@@ -4,7 +4,14 @@
  * 根据设计师 UI 偏好动态切换主题和视觉样式
  */
 
-import type { UIPreferences } from '../../main/services/rag/types';
+export interface UIPreferences {
+    theme?: 'dark' | 'light' | 'auto';
+    layoutMode?: 'grid' | 'list' | 'compact';
+    infoDensity?: 'dense' | 'normal' | 'spacious';
+    fontSize?: 'small' | 'medium' | 'large';
+    showTips?: boolean;
+    primaryColor?: string;
+}
 
 // ==================== 类型定义 ====================
 

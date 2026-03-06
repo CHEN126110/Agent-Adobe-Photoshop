@@ -5,8 +5,6 @@ import { ChatPanel } from './components/ChatPanel';
 import { SettingsModal } from './components/SettingsModal';
 import { ProjectManager } from './components/ProjectManager';
 import { AssetGallery } from './components/AssetGallery';
-// RAG 知识库 - 新版语义搜索面板
-import { UnifiedKnowledgePanel } from './components/knowledge/UnifiedKnowledgePanel';
 import { useAppStore, EcommerceProjectStructure } from './stores/app.store';
 
 // 获取系统主题
@@ -18,7 +16,7 @@ function getSystemTheme(): 'light' | 'dark' {
 }
 
 // 视图类型 - AI 驱动设计，设计和SKU功能通过对话完成
-type ViewType = 'chat' | 'assets' | 'knowledge';
+type ViewType = 'chat' | 'assets';
 
 function App() {
     const [showSettings, setShowSettings] = useState(false);
@@ -92,7 +90,7 @@ function App() {
         const handleMessage = (event: MessageEvent) => {
             if (event.data?.type === 'NAVIGATE_TO_VIEW') {
                 const targetView = event.data.view as ViewType;
-                if (['chat', 'assets', 'knowledge'].includes(targetView)) {
+                if (['chat', 'assets'].includes(targetView)) {
                     console.log(`[App] 🔄 收到跳转指令: ${targetView}`);
                     setActiveView(targetView);
                 }
@@ -260,16 +258,6 @@ function App() {
                             </svg>
                             素材
                         </button>
-                        <button 
-                            className={`view-nav-btn ${activeView === 'knowledge' ? 'active' : ''}`}
-                            onClick={() => setActiveView('knowledge')}
-                        >
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-                                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-                            </svg>
-                            知识库
-                        </button>
                     </div>
                     
                     <div className="app-main">
@@ -279,9 +267,6 @@ function App() {
                         </div>
                         <div style={{ display: activeView === 'assets' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
                             <AssetGallery />
-                        </div>
-                        <div style={{ display: activeView === 'knowledge' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-                            <UnifiedKnowledgePanel />
                         </div>
                     </div>
                 </div>

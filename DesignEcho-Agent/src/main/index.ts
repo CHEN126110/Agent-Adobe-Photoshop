@@ -29,6 +29,7 @@ import { InpaintingService } from './services/inpainting-service';
 import { getSubjectDetectionService, SubjectDetectionService } from './services/subject-detection-service';
 import { ContourService } from './services/contour-service';
 import { getSAMService, SAMService } from './services/sam-service';
+import { DebugBridgeService } from './services/debug-bridge-service';
 
 // 模块化 handlers 导入
 import { setupIPCHandlers, IPCContext } from './ipc-handlers';
@@ -37,6 +38,7 @@ import { registerUXPHandlers, UXPContext } from './uxp-handlers';
 // ============ 常量 ============
 const WS_PORT = 8765;
 const WEBVIEW_SERVER_PORT = 8766;
+const DEBUG_BRIDGE_PORT = 8767;
 
 // ============ 单实例锁定 ============
 const gotTheLock = app.requestSingleInstanceLock();
@@ -60,6 +62,7 @@ let subjectDetectionService: SubjectDetectionService | null = null;
 let contourService: ContourService | null = null;
 let samService: SAMService | null = null;
 let webviewServer: http.Server | null = null;
+let debugBridgeService: DebugBridgeService | null = null;
 
 // ============ 二进制协议 ============
 let binaryRequestIdCounter = 1;
@@ -339,6 +342,28 @@ async function initializeServices(): Promise<void> {
     
     // 启动 WebView 服务器
     startWebViewServer();
+
+    // 启动调试桥服务
+    debugBridgeService = new DebugBridgeService({
+        host: '127.0.0.1',
+        port: DEBUG_BRIDGE_PORT,
+        dataDir: path.join(app.getPath('userData'), 'debug-bridge'),
+        onEvent: (event) => {
+            if (event.type === 'session.created') {
+                logService?.logAgent('info', `[DebugBridge] 新会话: ${event.sessionId}`);
+            } else {
+                const message = event.payload as { role?: string; direction?: string; content?: string };
+                const preview = String(message.content || '').slice(0, 80);
+                logService?.logAgent(
+                    'info',
+                    `[DebugBridge] ${event.sessionId} ${message.direction || 'inbound'} ${message.role || 'user'}: ${preview}`
+                );
+            }
+            mainWindow?.webContents.send('debug-bridge:event', event);
+        }
+    });
+    debugBridgeService.start();
+    logService.logAgent('info', `Debug Bridge 已启动: http://127.0.0.1:${DEBUG_BRIDGE_PORT}`);
     
     console.log('[Main] Services initialized');
 }
@@ -407,6 +432,10 @@ app.on('before-quit', async () => {
     
     if (wsServer) {
         wsServer.stop();
+    }
+
+    if (debugBridgeService) {
+        debugBridgeService.stop();
     }
     
     if (logService) {

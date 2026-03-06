@@ -11,7 +11,6 @@ import { registerBeautifyHandlers } from './beautify-handlers';
 import { registerWebViewHandlers } from './webview-handlers';
 import { registerSmartLayoutUXPHandlers, getSmartLayoutToolSchemas } from './smart-layout-handlers';
 import { registerHarmonizationUXPHandlers, getHarmonizationToolSchemas } from './harmonization-handlers';
-import { registerRAGUXPHandlers } from './rag-handlers';
 import type { UXPContext } from './types';
 
 export { UXPContext, SubjectPositionCache, SendProgressFn } from './types';
@@ -47,8 +46,5 @@ export function registerUXPHandlers(context: UXPContext): void {
     // 图像协调
     registerHarmonizationUXPHandlers(context);
 
-    // RAG 知识库摄入
-    registerRAGUXPHandlers(context);
-    
     console.log('[UXP Handlers] 基础 handlers 注册完成');
 }

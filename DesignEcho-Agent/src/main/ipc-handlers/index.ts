@@ -23,10 +23,8 @@ import { registerHarmonizationHandlers } from './harmonization-handlers';
 import { registerSKUKnowledgeHandlers } from './sku-knowledge-handlers';
 import { registerBFLHandlers } from './bfl-handlers';
 import { registerTemplateKnowledgeHandlers } from './template-knowledge-handlers';
-import { registerRAGHandlers } from './rag-handlers';
 import { registerAestheticHandlers, setModelServiceForAesthetic } from './aesthetic-handlers';
 import { registerMCPHandlers } from './mcp-handlers';
-import { registerProjectIndexHandlers } from './project-index-handlers';
 import { registerKnowledgeManagementHandlers } from './knowledge-management-handlers';
 import { registerInpaintingHandlers } from './inpainting-handlers';
 import { registerBrandSpecHandlers } from './brand-spec-handlers';
@@ -108,9 +106,6 @@ export function setupIPCHandlers(context: IPCContext): void {
     // 模板知识库
     registerTemplateKnowledgeHandlers();
     
-    // RAG 知识库与设计师档案
-    registerRAGHandlers();
-    
     // 审美知识库与决策服务
     registerAestheticHandlers();
     
@@ -123,9 +118,6 @@ export function setupIPCHandlers(context: IPCContext): void {
     // 截图能力（Agent窗口与桌面）
     registerScreenshotHandlers();
     
-    // 项目索引器 (用户作品集 → RAG)
-    registerProjectIndexHandlers(context);
-
     // 知识库管理（清空数据等）
     registerKnowledgeManagementHandlers();
 

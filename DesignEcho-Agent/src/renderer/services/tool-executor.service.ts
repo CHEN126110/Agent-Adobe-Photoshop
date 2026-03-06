@@ -1460,7 +1460,7 @@ async function executeDetailPageContentMatch(params: {
     
     const plans: any[] = [];
     
-    // 优先走主进程 ContentMatcher（含 RAG、素材展平）
+    // 优先走主进程 ContentMatcher（含素材展平和结构化卖点匹配）
     try {
         const matcherResult = await window.designEcho.invoke('design-agent:matchContent', {
             screens: screens || [],

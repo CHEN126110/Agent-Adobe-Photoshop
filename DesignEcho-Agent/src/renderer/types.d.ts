@@ -177,33 +177,6 @@ export interface DesignEchoAPI {
     // ===== 项目索引进度 =====
     onProjectIndexProgress?: (callback: (data: { projectId: string; current: number; total: number; phase?: 'project' | 'file'; fileName?: string }) => void) => () => void;
 
-    // ===== 项目设计知识学习 =====
-    ingestProjectDesigns?: (params: {
-        projectPath: string;
-        projectId?: string;
-        options?: {
-            author?: string;
-            categories?: string[];
-            source?: 'system' | 'user' | 'learned' | 'import' | 'uxp';
-            includeComponents?: boolean;
-            maxComponents?: number;
-        };
-    }) => Promise<{
-        success: boolean;
-        data?: {
-            projectId: string;
-            totalFiles: number;
-            indexed: number;
-            failed: number;
-            errors: Array<{ filePath: string; error: string }>;
-        };
-        error?: string;
-    }>;
-    onRAGProjectIngestProgress?: (callback: (data: { projectId: string; current: number; total: number; filePath: string }) => void) => () => void;
-
-    // ===== RAG 知识库索引进度 =====
-    onRAGIndexProgress?: (callback: (data: { phase: string; current: number; total: number; message: string }) => void) => () => void;
-
     // ===== 通用 IPC 调用 =====
     invoke: (channel: string, ...args: any[]) => Promise<any>;
     

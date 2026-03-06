@@ -74,19 +74,6 @@ interface ProjectAssets {
     }[];
 }
 
-// RAG 搜索结果
-interface RAGSearchResult {
-    id: string;
-    text: string;
-    score: number;
-    metadata?: Record<string, any>;
-}
-
-// RAG 服务接口
-interface RAGService {
-    search(query: string, options?: { filter?: any; limit?: number }): Promise<RAGSearchResult[]>;
-}
-
 // 项目服务接口
 interface EcommerceProjectService {
     scanProject(projectPath: string): Promise<ProjectAssets>;
@@ -112,7 +99,6 @@ export class ContentMatcher {
     private styleHintCache = new Map<string, string[]>();
     
     constructor(
-        private ragService: RAGService | null,
         private projectService: EcommerceProjectService | null,
         sellingPoints?: SellingPointEntry[]
     ) {
@@ -194,31 +180,7 @@ export class ContentMatcher {
     ): Promise<CopyFillItem> {
         const knowledgeTypes = SCREEN_KNOWLEDGE_MAP[screenType] || [];
         
-        // 尝试从知识库检索
-        if (this.ragService && knowledgeTypes.length > 0) {
-            try {
-                const query = `${screenType} ${placeholder.role} ${placeholder.currentText}`;
-                const results = await this.ragService.search(query, {
-                    filter: { types: knowledgeTypes },
-                    limit: 3
-                });
-                
-                if (results.length > 0 && results[0].score > 0.7) {
-                    return {
-                        layerId: placeholder.layerId,
-                        layerName: placeholder.layerName,
-                        content: results[0].text,
-                        source: 'knowledge',
-                        sourceId: results[0].id,
-                        originalText: placeholder.currentText
-                    };
-                }
-            } catch (e: any) {
-                console.warn(`[ContentMatcher] RAG 检索失败: ${e.message}`);
-            }
-        }
-        
-        // RAG 无匹配时，尝试从本地卖点知识库匹配
+        // 使用本地卖点知识做匹配
         if (this.sellingPoints.length > 0 && knowledgeTypes.length > 0) {
             const matched = this.matchFromSellingPoints(knowledgeTypes, placeholder.role);
             if (matched) {
@@ -504,42 +466,8 @@ export class ContentMatcher {
         if (this.styleHintCache.has(cacheKey)) {
             return this.styleHintCache.get(cacheKey) || [];
         }
-        if (!this.ragService) {
-            this.styleHintCache.set(cacheKey, []);
-            return [];
-        }
-
-        try {
-            const results = await this.ragService.search(`${screenType} 版式 构图 图层 命名`, {
-                filter: { categories: ['psd', 'design'] },
-                limit: 6
-            });
-
-            const tokenSet = new Set<string>();
-            for (const r of results || []) {
-                const metaKeywords = Array.isArray(r.metadata?.keywords) ? r.metadata?.keywords : [];
-                for (const k of metaKeywords) {
-                    if (typeof k === 'string' && k.trim().length >= 2 && k.trim().length <= 20) {
-                        tokenSet.add(k.trim().toLowerCase());
-                    }
-                }
-                const text = (r.text || '').toLowerCase();
-                const matches = text.match(/[a-z0-9_\-\u4e00-\u9fa5]{2,20}/g) || [];
-                for (const t of matches) {
-                    if (tokenSet.size >= 20) break;
-                    if (t.length >= 2 && t.length <= 20) tokenSet.add(t);
-                }
-                if (tokenSet.size >= 20) break;
-            }
-
-            const hints = Array.from(tokenSet).slice(0, 20);
-            this.styleHintCache.set(cacheKey, hints);
-            return hints;
-        } catch (e: any) {
-            console.warn(`[ContentMatcher] 获取屏风格线索失败: ${e.message}`);
-            this.styleHintCache.set(cacheKey, []);
-            return [];
-        }
+        this.styleHintCache.set(cacheKey, []);
+        return [];
     }
     
     /**
@@ -605,8 +533,7 @@ export class ContentMatcher {
  * 创建内容匹配服务实例
  */
 export function createContentMatcher(
-    ragService?: RAGService | null,
     projectService?: EcommerceProjectService | null
 ): ContentMatcher {
-    return new ContentMatcher(ragService || null, projectService || null);
+    return new ContentMatcher(projectService || null);
 }

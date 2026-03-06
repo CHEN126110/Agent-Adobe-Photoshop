@@ -38,6 +38,12 @@ interface PlanExecutionFlags {
     useQuickExport: boolean;
 }
 
+interface MainImageCopyResult {
+    candidates: string[];
+    degraded: boolean;
+    raw: unknown;
+}
+
 // ==================== 审美决策 ====================
 
 async function requestAestheticDecision(
@@ -161,6 +167,98 @@ async function generateAIBackground(
     } catch (e) {
         console.warn('[MainImageExecutor] BFL 背景生成失败:', e);
     }
+    return null;
+}
+
+function normalizeCopyTexts(source: unknown): string[] {
+    if (!source) return [];
+
+    if (typeof source === 'string') {
+        const trimmed = source.trim();
+        if (!trimmed) return [];
+        const lines = trimmed
+            .split(/\n+/)
+            .map(line => line.replace(/^\s*(?:[-*•]|\d+[.)、:：])\s*/, '').trim())
+            .filter(Boolean);
+        return lines.length > 0 ? lines : [trimmed];
+    }
+
+    if (Array.isArray(source)) {
+        return source.flatMap(item => normalizeCopyTexts(item));
+    }
+
+    if (typeof source === 'object') {
+        const record = source as Record<string, unknown>;
+        for (const key of ['suggestions', 'candidates', 'versions', 'choices', 'texts', 'data', 'result', 'text', 'content']) {
+            if (key in record) {
+                const values = normalizeCopyTexts(record[key]);
+                if (values.length > 0) return values;
+            }
+        }
+    }
+
+    return [];
+}
+
+async function generateMainImageCopy(
+    params: Record<string, any>,
+    helpers: {
+        brandSpec?: any;
+        mainImageSpec?: any;
+        platform?: string;
+    },
+    callbacks?: any
+): Promise<MainImageCopyResult | null> {
+    try {
+        const count = Math.max(1, Math.min(5, Number(params.copyCount) || 3));
+        const creativeStyle = String(params.creativeStyle || helpers.brandSpec?.tone || 'natural');
+        const productName = String(params.productName || params.subjectName || params.productCategory || '').trim();
+        const imageType = String(params.imageType || helpers.mainImageSpec?.imageType || 'main-image').trim();
+        const userIntent = String(params.userIntent || '').trim();
+        const lockedKeywords = String(params.lockedKeywords || '').trim();
+        const sections = Array.isArray(helpers.mainImageSpec?.requiredSections)
+            ? helpers.mainImageSpec.requiredSections.slice(0, 3)
+            : [];
+
+        const prompt = [
+            '请为电商主图生成可直接落版的短文案候选。',
+            productName ? `产品：${productName}` : '',
+            `图片类型：${imageType}`,
+            helpers.platform ? `平台：${helpers.platform}` : '',
+            userIntent ? `设计目标：${userIntent}` : '',
+            helpers.brandSpec?.tone ? `品牌语气：${helpers.brandSpec.tone}` : '',
+            sections.length > 0 ? `建议信息结构：${sections.join('、')}` : '',
+            lockedKeywords ? `尽量保留关键词：${lockedKeywords}` : '',
+            `风格：${creativeStyle}`,
+            `版本数：${count}`,
+            '要求：每条尽量控制在 8-18 个字；短句优先；少广告腔；要能被主图画面直接支撑。'
+        ].filter(Boolean).join('\n\n');
+
+        const raw = await window.designEcho?.invoke?.('task:execute', 'text-optimize', {
+            text: prompt,
+            context: {
+                source: 'main-image-design',
+                imageType,
+                productName,
+                creativeStyle,
+                lockedKeywords
+            }
+        });
+
+        const candidates = Array.from(new Set(
+            normalizeCopyTexts(raw)
+                .map(item => item.trim())
+                .filter(Boolean)
+        )).slice(0, count);
+
+        if (candidates.length > 0) {
+            callbacks?.onMessage?.(`✍️ 主图文案候选: ${candidates[0]}`);
+            return { candidates, degraded: false, raw };
+        }
+    } catch (error) {
+        console.warn('[MainImageExecutor] 生成主图文案失败:', error);
+    }
+
     return null;
 }
 
@@ -362,6 +460,11 @@ export const mainImageExecutor: SkillExecutor = {
                 }
             }
             const platformRules = await getPlatformRules(platform);
+            let copyResult: MainImageCopyResult | null = null;
+            if (params.generateCopy !== false) {
+                callbacks?.onMessage?.('✍️ 生成主图候选文案...');
+                copyResult = await generateMainImageCopy(params, { brandSpec, mainImageSpec, platform }, callbacks);
+            }
             if (platformRules?.rules?.length) {
                 callbacks?.onMessage?.(`🧾 平台规范要点: ${platformRules.rules.slice(0, 2).join('；')}`);
             }
@@ -446,6 +549,13 @@ export const mainImageExecutor: SkillExecutor = {
             summary.push('', `**图片类型：** ${typeLabel}`);
             if (params.outputDir) summary.push(`**导出位置：** ${params.outputDir}\\主图\\`);
 
+            if (copyResult?.candidates?.length) {
+                summary.push('', '**主图候选文案：**');
+                copyResult.candidates.forEach((copy, index) => {
+                    summary.push(`${index + 1}. ${copy}`);
+                });
+            }
+
             if (critiqueResult) {
                 const arrow = getDeltaArrow(critiqueResult.delta);
                 summary.push(`🔍 **设计评估**：${critiqueResult.beforeScore} → ${critiqueResult.afterScore} (${arrow}${Math.abs(critiqueResult.delta)})`);
@@ -463,7 +573,13 @@ export const mainImageExecutor: SkillExecutor = {
                 success: true,
                 message: summary.join('\n'),
                 toolResults: results,
-                data: { sizeResults, aestheticDecisionUsed: anyAesthetic, critique: critiqueResult },
+                data: {
+                    sizeResults,
+                    aestheticDecisionUsed: anyAesthetic,
+                    critique: critiqueResult,
+                    copySuggestions: copyResult?.candidates || [],
+                    copyDegraded: copyResult?.degraded || false
+                },
             };
 
         } catch (e: any) {

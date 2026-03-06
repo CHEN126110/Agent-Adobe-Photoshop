@@ -583,31 +583,6 @@ const api = {
     },
 
     // ===== 项目设计知识学习 =====
-    ingestProjectDesigns: (params: {
-        projectPath: string;
-        projectId?: string;
-        options?: {
-            author?: string;
-            categories?: string[];
-            source?: 'system' | 'user' | 'learned' | 'import' | 'uxp';
-            includeComponents?: boolean;
-            maxComponents?: number;
-        };
-    }) => ipcRenderer.invoke('rag:ingestProjectDesigns', params),
-
-    onRAGProjectIngestProgress: (callback: (data: { projectId: string; current: number; total: number; filePath: string }) => void) => {
-        const handler = (_event: any, data: any) => callback(data);
-        ipcRenderer.on('rag:projectIngestProgress', handler);
-        return () => ipcRenderer.removeListener('rag:projectIngestProgress', handler);
-    },
-
-    // ===== RAG 知识库索引进度 =====
-    onRAGIndexProgress: (callback: (data: { phase: string; current: number; total: number; message: string }) => void) => {
-        const handler = (_event: any, data: any) => callback(data);
-        ipcRenderer.on('rag:indexProgress', handler);
-        return () => ipcRenderer.removeListener('rag:indexProgress', handler);
-    },
-
     // ===== 通用 IPC 调用 =====
     // 允许调用任意已注册的 IPC handler
     invoke: (channel: string, ...args: any[]) =>
