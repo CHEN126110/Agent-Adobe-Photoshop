@@ -1,0 +1,40 @@
+# Dependencies
+**/node_modules/
+
+# Build outputs
+**/dist/
+**/build/
+**/release/
+**/.cache/
+**/coverage/
+*.tsbuildinfo
+
+# Logs and temp files
+*.log
+tmp/
+**/tmp/
+DesignEcho-Agent/logs/
+
+# Local models and archives
+DesignEcho-Agent/models/
+DesignEcho-Agent/models_backup/
+C-649/
+_archived_python_backend/
+
+# Local tooling and editor state
+.claude/
+.cursor/
+.trae/
+.vscode/
+.cursorignore
+playwright-skill/
+DesignEcho-Agent/.agents/
+DesignEcho-Agent/.claude/
+DesignEcho-Agent/.cursor/
+DesignEcho-Agent/.trae/
+DesignEcho-Agent/.trash/
+DesignEcho-Agent/_trash/
+
+# Workspace-only exports / indexes
+eagle-*.json
+console-*.log

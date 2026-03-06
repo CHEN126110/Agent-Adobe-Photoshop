@@ -1,0 +1,3966 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DesignEcho</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+            font-feature-settings: "kern" 1, "liga" 1;
+        }
+
+        :root {
+            --de-primary: #0066ff;
+            --de-primary-glow: rgba(0, 102, 255, 0.4);
+            --de-success: #2ecc71;
+            --de-warning: #f39c12;
+            --de-error: #e74c3c;
+            --de-bg: #0a0a12;
+            --de-bg-light: #1a1a24;
+            --de-bg-card: rgba(20, 20, 30, 0.6);
+            --de-border: rgba(255, 255, 255, 0.08);
+            --de-border-light: rgba(255, 255, 255, 0.12);
+            --de-text: #f0f0f0;
+            --de-text-secondary: #9090a0;
+            
+            /* 毛玻璃效果 */
+            --glass-bg: rgba(25, 25, 35, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --glass-blur: 20px;
+            --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-size: 12px;
+            line-height: 1.5;
+            color: #e8e8e8;
+            background: linear-gradient(135deg, #0a0a12 0%, #12121c 50%, #0a0a12 100%);
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            font-weight: 400;
+            letter-spacing: 0.2px;
+        }
+        
+        /* 毛玻璃卡片基础样式 */
+        .glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(var(--glass-blur));
+            -webkit-backdrop-filter: blur(var(--glass-blur));
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            box-shadow: var(--glass-shadow);
+        }
+        
+        select,
+        input[type="range"] {
+            -webkit-appearance: none !important;
+            -moz-appearance: none !important;
+            appearance: none !important;
+            background-color: transparent !important;
+            border: none !important;
+            outline: none !important;
+        }
+        
+        select::-ms-expand {
+            display: none !important;
+        }
+        
+        input[type="range"]::-ms-track {
+            background: transparent !important;
+            border-color: transparent !important;
+            color: transparent !important;
+        }
+        
+        [style*="border-radius"],
+        .logo-icon,
+        .hero-icon,
+        .action-icon,
+        .connection-badge,
+        .status-dot,
+        .hero-card,
+        .action-btn,
+        .input-card,
+        .btn-secondary,
+        .toast,
+        .spinner,
+        .input,
+        .morph-section,
+        .step-badge,
+        .shape-dropdown,
+        .shape-preview,
+        .layer-checkbox,
+        .layer-icon,
+        .layer-type,
+        .btn-small,
+        .btn-back,
+        .btn-refresh-small,
+        .btn-execute,
+        .toggle-slider,
+        .toggle-slider:before,
+        .config-range,
+        .config-range::-webkit-slider-thumb,
+        .region-item input {
+            transform: translateZ(0);
+            -webkit-backface-visibility: hidden;
+            backface-visibility: hidden;
+        }
+        
+        .morph-page *,
+        .morph-section *,
+        select,
+        input[type="range"],
+        input[type="checkbox"] {
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        .page,
+        .app {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            position: relative;
+        }
+
+        .page {
+            display: none;
+        }
+
+        .page.active {
+            display: flex;
+        }
+
+        .app-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px;
+            background: rgba(13, 13, 20, 0.9);
+            border-bottom: 1px solid var(--de-border);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+        }
+
+        .logo-icon {
+            width: 24px;
+            height: 24px;
+            background: linear-gradient(135deg, #0066ff 0%, #00aaff 100%);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 8px;
+            box-shadow: 0 2px 6px rgba(0, 102, 255, 0.3);
+        }
+
+        .logo-icon svg {
+            width: 14px;
+            height: 14px;
+            fill: #fff;
+        }
+
+        .logo-text {
+            font-size: 13px;
+            font-weight: 600;
+            color: #ffffff;
+            letter-spacing: 0.3px;
+            text-shadow: 0 0 1px rgba(255,255,255,0.3);
+        }
+
+        .connection-badge {
+            display: flex;
+            align-items: center;
+            padding: 3px 10px;
+            background: var(--de-bg-light);
+            border: 1px solid var(--de-border);
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.3px;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--de-error);
+            margin-right: 8px;
+        }
+
+        .status-dot.connected {
+            background: var(--de-success);
+            box-shadow: 0 0 8px var(--de-success);
+        }
+
+        .status-dot.connecting {
+            background: var(--de-warning);
+            animation: blink 1s ease-in-out infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .connection-text {
+            color: var(--de-text-secondary);
+        }
+
+        .main {
+            flex: 1;
+            padding: 12px;
+            overflow-y: auto;
+        }
+
+        .card {
+            background: var(--de-bg-card);
+            border: 1px solid var(--de-border);
+            border-radius: 12px;
+            padding: 16px;
+            transition: all 0.2s ease;
+        }
+
+        .card-hover:hover {
+            border-color: var(--de-primary);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .hero-card {
+            display: flex;
+            align-items: center;
+            padding: 12px 14px;
+            background: linear-gradient(135deg, rgba(0, 102, 255, 0.15) 0%, rgba(0, 102, 255, 0.05) 100%);
+            border: 1px solid rgba(0, 102, 255, 0.3);
+            border-radius: 10px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .hero-card:hover:not(.disabled) {
+            background: linear-gradient(135deg, rgba(0, 102, 255, 0.2) 0%, rgba(0, 102, 255, 0.1) 100%);
+            border-color: var(--de-primary);
+            box-shadow: 0 0 24px var(--de-primary-glow);
+            transform: translateY(-1px);
+        }
+
+        .hero-card:active:not(.disabled) {
+            transform: translateY(0);
+        }
+
+        .hero-card.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .hero-icon {
+            width: 34px;
+            height: 34px;
+            background: var(--de-primary);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            margin-right: 12px;
+            box-shadow: 0 4px 12px var(--de-primary-glow);
+        }
+
+        .hero-content {
+            flex: 1;
+        }
+
+        .hero-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #ffffff;
+            margin-bottom: 1px;
+            letter-spacing: 0.3px;
+        }
+
+        .hero-desc {
+            font-size: 11px;
+            color: var(--de-text-secondary);
+            font-weight: 400;
+            letter-spacing: 0.2px;
+        }
+
+        .section {
+            margin-bottom: 10px;
+        }
+
+        .section:last-child {
+            margin-bottom: 0;
+        }
+
+        .section-title {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--de-text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 6px;
+        }
+
+        .action-grid {
+            display: flex;
+            flex-wrap: wrap;
+            margin: -5px;
+        }
+
+        .action-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: calc(50% - 10px);
+            margin: 5px;
+            padding: 10px 8px;
+            background: var(--de-bg-card);
+            border: 1px solid var(--de-border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .action-btn:hover:not(.disabled) {
+            background: var(--de-bg-light);
+            border-color: var(--de-primary);
+        }
+
+        .action-btn:active:not(.disabled) {
+            transform: scale(0.98);
+        }
+
+        .action-btn.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
+        .action-icon {
+            width: 26px;
+            height: 26px;
+            background: var(--de-bg-light);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            color: var(--de-text);
+            margin-bottom: 5px;
+            transition: all 0.2s ease;
+        }
+
+        .action-btn:hover:not(.disabled) .action-icon {
+            background: var(--de-primary);
+            color: #fff;
+        }
+
+        .action-label {
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--de-text-secondary);
+            letter-spacing: 0.3px;
+        }
+
+        .action-btn:hover:not(.disabled) .action-label {
+            color: var(--de-text);
+        }
+
+        .input-card {
+            background: var(--de-bg-card);
+            border: 1px solid var(--de-border);
+            border-radius: 6px;
+            padding: 8px 10px;
+        }
+
+        .input-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }
+
+        .input-title {
+            display: flex;
+            align-items: center;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--de-text);
+            letter-spacing: 0.2px;
+        }
+
+        .input-title-icon {
+            margin-right: 4px;
+            font-size: 10px;
+            color: var(--de-primary);
+        }
+
+        .input-badge {
+            font-size: 9px;
+            color: var(--de-text-secondary);
+            padding: 2px 6px;
+            background: var(--de-bg-light);
+            border-radius: 3px;
+        }
+
+        .input,
+        input[type="text"] {
+            width: 100%;
+            padding: 6px 8px;
+            background: #0d0d14 !important;
+            border: 1px solid #2a2a3a !important;
+            border-radius: 4px !important;
+            color: #f0f0f0 !important;
+            font-size: 11px;
+            font-family: inherit;
+            font-weight: 400;
+            letter-spacing: 0.2px;
+            outline: none !important;
+            box-shadow: none !important;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+        }
+
+        .input:focus,
+        input[type="text"]:focus {
+            border-color: #0066ff !important;
+            box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.3) !important;
+            outline: none !important;
+        }
+
+        .input::placeholder,
+        input[type="text"]::placeholder {
+            color: #909098 !important;
+            opacity: 1;
+            font-weight: 400;
+            letter-spacing: 0.2px;
+        }
+
+        input:invalid,
+        input:required {
+            border-color: #2a2a3a !important;
+            box-shadow: none !important;
+        }
+
+        .input-hint {
+            display: flex;
+            align-items: center;
+            margin-top: 4px;
+            font-size: 9px;
+            color: var(--de-text-secondary);
+        }
+
+        .hint-icon {
+            color: var(--de-success);
+            margin-right: 4px;
+            font-size: 9px;
+        }
+
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--de-bg-card);
+            border-top: 1px solid var(--de-border);
+        }
+
+        .btn-secondary {
+            display: flex;
+            align-items: center;
+            padding: 6px 10px;
+            background: var(--de-bg-light);
+            border: 1px solid var(--de-border);
+            border-radius: 6px;
+            color: var(--de-text);
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-secondary:hover {
+            background: var(--de-bg-card);
+            border-color: var(--de-primary);
+        }
+
+        .btn-icon {
+            margin-right: 6px;
+        }
+
+        .version {
+            font-size: 10px;
+            color: var(--de-text-secondary);
+        }
+
+
+        /* ========== 局部重绘页面 ========== */
+        .inpainting-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .inpainting-item {
+            position: relative;
+            aspect-ratio: 1;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .inpainting-item:hover {
+            border-color: rgba(0, 102, 255, 0.5);
+            transform: translateY(-2px);
+        }
+
+        .inpainting-item.selected {
+            border-color: #0066ff;
+            box-shadow: 0 0 0 2px rgba(0, 102, 255, 0.3);
+        }
+
+        .inpainting-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .inpainting-item .loading-placeholder {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--de-text-secondary);
+            font-size: 10px;
+        }
+
+        /* ========== 形态统一进度遮罩 ========== */
+        .morph-progress-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            backdrop-filter: blur(4px);
+        }
+        
+        .morph-progress-container {
+            background: linear-gradient(145deg, #2a2a2e, #1f1f23);
+            border-radius: 12px;
+            padding: 24px 32px;
+            min-width: 200px;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);
+        }
+        
+        .morph-progress-spinner {
+            width: 48px;
+            height: 48px;
+            border: 3px solid rgba(79, 172, 254, 0.2);
+            border-top-color: #4facfe;
+            border-radius: 50%;
+            margin: 0 auto 16px;
+            animation: morphSpin 1s linear infinite;
+        }
+        
+        @keyframes morphSpin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .morph-progress-text {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            color: #fff;
+        }
+        
+        .morph-progress-message {
+            font-size: 13px;
+            color: #b0b0b0;
+        }
+        
+        .morph-progress-percent {
+            font-size: 14px;
+            font-weight: 600;
+            color: #4facfe;
+        }
+        
+        .morph-progress-detail {
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 10px;
+            text-align: center;
+            min-height: 16px;
+            transition: opacity 0.2s ease;
+        }
+        
+        .morph-progress-bar-container {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        
+        .morph-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4facfe, #00f2fe);
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .toast-container {
+            position: fixed;
+            top: 50px;
+            right: 8px;
+            width: 240px;
+            z-index: 1000;
+            pointer-events: none;
+        }
+
+        .toast {
+            display: flex;
+            align-items: flex-start;
+            padding: 10px 12px;
+            background: var(--de-bg-light);
+            border: 1px solid var(--de-border);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            animation: slideInRight 0.3s ease;
+            pointer-events: auto;
+        }
+
+        .toast.hiding {
+            animation: slideOutRight 0.3s ease forwards;
+        }
+
+        @keyframes slideInRight {
+            from { opacity: 0; transform: translateX(100%); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        @keyframes slideOutRight {
+            from { opacity: 1; transform: translateX(0); }
+            to { opacity: 0; transform: translateX(100%); }
+        }
+
+        .toast.success { border-left: 3px solid var(--de-success); }
+        .toast.error { border-left: 3px solid var(--de-error); }
+        .toast.warning { border-left: 3px solid #f59e0b; }
+        .toast.info { border-left: 3px solid var(--de-primary); }
+
+        .toast-icon {
+            font-size: 12px;
+            margin-right: 8px;
+            margin-top: 2px;
+        }
+
+        .toast.success .toast-icon { color: var(--de-success); }
+        .toast.error .toast-icon { color: var(--de-error); }
+        .toast.warning .toast-icon { color: #f59e0b; }
+        .toast.info .toast-icon { color: var(--de-primary); }
+
+        .toast-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .toast-message {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--de-text);
+            word-wrap: break-word;
+            line-height: 1.4;
+        }
+
+        .toast-close {
+            background: none;
+            border: none;
+            color: var(--de-text-secondary);
+            font-size: 14px;
+            cursor: pointer;
+            padding: 0 0 0 8px;
+            line-height: 1;
+            opacity: 0.6;
+        }
+
+        .toast-close:hover {
+            opacity: 1;
+            color: var(--de-text);
+        }
+
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(13, 13, 20, 0.85);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+        }
+
+        .loading-overlay.visible {
+            display: flex;
+        }
+
+        .loading-content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 2px solid var(--de-border);
+            border-top-color: var(--de-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(0, 102, 255, 0.2);
+            border-top-color: var(--de-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        .loading-text {
+            font-size: 12px;
+            color: var(--de-text-secondary);
+            margin-top: 12px;
+        }
+
+        .action-btn.loading,
+        .hero-card.loading {
+            pointer-events: none;
+            position: relative;
+        }
+
+        .action-btn.loading::after,
+        .hero-card.loading::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+            animation: shimmer 1.2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .btn-secondary.hidden {
+            display: none;
+        }
+
+        .footer.connected .btn-secondary {
+            display: none;
+        }
+
+        .morph-page {
+            background: var(--de-bg);
+            flex-direction: column;
+            height: 100%;
+        }
+        
+        .morph-page.active {
+            display: flex;
+        }
+
+        .morph-header {
+            display: flex;
+            align-items: center;
+            padding: 12px 14px;
+            background: rgba(20, 20, 28, 0.8);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .btn-back {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            background: rgba(255, 255, 255, 0.06);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: var(--de-text);
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-right: 12px;
+        }
+
+        .btn-back:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .btn-refresh-small {
+            margin-left: auto;
+            width: 32px;
+            height: 32px;
+            background: rgba(255, 255, 255, 0.06);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: var(--de-text-secondary);
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-refresh-small:hover {
+            color: var(--de-primary);
+            border-color: rgba(0, 102, 255, 0.3);
+            background: rgba(0, 102, 255, 0.1);
+        }
+
+        .morph-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #fff;
+            letter-spacing: 0.5px;
+        }
+
+        .morph-main {
+            flex: 1;
+            padding: 12px;
+            padding-bottom: 80px;
+            overflow-y: auto;
+        }
+
+        .morph-section {
+            margin-bottom: 12px;
+            background: rgba(25, 25, 35, 0.6);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+        }
+
+        /* 局部重绘模型下拉：允许菜单突破卡片裁剪 */
+        .inpainting-model-section {
+            position: relative;
+            overflow: visible;
+            z-index: 40;
+        }
+
+        .inpainting-model-section .section-content {
+            overflow: visible;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            padding: 12px 14px;
+            background: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .step-badge {
+            width: 20px;
+            height: 20px;
+            background: linear-gradient(135deg, var(--de-primary) 0%, #0055dd 100%);
+            border-radius: 50%;
+            color: #fff;
+            font-size: 10px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 10px;
+            box-shadow: 0 2px 6px rgba(0, 102, 255, 0.3);
+        }
+
+        .section-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #fff;
+            letter-spacing: 0.3px;
+        }
+
+        .section-hint {
+            font-size: 10px;
+            color: var(--de-text-secondary);
+            margin-left: auto;
+            opacity: 0.7;
+        }
+
+        .section-content {
+            padding: 0;
+        }
+
+        /* 毛玻璃输入框 */
+        .glass-input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 12px 14px;
+            background: rgba(255, 255, 255, 0.04);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: #fff;
+            font-size: 12px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .glass-input:focus {
+            border-color: var(--de-primary);
+            box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.15);
+        }
+
+        .glass-input::placeholder {
+            color: var(--de-text-secondary);
+            opacity: 0.6;
+        }
+
+        /* 输出方式按钮组 */
+        .output-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .output-btn {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .output-btn input {
+            display: none;
+        }
+
+        .output-btn span {
+            font-size: 12px;
+            color: var(--de-text-secondary);
+        }
+
+        .output-btn:hover {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .output-btn.active {
+            background: rgba(0, 102, 255, 0.15);
+            border-color: rgba(0, 102, 255, 0.4);
+        }
+
+        .output-btn.active span {
+            color: #fff;
+        }
+
+        /* 抠图模式按钮组 */
+        .mode-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .mode-btn {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 14px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .mode-btn input {
+            display: none;
+        }
+
+        .mode-btn span {
+            font-size: 12px;
+            color: var(--de-text-secondary);
+        }
+
+        .mode-btn:hover {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .mode-btn.active {
+            background: rgba(0, 102, 255, 0.15);
+            border-color: rgba(0, 102, 255, 0.4);
+        }
+
+        .mode-btn.active span {
+            color: #fff;
+        }
+
+        .layer-count {
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--de-primary);
+            margin-left: auto;
+            padding: 4px 10px;
+            background: rgba(0, 102, 255, 0.15);
+            border: 1px solid rgba(0, 102, 255, 0.25);
+            border-radius: 20px;
+        }
+
+        .shape-selector {
+            padding: 12px;
+        }
+
+        /* ========== 自定义下拉菜单 ========== */
+        .custom-select {
+            position: relative;
+            width: 100%;
+            margin-bottom: 8px;
+            user-select: none;
+        }
+
+        .custom-select-trigger {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 14px;
+            background: rgba(255, 255, 255, 0.04);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            color: #e8e8f0;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .custom-select-trigger:hover {
+            border-color: rgba(0, 102, 255, 0.4);
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .custom-select.open .custom-select-trigger {
+            border-color: #0066ff;
+            border-radius: 12px;
+            box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.15);
+        }
+
+        .custom-select-text {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .custom-select-arrow {
+            font-size: 8px;
+            color: #888;
+            margin-left: 8px;
+            transition: transform 0.2s ease;
+        }
+
+        .custom-select.open .custom-select-arrow {
+            transform: rotate(180deg);
+        }
+
+        .custom-select-options {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            margin-top: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            background: #1a1a24;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            z-index: 9999;
+            display: none;
+        }
+
+        .custom-select.open .custom-select-options {
+            display: block;
+        }
+
+        .custom-select-option {
+            padding: 10px 14px;
+            margin: 4px;
+            font-size: 12px;
+            color: #c8c8d0;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.15s ease;
+        }
+
+        .custom-select-option:hover {
+            background: rgba(0, 102, 255, 0.2);
+            color: #fff;
+        }
+
+        .custom-select-option.selected {
+            background: rgba(0, 102, 255, 0.25);
+            color: #fff;
+        }
+
+        .shape-preview {
+            height: 50px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px dashed rgba(255, 255, 255, 0.12);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 10px;
+        }
+
+        .shape-placeholder {
+            font-size: 11px;
+            color: var(--de-text-secondary);
+            opacity: 0.6;
+            letter-spacing: 0.3px;
+        }
+
+        .layer-list {
+            max-height: 110px;
+            overflow-y: auto;
+        }
+
+        .layer-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 14px;
+            margin: 4px 8px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .layer-item:first-child {
+            margin-top: 8px;
+        }
+
+        .layer-item:last-child {
+            margin-bottom: 8px;
+        }
+
+        .layer-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.08);
+        }
+
+        .layer-item.selected {
+            background: rgba(0, 102, 255, 0.15);
+            border-color: rgba(0, 102, 255, 0.3);
+        }
+
+        .layer-checkbox {
+            width: 18px;
+            height: 18px;
+            border: 1.5px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            margin-right: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            color: transparent;
+            transition: all 0.15s ease;
+        }
+
+        .layer-item.selected .layer-checkbox {
+            background: linear-gradient(135deg, var(--de-primary) 0%, #0055dd 100%);
+            border-color: transparent;
+            color: #fff;
+            box-shadow: 0 1px 4px rgba(0, 102, 255, 0.3);
+        }
+
+        .layer-icon {
+            width: 18px;
+            height: 18px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 4px;
+            margin-right: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: var(--de-text-secondary);
+        }
+
+        .layer-name {
+            flex: 1;
+            font-size: 11px;
+            color: var(--de-text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .layer-type {
+            font-size: 9px;
+            font-weight: 500;
+            color: var(--de-text-secondary);
+            padding: 2px 6px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 4px;
+        }
+
+        .layer-empty {
+            padding: 16px;
+            text-align: center;
+            font-size: 11px;
+            color: var(--de-text-secondary);
+        }
+
+        .layer-actions {
+            display: flex;
+            padding: 8px 10px;
+            background: rgba(255, 255, 255, 0.02);
+            border-top: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .btn-small {
+            flex: 1;
+            padding: 8px 14px;
+            background: rgba(255, 255, 255, 0.06);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: var(--de-text-secondary);
+            font-size: 11px;
+            font-weight: 500;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-right: 8px;
+        }
+
+        .btn-small:last-child {
+            margin-right: 0;
+        }
+
+        .btn-small:hover {
+            background: linear-gradient(180deg, rgba(45, 45, 55, 0.9) 0%, rgba(35, 35, 45, 1) 100%);
+            color: var(--de-text);
+            border-color: rgba(0, 102, 255, 0.4);
+        }
+
+        .btn-small:active {
+            transform: translateY(1px);
+        }
+
+        .config-group {
+            padding: 10px 12px;
+        }
+
+        .config-row {
+            display: flex;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: none;
+        }
+
+        .config-row:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .config-row:first-child {
+            padding-top: 0;
+        }
+
+        .config-label {
+            min-width: 55px;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--de-text);
+            letter-spacing: 0.2px;
+        }
+
+        .config-desc {
+            font-size: 10px;
+            color: var(--de-text-secondary);
+            margin-left: 10px;
+        }
+
+        .range-wrapper {
+            flex: 1;
+            display: flex;
+            align-items: center;
+        }
+
+        /* ========== 自定义滑块 ========== */
+        .custom-slider {
+            flex: 1;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .custom-slider-track {
+            position: relative;
+            width: 100%;
+            height: 6px;
+            background: #2a2a36;
+            border-radius: 3px;
+        }
+
+        .custom-slider-fill {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            background: linear-gradient(90deg, #0066ff 0%, #0088ff 100%);
+            border-radius: 3px;
+            transition: width 0.05s ease;
+        }
+
+        .custom-slider-thumb {
+            position: absolute;
+            top: 50%;
+            width: 16px;
+            height: 16px;
+            background: linear-gradient(180deg, #ffffff 0%, #e8e8e8 100%);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.1);
+            transition: transform 0.1s ease, box-shadow 0.1s ease;
+            cursor: grab;
+        }
+
+        .custom-slider-thumb:hover {
+            transform: translate(-50%, -50%) scale(1.1);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(0, 0, 0, 0.1);
+        }
+
+        .custom-slider.dragging .custom-slider-thumb {
+            cursor: grabbing;
+            transform: translate(-50%, -50%) scale(0.95);
+        }
+
+        .range-value {
+            min-width: 40px;
+            text-align: right;
+            font-size: 11px;
+            font-weight: 600;
+            color: #0066ff;
+            padding-left: 10px;
+        }
+
+        /* ========== 自定义开关 ========== */
+        .custom-toggle {
+            width: 38px;
+            height: 20px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .custom-toggle-track {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(180deg, #2a2a36 0%, #222230 100%);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            transition: all 0.25s ease;
+        }
+
+        .custom-toggle.active .custom-toggle-track {
+            background: linear-gradient(180deg, #0066ff 0%, #0055dd 100%);
+            border-color: transparent;
+        }
+
+        .custom-toggle-thumb {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 14px;
+            height: 14px;
+            background: linear-gradient(180deg, #fff 0%, #e0e0e0 100%);
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .custom-toggle.active .custom-toggle-thumb {
+            left: calc(100% - 16px);
+        }
+
+        /* ========== 自定义复选框 ========== */
+        .custom-checkbox {
+            width: 16px;
+            height: 16px;
+            background: #2a2a36;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 8px;
+            transition: all 0.15s ease;
+            cursor: pointer;
+        }
+
+        .custom-checkbox .check-icon {
+            font-size: 10px;
+            color: transparent;
+            transition: color 0.15s ease;
+        }
+
+        .custom-checkbox.checked {
+            background: linear-gradient(135deg, #0066ff 0%, #0055dd 100%);
+            border-color: transparent;
+        }
+
+        .custom-checkbox.checked .check-icon {
+            color: #fff;
+        }
+
+        .custom-checkbox:hover {
+            border-color: rgba(0, 102, 255, 0.5);
+        }
+
+        .region-item {
+            display: flex;
+            align-items: center;
+            width: 50%;
+            padding: 6px 0;
+            font-size: 11px;
+            color: var(--de-text);
+            cursor: pointer;
+            transition: color 0.15s ease;
+        }
+
+        .region-item:hover {
+            color: #0066ff;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 36px;
+            height: 18px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(180deg, rgba(40, 40, 50, 0.9) 0%, rgba(30, 30, 40, 1) 100%);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            transition: all 0.25s ease;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 1px;
+            bottom: 1px;
+            background: linear-gradient(180deg, #fff 0%, #e0e0e0 100%);
+            border-radius: 50%;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+            background: linear-gradient(180deg, var(--de-primary) 0%, #0055dd 100%);
+            border-color: transparent;
+        }
+
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(18px);
+        }
+
+        .toggle-switch:hover .toggle-slider {
+            border-color: rgba(0, 102, 255, 0.3);
+        }
+
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(16px);
+        }
+
+        .collapsible .section-header.clickable {
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .collapsible .section-header.clickable:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .collapse-icon {
+            font-size: 10px;
+            color: var(--de-text-secondary);
+            margin-left: auto;
+            transition: transform 0.25s ease;
+        }
+
+        .collapsible.expanded .collapse-icon {
+            transform: rotate(180deg);
+        }
+
+        .advanced-content {
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.15);
+        }
+
+        .region-hint {
+            font-size: 10px;
+            color: var(--de-text-secondary);
+            margin-bottom: 10px;
+            padding: 8px 10px;
+            background: rgba(0, 102, 255, 0.08);
+            border-radius: 6px;
+            border-left: 2px solid var(--de-primary);
+        }
+
+        .region-badge {
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 8px;
+            margin-left: auto;
+            background: rgba(100, 100, 100, 0.3);
+            color: var(--de-text-secondary);
+        }
+
+        .region-badge.protect {
+            background: rgba(0, 102, 255, 0.15);
+            color: var(--de-primary);
+            border: 1px solid rgba(0, 102, 255, 0.3);
+        }
+
+        /* ========================================
+           款式识别模块 - 简洁蓝色统一设计
+           ======================================== */
+        
+        /* 子标签 */
+        .config-sublabel {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .config-sublabel .label-badge {
+            font-size: 9px;
+            padding: 1px 6px;
+            border-radius: 8px;
+            background: rgba(0, 102, 255, 0.12);
+            color: var(--de-primary);
+        }
+        
+        /* 配置行下拉菜单 */
+        .config-select {
+            position: relative;
+            flex: 1;
+        }
+        
+        .config-select-trigger {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 10px;
+            background: var(--de-bg-light);
+            border: 1px solid var(--de-border);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        
+        .config-select-trigger:hover {
+            border-color: var(--de-primary);
+        }
+        
+        .config-select.open .config-select-trigger {
+            border-color: var(--de-primary);
+            background: rgba(0, 102, 255, 0.05);
+        }
+        
+        .config-select-text {
+            font-size: 11px;
+            color: var(--de-text);
+        }
+        
+        .config-select-arrow {
+            font-size: 8px;
+            color: var(--de-text-secondary);
+            transition: transform 0.15s ease;
+        }
+        
+        .config-select.open .config-select-arrow {
+            transform: rotate(180deg);
+        }
+        
+        .config-select-options {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            margin-top: 4px;
+            min-width: 180px;
+            background: #1a1a24;
+            border: 1px solid var(--de-border-light);
+            border-radius: 6px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+            z-index: 9999;
+            display: none;
+            max-height: 240px;
+            overflow-y: auto;
+        }
+        
+        .config-select.open .config-select-options {
+            display: block;
+        }
+        
+        .config-select-option {
+            padding: 10px 12px;
+            font-size: 11px;
+            color: var(--de-text-secondary);
+            cursor: pointer;
+            transition: all 0.1s ease;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            white-space: nowrap;
+        }
+        
+        .config-select-option:last-child {
+            border-bottom: none;
+        }
+        
+        .config-select-option:hover {
+            background: rgba(0, 102, 255, 0.15);
+            color: var(--de-text);
+        }
+        
+        .config-select-option.active {
+            background: rgba(0, 102, 255, 0.2);
+            color: var(--de-primary);
+        }
+        
+        /* 袜口类型选择 - 简洁列表 */
+        .cuff-type-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+            width: 100%;
+        }
+        
+        .cuff-type-item {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 7px 8px;
+            background: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        
+        .cuff-type-item:hover {
+            border-color: var(--de-primary);
+        }
+        
+        .cuff-type-item.active {
+            border-color: var(--de-primary);
+            background: rgba(0, 102, 255, 0.1);
+        }
+        
+        /* 需保护的袜口 - 统一使用蓝色 */
+        .cuff-type-item.protected.active {
+            border-color: var(--de-primary);
+            background: rgba(0, 102, 255, 0.15);
+        }
+        
+        .cuff-type-item .cuff-name {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+        
+        .cuff-type-item.active .cuff-name {
+            color: var(--de-primary);
+            font-weight: 500;
+        }
+        
+        .cuff-type-item.protected.active .cuff-name {
+            color: var(--de-primary);
+        }
+        
+        /* 袜口提示 */
+        .cuff-hint-inline {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 8px;
+            padding-left: 2px;
+        }
+        
+        .cuff-hint-inline.protected {
+            color: var(--de-primary);
+        }
+        
+        .cuff-hint-inline::before {
+            content: '· ';
+            color: var(--de-primary);
+        }
+
+        .region-list {
+            display: flex;
+            flex-wrap: wrap;
+        }
+
+        .region-item {
+            display: flex;
+            align-items: center;
+            width: 50%;
+            padding: 6px 0;
+            font-size: 11px;
+            color: var(--de-text);
+            cursor: pointer;
+            transition: color 0.15s ease;
+        }
+
+        .region-item:hover {
+            color: var(--de-primary);
+        }
+
+        .region-item input {
+            margin-right: 8px;
+            width: 14px;
+            height: 14px;
+            accent-color: var(--de-primary);
+        }
+
+        .morph-footer {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 14px 16px;
+            background: rgba(18, 18, 26, 0.9);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            z-index: 100;
+        }
+
+        .morph-status {
+            font-size: 10px;
+            color: var(--de-text-secondary);
+            text-align: center;
+            margin-bottom: 8px;
+            letter-spacing: 0.2px;
+        }
+
+        .btn-execute {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 16px;
+            background: linear-gradient(135deg, #0077ff 0%, #0055dd 100%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            color: #fff;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 16px rgba(0, 102, 255, 0.3), 
+                        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-execute:hover:not(:disabled) {
+            background: linear-gradient(135deg, #0088ff 0%, #0066ff 100%);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 24px rgba(0, 102, 255, 0.4), 
+                        inset 0 1px 0 rgba(255, 255, 255, 0.15);
+            box-shadow: 0 4px 16px rgba(0, 102, 255, 0.4);
+            transform: translateY(-1px);
+        }
+
+        .btn-execute:active:not(:disabled) {
+            transform: translateY(0);
+            box-shadow: 0 2px 8px rgba(0, 102, 255, 0.3);
+        }
+
+        .btn-execute:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .btn-execute .btn-icon {
+            margin-right: 8px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <!-- ===== 主页面 ===== -->
+    <div class="page active" id="pageMain">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="white"/>
+                        <path d="M2 17L12 22L22 17" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M2 12L12 17L22 12" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+                <span class="logo-text">DesignEcho</span>
+            </div>
+            <div class="connection-badge" id="connectionStatus">
+                <span class="status-dot" id="statusDot"></span>
+                <span class="connection-text" id="statusLabel">离线</span>
+            </div>
+        </header>
+
+        <!-- Main -->
+        <main class="main">
+            <!-- Hero - 一键美化 -->
+            <div class="hero-card disabled" id="btnOneClickBeautify">
+                <div class="hero-icon">✨</div>
+                <div class="hero-content">
+                    <div class="hero-title">一键美化</div>
+                    <div class="hero-desc">智能分析画布，自动优化布局与样式</div>
+                </div>
+            </div>
+
+            <!-- Quick Actions -->
+            <section class="section">
+                <div class="section-title">快捷操作</div>
+                <div class="action-grid">
+                    <div class="action-btn disabled" id="btnOptimizeText">
+                        <div class="action-icon">T</div>
+                        <span class="action-label">优化文案</span>
+                    </div>
+                    <div class="action-btn disabled" id="btnAnalyzeLayout">
+                        <div class="action-icon">⊞</div>
+                        <span class="action-label">分析排版</span>
+                    </div>
+                    <div class="action-btn disabled" id="btnRemoveBackground">
+                        <div class="action-icon">✂</div>
+                        <span class="action-label">智能抠图</span>
+                    </div>
+                    <div class="action-btn disabled" id="btnShapeMorph">
+                        <div class="action-icon">◇</div>
+                        <span class="action-label">形态统一</span>
+                    </div>
+                    <div class="action-btn disabled" id="btnInpainting">
+                        <div class="action-icon">✎</div>
+                        <span class="action-label">局部重绘</span>
+                    </div>
+                    <div class="action-btn disabled" id="btnHarmonize">
+                        <div class="action-icon">⊕</div>
+                        <span class="action-label">协调融合</span>
+                    </div>
+                    <div class="action-btn disabled" id="btnAutoDesign">
+                        <div class="action-icon">◈</div>
+                        <span class="action-label">自动设计</span>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <button class="btn-secondary" id="btnReconnect">
+                <span class="btn-icon">↻</span>
+                <span>重连</span>
+            </button>
+            <span class="version">v2.0.0</span>
+        </footer>
+
+        <!-- Loading -->
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="loading-content">
+                <div class="spinner"></div>
+                <span class="loading-text" id="loadingText">处理中...</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="page" id="pageOptimizeText">
+        <header class="morph-header">
+            <button class="btn-back" id="btnOptimizeBack">‹</button>
+            <span class="morph-title">T 文案优化</span>
+            <button class="btn-refresh-small" id="btnOptimizeRefreshSelection">↻</button>
+        </header>
+        <main class="morph-main">
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">手动选择图层</span>
+                </div>
+                <div class="layer-empty" style="padding:10px 12px;text-align:left;">
+                    请先在 Photoshop 中手动选中一个文本图层，然后点右上角刷新按钮读取。
+                </div>
+            </section>
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">当前文案</span>
+                </div>
+                <div id="optimizeCurrentText" style="padding:12px;border:1px solid rgba(255,255,255,0.12);border-radius:10px;background:rgba(255,255,255,0.03);line-height:1.55;white-space:pre-wrap;color:var(--text-secondary);">请选择文本图层</div>
+                <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+                    <span style="font-size:12px;opacity:.8;min-width:56px;">文案风格</span>
+                    <select id="optimizeCreativeStyle" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:8px;">
+                        <option value="natural">自然</option>
+                        <option value="playful">轻松调侃</option>
+                        <option value="professional">专业</option>
+                    </select>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                    <span style="font-size:12px;opacity:.8;min-width:56px;">保留词</span>
+                    <input id="optimizeLockedKeywords" placeholder="逗号分隔，如：抗起球,透气" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:8px;" />
+                </div>
+                <button class="btn-execute" id="btnOptimizeGenerate" style="margin-top:12px;">
+                    <span class="btn-icon">✨</span>
+                    <span>生成三版文案</span>
+                </button>
+            </section>
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">候选文案（3选1）</span>
+                </div>
+                <div id="optimizeCandidateList" style="display:flex;flex-direction:column;gap:10px;">
+                    <div class="layer-empty">生成后在这里选择并替换</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ===== 形态统一页面 ===== -->
+    <div class="page morph-page" id="pageMorph">
+        <!-- 顶部导航 -->
+        <header class="morph-header">
+            <button class="btn-back" id="btnMorphBack">‹</button>
+            <span class="morph-title">◇ 形态统一</span>
+            <button class="btn-refresh-small" id="btnMorphRefresh">↻</button>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="morph-main">
+            <!-- Step 1: 选择参考形状 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">选择参考形状</span>
+                    <span class="section-hint">用钢笔工具绘制的理想轮廓</span>
+                </div>
+                <div class="shape-selector" id="shapeSelector">
+                    <!-- 自定义下拉菜单 -->
+                    <div class="custom-select" id="refShapeSelect" data-value="">
+                        <div class="custom-select-trigger">
+                            <span class="custom-select-text">-- 加载形状图层 --</span>
+                            <span class="custom-select-arrow">▼</span>
+                        </div>
+                        <div class="custom-select-options" id="refShapeOptions">
+                            <div class="custom-select-option" data-value="">-- 选择形状图层 --</div>
+                        </div>
+                    </div>
+                    <div class="shape-preview" id="refShapePreview">
+                        <div class="shape-placeholder">选择形状后预览</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 2: 选择产品图层 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">选择产品图层</span>
+                    <span class="layer-count" id="morphLayerCount">已选 0 个</span>
+                </div>
+                <div class="layer-list" id="morphLayerList">
+                    <div class="layer-empty">正在加载图层...</div>
+                </div>
+                <div class="layer-actions">
+                    <button class="btn-small" id="btnMorphSelectAll">全选产品</button>
+                    <button class="btn-small" id="btnMorphDeselectAll">取消全选</button>
+                </div>
+            </section>
+
+            <!-- Step 3: 款式识别 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">款式识别</span>
+                </div>
+                
+                <div class="config-group">
+                    <!-- 袜子款式 -->
+                    <div class="config-row">
+                        <span class="config-label">袜子款式</span>
+                        <div class="config-select" id="sockStyleSelect" data-value="boat">
+                            <div class="config-select-trigger">
+                                <span class="config-select-text">船袜</span>
+                                <span class="config-select-arrow">▼</span>
+                            </div>
+                            <div class="config-select-options" id="sockStyleOptions">
+                                <div class="config-select-option active" data-value="boat">船袜 · 露出脚踝</div>
+                                <div class="config-select-option" data-value="ankle">短袜 · 过脚踝</div>
+                                <div class="config-select-option" data-value="crew">中筒袜 · 小腿中部</div>
+                                <div class="config-select-option" data-value="calf">小腿袜 · 小腿上部</div>
+                                <div class="config-select-option" data-value="knee">长袜 · 到膝盖</div>
+                                <div class="config-select-option" data-value="over-knee">过膝袜 · 超过膝盖</div>
+                                <div class="config-select-option" data-value="leg-warmer">袜套 · 只有袜筒</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 袜口类型 -->
+                    <div class="config-sublabel" style="margin-top: 14px;">
+                        袜口类型
+                        <span class="label-badge">花型保护</span>
+                    </div>
+                    <div class="cuff-type-grid" id="cuffTypeGrid">
+                        <div class="cuff-type-item active" data-cuff="plain">
+                            <span class="cuff-name">普通平口</span>
+                        </div>
+                        <div class="cuff-type-item" data-cuff="ribbed">
+                            <span class="cuff-name">罗纹口</span>
+                        </div>
+                        <div class="cuff-type-item protected" data-cuff="double-welt">
+                            <span class="cuff-name">双罗口</span>
+                        </div>
+                        <div class="cuff-type-item protected" data-cuff="lace">
+                            <span class="cuff-name">花边口</span>
+                        </div>
+                        <div class="cuff-type-item protected" data-cuff="flare">
+                            <span class="cuff-name">喇叭口</span>
+                        </div>
+                        <div class="cuff-type-item protected" data-cuff="fold">
+                            <span class="cuff-name">翻边口</span>
+                        </div>
+                    </div>
+                    <div class="cuff-hint-inline" id="cuffTypeHint">普通平口：可正常变形</div>
+                </div>
+            </section>
+
+            <!-- Step 4: 变形设置 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">变形设置</span>
+                </div>
+                
+                <div class="config-group">
+                    <!-- 位置对齐 -->
+                    <div class="config-row">
+                        <span class="config-label">位置对齐</span>
+                        <div class="custom-toggle active" id="morphPreAlign" data-checked="true">
+                            <div class="custom-toggle-track">
+                                <div class="custom-toggle-thumb"></div>
+                            </div>
+                        </div>
+                        <span class="config-desc">自动移动到参考位置</span>
+                    </div>
+                    
+                    <!-- 形态吻合 -->
+                    <div class="config-row" style="margin-top: 8px;">
+                        <span class="config-label">形态吻合</span>
+                        <div class="custom-toggle active" id="morphShapeMatch" data-checked="true">
+                            <div class="custom-toggle-track">
+                                <div class="custom-toggle-thumb"></div>
+                            </div>
+                        </div>
+                        <span class="config-desc">使形态与参考重合</span>
+                    </div>
+                    
+                    <div class="config-row">
+                        <span class="config-label">边缘变形</span>
+                        <div class="custom-slider" id="morphEdgeStrength" data-value="70" data-min="0" data-max="100">
+                            <div class="custom-slider-track">
+                                <div class="custom-slider-fill" style="width: 70%;"></div>
+                                <div class="custom-slider-thumb" style="left: 70%;"></div>
+                            </div>
+                        </div>
+                        <span class="range-value" id="morphEdgeStrengthValue">70%</span>
+                    </div>
+                    
+                    <div class="config-row">
+                        <span class="config-label">内容保护</span>
+                        <div class="custom-slider" id="morphContentProtect" data-value="80" data-min="0" data-max="100">
+                            <div class="custom-slider-track">
+                                <div class="custom-slider-fill" style="width: 80%;"></div>
+                                <div class="custom-slider-thumb" style="left: 80%;"></div>
+                            </div>
+                        </div>
+                        <span class="range-value" id="morphContentProtectValue">80%</span>
+                    </div>
+                    
+                    <div class="config-row">
+                        <span class="config-label">变形平滑</span>
+                        <div class="custom-slider" id="morphSmoothness" data-value="50" data-min="0" data-max="100">
+                            <div class="custom-slider-track">
+                                <div class="custom-slider-fill" style="width: 50%;"></div>
+                                <div class="custom-slider-thumb" style="left: 50%;"></div>
+                            </div>
+                        </div>
+                        <span class="range-value" id="morphSmoothnessValue">50%</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 5: 分区控制 -->
+            <section class="morph-section" id="morphAdvancedSection">
+                <div class="section-header">
+                    <span class="section-label">分区控制</span>
+                </div>
+                <div class="advanced-content" id="advancedContent">
+                    <div class="region-hint">
+                        根据款式自动调整分区，勾选的区域将参与变形
+                    </div>
+                    <div class="region-list" id="regionList">
+                        <div class="region-item" data-region="cuff" data-checked="true">
+                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
+                            <span>袜口区域</span>
+                            <span class="region-badge protect">保护</span>
+                        </div>
+                        <div class="region-item" data-region="leg" data-checked="true">
+                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
+                            <span>袜筒区域</span>
+                        </div>
+                        <div class="region-item" data-region="heel" data-checked="true">
+                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
+                            <span>袜跟区域</span>
+                        </div>
+                        <div class="region-item" data-region="foot" data-checked="true">
+                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
+                            <span>袜身区域</span>
+                        </div>
+                        <div class="region-item" data-region="toe" data-checked="true">
+                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
+                            <span>袜头区域</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 快捷选项 -->
+        <div style="padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-tertiary); border-top: 1px solid var(--border-color);">
+            <!-- 执行步骤选择 -->
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 11px; color: var(--text-secondary);">执行步骤:</span>
+                <select id="morphStepSelect" style="padding: 4px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer;">
+                    <option value="morph" selected>完整变形</option>
+                    <option value="align">仅对齐 + 缩放</option>
+                </select>
+            </div>
+            <!-- 其他选项 -->
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; color: var(--text-secondary);">
+                    <input type="checkbox" id="morphForceRedetect" style="margin: 0;">
+                    <span>重新检测主体</span>
+                </label>
+                <span style="color: var(--text-muted); font-size: 10px;">(批量处理不同产品时勾选)</span>
+            </div>
+        </div>
+        
+        <!-- 操作按钮 -->
+        <footer class="morph-footer">
+            <div class="morph-status" id="morphStatus">
+                选择参考形状和产品图层后开始
+            </div>
+            <button class="btn-execute" id="btnMorphExecute" disabled>
+                <span class="btn-icon">◇</span>
+                <span>执行形态统一</span>
+            </button>
+        </footer>
+    </div>
+
+    <!-- ===== 局部重绘页面 ===== -->
+    <div class="page inpainting-page" id="pageInpainting">
+        <!-- 顶部导航 -->
+        <header class="morph-header">
+            <button class="btn-back" id="btnInpaintingBack">‹</button>
+            <span class="morph-title">✎ 局部重绘</span>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="morph-main">
+            <!-- 提示信息 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">使用说明</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <div style="font-size: 11px; color: var(--de-text-secondary);">
+                        已获取选区信息。请输入描述来生成内容。
+                    </div>
+                </div>
+            </section>
+
+            <!-- 模型选择（自定义下拉） -->
+            <section class="morph-section inpainting-model-section">
+                <div class="section-header">
+                    <span class="section-label">重绘模型</span>
+                </div>
+                <div class="section-content" style="padding: 8px 14px;">
+                    <div id="inpaintingModelSelect" class="custom-dropdown" data-value="flux-2-pro" style="position: relative; width: 100%;">
+                        <div class="custom-dropdown-trigger" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: rgba(255,255,255,0.04); color: var(--de-text-primary); font-size: 12px; cursor: pointer; transition: border-color 0.2s;">
+                            <span class="custom-dropdown-text">FLUX.2 [pro] — 平衡速度与质量</span>
+                            <span style="font-size: 9px; opacity: 0.5;">▼</span>
+                        </div>
+                        <div class="custom-dropdown-menu" id="inpaintingModelDropdownMenu" style="display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 120; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: #1a1a24; overflow-y: auto; max-height: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 200px;">
+                            <div class="custom-dropdown-option" data-value="flux-2-max" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [max] — 最高质量</div>
+                            <div class="custom-dropdown-option selected" data-value="flux-2-pro" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [pro] — 平衡速度与质量</div>
+                            <div class="custom-dropdown-option" data-value="flux-2-flex" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [flex] — 灵活编辑控制</div>
+                            <div class="custom-dropdown-option" data-value="flux-2-klein-9b" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [klein] — 快速迭代</div>
+                            <div class="custom-dropdown-option" data-value="nano-banana" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Nano Banana — 快速局部重绘</div>
+                            <div class="custom-dropdown-option" data-value="nano-banana-pro" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Nano Banana Pro — 高质量局部重绘</div>
+                            <div class="custom-dropdown-option" data-value="volcengine-inpaint" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">火山引擎 Inpainting — 即梦文生图3.1</div>
+                            <div class="custom-dropdown-option" data-value="volcengine-inpaint-pro" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">火山引擎 Inpainting Pro — 即梦AI Pro</div>
+                            <div class="custom-dropdown-option" data-value="volcengine-inpaint-4" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">火山引擎 Inpainting 4.0 — 即梦AI-图片生成4.0</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 描述输入 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">生成描述</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <input type="text" 
+                        id="inpaintingPrompt"
+                        class="glass-input"
+                        placeholder="描述要生成的内容，例如：将勃肯鞋替换为运动鞋"
+                    />
+                </div>
+            </section>
+
+            <!-- 生成结果 -->
+            <section class="morph-section" id="inpaintingResultSection" style="display: none;">
+                <div class="section-header">
+                    <span class="section-label">生成结果</span>
+                    <span class="section-hint">选择一张应用</span>
+                </div>
+                <div class="section-content" style="padding: 0 14px 14px;">
+                    <div class="inpainting-grid" id="inpaintingGrid">
+                        <!-- 结果将在这里渲染 -->
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 操作按钮 -->
+        <footer class="morph-footer">
+            <div class="morph-status" id="inpaintingStatus">
+                准备就绪
+            </div>
+            <!-- 局部重绘进度条 -->
+            <div id="inpaintingProgressContainer" style="display: none; width: 100%; margin: 6px 0;">
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--de-text-secondary); margin-bottom: 3px;">
+                    <span id="inpaintingProgressMsg">处理中...</span>
+                    <span id="inpaintingProgressPercent">0%</span>
+                </div>
+                <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
+                    <div id="inpaintingProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #638cff, #8b5cf6); border-radius: 2px; transition: width 0.3s ease;"></div>
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button class="btn-execute" id="btnInpaintingGenerate" style="flex: 1;">
+                    <span class="btn-icon">✨</span>
+                    <span>开始生成</span>
+                </button>
+                <button class="btn-execute" id="btnInpaintingApply" style="flex: 1; display: none; background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);">
+                    <span class="btn-icon">✓</span>
+                    <span>应用结果</span>
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ===== 智能抠图页面 ===== -->
+    <div class="page matting-page" id="pageMatting">
+        <!-- 顶部导航 -->
+        <header class="morph-header">
+            <button class="btn-back" id="btnMattingBack">‹</button>
+            <span class="morph-title">✂ 智能抠图</span>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="morph-main">
+            <!-- 提示信息卡片 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">使用说明</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <div style="font-size: 12px; color: #fff; margin-bottom: 6px;">请先在 Photoshop 中选择图层</div>
+                    <div style="font-size: 11px; color: var(--de-text-secondary);">支持同时选择多个图层进行批量抠图</div>
+                </div>
+            </section>
+
+            <!-- 抠图模式 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">抠图模式</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <div class="mode-buttons" style="display: flex; gap: 8px;">
+                        <label class="mode-btn active" data-value="auto" id="mattingModeAuto">
+                            <input type="radio" name="mattingMode" value="auto" checked>
+                            <span>🔍 自动检测</span>
+                        </label>
+                        <label class="mode-btn" data-value="selection" id="mattingModeSelection">
+                            <input type="radio" name="mattingMode" value="selection">
+                            <span>📐 使用选区</span>
+                        </label>
+                    </div>
+                    <div id="mattingModeHint" style="font-size: 11px; color: var(--de-text-secondary); margin-top: 8px;">
+                        自动识别图像中的主体并抠出
+                    </div>
+                </div>
+            </section>
+
+            <!-- 抠取目标（仅自动模式显示） -->
+            <section class="morph-section" id="mattingTargetSection">
+                <div class="section-header">
+                    <span class="section-label">抠取目标</span>
+                    <span class="section-hint">可选</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <input type="text" 
+                        id="mattingTargetPage"
+                        class="glass-input"
+                        placeholder="留空自动检测，或输入：袜子、鞋子..."
+                    />
+                </div>
+            </section>
+
+            <!-- 设置区域 -->
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">抠图设置</span>
+                </div>
+                <div class="section-content">
+                    <!-- 对所有图层取样 -->
+                    <div class="config-row" style="padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); justify-content: space-between;">
+                        <span class="config-label">对所有图层取样</span>
+                        <div class="custom-toggle" id="mattingSampleAll" data-checked="false" style="margin-left: 12px;">
+                            <div class="custom-toggle-track">
+                                <div class="custom-toggle-thumb"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 输出方式 -->
+                    <div style="padding: 12px 14px;">
+                        <div class="config-label" style="margin-bottom: 10px;">输出方式</div>
+                        <div class="output-buttons">
+                            <label class="output-btn" data-value="selection">
+                                <input type="radio" name="mattingOutput" value="selection">
+                                <span>选区</span>
+                            </label>
+                            <label class="output-btn active" data-value="mask">
+                                <input type="radio" name="mattingOutput" value="mask" checked>
+                                <span>蒙版</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 操作按钮 -->
+        <footer class="morph-footer">
+            <div class="morph-status" id="mattingStatus">
+                将对当前选中的图层进行抠图
+            </div>
+            <button class="btn-execute" id="btnMattingExecute">
+                <span class="btn-icon">✂</span>
+                <span>执行抠图</span>
+            </button>
+        </footer>
+
+        <!-- 抠图进度遮罩 -->
+        <div class="morph-progress-overlay" id="mattingProgressOverlay" style="display: none;">
+            <div class="morph-progress-container">
+                <div class="morph-progress-spinner"></div>
+                <div class="morph-progress-text">
+                    <span class="morph-progress-message" id="mattingProgressMsg">正在抠图...</span>
+                    <span class="morph-progress-percent" id="mattingProgressPercent">0%</span>
+                </div>
+                <div class="morph-progress-detail" id="mattingProgressDetail">分析图像主体...</div>
+                <div class="morph-progress-bar-container">
+                    <div class="morph-progress-bar" id="mattingProgressBar"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== WebView ↔ UXP 通信模块 ==========
+        console.log('[DesignEcho WebView] 初始化...');
+        
+        // 发送消息到 UXP
+        function sendToUXP(action, payload = {}) {
+            const message = { type: 'uxp-action', action, payload };
+            console.log('[WebView] 尝试发送消息:', message);
+            
+            // 方式1: UXP WebView 消息桥 (uxpHost)
+            if (window.uxpHost && typeof window.uxpHost.postMessage === 'function') {
+                console.log('[WebView → UXP] 使用 uxpHost.postMessage');
+                try {
+                    window.uxpHost.postMessage(message);
+                    console.log('[WebView] uxpHost.postMessage 成功');
+                    return;
+                } catch (err) {
+                    console.error('[WebView] uxpHost.postMessage 失败:', err);
+                }
+            }
+            
+            // 方式2: parent.postMessage (iframe 方式)
+            if (window.parent && window.parent !== window) {
+                console.log('[WebView → UXP] 使用 parent.postMessage');
+                try {
+                    window.parent.postMessage(message, '*');
+                    console.log('[WebView] parent.postMessage 成功');
+                    return;
+                } catch (err) {
+                    console.error('[WebView] parent.postMessage 失败:', err);
+                }
+            }
+            
+            // 方式3: Electron designEcho API
+            if (window.designEcho && window.designEcho.sendToPlugin) {
+                console.log('[WebView → UXP] 使用 designEcho.sendToPlugin');
+                window.designEcho.sendToPlugin('webview.action', message)
+                    .then(result => console.log('[WebView] sendToPlugin 成功:', result))
+                    .catch(err => console.error('[WebView] sendToPlugin 失败:', err));
+                return;
+            }
+            
+            // 没有可用的通信方式
+            console.error('[WebView] 没有可用的通信方式');
+            console.log('[WebView] window.uxpHost:', window.uxpHost);
+            console.log('[WebView] window.parent:', window.parent);
+            console.log('[WebView] window.designEcho:', window.designEcho);
+            showToast('无法与插件通信，请检查连接', 'error');
+        }
+        
+        // 接收来自 UXP 的消息
+        window.addEventListener('message', (e) => {
+            console.log('[UXP → WebView]', e.data);
+            handleUXPMessage(e.data);
+        });
+        
+        // 处理 UXP 消息
+        function handleUXPMessage(data) {
+            if (!data || !data.type) {
+                console.warn('[WebView] Invalid message, no type:', data);
+                return;
+            }
+            
+            console.log('[WebView] Processing message type:', data.type, data);
+            
+            switch (data.type) {
+                case 'connectionStatus':
+                    // 支持两种格式: { connected: boolean } 或 { status: string }
+                    const isConnected = data.connected === true || data.status === 'connected';
+                    updateConnectionUI(isConnected);
+                    break;
+                case 'switchPage':
+                    switchPage(data.page);
+                    break;
+                case 'morphLayers':
+                    console.log('[WebView] Received morphLayers:', JSON.stringify(data));
+                    updateMorphLayers(data);
+                    break;
+                case 'mattingResult':
+                    console.log('[WebView] Received mattingResult:', JSON.stringify(data));
+                    handleMattingResult(data);
+                    break;
+                case 'morphProgress':
+                    // 收到真实进度时，清除模拟进度定时器
+                    if (morphProgressInterval) {
+                        clearInterval(morphProgressInterval);
+                        morphProgressInterval = null;
+                    }
+                    showMorphProgress(data.progress, data.message);
+                    break;
+                case 'morphResult':
+                    handleMorphResult(data);
+                    break;
+                case 'morphSelectAll':
+                    selectAllLayers(true);
+                    break;
+                case 'morphDeselectAll':
+                    selectAllLayers(false);
+                    break;
+                case 'toast':
+                    // level 是 UXP 传来的原始类型（success/error/warning/info）
+                    const toastLevel = data.level || data.status || 'info';
+                    showToast(data.message, toastLevel);
+                    if (inpaintingState === 'generating' && (toastLevel === 'error' || toastLevel === 'warning')) {
+                        setInpaintingState(
+                            currentInpaintingData.selectionReady ? 'selectionReady' : 'idle',
+                            toastLevel === 'error' ? '生成失败，请调整后重试' : '请检查选区后重试'
+                        );
+                    }
+                    break;
+                case 'error':
+                    showToast(data.message || '操作失败', 'error');
+                    if (inpaintingState === 'generating') {
+                        setInpaintingState(
+                            currentInpaintingData.selectionReady ? 'selectionReady' : 'idle',
+                            '生成失败，请调整后重试'
+                        );
+                    }
+                    break;
+                case 'statusInfo':
+                    updateStatusInfo(data);
+                    break;
+                case 'hideMorphProgress':
+                    hideMorphProgress();
+                    break;
+                case 'showLoading':
+                    showLoadingOverlay(data.text);
+                    break;
+                case 'hideLoading':
+                    hideLoadingOverlay();
+                    if (inpaintingState === 'generating') {
+                        setInpaintingState(
+                            currentInpaintingData.selectionReady ? 'selectionReady' : 'idle',
+                            '等待重试'
+                        );
+                    }
+                    break;
+                case 'optimizeTextSelection':
+                    renderOptimizeTextSelection(data);
+                    break;
+                case 'optimizeTextCandidates':
+                    renderOptimizeTextCandidates(data);
+                    break;
+                case 'optimizeTextApplied':
+                    if (data && data.content) {
+                        const currentEl = document.getElementById('optimizeCurrentText');
+                        if (currentEl) currentEl.textContent = data.content;
+                    }
+                    break;
+                case 'navigate':
+                    if (data.view === 'inpainting') {
+                        switchPage('pageInpainting');
+                        handleInpaintingData(data.payload || { selectionReady: false });
+                    }
+                    break;
+                case 'inpaintingGenerated':
+                    handleInpaintingGenerated(data.images, data.rawImages || [], data.meta);
+                    break;
+                case 'mattingComplete':
+                    // 抠图完成，隐藏进度条并恢复按钮
+                    console.log('[WebView] mattingComplete:', data);
+                    hideMattingProgress();
+                    // 恢复抠图按钮
+                    const btn = document.getElementById('btnMattingExecute');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<span class="btn-icon">✂</span><span>执行抠图</span>';
+                    }
+                    break;
+                case 'enableActions':
+                    // 启用操作按钮
+                    const mattingBtn = document.getElementById('btnMattingExecute');
+                    if (mattingBtn && data.enabled) {
+                        mattingBtn.disabled = false;
+                        mattingBtn.innerHTML = '<span class="btn-icon">✂</span><span>执行抠图</span>';
+                    }
+                    break;
+            }
+        }
+        
+        // ========== UI 更新函数 ==========
+        
+        function updateConnectionUI(connected) {
+            const badge = document.querySelector('.connection-badge');
+            const dot = document.querySelector('.status-dot');
+            const text = document.querySelector('.connection-text');
+            const btnReconnect = document.querySelector('#btnReconnect');
+            
+            // 获取所有操作按钮
+            const heroCard = document.querySelector('.hero-card');
+            const actionBtns = document.querySelectorAll('.action-btn');
+            
+            if (connected) {
+                if (badge) badge.classList.add('connected');
+                if (dot) dot.classList.add('connected');
+                if (text) text.textContent = '已连接';
+                if (btnReconnect) btnReconnect.style.display = 'none';
+                
+                // 启用所有操作按钮
+                if (heroCard) heroCard.classList.remove('disabled');
+                actionBtns.forEach(btn => btn.classList.remove('disabled'));
+            } else {
+                if (badge) badge.classList.remove('connected');
+                if (dot) dot.classList.remove('connected');
+                if (text) text.textContent = '未连接';
+                if (btnReconnect) btnReconnect.style.display = 'block';
+                
+                // 禁用所有操作按钮
+                if (heroCard) heroCard.classList.add('disabled');
+                actionBtns.forEach(btn => btn.classList.add('disabled'));
+            }
+        }
+        
+        function switchPage(pageId) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            const target = document.getElementById(pageId);
+            if (target) target.classList.add('active');
+        }
+        
+        function updateMorphLayers(data) {
+            console.log('[WebView] updateMorphLayers - shapeLayers:', data.shapeLayers?.length || 0, 'productLayers:', data.productLayers?.length || 0);
+            
+            if (data.error) {
+                console.error('[WebView] updateMorphLayers error:', data.error);
+                showToast(data.error, 'error');
+                document.getElementById('morphLayerList').innerHTML = 
+                    '<div class="layer-empty">' + data.error + '</div>';
+                return;
+            }
+            
+            // 更新参考形状下拉菜单
+            const selectText = document.querySelector('#refShapeSelect .custom-select-text');
+            const selectOptions = document.getElementById('refShapeOptions');
+            console.log('[WebView] selectText:', !!selectText, 'selectOptions:', !!selectOptions);
+            
+            if (data.shapeLayers && data.shapeLayers.length > 0) {
+                // 直接显示形状图层，不显示占位符
+                if (selectText) selectText.textContent = data.shapeLayers[0].name;
+                if (selectOptions) {
+                    selectOptions.innerHTML = data.shapeLayers.map(l => 
+                        '<div class="custom-select-option" data-value="' + l.id + '">' + l.name + '</div>'
+                    ).join('');
+                    // 绑定选项点击事件
+                    bindSelectOptions();
+                }
+            } else {
+                if (selectText) selectText.textContent = '-- 无形状图层 --';
+            }
+            
+            // 更新产品图层列表
+            const layerList = document.getElementById('morphLayerList');
+            if (data.productLayers && data.productLayers.length > 0) {
+                layerList.innerHTML = data.productLayers.map(l => 
+                    '<div class="layer-item" data-layer-id="' + l.id + '">' +
+                        '<span class="layer-checkbox">✓</span>' +
+                        '<span class="layer-name">' + l.name + '</span>' +
+                        '<span class="layer-type">' + l.type + '</span>' +
+                    '</div>'
+                ).join('');
+                bindLayerItems();
+            } else {
+                layerList.innerHTML = '<div class="layer-empty">没有产品图层</div>';
+            }
+            
+            updateMorphStatus();
+        }
+        
+        function handleMorphResult(data) {
+            // 结果已由 UXP 端通过 toast 显示，这里只做日志记录
+            // 不再重复显示 toast 或切换页面
+            console.log('[Morph] Result received:', data);
+            
+            // 隐藏进度遮罩和恢复按钮
+            hideMorphProgress();
+            
+            // 分析结果用于调试
+            const successCount = data.successCount || 0;
+            const totalLayers = data.totalLayers || 0;
+            const hasError = !!data.error;
+            
+            console.log('[Morph] successCount:', successCount, 'totalLayers:', totalLayers, 'error:', data.error);
+            
+            // 注意：不在这里显示 toast 或切换页面
+            // toast 由 UXP 端的 executeMorphingFromWebView 函数统一处理
+            // 页面切换也由 UXP 端控制
+        }
+        
+        function selectAllLayers(select) {
+            const items = document.querySelectorAll('#morphLayerList .layer-item');
+            items.forEach(item => {
+                if (select) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+            updateMorphStatus();
+        }
+        
+        // ========== 智能抠图函数 ==========
+        
+        // 抠图模拟进度定时器
+        let mattingProgressInterval = null;
+        
+        function showMattingProgress(progress, message, detail) {
+            const overlay = document.getElementById('mattingProgressOverlay');
+            const msgEl = document.getElementById('mattingProgressMsg');
+            const percentEl = document.getElementById('mattingProgressPercent');
+            const barEl = document.getElementById('mattingProgressBar');
+            const detailEl = document.getElementById('mattingProgressDetail');
+            
+            if (overlay) overlay.style.display = 'flex';
+            if (msgEl) msgEl.textContent = message || '正在抠图...';
+            if (percentEl) percentEl.textContent = Math.round(progress) + '%';
+            if (barEl) barEl.style.width = progress + '%';
+            if (detailEl) detailEl.textContent = detail || '分析图像主体...';
+        }
+        
+        function hideMattingProgress() {
+            // 清除模拟进度定时器
+            if (mattingProgressInterval) {
+                clearInterval(mattingProgressInterval);
+                mattingProgressInterval = null;
+            }
+            
+            const overlay = document.getElementById('mattingProgressOverlay');
+            if (overlay) overlay.style.display = 'none';
+            
+            // 恢复按钮状态
+            const btn = document.getElementById('btnMattingExecute');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="btn-icon">✂</span><span>执行抠图</span>';
+            }
+        }
+        
+        function handleMattingResult(data) {
+            console.log('[WebView] handleMattingResult:', data);
+            
+            // 隐藏进度遮罩
+            hideMattingProgress();
+            
+            // 显示结果
+            if (data.success) {
+                showToast(`成功抠图 ${data.successCount || 1} 个图层`, 'success');
+            } else {
+                showToast(data.error || '抠图失败', 'error');
+            }
+        }
+        
+        // ========== 局部重绘逻辑 ==========
+        
+        let currentInpaintingData = {};
+        let inpaintingState = 'idle';
+        let optimizeTextState = {
+            selectedLayerId: null,
+            selectedLayerName: '',
+            selectedText: '',
+            candidates: []
+        };
+
+        function renderOptimizeTextSelection(data) {
+            optimizeTextState.selectedLayerId = Number(data?.layerId || 0) || null;
+            optimizeTextState.selectedLayerName = String(data?.layerName || '');
+            optimizeTextState.selectedText = String(data?.selectedText || '');
+            const currentEl = document.getElementById('optimizeCurrentText');
+            if (currentEl) {
+                if (optimizeTextState.selectedText) {
+                    const head = optimizeTextState.selectedLayerName ? `[${optimizeTextState.selectedLayerName}]\n` : '';
+                    currentEl.textContent = `${head}${optimizeTextState.selectedText}`;
+                } else {
+                    currentEl.textContent = '请先手动选择文本图层并刷新';
+                }
+            }
+        }
+
+        function renderOptimizeTextCandidates(data) {
+            const list = Array.isArray(data?.candidates) ? data.candidates : [];
+            optimizeTextState.candidates = list;
+            if (data?.layerId) optimizeTextState.selectedLayerId = Number(data.layerId) || optimizeTextState.selectedLayerId;
+            if (data?.originalText) optimizeTextState.selectedText = String(data.originalText || optimizeTextState.selectedText || '');
+
+            const currentEl = document.getElementById('optimizeCurrentText');
+            if (currentEl && optimizeTextState.selectedText) currentEl.textContent = optimizeTextState.selectedText;
+
+            const candidateEl = document.getElementById('optimizeCandidateList');
+            if (!candidateEl) return;
+            if (list.length === 0) {
+                candidateEl.innerHTML = '<div class="layer-empty">未生成候选文案，请重试</div>';
+                return;
+            }
+            candidateEl.innerHTML = list.map((text, idx) => {
+                const safe = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                return `<div style="border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:10px;background:rgba(255,255,255,0.03);">
+                    <div style="font-size:12px;opacity:.8;margin-bottom:6px;">方案 ${String.fromCharCode(65 + idx)}</div>
+                    <div style="line-height:1.55;white-space:pre-wrap;">${safe}</div>
+                    <button class="btn-small optimize-apply-btn" data-idx="${idx}" style="margin-top:8px;">替换到当前图层</button>
+                </div>`;
+            }).join('');
+
+            candidateEl.querySelectorAll('.optimize-apply-btn').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const index = Number(btn.getAttribute('data-idx') || -1);
+                    const content = optimizeTextState.candidates[index] || '';
+                    if (!optimizeTextState.selectedLayerId || !content) {
+                        showToast('请选择文本图层与候选文案', 'warning');
+                        return;
+                    }
+                    sendToUXP('optimizeTextApply', {
+                        layerId: optimizeTextState.selectedLayerId,
+                        content
+                    });
+                });
+            });
+        }
+
+        function setInpaintingState(nextState, statusText) {
+            inpaintingState = nextState;
+            const statusEl = document.getElementById('inpaintingStatus');
+            const generateBtn = document.getElementById('btnInpaintingGenerate');
+            const applyBtn = document.getElementById('btnInpaintingApply');
+            if (statusEl && statusText) statusEl.textContent = statusText;
+            if (generateBtn) {
+                // 允许在 idle/selectionReady/generated/applied 状态发起生成，
+                // 选区有效性由 UXP 在点击后实时校验，避免按钮被误禁用
+                const canGenerate = nextState !== 'generating';
+                generateBtn.disabled = !canGenerate;
+            }
+            if (applyBtn && nextState !== 'generated') {
+                applyBtn.style.display = 'none';
+                if (generateBtn) generateBtn.style.display = 'flex';
+            }
+        }
+
+        function handleInpaintingData(data) {
+            console.log('[WebView] Inpainting data received:', data);
+            currentInpaintingData = {
+                image: data.image || data.imageBase64 || '',
+                mask: data.mask || data.maskBase64 || '',
+                width: data.width,
+                height: data.height,
+                originalWidth: data.originalWidth,
+                originalHeight: data.originalHeight,
+                selectionBounds: data.selectionBounds || null,
+                documentMeta: data.documentMeta || null,
+                generatedMeta: null,
+                selectionReady: !!(data.selectionReady !== false && (data.image || data.imageBase64) && (data.mask || data.maskBase64))
+            };
+            
+            // 重置 UI
+            document.getElementById('inpaintingPrompt').value = '';
+            document.getElementById('inpaintingResultSection').style.display = 'none';
+            document.getElementById('inpaintingGrid').innerHTML = '';
+            document.getElementById('btnInpaintingApply').style.display = 'none';
+            document.getElementById('btnInpaintingGenerate').style.display = 'flex';
+            if (currentInpaintingData.selectionReady) {
+                setInpaintingState('selectionReady', '选区已就绪，可开始生成');
+            } else {
+                setInpaintingState('idle', '可直接点击生成，系统将实时读取当前选区');
+            }
+        }
+
+        function handleInpaintingGenerated(images, rawImages, meta) {
+            hideLoadingOverlay();
+            showInpaintingProgress(false);
+            
+            if (!images || images.length === 0) {
+                showToast('生成失败，未返回图片', 'error');
+                setInpaintingState('selectionReady', '生成失败，请调整描述后重试');
+                return;
+            }
+
+            // 保存 raw RGBA 数据供回写使用
+            currentInpaintingData.rawImages = rawImages || [];
+
+            const grid = document.getElementById('inpaintingGrid');
+            grid.innerHTML = '';
+            
+            images.forEach((imgBase64, index) => {
+                const item = document.createElement('div');
+                item.className = 'inpainting-item';
+                item.dataset.index = String(index);
+                item.innerHTML = `<img src="data:image/png;base64,${imgBase64}" />`;
+                
+                item.onclick = () => {
+                    document.querySelectorAll('.inpainting-item').forEach(i => i.classList.remove('selected'));
+                    item.classList.add('selected');
+                    document.getElementById('btnInpaintingApply').style.display = 'flex';
+                    document.getElementById('btnInpaintingGenerate').style.display = 'none';
+                    document.getElementById('inpaintingStatus').textContent = '已选择图片，点击应用';
+                };
+                
+                grid.appendChild(item);
+            });
+            
+            document.getElementById('inpaintingResultSection').style.display = 'block';
+            if (meta) {
+                currentInpaintingData.generatedMeta = meta;
+            }
+
+            // 单张结果：自动应用，跳过手动选择
+            if (images.length === 1) {
+                setInpaintingState('generated', '正在自动应用结果...');
+                const rawImgs = currentInpaintingData.rawImages || [];
+                const genMeta = currentInpaintingData.generatedMeta || {};
+                let imageData;
+                let isRawRgba = false;
+                if (rawImgs[0]) {
+                    imageData = rawImgs[0];
+                    isRawRgba = true;
+                } else {
+                    const firstImg = document.querySelector('.inpainting-item img');
+                    imageData = firstImg ? firstImg.src.split(',')[1] : '';
+                }
+                sendToUXP('applyInpaintingResult', {
+                    imageData,
+                    isRawRgba,
+                    width: genMeta.outputWidth || currentInpaintingData.width,
+                    height: genMeta.outputHeight || currentInpaintingData.height,
+                    originalWidth: genMeta.originalWidth || currentInpaintingData.originalWidth,
+                    originalHeight: genMeta.originalHeight || currentInpaintingData.originalHeight,
+                    ...(genMeta.targetBounds ? { targetBounds: genMeta.targetBounds } : {})
+                });
+                setInpaintingState('applied', '结果已自动应用到新图层');
+            } else {
+                setInpaintingState('generated', '生成完成，请选择一张');
+            }
+        }
+
+        // ========== 形态统一进度显示 ==========
+        
+        function showMorphProgress(progress, message) {
+            let overlay = document.getElementById('morphProgressOverlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'morphProgressOverlay';
+                overlay.className = 'morph-progress-overlay';
+                overlay.innerHTML = `
+                    <div class="morph-progress-container">
+                        <div class="morph-progress-spinner"></div>
+                        <div class="morph-progress-text">
+                            <span class="morph-progress-message">处理中...</span>
+                            <span class="morph-progress-percent">0%</span>
+                        </div>
+                        <div class="morph-progress-bar-container">
+                            <div class="morph-progress-bar"></div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(overlay);
+            }
+            
+            overlay.style.display = 'flex';
+            overlay.querySelector('.morph-progress-message').textContent = message || '处理中...';
+            overlay.querySelector('.morph-progress-percent').textContent = Math.round(progress) + '%';
+            overlay.querySelector('.morph-progress-bar').style.width = progress + '%';
+        }
+        
+        // 全局变量：模拟进度定时器
+        let morphProgressInterval = null;
+        
+        function hideMorphProgress() {
+            // 清除模拟进度定时器
+            if (morphProgressInterval) {
+                clearInterval(morphProgressInterval);
+                morphProgressInterval = null;
+            }
+            
+            const overlay = document.getElementById('morphProgressOverlay');
+            if (overlay) {
+                overlay.style.display = 'none';
+            }
+            // 恢复执行按钮
+            resetMorphExecuteButton();
+        }
+        
+        function resetMorphExecuteButton() {
+            const btn = document.getElementById('btnMorphExecute');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="btn-icon">◇</span><span>执行形态统一</span>';
+            }
+        }
+        
+        function showToast(message, type = 'info') {
+            // 获取或创建容器
+            let container = document.getElementById('toastContainer');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'toastContainer';
+                container.className = 'toast-container';
+                document.body.appendChild(container);
+            }
+            
+            // 创建新的 toast
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            
+            // 图标
+            const icons = { success: '✓', error: '✗', warning: '⚠', info: '●' };
+            
+            toast.innerHTML = 
+                '<span class="toast-icon">' + (icons[type] || '●') + '</span>' +
+                '<div class="toast-content"><span class="toast-message">' + message + '</span></div>' +
+                '<button class="toast-close">×</button>';
+            
+            container.appendChild(toast);
+            
+            // 关闭按钮
+            toast.querySelector('.toast-close').addEventListener('click', () => {
+                closeToast(toast);
+            });
+            
+            // 自动关闭（错误类型保持更长时间）
+            const duration = type === 'error' ? 8000 : 5000;
+            setTimeout(() => closeToast(toast), duration);
+        }
+        
+        function closeToast(toast) {
+            if (!toast || toast.classList.contains('hiding')) return;
+            toast.classList.add('hiding');
+            setTimeout(() => toast.remove(), 300);
+        }
+        
+        // ========== 局部重绘进度条 ==========
+
+        function showInpaintingProgress(visible) {
+            const container = document.getElementById('inpaintingProgressContainer');
+            if (container) container.style.display = visible ? 'block' : 'none';
+        }
+
+        function updateInpaintingProgress(percent, message) {
+            const msgEl = document.getElementById('inpaintingProgressMsg');
+            const percentEl = document.getElementById('inpaintingProgressPercent');
+            const barEl = document.getElementById('inpaintingProgressBar');
+            if (msgEl && message) msgEl.textContent = message;
+            if (percentEl) percentEl.textContent = Math.round(percent) + '%';
+            if (barEl) barEl.style.width = Math.round(percent) + '%';
+        }
+
+        function updateStatusInfo(data) {
+            // 如果当前在局部重绘页面且正在生成，更新进度条
+            const inpaintingPage = document.getElementById('pageInpainting');
+            if (inpaintingPage && inpaintingPage.classList.contains('active') && inpaintingState === 'generating') {
+                let message = data.hint || data.message || '处理中...';
+                let progress = 0;
+                const percentMatch = (data.message || '').match(/(\d+)%/);
+                if (percentMatch) {
+                    progress = parseInt(percentMatch[1], 10);
+                }
+                updateInpaintingProgress(progress, message);
+                showInpaintingProgress(true);
+            }
+
+            // 如果当前在抠图页面，更新抠图进度遮罩
+            const mattingPage = document.getElementById('pageMatting');
+            if (mattingPage && mattingPage.classList.contains('active')) {
+                const overlay = document.getElementById('mattingProgressOverlay');
+                if (overlay && overlay.style.display === 'flex') {
+                    // 清除模拟进度，使用真实进度
+                    if (mattingProgressInterval) {
+                        clearInterval(mattingProgressInterval);
+                        mattingProgressInterval = null;
+                    }
+                    
+                    // 解析消息中的进度百分比（如 "✂️ 智能抠图 50%" -> 提取 50）
+                    let message = data.message || '处理中...';
+                    let progress = 0;
+                    const percentMatch = message.match(/(\d+)%/);
+                    if (percentMatch) {
+                        progress = parseInt(percentMatch[1], 10);
+                        // 从消息中移除百分比，避免重复显示
+                        message = message.replace(/\s*\d+%\s*/, ' ').trim();
+                    }
+                    
+                    // 更新进度遮罩
+                    const msgEl = document.getElementById('mattingProgressMsg');
+                    const percentEl = document.getElementById('mattingProgressPercent');
+                    const barEl = document.getElementById('mattingProgressBar');
+                    const detailEl = document.getElementById('mattingProgressDetail');
+                    
+                    if (msgEl) msgEl.textContent = message;
+                    if (percentEl) percentEl.textContent = progress + '%';
+                    if (barEl) barEl.style.width = progress + '%';
+                    // 显示详细进度信息（来自 hint）
+                    if (detailEl && data.hint) {
+                        detailEl.textContent = data.hint;
+                    }
+                }
+            }
+        }
+        
+        function showLoadingOverlay(text) {
+            // 创建或更新加载遮罩
+            let overlay = document.getElementById('loadingOverlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'loadingOverlay';
+                overlay.innerHTML = '<div class="loading-spinner"></div><div class="loading-text"></div>';
+                overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(10,10,15,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;';
+                document.body.appendChild(overlay);
+            }
+            overlay.style.display = 'flex';
+            const textEl = overlay.querySelector('.loading-text');
+            if (textEl) textEl.textContent = text || '处理中...';
+        }
+        
+        function hideLoadingOverlay() {
+            const overlay = document.getElementById('loadingOverlay');
+            if (overlay) overlay.style.display = 'none';
+        }
+        
+        function updateMorphStatus() {
+            const refShapeSelect = document.getElementById('refShapeSelect');
+            const hasRefShape = refShapeSelect && refShapeSelect.dataset.value;
+            const selectedItems = document.querySelectorAll('#morphLayerList .layer-item.selected');
+            const hasProducts = selectedItems.length > 0;
+            
+            const statusEl = document.getElementById('morphStatus');
+            const btnExecute = document.getElementById('btnMorphExecute');
+            const layerCount = document.getElementById('morphLayerCount');
+            
+            if (layerCount) layerCount.textContent = '已选 ' + selectedItems.length + ' 个';
+            
+            if (!hasRefShape && !hasProducts) {
+                if (statusEl) statusEl.textContent = '选择参考形状和产品图层后开始';
+                if (btnExecute) btnExecute.disabled = true;
+            } else if (!hasRefShape) {
+                if (statusEl) statusEl.textContent = '请选择一个参考形状';
+                if (btnExecute) btnExecute.disabled = true;
+            } else if (!hasProducts) {
+                if (statusEl) statusEl.textContent = '请选择需要调整的产品图层';
+                if (btnExecute) btnExecute.disabled = true;
+            } else {
+                if (statusEl) statusEl.textContent = '将 ' + selectedItems.length + ' 个产品对齐到参考形状';
+                if (btnExecute) btnExecute.disabled = false;
+            }
+        }
+        
+        // ========== 事件绑定 ==========
+        
+        function bindSelectOptions() {
+            const select = document.getElementById('refShapeSelect');
+            const trigger = select.querySelector('.custom-select-trigger');
+            const optionsContainer = document.getElementById('refShapeOptions');
+            const textEl = select.querySelector('.custom-select-text');
+            
+            trigger.onclick = (e) => {
+                e.stopPropagation();
+                select.classList.toggle('open');
+            };
+            
+            // 绑定选项点击
+            const options = select.querySelectorAll('.custom-select-option');
+            options.forEach(opt => {
+                opt.onclick = (e) => {
+                    e.stopPropagation();
+                    const value = opt.dataset.value;
+                    const text = opt.textContent;
+                    
+                    options.forEach(o => o.classList.remove('selected'));
+                    opt.classList.add('selected');
+                    
+                    textEl.textContent = text;
+                    select.dataset.value = value;
+                    select.classList.remove('open');
+                    
+                    sendToUXP('morphRefShapeSelect', { value });
+                    updateMorphStatus();
+                };
+            });
+            
+            document.addEventListener('click', () => select.classList.remove('open'));
+        }
+        
+        function bindLayerItems() {
+            const items = document.querySelectorAll('#morphLayerList .layer-item');
+            items.forEach(item => {
+                item.onclick = () => {
+                    item.classList.toggle('selected');
+                    const layerId = item.dataset.layerId;
+                    sendToUXP('morphLayerToggle', { layerId });
+                    updateMorphStatus();
+                };
+            });
+        }
+        
+        function bindSliders() {
+            const sliders = [
+                { id: 'morphEdgeStrength', valueId: 'morphEdgeStrengthValue' },
+                { id: 'morphContentProtect', valueId: 'morphContentProtectValue' },
+                { id: 'morphSmoothness', valueId: 'morphSmoothnessValue' }
+            ];
+            
+            sliders.forEach(({ id, valueId }) => {
+                const slider = document.getElementById(id);
+                const valueSpan = document.getElementById(valueId);
+                if (!slider || !valueSpan) return;
+                
+                const track = slider.querySelector('.custom-slider-track');
+                const fill = slider.querySelector('.custom-slider-fill');
+                const thumb = slider.querySelector('.custom-slider-thumb');
+                
+                if (!track || !fill || !thumb) return;
+                
+                let isDragging = false;
+                
+                const updateSlider = (clientX) => {
+                    const rect = track.getBoundingClientRect();
+                    let percent = ((clientX - rect.left) / rect.width) * 100;
+                    percent = Math.max(0, Math.min(100, percent));
+                    
+                    fill.style.width = percent + '%';
+                    thumb.style.left = percent + '%';
+                    slider.dataset.value = Math.round(percent);
+                    valueSpan.textContent = Math.round(percent) + '%';
+                };
+                
+                slider.onpointerdown = (e) => {
+                    isDragging = true;
+                    slider.setPointerCapture(e.pointerId);
+                    updateSlider(e.clientX);
+                };
+                
+                slider.onpointermove = (e) => {
+                    if (isDragging) updateSlider(e.clientX);
+                };
+                
+                slider.onpointerup = (e) => {
+                    isDragging = false;
+                    slider.releasePointerCapture(e.pointerId);
+                };
+            });
+        }
+        
+        function bindToggles() {
+            const toggles = document.querySelectorAll('.custom-toggle');
+            toggles.forEach(toggle => {
+                toggle.onclick = () => {
+                    toggle.classList.toggle('active');
+                    toggle.dataset.checked = toggle.classList.contains('active');
+                };
+            });
+        }
+        
+        function bindOutputButtons() {
+            // 按 radio 组名称分别处理不同的选项组
+            const radioGroups = {};
+            const buttons = document.querySelectorAll('.output-btn');
+            
+            buttons.forEach(btn => {
+                const radio = btn.querySelector('input[type="radio"]');
+                if (radio) {
+                    const groupName = radio.name;
+                    if (!radioGroups[groupName]) {
+                        radioGroups[groupName] = [];
+                    }
+                    radioGroups[groupName].push(btn);
+                }
+            });
+            
+            // 为每个组单独绑定事件
+            Object.keys(radioGroups).forEach(groupName => {
+                const groupButtons = radioGroups[groupName];
+                groupButtons.forEach(btn => {
+                    btn.onclick = () => {
+                        // 只移除同组按钮的 active
+                        groupButtons.forEach(b => b.classList.remove('active'));
+                        // 激活当前按钮
+                        btn.classList.add('active');
+                        // 选中对应的 radio
+                        const radio = btn.querySelector('input[type="radio"]');
+                        if (radio) radio.checked = true;
+                        
+                    };
+                });
+            });
+        }
+        
+        function bindCheckboxes() {
+            const items = document.querySelectorAll('.region-item');
+            items.forEach(item => {
+                item.onclick = () => {
+                    const checkbox = item.querySelector('.custom-checkbox');
+                    if (checkbox) {
+                        checkbox.classList.toggle('checked');
+                        item.dataset.checked = checkbox.classList.contains('checked');
+                    }
+                };
+            });
+        }
+        
+        // 袜子款式选择说明
+        const sockStyleHints = {
+            'boat': '船袜：露出脚踝，无袜筒，最短款',
+            'ankle': '短袜：刚过脚踝，袜筒极短',
+            'crew': '中筒袜：袜筒到小腿中部',
+            'calf': '小腿袜：袜筒到小腿上部',
+            'knee': '长袜：袜筒到膝盖位置',
+            'over-knee': '过膝袜：袜筒超过膝盖',
+            'leg-warmer': '袜套：只有袜筒部分，无袜头袜跟'
+        };
+        
+        // 根据款式更新分区显示
+        const sockStyleRegions = {
+            'boat': ['cuff', 'foot', 'toe'],  // 船袜无袜筒
+            'ankle': ['cuff', 'foot', 'toe', 'heel'],  // 短袜
+            'crew': ['cuff', 'leg', 'foot', 'toe', 'heel'],  // 中筒袜
+            'calf': ['cuff', 'leg', 'foot', 'toe', 'heel'],  // 小腿袜
+            'knee': ['cuff', 'leg', 'foot', 'toe', 'heel'],  // 长袜
+            'over-knee': ['cuff', 'leg', 'foot', 'toe', 'heel'],  // 过膝袜
+            'leg-warmer': ['cuff', 'leg']  // 袜套：只有袜口和袜筒
+        };
+        
+        // 袜口类型选择说明
+        const cuffTypeHints = {
+            'plain': '普通平口：不需要特殊保护',
+            'ribbed': '罗纹口：有弹性纹理，轻度保护',
+            'double-welt': '双罗口：需要保护，避免变形',
+            'lace': '花边口：精细工艺，严格保护',
+            'flare': '喇叭口：特殊造型，严格保护',
+            'fold': '翻边口：有翻折设计，严格保护'
+        };
+        
+        // 需要严格保护的袜口类型
+        const protectedCuffTypes = ['double-welt', 'lace', 'flare', 'fold'];
+        
+        function bindSockStyleSelection() {
+            const selectEl = document.getElementById('sockStyleSelect');
+            const triggerEl = selectEl?.querySelector('.config-select-trigger');
+            const optionsEl = document.getElementById('sockStyleOptions');
+            const textEl = selectEl?.querySelector('.config-select-text');
+            const regionList = document.getElementById('regionList');
+            
+            if (!selectEl || !triggerEl || !optionsEl) return;
+            
+            // 点击触发器打开/关闭下拉
+            triggerEl.onclick = (e) => {
+                e.stopPropagation();
+                selectEl.classList.toggle('open');
+            };
+            
+            // 点击选项
+            const options = optionsEl.querySelectorAll('.config-select-option');
+            options.forEach(opt => {
+                opt.onclick = (e) => {
+                    e.stopPropagation();
+                    const value = opt.dataset.value;
+                    const text = opt.textContent.split('·')[0].trim();
+                    
+                    // 更新选中状态
+                    options.forEach(o => o.classList.remove('active'));
+                    opt.classList.add('active');
+                    
+                    // 更新显示文本和值
+                    textEl.textContent = text;
+                    selectEl.dataset.value = value;
+                    selectEl.classList.remove('open');
+                    
+                    // 根据款式更新分区可见性
+                    if (regionList && sockStyleRegions[value]) {
+                        const regions = sockStyleRegions[value];
+                        const allRegionItems = regionList.querySelectorAll('.region-item');
+                        
+                        allRegionItems.forEach(regionItem => {
+                            const region = regionItem.dataset.region;
+                            if (regions.includes(region)) {
+                                regionItem.style.display = 'flex';
+                            } else {
+                                regionItem.style.display = 'none';
+                                regionItem.dataset.checked = 'false';
+                                const checkbox = regionItem.querySelector('.custom-checkbox');
+                                if (checkbox) checkbox.classList.remove('checked');
+                            }
+                        });
+                    }
+                    
+                    console.log('[WebView] 袜子款式:', value);
+                };
+            });
+            
+            // 点击外部关闭下拉
+            document.addEventListener('click', () => {
+                selectEl.classList.remove('open');
+            });
+        }
+        
+        function bindCuffTypeSelection() {
+            const cuffItems = document.querySelectorAll('.cuff-type-item');
+            const cuffHint = document.getElementById('cuffTypeHint');
+            const cuffRegionItem = document.querySelector('.region-item[data-region="cuff"]');
+            
+            cuffItems.forEach(item => {
+                item.onclick = () => {
+                    // 移除其他选中状态
+                    cuffItems.forEach(i => i.classList.remove('active'));
+                    // 选中当前
+                    item.classList.add('active');
+                    
+                    const cuffType = item.dataset.cuff;
+                    const isProtected = item.classList.contains('protected');
+                    
+                    // 更新提示（简洁版）
+                    if (cuffHint && cuffTypeHints[cuffType]) {
+                        cuffHint.textContent = cuffTypeHints[cuffType];
+                        if (isProtected) {
+                            cuffHint.classList.add('protected');
+                        } else {
+                            cuffHint.classList.remove('protected');
+                        }
+                    }
+                    
+                    // 更新袜口区域的保护标记
+                    if (cuffRegionItem) {
+                        const badge = cuffRegionItem.querySelector('.region-badge');
+                        if (badge) {
+                            if (isProtected) {
+                                badge.textContent = '严格保护';
+                                badge.classList.add('protect');
+                            } else if (cuffType === 'ribbed') {
+                                badge.textContent = '轻度保护';
+                                badge.classList.add('protect');
+                            } else {
+                                badge.textContent = '可变形';
+                                badge.classList.remove('protect');
+                            }
+                        }
+                    }
+                    
+                    console.log('[WebView] 袜口类型:', cuffType, isProtected ? '(需保护)' : '');
+                };
+            });
+        }
+        
+        // 获取当前选择的款式配置
+        function getMorphingConfig() {
+            const activeStyle = document.querySelector('.sock-style-item.active');
+            const activeCuff = document.querySelector('.cuff-type-item.active');
+            const preAlign = document.getElementById('morphPreAlign');
+            const shapeMatch = document.getElementById('morphShapeMatch');
+            const edgeStrength = document.getElementById('morphEdgeStrength');
+            const contentProtect = document.getElementById('morphContentProtect');
+            const smoothness = document.getElementById('morphSmoothness');
+            
+            // 获取选中的分区
+            const selectedRegions = [];
+            document.querySelectorAll('.region-item').forEach(item => {
+                if (item.dataset.checked === 'true' && item.style.display !== 'none') {
+                    selectedRegions.push(item.dataset.region);
+                }
+            });
+            
+            return {
+                sockStyle: activeStyle?.dataset?.style || 'crew',
+                cuffType: activeCuff?.dataset?.cuff || 'plain',
+                cuffProtected: protectedCuffTypes.includes(activeCuff?.dataset?.cuff),
+                preAlign: preAlign?.dataset?.checked === 'true',
+                shapeMatch: shapeMatch?.dataset?.checked === 'true',
+                edgeStrength: parseInt(edgeStrength?.dataset?.value || '70'),
+                contentProtect: parseInt(contentProtect?.dataset?.value || '80'),
+                smoothness: parseInt(smoothness?.dataset?.value || '50'),
+                selectedRegions: selectedRegions
+            };
+        }
+        
+        function bindAdvancedToggle() {
+            const toggleBtn = document.getElementById('btnToggleAdvanced');
+            const section = document.getElementById('morphAdvancedSection');
+            const content = document.getElementById('advancedContent');
+            
+            if (toggleBtn && section && content) {
+                toggleBtn.onclick = () => {
+                    section.classList.toggle('expanded');
+                    content.style.display = section.classList.contains('expanded') ? 'block' : 'none';
+                };
+            }
+        }
+        
+        // ========== 主页面按钮事件 ==========
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('[DesignEcho WebView] DOM Ready');
+            
+            // 监听来自 UXP 转发的消息（进度更新、状态等）
+            // 当使用 Agent 桌面端时，UXP 通过 WebSocket 发送消息，Agent 转发给 WebView
+            if (window.designEcho && window.designEcho.onUXPWebViewMessage) {
+                console.log('[WebView] 注册 UXP WebView 消息监听器');
+                window.designEcho.onUXPWebViewMessage((message) => {
+                    console.log('[UXP → Agent → WebView]', message);
+                    handleUXPMessage(message);
+                });
+            }
+            
+            // 连接/重连按钮
+            document.getElementById('btnReconnect')?.addEventListener('click', () => sendToUXP('connect'));
+            
+            // 一键美化
+            document.getElementById('btnOneClickBeautify')?.addEventListener('click', () => sendToUXP('oneClickBeautify'));
+
+            // 文案优化
+            document.getElementById('btnOptimizeText')?.addEventListener('click', () => {
+                sendToUXP('optimizeText');
+                switchPage('pageOptimizeText');
+            });
+            
+            // 形态统一
+            document.getElementById('btnShapeMorph')?.addEventListener('click', () => {
+                sendToUXP('shapeMorph');
+                switchPage('pageMorph');
+                sendToUXP('morphRefresh');
+            });
+            
+            // 局部重绘
+            document.getElementById('btnInpainting')?.addEventListener('click', function() {
+                if (this.classList.contains('disabled')) {
+                    console.log('[WebView] Inpainting button disabled');
+                    return;
+                }
+                console.log('[WebView] Inpainting button clicked');
+                sendToUXP('inpainting');
+            });
+            
+            // 协调融合
+            document.getElementById('btnHarmonize')?.addEventListener('click', () => sendToUXP('harmonize'));
+            
+            // 自动设计
+            document.getElementById('btnAutoDesign')?.addEventListener('click', function() {
+                if (this.classList.contains('disabled')) return;
+                showLoadingOverlay('正在执行自动设计...');
+                sendToUXP('autoDesign');
+            });
+            
+            // 智能抠图 - 进入抠图页面
+            document.getElementById('btnRemoveBackground')?.addEventListener('click', () => {
+                switchPage('pageMatting');
+            });
+            
+            // 局部重绘 - 返回
+            document.getElementById('btnInpaintingBack')?.addEventListener('click', () => {
+                switchPage('pageMain');
+            });
+
+            document.getElementById('btnOptimizeBack')?.addEventListener('click', () => {
+                sendToUXP('optimizeTextBack');
+                switchPage('pageMain');
+            });
+
+            document.getElementById('btnOptimizeRefreshSelection')?.addEventListener('click', () => {
+                sendToUXP('optimizeTextRefreshSelection');
+            });
+
+            document.getElementById('btnOptimizeGenerate')?.addEventListener('click', () => {
+                if (!optimizeTextState.selectedLayerId) {
+                    showToast('请先在 Photoshop 手动选中一个文本图层并刷新', 'warning');
+                    return;
+                }
+                const creativeStyle = document.getElementById('optimizeCreativeStyle')?.value || 'natural';
+                const lockedKeywords = document.getElementById('optimizeLockedKeywords')?.value || '';
+                sendToUXP('optimizeTextGenerate', {
+                    creativeStyle,
+                    lockedKeywords
+                });
+            });
+
+            // 局部重绘 - 自定义下拉菜单
+            (function initCustomDropdown() {
+                const dropdown = document.getElementById('inpaintingModelSelect');
+                if (!dropdown) return;
+                const trigger = dropdown.querySelector('.custom-dropdown-trigger');
+                const menu = document.getElementById('inpaintingModelDropdownMenu');
+                if (!trigger || !menu) return;
+                const textEl = dropdown.querySelector('.custom-dropdown-text');
+                const options = menu.querySelectorAll('.custom-dropdown-option');
+
+                function openMenu() {
+                    menu.style.display = 'block';
+                    trigger.style.borderColor = 'rgba(99,140,255,0.5)';
+                }
+
+                function closeMenu() {
+                    menu.style.display = 'none';
+                    trigger.style.borderColor = 'rgba(255,255,255,0.12)';
+                }
+
+                trigger.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const isOpen = menu.style.display === 'block';
+                    if (isOpen) closeMenu();
+                    else openMenu();
+                });
+
+                options.forEach(opt => {
+                    opt.addEventListener('mouseenter', () => { opt.style.background = 'rgba(255,255,255,0.08)'; });
+                    opt.addEventListener('mouseleave', () => { opt.style.background = opt.classList.contains('selected') ? 'rgba(99,140,255,0.12)' : 'transparent'; });
+                    opt.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        options.forEach(o => { o.classList.remove('selected'); o.style.background = 'transparent'; });
+                        opt.classList.add('selected');
+                        opt.style.background = 'rgba(99,140,255,0.12)';
+                        dropdown.dataset.value = opt.dataset.value;
+                        textEl.textContent = opt.textContent;
+                        closeMenu();
+                    });
+                });
+
+                document.addEventListener('click', closeMenu);
+            })();
+
+            // 局部重绘 - 生成
+            document.getElementById('btnInpaintingGenerate')?.addEventListener('click', () => {
+                const prompt = document.getElementById('inpaintingPrompt').value;
+                if (!prompt) {
+                    showToast('请输入描述', 'warning');
+                    return;
+                }
+                const selectedModel = document.getElementById('inpaintingModelSelect')?.dataset?.value || 'flux-2-pro';
+                
+                updateInpaintingProgress(0, '准备中...');
+                showInpaintingProgress(true);
+                setInpaintingState('generating', '正在生成中...');
+                sendToUXP('inpaintingGenerate', { 
+                    prompt,
+                    model: selectedModel,
+                    documentMeta: currentInpaintingData.documentMeta || null
+                });
+            });
+
+            // 局部重绘 - 应用
+            document.getElementById('btnInpaintingApply')?.addEventListener('click', () => {
+                const selectedItem = document.querySelector('.inpainting-item.selected');
+                if (!selectedItem) {
+                    showToast('请选择一张图片', 'warning');
+                    return;
+                }
+                
+                const selectedIndex = parseInt(selectedItem.dataset.index || '0', 10);
+                const rawImages = currentInpaintingData.rawImages || [];
+                const generatedMeta = currentInpaintingData.generatedMeta || {};
+
+                // 优先使用 raw RGBA（putPixels 需要原始像素），回退到 PNG
+                let imageData;
+                let isRawRgba = false;
+                if (rawImages[selectedIndex]) {
+                    imageData = rawImages[selectedIndex];
+                    isRawRgba = true;
+                } else {
+                    const selectedImg = selectedItem.querySelector('img');
+                    imageData = selectedImg ? selectedImg.src.split(',')[1] : '';
+                }
+
+                sendToUXP('applyInpaintingResult', { 
+                    imageData,
+                    isRawRgba,
+                    width: generatedMeta.outputWidth || currentInpaintingData.width,
+                    height: generatedMeta.outputHeight || currentInpaintingData.height,
+                    originalWidth: generatedMeta.originalWidth || currentInpaintingData.originalWidth,
+                    originalHeight: generatedMeta.originalHeight || currentInpaintingData.originalHeight,
+                    ...(generatedMeta.targetBounds ? { targetBounds: generatedMeta.targetBounds } : {})
+                });
+                setInpaintingState('applied', '结果已应用到新图层');
+            });
+
+            // 形态统一页面按钮
+            document.getElementById('btnMorphBack')?.addEventListener('click', () => {
+                sendToUXP('morphBack');
+                switchPage('pageMain');
+            });
+            
+            document.getElementById('btnMorphRefresh')?.addEventListener('click', () => sendToUXP('morphRefresh'));
+            document.getElementById('btnMorphSelectAll')?.addEventListener('click', () => selectAllLayers(true));
+            document.getElementById('btnMorphDeselectAll')?.addEventListener('click', () => selectAllLayers(false));
+            
+            document.getElementById('btnMorphExecute')?.addEventListener('click', () => {
+                const refShapeId = document.getElementById('refShapeSelect')?.dataset.value;
+                const selectedItems = document.querySelectorAll('#morphLayerList .layer-item.selected');
+                const layerIds = Array.from(selectedItems).map(item => item.dataset.layerId);
+                
+                // 参数验证
+                if (!refShapeId) {
+                    showToast('请选择参考形状', 'warning');
+                    return;
+                }
+                if (layerIds.length === 0) {
+                    showToast('请选择产品图层', 'warning');
+                    return;
+                }
+                
+                // 获取完整的变形配置
+                const config = getMorphingConfig();
+                
+                // 检查是否强制重新检测
+                const forceRedetect = document.getElementById('morphForceRedetect')?.checked === true;
+                // 获取执行步骤
+                const morphStep = document.getElementById('morphStepSelect')?.value || 'morph';
+                
+                // 立即显示进度反馈
+                showMorphProgress(5, '正在准备...');
+                
+                // 禁用按钮防止重复点击
+                const btn = document.getElementById('btnMorphExecute');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="btn-icon">⏳</span><span>处理中...</span>';
+                }
+                
+                const morphParams = {
+                    refShapeId,
+                    layerIds,
+                    // 开关控制
+                    preAlign: config.preAlign,
+                    shapeMatch: config.shapeMatch,
+                    // 变形强度参数
+                    edgeStrength: config.edgeStrength,
+                    contentProtection: config.contentProtect,
+                    smoothness: config.smoothness,
+                    // 分区控制
+                    selectedRegions: config.selectedRegions,
+                    // 袜子款式
+                    sockStyle: config.sockStyle,
+                    cuffType: config.cuffType,
+                    cuffProtected: config.cuffProtected,
+                    // 其他
+                    forceRedetect: forceRedetect,
+                    step: morphStep
+                };
+                
+                console.log('[WebView] 发送 morphExecute 请求:', morphParams);
+                
+                sendToUXP('morphExecute', morphParams);
+                
+                // 清除之前的模拟进度定时器（如果有）
+                if (morphProgressInterval) {
+                    clearInterval(morphProgressInterval);
+                }
+                
+                // 模拟进度更新（在等待 Agent 响应期间显示动态进度）
+                // 注意：当收到真实进度或完成消息时，hideMorphProgress 会清除此定时器
+                let progress = 10;
+                morphProgressInterval = setInterval(() => {
+                    progress += 3;  // 减慢进度增长
+                    if (progress < 85) {
+                        showMorphProgress(progress, '正在处理中...');
+                    } else {
+                        // 进度接近上限时停止增长，等待真实结果
+                        clearInterval(morphProgressInterval);
+                        morphProgressInterval = null;
+                        showMorphProgress(85, '请稍候，正在完成...');
+                    }
+                }, 800);  // 减慢更新频率
+            });
+            
+            // ===== 智能抠图页面事件 =====
+            
+            // 返回主页
+            document.getElementById('btnMattingBack')?.addEventListener('click', () => {
+                switchPage('pageMain');
+            });
+            
+            // 输出方式选项交互
+            document.querySelectorAll('.output-option').forEach(option => {
+                option.addEventListener('click', () => {
+                    // 移除所有选中状态
+                    document.querySelectorAll('.output-option').forEach(opt => {
+                        opt.style.borderColor = 'transparent';
+                        opt.classList.remove('active');
+                        opt.querySelector('span').style.color = 'var(--text-secondary)';
+                    });
+                    // 设置当前选中
+                    option.style.borderColor = 'var(--accent-primary)';
+                    option.classList.add('active');
+                    option.querySelector('span').style.color = 'var(--text-primary)';
+                    option.querySelector('input').checked = true;
+                });
+            });
+            
+            // 抠图模式切换
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    this.querySelector('input').checked = true;
+                    
+                    const mode = this.dataset.value;
+                    const targetSection = document.getElementById('mattingTargetSection');
+                    const hintEl = document.getElementById('mattingModeHint');
+                    
+                    if (mode === 'selection') {
+                        // 选区模式：隐藏目标输入框
+                        if (targetSection) targetSection.style.display = 'none';
+                        if (hintEl) hintEl.textContent = '先在 Photoshop 中绘制选区，然后执行抠图';
+                        // 自动切换到套索工具，方便用户绘制选区
+                        sendToUXP('selectLassoTool', {});
+                    } else {
+                        // 自动模式：显示目标输入框
+                        if (targetSection) targetSection.style.display = 'block';
+                        if (hintEl) hintEl.textContent = '自动识别图像中的主体并抠出';
+                    }
+                });
+            });
+            
+            // 执行抠图（使用 Photoshop 中当前选中的图层）
+            document.getElementById('btnMattingExecute')?.addEventListener('click', () => {
+                const mattingMode = document.querySelector('input[name="mattingMode"]:checked')?.value || 'auto';
+                const target = document.getElementById('mattingTargetPage')?.value || '';
+                const sampleAllLayers = document.getElementById('mattingSampleAll')?.dataset.checked === 'true';
+                const outputFormat = document.querySelector('input[name="mattingOutput"]:checked')?.value || 'mask';
+                
+                console.log('[WebView] 发送抠图请求:', { mattingMode, target, sampleAllLayers, outputFormat });
+                
+                // 禁用按钮
+                const btn = document.getElementById('btnMattingExecute');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="btn-icon">⏳</span><span>处理中...</span>';
+                }
+                
+                // 根据模式显示不同的进度提示
+                const modeLabel = mattingMode === 'selection' ? '📐 选区分割' : '✂ 智能分割';
+                const hasTarget = document.getElementById('mattingTargetPage')?.value?.trim();
+                showMattingProgress(0, modeLabel, '正在初始化...');
+                
+                let simulatedProgress = 0;
+                // 根据模式和是否有文本描述选择不同的进度阶段
+                const simulatedStages = mattingMode === 'selection' 
+                    ? [
+                        { progress: 5, detail: '正在连接分割引擎...' },
+                        { progress: 10, detail: '正在获取图层数据...' },
+                        { progress: 20, detail: '正在传输图像数据...' },
+                        { progress: 40, detail: '获取选区边界框...' },
+                        { progress: 60, detail: 'BiRefNet 精确分割...' },
+                        { progress: 80, detail: '边缘细化处理...' },
+                        { progress: 90, detail: '正在生成蒙版...' },
+                    ]
+                    : hasTarget 
+                    ? [
+                        // 有文本描述：完整的 文本定位 + 目标检测 + 精确分割 + 边缘细化 流程
+                        { progress: 5, detail: '正在连接分割引擎...' },
+                        { progress: 10, detail: '正在获取图层数据...' },
+                        { progress: 20, detail: '正在传输图像数据...' },
+                        { progress: 30, detail: `YOLO-World 文本定位: "${hasTarget}"...` },
+                        { progress: 45, detail: '目标检测完成，定位边界框...' },
+                        { progress: 60, detail: 'BiRefNet 精确分割...' },
+                        { progress: 80, detail: '边缘细化处理...' },
+                        { progress: 90, detail: '正在生成蒙版...' },
+                    ]
+                    : [
+                        // 无文本描述：直接全图分割
+                        { progress: 5, detail: '正在连接分割引擎...' },
+                        { progress: 10, detail: '正在获取图层数据...' },
+                        { progress: 20, detail: '正在传输图像数据...' },
+                        { progress: 40, detail: 'BiRefNet 识别主体...' },
+                        { progress: 65, detail: '高精度边缘分割...' },
+                        { progress: 85, detail: '边缘细化处理...' },
+                        { progress: 92, detail: '正在生成蒙版...' },
+                    ];
+                    
+                let currentStageIdx = 0;
+                mattingProgressInterval = setInterval(() => {
+                    if (simulatedProgress < 85 && currentStageIdx < simulatedStages.length) {
+                        const stage = simulatedStages[currentStageIdx];
+                        if (simulatedProgress < stage.progress) {
+                            simulatedProgress += Math.random() * 2 + 0.5;
+                            simulatedProgress = Math.min(simulatedProgress, stage.progress);
+                        } else {
+                            currentStageIdx++;
+                        }
+                        const currentDetail = simulatedStages[Math.min(currentStageIdx, simulatedStages.length - 1)].detail;
+                        showMattingProgress(simulatedProgress, modeLabel, currentDetail);
+                    }
+                }, 400);
+                
+                // 根据模式发送不同的请求
+                if (mattingMode === 'selection') {
+                    // 选区模式：先获取选区边界框，再执行抠图
+                    sendToUXP('executeMattingBySelection', {
+                        outputFormat
+                    });
+                } else {
+                    // 自动模式：使用文本检测
+                    sendToUXP('executeMatting', {
+                        target,
+                        sampleAllLayers,
+                        outputFormat
+                    });
+                }
+            });
+            
+            // 初始化自定义组件
+            bindSliders();
+            bindToggles();
+            bindOutputButtons();
+            bindCheckboxes();
+            bindSockStyleSelection();
+            bindCuffTypeSelection();
+            bindAdvancedToggle();
+            
+            // 通知 UXP 我们已经准备好了
+            setTimeout(() => {
+        sendToUXP('webviewReady');
+            }, 100);
+        });
+    </script>
+    
+    <!-- 全局 Toast 容器（在所有页面外部，确保始终可见） -->
+    <div class="toast-container" id="toastContainer"></div>
+</body>
+</html>

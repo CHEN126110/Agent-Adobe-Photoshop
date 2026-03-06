@@ -1,0 +1,75 @@
+{
+    "manifestVersion": 6,
+    "id": "com.designecho.photoshop",
+    "name": "DesignEcho",
+    "version": "2.0.0",
+    "main": "dist/index.js",
+    "host": {
+        "app": "PS",
+        "minVersion": "26.0.0"
+    },
+    "entrypoints": [
+        {
+            "type": "panel",
+            "id": "mainPanel",
+            "label": {
+                "default": "DesignEcho"
+            },
+            "resizable": false,
+            "minimumSize": {
+                "width": 280,
+                "height": 620
+            },
+            "maximumSize": {
+                "width": 280,
+                "height": 620
+            },
+            "preferredDockedSize": {
+                "width": 280,
+                "height": 620
+            },
+            "preferredFloatingSize": {
+                "width": 280,
+                "height": 620
+            },
+            "icons": [
+                {
+                    "width": 23,
+                    "height": 23,
+                    "path": "icons/icon@1x.png",
+                    "scale": [1],
+                    "theme": ["darkest", "dark", "light", "lightest"]
+                },
+                {
+                    "width": 46,
+                    "height": 46,
+                    "path": "icons/icon@2x.png",
+                    "scale": [2],
+                    "theme": ["darkest", "dark", "light", "lightest"]
+                }
+            ]
+                }
+            ],
+    "icons": [
+        {
+            "width": 48,
+            "height": 48,
+            "path": "icons/plugin-icon.png",
+            "scale": [1, 2],
+            "theme": ["darkest", "dark", "light", "lightest"]
+        }
+    ],
+    "requiredPermissions": {
+        "network": {
+            "domains": "all"
+        },
+        "webview": {
+            "allow": "yes",
+            "domains": ["http://127.0.0.1:8766", "http://localhost:8766"],
+            "allowLocalRendering": "yes",
+            "enableMessageBridge": "localAndRemote"
+        },
+        "clipboard": "readAndWrite",
+        "localFileSystem": "request"
+    }
+}

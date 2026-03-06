@@ -1,0 +1,226 @@
+/* 简化的作品导入组件样式 */
+
+.quick-import {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px;
+    background: var(--de-bg-secondary, #1a1a2e);
+    border-radius: 12px;
+}
+
+/* 拖放区域 */
+.drop-zone {
+    padding: 32px 24px;
+    border: 2px dashed var(--de-border, #3a3a5c);
+    border-radius: 12px;
+    background: var(--de-bg-tertiary, #12121e);
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.drop-zone:hover {
+    border-color: var(--de-primary, #6366f1);
+    background: rgba(99, 102, 241, 0.05);
+}
+
+.quick-import--hover .drop-zone {
+    border-color: var(--de-primary, #6366f1);
+    background: rgba(99, 102, 241, 0.1);
+    transform: scale(1.01);
+}
+
+.quick-import--processing .drop-zone {
+    border-color: var(--de-warning, #f59e0b);
+    background: rgba(245, 158, 11, 0.05);
+}
+
+.quick-import--success .drop-zone {
+    border-color: var(--de-success, #10b981);
+    background: rgba(16, 185, 129, 0.1);
+}
+
+.quick-import--error .drop-zone {
+    border-color: var(--de-error, #ef4444);
+    background: rgba(239, 68, 68, 0.1);
+}
+
+/* 内容 */
+.drop-zone-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    text-align: center;
+}
+
+.drop-icon {
+    font-size: 48px;
+    line-height: 1;
+}
+
+.drop-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--de-text, #e4e4e7);
+}
+
+.drop-hint {
+    font-size: 13px;
+    color: var(--de-text-muted, #71717a);
+    max-width: 300px;
+}
+
+/* 进度条 */
+.progress-bar {
+    width: 100%;
+    max-width: 200px;
+    height: 4px;
+    background: var(--de-bg-secondary, #1a1a2e);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--de-primary, #6366f1);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+/* 操作按钮 */
+.import-actions {
+    display: flex;
+    justify-content: center;
+}
+
+.btn-select-folder {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 24px;
+    background: var(--de-primary, #6366f1);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-select-folder:hover:not(:disabled) {
+    background: var(--de-primary-hover, #4f46e5);
+    transform: translateY(-1px);
+}
+
+.btn-select-folder:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 项目列表 */
+.project-list {
+    background: var(--de-bg-tertiary, #12121e);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.project-list-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--de-text-muted, #71717a);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.project-items {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.project-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--de-bg-secondary, #1a1a2e);
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.project-item.status-completed {
+    border-left: 3px solid var(--de-success, #10b981);
+}
+
+.project-item.status-indexing {
+    border-left: 3px solid var(--de-warning, #f59e0b);
+}
+
+.project-name {
+    flex: 1;
+    color: var(--de-text, #e4e4e7);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.project-count {
+    font-size: 12px;
+    color: var(--de-text-muted, #71717a);
+}
+
+.status-badge {
+    font-size: 12px;
+}
+
+.status-badge.success {
+    color: var(--de-success, #10b981);
+}
+
+.status-badge.indexing {
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.project-more {
+    font-size: 12px;
+    color: var(--de-text-muted, #71717a);
+    text-align: center;
+    padding: 8px;
+}
+
+/* 使用说明 */
+.import-tips {
+    background: var(--de-bg-tertiary, #12121e);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.tips-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--de-text-muted, #71717a);
+    margin-bottom: 8px;
+}
+
+.tips-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.tips-content code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--de-text-secondary, #a1a1aa);
+    padding: 2px 0;
+}
