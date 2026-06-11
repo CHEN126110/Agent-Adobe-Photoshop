@@ -3,13 +3,32 @@
  * 
  * 包含：
  * 1. GetSelectionMaskTool - 获取当前选区作为蒙版
- * 2. ApplyInpaintingResultTool - 应用重绘结果到图层
+ * 2. ApplyRasterImageResultTool - 应用通用图像结果到图层
  */
 
 import { Tool, ToolSchema } from '../types';
+import {
+    arrayBufferFromBytes,
+    assertImageBytesSafeForPhotoshop,
+    bytesFromBase64ImagePayload,
+    readFileEntryBytes
+} from '../../core/image-safety';
+const uxp = require('uxp');
 
 const { app, imaging, action, core } = require('photoshop');
 const { batchPlay } = action;
+const fs = uxp.storage.localFileSystem;
+
+function getLayerBoundsNoEffects(layer: any): any {
+    return layer?.boundsNoEffects || layer?.bounds;
+}
+
+async function translateLayer(layer: any, offsetX: number, offsetY: number): Promise<void> {
+    if (typeof layer?.translate !== 'function') {
+        throw new Error('ApplyRasterImageResult failed: placed raster result layer does not support DOM translate; native move is blocked to avoid Photoshop popups.');
+    }
+    await Promise.resolve(layer.translate(offsetX, offsetY));
+}
 
 function toErrorMessage(error: any): string {
     if (error instanceof Error && error.message) return error.message;
@@ -45,6 +64,140 @@ function uint8ArrayToBase64(data: Uint8Array): string {
 function sanitizeBase64(str: string): string {
     if (!str || typeof str !== 'string') return '';
     return str.replace(/[^A-Za-z0-9+/=]/g, '');
+}
+
+function decodeBase64Bytes(input: string): Uint8Array {
+    const base64Data = sanitizeBase64(input);
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+}
+
+function extensionFromPath(filePath: string): string {
+    const match = String(filePath || '').match(/\.([a-z0-9]+)$/i);
+    return match ? match[1].toLowerCase() : '';
+}
+
+const PHOTOSHOP_16BIT_MAX = 32768;
+
+function coerceTypedPixelData(
+    data: Uint8Array | Uint16Array | Float32Array,
+    componentSize: number
+): Uint8Array | Uint16Array | Float32Array {
+    if (componentSize === 16) {
+        return data instanceof Uint16Array
+            ? data
+            : new Uint16Array(data.buffer, data.byteOffset, Math.floor(data.byteLength / 2));
+    }
+    if (componentSize === 32) {
+        return data instanceof Float32Array
+            ? data
+            : new Float32Array(data.buffer, data.byteOffset, Math.floor(data.byteLength / 4));
+    }
+    return data instanceof Uint8Array
+        ? data
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+
+function sampleTo8Bit(
+    data: Uint8Array | Uint16Array | Float32Array,
+    index: number,
+    componentSize: number
+): number {
+    if (componentSize === 16) {
+        const source = data as Uint16Array;
+        return Math.max(0, Math.min(255, Math.round((source[index] / PHOTOSHOP_16BIT_MAX) * 255)));
+    }
+    if (componentSize === 32) {
+        const source = data as Float32Array;
+        return Math.max(0, Math.min(255, Math.round(source[index] * 255)));
+    }
+    const source = data as Uint8Array;
+    return source[index] || 0;
+}
+
+function normalizePixelsTo8Bit(
+    data: Uint8Array | Uint16Array | Float32Array,
+    pixelCount: number,
+    components: number,
+    componentSize: number,
+    outputComponents: 1 | 3
+): Uint8Array {
+    const output = new Uint8Array(pixelCount * outputComponents);
+    for (let i = 0; i < pixelCount; i++) {
+        const src = i * components;
+        const dst = i * outputComponents;
+        if (outputComponents === 1) {
+            output[dst] = sampleTo8Bit(data, src, componentSize);
+        } else {
+            output[dst] = sampleTo8Bit(data, src, componentSize);
+            output[dst + 1] = sampleTo8Bit(data, src + 1, componentSize);
+            output[dst + 2] = sampleTo8Bit(data, src + 2, componentSize);
+        }
+    }
+    return output;
+}
+
+function normalizePixelsToRgba8(
+    data: Uint8Array | Uint16Array | Float32Array,
+    pixelCount: number,
+    components: number,
+    componentSize: number
+): Uint8ClampedArray {
+    const output = new Uint8ClampedArray(pixelCount * 4);
+    for (let i = 0; i < pixelCount; i++) {
+        const src = i * components;
+        const dst = i * 4;
+        const red = sampleTo8Bit(data, src, componentSize);
+        output[dst] = red;
+        output[dst + 1] = components > 1 ? sampleTo8Bit(data, src + 1, componentSize) : red;
+        output[dst + 2] = components > 2 ? sampleTo8Bit(data, src + 2, componentSize) : red;
+        output[dst + 3] = components > 3 ? sampleTo8Bit(data, src + 3, componentSize) : 255;
+    }
+    return output;
+}
+
+async function getDocumentPixelSpec(docId: number): Promise<{
+    componentSize: number;
+    colorProfile: string;
+}> {
+    const probe = await imaging.getPixels({
+        documentID: docId,
+        targetSize: { width: 1, height: 1 },
+        applyAlpha: true
+    });
+    try {
+        return {
+            componentSize: probe.imageData.componentSize || 8,
+            colorProfile: probe.imageData.colorProfile || 'sRGB IEC61966-2.1'
+        };
+    } finally {
+        probe.imageData.dispose();
+    }
+}
+
+function convertRgba8ToTargetDepth(
+    bytes: Uint8Array,
+    componentSize: number
+): Uint8Array | Uint16Array | Float32Array {
+    if (componentSize === 16) {
+        const converted = new Uint16Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) {
+            converted[i] = Math.max(0, Math.min(PHOTOSHOP_16BIT_MAX, Math.round((bytes[i] / 255) * PHOTOSHOP_16BIT_MAX)));
+        }
+        return converted;
+    }
+    if (componentSize === 32) {
+        const converted = new Float32Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) {
+            converted[i] = bytes[i] / 255;
+        }
+        return converted;
+    }
+    return bytes;
 }
 
 /**
@@ -102,15 +255,19 @@ export class GetSelectionMaskTool implements Tool {
                 return { success: false, error: '无法获取选区边界' };
             }
 
-            const scaledSelectionBounds = {
+            let scaledSelectionBounds = {
                 left: Math.round(selectionBounds.left * scale),
                 top: Math.round(selectionBounds.top * scale),
                 right: Math.round(selectionBounds.right * scale),
                 bottom: Math.round(selectionBounds.bottom * scale)
             };
 
-            let maskRawBase64 = '';
-            let imageRawBase64 = '';
+            let maskBase64 = '';
+            let imageBase64 = '';
+            let actualMaskWidth = targetWidth;
+            let actualMaskHeight = targetHeight;
+            let actualImageWidth = 0;
+            let actualImageHeight = 0;
 
             // 使用 PS 原生 API 获取选区蒙版和文档图像（零历史副作用）
             await core.executeAsModal(async () => {
@@ -119,69 +276,91 @@ export class GetSelectionMaskTool implements Tool {
                     documentID: doc.id,
                     targetSize: { width: targetWidth, height: targetHeight }
                 });
-                const maskData = await selResult.imageData.getData();
-                // 单通道灰度 raw base64
-                maskRawBase64 = uint8ArrayToBase64(maskData);
-                console.log(`[GetSelectionMask] 蒙版: ${selResult.imageData.width}x${selResult.imageData.height}, channels=${selResult.imageData.components}, bytes=${maskData.length}`);
+                const maskDataRaw = await selResult.imageData.getData() as Uint8Array | Uint16Array | Float32Array;
+                const maskData = coerceTypedPixelData(maskDataRaw, selResult.imageData.componentSize);
+                const maskBytes = normalizePixelsTo8Bit(
+                    maskData,
+                    selResult.imageData.width * selResult.imageData.height,
+                    selResult.imageData.components,
+                    selResult.imageData.componentSize,
+                    1
+                );
+                actualMaskWidth = selResult.imageData.width;
+                actualMaskHeight = selResult.imageData.height;
+                maskBase64 = uint8ArrayToBase64(maskBytes);
+                console.log(`[GetSelectionMask] 蒙版: ${selResult.imageData.width}x${selResult.imageData.height}, channels=${selResult.imageData.components}, componentSize=${selResult.imageData.componentSize}, encoded=raw-gray-base64`);
                 selResult.imageData.dispose();
 
-                // 2. 获取文档复合图像（RGB/RGBA raw）
+                // 2. 获取文档复合图像并标准化为 RGBA raw，交给 Agent 用 sharp 转 PNG，
+                // 避免依赖 UXP Canvas / ImageData 兼容性，同时保留无损像素。
                 if (includeImage) {
                     const imgResult = await imaging.getPixels({
                         documentID: doc.id,
                         targetSize: { width: targetWidth, height: targetHeight },
                         applyAlpha: true  // 返回 RGB（无 alpha），白底合成
                     });
-                    const imgData = await imgResult.imageData.getData();
-                    const components = imgResult.imageData.components;
-                    console.log(`[GetSelectionMask] 图像: ${imgResult.imageData.width}x${imgResult.imageData.height}, channels=${components}, bytes=${imgData.length}`);
-
-                    if (components === 4) {
-                        // RGBA -> RGB（去 alpha）
-                        const pixelCount = targetWidth * targetHeight;
-                        const rgb = new Uint8Array(pixelCount * 3);
-                        for (let i = 0; i < pixelCount; i++) {
-                            rgb[i * 3] = imgData[i * 4];
-                            rgb[i * 3 + 1] = imgData[i * 4 + 1];
-                            rgb[i * 3 + 2] = imgData[i * 4 + 2];
-                        }
-                        imageRawBase64 = uint8ArrayToBase64(rgb);
-                    } else {
-                        // 已经是 RGB
-                        imageRawBase64 = uint8ArrayToBase64(imgData);
-                    }
+                    const imgDataRaw = await imgResult.imageData.getData() as Uint8Array | Uint16Array | Float32Array;
+                    const imgData = coerceTypedPixelData(imgDataRaw, imgResult.imageData.componentSize);
+                    const rgbaBytes = normalizePixelsToRgba8(
+                        imgData,
+                        imgResult.imageData.width * imgResult.imageData.height,
+                        imgResult.imageData.components,
+                        imgResult.imageData.componentSize
+                    );
+                    actualImageWidth = imgResult.imageData.width;
+                    actualImageHeight = imgResult.imageData.height;
+                    imageBase64 = uint8ArrayToBase64(new Uint8Array(rgbaBytes.buffer));
+                    console.log(`[GetSelectionMask] 图像: ${imgResult.imageData.width}x${imgResult.imageData.height}, channels=${imgResult.imageData.components}, componentSize=${imgResult.imageData.componentSize}, encoded=raw-rgba-base64`);
                     imgResult.imageData.dispose();
                 }
             }, { commandName: 'DesignEcho: 获取选区蒙版' });
 
-            if (!maskRawBase64) {
+            if (!maskBase64) {
                 throw new Error('选区蒙版为空，请重新创建选区后重试');
             }
 
+            if (includeImage && actualImageWidth > 0 && actualImageHeight > 0) {
+                if (actualImageWidth !== actualMaskWidth || actualImageHeight !== actualMaskHeight) {
+                    throw new Error(`图像与蒙版尺寸不一致: image=${actualImageWidth}x${actualImageHeight}, mask=${actualMaskWidth}x${actualMaskHeight}`);
+                }
+            }
+
+            const effectiveWidth = actualMaskWidth;
+            const effectiveHeight = actualMaskHeight;
+            const effectiveScaleX = effectiveWidth / width;
+            const effectiveScaleY = effectiveHeight / height;
+            scaledSelectionBounds = {
+                left: Math.round(selectionBounds.left * effectiveScaleX),
+                top: Math.round(selectionBounds.top * effectiveScaleY),
+                right: Math.round(selectionBounds.right * effectiveScaleX),
+                bottom: Math.round(selectionBounds.bottom * effectiveScaleY)
+            };
+
             const result: any = {
                 success: true,
-                mask: maskRawBase64,
+                mask: maskBase64,
                 maskFormat: 'raw',
                 maskChannels: 1,
-                width: targetWidth,
-                height: targetHeight,
+                width: effectiveWidth,
+                height: effectiveHeight,
                 originalWidth: width,
                 originalHeight: height,
                 selectionBounds: scaledSelectionBounds,
                 documentMeta: {
                     width,
                     height,
-                    scale
+                    scale: Math.min(effectiveScaleX, effectiveScaleY),
+                    selectionBoundsOriginal: selectionBounds
                 }
             };
 
             if (includeImage) {
-                result.image = imageRawBase64;
+                result.image = imageBase64;
                 result.imageFormat = 'raw';
-                result.imageChannels = 3;
+                result.imageChannels = 4;
             }
 
-            console.log('[GetSelectionMask] 获取成功 (raw format)');
+            console.log(`[GetSelectionMask] 获取成功 (mask=${result.maskFormat}, image=${result.imageFormat || 'none'})`);
             return result;
 
         } catch (error: any) {
@@ -286,7 +465,8 @@ export class GetSelectionMaskTool implements Tool {
             width,
             height,
             components: 3,
-            colorSpace: 'RGB'
+            colorSpace: 'RGB',
+            colorProfile: 'sRGB IEC61966-2.1'
         });
 
         try {
@@ -306,50 +486,63 @@ export class GetSelectionMaskTool implements Tool {
             imageDataObj.dispose();
         }
     }
+
 }
 
 /**
- * 应用重绘结果
+ * Apply a raster image result.
  */
-export class ApplyInpaintingResultTool implements Tool {
-    name = 'applyInpaintingResult';
-    
+export class ApplyRasterImageResultTool implements Tool {
+    name = 'applyRasterImageResult';
+
     schema: ToolSchema = {
-        name: 'applyInpaintingResult',
-        description: '将局部重绘结果应用到新图层',
+        name: 'applyRasterImageResult',
+        description: 'Apply a raster image result onto a new Photoshop layer.',
         parameters: {
             type: 'object',
             properties: {
                 imageData: {
                     type: 'string',
-                    description: 'Base64 编码的重绘结果图像'
+                    description: 'Base64-encoded image payload.'
+                },
+                filePath: {
+                    type: 'string',
+                    description: 'Optional local file path to a raster image result.'
                 },
                 layerName: {
                     type: 'string',
-                    description: '新图层名称（默认"重绘结果"）'
+                    description: 'Optional destination layer name.'
                 },
                 width: {
                     type: 'number',
-                    description: '图像实际宽度'
+                    description: 'Result width in pixels.'
                 },
                 height: {
                     type: 'number',
-                    description: '图像实际高度'
+                    description: 'Result height in pixels.'
+                },
+                placementWidth: {
+                    type: 'number',
+                    description: 'Target width for placement on canvas.'
+                },
+                placementHeight: {
+                    type: 'number',
+                    description: 'Target height for placement on canvas.'
                 },
                 originalWidth: {
                     type: 'number',
-                    description: '原始文档宽度（用于缩放）'
+                    description: 'Original document width.'
                 },
                 originalHeight: {
                     type: 'number',
-                    description: '原始文档高度（用于缩放）'
+                    description: 'Original document height.'
                 },
                 targetBounds: {
                     type: 'object',
-                    description: '写入目标位置（left/top）',
+                    description: 'Destination top-left position.',
                     properties: {
-                        left: { type: 'number', description: '目标左侧坐标' },
-                        top: { type: 'number', description: '目标顶部坐标' }
+                        left: { type: 'number', description: 'Target left coordinate.' },
+                        top: { type: 'number', description: 'Target top coordinate.' }
                     }
                 }
             },
@@ -357,8 +550,8 @@ export class ApplyInpaintingResultTool implements Tool {
         }
     };
 
-    async execute(params: { imageData: string; isRawRgba?: boolean; layerName?: string; width?: number; height?: number; originalWidth?: number; originalHeight?: number; targetBounds?: { left?: number; top?: number } }): Promise<any> {
-        const layerName = params.layerName || '重绘结果';
+    async execute(params: { imageData: string; filePath?: string; imageBytes?: Uint8Array; imageFormat?: string; isRawRgba?: boolean; layerName?: string; width?: number; height?: number; placementWidth?: number; placementHeight?: number; originalWidth?: number; originalHeight?: number; targetBounds?: { left?: number; top?: number } }): Promise<any> {
+        const layerName = params.layerName || '图像结果';
         let createdLayerId: number | null = null;
 
         try {
@@ -367,35 +560,147 @@ export class ApplyInpaintingResultTool implements Tool {
                 return { success: false, error: '没有打开的文档' };
             }
 
-            // 解码 Base64 数据（清洗非法字符避免 atob InvalidCharacterError）
-            const base64Data = sanitizeBase64(params.imageData.replace(/^data:image\/\w+;base64,/, ''));
-            const binaryString = atob(base64Data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
+            let bytes: Uint8Array | undefined;
+            let encodedFormatHint = params.imageFormat;
+            const hasFilePath = typeof params.filePath === 'string' && params.filePath.length > 0;
+            const isRaw = params.isRawRgba === true;
+            if (params.imageBytes instanceof Uint8Array) {
+                bytes = params.imageBytes;
+            } else if (!hasFilePath) {
+                if (isRaw) {
+                    const rawPayload = (params.imageData || '').replace(/^data:[^;]+;base64,/, '');
+                    bytes = decodeBase64Bytes(rawPayload);
+                } else {
+                    const decoded = bytesFromBase64ImagePayload(params.imageData || '');
+                    bytes = decoded.bytes;
+                    encodedFormatHint = encodedFormatHint || decoded.mimeType;
+                }
+            }
+
+            if (!isRaw && bytes) {
+                assertImageBytesSafeForPhotoshop(bytes, {
+                    formatHint: encodedFormatHint,
+                    sourceLabel: `局部重绘结果「${layerName}」`
+                });
             }
 
             const docWidth = doc.width as number;
             const docHeight = doc.height as number;
-            
-            // 使用提供的图像尺寸，如果没有则默认为文档尺寸
             const imgWidth = params.width || docWidth;
             const imgHeight = params.height || docHeight;
-            
+            const placementWidth = params.placementWidth || imgWidth;
+            const placementHeight = params.placementHeight || imgHeight;
             const expectedSize = imgWidth * imgHeight * 4;
-            const isRaw = params.isRawRgba === true;
-            console.log(`[ApplyInpaintingResult] 图像尺寸: ${imgWidth}x${imgHeight}, 文档尺寸: ${docWidth}x${docHeight}, isRawRgba: ${isRaw}, bytes: ${bytes.length}, expected: ${expectedSize}`);
 
-            // 硬校验：raw RGBA 数据长度必须精确匹配
-            if (isRaw && bytes.length !== expectedSize) {
+            console.log(`[ApplyRasterImageResult] image=${imgWidth}x${imgHeight}, placement=${placementWidth}x${placementHeight}, doc=${docWidth}x${docHeight}, isRaw=${isRaw}, hasFilePath=${hasFilePath}, bytes=${bytes?.length || 0}, expected=${expectedSize}`);
+
+            if (isRaw && (!bytes || bytes.length !== expectedSize)) {
                 return {
                     success: false,
-                    error: `像素数据长度不匹配: 收到 ${bytes.length} 字节, 期望 ${expectedSize} 字节 (${imgWidth}x${imgHeight}x4)`
+                    error: `Pixel payload size mismatch: got ${bytes?.length || 0}, expected ${expectedSize} (${imgWidth}x${imgHeight}x4)`
                 };
             }
 
             await core.executeAsModal(async () => {
-                // 创建新图层
+                if (!isRaw) {
+                    const storage = uxp.storage;
+                    let fileEntry: any = null;
+                    let createdTempFile: any = null;
+
+                    try {
+                        if (hasFilePath) {
+                            try {
+                                fileEntry = await fs.getEntryWithUrl('file://' + params.filePath!.replace(/\\/g, '/'));
+                            } catch (pathError) {
+                                fileEntry = await fs.getEntryWithUrl(params.filePath!);
+                            }
+                            const fileBytes = await readFileEntryBytes(fileEntry, storage);
+                            assertImageBytesSafeForPhotoshop(fileBytes, {
+                                formatHint: params.imageFormat || extensionFromPath(params.filePath!),
+                                sourceLabel: `局部重绘结果文件「${params.filePath!.split(/[\\/]/).pop() || params.filePath}」`
+                            });
+                        } else {
+                            const tempFolder = await fs.getTemporaryFolder();
+                            const ext = (params.imageFormat || 'png').replace(/^\./, '') || 'png';
+                            const tempFile = await tempFolder.createFile(`inpaint_${Date.now()}.${ext}`, { overwrite: true });
+                            await tempFile.write(arrayBufferFromBytes(bytes!), { format: storage.formats.binary });
+                            fileEntry = tempFile;
+                            createdTempFile = tempFile;
+                        }
+
+                        const sessionToken = await fs.createSessionToken(fileEntry);
+
+                        await batchPlay([
+                            {
+                                _obj: 'placeEvent',
+                                null: { _path: sessionToken, _kind: 'local' },
+                                freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
+                                offset: {
+                                    _obj: 'offset',
+                                    horizontal: { _unit: 'pixelsUnit', _value: 0 },
+                                    vertical: { _unit: 'pixelsUnit', _value: 0 }
+                                },
+                                _options: { dialogOptions: 'dontDisplay' }
+                            }
+                        ], { synchronousExecution: true });
+
+                        const newLayer = doc.activeLayers?.[0];
+                        if (!newLayer) {
+                            throw new Error('Failed to place raster image result');
+                        }
+
+                        createdLayerId = newLayer.id;
+                        newLayer.name = layerName;
+
+                        const initialBounds = getLayerBoundsNoEffects(newLayer);
+                        const layerWidth = initialBounds.right - initialBounds.left;
+                        const layerHeight = initialBounds.bottom - initialBounds.top;
+
+                        if (layerWidth > 0 && layerHeight > 0) {
+                            const scaleW = (placementWidth / layerWidth) * 100;
+                            const scaleH = (placementHeight / layerHeight) * 100;
+                            if (Math.abs(scaleW - 100) > 0.1 || Math.abs(scaleH - 100) > 0.1) {
+                                await batchPlay([
+                                    {
+                                        _obj: 'transform',
+                                        _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
+                                        freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
+                                        width: { _unit: 'percentUnit', _value: scaleW },
+                                        height: { _unit: 'percentUnit', _value: scaleH },
+                                        linked: false,
+                                        interfaceIconFrameDimmed: { _enum: 'interpolationType', _value: 'bicubic' },
+                                        _options: { dialogOptions: 'dontDisplay' }
+                                    }
+                                ], {});
+                            }
+                        }
+
+                        if (params.targetBounds && (typeof params.targetBounds.left === 'number' || typeof params.targetBounds.top === 'number')) {
+                            const currentBounds = getLayerBoundsNoEffects(newLayer);
+                            const currentX = currentBounds.left;
+                            const currentY = currentBounds.top;
+                            const targetX = Math.round(params.targetBounds.left || 0);
+                            const targetY = Math.round(params.targetBounds.top || 0);
+                            const moveX = targetX - currentX;
+                            const moveY = targetY - currentY;
+
+                            if (moveX !== 0 || moveY !== 0) {
+                                await translateLayer(newLayer, moveX, moveY);
+                            }
+                        }
+                    } finally {
+                        if (createdTempFile) {
+                            try { await createdTempFile.delete(); } catch {}
+                        }
+                    }
+
+                    return;
+                }
+
+                const targetPixelSpec = await getDocumentPixelSpec(doc.id);
+                const sourcePixelData = convertRgba8ToTargetDepth(bytes!, targetPixelSpec.componentSize);
+                console.log(`[ApplyRasterImageResult] targetPixelSpec=${targetPixelSpec.componentSize}/${targetPixelSpec.colorProfile}`);
+
                 await batchPlay([
                     {
                         _obj: 'make',
@@ -404,85 +709,91 @@ export class ApplyInpaintingResultTool implements Tool {
                     }
                 ], {});
 
-                // 获取新创建的图层
-                const newLayer = doc.layers.find((l: any) => l.name === layerName);
+                const newLayer = doc.activeLayers?.[0];
                 if (!newLayer) {
                     throw new Error('创建图层失败');
                 }
                 createdLayerId = newLayer.id;
 
-                // 创建 ImageData 对象（RGBA，4通道）
-                const imageDataObj = await imaging.createImageDataFromBuffer(bytes, {
+                const imageDataObj = await imaging.createImageDataFromBuffer(sourcePixelData, {
                     width: imgWidth,
                     height: imgHeight,
                     components: 4,
-                    colorSpace: 'RGB'
+                    colorSpace: 'RGB',
+                    colorProfile: 'sRGB IEC61966-2.1'
                 });
 
-                await imaging.putPixels({
-                    documentID: doc.id,
-                    layerID: newLayer.id,
-                    imageData: imageDataObj,
-                    targetBounds: {
-                        left: Math.round(params.targetBounds?.left || 0),
-                        top: Math.round(params.targetBounds?.top || 0)
-                    }
-                });
-                
+                try {
+                    await imaging.putPixels({
+                        documentID: doc.id,
+                        layerID: newLayer.id,
+                        imageData: imageDataObj,
+                        targetBounds: {
+                            left: Math.round(params.targetBounds?.left || 0),
+                            top: Math.round(params.targetBounds?.top || 0)
+                        }
+                    });
+                } finally {
+                    imageDataObj.dispose();
+                }
+
                 const hasExplicitTargetBounds = params.targetBounds
                     && (typeof params.targetBounds.left === 'number' || typeof params.targetBounds.top === 'number');
 
-                // 仅在“整图回写”场景执行缩放回原尺寸；ROI 精确回贴不应触发缩放
                 if (!hasExplicitTargetBounds
                     && params.originalWidth
                     && params.originalHeight
                     && (Math.abs(imgWidth - params.originalWidth) > 1 || Math.abs(imgHeight - params.originalHeight) > 1)) {
-                    
                     const scaleW = (params.originalWidth / imgWidth) * 100;
                     const scaleH = (params.originalHeight / imgHeight) * 100;
-                    
-                    console.log(`[ApplyInpaintingResult] 需要缩放: ${scaleW.toFixed(2)}%, ${scaleH.toFixed(2)}%`);
-                    
+
                     await batchPlay([
                         {
-                            _obj: "transform",
-                            _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
-                            freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
-                            width: { _unit: "percent", _value: scaleW },
-                            height: { _unit: "percent", _value: scaleH },
+                            _obj: 'transform',
+                            _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
+                            freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
+                            width: { _unit: 'percent', _value: scaleW },
+                            height: { _unit: 'percent', _value: scaleH },
                             linked: false,
-                            interfaceIconFrameDimmed: { _enum: "interpolationType", _value: "bicubic" }
+                            interfaceIconFrameDimmed: { _enum: 'interpolationType', _value: 'bicubic' }
                         }
                     ], {});
                 }
+            }, { commandName: 'DesignEcho: 应用图像结果' });
 
-            }, { commandName: 'DesignEcho: 应用重绘结果' });
-
-            console.log(`[ApplyInpaintingResult] 成功创建图层: ${layerName}`);
-            
             return {
                 success: true,
-                layerName: layerName,
+                layerName,
                 layerId: createdLayerId
             };
 
         } catch (error: any) {
-            console.error('[ApplyInpaintingResult] 错误:', error.message);
-            return { success: false, error: error.message };
+            const errorMessage =
+                error?.message
+                || (typeof error === 'string' ? error : '')
+                || (() => {
+                    try {
+                        return JSON.stringify(error);
+                    } catch {
+                        return '';
+                    }
+                })()
+                || 'Unknown error';
+            console.error('[ApplyRasterImageResult] Error:', errorMessage, error);
+            return { success: false, error: errorMessage };
         }
     }
 }
 
 /**
- * 获取当前选区的边界框
- * 用于选区模式抠图
+ * Get current selection bounds.
  */
 export class GetSelectionBoundsTool implements Tool {
     name = 'getSelectionBounds';
-    
+
     schema: ToolSchema = {
         name: 'getSelectionBounds',
-        description: '获取当前 Photoshop 选区的边界框坐标（用于选区模式抠图）',
+        description: 'Get the current Photoshop selection bounds.',
         parameters: {
             type: 'object',
             properties: {}
@@ -493,10 +804,9 @@ export class GetSelectionBoundsTool implements Tool {
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档', hasSelection: false };
+                return { success: false, error: 'No active document', hasSelection: false };
             }
 
-            // 获取选区边界
             const result = await batchPlay([
                 {
                     _obj: 'get',
@@ -506,23 +816,19 @@ export class GetSelectionBoundsTool implements Tool {
                     ]
                 }
             ], { synchronousExecution: true });
-            
+
             if (!result[0] || !result[0].selection) {
-                return { 
-                    success: false, 
-                    error: '请先创建选区（使用套索工具、矩形选框等）',
-                    hasSelection: false 
+                return {
+                    success: false,
+                    error: 'Please create a selection first',
+                    hasSelection: false
                 };
             }
 
             const selection = result[0].selection;
-            
-            // 解析选区边界
-            // selection 可能是 rectangle 或其他形状
             let bounds: { left: number; top: number; right: number; bottom: number } | null = null;
-            
+
             if (selection.left !== undefined && selection.top !== undefined) {
-                // 直接的边界信息
                 bounds = {
                     left: Math.round(selection.left._value || selection.left),
                     top: Math.round(selection.top._value || selection.top),
@@ -530,7 +836,6 @@ export class GetSelectionBoundsTool implements Tool {
                     bottom: Math.round(selection.bottom._value || selection.bottom)
                 };
             } else {
-                // 尝试获取选区的边界框
                 const boundsResult = await batchPlay([
                     {
                         _obj: 'get',
@@ -540,7 +845,7 @@ export class GetSelectionBoundsTool implements Tool {
                         ]
                     }
                 ], { synchronousExecution: true });
-                
+
                 if (boundsResult[0] && boundsResult[0].selectionBounds) {
                     const sb = boundsResult[0].selectionBounds;
                     bounds = {
@@ -553,32 +858,29 @@ export class GetSelectionBoundsTool implements Tool {
             }
 
             if (!bounds) {
-                return { 
-                    success: false, 
-                    error: '无法获取选区边界',
-                    hasSelection: true 
+                return {
+                    success: false,
+                    error: 'Unable to resolve selection bounds',
+                    hasSelection: true
                 };
             }
 
             const width = bounds.right - bounds.left;
             const height = bounds.bottom - bounds.top;
 
-            console.log(`[GetSelectionBounds] 选区边界: (${bounds.left}, ${bounds.top}) - (${bounds.right}, ${bounds.bottom}), 尺寸: ${width}x${height}`);
-
             return {
                 success: true,
                 hasSelection: true,
-                bounds: bounds,
+                bounds,
                 box: [bounds.left, bounds.top, bounds.right, bounds.bottom],
-                width: width,
-                height: height,
+                width,
+                height,
                 documentWidth: doc.width as number,
                 documentHeight: doc.height as number
             };
-
         } catch (error: any) {
-            console.error('[GetSelectionBounds] 错误:', error.message);
-            return { success: false, error: error.message, hasSelection: false };
+            console.error('[GetSelectionBounds] Error:', error?.message || error);
+            return { success: false, error: error?.message || String(error), hasSelection: false };
         }
     }
 }

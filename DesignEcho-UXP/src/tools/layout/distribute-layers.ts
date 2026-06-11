@@ -5,6 +5,7 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
 
 const app = require('photoshop').app;
 const { core } = require('photoshop');
@@ -79,13 +80,13 @@ export class DistributeLayersTool implements Tool {
                             layerID: params.layerIds,
                             _options: { dialogOptions: 'dontDisplay' }
                         }
-                    ], {});
+                    ], { synchronousExecution: true });
                 }
 
                 // 构建分布命令
                 const distributeDescriptor = this.getDistributeDescriptor(params.distributeType);
                 
-                await action.batchPlay([distributeDescriptor], {});
+                await action.batchPlay([distributeDescriptor], { synchronousExecution: true });
 
             }, { commandName: 'DesignEcho: 分布图层' });
 
@@ -96,10 +97,7 @@ export class DistributeLayersTool implements Tool {
 
         } catch (error) {
             console.error('[DistributeLayers] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '分布失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 

@@ -93,6 +93,22 @@ export function registerResourceHandlers(context: IPCContext): void {
         return await resourceManagerService.readImageAsBase64(imagePath);
     });
 
+    // 只读图片文件探针：返回尺寸/大小/hash，不返回 base64 或原始图片内容
+    ipcMain.handle('resource:probeImageFile', async (_event: IpcMainInvokeEvent, imagePath: string) => {
+        if (!resourceManagerService) {
+            throw new Error('资源管理服务未初始化');
+        }
+        return await resourceManagerService.probeImageFile(imagePath);
+    });
+
+    // 只读图片像素探针：比较参考图与结果图，不返回 base64 或原始图片内容
+    ipcMain.handle('resource:compareImageFiles', async (_event: IpcMainInvokeEvent, referencePath: string, resultPath: string, options?: any) => {
+        if (!resourceManagerService) {
+            throw new Error('资源管理服务未初始化');
+        }
+        return await resourceManagerService.compareImageFiles(referencePath, resultPath, options);
+    });
+
     // 分析素材内容（使用视觉模型）
     ipcMain.handle('resource:analyzeAsset', async (_event: IpcMainInvokeEvent, imagePath: string) => {
         if (!resourceManagerService || !modelService) {

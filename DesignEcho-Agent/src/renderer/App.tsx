@@ -1,10 +1,8 @@
 ﻿import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Header } from './components/Header';
-import { Sidebar } from './components/Sidebar';
-import { ChatPanel } from './components/ChatPanel';
 import { SettingsModal } from './components/SettingsModal';
 import { ProjectManager } from './components/ProjectManager';
-import { AssetGallery } from './components/AssetGallery';
+import { DesignAgentWorkbench } from './components/DesignAgentWorkbench';
 import { useAppStore, EcommerceProjectStructure } from './stores/app.store';
 
 // 获取系统主题
@@ -36,10 +34,26 @@ function App() {
         document.documentElement.setAttribute('data-theme', effectiveTheme);
     }, [effectiveTheme]);
     const [, setConnectionAttempts] = useState(0);
-    const apiKeysSynced = useRef(false);
+    const lastSyncedApiKeys = useRef<string | null>(null);
     const projectScanned = useRef<string | null>(null);  // 记录已扫描的项目路径
     const stateFallbackLoaded = useRef(false);
     const stateSaveTimer = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (currentProject) return;
+        const params = new URLSearchParams(window.location.search || '');
+        if (params.get('designechoChatTestBridge') !== '1') return;
+        const projectPath = params.get('designechoChatTestProjectPath');
+        if (!projectPath) return;
+        setCurrentProject({
+            id: 'chat-ui-electron-bridge-smoke',
+            name: 'Chat UI Electron Bridge Smoke',
+            path: projectPath,
+            createdAt: Date.now(),
+            lastOpenedAt: Date.now(),
+            folders: {}
+        });
+    }, [currentProject, setCurrentProject]);
 
     // 检查连接状态
     const checkConnection = useCallback(async () => {
@@ -108,28 +122,43 @@ function App() {
 
     // 启动时同步 API Keys 到主进程（zustand persist 恢复后）
     useEffect(() => {
-        // 只在首次加载时同步一次
-        if (apiKeysSynced.current) return;
-        
-        // 延迟执行，确保 zustand persist 已经恢复数据
+        const normalizedApiKeys = {
+            anthropic: apiKeys?.anthropic || '',
+            google: apiKeys?.google || '',
+            xiaomi: apiKeys?.xiaomi || '',
+            openai: apiKeys?.openai || '',
+            gptsapi: apiKeys?.gptsapi || '',
+            openrouter: apiKeys?.openrouter || '',
+            deepseek: apiKeys?.deepseek || '',
+            ollamaUrl: apiKeys?.ollamaUrl || '',
+            ollamaApiKey: apiKeys?.ollamaApiKey || '',
+            bfl: apiKeys?.bfl || '',
+            volcengineJimengAccessKeyId: apiKeys?.volcengineJimengAccessKeyId || '',
+            volcengineJimengSecretAccessKey: apiKeys?.volcengineJimengSecretAccessKey || '',
+            volcengineSeedreamApiKey: apiKeys?.volcengineSeedreamApiKey || ''
+        };
+        const snapshot = JSON.stringify(normalizedApiKeys);
+        if (lastSyncedApiKeys.current === snapshot) return;
+
         const timer = setTimeout(async () => {
-            if (apiKeys && Object.keys(apiKeys).length > 0) {
+            if (Object.values(normalizedApiKeys).some(Boolean)) {
                 console.log('[App] 🔄 同步 API Keys 到主进程...');
                 try {
-                    await window.designEcho?.setApiKeys(apiKeys);
+                    await window.designEcho?.setApiKeys(normalizedApiKeys);
                     console.log('[App] ✅ API Keys 已同步到主进程');
-                    if (apiKeys.openrouter) {
+                    if (normalizedApiKeys.openrouter) {
                         console.log('[App] ✅ OpenRouter API Key 已配置，语义分割功能可用');
                     } else {
                         console.warn('[App] ⚠️ 未配置 OpenRouter API Key，语义分割将使用降级方案');
                     }
+                    lastSyncedApiKeys.current = snapshot;
                 } catch (error) {
                     console.error('[App] ❌ 同步 API Keys 失败:', error);
                 }
             } else {
                 console.log('[App] ℹ️ 未配置 API Keys，请在设置中配置');
+                lastSyncedApiKeys.current = snapshot;
             }
-            apiKeysSynced.current = true;
         }, 500);
 
         return () => clearTimeout(timer);
@@ -236,38 +265,14 @@ function App() {
                         onCloseProject={handleCloseProject}
                     />
                     
-                    {/* 视图导航栏 - AI 驱动设计，核心交互在对话中完成 */}
-                    <div className="view-nav">
-                        <button 
-                            className={`view-nav-btn ${activeView === 'chat' ? 'active' : ''}`}
-                            onClick={() => setActiveView('chat')}
-                        >
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                            </svg>
-                            对话
-                        </button>
-                        <button 
-                            className={`view-nav-btn ${activeView === 'assets' ? 'active' : ''}`}
-                            onClick={() => setActiveView('assets')}
-                        >
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                                <circle cx="8.5" cy="8.5" r="1.5"/>
-                                <polyline points="21 15 16 10 5 21"/>
-                            </svg>
-                            素材
-                        </button>
-                    </div>
-                    
                     <div className="app-main">
-                        <div style={{ display: activeView === 'chat' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-                            <Sidebar />
-                            <ChatPanel />
-                        </div>
-                        <div style={{ display: activeView === 'assets' ? 'flex' : 'none', flex: 1, overflow: 'hidden' }}>
-                            <AssetGallery />
-                        </div>
+                        <DesignAgentWorkbench
+                            activeView={activeView}
+                            onActiveViewChange={setActiveView}
+                            projectName={currentProject.name}
+                            isPluginConnected={isPluginConnected}
+                            ecommerceStructure={ecommerceStructure}
+                        />
                     </div>
                 </div>
             ) : (

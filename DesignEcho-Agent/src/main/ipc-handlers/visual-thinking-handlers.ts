@@ -14,10 +14,15 @@ import path from 'path';
 let visualThinkingService: VisualThinkingService | null = null;
 
 export function registerVisualThinkingHandlers(context: IPCContext): void {
-    const { modelService } = context;
+    const { modelService, taskOrchestrator } = context;
 
     if (modelService) {
         visualThinkingService = new VisualThinkingService(modelService);
+        // 用用户配置的 visualAnalyze 模型（而非硬编码）
+        const visualModelId = taskOrchestrator?.getAgentModels?.()?.vision;
+        if (visualModelId) {
+            visualThinkingService.setVisionModelId(visualModelId);
+        }
     }
 
     /**

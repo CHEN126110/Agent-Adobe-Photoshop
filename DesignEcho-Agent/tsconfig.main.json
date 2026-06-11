@@ -21,6 +21,13 @@
         },
         "types": ["node"]
     },
-    "include": ["src/main/**/*", "src/shared/**/*"],
-    "exclude": ["node_modules", "src/renderer/**/*"]
+    "include": [
+        "src/main/**/*",
+        "src/shared/**/*",
+        "src/renderer/services/skill-executors/detail-page.types.ts",
+        "src/renderer/services/skill-executors/detail-page-layout-graph.ts",
+        "src/renderer/services/skill-executors/detail-page-layout-analyzer.ts",
+        "src/renderer/services/skill-executors/detail-page-screen-role.ts"
+    ],
+    "exclude": ["node_modules"]
 }

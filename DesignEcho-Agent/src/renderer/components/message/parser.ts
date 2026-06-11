@@ -10,14 +10,19 @@
  */
 
 import type { ActionItem, ContentBlock, MultimodalMessage, TextBlock, CodeBlock, ImageBlock, ToolResultBlock, CardBlock, ThinkingBlock as ThinkingBlockType, ParseOptions } from './types';
-import { getToolDisplayInfo } from '../ThinkingProcess';
+import { getToolDisplayInfo } from '../../services/tool-display-info';
+import type { AgentExecutionSummary } from '../../services/agent-runtime/types';
+import type { BusinessSkillVisualEvidenceFeedback } from '../../../shared/business-skill-visual-evidence-feedback';
+import type { AgentTaskPublicPlanExecutionRequest } from '../../../shared/agent-task-public-plan-execution-request';
+import type { AgentTaskPublicPlanApprovalRecord } from '../../../shared/agent-task-public-plan-approval-record';
+import type { AgentTaskPublicPlanControlledRun } from '../../../shared/agent-task-public-plan-controlled-runner';
 
 // ==================== 类型定义 ====================
 
 // 旧版思维步骤类型
 interface LegacyThinkingStep {
     id: string;
-    type: 'thinking' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
+    type: 'thinking' | 'status' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
     content: string;
     toolName?: string;
     toolParams?: any;
@@ -41,6 +46,11 @@ interface LegacyMessage {
     copyResult?: any;
     isThinking?: boolean;
     thinkingSteps?: LegacyThinkingStep[];
+    executionSummary?: AgentExecutionSummary;
+    businessVisualEvidenceFeedback?: BusinessSkillVisualEvidenceFeedback;
+    agentTaskPublicPlanExecutionRequest?: AgentTaskPublicPlanExecutionRequest;
+    agentTaskPublicPlanApprovalRecord?: AgentTaskPublicPlanApprovalRecord;
+    agentTaskPublicPlanControlledRun?: AgentTaskPublicPlanControlledRun;
     image?: { data: string; type: string };
 }
 // ==================== 缓存机制 ====================
@@ -59,6 +69,11 @@ interface CacheEntry {
     contentHash: string;
     thinkingStepsLength: number;
     hasImage: boolean;
+    executionSummaryHash: string;
+    businessVisualEvidenceFeedbackHash: string;
+    publicPlanExecutionRequestHash: string;
+    publicPlanApprovalRecordHash: string;
+    publicPlanControlledRunHash: string;
 }
 
 const conversionCache = new WeakMap<LegacyMessage, CacheEntry>();
@@ -92,6 +107,285 @@ function withActionPayload(
     return {
         ...params,
         payload
+    };
+}
+
+function buildExecutionSummaryCard(
+    summary: AgentExecutionSummary | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    if (!summary) return null;
+    const stopReasonLabels: Record<string, string> = {
+        final_response: '模型给出最终回复',
+        tool_budget_final_response: '工具预算耗尽后总结',
+        max_iterations: '达到最大迭代次数',
+        no_progress: '重复或失败循环',
+        empty_final_response: '最终回复为空',
+        cancelled: '用户取消',
+        error: '运行错误'
+    };
+
+    const statusConfig: Record<AgentExecutionSummary['status'], {
+        label: string;
+        variant: CardBlock['variant'];
+        icon: string;
+        defaultCollapsed: boolean;
+    }> = {
+        completed: {
+            label: '已完成',
+            variant: 'success',
+            icon: '✓',
+            defaultCollapsed: true
+        },
+        needs_review: {
+            label: '需复核',
+            variant: 'warning',
+            icon: '!',
+            defaultCollapsed: false
+        },
+        failed: {
+            label: '未完成',
+            variant: 'error',
+            icon: '!',
+            defaultCollapsed: false
+        },
+        cancelled: {
+            label: '已取消',
+            variant: 'neutral',
+            icon: 'i',
+            defaultCollapsed: false
+        }
+    };
+
+    const config = statusConfig[summary.status] || statusConfig.needs_review;
+    const details: CardBlock['details'] = [
+        { label: '停止原因', value: stopReasonLabels[String(summary.stopReason || '')] || summary.stopReason },
+        { label: '迭代', value: summary.iterations },
+        { label: '工具调用', value: summary.toolCallCount },
+        { label: '成功工具', value: summary.successfulToolCalls },
+        { label: '失败工具', value: summary.failedToolCalls }
+    ];
+
+    if (summary.acceptanceVerified > 0) {
+        details.push({ label: '验收通过', value: summary.acceptanceVerified });
+    }
+    if (summary.acceptanceFailed > 0) {
+        details.push({ label: '验收失败', value: summary.acceptanceFailed });
+    }
+    if (summary.acceptanceNeedsReview > 0) {
+        details.push({ label: '验收复核', value: summary.acceptanceNeedsReview });
+    }
+    if (summary.noDocumentChangeRisks > 0) {
+        details.push({ label: '无变化风险', value: summary.noDocumentChangeRisks });
+    }
+    if (summary.lastToolName) {
+        details.push({ label: '最后工具', value: summary.lastToolName });
+    }
+    if (summary.lastError) {
+        details.push({ label: '最后错误', value: summary.lastError });
+    }
+
+    const blockers = Array.isArray(summary.blockers) ? summary.blockers.slice(0, 2) : [];
+    const warnings = Array.isArray(summary.warnings) ? summary.warnings.slice(0, 2) : [];
+    const extraLines = [...blockers, ...warnings].filter(Boolean);
+    const content = [
+        summary.summaryText || `执行状态：${config.label}`,
+        ...extraLines.map((item) => `- ${item}`)
+    ].join('\n');
+
+    return {
+        id: createStableId(messageId, 'execution-summary', index),
+        type: 'card',
+        variant: config.variant,
+        icon: config.icon,
+        title: `任务报告：${config.label}`,
+        content,
+        details,
+        collapsible: true,
+        defaultCollapsed: config.defaultCollapsed
+    };
+}
+
+function buildBusinessVisualEvidenceFeedbackCard(
+    feedback: BusinessSkillVisualEvidenceFeedback | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    if (!feedback || !feedback.userVisible) return null;
+
+    const variantBySeverity: Record<BusinessSkillVisualEvidenceFeedback['severity'], CardBlock['variant']> = {
+        none: 'neutral',
+        info: 'info',
+        warning: 'warning',
+        blocked: 'error'
+    };
+
+    const iconBySeverity: Record<BusinessSkillVisualEvidenceFeedback['severity'], string> = {
+        none: 'i',
+        info: 'i',
+        warning: '!',
+        blocked: '!'
+    };
+
+    const details: CardBlock['details'] = [
+        { label: '预检模式', value: feedback.preflightStrategy.mode },
+        { label: '允许继续', value: feedback.preflightStrategy.canProceed ? '是' : '否' }
+    ];
+
+    if (feedback.preflightStrategy.shouldRefreshProjectContext) {
+        details.push({ label: '需要上下文', value: '刷新项目上下文' });
+    }
+    if (feedback.preflightStrategy.shouldAskUserToSelectImages) {
+        details.push({ label: '需要图片', value: '用户选择或刷新素材索引' });
+    }
+    if (feedback.preflightStrategy.shouldOfferVisualAnalysis) {
+        details.push({ label: '建议', value: '显式视觉分析' });
+    }
+    if (feedback.preflightStrategy.shouldAvoidSemanticClaims) {
+        details.push({ label: '规则', value: '不编造款式、材质、场景或卖点' });
+    }
+
+    const warningLines = feedback.warningItems.slice(0, 2).map((item) => `- ${item}`);
+    const blockerLines = feedback.blockerItems.slice(0, 2).map((item) => `- ${item}`);
+    const content = [
+        feedback.summary,
+        feedback.actionHint,
+        ...blockerLines,
+        ...warningLines
+    ].filter(Boolean).join('\n');
+
+    return {
+        id: createStableId(messageId, 'business-visual-evidence-feedback', index),
+        type: 'card',
+        variant: variantBySeverity[feedback.severity] || 'warning',
+        icon: iconBySeverity[feedback.severity] || '!',
+        title: `业务预检：${feedback.title}`,
+        content,
+        details,
+        collapsible: true,
+        defaultCollapsed: feedback.severity === 'info'
+    };
+}
+
+function buildPublicPlanExecutionRequestCard(
+    request: AgentTaskPublicPlanExecutionRequest | undefined,
+    approvalRecord: AgentTaskPublicPlanApprovalRecord | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    if (!request || request.version !== 'agent-task-public-plan-execution-request/v0') return null;
+
+    const isPending = request.status === 'blocked_pending_user_confirmation';
+    const isApproved = approvalRecord?.status === 'approved_controlled_execution_request';
+    const isReady = request.status === 'ready_for_controlled_execution_request';
+    const toolList = request.proposedWriteTools.slice(0, 6).join(', ') || '未提供';
+    const readbackList = request.readbackTargets.slice(0, 4).join(', ') || '未提供';
+    const details: CardBlock['details'] = [
+        { label: '状态', value: isApproved || isReady ? '受控请求已准备' : isPending ? '等待确认' : request.status },
+        { label: '写工具', value: toolList },
+        { label: '读回目标', value: readbackList }
+    ];
+    const title = isApproved
+        ? '公开计划已确认'
+        : isReady
+            ? '受控请求已准备'
+            : '公开计划待确认';
+    const content = isApproved || isReady
+        ? '已生成受控执行请求；真实 Photoshop 写入仍需后续 runner 按白名单和读回目标执行。'
+        : '确认后只会创建受控执行请求，不会在按钮点击时直接写入 Photoshop。';
+
+    return {
+        id: createStableId(messageId, 'public-plan-execution-request', index),
+        type: 'card',
+        variant: isApproved || isReady ? 'success' : isPending ? 'warning' : 'neutral',
+        icon: isApproved || isReady ? '✓' : '!',
+        title,
+        content,
+        details,
+        actions: isPending && !isApproved
+            ? [{
+                id: createStableId(messageId, 'public-plan-confirm', index),
+                label: '确认计划',
+                variant: 'primary',
+                action: 'confirmPublicPlan',
+                params: {
+                    sourceMessageId: messageId,
+                    requestId: request.requestId
+                }
+            } as ActionItem]
+            : undefined,
+        collapsible: true,
+        defaultCollapsed: false
+    };
+}
+
+function buildPublicPlanControlledRunCard(
+    run: AgentTaskPublicPlanControlledRun | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    if (!run || run.version !== 'agent-task-public-plan-controlled-runner/v0') return null;
+
+    const isCompleted = run.status === 'completed_dry_run'
+        || run.status === 'completed_fake_adapter_verified'
+        || run.status === 'completed_live_adapter_verified';
+    const isFailed = run.status === 'failed_write_operation'
+        || run.status === 'failed_readback';
+    const isLiveBlocked = run.status === 'blocked_live_write_permission_missing'
+        || run.status === 'blocked_live_adapter_required'
+        || run.status === 'blocked_live_operation_params_required';
+    const isBlocked = run.status.startsWith('blocked_');
+    const variant: CardBlock['variant'] = isCompleted
+        ? 'success'
+        : isFailed
+            ? 'error'
+            : isBlocked
+                ? 'warning'
+                : 'neutral';
+    const title = run.status === 'completed_dry_run'
+        ? '受控执行已预检'
+        : run.status === 'completed_fake_adapter_verified'
+            ? '受控执行已模拟验证'
+            : run.status === 'completed_live_adapter_verified'
+                ? '受控执行已通过 live adapter'
+            : isFailed
+                ? '受控执行失败'
+                : isLiveBlocked
+                    ? '受控执行已阻断 live handoff'
+                    : '受控执行未开始';
+    const plannedWriteTools = run.plannedWriteTools.slice(0, 6).join(', ') || '无';
+    const executedWriteTools = run.executedWriteTools.slice(0, 6).join(', ') || '无';
+    const readbackTargets = run.readbackTargets.slice(0, 6).join(', ') || '无';
+    const primaryBlocker = run.blockers.find(Boolean);
+    const content = run.status === 'completed_dry_run'
+        ? 'runner 已完成 dry-run，只生成可回放执行计划；当前没有写入 Photoshop。'
+        : run.status === 'completed_fake_adapter_verified'
+            ? 'fake adapter 已按白名单执行并完成逐步读回；这不是 live Photoshop 写入。'
+            : run.status === 'completed_live_adapter_verified'
+                ? 'live adapter 已按白名单执行并完成逐步读回；仍需结果验收，不能直接声明设计质量通过。'
+            : isLiveBlocked
+                ? 'live handoff 当前被阻断，需要同时具备 live 目标、写入授权、受控 adapter 和可回放参数。'
+                : isFailed
+                    ? `执行未完成：${primaryBlocker || '写入或读回失败'}`
+                    : primaryBlocker || '受控执行请求尚未满足 runner 启动条件。';
+
+    return {
+        id: createStableId(messageId, 'public-plan-controlled-run', index),
+        type: 'card',
+        variant,
+        icon: isCompleted ? '✓' : isFailed ? '×' : '!',
+        title,
+        content,
+        details: [
+            { label: '状态', value: run.status },
+            { label: '目标', value: run.executionTarget },
+            { label: '计划写工具', value: plannedWriteTools },
+            { label: '已执行写工具', value: executedWriteTools },
+            { label: '读回目标', value: readbackTargets }
+        ],
+        collapsible: true,
+        defaultCollapsed: !isFailed && !isLiveBlocked
     };
 }
 
@@ -227,6 +521,9 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
     if (data.message && !success) {
         return data.message;
     }
+    if (typeof data.acceptance?.summaryText === 'string') {
+        return data.acceptance.summaryText;
+    }
     
     // 根据工具类型生成友好摘要
     switch (toolName) {
@@ -279,6 +576,9 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
         case 'moveLayer':
         case 'transformLayer':
             return success ? '变换已应用' : '变换失败';
+
+        case 'moveLayerToGroup':
+            return success ? '已移动到图层组' : '移动到图层组失败';
             
         case 'createGroup':
         case 'groupLayers':
@@ -289,9 +589,14 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
             
         case 'saveDocument':
         case 'quickExport':
+        case 'exportGroup':
             if (data.path) {
                 const fileName = data.path.split(/[/\\]/).pop();
                 return `已保存: ${fileName}`;
+            }
+            if (data.outputPath) {
+                const fileName = data.outputPath.split(/[/\\]/).pop();
+                return `已导出: ${fileName}`;
             }
             return success ? '保存成功' : '保存失败';
             
@@ -328,10 +633,22 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
 }
 
 /**
- * 将旧版思维步骤转换为思考块
+ * 将旧版可见步骤转换为独立的模型反馈 / 工具调用块。
+ * 路由、状态、skill telemetry 不展示为模型思考，避免硬编码流程伪装成 thinking。
  */
-function convertThinkingSteps(steps: LegacyThinkingStep[], messageId: string): ThinkingBlockType {
-    const thinkingSteps = steps.map(step => {
+function convertThinkingStepGroup(
+    steps: LegacyThinkingStep[],
+    messageId: string,
+    title: string,
+    index: number
+): ThinkingBlockType | null {
+    const visibleSteps = steps.filter((step) =>
+        typeof step.content === 'string'
+        && step.content.trim().length > 0
+    );
+    if (visibleSteps.length === 0) return null;
+
+    const thinkingSteps = visibleSteps.map(step => {
         let icon = '🔧';
         let label = step.content || '';
         
@@ -344,6 +661,8 @@ function convertThinkingSteps(steps: LegacyThinkingStep[], messageId: string): T
             }
         } else if (step.type === 'thinking' || step.type === 'decision') {
             icon = '💭';
+        } else if (step.type === 'status') {
+            icon = '⏳';
         } else if (step.type === 'reading') {
             icon = '📖';
             if (step.filePath) {
@@ -365,15 +684,25 @@ function convertThinkingSteps(steps: LegacyThinkingStep[], messageId: string): T
         };
     });
     
-    const totalDuration = steps.reduce((sum, s) => sum + (s.duration || 0), 0);
+    const totalDuration = visibleSteps.reduce((sum, s) => sum + (s.duration || 0), 0);
     
     return {
-        id: createStableId(messageId, 'thinking', 0),
+        id: createStableId(messageId, 'thinking', index),
         type: 'thinking',
+        title,
         steps: thinkingSteps,
         isExpanded: false,
         totalDuration
     };
+}
+
+function convertThinkingSteps(steps: LegacyThinkingStep[], messageId: string): ThinkingBlockType[] {
+    const modelThinkingSteps = steps.filter((step) => step.type === 'thinking');
+    const toolSteps = steps.filter((step) => step.type === 'tool_call' || step.type === 'tool_result');
+    return [
+        convertThinkingStepGroup(modelThinkingSteps, messageId, '正在思考', 0),
+        convertThinkingStepGroup(toolSteps, messageId, '工具调用', 1)
+    ].filter((block): block is ThinkingBlockType => Boolean(block));
 }
 
 /**
@@ -438,6 +767,13 @@ function parseToolResultDetails(result: any): Array<{ label: string; value: stri
     if (!result || typeof result !== 'object') return undefined;
     
     const details: Array<{ label: string; value: string | number; type?: 'text' | 'code' | 'link' }> = [];
+    if (typeof result.acceptance?.summaryText === 'string') {
+        details.push({
+            label: '验收',
+            value: result.acceptance.summaryText,
+            type: 'text'
+        });
+    }
     
     // 常见字段映射
     const fieldMap: Record<string, string> = {
@@ -455,6 +791,7 @@ function parseToolResultDetails(result: any): Array<{ label: string; value: stri
     };
     
     for (const [key, value] of Object.entries(result)) {
+        if (key === 'acceptance') continue;
         if (value === null || value === undefined) continue;
         if (typeof value === 'object') continue;
         
@@ -587,12 +924,32 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
     const contentHash = hashString(message.content || '');
     const thinkingStepsLength = message.thinkingSteps?.length ?? 0;
     const hasImage = !!message.image;
+    const executionSummaryHash = message.executionSummary
+        ? hashString(JSON.stringify(message.executionSummary))
+        : '';
+    const businessVisualEvidenceFeedbackHash = message.businessVisualEvidenceFeedback
+        ? hashString(JSON.stringify(message.businessVisualEvidenceFeedback))
+        : '';
+    const publicPlanExecutionRequestHash = message.agentTaskPublicPlanExecutionRequest
+        ? hashString(JSON.stringify(message.agentTaskPublicPlanExecutionRequest))
+        : '';
+    const publicPlanApprovalRecordHash = message.agentTaskPublicPlanApprovalRecord
+        ? hashString(JSON.stringify(message.agentTaskPublicPlanApprovalRecord))
+        : '';
+    const publicPlanControlledRunHash = message.agentTaskPublicPlanControlledRun
+        ? hashString(JSON.stringify(message.agentTaskPublicPlanControlledRun))
+        : '';
     
     // 缓存命中且内容未变化
     if (cached && 
         cached.contentHash === contentHash &&
         cached.thinkingStepsLength === thinkingStepsLength &&
-        cached.hasImage === hasImage) {
+        cached.hasImage === hasImage &&
+        cached.executionSummaryHash === executionSummaryHash &&
+        cached.businessVisualEvidenceFeedbackHash === businessVisualEvidenceFeedbackHash &&
+        cached.publicPlanExecutionRequestHash === publicPlanExecutionRequestHash &&
+        cached.publicPlanApprovalRecordHash === publicPlanApprovalRecordHash &&
+        cached.publicPlanControlledRunHash === publicPlanControlledRunHash) {
         return cached.result;
     }
     
@@ -610,12 +967,51 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
             zoomable: true
         } as ImageBlock);
     }
+
+    const executionSummaryCard = buildExecutionSummaryCard(message.executionSummary, message.id, blockIndex);
+    if (executionSummaryCard) {
+        blocks.push(executionSummaryCard);
+        blockIndex++;
+    }
+
+    const visualEvidenceFeedbackCard = buildBusinessVisualEvidenceFeedbackCard(
+        message.businessVisualEvidenceFeedback,
+        message.id,
+        blockIndex
+    );
+    if (visualEvidenceFeedbackCard) {
+        blocks.push(visualEvidenceFeedbackCard);
+        blockIndex++;
+    }
+
+    const publicPlanExecutionRequestCard = buildPublicPlanExecutionRequestCard(
+        message.agentTaskPublicPlanExecutionRequest,
+        message.agentTaskPublicPlanApprovalRecord,
+        message.id,
+        blockIndex
+    );
+    if (publicPlanExecutionRequestCard) {
+        blocks.push(publicPlanExecutionRequestCard);
+        blockIndex++;
+    }
+
+    const publicPlanControlledRunCard = buildPublicPlanControlledRunCard(
+        message.agentTaskPublicPlanControlledRun,
+        message.id,
+        blockIndex
+    );
+    if (publicPlanControlledRunCard) {
+        blocks.push(publicPlanControlledRunCard);
+        blockIndex++;
+    }
     
     // 2. 如果有思维步骤，添加思考块
     if (message.thinkingSteps && message.thinkingSteps.length > 0) {
-        const thinkingBlock = convertThinkingSteps(message.thinkingSteps, message.id);
-        blocks.push(thinkingBlock);
-        blockIndex++;
+        const thinkingBlocks = convertThinkingSteps(message.thinkingSteps, message.id);
+        for (const thinkingBlock of thinkingBlocks) {
+            blocks.push(thinkingBlock);
+            blockIndex++;
+        }
         
         // 添加工具执行结果
         const resultSteps = message.thinkingSteps.filter(s => s.type === 'tool_result');
@@ -646,7 +1042,12 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         result,
         contentHash,
         thinkingStepsLength,
-        hasImage
+        hasImage,
+        executionSummaryHash,
+        businessVisualEvidenceFeedbackHash,
+        publicPlanExecutionRequestHash,
+        publicPlanApprovalRecordHash,
+        publicPlanControlledRunHash
     });
     
     return result;

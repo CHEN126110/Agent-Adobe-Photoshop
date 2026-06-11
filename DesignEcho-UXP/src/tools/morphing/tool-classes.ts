@@ -234,6 +234,14 @@ export class ApplyDisplacementTool implements Tool {
                 sparseDisplacement: {
                     type: 'string',
                     description: '稀疏位移场数据（SPARSE:xxx 格式）'
+                },
+                preserveOriginal: {
+                    type: 'boolean',
+                    description: '是否保留原图层并在副本上写回，默认 true'
+                },
+                resultLayerName: {
+                    type: 'string',
+                    description: '输出图层名称（可选）'
                 }
             },
             required: ['layerId', 'sparseDisplacement']

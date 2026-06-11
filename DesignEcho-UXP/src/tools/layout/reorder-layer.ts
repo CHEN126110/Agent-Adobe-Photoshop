@@ -5,9 +5,111 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
 
 const app = require('photoshop').app;
-const { core, action } = require('photoshop');
+const { core, action, constants } = require('photoshop');
+
+function findLayerById(container: any, id: number): any {
+    for (const layer of container.layers || []) {
+        if (layer.id === id) return layer;
+        if (layer.layers) {
+            const found = findLayerById(layer, id);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+function findLayerLocation(container: any, id: number): { layer: any; parent: any; index: number } | null {
+    const layers = container.layers || [];
+    for (let i = 0; i < layers.length; i++) {
+        const layer = layers[i];
+        if (layer.id === id) {
+            return { layer, parent: container, index: i };
+        }
+        if (layer.layers) {
+            const found = findLayerLocation(layer, id);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+async function selectLayerById(layerId: number): Promise<void> {
+    await action.batchPlay([
+        {
+            _obj: 'select',
+            _target: [{ _ref: 'layer', _id: layerId }],
+            makeVisible: false,
+            _options: { dialogOptions: 'dontDisplay' }
+        }
+    ], { synchronousExecution: true });
+}
+
+function getElementPlacement(name: string): any {
+    const placement = constants?.ElementPlacement?.[name];
+    if (!placement) {
+        throw new Error(`当前 Photoshop UXP 环境缺少 ElementPlacement.${name}`);
+    }
+    return placement;
+}
+
+function moveLayerToFront(layer: any): void {
+    if (typeof layer.bringToFront === 'function') {
+        layer.bringToFront();
+        return;
+    }
+    throw new Error('当前 Photoshop UXP 环境不支持 layer.bringToFront');
+}
+
+function moveLayerToBack(layer: any): void {
+    if (typeof layer.sendToBack === 'function') {
+        layer.sendToBack();
+        return;
+    }
+    throw new Error('当前 Photoshop UXP 环境不支持 layer.sendToBack');
+}
+
+function moveLayerRelative(layer: any, relativeLayer: any, placementName: 'PLACEBEFORE' | 'PLACEAFTER'): void {
+    if (typeof layer.move !== 'function') {
+        throw new Error('当前 Photoshop UXP 环境不支持 layer.move');
+    }
+    layer.move(relativeLayer, getElementPlacement(placementName));
+}
+
+function moveLayerToSiblingIndex(doc: any, targetLayer: any, desiredIndex: number): void {
+    const currentLocation = findLayerLocation(doc, targetLayer.id);
+    if (!currentLocation) {
+        throw new Error('无法读取图层当前位置');
+    }
+
+    const movableSiblings = (currentLocation.parent.layers || []).filter((layer: any) => !layer.isBackgroundLayer);
+    const currentIndex = movableSiblings.findIndex((layer: any) => layer.id === targetLayer.id);
+    if (currentIndex < 0) {
+        throw new Error('无法在同级图层中定位目标图层');
+    }
+
+    const clampedIndex = Math.max(0, Math.min(movableSiblings.length - 1, desiredIndex));
+    if (clampedIndex === currentIndex) return;
+
+    const withoutTarget = movableSiblings.filter((layer: any) => layer.id !== targetLayer.id);
+    if (clampedIndex === 0) {
+        moveLayerToFront(targetLayer);
+        return;
+    }
+    if (clampedIndex >= withoutTarget.length) {
+        moveLayerToBack(targetLayer);
+        return;
+    }
+
+    moveLayerRelative(targetLayer, withoutTarget[clampedIndex], 'PLACEBEFORE');
+}
+
+async function moveLayerWithinSiblings(doc: any, targetLayer: any, desiredIndex: number): Promise<void> {
+    moveLayerToSiblingIndex(doc, targetLayer, desiredIndex);
+    await selectLayerById(targetLayer.id);
+}
 
 export class ReorderLayerTool implements Tool {
     name = 'reorderLayer';
@@ -63,7 +165,7 @@ export class ReorderLayerTool implements Tool {
             let targetLayer: any;
 
             if (params.layerId) {
-                targetLayer = this.findLayerById(doc, params.layerId);
+                targetLayer = findLayerById(doc, params.layerId);
                 if (!targetLayer) {
                     return { success: false, error: `未找到 ID 为 ${params.layerId} 的图层` };
                 }
@@ -83,70 +185,34 @@ export class ReorderLayerTool implements Tool {
             let newPosition = '';
 
             await core.executeAsModal(async () => {
-                // 先选中要移动的图层
-                await action.batchPlay([
-                    {
-                        _obj: 'select',
-                        _target: [{ _ref: 'layer', _id: targetLayer.id }],
-                        makeVisible: false,
-                        _options: { dialogOptions: 'dontDisplay' }
-                    }
-                ], {});
-
                 switch (params.action) {
                     case 'up':
-                        // 上移图层
-                        for (let i = 0; i < steps; i++) {
-                            await action.batchPlay([
-                                {
-                                    _obj: 'move',
-                                    _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                                    to: { _ref: 'layer', _enum: 'ordinal', _value: 'previous' },
-                                    _options: { dialogOptions: 'dontDisplay' }
-                                }
-                            ], {});
+                        {
+                            const location = findLayerLocation(doc, targetLayer.id);
+                            if (!location) throw new Error('无法读取图层当前位置');
+                            await moveLayerWithinSiblings(doc, targetLayer, location.index - steps);
                         }
                         newPosition = `上移 ${steps} 层`;
                         break;
 
                     case 'down':
-                        // 下移图层
-                        for (let i = 0; i < steps; i++) {
-                            await action.batchPlay([
-                                {
-                                    _obj: 'move',
-                                    _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                                    to: { _ref: 'layer', _enum: 'ordinal', _value: 'next' },
-                                    _options: { dialogOptions: 'dontDisplay' }
-                                }
-                            ], {});
+                        {
+                            const location = findLayerLocation(doc, targetLayer.id);
+                            if (!location) throw new Error('无法读取图层当前位置');
+                            await moveLayerWithinSiblings(doc, targetLayer, location.index + steps);
                         }
                         newPosition = `下移 ${steps} 层`;
                         break;
 
                     case 'top':
-                        // 置顶
-                        await action.batchPlay([
-                            {
-                                _obj: 'move',
-                                _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                                to: { _ref: 'layer', _enum: 'ordinal', _value: 'front' },
-                                _options: { dialogOptions: 'dontDisplay' }
-                            }
-                        ], {});
+                        moveLayerToFront(targetLayer);
+                        await selectLayerById(targetLayer.id);
                         newPosition = '已置顶';
                         break;
 
                     case 'bottom':
-                        // 置底（但在背景图层之上）
-                        await action.batchPlay([
-                            {
-                                _obj: 'move',
-                                _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                                to: { _ref: 'layer', _enum: 'ordinal', _value: 'back' },
-                                _options: { dialogOptions: 'dontDisplay' }
-                            }
-                        ], {});
+                        moveLayerToBack(targetLayer);
+                        await selectLayerById(targetLayer.id);
                         newPosition = '已置底';
                         break;
 
@@ -155,23 +221,29 @@ export class ReorderLayerTool implements Tool {
                         if (!params.targetLayerId) {
                             throw new Error('需要指定目标图层 ID');
                         }
-                        const destLayer = this.findLayerById(doc, params.targetLayerId);
+                        const destLayer = findLayerById(doc, params.targetLayerId);
                         if (!destLayer) {
                             throw new Error(`未找到目标图层 ID: ${params.targetLayerId}`);
                         }
 
-                        await action.batchPlay([
-                            {
-                                _obj: 'move',
-                                _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                                to: { 
-                                    _ref: 'layer', 
-                                    _id: destLayer.id 
-                                },
-                                adjustment: params.action === 'above',  // true = 上方, false = 下方
-                                _options: { dialogOptions: 'dontDisplay' }
-                            }
-                        ], {});
+                        const destinationLocation = findLayerLocation(doc, destLayer.id);
+                        const currentLocation = findLayerLocation(doc, targetLayer.id);
+                        if (!currentLocation || !destinationLocation) {
+                            throw new Error('无法读取图层当前位置');
+                        }
+                        if (currentLocation.parent !== destinationLocation.parent) {
+                            throw new Error('暂不支持跨图层组移动到指定图层上方或下方');
+                        }
+
+                        const movableSiblings = (currentLocation.parent.layers || []).filter((layer: any) => !layer.isBackgroundLayer);
+                        const withoutTarget = movableSiblings.filter((layer: any) => layer.id !== targetLayer.id);
+                        const destinationIndex = withoutTarget.findIndex((layer: any) => layer.id === destLayer.id);
+                        if (destinationIndex < 0) {
+                            throw new Error('无法在同级图层中定位目标图层');
+                        }
+                        const insertIndex = params.action === 'above' ? destinationIndex : destinationIndex + 1;
+                        moveLayerToSiblingIndex(doc, targetLayer, insertIndex);
+                        await selectLayerById(targetLayer.id);
                         newPosition = params.action === 'above' 
                             ? `移到 "${destLayer.name}" 上方` 
                             : `移到 "${destLayer.name}" 下方`;
@@ -192,23 +264,10 @@ export class ReorderLayerTool implements Tool {
 
         } catch (error) {
             console.error('[ReorderLayer] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '调整图层顺序失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) return layer;
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
 }
 
 /**
@@ -264,7 +323,7 @@ export class GroupLayersTool implements Tool {
                             makeVisible: false,
                             _options: { dialogOptions: 'dontDisplay' }
                         }
-                    ], {});
+                    ], { synchronousExecution: true });
                 }, { commandName: 'DesignEcho: 选择图层' });
             }
 
@@ -287,7 +346,7 @@ export class GroupLayersTool implements Tool {
                         },
                         _options: { dialogOptions: 'dontDisplay' }
                     }
-                ], {});
+                ], { synchronousExecution: true });
             }, { commandName: 'DesignEcho: 图层编组' });
 
             // 获取新建的组信息
@@ -306,10 +365,7 @@ export class GroupLayersTool implements Tool {
 
         } catch (error) {
             console.error('[GroupLayers] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '编组失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -353,7 +409,7 @@ export class UngroupLayersTool implements Tool {
             let targetGroup: any;
 
             if (params.groupId) {
-                targetGroup = this.findLayerById(doc, params.groupId);
+                targetGroup = findLayerById(doc, params.groupId);
                 if (!targetGroup) {
                     return { success: false, error: `未找到 ID 为 ${params.groupId} 的图层组` };
                 }
@@ -384,7 +440,7 @@ export class UngroupLayersTool implements Tool {
                         _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
                         _options: { dialogOptions: 'dontDisplay' }
                     }
-                ], {});
+                ], { synchronousExecution: true });
             }, { commandName: 'DesignEcho: 取消编组' });
 
             // 获取释放出来的图层
@@ -402,21 +458,8 @@ export class UngroupLayersTool implements Tool {
 
         } catch (error) {
             console.error('[UngroupLayers] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '取消编组失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) return layer;
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
 }

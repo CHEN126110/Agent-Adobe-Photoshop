@@ -60,6 +60,10 @@ export interface MattingResult {
     maskImage?: string;
     /** 原始蒙版（兼容旧接口） */
     mask?: string;
+    /** RAW_MASK 解码后的二进制蒙版。 */
+    maskBuffer?: Buffer;
+    maskWidth?: number;
+    maskHeight?: number;
     /** 处理耗时 (ms) */
     processingTime?: number;
     /** 使用的模型 */
@@ -86,8 +90,57 @@ const IMAGENET_STD = [0.229, 0.224, 0.225];
 
 // YOLO-World 模型配置
 const YOLO_INPUT_SIZE = 640;  // YOLO-World 模型原生分辨率，不可更改
-const YOLO_CONF_THRESHOLD = 0.10;  // 置信度阈值（降低以增加检测率）
-const YOLO_IOU_THRESHOLD = 0.45;   // NMS IoU 阈值
+const YOLO_CONF_THRESHOLD = 0.10;  // detection confidence threshold
+const YOLO_IOU_THRESHOLD = 0.45;   // NMS IoU threshold
+
+const YOLO_CLASS_NAMES = [
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+    'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog',
+    'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella',
+    'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite',
+    'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle',
+    'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich',
+    'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+    'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote',
+    'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book',
+    'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+] as const;
+const YOLO_PROMPT_CLASS_ALIASES: Record<string, string[]> = {
+    person: ['person', 'people', 'human', 'model', '\u4eba', '\u4eba\u50cf', '\u6a21\u7279'],
+    bicycle: ['bicycle', 'bike', '\u81ea\u884c\u8f66', '\u5355\u8f66'],
+    car: ['car', 'auto', '\u6c7d\u8f66'],
+    motorcycle: ['motorcycle', 'motorbike', '\u6469\u6258\u8f66'],
+    bus: ['bus', '\u516c\u4ea4\u8f66', '\u5df4\u58eb'],
+    train: ['train', '\u706b\u8f66'],
+    truck: ['truck', '\u5361\u8f66'],
+    boat: ['boat', 'ship', '\u8239'],
+    bird: ['bird', '\u9e1f'],
+    cat: ['cat', '\u732b'],
+    dog: ['dog', '\u72d7'],
+    horse: ['horse', '\u9a6c'],
+    backpack: ['backpack', '\u80cc\u5305', '\u53cc\u80a9\u5305'],
+    umbrella: ['umbrella', '\u96e8\u4f1e'],
+    handbag: ['handbag', 'bag', 'purse', '\u624b\u63d0\u5305', '\u5305'],
+    tie: ['tie', '\u9886\u5e26'],
+    suitcase: ['suitcase', 'luggage', '\u884c\u674e\u7bb1', '\u7bb1\u5b50'],
+    bottle: ['bottle', '\u74f6\u5b50'],
+    cup: ['cup', 'mug', '\u676f\u5b50'],
+    bowl: ['bowl', '\u7897'],
+    chair: ['chair', '\u6905\u5b50'],
+    couch: ['couch', 'sofa', '\u6c99\u53d1'],
+    'potted plant': ['plant', 'potted plant', '\u690d\u7269', '\u76c6\u683d'],
+    bed: ['bed', '\u5e8a'],
+    tv: ['tv', 'monitor', '\u7535\u89c6', '\u663e\u793a\u5668'],
+    laptop: ['laptop', 'notebook', '\u7b14\u8bb0\u672c', '\u7535\u8111'],
+    mouse: ['mouse', '\u9f20\u6807'],
+    keyboard: ['keyboard', '\u952e\u76d8'],
+    'cell phone': ['phone', 'cell phone', 'mobile phone', '\u624b\u673a'],
+    book: ['book', '\u4e66'],
+    vase: ['vase', '\u82b1\u74f6'],
+    scissors: ['scissors', '\u526a\u5200'],
+    toothbrush: ['toothbrush', '\u7259\u5237'],
+    'hair drier': ['hair drier', 'hair dryer', '\u5439\u98ce\u673a']
+};
 
 // ==================== 检测结果类型 ====================
 
@@ -142,6 +195,17 @@ export class MattingService {
         console.log(`[MattingService] 模型目录: ${this.modelsDir}`);
         console.log(`[MattingService] GPU 模式: ${this.config.gpuMode}`);
         console.log('[MattingService] 初始化完成，使用 YOLO-World + BiRefNet ONNX 模型');
+    }
+
+    private isVerboseLoggingEnabled(): boolean {
+        return process.env.DESIGNECHO_MATTING_DEBUG === '1';
+    }
+
+    private debugLog(message: string, ...args: any[]): void {
+        if (!this.isVerboseLoggingEnabled()) {
+            return;
+        }
+        console.log(message, ...args);
     }
 
     // ==================== 初始化 ====================
@@ -405,15 +469,101 @@ export class MattingService {
     /**
      * 归一化边缘细化模式
      */
-    private normalizeEdgeRefineMode(mode?: string): 'none' | 'light' | 'standard' | 'hair' {
+    private normalizeEdgeRefineMode(mode?: string): 'none' | 'light' | 'standard' | 'hair' | 'product-hard' {
         const m = (mode || '').toLowerCase();
         if (m === 'none' || m === 'off' || m === 'refine-none') return 'none';
         if (m === 'light' || m === 'refine-light') return 'light';
         if (m === 'hair' || m === 'refine-hair') return 'hair';
+        if (
+            m === 'product-hard' ||
+            m === 'product' ||
+            m === 'hard' ||
+            m === 'refine-product' ||
+            m === 'refine-product-hard' ||
+            m === 'goods'
+        ) {
+            return 'product-hard';
+        }
         if (m === 'standard' || m === 'smart' || m === 'refine-standard' || m === 'refine-smart' || m === 'vitmatte' || m === 'refine-inspyrenet') {
             return 'standard';
         }
         return 'standard';
+    }
+
+    private projectBoxToMaskSpace(
+        box: { x1: number; y1: number; x2: number; y2: number },
+        sourceWidth: number,
+        sourceHeight: number,
+        targetWidth: number,
+        targetHeight: number
+    ): { x1: number; y1: number; x2: number; y2: number } | null {
+        if (
+            !Number.isFinite(sourceWidth) ||
+            !Number.isFinite(sourceHeight) ||
+            !Number.isFinite(targetWidth) ||
+            !Number.isFinite(targetHeight) ||
+            sourceWidth <= 0 ||
+            sourceHeight <= 0 ||
+            targetWidth <= 0 ||
+            targetHeight <= 0
+        ) {
+            return null;
+        }
+
+        const scaleX = targetWidth / sourceWidth;
+        const scaleY = targetHeight / sourceHeight;
+
+        const projectedX1 = box.x1 * scaleX;
+        const projectedY1 = box.y1 * scaleY;
+        const projectedX2 = box.x2 * scaleX;
+        const projectedY2 = box.y2 * scaleY;
+
+        return {
+            x1: Math.min(projectedX1, projectedX2),
+            y1: Math.min(projectedY1, projectedY2),
+            x2: Math.max(projectedX1, projectedX2),
+            y2: Math.max(projectedY1, projectedY2)
+        };
+    }
+
+    private constrainMaskToBoxes(
+        maskBuffer: Buffer,
+        width: number,
+        height: number,
+        boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>,
+        paddingRatio: number,
+        minPadding: number,
+        maxPadding: number
+    ): Buffer {
+        const constrainedMask = Buffer.alloc(width * height, 0);
+
+        for (const box of boxes) {
+            const boxWidth = Math.max(0, box.x2 - box.x1);
+            const boxHeight = Math.max(0, box.y2 - box.y1);
+            if (boxWidth <= 0 || boxHeight <= 0) {
+                continue;
+            }
+
+            const padding = Math.max(
+                minPadding,
+                Math.min(maxPadding, Math.round(Math.min(boxWidth, boxHeight) * paddingRatio))
+            );
+
+            const x1 = Math.max(0, Math.round(box.x1 - padding));
+            const y1 = Math.max(0, Math.round(box.y1 - padding));
+            const x2 = Math.min(width, Math.round(box.x2 + padding));
+            const y2 = Math.min(height, Math.round(box.y2 + padding));
+
+            for (let y = y1; y < y2; y++) {
+                const rowOffset = y * width;
+                for (let x = x1; x < x2; x++) {
+                    const idx = rowOffset + x;
+                    constrainedMask[idx] = Math.max(constrainedMask[idx], maskBuffer[idx]);
+                }
+            }
+        }
+
+        return constrainedMask;
     }
 
     /**
@@ -443,7 +593,9 @@ export class MattingService {
             ? { lowClip: 4, highClip: 252, hardGrad: 70, softGrad: 30, hardBoost: 6, hardContract: 3, softBlend: 6 }
             : refineMode === 'light'
                 ? { lowClip: 8, highClip: 248, hardGrad: 60, softGrad: 24, hardBoost: 8, hardContract: 6, softBlend: 5 }
-                : { lowClip: 12, highClip: 244, hardGrad: 50, softGrad: 20, hardBoost: 10, hardContract: 8, softBlend: 4 };
+                : refineMode === 'product-hard'
+                    ? { lowClip: 18, highClip: 238, hardGrad: 42, softGrad: 12, hardBoost: 14, hardContract: 16, softBlend: 2 }
+                    : { lowClip: 12, highClip: 244, hardGrad: 50, softGrad: 20, hardBoost: 10, hardContract: 8, softBlend: 4 };
 
         // 第一遍：轻量 clip，去掉极弱背景并固定强前景
         for (let i = 0; i < source.length; i++) {
@@ -579,7 +731,9 @@ export class MattingService {
             ? { lowClip: 5, highClip: 250, bgSupportMax: 45, fgSupportMin: 210, push: 8, voteBoost: 4 }
             : refineMode === 'light'
                 ? { lowClip: 8, highClip: 248, bgSupportMax: 52, fgSupportMin: 204, push: 12, voteBoost: 6 }
-                : { lowClip: 10, highClip: 246, bgSupportMax: 58, fgSupportMin: 198, push: 15, voteBoost: 8 };
+                : refineMode === 'product-hard'
+                    ? { lowClip: 16, highClip: 240, bgSupportMax: 70, fgSupportMin: 186, push: 22, voteBoost: 12 }
+                    : { lowClip: 10, highClip: 246, bgSupportMax: 58, fgSupportMin: 198, push: 15, voteBoost: 8 };
 
         for (let i = 0; i < source.length; i++) {
             const a = source[i];
@@ -775,7 +929,7 @@ export class MattingService {
             const imgWidth = metadata.width!;
             const imgHeight = metadata.height!;
             
-            console.log(`[MattingService] 输入图像: ${imgWidth}x${imgHeight}, 目标输出: ${targetWidth || imgWidth}x${targetHeight || imgHeight}`);
+            this.debugLog(`[MattingService] 输入图像: ${imgWidth}x${imgHeight}, 目标输出: ${targetWidth || imgWidth}x${targetHeight || imgHeight}`);
             
             // 2. 预处理：保持纵横比 resize（contain）+ 归一化
             // 计算 contain 布局参数，用于推理后裁掉 padding 区域
@@ -785,7 +939,7 @@ export class MattingService {
             const padLeft = Math.floor((inputSize - scaledW) / 2);
             const padTop = Math.floor((inputSize - scaledH) / 2);
             
-            console.log(`[MattingService] contain 布局: scale=${scale.toFixed(3)}, scaled=${scaledW}x${scaledH}, pad=(${padLeft},${padTop})`);
+            this.debugLog(`[MattingService] contain 布局: scale=${scale.toFixed(3)}, scaled=${scaledW}x${scaledH}, pad=(${padLeft},${padTop})`);
             
             const resizedBuffer = await this.sharp(imageBuffer)
                 .resize(inputSize, inputSize, {
@@ -817,29 +971,29 @@ export class MattingService {
             feeds[inputName] = new this.ort.Tensor('float32', inputTensor, [1, 3, inputSize, inputSize]);
             
             // 5. 执行推理
-            console.log('[MattingService] 执行 BiRefNet 推理...');
+            this.debugLog('[MattingService] 执行 BiRefNet 推理...');
             const startTime = Date.now();
             const results = await this.birefnetSession.run(feeds);
-            console.log(`[MattingService] 推理完成 (${Date.now() - startTime}ms)`);
+            this.debugLog(`[MattingService] 推理完成 (${Date.now() - startTime}ms)`);
             
             // 6. 获取输出（蒙版）
             const outputNames = this.birefnetSession.outputNames;
-            console.log('[MattingService] BiRefNet 输出名称:', outputNames);
+            this.debugLog('[MattingService] BiRefNet 输出名称:', outputNames);
             
             const outputName = outputNames[0];
             const output = results[outputName];
             const outputData = output.data as Float32Array;
             const outputShape = output.dims;
             
-            console.log('[MattingService] BiRefNet 输出形状:', outputShape);
-            console.log('[MattingService] BiRefNet 输出数据长度:', outputData.length);
-            console.log('[MattingService] 预期像素数:', inputSize * inputSize);
+            this.debugLog('[MattingService] BiRefNet 输出形状:', outputShape);
+            this.debugLog('[MattingService] BiRefNet 输出数据长度:', outputData.length);
+            this.debugLog('[MattingService] 预期像素数:', inputSize * inputSize);
             
             // 7. 后处理：Sigmoid + 缩放到 0-255
             // 处理可能的多通道输出（取第一个通道或平均）
             const numPixels = inputSize * inputSize;
             const numChannels = outputData.length / numPixels;
-            console.log('[MattingService] 检测到通道数:', numChannels);
+            this.debugLog('[MattingService] 检测到通道数:', numChannels);
             
             // 诊断：输出原始 logit 值范围（均匀采样）
             {
@@ -850,18 +1004,18 @@ export class MattingService {
                     if (v < dMin) dMin = v;
                     if (v > dMax) dMax = v;
                 }
-                console.log(`[MattingService] 原始 logit 范围: min=${dMin.toFixed(4)}, max=${dMax.toFixed(4)} (判断: ${dMax > 0 ? '有正值→有前景' : '全负值→可能全黑'})`);
+                this.debugLog(`[MattingService] 原始 logit 范围: min=${dMin.toFixed(4)}, max=${dMax.toFixed(4)} (判断: ${dMax > 0 ? '有正值→有前景' : '全负值→可能全黑'})`);
             }
             
             const channelOffset = numChannels === 1 ? 0 : (numChannels - 1) * numPixels;
             if (channelOffset > 0) {
-                console.log('[MattingService] 使用最后一个通道，偏移量:', channelOffset);
+                this.debugLog('[MattingService] 使用最后一个通道，偏移量:', channelOffset);
             }
             const maskData = this.logitsToMask(outputData, channelOffset, numPixels);
             
             // 8. 边缘优化：自适应细化（硬边去残留，软边保细节）
             const refineStats = this.refineMaskEdgesAdaptive(maskData, inputSize, inputSize, edgeRefineMode);
-            console.log(`[MattingService] 自适应边缘细化: mode=${refineStats.mode}, touched=${refineStats.touched}`);
+            this.debugLog(`[MattingService] 自适应边缘细化: mode=${refineStats.mode}, touched=${refineStats.touched}`);
             
             // 9. 从 padded 蒙版中提取实际图像区域，然后 resize 到目标尺寸
             // 目标尺寸优先使用 PS 原始图层尺寸（由调用方传入），回退到 imageBuffer 尺寸
@@ -881,7 +1035,7 @@ export class MattingService {
 
             const finalMaskData = new Uint8Array(resizedMaskBuffer);
             const cleanupStats = this.cleanupResizedMaskEdges(finalMaskData, finalWidth, finalHeight, edgeRefineMode);
-            console.log(`[MattingService] 边缘去灰化: mode=${cleanupStats.mode}, touched=${cleanupStats.touched}`);
+            this.debugLog(`[MattingService] 边缘去灰化: mode=${cleanupStats.mode}, touched=${cleanupStats.touched}`);
             const resizedMask = Buffer.from(
                 finalMaskData.buffer,
                 finalMaskData.byteOffset,
@@ -890,8 +1044,8 @@ export class MattingService {
             
             // 调试日志
             const expectedSize = finalWidth * finalHeight;
-            console.log(`[MattingService] 蒙版尺寸调整: ${inputSize}x${inputSize} → extract(${scaledW}x${scaledH}) → ${finalWidth}x${finalHeight} (${Date.now() - resizeStart}ms)`);
-            console.log(`[MattingService] 蒙版 Buffer 大小: ${resizedMask.length}, 预期单通道: ${expectedSize}, 通道数: ${(resizedMask.length / expectedSize).toFixed(2)}`);
+            this.debugLog(`[MattingService] 蒙版尺寸调整: ${inputSize}x${inputSize} → extract(${scaledW}x${scaledH}) → ${finalWidth}x${finalHeight} (${Date.now() - resizeStart}ms)`);
+            this.debugLog(`[MattingService] 蒙版 Buffer 大小: ${resizedMask.length}, 预期单通道: ${expectedSize}, 通道数: ${(resizedMask.length / expectedSize).toFixed(2)}`);
             
             // 蒙版质量采样验证（均匀采样，避免只采样前 N 行导致漏检下部主体）
             const totalPixels = resizedMask.length;
@@ -909,8 +1063,8 @@ export class MattingService {
                 else sMid++;
                 actualSamples++;
             }
-            console.log(`[MattingService] 蒙版均匀采样(${actualSamples}/${totalPixels}, stride=${stride}): min=${sMin}, max=${sMax}, avg=${(sSum / actualSamples).toFixed(1)}`);
-            console.log(`[MattingService] 蒙版分布: 黑(${sBlack}), 白(${sWhite}), 中(${sMid})`);
+            this.debugLog(`[MattingService] 蒙版均匀采样(${actualSamples}/${totalPixels}, stride=${stride}): min=${sMin}, max=${sMax}, avg=${(sSum / actualSamples).toFixed(1)}`);
+            this.debugLog(`[MattingService] 蒙版分布: 黑(${sBlack}), 白(${sWhite}), 中(${sMid})`);
             
             return {
                 maskBuffer: resizedMask,
@@ -933,6 +1087,44 @@ export class MattingService {
      * @param textPrompt - 文本描述（如"袜子"、"鞋子"）
      * @returns 检测到的边界框数组
      */
+    private resolveYoloTargetClassIndices(textPrompt: string): number[] | null {
+        const normalized = textPrompt.trim().toLowerCase();
+        if (!normalized) return null;
+
+        const terms = new Set<string>();
+        terms.add(normalized);
+        terms.add(normalized.replace(/[\s_-]+/g, ' '));
+        terms.add(normalized.replace(/[\s_-]+/g, ''));
+
+        for (const token of normalized.split(/[\s,，、/|]+/)) {
+            const trimmed = token.trim();
+            if (trimmed) {
+                terms.add(trimmed);
+            }
+        }
+
+        const matched = new Set<number>();
+        for (let i = 0; i < YOLO_CLASS_NAMES.length; i++) {
+            const className = YOLO_CLASS_NAMES[i];
+            if (terms.has(className) || normalized.includes(className)) {
+                matched.add(i);
+                continue;
+            }
+
+            const aliases = YOLO_PROMPT_CLASS_ALIASES[className];
+            if (!aliases) continue;
+
+            for (const alias of aliases) {
+                if (terms.has(alias) || normalized.includes(alias)) {
+                    matched.add(i);
+                    break;
+                }
+            }
+        }
+
+        return matched.size > 0 ? Array.from(matched).sort((a, b) => a - b) : null;
+    }
+
     private async runYoloWorldInference(
         imageBuffer: Buffer,
         textPrompt: string
@@ -948,7 +1140,7 @@ export class MattingService {
             const originalWidth = metadata.width!;
             const originalHeight = metadata.height!;
             
-            console.log(`[MattingService] YOLO-World 输入: ${originalWidth}x${originalHeight}, 目标: "${textPrompt}"`);
+            this.debugLog(`[MattingService] YOLO-World 输入: ${originalWidth}x${originalHeight}, 目标: "${textPrompt}"`);
             
             // 2. 预处理：调整尺寸到 640x640
             const resizedBuffer = await this.sharp(imageBuffer)
@@ -971,26 +1163,26 @@ export class MattingService {
             
             // 4. 准备输入（注意：YOLO-World 可能需要额外的文本嵌入输入）
             const inputNames = this.yoloWorldSession.inputNames;
-            console.log('[MattingService] YOLO-World 输入名称:', inputNames);
+            this.debugLog('[MattingService] YOLO-World 输入名称:', inputNames);
             
             const feeds: Record<string, any> = {};
             feeds[inputNames[0]] = new this.ort.Tensor('float32', inputTensor, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
             
             // 5. 执行推理
-            console.log('[MattingService] 执行 YOLO-World 推理...');
+            this.debugLog('[MattingService] 执行 YOLO-World 推理...');
             const startTime = Date.now();
             const results = await this.yoloWorldSession.run(feeds);
-            console.log(`[MattingService] YOLO-World 推理完成 (${Date.now() - startTime}ms)`);
+            this.debugLog(`[MattingService] YOLO-World 推理完成 (${Date.now() - startTime}ms)`);
             
             // 6. 解析输出
             const outputNames = this.yoloWorldSession.outputNames;
-            console.log('[MattingService] YOLO-World 输出名称:', outputNames);
+            this.debugLog('[MattingService] YOLO-World 输出名称:', outputNames);
             
             const output = results[outputNames[0]];
             const outputData = output.data as Float32Array;
             const outputShape = output.dims;
             
-            console.log('[MattingService] YOLO-World 输出形状:', outputShape);
+            this.debugLog('[MattingService] YOLO-World 输出形状:', outputShape);
             
             // 7. 后处理：解析检测框
             // YOLO 输出格式通常是 [1, num_boxes, 4+num_classes] 或 [1, 4+num_classes, num_boxes]
@@ -999,7 +1191,13 @@ export class MattingService {
             // 计算缩放因子
             const scaleX = originalWidth / YOLO_INPUT_SIZE;
             const scaleY = originalHeight / YOLO_INPUT_SIZE;
-            
+            const targetClassIndices = this.resolveYoloTargetClassIndices(textPrompt);
+            if (!targetClassIndices || targetClassIndices.length === 0) {
+                console.warn(`[MattingService] YOLO semantic prompt is not supported by current fixed-vocabulary model: "${textPrompt}"`);
+                return null;
+            }
+            const targetClassNames = targetClassIndices.map(index => YOLO_CLASS_NAMES[index]);
+            this.debugLog(`[MattingService] YOLO target classes: ${targetClassNames.join(", ")}`);
             // 简化处理：取置信度最高的检测框
             // 实际 YOLO-World 输出格式可能需要根据具体模型调整
             let globalMaxConf = 0;
@@ -1009,7 +1207,7 @@ export class MattingService {
                 const numBoxes = outputShape[2];
                 const numFeatures = outputShape[1];
                 
-                console.log(`[MattingService] YOLO-World 解析输出: numBoxes=${numBoxes}, numFeatures=${numFeatures}`);
+            this.debugLog(`[MattingService] YOLO-World 解析输出: numBoxes=${numBoxes}, numFeatures=${numFeatures}`);
                 
                 for (let i = 0; i < numBoxes; i++) {
                     // 假设格式为 [1, 4+num_classes, num_boxes]
@@ -1036,7 +1234,7 @@ export class MattingService {
                         const x2 = Math.min(originalWidth, (cx + w / 2) * scaleX);
                         const y2 = Math.min(originalHeight, (cy + h / 2) * scaleY);
                         
-                        console.log(`[MattingService] YOLO-World 发现目标: conf=${maxConf.toFixed(3)}, box=(${x1.toFixed(0)},${y1.toFixed(0)})-(${x2.toFixed(0)},${y2.toFixed(0)})`);
+                    this.debugLog(`[MattingService] YOLO-World 发现目标: conf=${maxConf.toFixed(3)}, box=(${x1.toFixed(0)},${y1.toFixed(0)})-(${x2.toFixed(0)},${y2.toFixed(0)})`);
                         
                         detections.push({
                             x1: Math.round(x1),
@@ -1050,15 +1248,15 @@ export class MattingService {
                 }
             }
             
-            console.log(`[MattingService] YOLO-World 检测统计: 检查了 ${totalBoxesChecked} 个框, 最高置信度=${globalMaxConf.toFixed(3)}, 阈值=${YOLO_CONF_THRESHOLD}`);
+            this.debugLog(`[MattingService] YOLO-World 检测统计: 检查了 ${totalBoxesChecked} 个框, 最高置信度=${globalMaxConf.toFixed(3)}, 阈值=${YOLO_CONF_THRESHOLD}`);
             if (detections.length === 0 && globalMaxConf > 0) {
-                console.log(`[MattingService] ⚠️ 最高置信度 ${globalMaxConf.toFixed(3)} < 阈值 ${YOLO_CONF_THRESHOLD}，建议降低阈值`);
+                this.debugLog(`[MattingService] ⚠️ 最高置信度 ${globalMaxConf.toFixed(3)} < 阈值 ${YOLO_CONF_THRESHOLD}，建议降低阈值`);
             }
             
             // 8. NMS（非极大值抑制）
             const finalDetections = this.applyNMS(detections, YOLO_IOU_THRESHOLD);
             
-            console.log(`[MattingService] YOLO-World 检测到 ${finalDetections.length} 个目标`);
+            this.debugLog(`[MattingService] YOLO-World 检测到 ${finalDetections.length} 个目标`);
             return finalDetections;
             
         } catch (e: any) {
@@ -1168,11 +1366,15 @@ export class MattingService {
         options?: {
             quality?: QualityLevel | number;
             returnMask?: boolean;
+            binaryMaskOutput?: boolean;
             targetPrompt?: string;
             originalWidth?: number;
             originalHeight?: number;
             edgeRefine?: string;
             model?: string;
+            selectionBox?: { x1: number; y1: number; x2: number; y2: number };
+            selectionBoxSpaceWidth?: number;
+            selectionBoxSpaceHeight?: number;
             onProgress?: (progress: number, stage: string, message: string, extra?: { edgeType?: string; usedModels?: string[] }) => void;
         }
     ): Promise<MattingResult> {
@@ -1230,7 +1432,7 @@ export class MattingService {
                 } else {
                     imageBuffer = binaryData.buffer;
                 }
-                console.log(`[MattingService] 二进制输入: ${binaryData.format} ${binaryData.width}x${binaryData.height}`);
+                this.debugLog(`[MattingService] 二进制输入: ${binaryData.format} ${binaryData.width}x${binaryData.height}`);
             } else {
                 // Base64 字符串
                 let base64Data = imageInput;
@@ -1279,10 +1481,10 @@ export class MattingService {
             if (detections && detections.length > 0) {
                 detectedBoxes = detections;
                 usedModels.push('yolo-world');
-                console.log(`[MattingService] 检测到 ${detections.length} 个目标`);
+                this.debugLog(`[MattingService] 检测到 ${detections.length} 个目标`);
                 sendProgress(40, 'detection', `检测到 ${detections.length} 个目标`);
             } else {
-                console.log('[MattingService] 未检测到目标，使用全图分割');
+                this.debugLog('[MattingService] 未检测到目标，使用全图分割');
             }
         }
 
@@ -1313,36 +1515,50 @@ export class MattingService {
         let finalMaskBuffer = inferenceResult.maskBuffer;
         
         if (detectedBoxes.length > 0) {
-            // 创建一个新的蒙版，只保留检测区域内的分割结果
-            const width = inferenceResult.width;
-            const height = inferenceResult.height;
-            const combinedMask = Buffer.alloc(width * height, 0);
-            
-            for (const box of detectedBoxes) {
-                // 扩展边界框以包含边缘
-                const padding = Math.max(10, Math.min(box.x2 - box.x1, box.y2 - box.y1) * 0.05);
-                const x1 = Math.max(0, Math.round(box.x1 - padding));
-                const y1 = Math.max(0, Math.round(box.y1 - padding));
-                const x2 = Math.min(width, Math.round(box.x2 + padding));
-                const y2 = Math.min(height, Math.round(box.y2 + padding));
-                
-                // 复制检测区域内的蒙版值
-                for (let y = y1; y < y2; y++) {
-                    for (let x = x1; x < x2; x++) {
-                        const idx = y * width + x;
-                        combinedMask[idx] = Math.max(combinedMask[idx], finalMaskBuffer[idx]);
-                    }
-                }
+            finalMaskBuffer = this.constrainMaskToBoxes(
+                finalMaskBuffer,
+                inferenceResult.width,
+                inferenceResult.height,
+                detectedBoxes,
+                0.05,
+                10,
+                32
+            );
+            this.debugLog(`[MattingService] 蒙版已限制在 ${detectedBoxes.length} 个检测区域内`);
+        }
+
+        if (options?.selectionBox) {
+            const projectedSelectionBox = this.projectBoxToMaskSpace(
+                options.selectionBox,
+                options.selectionBoxSpaceWidth || inferenceResult.width,
+                options.selectionBoxSpaceHeight || inferenceResult.height,
+                inferenceResult.width,
+                inferenceResult.height
+            );
+
+            if (projectedSelectionBox) {
+                finalMaskBuffer = this.constrainMaskToBoxes(
+                    finalMaskBuffer,
+                    inferenceResult.width,
+                    inferenceResult.height,
+                    [projectedSelectionBox],
+                    0.02,
+                    4,
+                    12
+                );
+                this.debugLog('[MattingService] 蒙版已限制在用户选区范围内');
             }
-            
-            finalMaskBuffer = combinedMask;
-            console.log(`[MattingService] 蒙版已限制在 ${detectedBoxes.length} 个检测区域内`);
         }
 
         sendProgress(90, 'postprocess', '生成分割结果...');
 
-        // 6. 构建 RAW_MASK 格式
-        const maskBase64 = `RAW_MASK:${inferenceResult.width}:${inferenceResult.height}:${finalMaskBuffer.toString('base64')}`;
+        // 6. 构建蒙版返回结构
+        const maskWidth = inferenceResult.width;
+        const maskHeight = inferenceResult.height;
+        const shouldReturnBinaryMask = options?.returnMask === true && options?.binaryMaskOutput === true;
+        const maskBase64 = shouldReturnBinaryMask
+            ? undefined
+            : `RAW_MASK:${maskWidth}:${maskHeight}:${finalMaskBuffer.toString('base64')}`;
 
         // 7. 生成抠图后的图像（可选）
             let mattedImage: string | undefined;
@@ -1384,7 +1600,10 @@ export class MattingService {
             return {
                 success: true,
                 maskImage: maskBase64,
-            mask: maskBase64,  // 兼容旧接口
+                mask: maskBase64,  // 兼容旧接口
+                maskBuffer: shouldReturnBinaryMask ? Buffer.from(finalMaskBuffer) : undefined,
+                maskWidth,
+                maskHeight,
                 mattedImage,
                 processingTime: Date.now() - startTime,
             usedModel: usedModels.join('+'),

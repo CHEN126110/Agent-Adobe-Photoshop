@@ -173,27 +173,9 @@ export class AlignToReferenceTool implements Tool {
                 console.log(`[AlignToReference]   是否移动: ${needMove}`);
 
                 if (needMove) {
-                    // ★★★ 使用 batchPlay 实现移动（更可靠）★★★
                     try {
-                        // 获取当前图层边界用于计算
-                        const currentBounds = layer.boundsNoEffects || layer.bounds;
-                        const currentLeft = currentBounds.left;
-                        const currentTop = currentBounds.top;
-                        const currentRight = currentBounds.right;
-                        const currentBottom = currentBounds.bottom;
-                        
-                        // batchPlay 的 move 命令需要提供目标位置（绝对坐标）
-                        await action.batchPlay([{
-                            _obj: 'move',
-                            _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                            to: {
-                                _obj: 'offset',
-                                horizontal: { _unit: 'pixelsUnit', _value: offsetX },
-                                vertical: { _unit: 'pixelsUnit', _value: offsetY }
-                            },
-                            _options: { dialogOptions: 'dontDisplay' }
-                        }], { synchronousExecution: true });
-                        console.log(`[AlignToReference] ✓ 移动完成: (${offsetX.toFixed(1)}, ${offsetY.toFixed(1)}) (使用 batchPlay)`);
+                        await this.translateLayer(layer, offsetX, offsetY);
+                        console.log(`[AlignToReference] ✓ 移动完成: (${offsetX.toFixed(1)}, ${offsetY.toFixed(1)}) (使用 DOM translate)`);
                     } catch (moveErr: any) {
                         console.error(`[AlignToReference] ✗ 移动失败:`, moveErr);
                         throw moveErr;
@@ -249,5 +231,12 @@ export class AlignToReferenceTool implements Tool {
             }
         }
         return null;
+    }
+
+    private async translateLayer(layer: any, offsetX: number, offsetY: number): Promise<void> {
+        if (typeof layer?.translate !== 'function') {
+            throw new Error('alignToReference failed: target layer does not support DOM translate; native move is blocked to avoid Photoshop popups.');
+        }
+        await Promise.resolve(layer.translate(offsetX, offsetY));
     }
 }

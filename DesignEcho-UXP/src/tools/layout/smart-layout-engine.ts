@@ -685,16 +685,12 @@ async function batchPlayTranslateLayer(layerId: number, offsetX: number, offsetY
         _options: { dialogOptions: 'dontDisplay' }
     }], { synchronousExecution: true });
 
-    await action.batchPlay([{
-        _obj: 'move',
-        _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-        to: {
-            _obj: 'offset',
-            horizontal: { _unit: 'pixelsUnit', _value: offsetX },
-            vertical: { _unit: 'pixelsUnit', _value: offsetY }
-        },
-        _options: { dialogOptions: 'dontDisplay' }
-    }], { synchronousExecution: true });
+    const doc = app.activeDocument;
+    const layer = doc ? findLayerById(doc.layers, layerId) : null;
+    if (!layer || typeof layer.translate !== 'function') {
+        throw new Error(`SmartLayout failed: layer ${layerId} does not support DOM translate; native move is blocked to avoid Photoshop popups.`);
+    }
+    await Promise.resolve(layer.translate(offsetX, offsetY));
 }
 
 // ==================== 工具接口 ====================

@@ -6,6 +6,14 @@
  */
 
 import { Tool, ToolResult, ToolSchema } from '../types';
+import { getEntryFromPath } from '../../core/file-url';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
+import {
+    arrayBufferFromBytes,
+    assertImageBytesSafeForPhotoshop,
+    bytesFromBase64ImagePayload,
+    readFileEntryBytes
+} from '../../core/image-safety';
 
 const { app, core, action } = require('photoshop');
 const uxp = require('uxp');
@@ -46,6 +54,16 @@ function getLayerBoundsNoEffects(layer: any): any {
     return layer?.boundsNoEffects || layer?.bounds;
 }
 
+async function translateLayerWithoutNativeMove(layer: any, offsetX: number, offsetY: number): Promise<void> {
+    if (offsetX === 0 && offsetY === 0) {
+        return;
+    }
+    if (typeof layer?.translate !== 'function') {
+        throw new Error('置入图片定位失败：图层对象不支持 translate，已拒绝调用 Photoshop 原生 move 命令以避免弹窗。');
+    }
+    await Promise.resolve(layer.translate(offsetX, offsetY));
+}
+
 function calcChecksum(bytes: Uint8Array): string {
     // FNV-1a 32-bit, same as Agent side.
     let hash = 0x811c9dc5;
@@ -55,6 +73,11 @@ function calcChecksum(bytes: Uint8Array): string {
     }
     const hex = (hash >>> 0).toString(16).padStart(8, '0');
     return `fnv1a32:${hex}`;
+}
+
+function extensionFromPath(filePath: string): string {
+    const match = String(filePath || '').match(/\.([a-z0-9]+)$/i);
+    return match ? match[1].toLowerCase() : '';
 }
 
 export class PlaceImageTool implements Tool {
@@ -115,11 +138,7 @@ export class PlaceImageTool implements Tool {
     async execute(params: PlaceImageParams): Promise<ToolResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return {
-                success: false,
-                error: '没有打开的文档',
-                data: null
-            };
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
 
         const { 
@@ -139,11 +158,7 @@ export class PlaceImageTool implements Tool {
         const imageData = rawImageData || (params as any).base64;
 
         if (!imageData && !filePath && !params.fileToken) {
-            return {
-                success: false,
-                error: '必须提供 imageData 或 filePath 或 fileToken',
-                data: null
-            };
+            return createToolFailureResult({ toolName: this.name, error: '必须提供 imageData 或 filePath 或 fileToken', params });
         }
 
         try {
@@ -155,25 +170,15 @@ export class PlaceImageTool implements Tool {
                 if (params.fileToken || filePath) {
                     tokenPath = params.fileToken;
                     if (!tokenPath && filePath) {
-                        const normalizeToFileUrl = (p: string) => {
-                            const normalized = p.replace(/\\/g, '/');
-                            if (/^file:\/\//i.test(normalized)) return normalized;
-                            if (/^[a-zA-Z]:\//.test(normalized)) return `file:///${normalized}`;
-                            if (normalized.startsWith('//')) return `file:${normalized}`;
-                            return `file://${normalized.startsWith('/') ? '' : '/'}${normalized}`;
-                        };
-                        const safeEncodeUrl = (url: string) => {
-                            try {
-                                return encodeURI(decodeURI(url));
-                            } catch {
-                                return encodeURI(url);
-                            }
-                        };
-                        const fileUrl = safeEncodeUrl(normalizeToFileUrl(filePath));
-                        const fileEntry = await fs.getEntryWithUrl(fileUrl);
+                        const fileEntry = await getEntryFromPath(fs, filePath);
                         if (!fileEntry) {
                             throw new Error(`无法访问文件: ${filePath}`);
                         }
+                        const bytes = await readFileEntryBytes(fileEntry, uxp.storage);
+                        assertImageBytesSafeForPhotoshop(bytes, {
+                            formatHint: extensionFromPath(filePath),
+                            sourceLabel: `图片文件「${filePath.split(/[\\/]/).pop() || filePath}」`
+                        });
                         tokenPath = await fs.createSessionToken(fileEntry);
                     }
 
@@ -204,7 +209,7 @@ export class PlaceImageTool implements Tool {
                                 dialogOptions: 'dontDisplay'
                             }
                         }
-                    ], {});
+                    ], { synchronousExecution: true });
 
                     if (result && result[0]) {
                         placedLayerId = doc.activeLayers[0]?.id;
@@ -216,11 +221,12 @@ export class PlaceImageTool implements Tool {
                     const ext = (params.imageFormat || 'png').replace(/^\./, '') || 'png';
                     const tempFileName = `place_${Date.now()}.${ext}`;
                     const tempFile = await tempFolder.createFile(tempFileName, { overwrite: true });
-                    const binaryString = atob(imageData.replace(/^data:image\/\w+;base64,/, ''));
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
+                    const decoded = bytesFromBase64ImagePayload(imageData);
+                    const bytes = decoded.bytes;
+                    assertImageBytesSafeForPhotoshop(bytes, {
+                        formatHint: ext || decoded.mimeType,
+                        sourceLabel: name ? `图片「${name}」` : 'Base64 图片'
+                    });
                     if (typeof sourceByteLength === 'number' && sourceByteLength > 0 && sourceByteLength !== bytes.length) {
                         throw new Error(`源图字节长度不一致: expected=${sourceByteLength}, actual=${bytes.length}`);
                     }
@@ -233,7 +239,7 @@ export class PlaceImageTool implements Tool {
                     if (sourceAssetId) {
                         console.log(`[placeImage] 置入来源 assetId=${sourceAssetId}, sourcePath=${sourcePath || filePath || 'n/a'}`);
                     }
-                    await tempFile.write(bytes.buffer, { format: storage.formats.binary });
+                    await tempFile.write(arrayBufferFromBytes(bytes), { format: storage.formats.binary });
                     const sessionToken = await fs.createSessionToken(tempFile);
                     const placeResult = await action.batchPlay([
                         {
@@ -243,7 +249,7 @@ export class PlaceImageTool implements Tool {
                             offset: { _obj: 'offset', horizontal: { _unit: 'pixelsUnit', _value: 0 }, vertical: { _unit: 'pixelsUnit', _value: 0 } },
                             _options: { dialogOptions: 'dontDisplay' }
                         }
-                    ], {});
+                    ], { synchronousExecution: true });
                     if (placeResult?.[0]) placedLayerId = doc.activeLayers[0]?.id;
                     try { await tempFile.delete(); } catch { /* ignore */ }
                 }
@@ -298,7 +304,7 @@ export class PlaceImageTool implements Tool {
                                     dialogOptions: 'dontDisplay'
                                 }
                             }
-                        ], {});
+                        ], { synchronousExecution: true });
                     }
                 }
 
@@ -312,34 +318,7 @@ export class PlaceImageTool implements Tool {
                     const moveX = (x ?? currentX) - currentX;
                     const moveY = (y ?? currentY) - currentY;
 
-                    if (moveX !== 0 || moveY !== 0) {
-                        await action.batchPlay([
-                            {
-                                _obj: 'move',
-                                null: {
-                                    _ref: [{
-                                        _ref: 'layer',
-                                        _enum: 'ordinal',
-                                        _value: 'targetEnum'
-                                    }]
-                                },
-                                to: {
-                                    _obj: 'offset',
-                                    horizontal: {
-                                        _unit: 'pixelsUnit',
-                                        _value: moveX
-                                    },
-                                    vertical: {
-                                        _unit: 'pixelsUnit',
-                                        _value: moveY
-                                    }
-                                },
-                                _options: {
-                                    dialogOptions: 'dontDisplay'
-                                }
-                            }
-                        ], {});
-                    }
+                    await translateLayerWithoutNativeMove(newLayer, moveX, moveY);
                 } else if (center) {
                     // 居中置入
                     const layerBounds = getLayerBoundsNoEffects(newLayer);
@@ -356,32 +335,7 @@ export class PlaceImageTool implements Tool {
                     const moveX = targetX - currentX;
                     const moveY = targetY - currentY;
 
-                    await action.batchPlay([
-                        {
-                            _obj: 'move',
-                            null: {
-                                _ref: [{
-                                    _ref: 'layer',
-                                    _enum: 'ordinal',
-                                    _value: 'targetEnum'
-                                }]
-                            },
-                            to: {
-                                _obj: 'offset',
-                                horizontal: {
-                                    _unit: 'pixelsUnit',
-                                    _value: moveX
-                                },
-                                vertical: {
-                                    _unit: 'pixelsUnit',
-                                    _value: moveY
-                                }
-                            },
-                            _options: {
-                                dialogOptions: 'dontDisplay'
-                            }
-                        }
-                    ], {});
+                    await translateLayerWithoutNativeMove(newLayer, moveX, moveY);
                 }
             }, { commandName: 'DesignEcho: 置入图片' });
 
@@ -412,10 +366,20 @@ export class PlaceImageTool implements Tool {
             };
 
         } catch (error: any) {
+            const failure = createToolFailureResult({ toolName: this.name, error, params });
             return {
-                success: false,
-                error: `置入图片失败: ${error.message || error}`,
-                data: null
+                ...failure,
+                data: {
+                    popupPrevented: true,
+                    reason: failure.errorDetails.category === 'image_decode_error'
+                        ? 'image-preflight-failed'
+                        : 'photoshop-command-failed',
+                    source: {
+                        hasFilePath: !!filePath,
+                        hasImageData: !!imageData,
+                        assetId: sourceAssetId
+                    }
+                },
             };
         }
     }

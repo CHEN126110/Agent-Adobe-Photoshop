@@ -20,14 +20,38 @@ const api = {
     setApiKeys: (keys: {
         anthropic?: string;
         google?: string;
+        xiaomi?: string;
         openai?: string;
+        gptsapi?: string;
         openrouter?: string;  // OpenRouter 中转平台
+        deepseek?: string;    // DeepSeek 官方 API Key
         ollamaUrl?: string;
         ollamaApiKey?: string;
         bfl?: string;         // Black Forest Labs (FLUX) API Key
-        volcengineAccessKeyId?: string;
-        volcengineSecretAccessKey?: string;
+        volcengineJimengAccessKeyId?: string;
+        volcengineJimengSecretAccessKey?: string;
+        volcengineSeedreamApiKey?: string;
+        volcengineTosRegion?: string;
+        volcengineTosEndpoint?: string;
+        volcengineTosBucket?: string;
+        volcengineTosPublicBaseUrl?: string;
+        volcengineTosKeyPrefix?: string;
     }) => ipcRenderer.invoke('config:setApiKeys', keys),
+
+    testVolcengineJimengCredentials: (accessKeyId: string, secretAccessKey: string) =>
+        ipcRenderer.invoke('volcengine:testJimengCredentials', accessKeyId, secretAccessKey),
+
+    testVolcengineSeedreamApiKey: (apiKey: string) =>
+        ipcRenderer.invoke('volcengine:testSeedreamApiKey', apiKey),
+
+    testDeepSeek: (apiKey: string) =>
+        ipcRenderer.invoke('model:testDeepSeek', apiKey),
+    probeDesignKnowledgeSearxng: (settings: unknown) =>
+        ipcRenderer.invoke('designKnowledge:probeSearxngHealth', settings),
+    probeDesignKnowledgeEagleReadonly: (settings?: unknown) =>
+        ipcRenderer.invoke('designKnowledge:probeEagleReadonly', settings),
+    searchEagleReadonlyKnowledge: (query: unknown, settings?: unknown) =>
+        ipcRenderer.invoke('designKnowledge:searchEagleReadonly', query, settings),
 
     // 模型偏好设置
     setModelPreferences: (prefs: ModelPreferences) => 
@@ -98,8 +122,12 @@ const api = {
         ipcRenderer.invoke('task:execute', taskType, input),
 
     // ===== 模型 =====
-    chat: (modelId: string, messages: any[], options?: any) => 
+    chat: (modelId: string, messages: any[], options?: any) =>
         ipcRenderer.invoke('model:chat', modelId, messages, options),
+
+    // 带工具调用的聊天（Agent Runtime 使用）
+    chatWithTools: (modelId: string, messages: any[], tools: any[], options?: any) =>
+        ipcRenderer.invoke('model:chatWithTools', modelId, messages, tools, options),
     
     // 流式聊天
     chatStream: (params: {
@@ -108,6 +136,15 @@ const api = {
         messages: Array<{ role: string; content: string }>;
         options?: { maxTokens?: number; temperature?: number };
     }) => ipcRenderer.invoke('stream:chat', params),
+
+    // 带工具调用的 Agent 流式聊天
+    chatWithToolsStream: (params: {
+        requestId: string;
+        modelId: string;
+        messages: any[];
+        tools: any[];
+        options?: { maxTokens?: number; temperature?: number; nativeTools?: any[] };
+    }) => ipcRenderer.invoke('stream:chatWithTools', params),
     
     // 取消流式请求
     abortStream: (requestId: string) => 
@@ -274,6 +311,14 @@ const api = {
     // 读取图片为 Base64
     readImageBase64: (imagePath: string) =>
         ipcRenderer.invoke('resource:readImageBase64', imagePath),
+
+    // 只读图片文件探针：不返回 base64 或原始图片内容
+    probeImageFile: (imagePath: string) =>
+        ipcRenderer.invoke('resource:probeImageFile', imagePath),
+
+    // 只读图片像素探针：比较参考图与结果图，不返回 base64 或原始图片内容
+    compareImageFiles: (referencePath: string, resultPath: string, options?: any) =>
+        ipcRenderer.invoke('resource:compareImageFiles', referencePath, resultPath, options),
     
     // 分析素材内容（使用视觉模型）
     analyzeAssetContent: (imagePath: string) =>
@@ -358,61 +403,28 @@ const api = {
     saveEcommerceConfig: (projectPath: string, config: any) =>
         ipcRenderer.invoke('ecommerce:saveConfig', projectPath, config),
 
-    // ===== 知识库查询 =====
-    knowledge: {
-        // 获取所有卖点
-        getAllSellingPoints: () => ipcRenderer.invoke('knowledge:getAllSellingPoints'),
-        // 获取所有痛点
-        getAllPainPoints: () => ipcRenderer.invoke('knowledge:getAllPainPoints'),
-        // 获取所有配色
-        getAllColorSchemes: () => ipcRenderer.invoke('knowledge:getAllColorSchemes'),
-        // 搜索卖点
-        searchSellingPoints: (params: { keyword?: string; category?: string; limit?: number }) =>
-            ipcRenderer.invoke('knowledge:searchSellingPoints', params),
-        // 获取痛点
-        getPainPoints: (params: { category?: string; type?: string }) =>
-            ipcRenderer.invoke('knowledge:getPainPoints', params),
-        // 推荐配色
-        recommendColorScheme: (params: { emotion?: string; category?: string; season?: string }) =>
-            ipcRenderer.invoke('knowledge:recommendColorScheme', params),
-    },
+    // 构建运行时上下文快照（只读，不写项目配置）
+    buildProjectContextSnapshot: (options: string | {
+        projectPath: string;
+        projectName?: string;
+        currentDocument?: any;
+        selectedAssetPaths?: string[];
+        userConstraints?: string[];
+        taskHistory?: string[];
+        unverifiedItems?: string[];
+        visualSamplingScenario?: 'main-image' | 'detail-page' | 'sku' | 'reference-replication' | 'general-design' | 'unknown';
+        maxVisualSamples?: number;
+        visualSamplingCache?: any[];
+        usePersistedVisualInsightCache?: boolean;
+    }) => ipcRenderer.invoke('ecommerce:buildContextSnapshot', options),
 
-    // ===== 模板系统 =====
-    template: {
-        // 获取模板目录
-        getDirectory: () => ipcRenderer.invoke('template:getDirectory'),
-        // 获取已安装的模板包
-        getInstalledPacks: () => ipcRenderer.invoke('template:getInstalledPacks'),
-        // 选择模板包文件夹
-        selectPackFolder: () => ipcRenderer.invoke('template:selectPackFolder'),
-        // 安装模板包
-        installPack: (sourcePath: string) => ipcRenderer.invoke('template:installPack', sourcePath),
-        // 卸载模板包
-        uninstallPack: (packId: string) => ipcRenderer.invoke('template:uninstallPack', packId),
-        // 创建示例模板包
-        createSamplePack: () => ipcRenderer.invoke('template:createSamplePack'),
-        // 获取模板列表
-        getList: (type?: string) => ipcRenderer.invoke('template:getList', type),
-        // 加载模板详情
-        load: (templateId: string) => ipcRenderer.invoke('template:load', templateId),
-        // 获取模板占位符
-        getPlaceholders: (templateId: string) => ipcRenderer.invoke('template:getPlaceholders', templateId),
-        // 解析图层名称
-        parseLayerName: (layerName: string) => ipcRenderer.invoke('template:parseLayerName', layerName),
-        // 批量解析图层名称
-        parseLayerNames: (layerNames: string[]) => ipcRenderer.invoke('template:parseLayerNames', layerNames),
-        // 验证占位符名称
-        isValidPlaceholder: (name: string) => ipcRenderer.invoke('template:isValidPlaceholder', name),
-        // 生成占位符图层名称
-        generateLayerName: (params: { type: string; name: string; options?: string[]; flags?: object }) => 
-            ipcRenderer.invoke('template:generateLayerName', params),
-        // 验证绑定数据
-        validateBindings: (templateId: string, bindings: object) => 
-            ipcRenderer.invoke('template:validateBindings', templateId, bindings),
-        // 生成渲染指令
-        generateRenderInstructions: (context: object) => 
-            ipcRenderer.invoke('template:generateRenderInstructions', context),
-    },
+    // 写入项目级视觉理解缓存（仅写结构化 insight，不写 raw image/base64）
+    writeProjectVisualInsightCache: (options: {
+        projectPath: string;
+        entries: any[];
+        replace?: boolean;
+        nowIso?: string;
+    }) => ipcRenderer.invoke('ecommerce:writeVisualInsightCache', options),
 
     // ===== 设计规范引擎 =====
     designSpec: {
@@ -513,12 +525,6 @@ const api = {
         checkAIModel: () => ipcRenderer.invoke('harmonization:checkAIModel'),
     },
 
-    // ===== 火山引擎 局部重绘 =====
-    volcengine: {
-        testCredentials: (accessKeyId: string, secretAccessKey: string) =>
-            ipcRenderer.invoke('volcengine:testCredentials', accessKeyId, secretAccessKey),
-    },
-
     // ===== BFL (Black Forest Labs) FLUX 图像生成 =====
     bfl: {
         // 测试 API Key
@@ -574,6 +580,7 @@ const api = {
             options?: any
         ) => ipcRenderer.invoke('bfl:batchGenerate', model, prompts, options),
     },
+
 
     // ===== 项目索引进度 =====
     onProjectIndexProgress: (callback: (data: { projectId: string; current: number; total: number; phase?: 'project' | 'file'; fileName?: string }) => void) => {

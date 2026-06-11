@@ -890,6 +890,7 @@
     font-size: 14px;
     line-height: 1.6;
     color: var(--de-text, #f8fafc);
+    white-space: pre-wrap;
 }
 
 .card-details {

@@ -442,7 +442,7 @@ export async function runIntegrationTests(): Promise<void> {
     console.log(`\n结果: ${passed}/${total} 测试通过`);
     
     if (allPassed) {
-        console.log('\n✅ 所有测试通过！形态统一功能就绪。');
+        console.log('\n✅ 所有测试通过：基础变形链路可用，当前仍属于 prototype 验证阶段。');
     } else {
         console.log('\n❌ 存在失败的测试，请检查上述错误。');
     }

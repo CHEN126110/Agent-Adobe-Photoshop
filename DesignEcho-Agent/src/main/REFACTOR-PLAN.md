@@ -1,88 +1,89 @@
-﻿# index.ts 閲嶆瀯璁″垝
+# `index.ts` 重构计划
 
-> 褰撳墠: 5457 琛?鈫?鐩爣: ~500 琛?(鍙傝€?index.ts)
+> 当前：5457 行 -> 目标：约 500 行（参考精简版 `index.ts`）
 
-## 鐜扮姸鍒嗘瀽
+## 现状分析
 
-### 宸叉ā鍧楀寲
-- **IPC Handlers**: 25 涓ā鍧楁枃浠?(`ipc-handlers/`)
-- **UXP Handlers**: 11 涓ā鍧楁枃浠?(`uxp-handlers/`)
+### 已模块化部分
+- **IPC Handlers**：25 个模块文件（`ipc-handlers/`）
+- **UXP Handlers**：11 个模块文件（`uxp-handlers/`）
 
-### 寰呰縼绉?(index.ts 涓粛鏈?54 涓唴鑱?handlers)
+### 待迁移部分
+- `index.ts` 中仍保留 54 个内联 handlers
 
-## 寰呰縼绉诲唴瀹瑰垎绫?
+## 待迁移内容分类
 
-### 1. WebSocket UXP Handlers (~2000 琛?
+### 1. WebSocket UXP Handlers（约 2000 行）
 
-index.ts 涓ぇ閲?`wsServer.on('action', ...)` 瀹氫箟闇€瑕佽縼绉伙細
+`index.ts` 中大量 `wsServer.on('action', ...)` 定义需要迁移：
 
-| Handler 绫诲埆 | 浼拌琛屾暟 | 鐩爣鏂囦欢 |
+| Handler 类别 | 估计行数 | 目标文件 |
 |-------------|---------|----------|
-| morphToShape | ~500 | `uxp-handlers/morphing-handlers.ts` |
-| batchMorphToShape | ~300 | `uxp-handlers/morphing-handlers.ts` |
-| autoAlign | ~200 | `uxp-handlers/layout-handlers.ts` |
-| smartLayout | ~400 | `uxp-handlers/smart-layout-handlers.ts` |
-| 鍏朵粬褰㈡€佺浉鍏?| ~600 | 鍒嗙被鏁寸悊 |
+| `morphToShape` | ~500 | `uxp-handlers/morphing-handlers.ts` |
+| `batchMorphToShape` | ~300 | `uxp-handlers/morphing-handlers.ts` |
+| `autoAlign` | ~200 | `uxp-handlers/layout-handlers.ts` |
+| `smartLayout` | ~400 | `uxp-handlers/smart-layout-handlers.ts` |
+| 其他形态相关 | ~600 | 分类整理 |
 
-### 2. 浜岃繘鍒跺崗璁鐞?(~500 琛?
+### 2. 二进制协议处理（约 500 行）
 
-- `receivedBinaryImages` 缂撳瓨绠＄悊
-- `onBinary` 澶勭悊鍣?
-- 浜岃繘鍒跺浘鍍忚В鐮?缂栫爜
+- `receivedBinaryImages` 缓存管理
+- `onBinary` 处理器
+- 二进制图像解码/编码
 
-鈫?杩佺Щ鍒? `services/binary-protocol-service.ts`
+-> 迁移到 `services/binary-protocol-service.ts`
 
-### 3. 鏈嶅姟鍒濆鍖栭€昏緫 (~300 琛?
+### 3. 服务初始化逻辑（约 300 行）
 
-- 鍚勬湇鍔＄殑鍒濆鍖栦唬鐮?
-- 渚濊禆娉ㄥ叆閰嶇疆
+- 各服务的初始化代码
+- 依赖注入配置
 
-鈫?淇濈暀鍦?index.ts锛屼絾绠€鍖栦负鍑芥暟璋冪敤
+-> 保留在 `index.ts`，但简化为函数调用
 
-### 4. 璋冭瘯/璇婃柇浠ｇ爜 (~200 琛?
+### 4. 调试/诊断代码（约 200 行）
 
 - `morphExecutionCount`
-- 鍚勭璋冭瘯鏃ュ織
-- 涓存椂璇婃柇浠ｇ爜
+- 各种调试日志
+- 临时诊断代码
 
-鈫?娓呯悊鎴栬縼绉诲埌璋冭瘯妯″潡
+-> 清理或迁移到调试模块
 
-## 杩佺Щ绛栫暐
+## 迁移策略
 
-### 闃舵 1: UXP Morphing Handlers
-1. 鍒涘缓 `uxp-handlers/morphing-handlers.ts`
-2. 杩佺Щ morphToShape, batchMorphToShape 绛?
-3. 浠?index.ts 璋冪敤妯″潡鍖?handler
+### 阶段 1：UXP Morphing Handlers
+1. 创建 `uxp-handlers/morphing-handlers.ts`
+2. 迁移 `morphToShape`、`batchMorphToShape` 等
+3. 从 `index.ts` 调用模块化 handler
 
-### 闃舵 2: 浜岃繘鍒跺崗璁?
-1. 鍒涘缓 `services/binary-protocol-service.ts`
-2. 灏佽浜岃繘鍒剁紦瀛樺拰澶勭悊閫昏緫
-3. 瀵煎嚭绠€娲佹帴鍙?
+### 阶段 2：二进制协议
+1. 创建 `services/binary-protocol-service.ts`
+2. 封装二进制缓存和处理逻辑
+3. 导出简洁接口
 
-### 闃舵 3: 鏈嶅姟鍒濆鍖?
-1. 鍒涘缓 `services/service-initializer.ts`
-2. 缁熶竴绠＄悊鏈嶅姟鐢熷懡鍛ㄦ湡
-3. 绠€鍖?index.ts 鍚姩娴佺▼
+### 阶段 3：服务初始化
+1. 创建 `services/service-initializer.ts`
+2. 统一管理服务生命周期
+3. 简化 `index.ts` 启动流程
 
-### 闃舵 4: 娓呯悊
-1. 绉婚櫎璋冭瘯浠ｇ爜
-2. 缁熶竴鏃ュ織鏍煎紡
-3. 鏈€缁堥獙璇?
+### 阶段 4：清理
+1. 移除调试代码
+2. 统一日志格式
+3. 最终验证
 
-## 鍙傝€?
+## 参考
 
-- `index.ts`: 442 琛岀殑绮剧畝鐗堟湰
-- 鐩爣: index.ts 鍙礋璐ｅ簲鐢ㄥ惎鍔ㄥ拰妯″潡鍗忚皟
+- `index.ts`：442 行的精简版本
+- 目标：`index.ts` 只负责应用启动和模块协调
 
-## 椋庨櫓
+## 风险
 
-1. **杩愯鏃朵緷璧?*: 璁稿 handler 渚濊禆闂寘涓殑鏈嶅姟瀹炰緥
-2. **寰幆渚濊禆**: 妯″潡闂村彲鑳藉瓨鍦ㄥ惊鐜紩鐢?
-3. **绫诲瀷瀹夊叏**: 鎷嗗垎鏃堕渶纭繚绫诲瀷姝ｇ‘浼犻€?
+1. **运行时依赖**：许多 handler 依赖闭包中的服务实例
+2. **循环依赖**：模块间可能存在循环引用
+3. **类型安全**：拆分时需确保类型正确传递
 
-## 寤鸿
+## 建议
 
-鑰冭檻鍒伴闄╋紝寤鸿閲囩敤娓愯繘寮忚縼绉伙細
-1. 姣忔鍙縼绉讳竴涓?handler 绫诲埆
-2. 杩佺Щ鍚庣珛鍗虫祴璇?
-3. 浣跨敤 re-export 淇濇寔鍏煎
+考虑到风险，建议采用渐进式迁移：
+1. 每次只迁移一类 handler
+2. 迁移后立即测试
+3. 使用 re-export 保持兼容

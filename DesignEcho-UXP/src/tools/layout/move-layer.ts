@@ -4,6 +4,7 @@
 
 import { Tool, ToolSchema } from '../types';
 import { diagnosePhotoshopState, wrapError } from '../../core/error-handler';
+import { createToolFailureResult, normalizePhotoshopToolError } from '../../core/tool-error-normalizer';
 
 const app = require('photoshop').app;
 const { core } = require('photoshop');
@@ -58,6 +59,7 @@ export class MoveLayerTool implements Tool {
             overflowDirection?: string;  // 超出方向
             suggestedFix?: string;       // 建议修复方式
         };
+        method?: 'domTranslate';
         layerBounds?: { left: number; top: number; right: number; bottom: number; width: number; height: number };
         canvasBounds?: { width: number; height: number };
     }> {
@@ -69,12 +71,26 @@ export class MoveLayerTool implements Tool {
             console.log('[MoveLayer] Photoshop 状态:', JSON.stringify(diagnosis, null, 2));
             
             if (!diagnosis.hasDocument) {
-                return { success: false, error: '没有打开的文档', errorDetails: diagnosis };
+                const failure = createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
+                return {
+                    ...failure,
+                    errorDetails: {
+                        ...failure.errorDetails,
+                        diagnosis
+                    }
+                };
             }
 
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档', errorDetails: diagnosis };
+                const failure = createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
+                return {
+                    ...failure,
+                    errorDetails: {
+                        ...failure.errorDetails,
+                        diagnosis
+                    }
+                };
             }
             
             let layer;
@@ -90,10 +106,11 @@ export class MoveLayerTool implements Tool {
                     // 列出所有可用图层 ID 帮助调试
                     const allLayerIds = this.getAllLayerIds(doc);
                     console.error(`[MoveLayer] 可用图层 IDs:`, allLayerIds);
-                    return { 
-                        success: false, 
-                        error: `未找到图层 ID: ${params.layerId}`,
-                        errorDetails: { 
+                    const failure = createToolFailureResult({ toolName: this.name, error: `未找到图层 ID: ${params.layerId}`, params });
+                    return {
+                        ...failure,
+                        errorDetails: {
+                            ...failure.errorDetails,
                             requestedLayerId: params.layerId,
                             availableLayerIds: allLayerIds
                         }
@@ -102,10 +119,13 @@ export class MoveLayerTool implements Tool {
             } else {
                 const activeLayers = doc.activeLayers;
                 if (!activeLayers || activeLayers.length === 0) {
-                    return { 
-                        success: false, 
-                        error: '请先选中一个图层',
-                        errorDetails: diagnosis 
+                    const failure = createToolFailureResult({ toolName: this.name, error: '请先选中一个图层', params });
+                    return {
+                        ...failure,
+                        errorDetails: {
+                            ...failure.errorDetails,
+                            diagnosis
+                        }
                     };
                 }
                 layer = activeLayers[0];
@@ -115,19 +135,27 @@ export class MoveLayerTool implements Tool {
 
             // 检查图层是否锁定
             if (layer.locked) {
-                return { 
-                    success: false, 
-                    error: `图层 "${layer.name}" 已锁定，无法移动`,
-                    errorDetails: { locked: true, layerId: layer.id, layerName: layer.name }
+                const failure = createToolFailureResult({ toolName: this.name, error: `图层 "${layer.name}" 已锁定，无法移动`, params });
+                return {
+                    ...failure,
+                    errorDetails: {
+                        ...failure.errorDetails,
+                        locked: true,
+                        layerId: layer.id,
+                        layerName: layer.name
+                    }
                 };
             }
 
             // 检查是否是背景图层
             if (layer.isBackgroundLayer) {
-                return { 
-                    success: false, 
-                    error: `背景图层无法移动，请先将其转换为普通图层`,
-                    errorDetails: { isBackgroundLayer: true }
+                const failure = createToolFailureResult({ toolName: this.name, error: `背景图层无法移动，请先将其转换为普通图层`, params });
+                return {
+                    ...failure,
+                    errorDetails: {
+                        ...failure.errorDetails,
+                        isBackgroundLayer: true
+                    }
                 };
             }
 
@@ -165,33 +193,38 @@ export class MoveLayerTool implements Tool {
             }
 
             let moveError: any = null;
-            
-            // 使用 executeAsModal 移动图层
+
+            // 使用 UXP DOM translate，避免 Photoshop 原生 move 命令在不可用状态下弹出阻塞窗口。
             await core.executeAsModal(async () => {
                 try {
-                    console.log('[MoveLayer] 执行 translate:', { deltaX, deltaY });
-                    await layer.translate(deltaX, deltaY);
-                    console.log('[MoveLayer] translate 完成');
+                    console.log('[MoveLayer] 执行 layer.translate:', { deltaX, deltaY });
+                    await this.translateLayer(layer, deltaX, deltaY);
+                    console.log('[MoveLayer] layer.translate 完成');
                 } catch (err: any) {
-                    console.error('[MoveLayer] translate 失败:', err);
+                    console.error('[MoveLayer] layer.translate 失败:', err);
                     moveError = err;
                 }
             }, { commandName: 'DesignEcho: 移动图层' });
 
             if (moveError) {
                 const wrappedError = wrapError(moveError, 'moveLayer', params);
+                const normalized = normalizePhotoshopToolError({ toolName: this.name, error: moveError });
                 console.error('[MoveLayer] 错误详情:', JSON.stringify(wrappedError, null, 2));
                 return {
                     success: false,
                     layerId: layer.id,
                     previousPosition,
-                    error: moveError.message || '移动图层失败',
-                    errorDetails: wrappedError
+                    error: normalized.userMessage,
+                    errorDetails: {
+                        ...wrappedError,
+                        normalized
+                    }
                 };
             }
 
             // 重新获取位置
-            const newBounds = layer.bounds;
+            const movedLayer = this.findLayerById(doc, layer.id) || layer;
+            const newBounds = movedLayer.bounds;
             const newPosition = {
                 x: newBounds.left,
                 y: newBounds.top
@@ -259,6 +292,7 @@ export class MoveLayerTool implements Tool {
                     overflowDirection: overflows.length > 0 ? overflows.join('、') : undefined,
                     suggestedFix: suggestedFix || undefined
                 },
+                method: 'domTranslate',
                 layerBounds,
                 canvasBounds
             };
@@ -267,14 +301,25 @@ export class MoveLayerTool implements Tool {
             console.error('[MoveLayer] 捕获异常:', error);
             
             const wrappedError = wrapError(error, 'moveLayer', params);
+            const normalized = normalizePhotoshopToolError({ toolName: this.name, error });
             console.error('[MoveLayer] 错误详情:', JSON.stringify(wrappedError, null, 2));
             
             return {
                 success: false,
-                error: error.message || '移动图层失败',
-                errorDetails: wrappedError
+                error: normalized.userMessage,
+                errorDetails: {
+                    ...wrappedError,
+                    normalized
+                }
             };
         }
+    }
+
+    private async translateLayer(layer: any, offsetX: number, offsetY: number): Promise<void> {
+        if (typeof layer?.translate !== 'function') {
+            throw new Error('当前图层对象不支持 translate，已拒绝调用 Photoshop 原生 move 命令以避免弹窗。');
+        }
+        await Promise.resolve(layer.translate(offsetX, offsetY));
     }
     
     private getAllLayerIds(container: any): number[] {

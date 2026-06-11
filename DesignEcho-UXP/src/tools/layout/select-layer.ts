@@ -6,6 +6,7 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
 
 const app = require('photoshop').app;
 const { core, action } = require('photoshop');
@@ -193,7 +194,7 @@ export class SelectLayerTool implements Tool {
                     };
                 }
 
-                await action.batchPlay([selectDescriptor], {});
+                await action.batchPlay([selectDescriptor], { synchronousExecution: true });
             }, { commandName: 'DesignEcho: 选择图层' });
 
             // 获取选中结果
@@ -213,10 +214,7 @@ export class SelectLayerTool implements Tool {
 
         } catch (error) {
             console.error('[SelectLayer] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '选择图层失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 

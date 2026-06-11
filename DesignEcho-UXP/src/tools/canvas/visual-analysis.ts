@@ -157,10 +157,8 @@ export class GetCanvasSnapshotTool implements Tool {
         _format: string, 
         _quality: number
     ): Promise<string> {
-        // 使用 batchPlay 导出为临时文件然后读取
-        // 这是一个简化的实现，实际可能需要更复杂的处理
-        // TODO: 实现备用快照方法
-        return '';  // 返回空字符串表示需要使用其他方法
+        // 备用快照方法尚未实现，返回空字符串由调用方降级处理
+        return '';
     }
 }
 

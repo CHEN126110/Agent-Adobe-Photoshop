@@ -7,16 +7,33 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 
 import { TextSuggestion } from '../components/SuggestionList';
 import { LayoutAnalysisResult } from '../components/LayoutFixList';
+import type { AgentExecutionSummary } from '../services/agent-runtime/types';
+import type { AgentRequestLifecycleEvidence } from '../../shared/agent-request-lifecycle';
+import type { AgentDiagnosticEvidence } from '../../shared/agent-diagnostic-evidence';
+import type { BusinessSkillVisualEvidenceFeedback } from '../../shared/business-skill-visual-evidence-feedback';
+import type { AgentTaskPlanningContract } from '../../shared/agent-task-planning-contract';
+import type {
+    AgentTaskPublicPlanExecutionPlanLike,
+    AgentTaskPublicPlanExecutionRequest
+} from '../../shared/agent-task-public-plan-execution-request';
+import type { AgentTaskPublicPlanApprovalRecord } from '../../shared/agent-task-public-plan-approval-record';
+import type { AgentTaskPublicPlanControlledRun } from '../../shared/agent-task-public-plan-controlled-runner';
+import {
+    DEFAULT_DESIGN_KNOWLEDGE_SETTINGS,
+    normalizeDesignKnowledgeSettings,
+    type DesignKnowledgeRuntimeSettings
+} from '../../shared/design-knowledge-settings';
 
 // 从统一配置导入
 import { DEFAULT_MODEL_PREFERENCES } from '../../shared/config/models.config';
+import { SKILL_REGISTRY } from '../../shared/skills/skill-declarations';
 
 // 抠图使用本地 ONNX 模型（BiRefNet + YOLO-World）
 
 // 思维步骤类型（与 ThinkingProcess 组件同步）
 interface ThinkingStepData {
     id: string;
-    type: 'thinking' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
+    type: 'thinking' | 'status' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
     content: string;
     toolName?: string;
     toolParams?: any;
@@ -40,6 +57,15 @@ interface Message {
     // 思维链相关
     isThinking?: boolean;
     thinkingSteps?: ThinkingStepData[];
+    executionSummary?: AgentExecutionSummary;
+    agentRequestLifecycle?: AgentRequestLifecycleEvidence;
+    agentDiagnosticEvidence?: AgentDiagnosticEvidence;
+    businessVisualEvidenceFeedback?: BusinessSkillVisualEvidenceFeedback;
+    agentTaskPlan?: AgentTaskPlanningContract;
+    agentTaskPublicPlan?: AgentTaskPublicPlanExecutionPlanLike;
+    agentTaskPublicPlanExecutionRequest?: AgentTaskPublicPlanExecutionRequest;
+    agentTaskPublicPlanApprovalRecord?: AgentTaskPublicPlanApprovalRecord;
+    agentTaskPublicPlanControlledRun?: AgentTaskPublicPlanControlledRun;
     // 附带图片（用于视觉分析）
     image?: { data: string; type: string };
 }
@@ -71,13 +97,22 @@ interface Conversation {
 interface ApiKeys {
     anthropic?: string;
     google?: string;           // Google AI Studio 官方 API Key
+    xiaomi?: string;           // Xiaomi MiMo 官方 API Key
     openai?: string;
+    gptsapi?: string;          // GPTs API 中转平台 API Key
     openrouter?: string;       // OpenRouter 中转平台 API Key
+    deepseek?: string;         // DeepSeek 官方 API Key
     ollamaUrl?: string;
     ollamaApiKey?: string;     // Ollama Cloud API Key
     bfl?: string;              // Black Forest Labs (FLUX) API Key
-    volcengineAccessKeyId?: string;    // 火山引擎 Access Key ID（局部重绘）
-    volcengineSecretAccessKey?: string; // 火山引擎 Secret Access Key（局部重绘）
+    volcengineJimengAccessKeyId?: string;      // 即梦AI OpenAPI Access Key ID
+    volcengineJimengSecretAccessKey?: string;  // 即梦AI OpenAPI Secret Access Key
+    volcengineSeedreamApiKey?: string;         // Seedream 图生图 API Key
+    volcengineTosRegion?: string;              // TOS Region
+    volcengineTosEndpoint?: string;            // TOS Endpoint
+    volcengineTosBucket?: string;              // TOS Bucket
+    volcengineTosPublicBaseUrl?: string;       // TOS 公网访问前缀
+    volcengineTosKeyPrefix?: string;           // TOS 对象前缀
 }
 
 // 模型模式
@@ -97,7 +132,7 @@ export interface TaskModelConfig {
 export interface CustomModel {
     id: string;                          // 唯一标识
     name: string;                        // 显示名称
-    provider: 'openrouter' | 'openai' | 'anthropic' | 'google' | 'custom';
+    provider: 'openrouter' | 'openai' | 'anthropic' | 'google' | 'xiaomi' | 'deepseek' | 'custom';
     modelId: string;                     // 实际模型 ID (如 anthropic/claude-3.5-sonnet)
     category: TaskCategory;              // 适用的任务类别
     apiEndpoint?: string;                // 自定义 API 端点 (可选)
@@ -105,6 +140,26 @@ export interface CustomModel {
     description?: string;                // 描述
     isActive: boolean;                   // 是否激活
     createdAt: number;
+}
+
+export interface SkillToggleConfig {
+    enabled: boolean;
+}
+
+export interface MCPServerConfig {
+    id: string;
+    name: string;
+    transport: 'stdio' | 'http';
+    enabled: boolean;
+    command?: string;
+    args?: string[];
+    url?: string;
+    notes?: string;
+}
+
+export interface IntegrationSettings {
+    skills: Record<string, SkillToggleConfig>;
+    mcpServers: MCPServerConfig[];
 }
 
 // Worker 类型（新架构）
@@ -210,6 +265,8 @@ export interface AgentSettings {
         tokenThreshold: number;         // 触发压缩的 token 阈值
         keepRecentMessages: number;     // 保留最近 N 条消息
     };
+    // 多智能体协作模式
+    multiAgentMode: boolean;            // 启用后各技能可使用多模型协作流程
 }
 
 // 项目信息
@@ -259,6 +316,9 @@ export interface ImageFile {
     size: number;
     ext: string;
     type: ImageType;
+    width?: number;
+    height?: number;
+    aspectRatio?: number;
     thumbnailPath?: string;
     parentFolder: string;
     folderType: FolderType;
@@ -384,6 +444,14 @@ interface AppState {
     agentSettings: AgentSettings;
     setAgentSettings: (settings: Partial<AgentSettings>) => void;
 
+    // Integrations
+    integrationSettings: IntegrationSettings;
+    setIntegrationSettings: (settings: Partial<IntegrationSettings>) => void;
+
+    // 设计知识设置
+    designKnowledgeSettings: DesignKnowledgeRuntimeSettings;
+    setDesignKnowledgeSettings: (settings: Partial<DesignKnowledgeRuntimeSettings>) => void;
+
     // 模型状态管理
     ollamaStatus: 'unknown' | 'online' | 'offline';
     installedOllamaModels: string[];
@@ -394,6 +462,42 @@ interface AppState {
 
 // 默认模型偏好 - 从统一配置导入
 const defaultModelPreferences: ModelPreferences = DEFAULT_MODEL_PREFERENCES;
+
+const createDefaultSkillToggles = (): Record<string, SkillToggleConfig> =>
+    Object.fromEntries(SKILL_REGISTRY.map((skill) => [skill.id, { enabled: true }]));
+
+const normalizeIntegrationSettings = (settings?: Partial<IntegrationSettings> | null): IntegrationSettings => {
+    const skillDefaults = createDefaultSkillToggles();
+    const providedSkills = settings?.skills || {};
+    const skills = Object.fromEntries(
+        Object.keys(skillDefaults).map((skillId) => [
+            skillId,
+            { enabled: providedSkills[skillId]?.enabled !== false }
+        ])
+    );
+
+    const mcpServers = Array.isArray(settings?.mcpServers)
+        ? settings!.mcpServers
+            .filter((server): server is MCPServerConfig => !!server && typeof server.id === 'string' && typeof server.name === 'string')
+            .map((server): MCPServerConfig => ({
+                id: server.id,
+                name: server.name,
+                transport: server.transport === 'http' ? 'http' : 'stdio',
+                enabled: server.enabled !== false,
+                command: server.command || '',
+                args: Array.isArray(server.args) ? server.args.map((arg) => String(arg)) : [],
+                url: server.url || '',
+                notes: server.notes || ''
+            }))
+        : [];
+
+    return { skills, mcpServers };
+};
+
+const defaultIntegrationSettings: IntegrationSettings = normalizeIntegrationSettings();
+const defaultDesignKnowledgeSettings: DesignKnowledgeRuntimeSettings = normalizeDesignKnowledgeSettings(
+    DEFAULT_DESIGN_KNOWLEDGE_SETTINGS
+);
 
 // 预设智能分割模型列表（本地 ONNX）
 const presetSegmentationModels: SegmentationModelConfig[] = [];
@@ -1127,7 +1231,8 @@ export const useAppStore = create<AppState>()(
                     enabled: false,        // 默认关闭
                     tokenThreshold: 60000, // 60k tokens 触发压缩
                     keepRecentMessages: 4  // 保留最近 4 条消息
-                }
+                },
+                multiAgentMode: false, // 默认关闭，手动启用
             },
             
             setAgentSettings: (settings) => set((state) => ({
@@ -1139,6 +1244,34 @@ export const useAppStore = create<AppState>()(
                         ...(settings.contextCompression || {})
                     }
                 }
+            })),
+
+            integrationSettings: defaultIntegrationSettings,
+            setIntegrationSettings: (settings) => set((state) => ({
+                integrationSettings: normalizeIntegrationSettings({
+                    ...state.integrationSettings,
+                    ...settings,
+                    skills: settings.skills
+                        ? { ...state.integrationSettings.skills, ...settings.skills }
+                        : state.integrationSettings.skills,
+                    mcpServers: settings.mcpServers ?? state.integrationSettings.mcpServers
+                })
+            })),
+
+            designKnowledgeSettings: defaultDesignKnowledgeSettings,
+            setDesignKnowledgeSettings: (settings) => set((state) => ({
+                designKnowledgeSettings: normalizeDesignKnowledgeSettings({
+                    ...state.designKnowledgeSettings,
+                    ...settings,
+                    searxng: {
+                        ...state.designKnowledgeSettings.searxng,
+                        ...(settings.searxng || {})
+                    },
+                    xiaomiWebSearch: {
+                        ...state.designKnowledgeSettings.xiaomiWebSearch,
+                        ...(settings.xiaomiWebSearch || {})
+                    }
+                })
             })),
 
             // 模型状态管理
@@ -1175,7 +1308,7 @@ export const useAppStore = create<AppState>()(
         }),
         {
             name: 'designecho-storage',
-            version: 30,  // v30: 对话数据迁移到独立文件存储
+            version: 33,  // v33: Xiaomi MiMo V2 / V2 Omni 升级到 V2.5
             storage: persistedStorage,
             partialize: (state) => ({
                 // 只持久化小体积配置数据（< 50KB）
@@ -1184,12 +1317,14 @@ export const useAppStore = create<AppState>()(
                 modelPreferences: state.modelPreferences,
                 customModels: state.customModels,
                 mattingSettings: state.mattingSettings,
+                integrationSettings: state.integrationSettings,
+                designKnowledgeSettings: state.designKnowledgeSettings,
                 currentConversationId: state.currentConversationId,
                 currentProject: state.currentProject,
                 recentProjects: state.recentProjects
             }),
             migrate: (persistedState: any, version: number) => {
-                console.log('[Store] 迁移: v', version, '→ v30');
+                console.log('[Store] 迁移: v', version, '→ v33');
                 let state = { ...persistedState };
                 
                 // 统一迁移：所有低于当前版本的存储都重置为最新配置
@@ -1298,10 +1433,50 @@ export const useAppStore = create<AppState>()(
                     // 注意：此处不删除 projectConversations，留给 onRehydrateStorage 处理迁移
                 }
 
+                if (version < 31) {
+                    console.log('[Store] 迁移 v31: 初始化 integrations settings');
+                    state.integrationSettings = defaultIntegrationSettings;
+                }
+
+                if (version < 32 && state?.modelPreferences?.preferredCloudModels) {
+                    console.log('[Store] 迁移 v32: Xiaomi MiMo V2 Pro 升级到 V2.5 Pro');
+                    const cloudModels = state.modelPreferences.preferredCloudModels;
+                    for (const key of Object.keys(cloudModels)) {
+                        if ((cloudModels as any)[key] === 'xiaomi-mimo-v2-pro') {
+                            (cloudModels as any)[key] = 'xiaomi-mimo-v2.5-pro';
+                        }
+                        if ((cloudModels as any)[key] === 'openrouter-mimo-v2-pro') {
+                            (cloudModels as any)[key] = 'openrouter-mimo-v2.5-pro';
+                        }
+                    }
+                }
+
+                if (version < 33 && state?.modelPreferences?.preferredCloudModels) {
+                    console.log('[Store] 迁移 v33: Xiaomi MiMo V2 / V2 Omni 升级到 V2.5');
+                    const cloudModels = state.modelPreferences.preferredCloudModels;
+                    for (const key of Object.keys(cloudModels)) {
+                        if ((cloudModels as any)[key] === 'xiaomi-mimo-v2' || (cloudModels as any)[key] === 'xiaomi-mimo-v2-omni') {
+                            (cloudModels as any)[key] = 'xiaomi-mimo-v2.5';
+                        }
+                        if ((cloudModels as any)[key] === 'openrouter-mimo-v2' || (cloudModels as any)[key] === 'openrouter-mimo-v2-omni') {
+                            (cloudModels as any)[key] = 'openrouter-mimo-v2.5';
+                        }
+                    }
+                }
+
+                if (!state.designKnowledgeSettings) {
+                    state.designKnowledgeSettings = defaultDesignKnowledgeSettings;
+                }
+
                 return state;
             },
             onRehydrateStorage: () => (state) => {
                 console.log('[Store] 重新加载存储数据');
+
+                if (state) {
+                    state.integrationSettings = normalizeIntegrationSettings(state.integrationSettings);
+                    state.designKnowledgeSettings = normalizeDesignKnowledgeSettings(state.designKnowledgeSettings);
+                }
                 
                 // 🔧 修复旧格式的模型 ID (ollama-xxx → local-xxx)
                 if (state?.modelPreferences?.preferredLocalModels) {

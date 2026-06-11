@@ -26,6 +26,26 @@ const { app, core, action } = require('photoshop');
 const storage = require('uxp').storage;
 const fs = storage.localFileSystem;
 
+function findLayerById(container: any, id: number): any {
+    const layers = Array.isArray(container) ? container : container?.layers;
+    if (!Array.isArray(layers)) return null;
+    for (const layer of layers) {
+        if (layer?.id === id) return layer;
+        if (layer?.layers) {
+            const found = findLayerById(layer.layers, id);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+async function translateLayer(layer: any, offsetX: number, offsetY: number): Promise<void> {
+    if (typeof layer?.translate !== 'function') {
+        throw new Error(`SKULayout failed: layer ${layer?.id ?? 'unknown'} does not support DOM translate; native offset move is blocked to avoid Photoshop popups.`);
+    }
+    await Promise.resolve(layer.translate(offsetX, offsetY));
+}
+
 /**
  * 使用 batchPlay 缩放图层（兼容图层组）
  * @param layerId 图层 ID
@@ -66,17 +86,9 @@ async function batchPlayTranslate(layerId: number, offsetX: number, offsetY: num
         _options: { dialogOptions: 'dontDisplay' }
     }], { synchronousExecution: true });
     
-    // 使用 move 命令移动图层
-    await action.batchPlay([{
-        _obj: 'move',
-        _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-        to: {
-            _obj: 'offset',
-            horizontal: { _unit: 'pixelsUnit', _value: offsetX },
-            vertical: { _unit: 'pixelsUnit', _value: offsetY }
-        },
-        _options: { dialogOptions: 'dontDisplay' }
-    }], { synchronousExecution: true });
+    const doc = app.activeDocument;
+    const targetLayer = findLayerById(doc?.layers, layerId) || doc?.activeLayers?.[0];
+    await translateLayer(targetLayer, offsetX, offsetY);
 }
 
 /**
@@ -171,6 +183,14 @@ export class SKULayoutTool implements Tool {
                     type: 'array',
                     description: '颜色组合列表，每个元素是一个颜色名称数组'
                 },
+                skuDocName: {
+                    type: 'string',
+                    description: '明确指定 SKU 素材文档名称，避免误用当前打开的其他项目 SKU'
+                },
+                templateDocName: {
+                    type: 'string',
+                    description: '明确指定模板文档名称，避免依赖当前活动文档'
+                },
                 outputDir: {
                     type: 'string',
                     description: '输出目录路径'
@@ -202,6 +222,8 @@ export class SKULayoutTool implements Tool {
         outputFormat?: string;
         quality?: number;
         combos?: string[][];
+        skuDocName?: string;
+        templateDocName?: string;
         outputDir?: string;
         useSmartArrange?: boolean;
         arrangeConfig?: Partial<SmartArrangeConfig>;
@@ -234,6 +256,8 @@ export class SKULayoutTool implements Tool {
                 case 'execute':
                     return await this.executeComboLayout({
                         combos: params.combos || [],
+                        skuDocName: params.skuDocName,
+                        templateDocName: params.templateDocName,
                         outputDir: params.outputDir,
                         format: params.outputFormat || 'jpg',
                         quality: params.quality || 12,
@@ -257,6 +281,8 @@ export class SKULayoutTool implements Tool {
                     // 用于自选备注：从 SKU 素材复制颜色，动态排列，导出
                     return await this.executeNoteWithDynamicArrange({
                         colors: params.combos?.[0] || [],
+                        skuDocName: params.skuDocName,
+                        templateDocName: params.templateDocName,
                         outputDir: params.outputDir,
                         format: params.outputFormat || 'jpg',
                         quality: params.quality || 12,
@@ -363,9 +389,6 @@ export class SKULayoutTool implements Tool {
         };
     }
 
-    /**
-     * 列出当前文档的所有图层组（用于识别可用素材）
-     */
     /**
      * 列出当前文档中的所有图层组（LayerSets）
      * 
@@ -723,6 +746,8 @@ export class SKULayoutTool implements Tool {
         colors: string[];           // 简单模式：所有颜色放第一个占位区域
         colorsByRegion?: string[][]; // 高级模式：按区域分组 [['白','粉'], ['蓝','灰']]
         colorString?: string;        // 字符串模式："白+粉|蓝+灰"（参考 6.0袜子排版.jsx CSV 格式）
+        skuDocName?: string;
+        templateDocName?: string;
         outputDir?: string;
         format: string;
         quality: number;
@@ -773,15 +798,62 @@ export class SKULayoutTool implements Tool {
             
             // 1. 识别 SKU 素材文档和自选备注模板
             let skuDoc: any = null;
-            let templateDoc: any = app.activeDocument;  // 当前活动文档应该是自选备注模板
+            let templateDoc: any = null;
             
-            for (let i = 0; i < app.documents.length; i++) {
-                const doc = app.documents[i];
-                const name = (doc.name || '').toLowerCase();
-                if (name.includes('sku') || name.includes('素材')) {
-                    skuDoc = doc;
-                    break;
+            if (config.skuDocName) {
+                for (let i = 0; i < app.documents.length; i++) {
+                    if (app.documents[i].name === config.skuDocName) {
+                        skuDoc = app.documents[i];
+                        break;
+                    }
                 }
+            }
+
+            if (config.templateDocName) {
+                for (let i = 0; i < app.documents.length; i++) {
+                    if (app.documents[i].name === config.templateDocName) {
+                        templateDoc = app.documents[i];
+                        break;
+                    }
+                }
+            }
+
+            if (!skuDoc) {
+                for (let i = 0; i < app.documents.length; i++) {
+                    const doc = app.documents[i];
+                    const name = (doc.name || '').toLowerCase();
+                    if (name.includes('sku') || name.includes('素材')) {
+                        skuDoc = doc;
+                        break;
+                    }
+                }
+            }
+
+            if (!templateDoc) {
+                templateDoc = app.activeDocument;  // 当前活动文档应该是自选备注模板
+                const activeDocName = (templateDoc?.name || '').toLowerCase();
+                if (activeDocName.includes('sku') || activeDocName.includes('素材')) {
+                    templateDoc = null;
+                }
+            }
+
+            if (!templateDoc) {
+                for (let i = 0; i < app.documents.length; i++) {
+                    const doc = app.documents[i];
+                    const name = (doc.name || '').toLowerCase();
+                    if (name.includes('自选备注')) {
+                        templateDoc = doc;
+                        break;
+                    }
+                }
+            }
+
+            if (config.skuDocName && !skuDoc) {
+                return { success: false, error: `未找到指定 SKU 素材文档: ${config.skuDocName}`, data: null };
+            }
+
+            if (config.templateDocName && !templateDoc) {
+                return { success: false, error: `未找到指定自选备注模板文档: ${config.templateDocName}`, data: null };
             }
             
             if (!skuDoc) {
@@ -852,8 +924,6 @@ export class SKULayoutTool implements Tool {
                     console.log(`[SKULayout]   ${i + 1}. ${p.layer.name} (${p.width.toFixed(0)}x${p.height.toFixed(0)}) @ (${p.left.toFixed(0)}, ${p.top.toFixed(0)})`);
                 });
                 
-                // ★★★ 6.0袜子排版.jsx 验证逻辑 ★★★
-                // if (num != xlsstr.length) { writelog("模板图层与配制不匹配"); return; }
                 const numPlaceholders = sortedPlaceholders.length;
                 let numRegions = colorRegions.length;
                 
@@ -1134,12 +1204,8 @@ export class SKULayoutTool implements Tool {
                                 const deltaX = targetX - newLeft;
                                 const deltaY = targetY - newTop;
                                 
-                                await action.batchPlay([{
-                                    _obj: 'move',
-                                    _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                                    to: { _obj: 'offset', horizontal: { _unit: 'pixelsUnit', _value: deltaX }, vertical: { _unit: 'pixelsUnit', _value: deltaY } },
-                                    _options: { dialogOptions: 'dontDisplay' }
-                                }], { synchronousExecution: true });
+                                const activeLayer = templateDoc.activeLayers?.[0];
+                                await translateLayer(activeLayer, deltaX, deltaY);
                                 
                                 console.log(`[SKULayout]     移动: (${(newLeft + deltaX).toFixed(0)}, ${(newTop + deltaY).toFixed(0)})`);
                             }
@@ -1305,12 +1371,19 @@ export class SKULayoutTool implements Tool {
         
         console.log(`[SKULayout] ✅ 导出成功: ${fullPath}`);
         
-        // 关闭自选备注模板文档（不保存修改，与组合模板一致）
+        // 关闭自选备注模板文档（不保存修改，与组合模板一致）。
+        // Photoshop 在 JSX 保存后偶发进入 modal state；导出已经成功时，关闭失败不应覆盖任务结果。
         const templateNameForClose = templateDoc.name;
-        await core.executeAsModal(async () => {
-            await (templateDoc as any).closeWithoutSaving();
-        }, { commandName: '关闭自选备注模板文档' });
-        console.log(`[SKULayout] ✅ 已关闭自选备注模板文档: ${templateNameForClose}`);
+        let closeWarning: string | undefined;
+        try {
+            await core.executeAsModal(async () => {
+                await (templateDoc as any).closeWithoutSaving();
+            }, { commandName: '关闭自选备注模板文档' });
+            console.log(`[SKULayout] ✅ 已关闭自选备注模板文档: ${templateNameForClose}`);
+        } catch (closeError: any) {
+            closeWarning = `导出成功，但关闭自选备注模板失败: ${closeError?.message || closeError}`;
+            console.warn(`[SKULayout] ${closeWarning}`);
+        }
         
         return {
             success: true,
@@ -1321,7 +1394,8 @@ export class SKULayoutTool implements Tool {
                     targetName: `${outputFileName}.jpg`,
                     status: 'exported_jsx'
                 })],
-                outputDir: config.outputDir
+                outputDir: config.outputDir,
+                closeWarning
             }
         };
     }
@@ -1590,16 +1664,6 @@ export class SKULayoutTool implements Tool {
                         
                         const numPlaceholders = placeholderLayers.length;
                         console.log(`[SKULayout] 模板占位图层数: ${numPlaceholders}, 组合颜色数: ${comboSize}`);
-                        
-                        // ★★★ 6.0袜子排版.jsx 核心逻辑 ★★★
-                        // 参考第 840-900 行的双层循环：
-                        // for (var j = 0; j < lays.length; j++) {  // 遍历每个占位矩形
-                        //     var lay = lays[j];
-                        //     var rect = lay.bounds;
-                        //     var imgs = xlsstr[j].split("+");     // 该区域的颜色
-                        //     for (var k = 0; k < imgs.length; k++) { copylay(); suofang(); duqi(); }
-                        //     FBfun();
-                        // }
                         
                         // ★★★ 智能分配策略 ★★★
                         // 参考 6.0袜子排版.jsx：区域分配由 CSV 配置决定
@@ -2050,8 +2114,7 @@ export class SKULayoutTool implements Tool {
                                         using: { _enum: 'ADSt', _value: 'ADSCentersH' },
                                         _options: { dialogOptions: 'dontDisplay' }
                                     }], { 
-                                        synchronousExecution: true,
-                                        modalBehavior: 'execute'
+                                        synchronousExecution: true
                                     });
                                     console.log(`[SKULayout] ✅ 水平分布完成`);
                                 } catch (distErr: any) {

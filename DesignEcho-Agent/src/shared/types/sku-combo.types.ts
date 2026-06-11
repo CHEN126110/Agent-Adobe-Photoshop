@@ -69,7 +69,7 @@ export interface TemplateConfig {
  * SKU 组合知识库
  * 一个项目/产品可以有多个模板配置
  */
-export interface SKUComboKnowledge {
+export interface SKUComboCollection {
     /** 唯一 ID */
     id: string;
     /** 名称（如 "C-1016 小腿袜"） */

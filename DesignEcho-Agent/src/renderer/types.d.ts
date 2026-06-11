@@ -1,3 +1,12 @@
+import type { ContextSnapshot, ProjectAssetIndex } from '../shared/project-asset-index';
+import type { ProjectVisualInsightCacheReadResult } from '../shared/project-visual-insight-cache';
+import type { DesignKnowledgeResult } from '../shared/design-knowledge-search';
+import type {
+    ProjectVisualSamplingCacheEntry,
+    ProjectVisualSamplingPlan,
+    ProjectVisualSamplingScenario
+} from '../shared/project-visual-sampling';
+
 export interface DownloadProgress {
     modelId: string;
     percent: number;
@@ -9,14 +18,102 @@ export interface DesignEchoAPI {
     setApiKeys: (keys: {
         anthropic?: string;
         google?: string;
+        xiaomi?: string;
         openai?: string;
+        gptsapi?: string;
         openrouter?: string;
+        deepseek?: string;
         ollamaUrl?: string;
         ollamaApiKey?: string;
         bfl?: string;
-        volcengineAccessKeyId?: string;
-        volcengineSecretAccessKey?: string;
+        volcengineJimengAccessKeyId?: string;
+        volcengineJimengSecretAccessKey?: string;
+        volcengineSeedreamApiKey?: string;
+        volcengineTosRegion?: string;
+        volcengineTosEndpoint?: string;
+        volcengineTosBucket?: string;
+        volcengineTosPublicBaseUrl?: string;
+        volcengineTosKeyPrefix?: string;
     }) => Promise<void>;
+
+    testVolcengineJimengCredentials?: (accessKeyId: string, secretAccessKey: string) => Promise<{
+        success: boolean;
+        message?: string;
+        error?: string;
+    }>;
+
+    testVolcengineSeedreamApiKey?: (apiKey: string) => Promise<{
+        success: boolean;
+        message?: string;
+        error?: string;
+        status?: number;
+    }>;
+
+    testDeepSeek?: (apiKey: string) => Promise<{
+        success: boolean;
+        message?: string;
+        error?: string;
+        status?: number;
+        baseUrl?: string;
+        model?: string;
+        usage?: {
+            inputTokens: number;
+            outputTokens: number;
+        };
+    }>;
+
+    probeDesignKnowledgeSearxng?: (settings: unknown) => Promise<{
+        success: boolean;
+        status?: 'disabled' | 'missing_endpoint' | 'ok' | 'unavailable';
+        endpoint?: string;
+        httpStatus?: number;
+        warnings?: string[];
+        error?: string;
+    }>;
+
+    probeDesignKnowledgeEagleReadonly?: (settings?: {
+        enabled?: boolean;
+        endpoint?: string;
+        timeoutMs?: number;
+    }) => Promise<{
+        success: boolean;
+        status: 'disabled' | 'ok' | 'unavailable';
+        endpoint: string;
+        app?: unknown;
+        aiSearch?: unknown;
+        warnings: string[];
+        error?: string;
+    }>;
+
+    searchEagleReadonlyKnowledge?: (query: {
+        query: string;
+        limit?: number;
+        preferAiSearch?: boolean;
+        tags?: string[];
+        folders?: string[];
+        ext?: string;
+        selectedOnly?: boolean;
+    }, settings?: {
+        enabled?: boolean;
+        endpoint?: string;
+        timeoutMs?: number;
+    }) => Promise<{
+        version: 'eagle-readonly-knowledge/v0';
+        status: 'disabled' | 'ok' | 'unavailable';
+        query: string;
+        results: Array<DesignKnowledgeResult & { sourceType: 'eagle_library' | DesignKnowledgeResult['sourceType'] }>;
+        providerSummary: {
+            eagleLibrary: number;
+        };
+        warnings: string[];
+        boundaries: {
+            readonly: true;
+            doesNotWriteEagle: true;
+            doesNotRunPhotoshop: true;
+            doesNotReturnRawImages: true;
+            allowedTools: string[];
+        };
+    }>;
 
     setModelPreferences?: (prefs: {
         mode?: 'local' | 'cloud' | 'auto';
@@ -35,6 +132,22 @@ export interface DesignEchoAPI {
 
     executeTask: (taskType: string, input: any) => Promise<any>;
     chat: (modelId: string, messages: any[], options?: any) => Promise<any>;
+    chatWithTools?: (modelId: string, messages: any[], tools: any[], options?: any) => Promise<any>;
+    chatStream?: (params: {
+        requestId: string;
+        modelId: string;
+        messages: Array<{ role: string; content: string }>;
+        options?: { maxTokens?: number; temperature?: number };
+    }) => Promise<{ success: boolean; error?: string; requestId?: string }>;
+    chatWithToolsStream?: (params: {
+        requestId: string;
+        modelId: string;
+        messages: any[];
+        tools: any[];
+        options?: { maxTokens?: number; temperature?: number; nativeTools?: any[] };
+    }) => Promise<{ success: boolean; error?: string; requestId?: string }>;
+    abortStream?: (requestId: string) => Promise<{ success: boolean; error?: string }>;
+    onStreamChunk?: (callback: (data: { requestId: string; chunk: any }) => void) => () => void;
     
     getAvailableTools: () => { name: string; description: string; parameters: any }[];
 
@@ -56,10 +169,14 @@ export interface DesignEchoAPI {
 
     // 文件系统操作
     selectFolder: (title?: string) => Promise<string | null>;
-    readDirectory: (path: string, options?: { recursive?: boolean }) => Promise<{
+    selectFile: (options?: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>;
+    readFile: (path: string, encoding?: string) => Promise<string>;
+    readDirectory: (path: string, options?: { recursive?: boolean; filter?: string[] }) => Promise<{
         name: string;
         path: string;
         type: 'file' | 'directory';
+        ext?: string;
+        size?: number;
     }[] | null>;
     openPath: (path: string) => Promise<void>;
     
@@ -104,6 +221,52 @@ export interface DesignEchoAPI {
         error?: string;
     } | null>;
     readImageBase64: (imagePath: string) => Promise<string | null>;
+    probeImageFile: (imagePath: string) => Promise<{
+        success: boolean;
+        path: string;
+        status: 'ok' | 'missing' | 'not_file' | 'unsupported' | 'decode_failed';
+        exists: boolean;
+        isFile: boolean;
+        byteLength?: number;
+        format?: string;
+        mimeType?: string;
+        dimensions?: { width: number; height: number };
+        sha256?: string;
+        rawImagesRedacted: true;
+        error?: string;
+    }>;
+    compareImageFiles: (referencePath: string, resultPath: string, options?: {
+        targetSize?: { width?: number; height?: number };
+        thresholds?: {
+            maxMae?: number;
+            maxHighDeltaRatio?: number;
+            minDarkJaccard?: number;
+            minSoftDarkJaccard?: number;
+            softMaskBlurSigma?: number;
+            softMaskDarkThreshold?: number;
+        };
+    }) => Promise<{
+        success: boolean;
+        status: 'ok' | 'watch' | 'unverified';
+        mode: 'pixel-probe';
+        referencePath: string;
+        resultPath: string;
+        width?: number;
+        height?: number;
+        mae?: number;
+        rmse?: number;
+        highDeltaRatio?: number;
+        darkJaccard?: number;
+        softDarkJaccard?: number;
+        softMaskBlurSigma?: number;
+        softMaskDarkThreshold?: number;
+        referenceDarkPixels?: number;
+        resultDarkPixels?: number;
+        summary?: string;
+        boundary: string;
+        rawImagesRedacted: true;
+        error?: string;
+    }>;
     analyzeAssetContent: (imagePath: string) => Promise<any>;
     recommendAssets: (params: {
         requirement: string;
@@ -163,31 +326,48 @@ export interface DesignEchoAPI {
     updateImageType?: (projectPath: string, imageRelativePath: string, type: string) => Promise<void>;
     loadEcommerceConfig?: (projectPath: string) => Promise<any>;
     saveEcommerceConfig?: (projectPath: string, config: any) => Promise<void>;
-    
-    // ===== 知识库查询 =====
-    knowledge?: {
-        getAllSellingPoints: () => Promise<any[]>;
-        getAllPainPoints: () => Promise<any[]>;
-        getAllColorSchemes: () => Promise<any[]>;
-        searchSellingPoints: (params: { keyword?: string; category?: string; limit?: number }) => Promise<any[]>;
-        getPainPoints: (params: { category?: string; type?: string }) => Promise<any[]>;
-        recommendColorScheme: (params: { emotion?: string; category?: string; season?: string }) => Promise<any>;
-    };
+    buildProjectContextSnapshot?: (options: string | {
+        projectPath: string;
+        projectName?: string;
+        currentDocument?: any;
+        selectedAssetPaths?: string[];
+        userConstraints?: string[];
+        taskHistory?: string[];
+        unverifiedItems?: string[];
+        visualSamplingScenario?: ProjectVisualSamplingScenario;
+        maxVisualSamples?: number;
+        visualSamplingCache?: ProjectVisualSamplingCacheEntry[];
+        usePersistedVisualInsightCache?: boolean;
+    }) => Promise<{
+        success: true;
+        source: 'runtime-project-service';
+        projectPath: string;
+        projectName: string;
+        contextSnapshot: ContextSnapshot;
+        assetIndex: ProjectAssetIndex;
+        visualSamplingPlan: ProjectVisualSamplingPlan;
+        visualInsightCache: ProjectVisualInsightCacheReadResult;
+        warnings: string[];
+        limitations: string[];
+    }>;
+    writeProjectVisualInsightCache?: (options: {
+        projectPath: string;
+        entries: ProjectVisualSamplingCacheEntry[];
+        replace?: boolean;
+        nowIso?: string;
+    }) => Promise<{
+        success: true;
+        source: 'runtime-project-service';
+        cachePath: string;
+        manifest: any;
+        readResult: ProjectVisualInsightCacheReadResult;
+    }>;
     
     // ===== 项目索引进度 =====
     onProjectIndexProgress?: (callback: (data: { projectId: string; current: number; total: number; phase?: 'project' | 'file'; fileName?: string }) => void) => () => void;
 
     // ===== 通用 IPC 调用 =====
     invoke: (channel: string, ...args: any[]) => Promise<any>;
-    
-    // ===== 火山引擎 局部重绘 =====
-    volcengine?: {
-        testCredentials: (accessKeyId: string, secretAccessKey: string) => Promise<{
-            success: boolean;
-            message?: string;
-            error?: string;
-        }>;
-    };
     
     // ===== BFL (Black Forest Labs) 图片生成 =====
     bfl: {
@@ -256,7 +436,7 @@ export interface DesignEchoAPI {
         // 检查是否已配置 API Key
         hasApiKey: () => Promise<boolean>;
     };
-    
+
     captureAgentWindowScreenshot?: () => Promise<{
         success: boolean;
         imageBase64?: string;
@@ -279,5 +459,50 @@ export interface DesignEchoAPI {
 declare global {
     interface Window {
         designEcho: DesignEchoAPI;
+        __DESIGNECHO_CHAT_TEST_BRIDGE__?: {
+            version: number;
+            submit: (
+                text: string,
+                options?: {
+                    image?: { data: string; type: string };
+                    timeoutMs?: number;
+                }
+            ) => Promise<{
+                isLoading: boolean;
+                messageCount: number;
+                messages: Array<{
+                    id: string;
+                    role: string;
+                    contentPreview: string;
+                    hasImage: boolean;
+                    thinkingStepCount: number;
+                    toolResultCount: number;
+                }>;
+            }>;
+            getSnapshot: () => {
+                isLoading: boolean;
+                messageCount: number;
+                messages: Array<{
+                    id: string;
+                    role: string;
+                    contentPreview: string;
+                    hasImage: boolean;
+                    thinkingStepCount: number;
+                    toolResultCount: number;
+                }>;
+            };
+            waitForIdle: (timeoutMs?: number) => Promise<{
+                isLoading: boolean;
+                messageCount: number;
+                messages: Array<{
+                    id: string;
+                    role: string;
+                    contentPreview: string;
+                    hasImage: boolean;
+                    thinkingStepCount: number;
+                    toolResultCount: number;
+                }>;
+            }>;
+        };
     }
 }

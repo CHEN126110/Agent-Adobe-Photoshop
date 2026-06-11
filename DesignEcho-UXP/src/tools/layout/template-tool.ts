@@ -6,6 +6,14 @@
 
 import { app, core, action } from 'photoshop';
 import { Tool, ToolSchema, ToolResult } from '../types';
+import { openDocumentWithJsx } from '../../core/jsx-bridge';
+import { getEntryFromPath } from '../../core/file-url';
+import {
+    arrayBufferFromBytes,
+    assertImageBytesSafeForPhotoshop,
+    bytesFromBase64ImagePayload,
+    readFileEntryBytes
+} from '../../core/image-safety';
 
 // ===== 辅助函数 =====
 
@@ -57,31 +65,210 @@ function getBoundsNoEffects(layer: any): any {
     return layer?.boundsNoEffects || layer?.bounds;
 }
 
-function normalizeToFileUrl(p: string): string {
-    const normalized = p.replace(/\\/g, '/');
-    if (/^file:\/\//i.test(normalized)) return normalized;
-    if (/^[a-zA-Z]:\//.test(normalized)) return `file:///${normalized}`;
-    if (normalized.startsWith('//')) return `file:${normalized}`;
-    return `file://${normalized.startsWith('/') ? '' : '/'}${normalized}`;
+function normalizeTargetRect(bounds: any): { left: number; top: number; right: number; bottom: number } | null {
+    if (!bounds) return null;
+    const left = Number(bounds.left);
+    const top = Number(bounds.top);
+    const right = Number(bounds.right);
+    const bottom = Number(bounds.bottom);
+    if (![left, top, right, bottom].every((value) => Number.isFinite(value))) {
+        return null;
+    }
+    if (right <= left || bottom <= top) {
+        return null;
+    }
+    return { left, top, right, bottom };
 }
 
-function safeEncodeUrl(url: string): string {
-    try {
-        return encodeURI(decodeURI(url));
-    } catch {
-        return encodeURI(url);
+function normalizePlacementBox(box: any): { x: number; y: number; width: number; height: number } | null {
+    if (!box) return null;
+    const x = Number(box.x);
+    const y = Number(box.y);
+    const width = Number(box.width);
+    const height = Number(box.height);
+    if (![x, y, width, height].every((value) => Number.isFinite(value))) {
+        return null;
     }
+    if (width <= 0 || height <= 0) {
+        return null;
+    }
+    return { x, y, width, height };
+}
+
+function placementBoxToRect(box: { x: number; y: number; width: number; height: number }): { left: number; top: number; right: number; bottom: number } {
+    return {
+        left: box.x,
+        top: box.y,
+        right: box.x + box.width,
+        bottom: box.y + box.height
+    };
+}
+
+function rectContains(
+    outer: { left: number; top: number; right: number; bottom: number },
+    inner: { left: number; top: number; right: number; bottom: number }
+): boolean {
+    return inner.left >= outer.left
+        && inner.top >= outer.top
+        && inner.right <= outer.right
+        && inner.bottom <= outer.bottom;
+}
+
+function rectWithSize(rect: { left: number; top: number; right: number; bottom: number }): { left: number; top: number; right: number; bottom: number; width: number; height: number } {
+    return {
+        ...rect,
+        width: Math.max(1, rect.right - rect.left),
+        height: Math.max(1, rect.bottom - rect.top)
+    };
+}
+
+function statusFromPlacementDeviation(maxAbs: number): 'ok' | 'watch' | 'mismatch' {
+    if (maxAbs <= 2) return 'ok';
+    if (maxAbs <= 8) return 'watch';
+    return 'mismatch';
+}
+
+function buildPlacementAudit(
+    strategy: 'placementTransform' | 'smartScalingDecision' | 'fitFallback',
+    plannedRect: { left: number; top: number; right: number; bottom: number } | null,
+    actualRect: { left: number; top: number; right: number; bottom: number } | null,
+    smartScalingDecision?: {
+        confidence?: number;
+        cropRisk?: string;
+        warnings?: string[];
+    }
+) {
+    if (!plannedRect || !actualRect) {
+        return {
+            strategy,
+            status: 'unverified',
+            smartScaling: smartScalingDecision
+                ? {
+                    confidence: Number(smartScalingDecision.confidence || 0) || undefined,
+                    cropRisk: smartScalingDecision.cropRisk,
+                    warnings: smartScalingDecision.warnings || []
+                }
+                : undefined,
+            notes: ['missing planned or actual bounds for verification']
+        };
+    }
+
+    const planned = rectWithSize(plannedRect);
+    const actual = rectWithSize(actualRect);
+    const deviation = {
+        left: actual.left - planned.left,
+        top: actual.top - planned.top,
+        width: actual.width - planned.width,
+        height: actual.height - planned.height,
+        maxAbs: 0
+    };
+    deviation.maxAbs = Math.max(
+        Math.abs(deviation.left),
+        Math.abs(deviation.top),
+        Math.abs(deviation.width),
+        Math.abs(deviation.height)
+    );
+
+    return {
+        strategy,
+        plannedBounds: planned,
+        actualBounds: actual,
+        deviation,
+        status: statusFromPlacementDeviation(deviation.maxAbs),
+        smartScaling: smartScalingDecision
+            ? {
+                confidence: Number(smartScalingDecision.confidence || 0) || undefined,
+                cropRisk: smartScalingDecision.cropRisk,
+                warnings: smartScalingDecision.warnings || []
+            }
+            : undefined,
+        notes: [
+            ...(deviation.maxAbs <= 2 ? [] : [`actual bounds deviate from planned bounds by ${deviation.maxAbs.toFixed(1)}px`]),
+            ...(smartScalingDecision?.warnings || [])
+        ]
+    };
 }
 
 async function createSessionTokenFromPath(filePath: string): Promise<string> {
     const uxpStorage = require('uxp').storage;
     const localFs = uxpStorage.localFileSystem;
-    const fileUrl = safeEncodeUrl(normalizeToFileUrl(filePath));
-    const fileEntry = await localFs.getEntryWithUrl(fileUrl);
+    const fileEntry = await getEntryFromPath(localFs, filePath);
     if (!fileEntry) {
-        throw new Error(`无法访问文件: ${filePath}`);
+        throw new Error(`Cannot access file: ${filePath}`);
     }
     return await localFs.createSessionToken(fileEntry);
+}
+
+async function createValidatedImageSessionTokenFromPath(filePath: string): Promise<string> {
+    const uxpStorage = require('uxp').storage;
+    const localFs = uxpStorage.localFileSystem;
+    const fileEntry = await getEntryFromPath(localFs, filePath);
+    if (!fileEntry) {
+        throw new Error(`Cannot access image file: ${filePath}`);
+    }
+    const bytes = await readFileEntryBytes(fileEntry, uxpStorage);
+    const extension = String(filePath.match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase();
+    assertImageBytesSafeForPhotoshop(bytes, {
+        formatHint: extension,
+        sourceLabel: `占位图文件「${filePath.split(/[\\/]/).pop() || filePath}」`
+    });
+    return await localFs.createSessionToken(fileEntry);
+}
+
+function findLayerById(container: any, layerId: number): any | null {
+    const layers = Array.isArray(container?.layers) ? container.layers : [];
+    for (const layer of layers) {
+        if (layer?.id === layerId) return layer;
+        const nested = findLayerById(layer, layerId);
+        if (nested) return nested;
+    }
+    return null;
+}
+
+function extensionFromMimeType(mimeType: string): string {
+    const normalized = String(mimeType || '').toLowerCase();
+    if (normalized.includes('jpeg') || normalized.includes('jpg')) return 'jpg';
+    if (normalized.includes('webp')) return 'webp';
+    return 'png';
+}
+
+function describeUnknownError(error: unknown): string {
+    if (error === null || error === undefined) {
+        return 'Unknown error';
+    }
+    if (error instanceof Error) {
+        return error.message || error.name;
+    }
+    if (typeof error === 'string') {
+        return error;
+    }
+    try {
+        const serialized = JSON.stringify(error);
+        if (typeof serialized === 'string' && serialized.trim()) {
+            return serialized;
+        }
+    } catch {
+        // fall through to String(error)
+    }
+    const stringified = String(error);
+    return stringified && stringified !== 'undefined' ? stringified : 'Unknown error';
+}
+
+async function createSessionTokenFromImagePayload(input: string): Promise<string> {
+    const { bytes, mimeType } = bytesFromBase64ImagePayload(input);
+    assertImageBytesSafeForPhotoshop(bytes, {
+        formatHint: mimeType,
+        sourceLabel: '占位图 Base64 图片'
+    });
+
+    const uxpStorage = require('uxp').storage;
+    const localFs = uxpStorage.localFileSystem;
+    const tempFolder = await localFs.getTemporaryFolder();
+    const tempFile = await tempFolder.createFile(`placeholder_${Date.now()}.${extensionFromMimeType(mimeType)}`, {
+        overwrite: true
+    });
+    await tempFile.write(arrayBufferFromBytes(bytes), { format: uxpStorage.formats.binary });
+    return await localFs.createSessionToken(tempFile);
 }
 
 // ===== 打开 PSD/PSB 文件 =====
@@ -105,8 +292,8 @@ export class OpenTemplateTool implements Tool {
         }
     };
 
-    async execute(params: { psdPath: string }): Promise<ToolResult> {
-        const { psdPath } = params;
+    async execute(params: { psdPath: string; fileToken?: string }): Promise<ToolResult> {
+        const { psdPath, fileToken: providedFileToken } = params;
         
         console.log('[OpenFile] 开始打开文件:', psdPath);
 
@@ -119,30 +306,75 @@ export class OpenTemplateTool implements Tool {
         }
 
         try {
-            // UXP 安全限制：无法通过路径字符串直接打开外部文件
-            // 需要使用文件选择器获取用户授权
-            const uxpStorage = require('uxp').storage;
-            const localFs = uxpStorage.localFileSystem as any;  // 使用 any 绕过类型检查
-            
-            // 尝试使用文件选择器获取文件访问权限
-            // 这会弹出一个文件选择对话框
-            console.log('[OpenFile] 尝试通过文件选择器获取访问权限...');
-            
-            // 从路径中提取文件名
             const fileName = psdPath.split(/[\\\/]/).pop() || 'file.psd';
-            
-            let fileEntry;
+
+            let fileToken: string | undefined = providedFileToken;
+            if (!fileToken) {
             try {
-                // 弹出文件选择器，让用户选择要打开的文件
-                fileEntry = await localFs.getFileForOpening({
-                    types: ['psd', 'psb']
-                });
-                
-                if (!fileEntry) {
-                    console.log('[OpenFile] 用户取消了文件选择');
+                fileToken = await createSessionTokenFromPath(psdPath);
+                console.log('[OpenFile] 已通过路径直接获取文件 token');
+            } catch (directOpenError: any) {
+                console.warn('[OpenFile] 直接路径访问失败，回退到文件选择器:', directOpenError?.message || directOpenError);
+            }
+            }
+
+            if (!fileToken) {
+                try {
+                    const jsxResult = await openDocumentWithJsx(psdPath);
+                    return {
+                        success: true,
+                        data: {
+                            message: `文件已打开: ${jsxResult.documentName}`,
+                            documentName: jsxResult.documentName,
+                            filePath: jsxResult.filePath,
+                            openedVia: 'jsx'
+                        }
+                    };
+                } catch (jsxError) {
+                    console.warn('[OpenFile] JSX fallback open failed:', jsxError);
+                }
+
+                return {
+                    success: false,
+                    error: `无法直接打开文件: ${psdPath}`,
+                    data: {
+                        suggestion: 'direct_open_failed',
+                        filePath: psdPath,
+                        fileName
+                    }
+                };
+
+                const uxpStorage = require('uxp').storage;
+                const localFs = uxpStorage.localFileSystem as any;
+                console.log('[OpenFile] 尝试通过文件选择器获取访问权限...');
+
+                let fileEntry;
+                try {
+                    fileEntry = await localFs.getFileForOpening({
+                        types: ['psd', 'psb']
+                    });
+
+                    if (!fileEntry) {
+                        console.log('[OpenFile] 用户取消了文件选择');
+                        return {
+                            success: false,
+                            error: `用户取消了文件选择。\n\n如需打开文件，请在 Photoshop 中使用 **文件 > 打开**:\n📁 ${psdPath}`,
+                            data: {
+                                suggestion: 'manual_open',
+                                filePath: psdPath,
+                                fileName: fileName
+                            }
+                        };
+                    }
+
+                    console.log('[OpenFile] 用户选择了文件:', fileEntry.name);
+                    fileToken = await localFs.createSessionToken(fileEntry);
+                } catch (pickerError: any) {
+                    console.error('[OpenFile] 文件选择器失败:', pickerError.message);
+
                     return {
                         success: false,
-                        error: `用户取消了文件选择。\n\n如需打开文件，请在 Photoshop 中使用 **文件 > 打开**:\n📁 ${psdPath}`,
+                        error: `⚠️ 无法自动打开文件。\n\n请在 Photoshop 中手动打开:\n📁 ${psdPath}`,
                         data: {
                             suggestion: 'manual_open',
                             filePath: psdPath,
@@ -150,27 +382,8 @@ export class OpenTemplateTool implements Tool {
                         }
                     };
                 }
-                
-                console.log('[OpenFile] 用户选择了文件:', fileEntry.name);
-            } catch (pickerError: any) {
-                console.error('[OpenFile] 文件选择器失败:', pickerError.message);
-                
-                // 如果文件选择器也失败，返回手动打开的提示
-                return {
-                    success: false,
-                    error: `⚠️ 由于 UXP 安全限制，无法自动打开文件。\n\n请在 Photoshop 中手动打开:\n📁 ${psdPath}`,
-                    data: {
-                        suggestion: 'manual_open',
-                        filePath: psdPath,
-                        fileName: fileName
-                    }
-                };
             }
-            
-            // 创建 Session Token
-            const fileToken = await localFs.createSessionToken(fileEntry);
-            console.log('[OpenFile] Session Token 已创建');
-            
+
             // 使用 token 打开文件
             await core.executeAsModal(async () => {
                 await action.batchPlay([
@@ -183,7 +396,7 @@ export class OpenTemplateTool implements Tool {
                         _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], { synchronousExecution: true });
-            }, { commandName: `打开文件: ${fileEntry.name}` });
+            }, { commandName: `打开文件: ${fileName}` });
 
             const docName = app.activeDocument?.name;
             console.log('[OpenFile] 打开成功，当前文档:', docName);
@@ -191,9 +404,9 @@ export class OpenTemplateTool implements Tool {
             return {
                 success: true,
                 data: {
-                    message: `文件已打开: ${docName || fileEntry.name}`,
+                    message: `文件已打开: ${docName || fileName}`,
                     documentName: docName,
-                    filePath: fileEntry.nativePath
+                    filePath: psdPath
                 }
             };
         } catch (error: any) {
@@ -201,6 +414,21 @@ export class OpenTemplateTool implements Tool {
             
             // 提取文件名用于显示
             const fileName = psdPath.split(/[\\\/]/).pop() || 'file.psd';
+
+            try {
+                const jsxResult = await openDocumentWithJsx(psdPath);
+                return {
+                    success: true,
+                    data: {
+                        message: `文件已打开: ${jsxResult.documentName}`,
+                        documentName: jsxResult.documentName,
+                        filePath: jsxResult.filePath,
+                        openedVia: 'jsx'
+                    }
+                };
+            } catch (jsxError) {
+                console.warn('[OpenFile] JSX fallback after batchPlay failure also failed:', jsxError);
+            }
             
             return {
                 success: false,
@@ -284,62 +512,150 @@ export class ReplaceImagePlaceholderTool implements Tool {
     
     schema: ToolSchema = {
         name: 'replaceImagePlaceholder',
-        description: '替换模板中的图片占位符',
+        description: 'Replace an image placeholder using a layer path or explicit layer id.',
         parameters: {
             type: 'object',
             properties: {
                 layerPath: {
                     type: 'string',
-                    description: '目标图层路径，如 "产品层/[IMG:产品主体]"'
+                    description: 'Target layer path, for example "Product/[IMG:hero]"'
+                },
+                placeholderLayerId: {
+                    type: 'number',
+                    description: 'Explicit placeholder layer id'
+                },
+                targetLayerId: {
+                    type: 'number',
+                    description: 'Alias for explicit placeholder layer id'
                 },
                 imagePath: {
                     type: 'string',
-                    description: '替换图片的完整路径'
+                    description: 'Absolute image path to place'
+                },
+                imageBase64: {
+                    type: 'string',
+                    description: 'Base64 image payload or data URL'
+                },
+                image: {
+                    type: 'string',
+                    description: 'Alias for imageBase64'
                 },
                 fit: {
                     type: 'string',
                     enum: ['contain', 'cover', 'fill', 'none'],
-                    description: '图片适配模式'
+                    description: 'Image fit mode'
                 },
                 align: {
                     type: 'string',
                     enum: ['center', 'top', 'bottom', 'left', 'right'],
-                    description: '对齐方式'
+                    description: 'Alignment inside the placeholder bounds'
+                },
+                targetBounds: {
+                    type: 'object',
+                    description: 'Optional explicit target bounds override'
+                },
+                placementTransform: {
+                    type: 'object',
+                    description: 'Optional placement transform metadata'
+                },
+                smartScalingDecision: {
+                    type: 'object',
+                    description: 'Optional smart scaling decision metadata'
                 }
             },
-            required: ['layerPath', 'imagePath']
+            required: []
         }
     };
 
     async execute(params: {
-        layerPath: string;
-        imagePath: string;
+        layerPath?: string;
+        placeholderLayerId?: number;
+        targetLayerId?: number;
+        imagePath?: string;
+        imageBase64?: string;
+        image?: string;
         fit?: string;
         align?: string;
-    }): Promise<ToolResult> {
-        const { layerPath, imagePath, fit = 'contain' } = params;
-        
+        targetBounds?: { left?: number; top?: number; right?: number; bottom?: number };
+        placementTransform?: {
+            destinationBox?: { x?: number; y?: number; width?: number; height?: number };
+            visibleBox?: { x?: number; y?: number; width?: number; height?: number };
+            scale?: number;
+            scaleX?: number;
+            scaleY?: number;
+            anchor?: string;
+            scaleMode?: string;
+            cropRisk?: boolean;
+        };
+        smartScalingDecision?: {
+            destinationBox?: { x?: number; y?: number; width?: number; height?: number };
+            confidence?: number;
+            cropRisk?: string;
+            warnings?: string[];
+        };
+    }): Promise<any> {
         const doc = app.activeDocument;
         if (!doc) {
-            return { success: false, error: '没有打开的文档', data: null };
+            return { success: false, error: 'No active document' };
         }
 
-        const layer = await findLayerByPath(layerPath);
+        const explicitLayerId = typeof params.placeholderLayerId === 'number'
+            ? params.placeholderLayerId
+            : typeof params.targetLayerId === 'number'
+                ? params.targetLayerId
+                : undefined;
+        const layerPath = String(params.layerPath || '').trim();
+        const layer = typeof explicitLayerId === 'number'
+            ? findLayerById(doc, explicitLayerId)
+            : layerPath
+                ? await findLayerByPath(layerPath)
+                : null;
+
         if (!layer) {
-            return { success: false, error: `图层未找到: ${layerPath}`, data: null };
+            return {
+                success: false,
+                error: typeof explicitLayerId === 'number'
+                    ? `Layer not found for id ${explicitLayerId}`
+                    : 'replaceImagePlaceholder requires layerPath, placeholderLayerId, or targetLayerId'
+            };
         }
 
+        const fit = String(params.fit || 'contain');
+        const align = String(params.align || 'center');
+        const imagePayload = String(params.imageBase64 || params.image || '').trim();
+        const imagePath = String(params.imagePath || '').trim();
+        if (!imagePayload && !imagePath) {
+            return {
+                success: false,
+                error: 'replaceImagePlaceholder requires imagePath, imageBase64, or image'
+            };
+        }
+
+        let failureStage = 'start';
         try {
+            let resultLayerId = Number(layer.id);
+            let resultLayerName = String(layer.name || '');
+            let placementAudit: ReturnType<typeof buildPlacementAudit> | null = null;
             await core.executeAsModal(async () => {
-                // 获取目标图层边界
-                const targetBounds = getBoundsNoEffects(layer);
+                failureStage = 'resolve-target-bounds';
+                const targetBounds = normalizeTargetRect(params.targetBounds) || getBoundsNoEffects(layer);
+                if (!targetBounds) {
+                    throw new Error('Target layer bounds are unavailable');
+                }
                 const targetWidth = targetBounds.right - targetBounds.left;
                 const targetHeight = targetBounds.bottom - targetBounds.top;
+                if (!(targetWidth > 0) || !(targetHeight > 0)) {
+                    throw new Error(`Invalid target bounds ${targetWidth}x${targetHeight}`);
+                }
                 const targetCenterX = targetBounds.left + targetWidth / 2;
                 const targetCenterY = targetBounds.top + targetHeight / 2;
-                const imageToken = await createSessionTokenFromPath(imagePath);
 
-                // 放置新图片
+                failureStage = 'prepare-image-token';
+                const imageToken = imagePayload
+                    ? await createSessionTokenFromImagePayload(imagePayload)
+                    : await createValidatedImageSessionTokenFromPath(imagePath);
+
+                failureStage = 'place-image';
                 await action.batchPlay([
                     {
                         _obj: 'placeEvent',
@@ -350,35 +666,54 @@ export class ReplaceImagePlaceholderTool implements Tool {
                         freeTransformCenterState: {
                             _enum: 'quadCenterState',
                             _value: 'QCSAverage'
-                        }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
-                ], {});
+                ], { synchronousExecution: true });
 
+                failureStage = 'resolve-placed-layer';
                 const newLayer = doc.activeLayers[0];
-                if (!newLayer) return;
-
-                // 计算缩放
-                const newBounds = getBoundsNoEffects(newLayer);
-                const newWidth = newBounds.right - newBounds.left;
-                const newHeight = newBounds.bottom - newBounds.top;
-
-                let scaleX = 1;
-                let scaleY = 1;
-                if (fit === 'contain') {
-                    const uniform = Math.min(targetWidth / newWidth, targetHeight / newHeight);
-                    scaleX = uniform;
-                    scaleY = uniform;
-                } else if (fit === 'cover') {
-                    const uniform = Math.max(targetWidth / newWidth, targetHeight / newHeight);
-                    scaleX = uniform;
-                    scaleY = uniform;
-                } else if (fit === 'fill') {
-                    scaleX = targetWidth / newWidth;
-                    scaleY = targetHeight / newHeight;
+                if (!newLayer) {
+                    throw new Error('Failed to create placed layer');
                 }
 
-                // 应用缩放
-                if (scaleX !== 1 || scaleY !== 1) {
+                failureStage = 'measure-placed-layer';
+                const newBounds = getBoundsNoEffects(newLayer);
+                if (!newBounds) {
+                    throw new Error('Placed layer bounds are unavailable');
+                }
+                const newWidth = newBounds.right - newBounds.left;
+                const newHeight = newBounds.bottom - newBounds.top;
+                if (!(newWidth > 0) || !(newHeight > 0)) {
+                    throw new Error(`Invalid placed layer bounds ${newWidth}x${newHeight}`);
+                }
+
+                const transformDestination = normalizePlacementBox(params.placementTransform?.destinationBox);
+                const transformVisible = normalizePlacementBox(params.placementTransform?.visibleBox);
+                const smartScalingDestination = normalizePlacementBox(params.smartScalingDecision?.destinationBox);
+                const transformDestinationRect = transformDestination ? placementBoxToRect(transformDestination) : null;
+                const transformVisibleRect = transformVisible ? placementBoxToRect(transformVisible) : null;
+                const smartScalingDestinationRect = smartScalingDestination ? placementBoxToRect(smartScalingDestination) : null;
+                const canUseTransformDestination = !!transformDestinationRect && rectContains(targetBounds, transformDestinationRect);
+                const canUseSmartScalingDestination = !canUseTransformDestination
+                    && !!smartScalingDestinationRect
+                    && rectContains(targetBounds, smartScalingDestinationRect);
+                const destinationRect = canUseTransformDestination
+                    ? transformDestinationRect
+                    : canUseSmartScalingDestination
+                        ? smartScalingDestinationRect
+                        : null;
+                const placementStrategy = canUseTransformDestination
+                    ? 'placementTransform'
+                    : canUseSmartScalingDestination
+                        ? 'smartScalingDecision'
+                        : 'fitFallback';
+                const plannedRect = destinationRect
+                    ? destinationRect
+                    : transformVisibleRect || targetBounds;
+
+                if (destinationRect) {
+                    failureStage = 'scale-placed-layer';
                     await action.batchPlay([
                         {
                             _obj: 'transform',
@@ -386,45 +721,132 @@ export class ReplaceImagePlaceholderTool implements Tool {
                                 _enum: 'quadCenterState',
                                 _value: 'QCSAverage'
                             },
-                            width: { _unit: 'percentUnit', _value: scaleX * 100 },
-                            height: { _unit: 'percentUnit', _value: scaleY * 100 }
+                            width: {
+                                _unit: 'percentUnit',
+                                _value: Math.max(1, ((destinationRect.right - destinationRect.left) / newWidth) * 100)
+                            },
+                            height: {
+                                _unit: 'percentUnit',
+                                _value: Math.max(1, ((destinationRect.bottom - destinationRect.top) / newHeight) * 100)
+                            },
+                            _options: { dialogOptions: 'dontDisplay' }
                         }
-                    ], {});
+                    ], { synchronousExecution: true });
+
+                    failureStage = 'align-placed-layer';
+                    const currentBounds = getBoundsNoEffects(newLayer);
+                    if (!currentBounds) {
+                        throw new Error('Aligned layer bounds are unavailable');
+                    }
+                    await newLayer.translate(
+                        destinationRect.left - currentBounds.left,
+                        destinationRect.top - currentBounds.top
+                    );
+                } else {
+                    let scaleX = 1;
+                    let scaleY = 1;
+                    const alignBounds = transformVisibleRect || targetBounds;
+                    const alignWidth = alignBounds.right - alignBounds.left;
+                    const alignHeight = alignBounds.bottom - alignBounds.top;
+                    const alignCenterX = alignBounds.left + alignWidth / 2;
+                    const alignCenterY = alignBounds.top + alignHeight / 2;
+
+                    if (fit === 'contain') {
+                        const uniform = Math.min(alignWidth / newWidth, alignHeight / newHeight);
+                        scaleX = uniform;
+                        scaleY = uniform;
+                    } else if (fit === 'cover') {
+                        const uniform = Math.max(alignWidth / newWidth, alignHeight / newHeight);
+                        scaleX = uniform;
+                        scaleY = uniform;
+                    } else if (fit === 'fill') {
+                        scaleX = alignWidth / newWidth;
+                        scaleY = alignHeight / newHeight;
+                    }
+
+                    if (scaleX !== 1 || scaleY !== 1) {
+                        failureStage = 'scale-placed-layer';
+                        await action.batchPlay([
+                            {
+                                _obj: 'transform',
+                                freeTransformCenterState: {
+                                    _enum: 'quadCenterState',
+                                    _value: 'QCSAverage'
+                                },
+                                width: { _unit: 'percentUnit', _value: scaleX * 100 },
+                                height: { _unit: 'percentUnit', _value: scaleY * 100 },
+                                _options: { dialogOptions: 'dontDisplay' }
+                            }
+                        ], { synchronousExecution: true });
+                    }
+
+                    failureStage = 'align-placed-layer';
+                    const currentBounds = getBoundsNoEffects(newLayer);
+                    if (!currentBounds) {
+                        throw new Error('Aligned layer bounds are unavailable');
+                    }
+                    const currentWidth = currentBounds.right - currentBounds.left;
+                    const currentHeight = currentBounds.bottom - currentBounds.top;
+                    let desiredLeft = alignBounds.left;
+                    let desiredTop = alignBounds.top;
+
+                    if (align === 'center') {
+                        desiredLeft = alignCenterX - currentWidth / 2;
+                        desiredTop = alignCenterY - currentHeight / 2;
+                    } else if (align === 'top') {
+                        desiredLeft = alignCenterX - currentWidth / 2;
+                        desiredTop = alignBounds.top;
+                    } else if (align === 'bottom') {
+                        desiredLeft = alignCenterX - currentWidth / 2;
+                        desiredTop = alignBounds.bottom - currentHeight;
+                    } else if (align === 'left') {
+                        desiredLeft = alignBounds.left;
+                        desiredTop = alignCenterY - currentHeight / 2;
+                    } else if (align === 'right') {
+                        desiredLeft = alignBounds.right - currentWidth;
+                        desiredTop = alignCenterY - currentHeight / 2;
+                    }
+
+                    await newLayer.translate(
+                        desiredLeft - currentBounds.left,
+                        desiredTop - currentBounds.top
+                    );
                 }
 
-                // 移动到目标位置
-                const currentBounds = getBoundsNoEffects(newLayer);
-                const currentCenterX = (currentBounds.left + currentBounds.right) / 2;
-                const currentCenterY = (currentBounds.top + currentBounds.bottom) / 2;
-                
-                await newLayer.translate(
-                    targetCenterX - currentCenterX,
-                    targetCenterY - currentCenterY
-                );
-
-                // 删除原图层
+                failureStage = 'finalize-replacement';
                 const originalName = layer.name;
                 await layer.delete();
                 newLayer.name = originalName;
-
+                resultLayerId = Number(newLayer.id);
+                resultLayerName = String(newLayer.name || originalName || '');
+                placementAudit = buildPlacementAudit(
+                    placementStrategy,
+                    plannedRect,
+                    normalizeTargetRect(getBoundsNoEffects(newLayer)),
+                    params.smartScalingDecision
+                );
             }, { commandName: 'Replace Image Placeholder' });
 
             return {
                 success: true,
-                data: { message: `已替换图片: ${layerPath}` }
+                entityType: 'image-placeholder-replacement',
+                documentId: Number(doc.id),
+                layerId: resultLayerId,
+                name: resultLayerName,
+                targetLayerId: Number(layer.id),
+                placementAudit,
+                message: `Replaced image placeholder ${resultLayerName}`
             };
-        } catch (error: any) {
+        } catch (error: unknown) {
+            const detail = describeUnknownError(error);
             return {
                 success: false,
-                error: `替换图片失败: ${error.message}`,
-                data: null
+                error: `Replace image placeholder failed: ${detail}`,
+                stage: typeof failureStage === 'string' ? failureStage : 'unknown'
             };
         }
     }
 }
-
-// ===== 替换文本占位符 =====
-
 export class ReplaceTextPlaceholderTool implements Tool {
     name = 'replaceTextPlaceholder';
     

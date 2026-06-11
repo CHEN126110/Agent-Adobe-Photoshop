@@ -6,6 +6,14 @@
 
 import { app, action, core } from 'photoshop';
 import { Tool, ToolResult } from '../types';
+import {
+    arrayBufferFromBytes,
+    assertImageBytesSafeForPhotoshop,
+    bytesFromBase64ImagePayload
+} from '../../core/image-safety';
+import { createToolFailureResult, ToolFailureResult } from '../../core/tool-error-normalizer';
+
+type ReplaceLayerContentResult = ToolResult | ToolFailureResult;
 
 interface ReplaceLayerContentParams {
     layerId: number;
@@ -18,11 +26,15 @@ interface ReplaceLayerContentParams {
     };
 }
 
+function failure(toolName: string, error: unknown, params?: unknown): ToolFailureResult {
+    return createToolFailureResult({ toolName, error, params });
+}
+
 /**
  * 替换图层内容
  * 将 base64 图像数据替换指定图层的内容
  */
-export async function replaceLayerContent(params: ReplaceLayerContentParams): Promise<ToolResult> {
+export async function replaceLayerContent(params: ReplaceLayerContentParams): Promise<ReplaceLayerContentResult> {
     const { layerId, imageBase64, bounds } = params;
     
     console.log('[replaceLayerContent] 开始替换图层内容');
@@ -30,37 +42,39 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
     console.log(`  bounds: ${bounds ? `(${bounds.left}, ${bounds.top}) ${bounds.width}x${bounds.height}` : '无'}`);
     
     // 用于存储 executeAsModal 内部的结果
-    let modalResult: ToolResult = { success: false, error: '未执行', data: null };
+    let modalResult: ReplaceLayerContentResult = failure('replaceLayerContent', '未执行', params);
     
     try {
         // 使用 executeAsModal 包装所有会修改 Photoshop 状态的操作
         await core.executeAsModal(async () => {
             const doc = app.activeDocument;
             if (!doc) {
-                modalResult = { success: false, error: '没有打开的文档', data: null };
+                modalResult = failure('replaceLayerContent', '没有打开的文档', params);
                 return;
             }
             
             // 查找目标图层
             const targetLayer = findLayerById(doc.layers, layerId);
             if (!targetLayer) {
-                modalResult = { success: false, error: `未找到图层 ID: ${layerId}`, data: null };
+                modalResult = failure('replaceLayerContent', `未找到图层 ID: ${layerId}`, params);
                 return;
             }
             
             console.log(`  目标图层: "${targetLayer.name}"`);
             
-            // 解码 base64 图像
-            let base64Data = imageBase64;
-            if (base64Data.includes(',')) {
-                base64Data = base64Data.split(',')[1];
-            }
-            
-            // 将 base64 转为 ArrayBuffer
-            const binaryString = atob(base64Data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
+            const { bytes, mimeType } = bytesFromBase64ImagePayload(imageBase64);
+            const safety = assertImageBytesSafeForPhotoshop(bytes, {
+                formatHint: mimeType,
+                sourceLabel: 'replaceLayerContent 图像'
+            });
+            if (safety.format !== 'png') {
+                modalResult = failure('replaceLayerContent', 'replaceLayerContent 当前只支持安全 PNG 图像数据', {
+                    layerId,
+                    bounds,
+                    mimeType,
+                    detectedFormat: safety.format
+                });
+                return;
             }
             
             // 使用 batchPlay 放置图像
@@ -68,7 +82,8 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
                 {
                     _obj: 'select',
                     _target: [{ _ref: 'layer', _id: layerId }],
-                    makeVisible: true
+                    makeVisible: true,
+                    _options: { dialogOptions: 'dontDisplay' }
                 }
             ], { synchronousExecution: true });
         
@@ -85,7 +100,7 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
         const isPNG = pngSignature.every((b, i) => bytes[i] === b);
         
         if (!isPNG) {
-            modalResult = { success: false, error: '图像格式不是 PNG', data: null };
+            modalResult = failure('replaceLayerContent', '图像格式不是 PNG', params);
             return;
         }
         
@@ -105,7 +120,7 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
         const tempFolder = await fs.getTemporaryFolder();
         const tempFile = await tempFolder.createFile('temp_warp_result.png', { overwrite: true });
         
-        await tempFile.write(bytes.buffer);
+        await tempFile.write(arrayBufferFromBytes(bytes));
         
         console.log(`  临时文件已创建: ${tempFile.nativePath}`);
         
@@ -130,7 +145,8 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
                     _path: fileToken,
                     _kind: 'local'
                 },
-                linked: false  // 不链接，嵌入
+                linked: false,  // 不链接，嵌入
+                _options: { dialogOptions: 'dontDisplay' }
             }
         ], { synchronousExecution: true });
         
@@ -141,23 +157,13 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
         
         if (!newLayer) {
             console.warn('  ⚠ 未能获取新图层');
-            modalResult = { success: false, error: '放置图像后未能获取新图层', data: null };
+            modalResult = failure('replaceLayerContent', '放置图像后未能获取新图层', params);
             return;
         }
         
-        // 栅格化智能对象（如果是）
-        try {
-            await action.batchPlay([
-                {
-                    _obj: 'rasterizeLayer',
-                    _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }]
-                }
-            ], { synchronousExecution: true });
-            console.log('  图层已栅格化');
-        } catch (e) {
-            console.log('  图层无需栅格化');
-        }
-        
+        // 不再猜测性调用 rasterizeLayer。Photoshop 在命令不可用时会弹原生阻塞窗口，
+        // 这里保持置入层原状态，后续需要栅格化时必须走显式、可验证的安全工具。
+
         // 获取新图层的当前边界
         const newLayerBounds = newLayer.bounds;
         const currentLeft = newLayerBounds?.left || 0;
@@ -188,21 +194,12 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
                     },
                     width: { _unit: 'percentUnit', _value: scaleX * 100 },
                     height: { _unit: 'percentUnit', _value: scaleY * 100 },
-                    interfaceIconFrameDimmed: { _enum: 'interpolationType', _value: 'bicubic' }
+                    interfaceIconFrameDimmed: { _enum: 'interpolationType', _value: 'bicubic' },
+                    _options: { dialogOptions: 'dontDisplay' }
                 }
             ], { synchronousExecution: true });
             console.log('  图层已变换到目标位置');
         }
-        
-        // 将新图层移动到原图层上方
-        await action.batchPlay([
-            {
-                _obj: 'move',
-                _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                to: { _ref: 'layer', _id: layerId },
-                adjustment: false
-            }
-        ], { synchronousExecution: true });
         
         // 重命名新图层（添加后缀表示已变形）
         if (newLayer && newLayer.name) {
@@ -218,7 +215,8 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
         await action.batchPlay([
             {
                 _obj: 'hide',
-                null: [{ _ref: 'layer', _id: layerId }]
+                null: [{ _ref: 'layer', _id: layerId }],
+                _options: { dialogOptions: 'dontDisplay' }
             }
         ], { synchronousExecution: true });
         
@@ -246,11 +244,7 @@ export async function replaceLayerContent(params: ReplaceLayerContentParams): Pr
         
     } catch (error: any) {
         console.error('[replaceLayerContent] 错误:', error);
-        return {
-            success: false,
-            error: error.message || String(error),
-            data: null
-        };
+        return failure('replaceLayerContent', error, params);
     }
 }
 
@@ -306,7 +300,7 @@ export class ReplaceLayerContentTool implements Tool {
         }
     };
     
-    async execute(params: ReplaceLayerContentParams): Promise<ToolResult> {
+    async execute(params: ReplaceLayerContentParams): Promise<ReplaceLayerContentResult> {
         return replaceLayerContent(params);
     }
 }

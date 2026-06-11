@@ -9,6 +9,7 @@ import sharp from 'sharp';
 import * as crypto from 'crypto';
 import {
     Point2D,
+    ControlPointPair,
     BoundingBox,
     MorphingConfig,
     DisplacementField,
@@ -18,6 +19,7 @@ import {
     QUALITY_PRESETS,
     MorphingLogEntry
 } from './types';
+import { ContentAnalyzer } from './content-analyzer';
 import { JFADistanceField } from './jfa-distance-field';
 import { MLSDeformation } from './mls-deformation';
 import { SmartCuffDetector } from './smart-cuff-detector';
@@ -37,6 +39,9 @@ export interface OptimizedMorphRequest {
     
     // 可选: 源图像 (用于袜口检测)
     sourceImageBase64?: string;
+
+    // 可选: 由上游 planner 提供的控制点对
+    controlPairs?: ControlPointPair[];
     
     // 配置
     config?: Partial<MorphingConfig>;
@@ -60,9 +65,12 @@ export interface OptimizedMorphResult {
         jfaTime: number;
         mlsTime: number;
         cuffDetectionTime: number;
+        contentAnalysisTime: number;
         compressionTime: number;
         pixelCount: number;
         compressionRatio: number;
+        avgDisplacementPx: number;
+        maxDisplacementPx: number;
     };
     
     error?: string;
@@ -75,12 +83,14 @@ export class OptimizedMorphingService {
     private jfaDistanceField: JFADistanceField;
     private mlsDeformation: MLSDeformation;
     private cuffDetector: SmartCuffDetector;
+    private contentAnalyzer: ContentAnalyzer;
     private logs: MorphingLogEntry[] = [];
     
     constructor() {
         this.jfaDistanceField = new JFADistanceField();
         this.mlsDeformation = new MLSDeformation();
         this.cuffDetector = new SmartCuffDetector();
+        this.contentAnalyzer = new ContentAnalyzer();
         
         console.log('[OptimizedMorphing] 服务已初始化');
     }
@@ -116,6 +126,8 @@ export class OptimizedMorphingService {
             // 2. 袜口检测 (可选)
             let cuffInfo: CuffDetectionResult | undefined;
             let cuffDetectionTime = 0;
+            let contentAnalysisTime = 0;
+            let contentAnalysis: Awaited<ReturnType<ContentAnalyzer['analyze']>> | undefined;
             
             if (config.detectLace) {
                 const cuffStart = performance.now();
@@ -127,6 +139,19 @@ export class OptimizedMorphingService {
                 cuffDetectionTime = performance.now() - cuffStart;
                 this.log('perf', 'cuff', `袜口检测完成: ${cuffInfo.type}`, { duration: cuffDetectionTime });
             }
+
+            if ((config.detectPatterns || config.detectLace) && request.sourceImageBase64) {
+                const contentStart = performance.now();
+                this.log('info', 'content', '分析图案与花边保护区域...');
+                const imageBuffer = Buffer.from(request.sourceImageBase64, 'base64');
+                contentAnalysis = await this.contentAnalyzer.analyze(imageBuffer, sourceContour);
+                contentAnalysisTime = performance.now() - contentStart;
+                this.log('perf', 'content', '内容分析完成', {
+                    duration: contentAnalysisTime,
+                    hasPattern: contentAnalysis.hasPattern,
+                    hasLace: contentAnalysis.hasLace
+                });
+            }
             
             // 3. 生成边缘带权重
             const weightsStart = performance.now();
@@ -137,6 +162,18 @@ export class OptimizedMorphingService {
                 config.edgeBandWidth,
                 config.transitionWidth
             );
+
+            if (contentAnalysis?.patternMask && config.patternProtection > 0) {
+                weights = this.applyPatternProtection(
+                    weights,
+                    contentAnalysis.patternMask,
+                    config.patternProtection
+                );
+            }
+
+            if (contentAnalysis?.laceRegion && config.detectLace) {
+                weights = this.applyLaceProtection(weights, width, height, contentAnalysis.laceRegion);
+            }
             
             // 应用袜口保护
             if (cuffInfo && (cuffInfo.type === 'lace' || cuffInfo.type === 'double' || cuffInfo.type === 'ribbed')) {
@@ -150,11 +187,13 @@ export class OptimizedMorphingService {
             this.log('info', 'mls', '计算 MLS 位移场...');
             
             // 生成控制点对
-            const controlPairs = this.mlsDeformation.generateControlPairs(
-                sourceContour,
-                targetContour,
-                Math.max(30, sourceContour.length / 3)
-            );
+            const controlPairs = request.controlPairs && request.controlPairs.length > 0
+                ? request.controlPairs
+                : this.mlsDeformation.generateControlPairs(
+                    sourceContour,
+                    targetContour,
+                    Math.max(30, sourceContour.length / 3)
+                );
             
             // 计算位移场
             let displacement = this.mlsDeformation.computeDisplacementField(
@@ -165,6 +204,7 @@ export class OptimizedMorphingService {
             
             // 应用权重
             displacement = this.mlsDeformation.applyWeightedDisplacement(displacement, weights);
+            const displacementStats = this.measureDisplacement(displacement);
             
             const mlsTime = performance.now() - mlsStart;
             this.log('perf', 'mls', `MLS 位移场完成, ${controlPairs.length} 控制点`, { duration: mlsTime });
@@ -201,9 +241,12 @@ export class OptimizedMorphingService {
                     jfaTime,
                     mlsTime,
                     cuffDetectionTime,
+                    contentAnalysisTime,
                     compressionTime,
                     pixelCount: sparseField.pixelCount,
-                    compressionRatio
+                    compressionRatio,
+                    avgDisplacementPx: displacementStats.avgDisplacementPx,
+                    maxDisplacementPx: displacementStats.maxDisplacementPx
                 }
             };
             
@@ -243,6 +286,41 @@ export class OptimizedMorphingService {
         this.log('info', 'cuffProtection', `应用袜口保护: ${region.width.toFixed(0)}×${region.height.toFixed(0)}`);
         return result;
     }
+
+    private applyPatternProtection(
+        weights: Float32Array,
+        patternMask: Uint8Array,
+        protection: number
+    ): Float32Array {
+        const result = new Float32Array(weights.length);
+
+        for (let i = 0; i < weights.length; i++) {
+            result[i] = patternMask[i] > 0
+                ? weights[i] * (1 - protection)
+                : weights[i];
+        }
+
+        return result;
+    }
+
+    private applyLaceProtection(
+        weights: Float32Array,
+        width: number,
+        height: number,
+        laceRegion: BoundingBox
+    ): Float32Array {
+        const result = new Float32Array(weights);
+
+        for (let y = Math.floor(laceRegion.y); y < laceRegion.y + laceRegion.height && y < height; y++) {
+            for (let x = Math.floor(laceRegion.x); x < laceRegion.x + laceRegion.width && x < width; x++) {
+                if (x >= 0 && y >= 0) {
+                    result[y * width + x] = 0;
+                }
+            }
+        }
+
+        return result;
+    }
     
     /**
      * 合并配置
@@ -256,6 +334,27 @@ export class OptimizedMorphingService {
         }
         
         return { ...base, ...config };
+    }
+
+    private measureDisplacement(displacement: DisplacementField): {
+        avgDisplacementPx: number;
+        maxDisplacementPx: number;
+    } {
+        let sum = 0;
+        let max = 0;
+
+        for (let i = 0; i < displacement.dx.length; i++) {
+            const magnitude = Math.hypot(displacement.dx[i], displacement.dy[i]);
+            sum += magnitude;
+            if (magnitude > max) {
+                max = magnitude;
+            }
+        }
+
+        return {
+            avgDisplacementPx: displacement.dx.length > 0 ? sum / displacement.dx.length : 0,
+            maxDisplacementPx: max
+        };
     }
     
     /**

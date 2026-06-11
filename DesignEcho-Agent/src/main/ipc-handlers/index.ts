@@ -1,6 +1,6 @@
-/**
- * IPC Handlers 统一注册入口
- * 将原本集中在 index.ts 中的 54 个 IPC handlers 按功能模块化
+﻿/**
+ * IPC Handlers 注册入口
+ * 将原本集中在 index.ts 的 54 个 IPC handlers 拆分为独立模块注册
  */
 
 import { registerConfigHandlers, getMorphingSettingsCache, getUserMattingConfig } from './config-handlers';
@@ -12,124 +12,110 @@ import { registerFileSystemHandlers } from './file-system-handlers';
 import { registerResourceHandlers } from './resource-handlers';
 import { registerModelDownloadHandlers } from './model-download-handlers';
 import { registerEcommerceProjectHandlers } from './ecommerce-project-handlers';
-import { registerKnowledgeHandlers } from './knowledge-handlers';
-import { registerUserKnowledgeHandlers } from './user-knowledge-handlers';
-import { registerKnowledgeBridgeHandlers } from './knowledge-bridge-handlers';
-import { registerTemplateHandlers } from './template-handlers';
+
 import { registerDesignSpecHandlers } from './design-spec-handlers';
 import { registerSKUHandlers } from './sku-handlers';
 import { registerSmartLayoutHandlers, setMattingService } from './smart-layout-handlers';
 import { registerHarmonizationHandlers } from './harmonization-handlers';
-import { registerSKUKnowledgeHandlers } from './sku-knowledge-handlers';
 import { registerBFLHandlers } from './bfl-handlers';
 import { registerTemplateKnowledgeHandlers } from './template-knowledge-handlers';
-import { registerAestheticHandlers, setModelServiceForAesthetic } from './aesthetic-handlers';
 import { registerMCPHandlers } from './mcp-handlers';
-import { registerKnowledgeManagementHandlers } from './knowledge-management-handlers';
 import { registerInpaintingHandlers } from './inpainting-handlers';
-import { registerBrandSpecHandlers } from './brand-spec-handlers';
 import { registerVisualThinkingHandlers } from './visual-thinking-handlers';
 import { registerWebPageHandlers } from './web-page-handlers';
 import { registerScreenshotHandlers } from './screenshot-handlers';
 import { registerConversationHandlers } from './conversation-handlers';
+import { registerStreamHandlers } from './stream-handlers';
+import { registerDesignKnowledgeHandlers } from './design-knowledge-handlers';
+import { registerEagleKnowledgeHandlers } from './eagle-knowledge-handlers';
 import type { IPCContext } from './types';
 
 export { IPCContext } from './types';
 export { getMorphingSettingsCache, getUserMattingConfig };
-export { setModelServiceForAesthetic };
 
 /**
  * 注册所有 IPC handlers
  */
 export function setupIPCHandlers(context: IPCContext): void {
-    // 配置相关
+    // 配置管理
     registerConfigHandlers(context);
     
-    // 日志相关
+    // 日志管理
     registerLogHandlers(context);
     
-    // 抠图服务相关
+    // 抠图（Matting）服务
     registerMattingHandlers(context);
     
-    // WebSocket 相关
+    // WebSocket 服务
     registerWebSocketHandlers(context);
+
+    // 模型流式输出服务。preload 已暴露 chatStream/abortStream，这里必须注册对应 IPC。
+    if (context.modelService) {
+        registerStreamHandlers(context.modelService);
+    } else {
+        console.warn('[IPC] Model service is unavailable; stream handlers were not registered');
+    }
     
-    // Ollama 模型管理
+    // Ollama 本地模型服务
     registerOllamaHandlers(context);
     
-    // 文件系统相关
+    // 文件系统操作
     registerFileSystemHandlers(context);
     
-    // 资源管理相关
+    // 资源管理服务
     registerResourceHandlers(context);
     
-    // 模型下载相关
+    // 模型下载服务
     registerModelDownloadHandlers(context);
     
-    // 电商项目相关
+    // 电商项目管理服务
     registerEcommerceProjectHandlers(context);
     
-    // 知识库相关
-    registerKnowledgeHandlers(context);
-    
-    // 用户自定义知识
-    registerUserKnowledgeHandlers(context);
-    
-    // 知识桥接（供 Agent 使用）
-    registerKnowledgeBridgeHandlers(context);
-    
-    // 模板系统
-    registerTemplateHandlers(context);
-    
-    // 设计规范引擎
+    // 设计规格处理服务
     registerDesignSpecHandlers(context);
     
-    // SKU 批量生成
+    // SKU 生成管理
     registerSKUHandlers(context);
     
-    // 智能布局服务
+    // 智能排版服务
     registerSmartLayoutHandlers();
     // 注入 MattingService（如果有）
     if (context.mattingService) {
         setMattingService(context.mattingService);
     }
     
-    // 图像协调服务
+    // 色彩协调服务
     registerHarmonizationHandlers();
     
-    // SKU 组合知识库
-    registerSKUKnowledgeHandlers();
-    
-    // BFL (Black Forest Labs) 图像生成
+    // BFL (Black Forest Labs) 图像生成服务
     registerBFLHandlers();
     
-    // 模板知识库
+    // 模板库服务
     registerTemplateKnowledgeHandlers();
     
-    // 审美知识库与决策服务
-    registerAestheticHandlers();
+    // 以上为核心业务 handlers，以下为扩展功能
     
-    // MCP 设计平台爬虫 (花瓣/站酷/Behance)
+    // MCP 外部工具集成服务（网页抓取、Behance 等）
     registerMCPHandlers();
 
-    // 网页内容提取 (Playwright)
+    // 网页自动化处理服务（Playwright）
     registerWebPageHandlers();
 
-    // 截图能力（Agent窗口与桌面）
+    // 截图服务（供 Agent 内部视觉验证使用）
     registerScreenshotHandlers();
     
-    // 知识库管理（清空数据等）
-    registerKnowledgeManagementHandlers();
-
     // 局部重绘服务
     registerInpaintingHandlers(context);
 
-    // 品牌规范
-    registerBrandSpecHandlers();
 
-    // 视觉分析（支持本地图片）
+    // 视觉思考服务（将 Photoshop 截图发送给多模态模型进行视觉分析）
     registerVisualThinkingHandlers(context);
 
     // 对话持久化（独立文件存储）
     registerConversationHandlers(context);
+
+    // 设计知识设置与只读健康检查
+    registerDesignKnowledgeHandlers();
+    registerEagleKnowledgeHandlers();
+
 }

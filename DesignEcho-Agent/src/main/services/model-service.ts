@@ -12,8 +12,33 @@ import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import http from 'http';
+import { EventEmitter } from 'events';
 import { ALL_MODELS, ModelConfig, getModelById, ThinkingConfig } from '../../shared/config/models.config';
+import { buildAgentProviderTokenBudget } from '../../shared/agent-performance-policy';
+import type {
+    AgentToolStreamChunk,
+    AgentToolStreamResponse,
+    AgentToolStreamToolCall
+} from '../../shared/agent-tool-stream';
 import { extractThinkingFromModel, getThinkingRequestParams } from './thinking-extractor';
+import { getProviderAdapter } from './provider-adapters';
+import type { ToolSchema, AdapterMessage, ProviderResponse } from './provider-adapters';
+import { configureProcessProxyFromSystem, getOpenAIHttpAgent } from './network-proxy';
+import type { ProviderNativeToolRequest } from '../../shared/provider-native-tools';
+import { normalizeProviderNativeToolCitations } from '../../shared/provider-native-tools';
+
+const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+const DEEPSEEK_TEST_MODEL = 'deepseek-v4-pro';
+
+function resolveChatMaxTokens(
+    options?: { maxTokens?: number },
+    legacyDefaultMaxTokens?: number
+): number {
+    return buildAgentProviderTokenBudget({
+        requestedMaxTokens: options?.maxTokens,
+        legacyDefaultMaxTokens
+    }).maxTokens;
+}
 
 export interface ModelMessage {
     role: 'user' | 'assistant';
@@ -38,20 +63,77 @@ export interface ModelResponse {
     };
 }
 
+export interface AgentToolStreamHandle extends EventEmitter {
+    abort: () => void;
+}
+
+interface AccumulatedToolCall {
+    id?: string;
+    name?: string;
+    argumentsText: string;
+}
+
+function safeParseToolArguments(value: string): Record<string, any> {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return {};
+    try {
+        const parsed = JSON.parse(trimmed);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function buildToolCallsFromDeltas(calls: Map<number, AccumulatedToolCall>): AgentToolStreamToolCall[] {
+    return [...calls.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([index, call]) => ({
+            id: call.id || `stream_call_${index}`,
+            name: call.name || '',
+            arguments: safeParseToolArguments(call.argumentsText)
+        }))
+        .filter((call) => call.name);
+}
+
+export interface DeepSeekTestResult {
+    success: boolean;
+    message?: string;
+    error?: string;
+    status?: number;
+    baseUrl?: string;
+    model?: string;
+    usage?: {
+        inputTokens: number;
+        outputTokens: number;
+    };
+}
+
 interface ModelServiceConfig {
     anthropicApiKey?: string;
     googleApiKey?: string;
+    xiaomiApiKey?: string;
     openaiApiKey?: string;
+    gptsapiApiKey?: string;
     openrouterApiKey?: string;
+    deepseekApiKey?: string;
     ollamaUrl?: string;
     ollamaApiKey?: string;  // Ollama Cloud API Key
     bflApiKey?: string;     // Black Forest Labs (FLUX) API Key
 }
 
+interface ModelToolCallOptions {
+    maxTokens?: number;
+    temperature?: number;
+    nativeTools?: ProviderNativeToolRequest[];
+}
+
 export class ModelService {
     private anthropic: Anthropic | null = null;
     private gemini: GoogleGenerativeAI | null = null;
+    private xiaomi: OpenAI | null = null;
     private openai: OpenAI | null = null;
+    private gptsapi: OpenAI | null = null;
+    private deepseek: OpenAI | null = null;
     private ollamaBaseUrl = 'http://127.0.0.1:11434';
     private config: ModelServiceConfig;
 
@@ -72,6 +154,16 @@ export class ModelService {
      * 初始化客户端
      */
     private initializeClients(): void {
+        configureProcessProxyFromSystem();
+        const httpAgent = getOpenAIHttpAgent();
+
+        this.anthropic = null;
+        this.gemini = null;
+        this.xiaomi = null;
+        this.openai = null;
+        this.gptsapi = null;
+        this.deepseek = null;
+
         if (this.config.anthropicApiKey) {
             this.anthropic = new Anthropic({ apiKey: this.config.anthropicApiKey });
             console.log('[ModelService] Anthropic client initialized');
@@ -80,9 +172,33 @@ export class ModelService {
             this.gemini = new GoogleGenerativeAI(this.config.googleApiKey);
             console.log('[ModelService] Gemini client initialized');
         }
+        if (this.config.xiaomiApiKey) {
+            this.xiaomi = new OpenAI({
+                apiKey: this.config.xiaomiApiKey,
+                baseURL: 'https://api.xiaomimimo.com/v1',
+                httpAgent
+            });
+            console.log('[ModelService] Xiaomi MiMo client initialized');
+        }
         if (this.config.openaiApiKey) {
-            this.openai = new OpenAI({ apiKey: this.config.openaiApiKey });
+            this.openai = new OpenAI({ apiKey: this.config.openaiApiKey, httpAgent });
             console.log('[ModelService] OpenAI client initialized');
+        }
+        if (this.config.gptsapiApiKey) {
+            this.gptsapi = new OpenAI({
+                apiKey: this.config.gptsapiApiKey,
+                baseURL: 'https://api.gptsapi.net/v1',
+                httpAgent
+            });
+            console.log('[ModelService] GPTs API client initialized');
+        }
+        if (this.config.deepseekApiKey) {
+            this.deepseek = new OpenAI({
+                apiKey: this.config.deepseekApiKey,
+                baseURL: DEEPSEEK_BASE_URL,
+                httpAgent
+            });
+            console.log('[ModelService] DeepSeek official client initialized');
         }
         if (this.config.ollamaUrl) {
             this.ollamaBaseUrl = this.config.ollamaUrl;
@@ -142,12 +258,18 @@ export class ModelService {
                 return this.chatOllamaCloud(model as any, messages, options);
             case 'google':
                 return this.chatGemini(model as any, messages, options);
+            case 'xiaomi':
+                return this.chatXiaomi(model as any, messages, options);
             case 'openrouter':
                 return this.chatOpenRouter(model as any, messages, options);
             case 'anthropic':
                 return this.chatAnthropic(model as any, messages, options);
             case 'openai':
                 return this.chatOpenAI(model as any, messages, options);
+            case 'gptsapi':
+                return this.chatGPTsAPI(model as any, messages, options);
+            case 'deepseek':
+                return this.chatDeepSeek(model as any, messages, options);
             default:
                 throw new Error(`不支持的提供商: ${model.provider}`);
         }
@@ -179,19 +301,35 @@ export class ModelService {
     ): Promise<ModelResponse> {
         console.log(`[ModelService] Calling dynamic Ollama model: ${ollamaModel}`);
 
-        const ollamaMessages = messages.map(msg => ({
-            role: msg.role,
-            content: typeof msg.content === 'string' 
-                ? msg.content 
-                : msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
-        }));
+        const ollamaMessages = messages.map(msg => {
+            const baseMessage: any = {
+                role: msg.role,
+                content: typeof msg.content === 'string'
+                    ? msg.content
+                    : msg.content
+                        .filter(c => c.type === 'text')
+                        .map(c => c.text)
+                        .join('\n')
+            };
+
+            if (typeof msg.content !== 'string') {
+                const images = msg.content
+                    .filter(c => c.type === 'image' && c.image)
+                    .map(c => c.image!.data);
+                if (images.length > 0) {
+                    baseMessage.images = images;
+                }
+            }
+
+            return baseMessage;
+        });
 
         const requestBody = JSON.stringify({
             model: ollamaModel,
             messages: ollamaMessages,
             stream: false,
             options: {
-                num_predict: options?.maxTokens || 4096,
+                num_predict: resolveChatMaxTokens(options),
                 temperature: options?.temperature ?? 0.7
             }
         });
@@ -271,7 +409,7 @@ export class ModelService {
         const requestBody = JSON.stringify({
             model: openrouterModel,
             messages: openrouterMessages,
-            max_tokens: options?.maxTokens || 4096,
+            max_tokens: resolveChatMaxTokens(options),
             temperature: options?.temperature ?? 0.7
         });
 
@@ -362,7 +500,7 @@ export class ModelService {
 
         const response = await this.anthropic.messages.create({
             model: modelName,
-            max_tokens: options?.maxTokens || 4096,
+            max_tokens: resolveChatMaxTokens(options),
             temperature: options?.temperature,
             messages: anthropicMessages
         });
@@ -412,7 +550,7 @@ export class ModelService {
         const genModel = this.gemini.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                maxOutputTokens: options?.maxTokens || model.maxTokens || 8192,
+                maxOutputTokens: resolveChatMaxTokens(options, model.maxTokens || 8192),
                 temperature: options?.temperature
             }
         });
@@ -558,8 +696,176 @@ export class ModelService {
         messages: ModelMessage[],
         options?: { maxTokens?: number; temperature?: number }
     ): Promise<ModelResponse> {
-        if (!this.openai) {
-            throw new Error('OpenAI API key not configured');
+        return this.chatOpenAICompatible(this.openai, 'OpenAI', model, messages, options);
+    }
+
+    private async chatXiaomi(
+        model: ModelConfig,
+        messages: ModelMessage[],
+        options?: { maxTokens?: number; temperature?: number }
+    ): Promise<ModelResponse> {
+        return this.chatOpenAICompatible(this.xiaomi, 'Xiaomi MiMo', model, messages, options);
+    }
+
+    private async chatGPTsAPI(
+        model: ModelConfig,
+        messages: ModelMessage[],
+        options?: { maxTokens?: number; temperature?: number }
+    ): Promise<ModelResponse> {
+        return this.chatOpenAICompatible(this.gptsapi, 'GPTs API', model, messages, options);
+    }
+
+    private async chatDeepSeek(
+        model: ModelConfig,
+        messages: ModelMessage[],
+        options?: { maxTokens?: number; temperature?: number }
+    ): Promise<ModelResponse> {
+        const textOnlyMessages = this.toTextOnlyMessages(messages);
+        return this.chatOpenAICompatible(this.deepseek, 'DeepSeek', model, textOnlyMessages, options);
+    }
+
+    async testDeepSeek(apiKey?: string): Promise<DeepSeekTestResult> {
+        const key = (apiKey ?? this.config.deepseekApiKey ?? '').trim();
+
+        if (!key) {
+            return {
+                success: false,
+                error: '请先输入 DeepSeek 官方 API Key。',
+                baseUrl: DEEPSEEK_BASE_URL,
+                model: DEEPSEEK_TEST_MODEL
+            };
+        }
+
+        const client = new OpenAI({
+            apiKey: key,
+            baseURL: DEEPSEEK_BASE_URL,
+            timeout: 30000,
+            httpAgent: getOpenAIHttpAgent()
+        });
+
+        try {
+            const response = await client.chat.completions.create({
+                model: DEEPSEEK_TEST_MODEL,
+                messages: [
+                    {
+                        role: 'user',
+                        content: '连接测试：请只回复 OK。'
+                    }
+                ],
+                max_tokens: 64,
+                temperature: 0,
+                // 连通性测试只验证 API Key、模型权限和文本输出，不测试思考模式。
+                // DeepSeek 默认开启 thinking，低 token 预算下可能只返回 reasoning_content，导致误判。
+                thinking: { type: 'disabled' }
+            } as any);
+
+            const message = response.choices?.[0]?.message as any;
+            const content = message?.content?.trim() || '';
+            const reasoningContent = message?.reasoning_content?.trim() || '';
+            if (!content) {
+                if (reasoningContent) {
+                    return {
+                        success: true,
+                        message: `DeepSeek 官方 API 连接成功，模型 ${DEEPSEEK_TEST_MODEL} 返回了 reasoning_content，但未返回最终文本。通常是思考模式或输出 token 预算导致；当前测试已按非思考模式重试逻辑收口。`,
+                        baseUrl: DEEPSEEK_BASE_URL,
+                        model: DEEPSEEK_TEST_MODEL,
+                        usage: {
+                            inputTokens: response.usage?.prompt_tokens || 0,
+                            outputTokens: response.usage?.completion_tokens || 0
+                        }
+                    };
+                }
+                return {
+                    success: false,
+                    error: `DeepSeek 已响应，但模型 ${DEEPSEEK_TEST_MODEL} 没有返回最终文本。请稍后重试，或检查该模型在当前账号下是否可用。`,
+                    baseUrl: DEEPSEEK_BASE_URL,
+                    model: DEEPSEEK_TEST_MODEL,
+                    usage: {
+                        inputTokens: response.usage?.prompt_tokens || 0,
+                        outputTokens: response.usage?.completion_tokens || 0
+                    }
+                };
+            }
+
+            return {
+                success: true,
+                message: `DeepSeek 官方 API 连接成功，模型 ${DEEPSEEK_TEST_MODEL} 已返回文本。`,
+                baseUrl: DEEPSEEK_BASE_URL,
+                model: DEEPSEEK_TEST_MODEL,
+                usage: {
+                    inputTokens: response.usage?.prompt_tokens || 0,
+                    outputTokens: response.usage?.completion_tokens || 0
+                }
+            };
+        } catch (error: any) {
+            return {
+                success: false,
+                error: this.formatDeepSeekTestError(error),
+                status: error?.status || error?.statusCode,
+                baseUrl: DEEPSEEK_BASE_URL,
+                model: DEEPSEEK_TEST_MODEL
+            };
+        }
+    }
+
+    private formatDeepSeekTestError(error: any): string {
+        const status = error?.status || error?.statusCode || error?.response?.status;
+        const message = String(error?.message || error || '');
+
+        if (status === 401 || status === 403) {
+            return 'DeepSeek API Key 无效、已过期或没有权限。请在 DeepSeek 平台重新创建官方 API Key。';
+        }
+
+        if (status === 404) {
+            return `DeepSeek 官方接口已响应，但模型 ${DEEPSEEK_TEST_MODEL} 不存在或当前账号不可用。`;
+        }
+
+        if (status === 429) {
+            return 'DeepSeek 官方 API 返回频率限制或余额限制。请稍后重试或检查平台额度。';
+        }
+
+        if (status && status >= 500) {
+            return `DeepSeek 官方服务暂时不可用 (${status})。请稍后重试。`;
+        }
+
+        if (/ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|fetch failed|connection|connect|timeout/i.test(message)) {
+            return `无法连接 DeepSeek 官方 API：${DEEPSEEK_BASE_URL}。请检查网络或代理设置。`;
+        }
+
+        if (/invalid api key|unauthorized|forbidden/i.test(message)) {
+            return 'DeepSeek API Key 验证失败。请确认填入的是官方平台创建的 API Key。';
+        }
+
+        return `DeepSeek 测试失败：${message.slice(0, 240)}`;
+    }
+
+    private toTextOnlyMessages(messages: ModelMessage[]): ModelMessage[] {
+        return messages.map((msg) => {
+            if (typeof msg.content === 'string') {
+                return msg;
+            }
+
+            const text = msg.content
+                .filter((part) => part.type === 'text' && part.text)
+                .map((part) => part.text)
+                .join('\n');
+
+            return {
+                ...msg,
+                content: text
+            };
+        });
+    }
+
+    private async chatOpenAICompatible(
+        client: OpenAI | null,
+        providerName: string,
+        model: ModelConfig,
+        messages: ModelMessage[],
+        options?: { maxTokens?: number; temperature?: number }
+    ): Promise<ModelResponse> {
+        if (!client) {
+            throw new Error(`${providerName} API key not configured`);
         }
 
         const openaiMessages = messages.map(msg => ({
@@ -567,12 +873,15 @@ export class ModelService {
             content: this.convertToOpenAIContent(msg.content)
         }));
 
-        const response = await this.openai.chat.completions.create({
-            model: model.id,
+        const thinkingParams = getThinkingRequestParams(model.thinking);
+
+        const response = await client.chat.completions.create({
+            model: model.apiModelId || model.id,
             messages: openaiMessages,
-            max_tokens: options?.maxTokens || 4096,
-            temperature: options?.temperature
-        });
+            max_tokens: resolveChatMaxTokens(options),
+            temperature: options?.temperature,
+            ...thinkingParams
+        } as any);
 
         // 使用统一的 ThinkingExtractor 提取思维过程
         const { thinking, content } = extractThinkingFromModel(response, model.thinking);
@@ -631,7 +940,7 @@ export class ModelService {
             messages: ollamaMessages,
             stream: false,
             options: {
-                num_predict: options?.maxTokens || 4096,
+                num_predict: resolveChatMaxTokens(options),
                 temperature: options?.temperature ?? 0.7,
                 ...thinkingParams
             }
@@ -751,7 +1060,7 @@ export class ModelService {
                 messages: ollamaMessages,
                 stream: false,
                 options: {
-                    num_predict: options?.maxTokens || 4096,
+                    num_predict: resolveChatMaxTokens(options),
                     temperature: options?.temperature ?? 0.7,
                     ...thinkingParams  // 添加思维过程参数
                 }
@@ -804,7 +1113,7 @@ export class ModelService {
         const requestBody = JSON.stringify({
             model: openrouterModel,
             messages: openrouterMessages,
-            max_tokens: options?.maxTokens || 4096,
+            max_tokens: resolveChatMaxTokens(options),
             temperature: options?.temperature ?? 0.7
         });
 
@@ -935,6 +1244,623 @@ export class ModelService {
         }).filter(Boolean);
     }
 
+    // ==================== Tool Use 支持 ====================
+
+    /**
+     * 带工具调用的聊天接口
+     *
+     * 跨所有 Provider 统一 tool use：
+     * - Anthropic: 原生 tool_use content blocks
+     * - OpenAI / OpenRouter: 原生 function calling
+     * - Gemini: 原生 functionDeclarations
+     * - Ollama: 原生（llama3.1+）或 prompt-based XML 兜底
+     */
+    async chatWithTools(
+        modelId: string,
+        messages: AdapterMessage[],
+        tools: ToolSchema[],
+        options?: ModelToolCallOptions
+    ): Promise<ProviderResponse> {
+        console.log(`[ModelService] chatWithTools() modelId=${modelId}, tools=${tools.length}, messages=${messages.length}`);
+
+        const configuredModel = getModelById(modelId);
+        if (configuredModel && configuredModel.supportsToolUse === false) {
+            throw new Error(`模型 ${configuredModel.name} 不支持工具调用，请为执行链选择支持 chatWithTools 的模型。`);
+        }
+
+        // Resolve provider
+        const { provider, apiModelName } = this.resolveProvider(modelId);
+        const adapter = getProviderAdapter(provider, apiModelName);
+
+        // Format request using adapter
+        const formatted = adapter.formatMessages(messages, tools, {
+            maxTokens: options?.maxTokens,
+            temperature: options?.temperature,
+            nativeTools: options?.nativeTools
+        });
+
+        // Call the appropriate provider API
+        let rawResponse: any;
+
+        switch (provider) {
+            case 'anthropic': {
+                if (!this.anthropic) throw new Error('Anthropic API key not configured');
+                rawResponse = await this.anthropic.messages.create({
+                    model: apiModelName,
+                    ...formatted
+                });
+                break;
+            }
+            case 'openai': {
+                if (!this.openai) throw new Error('OpenAI API key not configured');
+                rawResponse = await this.openai.chat.completions.create({
+                    model: apiModelName,
+                    ...formatted
+                });
+                break;
+            }
+            case 'xiaomi': {
+                if (!this.xiaomi) throw new Error('Xiaomi MiMo API key not configured');
+                rawResponse = await this.xiaomi.chat.completions.create({
+                    model: apiModelName,
+                    ...formatted
+                });
+                break;
+            }
+            case 'gptsapi': {
+                if (!this.gptsapi) throw new Error('GPTs API key not configured');
+                rawResponse = await this.gptsapi.chat.completions.create({
+                    model: apiModelName,
+                    ...formatted
+                });
+                break;
+            }
+            case 'deepseek': {
+                if (!this.deepseek) throw new Error('DeepSeek API key not configured');
+                rawResponse = await this.deepseek.chat.completions.create({
+                    model: apiModelName,
+                    ...formatted,
+                    // DeepSeek 思考模式 + 工具调用要求后续轮次完整回传 reasoning_content。
+                    // 当前通用 Adapter 尚未携带该字段，工具链先使用官方支持的非思考模式。
+                    thinking: { type: 'disabled' }
+                } as any);
+                break;
+            }
+            case 'google': {
+                if (!this.gemini) throw new Error('Google API key not configured');
+                const genModel = this.gemini.getGenerativeModel({
+                    model: apiModelName,
+                    ...formatted.generationConfig ? { generationConfig: formatted.generationConfig } : {}
+                });
+                const genResult = await genModel.generateContent({
+                    contents: formatted.contents,
+                    tools: formatted.tools,
+                    ...(formatted.toolConfig ? { toolConfig: formatted.toolConfig } : {}),
+                    ...(formatted.systemInstruction ? { systemInstruction: formatted.systemInstruction } : {})
+                });
+                rawResponse = genResult.response;
+                break;
+            }
+            case 'openrouter': {
+                if (!this.config.openrouterApiKey) throw new Error('OpenRouter API key not configured');
+                rawResponse = await this.callOpenRouterWithTools(apiModelName, formatted);
+                break;
+            }
+            case 'ollama':
+            case 'ollama-cloud': {
+                rawResponse = await this.callOllamaWithTools(apiModelName, formatted, provider === 'ollama-cloud');
+                break;
+            }
+            default:
+                throw new Error(`chatWithTools: unsupported provider ${provider}`);
+        }
+
+        // Parse response using adapter
+        const parsed = adapter.parseResponse(rawResponse);
+        console.log(`[ModelService] chatWithTools result: provider=${provider}, model=${apiModelName}, content=${(parsed.content || '').length}chars, toolCalls=${parsed.toolCalls?.length || 0}, stop=${parsed.stopReason}`);
+        if (!parsed.toolCalls?.length && parsed.content) {
+            console.log(`[ModelService] chatWithTools: model returned text only (no tool calls). First 200 chars: ${parsed.content.substring(0, 200)}`);
+        }
+        return parsed;
+    }
+
+    /**
+     * 带工具调用的流式聊天接口。
+     *
+     * 只把 provider 真实返回的增量作为事件发出；不支持工具流的 provider 会降级为
+     * chatWithTools 的一次性结果，并在 done.response.streamMode 中标记为 fallback。
+     */
+    chatWithToolsStream(
+        modelId: string,
+        messages: AdapterMessage[],
+        tools: ToolSchema[],
+        options?: ModelToolCallOptions
+    ): AgentToolStreamHandle {
+        const emitter = new EventEmitter() as AgentToolStreamHandle;
+        const abortController = new AbortController();
+        let aborted = false;
+
+        const emitChunk = (chunk: AgentToolStreamChunk): void => {
+            if (aborted && chunk.type !== 'error') return;
+            emitter.emit('chunk', chunk);
+        };
+
+        emitter.abort = () => {
+            aborted = true;
+            abortController.abort();
+        };
+
+        setImmediate(() => {
+            this.runChatWithToolsStream(
+                modelId,
+                messages,
+                tools,
+                options,
+                abortController.signal,
+                emitChunk
+            ).catch((error: any) => {
+                if (!aborted) {
+                    emitChunk({ type: 'error', error: error?.message || String(error) });
+                }
+            });
+        });
+
+        return emitter;
+    }
+
+    private async runChatWithToolsStream(
+        modelId: string,
+        messages: AdapterMessage[],
+        tools: ToolSchema[],
+        options: ModelToolCallOptions | undefined,
+        signal: AbortSignal,
+        emitChunk: (chunk: AgentToolStreamChunk) => void
+    ): Promise<void> {
+        const configuredModel = getModelById(modelId);
+        if (configuredModel && configuredModel.supportsToolUse === false) {
+            throw new Error(`模型 ${configuredModel.name} 不支持工具调用，请为执行链选择支持 chatWithTools 的模型。`);
+        }
+
+        const { provider, apiModelName } = this.resolveProvider(modelId);
+        const adapter = getProviderAdapter(provider, apiModelName);
+        const formatted = adapter.formatMessages(messages, tools, {
+            maxTokens: options?.maxTokens,
+            temperature: options?.temperature,
+            nativeTools: options?.nativeTools
+        });
+
+        if (provider === 'openrouter') {
+            await this.streamOpenRouterWithTools(apiModelName, formatted, signal, emitChunk);
+            return;
+        }
+
+        const client = this.getOpenAICompatibleClient(provider);
+        if (client) {
+            await this.streamOpenAICompatibleWithTools(
+                provider,
+                client,
+                apiModelName,
+                formatted,
+                signal,
+                emitChunk
+            );
+            return;
+        }
+
+        const parsed = await this.chatWithTools(modelId, messages, tools, options);
+        emitChunk({
+            type: 'done',
+            response: this.toAgentToolStreamResponse(parsed, 'fallback')
+        });
+    }
+
+    private getOpenAICompatibleClient(provider: string): OpenAI | null {
+        switch (provider) {
+            case 'openai':
+                return this.openai;
+            case 'xiaomi':
+                return this.xiaomi;
+            case 'gptsapi':
+                return this.gptsapi;
+            case 'deepseek':
+                return this.deepseek;
+            default:
+                return null;
+        }
+    }
+
+    private async streamOpenAICompatibleWithTools(
+        provider: string,
+        client: OpenAI,
+        model: string,
+        formatted: any,
+        signal: AbortSignal,
+        emitChunk: (chunk: AgentToolStreamChunk) => void
+    ): Promise<void> {
+        const accumulatedToolCalls = new Map<number, AccumulatedToolCall>();
+        let content = '';
+        let thinking = '';
+        let usage = { inputTokens: 0, outputTokens: 0 };
+        const annotations: unknown[] = [];
+        let webSearchUsage: unknown;
+
+        const stream = await client.chat.completions.create({
+            model,
+            ...formatted,
+            stream: true,
+            ...(provider === 'deepseek' ? { thinking: { type: 'disabled' } } : {})
+        } as any, { signal } as any);
+
+        for await (const chunk of stream as any) {
+            if (signal.aborted) return;
+            const delta = chunk?.choices?.[0]?.delta;
+            if (!delta) continue;
+
+            if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+                thinking += delta.reasoning_content;
+                emitChunk({ type: 'thinking_delta', thinking: delta.reasoning_content });
+            }
+
+            if (typeof delta.content === 'string' && delta.content) {
+                content += delta.content;
+                emitChunk({ type: 'content_delta', content: delta.content });
+            }
+
+            if (Array.isArray(delta.annotations)) {
+                annotations.push(...delta.annotations);
+            }
+
+            this.consumeToolCallDeltas(delta.tool_calls, accumulatedToolCalls, emitChunk);
+
+            if (chunk.usage) {
+                usage = {
+                    inputTokens: chunk.usage.prompt_tokens || 0,
+                    outputTokens: chunk.usage.completion_tokens || 0
+                };
+                if (chunk.usage.web_search_usage) {
+                    webSearchUsage = chunk.usage.web_search_usage;
+                }
+            }
+        }
+
+        const toolCalls = buildToolCallsFromDeltas(accumulatedToolCalls);
+        const citations = provider === 'xiaomi'
+            ? normalizeProviderNativeToolCitations(annotations, { provider: 'xiaomi' })
+            : [];
+        for (const toolCall of toolCalls) {
+            emitChunk({ type: 'tool_call_ready', toolCall });
+        }
+        emitChunk({
+            type: 'done',
+            response: {
+                content,
+                thinking: thinking || undefined,
+                toolCalls,
+                usage,
+                citations,
+                nativeToolUsage: provider === 'xiaomi' && webSearchUsage
+                    ? [{ provider: 'xiaomi', toolType: 'web_search', rawUsage: webSearchUsage }]
+                    : undefined,
+                stopReason: toolCalls.length > 0 ? 'tool_use' : 'end_turn',
+                streamMode: 'stream'
+            }
+        });
+    }
+
+    private streamOpenRouterWithTools(
+        model: string,
+        formatted: any,
+        signal: AbortSignal,
+        emitChunk: (chunk: AgentToolStreamChunk) => void
+    ): Promise<void> {
+        if (!this.config.openrouterApiKey) {
+            throw new Error('OpenRouter API key not configured');
+        }
+
+        return new Promise((resolve, reject) => {
+            const https = require('https');
+            const accumulatedToolCalls = new Map<number, AccumulatedToolCall>();
+            let content = '';
+            let thinking = '';
+            let buffer = '';
+            let usage = { inputTokens: 0, outputTokens: 0 };
+            let settled = false;
+
+            const finish = (): void => {
+                if (settled || signal.aborted) return;
+                settled = true;
+                const toolCalls = buildToolCallsFromDeltas(accumulatedToolCalls);
+                for (const toolCall of toolCalls) {
+                    emitChunk({ type: 'tool_call_ready', toolCall });
+                }
+                emitChunk({
+                    type: 'done',
+                    response: {
+                        content,
+                        thinking: thinking || undefined,
+                        toolCalls,
+                        usage,
+                        stopReason: toolCalls.length > 0 ? 'tool_use' : 'end_turn',
+                        streamMode: 'stream'
+                    }
+                });
+                resolve();
+            };
+
+            const requestBody = JSON.stringify({
+                model,
+                ...formatted,
+                stream: true
+            });
+
+            const req = https.request({
+                hostname: 'openrouter.ai',
+                port: 443,
+                path: '/api/v1/chat/completions',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.config.openrouterApiKey}`,
+                    'HTTP-Referer': 'https://designecho.app',
+                    'X-Title': 'DesignEcho Agent',
+                    'Content-Length': Buffer.byteLength(requestBody)
+                },
+                timeout: 120000
+            }, (res: any) => {
+                if (res.statusCode !== 200) {
+                    let errorBody = '';
+                    res.on('data', (chunk: Buffer) => { errorBody += chunk.toString(); });
+                    res.on('end', () => reject(new Error(this.formatOpenRouterError(res.statusCode, safeParseToolArguments(errorBody), model))));
+                    return;
+                }
+
+                res.on('data', (chunk: Buffer) => {
+                    if (signal.aborted) return;
+                    buffer += chunk.toString();
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const data = line.slice(6).trim();
+                        if (!data) continue;
+                        if (data === '[DONE]') {
+                            finish();
+                            return;
+                        }
+
+                        try {
+                            const parsed = JSON.parse(data);
+                            const delta = parsed.choices?.[0]?.delta;
+                            if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content) {
+                                thinking += delta.reasoning_content;
+                                emitChunk({ type: 'thinking_delta', thinking: delta.reasoning_content });
+                            }
+                            if (typeof delta?.content === 'string' && delta.content) {
+                                content += delta.content;
+                                emitChunk({ type: 'content_delta', content: delta.content });
+                            }
+                            this.consumeToolCallDeltas(delta?.tool_calls, accumulatedToolCalls, emitChunk);
+                            if (parsed.usage) {
+                                usage = {
+                                    inputTokens: parsed.usage.prompt_tokens || 0,
+                                    outputTokens: parsed.usage.completion_tokens || 0
+                                };
+                            }
+                        } catch {
+                            // Ignore malformed SSE fragments.
+                        }
+                    }
+                });
+
+                res.on('end', finish);
+                res.on('error', (error: Error) => reject(error));
+            });
+
+            req.on('error', (error: Error) => {
+                if (!signal.aborted) reject(error);
+            });
+            req.on('timeout', () => {
+                req.destroy();
+                reject(new Error('OpenRouter timeout'));
+            });
+            signal.addEventListener('abort', () => req.destroy());
+            req.write(requestBody);
+            req.end();
+        });
+    }
+
+    private consumeToolCallDeltas(
+        deltas: any,
+        accumulatedToolCalls: Map<number, AccumulatedToolCall>,
+        emitChunk: (chunk: AgentToolStreamChunk) => void
+    ): void {
+        if (!Array.isArray(deltas)) return;
+
+        for (const delta of deltas) {
+            const index = typeof delta.index === 'number' ? delta.index : accumulatedToolCalls.size;
+            const current = accumulatedToolCalls.get(index) || { argumentsText: '' };
+            if (delta.id) current.id = delta.id;
+            if (delta.function?.name) current.name = `${current.name || ''}${delta.function.name}`;
+            if (delta.function?.arguments) current.argumentsText += delta.function.arguments;
+            accumulatedToolCalls.set(index, current);
+
+            emitChunk({
+                type: 'tool_call_delta',
+                index,
+                toolCallId: current.id,
+                name: current.name,
+                argumentsDelta: delta.function?.arguments
+            });
+        }
+    }
+
+    private toAgentToolStreamResponse(
+        response: ProviderResponse,
+        streamMode: 'stream' | 'fallback'
+    ): AgentToolStreamResponse {
+        return {
+            content: response.content,
+            thinking: response.thinking,
+            toolCalls: response.toolCalls,
+            usage: response.usage,
+            citations: response.citations,
+            nativeToolUsage: response.nativeToolUsage,
+            stopReason: response.stopReason,
+            streamMode
+        };
+    }
+
+    /**
+     * 从 modelId 解析 provider 和 API 模型名
+     */
+    private resolveProvider(modelId: string): { provider: string; apiModelName: string } {
+        const model = getModelById(modelId);
+        if (model) {
+            let apiModelName = (model as any).apiModelId || model.id;
+            // Anthropic model name mapping
+            if (model.provider === 'anthropic') {
+                if (model.id === 'claude-3-5-sonnet') apiModelName = 'claude-3-5-sonnet-20241022';
+                else if (model.id === 'claude-3-opus') apiModelName = 'claude-3-opus-20240229';
+            }
+            // Google: strip models/ prefix
+            if (model.provider === 'google' && apiModelName.startsWith('models/')) {
+                apiModelName = apiModelName.replace('models/', '');
+            }
+            return { provider: model.provider, apiModelName };
+        }
+
+        // Dynamic resolution
+        if (modelId.startsWith('local-')) {
+            return { provider: 'ollama', apiModelName: this.localIdToOllamaModel(modelId) };
+        }
+        if (modelId.startsWith('ollama-') && !modelId.startsWith('ollama-cloud-')) {
+            return { provider: 'ollama', apiModelName: modelId.replace('ollama-', '') };
+        }
+        if (modelId.startsWith('ollama-cloud-')) {
+            return { provider: 'ollama-cloud', apiModelName: modelId.replace('ollama-cloud-', '') };
+        }
+        if (modelId.startsWith('openrouter-')) {
+            return { provider: 'openrouter', apiModelName: modelId.replace('openrouter-', '') };
+        }
+        if (modelId.startsWith('gptsapi-')) {
+            return { provider: 'gptsapi', apiModelName: modelId.replace('gptsapi-', '') };
+        }
+        if (modelId.startsWith('deepseek-')) {
+            return { provider: 'deepseek', apiModelName: modelId };
+        }
+        if (modelId.startsWith('xiaomi-')) {
+            return { provider: 'xiaomi', apiModelName: modelId.replace('xiaomi-', '') };
+        }
+
+        throw new Error(`Unknown model: ${modelId}`);
+    }
+
+    /**
+     * OpenRouter HTTP 调用（带 tools）
+     */
+    private callOpenRouterWithTools(model: string, formatted: any): Promise<any> {
+        return new Promise((resolve, reject) => {
+            const requestBody = JSON.stringify({
+                model,
+                ...formatted
+            });
+            const https = require('https');
+            const req = https.request({
+                hostname: 'openrouter.ai',
+                port: 443,
+                path: '/api/v1/chat/completions',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.config.openrouterApiKey}`,
+                    'HTTP-Referer': 'https://designecho.app',
+                    'X-Title': 'DesignEcho Agent',
+                    'Content-Length': Buffer.byteLength(requestBody)
+                },
+                timeout: 120000
+            }, (res: any) => {
+                let data = '';
+                res.on('data', (chunk: any) => { data += chunk; });
+                res.on('end', () => {
+                    try {
+                        if (res.statusCode !== 200) {
+                            let errorData: any = {};
+                            try { errorData = JSON.parse(data); } catch {}
+                            reject(new Error(this.formatOpenRouterError(res.statusCode, errorData, model)));
+                            return;
+                        }
+                        resolve(JSON.parse(data));
+                    } catch (e) {
+                        reject(new Error(`OpenRouter response parse error: ${e}`));
+                    }
+                });
+            });
+            req.on('error', (e: any) => reject(new Error(`OpenRouter connection error: ${e.message}`)));
+            req.on('timeout', () => { req.destroy(); reject(new Error('OpenRouter timeout')); });
+            req.write(requestBody);
+            req.end();
+        });
+    }
+
+    /**
+     * Ollama HTTP 调用（带 tools）
+     */
+    private callOllamaWithTools(model: string, formatted: any, isCloud: boolean): Promise<any> {
+        if (isCloud) {
+            return this.callOllamaCloudWithTools(model, formatted);
+        }
+        return new Promise((resolve, reject) => {
+            const requestBody = JSON.stringify({ model, ...formatted });
+            const req = http.request({
+                hostname: '127.0.0.1',
+                port: 11434,
+                path: '/api/chat',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(requestBody)
+                },
+                timeout: 180000
+            }, (res) => {
+                let data = '';
+                res.on('data', chunk => { data += chunk; });
+                res.on('end', () => {
+                    try {
+                        if (res.statusCode !== 200) {
+                            reject(new Error(`Ollama error (${res.statusCode}): ${data}`));
+                            return;
+                        }
+                        resolve(JSON.parse(data));
+                    } catch (e) {
+                        reject(new Error(`Ollama response parse error: ${e}`));
+                    }
+                });
+            });
+            req.on('error', () => reject(new Error('无法连接到本地 Ollama 服务')));
+            req.on('timeout', () => { req.destroy(); reject(new Error('Ollama 响应超时')); });
+            req.write(requestBody);
+            req.end();
+        });
+    }
+
+    private async callOllamaCloudWithTools(model: string, formatted: any): Promise<any> {
+        if (!this.config.ollamaApiKey) throw new Error('Ollama Cloud API key not configured');
+        const response = await fetch('https://ollama.com/api/chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.config.ollamaApiKey}`
+            },
+            body: JSON.stringify({ model, ...formatted })
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Ollama Cloud error (${response.status}): ${errorText}`);
+        }
+        return response.json();
+    }
+
     // ==================== 流式输出支持 ====================
     
     /**
@@ -964,12 +1890,10 @@ export class ModelService {
         // 从统一配置获取模型信息
         const model = getModelById(modelId);
         
-        // 转换消息格式
+        // 保留多模态 content，由各 provider 的 stream adapter 负责格式转换。
         const streamMessages = messages.map(msg => ({
             role: msg.role as 'user' | 'assistant' | 'system',
-            content: typeof msg.content === 'string' 
-                ? msg.content 
-                : msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+            content: msg.content
         }));
         
         // 确定提供商
@@ -985,6 +1909,12 @@ export class ModelService {
         } else if (modelId.startsWith('openrouter-')) {
             provider = 'openrouter';
             modelToUse = modelId.replace('openrouter-', '');
+        } else if (modelId.startsWith('xiaomi-')) {
+            provider = 'xiaomi';
+            modelToUse = modelId.replace('xiaomi-', '');
+        } else if (modelId.startsWith('deepseek-')) {
+            provider = 'deepseek';
+            modelToUse = modelId;
         }
         
         // 创建适配器
@@ -993,8 +1923,11 @@ export class ModelService {
             ollamaApiKey: this.config.ollamaApiKey,
             openrouterApiKey: this.config.openrouterApiKey,
             googleApiKey: this.config.googleApiKey,
+            xiaomiApiKey: this.config.xiaomiApiKey,
             anthropicApiKey: this.config.anthropicApiKey,
-            openaiApiKey: this.config.openaiApiKey
+            openaiApiKey: this.config.openaiApiKey,
+            gptsapiApiKey: this.config.gptsapiApiKey,
+            deepseekApiKey: this.config.deepseekApiKey
         });
         
         // 开始流式请求

@@ -1,7 +1,7 @@
 /**
  * 抠图工具 - 毛发级别精细抠图
  * 
- * 使用本地 AI 模型进行智能分割，不依赖 PS 内置功能
+ * 使用本地 AI 模PS 内置型进行智能分割，不依赖 功能
  * 
  * 支持二进制传输优化：
  * - 图像数据使用 Uint8Array 直传，避免 Base64 膨胀
@@ -10,8 +10,20 @@
 
 import { Tool, ToolSchema } from '../types';
 import { BinaryMessageType } from '../../core/binary-protocol';
+import { arrayBufferFromBytes, assertImageBytesSafeForPhotoshop } from '../../core/image-safety';
 
 const { app, core, action, imaging } = require('photoshop');
+
+function findLayerById(container: any, id: number): any {
+    for (const layer of container.layers || []) {
+        if (layer.id === id) return layer;
+        if (layer.layers) {
+            const found = findLayerById(layer, id);
+            if (found) return found;
+        }
+    }
+    return null;
+}
 
 interface RemoveBackgroundParams {
     /** 抠图模式: 'ai' 使用 AI 模型（默认） */
@@ -24,8 +36,8 @@ interface RemoveBackgroundParams {
     useMask?: boolean;
     /** AI 模型 ID（后续扩展用） */
     modelId?: string;
-    /** 输出质量 (0-100) */
-    quality?: number;
+    /** 输出质量（0-100）或预设档位 */
+    quality?: number | 'fast' | 'balanced' | 'quality';
     /** 目标描述（如"袜子"、"人物"等），用于语义分割 */
     targetPrompt?: string;
     /** 边缘细化模式 */
@@ -53,6 +65,54 @@ export class RemoveBackgroundTool implements Tool {
     
     setWebSocketClient(client: any): void {
         this.wsClient = client;
+    }
+
+    private isLayerGroup(layer: any): boolean {
+        return Boolean(layer && Array.isArray(layer.layers));
+    }
+
+    private uint8ArrayToBase64(bytes: Uint8Array): string {
+        const chunkSize = 0x8000;
+        let binaryString = '';
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+            const chunk = bytes.subarray(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+        }
+        return btoa(binaryString);
+    }
+
+    private normalizeQualityPreset(quality?: number | string): 'fast' | 'balanced' | 'quality' {
+        if (typeof quality === 'string') {
+            const normalized = quality.trim().toLowerCase();
+            if (normalized === 'fast' || normalized === 'balanced' || normalized === 'quality') {
+                return normalized;
+            }
+            return 'balanced';
+        }
+
+        if (typeof quality === 'number' && Number.isFinite(quality)) {
+            if (quality >= 85) return 'quality';
+            if (quality >= 60) return 'balanced';
+            return 'fast';
+        }
+
+        return 'balanced';
+    }
+
+    private resolveExportMaxSize(maxSize: number | undefined, quality?: number | string): number {
+        const requestedMaxSize = Number(maxSize);
+        if (Number.isFinite(requestedMaxSize)) {
+            return Math.max(512, Math.min(4096, Math.round(requestedMaxSize)));
+        }
+
+        const qualityPreset = this.normalizeQualityPreset(quality);
+        if (qualityPreset === 'fast') {
+            return 896;
+        }
+        if (qualityPreset === 'quality') {
+            return 1280;
+        }
+        return 1024;
     }
 
     schema: ToolSchema = {
@@ -84,7 +144,7 @@ export class RemoveBackgroundTool implements Tool {
                 },
                 quality: {
                     type: 'number',
-                    description: '输出质量 0-100（默认90）'
+                    description: '输出质量 0-100；也兼容 fast/balanced/quality 预设'
                 },
                 targetPrompt: {
                     type: 'string',
@@ -97,7 +157,7 @@ export class RemoveBackgroundTool implements Tool {
                 },
                 maxSize: {
                     type: 'number',
-                    description: '模型输入最长边像素（512-4096，默认 1536）'
+                    description: '导出到模型前的最长边像素（512-4096；未指定时按质量档动态选择）'
                 }
             }
         }
@@ -133,15 +193,12 @@ export class RemoveBackgroundTool implements Tool {
             createNewLayer: _createNewLayer = true, // 预留
             useMask: _useMask = false, // 预留
             modelId: _modelId = 'default', // 预留
-            quality: _quality = 90, // 预留
+            quality: requestedQuality = 90,
             targetPrompt = '',
             maxSize
         } = params;
 
-        const requestedMaxSize = Number(maxSize);
-        const exportMaxSize = Number.isFinite(requestedMaxSize)
-            ? Math.max(512, Math.min(4096, Math.round(requestedMaxSize)))
-            : 1536;
+        const exportMaxSize = this.resolveExportMaxSize(maxSize, requestedQuality);
 
         try {
             const doc = app.activeDocument;
@@ -168,7 +225,7 @@ export class RemoveBackgroundTool implements Tool {
             }
 
             // 验证图层存在
-            const targetLayer = this.findLayerById(doc, targetLayerId);
+            const targetLayer = findLayerById(doc, targetLayerId);
             if (!targetLayer) {
                 return {
                     success: false,
@@ -190,29 +247,50 @@ export class RemoveBackgroundTool implements Tool {
                 let imageData = '';
                 let exportError: Error | null = null;
                 let useBinaryTransfer = false;
+                const exportLayerGroup = this.isLayerGroup(targetLayer);
                 
-                // 尝试二进制获取（速度优先）
-                try {
-                    binaryImageData = await this.getLayerImageDataBinary(targetLayerId, exportMaxSize);
-                    if (binaryImageData && binaryImageData.data.length > 0) {
-                        useBinaryTransfer = true;
-                        console.log(`[RemoveBackground] 二进制图像: ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB`);
+                if (exportLayerGroup) {
+                    console.log('[RemoveBackground] Layer group detected; using binary copy-export path.');
+                }
+
+                if (this.wsClient) {
+                    try {
+                        binaryImageData = exportLayerGroup
+                            ? await this.copyLayerAndExportBinary(targetLayerId)
+                            : await this.getLayerImageDataBinary(targetLayerId, exportMaxSize);
+                        if (binaryImageData && binaryImageData.data.length > 0) {
+                            useBinaryTransfer = true;
+                            console.log(`[RemoveBackground] Binary image ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB`);
+                        }
+                    } catch (binErr: any) {
+                        exportError = binErr;
+                        console.log('[RemoveBackground] Binary export failed, trying binary copy-export fallback:', binErr.message);
+                        if (!exportLayerGroup) {
+                            try {
+                                binaryImageData = await this.copyLayerAndExportBinary(targetLayerId);
+                                if (binaryImageData && binaryImageData.data.length > 0) {
+                                    useBinaryTransfer = true;
+                                    console.log(`[RemoveBackground] Binary copy-export ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB`);
+                                }
+                            } catch (copyBinErr: any) {
+                                exportError = copyBinErr;
+                                console.log('[RemoveBackground] Binary copy-export failed, fallback to Base64:', copyBinErr.message);
+                            }
+                        }
                     }
-                } catch (binErr: any) {
-                    console.log('[RemoveBackground] 二进制获取失败，回退到 Base64:', binErr.message);
                 }
                 
-                // 回退到 Base64（兼容）
                 if (!useBinaryTransfer) {
                     try {
-                        imageData = await this.getLayerImageData(targetLayerId, exportMaxSize);
-                } catch (err: any) {
-                    console.error('[RemoveBackground] 导出图像失败:', err.message);
-                    exportError = err;
+                        imageData = exportLayerGroup
+                            ? await this.copyLayerAndExport(targetLayerId)
+                            : await this.getLayerImageData(targetLayerId, exportMaxSize);
+                    } catch (err: any) {
+                        console.error('[RemoveBackground] Export failed:', err.message);
+                        exportError = err;
                     }
                 }
                 
-                // 检查导出结果
                 if (!useBinaryTransfer && (exportError || !imageData || imageData.length < 100)) {
                     const errorReason = exportError?.message || '导出数据无效';
                     console.error(`[RemoveBackground] AI 模式获取图像失败: ${errorReason}`);
@@ -321,99 +399,88 @@ export class RemoveBackgroundTool implements Tool {
      */
     private async getLayerImageData(layerId: number, maxSize: number = 1024): Promise<string> {
         const doc = app.activeDocument;
-        if (!doc) throw new Error('没有打开的文档');
+        if (!doc) throw new Error('No active document');
 
-        // 查找目标图层
-        const targetLayer = this.findLayerById(doc, layerId);
-        
-        let result = '';
-        
-        await core.executeAsModal(async () => {
-            // 官方文档：targetSize 只传一个维度时 PS 按比例缩放保持纵横比
-            // 传两个维度会强制缩放到精确尺寸（破坏纵横比）
-            let targetSize: Record<string, number> = { height: maxSize };
-            if (targetLayer) {
-                const bounds = targetLayer.bounds;
-                const layerW = bounds.right - bounds.left;
-                const layerH = bounds.bottom - bounds.top;
-                if (layerW > 0 && layerH > 0) {
-                    targetSize = layerW >= layerH 
-                        ? { width: Math.min(maxSize, layerW) }
-                        : { height: Math.min(maxSize, layerH) };
+        const targetLayer = findLayerById(doc, layerId);
+        let result = "";
+
+        try {
+            await core.executeAsModal(async () => {
+                let targetSize: Record<string, number> = { height: maxSize };
+                if (targetLayer) {
+                    const bounds = targetLayer.boundsNoEffects || targetLayer.bounds;
+                    const layerW = bounds.right - bounds.left;
+                    const layerH = bounds.bottom - bounds.top;
+                    if (layerW > 0 && layerH > 0) {
+                        targetSize = layerW >= layerH 
+                            ? { width: Math.min(maxSize, layerW) }
+                            : { height: Math.min(maxSize, layerH) };
+                    }
                 }
-            }
-            
-            // 获取像素数据
-            const pixelResult = await imaging.getPixels({
-                documentID: doc.id,
-                layerID: targetLayer?.id,
-                targetSize: targetSize as any  // PS API 支持只传一个维度，TS 类型定义过严
-            });
-            
-            if (!pixelResult?.imageData) {
-                throw new Error('无法获取像素数据');
-            }
-            
-            const imgData = pixelResult.imageData;
-            const actualWidth = imgData.width;
-            const actualHeight = imgData.height;
-            const components = imgData.components;
-            
-            console.log(`[RemoveBackground] 获取像素: ${actualWidth}x${actualHeight}, ${components} 通道`);
-            
-            // 优先尝试 JPEG 编码（更小的传输大小）
-            try {
-                const jpegBase64 = await imaging.encodeImageData({
-                    imageData: imgData,
-                    base64: true
+                
+                const pixelResult = await imaging.getPixels({
+                    documentID: doc.id,
+                    layerID: targetLayer?.id,
+                    targetSize: targetSize as any
                 });
                 
-                if (jpegBase64 && typeof jpegBase64 === 'string') {
-                    result = `data:image/jpeg;base64,${jpegBase64}`;
-                    console.log(`[RemoveBackground] JPEG 编码成功: ${(result.length / 1024).toFixed(0)}KB`);
+                if (!pixelResult?.imageData) {
+                    throw new Error('Unable to get pixel data');
                 }
-            } catch (encodeError: any) {
-                console.log('[RemoveBackground] JPEG 编码失败，使用 RAW:', encodeError.message);
-            }
-            
-            // 回退到 RAW 格式
-            if (!result) {
-                const rawData = await imgData.getData();
-                const pixelCount = actualWidth * actualHeight;
                 
-                // 提取 RGB(A) 数据
-                let binaryString = '';
-                for (let i = 0; i < pixelCount * components; i++) {
-                    binaryString += String.fromCharCode(rawData[i]);
+                const imgData = pixelResult.imageData;
+                const actualWidth = imgData.width;
+                const actualHeight = imgData.height;
+                const components = imgData.components;
+                
+                console.log(`[RemoveBackground] Pixels ${actualWidth}x${actualHeight}, ${components} channels`);
+                
+                try {
+                    const jpegBase64 = await imaging.encodeImageData({
+                        imageData: imgData,
+                        base64: true
+                    });
+                    
+                    if (jpegBase64 && typeof jpegBase64 === "string") {
+                        result = `data:image/jpeg;base64,${jpegBase64}`;
+                        console.log(`[RemoveBackground] JPEG encoded ${(result.length / 1024).toFixed(0)}KB`);
+                    }
+                } catch (encodeError: any) {
+                    console.log('[RemoveBackground] JPEG encode failed, using RAW:', encodeError.message);
                 }
-                const base64 = btoa(binaryString);
-                result = `RAW:${actualWidth}:${actualHeight}:${components}:${base64}`;
-                console.log(`[RemoveBackground] RAW 格式: ${(base64.length / 1024).toFixed(0)}KB`);
-            }
-            
-            imgData.dispose();
-            
-        }, { commandName: 'DesignEcho: 获取抠图图像' });
+                
+                if (!result) {
+                    const rawData = await imgData.getData();
+                    const pixelCount = actualWidth * actualHeight;
+                    
+                    let binaryString = "";
+                    for (let i = 0; i < pixelCount * components; i++) {
+                        binaryString += String.fromCharCode(rawData[i]);
+                    }
+                    const base64 = btoa(binaryString);
+                    result = `RAW:${actualWidth}:${actualHeight}:${components}:${base64}`;
+                    console.log(`[RemoveBackground] RAW payload ${(base64.length / 1024).toFixed(0)}KB`);
+                }
+                
+                imgData.dispose();
+                
+            }, { commandName: 'DesignEcho: Export matting image' });
+        } catch (error) {
+            console.warn('[RemoveBackground] getPixels export failed, using copy-export fallback:', error instanceof Error ? error.message : error);
+        }
         
-        // 备用方法：复制图层到新文档
         if (!result) {
-            console.log('[RemoveBackground] 尝试备用方法: 复制图层到新文档');
+            console.log('[RemoveBackground] Trying fallback: duplicate layer into temp document');
             result = await this.copyLayerAndExport(layerId);
         }
 
         if (!result) {
-            throw new Error('所有图像获取方法都失败了');
+            throw new Error('All image export strategies failed');
         }
         
         return result;
     }
 
-    /**
-     * 获取图层图像数据（二进制版本）
-     * 
-     * 返回 Uint8Array，用于二进制 WebSocket 传输
-     * 避免 Base64 膨胀，减少约 33% 传输数据量
-     */
     async getLayerImageDataBinary(layerId: number, maxSize: number = 1024): Promise<{
         type: BinaryMessageType;
         data: Uint8Array;
@@ -423,7 +490,7 @@ export class RemoveBackgroundTool implements Tool {
         const doc = app.activeDocument;
         if (!doc) throw new Error('没有打开的文档');
 
-        const targetLayer = this.findLayerById(doc, layerId);
+        const targetLayer = findLayerById(doc, layerId);
         
         let result: { type: BinaryMessageType; data: Uint8Array; width: number; height: number } | null = null;
         
@@ -532,7 +599,7 @@ export class RemoveBackgroundTool implements Tool {
         await core.executeAsModal(async () => {
             try {
                 // 选中目标图层
-                const layer = this.findLayerById(currentDoc, layerId);
+                const layer = findLayerById(currentDoc, layerId);
                 if (!layer) throw new Error(`未找到图层 ID: ${layerId}`);
                 currentDoc.activeLayers = [layer];
 
@@ -599,12 +666,8 @@ export class RemoveBackgroundTool implements Tool {
                     const encoder = new TextEncoder();
                     uint8Array = encoder.encode(fileData as string);
                 }
-                
-                    let binaryString = '';
-                    for (let i = 0; i < uint8Array.length; i++) {
-                        binaryString += String.fromCharCode(uint8Array[i]);
-                    }
-                    result = btoa(binaryString);
+
+                result = this.uint8ArrayToBase64(uint8Array);
                     
                     // 清理临时文件
                 try { await targetFile.delete(); } catch (e) {}
@@ -680,27 +743,60 @@ export class RemoveBackgroundTool implements Tool {
      * 这是最通用的方法，适用于任何类型的图层
      */
     private async copyLayerAndExport(layerId: number): Promise<string> {
+        const binaryExport = await this.exportLayerViaTempDocument(layerId);
+        return this.uint8ArrayToBase64(binaryExport.data);
+    }
+
+    private async copyLayerAndExportBinary(layerId: number): Promise<{
+        type: BinaryMessageType;
+        data: Uint8Array;
+        width: number;
+        height: number;
+    }> {
+        const exported = await this.exportLayerViaTempDocument(layerId);
+        console.log(`[RemoveBackground] Binary copy-export PNG: ${exported.width}x${exported.height}, ${(exported.data.length / 1024).toFixed(0)}KB`);
+        return {
+            type: BinaryMessageType.PNG,
+            data: exported.data,
+            width: exported.width,
+            height: exported.height
+        };
+    }
+
+    private async exportLayerViaTempDocument(layerId: number): Promise<{
+        data: Uint8Array;
+        width: number;
+        height: number;
+    }> {
         const uxp = require('uxp');
         const fs = uxp.storage.localFileSystem;
         const doc = app.activeDocument;
         if (!doc) throw new Error('没有打开的文档');
         
-        let result = '';
         let tempDoc: any = null;
         let tempFile: any = null;
+        let exportedWidth = 0;
+        let exportedHeight = 0;
         const originalDoc = doc;  // 捕获非空引用
 
+        const exportHolder: { bytes: Uint8Array | null } = { bytes: null };
         await core.executeAsModal(async () => {
             try {
                 // 选中目标图层
-                const layer = this.findLayerById(originalDoc, layerId);
+                const layer = findLayerById(originalDoc, layerId);
                 if (!layer) throw new Error(`未找到图层 ID: ${layerId}`);
                 originalDoc.activeLayers = [layer];
 
                 // 获取图层边界
-                const bounds = layer.bounds;
-                const width = bounds.width;
-                const height = bounds.height;
+                const bounds = layer.boundsNoEffects || layer.bounds;
+                const left = Number(bounds.left);
+                const top = Number(bounds.top);
+                const right = Number(bounds.right);
+                const bottom = Number(bounds.bottom);
+                const width = right - left;
+                const height = bottom - top;
+                exportedWidth = Math.max(1, Math.round(width));
+                exportedHeight = Math.max(1, Math.round(height));
 
                 // 复制图层到新文档
                 await action.batchPlay([
@@ -721,10 +817,10 @@ export class RemoveBackgroundTool implements Tool {
                         _obj: 'crop',
                         to: {
                             _obj: 'rectangle',
-                            top: { _unit: 'pixelsUnit', _value: 0 },
-                            left: { _unit: 'pixelsUnit', _value: 0 },
-                            bottom: { _unit: 'pixelsUnit', _value: height },
-                            right: { _unit: 'pixelsUnit', _value: width }
+                            top: { _unit: 'pixelsUnit', _value: top },
+                            left: { _unit: 'pixelsUnit', _value: left },
+                            bottom: { _unit: 'pixelsUnit', _value: bottom },
+                            right: { _unit: 'pixelsUnit', _value: right }
                         },
                         _options: { dialogOptions: 'dontDisplay' }
                     }
@@ -752,12 +848,7 @@ export class RemoveBackgroundTool implements Tool {
 
                 // 读取文件
                 const fileData = await tempFile.read({ format: uxp.storage.formats.binary });
-                const uint8Array = new Uint8Array(fileData);
-                let binaryString = '';
-                for (let i = 0; i < uint8Array.length; i++) {
-                    binaryString += String.fromCharCode(uint8Array[i]);
-                }
-                result = btoa(binaryString);
+                exportHolder.bytes = new Uint8Array(fileData);
 
             } finally {
                 // 关闭临时文档（不保存）
@@ -779,7 +870,16 @@ export class RemoveBackgroundTool implements Tool {
             }
         }, { commandName: 'DesignEcho: 复制图层并导出' });
 
-        return result;
+        const exportedBytes = exportHolder.bytes;
+        if (!exportedBytes || exportedBytes.byteLength === 0) {
+            throw new Error('复制图层导出失败');
+        }
+
+        return {
+            data: exportedBytes,
+            width: exportedWidth,
+            height: exportedHeight
+        };
     }
 
     /**
@@ -898,7 +998,7 @@ export class RemoveBackgroundTool implements Tool {
         if (!doc) throw new Error('没有文档');
 
         // 选中目标图层
-        const layer = this.findLayerById(doc, layerId);
+        const layer = findLayerById(doc, layerId);
         if (layer) {
             doc.activeLayers = [layer];
         }
@@ -973,7 +1073,7 @@ export class RemoveBackgroundTool implements Tool {
         if (!doc) throw new Error('没有文档');
 
         // 选中原图层
-        const layer = this.findLayerById(doc, originalLayerId);
+        const layer = findLayerById(doc, originalLayerId);
         if (!layer) throw new Error('找不到图层');
         doc.activeLayers = [layer];
 
@@ -1016,21 +1116,6 @@ export class RemoveBackgroundTool implements Tool {
         ], {});
     }
 
-    /**
-     * 递归查找图层
-     */
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) {
-                return layer;
-            }
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
 }
 
 /**
@@ -1281,7 +1366,7 @@ export class ApplyMattingResultTool implements Tool {
 
             await core.executeAsModal(async () => {
                 // 找到原始图层
-                const originalLayer = this.findLayerById(doc, originalLayerId);
+                const originalLayer = findLayerById(doc, originalLayerId);
                 if (!originalLayer) {
                     throw new Error(`未找到原始图层 ID: ${originalLayerId}`);
                 }
@@ -1596,7 +1681,7 @@ export class ApplyMattingResultTool implements Tool {
             }
             
             // 重新获取图层以确保它存在
-            let layer = this.findLayerById(doc, layerId);
+            let layer = findLayerById(doc, layerId);
             if (!layer) {
                 console.warn(`[ApplyMattingResult] 未找到图层 ${layerId}，尝试使用当前激活图层`);
                 if (doc.activeLayers.length > 0) {
@@ -2325,17 +2410,22 @@ export class ApplyMattingResultTool implements Tool {
         for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
         }
-        await tempFile.write(bytes.buffer, { format: uxp.storage.formats.binary });
+        assertImageBytesSafeForPhotoshop(bytes, {
+            formatHint: 'png',
+            sourceLabel: `抠图结果图层「${originalName}」`
+        });
+        await tempFile.write(arrayBufferFromBytes(bytes), { format: uxp.storage.formats.binary });
+        const sessionToken = await uxp.storage.localFileSystem.createSessionToken(tempFile);
 
         // 导入为新图层
         await action.batchPlay([
             {
                 _obj: 'placeEvent',
-                null: { _path: tempFile.nativePath, _kind: 'local' },
+                null: { _path: sessionToken, _kind: 'local' },
                 freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
                 _options: { dialogOptions: 'dontDisplay' }
             }
-        ], {});
+        ], { synchronousExecution: true });
 
         const currentDoc = app.activeDocument!;
         const newLayer = currentDoc.activeLayers[0];
@@ -2393,18 +2483,6 @@ export class ApplyMattingResultTool implements Tool {
         }
     }
 
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) {
-                return layer;
-            }
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
 }
 
 /**
@@ -2516,7 +2594,7 @@ export class ApplyMultiMattingResultTool implements Tool {
             }
 
             // 查找原始图层
-            const originalLayer = this.findLayerById(doc, originalLayerId);
+            const originalLayer = findLayerById(doc, originalLayerId);
             if (!originalLayer) {
                 return { 
                     success: false, 
@@ -2822,18 +2900,5 @@ export class ApplyMultiMattingResultTool implements Tool {
             bytes[i] = binaryString.charCodeAt(i);
         }
         return bytes;
-    }
-
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) {
-                return layer;
-            }
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
     }
 }

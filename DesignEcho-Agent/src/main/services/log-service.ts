@@ -138,12 +138,12 @@ export class LogService {
             }, 1000);
 
             this.initialized = true;
-            this.originalConsole.log(`[LogService] 日志目录: ${this.logDir}`);
-            this.originalConsole.log(`[LogService] 主日志: ${this.logFilePath}`);
-            this.originalConsole.log(`[LogService] 错误日志: ${this.errorLogPath}`);
+            this.writeToFile('info', `[LogService] 日志目录: ${this.logDir}`, 'Agent');
+            this.writeToFile('info', `[LogService] 主日志: ${this.logFilePath}`, 'Agent');
+            this.writeToFile('info', `[LogService] 错误日志: ${this.errorLogPath}`, 'Agent');
 
         } catch (error) {
-            this.originalConsole.error('[LogService] 初始化失败:', error);
+            this.writeToFile('error', `[LogService] 初始化失败: ${this.argToString(error)}`, 'Agent');
         }
     }
 
@@ -156,11 +156,15 @@ export class LogService {
 
             const stats = fs.statSync(filePath);
             if (stats.size >= this.maxFileSize) {
-                this.originalConsole.log(`[LogService] 日志文件超过 ${this.maxFileSize / 1024 / 1024}MB，清空重写: ${filePath}`);
+                this.writeToFile(
+                    'warn',
+                    `[LogService] 日志文件超过 ${this.maxFileSize / 1024 / 1024}MB，清空重写: ${filePath}`,
+                    'Agent'
+                );
                 fs.writeFileSync(filePath, `[${new Date().toISOString()}] 日志文件已清空（超过大小限制）\n`);
             }
         } catch (error) {
-            this.originalConsole.error('[LogService] 截断检查失败:', error);
+            this.writeToFile('error', `[LogService] 截断检查失败: ${this.argToString(error)}`, 'Agent');
         }
     }
 
@@ -435,26 +439,9 @@ export class LogService {
     /**
      * 输出到控制台（使用原始 console 避免被拦截导致重复）
      */
-    private consoleOutput(entry: LogEntry): void {
-        const prefix = entry.source === 'UXP' ? '🔌 [UXP]' : '🖥️ [Agent]';
-        const message = `${prefix} ${entry.message}`;
-
-        // 使用原始 console 方法，避免被 interceptConsole 再次捕获
-        const logFn = this.originalConsole;
-        
-        switch (entry.level) {
-            case 'error':
-                logFn.error(message, entry.data || '');
-                break;
-            case 'warn':
-                logFn.warn(message, entry.data || '');
-                break;
-            case 'debug':
-                logFn.debug(message, entry.data || '');
-                break;
-            default:
-                logFn.log(message, entry.data || '');
-        }
+    private consoleOutput(_entry: LogEntry): void {
+        // Desktop runtime may not have a stable stdout/stderr pipe.
+        // Keep a single logging path (file) to avoid EPIPE crashes.
     }
 
     /**
@@ -470,7 +457,7 @@ export class LogService {
                     this.writeStream.write(line);
                 }
             } catch (error) {
-                this.originalConsole.error('[LogService] 主日志写入失败:', error);
+                this.writeToFile('error', `[LogService] 主日志写入失败: ${this.argToString(error)}`, 'Agent');
             }
         }
         
@@ -483,7 +470,7 @@ export class LogService {
                     this.errorStream.write(line);
                 }
             } catch (error) {
-                this.originalConsole.error('[LogService] 错误日志写入失败:', error);
+                this.writeToFile('error', `[LogService] 错误日志写入失败: ${this.argToString(error)}`, 'Agent');
             }
         }
     }
@@ -537,10 +524,10 @@ export class LogService {
             const clearLine = `[${new Date().toISOString()}] 日志已清空\n`;
             this.writeStream.write(clearLine);
 
-            console.log('[LogService] 日志已清空');
+            this.writeToFile('info', '[LogService] 日志已清空', 'Agent');
 
         } catch (error) {
-            console.error('[LogService] 清空日志失败:', error);
+            this.writeToFile('error', `[LogService] 清空日志失败: ${this.argToString(error)}`, 'Agent');
         }
     }
 
@@ -572,8 +559,8 @@ export class LogService {
         this.initialized = false;
         this.lastConnectionState = 'unknown';
         this.heartbeatLoggedOnce = false;
-        
-        this.originalConsole.log('[LogService] 日志服务已关闭');
+
+        this.writeToFile('info', '[LogService] 日志服务已关闭', 'Agent');
     }
 
     // 保存原始 console 方法
@@ -596,36 +583,26 @@ export class LogService {
 
         console.log = (...args: any[]) => {
             const message = args.map(a => self.argToString(a)).join(' ');
-            
-            // 写入日志文件（不通过 consoleOutput 避免重复输出）
             self.writeToFile('info', message, 'Agent');
-            // 输出到终端
-            self.originalConsole.log(...args);
         };
 
         console.warn = (...args: any[]) => {
             const message = args.map(a => self.argToString(a)).join(' ');
-            
             self.writeToFile('warn', message, 'Agent');
-            self.originalConsole.warn(...args);
         };
 
         console.error = (...args: any[]) => {
             const message = args.map(a => self.argToString(a)).join(' ');
-            
             self.writeToFile('error', message, 'Agent');
-            self.originalConsole.error(...args);
         };
 
         console.debug = (...args: any[]) => {
             const message = args.map(a => self.argToString(a)).join(' ');
-            
             self.writeToFile('debug', message, 'Agent');
-            self.originalConsole.debug(...args);
         };
 
         this.consoleIntercepted = true;
-        this.originalConsole.log('[LogService] Console 输出已拦截，所有日志将写入文件');
+        this.writeToFile('info', '[LogService] Console 输出已拦截，所有日志将写入文件', 'Agent');
     }
 
     /**
@@ -733,7 +710,7 @@ export class LogService {
         console.debug = this.originalConsole.debug;
 
         this.consoleIntercepted = false;
-        console.log('[LogService] Console 输出已恢复');
+        this.writeToFile('info', '[LogService] Console 输出已恢复', 'Agent');
     }
 }
 

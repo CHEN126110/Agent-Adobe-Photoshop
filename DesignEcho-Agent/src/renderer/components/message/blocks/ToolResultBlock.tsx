@@ -26,9 +26,15 @@ export const ToolResultBlock: React.FC<ToolResultBlockProps> = ({ block, onActio
         if (value === null || value === undefined) return '-';
         if (typeof value === 'boolean') return value ? '是' : '否';
         if (typeof value === 'number') return value.toLocaleString();
-        if (typeof value === 'string') return value;
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length > 80) {
+                return '结构化结果已收起，可展开查看。';
+            }
+            return value.length > 1000 ? `${value.slice(0, 1000)}...` : value;
+        }
         if (Array.isArray(value)) return `${value.length} 项`;
-        if (typeof value === 'object') return JSON.stringify(value, null, 2);
+        if (typeof value === 'object') return '对象数据已收起，可展开查看。';
         return String(value);
     };
     

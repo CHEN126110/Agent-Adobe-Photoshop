@@ -7,6 +7,11 @@
 import { ModelService, ModelMessage } from './model-service';
 import { TASK_ROUTING, TaskType } from '../../shared/types/tasks';
 import { PROMPTS } from '../../shared/prompts';
+import {
+    getAgentWorkerModels,
+    getPrimaryModelForPreferenceBucket,
+    type ModelPreferenceBucket
+} from '../../shared/model-selection';
 
 // 模型模式
 export type ModelMode = 'local' | 'cloud' | 'auto';
@@ -39,6 +44,14 @@ export interface TaskExecutionOptions {
         goal?: string;
     };
     expectedOutputSchema?: Record<string, unknown>;
+}
+
+export interface TaskStreamCallbacks {
+    onStart?: (meta: { taskType: TaskType; modelId: string }) => void;
+    onContent?: (content: string) => void;
+    onThinking?: (thinking: string) => void;
+    onDone?: (response: { text: string; thinking?: string }) => void;
+    onError?: (error: string) => void;
 }
 
 // 任务类型到配置键的映射
@@ -90,52 +103,49 @@ export class TaskOrchestrator {
     }
 
     /**
+     * 获取三智能体系统使用的模型 ID
+     * 基于用户当前 mode（local/cloud/auto）自动解析
+     */
+    getAgentModels(): { vision: string; copy: string; logic: string } {
+        return getAgentWorkerModels(this.preferences, {
+            mode: this.preferences.mode,
+            includeFallback: this.preferences.autoFallback
+        });
+    }
+
+    /**
      * 根据任务类型和偏好获取模型
      */
-    private getModelForTask(taskType: TaskType): { primary: string; fallback?: string } {
-        const configKey = TASK_CONFIG_MAP[taskType];
-        
-        // 如果没有映射，使用默认路由
+    private getModelForTask(taskType: TaskType): { primary: string } {
+        const configKey = TASK_CONFIG_MAP[taskType] as ModelPreferenceBucket | undefined;
+
+        // Unknown task type falls back to static routing config.
         if (!configKey) {
             const routing = TASK_ROUTING.find(r => r.taskType === taskType);
             return {
-                primary: routing?.primaryModel || 'local-qwen2.5-7b',
-                fallback: routing?.fallbackModel
+                primary: routing?.primaryModel || 'local-qwen2.5-7b'
             };
         }
 
-        const { mode, autoFallback, preferredLocalModels, preferredCloudModels } = this.preferences;
-
-        switch (mode) {
-            case 'local':
-                return {
-                    primary: preferredLocalModels[configKey],
-                    fallback: autoFallback ? preferredCloudModels[configKey] : undefined
-                };
-            case 'cloud':
-                return {
-                    primary: preferredCloudModels[configKey],
-                    fallback: undefined
-                };
-            case 'auto':
-                return {
-                    primary: preferredLocalModels[configKey],
-                    fallback: preferredCloudModels[configKey]
-                };
-            default:
-                return { primary: preferredLocalModels[configKey] };
-        }
+        return {
+            primary: getPrimaryModelForPreferenceBucket(this.preferences, configKey, {
+                mode: this.preferences.mode,
+                includeFallback: this.preferences.autoFallback,
+                includeCrossTaskBackups: false,
+                requireVision: configKey === 'visualAnalyze'
+            })
+        };
     }
 
     /**
      * 执行任务
      */
     async execute(taskType: TaskType, input: any, options?: TaskExecutionOptions): Promise<any> {
-        const { primary, fallback } = this.getModelForTask(taskType);
+        const { primary } = this.getModelForTask(taskType);
 
         console.log(`[TaskOrchestrator] Executing ${taskType} with ${primary} (mode: ${this.preferences.mode})`);
 
-        // 构建消息
+        // Build a single request payload and execute with the primary model only.
         const messages = this.buildMessages(taskType, input, options);
 
         try {
@@ -150,53 +160,110 @@ export class TaskOrchestrator {
                     stage: 'primary_success',
                     reasonCode: 'PRIMARY_OK',
                     primaryModel: primary,
-                    fallbackModel: fallback || null
+                    fallbackModel: null
                 }
             );
 
         } catch (error: any) {
             console.error(`[TaskOrchestrator] Primary model error:`, error.message);
-
-            // 如果有备选模型，尝试使用备选模型
-            if (fallback) {
-                console.log(`[TaskOrchestrator] Fallback to ${fallback}`);
-                
-                try {
-                    const response = await this.modelService.chat(
-                        fallback,
-                        messages,
-                        { maxTokens: 4096, temperature: 0.7 }
-                    );
-                    return this.attachExecutionState(
-                        this.parseResponse(taskType, response.text),
-                        {
-                            stage: 'fallback_used',
-                            reasonCode: 'PRIMARY_MODEL_FAILED',
-                            primaryModel: primary,
-                            fallbackModel: fallback,
-                            primaryError: error?.message || String(error)
-                        }
-                    );
-                } catch (fallbackError) {
-                    const err = fallbackError as any;
-                    err.fallbackState = {
-                        stage: 'fallback_failed',
-                        reasonCode: 'FALLBACK_FAILED',
-                        primaryModel: primary,
-                        fallbackModel: fallback,
-                        primaryError: error?.message || String(error),
-                        fallbackError: err?.message || String(err)
-                    };
-                    throw fallbackError;
-                }
-            }
             (error as any).fallbackState = {
                 stage: 'primary_failed',
-                reasonCode: 'PRIMARY_MODEL_FAILED_NO_FALLBACK',
+                reasonCode: 'PRIMARY_MODEL_FAILED',
                 primaryModel: primary,
                 fallbackModel: null,
                 primaryError: error?.message || String(error)
             };
+            throw error;
+        }
+    }
+
+    async executeStream(
+        taskType: TaskType,
+        input: any,
+        callbacks: TaskStreamCallbacks = {},
+        options?: TaskExecutionOptions
+    ): Promise<any> {
+        const { primary } = this.getModelForTask(taskType);
+
+        console.log(`[TaskOrchestrator] Streaming ${taskType} with ${primary} (mode: ${this.preferences.mode})`);
+
+        const messages = this.buildMessages(taskType, input, options);
+        callbacks.onStart?.({ taskType, modelId: primary });
+
+        try {
+            const adapter = this.modelService.chatStream(
+                primary,
+                messages,
+                { maxTokens: 4096, temperature: 0.7 }
+            );
+
+            return await new Promise((resolve, reject) => {
+                let fullContent = '';
+                let fullThinking = '';
+                let settled = false;
+
+                adapter.on('chunk', (chunk: any) => {
+                    if (!chunk || settled) return;
+
+                    if (chunk.type === 'content') {
+                        const content = String(chunk.content || '');
+                        fullContent += content;
+                        callbacks.onContent?.(content);
+                        return;
+                    }
+
+                    if (chunk.type === 'thinking') {
+                        const thinking = String(chunk.thinking || '');
+                        fullThinking += thinking;
+                        callbacks.onThinking?.(thinking);
+                        return;
+                    }
+
+                    if (chunk.type === 'done') {
+                        settled = true;
+                        const text = String(chunk.fullResponse?.text ?? fullContent);
+                        const thinking = String(chunk.fullResponse?.thinking || fullThinking || '');
+                        callbacks.onDone?.({ text, thinking: thinking || undefined });
+                        resolve(this.attachExecutionState(
+                            this.parseResponse(taskType, text),
+                            {
+                                stage: 'primary_success',
+                                reasonCode: 'PRIMARY_OK',
+                                primaryModel: primary,
+                                fallbackModel: null,
+                                streamed: true
+                            }
+                        ));
+                        return;
+                    }
+
+                    if (chunk.type === 'error') {
+                        settled = true;
+                        const message = String(chunk.error || '模型流式请求失败');
+                        callbacks.onError?.(message);
+                        const error = new Error(message);
+                        (error as any).fallbackState = {
+                            stage: 'primary_failed',
+                            reasonCode: 'PRIMARY_MODEL_FAILED',
+                            primaryModel: primary,
+                            fallbackModel: null,
+                            primaryError: message
+                        };
+                        reject(error);
+                    }
+                });
+            });
+        } catch (error: any) {
+            console.error(`[TaskOrchestrator] Primary stream error:`, error.message);
+            if (!(error as any).fallbackState) {
+                (error as any).fallbackState = {
+                    stage: 'primary_failed',
+                    reasonCode: 'PRIMARY_MODEL_FAILED',
+                    primaryModel: primary,
+                    fallbackModel: null,
+                    primaryError: error?.message || String(error)
+                };
+            }
             throw error;
         }
     }

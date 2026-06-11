@@ -1,685 +1,825 @@
-/**
- * 详情页设计技能执行器
- *
- * 完整闭环链路：
- *   解析模板 → 检测问题 → 自动修复 → 匹配内容 → 文案处理 → 逐屏填充 → 对齐修正 → 导出切片 → Critique
- */
-
-import type { SkillExecutor, SkillExecuteParams } from './types';
-import type { AgentResult } from '../unified-agent.service';
-import type { ParsedScreen, FillPlan, LayerIssue, CopyPlaceholder } from './detail-page.types';
-import type { CritiqueResult } from './design-pipeline';
+﻿import type { AgentResult } from '../unified-agent.service';
+import type { DetailScreenPlan, FillPlan, LayerIssue, ParsedScreen } from './detail-page.types';
+import type { SkillExecuteParams, SkillExecutor } from './types';
 
 import { executeToolCall } from '../tool-executor.service';
-import { collectDesignContext, createPipeline, getDeltaArrow } from './design-pipeline';
-import { buildDesignIntent, buildDesignPlan } from './design-plan';
-import { extractPlanSteps, createTracer, getStepParams } from './plan-helpers';
+import { analyzeDetailImageAnchors } from './detail-page-plan-utils';
 import {
-    clamp01,
-    calculatePlanQuality,
-    alignFillPlansToScreens,
-    enrichFillPlansWithLayerRelations,
-    collectStructureAlerts,
-    alignFilledImages,
-} from './fill-plan-utils';
+    auditDetailCopyLayoutForScreens as auditDetailCopyLayout
+} from '../../../shared/detail-page-copy-layout-audit';
 import {
-    applyCopyGuard,
-    buildCopyEvidence,
-    evaluateCopyQuality,
-    reviewCopyWithFallback,
-    buildCopyCandidates,
-    fitCopyForLayout,
-    tokenOverlapRatio,
-    normalizeTextTokens,
-} from './copy-processor';
+    normalizeDetailFlatLayers,
+    reconstructDetailPlacementsFromHierarchy
+} from '../../../shared/detail-page-live-placement';
 import {
-    getEffectiveBrandSpec,
-    getBrandPromptContext,
-    getCopywritingFormulas,
-    getSceneKnowledge,
-    getScreenTemplates,
-} from './knowledge-query';
+    buildDetailPageDesignAgentOsEvidence,
+    type DetailPageScreenPlanEvidence
+} from '../../../shared/design-agent-os-contracts';
+import {
+    buildDetailPageSkillReadiness,
+    type DetailPageSkillProjectEvidence,
+    type DetailPageSkillReadiness,
+    type DetailPageSkillTemplateEvidence
+} from '../../../shared/detail-page-skill-readiness';
+import { buildDetailPagePlannerEvidence } from './design-planner-evidence';
+import {
+    buildDetailExecutionSummary as buildExecutionSummary,
+    buildDetailInspectionSummary as buildInspectionSummary,
+    buildDetailTemplateState,
+    formatDetailScreenPlanLine as formatScreenPlanLine,
+    planDetailPageContent,
+    prepareDetailScreenExecutionPlan,
+    resolveDetailExecutionReviewLevel,
+    resolveDetailExecutionScope
+} from '../design-skills/detail-page-design.skill';
+import { emitSkillStep, executeObservedSkillTool } from './skill-step-events';
 
-// ==================== 常量 ====================
+function clamp01(value: number, fallback: number): number {
+    if (!Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.min(1, value));
+}
 
-const DEFAULT_MIN_PLAN_CONFIDENCE = 0.62;
-const DEFAULT_MIN_IMAGE_COVERAGE = 0.6;
+function shouldExportFromRequest(params: Record<string, any>, context?: SkillExecuteParams['context']): boolean {
+    if (params.exportSlices === true || params.autoExport === true) return true;
+    const intent = String(params.userIntent || context?.userInput || '').toLowerCase();
+    return ['导出', '输出', '切片', 'export'].some((keyword) => intent.includes(keyword));
+}
 
-// ==================== 执行器 ====================
+function shouldCaptureScreenSnapshots(params: Record<string, any>): boolean {
+    if (params.includeScreenSnapshots === true) return true;
+    const visualValidation = String(params.visualValidation || '').trim().toLowerCase();
+    return visualValidation === 'snapshot' || visualValidation === 'screenshots';
+}
+
+function buildFailureResult(message: string, error: string, toolResults: any[], data?: any): AgentResult {
+    return {
+        success: false,
+        message,
+        error,
+        toolResults,
+        data
+    };
+}
+
+function filterScreenPlansByScreens(screenPlans: DetailScreenPlan[], screens: ParsedScreen[]): DetailScreenPlan[] {
+    const screenIds = new Set((screens || []).map((screen) => Number(screen.id || 0)));
+    return (screenPlans || []).filter((plan) => screenIds.has(Number(plan.screenId || 0)));
+}
+
+function buildDetailPageScreenEvidence(
+    screenPlans: DetailScreenPlan[],
+    fillPlans: FillPlan[] = [],
+    resultByScreenId: Map<number, string> = new Map()
+): DetailPageScreenPlanEvidence[] {
+    const fillPlanByScreenId = new Map<number, FillPlan>();
+    for (const fillPlan of fillPlans || []) {
+        const screenId = Number((fillPlan as any)?.screenId || 0);
+        if (screenId) fillPlanByScreenId.set(screenId, fillPlan);
+    }
+    return (screenPlans || []).map((plan) => {
+        const screenId = Number((plan as any)?.screenId || 0);
+        const fillPlan = fillPlanByScreenId.get(screenId) as any;
+        const visualSummary = (plan as any)?.visualSummary || {};
+        const riskCount = [
+            visualSummary.boundaryRisk === 'risky',
+            Array.isArray((plan as any)?.risks) && (plan as any).risks.length > 0
+        ].filter(Boolean).length;
+        return {
+            screenId: String(screenId || (plan as any)?.screenName || 'unknown'),
+            role: String((plan as any)?.screenRole || (plan as any)?.role || ''),
+            decisionSource: String((plan as any)?.decisionSource || 'unknown'),
+            requiresModelDecision: Boolean((plan as any)?.requiresModelDecision),
+            riskCount,
+            plannedCopyCount: Array.isArray(fillPlan?.copies) ? fillPlan.copies.length : undefined,
+            plannedImageCount: Array.isArray(fillPlan?.images) ? fillPlan.images.length : undefined,
+            resultStatus: resultByScreenId.get(screenId)
+        };
+    });
+}
+
+function buildDetailPageProjectReadinessEvidence(
+    context: SkillExecuteParams['context'],
+    projectPath: string
+): DetailPageSkillProjectEvidence {
+    const projectContext = context?.projectContext;
+    const assetIndex = projectContext?.assetIndex;
+    const visualSamplingPlan = projectContext?.visualSamplingPlan;
+    const visualInsightCache = projectContext?.visualInsightCache;
+
+    return {
+        projectPathKnown: Boolean(projectPath || projectContext?.projectPath),
+        assetImageCount: Number(assetIndex?.summary.totalImages || 0),
+        visualCandidateCount: Number(assetIndex?.visionCandidates.length || 0),
+        selectedCandidateCount: Number(visualSamplingPlan?.selectedCandidates.length || 0),
+        visualInsightCount: Number(visualInsightCache?.summary.entriesWithInsight || 0),
+        shouldAnalyzeCount: Number(visualSamplingPlan?.cacheSummary.shouldAnalyze || 0)
+    };
+}
+
+function buildDetailPageTemplateReadinessEvidence(input: {
+    parseResult?: any;
+    screens?: ParsedScreen[];
+    issues?: LayerIssue[];
+    crossScreenRiskCount?: number;
+    readiness?: { mode?: string; metrics?: Record<string, any> };
+}): DetailPageSkillTemplateEvidence {
+    const metrics = input.readiness?.metrics || {};
+    const screens = input.screens || [];
+    const issues = input.issues || [];
+
+    return {
+        parseSuccess: input.parseResult?.success === true,
+        screenCount: Number(input.parseResult?.screenCount || screens.length || 0),
+        readinessMode: input.readiness?.mode || undefined,
+        issueCount: Number(issues.length || 0),
+        crossScreenRiskCount: Number(input.crossScreenRiskCount || 0),
+        copyPlaceholderCount: Number(metrics.copyPlaceholderCount || 0),
+        imagePlaceholderCount: Number(metrics.imagePlaceholderCount || 0)
+    };
+}
+
+function buildDetailPageSkillReadinessEvidence(input: {
+    inspectOnly: boolean;
+    parseResult?: any;
+    screens?: ParsedScreen[];
+    issues?: LayerIssue[];
+    crossScreenRiskCount?: number;
+    readiness?: { mode?: string; metrics?: Record<string, any> };
+    context: SkillExecuteParams['context'];
+    projectPath: string;
+}): DetailPageSkillReadiness {
+    return buildDetailPageSkillReadiness({
+        mode: input.inspectOnly ? 'inspect' : 'execute',
+        template: buildDetailPageTemplateReadinessEvidence({
+            parseResult: input.parseResult,
+            screens: input.screens,
+            issues: input.issues,
+            crossScreenRiskCount: input.crossScreenRiskCount,
+            readiness: input.readiness
+        }),
+        project: buildDetailPageProjectReadinessEvidence(input.context, input.projectPath),
+        imagePlacementCoreAvailable: true,
+        verificationToolsAvailable: true
+    });
+}
 
 export const detailPageExecutor: SkillExecutor = {
     skillId: 'detail-page-design',
 
     async execute({ params, callbacks, signal, context }: SkillExecuteParams): Promise<AgentResult> {
-        const startTime = Date.now();
+        const startedAt = Date.now();
         const results: any[] = [];
-
-        // 统计计数器
-        let issuesFound = 0;
-        let issuesFixed = 0;
-        let copyGuardAdjusted = 0;
-        let copyReviewedCount = 0;
-        let copyRewrittenCount = 0;
-        let copyFlaggedCount = 0;
-        let copyEvidenceWeakCount = 0;
-        let copyLayoutAdjusted = 0;
-        let copyOverflowRiskCount = 0;
-        let copyContinuityAdjusted = 0;
-        const copyReviewFlags: Array<{
-            screenName: string; layerId: number; score: number;
-            reasons: string[]; candidates: string[];
-        }> = [];
-
-        const report = (step: string, progress: number) => {
-            callbacks?.onProgress?.(step, progress);
-            callbacks?.onMessage?.(`📋 ${step}`);
+        const phaseDurations: Record<string, number> = {};
+        const markPhaseDuration = (name: string, phaseStartedAt: number) => {
+            phaseDurations[name] = Math.max(0, Date.now() - phaseStartedAt);
         };
 
+        const report = (message: string, percent: number, options?: { thinking?: boolean; assistant?: boolean }) => {
+            callbacks?.onProgress?.(message, percent);
+            if (options?.thinking !== false) {
+                callbacks?.onStatus?.(message);
+            }
+            if (options?.assistant === true) {
+                callbacks?.onMessage?.(message);
+            }
+        };
+        const emitStep = (
+            kind: Parameters<typeof emitSkillStep>[1]['kind'],
+            title: string,
+            detail?: string,
+            status: Parameters<typeof emitSkillStep>[1]['status'] = 'running',
+            percent?: number
+        ) => emitSkillStep(callbacks, { kind, title, detail, status, percent });
+        const callTool = (toolName: string, toolParams: Record<string, any>, detail?: string) => {
+            return executeObservedSkillTool(callbacks, toolName, toolParams, executeToolCall, detail);
+        };
+
+        const projectPath = String(params.projectPath || context?.projectContext?.projectPath || '').trim();
+        const userInputForOs = String(params.userIntent || context?.userInput || '').trim();
+        const inspectOnly = params.inspectOnly === true || String(params.structureMode || '').toLowerCase() === 'inspect';
+        const autoFix = !inspectOnly && params.autoFix !== false;
+        const usePlanGuard = params.planGuard !== false;
+        const allowLowConfidenceFill = params.allowLowConfidenceFill === true;
+        const minPlanConfidence = clamp01(Number(params.minPlanConfidence), 0.62);
+        const minImageCoverage = clamp01(Number(params.minImageCoverage), 0.6);
+
         try {
-            // ===== 计划初始化 =====
-            const designIntent = buildDesignIntent(this.skillId, params, context);
-            const designPlan = buildDesignPlan(designIntent);
-            const { stepMap, has } = extractPlanSteps(designPlan);
-            const tracer = createTracer(designPlan.steps || designPlan.layoutSteps || []);
-
-            const useParseStep = has('parseDetailPageTemplate');
-            const useMatchStep = has('matchDetailPageContent');
-            const useFillStep = has('fillDetailPage');
-            const useExportStep = has('exportDetailPageSlices');
-
-            if (!useParseStep) {
-                tracer.upsert('parseDetailPageTemplate', 'failed', '设计计划缺少必需解析步骤');
-                return { success: false, message: '❌ 设计计划缺少 parseDetailPageTemplate，无法继续', toolResults: results };
-            }
-
-            // ===== Phase 1: 模板解析 =====
-            report('解析模板结构...', 0.1);
-
-            const parseResult = await executeToolCall('parseDetailPageTemplate', getStepParams(stepMap, 'parseDetailPageTemplate'));
-            if (!parseResult?.success) {
-                tracer.upsert('parseDetailPageTemplate', 'failed', parseResult?.error || '未知错误');
-                return { success: false, message: `❌ 模板解析失败: ${parseResult?.error || '未知错误'}`, toolResults: [parseResult] };
-            }
-
-            const screens: ParsedScreen[] = parseResult.screens || [];
-            if (screens.length === 0) {
-                return { success: false, message: '❌ 未找到有效的详情页屏', toolResults: [parseResult] };
-            }
-
-            // 结构检查
-            const structureMode = String(params.structureMode || 'guided').toLowerCase();
-            const structureAlerts = collectStructureAlerts(screens);
-            const copyPlaceholderMap = new Map<number, CopyPlaceholder>();
-            for (const screen of screens) {
-                for (const copy of (screen.copyPlaceholders || [])) {
-                    copyPlaceholderMap.set(copy.layerId, copy);
-                }
-            }
-
-            if (structureAlerts.length > 0 && structureMode !== 'ignore') {
-                callbacks?.onMessage?.(`🧱 结构检查: ${structureAlerts.length} 屏缺少标准分组（文案/icon/图片）`);
-                for (const alert of structureAlerts.slice(0, 5)) {
-                    callbacks?.onMessage?.(`   • ${alert.screenName}: 缺少 ${alert.missingGroups.join('/')}`);
-                }
-                if (structureMode === 'strict') {
-                    return {
-                        success: false,
-                        message: '❌ 模板结构不符合 strict 模式要求：请先补齐每屏的 文案/icon/图片 分组',
-                        toolResults: [parseResult], data: { structureAlerts, structureMode },
-                    };
-                }
-            }
-
-            callbacks?.onMessage?.(`✅ 解析完成: 发现 ${screens.length} 屏`);
-            results.push(parseResult);
-            tracer.upsert('parseDetailPageTemplate', 'success', `解析 ${screens.length} 屏`);
-
-            if (signal?.aborted) return { success: true, cancelled: true, message: '⏹️ 已停止' };
-
-            // ===== Phase 2: 问题检测 + 自动修复 =====
-            report('检测图层问题...', 0.2);
-
-            const detectResult = await executeToolCall('detectLayerIssues', { screens });
-            const issues: LayerIssue[] = detectResult?.issues || [];
-            issuesFound = issues.length;
-
-            if (issuesFound > 0) {
-                callbacks?.onMessage?.(`⚠️ 发现 ${issuesFound} 个图层问题`);
-                const autoFix = params.autoFix !== false;
-                const fixableIssues = issues.filter(i => i.autoFixable);
-                if (autoFix && fixableIssues.length > 0) {
-                    report(`修复 ${fixableIssues.length} 个可修复问题...`, 0.3);
-                    const fixResult = await executeToolCall('fixLayerIssues', { issues: fixableIssues });
-                    issuesFixed = fixResult?.fixed || 0;
-                    callbacks?.onMessage?.(`🔧 已修复 ${issuesFixed}/${fixableIssues.length} 个问题`);
-                    results.push(fixResult);
-                }
-            } else {
-                callbacks?.onMessage?.('✅ 图层结构良好，无需修复');
-            }
-            results.push(detectResult);
-
-            if (signal?.aborted) return { success: true, cancelled: true, message: '⏹️ 已停止' };
-
-            // ===== Phase 3: 内容匹配 → 生成填充计划 =====
-            report('匹配内容到占位符...', 0.4);
-
-            const projectPath = designIntent.projectPath || params.projectPath || '';
-            const forceCopyOnly = params.copyOnly === true || params.forceCopyOnly === true;
-            let fillPlans: FillPlan[] = [];
-
-            if (forceCopyOnly) {
-                callbacks?.onMessage?.('✍️ 仅文案优化模式，跳过素材匹配');
-                tracer.upsert('matchDetailPageContent', 'skipped', 'copy-only-mode');
-                fillPlans = screens.map(s => ({
-                    screenId: s.id, screenName: s.name, screenType: s.type,
-                    copies: (s.copyPlaceholders || []).map(c => ({ layerId: c.layerId, content: String(c.currentText || '').trim() })),
-                    images: [],
-                }));
-            } else if (useMatchStep) {
-                const matchParams = getStepParams(stepMap, 'matchDetailPageContent');
-                const matchResult = await executeToolCall('matchDetailPageContent', {
-                    ...matchParams, screens, projectPath: matchParams.projectPath || projectPath,
-                });
-                fillPlans = matchResult?.plans || [];
-                results.push(matchResult);
-                tracer.upsert('matchDetailPageContent', 'success', `生成 ${fillPlans.length} 个填充计划`);
-            } else {
-                callbacks?.onMessage?.('↪ 计划未包含素材匹配，使用模板默认');
-                tracer.upsert('matchDetailPageContent', 'skipped', '计划未包含');
-                fillPlans = screens.map(s => ({
-                    screenId: s.id, screenName: s.name, screenType: s.type,
-                    copies: (s.copyPlaceholders || []).map(c => ({ layerId: c.layerId, content: c.currentText || '' })),
-                    images: (s.imagePlaceholders || []).map(img => ({
-                        layerId: img.layerId, imagePath: '', fillMode: 'cover',
-                        isClippingMask: img.isClippingMask,
-                        baseLayerId: img.baseLayerId || img.clippingInfo?.baseLayerId,
-                        referenceLayerId: img.baseLayerId || img.clippingInfo?.baseLayerId || img.layerId,
-                    })),
-                }));
-            }
-
-            fillPlans = enrichFillPlansWithLayerRelations(fillPlans, screens);
-            const { alignedPlans, unmatchedPlanCount } = alignFillPlansToScreens(fillPlans, screens);
-            if (unmatchedPlanCount > 0) {
-                callbacks?.onMessage?.(`⚠️ 匹配计划与屏结构存在 ${unmatchedPlanCount} 个未对齐项，已使用兜底映射`);
-            }
-
-            const totalCopies = alignedPlans.reduce((sum, p) => sum + (p?.copies?.length || 0), 0);
-            const totalImages = alignedPlans.reduce((sum, p) => sum + (p?.images?.length || 0), 0);
-
-            if (signal?.aborted) return { success: true, cancelled: true, message: '⏹️ 已停止' };
-
-            // ===== Phase 4: 文案处理管线 =====
-            const brandSpec = await getEffectiveBrandSpec(projectPath || undefined);
-            const brandContext = (brandSpec && brandSpec.id !== 'default') ? await getBrandPromptContext(projectPath) : '';
-            if (brandSpec && brandSpec.id !== 'default') {
-                callbacks?.onMessage?.(`🎨 品牌规范: ${brandSpec.name} (${brandSpec.tone})`);
-            }
-            const brandTone = (brandSpec?.tone || params.brandTone || 'professional') as string;
-            const copyCreativeStyle = (
-                String(params.copyCreativeStyle || '').toLowerCase() === 'playful'
-                    ? 'playful'
-                    : String(params.copyCreativeStyle || '').toLowerCase() === 'professional'
-                        ? 'professional'
-                        : (brandTone === 'playful' ? 'playful' : brandTone === 'professional' ? 'professional' : 'natural')
-            ) as 'natural' | 'playful' | 'professional';
-            callbacks?.onMessage?.(`🧭 文案风格: ${copyCreativeStyle}（去广告感 + 图文佐证）`);
-
-            // Phase 4.1: CopyGuard — 广告法合规
-            const enableCopyGuard = params.copyGuard !== false;
-            if (enableCopyGuard) {
-                for (const plan of alignedPlans) {
-                    if (!plan) continue;
-                    for (const copy of (plan.copies || [])) {
-                        const before = copy.content || '';
-                        const after = applyCopyGuard(before, { screenType: plan.screenType, brandTone });
-                        if (after !== before) { copy.content = after; copyGuardAdjusted++; }
-                    }
-                }
-                if (copyGuardAdjusted > 0) callbacks?.onMessage?.(`🛡️ 文案去广告处理: 调整 ${copyGuardAdjusted} 处`);
-            }
-
-            // Phase 4.2: AI 文案填补空占位符
-            const enableAICopy = params.aiCopyGeneration !== false;
-            if (enableAICopy && totalCopies > 0) {
-                const copyFormulas = await getCopywritingFormulas(brandSpec?.category);
-                const formulaContext = copyFormulas.length > 0
-                    ? copyFormulas.map(f => `- ${f.name}: ${f.structure}`).join('\n') : '';
-                const sceneKnowledges = await getSceneKnowledge(brandSpec?.category);
-                const sceneContext = sceneKnowledges.length > 0
-                    ? sceneKnowledges.slice(0, 3).map(s => `- ${s.sceneName}: ${s.copyAngle}`).join('\n') : '';
-                const screenTemplates = await getScreenTemplates();
-                const templateByType = new Map<string, string>(
-                    screenTemplates.map(t => [t.type, `${t.name}（${t.purpose || '用途未描述'}）`])
-                );
-
-                let emptyCount = 0;
-                for (const plan of alignedPlans) {
-                    if (!plan) continue;
-                    emptyCount += (plan.copies || []).filter(c => !c.content || c.content.trim() === '').length;
-                }
-
-                if (emptyCount > 0) {
-                    callbacks?.onMessage?.(`📝 检测到 ${emptyCount} 个空文案占位符，尝试 AI 生成...`);
-                    try {
-                        for (const plan of alignedPlans) {
-                            if (!plan) continue;
-                            for (const copy of (plan.copies || [])) {
-                                if (copy.content && copy.content.trim() !== '') continue;
-                                const screenTemplateHint = templateByType.get(plan.screenType) || '';
-                                const promptParts = [
-                                    `为${plan.screenType}屏生成一句电商文案`,
-                                    brandTone !== 'professional' ? `品牌调性: ${brandTone}` : '',
-                                    `文案风格: ${copyCreativeStyle}`,
-                                    screenTemplateHint ? `参考屏模板: ${screenTemplateHint}` : '',
-                                    formulaContext ? `参考文案公式:\n${formulaContext}` : '',
-                                    sceneContext ? `参考场景角度:\n${sceneContext}` : '',
-                                    '要求：避免硬广和夸张承诺；文案要能被画面佐证；优先短句，允许轻微友好调侃。'
-                                ].filter(Boolean).join('\n');
-
-                                const aiResult = await window.designEcho?.invoke?.(
-                                    'task:execute', 'text-optimize', { text: promptParts, context: { screenType: plan.screenType, brandTone, brandContext } }
-                                );
-                                if (aiResult?.result) {
-                                    const generated = typeof aiResult.result === 'string'
-                                        ? aiResult.result : aiResult.result?.optimized?.[0]?.text || '';
-                                    if (generated) {
-                                        copy.content = enableCopyGuard
-                                            ? applyCopyGuard(generated, { screenType: plan.screenType, brandTone })
-                                            : generated;
-                                        callbacks?.onMessage?.(`  └ AI 文案: "${generated.substring(0, 30)}..."`);
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: any) {
-                        console.warn('[DetailPageExecutor] AI 文案生成失败:', e.message);
-                        callbacks?.onMessage?.('⚠️ AI 文案生成不可用，保留模板占位符');
-                    }
-                }
-            }
-
-            // Phase 4.3: CopyReview — 质量评审
-            const enableCopyReview = params.copyReview !== false;
-            const copyMinScore = clamp01(Number(params.copyMinScore), 0.72);
-            const copyCandidateCount = Math.max(2, Math.min(5, Math.round(Number(params.copyCandidateCount) || 3)));
-            const lowScoreCopyStrategyRaw = String(params.lowScoreCopyStrategy || (forceCopyOnly ? 'keep' : 'replace')).toLowerCase();
-            const lowScoreCopyStrategy: 'replace' | 'flag' | 'keep' =
-                lowScoreCopyStrategyRaw === 'flag' ? 'flag' : (lowScoreCopyStrategyRaw === 'keep' ? 'keep' : 'replace');
-
-            if (enableCopyReview && totalCopies > 0) {
-                callbacks?.onMessage?.(`🧪 文案审查启动（阈值 ${Math.round(copyMinScore * 100)} 分）...`);
-                for (const plan of alignedPlans) {
-                    if (!plan) continue;
-                    const evidence = buildCopyEvidence(plan);
-                    for (const copy of (plan.copies || [])) {
-                        const decision = reviewCopyWithFallback(copy.content || '', evidence, {
-                            minScore: copyMinScore, candidateCount: copyCandidateCount,
-                            strategy: lowScoreCopyStrategy, screenType: plan.screenType, brandTone, creativeStyle: copyCreativeStyle,
-                        });
-                        copyReviewedCount++;
-                        if (decision.quality.evidenceScore < 0.5) copyEvidenceWeakCount++;
-                        const beforeTrimmed = String(copy.content || '').trim();
-                        if (decision.replaced) { copy.content = decision.finalContent; copyRewrittenCount++; }
-                        else if (!beforeTrimmed && decision.candidates.length > 0 && lowScoreCopyStrategy !== 'keep') {
-                            copy.content = decision.candidates[0].text;
-                            copyRewrittenCount++;
-                        }
-                        if (decision.flagged) {
-                            copyFlaggedCount++;
-                            copyReviewFlags.push({
-                                screenName: plan.screenName, layerId: copy.layerId, score: decision.quality.score,
-                                reasons: decision.quality.reasons, candidates: decision.candidates.map(c => c.text).slice(0, copyCandidateCount),
-                            });
-                        }
-                    }
-                }
-                if (copyReviewedCount > 0) {
-                    callbacks?.onMessage?.(`🧾 文案审查完成: ${copyReviewedCount} 条, 改写 ${copyRewrittenCount} 条, 标记 ${copyFlaggedCount} 条`);
-                }
-            }
-
-            // Phase 4.4: CopyLayoutFit — 排版适配
-            const enableCopyLayoutFit = params.copyLayoutFit !== false;
-            const copyLineBreakStyle: 'balanced' | 'compact' =
-                String(params.copyLineBreakStyle || 'balanced').toLowerCase() === 'compact' ? 'compact' : 'balanced';
-            const copyTitleMaxLines = Math.max(1, Math.min(3, Math.round(Number(params.copyTitleMaxLines) || 2)));
-            const copySubtitleMaxLines = Math.max(1, Math.min(3, Math.round(Number(params.copySubtitleMaxLines) || 2)));
-            const copyBodyMaxLines = Math.max(1, Math.min(5, Math.round(Number(params.copyBodyMaxLines) || 3)));
-            const continuityOverlapThreshold = 0.82;
-
-            if (enableCopyLayoutFit && totalCopies > 0) {
-                callbacks?.onMessage?.(`🧩 文案排版适配（换行风格: ${copyLineBreakStyle}）...`);
-                for (const plan of alignedPlans) {
-                    if (!plan) continue;
-                    const evidence = buildCopyEvidence(plan);
-                    const sortedCopies = [...(plan.copies || [])].sort((a, b) => {
-                        const ap = copyPlaceholderMap.get(a.layerId);
-                        const bp = copyPlaceholderMap.get(b.layerId);
-                        return (Number(ap?.bounds?.top || 0) - Number(bp?.bounds?.top || 0))
-                            || (Number(ap?.bounds?.left || 0) - Number(bp?.bounds?.left || 0));
-                    });
-
-                    let prevText = '';
-                    for (const copy of sortedCopies) {
-                        const before = String(copy.content || '').trim();
-                        if (!before) continue;
-                        const placeholder = copyPlaceholderMap.get(copy.layerId);
-                        const fitOpts = { lineBreakStyle: copyLineBreakStyle, titleMaxLines: copyTitleMaxLines, subtitleMaxLines: copySubtitleMaxLines, bodyMaxLines: copyBodyMaxLines };
-
-                        let finalText = fitCopyForLayout(before, placeholder, fitOpts).text;
-                        let adjustedForLayout = fitCopyForLayout(before, placeholder, fitOpts).changed;
-                        let overflowRisk = fitCopyForLayout(before, placeholder, fitOpts).overflowRisk;
-
-                        // 连贯性检查：相邻文案过于相似时替换
-                        const overlapRatio = prevText ? tokenOverlapRatio(prevText, finalText) : 0;
-                        if (prevText && normalizeTextTokens(prevText).length >= 3 && normalizeTextTokens(finalText).length >= 3
-                            && overlapRatio >= continuityOverlapThreshold) {
-                            const currentQuality = evaluateCopyQuality(finalText, evidence);
-                            const continuityCandidates = buildCopyCandidates(
-                                evidence,
-                                Math.max(copyCandidateCount + 1, 3),
-                                { screenType: plan.screenType, brandTone, creativeStyle: copyCreativeStyle }
-                            );
-                            let bestText = finalText;
-                            let bestScore = currentQuality.score - (overlapRatio * 0.32);
-                            for (const candidate of continuityCandidates) {
-                                if (!candidate || candidate === finalText) continue;
-                                const fitted = fitCopyForLayout(candidate, placeholder, fitOpts);
-                                const candidateOverlap = tokenOverlapRatio(prevText, fitted.text);
-                                if (candidateOverlap > overlapRatio - 0.12) continue;
-                                const candidateQuality = evaluateCopyQuality(fitted.text, evidence);
-                                if (candidateQuality.score < currentQuality.score - 0.06) continue;
-                                const blendedScore = candidateQuality.score - (candidateOverlap * 0.32);
-                                if (blendedScore > bestScore + 0.015) { bestScore = blendedScore; bestText = fitted.text; }
-                            }
-                            if (bestText !== finalText) { finalText = bestText; copyContinuityAdjusted++; }
-                        }
-
-                        if (finalText !== before) copy.content = finalText;
-                        if (adjustedForLayout) copyLayoutAdjusted++;
-                        if (overflowRisk) copyOverflowRiskCount++;
-                        prevText = String(copy.content || '').trim();
-                    }
-                }
-                callbacks?.onMessage?.(
-                    `🧾 文案排版完成: 调整 ${copyLayoutAdjusted} 处, 连贯性改写 ${copyContinuityAdjusted} 处`
-                    + (copyOverflowRiskCount > 0 ? `, ${copyOverflowRiskCount} 处仍有溢出风险` : '')
-                );
-            }
-
-            if (signal?.aborted) return { success: true, cancelled: true, message: '⏹️ 已停止' };
-
-            // ===== Phase 5: Critique 前诊断 =====
-            callbacks?.onProgress?.('设计诊断...', 0.48);
-            const designCtx = await collectDesignContext({
-                platform: 'ecommerce',
-                brandTone: (designIntent.brandTone || params.brandTone) as string | undefined,
-                userIntent: params.userIntent as string | undefined,
+            const buildTemplateState = async (
+                nextScreens: ParsedScreen[],
+                nextIssues: LayerIssue[],
+                crossScreenRiskCount: number
+            ) => buildDetailTemplateState({
+                screens: nextScreens,
+                issues: nextIssues,
+                crossScreenRiskCount,
+                runTool: executeToolCall,
+                results
             });
-            const pipeline = createPipeline(designCtx, { onMessage: callbacks?.onMessage });
-            const beforeReport = await pipeline.before();
 
-            // ===== Phase 6: 逐屏填充 + 对齐修正 =====
+            const templatePhaseStartedAt = Date.now();
+            emitStep(
+                'observation',
+                '准备执行详情页技能',
+                inspectOnly ? '当前请求为模板结构检查，不执行填充。' : '当前请求会解析模板、规划内容并按屏填充。',
+                'running',
+                0.04
+            );
+            report('先检查当前详情页模板结构。', 0.08);
+            let parseResult = await callTool('parseDetailPageTemplate', { includeStructure: true }, '读取详情页屏结构、占位符和跨屏图层风险。');
+            results.push({ toolName: 'parseDetailPageTemplate', result: parseResult });
+
+            if (!parseResult?.success) {
+                const detailPageSkillReadiness = buildDetailPageSkillReadinessEvidence({
+                    inspectOnly,
+                    parseResult,
+                    context,
+                    projectPath
+                });
+                emitStep(
+                    'warning',
+                    '详情页模板解析失败',
+                    String(parseResult?.error || 'parseDetailPageTemplate 未返回成功状态。'),
+                    'error',
+                    0.1
+                );
+                return buildFailureResult(
+                    `详情页模板解析失败: ${parseResult?.error || '未知错误'}`,
+                    parseResult?.error || 'Parse failed',
+                    results,
+                    { detailPageSkillReadiness }
+                );
+            }
+
+            let screens: ParsedScreen[] = parseResult.screens || [];
+            if (screens.length === 0) {
+                const detailPageSkillReadiness = buildDetailPageSkillReadinessEvidence({
+                    inspectOnly,
+                    parseResult,
+                    screens,
+                    context,
+                    projectPath
+                });
+                emitStep('warning', '详情页模板解析无可用屏', '当前文档没有识别到详情页屏结构。', 'error', 0.1);
+                return buildFailureResult(
+                    '当前文档没有识别到可用的详情页屏结构。',
+                    'No parsed screens',
+                    results,
+                    { detailPageSkillReadiness }
+                );
+            }
+
+            emitStep(
+                'verification',
+                '详情页模板解析完成',
+                `识别到 ${screens.length} 屏，跨屏图层风险 ${Array.isArray(parseResult.crossScreenLayers) ? parseResult.crossScreenLayers.length : 0} 个。`,
+                'success',
+                0.12
+            );
+            callbacks?.onStatus?.(`已识别到 ${screens.length} 屏，先检查结构问题和可自动化程度。`);
+            report('正在评估模板是否适合自动化。', 0.16, { assistant: false });
+            let detectResult = await callTool('detectLayerIssues', { screens }, '检查详情页图层命名、分组和可自动化风险。');
+            results.push({ toolName: 'detectLayerIssues', result: detectResult });
+
+            let issues: LayerIssue[] = detectResult?.issues || [];
+            let crossScreenRiskCount = Array.isArray(parseResult.crossScreenLayers) ? parseResult.crossScreenLayers.length : 0;
+            let {
+                readiness,
+                layoutGraphs,
+                layoutAssessment,
+                placeholderAnchorDiagnostics,
+                visualPlanning,
+                screenPlans,
+                templateCopyAudit,
+                structureAlerts,
+                focus
+            } = await buildTemplateState(screens, issues, crossScreenRiskCount);
+            let detailPageSkillReadiness = buildDetailPageSkillReadinessEvidence({
+                inspectOnly,
+                parseResult,
+                screens,
+                issues,
+                crossScreenRiskCount,
+                readiness,
+                context,
+                projectPath
+            });
+            markPhaseDuration('模板解析', templatePhaseStartedAt);
+
+            emitStep(
+                'verification',
+                '详情页模板评估完成',
+                `就绪度 ${readiness.mode}，版式 ${layoutAssessment.mode}，文案位 ${readiness.metrics.copyPlaceholderCount} 个，图片区 ${readiness.metrics.imagePlaceholderCount} 个。`,
+                'success',
+                0.22
+            );
+            callbacks?.onStatus?.(
+                `模板评估为 ${readiness.mode}，识别到 ${readiness.metrics.copyPlaceholderCount} 个文案位、${readiness.metrics.imagePlaceholderCount} 个图片区。`
+            );
+            callbacks?.onStatus?.(`版式评估为 ${layoutAssessment.mode}，当前平均得分 ${Math.round(layoutAssessment.score * 100)}。`);
+            callbacks?.onStatus?.(
+                `视觉分块判断为 ${visualPlanning.mergeStatus}，识别到 ${visualPlanning.visualScreenCount} 个视觉屏、${visualPlanning.visualModuleCount} 个视觉模块。`
+            );
+            if (placeholderAnchorDiagnostics.warnings.length > 0) {
+                callbacks?.onStatus?.(`模板里还存在 ${placeholderAnchorDiagnostics.warnings.length} 条图片区锚点风险。`);
+            }
+
+            if (inspectOnly) {
+                emitStep('finalizing', '详情页结构检查结果已汇总', '仅输出模板诊断，不修改 Photoshop 文档。', 'success', 1);
+                callbacks?.onStatus?.('结构检查已完成，正在整理诊断结论。');
+                const designAgentOs = buildDetailPageDesignAgentOsEvidence({
+                    userInput: userInputForOs,
+                    screenCount: screens.length,
+                    screens: buildDetailPageScreenEvidence(screenPlans),
+                    toolResults: results,
+                    success: true,
+                    warnings: [
+                        ...structureAlerts.map((alert) => String(alert)),
+                        ...placeholderAnchorDiagnostics.warnings.map((warning) => String(warning))
+                    ]
+                });
+                const designPlanner = buildDetailPagePlannerEvidence({
+                    userInput: userInputForOs,
+                    params,
+                    context,
+                    projectPath,
+                    screenCount: screens.length,
+                    mode: 'inspect',
+                    readinessMode: readiness.mode,
+                    screenPlanCount: screenPlans.length
+                });
+                return {
+                    success: true,
+                    message: buildInspectionSummary({
+                        screens,
+                        screenPlans,
+                    readiness,
+                    layoutAssessment,
+                    visualPlanning,
+                    focus,
+                    anchorDiagnostics: placeholderAnchorDiagnostics,
+                    copyLayoutAudit: templateCopyAudit,
+                    totalTime: Date.now() - startedAt
+                }),
+                    toolResults: results,
+                    data: {
+                        inspectOnly: true,
+                        readiness,
+                        layoutGraphs,
+                        layoutAssessment,
+                        screenPlans,
+                        screenPlanLines: screenPlans.map(formatScreenPlanLine),
+                        visualPlanning,
+                        focus,
+                        copyLayoutAudit: templateCopyAudit,
+                        anchorDiagnostics: placeholderAnchorDiagnostics,
+                        structureAlerts,
+                        detailPageSkillReadiness,
+                        businessSkillMemoryEvidence: designPlanner.businessSkillMemoryEvidence,
+                        detailPageDesignPlacementIntelligence: designPlanner.detailPageDesignPlacementIntelligence,
+                        businessSkillDesignPlacementIntelligence: designPlanner.businessSkillDesignPlacementIntelligence,
+                        designAgentOs,
+                        designPlanner,
+                        stats: {
+                            screensProcessed: screens.length,
+                            issueCount: issues.length
+                        }
+                    }
+                };
+            }
+
+            if (signal?.aborted) {
+                return {
+                    success: false,
+                    cancelled: true,
+                    message: '已取消。',
+                    toolResults: results,
+                    data: { readiness, layoutGraphs, layoutAssessment }
+                };
+            }
+
+            const scopePhaseStartedAt = Date.now();
+            emitStep('observation', '准备确认详情页执行范围', '根据结构问题判断是否可继续自动修复和填充。', 'running', 0.28);
+            const executionScope = await resolveDetailExecutionScope({
+                screens,
+                issues,
+                crossScreenRiskCount,
+                autoFix,
+                runTool: executeToolCall,
+                results
+            });
+            markPhaseDuration('结构修复', scopePhaseStartedAt);
+
+            if (!executionScope.canProceed) {
+                emitStep(
+                    'warning',
+                    '详情页执行范围不可继续',
+                    executionScope.failureMessage || executionScope.failureReason || '模板结构不满足自动执行条件。',
+                    'error',
+                    0.32
+                );
+                return buildFailureResult(
+                    executionScope.failureMessage || '当前模板不适合自动执行',
+                    executionScope.failureReason || 'Template scope resolution failed',
+                    results,
+                    { readiness, layoutGraphs, layoutAssessment, visualPlanning, screenPlans, templateCopyAudit, detailPageSkillReadiness }
+                );
+            }
+
+            screens = executionScope.screens;
+            issues = executionScope.issues;
+            crossScreenRiskCount = executionScope.crossScreenRiskCount;
+            ({
+                readiness,
+                layoutGraphs,
+                layoutAssessment,
+                placeholderAnchorDiagnostics,
+                visualPlanning,
+                screenPlans,
+                templateCopyAudit,
+                structureAlerts,
+                focus
+            } = executionScope.templateState);
+            detailPageSkillReadiness = buildDetailPageSkillReadinessEvidence({
+                inspectOnly,
+                parseResult,
+                screens,
+                issues,
+                crossScreenRiskCount,
+                readiness,
+                context,
+                projectPath
+            });
+
+            for (const note of executionScope.notes) {
+                callbacks?.onStatus?.(note);
+            }
+
+            const assetPhaseStartedAt = Date.now();
+            report('正在整理当前项目素材。', 0.34);
+            const assetAnalysis = await callTool(
+                'analyzeProjectForDetailPage',
+                { projectPath },
+                projectPath ? '读取当前项目中的详情页可用素材。' : '没有项目路径时仅按当前上下文尝试分析素材。'
+            );
+            results.push({ toolName: 'analyzeProjectForDetailPage', result: assetAnalysis });
+            markPhaseDuration('素材分析', assetPhaseStartedAt);
+
+            if (!projectPath) {
+                callbacks?.onStatus?.('当前没有明确项目路径，接下来只能按当前上下文和已知素材做匹配。');
+            }
+
+            const planningPhaseStartedAt = Date.now();
+            emitStep(
+                'observation',
+                '开始生成详情页填充计划',
+                `基于 ${screens.length} 屏结构、模板评估和项目素材生成文案与图片放置计划。`,
+                'running',
+                0.42
+            );
+            report('正在为每一屏生成填充计划。', 0.46);
+            const plannedContent = await planDetailPageContent({
+                screens,
+                screenPlans,
+                focus,
+                projectPath,
+                layoutAssessment,
+                runTool: executeToolCall,
+                results
+            });
+            let fillPlans: FillPlan[] = plannedContent.fillPlans;
+            const projectedCopyAudit = plannedContent.projectedCopyAudit;
+            const anchorDiagnostics = plannedContent.anchorDiagnostics;
+            const copyGenerationSummary = plannedContent.copyGenerationSummary;
+            const placementRecords: any[] = [];
+            const screenPlanById = new Map<number, DetailScreenPlan>(screenPlans.map((plan) => [plan.screenId, plan]));
+            emitStep(
+                'verification',
+                '详情页填充计划已生成',
+                `填充计划 ${fillPlans.length} 个，图片区放置决策 ${plannedContent.fitDecisionCount} 个，锚点风险 ${anchorDiagnostics.warnings.length} 条。`,
+                'success',
+                0.52
+            );
+            callbacks?.onStatus?.(`已为 ${plannedContent.fitDecisionCount} 个图片区生成放置决策，接下来开始逐屏填充。`);
+            if (anchorDiagnostics.warnings.length > 0) {
+                callbacks?.onStatus?.(`检测到 ${anchorDiagnostics.warnings.length} 条放图锚点风险，执行时会优先局部修正。`);
+            }
+            markPhaseDuration('内容规划', planningPhaseStartedAt);
+
+            const degradedScreenNames: string[] = [];
             let successCount = 0;
             let failCount = 0;
-            let filledImages = 0;
-            let skippedImages = 0;
-            let totalAligned = 0;
-            let fillAttemptCount = 0;
-            let fillSuccessCount = 0;
-            let guardedScreenCount = 0;
-            let copyOnlyScreenCount = 0;
-            const guardedScreenNames: string[] = [];
+            const resultByScreenId = new Map<number, string>();
 
-            const minPlanConfidence = clamp01(Number(params.minPlanConfidence), DEFAULT_MIN_PLAN_CONFIDENCE);
-            const minImageCoverage = clamp01(Number(params.minImageCoverage), DEFAULT_MIN_IMAGE_COVERAGE);
-            const usePlanGuard = params.planGuard === true;
-            const allowLowConfidenceFill = params.allowLowConfidenceFill === true;
-            const fillStepParams = getStepParams(stepMap, 'fillDetailPage');
+            const fillPhaseStartedAt = Date.now();
+            report('开始按屏执行详情页填充。', 0.58, { assistant: false });
+            emitStep('observation', '开始按屏执行详情页填充', `待处理 ${screens.length} 屏。`, 'running', 0.58);
 
             for (let i = 0; i < screens.length; i++) {
+                if (signal?.aborted) {
+                    return {
+                        success: false,
+                        cancelled: true,
+                        message: '已取消。',
+                        toolResults: results,
+                        data: { readiness, layoutGraphs, layoutAssessment }
+                    };
+                }
+
                 const screen = screens[i];
-                const plan = alignedPlans[i];
-                report(`填充屏 ${i + 1}/${screens.length}: ${screen.name}`, 0.5 + (i / screens.length) * 0.25);
-
-                if (signal?.aborted) return { success: true, cancelled: true, message: '⏹️ 已停止' };
-
-                if (!useFillStep) {
-                    successCount++;
-                    callbacks?.onMessage?.(`  └ ${screen.name}: 计划未包含填充，跳过`);
+                const screenPlan = screenPlanById.get(screen.id);
+                const prepared = await prepareDetailScreenExecutionPlan({
+                    screen,
+                    screenPlan,
+                    initialPlan: fillPlans[i] as FillPlan | undefined,
+                    focus,
+                    anchorDiagnostics,
+                    usePlanGuard,
+                    allowLowConfidenceFill,
+                    minImageCoverage,
+                    projectPath,
+                    runTool: executeToolCall,
+                    results
+                });
+                if (!prepared.plan) {
+                    failCount++;
+                    resultByScreenId.set(screen.id, 'failed:no-executable-plan');
+                    emitStep(
+                        'warning',
+                        '单屏填充计划缺失',
+                        `${screen.name}: 单屏重建后仍没有可执行计划。`,
+                        'error',
+                        0.58 + ((i + 1) / Math.max(1, screens.length)) * 0.14
+                    );
+                    callbacks?.onStatus?.(`${screen.name}: 单屏重建后仍没有可执行计划。`);
                     continue;
                 }
 
-                if (!plan) { successCount++; callbacks?.onMessage?.(`  └ ${screen.name}: 跳过`); continue; }
+                emitStep(
+                    'observation',
+                    '准备填充详情页屏',
+                    `第 ${i + 1}/${screens.length} 屏：${screen.name}`,
+                    'running',
+                    0.58 + (i / Math.max(1, screens.length)) * 0.14
+                );
+                callbacks?.onStatus?.(`正在处理第 ${i + 1}/${screens.length} 屏: ${screen.name}`);
+                for (const note of prepared.notes) {
+                    callbacks?.onStatus?.(`${screen.name}: ${note}`);
+                }
 
-                const quality = calculatePlanQuality(plan);
-                const shouldGuard = usePlanGuard && !allowLowConfidenceFill
-                    && (!!plan.needsReview || quality.score < minPlanConfidence || quality.imageCoverage < minImageCoverage);
+                const planToApply: FillPlan = prepared.plan;
+                if (prepared.degraded) {
+                    degradedScreenNames.push(screen.name);
+                }
 
-                let planToApply = plan;
-                let copyOnlyApplied = forceCopyOnly;
+                const fillResult = await callTool('fillDetailPage', { plan: planToApply }, `填充详情页屏：${screen.name}`);
+                results.push({ toolName: `fillDetailPage[${screen.name}]`, result: fillResult });
+                if (Array.isArray(fillResult?.placements) && fillResult.placements.length > 0) {
+                    placementRecords.push(...fillResult.placements);
+                }
 
-                if (forceCopyOnly) {
-                    planToApply = { ...plan, images: [] };
-                    callbacks?.onMessage?.(`  └ ${screen.name}: ✍️ 仅文案模式`);
-                } else if (shouldGuard) {
-                    guardedScreenCount++;
-                    guardedScreenNames.push(screen.name);
-                    planToApply = { ...plan, images: [] };
-                    copyOnlyApplied = true;
-                    callbacks?.onMessage?.(
-                        `  └ ${screen.name}: ⚠️ 保护策略（评分 ${quality.score.toFixed(2)}），本屏仅填文案`
+                if (fillResult?.success) {
+                    successCount++;
+                    resultByScreenId.set(screen.id, 'passed');
+                    emitStep(
+                        'verification',
+                        '单屏填充完成',
+                        `${screen.name}: 填充工具返回成功。`,
+                        'success',
+                        0.58 + ((i + 1) / Math.max(1, screens.length)) * 0.14
+                    );
+                } else {
+                    failCount++;
+                    resultByScreenId.set(screen.id, 'failed:fill-tool');
+                    emitStep(
+                        'warning',
+                        '单屏填充失败',
+                        `${screen.name}: ${String(fillResult?.error || 'fillDetailPage 返回失败状态。')}`,
+                        'error',
+                        0.58 + ((i + 1) / Math.max(1, screens.length)) * 0.14
                     );
                 }
-                if (copyOnlyApplied) copyOnlyScreenCount++;
-
-                const planImages = planToApply.images?.filter(img => img.imagePath) || [];
-                const planSkipped = planToApply.images?.filter(img => !img.imagePath) || [];
-
-                if (planImages.length > 0 || planToApply.copies?.length > 0) {
-                    fillAttemptCount++;
-                    const fillResult = await executeToolCall('fillDetailPage', { ...fillStepParams, plan: planToApply });
-                    if (fillResult?.success) {
-                        successCount++;
-                        fillSuccessCount++;
-                        filledImages += planImages.length;
-                        skippedImages += planSkipped.length;
-                        if (planImages.length > 0) {
-                            totalAligned += await alignFilledImages(planToApply, screen, callbacks, results);
-                        }
-                        const details = [];
-                        if (planImages.length > 0) details.push(`${planImages.length} 图片`);
-                        if (planToApply.copies?.length > 0) details.push(`${planToApply.copies.length} 文案`);
-                        callbacks?.onMessage?.(`  └ ${screen.name}: ${details.join(', ')} ✓`);
-                    } else {
-                        failCount++;
-                        callbacks?.onMessage?.(`  └ ${screen.name}: 填充失败 ✗`);
-                    }
-                    results.push(fillResult);
-                } else {
-                    successCount++;
-                    callbacks?.onMessage?.(`  └ ${screen.name}: 无需填充`);
-                }
             }
+            markPhaseDuration('执行填充', fillPhaseStartedAt);
 
-            callbacks?.onMessage?.(`📊 填充汇总: ${filledImages} 图片已填充, ${skippedImages} 图片跳过`);
-            if (totalAligned > 0) callbacks?.onMessage?.(`📐 对齐修正: ${totalAligned} 张图片已居中对齐`);
-
-            // ===== Phase 7: 导出切片 =====
-            report('导出详情页切片...', 0.8);
-
-            const outputDir = designIntent.outputDir || params.outputDir || projectPath;
-            let exportResult: any = null;
-
-            if (useExportStep) {
-                const { config: exportConfigFromStep, ...exportToolParams } = getStepParams(stepMap, 'exportDetailPageSlices');
-                exportResult = await executeToolCall('exportDetailPageSlices', {
-                    ...exportToolParams, screens,
-                    config: {
-                        outputDir, format: params.exportFormat || 'jpeg', quality: params.exportQuality || 10,
-                        namingPattern: '{index}_{type}', createSubfolder: true, subfolder: '详情',
-                        ...(exportConfigFromStep || {}),
-                    },
-                });
-                results.push(exportResult);
-                tracer.upsert('exportDetailPageSlices',
-                    exportResult?.success ? 'success' : 'failed',
-                    exportResult?.success ? `导出 ${exportResult.successCount || screens.length} 张` : exportResult?.error
-                );
-            } else {
-                callbacks?.onMessage?.('↪ 计划未包含导出步骤，跳过');
-                tracer.upsert('exportDetailPageSlices', 'skipped', '计划未包含');
-                exportResult = { skipped: true };
-            }
-
-            // ===== Phase 8: Critique 后评估 =====
-            const doVisualValidation = params.visualValidation !== false;
-            let critiqueResult: CritiqueResult | null = null;
-            let verificationScore = 0;
-            let verificationIssueCount = 0;
-
-            if (doVisualValidation) {
-                report('设计评估...', 0.92);
-                critiqueResult = await pipeline.after(beforeReport);
-                if (critiqueResult) {
-                    verificationScore = critiqueResult.afterScore;
-                    verificationIssueCount = critiqueResult.afterIssues.length;
-                }
-            }
-
-            // ===== 汇总 =====
-            report('完成', 1.0);
-            const totalTime = Date.now() - startTime;
-
-            // 更新 tracer
-            if (useFillStep) {
-                tracer.upsert('fillDetailPage',
-                    fillAttemptCount === 0 ? 'skipped'
-                        : fillSuccessCount === fillAttemptCount ? 'success' : 'partial',
-                    `成功 ${fillSuccessCount}/${fillAttemptCount}`
-                );
-            }
-
-            const summary = buildSummary({
-                screens, alignedPlans, successCount, failCount,
-                filledImages, skippedImages, totalAligned, totalImages,
-                issuesFound, issuesFixed, copyGuardAdjusted,
-                copyReviewedCount, copyRewrittenCount, copyFlaggedCount,
-                enableCopyLayoutFit, copyLayoutAdjusted, copyContinuityAdjusted, copyOverflowRiskCount,
-                guardedScreenCount, guardedScreenNames, forceCopyOnly, copyOnlyScreenCount,
-                structureAlerts, structureMode, critiqueResult,
-                verificationScore, verificationIssueCount,
-                exportResult, outputDir, totalTime,
+            const auditPhaseStartedAt = Date.now();
+            report('正在回读 PSD，复核文案和图片区结果。', 0.76, { assistant: false });
+            emitStep('observation', '开始回读详情页执行结果', '重新读取 PSD 结构、图层层级和放置结果。', 'running', 0.76);
+            const liveParseResult = await callTool('parseDetailPageTemplate', { includeStructure: true }, '回读执行后的详情页屏结构。');
+            results.push({ toolName: 'parseDetailPageTemplate[liveAudit]', result: liveParseResult });
+            const liveScreens: ParsedScreen[] = liveParseResult?.success ? (liveParseResult.screens || []) : screens;
+            const liveScreenPlans = filterScreenPlansByScreens(screenPlans, liveScreens);
+            const liveCopyLayoutAudit = auditDetailCopyLayout({
+                screens: liveScreens,
+                screenPlans: liveScreenPlans
             });
+
+            const hierarchyResult = await callTool('getLayerHierarchy', { includeBounds: true, flatList: true }, '读取执行后的图层边界和层级。');
+            results.push({ toolName: 'getLayerHierarchy[livePlacement]', result: hierarchyResult });
+            const livePlacementState = reconstructDetailPlacementsFromHierarchy(
+                liveScreens,
+                normalizeDetailFlatLayers(hierarchyResult),
+                0.18
+            );
+
+            let placementAuditResult: any = {
+                success: true,
+                warnings: [],
+                riskyScreenIds: []
+            };
+            if (livePlacementState.placements.length > 0) {
+                placementAuditResult = await callTool('auditDetailPagePlacement', {
+                    screens: liveScreens,
+                    placements: livePlacementState.placements
+                }, '校验图片区实际放置位置和目标占位关系。');
+                results.push({ toolName: 'auditDetailPagePlacement', result: placementAuditResult });
+            }
+
+            emitStep(
+                'verification',
+                '详情页结果复核完成',
+                `回读屏数 ${liveScreens.length}，实际放置 ${livePlacementState.placements.length} 个，未匹配占位 ${livePlacementState.unmatchedPlaceholders.length} 个。`,
+                (placementAuditResult?.warnings?.length || 0) > 0 ? 'error' : 'success',
+                0.8
+            );
+            if ((placementAuditResult?.warnings?.length || 0) > 0) {
+                callbacks?.onStatus?.(`放置校验发现 ${placementAuditResult.warnings.length} 条风险，最终结果需要复核。`);
+            }
+            markPhaseDuration('结果复核', auditPhaseStartedAt);
+
+            let snapshotResult: any;
+            if (shouldCaptureScreenSnapshots(params)) {
+                const snapshotPhaseStartedAt = Date.now();
+                report('正在做屏级截图校验。', 0.82);
+                snapshotResult = await callTool('getScreenSnapshots', { screens: liveScreens, maxWidth: 1200 }, '采集屏级截图作为视觉复核证据。');
+                results.push({ toolName: 'getScreenSnapshots', result: snapshotResult });
+                markPhaseDuration('截图校验', snapshotPhaseStartedAt);
+            }
+
+            let exportResult: any;
+            if (shouldExportFromRequest(params, context)) {
+                const exportPhaseStartedAt = Date.now();
+                report('正在导出详情页切片。', 0.92);
+                exportResult = await callTool('exportDetailPageSlices', {
+                    screens: liveScreens,
+                    config: {
+                        outputDir: params.outputDir || projectPath,
+                        format: params.exportFormat || 'jpeg',
+                        quality: params.exportQuality || 10,
+                        createSubfolder: true,
+                        subfolder: '详情'
+                    }
+                }, '按屏导出详情页切片。');
+                results.push({ toolName: 'exportDetailPageSlices', result: exportResult });
+                markPhaseDuration('导出切片', exportPhaseStartedAt);
+            }
+
+            const livePlacementDiagnostics = {
+                placementCount: livePlacementState.placements.length,
+                unmatchedPlaceholderCount: livePlacementState.unmatchedPlaceholders.length,
+                diagnostics: livePlacementState.diagnostics,
+                unmatchedPlaceholders: livePlacementState.unmatchedPlaceholders
+            };
+            const reviewLevel = resolveDetailExecutionReviewLevel({
+                failCount,
+                degradedScreenCount: degradedScreenNames.length,
+                readinessMode: readiness.mode,
+                layoutMode: layoutAssessment.mode,
+                visualMergeStatus: visualPlanning.mergeStatus,
+                hasBoundaryRisk: screenPlans.some((plan) => plan.visualSummary?.boundaryRisk === 'risky'),
+                anchorWarningCount: anchorDiagnostics.warnings.length,
+                templateCopyWarningCount: templateCopyAudit.summary.warningCount || 0,
+                liveCopyRiskyCount: liveCopyLayoutAudit.summary.riskyCopyCount || 0,
+                liveCopyWarningCount: liveCopyLayoutAudit.summary.warningCount || 0,
+                unmatchedPlaceholderCount: livePlacementDiagnostics.unmatchedPlaceholderCount,
+                riskyPlacementCount: placementAuditResult?.riskyScreenIds?.length || 0
+            });
+            const needsReview = reviewLevel !== 'ok';
+            const designAgentOs = buildDetailPageDesignAgentOsEvidence({
+                userInput: userInputForOs,
+                screenCount: liveScreens.length,
+                screens: buildDetailPageScreenEvidence(screenPlans, fillPlans, resultByScreenId),
+                toolResults: results,
+                success: failCount === 0,
+                completionContract: {
+                    status: failCount === 0 && !needsReview ? 'passed' : (failCount === 0 ? 'needs_review' : 'failed'),
+                    summary: `详情页执行成功 ${successCount} 屏，失败 ${failCount} 屏，复核等级 ${reviewLevel}。`,
+                    blockers: failCount > 0 ? [`${failCount} 屏填充失败或缺少可执行计划。`] : [],
+                    warnings: [
+                        ...degradedScreenNames.map((name) => `${name}: 降级填充`),
+                        ...anchorDiagnostics.warnings.map((warning) => String(warning)),
+                        ...((placementAuditResult?.warnings || []) as any[]).map((warning) => String(warning))
+                    ]
+                }
+            });
+            const designPlanner = buildDetailPagePlannerEvidence({
+                userInput: userInputForOs,
+                params,
+                context,
+                projectPath,
+                screenCount: liveScreens.length,
+                mode: 'execute',
+                readinessMode: readiness.mode,
+                screenPlanCount: screenPlans.length
+            });
+            detailPageSkillReadiness = buildDetailPageSkillReadinessEvidence({
+                inspectOnly,
+                parseResult: liveParseResult?.success ? liveParseResult : parseResult,
+                screens: liveScreens,
+                issues,
+                crossScreenRiskCount,
+                readiness,
+                context,
+                projectPath
+            });
+            emitStep(
+                'finalizing',
+                '详情页执行结果已汇总',
+                `成功 ${successCount} 屏，失败 ${failCount} 屏，复核等级 ${reviewLevel}。`,
+                failCount === 0 ? 'success' : 'error',
+                1
+            );
 
             return {
                 success: failCount === 0,
-                message: summary,
+                message: buildExecutionSummary({
+                    screens: liveScreens,
+                    screenPlans,
+                    readiness,
+                    layoutAssessment,
+                    visualPlanning,
+                    focus,
+                    anchorDiagnostics,
+                    placementAudit: placementAuditResult,
+                    copyLayoutAudit: liveCopyLayoutAudit,
+                    copyGenerationSummary,
+                    livePlacementDiagnostics: {
+                        placementCount: livePlacementDiagnostics.placementCount,
+                        unmatchedPlaceholderCount: livePlacementDiagnostics.unmatchedPlaceholderCount
+                    },
+                    reviewLevel,
+                    successCount,
+                    failCount,
+                    degradedScreenNames,
+                    phaseDurations,
+                    exportResult,
+                    totalTime: Date.now() - startedAt
+                }),
                 toolResults: results,
                 data: {
-                    screensProcessed: screens.length,
-                    screensSuccess: successCount,
-                    screensFailed: failCount,
-                    imagesFilledCount: filledImages,
-                    imagesSkippedCount: skippedImages,
-                    imagesAligned: totalAligned,
-                    issuesFound, issuesFixed, copyGuardAdjusted,
-                    copyQuality: {
-                        reviewed: copyReviewedCount, rewritten: copyRewrittenCount,
-                        flagged: copyFlaggedCount, weakEvidence: copyEvidenceWeakCount,
-                        layoutAdjusted: copyLayoutAdjusted, overflowRisk: copyOverflowRiskCount,
-                        continuityAdjusted: copyContinuityAdjusted,
-                        lineBreakStyle: copyLineBreakStyle,
-                        maxLines: { title: copyTitleMaxLines, subtitle: copySubtitleMaxLines, body: copyBodyMaxLines },
-                        minScore: copyMinScore, strategy: lowScoreCopyStrategy, flags: copyReviewFlags,
+                    inspectOnly: false,
+                    reviewLevel,
+                    needsReview,
+                    readiness,
+                    layoutGraphs,
+                    layoutAssessment,
+                    screenPlans,
+                    screenPlanLines: screenPlans.map(formatScreenPlanLine),
+                    visualPlanning,
+                    focus,
+                    imageFit: {
+                        decisionCount: plannedContent.fitDecisionCount
                     },
-                    structureMode, structureAlerts,
-                    planGuard: {
-                        enabled: usePlanGuard, forceCopyOnly, allowLowConfidenceFill,
-                        minPlanConfidence, minImageCoverage,
-                        guardedScreenCount, copyOnlyScreenCount, guardedScreenNames,
+                    copyLayoutAudit: {
+                        template: templateCopyAudit,
+                        projected: projectedCopyAudit,
+                        live: liveCopyLayoutAudit
                     },
-                    critique: critiqueResult,
-                    totalTime,
-                    exportPath: exportResult?.outputDir,
-                },
+                    copyGenerationSummary,
+                    anchorDiagnostics,
+                    placementAudit: placementAuditResult,
+                    livePlacementDiagnostics,
+                    structureAlerts,
+                    export: exportResult,
+                    screenSnapshots: snapshotResult?.screens || snapshotResult?.images || [],
+                    phaseDurations,
+                    detailPageSkillReadiness,
+                    businessSkillMemoryEvidence: designPlanner.businessSkillMemoryEvidence,
+                    detailPageDesignPlacementIntelligence: designPlanner.detailPageDesignPlacementIntelligence,
+                    businessSkillDesignPlacementIntelligence: designPlanner.businessSkillDesignPlacementIntelligence,
+                    designAgentOs,
+                    designPlanner,
+                    stats: {
+                        screensProcessed: liveScreens.length,
+                        screensSuccess: successCount,
+                        screensFailed: failCount,
+                        degradedScreenCount: degradedScreenNames.length
+                    }
+                }
             };
-
-        } catch (e: any) {
-            console.error('[DetailPageExecutor] 执行失败:', e);
-            return { success: false, message: `❌ 详情页设计失败: ${e.message}`, error: e.message, toolResults: results };
+        } catch (error: any) {
+            emitStep(
+                'warning',
+                '详情页执行异常',
+                error?.message || '未知错误',
+                'error',
+                1
+            );
+            return buildFailureResult(
+                `详情页执行失败: ${error?.message || '未知错误'}`,
+                error?.message || 'Unknown error',
+                results
+            );
         }
-    },
+    }
 };
 
-// ==================== 汇总生成 ====================
-
-function buildSummary(ctx: {
-    screens: ParsedScreen[];
-    alignedPlans: Array<FillPlan | undefined>;
-    successCount: number; failCount: number;
-    filledImages: number; skippedImages: number;
-    totalAligned: number; totalImages: number;
-    issuesFound: number; issuesFixed: number;
-    copyGuardAdjusted: number;
-    copyReviewedCount: number; copyRewrittenCount: number; copyFlaggedCount: number;
-    enableCopyLayoutFit: boolean;
-    copyLayoutAdjusted: number; copyContinuityAdjusted: number; copyOverflowRiskCount: number;
-    guardedScreenCount: number; guardedScreenNames: string[];
-    forceCopyOnly: boolean; copyOnlyScreenCount: number;
-    structureAlerts: any[]; structureMode: string;
-    critiqueResult: CritiqueResult | null;
-    verificationScore: number; verificationIssueCount: number;
-    exportResult: any; outputDir: string;
-    totalTime: number;
-}): string {
-    const lines: string[] = ['✅ **详情页设计完成**', ''];
-
-    lines.push('📋 **处理内容**：');
-    for (let i = 0; i < Math.min(ctx.screens.length, 5); i++) {
-        const s = ctx.screens[i];
-        const p = ctx.alignedPlans[i];
-        const imgCount = p?.images?.filter(img => img.imagePath).length || 0;
-        const copyCount = p?.copies?.length || 0;
-        const details = [];
-        if (imgCount > 0) details.push(`${imgCount}张图片`);
-        if (copyCount > 0) details.push(`${copyCount}处文案`);
-        lines.push(`   • ${s.name}${details.length > 0 ? ` (${details.join(', ')})` : ''}`);
-    }
-    if (ctx.screens.length > 5) lines.push(`   • ... 还有 ${ctx.screens.length - 5} 屏`);
-    lines.push('');
-
-    lines.push(`📊 **统计**：${ctx.screens.length} 屏, ${ctx.successCount} 成功, ${ctx.failCount} 失败`);
-    if (ctx.filledImages > 0 || ctx.skippedImages > 0)
-        lines.push(`🖼️ **图片**：${ctx.filledImages} 已填充` + (ctx.skippedImages > 0 ? `, ${ctx.skippedImages} 跳过` : ''));
-    if (ctx.totalAligned > 0) lines.push(`📐 **对齐修正**：${ctx.totalAligned} 张图片已居中对齐`);
-    if (ctx.issuesFound > 0) lines.push(`🔧 **问题修复**：发现 ${ctx.issuesFound}, 修复 ${ctx.issuesFixed}`);
-    if (ctx.copyGuardAdjusted > 0) lines.push(`🛡️ **文案净化**：调整 ${ctx.copyGuardAdjusted} 处`);
-    if (ctx.copyReviewedCount > 0)
-        lines.push(`🧪 **文案审查**：${ctx.copyReviewedCount} 条, 改写 ${ctx.copyRewrittenCount} 条, 标记 ${ctx.copyFlaggedCount} 条`);
-    if (ctx.enableCopyLayoutFit && (ctx.copyLayoutAdjusted > 0 || ctx.copyContinuityAdjusted > 0))
-        lines.push(`✍️ **文案编排**：${ctx.copyLayoutAdjusted} 处适配, ${ctx.copyContinuityAdjusted} 处连贯性改写`
-            + (ctx.copyOverflowRiskCount > 0 ? `, ${ctx.copyOverflowRiskCount} 处溢出风险` : ''));
-    if (ctx.guardedScreenCount > 0) lines.push(`🧯 **执行保护**：${ctx.guardedScreenCount} 屏触发文案优先模式`);
-    if (ctx.forceCopyOnly) lines.push(`✍️ **仅文案模式**：${ctx.copyOnlyScreenCount} 屏保持原图`);
-    if (ctx.structureAlerts.length > 0 && ctx.structureMode !== 'ignore')
-        lines.push(`🧱 **结构提示**：${ctx.structureAlerts.length} 屏未完整命中三分区`);
-
-    if (ctx.critiqueResult) {
-        const arrow = getDeltaArrow(ctx.critiqueResult.delta);
-        lines.push(`🔍 **设计评估**：${ctx.critiqueResult.beforeScore} → ${ctx.critiqueResult.afterScore} (${arrow}${Math.abs(ctx.critiqueResult.delta)})`
-            + (ctx.critiqueResult.afterIssues.length > 0 ? `，${ctx.critiqueResult.afterIssues.length} 个待优化项` : ''));
-    }
-
-    if (ctx.exportResult?.success) { lines.push(''); lines.push(`📁 **导出位置**：${ctx.exportResult.outputDir || ctx.outputDir}`); }
-    lines.push(`⏱️ 耗时: ${(ctx.totalTime / 1000).toFixed(1)}s`);
-
-    if (ctx.filledImages === 0 && ctx.totalImages > 0) {
-        lines.push('');
-        lines.push('💡 **建议**：当前未填充任何图片。请确保项目目录中包含可用素材。');
-    }
-
-    return lines.join('\n');
-}
