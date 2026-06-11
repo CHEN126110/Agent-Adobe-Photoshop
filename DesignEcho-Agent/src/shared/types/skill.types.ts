@@ -32,6 +32,50 @@ export interface SkillParameter {
     examples?: any[];
 }
 
+export type SkillCategory =
+    | 'image'
+    | 'layout'
+    | 'text'
+    | 'batch'
+    | 'analysis'
+    | 'export'
+    | 'morphing'
+    | 'replication'
+    | 'ecommerce'
+    | 'document';
+
+export type SkillKind = 'workflow' | 'operation' | 'debug';
+
+export type SkillVisibility = 'user-facing' | 'internal-debug' | 'system-only';
+
+export interface SkillRoutingMetadata {
+    /** 强信号：当用户话术出现这些语义时，应优先考虑该 skill；可用 regex: 前缀表达受控正则信号 */
+    intentSignals?: string[];
+    /** 分组信号：每组内满足任一项即可，但所有分组都必须命中；可用 regex: 前缀表达受控正则信号 */
+    intentSignalGroups?: string[][];
+    /** 负信号：当用户话术出现这些语义时，应避免误路由到该 skill */
+    negativeSignals?: string[];
+    /** 执行前提：帮助分类器判断当前上下文是否足够 */
+    preconditions?: string[];
+    /** skill 支持的模式，例如 inspect / execute / authoring */
+    supportedModes?: string[];
+    /** 参数抽取提示：帮助分类器从自然语言里提取 skillParams */
+    parameterExtractionHints?: string[];
+    /** 路由模式信号：例如 inspect / execute */
+    modeSignals?: Record<string, string[]>;
+    /** 续作策略：用户说“再改一下”时如何继承上一轮任务 */
+    retryPolicy?: 'inherit_previous' | 're-evaluate' | 'fresh';
+    /** 当上下文不足时，优先澄清的问题方向 */
+    clarificationHints?: string[];
+    /** 容易混淆场景下的决策提示，供分类器直接消费 */
+    decisionGuidance?: string[];
+    /** 路由阶段的状态摘要文案，不代表模型思考 */
+    routeStatusMessages?: Partial<{
+        deterministic: string;
+        autonomous: string;
+    }>;
+}
+
 // ==================== Skill 能力声明 ====================
 
 /**
@@ -51,7 +95,13 @@ export interface SkillDeclaration {
     name: string;
     
     /** 技能分类 */
-    category: 'image' | 'layout' | 'text' | 'batch' | 'analysis' | 'export' | 'morphing' | 'replication' | 'ecommerce';
+    category: SkillCategory;
+
+    /** 技能层级：完整工作流 / 单步操作 / 调试能力 */
+    kind: SkillKind;
+
+    /** 可见性边界：普通用户、内部调试、系统内部 */
+    visibility: SkillVisibility;
     
     /** 详细描述（给 AI 看的，用于理解能力边界） */
     description: string;
@@ -61,6 +111,9 @@ export interface SkillDeclaration {
     
     /** 不适用场景（防止 AI 误用） */
     whenNotToUse?: string[];
+
+    /** 路由元数据：用于意图识别、歧义消解、参数抽取 */
+    routing?: SkillRoutingMetadata;
     
     /** 输入参数定义 */
     parameters: SkillParameter[];
@@ -210,6 +263,7 @@ export interface SkillSelectionResult {
  * 生成给 AI 看的 Skill 摘要（用于系统提示词）
  */
 export function generateSkillSummary(skills: SkillDeclaration[]): string {
+    const visibleSkills = skills.filter((skill) => skill.visibility === 'user-facing');
     const lines: string[] = [
         '## 可用技能列表',
         '',
@@ -218,7 +272,7 @@ export function generateSkillSummary(skills: SkillDeclaration[]): string {
     ];
     
     const byCategory: Record<string, SkillDeclaration[]> = {};
-    for (const skill of skills) {
+    for (const skill of visibleSkills) {
         if (!byCategory[skill.category]) {
             byCategory[skill.category] = [];
         }
@@ -232,8 +286,9 @@ export function generateSkillSummary(skills: SkillDeclaration[]): string {
         'batch': '📦 批量操作',
         'analysis': '🔍 分析诊断',
         'export': '💾 导出保存',
-        'morphing': '🔄 形态变形',
-        'replication': '📋 布局复刻'
+        'replication': '📋 布局复刻',
+        'ecommerce': '🛍️ 电商设计',
+        'document': '📄 文档操作'
     };
     
     for (const [category, categorySkills] of Object.entries(byCategory)) {

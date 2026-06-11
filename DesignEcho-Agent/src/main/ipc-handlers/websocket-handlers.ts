@@ -4,6 +4,11 @@
 
 import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import type { IPCContext } from './types';
+import {
+    buildChatTestFakeModelText,
+    buildChatTestFakeModelWithTools,
+    isChatTestFakeModelEnabled
+} from '../testing/chat-test-fake-model';
 
 /**
  * 注册 WebSocket 相关 IPC handlers
@@ -30,7 +35,8 @@ export function registerWebSocketHandlers(context: IPCContext): void {
     // 获取连接状态
     ipcMain.handle('ws:status', async () => {
         return {
-            connected: wsServer?.isPluginConnected() ?? false
+            connected: wsServer?.isPluginConnected() ?? false,
+            diagnostics: wsServer?.getConnectionDiagnostics?.() ?? null
         };
     });
 
@@ -53,6 +59,45 @@ export function registerWebSocketHandlers(context: IPCContext): void {
         if (!modelService) {
             throw new Error('模型服务未初始化');
         }
+        if (isChatTestFakeModelEnabled()) {
+            return {
+                text: buildChatTestFakeModelText(modelId, messages),
+                usage: {
+                    inputTokens: 0,
+                    outputTokens: 0
+                }
+            };
+        }
         return await modelService.chat(modelId, messages as Parameters<typeof modelService.chat>[1], options as Parameters<typeof modelService.chat>[2]);
+    });
+
+    // DeepSeek 官方连通性测试：只验证 OpenAI 兼容文本聊天链路，不声明视觉或工具调用能力。
+    ipcMain.handle('model:testDeepSeek', async (_event: IpcMainInvokeEvent, apiKey?: string) => {
+        if (!modelService) {
+            throw new Error('模型服务未初始化');
+        }
+        return await modelService.testDeepSeek(apiKey);
+    });
+
+    // 带工具调用的模型聊天（Agent Runtime 使用）
+    ipcMain.handle('model:chatWithTools', async (
+        _event: IpcMainInvokeEvent,
+        modelId: string,
+        messages: unknown[],
+        tools: unknown[],
+        options?: unknown
+    ) => {
+        if (!modelService) {
+            throw new Error('模型服务未初始化');
+        }
+        if (isChatTestFakeModelEnabled()) {
+            return buildChatTestFakeModelWithTools(modelId, messages, tools);
+        }
+        return await modelService.chatWithTools(
+            modelId,
+            messages as any[],
+            tools as any[],
+            options as any
+        );
     });
 }

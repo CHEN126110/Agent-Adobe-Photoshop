@@ -5,6 +5,7 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
 
 const { app, core, action } = require('photoshop');
 
@@ -80,7 +81,7 @@ export class TransformLayerTool implements Tool {
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档' };
+                return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
             }
 
             // 获取目标图层
@@ -92,12 +93,12 @@ export class TransformLayerTool implements Tool {
                     : params.layerId;
                 layer = this.findLayerById(doc, numericId);
                 if (!layer) {
-                    return { success: false, error: `未找到 ID 为 ${numericId} 的图层` };
+                    return createToolFailureResult({ toolName: this.name, error: `未找到 ID 为 ${numericId} 的图层`, params });
                 }
             } else {
                 layer = doc.activeLayers[0];
                 if (!layer) {
-                    return { success: false, error: '没有选中的图层' };
+                    return createToolFailureResult({ toolName: this.name, error: '没有选中的图层', params });
                 }
             }
 
@@ -109,20 +110,6 @@ export class TransformLayerTool implements Tool {
             const originalHeight = bounds.bottom - bounds.top;
 
             console.log(`[TransformLayer] 原始尺寸: ${originalWidth}x${originalHeight}`);
-
-            // 选中目标图层（UXP API）
-            try {
-                // 方法1: 使用 batchPlay 选择图层
-                await action.batchPlay([{
-                    _obj: 'select',
-                    _target: [{ _ref: 'layer', _id: layer.id }],
-                    makeVisible: false,
-                    _options: { dialogOptions: 'dontDisplay' }
-                }], { synchronousExecution: true });
-            } catch (selectErr) {
-                console.warn('[TransformLayer] 图层选择警告:', selectErr);
-                // 忽略选择错误，继续尝试变换
-            }
 
             let scaleX = 100;
             let scaleY = 100;
@@ -161,6 +148,14 @@ export class TransformLayerTool implements Tool {
 
             // 执行变换
             await core.executeAsModal(async () => {
+                // 选中目标图层。选择失败必须停止，否则可能变换当前活动图层而不是目标图层。
+                await action.batchPlay([{
+                    _obj: 'select',
+                    _target: [{ _ref: 'layer', _id: layer.id }],
+                    makeVisible: false,
+                    _options: { dialogOptions: 'dontDisplay' }
+                }], { synchronousExecution: true });
+
                 // ★ 优先使用 UXP DOM API 的 resize 方法（更可靠，不会触发"变换不可用"错误）
                 let useResizeMethod = true;
                 
@@ -246,7 +241,7 @@ export class TransformLayerTool implements Tool {
 
         } catch (error: any) {
             console.error('[TransformLayer] 错误:', error);
-            return { success: false, error: error.message || '变换失败' };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 

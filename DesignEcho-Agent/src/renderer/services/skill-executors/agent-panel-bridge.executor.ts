@@ -1,6 +1,11 @@
 import type { SkillExecutor, SkillExecuteParams } from './types';
 import type { AgentResult } from '../unified-agent.service';
 import { useAppStore } from '../../stores/app.store';
+import {
+    callPhotoshopMcpTool,
+    getPhotoshopConnectionStatus,
+    listPhotoshopMcpTools
+} from '../mcp-host.client';
 
 type BridgeParams = {
     goal?: string;
@@ -30,14 +35,6 @@ type ModelBridgeFeedback = {
 function toList(value: unknown): string[] {
     if (!Array.isArray(value)) return [];
     return value.map((item) => String(item || '').trim()).filter(Boolean);
-}
-
-function toPrettyJson(value: unknown): string {
-    try {
-        return JSON.stringify(value, null, 2);
-    } catch {
-        return '{}';
-    }
 }
 
 function parseJsonObject(text: string): any | null {
@@ -209,21 +206,15 @@ export const agentPanelBridgeExecutor: SkillExecutor = {
         const expectedResult = String(p.expectedResult || '未提供').trim();
         const feedbackModelId = await resolveFeedbackModelId(p.feedbackModelId);
 
-        const wsStatus = await window.designEcho.invoke('ws:status').catch(() => ({ connected: false }));
-        const pluginConnected = !!wsStatus?.connected;
+        const connectionStatus = await getPhotoshopConnectionStatus().catch(() => ({ connected: false, source: 'ipc' as const }));
+        const pluginConnected = !!connectionStatus?.connected;
+        const wsStatus = { connected: pluginConnected, source: connectionStatus.source };
         const mustUseMcp = p.needMcpTools !== false || !!String(p.mcpToolName || '').trim();
 
         if (!pluginConnected && mustUseMcp) {
             return {
                 success: false,
-                message: [
-                    '❌ Agent 桌面端未连接到 UXP 插件，当前无法进行 MCP 联调。',
-                    '',
-                    '**建议先执行**',
-                    '- 确认 Photoshop 插件已启动并连接',
-                    '- 在桌面端检查连接状态为已连接',
-                    '- 连接成功后重试 agent-panel-bridge'
-                ].join('\n'),
+                message: '当前未连接到 Photoshop 插件，无法继续面板调试链路。请先确认 UXP 插件已启动并连接，再重试。',
                 error: 'plugin not connected for MCP bridge',
                 data: {
                     wsStatus
@@ -236,7 +227,7 @@ export const agentPanelBridgeExecutor: SkillExecutor = {
         let suggestedTools: McpToolItem[] = [];
         if (p.needMcpTools !== false && pluginConnected) {
             callbacks?.onMessage?.('🔎 正在获取 MCP 工具列表...');
-            mcpTools = await window.designEcho.invoke('mcp:tools:list').catch((error: any) => ({
+            mcpTools = await listPhotoshopMcpTools().catch((error: any) => ({
                 error: error?.message || String(error || 'unknown error')
             }));
             if (!mcpTools?.error) {
@@ -249,7 +240,7 @@ export const agentPanelBridgeExecutor: SkillExecutor = {
         const mcpToolName = String(p.mcpToolName || '').trim();
         if (mcpToolName && pluginConnected) {
             callbacks?.onMessage?.(`🛠️ 正在调用 MCP 工具: ${mcpToolName}`);
-            mcpCall = await window.designEcho.invoke('mcp:tools:call', mcpToolName, p.mcpArguments || {}).catch((error: any) => ({
+            mcpCall = await callPhotoshopMcpTool(mcpToolName, p.mcpArguments || {}).catch((error: any) => ({
                 error: error?.message || String(error || 'unknown error')
             }));
         }
@@ -266,7 +257,7 @@ export const agentPanelBridgeExecutor: SkillExecutor = {
         ];
         const fallbackNextSteps = [
             '将上方 JSON 发送到 Agent 面板',
-            '回传执行日志、关键返回字段、失败堆栈',
+            '回传关键状态、关键返回字段、失败堆栈',
             '根据回传结果继续收敛到最小修复方案'
         ];
 
@@ -302,26 +293,16 @@ export const agentPanelBridgeExecutor: SkillExecutor = {
         ];
 
         const messageLines = [
-            '### ✅ Agent 面板桥接消息已生成',
+            '已生成一条内部调试任务。',
             '',
-            `**调试目标**: ${goal}`,
-            `**当前现象**: ${symptom}`,
-            `**期望结果**: ${expectedResult}`,
-            `**反馈模型**: ${feedbackModelId}`,
-            `**模型规划**: ${modelFeedback ? '已启用' : '未命中，使用回退策略'}`,
-            `**MCP工具总数**: ${parsedTools.length}`,
-            `**推荐工具**: ${suggestedTools.length > 0 ? suggestedTools.map((tool) => tool.name).join(', ') : '暂无推荐（可先查看 tools/list）'}`,
+            `调试目标：${goal}`,
+            `当前现象：${symptom}`,
+            `期望结果：${expectedResult}`,
+            `连接状态：${pluginConnected ? '已连接' : '未连接'}`,
+            `推荐工具数：${suggestedTools.length}`,
             '',
-            '**面板消息（可直接发送）**',
-            '```json',
-            toPrettyJson(panelMessage),
-            '```',
-            '',
-            '**预期反馈与判定标准**',
-            verification.map((item) => `- ${item}`).join('\n'),
-            '',
-            '**下一步动作**',
-            nextSteps.map((item) => `- ${item}`).join('\n')
+            '结构化调试载荷已写入内部数据，不在聊天区直接展开。',
+            '下一步应在调试链路里继续执行，不建议把这条消息当作普通用户回复。'
         ];
 
         const mcpCallFailed = !!(mcpCall && typeof mcpCall === 'object' && 'error' in mcpCall && mcpCall.error);
@@ -340,6 +321,8 @@ export const agentPanelBridgeExecutor: SkillExecutor = {
                 suggestedTools,
                 feedbackModelId,
                 modelFeedback,
+                verification,
+                nextSteps,
                 mcpCall
             }
         };

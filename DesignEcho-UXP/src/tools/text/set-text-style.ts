@@ -4,6 +4,13 @@
 
 import { Tool, ToolSchema, TextStyle } from '../types';
 import { safeBatchPlay, diagnosePhotoshopState, wrapError } from '../../core/error-handler';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
+import {
+    FontSuggestion,
+    ResolvedFontInfo,
+    fontMatchesResolvedFont,
+    resolveFont
+} from './font-resolver';
 
 const app = require('photoshop').app;
 const { core } = require('photoshop');
@@ -52,6 +59,9 @@ export class SetTextStyleTool implements Tool {
         success: boolean;
         layerId?: number;
         appliedStyles?: Partial<TextStyle>;
+        resolvedFont?: ResolvedFontInfo;
+        verifiedFont?: string;
+        fontSuggestions?: FontSuggestion[];
         error?: string;
         errorDetails?: any;
     }> {
@@ -63,12 +73,12 @@ export class SetTextStyleTool implements Tool {
             console.log('[SetTextStyle] Photoshop 状态:', JSON.stringify(diagnosis, null, 2));
             
             if (!diagnosis.hasDocument) {
-                return { success: false, error: '没有打开的文档', errorDetails: diagnosis };
+                return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
             }
 
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档', errorDetails: diagnosis };
+                return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
             }
             
             let layer;
@@ -77,20 +87,16 @@ export class SetTextStyleTool implements Tool {
                 layer = this.findLayerById(doc, params.layerId);
                 if (!layer) {
                     console.error(`[SetTextStyle] 未找到图层 ID: ${params.layerId}`);
-                    return { 
-                        success: false, 
+                    return createToolFailureResult({
+                        toolName: this.name,
                         error: `未找到图层 ID: ${params.layerId}`,
-                        errorDetails: { availableLayers: diagnosis.selectedLayers }
-                    };
+                        params
+                    });
                 }
             } else {
                 const activeLayers = doc.activeLayers;
                 if (!activeLayers || activeLayers.length === 0) {
-                    return { 
-                        success: false, 
-                        error: '请先选中一个文本图层',
-                        errorDetails: diagnosis 
-                    };
+                    return createToolFailureResult({ toolName: this.name, error: '请先选中一个文本图层', params });
                 }
                 layer = activeLayers[0];
             }
@@ -98,24 +104,44 @@ export class SetTextStyleTool implements Tool {
             console.log(`[SetTextStyle] 目标图层: ID=${layer.id}, Name="${layer.name}", Kind=${layer.kind}`);
 
             if (layer.kind !== LayerKind.TEXT) {
-                return { 
-                    success: false, 
+                return createToolFailureResult({
+                    toolName: this.name,
                     error: `选中的不是文本图层 (当前类型: ${layer.kind})`,
-                    errorDetails: { layerKind: layer.kind, expectedKind: LayerKind.TEXT }
-                };
+                    params
+                });
             }
 
             // 检查图层是否锁定
             if (layer.locked) {
-                return { 
-                    success: false, 
+                return createToolFailureResult({
+                    toolName: this.name,
                     error: `图层 "${layer.name}" 已锁定，无法修改`,
-                    errorDetails: { locked: true }
-                };
+                    params
+                });
             }
 
             const appliedStyles: Partial<TextStyle> = {};
             let batchPlayError: any = null;
+            let resolvedFont: ResolvedFontInfo | null = null;
+            let fontSuggestions: FontSuggestion[] = [];
+
+            if (params.fontName !== undefined) {
+                const fontResolution = resolveFont(params.fontName);
+                resolvedFont = fontResolution.resolved;
+                fontSuggestions = fontResolution.suggestions;
+                if (!resolvedFont) {
+                    return {
+                        success: false,
+                        layerId: layer.id,
+                        error: `未找到可用字体：${params.fontName}`,
+                        fontSuggestions,
+                        errorDetails: {
+                            requestedFont: params.fontName,
+                            suggestions: fontSuggestions
+                        }
+                    };
+                }
+            }
 
             // 使用 executeAsModal 执行操作
             await core.executeAsModal(async () => {
@@ -139,12 +165,13 @@ export class SetTextStyleTool implements Tool {
                         _unit: 'pointsUnit',
                         _value: params.leading
                     };
+                    textStyleDescriptor.autoLeading = false;
                     appliedStyles.leading = params.leading;
                 }
 
                 if (params.fontName !== undefined) {
-                    textStyleDescriptor.fontPostScriptName = params.fontName;
-                    appliedStyles.fontName = params.fontName;
+                    textStyleDescriptor.fontPostScriptName = resolvedFont?.postScriptName || params.fontName;
+                    appliedStyles.fontName = resolvedFont?.postScriptName || params.fontName;
                 }
 
                 if (Object.keys(textStyleDescriptor).length === 0) {
@@ -200,18 +227,56 @@ export class SetTextStyleTool implements Tool {
             }, { commandName: 'DesignEcho: 设置文本样式' });
 
             if (batchPlayError) {
+                const failure = createToolFailureResult({ toolName: this.name, error: batchPlayError, params });
                 return {
-                    success: false,
+                    ...failure,
                     layerId: layer.id,
-                    error: batchPlayError.message,
-                    errorDetails: batchPlayError
+                    resolvedFont: resolvedFont || undefined,
+                    fontSuggestions: fontSuggestions.length > 0 ? fontSuggestions : undefined
                 };
+            }
+
+            let verifiedFont: string | undefined;
+            if (params.fontName !== undefined) {
+                try {
+                    const refreshedLayer = this.findLayerById(doc, layer.id) || layer;
+                    verifiedFont = String(refreshedLayer?.textItem?.characterStyle?.font || '').trim() || undefined;
+                    if (!verifiedFont || !resolvedFont || !fontMatchesResolvedFont(verifiedFont, resolvedFont)) {
+                        return {
+                            success: false,
+                            layerId: layer.id,
+                            appliedStyles,
+                            resolvedFont: resolvedFont || undefined,
+                            verifiedFont,
+                            fontSuggestions: fontSuggestions.length > 0 ? fontSuggestions : undefined,
+                            error: `字体写入未生效：期望 ${resolvedFont?.postScriptName || params.fontName}，实际 ${verifiedFont || '未知'}`,
+                            errorDetails: {
+                                requestedFont: params.fontName,
+                                resolvedFont,
+                                verifiedFont
+                            }
+                        };
+                    }
+                } catch (verifyError: any) {
+                    return {
+                        success: false,
+                        layerId: layer.id,
+                        appliedStyles,
+                        resolvedFont: resolvedFont || undefined,
+                        fontSuggestions: fontSuggestions.length > 0 ? fontSuggestions : undefined,
+                        error: verifyError?.message || '字体验证失败',
+                        errorDetails: verifyError
+                    };
+                }
             }
 
             return {
                 success: true,
                 layerId: layer.id,
-                appliedStyles
+                appliedStyles,
+                resolvedFont: resolvedFont || undefined,
+                verifiedFont,
+                fontSuggestions: fontSuggestions.length > 0 ? fontSuggestions : undefined
             };
 
         } catch (error: any) {
@@ -220,11 +285,7 @@ export class SetTextStyleTool implements Tool {
             const wrappedError = wrapError(error, 'setTextStyle', params);
             console.error('[SetTextStyle] 错误详情:', JSON.stringify(wrappedError, null, 2));
             
-            return {
-                success: false,
-                error: error.message || '设置样式失败',
-                errorDetails: wrappedError
-            };
+            return createToolFailureResult({ toolName: this.name, error: error.message || wrappedError, params });
         }
     }
 

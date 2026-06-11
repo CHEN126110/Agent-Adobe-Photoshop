@@ -1,71 +1,86 @@
-/**
- * 创建形状工具
- * 
- * 支持创建矩形、圆形等基础形状图层
+﻿/**
+ * 创建形状图层工具
  */
 
-import { app, core } from 'photoshop';
+import { app, core, action } from 'photoshop';
 import type { Tool } from '../types';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
 
-/**
- * 将十六进制颜色转换为 RGB
- */
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16)
-    } : { r: 128, g: 128, b: 128 };
+interface RGBColorValue {
+    r: number;
+    g: number;
+    b: number;
 }
 
-/**
- * 创建矩形形状
- */
+interface ShapeResult {
+    success: boolean;
+    entityType?: 'shape';
+    documentId?: number;
+    layerId?: number;
+    name?: string;
+    shapeType?: 'rectangle' | 'ellipse';
+    layerName?: string;
+    message?: string;
+    error?: string;
+}
+
+function hexToRgb(hex: string): RGBColorValue {
+    const normalized = String(hex || '').trim();
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(normalized);
+    return result
+        ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+        }
+        : { r: 128, g: 128, b: 128 };
+}
+
+function isFiniteNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPositiveNumber(value: unknown): value is number {
+    return isFiniteNumber(value) && value > 0;
+}
+
+function normalizeColor(color?: RGBColorValue, fillColorHex?: string): RGBColorValue {
+    if (color && [color.r, color.g, color.b].every(channel => Number.isFinite(channel))) {
+        return color;
+    }
+    return hexToRgb(fillColorHex || '#808080');
+}
+
+async function renameActiveLayer(name: string): Promise<void> {
+    await action.batchPlay([
+        {
+            _obj: 'set',
+            _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
+            to: {
+                _obj: 'layer',
+                name
+            },
+            _options: { dialogOptions: 'dontDisplay' }
+        }
+    ], { synchronousExecution: true });
+}
+
 export class CreateRectangleTool implements Tool {
     name = 'createRectangle';
     schema = {
         name: 'createRectangle',
-        description: '在 Photoshop 中创建矩形形状图层。可以指定位置、尺寸、填充颜色等。',
+        description: '在 Photoshop 中创建矩形形状图层，可指定位置、尺寸、颜色和圆角。',
         parameters: {
             type: 'object' as const,
             properties: {
-                name: {
-                    type: 'string',
-                    description: '矩形图层的名称（可选）'
-                },
-                x: {
-                    type: 'number',
-                    description: '矩形左上角 X 坐标（像素）'
-                },
-                y: {
-                    type: 'number',
-                    description: '矩形左上角 Y 坐标（像素）'
-                },
-                width: {
-                    type: 'number',
-                    description: '矩形宽度（像素）'
-                },
-                height: {
-                    type: 'number',
-                    description: '矩形高度（像素）'
-                },
-                fillColorHex: {
-                    type: 'string',
-                    description: '填充颜色（十六进制，如 "#FF0000" 为红色，可选，默认灰色）'
-                },
-                color: {
-                    type: 'object',
-                    description: '填充颜色（RGB对象 { r, g, b }，可选，优先级高于 fillColorHex）'
-                },
-                strokeWidth: {
-                    type: 'number',
-                    description: '描边宽度（像素，可选）'
-                },
-                cornerRadius: {
-                    type: 'number',
-                    description: '圆角半径（像素，可选，默认0）'
-                }
+                name: { type: 'string', description: '图层名称。' },
+                x: { type: 'number', description: '左上角 X 坐标（像素）。' },
+                y: { type: 'number', description: '左上角 Y 坐标（像素）。' },
+                width: { type: 'number', description: '矩形宽度（像素）。' },
+                height: { type: 'number', description: '矩形高度（像素）。' },
+                fillColorHex: { type: 'string', description: '填充颜色，十六进制，例如 #FF0000。' },
+                color: { type: 'object', description: '填充颜色 RGB 对象，优先级高于 fillColorHex。' },
+                cornerRadius: { type: 'number', description: '圆角半径（像素），默认 0。' }
             },
             required: ['x', 'y', 'width', 'height']
         }
@@ -78,70 +93,45 @@ export class CreateRectangleTool implements Tool {
         width: number;
         height: number;
         fillColorHex?: string;
-        color?: { r: number; g: number; b: number };
-        strokeWidth?: number;
+        color?: RGBColorValue;
         cornerRadius?: number;
-    }): Promise<any> {
+    }): Promise<ShapeResult> {
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档' };
+                return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
             }
 
-            const {
-                name = '矩形',
-                x,
-                y,
-                width,
-                height,
-                fillColorHex = '#808080',
-                color,
-                strokeWidth = 0,
-                cornerRadius = 0
-            } = params;
+            const { name = '矩形', x, y, width, height, fillColorHex = '#808080', color, cornerRadius = 0 } = params;
+            if (!isFiniteNumber(x) || !isFiniteNumber(y) || !isPositiveNumber(width) || !isPositiveNumber(height)) {
+                return { success: false, error: 'createRectangle failed: x/y must be numeric and width/height must be greater than 0.' };
+            }
+            if (!isFiniteNumber(cornerRadius) || cornerRadius < 0) {
+                return { success: false, error: 'createRectangle failed: cornerRadius must be a non-negative number.' };
+            }
 
-            // 优先使用 color 对象，其次使用 fillColorHex
-            const fillColor = color || hexToRgb(fillColorHex);
-
-            console.log(`[CreateRectangle] 创建矩形: ${width}x${height} at (${x}, ${y})`);
-
-            // 构建矩形路径
-            const left = x;
-            const top = y;
-            const right = x + width;
-            const bottom = y + height;
-
+            const fillColor = normalizeColor(color, fillColorHex);
             let createdLayerId: number | undefined;
 
-            if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) {
-                return { success: false, error: '矩形参数无效（坐标或尺寸不是有效数字）' };
-            }
-            if (width <= 0 || height <= 0) {
-                return { success: false, error: '矩形参数无效（width/height 必须大于 0）' };
-            }
-            if (!Number.isFinite(cornerRadius) || cornerRadius < 0) {
-                return { success: false, error: '矩形参数无效（cornerRadius 必须为非负数）' };
-            }
-
-            const rectangleShape: any = {
-                _obj: 'rectangle',
-                unitValueQuadVersion: 1,
-                top: { _unit: 'pixelsUnit', _value: top },
-                left: { _unit: 'pixelsUnit', _value: left },
-                bottom: { _unit: 'pixelsUnit', _value: bottom },
-                right: { _unit: 'pixelsUnit', _value: right }
-            };
-            if (cornerRadius > 0) {
-                const radius = { _unit: 'pixelsUnit', _value: cornerRadius };
-                rectangleShape.topRight = radius;
-                rectangleShape.topLeft = radius;
-                rectangleShape.bottomRight = radius;
-                rectangleShape.bottomLeft = radius;
-            }
-
-            // 使用 executeAsModal 包裹 batchPlay 操作
             await core.executeAsModal(async () => {
-                await require('photoshop').action.batchPlay([
+                const rectangleShape: any = {
+                    _obj: 'rectangle',
+                    unitValueQuadVersion: 1,
+                    top: { _unit: 'pixelsUnit', _value: y },
+                    left: { _unit: 'pixelsUnit', _value: x },
+                    bottom: { _unit: 'pixelsUnit', _value: y + height },
+                    right: { _unit: 'pixelsUnit', _value: x + width }
+                };
+
+                if (cornerRadius > 0) {
+                    const radius = { _unit: 'pixelsUnit', _value: cornerRadius };
+                    rectangleShape.topRight = radius;
+                    rectangleShape.topLeft = radius;
+                    rectangleShape.bottomRight = radius;
+                    rectangleShape.bottomLeft = radius;
+                }
+
+                await action.batchPlay([
                     {
                         _obj: 'make',
                         _target: [{ _ref: 'contentLayer' }],
@@ -156,77 +146,48 @@ export class CreateRectangleTool implements Tool {
                                     blue: fillColor.b
                                 }
                             },
-                            shape: {
-                                ...rectangleShape
-                            }
-                        }
-                    },
-                    // 重命名图层
-                    {
-                        _obj: 'set',
-                        _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                        to: {
-                            _obj: 'layer',
-                            name: name
-                        }
+                            shape: rectangleShape
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
-                ], { commandName: 'DesignEcho: 创建矩形' });
+                ], { synchronousExecution: true });
 
+                await renameActiveLayer(name);
                 createdLayerId = doc.activeLayers[0]?.id;
             }, { commandName: 'DesignEcho: 创建矩形' });
 
             return {
                 success: true,
+                entityType: 'shape',
+                documentId: doc.id,
                 layerId: createdLayerId,
+                name,
+                shapeType: 'rectangle',
                 layerName: name,
-                message: `矩形 "${name}" 已创建，位置: (${x}, ${y})，尺寸: ${width}x${height}`
+                message: `Created rectangle "${name}".`
             };
-
         } catch (error) {
             console.error('[CreateRectangle] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '创建矩形失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
 
-/**
- * 创建椭圆形状
- */
 export class CreateEllipseTool implements Tool {
     name = 'createEllipse';
     schema = {
         name: 'createEllipse',
-        description: '在 Photoshop 中创建椭圆/圆形形状图层。',
+        description: '在 Photoshop 中创建椭圆形状图层，可指定中心点、尺寸和颜色。',
         parameters: {
             type: 'object' as const,
             properties: {
-                name: {
-                    type: 'string',
-                    description: '椭圆图层的名称（可选）'
-                },
-                x: {
-                    type: 'number',
-                    description: '椭圆中心 X 坐标（像素）'
-                },
-                y: {
-                    type: 'number',
-                    description: '椭圆中心 Y 坐标（像素）'
-                },
-                width: {
-                    type: 'number',
-                    description: '椭圆宽度（像素）'
-                },
-                height: {
-                    type: 'number',
-                    description: '椭圆高度（像素）'
-                },
-                fillColorHex: {
-                    type: 'string',
-                    description: '填充颜色（十六进制，如 "#FF0000"，可选）'
-                }
+                name: { type: 'string', description: '图层名称。' },
+                x: { type: 'number', description: '椭圆中心 X 坐标（像素）。' },
+                y: { type: 'number', description: '椭圆中心 Y 坐标（像素）。' },
+                width: { type: 'number', description: '椭圆宽度（像素）。' },
+                height: { type: 'number', description: '椭圆高度（像素）。' },
+                fillColorHex: { type: 'string', description: '填充颜色，十六进制，例如 #FF0000。' },
+                color: { type: 'object', description: '填充颜色 RGB 对象，优先级高于 fillColorHex。' }
             },
             required: ['x', 'y', 'width', 'height']
         }
@@ -239,35 +200,28 @@ export class CreateEllipseTool implements Tool {
         width: number;
         height: number;
         fillColorHex?: string;
-    }): Promise<any> {
+        color?: RGBColorValue;
+    }): Promise<ShapeResult> {
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档' };
+                return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
             }
 
-            const {
-                name = '椭圆',
-                x,
-                y,
-                width,
-                height,
-                fillColorHex = '#808080'
-            } = params;
+            const { name = '椭圆', x, y, width, height, fillColorHex = '#808080', color } = params;
+            if (!isFiniteNumber(x) || !isFiniteNumber(y) || !isPositiveNumber(width) || !isPositiveNumber(height)) {
+                return { success: false, error: 'createEllipse failed: x/y must be numeric and width/height must be greater than 0.' };
+            }
 
-            const fillColor = hexToRgb(fillColorHex);
-
-            // 计算椭圆的边界框
+            const fillColor = normalizeColor(color, fillColorHex);
             const left = x - width / 2;
             const top = y - height / 2;
             const right = x + width / 2;
             const bottom = y + height / 2;
-
             let createdLayerId: number | undefined;
 
-            // 使用 executeAsModal 包裹 batchPlay 操作
             await core.executeAsModal(async () => {
-                await require('photoshop').action.batchPlay([
+                await action.batchPlay([
                     {
                         _obj: 'make',
                         _target: [{ _ref: 'contentLayer' }],
@@ -290,34 +244,29 @@ export class CreateEllipseTool implements Tool {
                                 bottom: { _unit: 'pixelsUnit', _value: bottom },
                                 right: { _unit: 'pixelsUnit', _value: right }
                             }
-                        }
-                    },
-                    {
-                        _obj: 'set',
-                        _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                        to: {
-                            _obj: 'layer',
-                            name: name
-                        }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
-                ], { commandName: 'DesignEcho: 创建椭圆' });
+                ], { synchronousExecution: true });
 
+                await renameActiveLayer(name);
                 createdLayerId = doc.activeLayers[0]?.id;
             }, { commandName: 'DesignEcho: 创建椭圆' });
 
             return {
                 success: true,
+                entityType: 'shape',
+                documentId: doc.id,
                 layerId: createdLayerId,
+                name,
+                shapeType: 'ellipse',
                 layerName: name,
-                message: `椭圆 "${name}" 已创建`
+                message: `Created ellipse "${name}".`
             };
-
         } catch (error) {
             console.error('[CreateEllipse] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '创建椭圆失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
+

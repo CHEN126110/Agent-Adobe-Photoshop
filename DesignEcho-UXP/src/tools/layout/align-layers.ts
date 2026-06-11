@@ -5,6 +5,7 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
 
 const app = require('photoshop').app;
 const { core } = require('photoshop');
@@ -88,13 +89,13 @@ export class AlignLayersTool implements Tool {
                             layerID: params.layerIds,
                             _options: { dialogOptions: 'dontDisplay' }
                         }
-                    ], {});
+                    ], { synchronousExecution: true });
                 }
 
                 // 构建对齐命令
                 const alignDescriptor = this.getAlignDescriptor(params.alignType, alignTo);
                 
-                await action.batchPlay([alignDescriptor], {});
+                await action.batchPlay([alignDescriptor], { synchronousExecution: true });
 
             }, { commandName: 'DesignEcho: 对齐图层' });
 
@@ -105,10 +106,7 @@ export class AlignLayersTool implements Tool {
 
         } catch (error) {
             console.error('[AlignLayers] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '对齐失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 

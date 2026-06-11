@@ -12,7 +12,7 @@
 /**
  * 设计元素识别提示词
  */
-export const ELEMENT_RECOGNITION_PROMPT = `你是一位资深电商视觉设计专家，请仔细分析这张设计图。
+export const ELEMENT_RECOGNITION_PROMPT = `你是一位资深视觉设计专家，请仔细分析这张设计图。
 
 ## 任务：识别设计元素
 
@@ -287,7 +287,7 @@ export const getVisualPrompt = (type: VisualAnalysisType): string => {
 /**
  * 综合分析提示词
  */
-export const COMPREHENSIVE_ANALYSIS_PROMPT = `你是一位资深电商视觉设计专家，请对这张设计图进行全面分析。
+export const COMPREHENSIVE_ANALYSIS_PROMPT = `你是一位资深视觉设计专家，请对这张设计图进行全面分析。
 
 ## 分析框架
 

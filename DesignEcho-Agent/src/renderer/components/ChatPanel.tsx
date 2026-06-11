@@ -1,4 +1,4 @@
-﻿﻿/**
+﻿/**
  * 对话面板
  * 参考 Lovart (https://lovart.ai) 和 Manus (https://manus.im) 的设计理念
  * 
@@ -13,9 +13,7 @@ import { SuggestionList, TextSuggestion } from './SuggestionList';
 import { ReferenceUpload } from './ReferenceUpload';
 import { ReferenceReplicator } from './ReferenceReplicator';
 import { LayoutFixList, LayoutFix } from './LayoutFixList';
-import { ExecutionStatus, ExecutionStep, EXECUTION_TEMPLATES } from './ExecutionStatus';
-import { buildProSystemPrompt, buildSimpleProPrompt } from '../../shared/prompts/agent-prompt';
-import { ThinkingProcess, ThinkingStep, getToolDisplayInfo } from './ThinkingProcess';
+import { ThinkingProcess, ThinkingStep } from './ThinkingProcess';
 import './ThinkingProcess.css';
 
 // 多模态消息渲染
@@ -23,13 +21,25 @@ import { MessageRenderer, convertLegacyMessage } from './message';
 import type { MultimodalMessage } from './message';
 
 // 从工具执行服务导入核心功能
-import { 
-    AVAILABLE_TOOLS,
-    executeToolCall,
-} from '../services/tool-executor.service';
+import { executeToolCall } from '../services/tool-executor.service';
 
 // 保留 useChatActions Hook 的模型选择功能
 import { useChatActions } from '../hooks/useChatActions';
+import {
+    createDesignImageInputs,
+    injectImagesIntoLastUserMessage
+} from '../../shared/design-image-input';
+import {
+    installChatPanelTestBridge,
+    type ChatSendOverride
+} from '../testing/chat-panel-test-bridge';
+import {
+    buildAgentRunDebugBundleFromMessage,
+    evaluateAgentAcceptance,
+    type AgentAcceptanceCase
+} from '../../shared/agent-acceptance-contracts';
+import { buildAgentAcceptanceDebugExport } from '../../shared/agent-acceptance-export';
+import { buildAgentResumeReadonlyToolHandlers } from '../services/agent-orchestration/resume-readonly-handlers';
 
 // 导入统一 AI Agent 服务
 import { 
@@ -38,13 +48,89 @@ import {
     getPhotoshopContext,
     getProjectContext,
     type AgentContext,
-    type AgentResult,
     type PhotoshopContext
 } from '../services/unified-agent.service';
+import type { AgentExecutionSummary, AgentStepEvent } from '../services/agent-runtime/types';
+import {
+    buildAgentDiagnosticEvidence,
+    type AgentDiagnosticEvidence
+} from '../../shared/agent-diagnostic-evidence';
+import type { AgentRequestLifecycleEvidence } from '../../shared/agent-request-lifecycle';
+import type { BusinessSkillVisualEvidenceFeedback } from '../../shared/business-skill-visual-evidence-feedback';
+import {
+    canObservationEnterThinkingSteps,
+    classifyAgentObservationChannel
+} from '../../shared/agent-observation-channels';
+import { isSimpleDeterministicShortPathSkill } from '../../shared/agent-route-boundary-policy';
+import {
+    callPhotoshopMcpTool,
+    getPhotoshopConnectionStatus,
+    listPhotoshopMcpTools
+} from '../services/mcp-host.client';
+import { streamChatAsync } from '../services/stream-chat.service';
+import { canUsePlainTextProviderStream } from '../services/agent-orchestration/streaming-policy';
+import { summarizeChatError } from '../services/agent-orchestration/chat-error-summary';
+import {
+    buildInitialVisibleAgentActivity,
+    buildVisibleAgentActivityFromStepEvent,
+    formatAgentToolEventContent,
+    isVisibleAgentStepEvent,
+    isVisiblePonderingStep,
+    type VisibleAgentActivity
+} from '../services/agent-visible-feedback';
+import { getToolDisplayInfo } from '../services/tool-display-info';
 
 // 导入 BFL 图像生成模型配置
 import { BFL_MODELS } from '../../shared/config/models.config';
 
+type PhotoshopMcpToolsListPayload = {
+    tools?: unknown[];
+    result?: { tools?: unknown[] };
+};
+
+type PhotoshopMcpToolCallPayload = {
+    error?: unknown;
+    isError?: boolean;
+    success?: boolean;
+};
+
+type LiveActivityState = VisibleAgentActivity;
+
+function shouldDropCompletedMechanicalThinking(
+    step: ThinkingStep,
+    lifecycle?: AgentRequestLifecycleEvidence
+): boolean {
+    if (step.type !== 'thinking') return false;
+    const skillId = lifecycle?.decision?.skillId || lifecycle?.execution?.expectedExecutor;
+    return lifecycle?.decision?.source === 'deterministic_route'
+        && lifecycle?.decision?.route === 'skill_execution'
+        && lifecycle?.execution?.kind === 'deterministic_skill'
+        && isSimpleDeterministicShortPathSkill(skillId);
+}
+
+function shouldPersistVisibleProcessStep(
+    step: ThinkingStep,
+    lifecycle?: AgentRequestLifecycleEvidence
+): boolean {
+    return isVisiblePonderingStep(step) && !shouldDropCompletedMechanicalThinking(step, lifecycle);
+}
+
+const LiveActivityIndicator: React.FC<{ activity: LiveActivityState }> = ({ activity }) => (
+    <div
+        className="thinking-simple live-thinking live-activity-placeholder"
+        aria-live="polite"
+        data-testid="live-agent-activity"
+    >
+        <div className="pondering-header">
+            <span className="pondering-dot"></span>
+            <span className="pondering-title">{activity.title}</span>
+            <span className="agent-activity-label">{activity.agentLabel}</span>
+        </div>
+        {activity.detail ? (
+            <div className="agent-activity-detail">{activity.detail}</div>
+        ) : null}
+    </div>
+);
 
 // 模型配置导入已移至 useChatActions hook
 
@@ -79,12 +165,9 @@ export const ChatPanel: React.FC = () => {
 
     // 使用 Hook 获取业务逻辑（模型优先级、Agent 处理等）
     const { 
-        modelPriority,
-        isVisionModelAvailable,
         // 智能模型协作
         detectTaskType,
-        getModelPriorityForTask,
-        getTaskTypeLabel
+        getModelPriorityForTask
     } = useChatActions({ isPluginConnected });
     const [input, setInput] = useState('');
     const [showUpload, setShowUpload] = useState(false);  // 参考图上传面板
@@ -100,10 +183,7 @@ export const ChatPanel: React.FC = () => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const inputAreaRef = useRef<HTMLDivElement>(null);
-    
-    // 执行状态
-    const [executionSteps, setExecutionSteps] = useState<ExecutionStep[]>([]);
-    const [showExecution, setShowExecution] = useState(false);
+    const handleSendRef = useRef<((override?: ChatSendOverride) => Promise<void>) | null>(null);
     
     // 消息编辑状态
     const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -112,9 +192,10 @@ export const ChatPanel: React.FC = () => {
     // 参考图复刻面板状态
     const [showReplicator, setShowReplicator] = useState(false);
     
-    // 思维链状态
+    // 可见执行反馈状态
     const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
     const [showThinking, setShowThinking] = useState(false);
+    const [liveActivity, setLiveActivity] = useState<LiveActivityState | null>(null);
     
     // === 性能优化：缓存消息渲染回调 ===
     // 用于 MessageRenderer 的 action 处理（稳定引用）
@@ -264,6 +345,26 @@ export const ChatPanel: React.FC = () => {
                         }
                         return;
                     }
+                    case 'confirmPublicPlan': {
+                        const sourceMessageId = String(
+                            params?.sourceMessageId ??
+                            params?.messageId ??
+                            params?.payload?.sourceMessageId ??
+                            ''
+                        ).trim();
+                        const sourceMessage = useAppStore.getState().messages
+                            .find(message => message.id === sourceMessageId) as any;
+                        const request = sourceMessage?.agentTaskPublicPlanExecutionRequest;
+                        if (!sourceMessageId || request?.status !== 'blocked_pending_user_confirmation') {
+                            emitActionResult('skipped', '⚠️ 这条公开计划已经不可确认，请重新生成计划。', 'public plan request missing or not pending', 'ui.confirmPublicPlan');
+                            return;
+                        }
+                        await handleSendRef.current?.({
+                            text: '确认执行公开计划',
+                            publicPlanConfirmationSourceMessageId: sourceMessageId
+                        });
+                        return;
+                    }
                     default:
                         emitActionResult('skipped', `⚠️ 未支持的动作：${actionId}`, 'unsupported action', `ui.${normalizedActionId}`);
                         return;
@@ -274,7 +375,7 @@ export const ChatPanel: React.FC = () => {
         })();
     }, [addMessage]);
     
-    // 思维链辅助函数
+    // 可见执行反馈辅助函数
     const addThinkingStep = (step: Omit<ThinkingStep, 'id' | 'timestamp'>) => {
         const newStep: ThinkingStep = {
             ...step,
@@ -293,8 +394,9 @@ export const ChatPanel: React.FC = () => {
     
     const clearThinkingSteps = (hideThinking: boolean = true) => {
         setThinkingSteps([]);
+        setLiveActivity(null);
         if (hideThinking) {
-        setShowThinking(false);
+            setShowThinking(false);
         }
     };
 
@@ -339,23 +441,6 @@ export const ChatPanel: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    };
-
-    // 执行状态辅助函数
-    const startExecution = (templateName: keyof typeof EXECUTION_TEMPLATES) => {
-        const template = EXECUTION_TEMPLATES[templateName];
-        setExecutionSteps(template.map(s => ({ ...s, status: 'pending' as const })));
-        setShowExecution(true);
-    };
-
-    const updateStep = (stepId: string, status: ExecutionStep['status'], detail?: string) => {
-        setExecutionSteps(prev => prev.map(step => 
-            step.id === stepId ? { ...step, status, detail } : step
-        ));
-    };
-
-    const finishExecution = (delay: number = 1500) => {
-        setTimeout(() => setShowExecution(false), delay);
     };
 
     // 自动滚动到底部
@@ -610,33 +695,19 @@ export const ChatPanel: React.FC = () => {
         }
 
         setLoading(true);
-        startExecution('textOptimize');
 
         try {
-            // 步骤 1: 获取选中文本
-            updateStep('get-text', 'running');
             const result = await window.designEcho.sendToPlugin('getTextContent', {});
             if (!result.success) {
-                updateStep('get-text', 'error', result.error);
                 throw new Error(result.error || '获取文本失败');
             }
             const currentText = result.content;
-            updateStep('get-text', 'completed', `"${currentText.substring(0, 20)}..."`);
 
-            // 步骤 2: 获取样式
-            updateStep('get-style', 'running');
-            const styleResult = await window.designEcho.sendToPlugin('getTextStyle', {});
-            updateStep('get-style', 'completed', styleResult.success ? '已获取' : '跳过');
+            await window.designEcho.sendToPlugin('getTextStyle', {});
 
-            // 步骤 3: 调用 AI 优化
-            updateStep('ai-optimize', 'running');
             const aiResponse = await window.designEcho.executeTask('text-optimize', {
                 text: currentText
             });
-            updateStep('ai-optimize', 'completed');
-
-            // 步骤 4: 生成方案
-            updateStep('generate', 'running');
 
             // 3. 解析结果
             let suggestions: TextSuggestion[] = [];
@@ -662,16 +733,12 @@ export const ChatPanel: React.FC = () => {
 
             // 4. 展示结果
             if (suggestions.length > 0) {
-                updateStep('generate', 'completed', `${suggestions.length} 个方案`);
-                finishExecution();
                 addMessage({
                     role: 'assistant',
                     content: '✨ 优化建议如下：',
                     suggestions: suggestions
                 });
             } else {
-                updateStep('generate', 'error', '无建议');
-                finishExecution();
                 addMessage({
                     role: 'assistant',
                     content: '🤔 AI 未能生成有效建议，请重试。'
@@ -680,7 +747,6 @@ export const ChatPanel: React.FC = () => {
 
         } catch (error) {
             console.error('Optimize error:', error);
-            finishExecution(500);
             addMessage({
                 role: 'assistant',
                 content: `❌ 优化失败：${error instanceof Error ? error.message : '未知错误'}`
@@ -887,7 +953,7 @@ export const ChatPanel: React.FC = () => {
                 result = await window.designEcho.bfl.inpaint(
                     prompt,
                     pastedImage.data,
-                    pastedImage.data,  // TODO: 实际使用时需要单独的 mask
+                    pastedImage.data,  // 当前暂用原图作为蒙版，实际局部重绘应传入单独的 mask 图像
                     {}
                 );
             }
@@ -1054,13 +1120,22 @@ export const ChatPanel: React.FC = () => {
      * 2. AI 可以调用工具执行操作
      * 3. 只有明确的斜杠命令才特殊处理
      */
-    const handleSend = async () => {
-        if ((!input.trim() && !referenceImage && !pastedImage) || isLoading) return;
+    const handleSend = async (override?: ChatSendOverride) => {
+        const hasOverride = typeof override !== 'undefined';
+        const sourceInput = hasOverride ? (override.text || '') : input;
+        const overrideImage = hasOverride ? (override.image || null) : null;
+        const imageToSend = hasOverride
+            ? overrideImage
+            : (pastedImage || (referenceImage
+                ? { data: referenceImage, type: 'image/jpeg' }
+                : null));
 
-        const userInput = input.trim();
-        const imageToSend = pastedImage;  // 保存当前粘贴的图片
+        if ((!sourceInput.trim() && !imageToSend) || isLoading) return;
+
+        const userInput = sourceInput.trim();
         setInput('');
         setPastedImage(null);  // 清除粘贴的图片
+        setReferenceImage(null);
         
         if (userInput || imageToSend) {
             // 如果有图片，在消息中包含图片标记
@@ -1105,7 +1180,11 @@ export const ChatPanel: React.FC = () => {
         // 所有其他对话都交给 AI Agent 处理
         setLoading(true);
         try {
-            await handleUnifiedAgent(userInput, imageToSend || undefined);
+            await handleUnifiedAgent(userInput, imageToSend || undefined, {
+                publicPlanConfirmationSourceMessageId: hasOverride
+                    ? override?.publicPlanConfirmationSourceMessageId
+                    : undefined
+            });
         } catch (error) {
             console.error('Agent error:', error);
             addMessage({
@@ -1116,6 +1195,123 @@ export const ChatPanel: React.FC = () => {
             setLoading(false);
         }
     };
+
+    handleSendRef.current = handleSend;
+
+    const buildChatTestSnapshot = useCallback(() => {
+        const state = useAppStore.getState();
+        return {
+            isLoading: state.isLoading,
+            messageCount: state.messages.length,
+            messages: state.messages.map((message) => {
+                const converted = convertLegacyMessage(message as any);
+                const thinkingBlockTitles = converted.blocks
+                    .filter((block: any) => block.type === 'thinking')
+                    .map((block: any) => String(block.title || '').trim())
+                    .filter(Boolean);
+                const cardBlocks = converted.blocks.filter((block: any) => block.type === 'card');
+                const cardTitles = cardBlocks
+                    .map((block: any) => String(block.title || '').trim())
+                    .filter(Boolean);
+                const cardVariants = cardBlocks
+                    .map((block: any) => String(block.variant || '').trim())
+                    .filter(Boolean);
+                const businessPreflightCardTitles = cardTitles
+                    .filter((title) => title.includes('业务预检'));
+                return {
+                    id: message.id,
+                    role: message.role,
+                    contentPreview: typeof message.content === 'string'
+                        ? message.content.slice(0, 1000)
+                        : '',
+                    hasImage: !!message.image,
+                    thinkingStepCount: Array.isArray(message.thinkingSteps) ? message.thinkingSteps.length : 0,
+                    thinkingPreview: Array.isArray(message.thinkingSteps)
+                        ? message.thinkingSteps
+                            .map(step => [
+                                (step as any).type,
+                                (step as any).toolName,
+                                (step as any).content,
+                                (step as any).status
+                            ].filter(Boolean).join(': '))
+                            .join('\n')
+                            .slice(0, 1500)
+                        : '',
+                    thinkingBlockTitles,
+                    cardTitles,
+                    cardVariants,
+                    businessPreflightCardTitles,
+                    businessPreflightCardCount: businessPreflightCardTitles.length,
+                    hasBusinessVisualEvidenceFeedback: !!(message as any).businessVisualEvidenceFeedback,
+                    hasPublicPlanExecutionRequest: !!(message as any).agentTaskPublicPlanExecutionRequest,
+                    publicPlanRequestStatus: String((message as any).agentTaskPublicPlanExecutionRequest?.status || ''),
+                    publicPlanApprovalStatus: String((message as any).agentTaskPublicPlanApprovalRecord?.status || ''),
+                    hasPublicPlanControlledRun: !!(message as any).agentTaskPublicPlanControlledRun,
+                    publicPlanControlledRunStatus: String((message as any).agentTaskPublicPlanControlledRun?.status || ''),
+                    toolResultCount: Array.isArray(message.thinkingSteps)
+                        ? message.thinkingSteps.filter(step => !!(step as any).toolResult).length
+                        : 0,
+                    executionStatus: (message.executionSummary as any)?.status,
+                    executionSummaryPreview: typeof (message.executionSummary as any)?.summaryText === 'string'
+                        ? (message.executionSummary as any).summaryText.slice(0, 1000)
+                        : ''
+                };
+            })
+        };
+    }, []);
+
+    const waitForChatIdle = useCallback(async (timeoutMs = 30000) => {
+        const started = Date.now();
+        while (useAppStore.getState().isLoading) {
+            if (Date.now() - started > timeoutMs) {
+                throw new Error(`ChatPanel test bridge timed out after ${timeoutMs}ms`);
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        return buildChatTestSnapshot();
+    }, [buildChatTestSnapshot]);
+
+    const buildLatestAcceptanceDebug = useCallback((
+        acceptanceCase: AgentAcceptanceCase,
+        options?: { messageId?: string }
+    ) => {
+        const state = useAppStore.getState();
+        const assistantMessages = state.messages.filter((message) => message.role === 'assistant');
+        const targetMessage = options?.messageId
+            ? assistantMessages.find((message) => message.id === options.messageId)
+            : assistantMessages[assistantMessages.length - 1];
+
+        if (!targetMessage) {
+            throw new Error('No assistant message is available for acceptance debug export.');
+        }
+
+        const bundle = buildAgentRunDebugBundleFromMessage({
+            acceptanceCase,
+            message: {
+                content: targetMessage.content,
+                agentRequestLifecycle: targetMessage.agentRequestLifecycle,
+                executionSummary: targetMessage.executionSummary,
+                agentDiagnosticEvidence: targetMessage.agentDiagnosticEvidence,
+                thinkingSteps: targetMessage.thinkingSteps
+            }
+        });
+        const report = evaluateAgentAcceptance(acceptanceCase, bundle);
+
+        return buildAgentAcceptanceDebugExport({ bundle, report });
+    }, []);
+
+    useEffect(() => {
+        return installChatPanelTestBridge({
+            version: 1,
+            submit: async (text: string, options?: { image?: { data: string; type: string }; timeoutMs?: number }) => {
+                await handleSend({ text, image: options?.image || null });
+                return waitForChatIdle(options?.timeoutMs);
+            },
+            getSnapshot: buildChatTestSnapshot,
+            waitForIdle: waitForChatIdle,
+            getLatestAcceptanceDebug: buildLatestAcceptanceDebug
+        });
+    }, [buildChatTestSnapshot, buildLatestAcceptanceDebug, handleSend, waitForChatIdle]);
 
     /**
      * 快捷命令处理器
@@ -1179,8 +1375,14 @@ export const ChatPanel: React.FC = () => {
      * 3. 执行决策并返回结果
      * 4. 支持多轮对话
      */
-    const handleUnifiedAgent = async (userInput: string, attachedImage?: { data: string; type: string }) => {
-        // ========== 🤖 AI 驱动流程（专业思维链展示） ==========
+    const handleUnifiedAgent = async (
+        userInput: string,
+        attachedImage?: { data: string; type: string },
+        runOptions?: {
+            publicPlanConfirmationSourceMessageId?: string;
+        }
+    ) => {
+        // ========== Agent 执行流程：只展示真实模型反馈和真实工具事件 ==========
         
         // 创建 AbortController 用于取消任务
         const controller = new AbortController();
@@ -1188,13 +1390,23 @@ export const ChatPanel: React.FC = () => {
         const signal = controller.signal;
         
         const thinkingStartTime = Date.now();
-        const hasAttachedImage = !!attachedImage;
+        const attachedImages = attachedImage
+            ? createDesignImageInputs([{
+                data: attachedImage.data,
+                mediaType: attachedImage.type,
+                source: 'chat-paste'
+            }])
+            : [];
+        const hasAttachedImage = attachedImages.length > 0;
         
-        // 💡 收集思维步骤（用于专业 UI 展示）
+        // 收集可见执行证据。普通系统日志不能伪装成模型思考。
         const collectedSteps: ThinkingStep[] = [];
         const stepStartTimes: Record<string, number> = {};
+        let hasStructuredToolEvents = false;
+        let thinkingStepId: string | null = null;
+        const toolStepIdsByCallId = new Map<string, string>();
         
-        // 添加思维步骤的辅助函数
+        // 添加可见步骤的辅助函数。
         const addStep = (step: Omit<ThinkingStep, 'id' | 'timestamp'>): string => {
             const id = `step-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
             const newStep: ThinkingStep = {
@@ -1207,85 +1419,108 @@ export const ChatPanel: React.FC = () => {
             
             // 同步到 UI 状态
             setThinkingSteps([...collectedSteps]);
+            if (isVisiblePonderingStep(newStep)) {
+                setLiveActivity(null);
+            }
             return id;
         };
         
         // 清理 AI 响应中可能残留的 JSON 结构
         const cleanResponseContent = (content: string): string => {
             if (!content) return content;
+
+            const unwrapStructuredResponse = (raw: string): string | null => {
+                try {
+                    const json = JSON.parse(raw);
+                    if (!json || typeof json !== 'object') return null;
+                    if (typeof json.directResponse === 'string' && json.directResponse.trim()) {
+                        return json.directResponse.trim();
+                    }
+                    if (typeof json.clarificationQuestion === 'string' && json.clarificationQuestion.trim()) {
+                        return json.clarificationQuestion.trim();
+                    }
+                    if (
+                        typeof json.message === 'string'
+                        && json.message.trim()
+                        && !json.reasoning
+                        && !json.route
+                        && !json.skillId
+                    ) {
+                        return json.message.trim();
+                    }
+                    return '';
+                } catch {
+                    return null;
+                }
+            };
             
             // 检查是否包含 JSON 结构
             const jsonMatch = content.match(/^\s*```json\s*([\s\S]*?)\s*```\s*$/);
             if (jsonMatch) {
-                try {
-                    const json = JSON.parse(jsonMatch[1]);
-                    if (json.directResponse) return json.directResponse;
-                    if (json.reasoning) return json.reasoning;
-                } catch {}
+                const unwrapped = unwrapStructuredResponse(jsonMatch[1]);
+                if (unwrapped !== null) return unwrapped;
             }
             
             // 检查是否是纯 JSON 对象
             const trimmed = content.trim();
             if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-                try {
-                    const json = JSON.parse(trimmed);
-                    if (json.directResponse) return json.directResponse;
-                    if (json.reasoning) return json.reasoning;
-                } catch {}
+                const unwrapped = unwrapStructuredResponse(trimmed);
+                if (unwrapped !== null) return unwrapped;
             }
             
             return content;
         };
         
-        // 打字机效果显示消息（不再依赖 removeLastMessage）
-        const typewriterMessage = async (
+        // 非流式结果直接显示；普通对话的真实 token 流由 streamChatAsync 更新消息。
+        const displayAssistantMessage = async (
             fullContent: string, 
-            options?: { image?: any; thinkingSteps?: ThinkingStep[] }
-        ) => {
-            // 清理可能的 JSON 残留
-            const cleanedContent = cleanResponseContent(fullContent);
-            
-            // 短消息或无内容直接显示
-            if (!cleanedContent || cleanedContent.length < 50) {
-                addMessage({
-                    role: 'assistant',
-                    content: cleanedContent,
-                    image: options?.image,
-                    thinkingSteps: options?.thinkingSteps,
-                    isThinking: false
-                });
-                return;
+            options?: {
+                image?: any;
+                thinkingSteps?: ThinkingStep[];
+                executionSummary?: AgentExecutionSummary;
+                agentRequestLifecycle?: AgentRequestLifecycleEvidence;
+                agentDiagnosticEvidence?: AgentDiagnosticEvidence;
+                businessVisualEvidenceFeedback?: BusinessSkillVisualEvidenceFeedback;
+                agentTaskPlan?: any;
+                agentTaskPublicPlan?: any;
+                agentTaskPublicPlanExecutionRequest?: any;
+                agentTaskPublicPlanApprovalRecord?: any;
+                agentTaskPublicPlanControlledRun?: any;
             }
-        
-            // 逐步显示内容
-            let displayedLength = 0;
-            const chunkSize = 3; // 每次显示3个字符
-            const delay = 15; // 每次间隔15ms
-            
-            // 添加初始空消息
+        ) => {
+            const cleanedContent = cleanResponseContent(fullContent);
+
             addMessage({
                 role: 'assistant',
-                content: '',
+                content: cleanedContent,
                 image: options?.image,
                 thinkingSteps: options?.thinkingSteps,
+                executionSummary: options?.executionSummary,
+                agentRequestLifecycle: options?.agentRequestLifecycle,
+                agentDiagnosticEvidence: options?.agentDiagnosticEvidence,
+                businessVisualEvidenceFeedback: options?.businessVisualEvidenceFeedback,
+                agentTaskPlan: options?.agentTaskPlan,
+                agentTaskPublicPlan: options?.agentTaskPublicPlan,
+                agentTaskPublicPlanExecutionRequest: options?.agentTaskPublicPlanExecutionRequest,
+                agentTaskPublicPlanApprovalRecord: options?.agentTaskPublicPlanApprovalRecord,
+                agentTaskPublicPlanControlledRun: options?.agentTaskPublicPlanControlledRun,
                 isThinking: false
             });
-            
-            // 逐步更新内容（使用清理后的内容）
-            while (displayedLength < cleanedContent.length) {
-                displayedLength = Math.min(displayedLength + chunkSize, cleanedContent.length);
-                const partialContent = cleanedContent.substring(0, displayedLength);
-                
-                // 更新消息内容
-                useAppStore.getState().updateLastMessage(partialContent);
-                
-                // 滚动到底部
-                if (messagesEndRef.current) {
-                    messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, delay));
+        };
+
+        const formatFailureContent = (
+            message: string | undefined,
+            error: string | undefined,
+            summary: AgentExecutionSummary | undefined
+        ): string => {
+            let base = String(message || '处理失败').trim();
+            if (summary?.summaryText) {
+                base = base
+                    .replace(`\n\n${summary.summaryText}`, '')
+                    .replace(summary.summaryText, '')
+                    .trim() || base;
             }
+            return `⚠️ ${base}${error ? `\n\n错误: ${error}` : ''}`;
         };
         
         // 更新思维步骤
@@ -1304,19 +1539,152 @@ export const ChatPanel: React.FC = () => {
                 const newSteps = [...collectedSteps];
                 console.log('[ChatPanel] 更新后的步骤:', newSteps.map(s => ({ type: s.type, content: s.content?.substring(0, 20), status: s.status })));
                 setThinkingSteps(newSteps);
+                if (isVisiblePonderingStep(collectedSteps[idx])) {
+                    setLiveActivity(null);
+                }
+            }
+        };
+
+        const mergeVisibleThinking = (current: string, next: string): string => {
+            const currentText = String(current || '').trim();
+            const nextText = String(next || '').trim();
+            if (!currentText) return nextText;
+            if (!nextText) return currentText;
+            if (nextText.startsWith(currentText)) return nextText;
+            if (currentText.includes(nextText)) return currentText;
+            return `${currentText}\n\n${nextText}`.slice(0, 1800);
+        };
+
+        const handleAgentStep = (event: AgentStepEvent) => {
+            const activity = buildVisibleAgentActivityFromStepEvent(event);
+            if (activity) {
+                setLiveActivity(activity);
+            }
+            if (!event?.title || !isVisibleAgentStepEvent(event)) return;
+            const content = formatAgentToolEventContent(event);
+
+            if (event.kind === 'tool_started') {
+                hasStructuredToolEvents = true;
+                const id = addStep({
+                    type: 'tool_call',
+                    content,
+                    toolName: event.toolName,
+                    status: 'running'
+                });
+                if (event.toolCallId) {
+                    toolStepIdsByCallId.set(event.toolCallId, id);
+                }
+                return;
+            }
+
+            if (event.kind === 'tool_completed') {
+                hasStructuredToolEvents = true;
+                const stepId = event.toolCallId ? toolStepIdsByCallId.get(event.toolCallId) : undefined;
+                const fallback = collectedSteps
+                    .slice()
+                    .reverse()
+                    .find(step => step.type === 'tool_call' && step.toolName === event.toolName && step.status === 'running');
+                const targetId = stepId || fallback?.id;
+                if (targetId) {
+                    updateStep(targetId, {
+                        content,
+                        status: event.status === 'success' ? 'success' : 'error'
+                    });
+                } else {
+                    addStep({
+                        type: 'tool_result',
+                        content,
+                        toolName: event.toolName,
+                        status: event.status === 'success' ? 'success' : 'error'
+                    });
+                }
+                return;
             }
         };
         
-        // 显示思维链 UI
-        clearThinkingSteps(false);  // 清空但不隐藏
+        // 显示请求活动状态，但不写入 thinkingSteps，避免伪装成模型思考。
+        // 后续由 provider 公开输出或真实工具事件接管这个位置。
+        clearThinkingSteps(false);
         setShowThinking(true);
-        
-        // 创建思考步骤占位（不显示初始文字，等待真正的思考内容）
-        const thinkingStepId = addStep({
-            type: 'thinking',
-            content: '',  // 空内容，等待实际思考过程填充
-            status: 'running'
-        });
+        setLiveActivity(buildInitialVisibleAgentActivity());
+
+        let streamedAssistantMessageId: string | null = null;
+        let streamedAssistantContent = '';
+        let streamedThinkingStepId: string | null = null;
+
+        const ensureStreamedAssistantMessage = (): string => {
+            setLiveActivity(null);
+            if (!streamedAssistantMessageId) {
+                streamedAssistantMessageId = addMessage({
+                    role: 'assistant',
+                    content: '',
+                    isThinking: true
+                });
+            }
+            return streamedAssistantMessageId;
+        };
+
+        const updateStreamedAssistantContent = (content: string, isThinking = true) => {
+            streamedAssistantContent = content;
+            const messageId = ensureStreamedAssistantMessage();
+            updateMessage(messageId, {
+                content,
+                isThinking
+            });
+        };
+
+        const updateStreamedVisibleReasoning = (content: string, status: ThinkingStep['status'] = 'running') => {
+            const visibleText = String(content || '').trim();
+            if (!visibleText) return;
+            setLiveActivity(null);
+            if (!streamedThinkingStepId) {
+                streamedThinkingStepId = addStep({
+                    type: 'thinking',
+                    content: visibleText,
+                    status
+                });
+                return;
+            }
+            updateStep(streamedThinkingStepId, {
+                content: visibleText,
+                status
+            });
+        };
+
+        const finalizeStreamedAssistantMessage = (
+            content: string,
+            options?: {
+                image?: any;
+                thinkingSteps?: ThinkingStep[];
+                executionSummary?: AgentExecutionSummary;
+                agentRequestLifecycle?: AgentRequestLifecycleEvidence;
+                agentDiagnosticEvidence?: AgentDiagnosticEvidence;
+                businessVisualEvidenceFeedback?: BusinessSkillVisualEvidenceFeedback;
+                agentTaskPlan?: any;
+                agentTaskPublicPlan?: any;
+                agentTaskPublicPlanExecutionRequest?: any;
+                agentTaskPublicPlanApprovalRecord?: any;
+                agentTaskPublicPlanControlledRun?: any;
+            }
+        ) => {
+            if (!streamedAssistantMessageId) return false;
+            updateMessage(streamedAssistantMessageId, {
+                content: cleanResponseContent(content),
+                image: options?.image,
+                thinkingSteps: options?.thinkingSteps,
+                executionSummary: options?.executionSummary,
+                agentRequestLifecycle: options?.agentRequestLifecycle,
+                agentDiagnosticEvidence: options?.agentDiagnosticEvidence,
+                businessVisualEvidenceFeedback: options?.businessVisualEvidenceFeedback,
+                agentTaskPlan: options?.agentTaskPlan,
+                agentTaskPublicPlan: options?.agentTaskPublicPlan,
+                agentTaskPublicPlanExecutionRequest: options?.agentTaskPublicPlanExecutionRequest,
+                agentTaskPublicPlanApprovalRecord: options?.agentTaskPublicPlanApprovalRecord,
+                agentTaskPublicPlanControlledRun: options?.agentTaskPublicPlanControlledRun,
+                isThinking: false
+            });
+            return true;
+        };
         
         try {
             // 获取 Photoshop 上下文
@@ -1329,65 +1697,83 @@ export const ChatPanel: React.FC = () => {
             
             // 获取项目上下文
             const projectContext = await getProjectContext();
+            const publicPlanConfirmationSourceMessage = runOptions?.publicPlanConfirmationSourceMessageId
+                ? (messages.find(m => m.id === runOptions.publicPlanConfirmationSourceMessageId)
+                    || useAppStore.getState().messages.find(m => m.id === runOptions.publicPlanConfirmationSourceMessageId))
+                : undefined;
+            const sourcePublicPlanRequest = (publicPlanConfirmationSourceMessage as any)?.agentTaskPublicPlanExecutionRequest;
+            const approvedWriteTools = Array.isArray(sourcePublicPlanRequest?.proposedWriteTools)
+                ? sourcePublicPlanRequest.proposedWriteTools.filter((toolName: string) =>
+                    Array.isArray(sourcePublicPlanRequest.allowedWriteTools)
+                        && sourcePublicPlanRequest.allowedWriteTools.includes(toolName)
+                )
+                : [];
+            const agentTaskPublicPlanApproval = sourcePublicPlanRequest?.status === 'blocked_pending_user_confirmation'
+                ? {
+                    userConfirmed: true,
+                    allowedWriteTools: approvedWriteTools,
+                    enableControlledExecutionRequest: true,
+                    requestId: sourcePublicPlanRequest.requestId || runOptions?.publicPlanConfirmationSourceMessageId,
+                    sourceMessageId: runOptions?.publicPlanConfirmationSourceMessageId
+                }
+                : undefined;
             
             // 构建 Agent 上下文
             const agentContext: AgentContext = {
                 userInput,
                 conversationHistory: messages.map(m => ({
                     role: m.role,
-                    content: typeof m.content === 'string' ? m.content : ''
+                    content: typeof m.content === 'string' ? m.content : '',
+                    agentRequestLifecycle: m.agentRequestLifecycle,
+                    executionSummary: m.executionSummary,
+                    agentTaskPlan: m.agentTaskPlan,
+                    agentTaskPublicPlan: m.agentTaskPublicPlan,
+                    agentTaskPublicPlanExecutionRequest: m.agentTaskPublicPlanExecutionRequest,
+                    agentTaskPublicPlanApprovalRecord: m.agentTaskPublicPlanApprovalRecord,
+                    agentTaskPublicPlanControlledRun: m.agentTaskPublicPlanControlledRun,
+                    metadata: {
+                        agentRequestLifecycle: m.agentRequestLifecycle,
+                        executionSummary: m.executionSummary,
+                        agentTaskPlan: m.agentTaskPlan,
+                        agentTaskPublicPlan: m.agentTaskPublicPlan,
+                        agentTaskPublicPlanExecutionRequest: m.agentTaskPublicPlanExecutionRequest,
+                        agentTaskPublicPlanApprovalRecord: m.agentTaskPublicPlanApprovalRecord,
+                        agentTaskPublicPlanControlledRun: m.agentTaskPublicPlanControlledRun
+                    }
                 })),
                 isPluginConnected,
                 photoshopContext,
-                projectContext: projectContext ? {
-                    projectPath: projectContext.projectPath,
-                    hasSkuFiles: projectContext.hasSkuFiles,
-                    hasTemplates: projectContext.hasTemplates
-                } : undefined,
+                projectContext,
+                agentTaskPublicPlanApproval,
+                resumeReadonlyToolHandlers: buildAgentResumeReadonlyToolHandlers({
+                    executeToolCall,
+                    projectContext
+                }),
                 hasAttachedImage,  // 传递图片状态
-                attachedImageData: attachedImage?.data  // 传递图片数据
+                attachedImageData: attachedImages[0]?.data,
+                attachedImages
             };
-            
+
             // 调用模型的封装函数（支持图片 + 模型竞速优化）
             const callModel = async (msgs: Array<{ role: string; content: string | any[] }>, options?: any) => {
-                // 如果有附带图片，优先使用视觉模型
-                let modelsToTry = modelPriority;
+                const isRouterCall = options?.purpose === 'router' || options?.silent === true;
+                const isVisibleReasoningCall = options?.purpose === 'visible_reasoning';
+                const taskType = isRouterCall || isVisibleReasoningCall
+                    ? 'logic'
+                    : detectTaskType(userInput, hasAttachedImage);
+                let modelsToTry = getModelPriorityForTask(taskType);
                 const modelErrors: string[] = [];
                 
-                if (hasAttachedImage) {
-                    // 获取视觉任务的模型优先级
-                    const visualModels = getModelPriorityForTask('visual');
-                    // 视觉模型优先，然后是默认模型
-                    modelsToTry = [...new Set([...visualModels, ...modelPriority])];
+                if (hasAttachedImage && !isRouterCall && !isVisibleReasoningCall) {
                     console.log('[ChatPanel] 📷 有附带图片，使用视觉模型:', modelsToTry.slice(0, 3).join(', '));
                     console.log('[ChatPanel] 📷 附带图片信息:', {
-                        hasData: !!attachedImage?.data,
-                        dataLength: attachedImage?.data?.length,
-                        type: attachedImage?.type,
+                        count: attachedImages.length,
+                        hasData: !!attachedImages[0]?.data,
+                        dataLength: attachedImages[0]?.data?.length,
+                        type: attachedImages[0]?.mediaType,
                         msgCount: msgs.length
                     });
-                    
-                    // 转换消息格式为多模态格式（符合 model-service.ts 的 MessageContent 格式）
-                    msgs = msgs.map((msg, idx) => {
-                        // 只为最后一条用户消息添加图片
-                        if (msg.role === 'user' && idx === msgs.length - 1 && attachedImage) {
-                            console.log('[ChatPanel] 📷 为消息添加图片:', { idx, totalMsgs: msgs.length, textPreview: typeof msg.content === 'string' ? msg.content.substring(0, 50) : 'array' });
-                            return {
-                                role: 'user',
-                                content: [
-                                    { type: 'text', text: typeof msg.content === 'string' ? msg.content : (msg.content[0]?.text || '') },
-                                    { 
-                                        type: 'image', 
-                                        image: {
-                                            data: attachedImage.data,
-                                            mediaType: attachedImage.type
-                                        }
-                                    }
-                                ]
-                            };
-                        }
-                        return msg;
-                    });
+                    msgs = injectImagesIntoLastUserMessage(msgs, attachedImages);
                 }
                 
                 // 按顺序尝试模型列表
@@ -1397,7 +1783,57 @@ export const ChatPanel: React.FC = () => {
                     }
                     
                     try {
-                        const response = await window.designEcho.chat(modelId, msgs, options);
+                        const streamHasAttachedImage = isVisibleReasoningCall ? false : hasAttachedImage;
+                        if (!isRouterCall && canUsePlainTextProviderStream(msgs, options, {
+                            hasAttachedImage: streamHasAttachedImage,
+                            hasToolCalling: false
+                        })) {
+                            const streamOptions = {
+                                maxTokens: options?.maxTokens,
+                                temperature: options?.temperature
+                            };
+                            const response = await streamChatAsync(
+                                modelId,
+                                msgs.map(message => ({
+                                    role: message.role,
+                                    content: String(message.content)
+                                })),
+                                {
+                                    ...streamOptions,
+                                    onProgress: (fullContent) => {
+                                        if (isVisibleReasoningCall) {
+                                            updateStreamedVisibleReasoning(fullContent);
+                                        } else {
+                                            updateStreamedAssistantContent(fullContent, true);
+                                        }
+                                    },
+                                    onThinkingProgress: (fullThinking) => {
+                                        if (!fullThinking.trim()) return;
+                                        updateStreamedVisibleReasoning(fullThinking);
+                                    }
+                                }
+                            );
+
+                            if (streamedThinkingStepId) {
+                                updateStep(streamedThinkingStepId, { status: 'success' });
+                            }
+
+                            if (response?.text || streamedAssistantContent) {
+                                console.log(`[ChatPanel] ✓ 模型 ${modelId} 流式调用成功`);
+                                return {
+                                    text: response?.text || streamedAssistantContent,
+                                    thinking: response?.thinking
+                                };
+                            }
+
+                            modelErrors.push(`${modelId}: empty stream response`);
+                            continue;
+                        }
+
+                        const response = await window.designEcho.chat(modelId, msgs, {
+                            maxTokens: options?.maxTokens,
+                            temperature: options?.temperature
+                        });
                         if (response?.text) {
                             console.log(`[ChatPanel] ✓ 模型 ${modelId} 调用成功`);
                             return response;
@@ -1424,35 +1860,33 @@ export const ChatPanel: React.FC = () => {
                 throw new Error('任务已取消');
             }
             
-            // 执行统一 Agent 处理（使用专业思维链回调）
+            // 执行统一 Agent 处理（只接收真实模型反馈和执行事件）
             const result = await processWithUnifiedAgent(agentContext, {
                 callModel,
                 signal,  // 传递取消信号
                 callbacks: {
+                    onStep: (event) => {
+                        handleAgentStep(event);
+                    },
                     onProgress: (message, percent) => {
                         agentLog('info', `[AI Agent] ${message} (${percent}%)`);
-                        // 进度更新只记录日志，不再添加步骤（避免与 onMessage/onThinking 重复）
+                    },
+                    onStatus: (message) => {
+                        const content = String(message || '').trim();
+                        if (!content) return;
+                        agentLog('info', `[AI Agent] 状态: ${content}`);
                     },
                     onMessage: (message) => {
-                        // AI 的推理/决策内容（reasoning 字段）
-                        // 只有在没有收到真正的 thinking 时才使用这个
-                        if (!hasReceivedThinking && message && message.trim()) {
-                            agentLog('info', `[AI Agent] 💡 推理: ${message.substring(0, 100)}...`);
-                        
-                            // 更新思维步骤内容
-                            console.log('[ChatPanel] 💡 更新思维步骤 (from reasoning):', { thinkingStepId, message: message.substring(0, 50) });
-                        updateStep(thinkingStepId, { 
-                            type: 'thinking',
-                            content: message,
-                            status: 'running'  // 保持 running 状态，让动画继续显示
-                        });
+                        if (message && message.trim()) {
+                            agentLog('info', `[AI Agent] 📌 进展: ${message.substring(0, 100)}...`);
                         }
                     },
                     onToolStart: (toolName) => {
                         agentLog('info', `[AI Agent] 执行工具: ${toolName}`);
+                        if (hasStructuredToolEvents) return;
                         
                         // 标记思维完成（工具开始执行说明思维阶段结束）
-                        if (!hasReceivedThinking) {
+                        if (!hasReceivedThinking && thinkingStepId) {
                             const currentStep = collectedSteps.find(s => s.id === thinkingStepId);
                             if (currentStep && currentStep.status === 'running') {
                                 updateStep(thinkingStepId, { status: 'success' });
@@ -1463,7 +1897,7 @@ export const ChatPanel: React.FC = () => {
                         const toolInfo = getToolDisplayInfo(toolName);
                         addStep({
                             type: 'tool_call',
-                            content: toolInfo.description,
+                            content: `执行 ${toolInfo.name}`,
                             toolName: toolName,
                             status: 'running'
                         });
@@ -1472,7 +1906,9 @@ export const ChatPanel: React.FC = () => {
                         agentLog('info', `[AI Agent] 工具完成: ${toolName}`, toolResult);
                         
                         // 找到对应的工具步骤并更新（保留原始 content，只更新状态）
-                        const toolStep = collectedSteps.find(s => s.toolName === toolName && s.status === 'running');
+                        const toolStep = hasStructuredToolEvents
+                            ? collectedSteps.slice().reverse().find(s => s.toolName === toolName && !s.toolResult)
+                            : collectedSteps.find(s => s.toolName === toolName && s.status === 'running');
                         if (toolStep) {
                             updateStep(toolStep.id, {
                                 status: toolResult?.success !== false ? 'success' : 'error',
@@ -1481,19 +1917,34 @@ export const ChatPanel: React.FC = () => {
                             });
                         }
                     },
-                    onThinking: (thinking) => {
-                        // 模型的真实思维过程（优先级最高）
-                        if (thinking && thinking.trim()) {
+                    onThinking: (thinking, meta) => {
+                        const observation = classifyAgentObservationChannel({
+                            source: meta?.source || 'model_visible_reasoning',
+                            content: thinking
+                        });
+                        // 只有 provider thinking 或模型公开推理摘要允许进入“正在思考”。
+                        if (canObservationEnterThinkingSteps(observation) && thinking && thinking.trim()) {
                             hasReceivedThinking = true;
                             agentLog('info', `[AI Agent] 💡 思维过程: ${thinking.substring(0, 200)}...`);
                         
                             // 更新初始思考步骤
                             console.log('[ChatPanel] 💡 更新思维步骤 (from thinking):', { thinkingStepId, thinking: thinking.substring(0, 50) });
-                        updateStep(thinkingStepId, { 
-                            type: 'thinking',
-                            content: thinking,
-                                status: 'running'  // 保持 running，直到工具开始执行
-                        });
+                            const targetThinkingStepId = thinkingStepId || streamedThinkingStepId;
+                            if (!targetThinkingStepId) {
+                                thinkingStepId = addStep({
+                                    type: 'thinking',
+                                    content: thinking,
+                                    status: 'running'
+                                });
+                            } else {
+                                thinkingStepId = targetThinkingStepId;
+                                const currentStep = collectedSteps.find(s => s.id === targetThinkingStepId);
+                                updateStep(targetThinkingStepId, {
+                                    type: 'thinking',
+                                    content: mergeVisibleThinking(currentStep?.content || '', thinking),
+                                    status: 'running'
+                                });
+                            }
                         }
                     }
                 }
@@ -1502,6 +1953,21 @@ export const ChatPanel: React.FC = () => {
             // 计算处理时长
             const processingTime = Date.now() - thinkingStartTime;
             const hasToolExecution = result.toolResults && result.toolResults.length > 0;
+            const executionSummary = (result as any).data?.executionSummary as AgentExecutionSummary | undefined;
+            const agentRequestLifecycle = (result as any).data?.agentRequestLifecycle as AgentRequestLifecycleEvidence | undefined;
+            const agentDiagnosticEvidence = buildAgentDiagnosticEvidence((result as any).data);
+            const businessVisualEvidenceFeedback = (result as any).data?.businessVisualEvidenceFeedback as BusinessSkillVisualEvidenceFeedback | undefined;
+            const agentTaskPlan = (result as any).data?.agentTaskPlan;
+            const agentTaskPublicPlan = (result as any).data?.agentTaskPublicPlan;
+            const agentTaskPublicPlanExecutionRequest = (result as any).data?.agentTaskPublicPlanExecutionRequest;
+            const agentTaskPublicPlanApprovalRecord = (result as any).data?.agentTaskPublicPlanApprovalRecord;
+            const agentTaskPublicPlanControlledRun = (result as any).data?.agentTaskPublicPlanControlledRun;
+
+            if (runOptions?.publicPlanConfirmationSourceMessageId && agentTaskPublicPlanApprovalRecord) {
+                updateMessage(runOptions.publicPlanConfirmationSourceMessageId, {
+                    agentTaskPublicPlanApprovalRecord
+                } as any);
+            }
             
             // 完成所有剩余的运行中步骤
             collectedSteps.forEach(step => {
@@ -1510,8 +1976,9 @@ export const ChatPanel: React.FC = () => {
                 }
             });
             
-            // 隐藏实时思维链（将显示在消息中）
+            // 隐藏实时反馈（将显示在消息中）
             setShowThinking(false);
+            setLiveActivity(null);
             
             // 检查是否是用户取消（优先处理）
             if ((result as any).cancelled) {
@@ -1524,10 +1991,12 @@ export const ChatPanel: React.FC = () => {
                     }
                 });
                 
-                addMessage({
-                    role: 'assistant',
-                    content: '⏹️ 已停止'
-                });
+                if (!finalizeStreamedAssistantMessage('⏹️ 已停止')) {
+                    addMessage({
+                        role: 'assistant',
+                        content: '⏹️ 已停止'
+                    });
+                }
             } else if (result.success) {
                 let responseContent = result.message;
                 let generatedImage: { data: string; type: string } | undefined;
@@ -1547,28 +2016,78 @@ export const ChatPanel: React.FC = () => {
                     }
                 }
                 
-                // 添加消息（包含思维步骤供 ThinkingProcess 组件展示）
-                // 只在执行了工具时保存思维步骤（简单问答不需要）
-                const hasThinkingContent = collectedSteps.some(
-                    step => step.type === 'thinking' && typeof step.content === 'string' && step.content.trim().length > 0
+                // 添加消息（仅包含真实模型反馈或真实工具事件）。
+                // 普通聊天不保存固定系统日志，避免把硬编码流程包装成模型思考。
+                const visibleProcessSteps = collectedSteps.filter(
+                    step => shouldPersistVisibleProcessStep(step, agentRequestLifecycle)
                 );
-                const stepsToSave = (collectedSteps.length > 0 && (hasToolExecution || hasThinkingContent))
-                    ? [...collectedSteps]
+                const hasVisibleProcessSteps = visibleProcessSteps.length > 0;
+                const stepsToSave = hasVisibleProcessSteps
+                    ? visibleProcessSteps
                     : undefined;
                 
                 // 使用打字机效果显示最终回复
-                await typewriterMessage(responseContent, {
+                if (!finalizeStreamedAssistantMessage(responseContent, {
                     image: generatedImage,
-                    thinkingSteps: stepsToSave
-                });
+                    thinkingSteps: stepsToSave,
+                    executionSummary,
+                    agentRequestLifecycle,
+                    agentDiagnosticEvidence,
+                    businessVisualEvidenceFeedback,
+                    agentTaskPlan,
+                    agentTaskPublicPlan,
+                    agentTaskPublicPlanExecutionRequest,
+                    agentTaskPublicPlanApprovalRecord,
+                    agentTaskPublicPlanControlledRun
+                })) {
+                    await displayAssistantMessage(responseContent, {
+                        image: generatedImage,
+                        thinkingSteps: stepsToSave,
+                        executionSummary,
+                        agentRequestLifecycle,
+                        agentDiagnosticEvidence,
+                        businessVisualEvidenceFeedback,
+                        agentTaskPlan,
+                        agentTaskPublicPlan,
+                        agentTaskPublicPlanExecutionRequest,
+                        agentTaskPublicPlanApprovalRecord,
+                        agentTaskPublicPlanControlledRun
+                    });
+                }
                 
                 console.log(`[AI Agent] ✅ 完成，耗时 ${(processingTime/1000).toFixed(1)}s，思维步骤: ${collectedSteps.length}`);
                 } else {
-                addMessage({ 
-                    role: 'assistant', 
-                    content: `⚠️ ${result.message || '处理失败'}${result.error ? `\n\n错误: ${result.error}` : ''}`,
-                    thinkingSteps: collectedSteps.length > 0 ? [...collectedSteps] : undefined
-                });
+                const failureContent = formatFailureContent(result.message, result.error, executionSummary);
+                const visibleFailureSteps = collectedSteps.filter(
+                    step => shouldPersistVisibleProcessStep(step, agentRequestLifecycle)
+                );
+                if (!finalizeStreamedAssistantMessage(failureContent, {
+                    thinkingSteps: visibleFailureSteps.length > 0 ? visibleFailureSteps : undefined,
+                    executionSummary,
+                    agentRequestLifecycle,
+                    agentDiagnosticEvidence,
+                    businessVisualEvidenceFeedback,
+                    agentTaskPlan,
+                    agentTaskPublicPlan,
+                    agentTaskPublicPlanExecutionRequest,
+                    agentTaskPublicPlanApprovalRecord,
+                    agentTaskPublicPlanControlledRun
+                })) {
+                    addMessage({
+                        role: 'assistant',
+                        content: failureContent,
+                        thinkingSteps: visibleFailureSteps.length > 0 ? visibleFailureSteps : undefined,
+                        executionSummary,
+                        agentRequestLifecycle,
+                        agentDiagnosticEvidence,
+                        businessVisualEvidenceFeedback,
+                        agentTaskPlan,
+                        agentTaskPublicPlan,
+                        agentTaskPublicPlanExecutionRequest,
+                        agentTaskPublicPlanApprovalRecord,
+                        agentTaskPublicPlanControlledRun
+                    });
+                }
             }
             
             // 清理思维步骤状态
@@ -1590,12 +2109,14 @@ export const ChatPanel: React.FC = () => {
                 });
                 
                 setShowThinking(false);
+                setLiveActivity(null);
                 clearThinkingSteps();
-            
-            addMessage({
-                role: 'assistant',
-                    content: '⏹️ 任务已停止'
-                });
+                if (!finalizeStreamedAssistantMessage('⏹️ 任务已停止')) {
+                    addMessage({
+                        role: 'assistant',
+                        content: '⏹️ 任务已停止'
+                    });
+                }
                 return;
             }
             
@@ -1606,62 +2127,31 @@ export const ChatPanel: React.FC = () => {
                 }
             });
             
-            // 隐藏实时思维链
+            // 隐藏实时反馈
             setShowThinking(false);
+            setLiveActivity(null);
             clearThinkingSteps();
             
-            // 构建智能错误消息
+            // 构建脱敏错误摘要。保留 quota / 429 / 鉴权等真实原因，不回退成笼统失败。
             const prefs = useAppStore.getState().modelPreferences;
             const isCloud = prefs?.mode === 'cloud';
-            const errText = error.message || '';
+            const errorMsg = summarizeChatError(error, { isCloud });
             
-            let errorMsg = '抱歉，处理时出错了。';
-            if (errText.includes('API key') || errText.includes('401') || errText.includes('403')) {
-                errorMsg = '⚠️ API 密钥错误，请检查设置。';
-            } else if (errText.includes('Google') || errText.includes('gemini')) {
-                errorMsg = '⚠️ Google AI 连接失败，请检查 API 密钥。';
-            } else if (isCloud && errText.includes('fetch')) {
-                errorMsg = '⚠️ 无法连接到云端 AI 服务，请检查网络和 API 密钥。';
-            } else if (errText.includes('Ollama') || errText.includes('localhost:11434')) {
-                errorMsg = '⚠️ 无法连接到 Ollama，请确保服务已启动。';
-            } else if (errText.includes('fetch') && !isCloud) {
-                errorMsg = '⚠️ 无法连接到 AI 模型。请确保 Ollama 正在运行，或切换到云端模式。';
+            if (!finalizeStreamedAssistantMessage(errorMsg, {
+                thinkingSteps: collectedSteps.filter(isVisiblePonderingStep).length > 0
+                    ? collectedSteps.filter(isVisiblePonderingStep)
+                    : undefined
+            })) {
+                addMessage({
+                    role: 'assistant',
+                    content: errorMsg
+                });
             }
-            
-            addMessage({ 
-                role: 'assistant', 
-                content: errorMsg
-            });
         } finally {
             // 清理 AbortController
             setAbortController(null);
         }
     };
-
-    /**
-     * 构建简化版系统提示 - 用于本地小模型
-     * 使用新的专业级提示词
-     */
-    const _buildSimpleSystemPrompt = (): string => {
-        const toolsList = AVAILABLE_TOOLS.map(t => `- ${t.name}: ${t.description}`).join('\n');
-        return buildSimpleProPrompt(toolsList, isPluginConnected);
-    };
-
-    /**
-     * 构建 Agent 系统提示 - 包含专业设计知识
-     * 使用新的专业级提示词（参考 Lovart/Manus）
-     */
-    const buildAgentSystemPrompt = (useSimple: boolean = false): string => {
-        const toolsList = AVAILABLE_TOOLS.map(t => `- ${t.name}: ${t.description}`).join('\n');
-        
-        // 根据参数选择使用简化版还是完整版
-        if (useSimple) {
-            return buildSimpleProPrompt(toolsList, isPluginConnected);
-        }
-        
-        return buildProSystemPrompt(toolsList, isPluginConnected);
-    };
-
 
     /**
      * 检测用户意图
@@ -1992,7 +2482,8 @@ export const ChatPanel: React.FC = () => {
     };
 
     const handleDesktopDebug = async (rawCommand: string) => {
-        if (!isPluginConnected) {
+        const connectionStatus = await getPhotoshopConnectionStatus().catch(() => ({ connected: false, source: 'ipc' as const }));
+        if (!connectionStatus.connected) {
             addMessage({
                 role: 'assistant',
                 content: '⚠️ 桌面端联调需要先连接 Photoshop 插件。'
@@ -2007,7 +2498,7 @@ export const ChatPanel: React.FC = () => {
         });
 
         try {
-            const toolsResp = await window.designEcho.invoke('mcp:tools:list');
+            const toolsResp = (await listPhotoshopMcpTools()) as PhotoshopMcpToolsListPayload;
             const tools = toolsResp?.tools || toolsResp?.result?.tools || [];
             const toolNames = new Set((tools || []).map((t: any) => t?.name).filter(Boolean));
             const requiredTools = ['getSubjectBounds', 'smartLayout', 'quickExport', 'parseDetailPageTemplate', 'autoFitDetailPageContent', 'exportSlices'];
@@ -2044,10 +2535,7 @@ export const ChatPanel: React.FC = () => {
             const probeLines: string[] = [];
             for (const probe of probeCalls) {
                 try {
-                    const result = await window.designEcho.invoke('mcp:tools:call', {
-                        name: probe.name,
-                        arguments: probe.args
-                    });
+                    const result = (await callPhotoshopMcpTool(probe.name, probe.args)) as PhotoshopMcpToolCallPayload;
                     const failed = !!(result?.error || result?.isError === true || result?.success === false);
                     probeLines.push(`${failed ? '❌' : '✅'} ${probe.name}`);
                 } catch (error: any) {
@@ -2057,6 +2545,7 @@ export const ChatPanel: React.FC = () => {
 
             let report = `📌 **桌面端联调报告（主图/详情页）**\n\n`;
             report += `- MCP 工具总数：${tools.length}\n`;
+            report += `- MCP 通道：${connectionStatus.source === 'mcp-host' ? 'MCP Host (127.0.0.1:8768)' : 'Legacy IPC fallback'}\n`;
             report += `- 关键工具完整性：${missingTools.length === 0 ? '✅ 完整' : `❌ 缺失 ${missingTools.join(', ')}`}\n\n`;
             report += `**分流结果**\n${routeLines.join('\n')}\n\n`;
             report += `**链路探针**\n${probeLines.join('\n')}\n\n`;
@@ -2105,8 +2594,6 @@ export const ChatPanel: React.FC = () => {
 - \`/debug\` - 开启调试模式（显示详细工具日志）
 - \`/debug off\` - 关闭调试模式
 - \`/debug report\` - 查看最近会话的调试报告
-- \`/desktop-debug\` - 在桌面端执行主图/详情页联调
-- \`/desktop-debug quick\` - 执行双场景快速联调
 
 **快捷操作：**
 使用底部工具栏可以快速执行常用操作。`
@@ -2198,12 +2685,12 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
     return (
         <div className="chat-panel">
             {/* 消息列表 */}
-            <div className="messages-container">
+            <div className="messages-container" data-testid="chat-messages">
                 {messages.length === 0 ? (
                     <div className="welcome-message">
                         <div className="welcome-icon">🎨</div>
                         <h2>DesignEcho</h2>
-                        <p>专业电商设计智能体 · 一句话完成设计任务</p>
+                        <p>通用 Photoshop 设计 Agent · 理解需求并协助完成设计任务</p>
                         
                         {/* [已移除] 快捷任务面板 - 使用自然语言交互代替 */}
                         
@@ -2247,7 +2734,7 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
 
                         const multimodalMsg = convertLegacyMessage(msg);
                         return (
-                            <div key={msg.id} className="message-wrapper">
+                            <div key={msg.id} className="message-wrapper" data-testid={`chat-message-${msg.role}`}>
                                 <MessageRenderer 
                                     message={multimodalMsg}
                                     isStreaming={msg.isThinking}
@@ -2280,29 +2767,20 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                     })
                 )}
                 
-                {/* 实时思维链显示（加载过程中） */}
-                {isLoading && showThinking && (
+                {/* 实时模型反馈 / 工具调用显示（加载过程中） */}
+                {isLoading && showThinking && (thinkingSteps.some(isVisiblePonderingStep) || liveActivity) && (
                     <div className="message assistant">
                         <div className="message-avatar">🤖</div>
                         <div className="message-content">
+                            {thinkingSteps.some(isVisiblePonderingStep) ? (
                                 <ThinkingProcess 
                                     steps={thinkingSteps}
                                     isExpanded={true}
                                     className="live-thinking"
                                 />
-                        </div>
-                    </div>
-                )}
-                
-                {/* 执行状态指示器（非思维链模式）*/}
-                {isLoading && showExecution && executionSteps.length > 0 && !showThinking && (
-                    <div className="message assistant">
-                        <div className="message-avatar">🤖</div>
-                        <div className="message-content">
-                                <ExecutionStatus
-                                    steps={executionSteps}
-                                    isVisible={showExecution}
-                                />
+                            ) : liveActivity ? (
+                                <LiveActivityIndicator activity={liveActivity} />
+                            ) : null}
                         </div>
                     </div>
                 )}
@@ -2444,6 +2922,7 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                         <textarea
                             ref={textareaRef}
                             className="chat-input"
+                            data-testid="chat-input"
                             placeholder={showImageGen ? "描述你想要生成的图片..." : "输入消息..."}
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
@@ -2481,7 +2960,8 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                     ) : (
                         <button 
                             className="send-button"
-                            onClick={handleSend}
+                            data-testid="chat-send"
+                            onClick={() => handleSend()}
                             disabled={!input.trim() && !pastedImage}
                             title={pastedImage ? "发送图片和消息" : "发送消息"}
                         >

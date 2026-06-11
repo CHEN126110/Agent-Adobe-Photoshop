@@ -200,11 +200,13 @@ export async function streamChatAsync(
     modelId: string,
     messages: Array<{ role: string; content: string }>,
     options?: StreamOptions & {
-        onProgress?: (content: string) => void;
+        onProgress?: (content: string, chunk: string) => void;
+        onThinkingProgress?: (thinking: string, chunk: string) => void;
     }
 ): Promise<{ text: string; thinking?: string }> {
     let fullContent = '';
     let fullThinking = '';
+    const { onProgress, onThinkingProgress, ...streamOptions } = options || {};
     
     const handle = streamChat(
         modelId,
@@ -212,13 +214,14 @@ export async function streamChatAsync(
         {
             onContent: (content) => {
                 fullContent += content;
-                options?.onProgress?.(fullContent);
+                onProgress?.(fullContent, content);
             },
             onThinking: (thinking) => {
                 fullThinking += thinking;
+                onThinkingProgress?.(fullThinking, thinking);
             }
         },
-        options
+        streamOptions
     );
     
     const response = await handle.promise;

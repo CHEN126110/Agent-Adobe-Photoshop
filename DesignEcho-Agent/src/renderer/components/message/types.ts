@@ -192,6 +192,7 @@ export interface SuccessBlock extends BaseContentBlock {
 // 思考过程块
 export interface ThinkingBlock extends BaseContentBlock {
     type: 'thinking';
+    title?: string;
     steps: ThinkingStep[];
     isExpanded?: boolean;
     totalDuration?: number;

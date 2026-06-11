@@ -10,10 +10,27 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { createToolFailureResult, ToolFailureResult } from '../../core/tool-error-normalizer';
+
+type LayerEffectsResult = string | ToolFailureResult;
 
 const photoshop = require('photoshop');
 const { app, action } = photoshop;
 const { executeAsModal } = photoshop.core;
+
+function findLayerById(container: any, id: number): any {
+    for (const layer of container?.layers || []) {
+        if (layer.id === id) return layer;
+        const nested = findLayerById(layer, id);
+        if (nested) return nested;
+    }
+    return null;
+}
+
+function resolveLayer(doc: any, params: { layerId?: number }): any {
+    if (params.layerId) return findLayerById(doc, Number(params.layerId));
+    return doc.activeLayers?.[0];
+}
 
 // ==================== 添加投影效果 ====================
 
@@ -67,19 +84,17 @@ export class AddDropShadowTool implements Tool {
         spread?: number;
         size?: number;
         layerId?: number;
-    }): Promise<string> {
+    }): Promise<LayerEffectsResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             // 默认值
@@ -117,7 +132,8 @@ export class AddDropShadowTool implements Tool {
                                     blur: { _unit: 'pixelsUnit', _value: size }
                                 }
                             }
-                        }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], { synchronousExecution: true });
             }, { commandName: '添加投影效果' });
@@ -129,7 +145,7 @@ export class AddDropShadowTool implements Tool {
                 settings: { color, opacity, angle, distance, spread, size }
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -176,19 +192,17 @@ export class AddStrokeTool implements Tool {
         position?: 'outside' | 'inside' | 'center';
         opacity?: number;
         layerId?: number;
-    }): Promise<string> {
+    }): Promise<LayerEffectsResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             // 默认值
@@ -229,7 +243,8 @@ export class AddStrokeTool implements Tool {
                                     }
                                 }
                             }
-                        }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], { synchronousExecution: true });
             }, { commandName: '添加描边效果' });
@@ -241,7 +256,7 @@ export class AddStrokeTool implements Tool {
                 settings: { color, size, position, opacity }
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -293,19 +308,17 @@ export class AddGlowTool implements Tool {
         size?: number;
         spread?: number;
         layerId?: number;
-    }): Promise<string> {
+    }): Promise<LayerEffectsResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             // 默认值
@@ -342,7 +355,8 @@ export class AddGlowTool implements Tool {
                                     noise: { _unit: 'percentUnit', _value: 0 }
                                 }
                             }
-                        }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], { synchronousExecution: true });
             }, { commandName: `添加${glowType === 'outer' ? '外' : '内'}发光效果` });
@@ -354,7 +368,7 @@ export class AddGlowTool implements Tool {
                 settings: { color, opacity, size, spread }
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -401,19 +415,17 @@ export class AddGradientOverlayTool implements Tool {
         angle?: number;
         opacity?: number;
         layerId?: number;
-    }): Promise<string> {
+    }): Promise<LayerEffectsResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             const angle = params.angle ?? 90;
@@ -486,7 +498,8 @@ export class AddGradientOverlayTool implements Tool {
                                     scale: { _unit: 'percentUnit', _value: 100 }
                                 }
                             }
-                        }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], { synchronousExecution: true });
             }, { commandName: '添加渐变叠加' });
@@ -498,7 +511,7 @@ export class AddGradientOverlayTool implements Tool {
                 settings: { startColor: params.startColor, endColor: params.endColor, angle, opacity }
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -523,19 +536,17 @@ export class ClearLayerEffectsTool implements Tool {
         }
     };
     
-    async execute(params: { layerId?: number }): Promise<string> {
+    async execute(params: { layerId?: number }): Promise<LayerEffectsResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             await executeAsModal(async () => {
@@ -550,7 +561,8 @@ export class ClearLayerEffectsTool implements Tool {
                             layerEffects: {
                                 _obj: 'null'  // 清空效果
                             }
-                        }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], { synchronousExecution: true });
             }, { commandName: '清除图层效果' });
@@ -561,7 +573,7 @@ export class ClearLayerEffectsTool implements Tool {
                 message: '已清除所有图层效果'
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }

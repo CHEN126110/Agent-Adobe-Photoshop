@@ -7,20 +7,25 @@
 import { Tool, ToolSchema } from './types';
 import { GetTextContentTool } from './text/get-text-content';
 import { SetTextContentTool } from './text/set-text-content';
+import { AuditTextReplacementTool } from './text/audit-text-replacement';
 import { GetTextStyleTool } from './text/get-text-style';
 import { SetTextStyleTool } from './text/set-text-style';
+import { ResolveFontNameTool } from './text/resolve-font-name';
 import { GetAllTextLayersTool } from './layout/get-all-text-layers';
 import { GetLayerBoundsTool } from './layout/get-layer-bounds';
 import { MoveLayerTool } from './layout/move-layer';
 import { AlignLayersTool } from './layout/align-layers';
 import { DistributeLayersTool } from './layout/distribute-layers';
 import { SelectLayerTool } from './layout/select-layer';
+import { FocusLayerTool } from './layout/focus-layer';
 import { GetLayerHierarchyTool } from './layout/get-layer-hierarchy';
 import { CreateClippingMaskTool, ReleaseClippingMaskTool } from './layout/clipping-mask';
 import { RenameLayerTool, BatchRenameLayersTool } from './layout/rename-layer';
 import { ReorderLayerTool, GroupLayersTool, UngroupLayersTool } from './layout/reorder-layer';
+import { MoveLayerToGroupTool } from './layout/move-layer-to-group';
 import { GetDocumentInfoTool } from './canvas/get-document-info';
 import { GetDocumentSnapshotTool } from './canvas/get-document-snapshot';
+import { GetAcceptanceSnapshotTool } from './acceptance/get-acceptance-snapshot';
 import { CreateDocumentTool } from './canvas/create-document';
 import { UndoTool, RedoTool, GetHistoryInfoTool } from './canvas/undo-redo';
 import { DiagnoseStateTool } from './canvas/diagnose-state';
@@ -29,9 +34,10 @@ import { ListDocumentsTool } from './canvas/list-documents';
 import { CloseDocumentTool } from './canvas/close-document';
 import { SaveDocumentTool, QuickExportTool, BatchExportTool, SmartSaveTool } from './canvas/save-document';
 import { GetCanvasSnapshotTool, GetElementMappingTool, AnalyzeLayoutTool } from './canvas/visual-analysis';
+import { GetScreenSnapshotsTool, GetScreenSnapshotsWithOverlayTool } from './canvas/screen-snapshot';
 import { RemoveBackgroundTool, ApplyMattingResultTool, ApplyMultiMattingResultTool } from './image/remove-background';
 import { PlaceImageTool } from './image/place-image';
-import { GetSelectionMaskTool, ApplyInpaintingResultTool, GetSelectionBoundsTool } from './image/inpainting';
+import { GetSelectionMaskTool, ApplyRasterImageResultTool, GetSelectionBoundsTool } from './image/inpainting';
 import { CreateRectangleTool, CreateEllipseTool } from './canvas/create-shape';
 import { CreateTextLayerTool } from './text/create-text-layer';
 import { CreateGroupTool } from './layout/create-group';
@@ -62,6 +68,7 @@ import { ExtractShapePathTool, GetLayerContourTool, MorphToShapeTool, BatchMorph
 import { ApplyMorphedImageTool } from './morphing/apply-morphed-image';
 import { WarpExplorerTool } from './morphing/warp-explorer';
 import { ExportLayerAsBase64Tool } from './image/export-layer';
+import { ExportGroupTool } from './image/export-group';
 import { GetSubjectBoundsTool } from './image/get-subject-bounds';
 // SKU 排版工具
 import { SKULayoutTool } from './layout/sku-layout-tool';
@@ -95,6 +102,7 @@ import { LayerRelationDetectorTool } from './layout/layer-relation-detector';
 import { AutoFixerTool } from './layout/auto-fixer';
 import { DetailPageFillerTool } from './layout/detail-page-filler';
 import { SliceExporterTool } from './layout/slice-exporter';
+import { AuditDetailPagePlacementTool } from './layout/audit-detail-page-placement';
 // 智能对象工具
 import {
     GetSmartObjectInfoTool,
@@ -152,60 +160,87 @@ export class ToolRegistry {
         return this.harmonizeLayerTool;
     }
 
+    private registerMany(tools: Tool[]): void {
+        for (const tool of tools) {
+            this.register(tool);
+        }
+    }
+
     /**
      * 注册默认工具
      */
     private registerDefaultTools(): void {
         // 文本工具
-        this.register(new GetTextContentTool());
-        this.register(new SetTextContentTool());
-        this.register(new GetTextStyleTool());
-        this.register(new SetTextStyleTool());
+        this.registerMany([
+            new GetTextContentTool(),
+            new SetTextContentTool(),
+            new AuditTextReplacementTool(),
+            new GetTextStyleTool(),
+            new SetTextStyleTool(),
+            new ResolveFontNameTool()
+        ]);
 
         // 布局工具
-        this.register(new GetAllTextLayersTool());
-        this.register(new GetLayerBoundsTool());
-        this.register(new MoveLayerTool());
-        this.register(new AlignLayersTool());
-        this.register(new DistributeLayersTool());
-        this.register(new SelectLayerTool());
+        this.registerMany([
+            new GetAllTextLayersTool(),
+            new GetLayerBoundsTool(),
+            new MoveLayerTool(),
+            new AlignLayersTool(),
+            new DistributeLayersTool(),
+            new SelectLayerTool(),
+            new FocusLayerTool()
+        ]);
 
         // 图层管理工具
-        this.register(new GetLayerHierarchyTool());
-        this.register(new CreateClippingMaskTool());
-        this.register(new ReleaseClippingMaskTool());
-        this.register(new RenameLayerTool());
-        this.register(new BatchRenameLayersTool());
-        this.register(new ReorderLayerTool());
-        this.register(new GroupLayersTool());
-        this.register(new UngroupLayersTool());
+        this.registerMany([
+            new GetLayerHierarchyTool(),
+            new CreateClippingMaskTool(),
+            new ReleaseClippingMaskTool(),
+            new RenameLayerTool(),
+            new BatchRenameLayersTool(),
+            new ReorderLayerTool(),
+            new MoveLayerToGroupTool(),
+            new GroupLayersTool(),
+            new UngroupLayersTool()
+        ]);
 
         // 画布/文档工具
-        this.register(new GetDocumentInfoTool());
-        this.register(new GetDocumentSnapshotTool());
-        this.register(new CreateDocumentTool());  // 创建新文档
-        this.register(new ListDocumentsTool());
-        this.register(new SwitchDocumentTool());
-        this.register(new CloseDocumentTool());
+        this.registerMany([
+            new GetDocumentInfoTool(),
+            new GetDocumentSnapshotTool(),
+            new GetAcceptanceSnapshotTool(),
+            new CreateDocumentTool(),
+            new ListDocumentsTool(),
+            new SwitchDocumentTool(),
+            new CloseDocumentTool()
+        ]);
 
         // 历史记录工具
-        this.register(new UndoTool());
-        this.register(new RedoTool());
-        this.register(new GetHistoryInfoTool());
+        this.registerMany([
+            new UndoTool(),
+            new RedoTool(),
+            new GetHistoryInfoTool()
+        ]);
 
         // 诊断工具
         this.register(new DiagnoseStateTool());
 
         // 文档保存/导出工具
-        this.register(new SaveDocumentTool());
-        this.register(new QuickExportTool());
-        this.register(new BatchExportTool());
-        this.register(new SmartSaveTool());
+        this.registerMany([
+            new SaveDocumentTool(),
+            new QuickExportTool(),
+            new BatchExportTool(),
+            new SmartSaveTool()
+        ]);
 
         // 视觉分析工具
-        this.register(new GetCanvasSnapshotTool());
-        this.register(new GetElementMappingTool());
-        this.register(new AnalyzeLayoutTool());
+        this.registerMany([
+            new GetCanvasSnapshotTool(),
+            new GetElementMappingTool(),
+            new AnalyzeLayoutTool(),
+            new GetScreenSnapshotsTool(),
+            new GetScreenSnapshotsWithOverlayTool()
+        ]);
 
         // 图像处理工具
         // 保存 RemoveBackgroundTool 实例引用（用于二进制图像传输）
@@ -218,51 +253,66 @@ export class ToolRegistry {
         this.register(new PlaceImageTool());
         
         // 局部重绘工具
-        this.register(new GetSelectionMaskTool());
-        this.register(new ApplyInpaintingResultTool());
-        this.register(new GetSelectionBoundsTool());
+        this.registerMany([
+            new GetSelectionMaskTool(),
+            new ApplyRasterImageResultTool(),
+            new GetSelectionBoundsTool()
+        ]);
 
         // 创建工具
-        this.register(new CreateRectangleTool());
-        this.register(new CreateEllipseTool());
-        this.register(new CreateTextLayerTool());
-        this.register(new CreateGroupTool());
+        this.registerMany([
+            new CreateRectangleTool(),
+            new CreateEllipseTool(),
+            new CreateTextLayerTool(),
+            new CreateGroupTool()
+        ]);
 
         // 图层变换工具
-        this.register(new TransformLayerTool());
-        this.register(new QuickScaleTool());
-        this.register(new ReplaceLayerContentTool());
+        this.registerMany([
+            new TransformLayerTool(),
+            new QuickScaleTool(),
+            new ReplaceLayerContentTool()
+        ]);
 
         // 图层属性工具 (P0)
-        this.register(new SetLayerOpacityTool());
-        this.register(new SetBlendModeTool());
-        this.register(new SetLayerFillTool());
-        this.register(new DuplicateLayerTool());
-        this.register(new DeleteLayerTool());
-        this.register(new LockLayerTool());
-        this.register(new GetLayerPropertiesTool());
+        this.registerMany([
+            new SetLayerOpacityTool(),
+            new SetBlendModeTool(),
+            new SetLayerFillTool(),
+            new DuplicateLayerTool(),
+            new DeleteLayerTool(),
+            new LockLayerTool(),
+            new GetLayerPropertiesTool()
+        ]);
 
         // 图层效果工具 (P1)
-        this.register(new AddDropShadowTool());
-        this.register(new AddStrokeTool());
-        this.register(new AddGlowTool());
-        this.register(new AddGradientOverlayTool());
-        this.register(new ClearLayerEffectsTool());
+        this.registerMany([
+            new AddDropShadowTool(),
+            new AddStrokeTool(),
+            new AddGlowTool(),
+            new AddGradientOverlayTool(),
+            new ClearLayerEffectsTool()
+        ]);
 
         // 形态变形工具
-        this.register(new ExtractShapePathTool());
-        this.register(new GetLayerContourTool());
-        this.register(new MorphToShapeTool());
-        this.register(new BatchMorphToShapeTool());
-        this.register(new ApplyMorphedImageTool());
-        this.register(new WarpExplorerTool());
-        this.register(new ExportLayerAsBase64Tool());
-        this.register(new GetSubjectBoundsTool());  // 获取主体边界
-        this.register(new ApplyDisplacementTool()); // 稀疏位移场变形
+        this.registerMany([
+            new ExtractShapePathTool(),
+            new GetLayerContourTool(),
+            new MorphToShapeTool(),
+            new BatchMorphToShapeTool(),
+            new ApplyMorphedImageTool(),
+            new WarpExplorerTool(),
+            new ExportLayerAsBase64Tool(),
+            new ExportGroupTool(),
+            new GetSubjectBoundsTool(),
+            new ApplyDisplacementTool()
+        ]);
 
         // 剪切蒙版信息工具（智能布局）
-        this.register(new GetClippingMaskInfoTool());
-        this.register(new GetAllClippingMasksTool());
+        this.registerMany([
+            new GetClippingMaskInfoTool(),
+            new GetAllClippingMasksTool()
+        ]);
 
         // SKU 排版工具
         this.register(new SKULayoutTool());
@@ -275,15 +325,19 @@ export class ToolRegistry {
 
 
         // 优化图像传输（参考 sd-ppp 设计）
-        this.register(new OptimizedImageTransferTool());
-        this.register(new OptimizedMattingImageTool());
+        this.registerMany([
+            new OptimizedImageTransferTool(),
+            new OptimizedMattingImageTool()
+        ]);
 
         // 模板渲染工具
-        this.register(new OpenTemplateTool());
-        this.register(new GetTemplateStructureTool());
-        this.register(new ReplaceImagePlaceholderTool());
-        this.register(new ReplaceTextPlaceholderTool());
-        this.register(new BatchRenderTemplateTool());
+        this.registerMany([
+            new OpenTemplateTool(),
+            new GetTemplateStructureTool(),
+            new ReplaceImagePlaceholderTool(),
+            new ReplaceTextPlaceholderTool(),
+            new BatchRenderTemplateTool()
+        ]);
 
         // 图像协调工具
         this.harmonizeLayerTool = new HarmonizeLayerTool();
@@ -291,29 +345,36 @@ export class ToolRegistry {
         this.register(new QuickHarmonizeTool());
 
         // SKU 配置工具
-        this.register(new ExportColorConfigTool());
-        this.register(new CreateSkuPlaceholdersTool());
-        this.register(new GetSkuPlaceholdersTool());
-        this.register(new ExportToSkuDirTool());
+        this.registerMany([
+            new ExportColorConfigTool(),
+            new CreateSkuPlaceholdersTool(),
+            new GetSkuPlaceholdersTool(),
+            new ExportToSkuDirTool()
+        ]);
 
         // 导出目录服务已简化，使用 getEntryWithUrl 直接绕过授权
 
         // 智能对象工具
-        this.register(new GetSmartObjectInfoTool());
-        this.register(new ConvertToSmartObjectTool());
-        this.register(new EditSmartObjectContentsTool());
-        this.register(new ReplaceSmartObjectContentsTool());
-        this.register(new UpdateSmartObjectTool());
-        this.register(new GetSmartObjectLayersTool());
-        this.register(new DuplicateSmartObjectTool());
-        this.register(new RasterizeSmartObjectTool());
+        this.registerMany([
+            new GetSmartObjectInfoTool(),
+            new ConvertToSmartObjectTool(),
+            new EditSmartObjectContentsTool(),
+            new ReplaceSmartObjectContentsTool(),
+            new UpdateSmartObjectTool(),
+            new GetSmartObjectLayersTool(),
+            new DuplicateSmartObjectTool(),
+            new RasterizeSmartObjectTool()
+        ]);
 
         // 详情页设计工具
-        this.register(new DetailPageParserTool());
-        this.register(new LayerRelationDetectorTool());
-        this.register(new AutoFixerTool());
-        this.register(new DetailPageFillerTool());
-        this.register(new SliceExporterTool());
+        this.registerMany([
+            new DetailPageParserTool(),
+            new LayerRelationDetectorTool(),
+            new AutoFixerTool(),
+            new DetailPageFillerTool(),
+            new SliceExporterTool(),
+            new AuditDetailPagePlacementTool()
+        ]);
 
         console.log(`[ToolRegistry] Registered ${this.tools.size} tools`);
     }

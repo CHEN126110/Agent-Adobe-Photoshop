@@ -11,10 +11,39 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { createToolFailureResult, ToolFailureResult } from '../../core/tool-error-normalizer';
+
+type LayerPropertiesResult = string | ToolFailureResult;
 
 const photoshop = require('photoshop');
 const { app, action } = photoshop;
 const { executeAsModal } = photoshop.core;
+
+function findLayerById(container: any, id: number): any {
+    for (const layer of container?.layers || []) {
+        if (layer.id === id) return layer;
+        const nested = findLayerById(layer, id);
+        if (nested) return nested;
+    }
+    return null;
+}
+
+function findLayerByName(container: any, name: string): any {
+    const needle = String(name || '').trim().toLowerCase();
+    if (!needle) return null;
+    for (const layer of container?.layers || []) {
+        if (String(layer.name || '').toLowerCase().includes(needle)) return layer;
+        const nested = findLayerByName(layer, name);
+        if (nested) return nested;
+    }
+    return null;
+}
+
+function resolveLayer(doc: any, params: { layerId?: number; layerName?: string }): any {
+    if (params.layerId) return findLayerById(doc, params.layerId);
+    if (params.layerName) return findLayerByName(doc, params.layerName);
+    return doc.activeLayers?.[0];
+}
 
 // ==================== 设置图层不透明度 ====================
 
@@ -40,19 +69,17 @@ export class SetLayerOpacityTool implements Tool {
         }
     };
     
-    async execute(params: { opacity: number; layerId?: number }): Promise<string> {
+    async execute(params: { opacity: number; layerId?: number }): Promise<LayerPropertiesResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             const opacity = Math.max(0, Math.min(100, params.opacity));
@@ -67,7 +94,7 @@ export class SetLayerOpacityTool implements Tool {
                 opacity: opacity
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -108,29 +135,31 @@ export class SetBlendModeTool implements Tool {
         }
     };
     
-    async execute(params: { blendMode: string; layerId?: number }): Promise<string> {
+    async execute(params: { blendMode: string; layerId?: number }): Promise<LayerPropertiesResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             // 验证混合模式
             const mode = params.blendMode.toLowerCase();
             if (!BLEND_MODES.includes(mode)) {
-                return JSON.stringify({ 
-                    success: false, 
+                const failure = createToolFailureResult({
+                    toolName: this.name,
                     error: `不支持的混合模式: ${params.blendMode}`,
-                    availableModes: BLEND_MODES
+                    params
                 });
+                return {
+                    ...failure,
+                    availableModes: BLEND_MODES
+                } as ToolFailureResult & { availableModes: string[] };
             }
             
             await executeAsModal(async () => {
@@ -143,7 +172,7 @@ export class SetBlendModeTool implements Tool {
                 blendMode: mode
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -172,19 +201,17 @@ export class SetLayerFillTool implements Tool {
         }
     };
     
-    async execute(params: { color: { r: number; g: number; b: number }; layerId?: number }): Promise<string> {
+    async execute(params: { color: { r: number; g: number; b: number }; layerId?: number }): Promise<LayerPropertiesResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             const { r, g, b } = params.color;
@@ -206,7 +233,8 @@ export class SetLayerFillTool implements Tool {
                                     blue: b
                                 }
                             }
-                        }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], { synchronousExecution: true });
             }, { commandName: '设置填充颜色' });
@@ -217,7 +245,7 @@ export class SetLayerFillTool implements Tool {
                 color: { r, g, b }
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -246,19 +274,17 @@ export class DuplicateLayerTool implements Tool {
         }
     };
     
-    async execute(params: { newName?: string; layerId?: number }): Promise<string> {
+    async execute(params: { newName?: string; layerId?: number }): Promise<LayerPropertiesResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             let newLayer: any;
@@ -277,7 +303,7 @@ export class DuplicateLayerTool implements Tool {
                 newLayerName: newLayer?.name
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -306,28 +332,19 @@ export class DeleteLayerTool implements Tool {
         }
     };
     
-    async execute(params: { layerId?: number; layerName?: string }): Promise<string> {
+    async execute(params: { layerId?: number; layerName?: string }): Promise<LayerPropertiesResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
             let layer: any;
             
-            if (params.layerId) {
-                layer = doc.layers.find((l: any) => l.id === params.layerId);
-            } else if (params.layerName) {
-                // 模糊匹配
-                layer = doc.layers.find((l: any) => 
-                    l.name.toLowerCase().includes(params.layerName!.toLowerCase())
-                );
-            } else {
-                layer = doc.activeLayers[0];
-            }
+            layer = resolveLayer(doc, params);
             
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             const deletedName = layer.name;
@@ -343,7 +360,7 @@ export class DeleteLayerTool implements Tool {
                 deletedLayerName: deletedName
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -376,19 +393,17 @@ export class LockLayerTool implements Tool {
         }
     };
     
-    async execute(params: { lock: boolean; lockType?: string; layerId?: number }): Promise<string> {
+    async execute(params: { lock: boolean; lockType?: string; layerId?: number }): Promise<LayerPropertiesResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             const lockType = params.lockType || 'all';
@@ -410,7 +425,7 @@ export class LockLayerTool implements Tool {
                 lockType: lockType
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }
@@ -435,19 +450,17 @@ export class GetLayerPropertiesTool implements Tool {
         }
     };
     
-    async execute(params: { layerId?: number }): Promise<string> {
+    async execute(params: { layerId?: number }): Promise<LayerPropertiesResult> {
         const doc = app.activeDocument;
         if (!doc) {
-            return JSON.stringify({ success: false, error: '没有打开的文档' });
+            return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
         }
         
         try {
-            const layer = params.layerId 
-                ? doc.layers.find((l: any) => l.id === params.layerId)
-                : doc.activeLayers[0];
+            const layer = resolveLayer(doc, params);
                 
             if (!layer) {
-                return JSON.stringify({ success: false, error: '未找到指定图层' });
+                return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
             return JSON.stringify({
@@ -475,7 +488,7 @@ export class GetLayerPropertiesTool implements Tool {
                 }
             });
         } catch (error: any) {
-            return JSON.stringify({ success: false, error: error.message });
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 }

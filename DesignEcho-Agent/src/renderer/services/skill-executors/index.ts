@@ -1,8 +1,6 @@
 /**
- * 技能执行器注册中心
- * 
- * 将技能执行逻辑从 unified-agent.service.ts 拆分出来，
- * 每个技能一个独立文件，便于维护和测试。
+ * Skill executor registry.
+ * Keeps each skill implementation isolated while exposing one execution entrypoint.
  */
 
 import type { SkillExecutor, SkillExecutorRegistry, SkillExecuteParams } from './types';
@@ -10,115 +8,316 @@ import type { AgentResult } from '../unified-agent.service';
 import { getSkillById } from '../../../shared/skills/skill-declarations';
 import { startTiming, endTiming } from '../performance-tracker';
 
-// 导入技能执行器
 import { matteProductExecutor } from './matte-product.executor';
 import { smartLayoutExecutor } from './smart-layout.executor';
-import { shapeMorphingExecutor } from './shape-morphing.executor';
-import { detailPageExecutor } from './detail-page.executor';
 import { skuBatchExecutor } from './sku-batch.executor';
 import { skuConfigExecutor } from './sku-config.executor';
 import { layoutReplicationExecutor } from './layout-replication.executor';
+import { ecommerceSocksDesignExecutor } from './ecommerce-socks-design.executor';
 import { mainImageExecutor } from './main-image.executor';
 import { visualAnalysisExecutor } from './visual-analysis.executor';
+import { projectImageAnalysisExecutor } from './project-image-analysis.executor';
+import { layerManagementExecutor } from './layer-management.executor';
 import { designReferenceSearchExecutor } from './design-reference-search.executor';
 import { findEditElementExecutor } from './find-edit-element.executor';
 import { agentPanelBridgeExecutor } from './agent-panel-bridge.executor';
+import { documentManagementExecutor } from './document-management.executor';
+import { templateSaveExecutor } from './template-save.executor';
+import { autonomousAgentExecutor } from './autonomous-agent.executor';
+import { detailPageExecutor } from './detail-page.executor';
+import { detailPageTemplateAuthoringExecutor } from './detail-page-template-authoring.executor';
+import { textFontReplaceExecutor } from './text-font-replace.executor';
+import { mainImageTemplateAuthoringExecutor } from './main-image-template-authoring.executor';
+import {
+    attachBusinessSkillImagePlacementVerificationIntakeToResult,
+    attachBusinessSkillExecutionPlanIntakeToResult,
+    attachBusinessSkillProjectAssetUnderstandingIntakeToResult,
+    attachBusinessSkillExecutionIntakeToResult,
+    attachBusinessSkillVisualEvidencePreExecutionToResult,
+    attachBusinessSkillExecutionPreflightGateToResult,
+    attachBusinessSkillVisualEvidenceControlDecisionToResult,
+    attachBusinessVisualEvidenceGateToResult,
+    buildBusinessSkillImagePlacementVerificationIntakeForSkill,
+    buildBusinessSkillExecutionPlanIntakeForSkill,
+    buildBusinessSkillProjectAssetUnderstandingIntakeForSkill,
+    buildBusinessSkillExecutionIntakeForSkill,
+    buildBusinessSkillVisualEvidencePreExecutionGateForSkill,
+    buildBusinessSkillExecutionPreflightGateForSkill,
+    buildBusinessVisualEvidenceGateForSkill,
+    prepareBusinessSkillProjectContextForScenario,
+    runBusinessSkillVisualEvidenceRefreshBeforeExecution,
+    runBusinessSkillVisualEvidenceRefreshAfterExecution
+} from './business-skill-visual-evidence-gate';
 
-// 技能执行器注册表
 const executorRegistry: SkillExecutorRegistry = new Map();
 
-// 注册内置技能执行器
 function registerBuiltinExecutors(): void {
-    // 图像处理
     executorRegistry.set(matteProductExecutor.skillId, matteProductExecutor);
-    
-    // 布局排版
+
     executorRegistry.set(smartLayoutExecutor.skillId, smartLayoutExecutor);
     executorRegistry.set(layoutReplicationExecutor.skillId, layoutReplicationExecutor);
-    
-    // 形态变形
-    executorRegistry.set(shapeMorphingExecutor.skillId, shapeMorphingExecutor);
-    
-    // 电商设计
+    executorRegistry.set(ecommerceSocksDesignExecutor.skillId, ecommerceSocksDesignExecutor);
+
     executorRegistry.set(mainImageExecutor.skillId, mainImageExecutor);
+    executorRegistry.set(mainImageTemplateAuthoringExecutor.skillId, mainImageTemplateAuthoringExecutor);
     executorRegistry.set(detailPageExecutor.skillId, detailPageExecutor);
+    executorRegistry.set(detailPageTemplateAuthoringExecutor.skillId, detailPageTemplateAuthoringExecutor);
     executorRegistry.set(skuConfigExecutor.skillId, skuConfigExecutor);
     executorRegistry.set(skuBatchExecutor.skillId, skuBatchExecutor);
 
-    // 视觉分析
     executorRegistry.set(visualAnalysisExecutor.skillId, visualAnalysisExecutor);
+    executorRegistry.set(projectImageAnalysisExecutor.skillId, projectImageAnalysisExecutor);
+    executorRegistry.set(layerManagementExecutor.skillId, layerManagementExecutor);
     executorRegistry.set(findEditElementExecutor.skillId, findEditElementExecutor);
     executorRegistry.set(agentPanelBridgeExecutor.skillId, agentPanelBridgeExecutor);
+    executorRegistry.set(documentManagementExecutor.skillId, documentManagementExecutor);
+    executorRegistry.set(templateSaveExecutor.skillId, templateSaveExecutor);
+    executorRegistry.set(textFontReplaceExecutor.skillId, textFontReplaceExecutor);
 
-    // 设计参考搜索
     executorRegistry.set(designReferenceSearchExecutor.skillId, designReferenceSearchExecutor);
+    executorRegistry.set(autonomousAgentExecutor.skillId, autonomousAgentExecutor);
 }
 
-// 初始化
 registerBuiltinExecutors();
 
-/**
- * 获取技能执行器
- */
+function getSafeSkillLabel(skillId: string): string {
+    const skill = getSkillById(skillId);
+    if (!skill) {
+        return '该能力';
+    }
+    return skill.visibility === 'user-facing' ? skill.name : '当前请求';
+}
+
+function compactSkillResultText(value: unknown): string {
+    return String(value || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 180);
+}
+
+function summarizeSkillResult(result: AgentResult): string {
+    const error = compactSkillResultText(result.error);
+    if (error) return `失败原因: ${error}`;
+
+    const message = compactSkillResultText(result.message);
+    if (message) return message;
+
+    return result.success ? '能力执行成功。' : '能力执行未完成。';
+}
+
 export function getSkillExecutor(skillId: string): SkillExecutor | undefined {
     return executorRegistry.get(skillId);
 }
 
-/**
- * 注册自定义技能执行器
- */
 export function registerSkillExecutor(executor: SkillExecutor): void {
     executorRegistry.set(executor.skillId, executor);
 }
 
-/**
- * 执行技能（统一入口）
- * 
- * 优先使用注册的执行器，如果没有则返回未实现错误
- */
+function withUnifiedSkillRunner(executeParams: SkillExecuteParams): SkillExecuteParams {
+    return {
+        ...executeParams,
+        runSkill: (childSkillId, childExecuteParams) => executeSkillWithExecutor(childSkillId, childExecuteParams)
+    };
+}
+
 export async function executeSkillWithExecutor(
     skillId: string,
     executeParams: SkillExecuteParams
 ): Promise<AgentResult> {
     startTiming(`技能:${skillId}`, { params: Object.keys(executeParams.params) });
-    
+    const skillStepId = `skill-${skillId}-${Date.now()}`;
+
     const skill = getSkillById(skillId);
     if (!skill) {
+        executeParams.callbacks?.onStep?.({
+            kind: 'tool_completed',
+            title: `能力不可用：${skillId}`,
+            detail: '技能注册表中没有找到该能力。',
+            status: 'error',
+            toolName: skillId,
+            toolCallId: skillStepId,
+            issue: 'skill_not_found'
+        });
         endTiming(`技能:${skillId}`, { error: 'not found' });
         return {
             success: false,
-            message: `未找到技能: ${skillId}`,
+            message: '当前没有可用的处理能力来完成这个请求。',
             error: 'Skill not found'
         };
     }
-    
-    executeParams.callbacks?.onProgress?.(`执行技能: ${skill.name}`, 0);
-    executeParams.callbacks?.onMessage?.(`🔧 正在执行「${skill.name}」...`);
-    
+
+    const userVisibleSkill = skill.visibility === 'user-facing';
+    executeParams.callbacks?.onProgress?.(
+        userVisibleSkill ? `执行能力：${skill.name}` : '正在处理请求',
+        0
+    );
+    executeParams.callbacks?.onMessage?.(
+        userVisibleSkill ? `正在执行「${skill.name}」。` : '正在处理请求。'
+    );
+
     const executor = getSkillExecutor(skillId);
-    
+    const skillLabel = getSafeSkillLabel(skillId);
+
+    executeParams.callbacks?.onStep?.({
+        kind: 'tool_started',
+        title: `开始能力：${skillLabel}`,
+        detail: `能力 ID: ${skillId}`,
+        status: 'running',
+        toolName: skillId,
+        toolCallId: skillStepId,
+        percent: 32
+    });
+
     if (!executor) {
+        executeParams.callbacks?.onStep?.({
+            kind: 'tool_completed',
+            title: `能力不可用：${skillLabel}`,
+            detail: '该能力缺少可执行处理器。',
+            status: 'error',
+            toolName: skillId,
+            toolCallId: skillStepId,
+            issue: 'skill_executor_not_found'
+        });
         endTiming(`技能:${skillId}`, { error: 'no executor' });
         return {
             success: false,
-            message: `技能 ${skill.name} 的执行器尚未实现`,
+            message: `${getSafeSkillLabel(skillId)}的执行器当前不可用。`,
             error: 'Skill executor not implemented'
         };
     }
-    
+
     try {
-        const result = await executor.execute(executeParams);
+        const scenarioPreparedExecuteParams = await prepareBusinessSkillProjectContextForScenario(skillId, executeParams);
+        const businessVisualEvidenceGate = buildBusinessVisualEvidenceGateForSkill(skillId, scenarioPreparedExecuteParams);
+        const businessSkillProjectAssetUnderstandingIntake =
+            buildBusinessSkillProjectAssetUnderstandingIntakeForSkill(skillId, scenarioPreparedExecuteParams);
+        const businessSkillVisualEvidencePreExecutionGate =
+            buildBusinessSkillVisualEvidencePreExecutionGateForSkill(skillId, scenarioPreparedExecuteParams);
+        const businessSkillInitialExecutionIntake = buildBusinessSkillExecutionIntakeForSkill(skillId, {
+            stage: 'before_executor',
+            preExecutionGate: businessSkillVisualEvidencePreExecutionGate
+        });
+        const preExecutionVisualEvidence = await runBusinessSkillVisualEvidenceRefreshBeforeExecution(
+            businessSkillVisualEvidencePreExecutionGate,
+            scenarioPreparedExecuteParams
+        );
+
+        if (preExecutionVisualEvidence.blockedResult) {
+            const blockedIntake = buildBusinessSkillExecutionIntakeForSkill(skillId, {
+                stage: 'blocked_before_executor',
+                preExecutionGate: businessSkillVisualEvidencePreExecutionGate,
+                preExecutionRun: preExecutionVisualEvidence.runSummary as any
+            }) || businessSkillInitialExecutionIntake;
+            const blockedResultWithPlacementIntake = attachBusinessSkillImagePlacementVerificationIntakeToResult(
+                attachBusinessSkillProjectAssetUnderstandingIntakeToResult(
+                    preExecutionVisualEvidence.blockedResult,
+                    businessSkillProjectAssetUnderstandingIntake
+                ),
+                buildBusinessSkillImagePlacementVerificationIntakeForSkill(
+                    skillId,
+                    preExecutionVisualEvidence.blockedResult
+                )
+            );
+            const blockedResultWithExecutionPlanIntake = attachBusinessSkillExecutionPlanIntakeToResult(
+                blockedResultWithPlacementIntake,
+                buildBusinessSkillExecutionPlanIntakeForSkill(skillId, blockedResultWithPlacementIntake)
+            );
+            const blockedResult = attachBusinessSkillExecutionIntakeToResult(
+                blockedResultWithExecutionPlanIntake,
+                blockedIntake
+            );
+            executeParams.callbacks?.onStep?.({
+                kind: 'tool_completed',
+                title: `能力未完成：${skillLabel}`,
+                detail: summarizeSkillResult(blockedResult),
+                status: 'error',
+                toolName: skillId,
+                toolCallId: skillStepId,
+                percent: 95,
+                issue: blockedResult.error || 'business_visual_evidence_required_before_execution'
+            });
+            endTiming(`技能:${skillId}`, { error: 'business visual evidence required before execution' });
+            return blockedResult;
+        }
+
+        const executeParamsForBusiness = withUnifiedSkillRunner(preExecutionVisualEvidence.executeParams);
+        const executorResult = await executor.execute(executeParamsForBusiness);
+        const businessSkillExecutionPreflightGate = buildBusinessSkillExecutionPreflightGateForSkill(
+            skillId,
+            executeParamsForBusiness,
+            executorResult
+        );
+        const resultWithEvidence = attachBusinessSkillExecutionPreflightGateToResult(
+            attachBusinessSkillVisualEvidencePreExecutionToResult(
+                attachBusinessSkillProjectAssetUnderstandingIntakeToResult(
+                    attachBusinessVisualEvidenceGateToResult(executorResult, businessVisualEvidenceGate),
+                    businessSkillProjectAssetUnderstandingIntake
+                ),
+                businessSkillVisualEvidencePreExecutionGate,
+                preExecutionVisualEvidence.runSummary
+            ),
+            businessSkillExecutionPreflightGate,
+            executeParamsForBusiness
+        );
+        const resultWithRefreshEvidence = await runBusinessSkillVisualEvidenceRefreshAfterExecution(
+            resultWithEvidence,
+            businessSkillExecutionPreflightGate,
+            executeParamsForBusiness
+        );
+        const resultWithControlDecision = attachBusinessSkillVisualEvidenceControlDecisionToResult(resultWithRefreshEvidence);
+        const resultWithPlacementIntake = attachBusinessSkillImagePlacementVerificationIntakeToResult(
+            resultWithControlDecision,
+            buildBusinessSkillImagePlacementVerificationIntakeForSkill(skillId, resultWithControlDecision)
+        );
+        const resultWithExecutionPlanIntake = attachBusinessSkillExecutionPlanIntakeToResult(
+            resultWithPlacementIntake,
+            buildBusinessSkillExecutionPlanIntakeForSkill(skillId, resultWithPlacementIntake)
+        );
+        const resultData = (resultWithExecutionPlanIntake.data || {}) as any;
+        const finalExecutionIntake = buildBusinessSkillExecutionIntakeForSkill(skillId, {
+            stage: 'after_executor',
+            preExecutionGate: resultData.businessSkillVisualEvidencePreExecutionGate,
+            preExecutionRun: resultData.businessSkillVisualEvidencePreExecutionRun,
+            executionPreflightGate: resultData.businessSkillExecutionPreflightGate,
+            plannerEvidence: resultData.businessSkillPreflightPlannerEvidence,
+            refreshPlan: resultData.businessSkillVisualEvidenceRefreshPlan,
+            refreshRun: resultData.businessSkillVisualEvidenceRefreshRun,
+            controlDecision: resultData.businessSkillVisualEvidenceControlDecision
+        });
+        const result = attachBusinessSkillExecutionIntakeToResult(
+            resultWithExecutionPlanIntake,
+            finalExecutionIntake || businessSkillInitialExecutionIntake
+        );
+        executeParams.callbacks?.onStep?.({
+            kind: 'tool_completed',
+            title: `${result.success ? '能力完成' : '能力未完成'}：${skillLabel}`,
+            detail: summarizeSkillResult(result),
+            status: result.success ? 'success' : 'error',
+            toolName: skillId,
+            toolCallId: skillStepId,
+            percent: 95,
+            issue: result.success ? undefined : compactSkillResultText(result.error) || 'skill_failed'
+        });
         endTiming(`技能:${skillId}`, { success: result.success });
         return result;
     } catch (e: any) {
+        executeParams.callbacks?.onStep?.({
+            kind: 'tool_completed',
+            title: `能力异常：${skillLabel}`,
+            detail: compactSkillResultText(e.message) || '能力执行过程发生异常。',
+            status: 'error',
+            toolName: skillId,
+            toolCallId: skillStepId,
+            percent: 95,
+            issue: compactSkillResultText(e.message) || 'skill_exception'
+        });
         endTiming(`技能:${skillId}`, { error: e.message });
         return {
             success: false,
-            message: `执行技能失败: ${e.message}`,
+            message: `执行能力失败：${e.message}`,
             error: e.message
         };
     }
 }
 
-// 导出类型
 export type { SkillExecutor, SkillExecuteParams } from './types';

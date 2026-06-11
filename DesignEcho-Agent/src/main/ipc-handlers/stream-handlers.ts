@@ -7,9 +7,103 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import { ModelService } from '../services/model-service';
 import type { StreamChunk } from '../services/stream-adapter';
+import type { AgentToolStreamChunk, AgentToolStreamRequest } from '../../shared/agent-tool-stream';
+import {
+    buildChatTestFakeModelText,
+    buildChatTestFakeModelWithTools,
+    isChatTestFakeModelEnabled
+} from '../testing/chat-test-fake-model';
 
 // 存储活跃的流式请求（用于取消）
 const activeStreams = new Map<string, { abort: () => void }>();
+
+function sendStreamChunk(window: BrowserWindow, requestId: string, chunk: StreamChunk): void {
+    if (window.isDestroyed()) return;
+    window.webContents.send('stream:chunk', {
+        requestId,
+        chunk
+    });
+}
+
+function sendAgentToolStreamChunk(window: BrowserWindow, requestId: string, chunk: AgentToolStreamChunk): void {
+    if (window.isDestroyed()) return;
+    window.webContents.send('stream:chunk', {
+        requestId,
+        chunk
+    });
+}
+
+function startChatTestFakeStream(
+    window: BrowserWindow,
+    requestId: string,
+    modelId: string,
+    messages: Array<{ role: string; content: string }>
+): void {
+    const text = buildChatTestFakeModelText(modelId, messages);
+    let aborted = false;
+    const timers: NodeJS.Timeout[] = [];
+
+    activeStreams.set(requestId, {
+        abort: () => {
+            aborted = true;
+            timers.forEach((timer) => clearTimeout(timer));
+        }
+    });
+
+    const emit = (chunk: StreamChunk) => {
+        if (aborted) return;
+        sendStreamChunk(window, requestId, chunk);
+        if (chunk.type === 'done' || chunk.type === 'error') {
+            activeStreams.delete(requestId);
+        }
+    };
+
+    // 只模拟真实内容流，不伪造 provider thinking。
+    timers.push(setTimeout(() => emit({ type: 'content', content: text }), 0));
+    timers.push(setTimeout(() => emit({
+        type: 'done',
+        fullResponse: {
+            text,
+            usage: {
+                inputTokens: 0,
+                outputTokens: 0
+            }
+        }
+    }), 1));
+}
+
+function startChatTestFakeToolStream(
+    window: BrowserWindow,
+    requestId: string,
+    modelId: string,
+    messages: unknown[],
+    tools: unknown[]
+): void {
+    let aborted = false;
+    const timer = setTimeout(() => {
+        if (aborted) return;
+        const response = buildChatTestFakeModelWithTools(modelId, messages, tools);
+        sendAgentToolStreamChunk(window, requestId, {
+            type: 'done',
+            response: {
+                content: response.content,
+                thinking: (response as any).thinking,
+                toolCalls: response.toolCalls,
+                usage: response.usage,
+                stopReason: response.stopReason,
+                streamMode: 'fallback'
+            }
+        });
+        activeStreams.delete(requestId);
+    }, 0);
+
+    activeStreams.set(requestId, {
+        abort: () => {
+            aborted = true;
+            clearTimeout(timer);
+        }
+    });
+}
 
 /**
  * 注册流式输出 IPC 处理程序
@@ -40,6 +134,11 @@ export function registerStreamHandlers(modelService: ModelService): void {
         console.log(`[StreamHandlers] 开始流式请求: ${requestId}, 模型: ${modelId}`);
         
         try {
+            if (isChatTestFakeModelEnabled()) {
+                startChatTestFakeStream(window, requestId, modelId, messages);
+                return { success: true, requestId };
+            }
+
             // 创建 AbortController 用于取消
             const abortController = new AbortController();
             
@@ -84,6 +183,52 @@ export function registerStreamHandlers(modelService: ModelService): void {
             
         } catch (error: any) {
             console.error('[StreamHandlers] 流式请求失败:', error);
+            activeStreams.delete(requestId);
+            return { success: false, error: error.message };
+        }
+    });
+
+    /**
+     * 开始带工具调用的 Agent 模型流。
+     *
+     * 该通道只传 provider 真实流式事件；不支持工具流的模型由 ModelService 标记 fallback。
+     */
+    ipcMain.handle('stream:chatWithTools', async (event, args: AgentToolStreamRequest) => {
+        const { requestId, modelId, messages, tools, options } = args;
+        const window = BrowserWindow.fromWebContents(event.sender);
+
+        if (!window) {
+            console.error('[StreamHandlers] 无法获取窗口引用');
+            return { success: false, error: '无法获取窗口引用' };
+        }
+
+        try {
+            if (isChatTestFakeModelEnabled()) {
+                startChatTestFakeToolStream(window, requestId, modelId, messages, tools);
+                return { success: true, requestId };
+            }
+
+            const stream = modelService.chatWithToolsStream(
+                modelId,
+                messages as any[],
+                tools as any[],
+                options
+            );
+
+            activeStreams.set(requestId, {
+                abort: () => stream.abort()
+            });
+
+            stream.on('chunk', (chunk: AgentToolStreamChunk) => {
+                sendAgentToolStreamChunk(window, requestId, chunk);
+                if (chunk.type === 'done' || chunk.type === 'error') {
+                    activeStreams.delete(requestId);
+                }
+            });
+
+            return { success: true, requestId };
+        } catch (error: any) {
+            console.error('[StreamHandlers] Agent 工具流式请求失败:', error);
             activeStreams.delete(requestId);
             return { success: false, error: error.message };
         }

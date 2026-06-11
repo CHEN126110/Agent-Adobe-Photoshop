@@ -1,4 +1,6 @@
 
+import type { DesignImageInput } from '../../shared/design-image-input';
+
 export interface PhotoshopContext {
     hasDocument: boolean;
     documentName?: string;
@@ -12,6 +14,11 @@ export interface ProjectContext {
     hasSkuFiles?: boolean;
     hasTemplates?: boolean;
     availableColors?: string[];
+    projectImageCount?: number;
+    projectImageFolders?: Array<{ path: string; imageCount: number }>;
+    sampleImagePaths?: string[];
+    selectedProjectImagePath?: string;
+    selectedProjectImageName?: string;
 }
 
 export interface AgentContext {
@@ -29,6 +36,8 @@ export interface AgentContext {
     hasAttachedImage?: boolean;
     /** 用户附带的图片数据（base64） */
     attachedImageData?: string;
+    /** 统一的图片输入对象 */
+    attachedImages?: DesignImageInput[];
 }
 
 export interface AgentDecision {
@@ -66,6 +75,7 @@ export interface AgentResult {
 
 export interface ExecutionCallbacks {
     onProgress?: (message: string, percent: number) => void;
+    onStatus?: (message: string) => void;
     onToolStart?: (toolName: string) => void;
     onToolComplete?: (toolName: string, result: any) => void;
     onMessage?: (message: string) => void;

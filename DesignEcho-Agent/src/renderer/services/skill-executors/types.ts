@@ -16,6 +16,8 @@ export interface SkillExecuteParams {
     signal?: AbortSignal;
     /** Agent 上下文 */
     context?: AgentContext;
+    /** 由统一执行入口注入，用于父 skill 调度子 skill，避免直接调用子 executor */
+    runSkill?: (skillId: string, params: SkillExecuteParams) => Promise<AgentResult>;
 }
 
 /**

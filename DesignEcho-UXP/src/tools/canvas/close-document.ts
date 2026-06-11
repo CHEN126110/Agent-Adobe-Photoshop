@@ -1,11 +1,4 @@
-/**
- * 关闭文档工具
- *
- * 关闭指定文档，支持保存或不保存修改。
- * 与组合/自选备注模板使用后关闭文档的场景一致。
- */
-
-import { Tool, ToolSchema } from '../types';
+﻿import { Tool, ToolSchema } from '../types';
 
 const app = require('photoshop').app;
 const { core } = require('photoshop');
@@ -15,21 +8,21 @@ export class CloseDocumentTool implements Tool {
 
     schema: ToolSchema = {
         name: 'closeDocument',
-        description: '关闭指定文档。可指定保存或不保存修改。用于批量操作后清理临时文档。',
+        description: 'Close a Photoshop document. Supports saving or discarding changes.',
         parameters: {
             type: 'object',
             properties: {
                 documentName: {
                     type: 'string',
-                    description: '要关闭的文档名称（支持模糊匹配）'
+                    description: 'Document name to close. Supports fuzzy matching.'
                 },
                 documentId: {
                     type: 'number',
-                    description: '要关闭的文档 ID'
+                    description: 'Document id to close.'
                 },
                 save: {
                     type: 'boolean',
-                    description: '是否保存修改。默认 false 表示不保存'
+                    description: 'Whether to save changes before closing. Default false.'
                 }
             }
         }
@@ -47,7 +40,7 @@ export class CloseDocumentTool implements Tool {
         try {
             const documents = app.documents;
             if (!documents || documents.length === 0) {
-                return { success: false, error: '没有打开的文档' };
+                return { success: false, error: 'No open documents' };
             }
 
             let targetDoc: any = null;
@@ -76,29 +69,22 @@ export class CloseDocumentTool implements Tool {
                 return {
                     success: false,
                     error: params.documentName
-                        ? `未找到文档: ${params.documentName}`
-                        : '未指定要关闭的文档'
+                        ? `Document not found: ${params.documentName}`
+                        : 'No target document specified'
                 };
             }
 
             const docName = targetDoc.name;
             const shouldSave = params.save === true;
 
-            if (documents.length <= 1) {
-                return {
-                    success: false,
-                    error: '无法关闭最后一个文档，Photoshop 至少需要保留一个打开的文档'
-                };
-            }
-
             await core.executeAsModal(async () => {
                 if (shouldSave) {
                     await targetDoc.save();
                 }
                 await (targetDoc as any).closeWithoutSaving();
-            }, { commandName: 'DesignEcho: 关闭文档' });
+            }, { commandName: 'DesignEcho: Close Document' });
 
-            console.log(`[CloseDocument] ✅ 已关闭: ${docName} (${shouldSave ? '已保存' : '未保存'})`);
+            console.log(`[CloseDocument] Closed ${docName} (${shouldSave ? 'saved' : 'discarded changes'})`);
 
             return {
                 success: true,
@@ -108,7 +94,7 @@ export class CloseDocumentTool implements Tool {
             console.error('[CloseDocument] Error:', error);
             return {
                 success: false,
-                error: error?.message || '关闭文档失败'
+                error: error?.message || 'Close document failed'
             };
         }
     }

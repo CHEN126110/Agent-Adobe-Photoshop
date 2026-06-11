@@ -3,38 +3,40 @@
 
 # Build outputs
 **/dist/
-**/build/
 **/release/
-**/.cache/
-**/coverage/
-*.tsbuildinfo
+**/out/
+**/.vite/
 
-# Logs and temp files
-*.log
-tmp/
+# Runtime caches and temporary reports
 **/tmp/
-DesignEcho-Agent/logs/
+**/.cache/
+**/localappdata/
 
-# Local models and archives
-DesignEcho-Agent/models/
-DesignEcho-Agent/models_backup/
-C-649/
-_archived_python_backend/
+# Local environment
+.env
+.env.*
+!.env.example
 
-# Local tooling and editor state
-.claude/
-.cursor/
-.trae/
-.vscode/
-.cursorignore
-playwright-skill/
-DesignEcho-Agent/.agents/
-DesignEcho-Agent/.claude/
-DesignEcho-Agent/.cursor/
-DesignEcho-Agent/.trae/
-DesignEcho-Agent/.trash/
-DesignEcho-Agent/_trash/
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Workspace-only exports / indexes
-eagle-*.json
-console-*.log
+# Editor and OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+
+# Historical scratch/repair files
+*_backup*
+*_restore*
+*_tmp*
+tmp_*
+*.corrupted.*

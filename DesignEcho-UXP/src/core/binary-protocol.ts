@@ -5,7 +5,7 @@
  * 参考 sd-ppp 设计，使用 Uint8Array 替代 Base64
  * 
  * 优势：
- * 1. 无 Base64 膨胀（节省 33% 数据量）
+ * 1. 无 Base64 膨胀（节省约 33% 数据量）
  * 2. 更快的序列化/反序列化
  * 3. 更低的内存占用
  */
@@ -18,23 +18,25 @@ export enum BinaryMessageType {
     JPEG = 0x01,
     /** PNG 图像数据 */
     PNG = 0x02,
-    /** RAW 灰度蒙版（单通道，用于抠图结果） */
+    /** RAW 灰度蒙版（单通道，用于加图结果） */
     RAW_MASK = 0x03,
     /** RAW RGBA 数据 */
     RAW_RGBA = 0x04,
     /** RAW RGB 数据（无 Alpha） */
-    RAW_RGB = 0x05
+    RAW_RGB = 0x05,
+    /** Inpainting result PNG */
+    INPAINT_PNG = 0x06
 }
 
 /**
  * 二进制消息头部
  * 
- * 格式 (总计 16 字节):
- * - [0]: 消息类型 (1 字节)
- * - [1-4]: 请求 ID (4 字节, uint32)
- * - [5-8]: 宽度 (4 字节, uint32)
- * - [9-12]: 高度 (4 字节, uint32)
- * - [13-15]: 保留 (3 字节)
+ * 格式（总计 16 字节）：
+ * - [0]: 消息类型（1 字节）
+ * - [1-4]: 请求 ID（4 字节，uint32）
+ * - [5-8]: 宽度（4 字节，uint32）
+ * - [9-12]: 高度（4 字节，uint32）
+ * - [13-15]: 保留（3 字节）
  */
 export const BINARY_HEADER_SIZE = 16;
 
@@ -119,7 +121,7 @@ export function parseBinaryMessage(data: ArrayBuffer | Uint8Array): {
  * 
  * 判断依据：
  * 1. 数据长度 >= 16（头部大小）
- * 2. 第一个字节是有效的消息类型（0x01-0x05）
+ * 2. 第一个字节是有效的消息类型（0x01-0x06）
  */
 export function isBinaryMessage(data: ArrayBuffer | Uint8Array): boolean {
     const uint8Data = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
@@ -129,7 +131,7 @@ export function isBinaryMessage(data: ArrayBuffer | Uint8Array): boolean {
     }
     
     const firstByte = uint8Data[0];
-    return firstByte >= 0x01 && firstByte <= 0x05;
+    return firstByte >= 0x01 && firstByte <= 0x06;
 }
 
 /**
@@ -142,6 +144,7 @@ export function getBinaryTypeName(type: BinaryMessageType): string {
         case BinaryMessageType.RAW_MASK: return 'RAW_MASK';
         case BinaryMessageType.RAW_RGBA: return 'RAW_RGBA';
         case BinaryMessageType.RAW_RGB: return 'RAW_RGB';
+        case BinaryMessageType.INPAINT_PNG: return 'INPAINT_PNG';
         default: return `UNKNOWN(${type})`;
     }
 }

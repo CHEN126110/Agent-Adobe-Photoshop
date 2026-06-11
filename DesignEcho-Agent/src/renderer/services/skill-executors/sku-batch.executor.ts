@@ -1,75 +1,19 @@
-﻿/**
+/**
  * SKU 批量生成技能执行器
- * @description 审美知识驱动的 SKU 颜色组合生成 + 批量排版导出
+ * @description 规则驱动的 SKU 颜色组合生成 + 批量排版导出
  */
 
 import type { SkillExecutor, SkillExecuteParams } from './types';
 import type { AgentResult } from '../unified-agent.service';
 import { executeToolCall } from '../tool-executor.service';
 import { useAppStore } from '../../stores/app.store';
-import { getEffectiveBrandSpec } from './knowledge-query';
-
-// ==================== 色彩和谐度 ====================
-
-/**
- * 颜色色系分类（基于名称关键词推断）
- */
-type ColorFamily = 'warm' | 'cool' | 'neutral' | 'accent';
-
-const COLOR_FAMILY_KEYWORDS: Record<ColorFamily, string[]> = {
-    warm: ['红', '粉', '橙', '杏', '棕', '咖', '焦', '驼', '酒', '玫', '珊', '樱', '桃', '砖', 'red', 'pink', 'orange', 'brown', 'coral'],
-    cool: ['蓝', '绿', '青', '湖', '薄荷', '翠', '靛', '藏', 'blue', 'green', 'teal', 'mint', 'navy', 'cyan'],
-    neutral: ['白', '黑', '灰', '米', '卡', '奶', '杂', '麻', 'white', 'black', 'gray', 'grey', 'beige', 'ivory'],
-    accent: ['紫', '黄', '金', '银', '亮', 'purple', 'yellow', 'gold', 'silver']
-};
-
-function inferColorFamily(colorName: string): ColorFamily {
-    const lower = colorName.toLowerCase();
-    for (const [family, keywords] of Object.entries(COLOR_FAMILY_KEYWORDS)) {
-        if (keywords.some(kw => lower.includes(kw))) return family as ColorFamily;
-    }
-    return 'neutral';
-}
-
-/**
- * 色系和谐度评分矩阵
- * 同色系搭配得正分（协调），对比色搭配得轻微正分（视觉张力），
- * 中性色与任何色搭配都是正分（百搭）
- */
-const FAMILY_HARMONY: Record<string, number> = {
-    'warm-warm': 1.5,
-    'cool-cool': 1.5,
-    'neutral-neutral': 0.8,
-    'accent-accent': -0.5,
-    'warm-cool': 0.6,
-    'warm-neutral': 1.2,
-    'cool-neutral': 1.2,
-    'warm-accent': 0.4,
-    'cool-accent': 0.4,
-    'neutral-accent': 1.0
-};
-
-function getHarmonyScore(familyA: ColorFamily, familyB: ColorFamily): number {
-    const key1 = `${familyA}-${familyB}`;
-    const key2 = `${familyB}-${familyA}`;
-    return FAMILY_HARMONY[key1] ?? FAMILY_HARMONY[key2] ?? 0;
-}
-
-/**
- * 加载审美配色知识并构建色系映射
- */
-async function loadColorHarmonyContext(): Promise<{ loaded: boolean; colorKnowledge: any[] }> {
-    try {
-        const result = await window.designEcho?.invoke?.('aesthetic:getColorKnowledge');
-        if (result?.success && Array.isArray(result.knowledge)) {
-            return { loaded: true, colorKnowledge: result.knowledge };
-        }
-    } catch (e) {
-        console.warn('[SKU-Batch] 配色知识加载失败，使用内置色系规则:', e);
-    }
-    return { loaded: false, colorKnowledge: [] };
-}
-
+import { decideSkuSelfSelectNoteGeneration } from '../../../shared/sku-self-select-note-policy';
+import {
+    buildSkuDesignAgentOsEvidence,
+    type SkuBatchPlanEvidence
+} from '../../../shared/design-agent-os-contracts';
+import { buildSkuBatchPlannerEvidence } from './design-planner-evidence';
+import { emitSkillStep } from './skill-step-events';
 // ==================== 辅助函数 ====================
 
 async function getProjectContext(): Promise<{ projectPath?: string } | null> {
@@ -106,8 +50,24 @@ type TemplateLibraryItem = {
     metadata?: {
         comboSize?: number;
     };
-    source: 'project-folder' | 'local-library' | 'knowledge-library';
+    source: 'project-folder' | 'local-library' | 'template-library';
     sourcePriority: number;
+};
+
+type ProjectSkuSourceFile = {
+    name: string;
+    path: string;
+    relativePath?: string;
+};
+
+type SkuIntentPlan = {
+    mode: 'default' | 'specified-only' | 'append';
+    countPerSize?: number;
+    generateNotes?: boolean;
+    specifiedCombos?: string[][];
+    appendMonochromeColors?: string[];
+    targetSizes?: number[];
+    reasoning?: string;
 };
 
 const TEMPLATE_FILE_PATTERN = /\.(psd|psb|tif|tiff)$/i;
@@ -117,11 +77,168 @@ function normalizeNameWithoutExt(input: string): string {
     return String(input || '').replace(/\.[^.]+$/, '').toLowerCase();
 }
 
+function normalizeDocumentPathBasename(input: string): string {
+    const raw = String(input || '').trim();
+    if (!raw) return '';
+    const base = raw.split(/[/\\]/).pop() || raw;
+    return normalizeNameWithoutExt(base);
+}
+
+function normalizePathForCompare(input: string): string {
+    return String(input || '')
+        .trim()
+        .replace(/\//g, '\\')
+        .replace(/\\+$/, '')
+        .toLowerCase();
+}
+
+function isPathInsideDirectory(filePath?: string, directory?: string): boolean {
+    const normalizedFile = normalizePathForCompare(filePath || '');
+    const normalizedDir = normalizePathForCompare(directory || '');
+    if (!normalizedFile || !normalizedDir) return false;
+    return normalizedFile === normalizedDir || normalizedFile.startsWith(`${normalizedDir}\\`);
+}
+
+function isDocumentFromTemplateDirectory(doc: any, templateDir?: string): boolean {
+    if (!templateDir) return true;
+    return isPathInsideDirectory(doc?.path, templateDir);
+}
+
+function isExactTemplateDocument(doc: any, templateFilePath?: string): boolean {
+    const normalizedDocPath = normalizePathForCompare(doc?.path || '');
+    const normalizedTemplatePath = normalizePathForCompare(templateFilePath || '');
+    if (!normalizedDocPath || !normalizedTemplatePath) return false;
+    return normalizedDocPath === normalizedTemplatePath;
+}
+
+function matchesSkuDocument(
+    doc: any,
+    skuKeyword: string,
+    options: {
+        projectPath?: string;
+        expectedPath?: string;
+        allowPathlessProjectFallback?: boolean;
+    } = {}
+): boolean {
+    const keyword = normalizeNameWithoutExt(String(skuKeyword || ''));
+    if (!keyword) return false;
+
+    const normalizedDocPath = normalizePathForCompare(doc?.path || '');
+    const normalizedExpectedPath = normalizePathForCompare(options.expectedPath || '');
+    if (normalizedDocPath && normalizedExpectedPath && normalizedDocPath === normalizedExpectedPath) {
+        return true;
+    }
+
+    const docName = normalizeNameWithoutExt(doc?.name || '');
+    const docBaseNameFromPath = normalizeDocumentPathBasename(doc?.path || '');
+
+    const matchedByName = [docName, docBaseNameFromPath].some((candidate) => {
+        if (!candidate) return false;
+        return candidate === keyword || candidate.includes(keyword);
+    });
+
+    if (!matchedByName) return false;
+
+    if (options.expectedPath) {
+        const expectedBaseName = normalizeDocumentPathBasename(options.expectedPath);
+        if (docName !== expectedBaseName && docBaseNameFromPath !== expectedBaseName) {
+            return false;
+        }
+    }
+
+    if (options.projectPath) {
+        if (normalizedDocPath) {
+            return isPathInsideDirectory(normalizedDocPath, options.projectPath);
+        }
+        return options.allowPathlessProjectFallback === true;
+    }
+
+    return true;
+}
+
+function isLikelyOpenedComboTemplate(doc: any, skuKeyword: string, templateDir?: string): boolean {
+    const name = normalizeNameWithoutExt(doc?.name || '');
+    if (!name) return false;
+    if (name.includes(normalizeNameWithoutExt(skuKeyword))) return false;
+    if (name.includes(NOTE_TEMPLATE_KEYWORD)) return false;
+
+    const fromProjectTemplateDir = isDocumentFromTemplateDirectory(doc, templateDir);
+    const looksLikeTemplateName = /模板|双装|双模板/.test(String(doc?.name || ''));
+
+    return fromProjectTemplateDir || looksLikeTemplateName;
+}
+
+function collectSizesFromOpenedTemplateDocs(docs: any[], skuKeyword: string, templateDir?: string): number[] {
+    const sizes = new Set<number>();
+    for (const doc of Array.isArray(docs) ? docs : []) {
+        if (!isLikelyOpenedComboTemplate(doc, skuKeyword, templateDir)) continue;
+        const size = extractComboSize(String(doc?.name || '') || String(doc?.path || ''));
+        if (size && size > 0) sizes.add(size);
+    }
+    return Array.from(sizes).sort((a, b) => a - b);
+}
+
+function formatComboForSummary(combo: string[]): string {
+    const counts = new Map<string, number>();
+    for (const color of combo) {
+        counts.set(color, (counts.get(color) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+        .map(([color, count]) => `${color}x${count}`)
+        .join('+');
+}
+
+function shouldAllowLibraryTemplateFallback(projectPath?: string, explicitFlag?: unknown, projectTemplateCount = 0): boolean {
+    if (!projectPath) return true;
+    if (projectTemplateCount <= 0) return true;
+    return explicitFlag === true;
+}
+
+function isReasonableSkuSize(value: number): boolean {
+    return Number.isInteger(value) && value >= 1 && value <= 50;
+}
+
+function normalizeColorKey(input: string): string {
+    return String(input || '')
+        .trim()
+        .replace(/\s+/g, '')
+        .toLowerCase();
+}
+
+function dedupeColorNames(names: string[]): { uniqueColors: string[]; duplicateColors: string[] } {
+    const uniqueColors: string[] = [];
+    const duplicateColors: string[] = [];
+    const seen = new Set<string>();
+
+    for (const rawName of names) {
+        const normalized = normalizeColorKey(rawName);
+        if (!normalized) continue;
+        if (seen.has(normalized)) {
+            duplicateColors.push(String(rawName || '').trim());
+            continue;
+        }
+        seen.add(normalized);
+        uniqueColors.push(String(rawName || '').trim());
+    }
+
+    return { uniqueColors, duplicateColors };
+}
+
 function extractComboSize(input: string): number | null {
-    const match = String(input || '').match(/(\d+)双/);
-    if (!match) return null;
-    const value = parseInt(match[1], 10);
-    return Number.isFinite(value) ? value : null;
+    const text = String(input || '').replace(/\.[^.]+$/, '');
+    const patterns = [
+        /(?:^|[^\d])(\d{1,2})\s*(?:\u53cc\u88c5\u81ea\u9009\u5907\u6ce8|\u53cc\u81ea\u9009\u5907\u6ce8|\u53cc\u88c5|\u53cc\u6a21\u677f|\u53cc)(?!\d)/i,
+        /(?:^|[^\d])(\d{1,2})\s*(?:\u7ec4|\u5957)(?!\d)/i
+    ];
+
+    for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (!match) continue;
+        const value = parseInt(match[1], 10);
+        if (isReasonableSkuSize(value)) return value;
+    }
+
+    return null;
 }
 
 function inferTemplateSize(template: TemplateLibraryItem): number | null {
@@ -176,6 +293,448 @@ function collectSizesFromLibrary(templates: TemplateLibraryItem[]): number[] {
     return Array.from(sizes).sort((a, b) => a - b);
 }
 
+function escapeRegExp(input: string): string {
+    return String(input || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildComboIdentity(combo: string[]): string {
+    return combo
+        .map(color => normalizeColorKey(color))
+        .filter(Boolean)
+        .sort()
+        .join('|');
+}
+
+function dedupeCombosForSize(combos: string[][]): {
+    uniqueCombos: string[][];
+    removedCombos: string[][];
+} {
+    const uniqueCombos: string[][] = [];
+    const removedCombos: string[][] = [];
+    const seen = new Set<string>();
+
+    for (const combo of combos) {
+        const identity = buildComboIdentity(combo);
+        if (!identity) continue;
+
+        if (seen.has(identity)) {
+            removedCombos.push(combo);
+            continue;
+        }
+
+        seen.add(identity);
+        uniqueCombos.push(combo);
+    }
+
+    return { uniqueCombos, removedCombos };
+}
+
+function dedupeAllCombosBySize(combosBySize: Record<number, string[][]>): Array<{
+    size: number;
+    removedCombos: string[][];
+}> {
+    const removals: Array<{ size: number; removedCombos: string[][] }> = [];
+
+    for (const [sizeStr, combos] of Object.entries(combosBySize)) {
+        const size = parseInt(sizeStr, 10);
+        if (!Array.isArray(combos) || combos.length <= 1) continue;
+
+        const { uniqueCombos, removedCombos } = dedupeCombosForSize(combos);
+        combosBySize[size] = uniqueCombos;
+
+        if (removedCombos.length > 0) {
+            removals.push({ size, removedCombos });
+        }
+    }
+
+    return removals;
+}
+
+function buildColorAliasEntries(availableColors: string[]): Array<{ actual: string; aliases: string[] }> {
+    return availableColors.map(color => {
+        const normalized = normalizeColorKey(color);
+        const trimmed = String(color || '').trim();
+        return {
+            actual: color,
+            aliases: Array.from(new Set([
+                trimmed,
+                trimmed.replace(/色$/u, ''),
+                normalized,
+                normalized.replace(/色$/u, '')
+            ].filter(Boolean)))
+        };
+    });
+}
+
+function resolveColorToken(
+    token: string,
+    aliasEntries: Array<{ actual: string; aliases: string[] }>
+): string | null {
+    const normalizedToken = normalizeColorKey(token)
+        .replace(/(这个|那个|组合|搭配|颜色|款式|帮我|做|生成|新增|增加|追加|再加|再做|只做|只要|一个|每个规格|规格|双装|双|全是|都是)/g, '')
+        .trim();
+
+    if (!normalizedToken) return null;
+
+    for (const entry of aliasEntries) {
+        if (entry.aliases.some(alias => alias && (normalizedToken === alias || normalizedToken.endsWith(alias) || normalizedToken.startsWith(alias)))) {
+            return entry.actual;
+        }
+    }
+
+    for (const entry of aliasEntries) {
+        if (entry.aliases.some(alias => alias && normalizedToken.includes(alias))) {
+            return entry.actual;
+        }
+    }
+
+    return null;
+}
+
+function parseRequestedExplicitCombos(userInput: string, availableColors: string[]): string[][] {
+    const text = String(userInput || '').trim();
+    if (!text) return [];
+
+    const aliasEntries = buildColorAliasEntries(availableColors);
+    if (aliasEntries.length === 0) return [];
+
+    const combos: string[][] = [];
+    const clauses = text
+        .replace(/[“”"'`]/g, '')
+        .split(/[；;。！？!\n]/)
+        .map(item => item.trim())
+        .filter(Boolean);
+
+    for (const clause of clauses) {
+        if (!/[+＋、，,\/／|｜]/.test(clause)) continue;
+
+        const tokens = clause
+            .split(/[+＋、，,\/／|｜]/)
+            .map(item => item.trim())
+            .filter(Boolean);
+
+        const resolved = tokens
+            .map(token => resolveColorToken(token, aliasEntries))
+            .filter((color): color is string => !!color);
+
+        if (resolved.length >= 1) {
+            combos.push(resolved);
+        }
+    }
+
+    return combos;
+}
+
+function resolveRequestedTargetSizes(userInput: string, availableSizes: number[]): number[] {
+    const text = String(userInput || '');
+    const matches = Array.from(text.matchAll(/(\d{1,2})\s*双/g))
+        .map(match => parseInt(match[1], 10))
+        .filter(size => isReasonableSkuSize(size));
+
+    const unique = Array.from(new Set(matches));
+    if (unique.length === 0) return [];
+
+    if (!Array.isArray(availableSizes) || availableSizes.length === 0) {
+        return unique;
+    }
+
+    return unique.filter(size => availableSizes.includes(size));
+}
+
+function resolveRequestedMonochromeColors(userInput: string, availableColors: string[]): string[] {
+    const text = String(userInput || '').trim();
+    if (!text) return [];
+
+    const asksExtraCombo = /(增加|新增|再加|再增加|额外)/.test(text)
+        && /(组合|搭配|款式)/.test(text);
+
+    if (!asksExtraCombo) return [];
+
+    const resolved: string[] = [];
+    const pushResolved = (color?: string | null) => {
+        if (!color) return;
+        if (!resolved.includes(color)) resolved.push(color);
+    };
+
+    for (const color of availableColors) {
+        const normalized = normalizeColorKey(color);
+        if (!normalized) continue;
+
+        const aliases = Array.from(new Set([
+            color,
+            color.replace(/色$/u, ''),
+            normalized,
+            normalized.replace(/色$/u, '')
+        ].filter(Boolean)));
+
+        const matched = aliases.some(alias => {
+            const pattern = new RegExp(`(?:全|纯)?${escapeRegExp(alias)}(?:色)?`);
+            return pattern.test(text);
+        });
+
+        if (matched) {
+            pushResolved(color);
+        }
+    }
+
+    if (resolved.length === 0 && /(全白|纯白|白色\+白色|全是白色|都是白色)/.test(text)) {
+        pushResolved(availableColors.find(color => /白/.test(color)));
+    }
+
+    return resolved;
+}
+
+function appendRequestedExtraCombos(
+    combosBySize: Record<number, string[][]>,
+    comboSizes: number[],
+    requestedMonochromeColors: string[]
+): { added: Array<{ size: number; combo: string[] }>; skipped: string[] } {
+    const added: Array<{ size: number; combo: string[] }> = [];
+    const skipped: string[] = [];
+
+    for (const size of comboSizes) {
+        if (!combosBySize[size]) combosBySize[size] = [];
+        const existing = new Set(combosBySize[size].map(buildComboIdentity));
+
+        for (const color of requestedMonochromeColors) {
+            const combo = Array(size).fill(color);
+            const comboKey = buildComboIdentity(combo);
+            if (existing.has(comboKey)) {
+                skipped.push(`${size}双=${combo.join('+')}`);
+                continue;
+            }
+
+            combosBySize[size].push(combo);
+            existing.add(comboKey);
+            added.push({ size, combo });
+        }
+    }
+
+    return { added, skipped };
+}
+
+function appendRequestedSpecificCombos(
+    combosBySize: Record<number, string[][]>,
+    requestedCombos: string[][]
+): { added: Array<{ size: number; combo: string[] }>; skipped: string[] } {
+    const added: Array<{ size: number; combo: string[] }> = [];
+    const skipped: string[] = [];
+
+    for (const combo of requestedCombos) {
+        const size = combo.length;
+        if (!isReasonableSkuSize(size)) continue;
+
+        if (!combosBySize[size]) combosBySize[size] = [];
+        const existing = new Set(combosBySize[size].map(buildComboIdentity));
+        const comboKey = buildComboIdentity(combo);
+
+        if (existing.has(comboKey)) {
+            skipped.push(`${size}双=${combo.join('+')}`);
+            continue;
+        }
+
+        combosBySize[size].push(combo);
+        existing.add(comboKey);
+        added.push({ size, combo });
+    }
+
+    return { added, skipped };
+}
+
+function parseJsonObject(text: string): any | null {
+    const raw = String(text || '').trim();
+    if (!raw) return null;
+
+    try {
+        return JSON.parse(raw);
+    } catch {
+        const fenced = raw.match(/```json\s*([\s\S]*?)```/i);
+        const candidate = fenced ? fenced[1].trim() : raw;
+        try {
+            return JSON.parse(candidate);
+        } catch {
+            const start = candidate.indexOf('{');
+            const end = candidate.lastIndexOf('}');
+            if (start >= 0 && end > start) {
+                try {
+                    return JSON.parse(candidate.slice(start, end + 1));
+                } catch {
+                    return null;
+                }
+            }
+            return null;
+        }
+    }
+}
+
+async function resolveSkuPlanningModelId(): Promise<string> {
+    try {
+        const state = useAppStore.getState() as any;
+        const prefs = state?.modelPreferences;
+        const mode = String(prefs?.mode || '').toLowerCase();
+        if (mode === 'local') {
+            const localModel = String(prefs?.preferredLocalModels?.textOptimize || '').trim();
+            if (localModel) return localModel;
+        }
+        const cloudModel = String(prefs?.preferredCloudModels?.textOptimize || '').trim();
+        if (cloudModel) return cloudModel;
+    } catch {}
+    return 'google-gemini-3-flash';
+}
+
+function normalizePlannedCombos(rawCombos: unknown, availableColors: string[]): string[][] {
+    if (!Array.isArray(rawCombos)) return [];
+    const aliasEntries = buildColorAliasEntries(availableColors);
+
+    return rawCombos
+        .map((combo) => {
+            if (!Array.isArray(combo)) return null;
+            const resolved = combo
+                .map(token => resolveColorToken(String(token || ''), aliasEntries))
+                .filter((color): color is string => !!color);
+            return resolved.length >= 1 ? resolved : null;
+        })
+        .filter((combo): combo is string[] => Array.isArray(combo) && combo.length >= 1);
+}
+
+function normalizePlannedMonochromeColors(rawColors: unknown, availableColors: string[]): string[] {
+    if (!Array.isArray(rawColors)) return [];
+    const aliasEntries = buildColorAliasEntries(availableColors);
+    const resolved: string[] = [];
+
+    for (const rawColor of rawColors) {
+        const actual = resolveColorToken(String(rawColor || ''), aliasEntries);
+        if (actual && !resolved.includes(actual)) {
+            resolved.push(actual);
+        }
+    }
+
+    return resolved;
+}
+
+function normalizePlannedTargetSizes(rawSizes: unknown, availableSizes: number[]): number[] {
+    if (!Array.isArray(rawSizes)) return [];
+    const normalized = rawSizes
+        .map(value => Number(value))
+        .filter(value => isReasonableSkuSize(value));
+
+    const unique = Array.from(new Set(normalized));
+    if (!availableSizes.length) return unique;
+    return unique.filter(size => availableSizes.includes(size));
+}
+
+async function planSkuIntentWithModel(input: {
+    userIntent: string;
+    availableColors: string[];
+    detectedSizes: number[];
+    defaultCountPerSize: number;
+    defaultGenerateNotes: boolean;
+}): Promise<SkuIntentPlan | null> {
+    const userIntent = String(input.userIntent || '').trim();
+    if (!userIntent || !(window as any)?.designEcho?.chat) return null;
+
+    const modelId = await resolveSkuPlanningModelId();
+    const prompt = [
+        '你是 DesignEcho 的 SKU 任务规划器。',
+        '你要把用户的自然语言需求转换成 SKU 执行计划，不要直接写解释，只返回 JSON。',
+        '',
+        '规则：',
+        '1. mode 只能是 default、specified-only、append。',
+        '2. default 表示按默认规格批量生成。',
+        '3. specified-only 表示只做用户明确指定的组合，不做整批默认组合。',
+        '4. append 表示先按默认规格生成，再追加用户指定组合。',
+        '5. specifiedCombos 必须是颜色数组列表，例如 [["白色"],["白色","黑色"],["白色","白色","白色"]]。',
+        '6. appendMonochromeColors 只在用户要求给每个规格追加单色组合时填写，例如 ["白色"]。',
+        '7. targetSizes 仅在用户明确限制规格时填写，例如 [4]；如果用户说“每个规格”，就留空数组。',
+        `8. 默认每规格组合数是 ${input.defaultCountPerSize}，默认 generateNotes 是 ${input.defaultGenerateNotes ? 'true' : 'false'}。`,
+        '9. 只能使用给定的颜色名和规格，不要发明不存在的颜色。',
+        '',
+        '返回 JSON 结构：',
+        '{',
+        '  "mode": "default" | "specified-only" | "append",',
+        '  "countPerSize": number,',
+        '  "generateNotes": boolean,',
+        '  "specifiedCombos": string[][],',
+        '  "appendMonochromeColors": string[],',
+        '  "targetSizes": number[],',
+        '  "reasoning": "一句简短中文，说明你理解到的用户要求"',
+        '}',
+        '',
+        `可用颜色: ${input.availableColors.join(' / ') || '无'}`,
+        `已检测规格: ${input.detectedSizes.join(' / ') || '无'}`,
+        `用户需求: ${userIntent}`
+    ].join('\n');
+
+    try {
+        const response = await (window as any).designEcho.chat(modelId, [
+            { role: 'system', content: '你是 SKU 任务规划器，只输出严格 JSON。' },
+            { role: 'user', content: prompt }
+        ], { temperature: 0.1, maxTokens: 500 });
+
+        const parsed = parseJsonObject(String(response?.text || ''));
+        if (!parsed || typeof parsed !== 'object') return null;
+
+        const mode = String((parsed as any).mode || '').trim();
+        if (!['default', 'specified-only', 'append'].includes(mode)) return null;
+
+        const countPerSize = Number((parsed as any).countPerSize);
+        const generateNotes = typeof (parsed as any).generateNotes === 'boolean'
+            ? (parsed as any).generateNotes
+            : undefined;
+
+        return {
+            mode: mode as SkuIntentPlan['mode'],
+            countPerSize: Number.isFinite(countPerSize) && countPerSize > 0 ? Math.max(1, Math.floor(countPerSize)) : undefined,
+            generateNotes,
+            specifiedCombos: normalizePlannedCombos((parsed as any).specifiedCombos, input.availableColors),
+            appendMonochromeColors: normalizePlannedMonochromeColors((parsed as any).appendMonochromeColors, input.availableColors),
+            targetSizes: normalizePlannedTargetSizes((parsed as any).targetSizes, input.detectedSizes),
+            reasoning: String((parsed as any).reasoning || '').trim()
+        };
+    } catch {
+        return null;
+    }
+}
+
+function summarizeTemplateAvailability(options: {
+    templateDir?: string;
+    projectTemplates: TemplateLibraryItem[];
+    localTemplates: TemplateLibraryItem[];
+    localSpecs: number[];
+}): string {
+    const lines: string[] = [];
+    const templateDir = String(options.templateDir || '').trim();
+    const projectCount = options.projectTemplates.length;
+    const localCount = options.localTemplates.length;
+    const projectSpecs = collectSizesFromLibrary(options.projectTemplates);
+    const localSpecs = options.localSpecs.length > 0
+        ? options.localSpecs
+        : collectSizesFromLibrary(options.localTemplates);
+
+    if (templateDir) {
+        if (projectCount > 0) {
+            lines.push(`项目模板目录「${templateDir}」已识别 ${projectCount} 个模板文件`);
+            if (projectSpecs.length > 0) {
+                lines.push(`项目模板目录可用规格：${projectSpecs.join(' / ')}双`);
+            }
+        } else {
+            lines.push(`项目模板目录「${templateDir}」递归扫描结果为空（未发现 PSD/PSB/TIF/TIFF）`);
+        }
+    }
+
+    if (localCount > 0) {
+        lines.push(`本地模板库可用模板：${localCount} 个`);
+        if (localSpecs.length > 0) {
+            lines.push(`本地模板库可用规格：${localSpecs.join(' / ')}双`);
+        }
+    } else {
+        lines.push('本地模板库当前也没有可用 SKU 模板');
+    }
+
+    lines.push('支持的模板命名示例：2双装、3双装、4双装、2双模板');
+    return lines.map(line => `- ${line}`).join('\n');
+}
+
 function normalizeTemplateCandidate(item: any): TemplateLibraryItem | null {
     if (!item || typeof item.filePath !== 'string' || !TEMPLATE_FILE_PATTERN.test(item.filePath)) {
         return null;
@@ -188,7 +747,7 @@ function normalizeTemplateCandidate(item: any): TemplateLibraryItem | null {
         metadata: item.metadata && typeof item.metadata === 'object'
             ? { comboSize: typeof item.metadata.comboSize === 'number' ? item.metadata.comboSize : undefined }
             : undefined,
-        source: item.source === 'knowledge-library' ? 'knowledge-library' : 'local-library',
+        source: item.source === 'template-library' ? 'template-library' : 'local-library',
         sourcePriority: typeof item.sourcePriority === 'number' ? item.sourcePriority : 0
     };
 }
@@ -257,14 +816,65 @@ async function scanProjectTemplateFiles(templateDir?: string): Promise<TemplateL
     }
 }
 
+function isSkuSourceDesignFile(file: any, skuKeyword: string): file is ProjectSkuSourceFile {
+    const filePath = String(file?.path || '').trim();
+    const fileName = String(file?.name || filePath.split(/[/\\]/).pop() || '').trim();
+    if (!filePath || !fileName || !/\.(psd|psb)$/i.test(fileName)) return false;
+
+    const keyword = normalizeNameWithoutExt(skuKeyword || 'SKU');
+    const baseName = normalizeNameWithoutExt(fileName);
+    return Boolean(keyword && (baseName === keyword || baseName.includes(keyword)));
+}
+
+function scoreProjectSkuSourceFile(file: ProjectSkuSourceFile, skuKeyword: string, projectPath?: string): number {
+    const keyword = normalizeNameWithoutExt(skuKeyword || 'SKU');
+    const fileName = String(file.name || file.path.split(/[/\\]/).pop() || '');
+    const baseName = normalizeNameWithoutExt(fileName);
+    const normalizedPath = normalizePathForCompare(file.path);
+    const normalizedRelative = normalizePathForCompare(file.relativePath || '');
+
+    let score = 0;
+    if (baseName === keyword) score += 100;
+    else if (baseName.startsWith(keyword)) score += 70;
+    else if (baseName.includes(keyword)) score += 45;
+
+    if (projectPath && isPathInsideDirectory(file.path, projectPath)) score += 25;
+    if (/(^|\\)psd(\\|$)/i.test(normalizedPath) || /(^|\\)psd(\\|$)/i.test(normalizedRelative)) score += 12;
+    if (/\.psd$/i.test(fileName)) score += 6;
+    if (/\.psb$/i.test(fileName)) score += 5;
+    return score;
+}
+
+function pickBestProjectSkuSourceFile(
+    files: any[],
+    skuKeyword: string,
+    projectPath?: string
+): ProjectSkuSourceFile | null {
+    const candidates = (Array.isArray(files) ? files : [])
+        .filter((file) => isSkuSourceDesignFile(file, skuKeyword))
+        .map((file) => ({
+            name: String(file.name || file.path.split(/[/\\]/).pop() || ''),
+            path: String(file.path || ''),
+            relativePath: typeof file.relativePath === 'string' ? file.relativePath : undefined,
+            score: scoreProjectSkuSourceFile(file, skuKeyword, projectPath)
+        }))
+        .sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            return a.name.localeCompare(b.name, 'zh-CN');
+        });
+
+    if (candidates.length === 0) return null;
+    const { score: _score, ...candidate } = candidates[0];
+    return candidate;
+}
+
+const SKU_CONTRAST_PAIR_SCORING_ENABLED = false;
+
 /**
- * 生成指定大小的颜色组合（含色彩和谐度评分）
- * @param colorFamilies 每个颜色对应的色系（与 colors 等长），用于和谐度评分
+ * 生成指定大小的颜色组合（含组合模式评分）
  */
 function generateCombinationsOfSize(
-    colors: string[], size: number, count: number,
-    colorFamilies?: ColorFamily[],
-    brandPreferredColors?: string[]
+    colors: string[], size: number, count: number
 ): string[][] {
     const totalColors = colors.length;
     if (totalColors === 0 || size <= 0 || count <= 0) return [];
@@ -410,7 +1020,9 @@ function generateCombinationsOfSize(
     };
 
     const candidates = buildPatternCandidates();
-    const contrastPairs = buildContrastPairs();
+    const contrastPairs = SKU_CONTRAST_PAIR_SCORING_ENABLED
+        ? buildContrastPairs()
+        : new Set<string>();
 
     const usage = new Array(totalColors).fill(0);
     const selected: number[][] = [];
@@ -449,49 +1061,7 @@ function generateCombinationsOfSize(
         if (pairs >= 2) patternBonus += 1.8;
         else if (pairs === 1) patternBonus += 0.9;
 
-        // 色彩和谐度评分：基于色系搭配计算
-        let harmonyBonus = 0;
-        if (colorFamilies && colorFamilies.length === totalColors) {
-            const activeIdxs = counts.map((c, i) => (c > 0 ? i : -1)).filter(i => i >= 0);
-            if (activeIdxs.length >= 2) {
-                let pairCount = 0;
-                let totalHarmony = 0;
-                for (let p = 0; p < activeIdxs.length; p++) {
-                    for (let q = p + 1; q < activeIdxs.length; q++) {
-                        totalHarmony += getHarmonyScore(
-                            colorFamilies[activeIdxs[p]],
-                            colorFamilies[activeIdxs[q]]
-                        );
-                        pairCount++;
-                    }
-                }
-                harmonyBonus = pairCount > 0 ? (totalHarmony / pairCount) * 1.5 : 0;
-            }
-        }
-
-        let brandBonus = 0;
-        if (brandPreferredColors && brandPreferredColors.length > 0) {
-            const preferred = brandPreferredColors
-                .map((c: string) => String(c || '').trim().toLowerCase())
-                .filter(Boolean);
-            if (preferred.length > 0) {
-                let matchedDistinct = 0;
-                let matchedWeighted = 0;
-                for (let i = 0; i < totalColors; i++) {
-                    if (counts[i] <= 0) continue;
-                    const colorName = String(colors[i] || '').toLowerCase();
-                    const hit = preferred.some((p: string) => colorName.includes(p) || p.includes(colorName));
-                    if (hit) {
-                        matchedDistinct += 1;
-                        matchedWeighted += counts[i];
-                    }
-                }
-                brandBonus = matchedDistinct * 0.8 + matchedWeighted * 0.35;
-                if (distinct > 0 && matchedDistinct === 0) brandBonus -= 0.6;
-            }
-        }
-
-        return balanceScore + missingBonus + contrastBonus + patternBonus + harmonyBonus + brandBonus;
+        return balanceScore + missingBonus + contrastBonus + patternBonus;
     };
 
     const pickBest = () => {
@@ -559,19 +1129,24 @@ export const skuBatchExecutor: SkillExecutor = {
     skillId: 'sku-batch',
     
     async execute({ params, callbacks, signal, context: _context }: SkillExecuteParams): Promise<AgentResult> {
+        const emitStep = (
+            kind: Parameters<typeof emitSkillStep>[1]['kind'],
+            title: string,
+            detail?: string,
+            status: Parameters<typeof emitSkillStep>[1]['status'] = 'running',
+            percent?: number
+        ) => emitSkillStep(callbacks, { kind, title, detail, status, percent });
+
+        emitStep('observation', '准备执行 SKU 批量生成', '读取项目上下文、模板候选和 Photoshop 当前文档。', 'running', 0.03);
         callbacks?.onMessage?.('📋 正在分析项目结构...');
 
-        // 并行加载配色知识、项目上下文、模板候选
-        const [harmonyCtx, projectContext, skuTemplateCandidates, localLibrarySpecs] = await Promise.all([
-            loadColorHarmonyContext(),
+        // 并行加载项目上下文与模板候选
+        const [projectContext, skuTemplateCandidates, localLibrarySpecs] = await Promise.all([
             getProjectContext(),
             loadSkuTemplateLibrary(),
             loadLocalLibrarySpecs()
         ]);
         const localSkuTemplates = skuTemplateCandidates.filter(item => item.source === 'local-library');
-        if (harmonyCtx.loaded) {
-            callbacks?.onMessage?.(`🎨 已加载配色知识 (${harmonyCtx.colorKnowledge.length} 条)`);
-        }
         if (localSkuTemplates.length > 0) {
             callbacks?.onMessage?.(`📚 已加载本地模板库 (${localSkuTemplates.length} 个 SKU 模板)`);
         }
@@ -583,8 +1158,25 @@ export const skuBatchExecutor: SkillExecutor = {
         const templateDir = projectContext?.projectPath ? `${projectContext.projectPath}\\模板文件` : undefined;
         const outputDir = projectContext?.projectPath ? `${projectContext.projectPath}\\SKU` : undefined;
         const projectSkuTemplates = await scanProjectTemplateFiles(templateDir);
+        const allowLibraryTemplateFallback = shouldAllowLibraryTemplateFallback(
+            projectContext?.projectPath,
+            params.allowLibraryTemplateFallback,
+            projectSkuTemplates.length
+        );
         if (projectSkuTemplates.length > 0) {
             callbacks?.onMessage?.(`📁 项目模板目录识别到 ${projectSkuTemplates.length} 个模板文件`);
+        } else if (projectContext?.projectPath && localSkuTemplates.length > 0) {
+            callbacks?.onMessage?.('📚 当前项目模板目录未识别到 SKU 模板，已允许回退到本地模板库。');
+        }
+        emitStep(
+            'verification',
+            'SKU 项目与模板上下文读取完成',
+            `项目模板 ${projectSkuTemplates.length} 个，本地模板 ${localSkuTemplates.length} 个，本地规格 ${localLibrarySpecs.length} 个。`,
+            'success',
+            0.08
+        );
+        if (!allowLibraryTemplateFallback && projectContext?.projectPath) {
+            callbacks?.onMessage?.('🧭 当前 SKU 任务已锁定在当前项目模板目录，不会跨项目借用模板。');
         }
         
         // 从 AI 决策中获取参数
@@ -616,16 +1208,51 @@ export const skuBatchExecutor: SkillExecutor = {
                 };
             }
         };
-        
+
+        const isModalStateError = (result: any): boolean =>
+            /host is in a modal state/i.test(String(result?.error || result?.message || ''));
+
+        const executeSkuLayoutWithModalRetry = async (
+            toolParams: Record<string, any>,
+            stage: string,
+            timeoutMs = 5 * 60 * 1000
+        ): Promise<any> => {
+            let result = await safeToolCall('skuLayout', toolParams, timeoutMs, stage);
+            if (!result?.success && isModalStateError(result)) {
+                emitStep('warning', 'SKU 工具遇到 Photoshop modal state', '等待 Photoshop 释放状态后重试一次。', 'running', 0.68);
+                await sleep(1800);
+                try {
+                    await refreshDocuments();
+                } catch {}
+                result = await safeToolCall('skuLayout', toolParams, timeoutMs, `${stage}-modal-retry`);
+                if (result?.success) {
+                    result = {
+                        ...result,
+                        retriedAfterModalState: true
+                    };
+                }
+            }
+            return result;
+        };
+
         // 1. 获取文档列表
         callbacks?.onToolStart?.('listDocuments');
-        let docsResult = await executeToolCall('listDocuments', {});
+        let docsResult = await executeToolCall('listDocuments', { includeDetails: true });
         callbacks?.onToolComplete?.('listDocuments', docsResult);
 
         const refreshDocuments = async () => {
-            docsResult = await executeToolCall('listDocuments', {});
+            docsResult = await executeToolCall('listDocuments', { includeDetails: true });
             return docsResult;
         };
+
+        if (!docsResult?.success) {
+            emitStep('warning', 'SKU 文档列表读取失败', String(docsResult?.error || 'listDocuments failed'), 'error', 0.12);
+            return {
+                success: false,
+                message: `⚠️ **无法获取 Photoshop 文档列表**\n\n当前无法从 UXP 读取已打开文档，因此不能继续执行 SKU 批量任务。\n\n**工具错误：** ${docsResult?.error || 'listDocuments failed'}`,
+                error: docsResult?.error || 'Failed to list Photoshop documents'
+            };
+        }
 
         const matchLibraryOpenedDoc = (template: TemplateLibraryItem, size: number, noteMode: boolean): any | null => {
             const docs = docsResult?.documents || [];
@@ -633,6 +1260,12 @@ export const skuBatchExecutor: SkillExecutor = {
             const displayName = normalizeNameWithoutExt(template.name || '');
 
             return docs.find((d: any) => {
+                if (template.source === 'project-folder' && !isDocumentFromTemplateDirectory(d, templateDir)) {
+                    return false;
+                }
+                if (isExactTemplateDocument(d, template.filePath)) {
+                    return true;
+                }
                 const name = normalizeNameWithoutExt(d?.name || '');
                 if (!name) return false;
                 if (name.includes(skuKeyword.toLowerCase())) return false;
@@ -647,6 +1280,35 @@ export const skuBatchExecutor: SkillExecutor = {
                 const inferredSize = extractComboSize(name);
                 if (inferredSize === size && name.includes('模板')) return true;
                 return false;
+            }) || null;
+        };
+
+        const findOpenedTemplateDocument = (options: {
+            size: number;
+            noteMode: boolean;
+            templateKeyword?: string;
+        }): any | null => {
+            const docs = docsResult?.documents || [];
+            const sizeKeyword = `${options.size}双`;
+            const keyword = String(options.templateKeyword || '').trim().toLowerCase();
+
+            return docs.find((d: any) => {
+                if (!d?.name) return false;
+                if (!isDocumentFromTemplateDirectory(d, templateDir)) return false;
+
+                const name = String(d.name || '').toLowerCase();
+                if (name.includes(skuKeyword.toLowerCase())) return false;
+
+                const hasNote = name.includes(NOTE_TEMPLATE_KEYWORD);
+                if (options.noteMode !== hasNote) return false;
+
+                if (keyword && !name.includes(keyword)) return false;
+
+                if (options.noteMode) {
+                    return name.includes(sizeKeyword);
+                }
+
+                return name.includes(sizeKeyword) && (name.includes(`${options.size}双装`) || name.includes(`${options.size}双模板`) || name.includes('模板'));
             }) || null;
         };
 
@@ -682,6 +1344,9 @@ export const skuBatchExecutor: SkillExecutor = {
         };
 
         const tryOpenLibraryTemplate = async (size: number, noteMode: boolean): Promise<{ success: boolean; templateDoc?: any; template?: TemplateLibraryItem; error?: string }> => {
+            if (!allowLibraryTemplateFallback) {
+                return { success: false, error: '当前任务已锁定当前项目模板目录，未启用本地模板库回退' };
+            }
             let candidate: TemplateLibraryItem | null = null;
 
             // 优先使用主进程模板服务的匹配逻辑，保证评分规则一致
@@ -729,99 +1394,154 @@ export const skuBatchExecutor: SkillExecutor = {
 
             return { success: false, error: `已打开本地模板库文件但未在文档列表中识别到：${candidate.name}` };
         };
-        
-        // 2. 查找 SKU 文件
-        let skuDoc = docsResult?.documents?.find((d: any) => 
-            d.name.toLowerCase().includes(skuKeyword.toLowerCase())
-        );
-        
-        // 如果没有 SKU 文件打开，尝试从项目目录查找并打开
-        if (!skuDoc) {
-            callbacks?.onMessage?.(`📂 未找到已打开的「${skuKeyword}」文件，正在从项目目录查找...`);
-            
-            if (projectContext?.projectPath) {
-                await window.designEcho?.setProjectRoot?.(projectContext.projectPath);
-                
+
+        const findOpenedSkuDocument = (options: {
+            expectedPath?: string;
+            allowPathlessProjectFallback?: boolean;
+        } = {}): any | null => {
+            const docs = docsResult?.documents || [];
+            return docs.find((d: any) => matchesSkuDocument(d, skuKeyword, {
+                projectPath: projectContext?.projectPath,
+                expectedPath: options.expectedPath,
+                allowPathlessProjectFallback: options.allowPathlessProjectFallback
+            })) || null;
+        };
+
+        const waitForSkuDocument = async (expectedPath?: string): Promise<any | null> => {
+            for (let i = 0; i < 10; i++) {
+                await sleep(700);
+                await refreshDocuments();
+                const exact = findOpenedSkuDocument({ expectedPath });
+                if (exact) return exact;
+            }
+
+            if (expectedPath) {
+                await refreshDocuments();
+                return findOpenedSkuDocument({
+                    expectedPath,
+                    allowPathlessProjectFallback: true
+                });
+            }
+
+            return null;
+        };
+
+        const openProjectSkuSourceFile = async (candidate: ProjectSkuSourceFile): Promise<any | null> => {
+            callbacks?.onMessage?.(`📂 使用当前项目 SKU 素材文件：${candidate.name}`);
+            emitStep(
+                'tool_planned',
+                '准备打开项目 SKU 素材',
+                `从当前项目选择：${candidate.path}`,
+                'running',
+                0.14
+            );
+
+            try {
+                const openResult = await (window as any).designEcho?.openPath?.(candidate.path);
+                if (openResult && openResult !== '' && openResult !== true) {
+                    console.warn('[SKU-Batch] 打开项目 SKU 素材失败:', openResult);
+                    return null;
+                }
+            } catch (error) {
+                console.warn('[SKU-Batch] 打开项目 SKU 素材异常:', error);
+                return null;
+            }
+
+            return await waitForSkuDocument(candidate.path);
+        };
+
+        const resolveProjectSkuSourceDocument = async (): Promise<{
+            skuDoc: any | null;
+            projectSkuSourceFile?: ProjectSkuSourceFile;
+            error?: string;
+        }> => {
+            const projectPath = projectContext?.projectPath;
+
+            if (projectPath) {
+                await window.designEcho?.setProjectRoot?.(projectPath);
+
                 callbacks?.onToolStart?.('searchProjectResources');
-                const searchResult = await safeToolCall('searchProjectResources', { 
-                    query: skuKeyword, 
+                const searchResult = await safeToolCall('searchProjectResources', {
+                    query: skuKeyword,
                     type: 'design',
-                    directory: projectContext.projectPath
-                }, 12000, 'search-sku-source-file');
+                    directory: projectPath,
+                    limit: 50
+                }, 12000, 'search-project-sku-source-file');
                 callbacks?.onToolComplete?.('searchProjectResources', searchResult);
-                
-                console.log('[SKU-Batch] 搜索结果:', searchResult);
-                
-                const skuFiles = searchResult?.results?.filter((f: any) => 
-                    f.name.toLowerCase().includes(skuKeyword.toLowerCase()) && 
-                    /\.(psd|psb)$/i.test(f.name)
-                ) || [];
-                
-                if (skuFiles.length > 0) {
-                    callbacks?.onMessage?.(`📂 找到文件: ${skuFiles[0].name}，正在打开...`);
-                    callbacks?.onToolStart?.('openProjectFile');
-                    const openResult = await safeToolCall('openProjectFile', { 
-                        query: skuKeyword 
-                    }, 20000, 'open-sku-source-file');
-                    callbacks?.onToolComplete?.('openProjectFile', openResult);
-                    
-                    if (openResult?.success) {
-                        await sleep(1000);
-                        await refreshDocuments();
-                        skuDoc = docsResult?.documents?.find((d: any) => 
-                            d.name.toLowerCase().includes(skuKeyword.toLowerCase())
-                        );
+
+                const projectSkuSourceFile = pickBestProjectSkuSourceFile(
+                    searchResult?.results || [],
+                    skuKeyword,
+                    projectPath
+                );
+
+                if (projectSkuSourceFile) {
+                    const openedProjectDoc = findOpenedSkuDocument({
+                        expectedPath: projectSkuSourceFile.path
+                    });
+                    if (openedProjectDoc) {
+                        callbacks?.onMessage?.(`📂 已复用当前项目 SKU 素材文档：${openedProjectDoc.name}`);
+                        return { skuDoc: openedProjectDoc, projectSkuSourceFile };
                     }
-                }
-                
-                // 查找模板
-                if (templateKeyword) {
-                    const hasTemplate = docsResult?.documents?.some((d: any) => 
-                        d.name.toLowerCase().includes(templateKeyword.toLowerCase())
-                    );
-                    
-                    if (!hasTemplate) {
-                        callbacks?.onMessage?.(`📂 正在查找「${templateKeyword}」模板...`);
-                        const templateResult = await safeToolCall('openProjectFile', {
-                            query: templateKeyword,
-                            type: 'all'
-                        }, 20000, 'open-template-by-keyword');
-                        
-                        if (templateResult?.success) {
-                            await sleep(1000);
-                            await refreshDocuments();
-                        } else if (localSkuTemplates.length > 0) {
-                            const keywordCandidate = localSkuTemplates.find((template) => {
-                                const name = normalizeNameWithoutExt(template.name || template.filePath);
-                                return name.includes(templateKeyword.toLowerCase()) && !name.includes(NOTE_TEMPLATE_KEYWORD);
-                            });
-                            if (keywordCandidate) {
-                                callbacks?.onMessage?.(`📚 项目目录未命中，尝试打开本地模板库：${keywordCandidate.name}`);
-                                try {
-                                    await window.designEcho?.openPath?.(keywordCandidate.filePath);
-                                    await sleep(900);
-                                    await refreshDocuments();
-                                } catch (error) {
-                                    console.warn('[SKU-Batch] 本地模板库关键字打开失败:', error);
-                                }
-                            }
-                        }
+
+                    const openedDoc = await openProjectSkuSourceFile(projectSkuSourceFile);
+                    if (openedDoc) {
+                        return { skuDoc: openedDoc, projectSkuSourceFile };
                     }
+
+                    return {
+                        skuDoc: null,
+                        projectSkuSourceFile,
+                        error: `已找到当前项目 SKU 素材「${projectSkuSourceFile.name}」，但打开后无法在 Photoshop 文档列表中确认该文件。`
+                    };
                 }
+
+                const openedProjectDoc = findOpenedSkuDocument();
+                if (openedProjectDoc) {
+                    callbacks?.onMessage?.(`📂 当前项目已有打开的 SKU 素材文档：${openedProjectDoc.name}`);
+                    return { skuDoc: openedProjectDoc };
+                }
+
+                const pathlessFallback = findOpenedSkuDocument({ allowPathlessProjectFallback: true });
+                if (pathlessFallback) {
+                    callbacks?.onMessage?.(`⚠️ 未在当前项目目录找到 SKU PSD/PSB，临时使用已打开文档：${pathlessFallback.name}`);
+                    return { skuDoc: pathlessFallback };
+                }
+
+                return { skuDoc: null, error: searchResult?.error ? String(searchResult.error) : undefined };
             }
-            
-            if (!skuDoc) {
-                return {
-                    success: false,
-                    message: `📂 **未找到「${skuKeyword}」素材文件**\n\n请确保：\n1. 项目目录中包含 SKU 素材文件\n2. 或者在 Photoshop 中打开该文件\n\n**当前打开的文档：**\n` + 
-                        (docsResult?.documents?.map((d: any) => `- ${d.name}`).join('\n') || '无'),
-                    error: 'SKU document not found'
-                };
+
+            const openedDoc = (docsResult?.documents || []).find((d: any) => matchesSkuDocument(d, skuKeyword));
+            if (openedDoc) {
+                callbacks?.onMessage?.(`📂 未加载项目，使用已打开的 SKU 素材文档：${openedDoc.name}`);
             }
+            return { skuDoc: openedDoc || null };
+        };
+
+        // 2. 查找 SKU 文件
+        const skuSourceResolution = await resolveProjectSkuSourceDocument();
+        let skuDoc = skuSourceResolution.skuDoc;
+
+        if (!skuDoc) {
+            emitStep(
+                'warning',
+                'SKU 素材文档未找到',
+                `未找到当前项目中匹配「${skuKeyword}」的 PSD/PSB 文档。${skuSourceResolution.error ? ` ${skuSourceResolution.error}` : ''}`,
+                'error',
+                0.18
+            );
+            return {
+                success: false,
+                message: `📂 **未找到当前项目的「${skuKeyword}」素材文件**\n\n请确保当前项目目录中包含文件名带「${skuKeyword}」的 PSD/PSB 素材文件。为避免串项目，SKU skill 会优先使用当前项目文件，不会直接拿其他项目已打开的 SKU 文档。\n\n**当前打开的文档：**\n` +
+                    (docsResult?.documents?.map((d: any) => `- ${d.name}${d.path ? ` (${d.path})` : ''}`).join('\n') || '无') +
+                    (skuSourceResolution.error ? `\n\n**错误细节：** ${skuSourceResolution.error}` : ''),
+                error: skuSourceResolution.error || 'SKU document not found'
+            };
         }
         
         // 3. 切换到 SKU 文件
         if (skuDoc) {
+            emitStep('verification', 'SKU 素材文档已定位', `当前素材文档：${skuDoc.name}`, 'success', 0.2);
             callbacks?.onToolStart?.('switchDocument');
             await executeToolCall('switchDocument', { documentName: skuDoc.name });
             callbacks?.onToolComplete?.('switchDocument', { success: true });
@@ -833,6 +1553,13 @@ export const skuBatchExecutor: SkillExecutor = {
         callbacks?.onToolComplete?.('skuLayout', layersResult);
         
         if (!layersResult?.success || !layersResult?.data?.layerSets) {
+            emitStep(
+                'warning',
+                'SKU 颜色图层读取失败',
+                String(layersResult?.error || 'skuLayout listLayerSets 未返回有效 layerSets。'),
+                'error',
+                0.24
+            );
             return {
                 success: false,
                 message: '⚠️ **无法读取图层组**\n\n请确保 SKU 素材 PSD 已打开且包含颜色图层组。',
@@ -842,109 +1569,198 @@ export const skuBatchExecutor: SkillExecutor = {
         
         const allLayerNames = layersResult.data.layerSets.map((s: any) => s.name);
         
-        // 过滤非颜色图层
-        const defaultExcludes = ['详情', '模板', '背景', '参考', 'background', 'ref'];
+        // Filter non-color groups, then collapse duplicate color names from the SKU source document.
+        const defaultExcludes = ['参考组', '参考', '背景', '图层组', 'background', 'ref', 'group'];
         const excludeList = excludeColors.length > 0 ? excludeColors : defaultExcludes;
         
-        const validColors = allLayerNames.filter((c: string) => 
+        const rawValidColors = allLayerNames.filter((c: string) =>
             !excludeList.some(ex => c.toLowerCase().includes(ex.toLowerCase()))
         );
+        const { uniqueColors: validColors, duplicateColors } = dedupeColorNames(rawValidColors);
         
-        console.log('[SKU-Batch] 图层组分析:', {
+        console.log('[SKU-Batch] 颜色图层组分析:', {
             all: allLayerNames,
             excludeList,
-            validColors
+            rawValidColors,
+            validColors,
+            duplicateColors
         });
-        
-        const skuDocName = skuDoc?.name || '当前文档';
-        
+        if (duplicateColors.length > 0) {
+            callbacks?.onMessage?.(`检测到重复颜色图层组，已自动去重：${duplicateColors.join(' / ')}`);
+        }
+
+        const skuDocName = skuDoc?.name || '未知文档';
         if (validColors.length === 0) {
-        return {
-            success: false,
+            emitStep(
+                'warning',
+                'SKU 颜色图层为空',
+                `在「${skuDocName}」中没有识别到可用颜色图层组。`,
+                'error',
+                0.26
+            );
+            return {
+                success: false,
                 message: `⚠️ **未找到颜色图层组**\n\n在「${skuDocName}」中发现的图层组：${allLayerNames.join('、')}\n\n请确保 SKU 素材 PSD 中的图层组以颜色命名。`,
                 error: 'No valid color layer groups'
             };
         }
+        emitStep(
+            'verification',
+            'SKU 颜色图层读取完成',
+            `识别到 ${validColors.length} 个可用颜色：${validColors.slice(0, 8).join(' / ')}${validColors.length > 8 ? ' ...' : ''}`,
+            'success',
+            0.28
+        );
         
         // 5. 解析参数与自动推断规格
         let comboSizes = (params.comboSizes as number[]) || [];
         const countPerSize = Math.max(1, Number((params.countPerSize as number) || 5));
         const specifiedColors = params.specifiedColors as string[][] | undefined;
-        const disableNotesByIntent = /不需要自选备注|不要自选备注|仅组合|只要组合|不生成备注/.test(String(_context?.userInput || ''));
-        const generateNotes = (params.generateNotes as boolean | undefined) ?? !disableNotesByIntent;
+        const normalizedUserInput = String(params.userIntent || _context?.userInput || '');
+        const disableNotesByIntent = /不需要自选备注|不要自选备注|无需自选备注|不用自选备注|仅组合|只要组合|不生成(?:自选)?备注|不要备注图/.test(normalizedUserInput);
+        const explicitNotesIntent = /自选备注|备注图/.test(normalizedUserInput);
+        const generateNotes = typeof params.generateNotes === 'boolean'
+            ? params.generateNotes
+            : (explicitNotesIntent && !disableNotesByIntent);
         const onlyNotes = params.onlyNotes as boolean || false;
         
         // 如果未指定规格，尝试自动发现
         if (comboSizes.length === 0 && !params.comboSize) {
             callbacks?.onMessage?.('🔍 正在扫描项目模板与本地模板库以自动推断规格...');
             const foundSpecs = new Set<number>();
-            
-            // 1. 从当前打开的文档中推断
-            docsResult?.documents?.forEach((d: any) => {
-                const match = d.name.match(/(\d+)双/);
-                if (match) foundSpecs.add(parseInt(match[1], 10));
-            });
-            
-            // 2. 从项目模板目录推断（本地文件系统直扫，避免检索漏检）
+
+            // 1. 从项目模板目录推断（本地文件系统直扫，避免检索漏检）
             const projectSpecs = collectSizesFromLibrary(projectSkuTemplates);
             for (const size of projectSpecs) {
-                foundSpecs.add(size);
+                if (isReasonableSkuSize(size)) foundSpecs.add(size);
             }
             if (projectSpecs.length > 0) {
                 callbacks?.onMessage?.(`📁 项目模板目录识别到规格: ${projectSpecs.join(' / ')}双`);
             }
 
-            // 3. 搜索索引结果作为补充
-            if (projectContext?.projectPath) {
-                const templateSearchResult = await safeToolCall('searchProjectResources', {
-                    query: '双',
-                    type: 'all',
-                    directory: templateDir || projectContext.projectPath,
-                    limit: 60
-                }, 12000, 'scan-template-specs');
-
-                if (templateSearchResult?.success && Array.isArray(templateSearchResult.results)) {
-                    templateSearchResult.results.forEach((f: any) => {
-                        const match = f.name.match(/(\d+)双/);
-                        if (match && !f.name.toLowerCase().includes(skuKeyword.toLowerCase())) {
-                            foundSpecs.add(parseInt(match[1], 10));
-                        }
-                    });
-                } else if (templateSearchResult?.timeout) {
-                    callbacks?.onMessage?.('⚠️ 模板目录索引扫描超时，先按已识别规格执行。');
-                } else if (templateSearchResult?.error) {
-                    callbacks?.onMessage?.(`⚠️ 模板目录索引扫描失败：${templateSearchResult.error}`);
-                }
+            // 2. 从当前已打开的模板文档中补充推断，但只接受模板目录中的组合模板
+            const openedTemplateSpecs = collectSizesFromOpenedTemplateDocs(
+                docsResult?.documents || [],
+                skuKeyword,
+                templateDir
+            );
+            for (const size of openedTemplateSpecs) {
+                if (isReasonableSkuSize(size)) foundSpecs.add(size);
+            }
+            if (openedTemplateSpecs.length > 0) {
+                callbacks?.onMessage?.(`🗂️ 已打开模板识别到规格: ${openedTemplateSpecs.join(' / ')}双`);
             }
 
-            // 4. 从本地模板库推断
+            // 3. 从本地模板库推断
             const librarySpecs = localLibrarySpecs.length > 0
                 ? localLibrarySpecs
                 : collectSizesFromLibrary(localSkuTemplates);
             for (const size of librarySpecs) {
-                foundSpecs.add(size);
+                if (isReasonableSkuSize(size)) foundSpecs.add(size);
             }
             if (librarySpecs.length > 0) {
                 callbacks?.onMessage?.(`📚 本地模板库识别到规格: ${librarySpecs.join(' / ')}双`);
             }
             
             if (foundSpecs.size > 0) {
-                comboSizes = Array.from(foundSpecs).sort((a, b) => a - b);
+                comboSizes = Array.from(foundSpecs).filter(isReasonableSkuSize).sort((a, b) => a - b);
                 callbacks?.onMessage?.(`✅ 自动发现可用规格: ${comboSizes.join(' / ')}双`);
             } else {
                 comboSizes = [2]; // 默认降级
                 callbacks?.onMessage?.(`⚠️ 未发现明确的规格模板，将默认尝试 2双规格${templateDir ? `（项目模板目录：${templateDir}）` : ''}`);
             }
+            if (projectSpecs.length > 0 || openedTemplateSpecs.length > 0) {
+                comboSizes = Array.from(new Set([...projectSpecs, ...openedTemplateSpecs]))
+                    .filter(isReasonableSkuSize)
+                    .sort((a, b) => a - b);
+            }
         } else if (comboSizes.length === 0) {
-            comboSizes = [params.comboSize || 2];
+            comboSizes = [params.comboSize || 2].filter(isReasonableSkuSize);
         }
 
-        console.log('[SKU-Batch] 参数解析:', { comboSizes, countPerSize, specifiedColors, generateNotes, onlyNotes });
+        const modelPlan = !onlyNotes
+            ? await planSkuIntentWithModel({
+                userIntent: normalizedUserInput,
+                availableColors: validColors,
+                detectedSizes: comboSizes,
+                defaultCountPerSize: countPerSize,
+                defaultGenerateNotes: generateNotes
+            })
+            : null;
+
+        const requestedMonochromeColors = modelPlan?.appendMonochromeColors?.length
+            ? modelPlan.appendMonochromeColors
+            : resolveRequestedMonochromeColors(normalizedUserInput, validColors);
+        const requestedExplicitCombos = modelPlan?.specifiedCombos?.length
+            ? modelPlan.specifiedCombos
+            : parseRequestedExplicitCombos(normalizedUserInput, validColors);
+
+        const requestedTargetSizes = resolveRequestedTargetSizes(normalizedUserInput, comboSizes);
+        const hasAppendIntent = /(在原有|原有基础|基础上|增加|新增|追加|再加|额外)/.test(normalizedUserInput);
+        const hasSpecifiedOnlyIntent = /(只做|只要|单独做|单独生成|仅做|就做)/.test(normalizedUserInput);
+        const runSpecifiedOnly = !onlyNotes
+            && !specifiedColors
+            && requestedExplicitCombos.length > 0
+            && (
+                modelPlan?.mode === 'specified-only'
+                || (modelPlan?.mode !== 'append' && (hasSpecifiedOnlyIntent || !hasAppendIntent))
+            );
+        const effectiveSpecifiedColors = specifiedColors && specifiedColors.length > 0
+            ? specifiedColors
+            : (runSpecifiedOnly ? requestedExplicitCombos : undefined);
+        const effectiveCountPerSize = modelPlan?.countPerSize && modelPlan.mode === 'default'
+            ? modelPlan.countPerSize
+            : countPerSize;
+        const effectiveGenerateNotes = disableNotesByIntent
+            ? false
+            : (generateNotes || modelPlan?.generateNotes === true);
+        const effectiveRequestedTargetSizes = modelPlan?.targetSizes?.length
+            ? modelPlan.targetSizes
+            : requestedTargetSizes;
+
+        if (runSpecifiedOnly) {
+            comboSizes = Array.from(new Set(requestedExplicitCombos.map(combo => combo.length)))
+                .filter(isReasonableSkuSize)
+                .sort((a, b) => a - b);
+        }
+
+        console.log('[SKU-Batch] 参数解析:', {
+            comboSizes,
+            countPerSize: effectiveCountPerSize,
+            specifiedColors: effectiveSpecifiedColors,
+            generateNotes: effectiveGenerateNotes,
+            onlyNotes,
+            requestedMonochromeColors,
+            requestedExplicitCombos,
+            requestedTargetSizes: effectiveRequestedTargetSizes,
+            runSpecifiedOnly,
+            modelPlan
+        });
         
         if (onlyNotes) {
             callbacks?.onMessage?.(`📊 模式: 只生成自选备注, 规格=${comboSizes.join('/')}双`);
         } else {
-            callbacks?.onMessage?.(`📊 解析参数: 规格=${comboSizes.join('/')}双, 每规格${countPerSize}个组合`);
+            callbacks?.onMessage?.(`📊 解析参数: 规格=${comboSizes.join('/')}双, 每规格${effectiveCountPerSize}个组合`);
+        }
+        emitStep(
+            'verification',
+            'SKU 任务参数解析完成',
+            onlyNotes
+                ? `只生成自选备注，规格 ${comboSizes.join(' / ')} 双。`
+                : `规格 ${comboSizes.join(' / ')} 双，每规格目标 ${effectiveCountPerSize} 个组合，生成备注：${effectiveGenerateNotes ? '是' : '否'}。`,
+            'success',
+            0.36
+        );
+
+        if (runSpecifiedOnly && requestedExplicitCombos.length > 0) {
+            callbacks?.onMessage?.(`🎯 已识别为指定组合任务：只执行 ${requestedExplicitCombos.map(combo => combo.join('+')).join(' / ')}`);
+        }
+        if (modelPlan?.reasoning) {
+            callbacks?.onMessage?.(`🧠 已理解你的 SKU 要求：${modelPlan.reasoning}`);
+        }
+
+        if (!onlyNotes && requestedMonochromeColors.length > 0) {
+            callbacks?.onMessage?.(`🧩 已识别附加组合要求：每个规格追加 ${requestedMonochromeColors.join(' / ')} 单色组合`);
         }
 
         if (!onlyNotes) {
@@ -981,18 +1797,44 @@ export const skuBatchExecutor: SkillExecutor = {
 
                 if (foundTemplateCount === 0) {
                     if (!hasLibraryTemplate) {
+                        const availabilitySummary = summarizeTemplateAvailability({
+                            templateDir,
+                            projectTemplates: projectSkuTemplates,
+                            localTemplates: localSkuTemplates,
+                            localSpecs: localLibrarySpecs
+                        });
+                        emitStep(
+                            'warning',
+                            'SKU 模板不可用',
+                            `项目模板目录和本地模板库都没有命中所需规格：${comboSizes.join(' / ')} 双。`,
+                            'error',
+                            0.42
+                        );
                         return {
                             success: false,
-                            message: `⚠️ SKU 批量生成失败\n\n未找到可用模板文件。\n请在「${templateDir}」中准备如「2双装 / 3双装 / 4双装」模板，或先在 Photoshop 打开对应模板后再执行。`,
+                            message: `⚠️ SKU 批量生成失败\n\n未找到可用模板文件。\n\n**当前检查结果**\n${availabilitySummary}\n\n**处理建议**\n1. 在「${templateDir}」下放入如「2双装 / 3双装 / 4双装」模板\n2. 或先在 Photoshop 打开对应规格模板后再执行\n3. 或在模板知识库中配置本地模板库目录`,
                             error: probeError || 'Template files not found'
                         };
                     }
                     callbacks?.onMessage?.('📚 项目模板目录未命中，将切换到本地模板库继续执行。');
                 }
             } else if (openedTemplateCount === 0 && !hasLibraryTemplate) {
+                const availabilitySummary = summarizeTemplateAvailability({
+                    templateDir,
+                    projectTemplates: projectSkuTemplates,
+                    localTemplates: localSkuTemplates,
+                    localSpecs: localLibrarySpecs
+                });
+                emitStep(
+                    'warning',
+                    'SKU 模板不可用',
+                    `未找到已打开模板，也没有本地模板库可用模板：${comboSizes.join(' / ')} 双。`,
+                    'error',
+                    0.42
+                );
                 return {
                     success: false,
-                    message: '⚠️ SKU 批量生成失败\n\n未找到可用模板。\n请先打开模板文件，或在模板知识库中配置本地模板库目录后重试。',
+                    message: `⚠️ SKU 批量生成失败\n\n未找到可用模板。\n\n**当前检查结果**\n${availabilitySummary}\n\n请先打开模板文件，或在模板知识库中配置本地模板库目录后重试。`,
                     error: 'Template files not found'
                 };
             }
@@ -1005,40 +1847,76 @@ export const skuBatchExecutor: SkillExecutor = {
             for (const size of comboSizes) {
                 combosBySize[size] = [];
             }
-        } else if (specifiedColors && specifiedColors.length > 0) {
-            for (const combo of specifiedColors) {
+        } else if (effectiveSpecifiedColors && effectiveSpecifiedColors.length > 0) {
+            for (const combo of effectiveSpecifiedColors) {
                 const size = combo.length;
                 if (!combosBySize[size]) combosBySize[size] = [];
                 combosBySize[size].push(combo);
             }
         } else {
-            // 加载品牌推荐色
-            const brandSpec = await getEffectiveBrandSpec(projectContext?.projectPath);
-            const brandRecommendedColors: string[] = [];
-            if (brandSpec && brandSpec.id !== 'default') {
-                callbacks?.onMessage?.(`🎨 品牌规范: ${brandSpec.name}`);
-                const bKeywords = (brandSpec as any).keywords as string[] | undefined;
-                if (bKeywords && bKeywords.length > 0) {
-                    brandRecommendedColors.push(...bKeywords);
-                    callbacks?.onMessage?.(`🎯 品牌优先色: ${bKeywords.slice(0, 6).join('、')}`);
-                }
-            }
-
-            // 为每个颜色推断色系，用于和谐度评分
-            const families: ColorFamily[] = validColors.map((c: string) => inferColorFamily(c));
-            console.log('[SKU-Batch] 颜色色系映射:', validColors.map((c: string, i: number) => `${c}→${families[i]}`).join(', '));
-            callbacks?.onMessage?.(`🎨 色系分析: ${validColors.map((c: string, i: number) => `${c}(${families[i]})`).join(', ')}`);
-
             for (const size of comboSizes) {
-                const sizeCombos = generateCombinationsOfSize(validColors, size, countPerSize, families, brandRecommendedColors);
-                if (sizeCombos.length < countPerSize) {
-                    callbacks?.onMessage?.(`⚠️ ${size}双：请求 ${countPerSize} 个组合，但按“不重复（无序）”原则最多生成 ${sizeCombos.length} 个`);
+                const sizeCombos = generateCombinationsOfSize(validColors, size, effectiveCountPerSize);
+                if (sizeCombos.length < effectiveCountPerSize) {
+                    callbacks?.onMessage?.(`⚠️ ${size}双：请求 ${effectiveCountPerSize} 个组合，但按“不重复（无序）”原则最多生成 ${sizeCombos.length} 个`);
                 }
                 combosBySize[size] = sizeCombos;
             }
         }
-        
+
+        if (!onlyNotes && !runSpecifiedOnly && requestedExplicitCombos.length > 0 && (modelPlan?.mode === 'append' || hasAppendIntent)) {
+            const explicitComboResult = appendRequestedSpecificCombos(combosBySize, requestedExplicitCombos);
+            if (explicitComboResult.added.length > 0) {
+                callbacks?.onMessage?.(`✅ 已按要求追加指定组合：${explicitComboResult.added.map(item => `${item.size}双=${item.combo.join('+')}`).join(' / ')}`);
+            }
+            if (explicitComboResult.skipped.length > 0) {
+                callbacks?.onMessage?.(`ℹ️ 以下指定组合原本已存在，未重复追加：${explicitComboResult.skipped.join(' / ')}`);
+            }
+        }
+
+        if (!onlyNotes && requestedMonochromeColors.length > 0) {
+            const targetSizes = effectiveRequestedTargetSizes.length > 0 ? effectiveRequestedTargetSizes : comboSizes;
+            const extraComboResult = appendRequestedExtraCombos(combosBySize, targetSizes, requestedMonochromeColors);
+            if (extraComboResult.added.length > 0) {
+                const preview = extraComboResult.added
+                    .slice(0, 6)
+                    .map(item => `${item.size}双=${item.combo.join('+')}`)
+                    .join(' / ');
+                callbacks?.onMessage?.(`✅ 已追加指定组合：${preview}${extraComboResult.added.length > 6 ? ' ...' : ''}`);
+            }
+            if (extraComboResult.skipped.length > 0) {
+                callbacks?.onMessage?.(`ℹ️ 以下指定组合原本已存在，未重复追加：${extraComboResult.skipped.join(' / ')}`);
+            }
+        }
+
         // 7. 按规格循环处理
+        if (!onlyNotes) {
+            const duplicateRemovals = dedupeAllCombosBySize(combosBySize);
+            if (duplicateRemovals.length > 0) {
+                const removalSummary = duplicateRemovals
+                    .map(item => `${item.size}双去重 ${item.removedCombos.length} 组`)
+                    .join(' / ');
+                callbacks?.onMessage?.(`已自动去除重复 SKU 组合（包含顺序不同但颜色相同的重复）：${removalSummary}`);
+            }
+        }
+        const plannedComboCount = Object.values(combosBySize).reduce((sum, combos) => sum + combos.length, 0);
+        const plannedNoteSizes = comboSizes
+            .filter(size => decideSkuSelfSelectNoteGeneration({
+                comboSize: size,
+                notesRequested: effectiveGenerateNotes,
+                onlyNotes
+            }).shouldGenerate);
+        callbacks?.onMessage?.(
+            `🧭 SKU 执行计划已确认：素材「${skuDocName}」，规格 ${comboSizes.join(' / ')} 双，` +
+            `组合 ${plannedComboCount} 组，自选备注 ${plannedNoteSizes.length > 0 ? `${plannedNoteSizes.join(' / ')} 双` : '不生成或已跳过'}。`
+        );
+        emitStep(
+            'tool_planned',
+            'SKU 执行计划已确认',
+            `规格 ${Object.keys(combosBySize).join(' / ')} 双，计划组合 ${plannedComboCount} 组，自选备注 ${plannedNoteSizes.join(' / ') || '无'}。`,
+            'success',
+            0.5
+        );
+
         const allFinalFiles: string[] = [];
         const allCopyErrors: string[] = [];
         const allToolResults: any[] = [
@@ -1046,11 +1924,76 @@ export const skuBatchExecutor: SkillExecutor = {
             { toolName: 'skuLayout-listLayerSets', result: layersResult }
         ];
         const processedSizes: string[] = [];
+        const completedComboSizes = new Set<number>();
+        const generatedNoteSizes = new Set<number>();
+        const skippedNoteSizes = new Set<number>();
+
+        const resolveExportedFileRecord = async (
+            rawFileInfo: string,
+            relativeDirName: string
+        ): Promise<{ success: boolean; record?: string; error?: string }> => {
+            try {
+                const info = JSON.parse(rawFileInfo);
+
+                if (info.status === 'exported_to_temp' && info.tempPath) {
+                    const correctTargetDir = outputDir || info.targetDir;
+                    const targetPath = `${correctTargetDir}\\${relativeDirName}\\${info.targetName}`;
+
+                    const copyFn = (window as any).designEcho?.copyFile;
+                    if (!copyFn) {
+                        return { success: false, error: `${info.targetName}: copyFile unavailable` };
+                    }
+
+                    const copyResult = await copyFn(info.tempPath, targetPath);
+                    if (!copyResult?.success) {
+                        return { success: false, error: `${info.targetName}: ${copyResult?.error || '复制失败'}` };
+                    }
+
+                    try {
+                        await (window as any).designEcho?.invoke?.('fs:deleteFile', info.tempPath);
+                    } catch (e) {
+                        // ignore temp cleanup failures
+                    }
+
+                    return { success: true, record: targetPath };
+                }
+
+                if (info.status === 'exported_jsx') {
+                    const exportedPath = String(info.path || '').trim();
+                    if (exportedPath) {
+                        return { success: true, record: exportedPath };
+                    }
+                    if (info.targetName) {
+                        return {
+                            success: true,
+                            record: `${relativeDirName}\\${String(info.targetName).trim()}`
+                        };
+                    }
+                }
+
+                if (!info.status) {
+                    return { success: true, record: rawFileInfo };
+                }
+
+                return { success: false, error: `${rawFileInfo}: unsupported export status ${info.status}` };
+            } catch (e) {
+                const fileName = rawFileInfo.split('\\').pop() || rawFileInfo.split('/').pop() || rawFileInfo;
+                return { success: true, record: fileName };
+            }
+        };
         
         for (const [sizeStr, combos] of Object.entries(combosBySize)) {
             const size = parseInt(sizeStr, 10);
+            emitStep(
+                'observation',
+                '准备处理 SKU 规格',
+                onlyNotes ? `${size} 双自选备注。` : `${size} 双，组合 ${combos.length} 组。`,
+                'running',
+                0.52
+            );
             
             if (signal?.aborted) {
+                emitStep('stopped', 'SKU 批量生成已停止', '用户取消或信号中止。', 'error', 1);
                 return {
                     success: true,
                     cancelled: true,
@@ -1074,19 +2017,20 @@ export const skuBatchExecutor: SkillExecutor = {
                 const sizeKeyword = `${size}双`;
                 const excludeNoteKeyword = '自选备注';
                 
-                docsResult = await executeToolCall('listDocuments', {});
-                
+                docsResult = await executeToolCall('listDocuments', { includeDetails: true });
+
                 if (templateKeyword && !templateKeyword.toLowerCase().includes(excludeNoteKeyword)) {
-                    templateDoc = docsResult?.documents?.find((d: any) => {
-                        const name = d.name.toLowerCase();
-                        return name.includes(templateKeyword.toLowerCase()) && name.includes(sizeKeyword) && !name.includes(excludeNoteKeyword);
+                    templateDoc = findOpenedTemplateDocument({
+                        size,
+                        noteMode: false,
+                        templateKeyword
                     });
                 }
-                
+
                 if (!templateDoc) {
-                    templateDoc = docsResult?.documents?.find((d: any) => {
-                        const name = d.name.toLowerCase();
-                        return !name.includes(excludeNoteKeyword) && (d.name.includes(`${size}双装`) || d.name.includes(`${size}双模板`));
+                    templateDoc = findOpenedTemplateDocument({
+                        size,
+                        noteMode: false
                     });
                 }
                 
@@ -1115,42 +2059,20 @@ export const skuBatchExecutor: SkillExecutor = {
                     }
                     
                     // 降级策略：如果找不到精确规格的模板，尝试搜索通用模板
-                    if (!openResult?.success) {
-                        callbacks?.onMessage?.(`⚠️ 未找到「${sizeKeyword}」模板，尝试搜索通用模板...`);
-                        openResult = await safeToolCall('openProjectFile', {
-                            query: '模板',
-                            type: 'all',
-                            directory: templateDir
-                        }, 20000, `open-${sizeKeyword}-template-fallback`);
-                    }
+
                     
                     if (openResult?.success) {
                         await sleep(1000);
                         await refreshDocuments();
                         
                         // 优先查找匹配规格的组合模板（排除自选备注）
-                        templateDoc = docsResult?.documents?.find((d: any) => {
-                            const name = d.name.toLowerCase();
-                            return name.includes(sizeKeyword) && !name.includes(excludeNoteKeyword) &&
-                                (d.name.includes(`${size}双装`) || d.name.includes(`${size}双模板`));
+                        templateDoc = findOpenedTemplateDocument({
+                            size,
+                            noteMode: false
                         });
-                        if (!templateDoc) {
-                            templateDoc = docsResult?.documents?.find((d: any) => {
-                                const name = d.name.toLowerCase();
-                                return name.includes(sizeKeyword) && !name.includes(excludeNoteKeyword);
-                            });
-                        }
-                        
-                        // 如果没找到精确匹配，尝试使用任何非 SKU 素材、非自选备注的"模板"文件
-                        if (!templateDoc) {
-                            templateDoc = docsResult?.documents?.find((d: any) => {
-                                const name = d.name.toLowerCase();
-                                return name.includes('模板') && !name.includes(skuKeyword.toLowerCase()) && !name.includes(excludeNoteKeyword);
-                            });
-                            if (templateDoc) {
-                                callbacks?.onMessage?.(`🤔 使用通用模板: ${templateDoc.name}`);
-                            }
-                        }
+
+                        // 如果没找到精确匹配，尝试使用当前项目模板目录中任何非 SKU / 非自选备注模板
+
                     }
 
                     // openProjectFile 未命中时，尝试直接从项目模板目录按文件路径打开
@@ -1179,6 +2101,7 @@ export const skuBatchExecutor: SkillExecutor = {
                 
                 if (!templateDoc) {
                     allCopyErrors.push(`${size}双: 模板不可用`);
+                    emitStep('warning', 'SKU 规格模板不可用', `${size} 双没有找到可用组合模板。`, 'error', 0.62);
                     continue;
                 }
                 
@@ -1189,61 +2112,76 @@ export const skuBatchExecutor: SkillExecutor = {
             if (!onlyNotes) {
                 callbacks?.onMessage?.(`🔧 正在执行 ${size}双 排版...`);
                 
-                const executeResult = await executeToolCall('skuLayout', {
+                const executeResult = await executeSkuLayoutWithModalRetry({
                     action: 'execute',
                     combos: combos,
+                    skuDocName: skuDocName,
+                    templateDocName: templateDoc.name,
                     outputFormat: 'jpg',
                     quality: 12,
                     outputDir: outputDir
-                });
+                }, `sku-layout-${size}`);
                 
                 allToolResults.push({ toolName: `skuLayout-${size}双`, result: executeResult });
                 
                 if (executeResult?.success) {
                     const exportedFiles = executeResult.data?.exportedFiles || [];
+                    let producedComboFiles = 0;
                     
                     for (const fileInfo of exportedFiles) {
-                        try {
-                            const info = JSON.parse(fileInfo);
-                            if (info.status === 'exported_to_temp' && info.tempPath) {
-                                const correctTargetDir = outputDir || info.targetDir;
-                                const targetPath = `${correctTargetDir}\\${size}双装\\${info.targetName}`;
-                                
-                                const copyFn = (window as any).designEcho?.copyFile;
-                                if (copyFn) {
-                                    const copyResult = await copyFn(info.tempPath, targetPath);
-                                    if (copyResult?.success) {
-                                        allFinalFiles.push(`${size}双装/${info.targetName}`);
-                                        try {
-                                            await (window as any).designEcho?.invoke?.('fs:deleteFile', info.tempPath);
-                                        } catch (e) { /* 忽略 */ }
-                                    } else {
-                                        allCopyErrors.push(`${info.targetName}: ${copyResult?.error || '复制失败'}`);
-                                    }
-                                }
-                            } else if (!info.status) {
-                                allFinalFiles.push(fileInfo);
-                            }
-                        } catch (e) {
-                            const fileName = fileInfo.split('\\').pop() || fileInfo.split('/').pop() || fileInfo;
-                            allFinalFiles.push(fileName);
+                        const resolvedFile = await resolveExportedFileRecord(fileInfo, `${size}\u53cc`);
+                        if (resolvedFile.success && resolvedFile.record) {
+                            allFinalFiles.push(resolvedFile.record);
+                            producedComboFiles += 1;
+                        } else if (resolvedFile.error) {
+                            allCopyErrors.push(resolvedFile.error);
                         }
                     }
                     
-                    processedSizes.push(`${size}双 (${combos.length}个)`);
+                    if (producedComboFiles > 0) {
+                        completedComboSizes.add(size);
+                        processedSizes.push(`${size}双 (${combos.length}组)`);
+                        emitStep(
+                            'verification',
+                            'SKU 规格排版完成',
+                            `${size} 双导出 ${producedComboFiles} 个组合文件。`,
+                            'success',
+                            0.72
+                        );
+                    } else {
+                        allCopyErrors.push(`${size}双: 未导出任何文件`);
+                        emitStep('warning', 'SKU 规格排版无导出', `${size} 双排版成功返回，但没有导出文件。`, 'error', 0.72);
+                    }
                 } else {
-                    allCopyErrors.push(`${size}双排版失败: ${executeResult?.error || '未知错误'}`);
+                    allCopyErrors.push(`${size}双: ${executeResult?.error || '排版失败'}`);
+                    emitStep('warning', 'SKU 规格排版失败', `${size} 双：${String(executeResult?.error || '排版失败')}`, 'error', 0.72);
                 }
             }
             
             // 生成自选备注
-            if (generateNotes || onlyNotes) {
+            if (effectiveGenerateNotes || onlyNotes) {
+                const noteDecision = decideSkuSelfSelectNoteGeneration({
+                    comboSize: size,
+                    notesRequested: effectiveGenerateNotes,
+                    onlyNotes
+                });
+
+                if (!noteDecision.shouldGenerate) {
+                    skippedNoteSizes.add(size);
+                    emitStep('verification', 'SKU 自选备注已跳过', `${size} 双：${noteDecision.message}`, 'success', 0.78);
+                    callbacks?.onMessage?.(`ℹ️ 已跳过 ${size}双 自选备注：${noteDecision.message}。`);
+                    if (onlyNotes && !processedSizes.includes(`${size}双 (自选备注已跳过)`)) {
+                        processedSizes.push(`${size}双 (自选备注已跳过)`);
+                    }
+                    continue;
+                }
+
                 callbacks?.onMessage?.(`📝 正在生成 ${size}双 自选备注...`);
                 
                 await refreshDocuments();
-                let noteTemplateDoc = docsResult?.documents?.find((d: any) => {
-                    const name = d.name.toLowerCase();
-                    return name.includes(`${size}双`) && name.includes('自选备注');
+                let noteTemplateDoc = findOpenedTemplateDocument({
+                    size,
+                    noteMode: true
                 });
                 
                 if (!noteTemplateDoc) {
@@ -1263,9 +2201,9 @@ export const skuBatchExecutor: SkillExecutor = {
                     
                     await sleep(600);
                     await refreshDocuments();
-                    noteTemplateDoc = docsResult?.documents?.find((d: any) => {
-                        const name = d.name.toLowerCase();
-                        return name.includes(`${size}双`) && name.includes('自选备注');
+                    noteTemplateDoc = findOpenedTemplateDocument({
+                        size,
+                        noteMode: true
                     });
 
                     if (!noteTemplateDoc) {
@@ -1288,67 +2226,68 @@ export const skuBatchExecutor: SkillExecutor = {
                 if (noteTemplateDoc) {
                     await executeToolCall('switchDocument', { documentName: noteTemplateDoc.name });
                     
-                    const noteResult = await executeToolCall('skuLayout', {
+                    const noteResult = await executeSkuLayoutWithModalRetry({
                         action: 'arrangeDynamic',
                         combos: [validColors],
+                        skuDocName: skuDocName,
+                        templateDocName: noteTemplateDoc.name,
                         outputFormat: 'jpg',
                         quality: 12,
                         outputDir: outputDir,
                         noteFilePrefix: `${size}双自选备注`
-                    });
+                    }, `sku-note-${size}`);
                     
                     if (noteResult?.success) {
                         const noteFiles = noteResult.data?.exportedFiles || [];
+                        let producedNoteFiles = 0;
                         
                         for (const fileInfo of noteFiles) {
-                            try {
-                                const info = JSON.parse(fileInfo);
-                                if (info.status === 'exported_to_temp' && info.tempPath) {
-                                    const correctTargetDir = outputDir || info.targetDir;
-                                    const targetPath = `${correctTargetDir}\\${size}双自选备注\\${info.targetName}`;
-                                    
-                                    const copyFn = (window as any).designEcho?.copyFile;
-                                    if (copyFn) {
-                                        const copyResult = await copyFn(info.tempPath, targetPath);
-                                        if (copyResult?.success) {
-                                            allFinalFiles.push(`${size}双自选备注/${info.targetName}`);
-                                            try {
-                                                await (window as any).designEcho?.invoke?.('fs:deleteFile', info.tempPath);
-                                            } catch (e) { /* 忽略 */ }
-                                        } else {
-                                            allCopyErrors.push(`${size}双自选备注: 复制失败`);
-                                        }
-                                    }
-                                } else if (!info.status) {
-                                    allFinalFiles.push(fileInfo);
-                                }
-                            } catch (e) {
-                                allFinalFiles.push(`${size}双自选备注`);
+                            const resolvedFile = await resolveExportedFileRecord(fileInfo, `${size}\u53cc\u81ea\u9009\u5907\u6ce8`);
+                            if (resolvedFile.success && resolvedFile.record) {
+                                allFinalFiles.push(resolvedFile.record);
+                                producedNoteFiles += 1;
+                            } else if (resolvedFile.error) {
+                                allCopyErrors.push(resolvedFile.error);
                             }
                         }
                         
-                        if (onlyNotes && !processedSizes.includes(`${size}双 (自选备注)`)) {
+                        if (producedNoteFiles > 0) {
+                            generatedNoteSizes.add(size);
+                            emitStep('verification', 'SKU 自选备注生成完成', `${size} 双自选备注导出 ${producedNoteFiles} 个文件。`, 'success', 0.84);
+                        } else {
+                            allCopyErrors.push(`${size}双自选备注: 未导出任何文件`);
+                            emitStep('warning', 'SKU 自选备注无导出', `${size} 双自选备注工具返回成功，但没有导出文件。`, 'error', 0.84);
+                        }
+
+                        if (onlyNotes && producedNoteFiles > 0 && !processedSizes.includes(`${size}双 (自选备注)`)) {
                             processedSizes.push(`${size}双 (自选备注)`);
                         }
                     } else {
                         allCopyErrors.push(`${size}双自选备注: 生成失败`);
+                        emitStep('warning', 'SKU 自选备注生成失败', `${size} 双自选备注：${String(noteResult?.error || '生成失败')}`, 'error', 0.84);
                     }
                 } else {
                     allCopyErrors.push(`${size}双自选备注: 未找到模板`);
+                    emitStep('warning', 'SKU 自选备注模板不可用', `${size} 双没有找到自选备注模板。`, 'error', 0.84);
                 }
             }
         }
         
         // 8. 汇总结果
-        const totalCombos = Object.values(combosBySize).reduce((sum, arr) => sum + arr.length, 0);
-        const noteCount = generateNotes ? comboSizes.length : 0;
-        
-        const comboSummary = Object.entries(combosBySize)
+        const completedCombosBySize = Object.fromEntries(
+            Object.entries(combosBySize).filter(([size]) => completedComboSizes.has(Number(size)))
+        ) as Record<string, string[][]>;
+        const totalCombos = Object.values(completedCombosBySize).reduce((sum, arr) => sum + arr.length, 0);
+        const noteCount = generatedNoteSizes.size;
+
+        const comboSummary = Object.entries(completedCombosBySize)
             .map(([size, combos]) => {
-                const comboList = combos.map((c, i) => `${i + 1}.${c.join('+')}`).join('、');
-                let summary = `**${size}双装** (${combos.length}个)\n${comboList}`;
-                if (generateNotes) {
-                    summary += `\n+ 自选备注`;
+                const comboList = combos.map((c, i) => `${i + 1}. ${formatComboForSummary(c)}`).join('\n');
+                let summary = `**${size}双装** (${combos.length}组)\n${comboList}`;
+                if (generatedNoteSizes.has(Number(size))) {
+                    summary += `\n+ 已生成自选备注`;
+                } else if (skippedNoteSizes.has(Number(size))) {
+                    summary += `\n+ 已跳过自选备注（1双 SKU 已覆盖全部颜色）`;
                 }
                 return summary;
             }).join('\n\n');
@@ -1367,15 +2306,67 @@ export const skuBatchExecutor: SkillExecutor = {
             : '';
         
         const totalGenerated = totalCombos + noteCount;
-        const noteInfo = generateNotes ? ` + ${noteCount}备注` : '';
+        const skippedNoteCount = skippedNoteSizes.size;
+        const noteInfoParts: string[] = [];
+        if (effectiveGenerateNotes || noteCount > 0) noteInfoParts.push(`${noteCount}备注`);
+        if (skippedNoteCount > 0) noteInfoParts.push(`${skippedNoteCount}备注已跳过`);
+        const noteInfo = noteInfoParts.length > 0 ? ` + ${noteInfoParts.join(' + ')}` : '';
         const templateRelatedFailure = allCopyErrors.some(e => e.includes('模板'));
+        const hasProcessedSizes = processedSizes.length > 0;
+        const hasWarnings = allCopyErrors.length > 0;
+        const resultStatus = !hasProcessedSizes ? 'failed' : hasWarnings ? 'partial' : 'completed';
+        const statusLine = resultStatus === 'partial'
+            ? '**状态**: 部分完成（存在警告，请复核下方失败项）\n'
+            : resultStatus === 'completed'
+                ? '**状态**: 已完成\n'
+                : '';
         const templateHint = templateRelatedFailure
-            ? `\n\n**排查建议**\n1. 在「${templateDir || '模板目录'}」下放入如「2双装/3双装/4双装」模板文件\n2. 或先在 Photoshop 打开对应规格模板后再执行\n3. 或在模板知识库中配置「本地模板库目录」（支持 PSD/PSB/TIF）`
+            ? `\n\n**排查建议**\n${summarizeTemplateAvailability({
+                templateDir,
+                projectTemplates: projectSkuTemplates,
+                localTemplates: localSkuTemplates,
+                localSpecs: localLibrarySpecs
+            })}\n1. 在「${templateDir || '模板目录'}」下放入如「2双装/3双装/4双装」模板文件\n2. 或先在 Photoshop 打开对应规格模板后再执行\n3. 或在模板知识库中配置「本地模板库目录」（支持 PSD/PSB/TIF）`
             : '';
         
         const successMessage = processedSizes.length > 0
-            ? `**素材**: ${skuDocName}\n**规格**: ${processedSizes.join(' / ')}\n**数量**: ${totalCombos}组合${noteInfo}\n\n${comboSummary}${exportSummary}${errorSummary}`
+            ? `${statusLine}**素材**: ${skuDocName}\n**规格**: ${processedSizes.join(' / ')}\n**数量**: ${totalCombos}组合${noteInfo}\n\n${comboSummary}${exportSummary}${errorSummary}`
             : `⚠️ SKU 批量生成失败\n\n未能处理任何规格。${errorSummary}${templateHint}`;
+        const skuPlanEvidence: SkuBatchPlanEvidence[] = Object.entries(combosBySize)
+            .map(([size, combos]) => ({
+                size: Number(size),
+                comboCount: Array.isArray(combos) ? combos.length : 0,
+                noteGenerated: generatedNoteSizes.has(Number(size)),
+                warnings: allCopyErrors.filter((error) => String(error).includes(`${size}双`))
+            }))
+            .filter((item) => Number.isFinite(item.size));
+        const designAgentOs = buildSkuDesignAgentOsEvidence({
+            userInput: String(params.userIntent || _context?.userInput || '').trim(),
+            colorCount: validColors.length,
+            totalCombinations: totalCombos,
+            specs: skuPlanEvidence,
+            toolResults: allToolResults,
+            success: processedSizes.length > 0,
+            warnings: allCopyErrors,
+            blockers: processedSizes.length > 0 ? [] : ['未能处理任何 SKU 规格。']
+        });
+        const designPlanner = buildSkuBatchPlannerEvidence({
+            userInput: String(params.userIntent || _context?.userInput || '').trim(),
+            params,
+            context: _context,
+            projectPath: projectContext?.projectPath,
+            comboSizes,
+            colorCount: validColors.length,
+            totalCombinations: totalCombos,
+            processedSizeCount: processedSizes.length
+        });
+        emitStep(
+            'finalizing',
+            'SKU 批量生成结果已汇总',
+            `处理规格 ${processedSizes.length} 个，组合 ${totalCombos} 个，导出文件 ${allFinalFiles.length} 个，警告 ${allCopyErrors.length} 条。`,
+            processedSizes.length > 0 ? 'success' : 'error',
+            1
+        );
         
         return {
             success: processedSizes.length > 0,
@@ -1386,7 +2377,17 @@ export const skuBatchExecutor: SkillExecutor = {
                 totalGenerated,
                 processedSizes,
                 exportCount: allFinalFiles.length,
-                warningCount: allCopyErrors.length
+                warningCount: allCopyErrors.length,
+                status: resultStatus,
+                partial: resultStatus === 'partial',
+                warnings: allCopyErrors,
+                skippedNoteSizes: Array.from(skippedNoteSizes).sort((a, b) => a - b),
+                designAgentOs,
+                skuMemoryEvidence: designPlanner.businessSkillMemoryEvidence,
+                businessSkillMemoryEvidence: designPlanner.businessSkillMemoryEvidence,
+                skuDesignPlacementIntelligence: designPlanner.skuDesignPlacementIntelligence,
+                businessSkillDesignPlacementIntelligence: designPlanner.businessSkillDesignPlacementIntelligence,
+                designPlanner
             }
         };
     }

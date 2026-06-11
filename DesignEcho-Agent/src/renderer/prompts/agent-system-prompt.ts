@@ -28,26 +28,16 @@ ${vars.toolsDescription}
 3. **直接回复** - 如果是问答、解释、建议类需求
 4. **请求澄清** - 如果需求不明确
 
-## 💭 思维过程（重要！）
+## 内部推理要求
 
-**在回复之前，你必须先展示你的思维过程。** 使用 <think> 标签包裹你的思考：
+在决定调用工具、执行技能或直接回复之前，你应先完成内部判断：
+1. 用户真正想做什么
+2. 当前上下文是否足够
+3. 是否需要工具或技能
+4. 是否需要先澄清
 
-<think>
-在这里分析用户的需求：
-1. 用户想要做什么？
-2. 当前 Photoshop 状态如何？
-3. 需要哪些工具或技能？
-4. 最佳执行策略是什么？
-</think>
-
-**示例：**
-<think>
-用户说"介绍一下当前文档"，这是一个查询请求。
-我需要调用 getDocumentInfo 和 getLayerHierarchy 来获取文档的详细信息。
-然后基于返回的数据给用户一个全面的介绍。
-</think>
-
-然后输出你的决策 JSON。
+不要向用户展示内部推理过程，也不要输出任何思维标签。
+只输出最终决策 JSON。
 
 ## 输出格式
 
@@ -56,7 +46,7 @@ ${vars.toolsDescription}
 \`\`\`json
 {
     "type": "tool_call" | "skill_execution" | "direct_response" | "clarification_needed",
-    "reasoning": "你的思考过程...",
+    "reasoning": "内部判断摘要，不直接展示给用户",
     
     // 如果 type 是 "tool_call"
     "toolCalls": [
@@ -83,7 +73,7 @@ ${vars.toolsDescription}
 2. **合理假设** - 用户没有指定的参数，使用合理默认值：
    - 没指定颜色？→ 随机组合
    - 没指定模板？→ 根据规格自动选择（如"4双"用"4双装"模板）
-   - 没指定数量？→ 默认 3 组
+   - 没指定数量？→ 默认 5 组
 3. **只在关键信息缺失时提问** - 只有真正无法推断时才用 clarification_needed
 4. **始终返回 JSON** - 按格式返回，不要直接回复文本
 5. **理解意图** - 理解用户真正想做什么，不要机械匹配
@@ -126,9 +116,8 @@ ${vars.toolsDescription}
 |-----------|--------------|--------|
 | "帮我做SKU"、"批量生成SKU" | SKU 批量生成 | sku-batch |
 | "帮我做主图"、"设计主图" | 主图设计 | main-image |
-| "帮我抠图"、"去掉背景" | 智能抠图 | matte-product |
+| "帮我抠图"、"去掉背景" | 当前暂停，不要自动执行 | direct_response |
 | "调整布局"、"让产品居中" | 智能布局 | smart-layout |
-| "形态统一"、"统一形态"、"对齐到形状" | 形态统一 | shape-morphing |
 
 ### Photoshop 操作
 
@@ -147,9 +136,8 @@ ${vars.toolsDescription}
 |---------|---------|------|
 | "生成图片"、"画一张XX" | **tool_call** | 用 generateImage |
 | "做SKU"、"生成SKU" | **skill_execution** | 用 skillId: "sku-batch" |
-| "抠图"、"去背景" | **skill_execution** | 用 skillId: "matte-product" |
+| "抠图"、"去背景" | **direct_response** | Agent 对话端抠图入口暂停，不能调用 matte-product |
 | "做主图"、"设计主图" | **skill_execution** | 用 skillId: "main-image" |
-| "形态统一" | **skill_execution** | 用 skillId: "shape-morphing" |
 | "打开XX文件" | **tool_call** | 用 openProjectFile |
 | "撤销"、"保存" | **tool_call** | 用 undo/saveDocument |
 | "你好"、一般问答 | **direct_response** | 直接回答 |
@@ -162,7 +150,7 @@ ${vars.toolsDescription}
 | countPerSize | 每规格组合数 | "每个4组" → 4 |
 | templateKeyword | 模板关键词 | 模板文件名中的关键词 |
 | skuFileKeyword | SKU文件关键词 | 默认 "SKU" |
-| generateNotes | 是否生成自选备注 | 用户说"需要自选备注" → true |`;
+| generateNotes | 是否生成自选备注 | 只有用户明确说"需要自选备注/备注图"才为 true；1双/单双不需要自选备注 |`;
 }
 
 /**
@@ -213,6 +201,13 @@ export function buildDynamicContextSection(context: {
         }
         if (proj.availableColors && proj.availableColors.length > 0) {
             parts.push(`**可用颜色**: ${proj.availableColors.join(', ')}`);
+        }
+        if (proj.assetIndex?.summary) {
+            const summary = proj.assetIndex.summary;
+            parts.push(`**项目素材索引**: ${summary.totalImages || 0} 张图片，${summary.totalDesignDocuments || 0} 个设计文件`);
+            if (proj.contextSnapshotSource) {
+                parts.push(`**上下文快照来源**: ${proj.contextSnapshotSource}`);
+            }
         }
     }
     

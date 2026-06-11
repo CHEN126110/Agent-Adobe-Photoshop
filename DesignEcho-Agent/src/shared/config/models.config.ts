@@ -11,10 +11,12 @@
  * 
  * 2. **云端模型** (source: 'cloud') - 需要 API Key
  *    - Google AI Studio (provider: 'google') → apiKeys.google
+ *    - Xiaomi MiMo (provider: 'xiaomi') → apiKeys.xiaomi
  *    - OpenRouter (provider: 'openrouter') → apiKeys.openrouter
  *    - Anthropic (provider: 'anthropic') → apiKeys.anthropic
  *    - OpenAI (provider: 'openai') → apiKeys.openai
  *    - Ollama Cloud (provider: 'ollama-cloud') → apiKeys.ollamaApiKey
+ *    - DeepSeek 官方 (provider: 'deepseek') → apiKeys.deepseek
  */
 
 // ========== 类型定义 ==========
@@ -27,9 +29,12 @@ export type ModelProvider =
     | 'ollama'        // 本地 Ollama
     | 'ollama-cloud'  // Ollama 云服务
     | 'google'        // Google AI Studio 官方
+    | 'xiaomi'        // Xiaomi MiMo 官方
     | 'openrouter'    // OpenRouter 中转
     | 'anthropic'     // Anthropic 直连
     | 'openai'        // OpenAI 直连
+    | 'gptsapi'       // GPTs API 中转
+    | 'deepseek'      // DeepSeek 官方
     | 'bfl';          // Black Forest Labs (FLUX)
 
 /** API Key 类型映射 */
@@ -37,9 +42,12 @@ export type ApiKeyType =
     | 'ollamaUrl'      // 本地 Ollama URL（非 Key）
     | 'ollamaApiKey'   // Ollama Cloud API Key
     | 'google'         // Google AI Studio Key
+    | 'xiaomi'         // Xiaomi MiMo Key
     | 'openrouter'     // OpenRouter Key
     | 'anthropic'      // Anthropic Key
     | 'openai'         // OpenAI Key
+    | 'gptsapi'        // GPTs API Key
+    | 'deepseek'       // DeepSeek 官方 API Key
     | 'bfl';           // Black Forest Labs API Key
 
 export type ModelRole = 
@@ -91,6 +99,7 @@ export interface ModelConfig {
     roles: ModelRole[];            // 适用的角色
     capabilities: string[];        // 能力标签
     supportsVision: boolean;       // 是否支持视觉
+    supportsToolUse?: boolean;     // 是否支持工具调用（chatWithTools）
     supportsStreaming: boolean;    // 是否支持流式
     maxTokens: number;             // 最大输出 token
     contextWindow?: number;        // 上下文窗口大小
@@ -369,6 +378,80 @@ export const GOOGLE_MODELS: ModelConfig[] = [
     },
 ];
 
+// ========== 云端模型：Xiaomi MiMo 官方 ==========
+// 官方文档: https://platform.xiaomimimo.com/docs/api/chat/openai-api.md
+// 模型命名参考: https://platform.xiaomimimo.com/llms.txt
+export const XIAOMI_MODELS: ModelConfig[] = [
+    {
+        id: 'xiaomi-mimo-v2.5-pro',
+        name: '⭐ MiMo V2.5 Pro (官方)',
+        source: 'cloud',
+        provider: 'xiaomi',
+        requiredApiKey: 'xiaomi',
+        apiModelId: 'mimo-v2.5-pro',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code'],
+        capabilities: ['text-generation', 'reasoning', 'code', 'chinese', 'long-context', 'tool-calling', 'web-search-ready'],
+        supportsVision: false,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 32768,
+        thinking: { supported: true, format: 'reasoning_content' },
+        recommended: true,
+        description: '小米官方 MiMo V2.5 Pro，推荐用于中文推理、规划、代码与 Agent 任务'
+    },
+    {
+        id: 'xiaomi-mimo-v2.5',
+        name: '⭐ MiMo V2.5 (官方)',
+        source: 'cloud',
+        provider: 'xiaomi',
+        requiredApiKey: 'xiaomi',
+        apiModelId: 'mimo-v2.5',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code', 'vision'],
+        capabilities: ['text-generation', 'vision', 'image-understanding', 'audio-understanding', 'video-understanding', 'reasoning', 'chinese', 'long-context', 'tool-calling', 'web-search-ready'],
+        supportsVision: true,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 32768,
+        thinking: { supported: true, format: 'reasoning_content' },
+        recommended: true,
+        description: '小米官方 MiMo V2.5，全模态 Agent 基座，适合参考图理解、视觉分析、长上下文规划与日常 Agent 任务'
+    },
+    {
+        id: 'xiaomi-mimo-v2-pro',
+        name: 'MiMo V2 Pro (官方旧版)',
+        source: 'cloud',
+        provider: 'xiaomi',
+        requiredApiKey: 'xiaomi',
+        apiModelId: 'mimo-v2-pro',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code'],
+        capabilities: ['text-generation', 'reasoning', 'code', 'chinese', 'long-context', 'tool-calling'],
+        supportsVision: false,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 32768,
+        thinking: { supported: true, format: 'reasoning_content' },
+        recommended: false,
+        description: '小米官方 MiMo V2 Pro 旧版，保留为兼容和备用'
+    },
+    {
+        id: 'xiaomi-mimo-v2-omni',
+        name: '⭐ MiMo V2 Omni (官方)',
+        source: 'cloud',
+        provider: 'xiaomi',
+        requiredApiKey: 'xiaomi',
+        apiModelId: 'mimo-v2-omni',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code', 'vision'],
+        capabilities: ['text-generation', 'vision', 'image-understanding', 'reasoning', 'chinese', 'long-context', 'tool-calling'],
+        supportsVision: true,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 32768,
+        thinking: { supported: true, format: 'reasoning_content' },
+        recommended: true,
+        description: '小米官方全模态模型，适合参考图理解、视觉分析与设计规划'
+    }
+];
+
 // ========== 云端模型：OpenRouter 渠道 ==========
 
 export const OPENROUTER_MODELS: ModelConfig[] = [
@@ -467,8 +550,58 @@ export const OPENROUTER_MODELS: ModelConfig[] = [
         pricing: { inputPerMillion: 0.35, outputPerMillion: 0.40 },
         description: '开源通用'
     },
-    // 注意：Nano Banana (Imagen) 是图像生成模型，OpenRouter 不支持
-    // 如需使用 Nano Banana，请使用 Google AI Studio 官方渠道
+    {
+        id: 'openrouter-mimo-v2.5-pro',
+        name: 'MiMo V2.5 Pro',
+        source: 'cloud',
+        provider: 'openrouter',
+        requiredApiKey: 'openrouter',
+        apiModelId: 'xiaomi/mimo-v2.5-pro',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code'],
+        capabilities: ['text-generation', 'reasoning', 'code', 'chinese', 'long-context'],
+        supportsVision: false,
+        supportsStreaming: true,
+        maxTokens: 32768,
+        thinking: { supported: true, format: 'reasoning_content' },
+        pricing: { inputPerMillion: 1, outputPerMillion: 3 },
+        recommended: true,
+        description: '小米 MiMo V2.5 Pro，中转渠道备用'
+    },
+    {
+        id: 'openrouter-mimo-v2.5',
+        name: 'MiMo V2.5',
+        source: 'cloud',
+        provider: 'openrouter',
+        requiredApiKey: 'openrouter',
+        apiModelId: 'xiaomi/mimo-v2.5',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code', 'vision'],
+        capabilities: ['text-generation', 'vision', 'image-understanding', 'reasoning', 'code', 'chinese', 'long-context', 'tool-calling'],
+        supportsVision: true,
+        supportsStreaming: true,
+        maxTokens: 32768,
+        thinking: { supported: true, format: 'reasoning_content' },
+        pricing: { inputPerMillion: 0.40, outputPerMillion: 2 },
+        recommended: true,
+        description: '小米 MiMo V2.5，全模态中转渠道备用'
+    },
+    {
+        id: 'openrouter-mimo-v2-pro',
+        name: 'MiMo V2 Pro (旧版)',
+        source: 'cloud',
+        provider: 'openrouter',
+        requiredApiKey: 'openrouter',
+        apiModelId: 'xiaomi/mimo-v2-pro',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code'],
+        capabilities: ['text-generation', 'reasoning', 'code', 'chinese', 'long-context'],
+        supportsVision: false,
+        supportsStreaming: true,
+        maxTokens: 32768,
+        thinking: { supported: true, format: 'reasoning_content' },
+        pricing: { inputPerMillion: 1, outputPerMillion: 3 },
+        description: '小米 MiMo V2 Pro 旧版，保留为兼容和备用'
+    },
+    // OpenRouter 的图像编辑/生成模型单独维护在 OPENROUTER_IMAGE_MODELS，
+    // 这里只保留文本 / 多模态聊天模型。
 ];
 
 // ========== 云端模型：Ollama Cloud ==========
@@ -597,6 +730,92 @@ export const OLLAMA_CLOUD_MODELS: ModelConfig[] = [
     },
 ];
 
+export const GPTSAPI_MODELS: ModelConfig[] = [
+    {
+        id: 'gptsapi-gpt-5.4-pro',
+        name: '⭐ GPT 5.4 Pro',
+        source: 'cloud',
+        provider: 'gptsapi',
+        requiredApiKey: 'gptsapi',
+        apiModelId: 'gpt-5.4-pro',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code'],
+        capabilities: ['text-generation', 'reasoning', 'code', 'long-context'],
+        supportsVision: false,
+        supportsToolUse: false,
+        supportsStreaming: false,
+        maxTokens: 8192,
+        contextWindow: 200000,
+        recommended: true,
+        description: '通过 GPTs API 中转接入 GPT 5.4 Pro'
+    },
+    {
+        id: 'gptsapi-wild-sonnet-4-6',
+        name: '⭐ Claude Sonnet 4.6',
+        source: 'cloud',
+        provider: 'gptsapi',
+        requiredApiKey: 'gptsapi',
+        apiModelId: 'wild-sonnet-4-6',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code', 'vision'],
+        capabilities: ['text-generation', 'vision', 'reasoning', 'code', 'long-context'],
+        supportsVision: true,
+        supportsStreaming: false,
+        maxTokens: 8192,
+        contextWindow: 200000,
+        recommended: true,
+        description: '通过 GPTs API 中转接入 Claude Sonnet 4.6'
+    },
+    {
+        id: 'gptsapi-wild-opus-4-6',
+        name: '⭐ Claude Opus 4.6',
+        source: 'cloud',
+        provider: 'gptsapi',
+        requiredApiKey: 'gptsapi',
+        apiModelId: 'wild-opus-4-6',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code', 'vision'],
+        capabilities: ['text-generation', 'vision', 'reasoning', 'code', 'long-context'],
+        supportsVision: true,
+        supportsStreaming: false,
+        maxTokens: 8192,
+        contextWindow: 200000,
+        recommended: false,
+        description: '通过 GPTs API 中转接入 Claude Opus 4.6'
+    },
+];
+
+// ========== 云端模型：DeepSeek 官方 ==========
+// 官方文档：https://api-docs.deepseek.com/zh-cn/
+// OpenAI 兼容 Base URL：https://api.deepseek.com
+// 官方能力：思考模式、JSON Output、Tool Calls、对话前缀续写、FIM 补全。
+// 项目边界：普通 chat 默认启用思考模式；chatWithTools 先以非思考模式执行，避免漏回传 reasoning_content。
+// 未发现官方视觉输入说明，因此不声明视觉能力。
+export const DEEPSEEK_MODELS: ModelConfig[] = [
+    {
+        id: 'deepseek-v4-pro',
+        name: '⭐ DeepSeek V4 Pro (官方)',
+        source: 'cloud',
+        provider: 'deepseek',
+        requiredApiKey: 'deepseek',
+        apiModelId: 'deepseek-v4-pro',
+        roles: ['layout-analysis', 'copywriting', 'general', 'code'],
+        capabilities: ['text-generation', 'reasoning', 'code', 'chinese', 'long-context', 'json-output', 'tool-calling', 'chat-prefix-completion', 'fim-completion'],
+        supportsVision: false,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 384000,
+        contextWindow: 1000000,
+        thinking: {
+            supported: true,
+            format: 'reasoning_content',
+            requestParams: {
+                thinking: { type: 'enabled' },
+                reasoning_effort: 'high'
+            }
+        },
+        recommended: true,
+        description: 'DeepSeek 官方 V4 Pro，支持长上下文、思考模式、JSON Output 与 Tool Calls；官方文档未声明视觉输入'
+    }
+];
+
 // ========== BFL (Black Forest Labs) 图像生成模型 ==========
 // 官方 API: https://bfl.ai/
 // 文档: https://docs.bfl.ai/
@@ -604,7 +823,7 @@ export const OLLAMA_CLOUD_MODELS: ModelConfig[] = [
 export interface ImageGenerationModelConfig {
     id: string;
     name: string;
-    provider: 'bfl';
+    provider: 'bfl' | 'openrouter';
     apiModelId: string;
     type: 'text-to-image' | 'image-to-image' | 'inpainting' | 'control';
     capabilities: string[];
@@ -710,18 +929,36 @@ export const BFL_MODELS: ImageGenerationModelConfig[] = [
     },
 ];
 
+export const OPENROUTER_IMAGE_MODELS: ImageGenerationModelConfig[] = [
+    {
+        id: 'openrouter-gemini-3-pro-image-preview',
+        name: '🖌️ Nano Banana Pro (OpenRouter)',
+        provider: 'openrouter',
+        apiModelId: 'google/gemini-3-pro-image-preview',
+        type: 'inpainting',
+        capabilities: ['inpainting', 'image-editing', 'multimodal-edit', 'mask-guided'],
+        maxResolution: { width: 2048, height: 2048 },
+        recommended: true,
+        description: 'OpenRouter Gemini 图像编辑模型，适合局部重绘与参考引导编辑'
+    }
+];
+
 // ========== 合并所有模型 ==========
 
 export const ALL_MODELS: ModelConfig[] = [
     ...LOCAL_MODELS,
     ...GOOGLE_MODELS,
+    ...XIAOMI_MODELS,
     ...OPENROUTER_MODELS,
     ...OLLAMA_CLOUD_MODELS,
+    ...GPTSAPI_MODELS,
+    ...DEEPSEEK_MODELS,
 ];
 
 // 图像生成模型单独导出（类型不同）
 export const ALL_IMAGE_MODELS: ImageGenerationModelConfig[] = [
     ...BFL_MODELS,
+    ...OPENROUTER_IMAGE_MODELS,
 ];
 
 // ========== 辅助函数 ==========
@@ -958,4 +1195,3 @@ export const DEFAULT_MODEL_PREFERENCES: ModelPreferences = {
     // 默认启用新架构
     orchestrator: DEFAULT_ORCHESTRATOR_CONFIG
 };
-

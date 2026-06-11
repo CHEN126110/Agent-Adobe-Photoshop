@@ -13,8 +13,8 @@ export interface BoundingBox {
 
 export type AssetType = 'product' | 'model' | 'detail' | 'scene' | 'icon';
 export type LayerZone = 'copy' | 'icon' | 'image' | 'unknown';
-export type FillMode = 'cover' | 'contain' | 'smart';
-export type ContentSource = 'knowledge' | 'ai_generated' | 'user_input' | 'template';
+export type FillMode = 'cover' | 'contain' | 'smart' | 'aesthetic';
+export type ContentSource = 'preset' | 'ai_generated' | 'user_input' | 'template';
 
 // Keep ScreenType open to reduce coupling with parser naming variants.
 export type ScreenType = string;
@@ -24,7 +24,7 @@ export interface ScreenTypeConfig {
     namePatterns: RegExp[];
     keywords: string[];
     recommendedAssetType: AssetType;
-    knowledgeTypes: string[];
+    contentTags: string[];
 }
 
 export interface ScreenStructurePreset {
@@ -95,6 +95,16 @@ export interface IconPlaceholder {
     zone?: LayerZone;
 }
 
+/** 跨屏/全局图层标记 */
+export interface CrossScreenLayer {
+    layerId: number;
+    layerName: string;
+    layerType: 'text' | 'image' | 'icon' | 'other';
+    bounds: BoundingBox;
+    overlappingScreens: number[];
+    tag: 'crossScreen' | 'globalBackground';
+}
+
 export interface TemplateParseResult {
     success: boolean;
     documentName: string;
@@ -102,6 +112,7 @@ export interface TemplateParseResult {
     screenCount: number;
     screens: ParsedScreen[];
     issues: LayerIssue[];
+    crossScreenLayers: CrossScreenLayer[];
     parseTime: number;
 }
 
@@ -113,7 +124,11 @@ export type LayerIssueType =
     | 'aspect_distortion'
     | 'effect_clipped'
     | 'empty_placeholder'
-    | 'invalid_structure';
+    | 'invalid_structure'
+    | 'cross_group_reassign'
+    | 'orphan_reclaimed'
+    | 'cross_screen'
+    | 'global_background';
 
 export interface LayerIssue {
     type: LayerIssueType;
@@ -242,91 +257,91 @@ export const SCREEN_TYPE_CONFIGS: ScreenTypeConfig[] = [
         namePatterns: [/营销/i, /活动/i, /优惠/i, /促销/i],
         keywords: ['满减', '折扣', '限时', '活动'],
         recommendedAssetType: 'scene',
-        knowledgeTypes: ['marketing', 'promotion']
+        contentTags: ['marketing', 'promotion']
     },
     {
         type: 'B_信任状',
         namePatterns: [/信任/i, /品牌/i, /背书/i, /认证/i, /品牌背书/i],
         keywords: ['品牌', '认证', '资质', '奖项', '背书'],
         recommendedAssetType: 'icon',
-        knowledgeTypes: ['brand', 'certification']
+        contentTags: ['brand', 'certification']
     },
     {
         type: 'C_详情页首屏',
         namePatterns: [/首屏/i, /hero/i, /kv0/i, /主视觉/i, /核心/i, /卖点/i],
         keywords: ['首屏', '核心', '卖点', '亮点', '优势'],
         recommendedAssetType: 'product',
-        knowledgeTypes: ['hero', 'selling_point', 'feature']
+        contentTags: ['hero', 'selling_point', 'feature']
     },
     {
         type: 'D_图标icon',
         namePatterns: [/icon/i, /图标/i, /图标卖点/i],
         keywords: ['icon', '图标', '标识', '辅助说明'],
         recommendedAssetType: 'icon',
-        knowledgeTypes: ['icon', 'quick_point']
+        contentTags: ['icon', 'quick_point']
     },
     {
         type: 'E_KV图_调性',
         namePatterns: [/kv/i, /氛围/i, /视觉锤/i, /banner/i, /调性/i],
         keywords: ['kv', '氛围', 'banner', '调性'],
         recommendedAssetType: 'scene',
-        knowledgeTypes: ['kv', 'hero']
+        contentTags: ['kv', 'hero']
     },
     {
         type: 'F_颜色款式展示',
         namePatterns: [/颜色/i, /款式/i, /配色/i, /color/i],
         keywords: ['颜色', '款式', '配色'],
         recommendedAssetType: 'product',
-        knowledgeTypes: ['color', 'variant']
+        contentTags: ['color', 'variant']
     },
     {
         type: 'G_面料',
         namePatterns: [/面料/i, /材质/i, /成分/i, /fabric/i, /材质面料/i],
         keywords: ['面料', '材质', '成分', '纤维'],
         recommendedAssetType: 'detail',
-        knowledgeTypes: ['material', 'fabric']
+        contentTags: ['material', 'fabric']
     },
     {
         type: 'H_解决痛点',
         namePatterns: [/痛点/i, /问题/i, /解决/i, /pain/i],
         keywords: ['痛点', '问题', '解决'],
         recommendedAssetType: 'detail',
-        knowledgeTypes: ['pain_point', 'solution']
+        contentTags: ['pain_point', 'solution']
     },
     {
         type: 'I_穿搭推荐',
         namePatterns: [/穿搭/i, /搭配/i, /outfit/i],
         keywords: ['穿搭', '搭配', '场景'],
         recommendedAssetType: 'model',
-        knowledgeTypes: ['styling', 'outfit']
+        contentTags: ['styling', 'outfit']
     },
     {
         type: 'J_细节展示',
         namePatterns: [/细节/i, /工艺/i, /detail/i],
         keywords: ['细节', '工艺', '做工'],
         recommendedAssetType: 'detail',
-        knowledgeTypes: ['detail', 'craftsmanship']
+        contentTags: ['detail', 'craftsmanship']
     },
     {
         type: 'K_产品参数',
         namePatterns: [/参数/i, /规格/i, /尺码/i, /信息表/i],
         keywords: ['参数', '规格', '尺码', '数据'],
         recommendedAssetType: 'product',
-        knowledgeTypes: ['specification', 'size']
+        contentTags: ['specification', 'size']
     },
     {
         type: 'L_模特实拍',
         namePatterns: [/模特/i, /实拍/i, /model/i],
         keywords: ['模特', '实拍', '上身'],
         recommendedAssetType: 'model',
-        knowledgeTypes: ['model', 'lifestyle']
+        contentTags: ['model', 'lifestyle']
     },
     {
         type: 'M_售后服务',
         namePatterns: [/售后/i, /服务/i, /保障/i, /退换/i],
         keywords: ['售后', '服务', '保障', '退换'],
         recommendedAssetType: 'icon',
-        knowledgeTypes: ['service', 'guarantee']
+        contentTags: ['service', 'guarantee']
     }
 ];
 
@@ -349,7 +364,7 @@ export const DETAIL_PAGE_STRUCTURE_PRESET: ScreenStructurePreset = {
     ]
 };
 
-export const SCREEN_TO_KNOWLEDGE_MAP: Record<ScreenType, string[]> = {
+export const SCREEN_TO_CONTENT_TAG_MAP: Record<ScreenType, string[]> = {
     A_营销信息: ['promotion', 'discount', 'event'],
     B_信任状: ['brand', 'certification', 'award'],
     C_详情页首屏: ['hero', 'selling_point', 'feature', 'benefit'],

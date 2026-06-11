@@ -1,34 +1,69 @@
-/**
- * 获取图层中主体的边界
- * 使用 Photoshop 的"选择主体"功能或分析非透明像素
- */
-import { app, action, core } from 'photoshop';
+import { app, action, core, imaging } from 'photoshop';
 import { Tool, ToolSchema } from '../types';
+import { toNumber } from '../layout/layer-utils';
+
+type Bounds = {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+};
+
+function normalizeBounds(bounds: Bounds) {
+    return {
+        left: toNumber(bounds.left),
+        top: toNumber(bounds.top),
+        right: toNumber(bounds.right),
+        bottom: toNumber(bounds.bottom)
+    };
+}
+
+function findLayerById(container: any, id: number): any {
+    const numericId = typeof id === 'string' ? parseInt(id, 10) : id;
+    for (const layer of container.layers || []) {
+        if (layer.id === numericId) return layer;
+        if (layer.layers) {
+            const found = findLayerById(layer, numericId);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+function boundsFromLayer(layer: any): Bounds {
+    const source = layer.boundsNoEffects || layer.bounds;
+    return normalizeBounds({
+        left: source.left,
+        top: source.top,
+        right: source.right,
+        bottom: source.bottom
+    });
+}
 
 export class GetSubjectBoundsTool implements Tool {
     name = 'getSubjectBounds';
-    description = '获取图层中主体（非透明区域或智能检测主体）的边界框';
-    
+    description = '获取图层主体区域边界；可选 alpha 不透明区域或 Photoshop「选择主体」智能模式。';
+
     schema: ToolSchema = {
         name: 'getSubjectBounds',
-        description: '获取图层中主体（非透明区域或智能检测主体）的边界框',
+        description: '读取指定图层的主体外接矩形。method=alpha 基于透明度；method=smart 使用 Photoshop 选择主体。',
         parameters: {
             type: 'object',
             properties: {
                 layerId: {
                     type: 'number',
-                    description: '图层ID'
+                    description: '图层 ID'
                 },
                 method: {
                     type: 'string',
                     enum: ['alpha', 'smart'],
-                    description: '检测方法：alpha（分析透明度）或 smart（智能选择主体）'
+                    description: '检测方式：alpha（不透明区域）或 smart（选择主体）'
                 }
             },
             required: ['layerId']
         }
     };
-    
+
     async execute(params: {
         layerId: number;
         method?: 'alpha' | 'smart';
@@ -49,139 +84,86 @@ export class GetSubjectBoundsTool implements Tool {
         };
         error?: string;
     }> {
-        console.log('[GetSubjectBounds] ========== 开始 ==========');
-        console.log('[GetSubjectBounds] 参数:', JSON.stringify(params));
-        
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                console.error('[GetSubjectBounds] 错误: 没有打开的文档');
-                return { success: false, error: '没有打开的文档' };
+                return { success: false, error: '请先打开 Photoshop 文档' };
             }
-            
-            const layerId = typeof params.layerId === 'string' 
-                ? parseInt(params.layerId, 10) 
+
+            const layerId = typeof params.layerId === 'string'
+                ? parseInt(params.layerId, 10)
                 : params.layerId;
-            
-            console.log('[GetSubjectBounds] 查找图层 ID:', layerId);
-            
-            const layer = this.findLayerById(doc, layerId);
+
+            const layer = findLayerById(doc, layerId);
             if (!layer) {
-                console.error('[GetSubjectBounds] 错误: 未找到图层 ID:', layerId);
-                return { success: false, error: `未找到图层 ID: ${layerId}` };
+                return { success: false, error: `未找到图层，ID: ${layerId}` };
             }
-            
-            console.log('[GetSubjectBounds] 找到图层:', layer.name, 'kind:', layer.kind);
-            
+
             const method = params.method || 'smart';
-            console.log('[GetSubjectBounds] 使用方法:', method);
-            
-            let bounds: any;
-            
-            if (method === 'smart') {
-                console.log('[GetSubjectBounds] 调用 getSmartSubjectBounds...');
-                bounds = await this.getSmartSubjectBounds(layer);
-            } else {
-                console.log('[GetSubjectBounds] 调用 getAlphaBounds...');
-                bounds = await this.getAlphaBounds(layer);
-            }
-            
-            console.log('[GetSubjectBounds] 返回边界:', JSON.stringify(bounds));
-            
+            const bounds = method === 'smart'
+                ? await this.getSmartSubjectBounds(layer)
+                : await this.getAlphaBounds(doc, layer);
+
             if (!bounds) {
-                console.error('[GetSubjectBounds] 错误: bounds 为空');
-                return { success: false, error: '无法获取主体边界' };
+                return { success: false, error: `无法使用「${method}」方式获取主体区域` };
             }
-            
-            const result = {
+
+            const normalized = normalizeBounds(bounds);
+            return {
                 success: true,
                 data: {
                     bounds: {
-                        left: bounds.left,
-                        top: bounds.top,
-                        right: bounds.right,
-                        bottom: bounds.bottom,
-                        width: bounds.right - bounds.left,
-                        height: bounds.bottom - bounds.top,
-                        centerX: (bounds.left + bounds.right) / 2,
-                        centerY: (bounds.top + bounds.bottom) / 2
+                        left: normalized.left,
+                        top: normalized.top,
+                        right: normalized.right,
+                        bottom: normalized.bottom,
+                        width: normalized.right - normalized.left,
+                        height: normalized.bottom - normalized.top,
+                        centerX: (normalized.left + normalized.right) / 2,
+                        centerY: (normalized.top + normalized.bottom) / 2
                     },
                     method
                 }
             };
-            
-            console.log('[GetSubjectBounds] 成功:', JSON.stringify(result.data.bounds));
-            console.log('[GetSubjectBounds] ========== 结束 ==========');
-            return result;
-            
         } catch (error: any) {
-            console.error('[GetSubjectBounds] 异常:', error.message);
-            console.error('[GetSubjectBounds] 堆栈:', error.stack);
-            return { success: false, error: error.message || '获取主体边界失败' };
+            console.error('[GetSubjectBounds] Error:', error);
+            return {
+                success: false,
+                error: error.message || '获取主体区域失败'
+            };
         }
     }
-    
-    /**
-     * 使用智能选择主体获取边界
-     */
-    private async getSmartSubjectBounds(layer: any): Promise<any> {
-        console.log('[SmartSubject] 开始智能选择主体...');
-        console.log('[SmartSubject] 图层:', layer.name, 'ID:', layer.id);
-        
-        return await core.executeAsModal(async () => {
+
+    private async getSmartSubjectBounds(layer: any): Promise<Bounds | null> {
+        let resolved: Bounds | null = null;
+        await core.executeAsModal(async () => {
+            await action.batchPlay([
+                {
+                    _obj: 'select',
+                    _target: [{ _ref: 'layer', _id: layer.id }],
+                    makeVisible: false,
+                    _options: { dialogOptions: 'dontDisplay' }
+                }
+            ], { synchronousExecution: true });
+
+            await this.clearSelectionSilently();
+
             try {
-                // 先选中目标图层
-                console.log('[SmartSubject] 1. 选中目标图层...');
                 await action.batchPlay([
                     {
-                        _obj: 'select',
-                        _target: [{ _ref: 'layer', _id: layer.id }],
-                        makeVisible: false,
+                        _obj: 'selectSubject',
+                        sampleAllLayers: false,
+                        _isCommand: false,
                         _options: { dialogOptions: 'dontDisplay' }
                     }
-                ], { synchronousExecution: true });
-                console.log('[SmartSubject] ✓ 图层已选中');
-                
-                // 清除当前选区
-                console.log('[SmartSubject] 2. 清除当前选区...');
-                try {
-                    await action.batchPlay([
-                        {
-                            _obj: 'set',
-                            _target: [{ _ref: 'channel', _property: 'selection' }],
-                            to: { _enum: 'ordinal', _value: 'none' },
-                            _options: { dialogOptions: 'dontDisplay' }
-                        }
-                    ], { synchronousExecution: true });
-                    console.log('[SmartSubject] ✓ 选区已清除');
-                } catch (e) {
-                    console.log('[SmartSubject] 选区清除失败（忽略）');
-                }
-                
-                // 使用"选择主体"功能
-                console.log('[SmartSubject] 3. 执行 selectSubject (PS智能选择主体)...');
-                try {
-                    await action.batchPlay([
-                        {
-                            _obj: 'selectSubject',
-                            sampleAllLayers: false,
-                            _isCommand: false,  // 防止弹出错误对话框
-                            _options: { dialogOptions: 'dontDisplay' }
-                        }
-                    ], { 
-                        synchronousExecution: true,
-                        modalBehavior: 'execute'  // 静默执行
-                    });
-                    console.log('[SmartSubject] ✓ selectSubject 执行完成');
-                } catch (selectError: any) {
-                    console.warn('[SmartSubject] selectSubject 失败 (可能无法识别主体):', selectError.message);
-                    // 不抛出错误，直接回退到图层边界
-                    console.log('[SmartSubject] 回退到图层边界...');
-                    return this.getLayerBoundsFromBatchPlay(layer);
-                }
-                
-                // 获取选区边界
-                console.log('[SmartSubject] 4. 获取选区边界...');
+                ], {
+                    synchronousExecution: true
+                });
+            } catch (error: any) {
+                throw new Error(`选择主体失败: ${error.message || error}`);
+            }
+
+            try {
                 const selectionInfo = await action.batchPlay([
                     {
                         _obj: 'get',
@@ -192,112 +174,99 @@ export class GetSubjectBoundsTool implements Tool {
                         _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], { synchronousExecution: true });
-                
-                console.log('[SmartSubject] 选区信息:', JSON.stringify(selectionInfo));
-                
-                if (selectionInfo && selectionInfo[0] && selectionInfo[0].selection) {
-                    const sel = selectionInfo[0].selection;
-                    console.log('[SmartSubject] ✓ 选区有效, 原始数据:', JSON.stringify(sel));
-                    
-                    // 清除选区
-                    console.log('[SmartSubject] 5. 清除选区...');
-                    await action.batchPlay([
-                        {
-                            _obj: 'set',
-                            _target: [{ _ref: 'channel', _property: 'selection' }],
-                            to: { _enum: 'ordinal', _value: 'none' },
-                            _options: { dialogOptions: 'dontDisplay' }
-                        }
-                    ], { synchronousExecution: true });
-                    
-                    const bounds = {
-                        left: sel.left?._value || sel.left || 0,
-                        top: sel.top?._value || sel.top || 0,
-                        right: sel.right?._value || sel.right || 0,
-                        bottom: sel.bottom?._value || sel.bottom || 0
-                    };
-                    
-                    console.log('[SmartSubject] ✓ 主体边界:', JSON.stringify(bounds));
-                    return bounds;
+
+                const selection = selectionInfo?.[0]?.selection;
+                if (!selection) {
+                    throw new Error('Photoshop 未返回有效选区');
                 }
-                
-                // 如果智能选择失败（没有选区），回退到图层边界
-                console.warn('[SmartSubject] ✗ 没有选区，回退到图层边界');
-                return this.getLayerBoundsFromBatchPlay(layer);
-                
-            } catch (error: any) {
-                console.error('[SmartSubject] ✗ 智能选择异常:', error.message);
-                console.log('[SmartSubject] 回退到图层边界...');
-                return this.getLayerBoundsFromBatchPlay(layer);
+
+                resolved = normalizeBounds({
+                    left: selection.left?._value ?? selection.left,
+                    top: selection.top?._value ?? selection.top,
+                    right: selection.right?._value ?? selection.right,
+                    bottom: selection.bottom?._value ?? selection.bottom
+                });
+            } finally {
+                await this.clearSelectionSilently();
             }
-        }, { commandName: 'Get Subject Bounds' });
+        }, { commandName: 'Get Subject Bounds (smart)' });
+        return resolved;
     }
-    
-    /**
-     * 分析 alpha 通道获取非透明区域边界
-     */
-    private async getAlphaBounds(layer: any): Promise<any> {
-        // 对于没有透明背景的图层，使用图层边界
-        // 对于有透明背景的，理论上应该分析像素，但这里简化处理
-        return await core.executeAsModal(async () => {
-            return this.getLayerBoundsFromBatchPlay(layer);
-        }, { commandName: 'Get Alpha Bounds' });
+
+    private async getAlphaBounds(doc: any, layer: any): Promise<Bounds | null> {
+        let resolved: Bounds | null = null;
+        await core.executeAsModal(async () => {
+            const requestedBounds = boundsFromLayer(layer);
+            const pixelResult = await imaging.getPixels({
+                documentID: doc.id,
+                layerID: layer.id,
+                sourceBounds: requestedBounds
+            });
+
+            if (!pixelResult?.imageData) {
+                throw new Error('无法读取图层像素数据');
+            }
+
+            const actualBounds = normalizeBounds(pixelResult.sourceBounds || requestedBounds);
+            const imageData = pixelResult.imageData;
+            const width = imageData.width;
+            const height = imageData.height;
+            const components = imageData.components;
+            const rawData = await imageData.getData();
+
+            try {
+                if (components < 4) {
+                    resolved = actualBounds;
+                    return;
+                }
+
+                let minX = width;
+                let minY = height;
+                let maxX = -1;
+                let maxY = -1;
+
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const alpha = rawData[(y * width + x) * components + 3];
+                        if (alpha > 0) {
+                            if (x < minX) minX = x;
+                            if (y < minY) minY = y;
+                            if (x > maxX) maxX = x;
+                            if (y > maxY) maxY = y;
+                        }
+                    }
+                }
+
+                if (maxX < minX || maxY < minY) {
+                    resolved = null;
+                    return;
+                }
+
+                resolved = {
+                    left: actualBounds.left + minX,
+                    top: actualBounds.top + minY,
+                    right: actualBounds.left + maxX + 1,
+                    bottom: actualBounds.top + maxY + 1
+                };
+            } finally {
+                imageData.dispose();
+            }
+        }, { commandName: 'Get Subject Bounds (alpha)' });
+        return resolved;
     }
-    
-    /**
-     * 使用 batchPlay 获取图层边界（回退方案）
-     */
-    private async getLayerBoundsFromBatchPlay(layer: any): Promise<any> {
-        console.log('[LayerBounds] 获取图层边界 (回退), layerId:', layer.id);
+
+    private async clearSelectionSilently(): Promise<void> {
         try {
-            const result = await action.batchPlay([
+            await action.batchPlay([
                 {
-                    _obj: 'get',
-                    _target: [
-                        { _ref: 'layer', _id: layer.id }
-                    ],
+                    _obj: 'set',
+                    _target: [{ _ref: 'channel', _property: 'selection' }],
+                    to: { _enum: 'ordinal', _value: 'none' },
                     _options: { dialogOptions: 'dontDisplay' }
                 }
             ], { synchronousExecution: true });
-            
-            if (result && result[0] && result[0].bounds) {
-                const b = result[0].bounds;
-                return {
-                    left: b.left?._value || b.left || 0,
-                    top: b.top?._value || b.top || 0,
-                    right: b.right?._value || b.right || 0,
-                    bottom: b.bottom?._value || b.bottom || 0
-                };
-            }
-            
-            // 使用图层 API
-            if (layer.bounds) {
-                return {
-                    left: layer.bounds.left,
-                    top: layer.bounds.top,
-                    right: layer.bounds.right,
-                    bottom: layer.bounds.bottom
-                };
-            }
-            
-            return null;
-        } catch (error) {
-            console.error('[GetSubjectBounds] getLayerBoundsFromBatchPlay error:', error);
-            return null;
+        } catch {
+            // ignore if there is no active selection
         }
-    }
-    
-    private findLayerById(container: any, id: number): any {
-        const numericId = typeof id === 'string' ? parseInt(id as string, 10) : id;
-        for (const layer of container.layers) {
-            if (layer.id === numericId) {
-                return layer;
-            }
-            if (layer.layers) {
-                const found = this.findLayerById(layer, numericId);
-                if (found) return found;
-            }
-        }
-        return null;
     }
 }

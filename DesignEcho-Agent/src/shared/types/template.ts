@@ -12,7 +12,7 @@ export type ImageFit = 'contain' | 'cover' | 'fill' | 'none';
 export type ImageAlign = 'center' | 'top' | 'bottom' | 'left' | 'right';
 export type ImageMask = 'clip' | 'overflow';
 
-export type TextSource = 'input' | 'knowledge' | 'auto';
+export type TextSource = 'input' | 'preset' | 'auto';
 export type RepeatDirection = 'horizontal' | 'vertical' | 'grid';
 
 // ===== 占位符定义 =====
@@ -30,7 +30,7 @@ export interface PlaceholderOptions {
     maxLength?: number;
     fallback?: string;
     fontSize?: { min: number; max: number };
-    knowledgeType?: 'sellingPoint' | 'painPoint' | 'copyTemplate';
+    presetType?: 'sellingPoint' | 'painPoint' | 'copyTemplate';
     
     // 样式选项
     property?: 'color' | 'font' | 'effect';
@@ -155,7 +155,7 @@ export interface TextBinding {
     type: 'text';
     value: string;
     source?: TextSource;
-    knowledgeId?: string;
+    presetId?: string;
 }
 
 export interface StyleBinding {

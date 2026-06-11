@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 剪切蒙版工具
  * 
  * 创建和释放剪切蒙版
@@ -8,6 +8,17 @@ import { Tool, ToolSchema } from '../types';
 
 const app = require('photoshop').app;
 const { core, action } = require('photoshop');
+
+function findLayerById(container: any, id: number): any {
+    for (const layer of container.layers || []) {
+        if (layer.id === id) return layer;
+        if (layer.layers) {
+            const found = findLayerById(layer, id);
+            if (found) return found;
+        }
+    }
+    return null;
+}
 
 export class CreateClippingMaskTool implements Tool {
     name = 'createClippingMask';
@@ -50,7 +61,7 @@ export class CreateClippingMaskTool implements Tool {
 
             // 如果提供了 layerId，先选中该图层
             if (params.layerId) {
-                targetLayer = this.findLayerById(doc, params.layerId);
+                targetLayer = findLayerById(doc, params.layerId);
                 if (!targetLayer) {
                     return { success: false, error: `未找到 ID 为 ${params.layerId} 的图层` };
                 }
@@ -111,20 +122,6 @@ export class CreateClippingMaskTool implements Tool {
                 error: error instanceof Error ? error.message : '创建剪切蒙版失败'
             };
         }
-    }
-
-    /**
-     * 递归查找图层
-     */
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) return layer;
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
     }
 
     /**
@@ -191,7 +188,7 @@ export class ReleaseClippingMaskTool implements Tool {
             let targetLayer: any;
 
             if (params.layerId) {
-                targetLayer = this.findLayerById(doc, params.layerId);
+                targetLayer = findLayerById(doc, params.layerId);
                 if (!targetLayer) {
                     return { success: false, error: `未找到 ID 为 ${params.layerId} 的图层` };
                 }
@@ -243,14 +240,4 @@ export class ReleaseClippingMaskTool implements Tool {
         }
     }
 
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) return layer;
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
 }

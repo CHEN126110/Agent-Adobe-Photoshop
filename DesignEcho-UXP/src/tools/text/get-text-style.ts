@@ -3,6 +3,7 @@
  */
 
 import { Tool, ToolSchema, TextStyle } from '../types';
+import { safeBatchPlay } from '../../core/error-handler';
 
 const app = require('photoshop').app;
 const { LayerKind } = require('photoshop').constants;
@@ -57,15 +58,16 @@ export class GetTextStyleTool implements Tool {
 
             const textItem = layer.textItem;
             const charStyle = textItem.characterStyle;
+            const descriptorStyle = await this.readDescriptorTextStyle(layer.id);
 
             const style: TextStyle = {
-                fontSize: charStyle.size,
-                fontName: charStyle.font,
+                fontSize: this.pickNumber(descriptorStyle.fontSize, charStyle.size),
+                fontName: descriptorStyle.fontName || charStyle.font,
                 fontStyle: charStyle.fontStyle,
-                tracking: charStyle.tracking,
-                leading: charStyle.leading,
-                horizontalScale: charStyle.horizontalScale,
-                verticalScale: charStyle.verticalScale
+                tracking: this.pickNumber(descriptorStyle.tracking, charStyle.tracking),
+                leading: this.pickNumber(descriptorStyle.leading, charStyle.leading),
+                horizontalScale: this.pickNumber(descriptorStyle.horizontalScale, charStyle.horizontalScale),
+                verticalScale: this.pickNumber(descriptorStyle.verticalScale, charStyle.verticalScale)
             };
 
             // 尝试获取颜色
@@ -108,5 +110,46 @@ export class GetTextStyleTool implements Tool {
             }
         }
         return null;
+    }
+
+    private async readDescriptorTextStyle(layerId: number): Promise<Partial<TextStyle>> {
+        try {
+            const result = await safeBatchPlay([{
+                _obj: 'get',
+                _target: [{ _ref: 'layer', _id: layerId }],
+                _options: { dialogOptions: 'dontDisplay' }
+            }], { synchronousExecution: true }, '获取文本样式描述');
+
+            if (!result.success || !Array.isArray(result.result) || !result.result[0]) {
+                return {};
+            }
+
+            const textStyle = result.result[0]?.textKey?.textStyleRange?.[0]?.textStyle || {};
+            return {
+                fontSize: this.readUnitNumber(textStyle.size),
+                fontName: typeof textStyle.fontPostScriptName === 'string' ? textStyle.fontPostScriptName : undefined,
+                tracking: this.readUnitNumber(textStyle.tracking),
+                leading: this.readUnitNumber(textStyle.leading),
+                horizontalScale: this.readUnitNumber(textStyle.horizontalScale),
+                verticalScale: this.readUnitNumber(textStyle.verticalScale)
+            };
+        } catch {
+            return {};
+        }
+    }
+
+    private readUnitNumber(value: unknown): number | undefined {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (value && typeof value === 'object') {
+            const unitValue = Number((value as { _value?: unknown })._value);
+            if (Number.isFinite(unitValue)) return unitValue;
+        }
+        return undefined;
+    }
+
+    private pickNumber(primary: unknown, fallback: unknown): number | undefined {
+        const primaryValue = this.readUnitNumber(primary);
+        if (typeof primaryValue === 'number') return primaryValue;
+        return this.readUnitNumber(fallback);
     }
 }

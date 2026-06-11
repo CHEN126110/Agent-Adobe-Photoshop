@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WebSocket 服务器
  * 
  * 处理与 UXP 插件的通信
@@ -63,10 +63,33 @@ interface ServerOptions {
     onDisconnection?: () => void;
 }
 
+export interface WebSocketConnectionDiagnostics {
+    connected: boolean;
+    readyState: string;
+    lastActivityAt: string | null;
+    lastConnectedAt: string | null;
+    lastDisconnectedAt: string | null;
+    lastPingReceivedAt: string | null;
+    lastPongSentAt: string | null;
+    lastNativePingAt: string | null;
+    lastNativePongAt: string | null;
+    missedNativePongs: number;
+    lastError: string | null;
+    pendingRequestCount: number;
+    pendingRequests: Array<{
+        id: string;
+        method: string;
+        startedAt: string | null;
+        ageMs: number;
+    }>;
+}
+
 type PendingRequest = {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
     timeout: ReturnType<typeof setTimeout>;
+    method: string;
+    startedAt: number;
 };
 
 // 请求处理器类型
@@ -91,6 +114,7 @@ export class WebSocketServer {
     private requestHandlers: Map<string, RequestHandler> = new Map();
     private binaryHandler: BinaryRequestHandler | null = null;  // 二进制消息处理器
     private pendingBinaryRequests: Map<number, PendingBinaryRequest> = new Map();  // 二进制请求
+    private receivedBinaryCache: Map<number, { header: BinaryHeader; imageData: Buffer; timestamp: number }> = new Map();  // 已到达但未被 waitForBinaryData 消费的数据
     private wss: WSServer | null = null;
     private port: number;
     private pluginSocket: WebSocket | null = null;
@@ -102,6 +126,16 @@ export class WebSocketServer {
     private keepAliveInterval: ReturnType<typeof setInterval> | null = null;
     private lastActivityTime: number = Date.now();
     private static readonly KEEP_ALIVE_INTERVAL = 30000;  // 30秒发送一次心跳（sd-ppp 用 60s，适中选择）
+    private static readonly MAX_MISSED_NATIVE_PONGS = 3;
+    private lastConnectedAt: number | null = null;
+    private lastDisconnectedAt: number | null = null;
+    private lastPingReceivedAt: number | null = null;
+    private lastPongSentAt: number | null = null;
+    private lastNativePingAt: number | null = null;
+    private lastNativePongAt: number | null = null;
+    private missedNativePongs: number = 0;
+    private awaitingNativePong: boolean = false;
+    private lastSocketError: string | null = null;
 
     constructor(port: number, options: ServerOptions = {}) {
         this.port = port;
@@ -128,17 +162,24 @@ export class WebSocketServer {
         this.wss.on('connection', (socket: WebSocket) => {
             // 使用日志服务记录连接状态（只在状态变化时显示）
             const logService = getLogService();
-            logService.logConnectionStatus(true, 'WebSocket 连接建立');
+            logService.logConnectionStatus(true, 'WebSocket connected');
             
             // 只允许一个插件连接
             if (this.pluginSocket) {
-                logService.logAgent('debug', '[WebSocket] 关闭旧连接');
+                logService.logAgent('debug', '[WebSocket] Closing previous plugin connection');
                 this.stopKeepAlive();
                 this.pluginSocket.close();
             }
 
             this.pluginSocket = socket;
             this.lastActivityTime = Date.now();
+            this.lastConnectedAt = Date.now();
+            this.lastSocketError = null;
+            this.lastDisconnectedAt = null;
+            this.awaitingNativePong = false;
+            this.missedNativePongs = 0;
+            this.lastNativePingAt = null;
+            this.lastNativePongAt = null;
             this.options.onConnection?.();
             
             // 启动心跳保持
@@ -155,18 +196,32 @@ export class WebSocketServer {
                 }
             });
 
+            socket.on('pong', () => {
+                if (this.pluginSocket !== socket) return;
+                this.lastNativePongAt = Date.now();
+                this.awaitingNativePong = false;
+                this.missedNativePongs = 0;
+            });
+
             socket.on('close', () => {
-                logService.logConnectionStatus(false, 'WebSocket 连接断开');
-                logService.resetHeartbeatLog();
-                this.stopKeepAlive();
                 if (this.pluginSocket === socket) {
+                    logService.logConnectionStatus(false, 'WebSocket disconnected');
+                    logService.resetHeartbeatLog();
+                    this.stopKeepAlive();
                     this.pluginSocket = null;
+                    this.lastDisconnectedAt = Date.now();
+                    this.awaitingNativePong = false;
+                    this.missedNativePongs = 0;
+                    this.rejectPendingRequests('UXP 插件连接已断开');
                     this.options.onDisconnection?.();
                 }
             });
 
             socket.on('error', (error: Error) => {
-                logService.logAgent('error', `[WebSocket] Socket 错误: ${error.message}`);
+                if (this.pluginSocket === socket) {
+                    this.lastSocketError = error.message;
+                }
+                logService.logAgent('error', `[WebSocket] Socket error: ${error.message}`);
             });
         });
 
@@ -175,10 +230,10 @@ export class WebSocketServer {
             
             // 处理端口占用错误
             if (error.code === 'EADDRINUSE') {
-                console.log(`[WebSocket Server] 端口 ${this.port} 被占用`);
+                console.log(`[WebSocket Server] Port ${this.port} is already in use`);
                 
                 if (retryCount < maxRetries) {
-                    console.log(`[WebSocket Server] ${retryDelay/1000}秒后重试 (${retryCount + 1}/${maxRetries})...`);
+                    console.log(`[WebSocket Server] Retrying in ${retryDelay / 1000}s (${retryCount + 1}/${maxRetries})...`);
                     
                     // 关闭当前服务器实例
                     if (this.wss) {
@@ -191,7 +246,7 @@ export class WebSocketServer {
                         this.start(retryCount + 1);
                     }, retryDelay);
                 } else {
-                    console.error(`[WebSocket Server] 端口 ${this.port} 持续被占用，已达到最大重试次数`);
+                    console.error(`[WebSocket Server] Port ${this.port} is still in use after maximum retries`);
                 }
             }
         });
@@ -231,6 +286,7 @@ export class WebSocketServer {
         
         this.keepAliveInterval = setInterval(() => {
             if (this.isPluginConnected()) {
+                this.sendNativePing();
                 // 发送 pong 响应（模拟 UXP 的 ping），不记录日志
                 this.sendNotification('pong', { 
                     timestamp: Date.now(),
@@ -251,6 +307,43 @@ export class WebSocketServer {
         if (this.keepAliveInterval) {
             clearInterval(this.keepAliveInterval);
             this.keepAliveInterval = null;
+        }
+    }
+
+    private sendNativePing(): void {
+        if (!this.pluginSocket || this.pluginSocket.readyState !== WebSocket.OPEN) return;
+
+        if (this.awaitingNativePong) {
+            this.missedNativePongs += 1;
+            if (this.missedNativePongs >= WebSocketServer.MAX_MISSED_NATIVE_PONGS) {
+                this.closeStalePluginSocket('native pong timeout');
+                return;
+            }
+        }
+
+        try {
+            this.awaitingNativePong = true;
+            this.lastNativePingAt = Date.now();
+            this.pluginSocket.ping();
+        } catch (error: any) {
+            const message = error?.message || 'native ping failed';
+            this.lastSocketError = message;
+            this.closeStalePluginSocket(message);
+        }
+    }
+
+    private closeStalePluginSocket(reason: string): void {
+        if (!this.pluginSocket) return;
+
+        const socket = this.pluginSocket;
+        this.lastSocketError = reason;
+        console.warn(`[WebSocket Server] Closing stale plugin socket: ${reason}`);
+
+        try {
+            socket.close(1001, reason);
+        } catch (error: any) {
+            this.lastSocketError = error?.message || reason;
+            socket.terminate();
         }
     }
 
@@ -276,7 +369,40 @@ export class WebSocketServer {
      */
     setBinaryHandler(handler: BinaryRequestHandler): void {
         this.binaryHandler = handler;
-        console.log('[WebSocket Server] 二进制处理器已注册');
+        console.log('[WebSocket Server] Binary handler registered');
+    }
+
+    /**
+     * 等待指定 requestId 的二进制数据到达
+     *
+     * 用于 UXP handler 中获取二进制图像传输的数据
+     */
+    waitForBinaryData(requestId: number, timeoutMs: number = 10000): Promise<{ header: BinaryHeader; imageData: Buffer } | null> {
+        // 先检查是否已经到达（二进制可能先于 JSON 到达）
+        const cached = this.receivedBinaryCache.get(requestId);
+        if (cached) {
+            this.receivedBinaryCache.delete(requestId);
+            return Promise.resolve({ header: cached.header, imageData: cached.imageData });
+        }
+
+        return new Promise((resolve) => {
+            const timeoutId = setTimeout(() => {
+                this.pendingBinaryRequests.delete(requestId);
+                resolve(null);
+            }, timeoutMs);
+
+            this.pendingBinaryRequests.set(requestId, {
+                resolve: (data) => {
+                    clearTimeout(timeoutId);
+                    resolve(data);
+                },
+                reject: () => {
+                    clearTimeout(timeoutId);
+                    resolve(null);
+                },
+                timeout: timeoutId
+            });
+        });
     }
 
     /**
@@ -335,6 +461,11 @@ export class WebSocketServer {
             return;
         }
 
+        // 缓存二进制数据，供后续 waitForBinaryData 调用消费
+        this.receivedBinaryCache.set(header.requestId, { header, imageData, timestamp: Date.now() });
+        // 30 秒后自动清理
+        setTimeout(() => { this.receivedBinaryCache.delete(header.requestId); }, 30000);
+
         // 调用二进制处理器
         if (this.binaryHandler) {
             try {
@@ -367,6 +498,98 @@ export class WebSocketServer {
                this.pluginSocket.readyState === WebSocket.OPEN;
     }
 
+    getConnectionDiagnostics(): WebSocketConnectionDiagnostics {
+        return {
+            connected: this.isPluginConnected(),
+            readyState: this.getPluginReadyState(),
+            lastActivityAt: this.formatTimestamp(this.lastActivityTime),
+            lastConnectedAt: this.formatTimestamp(this.lastConnectedAt),
+            lastDisconnectedAt: this.formatTimestamp(this.lastDisconnectedAt),
+            lastPingReceivedAt: this.formatTimestamp(this.lastPingReceivedAt),
+            lastPongSentAt: this.formatTimestamp(this.lastPongSentAt),
+            lastNativePingAt: this.formatTimestamp(this.lastNativePingAt),
+            lastNativePongAt: this.formatTimestamp(this.lastNativePongAt),
+            missedNativePongs: this.missedNativePongs,
+            lastError: this.lastSocketError,
+            pendingRequestCount: this.pendingRequests.size,
+            pendingRequests: this.getPendingRequestDiagnostics()
+        };
+    }
+
+    private getPendingRequestDiagnostics(): WebSocketConnectionDiagnostics['pendingRequests'] {
+        const now = Date.now();
+        return Array.from(this.pendingRequests.entries()).map(([id, pending]) => ({
+            id: String(id),
+            method: pending.method,
+            startedAt: this.formatTimestamp(pending.startedAt),
+            ageMs: Math.max(0, now - pending.startedAt)
+        }));
+    }
+
+    private buildPluginRequestTimeoutError(
+        method: string,
+        requestId: string | number,
+        timeoutPrefix: 'Request timeout' | 'MCP request timeout' = 'Request timeout'
+    ): Error {
+        const diagnostics = this.getConnectionDiagnostics();
+        const pending = diagnostics.pendingRequests.find((item) => item.id === String(requestId));
+        const pendingSummary = pending
+            ? `pendingRequest=${pending.method}, ageMs=${pending.ageMs}`
+            : `pendingRequest=${method}`;
+        const message = [
+            `${timeoutPrefix}: ${method}`,
+            '疑似 Photoshop 原生弹窗或 UXP 模态状态阻塞。',
+            '请检查 Photoshop 是否弹出“命令当前不可用”等确认框，关闭弹窗后重载 UXP 插件；恢复前不要重复执行写入工具。',
+            pendingSummary
+        ].join(' ');
+        const error = new Error(message);
+        (error as Error & {
+            code?: string;
+            errorCategory?: string;
+            diagnostics?: WebSocketConnectionDiagnostics;
+        }).code = 'photoshop_native_modal_suspected';
+        (error as Error & {
+            code?: string;
+            errorCategory?: string;
+            diagnostics?: WebSocketConnectionDiagnostics;
+        }).errorCategory = 'photoshop_native_modal_suspected';
+        (error as Error & {
+            code?: string;
+            errorCategory?: string;
+            diagnostics?: WebSocketConnectionDiagnostics;
+        }).diagnostics = diagnostics;
+        return error;
+    }
+
+    private getPluginReadyState(): string {
+        if (!this.pluginSocket) return 'none';
+
+        switch (this.pluginSocket.readyState) {
+            case WebSocket.CONNECTING:
+                return 'connecting';
+            case WebSocket.OPEN:
+                return 'open';
+            case WebSocket.CLOSING:
+                return 'closing';
+            case WebSocket.CLOSED:
+                return 'closed';
+            default:
+                return String(this.pluginSocket.readyState);
+        }
+    }
+
+    private formatTimestamp(value: number | null): string | null {
+        return value ? new Date(value).toISOString() : null;
+    }
+
+    private rejectPendingRequests(message: string): void {
+        this.pendingRequests.forEach((pending) => {
+            clearTimeout(pending.timeout);
+            pending.reject(new Error(message));
+        });
+        this.pendingRequests.clear();
+    }
+
     /**
      * 发送请求到插件
      */
@@ -387,14 +610,17 @@ export class WebSocketServer {
 
         return new Promise(async (resolve, reject) => {
             const timeoutId = setTimeout(() => {
+                const timeoutError = this.buildPluginRequestTimeoutError(method, id, 'Request timeout');
                 this.pendingRequests.delete(id);
-                reject(new Error(`Request timeout: ${method}`));
+                reject(timeoutError);
             }, timeout);
 
             this.pendingRequests.set(id, {
                 resolve,
                 reject,
-                timeout: timeoutId
+                timeout: timeoutId,
+                method,
+                startedAt: Date.now()
             });
 
             // 计算数据大小并在发送大数据前发送心跳
@@ -445,11 +671,14 @@ export class WebSocketServer {
             params
         };
 
-        try {
-            this.pluginSocket!.send(JSON.stringify(notification));
-        } catch (e: any) {
-            // 忽略发送错误（可能是连接已断开）
-            console.warn(`[WebSocket Server] 发送通知失败: ${e.message}`);
+            try {
+                this.pluginSocket!.send(JSON.stringify(notification));
+                if (method === 'pong') {
+                    this.lastPongSentAt = Date.now();
+                }
+            } catch (e: any) {
+                // 忽略发送错误（可能是连接已断开）
+                console.warn(`[WebSocket Server] 发送通知失败: ${e.message}`);
         }
     }
 
@@ -459,6 +688,43 @@ export class WebSocketServer {
     registerHandler(method: string, handler: RequestHandler): void {
         this.requestHandlers.set(method, handler);
         console.log(`[WebSocket Server] Handler registered: ${method}`);
+    }
+
+    private summarizeValueForLog(value: any, depth = 0): string {
+        if (value === null) return 'null';
+        if (value === undefined) return 'undefined';
+        if (typeof value === 'string') return `string(${value.length})`;
+        if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+        if (typeof value === 'bigint') return `bigint(${value.toString()})`;
+        if (Buffer.isBuffer(value)) return `Buffer(${value.length})`;
+        if (value instanceof Uint8Array) return `Uint8Array(${value.length})`;
+        if (Array.isArray(value)) return `Array(${value.length})`;
+        if (typeof value !== 'object') return typeof value;
+        if (depth >= 1) return `Object(${Object.keys(value).length})`;
+        const keys = Object.keys(value);
+        const preview = keys.slice(0, 6).join(',');
+        return `Object(${keys.length}){${preview}${keys.length > 6 ? ',...' : ''}}`;
+    }
+
+    private summarizeRpcMessageForLog(message: any): string {
+        const hasId = Object.prototype.hasOwnProperty.call(message, 'id') && message.id !== null && message.id !== undefined;
+        const hasMethod = typeof message?.method === 'string' && message.method.length > 0;
+        const kind = hasId && hasMethod ? 'request'
+            : hasId && !hasMethod ? 'response'
+            : hasMethod ? 'notification'
+            : 'unknown';
+        const idPart = hasId ? ` id=${String(message.id)}` : '';
+        const methodPart = hasMethod ? ` method=${message.method}` : '';
+        const paramsPart = hasMethod && Object.prototype.hasOwnProperty.call(message, 'params')
+            ? ` params=${this.summarizeValueForLog(message.params)}`
+            : '';
+        const resultPart = Object.prototype.hasOwnProperty.call(message, 'result')
+            ? ` result=${this.summarizeValueForLog(message.result)}`
+            : '';
+        const errorPart = Object.prototype.hasOwnProperty.call(message, 'error')
+            ? ` error=${this.summarizeValueForLog(message.error)}`
+            : '';
+        return `${kind}${idPart}${methodPart}${paramsPart}${resultPart}${errorPart}`;
     }
 
     /**
@@ -473,7 +739,7 @@ export class WebSocketServer {
                                (message.method === 'plugin.log' && message.params?.message?.includes('pong'));
             
             if (!isHeartbeat) {
-                console.log('[WebSocket Server] Received:', message);
+                console.log(`[WebSocket Server] Received ${this.summarizeRpcMessageForLog(message)}`);
             }
 
             // 检查是否是响应（有 id，没有 method）
@@ -615,14 +881,17 @@ export class WebSocketServer {
 
         return new Promise((resolve, reject) => {
             const timeoutId = setTimeout(() => {
+                const timeoutError = this.buildPluginRequestTimeoutError(method, id, 'MCP request timeout');
                 this.pendingRequests.delete(id);
-                reject(new Error(`MCP request timeout: ${method}`));
+                reject(timeoutError);
             }, 30000);
 
             this.pendingRequests.set(id, {
                 resolve,
                 reject,
-                timeout: timeoutId
+                timeout: timeoutId,
+                method,
+                startedAt: Date.now()
             });
 
             this.pluginSocket!.send(JSON.stringify(request));
@@ -712,6 +981,7 @@ export class WebSocketServer {
                 break;
 
             case 'ping':
+                this.lastPingReceivedAt = Date.now();
                 // 静默响应 ping，不记录日志
                 this.sendNotification('pong', { timestamp: Date.now() });
                 break;

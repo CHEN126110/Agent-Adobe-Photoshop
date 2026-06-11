@@ -8,34 +8,44 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import {
     useAppStore,
     EcommerceProjectStructure,
-    FolderType, 
-    ImageType, 
-    FolderInfo, 
-    ImageFile 
+    FolderType,
+    ImageType,
+    FolderInfo,
+    ImageFile
 } from '../stores/app.store';
+import {
+    ASSET_ROLE_FILTERS,
+    filterAssetImages,
+    getAspectLabel,
+    getAssetRole,
+    getAssetRoleLabel,
+    getImageDimensions,
+    type AssetRoleFilter,
+    type AssetSortBy
+} from './asset-gallery-view-model';
 
 // 文件夹类型标签配置 - 统一样式
-const FOLDER_TYPE_CONFIG: Record<FolderType, { label: string; icon: string; color: string }> = {
-    source: { label: '素材', icon: '📁', color: '#9ca3af' },
-    psd: { label: 'PSD', icon: '📁', color: '#9ca3af' },
-    mainImage: { label: '主图', icon: '📁', color: '#9ca3af' },
-    detail: { label: '详情页', icon: '📁', color: '#9ca3af' },
-    sku: { label: 'SKU', icon: '📁', color: '#9ca3af' },
-    unknown: { label: '未分类', icon: '📁', color: '#9ca3af' }
+const FOLDER_TYPE_CONFIG: Record<FolderType, { label: string; shortLabel: string; color: string }> = {
+    source: { label: '素材', shortLabel: '源', color: '#9ca3af' },
+    psd: { label: 'PSD', shortLabel: 'PSD', color: '#9ca3af' },
+    mainImage: { label: '主图', shortLabel: '主', color: '#9ca3af' },
+    detail: { label: '详情页', shortLabel: '详', color: '#9ca3af' },
+    sku: { label: 'SKU', shortLabel: 'SKU', color: '#9ca3af' },
+    unknown: { label: '未分类', shortLabel: '未', color: '#9ca3af' }
 };
 
 // 图片类型标签配置
-const IMAGE_TYPE_CONFIG: Record<ImageType, { label: string; color: string; icon: string }> = {
-    product: { label: '产品图', color: '#10b981', icon: '📦' },
-    model: { label: '模特图', color: '#f59e0b', icon: '👤' },
-    detail: { label: '细节图', color: '#3b82f6', icon: '🔍' },
-    scene: { label: '场景图', color: '#8b5cf6', icon: '🏠' },
-    package: { label: '包装图', color: '#ec4899', icon: '📦' },
-    material: { label: '材质图', color: '#14b8a6', icon: '🧵' },
-    psd: { label: 'PSD', color: '#0066ff', icon: '🎨' },
-    design: { label: '设计文件', color: '#ff6600', icon: '✏️' },
-    video: { label: '视频', color: '#ff0066', icon: '🎬' },
-    unknown: { label: '未分类', color: '#6b7280', icon: '📄' }
+const IMAGE_TYPE_CONFIG: Record<ImageType, { label: string; color: string; shortLabel: string }> = {
+    product: { label: '产品图', color: '#10b981', shortLabel: '产' },
+    model: { label: '模特图', color: '#f59e0b', shortLabel: '模' },
+    detail: { label: '细节图', color: '#3b82f6', shortLabel: '细' },
+    scene: { label: '场景图', color: '#8b5cf6', shortLabel: '景' },
+    package: { label: '包装图', color: '#ec4899', shortLabel: '包' },
+    material: { label: '材质图', color: '#14b8a6', shortLabel: '材' },
+    psd: { label: 'PSD', color: '#0066ff', shortLabel: 'PSD' },
+    design: { label: '设计文件', color: '#ff6600', shortLabel: '设' },
+    video: { label: '视频', color: '#ff0066', shortLabel: '视' },
+    unknown: { label: '未分类', color: '#6b7280', shortLabel: '未' }
 };
 
 // 格式化文件大小
@@ -51,8 +61,14 @@ interface AssetGalleryProps {
     onImageTypeChange?: (imagePath: string, type: ImageType) => void;
 }
 
-// 排序类型
-type SortBy = 'name' | 'size' | 'type';
+function findFirstImageFolder(folders: FolderInfo[]): FolderInfo | null {
+    for (const folder of folders) {
+        if (folder.imageCount > 0) return folder;
+        const child = findFirstImageFolder(folder.children || []);
+        if (child) return child;
+    }
+    return null;
+}
 
 export const AssetGallery: React.FC<AssetGalleryProps> = ({
     onImageClick,
@@ -71,7 +87,8 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
     const [loadingThumbnails, setLoadingThumbnails] = useState<Set<string>>(new Set());
     const [failedThumbnails, setFailedThumbnails] = useState<Set<string>>(new Set());
     const [searchQuery, setSearchQuery] = useState('');
-    const [sortBy, setSortBy] = useState<SortBy>('name');
+    const [sortBy, setSortBy] = useState<AssetSortBy>('name');
+    const [assetRoleFilter, setAssetRoleFilter] = useState<AssetRoleFilter>('all');
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const [initialized, setInitialized] = useState(false);
     const [isScanningStructure, setIsScanningStructure] = useState(false);
@@ -150,6 +167,10 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
             if (expandable.length > 0) {
                 setExpandedFolders(new Set(expandable));
             }
+            const firstFolder = findFirstImageFolder(ecommerceStructure.folders);
+            if (firstFolder) {
+                setSelectedFolder(firstFolder.relativePath);
+            }
             setInitialized(true);
         }
     }, [ecommerceStructure, initialized, collectExpandableFolders]);
@@ -220,33 +241,27 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
         const folder = findFolder(ecommerceStructure.folders, selectedFolder);
         if (!folder) return [];
         
-        let images = [...folder.images];
-        
-        // 搜索过滤
-        if (searchQuery.trim()) {
-            const query = searchQuery.toLowerCase();
-            images = images.filter(img => 
-                img.name.toLowerCase().includes(query) ||
-                img.type.toLowerCase().includes(query)
-            );
-        }
-        
-        // 排序
-        images.sort((a, b) => {
-            switch (sortBy) {
-                case 'name':
-                    return a.name.localeCompare(b.name);
-                case 'size':
-                    return b.size - a.size;
-                case 'type':
-                    return a.type.localeCompare(b.type);
-                default:
-                    return 0;
-            }
+        return filterAssetImages(folder.images, {
+            query: searchQuery,
+            role: assetRoleFilter,
+            sortBy
         });
-        
-        return images;
-    }, [selectedFolder, ecommerceStructure, searchQuery, sortBy, findFolder]);
+    }, [selectedFolder, ecommerceStructure, searchQuery, assetRoleFilter, sortBy, findFolder]);
+
+    const selectedFolderInfo = useMemo(() => {
+        if (!selectedFolder || !ecommerceStructure) return null;
+        return findFolder(ecommerceStructure.folders, selectedFolder);
+    }, [selectedFolder, ecommerceStructure, findFolder]);
+
+    const selectedFolderImages = selectedFolderInfo?.images || [];
+    const visibleRoleStats = useMemo(() => {
+        const stats = new Map<AssetRoleFilter, number>();
+        for (const image of selectedFolderImages) {
+            const role = getAssetRole(image);
+            stats.set(role, (stats.get(role) || 0) + 1);
+        }
+        return stats;
+    }, [selectedFolderImages]);
 
     // 预览结果类型
     interface PreviewResult {
@@ -404,10 +419,10 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
     if (!ecommerceStructure) {
         return (
             <div className="asset-gallery-empty">
-                <div className="empty-icon">📁</div>
+                <div className="empty-icon" aria-hidden="true">库</div>
                 <p>{currentProject ? (isScanningStructure ? '正在加载项目素材，请稍候...' : '项目素材未加载完成') : '请先导入项目文件夹'}</p>
                 {currentProject && scanError && (
-                    <p style={{ marginTop: 8, color: '#ef4444', fontSize: 12 }}>
+                    <p className="asset-gallery-error">
                         {scanError}
                     </p>
                 )}
@@ -416,7 +431,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
     }
 
     return (
-        <div className="asset-gallery">
+        <div className="asset-gallery" data-testid="asset-gallery">
             {/* 主体内容 - 移除顶部统计栏，直接显示内容 */}
             <div className="gallery-content">
                 {/* 左侧文件夹列表 */}
@@ -463,7 +478,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                                     ) : (
                                         <span className="expand-placeholder" />
                                     )}
-                                    <span className="folder-icon">{config.icon}</span>
+                                    <span className="folder-icon" aria-hidden="true">{config.shortLabel}</span>
                                     <div className="folder-info">
                                         <div className="folder-name" title={folder.name}>{folder.name}</div>
                                         <span className="folder-count">
@@ -485,9 +500,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                     <div className="panel-header">
                         <div className="header-left">
                             <span className="panel-title">
-                                {selectedFolder ? 
-                                    filteredFolders.find(f => f.relativePath === selectedFolder)?.name || '图片' 
-                                    : '选择文件夹'}
+                                {selectedFolderInfo?.name || '项目素材'}
                             </span>
                             {selectedFolder && currentImages.length > 0 && (
                                 <span className="image-count-badge">{currentImages.length}</span>
@@ -505,6 +518,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                                     placeholder="搜索文件..."
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
+                                    data-testid="asset-gallery-search"
                                 />
                                 {searchQuery && (
                                     <button className="clear-btn" onClick={() => setSearchQuery('')}>×</button>
@@ -514,7 +528,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                             <select 
                                 className="sort-select"
                                 value={sortBy}
-                                onChange={(e) => setSortBy(e.target.value as SortBy)}
+                                onChange={(e) => setSortBy(e.target.value as AssetSortBy)}
                             >
                                 <option value="name">按名称</option>
                                 <option value="size">按大小</option>
@@ -548,6 +562,26 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                             </div>
                         </div>
                     </div>
+                    {selectedFolderInfo && (
+                        <div className="asset-evidence-toolbar" data-testid="asset-gallery-role-filters">
+                            {ASSET_ROLE_FILTERS.map((item) => {
+                                const count = item.value === 'all'
+                                    ? selectedFolderImages.length
+                                    : visibleRoleStats.get(item.value) || 0;
+                                return (
+                                    <button
+                                        key={item.value}
+                                        type="button"
+                                        className={assetRoleFilter === item.value ? 'active' : ''}
+                                        onClick={() => setAssetRoleFilter(item.value)}
+                                    >
+                                        <span>{item.label}</span>
+                                        <strong>{count}</strong>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
                     
                     {/* 图片内容区域 */}
                     <div className="image-content">
@@ -557,17 +591,22 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                                 {currentImages.map(image => {
                                     const typeConfig = IMAGE_TYPE_CONFIG[image.type];
                                     const thumbnail = thumbnails[image.path];
+                                    const role = getAssetRole(image);
+                                    const roleLabel = getAssetRoleLabel(role);
+                                    const dimensions = getImageDimensions(image);
+                                    const aspectLabel = getAspectLabel(image);
                                     
                                     return (
-                                        <div 
+                                        <div
                                             key={image.relativePath}
                                             className="image-card"
                                             onClick={() => handleImageClick(image)}
+                                            data-testid="asset-gallery-card"
                                         >
-                                            <div className="image-thumbnail">
+                                            <div className="image-thumbnail" data-testid="asset-gallery-aspect-thumbnail">
                                                 {thumbnail ? (
-                                                    <img 
-                                                        src={`data:image/jpeg;base64,${thumbnail}`} 
+                                                    <img
+                                                        src={`data:image/jpeg;base64,${thumbnail}`}
                                                         alt={image.name}
                                                         loading="lazy"
                                                     />
@@ -577,12 +616,12 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                                                             <div className="loading-spinner" />
                                                         ) : failedThumbnails.has(image.path) ? (
                                                             <>
-                                                                <span>{typeConfig.icon}</span>
+                                                                <span className="thumbnail-token">{typeConfig.shortLabel}</span>
                                                                 <span className="large-file-hint">预览失败</span>
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <span>{typeConfig.icon}</span>
+                                                                <span className="thumbnail-token">{typeConfig.shortLabel}</span>
                                                                 {/* 大文件提示 */}
                                                                 {image.size > 100 * 1024 * 1024 && (
                                                                     <span className="large-file-hint">大文件</span>
@@ -616,6 +655,18 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                                                         {formatFileSize(image.size)}
                                                     </span>
                                                 </div>
+                                                <div className="image-source-row">
+                                                    <span className={`image-source-chip ${role}`} data-testid="asset-gallery-source-chip">
+                                                        {roleLabel}
+                                                    </span>
+                                                    <span>{aspectLabel}</span>
+                                                    <span>{image.ext.toUpperCase()}</span>
+                                                </div>
+                                                {dimensions && (
+                                                    <div className="image-dimensions">
+                                                        {dimensions.width} × {dimensions.height}
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     );
@@ -623,14 +674,14 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                             </div>
                         ) : (
                             <div className="empty-folder">
-                                <span>📭</span>
-                                <p>此文件夹没有图片</p>
+                                <span aria-hidden="true">0</span>
+                                <p>暂无可预览素材</p>
                             </div>
                         )
                     ) : (
                         <div className="select-folder-hint">
-                            <span>👈</span>
-                            <p>选择左侧文件夹查看图片</p>
+                            <span aria-hidden="true">0</span>
+                            <p>暂无可预览素材</p>
                         </div>
                     )}
                     </div>
@@ -639,7 +690,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
 
             {/* 图片预览弹窗 */}
             {previewImage && (
-                <div className="preview-modal" onClick={closePreview}>
+                <div className="preview-modal" onClick={closePreview} data-testid="asset-gallery-preview-modal">
                     <div className="preview-content" onClick={e => e.stopPropagation()}>
                         {/* 预览图片 */}
                         <div className="preview-image-container">
@@ -655,7 +706,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                                 />
                             ) : (
                                 <div className="preview-error">
-                                    <span>⚠️</span>
+                                    <span aria-hidden="true">!</span>
                                     <p>无法加载预览</p>
                                 </div>
                             )}
@@ -666,6 +717,10 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                             <div className="preview-info-main">
                                 <h3>{previewImage.name}</h3>
                                 <div className="preview-meta">
+                                    <span className="meta-item">
+                                        <span className="meta-label">来源</span>
+                                        <span className="meta-value">{getAssetRoleLabel(getAssetRole(previewImage))}</span>
+                                    </span>
                                     <span className="meta-item">
                                         <span className="meta-label">路径</span>
                                         <span className="meta-value">{previewImage.relativePath}</span>
@@ -681,6 +736,10 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                                         </span>
                                     )}
                                     <span className="meta-item">
+                                        <span className="meta-label">比例</span>
+                                        <span className="meta-value">{getAspectLabel(previewImage)}</span>
+                                    </span>
+                                    <span className="meta-item">
                                         <span className="meta-label">类型</span>
                                         <span 
                                             className="meta-value type-tag"
@@ -693,9 +752,6 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                                         </span>
                                     </span>
                                 </div>
-                            </div>
-                            <div className="preview-nav-hint">
-                                使用 ← → 键切换图片，ESC 关闭
                             </div>
                         </div>
                         
@@ -803,6 +859,44 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                     border-bottom: 1px solid var(--de-border);
                     background: var(--de-bg-card);
                     gap: 12px;
+                }
+
+                .asset-evidence-toolbar {
+                    display: flex;
+                    gap: 8px;
+                    align-items: center;
+                    padding: 10px 16px;
+                    border-bottom: 1px solid var(--de-border);
+                    background: color-mix(in srgb, var(--de-bg-card) 88%, var(--de-bg-dark));
+                    overflow-x: auto;
+                }
+
+                .asset-evidence-toolbar button {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    min-height: 30px;
+                    padding: 5px 9px;
+                    border: 1px solid var(--de-border);
+                    border-radius: 6px;
+                    background: var(--de-bg-light);
+                    color: var(--de-text-secondary);
+                    font-size: 12px;
+                    font-weight: 600;
+                    white-space: nowrap;
+                    cursor: pointer;
+                }
+
+                .asset-evidence-toolbar button.active {
+                    border-color: var(--de-primary);
+                    background: color-mix(in srgb, var(--de-primary) 14%, var(--de-bg-light));
+                    color: var(--de-primary);
+                }
+
+                .asset-evidence-toolbar button strong {
+                    color: var(--de-text-primary);
+                    font-size: 12px;
+                    font-weight: 700;
                 }
 
                 .header-left {
@@ -966,7 +1060,16 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                 }
 
                 .folder-icon {
-                    font-size: 18px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 6px;
+                    background: color-mix(in srgb, var(--de-primary) 12%, var(--de-bg-light));
+                    color: var(--de-text-secondary);
+                    font-size: 11px;
+                    font-weight: 700;
                     flex-shrink: 0;
                 }
 
@@ -1028,13 +1131,15 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                 .image-list .image-thumbnail {
                     width: 64px;
                     height: 64px;
+                    min-height: 64px;
+                    aspect-ratio: auto;
                     flex-shrink: 0;
                 }
 
                 .image-card {
                     background: var(--de-bg-card);
                     border: 1px solid var(--de-border);
-                    border-radius: 10px;
+                    border-radius: 8px;
                     overflow: hidden;
                     cursor: pointer;
                     transition: all 0.2s;
@@ -1047,12 +1152,14 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                 }
 
                 .image-thumbnail {
-                    height: 120px;
+                    aspect-ratio: 4 / 3;
+                    min-height: 120px;
                     background: var(--de-bg-light);
                     display: flex;
                     align-items: center;
                     justify-content: center;
                     position: relative;
+                    overflow: hidden;
                 }
 
                 .image-thumbnail img {
@@ -1063,7 +1170,6 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                 }
 
                 .thumbnail-placeholder {
-                    font-size: 32px;
                     opacity: 0.5;
                     display: flex;
                     flex-direction: column;
@@ -1100,6 +1206,20 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                     margin-top: 4px;
                 }
 
+                .thumbnail-token {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-width: 40px;
+                    min-height: 40px;
+                    border-radius: 8px;
+                    background: color-mix(in srgb, var(--de-text-muted) 14%, transparent);
+                    color: var(--de-text-secondary);
+                    font-size: 13px;
+                    font-weight: 700;
+                    letter-spacing: 0;
+                }
+
                 .loading-spinner {
                     width: 24px;
                     height: 24px;
@@ -1131,6 +1251,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
+                    gap: 8px;
                 }
 
                 .image-type-tag {
@@ -1143,6 +1264,53 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                 .image-size {
                     font-size: 11px;
                     color: var(--de-text-muted);
+                    white-space: nowrap;
+                }
+
+                .image-source-row {
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    margin-top: 7px;
+                    min-width: 0;
+                    color: var(--de-text-muted);
+                    font-size: 11px;
+                    line-height: 1.35;
+                }
+
+                .image-source-row span {
+                    min-width: 0;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+
+                .image-source-chip {
+                    flex: 0 1 auto;
+                    padding: 2px 6px;
+                    border-radius: 999px;
+                    background: color-mix(in srgb, var(--de-primary) 12%, transparent);
+                    color: var(--de-text-secondary);
+                    font-weight: 600;
+                }
+
+                .image-source-chip.deliverable {
+                    color: var(--de-primary);
+                }
+
+                .image-source-chip.designDoc {
+                    color: #ffb86b;
+                }
+
+                .image-source-chip.media {
+                    color: #ff6b9a;
+                }
+
+                .image-dimensions {
+                    margin-top: 4px;
+                    color: var(--de-text-muted);
+                    font-size: 11px;
+                    line-height: 1.35;
                 }
 
                 .empty-folder,
@@ -1165,6 +1333,13 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                     opacity: 0.5;
                 }
 
+                .asset-gallery-error {
+                    margin-top: 8px;
+                    color: var(--de-danger);
+                    font-size: 12px;
+                    line-height: 1.45;
+                }
+
                 .preview-modal {
                     position: fixed;
                     inset: 0;
@@ -1183,7 +1358,7 @@ export const AssetGallery: React.FC<AssetGalleryProps> = ({
                     max-width: 90vw;
                     max-height: 90vh;
                     background: var(--de-bg-card);
-                    border-radius: 12px;
+                    border-radius: 8px;
                     overflow: hidden;
                     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
                 }

@@ -16,6 +16,14 @@ import {
 import { toolLogger } from './tool-logger';
 import { getMemoryService } from './memory.service';
 import { useAppStore } from '../stores/app.store';
+import { matchDetailPageContentPlans } from './skill-executors/detail-page-asset-ranker';
+import {
+    AcceptanceCaptureResult,
+    buildToolAcceptanceEvidence,
+    formatToolAcceptanceDebug,
+    getToolAcceptanceCapturePolicy,
+    shouldCollectAcceptanceEvidence
+} from '../../shared/acceptance/tool-acceptance';
 
 // ==================== 工具定义 ====================
 
@@ -31,14 +39,18 @@ export const AVAILABLE_TOOLS = [
     { name: 'closeDocument', description: '关闭指定文档（批量操作后清理）。不保存修改除非指定 save: true', params: '{ documentName?: string, documentId?: number, save?: boolean }' },
     { name: 'getDocumentInfo', description: '获取当前文档信息', params: '{}' },
     { name: 'getDocumentSnapshot', description: '获取文档快照（用于视觉分析）', params: '{ maxSize?: number }' },
+    { name: 'getAcceptanceSnapshot', description: '获取轻量验收快照（文档、图层、文字、边界、选中状态），用于任务前后验证和 Debug', params: '{ includeHidden?: boolean, includeBounds?: boolean, includeText?: boolean, maxLayers?: number }' },
     { name: 'diagnoseState', description: '诊断 Photoshop 状态', params: '{ verbose?: boolean }' },
     
     // === 图层操作 ===
     { name: 'selectLayer', description: '选中指定图层', params: '{ layerId?: number, layerIds?: number[], layerName?: string, addToSelection?: boolean }' },
+    { name: 'focusLayer', description: '聚焦到指定图层：选中图层、前置 Photoshop、刷新 UI，并返回真实边界；不承诺精确画布视口平移/缩放', params: '{ layerId?: number, layerName?: string, includeBounds?: boolean }' },
     { name: 'getLayerHierarchy', description: '获取图层层级树', params: '{ includeHidden?: boolean }' },
     { name: 'getAllTextLayers', description: '获取所有文本图层', params: '{}' },
-    { name: 'getLayerBounds', description: '获取图层边界', params: '{ layerId?: number }' },
-    { name: 'moveLayer', description: '移动图层', params: '{ x?: number, y?: number, relative?: boolean }' },
+    { name: 'getLayerBounds', description: '获取图层边界', params: '{ layerId?: number, includeEffects?: boolean }' },
+    { name: 'moveLayer', description: '移动图层在画布上的 x/y 位置；不改变 Photoshop 图层堆叠顺序', params: '{ layerId?: number, x?: number, y?: number, relative?: boolean }' },
+    { name: 'reorderLayer', description: '调整 Photoshop 图层堆叠顺序；置顶、置底、上移、下移、移动到指定图层上方/下方', params: '{ layerId?: number, action: "up"|"down"|"top"|"bottom"|"above"|"below", targetLayerId?: number, steps?: number }' },
+    { name: 'moveLayerToGroup', description: '移动图层或图层组到目标组内；改变父子层级，不改变画布 x/y 位置', params: '{ layerId: number, targetGroupId: number, position?: "inside"|"inside-top"|"inside-bottom" }' },
     { name: 'alignLayers', description: '对齐图层', params: '{ alignment: "left"|"center"|"right"|"top"|"middle"|"bottom" }' },
     { name: 'distributeLayers', description: '均匀分布图层', params: '{ direction: "horizontal"|"vertical" }' },
     { name: 'transformLayer', description: '变换图层', params: '{ scaleUniform?: number, rotate?: number, flipHorizontal?: boolean }' },
@@ -59,14 +71,15 @@ export const AVAILABLE_TOOLS = [
     
     // === 文本操作 ===
     { name: 'getTextContent', description: '获取文本内容', params: '{ layerId?: number, layerIds?: number[] }' },
-    { name: 'setTextContent', description: '设置文本内容', params: '{ layerId?: number, content?: string, updates?: { layerId: number, content: string }[] }' },
+    { name: 'setTextContent', description: '设置文本内容', params: '{ layerId?: number, content?: string, baselineContent?: string, updates?: { layerId: number, content: string, baselineContent?: string }[] }' },
     { name: 'getTextStyle', description: '获取文本样式', params: '{}' },
-    { name: 'setTextStyle', description: '设置文本样式', params: '{ fontSize?: number, fontName?: string, color?: string }' },
+    { name: 'resolveFontName', description: '解析 Photoshop 可用字体名', params: '{ fontName?: string, limit?: number }' },
+    { name: 'setTextStyle', description: '设置文本样式', params: '{ layerId?: number, fontSize?: number, fontName?: string, tracking?: number, leading?: number }' },
     
     // === 图层管理 ===
-    { name: 'renameLayer', description: '重命名图层', params: '{ newName: string }' },
+    { name: 'renameLayer', description: '重命名图层', params: '{ layerId?: number, newName: string }' },
     { name: 'batchRenameLayers', description: '批量重命名图层（支持前缀/后缀/序号）', params: '{ pattern?: string, prefix?: string, suffix?: string }' },
-    { name: 'groupLayers', description: '编组图层', params: '{ groupName?: string }' },
+    { name: 'groupLayers', description: '编组图层', params: '{ layerIds?: number[], groupName?: string }' },
     { name: 'ungroupLayers', description: '解散图层组', params: '{ groupId: number }' },
     { name: 'createClippingMask', description: '创建剪切蒙版', params: '{}' },
     { name: 'releaseClippingMask', description: '释放剪切蒙版', params: '{}' },
@@ -84,9 +97,10 @@ export const AVAILABLE_TOOLS = [
     { name: 'getHistoryInfo', description: '获取历史记录', params: '{}' },
     
     // === 导出 ===
-    { name: 'saveDocument', description: '保存文档', params: '{ path?: string }' },
+    { name: 'saveDocument', description: '保存或另存为文档，支持 PSD/PSB 和显式输出路径', params: '{ format?: "psd"|"psb"|"png"|"jpg"|"jpeg"|"tiff"|"pdf", path?: string, saveAs?: boolean, quality?: number }' },
     { name: 'quickExport', description: '快速导出', params: '{ format?: "png"|"jpg", quality?: number }' },
-    { name: 'smartSave', description: '智能保存（已有路径直接保存，否则弹出对话框）', params: '{ exportFormat?: "jpg"|"png" }' },
+    { name: 'exportGroup', description: '导出指定图层组或图层为 PNG 文件；需要 groupPath 或 layerId 以及完整 outputPath', params: '{ groupPath?: string[], layerId?: number, outputPath: string, format?: "png", targetWidth?: number, targetHeight?: number, maxSize?: number }' },
+    { name: 'smartSave', description: '智能保存（已有路径直接保存，否则弹出对话框），支持显式 PSD/PSB 路径', params: '{ exportFormat?: "psd"|"psb"|"jpg"|"png", path?: string, exportQuality?: number }' },
     
     // === 图像处理 ===
     { name: 'removeBackground', description: '智能抠图', params: '{ targetPrompt?: string, outputFormat?: "layer"|"mask" }' },
@@ -98,7 +112,7 @@ export const AVAILABLE_TOOLS = [
     // === 创建工具 ===
     { name: 'createRectangle', description: '创建矩形', params: '{ x: number, y: number, width: number, height: number, name?: string, color?: {r,g,b}, fillColorHex?: string, cornerRadius?: number }' },
     { name: 'createEllipse', description: '创建椭圆', params: '{ x: number, y: number, width: number, height: number }' },
-    { name: 'createTextLayer', description: '创建文字', params: '{ content: string, x: number, y: number, fontSize?: number }' },
+    { name: 'createTextLayer', description: '创建文字', params: '{ content: string, text?: string, name?: string, x: number, y: number, fontSize?: number, fontName?: string, tracking?: number, leading?: number, colorHex?: string, color?: { r: number, g: number, b: number }, alignment?: "left"|"center"|"right" }' },
     { name: 'createGroup', description: '创建图层组', params: '{ groupName: string }' },
     
     // === SKU 相关 ===
@@ -145,6 +159,8 @@ export const AVAILABLE_TOOLS = [
         description: '【网页内容提取】访问指定 URL 提取设计相关内容（标题、正文、图片）。当用户说"打开这个链接"、"去这个网站看看"、"获取这个页面的设计内容"时使用。',
         params: '{ url: string, extractImages?: boolean, maxTextLength?: number }'
     },
+    { name: 'auditDetailPagePlacement', description: 'Audit detail-page image placements against target bounds and flag offset or stacking risks.', params: '{ screens: any[], placements?: any[] }' },
+    { name: 'getScreenSnapshotsWithOverlay', description: 'Capture detail-page screen snapshots with target and actual placement boxes drawn on top.', params: '{ screens: any[], placements?: any[], maxWidth?: number, screenIndices?: number[] }' }
 ];
 
 /** Agent 工具名 → UXP 工具名 映射（UXP 使用 snake_case） */
@@ -158,9 +174,36 @@ export const VISION_TOOLS = ['getCanvasSnapshot', 'getDocumentSnapshot'];
 
 /** 长耗时工具超时（ms），默认 30s 不足以完成 SKU 批量排版 */
 const LONG_RUNNING_TOOL_TIMEOUT = 5 * 60 * 1000;  // 5 分钟
+const AUTO_FOCUS_MIN_INTERVAL_MS = 1200;
+
+const AUTO_FOCUS_AFTER_TOOLS = new Set([
+    'createTextLayer',
+    'createRectangle',
+    'createEllipse',
+    'placeImage',
+    'replaceLayerContent',
+    'moveLayer',
+    'reorderLayer',
+    'moveLayerToGroup',
+    'transformLayer',
+    'quickScale',
+    'setTextContent',
+    'setTextStyle',
+    'setLayerOpacity',
+    'setBlendMode',
+    'addDropShadow',
+    'addStroke',
+    'addGlow',
+    'clearLayerEffects',
+    'renameLayer',
+    'duplicateLayer'
+]);
+
+let lastAutoFocusAt = 0;
 
 /** 获取工具调用的超时时间 */
 function getToolTimeout(toolName: string, params: any): number | undefined {
+    if (toolName === 'focusLayer') return 15 * 1000;
     if (toolName === 'skuLayout') {
         const action = params?.action;
         if (action === 'execute' || action === 'arrangeDynamic') {
@@ -170,6 +213,109 @@ function getToolTimeout(toolName: string, params: any): number | undefined {
     // listDocuments 在 PS 加载文档时可能较慢
     if (toolName === 'listDocuments') return 60 * 1000;
     return undefined;
+}
+
+function isPhotoshopNativeModalTimeout(errorMessage: string): boolean {
+    const message = String(errorMessage || '');
+    return /(?:Request timeout|MCP request timeout|tools\/call timed out)/i.test(message)
+        || message.includes('photoshop_native_modal_suspected')
+        || message.includes('疑似 Photoshop 原生弹窗');
+}
+
+function buildPhotoshopNativeModalSuspectedResult(
+    toolName: string,
+    errorMessage: string,
+    params: any
+): Record<string, any> {
+    return {
+        success: false,
+        error: `${toolName} 调用超时：疑似 Photoshop 原生弹窗或 UXP 模态状态阻塞。`,
+        originalError: errorMessage,
+        errorCategory: 'photoshop_native_modal_suspected',
+        recoveryRequired: true,
+        userActionRequired: {
+            type: 'photoshop_native_dialog',
+            message: '请查看 Photoshop 是否弹出“命令当前不可用”等确认框；关闭弹窗后重载 UXP 插件，再继续执行。'
+        },
+        suggestion: '先关闭 Photoshop 原生弹窗并重载 UXP 插件；恢复前不要重复执行写入工具，避免继续留下临时文档或触发新的弹窗。',
+        toolName,
+        params
+    };
+}
+
+function asFinitePositiveId(value: any): number | undefined {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : undefined;
+}
+
+function inferFocusLayerId(toolName: string, params: any, result: any): number | undefined {
+    const directCandidates = [
+        result?.layerId,
+        result?.createdLayerId,
+        result?.newLayerId,
+        result?.layer?.id,
+        result?.group?.id,
+        result?.focusedLayer?.id
+    ];
+    for (const candidate of directCandidates) {
+        const layerId = asFinitePositiveId(candidate);
+        if (layerId) return layerId;
+    }
+
+    if (Array.isArray(result?.createdLayerIds) && result.createdLayerIds.length === 1) {
+        const layerId = asFinitePositiveId(result.createdLayerIds[0]);
+        if (layerId) return layerId;
+    }
+
+    if (toolName === 'setTextContent' && Array.isArray(params?.updates) && params.updates.length === 1) {
+        const layerId = asFinitePositiveId(params.updates[0]?.layerId);
+        if (layerId) return layerId;
+    }
+
+    return asFinitePositiveId(params?.layerId);
+}
+
+function shouldAutoFocusAfterTool(toolName: string, params: any, result: any): boolean {
+    if (toolName === 'focusLayer') return false;
+    if (!AUTO_FOCUS_AFTER_TOOLS.has(toolName)) return false;
+    if (!result || result.success === false) return false;
+    if (params?.autoFocus === false || params?.focusAfter === false) return false;
+    return Boolean(inferFocusLayerId(toolName, params, result));
+}
+
+async function maybeAutoFocusAfterTool(toolName: string, params: any, result: any): Promise<any | undefined> {
+    if (!shouldAutoFocusAfterTool(toolName, params, result)) return undefined;
+
+    const now = Date.now();
+    if (now - lastAutoFocusAt < AUTO_FOCUS_MIN_INTERVAL_MS) return undefined;
+
+    const layerId = inferFocusLayerId(toolName, params, result);
+    if (!layerId) return undefined;
+
+    lastAutoFocusAt = now;
+    try {
+        const focusResult = await window.designEcho.sendToPlugin(
+            'focusLayer',
+            { layerId, includeBounds: true },
+            getToolTimeout('focusLayer', { layerId })
+        );
+        return {
+            toolName: 'focusLayer',
+            triggeredBy: toolName,
+            layerId,
+            result: focusResult
+        };
+    } catch (error) {
+        return {
+            toolName: 'focusLayer',
+            triggeredBy: toolName,
+            layerId,
+            result: {
+                success: false,
+                error: error instanceof Error ? error.message : String(error || '自动聚焦失败')
+            }
+        };
+    }
 }
 
 /** 资源管理工具（Agent 端处理） */
@@ -192,6 +338,469 @@ export const resetToolSession = () => {
 export const setCurrentRound = (round: number) => {
     currentRound = round;
 };
+
+function isChatTestFakePhotoshopEnabled(): boolean {
+    try {
+        if (typeof window === 'undefined') return false;
+        const query = new URLSearchParams(window.location.search || '');
+        return query.get('designechoChatTestBridge') === '1'
+            && query.get('designechoChatTestFakePhotoshop') === '1';
+    } catch {
+        return false;
+    }
+}
+
+function isChatTestFakePhotoshopEmptyInitialEnabled(): boolean {
+    try {
+        if (typeof window === 'undefined') return false;
+        const query = new URLSearchParams(window.location.search || '');
+        return query.get('designechoChatTestBridge') === '1'
+            && query.get('designechoChatTestFakePhotoshop') === '1'
+            && query.get('designechoChatTestFakePhotoshopEmpty') === '1';
+    } catch {
+        return false;
+    }
+}
+
+function normalizeFakeSaveExtension(format: string): string {
+    const normalized = String(format || 'psd').trim().toLowerCase();
+    if (normalized === 'jpeg') return 'jpg';
+    if (normalized === 'tif') return 'tiff';
+    return normalized || 'psd';
+}
+
+type ChatTestFakeLayer = {
+    id: number;
+    name: string;
+    kind: 'text' | 'shape' | 'group';
+    content?: string;
+    fontSize?: number;
+    tracking?: number;
+    bounds: { left: number; top: number; width: number; height: number };
+};
+
+const chatTestFakePhotoshopState: {
+    nextLayerId: number;
+    documentCreated: boolean;
+    document: {
+        id: number;
+        name: string;
+        path: string;
+        width: number;
+        height: number;
+    };
+    layers: ChatTestFakeLayer[];
+} = {
+    nextLayerId: 92000,
+    documentCreated: false,
+    document: {
+        id: 91001,
+        name: 'ChatBridgeTest.psd',
+        path: 'C:\\DesignEchoTest\\PSD\\ChatBridgeTest.psd',
+        width: 800,
+        height: 800
+    },
+    layers: []
+};
+
+function isFakeDocumentAvailable(): boolean {
+    return !isChatTestFakePhotoshopEmptyInitialEnabled() || chatTestFakePhotoshopState.documentCreated;
+}
+
+function createFakeLayerId(): number {
+    chatTestFakePhotoshopState.nextLayerId += 1;
+    return chatTestFakePhotoshopState.nextLayerId;
+}
+
+function findChatTestFakeLayer(layerId: number | undefined): ChatTestFakeLayer | undefined {
+    const id = Number(layerId);
+    if (!Number.isFinite(id)) return undefined;
+    return chatTestFakePhotoshopState.layers.find((layer) => layer.id === id);
+}
+
+function estimateChatTestTextWidth(content: string, fontSize: number, tracking = 0): number {
+    const glyphs = Array.from(String(content || ''));
+    const baseUnits = glyphs.reduce((sum, char) => {
+        if (/[\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(char)) return sum + 1;
+        if (/[A-Z]/.test(char)) return sum + 0.62;
+        if (/[a-z0-9]/.test(char)) return sum + 0.56;
+        if (/[:：,，.。;]/.test(char)) return sum + 0.3;
+        if (/[-/\\]/.test(char)) return sum + 0.35;
+        if (/\s/.test(char)) return sum + 0.3;
+        return sum + 0.55;
+    }, 0);
+    const trackingWidth = Math.max(0, glyphs.length - 1) * fontSize * (tracking / 1000);
+    return Math.max(1, Math.round(baseUnits * fontSize + trackingWidth));
+}
+
+function readChatTestLayerBounds(layer: ChatTestFakeLayer | undefined): any {
+    if (!layer) {
+        return {
+            success: false,
+            error: '测试模式：未找到图层'
+        };
+    }
+    const bounds = {
+        left: layer.bounds.left,
+        top: layer.bounds.top,
+        right: layer.bounds.left + layer.bounds.width,
+        bottom: layer.bounds.top + layer.bounds.height,
+        width: layer.bounds.width,
+        height: layer.bounds.height
+    };
+    return {
+        success: true,
+        layerId: layer.id,
+        bounds,
+        boundsNoEffects: bounds
+    };
+}
+
+function buildChatTestFakePhotoshopResult(toolName: string, params: any): any | undefined {
+    if (!isChatTestFakePhotoshopEnabled()) return undefined;
+
+    const documentId = chatTestFakePhotoshopState.document.id;
+    const documentName = chatTestFakePhotoshopState.document.name;
+    const documentPath = chatTestFakePhotoshopState.document.path;
+
+    if (toolName === 'listDocuments') {
+        if (!isFakeDocumentAvailable()) {
+            return {
+                success: true,
+                message: '测试模式：当前没有打开文档。',
+                documents: []
+            };
+        }
+        return {
+            success: true,
+            message: '测试模式：返回 1 个打开文档。',
+            documents: [
+                {
+                    id: documentId,
+                    name: documentName,
+                    isActive: true,
+                    path: documentPath
+                }
+            ]
+        };
+    }
+
+    if (toolName === 'getDocumentInfo') {
+        if (!isFakeDocumentAvailable() && !params?.__chatTestAcceptanceFailed) {
+            return {
+                success: false,
+                error: '测试模式：当前没有打开文档。'
+            };
+        }
+        return {
+            success: true,
+            id: documentId,
+            name: documentName,
+            path: documentPath,
+            width: chatTestFakePhotoshopState.document.width,
+            height: chatTestFakePhotoshopState.document.height,
+            mode: 'RGB',
+            layers: chatTestFakePhotoshopState.layers.length || 1,
+            ...(params?.__chatTestAcceptanceFailed
+                ? {
+                    acceptance: {
+                        enabled: true,
+                        verified: false,
+                        assertionStatus: 'failed',
+                        noDocumentChangeRisk: false,
+                        summaryText: '测试模式：模拟验收失败，用于验证 UI 不会把失败任务显示为完成。'
+                    }
+                }
+                : {})
+        };
+    }
+
+    if (toolName === 'createDocument') {
+        chatTestFakePhotoshopState.documentCreated = true;
+        chatTestFakePhotoshopState.layers = [];
+        chatTestFakePhotoshopState.document = {
+            id: documentId,
+            name: String(params?.name || 'ChatBridgeGenerated.psd'),
+            path: documentPath,
+            width: Math.max(1, Math.round(Number(params?.width) || 800)),
+            height: Math.max(1, Math.round(Number(params?.height) || 800))
+        };
+        return {
+            success: true,
+            documentId,
+            document: { ...chatTestFakePhotoshopState.document },
+            message: '测试模式：已模拟创建文档。'
+        };
+    }
+
+    if (toolName === 'createTextLayer') {
+        const fontSize = Math.max(1, Math.round(Number(params?.fontSize) || 24));
+        const tracking = Math.round(Number(params?.tracking) || 0);
+        const content = String(params?.content ?? params?.text ?? '');
+        const layer: ChatTestFakeLayer = {
+            id: createFakeLayerId(),
+            name: String(params?.name || `Text ${chatTestFakePhotoshopState.layers.length + 1}`),
+            kind: 'text',
+            content,
+            fontSize,
+            tracking,
+            bounds: {
+                left: Math.round(Number(params?.x) || 0),
+                top: Math.round((Number(params?.y) || fontSize) - fontSize),
+                width: estimateChatTestTextWidth(content, fontSize, tracking),
+                height: Math.max(1, Math.round(fontSize * 0.92))
+            }
+        };
+        chatTestFakePhotoshopState.layers.push(layer);
+        return {
+            success: true,
+            layerId: layer.id,
+            layer: { id: layer.id, name: layer.name },
+            message: `测试模式：已模拟创建文本图层 ${layer.name}。`
+        };
+    }
+
+    if (toolName === 'createRectangle') {
+        const layer: ChatTestFakeLayer = {
+            id: createFakeLayerId(),
+            name: String(params?.name || `Rectangle ${chatTestFakePhotoshopState.layers.length + 1}`),
+            kind: 'shape',
+            bounds: {
+                left: Math.round(Number(params?.x) || 0),
+                top: Math.round(Number(params?.y) || 0),
+                width: Math.max(1, Math.round(Number(params?.width) || 1)),
+                height: Math.max(1, Math.round(Number(params?.height) || 1))
+            }
+        };
+        chatTestFakePhotoshopState.layers.push(layer);
+        return {
+            success: true,
+            layerId: layer.id,
+            layer: { id: layer.id, name: layer.name },
+            message: `测试模式：已模拟创建矩形图层 ${layer.name}。`
+        };
+    }
+
+    if (toolName === 'renameLayer') {
+        const layer = params?.layerId
+            ? findChatTestFakeLayer(params.layerId)
+            : params?.useCurrentSelection === true
+                ? chatTestFakePhotoshopState.layers[chatTestFakePhotoshopState.layers.length - 1]
+                : undefined;
+        if (layer) layer.name = String(params?.newName || layer.name);
+        return { success: true, layerId: layer?.id || params?.layerId, name: layer?.name || params?.newName };
+    }
+
+    if (toolName === 'deleteLayer') {
+        const layer = params?.layerId
+            ? findChatTestFakeLayer(params.layerId)
+            : params?.useCurrentSelection === true
+                ? chatTestFakePhotoshopState.layers[chatTestFakePhotoshopState.layers.length - 1]
+                : undefined;
+        if (!layer) return { success: false, error: '测试模式：未找到要删除的图层。' };
+        chatTestFakePhotoshopState.layers = chatTestFakePhotoshopState.layers.filter((item) => item.id !== layer.id);
+        return { success: true, layerId: layer.id, deletedLayerName: layer.name };
+    }
+
+    if (toolName === 'duplicateLayer') {
+        const source = params?.layerId
+            ? findChatTestFakeLayer(params.layerId)
+            : chatTestFakePhotoshopState.layers[chatTestFakePhotoshopState.layers.length - 1];
+        if (!source) return { success: false, error: '测试模式：未找到要复制的图层。' };
+        const layer: ChatTestFakeLayer = {
+            ...source,
+            id: createFakeLayerId(),
+            name: String(params?.newName || `${source.name} 拷贝`),
+            bounds: { ...source.bounds }
+        };
+        chatTestFakePhotoshopState.layers.push(layer);
+        return { success: true, layerId: layer.id, sourceLayerId: source.id, layer: { id: layer.id, name: layer.name } };
+    }
+
+    if (toolName === 'getLayerBounds') {
+        return readChatTestLayerBounds(findChatTestFakeLayer(params?.layerId));
+    }
+
+    if (toolName === 'focusLayer') {
+        const layer = params?.layerId
+            ? findChatTestFakeLayer(params.layerId)
+            : chatTestFakePhotoshopState.layers.find((item) => item.name === params?.layerName);
+        const boundsResult = readChatTestLayerBounds(layer);
+        if (!boundsResult.success) return boundsResult;
+        return {
+            success: true,
+            focusedLayer: {
+                id: layer!.id,
+                name: layer!.name,
+                kind: layer!.kind
+            },
+            bounds: boundsResult.bounds,
+            boundsNoEffects: boundsResult.boundsNoEffects,
+            focusActions: ['selectLayer(makeVisible=true)', 'app.bringToFront', 'app.updateUI'],
+            viewport: {
+                exactPanZoomSupported: false,
+                pannedOrZoomed: false,
+                reason: '测试模式：模拟图层聚焦，不模拟 Photoshop 画布视口 pan/zoom。'
+            }
+        };
+    }
+
+    if (toolName === 'moveLayer') {
+        const layer = findChatTestFakeLayer(params?.layerId);
+        if (!layer) return { success: false, error: '测试模式：未找到要移动的图层。' };
+        const relative = params?.relative !== false;
+        const x = Math.round(Number(params?.x) || 0);
+        const y = Math.round(Number(params?.y) || 0);
+        layer.bounds.left = relative ? layer.bounds.left + x : x;
+        layer.bounds.top = relative ? layer.bounds.top + y : y;
+        return { success: true, layerId: layer.id, bounds: readChatTestLayerBounds(layer).bounds };
+    }
+
+    if (toolName === 'reorderLayer') {
+        const layer = params?.layerId
+            ? findChatTestFakeLayer(params.layerId)
+            : params?.useCurrentSelection === true
+                ? chatTestFakePhotoshopState.layers[chatTestFakePhotoshopState.layers.length - 1]
+                : undefined;
+        if (!layer) return { success: false, error: '测试模式：未找到要调整顺序的图层。' };
+        const layers = chatTestFakePhotoshopState.layers;
+        const fromIndex = layers.findIndex((item) => item.id === layer.id);
+        if (fromIndex < 0) return { success: false, error: '测试模式：图层不在当前层级中。' };
+
+        const [removed] = layers.splice(fromIndex, 1);
+        const action = String(params?.action || '');
+        let toIndex = fromIndex;
+        if (action === 'top') {
+            toIndex = layers.length;
+        } else if (action === 'bottom') {
+            toIndex = 0;
+        } else if (action === 'up') {
+            toIndex = Math.min(layers.length, fromIndex + Math.max(1, Math.round(Number(params?.steps) || 1)));
+        } else if (action === 'down') {
+            toIndex = Math.max(0, fromIndex - Math.max(1, Math.round(Number(params?.steps) || 1)));
+        } else if (action === 'above' || action === 'below') {
+            const targetIndex = layers.findIndex((item) => item.id === Number(params?.targetLayerId));
+            if (targetIndex < 0) {
+                layers.splice(fromIndex, 0, removed);
+                return { success: false, error: '测试模式：未找到目标图层。' };
+            }
+            toIndex = action === 'above' ? targetIndex + 1 : targetIndex;
+        } else {
+            layers.splice(fromIndex, 0, removed);
+            return { success: false, error: `测试模式：未知排序动作 ${action}` };
+        }
+        layers.splice(Math.max(0, Math.min(layers.length, toIndex)), 0, removed);
+        return {
+            success: true,
+            layer: {
+                id: layer.id,
+                name: layer.name,
+                newPosition: action
+            }
+        };
+    }
+
+    if (toolName === 'setTextStyle') {
+        const layer = findChatTestFakeLayer(params?.layerId);
+        if (!layer) {
+            return {
+                success: true,
+                layerId: params?.layerId,
+                appliedStyles: {
+                    fontSize: params?.fontSize,
+                    tracking: params?.tracking
+                },
+                message: '测试模式：未找到文本图层，已跳过样式写入。'
+            };
+        }
+        if (typeof params?.fontSize === 'number' && Number.isFinite(params.fontSize) && params.fontSize > 0) {
+            layer.fontSize = Math.round(params.fontSize);
+            layer.bounds.height = Math.max(1, Math.round(layer.fontSize * 0.92));
+        }
+        if (typeof params?.tracking === 'number' && Number.isFinite(params.tracking)) {
+            layer.tracking = Math.round(params.tracking);
+        }
+        layer.bounds.width = estimateChatTestTextWidth(layer.content || '', layer.fontSize || 24, layer.tracking || 0);
+        return {
+            success: true,
+            layerId: layer.id,
+            appliedStyles: {
+                fontSize: layer.fontSize,
+                tracking: layer.tracking
+            }
+        };
+    }
+
+    if (toolName === 'setLayerOpacity' || toolName === 'addStroke') {
+        return { success: true, layerId: params?.layerId };
+    }
+
+    if (toolName === 'groupLayers') {
+        const childIds: number[] = Array.isArray(params?.layerIds) ? params.layerIds.map(Number).filter(Number.isFinite) : [];
+        const childLayers = childIds
+            .map((id) => findChatTestFakeLayer(id))
+            .filter(Boolean) as ChatTestFakeLayer[];
+        const left = childLayers.length > 0 ? Math.min(...childLayers.map((layer) => layer.bounds.left)) : 0;
+        const top = childLayers.length > 0 ? Math.min(...childLayers.map((layer) => layer.bounds.top)) : 0;
+        const right = childLayers.length > 0 ? Math.max(...childLayers.map((layer) => layer.bounds.left + layer.bounds.width)) : 1;
+        const bottom = childLayers.length > 0 ? Math.max(...childLayers.map((layer) => layer.bounds.top + layer.bounds.height)) : 1;
+        const layer: ChatTestFakeLayer = {
+            id: createFakeLayerId(),
+            name: String(params?.groupName || `Group ${chatTestFakePhotoshopState.layers.length + 1}`),
+            kind: 'group',
+            bounds: {
+                left,
+                top,
+                width: Math.max(1, right - left),
+                height: Math.max(1, bottom - top)
+            }
+        };
+        chatTestFakePhotoshopState.layers.push(layer);
+        return {
+            success: true,
+            group: { id: layer.id, name: layer.name },
+            layerId: layer.id
+        };
+    }
+
+    if (toolName === 'ungroupLayers') {
+        const group = findChatTestFakeLayer(params?.groupId);
+        if (!group) return { success: false, error: '测试模式：未找到要解散的图层组。' };
+        chatTestFakePhotoshopState.layers = chatTestFakePhotoshopState.layers.filter((item) => item.id !== group.id);
+        return { success: true, groupId: group.id, groupName: group.name };
+    }
+
+    if (toolName === 'saveDocument' || toolName === 'smartSave') {
+        const format = normalizeFakeSaveExtension(params?.format || 'psd');
+        const projectSubdir = String(params?.projectSubdir || 'PSD').trim().replace(/[\\/]+/g, '\\') || 'PSD';
+        const savePath = String(params?.path || '').trim()
+            || `C:\\DesignEchoTest\\${projectSubdir}\\ChatBridgeTest.${format}`;
+        return {
+            success: true,
+            message: `测试模式：已模拟保存文档到 ${savePath}`,
+            savePath,
+            savedPath: savePath,
+            format,
+            redirectedFrom: params?.redirectedFrom,
+            saveAs: params?.saveAs === true
+        };
+    }
+
+    if (toolName === 'closeDocument') {
+        const save = params?.save === true;
+        return {
+            success: true,
+            message: save
+                ? '测试模式：已模拟保存并关闭文档。'
+                : '测试模式：已模拟关闭文档且不保存。',
+            closedDocument: documentName,
+            documentId: Number(params?.documentId) || documentId,
+            save
+        };
+    }
+
+    return undefined;
+}
 
 
 function normalizePlaceImageFilePathCandidates(filePath: string, projectPath?: string): string[] {
@@ -549,11 +1158,70 @@ function sanitizeFileName(name: string): string {
     return safe || 'document';
 }
 
-function buildNoDialogSavePath(projectPath: string, documentName?: string): string {
+function normalizeNoDialogSaveFormat(value: any): string {
+    const format = String(value || 'psd').trim().toLowerCase();
+    if (format === 'psb') return 'psb';
+    if (format === 'png') return 'png';
+    if (format === 'jpg' || format === 'jpeg') return 'jpg';
+    if (format === 'tif' || format === 'tiff') return 'tiff';
+    if (format === 'pdf') return 'pdf';
+    return 'psd';
+}
+
+function buildNoDialogSavePath(projectPath: string, documentName?: string, format?: string): string {
     const safeName = sanitizeFileName(documentName || 'document');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const root = projectPath.replace(/[\\/]+$/, '');
-    return `${root}\\${safeName}_autosave_${stamp}.psd`;
+    const ext = normalizeNoDialogSaveFormat(format);
+    return `${root}\\${safeName}_autosave_${stamp}.${ext}`;
+}
+
+function sanitizeProjectSaveSubdir(value: any): string | undefined {
+    const subdir = String(value || '').trim();
+    if (!subdir) return undefined;
+    if (subdir.includes('/') || subdir.includes('\\') || subdir.includes('..')) return undefined;
+    const safe = subdir.replace(/[<>:"|?*\x00-\x1F]/g, '_').trim();
+    return safe || undefined;
+}
+
+async function resolveNoDialogSaveRoot(projectPath: string, requestedSubdir?: any): Promise<{
+    directory: string;
+    error?: string;
+}> {
+    const root = projectPath.replace(/[\\/]+$/, '');
+    const safeSubdir = sanitizeProjectSaveSubdir(requestedSubdir);
+    if (!safeSubdir) {
+        return { directory: root };
+    }
+
+    const targetDirectory = `${root}\\${safeSubdir}`;
+    const bridge = (window as any).designEcho;
+    if (!bridge?.createDirectory) {
+        return {
+            directory: root,
+            error: `无法创建项目子目录 ${safeSubdir}：文件系统桥接不可用`
+        };
+    }
+
+    try {
+        const exists = bridge.pathExists ? await bridge.pathExists(targetDirectory) : false;
+        if (!exists) {
+            const created = await bridge.createDirectory(targetDirectory);
+            if (created?.success === false) {
+                return {
+                    directory: root,
+                    error: created?.error || `创建项目子目录失败：${targetDirectory}`
+                };
+            }
+        }
+        return { directory: targetDirectory };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error || '未知错误');
+        return {
+            directory: root,
+            error: `创建项目子目录失败：${message}`
+        };
+    }
 }
 
 function hasValue(v: any): boolean {
@@ -568,6 +1236,63 @@ async function getCurrentDocumentName(): Promise<string | undefined> {
         return undefined;
     }
 }
+
+async function captureAcceptanceSnapshot(
+    stage: 'before' | 'after',
+    toolName: string,
+    options: {
+        includeHidden: boolean;
+        includeBounds: boolean;
+        includeText: boolean;
+        maxLayers: number;
+        timeoutMs: number;
+    }
+): Promise<AcceptanceCaptureResult> {
+    try {
+        const designEcho = (window as any).designEcho;
+        if (!designEcho?.sendToPlugin) {
+            return { error: `无法采集 ${stage} 快照：DesignEcho Photoshop bridge 不可用` };
+        }
+        const snapshot = await designEcho.sendToPlugin('getAcceptanceSnapshot', {
+            includeHidden: options.includeHidden,
+            includeBounds: options.includeBounds,
+            includeText: options.includeText,
+            maxLayers: options.maxLayers
+        }, options.timeoutMs);
+
+        if (!snapshot || snapshot.success === false) {
+            return { snapshot, error: snapshot?.error || `无法采集 ${stage} 快照` };
+        }
+        return { snapshot };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error || '未知错误');
+        console.warn(`[Acceptance] ${stage} snapshot failed for ${toolName}:`, message);
+        return { error: message };
+    }
+}
+
+function attachAcceptanceEvidence(toolName: string, params: any, result: any, before: AcceptanceCaptureResult, after: AcceptanceCaptureResult): any {
+    const acceptance = buildToolAcceptanceEvidence({
+        toolName,
+        params,
+        result,
+        before,
+        after
+    });
+
+    if (result && typeof result === 'object' && !Array.isArray(result)) {
+        return {
+            ...result,
+            acceptance
+        };
+    }
+
+    return {
+        success: result !== false,
+        value: result,
+        acceptance
+    };
+}
 // ==================== 工具执行 ====================
 
 /**
@@ -578,7 +1303,7 @@ export const executeToolCall = async (toolName: string, params: any): Promise<an
     console.log(`[ToolCall] 执行: ${toolName}`, params);
     
     // 依赖检查
-    const depCheck = checkToolDependencies(toolName, executedToolsInSession);
+    const depCheck = checkToolDependencies(toolName, executedToolsInSession, params);
     if (!depCheck.valid) {
         console.warn(`[ToolCall] 依赖检查失败:`, depCheck);
         const result = { 
@@ -592,6 +1317,16 @@ export const executeToolCall = async (toolName: string, params: any): Promise<an
     
     try {
         let result: any;
+
+        const chatTestFakePhotoshopResult = buildChatTestFakePhotoshopResult(toolName, params);
+        if (chatTestFakePhotoshopResult) {
+            if (chatTestFakePhotoshopResult.success) {
+                executedToolsInSession.push(toolName);
+                recordToolExecution(toolName, params, chatTestFakePhotoshopResult);
+            }
+            toolLogger.logToolCall(toolName, params, chatTestFakePhotoshopResult, Date.now() - startTime, currentRound);
+            return chatTestFakePhotoshopResult;
+        }
         
         // 资源工具在 Agent 端处理
         if (RESOURCE_TOOLS.includes(toolName)) {
@@ -654,10 +1389,27 @@ export const executeToolCall = async (toolName: string, params: any): Promise<an
                 }
 
                 const docName = await getCurrentDocumentName();
-                const autoPath = buildNoDialogSavePath(projectPath, docName);
+                const requestedFormat = normalizeNoDialogSaveFormat(params?.format || params?.exportFormat);
+                const saveRoot = await resolveNoDialogSaveRoot(projectPath, params?.projectSubdir);
+                if (saveRoot.error) {
+                    return {
+                        success: false,
+                        error: saveRoot.error,
+                        suggestion: '请确认项目路径可写，或使用 saveDocument(path) 显式传入完整保存路径'
+                    };
+                }
+                const autoPath = buildNoDialogSavePath(saveRoot.directory, docName, requestedFormat);
+                const saveParams: Record<string, any> = {
+                    path: autoPath,
+                    format: requestedFormat
+                };
+                const quality = params?.quality ?? params?.exportQuality;
+                if (hasValue(quality)) {
+                    saveParams.quality = quality;
+                }
                 const saveResult = await window.designEcho.sendToPlugin(
                     'saveDocument',
-                    { path: autoPath },
+                    saveParams,
                     getToolTimeout('saveDocument', { path: autoPath })
                 );
 
@@ -783,8 +1535,42 @@ export const executeToolCall = async (toolName: string, params: any): Promise<an
         // UXP 工具调用（应用名称别名）
         const uxpToolName = TOOL_NAME_ALIASES[toolName] || toolName;
         const timeout = getToolTimeout(toolName, finalParams);
+        const acceptancePolicy = getToolAcceptanceCapturePolicy(toolName, finalParams);
+        const collectAcceptance = acceptancePolicy.collect && shouldCollectAcceptanceEvidence(toolName, finalParams);
+        const acceptanceBefore = collectAcceptance
+            ? await captureAcceptanceSnapshot('before', toolName, acceptancePolicy)
+            : undefined;
         result = await window.designEcho.sendToPlugin(uxpToolName, finalParams, timeout);
         console.log(`[ToolCall] 结果:`, result);
+
+        if (collectAcceptance && acceptanceBefore) {
+            const acceptanceAfter = await captureAcceptanceSnapshot('after', toolName, acceptancePolicy);
+            result = attachAcceptanceEvidence(toolName, finalParams, result, acceptanceBefore, acceptanceAfter);
+            const acceptanceWithPolicy = {
+                ...result.acceptance,
+                policy: {
+                    mode: acceptancePolicy.mode,
+                    includeHidden: acceptancePolicy.includeHidden,
+                    includeBounds: acceptancePolicy.includeBounds,
+                    includeText: acceptancePolicy.includeText,
+                    maxLayers: acceptancePolicy.maxLayers,
+                    timeoutMs: acceptancePolicy.timeoutMs,
+                    reason: acceptancePolicy.reason
+                }
+            };
+            result.acceptance = {
+                ...acceptanceWithPolicy,
+                debugText: formatToolAcceptanceDebug(acceptanceWithPolicy)
+            };
+        }
+
+        const focusEvidence = await maybeAutoFocusAfterTool(toolName, finalParams, result);
+        if (focusEvidence && result && typeof result === 'object' && !Array.isArray(result)) {
+            result = {
+                ...result,
+                focusEvidence
+            };
+        }
         
         // 记录成功的工具
         if (result?.success !== false) {
@@ -804,6 +1590,11 @@ export const executeToolCall = async (toolName: string, params: any): Promise<an
     } catch (error) {
         console.error(`[ToolCall] 错误:`, error);
         const errorMessage = error instanceof Error ? error.message : '工具调用失败';
+        if (isPhotoshopNativeModalTimeout(errorMessage)) {
+            const modalResult = buildPhotoshopNativeModalSuspectedResult(toolName, errorMessage, params);
+            toolLogger.logToolCall(toolName, params, modalResult, Date.now() - startTime, currentRound);
+            return modalResult;
+        }
         const result = { 
             success: false, 
             error: errorMessage,
@@ -1298,12 +2089,45 @@ export const processToolResults = (
             });
             textParts.push(`[${toolName}] 返回画布截图`);
         } else {
-            textParts.push(`[${toolName}] 结果:\n${JSON.stringify(result, null, 2)}`);
+            textParts.push(`[${toolName}] ${summarizeToolResultForModel(result)}`);
         }
     }
 
     return { textContent: textParts.join('\n\n'), hasImages, images };
 };
+
+function summarizeToolResultForModel(result: any): string {
+    if (result === null || result === undefined) return '无返回结果';
+    if (typeof result === 'string') return result.length > 500 ? `${result.slice(0, 500)}...` : result;
+    if (typeof result !== 'object') return String(result);
+
+    const parts: string[] = [];
+    const success = result.success !== false;
+    parts.push(success ? '执行成功' : '执行失败');
+
+    if (typeof result.message === 'string' && result.message.trim()) {
+        parts.push(`消息：${truncateForToolSummary(result.message, 300)}`);
+    }
+    if (typeof result.error === 'string' && result.error.trim()) {
+        parts.push(`错误：${truncateForToolSummary(result.error, 300)}`);
+    }
+    if (typeof result.acceptance?.summaryText === 'string') {
+        parts.push(result.acceptance.summaryText);
+    }
+
+    const scalarFields = ['name', 'documentName', 'layerName', 'count', 'totalLayers', 'width', 'height', 'path'];
+    for (const key of scalarFields) {
+        const value = result[key];
+        if (value === null || value === undefined || typeof value === 'object') continue;
+        parts.push(`${key}=${truncateForToolSummary(String(value), 160)}`);
+    }
+
+    return parts.join('；');
+}
+
+function truncateForToolSummary(value: string, maxLength: number): string {
+    return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
 
 /**
  * 清理 AI 响应文本
@@ -1361,36 +2185,14 @@ export const parseToolCalls = (text: string, userInput?: string): { toolName: st
  * 获取工具列表字符串（用于 AI Prompt）
  */
 export const getToolsListString = (): string => {
-    return AVAILABLE_TOOLS.map(t => `- ${t.name}: ${t.description}`).join('\n');
+    return AVAILABLE_TOOLS
+        .filter((tool) => tool.name !== 'removeBackground')
+        .map(t => `- ${t.name}: ${t.description}`)
+        .join('\n');
 };
 
 // ==================== 详情页内容匹配 ====================
 
-/**
- * 屏类型到知识库类型映射
- */
-const SCREEN_KNOWLEDGE_MAP: Record<string, string[]> = {
-    'A_营销信息': ['promotion', 'discount', 'event'],
-    'B_信任状': ['brand', 'certification', 'award'],
-    'C_详情页首屏': ['hero', 'selling_point', 'feature', 'benefit'],
-    'C_核心卖点': ['hero', 'selling_point', 'feature', 'benefit'],
-    'D_图标icon': ['icon', 'quick_point'],
-    'D_图标卖点': ['icon', 'quick_point'],
-    'E_KV图_调性': ['kv', 'hero', 'tone'],
-    'E_KV图': ['kv', 'hero', 'tone'],
-    'F_颜色款式展示': ['color', 'variant'],
-    'F_颜色展示': ['color', 'variant'],
-    'G_面料': ['material', 'fabric', 'composition'],
-    'G_面料说明': ['material', 'fabric', 'composition'],
-    'H_解决痛点': ['pain_point', 'solution', 'problem'],
-    'I_穿搭推荐': ['styling', 'outfit', 'match'],
-    'J_细节展示': ['detail', 'craftsmanship', 'closeup'],
-    'K_产品参数': ['specification', 'size', 'info'],
-    'K_产品信息': ['specification', 'size', 'info'],
-    'L_模特实拍': ['model', 'lifestyle'],
-    'M_售后服务': ['service', 'guarantee', 'policy'],
-    'CUSTOM': []
-};
 
 /**
  * 屏类型到素材类型映射
@@ -1443,46 +2245,32 @@ function flattenFolderImages(folders: any[]): any[] {
 async function executeDetailPageContentMatch(params: {
     screens: any[];
     projectPath: string;
+    screenPlans?: any[];
+    selectedScene?: any;
+    selectedDesignContext?: any;
+    selectedElementContext?: any;
+    selectedModuleContext?: any;
 }): Promise<any> {
-    // 合并 projectPath：优先使用传入参数，否则从 appStore 读取
     let projectPath = params.projectPath || '';
     if (!projectPath) {
         try {
             const appState = useAppStore.getState();
             projectPath = (appState as any)?.currentProject?.path || '';
-        } catch { /* appStore 不可用时忽略 */ }
+        } catch { /* ignore */ }
     }
 
     const { screens } = params;
     
     console.log('[ContentMatch] 开始匹配内容...');
     console.log(`[ContentMatch] 屏数量: ${screens?.length || 0}, 项目: ${projectPath}`);
-    
-    const plans: any[] = [];
-    
-    // 优先走主进程 ContentMatcher（含素材展平和结构化卖点匹配）
-    try {
-        const matcherResult = await window.designEcho.invoke('design-agent:matchContent', {
-            screens: screens || [],
-            projectPath
-        });
-        if (matcherResult?.success && Array.isArray(matcherResult.plans)) {
-            console.log(`[ContentMatch] 主进程 ContentMatcher 返回 ${matcherResult.plans.length} 个方案`);
-            return matcherResult;
-        }
-        console.warn('[ContentMatch] 主进程 ContentMatcher 返回异常，降级到内联逻辑');
-    } catch (e: any) {
-        console.warn(`[ContentMatch] 主进程 ContentMatcher 调用失败: ${e.message}，降级到内联逻辑`);
-    }
 
-    // 降级：内联逻辑（扫描素材 + 简单匹配）
     let projectAssets: { images: any[] } = { images: [] };
     if (projectPath) {
         try {
             const scanResult = await window.designEcho.invoke('ecommerce:scanProject', projectPath);
             if (scanResult?.folders) {
                 projectAssets.images = flattenFolderImages(scanResult.folders);
-                console.log(`[ContentMatch] 降级扫描到 ${projectAssets.images.length} 张素材`);
+                console.log(`[ContentMatch] 扫描到 ${projectAssets.images.length} 张详情页可用素材（已排除 PSD/主图/SKU/视频等文件夹）`);
             } else if (scanResult?.images) {
                 projectAssets.images = scanResult.images;
             }
@@ -1492,19 +2280,19 @@ async function executeDetailPageContentMatch(params: {
     } else {
         console.warn('[ContentMatch] 未指定 projectPath，且 appStore 中无当前项目');
     }
-    
-    // 为每个屏生成填充方案
-    for (const screen of screens || []) {
-        const plan = await generateScreenPlan(screen, projectAssets);
-        plans.push(plan);
-    }
-    
-    console.log(`[ContentMatch] 生成 ${plans.length} 个填充方案`);
-    
-    return {
-        success: true,
-        plans
-    };
+
+    const ranked = await matchDetailPageContentPlans({
+        screens: screens || [],
+        projectAssets,
+        screenPlans: Array.isArray(params.screenPlans) ? params.screenPlans : [],
+        selectedScene: params.selectedScene || null,
+        selectedDesignContext: params.selectedDesignContext || null,
+        selectedElementContext: params.selectedElementContext || null,
+        selectedModuleContext: params.selectedModuleContext || null
+    });
+
+    console.log(`[ContentMatch] 生成 ${ranked.plans.length} 个填充方案`);
+    return ranked;
 }
 
 /**

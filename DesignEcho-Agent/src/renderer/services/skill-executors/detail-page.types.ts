@@ -1,6 +1,11 @@
-/**
- * 详情页 & 填充计划的共享类型
+﻿/**
+ * 详情页模板解析与填充计划的共享类型。
  */
+
+import type { DetailScreenPlan, DetailScreenRole } from '../../../shared/detail-page-screen-plan';
+import type { PlacementPlan, PlacementTransform } from '../../../shared/reference-replication-placement';
+import type { SmartScalingDecision } from '../../../shared/design-smart-scaling-policy';
+export type { DetailScreenPlan, DetailScreenRole } from '../../../shared/detail-page-screen-plan';
 
 export interface ParsedScreen {
     id: number;
@@ -44,6 +49,7 @@ export interface ImagePlaceholder {
     recommendedAssetType: string;
     aspectRatio: number;
     zone?: 'copy' | 'icon' | 'image' | 'unknown';
+    placementPlan?: PlacementPlan;
 }
 
 export interface LayerIssue {
@@ -59,17 +65,67 @@ export interface FillPlan {
     screenId: number;
     screenName: string;
     screenType: string;
+    screenRole?: DetailScreenRole;
+    imageStrategy?: DetailScreenPlan['imageStrategy'];
+    copyStrategy?: DetailScreenPlan['copyStrategy'];
+    mainMessage?: string;
+    supportingPoints?: string[];
     confidence?: number;
     needsReview?: boolean;
-    copies: { layerId: number; content: string }[];
+    decisionBoundary?: {
+        screenDecisionSource: string;
+        requiresModelDecision: boolean;
+        assetSelectionSource: string;
+        note: string;
+    };
+    copyAudit?: {
+        status: 'ok' | 'watch' | 'risky';
+        warningCount: number;
+        riskyPlaceholderCount: number;
+        watchPlaceholderCount: number;
+        warnings: string[];
+        placeholderAudits?: Array<{
+            placeholderLayerId: number;
+            status: 'ok' | 'watch' | 'risky';
+            warnings: string[];
+        }>;
+    };
+    copies: {
+        layerId: number;
+        layerName?: string;
+        content: string;
+        source?: 'template' | 'ai_generated' | 'knowledge' | 'user_input' | 'hybrid';
+        originalText?: string;
+        copyStrategy?: DetailScreenPlan['copyStrategy'];
+        mainMessage?: string;
+        supportingPoints?: string[];
+        generationStatus?: 'template' | 'generated' | 'failed';
+        generationReason?: string;
+    }[];
     images: {
         layerId: number;
+        layerName?: string;
         imagePath: string;
         fillMode: string;
+        assetType?: string;
+        needsMatting?: boolean;
+        subjectAlign?: 'center' | 'left' | 'right' | 'top' | 'bottom';
+        fitReason?: string;
         isClippingMask?: boolean;
         baseLayerId?: number;
         referenceLayerId?: number;
+        targetBounds?: {
+            left: number;
+            top: number;
+            right: number;
+            bottom: number;
+            width?: number;
+            height?: number;
+        };
         zone?: 'copy' | 'icon' | 'image' | 'unknown';
+        placementPlan?: PlacementPlan;
+        placementTransform?: PlacementTransform;
+        smartScalingDecision?: SmartScalingDecision;
     }[];
 }
 

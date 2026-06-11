@@ -42,6 +42,43 @@ function getSessionStatusIcon(status: SessionLog['status']): string {
     return 'ℹ️';
 }
 
+function getToolResultSummary(result: any): string | undefined {
+    if (!result || typeof result !== 'object') return undefined;
+    if (typeof result.acceptance?.summaryText === 'string') {
+        return result.acceptance.summaryText;
+    }
+    if (typeof result.message === 'string') {
+        return result.message.length > 160 ? `${result.message.slice(0, 160)}...` : result.message;
+    }
+    if (typeof result.error === 'string') {
+        return `错误: ${result.error}`;
+    }
+    return undefined;
+}
+
+function getToolAcceptanceDebugText(result: any): string | undefined {
+    if (!result || typeof result !== 'object') return undefined;
+    return typeof result.acceptance?.debugText === 'string' ? result.acceptance.debugText : undefined;
+}
+
+function summarizeParamsForReport(params: any): string {
+    if (!params || typeof params !== 'object') return String(params ?? '');
+    const keys = Object.keys(params).slice(0, 12);
+    if (keys.length === 0) return '{}';
+    return keys.map((key) => {
+        const value = params[key];
+        if (value === null || value === undefined) return `${key}=空`;
+        if (typeof value === 'string') {
+            if (/key|token|secret|password/i.test(key)) return `${key}=<已隐藏>`;
+            if (/path|file|dir|url/i.test(key)) return `${key}=<${value.split(/[\\/]/).pop() || '路径'}>`;
+            return `${key}=${value.length > 40 ? `${value.slice(0, 40)}...` : value}`;
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') return `${key}=${value}`;
+        if (Array.isArray(value)) return `${key}=数组(${value.length})`;
+        return `${key}=对象`;
+    }).join(', ');
+}
+
 class ToolLoggerService {
     private currentSession: SessionLog | null = null;
     private sessionHistory: SessionLog[] = [];
@@ -232,6 +269,14 @@ class ToolLoggerService {
         session.toolCalls.forEach((call, index) => {
             const icon = call.success ? '✅' : '❌';
             report += `${index + 1}. ${icon} ${call.toolName} (${call.duration}ms)\n`;
+            const summary = getToolResultSummary(call.result);
+            if (summary) {
+                report += `   摘要: ${summary}\n`;
+            }
+            const acceptanceDebug = getToolAcceptanceDebugText(call.result);
+            if (acceptanceDebug) {
+                report += `   ${acceptanceDebug}\n`;
+            }
             if (!call.success) {
                 report += `   错误: ${call.error}\n`;
             }
@@ -242,7 +287,7 @@ class ToolLoggerService {
             report += `\n**失败详情**\n`;
             failedCalls.forEach(call => {
                 report += `- ${call.toolName}: ${call.error}\n`;
-                report += `  参数: ${JSON.stringify(call.params).substring(0, 100)}\n`;
+                report += `  参数摘要: ${summarizeParamsForReport(call.params)}\n`;
             });
         }
 

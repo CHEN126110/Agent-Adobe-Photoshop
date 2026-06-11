@@ -11,21 +11,36 @@
 
 import React, { useState, useEffect } from 'react';
 import { useAppStore, TaskCategory } from '../stores/app.store';
+import { getUserFacingSkills } from '../../shared/skills/skill-declarations';
+import { getSkillExecutor } from '../services/skill-executors';
+import {
+    buildDesignKnowledgeSettingsSummary,
+    normalizeDesignKnowledgeSettings
+} from '../../shared/design-knowledge-settings';
+import { buildDesignKnowledgeRuntimeCapabilitySummary } from '../../shared/design-knowledge-runtime-capability';
+import {
+    getMemoryService,
+    type PreferenceMemoryItem
+} from '../services/memory.service';
 
 // 从统一配置导入模型定义
 import { 
     LOCAL_MODELS as LOCAL_MODELS_CONFIG, 
     GOOGLE_MODELS as GOOGLE_MODELS_CONFIG,
+    XIAOMI_MODELS as XIAOMI_MODELS_CONFIG,
     OPENROUTER_MODELS as OPENROUTER_MODELS_CONFIG,
     OLLAMA_CLOUD_MODELS as OLLAMA_CLOUD_CONFIG,
+    GPTSAPI_MODELS as GPTSAPI_MODELS_CONFIG,
+    DEEPSEEK_MODELS as DEEPSEEK_MODELS_CONFIG,
     matchOllamaModel,
-    DEFAULT_MODEL_PREFERENCES
+    DEFAULT_MODEL_PREFERENCES,
+    getModelById
 } from '../../shared/config/models.config';
 
 // ========== 类型定义 ==========
 
 // 设置 Tab 类型
-type SettingsTab = 'general' | 'ai-models' | 'image-models' | 'api-keys';
+type SettingsTab = 'general' | 'ai-models' | 'image-models' | 'api-keys' | 'integrations' | 'knowledge' | 'preferences';
 
 // 简洁单色图标组件（与导航栏风格一致）
 const TaskIcon: React.FC<{ type: string }> = ({ type }) => {
@@ -54,7 +69,7 @@ const TaskIcon: React.FC<{ type: string }> = ({ type }) => {
 // 任务分类配置（简洁单色图标）
 const TASK_CATEGORIES = [
     { id: 'layoutAnalysis' as TaskCategory, name: '逻辑理解', desc: '排版分析、代码生成', iconType: 'brain' },
-    { id: 'textOptimize' as TaskCategory, name: '文案撰写', desc: '文案优化、营销文案', iconType: 'edit' },
+    { id: 'textOptimize' as TaskCategory, name: '文案撰写', desc: '文案生成、营销文案', iconType: 'edit' },
     { id: 'visualAnalyze' as TaskCategory, name: '视觉分析', desc: '图像理解、设计分析', iconType: 'eye' },
 ];
 
@@ -83,6 +98,17 @@ const GOOGLE_MODELS = GOOGLE_MODELS_CONFIG.map(m => ({
     requiredKey: 'google' as const
 }));
 
+const XIAOMI_MODELS = XIAOMI_MODELS_CONFIG.map(m => ({
+    id: m.id,
+    name: m.name,
+    provider: 'xiaomi',
+    channel: 'Xiaomi MiMo' as const,
+    desc: m.description || '',
+    recommended: m.recommended || false,
+    vision: m.supportsVision,
+    requiredKey: 'xiaomi' as const
+}));
+
 // OpenRouter（中转渠道）
 const OPENROUTER_MODELS = OPENROUTER_MODELS_CONFIG.map(m => ({
     id: m.id,
@@ -108,11 +134,129 @@ const OLLAMA_CLOUD_MODELS = OLLAMA_CLOUD_CONFIG.map(m => ({
     requiredKey: 'ollamaApiKey' as const
 }));
 
-// 合并所有云端模型（按推荐渠道排序）
-const CLOUD_MODELS = [...GOOGLE_MODELS, ...OPENROUTER_MODELS, ...OLLAMA_CLOUD_MODELS];
+const GPTSAPI_MODELS = GPTSAPI_MODELS_CONFIG.map(m => ({
+    id: m.id,
+    name: m.name,
+    provider: 'gptsapi',
+    channel: 'GPTs API' as const,
+    desc: m.description || '',
+    recommended: m.recommended || false,
+    vision: m.supportsVision,
+    requiredKey: 'gptsapi' as const
+}));
+
+const DEEPSEEK_MODELS = DEEPSEEK_MODELS_CONFIG.map(m => ({
+    id: m.id,
+    name: m.name,
+    provider: 'deepseek',
+    channel: 'DeepSeek' as const,
+    desc: m.description || '',
+    recommended: m.recommended || false,
+    vision: m.supportsVision,
+    requiredKey: 'deepseek' as const
+}));
+
+const CLOUD_MODELS = [...GPTSAPI_MODELS, ...DEEPSEEK_MODELS, ...GOOGLE_MODELS, ...XIAOMI_MODELS, ...OPENROUTER_MODELS, ...OLLAMA_CLOUD_MODELS];
 
 interface SettingsModalProps {
     onClose: () => void;
+}
+
+const SKILL_CATEGORY_LABELS: Record<string, string> = {
+    image: '图像',
+    layout: '排版',
+    text: '文本',
+    document: '文档',
+    batch: '批量',
+    analysis: '分析',
+    export: '导出',
+    replication: '复刻',
+    ecommerce: '电商'
+};
+
+const BUILTIN_MCP_SERVERS = [
+    {
+        id: 'builtin-photoshop-host',
+        name: 'Photoshop MCP Host',
+        transport: 'http',
+        endpoint: 'http://127.0.0.1:8768/mcp',
+        description: 'Agent 内置 MCP Host，用于暴露 Photoshop UXP 插件工具。'
+    },
+    {
+        id: 'builtin-design-crawler',
+        name: 'Design Crawler MCP',
+        transport: 'internal',
+        endpoint: 'Electron IPC',
+        description: 'Agent 内置设计参考爬虫能力，当前由桌面端内部服务提供。'
+    }
+] as const;
+
+const PREFERENCE_STATUS_LABELS: Record<PreferenceMemoryItem['status'], string> = {
+    active: '启用',
+    disabled: '已禁用',
+    needs_review: '待确认',
+    archived: '已归档'
+};
+
+const PREFERENCE_SOURCE_LABELS: Record<PreferenceMemoryItem['sourceType'], string> = {
+    explicit: '显式偏好',
+    inferred: '推断偏好',
+    temporary: '临时偏好',
+    deprecated: '旧版偏好'
+};
+
+const PREFERENCE_CATEGORY_LABELS: Record<PreferenceMemoryItem['category'], string> = {
+    font: '字体',
+    color: '颜色',
+    style: '风格',
+    workflow: '工作流',
+    interaction: '交互',
+    copywriting: '文案',
+    layout: '排版',
+    unknown: '其他'
+};
+
+type PreferenceScopeType = NonNullable<PreferenceMemoryItem['scope']>['type'];
+
+interface PreferenceDraft {
+    category: PreferenceMemoryItem['category'];
+    value: string;
+    label: string;
+    evidenceSummary: string;
+    scopeType: PreferenceScopeType;
+    scopeId: string;
+}
+
+const PREFERENCE_SCOPE_LABELS: Record<PreferenceScopeType, string> = {
+    user: '用户级',
+    project: '项目级',
+    brand: '品牌级',
+    session: '会话级'
+};
+
+const PREFERENCE_DRAFT_DEFAULT: PreferenceDraft = {
+    category: 'style',
+    value: '',
+    label: '',
+    evidenceSummary: '',
+    scopeType: 'user',
+    scopeId: ''
+};
+
+function preferenceItemToDraft(item: PreferenceMemoryItem): PreferenceDraft {
+    return {
+        category: item.category,
+        value: item.value,
+        label: item.label,
+        evidenceSummary: item.evidenceSummary,
+        scopeType: item.scope?.type || 'user',
+        scopeId: item.scope?.id || ''
+    };
+}
+
+function preferenceDraftScope(draft: PreferenceDraft): PreferenceMemoryItem['scope'] {
+    const id = draft.scopeId.trim();
+    return id ? { type: draft.scopeType, id } : { type: draft.scopeType };
 }
 
 // ========== 智能分割模型配置 ==========
@@ -412,6 +556,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         modelPreferences, setModelPreferences,
         morphingSettings, setMorphingSettings,
         agentSettings, setAgentSettings,
+        integrationSettings, setIntegrationSettings,
+        designKnowledgeSettings, setDesignKnowledgeSettings,
         theme, setTheme
     } = useAppStore();
     
@@ -427,27 +573,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     };
     
     // ========== 状态 ==========
-    const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+    const [activeTab, setActiveTab] = useState<SettingsTab>('ai-models');
     const [localKeys, setLocalKeys] = useState({
         openrouter: apiKeys.openrouter || '',
         anthropic: apiKeys.anthropic || '',
         google: apiKeys.google || '',
+        xiaomi: apiKeys.xiaomi || '',
         openai: apiKeys.openai || '',
+        gptsapi: apiKeys.gptsapi || '',
         ollamaUrl: apiKeys.ollamaUrl || 'http://localhost:11434',
+        deepseek: apiKeys.deepseek || '',
         ollamaApiKey: apiKeys.ollamaApiKey || '',  // Ollama 云服务 API Key
         bfl: apiKeys.bfl || '',  // Black Forest Labs (FLUX) API Key
-        volcengineAccessKeyId: (() => {
-            if (apiKeys.volcengineAccessKeyId) return apiKeys.volcengineAccessKeyId;
-            const old = (apiKeys as { volcengine?: string }).volcengine;
-            if (old?.includes(':')) return old.split(':')[0] || '';
-            return '';
-        })(),
-        volcengineSecretAccessKey: (() => {
-            if (apiKeys.volcengineSecretAccessKey) return apiKeys.volcengineSecretAccessKey;
-            const old = (apiKeys as { volcengine?: string }).volcengine;
-            if (old?.includes(':')) return old.split(':').slice(1).join(':') || '';
-            return '';
-        })(),
+        volcengineJimengAccessKeyId: apiKeys.volcengineJimengAccessKeyId || '',
+        volcengineJimengSecretAccessKey: apiKeys.volcengineJimengSecretAccessKey || '',
+        volcengineSeedreamApiKey: apiKeys.volcengineSeedreamApiKey || '',
+        volcengineTosRegion: apiKeys.volcengineTosRegion || 'cn-beijing',
+        volcengineTosEndpoint: apiKeys.volcengineTosEndpoint || 'tos-s3-cn-beijing.volces.com',
+        volcengineTosBucket: apiKeys.volcengineTosBucket || '',
+        volcengineTosPublicBaseUrl: apiKeys.volcengineTosPublicBaseUrl || '',
+        volcengineTosKeyPrefix: apiKeys.volcengineTosKeyPrefix || 'designecho/jimeng-i2i',
     });
     // 修复已删除的模型配置
     const fixDeletedModels = (prefs: typeof modelPreferences) => {
@@ -475,8 +620,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     
     const { prefs: fixedModelPrefs, needsFix } = fixDeletedModels(modelPreferences);
     const [localPrefs, setLocalPrefs] = useState(fixedModelPrefs);
+    const [localIntegration, setLocalIntegration] = useState(integrationSettings);
+    const [localDesignKnowledge, setLocalDesignKnowledge] = useState(
+        normalizeDesignKnowledgeSettings(designKnowledgeSettings)
+    );
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [preferenceItems, setPreferenceItems] = useState<PreferenceMemoryItem[]>(() => getMemoryService().listPreferenceItems());
+    const [preferenceMessage, setPreferenceMessage] = useState('');
+    const [preferenceEditorOpen, setPreferenceEditorOpen] = useState(false);
+    const [editingPreferenceId, setEditingPreferenceId] = useState<string | null>(null);
+    const [preferenceDraft, setPreferenceDraft] = useState<PreferenceDraft>(PREFERENCE_DRAFT_DEFAULT);
+    const [preferenceImportText, setPreferenceImportText] = useState('');
+    const [preferenceExportText, setPreferenceExportText] = useState('');
+
+    useEffect(() => {
+        setLocalIntegration(integrationSettings);
+    }, [integrationSettings]);
+
+    useEffect(() => {
+        setLocalDesignKnowledge(normalizeDesignKnowledgeSettings(designKnowledgeSettings));
+    }, [designKnowledgeSettings]);
+
+    const visibleSkills = getUserFacingSkills();
+    const enabledSkillCount = visibleSkills.filter(
+        (skill) => localIntegration.skills?.[skill.id]?.enabled !== false
+    ).length;
+    const enabledMcpCount = localIntegration.mcpServers.filter((server) => server.enabled).length;
+    const activePreferenceCount = preferenceItems.filter((item) => item.status === 'active').length;
+    const reviewPreferenceCount = preferenceItems.filter((item) => item.status === 'needs_review').length;
+    const disabledPreferenceCount = preferenceItems.filter((item) => item.status === 'disabled').length;
+    const archivedPreferenceCount = preferenceItems.filter((item) => item.status === 'archived').length;
+    const designKnowledgeSummary = buildDesignKnowledgeSettingsSummary(localDesignKnowledge);
+    const designKnowledgeSelectedModel = getModelById(
+        localPrefs.orchestrator?.primaryModel || localPrefs.preferredCloudModels.layoutAnalysis
+    );
+    const designKnowledgeRuntimeCapability = buildDesignKnowledgeRuntimeCapabilitySummary({
+        settings: localDesignKnowledge,
+        model: designKnowledgeSelectedModel
+    });
+    const skillGroups = Object.entries(
+        visibleSkills.reduce<Record<string, typeof visibleSkills>>((groups, skill) => {
+            const category = skill.category || 'other';
+            if (!groups[category]) groups[category] = [];
+            groups[category].push(skill);
+            return groups;
+        }, {})
+    );
     
     // 如果需要修复，自动保存
     useEffect(() => {
@@ -503,14 +693,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     // API 测试状态 - Ollama Cloud
     const [ollamaCloudTestStatus, setOllamaCloudTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
     const [ollamaCloudTestMessage, setOllamaCloudTestMessage] = useState('');
+
+    // API 测试状态 - DeepSeek 官方
+    const [deepSeekTestStatus, setDeepSeekTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [deepSeekTestMessage, setDeepSeekTestMessage] = useState('');
     
     // API 测试状态 - BFL (Black Forest Labs)
     const [bflTestStatus, setBflTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
     const [bflTestMessage, setBflTestMessage] = useState('');
-    
-    // API 测试状态 - 火山引擎
-    const [volcengineTestStatus, setVolcengineTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
-    const [volcengineTestMessage, setVolcengineTestMessage] = useState('');
+
+    // API 测试状态 - 火山即梦
+    const [jimengTestStatus, setJimengTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [jimengTestMessage, setJimengTestMessage] = useState('');
+
+    // API 测试状态 - Seedream
+    const [seedreamTestStatus, setSeedreamTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [seedreamTestMessage, setSeedreamTestMessage] = useState('');
+
+    // 设计知识 SearXNG 健康检查状态
+    const [designKnowledgeTestStatus, setDesignKnowledgeTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [designKnowledgeTestMessage, setDesignKnowledgeTestMessage] = useState('');
     
     // 本地模型测试状态
     const [modelTestStatus, setModelTestStatus] = useState<'idle' | 'testing'>('idle');
@@ -559,11 +761,191 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         if (e.target === e.currentTarget) onClose();
     };
 
+    const createMcpServerDraft = (transport: 'stdio' | 'http') => ({
+        id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: transport === 'stdio' ? 'New MCP Server' : 'New MCP Endpoint',
+        transport,
+        enabled: true,
+        command: transport === 'stdio' ? 'node' : '',
+        args: [],
+        url: transport === 'http' ? 'http://127.0.0.1:3000/mcp' : '',
+        notes: ''
+    });
+
+    const handleToggleSkill = (skillId: string, enabled: boolean) => {
+        setLocalIntegration((prev) => ({
+            ...prev,
+            skills: {
+                ...prev.skills,
+                [skillId]: { enabled }
+            }
+        }));
+    };
+
+    const handleAddMcpServer = (transport: 'stdio' | 'http') => {
+        setLocalIntegration((prev) => ({
+            ...prev,
+            mcpServers: [...prev.mcpServers, createMcpServerDraft(transport)]
+        }));
+    };
+
+    const handleUpdateMcpServer = (
+        id: string,
+        patch: Partial<(typeof localIntegration.mcpServers)[number]>
+    ) => {
+        setLocalIntegration((prev) => ({
+            ...prev,
+            mcpServers: prev.mcpServers.map((server) =>
+                server.id === id ? { ...server, ...patch } : server
+            )
+        }));
+    };
+
+    const handleRemoveMcpServer = (id: string) => {
+        setLocalIntegration((prev) => ({
+            ...prev,
+            mcpServers: prev.mcpServers.filter((server) => server.id !== id)
+        }));
+    };
+
+    const handleUpdateDesignKnowledgeSearxng = (
+        patch: Partial<typeof localDesignKnowledge.searxng>
+    ) => {
+        setLocalDesignKnowledge((prev) => normalizeDesignKnowledgeSettings({
+            ...prev,
+            searxng: {
+                ...prev.searxng,
+                ...patch
+            }
+        }));
+    };
+
+    const handleUpdateDesignKnowledgeXiaomiWebSearch = (
+        patch: Partial<typeof localDesignKnowledge.xiaomiWebSearch>
+    ) => {
+        setLocalDesignKnowledge((prev) => normalizeDesignKnowledgeSettings({
+            ...prev,
+            xiaomiWebSearch: {
+                ...prev.xiaomiWebSearch,
+                ...patch
+            }
+        }));
+    };
+
+    const refreshPreferenceItems = () => {
+        setPreferenceItems(getMemoryService().listPreferenceItems());
+    };
+
+    const handleCreatePreference = () => {
+        setEditingPreferenceId(null);
+        setPreferenceDraft(PREFERENCE_DRAFT_DEFAULT);
+        setPreferenceEditorOpen(true);
+        setPreferenceMessage('');
+    };
+
+    const handleEditPreference = (item: PreferenceMemoryItem) => {
+        setEditingPreferenceId(item.id);
+        setPreferenceDraft(preferenceItemToDraft(item));
+        setPreferenceEditorOpen(true);
+        setPreferenceMessage('');
+    };
+
+    const handleCancelPreferenceEdit = () => {
+        setEditingPreferenceId(null);
+        setPreferenceDraft(PREFERENCE_DRAFT_DEFAULT);
+        setPreferenceEditorOpen(false);
+    };
+
+    const handleSavePreferenceDraft = () => {
+        const value = preferenceDraft.value.trim();
+        if (!value) {
+            setPreferenceMessage('偏好值不能为空。');
+            return;
+        }
+        if (preferenceDraft.scopeType !== 'user' && !preferenceDraft.scopeId.trim()) {
+            setPreferenceMessage('项目级、品牌级或会话级偏好需要填写作用域 ID。');
+            return;
+        }
+
+        try {
+            const payload = {
+                category: preferenceDraft.category,
+                value,
+                label: preferenceDraft.label.trim() || undefined,
+                evidenceSummary: preferenceDraft.evidenceSummary.trim() || undefined,
+                scope: preferenceDraftScope(preferenceDraft)
+            };
+            const updated = editingPreferenceId
+                ? getMemoryService().updatePreferenceItem(editingPreferenceId, {
+                    ...payload,
+                    sourceType: 'explicit',
+                    status: 'active'
+                })
+                : getMemoryService().upsertExplicitPreference(payload);
+            refreshPreferenceItems();
+            setPreferenceEditorOpen(false);
+            setEditingPreferenceId(null);
+            setPreferenceDraft(PREFERENCE_DRAFT_DEFAULT);
+            setPreferenceMessage(`已保存偏好：${updated.label}`);
+        } catch (error: any) {
+            setPreferenceMessage(error?.message || '保存偏好失败。');
+        }
+    };
+
+    const handleExportPreferences = async () => {
+        const snapshot = getMemoryService().exportPreferences();
+        const text = JSON.stringify(snapshot, null, 2);
+        setPreferenceExportText(text);
+        try {
+            await navigator.clipboard?.writeText(text);
+            setPreferenceMessage('已导出偏好 JSON，并尝试复制到剪贴板。');
+        } catch {
+            setPreferenceMessage('已导出偏好 JSON，可从文本框复制。');
+        }
+    };
+
+    const handleImportPreferences = () => {
+        if (!preferenceImportText.trim()) {
+            setPreferenceMessage('请先粘贴需要导入的偏好 JSON。');
+            return;
+        }
+        try {
+            const result = getMemoryService().importPreferences(preferenceImportText, { mode: 'merge' });
+            refreshPreferenceItems();
+            setPreferenceMessage(`已导入 ${result.importedCount} 条偏好，更新 ${result.replacedExistingCount} 条，跳过 ${result.skippedCount} 条。`);
+        } catch (error: any) {
+            setPreferenceMessage(error?.message || '导入偏好失败。');
+        }
+    };
+
+    const handleTogglePreference = (item: PreferenceMemoryItem) => {
+        const nextEnabled = item.status !== 'active';
+        const updated = getMemoryService().setPreferenceEnabled(item.id, nextEnabled);
+        refreshPreferenceItems();
+        setPreferenceMessage(nextEnabled ? `已启用偏好：${updated.label}` : `已禁用偏好：${updated.label}`);
+    };
+
+    const handleArchivePreference = (item: PreferenceMemoryItem) => {
+        const updated = getMemoryService().archivePreference(item.id);
+        refreshPreferenceItems();
+        setPreferenceMessage(`已归档偏好：${updated.label}`);
+    };
+
+    const handleClearInferredPreferences = () => {
+        const result = getMemoryService().clearInferredPreferences();
+        refreshPreferenceItems();
+        setPreferenceMessage(`已归档 ${result.archivedCount} 条待确认推断偏好。`);
+    };
+
     const handleSave = async () => {
         setSaving(true);
         try {
             setApiKeys(localKeys);
             setModelPreferences(localPrefs);
+            setIntegrationSettings(localIntegration);
+            setDesignKnowledgeSettings(localDesignKnowledge);
             await window.designEcho?.setApiKeys(localKeys);
             await window.designEcho?.setModelPreferences?.(localPrefs);
             // 保存形态统一设置到主进程
@@ -577,6 +959,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         } finally {
             setSaving(false);
         }
+    };
+
+    const handleTestDesignKnowledge = async () => {
+        const settings = normalizeDesignKnowledgeSettings(localDesignKnowledge);
+
+        if (!settings.searxng.enabled) {
+            setDesignKnowledgeTestStatus('error');
+            setDesignKnowledgeTestMessage('请先启用 SearXNG 设计知识搜索。');
+            return;
+        }
+
+        if (!settings.searxng.endpoint) {
+            setDesignKnowledgeTestStatus('error');
+            setDesignKnowledgeTestMessage('请先填写 SearXNG endpoint，例如 http://127.0.0.1:8080。');
+            return;
+        }
+
+        setDesignKnowledgeTestStatus('testing');
+        setDesignKnowledgeTestMessage('正在检查 SearXNG endpoint...');
+
+        try {
+            if (!window.designEcho?.probeDesignKnowledgeSearxng) {
+                throw new Error('当前版本不支持设计知识健康检查。');
+            }
+
+            const result = await window.designEcho.probeDesignKnowledgeSearxng(settings);
+            if (result.success && result.status === 'ok') {
+                setDesignKnowledgeTestStatus('success');
+                setDesignKnowledgeTestMessage(`SearXNG 已响应。HTTP ${result.httpStatus || 200}`);
+            } else {
+                const warnings = Array.isArray(result.warnings) ? result.warnings.join(' ') : '';
+                setDesignKnowledgeTestStatus('error');
+                setDesignKnowledgeTestMessage(result.error || warnings || `SearXNG 状态：${result.status || 'unavailable'}`);
+            }
+        } catch (error: any) {
+            setDesignKnowledgeTestStatus('error');
+            setDesignKnowledgeTestMessage(error?.message || 'SearXNG 健康检查失败。');
+        }
+
+        setTimeout(() => setDesignKnowledgeTestStatus('idle'), 7000);
     };
 
     const handleTestApi = async () => {
@@ -613,6 +1035,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         }
         
         setTimeout(() => setApiTestStatus('idle'), 5000);
+    };
+
+    const handleTestDeepSeek = async () => {
+        const apiKey = localKeys.deepseek?.trim();
+
+        if (!apiKey) {
+            setDeepSeekTestStatus('error');
+            setDeepSeekTestMessage('请先输入 DeepSeek 官方 API Key');
+            return;
+        }
+
+        setDeepSeekTestStatus('testing');
+        setDeepSeekTestMessage('正在调用 DeepSeek 官方文本聊天接口...');
+
+        try {
+            if (!window.designEcho?.testDeepSeek) {
+                throw new Error('当前版本不支持 DeepSeek 测试');
+            }
+
+            const result = await window.designEcho.testDeepSeek(apiKey);
+            if (result.success) {
+                const usageText = result.usage
+                    ? ` 输入 ${result.usage.inputTokens} / 输出 ${result.usage.outputTokens} tokens`
+                    : '';
+                setDeepSeekTestStatus('success');
+                setDeepSeekTestMessage(result.message || `连接成功。${usageText}`);
+            } else {
+                setDeepSeekTestStatus('error');
+                setDeepSeekTestMessage(result.error || 'DeepSeek 测试失败');
+            }
+        } catch (err: any) {
+            setDeepSeekTestStatus('error');
+            setDeepSeekTestMessage(err?.message || 'DeepSeek 测试失败');
+        }
+
+        setTimeout(() => setDeepSeekTestStatus('idle'), 5000);
     };
 
     const handleTestGoogleApi = async () => {
@@ -709,10 +1167,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         
         setBflTestStatus('testing');
         setBflTestMessage('正在验证...');
-        
+
         try {
             const designEcho = (window as any).designEcho;
             if (designEcho?.bfl?.testApiKey) {
+                setApiKeys({ bfl: apiKey });
+                await window.designEcho?.setApiKeys({ bfl: apiKey });
                 // 使用新的 BFL Service API
                 const result = await designEcho.bfl.testApiKey(apiKey);
                 if (result.success) {
@@ -740,38 +1200,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         setTimeout(() => setBflTestStatus('idle'), 5000);
     };
 
-    // 测试火山引擎凭证
-    const handleTestVolcengineApi = async () => {
-        const ak = localKeys.volcengineAccessKeyId?.trim();
-        const sk = localKeys.volcengineSecretAccessKey?.trim();
-        if (!ak || !sk) {
-            setVolcengineTestStatus('error');
-            setVolcengineTestMessage('请先填写 Access Key ID 和 Secret Access Key');
-            setTimeout(() => setVolcengineTestStatus('idle'), 5000);
+    const handleTestJimengApi = async () => {
+        const accessKeyId = localKeys.volcengineJimengAccessKeyId?.trim();
+        const secretAccessKey = localKeys.volcengineJimengSecretAccessKey?.trim();
+        if (!accessKeyId || !secretAccessKey) {
+            setJimengTestStatus('error');
+            setJimengTestMessage('请先输入 Access Key ID 和 Secret Access Key');
             return;
         }
-        setVolcengineTestStatus('testing');
-        setVolcengineTestMessage('正在验证...');
+
+        setJimengTestStatus('testing');
+        setJimengTestMessage('正在验证鉴权和提交链...');
+
         try {
-            const designEcho = (window as any).designEcho;
-            if (designEcho?.volcengine?.testCredentials) {
-                const result = await designEcho.volcengine.testCredentials(ak, sk);
-                if (result.success) {
-                    setVolcengineTestStatus('success');
-                    setVolcengineTestMessage(result.message || '✅ 凭证有效');
-                } else {
-                    setVolcengineTestStatus('error');
-                    setVolcengineTestMessage(result.error || '❌ 验证失败');
-                }
+            const designEcho = window.designEcho as any;
+            if (!designEcho?.testVolcengineJimengCredentials) {
+                throw new Error('当前版本不支持即梦 API 测试');
+            }
+            const result = await designEcho.testVolcengineJimengCredentials(accessKeyId, secretAccessKey);
+            if (result.success) {
+                setJimengTestStatus('success');
+                setJimengTestMessage(result.message || '✅ 鉴权和提交链已通过');
             } else {
-                setVolcengineTestStatus('error');
-                setVolcengineTestMessage('测试功能不可用');
+                setJimengTestStatus('error');
+                setJimengTestMessage(result.error || '❌ 验证失败');
             }
         } catch (err: any) {
-            setVolcengineTestStatus('error');
-            setVolcengineTestMessage(`❌ ${err.message || '验证失败'}`);
+            setJimengTestStatus('error');
+            setJimengTestMessage(`❌ ${err?.message || '验证失败'}`);
         }
-        setTimeout(() => setVolcengineTestStatus('idle'), 5000);
+
+        setTimeout(() => setJimengTestStatus('idle'), 5000);
+    };
+
+    const handleTestSeedreamApi = async () => {
+        const apiKey = localKeys.volcengineSeedreamApiKey?.trim();
+        if (!apiKey) {
+            setSeedreamTestStatus('error');
+            setSeedreamTestMessage('请先输入 Seedream API Key');
+            return;
+        }
+
+        setSeedreamTestStatus('testing');
+        setSeedreamTestMessage('正在验证...');
+
+        try {
+            const designEcho = window.designEcho as any;
+            if (!designEcho?.testVolcengineSeedreamApiKey) {
+                throw new Error('当前版本不支持 Seedream API 测试');
+            }
+            const result = await designEcho.testVolcengineSeedreamApiKey(apiKey);
+            if (result.success) {
+                setSeedreamTestStatus('success');
+                setSeedreamTestMessage(result.message || '✅ API Key 可用');
+            } else {
+                setSeedreamTestStatus('error');
+                setSeedreamTestMessage(result.error || '❌ 验证失败');
+            }
+        } catch (err: any) {
+            setSeedreamTestStatus('error');
+            setSeedreamTestMessage(`❌ ${err?.message || '验证失败'}`);
+        }
+
+        setTimeout(() => setSeedreamTestStatus('idle'), 5000);
     };
 
     const isModelInstalled = (modelId: string) => {
@@ -997,13 +1488,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                 {/* Tab 导航 */}
                 <div className="tabs-nav">
                     <button 
-                        className={`tab-btn ${activeTab === 'general' ? 'active' : ''}`}
-                        onClick={() => setActiveTab('general')}
-                    >
-                        <span className="tab-icon">⚙️</span>
-                        <span className="tab-label">常规</span>
-                    </button>
-                    <button 
                         className={`tab-btn ${activeTab === 'ai-models' ? 'active' : ''}`}
                         onClick={() => setActiveTab('ai-models')}
                     >
@@ -1024,10 +1508,768 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                         <span className="tab-icon">🔑</span>
                         <span className="tab-label">API 密钥</span>
                     </button>
+                    <button 
+                        className={`tab-btn ${activeTab === 'integrations' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('integrations')}
+                    >
+                        <span className="tab-icon">🧩</span>
+                        <span className="tab-label">MCP / Skills</span>
+                    </button>
+                    <button
+                        className={`tab-btn ${activeTab === 'knowledge' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('knowledge')}
+                    >
+                        <span className="tab-icon">📚</span>
+                        <span className="tab-label">设计知识</span>
+                    </button>
+                    <button
+                        className={`tab-btn ${activeTab === 'preferences' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('preferences')}
+                    >
+                        <span className="tab-icon">🧭</span>
+                        <span className="tab-label">用户偏好</span>
+                    </button>
+                    <button 
+                        className={`tab-btn ${activeTab === 'general' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('general')}
+                    >
+                        <span className="tab-icon">⚙️</span>
+                        <span className="tab-label">常规</span>
+                    </button>
                 </div>
 
                 {/* Tab 内容 */}
                 <div className="modal-content">
+                    {/* ==================== 设计知识 Tab ==================== */}
+                    {activeTab === 'knowledge' && (
+                        <div className="tab-content">
+                            <div className="config-section">
+                                <div className="section-header">
+                                    <h3 className="section-title">设计知识搜索</h3>
+                                    <span className={`badge ${designKnowledgeSummary.status === 'ready' ? 'success' : 'warning'}`}>
+                                        {designKnowledgeSummary.status === 'ready' ? '已就绪' : '未就绪'}
+                                    </span>
+                                </div>
+                                <p className="section-desc">
+                                    这里只配置外部设计知识来源。搜索结果只能作为 Agent 的设计参考和来源说明，不会直接生成 Photoshop 操作。
+                                </p>
+
+                                <div className="integration-card" style={{ marginBottom: '16px' }}>
+                                    <div className="integration-card-header">
+                                        <div>
+                                            <div className="integration-card-title">当前模型能力</div>
+                                            <div className="integration-card-subtitle">
+                                                只读摘要；用于判断当前模型是否支持工具流、公开推理显示和 provider-native 知识搜索。
+                                            </div>
+                                        </div>
+                                        <span className={`badge ${designKnowledgeRuntimeCapability.status === 'ready' ? 'success' : 'warning'}`}>
+                                            {designKnowledgeRuntimeCapability.status}
+                                        </span>
+                                    </div>
+                                    <div className="integration-summary-grid" style={{ marginTop: '12px' }}>
+                                        <div className="summary-stat-card">
+                                            <span className="summary-stat-value">{designKnowledgeRuntimeCapability.selectedModel?.name || '未识别'}</span>
+                                            <span className="summary-stat-label">当前规划模型</span>
+                                        </div>
+                                        <div className="summary-stat-card">
+                                            <span className="summary-stat-value">{designKnowledgeRuntimeCapability.providerObservation.toolStream.mode}</span>
+                                            <span className="summary-stat-label">工具流模式</span>
+                                        </div>
+                                        <div className="summary-stat-card">
+                                            <span className="summary-stat-value">{designKnowledgeRuntimeCapability.providerObservation.providerThinkingDelta.status}</span>
+                                            <span className="summary-stat-label">Provider 思考流</span>
+                                        </div>
+                                        <div className="summary-stat-card">
+                                            <span className="summary-stat-value">{designKnowledgeRuntimeCapability.providerNativeWebSearch.status}</span>
+                                            <span className="summary-stat-label">小米 Web Search</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="integration-card" style={{ marginBottom: '16px' }}>
+                                    <div className="integration-card-header">
+                                        <div>
+                                            <div className="integration-card-title">小米官方 Web Search</div>
+                                            <div className="integration-card-subtitle">
+                                                Provider-native 工具，仅在小米官方 provider 和支持模型上允许进入请求计划；当前不会自动搜索。
+                                            </div>
+                                        </div>
+                                        <label className="toggle-row">
+                                            <input
+                                                type="checkbox"
+                                                checked={localDesignKnowledge.xiaomiWebSearch.enabled}
+                                                onChange={(e) => handleUpdateDesignKnowledgeXiaomiWebSearch({ enabled: e.target.checked })}
+                                                style={{ width: '16px', height: '16px', accentColor: 'var(--de-primary)' }}
+                                            />
+                                            <span>启用</span>
+                                        </label>
+                                    </div>
+                                    <div className="mcp-grid">
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label>关键词数量</label>
+                                            <input
+                                                className="input"
+                                                type="number"
+                                                min={1}
+                                                max={5}
+                                                value={localDesignKnowledge.xiaomiWebSearch.maxKeyword}
+                                                onChange={(e) => handleUpdateDesignKnowledgeXiaomiWebSearch({ maxKeyword: Number(e.target.value) })}
+                                            />
+                                        </div>
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label>结果数量</label>
+                                            <input
+                                                className="input"
+                                                type="number"
+                                                min={1}
+                                                max={10}
+                                                value={localDesignKnowledge.xiaomiWebSearch.limit}
+                                                onChange={(e) => handleUpdateDesignKnowledgeXiaomiWebSearch({ limit: Number(e.target.value) })}
+                                            />
+                                        </div>
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label>用户位置</label>
+                                            <input
+                                                className="input"
+                                                value={localDesignKnowledge.xiaomiWebSearch.userLocation}
+                                                onChange={(e) => handleUpdateDesignKnowledgeXiaomiWebSearch({ userLocation: e.target.value })}
+                                                placeholder="例如 China"
+                                            />
+                                        </div>
+                                        <label className="toggle-row" style={{ alignSelf: 'end', minHeight: '42px' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={localDesignKnowledge.xiaomiWebSearch.forceSearch}
+                                                onChange={(e) => handleUpdateDesignKnowledgeXiaomiWebSearch({ forceSearch: e.target.checked })}
+                                                style={{ width: '16px', height: '16px', accentColor: 'var(--de-primary)' }}
+                                            />
+                                            <span>强制搜索</span>
+                                        </label>
+                                        <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                                            <label>providerNativeWebSearch</label>
+                                            <code className="integration-code">{designKnowledgeRuntimeCapability.providerNativeWebSearch.status}</code>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="integration-card">
+                                    <div className="integration-card-header">
+                                        <div>
+                                            <div className="integration-card-title">SearXNG 本地 Web RAG</div>
+                                            <div className="integration-card-subtitle">
+                                                可选 endpoint；DesignEcho 不启动、不停止、不管理 Docker / Harbor / SearXNG。
+                                            </div>
+                                        </div>
+                                        <label className="toggle-row">
+                                            <input
+                                                type="checkbox"
+                                                checked={localDesignKnowledge.searxng.enabled}
+                                                onChange={(e) => handleUpdateDesignKnowledgeSearxng({ enabled: e.target.checked })}
+                                                style={{ width: '16px', height: '16px', accentColor: 'var(--de-primary)' }}
+                                            />
+                                            <span>启用</span>
+                                        </label>
+                                    </div>
+
+                                    <div className="mcp-grid">
+                                        <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                                            <label>SearXNG endpoint</label>
+                                            <input
+                                                className="input"
+                                                value={localDesignKnowledge.searxng.endpoint}
+                                                onChange={(e) => handleUpdateDesignKnowledgeSearxng({ endpoint: e.target.value })}
+                                                placeholder="例如 http://127.0.0.1:8080"
+                                            />
+                                        </div>
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label>语言</label>
+                                            <input
+                                                className="input"
+                                                value={localDesignKnowledge.searxng.language}
+                                                onChange={(e) => handleUpdateDesignKnowledgeSearxng({ language: e.target.value })}
+                                                placeholder="zh-CN"
+                                            />
+                                        </div>
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label>安全搜索</label>
+                                            <select
+                                                className="select"
+                                                value={localDesignKnowledge.searxng.safeSearch}
+                                                onChange={(e) => handleUpdateDesignKnowledgeSearxng({ safeSearch: Number(e.target.value) as 0 | 1 | 2 })}
+                                            >
+                                                <option value={0}>关闭</option>
+                                                <option value={1}>中等</option>
+                                                <option value={2}>严格</option>
+                                            </select>
+                                        </div>
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label>超时 ms</label>
+                                            <input
+                                                className="input"
+                                                type="number"
+                                                min={1000}
+                                                max={30000}
+                                                value={localDesignKnowledge.searxng.timeoutMs}
+                                                onChange={(e) => handleUpdateDesignKnowledgeSearxng({ timeoutMs: Number(e.target.value) })}
+                                            />
+                                        </div>
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label>状态</label>
+                                            <code className="integration-code">{designKnowledgeSummary.status}</code>
+                                        </div>
+                                    </div>
+
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+                                        <button
+                                            className="btn btn-secondary"
+                                            type="button"
+                                            onClick={handleTestDesignKnowledge}
+                                            disabled={designKnowledgeTestStatus === 'testing'}
+                                        >
+                                            {designKnowledgeTestStatus === 'testing' ? '测试中...' : '测试连接'}
+                                        </button>
+                                        {designKnowledgeTestMessage && (
+                                            <span className={`test-message ${designKnowledgeTestStatus}`}>
+                                                {designKnowledgeTestMessage}
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    {designKnowledgeSummary.warnings.length > 0 && (
+                                        <div className="integration-empty-state" style={{ marginTop: '16px' }}>
+                                            {designKnowledgeSummary.warnings.map((warning) => (
+                                                <div key={warning}>{warning}</div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ==================== 用户偏好 Tab ==================== */}
+                    {activeTab === 'preferences' && (
+                        <div className="tab-content">
+                            <div className="config-section">
+                                <div className="section-header">
+                                    <h3 className="section-title">用户偏好记忆</h3>
+                                    <span className="badge" style={{ background: activePreferenceCount > 0 ? '#059669' : '#6b7280' }}>
+                                        {activePreferenceCount} 条启用
+                                    </span>
+                                </div>
+                                <p className="section-desc">
+                                    这里管理 Agent 可参考的本地偏好。待确认和已禁用的偏好不会进入设计知识，也不会直接触发 Photoshop 操作。
+                                </p>
+
+                                <div className="integration-summary-grid" style={{ marginBottom: '16px' }}>
+                                    <div className="summary-stat-card">
+                                        <span className="summary-stat-value">{activePreferenceCount}</span>
+                                        <span className="summary-stat-label">启用偏好</span>
+                                    </div>
+                                    <div className="summary-stat-card">
+                                        <span className="summary-stat-value">{reviewPreferenceCount}</span>
+                                        <span className="summary-stat-label">待确认推断</span>
+                                    </div>
+                                    <div className="summary-stat-card">
+                                        <span className="summary-stat-value">{disabledPreferenceCount}</span>
+                                        <span className="summary-stat-label">已禁用</span>
+                                    </div>
+                                    <div className="summary-stat-card">
+                                        <span className="summary-stat-value">{archivedPreferenceCount}</span>
+                                        <span className="summary-stat-label">已归档</span>
+                                    </div>
+                                </div>
+
+                                <div className="integration-card" style={{ marginBottom: '16px' }}>
+                                    <div className="integration-card-header">
+                                        <div>
+                                            <div className="integration-card-title">偏好维护</div>
+                                            <div className="integration-card-subtitle">
+                                                显式偏好会进入本地设计知识；推断偏好需要人工确认后才能启用。
+                                            </div>
+                                        </div>
+                                        <div className="preference-actions">
+                                            <button
+                                                className="btn btn-primary"
+                                                type="button"
+                                                onClick={handleCreatePreference}
+                                            >
+                                                新增偏好
+                                            </button>
+                                            <button
+                                                className="btn btn-secondary"
+                                                type="button"
+                                                onClick={handleExportPreferences}
+                                            >
+                                                导出偏好
+                                            </button>
+                                            <button
+                                                className="btn btn-secondary"
+                                                type="button"
+                                                onClick={handleClearInferredPreferences}
+                                                disabled={reviewPreferenceCount === 0}
+                                            >
+                                                清理待确认
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {preferenceMessage && (
+                                        <div className="test-message success" style={{ marginTop: '12px' }}>
+                                            {preferenceMessage}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {preferenceEditorOpen && (
+                                    <div className="integration-card preference-editor-card" style={{ marginBottom: '16px' }}>
+                                        <div className="integration-card-header">
+                                            <div>
+                                                <div className="integration-card-title">
+                                                    {editingPreferenceId ? '编辑偏好' : '新增偏好'}
+                                                </div>
+                                                <div className="integration-card-subtitle">
+                                                    用于记录明确偏好；不会绕过当前任务、商品事实或平台规范。
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="preference-editor-grid">
+                                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                                <label>分类</label>
+                                                <select
+                                                    className="select"
+                                                    value={preferenceDraft.category}
+                                                    onChange={(event) => setPreferenceDraft((prev) => ({
+                                                        ...prev,
+                                                        category: event.target.value as PreferenceMemoryItem['category']
+                                                    }))}
+                                                >
+                                                    {Object.entries(PREFERENCE_CATEGORY_LABELS).map(([value, label]) => (
+                                                        <option key={value} value={value}>{label}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                                <label>作用域</label>
+                                                <select
+                                                    className="select"
+                                                    value={preferenceDraft.scopeType}
+                                                    onChange={(event) => setPreferenceDraft((prev) => ({
+                                                        ...prev,
+                                                        scopeType: event.target.value as PreferenceScopeType,
+                                                        scopeId: event.target.value === 'user' ? '' : prev.scopeId
+                                                    }))}
+                                                >
+                                                    {Object.entries(PREFERENCE_SCOPE_LABELS).map(([value, label]) => (
+                                                        <option key={value} value={value}>{label}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                                <label>作用域 ID</label>
+                                                <input
+                                                    className="input"
+                                                    value={preferenceDraft.scopeId}
+                                                    disabled={preferenceDraft.scopeType === 'user'}
+                                                    placeholder={preferenceDraft.scopeType === 'project' ? '例如 C-1160' : '非用户级偏好需要填写'}
+                                                    onChange={(event) => setPreferenceDraft((prev) => ({
+                                                        ...prev,
+                                                        scopeId: event.target.value
+                                                    }))}
+                                                />
+                                            </div>
+                                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                                <label>偏好值</label>
+                                                <input
+                                                    className="input"
+                                                    value={preferenceDraft.value}
+                                                    placeholder="例如 高级灰、低广告感文案、阿里巴巴普惠体"
+                                                    onChange={(event) => setPreferenceDraft((prev) => ({
+                                                        ...prev,
+                                                        value: event.target.value
+                                                    }))}
+                                                />
+                                            </div>
+                                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                                <label>显示名称</label>
+                                                <input
+                                                    className="input"
+                                                    value={preferenceDraft.label}
+                                                    placeholder="可选，不填则自动生成"
+                                                    onChange={(event) => setPreferenceDraft((prev) => ({
+                                                        ...prev,
+                                                        label: event.target.value
+                                                    }))}
+                                                />
+                                            </div>
+                                            <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                                                <label>依据说明</label>
+                                                <textarea
+                                                    className="input"
+                                                    rows={3}
+                                                    value={preferenceDraft.evidenceSummary}
+                                                    placeholder="说明这个偏好来自哪次明确要求或验收结论"
+                                                    onChange={(event) => setPreferenceDraft((prev) => ({
+                                                        ...prev,
+                                                        evidenceSummary: event.target.value
+                                                    }))}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="preference-form-actions">
+                                            <button className="btn btn-primary" type="button" onClick={handleSavePreferenceDraft}>
+                                                保存偏好
+                                            </button>
+                                            <button className="btn btn-secondary" type="button" onClick={handleCancelPreferenceEdit}>
+                                                取消
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="integration-card preference-import-export-card" style={{ marginBottom: '16px' }}>
+                                    <div className="integration-card-header">
+                                        <div>
+                                            <div className="integration-card-title">导入偏好</div>
+                                            <div className="integration-card-subtitle">
+                                                导入只接受结构化偏好 JSON；无效字段会被丢弃，默认合并到当前记忆。
+                                            </div>
+                                        </div>
+                                        <button
+                                            className="btn btn-secondary"
+                                            type="button"
+                                            onClick={handleImportPreferences}
+                                        >
+                                            导入偏好
+                                        </button>
+                                    </div>
+                                    <textarea
+                                        className="input preference-json-textarea"
+                                        rows={4}
+                                        value={preferenceImportText}
+                                        placeholder="粘贴 designecho-preferences/v1 JSON"
+                                        onChange={(event) => setPreferenceImportText(event.target.value)}
+                                    />
+                                    {preferenceExportText && (
+                                        <textarea
+                                            className="input preference-json-textarea"
+                                            rows={4}
+                                            value={preferenceExportText}
+                                            readOnly
+                                            style={{ marginTop: '12px' }}
+                                        />
+                                    )}
+                                </div>
+
+                                {preferenceItems.length === 0 ? (
+                                    <div className="integration-empty-state">
+                                        还没有本地偏好。后续显式设置的偏好会显示在这里；自动推断项会先进入待确认状态。
+                                    </div>
+                                ) : (
+                                    <div className="preference-list">
+                                        {preferenceItems.map((item) => (
+                                            <div key={item.id} className={`preference-card preference-card-${item.status}`}>
+                                                <div className="preference-card-main">
+                                                    <div className="preference-title-row">
+                                                        <span className="preference-title">{item.label}</span>
+                                                        <span className={`badge preference-status-${item.status}`}>
+                                                            {PREFERENCE_STATUS_LABELS[item.status]}
+                                                        </span>
+                                                    </div>
+                                                    <div className="preference-meta">
+                                                        <span>{PREFERENCE_CATEGORY_LABELS[item.category]}</span>
+                                                        <span>{PREFERENCE_SOURCE_LABELS[item.sourceType]}</span>
+                                                        <span>
+                                                            {PREFERENCE_SCOPE_LABELS[item.scope?.type || 'user']}
+                                                            {item.scope?.id ? `：${item.scope.id}` : ''}
+                                                        </span>
+                                                        <span>使用 {item.usageCount || 0} 次</span>
+                                                    </div>
+                                                    <p className="preference-evidence">{item.evidenceSummary}</p>
+                                                </div>
+                                                <div className="preference-actions">
+                                                    {item.status !== 'archived' && (
+                                                        <button
+                                                            className="btn btn-secondary"
+                                                            type="button"
+                                                            onClick={() => handleEditPreference(item)}
+                                                        >
+                                                            编辑
+                                                        </button>
+                                                    )}
+                                                    {item.status !== 'archived' && (
+                                                        <button
+                                                            className="btn btn-secondary"
+                                                            type="button"
+                                                            onClick={() => handleTogglePreference(item)}
+                                                        >
+                                                            {item.status === 'active'
+                                                                ? '禁用'
+                                                                : item.sourceType === 'inferred' || item.status === 'needs_review'
+                                                                    ? '确认并启用'
+                                                                    : '启用'}
+                                                        </button>
+                                                    )}
+                                                    {item.status !== 'archived' && (
+                                                        <button
+                                                            className="btn btn-secondary"
+                                                            type="button"
+                                                            onClick={() => handleArchivePreference(item)}
+                                                        >
+                                                            归档
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ==================== MCP / Skills Tab ==================== */}
+                    {activeTab === 'integrations' && (
+                        <div className="tab-content">
+                            <div className="config-section">
+                                <div className="section-header">
+                                    <h3 className="section-title">集成控制台</h3>
+                                    <span className="badge" style={{ background: '#2563eb' }}>统一管理</span>
+                                </div>
+                                <p className="section-desc">
+                                    这里作为 Skills 与 MCP 的单一配置入口。Skill 开关会直接影响智能体可选能力；MCP 先统一管理配置和启用状态，后续运行器接线也应以这里为唯一数据源。
+                                </p>
+                                <div className="integration-summary-grid">
+                                    <div className="summary-stat-card">
+                                        <span className="summary-stat-value">{enabledSkillCount} / {visibleSkills.length}</span>
+                                        <span className="summary-stat-label">启用 Skills</span>
+                                    </div>
+                                    <div className="summary-stat-card">
+                                        <span className="summary-stat-value">{enabledMcpCount} / {localIntegration.mcpServers.length}</span>
+                                        <span className="summary-stat-label">启用外部 MCP</span>
+                                    </div>
+                                    <div className="summary-stat-card">
+                                        <span className="summary-stat-value">{BUILTIN_MCP_SERVERS.length}</span>
+                                        <span className="summary-stat-label">内置 MCP</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="config-section">
+                                <div className="section-header">
+                                    <h3 className="section-title">Skills</h3>
+                                    <span className="badge" style={{ background: '#0f766e' }}>影响智能体决策</span>
+                                </div>
+                                <p className="section-desc">
+                                    关闭某个 Skill 后，统一智能体不会再把它当成可选执行路径。这里显示声明、分类、依赖工具和本地执行器接线状态。
+                                </p>
+                                <div className="skill-group-stack">
+                                    {skillGroups.map(([category, skills]) => (
+                                        <div className="integration-card" key={category}>
+                                            <div className="integration-card-header">
+                                                <div>
+                                                    <div className="integration-card-title">
+                                                        {SKILL_CATEGORY_LABELS[category] || category}
+                                                    </div>
+                                                    <div className="integration-card-subtitle">
+                                                        {skills.length} 个技能
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="skill-list">
+                                                {skills.map((skill) => {
+                                                    const enabled = localIntegration.skills?.[skill.id]?.enabled !== false;
+                                                    const executor = getSkillExecutor(skill.id);
+                                                    return (
+                                                        <label className={`skill-item-row ${enabled ? '' : 'disabled'}`} key={skill.id}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={enabled}
+                                                                onChange={(e) => handleToggleSkill(skill.id, e.target.checked)}
+                                                                style={{ width: '16px', height: '16px', accentColor: 'var(--de-primary)' }}
+                                                            />
+                                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                                                                    <span style={{ fontWeight: 600 }}>{skill.name}</span>
+                                                                    <span className="mini-badge">{skill.id}</span>
+                                                                    <span className="mini-badge">{skill.requiredTools.length} tools</span>
+                                                                    <span className={`mini-badge ${executor ? 'success' : 'warning'}`}>
+                                                                        {executor ? '已接执行器' : '仅声明'}
+                                                                    </span>
+                                                                </div>
+                                                                <div style={{ fontSize: '12px', color: 'var(--de-text-secondary)', lineHeight: 1.55 }}>
+                                                                    {skill.description}
+                                                                </div>
+                                                            </div>
+                                                        </label>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="config-section">
+                                <div className="section-header">
+                                    <h3 className="section-title">MCP</h3>
+                                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                        <button className="btn btn-secondary" type="button" onClick={() => handleAddMcpServer('stdio')}>
+                                            + 添加 Stdio
+                                        </button>
+                                        <button className="btn btn-secondary" type="button" onClick={() => handleAddMcpServer('http')}>
+                                            + 添加 HTTP
+                                        </button>
+                                    </div>
+                                </div>
+                                <p className="section-desc">
+                                    内置 MCP 能力用于 Photoshop 与桌面端桥接；外部 MCP 服务器在这里登记 transport、命令、参数或 URL，避免后续继续散落在代码里硬编码。
+                                </p>
+
+                                <div className="integration-card" style={{ marginBottom: '16px' }}>
+                                    <div className="integration-card-header">
+                                        <div>
+                                            <div className="integration-card-title">内置 MCP</div>
+                                            <div className="integration-card-subtitle">系统提供，作为只读能力展示</div>
+                                        </div>
+                                    </div>
+                                    <div className="builtin-mcp-list">
+                                        {BUILTIN_MCP_SERVERS.map((server) => (
+                                            <div className="builtin-mcp-item" key={server.id}>
+                                                <div style={{ minWidth: 0 }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                                                        <span style={{ fontWeight: 600 }}>{server.name}</span>
+                                                        <span className="mini-badge success">内置</span>
+                                                        <span className="mini-badge">{server.transport}</span>
+                                                    </div>
+                                                    <div style={{ fontSize: '12px', color: 'var(--de-text-secondary)', marginBottom: '6px' }}>
+                                                        {server.description}
+                                                    </div>
+                                                    <code className="integration-code">{server.endpoint}</code>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="integration-card">
+                                    <div className="integration-card-header">
+                                        <div>
+                                            <div className="integration-card-title">外部 MCP 服务器</div>
+                                            <div className="integration-card-subtitle">可新增、编辑、禁用和删除</div>
+                                        </div>
+                                    </div>
+                                    {localIntegration.mcpServers.length === 0 ? (
+                                        <div className="integration-empty-state">
+                                            <div style={{ fontWeight: 600, marginBottom: '6px' }}>还没有外部 MCP 服务器</div>
+                                            <div style={{ fontSize: '12px', color: 'var(--de-text-secondary)' }}>
+                                                先从常用的 Stdio 或 HTTP 入口开始登记，例如 Eagle、本地 Node Proxy、内部 HTTP MCP 网关。
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="mcp-server-stack">
+                                            {localIntegration.mcpServers.map((server) => (
+                                                <div className="mcp-server-card" key={server.id}>
+                                                    <div className="mcp-server-header">
+                                                        <div className="toggle-row">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={server.enabled}
+                                                                onChange={(e) => handleUpdateMcpServer(server.id, { enabled: e.target.checked })}
+                                                                style={{ width: '16px', height: '16px', accentColor: 'var(--de-primary)' }}
+                                                            />
+                                                            <span style={{ fontWeight: 600 }}>启用此服务器</span>
+                                                        </div>
+                                                        <button
+                                                            className="btn btn-secondary"
+                                                            type="button"
+                                                            onClick={() => handleRemoveMcpServer(server.id)}
+                                                        >
+                                                            删除
+                                                        </button>
+                                                    </div>
+                                                    <div className="mcp-grid">
+                                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                                            <label>名称</label>
+                                                            <input
+                                                                className="input"
+                                                                value={server.name}
+                                                                onChange={(e) => handleUpdateMcpServer(server.id, { name: e.target.value })}
+                                                                placeholder="例如 Eagle MCP"
+                                                            />
+                                                        </div>
+                                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                                            <label>Transport</label>
+                                                            <select
+                                                                className="select"
+                                                                value={server.transport}
+                                                                onChange={(e) => handleUpdateMcpServer(server.id, {
+                                                                    transport: e.target.value as 'stdio' | 'http',
+                                                                    command: e.target.value === 'stdio' ? (server.command || 'node') : '',
+                                                                    url: e.target.value === 'http' ? (server.url || 'http://127.0.0.1:3000/mcp') : ''
+                                                                })}
+                                                            >
+                                                                <option value="stdio">stdio</option>
+                                                                <option value="http">http</option>
+                                                            </select>
+                                                        </div>
+                                                        {server.transport === 'stdio' ? (
+                                                            <>
+                                                                <div className="form-group" style={{ marginBottom: 0 }}>
+                                                                    <label>命令</label>
+                                                                    <input
+                                                                        className="input"
+                                                                        value={server.command || ''}
+                                                                        onChange={(e) => handleUpdateMcpServer(server.id, { command: e.target.value })}
+                                                                        placeholder="node"
+                                                                    />
+                                                                </div>
+                                                                <div className="form-group" style={{ marginBottom: 0 }}>
+                                                                    <label>参数（每行一个）</label>
+                                                                    <textarea
+                                                                        className="input"
+                                                                        value={(server.args || []).join('\n')}
+                                                                        onChange={(e) => handleUpdateMcpServer(server.id, {
+                                                                            args: e.target.value
+                                                                                .split(/\r?\n/)
+                                                                                .map((line) => line.trim())
+                                                                                .filter(Boolean)
+                                                                        })}
+                                                                        placeholder="C:/path/to/mcp-proxy.js"
+                                                                        style={{ minHeight: '88px', resize: 'vertical' }}
+                                                                    />
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                                                                <label>URL</label>
+                                                                <input
+                                                                    className="input"
+                                                                    value={server.url || ''}
+                                                                    onChange={(e) => handleUpdateMcpServer(server.id, { url: e.target.value })}
+                                                                    placeholder="http://127.0.0.1:41596/mcp"
+                                                                />
+                                                            </div>
+                                                        )}
+                                                        <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                                                            <label>备注</label>
+                                                            <textarea
+                                                                className="input"
+                                                                value={server.notes || ''}
+                                                                onChange={(e) => handleUpdateMcpServer(server.id, { notes: e.target.value })}
+                                                                placeholder="记录用途、依赖应用、示例命令或接入边界"
+                                                                style={{ minHeight: '72px', resize: 'vertical' }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* ==================== 常规设置 Tab ==================== */}
                     {activeTab === 'general' && (
                         <div className="tab-content">
@@ -1346,18 +2588,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                 // 检测用户选择的云端模型需要哪些 API Key
                                 const selectedModels = Object.values(localPrefs.preferredCloudModels);
                                 const needsGoogle = selectedModels.some(m => m?.startsWith('google-'));
+                                const needsXiaomi = selectedModels.some(m => m?.startsWith('xiaomi-'));
                                 const needsOpenRouter = selectedModels.some(m => m?.startsWith('openrouter-'));
                                 const needsOllamaCloud = selectedModels.some(m => m?.startsWith('ollama-cloud-'));
+                                const needsGPTsAPI = selectedModels.some(m => m?.startsWith('gptsapi-'));
+                                const needsDeepSeek = selectedModels.some(m => m?.startsWith('deepseek-'));
                                 
                                 const hasGoogle = !!(localKeys.google && localKeys.google.length > 10);
+                                const hasXiaomi = !!(localKeys.xiaomi && localKeys.xiaomi.length > 10);
                                 const hasOpenRouter = !!(localKeys.openrouter && localKeys.openrouter.length > 10);
                                 const hasOllamaCloud = !!(localKeys.ollamaApiKey && localKeys.ollamaApiKey.length > 10);
+                                const hasGPTsAPI = !!(localKeys.gptsapi && localKeys.gptsapi.length > 10);
+                                const hasDeepSeek = !!(localKeys.deepseek && localKeys.deepseek.length > 10);
                                 
-                                // 检测缺少的 API Key
                                 const missingKeys: string[] = [];
                                 if (needsGoogle && !hasGoogle) missingKeys.push('Google AI Studio');
+                                if (needsXiaomi && !hasXiaomi) missingKeys.push('Xiaomi MiMo');
                                 if (needsOpenRouter && !hasOpenRouter) missingKeys.push('OpenRouter');
                                 if (needsOllamaCloud && !hasOllamaCloud) missingKeys.push('Ollama Cloud');
+                                if (needsGPTsAPI && !hasGPTsAPI) missingKeys.push('GPTs API');
+                                if (needsDeepSeek && !hasDeepSeek) missingKeys.push('DeepSeek');
                                 
                                 const hasMissingKeys = missingKeys.length > 0;
                                 
@@ -1392,6 +2642,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                         preferredCloudModels: { ...p.preferredCloudModels, [cat.id]: e.target.value }
                                                     }))}
                                                 >
+                                                    <optgroup label="🧭 GPTs API (OpenAI 兼容)">
+                                                        {GPTSAPI_MODELS.filter(m => 
+                                                            cat.id !== 'visualAnalyze' || m.vision
+                                                        ).map(m => (
+                                                            <option key={m.id} value={m.id}>
+                                                                {m.name}
+                                                            </option>
+                                                        ))}
+                                                    </optgroup>
+                                                    <optgroup label="🟢 DeepSeek (官方)">
+                                                        {DEEPSEEK_MODELS.filter(m =>
+                                                            cat.id !== 'visualAnalyze' || m.vision
+                                                        ).map(m => (
+                                                            <option key={m.id} value={m.id}>
+                                                                {m.name}
+                                                            </option>
+                                                        ))}
+                                                    </optgroup>
                                                     {/* Google AI Studio 官方渠道 */}
                                                     <optgroup label="🔷 Google AI Studio (官方)">
                                                         {GOOGLE_MODELS.filter(m => 
@@ -1401,6 +2669,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                                 {m.name.replace(' (官方)', '')}
                                                         </option>
                                                     ))}
+                                                    </optgroup>
+                                                    <optgroup label="🟠 Xiaomi MiMo (官方)">
+                                                        {XIAOMI_MODELS.filter(m =>
+                                                            cat.id !== 'visualAnalyze' || m.vision
+                                                        ).map(m => (
+                                                            <option key={m.id} value={m.id}>
+                                                                {m.name}
+                                                            </option>
+                                                        ))}
                                                     </optgroup>
                                                     {/* Ollama 云服务 */}
                                                     <optgroup label="🦙 Ollama Cloud (免费额度)">
@@ -1519,6 +2796,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                     )}
                                 </div>
                             </div>
+
+                            {/* 多智能体协作模式 */}
+                            <div className="config-section" style={{ marginBottom: '24px' }}>
+                                <div className="section-header">
+                                    <h3 className="section-title">🤖 多智能体协作</h3>
+                                </div>
+                                <p className="section-desc">
+                                    启用后，各项自动化任务将根据需要使用多个模型协作完成：
+                                    视觉分析、逻辑推理、文案撰写各由最适合的模型负责，
+                                    模型跟随上方「模型偏好」中的分类设置。
+                                </p>
+                                <div className="config-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0' }}>
+                                    <div>
+                                        <div style={{ fontWeight: 500 }}>启用多智能体模式</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--de-text-secondary)', marginTop: '2px' }}>
+                                            关闭时使用传统单模型流程
+                                        </div>
+                                    </div>
+                                    <label className="toggle-switch">
+                                        <input
+                                            type="checkbox"
+                                            checked={agentSettings.multiAgentMode}
+                                            onChange={(e) => setAgentSettings({ multiAgentMode: e.target.checked })}
+                                        />
+                                        <span className="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
                     )}
 
@@ -1578,6 +2883,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                     {/* ==================== API 密钥 Tab ==================== */}
                     {activeTab === 'api-keys' && (
                         <div className="tab-content">
+                            <div className="config-section api-section xiaomi">
+                                <div className="section-header">
+                                    <h3 className="section-title">🟠 Xiaomi MiMo</h3>
+                                    {localKeys.xiaomi && <span className="badge success">已配置</span>}
+                                </div>
+                                <p className="section-desc">
+                                    官方 OpenAI 兼容接入，可直接使用 MiMo V2.5 Pro / MiMo V2.5 / MiMo V2 Omni。其中 V2.5 与 Omni 适合参考图理解与设计复刻。
+                                </p>
+
+                                <div className="form-group">
+                                    <label>API Key</label>
+                                    <input
+                                        type="password"
+                                        className="input"
+                                        placeholder="输入 Xiaomi MiMo API Key..."
+                                        value={localKeys.xiaomi}
+                                        onChange={e => setLocalKeys(k => ({ ...k, xiaomi: e.target.value }))}
+                                    />
+                                    <button
+                                        type="button"
+                                        className="link-btn"
+                                        onClick={() => openExternalLink('https://platform.xiaomimimo.com/#/docs/api/chat/openai-api')}
+                                    >
+                                        查看接入文档 →
+                                    </button>
+                                </div>
+                            </div>
+
                             {/* OpenRouter */}
                             <div className="config-section api-section openrouter">
                                 <div className="section-header">
@@ -1585,7 +2918,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                     <span className="badge" style={{ background: '#6366f1' }}>可选增强</span>
                                 </div>
                                 <p className="section-desc">
-                                    配置后可使用 AI 对话功能。<strong style={{ color: '#888' }}>语义分割已支持本地检测</strong>，无需此 API 也能使用。
+                                    配置后可使用 OpenRouter 对话模型，并为 UXP 局部重绘启用 Nano Banana Pro（Gemini 3 Pro Image Preview）。
                                 </p>
                                 
                                 <div className="form-group">
@@ -1610,6 +2943,66 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                         <div className={`test-result ${apiTestStatus}`}>{apiTestMessage}</div>
                                     )}
                                     <button type="button" className="link-btn" onClick={() => openExternalLink('https://openrouter.ai/keys')}>
+                                        获取 API Key →
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="config-section api-section gptsapi">
+                                <div className="section-header">
+                                    <h3 className="section-title">🧭 GPTs API</h3>
+                                    {localKeys.gptsapi && <span className="badge success">已配置</span>}
+                                </div>
+                                <p className="section-desc">
+                                    使用统一的 GPTs API Key 接入 Claude Sonnet 4.6，并为 UXP 图生图提供 Gemini 3 Pro Image Preview 能力
+                                </p>
+                                
+                                <div className="form-group">
+                                    <label>API Key</label>
+                                    <input
+                                        type="password"
+                                        className="input"
+                                        placeholder="sk-..."
+                                        value={localKeys.gptsapi}
+                                        onChange={e => setLocalKeys(k => ({ ...k, gptsapi: e.target.value }))}
+                                    />
+                                    <button type="button" className="link-btn" onClick={() => openExternalLink('https://api2.gptsapi.net/tutorial')}>
+                                        查看接入文档 →
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="config-section api-section deepseek">
+                                <div className="section-header">
+                                    <h3 className="section-title">🟢 DeepSeek</h3>
+                                    {localKeys.deepseek && <span className="badge success">已配置</span>}
+                                </div>
+                                <p className="section-desc">
+                                    DeepSeek 官方 API，OpenAI 兼容地址为 https://api.deepseek.com。当前接入 deepseek-v4-pro 文本聊天和流式；不声明视觉能力。
+                                </p>
+
+                                <div className="form-group">
+                                    <label>API Key</label>
+                                    <div className="input-with-action">
+                                        <input
+                                            type="password"
+                                            className="input"
+                                            placeholder="sk-..."
+                                            value={localKeys.deepseek}
+                                            onChange={e => setLocalKeys(k => ({ ...k, deepseek: e.target.value }))}
+                                        />
+                                        <button
+                                            className={`btn btn-test ${deepSeekTestStatus}`}
+                                            onClick={handleTestDeepSeek}
+                                            disabled={deepSeekTestStatus === 'testing'}
+                                        >
+                                            {deepSeekTestStatus === 'testing' ? '测试中...' : '测试'}
+                                        </button>
+                                    </div>
+                                    {deepSeekTestMessage && (
+                                        <div className={`test-result ${deepSeekTestStatus}`}>{deepSeekTestMessage}</div>
+                                    )}
+                                    <button type="button" className="link-btn" onClick={() => openExternalLink('https://platform.deepseek.com/api_keys')}>
                                         获取 API Key →
                                     </button>
                                 </div>
@@ -1741,56 +3134,156 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                 </div>
                             </div>
 
-                            {/* 火山引擎 - 局部重绘 */}
-                            <div className="config-section api-section volcengine">
+                            <div className="config-section api-section direct">
                                 <div className="section-header">
-                                    <h3 className="section-title">🌋 火山引擎（图像生成）</h3>
-                                    {localKeys.volcengineAccessKeyId && localKeys.volcengineSecretAccessKey && <span className="badge success">已配置</span>}
+                                    <h3 className="section-title">🌋 即梦AI（局部重绘）</h3>
+                                    {localKeys.volcengineJimengAccessKeyId && localKeys.volcengineJimengSecretAccessKey && (
+                                        <span className="badge success">已填写</span>
+                                    )}
                                 </div>
                                 <p className="section-desc">
-                                    即梦文生图3.1 / 即梦AI-图片生成4.0，支持局部重绘（图生图 + mask 合成）。需开通「即梦AI-图片生成」→「即梦文生图3.1」或「即梦AI-图片生成4.0」。凭证：控制台 → 访问控制 → 密钥管理
+                                    按火山即梦AI OpenAPI 接入局部重绘。这里使用 Access Key ID 和 Secret Access Key，不使用 Ark API Key。测试按钮会验证鉴权和真实提交链。
                                 </p>
                                 <div className="form-group">
-                                    <label>
-                                        Access Key ID
-                                        <span className="label-hint">火山引擎访问密钥 ID</span>
-                                    </label>
+                                    <label>Access Key ID</label>
                                     <input
                                         type="password"
                                         className="input"
-                                        placeholder="输入 Access Key ID"
-                                        value={localKeys.volcengineAccessKeyId}
-                                        onChange={e => setLocalKeys(k => ({ ...k, volcengineAccessKeyId: e.target.value }))}
+                                        placeholder="输入 Access Key ID..."
+                                        value={localKeys.volcengineJimengAccessKeyId}
+                                        onChange={e => setLocalKeys(k => ({ ...k, volcengineJimengAccessKeyId: e.target.value }))}
                                     />
                                 </div>
                                 <div className="form-group">
-                                    <label>
-                                        Secret Access Key
-                                        <span className="label-hint">火山引擎访问密钥 Secret</span>
-                                    </label>
+                                    <label>Secret Access Key</label>
                                     <div className="input-with-action">
                                         <input
                                             type="password"
                                             className="input"
-                                            placeholder="输入 Secret Access Key"
-                                            value={localKeys.volcengineSecretAccessKey}
-                                            onChange={e => setLocalKeys(k => ({ ...k, volcengineSecretAccessKey: e.target.value }))}
+                                            placeholder="输入 Secret Access Key..."
+                                            value={localKeys.volcengineJimengSecretAccessKey}
+                                            onChange={e => setLocalKeys(k => ({ ...k, volcengineJimengSecretAccessKey: e.target.value }))}
                                         />
                                         <button
-                                            className={`btn btn-test ${volcengineTestStatus}`}
-                                            onClick={handleTestVolcengineApi}
-                                            disabled={volcengineTestStatus === 'testing'}
+                                            className={`btn btn-test ${jimengTestStatus}`}
+                                            onClick={handleTestJimengApi}
+                                            disabled={jimengTestStatus === 'testing'}
                                         >
-                                            {volcengineTestStatus === 'testing' ? '测试中...' : '测试'}
+                                            {jimengTestStatus === 'testing' ? '测试中...' : '测试'}
                                         </button>
                                     </div>
-                                    {volcengineTestMessage && (
-                                        <div className={`test-result ${volcengineTestStatus}`}>{volcengineTestMessage}</div>
+                                    {jimengTestMessage && (
+                                        <div className={`test-result ${jimengTestStatus}`}>{jimengTestMessage}</div>
                                     )}
-                                    <button type="button" className="link-btn" onClick={() => openExternalLink('https://www.volcengine.com/docs/85621/1817045')}>
-                                        接入文档 →
-                                    </button>
                                 </div>
+                                <button type="button" className="link-btn" onClick={() => openExternalLink('https://console.volcengine.com/iam/keymanage/')}>
+                                    Access Key 管理 →
+                                </button>
+                            </div>
+
+                            <div className="config-section api-section direct">
+                                <div className="section-header">
+                                    <h3 className="section-title">🪣 TOS（即梦 4.6 图生图输入托管）</h3>
+                                    {localKeys.volcengineTosBucket && localKeys.volcengineTosPublicBaseUrl && (
+                                        <span className="badge success">已填写</span>
+                                    )}
+                                </div>
+                                <p className="section-desc">
+                                    即梦图片 4.6 官方图生图使用 <code>image_urls</code> 入参，这里配置 TOS 公网桶用于上传 UXP 抓到的输入图。当前实现默认复用上面的即梦 Access Key ID / Secret Access Key。
+                                </p>
+                                <div className="form-group">
+                                    <label>TOS Region</label>
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        placeholder="例如：cn-beijing"
+                                        value={localKeys.volcengineTosRegion}
+                                        onChange={e => setLocalKeys(k => ({ ...k, volcengineTosRegion: e.target.value }))}
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>TOS Endpoint</label>
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        placeholder="例如：tos-s3-cn-beijing.volces.com"
+                                        value={localKeys.volcengineTosEndpoint}
+                                        onChange={e => setLocalKeys(k => ({ ...k, volcengineTosEndpoint: e.target.value }))}
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>TOS Bucket</label>
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        placeholder="输入公开可读的 Bucket 名称..."
+                                        value={localKeys.volcengineTosBucket}
+                                        onChange={e => setLocalKeys(k => ({ ...k, volcengineTosBucket: e.target.value }))}
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>TOS Public Base URL</label>
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        placeholder="例如：https://your-bucket.tos-cn-beijing.volces.com"
+                                        value={localKeys.volcengineTosPublicBaseUrl}
+                                        onChange={e => setLocalKeys(k => ({ ...k, volcengineTosPublicBaseUrl: e.target.value }))}
+                                    />
+                                </div>
+                                <div className="form-group">
+                                    <label>对象前缀（可选）</label>
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        placeholder="designecho/jimeng-i2i"
+                                        value={localKeys.volcengineTosKeyPrefix}
+                                        onChange={e => setLocalKeys(k => ({ ...k, volcengineTosKeyPrefix: e.target.value }))}
+                                    />
+                                </div>
+                                <p className="section-desc" style={{ marginTop: 8 }}>
+                                    需要保证 Bucket 或对象具备公网读取能力，否则即梦 4.6 无法拉取输入图。
+                                </p>
+                            </div>
+
+                            <div className="config-section api-section direct">
+                                <div className="section-header">
+                                    <h3 className="section-title">🖼️ Seedream 5.0（图生图）</h3>
+                                    {localKeys.volcengineSeedreamApiKey && (
+                                        <span className="badge success">已填写</span>
+                                    )}
+                                </div>
+                                <p className="section-desc">
+                                    Seedream 图生图走方舟图片生成 API。这里需要填写 Ark API Key，不是即梦的 Access Key ID / Secret Access Key。当前默认服务地域为华北 2（北京）。
+                                </p>
+                                <div className="form-group">
+                                    <label>Seedream API Key</label>
+                                    <div className="input-with-action">
+                                        <input
+                                            type="password"
+                                            className="input"
+                                            placeholder="输入 Seedream API Key..."
+                                            value={localKeys.volcengineSeedreamApiKey}
+                                            onChange={e => setLocalKeys(k => ({ ...k, volcengineSeedreamApiKey: e.target.value }))}
+                                        />
+                                        <button
+                                            className={`btn btn-test ${seedreamTestStatus}`}
+                                            onClick={handleTestSeedreamApi}
+                                            disabled={seedreamTestStatus === 'testing'}
+                                        >
+                                            {seedreamTestStatus === 'testing' ? '测试中...' : '测试'}
+                                        </button>
+                                    </div>
+                                    {seedreamTestMessage && (
+                                        <div className={`test-result ${seedreamTestStatus}`}>{seedreamTestMessage}</div>
+                                    )}
+                                </div>
+                                <button type="button" className="link-btn" onClick={() => openExternalLink('https://console.volcengine.com/ark/region:ark+cn-beijing/apikey')}>
+                                    打开 Ark API 管理 →
+                                </button>
+                                <p className="section-desc" style={{ marginTop: 8 }}>
+                                    登录后前往「资源管理 &gt; API Key 管理」创建 LAS API Key。
+                                </p>
                             </div>
 
                             {/* 直连 API（折叠） */}
@@ -2285,6 +3778,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                     color: #ef4444;
                 }
 
+                .test-message {
+                    font-size: 12px;
+                    color: var(--de-text-secondary);
+                }
+
+                .test-message.success {
+                    color: #10b981;
+                }
+
+                .test-message.error {
+                    color: #ef4444;
+                }
+
                 .link {
                     display: inline-block;
                     margin-top: 8px;
@@ -2317,6 +3823,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                 .api-section.openrouter {
                     border-color: #8b5cf6;
                     background: linear-gradient(135deg, rgba(139, 92, 246, 0.03), var(--de-bg));
+                }
+
+                .api-section.deepseek {
+                    border-color: #10b981;
+                    background: linear-gradient(135deg, rgba(16, 185, 129, 0.04), var(--de-bg));
                 }
 
                 .api-section.ollama {
@@ -2681,6 +4192,283 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
                 .stage-item .select {
                     flex: 1;
+                }
+
+                .integration-summary-grid {
+                    display: grid;
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                    gap: 12px;
+                    margin-top: 16px;
+                }
+
+                .summary-stat-card {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 6px;
+                    padding: 16px;
+                    background: linear-gradient(180deg, rgba(37, 99, 235, 0.14), rgba(15, 23, 42, 0.18));
+                    border: 1px solid rgba(59, 130, 246, 0.24);
+                    border-radius: 12px;
+                }
+
+                .summary-stat-value {
+                    font-size: 22px;
+                    font-weight: 700;
+                    color: var(--de-text);
+                }
+
+                .summary-stat-label {
+                    font-size: 12px;
+                    color: var(--de-text-secondary);
+                }
+
+                .skill-group-stack,
+                .mcp-server-stack,
+                .builtin-mcp-list {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 12px;
+                }
+
+                .integration-card,
+                .mcp-server-card,
+                .builtin-mcp-item {
+                    padding: 16px;
+                    background: var(--de-bg-light);
+                    border: 1px solid var(--de-border);
+                    border-radius: 12px;
+                }
+
+                .integration-card-header,
+                .mcp-server-header {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 12px;
+                    margin-bottom: 14px;
+                }
+
+                .integration-card-title {
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: var(--de-text);
+                }
+
+                .integration-card-subtitle {
+                    margin-top: 4px;
+                    font-size: 12px;
+                    color: var(--de-text-secondary);
+                }
+
+                .skill-list {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                }
+
+                .skill-item-row {
+                    display: flex;
+                    align-items: flex-start;
+                    gap: 12px;
+                    padding: 12px;
+                    border-radius: 10px;
+                    border: 1px solid rgba(148, 163, 184, 0.16);
+                    background: rgba(15, 23, 42, 0.26);
+                    cursor: pointer;
+                    transition: border-color 0.18s ease, background 0.18s ease, opacity 0.18s ease;
+                }
+
+                .skill-item-row:hover {
+                    border-color: rgba(59, 130, 246, 0.38);
+                    background: rgba(30, 41, 59, 0.34);
+                }
+
+                .skill-item-row.disabled {
+                    opacity: 0.64;
+                }
+
+                .mini-badge {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    padding: 2px 8px;
+                    border-radius: 999px;
+                    border: 1px solid rgba(148, 163, 184, 0.18);
+                    background: rgba(15, 23, 42, 0.46);
+                    color: var(--de-text-secondary);
+                    font-size: 11px;
+                    line-height: 1.4;
+                }
+
+                .mini-badge.success {
+                    color: #34d399;
+                    border-color: rgba(52, 211, 153, 0.26);
+                    background: rgba(6, 78, 59, 0.18);
+                }
+
+                .mini-badge.warning {
+                    color: #fbbf24;
+                    border-color: rgba(251, 191, 36, 0.24);
+                    background: rgba(120, 53, 15, 0.18);
+                }
+
+                .integration-empty-state {
+                    padding: 20px;
+                    border: 1px dashed rgba(148, 163, 184, 0.24);
+                    border-radius: 12px;
+                    background: rgba(15, 23, 42, 0.2);
+                    text-align: center;
+                }
+
+                .preference-list {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 12px;
+                }
+
+                .preference-card {
+                    display: flex;
+                    justify-content: space-between;
+                    gap: 16px;
+                    padding: 14px;
+                    border: 1px solid rgba(148, 163, 184, 0.18);
+                    border-radius: 12px;
+                    background: rgba(15, 23, 42, 0.24);
+                }
+
+                .preference-card-disabled,
+                .preference-card-archived {
+                    opacity: 0.68;
+                }
+
+                .preference-card-main {
+                    min-width: 0;
+                    flex: 1;
+                }
+
+                .preference-title-row {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    flex-wrap: wrap;
+                }
+
+                .preference-title {
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: var(--de-text);
+                    word-break: break-word;
+                }
+
+                .preference-meta {
+                    display: flex;
+                    gap: 10px;
+                    flex-wrap: wrap;
+                    margin-top: 8px;
+                    font-size: 12px;
+                    color: var(--de-text-secondary);
+                }
+
+                .preference-evidence {
+                    margin: 8px 0 0;
+                    color: var(--de-text-secondary);
+                    font-size: 12px;
+                    line-height: 1.6;
+                }
+
+                .preference-actions {
+                    display: flex;
+                    align-items: flex-start;
+                    gap: 8px;
+                    flex-wrap: wrap;
+                    justify-content: flex-end;
+                }
+
+                .preference-editor-grid {
+                    display: grid;
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                    gap: 12px;
+                }
+
+                .preference-form-actions {
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 8px;
+                    margin-top: 14px;
+                    flex-wrap: wrap;
+                }
+
+                .preference-json-textarea {
+                    min-height: 96px;
+                    resize: vertical;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+                    font-size: 12px;
+                    line-height: 1.5;
+                }
+
+                .preference-status-active {
+                    background: #059669;
+                }
+
+                .preference-status-needs_review {
+                    background: #b45309;
+                }
+
+                .preference-status-disabled {
+                    background: #4b5563;
+                }
+
+                .preference-status-archived {
+                    background: #374151;
+                }
+
+                .toggle-row {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                }
+
+                .mcp-grid {
+                    display: grid;
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                    gap: 12px;
+                }
+
+                .integration-code {
+                    display: inline-block;
+                    max-width: 100%;
+                    padding: 6px 10px;
+                    border-radius: 8px;
+                    background: rgba(15, 23, 42, 0.58);
+                    border: 1px solid rgba(148, 163, 184, 0.16);
+                    color: #cbd5e1;
+                    font-size: 12px;
+                    word-break: break-all;
+                }
+
+                @media (max-width: 720px) {
+                    .integration-summary-grid,
+                    .mcp-grid {
+                        grid-template-columns: 1fr;
+                    }
+
+                    .integration-card-header,
+                    .mcp-server-header {
+                        flex-direction: column;
+                        align-items: stretch;
+                    }
+
+                    .preference-card {
+                        flex-direction: column;
+                    }
+
+                    .preference-editor-grid {
+                        grid-template-columns: 1fr;
+                    }
+
+                    .preference-actions {
+                        justify-content: flex-start;
+                    }
                 }
 
                 /* 底部 */

@@ -6,6 +6,7 @@
  */
 
 import { ToolRegistry } from '../tools/registry';
+import { createToolFailureResult } from './tool-error-normalizer';
 
 // MCP 协议版本
 export const MCP_VERSION = '2024-11-05';
@@ -226,10 +227,11 @@ export class MCPProtocolHandler {
             return await tool.execute(args || {});
         } catch (error: any) {
             console.error(`[MCP] 工具执行失败:`, error);
-            return {
-                success: false,
-                error: error?.message || 'Tool execution failed'
-            };
+            return createToolFailureResult({
+                toolName: name,
+                error,
+                params: args || {}
+            });
         }
     }
 

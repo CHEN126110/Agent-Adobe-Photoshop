@@ -36,13 +36,19 @@
             --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
         }
 
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif;
             font-size: 12px;
             line-height: 1.5;
             color: #e8e8e8;
             background: linear-gradient(135deg, #0a0a12 0%, #12121c 50%, #0a0a12 100%);
-            min-height: 100vh;
+            min-height: 100%;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
             font-weight: 400;
@@ -126,7 +132,8 @@
         .app {
             display: flex;
             flex-direction: column;
-            min-height: 100vh;
+            min-height: 100%;
+            height: 100%;
             position: relative;
         }
 
@@ -762,6 +769,14 @@
             font-size: 12px;
             color: var(--de-text-secondary);
             margin-top: 12px;
+            transition: opacity 0.3s;
+        }
+
+        .loading-elapsed {
+            font-size: 11px;
+            color: var(--de-text-secondary);
+            opacity: 0.5;
+            margin-top: 6px;
         }
 
         .action-btn.loading,
@@ -881,7 +896,7 @@
             box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
         }
 
-        /* 局部重绘模型下拉：允许菜单突破卡片裁剪 */
+        /* 模型/分辨率下拉：允许菜单突破卡片裁剪，并在打开时提升当前卡片层级 */
         .inpainting-model-section {
             position: relative;
             overflow: visible;
@@ -890,6 +905,75 @@
 
         .inpainting-model-section .section-content {
             overflow: visible;
+        }
+
+        .inpainting-model-section.dropdown-active {
+            z-index: 260;
+        }
+
+        @media (max-width: 320px) {
+            .app-header {
+                padding: 8px 10px;
+            }
+
+            .main,
+            .morph-main {
+                padding: 8px;
+                padding-bottom: 64px;
+            }
+
+            .morph-header {
+                padding: 10px;
+            }
+
+            .morph-section {
+                margin-bottom: 8px;
+                border-radius: 12px;
+            }
+
+            .btn-back,
+            .btn-refresh-small {
+                width: 28px;
+                height: 28px;
+                font-size: 13px;
+            }
+
+            .btn-back {
+                margin-right: 8px;
+            }
+
+            .morph-title {
+                font-size: 13px;
+                letter-spacing: 0.2px;
+            }
+
+            .section-header {
+                padding: 10px 12px;
+            }
+
+            .section-label {
+                font-size: 12px;
+            }
+
+            .section-hint {
+                font-size: 10px;
+            }
+
+            .btn-execute {
+                min-height: 42px;
+                padding: 10px 12px;
+            }
+
+            .custom-select-trigger {
+                padding: 8px 10px;
+            }
+
+            #optimizeBoundLayerInfo,
+            #optimizeLiveLayerInfo,
+            #optimizeCharInfo,
+            #optimizeCandidateContext {
+                font-size: 10px !important;
+            }
         }
 
         .section-header {
@@ -927,6 +1011,70 @@
             color: var(--de-text-secondary);
             margin-left: auto;
             opacity: 0.7;
+        }
+
+        .optimize-candidate-card {
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 10px;
+            padding: 10px;
+            background: rgba(255,255,255,0.03);
+        }
+
+        .optimize-candidate-card.fit-ok {
+            border-color: rgba(74, 222, 128, 0.22);
+        }
+
+        .optimize-candidate-card.fit-watch {
+            border-color: rgba(245, 158, 11, 0.34);
+        }
+
+        .optimize-candidate-card.fit-risk {
+            border-color: rgba(239, 68, 68, 0.36);
+        }
+
+        .optimize-candidate-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .optimize-candidate-badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 3px 7px;
+            font-size: 10px;
+            line-height: 1.2;
+            color: var(--de-text-secondary);
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .optimize-candidate-badge.ok {
+            color: #86efac;
+            background: rgba(34, 197, 94, 0.1);
+            border-color: rgba(34, 197, 94, 0.2);
+        }
+
+        .optimize-candidate-badge.watch {
+            color: #fbbf24;
+            background: rgba(245, 158, 11, 0.1);
+            border-color: rgba(245, 158, 11, 0.24);
+        }
+
+        .optimize-candidate-badge.risk {
+            color: #fca5a5;
+            background: rgba(239, 68, 68, 0.1);
+            border-color: rgba(239, 68, 68, 0.24);
+        }
+
+        .optimize-candidate-note {
+            margin-top: 7px;
+            font-size: 11px;
+            line-height: 1.45;
+            color: var(--de-text-secondary);
+            opacity: 0.8;
         }
 
         .section-content {
@@ -1861,7 +2009,1590 @@
             margin-right: 8px;
             font-size: 14px;
         }
-    </style>
+
+        .template-dir-list,
+        .template-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .template-dir-item,
+        .template-item-card {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .template-dir-item.is-active {
+            border-color: rgba(0, 102, 255, 0.45);
+            background: rgba(0, 102, 255, 0.08);
+        }
+
+        .template-dir-head,
+        .template-item-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .template-dir-title,
+        .template-item-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .template-dir-path,
+        .template-item-path,
+        .template-item-desc,
+        .template-meta {
+            margin-top: 6px;
+            font-size: 10px;
+            color: var(--de-text-secondary);
+            line-height: 1.5;
+            word-break: break-all;
+        }
+
+        .template-item-actions,
+        .template-inline-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .template-tag-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .template-tag {
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: rgba(0, 102, 255, 0.12);
+            border: 1px solid rgba(0, 102, 255, 0.24);
+            color: #d8e7ff;
+            font-size: 9px;
+        }
+
+        .template-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 52px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--de-text-secondary);
+            font-size: 9px;
+        }
+
+        .template-form-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 12px;
+        }
+
+        .template-form-label {
+            font-size: 10px;
+            color: var(--de-text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .template-summary {
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: rgba(0, 102, 255, 0.08);
+            border: 1px solid rgba(0, 102, 255, 0.18);
+            font-size: 10px;
+            color: #d6e5ff;
+            line-height: 1.6;
+        }
+
+        .template-topbar,
+        .template-section-action,
+        .template-library-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px;
+        }
+
+        .template-section-action {
+            padding-top: 0;
+            justify-content: space-between;
+        }
+
+        .template-search-shell {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            background: rgba(255,255,255,0.02);
+        }
+
+        .template-search-icon {
+            color: var(--de-text-secondary);
+            font-size: 12px;
+        }
+
+        .template-search-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--de-text);
+            font-size: 12px;
+            outline: none;
+        }
+
+        .template-search-input::placeholder {
+            color: var(--de-text-secondary);
+        }
+
+        .template-create-trigger {
+            max-width: 120px;
+        }
+
+        .template-library-toolbar {
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+
+        .template-library-toolbar-main {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .template-library-name {
+            font-size: 15px;
+            font-weight: 600;
+            color: #fff;
+            line-height: 1.2;
+        }
+
+        .template-library-summary {
+            margin-top: 4px;
+            font-size: 11px;
+            color: var(--de-text-secondary);
+        }
+
+        .template-icon-actions,
+        .template-view-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .template-view-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+        }
+
+        .template-size-control {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 110px;
+            padding: 0 2px;
+        }
+
+        .template-size-symbol {
+            flex: 0 0 auto;
+            color: var(--de-text-secondary);
+            font-size: 12px;
+            line-height: 1;
+            user-select: none;
+        }
+
+        .template-size-slider {
+            flex: 1;
+            min-width: 64px;
+            height: 18px;
+        }
+
+        .template-size-slider .custom-slider-track {
+            height: 4px;
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        .template-size-slider .custom-slider-fill {
+            background: linear-gradient(90deg, rgba(255, 255, 255, 0.9), rgba(0, 102, 255, 0.95));
+        }
+
+        .template-size-slider .custom-slider-thumb {
+            width: 12px;
+            height: 12px;
+        }
+
+        .template-icon-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 9px;
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.05);
+            color: var(--de-text-secondary);
+            cursor: pointer;
+        }
+
+        .template-icon-btn.is-active,
+        .template-icon-btn:hover {
+            color: var(--de-text);
+            border-color: rgba(0,102,255,0.35);
+            background: rgba(0,102,255,0.14);
+        }
+
+        .template-danger-btn:hover {
+            border-color: rgba(231, 76, 60, 0.35);
+            background: rgba(231, 76, 60, 0.12);
+            color: #ffd7d2;
+        }
+
+        .template-breadcrumbs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 0 12px 10px;
+        }
+
+        .template-breadcrumb-btn {
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.04);
+            color: var(--de-text-secondary);
+            cursor: pointer;
+            font-size: 10px;
+        }
+
+        .template-meta-inline {
+            padding: 0 12px 8px;
+            font-size: 10px;
+            color: var(--de-text-secondary);
+        }
+
+        .template-group {
+            margin-bottom: 14px;
+        }
+
+        .template-group-title {
+            padding: 0 2px 8px;
+            font-size: 10px;
+            color: var(--de-text-secondary);
+        }
+
+        .template-asset-waterfall {
+            width: 100%;
+            max-width: 100%;
+            column-width: var(--template-library-waterfall-column-width, 132px);
+            column-gap: var(--template-library-waterfall-column-gap, 8px);
+        }
+
+        .template-asset-preview {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: var(--de-text-primary);
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: .04em;
+        }
+
+        .template-asset-preview.is-list {
+            width: 44px;
+            height: 44px;
+        }
+
+        .template-asset-preview.is-grid {
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            margin-bottom: 10px;
+            font-size: 20px;
+        }
+
+        .template-item-card.template-item-card-list {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .template-item-card.template-item-card-list .template-item-head {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .template-item-card.template-item-card-list .template-item-title {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .template-item-card.template-item-card-list .template-item-actions {
+            margin-top: 0;
+            margin-left: auto;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .template-item-card.template-item-card-grid {
+            display: flex;
+            flex-direction: column;
+            min-height: 184px;
+        }
+
+        .template-item-card.template-item-card-grid .template-item-head {
+            display: block;
+        }
+
+        .template-item-card.template-item-card-grid .template-item-actions {
+            margin-top: auto;
+            flex-wrap: wrap;
+        }
+
+        .template-item-card.template-item-card-grid .template-item-actions .btn-small {
+            flex: 1 1 calc(50% - 4px);
+        }
+
+        .template-empty-state {
+            margin: 8px 0;
+            padding: 28px 16px;
+            text-align: center;
+            border: 1px dashed rgba(255,255,255,0.18);
+            border-radius: 14px;
+            background: rgba(255,255,255,0.03);
+            cursor: pointer;
+        }
+
+        .template-empty-icon {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto 12px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,102,255,0.18);
+            color: #fff;
+            font-size: 22px;
+        }
+
+        .template-empty-title {
+            font-size: 16px;
+            color: #fff;
+            margin-bottom: 6px;
+        }
+
+        .template-empty-desc {
+            font-size: 11px;
+            color: var(--de-text-secondary);
+            line-height: 1.6;
+        }
+
+        .template-modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 8, 12, 0.72);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+            z-index: 1200;
+        }
+
+        .template-modal-card {
+            width: 100%;
+            max-width: 320px;
+            background: #18181d;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 18px;
+        }
+
+        .template-modal-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 18px;
+        }
+
+        .template-modal-field {
+            margin-bottom: 14px;
+        }
+
+        .template-modal-note {
+            font-size: 11px;
+            color: var(--de-text-secondary);
+            line-height: 1.6;
+        }
+
+        .template-modal-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 18px;
+        }
+
+        /* Template Library Refresh */
+        .template-topbar,
+        .template-section-action,
+        .template-library-toolbar {
+            padding: 8px 6px;
+            gap: 6px;
+        }
+
+        .template-section-action {
+            padding-top: 2px;
+            padding-bottom: 8px;
+        }
+
+        .template-dir-list,
+        .template-list {
+            gap: 6px;
+        }
+
+        .template-search-shell {
+            height: 34px;
+            padding: 0 10px;
+            border: 1px solid rgba(255, 255, 255, 0.09);
+            border-radius: 10px;
+            background: rgba(8, 12, 22, 0.7);
+            box-shadow: none;
+        }
+
+        .template-search-icon {
+            font-size: 11px;
+            opacity: 0.78;
+        }
+
+        .template-search-input {
+            appearance: none;
+            -webkit-appearance: none;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            outline: none !important;
+            padding: 0;
+            min-width: 0;
+            font-size: 11px;
+        }
+
+        .template-search-shell > .template-search-input,
+        #templateLibrarySearch,
+        #templateAssetSearch {
+            appearance: none !important;
+            -webkit-appearance: none !important;
+            background: transparent !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            outline: 0 !important;
+        }
+
+        .template-search-input::-webkit-search-decoration,
+        .template-search-input::-webkit-search-cancel-button,
+        .template-search-input::-webkit-search-results-button,
+        .template-search-input::-webkit-search-results-decoration {
+            -webkit-appearance: none;
+            appearance: none;
+            display: none;
+        }
+
+        .template-count-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            min-width: 44px;
+            height: 28px;
+            padding: 0 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--de-text-secondary);
+            font-size: 11px;
+        }
+
+        .template-create-trigger {
+            appearance: none;
+            -webkit-appearance: none;
+            flex: 0 0 auto;
+            min-width: 104px;
+            height: 36px;
+            padding: 0 14px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            background: linear-gradient(180deg, rgba(48, 52, 71, 0.92) 0%, rgba(30, 33, 45, 0.94) 100%);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+
+        .template-create-trigger:hover {
+            border-color: rgba(0, 102, 255, 0.3);
+            background: linear-gradient(180deg, rgba(53, 60, 83, 0.98) 0%, rgba(34, 38, 53, 0.98) 100%);
+        }
+
+        .template-library-card {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            appearance: none;
+            -webkit-appearance: none;
+            padding: 11px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.035);
+            cursor: pointer;
+            text-align: left;
+            font-family: inherit;
+            transition: border-color .18s ease, background .18s ease, transform .18s ease, box-shadow .18s ease;
+        }
+
+        .template-library-card:hover {
+            transform: translateY(-1px);
+            border-color: rgba(255, 255, 255, 0.14);
+            background: rgba(255, 255, 255, 0.05);
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+        }
+
+        .template-library-card.is-active {
+            border-color: rgba(0, 102, 255, 0.42);
+            background: linear-gradient(180deg, rgba(14, 31, 60, 0.78) 0%, rgba(11, 18, 32, 0.84) 100%);
+            box-shadow: inset 0 0 0 1px rgba(0, 102, 255, 0.08), 0 10px 24px rgba(0, 30, 84, 0.18);
+        }
+
+        .template-library-card-main {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .template-library-card-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .template-library-card-title {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #fff;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .template-library-card-subtitle {
+            margin-top: 5px;
+            color: var(--de-text-secondary);
+            font-size: 10px;
+        }
+
+        .template-library-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 20px;
+            padding: 0 7px;
+            border-radius: 999px;
+            background: rgba(0, 102, 255, 0.16);
+            border: 1px solid rgba(0, 102, 255, 0.24);
+            color: #d9e8ff;
+            font-size: 9px;
+            flex: 0 0 auto;
+        }
+
+        .template-library-enter {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            width: 28px;
+            height: 28px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--de-text-secondary);
+            font-size: 14px;
+        }
+
+        .template-library-card:hover .template-library-enter,
+        .template-library-card.is-active .template-library-enter {
+            border-color: rgba(0, 102, 255, 0.28);
+            background: rgba(0, 102, 255, 0.12);
+            color: #e5efff;
+        }
+
+        .template-library-toolbar {
+            justify-content: space-between;
+            align-items: flex-start;
+            padding-bottom: 4px;
+        }
+
+        .template-library-name {
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+        }
+
+        .template-library-summary {
+            margin-top: 4px;
+            font-size: 10px;
+            line-height: 1.35;
+            color: var(--de-text-secondary);
+        }
+
+        .template-library-selection-panel {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: linear-gradient(180deg, rgba(18, 24, 38, 0.86) 0%, rgba(12, 16, 27, 0.92) 100%);
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+        }
+
+        .template-library-selection-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .template-library-selection-kicker {
+            font-size: 9px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: rgba(182, 192, 214, 0.72);
+        }
+
+        .template-library-selection-action {
+            appearance: none;
+            -webkit-appearance: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 24px;
+            padding: 0 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(46, 125, 255, 0.26);
+            background: rgba(46, 125, 255, 0.14);
+            color: #eef4ff;
+            font-size: 10px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: border-color .18s ease, background .18s ease, transform .18s ease;
+        }
+
+        .template-library-selection-action:hover {
+            border-color: rgba(46, 125, 255, 0.42);
+            background: rgba(46, 125, 255, 0.22);
+            transform: translateY(-1px);
+        }
+
+        .template-library-selection-title {
+            margin-top: 8px;
+            font-size: 12px;
+            line-height: 1.45;
+            font-weight: 600;
+            color: #fff;
+            word-break: break-word;
+        }
+
+        .template-library-selection-path {
+            margin-top: 4px;
+            font-size: 9px;
+            line-height: 1.45;
+            color: rgba(182, 192, 214, 0.72);
+            word-break: break-all;
+        }
+
+        .template-library-selection-meta {
+            margin-top: 8px;
+        }
+
+        .template-library-selection-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .template-library-selection-tag {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 22px;
+            padding: 0 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--de-text);
+            font-size: 10px;
+            line-height: 1.2;
+        }
+
+        .template-library-selection-tag.is-empty {
+            color: rgba(182, 192, 214, 0.72);
+        }
+
+        .template-loading-state {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 12px 4px 4px;
+        }
+
+        .template-loading-copy {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .template-loading-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .template-loading-desc {
+            font-size: 10px;
+            line-height: 1.45;
+            color: var(--de-text-secondary);
+        }
+
+        .template-loading-skeletons {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .template-loading-card {
+            width: 100%;
+            height: 68px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            background:
+                linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.08) 45%, rgba(255,255,255,0.04) 100%);
+            background-size: 220% 100%;
+            animation: template-library-skeleton 1.15s linear infinite;
+        }
+
+        .template-loading-card.is-short {
+            width: 82%;
+        }
+
+        @keyframes template-library-skeleton {
+            0% { background-position: 200% 0; }
+            100% { background-position: -20% 0; }
+        }
+
+        .template-library-meta-line {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .template-library-meta-pill {
+            display: inline-flex;
+            align-items: center;
+            height: 20px;
+            padding: 0 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--de-text-secondary);
+            font-size: 9px;
+            letter-spacing: 0.02em;
+        }
+
+        .template-library-tag-rail {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .template-library-tag-empty {
+            margin-top: 8px;
+            font-size: 9px;
+            color: rgba(182, 192, 214, 0.72);
+        }
+
+        .template-tag-filter {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            height: 24px;
+            padding: 0 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.035);
+            color: var(--de-text-secondary);
+            font-size: 10px;
+            cursor: pointer;
+            transition: border-color .18s ease, background .18s ease, color .18s ease;
+        }
+
+        .template-tag-filter.is-active {
+            border-color: rgba(46, 125, 255, 0.4);
+            background: rgba(46, 125, 255, 0.16);
+            color: #fff;
+        }
+
+        .template-tag-filter-name {
+            max-width: 88px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .template-tag-filter-count {
+            min-width: 14px;
+            color: inherit;
+            opacity: 0.86;
+        }
+
+        .template-icon-actions,
+        .template-view-actions {
+            gap: 3px;
+            padding: 0;
+            border: none;
+            background: transparent;
+        }
+
+        .template-icon-btn {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            font-family: inherit;
+        }
+
+        .template-actions-trigger {
+            font-size: 16px;
+            flex: 0 0 auto;
+        }
+
+        .template-breadcrumbs {
+            gap: 4px;
+            padding: 0 4px 6px;
+        }
+
+        .template-breadcrumb-btn {
+            appearance: none;
+            -webkit-appearance: none;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.035);
+            font-size: 9px;
+            font-family: inherit;
+        }
+
+        .template-meta-inline {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 0 4px 6px;
+        }
+
+        .template-group {
+            margin-bottom: 8px;
+        }
+
+        .template-group-title {
+            padding: 0 2px 6px;
+            font-size: 9px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .template-group-node {
+            margin-bottom: 6px;
+        }
+
+        .template-group-toggle {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 4px;
+            border: none;
+            background: transparent;
+            color: var(--de-text);
+            cursor: pointer;
+            text-align: left;
+            font-family: inherit;
+        }
+
+        .template-group-toggle.is-dragover {
+            border-radius: 8px;
+            background: rgba(0, 102, 255, 0.08);
+        }
+
+        .template-group-caret {
+            width: 12px;
+            color: var(--de-text-secondary);
+            flex: 0 0 auto;
+        }
+
+        .template-group-folder {
+            font-size: 12px;
+            opacity: 0.9;
+            flex: 0 0 auto;
+        }
+
+        .template-group-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #fff;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .template-group-children {
+            margin-left: 9px;
+            padding-left: 9px;
+            border-left: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .template-group-assets {
+            margin-top: 2px;
+            margin-bottom: 6px;
+        }
+
+        .template-folder-row {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            appearance: none;
+            -webkit-appearance: none;
+            padding: 8px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.035);
+            cursor: pointer;
+            text-align: left;
+            font-family: inherit;
+            transition: border-color .18s ease, background .18s ease, transform .18s ease;
+        }
+
+        .template-folder-row:hover {
+            transform: translateY(-1px);
+            border-color: rgba(255, 255, 255, 0.14);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .template-folder-row.is-dragover {
+            border-color: rgba(0, 102, 255, 0.34);
+            background: rgba(0, 102, 255, 0.08);
+        }
+
+        .template-folder-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 204, 76, 0.14);
+            border: 1px solid rgba(255, 204, 76, 0.18);
+            color: #ffd86c;
+            font-size: 13px;
+            flex: 0 0 auto;
+        }
+
+        .template-folder-main {
+            display: block;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .template-folder-name {
+            color: #fff;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .template-folder-meta {
+            display: block;
+            margin-top: 2px;
+            color: var(--de-text-secondary);
+            font-size: 9px;
+        }
+
+        .template-folder-chevron {
+            width: 24px;
+            height: 24px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--de-text-secondary);
+            font-size: 14px;
+            flex: 0 0 auto;
+        }
+
+        .template-item-card {
+            border-radius: 10px;
+            border-color: rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.035);
+        }
+
+        .template-library-asset-card {
+            cursor: grab;
+        }
+
+        .template-library-asset-card:active {
+            cursor: grabbing;
+        }
+
+        .template-item-body {
+            display: block;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .template-item-subtitle {
+            margin-top: 3px;
+            color: var(--de-text-secondary);
+            font-size: 9px;
+            line-height: 1.35;
+        }
+
+        .template-file-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 5px;
+            height: 18px;
+            padding: 0 7px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--de-text-secondary);
+            font-size: 9px;
+            letter-spacing: 0.03em;
+        }
+
+        .template-item-card.template-item-card-list {
+            align-items: center;
+            gap: 7px;
+            padding: 6px;
+        }
+
+        .template-item-card.template-item-card-list .template-item-title {
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .template-item-card.template-item-card-list .template-item-subtitle {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .template-item-card.template-item-card-list .template-item-actions {
+            margin-top: 0;
+            margin-left: auto;
+            gap: 6px;
+            flex-wrap: nowrap;
+        }
+
+        .template-item-card.template-item-card-grid {
+            display: inline-flex;
+            width: 100%;
+            min-height: 0;
+            margin: 0 0 8px;
+            padding: 0;
+            overflow: hidden;
+            break-inside: avoid;
+            -webkit-column-break-inside: avoid;
+        }
+
+        .template-item-card.template-item-card-grid .template-item-head {
+            display: block;
+        }
+
+        .template-item-card.template-item-card-grid .template-item-body {
+            padding: 7px 8px 9px;
+        }
+
+        .template-item-card.template-item-card-grid .template-item-title {
+            font-size: 10px;
+            line-height: 1.35;
+            white-space: normal;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            min-height: 28px;
+        }
+
+        .template-item-card.template-item-card-grid .template-item-subtitle {
+            display: none;
+        }
+
+        .template-item-card:hover {
+            border-color: rgba(255, 255, 255, 0.13);
+            background: rgba(255, 255, 255, 0.055);
+        }
+
+        .template-action-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            appearance: none;
+            -webkit-appearance: none;
+            flex: 0 0 auto;
+            min-width: 48px;
+            height: 30px;
+            padding: 0 10px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.045);
+            color: var(--de-text);
+            cursor: pointer;
+            font-size: 11px;
+            font-family: inherit;
+        }
+
+        .template-action-btn:hover {
+            border-color: rgba(255, 255, 255, 0.14);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .template-action-btn.is-primary {
+            border-color: rgba(0, 102, 255, 0.22);
+            background: rgba(0, 102, 255, 0.14);
+            color: #dfeaff;
+        }
+
+        .template-action-btn.is-primary:hover {
+            border-color: rgba(0, 102, 255, 0.32);
+            background: rgba(0, 102, 255, 0.2);
+        }
+
+        .template-action-btn.is-danger:hover {
+            border-color: rgba(231, 76, 60, 0.35);
+            background: rgba(231, 76, 60, 0.12);
+            color: #ffd7d2;
+        }
+
+        .template-asset-preview {
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+
+        .template-asset-preview.format-psd {
+            background: linear-gradient(160deg, rgba(22, 56, 110, 0.95), rgba(13, 25, 56, 0.98));
+            color: #d8e9ff;
+        }
+
+        .template-asset-preview.format-psb {
+            background: linear-gradient(160deg, rgba(67, 43, 112, 0.95), rgba(28, 18, 52, 0.98));
+            color: #ece0ff;
+        }
+
+        .template-asset-preview.format-tif {
+            background: linear-gradient(160deg, rgba(18, 92, 92, 0.95), rgba(11, 44, 44, 0.98));
+            color: #dafdf8;
+        }
+
+        .template-asset-preview.format-png,
+        .template-asset-preview.format-webp {
+            background: linear-gradient(160deg, rgba(18, 98, 70, 0.95), rgba(12, 45, 32, 0.98));
+            color: #ddffe9;
+        }
+
+        .template-asset-preview.format-jpg,
+        .template-asset-preview.format-jpeg {
+            background: linear-gradient(160deg, rgba(112, 71, 18, 0.95), rgba(51, 30, 11, 0.98));
+            color: #ffe9cd;
+        }
+
+        .template-asset-preview.format-file {
+            background: linear-gradient(160deg, rgba(56, 61, 78, 0.95), rgba(21, 25, 35, 0.98));
+            color: #eef3ff;
+        }
+
+        .template-empty-state {
+            margin-top: 4px;
+            padding: 24px 14px;
+            border-radius: 14px;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.02) 100%);
+        }
+
+        .template-empty-state.template-empty-state-compact {
+            padding: 18px 12px;
+            cursor: default;
+        }
+
+        .template-library-load-more {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 0 4px;
+        }
+
+        .template-library-load-more-btn {
+            min-width: 108px;
+            padding: 8px 14px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--de-text);
+            font-size: 12px;
+            cursor: pointer;
+            transition: border-color .18s ease, background .18s ease, transform .18s ease;
+        }
+
+        .template-library-load-more-btn:hover {
+            border-color: rgba(0, 102, 255, 0.28);
+            background: rgba(0, 102, 255, 0.12);
+        }
+
+        .template-library-load-more-meta {
+            color: var(--de-text-secondary);
+            font-size: 11px;
+        }
+
+        .template-library-load-more-sentinel {
+            width: 100%;
+            height: 2px;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .template-empty-title {
+            font-size: 14px;
+            margin-bottom: 6px;
+        }
+
+        .template-empty-desc {
+            max-width: 180px;
+            margin: 0 auto;
+        }
+
+        .design-library-import-strip {
+            display: none;
+        }
+
+        .design-library-dropzone {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 14px 12px;
+            border-radius: 12px;
+            border: 1px dashed rgba(255, 255, 255, 0.14);
+            background: rgba(255, 255, 255, 0.025);
+            color: var(--de-text);
+            cursor: pointer;
+            text-align: center;
+            font-family: inherit;
+            transition: border-color .18s ease, background .18s ease, transform .18s ease;
+        }
+
+        .design-library-dropzone.is-persistent {
+            margin-bottom: 8px;
+            padding: 12px 10px;
+        }
+
+        #pageTemplateLibrary .morph-main {
+            --template-library-waterfall-column-width: 132px;
+            --template-library-waterfall-placeholder-height: 108px;
+            --template-library-waterfall-column-gap: 8px;
+            --template-library-waterfall-layout-width: 100%;
+            padding: 8px 8px 18px;
+        }
+
+        #pageTemplateLibrary .morph-section {
+            padding: 8px;
+            border-radius: 12px;
+        }
+
+        .template-list {
+            padding: 0;
+        }
+
+        .template-dir-list {
+            padding: 0 2px;
+        }
+
+        .template-asset-preview {
+            width: 100%;
+            min-height: var(--template-library-waterfall-placeholder-height, 118px);
+            border-radius: 10px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex: none;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .template-item-card.template-item-card-waterfall {
+            display: inline-flex;
+            width: 100%;
+            margin: 0 0 10px;
+            padding: 0;
+            flex-direction: column;
+            overflow: hidden;
+            border-radius: 14px;
+            break-inside: avoid;
+            -webkit-column-break-inside: avoid;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.03) 100%);
+        }
+
+        .template-item-card.template-item-card-waterfall .template-asset-preview {
+            width: 100%;
+            min-height: var(--template-library-waterfall-placeholder-height, 118px);
+            margin-bottom: 0;
+            font-size: 16px;
+            position: relative;
+            border-radius: 14px 14px 0 0;
+            border-left: none;
+            border-right: none;
+            border-top: none;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            background: linear-gradient(180deg, rgba(17, 22, 34, 0.92) 0%, rgba(12, 16, 26, 0.98) 100%);
+        }
+
+        .template-item-card.template-item-card-waterfall .template-asset-preview.has-thumb {
+            min-height: 0;
+            display: block;
+            padding: 0;
+            box-sizing: border-box;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .template-item-card.template-item-card-waterfall .template-asset-preview.has-text-preview {
+            min-height: 96px;
+        }
+
+        .template-item-card.template-item-card-waterfall .template-item-preview-meta {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            right: 8px;
+            z-index: 2;
+            display: flex;
+            align-items: flex-start;
+            justify-content: flex-start;
+            pointer-events: none;
+        }
+
+        .template-asset-thumb {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .template-item-card.template-item-card-waterfall .template-item-body {
+            padding: 7px 9px 9px;
+        }
+
+        .template-item-card.template-item-card-waterfall .template-item-title {
+            font-size: 12px;
+            line-height: 1.35;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-height: 0;
+        }
+
+        .template-item-card.template-item-card-waterfall .template-item-subtitle {
+            display: none;
+        }
+
+        .template-item-card.template-item-card-waterfall .template-file-chip {
+            margin-top: 0;
+            opacity: 1;
+        }
+
+        .template-item-card.template-item-card-waterfall .template-file-chip.template-file-chip-overlay {
+            height: 20px;
+            padding: 0 8px;
+            border-color: rgba(255, 255, 255, 0.14);
+            background: rgba(7, 10, 18, 0.8);
+            color: #f3f7ff;
+            box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+            backdrop-filter: blur(12px);
+        }
+
+        .template-asset-text-preview {
+            width: 100%;
+            height: 100%;
+            padding: 7px;
+            font-size: 9px;
+            line-height: 1.35;
+            color: #f4f6ff;
+            white-space: normal;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 4;
+            -webkit-box-orient: vertical;
+            text-align: left;
+            background: linear-gradient(180deg, rgba(40,44,64,0.96), rgba(23,25,38,0.98));
+        }
+
+        .template-item-card.is-selected {
+            border-color: rgba(0, 102, 255, 0.38);
+            box-shadow: 0 0 0 1px rgba(0, 102, 255, 0.18);
+        }
+
+        .template-context-menu {
+            position: fixed;
+            z-index: 1200;
+            min-width: 148px;
+            padding: 5px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.09);
+            background: rgba(18, 20, 30, 0.96);
+            box-shadow: 0 12px 36px rgba(0,0,0,0.42);
+        }
+
+        .template-context-item {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 8px 10px;
+            border: none;
+            background: transparent;
+            color: var(--de-text);
+            font-size: 11px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .template-context-item:hover {
+            background: rgba(255,255,255,0.07);
+        }
+
+        .design-library-dropzone:hover,
+        .design-library-dropzone.is-dragover {
+            border-color: rgba(0, 102, 255, 0.42);
+            background: rgba(0, 102, 255, 0.07);
+            transform: translateY(-1px);
+        }
+
+        .design-library-dropzone-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .design-library-dropzone-desc {
+            font-size: 10px;
+            line-height: 1.45;
+            color: var(--de-text-secondary);
+        }
+
+        .design-library-surface {
+            position: relative;
+            min-height: 120px;
+        }
+
+        .design-library-drop-hint {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 18px 14px;
+            border-radius: 14px;
+            border: 1px dashed rgba(78, 133, 255, 0.48);
+            background:
+                linear-gradient(180deg, rgba(8, 14, 28, 0.84), rgba(8, 14, 28, 0.9)),
+                radial-gradient(circle at top, rgba(54, 112, 255, 0.2), transparent 60%);
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            pointer-events: none;
+            z-index: 6;
+        }
+
+        .design-library-surface.is-drop-active .design-library-drop-hint {
+            display: flex;
+        }
+
+        .design-library-drop-hint-card {
+            width: 100%;
+            max-width: 260px;
+            padding: 18px 16px;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(17, 22, 36, 0.78);
+            box-shadow: 0 22px 44px rgba(0,0,0,0.26);
+            text-align: center;
+        }
+
+        .design-library-drop-hint-icon {
+            width: 42px;
+            height: 42px;
+            margin: 0 auto 10px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 102, 255, 0.16);
+            color: #fff;
+            font-size: 22px;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+        }
+
+        .design-library-drop-hint-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .design-library-drop-hint-desc {
+            margin-top: 6px;
+            font-size: 10px;
+            line-height: 1.5;
+            color: rgba(235, 241, 255, 0.72);
+        }
+
+        .template-modal-card {
+            background: linear-gradient(180deg, #171a24 0%, #10131c 100%);
+            border-radius: 18px;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
+        }
+        </style>
 </head>
 <body>
     <!-- ===== 主页面 ===== -->
@@ -1901,7 +3632,7 @@
                 <div class="action-grid">
                     <div class="action-btn disabled" id="btnOptimizeText">
                         <div class="action-icon">T</div>
-                        <span class="action-label">优化文案</span>
+                        <span class="action-label">撰写文案</span>
                     </div>
                     <div class="action-btn disabled" id="btnAnalyzeLayout">
                         <div class="action-icon">⊞</div>
@@ -1927,6 +3658,14 @@
                         <div class="action-icon">◈</div>
                         <span class="action-label">自动设计</span>
                     </div>
+                    <div class="action-btn disabled" id="btnTemplateLibrary">
+                        <div class="action-icon">▣</div>
+                        <span class="action-label">模板</span>
+                    </div>
+                    <div class="action-btn disabled" id="btnImageToImage">
+                        <div class="action-icon">🖼</div>
+                        <span class="action-label">图生图</span>
+                    </div>
                 </div>
             </section>
         </main>
@@ -1949,48 +3688,166 @@
         </div>
     </div>
 
+    <div class="page morph-page" id="pageTemplateLibrary">
+        <header class="morph-header">
+            <button class="btn-back" id="btnTemplateLibraryBack">‹</button>
+            <span class="morph-title">▣ 设计库</span>
+            <button class="btn-refresh-small" id="btnTemplateLibraryRefresh">↻</button>
+        </header>
+        <main class="morph-main">
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">设计库</span>
+                    <span class="section-hint" id="templateLibraryTotal">0 个</span>
+                </div>
+                <div class="template-form-grid">
+                    <div>
+                        <div class="template-form-label">新建设计库</div>
+                        <input id="templateLibraryName" class="glass-input" type="text" placeholder="例如：袜子设计库" />
+                    </div>
+                    <div class="template-inline-actions">
+                        <button class="btn-small" id="btnTemplateLibraryCreate">创建设计库</button>
+                    </div>
+                    <div id="templateLibraryList" class="template-dir-list">
+                        <div class="layer-empty">暂无设计库，请先创建</div>
+                    </div>
+                </div>
+            </section>
+
+            <div id="templateLibraryDetailSection" style="display: none;">
+                <section class="morph-section">
+                    <div class="section-header">
+                        <span class="section-label">设计库</span>
+                        <span class="section-hint" id="templateLibraryActiveName">未选择</span>
+                    </div>
+                    <div class="section-content" style="padding: 12px;">
+                        <div class="template-summary" id="templateLibrarySummary">请先创建或选择设计库</div>
+                        <div class="template-inline-actions">
+                            <button class="btn-small" id="btnTemplateLibraryAddDir">设置目录</button>
+                            <button class="btn-small" id="btnTemplateLibraryRemove">删除当前库</button>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="morph-section">
+                    <div class="section-header">
+                        <span class="section-label">保存当前文档</span>
+                        <span class="section-hint">PSD / PSB / TIF</span>
+                    </div>
+                    <div class="template-form-grid">
+                        <div>
+                            <div class="template-form-label">模板说明</div>
+                            <input id="templateSaveDescription" class="glass-input" type="text" placeholder="例如：四双装活动模板" />
+                        </div>
+                        <div>
+                            <div class="template-form-label">标签</div>
+                            <input id="templateSaveTags" class="glass-input" type="text" placeholder="例如：袜子,四双装,活动" />
+                        </div>
+                        <button class="btn-execute" id="btnTemplateLibrarySaveCurrent">
+                            <span class="btn-icon">✚</span>
+                            <span>添加为模板</span>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="morph-section">
+                    <div class="section-header">
+                        <span class="section-label">模板</span>
+                        <span class="section-hint" id="templateLibraryCount">0 个</span>
+                    </div>
+                    <div class="section-content" style="padding: 12px;">
+                        <div id="templateList" class="template-list">
+                            <div class="layer-empty">当前库暂无模板</div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
     <div class="page" id="pageOptimizeText">
         <header class="morph-header">
             <button class="btn-back" id="btnOptimizeBack">‹</button>
-            <span class="morph-title">T 文案优化</span>
+            <span class="morph-title">T 撰写文案</span>
             <button class="btn-refresh-small" id="btnOptimizeRefreshSelection">↻</button>
         </header>
         <main class="morph-main">
             <section class="morph-section">
                 <div class="section-header">
-                    <span class="section-label">手动选择图层</span>
+                    <span class="section-label">当前文本</span>
+                    <span class="section-hint" id="optimizeLayerHint">自动检测中...</span>
                 </div>
-                <div class="layer-empty" style="padding:10px 12px;text-align:left;">
-                    请先在 Photoshop 中手动选中一个文本图层，然后点右上角刷新按钮读取。
+                <div style="padding:10px 14px;">
+                    <div id="optimizeCurrentText" style="padding:12px;border:1px solid rgba(255,255,255,0.12);border-radius:10px;background:rgba(255,255,255,0.03);line-height:1.55;white-space:pre-wrap;color:var(--de-text-secondary);font-size:12px;">正在准备当前文本...</div>
+                    <div id="optimizeBoundLayerInfo" style="font-size:11px;color:var(--de-text-secondary);opacity:0.82;margin-top:8px;">当前撰写目标：准备中...</div>
+                    <div id="optimizeLiveLayerInfo" style="font-size:11px;color:var(--de-text-secondary);opacity:0.68;margin-top:4px;">Photoshop 当前选中：准备中...</div>
+                    <div id="optimizeCharInfo" style="font-size:11px;color:var(--de-text-secondary);opacity:0.6;margin-top:6px;"></div>
+                    <div id="optimizeReplaceFeedback" style="display:none;margin-top:10px;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03);font-size:12px;line-height:1.5;"></div>
                 </div>
             </section>
             <section class="morph-section">
                 <div class="section-header">
-                    <span class="section-label">当前文案</span>
+                    <span class="section-label">生成设置</span>
                 </div>
-                <div id="optimizeCurrentText" style="padding:12px;border:1px solid rgba(255,255,255,0.12);border-radius:10px;background:rgba(255,255,255,0.03);line-height:1.55;white-space:pre-wrap;color:var(--text-secondary);">请选择文本图层</div>
-                <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
-                    <span style="font-size:12px;opacity:.8;min-width:56px;">文案风格</span>
-                    <select id="optimizeCreativeStyle" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:8px;">
-                        <option value="natural">自然</option>
-                        <option value="playful">轻松调侃</option>
-                        <option value="professional">专业</option>
-                    </select>
+                <div style="padding:10px 14px;">
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <span style="font-size:12px;opacity:.8;min-width:56px;">文案风格</span>
+                        <div class="custom-select" id="optimizeCreativeStyle" data-value="natural" style="flex:1;margin-bottom:0;">
+                            <div class="custom-select-trigger" style="padding:8px 12px;border-radius:8px;">
+                                <span class="custom-select-text">自然</span>
+                                <span class="custom-select-arrow">▼</span>
+                            </div>
+                            <div class="custom-select-options">
+                                <div class="custom-select-option selected" data-value="natural">自然</div>
+                                <div class="custom-select-option" data-value="playful">轻松调侃</div>
+                                <div class="custom-select-option" data-value="professional">专业</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                        <span style="font-size:12px;opacity:.8;min-width:56px;">目标人群</span>
+                        <input id="optimizeTargetAudience" placeholder="例如：通勤女性，关注舒适好搭、久走不累" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:8px;font-size:12px;" />
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                        <span style="font-size:12px;opacity:.8;min-width:56px;">保留词</span>
+                        <input id="optimizeLockedKeywords" placeholder="逗号分隔，如：抗起球,透气" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:8px;font-size:12px;" />
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start;">
+                        <span style="font-size:12px;opacity:.8;min-width:56px;margin-top:8px;">商品简报</span>
+                        <textarea id="optimizeDescription" placeholder="例如：商品是薄款袜子，核心卖点是轻薄透气，适合夏季通勤" rows="2" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:8px;font-size:12px;resize:vertical;min-height:36px;font-family:inherit;"></textarea>
+                    </div>
+                    <div style="margin-top:8px;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                            <span style="font-size:12px;opacity:.8;">参考图片</span>
+                            <span id="optimizeImageSourceHint" style="font-size:10px;color:var(--de-text-secondary);opacity:.7;">默认自动使用当前画面</span>
+                        </div>
+                        <div id="optimizeImagePreview" style="margin-top:6px;display:none;position:relative;">
+                            <img id="optimizeImageThumb" style="max-width:100%;max-height:120px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);" />
+                            <button id="optimizeImageRemove" style="position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,0.7);border:none;color:#fff;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;">×</button>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap;">
+                            <button id="optimizeUseCanvasBtn" type="button" style="display:inline-flex;align-items:center;gap:4px;padding:6px 12px;border-radius:8px;background:rgba(0,102,255,0.14);border:1px solid rgba(0,102,255,0.32);color:#8fb9ff;font-size:12px;cursor:pointer;">
+                                <span>使用当前画面</span>
+                            </button>
+                            <label id="optimizeImageUploadBtn" style="display:inline-flex;align-items:center;gap:4px;padding:6px 12px;border-radius:8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:var(--de-text-secondary);font-size:12px;cursor:pointer;">
+                                <span>+ 本地图片</span>
+                                <input type="file" id="optimizeImageInput" accept="image/*" style="display:none;" />
+                            </label>
+                        </div>
+                    </div>
+                    <button class="btn-execute" id="btnOptimizeGenerate" style="margin-top:12px;">
+                        <span class="btn-icon">✨</span>
+                        <span>撰写三版文案</span>
+                    </button>
+                    <div style="margin-top:8px;font-size:11px;color:var(--de-text-secondary);opacity:0.75;">按当前文本的字数与排版骨架撰写；仅替换文本内容，不修改字体、字号和样式。</div>
                 </div>
-                <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
-                    <span style="font-size:12px;opacity:.8;min-width:56px;">保留词</span>
-                    <input id="optimizeLockedKeywords" placeholder="逗号分隔，如：抗起球,透气" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:8px;" />
-                </div>
-                <button class="btn-execute" id="btnOptimizeGenerate" style="margin-top:12px;">
-                    <span class="btn-icon">✨</span>
-                    <span>生成三版文案</span>
-                </button>
             </section>
             <section class="morph-section">
                 <div class="section-header">
                     <span class="section-label">候选文案（3选1）</span>
                 </div>
-                <div id="optimizeCandidateList" style="display:flex;flex-direction:column;gap:10px;">
+                <div id="optimizeCandidateContext" style="padding:0 14px 8px;font-size:11px;color:var(--de-text-secondary);opacity:0.72;">这些候选会对应当前撰写目标</div>
+                <div id="optimizeCandidateList" style="display:flex;flex-direction:column;gap:10px;padding:10px 14px;">
                     <div class="layer-empty">生成后在这里选择并替换</div>
                 </div>
             </section>
@@ -2189,7 +4046,7 @@
                             <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
                             <span>袜跟区域</span>
                         </div>
-                        <div class="region-item" data-region="foot" data-checked="true">
+                        <div class="region-item" data-region="body" data-checked="true">
                             <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
                             <span>袜身区域</span>
                         </div>
@@ -2250,8 +4107,8 @@
                     <span class="section-label">使用说明</span>
                 </div>
                 <div class="section-content" style="padding: 12px 14px;">
-                    <div style="font-size: 11px; color: var(--de-text-secondary);">
-                        已获取选区信息。请输入描述来生成内容。
+                    <div style="font-size: 11px; color: var(--de-text-secondary); line-height: 1.6;">
+                        先圈出要修改的区域，再描述想改成什么。使用即梦AI时，删除场景建议直接输入“删除”；如果是改字，建议把目标文字放在引号里，例如“YunMeng”。
                     </div>
                 </div>
             </section>
@@ -2262,21 +4119,40 @@
                     <span class="section-label">重绘模型</span>
                 </div>
                 <div class="section-content" style="padding: 8px 14px;">
-                    <div id="inpaintingModelSelect" class="custom-dropdown" data-value="flux-2-pro" style="position: relative; width: 100%;">
+                    <div id="inpaintingModelSelect" class="custom-dropdown" data-value="flux-fill" style="position: relative; width: 100%;">
                         <div class="custom-dropdown-trigger" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: rgba(255,255,255,0.04); color: var(--de-text-primary); font-size: 12px; cursor: pointer; transition: border-color 0.2s;">
-                            <span class="custom-dropdown-text">FLUX.2 [pro] — 平衡速度与质量</span>
+                            <span class="custom-dropdown-text">FLUX Fill - 原生遮罩局部重绘</span>
                             <span style="font-size: 9px; opacity: 0.5;">▼</span>
                         </div>
                         <div class="custom-dropdown-menu" id="inpaintingModelDropdownMenu" style="display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 120; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: #1a1a24; overflow-y: auto; max-height: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 200px;">
-                            <div class="custom-dropdown-option" data-value="flux-2-max" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [max] — 最高质量</div>
-                            <div class="custom-dropdown-option selected" data-value="flux-2-pro" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [pro] — 平衡速度与质量</div>
-                            <div class="custom-dropdown-option" data-value="flux-2-flex" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [flex] — 灵活编辑控制</div>
-                            <div class="custom-dropdown-option" data-value="flux-2-klein-9b" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [klein] — 快速迭代</div>
-                            <div class="custom-dropdown-option" data-value="nano-banana" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Nano Banana — 快速局部重绘</div>
-                            <div class="custom-dropdown-option" data-value="nano-banana-pro" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Nano Banana Pro — 高质量局部重绘</div>
-                            <div class="custom-dropdown-option" data-value="volcengine-inpaint" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">火山引擎 Inpainting — 即梦文生图3.1</div>
-                            <div class="custom-dropdown-option" data-value="volcengine-inpaint-pro" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">火山引擎 Inpainting Pro — 即梦AI Pro</div>
-                            <div class="custom-dropdown-option" data-value="volcengine-inpaint-4" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">火山引擎 Inpainting 4.0 — 即梦AI-图片生成4.0</div>
+                            <div class="custom-dropdown-option selected" data-value="flux-fill" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX Fill - 原生遮罩局部重绘</div>
+                            <div class="custom-dropdown-option" data-value="google/gemini-3-pro-image-preview" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Nano Banana Pro (OpenRouter) - Gemini 3 Pro 图像编辑</div>
+                            <div class="custom-dropdown-option" data-value="jimeng-inpaint" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">即梦AI Inpainting - 官方遮罩局部重绘</div>
+                            <div class="custom-dropdown-option" data-value="flux-2-max" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [max] - 高质量区域编辑</div>
+                            <div class="custom-dropdown-option" data-value="flux-2-pro" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [pro] - 平衡速度与质量</div>
+                            <div class="custom-dropdown-option" data-value="flux-2-flex" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [flex] - 灵活区域编辑</div>
+                            <div class="custom-dropdown-option" data-value="flux-2-klein-9b" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [klein 9B] - 快速区域编辑</div>
+                            <div class="custom-dropdown-option" data-value="flux-2-klein-4b" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">FLUX.2 [klein 4B] - 极速草稿编辑</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="morph-section inpainting-model-section">
+                <div class="section-header">
+                    <span class="section-label">输入清晰度</span>
+                    <span class="section-hint">影响参考图清晰度与等待时间</span>
+                </div>
+                <div class="section-content" style="padding: 8px 14px;">
+                    <div id="inpaintingQualitySelect" class="custom-dropdown" data-value="high" style="position: relative; width: 100%;">
+                        <div class="custom-dropdown-trigger" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: rgba(255,255,255,0.04); color: var(--de-text-primary); font-size: 12px; cursor: pointer; transition: border-color 0.2s;">
+                            <span class="custom-dropdown-text">高清 - 更适合商品细节（1536）</span>
+                            <span style="font-size: 9px; opacity: 0.5;">▼</span>
+                        </div>
+                        <div class="custom-dropdown-menu" id="inpaintingQualityDropdownMenu" style="display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 120; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: #1a1a24; overflow-y: auto; max-height: 220px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 200px;">
+                            <div class="custom-dropdown-option" data-value="standard" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">标准 - 更快（1024）</div>
+                            <div class="custom-dropdown-option selected" data-value="high" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">高清 - 更适合商品细节（1536）</div>
+                            <div class="custom-dropdown-option" data-value="ultra" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">更清晰 - 更慢（2048）</div>
                         </div>
                     </div>
                 </div>
@@ -2291,7 +4167,7 @@
                     <input type="text" 
                         id="inpaintingPrompt"
                         class="glass-input"
-                        placeholder="描述要生成的内容，例如：将勃肯鞋替换为运动鞋"
+                        placeholder="例如：删除；或 字体不变，将内容替换为“YunMeng”"
                     />
                 </div>
             </section>
@@ -2324,6 +4200,11 @@
                 <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
                     <div id="inpaintingProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #638cff, #8b5cf6); border-radius: 2px; transition: width 0.3s ease;"></div>
                 </div>
+                <div id="inpaintingProgressDetail" style="display: none; margin-top: 6px; font-size: 11px; color: var(--de-text-secondary); line-height: 1.5;"></div>
+            </div>
+            <div id="inpaintingFeedback" style="display: none; margin: 6px 0; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03);">
+                <div id="inpaintingFeedbackTitle" style="font-size: 12px; font-weight: 600; color: var(--de-text-primary);"></div>
+                <div id="inpaintingFeedbackDetail" style="margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--de-text-secondary);"></div>
             </div>
             <div style="display: flex; gap: 10px;">
                 <button class="btn-execute" id="btnInpaintingGenerate" style="flex: 1;">
@@ -2333,6 +4214,152 @@
                 <button class="btn-execute" id="btnInpaintingApply" style="flex: 1; display: none; background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);">
                     <span class="btn-icon">✓</span>
                     <span>应用结果</span>
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ===== 图生图页面 ===== -->
+    <div class="page inpainting-page" id="pageImageToImage">
+        <header class="morph-header">
+            <button class="btn-back" id="btnImageToImageBack">‹</button>
+            <span class="morph-title">🖼 图生图</span>
+        </header>
+
+        <main class="morph-main">
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">使用说明</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <div id="imageToImageSourceHint" style="font-size: 11px; color: var(--de-text-secondary);">
+                        请先在 Photoshop 中选中一个要编辑的图层，生成结果会自动放到新图层。
+                    </div>
+                </div>
+            </section>
+
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">效果参考图</span>
+                    <span class="section-hint">可选，决定往什么感觉生成</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <div id="imageToImageReferenceHint" style="font-size: 11px; color: var(--de-text-secondary); line-height: 1.6;">
+                        可直接粘贴截图，也可以选择单张图片或目录中的一张参考图。当前目标图层决定改什么，效果参考图决定往什么感觉生成。
+                    </div>
+                    <div id="imageToImageReferencePreview" style="display:none; margin-top:10px; position:relative; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; overflow: hidden; background: rgba(255,255,255,0.03);">
+                        <img id="imageToImageReferenceThumb" style="display:block; width:100%; max-height:180px; object-fit:contain; background: rgba(255,255,255,0.02);" />
+                        <button id="imageToImageReferenceRemove" style="position:absolute; top:8px; right:8px; width:22px; height:22px; border-radius:50%; background:rgba(0,0,0,0.7); border:none; color:#fff; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; line-height:1;">×</button>
+                        <div id="imageToImageReferenceMeta" style="padding: 8px 10px; font-size: 11px; color: var(--de-text-secondary); border-top: 1px solid rgba(255,255,255,0.08);"></div>
+                    </div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+                        <button class="btn-secondary" id="btnImageToImageReferenceFile" style="padding:8px 12px; font-size:12px;">
+                            <span>选择文件</span>
+                        </button>
+                        <button class="btn-secondary" id="btnImageToImageReferenceFolder" style="padding:8px 12px; font-size:12px;">
+                            <span>选择目录</span>
+                        </button>
+                        <label id="imageToImageReferencePasteHint" style="display:inline-flex; align-items:center; padding:8px 12px; border-radius:8px; background:rgba(255,255,255,0.04); border:1px dashed rgba(255,255,255,0.12); color:var(--de-text-secondary); font-size:12px;">
+                            <span>支持 Ctrl+V 粘贴图片</span>
+                        </label>
+                        <input type="file" id="imageToImageReferenceInput" accept="image/*" style="display:none;" />
+                    </div>
+                    <div id="imageToImageReferenceFolderPicker" style="display:none; margin-top:10px; padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; background:rgba(255,255,255,0.03);">
+                        <div id="imageToImageReferenceFolderTitle" style="font-size:11px; color: var(--de-text-secondary); margin-bottom:8px;">已读取目录中的图片，请选择一张参考图</div>
+                        <div id="imageToImageReferenceFolderList" style="display:flex; flex-direction:column; gap:6px; max-height:180px; overflow:auto;"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="morph-section inpainting-model-section">
+                <div class="section-header">
+                    <span class="section-label">图生图模型</span>
+                </div>
+                <div class="section-content" style="padding: 8px 14px;">
+                    <div id="imageToImageModelSelect" class="custom-dropdown" data-value="doubao-seedream-5-0-260128" style="position: relative; width: 100%;">
+                        <div class="custom-dropdown-trigger" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: rgba(255,255,255,0.04); color: var(--de-text-primary); font-size: 12px; cursor: pointer; transition: border-color 0.2s;">
+                            <span class="custom-dropdown-text">Seedream 5.0 - 高质量图生图</span>
+                            <span style="font-size: 9px; opacity: 0.5;">▼</span>
+                        </div>
+                        <div class="custom-dropdown-menu" id="imageToImageModelDropdownMenu" style="display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 120; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: #1a1a24; overflow-y: auto; max-height: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 200px;">
+                            <div class="custom-dropdown-option selected" data-value="doubao-seedream-5-0-260128" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Seedream 5.0 - 高质量图生图</div>
+                            <div class="custom-dropdown-option" data-value="doubao-seedream-5-0-lite-260128" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Seedream 5.0 lite - 更快</div>
+                            <div class="custom-dropdown-option" data-value="doubao-seedream-4-5-251128" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Seedream 4.5 - 支持 4K</div>
+                            <div class="custom-dropdown-option" data-value="doubao-seedream-4-0-250828" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Seedream 4.0 - 兼容 1K/2K/4K</div>
+                            <div class="custom-dropdown-option" data-value="jimeng-seedream-4-6" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">即梦AI 图片生成4.6 - 官方图生图</div>
+                            <div class="custom-dropdown-option" data-value="gemini-3-pro-image-preview" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Gemini 3 Pro Image Preview - GPTs API</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="morph-section inpainting-model-section">
+                <div class="section-header">
+                    <span class="section-label">输出分辨率</span>
+                    <span class="section-hint" id="imageToImageSizeHint">将按当前模型支持的档位显示</span>
+                </div>
+                <div class="section-content" style="padding: 8px 14px;">
+                    <div id="imageToImageSizePresetSelect" class="custom-dropdown" data-value="2K" style="position: relative; width: 100%;">
+                        <div class="custom-dropdown-trigger" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: rgba(255,255,255,0.04); color: var(--de-text-primary); font-size: 12px; cursor: pointer; transition: border-color 0.2s;">
+                            <span class="custom-dropdown-text">2K - 标准</span>
+                            <span style="font-size: 9px; opacity: 0.5;">▼</span>
+                        </div>
+                        <div class="custom-dropdown-menu" id="imageToImageSizePresetDropdownMenu" style="display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 120; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: #1a1a24; overflow-y: auto; max-height: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 200px;">
+                            <div class="custom-dropdown-option selected" data-value="2K" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">2K - 标准</div>
+                            <div class="custom-dropdown-option" data-value="3K" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">3K - 高清</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="morph-section">
+                <div class="section-header">
+                    <span class="section-label">生成描述</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <input type="text"
+                        id="imageToImagePrompt"
+                        class="glass-input"
+                        placeholder="描述想基于当前内容生成的新效果，例如：调整成电影感夜景海报"
+                    />
+                </div>
+            </section>
+
+            <section class="morph-section" id="imageToImageResultSection" style="display: none;">
+                <div class="section-header">
+                    <span class="section-label">生成结果</span>
+                    <span class="section-hint">已自动置入新图层</span>
+                </div>
+                <div class="section-content" style="padding: 0 14px 14px;">
+                    <div style="border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; overflow: hidden; background: rgba(255,255,255,0.02);">
+                        <img id="imageToImagePreview" style="display: block; width: 100%; height: auto;" />
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="morph-footer">
+            <div class="morph-status" id="imageToImageStatus">
+                准备就绪
+            </div>
+            <div id="imageToImageProgressContainer" style="display: none; width: 100%; margin: 6px 0;">
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--de-text-secondary); margin-bottom: 3px;">
+                    <span id="imageToImageProgressMsg">处理中...</span>
+                    <span id="imageToImageProgressPercent">0%</span>
+                </div>
+                <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
+                    <div id="imageToImageProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #30cfd0, #5b86e5); border-radius: 2px; transition: width 0.3s ease;"></div>
+                </div>
+                <div id="imageToImageProgressDetail" style="display: none; margin-top: 6px; font-size: 11px; color: var(--de-text-secondary); line-height: 1.5;"></div>
+            </div>
+            <div id="imageToImageFeedback" style="display: none; margin: 6px 0; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03);">
+                <div id="imageToImageFeedbackTitle" style="font-size: 12px; font-weight: 600; color: var(--de-text-primary);"></div>
+                <div id="imageToImageFeedbackDetail" style="margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--de-text-secondary);"></div>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button class="btn-execute" id="btnImageToImageGenerate" style="flex: 1;">
+                    <span class="btn-icon">✨</span>
+                    <span>开始生成</span>
                 </button>
             </div>
         </footer>
@@ -2560,16 +4587,43 @@
                     // level 是 UXP 传来的原始类型（success/error/warning/info）
                     const toastLevel = data.level || data.status || 'info';
                     showToast(data.message, toastLevel);
+                    if (optimizeTextApplyingIndex !== null && (toastLevel === 'error' || toastLevel === 'warning')) {
+                        optimizeTextApplyingIndex = null;
+                        renderOptimizeTextCandidates({
+                            candidates: optimizeTextState.candidates,
+                            layerId: getOptimizeBoundLayerId(),
+                            originalText: getOptimizeBaselineText()
+                        });
+                    }
+                    if (_optimizeGenerating && (toastLevel === 'error' || toastLevel === 'warning')) {
+                        setOptimizeGenerating(false);
+                        const cel = document.getElementById('optimizeCandidateList');
+                        if (cel) cel.innerHTML = '<div class="layer-empty">生成失败，请调整后重试</div>';
+                    }
                     if (inpaintingState === 'generating' && (toastLevel === 'error' || toastLevel === 'warning')) {
+                        showInpaintingProgress(false);
                         setInpaintingState(
                             currentInpaintingData.selectionReady ? 'selectionReady' : 'idle',
                             toastLevel === 'error' ? '生成失败，请调整后重试' : '请检查选区后重试'
                         );
                     }
+                    if (imageToImageState === 'generating' && (toastLevel === 'error' || toastLevel === 'warning')) {
+                        showImageToImageProgress(false);
+                        setImageToImageState(
+                            'ready',
+                            toastLevel === 'error' ? '生成失败，请调整描述后重试' : '请检查当前文档后重试'
+                        );
+                    }
                     break;
                 case 'error':
                     showToast(data.message || '操作失败', 'error');
+                    if (_optimizeGenerating) {
+                        setOptimizeGenerating(false);
+                        const cel = document.getElementById('optimizeCandidateList');
+                        if (cel) cel.innerHTML = '<div class="layer-empty">生成失败，请调整后重试</div>';
+                    }
                     if (inpaintingState === 'generating') {
+                        showInpaintingProgress(false);
                         setInpaintingState(
                             currentInpaintingData.selectionReady ? 'selectionReady' : 'idle',
                             '生成失败，请调整后重试'
@@ -2579,41 +4633,142 @@
                 case 'statusInfo':
                     updateStatusInfo(data);
                     break;
+                case 'inpaintingProgress':
+                    if (inpaintingState === 'generating') {
+                        updateInpaintingProgress(data.progress || 0, data.message || '处理中...', data.stage || '');
+                        showInpaintingProgress(true);
+                    }
+                    break;
                 case 'hideMorphProgress':
                     hideMorphProgress();
                     break;
                 case 'showLoading':
-                    showLoadingOverlay(data.text);
+                    if (!_optimizeGenerating) showLoadingOverlay(data.text, data.steps);
+                    break;
+                case 'updateLoading':
+                    if (!_optimizeGenerating) updateLoadingText(data.text);
                     break;
                 case 'hideLoading':
-                    hideLoadingOverlay();
-                    if (inpaintingState === 'generating') {
-                        setInpaintingState(
-                            currentInpaintingData.selectionReady ? 'selectionReady' : 'idle',
-                            '等待重试'
-                        );
+                    if (_optimizeGenerating) {
+                        // 撰写文案的 hideLoading 不走全局遮罩，等 candidates 消息来关闭
+                    } else {
+                        hideLoadingOverlay();
+                        if (inpaintingState === 'generating') {
+                            showInpaintingProgress(false);
+                            setInpaintingState(
+                                currentInpaintingData.selectionReady ? 'selectionReady' : 'idle',
+                                '等待重试'
+                            );
+                        }
                     }
                     break;
                 case 'optimizeTextSelection':
                     renderOptimizeTextSelection(data);
                     break;
                 case 'optimizeTextCandidates':
+                    setOptimizeGenerating(false);
+                    optimizeTextApplyingIndex = null;
                     renderOptimizeTextCandidates(data);
                     break;
+                case 'optimizeTextImageCaptured':
+                    applyOptimizeReferenceImage(data);
+                    break;
                 case 'optimizeTextApplied':
+                    optimizeTextApplyingIndex = null;
                     if (data && data.content) {
                         const currentEl = document.getElementById('optimizeCurrentText');
                         if (currentEl) currentEl.textContent = data.content;
+                        optimizeTextState.boundText = String(data.content || '');
+                        if (getOptimizeBoundLayerId() && optimizeTextState.selectedLayerId === getOptimizeBoundLayerId()) {
+                            optimizeTextState.selectedText = String(data.content || '');
+                        }
+                        renderOptimizeLayerInfo();
+                        updateOptimizeCharInfo();
+                    }
+                    if (optimizeTextState.candidates.length > 0) {
+                        renderOptimizeTextCandidates({
+                            candidates: optimizeTextState.candidates,
+                            layerId: getOptimizeBoundLayerId(),
+                            originalText: getOptimizeBaselineText()
+                        });
+                    }
+                    if (data?.data?.checks?.isOutOfBounds) {
+                        const overflow = data.data.checks.overflowDirection ? '，超出方向：' + data.data.checks.overflowDirection : '';
+                        const fix = data.data.checks.suggestedFix ? '。建议：' + data.data.checks.suggestedFix : '';
+                        setOptimizeReplaceFeedback('warning', '已替换文本内容，但当前文字层可能超出画布' + overflow + fix + '。字体、字号和样式未改动。');
+                    } else if (data?.data?.checks?.isClipped) {
+                        const fix = data.data.checks.suggestedFix ? '。建议：' + data.data.checks.suggestedFix : '';
+                        setOptimizeReplaceFeedback('warning', '已替换文本内容，但当前文字层可能存在裁切风险' + fix + '。字体、字号和样式未改动。');
+                    } else {
+                        setOptimizeReplaceFeedback('success', '已替换文本内容，字体、字号和样式未改动。');
                     }
                     break;
                 case 'navigate':
                     if (data.view === 'inpainting') {
                         switchPage('pageInpainting');
                         handleInpaintingData(data.payload || { selectionReady: false });
+                    } else if (data.view === 'imageToImage') {
+                        switchPage('pageImageToImage');
+                        handleImageToImageData(data.payload || {});
                     }
+                    break;
+                case 'imageToImageSelection':
+                    applyImageToImageSelection(data, { preservePrompt: true, clearResult: true });
                     break;
                 case 'inpaintingGenerated':
                     handleInpaintingGenerated(data.images, data.rawImages || [], data.meta);
+                    break;
+                case 'inpaintingError':
+                    showInpaintingProgress(false);
+                    showInpaintingFeedback(
+                        data.type === 'warning' ? 'warning' : 'error',
+                        data.message || '局部重绘请求失败',
+                        data.detail || '',
+                        data.stageLabel || '',
+                        data.code || ''
+                    );
+                    setInpaintingState(
+                        currentInpaintingData.selectionReady ? 'selectionReady' : 'idle',
+                        data.message || '生成失败，请调整后重试'
+                    );
+                    break;
+                case 'inpaintingApplied':
+                    hideLoadingOverlay();
+                    showInpaintingProgress(false);
+                    setInpaintingState('applied', data.autoApplied ? '结果已自动应用到新图层' : '结果已应用到新图层');
+                    showInpaintingFeedback('success', '结果已应用到新图层', '局部重绘结果已经回到 Photoshop，可继续微调或再次生成。');
+                    break;
+                case 'imageToImageProgress':
+                    if (imageToImageState === 'generating') {
+                        showImageToImageProgress(true);
+                        updateImageToImageProgress(data.progress || 0, data.message || '处理中...', data.stage || '');
+                    }
+                    break;
+                case 'imageToImageError':
+                    showImageToImageProgress(false);
+                    showImageToImageFeedback(
+                        'error',
+                        data.message || '图生图请求失败',
+                        data.detail || '',
+                        data.stageLabel || '',
+                        data.code || ''
+                    );
+                    setImageToImageState('ready', data.message || '生成失败，请调整后重试');
+                    break;
+                case 'imageToImageGenerated':
+                    handleImageToImageGenerated(data.images || [], data.meta || null);
+                    break;
+                case 'imageToImageApplied':
+                    showImageToImageProgress(false);
+                    setImageToImageState('applied', data.autoApplied ? '结果已自动应用到新图层' : '结果已应用到新图层');
+                    showImageToImageFeedback('success', '结果已应用到新图层', '当前结果已经放到 Photoshop 新图层，可继续调整描述后重新生成。');
+                    break;
+                case 'mattingProgress':
+                    if (mattingProgressInterval) {
+                        clearInterval(mattingProgressInterval);
+                        mattingProgressInterval = null;
+                    }
+                    showMattingProgress(data.progress || 0, data.message || '正在抠图...', data.stage || '');
                     break;
                 case 'mattingComplete':
                     // 抠图完成，隐藏进度条并恢复按钮
@@ -2627,12 +4782,19 @@
                     }
                     break;
                 case 'enableActions':
+                    updateConnectionUI(!!data.enabled);
                     // 启用操作按钮
                     const mattingBtn = document.getElementById('btnMattingExecute');
-                    if (mattingBtn && data.enabled) {
-                        mattingBtn.disabled = false;
+                    if (mattingBtn) {
+                        mattingBtn.disabled = !data.enabled;
                         mattingBtn.innerHTML = '<span class="btn-icon">✂</span><span>执行抠图</span>';
                     }
+                    break;
+                case 'templateLibraryState':
+                    window.designLibraryRuntime?.renderState(data);
+                    break;
+                case 'templateLibraryUndoAvailable':
+                    showTemplateLibraryUndoToast(data?.message || '资产已删除，可撤销');
                     break;
             }
         }
@@ -2675,7 +4837,7 @@
             const target = document.getElementById(pageId);
             if (target) target.classList.add('active');
         }
-        
+
         function updateMorphLayers(data) {
             console.log('[WebView] updateMorphLayers - shapeLayers:', data.shapeLayers?.length || 0, 'productLayers:', data.productLayers?.length || 0);
             
@@ -2811,36 +4973,373 @@
         
         let currentInpaintingData = {};
         let inpaintingState = 'idle';
+        let currentImageToImageData = {
+            documentName: '',
+            width: 0,
+            height: 0,
+            selectionState: 'none',
+            hasSelectedLayer: false,
+            selectedLayerId: null,
+            selectedLayerName: '',
+            selectedLayerWidth: 0,
+            selectedLayerHeight: 0,
+            meta: null
+        };
+        let imageToImageState = 'idle';
+        let imageToImageReferenceDataUrl = '';
+        let imageToImageReferenceName = '';
+        let imageToImageReferenceSource = '';
+        let imageToImageReferenceDirectory = '';
+        const IMAGE_TO_IMAGE_MODEL_CAPABILITIES = {
+            'doubao-seedream-5-0-260128': {
+                label: 'Seedream 5.0 - 高质量图生图',
+                defaultSize: '3K',
+                supportedSizes: ['2K', '3K']
+            },
+            'doubao-seedream-5-0-lite-260128': {
+                label: 'Seedream 5.0 lite - 更快',
+                defaultSize: '3K',
+                supportedSizes: ['2K', '3K']
+            },
+            'doubao-seedream-4-5-251128': {
+                label: 'Seedream 4.5 - 支持 4K',
+                defaultSize: '2K',
+                supportedSizes: ['2K', '4K']
+            },
+            'doubao-seedream-4-0-250828': {
+                label: 'Seedream 4.0 - 兼容 1K/2K/4K',
+                defaultSize: '2K',
+                supportedSizes: ['1K', '2K', '4K']
+            },
+            'jimeng-seedream-4-6': {
+                label: '即梦AI 图片生成4.6 - 官方图生图',
+                defaultSize: '2K',
+                supportedSizes: ['1K', '2K', '4K'],
+                sizeHint: '官方图生图走 image_urls 输入，建议先在设置中配置 TOS 公网桶'
+            },
+            'gemini-3-pro-image-preview': {
+                label: 'Gemini 3 Pro Image Preview - GPTs API',
+                defaultSize: '2K',
+                supportedSizes: ['2K'],
+                sizeHint: '当前模型由 GPTs API 服务侧自动控制输出尺寸'
+            }
+        };
+        const IMAGE_TO_IMAGE_SIZE_LABELS = {
+            '1K': '1K - 预览',
+            '2K': '2K - 标准',
+            '3K': '3K - 高清',
+            '4K': '4K - 超清'
+        };
         let optimizeTextState = {
             selectedLayerId: null,
             selectedLayerName: '',
             selectedText: '',
-            candidates: []
+            boundLayerId: null,
+            boundLayerName: '',
+            boundText: '',
+            baselineText: '',
+            liveSelectionState: 'none',
+            liveLayerName: '',
+            candidates: [],
+            candidateDetails: []
         };
+        let optimizeTextApplyingIndex = null;
+        let optimizeTextImageBase64 = null; // base64 data (no prefix)
+        let optimizeTextImageSource = '';
+        // Design library runtime is implemented in public/webview/design-library.js
 
-        function renderOptimizeTextSelection(data) {
-            optimizeTextState.selectedLayerId = Number(data?.layerId || 0) || null;
-            optimizeTextState.selectedLayerName = String(data?.layerName || '');
-            optimizeTextState.selectedText = String(data?.selectedText || '');
-            const currentEl = document.getElementById('optimizeCurrentText');
-            if (currentEl) {
-                if (optimizeTextState.selectedText) {
-                    const head = optimizeTextState.selectedLayerName ? `[${optimizeTextState.selectedLayerName}]\n` : '';
-                    currentEl.textContent = `${head}${optimizeTextState.selectedText}`;
-                } else {
-                    currentEl.textContent = '请先手动选择文本图层并刷新';
+        let _optimizeGenerating = false;
+        let _optimizeGenTimer = null;
+        let _optimizeGenStart = 0;
+
+        function setOptimizeGenerating(generating) {
+            _optimizeGenerating = generating;
+            const btn = document.getElementById('btnOptimizeGenerate');
+            const candidateEl = document.getElementById('optimizeCandidateList');
+            if (generating) {
+                _optimizeGenStart = Date.now();
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;margin-right:6px;"></span><span>生成中...</span>';
+                    btn.style.opacity = '0.7';
+                }
+                if (candidateEl) {
+                    candidateEl.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px 0;">' +
+                        '<div class="spinner" style="width:28px;height:28px;"></div>' +
+                        '<div id="optimizeProgressText" style="font-size:12px;color:var(--de-text-secondary);">已发送撰写请求，等待 Agent 返回候选文案...</div>' +
+                        '<div id="optimizeProgressElapsed" style="font-size:11px;color:var(--de-text-secondary);opacity:0.5;"></div>' +
+                        '</div>';
+                }
+                // 只显示真实等待时长，不轮换伪造的模型处理阶段。
+                if (_optimizeGenTimer) clearInterval(_optimizeGenTimer);
+                _optimizeGenTimer = setInterval(() => {
+                    const elapsed = Date.now() - _optimizeGenStart;
+                    const sec = Math.floor(elapsed / 1000);
+                    const elapsedEl = document.getElementById('optimizeProgressElapsed');
+                    if (elapsedEl && sec > 0) elapsedEl.textContent = '已等待 ' + sec + 's';
+                }, 1000);
+            } else {
+                if (_optimizeGenTimer) { clearInterval(_optimizeGenTimer); _optimizeGenTimer = null; }
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<span class="btn-icon">✨</span><span>撰写三版文案</span>';
+                    btn.style.opacity = '1';
                 }
             }
         }
 
-        function renderOptimizeTextCandidates(data) {
-            const list = Array.isArray(data?.candidates) ? data.candidates : [];
-            optimizeTextState.candidates = list;
-            if (data?.layerId) optimizeTextState.selectedLayerId = Number(data.layerId) || optimizeTextState.selectedLayerId;
-            if (data?.originalText) optimizeTextState.selectedText = String(data.originalText || optimizeTextState.selectedText || '');
+        function clearOptimizeTextCandidates(message) {
+            optimizeTextState.candidates = [];
+            optimizeTextState.candidateDetails = [];
+            optimizeTextApplyingIndex = null;
+            const candidateEl = document.getElementById('optimizeCandidateList');
+            if (candidateEl) {
+                candidateEl.innerHTML = '<div class="layer-empty">' + (message || '生成后在这里选择并替换') + '</div>';
+            }
+            renderOptimizeCandidateContext();
+        }
+
+        function getOptimizeBoundLayerId() {
+            return Number(optimizeTextState.boundLayerId || 0) || null;
+        }
+
+        function getOptimizeBoundLayerName() {
+            const boundId = getOptimizeBoundLayerId();
+            return optimizeTextState.boundLayerName || (boundId ? ('图层 #' + boundId) : '');
+        }
+
+        function getOptimizeBaselineText() {
+            return String(optimizeTextState.baselineText || optimizeTextState.boundText || optimizeTextState.selectedText || '');
+        }
+
+        function getOptimizeDisplayText() {
+            return String(optimizeTextState.boundText || optimizeTextState.selectedText || '');
+        }
+
+        function setOptimizeImageSourceHint(text) {
+            const hint = document.getElementById('optimizeImageSourceHint');
+            if (hint) hint.textContent = text || '默认自动使用当前画面';
+        }
+
+        function applyOptimizeReferenceImage(data) {
+            const rawBase64 = String(data?.base64 || data?.image || '').replace(/^data:image\/[^;]+;base64,/, '').trim();
+            if (!rawBase64) return;
+            const mimeType = String(data?.mimeType || 'image/jpeg');
+            optimizeTextImageBase64 = rawBase64;
+            optimizeTextImageSource = String(data?.source || 'canvas');
+            const dataUrl = `data:${mimeType};base64,${rawBase64}`;
+            const thumb = document.getElementById('optimizeImageThumb');
+            const preview = document.getElementById('optimizeImagePreview');
+            if (thumb) thumb.src = dataUrl;
+            if (preview) preview.style.display = 'block';
+            const uploadBtn = document.getElementById('optimizeImageUploadBtn');
+            if (uploadBtn) uploadBtn.style.display = 'inline-flex';
+            const label = optimizeTextImageSource === 'local'
+                ? '已使用本地图片'
+                : '已使用当前 Photoshop 画面';
+            setOptimizeImageSourceHint(label);
+        }
+
+        function escapeOptimizeHtml(value) {
+            return String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function getOptimizeSelectValue(selectId, fallback) {
+            return document.getElementById(selectId)?.dataset?.value || fallback;
+        }
+
+        function setOptimizeReplaceFeedback(type, message) {
+            const feedbackEl = document.getElementById('optimizeReplaceFeedback');
+            if (!feedbackEl) return;
+            if (!message) {
+                feedbackEl.style.display = 'none';
+                feedbackEl.textContent = '';
+                feedbackEl.style.borderColor = 'rgba(255,255,255,0.12)';
+                feedbackEl.style.background = 'rgba(255,255,255,0.03)';
+                feedbackEl.style.color = 'var(--de-text-secondary)';
+                return;
+            }
+
+            const tone = type || 'info';
+            if (tone === 'warning') {
+                feedbackEl.style.borderColor = 'rgba(245, 158, 11, 0.45)';
+                feedbackEl.style.background = 'rgba(245, 158, 11, 0.12)';
+                feedbackEl.style.color = '#fbbf24';
+            } else if (tone === 'success') {
+                feedbackEl.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+                feedbackEl.style.background = 'rgba(34, 197, 94, 0.12)';
+                feedbackEl.style.color = '#86efac';
+            } else {
+                feedbackEl.style.borderColor = 'rgba(255,255,255,0.12)';
+                feedbackEl.style.background = 'rgba(255,255,255,0.03)';
+                feedbackEl.style.color = 'var(--de-text-secondary)';
+            }
+
+            feedbackEl.style.display = 'block';
+            feedbackEl.textContent = message;
+        }
+
+        function renderOptimizeLayerInfo() {
+            const hintEl = document.getElementById('optimizeLayerHint');
+            const boundEl = document.getElementById('optimizeBoundLayerInfo');
+            const liveEl = document.getElementById('optimizeLiveLayerInfo');
+            const boundId = getOptimizeBoundLayerId();
+            const boundName = getOptimizeBoundLayerName();
+            let liveText = 'Photoshop 当前选中：未选中图层';
+            let liveColor = 'var(--de-text-secondary)';
+
+            if (optimizeTextState.liveSelectionState === 'text') {
+                liveText = 'Photoshop 当前选中：' + (optimizeTextState.liveLayerName || '文本图层');
+                liveColor = 'var(--de-primary)';
+            } else if (optimizeTextState.liveSelectionState === 'non-text') {
+                liveText = 'Photoshop 当前选中：其他图层';
+                liveColor = 'var(--de-text-secondary)';
+            }
+
+            if (hintEl) {
+                if (boundId) {
+                    hintEl.textContent = '已准备好撰写当前文本';
+                    hintEl.style.color = 'var(--de-primary)';
+                } else {
+                    hintEl.textContent = '请选择要优化的文本';
+                    hintEl.style.color = '';
+                }
+            }
+
+            if (boundEl) {
+                if (boundId) {
+                    boundEl.textContent = '当前撰写目标：' + boundName;
+                    boundEl.style.color = 'var(--de-text)';
+                } else {
+                    boundEl.textContent = '当前撰写目标：未选择';
+                    boundEl.style.color = 'var(--de-text-secondary)';
+                }
+            }
+
+            if (liveEl) {
+                liveEl.textContent = liveText;
+                liveEl.style.color = liveColor;
+            }
+
+            renderOptimizeCandidateContext();
+        }
+
+        function renderOptimizeCandidateContext() {
+            const contextEl = document.getElementById('optimizeCandidateContext');
+            if (!contextEl) return;
+            const boundName = getOptimizeBoundLayerName();
+            if (optimizeTextState.candidates.length > 0 && boundName) {
+                contextEl.textContent = '这些候选对应：' + boundName;
+                contextEl.style.color = 'var(--de-text-secondary)';
+            } else if (boundName) {
+                contextEl.textContent = '当前撰写目标：' + boundName + '，生成后候选会对应这段文本';
+                contextEl.style.color = 'var(--de-text-secondary)';
+            } else {
+                contextEl.textContent = '这些候选会对应当前撰写目标';
+                contextEl.style.color = 'var(--de-text-secondary)';
+            }
+        }
+
+        function updateOptimizeCharInfo() {
+            const charInfoEl = document.getElementById('optimizeCharInfo');
+            if (!charInfoEl) return;
+            const text = getOptimizeDisplayText();
+            if (text) {
+                const chars = text.replace(/[\r\n]/g, '').length;
+                const lines = text.split(/\r?\n/).length;
+                charInfoEl.textContent = `${chars} 字` + (lines > 1 ? `，${lines} 行` : '');
+            } else {
+                charInfoEl.textContent = '';
+            }
+        }
+
+        function renderOptimizeTextSelection(data) {
+            const incomingLayerId = Number(data?.layerId || 0) || null;
+            const incomingLayerName = String(data?.layerName || '');
+            const incomingText = String(data?.selectedText || '');
+            const isTextLayer = !!data?.success && !!incomingLayerId;
+            const boundLayerId = getOptimizeBoundLayerId();
+            const targetChanged = isTextLayer && boundLayerId && incomingLayerId !== boundLayerId;
+
+            optimizeTextState.liveSelectionState = String(data?.selectionState || (data?.notText ? 'non-text' : 'none'));
+            optimizeTextState.liveLayerName = incomingLayerName;
+
+            if (isTextLayer) {
+                optimizeTextState.selectedLayerId = incomingLayerId;
+                optimizeTextState.selectedLayerName = incomingLayerName;
+                optimizeTextState.selectedText = incomingText;
+                if (!optimizeTextState.candidates.length || !boundLayerId) {
+                    optimizeTextState.boundLayerId = incomingLayerId;
+                    optimizeTextState.boundLayerName = incomingLayerName;
+                    optimizeTextState.boundText = incomingText;
+                    optimizeTextState.baselineText = incomingText;
+                }
+                if (targetChanged) {
+                    optimizeTextState.boundLayerId = incomingLayerId;
+                    optimizeTextState.boundLayerName = incomingLayerName;
+                    optimizeTextState.boundText = incomingText;
+                    optimizeTextState.baselineText = incomingText;
+                    clearOptimizeTextCandidates('已切换到新的文本图层，请重新生成候选文案');
+                    setOptimizeReplaceFeedback(null, '');
+                }
+            } else if (!data?.preserveSelection) {
+                optimizeTextState.selectedLayerId = null;
+                optimizeTextState.selectedLayerName = '';
+                optimizeTextState.selectedText = '';
+                if (!optimizeTextState.candidates.length) {
+                    optimizeTextState.boundLayerId = null;
+                    optimizeTextState.boundLayerName = '';
+                    optimizeTextState.boundText = '';
+                    optimizeTextState.baselineText = '';
+                    clearOptimizeTextCandidates('请先在 Photoshop 中选中一个文本图层');
+                    setOptimizeReplaceFeedback(null, '');
+                }
+            }
 
             const currentEl = document.getElementById('optimizeCurrentText');
-            if (currentEl && optimizeTextState.selectedText) currentEl.textContent = optimizeTextState.selectedText;
+            if (currentEl) {
+                const displayText = getOptimizeDisplayText();
+                if (displayText) {
+                    currentEl.textContent = displayText;
+                    currentEl.style.color = 'var(--de-text)';
+                } else {
+                    currentEl.textContent = '请先选择要优化的文本';
+                    currentEl.style.color = 'var(--de-text-secondary)';
+                }
+            }
+            renderOptimizeLayerInfo();
+            updateOptimizeCharInfo();
+        }
+
+        function renderOptimizeTextCandidates(data) {
+            const list = Array.isArray(data?.candidates) ? data.candidates : [];
+            const details = Array.isArray(data?.candidateDetails) ? data.candidateDetails : [];
+            optimizeTextState.candidates = list;
+            optimizeTextState.candidateDetails = details;
+            if (data?.layerId) {
+                const nextLayerId = Number(data.layerId) || getOptimizeBoundLayerId();
+                optimizeTextState.boundLayerId = nextLayerId;
+                if (nextLayerId && optimizeTextState.selectedLayerId === nextLayerId && optimizeTextState.selectedLayerName) {
+                    optimizeTextState.boundLayerName = optimizeTextState.selectedLayerName;
+                }
+            }
+            if (data?.originalText) {
+                const originalText = String(data.originalText || getOptimizeDisplayText() || '');
+                optimizeTextState.boundText = originalText;
+                optimizeTextState.baselineText = originalText;
+            }
+            setOptimizeReplaceFeedback(null, '');
+            renderOptimizeLayerInfo();
+            updateOptimizeCharInfo();
+
+            const currentEl = document.getElementById('optimizeCurrentText');
+            const displayText = getOptimizeDisplayText();
+            if (currentEl && displayText) currentEl.textContent = displayText;
 
             const candidateEl = document.getElementById('optimizeCandidateList');
             if (!candidateEl) return;
@@ -2848,12 +5347,41 @@
                 candidateEl.innerHTML = '<div class="layer-empty">未生成候选文案，请重试</div>';
                 return;
             }
+            const origCharCount = getOptimizeBaselineText().replace(/[\r\n]/g, '').length;
             candidateEl.innerHTML = list.map((text, idx) => {
-                const safe = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                return `<div style="border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:10px;background:rgba(255,255,255,0.03);">
-                    <div style="font-size:12px;opacity:.8;margin-bottom:6px;">方案 ${String.fromCharCode(65 + idx)}</div>
-                    <div style="line-height:1.55;white-space:pre-wrap;">${safe}</div>
-                    <button class="btn-small optimize-apply-btn" data-idx="${idx}" style="margin-top:8px;">替换到当前图层</button>
+                const detail = details[idx] || {};
+                const safe = escapeOptimizeHtml(text);
+                const candidateCharCount = String(text || '').replace(/[\r\n]/g, '').length;
+                const diff = Number.isFinite(Number(detail.lengthDiff)) ? Number(detail.lengthDiff) : candidateCharCount - origCharCount;
+                const diffStr = diff === 0 ? '一致' : (diff > 0 ? '+' + diff : String(diff));
+                const fitStatus = ['ok', 'watch', 'risk'].includes(detail.fitStatus) ? detail.fitStatus : (Math.abs(diff) <= 2 ? 'ok' : (Math.abs(diff) <= 5 ? 'watch' : 'risk'));
+                const fitLabel = detail.fitLabel || (fitStatus === 'ok' ? '可直接试用' : (fitStatus === 'watch' ? '需看版面' : '需复核'));
+                const badgeTone = fitStatus === 'ok' ? 'ok' : (fitStatus === 'watch' ? 'watch' : 'risk');
+                const canApply = fitStatus === 'ok';
+                const reason = detail.reason ? escapeOptimizeHtml(detail.reason) : 'AI 候选';
+                const risks = Array.isArray(detail.risks) ? detail.risks.filter(Boolean) : [];
+                const goals = Array.isArray(detail.goals) ? detail.goals.filter(Boolean).slice(0, 3) : [];
+                const preservedKeywords = Array.isArray(detail.preservedKeywords) ? detail.preservedKeywords.filter(Boolean).slice(0, 3) : [];
+                const riskNote = risks.length > 0
+                    ? `<div class="optimize-candidate-note" style="color:#fca5a5;">风险：${risks.map(escapeOptimizeHtml).join('；')}</div>`
+                    : '<div class="optimize-candidate-note">约束检查：已通过原字数、行数、每行字数和标点骨架检查。</div>';
+                const goalBadges = goals.map(goal => `<span class="optimize-candidate-badge">${escapeOptimizeHtml(goal)}</span>`).join('');
+                const keywordBadge = preservedKeywords.length > 0
+                    ? `<span class="optimize-candidate-badge ok">保留：${preservedKeywords.map(escapeOptimizeHtml).join('、')}</span>`
+                    : '';
+                return `<div class="optimize-candidate-card fit-${fitStatus}">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                        <span style="font-size:12px;opacity:.8;">方案 ${String.fromCharCode(65 + idx)}</span>
+                        <span class="optimize-candidate-badge ${badgeTone}">${escapeOptimizeHtml(fitLabel)} · ${candidateCharCount}字（${diffStr}）</span>
+                    </div>
+                    <div style="line-height:1.55;white-space:pre-wrap;font-size:13px;">${safe}</div>
+                    <div class="optimize-candidate-meta">
+                        <span class="optimize-candidate-badge">${reason}</span>
+                        ${goalBadges}
+                        ${keywordBadge}
+                    </div>
+                    ${riskNote}
+                    <button class="btn-small optimize-apply-btn" data-idx="${idx}" style="margin-top:8px;" ${optimizeTextApplyingIndex === idx || !canApply ? 'disabled' : ''}>${!canApply ? '不符合版式' : (optimizeTextApplyingIndex === idx ? '替换中...' : '替换到当前图层')}</button>
                 </div>`;
             }).join('');
 
@@ -2861,13 +5389,23 @@
                 btn.addEventListener('click', () => {
                     const index = Number(btn.getAttribute('data-idx') || -1);
                     const content = optimizeTextState.candidates[index] || '';
-                    if (!optimizeTextState.selectedLayerId || !content) {
+                    const boundLayerId = getOptimizeBoundLayerId();
+                    if (!boundLayerId || !content) {
                         showToast('请选择文本图层与候选文案', 'warning');
                         return;
                     }
+                    optimizeTextApplyingIndex = index;
+                    renderOptimizeTextCandidates({
+                        candidates: optimizeTextState.candidates,
+                        candidateDetails: optimizeTextState.candidateDetails,
+                        layerId: boundLayerId,
+                        originalText: getOptimizeBaselineText()
+                    });
+                    setOptimizeReplaceFeedback('info', '正在替换到当前绑定图层，请稍候...');
                     sendToUXP('optimizeTextApply', {
-                        layerId: optimizeTextState.selectedLayerId,
-                        content
+                        layerId: boundLayerId,
+                        content,
+                        baselineContent: getOptimizeBaselineText()
                     });
                 });
             });
@@ -2912,6 +5450,8 @@
             document.getElementById('inpaintingGrid').innerHTML = '';
             document.getElementById('btnInpaintingApply').style.display = 'none';
             document.getElementById('btnInpaintingGenerate').style.display = 'flex';
+            hideInpaintingFeedback();
+            showInpaintingProgress(false);
             if (currentInpaintingData.selectionReady) {
                 setInpaintingState('selectionReady', '选区已就绪，可开始生成');
             } else {
@@ -2924,6 +5464,7 @@
             showInpaintingProgress(false);
             
             if (!images || images.length === 0) {
+                showInpaintingFeedback('error', '生成失败', '模型没有返回可用结果');
                 showToast('生成失败，未返回图片', 'error');
                 setInpaintingState('selectionReady', '生成失败，请调整描述后重试');
                 return;
@@ -2957,33 +5498,380 @@
                 currentInpaintingData.generatedMeta = meta;
             }
 
-            // 单张结果：自动应用，跳过手动选择
             if (images.length === 1) {
-                setInpaintingState('generated', '正在自动应用结果...');
-                const rawImgs = currentInpaintingData.rawImages || [];
-                const genMeta = currentInpaintingData.generatedMeta || {};
-                let imageData;
-                let isRawRgba = false;
-                if (rawImgs[0]) {
-                    imageData = rawImgs[0];
-                    isRawRgba = true;
-                } else {
-                    const firstImg = document.querySelector('.inpainting-item img');
-                    imageData = firstImg ? firstImg.src.split(',')[1] : '';
-                }
-                sendToUXP('applyInpaintingResult', {
-                    imageData,
-                    isRawRgba,
-                    width: genMeta.outputWidth || currentInpaintingData.width,
-                    height: genMeta.outputHeight || currentInpaintingData.height,
-                    originalWidth: genMeta.originalWidth || currentInpaintingData.originalWidth,
-                    originalHeight: genMeta.originalHeight || currentInpaintingData.originalHeight,
-                    ...(genMeta.targetBounds ? { targetBounds: genMeta.targetBounds } : {})
-                });
-                setInpaintingState('applied', '结果已自动应用到新图层');
+                setInpaintingState('generated', '生成完成');
             } else {
                 setInpaintingState('generated', '生成完成，请选择一张');
             }
+            showInpaintingFeedback(
+                'info',
+                '已拿到重绘结果',
+                images.length === 1 ? '结果已生成，正在等待你确认并应用。' : '结果已生成，请选择一张应用到当前文档。'
+            );
+        }
+
+        function setImageToImageState(nextState, statusText) {
+            imageToImageState = nextState;
+            const statusEl = document.getElementById('imageToImageStatus');
+            const generateBtn = document.getElementById('btnImageToImageGenerate');
+            if (statusEl && statusText) statusEl.textContent = statusText;
+            if (generateBtn) generateBtn.disabled = nextState === 'generating' || !currentImageToImageData.hasSelectedLayer;
+        }
+
+        function getImageToImageSelectedModel() {
+            const dropdown = document.getElementById('imageToImageModelSelect');
+            return dropdown?.dataset?.value || 'doubao-seedream-5-0-260128';
+        }
+
+        function getImageToImageModelCapabilities(model) {
+            return IMAGE_TO_IMAGE_MODEL_CAPABILITIES[model] || IMAGE_TO_IMAGE_MODEL_CAPABILITIES['doubao-seedream-5-0-260128'];
+        }
+
+        function renderImageToImageSizePresetOptions(model, preferredSize) {
+            const dropdown = document.getElementById('imageToImageSizePresetSelect');
+            const menu = document.getElementById('imageToImageSizePresetDropdownMenu');
+            const textEl = dropdown?.querySelector('.custom-dropdown-text');
+            const hintEl = document.getElementById('imageToImageSizeHint');
+            if (!dropdown || !menu) return;
+
+            const capabilities = getImageToImageModelCapabilities(model);
+            const nextSize = capabilities.supportedSizes.includes(preferredSize) ? preferredSize : capabilities.defaultSize;
+
+            dropdown.dataset.value = nextSize;
+            if (textEl) textEl.textContent = IMAGE_TO_IMAGE_SIZE_LABELS[nextSize] || nextSize;
+            menu.innerHTML = capabilities.supportedSizes.map((sizePreset) => {
+                const selected = sizePreset === nextSize;
+                return `<div class="custom-dropdown-option${selected ? ' selected' : ''}" data-value="${sizePreset}" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;${selected ? ' background: rgba(99,140,255,0.12);' : ''}">${IMAGE_TO_IMAGE_SIZE_LABELS[sizePreset] || sizePreset}</div>`;
+            }).join('');
+
+            if (hintEl) {
+                hintEl.textContent = capabilities.sizeHint || `当前模型支持：${capabilities.supportedSizes.join(' / ')}`;
+            }
+        }
+
+        function inferImageMimeType(fileName = '') {
+            const normalized = String(fileName || '').trim().toLowerCase();
+            if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) return 'image/jpeg';
+            if (normalized.endsWith('.webp')) return 'image/webp';
+            if (normalized.endsWith('.gif')) return 'image/gif';
+            if (normalized.endsWith('.bmp')) return 'image/bmp';
+            return 'image/png';
+        }
+
+        function resetImageToImageReferenceFolderPicker() {
+            const picker = document.getElementById('imageToImageReferenceFolderPicker');
+            const list = document.getElementById('imageToImageReferenceFolderList');
+            const title = document.getElementById('imageToImageReferenceFolderTitle');
+            if (picker) picker.style.display = 'none';
+            if (list) list.innerHTML = '';
+            if (title) title.textContent = '已读取目录中的图片，请选择一张参考图';
+            imageToImageReferenceDirectory = '';
+        }
+
+        function updateImageToImageReferencePreview() {
+            const preview = document.getElementById('imageToImageReferencePreview');
+            const thumb = document.getElementById('imageToImageReferenceThumb');
+            const meta = document.getElementById('imageToImageReferenceMeta');
+            if (!preview || !thumb || !meta) return;
+
+            if (!imageToImageReferenceDataUrl) {
+                preview.style.display = 'none';
+                thumb.removeAttribute('src');
+                meta.textContent = '';
+                return;
+            }
+
+            thumb.src = imageToImageReferenceDataUrl;
+            const originText = imageToImageReferenceSource ? `来源：${imageToImageReferenceSource}` : '来源：参考图';
+            const nameText = imageToImageReferenceName ? ` · ${imageToImageReferenceName}` : '';
+            meta.textContent = `${originText}${nameText}`;
+            preview.style.display = 'block';
+        }
+
+        function clearImageToImageReference(options = {}) {
+            imageToImageReferenceDataUrl = '';
+            imageToImageReferenceName = '';
+            imageToImageReferenceSource = '';
+            if (!options.preserveFolderPicker) {
+                resetImageToImageReferenceFolderPicker();
+            }
+            updateImageToImageReferencePreview();
+        }
+
+        function setImageToImageReference(dataUrl, fileName, sourceLabel, options = {}) {
+            imageToImageReferenceDataUrl = dataUrl;
+            imageToImageReferenceName = fileName || '';
+            imageToImageReferenceSource = sourceLabel || '参考图';
+            if (!options.preserveFolderPicker) {
+                resetImageToImageReferenceFolderPicker();
+            }
+            updateImageToImageReferencePreview();
+        }
+
+        async function loadImageToImageReferenceFromPath(filePath, sourceLabel = '本地文件', options = {}) {
+            if (!filePath || !window.electronAPI?.readFile) {
+                showToast('当前环境不支持读取本地参考图', 'warning');
+                return false;
+            }
+            try {
+                const base64 = await window.electronAPI.readFile(filePath, 'base64');
+                if (!base64) {
+                    showToast('读取参考图失败', 'error');
+                    return false;
+                }
+                const fileName = filePath.split(/[/\\\\]/).pop() || 'reference.png';
+                const mimeType = inferImageMimeType(fileName);
+                setImageToImageReference(`data:${mimeType};base64,${base64}`, fileName, sourceLabel, options);
+                return true;
+            } catch (error) {
+                console.error('[WebView] Failed to load image-to-image reference image:', error);
+                showToast('读取参考图失败', 'error');
+                return false;
+            }
+        }
+
+        function renderImageToImageReferenceFolderChoices(directoryPath, files) {
+            const picker = document.getElementById('imageToImageReferenceFolderPicker');
+            const list = document.getElementById('imageToImageReferenceFolderList');
+            const title = document.getElementById('imageToImageReferenceFolderTitle');
+            if (!picker || !list || !title) return;
+
+            imageToImageReferenceDirectory = directoryPath || '';
+            if (!Array.isArray(files) || files.length === 0) {
+                picker.style.display = 'none';
+                list.innerHTML = '';
+                return;
+            }
+
+            title.textContent = `已读取目录中的 ${files.length} 张图片，请选择一张作为效果参考图`;
+            list.innerHTML = files.map((item, index) => `
+                <button
+                    class="btn-secondary image-reference-folder-item"
+                    data-index="${index}"
+                    style="justify-content:flex-start;padding:8px 10px;font-size:12px;text-align:left;"
+                >
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${item.name}</span>
+                </button>
+            `).join('');
+            picker.style.display = 'block';
+
+            list.querySelectorAll('.image-reference-folder-item').forEach((buttonEl) => {
+                buttonEl.addEventListener('click', async () => {
+                    const index = Number(buttonEl.dataset.index || '-1');
+                    const selected = files[index];
+                    if (!selected?.path) return;
+                    list.querySelectorAll('.image-reference-folder-item').forEach((el) => {
+                        el.style.borderColor = 'rgba(255,255,255,0.12)';
+                    });
+                    buttonEl.style.borderColor = 'rgba(99,140,255,0.5)';
+                    await loadImageToImageReferenceFromPath(selected.path, '目录参考图', { preserveFolderPicker: true });
+                });
+            });
+        }
+
+        async function selectImageToImageReferenceFile() {
+            if (window.electronAPI?.selectFile && window.electronAPI?.readFile) {
+                const filePath = await window.electronAPI.selectFile({
+                    title: '选择效果参考图',
+                    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }]
+                });
+                if (!filePath) return;
+                await loadImageToImageReferenceFromPath(filePath, '本地文件');
+                return;
+            }
+
+            document.getElementById('imageToImageReferenceInput')?.click();
+        }
+
+        async function selectImageToImageReferenceFolder() {
+            if (!window.electronAPI?.selectFolder || !window.electronAPI?.readDirectory) {
+                showToast('当前环境不支持目录参考图', 'warning');
+                return;
+            }
+
+            const folderResult = await window.electronAPI.selectFolder('选择效果参考图目录');
+            const dirPath = folderResult && typeof folderResult === 'object' && 'path' in folderResult
+                ? folderResult.path
+                : folderResult;
+            if (!dirPath) return;
+
+            try {
+                const entries = await window.electronAPI.readDirectory(dirPath, {
+                    recursive: false,
+                    filter: ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif']
+                });
+                const files = Array.isArray(entries)
+                    ? entries.filter((item) => item?.type === 'file' && item?.path).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'))
+                    : [];
+
+                if (files.length === 0) {
+                    resetImageToImageReferenceFolderPicker();
+                    showToast('所选目录中没有可用图片', 'warning');
+                    return;
+                }
+
+                if (files.length === 1) {
+                    await loadImageToImageReferenceFromPath(files[0].path, '目录参考图');
+                    return;
+                }
+
+                renderImageToImageReferenceFolderChoices(dirPath, files);
+                showToast('已读取目录中的图片，请选择一张参考图', 'info');
+            } catch (error) {
+                console.error('[WebView] Failed to read image-to-image reference directory:', error);
+                showToast('读取参考图目录失败', 'error');
+            }
+        }
+
+        async function handleImageToImageReferencePaste(event) {
+            if (!document.getElementById('pageImageToImage')?.classList.contains('active')) return;
+            const items = Array.from(event.clipboardData?.items || []);
+            const imageItem = items.find((item) => item.type && item.type.startsWith('image/'));
+            if (!imageItem) return;
+
+            const file = imageItem.getAsFile();
+            if (!file) return;
+            event.preventDefault();
+
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                const dataUrl = String(ev?.target?.result || '');
+                if (!dataUrl) {
+                    showToast('粘贴参考图失败', 'error');
+                    return;
+                }
+                setImageToImageReference(dataUrl, file.name || 'clipboard-image.png', '剪贴板');
+                showToast('已粘贴效果参考图', 'success');
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function handleImageToImageData(data) {
+            currentImageToImageData = {
+                documentName: data.documentName || '当前文档',
+                width: data.width || 0,
+                selectionState: data.selectionState || (data.hasSelectedLayer ? 'single' : 'none'),
+                height: data.height || 0,
+                hasSelectedLayer: data.hasSelectedLayer === true,
+                selectedLayerId: data.selectedLayerId ?? null,
+                selectedLayerName: data.selectedLayerName || '',
+                selectedLayerWidth: data.selectedLayerWidth || 0,
+                selectedLayerHeight: data.selectedLayerHeight || 0,
+                meta: null
+            };
+
+            const promptEl = document.getElementById('imageToImagePrompt');
+            const sourceHintEl = document.getElementById('imageToImageSourceHint');
+            const previewEl = document.getElementById('imageToImagePreview');
+            const resultSection = document.getElementById('imageToImageResultSection');
+
+            if (promptEl) promptEl.value = '';
+            if (previewEl) previewEl.removeAttribute('src');
+            if (resultSection) resultSection.style.display = 'none';
+            hideImageToImageFeedback();
+            showImageToImageProgress(false);
+
+            if (sourceHintEl) {
+                if (currentImageToImageData.hasSelectedLayer) {
+                    const dims = currentImageToImageData.selectedLayerWidth && currentImageToImageData.selectedLayerHeight
+                        ? ` (${currentImageToImageData.selectedLayerWidth} × ${currentImageToImageData.selectedLayerHeight})`
+                        : '';
+                    sourceHintEl.textContent = `当前将使用图层「${currentImageToImageData.selectedLayerName || '未命名图层'}」${dims} 作为编辑目标。可选添加一张效果参考图，让生成结果更贴近你想要的风格。`;
+                } else {
+                    sourceHintEl.textContent = '当前未选中可编辑图层。请先在 Photoshop 中选中一个要编辑的单图层，再开始图生图。';
+                }
+            }
+
+            renderImageToImageSizePresetOptions(getImageToImageSelectedModel());
+            setImageToImageState(
+                'ready',
+                currentImageToImageData.hasSelectedLayer
+                    ? `当前目标：${currentImageToImageData.selectedLayerName || '已选中图层'}`
+                    : '请先选中一个要编辑的图层'
+            );
+        }
+
+        function applyImageToImageSelection(data, options = {}) {
+            const preservePrompt = options.preservePrompt === true;
+            const clearResult = options.clearResult === true;
+
+            const previousLayerId = currentImageToImageData.selectedLayerId;
+            const previousSelectionState = currentImageToImageData.selectionState;
+
+            currentImageToImageData = {
+                ...currentImageToImageData,
+                documentName: data.documentName || currentImageToImageData.documentName || '当前文档',
+                width: data.width || currentImageToImageData.width || 0,
+                height: data.height || currentImageToImageData.height || 0,
+                selectionState: data.selectionState || (data.hasSelectedLayer ? 'single' : 'none'),
+                hasSelectedLayer: data.hasSelectedLayer === true,
+                selectedLayerId: data.selectedLayerId ?? null,
+                selectedLayerName: data.selectedLayerName || '',
+                selectedLayerWidth: data.selectedLayerWidth || 0,
+                selectedLayerHeight: data.selectedLayerHeight || 0
+            };
+
+            const selectionChanged =
+                previousLayerId !== currentImageToImageData.selectedLayerId ||
+                previousSelectionState !== currentImageToImageData.selectionState;
+
+            const sourceHintEl = document.getElementById('imageToImageSourceHint');
+            const promptEl = document.getElementById('imageToImagePrompt');
+            const previewEl = document.getElementById('imageToImagePreview');
+            const resultSection = document.getElementById('imageToImageResultSection');
+
+            if (!preservePrompt && promptEl) {
+                promptEl.value = '';
+            }
+
+            if (clearResult && selectionChanged) {
+                if (previewEl) previewEl.removeAttribute('src');
+                if (resultSection) resultSection.style.display = 'none';
+                currentImageToImageData.meta = null;
+                hideImageToImageFeedback();
+                showImageToImageProgress(false);
+            }
+
+            if (sourceHintEl) {
+                if (currentImageToImageData.selectionState === 'multiple') {
+                    sourceHintEl.textContent = '当前选中了多个图层。图生图一次只支持一个目标图层，请只保留一个图层选中。';
+                } else if (currentImageToImageData.hasSelectedLayer) {
+                    const dims = currentImageToImageData.selectedLayerWidth && currentImageToImageData.selectedLayerHeight
+                        ? ` (${currentImageToImageData.selectedLayerWidth} × ${currentImageToImageData.selectedLayerHeight})`
+                        : '';
+                    sourceHintEl.textContent = `当前将使用图层「${currentImageToImageData.selectedLayerName || '未命名图层'}」${dims} 作为编辑目标。可选添加一张效果参考图，让生成结果更贴近你想要的风格。`;
+                } else {
+                    sourceHintEl.textContent = '当前未选中可编辑图层。请先在 Photoshop 中选中一个要编辑的单图层，再开始图生图。';
+                }
+            }
+
+            if (imageToImageState !== 'generating') {
+                setImageToImageState(
+                    'ready',
+                    currentImageToImageData.hasSelectedLayer
+                        ? `当前目标：${currentImageToImageData.selectedLayerName || '已选中图层'}`
+                        : (currentImageToImageData.selectionState === 'multiple'
+                            ? '请只保留一个图层选中'
+                            : '请先选中一个要编辑的图层')
+                );
+            }
+        }
+
+        function handleImageToImageGenerated(images, meta) {
+            const preview = Array.isArray(images) ? images[0] : '';
+            if (!preview) {
+                showToast('图生图未返回结果图片', 'error');
+                setImageToImageState('ready', '生成失败，请调整描述后重试');
+                return;
+            }
+
+            currentImageToImageData.meta = meta || null;
+            const previewEl = document.getElementById('imageToImagePreview');
+            const resultSection = document.getElementById('imageToImageResultSection');
+            if (previewEl) previewEl.src = `data:image/png;base64,${preview}`;
+            if (resultSection) resultSection.style.display = 'block';
+            const referenceHint = meta?.referenceImageCount > 0 ? `本次已结合 ${meta.referenceImageCount} 张效果参考图。` : '';
+            showImageToImageFeedback('info', '已拿到生成结果', `正在把结果应用到 Photoshop 新图层。${referenceHint}`.trim());
         }
 
         // ========== 形态统一进度显示 ==========
@@ -3086,31 +5974,198 @@
         function showInpaintingProgress(visible) {
             const container = document.getElementById('inpaintingProgressContainer');
             if (container) container.style.display = visible ? 'block' : 'none';
+            if (!visible) {
+                const detailEl = document.getElementById('inpaintingProgressDetail');
+                if (detailEl) {
+                    detailEl.style.display = 'none';
+                    detailEl.textContent = '';
+                }
+            }
         }
 
-        function updateInpaintingProgress(percent, message) {
+        function updateInpaintingProgress(percent, message, stage) {
             const msgEl = document.getElementById('inpaintingProgressMsg');
             const percentEl = document.getElementById('inpaintingProgressPercent');
             const barEl = document.getElementById('inpaintingProgressBar');
+            const detailEl = document.getElementById('inpaintingProgressDetail');
             if (msgEl && message) msgEl.textContent = message;
             if (percentEl) percentEl.textContent = Math.round(percent) + '%';
             if (barEl) barEl.style.width = Math.round(percent) + '%';
+            if (detailEl) {
+                detailEl.textContent = formatInpaintingStage(stage);
+                detailEl.style.display = detailEl.textContent ? 'block' : 'none';
+            }
+        }
+
+        function formatInpaintingStage(stage) {
+            const stageMap = {
+                'validate': '正在校验当前请求。',
+                'analyze-selection': '正在读取并分析 Photoshop 当前选区。',
+                'crop-region': '正在准备局部重绘区域。',
+                'submit-model': '正在把重绘请求提交给模型。',
+                'provider-auth': '正在检查即梦 AI 的鉴权配置。',
+                'provider-submit': '模型服务已接收请求，正在创建任务。',
+                'provider-queued': '模型任务已创建，正在排队等待执行。',
+                'provider-generating': '模型正在进行局部重绘。',
+                'provider-query': '正在查询模型任务状态。',
+                'provider-ready': '模型已返回结果，正在解析图片。',
+                'provider-download': '正在下载模型生成结果。',
+                'provider-result': '模型返回了异常结果，请调整描述或重试。',
+                'provider-timeout': '模型处理超时，请稍后再试。',
+                'composite': '正在合成重绘结果。',
+                'encode-result': '正在准备回传结果。',
+                'transfer-result': '正在把结果传回 Photoshop。',
+                'apply-result': '正在把结果应用到新图层。',
+                'done': '局部重绘流程已完成。'
+            };
+            return stageMap[stage] || '';
+        }
+
+        function showInpaintingFeedback(type, title, detail, stageLabel = '', code = '') {
+            const card = document.getElementById('inpaintingFeedback');
+            const titleEl = document.getElementById('inpaintingFeedbackTitle');
+            const detailEl = document.getElementById('inpaintingFeedbackDetail');
+            if (!card || !titleEl || !detailEl) return;
+
+            const colors = {
+                success: {
+                    border: 'rgba(60, 207, 145, 0.28)',
+                    background: 'rgba(60, 207, 145, 0.08)',
+                    title: '#d7ffea'
+                },
+                error: {
+                    border: 'rgba(231, 76, 60, 0.32)',
+                    background: 'rgba(231, 76, 60, 0.08)',
+                    title: '#ffd9d2'
+                },
+                warning: {
+                    border: 'rgba(243, 156, 18, 0.3)',
+                    background: 'rgba(243, 156, 18, 0.08)',
+                    title: '#ffe7bf'
+                },
+                info: {
+                    border: 'rgba(91, 134, 229, 0.28)',
+                    background: 'rgba(91, 134, 229, 0.08)',
+                    title: '#dbe7ff'
+                }
+            };
+
+            const palette = colors[type] || colors.info;
+            const detailParts = [];
+            if (stageLabel) detailParts.push(`阶段：${stageLabel}`);
+            if (code) detailParts.push(`代码：${code}`);
+            if (detail) detailParts.push(detail);
+
+            card.style.display = 'block';
+            card.style.borderColor = palette.border;
+            card.style.background = palette.background;
+            titleEl.style.color = palette.title;
+            titleEl.textContent = title || '';
+            detailEl.textContent = detailParts.join(' · ');
+        }
+
+        function hideInpaintingFeedback() {
+            const card = document.getElementById('inpaintingFeedback');
+            const titleEl = document.getElementById('inpaintingFeedbackTitle');
+            const detailEl = document.getElementById('inpaintingFeedbackDetail');
+            if (card) card.style.display = 'none';
+            if (titleEl) titleEl.textContent = '';
+            if (detailEl) detailEl.textContent = '';
+        }
+
+        function showImageToImageProgress(visible) {
+            const container = document.getElementById('imageToImageProgressContainer');
+            if (container) container.style.display = visible ? 'block' : 'none';
+            if (!visible) {
+                const detailEl = document.getElementById('imageToImageProgressDetail');
+                if (detailEl) {
+                    detailEl.style.display = 'none';
+                    detailEl.textContent = '';
+                }
+            }
+        }
+
+        function updateImageToImageProgress(percent, message, stage) {
+            const msgEl = document.getElementById('imageToImageProgressMsg');
+            const percentEl = document.getElementById('imageToImageProgressPercent');
+            const barEl = document.getElementById('imageToImageProgressBar');
+            const detailEl = document.getElementById('imageToImageProgressDetail');
+            if (msgEl && message) msgEl.textContent = message;
+            if (percentEl) percentEl.textContent = Math.round(percent) + '%';
+            if (barEl) barEl.style.width = Math.round(percent) + '%';
+            if (detailEl) {
+                detailEl.textContent = formatImageToImageStage(stage);
+                detailEl.style.display = detailEl.textContent ? 'block' : 'none';
+            }
+        }
+
+        function formatImageToImageStage(stage) {
+            const stageMap = {
+                'validate-source-layer': '请先在 Photoshop 中选中一个要编辑的单图层。',
+                'capture-source-layer': '正在导出当前选中图层作为参考图。',
+                'provider-auth': '正在检查图生图服务配置。',
+                'provider-validate': '正在整理请求参数并校验输入内容。',
+                'provider-upload': '正在把输入图上传到 TOS，供即梦 4.6 官方接口读取。',
+                'provider-submit': '正在把请求提交给模型服务。',
+                'provider-request': '模型服务正在处理当前请求。',
+                'provider-waiting': '模型已经收到请求，正在生成结果。',
+                'provider-download': '模型已返回结果地址，正在下载图片。',
+                'provider-ready': '正在解析模型结果。',
+                'prepare-result-file': '正在准备本地结果文件，稍后会自动回到 Photoshop。',
+                'apply-result': '正在把结果放到 Photoshop 新图层。',
+                'done': '图生图流程已完成。'
+            };
+            return stageMap[stage] || '';
+        }
+
+        function showImageToImageFeedback(type, title, detail, stageLabel = '', code = '') {
+            const card = document.getElementById('imageToImageFeedback');
+            const titleEl = document.getElementById('imageToImageFeedbackTitle');
+            const detailEl = document.getElementById('imageToImageFeedbackDetail');
+            if (!card || !titleEl || !detailEl) return;
+
+            const colors = {
+                success: {
+                    border: 'rgba(60, 207, 145, 0.28)',
+                    background: 'rgba(60, 207, 145, 0.08)',
+                    title: '#d7ffea'
+                },
+                error: {
+                    border: 'rgba(231, 76, 60, 0.32)',
+                    background: 'rgba(231, 76, 60, 0.08)',
+                    title: '#ffd9d2'
+                },
+                info: {
+                    border: 'rgba(91, 134, 229, 0.28)',
+                    background: 'rgba(91, 134, 229, 0.08)',
+                    title: '#dbe7ff'
+                }
+            };
+
+            const palette = colors[type] || colors.info;
+            const detailParts = [];
+            if (stageLabel) detailParts.push(`阶段：${stageLabel}`);
+            if (code) detailParts.push(`代码：${code}`);
+            if (detail) detailParts.push(detail);
+
+            card.style.display = 'block';
+            card.style.borderColor = palette.border;
+            card.style.background = palette.background;
+            titleEl.style.color = palette.title;
+            titleEl.textContent = title || '';
+            detailEl.textContent = detailParts.join(' · ');
+        }
+
+        function hideImageToImageFeedback() {
+            const card = document.getElementById('imageToImageFeedback');
+            const titleEl = document.getElementById('imageToImageFeedbackTitle');
+            const detailEl = document.getElementById('imageToImageFeedbackDetail');
+            if (card) card.style.display = 'none';
+            if (titleEl) titleEl.textContent = '';
+            if (detailEl) detailEl.textContent = '';
         }
 
         function updateStatusInfo(data) {
-            // 如果当前在局部重绘页面且正在生成，更新进度条
-            const inpaintingPage = document.getElementById('pageInpainting');
-            if (inpaintingPage && inpaintingPage.classList.contains('active') && inpaintingState === 'generating') {
-                let message = data.hint || data.message || '处理中...';
-                let progress = 0;
-                const percentMatch = (data.message || '').match(/(\d+)%/);
-                if (percentMatch) {
-                    progress = parseInt(percentMatch[1], 10);
-                }
-                updateInpaintingProgress(progress, message);
-                showInpaintingProgress(true);
-            }
-
             // 如果当前在抠图页面，更新抠图进度遮罩
             const mattingPage = document.getElementById('pageMatting');
             if (mattingPage && mattingPage.classList.contains('active')) {
@@ -3149,22 +6204,73 @@
             }
         }
         
-        function showLoadingOverlay(text) {
+        let _loadingStepTimers = [];
+        let _loadingStartTime = 0;
+
+        function showLoadingOverlay(text, steps) {
+            // 清理之前的定时器
+            _loadingStepTimers.forEach(t => clearTimeout(t));
+            _loadingStepTimers = [];
+            _loadingStartTime = Date.now();
+
             // 创建或更新加载遮罩
             let overlay = document.getElementById('loadingOverlay');
             if (!overlay) {
                 overlay = document.createElement('div');
                 overlay.id = 'loadingOverlay';
-                overlay.innerHTML = '<div class="loading-spinner"></div><div class="loading-text"></div>';
+                overlay.innerHTML = '<div class="loading-spinner"></div><div class="loading-text"></div><div class="loading-elapsed"></div>';
                 overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(10,10,15,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;';
                 document.body.appendChild(overlay);
+            }
+            // 确保 elapsed 元素存在
+            if (!overlay.querySelector('.loading-elapsed')) {
+                const el = document.createElement('div');
+                el.className = 'loading-elapsed';
+                overlay.appendChild(el);
             }
             overlay.style.display = 'flex';
             const textEl = overlay.querySelector('.loading-text');
             if (textEl) textEl.textContent = text || '处理中...';
+
+            // 启动耗时计时器
+            const elapsedEl = overlay.querySelector('.loading-elapsed');
+            if (elapsedEl) {
+                elapsedEl.textContent = '';
+                const elapsedTimer = setInterval(() => {
+                    const overlayCur = document.getElementById('loadingOverlay');
+                    if (!overlayCur || overlayCur.style.display === 'none') {
+                        clearInterval(elapsedTimer);
+                        return;
+                    }
+                    const sec = Math.floor((Date.now() - _loadingStartTime) / 1000);
+                    const el = overlayCur.querySelector('.loading-elapsed');
+                    if (el) el.textContent = sec > 0 ? `已等待 ${sec}s` : '';
+                }, 1000);
+                _loadingStepTimers.push(elapsedTimer);
+            }
+
+            // 分阶段自动轮换文案
+            if (Array.isArray(steps) && steps.length > 0) {
+                steps.forEach(function(step) {
+                    if (step.duration > 0) {
+                        const tid = setTimeout(function() {
+                            const el = document.querySelector('#loadingOverlay .loading-text');
+                            if (el) el.textContent = step.text;
+                        }, step.duration);
+                        _loadingStepTimers.push(tid);
+                    }
+                });
+            }
         }
-        
+
+        function updateLoadingText(text) {
+            const el = document.querySelector('#loadingOverlay .loading-text');
+            if (el) el.textContent = text || '';
+        }
+
         function hideLoadingOverlay() {
+            _loadingStepTimers.forEach(t => clearTimeout(t));
+            _loadingStepTimers = [];
             const overlay = document.getElementById('loadingOverlay');
             if (overlay) overlay.style.display = 'none';
         }
@@ -3362,12 +6468,12 @@
         
         // 根据款式更新分区显示
         const sockStyleRegions = {
-            'boat': ['cuff', 'foot', 'toe'],  // 船袜无袜筒
-            'ankle': ['cuff', 'foot', 'toe', 'heel'],  // 短袜
-            'crew': ['cuff', 'leg', 'foot', 'toe', 'heel'],  // 中筒袜
-            'calf': ['cuff', 'leg', 'foot', 'toe', 'heel'],  // 小腿袜
-            'knee': ['cuff', 'leg', 'foot', 'toe', 'heel'],  // 长袜
-            'over-knee': ['cuff', 'leg', 'foot', 'toe', 'heel'],  // 过膝袜
+            'boat': ['cuff', 'body', 'toe'],  // 船袜无袜筒
+            'ankle': ['cuff', 'body', 'toe', 'heel'],  // 短袜
+            'crew': ['cuff', 'leg', 'body', 'toe', 'heel'],  // 中筒袜
+            'calf': ['cuff', 'leg', 'body', 'toe', 'heel'],  // 小腿袜
+            'knee': ['cuff', 'leg', 'body', 'toe', 'heel'],  // 长袜
+            'over-knee': ['cuff', 'leg', 'body', 'toe', 'heel'],  // 过膝袜
             'leg-warmer': ['cuff', 'leg']  // 袜套：只有袜口和袜筒
         };
         
@@ -3493,26 +6599,28 @@
         
         // 获取当前选择的款式配置
         function getMorphingConfig() {
-            const activeStyle = document.querySelector('.sock-style-item.active');
+            const sockStyleSelect = document.getElementById('sockStyleSelect');
             const activeCuff = document.querySelector('.cuff-type-item.active');
             const preAlign = document.getElementById('morphPreAlign');
             const shapeMatch = document.getElementById('morphShapeMatch');
             const edgeStrength = document.getElementById('morphEdgeStrength');
             const contentProtect = document.getElementById('morphContentProtect');
             const smoothness = document.getElementById('morphSmoothness');
+            const rawSockStyle = sockStyleSelect?.dataset?.value || 'boat';
+            const rawCuffType = activeCuff?.dataset?.cuff || 'plain';
             
             // 获取选中的分区
             const selectedRegions = [];
             document.querySelectorAll('.region-item').forEach(item => {
                 if (item.dataset.checked === 'true' && item.style.display !== 'none') {
-                    selectedRegions.push(item.dataset.region);
+                    selectedRegions.push(item.dataset.region === 'foot' ? 'body' : item.dataset.region);
                 }
             });
             
             return {
-                sockStyle: activeStyle?.dataset?.style || 'crew',
-                cuffType: activeCuff?.dataset?.cuff || 'plain',
-                cuffProtected: protectedCuffTypes.includes(activeCuff?.dataset?.cuff),
+                sockStyle: rawSockStyle === 'boat' ? 'no-show' : rawSockStyle,
+                cuffType: rawCuffType === 'double-welt' ? 'double' : (rawCuffType === 'fold' ? 'folded' : rawCuffType),
+                cuffProtected: protectedCuffTypes.includes(rawCuffType),
                 preAlign: preAlign?.dataset?.checked === 'true',
                 shapeMatch: shapeMatch?.dataset?.checked === 'true',
                 edgeStrength: parseInt(edgeStrength?.dataset?.value || '70'),
@@ -3550,18 +6658,78 @@
                 });
             }
             
+            // 尽早同步当前连接状态，避免后续页面初始化影响按钮解锁
+            sendToUXP('webviewReady');
+            
             // 连接/重连按钮
             document.getElementById('btnReconnect')?.addEventListener('click', () => sendToUXP('connect'));
             
             // 一键美化
             document.getElementById('btnOneClickBeautify')?.addEventListener('click', () => sendToUXP('oneClickBeautify'));
 
-            // 文案优化
+            // 撰写文案
             document.getElementById('btnOptimizeText')?.addEventListener('click', () => {
-                sendToUXP('optimizeText');
+                // 重置为"检测中"状态
+                optimizeTextState = {
+                    selectedLayerId: null,
+                    selectedLayerName: '',
+                    selectedText: '',
+                    boundLayerId: null,
+                    boundLayerName: '',
+                    boundText: '',
+                    baselineText: '',
+                    liveSelectionState: 'none',
+                    liveLayerName: '',
+                    candidates: [],
+                    candidateDetails: []
+                };
+                optimizeTextApplyingIndex = null;
+                optimizeTextImageBase64 = null;
+                optimizeTextImageSource = '';
+                const currentEl = document.getElementById('optimizeCurrentText');
+                if (currentEl) { currentEl.textContent = '正在准备当前文本...'; currentEl.style.color = 'var(--de-text-secondary)'; }
+                const hintEl = document.getElementById('optimizeLayerHint');
+                if (hintEl) { hintEl.textContent = '自动检测中...'; hintEl.style.color = ''; }
+                const boundEl = document.getElementById('optimizeBoundLayerInfo');
+                if (boundEl) { boundEl.textContent = '当前撰写目标：准备中...'; boundEl.style.color = 'var(--de-text-secondary)'; }
+                const liveEl = document.getElementById('optimizeLiveLayerInfo');
+                if (liveEl) { liveEl.textContent = 'Photoshop 当前选中：准备中...'; liveEl.style.color = 'var(--de-text-secondary)'; }
+                const candidateEl = document.getElementById('optimizeCandidateList');
+                if (candidateEl) candidateEl.innerHTML = '<div class="layer-empty">生成后在这里选择并替换</div>';
+                const preview = document.getElementById('optimizeImagePreview');
+                if (preview) preview.style.display = 'none';
+                const imageInput = document.getElementById('optimizeImageInput');
+                if (imageInput) imageInput.value = '';
+                setOptimizeImageSourceHint('默认自动使用当前画面');
+                setOptimizeReplaceFeedback(null, '');
                 switchPage('pageOptimizeText');
+                sendToUXP('optimizeText');
             });
-            
+
+            document.getElementById('btnTemplateLibrary')?.addEventListener('click', () => {
+                window.designLibraryRuntime?.enter();
+                switchPage('pageTemplateLibrary');
+            });
+
+            document.getElementById('btnImageToImage')?.addEventListener('click', function() {
+                if (this.classList.contains('disabled')) {
+                    console.log('[WebView] Image-to-image button disabled');
+                    return;
+                }
+                sendToUXP('imageToImage');
+            });
+
+            document.getElementById('btnTemplateLibraryBack')?.addEventListener('click', () => {
+                if (window.designLibraryRuntime?.handleBack?.()) {
+                    return;
+                }
+                switchPage('pageMain');
+            });
+
+            document.getElementById('btnTemplateLibraryRefresh')?.addEventListener('click', () => {
+                window.designLibraryRuntime?.refresh?.(true);
+            });
+
             // 形态统一
             document.getElementById('btnShapeMorph')?.addEventListener('click', () => {
                 sendToUXP('shapeMorph');
@@ -3599,6 +6767,11 @@
                 switchPage('pageMain');
             });
 
+            document.getElementById('btnImageToImageBack')?.addEventListener('click', () => {
+                sendToUXP('imageToImageBack');
+                switchPage('pageMain');
+            });
+
             document.getElementById('btnOptimizeBack')?.addEventListener('click', () => {
                 sendToUXP('optimizeTextBack');
                 switchPage('pageMain');
@@ -3608,37 +6781,140 @@
                 sendToUXP('optimizeTextRefreshSelection');
             });
 
-            document.getElementById('btnOptimizeGenerate')?.addEventListener('click', () => {
-                if (!optimizeTextState.selectedLayerId) {
-                    showToast('请先在 Photoshop 手动选中一个文本图层并刷新', 'warning');
-                    return;
-                }
-                const creativeStyle = document.getElementById('optimizeCreativeStyle')?.value || 'natural';
-                const lockedKeywords = document.getElementById('optimizeLockedKeywords')?.value || '';
-                sendToUXP('optimizeTextGenerate', {
-                    creativeStyle,
-                    lockedKeywords
-                });
+            document.getElementById('optimizeUseCanvasBtn')?.addEventListener('click', () => {
+                setOptimizeImageSourceHint('正在读取当前 Photoshop 画面...');
+                sendToUXP('optimizeTextUseCanvasSnapshot');
             });
 
-            // 局部重绘 - 自定义下拉菜单
-            (function initCustomDropdown() {
-                const dropdown = document.getElementById('inpaintingModelSelect');
+            document.getElementById('btnOptimizeGenerate')?.addEventListener('click', () => {
+                if (!optimizeTextState.selectedLayerId) {
+                    showToast('请先绑定一个文本图层', 'warning');
+                    return;
+                }
+                optimizeTextState.boundLayerId = optimizeTextState.selectedLayerId;
+                optimizeTextState.boundLayerName = optimizeTextState.selectedLayerName;
+                optimizeTextState.boundText = optimizeTextState.selectedText;
+                optimizeTextState.baselineText = optimizeTextState.selectedText || optimizeTextState.baselineText;
+                const creativeStyle = getOptimizeSelectValue('optimizeCreativeStyle', 'natural');
+                const targetAudience = document.getElementById('optimizeTargetAudience')?.value || '';
+                const lockedKeywords = document.getElementById('optimizeLockedKeywords')?.value || '';
+                const description = document.getElementById('optimizeDescription')?.value || '';
+                const payload = {
+                    layerId: getOptimizeBoundLayerId(),
+                    creativeStyle,
+                    targetAudience,
+                    lockedKeywords,
+                    description
+                };
+                if (optimizeTextImageBase64) {
+                    payload.image = optimizeTextImageBase64;
+                    payload.imageSource = optimizeTextImageSource || 'manual';
+                }
+                setOptimizeReplaceFeedback(null, '');
+                setOptimizeGenerating(true);
+                sendToUXP('optimizeTextGenerate', payload);
+            });
+
+            // 撰写文案 - 图片上传
+            document.getElementById('optimizeImageInput')?.addEventListener('change', function(e) {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                if (file.size > 4 * 1024 * 1024) {
+                    showToast('图片不能超过 4MB', 'warning');
+                    e.target.value = '';
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = function(ev) {
+                    const dataUrl = ev.target.result;
+                    applyOptimizeReferenceImage({
+                        base64: dataUrl.split(',')[1],
+                        mimeType: file.type || 'image/png',
+                        source: 'local'
+                    });
+                };
+                reader.readAsDataURL(file);
+            });
+            document.getElementById('optimizeImageRemove')?.addEventListener('click', () => {
+                optimizeTextImageBase64 = null;
+                optimizeTextImageSource = '';
+                const preview = document.getElementById('optimizeImagePreview');
+                if (preview) preview.style.display = 'none';
+                const imageInput = document.getElementById('optimizeImageInput');
+                if (imageInput) imageInput.value = '';
+                setOptimizeImageSourceHint('默认自动使用当前画面');
+            });
+
+            // 撰写文案 - 自定义下拉
+            function initOptimizeSelect(selectId) {
+                const select = document.getElementById(selectId);
+                if (!select) return;
+                if (select.dataset.bound === 'true') return;
+                select.dataset.bound = 'true';
+                const trigger = select.querySelector('.custom-select-trigger');
+                const textEl = select.querySelector('.custom-select-text');
+                if (!trigger || !textEl) return;
+                trigger.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    document.querySelectorAll('#pageOptimizeText .custom-select.open').forEach((other) => {
+                        if (other !== select) other.classList.remove('open');
+                    });
+                    select.classList.toggle('open');
+                });
+                select.querySelectorAll('.custom-select-option').forEach(opt => {
+                    opt.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        select.querySelectorAll('.custom-select-option').forEach(o => o.classList.remove('selected'));
+                        opt.classList.add('selected');
+                        textEl.textContent = opt.textContent;
+                        select.dataset.value = opt.dataset.value;
+                        select.classList.remove('open');
+                        renderOptimizeCandidateContext();
+                    });
+                });
+                document.addEventListener('click', () => select.classList.remove('open'));
+            }
+            initOptimizeSelect('optimizeCreativeStyle');
+
+            function initCustomDropdown(dropdownId, menuId) {
+                const dropdown = document.getElementById(dropdownId);
                 if (!dropdown) return;
+                if (dropdown.dataset.dropdownBound === 'true') return;
                 const trigger = dropdown.querySelector('.custom-dropdown-trigger');
-                const menu = document.getElementById('inpaintingModelDropdownMenu');
+                const menu = document.getElementById(menuId);
                 if (!trigger || !menu) return;
                 const textEl = dropdown.querySelector('.custom-dropdown-text');
-                const options = menu.querySelectorAll('.custom-dropdown-option');
+                const hostSection = dropdown.closest('.inpainting-model-section');
+
+                function resetOtherDropdowns() {
+                    document.querySelectorAll('.custom-dropdown-menu').forEach((otherMenu) => {
+                        if (otherMenu !== menu) {
+                            otherMenu.style.display = 'none';
+                        }
+                    });
+                    document.querySelectorAll('.custom-dropdown-trigger').forEach((otherTrigger) => {
+                        if (otherTrigger !== trigger) {
+                            otherTrigger.style.borderColor = 'rgba(255,255,255,0.12)';
+                        }
+                    });
+                    document.querySelectorAll('.inpainting-model-section.dropdown-active').forEach((section) => {
+                        if (section !== hostSection) {
+                            section.classList.remove('dropdown-active');
+                        }
+                    });
+                }
 
                 function openMenu() {
+                    resetOtherDropdowns();
                     menu.style.display = 'block';
                     trigger.style.borderColor = 'rgba(99,140,255,0.5)';
+                    hostSection?.classList.add('dropdown-active');
                 }
 
                 function closeMenu() {
                     menu.style.display = 'none';
                     trigger.style.borderColor = 'rgba(255,255,255,0.12)';
+                    hostSection?.classList.remove('dropdown-active');
                 }
 
                 trigger.addEventListener('click', (e) => {
@@ -3648,39 +6924,110 @@
                     else openMenu();
                 });
 
-                options.forEach(opt => {
-                    opt.addEventListener('mouseenter', () => { opt.style.background = 'rgba(255,255,255,0.08)'; });
-                    opt.addEventListener('mouseleave', () => { opt.style.background = opt.classList.contains('selected') ? 'rgba(99,140,255,0.12)' : 'transparent'; });
-                    opt.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        options.forEach(o => { o.classList.remove('selected'); o.style.background = 'transparent'; });
-                        opt.classList.add('selected');
-                        opt.style.background = 'rgba(99,140,255,0.12)';
-                        dropdown.dataset.value = opt.dataset.value;
-                        textEl.textContent = opt.textContent;
-                        closeMenu();
+                menu.addEventListener('click', (e) => {
+                    const opt = e.target?.closest?.('.custom-dropdown-option');
+                    if (!opt) return;
+                    e.stopPropagation();
+                    menu.querySelectorAll('.custom-dropdown-option').forEach((o) => {
+                        o.classList.remove('selected');
+                        o.style.background = 'transparent';
                     });
+                    opt.classList.add('selected');
+                    opt.style.background = 'rgba(99,140,255,0.12)';
+                    dropdown.dataset.value = opt.dataset.value;
+                    if (textEl) textEl.textContent = opt.textContent;
+                    closeMenu();
+                    dropdown.dispatchEvent(new CustomEvent('change', { detail: { value: opt.dataset.value } }));
                 });
 
                 document.addEventListener('click', closeMenu);
-            })();
+                dropdown.dataset.dropdownBound = 'true';
+            }
+
+            initCustomDropdown('inpaintingModelSelect', 'inpaintingModelDropdownMenu');
+            initCustomDropdown('inpaintingQualitySelect', 'inpaintingQualityDropdownMenu');
+            initCustomDropdown('imageToImageModelSelect', 'imageToImageModelDropdownMenu');
+            initCustomDropdown('imageToImageSizePresetSelect', 'imageToImageSizePresetDropdownMenu');
+
+            document.getElementById('imageToImageModelSelect')?.addEventListener('change', (event) => {
+                renderImageToImageSizePresetOptions(event?.detail?.value || getImageToImageSelectedModel());
+            });
+            renderImageToImageSizePresetOptions(getImageToImageSelectedModel());
+
+            document.getElementById('btnImageToImageReferenceFile')?.addEventListener('click', async () => {
+                await selectImageToImageReferenceFile();
+            });
+
+            document.getElementById('btnImageToImageReferenceFolder')?.addEventListener('click', async () => {
+                await selectImageToImageReferenceFolder();
+            });
+
+            document.getElementById('imageToImageReferenceRemove')?.addEventListener('click', () => {
+                clearImageToImageReference();
+            });
+
+            document.getElementById('imageToImageReferenceInput')?.addEventListener('change', function(e) {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = function(ev) {
+                    const dataUrl = String(ev?.target?.result || '');
+                    if (!dataUrl) {
+                        showToast('读取参考图失败', 'error');
+                        return;
+                    }
+                    setImageToImageReference(dataUrl, file.name || 'reference.png', '本地文件');
+                };
+                reader.readAsDataURL(file);
+                e.target.value = '';
+            });
+
+            document.addEventListener('paste', handleImageToImageReferencePaste);
 
             // 局部重绘 - 生成
             document.getElementById('btnInpaintingGenerate')?.addEventListener('click', () => {
                 const prompt = document.getElementById('inpaintingPrompt').value;
+                const selectedModel = document.getElementById('inpaintingModelSelect')?.dataset?.value || 'flux-fill';
+                const qualityPreset = document.getElementById('inpaintingQualitySelect')?.dataset?.value || 'high';
+                
+                hideInpaintingFeedback();
+                updateInpaintingProgress(0, prompt ? '正在准备局部重绘...' : '正在准备自然补全...');
+                showInpaintingProgress(true);
+                setInpaintingState('generating', prompt ? '正在生成中...' : '正在按周围画面自然补全...');
+                sendToUXP('inpaintingGenerate', { 
+                    prompt,
+                    model: selectedModel,
+                    qualityPreset,
+                    documentMeta: currentInpaintingData.documentMeta || null
+                });
+            });
+
+            document.getElementById('btnImageToImageGenerate')?.addEventListener('click', () => {
+                const prompt = document.getElementById('imageToImagePrompt').value;
                 if (!prompt) {
                     showToast('请输入描述', 'warning');
                     return;
                 }
-                const selectedModel = document.getElementById('inpaintingModelSelect')?.dataset?.value || 'flux-2-pro';
-                
-                updateInpaintingProgress(0, '准备中...');
-                showInpaintingProgress(true);
-                setInpaintingState('generating', '正在生成中...');
-                sendToUXP('inpaintingGenerate', { 
+                if (!currentImageToImageData.hasSelectedLayer) {
+                    showImageToImageFeedback(
+                        'warning',
+                        '请先选中一个要编辑的图层',
+                        '图生图现在只会针对当前选中的单图层生成，不再自动回退到整张文档。'
+                    );
+                    setImageToImageState('ready', '请先选中一个要编辑的图层');
+                    return;
+                }
+                const selectedModel = document.getElementById('imageToImageModelSelect')?.dataset?.value || 'doubao-seedream-5-0-260128';
+                const selectedSizePreset = document.getElementById('imageToImageSizePresetSelect')?.dataset?.value || getImageToImageModelCapabilities(selectedModel).defaultSize;
+                hideImageToImageFeedback();
+                showImageToImageProgress(true);
+                updateImageToImageProgress(0, '准备中...');
+                setImageToImageState('generating', '正在生成中...');
+                sendToUXP('imageToImageGenerate', {
                     prompt,
                     model: selectedModel,
-                    documentMeta: currentInpaintingData.documentMeta || null
+                    sizePreset: selectedSizePreset,
+                    referenceImages: imageToImageReferenceDataUrl ? [imageToImageReferenceDataUrl] : []
                 });
             });
 
@@ -3707,7 +7054,7 @@
                     imageData = selectedImg ? selectedImg.src.split(',')[1] : '';
                 }
 
-                sendToUXP('applyInpaintingResult', { 
+                sendToUXP('applyRasterImageResult', { 
                     imageData,
                     isRawRgba,
                     width: generatedMeta.outputWidth || currentInpaintingData.width,
@@ -3875,58 +7222,7 @@
                 
                 // 根据模式显示不同的进度提示
                 const modeLabel = mattingMode === 'selection' ? '📐 选区分割' : '✂ 智能分割';
-                const hasTarget = document.getElementById('mattingTargetPage')?.value?.trim();
                 showMattingProgress(0, modeLabel, '正在初始化...');
-                
-                let simulatedProgress = 0;
-                // 根据模式和是否有文本描述选择不同的进度阶段
-                const simulatedStages = mattingMode === 'selection' 
-                    ? [
-                        { progress: 5, detail: '正在连接分割引擎...' },
-                        { progress: 10, detail: '正在获取图层数据...' },
-                        { progress: 20, detail: '正在传输图像数据...' },
-                        { progress: 40, detail: '获取选区边界框...' },
-                        { progress: 60, detail: 'BiRefNet 精确分割...' },
-                        { progress: 80, detail: '边缘细化处理...' },
-                        { progress: 90, detail: '正在生成蒙版...' },
-                    ]
-                    : hasTarget 
-                    ? [
-                        // 有文本描述：完整的 文本定位 + 目标检测 + 精确分割 + 边缘细化 流程
-                        { progress: 5, detail: '正在连接分割引擎...' },
-                        { progress: 10, detail: '正在获取图层数据...' },
-                        { progress: 20, detail: '正在传输图像数据...' },
-                        { progress: 30, detail: `YOLO-World 文本定位: "${hasTarget}"...` },
-                        { progress: 45, detail: '目标检测完成，定位边界框...' },
-                        { progress: 60, detail: 'BiRefNet 精确分割...' },
-                        { progress: 80, detail: '边缘细化处理...' },
-                        { progress: 90, detail: '正在生成蒙版...' },
-                    ]
-                    : [
-                        // 无文本描述：直接全图分割
-                        { progress: 5, detail: '正在连接分割引擎...' },
-                        { progress: 10, detail: '正在获取图层数据...' },
-                        { progress: 20, detail: '正在传输图像数据...' },
-                        { progress: 40, detail: 'BiRefNet 识别主体...' },
-                        { progress: 65, detail: '高精度边缘分割...' },
-                        { progress: 85, detail: '边缘细化处理...' },
-                        { progress: 92, detail: '正在生成蒙版...' },
-                    ];
-                    
-                let currentStageIdx = 0;
-                mattingProgressInterval = setInterval(() => {
-                    if (simulatedProgress < 85 && currentStageIdx < simulatedStages.length) {
-                        const stage = simulatedStages[currentStageIdx];
-                        if (simulatedProgress < stage.progress) {
-                            simulatedProgress += Math.random() * 2 + 0.5;
-                            simulatedProgress = Math.min(simulatedProgress, stage.progress);
-                        } else {
-                            currentStageIdx++;
-                        }
-                        const currentDetail = simulatedStages[Math.min(currentStageIdx, simulatedStages.length - 1)].detail;
-                        showMattingProgress(simulatedProgress, modeLabel, currentDetail);
-                    }
-                }, 400);
                 
                 // 根据模式发送不同的请求
                 if (mattingMode === 'selection') {
@@ -3953,12 +7249,9 @@
             bindCuffTypeSelection();
             bindAdvancedToggle();
             
-            // 通知 UXP 我们已经准备好了
-            setTimeout(() => {
-        sendToUXP('webviewReady');
-            }, 100);
         });
     </script>
+    <script src="./design-library.js"></script>
     
     <!-- 全局 Toast 容器（在所有页面外部，确保始终可见） -->
     <div class="toast-container" id="toastContainer"></div>

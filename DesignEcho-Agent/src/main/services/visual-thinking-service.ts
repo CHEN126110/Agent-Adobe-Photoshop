@@ -91,9 +91,14 @@ export interface VisualAssessment {
  */
 export class VisualThinkingService {
     private modelService: ModelService;
-    
+    private visionModelId: string = 'google-gemini-2-flash';
+
     constructor(modelService: ModelService) {
         this.modelService = modelService;
+    }
+
+    setVisionModelId(modelId: string): void {
+        if (modelId) this.visionModelId = modelId;
     }
     
     /**
@@ -369,9 +374,9 @@ ${promptHint}
                 }
             ];
 
-            // 调用视觉模型
+            // 调用视觉模型（使用用户配置的 visualAnalyze 模型）
             const response = await this.modelService.chat(
-                'google-gemini-3-flash', // 使用支持视觉的模型
+                this.visionModelId,
                 [{ role: 'user', content: messageContent as any }],
                 { maxTokens: 1000 }
             );

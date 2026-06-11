@@ -6,12 +6,13 @@
 
 import { ToolRegistry } from '../tools/registry';
 import { MCPProtocolHandler } from './mcp-protocol';
+import { createToolFailureResult } from './tool-error-normalizer';
 
 export class MessageHandler {
     private toolRegistry: ToolRegistry;
     private mcpHandler: MCPProtocolHandler;
     private onPongCallback: (() => void) | null = null;
-    private onProgressCallback: ((operation: string, progress: number, message?: string) => void) | null = null;
+    private onProgressCallback: ((operation: string, progress: number, message?: string, stage?: string) => void) | null = null;
 
     constructor(toolRegistry: ToolRegistry) {
         this.toolRegistry = toolRegistry;
@@ -28,7 +29,7 @@ export class MessageHandler {
     /**
      * 设置进度回调（用于更新 UI 进度）
      */
-    setOnProgressCallback(callback: (operation: string, progress: number, message?: string) => void): void {
+    setOnProgressCallback(callback: (operation: string, progress: number, message?: string, stage?: string) => void): void {
         this.onProgressCallback = callback;
     }
 
@@ -80,9 +81,13 @@ export class MessageHandler {
                 const result = await tool.execute(params);
                 console.log(`[MessageHandler] 工具结果:`, result);
                 return result;
-            } catch (error) {
+            } catch (error: any) {
                 console.error(`[MessageHandler] 工具错误:`, error);
-                throw error;
+                return createToolFailureResult({
+                    toolName,
+                    error,
+                    params
+                });
             }
         }
 
@@ -129,7 +134,8 @@ export class MessageHandler {
                     this.onProgressCallback(
                         params.operation || 'unknown',
                         params.progress || 0,
-                        params.message
+                        params.message,
+                        params.stage
                     );
                 }
                 break;
