@@ -1,3 +1,18 @@
+import type {
+    InteractiveCardDefinition,
+    InteractiveCardSubmission
+} from '../../../shared/interactive-card-contract';
+import type { AgentResponseInterruption } from '../../../shared/agent-response-interruption';
+import type { AgentTaskPlanPresentation } from '../../../shared/agent-task-plan-presentation';
+import type {
+    ChatComposerContentPart,
+    ChatMessageImage
+} from '../../../shared/chat-composer-content';
+import type {
+    ThinkingStepDisplayRole,
+    VisibleThinkingStepSourceType
+} from './thinkingStepPresentation';
+
 /**
  * 多模态消息类型定义
  * 
@@ -7,6 +22,7 @@
 // 内容块类型
 export type ContentBlockType = 
     | 'text'           // 纯文本/Markdown
+    | 'composer_content' // 用户输入框中的有序文本与多模态引用
     | 'code'           // 代码块
     | 'image'          // 图片
     | 'image_gallery'  // 图片画廊
@@ -21,6 +37,8 @@ export type ContentBlockType =
     | 'warning'        // 警告信息
     | 'success'        // 成功信息
     | 'thinking'       // 思考过程
+    | 'task_plan'      // Runtime R4 计划状态投影
+    | 'interactive_card' // 可交互确认卡片
     | 'artifact'       // 生成产物（类似 Claude Artifacts）
     | 'action'         // 可操作按钮组
     | 'collapsible';   // 可折叠区域
@@ -37,6 +55,13 @@ export interface TextBlock extends BaseContentBlock {
     type: 'text';
     content: string;
     format?: 'plain' | 'markdown';
+}
+
+// 用户发送前在行内多模态输入框中编排的原始顺序。
+export interface ComposerContentBlock extends BaseContentBlock {
+    type: 'composer_content';
+    parts: ChatComposerContentPart[];
+    images: ChatMessageImage[];
 }
 
 // 代码块
@@ -192,6 +217,7 @@ export interface SuccessBlock extends BaseContentBlock {
 // 思考过程块
 export interface ThinkingBlock extends BaseContentBlock {
     type: 'thinking';
+    title?: string;
     steps: ThinkingStep[];
     isExpanded?: boolean;
     totalDuration?: number;
@@ -202,8 +228,29 @@ export interface ThinkingStep {
     label: string;
     icon: string;
     status: 'pending' | 'running' | 'success' | 'error';
+    tone?: 'thought' | 'action';
+    displayRole?: ThinkingStepDisplayRole;
+    roleLabel?: string;
+    sourceType?: VisibleThinkingStepSourceType;
+    actionLabel?: string;
     detail?: string;
+    /** 工具结果的有界预览（sections 内为已消毒文本），供步骤级展开查看。 */
+    preview?: import('../../services/tool-result-preview').ToolResultPreview;
     duration?: number;
+}
+
+// 任务计划展示块。只承载共享纯投影，不在 Renderer 重算业务状态。
+export interface TaskPlanBlock extends BaseContentBlock {
+    type: 'task_plan';
+    presentation: AgentTaskPlanPresentation;
+}
+
+// 可交互卡片块
+export interface InteractiveCardBlock extends BaseContentBlock {
+    type: 'interactive_card';
+    card: InteractiveCardDefinition;
+    sourceMessageId: string;
+    submission?: InteractiveCardSubmission;
 }
 
 // 生成产物块（类似 Claude Artifacts）
@@ -249,6 +296,7 @@ export interface CollapsibleBlock extends BaseContentBlock {
 // 内容块联合类型
 export type ContentBlock = 
     | TextBlock
+    | ComposerContentBlock
     | CodeBlock
     | ImageBlock
     | ImageGalleryBlock
@@ -263,6 +311,8 @@ export type ContentBlock =
     | WarningBlock
     | SuccessBlock
     | ThinkingBlock
+    | TaskPlanBlock
+    | InteractiveCardBlock
     | ArtifactBlock
     | ActionBlock
     | CollapsibleBlock;
@@ -279,6 +329,7 @@ export interface MultimodalMessage {
         tokens?: number;
         duration?: number;
         cost?: number;
+        agentResponseInterruption?: AgentResponseInterruption;
     };
 }
 

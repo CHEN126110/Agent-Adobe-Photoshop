@@ -6,6 +6,12 @@
  */
 
 import { ToolRegistry } from '../tools/registry';
+import { ToolExecutionContext } from '../tools/types';
+import {
+    executeToolWithPhotoshopTargetGuard,
+    stripPhotoshopTargetGuard
+} from './photoshop-target-guard';
+import { createToolFailureResult } from './tool-error-normalizer';
 
 // MCP 协议版本
 export const MCP_VERSION = '2024-11-05';
@@ -84,8 +90,14 @@ export class MCPProtocolHandler {
     /**
      * 处理 MCP 方法调用
      */
-    async handleMethod(method: string, params: any): Promise<any> {
-        console.log(`[MCP] 处理方法: ${method}`, params);
+    async handleMethod(method: string, params: any, context?: ToolExecutionContext): Promise<any> {
+        const loggedParams = method === 'tools/call' && params && typeof params === 'object'
+            ? {
+                ...params,
+                arguments: stripPhotoshopTargetGuard(params.arguments)
+            }
+            : stripPhotoshopTargetGuard(params);
+        console.log(`[MCP] 处理方法: ${method}`, loggedParams);
 
         switch (method) {
             // === 初始化 ===
@@ -100,7 +112,7 @@ export class MCPProtocolHandler {
                 return this.handleToolsList();
             
             case 'tools/call':
-                return this.handleToolsCall(params);
+                return this.handleToolsCall(params, context);
 
             // === 资源 ===
             case 'resources/list':
@@ -136,7 +148,7 @@ export class MCPProtocolHandler {
                 }
                 
                 if (this.toolRegistry.getTool(toolName)) {
-                    return this.handleLegacyToolCall(toolName, params);
+                    return this.handleLegacyToolCall(toolName, params, context);
                 }
                 throw new Error(`Unknown method: ${method}`);
         }
@@ -188,11 +200,11 @@ export class MCPProtocolHandler {
     /**
      * 调用工具
      */
-    private async handleToolsCall(params: { name: string; arguments?: any }): Promise<any> {
+    private async handleToolsCall(params: { name: string; arguments?: any }, context?: ToolExecutionContext): Promise<any> {
         const { name, arguments: args } = params;
         
-        console.log(`[MCP] 调用工具: ${name}`, args);
-        const result = await this.executeTool(name, args || {});
+        console.log(`[MCP] 调用工具: ${name}`, stripPhotoshopTargetGuard(args));
+        const result = await this.executeTool(name, args || {}, context);
         
         // MCP 标准返回格式
         return {
@@ -209,27 +221,28 @@ export class MCPProtocolHandler {
     /**
      * 兼容旧的工具调用格式
      */
-    private async handleLegacyToolCall(method: string, params: any): Promise<any> {
-        return await this.executeTool(method, params || {});
+    private async handleLegacyToolCall(method: string, params: any, context?: ToolExecutionContext): Promise<any> {
+        return await this.executeTool(method, params || {}, context);
     }
 
     /**
      * 统一工具执行入口
      * MCP tools/call 与 legacy tool.xxx 必须经过同一执行路径
      */
-    private async executeTool(name: string, args: any): Promise<any> {
+    private async executeTool(name: string, args: any, context?: ToolExecutionContext): Promise<any> {
         const tool = this.toolRegistry.getTool(name);
         if (!tool) {
             throw new Error(`Tool not found: ${name}`);
         }
         try {
-            return await tool.execute(args || {});
+            return await executeToolWithPhotoshopTargetGuard(tool, args || {}, context);
         } catch (error: any) {
             console.error(`[MCP] 工具执行失败:`, error);
-            return {
-                success: false,
-                error: error?.message || 'Tool execution failed'
-            };
+            return createToolFailureResult({
+                toolName: name,
+                error,
+                params: stripPhotoshopTargetGuard(args || {})
+            });
         }
     }
 

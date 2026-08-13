@@ -1,0 +1,263 @@
+{
+  "version": "1.0.0",
+  "description": "场景穿搭知识库 - 袜子使用场景与搭配",
+
+  "scenes": [
+    {
+      "id": "scene-sport",
+      "name": "运动场景",
+      "description": "跑步、健身、球类运动等",
+      "requirements": ["吸汗", "速干", "防滑", "减震"],
+      "recommendedTypes": ["运动袜", "中筒袜"],
+      "colorSuggestions": ["黑色", "白色", "灰色"],
+      "stylingTips": [
+        "运动袜配运动鞋",
+        "建议选择加厚款增加缓冲",
+        "深色更耐脏"
+      ],
+      "copyAngle": "运动穿它 干爽不闷脚"
+    },
+    {
+      "id": "scene-commute",
+      "name": "通勤场景",
+      "description": "上班、商务、日常出行",
+      "requirements": ["舒适", "透气", "简约", "不勒"],
+      "recommendedTypes": ["中筒袜", "船袜", "短袜"],
+      "colorSuggestions": ["黑色", "深灰", "藏青"],
+      "stylingTips": [
+        "搭配皮鞋选择薄款船袜",
+        "搭配休闲鞋选择短袜/中筒袜",
+        "素色百搭"
+      ],
+      "copyAngle": "通勤一整天 舒适不疲惫"
+    },
+    {
+      "id": "scene-home",
+      "name": "居家场景",
+      "description": "家居休闲、睡眠",
+      "requirements": ["柔软", "保暖", "宽松"],
+      "recommendedTypes": ["地板袜", "睡眠袜", "中筒袜"],
+      "colorSuggestions": ["浅色系", "莫兰迪色"],
+      "stylingTips": [
+        "地板袜底部防滑",
+        "冬季选择加绒款",
+        "可选择可爱图案"
+      ],
+      "copyAngle": "回家换上它 解放双脚"
+    },
+    {
+      "id": "scene-outdoor",
+      "name": "户外场景",
+      "description": "登山、徒步、露营",
+      "requirements": ["耐磨", "保暖", "吸湿", "厚实"],
+      "recommendedTypes": ["登山袜", "长筒袜"],
+      "colorSuggestions": ["深色系", "大地色"],
+      "stylingTips": [
+        "登山选择加厚毛圈底",
+        "长时间户外选择速干材质",
+        "可选择高帮防止进沙"
+      ],
+      "copyAngle": "户外探险 保护双脚"
+    },
+    {
+      "id": "scene-fashion",
+      "name": "潮流场景",
+      "description": "时尚穿搭、街拍",
+      "requirements": ["设计感", "色彩", "潮流"],
+      "recommendedTypes": ["中筒袜", "长筒袜"],
+      "colorSuggestions": ["亮色", "撞色", "图案款"],
+      "stylingTips": [
+        "外露穿法成为搭配亮点",
+        "与鞋子颜色形成对比或呼应",
+        "季节限定图案更有话题性"
+      ],
+      "copyAngle": "潮人必备 时尚加分"
+    },
+    {
+      "id": "scene-summer",
+      "name": "夏季场景",
+      "description": "炎热天气穿着",
+      "requirements": ["超薄", "透气", "速干", "凉感"],
+      "recommendedTypes": ["船袜", "短袜", "隐形袜"],
+      "colorSuggestions": ["浅色系", "白色", "肤色"],
+      "materials": ["冰丝", "竹纤维", "网眼棉"],
+      "stylingTips": [
+        "隐形船袜配乐福鞋",
+        "网眼透气孔增加凉爽感",
+        "浅色反射热量更凉快"
+      ],
+      "copyAngle": "夏天穿它 清凉一夏"
+    },
+    {
+      "id": "scene-winter",
+      "name": "冬季场景",
+      "description": "寒冷天气穿着",
+      "requirements": ["保暖", "厚实", "不闷"],
+      "recommendedTypes": ["羊毛袜", "加绒袜", "长筒袜"],
+      "colorSuggestions": ["深色系", "暖色"],
+      "materials": ["羊毛", "兔毛", "加绒"],
+      "stylingTips": [
+        "羊毛袜透气保暖不闷脚",
+        "长筒袜配靴子更保暖",
+        "可搭配暖脚贴使用"
+      ],
+      "copyAngle": "冬天穿它 温暖过冬"
+    },
+    {
+      "id": "scene-yoga",
+      "name": "瑜伽场景",
+      "description": "瑜伽、普拉提等柔性运动",
+      "requirements": ["防滑", "贴合", "柔软", "透气"],
+      "recommendedTypes": ["瑜伽袜", "五指袜"],
+      "colorSuggestions": ["莫兰迪色", "浅色系", "大地色"],
+      "stylingTips": [
+        "硅胶颗粒底防滑必备",
+        "五指分开款更稳定",
+        "选择柔软贴合不滑落的材质"
+      ],
+      "copyAngle": "瑜伽时光 稳如磐石"
+    },
+    {
+      "id": "scene-pregnancy",
+      "name": "孕妇场景",
+      "description": "孕期穿着舒适",
+      "requirements": ["宽口", "不勒", "纯棉", "抗菌"],
+      "recommendedTypes": ["宽口袜", "中筒袜"],
+      "colorSuggestions": ["浅色系", "粉色", "米白"],
+      "stylingTips": [
+        "无痕宽口不勒脚踝",
+        "纯棉材质亲肤安全",
+        "抗菌功能呵护孕期"
+      ],
+      "copyAngle": "孕期舒适 安心呵护"
+    },
+    {
+      "id": "scene-business",
+      "name": "正式商务",
+      "description": "商务会议、正装穿着",
+      "requirements": ["薄款", "不起球", "简约", "耐穿"],
+      "recommendedTypes": ["商务袜", "中筒袜"],
+      "colorSuggestions": ["黑色", "藏青", "深灰"],
+      "stylingTips": [
+        "搭配皮鞋选择薄款",
+        "颜色与裤腿保持一致",
+        "长度需盖过脚踝"
+      ],
+      "copyAngle": "商务精英 品质之选"
+    },
+    {
+      "id": "scene-gift",
+      "name": "送礼场景",
+      "description": "礼盒装、节日送礼",
+      "requirements": ["颜值", "包装", "品质感"],
+      "recommendedTypes": ["礼盒装", "精品组合"],
+      "colorSuggestions": ["高级色", "节日色"],
+      "stylingTips": [
+        "礼盒包装提升档次",
+        "多色组合满足不同喜好",
+        "节日限定增加仪式感"
+      ],
+      "copyAngle": "送他/她一双好袜子"
+    },
+    {
+      "id": "scene-kids",
+      "name": "儿童场景",
+      "description": "儿童日常、校园穿着",
+      "requirements": ["柔软", "安全", "不勒", "卡通"],
+      "recommendedTypes": ["儿童袜", "短袜", "中筒袜"],
+      "colorSuggestions": ["彩色", "卡通图案", "基础色"],
+      "stylingTips": [
+        "选择无骨缝头不磨脚趾",
+        "A类标准安全放心",
+        "卡通图案增加穿着乐趣"
+      ],
+      "copyAngle": "宝宝小脚 柔软呵护"
+    }
+  ],
+
+  "sockTypes": [
+    {
+      "id": "type-boat",
+      "name": "船袜/隐形袜",
+      "description": "低帮设计，穿鞋看不见",
+      "features": ["隐形", "低帮", "硅胶防滑"],
+      "suitableShoes": ["帆布鞋", "乐福鞋", "板鞋", "小白鞋"],
+      "seasons": ["春", "夏", "秋"],
+      "commonPainPoints": ["掉跟"],
+      "sellingPoints": ["硅胶防滑不掉跟", "隐形穿鞋好看"]
+    },
+    {
+      "id": "type-short",
+      "name": "短袜",
+      "description": "脚踝高度，短帮设计",
+      "features": ["脚踝", "透气", "日常"],
+      "suitableShoes": ["运动鞋", "休闲鞋", "板鞋"],
+      "seasons": ["全年"],
+      "commonPainPoints": ["勒脚踝"],
+      "sellingPoints": ["无痕宽口", "透气舒适"]
+    },
+    {
+      "id": "type-mid",
+      "name": "中筒袜",
+      "description": "小腿中部高度，经典款式",
+      "features": ["百搭", "保护", "经典"],
+      "suitableShoes": ["运动鞋", "休闲鞋", "皮鞋", "靴子"],
+      "seasons": ["全年"],
+      "commonPainPoints": ["勒脚踝", "起球"],
+      "sellingPoints": ["宽口不勒", "精梳棉不起球"]
+    },
+    {
+      "id": "type-long",
+      "name": "长筒袜/小腿袜",
+      "description": "膝盖以下高度，保暖时尚",
+      "features": ["保暖", "时尚", "外露穿法"],
+      "suitableShoes": ["靴子", "高帮鞋", "玛丽珍"],
+      "seasons": ["秋", "冬"],
+      "commonPainPoints": ["滑落", "勒腿"],
+      "sellingPoints": ["弹力不滑落", "轻压不勒腿"]
+    }
+  ],
+
+  "targetAudience": [
+    {
+      "id": "audience-male-casual",
+      "name": "男士日常",
+      "ageRange": "25-45",
+      "preferences": ["简约", "舒适", "耐穿"],
+      "painPoints": ["脚臭", "起球", "不舒服"],
+      "colorPreference": ["黑", "白", "灰", "藏青"],
+      "priceRange": "中等",
+      "copyTone": "简洁实用型"
+    },
+    {
+      "id": "audience-female-fashion",
+      "name": "女士时尚",
+      "ageRange": "18-35",
+      "preferences": ["颜值", "舒适", "搭配"],
+      "painPoints": ["掉跟", "勒脚", "不好看"],
+      "colorPreference": ["马卡龙色", "莫兰迪色", "纯色"],
+      "priceRange": "中高",
+      "copyTone": "时尚感性型"
+    },
+    {
+      "id": "audience-sport",
+      "name": "运动爱好者",
+      "ageRange": "20-40",
+      "preferences": ["功能性", "专业", "透气"],
+      "painPoints": ["闷脚", "打滑", "磨脚"],
+      "colorPreference": ["黑", "白", "荧光色"],
+      "priceRange": "中高",
+      "copyTone": "专业功能型"
+    },
+    {
+      "id": "audience-parent",
+      "name": "家庭采购",
+      "ageRange": "30-50",
+      "preferences": ["性价比", "耐穿", "多双装"],
+      "painPoints": ["质量参差", "码数不准"],
+      "colorPreference": ["基础色"],
+      "priceRange": "实惠",
+      "copyTone": "实惠家庭型"
+    }
+  ]
+}

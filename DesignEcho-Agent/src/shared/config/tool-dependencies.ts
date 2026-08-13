@@ -24,6 +24,65 @@ export interface ToolDependency {
     }>;
 }
 
+function hasFiniteLayerId(value: unknown): boolean {
+    const id = Number(value);
+    return Number.isFinite(id) && id > 0;
+}
+
+function hasLayerIds(value: unknown, minCount = 1): boolean {
+    return Array.isArray(value)
+        && value.map(Number).filter((id) => Number.isFinite(id) && id > 0).length >= minCount;
+}
+
+function hasTextLayerUpdates(value: unknown): boolean {
+    return Array.isArray(value)
+        && value.length > 0
+        && value.every((item) => {
+            const record = item as Record<string, unknown> | null;
+            return !!record && hasFiniteLayerId(record.layerId);
+        });
+}
+
+function canTargetLayerWithoutSelection(toolName: string, params?: unknown): boolean {
+    const record = (params && typeof params === 'object') ? params as Record<string, unknown> : {};
+    if (record.useCurrentSelection === true) return true;
+
+    switch (toolName) {
+        case 'setTextContent':
+            return hasFiniteLayerId(record.layerId) || hasLayerIds(record.layerIds) || hasTextLayerUpdates(record.updates);
+        case 'getTextContent':
+            return hasFiniteLayerId(record.layerId) || hasLayerIds(record.layerIds);
+        case 'getTextStyle':
+            return hasFiniteLayerId(record.layerId);
+        case 'setTextStyle':
+        case 'moveLayer':
+        case 'moveLayerToGroup':
+        case 'reorderLayer':
+        case 'alignToReference':
+        case 'renameLayer':
+        case 'deleteLayer':
+        case 'duplicateLayer':
+        case 'removeBackground':
+        case 'createClippingMask':
+        case 'releaseClippingMask':
+            return hasFiniteLayerId(record.layerId);
+        case 'groupLayers':
+            return hasLayerIds(record.layerIds);
+        default:
+            return false;
+    }
+}
+
+function removeDependenciesSatisfiedByParams(
+    toolName: string,
+    params: unknown,
+    missingRequired: string[]
+): string[] {
+    if (!missingRequired.includes('selectLayer')) return missingRequired;
+    if (!canTargetLayerWithoutSelection(toolName, params)) return missingRequired;
+    return missingRequired.filter((dependency) => dependency !== 'selectLayer');
+}
+
 /**
  * 工具依赖关系图
  */
@@ -41,21 +100,34 @@ export const TOOL_DEPENDENCIES: Record<string, ToolDependency> = {
     
     setTextStyle: {
         requires: ['selectLayer'],
-        optional: ['getTextStyle'],
-        description: '修改样式前，需要先选中目标文本图层',
+        optional: ['getAllTextLayers', 'getTextStyle', 'resolveFontName'],
+        description: '优先先读取文本图层并传入稳定 layerId；只有兼容旧入口且缺少 layerId 时才依赖当前选区。写入字体前应先解析可用 PostScript 名',
         commonErrors: [
-            { error: '没有选中图层', solution: '先调用 selectLayer' },
-            { error: '不是文本图层', solution: '确保选中的是文本图层' }
+            { error: '没有可绑定的目标文本图层', solution: '先调用 getAllTextLayers，并把目标 layerId 传给 setTextStyle' },
+            { error: '不是文本图层', solution: '用 getAllTextLayers 核对目标类型和 layerId' },
+            { error: '未找到可用字体', solution: '先调用 resolveFontName 获取可用字体或候选建议' }
         ]
     },
     
     moveLayer: {
         requires: ['selectLayer'],
         optional: ['getLayerBounds', 'getDocumentInfo'],
-        description: '移动图层前，需要先选中目标图层',
+        description: '移动图层画布位置前，需要先选中目标图层；不用于调整图层堆叠顺序',
         commonErrors: [
             { error: '没有选中图层', solution: '先调用 selectLayer' },
-            { error: '坐标超出范围', solution: '用 getDocumentInfo 获取画布尺寸' }
+            { error: '坐标超出范围', solution: '用 getDocumentInfo 获取画布尺寸' },
+            { error: '想调整图层顺序', solution: '使用 reorderLayer，而不是 moveLayer' }
+        ]
+    },
+
+    moveLayerToGroup: {
+        requires: ['selectLayer'],
+        optional: ['getLayerHierarchy'],
+        description: '把图层或图层组移动到目标图层组内；用于改变 Photoshop 图层父子层级，不用于画布 x/y 位置移动',
+        commonErrors: [
+            { error: 'Target layer is not a group', solution: '先调用 getLayerHierarchy 找到正确的目标图层组 ID' },
+            { error: 'Cannot move a layer or group into itself or its descendant', solution: '重新选择非自身、非后代的目标父级组' },
+            { error: '想移动画布位置', solution: '使用 moveLayer，而不是 moveLayerToGroup' }
         ]
     },
     
@@ -77,17 +149,40 @@ export const TOOL_DEPENDENCIES: Record<string, ToolDependency> = {
             { error: '图层数量不足', solution: '至少需要3个图层才能均匀分布' }
         ]
     },
+
+    alignToReference: {
+        requires: ['selectLayer'],
+        optional: ['getLayerHierarchy', 'getLayerBounds', 'getDocumentInfo'],
+        description: '对齐到参考点前，需要明确目标 layerId、缩放比例、目标中心点和主体偏移；传入 layerId 时无需先 selectLayer',
+        commonErrors: [
+            { error: '未找到图层', solution: '先调用 getLayerHierarchy 或 getLayerBounds 确认目标 layerId' },
+            { error: '已锁定', solution: '先让用户解锁图层，或改用未锁定图层' },
+            { error: 'does not support DOM translate', solution: '目标图层不支持安全移动；停止执行并报告，不要改用可能弹窗的原生命令替代' }
+        ]
+    },
     
     renameLayer: {
         requires: ['selectLayer'],
         optional: [],
         description: '重命名前，需要先选中目标图层'
     },
+
+    deleteLayer: {
+        requires: ['selectLayer'],
+        optional: ['getLayerHierarchy'],
+        description: '删除图层前，需要先从图层层级中定位并选中目标图层'
+    },
+
+    duplicateLayer: {
+        requires: ['selectLayer'],
+        optional: ['getLayerHierarchy'],
+        description: '复制图层前，需要先确认并选中目标图层'
+    },
     
     reorderLayer: {
         requires: ['selectLayer'],
         optional: ['getLayerHierarchy'],
-        description: '调整顺序前，需要先选中目标图层'
+        description: '调整 Photoshop 图层堆叠顺序前，需要先选中目标图层；置顶、置底、上移、下移、移动到指定图层上方/下方均使用此工具'
     },
     
     createClippingMask: {
@@ -148,7 +243,7 @@ export const TOOL_DEPENDENCIES: Record<string, ToolDependency> = {
     getTextStyle: {
         requires: ['selectLayer'],
         optional: [],
-        description: '获取文本样式，需要先选中文本图层'
+        description: '获取文本样式，可传入 layerId；未传 layerId 时需要先选中文本图层'
     },
     
     getLayerBounds: {
@@ -205,6 +300,16 @@ export const TOOL_DEPENDENCIES: Record<string, ToolDependency> = {
         optional: ['getDocumentInfo'],
         description: '快速导出，无需前置条件'
     },
+
+    exportGroup: {
+        requires: [],
+        optional: ['getLayerHierarchy', 'getDocumentInfo'],
+        description: '导出指定图层组或图层到完整 PNG 路径；必须提供 groupPath 或 layerId 以及 outputPath',
+        commonErrors: [
+            { error: '没有目标组', solution: '先调用 getLayerHierarchy 确认 groupPath 或 layerId' },
+            { error: '没有输出路径', solution: '提供完整 outputPath，而不是只提供目录' }
+        ]
+    },
     
     saveDocument: {
         requires: [],
@@ -227,8 +332,8 @@ export const TOOL_DEPENDENCIES: Record<string, ToolDependency> = {
     
     createTextLayer: {
         requires: [],
-        optional: ['getDocumentInfo'],
-        description: '创建文字图层，建议先了解画布尺寸'
+        optional: ['getDocumentInfo', 'resolveFontName'],
+        description: '创建文字图层，建议先了解画布尺寸；指定字体前应先解析可用 PostScript 名'
     },
     
     createGroup: {
@@ -260,6 +365,24 @@ export const TOOL_DEPENDENCIES: Record<string, ToolDependency> = {
         requires: [],
         optional: ['listProjectResources'],
         description: '搜索项目资源，建议先浏览可用资源'
+    },
+
+    createProjectContactSheetOverview: {
+        requires: [],
+        optional: ['listProjectResources', 'searchProjectResources'],
+        description: '生成项目图片缩略图总览，用于先整体观察项目素材'
+    },
+
+    analyzeProjectContactSheetOverview: {
+        requires: [],
+        optional: ['listProjectResources', 'createProjectContactSheetOverview', 'analyzeAssetContent'],
+        description: '生成并理解项目图片缩略图总览，用于判断整体风格、素材角色和后续单图复核编号'
+    },
+
+    prepareSkuRetouchAssets: {
+        requires: [],
+        optional: ['analyzeProjectContactSheetOverview', 'analyzeAssetContent'],
+        description: '为明确的一批纯底 SKU 素材生成形态、原影和中性灰精修资产；内部自行做适用性分类'
     },
     
     getProjectStructure: {
@@ -335,15 +458,15 @@ export const TASK_TOOL_CHAINS: Record<string, TaskToolChain> = {
         ]
     },
     
-    '优化文案': {
-        description: '优化文案内容和样式',
-        triggers: ['优化文案', '文案优化', '改进文案'],
+    '撰写文案': {
+        description: '按目标人群、商品事实和版式约束撰写可替换文案',
+        triggers: ['撰写文案', '写文案', '生成文案', '优化文案', '文案优化', '改进文案'],
         steps: [
             { tool: 'getAllTextLayers', purpose: '获取所有文案' },
-            { tool: 'selectLayer', purpose: '选中要优化的文案' },
-            { tool: 'getTextContent', purpose: '获取当前内容' },
-            { tool: 'getTextStyle', purpose: '获取当前样式' }
-            // AI 生成优化建议后执行修改
+            { tool: 'selectLayer', purpose: '选中目标文本图层' },
+            { tool: 'getTextContent', purpose: '获取当前文本的字数、行数和排版骨架' },
+            { tool: 'getTextStyle', purpose: '读取当前样式但不修改样式' }
+            // AI 撰写候选后仅替换文本内容
         ]
     },
     
@@ -424,7 +547,8 @@ export const TASK_TOOL_CHAINS: Record<string, TaskToolChain> = {
  */
 export const checkToolDependencies = (
     toolName: string,
-    executedTools: string[]
+    executedTools: string[],
+    params?: unknown
 ): { valid: boolean; missingDependencies: string[]; suggestion?: string } => {
     const dependency = TOOL_DEPENDENCIES[toolName];
     
@@ -432,8 +556,10 @@ export const checkToolDependencies = (
         return { valid: true, missingDependencies: [] };
     }
     
-    const missingRequired = dependency.requires.filter(
-        req => !executedTools.includes(req)
+    const missingRequired = removeDependenciesSatisfiedByParams(
+        toolName,
+        params,
+        dependency.requires.filter(req => !executedTools.includes(req))
     );
     
     if (missingRequired.length > 0) {

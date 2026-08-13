@@ -12,21 +12,59 @@ export default defineConfig({
     base: './',
     root: 'src/renderer',
     build: {
+        target: 'chrome120',
         outDir: '../../dist/renderer',
         emptyOutDir: true,
-        chunkSizeWarningLimit: 900,
         rollupOptions: {
             output: {
                 manualChunks(id) {
-                    if (!id.includes('node_modules')) return;
-                    if (
-                        id.includes('react') ||
-                        id.includes('react-dom') ||
-                        id.includes('scheduler') ||
-                        id.includes('use-sync-external-store')
-                    ) return 'react-vendor';
-                    if (id.includes('zustand')) return 'state-vendor';
-                    return 'vendor';
+                    const normalizedId = id.replace(/\\/g, '/');
+
+                    if (normalizedId.includes('node_modules')) {
+                        if (normalizedId.includes('/node_modules/@xyflow/')) return 'workflow-vendor';
+                        if (
+                            normalizedId.includes('/node_modules/react/') ||
+                            normalizedId.includes('/node_modules/react-dom/') ||
+                            normalizedId.includes('/node_modules/scheduler/') ||
+                            normalizedId.includes('/node_modules/use-sync-external-store/')
+                        ) return 'react-vendor';
+                        if (normalizedId.includes('/node_modules/zustand/')) return 'state-vendor';
+                        return 'vendor';
+                    }
+
+                    if (normalizedId.includes('/src/renderer/services/skill-executors/')) {
+                        const lowerId = normalizedId.toLowerCase();
+                        if (lowerId.includes('/agent-panel-bridge')) {
+                            return 'skill-agent-panel-bridge';
+                        }
+                        if (lowerId.includes('/sku') || lowerId.includes('sku-')) {
+                            return 'skill-sku';
+                        }
+                        if (
+                            lowerId.includes('/main-image') ||
+                            lowerId.includes('project-image-analysis') ||
+                            lowerId.includes('design-reference-search')
+                        ) {
+                            return 'skill-main-image';
+                        }
+                        if (lowerId.includes('/detail-page')) {
+                            return 'skill-detail-page';
+                        }
+                        if (
+                            lowerId.includes('/layout-replication') ||
+                            lowerId.includes('/find-edit') ||
+                            lowerId.includes('/reference')
+                        ) {
+                            return 'skill-layout-reference';
+                        }
+                        if (
+                            lowerId.includes('/business-skill') ||
+                            lowerId.includes('/design-planner')
+                        ) {
+                            return 'skill-design-governance';
+                        }
+                        return;
+                    }
                 }
             }
         }

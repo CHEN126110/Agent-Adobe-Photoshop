@@ -7,16 +7,18 @@ import { registerTextHandlers } from './text-handlers';
 import { registerLayoutHandlers } from './layout-handlers';
 import { registerVisualHandlers } from './visual-handlers';
 import { registerInpaintingHandlers } from './inpainting-handlers';
+import { registerImageToImageHandlers } from './image-to-image-handlers';
 import { registerBeautifyHandlers } from './beautify-handlers';
 import { registerWebViewHandlers } from './webview-handlers';
+import { registerTemplateLibraryHandlers } from './template-library-handlers';
 import { registerSmartLayoutUXPHandlers, getSmartLayoutToolSchemas } from './smart-layout-handlers';
-import { registerHarmonizationUXPHandlers, getHarmonizationToolSchemas } from './harmonization-handlers';
+import { registerShapeMorphingUXPHandlers } from './shape-morphing-handlers';
+import { registerManualSkuColorCardHandlers } from './manual-sku-color-card-handlers';
 import type { UXPContext } from './types';
 
 export { UXPContext, SubjectPositionCache, SendProgressFn } from './types';
 export { parseMultiTargets, generateRectContour } from './utils';
 export { getSmartLayoutToolSchemas } from './smart-layout-handlers';
-export { getHarmonizationToolSchemas } from './harmonization-handlers';
 
 /**
  * 注册所有 UXP handlers
@@ -24,8 +26,11 @@ export { getHarmonizationToolSchemas } from './harmonization-handlers';
 export function registerUXPHandlers(context: UXPContext): void {
     // WebView 消息转发
     registerWebViewHandlers(context);
+
+    // UXP 模板库
+    registerTemplateLibraryHandlers(context);
     
-    // 文案优化
+// 撰写文案
     registerTextHandlers(context);
     
     // 排版分析
@@ -36,6 +41,9 @@ export function registerUXPHandlers(context: UXPContext): void {
     
     // 局部重绘
     registerInpaintingHandlers(context);
+
+    // 图生图
+    registerImageToImageHandlers(context);
     
     // 一键美化
     registerBeautifyHandlers(context);
@@ -43,8 +51,11 @@ export function registerUXPHandlers(context: UXPContext): void {
     // 智能布局
     registerSmartLayoutUXPHandlers(context);
     
-    // 图像协调
-    registerHarmonizationUXPHandlers(context);
+    // 形态统一
+    registerShapeMorphingUXPHandlers(context);
+
+    // 手动 SKU 色卡（UXP 面板入口，复用 renderer 的统一色卡执行器）
+    registerManualSkuColorCardHandlers(context);
 
     console.log('[UXP Handlers] 基础 handlers 注册完成');
 }

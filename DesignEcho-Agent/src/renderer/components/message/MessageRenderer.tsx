@@ -10,8 +10,20 @@
  */
 
 import React, { useCallback, useMemo } from 'react';
-import type { ContentBlock, MultimodalMessage } from './types';
-import { TextBlock, CodeBlock, ImageBlock, ToolResultBlock, CardBlock, ThinkingBlock } from './blocks';
+import { Pencil } from 'lucide-react';
+import { isStructuredAgentResponseContent } from '../../../shared/agent-response-presentation';
+import { formatAgentResponseInterruption } from '../../../shared/agent-response-interruption';
+import type { ComposerContentBlock, ContentBlock, MultimodalMessage } from './types';
+import {
+    TextBlock,
+    CodeBlock,
+    ImageBlock,
+    ToolResultBlock,
+    CardBlock,
+    ThinkingBlock,
+    TaskPlanBlock,
+    InteractiveCardBlock
+} from './blocks';
 import './MessageRenderer.css';
 
 interface MessageRendererProps {
@@ -20,6 +32,12 @@ interface MessageRendererProps {
     isStreaming?: boolean;
     onEdit?: () => void;
     showEditButton?: boolean;
+    editor?: React.ReactNode;
+    isEditing?: boolean;
+}
+
+function getProcessBlockRenderKey(blockId: string, collapseProcessBlocks: boolean): string {
+    return `${blockId}:${collapseProcessBlocks ? 'terminal' : 'active'}`;
 }
 
 /**
@@ -29,10 +47,14 @@ interface MessageRendererProps {
  * 所有使用 hooks 的组件都应该是独立的 React 组件
  */
 const renderBlock = (
-    block: ContentBlock, 
-    onAction?: (actionId: string, params?: Record<string, any>) => void
+    block: ContentBlock,
+    onAction?: (actionId: string, params?: Record<string, any>) => void,
+    collapseProcessBlocks: boolean = false
 ): React.ReactNode => {
     switch (block.type) {
+        case 'composer_content':
+            return <ComposerContentDisplay key={block.id} block={block} />;
+
         case 'text':
             return <TextBlock key={block.id} block={block} />;
             
@@ -43,7 +65,14 @@ const renderBlock = (
             return <ImageBlock key={block.id} block={block} />;
             
         case 'tool_result':
-            return <ToolResultBlock key={block.id} block={block} onAction={onAction} />;
+            return (
+                <ToolResultBlock
+                    key={getProcessBlockRenderKey(block.id, collapseProcessBlocks)}
+                    block={block}
+                    onAction={onAction}
+                    collapseForTerminalState={collapseProcessBlocks}
+                />
+            );
             
         case 'card':
         case 'success':
@@ -74,7 +103,19 @@ const renderBlock = (
             return <CardBlock key={block.id} block={block} onAction={onAction} />;
             
         case 'thinking':
-            return <ThinkingBlock key={block.id} block={block} />;
+            return (
+                <ThinkingBlock
+                    key={getProcessBlockRenderKey(block.id, collapseProcessBlocks)}
+                    block={block}
+                    collapseForTerminalState={collapseProcessBlocks}
+                />
+            );
+
+        case 'task_plan':
+            return <TaskPlanBlock key={block.id} block={block} />;
+
+        case 'interactive_card':
+            return <InteractiveCardBlock key={block.id} block={block} onAction={onAction} />;
             
         case 'image_gallery':
             return (
@@ -135,6 +176,93 @@ const renderBlock = (
 };
 
 // ==================== 子组件（使用 React.memo 优化） ====================
+
+function getSafeReferenceLabel(value: unknown, fallback: string): string {
+    const normalized = String(value || '')
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .trim();
+    if (!normalized) return fallback;
+
+    const looksLikePath = /^[a-z]:[\\/]/i.test(normalized)
+        || normalized.startsWith('\\\\')
+        || normalized.includes('\\')
+        || normalized.includes('/');
+    const visible = looksLikePath
+        ? normalized.split(/[\\/]/).filter(Boolean).pop() || fallback
+        : normalized;
+    return visible.length > 80 ? `${visible.slice(0, 77)}...` : visible;
+}
+
+function getReferenceKindLabel(block: ComposerContentBlock, referenceId: string): string {
+    const part = block.parts.find((item) => (
+        item.type === 'reference' && item.reference.referenceId === referenceId
+    ));
+    if (!part || part.type !== 'reference') return 'REF';
+
+    switch (part.reference.mediaKind) {
+        case 'image':
+            return 'IMG';
+        case 'video':
+            return 'VID';
+        case 'design_document':
+            return 'PSD';
+        case 'font':
+            return 'FONT';
+        case 'knowledge':
+            return 'KNOW';
+        case 'document':
+            return 'DOC';
+        default:
+            return 'REF';
+    }
+}
+
+const ComposerContentDisplay = React.memo<{ block: ComposerContentBlock }>(({ block }) => {
+    const imagesById = new Map(block.images.map((image) => [image.id, image]));
+
+    return (
+        <div className="message-block composer-content-block">
+            {block.parts.map((part, index) => {
+                if (part.type === 'text') {
+                    return (
+                        <span key={`${block.id}-text-${index}`} className="composer-content-text">
+                            {part.text}
+                        </span>
+                    );
+                }
+
+                const reference = part.reference;
+                const uploadedImageId = reference.source.kind === 'uploaded_image'
+                    ? reference.source.imageId
+                    : '';
+                const image = uploadedImageId ? imagesById.get(uploadedImageId) : undefined;
+                const label = getSafeReferenceLabel(reference.label, '未命名引用');
+                const sourceLabel = getSafeReferenceLabel(reference.sourceLabel, '引用');
+
+                return (
+                    <span
+                        key={`${block.id}-reference-${reference.referenceId}-${index}`}
+                        className="composer-content-reference"
+                        title={`${sourceLabel} · ${label}`}
+                    >
+                        {image ? (
+                            <img
+                                className="composer-content-reference-thumbnail"
+                                src={`data:${image.type};base64,${image.data}`}
+                                alt=""
+                            />
+                        ) : (
+                            <span className="composer-content-reference-kind" aria-hidden="true">
+                                {getReferenceKindLabel(block, reference.referenceId)}
+                            </span>
+                        )}
+                        <span className="composer-content-reference-label">{label}</span>
+                    </span>
+                );
+            })}
+        </div>
+    );
+});
 
 /**
  * 图片画廊组件
@@ -427,6 +555,71 @@ const CollapsibleSection = React.memo<{
 
 // ==================== 主组件 ====================
 
+function normalizeMessageRendererSignatureValue(value: unknown, depth = 0): unknown {
+    if (value === null || value === undefined) {
+        return value;
+    }
+
+    if (typeof value === 'function') {
+        return '[function]';
+    }
+
+    if (typeof value !== 'object') {
+        return value;
+    }
+
+    if (depth >= 8) {
+        return '[depth-limit]';
+    }
+
+    if (Array.isArray(value)) {
+        return value.map(item => normalizeMessageRendererSignatureValue(item, depth + 1));
+    }
+
+    const input = value as Record<string, unknown>;
+    const output: Record<string, unknown> = {};
+    for (const key of Object.keys(input).sort()) {
+        const child = input[key];
+        if (typeof child === 'undefined') {
+            continue;
+        }
+        output[key] = normalizeMessageRendererSignatureValue(child, depth + 1);
+    }
+    return output;
+}
+
+function stringifyMessageRendererSignature(value: unknown): string {
+    try {
+        return JSON.stringify(normalizeMessageRendererSignatureValue(value));
+    } catch {
+        return String(value);
+    }
+}
+
+function getMessageRendererBlockSignature(block: ContentBlock): string {
+    return stringifyMessageRendererSignature(block);
+}
+
+function getMessageRendererMessageSignature(message: MultimodalMessage): string {
+    return stringifyMessageRendererSignature({
+        id: message.id,
+        role: message.role,
+        timestamp: message.timestamp,
+        isStreaming: message.isStreaming,
+        metadata: message.metadata,
+        blocks: message.blocks.map(getMessageRendererBlockSignature)
+    });
+}
+
+function hasStructuredAssistantPresentation(message: MultimodalMessage): boolean {
+    if (message.role !== 'assistant') return false;
+    return message.blocks.some((block) => {
+        if (block.type === 'list' || block.type === 'table') return true;
+        if (block.type !== 'text') return false;
+        return isStructuredAgentResponseContent(block.content);
+    });
+}
+
 /**
  * 多模态消息渲染器
  */
@@ -435,28 +628,38 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
     onAction,
     isStreaming,
     onEdit,
-    showEditButton
+    showEditButton,
+    editor,
+    isEditing = false
 }) => {
     const isUser = message.role === 'user';
+    const isStructuredResponse = hasStructuredAssistantPresentation(message);
+    const interruptionLabel = formatAgentResponseInterruption(
+        message.metadata?.agentResponseInterruption
+    );
+    const isInterruptionOnly = Boolean(interruptionLabel) && message.blocks.length === 0;
+    const isProcessActive = isStreaming === true || message.isStreaming === true;
+    const collapseProcessBlocks = message.role === 'assistant' && !isProcessActive;
     
     // 缓存时间格式化结果
     const formattedTime = useMemo(() => {
         return new Date(message.timestamp).toLocaleTimeString();
     }, [message.timestamp]);
     
-    // 缓存格式化的时长
-    const formattedDuration = useMemo(() => {
-        if (!message.metadata?.duration) return null;
-        return `${(message.metadata.duration / 1000).toFixed(1)}s`;
-    }, [message.metadata?.duration]);
-    
     // 渲染内容块（带缓存）
     const renderedBlocks = useMemo(() => {
-        return message.blocks.map(block => renderBlock(block, onAction));
-    }, [message.blocks, onAction]);
+        return message.blocks.map(block => renderBlock(block, onAction, collapseProcessBlocks));
+    }, [message.blocks, onAction, collapseProcessBlocks]);
     
     return (
-        <div className={`multimodal-message ${message.role} ${isStreaming ? 'streaming' : ''}`}>
+        <div className={[
+            'multimodal-message',
+            message.role,
+            isStreaming ? 'streaming' : '',
+            isStructuredResponse ? 'structured-response' : '',
+            isInterruptionOnly ? 'interruption-only' : '',
+            isEditing ? 'is-editing' : ''
+        ].filter(Boolean).join(' ')}>
             {/* 头像 */}
             <div className="message-avatar">
                 {isUser ? '👤' : '🤖'}
@@ -464,10 +667,26 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
             
             {/* 内容区 */}
             <div className="message-body">
-                {/* 内容块 */}
-                <div className="message-blocks">
-                    {renderedBlocks}
-                </div>
+                {isEditing && editor ? (
+                    <div className="message-editor-slot" data-testid="message-editor-slot">
+                        {editor}
+                    </div>
+                ) : (
+                    <div className="message-blocks">
+                        {renderedBlocks}
+                    </div>
+                )}
+
+                {interruptionLabel && (
+                    <div
+                        className="agent-response-interruption"
+                        data-testid="agent-response-interruption"
+                        role="status"
+                    >
+                        <span className="agent-response-interruption-mark" aria-hidden="true" />
+                        <span>{interruptionLabel}</span>
+                    </div>
+                )}
                 
                 {/* 流式输出指示器 */}
                 {isStreaming && (
@@ -479,25 +698,24 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
                 )}
                 
                 {/* 元信息和操作按钮 */}
-                <div className="message-meta">
-                    <span className="message-time">{formattedTime}</span>
-                    {message.metadata?.model && (
-                        <span className="message-model">{message.metadata.model}</span>
-                    )}
-                    {formattedDuration && (
-                        <span className="message-duration">{formattedDuration}</span>
-                    )}
-                    {/* 用户消息的编辑按钮 */}
-                    {isUser && showEditButton && onEdit && (
-                        <button 
-                            className="inline-edit-btn"
-                            onClick={onEdit}
-                            title="编辑消息"
-                        >
-                            ✏️
-                        </button>
-                    )}
-                </div>
+                {!isEditing && (
+                    <div className="message-meta">
+                        <span className="message-time">{formattedTime}</span>
+                        {/* 用户消息的编辑按钮 */}
+                        {isUser && showEditButton && onEdit && (
+                            <button
+                                type="button"
+                                className="inline-edit-btn"
+                                data-message-edit-trigger
+                                onClick={onEdit}
+                                title="编辑消息"
+                                aria-label="编辑这条用户消息"
+                            >
+                                <Pencil size={13} strokeWidth={1.8} aria-hidden="true" />
+                            </button>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -513,17 +731,13 @@ export const MessageRenderer = React.memo(MessageRendererComponent, (prevProps, 
     
     // 比较关键属性
     return (
-        prevMsg.id === nextMsg.id &&
-        prevMsg.timestamp === nextMsg.timestamp &&
-        prevMsg.role === nextMsg.role &&
-        prevMsg.blocks.length === nextMsg.blocks.length &&
-        prevMsg.isStreaming === nextMsg.isStreaming &&
+        getMessageRendererMessageSignature(prevMsg) === getMessageRendererMessageSignature(nextMsg) &&
         prevProps.isStreaming === nextProps.isStreaming &&
         prevProps.showEditButton === nextProps.showEditButton &&
+        prevProps.isEditing === nextProps.isEditing &&
+        prevProps.editor === nextProps.editor &&
         prevProps.onEdit === nextProps.onEdit &&
-        prevProps.onAction === nextProps.onAction &&
-        // 比较 blocks 的 id（假设内容不变时 id 不变）
-        prevMsg.blocks.every((b, i) => b.id === nextMsg.blocks[i]?.id)
+        prevProps.onAction === nextProps.onAction
     );
 });
 

@@ -1,7 +1,7 @@
 /**
  * 抠图工具 - 毛发级别精细抠图
  * 
- * 使用本地 AI 模型进行智能分割，不依赖 PS 内置功能
+ * 使用本地 AI 模PS 内置型进行智能分割，不依赖 功能
  * 
  * 支持二进制传输优化：
  * - 图像数据使用 Uint8Array 直传，避免 Base64 膨胀
@@ -10,8 +10,25 @@
 
 import { Tool, ToolSchema } from '../types';
 import { BinaryMessageType } from '../../core/binary-protocol';
+import { BinaryMaskStore } from '../../core/binary-mask-store';
+import { arrayBufferFromBytes, assertImageBytesSafeForPhotoshop } from '../../core/image-safety';
+import {
+    resizeGrayscaleMaskBilinear,
+    resolveMattingMaskApplyPlan
+} from '../../core/matting-mask-geometry';
 
 const { app, core, action, imaging } = require('photoshop');
+
+function findLayerById(container: any, id: number): any {
+    for (const layer of container.layers || []) {
+        if (layer.id === id) return layer;
+        if (layer.layers) {
+            const found = findLayerById(layer, id);
+            if (found) return found;
+        }
+    }
+    return null;
+}
 
 interface RemoveBackgroundParams {
     /** 抠图模式: 'ai' 使用 AI 模型（默认） */
@@ -24,14 +41,16 @@ interface RemoveBackgroundParams {
     useMask?: boolean;
     /** AI 模型 ID（后续扩展用） */
     modelId?: string;
-    /** 输出质量 (0-100) */
-    quality?: number;
+    /** 输出质量（0-100）或预设档位 */
+    quality?: number | 'fast' | 'balanced' | 'quality';
     /** 目标描述（如"袜子"、"人物"等），用于语义分割 */
     targetPrompt?: string;
     /** 边缘细化模式 */
     edgeRefine?: 'refine-none' | 'refine-light' | 'refine-standard' | 'refine-hair';
     /** 导出到模型前的最长边像素，默认动态选择 */
     maxSize?: number;
+    /** 对所有图层取样：导出目标图层边界内的文档复合图像（含背景上下文），蒙版仍应用到目标图层 */
+    sampleAllLayers?: boolean;
 }
 
 export class RemoveBackgroundTool implements Tool {
@@ -53,6 +72,54 @@ export class RemoveBackgroundTool implements Tool {
     
     setWebSocketClient(client: any): void {
         this.wsClient = client;
+    }
+
+    private isLayerGroup(layer: any): boolean {
+        return Boolean(layer && Array.isArray(layer.layers));
+    }
+
+    private uint8ArrayToBase64(bytes: Uint8Array): string {
+        const chunkSize = 0x8000;
+        let binaryString = '';
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+            const chunk = bytes.subarray(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+        }
+        return btoa(binaryString);
+    }
+
+    private normalizeQualityPreset(quality?: number | string): 'fast' | 'balanced' | 'quality' {
+        if (typeof quality === 'string') {
+            const normalized = quality.trim().toLowerCase();
+            if (normalized === 'fast' || normalized === 'balanced' || normalized === 'quality') {
+                return normalized;
+            }
+            return 'balanced';
+        }
+
+        if (typeof quality === 'number' && Number.isFinite(quality)) {
+            if (quality >= 85) return 'quality';
+            if (quality >= 60) return 'balanced';
+            return 'fast';
+        }
+
+        return 'balanced';
+    }
+
+    private resolveExportMaxSize(maxSize: number | undefined, quality?: number | string): number {
+        const requestedMaxSize = Number(maxSize);
+        if (Number.isFinite(requestedMaxSize)) {
+            return Math.max(512, Math.min(4096, Math.round(requestedMaxSize)));
+        }
+
+        const qualityPreset = this.normalizeQualityPreset(quality);
+        if (qualityPreset === 'fast') {
+            return 896;
+        }
+        if (qualityPreset === 'quality') {
+            return 1280;
+        }
+        return 1024;
     }
 
     schema: ToolSchema = {
@@ -84,7 +151,7 @@ export class RemoveBackgroundTool implements Tool {
                 },
                 quality: {
                     type: 'number',
-                    description: '输出质量 0-100（默认90）'
+                    description: '输出质量 0-100；也兼容 fast/balanced/quality 预设'
                 },
                 targetPrompt: {
                     type: 'string',
@@ -97,7 +164,7 @@ export class RemoveBackgroundTool implements Tool {
                 },
                 maxSize: {
                     type: 'number',
-                    description: '模型输入最长边像素（512-4096，默认 1536）'
+                    description: '导出到模型前的最长边像素（512-4096；未指定时按质量档动态选择）'
                 }
             }
         }
@@ -133,15 +200,13 @@ export class RemoveBackgroundTool implements Tool {
             createNewLayer: _createNewLayer = true, // 预留
             useMask: _useMask = false, // 预留
             modelId: _modelId = 'default', // 预留
-            quality: _quality = 90, // 预留
+            quality: requestedQuality = 90,
             targetPrompt = '',
-            maxSize
+            maxSize,
+            sampleAllLayers = false
         } = params;
 
-        const requestedMaxSize = Number(maxSize);
-        const exportMaxSize = Number.isFinite(requestedMaxSize)
-            ? Math.max(512, Math.min(4096, Math.round(requestedMaxSize)))
-            : 1536;
+        const exportMaxSize = this.resolveExportMaxSize(maxSize, requestedQuality);
 
         try {
             const doc = app.activeDocument;
@@ -168,7 +233,7 @@ export class RemoveBackgroundTool implements Tool {
             }
 
             // 验证图层存在
-            const targetLayer = this.findLayerById(doc, targetLayerId);
+            const targetLayer = findLayerById(doc, targetLayerId);
             if (!targetLayer) {
                 return {
                     success: false,
@@ -190,29 +255,59 @@ export class RemoveBackgroundTool implements Tool {
                 let imageData = '';
                 let exportError: Error | null = null;
                 let useBinaryTransfer = false;
+                const exportLayerGroup = this.isLayerGroup(targetLayer);
                 
-                // 尝试二进制获取（速度优先）
-                try {
-                    binaryImageData = await this.getLayerImageDataBinary(targetLayerId, exportMaxSize);
-                    if (binaryImageData && binaryImageData.data.length > 0) {
-                        useBinaryTransfer = true;
-                        console.log(`[RemoveBackground] 二进制图像: ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB`);
+                if (exportLayerGroup) {
+                    console.log('[RemoveBackground] Layer group detected; using binary copy-export path.');
+                }
+
+                if (this.wsClient) {
+                    try {
+                        // 复合取样优先：导出图层边界内的文档复合（模型可见完整背景上下文）
+                        binaryImageData = sampleAllLayers
+                            ? await this.getLayerImageDataBinary(targetLayerId, exportMaxSize, { composite: true })
+                            : exportLayerGroup
+                                ? await this.copyLayerAndExportBinary(targetLayerId)
+                                : await this.getLayerImageDataBinary(targetLayerId, exportMaxSize);
+                        if (binaryImageData && binaryImageData.data.length > 0) {
+                            useBinaryTransfer = true;
+                            console.log(`[RemoveBackground] Binary image ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB${sampleAllLayers ? ' (composite)' : ''}`);
+                        }
+                    } catch (binErr: any) {
+                        exportError = binErr;
+                        if (sampleAllLayers) {
+                            console.warn('[RemoveBackground] 复合取样导出失败，回退为仅目标图层取样:', binErr.message);
+                        } else {
+                            console.log('[RemoveBackground] Binary export failed, trying binary copy-export fallback:', binErr.message);
+                        }
+                        try {
+                            binaryImageData = sampleAllLayers
+                                ? await this.getLayerImageDataBinary(targetLayerId, exportMaxSize)
+                                : !exportLayerGroup
+                                    ? await this.copyLayerAndExportBinary(targetLayerId)
+                                    : null;
+                            if (binaryImageData && binaryImageData.data.length > 0) {
+                                useBinaryTransfer = true;
+                                console.log(`[RemoveBackground] Binary fallback export ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB`);
+                            }
+                        } catch (copyBinErr: any) {
+                            exportError = copyBinErr;
+                            console.log('[RemoveBackground] Binary copy-export failed, fallback to Base64:', copyBinErr.message);
+                        }
                     }
-                } catch (binErr: any) {
-                    console.log('[RemoveBackground] 二进制获取失败，回退到 Base64:', binErr.message);
                 }
                 
-                // 回退到 Base64（兼容）
                 if (!useBinaryTransfer) {
                     try {
-                        imageData = await this.getLayerImageData(targetLayerId, exportMaxSize);
-                } catch (err: any) {
-                    console.error('[RemoveBackground] 导出图像失败:', err.message);
-                    exportError = err;
+                        imageData = exportLayerGroup
+                            ? await this.copyLayerAndExport(targetLayerId)
+                            : await this.getLayerImageData(targetLayerId, exportMaxSize);
+                    } catch (err: any) {
+                        console.error('[RemoveBackground] Export failed:', err.message);
+                        exportError = err;
                     }
                 }
                 
-                // 检查导出结果
                 if (!useBinaryTransfer && (exportError || !imageData || imageData.length < 100)) {
                     const errorReason = exportError?.message || '导出数据无效';
                     console.error(`[RemoveBackground] AI 模式获取图像失败: ${errorReason}`);
@@ -230,13 +325,18 @@ export class RemoveBackgroundTool implements Tool {
                 
                 // 获取图层的实际尺寸和位置
                 const layerBounds = targetLayer.bounds;
-                const originalWidth = layerBounds.right - layerBounds.left;
-                const originalHeight = layerBounds.bottom - layerBounds.top;
-                const originalLeft = layerBounds.left;
-                const originalTop = layerBounds.top;
-                
-                const docWidth = doc.width;
-                const docHeight = doc.height;
+                const docWidth = Math.max(1, Math.round(doc.width));
+                const docHeight = Math.max(1, Math.round(doc.height));
+
+                // 复合取样导出的是画布内裁剪区域，回贴坐标需同样夹取；普通取样保持原始图层边界
+                const boundLeft = sampleAllLayers ? Math.max(0, Math.round(layerBounds.left)) : Math.round(layerBounds.left);
+                const boundTop = sampleAllLayers ? Math.max(0, Math.round(layerBounds.top)) : Math.round(layerBounds.top);
+                const boundRight = sampleAllLayers ? Math.min(docWidth, Math.round(layerBounds.right)) : Math.round(layerBounds.right);
+                const boundBottom = sampleAllLayers ? Math.min(docHeight, Math.round(layerBounds.bottom)) : Math.round(layerBounds.bottom);
+                const originalWidth = Math.max(1, boundRight - boundLeft);
+                const originalHeight = Math.max(1, boundBottom - boundTop);
+                const originalLeft = boundLeft;
+                const originalTop = boundTop;
                 
                 console.log(`[RemoveBackground] 图层: ${originalWidth}x${originalHeight}, 位置: (${originalLeft}, ${originalTop}), 文档: ${docWidth}x${docHeight}`);
                 
@@ -321,100 +421,89 @@ export class RemoveBackgroundTool implements Tool {
      */
     private async getLayerImageData(layerId: number, maxSize: number = 1024): Promise<string> {
         const doc = app.activeDocument;
-        if (!doc) throw new Error('没有打开的文档');
+        if (!doc) throw new Error('No active document');
 
-        // 查找目标图层
-        const targetLayer = this.findLayerById(doc, layerId);
-        
-        let result = '';
-        
-        await core.executeAsModal(async () => {
-            // 官方文档：targetSize 只传一个维度时 PS 按比例缩放保持纵横比
-            // 传两个维度会强制缩放到精确尺寸（破坏纵横比）
-            let targetSize: Record<string, number> = { height: maxSize };
-            if (targetLayer) {
-                const bounds = targetLayer.bounds;
-                const layerW = bounds.right - bounds.left;
-                const layerH = bounds.bottom - bounds.top;
-                if (layerW > 0 && layerH > 0) {
-                    targetSize = layerW >= layerH 
-                        ? { width: Math.min(maxSize, layerW) }
-                        : { height: Math.min(maxSize, layerH) };
+        const targetLayer = findLayerById(doc, layerId);
+        let result = "";
+
+        try {
+            await core.executeAsModal(async () => {
+                let targetSize: Record<string, number> = { height: maxSize };
+                if (targetLayer) {
+                    const bounds = targetLayer.boundsNoEffects || targetLayer.bounds;
+                    const layerW = bounds.right - bounds.left;
+                    const layerH = bounds.bottom - bounds.top;
+                    if (layerW > 0 && layerH > 0) {
+                        targetSize = layerW >= layerH 
+                            ? { width: Math.min(maxSize, layerW) }
+                            : { height: Math.min(maxSize, layerH) };
+                    }
                 }
-            }
-            
-            // 获取像素数据
-            const pixelResult = await imaging.getPixels({
-                documentID: doc.id,
-                layerID: targetLayer?.id,
-                targetSize: targetSize as any  // PS API 支持只传一个维度，TS 类型定义过严
-            });
-            
-            if (!pixelResult?.imageData) {
-                throw new Error('无法获取像素数据');
-            }
-            
-            const imgData = pixelResult.imageData;
-            const actualWidth = imgData.width;
-            const actualHeight = imgData.height;
-            const components = imgData.components;
-            
-            console.log(`[RemoveBackground] 获取像素: ${actualWidth}x${actualHeight}, ${components} 通道`);
-            
-            // 优先尝试 JPEG 编码（更小的传输大小）
-            try {
-                const jpegBase64 = await imaging.encodeImageData({
-                    imageData: imgData,
-                    base64: true
+                
+                const pixelResult = await imaging.getPixels({
+                    documentID: doc.id,
+                    layerID: targetLayer?.id,
+                    targetSize: targetSize as any
                 });
                 
-                if (jpegBase64 && typeof jpegBase64 === 'string') {
-                    result = `data:image/jpeg;base64,${jpegBase64}`;
-                    console.log(`[RemoveBackground] JPEG 编码成功: ${(result.length / 1024).toFixed(0)}KB`);
+                if (!pixelResult?.imageData) {
+                    throw new Error('Unable to get pixel data');
                 }
-            } catch (encodeError: any) {
-                console.log('[RemoveBackground] JPEG 编码失败，使用 RAW:', encodeError.message);
-            }
-            
-            // 回退到 RAW 格式
-            if (!result) {
-                const rawData = await imgData.getData();
-                const pixelCount = actualWidth * actualHeight;
                 
-                // 提取 RGB(A) 数据
-                let binaryString = '';
-                for (let i = 0; i < pixelCount * components; i++) {
-                    binaryString += String.fromCharCode(rawData[i]);
+                const imgData = pixelResult.imageData;
+                const actualWidth = imgData.width;
+                const actualHeight = imgData.height;
+                const components = imgData.components;
+                
+                console.log(`[RemoveBackground] Pixels ${actualWidth}x${actualHeight}, ${components} channels`);
+                
+                try {
+                    const jpegBase64 = await imaging.encodeImageData({
+                        imageData: imgData,
+                        base64: true
+                    });
+                    
+                    if (jpegBase64 && typeof jpegBase64 === "string") {
+                        result = `data:image/jpeg;base64,${jpegBase64}`;
+                        console.log(`[RemoveBackground] JPEG encoded ${(result.length / 1024).toFixed(0)}KB`);
+                    }
+                } catch (encodeError: any) {
+                    console.log('[RemoveBackground] JPEG encode failed, using RAW:', encodeError.message);
                 }
-                const base64 = btoa(binaryString);
-                result = `RAW:${actualWidth}:${actualHeight}:${components}:${base64}`;
-                console.log(`[RemoveBackground] RAW 格式: ${(base64.length / 1024).toFixed(0)}KB`);
-            }
-            
-            imgData.dispose();
-            
-        }, { commandName: 'DesignEcho: 获取抠图图像' });
+                
+                if (!result) {
+                    const rawData = await imgData.getData();
+                    const pixelCount = actualWidth * actualHeight;
+                    
+                    let binaryString = "";
+                    for (let i = 0; i < pixelCount * components; i++) {
+                        binaryString += String.fromCharCode(rawData[i]);
+                    }
+                    const base64 = btoa(binaryString);
+                    result = `RAW:${actualWidth}:${actualHeight}:${components}:${base64}`;
+                    console.log(`[RemoveBackground] RAW payload ${(base64.length / 1024).toFixed(0)}KB`);
+                }
+                
+                imgData.dispose();
+                
+            }, { commandName: 'DesignEcho: Export matting image' });
+        } catch (error) {
+            console.warn('[RemoveBackground] getPixels export failed, using copy-export fallback:', error instanceof Error ? error.message : error);
+        }
         
-        // 备用方法：复制图层到新文档
         if (!result) {
-            console.log('[RemoveBackground] 尝试备用方法: 复制图层到新文档');
+            console.log('[RemoveBackground] Trying fallback: duplicate layer into temp document');
             result = await this.copyLayerAndExport(layerId);
         }
 
         if (!result) {
-            throw new Error('所有图像获取方法都失败了');
+            throw new Error('All image export strategies failed');
         }
         
         return result;
     }
 
-    /**
-     * 获取图层图像数据（二进制版本）
-     * 
-     * 返回 Uint8Array，用于二进制 WebSocket 传输
-     * 避免 Base64 膨胀，减少约 33% 传输数据量
-     */
-    async getLayerImageDataBinary(layerId: number, maxSize: number = 1024): Promise<{
+    async getLayerImageDataBinary(layerId: number, maxSize: number = 1024, options?: { composite?: boolean }): Promise<{
         type: BinaryMessageType;
         data: Uint8Array;
         width: number;
@@ -423,10 +512,11 @@ export class RemoveBackgroundTool implements Tool {
         const doc = app.activeDocument;
         if (!doc) throw new Error('没有打开的文档');
 
-        const targetLayer = this.findLayerById(doc, layerId);
-        
+        const targetLayer = findLayerById(doc, layerId);
+        const composite = options?.composite === true;
+
         let result: { type: BinaryMessageType; data: Uint8Array; width: number; height: number } | null = null;
-        
+
         await core.executeAsModal(async () => {
             // 官方文档：targetSize 只传一个维度时 PS 按比例缩放保持纵横比
             // 传两个维度会强制缩放到精确尺寸（破坏纵横比）
@@ -437,18 +527,35 @@ export class RemoveBackgroundTool implements Tool {
                 const layerW = bounds.right - bounds.left;
                 const layerH = bounds.bottom - bounds.top;
                 if (layerW > 0 && layerH > 0) {
-                    targetSize = layerW >= layerH 
+                    targetSize = layerW >= layerH
                         ? { width: Math.min(maxSize, layerW) }
                         : { height: Math.min(maxSize, layerH) };
-                    console.log(`[RemoveBackground] 图层 ${layerW}x${layerH}, targetSize=${JSON.stringify(targetSize)}`);
+                    console.log(`[RemoveBackground] 图层 ${layerW}x${layerH}, targetSize=${JSON.stringify(targetSize)}${composite ? ' (复合取样)' : ''}`);
                 }
             }
-            
-            const pixelResult = await imaging.getPixels({
+
+            const pixelOptions: Record<string, any> = {
                 documentID: doc.id,
-                layerID: targetLayer?.id,
                 targetSize: targetSize as any  // PS API 支持只传一个维度，TS 类型定义过严
-            });
+            };
+            if (composite && targetLayer) {
+                // 复合取样：不传 layerID 即取文档复合像素；sourceBounds 裁剪到目标图层边界（夹取画布范围）
+                const b = targetLayer.bounds;
+                pixelOptions.sourceBounds = {
+                    left: Math.max(0, Math.round(b.left)),
+                    top: Math.max(0, Math.round(b.top)),
+                    right: Math.min(Math.round(doc.width), Math.round(b.right)),
+                    bottom: Math.min(Math.round(doc.height), Math.round(b.bottom))
+                };
+                if (pixelOptions.sourceBounds.right <= pixelOptions.sourceBounds.left
+                    || pixelOptions.sourceBounds.bottom <= pixelOptions.sourceBounds.top) {
+                    throw new Error('复合取样失败：目标图层完全在画布之外。');
+                }
+            } else {
+                pixelOptions.layerID = targetLayer?.id;
+            }
+
+            const pixelResult = await imaging.getPixels(pixelOptions as any);
             
             if (!pixelResult?.imageData) {
                 throw new Error('无法获取像素数据');
@@ -532,7 +639,7 @@ export class RemoveBackgroundTool implements Tool {
         await core.executeAsModal(async () => {
             try {
                 // 选中目标图层
-                const layer = this.findLayerById(currentDoc, layerId);
+                const layer = findLayerById(currentDoc, layerId);
                 if (!layer) throw new Error(`未找到图层 ID: ${layerId}`);
                 currentDoc.activeLayers = [layer];
 
@@ -599,12 +706,8 @@ export class RemoveBackgroundTool implements Tool {
                     const encoder = new TextEncoder();
                     uint8Array = encoder.encode(fileData as string);
                 }
-                
-                    let binaryString = '';
-                    for (let i = 0; i < uint8Array.length; i++) {
-                        binaryString += String.fromCharCode(uint8Array[i]);
-                    }
-                    result = btoa(binaryString);
+
+                result = this.uint8ArrayToBase64(uint8Array);
                     
                     // 清理临时文件
                 try { await targetFile.delete(); } catch (e) {}
@@ -680,27 +783,60 @@ export class RemoveBackgroundTool implements Tool {
      * 这是最通用的方法，适用于任何类型的图层
      */
     private async copyLayerAndExport(layerId: number): Promise<string> {
+        const binaryExport = await this.exportLayerViaTempDocument(layerId);
+        return this.uint8ArrayToBase64(binaryExport.data);
+    }
+
+    private async copyLayerAndExportBinary(layerId: number): Promise<{
+        type: BinaryMessageType;
+        data: Uint8Array;
+        width: number;
+        height: number;
+    }> {
+        const exported = await this.exportLayerViaTempDocument(layerId);
+        console.log(`[RemoveBackground] Binary copy-export PNG: ${exported.width}x${exported.height}, ${(exported.data.length / 1024).toFixed(0)}KB`);
+        return {
+            type: BinaryMessageType.PNG,
+            data: exported.data,
+            width: exported.width,
+            height: exported.height
+        };
+    }
+
+    private async exportLayerViaTempDocument(layerId: number): Promise<{
+        data: Uint8Array;
+        width: number;
+        height: number;
+    }> {
         const uxp = require('uxp');
         const fs = uxp.storage.localFileSystem;
         const doc = app.activeDocument;
         if (!doc) throw new Error('没有打开的文档');
         
-        let result = '';
         let tempDoc: any = null;
         let tempFile: any = null;
+        let exportedWidth = 0;
+        let exportedHeight = 0;
         const originalDoc = doc;  // 捕获非空引用
 
+        const exportHolder: { bytes: Uint8Array | null } = { bytes: null };
         await core.executeAsModal(async () => {
             try {
                 // 选中目标图层
-                const layer = this.findLayerById(originalDoc, layerId);
+                const layer = findLayerById(originalDoc, layerId);
                 if (!layer) throw new Error(`未找到图层 ID: ${layerId}`);
                 originalDoc.activeLayers = [layer];
 
                 // 获取图层边界
-                const bounds = layer.bounds;
-                const width = bounds.width;
-                const height = bounds.height;
+                const bounds = layer.boundsNoEffects || layer.bounds;
+                const left = Number(bounds.left);
+                const top = Number(bounds.top);
+                const right = Number(bounds.right);
+                const bottom = Number(bounds.bottom);
+                const width = right - left;
+                const height = bottom - top;
+                exportedWidth = Math.max(1, Math.round(width));
+                exportedHeight = Math.max(1, Math.round(height));
 
                 // 复制图层到新文档
                 await action.batchPlay([
@@ -721,10 +857,10 @@ export class RemoveBackgroundTool implements Tool {
                         _obj: 'crop',
                         to: {
                             _obj: 'rectangle',
-                            top: { _unit: 'pixelsUnit', _value: 0 },
-                            left: { _unit: 'pixelsUnit', _value: 0 },
-                            bottom: { _unit: 'pixelsUnit', _value: height },
-                            right: { _unit: 'pixelsUnit', _value: width }
+                            top: { _unit: 'pixelsUnit', _value: top },
+                            left: { _unit: 'pixelsUnit', _value: left },
+                            bottom: { _unit: 'pixelsUnit', _value: bottom },
+                            right: { _unit: 'pixelsUnit', _value: right }
                         },
                         _options: { dialogOptions: 'dontDisplay' }
                     }
@@ -752,12 +888,7 @@ export class RemoveBackgroundTool implements Tool {
 
                 // 读取文件
                 const fileData = await tempFile.read({ format: uxp.storage.formats.binary });
-                const uint8Array = new Uint8Array(fileData);
-                let binaryString = '';
-                for (let i = 0; i < uint8Array.length; i++) {
-                    binaryString += String.fromCharCode(uint8Array[i]);
-                }
-                result = btoa(binaryString);
+                exportHolder.bytes = new Uint8Array(fileData);
 
             } finally {
                 // 关闭临时文档（不保存）
@@ -779,7 +910,16 @@ export class RemoveBackgroundTool implements Tool {
             }
         }, { commandName: 'DesignEcho: 复制图层并导出' });
 
-        return result;
+        const exportedBytes = exportHolder.bytes;
+        if (!exportedBytes || exportedBytes.byteLength === 0) {
+            throw new Error('复制图层导出失败');
+        }
+
+        return {
+            data: exportedBytes,
+            width: exportedWidth,
+            height: exportedHeight
+        };
     }
 
     /**
@@ -898,7 +1038,7 @@ export class RemoveBackgroundTool implements Tool {
         if (!doc) throw new Error('没有文档');
 
         // 选中目标图层
-        const layer = this.findLayerById(doc, layerId);
+        const layer = findLayerById(doc, layerId);
         if (layer) {
             doc.activeLayers = [layer];
         }
@@ -973,7 +1113,7 @@ export class RemoveBackgroundTool implements Tool {
         if (!doc) throw new Error('没有文档');
 
         // 选中原图层
-        const layer = this.findLayerById(doc, originalLayerId);
+        const layer = findLayerById(doc, originalLayerId);
         if (!layer) throw new Error('找不到图层');
         doc.activeLayers = [layer];
 
@@ -1016,21 +1156,6 @@ export class RemoveBackgroundTool implements Tool {
         ], {});
     }
 
-    /**
-     * 递归查找图层
-     */
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) {
-                return layer;
-            }
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
 }
 
 /**
@@ -1072,87 +1197,26 @@ export class ApplyMattingResultTool implements Tool {
         }
     };
 
-    // 二进制蒙版等待队列（用于 JSON 请求先到达的情况）
-    private pendingBinaryMasks: Map<number, {
-        resolve: (data: { bytes: Uint8Array; type: BinaryMessageType }) => void;
-        reject: (error: Error) => void;
-        timeout: ReturnType<typeof setTimeout>;
-    }> = new Map();
+    private readonly binaryMaskStore: BinaryMaskStore;
 
-    // 二进制蒙版缓存（用于二进制数据先到达的情况）
-    private receivedBinaryMasks: Map<number, {
-        bytes: Uint8Array;
-        type: BinaryMessageType;
-        receivedAt: number;
-    }> = new Map();
-
-    /**
-     * 接收二进制蒙版数据（由 WebSocket 回调调用）
-     * 
-     * 关键设计：二进制数据可能在 JSON 请求之前到达，
-     * 因此需要缓存机制来处理两种时序：
-     * 1. JSON 请求先到达：waitForBinaryMask 已设置等待者，直接 resolve
-     * 2. 二进制先到达：缓存数据，waitForBinaryMask 调用时从缓存取
-     * 
-     * @param requestId - 请求 ID
-     * @param data - 蒙版数据
-     * @param type - 二进制消息类型 (PNG 或 RAW_MASK)
-     */
-    receiveBinaryMask(requestId: number, data: Uint8Array, type: BinaryMessageType = BinaryMessageType.PNG): void {
-        // 重要：必须复制数据，因为 WebSocket ArrayBuffer 可能被重用
-        const dataCopy = new Uint8Array(data);
-        
-        const pending = this.pendingBinaryMasks.get(requestId);
-        if (pending) {
-            // 情况 1：JSON 请求已在等待，直接 resolve
-            clearTimeout(pending.timeout);
-            this.pendingBinaryMasks.delete(requestId);
-            pending.resolve({ bytes: dataCopy, type });
-            console.log(`[ApplyMattingResult] 收到二进制蒙版（有等待者）: requestId=${requestId}, type=${type}, ${(dataCopy.length / 1024).toFixed(1)}KB`);
-        } else {
-            // 情况 2：二进制先到达，缓存数据等待 JSON 请求
-            this.receivedBinaryMasks.set(requestId, {
-                bytes: dataCopy,
-                type,
-                receivedAt: Date.now()
-            });
-            console.log(`[ApplyMattingResult] 二进制蒙版已缓存: requestId=${requestId}, type=${type}, ${(dataCopy.length / 1024).toFixed(1)}KB`);
-            
-            // 30 秒后自动清理缓存（防止内存泄漏）
-            setTimeout(() => {
-                if (this.receivedBinaryMasks.has(requestId)) {
-                    console.warn(`[ApplyMattingResult] 清理未使用的缓存: requestId=${requestId}`);
-                    this.receivedBinaryMasks.delete(requestId);
-                }
-            }, 30000);
-        }
+    constructor(binaryMaskStore: BinaryMaskStore = new BinaryMaskStore()) {
+        this.binaryMaskStore = binaryMaskStore;
     }
 
-    /**
-     * 等待二进制蒙版数据
-     * 
-     * 首先检查缓存（二进制可能已先到达），否则设置等待者
-     * 
-     * @returns 包含蒙版数据和类型的对象
-     */
-    private waitForBinaryMask(requestId: number, timeout: number = 60000): Promise<{ bytes: Uint8Array; type: BinaryMessageType }> {
-        // 先检查缓存：二进制数据可能已经先到达
-        const cached = this.receivedBinaryMasks.get(requestId);
-        if (cached) {
-            this.receivedBinaryMasks.delete(requestId);
-            console.log(`[ApplyMattingResult] 从缓存获取二进制蒙版: requestId=${requestId}, type=${cached.type}, ${(cached.bytes.length / 1024).toFixed(1)}KB`);
-            return Promise.resolve({ bytes: cached.bytes, type: cached.type });
+    private normalizePixelDimension(value: number, fallback: number): number {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric <= 0) {
+            return Math.max(1, Math.round(fallback));
         }
+        return Math.max(1, Math.round(numeric));
+    }
 
-        // 未找到缓存，设置等待者
-        return new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
-                this.pendingBinaryMasks.delete(requestId);
-                reject(new Error(`等待二进制蒙版超时: requestId=${requestId}`));
-            }, timeout);
-
-            this.pendingBinaryMasks.set(requestId, { resolve, reject, timeout: timeoutId });
-        });
+    private normalizePixelOffset(value: number): number {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return 0;
+        }
+        return Math.round(numeric);
     }
 
     async execute(params: {
@@ -1207,8 +1271,8 @@ export class ApplyMattingResultTool implements Tool {
 
             // ==================== 二进制蒙版处理 ====================
             let maskBytes: Uint8Array;
-            let maskWidth: number = paramMaskWidth || 0;
-            let maskHeight: number = paramMaskHeight || 0;
+            let maskWidth: number = Number(paramMaskWidth || 0);
+            let maskHeight: number = Number(paramMaskHeight || 0);
             let isPngMask = false;
             let isRawMask = false;
 
@@ -1216,8 +1280,20 @@ export class ApplyMattingResultTool implements Tool {
                 // 等待二进制蒙版数据
                 console.log(`[ApplyMattingResult] 等待二进制蒙版: requestId=${binaryRequestId}`);
                 try {
-                    const binaryResult = await this.waitForBinaryMask(binaryRequestId, 60000);
-                    maskBytes = binaryResult.bytes;
+                    const binaryResult = await this.binaryMaskStore.waitFor(binaryRequestId, 60000);
+                    maskBytes = binaryResult.data;
+                    if (maskWidth > 0 && binaryResult.width > 0 && maskWidth !== binaryResult.width) {
+                        throw new Error(
+                            `二进制蒙版宽度不一致：请求为 ${maskWidth}，实际为 ${binaryResult.width}。`
+                        );
+                    }
+                    if (maskHeight > 0 && binaryResult.height > 0 && maskHeight !== binaryResult.height) {
+                        throw new Error(
+                            `二进制蒙版高度不一致：请求为 ${maskHeight}，实际为 ${binaryResult.height}。`
+                        );
+                    }
+                    maskWidth = binaryResult.width || maskWidth;
+                    maskHeight = binaryResult.height || maskHeight;
                     
                     // 根据二进制消息类型设置标志
                     if (binaryResult.type === BinaryMessageType.RAW_MASK) {
@@ -1281,19 +1357,32 @@ export class ApplyMattingResultTool implements Tool {
 
             await core.executeAsModal(async () => {
                 // 找到原始图层
-                const originalLayer = this.findLayerById(doc, originalLayerId);
+                const originalLayer = findLayerById(doc, originalLayerId);
                 if (!originalLayer) {
                     throw new Error(`未找到原始图层 ID: ${originalLayerId}`);
                 }
+                const layerBounds = originalLayer.bounds;
+                const layerWidth = this.normalizePixelDimension(layerBounds.right - layerBounds.left, 1);
+                const layerHeight = this.normalizePixelDimension(layerBounds.bottom - layerBounds.top, 1);
 
-                // 如果没有解析到尺寸，使用图层尺寸
-                if (maskWidth === 0 || maskHeight === 0) {
-                    const layerBounds = originalLayer.bounds;
-                    maskWidth = layerBounds.right - layerBounds.left;
-                    maskHeight = layerBounds.bottom - layerBounds.top;
+                // 统一为正整数尺寸，缺失时回退到图层尺寸
+                maskWidth = this.normalizePixelDimension(maskWidth, layerWidth);
+                maskHeight = this.normalizePixelDimension(maskHeight, layerHeight);
+
+                if (isRawMask) {
+                    const resolved = this.resolveRawMaskGeometry(maskBytes, maskWidth, maskHeight, layerWidth, layerHeight);
+                    if (!resolved) {
+                        throw new Error(
+                            `RAW 蒙版尺寸异常: ${maskBytes.length} bytes, width=${maskWidth}, height=${maskHeight}, fallback=${layerWidth}x${layerHeight}`
+                        );
+                    }
+                    maskWidth = resolved.width;
+                    maskHeight = resolved.height;
                 }
 
                 console.log(`[ApplyMattingResult] 蒙版尺寸: ${maskWidth}x${maskHeight}, PNG: ${isPngMask}, RAW: ${isRawMask}`);
+
+                const needsCanvasSelection = isRawMask && (maskWidth !== layerWidth || maskHeight !== layerHeight);
 
                 // 选中原始图层
                 doc.activeLayers = [originalLayer];
@@ -1322,18 +1411,18 @@ export class ApplyMattingResultTool implements Tool {
                             
                             if (originalLeft !== undefined && originalTop !== undefined) {
                                 // 使用抠图时记录的位置（推荐）
-                                layerLeft = originalLeft;
-                                layerTop = originalTop;
-                                docWidth = paramDocWidth || doc.width;
-                                docHeight = paramDocHeight || doc.height;
+                                layerLeft = this.normalizePixelOffset(originalLeft);
+                                layerTop = this.normalizePixelOffset(originalTop);
+                                docWidth = this.normalizePixelDimension(paramDocWidth !== undefined ? paramDocWidth : doc.width, doc.width);
+                                docHeight = this.normalizePixelDimension(paramDocHeight !== undefined ? paramDocHeight : doc.height, doc.height);
                                 console.log(`[ApplyMattingResult] 使用抠图时记录的位置: left=${layerLeft}, top=${layerTop}`);
                             } else {
                                 // 回退：从当前图层获取（可能导致错位）
                                 const layerBounds = originalLayer.bounds;
-                                layerLeft = layerBounds.left;
-                                layerTop = layerBounds.top;
-                                docWidth = doc.width;
-                                docHeight = doc.height;
+                                layerLeft = this.normalizePixelOffset(layerBounds.left);
+                                layerTop = this.normalizePixelOffset(layerBounds.top);
+                                docWidth = this.normalizePixelDimension(doc.width, layerWidth);
+                                docHeight = this.normalizePixelDimension(doc.height, layerHeight);
                                 console.log(`[ApplyMattingResult] 使用当前图层位置: left=${layerLeft}, top=${layerTop} (警告：可能错位)`);
                             }
                             
@@ -1347,7 +1436,8 @@ export class ApplyMattingResultTool implements Tool {
                                 layerLeft,
                                 layerTop,
                                 docWidth,
-                                docHeight
+                                docHeight,
+                                needsCanvasSelection
                             );
                         } else {
                             throw new Error('无法创建选区：需要有效的蒙版数据');
@@ -1501,11 +1591,16 @@ export class ApplyMattingResultTool implements Tool {
         width: number,
         height: number
     ): Promise<void> {
-        console.log(`[ApplyMattingResult] 应用蒙版 ${width}x${height}, 数据大小: ${maskBytes.length}`);
-        
-        // 简化方案：直接创建一个"显示全部"的蒙版
-        // 后续可以通过选区方式应用精确蒙版
-        
+        const safeWidth = this.normalizePixelDimension(width, 1);
+        const safeHeight = this.normalizePixelDimension(height, 1);
+        console.log(`[ApplyMattingResult] 应用蒙版 ${safeWidth}x${safeHeight}, 数据大小: ${maskBytes.length}`);
+
+        // PNG 输入 fail closed：历史上这里只贴一个 revealAll 空白蒙版就当成功，
+        // 等于"抠了个空气"。PNG 解码需要打开临时文档，已统一走 RAW_MASK 二进制路径。
+        if (maskBytes[0] === 0x89 && maskBytes[1] === 0x50) {
+            throw new Error('PNG 蒙版不再支持静默应用（历史行为是创建空白蒙版冒充成功）。请改用 RAW_MASK 二进制蒙版路径。');
+        }
+
         try {
             // 1. 先添加一个空白蒙版
             await action.batchPlay([
@@ -1517,23 +1612,13 @@ export class ApplyMattingResultTool implements Tool {
                     _options: { dialogOptions: 'dontDisplay' }
                 }
             ], {});
-            
-            console.log('[ApplyMattingResult] 空白蒙版已添加，尝试使用 Imaging API 填充...');
-            
-            // 2. 尝试使用 Imaging API 填充蒙版
-            // 检查是否是 PNG 数据
-            if (maskBytes[0] === 0x89 && maskBytes[1] === 0x50) {
-                console.log('[ApplyMattingResult] PNG 格式，跳过直接填充');
-                // PNG 格式暂时只添加空白蒙版
-                return;
-            }
-            
-            // 尝试使用 putLayerMask
+
+            // 2. 使用 putLayerMask 填充真实蒙版数据
             const maskImageData = await imaging.createImageDataFromBuffer(
                 maskBytes,
                 {
-                    width: width,
-                    height: height,
+                    width: safeWidth,
+                    height: safeHeight,
                     components: 1,
                     colorSpace: 'Grayscale',
                     colorProfile: 'Gray Gamma 2.2'
@@ -1548,10 +1633,11 @@ export class ApplyMattingResultTool implements Tool {
 
             maskImageData.dispose();
             console.log('[ApplyMattingResult] 蒙版数据已填充');
-            
+
         } catch (error: any) {
             console.error('[ApplyMattingResult] 应用蒙版失败:', error.message);
-            // 即使失败，也不抛出异常，至少创建了空白蒙版
+            // 不吞错：让调用方如实失败，而不是留着空白蒙版冒充成功
+            throw new Error(`应用图层蒙版失败: ${error.message}`);
         }
     }
 
@@ -1587,7 +1673,9 @@ export class ApplyMattingResultTool implements Tool {
         const sampleSize = Math.min(maskBytes.length, 100000);
         console.log(`[ApplyMattingResult] 蒙版采样(${sampleSize}): min=${minVal}, max=${maxVal}, avg=${(sum/sampleSize).toFixed(1)}`);
         console.log(`[ApplyMattingResult] 分布: 黑(${blackCount}), 白(${whiteCount}), 中(${midCount})`);
-        
+
+        let maskImageData: any = null;
+
         try {
             // 验证当前文档和图层
             const doc = app.activeDocument;
@@ -1596,7 +1684,7 @@ export class ApplyMattingResultTool implements Tool {
             }
             
             // 重新获取图层以确保它存在
-            let layer = this.findLayerById(doc, layerId);
+            let layer = findLayerById(doc, layerId);
             if (!layer) {
                 console.warn(`[ApplyMattingResult] 未找到图层 ${layerId}，尝试使用当前激活图层`);
                 if (doc.activeLayers.length > 0) {
@@ -1610,10 +1698,12 @@ export class ApplyMattingResultTool implements Tool {
             }
             
             // 检查图层边界
-            const layerBounds = layer.bounds;
-            const layerWidth = layerBounds.right - layerBounds.left;
-            const layerHeight = layerBounds.bottom - layerBounds.top;
-            console.log(`[ApplyMattingResult] 图层尺寸: ${layerWidth}x${layerHeight}, 蒙版尺寸: ${width}x${height}`);
+            let layerBounds = layer.bounds;
+            let layerWidth = this.normalizePixelDimension(layerBounds.right - layerBounds.left, 1);
+            let layerHeight = this.normalizePixelDimension(layerBounds.bottom - layerBounds.top, 1);
+            const normalizedWidth = this.normalizePixelDimension(width, layerWidth);
+            const normalizedHeight = this.normalizePixelDimension(height, layerHeight);
+            console.log(`[ApplyMattingResult] 图层尺寸: ${layerWidth}x${layerHeight}, 蒙版尺寸: ${normalizedWidth}x${normalizedHeight}`);
             
             // 检查是否是背景图层 - 背景图层不支持蒙版，需要先转换
             if (layer.isBackgroundLayer) {
@@ -1622,59 +1712,68 @@ export class ApplyMattingResultTool implements Tool {
                 // 转换后重新获取图层信息
                 layer = doc.activeLayers[0];
                 layerId = layer.id;
+                layerBounds = layer.bounds;
+                layerWidth = this.normalizePixelDimension(layerBounds.right - layerBounds.left, 1);
+                layerHeight = this.normalizePixelDimension(layerBounds.bottom - layerBounds.top, 1);
                 console.log(`[ApplyMattingResult] 转换完成，新图层ID: ${layerId}`);
             }
             
-            // 创建 PhotoshopImageData（官方文档推荐 Gray Gamma 2.2 用于蒙版）
-            let maskImageData = await imaging.createImageDataFromBuffer(
-                maskBytes,
+            const expectedSourceBytes = normalizedWidth * normalizedHeight;
+            if (maskBytes.byteLength !== expectedSourceBytes) {
+                throw new Error(
+                    `RAW 蒙版数据不完整：收到 ${maskBytes.byteLength} bytes，` +
+                    `${normalizedWidth}×${normalizedHeight} 需要 ${expectedSourceBytes} bytes。`
+                );
+            }
+
+            const applyPlan = resolveMattingMaskApplyPlan(
+                normalizedWidth,
+                normalizedHeight,
+                layerWidth,
+                layerHeight
+            );
+            let applyMaskBytes = maskBytes;
+
+            if (applyPlan.mode === 'reject-large-mismatch') {
+                throw new Error(
+                    `MASK_DIMENSION_MISMATCH：Agent 返回 ${normalizedWidth}×${normalizedHeight} 蒙版，` +
+                    `目标图层为 ${layerWidth}×${layerHeight}。为避免 UXP 主线程长时间缩放大图，` +
+                    '请重新执行抠图；若仍出现此错误，请重启 DesignEcho 后重试。'
+                );
+            }
+
+            if (applyPlan.mode === 'compat-bilinear') {
+                const resizeStart = Date.now();
+                applyMaskBytes = resizeGrayscaleMaskBilinear(
+                    maskBytes,
+                    normalizedWidth,
+                    normalizedHeight,
+                    layerWidth,
+                    layerHeight
+                );
+                console.warn(
+                    `[ApplyMattingResult] 小图兼容 resize: ${normalizedWidth}x${normalizedHeight} → ` +
+                    `${layerWidth}x${layerHeight} (${Date.now() - resizeStart}ms)`
+                );
+            } else {
+                console.log(`[ApplyMattingResult] 蒙版尺寸匹配图层尺寸: ${normalizedWidth}x${normalizedHeight}，跳过 resize`);
+            }
+
+            // 在最终尺寸确定后只创建一次 PhotoshopImageData，避免大图 native buffer 重复分配。
+            maskImageData = await imaging.createImageDataFromBuffer(
+                applyMaskBytes,
                 {
-                    width: width,
-                    height: height,
+                    width: layerWidth,
+                    height: layerHeight,
                     components: 1,
                     colorSpace: 'Grayscale' as const,
                     colorProfile: 'Gray Gamma 2.2'
                 }
             );
-            
-            // 检查尺寸是否匹配
-            // 正常路径：Agent 侧已用 Sharp 将蒙版 resize 到 PS 原始尺寸，此处应直接匹配
-            // 兜底路径：尺寸不匹配时使用 bilinear 插值（仅应在 Agent 未传递原始尺寸时触发）
-            if (width !== layerWidth || height !== layerHeight) {
-                console.warn(`[ApplyMattingResult] 尺寸不匹配（兜底路径），自适应插值 resize 蒙版从 ${width}x${height} 到 ${layerWidth}x${layerHeight}...`);
-                
-                try {
-                    const scaleRatio = Math.max(layerWidth / width, layerHeight / height);
-                    const resizeStart = Date.now();
-                    let dstData = this.resizeMaskBilinear(maskBytes, width, height, layerWidth, layerHeight);
-                    dstData = this.cleanupResizedMaskEdges(dstData, layerWidth, layerHeight);
-                    
-                    // 释放原始 ImageData
-                    maskImageData.dispose();
-                    
-                    // 创建新的 ImageData
-                    maskImageData = await imaging.createImageDataFromBuffer(
-                        dstData,
-                        {
-                            width: layerWidth,
-                            height: layerHeight,
-                            components: 1,
-                            colorSpace: 'Grayscale' as const,
-                            colorProfile: 'Gray Gamma 2.2'
-                        }
-                    );
-                    
-                    console.log(`[ApplyMattingResult] 兜底自适应插值 resize 成功: ${layerWidth}x${layerHeight} (${Date.now() - resizeStart}ms, 放大 ${scaleRatio.toFixed(2)}x)`);
-                } catch (resizeError: any) {
-                    console.warn(`[ApplyMattingResult] resize 失败: ${resizeError.message}，使用原始尺寸`);
-                }
-            } else {
-                console.log(`[ApplyMattingResult] 蒙版尺寸匹配图层尺寸: ${width}x${height}，跳过 resize`);
-            }
 
             // 蒙版定位到图层的实际边界起点（非背景图层可能有偏移）
-            const maskLeft = layerBounds.left;
-            const maskTop = layerBounds.top;
+            const maskLeft = this.normalizePixelOffset(layerBounds.left);
+            const maskTop = this.normalizePixelOffset(layerBounds.top);
             console.log(`[ApplyMattingResult] 准备应用蒙版到图层 ${layerId}, targetBounds=(${maskLeft},${maskTop})...`);
             
             // 应用蒙版（targetBounds 确保蒙版与图层对齐）
@@ -1687,62 +1786,28 @@ export class ApplyMattingResultTool implements Tool {
                 commandName: 'DesignEcho: 应用 AI 蒙版'
             });
 
-            // 释放资源
-            maskImageData.dispose();
             console.log('[ApplyMattingResult] Imaging API 蒙版应用成功');
         } catch (e: any) {
             console.error('[ApplyMattingResult] Imaging API 失败:', e.message);
             throw e;  // 直接抛出错误，不回退到 PS 内置功能
+        } finally {
+            if (maskImageData) {
+                try {
+                    maskImageData.dispose();
+                } catch (disposeError: any) {
+                    console.warn(`[ApplyMattingResult] 释放蒙版 ImageData 失败: ${disposeError.message}`);
+                }
+            }
         }
     }
 
     /**
-     * 使用 PNG 数据应用蒙版（通过 PS 打开 PNG 来获取像素）
+     * PNG 蒙版 fail closed：历史实现只创建空白 revealAll 蒙版就返回，等于冒充成功。
+     * PNG 解码需要打开临时文档，已统一走 RAW_MASK 二进制蒙版路径。
      */
     private async applyPngMaskAsLayerMask(layerId: number, pngBytes: Uint8Array): Promise<void> {
-        console.log(`[ApplyMattingResult] PNG 蒙版大小: ${(pngBytes.length / 1024).toFixed(0)}KB`);
-        
-        const uxp = require('uxp');
-        const fs = uxp.storage.localFileSystem;
-        const doc = app.activeDocument;
-        if (!doc) throw new Error('没有打开的文档');
-        
-        // 1. 保存 PNG 到临时文件
-        const tempFolder = await fs.getTemporaryFolder();
-        const tempFile = await tempFolder.createFile(`de_mask_${Date.now()}.png`, { overwrite: true });
-        const pngBuffer = pngBytes.buffer.slice(pngBytes.byteOffset, pngBytes.byteOffset + pngBytes.byteLength);
-        await tempFile.write(pngBuffer as ArrayBuffer, { format: uxp.storage.formats.binary });
-        
-        console.log(`[ApplyMattingResult] PNG 临时文件: ${tempFile.nativePath}`);
-        
-        // 2. 记住当前文档
-        const originalDocId = doc.id;
-        
-        // 3. 创建会话令牌（必须在 executeAsModal 外部）
-        // 注意：这里已经在 executeAsModal 内部了，所以这个方法可能不工作
-        // 使用 placeEvent 替代 open
-        try {
-            // 使用 getPixels 从 PNG 获取像素数据
-            // 这需要先打开 PNG 文件...
-            
-            // 替代方案：直接添加蒙版，然后使用 PS 的"选择主体"
-            // 先添加空白蒙版
-            await action.batchPlay([
-                {
-                    _obj: 'make',
-                    new: { _class: 'channel' },
-                    at: { _ref: 'channel', _enum: 'channel', _value: 'mask' },
-                    using: { _enum: 'userMaskEnabled', _value: 'revealAll' },
-                    _options: { dialogOptions: 'dontDisplay' }
-                }
-            ], {});
-            console.log('[ApplyMattingResult] 空白蒙版已添加（PNG 模式暂时使用空白蒙版）');
-        } catch (e: any) {
-            console.log('[ApplyMattingResult] 添加蒙版失败:', e.message);
-        }
-        
-        // 清理
-        await tempFile.delete().catch(() => {});
+        console.log(`[ApplyMattingResult] PNG 蒙版大小: ${(pngBytes.length / 1024).toFixed(0)}KB，目标图层: ${layerId}`);
+        throw new Error('PNG 蒙版不再支持静默应用（历史行为是创建空白蒙版冒充成功）。请改用 RAW_MASK 二进制蒙版路径。');
     }
 
     /**
@@ -1765,6 +1830,46 @@ export class ApplyMattingResultTool implements Tool {
     }
 
     /**
+     * 尝试修复 RAW 蒙版几何信息，避免尺寸不一致导致的错误
+     * 1) 首选使用传入 width/height；
+     * 2) 回退到当前图层尺寸；
+     * 3) 最后尝试一维正方形尺寸推断
+     */
+    private resolveRawMaskGeometry(
+        maskBytes: Uint8Array,
+        width: number,
+        height: number,
+        fallbackWidth: number,
+        fallbackHeight: number
+    ): { width: number; height: number } | null {
+        const safeWidth = this.normalizePixelDimension(width, 1);
+        const safeHeight = this.normalizePixelDimension(height, 1);
+        const safeFallbackWidth = this.normalizePixelDimension(fallbackWidth, safeWidth);
+        const safeFallbackHeight = this.normalizePixelDimension(fallbackHeight, safeHeight);
+
+        const expectedLength = safeWidth > 0 && safeHeight > 0 ? safeWidth * safeHeight : 0;
+        if (expectedLength > 0 && expectedLength === maskBytes.length) {
+            return { width: safeWidth, height: safeHeight };
+        }
+
+        const fallbackLength = safeFallbackWidth > 0 && safeFallbackHeight > 0 ? safeFallbackWidth * safeFallbackHeight : 0;
+        if (fallbackLength > 0 && fallbackLength === maskBytes.length) {
+            console.log(
+                `[ApplyMattingResult] RAW 蒙版尺寸未携带完整信息，使用图层尺寸回退: ${safeFallbackWidth}x${safeFallbackHeight}`
+            );
+            return { width: safeFallbackWidth, height: safeFallbackHeight };
+        }
+
+        const sqrt = Math.sqrt(maskBytes.length);
+        if (Number.isFinite(sqrt) && Math.floor(sqrt) === sqrt) {
+            console.log('[ApplyMattingResult] RAW 蒙版采用正方形尺寸推断解析:', sqrt);
+            return { width: sqrt, height: sqrt };
+        }
+
+        return null;
+    }
+
+    /**
      * 从 Raw 蒙版数据创建选区
      * 
      * @param docId - 文档 ID
@@ -1784,37 +1889,50 @@ export class ApplyMattingResultTool implements Tool {
         layerLeft: number = 0,
         layerTop: number = 0,
         docWidth?: number,
-        docHeight?: number
+        docHeight?: number,
+        forceCanvas = false
     ): Promise<void> {
-        console.log(`[ApplyMattingResult] 从 Raw 蒙版创建选区: ${width}x${height}, 图层位置: (${layerLeft}, ${layerTop})`);
+        const safeWidth = this.normalizePixelDimension(width, 1);
+        const safeHeight = this.normalizePixelDimension(height, 1);
+        const safeLayerLeft = this.normalizePixelOffset(layerLeft);
+        const safeLayerTop = this.normalizePixelOffset(layerTop);
+        const safeDocWidth = docWidth ? this.normalizePixelDimension(docWidth, safeWidth) : safeWidth;
+        const safeDocHeight = docHeight ? this.normalizePixelDimension(docHeight, safeHeight) : safeHeight;
+
+        console.log(`[ApplyMattingResult] 从 Raw 蒙版创建选区: ${safeWidth}x${safeHeight}, 图层位置: (${safeLayerLeft}, ${safeLayerTop}), 文档画布: ${safeDocWidth}x${safeDocHeight}`);
         
         try {
+            const expectedLength = safeWidth * safeHeight;
+            if (safeWidth <= 0 || safeHeight <= 0 || expectedLength !== maskBytes.length) {
+                throw new Error(`Raw 蒙版尺寸与数据长度不匹配: ${safeWidth}x${safeHeight}, bytes=${maskBytes.length}`);
+            }
+
             // 如果图层有偏移，需要创建文档尺寸的选区画布
-            const hasOffset = layerLeft !== 0 || layerTop !== 0;
+            const hasOffset = forceCanvas || safeLayerLeft !== 0 || safeLayerTop !== 0;
             
-            if (hasOffset && docWidth && docHeight) {
-                console.log(`[ApplyMattingResult] 创建文档尺寸的选区画布: ${docWidth}x${docHeight}`);
+            if (hasOffset && safeDocWidth > 0 && safeDocHeight > 0) {
+                console.log(`[ApplyMattingResult] 创建文档尺寸的选区画布: ${safeDocWidth}x${safeDocHeight}`);
                 
                 // 创建文档尺寸的空白画布（全黑 = 不选中）
-                const fullCanvasBytes = new Uint8Array(docWidth * docHeight);
+                const fullCanvasBytes = new Uint8Array(safeDocWidth * safeDocHeight);
                 fullCanvasBytes.fill(0);  // 全部填充为 0（不选中）
                 
                 // 将蒙版数据复制到正确的位置
-                for (let y = 0; y < height; y++) {
-                    const srcRowStart = y * width;
-                    const dstY = Math.floor(layerTop) + y;
+                for (let y = 0; y < safeHeight; y++) {
+                    const srcRowStart = y * safeWidth;
+                    const dstY = safeLayerTop + y;
                     
                     // 检查是否在文档范围内
-                    if (dstY < 0 || dstY >= docHeight) continue;
+                    if (dstY < 0 || dstY >= safeDocHeight) continue;
                     
-                    for (let x = 0; x < width; x++) {
-                        const dstX = Math.floor(layerLeft) + x;
+                    for (let x = 0; x < safeWidth; x++) {
+                        const dstX = safeLayerLeft + x;
                         
                         // 检查是否在文档范围内
-                        if (dstX < 0 || dstX >= docWidth) continue;
+                        if (dstX < 0 || dstX >= safeDocWidth) continue;
                         
                         const srcIdx = srcRowStart + x;
-                        const dstIdx = dstY * docWidth + dstX;
+                        const dstIdx = dstY * safeDocWidth + dstX;
                         fullCanvasBytes[dstIdx] = maskBytes[srcIdx];
                     }
                 }
@@ -1823,8 +1941,8 @@ export class ApplyMattingResultTool implements Tool {
                 const selectionImageData = await imaging.createImageDataFromBuffer(
                     fullCanvasBytes,
                     {
-                        width: docWidth,
-                        height: docHeight,
+                        width: safeDocWidth,
+                        height: safeDocHeight,
                         components: 1,
                         colorSpace: 'Grayscale' as const,
                         colorProfile: ''
@@ -1847,8 +1965,8 @@ export class ApplyMattingResultTool implements Tool {
                 const selectionImageData = await imaging.createImageDataFromBuffer(
                     maskBytes,
                     {
-                        width: width,
-                        height: height,
+                        width: safeWidth,
+                        height: safeHeight,
                         components: 1,
                         colorSpace: 'Grayscale' as const,
                         colorProfile: ''
@@ -1882,25 +2000,22 @@ export class ApplyMattingResultTool implements Tool {
         width: number,
         height: number
     ): Promise<void> {
-        console.log(`[ApplyMattingResult] 创建选区 ${width}x${height}`);
+        const safeWidth = this.normalizePixelDimension(width, 1);
+        const safeHeight = this.normalizePixelDimension(height, 1);
+        console.log(`[ApplyMattingResult] 创建选区 ${safeWidth}x${safeHeight}`);
         
         try {
-            // 检查是否是 PNG 格式
+            // PNG 输入 fail closed：不允许静默回退到全选——后续删除/填充会作用整个画布
             if (maskBytes[0] === 0x89 && maskBytes[1] === 0x50) {
-                console.log('[ApplyMattingResult] PNG 格式，使用全选作为替代');
-                // 暂时使用全选作为替代
-                await action.batchPlay([
-                    { _obj: 'selectAll', _options: { dialogOptions: 'dontDisplay' } }
-                ], {});
-                return;
+                throw new Error('PNG 蒙版不能用于创建选区（已禁止静默回退全选）。请改用 RAW_MASK 二进制蒙版路径。');
             }
             
             // 创建选区图像数据
             const selectionImageData = await imaging.createImageDataFromBuffer(
                 maskBytes,
                 {
-                    width: width,
-                    height: height,
+                    width: safeWidth,
+                    height: safeHeight,
                     components: 1,
                     colorSpace: 'Grayscale',
                     colorProfile: 'Gray Gamma 2.2'
@@ -1919,10 +2034,8 @@ export class ApplyMattingResultTool implements Tool {
             
         } catch (error: any) {
             console.error('[ApplyMattingResult] 创建选区失败:', error.message);
-            // 回退到全选
-            await action.batchPlay([
-                { _obj: 'selectAll', _options: { dialogOptions: 'dontDisplay' } }
-            ], {});
+            // 不回退全选：选区不确定时继续操作会毁掉整个画布，必须诚实失败
+            throw new Error(`创建选区失败: ${error.message}`);
         }
     }
 
@@ -2014,7 +2127,9 @@ export class ApplyMattingResultTool implements Tool {
         width: number,
         height: number
     ): Promise<void> {
-        console.log(`[ApplyMattingResult] 从 Raw 蒙版创建 Alpha 通道: ${width}x${height}`);
+        const safeWidth = this.normalizePixelDimension(width, 1);
+        const safeHeight = this.normalizePixelDimension(height, 1);
+        console.log(`[ApplyMattingResult] 从 Raw 蒙版创建 Alpha 通道: ${safeWidth}x${safeHeight}`);
         
         try {
             // 先创建一个新的 Alpha 通道
@@ -2033,8 +2148,8 @@ export class ApplyMattingResultTool implements Tool {
             const selectionImageData = await imaging.createImageDataFromBuffer(
                 maskBytes,
                 {
-                    width: width,
-                    height: height,
+                    width: safeWidth,
+                    height: safeHeight,
                     components: 1,
                     colorSpace: 'Grayscale' as const,
                     colorProfile: ''
@@ -2087,175 +2202,6 @@ export class ApplyMattingResultTool implements Tool {
                 console.error('[ApplyMattingResult] 创建空通道也失败:', fallbackError);
             }
         }
-    }
-
-    /**
-     * Resize 后的轻量边缘去灰处理，避免兜底插值引入额外半透明边。
-     */
-    private cleanupResizedMaskEdges(maskData: Uint8Array, width: number, height: number): Uint8Array {
-        if (width < 3 || height < 3) {
-            return maskData;
-        }
-
-        const source = new Uint8Array(maskData);
-        const out = new Uint8Array(maskData);
-
-        for (let i = 0; i < source.length; i++) {
-            const a = source[i];
-            if (a <= 8) out[i] = 0;
-            else if (a >= 248) out[i] = 255;
-        }
-
-        for (let y = 1; y < height - 1; y++) {
-            for (let x = 1; x < width - 1; x++) {
-                const idx = y * width + x;
-                const a = source[idx];
-                if (a <= 8 || a >= 248) continue;
-
-                const l = source[idx - 1];
-                const r = source[idx + 1];
-                const u = source[idx - width];
-                const d = source[idx + width];
-
-                let fgVotes = 0;
-                let bgVotes = 0;
-                if (l >= 210) fgVotes++;
-                if (r >= 210) fgVotes++;
-                if (u >= 210) fgVotes++;
-                if (d >= 210) fgVotes++;
-                if (l <= 45) bgVotes++;
-                if (r <= 45) bgVotes++;
-                if (u <= 45) bgVotes++;
-                if (d <= 45) bgVotes++;
-
-                let value = a;
-                if (fgVotes >= 3 && a > 86) {
-                    value = Math.min(255, a + 18);
-                } else if (bgVotes >= 3 && a < 170) {
-                    value = Math.max(0, a - 18);
-                }
-
-                out[idx] = value;
-            }
-        }
-
-        return out;
-    }
-
-    /**
-     * 高质量 Lanczos 插值 resize 蒙版
-     * 
-     * 对于放大操作，使用 Lanczos-3 核进行更高质量的插值
-     * 比双线性插值更平滑，减少锯齿
-     */
-    private resizeMaskBilinear(
-        srcData: Uint8Array, 
-        srcWidth: number, 
-        srcHeight: number, 
-        dstWidth: number, 
-        dstHeight: number
-    ): Uint8Array {
-        const scaleRatio = Math.max(dstWidth / srcWidth, dstHeight / srcHeight);
-        
-        // 对于放大操作 (scaleRatio > 1.5)，使用 Lanczos 插值
-        // 对于缩小或轻微放大，使用双线性（更快）
-        if (scaleRatio > 1.5) {
-            console.log(`[ApplyMattingResult] 使用 Lanczos-3 插值 (放大 ${scaleRatio.toFixed(2)}x)`);
-            return this.resizeMaskLanczos(srcData, srcWidth, srcHeight, dstWidth, dstHeight);
-        }
-        
-        // 双线性插值（适用于缩小或轻微放大）
-        const dstData = new Uint8Array(dstWidth * dstHeight);
-        const xRatio = srcWidth / dstWidth;
-        const yRatio = srcHeight / dstHeight;
-        
-        for (let y = 0; y < dstHeight; y++) {
-            const srcY = y * yRatio;
-            const y0 = Math.floor(srcY);
-            const y1 = Math.min(y0 + 1, srcHeight - 1);
-            const yFrac = srcY - y0;
-            
-            for (let x = 0; x < dstWidth; x++) {
-                const srcX = x * xRatio;
-                const x0 = Math.floor(srcX);
-                const x1 = Math.min(x0 + 1, srcWidth - 1);
-                const xFrac = srcX - x0;
-                
-                const p00 = srcData[y0 * srcWidth + x0];
-                const p10 = srcData[y0 * srcWidth + x1];
-                const p01 = srcData[y1 * srcWidth + x0];
-                const p11 = srcData[y1 * srcWidth + x1];
-                
-                const top = p00 * (1 - xFrac) + p10 * xFrac;
-                const bottom = p01 * (1 - xFrac) + p11 * xFrac;
-                const value = top * (1 - yFrac) + bottom * yFrac;
-                
-                dstData[y * dstWidth + x] = Math.round(value);
-            }
-        }
-        
-        return dstData;
-    }
-
-    /**
-     * Lanczos-3 插值 resize（高质量，适用于放大）
-     * 
-     * Lanczos 核比双线性更平滑，能有效减少放大时的锯齿
-     */
-    private resizeMaskLanczos(
-        srcData: Uint8Array,
-        srcWidth: number,
-        srcHeight: number,
-        dstWidth: number,
-        dstHeight: number
-    ): Uint8Array {
-        const dstData = new Uint8Array(dstWidth * dstHeight);
-        const a = 3; // Lanczos-3 窗口大小
-        
-        const xRatio = srcWidth / dstWidth;
-        const yRatio = srcHeight / dstHeight;
-        
-        // Lanczos 核函数
-        const lanczos = (x: number): number => {
-            if (x === 0) return 1;
-            if (Math.abs(x) >= a) return 0;
-            const pix = Math.PI * x;
-            return (a * Math.sin(pix) * Math.sin(pix / a)) / (pix * pix);
-        };
-        
-        for (let y = 0; y < dstHeight; y++) {
-            const srcY = (y + 0.5) * yRatio - 0.5;
-            const y0 = Math.floor(srcY);
-            
-            for (let x = 0; x < dstWidth; x++) {
-                const srcX = (x + 0.5) * xRatio - 0.5;
-                const x0 = Math.floor(srcX);
-                
-                let sum = 0;
-                let weightSum = 0;
-                
-                // 采样 6x6 区域 (Lanczos-3)
-                for (let j = y0 - a + 1; j <= y0 + a; j++) {
-                    const jClamped = Math.max(0, Math.min(srcHeight - 1, j));
-                    const wy = lanczos(srcY - j);
-                    
-                    for (let i = x0 - a + 1; i <= x0 + a; i++) {
-                        const iClamped = Math.max(0, Math.min(srcWidth - 1, i));
-                        const wx = lanczos(srcX - i);
-                        
-                        const weight = wx * wy;
-                        sum += srcData[jClamped * srcWidth + iClamped] * weight;
-                        weightSum += weight;
-                    }
-                }
-                
-                // 归一化并 clamp 到 0-255
-                const value = weightSum > 0 ? sum / weightSum : 0;
-                dstData[y * dstWidth + x] = Math.max(0, Math.min(255, Math.round(value)));
-            }
-        }
-        
-        return dstData;
     }
 
     /**
@@ -2325,17 +2271,22 @@ export class ApplyMattingResultTool implements Tool {
         for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
         }
-        await tempFile.write(bytes.buffer, { format: uxp.storage.formats.binary });
+        assertImageBytesSafeForPhotoshop(bytes, {
+            formatHint: 'png',
+            sourceLabel: `抠图结果图层「${originalName}」`
+        });
+        await tempFile.write(arrayBufferFromBytes(bytes), { format: uxp.storage.formats.binary });
+        const sessionToken = await uxp.storage.localFileSystem.createSessionToken(tempFile);
 
         // 导入为新图层
         await action.batchPlay([
             {
                 _obj: 'placeEvent',
-                null: { _path: tempFile.nativePath, _kind: 'local' },
+                null: { _path: sessionToken, _kind: 'local' },
                 freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
                 _options: { dialogOptions: 'dontDisplay' }
             }
-        ], {});
+        ], { synchronousExecution: true });
 
         const currentDoc = app.activeDocument!;
         const newLayer = currentDoc.activeLayers[0];
@@ -2393,18 +2344,6 @@ export class ApplyMattingResultTool implements Tool {
         }
     }
 
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) {
-                return layer;
-            }
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
 }
 
 /**
@@ -2413,6 +2352,12 @@ export class ApplyMattingResultTool implements Tool {
  */
 export class ApplyMultiMattingResultTool implements Tool {
     name = 'applyMultiMattingResult';
+
+    private readonly binaryMaskStore: BinaryMaskStore;
+
+    constructor(binaryMaskStore: BinaryMaskStore = new BinaryMaskStore()) {
+        this.binaryMaskStore = binaryMaskStore;
+    }
 
     schema: ToolSchema = {
         name: 'applyMultiMattingResult',
@@ -2445,39 +2390,21 @@ export class ApplyMultiMattingResultTool implements Tool {
         }
     };
 
-    // 二进制蒙版缓存（用于存储提前到达的二进制数据）
-    private static receivedBinaryMasks: Map<number, { width: number; height: number; data: Uint8Array }> = new Map();
-    
-    // 接收二进制蒙版数据
-    static receiveBinaryMask(requestId: number, width: number, height: number, data: Uint8Array): void {
-        // 重要：必须复制数据，因为 WebSocket ArrayBuffer 可能被重用
-        const dataCopy = new Uint8Array(data);
-        console.log(`[ApplyMultiMatting] 接收二进制蒙版 requestId=${requestId} (${width}x${height}, ${dataCopy.length} bytes)`);
-        this.receivedBinaryMasks.set(requestId, { width, height, data: dataCopy });
-    }
-    
-    // 等待二进制蒙版
-    private async waitForBinaryMask(requestId: number, timeout: number = 30000): Promise<{ width: number; height: number; data: Uint8Array } | null> {
-        // 先检查缓存
-        const cached = ApplyMultiMattingResultTool.receivedBinaryMasks.get(requestId);
-        if (cached) {
-            ApplyMultiMattingResultTool.receivedBinaryMasks.delete(requestId);
-            return cached;
+    private async waitForBinaryMask(
+        requestId: number,
+        timeout: number = 30000
+    ): Promise<{ width: number; height: number; data: Uint8Array } | null> {
+        try {
+            const payload = await this.binaryMaskStore.waitFor(requestId, timeout);
+            return {
+                width: payload.width,
+                height: payload.height,
+                data: payload.data
+            };
+        } catch (error: any) {
+            console.warn(`[ApplyMultiMatting] 等待二进制蒙版失败 requestId=${requestId}: ${error.message}`);
+            return null;
         }
-        
-        // 等待数据到达
-        const startTime = Date.now();
-        while (Date.now() - startTime < timeout) {
-            await new Promise(resolve => setTimeout(resolve, 50));
-            const data = ApplyMultiMattingResultTool.receivedBinaryMasks.get(requestId);
-            if (data) {
-                ApplyMultiMattingResultTool.receivedBinaryMasks.delete(requestId);
-                return data;
-            }
-        }
-        
-        console.warn(`[ApplyMultiMatting] 等待二进制蒙版超时 requestId=${requestId}`);
-        return null;
     }
 
     async execute(params: {
@@ -2516,7 +2443,7 @@ export class ApplyMultiMattingResultTool implements Tool {
             }
 
             // 查找原始图层
-            const originalLayer = this.findLayerById(doc, originalLayerId);
+            const originalLayer = findLayerById(doc, originalLayerId);
             if (!originalLayer) {
                 return { 
                     success: false, 
@@ -2621,7 +2548,8 @@ export class ApplyMultiMattingResultTool implements Tool {
                                 _ref: 'layer',
                                 _enum: 'ordinal',
                                 _value: 'targetEnum'
-                            }
+                            },
+                            _options: { dialogOptions: 'dontDisplay' }
                         },
                         {
                             _obj: 'set',
@@ -2629,7 +2557,8 @@ export class ApplyMultiMattingResultTool implements Tool {
                             to: {
                                 _obj: 'layer',
                                 name: groupName
-                            }
+                            },
+                            _options: { dialogOptions: 'dontDisplay' }
                         }
                     ], {});
                 }
@@ -2749,6 +2678,8 @@ export class ApplyMultiMattingResultTool implements Tool {
      * 从二进制数据应用蒙版到图层（无 Base64 编码开销）
      */
     private async applyMaskToLayerFromBinary(layerId: number, maskData: Uint8Array, width: number, height: number): Promise<void> {
+        let imageObj: any = null;
+
         try {
             const doc = app.activeDocument;
             if (!doc) {
@@ -2757,9 +2688,16 @@ export class ApplyMultiMattingResultTool implements Tool {
             }
 
             console.log(`[ApplyMaskBinary] 应用蒙版: ${width}x${height}, ${maskData.length} bytes`);
+            const expectedBytes = width * height;
+            if (maskData.byteLength !== expectedBytes) {
+                throw new Error(
+                    `RAW 蒙版数据不完整：收到 ${maskData.byteLength} bytes，` +
+                    `${width}×${height} 需要 ${expectedBytes} bytes。`
+                );
+            }
             
             // 使用 imaging API 创建选区
-            const imageObj = await imaging.createImageDataFromBuffer(
+            imageObj = await imaging.createImageDataFromBuffer(
                 maskData,
                 {
                     width: width,
@@ -2811,6 +2749,14 @@ export class ApplyMultiMattingResultTool implements Tool {
                     }
                 ], {});
             } catch (e) {}
+        } finally {
+            if (imageObj) {
+                try {
+                    imageObj.dispose();
+                } catch (disposeError: any) {
+                    console.warn(`[ApplyMaskBinary] 释放蒙版 ImageData 失败: ${disposeError.message}`);
+                }
+            }
         }
     }
 
@@ -2822,18 +2768,5 @@ export class ApplyMultiMattingResultTool implements Tool {
             bytes[i] = binaryString.charCodeAt(i);
         }
         return bytes;
-    }
-
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) {
-                return layer;
-            }
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
     }
 }

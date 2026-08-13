@@ -1,13 +1,86 @@
-/**
+﻿/**
  * 重命名图层工具
  * 
  * 修改图层名称
  */
 
-import { Tool, ToolSchema } from '../types';
+import {
+    photoshopTransactionRunner,
+    type PhotoshopTransactionPreparation
+} from '../../core/photoshop-transaction-runner';
+import { Tool, ToolExecutionContext, ToolSchema } from '../types';
 
 const app = require('photoshop').app;
 const { core, action } = require('photoshop');
+
+function findLayerById(container: any, id: number): any {
+    for (const layer of container.layers || []) {
+        if (layer.id === id) return layer;
+        if (layer.layers) {
+            const found = findLayerById(layer, id);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+interface RenameLayerState {
+    documentId: number;
+    layerId: number;
+    parentId: number | null;
+    name: string;
+}
+
+interface RenameLayerResult {
+    success: boolean;
+    layer?: {
+        id: number;
+        oldName: string;
+        newName: string;
+    };
+    code?: string;
+    error?: string;
+}
+
+function findLayerState(
+    document: any,
+    layerId: number,
+    container: any = document,
+    parentId: number | null = null
+): RenameLayerState | undefined {
+    for (const layer of container.layers || []) {
+        if (Number(layer.id) === layerId) {
+            return {
+                documentId: Number(document.id),
+                layerId,
+                parentId,
+                name: String(layer.name || '')
+            };
+        }
+        if (layer.layers) {
+            const found = findLayerState(document, layerId, layer, Number(layer.id));
+            if (found) return found;
+        }
+    }
+    return undefined;
+}
+
+function sameRenameTarget(left: RenameLayerState, right: RenameLayerState): boolean {
+    return left.documentId === right.documentId
+        && left.layerId === right.layerId
+        && left.parentId === right.parentId;
+}
+
+function assertBatchPlaySucceeded(descriptors: unknown): void {
+    if (!Array.isArray(descriptors)) return;
+    const failure = descriptors.find((descriptor) => (
+        descriptor
+        && typeof descriptor === 'object'
+        && String((descriptor as Record<string, unknown>)._obj || '').toLowerCase() === 'error'
+    )) as Record<string, unknown> | undefined;
+    if (!failure) return;
+    throw new Error(String(failure.message || failure.error || 'Photoshop 拒绝了图层重命名。'));
+}
 
 export class RenameLayerTool implements Tool {
     name = 'renameLayer';
@@ -31,51 +104,113 @@ export class RenameLayerTool implements Tool {
         }
     };
 
-    async execute(params: {
-        layerId?: number;
-        newName: string;
-    }): Promise<{
-        success: boolean;
-        layer?: {
-            id: number;
-            oldName: string;
+    async execute(
+        params: {
+            layerId?: number;
             newName: string;
-        };
-        error?: string;
-    }> {
-        try {
-            const doc = app.activeDocument;
-            if (!doc) {
-                return { success: false, error: '没有打开的文档' };
-            }
+        },
+        context?: ToolExecutionContext
+    ): Promise<RenameLayerResult> {
+        const newName = String(params?.newName || '').trim();
+        const operationId = `renameLayer:${String(
+            context?.requestId
+            || `${Number(params?.layerId) || 'active'}:${Date.now()}`
+        )}`;
 
-            if (!params.newName || params.newName.trim() === '') {
-                return { success: false, error: '图层名称不能为空' };
-            }
-
-            let targetLayer: any;
-
-            if (params.layerId) {
-                targetLayer = this.findLayerById(doc, params.layerId);
-                if (!targetLayer) {
-                    return { success: false, error: `未找到 ID 为 ${params.layerId} 的图层` };
+        return await photoshopTransactionRunner.run<
+            RenameLayerState,
+            RenameLayerState,
+            RenameLayerResult
+        >({
+            operationId,
+            toolName: this.name,
+            commandName: 'DesignEcho: 重命名图层',
+            params,
+            context,
+            historyMode: 'suspend',
+            expectedEffect: 'mutation_required',
+            prepare(scope): PhotoshopTransactionPreparation<RenameLayerState, RenameLayerResult> {
+                if (!newName) {
+                    return {
+                        kind: 'complete',
+                        effect: 'none',
+                        result: {
+                            success: false,
+                            code: 'rename_layer_name_required',
+                            error: '图层名称不能为空'
+                        }
+                    };
                 }
-            } else {
-                if (doc.activeLayers.length === 0) {
-                    return { success: false, error: '没有选中的图层' };
+
+                const hasExplicitLayerId = Object.prototype.hasOwnProperty.call(
+                    params || {},
+                    'layerId'
+                );
+                const requestedLayerId = params?.layerId;
+                if (hasExplicitLayerId
+                    && (!Number.isSafeInteger(requestedLayerId) || Number(requestedLayerId) <= 0)) {
+                    return {
+                        kind: 'complete',
+                        effect: 'none',
+                        result: {
+                            success: false,
+                            code: 'rename_layer_target_invalid',
+                            error: '显式 layerId 必须是正安全整数'
+                        }
+                    };
                 }
-                targetLayer = doc.activeLayers[0];
-            }
+                const activeLayerId = Number(scope.document.activeLayers?.[0]?.id);
+                const layerId = hasExplicitLayerId
+                    ? Number(requestedLayerId)
+                    : activeLayerId;
+                if (!Number.isSafeInteger(layerId) || layerId <= 0) {
+                    return {
+                        kind: 'complete',
+                        effect: 'none',
+                        result: {
+                            success: false,
+                            code: 'rename_layer_target_required',
+                            error: '没有选中的图层'
+                        }
+                    };
+                }
 
-            const oldName = targetLayer.name;
-            const newName = params.newName.trim();
-
-            // 重命名图层
-            await core.executeAsModal(async () => {
-                await action.batchPlay([
+                const before = findLayerState(scope.document, layerId);
+                if (!before) {
+                    return {
+                        kind: 'complete',
+                        effect: 'none',
+                        result: {
+                            success: false,
+                            code: 'rename_layer_target_not_found',
+                            error: `未找到 ID 为 ${layerId} 的图层`
+                        }
+                    };
+                }
+                if (before.name === newName) {
+                    return {
+                        kind: 'complete',
+                        effect: 'already_satisfied',
+                        result: {
+                            success: true,
+                            layer: {
+                                id: before.layerId,
+                                oldName: before.name,
+                                newName
+                            }
+                        }
+                    };
+                }
+                return {
+                    kind: 'ready',
+                    before
+                };
+            },
+            async mutate(_scope, before): Promise<RenameLayerResult> {
+                const descriptors = await action.batchPlay([
                     {
                         _obj: 'set',
-                        _target: [{ _ref: 'layer', _id: targetLayer.id }],
+                        _target: [{ _ref: 'layer', _id: before.layerId }],
                         to: {
                             _obj: 'layer',
                             name: newName
@@ -83,38 +218,42 @@ export class RenameLayerTool implements Tool {
                         _options: { dialogOptions: 'dontDisplay' }
                     }
                 ], {});
-            }, { commandName: 'DesignEcho: 重命名图层' });
-
-            console.log(`[RenameLayer] 图层 "${oldName}" 重命名为 "${newName}"`);
-
-            return {
-                success: true,
-                layer: {
-                    id: targetLayer.id,
-                    oldName,
-                    newName
+                assertBatchPlaySucceeded(descriptors);
+                return {
+                    success: true,
+                    layer: {
+                        id: before.layerId,
+                        oldName: before.name,
+                        newName
+                    }
+                };
+            },
+            readState({ scope, before }): RenameLayerState {
+                const after = findLayerState(scope.document, before.layerId);
+                if (!after) {
+                    throw new Error(`写后读回未找到图层 ID ${before.layerId}。`);
                 }
-            };
-
-        } catch (error) {
-            console.error('[RenameLayer] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '重命名图层失败'
-            };
-        }
-    }
-
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) return layer;
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
+                return after;
+            },
+            verifyApplied({ before, after }) {
+                return {
+                    verified: sameRenameTarget(before, after) && after.name === newName,
+                    message: sameRenameTarget(before, after)
+                        ? `写后读回名称为「${after.name}」，目标名称为「${newName}」。`
+                        : '写后读回的文档、图层或父级与事务目标不一致。'
+                };
+            },
+            verifyRolledBack({ before, after }) {
+                return {
+                    verified: sameRenameTarget(before, after) && after.name === before.name,
+                    message: sameRenameTarget(before, after)
+                        ? `回滚后名称为「${after.name}」，原名称为「${before.name}」。`
+                        : '回滚读回的文档、图层或父级与事务开始时不一致。'
+                };
             }
-        }
-        return null;
+        });
     }
+
 }
 
 /**
@@ -178,7 +317,7 @@ export class BatchRenameLayersTool implements Tool {
 
             if (params.layerIds && params.layerIds.length > 0) {
                 for (const id of params.layerIds) {
-                    const layer = this.findLayerById(doc, id);
+                    const layer = findLayerById(doc, id);
                     if (layer) {
                         targetLayers.push(layer);
                     }
@@ -250,17 +389,6 @@ export class BatchRenameLayersTool implements Tool {
                 error: error instanceof Error ? error.message : '批量重命名失败'
             };
         }
-    }
-
-    private findLayerById(container: any, id: number): any {
-        for (const layer of container.layers) {
-            if (layer.id === id) return layer;
-            if (layer.layers) {
-                const found = this.findLayerById(layer, id);
-                if (found) return found;
-            }
-        }
-        return null;
     }
 
     private escapeRegExp(string: string): string {

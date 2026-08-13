@@ -1,13 +1,13 @@
 /**
  * 直接导出服务
  * 
- * 使用 batchPlay 执行 JSX 脚本绕过 UXP 安全限制
+ * 使用 batchPlay 执行 JSX 脚本，通过 token/临时 JSX 完成受控保存
  * 参考：https://blog.cutterman.cn/2025/02/02/uxp-run-jsx/
  * 
  * 核心原理：使用临时 JSX 文件 + token 的方式执行脚本
  */
 
-const { action, core } = require('photoshop');
+const { action, app, core } = require('photoshop');
 const uxp = require('uxp');
 const storage = uxp.storage;
 const fs = storage.localFileSystem as any;
@@ -16,7 +16,7 @@ const fs = storage.localFileSystem as any;
 const ensuredDirs = new Set<string>();
 
 /**
- * 使用 JSX 脚本保存 JPEG 文件（绕过 UXP 安全限制）
+ * 使用 JSX 脚本保存 JPEG 文件（通过 token/临时 JSX 完成受控保存）
  * 
  * 方法：创建临时 JSX 文件 → 获取 token → 执行脚本
  * 
@@ -24,9 +24,14 @@ const ensuredDirs = new Set<string>();
  * @param quality JPEG 质量 (1-12)
  * @returns 是否成功
  */
-export async function saveAsJPEGViaJSX(outputPath: string, quality: number = 12): Promise<boolean> {
-    // 将路径中的反斜杠转义为双反斜杠（JSX 字符串需要）
-    const escapedPath = outputPath.replace(/\\/g, '\\\\');
+export async function saveAsJPEGViaJSX(
+    outputPath: string,
+    quality: number = 12,
+    documentId?: number
+): Promise<boolean> {
+    // 统一正斜杠：ExtendScript File/Folder 原生支持 URI 风格路径；
+    // 反斜杠经多层字符串传输极易被当转义字符吞掉（实测：含中文的路径整段丢分隔符落到盘根）
+    const escapedPath = outputPath.replace(/\\+/g, '/');
     
     // JSX 脚本：保存当前文档为 JPEG
     const jsxScript = `
@@ -71,6 +76,17 @@ try {
         let batchResult: any = null;
         
         await core.executeAsModal(async () => {
+            if (Number.isFinite(Number(documentId))
+                && Number(app.activeDocument?.id) !== Number(documentId)) {
+                await action.batchPlay([{
+                    _obj: 'select',
+                    _target: [{ _ref: 'document', _id: Number(documentId) }]
+                }], { synchronousExecution: true });
+            }
+            if (Number.isFinite(Number(documentId))
+                && Number(app.activeDocument?.id) !== Number(documentId)) {
+                throw new Error(`无法选择待导出的 Photoshop 文档 ${String(documentId)}`);
+            }
             batchResult = await action.batchPlay([{
                 _obj: "AdobeScriptAutomation Scripts",
                 javaScript: {
@@ -118,8 +134,9 @@ try {
 export async function ensureDirectoryViaJSX(dirPath: string): Promise<boolean> {
     const normalized = dirPath.replace(/[/\\]+/g, '\\').replace(/\\+$/, '');
     if (ensuredDirs.has(normalized)) return true;
-    
-    const escapedPath = dirPath.replace(/\\/g, '\\\\');
+
+    // 统一正斜杠进 JSX（同 saveAsJPEGViaJSX，防反斜杠被转义吞掉）
+    const escapedPath = dirPath.replace(/\\+/g, '/');
     
     const jsxScript = `
 try {

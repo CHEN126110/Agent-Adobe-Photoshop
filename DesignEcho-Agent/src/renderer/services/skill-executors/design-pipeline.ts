@@ -123,7 +123,7 @@ export async function diagnose(
         }
     } catch (e: any) {
         console.warn('[DesignPipeline] 诊断失败:', e.message);
-        callbacks?.onMessage?.('⚠️ 设计诊断服务不可用，跳过诊断');
+        callbacks?.onMessage?.('当前画面分析暂时不可用，先按主图规则继续。');
     }
 
     return fallback;
@@ -163,12 +163,12 @@ export async function planDesign(
             const plan = result.decision?.executionPlan || [];
 
             if (callbacks?.onMessage && plan.length > 0) {
-                callbacks.onMessage(`📋 设计规划 (${plan.length} 步):`);
-                for (const step of plan.slice(0, 5)) {
-                    callbacks.onMessage(`   → ${step.tool}: ${step.reason || ''}`);
+                callbacks.onMessage(`已整理出 ${plan.length} 个调整方向。`);
+                for (const [index, step] of plan.slice(0, 5).entries()) {
+                    callbacks.onMessage(`调整方向 ${index + 1}: ${step.reason || '按当前画面状态继续优化。'}`);
                 }
                 if (plan.length > 5) {
-                    callbacks.onMessage(`   ... 还有 ${plan.length - 5} 步`);
+                    callbacks.onMessage(`还有 ${plan.length - 5} 个调整方向待处理。`);
                 }
             }
 
@@ -176,7 +176,7 @@ export async function planDesign(
         }
     } catch (e: any) {
         console.warn('[DesignPipeline] 规划失败:', e.message);
-        callbacks?.onMessage?.('⚠️ 设计规划服务不可用，跳过规划');
+        callbacks?.onMessage?.('自动规划暂时不可用，先按已确认规则继续。');
     }
 
     return null;
@@ -216,7 +216,7 @@ export function formatCritique(
 
     const arrow = getDeltaArrow(result.delta);
     callbacks.onMessage(
-        `🔍 视觉评估: ${result.beforeScore} → ${result.afterScore} (${arrow}${Math.abs(result.delta)})`
+        `画面复核：${result.beforeScore} → ${result.afterScore} (${arrow}${Math.abs(result.delta)})`
     );
 
     if (result.afterScore < 70 && result.afterIssues.length > 0) {
@@ -250,7 +250,7 @@ export function createPipeline(
         async before(): Promise<DiagnosisReport> {
             const report = await diagnose(context, callbacks);
             if (report.success && report.score > 0) {
-                callbacks?.onMessage?.(`📊 当前设计评分: ${report.score}/100`);
+                callbacks?.onMessage?.(`当前画面检查结果：${report.score}/100`);
                 if (report.issues.length > 0) {
                     callbacks?.onMessage?.(`   发现 ${report.issues.length} 个待优化项`);
                 }

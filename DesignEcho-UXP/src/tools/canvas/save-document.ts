@@ -1,189 +1,532 @@
-/**
- * 文档保存工具
- * 
- * 保存 PSD、导出图片等功能
- */
-
 import { Tool, ToolSchema } from '../types';
+import { saveActiveDocumentWithJsx, saveDocumentViaJsx } from '../../core/jsx-bridge';
+import { getEntryFromPath } from '../../core/file-url';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
+import {
+    readActiveHistoryStateRef,
+    sameHistoryStateRef,
+    type PhotoshopHistoryStateRef
+} from '../../core/photoshop-history-state-ref';
 
 const app = require('photoshop').app;
 const { core, action } = require('photoshop');
 const uxpFs = require('uxp').storage.localFileSystem;
+
+type SaveParams = {
+    format?: string;
+    path?: string;
+    quality?: number;
+    saveAs?: boolean;
+    conflictPolicy?: 'overwrite' | 'fail_if_exists';
+};
+
+type SaveConflictPolicy = NonNullable<SaveParams['conflictPolicy']>;
+
+const EDITABLE_DOCUMENT_ARTIFACT_VERSION =
+    'runtime-editable-document-artifact/v1' as const;
+
+interface EditableDocumentArtifactProof {
+    version: typeof EDITABLE_DOCUMENT_ARTIFACT_VERSION;
+    basis: 'uxp_post_save_file_metadata';
+    path: string;
+    format: 'psd' | 'psb';
+    byteLength: number;
+    modifiedAt: number;
+    documentId: number;
+    canvas: {
+        width: number;
+        height: number;
+    };
+}
+
+function detectFormat(format?: string, filePath?: string): string {
+    const explicit = String(format || '').trim().toLowerCase();
+    if (explicit) return explicit;
+
+    const ext = ((String(filePath || '').match(/\.([a-z0-9]+)$/i) || [])[1] || '').toLowerCase();
+    if (ext === 'psb') return 'psb';
+    if (ext === 'psd') return 'psd';
+    if (ext === 'png') return 'png';
+    if (ext === 'jpg' || ext === 'jpeg') return 'jpg';
+    if (ext === 'tif' || ext === 'tiff') return 'tiff';
+    if (ext === 'pdf') return 'pdf';
+    return 'psd';
+}
+
+async function createSaveToken(
+    filePath: string,
+    conflictPolicy: SaveConflictPolicy = 'overwrite',
+    onCreated?: (entry: any) => void
+): Promise<string> {
+    const normalizedPath = String(filePath || '').trim();
+    if (!normalizedPath) {
+        throw new Error('Missing save path');
+    }
+
+    try {
+        const existingEntry = await getEntryFromPath(uxpFs, normalizedPath) as any;
+        if (existingEntry) {
+            if (existingEntry.isFolder === true) {
+                throw new Error(`Save target is a folder, not a file: ${normalizedPath}`);
+            }
+            if (conflictPolicy === 'fail_if_exists') {
+                throw new Error(`save_target_exists: ${normalizedPath}`);
+            }
+            return await uxpFs.createSessionToken(existingEntry);
+        }
+    } catch (error: any) {
+        if (/folder, not a file|save_target_exists:/i.test(String(error?.message || error))) {
+            throw error;
+        }
+    }
+
+    const slashIndex = Math.max(normalizedPath.lastIndexOf('\\'), normalizedPath.lastIndexOf('/'));
+    const directoryPath = slashIndex >= 0 ? normalizedPath.slice(0, slashIndex) : '';
+    const fileName = slashIndex >= 0 ? normalizedPath.slice(slashIndex + 1) : normalizedPath;
+
+    if (!directoryPath || !fileName) {
+        throw new Error(`Invalid save path: ${normalizedPath}`);
+    }
+
+    const directoryEntry = await getEntryFromPath(uxpFs, directoryPath) as any;
+    let fileEntry: any;
+    try {
+        fileEntry = await directoryEntry.createFile(fileName, {
+            overwrite: conflictPolicy === 'overwrite'
+        });
+    } catch (error) {
+        if (conflictPolicy === 'fail_if_exists') {
+            try {
+                const racedEntry = await directoryEntry.getEntry(fileName);
+                if (racedEntry && racedEntry.isFolder !== true) {
+                    throw new Error(`save_target_exists: ${normalizedPath}`);
+                }
+            } catch (verificationError: any) {
+                if (/save_target_exists:/i.test(String(verificationError?.message || verificationError))) {
+                    throw verificationError;
+                }
+            }
+        }
+        throw error;
+    }
+    onCreated?.(fileEntry);
+    return await uxpFs.createSessionToken(fileEntry);
+}
+
+function normalizeSaveConflictPolicy(value: unknown): SaveConflictPolicy | undefined {
+    if (value === undefined || value === null || String(value).trim() === '') return 'overwrite';
+    if (value === 'overwrite' || value === 'fail_if_exists') return value;
+    return undefined;
+}
+
+function buildSaveConflictFailure(
+    code: 'save_conflict_policy_invalid' | 'save_conflict_policy_requires_path' | 'save_target_exists',
+    message: string,
+    conflictPolicy?: SaveConflictPolicy,
+    requestedPath?: string
+): {
+    success: false;
+    code: string;
+    error: string;
+    conflictPolicy?: SaveConflictPolicy;
+    savedPath?: string;
+} {
+    return {
+        success: false,
+        code,
+        error: message,
+        ...(conflictPolicy ? { conflictPolicy } : {}),
+        ...(requestedPath ? { savedPath: requestedPath } : {})
+    };
+}
+
+function getSaveDescriptor(format: string, quality?: number): any {
+    const normalized = detectFormat(format);
+    switch (normalized) {
+        case 'psd':
+            return {
+                _obj: 'photoshop35Format',
+                maximizeCompatibility: true
+            };
+        case 'psb':
+            return {
+                _obj: 'largeDocumentFormat',
+                maximizeCompatibility: true
+            };
+        case 'png':
+            return {
+                _obj: 'PNGFormat',
+                PNGInterlaceType: { _enum: 'PNGInterlaceType', _value: 'PNGInterlaceNone' },
+                compression: 6
+            };
+        case 'jpeg':
+        case 'jpg':
+            return {
+                _obj: 'JPEG',
+                quality: quality || 80
+            };
+        case 'tif':
+        case 'tiff':
+            return {
+                _obj: 'TIFF',
+                byteOrder: { _enum: 'platform', _value: 'IBMPC' },
+                LZWCompression: true
+            };
+        case 'pdf':
+            return {
+                _obj: 'photoshopPDFFormat',
+                pDFPresetFilename: 'High Quality Print',
+                preserveEditing: true
+            };
+        default:
+            throw new Error(`Unsupported save format: ${format}`);
+    }
+}
+
+function toDocumentPixels(value: any): number {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    try {
+        if (typeof value?.as === 'function') {
+            const px = Number(value.as('px'));
+            if (Number.isFinite(px)) return px;
+        }
+    } catch {
+        // ignore and fall back
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+        return numeric;
+    }
+    throw new Error('Unable to read document pixel size');
+}
+
+async function readEditableDocumentArtifactProof(
+    filePath: string,
+    format: 'psd' | 'psb',
+    doc: any,
+    saveStartedAt: number
+): Promise<EditableDocumentArtifactProof> {
+    const normalizedPath = String(filePath || '').trim();
+    const entry = await getEntryFromPath(uxpFs, normalizedPath) as any;
+    if (entry?.isFile === false) {
+        throw new Error(`保存目标不是文件：${normalizedPath}`);
+    }
+    const metadata = typeof entry?.getMetadata === 'function'
+        ? await entry.getMetadata()
+        : undefined;
+    const byteLength = Number(metadata?.size);
+    const rawModifiedAt = metadata?.dateModified;
+    let modifiedAt: number;
+    if (rawModifiedAt instanceof Date) {
+        modifiedAt = rawModifiedAt.getTime();
+    } else if (typeof rawModifiedAt === 'number') {
+        modifiedAt = rawModifiedAt;
+    } else {
+        modifiedAt = Date.parse(String(rawModifiedAt || ''));
+    }
+    const documentId = Number(doc?.id);
+    const width = toDocumentPixels(doc?.width);
+    const height = toDocumentPixels(doc?.height);
+    if (!Number.isSafeInteger(byteLength) || byteLength <= 0) {
+        throw new Error(`保存后的可编辑文档不存在或为空：${normalizedPath}`);
+    }
+    if (!Number.isFinite(modifiedAt) || modifiedAt < saveStartedAt - 2_000) {
+        throw new Error(`保存后的可编辑文档不是本轮新写入的结果：${normalizedPath}`);
+    }
+    if (!Number.isSafeInteger(documentId) || documentId <= 0
+        || !Number.isFinite(width) || width <= 0
+        || !Number.isFinite(height) || height <= 0) {
+        throw new Error('无法把保存后的可编辑文档绑定到当前 Photoshop 文档');
+    }
+    return {
+        version: EDITABLE_DOCUMENT_ARTIFACT_VERSION,
+        basis: 'uxp_post_save_file_metadata',
+        path: normalizedPath,
+        format,
+        byteLength,
+        modifiedAt,
+        documentId,
+        canvas: { width, height }
+    };
+}
+
+function toJsxJpegQuality(quality: unknown, fallback = 80): number {
+    const raw = Number(quality);
+    const normalized = Number.isFinite(raw) ? Math.max(1, Math.min(100, Math.round(raw))) : fallback;
+    return Math.max(1, Math.min(12, Math.round(normalized / 100 * 12)));
+}
+
+function getRasterExportExtension(filePath: string): string {
+    const ext = ((String(filePath || '').match(/\.([a-z0-9]+)$/i) || [])[1] || '').toLowerCase();
+    if (ext === 'png') return 'png';
+    if (ext === 'jpg' || ext === 'jpeg') return 'jpg';
+    return '';
+}
+
+function normalizeRasterExportFormat(format: unknown, outputPath?: string): 'png' | 'jpg' {
+    const pathFormat = getRasterExportExtension(String(outputPath || ''));
+    if (pathFormat) return pathFormat as 'png' | 'jpg';
+    const normalized = String(format || '').trim().toLowerCase();
+    return normalized === 'jpg' || normalized === 'jpeg' ? 'jpg' : 'png';
+}
+
+function appendSuffixBeforeExtension(filePath: string, suffix: string): string {
+    const cleanSuffix = String(suffix || '').trim();
+    if (!cleanSuffix) return filePath;
+    return String(filePath || '').replace(/(\.[a-z0-9]+)$/i, `${cleanSuffix}$1`);
+}
+
+async function batchPlaySave(descriptor: any, options: { token?: string; dialog?: 'dontDisplay' }) {
+    const command: any = {
+        _obj: 'save',
+        as: descriptor,
+        _options: { dialogOptions: options.dialog }
+    };
+    if (options.token) {
+        command.in = { _kind: 'local', _path: options.token };
+        command.lowerCase = true;
+        command.saveStage = { _enum: 'saveStageType', _value: 'saveBegin' };
+    }
+    await action.batchPlay([command], { synchronousExecution: true });
+}
 
 export class SaveDocumentTool implements Tool {
     name = 'saveDocument';
 
     schema: ToolSchema = {
         name: 'saveDocument',
-        description: '保存当前文档。可以保存为 PSD 格式或导出为其他格式（PNG、JPEG等）。',
+        description: 'Save the active document as PSD, PSB, or another export format. Supports deterministic save-as when path is provided.',
         parameters: {
             type: 'object',
             properties: {
                 format: {
                     type: 'string',
-                    enum: ['psd', 'png', 'jpeg', 'jpg', 'tiff', 'pdf'],
-                    description: '保存格式，默认为 psd'
+                    enum: ['psd', 'psb', 'png', 'jpeg', 'jpg', 'tiff', 'pdf'],
+                    description: 'Save format. If omitted, format is inferred from path or defaults to psd.'
                 },
                 path: {
                     type: 'string',
-                    description: '保存路径（可选，如果不提供则使用原路径或弹出保存对话框）'
+                    description: 'Absolute output path. When provided, the document is saved silently to this path.'
                 },
                 quality: {
                     type: 'number',
-                    description: 'JPEG 质量 (1-100)，仅 JPEG 格式有效'
+                    description: 'JPEG quality (1-100).'
                 },
                 saveAs: {
                     type: 'boolean',
-                    description: '是否另存为（即使有原路径也弹出对话框）'
+                    description: 'Deprecated for Agent execution. Provide path for deterministic Save As; no-path dialog save is refused.'
+                },
+                conflictPolicy: {
+                    type: 'string',
+                    enum: ['overwrite', 'fail_if_exists'],
+                    description: 'Output conflict policy. overwrite is the default and preserves existing behavior; fail_if_exists requires an explicit path and refuses to replace an existing file.'
                 }
             }
         }
     };
 
-    async execute(params: {
-        format?: string;
-        path?: string;
-        quality?: number;
-        saveAs?: boolean;
-    }): Promise<{
+    async execute(params: SaveParams): Promise<{
         success: boolean;
         savedPath?: string;
         format?: string;
+        documentId?: number;
+        editableDocumentArtifact?: EditableDocumentArtifactProof;
+        sourceHistoryStateRef?: PhotoshopHistoryStateRef;
+        code?: string;
+        conflictPolicy?: SaveConflictPolicy;
         error?: string;
     }> {
+        const requestedPath = String(params.path || '').trim();
+        const conflictPolicy = normalizeSaveConflictPolicy(params.conflictPolicy);
+        let newlyCreatedTargetEntry: any;
+        let batchSaveCommitted = false;
+        if (!conflictPolicy) {
+            return buildSaveConflictFailure(
+                'save_conflict_policy_invalid',
+                `Unsupported save conflictPolicy: ${String(params.conflictPolicy || '')}`
+            );
+        }
+        if (conflictPolicy === 'fail_if_exists' && !requestedPath) {
+            return buildSaveConflictFailure(
+                'save_conflict_policy_requires_path',
+                'saveDocument conflictPolicy=fail_if_exists requires an explicit path.',
+                conflictPolicy
+            );
+        }
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档' };
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('No active document'),
+                    params
+                });
             }
 
-            const format = params.format?.toLowerCase() || 'psd';
-            
+            const format = detectFormat(params.format, requestedPath);
+
+            if (requestedPath && (format === 'png' || format === 'jpg' || format === 'jpeg')) {
+                const jsxFormat = format === 'png' ? 'png' : 'jpg';
+                const jsxResult = await saveDocumentViaJsx(requestedPath, jsxFormat, doc.name, {
+                    jpegQuality: toJsxJpegQuality(params.quality),
+                    conflictPolicy
+                });
+                return {
+                    success: true,
+                    savedPath: jsxResult.filePath,
+                    format: jsxFormat,
+                    sourceHistoryStateRef: jsxResult.sourceHistoryStateRef
+                };
+            }
+
+            const descriptor = getSaveDescriptor(format, params.quality);
+            let sourceHistoryStateRef: PhotoshopHistoryStateRef | undefined;
+            const saveStartedAt = Date.now();
+
             await core.executeAsModal(async () => {
-                if (format === 'psd') {
-                    // 保存 PSD
-                    const hasPath = (doc as any).saved;  // 使用 saved 属性判断是否有保存过
-                    if (params.saveAs || !hasPath) {
-                        // 另存为或新文档，需要选择保存位置
-                        await action.batchPlay([
-                            {
-                                _obj: 'save',
-                                as: {
-                                    _obj: 'photoshop35Format',
-                                    maximizeCompatibility: true
-                                },
-                                _options: { dialogOptions: 'display' }
-                            }
-                        ], {});
-                    } else {
-                        // 直接保存
-                        await action.batchPlay([
-                            {
-                                _obj: 'save',
-                                _options: { dialogOptions: 'dontDisplay' }
-                            }
-                        ], {});
-                    }
-                } else {
-                    // 导出为其他格式
-                    await this.exportAs(doc, format, params.quality);
+                const modalDocument = app.activeDocument;
+                if (!modalDocument || Number(modalDocument.id) !== Number(doc.id)) {
+                    throw new Error('Active document changed before save commit');
                 }
-            }, { commandName: `DesignEcho: 保存文档 (${format.toUpperCase()})` });
+                sourceHistoryStateRef = readActiveHistoryStateRef(modalDocument);
+                if (requestedPath) {
+                    const token = await createSaveToken(
+                        requestedPath,
+                        conflictPolicy,
+                        (entry) => {
+                            if (conflictPolicy === 'fail_if_exists') {
+                                newlyCreatedTargetEntry = entry;
+                            }
+                        }
+                    );
+                    await batchPlaySave(descriptor, { token, dialog: 'dontDisplay' });
+                    batchSaveCommitted = true;
+                    return;
+                }
 
-            console.log(`[SaveDocument] 已保存文档: ${doc.name}, 格式: ${format}`);
+                const hasSavedPath = (doc as any).saved;
+                if ((format === 'psd' || format === 'psb') && !params.saveAs && hasSavedPath && format === 'psd') {
+                    await action.batchPlay([
+                        {
+                            _obj: 'save',
+                            _options: { dialogOptions: 'dontDisplay' }
+                        }
+                    ], { synchronousExecution: true });
+                    return;
+                }
 
+                throw new Error('saveDocument requires path when the current document cannot be saved silently; refusing to open Photoshop save dialog.');
+            }, { commandName: `DesignEcho: Save Document (${format.toUpperCase()})` });
+
+            const editableDocumentArtifact = requestedPath
+                && (format === 'psd' || format === 'psb')
+                ? await readEditableDocumentArtifactProof(
+                    requestedPath,
+                    format,
+                    doc,
+                    saveStartedAt
+                )
+                : undefined;
             return {
                 success: true,
-                savedPath: doc.name,
-                format
+                savedPath: requestedPath || doc.name,
+                format,
+                documentId: Number(doc.id),
+                ...(editableDocumentArtifact ? { editableDocumentArtifact } : {}),
+                sourceHistoryStateRef
             };
-
         } catch (error) {
             console.error('[SaveDocument] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '保存失败'
-            };
-        }
-    }
 
-    /**
-     * 导出为其他格式
-     */
-    private async exportAs(doc: any, format: string, quality?: number): Promise<void> {
-        const formatMap: Record<string, any> = {
-            png: {
-                _obj: 'PNGFormat',
-                PNGInterlaceType: { _enum: 'PNGInterlaceType', _value: 'PNGInterlaceNone' },
-                compression: 6
-            },
-            jpeg: {
-                _obj: 'JPEG',
-                quality: quality || 80
-            },
-            jpg: {
-                _obj: 'JPEG',
-                quality: quality || 80
-            },
-            tiff: {
-                _obj: 'TIFF',
-                byteOrder: { _enum: 'platform', _value: 'IBMPC' },
-                LZWCompression: true
-            },
-            pdf: {
-                _obj: 'photoshopPDFFormat',
-                pDFPresetFilename: 'High Quality Print',
-                preserveEditing: true
+            if (conflictPolicy === 'fail_if_exists'
+                && newlyCreatedTargetEntry
+                && !batchSaveCommitted) {
+                try {
+                    await newlyCreatedTargetEntry.delete();
+                } catch (cleanupError) {
+                    console.warn('[SaveDocument] Failed to clean uncommitted save target:', cleanupError);
+                }
             }
-        };
 
-        const formatOptions = formatMap[format];
-        if (!formatOptions) {
-            throw new Error(`不支持的格式: ${format}`);
-        }
-
-        await action.batchPlay([
-            {
-                _obj: 'save',
-                as: formatOptions,
-                _options: { dialogOptions: 'display' }
+            const format = detectFormat(params.format, requestedPath);
+            if (conflictPolicy === 'fail_if_exists'
+                && /save_target_exists:/i.test(String((error as any)?.message || error))) {
+                return buildSaveConflictFailure(
+                    'save_target_exists',
+                    `保存目标已存在，已按 fail_if_exists 拒绝覆盖：${requestedPath}`,
+                    conflictPolicy,
+                    requestedPath
+                );
             }
-        ], {});
+            if (conflictPolicy === 'overwrite'
+                && requestedPath
+                && (format === 'psd' || format === 'psb')) {
+                try {
+                    const saveStartedAt = Date.now();
+                    const jsxResult = await saveActiveDocumentWithJsx(requestedPath, format as 'psd' | 'psb');
+                    const editableDocumentArtifact = await readEditableDocumentArtifactProof(
+                        jsxResult.filePath,
+                        format,
+                        app.activeDocument,
+                        saveStartedAt
+                    );
+                    return {
+                        success: true,
+                        savedPath: jsxResult.filePath,
+                        format,
+                        documentId: Number(app.activeDocument?.id),
+                        editableDocumentArtifact,
+                        sourceHistoryStateRef: jsxResult.sourceHistoryStateRef
+                    };
+                } catch (jsxError) {
+                    console.warn('[SaveDocument] JSX fallback failed:', jsxError);
+                }
+            }
+
+            return createToolFailureResult({
+                toolName: this.name,
+                error,
+                params
+            });
+        }
     }
 }
 
-/**
- * 快速导出工具
- */
 export class QuickExportTool implements Tool {
     name = 'quickExport';
 
     schema: ToolSchema = {
         name: 'quickExport',
-        description: '快速导出当前文档或选中的图层为 PNG/JPEG 格式，适合电商场景导出主图、详情图等。',
+        description: 'Quick export the active document or selected layers as PNG/JPEG.',
         parameters: {
             type: 'object',
             properties: {
                 format: {
                     type: 'string',
                     enum: ['png', 'jpeg', 'jpg'],
-                    description: '导出格式，默认 png'
+                    description: 'Export format.'
                 },
                 scale: {
                     type: 'number',
-                    description: '缩放比例 (0.1-4)，例如 2 表示 200%，默认 1'
+                    description: 'Scale ratio (0.1-4).'
                 },
                 quality: {
                     type: 'number',
-                    description: 'JPEG 质量 (1-100)，默认 80'
+                    description: 'JPEG quality (1-100).'
                 },
                 exportLayers: {
                     type: 'boolean',
-                    description: '是否导出选中的图层（而非整个文档）'
+                    description: 'Export selected layers instead of the full document.'
+                },
+                outputPath: {
+                    type: 'string',
+                    description: 'Absolute output directory or complete PNG/JPEG file path. Required for silent Agent export.'
                 },
                 suffix: {
                     type: 'string',
-                    description: '文件名后缀，例如 "_主图" 或 "_800x800"'
+                    description: 'Optional filename suffix.'
                 }
             }
         }
@@ -200,153 +543,139 @@ export class QuickExportTool implements Tool {
         success: boolean;
         exportedFiles?: string[];
         outputPath?: string;
+        /** 导出成功时的最终文件绝对路径（含自动生成的文件名/后缀），与 exportedFiles[0] 一致 */
+        filePath?: string;
+        /** 实际使用的导出格式（png/jpg，经 normalizeRasterExportFormat 归一） */
+        format?: 'png' | 'jpg';
+        sourceHistoryStateRef?: PhotoshopHistoryStateRef;
         error?: string;
     }> {
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档' };
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('No active document'),
+                    params
+                });
             }
 
-            const format = params.format?.toLowerCase() || 'png';
-            const scale = Math.max(0.1, Math.min(4, params.scale || 1));
             const quality = params.quality || 80;
             const suffix = params.suffix || '';
-            const outputPath = params.outputPath;
+            const outputPath = String(params.outputPath || '').trim();
+            const format = normalizeRasterExportFormat(params.format, outputPath);
+            const scale = Number(params.scale || 1);
 
-            await core.executeAsModal(async () => {
-                if (outputPath) {
-                    // 静默导出到指定路径
-                    await this.exportToPath(doc, outputPath, format, quality, suffix);
-                } else if (params.exportLayers && doc.activeLayers.length > 0) {
-                    for (const layer of doc.activeLayers) {
-                        await this.exportLayer(layer, format, scale, quality, suffix);
-                    }
-                } else {
-                    await this.exportDocument(doc, format, scale, quality, suffix);
-                }
-            }, { commandName: 'DesignEcho: 快速导出' });
+            if (params.exportLayers) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('quickExport exportLayers is not supported in silent Agent export; use a layer-specific export tool with an explicit output path.'),
+                    params
+                });
+            }
+
+            if (Number.isFinite(scale) && scale !== 1) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('quickExport scale is not supported by the silent export path; use batchExport presets for resized outputs.'),
+                    params
+                });
+            }
+
+            if (!outputPath) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('quickExport requires outputPath for silent export; refusing to open Photoshop export dialog.'),
+                    params
+                });
+            }
+
+            const exported = await this.exportToPath(doc, outputPath, format, quality, suffix);
 
             return {
                 success: true,
-                exportedFiles: ['已导出'],
-                outputPath: outputPath || undefined
+                exportedFiles: [exported.filePath],
+                outputPath: outputPath || undefined,
+                filePath: exported.filePath,
+                format,
+                sourceHistoryStateRef: exported.sourceHistoryStateRef
             };
-
         } catch (error) {
             console.error('[QuickExport] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '导出失败'
-            };
+            return createToolFailureResult({
+                toolName: this.name,
+                error,
+                params
+            });
         }
     }
 
-    /**
-     * 静默导出到指定路径（跳过对话框）
-     */
-    private async exportToPath(doc: any, outputPath: string, format: string, quality: number, suffix: string): Promise<void> {
-        const normalizeToFileUrl = (p: string) => {
-            const normalized = p.replace(/\\/g, '/');
-            if (/^file:\/\//i.test(normalized)) return normalized;
-            if (/^[a-zA-Z]:\//.test(normalized)) return `file:///${normalized}`;
-            return `file://${normalized.startsWith('/') ? '' : '/'}${normalized}`;
-        };
+    private async exportToPath(
+        doc: any,
+        outputPath: string,
+        format: string,
+        quality: number,
+        suffix: string
+    ): Promise<{ filePath: string; sourceHistoryStateRef?: PhotoshopHistoryStateRef }> {
+        const explicitFileFormat = getRasterExportExtension(outputPath);
+        if (explicitFileFormat) {
+            const filePath = appendSuffixBeforeExtension(outputPath, suffix);
+            const jsxResult = await saveDocumentViaJsx(filePath, explicitFileFormat === 'png' ? 'png' : 'jpg', doc.name, {
+                jpegQuality: this.toJsxJpegQuality(quality)
+            });
+            return {
+                filePath,
+                sourceHistoryStateRef: jsxResult.sourceHistoryStateRef
+            };
+        }
 
-        // 构建输出文件名
         const docName = doc.name?.replace(/\.[^.]+$/, '') || 'export';
         const ext = format === 'png' ? '.png' : '.jpg';
         const fileName = `${docName}${suffix}${ext}`;
-
-        try {
-            const dirUrl = normalizeToFileUrl(outputPath);
-            const dirEntry = await uxpFs.getEntryWithUrl(dirUrl) as any;
-            const fileEntry = await dirEntry.createFile(fileName, { overwrite: true });
-            const token = await uxpFs.createSessionToken(fileEntry as any);
-
-            await action.batchPlay([{
-                _obj: 'save',
-                as: format === 'png'
-                    ? { _obj: 'PNGFormat', method: { _enum: 'PNGMethod', _value: 'quick' } }
-                    : { _obj: 'JPEG', extendedQuality: quality, matteColor: { _enum: 'matteColor', _value: 'white' } },
-                in: { _kind: 'local', _path: token },
-                lowerCase: true,
-                _options: { dialogOptions: 'dontDisplay' }
-            }], {});
-
-            console.log(`[QuickExport] 静默导出成功: ${outputPath}/${fileName}`);
-        } catch (e: any) {
-            console.warn(`[QuickExport] 静默导出失败，降级到对话框: ${e.message}`);
-            await this.exportDocument(doc, format, 1, quality, suffix);
-        }
+        const filePath = `${outputPath.replace(/[\\/]+$/, '')}\\${fileName}`;
+        const jsxResult = await saveDocumentViaJsx(filePath, format === 'png' ? 'png' : 'jpg', doc.name, {
+            jpegQuality: this.toJsxJpegQuality(quality)
+        });
+        return {
+            filePath,
+            sourceHistoryStateRef: jsxResult.sourceHistoryStateRef
+        };
     }
 
-    /**
-     * 导出整个文档（弹出对话框）
-     */
-    private async exportDocument(doc: any, format: string, scale: number, quality: number, suffix: string): Promise<void> {
-        await action.batchPlay([
-            {
-                _obj: 'exportSelectionAsFileTypePressed',
-                _target: [{ _ref: 'document', _enum: 'ordinal', _value: 'targetEnum' }],
-                fileType: format === 'png' ? 'png' : 'jpg',
-                quality: quality,
-                metadata: 0,
-                sRGB: true,
-                openWindow: false,
-                _options: { dialogOptions: 'display' }
-            }
-        ], {});
-    }
-
-    /**
-     * 导出单个图层（弹出对话框）
-     */
-    private async exportLayer(layer: any, format: string, scale: number, quality: number, suffix: string): Promise<void> {
-        await action.batchPlay([
-            {
-                _obj: 'exportSelectionAsFileTypePressed',
-                _target: [{ _ref: 'layer', _id: layer.id }],
-                fileType: format === 'png' ? 'png' : 'jpg',
-                quality: quality,
-                metadata: 0,
-                sRGB: true,
-                openWindow: false,
-                _options: { dialogOptions: 'display' }
-            }
-        ], {});
+    private toJsxJpegQuality(quality: number): number {
+        const normalized = Number.isFinite(quality) ? Math.max(1, Math.min(100, Math.round(quality))) : 80;
+        return Math.max(1, Math.min(12, Math.round(normalized / 100 * 12)));
     }
 }
 
-/**
- * 批量导出工具
- */
 export class BatchExportTool implements Tool {
     name = 'batchExport';
 
     schema: ToolSchema = {
         name: 'batchExport',
-        description: '批量导出多个尺寸的图片，适合电商场景同时导出主图、SKU图、详情图等多种规格。',
+        description: 'Batch export multiple sizes for e-commerce deliverables.',
         parameters: {
             type: 'object',
             properties: {
                 presets: {
                     type: 'array',
-                    description: '导出预设列表，每个预设包含 width、height、suffix',
-                    items: {
-                        type: 'object'
-                    }
+                    description: 'Export presets with width, height, and suffix.'
                 },
                 format: {
                     type: 'string',
-                    enum: ['png', 'jpeg'],
-                    description: '导出格式，默认 jpeg'
+                    enum: ['png', 'jpeg', 'jpg'],
+                    description: 'Export format.'
                 },
                 quality: {
                     type: 'number',
-                    description: 'JPEG 质量 (1-100)，默认 85'
+                    description: 'JPEG quality (1-100).'
+                },
+                outputDirectory: {
+                    type: 'string',
+                    description: 'Absolute output directory for silent batch export.'
                 }
-            }
+            },
+            required: ['outputDirectory']
         }
     };
 
@@ -354,117 +683,157 @@ export class BatchExportTool implements Tool {
         presets?: Array<{ width: number; height: number; suffix: string }>;
         format?: string;
         quality?: number;
-    }): Promise<{
-        success: boolean;
-        exported?: number;
-        error?: string;
-    }> {
+        outputDirectory?: string;
+    }): Promise<any> {
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档' };
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('No active document'),
+                    params
+                });
             }
 
-            // 默认电商导出预设
+            const outputDirectory = String(params.outputDirectory || '').trim();
+            if (!outputDirectory) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('batchExport requires outputDirectory'),
+                    params
+                });
+            }
+
             const presets = params.presets || [
-                { width: 800, height: 800, suffix: '_主图' },
-                { width: 400, height: 400, suffix: '_SKU' },
-                { width: 750, height: 0, suffix: '_详情' }  // height 0 表示按比例
+                { width: 800, height: 800, suffix: '_main' },
+                { width: 400, height: 400, suffix: '_sku' },
+                { width: 750, height: 0, suffix: '_detail' }
             ];
-
-            const format = params.format || 'jpeg';
+            const format = String(params.format || 'jpeg').toLowerCase();
             const quality = params.quality || 85;
+            if (!Array.isArray(presets) || presets.length === 0) {
+                return { success: false, error: 'batchExport requires at least one preset' };
+            }
 
-            let exported = 0;
-
-            await core.executeAsModal(async () => {
-                for (const preset of presets) {
-                    try {
-                        await this.exportWithSize(doc, preset, format, quality);
-                        exported++;
-                    } catch (e) {
-                        console.error(`[BatchExport] 导出 ${preset.suffix} 失败:`, e);
-                    }
+            const normalizedPresets = presets.map((preset, index) => {
+                const width = Number(preset?.width || 0);
+                const height = Number(preset?.height || 0);
+                const suffix = String(preset?.suffix || '').trim();
+                if ((!Number.isFinite(width) || width < 0) || (!Number.isFinite(height) || height < 0)) {
+                    throw new Error(`Invalid preset dimensions at index ${index}`);
                 }
-            }, { commandName: 'DesignEcho: 批量导出' });
+                if (width <= 0 && height <= 0) {
+                    throw new Error(`Preset at index ${index} must define width or height greater than 0`);
+                }
+                if (!suffix) {
+                    throw new Error(`Preset at index ${index} requires a non-empty suffix`);
+                }
+                return { width, height, suffix };
+            });
+
+            const ext = format === 'png' ? 'png' : 'jpg';
+            const docName = String(doc.name || 'export').replace(/\.[^.]+$/, '');
+            const exportedFiles: Array<{
+                filePath: string;
+                width: number;
+                height: number;
+                suffix: string;
+            }> = [];
+            let sourceHistoryStateRef: PhotoshopHistoryStateRef | undefined;
+            let sourceHistoryStateConsistent = true;
+
+            for (const preset of normalizedPresets) {
+                const resolved = this.resolvePresetDimensions(doc, preset);
+                const filePath = `${outputDirectory.replace(/[\\/]+$/, '')}\\${docName}${preset.suffix}.${ext}`;
+                const jsxResult = await saveDocumentViaJsx(filePath, ext === 'png' ? 'png' : 'jpg', doc.name, {
+                    width: resolved.width,
+                    height: resolved.height,
+                    jpegQuality: this.toJsxJpegQuality(quality)
+                });
+                const candidateRef = jsxResult.sourceHistoryStateRef;
+                if (!candidateRef
+                    || candidateRef.documentId !== Number(doc.id)
+                    || (sourceHistoryStateRef && !sameHistoryStateRef(sourceHistoryStateRef, candidateRef))) {
+                    sourceHistoryStateConsistent = false;
+                } else if (!sourceHistoryStateRef) {
+                    sourceHistoryStateRef = candidateRef;
+                }
+                exportedFiles.push({
+                    filePath,
+                    width: resolved.width,
+                    height: resolved.height,
+                    suffix: preset.suffix
+                });
+            }
 
             return {
                 success: true,
-                exported
+                entityType: 'export-batch',
+                documentId: Number(doc.id),
+                name: doc.name,
+                outputDirectory,
+                format: ext,
+                exportedCount: exportedFiles.length,
+                exportedFiles,
+                sourceHistoryStateRef: sourceHistoryStateConsistent ? sourceHistoryStateRef : undefined,
+                sourceHistoryStateVerified: sourceHistoryStateConsistent && Boolean(sourceHistoryStateRef),
+                message: `Exported ${exportedFiles.length} files to ${outputDirectory}`,
+                exported: exportedFiles.length
             };
-
         } catch (error) {
             console.error('[BatchExport] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '批量导出失败'
-            };
+            return createToolFailureResult({
+                toolName: this.name,
+                error,
+                params
+            });
         }
     }
 
-    /**
-     * 导出指定尺寸
-     */
-    private async exportWithSize(
-        doc: any, 
-        preset: { width: number; height: number; suffix: string },
-        format: string,
-        quality: number
-    ): Promise<void> {
-        // 计算目标尺寸
+    private resolvePresetDimensions(
+        doc: any,
+        preset: { width: number; height: number; suffix: string }
+    ): { width: number; height: number } {
+        const documentWidth = toDocumentPixels(doc.width);
+        const documentHeight = toDocumentPixels(doc.height);
         let targetWidth = preset.width;
         let targetHeight = preset.height;
 
         if (targetHeight === 0) {
-            // 按比例计算高度
-            targetHeight = Math.round((targetWidth / doc.width) * doc.height);
+            targetHeight = Math.round((targetWidth / documentWidth) * documentHeight);
         } else if (targetWidth === 0) {
-            // 按比例计算宽度
-            targetWidth = Math.round((targetHeight / doc.height) * doc.width);
+            targetWidth = Math.round((targetHeight / documentHeight) * documentWidth);
         }
+        return { width: targetWidth, height: targetHeight };
+    }
 
-        // 使用 Export As 功能
-        await action.batchPlay([
-            {
-                _obj: 'exportSelectionAsFileTypePressed',
-                _target: [{ _ref: 'document', _enum: 'ordinal', _value: 'targetEnum' }],
-                fileType: format === 'png' ? 'png' : 'jpg',
-                quality: quality,
-                metadata: 0,
-                width: { _unit: 'pixelsUnit', _value: targetWidth },
-                height: { _unit: 'pixelsUnit', _value: targetHeight },
-                sRGB: true,
-                openWindow: false,
-                _options: { dialogOptions: 'display' }
-            }
-        ], {});
+    private toJsxJpegQuality(quality: number): number {
+        const normalized = Number.isFinite(quality) ? Math.max(1, Math.min(100, Math.round(quality))) : 85;
+        return Math.max(1, Math.min(12, Math.round(normalized / 100 * 12)));
     }
 }
 
-/**
- * 智能保存工具
- * 
- * 自动判断保存方式：
- * 1. 如果文档已保存过 → 直接保存到原路径
- * 2. 如果是新文档 → 弹出保存对话框
- */
 export class SmartSaveTool implements Tool {
     name = 'smartSave';
 
     schema: ToolSchema = {
         name: 'smartSave',
-        description: '智能保存当前文档。如果文档已有保存路径则直接保存，否则弹出保存对话框。',
+        description: 'Smart save the active document. Saves silently when path exists or is provided.',
         parameters: {
             type: 'object',
             properties: {
                 exportFormat: {
                     type: 'string',
                     enum: ['psd', 'psb', 'jpg', 'png'],
-                    description: '额外导出格式（可选），除了保存 PSD 外还导出一份指定格式的图片'
+                    description: 'Primary save format or additional export format.'
                 },
                 exportQuality: {
                     type: 'number',
-                    description: 'JPG 导出质量 (1-100)，默认 85'
+                    description: 'JPEG export quality (1-100).'
+                },
+                path: {
+                    type: 'string',
+                    description: 'Absolute output path for deterministic save-as.'
                 }
             }
         }
@@ -473,97 +842,120 @@ export class SmartSaveTool implements Tool {
     async execute(params: {
         exportFormat?: string;
         exportQuality?: number;
+        path?: string;
     }): Promise<{
         success: boolean;
         message?: string;
         savedPath?: string;
         exportedPath?: string;
+        sourceHistoryStateRef?: PhotoshopHistoryStateRef;
         error?: string;
     }> {
         try {
             const doc = app.activeDocument;
             if (!doc) {
-                return { success: false, error: '没有打开的文档' };
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('No active document'),
+                    params
+                });
             }
 
-            const docName = doc.name;
-            const isSaved = (doc as any).saved !== false;  // 检查文档是否有原路径
+            const saveFormat = detectFormat(params.exportFormat, params.path);
             let savedPath = '';
-            
-            console.log(`[SmartSave] 文档: ${docName}, 已保存过: ${isSaved}`);
+            let sourceHistoryStateRef: PhotoshopHistoryStateRef | undefined;
 
             await core.executeAsModal(async () => {
-                if (isSaved) {
-                    // 文档有原路径，直接保存
-                    console.log('[SmartSave] 直接保存到原路径');
+                const modalDocument = app.activeDocument;
+                if (!modalDocument || Number(modalDocument.id) !== Number(doc.id)) {
+                    throw new Error('Active document changed before smart save commit');
+                }
+                sourceHistoryStateRef = readActiveHistoryStateRef(modalDocument);
+                if (params.path) {
+                    const token = await createSaveToken(params.path);
+                    await batchPlaySave(getSaveDescriptor(saveFormat, params.exportQuality), {
+                        token,
+                        dialog: 'dontDisplay'
+                    });
+                    savedPath = params.path;
+                    return;
+                }
+
+                const isSaved = (doc as any).saved !== false;
+                if (isSaved && saveFormat === 'psd') {
                     await action.batchPlay([
                         {
                             _obj: 'save',
                             _options: { dialogOptions: 'dontDisplay' }
                         }
                     ], { synchronousExecution: true });
-                    savedPath = docName;
-                } else {
-                    // 新文档，弹出保存对话框
-                    console.log('[SmartSave] 弹出保存对话框');
+                    savedPath = doc.name;
+                    return;
+                }
+
+                throw new Error(
+                    'smartSave requires path when the current document cannot be saved silently; refusing to open Photoshop save dialog.'
+                );
+            }, { commandName: 'DesignEcho: Smart Save' });
+
+            let exportedPath = '';
+            if (params.exportFormat && params.exportFormat !== 'psd' && params.exportFormat !== 'psb') {
+                if (!params.path) {
+                    return createToolFailureResult({
+                        toolName: this.name,
+                        error: new Error('smartSave requires path for silent export formats; refusing to open Photoshop export dialog.'),
+                        params
+                    });
+                }
+
+                const exportFormat = params.exportFormat === 'png' ? 'png' : 'jpg';
+                const slashIndex = Math.max(params.path.lastIndexOf('\\'), params.path.lastIndexOf('/'));
+                const directoryPath = slashIndex >= 0 ? params.path.slice(0, slashIndex) : '';
+                const baseName = slashIndex >= 0 ? params.path.slice(slashIndex + 1) : params.path;
+                const exportBaseName = baseName.replace(/\.[^.]+$/, '') || doc.name.replace(/\.(psd|psb)$/i, '');
+                const exportPath = `${directoryPath}\\${exportBaseName}.${exportFormat}`;
+                const exportToken = await createSaveToken(exportPath);
+
+                await core.executeAsModal(async () => {
+                    const exportSourceRef = readActiveHistoryStateRef(app.activeDocument);
+                    if (!sameHistoryStateRef(sourceHistoryStateRef, exportSourceRef)) {
+                        throw new Error('Document version changed between smart save and export');
+                    }
                     await action.batchPlay([
                         {
                             _obj: 'save',
-                            as: {
-                                _obj: 'photoshop35Format',
-                                maximizeCompatibility: true
-                            },
-                            _options: { dialogOptions: 'display' }
+                            as: exportFormat === 'png'
+                                ? { _obj: 'PNGFormat', method: { _enum: 'PNGMethod', _value: 'quick' } }
+                                : {
+                                    _obj: 'JPEG',
+                                    extendedQuality: params.exportQuality || 85,
+                                    matteColor: { _enum: 'matteColor', _value: 'white' }
+                                },
+                            in: { _kind: 'local', _path: exportToken },
+                            lowerCase: true,
+                            _options: { dialogOptions: 'dontDisplay' }
                         }
                     ], { synchronousExecution: true });
-                    savedPath = doc.name;  // 保存后获取新路径
-                }
-            }, { commandName: 'DesignEcho: 智能保存' });
-
-            let exportedPath = '';
-            
-            // 如果需要额外导出
-            if (params.exportFormat && params.exportFormat !== 'psd' && params.exportFormat !== 'psb') {
-                console.log(`[SmartSave] 额外导出为 ${params.exportFormat}`);
-                
-                await core.executeAsModal(async () => {
-                    const quality = params.exportQuality || 85;
-                    const format = params.exportFormat === 'png' ? 'png' : 'jpg';
-                    
-                    await action.batchPlay([
-                        {
-                            _obj: 'exportSelectionAsFileTypePressed',
-                            _target: [{ _ref: 'document', _enum: 'ordinal', _value: 'targetEnum' }],
-                            fileType: format,
-                            quality: quality,
-                            metadata: 0,
-                            sRGB: true,
-                            openWindow: false,
-                            _options: { dialogOptions: 'display' }
-                        }
-                    ], { synchronousExecution: true });
-                    
-                    exportedPath = `${docName.replace(/\.(psd|psb)$/i, '')}.${format}`;
-                }, { commandName: `DesignEcho: 导出 ${params.exportFormat.toUpperCase()}` });
+                    exportedPath = exportPath;
+                }, { commandName: `DesignEcho: Export ${String(params.exportFormat).toUpperCase()}` });
             }
-
-            const message = exportedPath 
-                ? `✅ 已保存: ${savedPath}\n✅ 已导出: ${exportedPath}`
-                : `✅ 已保存: ${savedPath}`;
 
             return {
                 success: true,
-                message,
+                message: exportedPath
+                    ? `Saved: ${savedPath}; Exported: ${exportedPath}`
+                    : `Saved: ${savedPath}`,
                 savedPath,
-                exportedPath: exportedPath || undefined
+                exportedPath: exportedPath || undefined,
+                sourceHistoryStateRef
             };
-
         } catch (error) {
             console.error('[SmartSave] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '保存失败'
-            };
+            return createToolFailureResult({
+                toolName: this.name,
+                error,
+                params
+            });
         }
     }
 }

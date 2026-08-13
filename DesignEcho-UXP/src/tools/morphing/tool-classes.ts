@@ -88,7 +88,7 @@ export class MorphToShapeTool implements Tool {
     
     schema: ToolSchema = {
         name: 'morphToShape',
-        description: '将图层变形为目标形状，保持内部图案和花边不变形',
+        description: '对图层做形状对齐预览（提取目标形状与源轮廓后只应用对齐变换，不执行真实变形；真实变形需 applyDisplacement / applyMorphedImage）',
         parameters: {
             type: 'object',
             properties: {
@@ -166,7 +166,7 @@ export class BatchMorphToShapeTool implements Tool {
     
     schema: ToolSchema = {
         name: 'batchMorphToShape',
-        description: '批量将多个图层变形为目标形状',
+        description: '批量对多个图层做形状对齐预览（只应用对齐变换，不执行真实变形；真实变形需 applyDisplacement / applyMorphedImage）',
         parameters: {
             type: 'object',
             properties: {
@@ -234,6 +234,14 @@ export class ApplyDisplacementTool implements Tool {
                 sparseDisplacement: {
                     type: 'string',
                     description: '稀疏位移场数据（SPARSE:xxx 格式）'
+                },
+                preserveOriginal: {
+                    type: 'boolean',
+                    description: '是否保留原图层并在副本上写回，默认 true'
+                },
+                resultLayerName: {
+                    type: 'string',
+                    description: '输出图层名称（可选）'
                 }
             },
             required: ['layerId', 'sparseDisplacement']

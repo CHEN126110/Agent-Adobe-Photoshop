@@ -6,18 +6,24 @@
  */
 
 import React, { useState, useCallback } from 'react';
-import { useAppStore, ProjectInfo, EcommerceProjectStructure } from '../stores/app.store';
+import { ArrowUp, FolderOpen, Plus, Sparkles } from 'lucide-react';
+
+import { normalizeModelThinkingPreference } from '../../shared/config/models.config';
+import { useAppStore, ProjectInfo } from '../stores/app.store';
+import { ThinkingModeControl } from './ThinkingModeControl';
+
+import './ProjectManager.css';
 
 export const ProjectManager: React.FC<{
-    onProjectOpen: (project: ProjectInfo) => void;
+    onProjectOpen: (project: ProjectInfo, pendingDraft?: string) => void;
 }> = ({ onProjectOpen }) => {
     const { 
         recentProjects, 
         addRecentProject, 
         removeRecentProject, 
-        setCurrentProject,
-        setEcommerceStructure,
-        currentProject
+        currentProject,
+        modelPreferences,
+        setModelPreferences
     } = useAppStore();
     const [isLoading, setIsLoading] = useState(false);
     const [loadingStatus, setLoadingStatus] = useState('');
@@ -26,6 +32,9 @@ export const ProjectManager: React.FC<{
     const [newProjectPath, setNewProjectPath] = useState('');
     const [exportFolderPath, setExportFolderPath] = useState<string | null>(null);
     const [showExportFolderPrompt, setShowExportFolderPrompt] = useState(false);
+    const [homePrompt, setHomePrompt] = useState('');
+    const [promptHint, setPromptHint] = useState('');
+    const thinkingPreference = normalizeModelThinkingPreference(modelPreferences?.thinking);
 
     const formatErrorMessage = (error: any, fallback: string): string => {
         if (!error) return fallback;
@@ -52,10 +61,10 @@ export const ProjectManager: React.FC<{
     ];
 
     /**
-     * 导出目录已通过 getEntryWithUrl 绕过授权，直接使用项目路径
+     * 导出目录使用当前项目路径；底层通过 getEntryWithUrl 解析为 UXP 可访问入口
      */
     const checkExportFolderStatus = useCallback(async () => {
-        // 使用 getEntryWithUrl 绕过授权，直接使用项目路径作为导出目录
+        // 使用当前项目路径作为导出目录，底层由 UXP entry 解析处理权限
         if (currentProject?.path) {
             setExportFolderPath(currentProject.path);
         }
@@ -63,7 +72,7 @@ export const ProjectManager: React.FC<{
 
     /**
      * 确认使用当前项目目录作为导出目录
-     * 使用 getEntryWithUrl 绕过授权，无需弹窗选择
+     * 复用当前项目路径，无需重复弹窗选择
      */
     const handleSelectExportFolder = async () => {
         if (currentProject?.path) {
@@ -147,16 +156,11 @@ export const ProjectManager: React.FC<{
                 }
             };
 
-            // 扫描项目结构
-            setLoadingStatus('正在初始化项目...');
-            await scanEcommerceProject(projectFullPath, true);
-
             // 添加到最近项目
             addRecentProject(project);
 
             // 打开项目
-            setCurrentProject(project);
-            onProjectOpen(project);
+            onProjectOpen(project, homePrompt.trim() || undefined);
             setExportFolderPath(projectFullPath);
             setShowExportFolderPrompt(false);
 
@@ -174,32 +178,6 @@ export const ProjectManager: React.FC<{
             setLoadingStatus('');
         }
     };
-
-    /**
-     * 扫描电商项目结构
-     */
-    const scanEcommerceProject = useCallback(async (projectPath: string, throwOnError: boolean = false): Promise<EcommerceProjectStructure | null> => {
-        try {
-            setLoadingStatus('正在扫描项目结构...');
-            if (!window.designEcho?.scanEcommerceProject) {
-                console.warn('[ProjectManager] scanEcommerceProject API 不可用');
-                if (throwOnError) throw new Error('scanEcommerceProject API 不可用');
-                return null;
-            }
-            const structure = await window.designEcho.scanEcommerceProject(projectPath);
-            if (structure) {
-                setEcommerceStructure(structure as EcommerceProjectStructure);
-                console.log('[ProjectManager] 电商项目扫描完成:', structure.summary);
-            }
-            return structure as EcommerceProjectStructure | null;
-        } catch (error: any) {
-            console.error('[ProjectManager] 扫描电商项目失败:', error);
-            if (throwOnError) {
-                throw new Error(formatErrorMessage(error, '扫描项目结构失败'));
-            }
-            return null;
-        }
-    }, [setEcommerceStructure]);
 
     /**
      * 选择并导入项目文件夹
@@ -224,30 +202,6 @@ export const ProjectManager: React.FC<{
             const pathParts = folderPath.split(/[/\\]/);
             const projectName = pathParts[pathParts.length - 1] || '未命名项目';
 
-            // 使用电商项目扫描服务
-            setLoadingStatus('正在识别项目结构...');
-            const structure = await scanEcommerceProject(folderPath);
-
-            // 基于扫描结果创建项目信息
-            const folders: ProjectInfo['folders'] = {};
-            if (structure) {
-                for (const folder of structure.folders) {
-                    switch (folder.type) {
-                        case 'source':
-                            folders.assets = folder.path;
-                            break;
-                        case 'psd':
-                            folders.psd = folder.path;
-                            break;
-                        case 'mainImage':
-                        case 'detail':
-                        case 'sku':
-                            folders.output = folder.path;
-                            break;
-                    }
-                }
-            }
-
             // 创建项目信息
             const project: ProjectInfo = {
                 id: crypto.randomUUID(),
@@ -255,17 +209,16 @@ export const ProjectManager: React.FC<{
                 path: folderPath,
                 createdAt: Date.now(),
                 lastOpenedAt: Date.now(),
-                folders
+                folders: {}
             };
 
             // 添加到最近项目
             addRecentProject(project);
             
             // 打开项目
-            setCurrentProject(project);
-            onProjectOpen(project);
+            onProjectOpen(project, homePrompt.trim() || undefined);
 
-            // 使用 getEntryWithUrl 绕过授权，直接使用项目路径
+            // 使用项目路径作为导出目录
             setExportFolderPath(folderPath);
             console.log('[ProjectManager] ✅ 项目目录:', folderPath);
 
@@ -281,19 +234,17 @@ export const ProjectManager: React.FC<{
     /**
      * 打开已有项目
      */
-    const handleOpenProject = async (project: ProjectInfo) => {
+    const handleOpenProject = (project: ProjectInfo): void => {
+        if (isLoading) return;
         setIsLoading(true);
         setLoadingStatus('正在加载项目...');
         
         try {
-            // 扫描电商项目结构
-            await scanEcommerceProject(project.path);
+            const openedProject = { ...project, lastOpenedAt: Date.now() };
+            addRecentProject(openedProject);
+            onProjectOpen(openedProject, homePrompt.trim() || undefined);
             
-            setCurrentProject({ ...project, lastOpenedAt: Date.now() });
-            addRecentProject({ ...project, lastOpenedAt: Date.now() });
-            onProjectOpen(project);
-            
-            // 使用 getEntryWithUrl 绕过授权，直接使用项目路径
+            // 使用项目路径作为导出目录
             setExportFolderPath(project.path);
             console.log('[ProjectManager] ✅ 项目目录:', project.path);
         } catch (error) {
@@ -308,16 +259,14 @@ export const ProjectManager: React.FC<{
     /**
      * 删除项目（仅从列表移除）
      */
-    const handleRemoveProject = (e: React.MouseEvent, projectId: string) => {
-        e.stopPropagation();
+    const handleRemoveProject = (projectId: string): void => {
         removeRecentProject(projectId);
     };
 
     /**
      * 在资源管理器中打开
      */
-    const handleOpenInExplorer = async (e: React.MouseEvent, path: string) => {
-        e.stopPropagation();
+    const handleOpenInExplorer = async (path: string): Promise<void> => {
         await window.designEcho?.openPath(path);
     };
 
@@ -337,134 +286,191 @@ export const ProjectManager: React.FC<{
         return date.toLocaleDateString();
     };
 
+    const handleToggleThinking = (): void => {
+        setModelPreferences({ thinking: { enabled: !thinkingPreference.enabled } });
+    };
+
+    const handleHomeSubmit = (event: React.FormEvent): void => {
+        event.preventDefault();
+        if (!homePrompt.trim()) {
+            setPromptHint('先描述你想完成的设计任务。');
+            return;
+        }
+        setPromptHint('选择、新建或导入一个项目后，这条需求会自动带入 Agent。');
+        document.getElementById('recent-projects-title')?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+        });
+    };
+
+    const taskPresets = [
+        '设计一张电商主图',
+        '规划详情页结构',
+        '批量制作 SKU',
+        '分析项目素材'
+    ];
+
     return (
         <div className="project-manager">
-            {/* 头部 */}
-            <div className="pm-header">
-                <div className="pm-logo">
-                    <span className="logo-icon">🎨</span>
-                    <div className="logo-text">
-                        <h1>DesignEcho</h1>
-                        <p>AI 驱动的设计助手</p>
+            <section className="pm-home" aria-labelledby="project-home-title">
+                <div className="pm-identity">
+                    <div className="pm-identity-title">
+                        <div className="pm-mark" aria-hidden="true">
+                            <Sparkles size={17} strokeWidth={1.9} />
+                        </div>
+                        <h1 id="project-home-title">让设计工作更简单</h1>
                     </div>
+                    <p>懂你的设计代理，帮你把素材、创作与交付连成一条工作流</p>
                 </div>
-            </div>
 
-            {/* 快速操作 */}
-            <div className="pm-actions">
-                <button 
-                    className="action-btn primary"
-                    onClick={handleImportProject}
-                    disabled={isLoading}
-                >
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                        <line x1="12" y1="11" x2="12" y2="17"/>
-                        <line x1="9" y1="14" x2="15" y2="14"/>
-                    </svg>
-                    <span>{isLoading ? (loadingStatus || '正在导入...') : '导入项目文件夹'}</span>
-                </button>
-
-                <button 
-                    className="action-btn secondary" 
-                    onClick={() => setShowNewProjectModal(true)}
-                    disabled={isLoading}
-                >
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                        <line x1="12" y1="8" x2="12" y2="16"/>
-                        <line x1="8" y1="12" x2="16" y2="12"/>
-                    </svg>
-                    <span>新建空白项目</span>
-                </button>
-            </div>
-
-            {/* 最近项目 */}
-            <div className="pm-recent">
-                <h2>最近项目</h2>
-                
-                {recentProjects.length === 0 ? (
-                    <div className="empty-state">
-                        <div className="empty-icon">📁</div>
-                        <p>还没有项目</p>
-                        <span>导入一个项目文件夹开始工作</span>
-                    </div>
-                ) : (
-                    <div className="project-grid">
-                        {recentProjects.map(project => (
-                            <div 
-                                key={project.id}
-                                className="project-card"
-                                onClick={() => handleOpenProject(project)}
+                <form className="pm-creator" onSubmit={handleHomeSubmit}>
+                    <textarea
+                        value={homePrompt}
+                        onChange={(event) => {
+                            setHomePrompt(event.target.value);
+                            setPromptHint('');
+                        }}
+                        placeholder="描述你想完成的设计任务…"
+                        aria-label="设计任务"
+                        rows={2}
+                    />
+                    <div className="pm-creator-toolbar">
+                        <div className="pm-creator-tools">
+                            <button
+                                type="button"
+                                className="pm-tool-button"
+                                onClick={handleImportProject}
+                                disabled={isLoading}
+                                aria-label="导入项目文件夹"
+                                title="导入项目文件夹"
                             >
-                                <div className="card-thumbnail">
-                                    {project.thumbnail ? (
-                                        <img src={project.thumbnail} alt={project.name} />
-                                    ) : (
-                                        <div className="default-thumbnail">
-                                            <span>📂</span>
-                                        </div>
-                                    )}
-                                </div>
-                                
-                                <div className="card-info">
-                                    <h3>{project.name}</h3>
-                                    <p className="card-path" title={project.path}>
-                                        {project.path}
-                                    </p>
-                                    <p className="card-time">
-                                        {formatDate(project.lastOpenedAt)}
-                                    </p>
-                                </div>
+                                <FolderOpen size={16} strokeWidth={1.8} aria-hidden="true" />
+                            </button>
+                            <ThinkingModeControl
+                                enabled={thinkingPreference.enabled}
+                                onToggle={handleToggleThinking}
+                                direction="down"
+                            />
+                        </div>
+                        <button
+                            type="submit"
+                            className="pm-submit-button"
+                            aria-label="准备设计任务"
+                        >
+                            <ArrowUp size={17} strokeWidth={2} aria-hidden="true" />
+                        </button>
+                    </div>
+                </form>
 
-                                <div className="card-actions">
-                                    <button 
+                <div className="pm-task-presets" aria-label="常用设计任务">
+                    {taskPresets.map((preset) => (
+                        <button
+                            key={preset}
+                            type="button"
+                            className={homePrompt === preset ? 'active' : ''}
+                            onClick={() => {
+                                setHomePrompt(preset);
+                                setPromptHint('');
+                            }}
+                        >
+                            {preset}
+                        </button>
+                    ))}
+                </div>
+                <p className="pm-prompt-hint" aria-live="polite">{promptHint}</p>
+
+                <section className="pm-recent" aria-labelledby="recent-projects-title">
+                    <div className="pm-recent-heading">
+                        <h2 id="recent-projects-title">最近项目</h2>
+                        <button type="button" onClick={handleImportProject} disabled={isLoading}>
+                            {isLoading ? (loadingStatus || '正在导入…') : '导入项目'}
+                        </button>
+                    </div>
+                    <div className="project-grid">
+                        <button
+                            type="button"
+                            className="project-card project-card-new"
+                            onClick={() => setShowNewProjectModal(true)}
+                            disabled={isLoading}
+                        >
+                            <span className="project-card-new-icon">
+                                <Plus size={20} strokeWidth={1.6} aria-hidden="true" />
+                            </span>
+                            <span>新建项目</span>
+                        </button>
+
+                        {recentProjects.map(project => (
+                            <article key={project.id} className="project-card">
+                                <button
+                                    type="button"
+                                    className="project-card-open"
+                                    onClick={() => handleOpenProject(project)}
+                                    disabled={isLoading}
+                                    aria-label={`打开项目：${project.name}`}
+                                >
+                                    <span className="project-card-preview">
+                                        {project.thumbnail ? (
+                                            <img src={project.thumbnail} alt="" />
+                                        ) : (
+                                            <FolderOpen size={30} strokeWidth={1.35} aria-hidden="true" />
+                                        )}
+                                    </span>
+                                    <span className="card-info">
+                                        <span className="card-title">{project.name}</span>
+                                        <span className="card-path" title={project.path}>{project.path}</span>
+                                        <span className="card-time">{formatDate(project.lastOpenedAt)}</span>
+                                    </span>
+                                </button>
+                                <span className="card-actions">
+                                    <button
+                                        type="button"
                                         className="card-btn"
-                                        onClick={(e) => handleOpenInExplorer(e, project.path)}
-                                        title="在资源管理器中打开"
+                                        onClick={() => void handleOpenInExplorer(project.path)}
+                                        disabled={isLoading}
                                     >
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                                            <polyline points="15 3 21 3 21 9"/>
-                                            <line x1="10" y1="14" x2="21" y2="3"/>
-                                        </svg>
+                                        打开目录
                                     </button>
-                                    <button 
+                                    <button
+                                        type="button"
                                         className="card-btn danger"
-                                        onClick={(e) => handleRemoveProject(e, project.id)}
-                                        title="从列表移除"
+                                        onClick={() => handleRemoveProject(project.id)}
+                                        disabled={isLoading}
                                     >
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"/>
-                                            <line x1="6" y1="6" x2="18" y2="18"/>
-                                        </svg>
+                                        移除
                                     </button>
-                                </div>
-                            </div>
+                                </span>
+                            </article>
                         ))}
                     </div>
-                )}
-            </div>
+                </section>
 
-            {/* 导出目录状态 */}
-            {exportFolderPath && (
-                <div className="pm-export-status">
-                    <div className="export-info">
-                        <span className="export-label">📤 导出目录:</span>
-                        <span className="export-path" title={exportFolderPath}>{exportFolderPath}</span>
+                {exportFolderPath && (
+                    <div className="pm-export-status">
+                        <div className="export-info">
+                            <span className="export-label">导出目录</span>
+                            <span className="export-path" title={exportFolderPath}>{exportFolderPath}</span>
+                        </div>
+                        <button className="btn-change-export" onClick={handleSelectExportFolder}>使用项目目录</button>
                     </div>
-                    <button className="btn-change-export" onClick={handleSelectExportFolder}>
-                        更换
-                    </button>
-                </div>
-            )}
+                )}
+
+                <details className="pm-tips">
+                    <summary>标准项目目录</summary>
+                    <div className="tips-content">
+                        <div className="tip-item"><span className="tip-folder">拍摄图 /</span><span className="tip-desc">原始产品照片</span></div>
+                        <div className="tip-item"><span className="tip-folder">PSD /</span><span className="tip-desc">Photoshop 源文件</span></div>
+                        <div className="tip-item"><span className="tip-folder">主图 /</span><span className="tip-desc">750 / 800 / 1200 尺寸</span></div>
+                        <div className="tip-item"><span className="tip-folder">详情页 /</span><span className="tip-desc">详情页切片</span></div>
+                        <div className="tip-item"><span className="tip-folder">SKU /</span><span className="tip-desc">颜色与款式图</span></div>
+                    </div>
+                </details>
+            </section>
 
             {/* 设置导出目录提示弹窗 */}
             {showExportFolderPrompt && (
                 <div className="export-prompt-overlay">
                     <div className="export-prompt-card">
                         <div className="prompt-header">
-                            <span className="prompt-icon">📤</span>
                             <h3>设置 SKU 导出目录</h3>
                         </div>
                         <p className="prompt-desc">
@@ -482,626 +488,13 @@ export const ProjectManager: React.FC<{
                 </div>
             )}
 
-            {/* 提示信息 */}
-            <div className="pm-tips">
-                <h3>💡 电商项目结构</h3>
-                <div className="tips-content">
-                    <div className="tip-item">
-                        <span className="tip-folder">📷 拍摄图/</span>
-                        <span className="tip-desc">原始产品照片</span>
-                    </div>
-                    <div className="tip-item">
-                        <span className="tip-folder">🎨 PSD/</span>
-                        <span className="tip-desc">Photoshop 源文件</span>
-                    </div>
-                    <div className="tip-item">
-                        <span className="tip-folder">🖼️ 主图/</span>
-                        <span className="tip-desc">750/800/1200 尺寸</span>
-                    </div>
-                    <div className="tip-item">
-                        <span className="tip-folder">📄 详情页/</span>
-                        <span className="tip-desc">详情页切片</span>
-                    </div>
-                    <div className="tip-item">
-                        <span className="tip-folder">🏷️ SKU/</span>
-                        <span className="tip-desc">颜色/款式图</span>
-                    </div>
-                </div>
-            </div>
-
-            <style>{`
-                .project-manager {
-                    flex: 1;
-                    display: flex;
-                    flex-direction: column;
-                    padding: 40px;
-                    overflow-y: auto;
-                    background: linear-gradient(180deg, var(--de-bg-dark) 0%, #0a0a12 100%);
-                }
-
-                .pm-header {
-                    margin-bottom: 48px;
-                }
-
-                .pm-logo {
-                    display: flex;
-                    align-items: center;
-                    gap: 16px;
-                }
-
-                .logo-icon {
-                    font-size: 48px;
-                }
-
-                .logo-text h1 {
-                    font-family: 'Space Grotesk', sans-serif;
-                    font-size: 32px;
-                    font-weight: 700;
-                    background: linear-gradient(135deg, #fff 0%, #0066ff 100%);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
-                    margin: 0;
-                }
-
-                .logo-text p {
-                    color: var(--de-text-secondary);
-                    margin: 4px 0 0;
-                    font-size: 14px;
-                }
-
-                .pm-actions {
-                    display: flex;
-                    gap: 16px;
-                    margin-bottom: 48px;
-                }
-
-                .action-btn {
-                    display: flex;
-                    align-items: center;
-                    gap: 12px;
-                    padding: 16px 24px;
-                    border-radius: 12px;
-                    font-size: 15px;
-                    font-weight: 500;
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                    border: 1px solid transparent;
-                }
-
-                .action-btn.primary {
-                    background: var(--de-primary);
-                    color: white;
-                    border: 1px solid transparent;
-                }
-
-                .action-btn.primary:hover:not(:disabled) {
-                    background: #0055dd;
-                    transform: translateY(-2px);
-                    box-shadow: 0 8px 24px rgba(0, 102, 255, 0.3);
-                }
-
-                .action-btn.secondary {
-                    background: var(--de-bg-card);
-                    color: var(--de-text-primary);
-                    border-color: var(--de-border);
-                }
-
-                .action-btn.secondary:hover:not(:disabled) {
-                    background: var(--de-bg-light);
-                    border-color: var(--de-primary);
-                }
-
-                .action-btn:disabled {
-                    opacity: 0.5;
-                    cursor: not-allowed;
-                }
-
-                .pm-recent {
-                    flex: 1;
-                }
-
-                .pm-recent h2 {
-                    font-size: 18px;
-                    font-weight: 600;
-                    color: var(--de-text-primary);
-                    margin: 0 0 20px;
-                }
-
-                .empty-state {
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 60px;
-                    text-align: center;
-                }
-
-                .empty-icon {
-                    font-size: 64px;
-                    margin-bottom: 16px;
-                    opacity: 0.5;
-                }
-
-                .empty-state p {
-                    color: var(--de-text-primary);
-                    font-size: 16px;
-                    margin: 0 0 8px;
-                }
-
-                .empty-state span {
-                    color: var(--de-text-secondary);
-                    font-size: 14px;
-                }
-
-                .project-grid {
-                    display: grid;
-                    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-                    gap: 20px;
-                }
-
-                .project-card {
-                    background: var(--de-bg-card);
-                    border: 1px solid var(--de-border);
-                    border-radius: 12px;
-                    overflow: hidden;
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                }
-
-                .project-card:hover {
-                    border-color: var(--de-primary);
-                    transform: translateY(-4px);
-                    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
-                }
-
-                .card-thumbnail {
-                    height: 120px;
-                    background: var(--de-bg-light);
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                }
-
-                .card-thumbnail img {
-                    width: 100%;
-                    height: 100%;
-                    object-fit: cover;
-                }
-
-                .default-thumbnail {
-                    font-size: 48px;
-                    opacity: 0.5;
-                }
-
-                .card-info {
-                    padding: 16px;
-                }
-
-                .card-info h3 {
-                    font-size: 15px;
-                    font-weight: 600;
-                    color: var(--de-text-primary);
-                    margin: 0 0 8px;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-
-                .card-path {
-                    font-size: 12px;
-                    color: var(--de-text-secondary);
-                    margin: 0 0 8px;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-
-                .card-time {
-                    font-size: 12px;
-                    color: var(--de-text-muted);
-                    margin: 0;
-                }
-
-                .card-actions {
-                    display: flex;
-                    justify-content: flex-end;
-                    gap: 8px;
-                    padding: 0 16px 16px;
-                }
-
-                .card-btn {
-                    width: 32px;
-                    height: 32px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    background: var(--de-bg-light);
-                    border: 1px solid var(--de-border);
-                    border-radius: 6px;
-                    color: var(--de-text-secondary);
-                    cursor: pointer;
-                    transition: all 0.15s ease;
-                }
-
-                .card-btn:hover {
-                    background: var(--de-bg-card);
-                    color: var(--de-text-primary);
-                    border-color: var(--de-primary);
-                }
-
-                .card-btn.danger:hover {
-                    background: rgba(239, 68, 68, 0.1);
-                    color: #ef4444;
-                    border-color: #ef4444;
-                }
-
-                .pm-tips {
-                    margin-top: 48px;
-                    padding: 20px;
-                    background: var(--de-bg-card);
-                    border: 1px solid var(--de-border);
-                    border-radius: 12px;
-                }
-
-                .pm-tips h3 {
-                    font-size: 14px;
-                    font-weight: 600;
-                    color: var(--de-text-primary);
-                    margin: 0 0 16px;
-                }
-
-                .tips-content {
-                    display: flex;
-                    flex-direction: row;
-                    flex-wrap: wrap;
-                    gap: 24px;
-                }
-
-                .tip-item {
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                }
-
-                .tip-folder {
-                    font-family: 'Consolas', monospace;
-                    font-size: 13px;
-                    color: var(--de-primary);
-                }
-
-                .tip-desc {
-                    font-size: 13px;
-                    color: var(--de-text-secondary);
-                }
-
-                /* 新建项目弹窗 */
-                .new-project-modal {
-                    position: fixed;
-                    inset: 0;
-                    background: rgba(0, 0, 0, 0.7);
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    z-index: 1000;
-                    animation: fadeIn 0.2s ease-out;
-                }
-
-                .new-project-card {
-                    background: var(--de-bg-card, #12121a);
-                    border: 1px solid var(--de-border, #2a2a3a);
-                    border-radius: 16px;
-                    width: 500px;
-                    max-width: 90vw;
-                    animation: slideUp 0.3s ease-out;
-                }
-
-                .new-project-header {
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    padding: 20px 24px;
-                    border-bottom: 1px solid var(--de-border, #2a2a3a);
-                }
-
-                .new-project-header h3 {
-                    font-size: 18px;
-                    font-weight: 600;
-                    display: flex;
-                    align-items: center;
-                    gap: 10px;
-                }
-
-                .new-project-body {
-                    padding: 24px;
-                }
-
-                .form-group {
-                    margin-bottom: 20px;
-                }
-
-                .form-group label {
-                    display: block;
-                    font-size: 13px;
-                    font-weight: 500;
-                    margin-bottom: 8px;
-                    color: var(--de-text-secondary);
-                }
-
-                .form-group input {
-                    width: 100%;
-                    padding: 12px 16px;
-                    border: 1px solid var(--de-border, #2a2a3a);
-                    border-radius: 8px;
-                    background: var(--de-bg, #0d0d14);
-                    color: var(--de-text, #e0e0e0);
-                    font-size: 14px;
-                }
-
-                .form-group input:focus {
-                    outline: none;
-                    border-color: var(--de-primary, #0066ff);
-                }
-
-                .path-selector {
-                    display: flex;
-                    gap: 8px;
-                }
-
-                .path-selector input {
-                    flex: 1;
-                }
-
-                .path-selector button {
-                    padding: 12px 16px;
-                    background: var(--de-bg-light, #1a1a24);
-                    border: 1px solid var(--de-border, #2a2a3a);
-                    border-radius: 8px;
-                    color: var(--de-text);
-                    cursor: pointer;
-                    white-space: nowrap;
-                }
-
-                .path-selector button:hover {
-                    background: var(--de-border, #2a2a3a);
-                }
-
-                .subdirs-preview {
-                    background: var(--de-bg, #0d0d14);
-                    border: 1px solid var(--de-border, #2a2a3a);
-                    border-radius: 8px;
-                    padding: 16px;
-                }
-
-                .subdirs-preview h4 {
-                    font-size: 12px;
-                    color: var(--de-text-secondary);
-                    margin-bottom: 12px;
-                    text-transform: uppercase;
-                    letter-spacing: 0.5px;
-                }
-
-                .subdirs-list {
-                    display: grid;
-                    grid-template-columns: repeat(2, 1fr);
-                    gap: 8px;
-                }
-
-                .subdir-item {
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                    font-size: 13px;
-                    color: var(--de-text-secondary);
-                }
-
-                .subdir-item span:first-child {
-                    font-size: 16px;
-                }
-
-                .new-project-footer {
-                    display: flex;
-                    justify-content: flex-end;
-                    gap: 12px;
-                    padding: 16px 24px;
-                    border-top: 1px solid var(--de-border, #2a2a3a);
-                }
-
-                .new-project-footer .btn {
-                    padding: 10px 20px;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    font-weight: 500;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                }
-
-                .new-project-footer .btn-cancel {
-                    background: transparent;
-                    border: 1px solid var(--de-border, #2a2a3a);
-                    color: var(--de-text-secondary);
-                }
-
-                .new-project-footer .btn-cancel:hover {
-                    background: var(--de-bg-light, #1a1a24);
-                }
-
-                .new-project-footer .btn-create {
-                    background: var(--de-primary, #0066ff);
-                    border: none;
-                    color: white;
-                }
-
-                .new-project-footer .btn-create:hover {
-                    background: #0055dd;
-                }
-
-                .new-project-footer .btn-create:disabled {
-                    background: #333;
-                    color: #666;
-                    cursor: not-allowed;
-                }
-
-                .btn-close {
-                    background: transparent;
-                    border: none;
-                    color: var(--de-text-secondary);
-                    cursor: pointer;
-                    padding: 4px 8px;
-                    font-size: 20px;
-                }
-
-                .btn-close:hover {
-                    color: var(--de-text);
-                }
-
-                @keyframes fadeIn {
-                    from { opacity: 0; }
-                    to { opacity: 1; }
-                }
-
-                @keyframes slideUp {
-                    from { opacity: 0; transform: translateY(20px); }
-                    to { opacity: 1; transform: translateY(0); }
-                }
-
-                /* 导出目录状态 */
-                .pm-export-status {
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    padding: 12px 16px;
-                    background: rgba(0, 102, 255, 0.1);
-                    border: 1px solid rgba(0, 102, 255, 0.3);
-                    border-radius: 8px;
-                    margin-bottom: 24px;
-                }
-
-                .export-info {
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                    min-width: 0;
-                }
-
-                .export-label {
-                    color: var(--de-text-secondary);
-                    white-space: nowrap;
-                }
-
-                .export-path {
-                    color: #0066ff;
-                    font-size: 13px;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    max-width: 400px;
-                }
-
-                .btn-change-export {
-                    background: transparent;
-                    border: 1px solid rgba(255,255,255,0.2);
-                    color: var(--de-text-secondary);
-                    padding: 4px 12px;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 12px;
-                    white-space: nowrap;
-                }
-
-                .btn-change-export:hover {
-                    border-color: #0066ff;
-                    color: #0066ff;
-                }
-
-                /* 导出目录提示弹窗 */
-                .export-prompt-overlay {
-                    position: fixed;
-                    inset: 0;
-                    background: rgba(0, 0, 0, 0.7);
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    z-index: 1000;
-                    animation: fadeIn 0.2s ease;
-                }
-
-                .export-prompt-card {
-                    background: var(--de-bg-card);
-                    border: 1px solid var(--de-border);
-                    border-radius: 16px;
-                    padding: 32px;
-                    width: 400px;
-                    animation: slideUp 0.3s ease;
-                }
-
-                .prompt-header {
-                    display: flex;
-                    align-items: center;
-                    gap: 12px;
-                    margin-bottom: 16px;
-                }
-
-                .prompt-icon {
-                    font-size: 32px;
-                }
-
-                .prompt-header h3 {
-                    margin: 0;
-                    font-size: 18px;
-                    color: var(--de-text);
-                }
-
-                .prompt-desc {
-                    color: var(--de-text-secondary);
-                    font-size: 14px;
-                    line-height: 1.6;
-                    margin-bottom: 24px;
-                }
-
-                .prompt-actions {
-                    display: flex;
-                    gap: 12px;
-                }
-
-                .prompt-actions .btn-primary {
-                    flex: 1;
-                    background: #0066ff;
-                    color: white;
-                    border: none;
-                    padding: 12px 20px;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    cursor: pointer;
-                    transition: background 0.2s;
-                }
-
-                .prompt-actions .btn-primary:hover {
-                    background: #0055dd;
-                }
-
-                .prompt-actions .btn-secondary {
-                    background: transparent;
-                    border: 1px solid var(--de-border);
-                    color: var(--de-text-secondary);
-                    padding: 12px 20px;
-                    border-radius: 8px;
-                    font-size: 14px;
-                    cursor: pointer;
-                }
-
-                .prompt-actions .btn-secondary:hover {
-                    border-color: var(--de-text-secondary);
-                    color: var(--de-text);
-                }
-            `}</style>
-
             {/* 新建项目弹窗 */}
             {showNewProjectModal && (
                 <div className="new-project-modal" onClick={() => setShowNewProjectModal(false)}>
                     <div className="new-project-card" onClick={e => e.stopPropagation()}>
                         <div className="new-project-header">
-                            <h3>📁 新建项目</h3>
-                            <button className="btn-close" onClick={() => setShowNewProjectModal(false)}>✕</button>
+                            <h3>新建项目</h3>
+                            <button className="btn-close" onClick={() => setShowNewProjectModal(false)} aria-label="关闭新建项目">×</button>
                         </div>
                         
                         <div className="new-project-body">
@@ -1133,12 +526,12 @@ export const ProjectManager: React.FC<{
                                 <div className="subdirs-preview">
                                     <h4>将创建以下目录结构</h4>
                                     <div className="subdirs-list">
-                                        <div className="subdir-item"><span>📷</span> SKU</div>
-                                        <div className="subdir-item"><span>🎨</span> PSD</div>
-                                        <div className="subdir-item"><span>🖼️</span> 主图</div>
-                                        <div className="subdir-item"><span>📋</span> 模板文件</div>
-                                        <div className="subdir-item"><span>⚙️</span> 配置文件</div>
-                                        <div className="subdir-item"><span>🎬</span> 主图视频</div>
+                                        <div className="subdir-item">SKU</div>
+                                        <div className="subdir-item">PSD</div>
+                                        <div className="subdir-item">主图</div>
+                                        <div className="subdir-item">模板文件</div>
+                                        <div className="subdir-item">配置文件</div>
+                                        <div className="subdir-item">主图视频</div>
                                     </div>
                                 </div>
                             </div>

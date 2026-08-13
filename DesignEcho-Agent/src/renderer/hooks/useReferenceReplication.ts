@@ -13,6 +13,10 @@
 
 import { useState, useCallback } from 'react';
 import { useAppStore } from '../stores/app.store';
+import {
+    getPrimaryModelForPreferenceBucket,
+    isVisionCapableModelId
+} from '../../shared/model-selection';
 import { 
     ReferenceLayoutAnalysis,
     buildReferenceAnalysisPrompt,
@@ -35,7 +39,7 @@ export interface ReplicationState {
     progress: number;
     /** 错误信息 */
     error: string | null;
-    /** 执行日志 */
+    /** 执行记录 */
     logs: string[];
 }
 
@@ -115,7 +119,11 @@ export const useReferenceReplication = (): UseReferenceReplicationReturn => {
             const prompt = buildLayoutReplicationPrompt(layoutAnalysis, currentElements);
 
             // 4. 选择合适的模型生成复刻指令
-            const model = modelPreferences.preferredLocalModels.layoutAnalysis || 'local-qwen2.5-7b';
+            const model = getPrimaryModelForPreferenceBucket(modelPreferences, 'layoutAnalysis', {
+                mode: modelPreferences?.mode,
+                includeFallback: modelPreferences?.autoFallback,
+                includeCrossTaskBackups: false
+            }) || 'local-qwen2.5-7b';
             addLog(`使用模型生成复刻指令: ${model}`);
 
             const response = await window.designEcho.chat(model, [
@@ -178,24 +186,19 @@ export const useReferenceReplication = (): UseReferenceReplicationReturn => {
 
         try {
             // 1. 根据 mode 选择视觉模型
-            const mode = modelPreferences.mode;
-            let visionModel = mode === 'local'
-                ? (modelPreferences.preferredLocalModels?.visualAnalyze || 'local-llava-13b')
-                : (modelPreferences.preferredCloudModels?.visualAnalyze || 'google-gemini-3-flash');
-            
-            // 检查模型是否支持视觉
-            const isVisionModel = visionModel.includes('llava') || 
-                                  visionModel.includes('gemini') || 
-                                  visionModel.includes('gpt-4') ||
-                                  visionModel.includes('claude') ||
-                                  visionModel.includes('minicpm');
-            
-            if (!isVisionModel) {
+            let visionModel = getPrimaryModelForPreferenceBucket(modelPreferences, 'visualAnalyze', {
+                mode: modelPreferences?.mode,
+                includeFallback: modelPreferences?.autoFallback,
+                includeCrossTaskBackups: false,
+                requireVision: true
+            }) || 'google-gemini-3-flash';
+
+            if (!isVisionCapableModelId(visionModel)) {
                 addLog(`⚠️ ${visionModel} 可能不支持视觉，尝试使用备选模型`);
-                visionModel = mode === 'local' ? 'local-llava-13b' : 'google-gemini-3-flash';
+                visionModel = modelPreferences?.mode === 'local' ? 'local-llava-13b' : 'google-gemini-3-flash';
             }
             
-            addLog(`使用视觉模型: ${visionModel} (模式: ${mode})`);
+            addLog(`使用视觉模型: ${visionModel} (模式: ${modelPreferences.mode})`);
 
             // 2. 构建分析提示词
             const prompt = buildReferenceAnalysisPrompt();

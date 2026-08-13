@@ -82,7 +82,10 @@ export interface MorphResult {
     error?: string;
     details?: {
         alignmentApplied: AlignmentTransform;
-        contentAnalysis: ContentAnalysisResult;
+        /** 真实形状变形是否已执行。当前 UXP 侧只应用对齐变换，变形需 Agent 管线。 */
+        morphApplied: boolean;
+        /** 对结果范围的诚实说明（例如：只应用了对齐预览，未变形）。 */
+        note: string;
         shapeDifference: number;  // 0-1
     };
 }

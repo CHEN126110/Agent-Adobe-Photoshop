@@ -16,10 +16,18 @@ declare module 'photoshop' {
     };
 
     export const core: {
-        executeAsModal: (
-            callback: (executionContext: ExecutionContext) => Promise<void>,
-            options?: { commandName?: string }
-        ) => Promise<void>;
+        executeAsModal: <T>(
+            callback: (
+                executionContext: ExecutionContext,
+                descriptor?: Record<string, unknown>
+            ) => T | Promise<T>,
+            options?: {
+                commandName?: string;
+                descriptor?: Record<string, unknown>;
+                interactive?: boolean;
+                timeOut?: number;
+            }
+        ) => Promise<T>;
     };
 
     export const action: {
@@ -42,6 +50,9 @@ declare module 'photoshop' {
             layerID?: number;
             targetSize?: { width: number; height: number };
             sourceBounds?: { left: number; top: number; right: number; bottom: number };
+            colorSpace?: 'RGB' | 'Grayscale' | 'Lab';
+            colorProfile?: string;
+            componentSize?: -1 | 8 | 16 | 32;
             applyAlpha?: boolean;
             componentCount?: number;  // 分量数
         }) => Promise<{
@@ -129,7 +140,7 @@ declare module 'photoshop' {
         encodeImageData: (options: {
             imageData: PhotoshopImageData;
             base64?: boolean;
-        }) => Promise<number[] | string>;
+        }) => Promise<number[] | Uint8Array | string | { base64?: string }>;
     };
 
     /**
@@ -146,7 +157,7 @@ declare module 'photoshop' {
         pixelFormat: string;
         isChunky: boolean;
         type: string;
-        getData: () => Promise<Uint8Array>;
+        getData: (options?: { chunky?: boolean; fullRange?: boolean }) => Promise<Uint8Array | Uint16Array | Float32Array>;
         dispose: () => void;
     }
 
@@ -180,10 +191,25 @@ declare module 'photoshop' {
         }
     }
 
-    interface ExecutionContext {
+    export type HistorySuspensionId =
+        | string
+        | number
+        | {
+            finalName?: string;
+            [key: string]: unknown;
+        };
+
+    export interface ExecutionContext {
+        readonly isCancelled: boolean;
         hostControl: {
-            suspendHistory: (options: { historyStateInfo: { name: string } }) => void;
-            resumeHistory: (commit: boolean, name?: string) => void;
+            suspendHistory: (options: {
+                documentID: number;
+                name: string;
+            }) => Promise<HistorySuspensionId>;
+            resumeHistory: (
+                suspensionID: HistorySuspensionId,
+                commit?: boolean
+            ) => Promise<void>;
         };
     }
 
@@ -202,6 +228,21 @@ declare module 'photoshop' {
         mode: string;
         layers: Layer[];
         activeLayers: Layer[];
+        activeHistoryState?: HistoryState;
+        createLayerGroup: (options?: GroupLayerCreateOptions) => Promise<Layer>;
+    }
+
+    interface HistoryState {
+        id: number;
+        name?: string;
+    }
+
+    interface GroupLayerCreateOptions {
+        name?: string;
+        opacity?: number;
+        blendMode?: string;
+        fromLayers?: Layer | Layer[];
+        group?: boolean;
     }
 
     interface Layer {

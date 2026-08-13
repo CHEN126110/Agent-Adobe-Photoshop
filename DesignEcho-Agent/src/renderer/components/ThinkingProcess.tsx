@@ -1,97 +1,27 @@
-/**
- * 思维过程展示组件（简洁版）
- */
-
-import React from 'react';
+import React, { useState } from 'react';
 import './ThinkingProcess.css';
+import {
+    getToolDisplayInfo,
+    TOOL_NAME_MAP,
+    type ToolDisplayInfo
+} from '../services/tool-display-info';
+import { buildToolResultPreview } from '../services/tool-result-preview';
+import {
+    resolveThinkingStepDisplayRole,
+    resolveThinkingStepRoleLabel,
+    cleanInlineProcessText,
+    type ThinkingStepDisplayRole
+} from './message/thinkingStepPresentation';
 
-// 工具名称中文映射表
-export const TOOL_NAME_MAP: Record<string, { name: string; icon: string; description: string }> = {
-    // 文档操作
-    createDocument: { name: '创建文档', icon: '📄', description: '创建新的 Photoshop 文档' },
-    getDocumentInfo: { name: '获取文档信息', icon: '📋', description: '获取当前文档的尺寸、名称等信息' },
-    listDocuments: { name: '列出文档', icon: '📂', description: '查看所有打开的文档' },
-    switchDocument: { name: '切换文档', icon: '🔄', description: '切换到另一个文档' },
-    diagnoseState: { name: '诊断状态', icon: '🔍', description: '检查 Photoshop 当前状态' },
-    
-    // 图层操作
-    selectLayer: { name: '选择图层', icon: '👆', description: '选中指定的图层' },
-    getLayerHierarchy: { name: '获取图层结构', icon: '🌲', description: '查看图层层级关系' },
-    getAllTextLayers: { name: '获取文本图层', icon: '📝', description: '获取所有文本图层信息' },
-    getLayerBounds: { name: '获取图层边界', icon: '📐', description: '获取图层的位置和大小' },
-    moveLayer: { name: '移动图层', icon: '↔️', description: '调整图层位置' },
-    alignLayers: { name: '对齐图层', icon: '⬛', description: '将多个图层对齐' },
-    distributeLayers: { name: '分布图层', icon: '📊', description: '均匀分布多个图层' },
-    
-    // 文本操作
-    getTextContent: { name: '获取文本内容', icon: '📖', description: '读取文本图层的内容' },
-    setTextContent: { name: '修改文本', icon: '✏️', description: '修改文本图层的内容' },
-    getTextStyle: { name: '获取文本样式', icon: '🎨', description: '获取字体、大小等样式' },
-    setTextStyle: { name: '设置文本样式', icon: '🖌️', description: '修改字体、颜色等样式' },
-    createTextLayer: { name: '创建文本', icon: '➕', description: '添加新的文本图层' },
-    
-    // 图层管理
-    renameLayer: { name: '重命名图层', icon: '✏️', description: '修改图层名称' },
-    groupLayers: { name: '编组图层', icon: '📁', description: '将多个图层组合' },
-    ungroupLayers: { name: '解散组', icon: '📂', description: '解散图层组' },
-    reorderLayer: { name: '调整层序', icon: '↕️', description: '调整图层上下顺序' },
-    createClippingMask: { name: '创建剪切蒙版', icon: '✂️', description: '创建剪切蒙版效果' },
-    releaseClippingMask: { name: '释放剪切蒙版', icon: '🔓', description: '释放剪切蒙版' },
-    createGroup: { name: '创建组', icon: '📁', description: '创建新的图层组' },
-    
-    // 视觉分析
-    getCanvasSnapshot: { name: '截取画布', icon: '📷', description: '获取当前画布截图' },
-    getDocumentSnapshot: { name: '截取文档', icon: '🖼️', description: '获取文档完整截图' },
-    getElementMapping: { name: '分析元素', icon: '🗺️', description: '识别画布中的所有元素' },
-    analyzeLayout: { name: '分析布局', icon: '📐', description: '分析设计的布局结构' },
-    getAnnotatedSnapshot: { name: '获取标注截图', icon: '🏷️', description: '获取带标注的画布截图' },
-    
-    // 图像处理
-    removeBackground: { name: '智能抠图', icon: '✂️', description: '使用 AI 去除背景' },
-    placeImage: { name: '置入图片', icon: '🖼️', description: '将图片放入文档' },
-    
-    // 形状创建
-    createRectangle: { name: '创建矩形', icon: '⬛', description: '绘制矩形形状' },
-    createEllipse: { name: '创建椭圆', icon: '⚪', description: '绘制椭圆形状' },
-    
-    // 历史操作
-    undo: { name: '撤销', icon: '↩️', description: '撤销上一步操作' },
-    redo: { name: '重做', icon: '↪️', description: '重做上一步操作' },
-    getHistoryInfo: { name: '获取历史', icon: '📜', description: '查看操作历史记录' },
-    
-    // 保存导出
-    saveDocument: { name: '保存文档', icon: '💾', description: '保存当前文档' },
-    quickExport: { name: '快速导出', icon: '📤', description: '快速导出为图片' },
-    batchExport: { name: '批量导出', icon: '📦', description: '批量导出多个图层' },
-    
-    // 资源管理
-    listProjectResources: { name: '列出项目资源', icon: '📂', description: '查看项目中的素材文件' },
-    searchProjectResources: { name: '搜索项目资源', icon: '🔎', description: '搜索项目中的特定素材' },
-    getProjectStructure: { name: '获取项目结构', icon: '🌲', description: '查看项目目录结构' },
-    getResourcesByCategory: { name: '按类别获取资源', icon: '📁', description: '按类别筛选素材' },
-    
-    // SKU 操作
-    skuLayout: { name: 'SKU 排版', icon: '🎨', description: '生成 SKU 组合排版' },
-    openProjectFile: { name: '打开文件', icon: '📂', description: '打开项目文件' },
-};
+export { getToolDisplayInfo, TOOL_NAME_MAP, type ToolDisplayInfo };
 
-// 获取工具的友好显示名称
-export const getToolDisplayInfo = (toolName: string): { name: string; icon: string; description: string } => {
-    return TOOL_NAME_MAP[toolName] || { 
-        name: toolName, 
-        icon: '🔧', 
-        description: '执行操作' 
-    };
-};
-
-// 思维步骤类型
 export interface ThinkingStep {
     id: string;
-    type: 'thinking' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
+    type: 'thinking' | 'status' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
     content: string;
     toolName?: string;
-    toolParams?: any;
-    toolResult?: any;
+    toolParams?: unknown;
+    toolResult?: unknown;
     imageData?: string;
     status: 'pending' | 'running' | 'success' | 'error';
     timestamp: number;
@@ -107,71 +37,162 @@ interface ThinkingProcessProps {
     className?: string;
 }
 
-/**
- * 简洁版思维过程组件（GPT Pondering 风格）
- * 纯文本列表，无图标装饰
- */
+const VISIBLE_STEP_TYPES = new Set<ThinkingStep['type']>([
+    'thinking',
+    'status',
+    'decision',
+    'reading',
+    'exploring',
+    'analyzing',
+    'tool_call',
+    'tool_result'
+]);
+
+function isActionStep(step: ThinkingStep): boolean {
+    return step.type === 'tool_call' || step.type === 'tool_result';
+}
+
+function getDisplayRole(step: ThinkingStep): ThinkingStepDisplayRole {
+    return resolveThinkingStepDisplayRole({
+        type: step.type,
+        toolName: step.toolName,
+        tone: isActionStep(step) ? 'action' : 'thought'
+    });
+}
+
+function getActionLabel(step: ThinkingStep): string {
+    if (step.status === 'error') return '未完成';
+    if (step.status === 'running' || step.status === 'pending') return '正在制作';
+    return '已完成';
+}
+
+function resolveThinkingPanelTitle(panelSteps: ThinkingStep[]): string {
+    const hasActiveStep = panelSteps.some((step) => step.status === 'running' || step.status === 'pending');
+    return hasActiveStep ? '正在设计' : '设计过程';
+}
+
 export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     steps,
     className = ''
 }) => {
-    // 过滤出有内容的步骤
-    const validSteps = steps.filter(s => s.content && s.content.trim());
-    
-    // 没有有效步骤时不显示
+    // 已展开步骤（看"已查看/已读取"的具体内容）；默认收起，保持过程面板清爽。
+    const [expandedStepIds, setExpandedStepIds] = useState<Record<string, boolean>>({});
+    const validSteps = steps.filter((step) =>
+        VISIBLE_STEP_TYPES.has(step.type)
+        && typeof step.content === 'string'
+        && step.content.trim().length > 0
+    );
     if (validSteps.length === 0) {
-        // 如果有运行中的步骤但没有内容，显示简单的加载指示
-        const isRunning = steps.some(s => s.status === 'running');
-        if (isRunning) {
-            return (
-                <div className={`thinking-simple ${className}`}>
-                    <div className="pondering-header">
-                        <span className="pondering-dot"></span>
-                        <span className="pondering-title">Pondering</span>
-                        <span className="pondering-dots">...</span>
-                    </div>
-                </div>
-            );
-        }
         return null;
     }
 
     const getStepText = (step: ThinkingStep): string => {
-        // 如果是工具调用，显示简洁的操作描述
-        if (step.type === 'tool_call' && step.toolName) {
+        if ((step.type === 'tool_call' || step.type === 'tool_result') && step.toolName) {
             const info = getToolDisplayInfo(step.toolName);
-            return step.content || info.description;
+            const raw = step.content || info.name;
+            // 动作状态已由左侧时间线节点图标表达，文案去掉冗余的「执行」前缀，只留工具名（更清爽）。
+            return cleanInlineProcessText(raw.replace(/^执行\s*/, '')) || info.name;
         }
-        return step.content;
+        // 思考/观察文本剥离 markdown 标记与状态 emoji，避免裸标记与彩色 emoji 噪音。
+        return cleanInlineProcessText(step.content);
     };
 
-    // 统计步骤数
-    const totalSteps = validSteps.length;
-    const completedSteps = validSteps.filter(s => s.status === 'success').length;
+    const toggleStepExpanded = (stepId: string): void => {
+        setExpandedStepIds((current) => ({ ...current, [stepId]: !current[stepId] }));
+    };
 
-    return (
+    const renderStepPanel = (title: string, panelSteps: ThinkingStep[]) => panelSteps.length > 0 ? (
         <div className={`thinking-simple ${className}`}>
-            {/* 标题行 */}
             <div className="pondering-header">
                 <span className="pondering-dot"></span>
-                <span className="pondering-title">Pondering</span>
-                <span className="pondering-count">({totalSteps})</span>
+                {/* 标题在进行中才带扫光（样式钩子 is-active）：强调留给整体状态这一行，
+                    下面的明细列表保持静态，否则满屏都在动反而没有重点。
+                    判据与 resolveThinkingPanelTitle 的「正在…」口径一致，同源同步。 */}
+                <span
+                    className={`pondering-title ${panelSteps.some((step) => step.status === 'running' || step.status === 'pending')
+                        ? 'is-active'
+                        : ''}`}
+                >
+                    {title}
+                </span>
             </div>
-            
-            {/* 步骤列表 - 纯文本 */}
+
             <div className="pondering-steps">
-                {validSteps.map((step, index) => (
-                    <div 
-                        key={step.id} 
-                        className={`pondering-step ${step.status}`}
-                    >
-                        <span className="step-number">{String(index + 1).padStart(2, '0')}</span>
-                        <span className="step-text">{getStepText(step)}</span>
-                    </div>
-                ))}
+                {panelSteps.map((step) => {
+                    const displayRole = getDisplayRole(step);
+                    const isTool = isActionStep(step) || displayRole === 'action';
+                    // 语义标签不再以文字 pill 占据版面，转为可访问性属性（hover/读屏可见）；
+                    // 步骤的类型与状态由左侧时间线节点的形状/颜色表达，正文按主次分级排版。
+                    const semanticLabel = isTool
+                        ? getActionLabel(step)
+                        : resolveThinkingStepRoleLabel(displayRole, step.type);
+                    const preview = isTool && step.toolName
+                        ? buildToolResultPreview(step.toolName, step.toolResult)
+                        : undefined;
+                    const expanded = Boolean(preview && expandedStepIds[step.id]);
+                    return (
+                        <div
+                            key={step.id}
+                            className={`pondering-step ${step.status} ${isTool ? 'is-action' : 'is-thought'} pondering-step--${displayRole}`}
+                            title={semanticLabel}
+                            aria-label={semanticLabel}
+                        >
+                            <span className="step-node" aria-hidden="true" />
+                            <div className="step-body">
+                                <div className={`step-line ${preview ? 'step-line--expandable' : ''}`}>
+                                    <span className="step-text">{getStepText(step)}</span>
+                                    {preview && (
+                                        <button
+                                            type="button"
+                                            className={`step-expand-toggle ${expanded ? 'is-expanded' : ''}`}
+                                            aria-expanded={expanded}
+                                            aria-label={expanded ? '收起结果内容' : '展开查看结果内容'}
+                                            onClick={() => toggleStepExpanded(step.id)}
+                                        >
+                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+                                                <polyline points="6 9 12 15 18 9"></polyline>
+                                            </svg>
+                                        </button>
+                                    )}
+                                </div>
+                                {preview?.summary && (
+                                    <span className="step-summary">{preview.summary}</span>
+                                )}
+                                {expanded && preview && preview.sections.length > 0 && (
+                                    <div className="step-preview" data-testid="step-result-preview">
+                                        {preview.sections.map((section, sectionIndex) => (
+                                            <div key={sectionIndex} className="step-preview__section">
+                                                {section.title && <span className="step-preview__title">{section.title}</span>}
+                                                <ul className="step-preview__list">
+                                                    {section.lines.map((line, lineIndex) => (
+                                                        <li key={lineIndex}>{line}</li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                            {step.imageData && (
+                                <img
+                                    className="step-snapshot"
+                                    src={step.imageData.startsWith('data:')
+                                        ? step.imageData
+                                        : `data:image/jpeg;base64,${step.imageData}`}
+                                    alt={getStepText(step)}
+                                    loading="lazy"
+                                />
+                            )}
+                        </div>
+                    );
+                })}
             </div>
         </div>
-    );
+    ) : null;
+
+    // 按原始时间顺序交替渲染：思考片段 → 它触发的工具 → 下一段思考 → 工具……（像 Claude 那样想一步做一步），
+    // 而不是把思考全堆成一组、工具全堆成一组（旧版分两个面板渲染，导致思考和动作割裂、对不上）。
+    return renderStepPanel(resolveThinkingPanelTitle(validSteps), validSteps);
 };
 
 export default ThinkingProcess;

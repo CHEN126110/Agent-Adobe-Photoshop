@@ -13,6 +13,15 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import sharp from 'sharp';
 import { readPsd, initializeCanvas } from 'ag-psd';
+import { buildAgentResourceCacheBudget } from '../../shared/agent-performance-policy';
+import { extractModelJsonObject } from '../../shared/model-json-extract';
+import { measureComposition } from '../../shared/composition-metrics';
+import type {
+    ProjectVisualAssetNature,
+    ProjectVisualBackgroundType,
+    ProjectVisualShotType
+} from '../../shared/project-visual-sampling';
+import { getSubjectDetectionService } from './subject-detection-service';
 
 // 初始化 ag-psd 的 canvas（使用自定义 createCanvas 函数）
 // 由于 Electron 主进程没有 DOM Canvas，使用 Sharp 模拟基础功能
@@ -70,6 +79,360 @@ function ensurePsdCanvasInitialized(): void {
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
 const DESIGN_EXTENSIONS = ['.psd', '.psb', '.ai', '.eps', '.svg'];
 const ALL_SUPPORTED = [...IMAGE_EXTENSIONS, ...DESIGN_EXTENSIONS];
+const RESOURCE_CACHE_BUDGET = buildAgentResourceCacheBudget();
+
+type PixelProbeStatus = 'ok' | 'watch' | 'unverified';
+
+type ImageVisualMetricsProbe = {
+    sampleSize: { width: number; height: number };
+    nonWhitePixelRatio: number;
+    nonWhiteBounds?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        centerX: number;
+        centerY: number;
+        widthRatio: number;
+        heightRatio: number;
+    };
+    edgeOccupancy: {
+        top: number;
+        right: number;
+        bottom: number;
+        left: number;
+    };
+    averageLuma?: number;
+    lumaStdDev?: number;
+    darkPixelRatio: number;
+    highlightPixelRatio: number;
+    shadowLikePixelRatio: number;
+    textureContrastScore?: number;
+    backgroundColor?: {
+        r: number;
+        g: number;
+        b: number;
+        luma: number;
+    };
+    backgroundDistanceThreshold?: number;
+    rawImagesRedacted: true;
+};
+
+export interface AnalyzeDesignReferenceRequest {
+    imagePath: string;
+    referenceTitle?: string;
+    referenceTags?: string[];
+    referenceSource?: string;
+    topics?: string[];
+    cadence?: string;
+}
+
+export interface DesignReferenceAnalysisResult {
+    success: boolean;
+    observation?: {
+        analysisSource: string;
+        productCategory?: string;
+        designType?: string;
+        summary: string;
+        strengths: Array<{
+            aspect: string;
+            observation: string;
+            reason: string;
+            suitableFor?: string[];
+        }>;
+        suitableScenarios: string[];
+        avoidWhen: string[];
+        reusableHeuristics: string[];
+        reviewStatus: 'needs_human_review';
+        sourceNotes: string[];
+        limitations: string[];
+    };
+    error?: string;
+    rawModelTextRedacted?: true;
+}
+
+function toPositiveInt(value: unknown, fallback: number): number {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+    return Math.max(1, Math.round(numeric));
+}
+
+function roundMetric(value: number, digits: number): number | undefined {
+    if (!Number.isFinite(value)) return undefined;
+    const factor = Math.pow(10, digits);
+    return Math.round(value * factor) / factor;
+}
+
+function getPixelOffset(width: number, channels: number, x: number, y: number): number {
+    return (y * width + x) * channels;
+}
+
+function getLuma(r: number, g: number, b: number): number {
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function quantizeChannel(value: number): number {
+    return Math.max(0, Math.min(255, Math.round(value / 8) * 8));
+}
+
+function estimateCanvasBackgroundColor(
+    data: Buffer,
+    width: number,
+    height: number,
+    channels: number
+): { r: number; g: number; b: number; luma: number; distanceThreshold: number } {
+    const edgeBandX = Math.max(1, Math.round(width * 0.04));
+    const edgeBandY = Math.max(1, Math.round(height * 0.04));
+    const buckets = new Map<string, { count: number; r: number; g: number; b: number }>();
+    const addSample = (x: number, y: number): void => {
+        const offset = getPixelOffset(width, channels, x, y);
+        const alpha = data[offset + 3];
+        if (alpha <= 8) return;
+        const r = data[offset];
+        const g = data[offset + 1];
+        const b = data[offset + 2];
+        const key = `${quantizeChannel(r)},${quantizeChannel(g)},${quantizeChannel(b)}`;
+        const bucket = buckets.get(key) || { count: 0, r: 0, g: 0, b: 0 };
+        bucket.count += 1;
+        bucket.r += r;
+        bucket.g += g;
+        bucket.b += b;
+        buckets.set(key, bucket);
+    };
+
+    for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+            if (x < edgeBandX || x >= width - edgeBandX || y < edgeBandY || y >= height - edgeBandY) {
+                addSample(x, y);
+            }
+        }
+    }
+
+    let best: { count: number; r: number; g: number; b: number } | undefined;
+    for (const bucket of buckets.values()) {
+        if (!best || bucket.count > best.count) best = bucket;
+    }
+    if (!best || best.count <= 0) {
+        return { r: 255, g: 255, b: 255, luma: 255, distanceThreshold: 6 };
+    }
+
+    const r = best.r / best.count;
+    const g = best.g / best.count;
+    const b = best.b / best.count;
+    const luma = getLuma(r, g, b);
+    const distanceThreshold = luma >= 248
+        ? 6
+        : luma >= 224
+            ? 10
+            : 14;
+    return { r, g, b, luma, distanceThreshold };
+}
+
+function isForegroundPixelAgainstBackground(
+    r: number,
+    g: number,
+    b: number,
+    alpha: number,
+    background: { r: number; g: number; b: number; distanceThreshold: number }
+): boolean {
+    if (alpha <= 8) return false;
+    if (alpha < 250) return true;
+    const maxChannelDelta = Math.max(
+        Math.abs(r - background.r),
+        Math.abs(g - background.g),
+        Math.abs(b - background.b)
+    );
+    return maxChannelDelta > background.distanceThreshold;
+}
+
+async function buildImageVisualMetricsProbe(imagePath: string): Promise<ImageVisualMetricsProbe | undefined> {
+    const sampleLimit = 256;
+    const { data, info } = await sharp(imagePath, { failOnError: false })
+        .rotate()
+        .resize({ width: sampleLimit, height: sampleLimit, fit: 'inside', withoutEnlargement: true })
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+    const width = info.width || 0;
+    const height = info.height || 0;
+    const channels = info.channels || 4;
+    if (!width || !height || channels < 4 || data.length === 0) return undefined;
+
+    let nonWhitePixels = 0;
+    let darkPixels = 0;
+    let highlightPixels = 0;
+    let shadowLikePixels = 0;
+    let lumaSum = 0;
+    let lumaSquaredSum = 0;
+    let textureDeltaSum = 0;
+    let textureDeltaCount = 0;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    const edgeBandX = Math.max(1, Math.round(width * 0.04));
+    const edgeBandY = Math.max(1, Math.round(height * 0.04));
+    let topEdge = 0;
+    let rightEdge = 0;
+    let bottomEdge = 0;
+    let leftEdge = 0;
+    const background = estimateCanvasBackgroundColor(data, width, height, channels);
+
+    const isForegroundAt = (x: number, y: number): { isForeground: boolean; luma: number } => {
+        const offset = getPixelOffset(width, channels, x, y);
+        const alpha = data[offset + 3];
+        if (alpha <= 8) return { isForeground: false, luma: 255 };
+        const r = data[offset];
+        const g = data[offset + 1];
+        const b = data[offset + 2];
+        const luma = getLuma(r, g, b);
+        const isForeground = isForegroundPixelAgainstBackground(r, g, b, alpha, background);
+        return { isForeground, luma };
+    };
+
+    for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+            const offset = (y * width + x) * channels;
+            const r = data[offset];
+            const g = data[offset + 1];
+            const b = data[offset + 2];
+            const max = Math.max(r, g, b);
+            const min = Math.min(r, g, b);
+            const saturationSpread = max - min;
+            const { isForeground, luma } = isForegroundAt(x, y);
+            if (!isForeground) continue;
+
+            nonWhitePixels += 1;
+            lumaSum += luma;
+            lumaSquaredSum += luma * luma;
+            if (luma < 48) darkPixels += 1;
+            if (luma > 245) highlightPixels += 1;
+            if (saturationSpread <= 18 && luma >= 35 && luma <= 235) shadowLikePixels += 1;
+            if (x < edgeBandX) leftEdge += 1;
+            if (x >= width - edgeBandX) rightEdge += 1;
+            if (y < edgeBandY) topEdge += 1;
+            if (y >= height - edgeBandY) bottomEdge += 1;
+
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+
+            if (x + 1 < width) {
+                const neighbor = isForegroundAt(x + 1, y);
+                if (neighbor.isForeground) {
+                    textureDeltaSum += Math.abs(luma - neighbor.luma);
+                    textureDeltaCount += 1;
+                }
+            }
+            if (y + 1 < height) {
+                const neighbor = isForegroundAt(x, y + 1);
+                if (neighbor.isForeground) {
+                    textureDeltaSum += Math.abs(luma - neighbor.luma);
+                    textureDeltaCount += 1;
+                }
+            }
+        }
+    }
+
+    const totalPixels = width * height;
+    const mean = nonWhitePixels > 0 ? lumaSum / nonWhitePixels : undefined;
+    const variance = mean !== undefined && nonWhitePixels > 0
+        ? Math.max(0, (lumaSquaredSum / nonWhitePixels) - (mean * mean))
+        : undefined;
+    const boundsWidth = maxX >= minX ? maxX - minX + 1 : 0;
+    const boundsHeight = maxY >= minY ? maxY - minY + 1 : 0;
+
+    return {
+        sampleSize: { width, height },
+        nonWhitePixelRatio: roundMetric(nonWhitePixels / totalPixels, 4) || 0,
+        nonWhiteBounds: boundsWidth > 0 && boundsHeight > 0 ? {
+            x: roundMetric(minX / width, 4) || 0,
+            y: roundMetric(minY / height, 4) || 0,
+            width: boundsWidth,
+            height: boundsHeight,
+            centerX: roundMetric((minX + boundsWidth / 2) / width, 4) || 0,
+            centerY: roundMetric((minY + boundsHeight / 2) / height, 4) || 0,
+            widthRatio: roundMetric(boundsWidth / width, 4) || 0,
+            heightRatio: roundMetric(boundsHeight / height, 4) || 0
+        } : undefined,
+        edgeOccupancy: {
+            top: roundMetric(topEdge / Math.max(1, width * edgeBandY), 4) || 0,
+            right: roundMetric(rightEdge / Math.max(1, edgeBandX * height), 4) || 0,
+            bottom: roundMetric(bottomEdge / Math.max(1, width * edgeBandY), 4) || 0,
+            left: roundMetric(leftEdge / Math.max(1, edgeBandX * height), 4) || 0
+        },
+        averageLuma: mean !== undefined ? roundMetric(mean, 2) : undefined,
+        lumaStdDev: variance !== undefined ? roundMetric(Math.sqrt(variance), 2) : undefined,
+        darkPixelRatio: roundMetric(darkPixels / Math.max(1, nonWhitePixels), 4) || 0,
+        highlightPixelRatio: roundMetric(highlightPixels / Math.max(1, nonWhitePixels), 4) || 0,
+        shadowLikePixelRatio: roundMetric(shadowLikePixels / Math.max(1, nonWhitePixels), 4) || 0,
+        textureContrastScore: textureDeltaCount > 0 ? roundMetric(textureDeltaSum / textureDeltaCount, 2) : undefined,
+        backgroundColor: {
+            r: Math.round(background.r),
+            g: Math.round(background.g),
+            b: Math.round(background.b),
+            luma: roundMetric(background.luma, 2) || 0
+        },
+        backgroundDistanceThreshold: background.distanceThreshold,
+        rawImagesRedacted: true
+    };
+}
+
+async function readLumaRawForProbe(input: string | Buffer, width: number, height: number, blurSigma = 0): Promise<Buffer> {
+    let image = sharp(input, { failOnError: false })
+        .resize(width, height, { fit: 'fill' })
+        .removeAlpha()
+        .grayscale();
+    if (Number.isFinite(blurSigma) && blurSigma > 0) {
+        image = image.blur(blurSigma);
+    }
+    return image.raw().toBuffer();
+}
+
+function compareLumaRawForProbe(referenceRaw: Buffer, resultRaw: Buffer, darkThreshold = 180): {
+    pixelCount: number;
+    mae: number;
+    rmse: number;
+    highDeltaRatio: number;
+    referenceDark: number;
+    resultDark: number;
+    darkJaccard: number;
+} {
+    let absoluteError = 0;
+    let squaredError = 0;
+    let highDeltaPixels = 0;
+    let referenceDark = 0;
+    let resultDark = 0;
+    let darkIntersection = 0;
+    let darkUnion = 0;
+
+    const pixelCount = Math.min(referenceRaw.length, resultRaw.length);
+    for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+        const refLuma = referenceRaw[pixel];
+        const resultLuma = resultRaw[pixel];
+        const delta = Math.abs(refLuma - resultLuma);
+        absoluteError += delta;
+        squaredError += delta * delta;
+        if (delta > 32) highDeltaPixels += 1;
+        const refIsDark = refLuma < darkThreshold;
+        const resultIsDark = resultLuma < darkThreshold;
+        if (refIsDark) referenceDark += 1;
+        if (resultIsDark) resultDark += 1;
+        if (refIsDark && resultIsDark) darkIntersection += 1;
+        if (refIsDark || resultIsDark) darkUnion += 1;
+    }
+
+    return {
+        pixelCount,
+        mae: pixelCount > 0 ? absoluteError / pixelCount : Number.POSITIVE_INFINITY,
+        rmse: pixelCount > 0 ? Math.sqrt(squaredError / pixelCount) : Number.POSITIVE_INFINITY,
+        highDeltaRatio: pixelCount > 0 ? highDeltaPixels / pixelCount : 1,
+        referenceDark,
+        resultDark,
+        darkJaccard: darkUnion > 0 ? darkIntersection / darkUnion : 1
+    };
+}
 
 /**
  * 资源文件信息
@@ -91,8 +454,42 @@ export interface ResourceFile {
     modifiedTime: Date;
     /** 图片尺寸（仅图片） */
     dimensions?: { width: number; height: number };
+    /** 源文件是否声明 alpha 通道；用于区分透明抠图与肉眼相同的白底图。 */
+    hasAlpha?: boolean;
     /** 缩略图 base64（可选） */
     thumbnail?: string;
+}
+
+export interface ResourceCategoryMap {
+    products: ResourceFile[];
+    backgrounds: ResourceFile[];
+    elements: ResourceFile[];
+    references: ResourceFile[];
+    others: ResourceFile[];
+}
+
+function categorizeResourceFiles(files: readonly ResourceFile[]): ResourceCategoryMap {
+    const categories: ResourceCategoryMap = {
+        products: [],
+        backgrounds: [],
+        elements: [],
+        references: [],
+        others: []
+    };
+    const keywords: Record<Exclude<keyof ResourceCategoryMap, 'others'>, string[]> = {
+        products: ['产品', 'product', '主图', 'main', '商品', 'item', '实拍', '白底'],
+        backgrounds: ['背景', 'bg', 'background', '底图', '底纹'],
+        elements: ['元素', 'element', '装饰', 'decor', 'icon', '图标', '标签', 'tag', '促销'],
+        references: ['参考', 'ref', 'reference', '灵感', '样式', 'style', '模板', 'template']
+    };
+    for (const file of files) {
+        if (file.type !== 'image') continue;
+        const searchText = `${file.name} ${file.relativePath}`.toLowerCase();
+        const category = (Object.keys(keywords) as Array<Exclude<keyof ResourceCategoryMap, 'others'>>)
+            .find((key) => keywords[key].some((keyword) => searchText.includes(keyword)));
+        categories[category || 'others'].push(file);
+    }
+    return categories;
 }
 
 /**
@@ -115,18 +512,555 @@ export interface DirectoryScanResult {
     errors?: string[];
 }
 
+export interface ProjectContactSheetImageInput {
+    path: string;
+    relativePath?: string;
+    labelHint?: string;
+    role?: string;
+}
+
+export interface ProjectContactSheetOverviewOptions {
+    projectPath?: string;
+    images?: ProjectContactSheetImageInput[];
+    columns?: number;
+    tileWidth?: number;
+    tileHeight?: number;
+    maxImages?: number;
+}
+
+export interface ProjectContactSheetOverviewAnalysisOptions extends ProjectContactSheetOverviewOptions {
+    focus?: string;
+    userIntent?: string;
+}
+
+export interface ProjectContactSheetOverviewItem {
+    id: string;
+    path: string;
+    relativePath?: string;
+    labelHint?: string;
+    role?: string;
+    status: 'rendered' | 'failed';
+    error?: string;
+    box: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+}
+
+export interface ProjectContactSheetOverviewResult {
+    success: boolean;
+    sheet?: {
+        imageData: string;
+        mediaType: 'image/jpeg';
+        width: number;
+        height: number;
+        columns: number;
+        rows: number;
+        tileWidth: number;
+        tileHeight: number;
+    };
+    items: ProjectContactSheetOverviewItem[];
+    warnings: string[];
+    limitations: string[];
+    error?: string;
+}
+
+export interface ProjectContactSheetOverviewObservation {
+    projectStyle?: string;
+    productUnderstanding?: string;
+    /**
+     * 供 Runtime 判断项目素材是否已经足以建立 product 输入。
+     * resolved 必须由可追溯的总览编号支撑；自由文本 productUnderstanding 不具备该语义。
+     */
+    productResolution: {
+        status: 'resolved' | 'ambiguous' | 'missing';
+        primaryProduct?: string;
+        candidates: string[];
+        basisImageIds: string[];
+    };
+    sellingPoints: string[];
+    imageRoles: Array<{
+        id: string;
+        role: string;
+        reason?: string;
+    }>;
+    nextSingleImageChecks: string[];
+    rawText?: string;
+}
+
+export interface ProjectContactSheetOverviewAnalysisResult {
+    success: boolean;
+    contactSheet: ProjectContactSheetOverviewResult;
+    observation?: ProjectContactSheetOverviewObservation;
+    rawText?: string;
+    warnings: string[];
+    limitations: string[];
+    error?: string;
+}
+
+/**
+ * 素材视觉分析结果（analyzeAssetContent 的 analysis 字段）
+ */
+type AssetContentAnalysis = {
+    description: string;
+    /** 素材本质：raw_photo 原始拍摄素材（可用原料）/ finished_design 已完成设计成品（交付物，不当素材） */
+    assetNature?: string;
+    visibleText?: string;
+    category: string;
+    mainSubject: string;
+    /** 主体（被售卖商品本身）占画面面积档位：dominant/moderate/small。仅视觉判断，供选图择优。 */
+    subjectCoverageRatio?: string;
+    /** 主体在画面中的主要位置：center/top/bottom/left/right/scattered。 */
+    subjectPosition?: string;
+    /** 画面视觉重心实际落在什么上（如『袜子/腿部』或『裙子/上半身』），用于识别"商品不突出"。 */
+    compositionFocus?: string;
+    /** 是否适合做需要突出该商品的主图：suitable/marginal/unsuitable。 */
+    mainImageSuitability?: string;
+    /** mainImageSuitability 的简短理由。 */
+    mainImageSuitabilityReason?: string;
+    /** 拍摄形态：flat_lay 平铺 / on_model 模特上身 / detail_closeup 细节特写 / package 包装 / chart 色卡图表 / scene 场景 / other。设计师按此给素材归类。 */
+    shotType?: ProjectVisualShotType;
+    /** 背景的可见/文件事实；不等同于“能否直接用于某个设计槽位”。 */
+    backgroundType?: ProjectVisualBackgroundType;
+    /** 卖点观察：记录图中真实可见内容及其可支持的卖点，不做超出画面的推断，无则空数组。 */
+    sellingPointObservations?: string[];
+    colors: string[];
+    style: string;
+    suggestedPlacement: string;
+    suggestedEffects: string[];
+};
+
+export type AssetRecommendationVisualRole =
+    | 'hero_product'
+    | 'hero_scene'
+    | 'model_context'
+    | 'detail_evidence'
+    | 'material_evidence'
+    | 'background'
+    | 'decorative'
+    | 'reference'
+    | 'unknown';
+
+export type AssetRecommendationDirectUseSuitability = 'suitable' | 'conditional' | 'unsuitable';
+
+export type AssetRecommendationSourceTreatment =
+    | 'direct_full_frame'
+    | 'clip_to_container'
+    | 'matte_and_recompose'
+    | 'supporting_only'
+    | 'reject'
+    | 'requires_visual_review';
+
+export interface AssetRecommendation {
+    file: ResourceFile;
+    matchScore: number;
+    matchReason: string;
+    /** 与 matchReason 兼容并存，供新调用方直接读取视觉判断理由。 */
+    reason: string;
+    suggestedUse: string;
+    visualObserved: boolean;
+    visualScore?: number;
+    visualRole: AssetRecommendationVisualRole;
+    /** 素材本质是视觉观察事实，不等同于当前槽位的使用决策。 */
+    assetNature?: ProjectVisualAssetNature;
+    backgroundType: ProjectVisualBackgroundType;
+    directUseSuitability: AssetRecommendationDirectUseSuitability;
+    sourceTreatment: AssetRecommendationSourceTreatment;
+    visualEvidenceId?: string;
+}
+
+export interface AssetRecommendationOptions {
+    maxResults?: number;
+    category?: string;
+    deterministic?: boolean;
+    /**
+     * Harness 已经扫描过的候选库存。提供后直接复用，不再次递归扫描 projectRoot。
+     * 该字段不进入模型 Tool Schema，只由业务执行器传入。
+     */
+    candidateFiles?: Array<Partial<ResourceFile> & Pick<ResourceFile, 'path'>>;
+    /** 当前设计槽位职责，例如 detail-page.hero；只用于本轮候选比较，不改素材事实。 */
+    designRole?: string;
+    /** 预期落位方式，例如 full-bleed / product-cutout / supporting-detail。 */
+    placementIntent?: string;
+}
+
+export interface AssetRecommendationResult {
+    success: boolean;
+    recommendations?: AssetRecommendation[];
+    warnings?: string[];
+    visualComparison?: {
+        status: 'observed' | 'metadata_only';
+        comparedCount: number;
+        modelCallCount: 0 | 1;
+    };
+    error?: string;
+}
+
+type AssetRecommendationVisionCandidate = {
+    id: string;
+    visualScore: number;
+    visualRole: AssetRecommendationVisualRole;
+    assetNature?: ProjectVisualAssetNature;
+    backgroundType: ProjectVisualBackgroundType;
+    directUseSuitability: AssetRecommendationDirectUseSuitability;
+    sourceTreatment: AssetRecommendationSourceTreatment;
+    reason: string;
+    suggestedUse: string;
+};
+
+/**
+ * analyzeAssetContent 的返回结构
+ */
+type AssetContentAnalysisResult = {
+    success: boolean;
+    analysis?: AssetContentAnalysis;
+    error?: string;
+    /** 命中 main 端结果缓存时为 true（同一文件内容在进程生命周期内只分析一次） */
+    fromCache?: boolean;
+};
+
+function clampContactSheetNumber(value: unknown, fallback: number, min: number, max: number): number {
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.max(min, Math.min(max, Math.round(numeric)));
+}
+
+function escapeContactSheetXml(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+function truncateContactSheetLabel(value: string | undefined, maxLength: number): string {
+    const normalized = (value || '').replace(/\s+/g, ' ').trim();
+    if (normalized.length <= maxLength) return normalized;
+    return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function cleanContactSheetText(value: unknown): string {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeContactSheetTextList(values: unknown): string[] {
+    if (!Array.isArray(values)) return [];
+    return Array.from(new Set(values.map(cleanContactSheetText).filter(Boolean)));
+}
+
+function buildContactSheetLabelSvg(options: {
+    id: string;
+    width: number;
+    height: number;
+    relativePath?: string;
+    labelHint?: string;
+    role?: string;
+    failed?: boolean;
+}): Buffer {
+    const title = truncateContactSheetLabel(options.labelHint || options.role || options.relativePath || '', 18);
+    const subtitle = truncateContactSheetLabel(options.relativePath || '', 28);
+    const statusText = options.failed ? '无法预览' : '';
+    const titleText = escapeContactSheetXml(title || statusText || '未命名素材');
+    const subtitleText = escapeContactSheetXml(subtitle);
+    const idText = escapeContactSheetXml(options.id);
+    const statusLine = statusText
+        ? `<text x="14" y="${options.height - 16}" font-size="13" fill="#b42318" font-family="Arial, sans-serif">${escapeContactSheetXml(statusText)}</text>`
+        : '';
+
+    return Buffer.from(`
+        <svg width="${options.width}" height="${options.height}" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0.5" y="0.5" width="${options.width - 1}" height="${options.height - 1}" rx="8" fill="#ffffff" stroke="#d9dde5"/>
+            <rect x="10" y="10" width="44" height="26" rx="13" fill="#111827"/>
+            <text x="32" y="28" font-size="14" fill="#ffffff" font-weight="700" text-anchor="middle" font-family="Arial, sans-serif">${idText}</text>
+            <text x="14" y="${options.height - 38}" font-size="14" fill="#111827" font-weight="700" font-family="Arial, sans-serif">${titleText}</text>
+            <text x="14" y="${options.height - 18}" font-size="11" fill="#6b7280" font-family="Arial, sans-serif">${subtitleText}</text>
+            ${statusLine}
+        </svg>
+    `, 'utf8');
+}
+
+function buildContactSheetVisionPrompt(input: {
+    options: ProjectContactSheetOverviewAnalysisOptions;
+    contactSheet: ProjectContactSheetOverviewResult;
+}): string {
+    const { options, contactSheet } = input;
+    const manifest = contactSheet.items
+        .map((item) => {
+            const parts = [
+                `${item.id}: ${item.relativePath || item.path}`,
+                item.labelHint ? `label=${item.labelHint}` : '',
+                item.role ? `roleHint=${item.role}` : '',
+                `status=${item.status}`
+            ].filter(Boolean);
+            return `- ${parts.join(' | ')}`;
+        })
+        .join('\n');
+
+    return `你正在查看一张项目图片缩略图总览。每张图都有编号，编号和文件清单如下：
+${manifest}
+
+用户意图：${options.userIntent || '理解项目图片，提炼后续设计方向。'}
+分析焦点：${options.focus || 'style-and-selling-points'}
+
+请只基于你在这张总览图中能看到的内容做判断，不要编造图片里看不到的信息。
+先判断这些图片能否明确指向一个被售卖的商品族：
+- 同一商品的不同颜色、角度、模特图、细节图属于同一商品族，不算歧义；
+- 如果出现互不相关的多个商品，或只能看出泛泛的“商品/服饰”而不能判断具体产品，status 必须为 ambiguous；
+- 完全看不到可识别商品时，status 为 missing；
+- 只有 status=resolved 时才填写 primaryProduct，并至少提供一个实际看见且 status=rendered 的编号作为 basisImageIds。
+
+输出 JSON，字段：
+{
+  "projectStyle": "整体拍摄/视觉风格",
+  "productUnderstanding": "这是什么产品或款式，有哪些可见特征",
+  "productResolution": {
+    "status": "resolved|ambiguous|missing",
+    "primaryProduct": "status=resolved 时填写具体商品，如运动短袜",
+    "candidates": ["可能的商品族；resolved 时通常只有一个"],
+    "basisImageIds": ["支撑该判断的总览编号，如 A01"]
+  },
+  "sellingPoints": ["从画面可支持的卖点或用户关注点"],
+  "imageRoles": [{"id":"A01","role":"SKU/主图/详情页/细节/场景/待确认","reason":"依据"}],
+  "nextSingleImageChecks": ["后续需要单图放大复核的编号"]
+}`;
+}
+
+function normalizeContactSheetObservation(rawText: string): ProjectContactSheetOverviewObservation {
+    const parsed = extractModelJsonObject(rawText)?.value as any;
+    if (!parsed || typeof parsed !== 'object') {
+        return {
+            productResolution: {
+                status: 'missing',
+                candidates: [],
+                basisImageIds: []
+            },
+            sellingPoints: [],
+            imageRoles: [],
+            nextSingleImageChecks: [],
+            rawText
+        };
+    }
+
+    const roleItems = Array.isArray(parsed.imageRoles) ? parsed.imageRoles : [];
+    const resolution = parsed.productResolution && typeof parsed.productResolution === 'object'
+        ? parsed.productResolution
+        : {};
+    const requestedStatus = cleanContactSheetText(resolution.status).toLowerCase();
+    const status = requestedStatus === 'resolved'
+        || requestedStatus === 'ambiguous'
+        || requestedStatus === 'missing'
+        ? requestedStatus
+        : 'missing';
+    const primaryProduct = status === 'resolved'
+        ? cleanContactSheetText(resolution.primaryProduct)
+        : '';
+    return {
+        projectStyle: cleanContactSheetText(parsed.projectStyle) || undefined,
+        productUnderstanding: cleanContactSheetText(parsed.productUnderstanding) || undefined,
+        productResolution: {
+            status,
+            ...(primaryProduct ? { primaryProduct } : {}),
+            candidates: normalizeContactSheetTextList(resolution.candidates),
+            basisImageIds: normalizeContactSheetTextList(resolution.basisImageIds)
+        },
+        sellingPoints: normalizeContactSheetTextList(parsed.sellingPoints),
+        imageRoles: roleItems
+            .map((item: any) => ({
+                id: cleanContactSheetText(item?.id),
+                role: cleanContactSheetText(item?.role),
+                reason: cleanContactSheetText(item?.reason) || undefined
+            }))
+            .filter((item: { id: string; role: string }) => item.id && item.role),
+        nextSingleImageChecks: normalizeContactSheetTextList(parsed.nextSingleImageChecks),
+        rawText
+    };
+}
+
+const ASSET_RECOMMENDATION_VISUAL_ROLE_VALUES: readonly AssetRecommendationVisualRole[] = [
+    'hero_product',
+    'hero_scene',
+    'model_context',
+    'detail_evidence',
+    'material_evidence',
+    'background',
+    'decorative',
+    'reference',
+    'unknown'
+];
+const ASSET_RECOMMENDATION_BACKGROUND_TYPE_VALUES: readonly ProjectVisualBackgroundType[] = [
+    'transparent',
+    'white_studio',
+    'solid_color',
+    'scene',
+    'designed_composite',
+    'unknown'
+];
+const ASSET_ANALYSIS_SHOT_TYPE_VALUES: readonly ProjectVisualShotType[] = [
+    'flat_lay',
+    'on_model',
+    'detail_closeup',
+    'package',
+    'chart',
+    'scene',
+    'other'
+];
+const ASSET_RECOMMENDATION_DIRECT_USE_VALUES: readonly AssetRecommendationDirectUseSuitability[] = [
+    'suitable',
+    'conditional',
+    'unsuitable'
+];
+const ASSET_RECOMMENDATION_SOURCE_TREATMENT_VALUES: readonly AssetRecommendationSourceTreatment[] = [
+    'direct_full_frame',
+    'clip_to_container',
+    'matte_and_recompose',
+    'supporting_only',
+    'reject',
+    'requires_visual_review'
+];
+
+function normalizeAssetRecommendationEnum<T extends string>(
+    value: unknown,
+    allowed: readonly T[],
+    fallback: T
+): T {
+    const text = cleanContactSheetText(value).toLowerCase();
+    return (allowed as readonly string[]).includes(text) ? text as T : fallback;
+}
+
+function clampAssetRecommendationScore(value: unknown): number {
+    const score = Number(value);
+    if (!Number.isFinite(score)) return 0;
+    return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function buildAssetRecommendationComparisonPrompt(input: {
+    requirement: string;
+    designRole?: string;
+    placementIntent?: string;
+    items: Array<{ id: string; file: ResourceFile; status: 'rendered' | 'failed' }>;
+}): string {
+    const manifest = input.items.map(({ id, file, status }) => {
+        let alphaState = 'unknown';
+        if (file.hasAlpha === true) {
+            alphaState = 'present';
+        } else if (file.hasAlpha === false) {
+            alphaState = 'absent';
+        }
+        return `- ${id}: ${file.relativePath || file.name} | ${file.dimensions?.width || 0}x${file.dimensions?.height || 0} | sourceAlpha=${alphaState} | status=${status}`;
+    }).join('\n');
+
+    return `你是一位电商视觉设计师，正在同屏比较带编号的候选素材。请把“素材画面事实”和“针对当前槽位的使用判断”分开。
+
+设计需求：${input.requirement}
+设计职责：${input.designRole || '未指定'}
+落位意图：${input.placementIntent || '未指定'}
+候选清单：
+${manifest}
+
+只基于总览图中真实可见内容和清单中的 sourceAlpha 判断，不要根据文件名臆测。
+- visualScore：该素材对当前设计需求/职责/落位意图的适配度，0-100；视觉内容是主依据。
+- visualRole 只能是 hero_product | hero_scene | model_context | detail_evidence | material_evidence | background | decorative | reference | unknown。
+- assetNature 只能是 raw_photo | finished_design；它只描述素材本质，不代表当前槽位是否可用。无法确认时省略该字段。
+- backgroundType 只能是 transparent | white_studio | solid_color | scene | designed_composite | unknown。只有 sourceAlpha=present 且画面确实是孤立主体时才可判 transparent；sourceAlpha=absent 时不得判 transparent。
+- directUseSuitability 判断“未经任何预处理直接整张置入当前槽位”是否合适，只能是 suitable | conditional | unsuitable。
+- sourceTreatment 只能是 direct_full_frame | clip_to_container | matte_and_recompose | supporting_only | reject | requires_visual_review。
+- 白底图不是一律禁用：对白底商品主体，如果直接铺满首屏不合适、但抠图后能重构 hero，应给 conditional/unsuitable + matte_and_recompose；透明抠图可按构图选择 clip_to_container 或 direct_full_frame。
+- 已完成的营销拼图/带字成品通常只能 supporting_only 或 reject，不要当原始照片直接塞进新设计。
+- 缩略图不足以判断细节时使用 requires_visual_review，不要伪造确定结论。
+
+为每个 status=rendered 的编号返回且只返回一个 JSON 对象：
+{
+  "candidates": [{
+    "id": "A01",
+    "visualScore": 0,
+    "visualRole": "unknown",
+    "assetNature": "raw_photo",
+    "backgroundType": "unknown",
+    "directUseSuitability": "unsuitable",
+    "sourceTreatment": "requires_visual_review",
+    "reason": "基于画面内容的简短理由",
+    "suggestedUse": "在当前设计中的建议用途"
+  }]
+}`;
+}
+
+function normalizeAssetRecommendationVisionCandidates(
+    rawText: string,
+    renderedIds: ReadonlySet<string>
+): Map<string, AssetRecommendationVisionCandidate> {
+    const parsed = extractModelJsonObject(rawText)?.value as Record<string, unknown> | undefined;
+    const rawCandidates = Array.isArray(parsed?.candidates) ? parsed.candidates : [];
+    const result = new Map<string, AssetRecommendationVisionCandidate>();
+    for (const value of rawCandidates) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const record = value as Record<string, unknown>;
+        const id = cleanContactSheetText(record.id).toUpperCase();
+        if (!id || !renderedIds.has(id) || result.has(id)) continue;
+        const rawAssetNature = cleanContactSheetText(record.assetNature).toLowerCase();
+        const assetNature: ProjectVisualAssetNature | undefined = rawAssetNature === 'raw_photo'
+            || rawAssetNature === 'finished_design'
+            ? rawAssetNature
+            : undefined;
+        result.set(id, {
+            id,
+            visualScore: clampAssetRecommendationScore(record.visualScore ?? record.score),
+            visualRole: normalizeAssetRecommendationEnum(
+                record.visualRole,
+                ASSET_RECOMMENDATION_VISUAL_ROLE_VALUES,
+                'unknown'
+            ),
+            ...(assetNature ? { assetNature } : {}),
+            backgroundType: normalizeAssetRecommendationEnum(
+                record.backgroundType,
+                ASSET_RECOMMENDATION_BACKGROUND_TYPE_VALUES,
+                'unknown'
+            ),
+            directUseSuitability: normalizeAssetRecommendationEnum(
+                record.directUseSuitability,
+                ASSET_RECOMMENDATION_DIRECT_USE_VALUES,
+                'unsuitable'
+            ),
+            sourceTreatment: normalizeAssetRecommendationEnum(
+                record.sourceTreatment,
+                ASSET_RECOMMENDATION_SOURCE_TREATMENT_VALUES,
+                'requires_visual_review'
+            ),
+            reason: cleanContactSheetText(record.reason) || '视觉对比已完成，但模型没有返回具体理由。',
+            suggestedUse: cleanContactSheetText(record.suggestedUse) || '需要结合当前画面进一步确认用途。'
+        });
+    }
+    return result;
+}
+
 /**
  * 资源管理服务
  */
 export class ResourceManagerService {
     private projectRoot: string = '';
     private cachedResources: Map<string, ResourceFile[]> = new Map();
-    private cacheExpiry: number = 30000; // 30秒缓存
+    private cacheExpiry: number = RESOURCE_CACHE_BUDGET.resourceScanCacheTtlMs;
     private lastCacheTime: Map<string, number> = new Map();
-    
+
     // PSD/PSB 预览缓存（避免重复解析大文件）
     private psdPreviewCache: Map<string, { result: any; timestamp: number }> = new Map();
-    private psdCacheExpiry: number = 300000; // 5分钟缓存
+    private psdCacheExpiry: number = RESOURCE_CACHE_BUDGET.psdPreviewCacheTtlMs;
+
+    // 素材视觉分析结果缓存：键 = imagePath + mtimeMs + size（文件内容变化后自动失效）。
+    // 单图视觉分析耗时 30 秒以上，进程生命周期内同一文件内容只分析一次；
+    // 只缓存成功结果，失败不缓存（不做负缓存，避免掩盖暂时性故障）。
+    private assetAnalysisCache: Map<string, AssetContentAnalysis> = new Map();
+    private static readonly ASSET_ANALYSIS_CACHE_MAX_ENTRIES = 200;
+
+    // in-flight 合并：同 key 的并发分析请求共享同一个 Promise，避免重复调用视觉模型
+    private assetAnalysisInFlight: Map<string, Promise<AssetContentAnalysisResult>> = new Map();
+
+    // 视觉模型调用并发闸门：本地模型（如 ollama）并发推理会争抢显存，限制同时进行的调用数
+    private static readonly VISION_CALL_MAX_CONCURRENCY = 2;
+    private visionCallActive = 0;
+    private visionCallWaiters: Array<() => void> = [];
 
     constructor() {
         console.log('[ResourceManager] 服务初始化');
@@ -270,6 +1204,7 @@ export class ResourceManagerService {
                                             width: metadata.width || 0,
                                             height: metadata.height || 0
                                         };
+                                        resourceFile.hasAlpha = metadata.hasAlpha === true;
 
                                         // 生成缩略图
                                         if (generateThumbnails) {
@@ -373,6 +1308,273 @@ export class ResourceManagerService {
     }
 
     /**
+     * 生成项目素材缩略图总览。
+     *
+     * 这是给 Agent 使用的观察输入：一张带稳定编号的总览图 + 编号清单。
+     * 它不判断素材用途，也不替 SKU/主图/详情页做业务决策。
+     */
+    async createProjectContactSheetOverview(
+        options: ProjectContactSheetOverviewOptions = {}
+    ): Promise<ProjectContactSheetOverviewResult> {
+        const warnings: string[] = [];
+        const rootPath = options.projectPath || this.projectRoot || '';
+        const maxImages = clampContactSheetNumber(options.maxImages, 40, 1, 80);
+        const columns = clampContactSheetNumber(options.columns, 4, 1, 8);
+        const tileWidth = clampContactSheetNumber(options.tileWidth, 220, 160, 420);
+        const tileHeight = clampContactSheetNumber(options.tileHeight, 260, 180, 460);
+        const requestedImages = (options.images || [])
+            .filter((image) => image && typeof image.path === 'string' && image.path.trim())
+            .slice(0, maxImages);
+
+        if (requestedImages.length === 0) {
+            return {
+                success: false,
+                items: [],
+                warnings: ['没有可用于生成项目总览的图片。'],
+                limitations: ['总览图只处理调用方传入的图片列表，不会自行扫描项目目录。'],
+                error: '没有可预览图片'
+            };
+        }
+
+        if ((options.images || []).length > requestedImages.length) {
+            warnings.push(`已限制总览图片数量：${requestedImages.length}/${(options.images || []).length}`);
+        }
+
+        const rows = Math.ceil(requestedImages.length / columns);
+        const width = columns * tileWidth;
+        const height = rows * tileHeight;
+        const labelHeight = Math.min(64, Math.max(52, Math.round(tileHeight * 0.22)));
+        const tilePadding = 12;
+        const thumbTop = 46;
+        const thumbWidth = tileWidth - tilePadding * 2;
+        const thumbHeight = Math.max(32, tileHeight - thumbTop - labelHeight - tilePadding);
+        const composites: sharp.OverlayOptions[] = [];
+        const items: ProjectContactSheetOverviewItem[] = [];
+
+        // 逐图缩略图生成按批并发：单图是独立的解码→缩放→编码，串行处理 40 张会把
+        // 项目总览拖成整个准备阶段最慢的一步（真机 34 秒）。并发上限保持温和，
+        // 避免同时解码大量高分辨率原图撑爆内存。合成顺序仍由 index 归位，与串行完全一致。
+        const CONTACT_SHEET_RENDER_CONCURRENCY = 6;
+        const renderedTiles = new Array<{
+            item: ProjectContactSheetOverviewItem;
+            composites: sharp.OverlayOptions[];
+            warning?: string;
+        }>(requestedImages.length);
+
+        const renderTile = async (index: number): Promise<void> => {
+            const input = requestedImages[index];
+            const fullPath = path.isAbsolute(input.path)
+                ? input.path
+                : path.resolve(rootPath || process.cwd(), input.path);
+            const relativePath = input.relativePath
+                || (rootPath ? path.relative(rootPath, fullPath) : path.basename(fullPath));
+            const id = `A${String(index + 1).padStart(2, '0')}`;
+            const tileComposites: sharp.OverlayOptions[] = [];
+            let tileWarning: string | undefined;
+            const column = index % columns;
+            const row = Math.floor(index / columns);
+            const x = column * tileWidth;
+            const y = row * tileHeight;
+            const item: ProjectContactSheetOverviewItem = {
+                id,
+                path: fullPath,
+                relativePath,
+                labelHint: input.labelHint,
+                role: input.role,
+                status: 'rendered',
+                box: { x, y, width: tileWidth, height: tileHeight }
+            };
+
+            tileComposites.push({
+                input: buildContactSheetLabelSvg({
+                    id,
+                    width: tileWidth,
+                    height: tileHeight,
+                    relativePath,
+                    labelHint: input.labelHint,
+                    role: input.role
+                }),
+                left: x,
+                top: y
+            });
+
+            try {
+                if (!fs.existsSync(fullPath)) {
+                    throw new Error('文件不存在');
+                }
+
+                const ext = path.extname(fullPath).toLowerCase();
+                if (!IMAGE_EXTENSIONS.includes(ext)) {
+                    throw new Error('不支持的图片格式');
+                }
+
+                // resolveWithObject 直接带回缩略图尺寸，省掉此前为拿宽高而对刚生成的
+                // 缩略图做的第二次解码（每张图白解一遍）。
+                const { data: thumb, info } = await sharp(fullPath, { failOnError: false })
+                    .rotate()
+                    .resize(thumbWidth, thumbHeight, {
+                        fit: 'contain',
+                        background: '#ffffff',
+                        withoutEnlargement: false
+                    })
+                    .flatten({ background: '#ffffff' })
+                    .jpeg({ quality: 82 })
+                    .toBuffer({ resolveWithObject: true });
+
+                const thumbX = x + tilePadding + Math.max(0, Math.round((thumbWidth - (info.width || thumbWidth)) / 2));
+                const thumbY = y + thumbTop + Math.max(0, Math.round((thumbHeight - (info.height || thumbHeight)) / 2));
+
+                tileComposites.push({
+                    input: thumb,
+                    left: thumbX,
+                    top: thumbY
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                item.status = 'failed';
+                item.error = message;
+                tileWarning = `${id} 无法预览：${message}`;
+                tileComposites.push({
+                    input: buildContactSheetLabelSvg({
+                        id,
+                        width: tileWidth,
+                        height: tileHeight,
+                        relativePath,
+                        labelHint: input.labelHint,
+                        role: input.role,
+                        failed: true
+                    }),
+                    left: x,
+                    top: y
+                });
+            }
+
+            renderedTiles[index] = { item, composites: tileComposites, warning: tileWarning };
+        };
+
+        // worker pool（与 eagle-library-service 的 mapWithConcurrency 同模式）：
+        // 不设批次栅栏，快的 worker 直接领下一张，不用等同批最慢的那张。
+        let nextTileIndex = 0;
+        const renderWorker = async (): Promise<void> => {
+            while (nextTileIndex < requestedImages.length) {
+                const index = nextTileIndex;
+                nextTileIndex += 1;
+                await renderTile(index);
+            }
+        };
+        const workerCount = Math.min(CONTACT_SHEET_RENDER_CONCURRENCY, Math.max(1, requestedImages.length));
+        await Promise.all(Array.from({ length: workerCount }, () => renderWorker()));
+
+        // 按原始顺序归位：合成层与 items 的次序必须与串行实现完全一致
+        for (const tile of renderedTiles) {
+            if (!tile) continue;
+            composites.push(...tile.composites);
+            if (tile.warning) warnings.push(tile.warning);
+            items.push(tile.item);
+        }
+
+        try {
+            const buffer = await sharp({
+                create: {
+                    width,
+                    height,
+                    channels: 3,
+                    background: '#f3f4f6'
+                }
+            })
+                .composite(composites)
+                .jpeg({ quality: 88 })
+                .toBuffer();
+
+            const renderedCount = items.filter((item) => item.status === 'rendered').length;
+            return {
+                success: renderedCount > 0,
+                sheet: {
+                    imageData: buffer.toString('base64'),
+                    mediaType: 'image/jpeg',
+                    width,
+                    height,
+                    columns,
+                    rows,
+                    tileWidth,
+                    tileHeight
+                },
+                items,
+                warnings,
+                limitations: [
+                    '总览图用于项目级快速观察；细节、材质和文字仍需要按编号进入单图复核。',
+                    '总览图不替 Agent 判断图片用途，只提供带编号的视觉观察。'
+                ],
+                error: renderedCount > 0 ? undefined : '所有图片都无法预览'
+            };
+        } catch (error) {
+            return {
+                success: false,
+                items,
+                warnings,
+                limitations: [
+                    '总览图用于项目级快速观察；细节、材质和文字仍需要按编号进入单图复核。'
+                ],
+                error: `生成项目总览失败: ${error instanceof Error ? error.message : error}`
+            };
+        }
+    }
+
+    /**
+     * 用视觉模型理解项目缩略图总览。
+     *
+     * 这一步提供“项目第一眼观察”，帮助 Agent 决定后续要放大复核哪些单图；
+     * 它不替代单图分析，也不直接生成设计结论。
+     */
+    async analyzeProjectContactSheetOverview(
+        options: ProjectContactSheetOverviewAnalysisOptions,
+        visionModelCall: (imageBase64: string, prompt: string) => Promise<string>
+    ): Promise<ProjectContactSheetOverviewAnalysisResult> {
+        const contactSheet = await this.createProjectContactSheetOverview(options);
+        const warnings = [...contactSheet.warnings];
+        const limitations = [
+            ...contactSheet.limitations,
+            '总览视觉理解只适合判断整体风格、图片角色和候选方向；关键卖点仍需单图放大复核。'
+        ];
+
+        if (!contactSheet.success || !contactSheet.sheet?.imageData) {
+            return {
+                success: false,
+                contactSheet,
+                warnings,
+                limitations,
+                error: contactSheet.error || '项目总览图生成失败，无法进入视觉理解。'
+            };
+        }
+
+        try {
+            const prompt = buildContactSheetVisionPrompt({ options, contactSheet });
+            const rawText = await this.runWithVisionCallGate(() => visionModelCall(
+                `data:image/jpeg;base64,${contactSheet.sheet!.imageData}`,
+                prompt
+            ));
+            const observation = normalizeContactSheetObservation(rawText);
+
+            return {
+                success: true,
+                contactSheet,
+                observation,
+                rawText,
+                warnings,
+                limitations
+            };
+        } catch (error) {
+            return {
+                success: false,
+                contactSheet,
+                warnings,
+                limitations,
+                error: `项目总览视觉理解失败: ${error instanceof Error ? error.message : error}`
+            };
+        }
+    }
+
+    /**
      * 获取图片预览（较大尺寸，支持 PSD）
      */
     async getImagePreview(imagePath: string, maxSize: number = 800): Promise<{
@@ -380,6 +1582,7 @@ export class ResourceManagerService {
         imageData?: string;
         base64?: string;  // 兼容旧接口
         dimensions?: { width: number; height: number };
+        hasAlpha?: boolean;
         error?: string;
     }> {
         try {
@@ -416,7 +1619,8 @@ export class ResourceManagerService {
                 dimensions: {
                     width: metadata.width || 0,
                     height: metadata.height || 0
-                }
+                },
+                hasAlpha: metadata.hasAlpha === true
             };
         } catch (e) {
             return {
@@ -687,52 +1891,9 @@ export class ResourceManagerService {
     /**
      * 按类别分组资源
      */
-    async getResourcesByCategory(directory?: string): Promise<{
-        products: ResourceFile[];      // 产品图
-        backgrounds: ResourceFile[];   // 背景
-        elements: ResourceFile[];      // 装饰元素
-        references: ResourceFile[];    // 参考图
-        others: ResourceFile[];        // 其他
-    }> {
+    async getResourcesByCategory(directory?: string): Promise<ResourceCategoryMap> {
         const scanResult = await this.scanDirectory(directory || this.projectRoot);
-        
-        const categories = {
-            products: [] as ResourceFile[],
-            backgrounds: [] as ResourceFile[],
-            elements: [] as ResourceFile[],
-            references: [] as ResourceFile[],
-            others: [] as ResourceFile[]
-        };
-
-        const keywords = {
-            products: ['产品', 'product', '主图', 'main', '商品', 'item', '实拍', '白底'],
-            backgrounds: ['背景', 'bg', 'background', '底图', '底纹'],
-            elements: ['元素', 'element', '装饰', 'decor', 'icon', '图标', '标签', 'tag', '促销'],
-            references: ['参考', 'ref', 'reference', '灵感', '样式', 'style', '模板', 'template']
-        };
-
-        for (const file of scanResult.files) {
-            if (file.type !== 'image') continue;
-            
-            const nameLower = file.name.toLowerCase();
-            const pathLower = file.relativePath.toLowerCase();
-            const searchStr = nameLower + ' ' + pathLower;
-
-            let categorized = false;
-            for (const [category, keys] of Object.entries(keywords)) {
-                if (keys.some(k => searchStr.includes(k))) {
-                    categories[category as keyof typeof categories].push(file);
-                    categorized = true;
-                    break;
-                }
-            }
-
-            if (!categorized) {
-                categories.others.push(file);
-            }
-        }
-
-        return categories;
+        return categorizeResourceFiles(scanResult.files);
     }
 
     /**
@@ -873,11 +2034,246 @@ export class ResourceManagerService {
     }
 
     /**
+     * 只读图片文件探针：用于验收链路确认导出图是否存在、可解码、尺寸是否可复核。
+     * 不返回原始图片内容或 base64，避免把结果图泄漏到普通报告链路。
+     */
+    async probeImageFile(imagePath: string): Promise<{
+        success: boolean;
+        path: string;
+        status: 'ok' | 'missing' | 'not_file' | 'unsupported' | 'decode_failed';
+        exists: boolean;
+        isFile: boolean;
+        byteLength?: number;
+        format?: string;
+        mimeType?: string;
+        dimensions?: { width: number; height: number };
+        visualMetrics?: ImageVisualMetricsProbe;
+        sha256?: string;
+        rawImagesRedacted: true;
+        error?: string;
+    }> {
+        const normalizedPath = path.resolve(String(imagePath || ''));
+        const base = {
+            path: normalizedPath,
+            rawImagesRedacted: true as const
+        };
+        try {
+            if (!fs.existsSync(normalizedPath)) {
+                return {
+                    ...base,
+                    success: false,
+                    status: 'missing',
+                    exists: false,
+                    isFile: false,
+                    error: '文件不存在'
+                };
+            }
+
+            const stats = fs.statSync(normalizedPath);
+            if (!stats.isFile()) {
+                return {
+                    ...base,
+                    success: false,
+                    status: 'not_file',
+                    exists: true,
+                    isFile: false,
+                    error: '目标不是文件'
+                };
+            }
+
+            const ext = path.extname(normalizedPath).toLowerCase();
+            if (!IMAGE_EXTENSIONS.includes(ext)) {
+                return {
+                    ...base,
+                    success: false,
+                    status: 'unsupported',
+                    exists: true,
+                    isFile: true,
+                    byteLength: stats.size,
+                    format: ext.replace(/^\./, ''),
+                    error: '不支持的图片格式'
+                };
+            }
+
+            const metadata = await sharp(normalizedPath).metadata();
+            const visualMetrics = await buildImageVisualMetricsProbe(normalizedPath);
+            const buffer = fs.readFileSync(normalizedPath);
+            const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+            const mimeTypes: Record<string, string> = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp',
+                '.tiff': 'image/tiff',
+                '.tif': 'image/tiff'
+            };
+
+            return {
+                ...base,
+                success: true,
+                status: 'ok',
+                exists: true,
+                isFile: true,
+                byteLength: stats.size,
+                format: String(metadata.format || ext.replace(/^\./, '')),
+                mimeType: mimeTypes[ext] || 'image/jpeg',
+                dimensions: {
+                    width: metadata.width || 0,
+                    height: metadata.height || 0
+                },
+                visualMetrics,
+                sha256
+            };
+        } catch (e) {
+            return {
+                ...base,
+                success: false,
+                status: 'decode_failed',
+                exists: fs.existsSync(normalizedPath),
+                isFile: fs.existsSync(normalizedPath) ? fs.statSync(normalizedPath).isFile() : false,
+                error: `图片探针失败: ${e instanceof Error ? e.message : e}`
+            };
+        }
+    }
+
+    /**
+     * 只读图片像素探针：比较参考图与结果图的粗粒度亮度/暗部轮廓相似度。
+     * 不返回原始图片内容或 base64；该指标只能用于 QA 检查，不能作为审美验收。
+     */
+    async compareImageFiles(referencePath: string, resultPath: string, options?: {
+        targetSize?: { width?: number; height?: number };
+        thresholds?: {
+            maxMae?: number;
+            maxHighDeltaRatio?: number;
+            minDarkJaccard?: number;
+            minSoftDarkJaccard?: number;
+            softMaskBlurSigma?: number;
+            softMaskDarkThreshold?: number;
+        };
+    }): Promise<{
+        success: boolean;
+        status: PixelProbeStatus;
+        mode: 'pixel-probe';
+        referencePath: string;
+        resultPath: string;
+        width?: number;
+        height?: number;
+        mae?: number;
+        rmse?: number;
+        highDeltaRatio?: number;
+        darkJaccard?: number;
+        softDarkJaccard?: number;
+        softMaskBlurSigma?: number;
+        softMaskDarkThreshold?: number;
+        referenceDarkPixels?: number;
+        resultDarkPixels?: number;
+        summary?: string;
+        boundary: string;
+        rawImagesRedacted: true;
+        error?: string;
+    }> {
+        const normalizedReferencePath = path.resolve(String(referencePath || ''));
+        const normalizedResultPath = path.resolve(String(resultPath || ''));
+        const boundary = 'Pixel probe only. It checks coarse screenshot similarity and antialias-tolerant dark-shape overlap; it is not a high-fidelity design acceptance score.';
+        const base = {
+            mode: 'pixel-probe' as const,
+            referencePath: normalizedReferencePath,
+            resultPath: normalizedResultPath,
+            boundary,
+            rawImagesRedacted: true as const
+        };
+
+        try {
+            const referenceProbe = await this.probeImageFile(normalizedReferencePath);
+            if (!referenceProbe.success || referenceProbe.status !== 'ok') {
+                return {
+                    ...base,
+                    success: false,
+                    status: 'unverified',
+                    summary: '参考图不可用于像素探针。',
+                    error: referenceProbe.error || referenceProbe.status
+                };
+            }
+
+            const resultProbe = await this.probeImageFile(normalizedResultPath);
+            if (!resultProbe.success || resultProbe.status !== 'ok') {
+                return {
+                    ...base,
+                    success: false,
+                    status: 'unverified',
+                    summary: '结果图不可用于像素探针。',
+                    error: resultProbe.error || resultProbe.status
+                };
+            }
+
+            const width = toPositiveInt(
+                options?.targetSize?.width,
+                resultProbe.dimensions?.width || referenceProbe.dimensions?.width || 800
+            );
+            const height = toPositiveInt(
+                options?.targetSize?.height,
+                resultProbe.dimensions?.height || referenceProbe.dimensions?.height || 800
+            );
+            const thresholds = {
+                maxMae: Number(options?.thresholds?.maxMae ?? 18),
+                maxHighDeltaRatio: Number(options?.thresholds?.maxHighDeltaRatio ?? 0.18),
+                minDarkJaccard: Number(options?.thresholds?.minDarkJaccard ?? 0.62),
+                minSoftDarkJaccard: Number(options?.thresholds?.minSoftDarkJaccard ?? options?.thresholds?.minDarkJaccard ?? 0.62),
+                softMaskBlurSigma: Number(options?.thresholds?.softMaskBlurSigma ?? 1.5),
+                softMaskDarkThreshold: Number(options?.thresholds?.softMaskDarkThreshold ?? 180)
+            };
+
+            const referenceRaw = await readLumaRawForProbe(normalizedReferencePath, width, height);
+            const resultRaw = await readLumaRawForProbe(normalizedResultPath, width, height);
+            const hardMetrics = compareLumaRawForProbe(referenceRaw, resultRaw);
+            const softReferenceRaw = await readLumaRawForProbe(normalizedReferencePath, width, height, thresholds.softMaskBlurSigma);
+            const softResultRaw = await readLumaRawForProbe(normalizedResultPath, width, height, thresholds.softMaskBlurSigma);
+            const softMetrics = compareLumaRawForProbe(softReferenceRaw, softResultRaw, thresholds.softMaskDarkThreshold);
+
+            const darkShapeMatches = hardMetrics.darkJaccard >= thresholds.minDarkJaccard
+                || softMetrics.darkJaccard >= thresholds.minSoftDarkJaccard;
+            const status: PixelProbeStatus = hardMetrics.mae <= thresholds.maxMae
+                && hardMetrics.highDeltaRatio <= thresholds.maxHighDeltaRatio
+                && darkShapeMatches
+                ? 'ok'
+                : 'watch';
+
+            return {
+                ...base,
+                success: true,
+                status,
+                width,
+                height,
+                mae: roundMetric(hardMetrics.mae, 3),
+                rmse: roundMetric(hardMetrics.rmse, 3),
+                highDeltaRatio: roundMetric(hardMetrics.highDeltaRatio, 4),
+                darkJaccard: roundMetric(hardMetrics.darkJaccard, 4),
+                softDarkJaccard: roundMetric(softMetrics.darkJaccard, 4),
+                softMaskBlurSigma: roundMetric(thresholds.softMaskBlurSigma, 2),
+                softMaskDarkThreshold: roundMetric(thresholds.softMaskDarkThreshold, 0),
+                referenceDarkPixels: hardMetrics.referenceDark,
+                resultDarkPixels: hardMetrics.resultDark,
+                summary: `pixelProbe=${status}; mae=${roundMetric(hardMetrics.mae, 3)}; highDeltaRatio=${roundMetric(hardMetrics.highDeltaRatio, 4)}; darkJaccard=${roundMetric(hardMetrics.darkJaccard, 4)}。`
+            };
+        } catch (e) {
+            return {
+                ...base,
+                success: false,
+                status: 'unverified',
+                summary: '像素探针执行失败。',
+                error: e instanceof Error ? e.message : String(e)
+            };
+        }
+    }
+
+    /**
      * 为 AI 生成资源摘要
      */
     async generateResourceSummary(directory?: string): Promise<string> {
         const scanResult = await this.scanDirectory(directory || this.projectRoot);
-        const categories = await this.getResourcesByCategory(directory);
+        const categories = categorizeResourceFiles(scanResult.files);
 
         const lines: string[] = [
             `📊 **项目资源概览**`,
@@ -912,72 +2308,466 @@ export class ResourceManagerService {
     }
 
     /**
+     * 获取一个视觉模型调用名额；满载时排队等待。
+     * 名额由 releaseVisionCallSlot 直接移交（移交时计数不变），等待者被唤醒后不再递增。
+     */
+    private async acquireVisionCallSlot(): Promise<void> {
+        if (this.visionCallActive < ResourceManagerService.VISION_CALL_MAX_CONCURRENCY) {
+            this.visionCallActive++;
+            return;
+        }
+        await new Promise<void>((resolve) => {
+            this.visionCallWaiters.push(resolve);
+        });
+    }
+
+    /**
+     * 释放视觉模型调用名额；若有等待者则把名额直接移交给队首，
+     * 避免“先递减再唤醒”的窗口期被新请求插队导致超过并发上限。
+     */
+    private releaseVisionCallSlot(): void {
+        const next = this.visionCallWaiters.shift();
+        if (next) {
+            next();
+            return;
+        }
+        this.visionCallActive--;
+    }
+
+    /**
+     * 在视觉模型并发闸门内执行任务（同时最多 VISION_CALL_MAX_CONCURRENCY 路）
+     */
+    private async runWithVisionCallGate<T>(task: () => Promise<T>): Promise<T> {
+        await this.acquireVisionCallSlot();
+        try {
+            return await task();
+        } finally {
+            this.releaseVisionCallSlot();
+        }
+    }
+
+    /**
+     * 构造素材分析缓存键：imagePath + mtimeMs + size + 分析版本。
+     * 文件内容变化后自动失效；分析提示词/分辨率升级时提升版本号，
+     * 防止旧版本分析结果（如 512px 无 visibleText 时代）污染新语义。
+     */
+    private static readonly ASSET_ANALYSIS_VERSION = 'v6-background-and-shot-taxonomy';
+
+    private buildAssetAnalysisCacheKey(imagePath: string): string {
+        const stat = fs.statSync(imagePath);
+        return `${imagePath}|mtime:${stat.mtimeMs}|size:${stat.size}|${ResourceManagerService.ASSET_ANALYSIS_VERSION}`;
+    }
+
+    /**
+     * 写入素材分析缓存。简单 LRU：重新插入刷新顺序（Map 迭代顺序 = 插入顺序），
+     * 超过上限时删除最老的条目。
+     */
+    private storeAssetAnalysisInCache(cacheKey: string, analysis: AssetContentAnalysis): void {
+        this.assetAnalysisCache.delete(cacheKey);
+        this.assetAnalysisCache.set(cacheKey, structuredClone(analysis));
+        while (this.assetAnalysisCache.size > ResourceManagerService.ASSET_ANALYSIS_CACHE_MAX_ENTRIES) {
+            const oldestKey = this.assetAnalysisCache.keys().next().value;
+            if (oldestKey === undefined) break;
+            this.assetAnalysisCache.delete(oldestKey);
+        }
+    }
+
+    /**
      * 分析素材图片内容（使用视觉模型）
+     *
+     * 性能收口（所有渲染端入口都经 IPC 'resource:analyzeAsset' 汇聚到这里）：
+     * 1. 结果缓存：同一文件内容（路径 + mtimeMs + size）的成功分析进程内只做一次，命中时附 fromCache: true；
+     * 2. in-flight 合并：同 key 并发请求共享同一个分析 Promise；
+     * 3. 并发闸门：视觉模型调用经 runWithVisionCallGate 限流，避免本地模型显存争抢。
      */
     async analyzeAssetContent(
         imagePath: string,
         visionModelCall: (imageBase64: string, prompt: string) => Promise<string>
-    ): Promise<{
-        success: boolean;
-        analysis?: {
-            description: string;
-            category: string;
-            mainSubject: string;
-            colors: string[];
-            style: string;
-            suggestedPlacement: string;
-            suggestedEffects: string[];
-        };
-        error?: string;
-    }> {
+    ): Promise<AssetContentAnalysisResult> {
+        let cacheKey: string;
         try {
-            const previewResult = await this.getImagePreview(imagePath, 512);
+            cacheKey = this.buildAssetAnalysisCacheKey(imagePath);
+        } catch (e) {
+            return {
+                success: false,
+                error: `分析失败：无法读取素材文件状态（${imagePath}）：${e instanceof Error ? e.message : e}`
+            };
+        }
+
+        // 结果缓存命中：直接返回缓存副本（防止调用方改动污染缓存）
+        const cachedAnalysis = this.assetAnalysisCache.get(cacheKey);
+        if (cachedAnalysis) {
+            // 命中时重新插入，刷新 LRU 顺序
+            this.assetAnalysisCache.delete(cacheKey);
+            this.assetAnalysisCache.set(cacheKey, cachedAnalysis);
+            return { success: true, analysis: structuredClone(cachedAnalysis), fromCache: true };
+        }
+
+        // in-flight 合并：同 key 并发请求共享同一个 Promise
+        const inFlight = this.assetAnalysisInFlight.get(cacheKey);
+        if (inFlight) {
+            return inFlight;
+        }
+
+        const analysisTask = this.performAssetContentAnalysis(imagePath, visionModelCall)
+            .then((result) => {
+                if (result.success && result.analysis) {
+                    this.storeAssetAnalysisInCache(cacheKey, result.analysis);
+                }
+                return result;
+            })
+            .finally(() => {
+                this.assetAnalysisInFlight.delete(cacheKey);
+            });
+        this.assetAnalysisInFlight.set(cacheKey, analysisTask);
+        return analysisTask;
+    }
+
+    /**
+     * 真正执行一次素材视觉分析（无缓存路径），仅由 analyzeAssetContent 收口调用
+     */
+    private async performAssetContentAnalysis(
+        imagePath: string,
+        visionModelCall: (imageBase64: string, prompt: string) => Promise<string>
+    ): Promise<AssetContentAnalysisResult> {
+        try {
+            // 768px：色卡/挂卡图上常印有产品编号、颜色名等小字，512px 缩图读不出来
+            const previewResult = await this.getImagePreview(imagePath, 768);
             if (!previewResult.success || !previewResult.imageData) {
                 return { success: false, error: previewResult.error };
             }
+            const previewImageData = previewResult.imageData;
+            let sourceAlphaState = 'unknown';
+            if (previewResult.hasAlpha === true) {
+                sourceAlphaState = 'present';
+            } else if (previewResult.hasAlpha === false) {
+                sourceAlphaState = 'absent';
+            }
 
-            const prompt = `分析这张设计素材图片，用于电商详情页设计。
-
-请用 JSON 格式返回：
+            const prompt = `Analyze this e-commerce asset image and return JSON only.
+If the image contains printed text (product code, color names, brand name, labels), transcribe it verbatim into "visibleText".
+Source alpha-channel metadata: ${sourceAlphaState}.
 {
-    "description": "图片内容简述（20字以内）",
-    "category": "分类（产品主图/产品细节/场景图/背景/装饰元素/人物/文字标签/其他）",
-    "mainSubject": "主体内容（如：白色运动鞋、木纹背景、促销标签）",
-    "colors": ["#主色1", "#主色2", "#主色3"],
-    "style": "风格（简约/高端/活力/可爱/复古/科技）",
-    "suggestedPlacement": "建议在详情页中的位置（如：首屏主图/卖点展示/细节特写/底部信息）",
-    "suggestedEffects": ["建议的处理效果1", "建议的处理效果2"]
+  "visibleText": "图片上印的文字原样转写（无则空字符串）",
+  "description": "Brief visual summary within 20 Chinese characters",
+  "assetNature": "raw_photo | finished_design",
+  "category": "product_main | product_detail | scene | background | decorative_element | person | text_label | other",
+  "mainSubject": "Main visible subject",
+  "subjectCoverageRatio": "dominant | moderate | small",
+  "subjectPosition": "center | top | bottom | left | right | scattered",
+  "compositionFocus": "一句话：画面视觉重心实际落在什么上（如『袜子/腿部』或『裙子/上半身』）",
+  "mainImageSuitability": "suitable | marginal | unsuitable",
+  "mainImageSuitabilityReason": "简短理由，说明为什么适合/不适合做突出该商品的主图",
+  "shotType": "flat_lay | on_model | detail_closeup | package | chart | scene | other",
+  "backgroundType": "transparent | white_studio | solid_color | scene | designed_composite | unknown",
+  "sellingPointObservations": ["「图中可见什么」→ 可支持「什么卖点」", "..."],
+  "colors": ["#RRGGBB", "#RRGGBB", "#RRGGBB"],
+  "style": "Short style phrase such as minimal / elegant / lively / cute / premium",
+  "suggestedPlacement": "Suggested detail-page usage such as hero image / selling point / detail close-up / footer support",
+  "suggestedEffects": ["clipping_mask", "drop_shadow"]
 }
 
-suggestedEffects 可选值：
-- "剪切蒙版" - 适合需要裁剪成特定形状
-- "投影效果" - 适合需要突出立体感
-- "圆角处理" - 适合卡片式展示
-- "描边强调" - 适合需要突出边界
-- "模糊背景" - 适合作为背景使用
-- "调整色调" - 适合统一整体风格
-- "直接置入" - 适合直接使用不需处理
+"assetNature" — judge from the VISUAL CONTENT (never the filename) what this asset really is:
+- "raw_photo": a reusable product/model visual source without designer marketing layout. It may be a camera shot, an isolated product image, or a clean cutout; white background alone does not make it a finished design.
+- "finished_design": already produced by a designer — shows editing traces such as overlaid marketing / selling-point text blocks, an arranged multi-image collage or spec/SKU grid, price or promo badges, or other composed campaign layout. This is a DELIVERABLE, not raw material — it must NOT be dropped into a new design as if it were a photo.
+When unsure, look for human design intent (typeset text, aligned modules, composited layout) → finished_design; a plain photographed scene → raw_photo.
 
-只返回 JSON，不要其他文字。`;
+"backgroundType" is a factual observation, separate from usage:
+- transparent: only when source alpha metadata is present AND the product is visibly isolated; never return transparent when sourceAlpha=absent.
+- white_studio: opaque plain white/near-white studio background.
+- solid_color: opaque plain non-white color background.
+- scene: photographed environmental/context background.
+- designed_composite: graphics, typography, collage, or an obviously composited marketing background.
+- unknown: the preview is insufficient or mixed.
+A white_studio source can still be useful after matting/recomposition; do not encode usage policy into backgroundType.
 
-            const response = await visionModelCall(
-                `data:image/jpeg;base64,${previewResult.imageData}`,
+Composition fields for IMAGE SELECTION — judge ONLY from the visual content (never the filename), thinking like an e-commerce art director choosing a main/hero image:
+- The "subject" is the actual merchandise being sold in this project (e.g. for legwear it is the socks themselves, for apparel the garment, for shoes the footwear) — NOT the model's other clothing, the scene, or the background.
+- "subjectCoverageRatio": dominant = the product fills most of the frame; moderate = clearly present but shares the frame with other elements; small = the product is only a minor part of the frame.
+- "subjectPosition": where the product itself sits in the frame.
+- "compositionFocus": state plainly what the visual weight actually lands on. If the product is small or low and attention goes to other elements (e.g. a skirt, the upper body, the background), say so.
+- "mainImageSuitability": "suitable" only when the product is the clear, prominent subject of the frame; "marginal" when it is visible but not spotlighted; "unsuitable" when the product is small / peripheral / lost in a busy scene. A main image must spotlight the product being sold.
+
+Selling-point observations — classify the asset the way a designer tags material for selling-point extraction:
+- "shotType": flat_lay = product laid flat / arranged without a person (typically shows fabric, texture, colorways, craftsmanship); on_model = worn on a person (typically shows stretch, fit, styling, wearing scenarios); detail_closeup = macro/close crop of one feature (stitching, cuff, sole, weave); package = retail packaging; chart = color card / size chart / spec sheet.
+- "sellingPointObservations": list what is actually visible in this image and which selling point that observation can support, each entry as 「图中可见的事实 → 可支撑的卖点」 (e.g. 「模特脚踝处袜口自然拉伸无勒痕 → 弹力舒适/不勒脚」「平铺可见细密针织纹理 → 面料工艺」「同款五个颜色并排 → 多色可选」). STRICT rule: only report what is actually visible in THIS image — no speculation, no generic claims like 舒适透气 without visible support. Empty array if the image shows nothing specific.
+
+Allowed suggestedEffects:
+- "clipping_mask"
+- "drop_shadow"
+- "rounded_corner"
+- "stroke_emphasis"
+- "blurred_background"
+- "color_tuning"
+- "direct_use"
+
+Return JSON only.`;
+
+            // 视觉模型调用过并发闸门，限制同时进行的推理路数
+            const response = await this.runWithVisionCallGate(() => visionModelCall(
+                `data:image/jpeg;base64,${previewImageData}`,
                 prompt
-            );
+            ));
 
-            const jsonMatch = response.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const analysis = JSON.parse(jsonMatch[0]);
+            const extracted = extractModelJsonObject(response);
+            if (extracted) {
+                const rawAnalysis = extracted.value as Record<string, unknown>;
+                let backgroundType = normalizeAssetRecommendationEnum(
+                    rawAnalysis.backgroundType,
+                    ASSET_RECOMMENDATION_BACKGROUND_TYPE_VALUES,
+                    'unknown'
+                );
+                if (backgroundType === 'transparent' && previewResult.hasAlpha !== true) {
+                    backgroundType = 'unknown';
+                }
+                const analysis: AssetContentAnalysis = {
+                    ...(rawAnalysis as unknown as AssetContentAnalysis),
+                    shotType: normalizeAssetRecommendationEnum(
+                        rawAnalysis.shotType,
+                        ASSET_ANALYSIS_SHOT_TYPE_VALUES,
+                        'other'
+                    ),
+                    backgroundType
+                };
                 return { success: true, analysis };
             }
 
-            return { success: false, error: '无法解析分析结果' };
+            return {
+                success: false,
+                error: `解析视觉分析结果失败：模型输出中没有可修复的 JSON 对象（输出前 120 字符：${String(response || '').slice(0, 120)}）`
+            };
         } catch (e) {
             return {
                 success: false,
                 error: `分析失败: ${e instanceof Error ? e.message : e}`
             };
         }
+    }
+
+    /**
+     * 测量参考图构图（"该多大"的参照依据 · 只读不落盘）
+     *
+     * 链路：读参考图（位图或 PSD/PSB 合成预览）→ 本地主体检测（抠图 ONNX，坐标缩放回原尺寸）
+     * → composition-metrics 纯逻辑求构图数值与 fitLayerSubjectToRegion 应用建议。
+     * 不用视觉模型（确定性测量，0 token）；主体检测失败时如实报错，不编造占比。
+     */
+    async measureReferenceComposition(imagePath: string): Promise<{
+        success: boolean;
+        measurement?: ReturnType<typeof measureComposition>;
+        source?: {
+            imagePath: string;
+            canvas: { width: number; height: number };
+            subjectBounds: { left: number; top: number; right: number; bottom: number };
+            detectionMethod?: string;
+        };
+        error?: string;
+    }> {
+        const normalizedPath = String(imagePath || '').trim();
+        if (!normalizedPath) {
+            return { success: false, error: '构图测量失败：缺少参考图路径 imagePath。' };
+        }
+        // 1024px 预览：主体检测对边缘敏感，比素材分析的 768 略高
+        const preview = await this.getImagePreview(normalizedPath, 1024);
+        if (!preview.success || !preview.imageData) {
+            return { success: false, error: `构图测量失败：无法读取参考图（${normalizedPath}）：${preview.error || '未知原因'}` };
+        }
+        const canvasWidth = preview.dimensions?.width || 0;
+        const canvasHeight = preview.dimensions?.height || 0;
+        if (canvasWidth <= 0 || canvasHeight <= 0) {
+            return { success: false, error: `构图测量失败：读不到参考图原始尺寸（${normalizedPath}）。` };
+        }
+
+        const detection = await getSubjectDetectionService().detectSubjectBounds(
+            `data:image/jpeg;base64,${preview.imageData}`,
+            {
+                originalImageWidth: canvasWidth,
+                originalImageHeight: canvasHeight
+            }
+        );
+        if (!detection.success || !detection.bounds) {
+            return {
+                success: false,
+                error: `构图测量失败：参考图主体检测未命中（${normalizedPath}）：${detection.error || '主体不明显或为纯背景图'}。如参考是氛围/背景图，无需按主体占比参照。`
+            };
+        }
+
+        const subjectBounds = {
+            left: detection.bounds.left,
+            top: detection.bounds.top,
+            right: detection.bounds.right,
+            bottom: detection.bounds.bottom
+        };
+        const measurement = measureComposition({
+            canvas: { width: canvasWidth, height: canvasHeight },
+            subjectBounds
+        });
+        if (!measurement.ok) {
+            return { success: false, error: measurement.error };
+        }
+        return {
+            success: true,
+            measurement,
+            source: {
+                imagePath: normalizedPath,
+                canvas: { width: canvasWidth, height: canvasHeight },
+                subjectBounds,
+                detectionMethod: detection.method
+            }
+        };
+    }
+
+    /**
+     * 分析设计参考图为什么有效（使用视觉模型，只返回可复核经验观察）
+     */
+    async analyzeDesignReference(
+        request: AnalyzeDesignReferenceRequest,
+        visionModelCall: (imageBase64: string, prompt: string) => Promise<string>
+    ): Promise<DesignReferenceAnalysisResult> {
+        try {
+            const imagePath = String(request?.imagePath || '').trim();
+            if (!imagePath) {
+                return { success: false, error: '缺少要分析的参考图路径。' };
+            }
+
+            const previewResult = await this.getImagePreview(imagePath, 768);
+            if (!previewResult.success || !previewResult.imageData) {
+                return { success: false, error: previewResult.error || '无法读取参考图预览。' };
+            }
+
+            const prompt = this.buildDesignReferenceAnalysisPrompt(request);
+            const response = await visionModelCall(
+                `data:image/jpeg;base64,${previewResult.imageData}`,
+                prompt
+            );
+            const parsed = this.extractJsonObject(response);
+            if (!parsed) {
+                return {
+                    success: false,
+                    error: '设计参考分析没有返回可解析 JSON。',
+                    rawModelTextRedacted: true
+                };
+            }
+
+            const observation = this.normalizeDesignReferenceObservation(parsed);
+            if (!observation) {
+                return {
+                    success: false,
+                    error: '设计参考分析缺少理由、适用场景或可复用经验。',
+                    rawModelTextRedacted: true
+                };
+            }
+
+            return { success: true, observation };
+        } catch (e) {
+            return {
+                success: false,
+                error: `设计参考分析失败: ${e instanceof Error ? e.message : e}`,
+                rawModelTextRedacted: true
+            };
+        }
+    }
+
+    private buildDesignReferenceAnalysisPrompt(request: AnalyzeDesignReferenceRequest): string {
+        const title = this.cleanDesignReferenceText(request.referenceTitle).slice(0, 80) || '未命名参考图';
+        const tags = this.normalizeDesignReferenceList(request.referenceTags).slice(0, 10);
+        const topics = this.normalizeDesignReferenceList(request.topics).slice(0, 8);
+        const source = this.cleanDesignReferenceText(request.referenceSource).slice(0, 40) || 'reference';
+        const cadence = this.cleanDesignReferenceText(request.cadence).slice(0, 24) || 'manual';
+        return `你是电商视觉设计总监，请分析这张参考图为什么值得学习。只返回 JSON，不要输出 Markdown，不要返回本地路径、base64、置信度、分数或调试字段。
+
+参考上下文：
+- 标题：${title}
+- 来源：${source}
+- 学习节奏：${cadence}
+- 标签：${tags.join('、') || '无'}
+- 本次学习主题：${topics.join('、') || '电商设计参考'}
+
+请从电商设计角度判断，不要只描述图片内容。重点关注：
+- 构图和主体关系：主体位置、大小、留白、基线、节奏、视觉重心。
+- 选图与置入：为什么这样裁切/摆放更利于商品比较或卖点表达。
+- 光影和精修：阴影方向、层次、质感保留、白底干净度。
+- 色彩和风格：主色关系、背景/文字/商品的对比和品牌气质。
+- 文案和排版：字号层级、标签位置、扫描顺序、是否适合主图/SKU/详情页。
+- 适用与禁用：哪些品类/场景适合复用，哪些情况下不要强行套用。
+
+返回 JSON 格式：
+{
+  "productCategory": "例如 socks / apparel / home / beauty / unknown",
+  "designType": "例如 sku-color-card / main-image-reference / detail-page-reference / layout-reference",
+  "summary": "用中文概括这张参考图的设计价值，不超过 80 字",
+  "strengths": [
+    {
+      "aspect": "composition | placement | lighting | color | typography | retouching",
+      "observation": "具体说好在哪儿，不要泛泛说好看",
+      "reason": "解释为什么这个处理有效，必须是设计理由",
+      "suitableFor": ["适用的设计场景"]
+    }
+  ],
+  "suitableScenarios": ["适合复用的业务场景"],
+  "avoidWhen": ["不适合套用的情况"],
+  "reusableHeuristics": ["可复用的设计做法，写成动作原则"]
+}
+
+硬性要求：
+- strengths 至少 3 条，其中至少包含 composition 或 placement，且至少包含 lighting、color、typography、retouching 中的一项。
+- suitableScenarios 至少 2 条。
+- avoidWhen 至少 1 条。
+- reusableHeuristics 至少 3 条。
+- 不要返回 confidence、score、localPath、imageBase64、rawImage、buffer、pixels。`;
+    }
+
+    private extractJsonObject(text: string): any | undefined {
+        return extractModelJsonObject(text)?.value;
+    }
+
+    private normalizeDesignReferenceObservation(value: any): DesignReferenceAnalysisResult['observation'] | undefined {
+        if (!value || typeof value !== 'object') return undefined;
+        const summary = this.cleanDesignReferenceText(value.summary);
+        const strengths = Array.isArray(value.strengths)
+            ? value.strengths
+                .map((item: any) => ({
+                    aspect: this.cleanDesignReferenceText(item?.aspect),
+                    observation: this.cleanDesignReferenceText(item?.observation),
+                    reason: this.cleanDesignReferenceText(item?.reason),
+                    suitableFor: this.normalizeDesignReferenceList(item?.suitableFor)
+                }))
+                .filter((item: { observation: string; reason: string }) => item.observation && item.reason)
+            : [];
+        const suitableScenarios = this.normalizeDesignReferenceList(value.suitableScenarios);
+        const avoidWhen = this.normalizeDesignReferenceList(value.avoidWhen);
+        const reusableHeuristics = this.normalizeDesignReferenceList(value.reusableHeuristics);
+
+        if (!summary || strengths.length < 2 || suitableScenarios.length < 1 || reusableHeuristics.length < 1) {
+            return undefined;
+        }
+
+        return {
+            analysisSource: 'resource:analyzeDesignReference',
+            productCategory: this.cleanDesignReferenceText(value.productCategory) || undefined,
+            designType: this.cleanDesignReferenceText(value.designType) || undefined,
+            summary,
+            strengths,
+            suitableScenarios,
+            avoidWhen: avoidWhen.length ? avoidWhen : ['与当前商品事实、品牌调性或平台规范冲突时不要直接套用。'],
+            reusableHeuristics,
+            reviewStatus: 'needs_human_review',
+            sourceNotes: ['analysis_adapter=resource:analyzeDesignReference'],
+            limitations: ['该设计参考分析来自视觉模型，需要人工复核后才能进入长期知识。']
+        };
+    }
+
+    private normalizeDesignReferenceList(value: unknown): string[] {
+        if (!Array.isArray(value)) return [];
+        return Array.from(new Set(value.map((item) => this.cleanDesignReferenceText(item)).filter(Boolean)));
+    }
+
+    private cleanDesignReferenceText(value: unknown): string {
+        return String(value || '')
+            .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, '[redacted]')
+            .replace(/\b[A-Za-z]:[\\/][^\s"'，,；;]+/g, '[redacted-local-path]')
+            .replace(/\bconfidence\b|置信度?|score|分数/gi, '[redacted]')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 
     /**
@@ -995,10 +2785,10 @@ suggestedEffects 可选值：
     private inferCategoryFromRequirement(requirement: string): 'products' | 'backgrounds' | 'elements' | 'references' | null {
         const text = String(requirement || '').toLowerCase();
         const categoryHints: Array<{ key: 'products' | 'backgrounds' | 'elements' | 'references'; words: string[] }> = [
-            { key: 'products', words: ['??', '??', '??', 'product', 'item', '??', '??'] },
-            { key: 'backgrounds', words: ['??', 'bg', 'background', '??', '??'] },
-            { key: 'elements', words: ['??', '??', '??', 'icon', '??', '??'] },
-            { key: 'references', words: ['??', 'style', '??', '??', 'reference'] }
+            { key: 'products', words: ['产品', '商品', '主图', '款式', 'product', 'item', 'model'] },
+            { key: 'backgrounds', words: ['背景', '底图', '场景底图', 'bg', 'background'] },
+            { key: 'elements', words: ['元素', '装饰', '图标', '标签', 'icon', 'sticker'] },
+            { key: 'references', words: ['参考', '风格', '版式', '样式', 'style', 'reference'] }
         ];
 
         for (const item of categoryHints) {
@@ -1012,10 +2802,10 @@ suggestedEffects 可选值：
     private fileMatchesCategory(file: ResourceFile, categoryKey: 'products' | 'backgrounds' | 'elements' | 'references'): boolean {
         const text = `${file.name} ${file.relativePath}`.toLowerCase();
         const keywords: Record<'products' | 'backgrounds' | 'elements' | 'references', string[]> = {
-            products: ['??', 'product', '??', '??', 'item', '??', '??'],
-            backgrounds: ['??', 'bg', 'background', '??', '??'],
-            elements: ['??', 'element', 'icon', '??', '??', '??'],
-            references: ['??', 'ref', 'style', '??', 'template']
+            products: ['产品', '商品', '主图', '款式', 'product', 'item', 'model'],
+            backgrounds: ['背景', '底图', '场景', 'bg', 'background'],
+            elements: ['元素', '装饰', '图标', '标签', 'element', 'icon'],
+            references: ['参考', '风格', '版式', '样式', 'ref', 'style', 'template']
         };
         return keywords[categoryKey].some((word) => text.includes(word));
     }
@@ -1040,7 +2830,7 @@ suggestedEffects 可选值：
                 keywordHits += 1;
                 score += keywordHits === 1 ? 20 : 10;
                 if (reasons.length < 2) {
-                    reasons.push(`?????: ${keyword}`);
+                    reasons.push(`keyword match: ${keyword}`);
                 }
             }
         }
@@ -1048,7 +2838,7 @@ suggestedEffects 可选值：
         if (inferredCategory) {
             if (this.fileMatchesCategory(file, inferredCategory)) {
                 score += 20;
-                reasons.push(`????: ${inferredCategory}`);
+                reasons.push(`category hint: ${inferredCategory}`);
             } else {
                 score -= 8;
             }
@@ -1060,7 +2850,7 @@ suggestedEffects 可选值：
             const megaPixels = (width * height) / 1_000_000;
             score += Math.min(22, megaPixels * 4.5);
             if (megaPixels >= 1.2 && reasons.length < 3) {
-                reasons.push(`?????: ${width}x${height}`);
+                reasons.push(`high resolution: ${width}x${height}`);
             }
         }
 
@@ -1075,52 +2865,77 @@ suggestedEffects 可选值：
         };
     }
 
-    private parseJsonObject<T>(input: string): T | null {
-        if (!input) return null;
-        const match = input.match(/\{[\s\S]*\}/);
-        if (!match) return null;
-        try {
-            return JSON.parse(match[0]) as T;
-        } catch {
-            return null;
-        }
-    }
-
     /**
-     * ??????????????
+     * Recommend project assets from one requirement-specific contact-sheet comparison.
+     * The visual model compares the same shortlist in one call; metadata-only fallbacks are
+     * explicitly marked visualObserved=false and must not be treated as auto-placement evidence.
      */
     async recommendAssets(
         requirement: string,
         visionModelCall: (imageBase64: string, prompt: string) => Promise<string>,
-        options: {
-            maxResults?: number;
-            category?: string;
-            deterministic?: boolean;
-        } = {}
-    ): Promise<{
-        success: boolean;
-        recommendations?: Array<{
-            file: ResourceFile;
-            matchScore: number;
-            matchReason: string;
-            suggestedUse: string;
-        }>;
-        error?: string;
-    }> {
-        const { maxResults = 5, category, deterministic = false } = options;
+        options: AssetRecommendationOptions = {}
+    ): Promise<AssetRecommendationResult> {
+        const {
+            maxResults = 5,
+            category,
+            deterministic = false,
+            designRole,
+            placementIntent
+        } = options;
+        const resultLimit = Math.max(1, Math.min(12, Math.round(Number(maxResults) || 5)));
+        const warnings: string[] = [];
 
         try {
-            const normalizedRequirement = String(requirement || '').trim() || '???? ?? ??';
-            const scanResult = await this.scanDirectory();
-            let candidates = scanResult.files.filter((f) => f.type === 'image');
+            const normalizedRequirement = String(requirement || '').trim() || 'find suitable project assets';
+            const providedCandidates = Array.isArray(options.candidateFiles)
+                ? options.candidateFiles
+                    .filter((file) => Boolean(String(file?.path || '').trim()))
+                    .map((file) => {
+                        const filePath = String(file.path || '').trim();
+                        const modifiedTime = file.modifiedTime instanceof Date
+                            ? file.modifiedTime
+                            : new Date(Number((file as any).modifiedTimeMs || 0) || Date.now());
+                        return {
+                            ...file,
+                            name: String(file.name || path.basename(filePath)),
+                            path: filePath,
+                            relativePath: String(file.relativePath || path.basename(filePath)),
+                            type: 'image' as const,
+                            extension: String(file.extension || path.extname(filePath)).toLowerCase(),
+                            size: Number(file.size || (file as any).sizeBytes || 0),
+                            modifiedTime,
+                            dimensions: file.dimensions || (
+                                Number((file as any).width) > 0 && Number((file as any).height) > 0
+                                    ? {
+                                        width: Number((file as any).width),
+                                        height: Number((file as any).height)
+                                    }
+                                    : undefined
+                            )
+                        } satisfies ResourceFile;
+                    })
+                : [];
+            const scanResult = providedCandidates.length > 0 ? undefined : await this.scanDirectory();
+            let candidates = providedCandidates.length > 0
+                ? providedCandidates
+                : (scanResult?.files || []).filter((f) => f.type === 'image');
 
-            if (category) {
+            const suppliedCategory = (['products', 'backgrounds', 'elements', 'references'] as const)
+                .find((item) => item === category);
+            if (suppliedCategory && providedCandidates.length > 0) {
+                candidates = candidates.filter((file) => this.fileMatchesCategory(file, suppliedCategory));
+            } else if (category && providedCandidates.length === 0) {
                 const categories = await this.getResourcesByCategory();
                 candidates = categories[category as keyof typeof categories] || candidates;
             }
 
             if (candidates.length === 0) {
-                return { success: true, recommendations: [] };
+                return {
+                    success: true,
+                    recommendations: [],
+                    warnings,
+                    visualComparison: { status: 'metadata_only', comparedCount: 0, modelCallCount: 0 }
+                };
             }
 
             const requirementKeywords = this.getRequirementKeywords(normalizedRequirement);
@@ -1132,7 +2947,7 @@ suggestedEffects 可选值：
                     return {
                         file,
                         heuristicScore: heuristic.score,
-                        heuristicReason: heuristic.reasons.join('?') || '????'
+                        heuristicReason: heuristic.reasons.join(' / ') || 'base ranking'
                     };
                 })
                 .sort((a, b) => {
@@ -1144,77 +2959,121 @@ suggestedEffects 可选值：
                 })
                 .slice(0, 12);
 
-            const recommendations: Array<{
-                file: ResourceFile;
-                matchScore: number;
-                matchReason: string;
-                suggestedUse: string;
-            }> = [];
-
-            const visionCandidates = heuristicRanked.slice(0, 5);
-            for (const candidate of visionCandidates) {
-                let modelScore: number | undefined;
-                let modelReason = '';
-                let suggestedUse = '';
-
+            const recommendations: AssetRecommendation[] = [];
+            // 定点 placeImage 默认比较 5 张；详情页库存冷启动显式请求 12 时仍只做同一次联系表调用，
+            // 但扩大同屏候选覆盖，避免启发式 top-5 恰好全是白底图而漏掉场景/细节素材。
+            const visionCandidateLimit = Math.min(12, Math.max(5, resultLimit));
+            const visionCandidates = heuristicRanked.slice(0, visionCandidateLimit);
+            let visionById = new Map<string, AssetRecommendationVisionCandidate>();
+            let modelCallCount: 0 | 1 = 0;
+            if (visionCandidates.length > 0) {
                 try {
-                    const preview = await this.getImagePreview(candidate.file.path, 320);
-                    if (preview.success && preview.imageData) {
-                        const prompt = `?????${normalizedRequirement}
-
-????????????????? JSON?
-{
-  "score": 0-100,
-  "reason": "?????",
-  "suggestedUse": "???????"
-}
-??? JSON?`;
-
-                        const response = await visionModelCall(
-                            `data:image/jpeg;base64,${preview.imageData}`,
+                    const contactSheet = await this.createProjectContactSheetOverview({
+                        projectPath: this.projectRoot || undefined,
+                        images: visionCandidates.map((candidate) => ({
+                            path: candidate.file.path,
+                            relativePath: candidate.file.relativePath,
+                            labelHint: candidate.file.name,
+                            role: designRole
+                        })),
+                        maxImages: visionCandidates.length,
+                        columns: Math.min(3, visionCandidates.length),
+                        tileWidth: 320,
+                        tileHeight: 360
+                    });
+                    if (contactSheet.success && contactSheet.sheet?.imageData) {
+                        const comparisonItems = contactSheet.items.map((item, index) => ({
+                            id: item.id,
+                            file: visionCandidates[index]?.file,
+                            status: item.status
+                        })).filter((item): item is {
+                            id: string;
+                            file: ResourceFile;
+                            status: 'rendered' | 'failed';
+                        } => Boolean(item.file));
+                        const renderedIds = new Set(comparisonItems
+                            .filter((item) => item.status === 'rendered')
+                            .map((item) => item.id.toUpperCase()));
+                        const prompt = buildAssetRecommendationComparisonPrompt({
+                            requirement: normalizedRequirement,
+                            designRole,
+                            placementIntent,
+                            items: comparisonItems
+                        });
+                        modelCallCount = 1;
+                        const response = await this.runWithVisionCallGate(() => visionModelCall(
+                            `data:${contactSheet.sheet!.mediaType};base64,${contactSheet.sheet!.imageData}`,
                             prompt
-                        );
-                        const parsed = this.parseJsonObject<{
-                            score?: number;
-                            reason?: string;
-                            suggestedUse?: string;
-                        }>(response);
-
-                        if (parsed) {
-                            modelScore = this.clampScore(Number(parsed.score || 0));
-                            modelReason = String(parsed.reason || '').trim();
-                            suggestedUse = String(parsed.suggestedUse || '').trim();
+                        ));
+                        visionById = normalizeAssetRecommendationVisionCandidates(response, renderedIds);
+                        if (visionById.size === 0) {
+                            warnings.push('候选总览已完成视觉调用，但没有解析出可绑定到编号的视觉结论；本轮仅返回 metadata-only 候选。');
                         }
+                    } else {
+                        warnings.push(contactSheet.error || '候选总览生成失败；本轮仅返回 metadata-only 候选。');
                     }
-                } catch {
-                    console.warn(`[ResourceManager] ??????????????: ${candidate.file.path}`);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    warnings.push(`候选总览视觉比较失败：${message}；本轮仅返回 metadata-only 候选。`);
+                    console.warn('[ResourceManager] Asset contact-sheet comparison failed:', message);
                 }
-
-                const finalScore = modelScore === undefined
-                    ? candidate.heuristicScore
-                    : this.clampScore(candidate.heuristicScore * 0.55 + modelScore * 0.45);
-                const finalReason = modelReason
-                    ? `${modelReason}????: ${candidate.heuristicReason}?`
-                    : `?????: ${candidate.heuristicReason}`;
-
-                recommendations.push({
-                    file: candidate.file,
-                    matchScore: finalScore,
-                    matchReason: finalReason,
-                    suggestedUse: suggestedUse || '???????????????????'
-                });
             }
 
-            for (const candidate of heuristicRanked.slice(visionCandidates.length)) {
+            for (let index = 0; index < heuristicRanked.length; index += 1) {
+                const candidate = heuristicRanked[index];
+                const visual = index < visionCandidates.length
+                    ? visionById.get(`A${String(index + 1).padStart(2, '0')}`)
+                    : undefined;
+                if (visual) {
+                    let backgroundType = visual.backgroundType;
+                    let directUseSuitability = visual.directUseSuitability;
+                    let sourceTreatment = visual.sourceTreatment;
+                    let reason = visual.reason;
+                    if (backgroundType === 'transparent' && candidate.file.hasAlpha !== true) {
+                        backgroundType = 'unknown';
+                        directUseSuitability = 'unsuitable';
+                        sourceTreatment = 'requires_visual_review';
+                        reason = `${reason}；源文件没有可验证 alpha 通道，透明背景结论已降级为待复核。`;
+                    }
+                    const matchScore = this.clampScore(
+                        visual.visualScore * 0.78 + candidate.heuristicScore * 0.22
+                    );
+                    const matchReason = `${reason} | visualEvidence: contact-sheet:${visual.id} | heuristic: ${candidate.heuristicReason}`;
+                    recommendations.push({
+                        file: candidate.file,
+                        matchScore,
+                        matchReason,
+                        reason,
+                        suggestedUse: visual.suggestedUse,
+                        visualObserved: true,
+                        visualScore: visual.visualScore,
+                        visualRole: visual.visualRole,
+                        ...(visual.assetNature ? { assetNature: visual.assetNature } : {}),
+                        backgroundType,
+                        directUseSuitability,
+                        sourceTreatment,
+                        visualEvidenceId: visual.id
+                    });
+                    continue;
+                }
+
+                const reason = `metadata-only: ${candidate.heuristicReason}`;
                 recommendations.push({
                     file: candidate.file,
                     matchScore: candidate.heuristicScore,
-                    matchReason: `?????: ${candidate.heuristicReason}`,
-                    suggestedUse: '?????????'
+                    matchReason: `${reason}；尚未取得该素材的视觉内容证据，不能据此自动置入。`,
+                    reason,
+                    suggestedUse: '先进行视觉复核，再决定直接使用、剪切容器或抠图重构。',
+                    visualObserved: false,
+                    visualRole: 'unknown',
+                    backgroundType: 'unknown',
+                    directUseSuitability: 'unsuitable',
+                    sourceTreatment: 'requires_visual_review'
                 });
             }
 
             recommendations.sort((a, b) => {
+                if (a.visualObserved !== b.visualObserved) return a.visualObserved ? -1 : 1;
                 if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
                 if (deterministic) {
                     return String(a.file.path || '').localeCompare(String(b.file.path || ''));
@@ -1223,12 +3082,18 @@ suggestedEffects 可选值：
             });
             return {
                 success: true,
-                recommendations: recommendations.slice(0, maxResults)
+                recommendations: recommendations.slice(0, resultLimit),
+                warnings,
+                visualComparison: {
+                    status: recommendations.some((item) => item.visualObserved) ? 'observed' : 'metadata_only',
+                    comparedCount: recommendations.filter((item) => item.visualObserved).length,
+                    modelCallCount
+                }
             };
         } catch (e) {
             return {
                 success: false,
-                error: `????: ${e instanceof Error ? e.message : e}`
+                error: `Asset recommendation failed: ${e instanceof Error ? e.message : e}`
             };
         }
     }

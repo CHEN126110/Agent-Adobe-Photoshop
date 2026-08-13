@@ -7,16 +7,73 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 
 import { TextSuggestion } from '../components/SuggestionList';
 import { LayoutAnalysisResult } from '../components/LayoutFixList';
+import type { AgentExecutionSummary } from '../services/agent-runtime/types';
+import type { AgentRequestLifecycleRecord } from '../../shared/agent-request-lifecycle';
+import type { AgentDiagnosticRecord } from '../../shared/agent-diagnostic-record';
+import {
+    isAgentResponseInterruptionSentinelContent,
+    resolveAgentResponseInterruption,
+    type AgentResponseInterruption
+} from '../../shared/agent-response-interruption';
+import type { BusinessSkillVisualObservationFeedback } from '../../shared/business-skill-visual-observation-feedback';
+import {
+    buildChatComposerPlainText,
+    normalizeChatComposerContentParts,
+    type ChatComposerContentPart,
+    type ChatMessageImage
+} from '../../shared/chat-composer-content';
+import type { SkuDeliverySummary } from '../../shared/sku-delivery-summary';
+import type {
+    InteractiveCardDefinition,
+    InteractiveCardSubmission
+} from '../../shared/interactive-card-contract';
+import type { PendingInteractiveContinuation } from '../../shared/pending-interactive-continuation';
+import {
+    uiStatusReplyOrigin,
+    type AssistantReplyOrigin
+} from '../../shared/assistant-reply-origin';
+import type { AgentTaskPlanningContract } from '../../shared/agent-task-planning-contract';
+import {
+    shouldAcceptAgentTaskPlanPresentationUpdate,
+    type AgentTaskPlanPresentation
+} from '../../shared/agent-task-plan-presentation';
+import type {
+    AgentTaskPublicPlanExecutionPlanLike,
+    AgentTaskPublicPlanExecutionRequest
+} from '../../shared/agent-task-public-plan-execution-request';
+import { stripRuntimeParamsFromPublicPlanExecutionRequest } from '../../shared/agent-task-public-plan-execution-request';
+import type { AgentTaskPublicPlanApprovalRecord } from '../../shared/agent-task-public-plan-approval-record';
+import type { AgentTaskPublicPlanControlledRun } from '../../shared/agent-task-public-plan-controlled-runner';
+import { stripRuntimeParamsFromPublicPlanControlledRun } from '../../shared/agent-task-public-plan-controlled-runner';
+import { sanitizeUserVisibleAssistantBodyText } from '../../shared/chat-response-cleaner';
+import {
+    DEFAULT_DESIGN_KNOWLEDGE_SETTINGS,
+    normalizeDesignKnowledgeSettings,
+    type DesignKnowledgeRuntimeSettings
+} from '../../shared/design-knowledge-settings';
 
 // 从统一配置导入
-import { DEFAULT_MODEL_PREFERENCES } from '../../shared/config/models.config';
+import {
+    DEFAULT_MODEL_PREFERENCES,
+    getModelsByProvider,
+    normalizeModelPreferences,
+    normalizeModelRunMode,
+    type ModelConfig,
+    type ModelProvider,
+    type ModelPreferences,
+    type ModelPreferencesPatch
+} from '../../shared/config/models.config';
+import { setDynamicModels } from '../../shared/config/dynamic-model-registry';
+import { normalizeDynamicModelUsageConfig } from '../../shared/config/provider-model-merge';
+import { SKILL_REGISTRY } from '../../shared/skills/skill-declarations';
+import type { DesignDimensionSpec } from '../../shared/design-dimension-spec';
 
 // 抠图使用本地 ONNX 模型（BiRefNet + YOLO-World）
 
 // 思维步骤类型（与 ThinkingProcess 组件同步）
 interface ThinkingStepData {
     id: string;
-    type: 'thinking' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
+    type: 'thinking' | 'status' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
     content: string;
     toolName?: string;
     toolParams?: any;
@@ -40,9 +97,37 @@ interface Message {
     // 思维链相关
     isThinking?: boolean;
     thinkingSteps?: ThinkingStepData[];
+    executionSummary?: AgentExecutionSummary;
+    assistantReplyOrigin?: AssistantReplyOrigin;
+    agentResponseInterruption?: AgentResponseInterruption;
+    agentRequestLifecycle?: AgentRequestLifecycleRecord;
+    agentDiagnosticRecord?: AgentDiagnosticRecord;
+    businessVisualObservationFeedback?: BusinessSkillVisualObservationFeedback;
+    agentTaskPlan?: AgentTaskPlanningContract;
+    agentTaskPlanPresentation?: AgentTaskPlanPresentation;
+    agentTaskPublicPlan?: AgentTaskPublicPlanExecutionPlanLike;
+    agentTaskPublicPlanExecutionRequest?: AgentTaskPublicPlanExecutionRequest;
+    agentTaskPublicPlanApprovalRecord?: AgentTaskPublicPlanApprovalRecord;
+    agentTaskPublicPlanControlledRun?: AgentTaskPublicPlanControlledRun;
+    skuDeliverySummary?: SkuDeliverySummary;
+    interactiveCards?: InteractiveCardDefinition[];
+    interactiveCardSubmissions?: InteractiveCardSubmission[];
+    pendingInteractiveContinuation?: PendingInteractiveContinuation;
+    conversationalModelFailure?: any;
     // 附带图片（用于视觉分析）
     image?: { data: string; type: string };
+    // 用户在输入框内按真实顺序编排的文本与引用；ConversationStore 仍是唯一持久化 owner。
+    contentParts?: ChatComposerContentPart[];
+    // contentParts 中 uploaded_image 引用对应的可回显图片数据。
+    images?: ChatMessageImage[];
 }
+
+interface UserMessageReplacement {
+    content: string;
+    contentParts?: ChatComposerContentPart[];
+    images?: ChatMessageImage[];
+}
+
 // 卖点文案生成结果
 interface CopyGenerationResult {
     analysis?: {
@@ -68,20 +153,132 @@ interface Conversation {
     messages: Message[];
 }
 
+function normalizeAssistantReplyOriginForPersistence(message: Partial<Message>): AssistantReplyOrigin | undefined {
+    if (message.role !== 'assistant') return message.assistantReplyOrigin;
+    return message.assistantReplyOrigin || uiStatusReplyOrigin('store:assistant-message:missing-origin');
+}
+
+function sanitizeMessageForPersistence<T extends Partial<Message>>(message: T): T {
+    const sanitizedContent = message.role === 'assistant' && typeof message.content === 'string'
+        ? sanitizeUserVisibleAssistantBodyText(message.content)
+        : message.content;
+    const assistantReplyOrigin = normalizeAssistantReplyOriginForPersistence(message);
+    const agentResponseInterruption = resolveAgentResponseInterruption({
+        interruption: message.agentResponseInterruption,
+        assistantReplyOrigin,
+        content: sanitizedContent
+    });
+    const content = agentResponseInterruption
+        && isAgentResponseInterruptionSentinelContent(sanitizedContent)
+        ? ''
+        : sanitizedContent;
+
+    const contentParts = Array.isArray(message.contentParts)
+        ? normalizeChatComposerContentParts(message.contentParts)
+        : undefined;
+    const images = Array.isArray(message.images)
+        ? message.images.map((image) => ({ ...image }))
+        : undefined;
+
+    return {
+        ...message,
+        content,
+        contentParts,
+        images,
+        assistantReplyOrigin,
+        agentResponseInterruption,
+        agentTaskPublicPlanExecutionRequest: stripRuntimeParamsFromPublicPlanExecutionRequest(
+            message.agentTaskPublicPlanExecutionRequest
+        ),
+        agentTaskPublicPlanControlledRun: stripRuntimeParamsFromPublicPlanControlledRun(
+            message.agentTaskPublicPlanControlledRun
+        )
+    };
+}
+
+function buildConversationTitleFromUserMessage(message: Pick<
+    Message,
+    'content' | 'contentParts'
+>): string {
+    const parts = Array.isArray(message.contentParts)
+        ? normalizeChatComposerContentParts(message.contentParts)
+        : [];
+    let titleSource = buildChatComposerPlainText(parts);
+    if (!titleSource) {
+        const firstReference = parts.find((part) => part.type === 'reference');
+        if (firstReference?.type === 'reference') {
+            const labelSegments = String(firstReference.reference.label || '').split(/[\\/]/);
+            titleSource = labelSegments[labelSegments.length - 1] || '';
+        }
+    }
+    if (!titleSource) titleSource = String(message.content || '').trim();
+    const compact = titleSource.replace(/\s+/g, ' ').trim();
+    return compact.slice(0, 20) + (compact.length > 20 ? '...' : '');
+}
+
+function hasMeaningfulAssistantPayload(message: Partial<Message>): boolean {
+    return Boolean(
+        message.image
+        || message.layoutResult
+        || message.copyResult
+        || message.executionSummary
+        || message.businessVisualObservationFeedback
+        || message.agentTaskPlanPresentation
+        || message.agentTaskPublicPlan
+        || message.agentTaskPublicPlanExecutionRequest
+        || message.agentTaskPublicPlanApprovalRecord
+        || message.agentTaskPublicPlanControlledRun
+        || message.skuDeliverySummary
+        || (Array.isArray(message.interactiveCards) && message.interactiveCards.length > 0)
+        || (Array.isArray(message.interactiveCardSubmissions) && message.interactiveCardSubmissions.length > 0)
+        || Boolean(message.pendingInteractiveContinuation)
+        || Boolean(message.agentResponseInterruption)
+        || (Array.isArray(message.suggestions) && message.suggestions.length > 0)
+        || (Array.isArray(message.thinkingSteps) && message.thinkingSteps.length > 0)
+    );
+}
+
+function shouldKeepSanitizedMessage(message: Partial<Message>): boolean {
+    if (message.role !== 'assistant') return true;
+    if (typeof message.content === 'string' && message.content.trim()) return true;
+    return hasMeaningfulAssistantPayload(message);
+}
+
+function sanitizeConversationForPersistence(conversation: Conversation): Conversation {
+    return {
+        ...conversation,
+        messages: conversation.messages
+            .map((message) => sanitizeMessageForPersistence(message) as Message)
+            .filter(shouldKeepSanitizedMessage)
+    };
+}
+
+function sanitizeConversationsForPersistence(conversations: Conversation[]): Conversation[] {
+    return conversations.map(sanitizeConversationForPersistence);
+}
+
 interface ApiKeys {
     anthropic?: string;
     google?: string;           // Google AI Studio 官方 API Key
+    xiaomi?: string;           // Xiaomi MiMo 官方 API Key
     openai?: string;
     openrouter?: string;       // OpenRouter 中转平台 API Key
+    deepseek?: string;         // DeepSeek 官方 API Key
     ollamaUrl?: string;
     ollamaApiKey?: string;     // Ollama Cloud API Key
     bfl?: string;              // Black Forest Labs (FLUX) API Key
-    volcengineAccessKeyId?: string;    // 火山引擎 Access Key ID（局部重绘）
-    volcengineSecretAccessKey?: string; // 火山引擎 Secret Access Key（局部重绘）
+    volcengineJimengAccessKeyId?: string;      // 即梦AI OpenAPI Access Key ID
+    volcengineJimengSecretAccessKey?: string;  // 即梦AI OpenAPI Secret Access Key
+    volcengineSeedreamApiKey?: string;         // Seedream 图生图 API Key
+    volcengineTosRegion?: string;              // TOS Region
+    volcengineTosEndpoint?: string;            // TOS Endpoint
+    volcengineTosBucket?: string;              // TOS Bucket
+    volcengineTosPublicBaseUrl?: string;       // TOS 公网访问前缀
+    volcengineTosKeyPrefix?: string;           // TOS 对象前缀
 }
 
 // 模型模式
-export type ModelMode = 'local' | 'cloud' | 'auto';
+export type ModelMode = 'local' | 'cloud';
 
 // 任务类型
 export type TaskCategory = 'layoutAnalysis' | 'textOptimize' | 'visualAnalyze';
@@ -97,7 +294,7 @@ export interface TaskModelConfig {
 export interface CustomModel {
     id: string;                          // 唯一标识
     name: string;                        // 显示名称
-    provider: 'openrouter' | 'openai' | 'anthropic' | 'google' | 'custom';
+    provider: 'openrouter' | 'openai' | 'anthropic' | 'google' | 'xiaomi' | 'deepseek' | 'custom';
     modelId: string;                     // 实际模型 ID (如 anthropic/claude-3.5-sonnet)
     category: TaskCategory;              // 适用的任务类别
     apiEndpoint?: string;                // 自定义 API 端点 (可选)
@@ -107,38 +304,31 @@ export interface CustomModel {
     createdAt: number;
 }
 
-// Worker 类型（新架构）
-export type WorkerType = 'vision' | 'design' | 'executor';
-
-// Worker 配置
-export interface WorkerModelConfig {
-    modelId: string;
+export interface SkillToggleConfig {
     enabled: boolean;
 }
 
-// Orchestrator 模型配置（新架构）
-export interface OrchestratorModelConfig {
-    /** 主规划模型 */
-    primaryModel: string;
-    /** 备用模型 */
-    fallbackModel: string;
-    /** Workers 模型配置 */
-    workers: {
-        vision: WorkerModelConfig;
-        design: WorkerModelConfig;
-        executor: WorkerModelConfig;
-    };
+export interface MCPServerConfig {
+    id: string;
+    name: string;
+    transport: 'stdio' | 'http';
+    enabled: boolean;
+    command?: string;
+    args?: string[];
+    url?: string;
+    notes?: string;
 }
 
-// 模型偏好设置
-interface ModelPreferences {
-    mode: ModelMode;                    // 模型模式
-    autoFallback: boolean;              // 自动回退到云端
-    preferredLocalModels: TaskModelConfig;   // 本地模型偏好（旧架构，保留兼容）
-    preferredCloudModels: TaskModelConfig;   // 云端模型偏好（旧架构，保留兼容）
-    /** Orchestrator-Workers 架构配置（新架构） */
-    orchestrator?: OrchestratorModelConfig;
+export interface IntegrationSettings {
+    skills: Record<string, SkillToggleConfig>;
+    mcpServers: MCPServerConfig[];
 }
+
+// 已移除 WorkerType / WorkerModelConfig / OrchestratorModelConfig：
+// 这是 models.config 里那套同名 Orchestrator 配置在 store 侧的重复声明，
+// 两边都没有运行时消费者，详见 models.config 的移除说明。
+
+// 模型偏好设置从统一模型配置导入，避免设置页、调度层和请求层各自维护一份结构。
 
 // 智能分割阶段类型
 export type SegmentationStage = 
@@ -202,16 +392,6 @@ export interface MorphingSettings {
     positionThreshold: number;
 }
 
-// ========== Agent 设置 ==========
-export interface AgentSettings {
-    // 对话压缩
-    contextCompression: {
-        enabled: boolean;               // 是否启用对话压缩
-        tokenThreshold: number;         // 触发压缩的 token 阈值
-        keepRecentMessages: number;     // 保留最近 N 条消息
-    };
-}
-
 // 项目信息
 export interface ProjectInfo {
     id: string;
@@ -259,6 +439,9 @@ export interface ImageFile {
     size: number;
     ext: string;
     type: ImageType;
+    width?: number;
+    height?: number;
+    aspectRatio?: number;
     thumbnailPath?: string;
     parentFolder: string;
     folderType: FolderType;
@@ -323,8 +506,18 @@ interface AppState {
 
     // 模型偏好
     modelPreferences: ModelPreferences;
-    setModelPreferences: (prefs: Partial<ModelPreferences>) => void;
+    setModelPreferences: (prefs: ModelPreferencesPatch) => void;
     setModelMode: (mode: ModelMode) => void;
+
+    // 设计尺寸规范（用户可覆盖，默认预设；消费方经 normalizeDesignDimensionSpec 读取）
+    designDimensionSpec: Partial<DesignDimensionSpec>;
+    setDesignDimensionSpec: (spec: Partial<DesignDimensionSpec>) => void;
+    resetDesignDimensionSpec: () => void;
+
+    // 动态拉取的模型（从 provider 官方接口获取的完整 ModelConfig，含正确 apiModelId）。
+    // 持久化后经 setDynamicModels 注入进程内注册表，让 getModelById 能查到带点 apiModelId。
+    dynamicModels: ModelConfig[];
+    upsertDynamicModels: (provider: ModelProvider, models: ModelConfig[]) => void;
 
     // 自定义模型管理
     customModels: CustomModel[];
@@ -342,6 +535,7 @@ interface AppState {
     deleteConversation: (id: string) => void;
     switchConversation: (id: string) => void;
     updateConversationTitle: (id: string, title: string) => void;
+    reorderConversations: (orderedIds: string[]) => void;
     
     // 项目对话管理
     saveCurrentProjectConversations: () => void;  // 保存当前项目对话
@@ -350,13 +544,20 @@ interface AppState {
     // 当前对话的消息
     messages: Message[];
     addMessage: (message: Omit<Message, 'id' | 'timestamp'> & { layoutResult?: LayoutAnalysisResult }) => string;  // 返回新消息 ID
+    addMessageToConversation: (conversationId: string, message: Omit<Message, 'id' | 'timestamp'> & { layoutResult?: LayoutAnalysisResult }) => string;
     removeLastMessage: () => void;
     updateLastMessage: (content: string) => void;  // 更新最后一条消息内容
     updateMessage: (messageId: string, updates: Partial<Omit<Message, 'id' | 'timestamp'>>) => void;  // 按 ID 更新消息
+    updateMessageInConversation: (conversationId: string, messageId: string, updates: Partial<Omit<Message, 'id' | 'timestamp'>>) => boolean;
     clearMessages: () => void;
     
     // 消息编辑
     editMessage: (messageId: string, newContent: string) => void;
+    replaceUserMessageAndTruncate: (
+        conversationId: string,
+        messageId: string,
+        replacement: UserMessageReplacement
+    ) => boolean;
     removeMessagesFrom: (messageId: string) => string | null;  // 返回被删除消息的内容
 
     // 当前任务
@@ -380,9 +581,14 @@ interface AppState {
     morphingSettings: MorphingSettings;
     setMorphingSettings: (settings: Partial<MorphingSettings>) => void;
 
-    // Agent 设置
-    agentSettings: AgentSettings;
-    setAgentSettings: (settings: Partial<AgentSettings>) => void;
+
+    // Integrations
+    integrationSettings: IntegrationSettings;
+    setIntegrationSettings: (settings: Partial<IntegrationSettings>) => void;
+
+    // 设计知识设置
+    designKnowledgeSettings: DesignKnowledgeRuntimeSettings;
+    setDesignKnowledgeSettings: (settings: Partial<DesignKnowledgeRuntimeSettings>) => void;
 
     // 模型状态管理
     ollamaStatus: 'unknown' | 'online' | 'offline';
@@ -393,7 +599,82 @@ interface AppState {
 }
 
 // 默认模型偏好 - 从统一配置导入
-const defaultModelPreferences: ModelPreferences = DEFAULT_MODEL_PREFERENCES;
+const defaultModelPreferences: ModelPreferences = normalizeModelPreferences(DEFAULT_MODEL_PREFERENCES);
+
+function normalizePersistedDynamicModels(value: unknown): ModelConfig[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .filter((model): model is ModelConfig => (
+            !!model
+            && typeof model === 'object'
+            && typeof model.id === 'string'
+            && model.id.trim().length > 0
+            && typeof model.apiModelId === 'string'
+            && model.apiModelId.trim().length > 0
+        ))
+        .map(normalizeDynamicModelUsageConfig);
+}
+
+function migrateRetiredXiaomiMimoModels(cloudModels?: TaskModelConfig): boolean {
+    if (!cloudModels) return false;
+    let changed = false;
+    for (const key of Object.keys(cloudModels)) {
+        const current = (cloudModels as any)[key];
+        if (current === 'xiaomi-mimo-v2-pro') {
+            (cloudModels as any)[key] = 'xiaomi-mimo-v2.5-pro';
+            changed = true;
+        }
+        if (current === 'openrouter-mimo-v2-pro') {
+            (cloudModels as any)[key] = 'openrouter-mimo-v2.5-pro';
+            changed = true;
+        }
+        if (current === 'xiaomi-mimo-v2' || current === 'xiaomi-mimo-v2-omni') {
+            (cloudModels as any)[key] = 'xiaomi-mimo-v2.5';
+            changed = true;
+        }
+        if (current === 'openrouter-mimo-v2' || current === 'openrouter-mimo-v2-omni') {
+            (cloudModels as any)[key] = 'openrouter-mimo-v2.5';
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+const createDefaultSkillToggles = (): Record<string, SkillToggleConfig> =>
+    Object.fromEntries(SKILL_REGISTRY.map((skill) => [skill.id, { enabled: true }]));
+
+const normalizeIntegrationSettings = (settings?: Partial<IntegrationSettings> | null): IntegrationSettings => {
+    const skillDefaults = createDefaultSkillToggles();
+    const providedSkills = settings?.skills || {};
+    const skills = Object.fromEntries(
+        Object.keys(skillDefaults).map((skillId) => [
+            skillId,
+            { enabled: providedSkills[skillId]?.enabled !== false }
+        ])
+    );
+
+    const mcpServers = Array.isArray(settings?.mcpServers)
+        ? settings!.mcpServers
+            .filter((server): server is MCPServerConfig => !!server && typeof server.id === 'string' && typeof server.name === 'string')
+            .map((server): MCPServerConfig => ({
+                id: server.id,
+                name: server.name,
+                transport: server.transport === 'http' ? 'http' : 'stdio',
+                enabled: server.enabled !== false,
+                command: server.command || '',
+                args: Array.isArray(server.args) ? server.args.map((arg) => String(arg)) : [],
+                url: server.url || '',
+                notes: server.notes || ''
+            }))
+        : [];
+
+    return { skills, mcpServers };
+};
+
+const defaultIntegrationSettings: IntegrationSettings = normalizeIntegrationSettings();
+const defaultDesignKnowledgeSettings: DesignKnowledgeRuntimeSettings = normalizeDesignKnowledgeSettings(
+    DEFAULT_DESIGN_KNOWLEDGE_SETTINGS
+);
 
 // 预设智能分割模型列表（本地 ONNX）
 const presetSegmentationModels: SegmentationModelConfig[] = [];
@@ -438,46 +719,148 @@ const getProjectId = (project: ProjectInfo | null): string => {
     return project?.id || DEFAULT_PROJECT_ID;
 };
 
+interface ConversationOwner {
+    projectId: string;
+    conversations: Conversation[];
+    conversation: Conversation;
+    isActiveProject: boolean;
+}
+
+/**
+ * Resolve the project that owns a conversation before applying an async run update.
+ * A run may finish after the user has switched projects; conversationId, rather than
+ * the currently visible project, is therefore the resource identity for the write.
+ */
+function resolveConversationOwner(input: {
+    conversationId: string;
+    activeProjectId: string;
+    activeConversations: Conversation[];
+    projectConversations: Record<string, Conversation[]>;
+}): ConversationOwner | undefined {
+    const activeConversation = input.activeConversations.find(
+        (conversation) => conversation.id === input.conversationId
+    );
+    if (activeConversation) {
+        return {
+            projectId: input.activeProjectId,
+            conversations: input.activeConversations,
+            conversation: activeConversation,
+            isActiveProject: true
+        };
+    }
+
+    for (const [projectId, conversations] of Object.entries(input.projectConversations)) {
+        if (projectId === input.activeProjectId) continue;
+        const conversation = conversations.find((item) => item.id === input.conversationId);
+        if (!conversation) continue;
+        return {
+            projectId,
+            conversations,
+            conversation,
+            isActiveProject: false
+        };
+    }
+    return undefined;
+}
+
 // ===== 对话文件持久化 =====
-// 防抖保存计时器
-let _conversationSaveTimer: ReturnType<typeof setTimeout> | null = null;
+// 每个项目独立防抖；A 项目的高频流式更新不能取消 B 项目的保存。
+const _conversationSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const _conversationMutationRevisions = new Map<string, number>();
+const _dirtyConversationProjects = new Set<string>();
 const CONVERSATION_SAVE_DELAY = 2000; // 2 秒防抖
+
+function markConversationMutation(projectId: string): number {
+    const nextRevision = (_conversationMutationRevisions.get(projectId) || 0) + 1;
+    _conversationMutationRevisions.set(projectId, nextRevision);
+    return nextRevision;
+}
+
+function getConversationMutationRevision(projectId: string): number {
+    return _conversationMutationRevisions.get(projectId) || 0;
+}
+
+function mergeConversationCollections(persisted: Conversation[], local: Conversation[]): Conversation[] {
+    const localIds = new Set(local.map((conversation) => conversation.id));
+    return sanitizeConversationsForPersistence([
+        ...local,
+        ...persisted.filter((conversation) => !localIds.has(conversation.id))
+    ]);
+}
 
 /**
  * 防抖保存当前项目对话到文件
  * 在对话内容变更后调用，2 秒内没有新变更时执行实际保存
  */
 function debouncedSaveConversations(projectId: string, conversations: Conversation[]) {
-    if (_conversationSaveTimer) {
-        clearTimeout(_conversationSaveTimer);
+    const revision = markConversationMutation(projectId);
+    _dirtyConversationProjects.add(projectId);
+    const existingTimer = _conversationSaveTimers.get(projectId);
+    if (existingTimer) {
+        clearTimeout(existingTimer);
     }
-    _conversationSaveTimer = setTimeout(() => {
-        _conversationSaveTimer = null;
+    const timer = setTimeout(() => {
+        if (_conversationSaveTimers.get(projectId) !== timer) return;
+        _conversationSaveTimers.delete(projectId);
+        if (typeof window === 'undefined') return;
         const designEcho = (window as any).designEcho;
         if (designEcho?.invoke) {
-            designEcho.invoke('conversation:save', projectId, conversations)
+            designEcho.invoke('conversation:save', projectId, sanitizeConversationsForPersistence(conversations))
                 .then((r: any) => {
                     if (!r?.success) {
                         console.error('[Store] 对话保存失败:', r?.error);
+                        return;
+                    }
+                    if (getConversationMutationRevision(projectId) === revision) {
+                        _dirtyConversationProjects.delete(projectId);
                     }
                 })
                 .catch((e: any) => console.error('[Store] 对话保存异常:', e));
         }
     }, CONVERSATION_SAVE_DELAY);
+    _conversationSaveTimers.set(projectId, timer);
 }
 
 /**
  * 立即保存（用于项目切换、窗口关闭等场景）
  */
 function flushSaveConversations(projectId: string, conversations: Conversation[]) {
-    if (_conversationSaveTimer) {
-        clearTimeout(_conversationSaveTimer);
-        _conversationSaveTimer = null;
+    const existingTimer = _conversationSaveTimers.get(projectId);
+    if (existingTimer) {
+        clearTimeout(existingTimer);
+        _conversationSaveTimers.delete(projectId);
     }
+    if (!_dirtyConversationProjects.has(projectId)) return;
+    if (typeof window === 'undefined') return;
     const designEcho = (window as any).designEcho;
     if (designEcho?.invoke) {
-        designEcho.invoke('conversation:save', projectId, conversations)
+        const revision = getConversationMutationRevision(projectId);
+        designEcho.invoke('conversation:save', projectId, sanitizeConversationsForPersistence(conversations))
+            .then((r: any) => {
+                if (!r?.success) {
+                    console.error('[Store] 对话保存失败:', r?.error);
+                    return;
+                }
+                if (getConversationMutationRevision(projectId) === revision) {
+                    _dirtyConversationProjects.delete(projectId);
+                }
+            })
             .catch((e: any) => console.error('[Store] 对话保存异常:', e));
+    }
+}
+
+/**
+ * 校验持久化字符串是合法 JSON；损坏（断电写半截/配额截断/迁移异常）则返回 null（走默认值），
+ * 避免 zustand 水合期 JSON.parse 同步抛错 → 阻断 app.store 模块导入 → React 整树不挂载 → 黑屏。
+ */
+function validatePersistedJson(raw: string | null): string | null {
+    if (raw == null) return null;
+    try {
+        JSON.parse(raw);
+        return raw;
+    } catch {
+        console.warn('[Store] 持久化数据 JSON 损坏，丢弃并走默认值');
+        return null;
     }
 }
 
@@ -491,7 +874,7 @@ const persistedStorage = createJSONStorage(() => ({
                 const result = designEcho.getPersistedValueSync(name);
                 if (result?.success && typeof result.value === 'string') {
                     console.log(`[Store] IPC 读取成功: key="${name}", len=${result.value.length}`);
-                    return result.value;
+                    return validatePersistedJson(result.value);
                 }
                 if (result?.success && result.value === null) {
                     // IPC store 没有数据，尝试从 localStorage 迁移
@@ -503,7 +886,7 @@ const persistedStorage = createJSONStorage(() => ({
                             designEcho.invoke?.('state:setPersistedValue', name, lsValue)
                                 .then((r: any) => console.log('[Store] localStorage 迁移到 IPC:', r?.success ? '成功' : r?.error))
                                 .catch((e: any) => console.warn('[Store] localStorage 迁移到 IPC 失败:', e));
-                            return lsValue;
+                            return validatePersistedJson(lsValue);
                         }
                     } catch {}
                     return null;
@@ -514,7 +897,7 @@ const persistedStorage = createJSONStorage(() => ({
             }
         }
         try {
-            return window.localStorage.getItem(name);
+            return validatePersistedJson(window.localStorage.getItem(name));
         } catch {
             return null;
         }
@@ -602,11 +985,11 @@ export const useAppStore = create<AppState>()(
                 }
                 
                 // 1. 保存当前项目的对话到 projectConversations
-                const currentConversationsToSave = state.conversations.map(c => 
+                const currentConversationsToSave = sanitizeConversationsForPersistence(state.conversations.map(c =>
                     c.id === state.currentConversationId 
                         ? { ...c, messages: state.messages, updatedAt: Date.now() }
                         : c
-                );
+                ));
                 
                 const updatedProjectConversations = {
                     ...state.projectConversations,
@@ -614,7 +997,7 @@ export const useAppStore = create<AppState>()(
                 };
                 
                 // 2. 加载新项目的对话
-                let newProjectConversations = updatedProjectConversations[newProjectId] || [];
+                let newProjectConversations = sanitizeConversationsForPersistence(updatedProjectConversations[newProjectId] || []);
                 
                 // 如果新项目没有对话，创建一个默认对话
                 if (newProjectConversations.length === 0) {
@@ -630,6 +1013,10 @@ export const useAppStore = create<AppState>()(
                     currentConversationId: firstConv.id,
                     messages: firstConv.messages || []
                 });
+
+                // 项目切换是持久化边界：旧项目立即保存，新项目只通过统一加载入口恢复。
+                flushSaveConversations(oldProjectId, currentConversationsToSave);
+                get().loadProjectConversations(newProjectId);
                 
                 console.log(`[AppStore] 切换项目: ${oldProjectId} -> ${newProjectId}, 对话数: ${newProjectConversations.length}`);
             },
@@ -656,15 +1043,54 @@ export const useAppStore = create<AppState>()(
             // 模型偏好
             modelPreferences: defaultModelPreferences,
             setModelPreferences: (prefs) => set((state) => ({
-                modelPreferences: { ...state.modelPreferences, ...prefs }
+                modelPreferences: normalizeModelPreferences({
+                    ...state.modelPreferences,
+                    ...prefs,
+                    thinking: {
+                        ...state.modelPreferences.thinking,
+                        ...prefs.thinking
+                    }
+                })
             })),
             setModelMode: (mode) => set((state) => ({
-                modelPreferences: { ...state.modelPreferences, mode }
+                modelPreferences: normalizeModelPreferences({ ...state.modelPreferences, mode })
             })),
+
+            // 设计尺寸规范（空对象 = 全部走预设）
+            designDimensionSpec: {},
+            setDesignDimensionSpec: (spec) => set((state) => ({
+                designDimensionSpec: { ...state.designDimensionSpec, ...spec }
+            })),
+            resetDesignDimensionSpec: () => set({ designDimensionSpec: {} }),
+
+            // 动态拉取的模型（持久化 + 注入进程内注册表）
+            dynamicModels: [],
+            upsertDynamicModels: (provider, models) => set((state) => {
+                // 按 provider 整体替换该 provider 的动态项：移除旧的，写入本次拉取的新集合。
+                // 与硬编码 apiModelId 去重——已硬编码的模型由 ALL_MODELS 提供可靠能力，
+                // 不让动态项（保守默认能力）覆盖它。
+                const hardcodedApiModelIds = new Set(
+                    getModelsByProvider(provider).map((m) => m.apiModelId)
+                );
+                const incoming = (Array.isArray(models) ? models : []).filter(
+                    (m) =>
+                        m &&
+                        typeof m.id === 'string' &&
+                        m.id.trim().length > 0 &&
+                        typeof m.apiModelId === 'string' &&
+                        m.apiModelId.trim().length > 0 &&
+                        !hardcodedApiModelIds.has(m.apiModelId)
+                );
+                const kept = state.dynamicModels.filter((m) => m.provider !== provider);
+                const nextDynamicModels = [...kept, ...incoming];
+                // 同步注入进程内注册表，让 getModelById 立即可查到正确 apiModelId。
+                setDynamicModels(nextDynamicModels);
+                return { dynamicModels: nextDynamicModels };
+            }),
 
             // 自定义模型管理
             customModels: [],
-            
+
             addCustomModel: (model) => {
                 const id = `custom-${crypto.randomUUID().slice(0, 8)}`;
                 const newModel: CustomModel = {
@@ -699,6 +1125,7 @@ export const useAppStore = create<AppState>()(
                 // 同时更新 preferredCloudModels
                 modelPreferences: {
                     ...state.modelPreferences,
+                    autoFallback: false,
                     preferredCloudModels: {
                         ...state.modelPreferences.preferredCloudModels,
                         [category]: modelId
@@ -719,11 +1146,11 @@ export const useAppStore = create<AppState>()(
             saveCurrentProjectConversations: () => {
                 const state = get();
                 const projectId = getProjectId(state.currentProject);
-                const currentConversationsToSave = state.conversations.map(c =>
+                const currentConversationsToSave = sanitizeConversationsForPersistence(state.conversations.map(c =>
                     c.id === state.currentConversationId
                         ? { ...c, messages: state.messages, updatedAt: Date.now() }
                         : c
-                );
+                ));
                 set({
                     projectConversations: {
                         ...state.projectConversations,
@@ -736,57 +1163,71 @@ export const useAppStore = create<AppState>()(
 
             // 加载项目对话（优先从文件加载，兼容旧内存数据）
             loadProjectConversations: (projectId: string) => {
-                const designEcho = (window as any).designEcho;
+                const stateAtRequest = get();
+                const memConvs = stateAtRequest.projectConversations[projectId];
+                const isActiveProject = getProjectId(stateAtRequest.currentProject) === projectId;
 
-                // 先从内存中查找（兼容旧数据）
-                const memConvs = get().projectConversations[projectId];
-
-                // 尝试从文件加载
-                if (designEcho?.invoke) {
-                    designEcho.invoke('conversation:load', projectId)
-                        .then((result: any) => {
-                            if (result?.success && result.conversations?.length > 0) {
-                                console.log(`[Store] 从文件加载对话: project="${projectId}", ${result.conversations.length} 条`);
-                                set({
-                                    conversations: result.conversations,
-                                    currentConversationId: result.conversations[0].id,
-                                    messages: result.conversations[0].messages || [],
-                                    projectConversations: {
-                                        ...get().projectConversations,
-                                        [projectId]: result.conversations
-                                    }
-                                });
-                            } else if (!memConvs || memConvs.length === 0) {
-                                // 文件和内存都没有数据，创建默认对话
-                                const newConv = createDefaultConversation();
-                                set({
-                                    conversations: [newConv],
-                                    currentConversationId: newConv.id,
-                                    messages: []
-                                });
-                            }
-                        })
-                        .catch((e: any) => {
-                            console.error('[Store] 从文件加载对话失败:', e);
-                        });
-                }
-
-                // 同步返回内存数据（如果有），避免 UI 闪烁
+                // 已有内存事实时不再发起可能迟到的文件加载；待写文件由主进程队列按调用顺序落盘。
                 if (memConvs && memConvs.length > 0) {
-                    set({
-                        conversations: memConvs,
-                        currentConversationId: memConvs[0].id,
-                        messages: memConvs[0].messages || []
-                    });
-                } else {
-                    // 暂时设置空状态，等待文件加载完成
-                    const newConv = createDefaultConversation();
-                    set({
-                        conversations: [newConv],
-                        currentConversationId: newConv.id,
-                        messages: []
-                    });
+                    if (isActiveProject) {
+                        const loadedMemoryConversations = sanitizeConversationsForPersistence(memConvs);
+                        set({
+                            conversations: loadedMemoryConversations,
+                            currentConversationId: loadedMemoryConversations[0].id,
+                            messages: loadedMemoryConversations[0].messages || []
+                        });
+                    }
+                    return;
                 }
+
+                const placeholder = createDefaultConversation();
+                const requestRevision = getConversationMutationRevision(projectId);
+                if (isActiveProject) {
+                    set((currentState) => ({
+                        conversations: [placeholder],
+                        currentConversationId: placeholder.id,
+                        messages: [],
+                        projectConversations: {
+                            ...currentState.projectConversations,
+                            [projectId]: [placeholder]
+                        }
+                    }));
+                }
+
+                const designEcho = typeof window !== 'undefined' ? (window as any).designEcho : undefined;
+                if (!designEcho?.invoke) return;
+                designEcho.invoke('conversation:load', projectId)
+                    .then((result: any) => {
+                        const persistedConversations = result?.success && result.conversations?.length > 0
+                            ? sanitizeConversationsForPersistence(result.conversations)
+                            : [placeholder];
+                        const revisionChanged = getConversationMutationRevision(projectId) !== requestRevision;
+                        const localConversations = get().projectConversations[projectId] || [];
+                        const loadedConversations = revisionChanged
+                            ? mergeConversationCollections(persistedConversations, localConversations)
+                            : persistedConversations;
+                        const activeAfterLoad = getProjectId(get().currentProject) === projectId;
+
+                        set((currentState) => ({
+                            projectConversations: {
+                                ...currentState.projectConversations,
+                                [projectId]: loadedConversations
+                            },
+                            ...(activeAfterLoad ? {
+                                conversations: loadedConversations,
+                                currentConversationId: loadedConversations[0].id,
+                                messages: loadedConversations[0].messages || []
+                            } : {})
+                        }));
+                        if (revisionChanged) {
+                            // 迟到加载不能覆盖本地新消息；合并后重新排队，确保磁盘最终包含两边事实。
+                            debouncedSaveConversations(projectId, loadedConversations);
+                        }
+                        console.log(`[Store] 从文件加载对话: project="${projectId}", ${loadedConversations.length} 条`);
+                    })
+                    .catch((e: any) => {
+                        console.error('[Store] 从文件加载对话失败:', e);
+                    });
             },
 
             createConversation: () => {
@@ -874,44 +1315,100 @@ export const useAppStore = create<AppState>()(
                 debouncedSaveConversations(projectId, updatedConversations);
             },
 
+            reorderConversations: (orderedIds: string[]) => {
+                const state = get();
+                const projectId = getProjectId(state.currentProject);
+                const conversationsById = new Map(
+                    state.conversations.map((conversation) => [conversation.id, conversation])
+                );
+                const seenIds = new Set<string>();
+                const reorderedConversations: Conversation[] = [];
+
+                for (const conversationId of orderedIds) {
+                    const conversation = conversationsById.get(conversationId);
+                    if (!conversation || seenIds.has(conversationId)) continue;
+                    seenIds.add(conversationId);
+                    reorderedConversations.push(conversation);
+                }
+
+                for (const conversation of state.conversations) {
+                    if (seenIds.has(conversation.id)) continue;
+                    reorderedConversations.push(conversation);
+                }
+
+                const orderChanged = reorderedConversations.some(
+                    (conversation, index) => conversation.id !== state.conversations[index]?.id
+                );
+                if (!orderChanged) return;
+
+                set({
+                    conversations: reorderedConversations,
+                    projectConversations: {
+                        ...state.projectConversations,
+                        [projectId]: reorderedConversations
+                    }
+                });
+                debouncedSaveConversations(projectId, reorderedConversations);
+            },
+
             // 当前对话的消息
             messages: [],
             addMessage: (message) => {
                 const state = get();
-                const projectId = getProjectId(state.currentProject);
+                if (!state.currentConversationId) {
+                    throw new Error('Cannot add a chat message without an active conversation.');
+                }
+                return get().addMessageToConversation(state.currentConversationId, message);
+            },
+            addMessageToConversation: (conversationId, message) => {
+                const state = get();
+                const activeProjectId = getProjectId(state.currentProject);
+                const owner = resolveConversationOwner({
+                    conversationId,
+                    activeProjectId,
+                    activeConversations: state.conversations,
+                    projectConversations: state.projectConversations
+                });
+                if (!owner) {
+                    throw new Error(`Conversation not found: ${conversationId}`);
+                }
+                const safeMessage = sanitizeMessageForPersistence(message);
                 const newMessage = {
-                    ...message,
+                    ...safeMessage,
                     id: crypto.randomUUID(),
                     timestamp: Date.now()
-                };
-                const newMessages = [...state.messages, newMessage];
-                
-                // 自动更新对话标题（如果是第一条用户消息）
-                let updatedConversations = state.conversations;
-                if (state.currentConversationId && message.role === 'user' && state.messages.length === 0) {
-                    const title = message.content.slice(0, 20) + (message.content.length > 20 ? '...' : '');
-                    updatedConversations = state.conversations.map(c => 
-                        c.id === state.currentConversationId 
-                            ? { ...c, title, messages: newMessages, updatedAt: Date.now() }
-                            : c
-                    );
-                } else {
-                    updatedConversations = state.conversations.map(c => 
-                        c.id === state.currentConversationId 
-                            ? { ...c, messages: newMessages, updatedAt: Date.now() }
-                            : c
-                    );
-                }
+                } as Message;
+                const isVisibleConversation = owner.isActiveProject
+                    && conversationId === state.currentConversationId;
+                const targetMessages = isVisibleConversation
+                    ? state.messages
+                    : owner.conversation.messages || [];
+                const newMessages = [...targetMessages, newMessage];
+                const updatedAt = Date.now();
+                const shouldUpdateTitle = message.role === 'user' && targetMessages.length === 0;
+                const updatedConversations = owner.conversations.map(c => {
+                    if (c.id !== conversationId) return c;
+                    return {
+                        ...c,
+                        title: shouldUpdateTitle
+                            ? buildConversationTitleFromUserMessage(safeMessage)
+                            : c.title,
+                        messages: newMessages,
+                        updatedAt
+                    };
+                });
 
                 set({
-                    messages: newMessages,
-                    conversations: updatedConversations,
+                    ...(owner.isActiveProject ? {
+                        messages: isVisibleConversation ? newMessages : state.messages,
+                        conversations: updatedConversations
+                    } : {}),
                     projectConversations: {
                         ...state.projectConversations,
-                        [projectId]: updatedConversations
+                        [owner.projectId]: updatedConversations
                     }
                 });
-                debouncedSaveConversations(projectId, updatedConversations);
+                debouncedSaveConversations(owner.projectId, updatedConversations);
 
                 return newMessage.id;
             },
@@ -939,10 +1436,10 @@ export const useAppStore = create<AppState>()(
                 const projectId = getProjectId(state.currentProject);
 
                 const newMessages = [...state.messages];
-                newMessages[newMessages.length - 1] = {
+                newMessages[newMessages.length - 1] = sanitizeMessageForPersistence({
                     ...newMessages[newMessages.length - 1],
                     content
-                };
+                }) as Message;
 
                 const updatedConversations = state.conversations.map(c =>
                     c.id === state.currentConversationId
@@ -961,9 +1458,73 @@ export const useAppStore = create<AppState>()(
             // 按 ID 更新消息
             updateMessage: (messageId: string, updates: Partial<Omit<Message, 'id' | 'timestamp'>>) => {
                 const state = get();
+                if (!state.currentConversationId) return;
+                get().updateMessageInConversation(state.currentConversationId, messageId, updates);
+            },
+            updateMessageInConversation: (conversationId: string, messageId: string, updates: Partial<Omit<Message, 'id' | 'timestamp'>>) => {
+                const state = get();
+                const activeProjectId = getProjectId(state.currentProject);
+                const owner = resolveConversationOwner({
+                    conversationId,
+                    activeProjectId,
+                    activeConversations: state.conversations,
+                    projectConversations: state.projectConversations
+                });
+                if (!owner) return false;
+                const isVisibleConversation = owner.isActiveProject
+                    && conversationId === state.currentConversationId;
+                const targetMessages = isVisibleConversation
+                    ? state.messages
+                    : owner.conversation.messages || [];
+                let didUpdate = false;
+                const newMessages = targetMessages.map(m => {
+                    if (m.id !== messageId) return m;
+                    didUpdate = true;
+                    const nextPresentation = updates.agentTaskPlanPresentation;
+                    const presentationUpdateRejected = m.agentTaskPlanPresentation
+                        && (!nextPresentation || !shouldAcceptAgentTaskPlanPresentationUpdate({
+                            current: m.agentTaskPlanPresentation,
+                            next: nextPresentation
+                        }));
+                    const guardedUpdates = presentationUpdateRejected
+                        ? { ...updates, agentTaskPlanPresentation: m.agentTaskPlanPresentation }
+                        : updates;
+                    return sanitizeMessageForPersistence({ ...m, ...guardedUpdates }) as Message;
+                });
+                if (!didUpdate) return false;
+                const updatedConversations = owner.conversations.map(c =>
+                    c.id === conversationId
+                        ? { ...c, messages: newMessages, updatedAt: Date.now() }
+                        : c
+                );
+                set({
+                    ...(owner.isActiveProject ? {
+                        messages: isVisibleConversation ? newMessages : state.messages,
+                        conversations: updatedConversations
+                    } : {}),
+                    projectConversations: {
+                        ...state.projectConversations,
+                        [owner.projectId]: updatedConversations
+                    }
+                });
+                debouncedSaveConversations(owner.projectId, updatedConversations);
+                return true;
+            },
+
+            // 编辑消息内容
+            editMessage: (messageId: string, newContent: string) => {
+                const state = get();
                 const projectId = getProjectId(state.currentProject);
                 const newMessages = state.messages.map(m =>
-                    m.id === messageId ? { ...m, ...updates } : m
+                    m.id === messageId
+                        ? sanitizeMessageForPersistence({
+                            ...m,
+                            content: newContent,
+                            // 现有编辑器只编辑纯文本；清掉旧 rich payload，避免编辑后仍回显旧引用。
+                            contentParts: undefined,
+                            images: undefined
+                        }) as Message
+                        : m
                 );
                 const updatedConversations = state.conversations.map(c =>
                     c.id === state.currentConversationId
@@ -978,24 +1539,66 @@ export const useAppStore = create<AppState>()(
                 debouncedSaveConversations(projectId, updatedConversations);
             },
 
-            // 编辑消息内容
-            editMessage: (messageId: string, newContent: string) => {
+            // 原子替换指定用户消息并截断其后的旧回复，用于编辑后重新发送。
+            replaceUserMessageAndTruncate: (conversationId, messageId, replacement) => {
                 const state = get();
-                const projectId = getProjectId(state.currentProject);
-                const newMessages = state.messages.map(m =>
-                    m.id === messageId ? { ...m, content: newContent } : m
-                );
-                const updatedConversations = state.conversations.map(c =>
-                    c.id === state.currentConversationId
-                        ? { ...c, messages: newMessages, updatedAt: Date.now() }
-                        : c
-                );
-                set({
-                    messages: newMessages,
-                    conversations: updatedConversations,
-                    projectConversations: { ...state.projectConversations, [projectId]: updatedConversations }
+                const activeProjectId = getProjectId(state.currentProject);
+                const owner = resolveConversationOwner({
+                    conversationId,
+                    activeProjectId,
+                    activeConversations: state.conversations,
+                    projectConversations: state.projectConversations
                 });
-                debouncedSaveConversations(projectId, updatedConversations);
+                if (!owner) return false;
+
+                const isVisibleConversation = owner.isActiveProject
+                    && conversationId === state.currentConversationId;
+                const targetMessages = isVisibleConversation
+                    ? state.messages
+                    : owner.conversation.messages || [];
+                const messageIndex = targetMessages.findIndex(message => message.id === messageId);
+                if (messageIndex < 0) return false;
+
+                const currentMessage = targetMessages[messageIndex];
+                if (currentMessage.role !== 'user') return false;
+
+                const replacedMessage = sanitizeMessageForPersistence({
+                    ...currentMessage,
+                    content: replacement.content,
+                    contentParts: replacement.contentParts,
+                    images: replacement.images,
+                    // 结构化 images 是编辑重发后的唯一图片真相源，不得残留旧版单图字段。
+                    image: undefined
+                }) as Message;
+                const newMessages = [
+                    ...targetMessages.slice(0, messageIndex),
+                    replacedMessage
+                ];
+                const updatedAt = Date.now();
+                const updatedConversations = owner.conversations.map(conversation => {
+                    if (conversation.id !== conversationId) return conversation;
+                    return {
+                        ...conversation,
+                        title: messageIndex === 0
+                            ? buildConversationTitleFromUserMessage(replacedMessage)
+                            : conversation.title,
+                        messages: newMessages,
+                        updatedAt
+                    };
+                });
+
+                set({
+                    ...(owner.isActiveProject ? {
+                        messages: isVisibleConversation ? newMessages : state.messages,
+                        conversations: updatedConversations
+                    } : {}),
+                    projectConversations: {
+                        ...state.projectConversations,
+                        [owner.projectId]: updatedConversations
+                    }
+                });
+                debouncedSaveConversations(owner.projectId, updatedConversations);
+                return true;
             },
 
             // 删除指定消息及其后续所有消息，返回被删除消息的内容
@@ -1121,24 +1724,33 @@ export const useAppStore = create<AppState>()(
                 morphingSettings: { ...state.morphingSettings, ...settings }
             })),
 
-            // Agent 设置
-            agentSettings: {
-                contextCompression: {
-                    enabled: false,        // 默认关闭
-                    tokenThreshold: 60000, // 60k tokens 触发压缩
-                    keepRecentMessages: 4  // 保留最近 4 条消息
-                }
-            },
-            
-            setAgentSettings: (settings) => set((state) => ({
-                agentSettings: {
-                    ...state.agentSettings,
+
+            integrationSettings: defaultIntegrationSettings,
+            setIntegrationSettings: (settings) => set((state) => ({
+                integrationSettings: normalizeIntegrationSettings({
+                    ...state.integrationSettings,
                     ...settings,
-                    contextCompression: {
-                        ...state.agentSettings.contextCompression,
-                        ...(settings.contextCompression || {})
+                    skills: settings.skills
+                        ? { ...state.integrationSettings.skills, ...settings.skills }
+                        : state.integrationSettings.skills,
+                    mcpServers: settings.mcpServers ?? state.integrationSettings.mcpServers
+                })
+            })),
+
+            designKnowledgeSettings: defaultDesignKnowledgeSettings,
+            setDesignKnowledgeSettings: (settings) => set((state) => ({
+                designKnowledgeSettings: normalizeDesignKnowledgeSettings({
+                    ...state.designKnowledgeSettings,
+                    ...settings,
+                    searxng: {
+                        ...state.designKnowledgeSettings.searxng,
+                        ...(settings.searxng || {})
+                    },
+                    xiaomiWebSearch: {
+                        ...state.designKnowledgeSettings.xiaomiWebSearch,
+                        ...(settings.xiaomiWebSearch || {})
                     }
-                }
+                })
             })),
 
             // 模型状态管理
@@ -1175,21 +1787,25 @@ export const useAppStore = create<AppState>()(
         }),
         {
             name: 'designecho-storage',
-            version: 30,  // v30: 对话数据迁移到独立文件存储
+            version: 39,  // v39: 动态模型用途分类，迁移旧的乐观 vision/tool 能力
             storage: persistedStorage,
             partialize: (state) => ({
                 // 只持久化小体积配置数据（< 50KB）
                 // 对话数据通过独立文件存储，不再经过 Zustand persist
                 apiKeys: state.apiKeys,
                 modelPreferences: state.modelPreferences,
+                dynamicModels: state.dynamicModels,
                 customModels: state.customModels,
                 mattingSettings: state.mattingSettings,
+                integrationSettings: state.integrationSettings,
+                designKnowledgeSettings: state.designKnowledgeSettings,
+                designDimensionSpec: state.designDimensionSpec,
                 currentConversationId: state.currentConversationId,
                 currentProject: state.currentProject,
                 recentProjects: state.recentProjects
             }),
             migrate: (persistedState: any, version: number) => {
-                console.log('[Store] 迁移: v', version, '→ v30');
+                console.log('[Store] 迁移: v', version, '→ v39');
                 let state = { ...persistedState };
                 
                 // 统一迁移：所有低于当前版本的存储都重置为最新配置
@@ -1213,6 +1829,10 @@ export const useAppStore = create<AppState>()(
                 if (version < 23) {
                     console.log('[Store] 迁移 v23: 重置 modelPreferences 为新格式 (local-xxx + Gemini latest)');
                     state.modelPreferences = DEFAULT_MODEL_PREFERENCES;
+                }
+
+                if (version < 36 || state.modelPreferences) {
+                    state.modelPreferences = normalizeModelPreferences(state.modelPreferences);
                 }
                 
                 // v24: 新增专业 Alpha Matting 模型
@@ -1298,10 +1918,75 @@ export const useAppStore = create<AppState>()(
                     // 注意：此处不删除 projectConversations，留给 onRehydrateStorage 处理迁移
                 }
 
+                if (version < 31) {
+                    console.log('[Store] 迁移 v31: 初始化 integrations settings');
+                    state.integrationSettings = defaultIntegrationSettings;
+                }
+
+                if (version < 32 && state?.modelPreferences?.preferredCloudModels) {
+                    console.log('[Store] 迁移 v32: Xiaomi MiMo V2 Pro 升级到 V2.5 Pro');
+                    migrateRetiredXiaomiMimoModels(state.modelPreferences.preferredCloudModels);
+                }
+
+                if (version < 33 && state?.modelPreferences?.preferredCloudModels) {
+                    console.log('[Store] 迁移 v33: Xiaomi MiMo V2 / V2 Omni 升级到 V2.5');
+                    migrateRetiredXiaomiMimoModels(state.modelPreferences.preferredCloudModels);
+                }
+
+                if (version < 34 && state?.modelPreferences?.preferredCloudModels) {
+                    console.log('[Store] 迁移 v34: 移除即将下线 Xiaomi MiMo V2 旧模型，只保留 V2.5 系列');
+                    migrateRetiredXiaomiMimoModels(state.modelPreferences.preferredCloudModels);
+                }
+
+                if (version < 35 && state?.modelPreferences) {
+                    console.log('[Store] 迁移 v35: 关闭模型自动跨供应商回退');
+                    state.modelPreferences = {
+                        ...state.modelPreferences,
+                        autoFallback: false
+                    };
+                }
+
+                if (version < 38 && state?.modelPreferences) {
+                    console.log('[Store] 迁移 v38: 从旧主模型/视觉槽初始化独立视觉模型');
+                    state.modelPreferences = normalizeModelPreferences(state.modelPreferences);
+                }
+
+                if (!state.designKnowledgeSettings) {
+                    state.designKnowledgeSettings = defaultDesignKnowledgeSettings;
+                }
+
+                // v37: 新增 dynamicModels（动态拉取模型）。仅补缺省值，绝不触碰上面的
+                // Xiaomi 退役迁移链与 preferredCloudModels。
+                if (!Array.isArray(state.dynamicModels)) {
+                    state.dynamicModels = [];
+                }
+                if (version < 39) {
+                    console.log('[Store] 迁移 v39: 重新分类旧动态模型并撤销未经证实的视觉/Tool 能力');
+                    state.dynamicModels = normalizePersistedDynamicModels(state.dynamicModels);
+                }
+
                 return state;
             },
             onRehydrateStorage: () => (state) => {
                 console.log('[Store] 重新加载存储数据');
+
+                if (state) {
+                    // 'auto' 运行模式已取消：磁盘上的旧值必须在这里折算成 local/cloud。
+                    // 只靠 migrate 不够——已经是当前 version 的用户不会再跑迁移，
+                    // 而带着 'auto' 的偏好会让设置页两个模式都不高亮、模型列表全空。
+                    if (state.modelPreferences) {
+                        state.modelPreferences.mode = normalizeModelRunMode(
+                            state.modelPreferences.mode,
+                            state.modelPreferences.primaryModel
+                        );
+                    }
+                    state.integrationSettings = normalizeIntegrationSettings(state.integrationSettings);
+                    state.designKnowledgeSettings = normalizeDesignKnowledgeSettings(state.designKnowledgeSettings);
+                    // 把持久化的动态模型注入 renderer 进程注册表，让 getModelById
+                    // 在 hydrate 后立即能查到正确 apiModelId（不再走 slug 反推）。
+                    state.dynamicModels = normalizePersistedDynamicModels(state.dynamicModels);
+                    setDynamicModels(state.dynamicModels);
+                }
                 
                 // 🔧 修复旧格式的模型 ID (ollama-xxx → local-xxx)
                 if (state?.modelPreferences?.preferredLocalModels) {
@@ -1320,7 +2005,7 @@ export const useAppStore = create<AppState>()(
                     
                     if (needsFix) {
                         console.log('[Store] onRehydrate: 重置 modelPreferences 为新格式');
-                        state.modelPreferences = DEFAULT_MODEL_PREFERENCES;
+                        state.modelPreferences = normalizeModelPreferences(DEFAULT_MODEL_PREFERENCES);
                     }
                 }
                 
@@ -1381,6 +2066,7 @@ export const useAppStore = create<AppState>()(
                 // 如果旧持久化数据中包含 projectConversations，迁移到文件
                 if (state) {
                     const oldProjectConversations = (state as any).projectConversations;
+                    let migrationTask: Promise<unknown> = Promise.resolve();
                     if (oldProjectConversations && typeof oldProjectConversations === 'object') {
                         const projectIds = Object.keys(oldProjectConversations);
                         const hasData = projectIds.some(id => {
@@ -1389,9 +2075,9 @@ export const useAppStore = create<AppState>()(
                         });
                         if (hasData) {
                             console.log(`[Store] onRehydrate: 发现旧 projectConversations 数据 (${projectIds.length} 个项目)，迁移到文件...`);
-                            const designEcho = (window as any).designEcho;
+                            const designEcho = typeof window !== 'undefined' ? (window as any).designEcho : undefined;
                             if (designEcho?.invoke) {
-                                designEcho.invoke('conversation:migrateFromStore', oldProjectConversations)
+                                migrationTask = designEcho.invoke('conversation:migrateFromStore', oldProjectConversations)
                                     .then((r: any) => console.log('[Store] 对话迁移结果:', r))
                                     .catch((e: any) => console.error('[Store] 对话迁移失败:', e));
                             }
@@ -1402,68 +2088,19 @@ export const useAppStore = create<AppState>()(
                     state.projectConversations = {};
 
                     const projectId = getProjectId(state.currentProject);
+                    const placeholder = createDefaultConversation();
+                    state.conversations = [placeholder];
+                    state.currentConversationId = placeholder.id;
+                    state.messages = [];
 
-                    // 从文件加载当前项目的对话
-                    const designEcho = (window as any).designEcho;
-                    if (designEcho?.invoke) {
-                        designEcho.invoke('conversation:load', projectId)
-                            .then((result: any) => {
-                                if (result?.success && result.conversations?.length > 0) {
-                                    console.log(`[Store] onRehydrate: 从文件加载对话成功: ${result.conversations.length} 条`);
-                                    const convs = result.conversations;
-                                    let targetConv = convs.find((c: Conversation) =>
-                                        c.id === useAppStore.getState().currentConversationId
-                                    );
-                                    if (!targetConv) targetConv = convs[0];
-
-                                    useAppStore.setState({
-                                        conversations: convs,
-                                        currentConversationId: targetConv.id,
-                                        messages: targetConv.messages || [],
-                                        projectConversations: { [projectId]: convs }
-                                    });
-                                } else {
-                                    // 文件中没有数据，尝试从旧迁移数据中恢复
-                                    const oldConvs = oldProjectConversations?.[projectId];
-                                    if (Array.isArray(oldConvs) && oldConvs.length > 0) {
-                                        console.log(`[Store] onRehydrate: 使用旧内存数据: ${oldConvs.length} 条`);
-                                        let targetConv = oldConvs.find((c: Conversation) =>
-                                            c.id === useAppStore.getState().currentConversationId
-                                        );
-                                        if (!targetConv) targetConv = oldConvs[0];
-                                        useAppStore.setState({
-                                            conversations: oldConvs,
-                                            currentConversationId: targetConv.id,
-                                            messages: targetConv.messages || [],
-                                            projectConversations: { [projectId]: oldConvs }
-                                        });
-                                    } else {
-                                        console.log('[Store] onRehydrate: 无对话数据，创建默认对话');
-                                        const newConv = createDefaultConversation();
-                                        useAppStore.setState({
-                                            conversations: [newConv],
-                                            currentConversationId: newConv.id,
-                                            messages: []
-                                        });
-                                    }
-                                }
-                            })
-                            .catch((e: any) => {
-                                console.error('[Store] onRehydrate: 加载对话失败:', e);
-                                const newConv = createDefaultConversation();
-                                useAppStore.setState({
-                                    conversations: [newConv],
-                                    currentConversationId: newConv.id,
-                                    messages: []
-                                });
-                            });
-                    } else {
-                        // 无 IPC bridge（不应该发生，但做防御）
-                        const newConv = createDefaultConversation();
-                        state.conversations = [newConv];
-                        state.currentConversationId = newConv.id;
-                        state.messages = [];
-                    }
+                    // 迁移与加载共享主进程文件队列；加载统一走 store action，避免第二套迟到回写逻辑。
+                    void migrationTask.finally(() => {
+                        Promise.resolve().then(() => {
+                            const currentStore = useAppStore.getState();
+                            if (getProjectId(currentStore.currentProject) !== projectId) return;
+                            currentStore.loadProjectConversations(projectId);
+                        });
+                    });
                 }
             }
         }

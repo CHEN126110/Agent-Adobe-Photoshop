@@ -5,9 +5,15 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { observeActiveDocumentAtHistoryState } from '../../core/photoshop-document-observation';
+import type { PhotoshopHistoryStateRef } from '../../core/photoshop-history-state-ref';
+import {
+    encodePhotoshopImageDataAsJpeg,
+    toSnapshotErrorMessage
+} from './snapshot-encoding';
 
 const app = require('photoshop').app;
-const { core, imaging } = require('photoshop');
+const { imaging } = require('photoshop');
 
 /**
  * 获取画布快照工具
@@ -30,11 +36,21 @@ export class GetCanvasSnapshotTool implements Tool {
                 format: {
                     type: 'string',
                     enum: ['jpeg', 'png'],
-                    description: '图片格式，默认 jpeg（更小）'
+                    description: '兼容请求格式；当前快照统一返回 JPEG'
                 },
                 quality: {
                     type: 'number',
-                    description: 'JPEG 质量 (1-100)，默认 80'
+                    description: '兼容字段；当前由 Photoshop Imaging API 统一编码'
+                },
+                region: {
+                    type: 'object',
+                    description: '只截取文档中的一个区域（文档像素坐标 {x,y,width,height}）。长文档（如详情页）观察某一屏时必用：全图缩放会小到看不清',
+                    properties: {
+                        x: { type: 'number', description: '区域左上角 X 坐标（文档像素）' },
+                        y: { type: 'number', description: '区域左上角 Y 坐标（文档像素）' },
+                        width: { type: 'number', description: '区域宽度（文档像素）' },
+                        height: { type: 'number', description: '区域高度（文档像素）' }
+                    }
                 }
             }
         }
@@ -44,6 +60,7 @@ export class GetCanvasSnapshotTool implements Tool {
         maxSize?: number;
         format?: string;
         quality?: number;
+        region?: { x?: number; y?: number; width?: number; height?: number };
     }): Promise<{
         success: boolean;
         snapshot?: {
@@ -52,7 +69,12 @@ export class GetCanvasSnapshotTool implements Tool {
             height: number;
             format: string;
         };
+        requestedFormat?: string;
+        message?: string;
+        region?: { x: number; y: number; width: number; height: number };
+        historyStateRef?: PhotoshopHistoryStateRef;
         documentInfo?: {
+            id: number;
             name: string;
             width: number;
             height: number;
@@ -61,106 +83,118 @@ export class GetCanvasSnapshotTool implements Tool {
         error?: string;
     }> {
         try {
-            const doc = app.activeDocument;
-            if (!doc) {
-                return { success: false, error: '没有打开的文档' };
-            }
-
             const maxSize = params.maxSize || 1024;
-            const format = params.format || 'jpeg';
-            const quality = params.quality || 80;
-
-            // 计算缩放后的尺寸
-            let targetWidth = doc.width;
-            let targetHeight = doc.height;
-            
-            if (targetWidth > maxSize || targetHeight > maxSize) {
-                const scale = Math.min(maxSize / targetWidth, maxSize / targetHeight);
-                targetWidth = Math.round(targetWidth * scale);
-                targetHeight = Math.round(targetHeight * scale);
-            }
-
-            let base64Data = '';
-
-            await core.executeAsModal(async () => {
-                // 使用 Imaging API 获取整个文档的像素数据
-                try {
-                    const pixelData = await imaging.getPixels({
-                        documentID: doc.id,
-                        targetSize: { width: targetWidth, height: targetHeight },
-                        applyAlpha: true
-                    });
-
-                    // 编码为 JPEG 或 PNG
-                    const encodedData = await imaging.encodeImageData({
-                        imageData: pixelData.imageData,
-                        base64: true
-                    });
-
-                    // encodeImageData 返回的可能是字符串或对象
-                    if (typeof encodedData === 'string') {
-                        base64Data = encodedData;
-                    } else if (encodedData && typeof encodedData === 'object') {
-                        base64Data = (encodedData as any).base64 || '';
+            const requestedFormat = params.format || 'jpeg';
+            const outputFormat = 'jpeg';
+            const observation = await observeActiveDocumentAtHistoryState({
+                commandName: 'DesignEcho: 获取画布快照',
+                timeOut: 5,
+                unavailableMessage: '无法读取 Photoshop 文档历史版本，未返回可能过期的画布快照。',
+                changedMessage: '截图期间 Photoshop 文档发生变化，已丢弃这张不一致的画布快照。'
+            }, async (doc) => {
+                const documentWidth = Number(doc.width);
+                const documentHeight = Number(doc.height);
+                let regionRect: { x: number; y: number; width: number; height: number } | null = null;
+                if (params.region && Number(params.region.width) > 0 && Number(params.region.height) > 0) {
+                    const rx = Math.max(0, Math.min(documentWidth - 1, Math.round(Number(params.region.x) || 0)));
+                    const ry = Math.max(0, Math.min(documentHeight - 1, Math.round(Number(params.region.y) || 0)));
+                    const rw = Math.min(documentWidth - rx, Math.round(Number(params.region.width)));
+                    const rh = Math.min(documentHeight - ry, Math.round(Number(params.region.height)));
+                    if (rw > 0 && rh > 0) {
+                        regionRect = { x: rx, y: ry, width: rw, height: rh };
                     }
-                    pixelData.imageData.dispose();
+                }
 
+                let targetWidth = regionRect ? regionRect.width : documentWidth;
+                let targetHeight = regionRect ? regionRect.height : documentHeight;
+                if (targetWidth > maxSize || targetHeight > maxSize) {
+                    const scale = Math.min(maxSize / targetWidth, maxSize / targetHeight);
+                    targetWidth = Math.max(1, Math.round(targetWidth * scale));
+                    targetHeight = Math.max(1, Math.round(targetHeight * scale));
+                }
+
+                let pixelData: any;
+                let encoded;
+                try {
+                    pixelData = await imaging.getPixels({
+                        documentID: doc.id,
+                        ...(regionRect ? {
+                            sourceBounds: {
+                                left: regionRect.x,
+                                top: regionRect.y,
+                                right: regionRect.x + regionRect.width,
+                                bottom: regionRect.y + regionRect.height
+                            }
+                        } : {}),
+                        targetSize: { width: targetWidth, height: targetHeight },
+                        colorSpace: 'RGB',
+                        componentSize: 8,
+                        applyAlpha: true,
+                    });
+                    encoded = await encodePhotoshopImageDataAsJpeg(
+                        pixelData.imageData,
+                        targetWidth,
+                        targetHeight
+                    );
                 } catch (imagingError) {
-                    console.log('[GetCanvasSnapshot] Imaging API 失败，使用备用方法');
-                    // 备用方法：使用临时文件
-                    base64Data = await this.getFallbackSnapshot(doc, targetWidth, targetHeight, format, quality);
+                    if (regionRect) {
+                        // 区域模式不降级全图：返回全图会让模型误以为看到的是区域，比失败更糟
+                        throw new Error(`区域截图失败（region ${regionRect.x},${regionRect.y} ${regionRect.width}x${regionRect.height}）：${imagingError instanceof Error ? imagingError.message : String(imagingError)}。可尝试缩小区域或用不带 region 的快照。`);
+                    }
+                    // 大文档全图失败要指路 region（失败信息不指路=模型只能反复裸调，真机病例）
+                    if (Number(doc.height) > 8000 || Number(doc.width) > 8000) {
+                        throw new Error(`全图截取失败：文档 ${doc.width}x${doc.height}px 过大。请带 region 参数只看目标区域，例如 {x:0, y:目标屏起点, width:${doc.width}, height:屏高}；目标图层的区域可先用 getLayerBounds/findLayers 读到。`);
+                    }
+                    throw imagingError;
+                } finally {
+                    pixelData?.imageData?.dispose?.();
                 }
-            }, { commandName: 'DesignEcho: 获取画布快照' });
 
-            // 统计图层数量
-            let layerCount = 0;
-            const countLayers = (container: any) => {
-                for (const layer of container.layers) {
-                    layerCount++;
-                    if (layer.layers) countLayers(layer);
-                }
-            };
-            countLayers(doc);
+                let layerCount = 0;
+                const countLayers = (container: any): void => {
+                    for (const layer of container.layers) {
+                        layerCount += 1;
+                        if (layer.layers) countLayers(layer);
+                    }
+                };
+                countLayers(doc);
+                return {
+                    snapshot: {
+                        base64: encoded.base64,
+                        width: encoded.width,
+                        height: encoded.height,
+                        format: outputFormat
+                    },
+                    regionRect,
+                    documentInfo: {
+                        id: Number(doc.id),
+                        name: String(doc.name || ''),
+                        width: documentWidth,
+                        height: documentHeight,
+                        layerCount
+                    }
+                };
+            });
 
             return {
                 success: true,
-                snapshot: {
-                    base64: base64Data,
-                    width: targetWidth,
-                    height: targetHeight,
-                    format
-                },
-                documentInfo: {
-                    name: doc.name,
-                    width: doc.width,
-                    height: doc.height,
-                    layerCount
-                }
+                snapshot: observation.value.snapshot,
+                requestedFormat,
+                message: requestedFormat === outputFormat
+                    ? undefined
+                    : '已返回可预览快照，格式为 JPEG。',
+                ...(observation.value.regionRect ? { region: observation.value.regionRect } : {}),
+                historyStateRef: observation.historyStateRef,
+                documentInfo: observation.value.documentInfo
             };
 
         } catch (error) {
             console.error('[GetCanvasSnapshot] Error:', error);
             return {
                 success: false,
-                error: error instanceof Error ? error.message : '获取快照失败'
+                error: toSnapshotErrorMessage(error)
             };
         }
-    }
-
-    /**
-     * 备用快照方法
-     */
-    private async getFallbackSnapshot(
-        _doc: any, 
-        _width: number, 
-        _height: number, 
-        _format: string, 
-        _quality: number
-    ): Promise<string> {
-        // 使用 batchPlay 导出为临时文件然后读取
-        // 这是一个简化的实现，实际可能需要更复杂的处理
-        // TODO: 实现备用快照方法
-        return '';  // 返回空字符串表示需要使用其他方法
     }
 }
 

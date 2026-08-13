@@ -5,6 +5,7 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { createToolFailureResult } from '../../core/tool-error-normalizer';
 
 const app = require('photoshop').app;
 const { core } = require('photoshop');
@@ -33,8 +34,8 @@ export class AlignLayersTool implements Tool {
                 },
                 alignTo: {
                     type: 'string',
-                    enum: ['selection', 'canvas', 'firstLayer'],
-                    description: '对齐参考：selection（选区）、canvas（画布）、firstLayer（第一个图层）'
+                    enum: ['canvas', 'firstLayer'],
+                    description: '对齐参考：canvas（画布）、firstLayer（第一个图层）。对齐到选区暂不支持（底层描述符只区分画布/图层，传 selection 会静默按首图层对齐）'
                 }
             },
             required: ['alignType']
@@ -88,13 +89,13 @@ export class AlignLayersTool implements Tool {
                             layerID: params.layerIds,
                             _options: { dialogOptions: 'dontDisplay' }
                         }
-                    ], {});
+                    ], { synchronousExecution: true });
                 }
 
                 // 构建对齐命令
                 const alignDescriptor = this.getAlignDescriptor(params.alignType, alignTo);
                 
-                await action.batchPlay([alignDescriptor], {});
+                await action.batchPlay([alignDescriptor], { synchronousExecution: true });
 
             }, { commandName: 'DesignEcho: 对齐图层' });
 
@@ -105,10 +106,7 @@ export class AlignLayersTool implements Tool {
 
         } catch (error) {
             console.error('[AlignLayers] Error:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : '对齐失败'
-            };
+            return createToolFailureResult({ toolName: this.name, error, params });
         }
     }
 
@@ -124,6 +122,10 @@ export class AlignLayersTool implements Tool {
         };
 
         // 映射对齐参考
+        // 现状说明：此映射从未被使用——下方 align 描述符只通过 alignToCanvas 布尔值区分
+        // "对齐画布"与"对齐图层"，没有"对齐到选区"的表达；alignTo='selection' 实际
+        // 等同对齐首图层且无报错。Agent 可见 schema（DesignEcho-Agent tool-schemas.ts
+        // alignLayers.alignTo）已从枚举中移除 selection，避免对模型过度承诺。
         const alignToMap: Record<string, string> = {
             'selection': 'selection',
             'canvas': 'canvas',

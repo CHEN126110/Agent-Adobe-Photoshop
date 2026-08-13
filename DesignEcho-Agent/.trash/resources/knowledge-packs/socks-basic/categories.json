@@ -1,0 +1,44 @@
+[
+  {
+    "id": "cat-boat",
+    "name": "船袜",
+    "alias": ["隐形袜", "浅口袜", "豆豆袜"],
+    "description": "低帮隐形设计，适合搭配低帮鞋、帆布鞋、乐福鞋",
+    "targetAudience": ["年轻人", "时尚人群", "夏季穿搭"]
+  },
+  {
+    "id": "cat-ankle",
+    "name": "短袜",
+    "alias": ["踝袜", "短筒袜"],
+    "description": "刚好到脚踝的长度，日常穿搭百搭款式",
+    "targetAudience": ["日常穿搭", "休闲运动", "通用"]
+  },
+  {
+    "id": "cat-crew",
+    "name": "中筒袜",
+    "alias": ["棉袜", "运动袜"],
+    "description": "经典中筒设计，覆盖小腿下部，适合运动和日常",
+    "targetAudience": ["运动人群", "学生", "日常穿搭"]
+  },
+  {
+    "id": "cat-calf",
+    "name": "小腿袜",
+    "alias": ["中长袜", "及膝袜"],
+    "description": "覆盖小腿，保暖性好，适合秋冬季节",
+    "targetAudience": ["女性", "保暖需求", "搭配短裙"]
+  },
+  {
+    "id": "cat-knee",
+    "name": "长筒袜",
+    "alias": ["及膝袜", "高筒袜"],
+    "description": "到达膝盖位置的长度，保暖时尚兼具",
+    "targetAudience": ["女性", "秋冬搭配", "JK风格"]
+  },
+  {
+    "id": "cat-over-knee",
+    "name": "过膝袜",
+    "alias": ["大腿袜", "长腿袜"],
+    "description": "超过膝盖的长度，显腿长，时尚感强",
+    "targetAudience": ["时尚女性", "秋冬搭配", "显瘦需求"]
+  }
+]

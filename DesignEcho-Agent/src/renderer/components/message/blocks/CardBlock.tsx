@@ -12,27 +12,27 @@ interface CardBlockProps {
 
 const VARIANT_CONFIG = {
     info: {
-        icon: 'ℹ️',
+        icon: 'i',
         className: 'card-info',
         defaultTitle: '提示'
     },
     success: {
-        icon: '✅',
+        icon: '✓',
         className: 'card-success',
         defaultTitle: '成功'
     },
     warning: {
-        icon: '⚠️',
+        icon: '!',
         className: 'card-warning',
         defaultTitle: '警告'
     },
     error: {
-        icon: '❌',
+        icon: 'x',
         className: 'card-error',
         defaultTitle: '错误'
     },
     neutral: {
-        icon: '📋',
+        icon: 'i',
         className: 'card-neutral',
         defaultTitle: '信息'
     }
@@ -58,7 +58,7 @@ export const CardBlock: React.FC<CardBlockProps> = ({ block, onAction }) => {
                     <span className="card-title">{title}</span>
                 </div>
                 {block.collapsible && (
-                    <button className="collapse-btn">
+                    <button className="collapse-btn" aria-label={isCollapsed ? '展开' : '收起'}>
                         <svg 
                             width="16" 
                             height="16" 

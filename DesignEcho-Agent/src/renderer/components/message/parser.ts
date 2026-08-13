@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 消息解析器
  * 
  * 将传统消息格式转换为多模态内容块格式
@@ -9,15 +9,56 @@
  * - 避免不必要的字符串操作
  */
 
-import type { ActionItem, ContentBlock, MultimodalMessage, TextBlock, CodeBlock, ImageBlock, ToolResultBlock, CardBlock, ThinkingBlock as ThinkingBlockType, ParseOptions } from './types';
-import { getToolDisplayInfo } from '../ThinkingProcess';
+import type { ActionItem, ContentBlock, MultimodalMessage, TextBlock, CodeBlock, ImageBlock, ToolResultBlock, CardBlock, CollapsibleBlock, ThinkingBlock as ThinkingBlockType, TaskPlanBlock as TaskPlanBlockType, InteractiveCardBlock, ComposerContentBlock, ParseOptions } from './types';
+import type {
+    InteractiveCardDefinition,
+    InteractiveCardSubmission
+} from '../../../shared/interactive-card-contract';
+import { getToolDisplayInfo } from '../../services/tool-display-info';
+import type { AgentExecutionSummary } from '../../services/agent-runtime/types';
+import type { BusinessSkillVisualObservationFeedback } from '../../../shared/business-skill-visual-observation-feedback';
+import type { AgentTaskPlanningContract } from '../../../shared/agent-task-planning-contract';
+import type { AgentTaskPlanPresentation } from '../../../shared/agent-task-plan-presentation';
+import type { AgentUserVisibleState } from '../../../shared/agent-user-visible-state';
+import type { AgentTaskPublicPlanExecutionRequest } from '../../../shared/agent-task-public-plan-execution-request';
+import type { AgentTaskPublicPlanApprovalRecord } from '../../../shared/agent-task-public-plan-approval-record';
+import type { AgentTaskPublicPlanControlledRun } from '../../../shared/agent-task-public-plan-controlled-runner';
+import type { SkuDeliverySummary, SkuDeliveryStatus } from '../../../shared/sku-delivery-summary';
+import {
+    normalizeChatComposerContentParts,
+    stripChatComposerReferenceMarkers,
+    type ChatComposerContentPart,
+    type ChatMessageImage
+} from '../../../shared/chat-composer-content';
+import { resolveAgentExecutionBusinessActivityCounts } from '../../../shared/agent-execution-activity-counts';
+import { normalizeAgentResponsePresentation } from '../../../shared/agent-response-presentation';
+import {
+    isAgentResponseInterruptionSentinelContent,
+    resolveAgentResponseInterruption,
+    type AgentResponseInterruption
+} from '../../../shared/agent-response-interruption';
+import {
+    isDeterministicVisibleNoticeOrigin,
+    normalizeAssistantReplyOriginForDisplay,
+    type AssistantReplyOrigin
+} from '../../../shared/assistant-reply-origin';
+import {
+    sanitizeUserVisibleAssistantBodyText,
+    sanitizeUserVisibleDiagnosticText,
+    sanitizeUserVisibleThinkingText
+} from '../../../shared/chat-response-cleaner';
+import { buildToolResultPreview } from '../../services/tool-result-preview';
+import {
+    resolveThinkingStepDisplayRole,
+    resolveThinkingStepRoleLabel
+} from './thinkingStepPresentation';
 
 // ==================== 类型定义 ====================
 
 // 旧版思维步骤类型
 interface LegacyThinkingStep {
     id: string;
-    type: 'thinking' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
+    type: 'thinking' | 'status' | 'tool_call' | 'tool_result' | 'decision' | 'reading' | 'exploring' | 'analyzing';
     content: string;
     toolName?: string;
     toolParams?: any;
@@ -41,7 +82,22 @@ interface LegacyMessage {
     copyResult?: any;
     isThinking?: boolean;
     thinkingSteps?: LegacyThinkingStep[];
+    executionSummary?: AgentExecutionSummary;
+    businessVisualObservationFeedback?: BusinessSkillVisualObservationFeedback;
+    agentTaskPlan?: AgentTaskPlanningContract;
+    agentTaskPlanPresentation?: AgentTaskPlanPresentation;
+    agentTaskPublicPlanExecutionRequest?: AgentTaskPublicPlanExecutionRequest;
+    agentTaskPublicPlanApprovalRecord?: AgentTaskPublicPlanApprovalRecord;
+    agentTaskPublicPlanControlledRun?: AgentTaskPublicPlanControlledRun;
+    skuDeliverySummary?: SkuDeliverySummary;
+    interactiveCards?: InteractiveCardDefinition[];
+    interactiveCardSubmissions?: InteractiveCardSubmission[];
+    assistantReplyOrigin?: AssistantReplyOrigin;
+    agentResponseInterruption?: AgentResponseInterruption;
+    conversationalModelFailure?: any;
     image?: { data: string; type: string };
+    contentParts?: ChatComposerContentPart[];
+    images?: ChatMessageImage[];
 }
 // ==================== 缓存机制 ====================
 
@@ -58,10 +114,203 @@ interface CacheEntry {
     result: MultimodalMessage;
     contentHash: string;
     thinkingStepsLength: number;
+    thinkingStepsHash: string;
+    isThinking: boolean;
     hasImage: boolean;
+    contentPartsHash: string;
+    imagesHash: string;
+    executionSummaryHash: string;
+    businessVisualObservationFeedbackHash: string;
+    agentTaskPlanUserVisibleStateHash: string;
+    agentTaskPlanPresentationHash: string;
+    publicPlanExecutionRequestHash: string;
+    publicPlanApprovalRecordHash: string;
+    publicPlanControlledRunHash: string;
+    skuDeliverySummaryHash: string;
+    interactiveCardsHash: string;
+    interactiveCardSubmissionsHash: string;
+    assistantReplyOriginHash: string;
+    agentResponseInterruptionHash: string;
 }
 
 const conversionCache = new WeakMap<LegacyMessage, CacheEntry>();
+
+function safeDiagnosticText(value: unknown): string {
+    return sanitizeUserVisibleDiagnosticText(String(value ?? ''))
+        .replace(/工具调用/g, '画面处理')
+        .replace(/业务\s*skill/gi, '设计任务')
+        .replace(/ContextSnapshot\s*\/\s*ProjectAssetIndex/gi, '项目上下文或素材索引')
+        .replace(/VisualInsightCache/gi, '已有素材理解结果')
+        .replace(/视觉洞察缓存/g, '素材理解结果');
+}
+
+function safeThinkingText(value: unknown): string {
+    return sanitizeUserVisibleThinkingText(String(value ?? ''))
+        .replace(/ContextSnapshot\s*\/\s*ProjectAssetIndex/gi, '项目上下文或素材索引')
+        .replace(/VisualInsightCache/gi, '已有素材理解结果')
+        .replace(/视觉洞察缓存/g, '素材理解结果');
+}
+
+function safeCardText(value: unknown, fallback: string): string {
+    return safeDiagnosticText(value) || fallback;
+}
+
+function safePublicPlanDesignText(value: unknown): string {
+    return safeDiagnosticText(value)
+        .replace(/\blayer_hierarchy\b/ig, '图层情况')
+        .replace(/\bacceptance_snapshot\b/ig, '画面快照')
+        .replace(/\bdocument_info\b/ig, '文档信息')
+        .replace(/读回图层结构/g, '检查图层是否真实创建')
+        .replace(/读回图层/g, '检查图层')
+        .replace(/读回验收快照/g, '查看画面结果')
+        .replace(/读回画面/g, '查看画面')
+        .replace(/读回导出文件/g, '检查导出文件')
+        .replace(/执行后读回/g, '完成后复核')
+        .replace(/读回/g, '复核')
+        .replace(/工具执行/g, '处理')
+        .replace(/受控/g, '确认范围内')
+        .replace(/^公开设计计划[：:]\s*/u, '')
+        .replace(/；?等待用户确认后才允许(?:受控)?执行。?$/u, '')
+        .replace(/；?确认后(?:才)?(?:允许|开始)(?:受控)?执行。?$/u, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function safePublicPlanRequestStatus(status: unknown): string {
+    const value = String(status || '').trim();
+    if (value === 'ready_for_controlled_execution_request') return '准备开始';
+    if (value === 'blocked_pending_user_confirmation') return '等待确认';
+    if (value.startsWith('blocked_')) return '当前条件不完整';
+    return safeDiagnosticText(value) || '状态未知';
+}
+
+function safePublicPlanControlledRunStatus(status: unknown): string {
+    const value = String(status || '').trim();
+    if (value === 'completed_dry_run') return '计划已检查';
+    if (value === 'completed_fake_adapter_verified') return '计划已检查';
+    if (value === 'completed_live_adapter_verified') return '画面已创建，待复核';
+    if (value === 'failed_write_operation') return '处理未完成';
+    if (value === 'failed_readback') return '复核未完成';
+    if (value.startsWith('blocked_')) return '当前条件不完整';
+    return safeDiagnosticText(value) || '状态未知';
+}
+
+function getAgentUserVisibleStateVariant(
+    category: AgentUserVisibleState['category']
+): CardBlock['variant'] {
+    if (category === 'blocked') return 'warning';
+    if (category === 'clarification') return 'warning';
+    if (category === 'controlled_execution') return 'info';
+    if (category === 'planning') return 'info';
+    if (category === 'read_only') return 'neutral';
+    return 'neutral';
+}
+
+function resolveAgentUserVisibleState(
+    plan: AgentTaskPlanningContract | undefined
+): AgentUserVisibleState | undefined {
+    const state = (plan as any)?.userVisibleState;
+    if (!state || state.version !== 'agent-user-visible-state/v0') return undefined;
+    if (!state.title || !state.summary || !state.nextStep || !state.toolUse) return undefined;
+    return state as AgentUserVisibleState;
+}
+
+function getSkuDeliverySummaryVariant(status: SkuDeliveryStatus): CardBlock['variant'] {
+    if (status === 'completed') return 'success';
+    if (status === 'partial') return 'warning';
+    return 'error';
+}
+
+function formatSkuNoteSummary(noteCount: number, skippedNoteCount: number): string {
+    const parts: string[] = [];
+    if (noteCount > 0) parts.push(`${noteCount}个`);
+    if (skippedNoteCount > 0) parts.push(`跳过${skippedNoteCount}个`);
+    return parts.join('，') || '0个';
+}
+
+function buildSkuDeliverySummaryBlocks(
+    summary: SkuDeliverySummary | undefined,
+    messageId: string,
+    startIndex: number
+): ContentBlock[] {
+    if (!summary || summary.version !== 'sku-delivery-summary/v0') return [];
+    const compactText = safeCardText(summary.compactText, 'SKU 任务已完成，明细可展开查看。');
+    const statusCard: CardBlock = {
+        id: createStableId(messageId, 'sku-delivery-summary', startIndex),
+        type: 'card',
+        variant: getSkuDeliverySummaryVariant(summary.status),
+        title: 'SKU 交付状态',
+        content: compactText,
+        details: [
+            { label: '素材', value: safeCardText(summary.skuDocName, '未识别') },
+            { label: '规格', value: summary.processedSizes.length > 0 ? summary.processedSizes.join('、') : '未生成' },
+            { label: '组合', value: `${Math.max(0, summary.totalCombos)}组` },
+            { label: '自选备注', value: formatSkuNoteSummary(summary.noteCount, summary.skippedNoteCount) },
+            { label: '导出', value: `${Math.max(0, summary.exportCount)}张` },
+            { label: '留意', value: `${Math.max(0, summary.warningCount)}项` }
+        ]
+    };
+    const detailBlock: CollapsibleBlock = {
+        id: createStableId(messageId, 'sku-delivery-details', startIndex + 1),
+        type: 'collapsible',
+        title: 'SKU 明细',
+        icon: 'i',
+        defaultExpanded: false,
+        content: [{
+            id: createStableId(messageId, 'sku-delivery-details-text', startIndex + 2),
+            type: 'text',
+            format: 'plain',
+            content: safeCardText(summary.detailText, '暂无明细。')
+        } as TextBlock]
+    };
+    return [statusCard, detailBlock];
+}
+
+function shouldSkipPlainContentForSkuDelivery(
+    content: string,
+    summary: SkuDeliverySummary | undefined
+): boolean {
+    if (!summary) return false;
+    const normalizedContent = sanitizeUserVisibleAssistantBodyText(content).trim();
+    const normalizedCompact = sanitizeUserVisibleAssistantBodyText(summary.compactText).trim();
+    return normalizedContent.length > 0 && normalizedContent === normalizedCompact;
+}
+
+function isOriginNoticeAssistantContent(message: LegacyMessage): boolean {
+    const assistantReplyOrigin = normalizeAssistantReplyOriginForDisplay(message.assistantReplyOrigin);
+    return message.role === 'assistant'
+        && isDeterministicVisibleNoticeOrigin(assistantReplyOrigin);
+}
+
+function buildOriginNoticeContentBlock(
+    content: string,
+    message: LegacyMessage,
+    index: number
+): TextBlock | null {
+    if (!isOriginNoticeAssistantContent(message)) return null;
+    const safeContent = sanitizeUserVisibleAssistantBodyText(content).trim();
+    if (!safeContent) return null;
+    return {
+        id: createStableId(message.id, 'origin-notice-content', index),
+        type: 'text',
+        // 用 markdown 渲染：工具结果摘要（如设计参考检索）常含标题/列表/来源链接，
+        // plain 会把结构压成一段文字流。TextBlock 的 parseMarkdown 先转义 HTML 再解析，XSS 安全。
+        format: 'markdown',
+        content: safeContent
+    };
+}
+
+function shouldRenderPersistentThinkingSteps(message: LegacyMessage): boolean {
+    const steps = Array.isArray(message.thinkingSteps) ? message.thinkingSteps : [];
+    if (steps.length === 0) return false;
+
+    const requestKind = String((message.agentTaskPlan as any)?.requestKind || '');
+    const route = String((message.agentTaskPlan as any)?.route || '');
+    const hasToolTrace = steps.some(step => step.type === 'tool_call' || step.type === 'tool_result');
+    if (hasToolTrace) return true;
+
+    return requestKind !== 'chat_only' && route !== 'direct_response';
+}
 
 /**
  * 简单字符串哈希（djb2 算法）
@@ -75,6 +324,71 @@ function hashString(str: string): string {
     return hash.toString(36);
 }
 
+function safeCacheStringify(value: unknown): string {
+    if (value === undefined) return '';
+    try {
+        return JSON.stringify(value) || '';
+    } catch {
+        return String(value);
+    }
+}
+
+function hashCachePayload(value: unknown): string {
+    const text = safeCacheStringify(value);
+    return text ? hashString(text) : '';
+}
+
+function buildChatMessageImagesHash(images?: ChatMessageImage[]): string {
+    if (!Array.isArray(images) || images.length === 0) return '';
+    const signature = images.map((image) => {
+        const data = String(image.data || '');
+        return [
+            image.id,
+            image.type,
+            image.name || '',
+            data.length,
+            data.slice(0, 48),
+            data.slice(-48)
+        ].join('\u0000');
+    }).join('\u0001');
+    return hashString(signature);
+}
+
+function buildThinkingStepsHash(steps?: LegacyThinkingStep[]): string {
+    if (!Array.isArray(steps) || steps.length === 0) return '';
+
+    const signature = steps.map((step) => ({
+        id: step.id,
+        type: step.type,
+        status: step.status,
+        content: step.content,
+        toolName: step.toolName,
+        toolParamsHash: hashCachePayload(step.toolParams),
+        toolResultHash: hashCachePayload(step.toolResult),
+        duration: step.duration,
+        filePath: step.filePath,
+        lineRange: step.lineRange
+    }));
+
+    return hashString(safeCacheStringify(signature));
+}
+
+function normalizeHistoricalThinkingSteps(
+    steps: LegacyThinkingStep[],
+    isStreaming = false
+): LegacyThinkingStep[] {
+    if (!Array.isArray(steps) || steps.length === 0) return [];
+    if (isStreaming) return steps;
+
+    return steps.map((step) => {
+        if (step.status !== 'running' && step.status !== 'pending') return step;
+        return {
+            ...step,
+            status: 'success'
+        };
+    });
+}
+
 /**
  * 生成稳定 ID
  * 
@@ -85,6 +399,20 @@ function createStableId(messageId: string, blockType: string, index: number): st
     return `${messageId}-${blockType}-${index}`;
 }
 
+function buildAgentTaskPlanPresentationBlock(
+    presentation: AgentTaskPlanPresentation | undefined,
+    messageId: string,
+    index: number
+): TaskPlanBlockType | null {
+    if (!presentation || presentation.version !== 'agent-task-plan-presentation/v0') return null;
+    if (!Array.isArray(presentation.steps) || presentation.steps.length === 0) return null;
+    return {
+        id: createStableId(messageId, 'task-plan', index),
+        type: 'task_plan',
+        presentation
+    };
+}
+
 function withActionPayload(
     params: Record<string, any>,
     payload: Record<string, any> = params
@@ -92,6 +420,459 @@ function withActionPayload(
     return {
         ...params,
         payload
+    };
+}
+
+function buildExecutionSummaryCard(
+    summary: AgentExecutionSummary | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    if (!summary) return null;
+    const statusConfig: Record<AgentExecutionSummary['status'], {
+        label: string;
+        variant: CardBlock['variant'];
+        icon: string;
+        defaultCollapsed: boolean;
+        message: string;
+    }> = {
+        completed: {
+            label: '已完成',
+            variant: 'success',
+            icon: '✓',
+            defaultCollapsed: true,
+            message: '当前版本已经完成。'
+        },
+        needs_review: {
+            label: '可以先看',
+            variant: 'warning',
+            icon: '!',
+            defaultCollapsed: true,
+            message: '当前版本已经形成，可以先看看整体效果。'
+        },
+        failed: {
+            label: '还没做完',
+            variant: 'error',
+            icon: '!',
+            defaultCollapsed: false,
+            message: '这次停在制作过程中，已经产生的改动会保留。'
+        },
+        cancelled: {
+            label: '已停止',
+            variant: 'neutral',
+            icon: 'i',
+            defaultCollapsed: false,
+            message: '已经停下，当前改动会保留。'
+        },
+        awaiting_confirmation: {
+            label: '等你确认',
+            variant: 'neutral',
+            icon: 'i',
+            defaultCollapsed: true,
+            message: '有一个会影响接下来制作的选择需要你确认，确认后会继续。'
+        }
+    };
+
+    const displayStatus = resolveExecutionSummaryDisplayStatus(summary);
+    const config = statusConfig[displayStatus] || statusConfig.needs_review;
+    const userVisibleSummary = safeDiagnosticText(summary.userVisibleSummary || '');
+    const userVisibleNextStep = safeDiagnosticText(summary.userVisibleNextStep || '');
+    // 新消息只展示 Runtime 明确签发的用户结果投影。旧消息没有该投影时使用中性的状态说明，
+    // 不回退 summaryText / blockers / warnings / lastError 等内部完成与诊断字段。
+    const content = userVisibleSummary || config.message;
+    const details: CardBlock['details'] = [
+        ...(userVisibleNextStep ? [{ label: '下一步', value: userVisibleNextStep }] : [])
+    ];
+
+    return {
+        id: createStableId(messageId, 'execution-summary', index),
+        type: 'card',
+        variant: config.variant,
+        icon: config.icon,
+        title: `当前版本：${config.label}`,
+        content,
+        details,
+        collapsible: true,
+        defaultCollapsed: config.defaultCollapsed
+    };
+}
+
+/**
+ * 旧记录可能把外层 summary 写成 completed，但内部 TaskCompletion 仍是 0/2
+ * needs_review。展示层只允许向更保守的状态合并，绝不能把矛盾记录渲染成成功。
+ * cancelled / awaiting_confirmation 是用户可理解的独立终态，优先保留而不染成红色失败。
+ */
+function resolveExecutionSummaryDisplayStatus(
+    summary: AgentExecutionSummary
+): AgentExecutionSummary['status'] {
+    const validExecutionStatuses = new Set<AgentExecutionSummary['status']>([
+        'completed',
+        'needs_review',
+        'failed',
+        'cancelled',
+        'awaiting_confirmation'
+    ]);
+    const rawSummaryStatus: unknown = (summary as { status?: unknown }).status;
+    const summaryStatus: AgentExecutionSummary['status'] = validExecutionStatuses.has(
+        rawSummaryStatus as AgentExecutionSummary['status']
+    )
+        ? rawSummaryStatus as AgentExecutionSummary['status']
+        : 'needs_review';
+    const rawCompletionStatus: unknown = summary.taskCompletion?.status;
+    let completionStatus: AgentExecutionSummary['status'] | undefined;
+    if (rawCompletionStatus !== undefined) {
+        completionStatus = validExecutionStatuses.has(
+            rawCompletionStatus as AgentExecutionSummary['status']
+        )
+            ? rawCompletionStatus as AgentExecutionSummary['status']
+            : 'needs_review';
+    }
+    const requirementStatuses: unknown[] = Array.isArray(summary.taskCompletion?.required)
+        ? summary.taskCompletion.required.map((item) => item?.status)
+        : [];
+    const statuses = new Set([
+        summaryStatus,
+        ...(completionStatus ? [completionStatus] : [])
+    ]);
+
+    if (statuses.has('cancelled')) return 'cancelled';
+    if (statuses.has('awaiting_confirmation')) return 'awaiting_confirmation';
+    if (statuses.has('failed') || requirementStatuses.includes('failed')) return 'failed';
+    const hasUnknownRequirementStatus = requirementStatuses.some((status) => (
+        status !== 'passed'
+        && status !== 'failed'
+        && status !== 'needs_review'
+        && status !== 'not_applicable'
+    ));
+    if (
+        statuses.has('needs_review')
+        || requirementStatuses.includes('needs_review')
+        || hasUnknownRequirementStatus
+    ) {
+        return 'needs_review';
+    }
+    return 'completed';
+}
+
+function buildAgentUserVisibleStateCard(
+    plan: AgentTaskPlanningContract | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    const state = resolveAgentUserVisibleState(plan);
+    if (!state) return null;
+    if (state.category === 'conversation' && !state.userActionRequired) return null;
+    if (state.category === 'clarification') return null;
+
+    const safeTitle = safeCardText(state.title, '本轮状态');
+    const summary = safeDiagnosticText(state.summary);
+    const nextStep = safeDiagnosticText(state.nextStep);
+    const content = [
+        summary,
+        nextStep ? `下一步：${nextStep}` : ''
+    ].filter(Boolean).join('\n');
+
+    return {
+        id: createStableId(messageId, 'agent-state', index),
+        type: 'card',
+        variant: getAgentUserVisibleStateVariant(state.category),
+        icon: state.userActionRequired ? '!' : 'i',
+        title: safeTitle,
+        content,
+        collapsible: true,
+        defaultCollapsed: state.category === 'conversation'
+    };
+}
+
+function shouldSuppressAgentUserVisibleStateCard(message: LegacyMessage): boolean {
+    const state = resolveAgentUserVisibleState(message.agentTaskPlan);
+    if (!state) return false;
+    if (!state.userActionRequired) return true;
+    const assistantReplyOrigin = normalizeAssistantReplyOriginForDisplay(message.assistantReplyOrigin);
+    return message.role === 'assistant'
+        && assistantReplyOrigin.userVisibleKind === 'tool_summary'
+        && state.category === 'read_only'
+        && !state.userActionRequired;
+}
+
+function buildBusinessVisualObservationFeedbackCard(
+    feedback: BusinessSkillVisualObservationFeedback | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    if (!shouldRenderBusinessVisualObservationFeedbackCard(feedback)) return null;
+
+    const variantBySeverity: Record<BusinessSkillVisualObservationFeedback['severity'], CardBlock['variant']> = {
+        none: 'neutral',
+        info: 'info',
+        warning: 'warning'
+    };
+
+    const iconBySeverity: Record<BusinessSkillVisualObservationFeedback['severity'], string> = {
+        none: 'i',
+        info: 'i',
+        warning: '!'
+    };
+
+    const safeTitle = safeCardText(feedback.title, '处理前先确认');
+    const warningLines = feedback.warningItems.slice(0, 2).map(safeDiagnosticText).filter(Boolean).map((item) => `- ${item}`);
+    const content = [
+        safeDiagnosticText(feedback.summary),
+        safeDiagnosticText(feedback.actionHint),
+        ...warningLines
+    ].filter(Boolean).join('\n');
+
+    return {
+        id: createStableId(messageId, 'business-visual-observation-feedback', index),
+        type: 'card',
+        variant: variantBySeverity[feedback.severity] || 'warning',
+        icon: iconBySeverity[feedback.severity] || '!',
+        title: `素材提示：${safeTitle}`,
+        content,
+        collapsible: true,
+        defaultCollapsed: feedback.severity === 'info'
+    };
+}
+
+function shouldRenderBusinessVisualObservationFeedbackCard(
+    feedback: BusinessSkillVisualObservationFeedback | undefined
+): feedback is BusinessSkillVisualObservationFeedback {
+    if (!feedback || feedback.userVisible !== true) return false;
+    if (!Array.isArray(feedback.missingInputs) || feedback.missingInputs.length === 0) return false;
+    return feedback.recommendedActions.includes('refresh_project_context')
+        || feedback.recommendedActions.includes('ask_user_to_select_images');
+}
+
+function collectBusinessFeedbackVisibleText(feedback?: BusinessSkillVisualObservationFeedback): string {
+    if (!feedback) return '';
+    return [
+        feedback.title,
+        feedback.summary,
+        feedback.actionHint,
+        ...(Array.isArray(feedback.missingInputs) ? feedback.missingInputs : []),
+        ...(Array.isArray(feedback.warningItems) ? feedback.warningItems : [])
+    ].map((item) => safeDiagnosticText(item)).filter(Boolean).join(' ');
+}
+
+function hasExecutionCompletionActivity(summary: AgentExecutionSummary): boolean {
+    const activityCounts = resolveAgentExecutionBusinessActivityCounts(summary);
+    return activityCounts.total > 0
+        || summary.acceptanceVerified > 0
+        || summary.acceptanceFailed > 0
+        || summary.acceptanceNeedsReview > 0
+        || summary.noDocumentChangeRisks > 0
+        || !!summary.taskCompletion;
+}
+
+function isAssistantReplyRequestingUserInput(content: string): boolean {
+    const normalized = sanitizeUserVisibleAssistantBodyText(content)
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!normalized) return false;
+
+    return /(请告诉我[:：]?|告诉我[:：]?|请提供|请补充|需要你提供|需要你补充|需要先确认|先确认|补充.*后再继续|有了这些信息)/u.test(normalized)
+        || /(产品类型|需求|素材来源|图片|模板|项目素材|风格|尺寸|目标).{0,80}(告诉我|提供|补充|确认)/u.test(normalized)
+        || /(如果你需要我开始|如果要开始|开始做.*请告诉我|我就可以立即开工)/u.test(normalized);
+}
+
+function shouldSuppressCompletedExecutionSummaryCard(message: LegacyMessage): boolean {
+    if (message.role !== 'assistant') return false;
+    const summary = message.executionSummary;
+    if (!summary || resolveExecutionSummaryDisplayStatus(summary) !== 'completed') return false;
+
+    const state = resolveAgentUserVisibleState(message.agentTaskPlan);
+    if (state?.category === 'clarification' || state?.userActionRequired) return true;
+
+    const content = sanitizeUserVisibleAssistantBodyText(message.content || '').trim();
+    if (!content) return false;
+    if (isAssistantReplyRequestingUserInput(content)) return true;
+
+    // final_response means the model loop ended. Without tool or acceptance activity,
+    // it is a conversational reply rather than a completed processing result.
+    return String(summary.stopReason || '') === 'final_response'
+        && !hasExecutionCompletionActivity(summary);
+}
+
+function isConversationalUnavailableNotice(message: LegacyMessage): boolean {
+    if (message.role !== 'assistant') return false;
+    const assistantReplyOrigin = normalizeAssistantReplyOriginForDisplay(message.assistantReplyOrigin);
+    const combined = String(message.content || '');
+
+    return Boolean((message as any).conversationalModelFailure)
+        || assistantReplyOrigin.source === 'conversational:unavailable'
+        || /\bConversational reply unavailable\b/i.test(combined)
+        || /(这次没有拿到模型回复|暂时没有拿到(?:可靠|稳定)回复|对话模型没有返回有效内容|当前没有生成可展示回复|没有收到模型回复|没有拿到模型回复)/u.test(combined);
+}
+
+function shouldUseCompactAssistantFailureView(message: LegacyMessage): boolean {
+    if (message.role !== 'assistant') return false;
+
+    const content = sanitizeUserVisibleAssistantBodyText(message.content || '').trim();
+    if (!content) return false;
+    if (isConversationalUnavailableNotice(message)) return true;
+
+    const summary = message.executionSummary;
+    const stopReason = String(summary?.stopReason || '');
+    const planStatus = String((message.agentTaskPlan as any)?.status || '');
+    const visibleStateCategory = String((message.agentTaskPlan as any)?.userVisibleState?.category || '');
+    const assistantReplyOrigin = normalizeAssistantReplyOriginForDisplay(message.assistantReplyOrigin);
+    const feedback = message.businessVisualObservationFeedback;
+    const isBlockedOrFailed = summary?.status === 'failed'
+        || assistantReplyOrigin.userVisibleKind === 'blocker_notice'
+        || stopReason === 'tool_preflight_blocked'
+        || planStatus.startsWith('blocked_')
+        || visibleStateCategory === 'blocked';
+    if (!isBlockedOrFailed) return false;
+
+    const combined = [
+        content,
+        summary?.userVisibleSummary,
+        summary?.userVisibleNextStep,
+        collectBusinessFeedbackVisibleText(feedback)
+    ].map((item) => safeDiagnosticText(item)).filter(Boolean).join(' ');
+    const hasUserActionableMissingCondition = /(当前项目缺少|当前项目里没有|缺少可用|未找到|没有找到|没有可用|没有可分析|请先补齐|需要图片|图片资源|素材|资源|SKU|PSD|PSB|模板|文档|项目目录|文件)/u.test(combined);
+    if (!hasUserActionableMissingCondition) return false;
+
+    const contentAlreadyExplainsBlocker = /(还缺少条件|当前项目缺少|当前项目里没有|缺少可用|未找到|没有找到|没有可用|没有可分析|请先补齐|需要图片|图片资源|素材|资源|SKU|PSD|PSB|模板|文档|项目目录|文件)/u.test(content);
+    return contentAlreadyExplainsBlocker;
+}
+
+function buildPublicPlanExecutionRequestCard(
+    request: AgentTaskPublicPlanExecutionRequest | undefined,
+    approvalRecord: AgentTaskPublicPlanApprovalRecord | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    if (!request || request.version !== 'agent-task-public-plan-execution-request/v0') return null;
+
+    const isPending = request.status === 'blocked_pending_user_confirmation';
+    const isApproved = approvalRecord?.status === 'approved_controlled_execution_request';
+    const isReady = request.status === 'ready_for_controlled_execution_request';
+    const plannedStepCount = Math.max(request.operationRequests?.length || 0, request.proposedWriteTools?.length || 0);
+    const readbackTargetCount = request.readbackTargets?.length || 0;
+    const details: CardBlock['details'] = [
+        { label: '状态', value: isApproved || isReady ? '准备开始' : safePublicPlanRequestStatus(request.status) },
+        { label: '画面动作', value: plannedStepCount > 0 ? `${plannedStepCount} 项` : '待补充' },
+        { label: '完成检查', value: readbackTargetCount > 0 ? `${readbackTargetCount} 项` : '待补充' }
+    ];
+    const designDecision = safePublicPlanDesignText(request.publicPlanSummary);
+    const executionIdea = safePublicPlanDesignText(request.executionPlanSummary);
+    const title = isApproved
+        ? '处理计划已确认'
+        : isReady
+            ? '准备开始处理'
+            : '处理计划待确认';
+    const content = isApproved || isReady
+        ? designDecision || '已准备好按这份处理计划推进；开始前仍会按计划和检查项执行。'
+        : designDecision || '确认后会按这份处理计划推进，并按检查项复核结果。';
+
+    return {
+        id: createStableId(messageId, 'public-plan-execution-request', index),
+        type: 'card',
+        variant: isApproved || isReady ? 'success' : isPending ? 'warning' : 'neutral',
+        icon: isApproved || isReady ? '✓' : '!',
+        title,
+        content,
+        details: executionIdea
+            ? [...details, { label: '思路', value: executionIdea }]
+            : details,
+        actions: isPending && !isApproved
+            ? [{
+                id: createStableId(messageId, 'public-plan-confirm', index),
+                label: '确认计划',
+                variant: 'primary',
+                action: 'confirmPublicPlan',
+                params: {
+                    sourceMessageId: messageId,
+                    requestId: request.requestId
+                }
+            } as ActionItem]
+            : undefined,
+        collapsible: true,
+        defaultCollapsed: false
+    };
+}
+
+function buildPublicPlanControlledRunCard(
+    run: AgentTaskPublicPlanControlledRun | undefined,
+    messageId: string,
+    index: number
+): CardBlock | null {
+    if (!run || run.version !== 'agent-task-public-plan-controlled-runner/v0') return null;
+
+    const isCompleted = run.status === 'completed_dry_run'
+        || run.status === 'completed_fake_adapter_verified'
+        || run.status === 'completed_live_adapter_verified';
+    const isFailed = run.status === 'failed_write_operation'
+        || run.status === 'failed_readback';
+    const isLiveBlocked = run.status === 'blocked_live_write_permission_missing'
+        || run.status === 'blocked_live_adapter_required'
+        || run.status === 'blocked_live_operation_params_required';
+    const isBlocked = run.status.startsWith('blocked_');
+    const variant: CardBlock['variant'] = isCompleted
+        ? 'success'
+        : isFailed
+            ? 'error'
+            : isBlocked
+                ? 'warning'
+                : 'neutral';
+    const title = run.status === 'completed_dry_run'
+        ? '设计方案已检查'
+        : run.status === 'completed_fake_adapter_verified'
+            ? '设计方案已检查'
+            : run.status === 'completed_live_adapter_verified'
+                ? '画面已创建，待复核'
+            : isFailed
+                ? '处理未完成'
+            : isLiveBlocked
+                    ? '处理条件不完整'
+                    : '尚未开始处理';
+    const plannedStepCount = Math.max(run.operationRequests?.length || 0, run.plannedWriteTools?.length || 0);
+    const completedStepCount = Math.max(run.operationResults?.length || 0, run.executedWriteTools?.length || 0);
+    const readbackTargetCount = run.readbackTargets?.length || run.readbackResults?.length || 0;
+    const primaryBlocker = run.blockers.find(Boolean);
+    const safePrimaryBlocker = primaryBlocker ? safeDiagnosticText(primaryBlocker) : '';
+    const designDecision = safePublicPlanDesignText(run.publicPlanSummary);
+    const executionIdea = safePublicPlanDesignText(run.executionPlanSummary);
+    const observationDiffSummary = run.observationDiff?.status === 'mismatch'
+        ? safePublicPlanDesignText(run.observationDiff.userVisibleSummary)
+            || `画面里暂时没有看到「${(run.observationDiff.missingVisibleCopy || [])
+                .map((item) => safePublicPlanDesignText(item))
+                .filter(Boolean)
+                .slice(0, 4)
+                .join('」「')}」。`
+        : '';
+    const content = run.status === 'completed_dry_run'
+        ? designDecision || '已检查这份设计方案，本轮没有改动画面。'
+        : run.status === 'completed_fake_adapter_verified'
+            ? designDecision || '已检查这份设计方案，但没有改动真实画面。'
+            : run.status === 'completed_live_adapter_verified'
+                ? designDecision || '已按方案创建画面，需要继续复核整体效果。'
+                : isLiveBlocked
+                ? '当前还缺少必要条件，暂时不能改动画面。'
+                : isFailed
+                    ? observationDiffSummary
+                        ? `复核发现：${observationDiffSummary}`
+                        : `处理未完成：${safePrimaryBlocker || '写入或结果检查失败'}`
+                    : safePrimaryBlocker || '待处理请求尚未满足启动条件。';
+
+    return {
+        id: createStableId(messageId, 'public-plan-controlled-run', index),
+        type: 'card',
+        variant,
+        icon: isCompleted ? '✓' : isFailed ? '×' : '!',
+        title,
+        content,
+        details: [
+            { label: '状态', value: safePublicPlanControlledRunStatus(run.status) },
+            { label: '画面动作', value: plannedStepCount > 0 ? `${plannedStepCount} 项` : '未开始' },
+            { label: '已完成', value: completedStepCount > 0 ? `${completedStepCount} 项` : '0 项' },
+            { label: '完成检查', value: readbackTargetCount > 0 ? `${readbackTargetCount} 项` : '待补充' },
+            ...(observationDiffSummary ? [{ label: '复核发现', value: observationDiffSummary }] : []),
+            ...(executionIdea ? [{ label: '思路', value: executionIdea }] : [])
+        ],
+        collapsible: true,
+        defaultCollapsed: !isFailed && !isLiveBlocked
     };
 }
 
@@ -208,24 +989,23 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
             data = JSON.parse(result);
         } catch {
             // 非 JSON 字符串，截取显示
-            return result.length > 50 ? result.slice(0, 50) + '...' : result;
+            const cleaned = safeDiagnosticText(result);
+            return cleaned.length > 50 ? cleaned.slice(0, 50) + '...' : cleaned;
         }
     }
     
     // 处理常见工具结果模式
     if (typeof data !== 'object' || data === null) {
-        return String(data);
+        return safeDiagnosticText(data);
     }
     
     // 检查是否成功
     const success = data.success !== false;
     
-    // 错误消息优先显示
-    if (data.error) {
-        return `错误: ${data.error}`;
-    }
-    if (data.message && !success) {
-        return data.message;
+    // 原始 Tool 错误和内部检查摘要属于运行诊断，不直接成为用户文案。
+    // 用户需要知道的阻塞由 Agent 的最终用户结果投影或交互卡片说明。
+    if (!success) {
+        return `${getToolDisplayInfo(toolName).name}没有完成`;
     }
     
     // 根据工具类型生成友好摘要
@@ -273,12 +1053,37 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
             return success ? '图片已置入' : '置入失败';
             
         case 'setTextContent':
-        case 'setTextStyle':
             return success ? '文本已更新' : '更新失败';
+
+        case 'setTextStyle': {
+            if (!success) return '文字样式更新失败';
+            if (data.outcome === 'unchanged_already_satisfied') {
+                return '目标文字样式已满足，未产生写入';
+            }
+            const changedProperties = Array.isArray(data.changedProperties)
+                ? data.changedProperties.filter((property: unknown) => typeof property === 'string')
+                : [];
+            const propertyLabels: Record<string, string> = {
+                fontName: '字体',
+                fontSize: '字号',
+                tracking: '字距',
+                leading: '行距'
+            };
+            const changedSummary = changedProperties.length > 0
+                ? `：${changedProperties.map((property: string) => propertyLabels[property] || property).join('、')}`
+                : '';
+            if (data.verification?.status === 'passed') {
+                return `文字样式已按字段更新并验证${changedSummary}`;
+            }
+            return `文字样式已更新，保持性待复核${changedSummary}`;
+        }
             
         case 'moveLayer':
         case 'transformLayer':
             return success ? '变换已应用' : '变换失败';
+
+        case 'moveLayerToGroup':
+            return success ? '已移动到图层组' : '移动到图层组失败';
             
         case 'createGroup':
         case 'groupLayers':
@@ -289,9 +1094,14 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
             
         case 'saveDocument':
         case 'quickExport':
+        case 'exportGroup':
             if (data.path) {
                 const fileName = data.path.split(/[/\\]/).pop();
                 return `已保存: ${fileName}`;
+            }
+            if (data.outputPath) {
+                const fileName = data.outputPath.split(/[/\\]/).pop();
+                return `已导出: ${fileName}`;
             }
             return success ? '保存成功' : '保存失败';
             
@@ -311,7 +1121,8 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
     
     // 通用消息字段
     if (data.message && typeof data.message === 'string') {
-        return data.message.length > 60 ? data.message.slice(0, 60) + '...' : data.message;
+        const cleaned = safeDiagnosticText(data.message);
+        return cleaned.length > 60 ? cleaned.slice(0, 60) + '...' : cleaned;
     }
     
     // 通用成功/失败
@@ -328,22 +1139,69 @@ function formatToolResultSummary(toolName: string, result: any): string | undefi
 }
 
 /**
- * 将旧版思维步骤转换为思考块
+ * 将旧版可见步骤转换为独立的公开过程 / 工具执行块。
+ * 这里展示的是用户可见的意图、观察和复核摘要，不展示私密链路推理。
  */
-function convertThinkingSteps(steps: LegacyThinkingStep[], messageId: string): ThinkingBlockType {
-    const thinkingSteps = steps.map(step => {
+function isVisibleTimelineStep(step: LegacyThinkingStep): boolean {
+    if (step.toolName) return true;
+    if (step.type === 'thinking' || step.type === 'decision') {
+        return safeThinkingText(step.content).length > 0;
+    }
+    return typeof step.content === 'string'
+        && safeDiagnosticText(step.content).trim().length > 0;
+}
+
+function resolveTimelineDuration(steps: LegacyThinkingStep[]): number {
+    const timedSteps = steps.flatMap((step) => {
+        const timestamp = Number(step.timestamp);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return [];
+        const rawDuration = Number(step.duration);
+        const duration = Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 0;
+        return [{ start: timestamp, end: timestamp + duration }];
+    });
+    if (timedSteps.length > 0) {
+        const firstStart = Math.min(...timedSteps.map((step) => step.start));
+        const lastEnd = Math.max(...timedSteps.map((step) => step.end));
+        return Math.max(0, lastEnd - firstStart);
+    }
+    return steps.reduce((longest, step) => {
+        const duration = Number(step.duration);
+        return Number.isFinite(duration) && duration > longest ? duration : longest;
+    }, 0);
+}
+
+function convertThinkingStepGroup(
+    steps: LegacyThinkingStep[],
+    messageId: string,
+    title: string,
+    index: number,
+    isStreaming: boolean
+): ThinkingBlockType | null {
+    const visibleSteps = steps.filter(isVisibleTimelineStep);
+    if (visibleSteps.length === 0) return null;
+
+    const thinkingSteps = visibleSteps.map(step => {
         let icon = '🔧';
-        let label = step.content || '';
+        let label = step.type === 'thinking' || step.type === 'decision'
+            ? safeThinkingText(step.content || '')
+            : safeDiagnosticText(step.content || '');
+        const isToolStep = Boolean(step.toolName)
+            || step.type === 'tool_call'
+            || step.type === 'tool_result';
+        const displayRole = resolveThinkingStepDisplayRole({
+            type: step.type,
+            toolName: step.toolName,
+            tone: isToolStep ? 'action' : 'thought'
+        });
         
         if (step.toolName) {
             const info = getToolDisplayInfo(step.toolName);
             icon = info.icon;
             label = info.name;
-            if (step.content && step.content !== info.description) {
-                label = step.content;
-            }
         } else if (step.type === 'thinking' || step.type === 'decision') {
             icon = '💭';
+        } else if (step.type === 'status') {
+            icon = '⏳';
         } else if (step.type === 'reading') {
             icon = '📖';
             if (step.filePath) {
@@ -360,20 +1218,66 @@ function convertThinkingSteps(steps: LegacyThinkingStep[], messageId: string): T
             label,
             icon,
             status: step.status,
+            tone: isToolStep ? 'action' as const : 'thought' as const,
+            displayRole,
+            roleLabel: resolveThinkingStepRoleLabel(displayRole, step.type),
+            sourceType: step.type,
+            actionLabel: isToolStep
+                ? step.status === 'error'
+                    ? '未完成'
+                    : step.status === 'running' || step.status === 'pending'
+                        ? '正在制作'
+                        : '已完成'
+                : undefined,
             detail: step.toolResult ? formatToolResultSummary(step.toolName || '', step.toolResult) : undefined,
+            preview: step.toolResult
+                ? buildToolResultPreview(step.toolName || '', step.toolResult)
+                : undefined,
             duration: step.duration
         };
     });
     
-    const totalDuration = steps.reduce((sum, s) => sum + (s.duration || 0), 0);
+    const totalDuration = resolveTimelineDuration(visibleSteps);
     
     return {
-        id: createStableId(messageId, 'thinking', 0),
+        id: createStableId(messageId, 'thinking', index),
         type: 'thinking',
+        title,
         steps: thinkingSteps,
-        isExpanded: false,
+        // 过程在运行中保持可见；历史 / 完成 / 失败终态默认只显示一行摘要。
+        // MessageRenderer 还会用 active/terminal key 处理同一消息的运行态切换。
+        isExpanded: isStreaming,
         totalDuration
     };
+}
+
+function convertThinkingSteps(steps: LegacyThinkingStep[], messageId: string, isStreaming = false): ThinkingBlockType[] {
+    const normalizedSteps = normalizeHistoricalThinkingSteps(steps, isStreaming);
+    const timelineSteps = normalizedSteps.filter((step) => (
+        step.type === 'thinking'
+        || step.type === 'decision'
+        || step.type === 'status'
+        || step.type === 'reading'
+        || step.type === 'exploring'
+        || step.type === 'analyzing'
+        || step.type === 'tool_call'
+        || step.type === 'tool_result'
+    ));
+    const visibleTimelineSteps = timelineSteps.filter(isVisibleTimelineStep);
+    return [
+        convertThinkingStepGroup(
+            visibleTimelineSteps,
+            messageId,
+            resolveThinkingBlockTitle(visibleTimelineSteps, isStreaming),
+            0,
+            isStreaming
+        )
+    ].filter((block): block is ThinkingBlockType => Boolean(block));
+}
+
+function resolveThinkingBlockTitle(steps: LegacyThinkingStep[], isStreaming = false): string {
+    const hasActiveStep = steps.some((step) => step.status === 'running' || step.status === 'pending');
+    return isStreaming && hasActiveStep ? '正在设计' : '设计过程';
 }
 
 /**
@@ -392,7 +1296,7 @@ function convertToolResult(step: LegacyThinkingStep, messageId: string, index: n
         icon: info.icon,
         success: step.status === 'success',
         result: step.toolResult,
-        error: step.status === 'error' ? (step.content || '执行失败') : undefined,
+        error: step.status === 'error' ? (safeDiagnosticText(step.content || '执行失败') || '执行失败') : undefined,
         duration: step.duration,
         details: step.toolResult ? parseToolResultDetails(step.toolResult) : undefined,
         actions: buildToolResultActions(step, messageId, index)
@@ -414,22 +1318,22 @@ function buildToolResultActions(step: LegacyThinkingStep, messageId: string, ind
         });
     }
 
-    if (step.status === 'error' && step.toolName) {
-        actions.push({
-            id: createStableId(messageId, 'tool-result-retry', index + 102),
-            label: '重试工具',
-            icon: '🔁',
-            variant: 'primary',
-            action: 'runTool',
-            params: withActionPayload(
-                { toolName: step.toolName, toolParams: step.toolParams || {} },
-                { toolName: step.toolName, toolParams: step.toolParams || {} }
-            )
-        });
-    }
-
     return actions.length > 0 ? actions : undefined;
 }
+
+const PUBLIC_TOOL_RESULT_FIELD_MAP: Record<string, { label: string; type?: 'text' | 'code' | 'link' }> = {
+    name: { label: '名称' },
+    documentName: { label: '文档' },
+    layerName: { label: '图层' },
+    type: { label: '类型' },
+    count: { label: '数量' },
+    size: { label: '大小' },
+    width: { label: '宽度' },
+    height: { label: '高度' },
+    totalFiles: { label: '文件数量' },
+    totalLayers: { label: '图层数量' },
+    success: { label: '结果' }
+};
 
 /**
  * 解析工具结果详情
@@ -438,35 +1342,22 @@ function parseToolResultDetails(result: any): Array<{ label: string; value: stri
     if (!result || typeof result !== 'object') return undefined;
     
     const details: Array<{ label: string; value: string | number; type?: 'text' | 'code' | 'link' }> = [];
-    
-    // 常见字段映射
-    const fieldMap: Record<string, string> = {
-        'name': '名称',
-        'id': 'ID',
-        'path': '路径',
-        'type': '类型',
-        'count': '数量',
-        'size': '大小',
-        'width': '宽度',
-        'height': '高度',
-        'success': '成功',
-        'error': '错误',
-        'message': '消息'
-    };
-    
     for (const [key, value] of Object.entries(result)) {
+        if (key === 'acceptance') continue;
         if (value === null || value === undefined) continue;
         if (typeof value === 'object') continue;
-        
-        const label = fieldMap[key] || key;
+        const publicField = PUBLIC_TOOL_RESULT_FIELD_MAP[key];
+        const label = publicField?.label;
+        if (!label) continue;
+
         const displayValue = typeof value === 'boolean' 
             ? (value ? '是' : '否')
-            : String(value);
+            : safeDiagnosticText(value);
         
         details.push({
             label,
             value: displayValue,
-            type: key === 'path' ? 'code' : 'text'
+            type: publicField.type || 'text'
         });
         
         // 限制详情数量
@@ -482,7 +1373,8 @@ function parseToolResultDetails(result: any): Array<{ label: string; value: stri
 function parseMessageContentInternal(
     content: string, 
     messageId: string,
-    startBlockIndex: number
+    startBlockIndex: number,
+    detectStatusCard = true
 ): ContentBlock[] {
     const blocks: ContentBlock[] = [];
     let blockIndex = startBlockIndex;
@@ -492,7 +1384,7 @@ function parseMessageContentInternal(
     blockIndex += codeBlocks.length;
     
     // 2. 检测消息类型
-    const messageType = detectMessageType(remainingContent);
+    const messageType = detectStatusCard ? detectMessageType(remainingContent) : 'normal';
     
     // 3. 如果是特殊类型消息，转换为卡片
     if (messageType !== 'normal') {
@@ -586,22 +1478,110 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
     const cached = conversionCache.get(message);
     const contentHash = hashString(message.content || '');
     const thinkingStepsLength = message.thinkingSteps?.length ?? 0;
+    const thinkingStepsHash = buildThinkingStepsHash(message.thinkingSteps);
+    const isThinking = message.isThinking === true;
     const hasImage = !!message.image;
+    const contentPartsHash = Array.isArray(message.contentParts)
+        ? hashString(JSON.stringify(message.contentParts))
+        : '';
+    const imagesHash = buildChatMessageImagesHash(message.images);
+    const executionSummaryHash = message.executionSummary
+        ? hashString(JSON.stringify(message.executionSummary))
+        : '';
+    const businessVisualObservationFeedbackHash = message.businessVisualObservationFeedback
+        ? hashString(JSON.stringify(message.businessVisualObservationFeedback))
+        : '';
+    const agentTaskPlanUserVisibleStateHash = message.agentTaskPlan?.userVisibleState
+        ? hashString(JSON.stringify(message.agentTaskPlan.userVisibleState))
+        : '';
+    const agentTaskPlanPresentationHash = message.agentTaskPlanPresentation
+        ? hashString(JSON.stringify(message.agentTaskPlanPresentation))
+        : '';
+    const publicPlanExecutionRequestHash = message.agentTaskPublicPlanExecutionRequest
+        ? hashString(JSON.stringify(message.agentTaskPublicPlanExecutionRequest))
+        : '';
+    const publicPlanApprovalRecordHash = message.agentTaskPublicPlanApprovalRecord
+        ? hashString(JSON.stringify(message.agentTaskPublicPlanApprovalRecord))
+        : '';
+    const publicPlanControlledRunHash = message.agentTaskPublicPlanControlledRun
+        ? hashString(JSON.stringify(message.agentTaskPublicPlanControlledRun))
+        : '';
+    const skuDeliverySummaryHash = message.skuDeliverySummary
+        ? hashString(JSON.stringify(message.skuDeliverySummary))
+        : '';
+    const interactiveCardsHash = Array.isArray(message.interactiveCards) && message.interactiveCards.length > 0
+        ? hashString(JSON.stringify(message.interactiveCards))
+        : '';
+    const interactiveCardSubmissionsHash = Array.isArray(message.interactiveCardSubmissions)
+        && message.interactiveCardSubmissions.length > 0
+        ? hashString(JSON.stringify(message.interactiveCardSubmissions))
+        : '';
+    const assistantReplyOriginHash = message.assistantReplyOrigin
+        ? hashString(JSON.stringify(message.assistantReplyOrigin))
+        : '';
+    const agentResponseInterruption = resolveAgentResponseInterruption({
+        interruption: message.agentResponseInterruption,
+        assistantReplyOrigin: message.assistantReplyOrigin,
+        content: message.content
+    });
+    const agentResponseInterruptionHash = agentResponseInterruption
+        ? hashString(JSON.stringify(agentResponseInterruption))
+        : '';
     
     // 缓存命中且内容未变化
     if (cached && 
         cached.contentHash === contentHash &&
         cached.thinkingStepsLength === thinkingStepsLength &&
-        cached.hasImage === hasImage) {
+        cached.thinkingStepsHash === thinkingStepsHash &&
+        cached.isThinking === isThinking &&
+        cached.hasImage === hasImage &&
+        cached.contentPartsHash === contentPartsHash &&
+        cached.imagesHash === imagesHash &&
+        cached.executionSummaryHash === executionSummaryHash &&
+        cached.businessVisualObservationFeedbackHash === businessVisualObservationFeedbackHash &&
+        cached.agentTaskPlanUserVisibleStateHash === agentTaskPlanUserVisibleStateHash &&
+        cached.agentTaskPlanPresentationHash === agentTaskPlanPresentationHash &&
+        cached.publicPlanExecutionRequestHash === publicPlanExecutionRequestHash &&
+        cached.publicPlanApprovalRecordHash === publicPlanApprovalRecordHash &&
+        cached.publicPlanControlledRunHash === publicPlanControlledRunHash &&
+        cached.skuDeliverySummaryHash === skuDeliverySummaryHash &&
+        cached.interactiveCardsHash === interactiveCardsHash &&
+        cached.interactiveCardSubmissionsHash === interactiveCardSubmissionsHash &&
+        cached.assistantReplyOriginHash === assistantReplyOriginHash &&
+        cached.agentResponseInterruptionHash === agentResponseInterruptionHash) {
         return cached.result;
     }
     
     // 执行转换
     const blocks: ContentBlock[] = [];
     let blockIndex = 0;
+    const normalizedComposerParts = message.role === 'user' && Array.isArray(message.contentParts)
+        ? normalizeChatComposerContentParts(message.contentParts)
+        : [];
+    const hasComposerContent = normalizedComposerParts.length > 0;
+    const compactFailureView = shouldUseCompactAssistantFailureView(message);
+    const hasInteractiveUserAction = Array.isArray(message.interactiveCards)
+        && message.interactiveCards.length > 0;
+    const hasBusinessDeliveryResult = Boolean(message.skuDeliverySummary);
+    const taskPlanPresentationBlock = hasInteractiveUserAction || hasBusinessDeliveryResult
+        ? null
+        : buildAgentTaskPlanPresentationBlock(
+            message.agentTaskPlanPresentation,
+            message.id,
+            blockIndex
+        );
     
-    // 1. 如果有图片，添加图片块
-    if (message.image) {
+    // 新消息优先使用有序 composer block。旧 message.image 仅在没有新契约时按原逻辑回显。
+    if (hasComposerContent) {
+        blocks.push({
+            id: createStableId(message.id, 'composer-content', blockIndex++),
+            type: 'composer_content',
+            parts: normalizedComposerParts,
+            images: Array.isArray(message.images)
+                ? message.images.map((image) => ({ ...image }))
+                : []
+        } as ComposerContentBlock);
+    } else if (message.image) {
         blocks.push({
             id: createStableId(message.id, 'image', blockIndex++),
             type: 'image',
@@ -610,15 +1590,110 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
             zoomable: true
         } as ImageBlock);
     }
-    
-    // 2. 如果有思维步骤，添加思考块
-    if (message.thinkingSteps && message.thinkingSteps.length > 0) {
-        const thinkingBlock = convertThinkingSteps(message.thinkingSteps, message.id);
-        blocks.push(thinkingBlock);
+
+    if (taskPlanPresentationBlock) {
+        blocks.push({
+            ...taskPlanPresentationBlock,
+            id: createStableId(message.id, 'task-plan', blockIndex++)
+        });
+    }
+
+    const hasUnifiedTaskPlanPresentation = Boolean(taskPlanPresentationBlock);
+    const hasAuthoritativeNonCompletedResult = Boolean(
+        message.executionSummary
+        && resolveExecutionSummaryDisplayStatus(message.executionSummary) !== 'completed'
+    );
+    const hasRequiredUserVisibleAction = message.agentTaskPlan?.userVisibleState?.userActionRequired === true;
+    const hasPublicPlanConfirmationAction = (
+        message.agentTaskPublicPlanExecutionRequest?.status === 'blocked_pending_user_confirmation'
+    );
+    const controlledRunStatus = String(message.agentTaskPublicPlanControlledRun?.status || '');
+    const controlledRunIsEquivalentTerminal = controlledRunStatus === 'not_applicable'
+        || controlledRunStatus.startsWith('completed_');
+
+    const suppressCompletedExecutionSummary = shouldSuppressCompletedExecutionSummaryCard(message);
+    const executionSummaryCard = compactFailureView
+        || suppressCompletedExecutionSummary
+        || hasInteractiveUserAction
+        || hasBusinessDeliveryResult
+        || (hasUnifiedTaskPlanPresentation && !hasAuthoritativeNonCompletedResult)
+        ? null
+        : buildExecutionSummaryCard(message.executionSummary, message.id, blockIndex);
+    if (executionSummaryCard) {
+        blocks.push(executionSummaryCard);
         blockIndex++;
+    }
+
+    const agentUserVisibleStateCard = compactFailureView
+        || (!hasRequiredUserVisibleAction && (
+            hasUnifiedTaskPlanPresentation
+            || shouldSuppressAgentUserVisibleStateCard(message)
+        ))
+        ? null
+        : buildAgentUserVisibleStateCard(message.agentTaskPlan, message.id, blockIndex);
+    if (agentUserVisibleStateCard) {
+        blocks.push(agentUserVisibleStateCard);
+        blockIndex++;
+    }
+
+    const visualObservationFeedbackCard = compactFailureView ? null : buildBusinessVisualObservationFeedbackCard(
+        message.businessVisualObservationFeedback,
+        message.id,
+        blockIndex
+    );
+    if (visualObservationFeedbackCard) {
+        blocks.push(visualObservationFeedbackCard);
+        blockIndex++;
+    }
+
+    const publicPlanExecutionRequestCard = (compactFailureView && !hasPublicPlanConfirmationAction)
+        || (hasUnifiedTaskPlanPresentation && !hasPublicPlanConfirmationAction)
+        ? null
+        : buildPublicPlanExecutionRequestCard(
+        message.agentTaskPublicPlanExecutionRequest,
+        message.agentTaskPublicPlanApprovalRecord,
+        message.id,
+        blockIndex
+    );
+    if (publicPlanExecutionRequestCard) {
+        blocks.push(publicPlanExecutionRequestCard);
+        blockIndex++;
+    }
+
+    const publicPlanControlledRunCard = compactFailureView
+        || (hasUnifiedTaskPlanPresentation && controlledRunIsEquivalentTerminal)
+        ? null
+        : buildPublicPlanControlledRunCard(
+        message.agentTaskPublicPlanControlledRun,
+        message.id,
+        blockIndex
+    );
+    if (publicPlanControlledRunCard) {
+        blocks.push(publicPlanControlledRunCard);
+        blockIndex++;
+    }
+
+    const skuDeliverySummaryBlocks = buildSkuDeliverySummaryBlocks(
+        message.skuDeliverySummary,
+        message.id,
+        blockIndex
+    );
+    if (skuDeliverySummaryBlocks.length > 0) {
+        blocks.push(...skuDeliverySummaryBlocks);
+        blockIndex += skuDeliverySummaryBlocks.length;
+    }
+
+    // 2. 如果有思维步骤，添加思考块
+    if (!compactFailureView && shouldRenderPersistentThinkingSteps(message)) {
+        const thinkingSteps = message.thinkingSteps || [];
+        const thinkingBlocks = convertThinkingSteps(thinkingSteps, message.id, message.isThinking === true);
+        for (const thinkingBlock of thinkingBlocks) {
+            blocks.push(thinkingBlock);
+            blockIndex++;
+        }
         
         // 添加工具执行结果
-        const resultSteps = message.thinkingSteps.filter(s => s.type === 'tool_result');
+        const resultSteps = thinkingSteps.filter(s => s.type === 'tool_result');
         for (const step of resultSteps) {
             const resultBlock = convertToolResult(step, message.id, blockIndex++);
             if (resultBlock) {
@@ -628,17 +1703,60 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
     }
 
 
-    if (message.content) {
-        const contentBlocks = parseMessageContentInternal(message.content, message.id, blockIndex);
-        blocks.push(...contentBlocks);
+    const suppressInterruptionSentinel = Boolean(
+        agentResponseInterruption
+        && isAgentResponseInterruptionSentinelContent(message.content)
+    );
+    if (
+        message.content
+        && !hasComposerContent
+        && !suppressInterruptionSentinel
+        && !shouldSkipPlainContentForSkuDelivery(message.content, message.skuDeliverySummary)
+    ) {
+        const content = message.role === 'assistant'
+            ? normalizeAgentResponsePresentation(sanitizeUserVisibleAssistantBodyText(message.content))
+            : stripChatComposerReferenceMarkers(message.content).content;
+        const originNoticeBlock = content
+            ? buildOriginNoticeContentBlock(content, message, blockIndex)
+            : null;
+        if (originNoticeBlock) {
+            blocks.push(originNoticeBlock);
+            blockIndex++;
+        } else {
+            const contentBlocks = content
+                ? parseMessageContentInternal(content, message.id, blockIndex, false)
+                : [];
+            blocks.push(...contentBlocks);
+        }
     }
-    
+
+    // 交互确认卡片放在整条消息最底部：它是用户当下要操作的对象，必须在过程步骤/说明文字之下，
+    // 不能出现在"判断/处理"过程块之上（否则用户要往上翻才能找到确认卡片）。
+    if (Array.isArray(message.interactiveCards) && message.interactiveCards.length > 0) {
+        const submissionsByCardId = new Map(
+            (message.interactiveCardSubmissions || []).map((submission) => [submission.cardId, submission])
+        );
+        for (const card of message.interactiveCards) {
+            if (!card || card.version !== 'interactive-card/v0') continue;
+            blocks.push({
+                id: createStableId(message.id, `interactive-card-${card.id}`, blockIndex++),
+                type: 'interactive_card',
+                card,
+                sourceMessageId: message.id,
+                submission: submissionsByCardId.get(card.id)
+            } as InteractiveCardBlock);
+        }
+    }
+
     const result: MultimodalMessage = {
         id: message.id,
         role: message.role,
         timestamp: message.timestamp,
         blocks,
-        isStreaming: message.isThinking
+        isStreaming: isThinking,
+        metadata: agentResponseInterruption
+            ? { agentResponseInterruption }
+            : undefined
     };
     
     // 存入缓存
@@ -646,105 +1764,24 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         result,
         contentHash,
         thinkingStepsLength,
-        hasImage
+        thinkingStepsHash,
+        isThinking,
+        hasImage,
+        contentPartsHash,
+        imagesHash,
+        executionSummaryHash,
+        businessVisualObservationFeedbackHash,
+        agentTaskPlanUserVisibleStateHash,
+        agentTaskPlanPresentationHash,
+        publicPlanExecutionRequestHash,
+        publicPlanApprovalRecordHash,
+        publicPlanControlledRunHash,
+        skuDeliverySummaryHash,
+        interactiveCardsHash,
+        interactiveCardSubmissionsHash,
+        assistantReplyOriginHash,
+        agentResponseInterruptionHash
     });
     
     return result;
 }
-
-/**
- * 快速创建文本消息
- */
-export function createTextMessage(
-    content: string,
-    role: 'user' | 'assistant' = 'assistant'
-): MultimodalMessage {
-    const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
-    return {
-        id,
-        role,
-        timestamp: Date.now(),
-        blocks: [{
-            id: createStableId(id, 'text', 0),
-            type: 'text',
-            content,
-            format: 'markdown'
-        } as TextBlock]
-    };
-}
-
-/**
- * 快速创建成功消息
- */
-export function createSuccessMessage(title: string, message: string, details?: string[]): MultimodalMessage {
-    const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
-    const blocks: ContentBlock[] = [{
-        id: createStableId(id, 'card', 0),
-        type: 'card',
-        variant: 'success',
-        title,
-        content: message
-    } as CardBlock];
-    
-    return {
-        id,
-        role: 'assistant',
-        timestamp: Date.now(),
-        blocks
-    };
-}
-
-/**
- * 快速创建错误消息
- */
-export function createErrorMessage(title: string, message: string, suggestion?: string): MultimodalMessage {
-    const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
-    return {
-        id,
-        role: 'assistant',
-        timestamp: Date.now(),
-        blocks: [{
-            id: createStableId(id, 'error', 0),
-            type: 'error',
-            title,
-            message,
-            suggestion
-        }]
-    };
-}
-
-/**
- * 快速创建图片消息
- */
-export function createImageMessage(
-    imageSrc: string,
-    caption?: string,
-    role: 'user' | 'assistant' = 'assistant'
-): MultimodalMessage {
-    const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
-    return {
-        id,
-        role,
-        timestamp: Date.now(),
-        blocks: [{
-            id: createStableId(id, 'image', 0),
-            type: 'image',
-            src: imageSrc,
-            caption,
-            zoomable: true
-        } as ImageBlock]
-    };
-}
-
-
-
-
-
-
-
-
-
-
-
-
-

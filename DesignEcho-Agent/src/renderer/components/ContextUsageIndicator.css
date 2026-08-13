@@ -1,0 +1,193 @@
+/* 上下文占用环形指示器：与 Thinking 灯泡、模型图标同尺寸，工具条右侧成组 */
+
+.context-usage {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+}
+
+.context-usage-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+    outline: none;
+    transition: background-color 0.16s ease;
+}
+
+.context-usage-button:hover {
+    background-color: rgba(148, 163, 184, 0.13);
+}
+
+.context-usage-button:focus-visible {
+    box-shadow: 0 0 0 2px rgba(38, 132, 255, 0.45);
+}
+
+.context-usage-track {
+    fill: none;
+    stroke: rgba(148, 163, 184, 0.26);
+    stroke-width: 2.4;
+}
+
+/* 从 12 点方向顺时针增长，符合"进度"的直觉 */
+.context-usage-fill {
+    fill: none;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    transform: rotate(-90deg);
+    transform-origin: 9px 9px;
+    transition: stroke-dasharray 0.24s ease, stroke 0.16s ease;
+}
+
+.level-ok .context-usage-fill { stroke: #60a5fa; }
+.level-warn .context-usage-fill { stroke: #f5b35a; }
+.level-danger .context-usage-fill { stroke: #ef4444; }
+
+/* ===== 悬停面板 ===== */
+
+.context-usage-panel {
+    z-index: 400;
+    width: 268px;
+    max-width: min(268px, calc(100vw - 32px));
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--de-border);
+    background: var(--de-bg-card, #18181b);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+    pointer-events: none;
+}
+
+.context-usage-panel-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.context-usage-headline {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.context-usage-percent {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.context-usage-percent.level-ok { color: var(--de-text); }
+.context-usage-percent.level-warn { color: #f5b35a; }
+.context-usage-percent.level-danger { color: #ef4444; }
+
+.context-usage-total {
+    font-size: 11px;
+    color: var(--de-text-secondary);
+}
+
+.context-usage-bar {
+    display: flex;
+    height: 5px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(148, 163, 184, 0.14);
+}
+
+.context-usage-bar-part {
+    height: 100%;
+}
+
+.context-usage-bar-part.part-tools { background: #60a5fa; }
+.context-usage-bar-part.part-messages { background: #7dd3fc; }
+.context-usage-bar-part.part-free { background: transparent; }
+
+.context-usage-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.context-usage-list li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--de-text);
+}
+
+.context-usage-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+}
+
+.context-usage-dot.part-tools { background: #60a5fa; }
+.context-usage-dot.part-messages { background: #7dd3fc; }
+.context-usage-dot.part-free { background: rgba(148, 163, 184, 0.3); }
+
+.context-usage-label {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.context-usage-value {
+    flex: 0 0 auto;
+    color: var(--de-text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.context-usage-ratio {
+    flex: 0 0 auto;
+    width: 34px;
+    text-align: right;
+    color: var(--de-text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* 可用性告警：跟"用了多少"分开表达，它说的是"这个模型能不能用" */
+.context-usage-alert {
+    margin: 0;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.context-usage-alert.level-exceeds {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.12);
+}
+
+.context-usage-alert.level-tight {
+    color: #f5b35a;
+    background: rgba(245, 179, 90, 0.1);
+}
+
+/* 口径说明：这是估算值，不能拿去和渠道账单对数，必须写清楚 */
+.context-usage-note {
+    margin: 0;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--de-text-secondary);
+}
+
+.workbench-agent-panel .context-usage-button {
+    width: 26px;
+    height: 26px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .context-usage-button,
+    .context-usage-fill {
+        transition: none;
+    }
+}

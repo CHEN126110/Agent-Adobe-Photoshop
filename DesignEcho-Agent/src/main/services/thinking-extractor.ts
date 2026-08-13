@@ -220,7 +220,7 @@ export function extractThinkingFromModel(
     thinkingConfig?: ThinkingConfig
 ): ExtractedThinking {
     if (!thinkingConfig || !thinkingConfig.supported) {
-        // 不支持思维过程，但仍尝试解析 XML 标签（兜底）
+        // 不支持思维过程时，仍尝试解析 XML 标签作为兼容路径
         return extractXmlThinking(rawResponse);
     }
     

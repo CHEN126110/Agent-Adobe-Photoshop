@@ -255,12 +255,23 @@
             subtree: true
         });
         
-        // 安全超时：5秒后强制隐藏（防止卡住）
+        // 安全超时：5秒后处理 splash。
+        // 关键修复：若 React 仍未挂载（#root 空），不要直接移除 splash 露出与背景同色的纯黑屏，
+        // 而是保留 splash 并切到可读提示，避免"内容区全黑、无任何反馈"的黑屏体验。
         setTimeout(() => {
             const splash = document.getElementById('splash-screen');
-            if (splash && !splash.classList.contains('hidden')) {
+            if (!splash || splash.classList.contains('hidden')) return;
+            const root = document.getElementById('root');
+            if (root && root.children.length > 0) {
+                // React 已挂载，正常隐藏
                 splash.classList.add('hidden');
                 setTimeout(() => splash.remove(), 500);
+            } else {
+                // React 仍未挂载：保留 splash 但切到可读提示，不露黑屏
+                clearInterval(statusInterval);
+                if (statusElement) {
+                    statusElement.textContent = '启动较慢或遇到问题，请再稍候，或关闭后重新打开应用…';
+                }
             }
         }, 5000);
     </script>

@@ -18,8 +18,11 @@
  */
 
 import { EventEmitter } from 'events';
-import { ModelConfig, ThinkingConfig } from '../../shared/config/models.config';
-import { extractThinkingFromModel } from './thinking-extractor';
+import { ModelConfig } from '../../shared/config/models.config';
+import { buildAgentProviderTokenBudget } from '../../shared/agent-performance-policy';
+import { normalizeStreamTextChunk } from '../../shared/stream-text-normalizer';
+import { getHttpRequestAgent } from './network-proxy';
+import { getThinkingRequestParams } from './thinking-extractor';
 
 // ==================== 类型定义 ====================
 
@@ -48,13 +51,144 @@ export interface StreamOptions {
     maxTokens?: number;
     /** 温度 */
     temperature?: number;
+    /** 是否请求并显示模型原生 Thinking / reasoning 输出 */
+    thinkingEnabled?: boolean;
+    /** 调用方预算，当前用于上层取消和日志传递 */
+    timeoutMs?: number;
     /** 取消信号 */
     signal?: AbortSignal;
 }
 
+export type StreamMessageContent = string | Array<{
+    type: 'text' | 'image';
+    text?: string;
+    image?: {
+        data: string;
+        mediaType: string;
+    };
+}>;
+
 export interface StreamMessage {
     role: 'user' | 'assistant' | 'system';
-    content: string;
+    content: StreamMessageContent;
+}
+
+function resolveStreamMaxTokens(options?: StreamOptions): number {
+    return buildAgentProviderTokenBudget({
+        requestedMaxTokens: options?.maxTokens
+    }).maxTokens;
+}
+
+function isStreamThinkingEnabled(options?: StreamOptions): boolean {
+    return options?.thinkingEnabled !== false;
+}
+
+function resolveStreamThinkingRequestParams(
+    model: ModelConfig | string,
+    options?: StreamOptions
+): Record<string, any> {
+    if (typeof model === 'string') return {};
+    if (!isStreamThinkingEnabled(options)) {
+        if (model.provider === 'deepseek' || model.provider === 'xiaomi') {
+            return { thinking: { type: 'disabled' } };
+        }
+        return {};
+    }
+    return getThinkingRequestParams(model.thinking);
+}
+
+function streamContentToText(content: StreamMessageContent): string {
+    if (typeof content === 'string') return content;
+    return content
+        .filter(part => part.type === 'text' && part.text)
+        .map(part => part.text)
+        .join('\n');
+}
+
+function streamContentImages(content: StreamMessageContent): string[] {
+    if (typeof content === 'string') return [];
+    return content
+        .filter(part => part.type === 'image' && part.image?.data)
+        .map(part => part.image!.data);
+}
+
+function streamContentToOpenAI(content: StreamMessageContent): any {
+    if (typeof content === 'string') return content;
+    return content.map(part => {
+        if (part.type === 'text') {
+            return { type: 'text', text: part.text || '' };
+        }
+        if (part.type === 'image' && part.image?.data) {
+            return {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${part.image.mediaType || 'image/png'};base64,${part.image.data}`
+                }
+            };
+        }
+        return null;
+    }).filter(Boolean);
+}
+
+function streamContentToGeminiParts(content: StreamMessageContent): any[] {
+    if (typeof content === 'string') return [{ text: content }];
+    return content.map(part => {
+        if (part.type === 'text') {
+            return { text: part.text || '' };
+        }
+        if (part.type === 'image' && part.image?.data) {
+            return {
+                inlineData: {
+                    mimeType: part.image.mediaType || 'image/png',
+                    data: part.image.data
+                }
+            };
+        }
+        return null;
+    }).filter(Boolean);
+}
+
+function compactProviderErrorBody(body: string): string {
+    const trimmed = String(body || '').trim();
+    if (!trimmed) return '';
+
+    try {
+        const parsed = JSON.parse(trimmed);
+        const message = parsed?.error?.message || parsed?.message || parsed?.error;
+        if (typeof message === 'string' && message.trim()) {
+            return message.trim().slice(0, 600);
+        }
+    } catch {
+        // Fall through to the raw body.
+    }
+
+    return trimmed.replace(/\s+/g, ' ').slice(0, 600);
+}
+
+function attachHttpErrorResponseHandler(
+    res: any,
+    providerName: string,
+    statusCode: number,
+    emitError: (message: string) => void,
+    isAborted: () => boolean
+): void {
+    let body = '';
+
+    res.on('data', (chunk: Buffer | string) => {
+        body += chunk.toString();
+    });
+
+    res.on('end', () => {
+        if (isAborted()) return;
+        const detail = compactProviderErrorBody(body);
+        emitError(`${providerName} HTTP ${statusCode}${detail ? `: ${detail}` : ''}`);
+    });
+
+    res.on('error', (err: Error) => {
+        if (!isAborted()) {
+            emitError(`${providerName} HTTP ${statusCode} 响应读取失败: ${err.message}`);
+        }
+    });
 }
 
 // ==================== 流式适配器基类 ====================
@@ -141,18 +275,26 @@ export class OllamaStreamAdapter extends BaseStreamAdapter {
             ? model 
             : (model.apiModelId || model.id.replace('local-', ''));
         
-        const ollamaMessages = messages.map(msg => ({
-            role: msg.role === 'system' ? 'system' : msg.role,
-            content: msg.content
-        }));
+        const ollamaMessages = messages.map(msg => {
+            const message: any = {
+                role: msg.role === 'system' ? 'system' : msg.role,
+                content: streamContentToText(msg.content)
+            };
+            const images = streamContentImages(msg.content);
+            if (images.length > 0) {
+                message.images = images;
+            }
+            return message;
+        });
         
         const requestBody = JSON.stringify({
             model: modelName,
             messages: ollamaMessages,
             stream: true,
             options: {
-                num_predict: options?.maxTokens || 4096,
-                temperature: options?.temperature ?? 0.7
+                num_predict: resolveStreamMaxTokens(options),
+                temperature: options?.temperature ?? 0.7,
+                ...resolveStreamThinkingRequestParams(model, options)
             }
         });
         
@@ -178,6 +320,18 @@ export class OllamaStreamAdapter extends BaseStreamAdapter {
             headers,
             timeout: 120000
         }, (res: any) => {
+            const statusCode = Number(res.statusCode || 0);
+            if (statusCode < 200 || statusCode >= 300) {
+                attachHttpErrorResponseHandler(
+                    res,
+                    'Ollama',
+                    statusCode,
+                    (message) => this.emitError(message),
+                    () => this.aborted
+                );
+                return;
+            }
+
             let fullContent = '';
             let fullThinking = '';
             let buffer = '';
@@ -208,12 +362,13 @@ export class OllamaStreamAdapter extends BaseStreamAdapter {
                         }
                         
                         if (data.done) {
-                            // 最终处理思维过程
-                            const { thinking, content: cleanContent } = this.extractThinking(fullContent);
+                            const result = isStreamThinkingEnabled(options)
+                                ? this.extractThinking(fullContent)
+                                : { thinking: null, content: fullContent };
                             
                             this.emitDone({
-                                text: cleanContent,
-                                thinking: thinking || undefined,
+                                text: result.content,
+                                thinking: result.thinking || undefined,
                                 usage: {
                                     inputTokens: data.prompt_eval_count || 0,
                                     outputTokens: data.eval_count || 0
@@ -232,10 +387,12 @@ export class OllamaStreamAdapter extends BaseStreamAdapter {
                     try {
                         const data = JSON.parse(buffer);
                         if (!data.done) {
-                            const { thinking, content: cleanContent } = this.extractThinking(fullContent);
+                            const result = isStreamThinkingEnabled(options)
+                                ? this.extractThinking(fullContent)
+                                : { thinking: null, content: fullContent };
                             this.emitDone({
-                                text: cleanContent,
-                                thinking: thinking || undefined
+                                text: result.content,
+                                thinking: result.thinking || undefined
                             });
                         }
                     } catch {
@@ -308,19 +465,22 @@ export class OpenRouterStreamAdapter extends BaseStreamAdapter {
         
         const requestBody = JSON.stringify({
             model: modelId,
-            messages: messages.map(m => ({ role: m.role, content: m.content })),
-            max_tokens: options?.maxTokens || 4096,
+            messages: messages.map(m => ({ role: m.role, content: streamContentToOpenAI(m.content) })),
+            max_tokens: resolveStreamMaxTokens(options),
             temperature: options?.temperature ?? 0.7,
-            stream: true
+            stream: true,
+            ...resolveStreamThinkingRequestParams(model, options)
         });
         
         const https = require('https');
+        const endpoint = new URL('https://openrouter.ai/api/v1/chat/completions');
         
         const req = https.request({
-            hostname: 'openrouter.ai',
+            hostname: endpoint.hostname,
             port: 443,
-            path: '/api/v1/chat/completions',
+            path: endpoint.pathname,
             method: 'POST',
+            agent: getHttpRequestAgent(endpoint),
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${this.apiKey}`,
@@ -330,6 +490,18 @@ export class OpenRouterStreamAdapter extends BaseStreamAdapter {
             },
             timeout: 120000
         }, (res: any) => {
+            const statusCode = Number(res.statusCode || 0);
+            if (statusCode < 200 || statusCode >= 300) {
+                attachHttpErrorResponseHandler(
+                    res,
+                    'OpenRouter',
+                    statusCode,
+                    (message) => this.emitError(message),
+                    () => this.aborted
+                );
+                return;
+            }
+
             let fullContent = '';
             let fullThinking = '';
             let buffer = '';
@@ -361,9 +533,10 @@ export class OpenRouterStreamAdapter extends BaseStreamAdapter {
                         const delta = parsed.choices?.[0]?.delta;
                         
                         // 检查 reasoning_content（DeepSeek 等）
-                        if (delta?.reasoning_content) {
-                            fullThinking += delta.reasoning_content;
-                            this.emitThinking(delta.reasoning_content);
+                        if (isStreamThinkingEnabled(options) && delta?.reasoning_content) {
+                            const normalized = normalizeStreamTextChunk(fullThinking, delta.reasoning_content);
+                            fullThinking = normalized.fullText;
+                            if (normalized.deltaText) this.emitThinking(normalized.deltaText);
                         }
                         
                         // 常规内容
@@ -387,10 +560,12 @@ export class OpenRouterStreamAdapter extends BaseStreamAdapter {
             
             res.on('end', () => {
                 if (!this.aborted && fullContent) {
-                    const { thinking, content: cleanContent } = this.extractThinking(fullContent);
+                    const result = isStreamThinkingEnabled(options)
+                        ? this.extractThinking(fullContent)
+                        : { thinking: null, content: fullContent };
                     this.emitDone({
-                        text: cleanContent,
-                        thinking: fullThinking || thinking || undefined,
+                        text: result.content,
+                        thinking: isStreamThinkingEnabled(options) ? (fullThinking || result.thinking || undefined) : undefined,
                         usage
                     });
                 }
@@ -463,7 +638,7 @@ export class GeminiStreamAdapter extends BaseStreamAdapter {
         // 转换消息格式
         const history = messages.slice(0, -1).map(m => ({
             role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }]
+            parts: streamContentToGeminiParts(m.content)
         }));
         
         const lastMessage = messages[messages.length - 1];
@@ -472,12 +647,12 @@ export class GeminiStreamAdapter extends BaseStreamAdapter {
             const chat = geminiModel.startChat({
                 history,
                 generationConfig: {
-                    maxOutputTokens: options?.maxTokens || 4096,
+                    maxOutputTokens: resolveStreamMaxTokens(options),
                     temperature: options?.temperature ?? 0.7
                 }
             });
             
-            const result = await chat.sendMessageStream(lastMessage.content);
+            const result = await chat.sendMessageStream(streamContentToGeminiParts(lastMessage.content));
             
             let fullContent = '';
             
@@ -506,6 +681,166 @@ export class GeminiStreamAdapter extends BaseStreamAdapter {
     }
 }
 
+export class OpenAICompatibleStreamAdapter extends BaseStreamAdapter {
+    private apiKey: string;
+    private baseUrl: string;
+    private providerName: string;
+
+    constructor(apiKey: string, baseUrl: string, providerName: string) {
+        super();
+        this.apiKey = apiKey;
+        this.baseUrl = baseUrl.replace(/\/+$/, '');
+        this.providerName = providerName;
+    }
+
+    stream(
+        model: ModelConfig | string,
+        messages: StreamMessage[],
+        options?: StreamOptions
+    ): void {
+        this.aborted = false;
+
+        const modelId = typeof model === 'string'
+            ? model
+            : (model.apiModelId || model.id);
+
+        const maxTokens = resolveStreamMaxTokens(options);
+        const isXiaomiMimo = /xiaomi\s*mimo/i.test(this.providerName);
+        const thinkingParams = typeof model === 'string' && isXiaomiMimo && options?.thinkingEnabled === false
+            ? { thinking: { type: 'disabled' } }
+            : resolveStreamThinkingRequestParams(model, options);
+        const requestBody = JSON.stringify({
+            model: modelId,
+            messages: messages.map(message => ({ role: message.role, content: streamContentToOpenAI(message.content) })),
+            ...(isXiaomiMimo
+                ? {
+                    max_completion_tokens: maxTokens,
+                    top_p: 0.95,
+                    ...thinkingParams
+                }
+                : { max_tokens: maxTokens, ...resolveStreamThinkingRequestParams(model, options) }),
+            temperature: options?.temperature ?? 0.7,
+            stream: true
+        });
+
+        const endpoint = new URL('chat/completions', `${this.baseUrl}/`);
+        const isHttps = endpoint.protocol === 'https:';
+        const httpModule = isHttps ? require('https') : require('http');
+
+        const req = httpModule.request({
+            hostname: endpoint.hostname,
+            port: endpoint.port || (isHttps ? 443 : 80),
+            path: `${endpoint.pathname}${endpoint.search}`,
+            method: 'POST',
+            agent: getHttpRequestAgent(endpoint),
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.apiKey}`,
+                'Content-Length': Buffer.byteLength(requestBody)
+            },
+            timeout: 120000
+        }, (res: any) => {
+            const statusCode = Number(res.statusCode || 0);
+            if (statusCode < 200 || statusCode >= 300) {
+                attachHttpErrorResponseHandler(
+                    res,
+                    this.providerName,
+                    statusCode,
+                    (message) => this.emitError(message),
+                    () => this.aborted
+                );
+                return;
+            }
+
+            let fullContent = '';
+            let fullThinking = '';
+            let buffer = '';
+            let usage = { inputTokens: 0, outputTokens: 0 };
+
+            res.on('data', (chunk: Buffer) => {
+                if (this.aborted) return;
+
+                buffer += chunk.toString();
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+
+                    const data = line.slice(6).trim();
+                    if (!data) continue;
+
+                    if (data === '[DONE]') {
+                        this.emitDone({
+                            text: fullContent,
+                            thinking: isStreamThinkingEnabled(options) ? (fullThinking || undefined) : undefined,
+                            usage
+                        });
+                        return;
+                    }
+
+                    try {
+                        const parsed = JSON.parse(data);
+                        const delta = parsed.choices?.[0]?.delta;
+
+                        if (isStreamThinkingEnabled(options) && delta?.reasoning_content) {
+                            const normalized = normalizeStreamTextChunk(fullThinking, delta.reasoning_content);
+                            fullThinking = normalized.fullText;
+                            if (normalized.deltaText) this.emitThinking(normalized.deltaText);
+                        }
+
+                        if (typeof delta?.content === 'string' && delta.content) {
+                            fullContent += delta.content;
+                            this.emitContent(delta.content);
+                        }
+
+                        if (parsed.usage) {
+                            usage = {
+                                inputTokens: parsed.usage.prompt_tokens || 0,
+                                outputTokens: parsed.usage.completion_tokens || 0
+                            };
+                        }
+                    } catch {
+                    }
+                }
+            });
+
+            res.on('end', () => {
+                if (!this.aborted) {
+                    this.emitDone({
+                        text: fullContent,
+                        thinking: isStreamThinkingEnabled(options) ? (fullThinking || undefined) : undefined,
+                        usage
+                    });
+                }
+            });
+
+            res.on('error', (err: Error) => {
+                this.emitError(err.message);
+            });
+        });
+
+        req.on('error', (err: Error) => {
+            this.emitError(`${this.providerName} 请求失败: ${err.message}`);
+        });
+
+        req.on('timeout', () => {
+            req.destroy();
+            this.emitError(`${this.providerName} 响应超时`);
+        });
+
+        if (options?.signal) {
+            options.signal.addEventListener('abort', () => {
+                this.abort();
+                req.destroy();
+            });
+        }
+
+        req.write(requestBody);
+        req.end();
+    }
+}
+
 // ==================== 工厂函数 ====================
 
 export interface StreamAdapterConfig {
@@ -513,8 +848,10 @@ export interface StreamAdapterConfig {
     ollamaApiKey?: string;
     openrouterApiKey?: string;
     googleApiKey?: string;
+    xiaomiApiKey?: string;
     anthropicApiKey?: string;
     openaiApiKey?: string;
+    deepseekApiKey?: string;
 }
 
 /**
@@ -542,6 +879,25 @@ export function createStreamAdapter(
                 throw new Error('Google API key required');
             }
             return new GeminiStreamAdapter(config.googleApiKey);
+        case 'xiaomi':
+            if (!config.xiaomiApiKey) {
+                throw new Error('Xiaomi MiMo API key required');
+            }
+            return new OpenAICompatibleStreamAdapter(config.xiaomiApiKey, 'https://api.xiaomimimo.com/v1', 'Xiaomi MiMo');
+        case 'openai':
+            if (!config.openaiApiKey) {
+                throw new Error('OpenAI API key required');
+            }
+            return new OpenAICompatibleStreamAdapter(config.openaiApiKey, 'https://api.openai.com/v1', 'OpenAI');
+        case 'deepseek':
+            if (!config.deepseekApiKey) {
+                throw new Error('DeepSeek API key required');
+            }
+            return new OpenAICompatibleStreamAdapter(
+                config.deepseekApiKey,
+                'https://api.deepseek.com',
+                'DeepSeek'
+            );
         default:
             throw new Error(`Unsupported provider for streaming: ${provider}`);
     }

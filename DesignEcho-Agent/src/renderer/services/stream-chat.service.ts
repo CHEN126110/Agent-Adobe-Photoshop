@@ -15,6 +15,8 @@
  * stream.abort();
  */
 
+import { normalizeStreamTextChunk } from '../../shared/stream-text-normalizer';
+
 // ==================== 类型定义 ====================
 
 export interface StreamChunk {
@@ -46,6 +48,8 @@ export interface StreamCallbacks {
 export interface StreamOptions {
     maxTokens?: number;
     temperature?: number;
+    thinkingEnabled?: boolean;
+    timeoutMs?: number;
 }
 
 export interface StreamHandle {
@@ -80,7 +84,7 @@ function ensureListenerRegistered(): void {
     designEcho.onStreamChunk((data: { requestId: string; chunk: StreamChunk }) => {
         const { requestId, chunk } = data;
         const callbacks = activeCallbacks.get(requestId);
-        
+
         if (!callbacks) return;
         
         switch (chunk.type) {
@@ -182,10 +186,10 @@ export function streamChat(
     return {
         requestId,
         abort: async () => {
+            activeCallbacks.delete(requestId);
             if (designEcho.abortStream) {
                 await designEcho.abortStream(requestId);
             }
-            activeCallbacks.delete(requestId);
         },
         promise
     };
@@ -200,33 +204,80 @@ export async function streamChatAsync(
     modelId: string,
     messages: Array<{ role: string; content: string }>,
     options?: StreamOptions & {
-        onProgress?: (content: string) => void;
+        onProgress?: (content: string, chunk: string) => void;
+        onThinkingProgress?: (thinking: string, chunk: string) => void;
     }
 ): Promise<{ text: string; thinking?: string }> {
     let fullContent = '';
     let fullThinking = '';
-    
-    const handle = streamChat(
+    const { onProgress, onThinkingProgress, ...streamOptions } = options || {};
+    const timeoutMs = Number(options?.timeoutMs || 0);
+    const hasInactivityTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let timeoutReject: ((reason?: any) => void) | null = null;
+    let streamSettled = false;
+    let handle: StreamHandle | null = null;
+
+    function clearStreamInactivityTimeout(): void {
+        if (!timeoutId) return;
+        clearTimeout(timeoutId);
+        timeoutId = null;
+    }
+
+    function refreshStreamInactivityTimeout(): void {
+        if (!hasInactivityTimeout || !timeoutReject || streamSettled) return;
+        clearStreamInactivityTimeout();
+        timeoutId = setTimeout(() => {
+            if (streamSettled) return;
+            void handle?.abort().catch(() => undefined);
+            timeoutReject?.(new Error(`Stream chat timeout after ${Math.round(timeoutMs)}ms`));
+        }, timeoutMs);
+    }
+
+    const timeoutPromise = hasInactivityTimeout
+        ? new Promise<StreamChunk['fullResponse'] | null>((_resolve, reject) => {
+            timeoutReject = reject;
+        })
+        : null;
+
+    handle = streamChat(
         modelId,
         messages,
         {
             onContent: (content) => {
+                if (!content) return;
                 fullContent += content;
-                options?.onProgress?.(fullContent);
+                refreshStreamInactivityTimeout();
+                onProgress?.(fullContent, content);
             },
             onThinking: (thinking) => {
-                fullThinking += thinking;
+                const normalized = normalizeStreamTextChunk(fullThinking, thinking);
+                fullThinking = normalized.fullText;
+                if (normalized.deltaText) {
+                    refreshStreamInactivityTimeout();
+                    onThinkingProgress?.(fullThinking, normalized.deltaText);
+                }
             }
         },
-        options
+        streamOptions
     );
-    
-    const response = await handle.promise;
-    
-    return {
-        text: response?.text || fullContent,
-        thinking: response?.thinking || fullThinking || undefined
-    };
+
+    refreshStreamInactivityTimeout();
+
+    try {
+        const response = await (
+            timeoutPromise
+                ? Promise.race([handle.promise, timeoutPromise])
+                : handle.promise
+        );
+        return {
+            text: response?.text || fullContent,
+            thinking: response?.thinking || fullThinking || undefined
+        };
+    } finally {
+        streamSettled = true;
+        clearStreamInactivityTimeout();
+    }
 }
 
 // 类型已在定义处导出，无需重复导出

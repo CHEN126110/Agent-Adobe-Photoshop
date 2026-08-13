@@ -10,6 +10,7 @@ interface HeaderProps {
     projectName?: string;
     onCloseProject?: () => void;
     isHome?: boolean;
+    workspaceNavigation?: React.ReactNode;
 }
 
 export const Header: React.FC<HeaderProps> = ({ 
@@ -17,7 +18,8 @@ export const Header: React.FC<HeaderProps> = ({
     onSettingsClick, 
     projectName, 
     onCloseProject,
-    isHome 
+    isHome,
+    workspaceNavigation
 }) => {
     const [isUndoing, setIsUndoing] = useState(false);
     const [isRedoing, setIsRedoing] = useState(false);
@@ -47,7 +49,7 @@ export const Header: React.FC<HeaderProps> = ({
     };
 
     return (
-        <header className="app-header">
+        <header className={`app-header ${workspaceNavigation ? 'with-workspace-tabs' : ''}`}>
             <div className="header-left">
                 {/* 返回按钮（项目模式下显示） */}
                 {projectName && onCloseProject && (
@@ -56,22 +58,23 @@ export const Header: React.FC<HeaderProps> = ({
                         onClick={onCloseProject}
                         title="返回项目列表"
                     >
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M19 12H5M12 19l-7-7 7-7"/>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                            <path d="M15 18l-6-6 6-6" />
                         </svg>
                     </button>
                 )}
 
                 <div className="logo">
-                    <span className="logo-icon">🎨</span>
-                    <span className="logo-text">
-                        {projectName || 'DesignEcho'}
-                    </span>
-                    {projectName && (
-                        <span className="project-badge">项目</span>
-                    )}
+                    <span className="logo-text">DesignEcho</span>
+                    {projectName && <span className="project-context">{projectName}</span>}
                 </div>
             </div>
+
+            {workspaceNavigation && (
+                <div className="header-workspace-navigation">
+                    {workspaceNavigation}
+                </div>
+            )}
 
             {/* 撤销/重做按钮（仅在项目模式下显示） */}
             {!isHome && (
@@ -104,9 +107,7 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="header-center">
                 <div className={`connection-badge ${!isConnected ? 'waiting' : ''}`}>
                     <span className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`} />
-                    <span className="connection-text">
-                        {isConnected ? '✓ Photoshop 已连接' : '等待 Photoshop 连接...'}
-                    </span>
+                    <span className="connection-text">{isConnected ? 'Photoshop 已连接' : '等待 Photoshop 连接…'}</span>
                     {!isConnected && (
                         <span className="connection-hint">请在 PS 中打开插件面板</span>
                     )}
@@ -114,99 +115,110 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             <div className="header-right">
-                <button className="btn btn-ghost" onClick={onSettingsClick}>
+                <button className="header-settings-btn" onClick={onSettingsClick} aria-label="打开设置" title="设置">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <circle cx="12" cy="12" r="3" />
                         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                     </svg>
-                    设置
                 </button>
             </div>
 
             <style>{`
                 .app-header {
+                    position: relative;
+                    z-index: 40;
                     display: flex;
                     align-items: center;
-                    height: 60px;
-                    padding: 0;
-                    background: var(--de-bg-card);
-                    backdrop-filter: blur(20px);
-                    border-bottom: 1px solid var(--de-border);
+                    height: 52px;
+                    padding: 0 18px;
+                    background: var(--de-bg);
+                    border-bottom: 1px solid var(--de-border-subtle);
                     -webkit-app-region: drag;
                 }
 
                 .header-left {
-                    width: 260px;
-                    min-width: 260px;
-                    max-width: 260px;
+                    min-width: 0;
                     display: flex;
                     align-items: center;
-                    padding: 0 16px;
+                    padding: 0;
                     box-sizing: border-box;
                     -webkit-app-region: no-drag;
                     flex-shrink: 0;
-                    border-right: 1px solid var(--de-border);
                     height: 100%;
                 }
 
                 .header-right {
-                    min-width: 160px;
                     display: flex;
                     align-items: center;
                     justify-content: flex-end;
-                    padding-right: 16px;
                     -webkit-app-region: no-drag;
                     flex-shrink: 0;
+                }
+
+                .header-workspace-navigation {
+                    display: flex;
+                    min-width: 0;
+                    height: 100%;
+                    margin-left: 18px;
+                    align-items: flex-end;
+                    flex: 1;
+                    -webkit-app-region: no-drag;
                 }
 
                 .logo {
                     display: flex;
                     align-items: center;
-                    gap: 10px;
+                    gap: 14px;
                     flex-shrink: 0;
                     white-space: nowrap;
                     overflow: hidden;
-                }
-
-                .logo-icon {
-                    font-size: 24px;
-                    flex-shrink: 0;
                 }
 
                 .logo-text {
-                    font-family: 'Space Grotesk', sans-serif;
-                    font-size: 20px;
-                    font-weight: 600;
-                    background: linear-gradient(135deg, #fff 0%, #0066ff 100%);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
+                    color: var(--de-text-primary);
+                    font-size: 13px;
+                    font-weight: 500;
                     white-space: nowrap;
                     overflow: hidden;
                     text-overflow: ellipsis;
-                    max-width: 200px;
+                    max-width: 160px;
+                }
+
+                .project-context {
+                    max-width: 180px;
+                    overflow: hidden;
+                    color: var(--de-text-muted);
+                    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+                    font-size: 9.5px;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
                 }
 
                 .header-center {
                     flex: 1;
                     display: flex;
                     align-items: center;
-                    justify-content: center;
-                    padding-left: 16px;
+                    justify-content: flex-end;
+                    padding-right: 8px;
+                }
+
+                .app-header.with-workspace-tabs .header-center {
+                    flex: 0 0 auto;
+                    padding-left: 14px;
                 }
 
                 .connection-badge {
                     display: flex;
                     align-items: center;
-                    gap: 8px;
-                    padding: 6px 16px;
-                    background: var(--de-bg-light);
-                    border: 1px solid var(--de-border);
-                    border-radius: 20px;
-                    font-size: 13px;
+                    gap: 7px;
+                    padding: 0;
+                    background: transparent;
+                    border: 0;
+                    font-size: 10px;
                 }
 
                 .connection-text {
-                    color: var(--de-text-secondary);
+                    color: var(--de-text-muted);
                 }
 
                 .connection-badge.waiting {
@@ -228,28 +240,28 @@ export const Header: React.FC<HeaderProps> = ({
                 }
 
                 .connection-hint {
-                    font-size: 11px;
+                    display: none;
                     color: var(--de-text-secondary);
                     opacity: 0.7;
                     margin-left: 4px;
                 }
 
                 .history-buttons {
-                    display: flex;
+                    display: none;
                     gap: 4px;
-                    padding: 0 12px;
+                    padding: 0 10px;
                     align-items: center;
                     flex-shrink: 0;
                 }
 
                 .history-btn {
-                    width: 32px;
-                    height: 32px;
+                    width: 28px;
+                    height: 28px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    background: var(--de-bg-light);
-                    border: 1px solid var(--de-border);
+                    background: transparent;
+                    border: 1px solid transparent;
                     border-radius: 6px;
                     color: var(--de-text);
                     cursor: pointer;
@@ -268,36 +280,51 @@ export const Header: React.FC<HeaderProps> = ({
                 }
 
                 .back-btn {
-                    width: 32px;
-                    height: 32px;
+                    width: 26px;
+                    height: 26px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    background: var(--de-bg-light);
-                    border: 1px solid var(--de-border);
+                    background: transparent;
+                    border: 1px solid transparent;
                     border-radius: 6px;
                     color: var(--de-text);
                     cursor: pointer;
                     transition: all 0.2s;
-                    margin-right: 10px;
+                    margin-right: 8px;
                     flex-shrink: 0;
                 }
 
                 .back-btn:hover {
-                    background: var(--de-bg-card);
-                    border-color: var(--de-primary);
-                    color: var(--de-primary);
+                    background: var(--de-hover-bg);
+                    color: var(--de-text-primary);
                 }
 
-                .project-badge {
-                    font-size: 10px;
-                    font-weight: 500;
-                    padding: 2px 8px;
-                    background: var(--de-primary);
-                    color: white;
-                    border-radius: 10px;
-                    margin-left: 8px;
+                .header-settings-btn {
+                    display: flex;
+                    width: 28px;
+                    height: 28px;
+                    padding: 0;
+                    align-items: center;
+                    justify-content: center;
+                    border: 0;
+                    border-radius: 6px;
+                    background: transparent;
+                    color: var(--de-text-muted);
+                    cursor: pointer;
                 }
+
+                .header-settings-btn svg {
+                    width: 15px;
+                    height: 15px;
+                    stroke-width: 1.6;
+                }
+
+                .header-settings-btn:hover {
+                    background: var(--de-hover-bg);
+                    color: var(--de-text-primary);
+                }
+
             `}</style>
         </header>
     );

@@ -269,7 +269,8 @@ export class SubjectDetectionService {
             const mattingResult = await this.nodeMattingService.removeBackground(imageBase64, {
                 returnMask: true,
                 model: modelToUse,
-                quality: 'fast'
+                quality: 'fast',
+                binaryMaskOutput: true
             });
 
             if (!mattingResult?.success) {
@@ -286,29 +287,38 @@ export class SubjectDetectionService {
             let maskWidth: number;
             let maskHeight: number;
 
-            const maskData = mattingResult.mask || mattingResult.maskImage || mattingResult.alphaMask;
-            
-            if (!maskData) {
-                return {
-                    success: false,
-                    error: '未获取到 mask 数据',
-                    method: 'matting',
-                    processingTime: Date.now() - startTime
-                };
-            }
-
-            // 解析 mask 数据
-            if (typeof maskData === 'string' && maskData.startsWith('RAW_MASK:')) {
-                const parts = maskData.split(':');
-                maskWidth = parseInt(parts[1], 10);
-                maskHeight = parseInt(parts[2], 10);
-                maskBuffer = Buffer.from(parts.slice(3).join(':'), 'base64');
-            } else if (typeof maskData === 'string' && maskData.startsWith('RAW:')) {
-                const parts = maskData.split(':');
-                maskWidth = parseInt(parts[1], 10);
-                maskHeight = parseInt(parts[2], 10);
-                maskBuffer = Buffer.from(parts.slice(3).join(':'), 'base64');
+            if (
+                Buffer.isBuffer(mattingResult.maskBuffer) &&
+                typeof mattingResult.maskWidth === 'number' &&
+                typeof mattingResult.maskHeight === 'number'
+            ) {
+                maskWidth = mattingResult.maskWidth;
+                maskHeight = mattingResult.maskHeight;
+                maskBuffer = Buffer.from(mattingResult.maskBuffer);
             } else {
+                const maskData = mattingResult.mask || mattingResult.maskImage || mattingResult.alphaMask;
+
+                if (!maskData) {
+                    return {
+                        success: false,
+                        error: '未获取到 mask 数据',
+                        method: 'matting',
+                        processingTime: Date.now() - startTime
+                    };
+                }
+
+                // 解析旧格式 mask 数据
+                if (typeof maskData === 'string' && maskData.startsWith('RAW_MASK:')) {
+                    const parts = maskData.split(':');
+                    maskWidth = parseInt(parts[1], 10);
+                    maskHeight = parseInt(parts[2], 10);
+                    maskBuffer = Buffer.from(parts.slice(3).join(':'), 'base64');
+                } else if (typeof maskData === 'string' && maskData.startsWith('RAW:')) {
+                    const parts = maskData.split(':');
+                    maskWidth = parseInt(parts[1], 10);
+                    maskHeight = parseInt(parts[2], 10);
+                    maskBuffer = Buffer.from(parts.slice(3).join(':'), 'base64');
+                } else {
                 const sharp = (await import('sharp')).default;
                 let base64Data = maskData;
                 if (base64Data.includes(',')) {
@@ -323,6 +333,7 @@ export class SubjectDetectionService {
                     .greyscale()
                     .raw()
                     .toBuffer();
+                }
             }
 
             // 智能阈值分析

@@ -8,3 +8,5 @@ export { ImageBlock } from './ImageBlock';
 export { ToolResultBlock } from './ToolResultBlock';
 export { CardBlock } from './CardBlock';
 export { ThinkingBlock } from './ThinkingBlock';
+export { TaskPlanBlock } from './TaskPlanBlock';
+export { InteractiveCardBlock } from './InteractiveCardBlock';

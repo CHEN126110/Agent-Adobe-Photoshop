@@ -1,0 +1,216 @@
+{
+  "batch": "2026-08-03-unreachable-src",
+  "archivedAt": "2026-08-03T14:53:44.050Z",
+  "fileCount": 52,
+  "lineCount": 16478,
+  "files": [
+    {
+      "path": "src/main/services/local-detection-service.ts",
+      "lines": 1359
+    },
+    {
+      "path": "src/main/services/aesthetic/product-library-service.ts",
+      "lines": 711
+    },
+    {
+      "path": "src/main/services/aesthetic/vlm-aesthetic-service.ts",
+      "lines": 698
+    },
+    {
+      "path": "src/main/services/aesthetic/trend-sensing-service.ts",
+      "lines": 649
+    },
+    {
+      "path": "src/main/services/aesthetic/aesthetic-knowledge-service.ts",
+      "lines": 644
+    },
+    {
+      "path": "src/renderer/services/context.service.ts",
+      "lines": 597
+    },
+    {
+      "path": "src/main/services/morphing/morphing-service.ts",
+      "lines": 565
+    },
+    {
+      "path": "src/shared/knowledge/color-schemes.ts",
+      "lines": 562
+    },
+    {
+      "path": "src/main/services/asset-library-service.ts",
+      "lines": 552
+    },
+    {
+      "path": "src/main/services/contour-analysis-service.ts",
+      "lines": 512
+    },
+    {
+      "path": "src/renderer/components/Sidebar.tsx",
+      "lines": 474
+    },
+    {
+      "path": "src/main/services/design-intelligence-service.ts",
+      "lines": 473
+    },
+    {
+      "path": "src/renderer/services/theme-adapter.ts",
+      "lines": 453
+    },
+    {
+      "path": "src/renderer/components/CustomSelect.tsx",
+      "lines": 435
+    },
+    {
+      "path": "src/main/services/fast-action-service.ts",
+      "lines": 431
+    },
+    {
+      "path": "src/main/services/mls-warp-service.ts",
+      "lines": 421
+    },
+    {
+      "path": "src/main/services/morphing/benchmark-comparison.ts",
+      "lines": 419
+    },
+    {
+      "path": "src/renderer/services/agent-orchestration/task-classifier.ts",
+      "lines": 413
+    },
+    {
+      "path": "src/shared/types/detail-page.types.ts",
+      "lines": 374
+    },
+    {
+      "path": "src/main/services/aesthetic/aesthetic-decision-service.ts",
+      "lines": 357
+    },
+    {
+      "path": "src/renderer/services/context-compressor.ts",
+      "lines": 340
+    },
+    {
+      "path": "src/renderer/components/MemorySettings.tsx",
+      "lines": 336
+    },
+    {
+      "path": "src/main/services/aesthetic/types.ts",
+      "lines": 321
+    },
+    {
+      "path": "src/main/services/morphing/distance-field.ts",
+      "lines": 276
+    },
+    {
+      "path": "src/shared/types/mcp.types.ts",
+      "lines": 266
+    },
+    {
+      "path": "src/main/services/webgl-warp-engine/image-warper.ts",
+      "lines": 262
+    },
+    {
+      "path": "src/main/services/morphing/image-warper.ts",
+      "lines": 254
+    },
+    {
+      "path": "src/shared/agent-runtime-v5/runtime-action-plan-maturity.ts",
+      "lines": 248
+    },
+    {
+      "path": "src/main/services/webgl-warp-engine/tps-solver.ts",
+      "lines": 241
+    },
+    {
+      "path": "src/main/utils/matting-logger.ts",
+      "lines": 221
+    },
+    {
+      "path": "src/renderer/services/token-counter.ts",
+      "lines": 213
+    },
+    {
+      "path": "src/renderer/hooks/useStreamChat.ts",
+      "lines": 208
+    },
+    {
+      "path": "src/shared/agent-runtime-v5/render-bridge.ts",
+      "lines": 203
+    },
+    {
+      "path": "src/renderer/services/design-crawler.service.ts",
+      "lines": 196
+    },
+    {
+      "path": "src/shared/agent-runtime-v5/planner-model-caller.ts",
+      "lines": 196
+    },
+    {
+      "path": "src/renderer/hooks/useChatInput.ts",
+      "lines": 183
+    },
+    {
+      "path": "src/main/services/webgl-warp-engine/index.ts",
+      "lines": 175
+    },
+    {
+      "path": "src/shared/design-learning-daily-workflow.ts",
+      "lines": 174
+    },
+    {
+      "path": "src/renderer/services/renderer-logger.ts",
+      "lines": 130
+    },
+    {
+      "path": "src/shared/types/sku-combo.types.ts",
+      "lines": 121
+    },
+    {
+      "path": "src/shared/agent-runtime-v5/detail-page-planning-gate.ts",
+      "lines": 118
+    },
+    {
+      "path": "src/main/services/webgl-warp-engine/types.ts",
+      "lines": 110
+    },
+    {
+      "path": "src/shared/agent-orchestration-layers.ts",
+      "lines": 104
+    },
+    {
+      "path": "src/renderer/types/agent.types.ts",
+      "lines": 99
+    },
+    {
+      "path": "src/main/services/subject-position-cache.ts",
+      "lines": 86
+    },
+    {
+      "path": "src/renderer/hooks/useThinking.ts",
+      "lines": 64
+    },
+    {
+      "path": "src/main/utils/port-cleanup.ts",
+      "lines": 58
+    },
+    {
+      "path": "src/main/services/morphing/index.ts",
+      "lines": 57
+    },
+    {
+      "path": "src/main/services/aesthetic/index.ts",
+      "lines": 40
+    },
+    {
+      "path": "src/shared/agent-runtime-v5/approval-policy.ts",
+      "lines": 36
+    },
+    {
+      "path": "src/shared/agent-runtime-v5/owner-scopes.ts",
+      "lines": 33
+    },
+    {
+      "path": "src/renderer/hooks/index.ts",
+      "lines": 10
+    }
+  ]
+}

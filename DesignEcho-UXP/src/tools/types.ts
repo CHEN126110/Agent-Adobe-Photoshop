@@ -6,7 +6,17 @@ export interface ToolSchemaProperty {
     type: string;
     description: string;
     enum?: string[];
-    items?: { type: string };  // 用于数组类型
+    /**
+     * 用于数组类型。数组元素可以是简单类型（{ type: 'number' }），
+     * 也可以是带 properties 的对象 schema（如 createSkuPlaceholders 的 slots 槽位数组）。
+     * 元素级 description 可省略（外层属性通常已描述数组语义）。
+     */
+    items?: {
+        type: string;
+        description?: string;
+        enum?: string[];
+        properties?: Record<string, ToolSchemaProperty>;
+    };
     properties?: Record<string, ToolSchemaProperty>;  // 用于嵌套对象类型
 }
 
@@ -23,7 +33,30 @@ export interface ToolSchema {
 export interface Tool {
     name: string;
     schema: ToolSchema;
-    execute(params: any): Promise<any>;
+    execute(params: any, context?: ToolExecutionContext): Promise<any>;
+}
+
+/**
+ * Renderer 在一次写调用上签发的 Photoshop 目标约束。
+ *
+ * 它只存在于该次 ToolExecutionContext 中；不得保存到 Tool 实例或模块全局，
+ * 否则并发调用会把彼此的目标身份串线。
+ */
+export interface PhotoshopTargetGuard {
+    readonly expectedDocumentId: number;
+    readonly expectedActiveLayerId?: number;
+    readonly expectedHistoryStateRef?: Readonly<{
+        documentId: number;
+        historyStateId: number;
+    }>;
+    readonly observationTool?: string;
+}
+
+export interface ToolExecutionContext {
+    requestId?: string | number;
+    isCancelled?: () => boolean;
+    /** 已归一化且已从业务参数剥离的调用级目标约束。 */
+    photoshopTargetGuard?: Readonly<PhotoshopTargetGuard>;
 }
 
 /**
@@ -34,6 +67,7 @@ export interface TextLayerInfo {
     name: string;
     contents: string;
     bounds: LayerBounds;
+    boundsNoEffects?: LayerBounds;
     style: TextStyle;
 }
 
@@ -61,6 +95,11 @@ export interface TextStyle {
     leading?: number;        // 行高
     horizontalScale?: number;
     verticalScale?: number;
+    /**
+     * 段落对齐（来自 batchPlay 描述符 paragraphStyleRange.paragraphStyle.align）。
+     * 读不到 / 多段不一致 / 枚举不在三值域内时不输出该字段，绝不默认 center。【需真机验证】
+     */
+    textAlign?: 'left' | 'center' | 'right';
 }
 
 /**
@@ -74,6 +113,8 @@ export interface DocumentInfo {
     resolution: number;
     colorMode: string;
     layerCount: number;
+    activeLayerId?: number;
+    activeLayerName?: string;
 }
 
 /**
@@ -81,6 +122,8 @@ export interface DocumentInfo {
  */
 export interface ToolResult<T = any> {
     success: boolean;
+    code?: string;
+    message?: string;
     error?: string;
     data: T | null;
 }

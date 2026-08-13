@@ -31,6 +31,8 @@ interface SparseDisplacementField {
 export interface ApplyDisplacementParams {
     layerId: number;
     sparseDisplacement: string;  // SPARSE:xxx 格式
+    preserveOriginal?: boolean;
+    resultLayerName?: string;
 }
 
 /**
@@ -41,6 +43,9 @@ export interface ApplyDisplacementResult {
     layerId: number;
     layerName: string;
     processingTime: number;
+    outputLayerId?: number;
+    outputLayerName?: string;
+    preservedOriginal?: boolean;
     error?: string;
 }
 
@@ -156,6 +161,8 @@ export async function applyDisplacement(
         
         let actualLayerId = params.layerId;
         let layerName = '';
+        let outputLayerName = '';
+        const preserveOriginal = params.preserveOriginal !== false;
         
         await core.executeAsModal(async () => {
             const layer = findLayerById(doc, params.layerId);
@@ -163,9 +170,25 @@ export async function applyDisplacement(
                 throw new Error(`未找到图层 ID: ${params.layerId}`);
             }
             layerName = layer.name;
-            const layerKind = layer.kind?.toString() || 'unknown';
+            outputLayerName = layer.name;
+
+            if (preserveOriginal) {
+                const duplicatedLayer = await layer.duplicate();
+                if (params.resultLayerName) {
+                    duplicatedLayer.name = params.resultLayerName;
+                }
+                actualLayerId = Number(duplicatedLayer.id);
+                outputLayerName = duplicatedLayer.name;
+                logInfo(`已创建安全副本: ${layer.name} -> ${outputLayerName}`);
+            }
+
+            const workingLayer = findLayerById(doc, actualLayerId);
+            if (!workingLayer) {
+                throw new Error(`未找到工作图层 ID: ${actualLayerId}`);
+            }
+            const layerKind = workingLayer.kind?.toString() || 'unknown';
             
-            logInfo(`图层类型: ${layerKind} (${layer.name})`);
+            logInfo(`图层类型: ${layerKind} (${workingLayer.name})`);
             
             // 检查是否需要栅格化
             const needsRasterize = ['solidColorLayer', 'gradientLayer', 'patternLayer', 
@@ -175,12 +198,12 @@ export async function applyDisplacement(
             );
             
             if (needsRasterize || layerKind === 'unknown') {
-                logInfo(`图层 "${layer.name}" 不是像素图层，尝试栅格化...`);
+                logInfo(`图层 "${workingLayer.name}" 不是像素图层，尝试栅格化...`);
                 
                 // 先选中图层
                 await action.batchPlay([{
                     _obj: 'select',
-                    _target: [{ _ref: 'layer', _id: params.layerId }],
+                    _target: [{ _ref: 'layer', _id: actualLayerId }],
                     makeVisible: false,
                     _options: { dialogOptions: 'dontDisplay' }
                 }], { synchronousExecution: true });
@@ -306,9 +329,12 @@ export async function applyDisplacement(
             success: true,
             data: {
                 success: true,
-                layerId: params.layerId,
+                layerId: actualLayerId,
                 layerName,
-                processingTime
+                processingTime,
+                outputLayerId: actualLayerId,
+                outputLayerName,
+                preservedOriginal: preserveOriginal
             }
         };
         
@@ -325,6 +351,9 @@ export async function applyDisplacement(
                 layerId: params.layerId,
                 layerName: '',
                 processingTime,
+                outputLayerId: params.layerId,
+                outputLayerName: '',
+                preservedOriginal: params.preserveOriginal !== false,
                 error: error.message
             }
         };

@@ -10,26 +10,110 @@
  * 用户需求 → AI 理解 → AI 选择 Skill → 执行器执行 → AI 验证
  */
 
+import type { ProjectVisualSamplingScenario } from '../project-visual-sampling';
+
 // ==================== Skill 参数定义 ====================
 
 /**
  * 参数类型定义（类似 JSON Schema）
  */
-export interface SkillParameter {
+export type SkillParameterType =
+    | 'string'
+    | 'number'
+    | 'integer'
+    | 'boolean'
+    | 'array'
+    | 'object'
+    | 'image';
+
+/**
+ * 可递归的参数 Schema 节点。
+ *
+ * 顶层参数和嵌套 object property 共用同一份约束表达能力；数组 items
+ * 不需要 name / required，因此单独使用这个节点类型。
+ */
+export interface SkillParameterSchema {
+    /** 类型 */
+    type: SkillParameterType;
+    /** 描述（给 AI 看的） */
+    description?: string;
+    /** 默认值 */
+    default?: any;
+    /** 枚举值（如果是固定选项） */
+    enum?: Array<string | number | boolean>;
+    /** 示例值 */
+    examples?: any[];
+    /** 数组元素 Schema */
+    items?: SkillParameterSchema;
+    /** object 属性；required 由每个属性自身声明 */
+    properties?: SkillParameter[];
+    /** 是否允许声明之外的 object 属性 */
+    additionalProperties?: boolean;
+    /** 数字下界（含） */
+    minimum?: number;
+    /** 数字上界（含） */
+    maximum?: number;
+    /** 字符串最小长度 */
+    minLength?: number;
+    /** 数组最小元素数 */
+    minItems?: number;
+    /** 数组最大元素数 */
+    maxItems?: number;
+    /** 数组元素是否必须唯一 */
+    uniqueItems?: boolean;
+}
+
+export interface SkillParameter extends SkillParameterSchema {
     /** 参数名 */
     name: string;
-    /** 类型 */
-    type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'image';
     /** 描述（给 AI 看的） */
     description: string;
     /** 是否必需 */
     required: boolean;
-    /** 默认值 */
-    default?: any;
-    /** 枚举值（如果是固定选项） */
-    enum?: string[];
-    /** 示例值 */
-    examples?: any[];
+}
+
+export type SkillCategory =
+    | 'image'
+    | 'layout'
+    | 'text'
+    | 'batch'
+    | 'analysis'
+    | 'export'
+    | 'morphing'
+    | 'replication'
+    | 'ecommerce'
+    | 'document';
+
+export type SkillKind = 'workflow' | 'operation' | 'debug';
+
+export type SkillVisibility = 'user-facing' | 'internal-debug' | 'system-only';
+
+export interface SkillRoutingMetadata {
+    /** 强信号：当用户话术出现这些语义时，应优先考虑该 skill；可用 regex: 前缀表达受控正则信号 */
+    intentSignals?: string[];
+    /** 分组信号：每组内满足任一项即可，但所有分组都必须命中；可用 regex: 前缀表达受控正则信号 */
+    intentSignalGroups?: string[][];
+    /** 负信号：当用户话术出现这些语义时，应避免误路由到该 skill */
+    negativeSignals?: string[];
+    /** 执行前提：帮助分类器判断当前上下文是否足够 */
+    preconditions?: string[];
+    /** skill 支持的模式，例如 inspect / execute / authoring */
+    supportedModes?: string[];
+    /** 参数抽取提示：帮助分类器从自然语言里提取 skillParams */
+    parameterExtractionHints?: string[];
+    /** 路由模式信号：例如 inspect / execute */
+    modeSignals?: Record<string, string[]>;
+    /** 续作策略：用户说“再改一下”时如何继承上一轮任务 */
+    retryPolicy?: 'inherit_previous' | 're-evaluate' | 'fresh';
+    /** 当上下文不足时，优先澄清的问题方向 */
+    clarificationHints?: string[];
+    /** 容易混淆场景下的决策提示，供分类器直接消费 */
+    decisionGuidance?: string[];
+    /** 路由阶段的状态摘要文案，不代表模型思考 */
+    routeStatusMessages?: Partial<{
+        deterministic: string;
+        autonomous: string;
+    }>;
 }
 
 // ==================== Skill 能力声明 ====================
@@ -49,9 +133,22 @@ export interface SkillDeclaration {
     
     /** 技能名称（给 AI 和用户看的） */
     name: string;
+
+    /**
+     * 用户可见中文显示名（可选）。UI 步骤/卡片显示"技能·<displayName>"，
+     * 让用户明确看到 Agent 使用了哪个技能（单一来源，别在显示层另建映射表）。
+     * 缺省时显示层回退用 name。
+     */
+    displayName?: string;
     
     /** 技能分类 */
-    category: 'image' | 'layout' | 'text' | 'batch' | 'analysis' | 'export' | 'morphing' | 'replication' | 'ecommerce';
+    category: SkillCategory;
+
+    /** 技能层级：完整工作流 / 单步操作 / 调试能力 */
+    kind: SkillKind;
+
+    /** 可见性边界：普通用户、内部调试、系统内部 */
+    visibility: SkillVisibility;
     
     /** 详细描述（给 AI 看的，用于理解能力边界） */
     description: string;
@@ -61,6 +158,9 @@ export interface SkillDeclaration {
     
     /** 不适用场景（防止 AI 误用） */
     whenNotToUse?: string[];
+
+    /** 路由元数据：用于意图识别、歧义消解、参数抽取 */
+    routing?: SkillRoutingMetadata;
     
     /** 输入参数定义 */
     parameters: SkillParameter[];
@@ -89,6 +189,61 @@ export interface SkillDeclaration {
     
     /** 是否需要 AI 决策点（执行中可能需要回调 AI） */
     hasDecisionPoints?: boolean;
+
+    /**
+     * 受控技能路由命中后的执行入口（去刻意路线治理）：
+     * - 'autonomous-react-loop'：即便被确定性/受控技能路由命中，也交给 Agent 自主 ReAct 循环处理
+     *   （技能仅作循环内可选工具的路由提示），而不是由引擎直执固定流水线脚本。
+     * - 省略（默认）：保持原行为，命中后走 execute_skill 受控技能执行。
+     * 安全性由执行点约束保证（denylist 阻止模型直执 + 循环内读后写/看图门禁）。
+     */
+    controlledRouteEntry?: 'autonomous-react-loop';
+
+    /**
+     * Skill 是否禁止被 Harness 直接执行：
+     * - 'forbidden'：只能作为主 Agent ReAct 循环中的能力调用；结构化 handoff 只声明归属，
+     *   不执行 Skill、不授予 Tool 权限。
+     * - 省略（默认）：legacy 无模型兼容路径仍可按既有受控规则执行。
+     * v5 Skill package 校验会据此拒绝恢复 Harness 直执能力。
+     */
+    modelDirectExecution?: 'forbidden';
+
+    /**
+     * 路由类别（规范可插拔 skill 治理·声明即单一真相源）：让运行时的路由/边界判定从声明派生，
+     * 而不是在 engine / route-boundary / control-plane 里硬编码 skillId Set。
+     * - 'business-workflow'：电商业务生产工作流（主图/详情页/SKU）。在 autonomous_execution 意图下
+     *   应进 Agent 自主 ReAct 循环入口，技能作为循环内可选工具，不被确定性路由当普通技能短路直执。
+     * - 省略（默认）：非业务工作流技能，保持原路由语义。
+     * - 'open-design'：开放式/分析类设计技能（如 layout-replication / project-image-analysis /
+     *   autonomous-agent）——与业务工作流一样「不能走简单机械短路径」，需保留模型路由或自主规划。
+     * - 省略（默认）：非上述类别技能，保持原路由语义。
+     * 后续 'simple-deterministic' / 'coordinator' 等类别按需扩展，逐步替换其余硬编码 Set。
+     */
+    routeClass?: 'business-workflow' | 'open-design';
+
+    /** 项目视觉观察的采样场景身份；不授权、不改变门禁或质量结论。 */
+    visualSamplingScenario?: Exclude<ProjectVisualSamplingScenario, 'unknown'>;
+
+    /**
+     * Skill 的运行环境要求。由生命周期/预检读取声明，不在 Agent 核心按 skillId 写例外。
+     * - required：执行该 Skill 必须连接 Photoshop；
+     * - not_required：该 Skill 完全不依赖 Photoshop；
+     * - source_dependent：仅 photoshopFreeSourceTypes 声明的数据源可脱离 Photoshop 执行。
+     */
+    runtimeRequirements?: {
+        photoshop: 'required' | 'not_required' | 'source_dependent';
+        photoshopFreeSourceTypes?: string[];
+        /**
+         * Skill 启动时是否必须已经存在打开的 Photoshop 文档。
+         * - required：进入 Skill 前必须已有目标文档；
+         * - not_required：Skill 可以在无现有文档时启动（例如内部创建目标文档，
+         *   或只消费项目 / 外部数据）。这只放行 Skill 入口，内部原子写入仍需经过
+         *   documentId / revision、读后写与 execution preflight。
+         *
+         * 省略时按 required 处理，避免把未知能力静默解释为可无文档写入。
+         */
+        document?: 'required' | 'not_required';
+    };
 }
 
 // ==================== Skill 执行相关 ====================
@@ -210,6 +365,7 @@ export interface SkillSelectionResult {
  * 生成给 AI 看的 Skill 摘要（用于系统提示词）
  */
 export function generateSkillSummary(skills: SkillDeclaration[]): string {
+    const visibleSkills = skills.filter((skill) => skill.visibility === 'user-facing');
     const lines: string[] = [
         '## 可用技能列表',
         '',
@@ -218,7 +374,7 @@ export function generateSkillSummary(skills: SkillDeclaration[]): string {
     ];
     
     const byCategory: Record<string, SkillDeclaration[]> = {};
-    for (const skill of skills) {
+    for (const skill of visibleSkills) {
         if (!byCategory[skill.category]) {
             byCategory[skill.category] = [];
         }
@@ -232,8 +388,9 @@ export function generateSkillSummary(skills: SkillDeclaration[]): string {
         'batch': '📦 批量操作',
         'analysis': '🔍 分析诊断',
         'export': '💾 导出保存',
-        'morphing': '🔄 形态变形',
-        'replication': '📋 布局复刻'
+        'replication': '📋 布局复刻',
+        'ecommerce': '🛍️ 电商设计',
+        'document': '📄 文档操作'
     };
     
     for (const [category, categorySkills] of Object.entries(byCategory)) {

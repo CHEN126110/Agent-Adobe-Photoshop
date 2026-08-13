@@ -1,0 +1,166 @@
+.inline-multimodal-composer {
+    width: 100%;
+    min-height: 48px;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 6px 0 8px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--de-text);
+    font-size: 14px;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    caret-color: #6ea8ff;
+}
+
+.inline-multimodal-composer[data-empty='true']::before {
+    content: attr(data-placeholder);
+    color: #747d89;
+    pointer-events: none;
+}
+
+.inline-composer-reference {
+    display: inline-flex;
+    align-items: center;
+    max-width: min(176px, calc(100% - 8px));
+    height: 26px;
+    margin: 1px 2px;
+    padding: 0 3px;
+    vertical-align: middle;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.045);
+    color: #c8cfda;
+    opacity: 0.82;
+    transition: opacity 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.inline-composer-reference:hover,
+.inline-composer-reference:focus-within {
+    border-color: rgba(110, 168, 255, 0.42);
+    background: rgba(110, 168, 255, 0.09);
+    opacity: 1;
+}
+
+.inline-composer-reference__preview {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 18px;
+    width: 18px;
+    height: 18px;
+    overflow: hidden;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #aeb8c6;
+    font-size: 7px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.inline-composer-reference__preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.inline-composer-reference__label {
+    min-width: 0;
+    max-width: 112px;
+    margin-left: 5px;
+    overflow: hidden;
+    color: inherit;
+    font-size: 12px;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.inline-composer-reference__remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    margin-left: 2px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: #8f98a5;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.inline-composer-reference__remove:hover,
+.inline-composer-reference__remove:focus-visible {
+    background: rgba(255, 255, 255, 0.09);
+    color: #f3f6fb;
+    outline: none;
+}
+
+/* 已发送消息的气泡内编辑变体；同时兼容 class 直接落在编辑器或落在包装层。 */
+.inline-multimodal-composer.message-edit-composer,
+.message-edit-composer .inline-multimodal-composer {
+    min-height: 34px;
+    max-height: 160px;
+    padding: 2px 0 4px;
+    border: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 0;
+    background: transparent;
+    color: #f7f9fc;
+    font-size: 13px;
+    line-height: 1.55;
+    caret-color: #fff;
+    box-sizing: border-box;
+    transition: border-color 0.15s ease;
+}
+
+.inline-multimodal-composer.message-edit-composer:focus,
+.message-edit-composer .inline-multimodal-composer:focus {
+    border-color: rgba(255, 255, 255, 0.44);
+    background: transparent;
+    box-shadow: none;
+}
+
+.inline-multimodal-composer.message-edit-composer[data-empty='true']::before,
+.message-edit-composer .inline-multimodal-composer[data-empty='true']::before {
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.inline-multimodal-composer.message-edit-composer .inline-composer-reference,
+.message-edit-composer .inline-composer-reference {
+    max-width: min(164px, calc(100% - 8px));
+    height: 24px;
+    margin: 1px 2px;
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.88);
+    opacity: 1;
+}
+
+.inline-multimodal-composer.message-edit-composer .inline-composer-reference__preview,
+.message-edit-composer .inline-composer-reference__preview {
+    flex-basis: 17px;
+    width: 17px;
+    height: 17px;
+}
+
+.inline-multimodal-composer.message-edit-composer .inline-composer-reference__label,
+.message-edit-composer .inline-composer-reference__label {
+    max-width: 104px;
+    font-size: 11.5px;
+}
+
+.inline-multimodal-composer.message-edit-composer .inline-composer-reference__remove,
+.message-edit-composer .inline-composer-reference__remove {
+    flex-basis: 20px;
+    width: 20px;
+    height: 20px;
+    color: rgba(255, 255, 255, 0.64);
+}

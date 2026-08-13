@@ -7,6 +7,36 @@
 import { chromium } from 'playwright';
 
 const DEFAULT_TIMEOUT = 30000;
+
+/**
+ * 启动用于读网页的浏览器。优先用系统已装浏览器（系统 Chrome → 系统 Edge），
+ * 最后回退 Playwright 自带 chromium。这样不依赖 Playwright 单独下载的 browser 版本——
+ * 实测 Playwright 1.59.1 需要 chromium-headless-shell 1217（Chrome 147.0.7727.15），
+ * 官方 CDN 下载卡、国内镜像缺该版本，导致读网页失败；改用系统浏览器彻底绕开版本与下载问题。
+ */
+async function launchWebBrowserWithFallback() {
+    const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox'];
+    const candidates: Array<{ channel?: string }> = [
+        { channel: 'chrome' },
+        { channel: 'msedge' },
+        {}
+    ];
+    let lastError: unknown;
+    for (const candidate of candidates) {
+        try {
+            return await chromium.launch({
+                ...(candidate.channel ? { channel: candidate.channel } : {}),
+                headless: true,
+                args: launchArgs
+            });
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError instanceof Error
+        ? lastError
+        : new Error('无法启动任何浏览器（系统 Chrome/Edge 与 Playwright Chromium 均不可用）。');
+}
 const MAX_TEXT_LENGTH = 8000;
 const MAX_IMAGES = 20;
 
@@ -38,10 +68,7 @@ export async function fetchWebPageDesignContent(params: {
     let browser;
 
     try {
-        browser = await chromium.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
+        browser = await launchWebBrowserWithFallback();
 
         const context = await browser.newContext({
             viewport: { width: 1280, height: 720 },
@@ -59,8 +86,8 @@ export async function fetchWebPageDesignContent(params: {
 
         await page.waitForTimeout(1500);
 
-        const result = await page.evaluate((opts: { extractImages: boolean; maxLen: number }) => {
-            const { extractImages: doExtractImages, maxLen } = opts;
+        const result = await page.evaluate((opts: { extractImages: boolean; maxLen: number; maxImages: number }) => {
+            const { extractImages: doExtractImages, maxLen, maxImages } = opts;
             const images: Array<{ src: string; alt?: string; width?: number; height?: number }> = [];
 
             let description: string | undefined;
@@ -92,7 +119,7 @@ export async function fetchWebPageDesignContent(params: {
             if (doExtractImages) {
                 const imgs = contentRoot.querySelectorAll('img[src]');
                 const seen = new Set<string>();
-                for (let i = 0; i < Math.min(imgs.length, MAX_IMAGES); i++) {
+                for (let i = 0; i < Math.min(imgs.length, maxImages); i++) {
                     const img = imgs[i] as HTMLImageElement;
                     const src = img.src;
                     if (!src || seen.has(src)) continue;
@@ -115,7 +142,7 @@ export async function fetchWebPageDesignContent(params: {
                 textContent,
                 images
             };
-        }, { extractImages, maxLen: maxTextLength });
+        }, { extractImages, maxLen: maxTextLength, maxImages: MAX_IMAGES });
 
         await browser.close();
         return result;

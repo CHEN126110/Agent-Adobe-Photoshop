@@ -11,6 +11,11 @@ import {
     ImageType,
     EcommerceProjectStructure 
 } from '../services/ecommerce-project-service';
+import {
+    projectContextSnapshotService,
+    type ProjectContextSnapshotBuildOptions,
+    type ProjectContextSnapshotBuildResult
+} from '../services/project-context-snapshot-service';
 import type { IPCContext } from './types';
 
 /**
@@ -82,6 +87,57 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
         config: any
     ) => {
         await ecommerceProjectService.saveProjectConfig(projectPath, config);
+    });
+
+    // 构建运行时 ContextSnapshot（只读，不初始化或写入项目配置）
+    ipcMain.handle('ecommerce:buildContextSnapshot', async (
+        _event: IpcMainInvokeEvent,
+        options: ProjectContextSnapshotBuildOptions | string
+    ): Promise<ProjectContextSnapshotBuildResult> => {
+        const buildOptions: ProjectContextSnapshotBuildOptions = typeof options === 'string'
+            ? { projectPath: options }
+            : options;
+
+        logService?.logAgent('info', `[EcommerceProject] 构建运行时 ContextSnapshot: ${buildOptions.projectPath}`);
+        try {
+            return await projectContextSnapshotService.build(buildOptions);
+        } catch (error: any) {
+            logService?.logAgent('error', `[EcommerceProject] ContextSnapshot 构建失败: ${error.message}`);
+            throw error;
+        }
+    });
+
+    // 只读项目视觉理解缓存（.designecho/visual-insights-cache.json；不扫描项目、不初始化或写入项目配置）
+    ipcMain.handle('ecommerce:readVisualInsightCache', async (
+        _event: IpcMainInvokeEvent,
+        options: { projectPath: string } | string
+    ) => {
+        const projectPath = typeof options === 'string' ? options : options?.projectPath;
+        logService?.logAgent('info', `[EcommerceProject] 读取视觉理解缓存: ${projectPath}`);
+        try {
+            return await projectContextSnapshotService.readPersistedVisualInsightCache(projectPath);
+        } catch (error: any) {
+            logService?.logAgent('error', `[EcommerceProject] 视觉理解缓存读取失败: ${error.message}`);
+            throw error;
+        }
+    });
+
+    ipcMain.handle('ecommerce:writeVisualInsightCache', async (
+        _event: IpcMainInvokeEvent,
+        options: {
+            projectPath: string;
+            entries: any[];
+            replace?: boolean;
+            nowIso?: string;
+        }
+    ) => {
+        logService?.logAgent('info', `[EcommerceProject] 写入视觉理解缓存: ${options?.projectPath}`);
+        try {
+            return await projectContextSnapshotService.writeVisualInsightCache(options);
+        } catch (error: any) {
+            logService?.logAgent('error', `[EcommerceProject] 视觉理解缓存写入失败: ${error.message}`);
+            throw error;
+        }
     });
 
     console.log('[IPC] 电商项目 handlers 已注册');

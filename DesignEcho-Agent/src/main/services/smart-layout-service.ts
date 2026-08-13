@@ -394,10 +394,10 @@ export class SmartLayoutService {
         // 1. 执行抠图获取 mask
         const mattingResult = await this.mattingService.removeBackground(
             typeof imageData === 'string' ? imageData : imageData.toString('base64'),
-            { returnMask: true }
+            { returnMask: true, binaryMaskOutput: true }
         );
         
-        if (!mattingResult.success || !mattingResult.maskImage) {
+        if (!mattingResult.success) {
             console.warn('[SmartLayoutService] 抠图失败，使用保守回退');
             return {
                 success: false,
@@ -410,7 +410,7 @@ export class SmartLayoutService {
         }
         
         // 2. 解析 mask 数据
-        const maskData = this.parseMaskData(mattingResult.maskImage, imageSize);
+        const maskData = this.parseMaskData(mattingResult, imageSize);
         if (!maskData) {
             return {
                 success: false,
@@ -459,10 +459,33 @@ export class SmartLayoutService {
      * 解析 mask 数据
      */
     private parseMaskData(
-        maskImage: string,
+        mattingResult: {
+            maskImage?: string;
+            maskBuffer?: Buffer;
+            maskWidth?: number;
+            maskHeight?: number;
+        },
         imageSize: ImageSize
     ): { data: Uint8Array; width: number; height: number } | null {
         try {
+            if (
+                mattingResult.maskBuffer &&
+                mattingResult.maskWidth &&
+                mattingResult.maskHeight
+            ) {
+                return {
+                    data: new Uint8Array(mattingResult.maskBuffer),
+                    width: mattingResult.maskWidth,
+                    height: mattingResult.maskHeight
+                };
+            }
+
+            const maskImage = mattingResult.maskImage;
+            if (!maskImage) {
+                console.warn('[SmartLayoutService] 抠图结果未返回 mask 数据');
+                return null;
+            }
+
             // RAW_MASK 格式: "RAW_MASK:width:height:base64"
             if (maskImage.startsWith('RAW_MASK:')) {
                 const parts = maskImage.split(':');

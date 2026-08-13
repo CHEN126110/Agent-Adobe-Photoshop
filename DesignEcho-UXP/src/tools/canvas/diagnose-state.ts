@@ -6,6 +6,7 @@
 
 import { Tool, ToolSchema } from '../types';
 import { diagnosePhotoshopState } from '../../core/error-handler';
+import { getPhotoshopRuntimeBuildInfo } from '../../core/runtime-build-info';
 
 const app = require('photoshop').app;
 
@@ -31,6 +32,11 @@ export class DiagnoseStateTool implements Tool {
     }): Promise<{
         success: boolean;
         state?: {
+            runtime: {
+                buildId: string;
+                loadedAt: string;
+                features: string[];
+            };
             hasDocument: boolean;
             documentInfo?: {
                 name: string;
@@ -66,6 +72,7 @@ export class DiagnoseStateTool implements Tool {
             
             // 扩展诊断信息
             const state: any = {
+                runtime: getPhotoshopRuntimeBuildInfo(),
                 hasDocument: basicDiagnosis.hasDocument,
                 hasSelection: basicDiagnosis.hasSelection,
                 issues: basicDiagnosis.issues || []

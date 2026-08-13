@@ -6,6 +6,7 @@
 
 import path from 'path';
 import fs from 'fs';
+import { serializedFileOperations } from './serialized-file-operations';
 
 const fsPromises = fs.promises;
 
@@ -50,6 +51,7 @@ export interface ImageFile {
     path: string;
     relativePath: string;      // 相对于项目根目录
     size: number;
+    modifiedTimeMs?: number;   // 文件版本身份；内容变化后视觉缓存必须失效
     ext: string;
     type: ImageType;
     thumbnailPath?: string;    // 缩略图路径（如果已生成）
@@ -407,6 +409,7 @@ export class EcommerceProjectService {
                         path: fullPath,
                         relativePath,
                         size: stats.size,
+                        modifiedTimeMs: stats.mtimeMs,
                         ext,
                         type: imageType,
                         parentFolder: path.basename(folderPath),
@@ -435,7 +438,10 @@ export class EcommerceProjectService {
      */
     async loadProjectConfig(projectPath: string): Promise<ProjectConfig | null> {
         const configPath = path.join(projectPath, '.designecho', 'project.json');
-        
+        return await this.loadProjectConfigFile(configPath);
+    }
+
+    private async loadProjectConfigFile(configPath: string): Promise<ProjectConfig | null> {
         try {
             const content = await fsPromises.readFile(configPath, 'utf-8');
             return JSON.parse(content) as ProjectConfig;
@@ -448,15 +454,17 @@ export class EcommerceProjectService {
      * 保存项目配置
      */
     async saveProjectConfig(projectPath: string, config: ProjectConfig): Promise<void> {
-        const configDir = path.join(projectPath, '.designecho');
-        const configPath = path.join(configDir, 'project.json');
-        
+        const configPath = path.join(projectPath, '.designecho', 'project.json');
+        await serializedFileOperations.runExclusive(configPath, async (normalizedConfigPath) => {
+            await this.writeProjectConfigFile(normalizedConfigPath, config);
+        });
+    }
+
+    private async writeProjectConfigFile(configPath: string, config: ProjectConfig): Promise<void> {
+        const configDir = path.dirname(configPath);
+
         try {
-            // 创建目录
-            await fsPromises.mkdir(configDir, { recursive: true });
-            
-            // 写入配置文件
-            await fsPromises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+            await serializedFileOperations.writeUtf8Atomically(configPath, JSON.stringify(config, null, 2));
             
             // 在 Windows 上设置隐藏属性（同步执行确保可靠）
             if (process.platform === 'win32') {
@@ -488,33 +496,35 @@ export class EcommerceProjectService {
         projectPath: string, 
         structure: EcommerceProjectStructure
     ): Promise<ProjectConfig> {
-        const existing = await this.loadProjectConfig(projectPath);
-        const now = new Date().toISOString();
-        
-        const config: ProjectConfig = {
-            version: '1.0',
-            createdAt: existing?.createdAt || now,
-            lastOpenedAt: now,
-            projectPath,
-            projectName: structure.projectName,
-            folderMappings: existing?.folderMappings || {},
-            imageClassifications: existing?.imageClassifications || {},
-            designPlan: existing?.designPlan || {
-                mainImage: { status: 'pending' },
-                sku: { status: 'pending' },
-                detail: { status: 'pending' }
+        const configPath = path.join(projectPath, '.designecho', 'project.json');
+        return await serializedFileOperations.runExclusive(configPath, async (normalizedConfigPath) => {
+            const existing = await this.loadProjectConfigFile(normalizedConfigPath);
+            const now = new Date().toISOString();
+
+            const config: ProjectConfig = {
+                version: '1.0',
+                createdAt: existing?.createdAt || now,
+                lastOpenedAt: now,
+                projectPath,
+                projectName: structure.projectName,
+                folderMappings: existing?.folderMappings || {},
+                imageClassifications: existing?.imageClassifications || {},
+                designPlan: existing?.designPlan || {
+                    mainImage: { status: 'pending' },
+                    sku: { status: 'pending' },
+                    detail: { status: 'pending' }
+                }
+            };
+
+            for (const folder of structure.folders) {
+                if (!config.folderMappings[folder.name] && folder.type !== 'unknown') {
+                    config.folderMappings[folder.name] = folder.type;
+                }
             }
-        };
-        
-        // 自动填充文件夹映射
-        for (const folder of structure.folders) {
-            if (!config.folderMappings[folder.name] && folder.type !== 'unknown') {
-                config.folderMappings[folder.name] = folder.type;
-            }
-        }
-        
-        await this.saveProjectConfig(projectPath, config);
-        return config;
+
+            await this.writeProjectConfigFile(normalizedConfigPath, config);
+            return config;
+        });
     }
     
     /**
@@ -525,14 +535,17 @@ export class EcommerceProjectService {
         folderName: string, 
         type: FolderType
     ): Promise<void> {
-        const config = await this.loadProjectConfig(projectPath);
-        if (!config) {
-            throw new Error('项目配置不存在');
-        }
-        
-        config.folderMappings[folderName] = type;
-        config.lastOpenedAt = new Date().toISOString();
-        await this.saveProjectConfig(projectPath, config);
+        const configPath = path.join(projectPath, '.designecho', 'project.json');
+        await serializedFileOperations.runExclusive(configPath, async (normalizedConfigPath) => {
+            const config = await this.loadProjectConfigFile(normalizedConfigPath);
+            if (!config) {
+                throw new Error('项目配置不存在');
+            }
+
+            config.folderMappings[folderName] = type;
+            config.lastOpenedAt = new Date().toISOString();
+            await this.writeProjectConfigFile(normalizedConfigPath, config);
+        });
     }
     
     /**
@@ -543,14 +556,17 @@ export class EcommerceProjectService {
         imageRelativePath: string, 
         type: ImageType
     ): Promise<void> {
-        const config = await this.loadProjectConfig(projectPath);
-        if (!config) {
-            throw new Error('项目配置不存在');
-        }
-        
-        config.imageClassifications[imageRelativePath] = type;
-        config.lastOpenedAt = new Date().toISOString();
-        await this.saveProjectConfig(projectPath, config);
+        const configPath = path.join(projectPath, '.designecho', 'project.json');
+        await serializedFileOperations.runExclusive(configPath, async (normalizedConfigPath) => {
+            const config = await this.loadProjectConfigFile(normalizedConfigPath);
+            if (!config) {
+                throw new Error('项目配置不存在');
+            }
+
+            config.imageClassifications[imageRelativePath] = type;
+            config.lastOpenedAt = new Date().toISOString();
+            await this.writeProjectConfigFile(normalizedConfigPath, config);
+        });
     }
 }
 

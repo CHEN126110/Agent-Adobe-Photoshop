@@ -42,6 +42,7 @@ export interface BFLProgressEvent {
     pollingCount?: number;
     elapsedMs: number;
     status?: string;
+    progress?: number;
 }
 
 export type BFLProgressCallback = (event: BFLProgressEvent) => void;
@@ -468,13 +469,15 @@ export class BFLService {
             pollingCount += 1;
 
             const status = response.status as string;
+            const progress = this.extractProgressPercent(response);
             onProgress?.({
                 phase: 'polling',
                 model,
                 generationId,
                 pollingCount,
                 elapsedMs: Date.now() - startTime,
-                status
+                status,
+                progress
             });
             if (status === 'Ready') {
                 return {
@@ -491,6 +494,23 @@ export class BFLService {
         }
 
         throw new Error(`生成超时 (${timeout}ms)`);
+    }
+
+    private extractProgressPercent(response: Record<string, unknown>): number | undefined {
+        const raw = response.progress;
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+            return undefined;
+        }
+
+        if (raw >= 0 && raw <= 1) {
+            return Math.max(0, Math.min(100, raw * 100));
+        }
+
+        if (raw >= 0 && raw <= 100) {
+            return raw;
+        }
+
+        return undefined;
     }
 
     private async requestWithRetry(

@@ -14,6 +14,10 @@ import { Tool, ToolSchema } from '../types';
 const photoshop = require('photoshop');
 const { app, action } = photoshop;
 
+function isLayerClipped(layer: any): boolean {
+    return layer?.isClippingMask === true || layer?.clipped === true;
+}
+
 // ==================== 剪切蒙版信息结果接口 ====================
 
 interface ClippingMaskInfo {
@@ -115,7 +119,7 @@ export class GetClippingMaskInfoTool implements Tool {
         const bounds = this.getLayerBounds(layer);
         
         // 检查是否被剪切
-        const isClipped = layer.clipped || false;
+        const isClipped = isLayerClipped(layer);
         
         // 查找剪切蒙版基底
         let clippingBaseId: number | undefined;
@@ -188,7 +192,7 @@ export class GetClippingMaskInfoTool implements Tool {
         // 向下（索引增大方向）查找第一个非 clipped 的图层
         // 注意：在 Photoshop 中，图层列表是从上到下排列的
         for (let i = currentIndex + 1; i < siblings.length; i++) {
-            if (!siblings[i].clipped) {
+            if (!isLayerClipped(siblings[i])) {
                 return siblings[i];
             }
         }
@@ -218,7 +222,7 @@ export class GetClippingMaskInfoTool implements Tool {
         
         // 检查上方（索引减小方向）是否有 clipped 图层
         for (let i = currentIndex - 1; i >= 0; i--) {
-            if (siblings[i].clipped) {
+            if (isLayerClipped(siblings[i])) {
                 return true;
             } else {
                 // 遇到非 clipped 图层就停止
@@ -301,12 +305,12 @@ export class GetAllClippingMasksTool implements Tool {
             const layer = layers[i];
             
             // 如果这个图层不是 clipped，检查它是否是剪切蒙版的基底
-            if (!layer.clipped) {
+            if (!isLayerClipped(layer)) {
                 const clippedLayers: any[] = [];
                 
                 // 向上查找所有 clipped 图层
                 for (let j = i - 1; j >= 0; j--) {
-                    if (layers[j].clipped) {
+                    if (isLayerClipped(layers[j])) {
                         clippedLayers.unshift({
                             id: layers[j].id,
                             name: layers[j].name,

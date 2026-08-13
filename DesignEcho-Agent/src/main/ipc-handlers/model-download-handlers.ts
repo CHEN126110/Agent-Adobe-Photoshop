@@ -297,6 +297,23 @@ export function registerModelDownloadHandlers(context: IPCContext): void {
     });
 
     // 下载模型到 models 目录
+    // 说明失败原因时带上「哪一步、为什么、能怎么办」，不要只回一个状态码。
+    function buildDownloadFailureMessage(statusCode: number | undefined, requestUrl: string): string {
+        const host = (() => {
+            try { return new URL(requestUrl).host; } catch { return '下载源'; }
+        })();
+        if (statusCode === 401 || statusCode === 403) {
+            return `${host} 拒绝了匿名下载（HTTP ${statusCode}）。`
+                + '常见原因是该模型仓库已被删除、改名或转为私有——HuggingFace 对这几种情况都返回 401。'
+                + '可以先点「镜像」换源重试，或手动下载模型文件后用「打开模型目录」放进去。';
+        }
+        if (statusCode === 404) {
+            return `${host} 上找不到这个模型文件（HTTP 404），下载地址可能已经失效。`
+                + '可以先点「镜像」换源重试，或手动下载后放进模型目录。';
+        }
+        return `${host} 返回 HTTP ${statusCode}，下载未开始。可稍后重试或改用「镜像」源。`;
+    }
+
     ipcMain.handle('model:downloadToModels', async (
         event: IpcMainInvokeEvent, 
         url: string, 
@@ -304,7 +321,10 @@ export function registerModelDownloadHandlers(context: IPCContext): void {
         fileName: string, 
         progressChannel: string
     ) => {
-        const modelsDir = path.join(__dirname, '../../../models');
+        // 下到 userData，与本文件其它 handler（导入/删除/扫描）和推理服务的加载路径一致。
+        // 这里原先用的是 __dirname/../../../models（安装目录）：打包后往往只读，
+        // 即使写成功了推理服务也不去那里找，等于下了个永远用不上的文件。
+        const modelsDir = path.join(app.getPath('userData'), 'models');
         const targetDir = path.join(modelsDir, folder);
         const targetPath = path.join(targetDir, fileName);
         
@@ -333,7 +353,9 @@ export function registerModelDownloadHandlers(context: IPCContext): void {
                     }
                     
                     if (response.statusCode !== 200) {
-                        reject(new Error(`HTTP ${response.statusCode}`));
+                        // 裸 HTTP 码对用户没有意义。HuggingFace 对「仓库不存在」与「需要登录」
+                        // 都返回 401，所以这两种要一起说，并指出可自行处理的动作。
+                        reject(new Error(buildDownloadFailureMessage(response.statusCode, requestUrl)));
                         return;
                     }
                     

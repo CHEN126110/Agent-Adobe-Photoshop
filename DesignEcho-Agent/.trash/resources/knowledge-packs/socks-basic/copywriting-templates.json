@@ -1,0 +1,164 @@
+{
+  "version": "1.0.0",
+  "description": "电商文案模板库 - 标题/副标题/卖点写法",
+
+  "principles": [
+    {
+      "id": "user-centric",
+      "name": "用户视角",
+      "description": "从用户利益出发，而非产品功能",
+      "bad": "采用银离子抗菌技术",
+      "good": "告别脚臭尴尬 48小时持久清爽"
+    },
+    {
+      "id": "concrete-numbers",
+      "name": "具体数字",
+      "description": "用数字增强可信度和记忆点",
+      "bad": "超级透气",
+      "good": "800+透气孔 透气性提升200%"
+    },
+    {
+      "id": "pain-first",
+      "name": "痛点先行",
+      "description": "先唤起痛点共鸣，再给出解决方案",
+      "bad": "无骨缝头设计",
+      "good": "脚趾再也不被磨疼 无骨缝头零压感"
+    },
+    {
+      "id": "short-powerful",
+      "name": "简短有力",
+      "description": "核心信息控制在10字以内",
+      "bad": "我们的袜子采用了先进的工艺制作非常舒适",
+      "good": "一穿就爱上"
+    }
+  ],
+
+  "titleTemplates": {
+    "detailPage": [
+      {
+        "pattern": "{核心卖点} {效果/感受}",
+        "examples": ["100%纯棉 柔软亲肤", "银离子抗菌 持久清爽", "无骨缝头 零压感"]
+      },
+      {
+        "pattern": "告别{痛点} {解决方案}",
+        "examples": ["告别脚臭 银离子持久抗菌", "告别勒脚 无痕宽口设计"]
+      },
+      {
+        "pattern": "{场景}必备 {产品特性}",
+        "examples": ["运动必备 吸汗速干", "通勤必备 隐形不掉跟", "冬季必备 保暖不闷脚"]
+      },
+      {
+        "pattern": "{数字}+{效果}",
+        "examples": ["800+透气孔 清爽一整天", "7天不臭 科技面料", "99%抑菌率 SGS认证"]
+      }
+    ],
+    "mainImage": [
+      {
+        "pattern": "{产品类型} {核心卖点}",
+        "examples": ["纯棉袜 柔软透气", "船袜 不掉跟", "中筒袜 无痕宽口"]
+      },
+      {
+        "pattern": "{场景} {效果}",
+        "examples": ["运动穿它 干爽不闷", "上班穿它 一天舒适"]
+      }
+    ]
+  },
+
+  "subtitleTemplates": [
+    {
+      "type": "extension",
+      "pattern": "{主标题的延伸说明}",
+      "examples": ["新疆长绒棉 透气不闷脚", "洗100次依然抗菌"]
+    },
+    {
+      "type": "specification",
+      "pattern": "{成分/规格}",
+      "examples": ["棉80% 氨纶15% 锦纶5%", "5双装 5色可选"]
+    },
+    {
+      "type": "endorsement",
+      "pattern": "{认证/背书}",
+      "examples": ["SGS检测认证", "专注袜类20年"]
+    }
+  ],
+
+  "sellingPointFormats": {
+    "icon-style": {
+      "charLimit": 4,
+      "examples": ["纯棉", "抗菌", "透气", "不勒", "防滑", "无骨"]
+    },
+    "short-phrase": {
+      "charLimit": 8,
+      "examples": ["柔软亲肤", "吸汗速干", "无痕宽口", "防滑不掉"]
+    },
+    "benefit-statement": {
+      "charLimit": 15,
+      "examples": ["穿一天依然清爽", "脚踝再也不勒", "走路不掉跟"]
+    }
+  },
+
+  "painPointCopywriting": [
+    {
+      "painPoint": "脚臭出汗",
+      "headline": "告别脚臭尴尬",
+      "subheadline": "银离子抗菌 48小时清爽",
+      "body": "纳米银离子嵌入纤维，抑菌率99%，从源头解决脚臭",
+      "comparison": { "before": "穿一天就臭", "after": "7天依然清爽" }
+    },
+    {
+      "painPoint": "袜口勒脚",
+      "headline": "不再勒脚踝",
+      "subheadline": "无痕宽口 自然贴合",
+      "body": "3D立体编织工艺，宽口设计，回家脚踝无红印",
+      "comparison": { "before": "勒出红印", "after": "无痕舒适" }
+    },
+    {
+      "painPoint": "脚趾不舒服",
+      "headline": "脚趾零压感",
+      "subheadline": "无骨缝合 平整舒适",
+      "body": "告别传统缝合线磨脚，无骨对接工艺，穿久也不硌",
+      "comparison": { "before": "缝线磨脚趾", "after": "平整零摩擦" }
+    },
+    {
+      "painPoint": "船袜掉跟",
+      "headline": "稳如磐石 不再掉跟",
+      "subheadline": "硅胶防滑 一步到位",
+      "body": "后跟内置硅胶防滑条，走路跑步都不掉",
+      "comparison": { "before": "走几步就掉", "after": "怎么动都稳" }
+    },
+    {
+      "painPoint": "袜子起球",
+      "headline": "穿10次还是新的",
+      "subheadline": "精梳棉 不起球不变形",
+      "body": "精梳工艺去除短纤维，面料更耐穿，不易起球",
+      "comparison": { "before": "穿几次就起球", "after": "洗50次如新" }
+    }
+  ],
+
+  "callToAction": [
+    "立即抢购",
+    "马上下单",
+    "一试便知",
+    "点击选色",
+    "加入购物车",
+    "限时特惠",
+    "新品尝鲜"
+  ],
+
+  "urgencyPhrases": [
+    "限时特价",
+    "前100名下单立减",
+    "库存仅剩XX双",
+    "今日下单立发",
+    "活动最后1天",
+    "爆款热卖中"
+  ],
+
+  "socialProof": [
+    "累计销售{数字}万双",
+    "好评率{百分比}",
+    "{数字}位买家的选择",
+    "回购率超{百分比}",
+    "连续{数字}年销量第一"
+  ]
+}

@@ -13,11 +13,33 @@ import path from 'path';
 
 let visualThinkingService: VisualThinkingService | null = null;
 
+function resolveMediaTypeFromExtension(extension: string): 'image/jpeg' | 'image/png' | 'image/webp' {
+    if (extension === '.png') return 'image/png';
+    if (extension === '.webp') return 'image/webp';
+    return 'image/jpeg';
+}
+
 export function registerVisualThinkingHandlers(context: IPCContext): void {
-    const { modelService } = context;
+    const { modelService, taskOrchestrator } = context;
 
     if (modelService) {
         visualThinkingService = new VisualThinkingService(modelService);
+        // 用用户配置的 visualModel（而非硬编码）。
+        const visualModelId = taskOrchestrator?.getAgentModels?.()?.vision;
+        if (visualModelId) {
+            visualThinkingService.setVisionModelId(visualModelId);
+        }
+    }
+
+    /**
+     * 每次调用前同步最新视觉模型配置。
+     * 修复：原来只在注册时读取一次，用户后续修改设置不会生效。
+     */
+    function syncVisionModelConfig(): void {
+        const currentVisionModel = taskOrchestrator?.getAgentModels?.()?.vision;
+        if (currentVisionModel) {
+            visualThinkingService?.setVisionModelId(currentVisionModel);
+        }
     }
 
     /**
@@ -28,6 +50,7 @@ export function registerVisualThinkingHandlers(context: IPCContext): void {
         if (!visualThinkingService) {
             return { success: false, error: 'VisualThinkingService not initialized (ModelService missing)' };
         }
+        syncVisionModelConfig();
 
         try {
             // 1. 读取文件
@@ -45,9 +68,10 @@ export function registerVisualThinkingHandlers(context: IPCContext): void {
             }
 
             const base64 = buffer.toString('base64');
+            const mediaType = resolveMediaTypeFromExtension(ext);
 
             // 2. 调用分析
-            const analysis = await visualThinkingService.analyzeGenericImage(base64, hint);
+            const analysis = await visualThinkingService.analyzeGenericImage(base64, hint, mediaType);
 
             return { success: true, data: analysis };
         } catch (error: any) {
@@ -59,16 +83,25 @@ export function registerVisualThinkingHandlers(context: IPCContext): void {
     /**
      * 分析 Base64 图片
      */
-    ipcMain.handle('visual:analyzeBase64Image', async (_event: IpcMainInvokeEvent, base64: string, hint?: string) => {
+    ipcMain.handle('visual:analyzeBase64Image', async (
+        _event: IpcMainInvokeEvent,
+        base64: string,
+        hint?: string,
+        mediaType?: string
+    ) => {
         if (!visualThinkingService) {
             return { success: false, error: 'VisualThinkingService not initialized' };
         }
 
+        syncVisionModelConfig();
+
         try {
-            const analysis = await visualThinkingService.analyzeGenericImage(base64, hint);
+            const analysis = await visualThinkingService.analyzeGenericImage(base64, hint, mediaType);
             return { success: true, data: analysis };
         } catch (error: any) {
-            return { success: false, error: error.message };
+            const errorMessage = error?.message || String(error);
+            console.error('[VisualHandlers] Base64 analysis failed:', errorMessage);
+            return { success: false, error: errorMessage };
         }
     });
 }

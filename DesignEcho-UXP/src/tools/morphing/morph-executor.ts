@@ -5,7 +5,7 @@
  * 主要逻辑在 Agent 端执行，这里负责调用和结果应用
  */
 
-import { action, app } from 'photoshop';
+import { action, app, core } from 'photoshop';
 import { ToolResult } from '../types';
 import { Point2D, MorphingConfig, MorphResult, BatchMorphResult, ShapeContour, AlignmentTransform } from './types';
 import { 
@@ -166,12 +166,10 @@ export async function morphToShape(params: MorphToShapeParams): Promise<ToolResu
                 processingTime,
                 details: {
                     alignmentApplied: alignment,
-                    contentAnalysis: {
-                        hasPattern: false,  // 需要 Agent 分析
-                        patternRegions: [],
-                        hasLace: false,
-                        laceConfidence: 0
-                    },
+                    // 诚实结果：本工具当前只提取轮廓并应用对齐变换，不执行真实形状变形。
+                    // 真实变形走 Agent 变形管线（applyDisplacement 位移场 / applyMorphedImage 回写）。
+                    morphApplied: false,
+                    note: '已提取目标形状与源轮廓并应用对齐预览；未执行真实形状变形（需 Agent 变形管线 applyDisplacement / applyMorphedImage 完成）。',
                     shapeDifference
                 }
             }
@@ -289,29 +287,32 @@ function computeShapeDifference(source: Point2D[], target: Point2D[]): number {
 async function applyAlignmentTransform(layerId: number, alignment: AlignmentTransform): Promise<void> {
     const { translation, scale } = alignment;
     
-    // 使用 batchPlay 应用变换
-    await action.batchPlay([
-        // 先选择图层
-        {
-            _obj: 'select',
-            _target: [{ _ref: 'layer', _id: layerId }],
-            makeVisible: false,
-            _options: { dialogOptions: 'dontDisplay' }
-        },
-        // 应用自由变换
-        {
-            _obj: 'transform',
-            freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
-            offset: {
-                _obj: 'offset',
-                horizontal: { _unit: 'pixelsUnit', _value: translation.x },
-                vertical: { _unit: 'pixelsUnit', _value: translation.y }
+    // 写操作必须包 executeAsModal：与其他写工具一致，避免与 PS 主线程状态竞争。
+    await core.executeAsModal(async () => {
+        // 使用 batchPlay 应用变换
+        await action.batchPlay([
+            // 先选择图层
+            {
+                _obj: 'select',
+                _target: [{ _ref: 'layer', _id: layerId }],
+                makeVisible: false,
+                _options: { dialogOptions: 'dontDisplay' }
             },
-            width: { _unit: 'percentUnit', _value: scale.x * 100 },
-            height: { _unit: 'percentUnit', _value: scale.y * 100 },
-            _options: { dialogOptions: 'dontDisplay' }
-        }
-    ], { synchronousExecution: true });
+            // 应用自由变换
+            {
+                _obj: 'transform',
+                freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
+                offset: {
+                    _obj: 'offset',
+                    horizontal: { _unit: 'pixelsUnit', _value: translation.x },
+                    vertical: { _unit: 'pixelsUnit', _value: translation.y }
+                },
+                width: { _unit: 'percentUnit', _value: scale.x * 100 },
+                height: { _unit: 'percentUnit', _value: scale.y * 100 },
+                _options: { dialogOptions: 'dontDisplay' }
+            }
+        ], { synchronousExecution: true });
+    }, { commandName: '形态变形对齐预览' });
 }
 
 /**
@@ -377,12 +378,12 @@ export async function batchMorphToShape(
 // 注册工具
 export const morphToShapeTool = {
     name: 'morphToShape',
-    description: '将图层变形为目标形状',
+    description: '提取目标形状与源轮廓并应用对齐预览（不执行真实变形；真实变形需 applyDisplacement / applyMorphedImage）',
     handler: morphToShape
 };
 
 export const batchMorphToShapeTool = {
     name: 'batchMorphToShape',
-    description: '批量将图层变形为目标形状',
+    description: '批量对多个图层执行形状对齐预览（不执行真实变形；真实变形需 applyDisplacement / applyMorphedImage）',
     handler: batchMorphToShape
 };

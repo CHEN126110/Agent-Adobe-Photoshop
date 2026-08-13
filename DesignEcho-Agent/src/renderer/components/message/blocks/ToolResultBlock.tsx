@@ -4,14 +4,22 @@
 
 import React, { useState } from 'react';
 import type { ToolResultBlock as ToolResultBlockType } from '../types';
+import { sanitizeUserVisibleDiagnosticText } from '../../../../shared/chat-response-cleaner';
 
 interface ToolResultBlockProps {
     block: ToolResultBlockType;
     onAction?: (actionId: string, params?: Record<string, any>) => void;
+    collapseForTerminalState?: boolean;
 }
 
-export const ToolResultBlock: React.FC<ToolResultBlockProps> = ({ block, onAction }) => {
-    const [isExpanded, setIsExpanded] = useState(false);
+export const ToolResultBlock: React.FC<ToolResultBlockProps> = ({
+    block,
+    onAction,
+    collapseForTerminalState = false
+}) => {
+    const [isExpanded, setIsExpanded] = useState(
+        collapseForTerminalState ? false : block.success === false
+    );
     
     const statusIcon = block.success ? '✓' : '✗';
     const statusClass = block.success ? 'success' : 'error';
@@ -26,11 +34,27 @@ export const ToolResultBlock: React.FC<ToolResultBlockProps> = ({ block, onActio
         if (value === null || value === undefined) return '-';
         if (typeof value === 'boolean') return value ? '是' : '否';
         if (typeof value === 'number') return value.toLocaleString();
-        if (typeof value === 'string') return value;
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length > 80) {
+                return '结构化结果已隐藏。';
+            }
+            const cleaned = sanitizeUserVisibleDiagnosticText(value).replace(/工具调用/g, '画面处理') || '这项结果包含结构化内容，已收起。';
+            return cleaned.length > 1000 ? `${cleaned.slice(0, 1000)}...` : cleaned;
+        }
         if (Array.isArray(value)) return `${value.length} 项`;
-        if (typeof value === 'object') return JSON.stringify(value, null, 2);
+        if (typeof value === 'object') return '对象数据已隐藏。';
         return String(value);
     };
+
+    const safeErrorText = sanitizeUserVisibleDiagnosticText(block.error) || '处理失败';
+    const safeDetailLabel = (label: unknown): string => {
+        const cleaned = sanitizeUserVisibleDiagnosticText(String(label ?? ''));
+        if (!cleaned || cleaned.includes('系统已保留诊断信息')) return '详情';
+        return cleaned;
+    };
+    const safeDetailValue = (value: any): string => formatResultValue(value);
+    const isSafeExternalLink = (value: string): boolean => /^https?:\/\//i.test(value);
     
     return (
         <div className={`message-block tool-result-block ${statusClass}`}>
@@ -47,7 +71,7 @@ export const ToolResultBlock: React.FC<ToolResultBlockProps> = ({ block, onActio
                     {block.duration && (
                         <span className="tool-duration">{formatDuration(block.duration)}</span>
                     )}
-                    <button className="expand-btn">
+                    <button className="expand-btn" aria-label={isExpanded ? '收起结果' : '展开结果'}>
                         <svg 
                             width="16" 
                             height="16" 
@@ -69,30 +93,38 @@ export const ToolResultBlock: React.FC<ToolResultBlockProps> = ({ block, onActio
                     {/* 错误信息 */}
                     {block.error && (
                         <div className="error-message">
-                            <span className="error-icon">⚠️</span>
-                            <span className="error-text">{block.error}</span>
+                            <span className="error-icon">!</span>
+                            <span className="error-text">{safeErrorText}</span>
                         </div>
                     )}
                     
                     {/* 详情列表 */}
                     {block.details && block.details.length > 0 && (
                         <div className="details-list">
-                            {block.details.map((detail, index) => (
-                                <div key={index} className="detail-item">
-                                    <span className="detail-label">{detail.label}:</span>
-                                    <span className={`detail-value ${detail.type || 'text'}`}>
-                                        {detail.type === 'code' ? (
-                                            <code>{detail.value}</code>
-                                        ) : detail.type === 'link' ? (
-                                            <a href={String(detail.value)} target="_blank" rel="noopener">
-                                                {detail.value}
-                                            </a>
-                                        ) : (
-                                            formatResultValue(detail.value)
-                                        )}
-                                    </span>
-                                </div>
-                            ))}
+                            {block.details.map((detail, index) => {
+                                const detailLabel = safeDetailLabel(detail.label);
+                                const detailValue = safeDetailValue(detail.value);
+                                const rawLinkValue = String(detail.value || '').trim();
+                                const canRenderLink = detail.type === 'link'
+                                    && isSafeExternalLink(rawLinkValue)
+                                    && detailValue === rawLinkValue;
+                                return (
+                                    <div key={index} className="detail-item">
+                                        <span className="detail-label">{detailLabel}:</span>
+                                        <span className={`detail-value ${detail.type || 'text'}`}>
+                                            {detail.type === 'code' ? (
+                                                <code>{detailValue}</code>
+                                            ) : canRenderLink ? (
+                                                <a href={rawLinkValue} target="_blank" rel="noopener">
+                                                    {detailValue}
+                                                </a>
+                                            ) : (
+                                                detailValue
+                                            )}
+                                        </span>
+                                    </div>
+                                );
+                            })}
                         </div>
                     )}
                     

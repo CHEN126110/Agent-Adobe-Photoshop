@@ -10,11 +10,20 @@
 export interface ReferenceLayoutAnalysis {
     /** 布局类型 */
     layoutType: 'center' | 'left-right' | 'top-bottom' | 'grid' | 'custom';
+    /** 设计目标 */
+    designIntent?: string;
     /** 画布尺寸（推测） */
     canvasSize: {
         width: number;
         height: number;
         aspectRatio: string;  // 如 "1:1", "3:4", "16:9"
+    };
+    /** 构图摘要 */
+    composition?: {
+        focalPoint?: string;
+        readingOrder?: string[];
+        density?: 'low' | 'medium' | 'high';
+        symmetry?: 'symmetrical' | 'asymmetrical' | 'mixed';
     };
     /** 检测到的元素 */
     elements: LayoutElement[];
@@ -29,6 +38,8 @@ export interface LayoutElement {
     id: string;
     /** 元素类型 */
     type: 'main-title' | 'sub-title' | 'body-text' | 'cta' | 'product-image' | 'background' | 'decoration' | 'logo' | 'tag';
+    /** 元素职责 */
+    role?: 'headline' | 'supporting-copy' | 'hero-asset' | 'cta' | 'background' | 'brand' | 'decoration' | 'badge';
     /** 推测内容 */
     content?: string;
     /** 相对位置（百分比） */
@@ -44,7 +55,16 @@ export interface LayoutElement {
         fontWeight?: 'bold' | 'normal';
         color?: string;
         alignment?: 'left' | 'center' | 'right';
+        emphasis?: 'high' | 'medium' | 'low';
     };
+    /** 与其他元素的关系 */
+    relationship?: {
+        anchors?: string[];
+        overlaps?: string[];
+        group?: string;
+    };
+    /** 视觉权重 */
+    visualWeight?: 'primary' | 'secondary' | 'tertiary';
     /** 层级（z-index 参考） */
     zIndex: number;
 }
@@ -60,11 +80,11 @@ export interface AlignmentGroup {
  * 构建参考图分析提示词
  */
 export const buildReferenceAnalysisPrompt = (): string => {
-    return `你是一位资深电商设计分析专家。请仔细分析这张参考图的布局结构。
+    return `你是一位资深视觉设计分析专家。请仔细分析这张参考图的布局结构。
 
 ## 分析要求
 
-请提取以下信息并以 JSON 格式返回：
+请提取以下信息并以 JSON 格式返回。重点不是猜文案，而是建立“可执行设计蓝图”：
 
 ### 1. 布局类型 (layoutType)
 - "center": 居中对称布局
@@ -80,7 +100,11 @@ export const buildReferenceAnalysisPrompt = (): string => {
 - Banner 通常 1920x600 (16:5)
 
 ### 3. 元素列表 (elements)
-识别画面中的每个设计元素：
+识别画面中的主要设计元素，并写清楚：
+- 它在画布的什么位置
+- 它承担什么职责
+- 它与谁形成对齐/分组/覆盖关系
+- 谁是主视觉、谁是次级信息
 
 | 类型 | 说明 |
 |------|------|
@@ -107,18 +131,28 @@ export const buildReferenceAnalysisPrompt = (): string => {
 \`\`\`json
 {
     "layoutType": "center",
+    "designIntent": "突出产品主体，标题与卖点围绕主视觉形成清晰阅读路径",
     "canvasSize": {
         "width": 800,
         "height": 800,
         "aspectRatio": "1:1"
     },
+    "composition": {
+        "focalPoint": "产品主体位于画面中央偏下",
+        "readingOrder": ["主标题", "副标题", "产品主体", "CTA"],
+        "density": "medium",
+        "symmetry": "symmetrical"
+    },
     "elements": [
         {
             "id": "el-1",
             "type": "main-title",
+            "role": "headline",
             "content": "推测的文案内容",
             "position": { "x": 50, "y": 20, "width": 80, "height": 10 },
-            "style": { "fontSize": "large", "fontWeight": "bold", "alignment": "center" },
+            "style": { "fontSize": "large", "fontWeight": "bold", "alignment": "center", "emphasis": "high" },
+            "relationship": { "anchors": ["el-2"], "group": "title-group" },
+            "visualWeight": "primary",
             "zIndex": 10
         }
     ],
@@ -165,8 +199,8 @@ export const buildLayoutReplicationPrompt = (
 
 ### 参考图元素（${referenceAnalysis.elements.length} 个）
 ${referenceAnalysis.elements.map(el => `
-**[${el.id}]** ${el.type}${el.content ? ` - "${el.content}"` : ''}
-  └ 位置: X ${el.position.x}% Y ${el.position.y}% | 尺寸: ${el.position.width}% × ${el.position.height}%${el.style ? ` | 样式: ${el.style.fontSize || ''} ${el.style.alignment || ''}` : ''} | 层级: z-${el.zIndex}`).join('\n')}
+**[${el.id}]** ${el.type}${el.role ? ` / ${el.role}` : ''}${el.content ? ` - "${el.content}"` : ''}
+  └ 位置: X ${el.position.x}% Y ${el.position.y}% | 尺寸: ${el.position.width}% × ${el.position.height}%${el.style ? ` | 样式: ${el.style.fontSize || ''} ${el.style.alignment || ''}` : ''}${el.visualWeight ? ` | 权重: ${el.visualWeight}` : ''} | 层级: z-${el.zIndex}`).join('\n')}
 
 ## 📄 当前文档图层（${currentElements.length} 个）
 ${currentElements.map((el, i) => `
@@ -202,8 +236,8 @@ ${currentElements.map((el, i) => `
 |------|------|---------|
 | selectLayer | 选中图层 | \`{ "layerName": "标题" }\` 或 \`{ "layerId": 123 }\` |
 | moveLayer | 移动图层 | \`{ "x": 400, "y": 160, "relative": false }\` |
-| setTextStyle | 设置文字样式 | \`{ "fontSize": 48, "alignment": "center" }\` |
-| alignLayers | 对齐图层 | \`{ "alignment": "center" }\` (需先多选) |
+| setTextStyle | 按字段修改文字样式 | \`{ "layerId": 123, "fontSize": 48 }\`（字号单位 pt；不支持 alignment） |
+| alignLayers | 对齐图层 | \`{ "layerIds": [123], "alignment": "center" }\` |
 | reorderLayer | 调整层级 | \`{ "layerId": 123, "position": "front" }\` |
 
 ## 📋 输出要求
@@ -246,29 +280,75 @@ ${currentElements.map((el, i) => `
 3. **优先使用 layerId**（更准确），其次 layerName
 4. **处理顺序**：背景 → 主图 → 标题 → 装饰元素
 5. **跳过无法匹配的元素**，不要强行匹配
+6. **优先保持视觉层级与阅读顺序**，不要只做机械坐标搬运
 
 现在请分析并生成布局复刻指令：`;
 };
+
+function clampPercent(value: number, fallback: number): number {
+    if (!Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.min(100, value));
+}
+
+function sanitizeElement(raw: any, index: number): LayoutElement {
+    return {
+        id: typeof raw?.id === 'string' && raw.id.trim() ? raw.id.trim() : `el-${index + 1}`,
+        type: raw?.type || 'decoration',
+        role: raw?.role,
+        content: typeof raw?.content === 'string' ? raw.content : undefined,
+        position: {
+            x: clampPercent(Number(raw?.position?.x), 0),
+            y: clampPercent(Number(raw?.position?.y), 0),
+            width: clampPercent(Number(raw?.position?.width), 10),
+            height: clampPercent(Number(raw?.position?.height), 10)
+        },
+        style: raw?.style && typeof raw.style === 'object' ? raw.style : undefined,
+        relationship: raw?.relationship && typeof raw.relationship === 'object' ? raw.relationship : undefined,
+        visualWeight: raw?.visualWeight,
+        zIndex: Number.isFinite(Number(raw?.zIndex)) ? Number(raw.zIndex) : index + 1
+    };
+}
 
 /**
  * 解析布局分析结果
  */
 export const parseLayoutAnalysis = (response: string): ReferenceLayoutAnalysis | null => {
     try {
+        let parsed: any = null;
         // 尝试提取 JSON 代码块
         const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/);
         if (jsonMatch) {
-            return JSON.parse(jsonMatch[1]);
+            parsed = JSON.parse(jsonMatch[1]);
+        } else {
+            // 尝试直接解析
+            const startIndex = response.indexOf('{');
+            const endIndex = response.lastIndexOf('}');
+            if (startIndex !== -1 && endIndex !== -1) {
+                parsed = JSON.parse(response.substring(startIndex, endIndex + 1));
+            }
         }
-        
-        // 尝试直接解析
-        const startIndex = response.indexOf('{');
-        const endIndex = response.lastIndexOf('}');
-        if (startIndex !== -1 && endIndex !== -1) {
-            return JSON.parse(response.substring(startIndex, endIndex + 1));
+
+        if (!parsed || typeof parsed !== 'object') {
+            return null;
         }
-        
-        return null;
+
+        const elements = Array.isArray(parsed.elements)
+            ? parsed.elements.map((item: any, index: number) => sanitizeElement(item, index))
+            : [];
+
+        return {
+            layoutType: parsed.layoutType || 'custom',
+            designIntent: typeof parsed.designIntent === 'string' ? parsed.designIntent : undefined,
+            canvasSize: {
+                width: Number(parsed?.canvasSize?.width) || 800,
+                height: Number(parsed?.canvasSize?.height) || 800,
+                aspectRatio: parsed?.canvasSize?.aspectRatio || '1:1'
+            },
+            composition: parsed?.composition && typeof parsed.composition === 'object' ? parsed.composition : undefined,
+            elements,
+            alignmentGroups: Array.isArray(parsed.alignmentGroups) ? parsed.alignmentGroups : [],
+            suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : []
+        };
     } catch (error) {
         console.error('[parseLayoutAnalysis] 解析失败:', error);
         return null;

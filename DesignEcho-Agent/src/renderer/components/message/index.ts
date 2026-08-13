@@ -46,9 +46,5 @@ export {
 // 解析器
 export {
     parseMessageContent,
-    convertLegacyMessage,
-    createTextMessage,
-    createSuccessMessage,
-    createErrorMessage,
-    createImageMessage
+    convertLegacyMessage
 } from './parser';

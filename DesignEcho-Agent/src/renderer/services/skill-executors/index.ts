@@ -1,124 +1,80 @@
 /**
- * 技能执行器注册中心
- * 
- * 将技能执行逻辑从 unified-agent.service.ts 拆分出来，
- * 每个技能一个独立文件，便于维护和测试。
+ * Skill executor registry.
+ * Keeps each skill implementation isolated while exposing one execution entrypoint.
  */
 
-import type { SkillExecutor, SkillExecutorRegistry, SkillExecuteParams } from './types';
+import type { SkillExecutor, SkillExecuteParams } from './types';
 import type { AgentResult } from '../unified-agent.service';
-import { getSkillById } from '../../../shared/skills/skill-declarations';
-import { startTiming, endTiming } from '../performance-tracker';
+import {
+    executeSkillWithExecutor as executeSkillWithExecutorFromRegistry,
+    getSkillExecutor as getSkillExecutorFromRegistry,
+    registerSkillExecutor as registerSkillExecutorInRegistry
+} from './registry';
 
-// 导入技能执行器
 import { matteProductExecutor } from './matte-product.executor';
 import { smartLayoutExecutor } from './smart-layout.executor';
-import { shapeMorphingExecutor } from './shape-morphing.executor';
-import { detailPageExecutor } from './detail-page.executor';
 import { skuBatchExecutor } from './sku-batch.executor';
-import { skuConfigExecutor } from './sku-config.executor';
 import { layoutReplicationExecutor } from './layout-replication.executor';
+import { ecommerceSocksDesignExecutor } from './ecommerce-socks-design.executor';
 import { mainImageExecutor } from './main-image.executor';
 import { visualAnalysisExecutor } from './visual-analysis.executor';
+import { projectImageAnalysisExecutor } from './project-image-analysis.executor';
+import { layerManagementExecutor } from './layer-management.executor';
 import { designReferenceSearchExecutor } from './design-reference-search.executor';
 import { findEditElementExecutor } from './find-edit-element.executor';
 import { agentPanelBridgeExecutor } from './agent-panel-bridge.executor';
+import { documentManagementExecutor } from './document-management.executor';
+import { templateSaveExecutor } from './template-save.executor';
+import { detailPageExecutor } from './detail-page.executor';
+import { textFontReplaceExecutor } from './text-font-replace.executor';
 
-// 技能执行器注册表
-const executorRegistry: SkillExecutorRegistry = new Map();
+const lazyAutonomousAgentExecutor: SkillExecutor = {
+    skillId: 'autonomous-agent',
+    async execute(executeParams: SkillExecuteParams): Promise<AgentResult> {
+        const { autonomousAgentExecutor } = await import('./autonomous-agent.executor');
+        return autonomousAgentExecutor.execute(executeParams);
+    }
+};
 
-// 注册内置技能执行器
 function registerBuiltinExecutors(): void {
-    // 图像处理
-    executorRegistry.set(matteProductExecutor.skillId, matteProductExecutor);
-    
-    // 布局排版
-    executorRegistry.set(smartLayoutExecutor.skillId, smartLayoutExecutor);
-    executorRegistry.set(layoutReplicationExecutor.skillId, layoutReplicationExecutor);
-    
-    // 形态变形
-    executorRegistry.set(shapeMorphingExecutor.skillId, shapeMorphingExecutor);
-    
-    // 电商设计
-    executorRegistry.set(mainImageExecutor.skillId, mainImageExecutor);
-    executorRegistry.set(detailPageExecutor.skillId, detailPageExecutor);
-    executorRegistry.set(skuConfigExecutor.skillId, skuConfigExecutor);
-    executorRegistry.set(skuBatchExecutor.skillId, skuBatchExecutor);
+    registerSkillExecutorInRegistry(matteProductExecutor);
 
-    // 视觉分析
-    executorRegistry.set(visualAnalysisExecutor.skillId, visualAnalysisExecutor);
-    executorRegistry.set(findEditElementExecutor.skillId, findEditElementExecutor);
-    executorRegistry.set(agentPanelBridgeExecutor.skillId, agentPanelBridgeExecutor);
+    registerSkillExecutorInRegistry(smartLayoutExecutor);
+    registerSkillExecutorInRegistry(layoutReplicationExecutor);
+    registerSkillExecutorInRegistry(ecommerceSocksDesignExecutor);
 
-    // 设计参考搜索
-    executorRegistry.set(designReferenceSearchExecutor.skillId, designReferenceSearchExecutor);
+    registerSkillExecutorInRegistry(mainImageExecutor);
+    registerSkillExecutorInRegistry(detailPageExecutor);
+    registerSkillExecutorInRegistry(skuBatchExecutor);
+
+    registerSkillExecutorInRegistry(visualAnalysisExecutor);
+    registerSkillExecutorInRegistry(projectImageAnalysisExecutor);
+    registerSkillExecutorInRegistry(layerManagementExecutor);
+    registerSkillExecutorInRegistry(findEditElementExecutor);
+    registerSkillExecutorInRegistry(agentPanelBridgeExecutor);
+    registerSkillExecutorInRegistry(documentManagementExecutor);
+    registerSkillExecutorInRegistry(templateSaveExecutor);
+    registerSkillExecutorInRegistry(textFontReplaceExecutor);
+
+    registerSkillExecutorInRegistry(designReferenceSearchExecutor);
+    registerSkillExecutorInRegistry(lazyAutonomousAgentExecutor);
 }
 
-// 初始化
 registerBuiltinExecutors();
 
-/**
- * 获取技能执行器
- */
 export function getSkillExecutor(skillId: string): SkillExecutor | undefined {
-    return executorRegistry.get(skillId);
+    return getSkillExecutorFromRegistry(skillId);
 }
 
-/**
- * 注册自定义技能执行器
- */
 export function registerSkillExecutor(executor: SkillExecutor): void {
-    executorRegistry.set(executor.skillId, executor);
+    registerSkillExecutorInRegistry(executor);
 }
 
-/**
- * 执行技能（统一入口）
- * 
- * 优先使用注册的执行器，如果没有则返回未实现错误
- */
 export async function executeSkillWithExecutor(
     skillId: string,
     executeParams: SkillExecuteParams
 ): Promise<AgentResult> {
-    startTiming(`技能:${skillId}`, { params: Object.keys(executeParams.params) });
-    
-    const skill = getSkillById(skillId);
-    if (!skill) {
-        endTiming(`技能:${skillId}`, { error: 'not found' });
-        return {
-            success: false,
-            message: `未找到技能: ${skillId}`,
-            error: 'Skill not found'
-        };
-    }
-    
-    executeParams.callbacks?.onProgress?.(`执行技能: ${skill.name}`, 0);
-    executeParams.callbacks?.onMessage?.(`🔧 正在执行「${skill.name}」...`);
-    
-    const executor = getSkillExecutor(skillId);
-    
-    if (!executor) {
-        endTiming(`技能:${skillId}`, { error: 'no executor' });
-        return {
-            success: false,
-            message: `技能 ${skill.name} 的执行器尚未实现`,
-            error: 'Skill executor not implemented'
-        };
-    }
-    
-    try {
-        const result = await executor.execute(executeParams);
-        endTiming(`技能:${skillId}`, { success: result.success });
-        return result;
-    } catch (e: any) {
-        endTiming(`技能:${skillId}`, { error: e.message });
-        return {
-            success: false,
-            message: `执行技能失败: ${e.message}`,
-            error: e.message
-        };
-    }
+    return executeSkillWithExecutorFromRegistry(skillId, executeParams);
 }
 
-// 导出类型
 export type { SkillExecutor, SkillExecuteParams } from './types';

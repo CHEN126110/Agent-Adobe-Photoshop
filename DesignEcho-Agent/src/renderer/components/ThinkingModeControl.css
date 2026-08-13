@@ -1,0 +1,87 @@
+.thinking-mode-control {
+    position: relative;
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.thinking-mode-control-button {
+    display: inline-flex;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 8px;
+    outline: none;
+    background: transparent;
+    color: var(--de-text-secondary);
+    cursor: pointer;
+    transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.thinking-mode-control-button:hover {
+    background: var(--de-hover-bg);
+    color: var(--de-text-primary);
+}
+
+.thinking-mode-control-button.active {
+    background: var(--de-thinking-active-bg);
+    color: var(--de-thinking-active);
+}
+
+.thinking-mode-control-button:focus-visible {
+    box-shadow: 0 0 0 2px var(--de-bg), 0 0 0 4px var(--de-primary);
+}
+
+/* 定位由 FloatingLayer 用 position:fixed 内联下发（portal 到 body，躲开祖先 overflow:hidden）；
+   这里只负责外观，不要再写 position / left / bottom / transform。 */
+.thinking-mode-tooltip {
+    z-index: 400;
+    width: 208px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: #18181b;
+    color: #fff;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    /* 提示是纯说明，不该吃掉指针事件（否则贴着按钮时会挡住点击） */
+    pointer-events: none;
+    animation: thinking-mode-tooltip-in 120ms ease;
+}
+
+.thinking-mode-tooltip-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+@keyframes thinking-mode-tooltip-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.thinking-mode-tooltip strong {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+.thinking-mode-tooltip span {
+    color: #d4d4d8;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .thinking-mode-control-button {
+        transition: none;
+    }
+
+    .thinking-mode-tooltip {
+        animation: none;
+    }
+}

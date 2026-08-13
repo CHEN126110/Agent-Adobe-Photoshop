@@ -1,0 +1,276 @@
+{
+  "id": "rr-001-fex-certificate-text-layout",
+  "name": "FEX 合格证文本排版复刻",
+  "status": "reference_captured",
+  "referenceImage": {
+    "path": "assets/fex-certificate-text-layout.jpg",
+    "description": "460x460 白底黑字合格证标签。顶部标题居中，下方为左右两列产品信息和左对齐多行标准说明。"
+  },
+  "scenario": {
+    "category": "certificate-text-layout",
+    "notes": "用于反压参考图复刻的文本排版能力：标题层级、左右列对齐、行距、字段标签和值、底部说明组。该 case 暂不验证复杂图片、样式特效或审美创意。 expectedBox 采用参考图黑色像素阈值检测结果，主要用于 bounds/对齐验收，不等同于 Photoshop 文本框真实 typographic bounds。",
+    "source": {
+      "providedBy": "temporary-fex",
+      "originalPath": "C:/Users/12611/Desktop/FEX.jpg",
+      "capturedAt": "2026-04-28",
+      "boundary": "Temporary FEX text-layout benchmark only. It cannot support product capability or design-quality claims."
+    },
+    "canvas": {
+      "width": 460,
+      "height": 460,
+      "background": "#FFFFFF"
+    },
+    "expectedLayout": {
+      "layoutType": "certificate-label",
+      "readingOrder": [
+        "title",
+        "top-left-field-brand",
+        "top-right-field-product-name",
+        "top-left-field-style-no",
+        "top-right-field-grade",
+        "left-field-color",
+        "left-field-inspector",
+        "bottom-standards-block"
+      ],
+      "alignment": [
+        "title horizontally centered around x=230px",
+        "left column black-pixel bounds start around x=36-38px",
+        "right column black-pixel bounds start around x=300-302px",
+        "bottom standards block left aligned around x=36-37px",
+        "body text rows use consistent black-pixel height around 22px and baseline step around 38px"
+      ],
+      "typography": {
+        "title": {
+          "approximateFontSizePx": 40,
+          "fontWeight": "bold",
+          "textColor": "#111111",
+          "detectedBlackPixelBox": {
+            "x": 160,
+            "y": 41,
+            "width": 141,
+            "height": 45
+          }
+        },
+        "body": {
+          "approximateFontSizePx": 24,
+          "fontWeight": "regular",
+          "textColor": "#111111",
+          "detectedBlackPixelHeightPx": 22
+        }
+      }
+    }
+  },
+  "execution": {
+    "visionModel": "",
+    "logicModel": "",
+    "autoCreateDocument": true,
+    "templateApply": false,
+    "suggestedParams": {
+      "outputWidth": 460,
+      "outputHeight": 460,
+      "visualValidation": "bounds",
+      "includeOverlaySnapshots": false,
+      "preserveEditableText": true
+    }
+  },
+  "expectedElements": [
+    {
+      "id": "title",
+      "kind": "text",
+      "role": "headline",
+      "content": "合格证",
+      "expectedBox": {
+        "x": 160,
+        "y": 41,
+        "width": 141,
+        "height": 45
+      },
+      "alignment": "center",
+      "fontWeight": "bold"
+    },
+    {
+      "id": "brand",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "品牌:FEX",
+      "expectedBox": {
+        "x": 38,
+        "y": 121,
+        "width": 94,
+        "height": 22
+      },
+      "alignment": "left-column"
+    },
+    {
+      "id": "product-name",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "品名:袜子",
+      "expectedBox": {
+        "x": 302,
+        "y": 121,
+        "width": 100,
+        "height": 22
+      },
+      "alignment": "right-column"
+    },
+    {
+      "id": "style-no",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "货号:N-W210520",
+      "expectedBox": {
+        "x": 37,
+        "y": 159,
+        "width": 187,
+        "height": 22
+      },
+      "alignment": "left-column"
+    },
+    {
+      "id": "grade",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "等级:一等品",
+      "expectedBox": {
+        "x": 300,
+        "y": 159,
+        "width": 123,
+        "height": 22
+      },
+      "alignment": "right-column"
+    },
+    {
+      "id": "color",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "颜色:混色",
+      "expectedBox": {
+        "x": 37,
+        "y": 197,
+        "width": 100,
+        "height": 22
+      },
+      "alignment": "left-column"
+    },
+    {
+      "id": "inspector",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "检验员:018",
+      "expectedBox": {
+        "x": 36,
+        "y": 235,
+        "width": 120,
+        "height": 22
+      },
+      "alignment": "left-column"
+    },
+    {
+      "id": "material",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "成分:棉100%",
+      "expectedBox": {
+        "x": 37,
+        "y": 290,
+        "width": 138,
+        "height": 22
+      },
+      "alignment": "left-column"
+    },
+    {
+      "id": "execute-standard",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "执行标准:FZ/T73001-2016",
+      "expectedBox": {
+        "x": 37,
+        "y": 328,
+        "width": 288,
+        "height": 22
+      },
+      "alignment": "left-column"
+    },
+    {
+      "id": "compliance-standard",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "符合标准:GB18401-2010",
+      "expectedBox": {
+        "x": 36,
+        "y": 366,
+        "width": 268,
+        "height": 22
+      },
+      "alignment": "left-column"
+    },
+    {
+      "id": "safety-category",
+      "kind": "text",
+      "role": "supporting-copy",
+      "content": "安全技术类别:B类可直接接触皮肤",
+      "expectedBox": {
+        "x": 37,
+        "y": 404,
+        "width": 353,
+        "height": 22
+      },
+      "alignment": "left-column"
+    }
+  ],
+  "acceptanceCriteria": [
+    "必须创建可编辑文本层，而不是把整张参考图直接作为位图贴入。",
+    "标题“合格证”应水平居中，且字号/字重大于正文。",
+    "正文应保留左右两列结构：品牌/货号在左，品名/等级在右。",
+    "底部四行说明应与左列起点一致，并保持稳定行距。",
+    "文本内容必须完整，不应遗漏英文、数字、斜杠或中文标点。",
+    "当前验收以结构、文本内容和 bounds 为主，不宣称像素级完全一致。"
+  ],
+  "outputs": {
+    "documentName": "FEX 合格证文本排版复刻.psd",
+    "resultScreenshot": "",
+    "notes": "未执行真实 Photoshop 复刻前不填写结果截图和评分。"
+  },
+  "score": {
+    "structure": null,
+    "placement": null,
+    "textHierarchy": null,
+    "editability": null,
+    "overall": null
+  },
+  "verification": {
+    "buildVerified": false,
+    "manualVerified": false,
+    "reviewedAt": "",
+    "reviewer": ""
+  },
+  "acceptance": {
+    "requiredEvidence": [
+      "editable-text-layers",
+      "bounds-qa",
+      "screenshot-pixel-probe",
+      "manual-review"
+    ],
+    "mustRemainEditable": true,
+    "boundsQa": {
+      "minOkRatio": 0.82,
+      "maxMismatch": 0,
+      "maxUnverified": 0
+    },
+    "screenshotPixelProbe": {
+      "enabled": true,
+      "targetSize": {
+        "width": 460,
+        "height": 460
+      },
+      "thresholds": {
+        "maxMae": 32,
+        "maxHighDeltaRatio": 0.22,
+        "minDarkJaccard": 0.52
+      },
+      "boundary": "Pixel probe is diagnostic evidence for the 460x460 black-text certificate case only. It does not prove typographic fidelity or original PSD reconstruction.",
+      "rawImagesRedacted": true
+    }
+  }
+}

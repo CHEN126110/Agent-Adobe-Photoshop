@@ -3,9 +3,14 @@
  */
 
 import { Tool, ToolSchema } from '../types';
+import { observeActiveDocumentAtHistoryState } from '../../core/photoshop-document-observation';
+import type { PhotoshopHistoryStateRef } from '../../core/photoshop-history-state-ref';
+import {
+    encodePhotoshopImageDataAsJpeg,
+    toSnapshotErrorMessage
+} from './snapshot-encoding';
 
-const app = require('photoshop').app;
-const { core, imaging } = require('photoshop');
+const { imaging } = require('photoshop');
 
 export class GetDocumentSnapshotTool implements Tool {
     name = 'getDocumentSnapshot';
@@ -43,107 +48,85 @@ export class GetDocumentSnapshotTool implements Tool {
         width?: number;
         height?: number;
         format?: string;
+        requestedFormat?: string;
+        message?: string;
+        historyStateRef?: PhotoshopHistoryStateRef;
+        documentInfo?: {
+            id: number;
+            name: string;
+            width: number;
+            height: number;
+        };
         error?: string;
     }> {
         try {
-            const doc = app.activeDocument;
-            if (!doc) {
-                return { success: false, error: '没有打开的文档' };
-            }
-
             const maxWidth = params.maxWidth || 800;
             const maxHeight = params.maxHeight || 600;
-            const format = params.format || 'jpeg';
-
-            // 计算缩放后的尺寸
-            const docWidth = doc.width;
-            const docHeight = doc.height;
-            const scale = Math.min(maxWidth / docWidth, maxHeight / docHeight, 1);
-            const targetWidth = Math.round(docWidth * scale);
-            const targetHeight = Math.round(docHeight * scale);
-
-            // 使用 executeAsModal 获取像素数据（imaging API 必须在 modal scope 内执行）
-            let base64 = '';
-            await core.executeAsModal(async () => {
-                // 获取像素数据
+            const requestedFormat = params.format || 'jpeg';
+            const outputFormat = 'jpeg';
+            const observation = await observeActiveDocumentAtHistoryState({
+                commandName: 'DesignEcho: 获取文档截图',
+                timeOut: 5,
+                unavailableMessage: '无法读取 Photoshop 文档历史版本，未返回可能过期的截图。',
+                changedMessage: '截图期间 Photoshop 文档发生变化，已丢弃这张不一致的截图。'
+            }, async (doc) => {
+                const docWidth = Number(doc.width);
+                const docHeight = Number(doc.height);
+                const scale = Math.min(maxWidth / docWidth, maxHeight / docHeight, 1);
+                const targetWidth = Math.max(1, Math.round(docWidth * scale));
+                const targetHeight = Math.max(1, Math.round(docHeight * scale));
                 const pixelData = await imaging.getPixels({
                     documentID: doc.id,
-                    targetSize: {
-                        width: targetWidth,
-                        height: targetHeight
-                    },
-                    componentCount: 4  // RGBA
+                    targetSize: { width: targetWidth, height: targetHeight },
+                    colorSpace: 'RGB',
+                    componentSize: 8,
+                    applyAlpha: true
                 });
 
-                // 获取图像数据
-                const imageData = await pixelData.imageData.getData();
-                
-                // 转换为 base64
-                base64 = await this.rgbaToBase64(imageData, targetWidth, targetHeight, format);
+                let encoded;
+                try {
+                    encoded = await encodePhotoshopImageDataAsJpeg(
+                        pixelData.imageData,
+                        targetWidth,
+                        targetHeight
+                    );
+                } finally {
+                    pixelData.imageData.dispose();
+                }
 
-                // 释放资源
-                pixelData.imageData.dispose();
-            }, { commandName: 'DesignEcho: 获取文档截图' });
+                return {
+                    base64: encoded.base64,
+                    outputWidth: encoded.width,
+                    outputHeight: encoded.height,
+                    documentInfo: {
+                        id: Number(doc.id),
+                        name: String(doc.name || ''),
+                        width: docWidth,
+                        height: docHeight
+                    }
+                };
+            });
 
             return {
                 success: true,
-                imageData: base64,
-                width: targetWidth,
-                height: targetHeight,
-                format: format
+                imageData: observation.value.base64,
+                width: observation.value.outputWidth,
+                height: observation.value.outputHeight,
+                format: outputFormat,
+                requestedFormat,
+                message: requestedFormat === outputFormat
+                    ? undefined
+                    : '已返回可预览截图，格式为 JPEG。',
+                historyStateRef: observation.historyStateRef,
+                documentInfo: observation.value.documentInfo
             };
 
         } catch (error) {
             console.error('[GetDocumentSnapshot] Error:', error);
             return {
                 success: false,
-                error: error instanceof Error ? error.message : '获取截图失败'
+                error: toSnapshotErrorMessage(error, '获取文档截图失败')
             };
         }
-    }
-
-    /**
-     * RGBA 转 Base64 (JPEG/PNG)
-     */
-    private async rgbaToBase64(
-        rgbaData: ArrayBuffer | Uint8Array, 
-        width: number, 
-        height: number, 
-        format: 'jpeg' | 'png' = 'jpeg'
-    ): Promise<string> {
-        return new Promise((resolve, reject) => {
-            try {
-                // 创建 Canvas
-                const canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d');
-                
-                if (!ctx) {
-                    throw new Error('无法创建 Canvas Context');
-                }
-
-                // 创建 ImageData
-                // 注意：UXP 的 ArrayBuffer 可能需要转换
-                const data = new Uint8ClampedArray(rgbaData);
-                const imageData = new ImageData(data, width, height);
-                
-                // 绘制到 Canvas
-                ctx.putImageData(imageData, 0, 0);
-                
-                // 导出为 Base64
-                const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
-                const quality = 0.8;
-                
-                // UXP 的 toDataURL 返回完整的 data URI: data:image/jpeg;base64,...
-                const dataUrl = canvas.toDataURL(mimeType, quality);
-                
-                // 去除前缀，只返回 base64 内容
-                const base64 = dataUrl.split(',')[1];
-                resolve(base64);
-            } catch (e) {
-                reject(e);
-            }
-        });
     }
 }

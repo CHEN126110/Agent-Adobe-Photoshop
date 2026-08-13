@@ -2,14 +2,10 @@
  * SKU 批量生成 IPC 处理器
  */
 
-import { ipcMain, dialog, app } from 'electron';
+import { ipcMain, dialog } from 'electron';
 import * as fs from 'fs/promises';
-import * as path from 'path';
 import { skuConfigService } from '../services/sku-config-service';
 import type { IPCContext } from './types';
-
-// 配置存储路径
-const getConfigStorePath = () => path.join(app.getPath('userData'), 'sku-configs.json');
 
 export function registerSKUHandlers(_context: IPCContext): void {
     console.log('[IPC] 注册 SKU 处理器');
@@ -55,60 +51,6 @@ export function registerSKUHandlers(_context: IPCContext): void {
         } catch (error: any) {
             console.error('[SKU] 提取图层组失败:', error);
             return [];
-        }
-    });
-
-    // 保存配置
-    ipcMain.handle('sku:saveConfig', async (_, config: any) => {
-        try {
-            const storePath = getConfigStorePath();
-            let configs: any[] = [];
-            
-            try {
-                const existing = await fs.readFile(storePath, 'utf-8');
-                configs = JSON.parse(existing);
-            } catch (e) {
-                // 文件不存在，使用空数组
-            }
-            
-            configs.push(config);
-            
-            // 只保留最近 20 个配置
-            if (configs.length > 20) {
-                configs = configs.slice(-20);
-            }
-            
-            await fs.writeFile(storePath, JSON.stringify(configs, null, 2));
-            console.log('[SKU] 配置已保存');
-            return true;
-        } catch (error: any) {
-            console.error('[SKU] 保存配置失败:', error);
-            return false;
-        }
-    });
-
-    // 获取保存的配置
-    ipcMain.handle('sku:getSavedConfigs', async () => {
-        try {
-            const storePath = getConfigStorePath();
-            const data = await fs.readFile(storePath, 'utf-8');
-            return JSON.parse(data);
-        } catch (e) {
-            return [];
-        }
-    });
-
-    // 删除保存的配置
-    ipcMain.handle('sku:deleteConfig', async (_, configId: string) => {
-        try {
-            const storePath = getConfigStorePath();
-            const data = await fs.readFile(storePath, 'utf-8');
-            let configs = JSON.parse(data);
-            configs = configs.filter((c: any) => c.id !== configId);
-            await fs.writeFile(storePath, JSON.stringify(configs, null, 2));
-            return true;
-        } catch (e) {
-            return false;
         }
     });
 

@@ -1,0 +1,236 @@
+[
+  {
+    "id": "cs-pure-white",
+    "name": "纯白清洁",
+    "description": "纯白背景，适合搜索展示和白底图要求",
+    "scenes": ["白底图", "搜索展示", "标品展示"],
+    "categories": ["通用"],
+    "seasons": ["all"],
+    "emotions": ["干净", "专业", "简约"],
+    "primary": "#FFFFFF",
+    "secondary": "#F5F5F5",
+    "accent": "#333333",
+    "text": "#333333",
+    "designTips": [
+      "纯白背景最适合淘宝搜索权重",
+      "产品需高质量抠图无残留",
+      "可添加微弱阴影增加立体感"
+    ]
+  },
+  {
+    "id": "cs-warm-cozy",
+    "name": "暖调居家",
+    "description": "米白色调，传递温馨舒适的家居感",
+    "scenes": ["居家", "冬季", "棉质产品"],
+    "categories": ["棉袜", "家居袜", "地板袜"],
+    "seasons": ["autumn", "winter"],
+    "emotions": ["温暖", "亲切", "舒适"],
+    "primary": "#FFF8F0",
+    "secondary": "#FFE4D6",
+    "accent": "#D4A574",
+    "text": "#5D4037",
+    "designTips": [
+      "米白色背景传递温暖感",
+      "棕色系强调天然材质",
+      "适合强调舒适、亲肤的产品"
+    ]
+  },
+  {
+    "id": "cs-sport-energy",
+    "name": "运动活力",
+    "description": "清新蓝绿色调，适合运动功能性产品",
+    "scenes": ["运动", "户外", "功能性"],
+    "categories": ["运动袜", "跑步袜", "登山袜"],
+    "seasons": ["all"],
+    "emotions": ["活力", "清爽", "专业"],
+    "primary": "#E8F5E9",
+    "secondary": "#E3F2FD",
+    "accent": "#4CAF50",
+    "text": "#1B5E20",
+    "designTips": [
+      "浅绿浅蓝传递清新感",
+      "适合运动、透气等卖点",
+      "可用荧光色强调科技感"
+    ]
+  },
+  {
+    "id": "cs-minimal-gray",
+    "name": "极简灰调",
+    "description": "灰色系为主，高级感商务风",
+    "scenes": ["商务", "高端", "极简"],
+    "categories": ["商务袜", "通用"],
+    "seasons": ["all"],
+    "emotions": ["高级", "沉稳", "专业"],
+    "primary": "#F0F0F0",
+    "secondary": "#E0E0E0",
+    "accent": "#424242",
+    "text": "#212121",
+    "designTips": [
+      "灰色调传递高端质感",
+      "深灰文字比纯黑更柔和",
+      "适合无色彩干扰的产品展示"
+    ]
+  },
+  {
+    "id": "cs-feminine-pink",
+    "name": "少女粉调",
+    "description": "柔和粉色系，面向女性用户",
+    "scenes": ["女袜", "礼盒", "情人节"],
+    "categories": ["女袜", "船袜"],
+    "seasons": ["spring", "all"],
+    "emotions": ["甜美", "柔软", "可爱"],
+    "primary": "#FFF0F5",
+    "secondary": "#FCE4EC",
+    "accent": "#E91E63",
+    "text": "#880E4F",
+    "designTips": [
+      "浅粉背景吸引女性用户",
+      "搭配圆润字体增加可爱感",
+      "避免过深的粉红色，保持清新"
+    ]
+  },
+  {
+    "id": "cs-summer-cool",
+    "name": "夏日清凉",
+    "description": "冰蓝色调，强调透气凉感",
+    "scenes": ["夏季", "冰丝", "透气"],
+    "categories": ["隐形袜", "船袜", "薄款"],
+    "seasons": ["summer"],
+    "emotions": ["清凉", "透气", "轻盈"],
+    "primary": "#E0F7FA",
+    "secondary": "#B2EBF2",
+    "accent": "#00ACC1",
+    "text": "#006064",
+    "designTips": [
+      "冰蓝色直觉传递凉爽感",
+      "可配合冰块/水滴等视觉元素",
+      "字号可稍大强调'凉'字"
+    ]
+  },
+  {
+    "id": "cs-autumn-earth",
+    "name": "秋日大地",
+    "description": "大地色系，秋季暖色调",
+    "scenes": ["秋季", "复古", "文艺"],
+    "categories": ["中筒袜", "长筒袜", "羊毛袜"],
+    "seasons": ["autumn"],
+    "emotions": ["温暖", "复古", "文艺"],
+    "primary": "#EFEBE9",
+    "secondary": "#D7CCC8",
+    "accent": "#8D6E63",
+    "text": "#4E342E",
+    "designTips": [
+      "大地色营造秋冬氛围",
+      "搭配质感纹理增加层次",
+      "适合羊毛/复古主题产品"
+    ]
+  },
+  {
+    "id": "cs-promo-red",
+    "name": "促销红色",
+    "description": "红色为主的促销活动配色",
+    "scenes": ["双11", "618", "年货节", "促销"],
+    "categories": ["通用"],
+    "seasons": ["all"],
+    "emotions": ["紧迫", "热情", "划算"],
+    "primary": "#FFEBEE",
+    "secondary": "#FFCDD2",
+    "accent": "#F44336",
+    "text": "#B71C1C",
+    "designTips": [
+      "红色刺激购买冲动",
+      "大号价格标签配红色",
+      "限时标签增加紧迫感"
+    ]
+  },
+  {
+    "id": "cs-kids-playful",
+    "name": "童趣缤纷",
+    "description": "明亮多彩，面向儿童袜",
+    "scenes": ["儿童", "亲子", "卡通"],
+    "categories": ["儿童袜"],
+    "seasons": ["all"],
+    "emotions": ["活泼", "可爱", "开心"],
+    "primary": "#FFF9C4",
+    "secondary": "#F0F4C3",
+    "accent": "#FF9800",
+    "text": "#E65100",
+    "designTips": [
+      "鲜艳颜色吸引家长注意",
+      "可搭配卡通图标",
+      "字体选择圆润可爱的类型"
+    ]
+  },
+  {
+    "id": "cs-premium-gold",
+    "name": "高端金色",
+    "description": "黑金配色，顶级品质感",
+    "scenes": ["礼盒", "高端", "送礼"],
+    "categories": ["精品礼盒", "商务袜"],
+    "seasons": ["all"],
+    "emotions": ["尊贵", "品质", "高端"],
+    "primary": "#1A1A2E",
+    "secondary": "#16213E",
+    "accent": "#D4AF37",
+    "text": "#F5F5DC",
+    "designTips": [
+      "黑底金字传递奢华感",
+      "金色仅用于点缀，不宜大面积",
+      "搭配高光效果增加质感"
+    ]
+  },
+  {
+    "id": "cs-eco-green",
+    "name": "环保自然",
+    "description": "自然绿色调，强调环保有机概念",
+    "scenes": ["有机棉", "环保", "天然"],
+    "categories": ["有机棉袜", "竹纤维袜"],
+    "seasons": ["all"],
+    "emotions": ["自然", "环保", "健康"],
+    "primary": "#E8F5E9",
+    "secondary": "#C8E6C9",
+    "accent": "#2E7D32",
+    "text": "#1B5E20",
+    "designTips": [
+      "绿色传递自然环保理念",
+      "可配合叶子/棉花等元素",
+      "强调无化学染料等卖点"
+    ]
+  },
+  {
+    "id": "cs-morandi",
+    "name": "莫兰迪色系",
+    "description": "低饱和度高级灰调，文艺高级感",
+    "scenes": ["文艺", "日系", "ins风"],
+    "categories": ["女袜", "中筒袜"],
+    "seasons": ["spring", "autumn"],
+    "emotions": ["文艺", "高级", "安静"],
+    "primary": "#E8E0D8",
+    "secondary": "#D5CAC3",
+    "accent": "#A1887F",
+    "text": "#5D4037",
+    "designTips": [
+      "莫兰迪色系自带高级感",
+      "适合多色展示的SKU图",
+      "低饱和度让产品颜色更突出"
+    ]
+  },
+  {
+    "id": "cs-night-navy",
+    "name": "深夜藏青",
+    "description": "深蓝色调，稳重大气",
+    "scenes": ["商务", "男士", "秋冬"],
+    "categories": ["商务袜", "男袜"],
+    "seasons": ["autumn", "winter"],
+    "emotions": ["稳重", "可靠", "成熟"],
+    "primary": "#1A237E",
+    "secondary": "#283593",
+    "accent": "#C5CAE9",
+    "text": "#E8EAF6",
+    "designTips": [
+      "深蓝色传递信任和专业感",
+      "浅色文字确保深色背景可读性",
+      "适合强调品质和耐久性"
+    ]
+  }
+]

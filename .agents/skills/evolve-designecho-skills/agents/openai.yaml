@@ -1,0 +1,7 @@
+interface:
+  display_name: "DesignEcho 技能演进"
+  short_description: "把真实运行经验转成有证据、受审且可回滚的能力改进候选"
+  default_prompt: "使用 $evolve-designecho-skills 诊断这次 DesignEcho 运行，并准备可审查的演进候选。"
+
+policy:
+  allow_implicit_invocation: false

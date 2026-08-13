@@ -5,8 +5,8 @@
  */
 
 import { Tool, ToolSchema } from '../types';
-
-const app = require('photoshop').app;
+import { observeActiveDocumentAtHistoryState } from '../../core/photoshop-document-observation';
+import type { PhotoshopHistoryStateRef } from '../../core/photoshop-history-state-ref';
 
 /**
  * 图层节点信息
@@ -43,7 +43,7 @@ export class GetLayerHierarchyTool implements Tool {
 
     schema: ToolSchema = {
         name: 'getLayerHierarchy',
-        description: '获取文档的完整图层层级结构，包括父子关系、剪切蒙版组、图层顺序等信息。返回树形结构，便于理解图层的组织方式。',
+        description: '获取文档的完整图层层级结构，包括父子关系、剪切蒙版组、图层顺序等信息。返回树形结构，便于理解图层的组织方式。大文档嵌套太深看不到目标组内部时，用 rootLayerId 只读该组的子树。',
         parameters: {
             type: 'object',
             properties: {
@@ -58,6 +58,10 @@ export class GetLayerHierarchyTool implements Tool {
                 flatList: {
                     type: 'boolean',
                     description: '是否返回扁平列表而非树形结构，默认 false'
+                },
+                rootLayerId: {
+                    type: 'number',
+                    description: '只读取该图层组的子树（组本身作为根节点返回）。大文档定位某组内部结构时用它，避免全量输出被截断'
                 }
             }
         }
@@ -67,10 +71,14 @@ export class GetLayerHierarchyTool implements Tool {
         includeHidden?: boolean;
         includeBounds?: boolean;
         flatList?: boolean;
+        rootLayerId?: number;
     }): Promise<{
         success: boolean;
         documentName?: string;
         totalLayers?: number;
+        rootLayerId?: number;
+        rootLayerName?: string;
+        historyStateRef?: PhotoshopHistoryStateRef;
         hierarchy?: LayerNode[];
         flatList?: LayerNode[];
         summary?: {
@@ -84,55 +92,69 @@ export class GetLayerHierarchyTool implements Tool {
         error?: string;
     }> {
         try {
-            const doc = app.activeDocument;
-            if (!doc) {
-                return { success: false, error: '没有打开的文档' };
-            }
+            const observation = await observeActiveDocumentAtHistoryState({
+                commandName: 'DesignEcho: 读取图层层级',
+                unavailableMessage: '无法读取 Photoshop 文档历史版本，请重新读取当前图层结构。',
+                changedMessage: '读取图层层级期间 Photoshop 文档发生变化，请重新读取当前结构。'
+            }, (doc) => {
+                const includeHidden = params.includeHidden !== false;
+                const includeBounds = params.includeBounds === true;
+                const returnFlatList = params.flatList === true;
+                let treeRootContainer: any = doc;
+                let rootLayerName: string | undefined;
+                if (params.rootLayerId) {
+                    const rootLayer = this.findLayerByIdDeep(doc, Number(params.rootLayerId));
+                    if (!rootLayer) {
+                        throw new Error(`未找到 rootLayerId=${params.rootLayerId} 的图层。用不带 rootLayerId 的 getLayerHierarchy 或 getElementMapping 先定位组 ID。`);
+                    }
+                    if (this.getLayerKind(rootLayer) !== 'group') {
+                        throw new Error(`图层「${rootLayer.name}」(ID: ${rootLayer.id}) 不是图层组，无法读取子树。`);
+                    }
+                    treeRootContainer = rootLayer;
+                    rootLayerName = rootLayer.name;
+                }
 
-            const includeHidden = params.includeHidden !== false;
-            const includeBounds = params.includeBounds === true;
-            const returnFlatList = params.flatList === true;
-
-            // 构建图层树
-            const hierarchy = this.buildLayerTree(doc, null, 0, 0, includeHidden, includeBounds, [], []);
-            
-            // 统计信息
-            const flatLayers: LayerNode[] = [];
-            this.flattenTree(hierarchy, flatLayers);
-            
-            const summary = {
-                groups: flatLayers.filter(l => l.kind === 'group').length,
-                normalLayers: flatLayers.filter(l => l.kind === 'pixel').length,
-                textLayers: flatLayers.filter(l => l.kind === 'text').length,
-                adjustmentLayers: flatLayers.filter(l => 
-                    l.kind.includes('adjustment') || 
-                    ['brightnessContrast', 'levels', 'curves', 'exposure', 'vibrance', 
-                     'hue', 'colorBalance', 'blackAndWhite', 'photoFilter', 'channelMixer',
-                     'colorLookup', 'invert', 'posterize', 'threshold', 'gradientMap',
-                     'selectiveColor'].includes(l.kind)
-                ).length,
-                smartObjects: flatLayers.filter(l => l.kind === 'smartObject').length,
-                clippingGroups: flatLayers.filter(l => l.isClippingMask).length
-            };
-
-            console.log(`[GetLayerHierarchy] 获取到 ${flatLayers.length} 个图层`);
-
-            if (returnFlatList) {
+                const hierarchy = this.buildLayerTree(
+                    treeRootContainer,
+                    params.rootLayerId ? Number(params.rootLayerId) : null,
+                    0,
+                    0,
+                    includeHidden,
+                    includeBounds,
+                    rootLayerName ? [rootLayerName] : [],
+                    params.rootLayerId ? [Number(params.rootLayerId)] : []
+                );
+                const flatLayers: LayerNode[] = [];
+                this.flattenTree(hierarchy, flatLayers);
+                const summary = {
+                    groups: flatLayers.filter((layer) => layer.kind === 'group').length,
+                    normalLayers: flatLayers.filter((layer) => layer.kind === 'pixel').length,
+                    textLayers: flatLayers.filter((layer) => layer.kind === 'text').length,
+                    adjustmentLayers: flatLayers.filter((layer) => (
+                        layer.kind.includes('adjustment')
+                        || ['brightnessContrast', 'levels', 'curves', 'exposure', 'vibrance',
+                            'hue', 'colorBalance', 'blackAndWhite', 'photoFilter', 'channelMixer',
+                            'colorLookup', 'invert', 'posterize', 'threshold', 'gradientMap',
+                            'selectiveColor'].includes(layer.kind)
+                    )).length,
+                    smartObjects: flatLayers.filter((layer) => layer.kind === 'smartObject').length,
+                    clippingGroups: flatLayers.filter((layer) => layer.isClippingMask).length
+                };
+                console.log(`[GetLayerHierarchy] 获取到 ${flatLayers.length} 个图层`);
                 return {
-                    success: true,
-                    documentName: doc.name,
+                    documentName: String(doc.name || ''),
                     totalLayers: flatLayers.length,
-                    flatList: flatLayers,
+                    rootLayerId: params.rootLayerId ? Number(params.rootLayerId) : undefined,
+                    rootLayerName,
+                    ...(returnFlatList ? { flatList: flatLayers } : { hierarchy }),
                     summary
                 };
-            }
+            });
 
             return {
                 success: true,
-                documentName: doc.name,
-                totalLayers: flatLayers.length,
-                hierarchy,
-                summary
+                ...observation.value,
+                historyStateRef: observation.historyStateRef
             };
 
         } catch (error) {
@@ -142,6 +164,18 @@ export class GetLayerHierarchyTool implements Tool {
                 error: error instanceof Error ? error.message : '获取图层层级失败'
             };
         }
+    }
+
+    /** 深度查找图层（含组内嵌套） */
+    private findLayerByIdDeep(container: any, id: number): any {
+        for (const layer of container.layers || []) {
+            if (layer.id === id) return layer;
+            if (layer.layers) {
+                const found = this.findLayerByIdDeep(layer, id);
+                if (found) return found;
+            }
+        }
+        return null;
     }
 
     /**
@@ -158,7 +192,7 @@ export class GetLayerHierarchyTool implements Tool {
         parentPathIds: number[]
     ): LayerNode[] {
         const nodes: LayerNode[] = [];
-        const layers = container.layers;
+        const layers = container.layers || [];
 
         for (let i = 0; i < layers.length; i++) {
             const layer = layers[i];

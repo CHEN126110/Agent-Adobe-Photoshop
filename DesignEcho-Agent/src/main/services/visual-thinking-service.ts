@@ -10,6 +10,111 @@
  */
 
 import { ModelService } from './model-service';
+import {
+    normalizeImageMediaType,
+    stripImageDataUrl
+} from '../../shared/design-image-input';
+import { extractModelJsonObject } from '../../shared/model-json-extract';
+
+export interface GenericImageAnalysis {
+    style: string;
+    colorPalette: string[];
+    composition: string;
+    elements: string[];
+    suggestions: string[];
+    analysisFormat: 'structured' | 'text';
+    rawAnalysis?: string;
+    modelId: string;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+}
+
+function inferImageMediaTypeFromBase64(data: string): string | undefined {
+    if (data.startsWith('iVBORw0KGgo')) return 'image/png';
+    if (data.startsWith('/9j/')) return 'image/jpeg';
+    if (data.startsWith('UklGR')) return 'image/webp';
+    return undefined;
+}
+
+function isExplicitVisionFailureText(value: string): boolean {
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    return /^(?:分析失败|视觉分析失败|无法分析(?:这张|该)?(?:图片|图像)?|不能分析(?:这张|该)?(?:图片|图像)?)(?:[：:，,。.]|$)/i.test(normalized);
+}
+
+function resolveImagePayload(imageBase64: string, mediaType?: string): {
+    data: string;
+    mediaType: 'image/jpeg' | 'image/png' | 'image/webp';
+} {
+    const parsed = stripImageDataUrl(imageBase64);
+    const data = String(parsed.data || '').trim();
+    if (!data) {
+        throw new Error('图片数据为空，无法提交视觉分析。');
+    }
+    return {
+        data,
+        mediaType: normalizeImageMediaType(
+            parsed.mediaType || mediaType || inferImageMediaTypeFromBase64(data)
+        )
+    };
+}
+
+function normalizeGenericImageAnalysis(responseText: string, modelId: string): GenericImageAnalysis {
+    const rawText = String(responseText || '').trim();
+    if (!rawText) {
+        throw new Error(`视觉模型 ${modelId} 返回了空文本。`);
+    }
+
+    const extracted = extractModelJsonObject(rawText);
+    const value = extracted?.value && typeof extracted.value === 'object'
+        ? extracted.value as Record<string, unknown>
+        : null;
+    if (!value) {
+        if (isExplicitVisionFailureText(rawText)) {
+            throw new Error(`视觉模型 ${modelId} 明确表示未能分析图片：${rawText.slice(0, 160)}`);
+        }
+        return {
+            style: '',
+            colorPalette: [],
+            composition: '',
+            elements: [],
+            suggestions: [],
+            analysisFormat: 'text',
+            rawAnalysis: rawText,
+            modelId
+        };
+    }
+
+    const result: GenericImageAnalysis = {
+        style: String(value.style || '').trim(),
+        colorPalette: normalizeStringArray(value.colorPalette),
+        composition: String(value.composition || '').trim(),
+        elements: normalizeStringArray(value.elements),
+        suggestions: normalizeStringArray(value.suggestions),
+        analysisFormat: 'structured',
+        modelId
+    };
+    const hasUsableAnalysis = Boolean(
+        result.style
+        || result.composition
+        || result.colorPalette.length
+        || result.elements.length
+        || result.suggestions.length
+    );
+    if (!hasUsableAnalysis) {
+        throw new Error(`视觉模型 ${modelId} 返回了 JSON，但其中没有可用的视觉分析字段。`);
+    }
+    if (/^(?:分析失败|无法分析|未知)$/i.test(result.style)
+        && !result.composition
+        && result.colorPalette.length === 0
+        && result.elements.length === 0) {
+        throw new Error(`视觉模型 ${modelId} 明确表示未能分析图片。`);
+    }
+    return result;
+}
 
 /**
  * 设计规范 - 基于画布尺寸的比例规则
@@ -91,9 +196,15 @@ export interface VisualAssessment {
  */
 export class VisualThinkingService {
     private modelService: ModelService;
-    
+    // 模型必须来自用户配置的视觉能力槽，不能在服务内部硬编码供应商或模型。
+    private visionModelId: string = '';
+
     constructor(modelService: ModelService) {
         this.modelService = modelService;
+    }
+
+    setVisionModelId(modelId: string): void {
+        if (modelId) this.visionModelId = modelId;
     }
     
     /**
@@ -293,21 +404,23 @@ ${existingIssues.map(i => `- ${i.element}: ${i.issue}`).join('\n') || '暂无'}
         try {
             // 使用支持视觉的模型进行分析
             // 构建包含图像的消息内容
-            const messageContent: { type: string; text?: string; image_url?: { url: string } }[] = [
+            const messageContent: { type: string; text?: string; image?: { mediaType: string; data: string } }[] = [
                 { type: 'text', text: prompt }
             ];
             
             // 如果有图像，添加到消息中
+            // 必须使用 {type:'image', image:{mediaType,data}} 格式——
+            // OpenAI 风格 {type:'image_url'} 会被各 provider 转换器静默丢弃
             if (snapshotBase64) {
                 messageContent.push({
-                    type: 'image_url',
-                    image_url: { url: `data:image/png;base64,${snapshotBase64}` }
+                    type: 'image',
+                    image: { mediaType: 'image/png', data: snapshotBase64 }
                 });
             }
             
             // 使用默认的视觉模型（如 Gemini 或 OpenRouter 的视觉模型）
             const response = await this.modelService.chat(
-                'google-gemini-3-flash',  // 默认使用 Gemini 3 Flash（支持视觉）
+                this.visionModelId,  // 统一走 visionModelId（默认小米 MiMo V2.5，用户 API），不再硬编码 Gemini
                 [{ role: 'user', content: messageContent as any }],
                 { maxTokens: 1000 }
             );
@@ -332,14 +445,9 @@ ${existingIssues.map(i => `- ${i.element}: ${i.issue}`).join('\n') || '暂无'}
      */
     async analyzeGenericImage(
         imageBase64: string,
-        promptHint: string = '分析这张图片的设计风格和关键元素'
-    ): Promise<{
-        style: string;
-        colorPalette: string[];
-        composition: string;
-        elements: string[];
-        suggestions: string[];
-    }> {
+        promptHint: string = '分析这张图片的设计风格和关键元素',
+        mediaType?: string
+    ): Promise<GenericImageAnalysis> {
         const prompt = `作为专业设计师，请分析这张图片的视觉设计。
 ${promptHint}
 
@@ -359,39 +467,25 @@ ${promptHint}
     "suggestions": ["建议1", ...]
 }`;
 
-        try {
-            // 构建消息
-            const messageContent = [
-                { type: 'text', text: prompt },
-                {
-                    type: 'image_url',
-                    image_url: { url: `data:image/png;base64,${imageBase64}` }
-                }
-            ];
-
-            // 调用视觉模型
-            const response = await this.modelService.chat(
-                'google-gemini-3-flash', // 使用支持视觉的模型
-                [{ role: 'user', content: messageContent as any }],
-                { maxTokens: 1000 }
-            );
-
-            const jsonMatch = response.text?.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
-            }
-        } catch (error) {
-            console.error('[VisualThinking] Generic image analysis failed:', error);
+        const modelId = String(this.visionModelId || '').trim();
+        if (!modelId) {
+            throw new Error('未配置视觉模型，无法分析图片。');
         }
+        const image = resolveImagePayload(imageBase64, mediaType);
+        const messageContent = [
+            { type: 'text', text: prompt },
+            {
+                type: 'image',
+                image
+            }
+        ];
 
-        // 降级返回
-        return {
-            style: '分析失败',
-            colorPalette: [],
-            composition: '未知',
-            elements: [],
-            suggestions: ['无法分析图片内容']
-        };
+        const response = await this.modelService.chat(
+            modelId,
+            [{ role: 'user', content: messageContent as any }],
+            { maxTokens: 2000 }
+        );
+        return normalizeGenericImageAnalysis(response.text || '', modelId);
     }
 
     /**

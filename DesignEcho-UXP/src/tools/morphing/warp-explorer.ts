@@ -33,6 +33,23 @@ export class WarpExplorerTool implements Tool {
                 warpParams: {
                     type: 'object',
                     description: '变形参数'
+                },
+                commands: {
+                    type: 'array',
+                    description: '要直接执行的 batchPlay 命令数组',
+                    items: { type: 'object' }
+                },
+                preserveOriginal: {
+                    type: 'boolean',
+                    description: '是否保留原图层并在副本上执行'
+                },
+                resultLayerName: {
+                    type: 'string',
+                    description: '输出图层名称'
+                },
+                autoConvertToSmartObject: {
+                    type: 'boolean',
+                    description: '执行前是否自动转为智能对象'
                 }
             },
             required: ['action']
@@ -43,6 +60,10 @@ export class WarpExplorerTool implements Tool {
         action: string;
         layerId?: number;
         warpParams?: any;
+        commands?: any[];
+        preserveOriginal?: boolean;
+        resultLayerName?: string;
+        autoConvertToSmartObject?: boolean;
     }): Promise<ToolResult<any>> {
         try {
             const doc = app.activeDocument;
@@ -59,6 +80,18 @@ export class WarpExplorerTool implements Tool {
                 
                 case 'getWarpInfo':
                     return await this.getWarpInfo(params.layerId);
+
+                case 'verifyNativeWarpSupport':
+                    return await this.verifyNativeWarpSupport(params.layerId, params.autoConvertToSmartObject !== false);
+
+                case 'executePuppetWarp':
+                    return await this.executePuppetWarp({
+                        layerId: params.layerId,
+                        commands: Array.isArray(params.commands) ? params.commands : [],
+                        preserveOriginal: params.preserveOriginal !== false,
+                        resultLayerName: params.resultLayerName,
+                        autoConvertToSmartObject: params.autoConvertToSmartObject !== false
+                    });
                 
                 case 'testTransform':
                     return await this.testWarpTransform(params.layerId);
@@ -83,6 +116,201 @@ export class WarpExplorerTool implements Tool {
             }
         } catch (error: any) {
             console.error('[WarpExplorer] 错误:', error);
+            return { success: false, error: error.message, data: null };
+        }
+    }
+
+    private async verifyNativeWarpSupport(
+        layerId?: number,
+        autoConvertToSmartObject: boolean = true
+    ): Promise<ToolResult<any>> {
+        const doc = app.activeDocument;
+        if (!doc) {
+            return { success: false, error: '没有打开的文档', data: null };
+        }
+        const baseLayer = layerId ? this.findLayerById(doc, layerId) : doc.activeLayers[0];
+        if (!baseLayer) {
+            return { success: false, error: '未找到用于验证的图层', data: null };
+        }
+
+        let probeLayerId: number | undefined;
+        let freeTransformWarpSupported = false;
+        let puppetWarpSupported = false;
+        let usedSmartObject = false;
+        const notes: string[] = [];
+        const errors: string[] = [];
+
+        try {
+            await core.executeAsModal(async () => {
+                const duplicated = await baseLayer.duplicate();
+                duplicated.name = `${baseLayer.name}_warp_probe`;
+                probeLayerId = Number(duplicated.id);
+
+                await this.selectLayer(probeLayerId);
+
+                try {
+                    await action.batchPlay([{
+                        _obj: 'transform',
+                        freeTransformCenterState: {
+                            _enum: 'quadCenterState',
+                            _value: 'QCSAverage'
+                        },
+                        warp: {
+                            _obj: 'warp',
+                            warpStyle: {
+                                _enum: 'warpStyle',
+                                _value: 'warpNone'
+                            },
+                            warpValue: 0,
+                            warpPerspective: 0,
+                            warpPerspectiveOther: 0,
+                            warpRotate: {
+                                _enum: 'orientation',
+                                _value: 'horizontal'
+                            }
+                        },
+                        _options: { dialogOptions: 'dontDisplay' }
+                    }], { synchronousExecution: true });
+                    freeTransformWarpSupported = true;
+                } catch (error: any) {
+                    errors.push(`Free Transform Warp 不可用: ${error.message}`);
+                }
+
+                if (autoConvertToSmartObject) {
+                    const convertedLayer = await this.ensureSmartObject(probeLayerId);
+                    probeLayerId = Number(convertedLayer.id);
+                    usedSmartObject = true;
+                    notes.push('验证时已自动转换为智能对象');
+                }
+
+                try {
+                    await this.selectLayer(probeLayerId);
+                    const probeBounds = this.normalizeBounds((this.findLayerById(doc, probeLayerId) || duplicated).bounds);
+                    const centerX = probeBounds.left + probeBounds.width / 2;
+                    const centerY = probeBounds.top + probeBounds.height / 2;
+
+                    await action.batchPlay([
+                        {
+                            _obj: 'puppetWarp',
+                            meshFidelity: 2,
+                            meshExpansion: 0,
+                            meshRotation: 0,
+                            _options: { dialogOptions: 'dontDisplay' }
+                        },
+                        {
+                            _obj: 'puppetWarpPin',
+                            puppetPinLocation: {
+                                _obj: 'point',
+                                horizontal: centerX,
+                                vertical: centerY
+                            },
+                            puppetPinRotation: 0,
+                            puppetPinDepth: 0,
+                            puppetPinStiffness: 100,
+                            _options: { dialogOptions: 'dontDisplay' }
+                        },
+                        {
+                            _obj: 'applyPuppetWarp',
+                            _options: { dialogOptions: 'dontDisplay' }
+                        }
+                    ], { synchronousExecution: true });
+                    puppetWarpSupported = true;
+                } catch (error: any) {
+                    errors.push(`Puppet Warp 不可用: ${error.message}`);
+                }
+            }, { commandName: 'Verify Native Warp Support' });
+        } finally {
+            if (probeLayerId) {
+                await this.deleteLayerIfExists(probeLayerId);
+            }
+        }
+
+        return {
+            success: true,
+            data: {
+                freeTransformWarpSupported,
+                puppetWarpSupported,
+                usedSmartObject,
+                notes,
+                errors,
+                recommendedMethod: puppetWarpSupported
+                    ? 'native-puppet'
+                    : freeTransformWarpSupported
+                        ? 'native-warp'
+                        : 'unavailable'
+            }
+        };
+    }
+
+    private async executePuppetWarp(params: {
+        layerId?: number;
+        commands: any[];
+        preserveOriginal: boolean;
+        resultLayerName?: string;
+        autoConvertToSmartObject: boolean;
+    }): Promise<ToolResult<any>> {
+        const doc = app.activeDocument;
+        if (!doc) {
+            return { success: false, error: '没有打开的文档', data: null };
+        }
+        const baseLayer = params.layerId ? this.findLayerById(doc, params.layerId) : doc.activeLayers[0];
+        if (!baseLayer) {
+            return { success: false, error: '未找到要执行 Puppet Warp 的图层', data: null };
+        }
+        if (!Array.isArray(params.commands) || params.commands.length === 0) {
+            return { success: false, error: '缺少 Puppet Warp batchPlay 命令', data: null };
+        }
+
+        let workingLayerId = Number(baseLayer.id);
+        let workingLayerName = baseLayer.name;
+        let createdDuplicate = false;
+
+        try {
+            await core.executeAsModal(async () => {
+                if (params.preserveOriginal) {
+                    const duplicated = await baseLayer.duplicate();
+                    workingLayerId = Number(duplicated.id);
+                    workingLayerName = duplicated.name;
+                    createdDuplicate = true;
+                }
+
+                await this.selectLayer(workingLayerId);
+
+                if (params.autoConvertToSmartObject) {
+                    const smartLayer = await this.ensureSmartObject(workingLayerId);
+                    workingLayerId = Number(smartLayer.id);
+                    workingLayerName = smartLayer.name;
+                    await this.selectLayer(workingLayerId);
+                }
+
+                await action.batchPlay(params.commands, { synchronousExecution: true });
+
+                const outputLayer = this.findLayerById(doc, workingLayerId) || doc.activeLayers[0];
+                if (!outputLayer) {
+                    throw new Error('Puppet Warp 执行后未找到输出图层');
+                }
+
+                if (params.resultLayerName) {
+                    outputLayer.name = params.resultLayerName;
+                }
+
+                workingLayerId = Number(outputLayer.id);
+                workingLayerName = outputLayer.name;
+            }, { commandName: 'Execute Puppet Warp' });
+
+            return {
+                success: true,
+                data: {
+                    outputLayerId: workingLayerId,
+                    outputLayerName: workingLayerName,
+                    preservedOriginal: params.preserveOriginal,
+                    executionMethod: 'native-puppet'
+                }
+            };
+        } catch (error: any) {
+            if (createdDuplicate) {
+                await this.deleteLayerIfExists(workingLayerId);
+            }
             return { success: false, error: error.message, data: null };
         }
     }
@@ -245,7 +473,8 @@ export class WarpExplorerTool implements Tool {
                 _target: [
                     { _property: 'smartObject' },
                     { _ref: 'layer', _id: layer.id }
-                ]
+                ],
+                _options: { dialogOptions: 'dontDisplay' }
             };
 
             const result = await action.batchPlay([getDescriptor], { synchronousExecution: true });
@@ -257,7 +486,8 @@ export class WarpExplorerTool implements Tool {
                 _target: [
                     { _property: 'quiltWarp' },
                     { _ref: 'layer', _id: layer.id }
-                ]
+                ],
+                _options: { dialogOptions: 'dontDisplay' }
             };
 
             try {
@@ -596,6 +826,81 @@ export class WarpExplorerTool implements Tool {
         return null;
     }
 
+    private async selectLayer(layerId: number): Promise<void> {
+        await action.batchPlay([{
+            _obj: 'select',
+            _target: [{ _ref: 'layer', _id: layerId }],
+            makeVisible: false,
+            _options: { dialogOptions: 'dontDisplay' }
+        }], { synchronousExecution: true });
+    }
+
+    private async ensureSmartObject(layerId: number): Promise<any> {
+        const doc = app.activeDocument;
+        if (!doc) {
+            throw new Error('没有打开的文档');
+        }
+        const currentLayer = this.findLayerById(doc, layerId);
+        if (!currentLayer) {
+            throw new Error(`未找到图层 ID: ${layerId}`);
+        }
+
+        const layerKind = currentLayer.kind?.toString?.() || '';
+        if (String(layerKind).toLowerCase().includes('smartobject')) {
+            return currentLayer;
+        }
+
+        await this.selectLayer(layerId);
+        await action.batchPlay([{
+            _obj: 'newPlacedLayer',
+            _options: { dialogOptions: 'dontDisplay' }
+        }], { synchronousExecution: true });
+
+        const converted = doc.activeLayers?.[0];
+        if (!converted) {
+            throw new Error('转换智能对象失败');
+        }
+        return converted;
+    }
+
+    private async deleteLayerIfExists(layerId: number): Promise<void> {
+        try {
+            const doc = app.activeDocument;
+            const layer = doc ? this.findLayerById(doc, layerId) : null;
+            if (!layer) {
+                return;
+            }
+
+            await core.executeAsModal(async () => {
+                await action.batchPlay([{
+                    _obj: 'delete',
+                    _target: [{ _ref: 'layer', _id: layerId }],
+                    _options: { dialogOptions: 'dontDisplay' }
+                }], { synchronousExecution: true });
+            }, { commandName: 'Delete Probe Layer' });
+        } catch {
+            // ignore cleanup failures
+        }
+    }
+
+    private normalizeBounds(bounds: any): {
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+    } {
+        const left = Number(bounds?.left?._value ?? bounds?.left ?? 0);
+        const top = Number(bounds?.top?._value ?? bounds?.top ?? 0);
+        const right = Number(bounds?.right?._value ?? bounds?.right ?? left);
+        const bottom = Number(bounds?.bottom?._value ?? bounds?.bottom ?? top);
+        return {
+            left,
+            top,
+            width: Math.max(0, right - left),
+            height: Math.max(0, bottom - top)
+        };
+    }
+
     /**
      * 录制 Puppet Warp 动作
      * 通过记录用户手动执行的 Puppet Warp 来获取命令格式
@@ -611,20 +916,9 @@ export class WarpExplorerTool implements Tool {
             console.log('');
             console.log('📌 监听 batchPlay 事件...');
 
-            // 使用 Photoshop 的 notifier 监听历史记录变化
-            // 这可以捕获到 Puppet Warp 的命令格式
-            
-            // 获取当前历史记录数量
-            const getHistoryState = {
-                _obj: 'get',
-                _target: [
-                    { _property: 'count' },
-                    { _ref: 'historyState' }
-                ]
-            };
-
-            const historyResult = await action.batchPlay([getHistoryState], { synchronousExecution: true });
-            const initialHistoryCount = historyResult?.[0]?.count || 0;
+            // 使用官方 HistoryStates DOM 读取历史深度。这里曾用不存在的
+            // historyState.count Action 属性，会触发 Photoshop 原生“获取当前不可用”弹窗。
+            const initialHistoryCount = Number(app.activeDocument?.historyStates?.length) || 0;
             console.log(`[WarpExplorer] 初始历史记录数: ${initialHistoryCount}`);
 
             // 提供探索性命令尝试

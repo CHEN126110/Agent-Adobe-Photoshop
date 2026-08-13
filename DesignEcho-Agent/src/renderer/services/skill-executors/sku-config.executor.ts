@@ -1,59 +1,30 @@
-import type { SkillExecutor, SkillExecuteParams } from './types';
+import type { SkillExecuteParams } from './types';
 import type { AgentResult } from '../unified-agent.service';
 import { executeToolCall } from '../tool-executor.service';
-import { skuBatchExecutor } from './sku-batch.executor';
 
-function parseComboSizesFromText(input: string): number[] {
-    const text = String(input || '');
-    const matched = text.match(/\d+/g) || [];
-    const sizes = matched
-        .map(v => Number(v))
-        .filter(v => Number.isFinite(v) && v >= 2 && v <= 12);
-    return Array.from(new Set(sizes)).sort((a, b) => a - b);
-}
-
-function parseCountPerSizeFromText(input: string): number | undefined {
-    const text = String(input || '');
-    const m = text.match(/每个规格(?:需要|要)?\s*(\d+)\s*个/);
-    if (!m) return undefined;
-    const value = Number(m[1]);
-    if (!Number.isFinite(value) || value <= 0) return undefined;
-    return value;
-}
-
-export const skuConfigExecutor: SkillExecutor = {
-    skillId: 'sku-config',
-
-    async execute({ params, callbacks, signal, context }: SkillExecuteParams): Promise<AgentResult> {
-        const action = String(params?.action || '').trim();
+/** SKU Skill 的内部配置/占位符策略，不单独注册为 Skill。 */
+export async function executeSkuConfigurationStrategy({
+    params,
+    callbacks,
+    signal
+}: SkillExecuteParams): Promise<AgentResult> {
+        const action = String(params?.configAction || params?.action || '').trim();
 
         if (!action) {
-            const userInput = String(context?.userInput || '');
-            const shouldDelegateToBatch = /(双装|自选备注|组合|批量|生成|制作|sku)/i.test(userInput);
-            if (shouldDelegateToBatch) {
-                const comboSizes = parseComboSizesFromText(userInput);
-                const countPerSize = parseCountPerSizeFromText(userInput);
-                return skuBatchExecutor.execute({
-                    params: {
-                        comboSizes: comboSizes.length > 0 ? comboSizes : undefined,
-                        countPerSize: countPerSize || params?.countPerSize
-                    },
-                    callbacks,
-                    signal,
-                    context
-                });
-            }
-
             return {
                 success: false,
-                message: 'SKU 配置操作缺少 action。可用值：exportColors / createPlaceholders / getPlaceholders。',
-                error: 'Missing sku-config action'
+                message: 'SKU 配置操作缺少 action。可用生产动作：exportColors / createPlaceholders。纯查看占位符请直接使用只读工具。',
+                error: 'Missing SKU configuration action',
+                data: {
+                    availableActions: ['exportColors', 'createPlaceholders'],
+                    requiredStage: 'config'
+                }
             };
         }
 
         if (action === 'exportColors') {
             callbacks?.onToolStart?.('exportColorConfig');
-            const result = await executeToolCall('exportColorConfig', {});
+            const result = await executeToolCall('exportColorConfig', {}, { signal });
             callbacks?.onToolComplete?.('exportColorConfig', result);
             return {
                 success: result?.success !== false,
@@ -65,25 +36,52 @@ export const skuConfigExecutor: SkillExecutor = {
         }
 
         if (action === 'createPlaceholders') {
+            // 前置文档检查：createSkuPlaceholders 需要打开的文档才能操作
+            callbacks?.onToolStart?.('getDocumentInfo');
+            const docInfo = await executeToolCall('getDocumentInfo', {}, { signal });
+            callbacks?.onToolComplete?.('getDocumentInfo', docInfo);
+            if (docInfo?.success === false) {
+                return {
+                    success: false,
+                    message: '当前没有打开的 Photoshop 文档，无法创建 SKU 占位符。请先打开或创建一个文档。',
+                    toolResults: [{ toolName: 'getDocumentInfo', result: docInfo }],
+                    error: docInfo?.error || '没有打开的文档'
+                };
+            }
+
+            const placeholderCount = Number(params?.placeholderCount);
+            if (!Number.isInteger(placeholderCount) || placeholderCount <= 0) {
+                return {
+                    success: false,
+                    message: '创建 SKU 占位符需要明确的正整数 placeholderCount；本策略不会猜测默认数量。',
+                    error: 'Missing explicit SKU placeholder count',
+                    toolResults: [{ toolName: 'getDocumentInfo', result: docInfo }]
+                };
+            }
+
             const payload = {
-                placeholderCount: Number(params?.placeholderCount || 5),
-                layout: params?.layout || 'horizontal'
+                count: placeholderCount,
+                layout: params?.placeholderLayout || params?.layout || 'horizontal'
             };
             callbacks?.onToolStart?.('createSkuPlaceholders');
-            const result = await executeToolCall('createSkuPlaceholders', payload);
+            const result = await executeToolCall('createSkuPlaceholders', payload, { signal });
             callbacks?.onToolComplete?.('createSkuPlaceholders', result);
             return {
                 success: result?.success !== false,
                 message: result?.message || (result?.success !== false ? 'SKU 占位符创建完成。' : '创建 SKU 占位符失败。'),
-                toolResults: [{ toolName: 'createSkuPlaceholders', result }],
+                toolResults: [
+                    { toolName: 'getDocumentInfo', result: docInfo },
+                    { toolName: 'createSkuPlaceholders', result }
+                ],
                 error: result?.success === false ? (result?.error || 'createSkuPlaceholders failed') : undefined,
                 data: result?.data
             };
         }
 
+        // 只保留旧调用兼容；新模型不会从 Skill schema 看到这个只读动作。
         if (action === 'getPlaceholders') {
             callbacks?.onToolStart?.('getSkuPlaceholders');
-            const result = await executeToolCall('getSkuPlaceholders', {});
+            const result = await executeToolCall('getSkuPlaceholders', {}, { signal });
             callbacks?.onToolComplete?.('getSkuPlaceholders', result);
             return {
                 success: result?.success !== false,
@@ -96,9 +94,7 @@ export const skuConfigExecutor: SkillExecutor = {
 
         return {
             success: false,
-            message: `不支持的 sku-config action: ${action}`,
-            error: 'Unsupported sku-config action'
+            message: `不支持的 SKU 配置动作：${action}`,
+            error: 'Unsupported SKU configuration action'
         };
-    }
-};
-
+}

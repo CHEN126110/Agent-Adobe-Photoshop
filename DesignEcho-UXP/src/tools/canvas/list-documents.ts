@@ -21,6 +21,18 @@ export class ListDocumentsTool implements Tool {
                 includeDetails: {
                     type: 'boolean',
                     description: '是否包含详细信息（尺寸、图层数等），默认 false'
+                },
+                includePaths: {
+                    type: 'boolean',
+                    description: '是否读取已保存文档路径；可与 includeDetails 分开启用，避免为轮询递归统计全部图层'
+                },
+                includeDimensions: {
+                    type: 'boolean',
+                    description: '是否读取文档宽高；不会递归遍历图层'
+                },
+                includeLayerCount: {
+                    type: 'boolean',
+                    description: '是否递归统计图层数；默认仅在 includeDetails=true 时启用'
                 }
             }
         }
@@ -28,6 +40,9 @@ export class ListDocumentsTool implements Tool {
 
     async execute(params: {
         includeDetails?: boolean;
+        includePaths?: boolean;
+        includeDimensions?: boolean;
+        includeLayerCount?: boolean;
     }): Promise<{
         success: boolean;
         activeDocumentId?: number;
@@ -84,10 +99,14 @@ export class ListDocumentsTool implements Tool {
                     isActive: doc.id === activeDocId
                 };
 
-                if (params.includeDetails) {
+                if (params.includeDetails || params.includeDimensions) {
                     docInfo.width = doc.width;
                     docInfo.height = doc.height;
+                }
+                if (params.includeDetails || params.includeLayerCount) {
                     docInfo.layerCount = this.countLayers(doc);
+                }
+                if (params.includeDetails || params.includePaths) {
                     docInfo.path = await this.getDocumentPath(doc.id);
                 }
 

@@ -1,0 +1,305 @@
+{
+  "version": "1.0.0",
+  "description": "详情页屏内容模板 - 各类型屏的标准文案结构",
+  
+  "screens": [
+    {
+      "id": "screen-A",
+      "type": "A_营销信息",
+      "name": "营销活动屏",
+      "purpose": "展示限时活动、促销信息，刺激下单",
+      "priority": 1,
+      "optional": true,
+      "contentTemplate": {
+        "title": "{活动名称}",
+        "subtitle": "{活动力度} {时间限制}",
+        "body": "{参与方式}",
+        "cta": "{行动号召}"
+      },
+      "examples": [
+        {
+          "title": "新品首发 限时特惠",
+          "subtitle": "前100名下单立减30元",
+          "body": "活动时间：2024.1.1-1.7",
+          "cta": "立即抢购"
+        },
+        {
+          "title": "年货节狂欢",
+          "subtitle": "满199减100 限时3天",
+          "cta": "马上凑单"
+        }
+      ],
+      "designTips": [
+        "使用红色/橙色等暖色调吸引注意",
+        "突出优惠力度和时间紧迫感",
+        "按钮或标签突出行动号召"
+      ]
+    },
+    {
+      "id": "screen-B",
+      "type": "B_信任状",
+      "name": "品牌信任屏",
+      "purpose": "建立品牌信任，降低决策门槛",
+      "priority": 2,
+      "optional": true,
+      "contentTemplate": {
+        "title": "{品牌名} {成立年份}",
+        "subtitle": "{核心荣誉/认证}",
+        "body": "{数据背书}",
+        "icons": ["{认证图标1}", "{认证图标2}", "{认证图标3}"]
+      },
+      "examples": [
+        {
+          "title": "专注袜类20年",
+          "subtitle": "国家高新技术企业",
+          "body": "累计销售1亿双+",
+          "icons": ["质检认证", "正品保障", "无理由退换"]
+        }
+      ],
+      "designTips": [
+        "使用徽章、图标增加权威感",
+        "数据用大字体突出展示",
+        "整体风格稳重、专业"
+      ]
+    },
+    {
+      "id": "screen-C",
+      "type": "C_核心卖点",
+      "name": "首屏核心卖点",
+      "purpose": "第一屏抓住用户注意力，传达核心价值",
+      "priority": 3,
+      "optional": false,
+      "contentTemplate": {
+        "title": "{产品名称} {核心卖点}",
+        "subtitle": "{卖点延伸描述}",
+        "body": "{1-3个关键特性}"
+      },
+      "examples": [
+        {
+          "title": "100%纯棉 柔软亲肤",
+          "subtitle": "新疆长绒棉 透气不闷脚",
+          "body": "精梳工艺 | 无骨缝头 | 宽口不勒"
+        },
+        {
+          "title": "防臭黑科技 告别脚气尴尬",
+          "subtitle": "银离子抗菌 48小时持久清爽",
+          "body": "吸湿速干 | 7天不臭 | 送检合格"
+        }
+      ],
+      "designTips": [
+        "标题要大且醒目，控制在10字以内",
+        "产品图占主导地位，约60-70%",
+        "留白充足，避免信息过载"
+      ]
+    },
+    {
+      "id": "screen-D",
+      "type": "D_图标卖点",
+      "name": "图标化卖点",
+      "purpose": "用图标+短文快速传达多个卖点",
+      "priority": 4,
+      "optional": true,
+      "contentTemplate": {
+        "layout": "3-4个图标横排或2x2网格",
+        "iconCount": 4,
+        "items": [
+          { "icon": "{图标}", "label": "{2-4字卖点}" }
+        ]
+      },
+      "examples": [
+        {
+          "items": [
+            { "icon": "cotton", "label": "精梳棉" },
+            { "icon": "antibacterial", "label": "抗菌除臭" },
+            { "icon": "elastic", "label": "弹力不勒" },
+            { "icon": "breathable", "label": "透气速干" }
+          ]
+        }
+      ],
+      "designTips": [
+        "图标风格统一，建议使用线性或扁平图标",
+        "文字简短有力，2-4字最佳",
+        "等距排列，视觉整齐"
+      ]
+    },
+    {
+      "id": "screen-G",
+      "type": "G_面料说明",
+      "name": "面料材质屏",
+      "purpose": "专业展示面料成分和工艺",
+      "priority": 5,
+      "optional": false,
+      "contentTemplate": {
+        "title": "{面料类型} {核心特性}",
+        "subtitle": "{成分比例}",
+        "body": "{面料优势说明}",
+        "image": "{面料细节图}"
+      },
+      "examples": [
+        {
+          "title": "新疆长绒棉 柔软透气",
+          "subtitle": "棉 80% + 氨纶 15% + 锦纶 5%",
+          "body": "纤维长度超33mm，手感更柔软，透气性提升30%"
+        },
+        {
+          "title": "银离子抗菌纤维",
+          "subtitle": "科技面料 持久抑菌",
+          "body": "纳米银离子嵌入纤维，抑菌率99%，洗涤100次有效"
+        }
+      ],
+      "designTips": [
+        "展示面料特写或放大细节",
+        "使用图表或对比展示数据",
+        "配色偏自然、简洁"
+      ]
+    },
+    {
+      "id": "screen-H",
+      "type": "H_解决痛点",
+      "name": "痛点解决屏",
+      "purpose": "展示产品如何解决用户痛点",
+      "priority": 6,
+      "optional": false,
+      "contentTemplate": {
+        "title": "告别{痛点问题}",
+        "subtitle": "{解决方案}",
+        "body": "{具体说明}",
+        "comparison": { "before": "{痛点情况}", "after": "{解决后}" }
+      },
+      "examples": [
+        {
+          "title": "告别脚臭尴尬",
+          "subtitle": "银离子抗菌 48小时清爽",
+          "comparison": { "before": "穿一天就臭脚", "after": "7天依然清爽" }
+        },
+        {
+          "title": "不再勒脚踝",
+          "subtitle": "3D立体宽口 无痕贴合",
+          "comparison": { "before": "勒出红印", "after": "轻松无压" }
+        }
+      ],
+      "designTips": [
+        "可使用对比图(X vs ✓)增强效果",
+        "痛点用深色/警告色，解决方案用绿色/积极色",
+        "配图真实，增加可信度"
+      ]
+    },
+    {
+      "id": "screen-J",
+      "type": "J_细节展示",
+      "name": "细节工艺屏",
+      "purpose": "展示产品细节工艺，体现品质感",
+      "priority": 7,
+      "optional": true,
+      "contentTemplate": {
+        "title": "{工艺名称}",
+        "subtitle": "{工艺效果}",
+        "details": [
+          { "part": "{部位}", "feature": "{特点}" }
+        ]
+      },
+      "examples": [
+        {
+          "title": "匠心工艺 细节见品质",
+          "details": [
+            { "part": "袜口", "feature": "无痕宽口，不勒脚踝" },
+            { "part": "袜头", "feature": "无骨缝合，零压感" },
+            { "part": "脚跟", "feature": "加厚耐磨，Y型立体" }
+          ]
+        }
+      ],
+      "designTips": [
+        "使用局部放大图+标注",
+        "每个细节配专属图片",
+        "整体布局清晰，有层次"
+      ]
+    },
+    {
+      "id": "screen-L",
+      "type": "L_模特实拍",
+      "name": "模特/场景实拍",
+      "purpose": "展示真实穿着效果，增强代入感",
+      "priority": 8,
+      "optional": true,
+      "contentTemplate": {
+        "title": "{场景/风格}",
+        "subtitle": "{穿搭建议}",
+        "image": "{模特实拍图}"
+      },
+      "examples": [
+        {
+          "title": "日常百搭 轻松驾驭",
+          "subtitle": "搭配运动鞋、板鞋、帆布鞋"
+        },
+        {
+          "title": "通勤必备 隐形舒适",
+          "subtitle": "低帮船袜 穿什么都好看"
+        }
+      ],
+      "designTips": [
+        "模特图质量要高，光线自然",
+        "展示多角度或多场景",
+        "可加入穿搭推荐标签"
+      ]
+    },
+    {
+      "id": "screen-K",
+      "type": "K_产品信息",
+      "name": "产品参数屏",
+      "purpose": "展示产品规格、成分等基础信息",
+      "priority": 9,
+      "optional": false,
+      "contentTemplate": {
+        "title": "产品信息",
+        "specs": [
+          { "label": "{参数名}", "value": "{参数值}" }
+        ]
+      },
+      "examples": [
+        {
+          "specs": [
+            { "label": "材质", "value": "棉80% 氨纶15% 锦纶5%" },
+            { "label": "尺码", "value": "均码 (适合35-44码)" },
+            { "label": "颜色", "value": "黑/白/灰/藏青/深灰" },
+            { "label": "重量", "value": "约35g/双" },
+            { "label": "洗涤", "value": "建议水温<40°C 不可烘干" }
+          ]
+        }
+      ],
+      "designTips": [
+        "信息排版整齐，易于阅读",
+        "可用表格或列表形式",
+        "字号适中，不宜过小"
+      ]
+    },
+    {
+      "id": "screen-M",
+      "type": "M_售后服务",
+      "name": "售后保障屏",
+      "purpose": "消除购买顾虑，展示售后服务",
+      "priority": 10,
+      "optional": true,
+      "contentTemplate": {
+        "title": "购物无忧",
+        "services": [
+          { "icon": "{图标}", "title": "{服务}", "desc": "{说明}" }
+        ]
+      },
+      "examples": [
+        {
+          "services": [
+            { "icon": "return", "title": "7天无理由", "desc": "不满意随时退" },
+            { "icon": "quality", "title": "质量保障", "desc": "问题包换新" },
+            { "icon": "shipping", "title": "顺丰包邮", "desc": "快速送达" },
+            { "icon": "service", "title": "专属客服", "desc": "1对1服务" }
+          ]
+        }
+      ],
+      "designTips": [
+        "使用图标+文字组合",
+        "信息简洁明了",
+        "放在详情页末尾"
+      ]
+    }
+  ]
+}

@@ -1,11 +1,11 @@
 /**
  * 二进制传输协议
- * 
+ *
  * 用于 WebSocket 图像数据的高效传输
  * 参考 sd-ppp 设计，使用 Uint8Array 替代 Base64
- * 
+ *
  * 优势：
- * 1. 无 Base64 膨胀（节省 33% 数据量）
+ * 1. 无 Base64 膨胀（节省约 33% 数据量）
  * 2. 更快的序列化/反序列化
  * 3. 更低的内存占用
  */
@@ -18,23 +18,25 @@ export enum BinaryMessageType {
     JPEG = 0x01,
     /** PNG 图像数据 */
     PNG = 0x02,
-    /** RAW 灰度蒙版（单通道，用于抠图结果） */
+    /** RAW 灰度蒙版（单通道，用于加图结果） */
     RAW_MASK = 0x03,
     /** RAW RGBA 数据 */
     RAW_RGBA = 0x04,
     /** RAW RGB 数据（无 Alpha） */
-    RAW_RGB = 0x05
+    RAW_RGB = 0x05,
+    /** Inpainting result PNG */
+    INPAINT_PNG = 0x06
 }
 
 /**
  * 二进制消息头部
- * 
- * 格式 (总计 16 字节):
- * - [0]: 消息类型 (1 字节)
- * - [1-4]: 请求 ID (4 字节, uint32)
- * - [5-8]: 宽度 (4 字节, uint32)
- * - [9-12]: 高度 (4 字节, uint32)
- * - [13-15]: 保留 (3 字节)
+ *
+ * 格式（总计 16 字节）：
+ * - [0]: 消息类型（1 字节）
+ * - [1-4]: 请求 ID（4 字节，uint32）
+ * - [5-8]: 宽度（4 字节，uint32）
+ * - [9-12]: 高度（4 字节，uint32）
+ * - [13-15]: 保留（3 字节）
  */
 export const BINARY_HEADER_SIZE = 16;
 
@@ -53,13 +55,13 @@ export interface BinaryHeader {
  */
 export function encodeBinaryHeader(header: BinaryHeader): Uint8Array {
     const buffer = Buffer.alloc(BINARY_HEADER_SIZE);
-    
+
     buffer.writeUInt8(header.type, 0);
     buffer.writeUInt32LE(header.requestId, 1);
     buffer.writeUInt32LE(header.width, 5);
     buffer.writeUInt32LE(header.height, 9);
     // [13-15] 保留，填 0
-    
+
     return new Uint8Array(buffer);
 }
 
@@ -68,7 +70,7 @@ export function encodeBinaryHeader(header: BinaryHeader): Uint8Array {
  */
 export function decodeBinaryHeader(data: Buffer | Uint8Array): BinaryHeader {
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    
+
     return {
         type: buffer.readUInt8(0) as BinaryMessageType,
         requestId: buffer.readUInt32LE(1),
@@ -88,8 +90,8 @@ export function createBinaryMessage(
     imageData: Buffer | Uint8Array
 ): Buffer {
     const header = encodeBinaryHeader({ type, requestId, width, height });
-    
-    // 合并头部和数据
+
+    // Concatenate header and binary payload.
     return Buffer.concat([
         Buffer.from(header),
         Buffer.isBuffer(imageData) ? imageData : Buffer.from(imageData)
@@ -104,27 +106,27 @@ export function parseBinaryMessage(data: Buffer | Uint8Array): {
     imageData: Buffer;
 } {
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    
+
     const header = decodeBinaryHeader(buffer.subarray(0, BINARY_HEADER_SIZE));
     const imageData = buffer.subarray(BINARY_HEADER_SIZE);
-    
+
     return { header, imageData };
 }
 
 /**
  * 检查是否为二进制消息（用于接收端判断）
- * 
+ *
  * 判断依据：
  * 1. 数据长度 >= 16（头部大小）
- * 2. 第一个字节是有效的消息类型（0x01-0x05）
+ * 2. 第一个字节是有效的消息类型（0x01-0x06）
  */
 export function isBinaryMessage(data: Buffer | Uint8Array): boolean {
     if (data.length < BINARY_HEADER_SIZE) {
         return false;
     }
-    
+
     const firstByte = data[0];
-    return firstByte >= 0x01 && firstByte <= 0x05;
+    return firstByte >= 0x01 && firstByte <= 0x06;
 }
 
 /**
@@ -137,13 +139,14 @@ export function getBinaryTypeName(type: BinaryMessageType): string {
         case BinaryMessageType.RAW_MASK: return 'RAW_MASK';
         case BinaryMessageType.RAW_RGBA: return 'RAW_RGBA';
         case BinaryMessageType.RAW_RGB: return 'RAW_RGB';
+        case BinaryMessageType.INPAINT_PNG: return 'INPAINT_PNG';
         default: return `UNKNOWN(${type})`;
     }
 }
 
 /**
  * 解析蒙版格式，提取尺寸和数据
- * 
+ *
  * 支持的格式：
  * - RAW_MASK:width:height:base64data - RAW 灰度蒙版
  * - PNG_MASK:width:height:base64data - PNG 编码蒙版
@@ -169,7 +172,7 @@ export function parseMaskData(maskData: string): {
             format: 'RAW_MASK'
         };
     }
-    
+
     // 处理 PNG_MASK 格式: PNG_MASK:width:height:base64data
     if (maskData.startsWith('PNG_MASK:')) {
         const parts = maskData.split(':');
@@ -183,7 +186,7 @@ export function parseMaskData(maskData: string): {
             format: 'PNG_MASK'
         };
     }
-    
+
     // 处理 Data URI 格式
     if (maskData.startsWith('data:')) {
         const cleanBase64 = maskData.replace(/^data:[^;]+;base64,/, '');
@@ -194,7 +197,7 @@ export function parseMaskData(maskData: string): {
             format: 'DATA_URI'
         };
     }
-    
+
     // 纯 Base64
     return {
         buffer: Buffer.from(maskData, 'base64'),
@@ -206,7 +209,7 @@ export function parseMaskData(maskData: string): {
 
 /**
  * Base64 转 Buffer（兼容多种蒙版格式）
- * 
+ *
  * 支持的格式：
  * - RAW_MASK:width:height:base64data - RAW 灰度蒙版
  * - PNG_MASK:width:height:base64data - PNG 编码蒙版
@@ -228,7 +231,7 @@ export function bufferToBase64(buffer: Buffer, mimeType: string = 'image/png'): 
 
 /**
  * 二进制图像数据类型（用于内部传递）
- * 
+ *
  * 设计目标：消除 Agent 内部的 Base64 转换开销
  * 参考 sd-ppp 的 JPEG + Alpha 分离传输策略
  */
@@ -236,7 +239,7 @@ export type BinaryImageFormat = 'jpeg' | 'png' | 'raw_rgb' | 'raw_rgba' | 'raw_m
 
 /**
  * 二进制图像数据接口
- * 
+ *
  * 用于 Agent 内部传递图像数据，避免 Base64 转换
  * - MattingService.removeBackground 接收此接口
  * - ONNX 推理服务使用 Buffer 处理
@@ -292,10 +295,10 @@ export function createBinaryImageData(
     height: number
 ): BinaryImageData {
     const format = binaryTypeToFormat(type);
-    const channels = format === 'raw_rgb' ? 3 : 
-                     format === 'raw_rgba' ? 4 : 
+    const channels = format === 'raw_rgb' ? 3 :
+                     format === 'raw_rgba' ? 4 :
                      format === 'raw_mask' ? 1 : undefined;
-    
+
     return {
         format,
         buffer,
@@ -307,7 +310,7 @@ export function createBinaryImageData(
 
 /**
  * BinaryImageData 转换为 Base64 字符串（兼容旧代码）
- * 
+ *
  * 仅在需要兼容旧接口时使用
  */
 export function binaryImageDataToBase64(data: BinaryImageData): string {
@@ -348,7 +351,7 @@ export function base64ToBinaryImageData(base64: string): BinaryImageData | null 
             };
         }
     }
-    
+
     // RAW_MASK 格式: RAW_MASK:width:height:base64data
     if (base64.startsWith('RAW_MASK:')) {
         const parts = base64.split(':');
@@ -365,18 +368,18 @@ export function base64ToBinaryImageData(base64: string): BinaryImageData | null 
             };
         }
     }
-    
+
     // Data URI 格式
     if (base64.startsWith('data:image/jpeg')) {
         const b64Data = base64.replace(/^data:image\/jpeg;base64,/, '');
         return {
             format: 'jpeg',
             buffer: Buffer.from(b64Data, 'base64'),
-            width: 0,  // 需要解码才能知道
+            width: 0,
             height: 0
         };
     }
-    
+
     if (base64.startsWith('data:image/png')) {
         const b64Data = base64.replace(/^data:image\/png;base64,/, '');
         return {
@@ -386,6 +389,6 @@ export function base64ToBinaryImageData(base64: string): BinaryImageData | null 
             height: 0
         };
     }
-    
+
     return null;
 }

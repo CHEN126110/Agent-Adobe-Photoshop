@@ -126,7 +126,8 @@ export async function getLayerContour(params: GetLayerContourParams = {}): Promi
                         const pixelData = await imaging.getPixels({
                             documentID: doc.id,
                             layerID: layerId,
-                            targetSize: { width: Math.min(boundingBox.width, 512), height: Math.min(boundingBox.height, 512) }
+                            targetSize: { width: Math.min(boundingBox.width, 512), height: Math.min(boundingBox.height, 512) },
+                            componentSize: 8
                         });
                         
                         if (pixelData && pixelData.imageData) {
@@ -137,7 +138,7 @@ export async function getLayerContour(params: GetLayerContourParams = {}): Promi
                             logInfo(`获取到像素数据: ${imgWidth}x${imgHeight}, ${imgComponents}通道`);
                             
                             // ★★★ 关键修复：使用 getData() 获取实际像素数据 ★★★
-                            const rawData = await pixelData.imageData.getData();
+                            const rawData = await pixelData.imageData.getData() as Uint8Array;
                             
                             if (rawData && rawData.length > 0) {
                                 logInfo(`像素数据大小: ${rawData.length} bytes`);

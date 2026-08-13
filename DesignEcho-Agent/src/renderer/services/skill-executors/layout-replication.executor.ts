@@ -1,639 +1,376 @@
-﻿import type { SkillExecutor, SkillExecuteParams } from './types';
+import type { SkillExecutor, SkillExecuteParams } from './types';
 import type { AgentResult } from '../unified-agent.service';
 import { executeToolCall } from '../tool-executor.service';
+import {
+    applyTemplateBlueprintToDocument
+} from './layout-replication-apply';
+import { autoFillAppliedTemplate } from './layout-replication-autofill';
+import {
+    executeLayoutMatchPlan,
+    requestLayoutMatchPlan
+} from './layout-replication-match';
+import {
+    formatLayoutReplicationUserReport,
+    summarizeLayoutMatchCompletion,
+    summarizeTemplateApplyCompletion
+} from './layout-replication-completion';
+import {
+    buildLayoutMatchCoverageReport,
+    buildTemplateApplyCoverageReport
+} from './layout-replication-coverage';
+import {
+    buildReferenceReplicationQaReport,
+    buildVisualQaItemsFromGeneratedScreens
+} from './layout-replication-qa';
+import {
+    buildReferenceReplicationVisualQaReport,
+    type ReferenceReplicationVisualQaReport,
+    type ReferenceReplicationVisualQaVerificationReport
+} from '../../../shared/reference-replication-visual-qa';
 import { useAppStore } from '../../stores/app.store';
+import { getModelById } from '../../../shared/config/models.config';
+import { getPrimaryModelForPreferenceBucket } from '../../../shared/model-selection';
+import {
+    buildMinimalDesignRepresentation,
+    buildReferenceParsePrompt,
+    normalizeReferenceParseResult,
+    parseJsonObject,
+    type MinimalDesignRepresentation
+} from '../../../shared/reference-replication';
+import {
+    buildReferenceReplicationDesignAgentOsRecord
+} from '../../../shared/design-agent-os-contracts';
+import {
+    buildPlannerExecutionPreflightGate,
+    buildReferenceReplicationPlannerContext,
+    comparePlannerExecutionPlanToExecutor
+} from './design-planner-context';
+import {
+    buildReferenceReplicationBlueprint
+} from '../../../shared/reference-replication-blueprint';
+import {
+    resolveReferenceReplicationOutputIntent
+} from '../../../shared/reference-replication-output-intent';
+import {
+    buildRuntimeDeliveryReceipt
+} from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
+import { readPhotoshopHistoryStateRef } from '../../../shared/photoshop-history-state-ref';
+import {
+    resolveLayoutReplicationAutoCanvasSize
+} from './layout-replication-canvas';
+import { emitSkillStep } from './skill-step-events';
 
-interface LayoutElement {
-    type?: string;
-    name?: string;
-    content?: string;
-    position?: { x?: number; y?: number };
-    size?: { width?: number; height?: number };
-    zIndex?: number;
+const REFERENCE_PARSE_TARGET_MAX_TOKENS = 12000;
+
+function layoutReplicationToNumber(value: unknown, fallback: number): number {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
 }
 
-interface LayoutAnalysisResult {
-    layoutType?: string;
-    canvasSize?: { width?: number; height?: number };
-    elements?: LayoutElement[];
-    alignmentGroups?: Array<{ type?: string; elementIndices?: number[] }>;
-}
-
-interface MatchAction {
-    tool?: string;
-    params?: Record<string, any>;
-}
-
-interface MatchItem {
-    refElement?: string;
-    targetLayerId?: number;
-    targetLayerName?: string;
-    action?: MatchAction;
-}
-
-interface MatchResult {
-    matches?: MatchItem[];
-    summary?: string;
-}
-
-interface TemplateBlueprintElement {
-    role: 'copy' | 'icon' | 'image' | 'background' | 'decoration' | 'unknown';
-    name: string;
-    content?: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-}
-
-interface TemplateBlueprintScreen {
-    index: number;
-    type: string;
-    label: string;
-    groups: Array<'文案' | 'icon' | '图片'>;
-    elements: TemplateBlueprintElement[];
-}
-
-interface PixelBox {
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-}
-
-interface GeneratedCopyPlaceholder {
-    layerId: number;
-    layerName: string;
-    currentText: string;
-    role: 'title' | 'subtitle' | 'body' | 'label' | 'unknown';
-    bounds: PixelBox;
-}
-
-interface GeneratedImagePlaceholder {
-    layerId: number;
-    layerName: string;
-    bounds: PixelBox;
-    aspectRatio: number;
-    recommendedAssetType: 'product' | 'model' | 'detail' | 'scene' | 'icon';
-}
-
-interface GeneratedTemplateScreen {
-    id: number;
-    name: string;
-    type: string;
-    copyPlaceholders: GeneratedCopyPlaceholder[];
-    imagePlaceholders: GeneratedImagePlaceholder[];
-}
-
-function clamp01(v: number, fallback = 0): number {
-    if (!Number.isFinite(v)) return fallback;
-    return Math.max(0, Math.min(1, v));
-}
-
-function parseJsonObject(text: string): any | null {
-    if (!text) return null;
-    const first = text.indexOf('{');
-    const last = text.lastIndexOf('}');
-    if (first < 0 || last <= first) return null;
-    try {
-        return JSON.parse(text.slice(first, last + 1));
-    } catch {
-        return null;
-    }
-}
-
-function normalizeRole(rawType: string, name: string): TemplateBlueprintElement['role'] {
-    const t = String(rawType || '').toLowerCase();
-    const n = String(name || '').toLowerCase();
-    if (/title|subtitle|text|copy|文案|标题|说明/.test(t) || /title|subtitle|text|copy|文案|标题|说明/.test(n)) return 'copy';
-    if (/icon|badge|label|tag|图标|标签/.test(t) || /icon|badge|label|tag|图标|标签/.test(n)) return 'icon';
-    if (/image|photo|product|model|hero|kv|picture|图片|主图|模特/.test(t) || /image|photo|product|model|hero|kv|picture|图片|主图|模特/.test(n)) return 'image';
-    if (/background|bg|背景/.test(t) || /background|bg|背景/.test(n)) return 'background';
-    if (/decoration|shape|line|装饰|图形/.test(t) || /decoration|shape|line|装饰|图形/.test(n)) return 'decoration';
-    return 'unknown';
-}
-
-function guessDetailScreenType(text: string): string {
-    const t = text.toLowerCase();
-    if (/营销|活动|优惠|促销|discount|campaign/.test(t)) return '营销信息';
-    if (/信任|背书|品牌|认证|award|trust/.test(t)) return '信任状/品牌背书';
-    if (/首屏|hero|kv|banner|主视觉/.test(t)) return '详情页首屏';
-    if (/icon|图标|标签|卖点/.test(t)) return '图标icon';
-    if (/颜色|款式|配色|color|variant/.test(t)) return '颜色款式展示';
-    if (/面料|材质|fabric|material/.test(t)) return '面料';
-    if (/痛点|问题|解决|pain|solution/.test(t)) return '解决痛点问题';
-    if (/穿搭|搭配|outfit|styling/.test(t)) return '穿搭推荐';
-    if (/参数|规格|尺码|spec|size/.test(t)) return '产品参数';
-    if (/细节|工艺|detail|closeup/.test(t)) return '细节展示';
-    return '自定义模块';
-}
-
-function buildDetailTemplateBlueprint(layoutAnalysis: LayoutAnalysisResult): {
-    layoutType: string;
-    screens: TemplateBlueprintScreen[];
+/**
+ * 将聚合 Skill 的最终目标文档身份提升到 workflow 外层结果。Runtime 只会把这些
+ * 标准字段转换成不透明指纹，用来把本次写入与后续读回绑定；不会记录名称或路径。
+ */
+function buildLayoutReplicationTargetContext(documentInfo: any): {
+    documentId?: number | string;
+    documentName?: string;
 } {
-    const rawElements = Array.isArray(layoutAnalysis?.elements) ? layoutAnalysis.elements : [];
-    const normalized = rawElements
-        .map((el, idx) => {
-            const x = clamp01(Number(el?.position?.x), 0.5);
-            const y = clamp01(Number(el?.position?.y), 0.5);
-            const width = clamp01(Number(el?.size?.width), 0.2);
-            const height = clamp01(Number(el?.size?.height), 0.1);
-            const name = String(el?.name || `${el?.type || 'element'}_${idx + 1}`);
-            return {
-                role: normalizeRole(String(el?.type || ''), name),
-                name,
-                content: typeof el?.content === 'string' ? el.content : undefined,
-                x,
-                y,
-                width,
-                height
-            } as TemplateBlueprintElement;
+    const rawId = documentInfo?.documentId ?? documentInfo?.docId ?? documentInfo?.id;
+    const documentId = typeof rawId === 'number' && Number.isFinite(rawId)
+        ? rawId
+        : (typeof rawId === 'string' && rawId.trim() ? rawId.trim() : undefined);
+    const rawName = documentInfo?.documentName ?? documentInfo?.name;
+    const documentName = typeof rawName === 'string' && rawName.trim()
+        ? rawName.trim()
+        : undefined;
+    return {
+        ...(documentId !== undefined ? { documentId } : {}),
+        ...(documentName ? { documentName } : {})
+    };
+}
+
+function buildLayoutReplicationDeliveryResult(success: boolean, finalDocumentInfo?: any): {
+    runtimeDeliveryReceipt?: ReturnType<typeof buildRuntimeDeliveryReceipt>;
+} {
+    if (!success) return {};
+    const sourceHistoryStateRef = readPhotoshopHistoryStateRef(finalDocumentInfo);
+    return {
+        runtimeDeliveryReceipt: buildRuntimeDeliveryReceipt({
+            status: 'ready',
+            outputs: ['editable_design_document', 'replication_report'],
+            resultRefs: [
+                'workflow:layout-replication:document-change',
+                'workflow:layout-replication:replication-report'
+            ],
+            sourceHistoryStateRef
         })
-        .sort((a, b) => a.y - b.y);
-
-    if (normalized.length === 0) {
-        return { layoutType: String(layoutAnalysis?.layoutType || 'unknown'), screens: [] };
-    }
-
-    const screens: TemplateBlueprintScreen[] = [];
-    const GAP_THRESHOLD = 0.12;
-    let cluster: TemplateBlueprintElement[] = [];
-    let anchorY = normalized[0].y;
-
-    const flushCluster = (items: TemplateBlueprintElement[]) => {
-        if (items.length === 0) return;
-        const textBlob = items.map(it => `${it.name} ${it.content || ''}`).join(' ');
-        const type = guessDetailScreenType(textBlob);
-        screens.push({
-            index: screens.length + 1,
-            type,
-            label: `第${screens.length + 1}屏_${type}`,
-            groups: ['文案', 'icon', '图片'],
-            elements: items
-        });
-    };
-
-    for (const el of normalized) {
-        if (cluster.length === 0) {
-            cluster.push(el);
-            anchorY = el.y;
-            continue;
-        }
-
-        if (Math.abs(el.y - anchorY) > GAP_THRESHOLD) {
-            flushCluster(cluster);
-            cluster = [el];
-            anchorY = el.y;
-            continue;
-        }
-
-        cluster.push(el);
-        anchorY = (anchorY + el.y) / 2;
-    }
-
-    flushCluster(cluster);
-
-    return {
-        layoutType: String(layoutAnalysis?.layoutType || 'unknown'),
-        screens
     };
 }
 
-function toNumber(v: any, fallback = 0): number {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : fallback;
+function resolveReferenceParseMaxTokens(modelId: string): number {
+    const configuredMax = Number(getModelById(modelId)?.maxTokens || 0);
+    const providerMax = Number.isFinite(configuredMax) && configuredMax > 0
+        ? configuredMax
+        : REFERENCE_PARSE_TARGET_MAX_TOKENS;
+    return Math.max(4096, Math.min(providerMax, REFERENCE_PARSE_TARGET_MAX_TOKENS));
 }
 
-function clamp(n: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, n));
-}
+async function readReferenceImageSize(base64OrDataUrl: string, mediaType = 'image/jpeg'): Promise<{ width: number; height: number } | null> {
+    const source = String(base64OrDataUrl || '').trim();
+    if (!source || typeof Image === 'undefined') return null;
+    const dataUrl = source.startsWith('data:')
+        ? source
+        : `data:${mediaType};base64,${source}`;
 
-function computePixelBox(element: TemplateBlueprintElement, canvasWidth: number, canvasHeight: number): PixelBox {
-    // The analysis prompt enforces top-left coordinates in [0,1].
-    const left = Math.round(clamp(element.x, 0, 1) * canvasWidth);
-    const top = Math.round(clamp(element.y, 0, 1) * canvasHeight);
-    const width = Math.round(clamp(element.width, 0.02, 1) * canvasWidth);
-    const height = Math.round(clamp(element.height, 0.02, 1) * canvasHeight);
-    return {
-        left: clamp(left, 0, Math.max(0, canvasWidth - 10)),
-        top: clamp(top, 0, Math.max(0, canvasHeight - 10)),
-        width: clamp(width, 24, Math.max(24, canvasWidth)),
-        height: clamp(height, 24, Math.max(24, canvasHeight))
-    };
-}
-
-function roleGroupName(role: TemplateBlueprintElement['role']): '文案' | 'icon' | '图片' {
-    if (role === 'copy') return '文案';
-    if (role === 'icon') return 'icon';
-    return '图片';
-}
-
-function placeholderColor(role: TemplateBlueprintElement['role']): string {
-    if (role === 'icon') return '#BFD7EA';
-    if (role === 'image') return '#C7E9B4';
-    if (role === 'background') return '#E0E0E0';
-    if (role === 'decoration') return '#E8DFF5';
-    return '#D9D9D9';
-}
-
-function recommendAssetTypeByRole(role: TemplateBlueprintElement['role']): 'product' | 'model' | 'detail' | 'scene' | 'icon' {
-    if (role === 'icon') return 'icon';
-    if (role === 'background') return 'scene';
-    if (role === 'image') return 'product';
-    if (role === 'decoration') return 'detail';
-    return 'product';
-}
-
-function normalizeCopyRole(content: string): 'title' | 'subtitle' | 'body' | 'label' | 'unknown' {
-    const t = String(content || '').toLowerCase();
-    if (t.length <= 12) return 'title';
-    if (t.length <= 24) return 'subtitle';
-    if (/价格|price|¥|￥|元/.test(t)) return 'label';
-    if (t.length > 32) return 'body';
-    return 'unknown';
-}
-
-async function safeRenameLayer(layerId: number | undefined, newName: string): Promise<void> {
-    if (!layerId) return;
-    try {
-        await executeToolCall('renameLayer', { layerId, newName });
-    } catch {
-        // Non-blocking.
-    }
-}
-
-async function ensurePlaceholderByRole(
-    role: '文案' | 'icon' | '图片',
-    screenIndex: number,
-    canvasWidth: number,
-    canvasHeight: number
-): Promise<number | undefined> {
-    if (role === '文案') {
-        const textResult = await executeToolCall('createTextLayer', {
-            content: `[文案占位] 第${screenIndex}屏`,
-            x: 24,
-            y: 48,
-            fontSize: 28,
-            colorHex: '#444444'
-        });
-        const layerId = textResult?.layerId as number | undefined;
-        await safeRenameLayer(layerId, `文案_占位_${screenIndex}`);
-        return layerId;
-    }
-
-    const shapeResult = await executeToolCall('createRectangle', {
-        name: `${role}_占位_${screenIndex}`,
-        x: Math.round(canvasWidth * (role === 'icon' ? 0.05 : 0.1)),
-        y: Math.round(canvasHeight * (role === 'icon' ? 0.12 : 0.18)),
-        width: Math.round(canvasWidth * (role === 'icon' ? 0.12 : 0.7)),
-        height: Math.round(canvasHeight * (role === 'icon' ? 0.08 : 0.24)),
-        fillColorHex: role === 'icon' ? '#BFD7EA' : '#C7E9B4',
-        cornerRadius: role === 'icon' ? 18 : 8
-    });
-    const layerId = shapeResult?.layerId as number | undefined;
-    if (layerId) {
-        await executeToolCall('setLayerOpacity', { layerId, opacity: 28 });
-    }
-    return layerId;
-}
-
-async function applyTemplateBlueprintToDocument(
-    blueprint: { layoutType: string; screens: TemplateBlueprintScreen[] },
-    canvas: { width: number; height: number },
-    callbacks: SkillExecuteParams['callbacks'],
-    signal?: AbortSignal
-): Promise<{
-    success: boolean;
-    screenCount: number;
-    createdLayers: number;
-    rootGroupName?: string;
-    failedOps: number;
-    generatedScreens: GeneratedTemplateScreen[];
-}> {
-    const screenGroupIds: number[] = [];
-    const generatedScreens: GeneratedTemplateScreen[] = [];
-    let createdLayers = 0;
-    let failedOps = 0;
-
-    for (const screen of blueprint.screens) {
-        if (signal?.aborted) {
-            return {
-                success: true,
-                screenCount: screenGroupIds.length,
-                createdLayers,
-                failedOps,
-                rootGroupName: undefined,
-                generatedScreens
-            };
-        }
-
-        callbacks?.onMessage?.(`生成模板骨架: 第${screen.index}屏 ${screen.type}`);
-
-        const roleLayerMap: Record<'文案' | 'icon' | '图片', number[]> = {
-            文案: [],
-            icon: [],
-            图片: []
+    return new Promise((resolve) => {
+        const image = new Image();
+        image.onload = () => {
+            const width = Math.round(image.naturalWidth || image.width || 0);
+            const height = Math.round(image.naturalHeight || image.height || 0);
+            resolve(width > 0 && height > 0 ? { width, height } : null);
         };
-        const generatedCopyPlaceholders: GeneratedCopyPlaceholder[] = [];
-        const generatedImagePlaceholders: GeneratedImagePlaceholder[] = [];
+        image.onerror = () => resolve(null);
+        image.src = dataUrl;
+    });
+}
 
-        for (let i = 0; i < screen.elements.length; i++) {
-            const element = screen.elements[i];
-            const group = roleGroupName(element.role);
-            const box = computePixelBox(element, canvas.width, canvas.height);
+type ReferenceOverlayCapture = {
+    result?: any;
+    visualQa?: ReferenceReplicationVisualQaReport;
+};
 
-            try {
-                if (element.role === 'copy') {
-                    const content = String(element.content || '').trim() || `[文案] ${screen.type}`;
-                    const fontSize = clamp(Math.round(box.height * 0.45), 16, 72);
-                    const textResult = await executeToolCall('createTextLayer', {
-                        content,
-                        x: box.left + 6,
-                        y: box.top + fontSize + 4,
-                        fontSize,
-                        colorHex: '#333333'
-                    });
-                    const layerId = textResult?.layerId as number | undefined;
-                    await safeRenameLayer(layerId, `文案_${screen.index}_${i + 1}`);
-                    if (layerId) {
-                        const layerName = `文案_${screen.index}_${i + 1}`;
-                        generatedCopyPlaceholders.push({
-                            layerId,
-                            layerName,
-                            currentText: content,
-                            role: normalizeCopyRole(content),
-                            bounds: box
-                        });
-                        roleLayerMap[group].push(layerId);
-                        createdLayers++;
-                    } else {
-                        failedOps++;
-                    }
-                } else {
-                    const layerName = `${group}_${screen.index}_${i + 1}`;
-                    const shapeResult = await executeToolCall('createRectangle', {
-                        name: layerName,
-                        x: box.left,
-                        y: box.top,
-                        width: box.width,
-                        height: box.height,
-                        fillColorHex: placeholderColor(element.role),
-                        cornerRadius: group === 'icon' ? 16 : 6
-                    });
-                    const layerId = shapeResult?.layerId as number | undefined;
-                    if (layerId) {
-                        generatedImagePlaceholders.push({
-                            layerId,
-                            layerName,
-                            bounds: box,
-                            aspectRatio: box.width > 0 && box.height > 0 ? box.width / box.height : 1,
-                            recommendedAssetType: recommendAssetTypeByRole(element.role)
-                        });
-                        await executeToolCall('setLayerOpacity', { layerId, opacity: group === 'icon' ? 35 : 26 });
-                        roleLayerMap[group].push(layerId);
-                        createdLayers++;
-                    } else {
-                        failedOps++;
-                    }
-                }
-            } catch {
-                failedOps++;
-            }
-        }
+type RedactedOverlaySnapshotResult = {
+    success: boolean;
+    error?: string;
+    errors?: Array<{
+        screenId?: number;
+        screenName?: string;
+        screenIndex?: number;
+        error?: string;
+    }>;
+    summaryText: string;
+    snapshotCount: number;
+    overlayCount: number;
+    redacted: true;
+    verificationReport?: ReferenceReplicationVisualQaVerificationReport;
+    snapshots: Array<{
+        screenId?: number;
+        screenName?: string;
+        screenIndex?: number;
+        width?: number;
+        height?: number;
+        base64Bytes?: number;
+        base64Hidden: true;
+    }>;
+};
 
-        // Ensure each required subgroup exists even if no detected elements.
-        for (const requiredRole of ['文案', 'icon', '图片'] as const) {
-            if (roleLayerMap[requiredRole].length === 0) {
-                const fallbackLayerId = await ensurePlaceholderByRole(requiredRole, screen.index, canvas.width, canvas.height);
-                if (fallbackLayerId) {
-                    if (requiredRole === '文案') {
-                        generatedCopyPlaceholders.push({
-                            layerId: fallbackLayerId,
-                            layerName: `文案_占位_${screen.index}`,
-                            currentText: `[文案占位] 第${screen.index}屏`,
-                            role: 'title',
-                            bounds: {
-                                left: 24,
-                                top: 24,
-                                width: Math.round(canvas.width * 0.7),
-                                height: Math.round(canvas.height * 0.1)
-                            }
-                        });
-                    } else {
-                        const isIcon = requiredRole === 'icon';
-                        const box: PixelBox = {
-                            left: Math.round(canvas.width * (isIcon ? 0.05 : 0.1)),
-                            top: Math.round(canvas.height * (isIcon ? 0.12 : 0.18)),
-                            width: Math.round(canvas.width * (isIcon ? 0.12 : 0.7)),
-                            height: Math.round(canvas.height * (isIcon ? 0.08 : 0.24))
-                        };
-                        generatedImagePlaceholders.push({
-                            layerId: fallbackLayerId,
-                            layerName: `${requiredRole}_占位_${screen.index}`,
-                            bounds: box,
-                            aspectRatio: box.width > 0 && box.height > 0 ? box.width / box.height : 1,
-                            recommendedAssetType: isIcon ? 'icon' : 'product'
-                        });
-                    }
-                    roleLayerMap[requiredRole].push(fallbackLayerId);
-                    createdLayers++;
-                } else {
-                    failedOps++;
-                }
-            }
-        }
+function shouldCaptureReferenceOverlaySnapshots(params: Record<string, any>): boolean {
+    if (params.includeOverlaySnapshots === true || params.includeScreenSnapshotsWithOverlay === true) return true;
+    const visualValidation = String(params.visualValidation || '').trim().toLowerCase();
+    return visualValidation === 'overlay'
+        || visualValidation === 'overlays'
+        || visualValidation === 'deep'
+        || visualValidation === 'screenshot'
+        || visualValidation === 'screenshots';
+}
 
-        const roleGroupIds: number[] = [];
-        for (const role of ['文案', 'icon', '图片'] as const) {
-            const ids = roleLayerMap[role];
-            if (ids.length === 0) continue;
-            const grouped = await executeToolCall('groupLayers', {
-                layerIds: ids,
-                groupName: role
-            });
-            const groupId = grouped?.group?.id as number | undefined;
-            if (groupId) {
-                roleGroupIds.push(groupId);
-            } else {
-                failedOps++;
-            }
-        }
-
-        let currentScreenId = screen.index;
-        if (roleGroupIds.length > 0) {
-            const screenGroupResult = await executeToolCall('groupLayers', {
-                layerIds: roleGroupIds,
-                groupName: `一_${String(screen.index).padStart(2, '0')}_${screen.type}`
-            });
-            const screenGroupId = screenGroupResult?.group?.id as number | undefined;
-            if (screenGroupId) {
-                currentScreenId = screenGroupId;
-                screenGroupIds.push(screenGroupId);
-            } else {
-                failedOps++;
-            }
-        }
-
-        generatedScreens.push({
-            id: currentScreenId,
-            name: `一_${String(screen.index).padStart(2, '0')}_${screen.type}`,
-            type: screen.type,
-            copyPlaceholders: generatedCopyPlaceholders,
-            imagePlaceholders: generatedImagePlaceholders
-        });
+function pixelBoxToOverlayRect(box?: { left: number; top: number; width: number; height: number }): { left: number; top: number; right: number; bottom: number } | undefined {
+    if (!box) return undefined;
+    const left = Number(box.left);
+    const top = Number(box.top);
+    const width = Number(box.width);
+    const height = Number(box.height);
+    if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        return undefined;
     }
-
-    let rootGroupName: string | undefined;
-    if (screenGroupIds.length > 0) {
-        rootGroupName = `详情页模板骨架_${new Date().toISOString().slice(0, 10)}`;
-        const root = await executeToolCall('groupLayers', {
-            layerIds: screenGroupIds,
-            groupName: rootGroupName
-        });
-        if (!root?.success) {
-            failedOps++;
-        }
-    }
-
     return {
-        success: failedOps === 0 || createdLayers > 0,
-        screenCount: blueprint.screens.length,
-        createdLayers,
-        rootGroupName,
-        failedOps,
-        generatedScreens
+        left: Math.round(left),
+        top: Math.round(top),
+        right: Math.round(left + width),
+        bottom: Math.round(top + height)
     };
 }
 
-function calculatePlanScore(plan: any): {
-    confidence: number;
-    imageCoverage: number;
-    score: number;
-} {
-    const images = Array.isArray(plan?.images) ? plan.images : [];
-    const copies = Array.isArray(plan?.copies) ? plan.copies : [];
-    const imageTotal = images.length;
-    const imageMatched = images.filter((img: any) => !!img?.imagePath).length;
-    const imageCoverage = imageTotal > 0 ? imageMatched / imageTotal : 1;
-    const copyTotal = copies.length;
-    const copyNonEmpty = copies.filter((c: any) => String(c?.content || '').trim().length > 0).length;
-    const copyCoverage = copyTotal > 0 ? copyNonEmpty / copyTotal : 1;
-    const confidence = clamp01(Number(plan?.confidence), imageCoverage);
-    const score = imageCoverage * 0.65 + copyCoverage * 0.2 + confidence * 0.15;
-    return { confidence, imageCoverage, score };
-}
-
-async function autoFillAppliedTemplate(
-    screens: GeneratedTemplateScreen[],
-    projectPath: string,
-    callbacks: SkillExecuteParams['callbacks'],
-    signal?: AbortSignal,
-    options?: {
-        minPlanScore?: number;
-        minImageCoverage?: number;
-        allowLowConfidenceFill?: boolean;
-    }
-): Promise<{
-    success: boolean;
-    filledScreens: number;
-    failedScreens: number;
-    skippedScreens: number;
-    guardedScreens: number;
-    filledImages: number;
-    plansCount: number;
-}> {
-    const minPlanScore = clamp01(Number(options?.minPlanScore), 0.62);
-    const minImageCoverage = clamp01(Number(options?.minImageCoverage), 0.6);
-    const allowLowConfidenceFill = options?.allowLowConfidenceFill === true;
-
-    const matchResult = await executeToolCall('matchDetailPageContent', {
-        screens,
-        projectPath
-    });
-    if (!matchResult?.success || !Array.isArray(matchResult?.plans)) {
+function summarizeOverlaySnapshotResult(result: any, overlayCount: number): RedactedOverlaySnapshotResult {
+    const rawSnapshots = Array.isArray(result?.snapshots)
+        ? result.snapshots
+        : Array.isArray(result?.screens)
+            ? result.screens
+            : Array.isArray(result?.images)
+                ? result.images
+                : [];
+    const snapshots = rawSnapshots.map((snapshot: any) => {
+        const base64 = typeof snapshot?.base64 === 'string'
+            ? snapshot.base64
+            : typeof snapshot?.imageData === 'string'
+                ? snapshot.imageData
+                : '';
         return {
-            success: false,
-            filledScreens: 0,
-            failedScreens: 0,
-            skippedScreens: screens.length,
-            guardedScreens: 0,
-            filledImages: 0,
-            plansCount: 0
+            screenId: snapshot?.screenId,
+            screenName: snapshot?.screenName,
+            screenIndex: snapshot?.screenIndex,
+            width: Number.isFinite(Number(snapshot?.width)) ? Number(snapshot.width) : undefined,
+            height: Number.isFinite(Number(snapshot?.height)) ? Number(snapshot.height) : undefined,
+            base64Bytes: base64 ? Math.round(base64.length * 0.75) : undefined,
+            base64Hidden: true as const
+        };
+    });
+    const snapshotCount = snapshots.length;
+    const success = result?.success !== false && snapshotCount > 0;
+    const errors = Array.isArray(result?.errors)
+        ? result.errors.map((item: any) => ({
+            screenId: item?.screenId,
+            screenName: item?.screenName,
+            screenIndex: item?.screenIndex,
+            error: item?.error
+        }))
+        : undefined;
+    return {
+        success,
+        error: result?.error || (snapshotCount === 0 ? 'Overlay tool returned no snapshots.' : undefined),
+        errors,
+        summaryText: !success
+            ? `Overlay 截图采集失败：${result?.error || '未返回任何截图'}`
+            : `Overlay 截图采集完成：${snapshotCount} 张截图，${overlayCount} 项标注。截图 base64 已从普通消息结果中隐藏。`,
+        snapshotCount,
+        overlayCount,
+        redacted: true,
+        snapshots
+    };
+}
+
+async function captureReferenceOverlaySnapshotsIfRequested(
+    generatedScreens: Awaited<ReturnType<typeof applyTemplateBlueprintToDocument>>['generatedScreens'],
+    params: Record<string, any>,
+    callbacks: SkillExecuteParams['callbacks']
+): Promise<ReferenceOverlayCapture> {
+    const visualQaItems = buildVisualQaItemsFromGeneratedScreens(generatedScreens);
+    if (!shouldCaptureReferenceOverlaySnapshots(params)) {
+        return {};
+    }
+
+    const screens = (generatedScreens || [])
+        .filter((screen) => screen.bounds && screen.bounds.width > 0 && screen.bounds.height > 0)
+        .map((screen) => ({
+            id: screen.id,
+            name: screen.name,
+            index: screen.index,
+            bounds: screen.bounds
+        }));
+
+    const placements = (generatedScreens || []).flatMap((screen) => ([
+        ...(screen.copyPlaceholders || []).map((placeholder) => ({
+            screenId: screen.id,
+            placeholderLayerId: placeholder.layerId,
+            placeholderLayerName: placeholder.layerName,
+            actualLayerId: placeholder.layerId,
+            actualLayerName: placeholder.layerName,
+            targetBounds: pixelBoxToOverlayRect(placeholder.bounds),
+            actualBounds: pixelBoxToOverlayRect(placeholder.actualBounds)
+        })),
+        ...(screen.imagePlaceholders || []).map((placeholder) => ({
+            screenId: screen.id,
+            placeholderLayerId: placeholder.layerId,
+            placeholderLayerName: placeholder.layerName,
+            actualLayerId: placeholder.layerId,
+            actualLayerName: placeholder.layerName,
+            targetBounds: pixelBoxToOverlayRect(placeholder.bounds),
+            actualBounds: pixelBoxToOverlayRect(placeholder.actualBounds || placeholder.bounds)
+        }))
+    ])).filter((placement) => placement.targetBounds || placement.actualBounds);
+
+    if (screens.length === 0) {
+        return {
+            visualQa: buildReferenceReplicationVisualQaReport({
+                items: visualQaItems,
+                snapshotObservation: {
+                    source: 'getScreenSnapshotsWithOverlay',
+                    snapshotCount: 0,
+                    overlayCount: placements.length,
+                    notes: ['overlay skipped: no generated screen bounds available']
+                }
+            })
         };
     }
 
-    const plans: any[] = matchResult.plans;
-    const planByScreenId = new Map<number, any>();
-    plans.forEach((plan) => {
-        if (!planByScreenId.has(plan.screenId)) {
-            planByScreenId.set(plan.screenId, plan);
+    callbacks?.onMessage?.('正在采集参考图复刻 overlay 截图检查...');
+    callbacks?.onToolStart?.('getScreenSnapshotsWithOverlay');
+    try {
+        const result = await executeToolCall('getScreenSnapshotsWithOverlay', {
+            screens,
+            placements,
+            maxWidth: layoutReplicationToNumber(params.overlayMaxWidth, 1200)
+        });
+        const redactedResult = summarizeOverlaySnapshotResult(result, placements.length);
+        const snapshotCount = Array.isArray(result?.snapshots)
+            ? result.snapshots.length
+            : Array.isArray(result?.screens)
+                ? result.screens.length
+                : 0;
+        const overlayNotes: string[] = [];
+        if (result?.success === false) {
+            overlayNotes.push(`overlay capture failed: ${result.error || 'unknown error'}`);
         }
-    });
-
-    let filledScreens = 0;
-    let failedScreens = 0;
-    let skippedScreens = 0;
-    let guardedScreens = 0;
-    let filledImages = 0;
-
-    for (let i = 0; i < screens.length; i++) {
-        if (signal?.aborted) break;
-
-        const screen = screens[i];
-        const plan = planByScreenId.get(screen.id) || plans[i];
-        if (!plan) {
-            skippedScreens++;
-            continue;
+        if (snapshotCount === 0) {
+            overlayNotes.push('overlay capture returned no snapshots');
         }
-
-        const quality = calculatePlanScore(plan);
-        const shouldGuard = !allowLowConfidenceFill
-            && (
-                !!plan.needsReview
-                || quality.score < minPlanScore
-                || quality.imageCoverage < minImageCoverage
-            );
-        const planToApply = shouldGuard ? { ...plan, images: [] } : plan;
-        if (shouldGuard) {
-            guardedScreens++;
-            callbacks?.onMessage?.(
-                `自动填充保护: ${screen.name} 评分 ${quality.score.toFixed(2)}，仅填文案`
-            );
-        }
-
-        const hasCopies = Array.isArray(planToApply.copies) && planToApply.copies.length > 0;
-        const hasImages = Array.isArray(planToApply.images) && planToApply.images.some((img: any) => !!img?.imagePath);
-        if (!hasCopies && !hasImages) {
-            skippedScreens++;
-            continue;
-        }
-
-        callbacks?.onMessage?.(`自动填充: ${screen.name}`);
-        const fillResult = await executeToolCall('fillDetailPage', { plan: planToApply });
-        if (fillResult?.success) {
-            filledScreens++;
-            filledImages += (planToApply.images || []).filter((img: any) => !!img?.imagePath).length;
-        } else {
-            failedScreens++;
-        }
+        const visualQa = buildReferenceReplicationVisualQaReport({
+            items: visualQaItems,
+            snapshotObservation: {
+                source: 'getScreenSnapshotsWithOverlay',
+                snapshotCount,
+                overlayCount: placements.length,
+                notes: overlayNotes.length > 0 ? overlayNotes : undefined
+            }
+        });
+        callbacks?.onToolComplete?.('getScreenSnapshotsWithOverlay', {
+            ...redactedResult,
+            verificationReport: visualQa.verificationReport
+        });
+        return {
+            result: {
+                ...redactedResult,
+                verificationReport: visualQa.verificationReport
+            },
+            visualQa
+        };
+    } catch (error: any) {
+        const message = error?.message || String(error);
+        const visualQa = buildReferenceReplicationVisualQaReport({
+            items: visualQaItems,
+            snapshotObservation: {
+                source: 'getScreenSnapshotsWithOverlay',
+                snapshotCount: 0,
+                overlayCount: placements.length,
+                notes: [`overlay capture failed: ${message}`]
+            }
+        });
+        callbacks?.onToolComplete?.('getScreenSnapshotsWithOverlay', {
+            ...summarizeOverlaySnapshotResult({ success: false, error: message }, placements.length),
+            verificationReport: visualQa.verificationReport
+        });
+        return {
+            visualQa
+        };
     }
-
-    return {
-        success: failedScreens === 0,
-        filledScreens,
-        failedScreens,
-        skippedScreens,
-        guardedScreens,
-        filledImages,
-        plansCount: plans.length
-    };
 }
 
 export const layoutReplicationExecutor: SkillExecutor = {
     skillId: 'layout-replication',
 
     async execute({ params, callbacks, signal, context }: SkillExecuteParams): Promise<AgentResult> {
+        const emitStep = (
+            kind: 'observation' | 'model_request' | 'verification' | 'warning' | 'finalizing',
+            title: string,
+            detail?: string,
+            status: 'pending' | 'running' | 'success' | 'error' = 'running'
+        ) => emitSkillStep(callbacks, { kind, title, detail, status });
+
+        emitStep(
+            'observation',
+            '准备参考图复刻',
+            '读取参考图输入，并确认输出模式与执行路径。'
+        );
         callbacks?.onMessage?.('正在分析参考图布局...');
 
         let refImage: string | undefined = context?.attachedImageData;
@@ -657,35 +394,32 @@ export const layoutReplicationExecutor: SkillExecutor = {
         const outputMode = String(params.outputMode || '').toLowerCase();
         const templateApplyMode = outputMode === 'template_apply' || params.templateApply === true;
         const templateBlueprintOnly = outputMode === 'template_blueprint' || params.templateBlueprintOnly === true;
+        const userInputForOs = String(params.userIntent || context?.userInput || '').trim();
+        const outputIntent = resolveReferenceReplicationOutputIntent({
+            artifactKind: params.artifactKind,
+            userIntent: userInputForOs
+        });
 
         try {
+            emitStep(
+                'model_request',
+                '调用视觉模型解析参考图',
+                '将参考图解析为结构化元素、画布和基础样式描述。'
+            );
             callbacks?.onToolStart?.('analyzeReferenceLayout');
             callbacks?.onMessage?.('正在调用视觉模型分析元素结构...');
 
             const modelPreferences = useAppStore.getState().modelPreferences;
-            const visionModel = modelPreferences?.mode === 'local'
-                ? (modelPreferences?.preferredLocalModels?.visualAnalyze || 'local-llava-13b')
-                : (modelPreferences?.preferredCloudModels?.visualAnalyze || 'google-gemini-3-flash');
+            const visionModel = getPrimaryModelForPreferenceBucket(modelPreferences, 'visualAnalyze', {
+                mode: modelPreferences?.mode,
+                includeFallback: modelPreferences?.autoFallback,
+                includeCrossTaskBackups: false,
+                requireVision: true
+            }) || 'google-gemini-3-flash';
+            const referenceImageSize = await readReferenceImageSize(refImage, 'image/jpeg');
+            const referenceParseMaxTokens = resolveReferenceParseMaxTokens(visionModel);
 
-            const analysisPrompt = [
-                '你是电商设计布局分析专家。',
-                '请分析参考图并输出 JSON：',
-                '{',
-                '  "layoutType": "center|left|right|split|grid",',
-                '  "elements": [',
-                '    {',
-                '      "type": "title|subtitle|image|icon|badge|background|decoration",',
-                '      "name": "元素名称",',
-                '      "position": { "x": 0-1, "y": 0-1 }, // 左上角坐标',
-                '      "size": { "width": 0-1, "height": 0-1 },',
-                '      "zIndex": 1,',
-                '      "content": "文本元素时填写"',
-                '    }',
-                '  ],',
-                '  "alignmentGroups": []',
-                '}',
-                '只输出 JSON，不要输出额外解释。'
-            ].join('\n');
+            const analysisPrompt = buildReferenceParsePrompt();
 
             const analysisResponse = await window.designEcho.chat(visionModel, [
                 { role: 'system', content: '你是专业电商设计布局分析助手，只输出 JSON。' },
@@ -696,12 +430,32 @@ export const layoutReplicationExecutor: SkillExecutor = {
                         { type: 'image', image: { data: refImage, mediaType: 'image/jpeg' } }
                     ]
                 }
-            ], { maxTokens: 4096, temperature: 0.1 });
+            ], { maxTokens: referenceParseMaxTokens, temperature: 0.1 });
 
-            callbacks?.onToolComplete?.('analyzeReferenceLayout', { success: true });
-
-            const layoutAnalysis = parseJsonObject(analysisResponse?.text || '') as LayoutAnalysisResult | null;
-            if (!layoutAnalysis || !Array.isArray(layoutAnalysis.elements) || layoutAnalysis.elements.length === 0) {
+            const parsedAnalysis = parseJsonObject(analysisResponse?.text || '');
+            if (parsedAnalysis && referenceImageSize) {
+                parsedAnalysis.canvasSize = referenceImageSize;
+            }
+            const referenceParse = normalizeReferenceParseResult(parsedAnalysis);
+            const designRepresentation = referenceParse
+                ? buildMinimalDesignRepresentation(referenceParse)
+                : null;
+            if (!referenceParse || !designRepresentation || !Array.isArray(designRepresentation.elements) || designRepresentation.elements.length === 0) {
+                emitStep(
+                    'verification',
+                    '参考图解析失败',
+                    '视觉模型结果无法转换为可执行元素结构。',
+                    'error'
+                );
+                callbacks?.onToolComplete?.('analyzeReferenceLayout', {
+                    success: false,
+                    error: 'Failed to parse layout analysis',
+                    modelId: visionModel,
+                    maxTokens: referenceParseMaxTokens,
+                    responseTextLength: String(analysisResponse?.text || '').length,
+                    thinkingChars: String(analysisResponse?.thinking || '').length,
+                    usage: analysisResponse?.usage || null
+                });
                 return {
                     success: false,
                     message: '无法识别参考图中的有效元素。建议更清晰的参考图后重试。',
@@ -709,47 +463,171 @@ export const layoutReplicationExecutor: SkillExecutor = {
                 };
             }
 
-            callbacks?.onMessage?.(`识别到 ${layoutAnalysis.elements.length} 个元素`);
+            callbacks?.onToolComplete?.('analyzeReferenceLayout', {
+                success: true,
+                elementCount: designRepresentation.elements.length,
+                canvasSize: designRepresentation.canvas,
+                modelId: visionModel,
+                maxTokens: referenceParseMaxTokens,
+                responseTextLength: String(analysisResponse?.text || '').length,
+                thinkingChars: String(analysisResponse?.thinking || '').length,
+                usage: analysisResponse?.usage || null,
+                canvasSource: referenceImageSize ? 'decoded-reference-image' : 'model-output'
+            });
+            emitStep(
+                'verification',
+                '参考图结构解析完成',
+                `识别元素 ${designRepresentation.elements.length} 个，画布 ${designRepresentation.canvas.width}x${designRepresentation.canvas.height}。`,
+                'success'
+            );
 
-            const templateBlueprint = buildDetailTemplateBlueprint(layoutAnalysis);
+            callbacks?.onMessage?.(`识别到 ${designRepresentation.elements.length} 个元素`);
+            if (designRepresentation.layout.designIntent) {
+                callbacks?.onMessage?.(`设计意图: ${designRepresentation.layout.designIntent}`);
+            }
+
+            const plannerPreflight = buildReferenceReplicationPlannerContext({
+                userInput: userInputForOs,
+                params,
+                context,
+                representation: designRepresentation,
+                mode: 'reference_preflight'
+            });
+            const plannerPreflightAlignment = comparePlannerExecutionPlanToExecutor(plannerPreflight, [
+                'readDesignContext',
+                'composeDesignDsl',
+                'verifyDesignResult'
+            ]);
+            const designPlannerPreflightGate = buildPlannerExecutionPreflightGate(plannerPreflight, {
+                stage: 'reference-replication-before-blueprint'
+            });
+            emitStep(
+                'verification',
+                '参考图复刻计划已生成',
+                `Planner readiness=${plannerPreflight.output.readiness}；gate=${designPlannerPreflightGate.decision}；计划步骤 ${plannerPreflight.output.executionPlan.steps.length} 个；对齐 ${plannerPreflightAlignment.status}。`,
+                designPlannerPreflightGate.shouldExecute ? 'success' : 'error'
+            );
+            if (!designPlannerPreflightGate.shouldExecute) {
+                return {
+                    success: false,
+                    message: [
+                        designPlannerPreflightGate.decision === 'request_context'
+                            ? '参考图复刻缺少必要上下文，未进入 Photoshop 执行。'
+                            : '参考图复刻计划被阻断，未进入 Photoshop 执行。',
+                        ...designPlannerPreflightGate.blockers,
+                        ...designPlannerPreflightGate.warnings
+                    ].filter(Boolean).join('\n'),
+                    error: designPlannerPreflightGate.reason,
+                    data: {
+                        referenceParse,
+                        designRepresentation,
+                        layoutAnalysis: referenceParse,
+                        designPlanner: plannerPreflight,
+                        designPlannerPreflightGate,
+                        designPlannerExecutionAlignment: plannerPreflightAlignment
+                    }
+                };
+            }
+
+            const templateBlueprint = buildReferenceReplicationBlueprint(
+                designRepresentation,
+                outputIntent
+            );
+            const blueprintQa = buildReferenceReplicationQaReport({
+                stage: 'template-blueprint',
+                representation: designRepresentation,
+                blueprintScreens: templateBlueprint.screens,
+                outputTopology: outputIntent.topology
+            });
+            emitStep(
+                'verification',
+                '模板蓝图已生成',
+                `形成 ${templateBlueprint.screens.length} 个版面单元；QA：${blueprintQa.summary}`,
+                'success'
+            );
 
             if (templateBlueprintOnly && !templateApplyMode) {
                 const screenCount = templateBlueprint.screens.length;
                 const previewTypes = templateBlueprint.screens.slice(0, 6).map(s => s.type).join(' / ');
+                const toolResults = [{
+                    toolName: 'layout-template-blueprint',
+                    result: {
+                        success: true,
+                        layoutType: templateBlueprint.layoutType,
+                        screenCount,
+                        outputIntent,
+                        qaReport: blueprintQa
+                    }
+                }];
+                const designAgentOs = buildReferenceReplicationDesignAgentOsRecord({
+                    userInput: userInputForOs,
+                    representation: designRepresentation,
+                    qaReport: blueprintQa,
+                    toolResults,
+                    success: true,
+                    mode: 'template_blueprint'
+                });
+                const designPlanner = buildReferenceReplicationPlannerContext({
+                    userInput: userInputForOs,
+                    params,
+                    context,
+                    representation: designRepresentation,
+                    mode: 'template_blueprint'
+                });
+                const designPlannerExecutionAlignment = comparePlannerExecutionPlanToExecutor(designPlanner, [
+                    'readDesignContext',
+                    'composeDesignDsl',
+                    'buildTemplateBlueprint',
+                    'verifyDesignResult'
+                ]);
 
                 return {
                     success: true,
                     message: [
-                        '参考图模板骨架生成完成',
-                        `识别元素: ${layoutAnalysis.elements.length}`,
-                        `拆分屏数: ${screenCount}`,
+                        `${outputIntent.artifactLabel}参考结构蓝图生成完成`,
+                        `识别元素: ${designRepresentation.elements.length}`,
+                        `版面单元: ${screenCount}`,
+                        `QA: ${blueprintQa.summary}`,
                         previewTypes ? `结构预览: ${previewTypes}` : ''
                     ].filter(Boolean).join('\n'),
                     data: {
-                        layoutAnalysis,
-                        templateBlueprint
+                        referenceParse,
+                        designRepresentation,
+                        layoutAnalysis: referenceParse,
+                        outputIntent,
+                        referenceBlueprint: templateBlueprint,
+                        templateBlueprint,
+                        qaReport: blueprintQa,
+                        designAgentOs,
+                        designPlanner,
+                        designPlannerPreflight: plannerPreflight,
+                        designPlannerPreflightGate,
+                        designPlannerExecutionAlignment
                     },
-                    toolResults: [{
-                        toolName: 'layout-template-blueprint',
-                        result: {
-                            success: true,
-                            layoutType: templateBlueprint.layoutType,
-                            screenCount
-                        }
-                    }]
+                    toolResults
                 };
             }
 
             if (templateApplyMode) {
+                emitStep(
+                    'observation',
+                    '准备落地模板骨架',
+                    '检查当前 Photoshop 文档，必要时自动创建目标画布。'
+                );
                 let docInfo = await executeToolCall('getDocumentInfo', {});
+                let createDocumentResult: any = null;
                 if (!docInfo?.success && params.autoCreateDocument !== false) {
-                    const width = Math.max(800, Math.round(toNumber(layoutAnalysis.canvasSize?.width, 1242)));
-                    const height = Math.max(1200, Math.round(toNumber(layoutAnalysis.canvasSize?.height, 3600)));
-                    callbacks?.onMessage?.(`未检测到文档，自动创建模板画布 ${width}x${height}`);
-                    await executeToolCall('createDocument', {
-                        width,
-                        height,
-                        name: '详情页模板骨架',
+                    const canvasSize = resolveLayoutReplicationAutoCanvasSize({
+                        params,
+                        referenceCanvas: designRepresentation.canvas,
+                        fallback: outputIntent.fallbackCanvas,
+                        profile: outputIntent.canvasProfile
+                    });
+                    callbacks?.onMessage?.(`未检测到文档，自动创建${outputIntent.artifactLabel}画布 ${canvasSize.width}x${canvasSize.height}`);
+                    createDocumentResult = await executeToolCall('createDocument', {
+                        width: canvasSize.width,
+                        height: canvasSize.height,
+                        name: outputIntent.documentName,
                         backgroundColor: 'white'
                     });
                     docInfo = await executeToolCall('getDocumentInfo', {});
@@ -764,26 +642,43 @@ export const layoutReplicationExecutor: SkillExecutor = {
                 }
 
                 const canvas = {
-                    width: Math.max(1, Math.round(toNumber(docInfo.width, 1242))),
-                    height: Math.max(1, Math.round(toNumber(docInfo.height, 3600)))
+                    width: Math.max(1, Math.round(layoutReplicationToNumber(docInfo.width, outputIntent.fallbackCanvas.width))),
+                    height: Math.max(1, Math.round(layoutReplicationToNumber(docInfo.height, outputIntent.fallbackCanvas.height)))
                 };
 
-                callbacks?.onMessage?.(`开始落地模板骨架到文档: ${docInfo.name} (${canvas.width}x${canvas.height})`);
+                callbacks?.onMessage?.(`开始落地${outputIntent.artifactLabel}参考骨架到文档: ${docInfo.name} (${canvas.width}x${canvas.height})`);
+                emitStep(
+                    'observation',
+                    `开始创建可编辑${outputIntent.artifactLabel}参考骨架`,
+                    `目标文档：${docInfo.name}，画布 ${canvas.width}x${canvas.height}。`
+                );
                 const applyResult = await applyTemplateBlueprintToDocument(
                     templateBlueprint,
                     canvas,
                     callbacks,
                     signal
                 );
+                emitStep(
+                    'verification',
+                    '模板骨架创建完成',
+                    `创建图层 ${applyResult.createdLayers} 个，失败操作 ${applyResult.failedOps} 个。`,
+                    applyResult.success ? 'success' : 'error'
+                );
 
                 const projectPath = String(
                     params.projectPath || useAppStore.getState().currentProject?.path || ''
                 ).trim();
-                const autoFillAfterApply = params.autoFillAfterApply !== false;
+                const autoFillAfterApply = outputIntent.autoFillStrategy === 'detail-page'
+                    && params.autoFillAfterApply !== false;
                 let autoFillResult: Awaited<ReturnType<typeof autoFillAppliedTemplate>> | null = null;
 
                 if (autoFillAfterApply && applyResult.generatedScreens.length > 0) {
                     if (projectPath) {
+                        emitStep(
+                            'observation',
+                            '开始自动选图填充',
+                            `项目路径：${projectPath}`
+                        );
                         callbacks?.onMessage?.(`开始自动选图填充（项目: ${projectPath}）`);
                         autoFillResult = await autoFillAppliedTemplate(
                             applyResult.generatedScreens,
@@ -796,37 +691,163 @@ export const layoutReplicationExecutor: SkillExecutor = {
                                 allowLowConfidenceFill: params.allowLowConfidenceFill !== false
                             }
                         );
+                        emitStep(
+                            'verification',
+                            '自动选图填充完成',
+                            `填充屏 ${autoFillResult.filledScreens} 个，失败屏 ${autoFillResult.failedScreens} 个。`,
+                            autoFillResult.failedScreens > 0 ? 'error' : 'success'
+                        );
                     } else {
+                        emitStep(
+                            'warning',
+                            '跳过自动选图填充',
+                            '缺少 projectPath，无法从项目素材中自动匹配图片。',
+                            'success'
+                        );
                         callbacks?.onMessage?.('已跳过自动填充：缺少 projectPath（请传入或先导入项目）');
                     }
                 }
 
+                emitStep(
+                    'verification',
+                    '准备生成复刻验收报告',
+                    '汇总覆盖率、样式 recipe、自动填充和可选 overlay 截图检查。'
+                );
+                const overlayCapture = await captureReferenceOverlaySnapshotsIfRequested(
+                    applyResult.generatedScreens,
+                    params,
+                    callbacks
+                );
+                const coverage = buildTemplateApplyCoverageReport({
+                    blueprintScreens: templateBlueprint.screens,
+                    generatedScreens: applyResult.generatedScreens,
+                    elementResults: applyResult.elementResults,
+                    failedOps: applyResult.failedOps
+                });
+
+                const applyQa = buildReferenceReplicationQaReport({
+                    stage: 'template-applied',
+                    representation: designRepresentation,
+                    blueprintScreens: templateBlueprint.screens,
+                    outputTopology: outputIntent.topology,
+                    generatedScreens: applyResult.generatedScreens,
+                    applyStats: {
+                        screenCount: applyResult.screenCount,
+                        createdLayers: applyResult.createdLayers,
+                        failedOps: applyResult.failedOps,
+                        styleRecipeStats: applyResult.styleRecipeStats
+                    },
+                    coverage,
+                    autoFillStats: autoFillResult ? {
+                        filledScreens: autoFillResult.filledScreens,
+                        failedScreens: autoFillResult.failedScreens,
+                        guardedScreens: autoFillResult.guardedScreens,
+                        filledImages: autoFillResult.filledImages
+                    } : undefined,
+                    visualQa: overlayCapture.visualQa
+                });
+
+                const applySummary = summarizeTemplateApplyCompletion({
+                    headingSuccess: `${outputIntent.artifactLabel}可编辑复刻骨架已生成`,
+                    headingReview: `${outputIntent.artifactLabel}复刻骨架部分生成，需复核`,
+                    baseSuccess: applyResult.success,
+                    screenCount: applyResult.screenCount,
+                    createdLayers: applyResult.createdLayers,
+                    rootGroupName: applyResult.rootGroupName,
+                    failedOps: applyResult.failedOps,
+                    styleRecipeStats: applyResult.styleRecipeStats,
+                    coverage,
+                    qaSummary: applyQa.summary,
+                    autoFill: autoFillResult,
+                    visualQa: applyQa.visualQa
+                });
+                emitStep(
+                    'finalizing',
+                    '模板复刻结果已汇总',
+                    applySummary.completionContract?.summary || applySummary.heading,
+                    applySummary.success ? 'success' : 'error'
+                );
+
+                const finalDocumentInfo = applySummary.success
+                    ? await executeToolCall('getDocumentInfo', {})
+                    : undefined;
+                const deliveryDocumentInfo = finalDocumentInfo?.success !== false
+                    ? finalDocumentInfo
+                    : undefined;
+                const toolResults = [...(createDocumentResult ? [{
+                    toolName: 'createDocument',
+                    result: createDocumentResult
+                }] : []), {
+                    toolName: 'layout-template-apply',
+                    result: {
+                        ...applyResult,
+                        qaReport: applyQa,
+                        completionContract: applySummary.completionContract
+                    }
+                }, ...(overlayCapture.result ? [{
+                    toolName: 'getScreenSnapshotsWithOverlay',
+                    result: overlayCapture.result
+                }] : []), ...(autoFillResult ? [{
+                    toolName: 'layout-template-autofill',
+                    result: autoFillResult
+                }] : []), ...(finalDocumentInfo ? [{
+                    toolName: 'getDocumentInfo',
+                    result: finalDocumentInfo
+                }] : [])];
+                const designAgentOs = buildReferenceReplicationDesignAgentOsRecord({
+                    userInput: userInputForOs,
+                    representation: designRepresentation,
+                    qaReport: applyQa,
+                    completionContract: applySummary.completionContract,
+                    toolResults,
+                    success: applySummary.success,
+                    mode: 'template_apply'
+                });
+                const designPlanner = buildReferenceReplicationPlannerContext({
+                    userInput: userInputForOs,
+                    params,
+                    context,
+                    representation: designRepresentation,
+                    docInfo: deliveryDocumentInfo || docInfo,
+                    projectPath,
+                    mode: 'template_apply'
+                });
+                const designPlannerExecutionAlignment = comparePlannerExecutionPlanToExecutor(designPlanner, [
+                    'readDesignContext',
+                    'composeDesignDsl',
+                    'applyTemplateBlueprint',
+                    autoFillResult ? 'selectAsset' : '',
+                    autoFillResult ? 'placeAsset' : '',
+                    'verifyDesignResult'
+                ].filter(Boolean));
+
                 return {
-                    success: autoFillResult ? (applyResult.success && autoFillResult.success) : applyResult.success,
-                    message: [
-                        '详情页模板骨架已生成',
-                        `屏数: ${applyResult.screenCount}`,
-                        `创建图层: ${applyResult.createdLayers}`,
-                        applyResult.rootGroupName ? `根分组: ${applyResult.rootGroupName}` : '',
-                        applyResult.failedOps > 0 ? `失败/跳过操作: ${applyResult.failedOps}` : '',
-                        autoFillResult ? `自动填充: ${autoFillResult.filledScreens} 屏成功, ${autoFillResult.filledImages} 张图片` : '',
-                        autoFillResult && autoFillResult.guardedScreens > 0 ? `保护策略: ${autoFillResult.guardedScreens} 屏` : '',
-                        autoFillResult && autoFillResult.failedScreens > 0 ? `自动填充失败: ${autoFillResult.failedScreens} 屏` : ''
-                    ].filter(Boolean).join('\n'),
+                    success: applySummary.success,
+                    message: formatLayoutReplicationUserReport(applySummary.userReport, applySummary.messageLines),
                     data: {
-                        layoutAnalysis,
+                        ...buildLayoutReplicationTargetContext(deliveryDocumentInfo || docInfo),
+                        ...buildLayoutReplicationDeliveryResult(applySummary.success, deliveryDocumentInfo),
+                        referenceParse,
+                        designRepresentation,
+                        layoutAnalysis: referenceParse,
+                        outputIntent,
+                        referenceBlueprint: templateBlueprint,
                         templateBlueprint,
+                        createdDocument: createDocumentResult?.success === true,
                         applyResult,
                         autoFillResult,
-                        projectPathUsed: projectPath || undefined
+                        overlaySnapshotResult: overlayCapture.result,
+                        projectPathUsed: projectPath || undefined,
+                        qaReport: applyQa,
+                        completionContract: applySummary.completionContract,
+                        referenceReplicationReport: applySummary.userReport,
+                        designAgentOs,
+                        designPlanner,
+                        designPlannerPreflight: plannerPreflight,
+                        designPlannerPreflightGate,
+                        designPlannerExecutionAlignment
                     },
-                    toolResults: [{
-                        toolName: 'layout-template-apply',
-                        result: applyResult
-                    }, ...(autoFillResult ? [{
-                        toolName: 'layout-template-autofill',
-                        result: autoFillResult
-                    }] : [])]
+                    toolResults
                 };
             }
 
@@ -836,6 +857,172 @@ export const layoutReplicationExecutor: SkillExecutor = {
 
             const docCheckResult = await executeToolCall('getDocumentInfo', {});
             if (!docCheckResult?.success) {
+                if (params.autoCreateDocument !== false) {
+                    emitStep(
+                        'observation',
+                        '没有打开文档，准备自动创建复刻骨架',
+                        '根据参考图画布和输出模式创建新文档。'
+                    );
+                    callbacks?.onMessage?.('当前没有打开文档，先根据参考图创建可编辑骨架。');
+                    const canvasSize = resolveLayoutReplicationAutoCanvasSize({
+                        params,
+                        referenceCanvas: designRepresentation.canvas,
+                        fallback: outputIntent.fallbackCanvas,
+                        profile: outputIntent.canvasProfile
+                    });
+                    const createDocumentResult = await executeToolCall('createDocument', {
+                        width: canvasSize.width,
+                        height: canvasSize.height,
+                        name: outputIntent.documentName,
+                        backgroundColor: 'white'
+                    });
+                    const createdDocInfo = await executeToolCall('getDocumentInfo', {});
+                    if (!createdDocInfo?.success) {
+                        return {
+                            success: false,
+                            message: '参考图分析完成，但自动创建文档失败。',
+                            error: 'Auto create document failed'
+                        };
+                    }
+
+                    const applyResult = await applyTemplateBlueprintToDocument(
+                        templateBlueprint,
+                        {
+                            width: Math.max(1, Math.round(layoutReplicationToNumber(createdDocInfo.width, canvasSize.width))),
+                            height: Math.max(1, Math.round(layoutReplicationToNumber(createdDocInfo.height, canvasSize.height)))
+                        },
+                        callbacks,
+                        signal
+                    );
+                    emitStep(
+                        'verification',
+                        '自动创建复刻骨架完成',
+                        `创建图层 ${applyResult.createdLayers} 个，失败操作 ${applyResult.failedOps} 个。`,
+                        applyResult.success ? 'success' : 'error'
+                    );
+                    const overlayCapture = await captureReferenceOverlaySnapshotsIfRequested(
+                        applyResult.generatedScreens,
+                        params,
+                        callbacks
+                    );
+                    const coverage = buildTemplateApplyCoverageReport({
+                        blueprintScreens: templateBlueprint.screens,
+                        generatedScreens: applyResult.generatedScreens,
+                        elementResults: applyResult.elementResults,
+                        failedOps: applyResult.failedOps
+                    });
+                    const applyQa = buildReferenceReplicationQaReport({
+                        stage: 'template-applied',
+                        representation: designRepresentation,
+                        blueprintScreens: templateBlueprint.screens,
+                        outputTopology: outputIntent.topology,
+                        generatedScreens: applyResult.generatedScreens,
+                        applyStats: {
+                            screenCount: applyResult.screenCount,
+                            createdLayers: applyResult.createdLayers,
+                            failedOps: applyResult.failedOps,
+                            styleRecipeStats: applyResult.styleRecipeStats
+                        },
+                        coverage,
+                        visualQa: overlayCapture.visualQa
+                    });
+
+                    const autoCreateSummary = summarizeTemplateApplyCompletion({
+                        headingSuccess: `已根据参考图创建${outputIntent.artifactLabel}可编辑复刻骨架`,
+                        headingReview: `${outputIntent.artifactLabel}复刻骨架部分创建，需复核`,
+                        baseSuccess: applyResult.success,
+                        screenCount: applyResult.screenCount,
+                        createdLayers: applyResult.createdLayers,
+                        rootGroupName: applyResult.rootGroupName,
+                        failedOps: applyResult.failedOps,
+                        styleRecipeStats: applyResult.styleRecipeStats,
+                        coverage,
+                        designIntent: designRepresentation.layout.designIntent,
+                        qaSummary: applyQa.summary,
+                        visualQa: applyQa.visualQa
+                    });
+                    emitStep(
+                        'finalizing',
+                        '自动创建复刻结果已汇总',
+                        autoCreateSummary.completionContract?.summary || autoCreateSummary.heading,
+                        autoCreateSummary.success ? 'success' : 'error'
+                    );
+
+                    const finalDocumentInfo = autoCreateSummary.success
+                        ? await executeToolCall('getDocumentInfo', {})
+                        : undefined;
+                    const deliveryDocumentInfo = finalDocumentInfo?.success !== false
+                        ? finalDocumentInfo
+                        : undefined;
+                    const toolResults = [{
+                        toolName: 'createDocument',
+                        result: createDocumentResult
+                    }, {
+                        toolName: 'layout-template-apply',
+                        result: {
+                            ...applyResult,
+                            qaReport: applyQa,
+                            completionContract: autoCreateSummary.completionContract
+                        }
+                    }, ...(overlayCapture.result ? [{
+                        toolName: 'getScreenSnapshotsWithOverlay',
+                        result: overlayCapture.result
+                    }] : []), ...(finalDocumentInfo ? [{
+                        toolName: 'getDocumentInfo',
+                        result: finalDocumentInfo
+                    }] : [])];
+                    const designAgentOs = buildReferenceReplicationDesignAgentOsRecord({
+                        userInput: userInputForOs,
+                        representation: designRepresentation,
+                        qaReport: applyQa,
+                        completionContract: autoCreateSummary.completionContract,
+                        toolResults,
+                        success: autoCreateSummary.success,
+                        mode: 'auto_create_document'
+                    });
+                    const designPlanner = buildReferenceReplicationPlannerContext({
+                        userInput: userInputForOs,
+                        params,
+                        context,
+                        representation: designRepresentation,
+                        docInfo: deliveryDocumentInfo || createdDocInfo,
+                        mode: 'auto_create_document'
+                    });
+                    const designPlannerExecutionAlignment = comparePlannerExecutionPlanToExecutor(designPlanner, [
+                        'readDesignContext',
+                        'composeDesignDsl',
+                        'createCanvas',
+                        'applyTemplateBlueprint',
+                        'verifyDesignResult'
+                    ]);
+
+                    return {
+                        success: autoCreateSummary.success,
+                        message: formatLayoutReplicationUserReport(autoCreateSummary.userReport, autoCreateSummary.messageLines),
+                        data: {
+                            ...buildLayoutReplicationTargetContext(deliveryDocumentInfo || createdDocInfo),
+                            ...buildLayoutReplicationDeliveryResult(autoCreateSummary.success, deliveryDocumentInfo),
+                            referenceParse,
+                            designRepresentation,
+                            layoutAnalysis: referenceParse,
+                            outputIntent,
+                            referenceBlueprint: templateBlueprint,
+                            templateBlueprint,
+                            createdDocument: createDocumentResult?.success === true,
+                            applyResult,
+                            overlaySnapshotResult: overlayCapture.result,
+                            qaReport: applyQa,
+                            completionContract: autoCreateSummary.completionContract,
+                            referenceReplicationReport: autoCreateSummary.userReport,
+                            designAgentOs,
+                            designPlanner,
+                            designPlannerPreflight: plannerPreflight,
+                            designPlannerPreflightGate,
+                            designPlannerExecutionAlignment
+                        },
+                        toolResults
+                    };
+                }
                 return {
                     success: false,
                     message: '请先打开一个 Photoshop 文档，再执行布局复刻。',
@@ -845,6 +1032,11 @@ export const layoutReplicationExecutor: SkillExecutor = {
 
             const targetDoc = docCheckResult;
             callbacks?.onMessage?.(`目标文档: ${targetDoc.name} (${targetDoc.width}x${targetDoc.height})`);
+            emitStep(
+                'observation',
+                '准备匹配当前文档图层',
+                `目标文档：${targetDoc.name}，画布 ${targetDoc.width}x${targetDoc.height}。`
+            );
 
             callbacks?.onToolStart?.('getElementMapping');
             const elementsResult = await executeToolCall('getElementMapping', {
@@ -863,75 +1055,203 @@ export const layoutReplicationExecutor: SkillExecutor = {
 
             const currentElements = elementsResult.elements;
 
-            const matchPrompt = [
-                '你是 Photoshop 布局复刻专家。',
-                '请将参考布局元素与当前文档图层做匹配，并输出 JSON：',
-                '{ "matches": [{ "refElement": "", "targetLayerId": 1, "targetLayerName": "", "action": { "tool": "moveLayer", "params": {} } }], "summary": "" }',
-                '只输出 JSON。',
-                '',
-                `参考布局: ${JSON.stringify(layoutAnalysis, null, 2)}`,
-                `目标画布尺寸: ${targetDoc.width}x${targetDoc.height}`,
-                `当前图层: ${JSON.stringify(currentElements.map((e: any) => ({ id: e.id, name: e.name, type: e.type, bounds: e.bounds, textContent: e.textContent })), null, 2)}`
-            ].join('\n');
+            const matchModel = getPrimaryModelForPreferenceBucket(modelPreferences, 'layoutAnalysis', {
+                mode: modelPreferences?.mode,
+                includeFallback: modelPreferences?.autoFallback,
+                includeCrossTaskBackups: false
+            }) || 'openrouter-qwen/qwen-2.5-72b-instruct';
 
-            const matchResponse = await window.designEcho.chat(
-                modelPreferences?.preferredLocalModels?.layoutAnalysis || 'openrouter-qwen/qwen-2.5-72b-instruct',
-                [
-                    { role: 'system', content: '你是 Photoshop 布局专家，只输出 JSON。' },
-                    { role: 'user', content: matchPrompt }
-                ],
-                { maxTokens: 4096, temperature: 0.1 }
+            emitStep(
+                'model_request',
+                '生成图层匹配计划',
+                `当前文档元素 ${currentElements.length} 个，参考元素 ${designRepresentation.elements.length} 个。`
             );
-
-            const matchResult = parseJsonObject(matchResponse?.text || '') as MatchResult | null;
+            const matchResult = await requestLayoutMatchPlan({
+                modelId: matchModel,
+                designRepresentation,
+                targetDoc: { width: targetDoc.width, height: targetDoc.height },
+                currentElements
+            });
             if (!matchResult || !Array.isArray(matchResult.matches) || matchResult.matches.length === 0) {
+                emitStep(
+                    'verification',
+                    '没有可执行匹配计划',
+                    '模型未返回可执行的图层匹配关系。',
+                    'error'
+                );
+                const noMatchSummary = summarizeLayoutMatchCompletion({
+                    hasExecutableMatches: false,
+                    referenceElementCount: designRepresentation.elements.length,
+                    layoutType: designRepresentation.layout.layoutType
+                });
+                const toolResults = [
+                    { toolName: 'getElementMapping', result: elementsResult },
+                    { toolName: 'layout-match-plan', result: { success: false, error: 'No executable matches' } }
+                ];
+                const designAgentOs = buildReferenceReplicationDesignAgentOsRecord({
+                    userInput: userInputForOs,
+                    representation: designRepresentation,
+                    qaReport: blueprintQa,
+                    completionContract: noMatchSummary.completionContract,
+                    toolResults,
+                    success: noMatchSummary.success,
+                    mode: 'match_no_executable_plan'
+                });
+                const designPlanner = buildReferenceReplicationPlannerContext({
+                    userInput: userInputForOs,
+                    params,
+                    context,
+                    representation: designRepresentation,
+                    docInfo: targetDoc,
+                    mode: 'match_no_executable_plan'
+                });
+                const designPlannerExecutionAlignment = comparePlannerExecutionPlanToExecutor(designPlanner, [
+                    'readDesignContext',
+                    'composeDesignDsl',
+                    'executeLayoutMatchPlan',
+                    'verifyDesignResult'
+                ]);
                 return {
-                    success: true,
-                    message: [
-                        '布局分析完成，但未生成可执行匹配。',
-                        `参考布局类型: ${layoutAnalysis.layoutType || 'unknown'}`,
-                        '建议先统一图层命名后重试。'
-                    ].join('\n'),
-                    data: { layoutAnalysis, currentElements }
+                    success: noMatchSummary.success,
+                    message: formatLayoutReplicationUserReport(noMatchSummary.userReport, noMatchSummary.messageLines),
+                    error: noMatchSummary.error,
+                    data: {
+                        referenceParse,
+                        designRepresentation,
+                        layoutAnalysis: referenceParse,
+                        outputIntent,
+                        referenceBlueprint: templateBlueprint,
+                        templateBlueprint,
+                        currentElements,
+                        completionContract: noMatchSummary.completionContract,
+                        referenceReplicationReport: noMatchSummary.userReport,
+                        designAgentOs,
+                        designPlanner,
+                        designPlannerPreflight: plannerPreflight,
+                        designPlannerPreflightGate,
+                        designPlannerExecutionAlignment
+                    }
                 };
             }
+            emitStep(
+                'verification',
+                '图层匹配计划已生成',
+                `匹配项 ${matchResult.matches.length} 个。`,
+                'success'
+            );
 
-            let successCount = 0;
-            let failCount = 0;
-
-            for (const match of matchResult.matches) {
-                if (signal?.aborted) {
-                    return { success: true, cancelled: true, message: '已停止' };
-                }
-
-                const toolName = match?.action?.tool;
-                const toolParams = match?.action?.params;
-                if (!toolName || !toolParams) continue;
-
-                callbacks?.onToolStart?.(toolName);
-                const actionResult = await executeToolCall(toolName, toolParams);
-
-                if (actionResult?.success) {
-                    successCount++;
-                    callbacks?.onToolComplete?.(toolName, actionResult);
-                } else {
-                    failCount++;
-                }
-
-                await new Promise(resolve => setTimeout(resolve, 80));
+            const executionResult = await executeLayoutMatchPlan({
+                matchResult,
+                currentElements,
+                targetDoc: { width: targetDoc.width, height: targetDoc.height },
+                callbacks,
+                signal
+            });
+            if (executionResult.cancelled) {
+                return { success: true, cancelled: true, message: '已停止' };
             }
 
+            const { successCount, failCount } = executionResult;
+            emitStep(
+                'verification',
+                '图层匹配执行完成',
+                `成功 ${successCount} 个，失败 ${failCount} 个。`,
+                failCount > 0 ? 'error' : 'success'
+            );
+            const coverage = buildLayoutMatchCoverageReport({
+                representation: designRepresentation,
+                matchResult,
+                executionResults: executionResult.results
+            });
+            const matchQa = buildReferenceReplicationQaReport({
+                stage: 'matched',
+                representation: designRepresentation,
+                blueprintScreens: templateBlueprint.screens,
+                outputTopology: outputIntent.topology,
+                matchResult,
+                matchExecution: {
+                    successCount,
+                    failCount
+                },
+                coverage
+            });
+
+            const matchSummary = summarizeLayoutMatchCompletion({
+                hasExecutableMatches: true,
+                referenceElementCount: designRepresentation.elements.length,
+                successCount,
+                failCount,
+                coverage,
+                matchSummary: matchResult.summary,
+                qaSummary: matchQa.summary
+            });
+            emitStep(
+                'finalizing',
+                '图层匹配结果已汇总',
+                matchSummary.completionContract?.summary || matchSummary.heading,
+                matchSummary.success ? 'success' : 'error'
+            );
+
+            const finalDocumentInfo = matchSummary.success
+                ? await executeToolCall('getDocumentInfo', {})
+                : undefined;
+            const deliveryDocumentInfo = finalDocumentInfo?.success !== false
+                ? finalDocumentInfo
+                : undefined;
+            const toolResults = [{
+                toolName: 'layout-replication',
+                result: { successCount, failCount, qaReport: matchQa, completionContract: matchSummary.completionContract }
+            }, ...(finalDocumentInfo ? [{
+                toolName: 'getDocumentInfo',
+                result: finalDocumentInfo
+            }] : [])];
+            const designAgentOs = buildReferenceReplicationDesignAgentOsRecord({
+                userInput: userInputForOs,
+                representation: designRepresentation,
+                qaReport: matchQa,
+                completionContract: matchSummary.completionContract,
+                toolResults,
+                success: matchSummary.success,
+                mode: 'match_existing_document'
+            });
+            const designPlanner = buildReferenceReplicationPlannerContext({
+                userInput: userInputForOs,
+                params,
+                context,
+                representation: designRepresentation,
+                docInfo: deliveryDocumentInfo || targetDoc,
+                mode: 'match_existing_document'
+            });
+            const designPlannerExecutionAlignment = comparePlannerExecutionPlanToExecutor(designPlanner, [
+                'readDesignContext',
+                'composeDesignDsl',
+                'executeLayoutMatchPlan',
+                'verifyDesignResult'
+            ]);
+
             return {
-                success: true,
-                message: [
-                    '布局复刻完成',
-                    `参考元素: ${layoutAnalysis.elements.length}`,
-                    `成功调整: ${successCount}`,
-                    failCount > 0 ? `失败/跳过: ${failCount}` : '',
-                    matchResult.summary || ''
-                ].filter(Boolean).join('\n'),
-                toolResults: [{ toolName: 'layout-replication', result: { successCount, failCount } }],
-                data: { layoutAnalysis, matchResult }
+                success: matchSummary.success,
+                message: formatLayoutReplicationUserReport(matchSummary.userReport, matchSummary.messageLines),
+                toolResults,
+                data: {
+                    ...buildLayoutReplicationTargetContext(deliveryDocumentInfo || targetDoc),
+                    ...buildLayoutReplicationDeliveryResult(matchSummary.success, deliveryDocumentInfo),
+                    referenceParse,
+                    designRepresentation,
+                    layoutAnalysis: referenceParse,
+                    outputIntent,
+                    referenceBlueprint: templateBlueprint,
+                    templateBlueprint,
+                    matchResult,
+                    qaReport: matchQa,
+                    completionContract: matchSummary.completionContract,
+                    referenceReplicationReport: matchSummary.userReport,
+                    designAgentOs,
+                    designPlanner,
+                    designPlannerPreflight: plannerPreflight,
+                    designPlannerPreflightGate,
+                    designPlannerExecutionAlignment
+                }
             };
         } catch (replicationError: any) {
             return {

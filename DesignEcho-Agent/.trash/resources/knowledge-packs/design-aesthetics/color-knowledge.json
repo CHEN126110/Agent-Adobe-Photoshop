@@ -1,0 +1,127 @@
+{
+  "version": "1.0.0",
+  "description": "配色设计知识库 - 电商场景配色参考",
+  
+  "colorKnowledge": [
+    {
+      "id": "color-pure-white",
+      "name": "纯净白底",
+      "type": "neutral",
+      "primaryColors": ["#FFFFFF"],
+      "accentColors": ["#333333", "#666666"],
+      "mood": ["干净", "专业", "百搭"],
+      "suitableFor": ["淘宝主图（白底加权）", "产品对比展示", "极简风格"],
+      "guidelines": [
+        "白底是电商标准，有利于搜索排名加权",
+        "产品颜色必须准确，不受背景干扰",
+        "文字使用深灰而非纯黑，更柔和",
+        "适合所有类目产品"
+      ]
+    },
+    {
+      "id": "color-warm-cream",
+      "name": "暖调米白",
+      "type": "neutral",
+      "primaryColors": ["#FFF8F0", "#FFFAF5", "#FAF6F0"],
+      "accentColors": ["#D4A574", "#8B6914", "#5C4033"],
+      "mood": ["温暖", "亲切", "自然", "舒适"],
+      "suitableFor": ["棉质产品", "家居用品", "母婴产品", "食品"],
+      "guidelines": [
+        "米白色传递温暖亲切的感觉",
+        "棕色系强调天然材质属性",
+        "适合强调舒适、亲肤、自然的卖点",
+        "避免与冷色调产品搭配"
+      ]
+    },
+    {
+      "id": "color-cool-gray",
+      "name": "冷调灰白",
+      "type": "neutral",
+      "primaryColors": ["#F8F9FA", "#F5F6F7", "#ECEFF1"],
+      "accentColors": ["#455A64", "#607D8B", "#78909C"],
+      "mood": ["现代", "科技", "简约", "高级"],
+      "suitableFor": ["电子产品", "运动产品", "男性用品", "现代简约风格"],
+      "guidelines": [
+        "冷灰色传递现代科技感",
+        "适合金属质感或塑料产品",
+        "蓝灰色调增加高级感",
+        "避免与暖色调产品搭配"
+      ]
+    },
+    {
+      "id": "color-fresh-green",
+      "name": "清新绿意",
+      "type": "analogous",
+      "primaryColors": ["#E8F5E9", "#F1F8E9", "#E0F2F1"],
+      "accentColors": ["#4CAF50", "#8BC34A", "#00BCD4"],
+      "mood": ["清新", "自然", "健康", "环保"],
+      "suitableFor": ["运动产品", "健康食品", "环保产品", "春夏季节"],
+      "guidelines": [
+        "绿色传递清新健康的感觉",
+        "适合强调透气、清爽等卖点",
+        "可搭配蓝色增加活力感",
+        "背景保持浅色，产品突出"
+      ]
+    },
+    {
+      "id": "color-soft-pink",
+      "name": "柔和粉调",
+      "type": "monochromatic",
+      "primaryColors": ["#FFF0F5", "#FCE4EC", "#F8BBD9"],
+      "accentColors": ["#E91E63", "#F06292", "#AD1457"],
+      "mood": ["柔美", "甜美", "少女", "浪漫"],
+      "suitableFor": ["女性用品", "美妆产品", "少女服饰", "情人节促销"],
+      "guidelines": [
+        "粉色是女性产品的经典配色",
+        "浅粉背景+深粉点缀层次分明",
+        "避免过于饱和，保持柔和感",
+        "搭配金色可增加精致感"
+      ]
+    },
+    {
+      "id": "color-luxury-dark",
+      "name": "高端深色",
+      "type": "neutral",
+      "primaryColors": ["#1A1A1A", "#2C2C2C", "#212121"],
+      "accentColors": ["#D4AF37", "#C9B037", "#FFFFFF"],
+      "mood": ["高端", "奢华", "神秘", "品质"],
+      "suitableFor": ["奢侈品", "高端电子", "男性用品", "限量款"],
+      "guidelines": [
+        "深色背景营造高端神秘感",
+        "金色点缀增加奢华气质",
+        "需要良好的产品打光",
+        "不适合需要白底加权的场景"
+      ]
+    },
+    {
+      "id": "color-vibrant-energy",
+      "name": "活力撞色",
+      "type": "complementary",
+      "primaryColors": ["#FFEB3B", "#FF9800"],
+      "accentColors": ["#2196F3", "#673AB7", "#E91E63"],
+      "mood": ["活力", "年轻", "动感", "促销"],
+      "suitableFor": ["促销活动", "运动产品", "年轻人群", "夏季主题"],
+      "guidelines": [
+        "撞色吸引眼球，适合促销场景",
+        "控制撞色面积，避免视觉疲劳",
+        "主色和辅色面积比约 7:3",
+        "产品本身不宜太复杂"
+      ]
+    },
+    {
+      "id": "color-earth-natural",
+      "name": "大地色系",
+      "type": "analogous",
+      "primaryColors": ["#EFEBE9", "#D7CCC8", "#BCAAA4"],
+      "accentColors": ["#795548", "#5D4037", "#3E2723"],
+      "mood": ["自然", "朴实", "复古", "质朴"],
+      "suitableFor": ["棉麻产品", "手工制品", "复古风格", "秋冬季节"],
+      "guidelines": [
+        "大地色传递自然质朴的感觉",
+        "适合强调天然材质的产品",
+        "棕色系有厚重感，适合秋冬",
+        "可搭配绿色增加生机"
+      ]
+    }
+  ]
+}

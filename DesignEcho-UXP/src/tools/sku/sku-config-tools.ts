@@ -195,13 +195,23 @@ export class CreateSkuPlaceholdersTool implements Tool {
 
     schema: ToolSchema = {
         name: 'createSkuPlaceholders',
-        description: '在模板文档中创建 SKU 定位占位符矩形。用于标记产品放置位置，确保批量生成时位置一致',
+        description: '在模板文档中创建 SKU 定位占位符矩形。用于标记产品放置位置，确保批量生成时位置一致。占位槽几何是排版设计决策：设计过的模板应传 slots 显式坐标（按版面构图规划）；只传 count 时按 layout 机械均分，仅适合空白裸模板',
         parameters: {
             type: 'object',
             properties: {
                 count: {
                     type: 'number',
                     description: '占位符数量（2双、3双、4双等）'
+                },
+                placementMethod: {
+                    type: 'string',
+                    enum: ['ordered_slots', 'region_composition'],
+                    description: '占位语义：ordered_slots=6.3 一色一槽；region_composition=6.0 一个矩形区域可承载多个颜色'
+                },
+                regionCapacities: {
+                    type: 'array',
+                    items: { type: 'number' },
+                    description: 'region_composition 每个矩形区域的容量，按图层面板顺序，例如上3下1为 [3,1]'
                 },
                 layout: {
                     type: 'string',
@@ -224,6 +234,38 @@ export class CreateSkuPlaceholdersTool implements Tool {
                     },
                     description: '指定占位符尺寸（可选，默认自动计算）'
                 },
+                area: {
+                    type: 'object',
+                    properties: {
+                        x: { type: 'number', description: '占位区域左上角 X 坐标' },
+                        y: { type: 'number', description: '占位区域左上角 Y 坐标' },
+                        width: { type: 'number', description: '占位区域宽度' },
+                        height: { type: 'number', description: '占位区域高度' }
+                    },
+                    description: '指定占位符排列的内容区域；用于给标题、备注条等视觉元素预留空间'
+                },
+                slots: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            name: { type: 'string', description: '占位符图层名称；不传时使用 naming 生成' },
+                            x: { type: 'number', description: '占位符左上角 X 坐标' },
+                            y: { type: 'number', description: '占位符左上角 Y 坐标' },
+                            width: { type: 'number', description: '占位符宽度' },
+                            height: { type: 'number', description: '占位符高度' }
+                        }
+                    },
+                    description: 'Agent 已经规划好的占位符槽位；传入后工具按这些槽位创建，不再重新计算几何'
+                },
+                columns: {
+                    type: 'number',
+                    description: 'grid 布局列数；不传时按占位符数量自动计算'
+                },
+                centerLastRow: {
+                    type: 'boolean',
+                    description: 'grid 布局最后一行居中；用于最后一行不足整行的 3 双等 2+1 卡片构图'
+                },
                 naming: {
                     type: 'string',
                     description: '命名模式，如 "[SKU:占位{n}]"，其中 {n} 会被替换为序号'
@@ -235,6 +277,10 @@ export class CreateSkuPlaceholdersTool implements Tool {
                 fillOpacity: {
                     type: 'number',
                     description: '填充不透明度（0-100，默认 0 即透明）'
+                },
+                visible: {
+                    type: 'boolean',
+                    description: '占位符图层是否可见；false 时隐藏定位槽，仍保留图层 bounds 供后续 SKU 排版识别'
                 }
             },
             required: ['count']
@@ -243,13 +289,20 @@ export class CreateSkuPlaceholdersTool implements Tool {
 
     async execute(params: {
         count: number;
+        placementMethod?: 'ordered_slots' | 'region_composition';
+        regionCapacities?: number[];
         layout?: 'horizontal' | 'vertical' | 'grid';
         margin?: number;
         padding?: number;
         placeholderSize?: { width: number; height: number };
+        area?: { x?: number; y?: number; width?: number; height?: number };
+        slots?: Array<{ name?: string; x?: number; y?: number; width?: number; height?: number }>;
+        columns?: number;
+        centerLastRow?: boolean;
         naming?: string;
         strokeColor?: string;
         fillOpacity?: number;
+        visible?: boolean;
     }): Promise<ToolResult<any>> {
         try {
             const doc = app.activeDocument;
@@ -257,18 +310,88 @@ export class CreateSkuPlaceholdersTool implements Tool {
                 return { success: false, error: '没有打开的文档', data: null };
             }
 
+            // 已有区域/占位结构的模板不能由模型布尔参数授权覆盖。先读回并转换现有结构，
+            // 或在独立新文档中重建；createSkuPlaceholders 只负责从无到有地创建占位结构。
+            const existingRegionMarkers: string[] = [];
+            const scanRegions = (container: any): void => {
+                for (const layer of container.layers || []) {
+                    const layerName = String(layer?.name || '').trim();
+                    const kindText = String(layer?.kind ?? '').toLowerCase();
+                    const isShapeLike = kindText.includes('shape') || kindText.includes('vector')
+                        || kindText.includes('solid') || layer?.kind === 4 || layer?.kind === 11;
+                    const isHiddenShape = isShapeLike && layer?.visible === false;
+                    const hasExplicitPlaceholderName = /占位|\[SKU:/.test(layerName);
+                    const isNumericRegionMarker = /^\d{1,2}$/.test(layerName);
+                    if (hasExplicitPlaceholderName || (isHiddenShape && isNumericRegionMarker)) {
+                        existingRegionMarkers.push(layerName || `图层 ${layer?.id}`);
+                    }
+                    if (layer?.layers) scanRegions(layer);
+                }
+            };
+            scanRegions(doc);
+            if (existingRegionMarkers.length > 0) {
+                const message = `模板「${doc.name}」已有 ${existingRegionMarkers.length} 个参考区域/占位标记（${existingRegionMarkers.slice(0, 4).join('、')}）。`
+                    + 'createSkuPlaceholders 不会覆盖或追加到既有结构。请先用 inspectTemplateLayout 读取现有 layerId/bounds，再用 transformLayer 转换；如果目标是完全不同的结构，请在新文档中重建。';
+                return {
+                    success: false,
+                    code: 'existing_structure_detected',
+                    message,
+                    error: message,
+                    data: {
+                        existingRegionMarkers,
+                        templateName: String(doc.name || ''),
+                        allowedNextActions: ['inspectTemplateLayout', 'transformLayer', 'createDocument']
+                    }
+                };
+            }
+
             const count = params.count;
+            const placementMethod = params.placementMethod === 'region_composition'
+                ? 'region_composition'
+                : 'ordered_slots';
+            const regionCapacities = Array.isArray(params.regionCapacities)
+                ? params.regionCapacities.map((value) => Number(value))
+                : [];
+            if (placementMethod === 'region_composition') {
+                const validRegionCapacities = regionCapacities.length === count
+                    && regionCapacities.every((value) => Number.isInteger(value) && value > 0);
+                if (!validRegionCapacities) {
+                    return {
+                        success: false,
+                        error: `createSkuPlaceholders failed: region_composition requires ${count} positive integer regionCapacities.`,
+                        data: null
+                    };
+                }
+            } else if (regionCapacities.length > 0) {
+                return {
+                    success: false,
+                    error: 'createSkuPlaceholders failed: regionCapacities is only valid for region_composition.',
+                    data: null
+                };
+            }
             const layout = params.layout || 'horizontal';
             const margin = params.margin ?? 20;
             const padding = params.padding ?? 50;
-            const naming = params.naming || '[SKU:占位{n}]';
+            const naming = params.naming || (placementMethod === 'region_composition'
+                ? '[SKU:区域占位{n}]'
+                : '[SKU:占位{n}]');
             const strokeColor = params.strokeColor || '#FF0000';
             const fillOpacity = params.fillOpacity ?? 0;
 
             const docWidth = doc.width;
             const docHeight = doc.height;
+            const requestedArea = params.area || {};
+            const hasCustomArea = [requestedArea.x, requestedArea.y, requestedArea.width, requestedArea.height]
+                .every((value) => typeof value === 'number' && Number.isFinite(value));
+            const areaX = hasCustomArea ? Number(requestedArea.x) : padding;
+            const areaY = hasCustomArea ? Number(requestedArea.y) : padding;
+            const areaWidth = hasCustomArea ? Number(requestedArea.width) : docWidth - padding * 2;
+            const areaHeight = hasCustomArea ? Number(requestedArea.height) : docHeight - padding * 2;
 
-            // 计算占位符尺寸和位置
+            if (areaWidth <= 0 || areaHeight <= 0) {
+                return { success: false, error: 'createSkuPlaceholders failed: area width and height must be greater than 0.', data: null };
+            }
+
             const placeholders: Array<{
                 name: string;
                 x: number;
@@ -276,16 +399,43 @@ export class CreateSkuPlaceholdersTool implements Tool {
                 width: number;
                 height: number;
             }> = [];
+            const explicitSlots = Array.isArray(params.slots)
+                ? params.slots
+                    .map((slot, index) => {
+                        const x = Number(slot?.x);
+                        const y = Number(slot?.y);
+                        const width = Number(slot?.width);
+                        const height = Number(slot?.height);
+                        if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+                        return {
+                            name: String(slot?.name || naming.replace('{n}', String(index + 1))),
+                            x,
+                            y,
+                            width,
+                            height
+                        };
+                    })
+                    .filter((slot): slot is { name: string; x: number; y: number; width: number; height: number } => Boolean(slot))
+                : [];
+            if (Array.isArray(params.slots) && params.slots.length > 0 && explicitSlots.length !== count) {
+                return {
+                    success: false,
+                    error: `createSkuPlaceholders failed: explicit slots count ${explicitSlots.length} does not match requested count ${count}.`,
+                    data: null
+                };
+            }
 
-            if (layout === 'horizontal') {
+            if (explicitSlots.length > 0) {
+                placeholders.push(...explicitSlots.slice(0, count));
+            } else if (layout === 'horizontal') {
                 // 水平排列
-                const availableWidth = docWidth - padding * 2 - margin * (count - 1);
+                const availableWidth = areaWidth - margin * (count - 1);
                 const placeholderWidth = params.placeholderSize?.width || Math.floor(availableWidth / count);
-                const placeholderHeight = params.placeholderSize?.height || Math.floor(docHeight - padding * 2);
+                const placeholderHeight = params.placeholderSize?.height || Math.floor(areaHeight);
 
                 for (let i = 0; i < count; i++) {
-                    const x = padding + i * (placeholderWidth + margin);
-                    const y = padding;
+                    const x = areaX + i * (placeholderWidth + margin);
+                    const y = areaY;
                     const name = naming.replace('{n}', String(i + 1));
                     
                     placeholders.push({
@@ -298,13 +448,13 @@ export class CreateSkuPlaceholdersTool implements Tool {
                 }
             } else if (layout === 'vertical') {
                 // 垂直排列
-                const availableHeight = docHeight - padding * 2 - margin * (count - 1);
-                const placeholderWidth = params.placeholderSize?.width || Math.floor(docWidth - padding * 2);
+                const availableHeight = areaHeight - margin * (count - 1);
+                const placeholderWidth = params.placeholderSize?.width || Math.floor(areaWidth);
                 const placeholderHeight = params.placeholderSize?.height || Math.floor(availableHeight / count);
 
                 for (let i = 0; i < count; i++) {
-                    const x = padding;
-                    const y = padding + i * (placeholderHeight + margin);
+                    const x = areaX;
+                    const y = areaY + i * (placeholderHeight + margin);
                     const name = naming.replace('{n}', String(i + 1));
                     
                     placeholders.push({
@@ -317,20 +467,29 @@ export class CreateSkuPlaceholdersTool implements Tool {
                 }
             } else {
                 // 网格排列
-                const cols = Math.ceil(Math.sqrt(count));
+                const requestedColumns = Number(params.columns);
+                const cols = Number.isFinite(requestedColumns) && requestedColumns > 0
+                    ? Math.max(1, Math.min(count, Math.round(requestedColumns)))
+                    : Math.ceil(Math.sqrt(count));
                 const rows = Math.ceil(count / cols);
                 
-                const availableWidth = docWidth - padding * 2 - margin * (cols - 1);
-                const availableHeight = docHeight - padding * 2 - margin * (rows - 1);
+                const availableWidth = areaWidth - margin * (cols - 1);
+                const availableHeight = areaHeight - margin * (rows - 1);
                 
                 const placeholderWidth = params.placeholderSize?.width || Math.floor(availableWidth / cols);
                 const placeholderHeight = params.placeholderSize?.height || Math.floor(availableHeight / rows);
+                const lastRowCount = count % cols || cols;
+                const shouldCenterLastRow = params.centerLastRow === true && lastRowCount < cols;
+                const rowOffsetX = shouldCenterLastRow
+                    ? Math.round(((cols - lastRowCount) * (placeholderWidth + margin)) / 2)
+                    : 0;
 
                 for (let i = 0; i < count; i++) {
                     const col = i % cols;
                     const row = Math.floor(i / cols);
-                    const x = padding + col * (placeholderWidth + margin);
-                    const y = padding + row * (placeholderHeight + margin);
+                    const isLastRow = row === rows - 1;
+                    const x = areaX + col * (placeholderWidth + margin) + (isLastRow ? rowOffsetX : 0);
+                    const y = areaY + row * (placeholderHeight + margin);
                     const name = naming.replace('{n}', String(i + 1));
                     
                     placeholders.push({
@@ -343,12 +502,20 @@ export class CreateSkuPlaceholdersTool implements Tool {
                 }
             }
 
+            if (placementMethod === 'region_composition' && !params.naming) {
+                placeholders.forEach((placeholder, index) => {
+                    placeholder.name = `[SKU:区域占位${index + 1}:容量${regionCapacities[index]}]`;
+                });
+            }
+
             // 创建占位符图层组和矩形
             const createdLayers: string[] = [];
 
             await core.executeAsModal(async () => {
                 // 创建图层组
-                const groupName = `SKU占位符 (${count}个)`;
+                const groupName = placementMethod === 'region_composition'
+                    ? `SKU区域 (${count}区)`
+                    : `SKU占位符 (${count}个)`;
                 
                 // 使用 batchPlay 创建图层组
                 await action.batchPlay([{
@@ -442,6 +609,10 @@ export class CreateSkuPlaceholdersTool implements Tool {
                             _options: { dialogOptions: 'dontDisplay' }
                         }], { synchronousExecution: true });
 
+                        if (params.visible === false) {
+                            activeLayer.visible = false;
+                        }
+
                         createdLayers.push(placeholder.name);
                     }
                 }
@@ -453,8 +624,12 @@ export class CreateSkuPlaceholdersTool implements Tool {
                 data: {
                     message: `已创建 ${count} 个占位符`,
                     layout,
+                    placementMethod,
+                    ...(placementMethod === 'region_composition' ? { regionCapacities } : {}),
                     createdLayers,
                     placeholders,
+                    visible: params.visible !== false,
+                    geometrySource: explicitSlots.length > 0 ? 'explicit-slots' : 'auto-layout',
                     usage: '占位符已创建。素材将按占位符位置自动缩放和对齐。',
                     tips: [
                         '占位符图层仅用于定位，批量生成时会被隐藏',
