@@ -1,0 +1,132 @@
+{
+  "version": "1.0.0",
+  "description": "字体设计知识库 - 电商场景字体使用指南",
+  
+  "typographyKnowledge": [
+    {
+      "id": "typo-headline-impact",
+      "purpose": "headline",
+      "title": "冲击力标题",
+      "description": "用于首屏核心卖点、促销标题等需要吸引注意力的场景",
+      "fontFamilies": ["阿里巴巴普惠体 Heavy", "思源黑体 Bold", "PingFang SC Semibold", "微软雅黑 Bold"],
+      "fontSize": { "min": 48, "ideal": 72, "max": 120, "unit": "px" },
+      "lineHeight": 1.2,
+      "fontWeight": "bold",
+      "applicableTypes": ["detailHero", "banner"],
+      "guidelines": [
+        "标题要大且醒目，确保一眼可见",
+        "使用粗体增强视觉冲击力",
+        "行高紧凑 (1.1-1.3)，文字紧密有力",
+        "避免过长的标题，核心信息控制在 8 字以内",
+        "可使用渐变或描边增加质感"
+      ]
+    },
+    {
+      "id": "typo-headline-elegant",
+      "purpose": "headline",
+      "title": "优雅标题",
+      "description": "用于高端产品、品牌展示等需要精致感的场景",
+      "fontFamilies": ["思源宋体", "方正书宋", "造字工房尚雅", "PingFang SC Light"],
+      "fontSize": { "min": 36, "ideal": 56, "max": 80, "unit": "px" },
+      "lineHeight": 1.4,
+      "fontWeight": "regular",
+      "applicableTypes": ["detailHero", "mainImage"],
+      "guidelines": [
+        "使用纤细字重传递精致感",
+        "字间距可适当放宽 (0.05-0.1em)",
+        "适合英文+中文组合排版",
+        "配合充足留白更显高级",
+        "避免用于促销或信息密集的场景"
+      ]
+    },
+    {
+      "id": "typo-subheadline",
+      "purpose": "body",
+      "title": "副标题/正文大字",
+      "description": "用于卖点描述、产品特性等需要清晰传达信息的场景",
+      "fontFamilies": ["PingFang SC Regular", "思源黑体 Regular", "微软雅黑"],
+      "fontSize": { "min": 28, "ideal": 36, "max": 48, "unit": "px" },
+      "lineHeight": 1.5,
+      "fontWeight": "regular",
+      "applicableTypes": ["detailHero", "detailSection"],
+      "guidelines": [
+        "可读性优先于装饰性",
+        "行高 1.5-1.6 确保阅读舒适",
+        "段落间距使用 1.5 倍行高",
+        "字色使用深灰 (#333-#666) 而非纯黑",
+        "每行控制在 15-25 字为宜"
+      ]
+    },
+    {
+      "id": "typo-body-compact",
+      "purpose": "body",
+      "title": "紧凑正文",
+      "description": "用于详情页的产品参数、说明文字等信息密集区域",
+      "fontFamilies": ["PingFang SC", "思源黑体", "微软雅黑"],
+      "fontSize": { "min": 22, "ideal": 26, "max": 32, "unit": "px" },
+      "lineHeight": 1.6,
+      "fontWeight": "regular",
+      "applicableTypes": ["detailSection"],
+      "guidelines": [
+        "确保在手机端可清晰阅读",
+        "行高 1.6-1.8 适合长文阅读",
+        "可使用项目符号增强层次",
+        "重点内容可加粗或变色",
+        "避免大段纯文字，配合图示说明"
+      ]
+    },
+    {
+      "id": "typo-label-prominent",
+      "purpose": "label",
+      "title": "醒目标签",
+      "description": "用于主图上的卖点标签、促销角标等需要快速识别的元素",
+      "fontFamilies": ["阿里巴巴普惠体 Medium", "PingFang SC Semibold", "思源黑体 Medium"],
+      "fontSize": { "min": 20, "ideal": 28, "max": 36, "unit": "px" },
+      "lineHeight": 1.3,
+      "fontWeight": "medium",
+      "applicableTypes": ["mainImage", "skuImage"],
+      "guidelines": [
+        "标签文字简洁，控制在 4 字以内",
+        "配合圆角矩形背景增加辨识度",
+        "与产品保持适当距离，不遮挡主体",
+        "同一画面标签数量不超过 3 个",
+        "使用对比色确保可读性"
+      ]
+    },
+    {
+      "id": "typo-label-subtle",
+      "purpose": "label",
+      "title": "低调标签",
+      "description": "用于辅助信息、版权说明等不需要抢眼的元素",
+      "fontFamilies": ["PingFang SC Light", "思源黑体 Light"],
+      "fontSize": { "min": 14, "ideal": 18, "max": 24, "unit": "px" },
+      "lineHeight": 1.4,
+      "fontWeight": "light",
+      "applicableTypes": ["mainImage", "detailSection"],
+      "guidelines": [
+        "颜色使用浅灰色 (#999-#BBB)",
+        "位置放在画面边缘或底部",
+        "不干扰主要视觉元素",
+        "可用于品牌名、规格说明等"
+      ]
+    },
+    {
+      "id": "typo-number-highlight",
+      "purpose": "accent",
+      "title": "数字强调",
+      "description": "用于价格、折扣比例、销量等需要突出的数字信息",
+      "fontFamilies": ["DIN Pro", "Helvetica Neue Bold", "Arial Black", "阿里巴巴普惠体 Heavy"],
+      "fontSize": { "min": 36, "ideal": 56, "max": 96, "unit": "px" },
+      "lineHeight": 1.0,
+      "fontWeight": "black",
+      "applicableTypes": ["banner", "detailHero"],
+      "guidelines": [
+        "数字使用西文字体更现代",
+        "可使用更大字号突出数字部分",
+        "单位使用较小字号 (约数字的 60%)",
+        "价格用红色或橙色增强促销感",
+        "避免数字与中文混用同一字体"
+      ]
+    }
+  ]
+}

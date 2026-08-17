@@ -1,0 +1,326 @@
+/* 主模型选择器
+ *
+ * 触发器沿用原来 model-quick-select 的胶囊尺寸（26px 高、圆角 999px），
+ * 换掉的只是弹层：原生下拉给不了描述行、能力徽标和搜索。
+ * 面板宽度按窄面板收缩（工作台 Agent 面板比主聊天窄），不撑破容器。 */
+
+/* 靠右由使用方决定（输入栏用 margin-left:auto 把它连同 Thinking 顶到右侧），
+   组件自身不写外边距，免得换个容器就要来这里改数值。 */
+.model-picker {
+    position: relative;
+    flex: 0 1 auto;
+    min-width: 0;
+    display: inline-flex;
+}
+
+/* 图标按钮：与相邻的 Thinking 灯泡同尺寸同形状，工具条右侧成组不突兀 */
+.model-picker-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--de-text-secondary);
+    line-height: 1;
+    cursor: pointer;
+    outline: none;
+    transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.model-picker-trigger:hover,
+.model-picker.is-open .model-picker-trigger {
+    background-color: rgba(148, 163, 184, 0.13);
+    color: var(--de-text);
+}
+
+.model-picker-trigger:focus-visible {
+    box-shadow: 0 0 0 2px rgba(38, 132, 255, 0.45);
+    color: var(--de-text);
+}
+
+/* 当前主模型不具备工具调用能力：设计任务在它上面只能聊天。
+   不是错误状态（用户可能就是想聊天），所以用提示色而非报错色。
+   模型名收进面板后，这个图标颜色是工具条上唯一的能力警示，必须保留。 */
+.model-picker-trigger.is-capability-blocked {
+    color: #f5b35a;
+}
+
+.model-picker-trigger.is-capability-blocked:hover {
+    background-color: rgba(245, 179, 90, 0.14);
+    color: #f5b35a;
+}
+
+/* 定位由 FloatingLayer 用 position:fixed 内联下发（portal 到 body，躲开祖先 overflow:hidden）；
+   这里只负责这块浮层长什么样，不要再写 position / top / bottom。 */
+.model-picker-panel {
+    z-index: 400;
+    width: 320px;
+    max-width: min(320px, calc(100vw - 32px));
+    padding: 10px;
+    border-radius: 12px;
+    border: 1px solid var(--de-border);
+    background: var(--de-bg-card, #18181b);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34);
+    animation: model-picker-in 120ms ease;
+}
+
+.model-picker-panel-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+@keyframes model-picker-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.model-picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 2px;
+}
+
+/* 面板标题就是当前模型名：触发器已经不显示它了，这里是主要的告知位 */
+.model-picker-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--de-text);
+}
+
+/* 运行模式徽标：解释这份候选为什么被过滤，避免用户以为模型「丢了」 */
+.model-picker-mode {
+    flex: 0 0 auto;
+    font-size: 10.5px;
+    line-height: 1;
+    padding: 3px 7px;
+    border-radius: 999px;
+    color: var(--de-text-secondary);
+    background: rgba(148, 163, 184, 0.12);
+}
+
+/* 渠道分页：本地 / 云端。分段控件而非下拉，两个选项一眼可见、一次点击可切 */
+.model-picker-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 8px;
+    background: rgba(148, 163, 184, 0.1);
+}
+
+.model-picker-tab {
+    flex: 1 1 0;
+    height: 24px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--de-text-secondary);
+    font-size: 11.5px;
+    cursor: pointer;
+    transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.model-picker-tab:hover {
+    color: var(--de-text);
+}
+
+.model-picker-tab.is-active {
+    background: var(--de-bg-light, #15171b);
+    color: var(--de-text);
+    font-weight: 500;
+}
+
+.model-picker-slot-hint {
+    margin: 0;
+    padding: 0 2px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--de-text-secondary);
+}
+
+.model-picker-search {
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid var(--de-border);
+    background: rgba(148, 163, 184, 0.08);
+    color: var(--de-text);
+    font-size: 12px;
+    outline: none;
+}
+
+.model-picker-search::placeholder {
+    color: var(--de-text-secondary);
+    opacity: 0.7;
+}
+
+.model-picker-search:focus {
+    border-color: rgba(38, 132, 255, 0.55);
+    box-shadow: 0 0 0 2px rgba(38, 132, 255, 0.16);
+}
+
+.model-picker-list {
+    /* 窗口矮的时候按视口收缩：候选有 37 条时列表本身能滚，
+       但面板整体不能高过窗口，否则向上展开会被顶出可视区。 */
+    max-height: min(320px, 40vh);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    /* 隐藏滚动条但保留滚动：全局那条 6px 滚动条（styles/index.css）压在圆角浮层边缘上很脏。
+       Chromium 走 ::-webkit-scrollbar，scrollbar-width 是 Firefox / 新标准的等价写法。
+       注意只藏视觉，不动滚动行为——滚轮、拖拽、键盘 ↑↓ 的 scrollIntoView 都照常。 */
+    scrollbar-width: none;
+}
+
+.model-picker-list::-webkit-scrollbar {
+    display: none;
+}
+
+.model-picker-empty {
+    margin: 0;
+    padding: 12px 8px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--de-text-secondary);
+}
+
+.model-picker-group-label {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 6px 8px 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--de-text-secondary);
+    background: var(--de-bg-card, #18181b);
+}
+
+.model-picker-row {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 7px 26px 7px 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--de-text);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+}
+
+.model-picker-row.is-active {
+    background: rgba(148, 163, 184, 0.12);
+}
+
+.model-picker-row.is-selected {
+    background: rgba(38, 132, 255, 0.14);
+}
+
+.model-picker-row-main {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+
+.model-picker-row-name {
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+.model-picker-row.is-blocked .model-picker-row-name {
+    color: #f5b35a;
+}
+
+.model-picker-row-desc {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--de-text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.model-picker-row-check {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    font-size: 12px;
+    color: var(--de-primary, #2684ff);
+}
+
+.model-picker-badge {
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1.5;
+    font-weight: 500;
+}
+
+.model-picker-badge.tone-vision {
+    color: #7dd3fc;
+    background: rgba(125, 211, 252, 0.14);
+}
+
+.model-picker-badge.tone-thinking {
+    color: #c4b5fd;
+    background: rgba(196, 181, 253, 0.14);
+}
+
+/* 中性元信息（云端渠道、本地模型体积）：不表达好坏，只给事实 */
+.model-picker-badge.tone-meta {
+    color: var(--de-text-secondary);
+    background: rgba(148, 163, 184, 0.14);
+}
+
+/* 本地渠道用绿色：混排清单里本地模型通常是少数，上色让它们能被一眼扫出来 */
+.model-picker-badge.tone-local {
+    color: #86efac;
+    background: rgba(134, 239, 172, 0.14);
+}
+
+.model-picker-badge.tone-warn {
+    color: #f5b35a;
+    background: rgba(245, 179, 90, 0.14);
+}
+
+/* 工作台 Agent 面板比主聊天窄，图标按钮同步收小，与该面板的 Thinking 按钮对齐 */
+.workbench-agent-panel .model-picker-trigger {
+    width: 26px;
+    height: 26px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .model-picker-panel {
+        animation: none;
+    }
+
+    .model-picker-trigger,
+    .model-picker-trigger-caret,
+    .model-picker-row {
+        transition: none;
+    }
+}

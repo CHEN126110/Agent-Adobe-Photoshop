@@ -1,0 +1,283 @@
+/* 智能分割模型管理
+ *
+ * 这块原来是一堆内联样式：6 种强调色、渐变底、满屏 emoji、4 种圆角、5 种字号混在一起。
+ * 统一原则只有两条：
+ * 1. 颜色承载语义，不承载装饰 —— 只保留一种强调色（蓝）与三种状态色
+ *    （绿=已装 / 琥珀=进行中 / 红=缺失），流程图那种给每个词配一个颜色的做法取消。
+ * 2. 尺寸走固定档位 —— 圆角 10/8/999，字号 13/12/11，间距 16/12/8/6/4。
+ */
+
+.segmentation-models {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ===== 流程说明 ===== */
+
+.segmentation-flow {
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--de-border);
+    background: rgba(148, 163, 184, 0.06);
+}
+
+.segmentation-flow-title {
+    margin: 0 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--de-text);
+}
+
+.segmentation-flow-steps {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--de-text-secondary);
+    line-height: 1.6;
+}
+
+/* 四个步骤同色：它们是一条流程，不是四种不同性质的东西 */
+.segmentation-flow-step {
+    color: var(--de-text);
+}
+
+.segmentation-flow-arrow {
+    color: var(--de-text-secondary);
+    opacity: 0.6;
+}
+
+/* ===== 顶部汇总栏 ===== */
+
+.segmentation-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.segmentation-summary-text {
+    font-size: 12px;
+    color: var(--de-text-secondary);
+}
+
+.segmentation-ghost-button {
+    flex: 0 0 auto;
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 8px;
+    border: 1px solid var(--de-border);
+    background: transparent;
+    color: var(--de-text);
+    font-size: 11.5px;
+    cursor: pointer;
+    transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.segmentation-ghost-button:hover {
+    background: rgba(148, 163, 184, 0.12);
+    border-color: rgba(148, 163, 184, 0.34);
+}
+
+/* ===== 模型卡片 ===== */
+
+.segmentation-card {
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px solid var(--de-border);
+    background: rgba(148, 163, 184, 0.05);
+    transition: border-color 0.16s ease;
+}
+
+/* 必需项不再用蓝色描边整张卡（那会和"选中"混淆），改由徽标表达 */
+.segmentation-card:hover {
+    border-color: rgba(148, 163, 184, 0.28);
+}
+
+.segmentation-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+
+.segmentation-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.segmentation-card-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--de-text);
+}
+
+/* 徽标形状与模型选择器保持一致：圆角 4、10px 字、淡底 */
+.segmentation-tag {
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1.5;
+    font-weight: 500;
+}
+
+.segmentation-tag.is-required {
+    color: #7daaff;
+    background: rgba(38, 132, 255, 0.16);
+}
+
+.segmentation-tag.is-optional {
+    color: var(--de-text-secondary);
+    background: rgba(148, 163, 184, 0.14);
+}
+
+/* ===== 状态 ===== */
+
+.segmentation-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+}
+
+.segmentation-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+
+.segmentation-status.is-installed { color: #86efac; }
+.segmentation-status.is-installed .segmentation-status-dot { background: #86efac; }
+
+.segmentation-status.is-downloading { color: #f5b35a; }
+.segmentation-status.is-downloading .segmentation-status-dot {
+    background: #f5b35a;
+    animation: segmentation-pulse 1.4s ease-in-out infinite;
+}
+
+.segmentation-status.is-missing { color: var(--de-text-secondary); }
+.segmentation-status.is-missing .segmentation-status-dot {
+    background: rgba(148, 163, 184, 0.5);
+}
+
+@keyframes segmentation-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+/* ===== 卡片正文 ===== */
+
+.segmentation-card-desc {
+    margin: 0 0 4px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--de-text-secondary);
+}
+
+.segmentation-card-feature {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--de-text-secondary);
+    opacity: 0.85;
+}
+
+.segmentation-progress {
+    margin-top: 10px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.16);
+    overflow: hidden;
+}
+
+.segmentation-progress-fill {
+    height: 100%;
+    background: #f5b35a;
+    transition: width 0.24s ease;
+}
+
+.segmentation-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.segmentation-primary-button {
+    height: 30px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--de-primary);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.16s ease;
+}
+
+.segmentation-primary-button:hover:not(:disabled) {
+    opacity: 0.88;
+}
+
+.segmentation-primary-button:disabled {
+    background: rgba(148, 163, 184, 0.18);
+    color: var(--de-text-secondary);
+    cursor: not-allowed;
+}
+
+/* ===== 手动安装说明 ===== */
+
+.segmentation-manual {
+    margin-top: 4px;
+    font-size: 11.5px;
+    color: var(--de-text-secondary);
+}
+
+.segmentation-manual > summary {
+    cursor: pointer;
+    padding: 6px 0;
+    color: var(--de-text-secondary);
+}
+
+.segmentation-manual > summary:hover {
+    color: var(--de-text);
+}
+
+.segmentation-manual ol {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    line-height: 1.9;
+}
+
+.segmentation-manual ul {
+    margin: 4px 0;
+    padding-left: 16px;
+}
+
+.segmentation-manual code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(148, 163, 184, 0.14);
+    font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .segmentation-card,
+    .segmentation-ghost-button,
+    .segmentation-primary-button,
+    .segmentation-progress-fill {
+        transition: none;
+    }
+
+    .segmentation-status-dot {
+        animation: none;
+    }
+}

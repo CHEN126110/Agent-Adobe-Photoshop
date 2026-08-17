@@ -1,0 +1,283 @@
+/**
+ * Legacy tool capability bridge
+ *
+ * v5 Skill manifests declare namespaced tool capabilities. The current renderer
+ * Agent still exposes legacy executable tool schema names. This file keeps that
+ * mismatch explicit while the tool registry migrates.
+ */
+
+import type { SkillRuntimeManifest } from './contracts';
+
+export interface LegacyToolCapabilityBridgeEntry {
+    capability: string;
+    executableTools: string[];
+    status: 'mapped' | 'unmapped';
+}
+
+export interface LegacyToolCapabilityBridge {
+    version: 'legacy-tool-capability-bridge/v0';
+    skillId: string;
+    taskType: string;
+    /**
+     * 当前 Manifest 显式声明的 workflow bridge 入口。
+     *
+     * 它与 capability provider Tool 分开记账：前者拥有整项交付物，后者只提供
+     * 原子能力。Agent 可在 E1 漂移时回到已选执行 owner，而不靠品类关键词猜测。
+     */
+    workflowEntryTools: string[];
+    entries: LegacyToolCapabilityBridgeEntry[];
+    mappedCapabilities: string[];
+    unmappedCapabilities: string[];
+    executableTools: string[];
+}
+
+export interface BuildLegacyToolCapabilityBridgeInput {
+    manifest: SkillRuntimeManifest;
+    executableToolNames: readonly string[];
+}
+
+export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    'agent.interaction.requestConfirmation': ['createInteractiveCard'],
+    'agent.intent.declareDesignTask': ['declareDesignIntent'],
+    'agent.team.collaborate': ['delegateToAgent', 'runDesignTeamPipeline'],
+    'project.listResources': ['listProjectResources'],
+    'project.searchResources': ['searchProjectResources'],
+    'project.observeAssets': ['analyzeProjectContactSheetOverview'],
+    'knowledge.read.designFoundation': [
+        'getDesignKnowledge',
+        'getDesignPrinciples',
+        'getMainImageDesignFramework',
+        'getDetailPageDesignFramework',
+        'searchDesignKnowledge',
+        'analyzePsdDesignSource',
+        'measureReferenceComposition'
+    ],
+    'memory.designProjectState': ['getDesignProjectState', 'updateDesignProjectState'],
+    'preview.renderStoryboard': ['renderLayout'],
+    'eagle.read.searchReferences': ['searchEagleReferences', 'searchDesignKnowledge'],
+    'eagle.read.analyzeReference': ['analyzeEagleReference'],
+    'eagle.read.observeAsset': ['observeEagleAsset'],
+    'project.importEagleAsset': ['importEagleAssetToProject'],
+    // 外部参考检索（2026-08-16 全量工具审计补齐）：用户贴链接/要联网时，搜索与读页
+    // 必须第一轮就对模型可见——此前它们只在被截断的按需目录里，真机表现为模型
+    // 诚实但错误地宣称「没有实时抓取网页内容的能力」（13:05 淘宝链接案例）。
+    'web.searchInternet': ['webSearch'],
+    'web.readPageContent': [
+        'fetchWebPageDesignContent',
+        'listBrowserTabs',
+        'readBrowserPage',
+        'captureBrowserTab'
+    ],
+    'photoshop.read.getDocumentSummary': [
+        'getDocumentInfo',
+        'listDocuments',
+        'switchDocument',
+        'getLayerHierarchy'
+    ],
+    'photoshop.read.getDocumentInfo': ['getDocumentInfo'],
+    'photoshop.read.getLayerHierarchy': ['getLayerHierarchy'],
+    'photoshop.read.getAcceptanceSnapshot': ['getAcceptanceSnapshot'],
+    'photoshop.read.getCanvasSnapshot': ['getCanvasSnapshot'],
+    'photoshop.read.inspectDetailPageTemplate': ['parseDetailPageTemplate', 'detectLayerIssues'],
+    'photoshop.read.getVisualSnapshot': [
+        'getAnnotatedSnapshot',
+        'getDocumentSnapshot',
+        'getAcceptanceSnapshot',
+        'getCanvasSnapshot',
+        'getScreenSnapshots',
+    ],
+    'photoshop.read.inspectLayers': [
+        'getLayerHierarchy',
+        'findLayers',
+        'getAllTextLayers',
+        'getLayerProperties',
+        'getClippingMaskInfo',
+        'getAllClippingMasks',
+        'getTextContent',
+        'getTextStyle',
+        'getSmartObjectInfo',
+        'getSmartObjectLayers'
+    ],
+    'photoshop.read.getLayerBounds': ['getLayerBounds', 'getLayerProperties'],
+    'photoshop.apply.fixDetailPageTemplate': ['fixLayerIssues'],
+    'photoshop.apply.matchDetailPageContent': ['matchDetailPageContent'],
+    'photoshop.apply.fillDetailPageTemplate': ['fillDetailPage'],
+    'photoshop.sandbox.createDocument': ['createDocument'],
+    'photoshop.sandbox.createScreenGroup': ['createDocument', 'renderLayout'],
+    'photoshop.sandbox.createShape': ['createRectangle', 'createEllipse'],
+    'photoshop.sandbox.createSkuPlaceholders': ['createSkuPlaceholders'],
+    // 叶子 capability 保留既有稳定身份；manageLayers 同时装载完成局部编辑所需的
+    // 可逆原子动作，避免专用占位替换 provider 缺失时失去 place + clip 路径。
+    'photoshop.write.moveLayer': ['moveLayer'],
+    'photoshop.write.reorderLayer': ['reorderLayer'],
+    'photoshop.write.alignLayers': ['alignLayers'],
+    'photoshop.write.fitLayerSubjectToRegion': ['fitLayerSubjectToRegion'],
+    'photoshop.write.setLayerVisibility': ['setLayerVisibility'],
+    'photoshop.write.renameLayer': ['renameLayer'],
+    // TransactionRunner V0 认证包只接受一对一叶子 Capability。broad sandbox
+    // capability 继续用于旧 Tool surface，但不能借此取得可执行 R4 节点资格。
+    'photoshop.write.groupLayersSafely': ['groupLayersSafely'],
+    'photoshop.write.lockLayer': ['lockLayer'],
+    'photoshop.write.setTextStyle': ['setTextStyle'],
+    'photoshop.write.setTextContent': ['setTextContent'],
+    'photoshop.write.setLayerOpacity': ['setLayerOpacity'],
+    'photoshop.write.setBlendMode': ['setBlendMode'],
+    'photoshop.write.setLayerFill': ['setLayerFill'],
+    'photoshop.write.replaceSmartObjectContents': ['replaceSmartObjectContents'],
+    'photoshop.write.placeImage': ['placeImage'],
+    'photoshop.write.replaceImagePlaceholder': ['replaceImagePlaceholder'],
+    'photoshop.write.transformLayer': ['transformLayer'],
+    'photoshop.sandbox.manageLayers': [
+        'createGroup',
+        'groupLayersSafely',
+        'groupLayers',
+        'ungroupLayers',
+        'moveLayer',
+        'reorderLayer',
+        'moveLayerToGroup',
+        'alignLayers',
+        'fitLayerSubjectToRegion',
+        'setLayerVisibility',
+        'renameLayer',
+        'batchRenameLayers',
+        'createClippingMask'
+    ],
+    'photoshop.sandbox.editSmartObject': [
+        'convertToSmartObject',
+        'editSmartObjectContents',
+        'getSmartObjectInfo',
+        'closeDocument',
+        'switchDocument'
+    ],
+    'photoshop.sandbox.placeImage': ['placeImage'],
+    'photoshop.sandbox.replaceImagePlaceholder': ['replaceImagePlaceholder'],
+    'photoshop.sandbox.transformLayer': ['transformLayer'],
+    'photoshop.sandbox.writeText': [
+        'resolveFontName',
+        'createTextLayer',
+        'setTextContent',
+        'setTextStyle'
+    ],
+    'delivery.exportSlices': ['exportDetailPageSlices'],
+    'delivery.exportAsset': ['exportGroup', 'quickExport'],
+    'delivery.saveDocument': ['saveDocument']
+});
+
+export interface SelectPreferredLegacyToolsInput {
+    capabilityIds: readonly string[];
+    executableToolNames: readonly string[];
+}
+
+export interface SelectLegacyToolProvidersInput {
+    capabilityIds: readonly string[];
+    executableToolNames: readonly string[];
+}
+
+/**
+ * 为阶段规划选择每个 Capability 的首选 provider Tool。
+ * 这是 Capability→Tool 的通用映射收敛，不按任务品类或用户文本建立白名单。
+ */
+export function selectPreferredLegacyToolsForCapabilities(
+    input: SelectPreferredLegacyToolsInput
+): string[] {
+    const executableSet = new Set(unique(input.executableToolNames));
+    const selected: string[] = [];
+    unique(input.capabilityIds).forEach((capabilityId) => {
+        const preferred = (LEGACY_TOOL_CAPABILITY_MAP[capabilityId] || [])
+            .find((toolName) => executableSet.has(toolName));
+        if (preferred) selected.push(preferred);
+    });
+    return unique(selected);
+}
+
+/**
+ * 为已经激活的 Capability 返回可执行 provider，并按 Capability 轮询展开。
+ *
+ * 正常阶段仍应使用 selectPreferredLegacyToolsForCapabilities 保持 Tool surface 精简；
+ * 只有 Harness 已确认存在来源缺口时，才应有界地使用本函数公开替代 provider。
+ * 轮询顺序避免一个 provider 很多的 Capability 永久遮住其他观察通道。
+ */
+export function selectLegacyToolProvidersForCapabilities(
+    input: SelectLegacyToolProvidersInput
+): string[] {
+    const executableSet = new Set(unique(input.executableToolNames));
+    const providerGroups = unique(input.capabilityIds)
+        .map((capabilityId) => (
+            unique(LEGACY_TOOL_CAPABILITY_MAP[capabilityId] || [])
+                .filter((toolName) => executableSet.has(toolName))
+        ))
+        .filter((providerNames) => providerNames.length > 0);
+    const selected: string[] = [];
+    const maximumProviderCount = providerGroups.reduce(
+        (maximum, providerNames) => Math.max(maximum, providerNames.length),
+        0
+    );
+    for (let providerIndex = 0; providerIndex < maximumProviderCount; providerIndex += 1) {
+        providerGroups.forEach((providerNames) => {
+            const providerName = providerNames[providerIndex];
+            if (providerName) selected.push(providerName);
+        });
+    }
+    return unique(selected);
+}
+
+function normalizeName(value: unknown): string {
+    return String(value || '').trim();
+}
+
+function unique(values: readonly string[]): string[] {
+    return Array.from(new Set(values.map(normalizeName).filter(Boolean)));
+}
+
+export function buildLegacyToolCapabilityBridge(
+    input: BuildLegacyToolCapabilityBridgeInput
+): LegacyToolCapabilityBridge {
+    const executableNameSet = new Set(unique(input.executableToolNames));
+    const workflowEntryTools = unique(input.manifest.workflow_entry_skill_ids || [])
+        .filter((toolName) => executableNameSet.has(toolName));
+    const entries = input.manifest.available_tools.map((capability) => {
+        const candidates = LEGACY_TOOL_CAPABILITY_MAP[capability] || [];
+        const executableTools = candidates.filter((toolName) => executableNameSet.has(toolName));
+        return {
+            capability,
+            executableTools,
+            status: executableTools.length > 0 ? 'mapped' : 'unmapped'
+        } satisfies LegacyToolCapabilityBridgeEntry;
+    });
+
+    return {
+        version: 'legacy-tool-capability-bridge/v0',
+        skillId: input.manifest.skill_id,
+        taskType: input.manifest.task_type,
+        workflowEntryTools,
+        entries,
+        mappedCapabilities: entries
+            .filter((entry) => entry.status === 'mapped')
+            .map((entry) => entry.capability),
+        unmappedCapabilities: entries
+            .filter((entry) => entry.status === 'unmapped')
+            .map((entry) => entry.capability),
+        executableTools: unique(entries.flatMap((entry) => entry.executableTools))
+    };
+}
+
+export function summarizeLegacyToolCapabilityBridge(bridge: LegacyToolCapabilityBridge): string {
+    const lines = [
+        `Tool capability bridge: ${bridge.version}`,
+        `Skill: ${bridge.skillId} (${bridge.taskType})`,
+        `Workflow entry: ${(bridge.workflowEntryTools || []).join(', ') || 'none'}`
+    ];
+
+    bridge.entries.forEach((entry) => {
+        const target = entry.executableTools.length
+            ? entry.executableTools.join(', ')
+            : 'unmapped';
+        lines.push(`${entry.capability} -> ${target}`);
+    });
+
+    if (bridge.unmappedCapabilities.length) {
+        lines.push(`Unmapped capabilities: ${bridge.unmappedCapabilities.join(', ')}`);
+    }
+
+    return lines.join('\n');
+}

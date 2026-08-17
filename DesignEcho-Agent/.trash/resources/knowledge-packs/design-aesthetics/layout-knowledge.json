@@ -1,0 +1,119 @@
+{
+  "version": "1.0.0",
+  "description": "布局设计知识库 - AI 决策参考",
+  
+  "layoutKnowledge": [
+    {
+      "id": "layout-golden-ratio",
+      "type": "composition",
+      "title": "黄金分割构图",
+      "description": "利用 1:1.618 的黄金比例创造自然和谐的视觉效果，是最经典的构图法则之一",
+      "guidance": [
+        "将画面按 1:1.618 分割，约为 38.2% 和 61.8%",
+        "主体放置在黄金分割线上或交叉点附近",
+        "适用于需要优雅、自然美感的设计",
+        "可用于确定产品占比和留白比例"
+      ],
+      "applicableTypes": ["mainImage", "detailHero", "banner"],
+      "keywords": ["黄金分割", "1.618", "和谐", "经典", "优雅"]
+    },
+    {
+      "id": "layout-rule-of-thirds",
+      "type": "composition",
+      "title": "三分法则",
+      "description": "将画面横竖各分三等分形成九宫格，视觉焦点放在四个交叉点之一",
+      "guidance": [
+        "用两条水平线和两条垂直线将画面分成九个等分",
+        "产品主体或视觉焦点放在四个交叉点之一",
+        "水平线可用于分割文案区和产品区",
+        "避免主体完全居中（除非刻意追求对称感）"
+      ],
+      "applicableTypes": ["mainImage", "detailHero", "banner"],
+      "keywords": ["三分法", "九宫格", "交叉点", "焦点", "构图"]
+    },
+    {
+      "id": "layout-visual-balance",
+      "type": "balance",
+      "title": "视觉平衡原则",
+      "description": "确保画面左右、上下的视觉重量达到平衡状态",
+      "guidance": [
+        "大面积浅色与小面积深色可以形成平衡",
+        "多个小元素可以平衡一个大元素",
+        "空白区域也是视觉元素，需要纳入平衡考量",
+        "不对称平衡比对称更有活力"
+      ],
+      "applicableTypes": ["mainImage", "detailHero", "colorShowcase"],
+      "keywords": ["平衡", "对称", "重量", "视觉重心", "协调"]
+    },
+    {
+      "id": "layout-breathing-space",
+      "type": "spacing",
+      "title": "呼吸感留白",
+      "description": "适当的留白让设计更有品质感和高级感",
+      "guidance": [
+        "产品边缘与画布边缘保持 5-20% 的距离",
+        "留白越多，越显高端和克制",
+        "但过多留白会让产品显得过小",
+        "底部留白略多于顶部，更符合视觉习惯"
+      ],
+      "applicableTypes": ["mainImage", "skuImage"],
+      "keywords": ["留白", "呼吸感", "高端", "品质", "空间"]
+    },
+    {
+      "id": "layout-visual-center",
+      "type": "alignment",
+      "title": "视觉中心定位",
+      "description": "人眼的视觉中心略高于画面几何中心",
+      "guidance": [
+        "视觉中心约在画面上方 45% 处（几何中心为 50%）",
+        "产品重心对齐视觉中心更显舒适",
+        "底部留白略多于顶部是常见做法",
+        "对于纵向产品，可略微上移 3-5%"
+      ],
+      "applicableTypes": ["mainImage", "skuImage"],
+      "keywords": ["视觉中心", "居中", "定位", "舒适", "自然"]
+    },
+    {
+      "id": "layout-hierarchy",
+      "type": "hierarchy",
+      "title": "视觉层次设计",
+      "description": "通过大小、色彩、位置等手段建立清晰的信息层次",
+      "guidance": [
+        "最重要的信息用最大的尺寸或最醒目的位置",
+        "产品是第一层次，卖点是第二层次，细节是第三层次",
+        "通过对比度区分主次",
+        "引导用户的阅读路径"
+      ],
+      "applicableTypes": ["detailHero", "detailSection", "banner"],
+      "keywords": ["层次", "主次", "对比", "引导", "阅读路径"]
+    },
+    {
+      "id": "layout-safe-zone",
+      "type": "spacing",
+      "title": "安全区域设计",
+      "description": "确保核心内容不被平台 UI 遮挡",
+      "guidance": [
+        "主图顶部预留 50-80px 给平台标签",
+        "底部预留 80-100px 给价格和购买按钮",
+        "左右两侧预留 5% 应对不同屏幕裁切",
+        "核心信息集中在画面中心 70% 区域内"
+      ],
+      "applicableTypes": ["mainImage", "detailHero"],
+      "keywords": ["安全区", "边距", "平台UI", "遮挡", "裁切"]
+    },
+    {
+      "id": "layout-aspect-ratio",
+      "type": "composition",
+      "title": "画幅比例选择",
+      "description": "根据设计类型选择最佳画幅比例",
+      "guidance": [
+        "主图：1:1 正方形是电商标准",
+        "详情页首屏：建议 750×1000 或 790×1000",
+        "横幅：16:9 或 3:1 常用于 PC 端",
+        "SKU 图：1:1 正方形，尺寸可较小"
+      ],
+      "applicableTypes": ["mainImage", "detailHero", "skuImage", "banner"],
+      "keywords": ["比例", "画幅", "尺寸", "正方形", "横幅"]
+    }
+  ]
+}

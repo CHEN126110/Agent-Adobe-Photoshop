@@ -1,0 +1,566 @@
+.thinking-simple {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    padding: 14px 16px;
+    font-size: 13px;
+    background: var(--de-bg-card);
+    border: 1px solid var(--de-border);
+    border-radius: 12px;
+    margin-bottom: 8px;
+    width: 100%;
+    inline-size: 100%;
+    min-width: 0;
+    min-inline-size: 0;
+    max-width: 100%;
+    max-inline-size: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+}
+
+.live-activity-placeholder {
+    width: 100%;
+    inline-size: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-inline-size: 0;
+    max-width: 100%;
+    max-inline-size: 100%;
+    overflow-x: hidden;
+}
+
+/* ── 头部 ── */
+.pondering-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 12.5px;
+    color: var(--de-text-secondary);
+    min-width: 0;
+    min-inline-size: 0;
+    max-width: 100%;
+    max-inline-size: 100%;
+    box-sizing: border-box;
+}
+
+.pondering-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--de-text-secondary) 72%, transparent);
+    flex: 0 0 auto;
+}
+
+/* 进行中的状态点：颜色、光晕和呼吸曲线都取自对话标签页的执行指示点，两处看起来是同一个东西。
+ *
+ * 只在进行中才蓝：标签页那个点只有对话在跑时才渲染，蓝色在这套界面里就等于「正在跑」。
+ * 跑完必须落回上面那条静态的弱化色，否则标题已经是「设计过程」了，点还在亮蓝呼吸，
+ * 等于告诉用户它还在干活。 */
+.pondering-dot.is-active,
+.live-activity-placeholder .pondering-dot {
+    background: #60a5fa;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.12);
+    animation: de-running-dot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.pondering-title {
+    font-weight: 600;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--de-text);
+}
+
+.pondering-count {
+    flex: 0 0 auto;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--de-text-secondary);
+    background: color-mix(in srgb, var(--de-text-secondary) 10%, transparent);
+}
+
+.live-activity-placeholder .pondering-header {
+    margin-bottom: 0;
+}
+
+.live-activity-placeholder .pondering-title {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.5;
+}
+
+.pondering-dots {
+    animation: dots 1.5s infinite;
+}
+
+@keyframes dots {
+    0%, 20% { opacity: 0.3; }
+    40% { opacity: 0.6; }
+    60%, 100% { opacity: 1; }
+}
+
+/* ── 步骤时间线 ── */
+.pondering-steps {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-inline-size: 0;
+    max-width: 100%;
+    max-inline-size: 100%;
+    overflow-x: hidden;
+}
+
+.pondering-step {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    column-gap: 10px;
+    align-items: start;
+    padding: 5px 0;
+    min-width: 0;
+    min-inline-size: 0;
+    max-width: 100%;
+    max-inline-size: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+}
+
+/* Agent 看过的画面快照：落在内容列、text 下方，小尺寸缩略图随处理过程内联展现。
+ *
+ * 槽位尺寸必须恒定。旧版只给 img 设 max-width/max-height，让画面比例直接决定控件尺寸：
+ * 详情页这类约 1:19 的超长文档按 contain 缩进 220×160 后只剩 8px 宽的一根面条，
+ * 而方形画布铺满整框——同一条「已查看当前画面」在两次运行里长成两种控件，用户读到的
+ * 是「UI 没有规范」而不是「文档比例不同」。现在由外框定版位，比例差异交给 object-fit 吸收。 */
+.step-snapshot-frame {
+    grid-column: 2;
+    position: relative;
+    display: block;
+    margin-top: 6px;
+    padding: 0;
+    width: min(220px, 100%);
+    aspect-ratio: 4 / 3;
+    border-radius: 6px;
+    border: 1px solid var(--de-border, rgba(255, 255, 255, 0.12));
+    background: color-mix(in srgb, var(--de-text-secondary) 8%, transparent);
+    overflow: hidden;
+    /* 这么小的缩略图看不清画面细节，点开是常用动作，光标和边框都要提示它可点 */
+    cursor: zoom-in;
+    transition: border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.step-snapshot-frame:hover,
+.step-snapshot-frame:focus-visible {
+    border-color: rgba(96, 165, 250, 0.72);
+    opacity: 0.92;
+}
+
+.step-snapshot-frame:focus-visible {
+    outline: 2px solid rgba(96, 165, 250, 0.9);
+    outline-offset: 2px;
+}
+
+.step-snapshot {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* 画面被槽位裁掉时的比例角标：让「只看到一截」是显式告知，而不是让用户以为
+ * Agent 看的就是这么一小块（截图里那张白方块曾被读成「它新建了一个空白文档」）。 */
+.step-snapshot-badge {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    max-width: calc(100% - 8px);
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--de-text-primary, #fff);
+    background: rgba(0, 0, 0, 0.62);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+/* 节点列：贯穿引导线 + 状态节点圆 */
+.step-node {
+    grid-column: 1;
+    position: relative;
+    align-self: stretch;
+    width: 16px;
+}
+
+.step-node::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    transform: translateX(-50%);
+    background: var(--de-border);
+    opacity: 0.55;
+}
+
+.pondering-step:first-child .step-node::before { top: 10px; }
+.pondering-step:last-child .step-node::before { bottom: calc(100% - 10px); }
+.pondering-step:only-child .step-node::before { display: none; }
+
+.step-node::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 10px;
+    width: 7px;
+    height: 7px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    box-sizing: border-box;
+    background: var(--de-bg-card);
+    border: 1.5px solid color-mix(in srgb, var(--de-text-secondary) 60%, transparent);
+    z-index: 1;
+}
+
+/* 思考 / 观察 / 判断 / 说明：空心弱节点 */
+.is-thought .step-node::after {
+    border-color: color-mix(in srgb, var(--de-text-secondary) 55%, transparent);
+    background: var(--de-bg-card);
+}
+
+/* 工具完成：实心中性节点 */
+.is-action.success .step-node::after {
+    background: var(--de-text-secondary);
+    border-color: var(--de-text-secondary);
+}
+
+/* 工具进行中：主题色旋转环 */
+.is-action.running .step-node::after,
+.is-action.pending .step-node::after {
+    border-color: var(--de-primary);
+    border-top-color: transparent;
+    background: var(--de-bg-card);
+    animation: node-spin 0.7s linear infinite;
+}
+
+/* 失败：错误色实心节点 */
+.pondering-step.error .step-node::after {
+    background: var(--de-error);
+    border-color: var(--de-error);
+    animation: none;
+}
+
+@keyframes node-spin {
+    from { transform: translate(-50%, -50%) rotate(0deg); }
+    to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+/* 文本列 */
+.step-text {
+    grid-column: 2;
+    min-width: 0;
+    min-inline-size: 0;
+    max-width: 100%;
+    max-inline-size: 100%;
+    color: var(--de-text);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* ── 三类信息的视觉分型 ──
+   层级：文字输出（正式回复，面板外主色 markdown）＞ 执行（动作）＞ Agent 思考（内部推理）。
+   过程面板整体是「辅助信息」，所以思考用次要灰、执行用动作 chip，二者与正式回复明显分层。 */
+
+/* 执行：操作动作——工具名以轻量「动作 chip」呈现，结构上区别于思考的纯文本叙述 */
+.is-action .step-text {
+    display: inline-block;
+    align-self: start;
+    max-width: 100%;
+    box-sizing: border-box;
+    font-size: 12.5px;
+    line-height: 1.5;
+    font-weight: 500;
+    color: var(--de-text);
+    padding: 2px 9px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--de-text-secondary) 9%, transparent);
+}
+
+.is-action.running .step-text,
+.is-action.pending .step-text {
+    color: var(--de-text);
+    background: var(--de-primary-dim);
+}
+
+.is-action.success .step-text {
+    color: var(--de-text-secondary);
+    font-weight: 400;
+    background: color-mix(in srgb, var(--de-text-secondary) 7%, transparent);
+}
+
+.is-action.error .step-text {
+    color: var(--de-error);
+    background: color-mix(in srgb, var(--de-error) 10%, transparent);
+}
+
+/* Agent 思考：内部推理叙述——次要灰阶，明显弱于「文字输出」 */
+.pondering-step--reasoning {
+    padding: 6px 0;
+}
+
+.pondering-step--reasoning .step-text {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--de-text-secondary);
+}
+
+/* Agent 观察 / 判断 / 说明：最次要的辅助灰阶 */
+.pondering-step--observation .step-text,
+.pondering-step--decision .step-text,
+.pondering-step--agent .step-text {
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--de-text-secondary);
+    opacity: 0.92;
+}
+
+.pondering-step.running .step-text {
+    color: var(--de-text);
+}
+
+.pondering-step.error .step-text {
+    color: var(--de-error);
+}
+
+/* ── Light 主题 ── */
+[data-theme="light"] .thinking-simple {
+    background: #f8f9fa;
+    border-color: #e9ebef;
+}
+
+[data-theme="light"] .step-node::after,
+[data-theme="light"] .is-action.running .step-node::after,
+[data-theme="light"] .is-action.pending .step-node::after {
+    background: #f8f9fa;
+}
+
+[data-theme="light"] .is-action .step-text {
+    color: #1a1a1a;
+}
+
+[data-theme="light"] .is-action.success .step-text {
+    color: #6b6b6b;
+}
+
+[data-theme="light"] .pondering-step--reasoning .step-text,
+[data-theme="light"] .pondering-step--observation .step-text,
+[data-theme="light"] .pondering-step--decision .step-text,
+[data-theme="light"] .pondering-step--agent .step-text {
+    color: #5f5f5f;
+}
+
+/* ── 步骤结果预览（展开查看"已查看/已读取"的内容） ── */
+.step-body {
+    grid-column: 2;
+    display: flex;
+    min-width: 0;
+    min-inline-size: 0;
+    max-width: 100%;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.step-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    min-width: 0;
+}
+
+.step-line .step-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.step-line--expandable .step-text {
+    cursor: default;
+}
+
+.step-expand-toggle {
+    display: inline-flex;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--de-text-secondary);
+    cursor: pointer;
+}
+
+.step-expand-toggle:hover {
+    background: var(--de-hover-bg);
+    color: var(--de-text-primary);
+}
+
+.step-expand-toggle svg {
+    transition: transform 0.18s ease;
+}
+
+.step-expand-toggle.is-expanded svg {
+    transform: rotate(180deg);
+}
+
+.step-summary {
+    display: block;
+    color: var(--de-text-secondary);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.step-preview {
+    display: block;
+    margin-top: 4px;
+    padding: 6px 9px;
+    border-left: 2px solid color-mix(in srgb, var(--de-primary) 45%, var(--de-border));
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--de-bg-card) 82%, transparent);
+    color: var(--de-text-secondary);
+    font-size: 11px;
+    line-height: 1.55;
+}
+
+.step-preview__section + .step-preview__section {
+    margin-top: 6px;
+}
+
+.step-preview__title {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--de-text-primary);
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.step-preview__list {
+    margin: 0;
+    padding-left: 14px;
+}
+
+.step-preview__list li {
+    overflow-wrap: anywhere;
+}
+
+.step-preview__list li + li {
+    margin-top: 1px;
+}
+
+/* ══ 进行中状态标题的扫光 ══
+ *
+ * 只给标题（整体状态那一行）加扫光，明细列表保持静态——强调必须有层次，
+ * 每条都在动等于没有重点。标题文案本身已区分「正在执行」与「执行」，
+ * is-active 由 ThinkingProcess 按同一判据挂上，两者同源不会打架。
+ *
+ * 进行中的那一条明细靠左侧节点呼吸标识，不再抢标题的视觉权重。
+ * 兜底：background-clip:text 若不生效，color 仍为可读的弱化文字色，不会变成透明看不见。
+ */
+.pondering-title.is-active,
+.live-activity-placeholder .pondering-title {
+    /* 扫光文案可能较长：允许换行，不要用单行省略号截断 */
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+    color: var(--de-text-muted);
+    /* 光带宽度看的是「渐变比例 x background-size」，不是渐变里写的百分比：
+     * 46%~54% 是 8% 的渐变宽，乘 220% 后实际照亮约 17.6% 行宽——一道窄光带。
+     * 旧值 38%~62%（24%）实际照亮 53%，超过半行都在光里，所以糊、没有对比。
+     * 暗部用 --de-text-muted 而非 --de-text-secondary：深色下 0.34 vs 0.56，
+     * 与峰值 --de-text 的落差更大，光带更跳。 */
+    background-image: linear-gradient(
+        100deg,
+        var(--de-text-muted) 0%,
+        var(--de-text-muted) 46%,
+        var(--de-text) 50%,
+        var(--de-text-muted) 54%,
+        var(--de-text-muted) 100%
+    );
+    background-size: 220% 100%;
+    background-repeat: no-repeat;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: de-action-shimmer var(--de-shimmer-duration, 1.9s) linear infinite;
+}
+
+@keyframes de-action-shimmer {
+    /* background-position 的百分比是「比例对齐」不是「平移距离」：
+     *   实际偏移 = (容器宽 - 背景宽) x 百分比 = (100% - 220%) x X = -120 x X
+     * 于是只有 X 落在 [0%, 100%] 时背景才始终盖满容器；越界会把渐变整块移到容器外，
+     * 而文字靠背景绘制(background-clip:text)，没背景的部分直接透明——
+     * 表现就是「文字只剩几个字」，看着像被截断（真机 2026-07-31 截到过）。
+     *   X=180% -> 偏移 -216%，容器仅 0~4% 有字；X=-120% -> 偏移 +144%，一个字都不剩。
+     * 亮部(渐变 50% 处)位置 = 偏移 + 110%：X 从 100% 走到 0%，亮部由 -10% 扫到 110%，
+     * 即从左往右扫过整行，全程文字完整可见。 */
+    from { background-position: 100% 0; }
+    to { background-position: 0% 0; }
+}
+
+/* 进行中的那一条：只让圆点(::after)呼吸。
+ * 注意别打在 .step-node 上——它的 ::before 是时间线连接线，连线跟着闪会很怪。
+ *
+ * 必须限定 .is-thought：工具进行中要的是上面那个 node-spin 旋转环，而两条选择器
+ * 特异性都是 (0,3,1)，平手时写在后面的赢——不加限定，这条呼吸会把旋转整个盖掉，
+ * 表现就是「本该转圈的工具节点在一呼一吸」。 */
+.pondering-step.running.is-thought .step-node::after,
+.pondering-step.pending.is-thought .step-node::after {
+    animation: pulse-dot 1.9s ease-in-out infinite;
+}
+
+/* 无障碍：用户要求减少动效时一律停掉，并恢复实心文字色 */
+@media (prefers-reduced-motion: reduce) {
+    .pondering-title.is-active,
+    .live-activity-placeholder .pondering-title {
+        background-image: none;
+        -webkit-text-fill-color: currentColor;
+        color: var(--de-text);
+        animation: none;
+    }
+
+    .pondering-dot.is-active,
+    .live-activity-placeholder .pondering-dot {
+        animation: none;
+    }
+
+    /* 呼吸和旋转两种都要停：显式各列一遍，不依赖「写在后面就能盖住」的顺序运气 */
+    .pondering-step.running .step-node::after,
+    .pondering-step.pending .step-node::after,
+    .is-action.running .step-node::after,
+    .is-action.pending .step-node::after {
+        animation: none;
+    }
+}

@@ -1,0 +1,401 @@
+.conversation-manager {
+    display: flex;
+    min-width: 0;
+    min-height: 48px;
+    padding: 6px 10px 6px 12px;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--de-border-subtle);
+    background: color-mix(in srgb, var(--de-bg) 92%, #0b1220);
+}
+
+.conversation-tablist {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: stretch;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    touch-action: pan-x;
+}
+
+.conversation-tablist::-webkit-scrollbar {
+    display: none;
+}
+
+.conversation-tab {
+    display: flex;
+    min-width: 112px;
+    max-width: 128px;
+    flex: 0 0 128px;
+    align-items: center;
+    position: relative;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--de-text-muted);
+    cursor: grab;
+    transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
+}
+
+.conversation-tab:hover {
+    background: rgba(255, 255, 255, 0.025);
+    color: var(--de-text-primary);
+}
+
+.conversation-tab.is-current {
+    background: rgba(148, 163, 184, 0.1);
+    color: var(--de-text-primary);
+}
+
+.conversation-tab.is-dragging {
+    opacity: 0.36;
+}
+
+.conversation-tab.is-drop-before {
+    box-shadow: inset 2px 0 0 var(--de-primary);
+}
+
+.conversation-tab.is-drop-after {
+    box-shadow: inset -2px 0 0 var(--de-primary);
+}
+
+.conversation-tab-select {
+    display: inline-flex;
+    min-width: 0;
+    min-height: 34px;
+    flex: 1;
+    padding: 0 4px 0 9px;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: grab;
+    font: inherit;
+    text-align: left;
+}
+
+.conversation-tab-select:active {
+    cursor: grabbing;
+}
+
+.conversation-tab-title {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 11.5px;
+    font-weight: 550;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.conversation-running-indicator {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: #60a5fa;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.12);
+    /* 呼吸曲线在 styles/index.css，与设计过程面板的状态点共用 */
+    animation: de-running-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.conversation-tab-close,
+.conversation-manager-action,
+.conversation-history-close,
+.conversation-history-rename,
+.conversation-title-editor button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    cursor: pointer;
+}
+
+.conversation-tab-close {
+    width: 24px;
+    height: 34px;
+    flex: 0 0 24px;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--de-text-muted);
+    transition: color 140ms ease, opacity 140ms ease;
+}
+
+.conversation-tab-close:hover:not(:disabled) {
+    background: transparent;
+    color: var(--de-text-primary);
+    opacity: 1;
+}
+
+.conversation-manager-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 2px;
+}
+
+.conversation-manager-action {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--de-text-secondary);
+    transition: background 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.conversation-manager-action:hover:not(:disabled),
+.conversation-manager-action.is-active {
+    background: rgba(59, 130, 246, 0.12);
+    color: #8fbdff;
+}
+
+.conversation-manager-action:hover:not(:disabled) {
+    transform: translateY(-1px);
+}
+
+.conversation-tab-select:focus-visible,
+.conversation-tab-close:focus-visible,
+.conversation-manager-action:focus-visible,
+.conversation-history-close:focus-visible,
+.conversation-history-select:focus-visible,
+.conversation-history-rename:focus-visible,
+.conversation-title-editor input:focus-visible,
+.conversation-title-editor button:focus-visible,
+.conversation-history-search:focus-within {
+    outline: 2px solid var(--de-primary);
+    outline-offset: 2px;
+}
+
+.conversation-tab-select:disabled,
+.conversation-tab-close:disabled,
+.conversation-manager-action:disabled,
+.conversation-history-select:disabled,
+.conversation-history-rename:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+.conversation-history-popover {
+    z-index: 160;
+    width: min(356px, calc(100vw - 16px));
+    overflow: hidden;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 12px;
+    background: #151922;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.025) inset;
+}
+
+.conversation-history-header {
+    display: flex;
+    min-height: 48px;
+    padding: 8px 8px 8px 14px;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.conversation-history-header > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.conversation-history-header strong {
+    color: var(--de-text-primary);
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.conversation-history-header span {
+    color: var(--de-text-muted);
+    font-size: 10px;
+}
+
+.conversation-history-close {
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--de-text-secondary);
+}
+
+.conversation-history-close:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--de-text-primary);
+}
+
+.conversation-history-search {
+    display: flex;
+    height: 36px;
+    margin: 10px 12px 8px;
+    padding: 0 10px;
+    align-items: center;
+    gap: 7px;
+    border: 1px solid rgba(148, 163, 184, 0.17);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--de-text-muted);
+}
+
+.conversation-history-search input,
+.conversation-title-editor input {
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--de-text-primary);
+    font: inherit;
+}
+
+.conversation-history-search input {
+    font-size: 12px;
+}
+
+.conversation-history-search input::placeholder {
+    color: var(--de-text-muted);
+}
+
+.conversation-history-list {
+    display: flex;
+    max-height: min(420px, calc(100vh - 168px));
+    padding: 0 6px 8px;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+}
+
+.conversation-history-row {
+    display: flex;
+    min-width: 0;
+    padding: 4px;
+    align-items: center;
+    gap: 2px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+}
+
+.conversation-history-row:hover,
+.conversation-history-row.is-current {
+    border-color: rgba(148, 163, 184, 0.13);
+    background: rgba(255, 255, 255, 0.045);
+}
+
+.conversation-history-row.is-current {
+    background: rgba(59, 130, 246, 0.105);
+}
+
+.conversation-history-select {
+    display: flex;
+    min-width: 0;
+    min-height: 58px;
+    flex: 1;
+    padding: 7px 8px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+}
+
+.conversation-history-select:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.035);
+}
+
+.conversation-history-title,
+.conversation-history-preview,
+.conversation-history-meta {
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.conversation-history-title {
+    color: var(--de-text-primary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.conversation-history-preview {
+    color: var(--de-text-secondary);
+    font-size: 10.5px;
+}
+
+.conversation-history-meta {
+    color: var(--de-text-muted);
+    font-size: 9.5px;
+}
+
+.conversation-history-rename {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--de-text-muted);
+}
+
+.conversation-history-rename:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    color: #b9d5ff;
+}
+
+.conversation-title-editor {
+    display: flex;
+    min-width: 0;
+    min-height: 38px;
+    flex: 1;
+    padding: 0 5px 0 8px;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid rgba(59, 130, 246, 0.52);
+    border-radius: 7px;
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.conversation-title-editor input {
+    font-size: 12px;
+}
+
+.conversation-title-editor button {
+    width: 26px;
+    height: 26px;
+    flex: 0 0 auto;
+    border-radius: 6px;
+    background: rgba(59, 130, 246, 0.23);
+    color: #b9d5ff;
+}
+
+.conversation-title-editor button:hover {
+    background: rgba(59, 130, 246, 0.36);
+    color: #ffffff;
+}
+
+.conversation-history-empty {
+    margin: 18px 8px;
+    color: var(--de-text-secondary);
+    font-size: 11px;
+    line-height: 1.5;
+    text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .conversation-tab,
+    .conversation-manager-action,
+    .conversation-running-indicator {
+        animation: none;
+        transition: none;
+    }
+}

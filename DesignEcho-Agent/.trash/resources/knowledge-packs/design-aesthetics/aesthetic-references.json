@@ -1,0 +1,184 @@
+{
+  "version": "1.0.0",
+  "description": "专业设计审美参考库 - 提供 AI 审美决策所需的参考案例和设计原则",
+  
+  "references": [
+    {
+      "id": "ref-main-minimal-premium",
+      "name": "高端简约主图",
+      "description": "大量留白，产品精致呈现，适合高端定位产品",
+      "designType": "mainImage",
+      "style": "minimal",
+      "visualParams": {
+        "subjectRatio": { "min": 0.45, "ideal": 0.55, "max": 0.65 },
+        "position": {
+          "vertical": "center",
+          "horizontal": "center",
+          "offsetY": -0.03
+        },
+        "whitespace": { "top": 0.18, "bottom": 0.22, "left": 0.18, "right": 0.18 }
+      },
+      "principles": [
+        "留白是奢侈品的象征，越多越显高端",
+        "产品呈现要精致，避免过大显得廉价",
+        "视觉重心略偏上方，底部留白稍多",
+        "背景干净，不添加任何装饰元素"
+      ],
+      "applicableScenarios": ["高端产品", "品质定位", "极简风格", "轻奢品牌"],
+      "avoidScenarios": ["促销活动", "性价比产品", "需要大量信息的设计"],
+      "weight": 0.95
+    },
+    {
+      "id": "ref-main-balanced",
+      "name": "平衡型主图",
+      "description": "产品适中，留白与内容平衡，适合大多数电商场景",
+      "designType": "mainImage",
+      "style": "elegant",
+      "visualParams": {
+        "subjectRatio": { "min": 0.55, "ideal": 0.65, "max": 0.72 },
+        "position": {
+          "vertical": "center",
+          "horizontal": "center",
+          "offsetY": -0.02
+        },
+        "whitespace": { "top": 0.12, "bottom": 0.16, "left": 0.12, "right": 0.12 }
+      },
+      "principles": [
+        "产品清晰可见，细节可辨",
+        "保留足够空间放置卖点标签",
+        "视觉平衡，不压迫也不空洞",
+        "适合添加 1-2 个小型卖点图标"
+      ],
+      "applicableScenarios": ["日用品", "服饰", "家居用品", "标准电商"],
+      "avoidScenarios": ["需要极简风格", "产品细节极多需要放大展示"],
+      "weight": 0.90
+    },
+    {
+      "id": "ref-main-prominent",
+      "name": "突出型主图",
+      "description": "产品占主导，最大化展示产品细节",
+      "designType": "mainImage",
+      "style": "rich",
+      "visualParams": {
+        "subjectRatio": { "min": 0.68, "ideal": 0.75, "max": 0.82 },
+        "position": {
+          "vertical": "center",
+          "horizontal": "center",
+          "offsetY": 0
+        },
+        "whitespace": { "top": 0.08, "bottom": 0.10, "left": 0.08, "right": 0.08 }
+      },
+      "principles": [
+        "产品是绝对主角，占据大部分画面",
+        "适合需要展示细节的产品",
+        "标签和文字要精简，不喧宾夺主",
+        "边距不宜太小，保持视觉呼吸"
+      ],
+      "applicableScenarios": ["细节丰富的产品", "工艺品", "需要突出材质纹理"],
+      "avoidScenarios": ["高端简约定位", "需要大量文案"],
+      "weight": 0.80
+    },
+    
+    {
+      "id": "ref-detail-hero-classic",
+      "name": "详情页首屏经典布局",
+      "description": "上方文案区+下方产品区的黄金布局",
+      "designType": "detailHero",
+      "style": "elegant",
+      "visualParams": {
+        "subjectRatio": { "min": 0.38, "ideal": 0.48, "max": 0.55 },
+        "position": {
+          "vertical": "bottom-third",
+          "horizontal": "center",
+          "offsetY": 0.12
+        },
+        "whitespace": { "top": 0.38, "bottom": 0.05, "left": 0.08, "right": 0.08 }
+      },
+      "principles": [
+        "上方 35-40% 区域用于核心卖点和标题",
+        "产品作为视觉支撑，位于画面下方",
+        "文案与产品形成上下呼应",
+        "确保首屏信息层次清晰"
+      ],
+      "applicableScenarios": ["详情页首屏", "需要突出卖点", "标准电商布局"],
+      "avoidScenarios": ["纯产品展示页"],
+      "weight": 0.92
+    },
+    {
+      "id": "ref-detail-hero-immersive",
+      "name": "详情页首屏沉浸式",
+      "description": "产品占据主导，文案融入画面",
+      "designType": "detailHero",
+      "style": "premium",
+      "visualParams": {
+        "subjectRatio": { "min": 0.55, "ideal": 0.65, "max": 0.75 },
+        "position": {
+          "vertical": "center",
+          "horizontal": "center",
+          "offsetY": 0.05
+        },
+        "whitespace": { "top": 0.10, "bottom": 0.12, "left": 0.10, "right": 0.10 }
+      },
+      "principles": [
+        "产品作为视觉主体占据中心",
+        "文案以叠加或环绕方式融入",
+        "创造沉浸式的视觉体验",
+        "适合品牌调性较强的设计"
+      ],
+      "applicableScenarios": ["品牌型详情页", "高端产品", "视觉冲击力需求"],
+      "avoidScenarios": ["信息密集型详情页", "性价比产品"],
+      "weight": 0.75
+    },
+    
+    {
+      "id": "ref-sku-compact",
+      "name": "SKU 紧凑型",
+      "description": "产品最大化展示，用于快速识别颜色/款式",
+      "designType": "skuImage",
+      "style": "minimal",
+      "visualParams": {
+        "subjectRatio": { "min": 0.78, "ideal": 0.85, "max": 0.92 },
+        "position": {
+          "vertical": "center",
+          "horizontal": "center",
+          "offsetY": 0
+        },
+        "whitespace": { "top": 0.04, "bottom": 0.06, "left": 0.04, "right": 0.04 }
+      },
+      "principles": [
+        "SKU 图的核心是快速识别",
+        "产品必须占据绝对主体",
+        "背景纯净，不干扰颜色判断",
+        "所有 SKU 图保持风格统一"
+      ],
+      "applicableScenarios": ["SKU 选择器", "颜色展示", "规格展示"],
+      "avoidScenarios": ["需要展示使用场景"],
+      "weight": 1.0
+    },
+    
+    {
+      "id": "ref-showcase-grid",
+      "name": "多色展示网格布局",
+      "description": "多个产品均匀排列，用于颜色/款式对比展示",
+      "designType": "colorShowcase",
+      "style": "minimal",
+      "visualParams": {
+        "subjectRatio": { "min": 0.18, "ideal": 0.22, "max": 0.28 },
+        "position": {
+          "vertical": "center",
+          "horizontal": "center"
+        },
+        "whitespace": { "top": 0.08, "bottom": 0.08, "left": 0.08, "right": 0.08 }
+      },
+      "principles": [
+        "所有产品大小完全一致",
+        "间距均匀，排列整齐",
+        "形态统一是关键要素",
+        "背景统一，不干扰对比"
+      ],
+      "applicableScenarios": ["多色展示", "款式对比", "产品系列展示"],
+      "avoidScenarios": ["单品展示"],
+      "weight": 0.85
+    }
+  ]
+}

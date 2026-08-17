@@ -1,0 +1,39 @@
+{
+  "id": "socks-basic",
+  "name": "袜子电商知识库 - 基础版",
+  "version": "2.0.0",
+  "description": "袜子类目完整知识库：卖点、痛点、详情页模板、主图规范、文案公式、场景穿搭",
+  "author": "DesignEcho Team",
+  "category": "socks",
+  "createdAt": "2026-01-26T00:00:00.000Z",
+  "updatedAt": "2026-02-04T00:00:00.000Z",
+  "contents": {
+    "sellingPoints": 30,
+    "painPoints": 15,
+    "colorSchemes": 13,
+    "categories": 6,
+    "detailScreenTemplates": 10,
+    "mainImageSpecs": 5,
+    "copywritingTemplates": 25,
+    "sceneStyles": 12,
+    "layoutRules": 8
+  },
+  "files": [
+    { "file": "selling-points.json", "type": "sellingPoints", "description": "产品卖点库" },
+    { "file": "pain-points.json", "type": "painPoints", "description": "用户痛点库" },
+    { "file": "color-schemes.json", "type": "colorSchemes", "description": "配色方案库" },
+    { "file": "categories.json", "type": "categories", "description": "类目分类" },
+    { "file": "layout-rules.json", "type": "layoutRules", "description": "布局规则" },
+    { "file": "detail-page-screens.json", "type": "detailScreens", "description": "详情页屏模板" },
+    { "file": "main-image-specs.json", "type": "mainImageSpecs", "description": "主图设计规范" },
+    { "file": "copywriting-templates.json", "type": "copywriting", "description": "电商文案模板" },
+    { "file": "scene-styling.json", "type": "sceneStyling", "description": "场景穿搭知识" }
+  ],
+  "useCases": [
+    "详情页设计",
+    "主图设计",
+    "转化图设计",
+    "SKU批量生成",
+    "文案撰写"
+  ]
+}

@@ -1,0 +1,55 @@
+# Dependencies
+**/node_modules/
+
+# Build outputs
+**/dist/
+**/release/
+**/out/
+**/output/
+**/.vite/
+
+# Runtime caches and temporary reports
+**/tmp/
+**/.cache/
+**/localappdata/
+**/.playwright-cli/
+/.codex/
+.designecho/
+_codex_exports/
+
+# Local environment
+.venv/
+**/.venv/
+.claude/settings.local.json
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local model binaries and generated bundle analysis
+**/*.onnx
+**/*.onnx_data
+DesignEcho-UXP/stats*.json
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+
+# Historical scratch/repair files
+*_backup*
+*_restore*
+*_tmp*
+tmp_*
+*.corrupted.*
