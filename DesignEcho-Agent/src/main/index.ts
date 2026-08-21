@@ -13,11 +13,12 @@
  * 4. 窗口管理、生命周期管理、端口清理等辅助逻辑保留在本文件
  */
 
-import { app, BrowserWindow, ipcMain, type IpcMainEvent } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, type IpcMainEvent } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import http from 'http';
 import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
 
 // 服务模块导入
 import { WebSocketServer } from './websocket/server';
@@ -39,6 +40,7 @@ import { getSAMService, SAMService } from './services/sam-service';
 import { DebugBridgeService, type DebugBridgeChatSubmitInput } from './services/debug-bridge-service';
 import { MCPHostService } from './services/mcp-host-service';
 import { BrowserBridgeService, initBrowserBridgeService } from './services/browser-bridge-service';
+import { CodexSubscriptionService } from './services/codex-subscription-service';
 import {
     BROWSER_BRIDGE_PORT,
     DEBUG_BRIDGE_PORT,
@@ -53,6 +55,8 @@ import { setupIPCHandlers, IPCContext } from './ipc-handlers';
 import { registerUXPHandlers, UXPContext } from './uxp-handlers';
 import { cleanupStreams } from './ipc-handlers/stream-handlers';
 import { BinaryMessageType, getBinaryTypeName } from '../shared/binary-protocol';
+import { CODEX_SUBSCRIPTION_PROVIDER } from '../shared/codex-subscription-contract';
+import { getDynamicModels, setDynamicModels } from '../shared/config/dynamic-model-registry';
 
 // ============ 全局变量 ============
 
@@ -106,7 +110,43 @@ let webviewServer: http.Server | null = null;
 let debugBridgeService: DebugBridgeService | null = null;
 let mcpHostService: MCPHostService | null = null;
 let browserBridgeService: BrowserBridgeService | null = null;
+let codexSubscriptionService: CodexSubscriptionService | null = null;
+let codexSubscriptionHydration: Promise<void> | null = null;
+let ipcHandlersReady = false;
 let mainWindowShown = false;
+
+function isTrustedRendererUrl(rawUrl: string): boolean {
+    try {
+        const parsed = new URL(rawUrl);
+        if (parsed.protocol !== 'file:') return false;
+        const expectedPath = path.resolve(__dirname, '../../renderer/index.html');
+        return path.resolve(fileURLToPath(parsed)) === expectedPath;
+    } catch {
+        return false;
+    }
+}
+
+function resolveSafeExternalUrl(rawUrl: string): string | null {
+    try {
+        const parsed = new URL(rawUrl);
+        if (parsed.username || parsed.password) return null;
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'mailto:') return null;
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+}
+
+function openExternalFromMainWindow(rawUrl: string): void {
+    const safeUrl = resolveSafeExternalUrl(rawUrl);
+    if (!safeUrl) {
+        logService?.logAgent('warn', '[Main] Blocked an unsafe renderer navigation target');
+        return;
+    }
+    void shell.openExternal(safeUrl).catch((error) => {
+        logService?.logAgent('warn', `[Main] Failed to open an approved external URL (${error instanceof Error ? error.name : 'Error'})`);
+    });
+}
 
 function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<unknown> {
     if (!mainWindow || mainWindow.isDestroyed()) {
@@ -292,6 +332,19 @@ function createWindow(): void {
 
     mainWindow.webContents.once('did-finish-load', () => {
         showMainWindow('did-finish-load');
+        if (ipcHandlersReady) publishCodexSubscriptionState('ready');
+    });
+
+    // 带 preload 的主窗口只能停留在打包后的本地 renderer。所有外链都交给系统浏览器，
+    // 防止远端页面或 window.open 继承 DesignEcho 的高权限 IPC 桥。
+    mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+        if (isTrustedRendererUrl(navigationUrl)) return;
+        event.preventDefault();
+        openExternalFromMainWindow(navigationUrl);
+    });
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        openExternalFromMainWindow(url);
+        return { action: 'deny' };
     });
 
     // 渲染进程 console 告警/错误落盘：此前 ErrorBoundary 崩溃现场只在 DevTools 可见，事后无法诊断。
@@ -373,6 +426,53 @@ function readPersistedApiKeys(): PersistedApiKeys {
         console.warn('[Main] Failed to read persisted API Keys:', error?.message || String(error));
     }
     return {};
+}
+
+function publishCodexSubscriptionState(reason: 'account' | 'runtime_exit' | 'ready'): void {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('codexSubscription:stateChanged', { reason });
+    }
+}
+
+function invalidateCodexSubscriptionModels(reason: 'account' | 'runtime_exit'): void {
+    if (reason === 'account') {
+        setDynamicModels(
+            getDynamicModels().filter((model) => model.provider !== CODEX_SUBSCRIPTION_PROVIDER)
+        );
+    }
+    publishCodexSubscriptionState(reason);
+}
+
+async function hydrateCodexSubscriptionModels(): Promise<void> {
+    if (codexSubscriptionHydration) return codexSubscriptionHydration;
+    const service = codexSubscriptionService;
+    if (!service) return;
+
+    const hydration = (async (): Promise<void> => {
+        const status = await service.getStatus();
+        if (!status.success || !status.status.signedIn) return;
+        const result = await service.listModels(false);
+        if (!result.success) {
+            logService?.logAgent('warn', '[Main] ChatGPT subscription model catalog bootstrap failed');
+            return;
+        }
+        const otherProviders = getDynamicModels().filter(
+            (model) => model.provider !== CODEX_SUBSCRIPTION_PROVIDER
+        );
+        setDynamicModels([...otherProviders, ...result.models]);
+        logService?.logAgent('info', `[Main] Restored ${result.models.length} ChatGPT subscription models for this session`);
+    })();
+    codexSubscriptionHydration = hydration;
+    try {
+        await hydration;
+    } finally {
+        if (codexSubscriptionHydration === hydration) codexSubscriptionHydration = null;
+    }
+}
+
+function handleCodexSubscriptionStateChanged(reason: 'account' | 'runtime_exit'): void {
+    invalidateCodexSubscriptionModels(reason);
+    if (reason === 'account') void hydrateCodexSubscriptionModels();
 }
 
 /**
@@ -511,6 +611,14 @@ async function initializeServices(): Promise<void> {
         openRouterGeminiImageService.setApiKey(persistedApiKeys.openrouter);
         logService.logAgent('info', '[Main] Restored OpenRouter API Key for Gemini image edit from persisted state');
     }
+    // ChatGPT 订阅模型使用独立 Codex App Server 与隔离凭据目录；它不是 OpenAI API Key。
+    codexSubscriptionService = new CodexSubscriptionService({
+        userDataDir: app.getPath('userData'),
+        clientVersion: app.getVersion(),
+        onStateChanged: handleCodexSubscriptionStateChanged
+    });
+    await hydrateCodexSubscriptionModels();
+
     // 初始化 AI 模型服务（多 provider 支持）
     modelService = new ModelService({
         anthropicApiKey: persistedApiKeys.anthropic,
@@ -521,7 +629,7 @@ async function initializeServices(): Promise<void> {
         deepseekApiKey: persistedApiKeys.deepseek,
         ollamaUrl: persistedApiKeys.ollamaUrl,
         ollamaApiKey: persistedApiKeys.ollamaApiKey
-    });
+    }, codexSubscriptionService);
     logService.logAgent('info', 'Model service initialized');
     
     // 任务协调器（管理 Agent 任务的调度与执行）
@@ -685,6 +793,7 @@ function setupIPC(): void {
         logService,
         mattingService,
         resourceManagerService,
+        codexSubscriptionService,
         mainWindow
     };
     
@@ -722,6 +831,8 @@ app.whenReady().then(async () => {
     createWindow();
     await initializeServices();
     setupIPC();
+    ipcHandlersReady = true;
+    publishCodexSubscriptionState('ready');
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
@@ -761,6 +872,10 @@ app.on('before-quit', async () => {
 
     if (browserBridgeService) {
         browserBridgeService.stop();
+    }
+
+    if (codexSubscriptionService) {
+        await codexSubscriptionService.dispose();
     }
 
     if (logService) {

@@ -9,7 +9,7 @@
  * 1. **本地模型** (source: 'local') - 需要本地服务运行
  *    - Ollama 本地 LLM
  * 
- * 2. **云端模型** (source: 'cloud') - 需要 API Key
+ * 2. **云端模型** (source: 'cloud') - 使用 API Key 或受管账号会话
  *    - Google AI Studio (provider: 'google') → apiKeys.google
  *    - Xiaomi MiMo (provider: 'xiaomi') → apiKeys.xiaomi
  *    - OpenRouter (provider: 'openrouter') → apiKeys.openrouter
@@ -17,6 +17,7 @@
  *    - OpenAI (provider: 'openai') → apiKeys.openai
  *    - Ollama Cloud (provider: 'ollama-cloud') → apiKeys.ollamaApiKey
  *    - DeepSeek 官方 (provider: 'deepseek') → apiKeys.deepseek
+ *    - ChatGPT 订阅 (provider: 'openai-codex') → Codex App Server 受管登录
  */
 
 // 动态模型注册表（进程内覆盖层）：getModelById 未命中硬编码时回退到此。
@@ -39,6 +40,7 @@ export type ModelProvider =
     | 'openrouter'    // OpenRouter 中转
     | 'anthropic'     // Anthropic 直连
     | 'openai'        // OpenAI 直连
+    | 'openai-codex'  // ChatGPT 订阅（Codex App Server）
     | 'deepseek';     // DeepSeek 官方
 
 /** API Key 类型映射 */
@@ -62,6 +64,11 @@ export type ModelRole =
     | 'image-editing';    // 图像编辑
 
 export type TaskCategory = 'layoutAnalysis' | 'textOptimize' | 'visualAnalyze';
+
+export type ModelAuthRequirement =
+    | { kind: 'none' }
+    | { kind: 'api_key'; keyType: ApiKeyType }
+    | { kind: 'account_session'; provider: 'openai-codex' };
 
 /**
  * 思维过程格式类型
@@ -97,6 +104,8 @@ export interface ModelConfig {
     source: ModelSource;           // 模型来源：local/cloud
     provider: ModelProvider;       // 提供商
     requiredApiKey?: ApiKeyType;   // 需要的 API Key 类型
+    /** 认证方式；账号会话模型不能借用 requiredApiKey 或 renderer 的 apiKeys。 */
+    authRequirement?: ModelAuthRequirement;
     apiModelId: string;            // 实际 API 调用时使用的模型 ID
     roles: ModelRole[];            // 适用的角色
     capabilities: string[];        // 能力标签
@@ -109,6 +118,9 @@ export interface ModelConfig {
     supportsStreaming: boolean;    // 是否支持流式
     maxTokens: number;             // 最大输出 token
     contextWindow?: number;        // 上下文窗口大小
+    /** Provider 目录真实返回的推理档位；仅用于该 provider 自己的请求映射。 */
+    reasoningEfforts?: string[];
+    defaultReasoningEffort?: string;
     
     // 🆕 思维过程能力配置
     thinking?: ThinkingConfig;
@@ -1131,7 +1143,8 @@ export interface ModelContextWindowResolution {
  *
  * 优先级：模型自己声明 > 该渠道的已知默认值 > 解析不出（返回 null）。
  * 返回 null 表示"不知道"，调用方必须如实展示，不要折成某个具体数字——
- * 46 个内置模型里目前只有 4 个声明了 contextWindow，未知是常态而非异常。
+ * 内置配置只为有明确依据的模型声明 contextWindow；动态目录则优先采用 provider 返回值。
+ * 未返回窗口的渠道保持 unknown，不按模型名猜测。
  */
 export function resolveModelContextWindow(modelId: string): ModelContextWindowResolution | null {
     const model = getModelById(String(modelId || '').trim());

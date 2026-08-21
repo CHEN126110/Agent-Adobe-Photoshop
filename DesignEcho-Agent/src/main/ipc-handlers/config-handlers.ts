@@ -8,7 +8,8 @@ import fsSync from 'fs';
 import path from 'path';
 import type { IPCContext } from './types';
 import type { ModelConfig } from '../../shared/config/models.config';
-import { setDynamicModels } from '../../shared/config/dynamic-model-registry';
+import { CODEX_SUBSCRIPTION_PROVIDER } from '../../shared/codex-subscription-contract';
+import { getDynamicModels, setDynamicModels } from '../../shared/config/dynamic-model-registry';
 import { bflService } from '../services/bfl-service';
 import { volcengineJimengInpaintingService } from '../services/volcengine-jimeng-inpainting-service';
 import { volcengineJimengImageService } from '../services/volcengine-jimeng-image-service';
@@ -333,10 +334,19 @@ export function registerConfigHandlers(context: IPCContext): void {
         // 仅当字段存在时才回灌——缺省（旧 renderer / 无动态模型）不动注册表，避免误清空
         // listProviderModels 刚回灌的项。
         if (Array.isArray(prefs.dynamicModels)) {
-            setDynamicModels(prefs.dynamicModels);
+            // ChatGPT 订阅目录只由主进程的当前账号会话产生，不能由 renderer 持久化快照回灌。
+            // 保留本会话已由 codexSubscription:listModels 验证的条目，同时同步其它 provider。
+            const sessionBoundModels = getDynamicModels().filter(
+                (model) => model.provider === CODEX_SUBSCRIPTION_PROVIDER
+            );
+            const persistedModels = prefs.dynamicModels.filter(
+                (model) => model.provider !== CODEX_SUBSCRIPTION_PROVIDER
+            );
+            setDynamicModels([...persistedModels, ...sessionBoundModels]);
             logService?.logAgent(
                 'info',
-                `[Config] 动态模型注册表已同步: ${prefs.dynamicModels.length} 个`
+                `[Config] 动态模型注册表已同步: ${persistedModels.length} 个持久化模型，`
+                + `${sessionBoundModels.length} 个会话模型`
             );
         }
         return { success: true };

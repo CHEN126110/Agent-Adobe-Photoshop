@@ -226,7 +226,7 @@ export const AVAILABLE_TOOLS = [
     { name: 'createProjectContactSheetOverview', description: '把项目图片合成一张带编号的缩略图总览，适合先整体观察款式、素材类型和后续要单独复核的图片。', params: '{ directory?: string, maxImages?: number, columns?: number }' },
     { name: 'analyzeProjectContactSheetOverview', description: '先生成项目图片总览图，再用视觉模型理解整体款式、拍摄风格、素材角色和后续需要单图复核的编号。', params: '{ directory?: string, maxImages?: number, focus?: string }' },
     { name: 'prepareSkuRetouchAssets', description: '为一批纯底棚拍 SKU 商品图生成可编辑精修资产：自动选形态基准、受约束形态统一、独立原影、中性灰低频光影修正和预览。sourceMode=auto 会跳过场景图；该工具只生成项目文件，不代表 Photoshop 色卡已完成。', params: '{ sources: [{sourceId?: string, filePath: string, colorName?: string}], projectPath?: string, outputDir?: string, referenceSourcePath?: string, sourceMode?: "auto"|"studio"|"scene", shapeStrength?: number, lightingStrength?: number, maxLongEdge?: number, force?: boolean }' },
-    { name: 'generateImage', description: '使用 Black Forest Labs FLUX 生成新的图片素材。生成结果不会自动写入 Photoshop，采用前仍需查看。', params: '{ prompt: string, model?: "flux-2-max"|"flux-2-pro"|"flux-2-klein-9b"|"flux-2-klein-4b", width?: number, height?: number }' },
+    { name: 'generateImage', description: '使用设置中选择的生图渠道生成新素材：ChatGPT/Codex 订阅的 gpt-image-2，或 BFL API 的 FLUX。生成结果不会自动写入 Photoshop，采用前仍需查看。', params: '{ prompt: string, model?: "flux-2-max"|"flux-2-pro"|"flux-2-klein-9b"|"flux-2-klein-4b", width?: number, height?: number, transparentBackground?: boolean }' },
 
     // === 设计源解析（PSD 知识库）===
     {
@@ -5653,6 +5653,7 @@ async function executeImageGeneration(params: {
     model?: string;
     width?: number;
     height?: number;
+    transparentBackground?: boolean;
 }): Promise<any> {
     const prompt = String(params?.prompt || '').trim();
     const model = String(params?.model || 'flux-2-max');
@@ -5668,6 +5669,45 @@ async function executeImageGeneration(params: {
     }
 
     try {
+        const provider = useAppStore.getState().integrationSettings.imageGenerationProvider;
+        if (provider === 'codex-subscription') {
+            const generate = window.designEcho.generateCodexSubscriptionImage;
+            if (!generate) {
+                return {
+                    success: false,
+                    error: '当前构建未包含 ChatGPT/Codex 订阅生图通道',
+                    message: '订阅生图没有执行：请更新或重新构建 DesignEcho。'
+                };
+            }
+            const generation = await generate({
+                prompt,
+                width,
+                height,
+                transparentBackground: params.transparentBackground === true
+            });
+            if (!generation?.success || !generation.imageData) {
+                return {
+                    success: false,
+                    error: generation?.error || '订阅生图失败',
+                    code: generation?.code,
+                    resetsAt: generation?.resetsAt,
+                    message: `ChatGPT/Codex 订阅生图没有完成：${generation?.error || '服务没有返回图片。'}`
+                };
+            }
+            return {
+                success: true,
+                message: '图片已通过 ChatGPT/Codex 订阅的 gpt-image-2 生成，请先查看效果，再决定是否放入设计。',
+                imageData: generation.imageData,
+                width: generation.width,
+                height: generation.height,
+                mediaType: generation.mediaType,
+                model: generation.model || 'gpt-image-2',
+                provider: 'codex-subscription',
+                revisedPrompt: generation.revisedPrompt,
+                transparentBackground: generation.transparentBackground === true
+            };
+        }
+
         const hasApiKey = await window.designEcho.bfl.hasApiKey();
         if (!hasApiKey) {
             return {
@@ -5704,7 +5744,8 @@ async function executeImageGeneration(params: {
             imageUrl: generation.data.url,
             width: generation.data.width,
             height: generation.data.height,
-            model
+            model,
+            provider: 'bfl'
         };
     } catch (error) {
         const message = error instanceof Error ? error.message : '未知错误';

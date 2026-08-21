@@ -42,7 +42,13 @@ export interface ModelCapabilityVerdict {
  * 刻意不含聚合网关（openrouter）：它底下挂着各家几百个模型，其中确有不支持的，
  * 按 provider 一刀切就是虚报能力（smoke-provider-model-merge「不伪造 Tool 能力」为此设的护栏）。
  */
-const PROVIDER_ALWAYS_SUPPORTS_TOOL_USE = new Set(['deepseek', 'openai', 'anthropic', 'xiaomi']);
+const PROVIDER_ALWAYS_SUPPORTS_TOOL_USE = new Set([
+    'deepseek',
+    'openai',
+    'openai-codex',
+    'anthropic',
+    'xiaomi'
+]);
 
 /** 对话模型全系具备视觉能力的 provider。目前没有可以一刀切的厂商——视觉是按模型区分的。 */
 const PROVIDER_ALWAYS_SUPPORTS_VISION = new Set<string>();

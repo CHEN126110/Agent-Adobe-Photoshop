@@ -9,7 +9,7 @@
  *    - 本地 ONNX：BiRefNet + YOLO-World
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import './SettingsModal.css';
 import './SegmentationModelManager.css';
 import './KnowledgeLibraryPage.css';
@@ -18,6 +18,7 @@ import { DesignLearningRuntimeSettingsPanel } from './DesignLearningRuntimeSetti
 import { DesignLearningReviewSettingsPanel } from './DesignLearningReviewSettingsPanel';
 import { KnowledgeSourceManagementPanel } from './KnowledgeSourceManagementPanel';
 import { UserPreferencesPanel } from './UserPreferencesPanel';
+import { ChatGptSubscriptionCard } from './ChatGptSubscriptionCard';
 import { getUserFacingSkills } from '../../shared/skills/skill-declarations';
 import { getSkillExecutor } from '../services/skill-executors';
 import { normalizeDesignDimensionSpec } from '../../shared/design-dimension-spec';
@@ -46,6 +47,7 @@ import {
     isConversationModelId,
     isModelThinkingUserControllable,
     getModelThinkingDisplayName,
+    type ModelConfig,
     type ModelProvider
 } from '../../shared/config/models.config';
 import { mergeFetchedProviderModels } from '../../shared/config/provider-model-merge';
@@ -199,6 +201,7 @@ type CloudModelOption = {
 
 /** 刷新结果消息里显示的 provider 中文/渠道名。 */
 const PROVIDER_REFRESH_LABELS: Record<string, string> = {
+    'openai-codex': 'ChatGPT 订阅',
     deepseek: 'DeepSeek',
     google: 'Google',
     xiaomi: 'Xiaomi',
@@ -208,6 +211,7 @@ const PROVIDER_REFRESH_LABELS: Record<string, string> = {
 
 /** 主模型与视觉模型共用的云端候选分组，避免两套下拉列表继续漂移。 */
 const CLOUD_MODEL_OPTION_GROUPS = [
+    { provider: 'openai-codex', label: 'ChatGPT 订阅（Codex）' },
     { provider: 'deepseek', label: 'DeepSeek (官方)' },
     { provider: 'google', label: 'Google AI Studio (官方)' },
     { provider: 'xiaomi', label: 'Xiaomi MiMo (官方)' },
@@ -217,6 +221,7 @@ const CLOUD_MODEL_OPTION_GROUPS = [
 
 /** 各 cloud provider 的硬编码模型（简化形态），供下拉默认数据源 + 合并去重的「优先层」。 */
 const HARDCODED_OPTIONS_BY_PROVIDER: Record<string, CloudModelOption[]> = {
+    'openai-codex': [],
     deepseek: DEEPSEEK_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
     google: GOOGLE_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
     xiaomi: XIAOMI_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
@@ -976,6 +981,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
     // 自动拉取最新模型：本会话拉到的新模型（硬编码里没有的），按 provider 归档
     const [fetchedModelsByProvider, setFetchedModelsByProvider] = useState<Record<string, CloudModelOption[]>>({});
+    const handleCodexModelsLoaded = useCallback((models: ModelConfig[]): void => {
+        upsertDynamicModels('openai-codex', models);
+        setFetchedModelsByProvider((current) => ({
+            ...current,
+            'openai-codex': models.map((model) => ({
+                id: model.id,
+                name: model.name,
+                vision: model.supportsVision,
+                conversation: isConversationModelConfig(model)
+            }))
+        }));
+    }, [upsertDynamicModels]);
     // 各 provider 的刷新按钮状态机（与 test 按钮范式一致）
     const [modelRefreshStatus, setModelRefreshStatus] = useState<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
     const [modelRefreshMessage, setModelRefreshMessage] = useState<Record<string, string>>({});
@@ -2932,6 +2949,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                     {/* ==================== AI 模型 Tab ==================== */}
                     {activeTab === 'ai-models' && (
                         <div className="tab-content">
+                            <ChatGptSubscriptionCard
+                                onModelsLoaded={handleCodexModelsLoaded}
+                                imageGenerationProvider={localIntegration.imageGenerationProvider}
+                                onImageGenerationProviderChange={(provider) => setLocalIntegration((current) => ({
+                                    ...current,
+                                    imageGenerationProvider: provider
+                                }))}
+                            />
+
                             {/* 模型模式选择 */}
                             <div className="config-section">
                                 <h3 className="section-title">运行模式</h3>
@@ -2956,9 +2982,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                         <div className="mode-header">
                                             <span className="mode-icon">☁️</span>
                                             <span className="mode-name">云端模式</span>
-                                            {localKeys.openrouter && <span className="badge success">已配置</span>}
                                         </div>
-                                        <p className="mode-desc">通过 OpenRouter 使用 Claude/GPT-4o 等</p>
+                                        <p className="mode-desc">使用 ChatGPT 订阅或已配置 API 的云端模型</p>
                                     </div>
                                 </div>
                                 <p className="section-desc" style={{ marginTop: '8px' }}>
@@ -3022,8 +3047,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                         OLLAMA_MODELS.forEach(m => visibleIds.add(m.id));
                                                     }
                                                     if (localPrefs.mode === 'cloud') {
-                                                        ['deepseek', 'google', 'xiaomi', 'ollama-cloud', 'openrouter'].forEach(pv => {
-                                                            buildProviderOptions(pv, fetchedModelsByProvider).forEach(m => visibleIds.add(m.id));
+                                                        CLOUD_MODEL_OPTION_GROUPS.forEach(group => {
+                                                            buildProviderOptions(group.provider, fetchedModelsByProvider).forEach(m => visibleIds.add(m.id));
                                                         });
                                                     }
                                                     if (visibleIds.has(current)) return null;
@@ -3639,7 +3664,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                     {localKeys.bfl && <span className="badge success">已配置</span>}
                                 </div>
                                 <p className="section-desc">
-                                    FLUX 文生图服务，供设计 Agent 的「生成图片」工具使用。
+                                    FLUX 文生图服务。仅当「Agent 生图渠道」选择 BFL API 时，由「生成图片」工具使用。
                                 </p>
                                 <div className="form-group">
                                     <label>BFL API Key</label>

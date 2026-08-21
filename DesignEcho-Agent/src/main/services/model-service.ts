@@ -40,6 +40,7 @@ import {
     normalizeProviderNativeToolCitations
 } from '../../shared/provider-native-tools';
 import { normalizeStreamTextChunk } from '../../shared/stream-text-normalizer';
+import { CodexSubscriptionService } from './codex-subscription-service';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEEPSEEK_TEST_MODEL = 'deepseek-v4-pro';
@@ -264,9 +265,11 @@ export class ModelService {
     private deepseek: OpenAI | null = null;
     private ollamaBaseUrl = 'http://127.0.0.1:11434';
     private config: ModelServiceConfig;
+    private readonly codexSubscriptionService: CodexSubscriptionService | null;
 
-    constructor(config: ModelServiceConfig) {
+    constructor(config: ModelServiceConfig, codexSubscriptionService?: CodexSubscriptionService | null) {
         this.config = config;
+        this.codexSubscriptionService = codexSubscriptionService || null;
         this.initializeClients();
     }
 
@@ -432,11 +435,52 @@ export class ModelService {
                 return this.chatAnthropic(model as any, messages, options);
             case 'openai':
                 return this.chatOpenAI(model as any, messages, options);
+            case 'openai-codex': {
+                if (!this.codexSubscriptionService) {
+                    throw new Error('ChatGPT 订阅服务尚未初始化。');
+                }
+                const response = await this.codexSubscriptionService.chatWithTools(
+                    model.apiModelId,
+                    this.toAdapterMessages(messages),
+                    [],
+                    {
+                        timeoutMs: options?.timeoutMs
+                    }
+                );
+                return {
+                    text: response.content || '',
+                    usage: response.usage
+                };
+            }
             case 'deepseek':
                 return this.chatDeepSeek(model as any, messages, options);
             default:
                 throw new Error(`不支持的提供商: ${model.provider}`);
         }
+    }
+
+    private toAdapterMessages(messages: ModelMessage[]): AdapterMessage[] {
+        return messages.map((message) => {
+            if (typeof message.content === 'string') {
+                return { role: message.role, content: message.content };
+            }
+            return {
+                role: message.role,
+                contentBlocks: message.content.map((block) => {
+                    if (block.type === 'image' && block.image) {
+                        return {
+                            type: 'image' as const,
+                            data: block.image.data,
+                            mediaType: block.image.mediaType
+                        };
+                    }
+                    return {
+                        type: 'text' as const,
+                        text: String(block.text || '')
+                    };
+                })
+            };
+        });
     }
     
     /**
@@ -1725,6 +1769,20 @@ export class ModelService {
 
         // Resolve provider
         const { provider, apiModelName } = this.resolveProvider(modelId);
+        if (provider === 'openai-codex') {
+            if (!this.codexSubscriptionService) {
+                throw new Error('ChatGPT 订阅服务尚未初始化。');
+            }
+            return this.codexSubscriptionService.chatWithTools(
+                apiModelName,
+                messages,
+                tools,
+                {
+                    timeoutMs: options?.timeoutMs,
+                    nativeTools: options?.nativeTools
+                }
+            );
+        }
         const adapter = getProviderAdapter(provider, apiModelName);
         const thinkingRequestParams = configuredModel
             ? this.resolveThinkingRequestParams(configuredModel, options)
@@ -1970,6 +2028,26 @@ export class ModelService {
         }
 
         const { provider, apiModelName } = this.resolveProvider(modelId);
+        if (provider === 'openai-codex') {
+            if (!this.codexSubscriptionService) {
+                throw new Error('ChatGPT 订阅服务尚未初始化。');
+            }
+            const parsed = await this.codexSubscriptionService.chatWithTools(
+                apiModelName,
+                messages,
+                tools,
+                {
+                    timeoutMs: options?.timeoutMs,
+                    nativeTools: options?.nativeTools
+                },
+                signal
+            );
+            emitChunk({
+                type: 'done',
+                response: this.toAgentToolStreamResponse(parsed, 'fallback')
+            });
+            return;
+        }
         const adapter = getProviderAdapter(provider, apiModelName);
         const thinkingRequestParams = configuredModel
             ? this.resolveThinkingRequestParams(configuredModel, options)

@@ -65,6 +65,7 @@ import {
 } from '../../shared/config/models.config';
 import { setDynamicModels } from '../../shared/config/dynamic-model-registry';
 import { normalizeDynamicModelUsageConfig } from '../../shared/config/provider-model-merge';
+import { CODEX_SUBSCRIPTION_PROVIDER } from '../../shared/codex-subscription-contract';
 import { SKILL_REGISTRY } from '../../shared/skills/skill-declarations';
 import type { DesignDimensionSpec } from '../../shared/design-dimension-spec';
 
@@ -329,9 +330,12 @@ export interface MCPServerConfig {
     notes?: string;
 }
 
+export type ImageGenerationProvider = 'bfl' | 'codex-subscription';
+
 export interface IntegrationSettings {
     skills: Record<string, SkillToggleConfig>;
     mcpServers: MCPServerConfig[];
+    imageGenerationProvider: ImageGenerationProvider;
 }
 
 // 已移除 WorkerType / WorkerModelConfig / OrchestratorModelConfig：
@@ -625,6 +629,10 @@ function normalizePersistedDynamicModels(value: unknown): ModelConfig[] {
         .map(normalizeDynamicModelUsageConfig);
 }
 
+function excludeSessionBoundDynamicModels(models: ModelConfig[]): ModelConfig[] {
+    return models.filter((model) => model.provider !== CODEX_SUBSCRIPTION_PROVIDER);
+}
+
 function migrateRetiredXiaomiMimoModels(cloudModels?: TaskModelConfig): boolean {
     if (!cloudModels) return false;
     let changed = false;
@@ -678,7 +686,11 @@ const normalizeIntegrationSettings = (settings?: Partial<IntegrationSettings> | 
             }))
         : [];
 
-    return { skills, mcpServers };
+    const imageGenerationProvider = settings?.imageGenerationProvider === 'codex-subscription'
+        ? 'codex-subscription'
+        : 'bfl';
+
+    return { skills, mcpServers, imageGenerationProvider };
 };
 
 const defaultIntegrationSettings: IntegrationSettings = normalizeIntegrationSettings();
@@ -1807,7 +1819,8 @@ export const useAppStore = create<AppState>()(
                 // 对话数据通过独立文件存储，不再经过 Zustand persist
                 apiKeys: state.apiKeys,
                 modelPreferences: state.modelPreferences,
-                dynamicModels: state.dynamicModels,
+                // 订阅模型目录属于当前账号会话；冷启动必须重新向 Codex Runtime 核验。
+                dynamicModels: excludeSessionBoundDynamicModels(state.dynamicModels),
                 customModels: state.customModels,
                 mattingSettings: state.mattingSettings,
                 integrationSettings: state.integrationSettings,
@@ -1997,7 +2010,9 @@ export const useAppStore = create<AppState>()(
                     state.designKnowledgeSettings = normalizeDesignKnowledgeSettings(state.designKnowledgeSettings);
                     // 把持久化的动态模型注入 renderer 进程注册表，让 getModelById
                     // 在 hydrate 后立即能查到正确 apiModelId（不再走 slug 反推）。
-                    state.dynamicModels = normalizePersistedDynamicModels(state.dynamicModels);
+                    state.dynamicModels = excludeSessionBoundDynamicModels(
+                        normalizePersistedDynamicModels(state.dynamicModels)
+                    );
                     setDynamicModels(state.dynamicModels);
                 }
                 

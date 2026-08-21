@@ -9,6 +9,7 @@ import type { TaskOrchestrator } from '../services/task-orchestrator';
 import type { LogService } from '../services/log-service';
 import type { MattingService } from '../services/matting-service';
 import type { ResourceManagerService } from '../services/resource-manager-service';
+import type { CodexSubscriptionService } from '../services/codex-subscription-service';
 
 /**
  * IPC Handler 上下文 - 包含所有可能需要的服务引用
@@ -20,6 +21,7 @@ export interface IPCContext {
     logService: LogService | null;
     mattingService: MattingService | null;
     resourceManagerService: ResourceManagerService | null;
+    codexSubscriptionService: CodexSubscriptionService | null;
     mainWindow: Electron.BrowserWindow | null;
 }
 

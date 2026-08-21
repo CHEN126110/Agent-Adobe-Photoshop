@@ -36,7 +36,20 @@ function App() {
         INITIAL_WORKSPACE_TABS_STATE
     );
     const [chatDraftRequest, setChatDraftRequest] = useState<{ revision: number; text: string } | null>(null);
-    const { setPluginConnected, isPluginConnected, currentProject, setCurrentProject, apiKeys, modelPreferences, dynamicModels, recentProjects, ecommerceStructure, setEcommerceStructure, theme } = useAppStore();
+    const {
+        setPluginConnected,
+        isPluginConnected,
+        currentProject,
+        setCurrentProject,
+        apiKeys,
+        modelPreferences,
+        dynamicModels,
+        upsertDynamicModels,
+        recentProjects,
+        ecommerceStructure,
+        setEcommerceStructure,
+        theme
+    } = useAppStore();
     
     // 计算实际主题（处理 system 模式）
     const effectiveTheme = useMemo(() => {
@@ -64,6 +77,80 @@ function App() {
     const chatDraftRevisionRef = useRef(0);
 
     useEffect(() => installManualSkuColorCardBridge(), []);
+
+    // ChatGPT 订阅目录属于当前登录会话，不能持久化成永久模型配置；但也不能要求用户
+    // 每次重启后先打开设置页。应用启动时从主进程重新验证账户并恢复目录，账户变化时
+    // 由同一入口失效并重取。短暂的 IPC 初始化竞态只重试，不把未知状态写成“未登录”。
+    useEffect(() => {
+        let disposed = false;
+        let retryTimer: number | null = null;
+        let revision = 0;
+
+        const scheduleHydration = (delayMs: number, attempt = 0): void => {
+            if (retryTimer !== null) window.clearTimeout(retryTimer);
+            retryTimer = window.setTimeout(() => {
+                retryTimer = null;
+                void hydrateSubscriptionModels(attempt);
+            }, delayMs);
+        };
+
+        const hydrateSubscriptionModels = async (attempt: number): Promise<void> => {
+            const requestRevision = ++revision;
+            const api = window.designEcho;
+            if (!api?.getCodexSubscriptionStatus || !api.listCodexSubscriptionModels) return;
+
+            try {
+                const statusResult = await api.getCodexSubscriptionStatus();
+                if (disposed || requestRevision !== revision) return;
+                if (!statusResult.success || !statusResult.status.runtimeAvailable) {
+                    if (attempt < 4) scheduleHydration(500 * (attempt + 1), attempt + 1);
+                    return;
+                }
+                if (!statusResult.status.signedIn) {
+                    upsertDynamicModels('openai-codex', []);
+                    return;
+                }
+
+                const modelResult = await api.listCodexSubscriptionModels(false);
+                if (disposed || requestRevision !== revision) return;
+                upsertDynamicModels('openai-codex', modelResult.success ? modelResult.models : []);
+            } catch (error) {
+                if (disposed || requestRevision !== revision) return;
+                if (attempt < 4) {
+                    retryTimer = window.setTimeout(() => {
+                        retryTimer = null;
+                        void hydrateSubscriptionModels(attempt + 1);
+                    }, 400 * (attempt + 1));
+                    return;
+                }
+                console.warn('[App] ChatGPT 订阅模型目录恢复失败:', error);
+            }
+        };
+
+        const unsubscribe = window.designEcho?.onCodexSubscriptionStateChanged?.((event) => {
+            revision += 1;
+            if (event.reason === 'account') {
+                upsertDynamicModels('openai-codex', []);
+                scheduleHydration(0);
+                return;
+            }
+            if (event.reason === 'ready') {
+                scheduleHydration(0);
+                return;
+            }
+            // Runtime 进程退出不代表账户或已验证模型目录失效。保留目录让下一次调用仍能
+            // 正确路由到订阅 provider，同时后台做有限次数的 Runtime 重启与目录复核。
+            scheduleHydration(750, 1);
+        });
+
+        scheduleHydration(0);
+        return () => {
+            disposed = true;
+            revision += 1;
+            if (retryTimer !== null) window.clearTimeout(retryTimer);
+            unsubscribe?.();
+        };
+    }, [upsertDynamicModels]);
 
     const commitProjectSession = useCallback((project: ProjectInfo | null, pendingDraft?: string): void => {
         const nextSession = project ? `${project.id}:${project.path}` : null;
@@ -308,8 +395,8 @@ function App() {
             // 之前只有用户手动改设置才推送——每次重启后主进程的视觉/文案模型选择
             // 都退回默认（本地 llava），用户配置的视觉模型从未在素材分析中生效（实测）。
             // 该 effect 在挂载与偏好变化时都会运行，恰好覆盖启动同步。
-            // 同时随通道下发持久化的 dynamicModels，作主进程动态模型注册表的冷启动回灌：
-            // 确保主进程 getModelById 在首次 chat() 前就能查到带点 apiModelId（修复 slug 反推丢点）。
+            // 同时下发可持久化 provider 的动态模型，作主进程注册表的冷启动回灌。
+            // ChatGPT 订阅目录是会话态，不落盘；它由上面的账户验证流程单独恢复。
             Promise.resolve(
                 window.designEcho?.setModelPreferences?.({ ...modelPreferences, dynamicModels })
             ).catch((error: any) => {

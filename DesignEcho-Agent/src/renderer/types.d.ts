@@ -7,6 +7,16 @@ import type {
 } from '../shared/design-knowledge-search';
 import type { ModelConfig } from '../shared/config/models.config';
 import type {
+    CodexSubscriptionImageGenerationCapabilityResult,
+    CodexSubscriptionImageGenerationRequest,
+    CodexSubscriptionImageGenerationResult,
+    CodexSubscriptionModelListResult,
+    CodexSubscriptionOperationResult,
+    CodexSubscriptionRateLimitsResult,
+    CodexSubscriptionStateChangedEvent,
+    CodexSubscriptionStatusResult
+} from '../shared/codex-subscription-contract';
+import type {
     ArtifactRepositoryReadProjection,
     ArtifactRepositoryReadResult,
     ArtifactRuntimeBinding
@@ -232,6 +242,20 @@ export interface DesignEchoAPI {
         error?: string;
         baseUrlUsed?: string;
     }>;
+
+    getCodexSubscriptionStatus?: () => Promise<CodexSubscriptionStatusResult>;
+    startCodexSubscriptionLogin?: () => Promise<CodexSubscriptionOperationResult>;
+    cancelCodexSubscriptionLogin?: () => Promise<CodexSubscriptionOperationResult>;
+    logoutCodexSubscription?: () => Promise<CodexSubscriptionOperationResult>;
+    listCodexSubscriptionModels?: (forceRefresh?: boolean) => Promise<CodexSubscriptionModelListResult>;
+    getCodexSubscriptionRateLimits?: () => Promise<CodexSubscriptionRateLimitsResult>;
+    getCodexSubscriptionImageGenerationCapability?: () => Promise<CodexSubscriptionImageGenerationCapabilityResult>;
+    generateCodexSubscriptionImage?: (
+        request: CodexSubscriptionImageGenerationRequest
+    ) => Promise<CodexSubscriptionImageGenerationResult>;
+    onCodexSubscriptionStateChanged?: (
+        callback: (event: CodexSubscriptionStateChangedEvent) => void
+    ) => () => void;
 
     probeDesignKnowledgeSearxng?: (settings: unknown) => Promise<{
         success: boolean;

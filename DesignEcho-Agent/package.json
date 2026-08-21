@@ -95,9 +95,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
     "@google/generative-ai": "^0.21.0",
+    "@openai/codex": "0.149.0",
     "@volcengine/openapi": "^1.36.0",
     "@volcengine/tos-sdk": "^2.9.1",
     "ag-psd": "^29.1.0",
+    "ajv": "^8.20.0",
     "axios": "^1.13.2",
     "onnxruntime-node": "^1.23.2",
     "openai": "^4.70.0",
@@ -113,7 +115,6 @@
     "@types/ws": "^8.5.0",
     "@vitejs/plugin-react": "^4.2.0",
     "@xyflow/react": "^12.11.2",
-    "ajv": "^8.20.0",
     "autoprefixer": "^10.4.16",
     "concurrently": "^8.2.0",
     "cross-env": "^10.1.0",
@@ -139,10 +140,16 @@
       "node_modules/**/*",
       "public/**/*"
     ],
+    "asarUnpack": [
+      "node_modules/@openai/codex-*/vendor/**/*"
+    ],
     "win": {
       "target": "nsis",
       "icon": "resources/icon.ico",
       "files": [
+        "dist/**/*",
+        "node_modules/**/*",
+        "public/**/*",
         "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**/*",
         "!node_modules/onnxruntime-node/bin/napi-v6/linux/**/*",
         "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**/*"

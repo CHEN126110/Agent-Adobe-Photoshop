@@ -1471,12 +1471,17 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'generateImage',
-        description: 'Generate a new image with Black Forest Labs FLUX. Use this for new visual assets, not for editing the active Photoshop document. The generated result must still be reviewed before it is placed into a design.',
+        description: 'Generate a new bitmap with the image provider selected in Settings: gpt-image-2 through the signed-in ChatGPT/Codex subscription, or FLUX through the configured BFL API. Use this for new visual assets, not for editing the active Photoshop document. The generated result must still be reviewed before it is placed into a design.',
         inputSchema: objectSchema({
             prompt: { type: 'string' },
-            model: { type: 'string', enum: ['flux-2-max', 'flux-2-pro', 'flux-2-klein-9b', 'flux-2-klein-4b'] },
-            width: { type: 'number' },
-            height: { type: 'number' }
+            model: {
+                type: 'string',
+                enum: ['flux-2-max', 'flux-2-pro', 'flux-2-klein-9b', 'flux-2-klein-4b'],
+                description: 'Only used by the BFL route. The ChatGPT/Codex subscription route always uses gpt-image-2.'
+            },
+            width: { type: 'number', description: 'Target width. Subscription generation may return the closest supported size; trust the returned width.' },
+            height: { type: 'number', description: 'Target height. Subscription generation may return the closest supported size; trust the returned height.' },
+            transparentBackground: { type: 'boolean', description: 'Request transparency when supported. Mainly intended for isolated product or element assets.' }
         }, ['prompt'])
     },
     {

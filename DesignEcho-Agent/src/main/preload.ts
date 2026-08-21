@@ -7,6 +7,16 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ModelConfig } from '../shared/config/models.config';
 import type {
+    CodexSubscriptionImageGenerationCapabilityResult,
+    CodexSubscriptionImageGenerationRequest,
+    CodexSubscriptionImageGenerationResult,
+    CodexSubscriptionModelListResult,
+    CodexSubscriptionOperationResult,
+    CodexSubscriptionRateLimitsResult,
+    CodexSubscriptionStateChangedEvent,
+    CodexSubscriptionStatusResult
+} from '../shared/codex-subscription-contract';
+import type {
     ArtifactRuntimeBinding
 } from '../shared/agent-runtime-v5/artifact-repository-contract';
 import type { ArtifactRef } from '../shared/agent-runtime-v5/contracts/common';
@@ -123,6 +133,29 @@ const api = {
     // 从某 provider 官方接口拉取最新模型列表（apiKey 由主进程取，渲染侧不传 key）
     listProviderModels: (provider: string) =>
         ipcRenderer.invoke('model:listProviderModels', provider),
+    getCodexSubscriptionStatus: () =>
+        ipcRenderer.invoke('codexSubscription:getStatus') as Promise<CodexSubscriptionStatusResult>,
+    startCodexSubscriptionLogin: () =>
+        ipcRenderer.invoke('codexSubscription:startLogin') as Promise<CodexSubscriptionOperationResult>,
+    cancelCodexSubscriptionLogin: () =>
+        ipcRenderer.invoke('codexSubscription:cancelLogin') as Promise<CodexSubscriptionOperationResult>,
+    logoutCodexSubscription: () =>
+        ipcRenderer.invoke('codexSubscription:logout') as Promise<CodexSubscriptionOperationResult>,
+    listCodexSubscriptionModels: (forceRefresh?: boolean) =>
+        ipcRenderer.invoke('codexSubscription:listModels', forceRefresh) as Promise<CodexSubscriptionModelListResult>,
+    getCodexSubscriptionRateLimits: () =>
+        ipcRenderer.invoke('codexSubscription:getRateLimits') as Promise<CodexSubscriptionRateLimitsResult>,
+    getCodexSubscriptionImageGenerationCapability: () =>
+        ipcRenderer.invoke('codexSubscription:getImageGenerationCapability') as Promise<CodexSubscriptionImageGenerationCapabilityResult>,
+    generateCodexSubscriptionImage: (request: CodexSubscriptionImageGenerationRequest) =>
+        ipcRenderer.invoke('codexSubscription:generateImage', request) as Promise<CodexSubscriptionImageGenerationResult>,
+    onCodexSubscriptionStateChanged: (callback: (event: CodexSubscriptionStateChangedEvent) => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, payload: CodexSubscriptionStateChangedEvent) => {
+            callback(payload);
+        };
+        ipcRenderer.on('codexSubscription:stateChanged', handler);
+        return () => ipcRenderer.removeListener('codexSubscription:stateChanged', handler);
+    },
     probeDesignKnowledgeSearxng: (settings: unknown) =>
         ipcRenderer.invoke('designKnowledge:probeSearxngHealth', settings),
     probeDesignKnowledgeEagleReadonly: (settings?: unknown) =>

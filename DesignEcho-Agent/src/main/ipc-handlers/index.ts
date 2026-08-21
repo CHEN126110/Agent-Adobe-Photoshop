@@ -37,6 +37,7 @@ import { registerEagleKnowledgeHandlers } from './eagle-knowledge-handlers';
 import { registerEagleLibraryHandlers } from './eagle-library-handlers';
 import { registerWebSearchHandlers } from './web-search-handlers';
 import { registerModelListingHandlers } from './model-listing-handlers';
+import { registerCodexSubscriptionHandlers } from './codex-subscription-handlers';
 import type { IPCContext } from './types';
 
 export { IPCContext } from './types';
@@ -143,5 +144,8 @@ export function setupIPCHandlers(context: IPCContext): void {
 
     // Provider 列模型服务（从各 provider 官方接口拉取最新模型 id，合并进设置可选列表）
     registerModelListingHandlers(context);
+
+    // ChatGPT 订阅登录、目录与限额；协议和凭据不向 renderer 暴露。
+    registerCodexSubscriptionHandlers(context);
 
 }
