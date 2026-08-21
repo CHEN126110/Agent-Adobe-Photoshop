@@ -1452,10 +1452,6 @@ async function handleOneClickBeautify() {
 let optimizeTextPollingTimer: ReturnType<typeof setInterval> | null = null;
 let optimizeTextLastLayerId: number | null = null;
 let optimizeTextLockedLayerId: number | null = null;
-// 文案模型能否读图（由 Agent 在上一次生成结果里回传），按"面板选的模型"分别记：
-// 空 key 表示"跟随主模型"。未知时按能读图处理；明确为 false 时不再自动截取当前画面，
-// 那张图会在 Agent 侧被丢弃，白白多一次 Photoshop 导出和几秒等待。
-const optimizeTextVisionSupportedByModel = new Map<string, boolean>();
 // 当前选中态签名（图层 + 文本内容）。只按 layerId 判重时，用户在 Photoshop 里
 // 直接改了同一图层的文字，面板会一直显示旧文本。
 let optimizeTextLastSignature = '';
@@ -1563,8 +1559,6 @@ function startOptimizeTextPolling() {
     stopOptimizeTextPolling();
     optimizeTextLastLayerId = null;
     optimizeTextLastSignature = '';
-    // 每次进入撰写页重新探一次模型视觉能力：用户可能在设置里换了主模型
-    optimizeTextVisionSupportedByModel.clear();
     // 立即检测一次
     pollOptimizeTextSelection();
     // 先按兜底心跳起轮询；事件监听注册成功后再把频率降下来。
@@ -1780,7 +1774,6 @@ async function handleGenerateOptimizeText(payload: any) {
             sendToWebView('toast', { message: selected?.error || '请先在 Photoshop 手动选中一个文本图层', type: 'warning' });
             return;
         }
-        const selectedModelId = String(payload?.modelId || '').trim();
         // 参考图只用用户自己选的（粘贴 / 本地图片 / 读剪贴板）。
         // 不再自动截当前画面：那张图未必是这句文案对应的画面，还要多花一次
         // Photoshop 导出和几秒等待，模型看不了图时更是白做。
@@ -1808,16 +1801,11 @@ async function handleGenerateOptimizeText(payload: any) {
             maxChars: Number(payload?.maxChars) || undefined,
             image: payload?.image || null,
             imageSource: payload?.image ? String(payload?.imageSource || 'manual') : 'none',
-            // 面板单独选的文案模型；空字符串表示跟随主模型
-            modelId: String(payload?.modelId || '').trim(),
             charCount,
             lineCount: lines.length,
             lineCharCounts: lines.map(l => l.length)
         }, 120000);
         sendToWebView('hideLoading', {});
-        if (typeof result?.visionSupported === 'boolean') {
-            optimizeTextVisionSupportedByModel.set(selectedModelId, result.visionSupported);
-        }
         if (result?.success) {
             sendToWebView('optimizeTextCandidates', result);
             if (result?.imageIgnored && result?.imageIgnoredReason) {

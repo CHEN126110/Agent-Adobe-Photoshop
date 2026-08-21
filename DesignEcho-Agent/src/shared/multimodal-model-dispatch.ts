@@ -1,5 +1,8 @@
 import type { ModelPreferences } from './config/models.config';
-import { getModelById, isConversationModelConfig } from './config/models.config';
+import {
+    getModelById,
+    isAgentMultimodalModelConfig
+} from './config/models.config';
 import {
     getModelPriorityForConversationTask,
     type ConversationTaskType
@@ -42,7 +45,7 @@ export interface ModelDispatchHandoffBoundary {
 
 export interface MultimodalModelDispatchPlan {
     version: 'multimodal-model-dispatch/v0';
-    architecture: 'stable-primary-agent-with-expert-models';
+    architecture: 'unified-multimodal-agent-model';
     consumer: ModelDispatchConsumer;
     role?: DesignTeammateRole;
     taskType: ConversationTaskType;
@@ -90,13 +93,13 @@ function isKnownOrAvailableModel(modelId: string, availableModels?: string[]): b
 function modelMeetsDispatchRequirements(
     modelId: string,
     input: BuildMultimodalModelDispatchInput,
-    taskType: ConversationTaskType
+    _taskType: ConversationTaskType
 ): boolean {
     if (!isKnownOrAvailableModel(modelId, input.availableModels)) return false;
     const model = getModelById(modelId);
-    if (!isConversationModelConfig(model)) return false;
-    const requireVision = input.requireVision ?? taskType === 'visual';
-    if (requireVision && model?.supportsVision !== true) return false;
+    // 所有 Agent 消费方都走同一个能力真相源，不能让文本-only 模型在
+    // logic/copywriting 角色或 fallback 队列里重新进入运行时。
+    if (!isAgentMultimodalModelConfig(model)) return false;
     if ((input.requireToolUse ?? true) && model?.supportsToolUse === false) return false;
     return true;
 }
@@ -140,16 +143,16 @@ function buildRequiredContext(input: BuildMultimodalModelDispatchInput, taskType
 
 function buildPublicReason(input: BuildMultimodalModelDispatchInput, slot: ModelCapabilitySlot, selectedModelId: string): string {
     const rolePart = input.role ? `${input.role} ` : '';
-    const modelRole = slot === 'visual' ? '视觉模型' : '主模型';
+    const modelRole = 'Agent 模型';
     if (!selectedModelId) {
         return `${rolePart}这一步暂时没有可用的${modelRole}，请检查模型设置。`;
     }
     if (input.consumer === 'primary-agent') {
-        return `主模型 ${selectedModelId} 负责理解需求、设计判断和最终回复；需要看图时再请视觉模型补充。`;
+        return `Agent 模型 ${selectedModelId} 负责理解需求、读取画面、设计判断、工具调用和最终回复。`;
     }
     return slot === 'visual'
-        ? `${rolePart}这一步交给视觉模型 ${selectedModelId} 看图，结论交回主模型继续完成任务。`
-        : `${rolePart}这一步由主模型 ${selectedModelId} 完成专业判断。`;
+        ? `${rolePart}这一步由同一个 Agent 模型 ${selectedModelId} 读取画面并完成判断。`
+        : `${rolePart}这一步由同一个 Agent 模型 ${selectedModelId} 完成专业判断。`;
 }
 
 export function buildMultimodalModelDispatchPlan(
@@ -158,21 +161,28 @@ export function buildMultimodalModelDispatchPlan(
     const taskType = resolveDispatchTaskType(input);
     const capabilitySlot = resolveCapabilitySlotForTaskType(taskType);
     const explicitModelId = String(input.explicitModelId || '').trim();
-    const candidates = uniqNonEmpty([
-        explicitModelId,
-        ...getModelPriorityForConversationTask(input.prefs, taskType, {
+    const configuredIdentity = String(
+        input.prefs?.primaryModel || input.prefs?.visualModel || ''
+    ).trim();
+    const configuredCandidates = getModelPriorityForConversationTask(input.prefs, taskType, {
             mode: input.mode,
             includeFallback: input.includeFallback,
             includeCrossTaskBackups: input.includeCrossTaskBackups ?? true,
-            requireVision: input.requireVision ?? taskType === 'visual',
+            requireVision: true,
             requireToolUse: input.requireToolUse ?? true
-        })
-    ]).filter((modelId) => modelMeetsDispatchRequirements(modelId, input, taskType));
+        });
+    // 一旦存在用户配置身份，显式 override 也不能把某个角色切到第二个模型。
+    // explicitModelId 只服务于“配置读取失败且没有任何用户模型身份”的恢复入口。
+    const candidates = uniqNonEmpty(
+        configuredIdentity
+            ? configuredCandidates
+            : [explicitModelId, ...configuredCandidates]
+    ).filter((modelId) => modelMeetsDispatchRequirements(modelId, input, taskType));
     const selectedModelId = candidates[0] || '';
 
     return {
         version: 'multimodal-model-dispatch/v0',
-        architecture: 'stable-primary-agent-with-expert-models',
+        architecture: 'unified-multimodal-agent-model',
         consumer: input.consumer,
         ...(input.role ? { role: input.role } : {}),
         taskType,
@@ -191,9 +201,9 @@ export function buildMultimodalModelDispatchPlan(
             expertReturnsConclusionOnly: true,
             expertMayDirectlyExecuteTools: false,
             notes: [
-                '主 Agent 负责最终决策和工具执行顺序。',
-                '专家模型只读取结构化上下文，返回判断、建议或评审结论。',
-                '不要把完整历史对话无差别交给专家模型，避免上下文漂移。'
+                '同一个 Agent 模型负责理解、视觉观察、最终决策和工具执行顺序。',
+                '团队角色只隔离职责与上下文，不切换基础模型。',
+                '不要把完整历史对话无差别交给角色任务，避免上下文漂移。'
             ]
         }
     };
@@ -202,21 +212,21 @@ export function buildMultimodalModelDispatchPlan(
 export function formatModelDispatchTrace(plan: MultimodalModelDispatchPlan): string {
     const roleText = plan.role ? `（${plan.role}）` : '';
     const slotLabel = formatCapabilitySlotLabel(plan.capabilitySlot);
-    const modelText = plan.selectedModelId || '默认模型';
+    const modelText = plan.selectedModelId || '未解析';
     return [
-        `模型调度${roleText}：使用${slotLabel}模型 ${modelText}。`,
+        `模型调度${roleText}：Agent 模型 ${modelText}；本步侧重${slotLabel}。`,
         plan.publicReason,
-        '边界：主 Agent 保留最终判断；专家模型只提供结论，不直接接管工具执行。',
+        '边界：角色可分工，但基础模型保持一致；主 Agent 保留最终判断。',
         `上下文：使用结构化任务摘要，不直接传递完整对话；需要：${plan.contextPolicy.requiredContext.join('、')}。`
     ].join('\n');
 }
 
 export function formatPrimaryAgentDispatchPromptSection(plan: MultimodalModelDispatchPlan): string {
     return [
-        '## 模型分工',
-        `- 你是本轮主模型：${plan.selectedModelId || '当前配置的主模型'}。`,
-        '- 你负责理解用户、做设计判断、安排必要动作并给出最终回复。',
-        '- 只有在需要看图或复核画面时才请视觉模型补充；视觉观察不替代你的最终判断。',
+        '## Agent 模型',
+        `- 本轮统一使用视觉多模态模型：${plan.selectedModelId || '当前配置的 Agent 模型'}。`,
+        '- 你负责理解用户、读取画面、做设计判断、安排必要动作并给出最终回复。',
+        '- 不存在独立视觉模型转述；你必须直接依据本轮真实图像观察形成判断。',
         '- 面向用户只谈设计目标、画面判断、处理结果和必要选择，不谈模型分工或内部处理机制。',
         `- 继续任务所需信息：${plan.contextPolicy.requiredContext.join('、')}。`
     ].join('\n');

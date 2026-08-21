@@ -260,6 +260,7 @@ import {
 // 导入模型配置
 import {
     getModelById,
+    isAgentMultimodalModelId,
     isModelThinkingUserControllable,
     normalizeModelRunMode,
     resolveModelContextWindow,
@@ -1391,26 +1392,11 @@ function resolveComposerThinkingModelIds(preferences?: Partial<ModelPreferences>
     return uniqueModelIds(ids).filter(isModelThinkingUserControllable);
 }
 
-const PROVIDER_NATIVE_WEB_SEARCH_MODEL_PRIORITY = [
-    'xiaomi-mimo-v2.5-pro',
-    'xiaomi-mimo-v2.5'
-];
-
 /** 输入栏模型选择器上的运行模式徽标文案（与设置页「运行模式」同名）。 */
 const COMPOSER_RUN_MODE_LABELS: Record<'local' | 'cloud', string> = {
     local: '本地模式',
     cloud: '云端模式'
 };
-
-function getProviderNativeWebSearchModelPriority(apiKeys: unknown): string[] {
-    const apiKeyRecord = (apiKeys || {}) as Record<string, unknown>;
-    return PROVIDER_NATIVE_WEB_SEARCH_MODEL_PRIORITY.filter((modelId) => {
-        const model = getModelById(modelId);
-        if (!model || model.provider !== 'xiaomi') return false;
-        const requiredApiKey = model.requiredApiKey;
-        return !requiredApiKey || Boolean(String(apiKeyRecord[requiredApiKey] || '').trim());
-    });
-}
 
 function compactModelFailureText(value: unknown): string {
     return String(value || '')
@@ -2072,40 +2058,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         // App.tsx 的偏好同步 effect 会防抖推送 window.designEcho.setModelPreferences 到主进程
         // （含冷启动回灌），与 Thinking 胶囊同一条同步链路，重启后依然生效。
         setModelPreferences(nextMode
-            ? { primaryModel: nextModelId, mode: nextMode }
-            : { primaryModel: nextModelId });
+            ? { primaryModel: nextModelId, visualModel: nextModelId, mode: nextMode }
+            : { primaryModel: nextModelId, visualModel: nextModelId });
     }, [setModelPreferences]);
 
-    // 视觉模型只写自己的槽位，不动运行模式：
-    // 运行模式描述的是主模型走哪条渠道；视觉允许跨渠道搭配
-    //（例如云端主模型负责推理、本地 LLaVA 负责看图，省钱也不外传画面）。
-    const handleSelectComposerVisualModel = useCallback((nextModelIdRaw: string) => {
-        const nextModelId = nextModelIdRaw.trim();
-        if (!nextModelId) return;
-        setModelPreferences({ visualModel: nextModelId });
-    }, [setModelPreferences]);
-
-    const composerModelSlots = useMemo(() => [
-        {
-            key: 'primary',
-            label: '主模型',
-            value: composerPrimaryModelId,
-            onChange: handleSelectComposerPrimaryModel,
-            hint: '负责理解目标、规划、文案与 Photoshop 工具调用。'
-        },
-        {
-            key: 'visual',
-            label: '视觉模型',
-            value: modelPreferences?.visualModel || '',
-            onChange: handleSelectComposerVisualModel,
-            requireVision: true,
-            hint: '只在需要看图、读画布或视觉质检时调用，结论交回主模型裁决。'
-        }
-    ], [
+    const composerModelSlot = useMemo(() => ({
+        key: 'agent',
+        label: 'Agent 模型',
+        value: composerPrimaryModelId,
+        onChange: handleSelectComposerPrimaryModel,
+        hint: '同一个视觉多模态模型负责理解、看图、规划与 Photoshop 工具调用。'
+    }), [
         composerPrimaryModelId,
-        handleSelectComposerPrimaryModel,
-        handleSelectComposerVisualModel,
-        modelPreferences?.visualModel
+        handleSelectComposerPrimaryModel
     ]);
 
     // 工具定义体积。
@@ -5771,72 +5736,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 });
                 const latestModelState = useAppStore.getState();
                 const latestModelPreferences = latestModelState.modelPreferences || modelPreferences;
-                const latestApiKeys = latestModelState.apiKeys || {};
-                const getLivePriorityForTask = (modelTaskType: ConversationTaskType) =>
-                    getModelPriorityForConversationTask(latestModelPreferences, modelTaskType, {
-                        apiKeys: latestApiKeys
-                    });
-                const getLiveRecoveryPriorityForTask = (modelTaskType: ConversationTaskType) =>
-                    getModelRecoveryPriorityForConversationTask(latestModelPreferences, modelTaskType, {
-                        apiKeys: latestApiKeys
-                    });
-                // 自动降级关闭时「只使用用户设置的模型」：不并入 recovery 候选。
-                // recovery 列表硬编码 includeFallback:true（model-selection.ts getModelRecoveryPriorityForConversationTask），
-                // 会把用户从没在能力槽配过的 configured-cloud-backups / 跨任务备份拉进候选逐个静默尝试
-                // （实测命中过用户从未配置 Key 的中转平台模型，日志 401 余额不足）。autoFallback=true 时维持原有 recovery 行为不变。
-                const autoFallbackEnabled = latestModelPreferences?.autoFallback === true;
-                const getRecoveryForTaskWhenAllowed = (modelTaskType: ConversationTaskType) =>
-                    autoFallbackEnabled ? getLiveRecoveryPriorityForTask(modelTaskType) : [];
-                let modelsToTry = uniqueModelIds([
-                    ...getLivePriorityForTask(taskType),
-                    ...getRecoveryForTaskWhenAllowed(taskType)
-                ]);
-                if (isDirectResponseLikeCall && !shouldUseAttachedImages) {
-                    modelsToTry = uniqueModelIds([
-                        ...getLivePriorityForTask('general'),
-                        ...getLivePriorityForTask('copywriting'),
-                        ...getRecoveryForTaskWhenAllowed('general'),
-                        ...getRecoveryForTaskWhenAllowed('copywriting'),
-                        ...modelsToTry
-                    ]);
-                }
-                if (canAttachProviderNativeWebSearchToModelCall(options)) {
-                    modelsToTry = uniqueModelIds([
-                        ...getProviderNativeWebSearchModelPriority(latestApiKeys),
-                        ...modelsToTry
-                    ]);
-                }
-                // 用户自己选定的主模型永远作为最后兜底候选。
-                //
-                // 它和上面被 autoFallback 挡掉的 recovery 列表性质不同：recovery 会拉进用户从没配过的
-                // 跨 provider 备份（实测命中过未配置 Key 的中转平台模型并报 401 余额不足），而 primaryModel 是用户在
-                // 设置页/输入栏亲手选中、通常还测过连通性的那一个。「只用我设置的模型」要挡的是前者。
-                //
-                // 真机 2026-08-01：logic 任务槽只解出 deepseek-v4-flash 一个候选，它一失败就没有下一个可试，
-                // 于是直接对用户报「当前模型没有通过认证」——而用户配好并测通的 deepseek-v4-pro 就在旁边，
-                // 从头到尾没被用上。用户只能反复去检查一份本来就正确的配置。
-                //
-                // 视觉调用除外：主模型未必支持看图，混进去会造成「静默失明」（模型看不见却照常作答）。
                 const userPrimaryModelId = String(latestModelPreferences?.primaryModel || '').trim();
-                if (userPrimaryModelId && !shouldUseAttachedImages) {
-                    modelsToTry = uniqueModelIds([...modelsToTry, userPrimaryModelId]);
+                // 单模型运行边界：普通回复、路由、工具循环与图像输入都只用用户选择的同一个
+                // 已验证全模态模型。原生 web_search 不再成为偷偷换模型的理由；当前模型不支持时
+                // 应走显式搜索工具或如实失败。
+                const modelsToTry = userPrimaryModelId && isAgentMultimodalModelId(userPrimaryModelId)
+                    ? [userPrimaryModelId]
+                    : [];
+                if (modelsToTry.length === 0) {
+                    throw new Error(
+                        `当前选择的 Agent 模型 ${userPrimaryModelId || '未配置'} 尚未确认同时具备读图与工具调用能力，`
+                        + '本轮已停止且未改用其他模型。请在模型设置中刷新目录或选择视觉多模态 Agent 模型。'
+                    );
                 }
                 agentLog(
                     'info',
-                    `[ModelRouting] 候选模型 ${taskType}/${options?.purpose || 'chat'}: ${modelsToTry.slice(0, 8).join(', ')}${modelsToTry.length > 8 ? ` +${modelsToTry.length - 8}` : ''}`
+                    `[ModelRouting] Agent 模型 ${taskType}/${options?.purpose || 'chat'}: ${modelsToTry[0]}`
                 );
-                const modelCandidateOffset = Number(options?.modelCandidateOffset);
-                if (modelsToTry.length > 1 && Number.isFinite(modelCandidateOffset) && modelCandidateOffset > 0) {
-                    const offset = Math.round(modelCandidateOffset) % modelsToTry.length;
-                    modelsToTry = [
-                        ...modelsToTry.slice(offset),
-                        ...modelsToTry.slice(0, offset)
-                    ];
-                    agentLog(
-                        'info',
-                        `[ModelRouting] 本次按候选偏移 ${offset} 重排：${modelsToTry.slice(0, 8).join(', ')}${modelsToTry.length > 8 ? ` +${modelsToTry.length - 8}` : ''}`
-                    );
-                }
                 const modelTimeoutMs = typeof options?.timeoutMs === 'number'
                     ? options.timeoutMs
                     : (isRouterCall || isVisibleReasoningCall || isDirectResponseLikeCall ? 15_000 : undefined);
@@ -5844,11 +5760,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 const recordModelFailure = (modelId: string, reason: unknown) => {
                     const message = compactModelFailureText(reason) || 'model call failed';
                     modelErrors.push(`${modelId}: ${message}`);
-                    agentLog('warn', `[ModelRouting] 模型 ${modelId} 不可用，尝试下一个候选: ${message.slice(0, 220)}`);
+                    agentLog('warn', `[ModelRouting] Agent 模型 ${modelId} 调用失败: ${message.slice(0, 220)}`);
                 };
                 
                 if (shouldUseAttachedImages && !isRouterCall && !isVisibleReasoningCall) {
-                    console.log('[ChatPanel] 📷 有附带图片，使用视觉模型:', modelsToTry.slice(0, 3).join(', '));
+                    console.log('[ChatPanel] 📷 有附带图片，使用 Agent 模型:', modelsToTry.slice(0, 3).join(', '));
                     console.log('[ChatPanel] 📷 附带图片信息:', {
                         count: attachedImages.length,
                         hasData: !!attachedImages[0]?.data,
@@ -5868,7 +5784,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         : injectImagesIntoLastUserMessage(msgs, attachedImages);
                 }
                 
-                // 按顺序尝试模型列表
+                // 兼容既有调用结构；单模型边界下这里只会执行一次。
                 for (const modelId of modelsToTry) {
                     throwIfRunStopped();
                     const nativeTools = buildRequestNativeToolsForModel(modelId, options);
@@ -6010,14 +5926,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         console.warn(`[ChatPanel] 模型 ${modelId} 调用失败:`, error);
                         const errorMessage = error instanceof Error ? error.message : String(error);
                         modelErrors.push(`${modelId}: ${errorMessage}`);
-                        // 继续尝试下一个模型
                     }
                 }
                 
-                console.warn('[ChatPanel] ⚠️ 所有模型调用失败');
+                console.warn('[ChatPanel] ⚠️ 当前 Agent 模型调用失败');
                 markProviderNativeWebSearchFailed();
                 const mergedError = Array.from(new Set(modelErrors)).slice(0, 3).join(' | ');
-                throw new Error(mergedError || '所有模型调用失败');
+                throw new Error(mergedError || '当前 Agent 模型调用失败');
             };
             (callModel as any).supportsModelMediatedUserReply = true;
             
@@ -7229,7 +7144,7 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
 
                                 {canShowComposerModelSelect && (
                                     <ModelPicker
-                                        slots={composerModelSlots}
+                                        slot={composerModelSlot}
                                         groups={composerModelGroups}
                                         runModeLabel={composerRunModeLabel}
                                         direction="up"

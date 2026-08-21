@@ -317,6 +317,9 @@ export function registerConfigHandlers(context: IPCContext): void {
     // 更新模型偏好设置
     ipcMain.handle('config:setModelPreferences', async (_event: IpcMainInvokeEvent, prefs: {
         mode?: 'local' | 'cloud';
+        primaryModel?: string;
+        /** @deprecated 旧 renderer 兼容；主进程会把它迁移为 primaryModel。 */
+        visualModel?: string;
         autoFallback?: boolean;
         preferredLocalModels?: { layoutAnalysis: string; textOptimize: string; visualAnalyze: string };
         preferredCloudModels?: { layoutAnalysis: string; textOptimize: string; visualAnalyze: string };
@@ -326,20 +329,21 @@ export function registerConfigHandlers(context: IPCContext): void {
         // 确保主进程 getModelById 在首次 chat() 前就能查到带点 apiModelId（不走 slug 反推）。
         dynamicModels?: ModelConfig[];
     }) => {
+        const { dynamicModels, ...modelPreferencesPatch } = prefs;
         if (taskOrchestrator) {
-            taskOrchestrator.updatePreferences(prefs);
+            taskOrchestrator.updatePreferences(modelPreferencesPatch);
             logService?.logAgent('info', `模型偏好已更新: 模式=${prefs.mode || 'unchanged'}`);
         }
         // 整体替换主进程动态模型注册表（renderer 传来的是完整快照，非增量）。
         // 仅当字段存在时才回灌——缺省（旧 renderer / 无动态模型）不动注册表，避免误清空
         // listProviderModels 刚回灌的项。
-        if (Array.isArray(prefs.dynamicModels)) {
+        if (Array.isArray(dynamicModels)) {
             // ChatGPT 订阅目录只由主进程的当前账号会话产生，不能由 renderer 持久化快照回灌。
             // 保留本会话已由 codexSubscription:listModels 验证的条目，同时同步其它 provider。
             const sessionBoundModels = getDynamicModels().filter(
                 (model) => model.provider === CODEX_SUBSCRIPTION_PROVIDER
             );
-            const persistedModels = prefs.dynamicModels.filter(
+            const persistedModels = dynamicModels.filter(
                 (model) => model.provider !== CODEX_SUBSCRIPTION_PROVIDER
             );
             setDynamicModels([...persistedModels, ...sessionBoundModels]);

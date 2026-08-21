@@ -47,6 +47,10 @@ const chatTestFakePhotoshopEnabled = process.env.DESIGNECHO_CHAT_TEST_BRIDGE ===
 // 模型偏好类型
 interface ModelPreferences {
     mode?: 'local' | 'cloud';
+    /** 唯一 Agent 模型；必须由运行时目录明确声明支持视觉。 */
+    primaryModel?: string;
+    /** @deprecated 旧配置兼容镜像，主进程归一化后与 primaryModel 相同。 */
+    visualModel?: string;
     autoFallback?: boolean;
     preferredLocalModels?: { layoutAnalysis: string; textOptimize: string; visualAnalyze: string };
     preferredCloudModels?: { layoutAnalysis: string; textOptimize: string; visualAnalyze: string };
@@ -578,11 +582,11 @@ const api = {
     compareImageFiles: (referencePath: string, resultPath: string, options?: any) =>
         ipcRenderer.invoke('resource:compareImageFiles', referencePath, resultPath, options),
     
-    // 分析素材内容（使用视觉模型）
+    // 分析素材内容（复用唯一 Agent 模型）
     analyzeAssetContent: (imagePath: string) =>
         ipcRenderer.invoke('resource:analyzeAsset', imagePath),
 
-    // 分析设计参考图为什么有效（使用视觉模型，只生成待复核经验观察）
+    // 分析设计参考图为什么有效（复用唯一 Agent 模型，只生成待复核经验观察）
     analyzeDesignReference: (input: {
         imagePath: string;
         referenceTitle?: string;

@@ -1,12 +1,12 @@
 /**
- * 运行模式 ↔ 模型分工 对齐（纯逻辑，无 IO）
+ * 运行模式 ↔ Agent 模型对齐（纯逻辑，无 IO）
  *
- * 修复的真实缺陷：设置页「运行模式」与「模型分工」原本是两份互不影响的状态。
+ * 修复的真实缺陷：设置页「运行模式」与模型选择原本是两份互不影响的状态。
  * 切到本地模式只会过滤下拉的 optgroup，从不改写已选的 primaryModel / visualModel；
  * 而运行时 resolvePrimaryModelForPreferences 是「显式配置的 primaryModel 优先」，
  * 于是出现「已选本地模式，界面仍显示云端模型、实际也仍在调用云端 API」。
  *
- * 本模块只负责：给定运行模式与当前两个模型槽，算出对齐后的模型 + 面向用户的变更说明。
+ * 本模块只负责：给定运行模式与当前兼容配置，算出唯一全模态 Agent 模型 + 面向用户的变更说明。
  * 不发网络请求、不读 store，可被设置页 UI 与后续校验共用。
  *
  * 两条硬约束：
@@ -19,13 +19,13 @@ import {
     DEFAULT_MODEL_PREFERENCES,
     LOCAL_MODELS,
     getModelById,
-    isConversationModelConfig,
+    isAgentMultimodalModelConfig,
     type ModelPreferences
 } from './models.config';
 
 export type ModelRunMode = ModelPreferences['mode'];
 
-/** 模型分工的两个槽位；与设置页「主模型 / 视觉模型」一一对应。 */
+/** visual 只为旧配置回执兼容保留；新运行时只有 primary 一个选择。 */
 export type ModelSlot = 'primary' | 'visual';
 
 /** 模型所属渠道；unknown = 注册表里查不到，按三态原则保留不动。 */
@@ -75,8 +75,8 @@ export interface ModelRunModeAlignment extends ModelSlotSelection {
 }
 
 const SLOT_LABEL: Record<ModelSlot, string> = {
-    primary: '主模型',
-    visual: '视觉模型'
+    primary: 'Agent 模型',
+    visual: 'Agent 模型'
 };
 
 const MODE_LABEL: Record<ModelRunMode, string> = {
@@ -123,16 +123,15 @@ function normalizeOllamaTag(tag: string): string {
 
 /**
  * 列出某个槽位在本地模式下的候选模型。
- * 视觉槽只收 supportsVision 的模型；主模型槽收全部本地对话模型。
+ * Agent 只收明确 supportsVision 的对话模型；slot 参数仅为旧调用方兼容。
  */
 export function listLocalSlotCandidates(
-    slot: ModelSlot,
+    _slot: ModelSlot,
     installedModelTags?: readonly string[]
 ): LocalModelCandidate[] {
     const installed = new Set((installedModelTags || []).map(normalizeOllamaTag).filter(Boolean));
     return LOCAL_MODELS
-        .filter(model => isConversationModelConfig(model))
-        .filter(model => slot !== 'visual' || model.supportsVision === true)
+        .filter(isAgentMultimodalModelConfig)
         .map(model => ({
             id: model.id,
             name: model.name,
@@ -187,22 +186,19 @@ export function pickLocalModelForSlot(input: {
  * 云端模式下为某槽位挑一个默认模型。
  * 云端候选是动态的（各 provider 列表 + 用户配置的 key），这里不做能力猜测：
  * 只在「用户上次的云端选择」与「出厂默认」之间取，且必须确实是云端对话模型。
- * 视觉槽额外要求 supportsVision，避免把纯文本模型塞进读图位置。
+ * Agent 候选必须明确支持视觉，避免把纯文本模型塞进统一运行位置。
  */
 export function pickCloudModelForSlot(input: {
     slot: ModelSlot;
     preferredModelId?: string;
 }): string | null {
-    const fallback = input.slot === 'visual'
-        ? DEFAULT_MODEL_PREFERENCES.visualModel
-        : DEFAULT_MODEL_PREFERENCES.primaryModel;
+    const fallback = DEFAULT_MODEL_PREFERENCES.primaryModel;
 
     for (const candidateId of [String(input.preferredModelId || '').trim(), fallback]) {
         if (!candidateId) continue;
         const model = getModelById(candidateId);
         if (!model || model.source !== 'cloud') continue;
-        if (!isConversationModelConfig(model)) continue;
-        if (input.slot === 'visual' && model.supportsVision !== true) continue;
+        if (!isAgentMultimodalModelConfig(model)) continue;
         return candidateId;
     }
     return null;
@@ -226,9 +222,7 @@ function buildMismatch(slot: ModelSlot, modelId: string, mode: ModelRunMode): Mo
  * 检测已保存配置里的模式/模型冲突（打开设置页时用）。
  * 只报告、不改写：历史配置由用户自己决定是否对齐，避免开页即静默改配置。
  *
- * 只检查主模型：运行模式描述的就是主模型走哪条渠道。视觉模型是独立槽位，
- * 允许跨渠道搭配（云端主模型推理 + 本地视觉模型看图是合理组合，省钱且画面不外传），
- * 对它报「渠道不一致」是误报——用户刚在选择器里特意这么配的。
+ * 只检查唯一 Agent 模型。visualModel 是 primaryModel 的兼容镜像，不再独立判断。
  */
 export function detectRunModeMismatches(input: {
     mode: ModelRunMode;
@@ -285,7 +279,7 @@ function alignSlot(input: {
 }
 
 /**
- * 把两个模型槽对齐到目标运行模式。
+ * 把唯一 Agent 模型对齐到目标运行模式；visualModel 只随 primaryModel 返回兼容镜像。
  *
  * @param input.rememberedByMode 各模式下用户上次的选择；切回原模式时恢复，不做跨模式猜测
  * @param input.installedLocalModelTags Ollama /api/tags 返回的已安装模型名，仅用于候选排序
@@ -305,25 +299,15 @@ export function alignModelSelectionToRunMode(input: {
         rememberedModelId: remembered?.primaryModel,
         installedLocalModelTags: input.installedLocalModelTags
     });
-    const visual = alignSlot({
-        slot: 'visual',
-        mode: input.mode,
-        currentModelId: input.visualModel,
-        rememberedModelId: remembered?.visualModel,
-        installedLocalModelTags: input.installedLocalModelTags
-    });
-
     const changes: ModelRunModeChange[] = [];
     if (primary.change) changes.push(primary.change);
-    if (visual.change) changes.push(visual.change);
 
     const mismatches: ModelRunModeMismatch[] = [];
     if (primary.mismatch) mismatches.push(primary.mismatch);
-    if (visual.mismatch) mismatches.push(visual.mismatch);
 
     return {
         primaryModel: primary.modelId,
-        visualModel: visual.modelId,
+        visualModel: primary.modelId,
         changes,
         mismatches
     };
@@ -339,7 +323,7 @@ export function rememberRunModeSelection(
         ...(memory || {}),
         [mode]: {
             primaryModel: selection.primaryModel,
-            visualModel: selection.visualModel
+            visualModel: selection.primaryModel
         }
     };
 }

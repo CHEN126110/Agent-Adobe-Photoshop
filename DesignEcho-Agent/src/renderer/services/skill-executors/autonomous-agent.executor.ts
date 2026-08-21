@@ -2,7 +2,6 @@ import type { SkillExecutor, SkillExecuteParams } from './types';
 import type { AgentResult } from '../unified-agent.service';
 import {
     resolveToolUseVerdict,
-    resolveVisionVerdict,
     capabilityBlocksExecution
 } from '../../../shared/model-capability-verdict';
 import {
@@ -51,7 +50,7 @@ import { streamChatWithToolsAsync } from '../agent-tool-stream.service';
 import { useAppStore } from '../../stores/app.store';
 import {
     getModelById,
-    isConversationModelConfig,
+    isAgentMultimodalModelConfig,
     resolveModelThinkingEnabledForCall,
     type ModelConfig
 } from '../../../shared/config/models.config';
@@ -301,25 +300,10 @@ type WebSearchVisibilityState = {
 };
 
 const WEB_SEARCH_TOOL_CALL_ID = 'provider-native-web-search';
-const PROVIDER_NATIVE_WEB_SEARCH_MODEL_PRIORITY = [
-    'xiaomi-mimo-v2.5-pro',
-    'xiaomi-mimo-v2.5'
-];
 
 function hasProviderNativeWebSearch(options?: Record<string, any>): boolean {
     return Array.isArray(options?.nativeTools)
         && options.nativeTools.some((tool: any) => tool?.type === 'web_search');
-}
-
-function getProviderNativeWebSearchModelId(): string {
-    const state = useAppStore.getState();
-    const apiKeys = (state as any).apiKeys || {};
-    return PROVIDER_NATIVE_WEB_SEARCH_MODEL_PRIORITY.find((modelId) => {
-        const model = getModelById(modelId);
-        if (!model || model.provider !== 'xiaomi') return false;
-        const requiredApiKey = model.requiredApiKey;
-        return !requiredApiKey || Boolean(String(apiKeys?.[requiredApiKey] || '').trim());
-    }) || '';
 }
 
 function emitProviderNativeWebSearchStarted(state?: WebSearchVisibilityState) {
@@ -584,7 +568,6 @@ function createCallModelStreamViaIPC(
 const callModelViaIPC: CallModelFn = createCallModelViaIPC();
 const callModelStreamViaIPC: CallModelStreamFn = createCallModelStreamViaIPC();
 
-const FALLBACK_MODELS = ['google-gemini-3-flash', 'google-gemini-3-pro', 'local-qwen2.5-7b'];
 
 // 委派安全纵深（治理审计 2026-07-08 既有盲区收口）：DesignTeamCoordinator 给设计队友子代理用的是
 // 原始 executeToolCall，绕过主循环 createExecuteToolWrapper 的破坏性动作 hook / HITL 卡 / 外部内容
@@ -3123,7 +3106,7 @@ export function selectToolsForContext(params: Record<string, any>, context?: any
     return resolveAutonomousCapabilityRuntime(params, context).capabilitySession.activeTools;
 }
 
-function buildPrimaryAgentDispatchPlan(taskType: ConversationTaskType = 'logic', explicitModelId?: string) {
+function buildPrimaryAgentDispatchPlan(taskType: ConversationTaskType = 'logic') {
     try {
         const state = useAppStore.getState();
         const prefs = (state as any).modelPreferences;
@@ -3132,18 +3115,14 @@ function buildPrimaryAgentDispatchPlan(taskType: ConversationTaskType = 'logic',
             taskType,
             prefs,
             mode: prefs?.mode,
-            includeFallback: prefs?.autoFallback,
-            includeCrossTaskBackups: true,
+            includeFallback: false,
+            includeCrossTaskBackups: false,
             requireToolUse: true,
-            explicitModelId,
-            availableModels: FALLBACK_MODELS
         });
     } catch {
         return buildMultimodalModelDispatchPlan({
             consumer: 'primary-agent',
             taskType,
-            explicitModelId: explicitModelId || FALLBACK_MODELS[0],
-            availableModels: FALLBACK_MODELS,
             requireToolUse: true
         });
     }
@@ -3160,10 +3139,6 @@ function readModelPreferencesSafe(): any {
     }
 }
 
-function isAutoFallbackEnabled(): boolean {
-    return readModelPreferencesSafe()?.autoFallback === true;
-}
-
 function findConfiguredModelInRendererState(modelId: string): ModelConfig | null {
     const knownModel = getModelById(modelId);
     if (knownModel) return knownModel;
@@ -3174,18 +3149,17 @@ function findConfiguredModelInRendererState(modelId: string): ModelConfig | null
 }
 
 /**
- * 从用户配置的双角色模型中读取本轮模型。
- * 直接读取 primaryModel / visualModel，避免自主执行链再次经过旧任务槽映射后与普通对话链产生分歧；
- * 同时仍用真实模型配置拒绝图片生成等非对话模型，未知模型不会被乐观放行。
+ * 从用户配置的唯一 Agent 模型中读取本轮模型。
+ * 只有当前目录明确声明 supportsVision=true 才能运行；未知不会按名称猜，也不会回退文本模型。
  */
-function resolveUserConfiguredPrimaryModel(taskType: ConversationTaskType): string {
+function resolveUserConfiguredPrimaryModel(_taskType: ConversationTaskType): string {
     try {
         const prefs = readModelPreferencesSafe();
-        const modelId = String(taskType === 'visual' ? prefs?.visualModel : prefs?.primaryModel || '').trim();
+        const modelId = String(prefs?.primaryModel || '').trim();
         if (!modelId) return '';
 
         const model = findConfiguredModelInRendererState(modelId);
-        if (!model || !isConversationModelConfig(model)) return '';
+        if (!model || !isAgentMultimodalModelConfig(model)) return '';
         // 只有「有依据的否定」才拒绝这个模型；能力未知一律放行，交给真实调用去检验。
         // 旧写法 `supportsToolUse === false` 把「provider 没声明」也当成确定不支持，
         // 于是用户在设置里选得到的模型在这里被判空，最终报 no_usable_model
@@ -3194,10 +3168,8 @@ function resolveUserConfiguredPrimaryModel(taskType: ConversationTaskType): stri
             provider: model.provider,
             modelLabel: model.name || modelId
         };
-        const verdict = taskType === 'visual'
-            ? resolveVisionVerdict({ ...capabilityInput, declared: model.supportsVision })
-            : resolveToolUseVerdict({ ...capabilityInput, declared: model.supportsToolUse });
-        if (capabilityBlocksExecution(verdict)) return '';
+        const toolVerdict = resolveToolUseVerdict({ ...capabilityInput, declared: model.supportsToolUse });
+        if (capabilityBlocksExecution(toolVerdict)) return '';
         return modelId;
     } catch {
         return '';
@@ -3207,37 +3179,32 @@ function resolveUserConfiguredPrimaryModel(taskType: ConversationTaskType): stri
 /**
  * 主 Agent 实际使用的模型 id 解析（单一不变量）：
  * - dispatch 已解析出已识别模型 → 直接用；
- * - 否则 autoFallback=true → 允许降级到 FALLBACK_MODELS[0]（保留 tier 降级，行为不变）；
- * - autoFallback=false → 只用用户配置的原始模型，解析不出则返回 ''（由上层诚实失败，不静默落 google）。
+ * - dispatch 无法解析时只复核用户当前选择；
+ * - 不读取 legacy visualModel，不跨 provider 自动 fallback。
  */
 function resolvePrimaryAgentModelId(
     dispatchPlan: ReturnType<typeof buildPrimaryAgentDispatchPlan>,
-    taskType: ConversationTaskType,
-    autoFallbackEnabled: boolean
+    taskType: ConversationTaskType
 ): string {
     if (dispatchPlan.selectedModelId) return dispatchPlan.selectedModelId;
-    if (autoFallbackEnabled) return FALLBACK_MODELS[0];
     return resolveUserConfiguredPrimaryModel(taskType);
 }
 
 function getModelId(taskType: ConversationTaskType = 'logic'): string {
     const dispatchPlan = buildPrimaryAgentDispatchPlan(taskType);
-    return resolvePrimaryAgentModelId(dispatchPlan, taskType, isAutoFallbackEnabled());
+    return resolvePrimaryAgentModelId(dispatchPlan, taskType);
 }
 
 /**
  * 没有可用角色模型时，内部保留稳定错误码，用户只看到自然、可行动的说明。
  * 不向设计用户暴露任务槽、路由、候选队列或自动降级实现。
  */
-function buildNoUsableModelResult(taskType: ConversationTaskType, autoFallbackEnabled: boolean): AgentResult {
-    const modelRole = taskType === 'visual' ? '视觉模型' : '主模型';
-    const fallbackBoundary = autoFallbackEnabled
-        ? ''
-        : '我没有擅自改用其他模型。';
+function buildNoUsableModelResult(taskType: ConversationTaskType): AgentResult {
+    const fallbackBoundary = '我没有擅自改用其他模型。';
     return {
         success: false,
-        message: `这次暂时没能连接到你选择的${modelRole}，所以还没有开始处理画面。${fallbackBoundary}请在模型设置中检查${modelRole}和对应的 API Key 后再试。`,
-        error: `no_usable_model:${taskType}:autoFallback=${autoFallbackEnabled}`
+        message: `当前选择的 Agent 模型尚未被运行时确认具备读图能力，或暂时无法连接，所以还没有开始处理画面。${fallbackBoundary}请在模型设置中改选已标记视觉能力的模型，并检查对应账户登录或 API Key。`,
+        error: `no_usable_agent_model:${taskType}`
     };
 }
 
@@ -3619,16 +3586,13 @@ export const autonomousAgentExecutor: SkillExecutor = {
         let incomingReflexionHandoff: ReflexionHandoff | undefined;
 
         const requestWebSearchIntent = runtimeParams.providerNativeWebSearchIntent as ChatWebSearchIntent | undefined;
-        // 自主循环始终由主 Agent 模型负责；图片不再把整轮 Agent 偷换成视觉模型。
-        // 视觉模型通过 visualExpertModelId 只处理用户图片、画布观察与视觉质检，再把结论交回主模型。
+        // 自主循环、图片观察与视觉质检始终复用用户选择的同一个全模态 Agent 模型。
         const primaryTaskType: ConversationTaskType = 'logic';
-        const explicitModelId = runtimeParams.modelId || (requestWebSearchIntent ? getProviderNativeWebSearchModelId() : '');
-        const primaryDispatchPlan = buildPrimaryAgentDispatchPlan(primaryTaskType, explicitModelId || undefined);
-        const autoFallbackEnabled = isAutoFallbackEnabled();
-        const modelId = resolvePrimaryAgentModelId(primaryDispatchPlan, primaryTaskType, autoFallbackEnabled);
+        const primaryDispatchPlan = buildPrimaryAgentDispatchPlan(primaryTaskType);
+        const modelId = resolvePrimaryAgentModelId(primaryDispatchPlan, primaryTaskType);
         if (!modelId) {
-            // 保留内部错误码便于调试，但用户只看到主模型 / 视觉模型角色，不暴露旧能力槽实现。
-            return buildNoUsableModelResult(primaryTaskType, autoFallbackEnabled);
+            // 保留内部错误码便于调试；用户只看到唯一 Agent 模型的可行动说明。
+            return buildNoUsableModelResult(primaryTaskType);
         }
         const effectivePrimaryDispatchPlan = primaryDispatchPlan.selectedModelId
             ? primaryDispatchPlan

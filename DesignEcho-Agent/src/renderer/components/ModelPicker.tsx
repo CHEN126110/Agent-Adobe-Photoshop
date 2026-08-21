@@ -1,5 +1,5 @@
 /**
- * 主模型选择器（弹层版）
+ * Agent 模型选择器（弹层版）
  *
  * 替代输入栏原来的原生 <select>：候选一多（单 Google 一组就近 20 条）原生下拉只能给出
  * 一列裸模型名，用户既搜不了、也看不出「这个模型能不能读图 / 能不能调工具」。
@@ -7,9 +7,9 @@
  * 这里只换呈现与交互，不改候选口径：分组仍来自 primary-model-options
  * （硬编码 + 动态拉取，按运行模式过滤），选择结果仍写回 modelPreferences.primaryModel。
  *
- * 能力标注沿用 model-capability-verdict 的三态判据：
- * 只有「有依据的否定」才标红并提示，unknown 不标注（多数 provider 不返回能力字段，
- * 逐项标注会让整屏都是警告，真正受限的那几个反而被淹没）。
+ * 视觉能力必须由运行时目录明确确认；目录未知或明确不支持视觉时直接标红。
+ * 工具调用能力沿用 model-capability-verdict 的三态判据：明确不支持才阻断，unknown
+ * 允许真实尝试并在调用失败时如实返回。
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -17,6 +17,8 @@ import { Box } from 'lucide-react';
 
 import {
     getModelById,
+    isAgentMultimodalModelConfig,
+    isAgentMultimodalModelId,
     isModelThinkingUserControllable
 } from '../../shared/config/models.config';
 import {
@@ -52,7 +54,18 @@ export interface ModelCapabilityNote {
 export function describeModelCapabilityNote(modelId: string): ModelCapabilityNote {
     const model = getModelById(modelId);
     if (!model) {
-        return { suffix: '', blocked: false, hint: '' };
+        return {
+            suffix: ' · 等待视觉能力目录',
+            blocked: true,
+            hint: '当前 Agent 模型尚未出现在运行时模型目录中。系统会保留你的选择，但在目录明确声明支持读图前不会执行。'
+        };
+    }
+    if (!isAgentMultimodalModelConfig(model)) {
+        return {
+            suffix: ' · 不能作为 Agent 模型',
+            blocked: true,
+            hint: 'DesignEcho Agent 只运行明确声明支持读图的对话模型。请改选视觉多模态模型。'
+        };
     }
     const verdict = resolveToolUseVerdict({
         declared: model.supportsToolUse,
@@ -119,13 +132,11 @@ interface ModelPickerGroup {
     rows: ModelPickerRow[];
 }
 
-/** 分页项：主模型按渠道占两页，其余槽位各占一页（不再按渠道细分）。 */
+/** 唯一 Agent 模型按渠道分成两页。 */
 interface PickerTab {
     key: string;
     label: string;
-    slot: ModelPickerSlot;
-    /** 仅主模型页有：把列表限定到该渠道 */
-    channel?: ModelChannelTab;
+    channel: ModelChannelTab;
 }
 
 /**
@@ -142,23 +153,21 @@ function resolveGroupChannel(rows: ModelPickerRow[]): ModelChannelTab {
     return 'cloud';
 }
 
-/** 一个可选模型的槽位（主模型 / 视觉模型），各自独立取值与写回。 */
+/** 唯一 Agent 模型的当前取值与写回。 */
 export interface ModelPickerSlot {
     key: string;
     /** 分页标签，同时用于 aria 与标题 */
     label: string;
     value: string;
     onChange: (modelId: string) => void;
-    /** 只列声明支持读图的模型（视觉槽用） */
-    requireVision?: boolean;
-    /** 槽位职责说明，显示在列表上方 */
+    /** Agent 模型职责说明，显示在列表上方 */
     hint?: string;
 }
 
 export interface ModelPickerProps {
-    /** 槽位列表；多于一个时面板顶部出现槽位分页 */
-    slots: ModelPickerSlot[];
-    /** 候选分组（全渠道全量，来自 buildAllPrimaryModelOptionGroups），按槽位与渠道在组件内过滤 */
+    /** 唯一 Agent 模型选择。 */
+    slot: ModelPickerSlot;
+    /** 候选分组（全渠道全量，来自 buildAllPrimaryModelOptionGroups），按渠道在组件内过滤 */
     groups: PrimaryModelOptionGroup[];
     /** 运行模式说明，挂在面板标题右侧 */
     runModeLabel?: string;
@@ -190,7 +199,7 @@ function buildBadges(modelId: string, blocked: boolean, context: RowBadgeContext
         badges.push({ label: '思考', tone: 'thinking', title: '支持由你开关的原生推理 / Thinking 输出' });
     }
     if (blocked) {
-        badges.push({ label: '不支持工具', tone: 'warn', title: '不能调用 Photoshop 工具，选它只能聊天' });
+        badges.push({ label: '不可用', tone: 'warn', title: '当前模型不满足 Agent 的视觉多模态运行边界' });
     }
     return badges;
 }
@@ -222,7 +231,7 @@ function matchesQuery(row: ModelPickerRow, groupLabel: string, query: string): b
 }
 
 export function ModelPicker({
-    slots,
+    slot,
     groups,
     runModeLabel = '',
     direction = 'up',
@@ -237,70 +246,45 @@ export function ModelPicker({
     const searchRef = useRef<HTMLInputElement>(null);
     const activeRowRef = useRef<HTMLButtonElement>(null);
 
-    /**
-     * 一行分页把两件事拍平：前两页是主模型的两个渠道，之后每个附加槽位各占一页。
-     * 「云端 / 本地 / 视觉模型」读起来像三个并列选项——用户不需要先理解"槽位"和"渠道"
-     * 是两个维度，点哪页就看哪一份清单。歧义由页签下方那行槽位说明消掉。
-     */
     const tabs = useMemo<PickerTab[]>(() => {
-        const primarySlot = slots[0];
-        const result: PickerTab[] = [];
-        if (primarySlot) {
-            for (const channel of ['cloud', 'local'] as ModelChannelTab[]) {
-                result.push({
-                    key: channel,
-                    label: CHANNEL_TAB_LABELS[channel],
-                    slot: primarySlot,
-                    channel
-                });
-            }
-        }
-        for (const slot of slots.slice(1)) {
-            // 附加槽位不再按渠道拆页：视觉模型本来候选就少，云端与本地在同一页里按分组排开更省事
-            result.push({ key: slot.key, label: slot.label, slot });
-        }
-        return result;
-    }, [slots]);
+        return (['cloud', 'local'] as ModelChannelTab[]).map(channel => ({
+            key: channel,
+            label: CHANNEL_TAB_LABELS[channel],
+            channel
+        }));
+    }, []);
 
     const activeTab = tabs.find(tab => tab.key === tabKey) || tabs[0];
-    const activeSlot = activeTab?.slot || slots[0];
-    const value = activeSlot?.value || '';
+    const value = slot.value || '';
 
-    // 这一页是否混着两种渠道：主模型页按渠道分开了，视觉模型页没有
     const badgeContext = useMemo<RowBadgeContext>(() => ({
-        showChannel: !activeTab?.channel,
-        suppressVision: activeSlot?.requireVision === true
-    }), [activeTab?.channel, activeSlot?.requireVision]);
+        showChannel: false,
+        suppressVision: true
+    }), []);
 
     const allGroups = useMemo<ModelPickerGroup[]>(() => {
         const built = groups
             .map(group => {
-                // 视觉槽只收声明支持读图的模型：列出一个读不了图的模型，
-                // 用户选完要到真正看图时才发现用不了，那时已经浪费了一整轮。
-                const options = activeSlot?.requireVision
-                    ? group.options.filter(option => getModelById(option.id)?.supportsVision === true)
-                    : group.options;
+                // Agent 候选只收运行时目录明确声明支持读图的对话模型，不按名称猜能力。
+                const options = group.options.filter(option => isAgentMultimodalModelId(option.id));
                 const rows = options.map(option => buildRow(option, badgeContext));
                 return { label: group.label, channel: resolveGroupChannel(rows), rows };
             })
             .filter(group => group.rows.length > 0);
-        // 兜底：当前模型不在候选里（动态拉取重置 / 模型下架 / 视觉槽选了个不支持读图的旧值）
+        // 兜底：当前模型不在候选里（动态目录尚未恢复、模型下架或旧配置不支持读图）
         // 时补一组，不让用户在列表里找不到自己正在用的模型，也不静默替换它。
         const listed = built.some(group => group.rows.some(row => row.id === value));
         if (value && !listed) {
             const known = getModelById(value);
             const rows = [buildRow({ id: value, name: known?.name || value }, badgeContext)];
-            built.unshift({ label: `当前${activeSlot?.label || '模型'}`, channel: resolveGroupChannel(rows), rows });
+            built.unshift({ label: `当前${slot.label || 'Agent 模型'}`, channel: resolveGroupChannel(rows), rows });
         }
         return built;
-    }, [groups, value, activeSlot?.requireVision, activeSlot?.label, badgeContext]);
+    }, [groups, value, slot.label, badgeContext]);
 
     const visibleGroups = useMemo<ModelPickerGroup[]>(() => {
         const trimmed = query.trim();
-        // 主模型页按渠道切分；附加槽位页不切，云端与本地分组一起列
-        const scoped = activeTab?.channel
-            ? allGroups.filter(group => group.channel === activeTab.channel)
-            : allGroups;
+        const scoped = allGroups.filter(group => group.channel === activeTab.channel);
         if (!trimmed) return scoped;
         return scoped
             .map(group => ({
@@ -315,15 +299,9 @@ export function ModelPicker({
         [visibleGroups]
     );
 
-    function slotModelName(slot: ModelPickerSlot): string {
-        return formatPrimaryModelShortName(getModelById(slot.value)?.name || slot.value) || '未选择';
-    }
-
     const activeModelName = formatPrimaryModelShortName(getModelById(value)?.name || value) || '选择模型';
-    // 触发器的能力告警只看第一个槽位（主模型）：能不能调工具是主模型的职责，
-    // 视觉模型不支持工具调用是正常的，不该把图标染成警示色。
-    const primaryNote = describeModelCapabilityNote(slots[0]?.value || '');
-    const triggerTitle = slots.map(slot => `${slot.label}：${slotModelName(slot)}`).join('\n');
+    const primaryNote = describeModelCapabilityNote(slot.value || '');
+    const triggerTitle = `${slot.label}：${activeModelName}`;
 
     const closePicker = useCallback(() => {
         setOpen(false);
@@ -331,16 +309,16 @@ export function ModelPicker({
     }, []);
 
     const selectRow = useCallback((modelId: string) => {
-        if (modelId && activeSlot && modelId !== activeSlot.value) {
-            activeSlot.onChange(modelId);
+        if (modelId && modelId !== slot.value) {
+            slot.onChange(modelId);
         }
         closePicker();
-    }, [activeSlot, closePicker]);
+    }, [slot, closePicker]);
 
-    // 打开时停在主模型当前所在的渠道页，别让用户先自己找一遍
+    // 打开时停在当前 Agent 模型所在的渠道页，别让用户先自己找一遍
     useEffect(() => {
         if (!open) return;
-        const primaryChannel = getModelById(slots[0]?.value || '')?.source;
+        const primaryChannel = getModelById(slot.value || '')?.source;
         setTabKey(primaryChannel === 'local' ? 'local' : 'cloud');
         setQuery('');
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -467,8 +445,8 @@ export function ModelPicker({
                         </div>
                     )}
 
-                    {activeSlot?.hint && (
-                        <p className="model-picker-slot-hint">{activeSlot.hint}</p>
+                    {slot.hint && (
+                        <p className="model-picker-slot-hint">{slot.hint}</p>
                     )}
 
                     {/* 不做跨渠道提示：选中哪个渠道的模型，运行模式就自动跟过去，
@@ -483,12 +461,12 @@ export function ModelPicker({
                         onChange={event => setQuery(event.target.value)}
                     />
 
-                    <div className="model-picker-list" role="listbox" aria-label={activeSlot?.label || '模型'}>
+                    <div className="model-picker-list" role="listbox" aria-label={slot.label || 'Agent 模型'}>
                         {flatRows.length === 0 && (
                             <p className="model-picker-empty">
                                 {query.trim()
                                     ? `没有匹配「${query.trim()}」的模型，换个词试试。`
-                                    : `这一侧没有可用于${activeSlot?.label || '该角色'}的模型。`}
+                                    : '这一侧没有明确支持读图的 Agent 模型。'}
                             </p>
                         )}
 

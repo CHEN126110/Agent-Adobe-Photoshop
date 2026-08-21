@@ -35,7 +35,7 @@ interface OptimizeTextParams {
     charCount?: number;
     lineCount?: number;
     lineCharCounts?: number[];
-    /** 面板单独指定的文案模型；空表示跟随主模型 */
+    /** @deprecated 旧面板兼容；若提供，只允许等于当前 Agent 模型。 */
     modelId?: string;
 }
 
@@ -567,7 +567,7 @@ export function buildOptimizePrompt(
         params.image
             ? (visionAvailable
                 ? '已附带参考图片，请仔细观察画面内容（产品外观、场景、模特动作等），文案必须与画面可互相印证。'
-                : '用户提供了参考图片，但当前文案模型不具备读图能力，这张图不会随本次请求传给你。禁止描述或猜测画面内容，只依据下方文字事实撰写。')
+                : '用户提供了参考图片，但当前 Agent 模型不具备读图能力，这张图不会随本次请求传给你。禁止描述或猜测画面内容，只依据下方文字事实撰写。')
             : '',
         `版式骨架（只用于落版，不包含当前文本语义）：\n${layoutSkeletonDesc}`,
         targetAudience ? `目标人群与兴趣方向：${targetAudience}` : '目标人群与兴趣方向：未提供。只能写克制通用表达，不得假设具体身份或生活方式。',
@@ -1190,15 +1190,14 @@ export function registerTextHandlers(context: UXPContext): void {
             // 模型调用的真实失败原因：候选为空时要如实告诉用户是哪一步失败，
             // 不能一律说成"模型输出格式异常"（那是猜测，用户照着猜测无法排查）。
             let modelFailureReason = '';
-            // 面板选了模型就用面板的；没选（或选了"跟随主模型"）走原来的主模型链路。
+            // 旧面板可能仍携带历史文案模型。服务端必须拒绝不同模型，不能靠新版 UI 保证边界。
             const requestedModelId = normalizeText(params.modelId);
             if (requestedModelId && taskOrchestrator) {
                 const resolved = taskOrchestrator.resolveTaskModelOverride(requestedModelId);
                 if (!resolved.ok) {
-                    // 选定模型不可用时直接说清楚，不偷偷换回主模型
                     return {
                         success: false,
-                        error: `文案模型不可用：${resolved.error}`,
+                        error: `Agent 模型不一致：${resolved.error}`,
                         layerId: layerId || null,
                         originalText: textContent,
                         candidates: [],
@@ -1208,15 +1207,14 @@ export function registerTextHandlers(context: UXPContext): void {
                 }
             }
             const visionSupport = taskOrchestrator
-                ? taskOrchestrator.getTaskVisionSupport('text-optimize', requestedModelId)
+                ? taskOrchestrator.getTaskVisionSupport('text-optimize')
                 : { modelId: '', modelName: '', supportsVision: false };
-            const executionOptions = requestedModelId ? { modelOverride: requestedModelId } : undefined;
             // 只在"用户自己挂了参考图"时提示被忽略：自动截取的当前画面是系统行为，
             // 每次生成都弹一条警告只会变成噪音。
             const imageFromUser = Boolean(params.image) && normalizeText(params.imageSource) !== 'canvas-auto';
             const imageIgnored = imageFromUser && !visionSupport.supportsVision;
             const imageIgnoredReason = imageIgnored
-                ? `当前文案模型（${visionSupport.modelName || visionSupport.modelId || '未知'}）不支持读图，本次参考图片没有参与撰写；文案只依据文字信息生成。`
+                ? `当前 Agent 模型（${visionSupport.modelName || visionSupport.modelId || '未知'}）不支持读图，本次参考图片没有参与撰写；文案只依据文字信息生成。`
                 : '';
             const layoutSkeleton = buildLayoutSkeletonDescription(textContent);
             // 让模型多产几个候选：版式验收有损耗，按需求数请求会经常不够挑。
@@ -1261,7 +1259,7 @@ export function registerTextHandlers(context: UXPContext): void {
                     };
                 }
                 try {
-                    rawResult = await taskOrchestrator.execute('text-optimize', taskInput, executionOptions);
+                    rawResult = await taskOrchestrator.execute('text-optimize', taskInput);
                 } catch (error: any) {
                     // 首轮失败不直接抛：下面的严格重试仍可能拿到候选，
                     // 真的两轮都失败时再把这里的真实原因报给用户。
@@ -1269,7 +1267,7 @@ export function registerTextHandlers(context: UXPContext): void {
                     logService?.logAgent('error', `[UXP Handler] 文案撰写首轮模型调用失败: ${modelFailureReason}`);
                 }
             } else {
-                modelFailureReason = 'Agent 任务调度器未初始化，无法调用文案模型。请重启 Agent 后重试。';
+                modelFailureReason = 'Agent 任务调度器未初始化，无法调用 Agent 模型。请重启 Agent 后重试。';
             }
 
             // 保护词来自用户自己打的字：他写了「新疆棉」，换行就不该把这三个字拆开
@@ -1310,7 +1308,7 @@ export function registerTextHandlers(context: UXPContext): void {
                     };
                 }
                 try {
-                    retryResult = await taskOrchestrator.execute('text-optimize', retryInput, executionOptions);
+                    retryResult = await taskOrchestrator.execute('text-optimize', retryInput);
                 } catch (error: any) {
                     // 重试失败不能连累首轮：此前这里直接抛，会把首轮已经拿到的可用候选一起丢掉。
                     modelFailureReason = modelFailureReason || error?.message || String(error);
@@ -1356,8 +1354,8 @@ export function registerTextHandlers(context: UXPContext): void {
                 // 「可能是输出格式异常或调用失败」这种猜测会让用户无从下手。
                 const error = normalized.stats.collected === 0
                     ? (modelFailureReason
-                        ? `文案模型调用失败：${modelFailureReason}`
-                        : '模型返回的内容里没有可解析的候选文案。请重试；若连续失败，请在设置中确认主模型可用。')
+                        ? `Agent 模型调用失败：${modelFailureReason}`
+                        : '模型返回的内容里没有可解析的候选文案。请重试；若连续失败，请在设置中确认 Agent 模型可用。')
                     : `模型返回的 ${normalized.stats.collected} 个候选全部被过滤：候选命中了禁用词或与原文完全相同。请调整禁用词或重试。`;
                 return {
                     success: false,
@@ -1410,12 +1408,12 @@ export function registerTextHandlers(context: UXPContext): void {
             logService?.logAgent('error', `[UXP Handler] 文案撰写失败: ${error.message}`);
             return {
                 success: false,
-                error: `文案生成失败：${error.message || '未知错误'}。请重试；若连续失败，请检查 Agent 与文案模型设置。`
+                error: `文案生成失败：${error.message || '未知错误'}。请重试；若连续失败，请检查 Agent 模型设置。`
             };
         }
     });
 
-    // 撰写文案面板的模型选择清单：精选（注册表内、key 可用）+ 关键字搜索全部动态模型。
+    // 兼容旧面板的清单协议；只回传当前唯一 Agent 模型，不再提供独立文案模型选择。
     wsServer.registerHandler('list-copywriting-models', async (params: { query?: string; limit?: number } = {}) => {
         if (!taskOrchestrator) {
             return {

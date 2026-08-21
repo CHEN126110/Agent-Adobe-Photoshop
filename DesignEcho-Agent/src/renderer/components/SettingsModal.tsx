@@ -2,7 +2,7 @@
  * 设置弹窗 - 重构版
  * 
  * 清晰划分模型类型：
- * 1. AI 对话模型 - 用于文案、排版、视觉分析
+ * 1. Agent 视觉多模态模型 - 统一负责对话、规划、看图、文案与工具调用
  *    - 本地：Ollama LLM
  *    - 云端：OpenRouter / 直连 API
  * 2. 图像处理模型 - 用于抠图等图像处理
@@ -43,6 +43,7 @@ import {
     DEFAULT_MODEL_PREFERENCES,
     getModelById,
     getModelsByProvider,
+    isAgentMultimodalModelId,
     isConversationModelConfig,
     isConversationModelId,
     isModelThinkingUserControllable,
@@ -56,7 +57,7 @@ import {
     surveyOpenRouterImageModels,
     type OpenRouterImageModelSurvey
 } from '../../shared/config/openrouter-image-model-survey';
-// 运行模式 ↔ 模型分工 对齐（纯逻辑，见模块头注释：切模式必须同时收口已选模型，否则模式形同虚设）
+// 运行模式 ↔ Agent 模型对齐（切模式必须同时收口已选模型，否则模式形同虚设）
 import {
     alignModelSelectionToRunMode,
     detectRunModeMismatches,
@@ -64,7 +65,6 @@ import {
     type ModelRunMode,
     type ModelRunModeSelectionMemory
 } from '../../shared/config/model-run-mode-alignment';
-import { isVisionCapableModelId } from '../../shared/model-selection';
 
 // ========== 类型定义 ==========
 
@@ -209,7 +209,7 @@ const PROVIDER_REFRESH_LABELS: Record<string, string> = {
     openrouter: 'OpenRouter'
 };
 
-/** 主模型与视觉模型共用的云端候选分组，避免两套下拉列表继续漂移。 */
+/** 唯一 Agent 模型的云端候选分组。 */
 const CLOUD_MODEL_OPTION_GROUPS = [
     { provider: 'openai-codex', label: 'ChatGPT 订阅（Codex）' },
     { provider: 'deepseek', label: 'DeepSeek (官方)' },
@@ -1248,7 +1248,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     });
 
     /**
-     * 切换运行模式：同时把「模型分工」里的主模型 / 视觉模型收口到该模式的渠道。
+     * 切换运行模式：把唯一 Agent 模型收口到该模式的渠道。
      *
      * 之前只改 mode 不改模型，而运行时 primaryModel 优先级最高，
      * 导致「已选本地模式却仍在调用云端 API」。切换是用户显式动作，跟着换模型不算静默降级，
@@ -1607,7 +1607,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             if (!designEcho?.testOllamaCloud) {
                 throw new Error('当前应用尚未加载 Ollama Cloud 真实测试桥，请重启 DesignEcho 后再试。');
             }
-            const selectedOllamaCloudModelId = [localPrefs.primaryModel, localPrefs.visualModel]
+            const selectedOllamaCloudModelId = [localPrefs.primaryModel]
                 .map(modelId => String(modelId || '').trim())
                 .find(modelId => modelId.startsWith('ollama-cloud-'));
             const result = await designEcho.testOllamaCloud(apiKey, selectedOllamaCloudModelId);
@@ -2991,11 +2991,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                 </p>
                             </div>
 
-                            {/* 主模型负责规划与执行，视觉模型按需提供视觉事实。 */}
+                            {/* 唯一全模态 Agent 模型负责推理、看图与工具执行。 */}
                             <div className="config-section">
-                                <h3 className="section-title">模型分工</h3>
+                                <h3 className="section-title">Agent 模型</h3>
                                 <p className="section-desc">
-                                    主模型负责理解目标、规划、文案和 Photoshop 工具调用；视觉模型只在需要看图、读取画布或视觉质检时介入。两者可以相同，也可以自由组合。
+                                    同一个视觉多模态模型负责理解目标、规划、文案、读取画面与 Photoshop 工具调用。未明确声明读图能力的模型不会进入 Agent 候选。
                                 </p>
                                 {/* 切换运行模式后的模型变更回执：换了什么如实展示，不静默替换用户选择 */}
                                 {runModeAlignmentNotes.length > 0 && (
@@ -3026,7 +3026,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                     <div className="task-model-item">
                                         <label>
                                             <TaskIcon type="brain" />
-                                            <span className="task-name">主模型</span>
+                                            <span className="task-name">视觉多模态模型</span>
                                         </label>
                                         <div className="task-model-field" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                             <select
@@ -3034,7 +3034,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                 value={localPrefs.primaryModel}
                                                 onChange={e => {
                                                     setRunModeAlignmentNotes([]);
-                                                    setLocalPrefs(p => ({ ...p, primaryModel: e.target.value }));
+                                                    setLocalPrefs(p => ({
+                                                        ...p,
+                                                        primaryModel: e.target.value,
+                                                        visualModel: e.target.value
+                                                    }));
                                                 }}
                                             >
                                                 {/* 兜底：当前主模型不在可见选项里（跨运行模式 / 动态拉取重置）时补一项，
@@ -3044,18 +3048,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                     if (!current) return null;
                                                     const visibleIds = new Set<string>();
                                                     if (localPrefs.mode === 'local') {
-                                                        OLLAMA_MODELS.forEach(m => visibleIds.add(m.id));
+                                                        OLLAMA_MODELS.filter(m => isAgentMultimodalModelId(m.id)).forEach(m => visibleIds.add(m.id));
                                                     }
                                                     if (localPrefs.mode === 'cloud') {
                                                         CLOUD_MODEL_OPTION_GROUPS.forEach(group => {
-                                                            buildProviderOptions(group.provider, fetchedModelsByProvider).forEach(m => visibleIds.add(m.id));
+                                                            buildProviderOptions(group.provider, fetchedModelsByProvider)
+                                                                .filter(m => isAgentMultimodalModelId(m.id))
+                                                                .forEach(m => visibleIds.add(m.id));
                                                         });
                                                     }
                                                     if (visibleIds.has(current)) return null;
                                                     const known = getModelById(current);
                                                     return (
-                                                        <optgroup label="当前主模型">
-                                                            <option value={current}>
+                                                        <optgroup label="当前 Agent 模型">
+                                                            <option value={current} disabled>
                                                                 {known?.name || current}
                                                             </option>
                                                         </optgroup>
@@ -3066,7 +3072,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                     <>
                                                         {CLOUD_MODEL_OPTION_GROUPS.map(group => (
                                                             <optgroup key={group.provider} label={group.label}>
-                                                                {buildProviderOptions(group.provider, fetchedModelsByProvider).map(m => (
+                                                                {buildProviderOptions(group.provider, fetchedModelsByProvider)
+                                                                    .filter(m => isAgentMultimodalModelId(m.id))
+                                                                    .map(m => (
                                                                     <option key={m.id} value={m.id}>
                                                                         {m.name}
                                                                     </option>
@@ -3078,7 +3086,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                 {/* 本地对话模型（local / auto 时展示） */}
                                                 {(localPrefs.mode === 'local') && (
                                                     <optgroup label="本地模型 (Ollama)">
-                                                        {OLLAMA_MODELS.map(m => (
+                                                        {OLLAMA_MODELS.filter(m => isAgentMultimodalModelId(m.id)).map(m => (
                                                             <option key={m.id} value={m.id}>
                                                                 {m.name}
                                                             </option>
@@ -3087,97 +3095,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                                 )}
                                             </select>
                                             <span style={{ fontSize: '11px', color: 'var(--de-text-secondary, #888)' }}>
-                                                负责主 Agent 的推理、规划、文案与工具执行。
+                                                负责 Agent 的推理、看图、规划、文案与工具执行。
                                             </span>
                                             {!isConversationModelId(localPrefs.primaryModel) && (
                                                 <span className="status-text warning">
-                                                    当前选择不是对话模型，不能作为 Agent 主模型；请改选支持文本对话的模型。
+                                                    当前选择不是对话模型，不能作为 Agent 模型。
                                                 </span>
                                             )}
-                                        </div>
-                                    </div>
-
-                                    <div className="task-model-item">
-                                        <label>
-                                            <TaskIcon type="eye" />
-                                            <span className="task-name">视觉模型</span>
-                                        </label>
-                                        <div className="task-model-field" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                            <select
-                                                className="select"
-                                                value={localPrefs.visualModel}
-                                                onChange={e => {
-                                                    setRunModeAlignmentNotes([]);
-                                                    setLocalPrefs(p => ({ ...p, visualModel: e.target.value }));
-                                                }}
-                                            >
-                                                {(() => {
-                                                    const current = localPrefs.visualModel;
-                                                    if (!current) return null;
-                                                    const visibleIds = new Set<string>();
-                                                    if (localPrefs.mode === 'local') {
-                                                        OLLAMA_MODELS.filter(m => m.vision).forEach(m => visibleIds.add(m.id));
-                                                    }
-                                                    if (localPrefs.mode === 'cloud') {
-                                                        CLOUD_MODEL_OPTION_GROUPS.forEach(group => {
-                                                            buildProviderOptions(group.provider, fetchedModelsByProvider)
-                                                                .filter(m => m.vision)
-                                                                .forEach(m => visibleIds.add(m.id));
-                                                        });
-                                                    }
-                                                    if (visibleIds.has(current)) return null;
-                                                    const known = getModelById(current);
-                                                    return (
-                                                        <optgroup label="当前视觉模型">
-                                                            <option value={current}>
-                                                                {known?.name || current}
-                                                            </option>
-                                                        </optgroup>
-                                                    );
-                                                })()}
-                                                {(localPrefs.mode === 'cloud') && (
-                                                    <>
-                                                        {CLOUD_MODEL_OPTION_GROUPS.map(group => {
-                                                            const visualOptions = buildProviderOptions(group.provider, fetchedModelsByProvider)
-                                                                .filter(m => m.vision);
-                                                            if (visualOptions.length === 0) return null;
-                                                            return (
-                                                                <optgroup key={group.provider} label={group.label}>
-                                                                    {visualOptions.map(m => (
-                                                                        <option key={m.id} value={m.id}>
-                                                                            {m.name}
-                                                                        </option>
-                                                                    ))}
-                                                                </optgroup>
-                                                            );
-                                                        })}
-                                                    </>
-                                                )}
-                                                {(localPrefs.mode === 'local') && (
-                                                    <optgroup label="本地视觉模型 (Ollama)">
-                                                        {OLLAMA_MODELS.filter(m => m.vision).map(m => (
-                                                            <option key={m.id} value={m.id}>
-                                                                {m.name}
-                                                            </option>
-                                                        ))}
-                                                    </optgroup>
-                                                )}
-                                            </select>
-                                            <span style={{ fontSize: '11px', color: 'var(--de-text-secondary, #888)' }}>
-                                                仅在用户图片、画布快照、素材理解和视觉质检时调用；观察结果会交回主模型裁决。
-                                            </span>
-                                            {!isConversationModelId(localPrefs.visualModel) && (
+                                            {isConversationModelId(localPrefs.primaryModel) && !isAgentMultimodalModelId(localPrefs.primaryModel) && (
                                                 <span className="status-text warning">
-                                                    当前选择属于图片生成或其他非对话模型，不能承担视觉理解。
+                                                    当前模型未满足 Agent 的视觉多模态与工具调用边界，执行会停止且不会暗换其他模型。
                                                 </span>
-                                            )}
-                                            {isConversationModelId(localPrefs.visualModel) && !isVisionCapableModelId(localPrefs.visualModel) && (
-                                                <span className="status-text warning">
-                                                    当前视觉模型未声明读图能力，视觉任务会如实中止而不会假装看过图片。
-                                                </span>
-                                            )}
-                                            {localPrefs.primaryModel === localPrefs.visualModel && isVisionCapableModelId(localPrefs.primaryModel) && (
-                                                <span className="status-text success">当前复用同一个全模态模型，不产生视觉转述。</span>
                                             )}
                                         </div>
                                     </div>
@@ -3411,8 +3339,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
                             {/* 云端模型配置 */}
                             {(localPrefs.mode === 'cloud') && (() => {
-                                // 主模型与视觉模型可能来自不同供应商，两者所需密钥都必须提示。
-                                const selectedModels = [localPrefs.primaryModel, localPrefs.visualModel];
+                                const selectedModels = [localPrefs.primaryModel];
                                 const needsGoogle = selectedModels.some(m => m?.startsWith('google-'));
                                 const needsXiaomi = selectedModels.some(m => m?.startsWith('xiaomi-'));
                                 const needsOpenRouter = selectedModels.some(m => m?.startsWith('openrouter-'));

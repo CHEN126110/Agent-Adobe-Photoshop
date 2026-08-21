@@ -55,6 +55,7 @@ import {
 // 从统一配置导入
 import {
     DEFAULT_MODEL_PREFERENCES,
+    applyModelPreferencesPatch,
     getModelsByProvider,
     normalizeModelPreferences,
     normalizeModelRunMode,
@@ -1066,14 +1067,7 @@ export const useAppStore = create<AppState>()(
             // 模型偏好
             modelPreferences: defaultModelPreferences,
             setModelPreferences: (prefs) => set((state) => ({
-                modelPreferences: normalizeModelPreferences({
-                    ...state.modelPreferences,
-                    ...prefs,
-                    thinking: {
-                        ...state.modelPreferences.thinking,
-                        ...prefs.thinking
-                    }
-                })
+                modelPreferences: applyModelPreferencesPatch(state.modelPreferences, prefs)
             })),
             setModelMode: (mode) => set((state) => ({
                 modelPreferences: normalizeModelPreferences({ ...state.modelPreferences, mode })
@@ -1812,7 +1806,7 @@ export const useAppStore = create<AppState>()(
         }),
         {
             name: 'designecho-storage',
-            version: 39,  // v39: 动态模型用途分类，迁移旧的乐观 vision/tool 能力
+            version: 40,  // v40: 主/视觉双槽迁移为单一全模态 Agent 模型
             storage: persistedStorage,
             partialize: (state) => ({
                 // 只持久化小体积配置数据（< 50KB）
@@ -1831,7 +1825,7 @@ export const useAppStore = create<AppState>()(
                 recentProjects: state.recentProjects
             }),
             migrate: (persistedState: any, version: number) => {
-                console.log('[Store] 迁移: v', version, '→ v39');
+                console.log('[Store] 迁移: v', version, '→ v40');
                 let state = { ...persistedState };
                 
                 // 统一迁移：所有低于当前版本的存储都重置为最新配置
@@ -1991,6 +1985,11 @@ export const useAppStore = create<AppState>()(
                     state.dynamicModels = normalizePersistedDynamicModels(state.dynamicModels);
                 }
 
+                if (version < 40 && state?.modelPreferences) {
+                    console.log('[Store] 迁移 v40: 合并主模型与视觉模型为单一全模态 Agent 模型');
+                    state.modelPreferences = normalizeModelPreferences(state.modelPreferences);
+                }
+
                 return state;
             },
             onRehydrateStorage: () => (state) => {
@@ -2014,6 +2013,9 @@ export const useAppStore = create<AppState>()(
                         normalizePersistedDynamicModels(state.dynamicModels)
                     );
                     setDynamicModels(state.dynamicModels);
+                    // 动态注册表就绪后再做一次单模型归一化，避免迁移阶段因目录尚未注入而
+                    // 错判持久化动态模型。会话态订阅模型未恢复时保留 id，但运行时仍拒绝未知能力。
+                    state.modelPreferences = normalizeModelPreferences(state.modelPreferences);
                 }
                 
                 // 🔧 修复旧格式的模型 ID (ollama-xxx → local-xxx)

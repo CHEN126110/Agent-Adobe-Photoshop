@@ -1,6 +1,7 @@
 import type { SkillExecutor, SkillExecuteParams } from './types';
 import type { AgentResult } from '../unified-agent.service';
 import { useAppStore } from '../../stores/app.store';
+import { isAgentMultimodalModelId } from '../../../shared/config/models.config';
 import {
     callPhotoshopMcpTool,
     getPhotoshopConnectionStatus,
@@ -62,24 +63,14 @@ function parseJsonObject(text: string): any | null {
     }
 }
 
-async function resolveFeedbackModelId(explicitModelId?: string): Promise<string> {
-    const fromParam = String(explicitModelId || '').trim();
-    if (fromParam) return fromParam;
+async function resolveFeedbackModelId(_explicitModelId?: string): Promise<string> {
     try {
         const state = useAppStore.getState() as any;
         const prefs = state?.modelPreferences;
-        // 角色化模型：非视觉文本任务统一交给主模型，不再维护 textOptimize 专用槽位。
         const primaryModel = String(prefs?.primaryModel || '').trim();
-        if (primaryModel) return primaryModel;
-        const mode = String(prefs?.mode || '').toLowerCase();
-        if (mode === 'local') {
-            const localModel = String(prefs?.preferredLocalModels?.textOptimize || '').trim();
-            if (localModel) return localModel;
-        }
-        const cloudModel = String(prefs?.preferredCloudModels?.textOptimize || '').trim();
-        if (cloudModel) return cloudModel;
+        return isAgentMultimodalModelId(primaryModel) ? primaryModel : '';
     } catch {}
-    return 'google-gemini-3-flash';
+    return '';
 }
 
 function normalizeStringList(value: unknown, max = 6): string[] {
@@ -264,15 +255,17 @@ export const agentPanelBridgeExecutor: SkillExecutor = {
             '根据回传结果继续收敛到最小修复方案'
         ];
 
-        const modelFeedback = await buildModelBridgeFeedback({
-            modelId: feedbackModelId,
-            goal,
-            symptom,
-            expectedResult,
-            reproSteps,
-            constraints,
-            suggestedTools
-        });
+        const modelFeedback = feedbackModelId
+            ? await buildModelBridgeFeedback({
+                modelId: feedbackModelId,
+                goal,
+                symptom,
+                expectedResult,
+                reproSteps,
+                constraints,
+                suggestedTools
+            })
+            : null;
         const actionRequest = modelFeedback?.action_request?.length ? modelFeedback.action_request : fallbackActionRequest;
         const expectedFeedback = modelFeedback?.expected_feedback?.length ? modelFeedback.expected_feedback : fallbackExpectedFeedback;
         const nextSteps = modelFeedback?.next_steps?.length ? modelFeedback.next_steps : fallbackNextSteps;

@@ -1,15 +1,9 @@
 /**
  * 主循环视觉观察策略（纯逻辑，可 smoke）。
  *
- * 背景：主自主循环按任务类型选「一个」模型跑整轮。若主模型是逻辑模型（不支持读图），
- * 之前图片没有送达可读图模型，主模型会对画面「瞎判断」。
- *
- * 本模块决定每张快照怎么观察，落实「强模型主导 + 视觉专家协同」（类多 Agent）：
- * - primary-self：主模型自己支持视觉 → 图直接回传，主模型自己看。
- * - visual-expert：主模型不支持视觉，但配了可用的视觉槽模型 → 让视觉专家替它看，
- *   把文字判断注入主模型上下文（主模型仍负责编排与决策）。
- * - no-visual-capability：主模型不支持视觉、又没有可用视觉模型 → 如实告知主模型
- *   「无法核对画面」，不静默假装看过（诚实失败优于伪造已确认）。
+ * 当前 Agent 只允许视觉多模态模型。每张快照要么由同一个 Agent 模型直接观察，
+ * 要么在能力尚未确认时如实标记为未观察；运行时不再把画面转交第二个视觉模型。
+ * `visual-expert` 仅保留在历史观察记录类型中，用于兼容读取旧日志。
  */
 
 import {
@@ -666,15 +660,9 @@ export function resolveAgentVisualDeliveryReviewStatus(
 
 export function resolveVisualObservationStrategy(input: {
     primaryModelSupportsVision: boolean;
-    visualExpertModelId?: string;
-    visualExpertSupportsVision?: boolean;
 }): VisualObservationStrategy {
     if (input.primaryModelSupportsVision) {
         return 'primary-self';
-    }
-    const expertId = String(input.visualExpertModelId || '').trim();
-    if (expertId && input.visualExpertSupportsVision) {
-        return 'visual-expert';
     }
     return 'no-visual-capability';
 }

@@ -1871,35 +1871,6 @@
             color: #fff;
         }
 
-        /* 文案模型下拉：清单较长，搜索框吸顶，分组标题不可点 */
-        #optimizeModelOptions {
-            max-height: 280px;
-        }
-
-        #optimizeModelSearchRow {
-            position: sticky;
-            top: 0;
-            padding: 8px;
-            background: #1a1a24;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-            z-index: 1;
-        }
-
-        .optimize-model-group {
-            padding: 8px 14px 4px;
-            font-size: 10px;
-            letter-spacing: .04em;
-            color: var(--de-text-secondary);
-            opacity: .65;
-        }
-
-        .optimize-model-meta {
-            display: block;
-            margin-top: 2px;
-            font-size: 10px;
-            opacity: .6;
-        }
-
         .shape-preview {
             height: 50px;
             background: rgba(255, 255, 255, 0.02);
@@ -4942,23 +4913,12 @@
                         </div>
                     </div>
                     <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
-                        <span style="font-size:12px;opacity:.8;min-width:56px;">文案模型</span>
-                        <div class="custom-select" id="optimizeModelSelect" data-value="" style="flex:1;margin-bottom:0;">
-                            <div class="custom-select-trigger" style="padding:8px 12px;border-radius:8px;">
-                                <span class="custom-select-text" id="optimizeModelSelectText">跟随主模型</span>
-                                <span class="custom-select-arrow">▼</span>
-                            </div>
-                            <div class="custom-select-options" id="optimizeModelOptions">
-                                <div id="optimizeModelSearchRow">
-                                    <input id="optimizeModelSearch" placeholder="搜索模型，如 mimo / gemini / deepseek" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:6px 8px;font-size:12px;" />
-                                </div>
-                                <div id="optimizeModelOptionList">
-                                    <div class="custom-select-option selected" data-value="">跟随主模型</div>
-                                </div>
-                            </div>
+                        <span style="font-size:12px;opacity:.8;min-width:56px;">Agent 模型</span>
+                        <div id="optimizeModelSelectText" style="flex:1;padding:8px 12px;border-radius:8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);font-size:12px;">
+                            正在读取...
                         </div>
                     </div>
-                    <div id="optimizeModelHint" style="font-size:10px;color:var(--de-text-secondary);opacity:.7;margin-top:4px;margin-left:64px;">正在读取可用模型...</div>
+                    <div id="optimizeModelHint" style="font-size:10px;color:var(--de-text-secondary);opacity:.7;margin-top:4px;margin-left:64px;">与 DesignEcho 对话、看图和工具执行使用同一个模型。</div>
                     <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
                         <span style="font-size:12px;opacity:.8;min-width:56px;">目标人群</span>
                         <input id="optimizeTargetAudience" placeholder="例如：通勤女性，关注舒适好搭、久走不累" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff;border-radius:8px;padding:8px;font-size:12px;" />
@@ -6443,187 +6403,46 @@
             }
         }
 
-        // ===== 文案模型选择 =====
-        // 空字符串 = 跟随主模型（与 Agent 侧"未指定 modelId 就用主模型"完全对齐，
-        // 不在面板里另存一份"主模型是谁"，避免设置里换了主模型这里还记着旧的）。
-        const OPTIMIZE_MODEL_STORAGE_KEY = 'designecho.optimizeText.modelId';
-        let optimizeModelCatalog = { primary: null, curated: [], matches: [], searchableCount: 0 };
-        let optimizeModelSelectedId = '';
-        let optimizeModelSelectedLabel = '';
-        let _optimizeModelSearchTimer = null;
-        // 清单读取失败的原因（人话版）。为空表示清单可用。
-        let optimizeModelCatalogError = '';
-
-        // Agent 主进程还没有这个 handler = 用户升级了面板但没重启 Agent。
-        // 这是最容易发生也最容易误判成"功能坏了"的一种失败，必须直说该怎么办。
+        // ===== Agent 模型展示 =====
+        // Photoshop 不再保存或选择第二个“文案模型”，这里只展示真实执行身份。
         function describeOptimizeModelCatalogError(rawError) {
             const raw = String(rawError || '');
             if (/Method not found|No handler/i.test(raw)) {
-                return '当前运行的 Agent 还是旧版本，没有模型清单接口：重启 Agent 后即可选择文案模型。现在仍可用「跟随主模型」正常撰写。';
+                return '当前运行的 Agent 还是旧版本，没有 Agent 模型信息接口。请重启 DesignEcho。';
             }
             if (/未连接|not connected/i.test(raw)) {
-                return '尚未连接到 Agent，连接后才能读取模型清单。现在仍可用「跟随主模型」。';
+                return '尚未连接到 Agent，连接后才能读取当前模型。';
             }
-            return raw || '读取模型清单失败，现在仍可用「跟随主模型」。';
-        }
-
-        function loadOptimizeModelPreference() {
-            try {
-                optimizeModelSelectedId = String(window.localStorage?.getItem(OPTIMIZE_MODEL_STORAGE_KEY) || '');
-            } catch (err) {
-                // localStorage 不可用只是记不住选择，不影响本次使用
-                optimizeModelSelectedId = '';
-            }
-        }
-
-        function saveOptimizeModelPreference() {
-            try {
-                if (optimizeModelSelectedId) {
-                    window.localStorage?.setItem(OPTIMIZE_MODEL_STORAGE_KEY, optimizeModelSelectedId);
-                } else {
-                    window.localStorage?.removeItem(OPTIMIZE_MODEL_STORAGE_KEY);
-                }
-            } catch (err) {
-                console.warn('[WebView] 文案模型选择保存失败（localStorage 不可用）:', err);
-            }
-        }
-
-        function findOptimizeModelOption(modelId) {
-            if (!modelId) return null;
-            const pools = [optimizeModelCatalog.curated || [], optimizeModelCatalog.matches || []];
-            for (const pool of pools) {
-                const hit = pool.find(item => item.id === modelId);
-                if (hit) return hit;
-            }
-            return null;
+            return raw || '读取当前 Agent 模型失败。';
         }
 
         function describeOptimizeModel(option) {
             if (!option) return '';
             const bits = [option.provider];
-            bits.push(option.supportsVision ? '可读参考图' : '看不到参考图');
-            // 本地模型不需要 key，但要用户自己开着 Ollama——不写清楚就成了"看着能用其实调不通"
+            bits.push(option.supportsVision ? '视觉多模态' : '视觉能力未确认');
             if (option.source && option.source !== 'cloud') bits.push('需本地 Ollama 运行');
-            if (option.dynamic) bits.push('能力未核实');
             return bits.filter(Boolean).join(' · ');
         }
 
-        function renderOptimizeModelSelection() {
-            const textEl = document.getElementById('optimizeModelSelectText');
-            const hintEl = document.getElementById('optimizeModelHint');
-            const select = document.getElementById('optimizeModelSelect');
-            if (select) select.dataset.value = optimizeModelSelectedId;
-
-            const primary = optimizeModelCatalog.primary;
-            const selected = optimizeModelSelectedId ? findOptimizeModelOption(optimizeModelSelectedId) : null;
-            const effective = optimizeModelSelectedId ? selected : primary;
-
-            if (textEl) {
-                if (!optimizeModelSelectedId) {
-                    textEl.textContent = primary ? ('跟随主模型（' + primary.name + '）') : '跟随主模型';
-                } else {
-                    // 选过的模型可能已从清单里消失（provider 下架 / key 被删），
-                    // 这时保留 id 并标注，不要假装它还在
-                    textEl.textContent = selected ? selected.name : (optimizeModelSelectedLabel || optimizeModelSelectedId);
-                }
-            }
-
-            if (hintEl) {
-                if (optimizeModelCatalogError) {
-                    hintEl.textContent = optimizeModelCatalogError;
-                } else if (!effective) {
-                    hintEl.textContent = optimizeModelSelectedId
-                        ? ('已选 ' + optimizeModelSelectedId + '：不在当前可用清单里，生成时会由 Agent 校验')
-                        : '正在读取可用模型...';
-                } else {
-                    hintEl.textContent = describeOptimizeModel(effective)
-                        + (optimizeModelCatalog.searchableCount
-                            ? '｜可搜索 ' + optimizeModelCatalog.searchableCount + ' 个模型'
-                            : '');
-                }
-            }
-        }
-
-        function renderOptimizeModelOptions() {
-            const listEl = document.getElementById('optimizeModelOptionList');
-            if (!listEl) return;
-            const searchEl = document.getElementById('optimizeModelSearch');
-            const query = String(searchEl?.value || '').trim();
-            const rows = [];
-
-            const optionHtml = (option) => {
-                const selectedClass = option.id === optimizeModelSelectedId ? ' selected' : '';
-                return '<div class="custom-select-option' + selectedClass + '" data-value="' + escapeOptimizeHtml(option.id) + '">'
-                    + escapeOptimizeHtml(option.name)
-                    + '<span class="optimize-model-meta">' + escapeOptimizeHtml(describeOptimizeModel(option)) + '</span>'
-                    + '</div>';
-            };
-
-            if (!query) {
-                const primary = optimizeModelCatalog.primary;
-                rows.push('<div class="custom-select-option' + (optimizeModelSelectedId ? '' : ' selected') + '" data-value="">'
-                    + '跟随主模型'
-                    + (primary ? '<span class="optimize-model-meta">' + escapeOptimizeHtml(primary.name + ' · ' + describeOptimizeModel(primary)) + '</span>' : '')
-                    + '</div>');
-                const curated = optimizeModelCatalog.curated || [];
-                if (curated.length > 0) {
-                    rows.push('<div class="optimize-model-group">可用模型（能力已核实）</div>');
-                    curated.forEach(option => rows.push(optionHtml(option)));
-                    rows.push('<div class="optimize-model-group">想用别的模型？在上面搜索</div>');
-                } else {
-                    // 清单空的时候不能还写"在上面搜索"——那会让人去搜一个根本搜不动的东西
-                    rows.push('<div class="optimize-model-group">'
-                        + escapeOptimizeHtml(optimizeModelCatalogError || '正在读取可用模型...')
-                        + '</div>');
-                }
-            } else {
-                const matches = optimizeModelCatalog.matches || [];
-                if (matches.length === 0) {
-                    rows.push('<div class="optimize-model-group">'
-                        + (optimizeModelCatalogError
-                            ? escapeOptimizeHtml(optimizeModelCatalogError)
-                            : '没有匹配「' + escapeOptimizeHtml(query) + '」的可用模型')
-                        + '</div>');
-                } else {
-                    rows.push('<div class="optimize-model-group">搜索结果（' + matches.length + '）</div>');
-                    matches.forEach(option => rows.push(optionHtml(option)));
-                }
-            }
-
-            listEl.innerHTML = rows.join('');
-        }
-
-        function requestOptimizeModelOptions(query) {
-            sendToUXP('optimizeTextLoadModels', { query: String(query || '') });
+        function requestOptimizeModelOptions() {
+            sendToUXP('optimizeTextLoadModels', {});
         }
 
         function handleOptimizeModelOptions(data) {
+            const textEl = document.getElementById('optimizeModelSelectText');
+            const hintEl = document.getElementById('optimizeModelHint');
             if (!data || data.success === false) {
-                optimizeModelCatalogError = describeOptimizeModelCatalogError(data?.error);
-                renderOptimizeModelSelection();
-                renderOptimizeModelOptions();
+                if (textEl) textEl.textContent = 'Agent 模型暂不可用';
+                if (hintEl) hintEl.textContent = describeOptimizeModelCatalogError(data?.error);
                 return;
             }
-            optimizeModelCatalogError = '';
-            optimizeModelCatalog = {
-                primary: data.primary || null,
-                curated: Array.isArray(data.curated) ? data.curated : [],
-                matches: Array.isArray(data.matches) ? data.matches : [],
-                searchableCount: Number(data.searchableCount) || 0
-            };
-            const selected = findOptimizeModelOption(optimizeModelSelectedId);
-            if (selected) optimizeModelSelectedLabel = selected.name;
-            renderOptimizeModelSelection();
-            renderOptimizeModelOptions();
-        }
-
-        function setOptimizeModelSelection(modelId) {
-            optimizeModelSelectedId = String(modelId || '');
-            const option = findOptimizeModelOption(optimizeModelSelectedId);
-            optimizeModelSelectedLabel = option ? option.name : '';
-            saveOptimizeModelPreference();
-            renderOptimizeModelSelection();
-            renderOptimizeModelOptions();
+            const primary = data.primary || null;
+            if (textEl) textEl.textContent = primary?.name || 'Agent 模型尚未就绪';
+            if (hintEl) {
+                hintEl.textContent = primary
+                    ? describeOptimizeModel(primary) + '｜对话、看图、文案与工具执行共用'
+                    : '当前模型尚未确认具备视觉多模态能力，请在 DesignEcho 设置中刷新或更换。';
+            }
         }
 
         // 替换看门狗：Photoshop 写入异常（modal 冲突、文档被关掉、插件断连）时
@@ -9844,8 +9663,8 @@
                 clearOptimizeApplyWatchdog();
                 optimizeTextImageBase64 = null;
                 optimizeTextImageSource = '';
-                // 每次进页面重新拉一次：主模型、API Key、provider 模型列表都可能在设置里改过
-                requestOptimizeModelOptions('');
+                // 每次进页面重新读取：Agent 模型或账号状态可能在设置里改过。
+                requestOptimizeModelOptions();
                 const currentEl = document.getElementById('optimizeCurrentText');
                 if (currentEl) { currentEl.textContent = '正在准备当前文本...'; currentEl.style.color = 'var(--de-text-secondary)'; }
                 const hintEl = document.getElementById('optimizeLayerHint');
@@ -10105,9 +9924,7 @@
                     creativeStyle,
                     targetAudience,
                     description,
-                    keyMessage,
-                    // 空字符串 = 跟随主模型，由 Agent 侧决定用哪个
-                    modelId: optimizeModelSelectedId || ''
+                    keyMessage
                 };
                 if (optimizeTextImageBase64) {
                     payload.image = optimizeTextImageBase64;
@@ -10189,64 +10006,6 @@
                 document.addEventListener('click', () => select.classList.remove('open'));
             }
             initOptimizeSelect('optimizeCreativeStyle');
-
-            // 文案模型下拉：选项来自 Agent、可搜索，所以不能用静态绑定的 initOptimizeSelect，
-            // 这里用事件委托，列表每次重绘后依然有效。
-            (function initOptimizeModelSelect() {
-                const select = document.getElementById('optimizeModelSelect');
-                const listEl = document.getElementById('optimizeModelOptionList');
-                const searchEl = document.getElementById('optimizeModelSearch');
-                const optionsEl = document.getElementById('optimizeModelOptions');
-                if (!select || !listEl || !searchEl || !optionsEl) return;
-                const trigger = select.querySelector('.custom-select-trigger');
-
-                trigger?.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    document.querySelectorAll('#pageOptimizeText .custom-select.open').forEach((other) => {
-                        if (other !== select) other.classList.remove('open');
-                    });
-                    const willOpen = !select.classList.contains('open');
-                    select.classList.toggle('open');
-                    if (willOpen) {
-                        // 上次没读到清单（比如 Agent 当时还没重启）就再试一次，
-                        // 不用逼用户退出页面再进来
-                        if ((optimizeModelCatalog.curated || []).length === 0) {
-                            requestOptimizeModelOptions(searchEl.value.trim());
-                        }
-                        renderOptimizeModelOptions();
-                        setTimeout(() => searchEl.focus(), 0);
-                    }
-                });
-
-                // 下拉内部点击不关闭（搜索框要能输入）
-                optionsEl.addEventListener('click', (e) => e.stopPropagation());
-
-                listEl.addEventListener('click', (e) => {
-                    const option = e.target.closest('.custom-select-option');
-                    if (!option) return;
-                    e.stopPropagation();
-                    setOptimizeModelSelection(option.dataset.value || '');
-                    select.classList.remove('open');
-                });
-
-                searchEl.addEventListener('input', () => {
-                    const query = searchEl.value.trim();
-                    if (_optimizeModelSearchTimer) clearTimeout(_optimizeModelSearchTimer);
-                    if (!query) {
-                        optimizeModelCatalog.matches = [];
-                        renderOptimizeModelOptions();
-                        return;
-                    }
-                    // 搜索在 Agent 侧做：动态模型有几百个，全量塞进面板既慢又会过期
-                    _optimizeModelSearchTimer = setTimeout(() => requestOptimizeModelOptions(query), 220);
-                });
-
-                document.addEventListener('click', () => select.classList.remove('open'));
-
-                loadOptimizeModelPreference();
-                renderOptimizeModelSelection();
-                renderOptimizeModelOptions();
-            })();
 
             function initCustomDropdown(dropdownId, menuId) {
                 const dropdown = document.getElementById(dropdownId);

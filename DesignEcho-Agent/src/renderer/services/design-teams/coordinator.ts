@@ -249,8 +249,8 @@ export class DesignTeamCoordinator {
         this.resolveDefaultModelId = options.resolveDefaultModelId;
     }
 
-    /** 按角色构建模型调度计划；调度计划只决定专家模型，不改变主 Agent 的裁决权。 */
-    private buildDispatchPlanForRole(role: DesignTeammateRole, explicitModelId?: string): MultimodalModelDispatchPlan {
+    /** 角色只隔离职责和上下文，基础模型始终复用用户选择的同一个 Agent 模型。 */
+    private buildDispatchPlanForRole(role: DesignTeammateRole): MultimodalModelDispatchPlan {
         try {
             const prefs = (useAppStore.getState() as any).modelPreferences;
             return buildMultimodalModelDispatchPlan({
@@ -258,13 +258,12 @@ export class DesignTeamCoordinator {
                 role,
                 prefs,
                 mode: prefs?.mode,
-                includeFallback: prefs?.autoFallback,
-                includeCrossTaskBackups: true,
+                includeFallback: false,
+                includeCrossTaskBackups: false,
                 requireToolUse: true,
-                explicitModelId
             });
         } catch {
-            const fallbackModelId = explicitModelId || this.resolveDefaultModelId();
+            const fallbackModelId = this.resolveDefaultModelId();
             return buildMultimodalModelDispatchPlan({
                 consumer: 'teammate',
                 role,
@@ -273,11 +272,6 @@ export class DesignTeamCoordinator {
                 requireToolUse: true
             });
         }
-    }
-
-    private resolveModelForRole(role: DesignTeammateRole): string {
-        const plan = this.buildDispatchPlanForRole(role);
-        return plan.selectedModelId || this.resolveDefaultModelId();
     }
 
     async runTeammateTask(
@@ -315,8 +309,11 @@ export class DesignTeamCoordinator {
             }
             return this.executeTool(toolName, params, runtimeContext);
         };
-        const dispatchPlan = this.buildDispatchPlanForRole(request.role, request.modelId);
-        const modelId = dispatchPlan.selectedModelId || this.resolveModelForRole(request.role);
+        const dispatchPlan = this.buildDispatchPlanForRole(request.role);
+        const modelId = dispatchPlan.selectedModelId;
+        if (!modelId) {
+            throw new Error('当前 Agent 模型没有经过读图能力验证，Design Team 未启动，也没有改用其他模型。');
+        }
         const taskId = this.createTaskId(request.role);
         const task = new DesignTeammateTask(taskId, request);
         const runtimeBudget = buildDesignTeamRuntimeBudget({

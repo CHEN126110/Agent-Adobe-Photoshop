@@ -5,16 +5,17 @@
  */
 
 import { ModelService, ModelMessage, ModelResponse } from './model-service';
-import { TASK_ROUTING, TaskType } from '../../shared/types/tasks';
+import { TaskType } from '../../shared/types/tasks';
 import { PROMPTS } from '../../shared/prompts';
 import {
     ALL_MODELS,
+    applyModelPreferencesPatch,
     getModelById,
     hasRequiredApiKey,
     isConversationModelId,
+    isAgentMultimodalModelConfig,
     type ModelConfig
 } from '../../shared/config/models.config';
-import { getDynamicModels } from '../../shared/config/dynamic-model-registry';
 import {
     getAgentWorkerModels,
     getModelPriorityForPreferenceBucket,
@@ -53,22 +54,21 @@ export interface TaskModelOption {
 }
 
 export interface TaskModelCatalog {
-    /** "跟随主模型"实际会用到的模型 */
+    /** 当前唯一 Agent 模型 */
     primary: TaskModelOption | null;
-    /** 精选：注册表内、当前 key 可用的对话模型，能力标注可信 */
+    /** 兼容旧面板协议；最多只包含当前 Agent 模型 */
     curated: TaskModelOption[];
-    /** 搜索结果（仅在传入 query 时有值） */
+    /** 兼容旧面板搜索协议；只能命中当前 Agent 模型 */
     matches: TaskModelOption[];
-    /** 可搜索的模型总数（含 provider 动态拉取的） */
+    /** 当前可用 Agent 模型数量，只可能是 0 或 1 */
     searchableCount: number;
     query: string;
 }
 
 export interface TaskExecutionOptions {
     /**
-     * 本次执行强制使用的模型（如撰写文案面板单独选的文案模型）。
-     * 覆盖后不再拼接任何回退候选：用户点名了模型，失败就要如实报错，
-     * 不能悄悄换一个模型把结果做出来。
+     * 旧调用方兼容字段。若提供，值必须等于当前 Agent 模型；
+     * 不再允许任务级覆盖建立第二条模型路线。
      */
     modelOverride?: string;
     constraintProfile?: {
@@ -130,14 +130,7 @@ export class TaskOrchestrator {
      * 更新模型偏好设置
      */
     updatePreferences(prefs: ModelPreferencesPatch): void {
-        this.preferences = normalizeModelPreferences({
-            ...this.preferences,
-            ...prefs,
-            thinking: {
-                ...this.preferences.thinking,
-                ...prefs.thinking
-            }
-        });
+        this.preferences = applyModelPreferencesPatch(this.preferences, prefs);
         console.log('[TaskOrchestrator] Preferences updated:', this.preferences.mode);
     }
 
@@ -148,20 +141,12 @@ export class TaskOrchestrator {
         return this.preferences;
     }
 
-    /** 获取主 Agent / 视觉专家模型；copy 与 logic 都指向主模型，vision 指向独立视觉模型。 */
+    /** 兼容旧调用形状；三个键始终指向同一个全模态 Agent 模型。 */
     getAgentModels(): { vision: string; copy: string; logic: string } {
         return getAgentWorkerModels(this.preferences, {
             mode: this.preferences.mode,
             includeFallback: this.preferences.autoFallback
         });
-    }
-
-    /**
-     * 根据任务类型和偏好获取模型
-     */
-    private getModelForTask(taskType: TaskType): { primary: string } {
-        const candidates = this.getModelCandidatesForTask(taskType);
-        return { primary: candidates[0] || 'local-qwen2.5-7b' };
     }
 
     private getApiKeys(): Record<string, string> {
@@ -173,7 +158,7 @@ export class TaskOrchestrator {
 
     /** 云端模型要有对应 provider 的 key 才算"现在能用"；本地模型不需要 key。 */
     private isModelUsableNow(model: ModelConfig, apiKeys: Record<string, string>): boolean {
-        if (!isConversationModelId(model.id)) return false;
+        if (!isAgentMultimodalModelConfig(model)) return false;
         if (model.source !== 'cloud') return true;
         if (!model.requiredApiKey) return true;
         return hasRequiredApiKey(model.id, apiKeys);
@@ -190,53 +175,27 @@ export class TaskOrchestrator {
         };
     }
 
-    /**
-     * 面板可选的文案模型清单。
-     *
-     * 精选只收注册表内的模型：provider 的 /models 接口不报能力，动态模型的
-     * supportsVision 一律是假定值 false，摆在推荐位会误导"这个模型能看参考图"。
-     * 动态模型仍可通过搜索选到，但会标明能力未经核实。
-     */
+    /** 兼容旧 Photoshop 面板协议：只回传当前唯一 Agent 模型。 */
     listTaskModelCatalog(input: { query?: string; limit?: number } = {}): TaskModelCatalog {
         const apiKeys = this.getApiKeys();
         const query = String(input.query || '').trim().toLowerCase();
-        const limit = Math.max(1, Math.min(50, Number(input.limit) || 30));
-
-        // 排序按"现在能直接用上"的程度：云端可读图 → 云端其它 → 本地（要自己开着 Ollama）。
-        // 本地模型不需要 key，不排序的话会整片压在最前面，而用户多数时候在 cloud 模式。
-        const curatedRank = (option: TaskModelOption) => {
-            if (option.source !== 'cloud') return 3;
-            return option.supportsVision ? 1 : 2;
-        };
-        const curated = ALL_MODELS
-            .filter(model => this.isModelUsableNow(model, apiKeys))
-            .map(model => this.toModelOption(model, false))
-            .sort((a, b) => curatedRank(a) - curatedRank(b) || a.name.localeCompare(b.name, 'zh'));
-
-        const dynamic = getDynamicModels()
-            .filter(model => this.isModelUsableNow(model, apiKeys))
-            .filter(model => !curated.some(item => item.id === model.id))
-            .map(model => this.toModelOption(model, true));
-
-        const primaryId = this.getPrimaryModelForLog('text-optimize');
+        const primaryId = this.preferences.primaryModel;
         const primaryModel = primaryId ? getModelById(primaryId) : undefined;
-        const primary = primaryModel
+        const primary = primaryModel && this.isModelUsableNow(primaryModel, apiKeys)
             ? this.toModelOption(primaryModel, !ALL_MODELS.some(item => item.id === primaryModel.id))
             : null;
-
-        const matches = query
-            ? [...curated, ...dynamic]
-                .filter(option => option.id.toLowerCase().includes(query)
-                    || option.name.toLowerCase().includes(query)
-                    || option.provider.toLowerCase().includes(query))
-                .slice(0, limit)
-            : [];
+        const curated = primary ? [primary] : [];
+        const matches = primary && query && (
+            primary.id.toLowerCase().includes(query)
+            || primary.name.toLowerCase().includes(query)
+            || primary.provider.toLowerCase().includes(query)
+        ) ? [primary] : [];
 
         return {
             primary,
             curated,
             matches,
-            searchableCount: curated.length + dynamic.length,
+            searchableCount: curated.length,
             query: input.query ? String(input.query) : ''
         };
     }
@@ -248,15 +207,26 @@ export class TaskOrchestrator {
         const id = String(modelId || '').trim();
         if (!id) return { ok: false, error: '未指定模型' };
 
+        const configuredId = String(this.preferences.primaryModel || '').trim();
+        if (id !== configuredId) {
+            return {
+                ok: false,
+                error: `任务级模型选择已停用。当前 Agent 模型是 ${configuredId || '未配置'}；请在 DesignEcho 设置中统一修改。`
+            };
+        }
+
         const model = getModelById(id);
         if (!model) {
             return {
                 ok: false,
-                error: `未找到模型 ${id}。它可能已从 provider 列表中移除，请在设置里重新刷新模型列表，或改回"跟随主模型"。`
+                error: `当前 Agent 模型 ${id} 尚未从 provider 目录恢复，暂时不能执行。请刷新模型列表后重试。`
             };
         }
         if (!isConversationModelId(id)) {
             return { ok: false, error: `模型 ${model.name || id} 不是对话模型，不能用来撰写文案。` };
+        }
+        if (!isAgentMultimodalModelConfig(model)) {
+            return { ok: false, error: `模型 ${model.name || id} 未声明读图能力，不能作为 DesignEcho Agent 模型。` };
         }
         if (!this.isModelUsableNow(model, this.getApiKeys())) {
             return {
@@ -269,32 +239,20 @@ export class TaskOrchestrator {
 
     private getModelCandidatesForTask(taskType: TaskType): string[] {
         const configKey = TASK_CONFIG_MAP[taskType] as ModelPreferenceBucket | undefined;
-        const apiKeys = typeof (this.modelService as any).getModelSelectionApiKeys === 'function'
-            ? (this.modelService as any).getModelSelectionApiKeys()
-            : undefined;
 
-        // Unknown task type falls back to static routing config.
+        // 所有任务复用唯一 Agent 模型；未知任务也不能退回旧的文本-only 静态路由。
         if (!configKey) {
-            const routing = TASK_ROUTING.find(r => r.taskType === taskType);
-            return [routing?.primaryModel || 'local-qwen2.5-7b'];
+            const modelId = this.preferences.primaryModel;
+            return isAgentMultimodalModelConfig(getModelById(modelId)) ? [modelId] : [];
         }
 
         const primary = getPrimaryModelForPreferenceBucket(this.preferences, configKey, {
             mode: this.preferences.mode,
             includeFallback: this.preferences.autoFallback,
             includeCrossTaskBackups: false,
-            requireVision: configKey === 'visualAnalyze'
+            requireVision: true
         });
-        const recovery = getModelPriorityForPreferenceBucket(this.preferences, configKey, {
-            mode: this.preferences.mode,
-            includeFallback: true,
-            includeCrossTaskBackups: true,
-            includeConfiguredProviderBackups: true,
-            apiKeys,
-            requireVision: configKey === 'visualAnalyze'
-        });
-
-        return Array.from(new Set([primary, ...recovery].filter(Boolean)));
+        return primary ? [primary] : [];
     }
 
     private buildFallbackState(input: {
@@ -369,11 +327,8 @@ export class TaskOrchestrator {
     }
 
     /**
-     * 本次执行的候选模型列表。
-     *
-     * 指定了 modelOverride 就只用它一个：这是用户在面板上点名的模型，
-     * 后面再挂回退候选等于"你选的失败了我换一个"，正是明令禁止的静默降级。
-     * 无效的 override 在这里就抛出，不会退回主模型把结果糊出来。
+     * 本次执行的唯一 Agent 模型。
+     * 旧调用方传入 modelOverride 时只做身份一致性校验，不允许任务级换模。
      */
     private resolveExecutionCandidates(taskType: TaskType, options?: TaskExecutionOptions): string[] {
         const override = String(options?.modelOverride || '').trim();
@@ -391,14 +346,12 @@ export class TaskOrchestrator {
      * "这张参考图当前模型看不到"。此前提示词无条件声称已附带图片，而 buildMessages 又按
      * supportsVision 把图丢掉并注入"视觉输入不可用"，同一条消息里前后矛盾。
      */
-    getTaskVisionSupport(taskType: TaskType, modelOverride?: string): {
+    getTaskVisionSupport(taskType: TaskType, _modelOverride?: string): {
         modelId: string;
         modelName: string;
         supportsVision: boolean;
     } {
-        const override = String(modelOverride || '').trim();
-        const modelId = override
-            || this.getModelCandidatesForTask(taskType)[0]
+        const modelId = this.getModelCandidatesForTask(taskType)[0]
             || this.getPrimaryModelForLog(taskType);
         const model = getModelById(modelId);
         return {
@@ -502,12 +455,10 @@ export class TaskOrchestrator {
 
     private getPrimaryModelOrFallback(taskType: TaskType): string {
         const candidates = this.getModelCandidatesForTask(taskType);
-        return candidates[0] || 'local-qwen2.5-7b';
+        return candidates[0] || '';
     }
 
-    /**
-     * 保留给外部兼容：返回当前首选模型，不代表执行时只会尝试这一个模型。
-     */
+    /** 保留给外部兼容：返回当前唯一 Agent 模型。 */
     private getPrimaryModelForLog(taskType: TaskType): string {
         const configKey = TASK_CONFIG_MAP[taskType] as ModelPreferenceBucket | undefined;
         if (!configKey) return this.getPrimaryModelOrFallback(taskType);
@@ -515,7 +466,7 @@ export class TaskOrchestrator {
             mode: this.preferences.mode,
             includeFallback: this.preferences.autoFallback,
             includeCrossTaskBackups: false,
-            requireVision: configKey === 'visualAnalyze'
+            requireVision: true
         }) || this.getPrimaryModelOrFallback(taskType);
     }
 
@@ -526,6 +477,10 @@ export class TaskOrchestrator {
         const candidates = this.resolveExecutionCandidates(taskType, options);
         const primary = candidates[0] || this.getPrimaryModelForLog(taskType);
         const attempts: Array<{ modelId: string; error?: string }> = [];
+
+        if (candidates.length === 0) {
+            throw new Error(`当前 Agent 模型 ${primary || '未配置'} 尚未确认具备视觉多模态能力，任务已停止且未改用其他模型。`);
+        }
 
         for (const modelId of candidates) {
             try {
@@ -546,9 +501,13 @@ export class TaskOrchestrator {
         callbacks: TaskStreamCallbacks = {},
         options?: TaskExecutionOptions
     ): Promise<any> {
-        const candidates = this.getModelCandidatesForTask(taskType);
+        const candidates = this.resolveExecutionCandidates(taskType, options);
         const primary = candidates[0] || this.getPrimaryModelForLog(taskType);
         const attempts: Array<{ modelId: string; error?: string }> = [];
+
+        if (candidates.length === 0) {
+            throw new Error(`当前 Agent 模型 ${primary || '未配置'} 尚未确认具备视觉多模态能力，任务已停止且未改用其他模型。`);
+        }
 
         for (const modelId of candidates) {
             try {

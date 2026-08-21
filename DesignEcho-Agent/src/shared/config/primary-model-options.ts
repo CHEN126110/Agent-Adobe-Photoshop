@@ -3,7 +3,7 @@
  *
  * 设置页「AI 模型 · 主模型」下拉与聊天输入栏的主模型选择器共用这里的候选构建函数，
  * 不允许两处各造一套模型清单。
- * 这里只维护主 Agent 模型候选；独立视觉模型由设置页按 supportsVision 过滤。
+ * 这里只维护唯一 Agent 模型候选；候选必须是已声明支持视觉的对话模型。
  *
  * 两处的展示口径不同，是有意的：
  * - 设置页用 buildPrimaryModelOptionGroups(mode)，只列当前运行模式对应渠道。
@@ -31,7 +31,7 @@ import {
     OLLAMA_CLOUD_MODELS,
     OPENROUTER_MODELS,
     XIAOMI_MODELS,
-    isConversationModelConfig,
+    isAgentMultimodalModelConfig,
     type ModelConfig,
     type ModelPreferences
 } from './models.config';
@@ -69,7 +69,7 @@ function mergeProviderOptions(hardcoded: ModelConfig[], dynamicForProvider: Mode
     const seen = new Set(hardcoded.map(m => m.id));
     const extras = dynamicForProvider.filter(m => !seen.has(m.id));
     return [...hardcoded, ...extras]
-        .filter(isConversationModelConfig)
+        .filter(isAgentMultimodalModelConfig)
         .map(m => ({
             id: m.id,
             name: m.name
@@ -110,7 +110,7 @@ export function buildAllPrimaryModelOptionGroups(
     }
 
     const localOptions = LOCAL_MODELS
-        .filter(isConversationModelConfig)
+        .filter(isAgentMultimodalModelConfig)
         .map(m => ({ id: m.id, name: m.name }));
     if (localOptions.length > 0) {
         groups.push({ label: LOCAL_GROUP_LABEL, options: localOptions });

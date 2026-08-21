@@ -123,8 +123,11 @@ export const useReferenceReplication = (): UseReferenceReplicationReturn => {
                 mode: modelPreferences?.mode,
                 includeFallback: modelPreferences?.autoFallback,
                 includeCrossTaskBackups: false
-            }) || 'local-qwen2.5-7b';
-            addLog(`使用模型生成复刻指令: ${model}`);
+            });
+            if (!isVisionCapableModelId(model)) {
+                throw new Error('当前 Agent 模型没有经过读图能力验证；复刻指令生成已停止，未改用其他模型。');
+            }
+            addLog(`使用 Agent 模型生成复刻指令: ${model}`);
 
             const response = await window.designEcho.chat(model, [
                 { 
@@ -185,20 +188,19 @@ export const useReferenceReplication = (): UseReferenceReplicationReturn => {
         addLog('开始分析参考图布局...');
 
         try {
-            // 1. 根据 mode 选择视觉模型
-            let visionModel = getPrimaryModelForPreferenceBucket(modelPreferences, 'visualAnalyze', {
+            // 1. 复用用户选择的唯一全模态 Agent 模型
+            const visionModel = getPrimaryModelForPreferenceBucket(modelPreferences, 'visualAnalyze', {
                 mode: modelPreferences?.mode,
                 includeFallback: modelPreferences?.autoFallback,
                 includeCrossTaskBackups: false,
                 requireVision: true
-            }) || 'google-gemini-3-flash';
+            });
 
             if (!isVisionCapableModelId(visionModel)) {
-                addLog(`⚠️ ${visionModel} 可能不支持视觉，尝试使用备选模型`);
-                visionModel = modelPreferences?.mode === 'local' ? 'local-llava-13b' : 'google-gemini-3-flash';
+                throw new Error('当前 Agent 模型没有经过读图能力验证；参考图分析已停止，未改用其他模型。');
             }
             
-            addLog(`使用视觉模型: ${visionModel} (模式: ${modelPreferences.mode})`);
+            addLog(`使用 Agent 模型: ${visionModel} (模式: ${modelPreferences.mode})`);
 
             // 2. 构建分析提示词
             const prompt = buildReferenceAnalysisPrompt();

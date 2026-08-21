@@ -21,6 +21,7 @@ const COMMANDS = [
   { label: "Agent 简化棘轮", cwd: agentRoot, args: ["run", "audit:simplification-ratchet"] },
   { label: "业务边界", cwd: agentRoot, args: ["run", "audit:agent-business-boundaries"] },
   { label: "能力解析", cwd: agentRoot, args: ["run", "audit:capability-resolver"] },
+  { label: "Agent 模型用途与多模态边界", cwd: agentRoot, args: ["run", "test:model-usage-classification"] },
   { label: "Skill 包契约", cwd: agentRoot, args: ["run", "audit:skill-package-contract"] },
   { label: "Runtime 声明解析", cwd: agentRoot, args: ["run", "audit:runtime-declaration"] },
   { label: "Prompt 能力治理", cwd: agentRoot, args: ["run", "audit:prompt-capability-governance"] },

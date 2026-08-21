@@ -383,7 +383,10 @@ import {
     readPhotoshopOperationResult,
     requiresPhotoshopOperationReadback
 } from '../../../shared/photoshop-operation-result';
-import { getModelById } from '../../../shared/config/models.config';
+import {
+    getModelById,
+    isAgentMultimodalModelId
+} from '../../../shared/config/models.config';
 import {
     extractDesignSurfaceSnapshotFromToolResults,
     extractFreshDesignSurfaceSnapshotFromToolResults
@@ -7567,20 +7570,14 @@ export class Agent {
     /** 发给用户看的快照张数上限（防刷屏；独立于喂模型的观察上限）。 */
     private static readonly MAX_USER_SNAPSHOT_IMAGES = 8;
 
-    /**
-     * 主模型不支持视觉时，先让独立视觉模型读取用户附件，再把结构化观察交回主模型。
-     * 视觉模型只负责感知，不接管规划、工具调用或最终裁决。
-     */
+    /** 把用户附件交给当前唯一 Agent 模型；模型无视觉能力时如实停止视觉观察。 */
     private async attachInitialImageObservations(task: string, images?: ImageAttachment[]): Promise<void> {
         if (!images?.length) return;
 
         const primaryModel = getModelById(this.config.modelId);
-        const expertModelId = String(this.config.visualExpertModelId || '').trim();
-        const expertModel = expertModelId ? getModelById(expertModelId) : undefined;
+        const expertModelId = '';
         const strategy = resolveVisualObservationStrategy({
-            primaryModelSupportsVision: canAttemptModelVision(primaryModel),
-            visualExpertModelId: expertModelId,
-            visualExpertSupportsVision: canAttemptModelVision(expertModel)
+            primaryModelSupportsVision: canAttemptModelVision(primaryModel)
         });
         if (strategy === 'primary-self') {
             if (!this.initialImagesPendingPrimaryObservation) {
@@ -7940,12 +7937,9 @@ export class Agent {
         this.emitUserVisibleSnapshots(toolResults);
 
         const primaryModel = getModelById(this.config.modelId);
-        const expertModelId = String(this.config.visualExpertModelId || '').trim();
-        const expertModel = expertModelId ? getModelById(expertModelId) : undefined;
+        const expertModelId = '';
         const strategy = resolveVisualObservationStrategy({
-            primaryModelSupportsVision: canAttemptModelVision(primaryModel),
-            visualExpertModelId: expertModelId,
-            visualExpertSupportsVision: canAttemptModelVision(expertModel)
+            primaryModelSupportsVision: canAttemptModelVision(primaryModel)
         });
 
         // toolCallLog 与本轮 toolResults 同序追加，取尾部对应名称
@@ -12577,15 +12571,10 @@ export class Agent {
         });
         if (!surfaceSnapshot) return null;
 
-        // 视觉能力解析：主模型支持读图优先用主模型，否则用视觉槽模型；都没有 → 诚实不打分
-        const primaryModel = getModelById(this.config.modelId);
-        const expertModelId = String(this.config.visualExpertModelId || '').trim();
-        const expertModel = expertModelId ? getModelById(expertModelId) : undefined;
-        let judgeModelId = '';
-        if (primaryModel?.supportsVision === true) judgeModelId = this.config.modelId;
-        else if (expertModel?.supportsVision === true) judgeModelId = expertModelId;
-        else if (canAttemptModelVision(primaryModel)) judgeModelId = this.config.modelId;
-        else if (canAttemptModelVision(expertModel)) judgeModelId = expertModelId;
+        // 最终视觉裁决继续使用同一个 Agent 模型；目录未明确 supportsVision=true 时诚实跳过。
+        const judgeModelId = isAgentMultimodalModelId(this.config.modelId)
+            ? this.config.modelId
+            : '';
         if (!judgeModelId) return null;
 
         const pending = evaluationProfile

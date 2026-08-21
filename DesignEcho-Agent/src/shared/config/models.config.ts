@@ -834,7 +834,30 @@ export function getModelsByProvider(provider: ModelProvider): ModelConfig[] {
  * 获取支持视觉的模型
  */
 export function getVisionModels(): ModelConfig[] {
-    return ALL_MODELS.filter(m => m.supportsVision);
+    return ALL_MODELS.filter(m => isAgentMultimodalModelConfig(m));
+}
+
+/**
+ * Agent 运行模型的统一能力边界。
+ *
+ * DesignEcho 的 Agent 需要在同一轮里理解文字、接收真实画面并调用工具，因此只有
+ * provider/受管目录明确声明 supportsVision=true、且没有明确声明不支持工具调用的
+ * 对话模型可以进入 Agent 候选。工具能力 unknown 仍允许真实尝试，但视觉能力 unknown
+ * 必须 fail closed；图片生成模型即使能接收图片也不是 Agent 对话模型。
+ */
+export function isAgentMultimodalModelConfig(
+    model: ModelConfig | null | undefined
+): boolean {
+    return Boolean(
+        model
+        && isConversationModelConfig(model)
+        && model.supportsVision === true
+        && model.supportsToolUse !== false
+    );
+}
+
+export function isAgentMultimodalModelId(modelId: string): boolean {
+    return isAgentMultimodalModelConfig(getModelById(String(modelId || '').trim()));
 }
 
 /**
@@ -967,7 +990,8 @@ export function matchOllamaModel(configModelId: string, installedModelName: stri
  * 它唯一真实的作用是给知识来源页提供了一个错误的模型（默认 openrouter-claude-3.5-sonnet），
  * 导致「当前模型支不支持原生联网搜索」的判定用的不是实际执行的主模型。
  *
- * 现在的模型编排只有两个角色：primaryModel（推理/规划/工具调用）与 visualModel（读图）。
+ * Agent 现在只有一个运行模型：primaryModel。visualModel 仅作为旧配置兼容镜像保留，
+ * normalizeModelPreferences 会始终把它同步为 primaryModel，运行时不得把它当成第二选择源。
  */
 
 export interface ModelPreferences {
@@ -978,13 +1002,13 @@ export interface ModelPreferences {
      */
     mode: 'local' | 'cloud';
     /**
-     * 主 Agent 模型：负责理解目标、规划、文案、工具调用和最终裁决。
-     * 它可以是纯文本模型；读图能力由 visualModel 独立补充。
+     * Agent 模型：负责理解目标、规划、文案、真实看图、工具调用和最终裁决。
+     * 只有已验证 supportsVision=true 的对话模型能进入运行时。
      */
     primaryModel: string;
     /**
-     * 视觉专家模型：只在用户图片、画布快照、素材分析和视觉质检等需要真实看图的环节调用。
-     * 视觉结论会回到 primaryModel，由主 Agent 保留最终判断与工具执行权。
+     * @deprecated 旧双模型配置的兼容镜像。归一化后永远等于 primaryModel；
+     * 新代码只能读取 primaryModel，不能重新建立独立视觉模型路由。
      */
     visualModel: string;
     autoFallback: boolean;
@@ -1013,6 +1037,33 @@ export type ModelPreferencesPatch =
         preferredCloudModels?: Partial<ModelPreferences['preferredCloudModels']>;
         thinking?: Partial<ModelThinkingPreference>;
     };
+
+/**
+ * 把兼容 patch 合并到单一 Agent 模型配置。
+ *
+ * 旧 renderer/IPC 可能只发送 visualModel；新调用方只发送 primaryModel。两者都表示
+ * “用户刚选择的 Agent 模型”，因此 patch 中显式出现的字段必须优先于 base，随后同步
+ * 到两个持久化键。这样不会出现 base.primaryModel 在对象展开时抢占 legacy visual patch。
+ */
+export function applyModelPreferencesPatch(
+    base: ModelPreferences,
+    patch: ModelPreferencesPatch
+): ModelPreferences {
+    const patchedPrimary = String(patch.primaryModel || '').trim();
+    const patchedLegacyVisual = String(patch.visualModel || '').trim();
+    const patchedAgentModel = patchedPrimary || patchedLegacyVisual;
+    return normalizeModelPreferences({
+        ...base,
+        ...patch,
+        ...(patchedAgentModel
+            ? { primaryModel: patchedAgentModel, visualModel: patchedAgentModel }
+            : {}),
+        thinking: {
+            ...base.thinking,
+            ...patch.thinking
+        }
+    });
+}
 
 export function normalizeModelThinkingPreference(
     preference?: Partial<ModelThinkingPreference> | null
@@ -1056,44 +1107,46 @@ export function resolveModelThinkingEnabledForCall(
 /**
  * 主 Agent 模型解析（向后兼容迁移）。
  *
- * - 已显式配置 primaryModel（新配置）→ 直接沿用。
- * - 老配置缺 primaryModel → 从「视觉分析」槽迁移一个能读图的模型当默认：
- *   cloud → preferredCloudModels.visualAnalyze；
- *   local → preferredLocalModels.visualAnalyze；
- *   auto  → 优先云端视觉槽，其次本地视觉槽。
- *   这是历史单模型配置的兼容行为；新配置由 visualModel 独立承担读图。
- * - 视觉槽为空 → 回退到该 mode 的「布局分析/主逻辑」槽。
- * - 仍为空 → 回退到 DEFAULT_MODEL_PREFERENCES.primaryModel。
- * 保证返回值一定非空且尽量能读图，避免老用户迁移后 primaryModel 落空。
+ * 迁移优先使用已经证实支持视觉的显式选择；动态订阅模型在冷启动目录恢复前保持
+ * 原始 ID，由运行时 fail closed，而不是暗换成另一个模型。若用户显式选择的是已知
+ * 文本模型，也保留其身份并在 UI/运行时明确阻断。只有完全没有显式选择时才使用
+ * 历史视觉分析槽或出厂默认。
  */
 export function resolvePrimaryModelForPreferences(input: {
     primaryModel?: unknown;
+    /** 旧双模型配置的迁移来源；新配置不再单独读取它。 */
+    visualModel?: unknown;
     mode?: ModelPreferences['mode'] | null;
     preferredLocalModels: ModelPreferences['preferredLocalModels'];
     preferredCloudModels: ModelPreferences['preferredCloudModels'];
 }): string {
     const explicit = String(input.primaryModel || '').trim();
+    const explicitConfig = explicit ? getModelById(explicit) : undefined;
+    const legacyVisual = String(input.visualModel || '').trim();
+    const legacyVisualConfig = legacyVisual ? getModelById(legacyVisual) : undefined;
+
+    // primaryModel 是新配置的唯一身份。它在冷启动时可能只是尚未恢复目录的订阅模型，
+    // unknown 不能被旧 visualModel 或默认模型覆盖；只有 primary 已被明确证明不合格时，
+    // 才迁移到旧视觉槽。这样既不把已知文本模型带进运行时，也不暗换用户的新选择。
+    if (explicitConfig && isAgentMultimodalModelConfig(explicitConfig)) return explicit;
+    if (explicit && !explicitConfig) return explicit;
+    if (legacyVisualConfig && isAgentMultimodalModelConfig(legacyVisualConfig)) return legacyVisual;
+    if (legacyVisual && !legacyVisualConfig) return legacyVisual;
+    // 显式但不合格也必须保留，避免迁移过程替用户暗中改成另一个模型。
     if (explicit) return explicit;
+    if (legacyVisual) return legacyVisual;
 
     const mode = input.mode || DEFAULT_MODEL_PREFERENCES.mode;
     const cloudVisual = String(input.preferredCloudModels.visualAnalyze || '').trim();
     const localVisual = String(input.preferredLocalModels.visualAnalyze || '').trim();
-    const cloudLayout = String(input.preferredCloudModels.layoutAnalysis || '').trim();
-    const localLayout = String(input.preferredLocalModels.layoutAnalysis || '').trim();
-
-    const migrated = mode === 'local'
-        ? (localVisual || localLayout)
-        : (cloudVisual || cloudLayout);
-    return migrated || DEFAULT_MODEL_PREFERENCES.primaryModel;
+    const candidates = mode === 'local'
+        ? [legacyVisual, localVisual, DEFAULT_MODEL_PREFERENCES.primaryModel]
+        : [legacyVisual, cloudVisual, DEFAULT_MODEL_PREFERENCES.primaryModel];
+    return candidates.find(isAgentMultimodalModelId) || DEFAULT_MODEL_PREFERENCES.primaryModel;
 }
 
 /**
- * 视觉专家模型解析（向后兼容迁移）。
- *
- * - 已显式配置 visualModel → 原样保留，运行时再按 supportsVision 做能力校验。
- * - 主模型本身支持视觉 → 默认复用主模型，老用户行为不变且不产生额外调用。
- * - 主模型不支持视觉 → 从旧 visualAnalyze 槽迁移。
- * - 旧槽也为空 → 使用安全的默认视觉模型。
+ * 旧 visualModel 的兼容镜像解析。新运行时不再建立视觉专家路由。
  */
 export function resolveVisualModelForPreferences(input: {
     visualModel?: unknown;
@@ -1102,19 +1155,8 @@ export function resolveVisualModelForPreferences(input: {
     preferredLocalModels: ModelPreferences['preferredLocalModels'];
     preferredCloudModels: ModelPreferences['preferredCloudModels'];
 }): string {
-    const explicit = String(input.visualModel || '').trim();
-    if (explicit) return explicit;
-
     const primaryModel = String(input.primaryModel || '').trim();
-    if (primaryModel && getModelById(primaryModel)?.supportsVision === true) {
-        return primaryModel;
-    }
-
-    const mode = input.mode || DEFAULT_MODEL_PREFERENCES.mode;
-    const cloudVisual = String(input.preferredCloudModels.visualAnalyze || '').trim();
-    const localVisual = String(input.preferredLocalModels.visualAnalyze || '').trim();
-    const migrated = mode === 'local' ? localVisual : cloudVisual;
-    return migrated || DEFAULT_MODEL_PREFERENCES.visualModel;
+    return primaryModel || DEFAULT_MODEL_PREFERENCES.primaryModel;
 }
 
 /**
@@ -1195,36 +1237,33 @@ export function normalizeModelPreferences(
     };
     const primaryModel = resolvePrimaryModelForPreferences({
         primaryModel: (preferences as Partial<ModelPreferences> | null | undefined)?.primaryModel,
+        visualModel: (preferences as Partial<ModelPreferences> | null | undefined)?.visualModel,
         mode,
         preferredLocalModels,
         preferredCloudModels
     });
-    // 磁盘上的旧偏好里可能还带着已废弃的 orchestrator 键。展开时显式剥掉，
-    // 否则它会跟着 spread 一路留在内存与后续落盘里，字段没了但数据永远清不干净。
-    const { orchestrator: _removedOrchestratorConfig, ...carriedPreferences } =
-        (preferences || {}) as Record<string, unknown>;
-
+    // 只构造公开契约字段，不传播磁盘旧键、IPC 附带的动态目录或未来未知字段。
+    // 单模型运行时也不再接受历史 autoFallback=true：字段仅用于读取旧配置，
+    // 归一化后必须反映真实行为——失败时停在当前 Agent 模型，不暗换第二个模型。
     return {
-        ...defaults,
-        ...(carriedPreferences as Partial<ModelPreferences>),
         mode,
-        preferredLocalModels,
-        preferredCloudModels,
         primaryModel,
         visualModel: resolveVisualModelForPreferences({
-            visualModel: (preferences as Partial<ModelPreferences> | null | undefined)?.visualModel,
             primaryModel,
             mode,
             preferredLocalModels,
             preferredCloudModels
         }),
+        autoFallback: false,
+        preferredLocalModels,
+        preferredCloudModels,
         thinking: normalizeModelThinkingPreference(preferences?.thinking)
     };
 }
 
 export const DEFAULT_MODEL_PREFERENCES: ModelPreferences = {
     mode: 'cloud',
-    // 主 Agent 与视觉专家默认复用同一个全模态模型；用户可将二者拆成高速文本 + 视觉组合。
+    // Agent 始终使用一个已验证全模态模型；visualModel 只保留为旧配置镜像。
     primaryModel: 'xiaomi-mimo-v2.5',
     visualModel: 'xiaomi-mimo-v2.5',
     autoFallback: false,

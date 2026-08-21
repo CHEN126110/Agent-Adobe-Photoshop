@@ -46,10 +46,10 @@ const PATTERN = new RegExp(
  * 只许降不许升；确需新增时，先问它拦的是「确定做不到」还是「不知道能不能做到」——
  * 前者有依据、可以阻断，后者只是猜测，代价由模型和用户承担。
  *
- * 这 29 处里多数是纯展示/统计（无害），真正危险的是用它直接产出阻断的那些。
+ * 当前基线里的多数命中是纯展示/统计（无害），真正危险的是用它直接产出阻断的那些。
  * 逐步迁移到 capabilityBlocksExecution() 后，把这个数字往下收。
  */
-const BASELINE = 29;
+const BASELINE = 24;
 
 function walk(dir, out) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

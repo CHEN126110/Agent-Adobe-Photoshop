@@ -29,7 +29,10 @@ import {
 } from '../../../shared/reference-replication-visual-qa';
 import { useAppStore } from '../../stores/app.store';
 import { getModelById } from '../../../shared/config/models.config';
-import { getPrimaryModelForPreferenceBucket } from '../../../shared/model-selection';
+import {
+    getPrimaryModelForPreferenceBucket,
+    isVisionCapableModelId
+} from '../../../shared/model-selection';
 import {
     buildMinimalDesignRepresentation,
     buildReferenceParsePrompt,
@@ -415,7 +418,10 @@ export const layoutReplicationExecutor: SkillExecutor = {
                 includeFallback: modelPreferences?.autoFallback,
                 includeCrossTaskBackups: false,
                 requireVision: true
-            }) || 'google-gemini-3-flash';
+            });
+            if (!isVisionCapableModelId(visionModel)) {
+                throw new Error('当前 Agent 模型没有经过读图能力验证；参考复刻已停止，未改用其他模型。');
+            }
             const referenceImageSize = await readReferenceImageSize(refImage, 'image/jpeg');
             const referenceParseMaxTokens = resolveReferenceParseMaxTokens(visionModel);
 
@@ -1059,7 +1065,14 @@ export const layoutReplicationExecutor: SkillExecutor = {
                 mode: modelPreferences?.mode,
                 includeFallback: modelPreferences?.autoFallback,
                 includeCrossTaskBackups: false
-            }) || 'openrouter-qwen/qwen-2.5-72b-instruct';
+            });
+            if (!isVisionCapableModelId(matchModel)) {
+                return {
+                    success: false,
+                    message: '当前 Agent 模型没有经过读图能力验证；图层匹配已停止，未改用其他模型。',
+                    error: 'Agent multimodal model unavailable'
+                };
+            }
 
             emitStep(
                 'model_request',

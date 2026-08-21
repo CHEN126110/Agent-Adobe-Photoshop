@@ -1,10 +1,8 @@
 import {
     getModelById,
-    hasRequiredApiKey,
-    isConversationModelId,
+    isAgentMultimodalModelId,
     normalizeModelPreferences,
     type ApiKeyType,
-    type ModelConfig,
     type ModelPreferences,
     type ModelPreferencesPatch
 } from './config/models.config';
@@ -23,18 +21,6 @@ interface ModelPriorityOptions {
     requireToolUse?: boolean;
     apiKeys?: Partial<Record<ApiKeyType, string>> | Record<string, string | undefined>;
     includeConfiguredProviderBackups?: boolean;
-}
-
-function uniqNonEmpty(values: Array<string | undefined | null>): string[] {
-    const ordered: string[] = [];
-    const seen = new Set<string>();
-    for (const value of values) {
-        const modelId = String(value || '').trim();
-        if (!modelId || seen.has(modelId)) continue;
-        seen.add(modelId);
-        ordered.push(modelId);
-    }
-    return ordered;
 }
 
 function mergeModelPreferences(
@@ -148,57 +134,8 @@ export function mapConversationTaskToPreferenceBucket(
     }
 }
 
-function getConfiguredPreferenceRecoveryCandidates(
-    prefs: ModelPreferences,
-    bucket: ModelPreferenceBucket,
-    options: ModelPriorityOptions
-): string[] {
-    const mode = options.mode || prefs.mode;
-    const includeCrossTaskBackups = options.includeCrossTaskBackups !== false;
-    const localModels = prefs.preferredLocalModels;
-    const cloudModels = prefs.preferredCloudModels;
-    const localCrossTask = includeCrossTaskBackups
-        ? [localModels.layoutAnalysis, localModels.textOptimize, localModels.visualAnalyze]
-        : [];
-    const cloudCrossTask = includeCrossTaskBackups
-        ? [cloudModels.layoutAnalysis, cloudModels.textOptimize, cloudModels.visualAnalyze]
-        : [];
-
-    // 本地模式仍把云端列为后备（本机模型跑不动时还有救）；云端模式不回落到本地。
-    if (mode === 'local') {
-        return uniqNonEmpty([
-            localModels[bucket],
-            ...localCrossTask,
-            cloudModels[bucket],
-            ...cloudCrossTask
-        ]);
-    }
-    return uniqNonEmpty([
-        cloudModels[bucket],
-        ...cloudCrossTask
-    ]);
-}
-
-/*
- * 已移除 getOrchestratorRecoveryCandidates：
- * 它从 orchestrator 配置（主规划模型 + 三个 worker）里凑恢复候选，
- * 而那套配置从未接线到执行路径，本函数的调用链终点在 ChatPanel 里也没有调用者。
- * 恢复候选现在只来自用户真实配置的模型槽（getConfiguredPreferenceRecoveryCandidates）。
- */
-
-function canUseConfiguredCloudModel(
-    model: ModelConfig,
-    apiKeys?: ModelPriorityOptions['apiKeys']
-): boolean {
-    if (model.source !== 'cloud') return false;
-    if (!model.requiredApiKey) return true;
-    if (!apiKeys) return false;
-    return hasRequiredApiKey(model.id, apiKeys as Record<string, string>);
-}
-
 export function isVisionCapableModelId(modelId: string): boolean {
-    const model = getModelById(modelId);
-    return !!model?.supportsVision;
+    return isAgentMultimodalModelId(modelId);
 }
 
 export function isToolCapableModelId(modelId: string): boolean {
@@ -212,14 +149,12 @@ export function getModelPriorityForPreferenceBucket(
     options: ModelPriorityOptions = {}
 ): string[] {
     const merged = mergeModelPreferences(prefs);
-    const requireVision = options.requireVision === true || bucket === 'visualAnalyze';
     const requireToolUse = options.requireToolUse === true;
-    const configuredModelId = String(
-        requireVision ? merged.visualModel : merged.primaryModel
-    ).trim();
+    // Agent 只有一个模型选择。任务类型不再切换模型；视觉、文案、逻辑和工具调用
+    // 都复用同一个已验证全模态 primaryModel。
+    const configuredModelId = String(merged.primaryModel).trim();
     if (!configuredModelId) return [];
-    if (!isConversationModelId(configuredModelId)) return [];
-    if (requireVision && !isVisionCapableModelId(configuredModelId)) return [];
+    if (!isAgentMultimodalModelId(configuredModelId)) return [];
     if (requireToolUse && !isToolCapableModelId(configuredModelId)) return [];
     return [configuredModelId];
 }
@@ -253,39 +188,9 @@ export function getModelRecoveryPriorityForConversationTask(
     taskType: ConversationTaskType,
     options: ModelPriorityOptions = {}
 ): string[] {
-    const merged = mergeModelPreferences(prefs);
-    const bucket = mapConversationTaskToPreferenceBucket(taskType);
-    const requireVision = options.requireVision ?? taskType === 'visual';
-    const requireToolUse = options.requireToolUse === true;
-    const primaryCandidates = getModelPriorityForConversationTask(
-        prefs,
-        taskType,
-        {
-            ...options,
-            requireVision
-        }
-    );
-    const primaryCandidateSet = new Set(primaryCandidates);
-    const candidates = uniqNonEmpty([
-        ...primaryCandidates,
-        ...getConfiguredPreferenceRecoveryCandidates(merged, bucket, options)
-    ]);
-
-    return candidates.filter((modelId) => {
-        if (!isConversationModelId(modelId)) return false;
-        const model = getModelById(modelId);
-        if (!model) return false;
-        if (
-            model.source === 'cloud'
-            && !primaryCandidateSet.has(modelId)
-            && !canUseConfiguredCloudModel(model, options.apiKeys)
-        ) {
-            return false;
-        }
-        if (requireVision && !isVisionCapableModelId(modelId)) return false;
-        if (requireToolUse && !isToolCapableModelId(modelId)) return false;
-        return true;
-    });
+    // 单模型架构禁止运行中静默换到另一模型。调用失败必须把真实错误交还上层，
+    // 不能从历史能力槽或跨 provider 列表挑选“备用 Agent”。
+    return getModelPriorityForConversationTask(prefs, taskType, options);
 }
 
 export function getPrimaryModelForConversationTask(
@@ -301,22 +206,15 @@ export function getAgentWorkerModels(
     prefs: Partial<ModelPreferences> | null | undefined,
     options: Pick<ModelPriorityOptions, 'mode' | 'includeFallback'> = {}
 ): { vision: string; copy: string; logic: string } {
+    const modelId = getPrimaryModelForPreferenceBucket(prefs, 'layoutAnalysis', {
+        ...options,
+        requireVision: true,
+        requireToolUse: true,
+        includeCrossTaskBackups: false
+    });
     return {
-        vision: getPrimaryModelForPreferenceBucket(prefs, 'visualAnalyze', {
-            ...options,
-            requireVision: true,
-            requireToolUse: false,
-            includeCrossTaskBackups: true
-        }),
-        copy: getPrimaryModelForPreferenceBucket(prefs, 'textOptimize', {
-            ...options,
-            requireToolUse: true,
-            includeCrossTaskBackups: true
-        }),
-        logic: getPrimaryModelForPreferenceBucket(prefs, 'layoutAnalysis', {
-            ...options,
-            requireToolUse: true,
-            includeCrossTaskBackups: true
-        })
+        vision: modelId,
+        copy: modelId,
+        logic: modelId
     };
 }

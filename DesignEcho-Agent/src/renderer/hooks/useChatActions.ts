@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useAppStore } from '../stores/app.store';
-import { getVisionModels } from '../../shared/config/models.config';
+import { isAgentMultimodalModelId } from '../../shared/config/models.config';
 import {
     detectConversationTaskType,
     getModelPriorityForConversationTask,
@@ -38,9 +38,8 @@ export function useChatActions({ isPluginConnected }: UseChatActionsOptions): Us
     );
 
     const isVisionModelAvailable = useCallback(() => {
-        const visionModels = getVisionModels();
-        return visionModels.length > 0;
-    }, []);
+        return isAgentMultimodalModelId(modelPreferences.primaryModel);
+    }, [modelPreferences.primaryModel]);
 
     const detectTaskType = useCallback(
         (userInput: string, hasImage?: boolean): TaskType =>
