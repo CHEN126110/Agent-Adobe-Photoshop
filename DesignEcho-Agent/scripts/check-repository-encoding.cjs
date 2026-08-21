@@ -6,8 +6,10 @@ const path = require("path");
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 const textExtensions = new Set([".cjs", ".css", ".html", ".js", ".json", ".md", ".ts", ".tsx"]);
+// Keep this list limited to characters that are not valid in ordinary Simplified Chinese prose.
+// U+6D93 (涓) was removed because terms such as "涓流" are legitimate and caused false positives.
 const mojibakePatterns = [
-  0x9359, 0x6D93, 0x923F, 0x7487, 0x93C1, 0x9429, 0x7EF1, 0x6FB6,
+  0x9359, 0x923F, 0x7487, 0x93C1, 0x9429, 0x7EF1, 0x6FB6,
   0x59AF, 0x7EAD, 0x701B, 0x6D94, 0x93AC, 0x51AD, 0x5EA2, 0x9983,
   0x20AC, 0x00C3, 0x00C2, 0xFFFD
 ].map((codePoint) => String.fromCodePoint(codePoint));
