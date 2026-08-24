@@ -19,6 +19,25 @@
   <div class="meta">已处理请求：<span id="request-count">0</span></div>
   <div id="last-error" class="error hidden"></div>
 
+  <section class="actions">
+    <button class="action" data-action="collect-save-link">
+      <span>🔗 保存链接</span><kbd>Alt+Shift+0</kbd>
+    </button>
+    <button class="action" data-action="collect-batch">
+      <span>🖼 批量收藏</span><kbd>Alt+Shift+1</kbd>
+    </button>
+    <button class="action" data-action="collect-region">
+      <span>✂ 区域截图</span><kbd>Alt+Shift+2</kbd>
+    </button>
+    <button class="action" data-action="collect-visible">
+      <span>🗔 可视范围截图</span><kbd>Alt+Shift+3</kbd>
+    </button>
+    <button class="action" data-action="collect-fullpage">
+      <span>📄 整页截图</span><kbd></kbd>
+    </button>
+    <div class="meta">收藏经 DesignEcho Agent 存入 Eagle 当前打开的素材库（需 Eagle 在运行；在 Eagle 里切换素材库即切换落点）。快捷键可在 chrome://extensions/shortcuts 修改。</div>
+  </section>
+
   <section class="settings">
     <label for="port-input">桥端口</label>
     <input id="port-input" type="number" min="1" max="65535" placeholder="8769">

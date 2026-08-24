@@ -1,5 +1,413 @@
 # Current Task
 
+## 2026-08-22 DESIGN-QUALITY-REFLEXION-LIVE-001：无 Skill 设计质量反馈与 Agent 自主修订闭环
+
+### 目标
+
+用同一句普通用户需求和同一组真实素材验证：不依赖业务 Skill 的设计 Agent 能先自主选图和设计，再以同一 Photoshop revision 的真实画面评价发现最影响任务效果的问题，并在同一授权、同一预算内由 Agent 自主完成最多一次有界修订。Harness 只提供画面事实、评价反馈、预算、目标 /revision 与安全边界，不替 Agent 选择版式、文案、素材或修改动作。
+
+### 当前事实
+
+- 第七轮真实产物 `腊肠狗条纹袜商品主图-V04.psd` 已形成 13 个可编辑图层、2 个智能对象和清楚分组；两张素材分别承担多色证明与上脚证明，选图已有真实理由，不再是反复盲选单只袜子。
+- 第七轮仍只是干净草稿：双栏画册式层级让商品与腊肠狗刺绣没有成为缩略图第一焦点，弱小辅助文案和大面积非商品内容占用注意力。Agent 只做一次 `composeDesign` 后即自行宣布完成，没有做影响点击任务的一轮修订。
+- 第七轮终局 Judge 只使用旧版 8 项任务中性目录，`impact.squint` 和 `comp.subject-ratio` 均未评价；89 分只代表这 8 项内部结果，不能解释成主图商业质量接近 90。`impact.squint` 的缺席是通用任务效力盲区；主体比例仍保留给模型绑定的主图 Profile，不为当前样例写入通用固定比例。
+- 第七轮已经生成 `completed_aesthetic_improvement` handoff，且两条 diagnosis 均绑定 document 4087 / history 4130；没有子运行的直接原因是 `reflexion-reentry-policy` 把该 handoff 强制改成 `completed_aesthetic_review_terminal`。不是模型、VLM、Project State、预算身份或 Photoshop 失败。
+- 终审又发现一个跨代竞态：旧 handoff 只把 `sourceId / observationKey` 写进描述文字，没有机器可校验的 ReviewSet 版本来源；若两代之间 Photoshop 被外部修改，旧评价可能影响新版本。现已把 document/history/observationKeys 写入既有 handoff，并以 WeakMap 可信视觉 Artifact 核对来源；下一代第一项写入若版本已变化，必须由 Agent 自主完整观察当前版本后才能继续。
+- 第八轮干净项目已建立，48 张素材与空主图目录均核对；Sol 与临时 Terra 都在 iteration 0、零 Tool、零 Photoshop mutation 时返回同一 ChatGPT/Codex 订阅用量上限，服务提示 2026-08-28 09:01 后重试。原 Sol 模型偏好已经恢复。
+
+### 实施边界
+
+1. `impact.squint` 只判断用户当前任务在典型使用尺寸下能否识别首要沟通对象；不要求高冲击、唯一焦点、营销风格或固定主体比例。
+2. completed 后的可靠评价只能在同一 TaskRun 和累计预算中唤醒 Agent 一次；Harness 不直接调用 Photoshop mutation，原 execution preflight、目标绑定、取消、预算、无进展与次数上限继续 fail closed。
+3. completed handoff 只传同一 ReviewSet / history 上、带结构化 observationKey 的 paired diagnosis；缺 binding、重复 key、issue 指向集合外 key 或与运行结果的可信视觉 Artifact 不一致时不得重入。同批 `summary.warnings`、failureAnalysis、strategyAdjustments 和 scorecard 通用 expectedFix 不得重复扩大成命令。
+4. 评价反馈以“画面观察 + 可检验方向”交给 Agent；Agent 可以接受、否定、补观察或选择其它可逆修订，不能把建议本身当成写入授权。
+5. 不用“主图”等关键词让 Harness 选择 Skill / Profile，不强制查询 Eagle、独立评审或固定七步流程；模型完成结构化任务语义绑定后，才可取得对应 Profile 的专门评价。
+
+### 下一步
+
+订阅额度恢复或用户补充可用额度后，在第八轮干净项目中继续使用原句「帮我用这个文件夹里的素材重新做一张商品主图，先自己看素材决定怎么做。」复跑 Sol。必须核对父代终审是否包含 `impact.squint`、handoff 是否与可信 ReviewSet Artifact 完全一致且只携带 paired diagnosis、是否生成独立 parent / child Run Record、同版本时是否直接交给子 Agent 判断、版本漂移时是否先由 Agent 自主完整重看、最终 history 是否变化并重新闭合结构 /像素 /post-judge 读回；再把结果与第七轮、用户原图和 Eagle 参考做同尺寸比较。
+
+### 验证与未知
+
+- 已通过：completed Agent-owned reentry、paired-only handoff、缺失/伪造/错版本 ReviewSet binding 不重入、旧评价第一写入新鲜度、版本变化后 Agent 完整重看恢复、预算耗尽不重入、通用 `impact.squint` 边界、Provider usage-limit 分类的正式业务 /作者权审计；34 项核心维护验证、Agent 生产构建与 UXP 生产构建均通过。
+- 第七轮已真实验证：素材观察、选图、Photoshop 写入、可编辑结构、终局 pre-judge 结构包、VLM Judge、post-judge revision 与 handoff 生成。未验证：新策略下的真实父子重入、修订后画面质量和 Sol 商业质量；第八轮被外部订阅额度在首轮阻断，不能冒充 E2E。
+
+### 状态
+
+`in_progress / seventh_live_root_cause_verified / agent_owned_single_reentry_implemented / task_neutral_impact_evaluation_added / paired_diagnosis_only_feedback_implemented / reviewset_provenance_and_first_write_freshness_implemented / provider_usage_limit_classified / full_34_check_maintenance_and_production_build_passed / eighth_live_replay_blocked_by_shared_subscription_usage_limit / sol_preferences_restored / post_reset_live_parent_child_replay_pending`
+
+## 2026-08-21 COMPOSE-FAILURE-SEMANTICS-001：首稿校验、失败熔断与用户表达治理
+
+### 目标
+
+修复主图真机运行中 `composeDesign` 连续补齐不同参数却被 Harness 当成「同一种处理重复失败」终止，以及内部 Tool 名、JSON 字段路径和步数直接展示给用户的问题。Harness 应把完整执行契约一次性交给模型，只在同一失败原因原样重复时熔断；用户只看到设计师能解释的当前结果与卡点。
+
+### 当前事实
+
+- 真实运行的三次 `composeDesign` 失败原因依次为：主体阴影与背景处理冲突、主体占比缺失、第三个排版区域缺少用途与内容。模型在逐项修正，并非重复撞同一堵墙。
+- 旧熔断器只按 Tool 名累计，所以三个不同错误也会触发连续失败上限；这是 Harness 误判，不是模型失去修正能力。
+- 执行器要求 canvas、palette、subject、background、layout region 和 save 的多层必填字段，但模型可见 JSON Schema 没有完整声明；Harness 先少给说明、再用隐藏规则处罚模型。
+- 用户看到的 `composeDesign`、`layout.regions[2]`、`role/content` 与「已处理 10 步」来自运行时收尾模板和原始诊断泄漏，不是设计师面向用户的正常表达。
+- 该失败运行沿用了旧会话工具面和重复用户 Prompt，开始时间早于本轮生产构建；不能用它判定最新修复无效，但它暴露的上述代码缺陷均真实存在。
+- 重载后的干净会话只输入「帮我用项目里的素材做一张主图。」时，模型已自主选材、决定不编造文案并创建新 Photoshop 文档；新的失败来自复合工具内部：摄影优先路径先按 `main-image` 区域定位商品图，随后从待渲染区域移除该区域，却仍要求至少存在一个文字或装饰区域。有效的纯图片设计因此被 Harness 拒绝。
+- 该复合调用已经创建文档、置入并定位商品图，但旧失败结果没有稳定声明 `createdDocument / layoutRendered / partialMutation`，导致运行档案把部分成功写成未新建文档；这是回执一致性问题，不是 Agent 设计判断问题。
+
+### 实施边界
+
+1. Schema 只声明 Tool 真正需要的结构、类型与兼容关系，不替 Agent 选择版式、区域语义、主体占比、颜色或视觉风格。
+2. 失败熔断保护真实执行安全，但必须区分「原样重犯」与「根据错误继续修正」；不能按 Tool 名粗暴累计。
+3. 内部诊断保留给模型与开发日志；用户可见结果必须表达业务含义，不展示 JSON 路径、Tool 名、循环计数或 Harness 调度术语。
+4. 不通过放宽 Photoshop 写入约束、吞掉错误或伪造成功来改善表面体验。
+
+### 实施结果
+
+1. `composeDesign` Schema 已与真实执行契约对齐：多层对象显式声明 required；photo / cutout 分支分别约束主体占比或抠图决定；区域必须带 id、role、content 与完整 bounds。约束只要求模型给出自己的答案，不补任何内置版式或审美默认。
+2. 连续失败计数改为比较归一化后的错误原因：同 Tool 出现不同校验问题会重置为 1，表示 Agent 正在取得修正进展；只有相同问题连续出现三次才停止。
+3. 循环停机、最后工具摘要和执行告警不再展示内部 Tool 名、字段路径或处理步数；诊断清洗把具体字段问题转换为「第 3 个区域还没有说明用途和内容」等自然表达。
+4. 定向验证覆盖完整 Schema、不同错误不误判、相同错误仍能熔断，以及原始真机错误到用户语言的转换；没有为通过检查删除执行器约束或放宽安全门。
+5. `renderLayout` 新增受限的 owned-layer-only 结构整理模式：仅当调用方已经提供当前文档中的真实图层时，允许没有剩余 blocks / regions，并继续完成语义分组、图层读回与真实快照；普通空布局仍然 fail closed。它只承认 Agent 已经做出的纯图片设计，不补文案、坐标或审美默认。
+6. `composeDesign` 成功和部分失败都返回统一执行收据；新文档已创建、排版是否完成和部分写入分别记账。完成契约只在 `document.mode=new` 时把复合调用计为新建文档，编辑当前文档不再被误算为新建。
+7. 用户过程把「一次成稿」改为「制作首稿」，启动状态从固定宣布检查 Photoshop 改为中性的需求理解；Harness 不再替 Agent 公开决定工作步骤。
+
+### 下一步
+
+重载本轮最新 production build 后再建一个干净会话，只输入一句「帮我用项目里的素材做一张主图。」；重点核对纯图片选择能否直接完成语义分组与写后快照、图层结构是否符合交付习惯、最终回复是否只说设计结果与自然卡点，并记录工具次数、首次真实写入延迟和整体耗时。
+
+### 验证与未知
+
+- 已通过：`verify-compose-design-spec`、`verify-design-authorship-boundary`、`verify-run-fact-ledger`、Main / Renderer 类型检查、Skill Package 契约（首轮 13 个 Tool 且 Schema 低于 16000 字符）、完整 `maintenance:validate` 33 个核心检查、Agent / UXP production build 与 scoped `git diff --check`。
+- 已完成第一轮干净实机定位：Agent 的选材、纯图片设计判断和新建文档均真实发生；暴露并修复 owned-layer-only 适配与部分成功回执缺口。待完成：重载本轮修复后的第二次 Photoshop 真机复验。
+
+### 状态
+
+`in_progress / implementation_complete / full_core_33_checks_passed / production_build_passed / first_clean_live_replay_root_cause_fixed / second_live_photoshop_replay_pending`
+
+## 2026-08-21 DESIGN-AUTHORSHIP-PRESET-CLEANUP-001：内置设计预设清理
+
+### 目标
+
+解决同类设计反复产出相同版式、主体比例、字色、阴影和占位结构的问题：开放创意由 Agent 基于用户目标、真实素材、项目状态与模型知识做决定；Harness 只提供事实、几何执行、权限、安全、结构收据和写后验证。平台尺寸、文件格式、SKU 组合数量等唯一可校验规格不按“设计预设”误删。
+
+### 当前事实
+
+- 已核实固定结果并非单一模型问题：通用 compose 入口、renderLayout、智能缩放、主图旧策略、参考复刻缺项补造、详情页固定结构卡和部分知识 /Prompt 同时存在隐藏审美默认。
+- 已删除六套固定版式 recipe、详情页固定八屏结构预设、旧主图审美配方、未使用的旧视觉 Prompt，以及 agentic 主图 /详情页 Manifest 的标准模板绑定。
+- `composeDesign` 现在要求 Agent 显式声明 regions、visualStyle、页面底色、主体处理 /占比和完整投影参数；颜色只接受明确色值，不把“米白 /高级 /柔和阴影”等标签翻译成固定色号或 Photoshop 参数。
+- 全局智能缩放不再有品类 /角色 /意图表和 70% 主体占比；参考复刻不再在缺参数时补统一阴影、描边、彩色占位块、坐标或文案。
+- SKU 色卡自身明确的组合、卡片结构和主体尺度仍属于 staged Skill 规格，不进入通用 Harness；恢复路径调用主体适配时也必须显式带 fill ratio 与 anchor。
+
+### 实施边界
+
+1. Agent 拥有版式、颜色、字体层级、主体尺度 /重心、背景、阴影、文案表达和是否复核的选择权。
+2. Harness 可以校验字段、范围、对比度、越界、目标文档、事务和写后事实，但不得根据任务类型或缺省参数补视觉答案。
+3. 用户 /项目模板和参考图属于可选证据；只有显式复刻 /套版任务才消费其真实结构，缺失参数不得用内置配方补造。
+4. Skill 可拥有该业务唯一可验的生产规格；可变审美仍由 Agent 决定并作为完整参数交给 Tool。
+5. `neutral_wireframe` 只服务明确结构预览，不得冒充设计成品。
+
+### 下一步
+
+重启桌面端，在桌面新建第二个干净项目副本，只提交一句“帮我用项目里的素材做一张主图。”：核对 Agent 是否自主选材、直接创建独立文档、按语义组织图层、使用正式保存 /导出而不是恢复点，并记录首次写入延迟、重复观察、最终画面和订阅桥是否仍会误中断活跃输出。静态验证不能替代这次 Photoshop 真机对照。
+
+### 验证与未知
+
+- 已通过：`test:compose-design-spec`、`test:design-authorship-boundary`、`test:recent-designs`、`test:run-fact-ledger`、Main /Renderer 类型检查、Agent /UXP production build，以及 `maintenance:validate` 33 个核心检查。
+- 首轮开放设计仍保留 `createDocument + composeDesign` 真实写入入口；移除非执行必需的 rationale Tool 参数后，13 个首轮工具的 Schema 从 16018 降至 15465 字符，重新低于渐进披露预算。
+- 运行事实账本已从固定 recipe 解析改为记录 Agent 显式 regions /blocks 生成的 `layoutSignature`，避免项目记忆继续传播已删除的内置配方身份。
+- 2026-08-21 第二轮修复：订阅桥从固定总时限改为“活动增量刷新空闲时限 + 独立硬上限”，Provider 失败保持结构化归因；重复 Prompt 已去重；`smartSave` 从 Agent 工具面移除并强制写入 `.designecho/recovery`；新建模式 `composeDesign` 不再被旧画面读取门禁拦截；未过质量门首稿不再进入近期成稿。
+- 工具面仍为 13 个：新增 `getLayerHierarchy` 事实读回，同时把额外设计方法论移到按需检索，避免固定内容和工具选择负担进入首轮；完整 `maintenance:validate` 33 项及 Agent /UXP production build 已通过。
+- 待完成：第二轮重载后的 Photoshop 真机差异性、效率、交付完整性与超时验证。
+
+### 状态
+
+`validated / implementation_complete / built_in_aesthetic_presets_removed / deterministic_skill_specs_retained / recovery_save_isolated / subscription_idle_timeout_fixed / first_turn_tool_budget_13 / full_core_33_checks_passed / second_live_photoshop_validation_pending`
+
+## 2026-08-21 MODEL-HARNESS-EFFECTIVENESS-001：GPT-5.6 有效能力与 Harness 运行效率治理
+
+### 目标
+
+不把「模型升级后效果变差」凭感觉归因给模型或 Harness，而是依据真实 Run Record 找到 Harness 对模型的拖慢、误报和越权点；保留权限、目标 /revision、事务、真实读回和硬预算，不以放宽安全换速度。
+
+### 当前事实
+
+- 522 次真实运行中，155 次 success（30%）、73 次 completed（14%）、21 次 completed 且有真实写入（4%）、399 次零写入（76%）、203 次预算 /无进展收尾（39%）。这证明系统有效表现远未稳定，但不能据此把全部失败归因于 GPT-5.6。
+- GPT-5.6 SKU run 522 共 15 iterations、25 Tool calls、8 次写入；模型完成了能力发现、变换、文字和终图观察。Harness 同时制造了一次假失败：同一模型轮的只读 `searchAgentCapabilities` 被当成第二次 schema 装载，错误返回 `capability_request_round_budget_exceeded`。
+- 普通问候 run 519 和系统审查 run 520 都在模型响应前被 Harness 强制调用 `getDocumentInfo`。这不是安全前置条件，却给非 Photoshop 任务增加延迟、上下文噪声和错误面。
+- 重载后的 run 525「你是谁」与 run 526「那你可以看图理解项目图片中有哪些卖点吗」均为 1 iteration、0 Tool、0 Harness observation，证明通用开场不再误碰 Photoshop。新的问题是回答虽然没有越权行动，却把常驻「产品事实必须追溯」原则改写成了能力免责声明；真实输出中的「材质 /功能 /参数 /合规需资料确认」与该常驻原则直接对应。
+- 旧审计把已收敛的 `composeDesign` 首稿能力误判为缺少 `placeImage + createTextLayer`，也因上下文编译新增字符预算参数误报 stage context 未刷新；两项已按当前真实不变量校准。
+- SKU 自选备注原有两套互斥文件策略已经收口：所有备注先写入项目内隔离暂存目录，逐项验证文件可解码、尺寸和唯一正式路径，全部通过后再独占提交；失败回滚已提交文件并清理暂存，空父目录只走原子非递归删除。业务边界审计 3 条事务违规已清零。
+- 用户截图中的「可校验的文档标识 / Photoshop 写入目标 / 当前已授权能力」不是模型生成的设计表达，而是 Tool preflight 原始 blocker 经术语替换后被直接投影进用户过程；实际生产身份虽已写「主设计师」，但 Harness 的公开过程绕过了该身份。这是用户感到 Agent 像工程系统而不是设计师的直接根因。
+- 项目目录、当前 Photoshop 文档与用户点名交付物此前缺少同一组结构化事实：现已统一解析 canonical project root，运行上下文带开放文档的路径状态、项目亲和性和文档性质；主图、详情页、SKU 等用户原文交付义务逐项取得独立结果收据，不能再由一份模糊文件或模型完成措辞同时冒充多个交付物完成。
+
+### 实施边界
+
+1. 能力目录搜索保持只读且不消耗「每轮一次 schema 变更」额度；只有 `requestAgentCapabilities` 装载能力时消耗该额度。搜索后装载、装载后再搜索均保持可用。
+2. 通用 autonomous Agent 的开场观察默认为 `none`；问候、解释和系统审查不再自动碰 Photoshop。模型仍可按任务需要调用 `getDocumentInfo`；结构化 Design Team 阶段显式保留 `canvas_visual`。
+3. 恢复 `maxToolCalls` 真实硬上限；预算不替模型选择下一步，但必须阻止异常循环。连续 3 次同一 Tool 的已证实失败后停止再次执行该 Tool，并把失败事实交回模型；不能通过 no-progress 恢复把它重新放行。
+4. `operation_unknown` 写入在两次通用读回仍无法对账后保持写锁并诚实停机，不允许以「继续根据画面操作」掩盖未知副作用。
+5. 清除 Capability Resolver 中已失效的 confirmation 全局 deny；`agent.interaction.requestConfirmation` 使用可恢复的 `askUserToChoose`，不再因半迁移而不可达。
+6. Runtime /业务审计改为验证生产语义：Capability 按 family 可发现、Prompt 不倾倒全目录、首稿入口为 `createDocument + composeDesign`、阶段上下文编译受统一字符预算约束。
+7. 常驻产品事实原则只约束真正生成 /采信商品文案和写入交付物的场景；纯能力说明不主动复述边界。主 Agent 的身份提示要求能力咨询先说明能交付的具体结果和自然下一步，只有真实限制会直接影响当前目标时才展开，不通过关键词改路由，也不强迫能力问答调用 Tool。
+8. 主 Agent 的首要身份收紧为对创意与质量负责的资深商业视觉设计师，Photoshop / Capability 只是制作媒介。Tool preflight 原始 blocker 只留给模型和诊断；用户过程由品类中立的公开投影说明正在核对的画面 /图层及设计原因，不展示 documentId、写入目标、授权能力、门禁或调度术语，也不削弱后台目标绑定和安全拦截。
+9. 通用任务计划不再制造固定的「开场检查当前画面」步骤；只复用已经取得的上下文事实，由 Agent 自己决定是否补充观察和调用哪个只读 Tool。结构化 staged Skill 可以声明真正必要的输入观察，写入前目标 /revision 校验和写后读回继续强制。
+10. 任务卡状态按 TaskRun /请求作用域隔离并可显式释放；用户点名交付物的收据与未完成项写回现有 Design Project State 的 `productionTasks`，不新建第二套任务状态或依赖渲染进程全局单例。
+
+### 下一步
+
+重载最新 `dist` 后继续同模型、同设置对照：能力问答应先说清能做出的结果和下一步，不再以常识性限制收尾；明确的「去看项目图片并提炼卖点」仍应由模型调用必要的只读观察，而不是被问答风格提示压成纯聊天。设计写入前缺少目标身份时，用户过程应显示「确认当前工作画面 /图层」及避免改错的设计师说明，后台仍保留原始 preflight blocker。SKU 还需验证一次装载前后继续搜索而无假失败。记录首次有用动作延迟、模型 /Tool 调用数、重复观察、真实写入和完成结果；只有真实重放仍显示搜索重复或视觉成本过高时，才继续改缓存和观察策略。
+
+SKU 自选备注事务治理已完成代码和静态回归；下一次真机只需要验证同规格重跑、任一批次失败不留下部分正式交付、既有文件不被覆盖以及暂存目录可清理，不再需要设计第二套文件策略。
+
+### 验证与未知
+
+- 已通过：Renderer /Main 类型检查、Capability resolver、Runtime declaration、简化棘轮、Prompt capability governance、Tool /Handler /Skill /通用 Executor 审计、UTF-8 检查、scoped `git diff --check`、默认 5/5 测试与 Agent production build。Prompt 审计显式断言了「具体结果 /自然下一步 /不写免责声明」「产品事实只在交付内容中生效」，以及「资深商业视觉设计师 /创意与质量负责人 /工具只是媒介」；preflight 公开投影用真实原 blocker 回归，并断言用户文案不含 documentId、写入目标、文档身份、授权能力、Harness 或门禁。
+- `maintenance:validate` 已完整通过 33 个核心检查，覆盖规划一致性、仓库卫生、UTF-8、Tool /Handler /Skill /Executor /Capability /Prompt /业务边界、事实账本、任务卡、Agent 类型检查和 UXP production build。Category Terms 审计已修复孤立根快照无法取得迁移前基线的问题，改为从仓库保留引用中找到真实首次引入父提交逐词对照；`KV / 视觉稿 / 场景图` 均取得旧代码证据，没有删词或放宽断言制造假绿。
+- 已验证：桌面端重放 run 525 /526 后，普通对话的强制开场 Photoshop 调用已从真实运行中消失。未知：本次能力问答 Prompt 修复刚完成 production build，当前桌面进程尚未再次重载；SKU 搜索额度、真实 GPT-5.6 设计完成率和设计质量仍未实机复验。
+
+### 状态
+
+`validated / harness_root_causes_fixed / capability_search_no_longer_consumes_load_budget / generic_opening_observation_owned_by_agent / capability_answer_disclaimer_leak_fixed_in_prompt / designer_identity_strengthened / preflight_diagnostics_removed_from_user_process / hard_budget_and_repeated_failure_stop_restored / unknown_write_fail_closed / project_and_document_identity_structured / literal_deliverable_receipts_enforced / task_card_scope_isolated / sku_staging_transaction_closed / full_core_33_checks_passed / production_build_passed / designer_process_capability_answer_and_live_photoshop_replay_pending`
+
+## 2026-08-21 TODAY-BOUNDARY-LANDING-001：今日 Agent / Harness / Skill / Tool 讨论落地
+
+### 目标
+
+把今天关于 Harness 不替 Agent 决策、业务能力归 Skill、通用电脑能力归受控 Tool Provider、SKU 好体验保留、交互卡减少沟通成本和代码卫生的讨论收敛为同一套生产边界；不把“像 Codex 一样操作电脑”误实现为默认开放任意 Shell 或无范围桌面控制。
+
+### 当前事实
+
+- Agent 拥有目标理解、设计判断、动态计划和下一动作选择；Harness 只拥有能力真相、上下文、权限、任务身份、目标 /revision、事务、核验、预算和安全停机。
+- SKU、主图、详情页的业务方法、领域卡片 schema、校验和提交消费归各自 Skill package。Photoshop、项目文件、浏览器、桌面观察和未来命令执行是跨业务 Tool Provider，归 Harness 的 Capability /preflight /执行边界；Skill 只声明依赖，不能各复制一套电脑控制代码。
+- DesignEcho 的产品边界仍是专业视觉设计与 Photoshop 生产 Agent，不扩张为任意通用电脑代办。电脑能力只按当前设计任务需要渐进装载。
+- 原始命令工具暂不进入生产：当前还缺任务级批准回执、工作目录 /目标范围、风险分类、取消 /超时、输出脱敏和副作用读回。直接开启内置 Codex `shell_tool / computer_use` 或把外部 MCP 配置当作已授权工具都会越过现有安全 owner。
+
+### 实施边界
+
+1. 修正 Capability 映射：`agent.interaction.requestConfirmation` 改为 `askUserToChoose`；`createInteractiveCard` 只对应多字段结构化草稿，避免确认能力加载错工具。
+2. 浏览器导航与交互被显式登记为 Harness 跨业务 Provider capability；业务 Skill 不拥有浏览器实现，执行仍走现有风险分类和批准纪律。
+3. SKU 组合卡和人工复核卡 Provider 增加 `ownerSkillId=sku-batch`，注册表在启动时检查 owner 存在以及 `kind@payloadVersion` 唯一，并提供只读审计投影；通用 UI 不据此选择 Skill 或取得权限。
+4. 设置页明确标注外部 MCP 当前只是配置存储，启用不等于 Agent 已可调用；在安全契约完成前不制造“已经接线”的假象。
+5. 浏览器桥文档改用 `askUserToChoose(decisionKind=approval)`，并移除已退役 smoke 入口的错误说明。
+
+### 下一步
+
+在不新建第二 Capability Registry 的前提下，基于现有 Capability Session 和 execution preflight 实现 `COMPUTER-PROVIDER-AUTHORIZATION-001`：先做只读桌面观察与连接状态，再做有范围的文件操作；最后才接命令执行和桌面输入。每个 Provider 必须有用户启用、任务范围、Tool annotations /本地风险覆盖、批准回执、超时 /取消、结果脱敏和写后核验。外部 MCP 只编译已批准且分类完整的工具，未知与高风险能力 fail closed。
+
+### 验证与未知
+
+- 已通过：选择卡 /Skill Provider 定向测试、Main /Renderer 类型检查、Tool /Skill package /Executor /Capability /Prompt 审计、Agent 与 UXP production build、UTF-8 检查和 scoped `git diff --check`。
+- 业务边界审计仍为相同 7 条既有失败：SKU 布局 /交付 1 条、SKU 暂存清理 2 条、主图 handoff 基线 3 条、stage context 刷新 1 条；Runtime declaration 审计仍停在既有 `hard tool budget must still stop all calls` 断言。本轮零新增，未修改断言制造假绿。
+- 未知：真实桌面 UI 中选择卡加载、SKU 卡片恢复和浏览器 approval 尚未点击验收；外部 MCP、通用桌面写入和命令执行仍未接生产 Runtime，不能宣称可用。
+
+### 状态
+
+`validated / first_safe_slice_complete / interaction_mapping_fixed / skill_card_owner_registered / computer_provider_boundary_defined / arbitrary_shell_not_exposed / focused_tests_passed / production_build_passed / full_validation_still_blocked_by_preexisting_runtime_budget_assertion_and_7_business_audit_failures / live_ui_pending`
+
+## 2026-08-21 SKILL-INTERACTION-BOUNDARY-001：Skill 卡片 Provider 与低沟通成本交互
+
+### 目标
+
+SKU、主图、详情页等 Skill 的业务交互不得渗入通用 Agent、ChatPanel 或通用卡片 Host；同时保留 SKU 组合卡已有的拖拽、增删、排序和人工复核体验。通用 Agent 卡片必须减少歧义，而不是为了展示 UI 增加沟通轮次或把同一任务重新发送一遍。
+
+### 当前事实
+
+- Agent 只直接看见通用交互能力和按需装载的 Skill 公开入口；SKU 组合卡、人工复核卡的构造、语义校验、提交和持久化属于 SKU Skill Provider，不作为散装 Tool 暴露。
+- 通用交互只有两种稳定入口：`askUserToChoose` 处理 1–3 个实质选择；`createInteractiveCard` 只处理确有必要的多字段可编辑草稿。领域卡片只能由已选择 Skill 的 Provider 生成。
+- 选择问题必须区分 `preference / required_fact / approval`。自动模式只能采用有推荐项的专业偏好；用户事实与授权不能由模型代答。
+- 交互提交通过来源消息、对话 /项目作用域和 Runtime 身份恢复原任务；普通发送管线不得把卡片答案新建为无归属任务。
+
+### 实施边界
+
+1. SKU 组合提交、配方记忆、人工复核持久化和两类专属 Renderer 已迁入 `skill-executors/interaction-cards/` Provider 包；通用 `ChatPanel` 与 `InteractiveCardBlock` 不再导入或分支处理 SKU 卡片类型。
+2. 通用 Tool executor 不再包含 `sku_combo_editor` 特判，而是只接受通用卡白名单；未注册业务卡 fail closed，由对应 Skill Provider 负责。
+3. 关闭无法表达稳定提交语义的 `generic_confirmation`；简短选择走 `askUserToChoose`，多字段草稿走 `editable_confirmation`，两者提交后都结构化恢复原任务。
+4. `askUserToChoose` 一次最多 3 题、每题最多 5 项，必须说明为什么由用户决定以及结果影响；可观察事实不应询问，低影响可逆判断由 Agent 自主完成。
+5. 不允许 Agent 生成 React /HTML /CSS /脚本或任意提交动作；卡片内容可声明，渲染、身份、幂等、作用域和恢复由受控 Runtime 负责。
+
+### 下一步
+
+重载当前桌面端后做一次真实 UI 验收：普通偏好卡在 ask /auto 两种模式的行为、事实 /授权在 auto 模式仍停下、SKU 组合拖拽增删排序、SKU 人工复核写入、可编辑草稿提交后继续原任务。若出现额外沟通轮次，依据同一 Run 的来源消息和 resume 记录定位，不恢复普通发送重开任务。
+
+### 验证与未知
+
+- 已通过：选择卡与 Skill Provider 纯逻辑 /边界测试、Main /Renderer 类型检查、Agent 与 UXP production build、Tool registry、通用 executor 审计、UTF-8 检查与 scoped `git diff --check`。
+- 完整 `maintenance:validate` 已运行，并在业务边界审计的 7 条既有债务处停止：SKU 布局接线 1、SKU 暂存 /清理 2、主图 handoff 3、stage context 1；本轮没有新增违规，也没有修改断言制造假绿。
+- 未做：真实桌面卡片点击、同 TaskRun 恢复和 Photoshop 端到端验收。因此代码契约与构建已验证，不宣称真实交互耗时和视觉体验已经实机通过。
+
+### 状态
+
+`validated / code_complete / provider_boundary_closed_for_sku_cards / generic_card_modes_stabilized / focused_tests_passed / production_build_passed / full_validation_blocked_by_7_preexisting_business_audit_failures / live_ui_resume_validation_pending`
+
+## 2026-08-21 AGENT-HARNESS-AUTHORITY-SUBTRACTION-002：Harness 下一步规划越权链完整收口
+
+### 目标
+
+用户确认「Harness 替模型决定下一步」属于越界，而且会拖慢 Agent；要求不再停在第一切片，直接完成治理，并把代码卫生作为硬要求。
+
+### 当前事实
+
+- Agent 拥有：理解目标、设计判断、动态计划、从当前可用能力中选择动作、根据失败事实决定恢复路线。
+- Harness 拥有：上下文与能力真相、权限、目标文档与 revision、事务、副作用核验、预算和安全停机。
+- Harness 可以拒绝不安全动作并返回事实、原因和当前授权边界；除非属于显式 staged Manifest 的规格或安全协议唯一动作，否则不得替 Agent 选择下一工具、裁剪下一轮工具面、合成 Tool call 或把验收缺口翻译成工具步骤。
+- Tool / Skill 原始结果仍可在 Runtime 内部保留 `nextRequiredTool`、`allowedToolNames` 等历史兼容字段，但模型可见投影会剥离这些规划字段；开放式 agentic 路径不消费它们作为权限、计划或下一轮 allowlist。
+- 显式 staged Runtime 仍可按版本化 Manifest、当前 Stage、Capability、目标 /revision 与工作流 continuation 做最小权限约束。这是规格化生产和执行安全，不进入开放创意路径，也不替模型生成调用。
+
+### 实施边界
+
+本轮删除所有已确认会接管下一轮动作选择的生产链；同时保留能力真相、授权、目标 /revision、事务、未知写入读回、完成真实性、预算与安全停机。不得以“自主”为名放宽 Photoshop 执行安全，也不新增第三套 Runtime。
+
+1. 完整删除 `AgentRecoveryQueue` 及其 Tool decision、preflight、no-progress、stage-stall、required/no-call 等下一轮排队、allowlist 消费和强制 no-call 状态；恢复消息只报告失败、未完成、剩余授权能力数量或用户输入缺口。
+2. 删除紧凑 E1 的确定性 workflow-owner Tool call 合成和首轮 owner-only 工具面裁剪。staged 执行点仍能拒绝越过唯一 workflow owner 的提前写入，但返回事实后由模型自己发起合法动作。
+3. `applyWorkflowContinuationScope` 只在真实 `runtimeSession + runtimeStagePlan` 下生效；开放式 agentic Skill 结果中的 continuation、recovery 与 `allowedToolNames` 不再取得计划或权限。
+4. Skill 模型投影不再输出 `nextAction / nextStep`；通用 Tool 模型投影递归剥离 `nextRequiredTool*`、`requiredTool*`、`requiredArguments` 与 `allowedToolNames`。原始结果仍供日志、staged 对账和诊断使用。
+5. 完成契约补救从「调用哪个 Tool、传什么参数、按什么顺序」改为只列出确定未满足 /尚未验证的验收事实；用户目标、禁止项、同目标读回与真实交付证明仍是硬边界，具体补救动作由 Agent 选择。
+6. 删除 execution preflight 对 Tool result `nextRequiredTool` 的隐式消费，以及失去调用方的交付工具筛选器；目标身份缺失的 blocker 不再点名 `getDocumentInfo`，只声明必须取得带文档身份的只读事实。
+7. `audit:simplification-ratchet` 新增零容忍项，禁止 Recovery Queue、Tool call 合成、补救策略点名 Tool /参数、Skill nextStep 投影和 Tool-result 隐式预检授权回潮。
+
+本文件较早条目中由 `resolveRequiredToolRecovery`、`nextRequiredTool` 或紧凑 owner 合成下一步的方案均为历史记录，不代表当前 Runtime 行为。
+
+### 下一步
+
+代码与生产构建已收口。下一步只做真机效果验证：重启桌面端加载新 `dist`，在安全 Photoshop 副本用同一批任务对比首次有效写入延迟、模型调用数、重复观察、工作流 owner 是否仍可达，以及完成且有真实写入率。若仍慢，依据运行档案定位新的事实瓶颈，不恢复下一步工具笼子。
+
+### 验证与未知
+
+- 已通过：Main / Renderer 类型检查、Agent production build、Tool、Executor generic、Capability resolver、Prompt capability governance、Planning check 与 simplification ratchet。
+- 权力棘轮当前为：下一步 Tool 规划接管入口 `0`；主循环控制分支 `21 → 17 → 13`；`agent.ts` 行数 `13,707 → 13,554 → 13,025`。
+- 新行为断言已通过：开放式 Skill 结果不把 nextAction / allowlist 投给模型；通用 Tool 结果不泄露内部下一 Tool 字段；紧凑 E1 owner 保持模型选择；完成契约只投验收事实。
+- 完整 Runtime declaration 审计仍被既有 `hard tool budget must still stop all calls` 断言阻断。本轮没有降低或改写该无关断言。
+- 业务边界审计仍为同样 7 条既有 SKU /主图 /stage-context 失败；本轮新增的权力边界检查全部为零违规，没有改断言、吞错误或扩充兜底制造假绿。
+- 正式 `maintenance:validate` 已运行：规划一致性和仓库卫生通过，随后被未跟踪旧文档 `docs/asset-distillation-knowledge-feasibility-2026-08-19.md` 第 3 /165 行疑似乱码阻断；该文件不属于本任务，保持原状。
+- 未做真实 Provider + Photoshop 端到端写入，因此不宣称真实设计速度和成功率已经改善。
+- 历史兼容类型仍保留 `harness_compact_workflow_owner` 与若干 `nextRequiredTool*` 字段，用于读取旧运行档案和内部 staged 契约；生产 Agent 已不再生成前者，也不会把后者回灌成模型计划。
+
+### 状态
+
+`validated / code_complete / next_turn_planning_authority_zero / agent_recovery_queue_retired / production_build_passed / focused_boundary_checks_passed / full_runtime_and_business_audits_blocked_by_preexisting_failures / live_photoshop_effect_validation_pending`
+
+## 2026-08-21 AGENT-HARNESS-BOUNDARY-CLOSURE-001：经验、设计能力、Prompt 与上下文边界收口
+
+### 目标
+
+用户不再接受零散修补或半成品：需要把经验到底归谁、Harness 与 Agent 的边界、通用设计能力与业务 Skill 的边界、系统提示和模型上下文如何治理一次收口，并参考行业最新实践给出工程决定，不把技术方案选择题交回用户。
+
+### 当前事实
+
+1. 经验不是 Agent 或 Harness 的附属字段：Memory / Knowledge 拥有内容与来源，Experience Publisher 拥有候选晋升，Evaluation 只提交 finding，Harness 负责检索、作用域、预算和生命周期，Agent 只在任务中解释 /使用。
+2. Design Kernel 拥有跨品类设计能力；Skill 只叠加品类、渠道、交付物特有的方法与契约。开放创意保持 agentic；只有有唯一正确答案的规格化生产使用 staged。
+3. 七步法、任务卡和独立评价都是按任务复杂度 /风险装载的脚手架，不是所有设计任务的固定门禁。System Prompt 只保留稳定身份、安全和少量跨任务原则。
+4. 首轮 Capability 必须是真正小面：一对一叶子能力 + 只读搜索 + 精确装载；Capability 可见性不等于执行授权。
+5. 每次模型调用只使用一个 context capacity plan：以真实模型窗口为总账本，预留输出和 Tool schema 后再编译消息；未知窗口保持 unknown，不按模型名猜测。
+
+#### 已完成代码闭环
+
+- Experience v2 候选隔离与 v1 安全迁移；模型评审只产生候选，用户明确项目反馈才可进入项目 Evaluation calibration。
+- `studyReference` 的模型解读进入现有 Memory 人工审核队列；未审条目不可检索，审核批准后才转 active 知识。
+- `searchAgentCapabilities → requestAgentCapabilities` 两阶段按需发现；中文长句复用真实 Tool 语义进行 CJK 片段匹配，搜索不改变 active tools。
+- 通用设计首轮能力从聚合映射拆成叶子能力：实测 active tools 25 → 13，Tool schema 约 27.4k → 14.3k 字符，同时保留项目定位、文档识别 /切换、项目状态、看画布、建画布和可逆首稿。
+- 模型窗口、输出、Tool schema、Runtime Context 与历史消息已纳入同一容量计划；受保护内容无法容纳时明确返回 `context_window_budget_exceeded`。
+- 开放设计纪律中只有确定错误 /安全错误可硬阻断；七步 /任务卡 /评价已降为按需专业脚手架。
+
+### 实施边界
+
+本轮允许修改经验候选 /发布路径、Capability Session /Resolver、Context Manager /容量计划、通用 Prompt /设计纪律及其现有测试与真相源文档。不得借此重写 v3 循环、建立第三 Runtime、自动发布跨项目知识、放宽 Photoshop 事务安全，或修复共享脏工作树中与本边界无关的 SKU /Provider /UI 债务。
+
+### 下一步
+
+本轮代码、文档与本地验证已收口。后续仅在环境具备显式双重 opt-in 与有效 Provider 凭据时运行只读 search→load 接受测试；Photoshop 商业设计质量另走安全副本真机验收。共享工作树中的旧 SKU /Runtime /品类词与编码债务按各自任务处理，不归入本轮实现。
+
+### 验证与未知
+
+已通过：Main /Renderer 类型检查、Agent 与 UXP 生产构建、Tool /Handler /Skill /Capability /Prompt /Executor /Gate /三态 /Design Intelligence 审计、Skill Package、简化棘轮、经验专项及核心列出的全部功能测试；`git diff --check` 通过。完整 `maintenance:validate` 未全绿，首先被未跟踪旧文档两处疑似乱码阻断；逐项补跑还确认了 7 条既有业务边界债、1 条既有 Runtime hard-tool-budget 断言和品类词库无父提交 /3 个扩张词。未改这些无关文件或断言制造假绿。
+
+真实 Provider 的 search→load 接受脚本语法与双重 opt-in 边界已验证，但本轮没有使用用户凭据发起真实 API 请求，因此不外推真实模型选择质量。真实 Photoshop 商业设计质量仍需独立真机任务验收，不由本次边界治理冒充。
+
+### 状态
+
+`done / runtime_and_governance_implemented / focused_and_production_build_validation_passed / documentation_converged / full_core_blocked_by_preexisting_dirty_worktree_failures / live_provider_and_photoshop_quality_not_claimed`
+
+## 2026-08-21 CODEX-SUBSCRIPTION-PROVIDER-001：内置 ChatGPT 订阅登录、GPT-5.6 模型与 gpt-image-2 生图
+
+### 目标
+
+「我想在项目中内置一个 GPT 订阅的登录的模型，用户可以选择订阅模型 5.6 系列。」后续补充：「借助 Codex 的生图能力或 ChatGPT/Codex 订阅额度，让 Agent 调用生图。」
+
+### 当前事实
+
+- 官方 Codex App Server 是可嵌入自有产品的 JSON-RPC 协议层，支持 managed ChatGPT 登录、凭据自动刷新、`account/read`、`model/list`、`thread/start`、`turn/start` 与结构化最终输出。
+- 捆绑并锁定 `@openai/codex@0.149.0` 后，本机协议握手真实返回 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`；旧全局 Codex 0.125.0 无法解析新增的 `max` effort，证明产品不能依赖用户全局安装。
+- 直接把 App Server 当第二个 Agent Runtime 会与 DesignEcho 现有 Agent 循环争夺历史、工具、完成判定与权限。已实测可用 `turn/start.outputSchema` 把 App Server 收敛为「单步模型桥」：只返回正文或 DesignEcho 工具调用 JSON，实际工具执行仍由现有 preflight / policy / Photoshop 事务链负责。
+- 0.149.0 的真实协议包含 `modelProvider/capabilities/read.imageGeneration`、`imageGeneration` ThreadItem、`usageLimitExceeded` 与 `savedPath/result`；官方说明内置生图使用 `gpt-image-2`，计入 Codex 通用用量。普通模型桥仍禁用全部内建工具，生图由第二个单用途 Runtime 独立承接。
+- 实机根因已验证：只启用 `image_generation` 只会暴露 `$imagegen` 技能说明，模型会发出 code-mode `exec`，但缺少 code-mode host 时不会产生图片。生图 Runtime 必须同时启用并捆绑同版本 `codex-code-mode-host`；其余内建能力继续禁用，宿主请求仍拒绝。
+
+### 实施边界
+
+**必须**
+
+1. 新增独立 provider `openai-codex`，与 OpenAI API Key 通道明确分离；订阅凭据不得进入 renderer、`apiKeys` 或项目文件。
+2. 主进程启动随应用捆绑的 Codex App Server，使用应用私有 `CODEX_HOME` 和空白只读 cwd；完成初始化、登录、退出、账号状态、配额、动态 5.6 模型目录、取消与进程清理。
+3. provider 每次调用使用 ephemeral thread + structured output，只返回一轮 `ProviderResponse`；不得注册 Photoshop MCP、不得执行 Codex 内建工具、不得形成第二套 Agent 循环。
+4. 设置页提供「ChatGPT 订阅（Codex）」登录卡和动态 5.6 模型选择，并明确说明它与 OpenAI API 独立计费/独立认证。
+5. 打包时解包平台原生 Codex 可执行文件；完成类型检查、构建、静态审计和协议级验证。
+6. 订阅生图使用独立 ephemeral thread、隔离工作目录和独立 App Server 进程；只允许 `$imagegen` 的 code-mode 编排与一个 `imageGeneration` 完成项。普通模型桥的 `image_generation` / `code_mode_host` 禁用不变。Agent 的 `generateImage` 通过显式设置选择订阅 `gpt-image-2` 或既有 BFL FLUX，不静默跨渠道回退。
+
+**不做**
+
+- 不抓取浏览器 Cookie，不复制 ChatGPT OAuth token，不读取或回传 App Server 的认证文件。
+- 不复用现有无鉴权的 Photoshop MCP 调试端点，不让 App Server 绕过 DesignEcho 工具执行契约。
+- 不硬编码宣称账号一定拥有某个模型；界面只展示当前 `model/list` 实际返回且非隐藏的 GPT-5.6 模型。
+- 不依赖全局 `codex`、全局 `~/.codex` 配置、第三方插件或 MCP。订阅生图只使用随锁定 Runtime 一起提供的官方 `$imagegen` 系统技能与 code-mode host。
+
+### 下一步
+
+用户在已启动的应用中进入「设置 → AI 模型 → ChatGPT 订阅模型（Beta）」完成登录；能力探针通过后，把「Agent 生图渠道」切换为「ChatGPT/Codex 订阅（gpt-image-2）」并保存。随后让 Agent 调用一次 `generateImage`，确认聊天里能看到真实图片，再决定是否置入 Photoshop；普通对话与 Photoshop 工具仍走原 DesignEcho Agent 循环。
+
+### 验证与未知
+
+- 已验证：官方协议、锁定运行时、GPT-5.6 模型目录协议、ephemeral thread + structured output 单步桥、独立只读 Runtime、登录发起/取消、取消竞态、工具 schema 二次校验、主/渲染类型检查、UXP 生产构建、安装目录原生运行时 `0.149.0`、打包应用启动与进程响应。
+- 已验证（订阅生图）：真实账户能力探针返回 `available=true / model=gpt-image-2 / usageKind=codex_subscription`；真实生成返回 1254×1254 PNG、约 1.03 MB、`model=gpt-image-2`、`provider=codex-subscription`。该次透明背景请求实际返回 false，运行时按真实结果上报，未虚报透明。`npm run pack` 成功，`release/win-unpacked/resources/app.asar.unpacked/.../bin/` 同时包含 `codex.exe` 与 `codex-code-mode-host.exe`，二者 Authenticode 均为 `Valid`、签名主体 OpenAI OpCo, LLC。
+- 已验证（最终打包产物）：`app.asar` 新于当前订阅功能源码，顶层仅含 `dist`、`node_modules`、`package.json`、`public`；登录错误脱敏、官方域名/标准端口校验、`config/read` 安全审计和内置工具禁用均已进入包内。打包后的干净隔离配置可启动 0.149.0 并返回未登录状态；人为启用 MCP 的隔离配置被拒绝。物理 `codex.exe` 的 Authenticode 状态为 `Valid`，签名主体为 OpenAI OpCo, LLC。
+- 正式核心验证未全绿，但阻断项来自当前脏工作树中的既有内容：一个未跟踪设计知识文档触发疑似乱码；另外 SKU 生产接线、Runtime budget 断言和品类词基线审计仍有失败。它们不应被伪装成本功能通过，也没有证据表明由本次订阅 provider 引入。
+- 仍未知：打包应用 UI 中的生图渠道保存与 Agent `generateImage` 整链、真实 `usageLimitExceeded` 配额事件、登录跨重启保持、Photoshop 置入后的视觉观察与人工采用闭环。未取得的结果不外推、不补造。
+
+### 状态
+
+`subscription_model_bridge_done / dedicated_image_lane_done / real_gpt_image_2_generation_validated / packaged_image_lane_binaries_validated / ui_agent_chain_pending`
+
+## 2026-08-17 DESIGN-PATH-CONSTITUTION-001：创意路径退出 Stage 门禁（设计路径宪法第一刀）
+
+### 用户原始需求
+
+「让 Agent 和设计师一样会设计而不是呆呆傻傻的机器人」；「从能做到能做好」；「你回顾过历史我们一直在治理但是没有解决问题」——要求给出有主见的专业决定并执行。
+
+### 决定（已落地，详见 Status.md 同日条目与 CLAUDE.md「设计路径宪法」）
+
+- 病根不是「还差哪个门禁没修好」，而是造门禁的机器还在运转：v5 Stage 机（R1/R3/R4 三张表 → E1 才许写）被接成了所有设计任务的写入门禁，连 general-design 也是 8 阶段；每修一堵墙都对，完成率仍 4%。
+- 第一刀：创意路径（general / main-image / detail-page / single-canvas-visual / reference-replication）以 manifest 字段 `execution_model: 'agentic'` 退出 Stage 机——不建 Runtime Session、声明不作写入门票、工具面 broad discovery、方法知识第一轮全部可见；SKU 批量 / 色卡 / 模板保持 staged。
+- 配套减法：观察预算拦截 → 一次性提醒；proven-applied 写入不再逼模型多花一轮读回、不锁同批写入；表单驳回可执行化 + 上撞墙账本 + 恢复 allowlist 不收成只剩控制工具；预算抬到设计师量级；棘轮钉住 agent.ts 行数 / 控制工具数 / 拦截返回点数只减不增 + 5 份创意清单必须 agentic。
+
+### 禁止做
+
+- 不得把创意清单改回 staged；不得新增前置拦截而不回答「拦做错还是说错 / 出口可达 / 真机档案编号」三问；不得再往 agent.ts 长分支（棘轮会拦）。
+
+### 后续刀（同日，已落地）
+
+- 第十刀 = 技术方案 P0（`docs/design-craft-harness-technical-plan.md` §4）：原则按七步工作法重排为 14 条并进棘轮（`design_principle_lines`）；`generic` 知识条目改写为七步工作法正文 + 七步自检；`getDesignKnowledge` 描述注明 generic 用途。P1 起点：② 文案功能词 vs 产品观察硬项、③ 选图留白方向评分、⑦ Harness 收尾自看 + 评分卡开机、配方表可加载数据、四宫格图片格。
+
+- 第十一刀（08-18）= 记忆与上下文第一批：运行事实账本（Harness 记事实、模型记判断）+ 状态摘要素材行 + 续跑摘要「上次做到」+ 去重复读。真机验收：`debug:runs` 看项目记忆写入率（基线 5%）；同一对话第二句「把标题改大点」是否还重新看图。剩余 P3：轮内语义摘要压缩、店铺级记忆（等账本有数据后做「成稿→标准档案」）。
+
+- 第十二刀（08-18）= 主体框变素材属性：alpha → 纯色底裁边 → 本地分割 → 整框，逐级本地求解带置信度；`getSubjectBounds` / `fitLayerSubjectToRegion` 默认不再用 PS 选择主体（显式 smart 才用）；写后读回按相对框投影。真机验收：fit 结果 `subjectDetection.method` 分布（asset:trim / alpha / layer:matting / frame），frame 占比越低越好；主体缩放不再因 PS 弹窗 / 超时失败。第二批：视觉粗框 + SAM 精修、主体框入素材记忆。
+
+- 第十三刀（08-18）= SKU 缺模板时「把色卡当模板」修法：handoff 契约写清模板定义（独立新文档 / 只放版式与占位 / 不置入颜色图 / 色卡只读不同名 / 先找项目与 Eagle 合适模板再新建）+ sku-batch 预算 16→32 + UXP switchDocument 同分不再静默选旧文档。真机验收：重跑「帮我做SKU」，色卡文档零写入、出现 2/3/4 双装独立文档、不在 14 轮被砍。
+
+- 第十四刀（08-18）= 推演第二批：缺模板时先弹组合确认卡（双数可改）再设计模板；handoff「合适」判据分两半；版式起点数字（三份共用刻度）。真机验收：「帮我做SKU」第一步应看到确认卡；确认后模板设计三份风格一致、占位数正确；色卡零写入。
+
+- 第十五 / 十六刀（08-18）= 来源只读（Skill 声明 `protectSourceDocument`）+ owner 先行（写入门禁 + 阶段提示）+ 账本不误导 + 提示体量测量（`debug:runs --trace` 看「提示体量」表）。真机验收：SKU 运行开工 ≤3 轮就到 owner；色卡写入被拦（错误里见「只读来源文档」/「先调用 SKU 工作流」）；档案里 promptShapeSamples 有数据。
+
+### 待验证（真机）
+
+- 重启应用后用同一组提示复测：「帮我做 详情页」「帮我完成SKU编排」「你帮我看看这个淘宝链接的设计 <url>」；`npm run debug:runs` 同口径看「完成且有写入率」（基线 08-14~17：41 次 0 次自然完成）、门禁拒绝占失败比（基线约三分之二）、首次写入延迟。
+- 已知遗留：agentic 路径无自动 Reflexion 返工（原依赖 Session 账本）；staged 路径 `createTextLayer::runtime_task_run_revision_reobserve_required` 待单独查；`audit:category-terms` 因仓库压成单一根提交而失败（与本刀无关）。
+
 ## 2026-08-16 GATE-SIMPLIFY-009：cut 意图审议闸门（治理切片 9，最后一刀）
 
 ### 用户原始需求

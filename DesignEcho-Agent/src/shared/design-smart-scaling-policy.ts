@@ -70,7 +70,8 @@ export interface SmartScalingInput {
     designType?: SmartScalingDesignType;
     assetRole?: SmartScalingAssetRole;
     intent?: SmartScalingIntent;
-    presetOverride?: Partial<SmartScalingPreset>;
+    /** 完整几何意图必须由调用方提供；Harness 不按品类补主体占比、锚点或裁切策略。 */
+    presetOverride: SmartScalingPreset;
 }
 
 export interface SmartScalingDecision {
@@ -90,143 +91,6 @@ export interface SmartScalingDecision {
     warnings: string[];
     preset: SmartScalingPreset;
 }
-
-export const DEFAULT_SMART_SCALING_PRESET: SmartScalingPreset = {
-    scaleMode: 'contain',
-    targetFill: 0.7,
-    minFill: 0.55,
-    maxFill: 0.9,
-    anchor: 'center',
-    cropPolicy: 'protect-subject',
-    visualBiasY: 0,
-    preserveSubject: true,
-    minScale: 0.05,
-    maxScale: 8
-};
-
-const DESIGN_PRESETS: Record<SmartScalingDesignType, Partial<SmartScalingPreset>> = {
-    'main-image': {
-        targetFill: 0.68,
-        minFill: 0.55,
-        maxFill: 0.82,
-        anchor: 'center',
-        cropPolicy: 'protect-subject',
-        visualBiasY: 0.02
-    },
-    'detail-page': {
-        targetFill: 0.62,
-        minFill: 0.45,
-        maxFill: 0.85,
-        cropPolicy: 'protect-subject'
-    },
-    sku: {
-        targetFill: 0.78,
-        minFill: 0.65,
-        maxFill: 0.9,
-        cropPolicy: 'avoid-crop'
-    },
-    'reference-replication': {
-        targetFill: 0.72,
-        minFill: 0.5,
-        maxFill: 0.9,
-        cropPolicy: 'protect-subject'
-    },
-    poster: {
-        targetFill: 0.66,
-        minFill: 0.42,
-        maxFill: 0.95,
-        cropPolicy: 'protect-subject'
-    },
-    banner: {
-        targetFill: 0.58,
-        minFill: 0.38,
-        maxFill: 0.86,
-        cropPolicy: 'protect-subject'
-    },
-    generic: {}
-};
-
-const ROLE_PRESETS: Record<SmartScalingAssetRole, Partial<SmartScalingPreset>> = {
-    product: {
-        targetFill: 0.7,
-        cropPolicy: 'protect-subject',
-        preserveSubject: true
-    },
-    model: {
-        targetFill: 0.74,
-        cropPolicy: 'protect-subject',
-        visualBiasY: 0.03
-    },
-    detail: {
-        targetFill: 0.8,
-        cropPolicy: 'avoid-crop'
-    },
-    scene: {
-        scaleMode: 'cover',
-        targetFill: 1,
-        minFill: 1,
-        maxFill: 1.2,
-        cropPolicy: 'allow-crop',
-        preserveSubject: false
-    },
-    icon: {
-        targetFill: 0.54,
-        minFill: 0.35,
-        maxFill: 0.7,
-        cropPolicy: 'avoid-crop'
-    },
-    background: {
-        scaleMode: 'cover',
-        targetFill: 1,
-        minFill: 1,
-        maxFill: 1.35,
-        cropPolicy: 'allow-crop',
-        preserveSubject: false
-    },
-    group: {
-        targetFill: 0.72,
-        cropPolicy: 'protect-subject'
-    },
-    unknown: {}
-};
-
-const INTENT_PRESETS: Record<SmartScalingIntent, Partial<SmartScalingPreset>> = {
-    hero: {
-        targetFill: 0.72,
-        visualBiasY: 0.02,
-        cropPolicy: 'protect-subject'
-    },
-    supporting: {
-        targetFill: 0.52,
-        minFill: 0.32,
-        maxFill: 0.72
-    },
-    thumbnail: {
-        targetFill: 0.78,
-        minFill: 0.6,
-        maxFill: 0.88,
-        cropPolicy: 'avoid-crop'
-    },
-    'full-bleed': {
-        scaleMode: 'cover',
-        targetFill: 1,
-        minFill: 1,
-        maxFill: 1.25,
-        cropPolicy: 'allow-crop'
-    },
-    'fit-slot': {
-        targetFill: 0.86,
-        minFill: 0.65,
-        maxFill: 0.96,
-        cropPolicy: 'protect-subject'
-    },
-    'compare-grid': {
-        targetFill: 0.76,
-        minFill: 0.62,
-        maxFill: 0.88,
-        cropPolicy: 'avoid-crop'
-    }
-};
 
 function isFinitePositive(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0;
@@ -307,18 +171,8 @@ function normalizePreset(preset: SmartScalingPreset): SmartScalingPreset {
     };
 }
 
-export function getSmartScalingPreset(input: Pick<SmartScalingInput, 'designType' | 'assetRole' | 'intent' | 'presetOverride'>): SmartScalingPreset {
-    const designType = input.designType || 'generic';
-    const assetRole = input.assetRole || 'unknown';
-    const intent = input.intent;
-
-    return normalizePreset({
-        ...DEFAULT_SMART_SCALING_PRESET,
-        ...(DESIGN_PRESETS[designType] || {}),
-        ...(ROLE_PRESETS[assetRole] || {}),
-        ...(intent ? INTENT_PRESETS[intent] || {} : {}),
-        ...(input.presetOverride || {})
-    });
+export function getSmartScalingPreset(input: Pick<SmartScalingInput, 'presetOverride'>): SmartScalingPreset {
+    return normalizePreset(input.presetOverride);
 }
 
 export function computeSmartScalingDecision(input: SmartScalingInput): SmartScalingDecision {
@@ -396,9 +250,7 @@ export function computeSmartScalingDecision(input: SmartScalingInput): SmartScal
         warnings.push(`Crop risk is ${cropRisk}; verify clipping or target bounds before execution.`);
     }
 
-    reasons.push(`designType=${input.designType || 'generic'}`);
-    reasons.push(`assetRole=${input.assetRole || 'unknown'}`);
-    if (input.intent) reasons.push(`intent=${input.intent}`);
+    reasons.push('geometry_parameters=explicit');
     reasons.push(`scaleMode=${preset.scaleMode}`);
     reasons.push(`targetFill=${preset.targetFill.toFixed(2)}`);
     reasons.push(`anchor=${preset.anchor}`);

@@ -40,6 +40,8 @@ import { getSAMService, SAMService } from './services/sam-service';
 import { DebugBridgeService, type DebugBridgeChatSubmitInput } from './services/debug-bridge-service';
 import { MCPHostService } from './services/mcp-host-service';
 import { BrowserBridgeService, initBrowserBridgeService } from './services/browser-bridge-service';
+import { handleBrowserCollectionRequest } from './services/browser-collection-service';
+import { ClaudeSubscriptionService } from './services/claude-subscription-service';
 import { CodexSubscriptionService } from './services/codex-subscription-service';
 import {
     BROWSER_BRIDGE_PORT,
@@ -52,11 +54,13 @@ import {
 
 // 导入拆分后的 handlers 注册器
 import { setupIPCHandlers, IPCContext } from './ipc-handlers';
+import { registerEarlyStateStoreHandlers } from './ipc-handlers/early-state-handlers';
 import { registerUXPHandlers, UXPContext } from './uxp-handlers';
 import { cleanupStreams } from './ipc-handlers/stream-handlers';
 import { BinaryMessageType, getBinaryTypeName } from '../shared/binary-protocol';
 import { CODEX_SUBSCRIPTION_PROVIDER } from '../shared/codex-subscription-contract';
 import { getDynamicModels, setDynamicModels } from '../shared/config/dynamic-model-registry';
+import { resolvePersistedModelRuntimeState } from '../shared/config/persisted-model-runtime';
 
 // ============ 全局变量 ============
 
@@ -111,9 +115,11 @@ let debugBridgeService: DebugBridgeService | null = null;
 let mcpHostService: MCPHostService | null = null;
 let browserBridgeService: BrowserBridgeService | null = null;
 let codexSubscriptionService: CodexSubscriptionService | null = null;
+let claudeSubscriptionService: ClaudeSubscriptionService | null = null;
 let codexSubscriptionHydration: Promise<void> | null = null;
 let ipcHandlersReady = false;
 let mainWindowShown = false;
+let loadMainWindowRenderer: (() => void) | null = null;
 
 function isTrustedRendererUrl(rawUrl: string): boolean {
     try {
@@ -325,12 +331,27 @@ function createWindow(): void {
                 : {})
         }
         : undefined;
-    mainWindow.loadFile(
-        path.join(__dirname, '../../renderer/index.html'),
-        rendererQuery ? { query: rendererQuery } : undefined
-    );
+    let rendererLoadRetries = 0;
+    let rendererStartupTimeout: ReturnType<typeof setTimeout> | null = null;
+    const loadRenderer = (): void => {
+        if (!rendererStartupTimeout) {
+            rendererStartupTimeout = setTimeout(() => {
+                showMainWindow('startup-timeout');
+            }, 5000);
+        }
+        mainWindow?.loadFile(
+            path.join(__dirname, '../../renderer/index.html'),
+            rendererQuery ? { query: rendererQuery } : undefined
+        );
+    };
+    loadMainWindowRenderer = loadRenderer;
 
-    mainWindow.webContents.once('did-finish-load', () => {
+    mainWindow.webContents.on('did-finish-load', () => {
+        rendererLoadRetries = 0;
+        if (rendererStartupTimeout) {
+            clearTimeout(rendererStartupTimeout);
+            rendererStartupTimeout = null;
+        }
         showMainWindow('did-finish-load');
         if (ipcHandlersReady) publishCodexSubscriptionState('ready');
     });
@@ -355,15 +376,25 @@ function createWindow(): void {
     });
 
     mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+        // -3 = ERR_ABORTED：新一次 load 取代旧 load 的正常信号，不是失败。
+        if (errorCode === -3) return;
         console.error(`[Main] Renderer failed to load. code=${errorCode}, description=${errorDescription}, url=${validatedURL}`);
+        // 加载失败最常见的场景是启动恰逢 dist 重建、index.html/资产尚未写全。
+        // 此前这里只把窗口 show 出来，用户面对的是一个永久纯黑的空窗口；改为延迟重试自愈。
+        if (rendererLoadRetries < 5) {
+            rendererLoadRetries += 1;
+            console.warn(`[Main] Renderer 加载失败（${errorDescription}），1 秒后重试（第 ${rendererLoadRetries}/5 次）`);
+            setTimeout(() => {
+                if (mainWindow) loadRenderer();
+            }, 1000);
+            return;
+        }
         showMainWindow('did-fail-load');
     });
 
-    setTimeout(() => {
-        showMainWindow('startup-timeout');
-    }, 5000);
-
     mainWindow.on('closed', () => {
+        if (rendererStartupTimeout) clearTimeout(rendererStartupTimeout);
+        loadMainWindowRenderer = null;
         mainWindow = null;
         mainWindowShown = false;
     });
@@ -371,7 +402,7 @@ function createWindow(): void {
     console.log('[Main] Window created (hidden until ready)');
 }
 
-function readPersistedApiKeys(): PersistedApiKeys {
+function readPersistedStateEntries(): Record<string, string> {
     try {
         const stateStorePath = path.join(app.getPath('userData'), 'app-state-store.json');
         if (!fs.existsSync(stateStorePath)) {
@@ -380,50 +411,48 @@ function readPersistedApiKeys(): PersistedApiKeys {
 
         const raw = fs.readFileSync(stateStorePath, 'utf8');
         const parsed = JSON.parse(raw);
-        const entries = parsed?.entries && typeof parsed.entries === 'object' ? parsed.entries : {};
-
-        const tryParseApiKeys = (source: any): PersistedApiKeys => {
-            const apiKeys = source?.apiKeys && typeof source.apiKeys === 'object' ? source.apiKeys : {};
-            return {
-                anthropic: typeof apiKeys.anthropic === 'string' ? apiKeys.anthropic : '',
-                google: typeof apiKeys.google === 'string' ? apiKeys.google : '',
-                xiaomi: typeof apiKeys.xiaomi === 'string' ? apiKeys.xiaomi : '',
-                openai: typeof apiKeys.openai === 'string' ? apiKeys.openai : '',
-                openrouter: typeof apiKeys.openrouter === 'string' ? apiKeys.openrouter : '',
-                deepseek: typeof apiKeys.deepseek === 'string' ? apiKeys.deepseek : '',
-                ollamaUrl: typeof apiKeys.ollamaUrl === 'string' ? apiKeys.ollamaUrl : '',
-                ollamaApiKey: typeof apiKeys.ollamaApiKey === 'string' ? apiKeys.ollamaApiKey : '',
-                bfl: typeof apiKeys.bfl === 'string' ? apiKeys.bfl : '',
-                volcengineJimengAccessKeyId: typeof apiKeys.volcengineJimengAccessKeyId === 'string' ? apiKeys.volcengineJimengAccessKeyId : '',
-                volcengineJimengSecretAccessKey: typeof apiKeys.volcengineJimengSecretAccessKey === 'string' ? apiKeys.volcengineJimengSecretAccessKey : '',
-                volcengineSeedreamApiKey: typeof apiKeys.volcengineSeedreamApiKey === 'string' ? apiKeys.volcengineSeedreamApiKey : '',
-                volcengineTosRegion: typeof apiKeys.volcengineTosRegion === 'string' ? apiKeys.volcengineTosRegion : '',
-                volcengineTosEndpoint: typeof apiKeys.volcengineTosEndpoint === 'string' ? apiKeys.volcengineTosEndpoint : '',
-                volcengineTosBucket: typeof apiKeys.volcengineTosBucket === 'string' ? apiKeys.volcengineTosBucket : '',
-                volcengineTosPublicBaseUrl: typeof apiKeys.volcengineTosPublicBaseUrl === 'string' ? apiKeys.volcengineTosPublicBaseUrl : '',
-                volcengineTosKeyPrefix: typeof apiKeys.volcengineTosKeyPrefix === 'string' ? apiKeys.volcengineTosKeyPrefix : '',
-            };
-        };
-
-        const rendererStateRaw = entries.rendererState;
-        if (typeof rendererStateRaw === 'string' && rendererStateRaw.trim()) {
-            const rendererState = JSON.parse(rendererStateRaw);
-            const rendererKeys = tryParseApiKeys(rendererState);
-            if (Object.values(rendererKeys).some(Boolean)) {
-                return rendererKeys;
-            }
-        }
-
-        const storeRaw = entries['designecho-storage'];
-        if (typeof storeRaw === 'string' && storeRaw.trim()) {
-            const storeState = JSON.parse(storeRaw);
-            const storeKeys = tryParseApiKeys(storeState?.state || storeState);
-            if (Object.values(storeKeys).some(Boolean)) {
-                return storeKeys;
-            }
-        }
+        return parsed?.entries && typeof parsed.entries === 'object'
+            ? { ...(parsed.entries as Record<string, string>) }
+            : {};
     } catch (error: any) {
-        console.warn('[Main] Failed to read persisted API Keys:', error?.message || String(error));
+        console.warn('[Main] Failed to read persisted renderer state:', error?.message || String(error));
+    }
+    return {};
+}
+
+function readPersistedApiKeys(entries: Record<string, string>): PersistedApiKeys {
+    const tryParseApiKeys = (source: any): PersistedApiKeys => {
+        const apiKeys = source?.apiKeys && typeof source.apiKeys === 'object' ? source.apiKeys : {};
+        return {
+            anthropic: typeof apiKeys.anthropic === 'string' ? apiKeys.anthropic : '',
+            google: typeof apiKeys.google === 'string' ? apiKeys.google : '',
+            xiaomi: typeof apiKeys.xiaomi === 'string' ? apiKeys.xiaomi : '',
+            openai: typeof apiKeys.openai === 'string' ? apiKeys.openai : '',
+            openrouter: typeof apiKeys.openrouter === 'string' ? apiKeys.openrouter : '',
+            deepseek: typeof apiKeys.deepseek === 'string' ? apiKeys.deepseek : '',
+            ollamaUrl: typeof apiKeys.ollamaUrl === 'string' ? apiKeys.ollamaUrl : '',
+            ollamaApiKey: typeof apiKeys.ollamaApiKey === 'string' ? apiKeys.ollamaApiKey : '',
+            bfl: typeof apiKeys.bfl === 'string' ? apiKeys.bfl : '',
+            volcengineJimengAccessKeyId: typeof apiKeys.volcengineJimengAccessKeyId === 'string' ? apiKeys.volcengineJimengAccessKeyId : '',
+            volcengineJimengSecretAccessKey: typeof apiKeys.volcengineJimengSecretAccessKey === 'string' ? apiKeys.volcengineJimengSecretAccessKey : '',
+            volcengineSeedreamApiKey: typeof apiKeys.volcengineSeedreamApiKey === 'string' ? apiKeys.volcengineSeedreamApiKey : '',
+            volcengineTosRegion: typeof apiKeys.volcengineTosRegion === 'string' ? apiKeys.volcengineTosRegion : '',
+            volcengineTosEndpoint: typeof apiKeys.volcengineTosEndpoint === 'string' ? apiKeys.volcengineTosEndpoint : '',
+            volcengineTosBucket: typeof apiKeys.volcengineTosBucket === 'string' ? apiKeys.volcengineTosBucket : '',
+            volcengineTosPublicBaseUrl: typeof apiKeys.volcengineTosPublicBaseUrl === 'string' ? apiKeys.volcengineTosPublicBaseUrl : '',
+            volcengineTosKeyPrefix: typeof apiKeys.volcengineTosKeyPrefix === 'string' ? apiKeys.volcengineTosKeyPrefix : ''
+        };
+    };
+
+    for (const rawEntry of [entries.rendererState, entries['designecho-storage']]) {
+        if (typeof rawEntry !== 'string' || !rawEntry.trim()) continue;
+        try {
+            const parsed = JSON.parse(rawEntry);
+            const keys = tryParseApiKeys(parsed?.state || parsed);
+            if (Object.values(keys).some(Boolean)) return keys;
+        } catch (error: any) {
+            console.warn('[Main] Ignored malformed persisted API key entry:', error?.message || String(error));
+        }
     }
     return {};
 }
@@ -571,7 +600,17 @@ async function initializeServices(): Promise<void> {
     logService.interceptConsole();
     logService.logAgent('info', 'DesignEcho Agent service initialization started');
 
-    const persistedApiKeys = readPersistedApiKeys();
+    const persistedStateEntries = readPersistedStateEntries();
+    const persistedApiKeys = readPersistedApiKeys(persistedStateEntries);
+    const persistedModelRuntime = resolvePersistedModelRuntimeState(persistedStateEntries);
+    // renderer Zustand Store 是模型偏好的持久化 owner。主进程在任何资源 IPC 可达前
+    // 直接读取同一份快照，并先恢复持久化动态目录；不再等待 App 挂载后的延迟推送。
+    setDynamicModels(persistedModelRuntime.dynamicModels);
+    logService.logAgent(
+        'info',
+        `[Main] Restored model runtime from ${persistedModelRuntime.source}: `
+        + `${persistedModelRuntime.dynamicModels.length} persisted dynamic models`
+    );
     if (persistedApiKeys.bfl) {
         bflService.setApiKey(persistedApiKeys.bfl);
         logService.logAgent('info', '[Main] Restored BFL API Key from persisted state');
@@ -619,6 +658,29 @@ async function initializeServices(): Promise<void> {
     });
     await hydrateCodexSubscriptionModels();
 
+    // Claude 订阅：Agent SDK 内嵌运行时，凭据由官方运行时自管（终端 /login），主进程不经手。
+    claudeSubscriptionService = new ClaudeSubscriptionService();
+    // 启动即恢复（不依赖用户打开设置页——真机 2026-08-23：注册链曾挂在设置卡挂载上，
+    // 用户直接聊天时列表只剩持久化旧条目）：凭据在 → 后台验证+解析真实型号 → 注册并通知渲染层重拉。
+    void (async () => {
+        const service = claudeSubscriptionService;
+        if (!service) return;
+        const status = await service.getStatus();
+        if (!status.success || !status.status.signedIn) return;
+        const probe = await service.probeAuth();
+        if (!probe.success) {
+            logService?.logAgent('warn', `[Main] Claude subscription bootstrap probe failed: ${probe.error || 'unknown'}`);
+            return;
+        }
+        const models = service.listModels();
+        const otherProviders = getDynamicModels().filter((model) => model.provider !== 'claude-subscription');
+        setDynamicModels([...otherProviders, ...models]);
+        logService?.logAgent('info', `[Main] Restored ${models.length} Claude subscription models for this session`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('claudeSubscription:modelsReady');
+        }
+    })();
+
     // 初始化 AI 模型服务（多 provider 支持）
     modelService = new ModelService({
         anthropicApiKey: persistedApiKeys.anthropic,
@@ -629,12 +691,18 @@ async function initializeServices(): Promise<void> {
         deepseekApiKey: persistedApiKeys.deepseek,
         ollamaUrl: persistedApiKeys.ollamaUrl,
         ollamaApiKey: persistedApiKeys.ollamaApiKey
-    }, codexSubscriptionService);
+    }, codexSubscriptionService, claudeSubscriptionService);
     logService.logAgent('info', 'Model service initialized');
     
     // 任务协调器（管理 Agent 任务的调度与执行）
-    taskOrchestrator = new TaskOrchestrator(modelService);
-    logService.logAgent('info', 'Task orchestrator initialized');
+    taskOrchestrator = new TaskOrchestrator(
+        modelService,
+        persistedModelRuntime.modelPreferences || undefined
+    );
+    logService.logAgent(
+        'info',
+        `Task orchestrator initialized with Agent model ${taskOrchestrator.getPreferences().primaryModel}`
+    );
 
     // 资源管理服务（知识库文件、模板资源等）
     resourceManagerService = new ResourceManagerService();
@@ -659,7 +727,10 @@ async function initializeServices(): Promise<void> {
 
     // 主体检测服务（用于智能排版的主体边界识别）
     subjectDetectionService = getSubjectDetectionService();
-    logService.logAgent('info', 'Subject detection service initialized');
+    // 2026-08-18 之前从未调用 setMattingService：服务一直是「抠图服务未初始化」，
+    // measureReferenceComposition 与素材主体框的分割级都在静默失败（建好未接线）。
+    subjectDetectionService.setMattingService(mattingService);
+    logService.logAgent('info', 'Subject detection service initialized (matting wired)');
     
     // 轮廓提取服务（用于主体边缘描绘与裁切）
     contourService = ContourService.getInstance();
@@ -775,7 +846,11 @@ async function initializeServices(): Promise<void> {
         host: WEBVIEW_BIND_HOST,
         port: BROWSER_BRIDGE_PORT,
         token: process.env.DESIGNECHO_BROWSER_BRIDGE_TOKEN,
-        onLog: (level, message) => logService?.logAgent(level, message)
+        onLog: (level, message) => logService?.logAgent(level, message),
+        // 扩展侧用户主动收藏（保存链接/批量收藏/截图）经此写入 Eagle 当前打开的素材库
+        onClientRequest: (method, params) => handleBrowserCollectionRequest(method, params, {
+            onLog: (level, message) => logService?.logAgent(level, message)
+        })
     });
     await browserBridgeService.start();
 
@@ -794,6 +869,7 @@ function setupIPC(): void {
         mattingService,
         resourceManagerService,
         codexSubscriptionService,
+        claudeSubscriptionService,
         mainWindow
     };
     
@@ -827,16 +903,21 @@ app.whenReady().then(async () => {
     }
     
     await new Promise(resolve => setTimeout(resolve, 500));
-    
+
+    // 必须先于 createWindow：渲染进程加载后立即同步水合 persist，
+    // 等 setupIPC 再注册该通道每次都会竞态失败（见 early-state-handlers.ts）。
+    registerEarlyStateStoreHandlers();
+
     createWindow();
     await initializeServices();
     setupIPC();
     ipcHandlersReady = true;
-    publishCodexSubscriptionState('ready');
+    loadMainWindowRenderer?.();
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
+            loadMainWindowRenderer?.();
         }
     });
 });

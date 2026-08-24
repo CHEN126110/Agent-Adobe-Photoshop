@@ -147,7 +147,7 @@ export const SmartLayoutSkill: SkillDeclaration = {
         negativeSignals: ['详情页', '主图', 'SKU', '复刻', '参考图', '图层顺序', '置顶', '置底', '重命名', '删除', '只讨论', '只说明'],
         preconditions: ['需要当前文档和可定位的目标图层，或用户明确提供 layerId'],
         supportedModes: ['execute'],
-        parameterExtractionHints: ['抽取 layerId、fillRatio、alignment、productType；没有目标图层时先澄清'],
+        parameterExtractionHints: ['抽取 layerId、fillRatio、alignment；fillRatio 与 alignment 必须来自用户明确要求或 Agent 对当前画面的判断，Harness 不补默认值；没有目标图层时先澄清'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果没有当前选中图层或明确 layerId，先确认要调整哪个图层'],
         decisionGuidance: [
@@ -161,10 +161,9 @@ export const SmartLayoutSkill: SkillDeclaration = {
     },
     parameters: [
         numParam('layerId', 'Target layer id'),
-        numParam('fillRatio', 'Canvas fill ratio', false, { default: 0.85, examples: [0.75, 0.85, 0.9] }),
+        numParam('fillRatio', 'Agent- or user-declared canvas fill ratio; no Harness default is supplied'),
         strParam('alignment', 'Alignment mode', false, {
-            enum: ['center', 'bottom-center', 'top-center'],
-            default: 'center'
+            enum: ['center', 'bottom-center', 'top-center']
         }),
         strParam('productType', 'Optional product type')
     ],
@@ -175,8 +174,8 @@ export const SmartLayoutSkill: SkillDeclaration = {
     requiredTools: ['smartLayout', 'getLayerBounds', 'getDocumentInfo'],
     examples: [
         {
-            userSays: '把产品居中并缩放到合适比例',
-            parameters: { fillRatio: 0.85, alignment: 'center' }
+            userSays: '把产品居中并缩放到画布的 78%',
+            parameters: { fillRatio: 0.78, alignment: 'center' }
         }
     ],
     estimatedTime: 2
@@ -186,6 +185,7 @@ export const SKUSkill: SkillDeclaration = {
     id: 'sku-batch',
     name: 'SKU Design and Production',
     displayName: 'SKU 设计与生产',
+    userFacingSummary: '从项目摄影图到成套 SKU 组合图：建色卡、做模板、按确认的组合批量出图',
     category: 'batch',
     kind: 'workflow',
     visibility: 'user-facing',
@@ -201,7 +201,7 @@ export const SKUSkill: SkillDeclaration = {
     // 模型路由不得直执（用户拍板红线，smoke-skill-route-guard-declaration 钉桩）：
     // sku-batch 必须经 Agent 自主 ReAct 循环，防止退回脚本直调。
     modelDirectExecution: 'forbidden',
-    description: 'Unified SKU design-and-production Skill. Inside the autonomous Agent loop it understands the current project, resolves the requested SKU deliverable, prepares or improves color-card and template prerequisites, designs copy/layout/visual direction, produces combination and note artifacts, and verifies editable Photoshop outputs. Deterministic rules validate combinations, slots, naming, export counts, target identity, and readback; they do not replace the Agent\'s visual judgment.',
+    description: 'SKU 生产 Skill（内部三站，你判断、我执行；每次只调一站，别裸调 stage=full 让我猜）。开工先用 readSkillPlaybook("sku-production") 读工作法手册（认料/色卡/模板/编排四步与判据），再弄懂：哪几张是色卡源图、每色叫什么、要出哪些规格组合、项目里有没有 SKU 源文档和对应规格模板（拿不准用 askUserToChoose 问用户）。项目里名字带「色卡」的文档不等于色卡源：必须打开读图层结构验证每色一个颜色组才算色卡站完成——文件名和画面上的色名文字都不是证据。生产顺序=色卡→模板→组合编排，缺谁先补谁、不跳站。站① stage=color-card 建色卡源文档：源图必须是单色的完整单只 / 平铺照（多色合影、带吊牌腰封的成品照不是色卡源）；传 sourceDirectory="目录名"（目录里图片按文件名当色名，一句话搞定）或 sources=[{filePath,colorName}]（filePath 写文件名即可，别写一堆绝对路径把调用撑爆）。站② stage=full 批量出组合：需要源文档 + 模板，用 specifiedColors=[[色,色],…] 给出你定好的组合（或 comboSizes+countPerSize 出候选弹确认卡）。站③ 缺模板时我会点名缺哪些规格：从 Eagle 素材库找现成模板拷进项目（importEagleAssetToProject，Eagle 原件只读）、调 stage=template 设计可编辑模板（可先看 Eagle 同类模板参考）、让用户提供（askUserToChoose）、或先只做有模板的规格；不要重调 stage=full。每条失败都会说清卡在哪一站、下一步谁做什么；同一站同参数别连调两次。确定性规则只管数量、槽位、命名与导出读回，不替你做视觉判断。',
     whenToUse: [
         'User asks the Agent to make, design, complete, improve, or batch-produce SKU deliverables, including a bare execution request such as "帮我做 SKU".',
         'User asks for an editable SKU color card, SKU card template, combination image, pack-size variant, self-select note, or a complete 2/3/4-pack SKU set.',
@@ -236,7 +236,7 @@ export const SKUSkill: SkillDeclaration = {
             execute: ['做', '完成', '创建', '新建', '生成', '制作', '设计', '修复', '调整', '修改', '优化', '处理', '出图', '导出', '批量生成', '批量出图', '开始', '执行']
         },
         canonicalProductionEntries: [
-            'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:(?:批量)?(?:做|制作|设计|生成|完成|修复|改|修改|调整|优化|处理|导出|出图|出))\\s*(?:这个|当前|一个|一套|一组|一批|个)?\\s*(?:SKU|sku)(?:\\s*(?:色卡|模板|组合图|自选备注|备注图))?$'
+            'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:(?:批量)?(?:做|制作|设计|生成|完成|修复|改|修改|调整|优化|处理|导出|出图|出))\\s*(?:一下子|一下|下|这个|当前|一个|一套|一组|一批|个)?\\s*(?:SKU|sku)(?:\\s*(?:色卡|模板|组合图|自选备注|备注图))?$'
         ],
         parameterExtractionHints: [
             '根据用户真正要交付的 SKU 产物抽取 stage：完整 SKU/组合图/备注图或裸执行请求使用 full；独立色卡使用 color-card；独立模板设计或修复使用 template；纯配置动作使用 config。',
@@ -248,7 +248,7 @@ export const SKUSkill: SkillDeclaration = {
         decisionGuidance: [
             'sku-batch 是完整 SKU Skill 的兼容 ID，拥有从项目理解、色卡/模板设计、组合规划到生产、导出和读回复核的领域流程；通用 Agent/Harness 不得复制这些业务阶段。',
             'Skill 运行在通用 Agent 的自主 ReAct 循环中：模型负责文案、排版、风格、视觉层级和可逆设计判断，确定性代码只负责组合数量、槽位、命名、目标、导出数量和读回证据。',
-            '裸“帮我做 SKU”进入 stage=full。先观察真实项目、当前文档、已有色卡/模板和项目状态，再自主补齐缺失设计；前置条件可用后生成组合候选并显示一次组合确认卡，用户确认后直接批量生产。不能只给方案，也不能在前置设计开始前弹空白确认卡。',
+            '裸“帮我做 SKU”进入 stage=full。先观察真实项目、当前文档、已有色卡/模板和项目状态；已有有效颜色组的色卡立即登记为只读来源并复用，不得当成模板改造。规格/组合仍非权威时只显示一次 SKU Provider 组合卡，确认后自主补齐缺失模板并直接批量生产。不能只给方案，也不能弹“如何处理色卡/模板”的通用卡片。',
             '能力问答、术语解释、做法说明、只读检查、规划讨论必须停留在对话或只读能力，不要调用 sku-batch。',
             'stage=color-card / template 既可作为完整 SKU 流程内部阶段，也可响应明确的独立 SKU 色卡/模板交付；它们必须产出可编辑结构并由 Agent 看图复核，不能用机械占位脚本冒充设计完成。',
             '缺色卡、缺模板或缺占位符时在同一 SKU Skill 中登记 prerequisite、完成设计、写入、读回并继续生产；不要把任务抛回用户，也不要要求用户重新描述完整需求。',
@@ -298,7 +298,9 @@ export const SKUSkill: SkillDeclaration = {
         strParam('templateKeyword', 'Optional template keyword for combo layout'),
         strParam('skuFileKeyword', 'Keyword for SKU source files', false, { default: 'SKU' }),
         arrParam('specifiedColors', 'Optional explicit color combinations, as an array of color-name arrays: [["双层边","木耳边"],["水晶丝","花苞"]] (each inner array is one combo). NOT objects like {size,colors}. Usually leave this unset: when resuming after the user confirmed combos on the card, combos are parsed automatically from the task text.'),
-        arrParam('sources', 'stage=color-card only: explicit source objects [{filePath,colorName?,relativePath?,assetId?}] in the authoritative order.'),
+        arrParam('sources', 'stage=color-card only: 色卡源清单 [{filePath,colorName}]，顺序 = 色卡顺序。filePath 可以只写文件名或项目内相对路径（项目里唯一同名图会自动解析成完整路径）——别写 20 条盘符绝对路径，会把调用撑到输出上限被截断。'),
+        strParam('sourceDirectory', 'stage=color-card only: 目录级捷径——项目内子目录名或绝对目录（不递归）；目录里全部图片按文件名当色名、按名字排序进色卡。20 张源图时用它一句话代替 20 条 sources。'),
+        boolParam('colorNamesFromFilename', 'stage=color-card only: 明确授权「文件名就是色名」（sources 只给 filePath 时用）。', false),
         arrParam('sourcePaths', 'stage=color-card only: ordered local image paths when sources is not provided.'),
         arrParam('colorNames', 'stage=color-card only: ordered authoritative color names aligned with sourcePaths.'),
         strParam('projectPath', 'stage=color-card only: active project root; defaults to current project context.'),
@@ -341,6 +343,15 @@ export const SKUSkill: SkillDeclaration = {
         description: 'Stage-specific SKU result: editable color-card/template documents, configuration data, or verified production exports.'
     },
     requiredTools: ['skuLayout', 'prepareSkuRetouchAssets', 'listDocuments', 'switchDocument', 'getDocumentInfo', 'getLayerHierarchy', 'createDocument', 'createRectangle', 'createTextLayer', 'setTextContent', 'createGroup', 'placeImage', 'setLayerVisibility', 'setBlendMode', 'moveLayerToGroup', 'createSkuPlaceholders', 'getSkuPlaceholders', 'exportColorConfig', 'convertToSmartObject', 'editSmartObjectContents', 'createClippingMask', 'getClippingMaskInfo', 'getLayerBounds', 'getLayerProperties', 'setTextStyle', 'moveLayer', 'closeDocument', 'getSmartObjectInfo', 'getCanvasSnapshot', 'fitLayerSubjectToRegion', 'transformLayer', 'saveDocument', 'getAcceptanceSnapshot', 'quickExport', 'exportToSkuDir'],
+    internalTools: [
+        'skuLayout',
+        'prepareSkuRetouchAssets',
+        'createSkuPlaceholders',
+        'getSkuPlaceholders',
+        'exportColorConfig',
+        'exportToSkuDir'
+    ],
+    interactionOwner: 'skill-provider',
     examples: [
         {
             userSays: '按我确认的卡其+浅紫、灰+红两组做 2 双装 SKU，不要备注图',
@@ -415,6 +426,7 @@ export const LayoutReplicationSkill: SkillDeclaration = {
     id: 'layout-replication',
     name: 'Layout Replication',
     displayName: '版式复刻',
+    userFacingSummary: '按参考图分析版式结构，在 Photoshop 里重建为可编辑的图层版式',
     category: 'replication',
     kind: 'workflow',
     visibility: 'user-facing',
@@ -1449,6 +1461,7 @@ export const MainImageSkill: SkillDeclaration = {
     id: 'main-image-design',
     name: 'Main Image Design',
     displayName: '主图设计',
+    userFacingSummary: '电商主图从想法到成稿：定方向、构图、文案与光影精修，一次交付可用主图',
     category: 'ecommerce',
     kind: 'workflow',
     visibility: 'user-facing',
@@ -1460,7 +1473,7 @@ export const MainImageSkill: SkillDeclaration = {
     routeClass: 'business-workflow',
     // 模型路由不得直执：主图生产必须经 Agent 自主 ReAct 循环（看素材/看文档/逐步推进）。
     modelDirectExecution: 'forbidden',
-    description: 'Runtime owner for e-commerce main-image delivery. Open creative main-image work stays in the autonomous design loop with Manifest-scoped atomic capabilities; specification work also covers white-background images, click/conversion documents, and multi-size (800/750/1200) export. The legacy id is not an executable workflow entry.',
+    description: '开工先用 readSkillPlaybook("main-image-design") 读工作法手册（店铺规格分文档体系/点击图分层/摄影优先）。Runtime owner for e-commerce main-image delivery. Open creative main-image work stays in the autonomous design loop with Manifest-scoped atomic capabilities; specification work also covers white-background images, click/conversion documents, and multi-size (800/750/1200) export. The legacy id is not an executable workflow entry.',
     whenToUse: [
         'User explicitly delegates a main-image, cover, or first-image design deliverable',
         'User asks for a white background image (白底图)',
@@ -1486,7 +1499,7 @@ export const MainImageSkill: SkillDeclaration = {
         canonicalProductionEntries: [
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:设计|做|制作|出|生成|完成|导出|修复|改|修改|调整|优化|处理)\\s*(?:一张|一个|一版|这个|当前)?\\s*(?:(?:新的?|创意|电商|商品)\\s*){0,3}(?:白底图|点击图|转化图|主图|首图|封面)$'
         ],
-        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、preferredStyle、backgroundPrompt、outputDir；未显式指定 size/sizes 时默认规划 800/750/1200 三规格；普通主图交付包含点击图和转化图规则，1200 只出点击图不出转化图；白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
+        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir；未显式指定 size/sizes 时默认规划 800/750/1200 三规格；普通主图交付包含点击图和转化图规则，1200 只出点击图不出转化图；白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果用户同时提到模板和现有主图优化，先问是新建模板还是处理当前画面'],
         decisionGuidance: [
@@ -1498,7 +1511,7 @@ export const MainImageSkill: SkillDeclaration = {
         ],
         routeStatusMessages: {
             deterministic: '判断主图任务类型、素材来源和执行边界，再选择规划或受控导出路径。',
-            autonomous: '查看当前画面、图层和素材后规划主图。'
+            autonomous: '由 Agent 根据当前目标，自主选择需要读取的画面、图层、素材与项目事实并规划主图。'
         }
     },
     parameters: [
@@ -1506,8 +1519,7 @@ export const MainImageSkill: SkillDeclaration = {
             enum: ['800', '750', '1200', 'custom']
         }),
         objParam('customSize', 'Custom size object {width,height}'),
-        numParam('productScale', 'Subject scale ratio', false, { default: 0.65 }),
-        numParam('verticalOffset', 'Vertical offset ratio', false, { default: -0.03 }),
+        numParam('productScale', 'Agent- or user-declared subject scale ratio; no Harness default is supplied'),
         strParam('outputDir', 'Output directory'),
         strParam('imageType', 'Main image type', false, {
             enum: ['click', 'conversion', 'white-bg']
@@ -1522,10 +1534,6 @@ export const MainImageSkill: SkillDeclaration = {
         strParam('whiteBackgroundSourceDocumentPath', 'White background source document path'),
         strParam('whiteBackgroundOutputRelativePath', 'White background export relative path'),
         arrParam('sizes', 'Batch output sizes list'),
-        strParam('preferredStyle', 'Preferred style', false, {
-            enum: ['minimal', 'rich', 'elegant', 'bold'],
-            default: 'minimal'
-        }),
         strParam('mainImageExecutionMode', 'Controlled execution mode for the main-image executor', false, {
             enum: ['strategy-only', 'product-disposable-live'],
             default: 'strategy-only'
@@ -1586,6 +1594,7 @@ export const DetailPageDesignSkill: SkillDeclaration = {
     id: 'detail-page-design',
     name: 'Detail Page Design',
     displayName: '详情页设计',
+    userFacingSummary: '电商详情页整页制作：套用你的模板或从零设计，逐屏完成并导出切片',
     category: 'ecommerce',
     kind: 'workflow',
     visibility: 'user-facing',
@@ -1596,7 +1605,7 @@ export const DetailPageDesignSkill: SkillDeclaration = {
     routeClass: 'business-workflow',
     // 模型路由不得直执：详情页设计必须经 Agent 自主 ReAct 循环（先看图后规划的视觉观察纪律在循环内强制）。
     modelDirectExecution: 'forbidden',
-    description: '项目级详情页设计任务说明：先摸索项目、读取素材和当前文档，再判断走模板套版还是纯设计；模板优先但不是硬前提，复核未通过时调整策略后继续推进。',
+    description: '开工先用 readSkillPlaybook("detail-page-design") 读工作法手册（店铺逐屏叙事框架/1440 规格/组名带理由的命名习惯）。项目级详情页设计任务说明：先摸索项目、读取素材和当前文档，再判断走模板套版还是纯设计；模板优先但不是硬前提，复核未通过时调整策略后继续推进。',
     whenToUse: [
         '用户只说“做详情页 / 设计详情页 / 生成详情页 / 整理详情页”时，先进入本 Skill 的项目级 Agent 循环，不要先要求用户指定模板路径。',
         '项目或当前 Photoshop 文档里可能有详情页模板时，优先检查并理解模板，再决定是否套版。',
@@ -1801,6 +1810,29 @@ export const SKILL_REGISTRY: SkillDeclaration[] = [
 
 export function getSkillById(id: string): SkillDeclaration | undefined {
     return SKILL_REGISTRY.find((s) => s.id === id);
+}
+
+/**
+ * 查询领域原子工具的声明式 owner。通用 Runtime 只消费该映射，不维护品类名单。
+ */
+export function getSkillInternalToolOwnerIds(toolName: string): string[] {
+    const normalizedToolName = String(toolName || '').trim();
+    if (!normalizedToolName) return [];
+    return SKILL_REGISTRY
+        .filter((skill) => skill.internalTools?.includes(normalizedToolName))
+        .map((skill) => skill.id);
+}
+
+/** 全部需要 Runtime owner 的领域原子工具名。 */
+export function getSkillInternalToolNames(): string[] {
+    return Array.from(new Set(
+        SKILL_REGISTRY.flatMap((skill) => skill.internalTools || [])
+    ));
+}
+
+/** 业务交互卡是否由 Skill Provider 构造。 */
+export function isSkillProviderInteractionOwner(skillId: string): boolean {
+    return getSkillById(skillId)?.interactionOwner === 'skill-provider';
 }
 
 export function getSkillsByCategory(category: string): SkillDeclaration[] {

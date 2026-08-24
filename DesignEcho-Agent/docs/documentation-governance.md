@@ -46,45 +46,44 @@ DesignEcho 仓库里同时存在架构文档、方法论文档、长期路线、
 
 ## 3. 文档权限层级
 
-### A 层：强约束真相源
+### A 层：默认当前真相源
 
-这些文档可以直接约束当前开发行为。
+默认只让三份短文档直接参与当前任务：
 
 1. [AGENTS.md](C:\UXP\2.0\DesignEcho-Agent\AGENTS.md)
 2. [Prompt.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Prompt.md)
-3. [CurrentTask.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\CurrentTask.md)
-4. [documentation-governance.md](C:\UXP\2.0\DesignEcho-Agent\docs\documentation-governance.md)
-5. [design-agent-operating-system.md](C:\UXP\2.0\DesignEcho-Agent\docs\design-agent-operating-system.md)
-6. [Plan.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Plan.md)
-7. [Status.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Status.md)
+3. [CurrentTask.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\CurrentTask.md) 的第一个 H2 当前任务卡
 
 规则：
 
 1. 当前任务如何做，以 `CurrentTask.md` 为准。
 2. 当前总目标和当前北极星，以 `Prompt.md` 为准。
-3. 架构总控边界，以 `design-agent-operating-system.md` 为准。
-4. 当前阶段顺序和验收，以 `Plan.md` 为准。
-5. 已核实事实，以 `Status.md` 为准。
+3. 当前代码与真实运行读回决定已经实现和正在发生的事实；历史状态文档不得覆盖它们。
 
 ### B 层：条件性执行辅助文档
 
-这些文档有明确价值，但只有在对应动作发生时才进入默认阅读路径。
+这些文档有明确价值，但只有在对应动作发生时才进入阅读路径。
 
-1. [agent-capability-map.md](C:\UXP\2.0\DesignEcho-Agent\docs\agent-capability-map.md)
-2. [Intake.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Intake.md)
-3. [Backlog.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Backlog.md)
-4. [Risks.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Risks.md)
-5. [Decisions.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Decisions.md)
-6. [business-skill-design-governance.md](C:\UXP\2.0\DesignEcho-Agent\docs\business-skill-design-governance.md)
-7. [project-master-plan.md](C:\UXP\2.0\DesignEcho-Agent\docs\project-master-plan.md)
+1. [documentation-governance.md](C:\UXP\2.0\DesignEcho-Agent\docs\documentation-governance.md)
+2. [design-agent-operating-system.md](C:\UXP\2.0\DesignEcho-Agent\docs\design-agent-operating-system.md)
+3. [Plan.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Plan.md)
+4. [Status.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Status.md)
+5. [agent-capability-map.md](C:\UXP\2.0\DesignEcho-Agent\docs\agent-capability-map.md)
+6. [Intake.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Intake.md)
+7. [Backlog.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Backlog.md)
+8. [Risks.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Risks.md)
+9. [Decisions.md](C:\UXP\2.0\DesignEcho-Agent\project-memory\Decisions.md)
+10. [business-skill-design-governance.md](C:\UXP\2.0\DesignEcho-Agent\docs\business-skill-design-governance.md)
+11. [project-master-plan.md](C:\UXP\2.0\DesignEcho-Agent\docs\project-master-plan.md)
 
 使用时机：
 
-1. 需要给新需求归类时，再读能力地图。
-2. 需要排期、移动优先级时，再读 Intake / Backlog。
-3. 需要判断历史方案边界时，再读 Risks / Decisions。
-4. 需要处理主图、详情页、SKU 场景边界时，再读业务治理文档。
-5. 需要看长期路线，不是当前实现入口时，再读项目计划书。
+1. 需要调整文档权威或架构边界时，再读文档治理与 OS。
+2. 需要排期、移动优先级时，再读 Plan / Intake / Backlog。
+3. 需要核对既有验证时，再读 Status；需要判断历史方案边界时，再读 Risks / Decisions。
+4. 需要给新需求归类时，再读能力地图。
+5. 需要处理主图、详情页、SKU 场景边界时，再读业务治理文档。
+6. 需要看长期路线而非当前实现入口时，再读项目计划书。
 
 ### C 层：专项计划与研究文档
 
@@ -104,6 +103,7 @@ DesignEcho 仓库里同时存在架构文档、方法论文档、长期路线、
 10. `design-agent-professional-capability-system-plan.md`
 11. `agent-governance-implementation-objective.md`
 12. `design-agent-os-implementation-tree.md`
+13. `design-craft-harness-technical-plan.md`（设计工作法 Harness 技术方案：落地 / 可行性 / 预期 / 风险，2026-08-17）
 
 规则：
 
@@ -155,8 +155,7 @@ DesignEcho 仓库里同时存在架构文档、方法论文档、长期路线、
 3. `C:\UXP\2.0\docs\long-horizon`
 原因：该目录是早期全工作区长任务协作记忆，不是当前 `DesignEcho-Agent` 的默认开发入口；其中部分对齐目标指向已降级的历史架构文档，后续只能作为历史协作记录或背景材料。
 
-4. 根目录 `CLAUDE.md` / `AGENTS.md`
-原因：根目录文件面向全工作区或不同工具入口，内容可能与 `DesignEcho-Agent/AGENTS.md` 不完全同步；处理 `DesignEcho-Agent` 中大型任务时，以 `DesignEcho-Agent/AGENTS.md` 和本文件定义的阅读路径为准。
+根目录 `CLAUDE.md` / `AGENTS.md` 是继承生效的工作区规则，不属于外部高干扰材料。子项目 `AGENTS.md` 只能细化，不能否定根规则；项目当前目标、架构和历史细节仍应放在子项目自己的权威文档中。
 
 特别规则：
 
@@ -169,37 +168,16 @@ DesignEcho 仓库里同时存在架构文档、方法论文档、长期路线、
 处理中大型任务时，默认阅读顺序收敛为：
 
 1. `AGENTS.md`
-2. `project-memory/README.md`
-3. `project-memory/Prompt.md`
-4. `project-memory/CurrentTask.md`
-5. `docs/documentation-governance.md`
-6. `docs/design-agent-operating-system.md`
-7. `project-memory/Plan.md`
-8. `project-memory/Status.md`
+2. `project-memory/Prompt.md`
+3. `project-memory/CurrentTask.md` 的第一个 H2 当前任务卡
 
-只有在需要归类、排期、回看风险或专项实施时，才继续读：
-
-1. `docs/agent-capability-map.md`
-2. `project-memory/Intake.md`
-3. `project-memory/Backlog.md`
-4. `project-memory/Risks.md`
-5. `project-memory/Decisions.md`
-6. 命中的专项计划文档
+只有在实际动作需要时，才读取文档治理、OS、Plan、Status、能力地图、Intake / Backlog、Risks / Decisions 或命中的专项文档。不得为了“完整回顾”把历史状态日志整体注入当前任务。
 
 ## 6. 冲突处理规则
 
-如果多份文档对同一问题给出不同结论，按以下顺序裁决：
+先按事实所属领域裁决，而不是用一条总排序混淆目标、事实和权限：当前任务目标与用户可见边界看第一个 `CurrentTask` 卡；稳定产品边界看 `Prompt`；项目执行原则看继承生效的根 /子项目 `AGENTS`；架构改动按需看 OS；排期看 Plan；既有验证看 Status；实际实现和运行事实以当前代码与真实读回为准。
 
-1. `AGENTS.md`
-2. `Prompt.md`
-3. `CurrentTask.md`
-4. `documentation-governance.md`
-5. `design-agent-operating-system.md`
-6. `Plan.md`
-7. `Status.md`
-8. 其他文档
-
-专项文档、研究文档、复盘文档不能推翻以上顺序。
+同一领域仍冲突时，继承生效的根规则与子项目 `AGENTS.md` 优先，其次是当前任务卡和对应领域的唯一文档。专项、研究、复盘和历史状态不能推翻当前规则，也不能把 `staged` 阶段门禁扩展到 `agentic` 路径。
 
 ## 7. 新文档创建规则
 

@@ -72,6 +72,7 @@ const photoshopCraftRecipesPath = path.join(root, 'src', 'shared', 'knowledge', 
 const designKnowledgeSearchPath = path.join(root, 'src', 'shared', 'design-knowledge-search.ts');
 const designMemoryKnowledgePath = path.join(root, 'src', 'shared', 'design-memory-knowledge.ts');
 const designLearningMemoryReviewPath = path.join(root, 'src', 'shared', 'design-learning-memory-review.ts');
+const designLearningExperiencePath = path.join(root, 'src', 'shared', 'design-learning-experience.ts');
 const projectMemoryScopePath = path.join(root, 'src', 'shared', 'project-memory-scope.ts');
 const skuComboInteractiveCardPath = path.join(root, 'src', 'shared', 'sku-combo-interactive-card.ts');
 const editableConfirmationInteractiveCardPath = path.join(
@@ -83,7 +84,10 @@ const editableConfirmationInteractiveCardPath = path.join(
 const subjectFitPath = path.join(root, 'src', 'shared', 'subject-fit.ts');
 const layoutEnginePath = path.join(root, 'src', 'shared', 'layout', 'layout-engine.ts');
 const renderLayoutStylePath = path.join(root, 'src', 'shared', 'layout', 'render-layout-style.ts');
+const composeDesignSpecPath = path.join(root, 'src', 'shared', 'design-workshop', 'compose-design-spec.ts');
 const toolExecutorPath = path.join(root, 'src', 'renderer', 'services', 'tool-executor.service.ts');
+const composeDesignExecutorPath = path.join(root, 'src', 'renderer', 'services', 'design-workshop', 'compose-design.executor.ts');
+const screenshotHandlersPath = path.join(root, 'src', 'main', 'ipc-handlers', 'screenshot-handlers.ts');
 const uxpCreateTextLayerPath = path.resolve(
   root,
   '..',
@@ -168,6 +172,14 @@ const designTaskPolicyPath = path.join(root, 'src', 'renderer', 'services', 'age
 const designQualityVerdictPath = path.join(root, 'src', 'shared', 'design-quality-verdict-bundle.ts');
 const designQualityAssertionPath = path.join(root, 'src', 'shared', 'design-quality-assertion.ts');
 const reflexionReentryPolicyPath = path.join(root, 'src', 'shared', 'reflexion-reentry-policy.ts');
+const reflexionWriteFreshnessPath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'reflexion-write-freshness.ts'
+);
 const runtimeReflexionContractPath = path.join(
   root,
   'src',
@@ -204,6 +216,7 @@ const detailPageAssetRankerPath = path.join(root, 'src', 'renderer', 'services',
 const detailPageDesignSkillPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'detail-page-design.skill.ts');
 const skillExecutorIndexPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'index.ts');
 const skuColorCardContractPath = path.join(root, 'src', 'shared', 'sku-color-card-skill.ts');
+const skuArtifactRolesPath = path.join(root, 'src', 'shared', 'sku-artifact-roles.ts');
 const skuTemplateDesignLoopPath = path.join(root, 'src', 'shared', 'sku-template-design-loop.ts');
 const deterministicConsistencyPath = path.join(root, 'src', 'shared', 'deterministic-consistency-verification.ts');
 const skuAutoLayoutExecutorPolicyPath = path.join(root, 'src', 'shared', 'sku-auto-layout-executor-policy.ts');
@@ -214,6 +227,7 @@ const skillRoutingPath = path.join(root, 'src', 'shared', 'skill-routing.ts');
 const skillDeclarationsPath = path.join(root, 'src', 'shared', 'skills', 'skill-declarations.ts');
 const skuIntentParamsPath = path.join(root, 'src', 'shared', 'sku-intent-params.ts');
 const toolSchemasPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'tool-schemas.ts');
+const performanceLedgerPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'performance-ledger.ts');
 const enginePath = path.join(root, 'src', 'renderer', 'services', 'design-agent', 'engine.ts');
 const agentToolExecutionPreflightPath = path.join(root, 'src', 'shared', 'agent-tool-execution-preflight.ts');
 const agentSkillAtomicToolExecutionPath = path.join(root, 'src', 'shared', 'agent-skill-atomic-tool-execution.ts');
@@ -1025,6 +1039,7 @@ function countBusinessReferences(filePath) {
 
 async function run() {
   const performanceText = read(performancePolicyPath);
+  const performanceLedgerText = read(performanceLedgerPath);
   const performanceSource = parse(performancePolicyPath);
   const decisionFunctionNames = [
     'inferTaskClass',
@@ -1077,6 +1092,10 @@ async function run() {
     'buildDesignMemoryKnowledgeResultsForSkill'
   )?.getText(designPlannerContextSource) || '';
   const toolExecutorText = read(toolExecutorPath);
+  const composeDesignSpecText = read(composeDesignSpecPath);
+  const composeDesignExecutorText = read(composeDesignExecutorPath);
+  const photoshopTransientErrorText = read(path.join(root, 'src', 'shared', 'photoshop-transient-error.ts'));
+  const screenshotHandlersText = read(screenshotHandlersPath);
   const uxpCreateTextLayerSource = parse(uxpCreateTextLayerPath);
   const uxpCreateTextLayerText = read(uxpCreateTextLayerPath);
   const uxpNormalizeTextContentText = findFunction(
@@ -1165,7 +1184,6 @@ async function run() {
   } = require(skuTemplateDesignLoopPath);
   const { buildSkillWorkflowBridgeObservation } = require(skillToolsPath);
   const {
-    buildDeterministicCompactE1WorkflowOwnerCall,
     evaluateAgentWorkflowContinuationToolAccess,
     isDeclaredNonFatalAgentWorkflowHandoff,
     resolveAgentWorkflowContinuationScopeUpdate,
@@ -1220,6 +1238,14 @@ async function run() {
   const routingText = read(routingPath);
   const visualSamplingText = read(visualSamplingPath);
   const modelProviderFailureText = read(modelProviderFailurePath);
+  const reflexionReentryPolicyText = read(reflexionReentryPolicyPath);
+  const reflexionWriteFreshnessText = read(reflexionWriteFreshnessPath);
+  const runtimeReflexionContractText = read(runtimeReflexionContractPath);
+  const { classifyModelProviderFailure } = require(modelProviderFailurePath);
+  const subscriptionUsageLimitFailure = classifyModelProviderFailure(Object.assign(
+    new Error("GPT 订阅模型运行错误：You've hit your usage limit. Purchase more credits or try again at Aug 28th, 2026 9:01 AM."),
+    { code: 'codex_subscription_turn_not_completed' }
+  ));
   const designDocumentRoleText = read(designDocumentRolePath);
   const toolAcceptanceText = read(toolAcceptancePath);
   const policyGateRepeatGuardText = read(policyGateRepeatGuardPath);
@@ -1250,6 +1276,7 @@ async function run() {
     searchDesignMemoryKnowledge
   } = require(designMemoryKnowledgePath);
   const { reviewDesignLearningMemoryCandidate } = require(designLearningMemoryReviewPath);
+  const { buildWorkshopReferenceLearningCandidate } = require(designLearningExperiencePath);
   const { buildSkuComboEditorInteractiveCard } = require(skuComboInteractiveCardPath);
   const { buildEditableConfirmationInteractiveCard } = require(editableConfirmationInteractiveCardPath);
 
@@ -1389,6 +1416,32 @@ async function run() {
     reviewedAt: '2026-08-14T00:10:00.000Z'
   });
   const approvedLearningKnowledge = designMemoryItemToKnowledgeResult(approvedLearningReview.reviewedItem);
+  const workshopReferenceCandidate = buildWorkshopReferenceLearningCandidate({
+    title: '点击图参考学习',
+    summary: '主体清晰，文字集中在右侧留白。',
+    whatLooksGood: ['主体与文字没有互相遮挡'],
+    whyItWorks: ['缩略图下仍能快速识别商品'],
+    reusableHeuristics: ['先按素材留白方向决定文字区'],
+    suitableScenarios: ['电商点击图'],
+    analysisSource: 'audit-visual-model',
+    userCuratedReference: true,
+    now: '2026-08-14T00:05:00.000Z'
+  });
+  const unreviewedWorkshopKnowledge = workshopReferenceCandidate
+    ? designMemoryItemToKnowledgeResult(workshopReferenceCandidate)
+    : undefined;
+  const reviewedWorkshopCandidate = workshopReferenceCandidate
+    ? reviewDesignLearningMemoryCandidate({
+        candidate: workshopReferenceCandidate,
+        decision: 'approved',
+        reviewer: 'user',
+        notes: ['确认该方法可进入长期知识。'],
+        reviewedAt: '2026-08-14T00:10:00.000Z'
+      })
+    : undefined;
+  const reviewedWorkshopKnowledge = reviewedWorkshopCandidate
+    ? designMemoryItemToKnowledgeResult(reviewedWorkshopCandidate.reviewedItem)
+    : undefined;
   if (!inferredPreferenceMemory
     || inferredPreferenceMemory.status !== 'needs_review'
     || unreviewedKnowledge !== undefined
@@ -1396,7 +1449,12 @@ async function run() {
     || approvedLearningReview.status !== 'promoted_active'
     || approvedLearningReview.reviewedItem.status !== 'active'
     || !approvedLearningReview.reviewedItem.sourceNotes.every((note) => note.status === 'active')
-    || approvedLearningKnowledge?.governance?.provenance !== 'local_reviewed') {
+    || approvedLearningKnowledge?.governance?.provenance !== 'local_reviewed'
+    || !workshopReferenceCandidate
+    || workshopReferenceCandidate.status !== 'needs_review'
+    || unreviewedWorkshopKnowledge !== undefined
+    || reviewedWorkshopCandidate?.status !== 'promoted_active'
+    || reviewedWorkshopKnowledge?.governance?.provenance !== 'local_reviewed') {
     memoryTruthSourceViolations.push('design-memory-review:top-level-or-source-note-review-truth-was-bypassed');
   }
 
@@ -1963,57 +2021,12 @@ async function run() {
   }
   const compactE1WorkflowOwnerViolations = [];
   const runtimeSkillHandoffViolations = [];
-  const compactE1WorkflowOwnerInput = {
-    currentStage: 'E1',
-    runtimeStages: ['R0', 'R2', 'E1', 'R5'],
-    workflowEntryTools: ['sku-batch'],
-    visibleAllowedToolNames: ['sku-batch', 'getDocumentInfo'],
-    attemptedToolNames: [],
-    writeAuthorized: true,
-    hasActiveContinuation: false,
-    hasActionResult: false
-  };
-  const compactE1WorkflowOwnerCall = buildDeterministicCompactE1WorkflowOwnerCall(
-    compactE1WorkflowOwnerInput
-  );
-  if (compactE1WorkflowOwnerCall?.name !== 'sku-batch'
-    || Object.keys(compactE1WorkflowOwnerCall.arguments || {}).length !== 0) {
-    compactE1WorkflowOwnerViolations.push('compact-e1-workflow-owner:sole-authorized-owner-not-selected');
+  const workflowContinuationSourceText = read(agentWorkflowContinuationScopePath);
+  if (/buildDeterministicCompactE1WorkflowOwnerCall|selectInitialAgentWorkflowToolNames/.test(
+    `${agentRuntimeText}\n${workflowContinuationSourceText}`
+  ) || agentRuntimeText.includes('harness_compact_workflow_owner')) {
+    compactE1WorkflowOwnerViolations.push('compact-e1-workflow-owner:harness-still-selects-or-fabricates-tool-call');
   }
-  const soleVisibleOwnerFromMultipleDeclared = buildDeterministicCompactE1WorkflowOwnerCall({
-    ...compactE1WorkflowOwnerInput,
-    workflowEntryTools: ['sku-batch', 'detail-page-design'],
-    visibleAllowedToolNames: ['sku-batch']
-  });
-  if (soleVisibleOwnerFromMultipleDeclared?.name !== 'sku-batch') {
-    compactE1WorkflowOwnerViolations.push('compact-e1-workflow-owner:current-visible-intersection-not-used');
-  }
-  const compactE1BlockedCases = [
-    ['wrong-stage', { currentStage: 'R2' }],
-    ['creative-r4', { runtimeStages: ['R0', 'R1', 'R3', 'R4', 'E1', 'R5'] }],
-    ['multiple-visible-owners', {
-      workflowEntryTools: ['sku-batch', 'detail-page-design'],
-      visibleAllowedToolNames: ['sku-batch', 'detail-page-design']
-    }],
-    ['write-not-authorized', { writeAuthorized: false }],
-    ['owner-already-attempted', { attemptedToolNames: ['sku-batch'] }],
-    ['active-continuation', { hasActiveContinuation: true }],
-    ['action-already-produced', { hasActionResult: true }],
-    ['owner-not-currently-visible', { visibleAllowedToolNames: ['getDocumentInfo'] }],
-    ['non-write-owner', {
-      workflowEntryTools: ['searchDesignKnowledge'],
-      visibleAllowedToolNames: ['searchDesignKnowledge']
-    }]
-  ];
-  compactE1BlockedCases.forEach(([name, overrides]) => {
-    const call = buildDeterministicCompactE1WorkflowOwnerCall({
-      ...compactE1WorkflowOwnerInput,
-      ...overrides
-    });
-    if (call) {
-      compactE1WorkflowOwnerViolations.push(`compact-e1-workflow-owner:${name}-did-not-fail-closed`);
-    }
-  });
   const delegationBoundaryViolations = [];
   const delegatedSkuRequest = '请自行识别产品款式与颜色，判断哪些组合适合 INS 风格、哪些适合纯色展示。';
   if (!hasExplicitReversibleDesignDecisionDelegation(delegatedSkuRequest)) {
@@ -2349,6 +2362,8 @@ async function run() {
   const appStoreText = read(appStorePath);
   const appStoreSource = parse(appStorePath);
   const messageParserText = read(messageParserPath);
+  // 通用「当前版本」状态卡开关（用户 2026-08-18 要求关闭）；相关断言按开关分档。
+  const executionSummaryCardDisabled = messageParserText.includes('const SHOW_EXECUTION_SUMMARY_CARD = false;');
   const chatResponseCleanerText = read(chatResponseCleanerPath);
   const messageRendererText = read(messageRendererPath);
   const messageRendererSource = parseTsx(messageRendererPath);
@@ -2557,6 +2572,12 @@ async function run() {
   } = require(agentRunRecordPath);
   const { buildRunRecordResumeBrief } = require(agentRunResumePath);
   const { resolveAutonomousCapabilityRuntime } = require(executorPath);
+  const {
+    getSkillInternalToolOwnerIds,
+    getSkillInternalToolNames,
+    isSkillProviderInteractionOwner
+  } = require(skillDeclarationsPath);
+  const { buildSkuColorCardSourceReceipt } = require(skuArtifactRolesPath);
   const { evaluateDesignAssetAutoPlacement } = require(designPlacementIntelligencePath);
   const {
     buildChatComposerModelText,
@@ -2587,12 +2608,15 @@ async function run() {
     DESIGN_ASSERTIONS,
     buildVlmJudgeContextMessage,
     buildVlmJudgeSystemPrompt,
+    getVlmJudgeAssertions,
     isReliableVlmJudgeBatchComplete,
     parseVlmJudgeResponse,
     scoreDesignAssertions
   } = require(designQualityAssertionPath);
   const {
     decideQualityAwareReflexionReentry,
+    evaluateCompletedReflexionWriteFreshness,
+    evaluateReflexionReviewProvenance,
     isCompletedAestheticImprovementHandoff
   } = require(reflexionReentryPolicyPath);
   const { buildReflexionHandoffFromReviewReport } = require(runtimeReflexionContractPath);
@@ -2839,13 +2863,13 @@ async function run() {
   );
   const realSkuSamplingFiles = [
     ...Array.from({ length: 20 }, (_, index) => ({
-      path: `C:/project/6049/模特/${String(index + 1).padStart(3, '0')}.jpg`,
-      relativePath: `6049/模特/${String(index + 1).padStart(3, '0')}.jpg`,
+      path: `C:/project/6049/模特场景/${String(index + 1).padStart(3, '0')}.jpg`,
+      relativePath: `6049/模特场景/${String(index + 1).padStart(3, '0')}.jpg`,
       name: `${String(index + 1).padStart(3, '0')}.jpg`
     })),
     ...Array.from({ length: 21 }, (_, index) => ({
-      path: `C:/project/6049/平铺/${String(index + 1).padStart(3, '0')}.jpg`,
-      relativePath: `6049/平铺/${String(index + 1).padStart(3, '0')}.jpg`,
+      path: `C:/project/6049/平铺细节/${String(index + 1).padStart(3, '0')}.jpg`,
+      relativePath: `6049/平铺细节/${String(index + 1).padStart(3, '0')}.jpg`,
       name: `${String(index + 1).padStart(3, '0')}.jpg`
     }))
   ];
@@ -3046,8 +3070,17 @@ async function run() {
 
     const judgePrompt = buildVlmJudgeSystemPrompt([typeCharacterAssertion, alignmentAssertion]);
     if (!judgePrompt.includes('最多只给 3 个')
-      || !judgePrompt.includes('不要另返 pass 字段')) {
+      || !judgePrompt.includes('不要另返 pass 字段')
+      || !judgePrompt.includes('真实使用尺寸与观看情境')
+      || !judgePrompt.includes('不要因为小字、边缘或间距更容易描述')) {
       aestheticProtocolViolations.push('judge-prompt-lost-single-score-or-top-three-diagnosis-contract');
+    }
+    const taskNeutralJudgeAssertionIds = getVlmJudgeAssertions().map((item) => item.id);
+    if (!taskNeutralJudgeAssertionIds.includes('impact.squint')
+      || taskNeutralJudgeAssertionIds.includes('comp.subject-ratio')
+      || taskNeutralJudgeAssertionIds.includes('sell.visualized')
+      || taskNeutralJudgeAssertionIds.includes('overall.above-baseline')) {
+      aestheticProtocolViolations.push('task-neutral-judge-lost-delivery-size-effectiveness-boundary');
     }
     const diagnosisAssertions = DESIGN_ASSERTIONS
       .filter((item) => item.method === 'vlm_judge')
@@ -3109,7 +3142,7 @@ async function run() {
     if (!diagnosedOnlyReentry.shouldReenter
       || diagnosedOnlyReentry.injectedConstraints.length !== 1
       || diagnosedOnlyReentry.injectedConstraints[0] !== diagnosedOnlyConstraint) {
-      aestheticProtocolViolations.push('completed-aesthetic-reentry-reintroduced-undiagnosed-fixes');
+      aestheticProtocolViolations.push('aesthetic-reentry-reintroduced-undiagnosed-fixes');
     }
     const completedImprovementHandoff = {
       version: 'quality-gate-reflexion-handoff/v0',
@@ -3118,10 +3151,22 @@ async function run() {
       targetStage: 'R4',
       reenterLoop: 'react',
       trigger: 'completed_aesthetic_improvement',
+      reviewBinding: {
+        documentId: 71,
+        historyStateId: 103,
+        observationKeys: ['review:current-revision-focus']
+      },
+      issueConstraints: [{
+        issueId: 'current-revision-focus',
+        description: '当前画面的首要对象不够清楚',
+        expectedFix: '由 Agent 根据当前像素判断一个最小调整并复核',
+        observationKey: 'review:current-revision-focus'
+      }],
       failureAnalysis: ['终局审美仍有可改进项'],
-      strategyAdjustments: [],
+      strategyAdjustments: ['泛化策略不得进入 completed handoff-only'],
       nextRoundConstraints: [diagnosedOnlyConstraint]
     };
+    const pairedCompletedConstraint = '问题 current-revision-focus；当前画面的首要对象不够清楚；对应修法：由 Agent 根据当前像素判断一个最小调整并复核';
     const passedImprovementScorecard = scoreDesignAssertions(
       diagnosisAssertions.map((assertion) => ({
         id: assertion.id,
@@ -3143,6 +3188,13 @@ async function run() {
       stopReason: 'final_response',
       constraintMode: 'handoff_only'
     });
+    const needsReviewImprovementReentry = decideQualityAwareReflexionReentry({
+      handoff: completedImprovementHandoff,
+      priorReentryCount: 0,
+      scorecardHistory: [diagnosedScorecard],
+      stopReason: 'final_response',
+      constraintMode: 'handoff_only'
+    });
     const secondPassedImprovementReentry = decideQualityAwareReflexionReentry({
       handoff: completedImprovementHandoff,
       priorReentryCount: 1,
@@ -3151,9 +3203,134 @@ async function run() {
       constraintMode: 'handoff_only'
     });
     if (!firstPassedImprovementReentry.shouldReenter
+      || firstPassedImprovementReentry.reason !== 'reentry'
       || firstPassedImprovementReentry.injectedConstraints.length !== 1
+      || firstPassedImprovementReentry.injectedConstraints[0] !== pairedCompletedConstraint
+      || !needsReviewImprovementReentry.shouldReenter
+      || needsReviewImprovementReentry.injectedConstraints.length !== 1
+      || needsReviewImprovementReentry.injectedConstraints[0] !== pairedCompletedConstraint
       || secondPassedImprovementReentry.shouldReenter) {
-      aestheticProtocolViolations.push('passed-completed-aesthetic-improvement-was-not-exactly-once');
+      aestheticProtocolViolations.push('passed-completed-aesthetic-improvement-was-not-agent-owned-exactly-once');
+    }
+    const invalidCompletedHandoffs = [
+      { ...completedImprovementHandoff, reviewBinding: undefined },
+      {
+        ...completedImprovementHandoff,
+        reviewBinding: {
+          documentId: 71,
+          historyStateId: 103,
+          observationKeys: ['review:duplicate', 'review:duplicate']
+        }
+      },
+      {
+        ...completedImprovementHandoff,
+        issueConstraints: completedImprovementHandoff.issueConstraints.map((issue) => ({
+          ...issue,
+          observationKey: 'review:not-in-current-set'
+        }))
+      }
+    ];
+    for (const invalidHandoff of invalidCompletedHandoffs) {
+      const invalidDecision = decideQualityAwareReflexionReentry({
+        handoff: invalidHandoff,
+        priorReentryCount: 0,
+        scorecardHistory: [passedImprovementScorecard],
+        stopReason: 'final_response',
+        constraintMode: 'handoff_only'
+      });
+      if (invalidDecision.shouldReenter || invalidDecision.reason !== 'no_actionable_constraints') {
+        aestheticProtocolViolations.push('completed-aesthetic-invalid-review-binding-reentered');
+        break;
+      }
+    }
+    const trustedProvenance = evaluateReflexionReviewProvenance({
+      handoff: completedImprovementHandoff,
+      artifact: {
+        historyStateRef: { documentId: 71, historyStateId: 103 },
+        observationKeys: ['review:current-revision-focus']
+      }
+    });
+    const mismatchedProvenance = evaluateReflexionReviewProvenance({
+      handoff: completedImprovementHandoff,
+      artifact: {
+        historyStateRef: { documentId: 71, historyStateId: 104 },
+        observationKeys: ['review:current-revision-focus']
+      }
+    });
+    if (!trustedProvenance.valid
+      || trustedProvenance.status !== 'match'
+      || mismatchedProvenance.valid
+      || mismatchedProvenance.status !== 'revision_mismatch') {
+      aestheticProtocolViolations.push('completed-aesthetic-handoff-not-bound-to-trusted-review-artifact');
+    }
+    const sameRevisionWrite = evaluateCompletedReflexionWriteFreshness({
+      handoff: completedImprovementHandoff,
+      executionKind: 'photoshop_write',
+      hasGenerationMutation: false,
+      targetRevision: { documentId: 71, historyStateId: 103 }
+    });
+    const staleUnobservedWrite = evaluateCompletedReflexionWriteFreshness({
+      handoff: completedImprovementHandoff,
+      executionKind: 'photoshop_write',
+      hasGenerationMutation: false,
+      targetRevision: { documentId: 71, historyStateId: 104 }
+    });
+    const staleReobservedWrite = evaluateCompletedReflexionWriteFreshness({
+      handoff: completedImprovementHandoff,
+      executionKind: 'photoshop_write',
+      hasGenerationMutation: false,
+      targetRevision: { documentId: 71, historyStateId: 104 },
+      currentVisualReview: {
+        historyStateRef: { documentId: 71, historyStateId: 104 },
+        observationKeys: ['review:current-104'],
+        fullyReviewed: true
+      }
+    });
+    const postMutationWrite = evaluateCompletedReflexionWriteFreshness({
+      handoff: completedImprovementHandoff,
+      executionKind: 'photoshop_write',
+      hasGenerationMutation: true,
+      targetRevision: { documentId: 71, historyStateId: 104 }
+    });
+    if (!sameRevisionWrite.allowed
+      || staleUnobservedWrite.allowed
+      || staleUnobservedWrite.status !== 'current_revision_observation_required'
+      || !staleReobservedWrite.allowed
+      || staleReobservedWrite.status !== 'current_revision_reobserved'
+      || !postMutationWrite.allowed
+      || postMutationWrite.status !== 'subsequent_generation_write') {
+      aestheticProtocolViolations.push('completed-aesthetic-first-write-freshness-boundary-invalid');
+    }
+    const completedNoiseOnlyReentry = decideQualityAwareReflexionReentry({
+      handoff: {
+        ...completedImprovementHandoff,
+        issueConstraints: []
+      },
+      priorReentryCount: 0,
+      scorecardHistory: [passedImprovementScorecard],
+      stopReason: 'final_response',
+      constraintMode: 'handoff_only'
+    });
+    if (completedNoiseOnlyReentry.shouldReenter
+      || completedNoiseOnlyReentry.reason !== 'no_actionable_constraints') {
+      aestheticProtocolViolations.push('completed-aesthetic-warning-without-paired-diagnosis-reentered');
+    }
+    if (!agentRuntimeText.includes('const reflexionSummaryWarningIssues = completedAestheticImprovementEligible')
+      || !reflexionReentryPolicyText.includes('const advisoryOnly = isCompletedAestheticImprovementReflexionHandoff(handoff)')
+      || !agentRuntimeText.includes('buildCompletedReflexionWriteFreshnessBlock({')
+      || !reflexionWriteFreshnessText.includes('evaluateCompletedReflexionWriteFreshness({')
+      || !reflexionWriteFreshnessText.includes("code: missingTargetRevision")
+      || !reflexionWriteFreshnessText.includes('executesPhotoshop: false')
+      || !reflexionWriteFreshnessText.includes('grantsPermission: false')
+      || !reflexionWriteFreshnessText.includes('countsAsTaskProgress: false')
+      || !executorText.includes('evaluateReflexionReviewProvenance({')
+      || !executorText.includes('readTrustedVisualReviewArtifact(result)')
+      || !runtimeReflexionContractText.includes('reviewBinding?: ReflexionReviewBinding')
+      || !runtimeReflexionContractText.includes('observationKey?: string')
+      || !executorText.includes('failureAnalysis: []')
+      || !executorText.includes('strategyAdjustments: []')
+      || !executorText.includes('nextRoundConstraints: []')) {
+      aestheticProtocolViolations.push('completed-aesthetic-handoff-expanded-beyond-paired-advisory-observations');
     }
     const exhaustedBudgetReentry = decideQualityAwareReflexionReentry({
       handoff: completedImprovementHandoff,
@@ -3278,6 +3455,7 @@ async function run() {
     });
     if (!judgeContext.includes('structuralHeuristicSignals')
       || !judgeContext.includes('structural_heuristic_not_pixel_fact')
+      || !judgeContext.includes('用户未明确要求的信息、文案、渠道或尺寸不是缺失项')
       || judgeContext.includes('backgroundIsPlainDefault')
       || judgeContext.includes('layoutBaselineOnly')) {
       aestheticProtocolViolations.push('structural-heuristics-were-misrepresented-as-pixel-facts');
@@ -3960,6 +4138,13 @@ async function run() {
     success: false,
     error: '未找到图层 ID: 12'
   });
+  // 真机病例 2026-08-17：declareDesignBrief 结构校验驳回一次 run 内连撞 7 次不停机、零写入。
+  // 声明表单驳回（*_declaration_invalid）同样是「Harness 拒绝模型」，必须上账。
+  const declarationRejectionSignature = resolvePolicyGateBlockSignature('declareDesignBrief', {
+    success: false,
+    code: 'runtime_design_brief_declaration_invalid',
+    error: 'runtime_design_brief_declaration_invalid: array_too_long (deliverables)'
+  });
   const exactPropertyWriteScopeCases = [
     {
       id: 'layer-name-only',
@@ -4305,6 +4490,7 @@ async function run() {
   const { ecommerceSocksDesignExecutor } = require(ecommerceSocksDesignExecutorPath);
   const manifestOwnedChildDispatchViolations = [];
   const modelOwnedVisualStyleViolations = [];
+  const environmentRecoveryViolations = [];
   const verifiedChildCalls = [];
   const verifiedParentResult = await ecommerceSocksDesignExecutor.execute({
     params: {
@@ -4433,13 +4619,12 @@ async function run() {
     backgroundHex: '#FFFFFF',
     visualStyle: { mode: 'neutral_wireframe' }
   });
-  if (!neutralLayoutStyle.ok
-    || neutralLayoutStyle.style?.mode !== 'neutral_wireframe'
-    || neutralLayoutStyle.style?.provenance !== 'neutral_wireframe_default'
+  if (neutralLayoutStyle.ok
+    || !neutralLayoutStyle.issues?.includes('visualStyle:required_use_model_authored_or_explicit_neutral_wireframe')
     || !explicitNeutralLayoutStyle.ok
     || explicitNeutralLayoutStyle.style?.mode !== 'neutral_wireframe') {
     modelOwnedVisualStyleViolations.push(
-      `render-layout-style:implicit-style-was-not-neutral-wireframe:${JSON.stringify(neutralLayoutStyle)}`
+      `render-layout-style:implicit-style-did-not-fail-closed:${JSON.stringify(neutralLayoutStyle)}`
     );
   }
   const modelAuthoredLayoutStyle = resolveRenderLayoutVisualStyle({
@@ -4450,14 +4635,15 @@ async function run() {
         primaryTextColorHex: '#2B1712',
         secondaryTextColorHex: '#69463C',
         accentColorHex: '#C85D37',
+        placeholderFillColorHex: '#D8B49B',
         sellingPointTextColorHex: '#FFF8F0',
         sellingPointFillColorHex: '#8D351F'
       },
       typography: {
         title: { fontName: 'SourceHanSansCN-Bold', fontSizeRatio: 0.52, minFontSizeRatio: 0.2, fitMode: 'none', tracking: -20, leadingRatio: 1.05 },
-        subtitle: { fontSizeRatio: 0.34, minFontSizeRatio: 0.16, fitMode: 'shrink_to_width', tracking: 10, leadingRatio: 1.2 },
-        body: { fontSizeRatio: 0.28, minFontSizeRatio: 0.14, fitMode: 'shrink_to_width', tracking: 0, leadingRatio: 1.35 },
-        sellingPoint: { fontSizeRatio: 0.36, minFontSizeRatio: 0.16, fitMode: 'shrink_to_width', tracking: 15, leadingRatio: 1.1 }
+        subtitle: { fontName: 'SourceHanSansCN-Regular', fontSizeRatio: 0.34, minFontSizeRatio: 0.16, fitMode: 'shrink_to_width', tracking: 10, leadingRatio: 1.2 },
+        body: { fontName: 'SourceHanSansCN-Regular', fontSizeRatio: 0.28, minFontSizeRatio: 0.14, fitMode: 'shrink_to_width', tracking: 0, leadingRatio: 1.35 },
+        sellingPoint: { fontName: 'SourceHanSansCN-Medium', fontSizeRatio: 0.36, minFontSizeRatio: 0.16, fitMode: 'shrink_to_width', tracking: 15, leadingRatio: 1.1 }
       },
       sellingPoint: { treatment: 'text_only', cornerRadiusRatio: 0, paddingRatio: 0.02 }
     }
@@ -4497,6 +4683,7 @@ async function run() {
         primaryTextColorHex: '#101010',
         secondaryTextColorHex: '#303030',
         accentColorHex: '#804020',
+        placeholderFillColorHex: '#D0D0D0',
         sellingPointTextColorHex: '#FFFFFF'
       },
       typography: {
@@ -4891,6 +5078,34 @@ async function run() {
     || toolExecutorText.indexOf('resolveRenderLayoutVisualStyle({') > toolExecutorText.indexOf('deletePreviousStageGroup')) {
     modelOwnedVisualStyleViolations.push('render-layout-style:production-wiring-does-not-validate-before-mutation');
   }
+  if (!composeDesignSpecText.includes("export type ComposeDesignLayoutMode = 'agent_authored'")
+    || !composeDesignSpecText.includes('内置版式配方已移除')
+    || !composeDesignSpecText.includes('Harness 不按底色派生字色')
+    || composeDesignExecutorText.includes("executeToolCall('evaluateDesign'")
+    || composeDesignExecutorText.includes('等待 Photoshop 落定')
+    || !composeDesignExecutorText.includes('visualStyle: spec.layout.visualStyle')
+    || !composeDesignExecutorText.includes('groupName: spec.layout.groupName')
+    || !toolExecutorText.includes('内置版式配方已移除')
+    || /expandLayoutRecipe|recipeExpansion/.test(toolExecutorText)
+    || !toolExecutorText.includes("version: 'render-layout-layer-structure/v1'")
+    || toolSchemasText.includes('【首稿首选 recipe 模式】')) {
+    modelOwnedVisualStyleViolations.push('compose-design:harness-can-still-impersonate-design-authorship');
+  }
+  if (!toolSchemasText.includes("name: 'capturePhotoshopWindow'")
+    || !toolExecutorText.includes("toolName === 'capturePhotoshopWindow'")
+    || !toolExecutorText.includes("environmentState: 'photoshop_native_modal_suspected'")
+    || !toolExecutorText.includes("capability: 'capturePhotoshopWindow'")
+    || !composeDesignExecutorText.includes('isRetryablePhotoshopBusyFailure')
+    // 2026-08-23 瞬态判定收拢到 shared/photoshop-transient-error（弹窗/写状态未知不重试的单一真相源），executor 薄委托。
+    || !composeDesignExecutorText.includes('isTransientPhotoshopBusyFailure')
+    || !photoshopTransientErrorText.includes('photoshop_native_modal_suspected')
+    || !screenshotHandlersText.includes("types: ['window']")
+    || !screenshotHandlersText.includes("source: 'photoshop-window'")
+    || !toolSchemasText.includes('It is not a canvas-quality check')
+    || !toolSchemasText.includes('must not become a generic task-opening screenshot')
+    || !agentToolExecutionPreflightText.includes("'capturePhotoshopWindow'")) {
+    environmentRecoveryViolations.push('photoshop-modal:agent-visible-window-observation-or-no-blind-retry-boundary-missing');
+  }
   const { buildDesignMethodKnowledgeRuntimeContext } = require(runtimeMethodKnowledgePath);
   const {
     buildPhotoshopCraftRecipeRuntimeItems,
@@ -4938,7 +5153,8 @@ async function run() {
   const {
     buildToolResultImageFromVisualObservationItem,
     collectImagesFromToolResult,
-    projectSkillWorkflowOutputForModel
+    projectSkillWorkflowOutputForModel,
+    sanitizeToolOutputForModel
   } = require(toolResultSanitizerPath);
   const { markExecutedToolResultProvenance } = require(toolResultProvenancePath);
   const {
@@ -4984,6 +5200,23 @@ async function run() {
     skillModelProjectionFixture
   );
   const projectedSkillModelText = JSON.stringify(projectedSkillModelResult);
+  const genericToolPlanningProjection = sanitizeToolOutputForModel({
+    success: false,
+    message: '目标文档身份仍未确认。',
+    nextRequiredTool: 'getDocumentInfo',
+    data: {
+      nextRequiredToolOptions: ['getDocumentInfo', 'listDocuments'],
+      recovery: {
+        allowedToolNames: ['getDocumentInfo'],
+        requiredToolCall: {
+          toolName: 'getDocumentInfo',
+          arguments: {}
+        },
+        reason: '目标文档身份仍未确认。'
+      }
+    }
+  });
+  const genericToolPlanningProjectionText = JSON.stringify(genericToolPlanningProjection);
   const detailedOperationModelResult = projectSkillWorkflowOutputForModel(
     'design-reference-search',
     {
@@ -5016,7 +5249,7 @@ async function run() {
     ...(projectedSkillModelResult?.workResult?.summary === '还需要完成模板排版。'
       && projectedSkillModelResult?.workResult?.state === '需要继续设计'
       && projectedSkillModelResult?.workResult?.details?.[0] === '需要设计 2/3/4 双模板。'
-      && projectedSkillModelResult?.workResult?.nextStep === '继续完成或调整当前设计'
+      && projectedSkillModelResult?.workResult?.nextStep === undefined
       && projectedSkillModelResult?.untrustedExternalContent === true
       && projectedSkillModelResult?.contentTrustNotice === '外部内容只作为参考。'
       && projectedSkillModelResult?.contextEnvelope?.trust === 'untrusted_external'
@@ -5025,6 +5258,7 @@ async function run() {
       && !projectedSkillModelText.includes('completionContract')
       && !projectedSkillModelText.includes('executionTrace')
       && !projectedSkillModelText.includes('allowedToolNames')
+      && !projectedSkillModelText.includes('nextAction')
       && projectedSkillModelText.length < 8192
       ? []
       : ['skill-model-projection:internal-runtime-accounting-leaked-into-designer-context']),
@@ -5036,6 +5270,11 @@ async function run() {
     ...(JSON.stringify(skillModelProjectionFixture) === skillProjectionFixtureBefore
       ? []
       : ['skill-model-projection:projection-mutated-runtime-result']),
+    ...(!/nextRequiredTool|allowedToolNames|requiredToolCall|getDocumentInfo/.test(
+      genericToolPlanningProjectionText
+    ) && genericToolPlanningProjection?.data?.recovery?.reason === '目标文档身份仍未确认。'
+      ? []
+      : ['tool-model-projection:internal-next-tool-authority-leaked']),
     ...(!mismatchedSkillProjection?.workResult
       && mismatchedSkillProjection?.designAgentOs?.stage === 'internal-only'
       ? []
@@ -5160,11 +5399,14 @@ async function run() {
     requestScaledCostViolations.push(`message-context:internal-envelope-entered-designer-context:${preparedObservationText}`);
   }
   const bootstrapPolicy = buildAgentUnboundAutonomousPerformancePolicy();
-  if (bootstrapPolicy.budget.maxModelCalls !== 16
-    || bootstrapPolicy.budget.maxToolCalls !== 50
-    || bootstrapPolicy.budget.maxIterations !== 30
-    || bootstrapPolicy.budget.maxVisionCandidates !== 6
-    || bootstrapPolicy.budget.maxVisualAnalyses !== 3
+  // 设计路径宪法（2026-08-17）：未绑定清单的自主设计预算必须是「设计师干活量级」的下限，
+  // 只许往上不许再缩回聊天助理量级（真机 run 469 在 14 轮 6 写入零失败时被 16 次上限掐断）。
+  if (bootstrapPolicy.budget.maxModelCalls < 32
+    || bootstrapPolicy.budget.maxToolCalls < 120
+    || bootstrapPolicy.budget.maxIterations < 60
+    || bootstrapPolicy.budget.maxVisionCandidates < 8
+    || bootstrapPolicy.budget.maxVisualAnalyses < 4
+    || bootstrapPolicy.budget.softTimeBudgetMs < 900_000
     || bootstrapPolicy.budget.maxPrimaryOutputTokens !== 8192
     || bootstrapPolicy.budget.allowProviderThinking !== true
     || bootstrapPolicy.profileSource.ref !== 'agent-unbound-autonomous/v0') {
@@ -5340,12 +5582,20 @@ async function run() {
         updatedUsage
       })}`);
     }
-    if (!agentRuntimeText.includes('activeElapsedMs: this.readPerformanceActiveElapsedMs()')
-      || !agentRuntimeText.includes('performanceUsage.activeElapsedMs')
+    if (!agentRuntimeText.includes('return projectPerformanceLedgerUsage(this.performanceLedger, this.iteration)')
+      || !performanceLedgerText.includes('activeElapsedMs: readPerformanceActiveElapsedMs(ledger, nowMs)')
+      || !performanceLedgerText.includes('nonNegativeInteger(usage.activeElapsedMs)')
       || agentRuntimeText.includes('this.performanceLedger.runStartedAtMs = sessionStartedAtMs')
       || performanceText.includes('parentRunStartedAtMs')
       || !agentRuntimeText.includes("throw new Error('runtime_session_generation_seed_required')")
-      || !executorText.includes('本次运行没有可承接的请求级成本账本')
+      || !agentRuntimeText.includes('readRequestPerformanceUsageSnapshot(): RuntimePerformanceUsage')
+      || !agentRuntimeText.includes('restorePerformanceLedgerUsage(this.performanceLedger, this.iteration, this.config.requestPerformanceUsageSeed)')
+      || !executorText.includes('.readRequestPerformanceUsageSnapshot();')
+      || !executorText.includes('? { requestPerformanceUsageSeed }')
+      || executorText.includes('本次运行没有可承接的请求级成本账本')
+      || !executorText.includes('function resolveRuntimeRunRecordIdentity(')
+      || !executorText.includes('return runtimeContractBundle ? runtimeSessionIdentity : undefined;')
+      || !agentRunRecordText.includes('parent:${input.parentRunId}')
       || !executorText.includes("console.warn('[AutonomousAgent] 自动调整停止:'")) {
       requestScaledCostViolations.push('reflexion:active-execution-time-was-not-generation-scoped');
     }
@@ -6022,16 +6272,60 @@ async function run() {
   const staticContextSection = staticContextStart >= 0 && staticContextEnd > staticContextStart
     ? executorText.slice(staticContextStart, staticContextEnd)
     : '';
+  const planNeutralKnowledgeStart = executorText.indexOf('function buildPlanNeutralDesignKnowledgeRuntimeItems(');
+  const planNeutralKnowledgeEnd = executorText.indexOf('export interface AutonomousCapabilityRuntime', planNeutralKnowledgeStart);
+  const planNeutralKnowledgeSection = planNeutralKnowledgeStart >= 0
+    && planNeutralKnowledgeEnd > planNeutralKnowledgeStart
+    ? executorText.slice(planNeutralKnowledgeStart, planNeutralKnowledgeEnd)
+    : '';
   const providerFailureCatchStart = executorText.indexOf("console.error('[AutonomousAgent] runtime failure:'");
-  const providerFailureCatchEnd = executorText.indexOf('if (error instanceof AutonomousAgentModelCallError)', providerFailureCatchStart);
+  const providerFailureCatchEnd = executorText.indexOf('if (error instanceof ModelProviderCallError)', providerFailureCatchStart);
   const providerFailureCatchPrefix = providerFailureCatchStart >= 0 && providerFailureCatchEnd > providerFailureCatchStart
     ? executorText.slice(providerFailureCatchStart, providerFailureCatchEnd)
     : '';
   if (!executorText.includes('const buildPlanNeutralRuntimeContextItems = (')
+    || !executorText.includes('...buildPlanNeutralDesignKnowledgeRuntimeItems({')
+    || !planNeutralKnowledgeSection.includes("id: 'knowledge.plan-neutral-designer-judgment'")
+    || !planNeutralKnowledgeSection.includes("buildDesignPrinciplesSummary('overview')")
+    || !planNeutralKnowledgeSection.includes('getDesignKnowledge 或 getDesignPrinciples')
+    || planNeutralKnowledgeSection.includes('buildDesignMethodKnowledgeRuntimeContext({')
+    || planNeutralKnowledgeSection.includes('buildDesignArtifactKnowledgeRuntimeItem({')
+    || planNeutralKnowledgeSection.includes('buildPhotoshopCraftRecipeRuntimeItems({')
+    || planNeutralKnowledgeSection.includes('buildDesignPrinciplesRuntimeContext(true)')
+    || planNeutralKnowledgeSection.length > 5_000
     || staticContextSection.includes('artifactKnowledgeItem')
     || staticContextSection.includes('photoshopCraftRecipeItems')
     || staticContextSection.includes("id: 'knowledge.design-principles'")) {
-    autonomousDesignLoopViolations.push('generation-context:plan-neutral-knowledge-not-replaceable');
+    autonomousDesignLoopViolations.push('generation-context:plan-neutral-knowledge-not-compact-or-replaceable');
+  }
+  if (artifactKnowledgeText.includes('七步做完一张画面')
+    || artifactKnowledgeText.includes('七步自检')
+    || toolSchemasText.includes('七步思考脚手架')
+    || !artifactKnowledgeText.includes('成熟设计师的判断结构')
+    || !artifactKnowledgeText.includes('可以按任务自由组合的判断维度，不是阶段列表')) {
+    autonomousDesignLoopViolations.push('design-knowledge:generic-method-regressed-to-fixed-workflow');
+  }
+  if (!runtimeMethodKnowledgeText.includes('候选短名单只回答')
+    || !runtimeMethodKnowledgeText.includes('对象是什么及包含哪些部件或变体')
+    || !artifactKnowledgeText.includes('候选短名单只是在一个已声明需求或素材角色下比较可用性')
+    || !artifactKnowledgeText.includes('一次候选排序不代表对象与素材角色已经覆盖完整')
+    || !toolSchemasText.includes('one selected image is not evidence of project-wide understanding')
+    || !toolSchemasText.includes('by expected information gain')) {
+    autonomousDesignLoopViolations.push('design-knowledge:asset-shortlist-still-impersonates-object-understanding');
+  }
+  if (!runtimeMethodKnowledgeText.includes('是否检索 Eagle 或其他参考资源由 Agent 按信息增益判断')
+    || !artifactKnowledgeText.includes('是否调用 Eagle 等参考工具、查什么以及何时停止由 Agent 决定')
+    // 2026-08-23 用户裁决「看参考挂到定方向前」：正向流程位替代纯信息增益触发，锚点改守豁免出口（非强制仪式）。
+    || !toolSchemasText.includes('skip it only when an explicit reference')
+    || !toolSchemasText.includes('no opening announcement or fixed research ritual is required')
+    || toolSchemasText.includes('先说明要解决的构图、色彩、字体或表达问题')
+    || toolSchemasText.includes('每次设计必须查 Eagle')) {
+    autonomousDesignLoopViolations.push('design-knowledge:reference-research-not-agent-owned-or-information-gain-driven');
+  }
+  if (!capabilitySessionText.includes("'eagle.read.searchReferences'")
+    || !capabilitySessionText.includes("'eagle.read.analyzeReference'")
+    || !capabilitySessionText.includes('参考研究是设计师可自行选择的思考资源，不是 Harness 前置流程')) {
+    autonomousDesignLoopViolations.push('capability-session:optional-reference-research-not-visible-to-designer');
   }
   if (!providerFailureCatchPrefix.includes('await refreshGenerationDataContext(')
     || !providerFailureCatchPrefix.includes('await adoptOwnerConfirmedProjectStateFromRun({')
@@ -7393,7 +7687,9 @@ async function run() {
     documentId = 41,
     historyStateId = 102,
     keySuffix = '',
-    region
+    region,
+    summaryOverride,
+    comparisonReason
   ) {
     const snapshot = successfulOperationInDocument(
       'getCanvasSnapshot',
@@ -7421,12 +7717,13 @@ async function run() {
           version: 'visual-observation-review-decision/v1',
           observationKey,
           status,
-          reviewer: 'visual_expert',
-          summary: status === 'passed'
+          reviewer: comparisonReason ? 'primary_model' : 'visual_expert',
+          summary: summaryOverride || (status === 'passed'
             ? '占位已精确替换，最终画面通过复核。'
             : (status === 'needs_fix'
               ? '占位已替换，但最终画面仍需修订。'
-              : '最终画面无法读取。'),
+              : '最终画面无法读取。')),
+          ...(comparisonReason ? { comparisonReason } : {}),
           ...(status === 'passed' ? {} : { issues: ['视觉复核未通过'] })
         }
       } : {})
@@ -7606,6 +7903,118 @@ async function run() {
       successfulOperationInDocument('getLayerHierarchy', {}, 41, 103, 103, { documentId: 41 })
     ]
   });
+  const candidateComparisonFinding = {
+    code: 'candidate_structural_reduction_not_compared',
+    severity: 'review',
+    closureKind: 'comparison',
+    blockId: '纯商品主图',
+    role: 'layout',
+    message: '同素材另建候选由三个声明元素减少为一个；这是变化证据，不是更优证据。'
+  };
+  function buildNewComposeCandidate(
+    documentId,
+    documentName,
+    before,
+    afterHistoryStateId,
+    qualityState,
+    qualityFindings
+  ) {
+    return {
+      name: 'composeDesign',
+      arguments: {
+        document: { mode: 'new', name: documentName },
+        canvas: { width: 1440, height: 1440 },
+        layout: { regions: [{ id: '主体·商品摄影', role: 'main-image', content: 'subject' }] }
+      },
+      result: {
+        success: true,
+        status: qualityState === 'passed' ? 'completed' : qualityState,
+        qualityState,
+        qualityFindings,
+        documentId,
+        historyStateRef: { documentId, historyStateId: afterHistoryStateId },
+        createdLayerIds: [documentId * 10 + 1],
+        photoshopHistoryTransition: {
+          version: 'photoshop-history-transition/v1',
+          basis: 'acceptance_snapshot_pair',
+          before,
+          after: { documentId, historyStateId: afterHistoryStateId },
+          toolActionCompleted: true,
+          mutationObserved: true,
+          documentChanged: before.documentId !== documentId
+        }
+      }
+    };
+  }
+  const composeCandidateA = buildNewComposeCandidate(
+    301,
+    '运动袜主图-A',
+    { documentId: 41, historyStateId: 101 },
+    10,
+    'passed',
+    []
+  );
+  const composeCandidateB = buildNewComposeCandidate(
+    302,
+    '运动袜主图-B',
+    { documentId: 301, historyStateId: 10 },
+    20,
+    'needs_review',
+    [candidateComparisonFinding]
+  );
+  const candidateBLayerReadback = successfulOperationInDocument(
+    'getLayerHierarchy',
+    {},
+    302,
+    20,
+    20,
+    { documentId: 302 }
+  );
+  const unresolvedComposeAlternativeContract = buildTaskCompletionContract({
+    task: '用项目素材重新做一张商品主图。',
+    toolCallLog: [currentDocumentRead, composeCandidateA, composeCandidateB, candidateBLayerReadback]
+  });
+  const genericReviewedComposeAlternativeContract = buildTaskCompletionContract({
+    task: '用项目素材重新做一张商品主图。',
+    toolCallLog: [
+      currentDocumentRead,
+      composeCandidateA,
+      composeCandidateB,
+      buildLegacyPlaceholderReviewSnapshot('passed', 302, 20, 'compose-generic-review'),
+      candidateBLayerReadback
+    ]
+  });
+  const reviewedComposeAlternativeContract = buildTaskCompletionContract({
+    task: '用项目素材重新做一张商品主图。',
+    toolCallLog: [
+      currentDocumentRead,
+      composeCandidateA,
+      composeCandidateB,
+      buildLegacyPlaceholderReviewSnapshot(
+        'passed',
+        302,
+        20,
+        'compose-comparison',
+        undefined,
+        '当前画面已完成同文档复核。',
+        '前一候选的文字与主体争抢；当前候选减少文字后，商品成为唯一视觉焦点，更符合本次主图目标。'
+      ),
+      candidateBLayerReadback
+    ]
+  });
+  const criticComposeAlternativeContract = buildTaskCompletionContract({
+    task: '用项目素材重新做一张商品主图。',
+    toolCallLog: [
+      currentDocumentRead,
+      composeCandidateA,
+      composeCandidateB,
+      successfulOperationInDocument('evaluateDesign', {}, 302, 20, 20, {
+        evaluationAuthority: 'advisory_visual_critique',
+        evaluation: { verdict: 'pass' }
+      }),
+      candidateBLayerReadback
+    ]
+  });
 
   const explicitCopyTask = '制作一张海报，必须包含标题“夏日上新”，直接在当前画布完成。';
   const missingExplicitCopyContract = buildCreativeCompletionCase(explicitCopyTask, [
@@ -7765,7 +8174,7 @@ async function run() {
     ],
     { agentTaskPlan: editableOnlyDeliveryPlan }
   );
-  const verifiedSmartSaveContract = buildCreativeCompletionCase(
+  const pathBearingSmartSaveContract = buildCreativeCompletionCase(
     explicitDeliveryTask,
     [
       successfulOperation('createRectangle', { documentId: 41, x: 0, y: 0, width: 1080, height: 1080 }),
@@ -8095,6 +8504,40 @@ async function run() {
       && requirementById(unscopedRetiredDraftContract, 'creative-layout-quality')?.actual?.unresolvedOwnerCount === 0
       ? []
       : ['render-layout-owner:verified-unscoped-draft-retirement-did-not-supersede']),
+    ...(unresolvedComposeAlternativeContract?.status !== 'completed'
+      && requirementById(unresolvedComposeAlternativeContract, 'creative-layout-quality')?.status === 'needs_review'
+      && requirementById(unresolvedComposeAlternativeContract, 'creative-layout-quality')?.actual?.ownerCount === 2
+      && requirementById(unresolvedComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedOwnerCount === 1
+      && requirementById(unresolvedComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedFindingCount === 1
+      && requirementById(unresolvedComposeAlternativeContract, 'creative-layout-quality')?.actual?.verifiedClosureCount === 0
+      && requirementById(unresolvedComposeAlternativeContract, 'creative-layout-quality')?.actual?.criticClosureCount === 0
+      ? []
+      : ['compose-design-comparison:unreviewed-structural-change-was-treated-as-better']),
+    ...(genericReviewedComposeAlternativeContract?.status !== 'completed'
+      && requirementById(genericReviewedComposeAlternativeContract, 'creative-layout-quality')?.status === 'needs_review'
+      && requirementById(genericReviewedComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedFindingCount === 1
+      && requirementById(genericReviewedComposeAlternativeContract, 'creative-layout-quality')?.actual?.verifiedClosureCount === 0
+      ? []
+      : ['compose-design-comparison:generic-looks-good-review-closed-comparison-without-reason']),
+    ...(requirementById(reviewedComposeAlternativeContract, 'creative-layout-quality')?.status === 'passed'
+      && requirementById(reviewedComposeAlternativeContract, 'creative-layout-quality')?.actual?.ownerCount === 2
+      && requirementById(reviewedComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedOwnerCount === 0
+      && requirementById(reviewedComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedFindingCount === 0
+      && requirementById(reviewedComposeAlternativeContract, 'creative-layout-quality')?.actual?.verifiedClosureCount === 1
+      && requirementById(reviewedComposeAlternativeContract, 'creative-layout-quality')?.actual?.criticClosureCount === 0
+      ? []
+      : ['compose-design-comparison:same-document-visual-review-did-not-close-comparison']),
+    ...(criticComposeAlternativeContract?.status === 'completed'
+      && requirementById(criticComposeAlternativeContract, 'creative-review')?.status === 'passed'
+      && requirementById(criticComposeAlternativeContract, 'creative-review')?.actual?.independentCriticReviewCount === 1
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.status === 'passed'
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.ownerCount === 2
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedOwnerCount === 0
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.unresolvedFindingCount === 0
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.verifiedClosureCount === 1
+      && requirementById(criticComposeAlternativeContract, 'creative-layout-quality')?.actual?.criticClosureCount === 1
+      ? []
+      : ['compose-design-comparison:version-bound-critic-did-not-close-comparison']),
     ...(requirementById(missingExplicitCopyContract, 'creative-copy')?.status === 'failed'
       && requirementById(missingExplicitCopyContract, 'creative-copy')?.method === 'deterministic'
       && requirementById(missingExplicitCopyContract, 'creative-copy')?.blockerKind === 'required_artifact_missing'
@@ -8112,10 +8555,11 @@ async function run() {
     ...(requirementById(unverifiedExplicitCopyContract, 'creative-copy')?.status === 'needs_review'
       ? []
       : ['explicit-copy:write-without-final-text-readback-did-not-stay-needs-review']),
-    ...((unverifiedExplicitCopyPolicy?.directive || '').includes('getAllTextLayers')
-      && !/只写入 TaskPlan|恢复本轮误加/.test(unverifiedExplicitCopyPolicy?.directive || '')
+    ...((unverifiedExplicitCopyPolicy?.directive || '').includes('尚未验证')
+      && !(unverifiedExplicitCopyPolicy?.directive || '').includes('getAllTextLayers')
+      && /不指定下一工具/.test(unverifiedExplicitCopyPolicy?.directive || '')
       ? []
-      : ['explicit-copy:missing-readback-triggered-rewrite-instead-of-observation']),
+      : ['explicit-copy:completion-gap-selected-a-recovery-tool']),
     ...(requirementById(readOnlyMutationContract, 'creative-read-only-constraint')?.status === 'failed'
       && requirementById(readOnlyMutationContract, 'creative-read-only-constraint')?.method === 'deterministic'
       ? []
@@ -8149,9 +8593,9 @@ async function run() {
     ...(requirementById(unverifiedSmartSaveContract, 'creative-delivery')?.status === 'failed'
       ? []
       : ['explicit-delivery:smart-save-tool-name-or-input-format-forged-editable-artifact']),
-    ...(requirementById(verifiedSmartSaveContract, 'creative-delivery')?.status === 'passed'
+    ...(requirementById(pathBearingSmartSaveContract, 'creative-delivery')?.status === 'failed'
       ? []
-      : ['explicit-delivery:returned-psd-save-path-not-recognized']),
+      : ['explicit-delivery:internal-smart-save-was-accepted-as-final-delivery']),
     ...(requirementById(genericNestedWorkflowContract, 'creative-execution')?.status === 'passed'
       && requirementById(genericNestedWorkflowContract, 'creative-target')?.status === 'passed'
       && requirementById(genericNestedWorkflowContract, 'creative-readback')?.status === 'passed'
@@ -8441,8 +8885,7 @@ async function run() {
       'skill.sku-batch'
     ]);
     if (!activeToolNames.includes('createDocument')
-      || !activeToolNames.includes('placeImage')
-      || !activeToolNames.includes('createTextLayer')) {
+      || !activeToolNames.includes('composeDesign')) {
       runtimeSkillHandoffViolations.push(
         `runtime-skill-handoff:unbound-production-lost-atomic-write-baseline:${text}`
       );
@@ -8710,6 +9153,7 @@ async function run() {
     ['do not use any tools，帮我做主图', 'none', 'allow', undefined],
     ['不允许动用业务工作流 Skill，帮我做一张主图', undefined, 'forbid', undefined],
     ['不要走 Skill，用普通原子工具帮我做主图', undefined, 'forbid', undefined],
+    ['不使用 Skill 来完成 SKU', undefined, 'forbid', undefined],
     ['不要碰 PS，帮我生成一张主图', undefined, 'allow', 'photoshop']
   ];
   explicitCapabilityConstraintCases.forEach(([text, expectedCeiling, expectedSkillPolicy, expectedDomain]) => {
@@ -8799,6 +9243,58 @@ async function run() {
     agentIntentControlPlane: realSkuEngineDecision,
     skillRoutingRecommendation: authoritativeSkuProductionRecommendation
   }, {});
+  const skillFreeSkuConstraint = extractExplicitUserCapabilityConstraint(
+    '不使用 Skill 来完成 SKU'
+  );
+  const skillFreeSkuCapabilityRuntime = resolveAutonomousCapabilityRuntime({
+    agentIntentControlPlane: realSkuEngineDecision,
+    skillRoutingRecommendation: authoritativeSkuProductionRecommendation,
+    skillBridgePolicy: skillFreeSkuConstraint.skillBridgePolicy,
+    agentCapabilityConstraint: skillFreeSkuConstraint
+  }, {});
+  const defaultSkuResolution = planNeutralSkuCapabilityRuntime.capabilitySession.getResolution();
+  const skillFreeSkuSession = skillFreeSkuCapabilityRuntime.capabilitySession;
+  const skillFreeSkuBefore = skillFreeSkuSession.getResolution();
+  const internalSkuCapabilityId = skillFreeSkuSession.inventory.find((entry) => (
+    entry.kind === 'tool' && entry.providerToolNames.includes('skuLayout')
+  ))?.capabilityId;
+  const skillFreeSkuActivation = internalSkuCapabilityId
+    ? skillFreeSkuSession.requestCapabilities([internalSkuCapabilityId])
+    : undefined;
+  const skillFreeSkuAfter = skillFreeSkuSession.getResolution();
+  const internalSkuToolNames = getSkillInternalToolNames();
+  const filenameOnlyArtifactRole = buildSkuColorCardSourceReceipt({
+    documentName: 'SKU.psb',
+    documentId: 41,
+    observedColorNames: []
+  });
+  const observedColorCardRole = buildSkuColorCardSourceReceipt({
+    documentName: 'SKU.psb',
+    documentId: 41,
+    filePath: 'E:/project/PSD/SKU.psb',
+    projectRelativePath: 'PSD/SKU.psb',
+    observedColorNames: ['黑色', '奶白', '黑色']
+  });
+  if (skillFreeSkuConstraint.skillBridgePolicy !== 'forbid'
+    || getSkillInternalToolOwnerIds('skuLayout').join(',') !== 'sku-batch'
+    || !internalSkuToolNames.includes('skuLayout')
+    || !isSkillProviderInteractionOwner('sku-batch')
+    || !internalSkuCapabilityId
+    || defaultSkuResolution.selectedToolNames.includes('skuLayout')
+    || defaultSkuResolution.onDemandCapabilityIds.includes(internalSkuCapabilityId)
+    || !skillFreeSkuBefore.onDemandCapabilityIds.includes(internalSkuCapabilityId)
+    || skillFreeSkuBefore.selectedCapabilityIds.some((capabilityId) => capabilityId.startsWith('skill.'))
+    || skillFreeSkuActivation?.status !== 'activated'
+    || !skillFreeSkuAfter.selectedToolNames.includes('skuLayout')
+    || filenameOnlyArtifactRole !== undefined
+    || observedColorCardRole?.role !== 'color_card_source'
+    || observedColorCardRole?.lifecycle?.mutationPolicy !== 'read_only_source'
+    || observedColorCardRole?.evidence?.observedColorCount !== 2
+    || !skuBatchExecutorText.includes('skuArtifactRoles.push(skuColorCardSourceReceipt)')) {
+    skuAutonomousTemplateViolations.push(
+      'sku-boundary:default-owner-isolation-or-explicit-skill-free-atomic-path-drifted'
+    );
+  }
   const skuContinuationCapabilityRuntime = resolveAutonomousCapabilityRuntime({
     agentIntentControlPlane: realSkuEngineDecision,
     skillRoutingRecommendation: authoritativeSkuProductionRecommendation
@@ -10378,11 +10874,14 @@ async function run() {
       && !isSkuDeliveryPresentationSummary(failedWithOutputSkuSummary)
       && !isSkuDeliveryPresentationSummary(partialWithoutIssueSkuSummary)
       && !isSkuDeliveryPresentationSummary(emptyWarningSkuSummary)
-      && malformedVersionSkuBlocksText.includes('真实失败：4双自选备注未生成。')
-      && incompleteOwnedSkuBlocksText.includes('真实失败：4双自选备注未生成。')
+      // 2026-08-18 用户拍板关闭通用「当前版本」状态卡（SHOW_EXECUTION_SUMMARY_CARD=false）后，
+      // 落到通用卡的 SKU 病态摘要不再渲染成卡片；真实失败正文由模型正文与运行档案承担。
+      // 关卡开着时仍要求这些正文不丢；关卡关着时只要求不出现「SKU 交付状态」冒充。
+      && (executionSummaryCardDisabled || malformedVersionSkuBlocksText.includes('真实失败：4双自选备注未生成。'))
+      && (executionSummaryCardDisabled || incompleteOwnedSkuBlocksText.includes('真实失败：4双自选备注未生成。'))
       && !incompleteOwnedSkuBlocksText.includes('SKU 交付状态')
-      && damagedProjectionSkuBlocksText.includes('不能丢失的真实失败正文。')
-      && damagedProjectionSkuBlocksText.includes('真实工具失败：版面读回失败。')
+      && (executionSummaryCardDisabled || damagedProjectionSkuBlocksText.includes('不能丢失的真实失败正文。'))
+      && (executionSummaryCardDisabled || damagedProjectionSkuBlocksText.includes('真实工具失败：版面读回失败。'))
       && !damagedProjectionSkuBlocksText.includes('SKU 交付状态')
       && messageParserText.includes('isSkuDeliveryPresentationSummary(summary)')
       && messageParserText.includes('const hasBusinessDeliveryResult = isSkuDeliveryPresentationOwned(')
@@ -11334,7 +11833,7 @@ async function run() {
   const checks = [
     {
       id: 'skill-results-project-design-work-without-runtime-accounting',
-      description: 'Skill 原始结果继续供 Runtime、续跑与诊断使用；设计模型只接收工作结果、实际问题和下一步，不接收 OS、验收报告、执行轨迹或能力 allowlist。',
+      description: 'Skill 原始结果继续供 Runtime、续跑与诊断使用；设计模型只接收工作结果和实际问题，不接收 nextAction、OS、验收报告、执行轨迹或能力 allowlist。',
       violations: skillModelProjectionViolations
     },
     {
@@ -11379,7 +11878,7 @@ async function run() {
     },
     {
       id: 'aesthetic-judge-protocol-is-brief-relative-and-non-blocking-by-default',
-      description: '审美 Judge 以 score 为唯一裁决值；无分结果不污染覆盖率，N/A 受断言白名单约束，结构启发信号不冒充像素事实，诊断强制 top-3 且 completed 改进保持 handoff-only，零视觉/局部编辑 Profile 不强跑全局 VLM。',
+      description: '审美 Judge 以 score 为唯一裁决值；无分结果不污染覆盖率，N/A 受断言白名单约束，结构启发信号不冒充像素事实，诊断强制 top-3；completed 的可靠诊断只在同一请求内唤醒 Agent 一次，Harness 不选择或直接执行修改；零视觉/局部编辑 Profile 不强跑全局 VLM。',
       violations: aestheticProtocolViolations
     },
     {
@@ -11601,8 +12100,8 @@ async function run() {
       violations: runtimeSkillHandoffViolations
     },
     {
-      id: 'compact-e1-sole-workflow-owner-dispatches-on-text-only-turn',
-      description: '无 R4 的紧凑 Runtime 到达 E1 后，只有一个当前可见且已授权的 workflow owner 时可确定性调用一次；创意 R4、多 owner、未授权、已尝试、已有动作或 continuation 均保持失败关闭。',
+      id: 'compact-e1-owner-remains-model-selected',
+      description: '紧凑 Runtime 可以在执行点要求既定 workflow owner 先行，但 Harness 不得合成 Tool call、把首轮工具面裁成 owner，或把模型文字回复改写成确定性执行。',
       violations: compactE1WorkflowOwnerViolations
     },
     {
@@ -11680,7 +12179,10 @@ async function run() {
         ...(performanceResolverText.includes('workMode: runtimeContractBundle?.stagePlan.expectedWorkMode')
           ? []
           : ['executor:expected-work-mode-not-handed-off']),
-        ...(/resolveAutonomousPerformancePolicy\([\s\S]{0,240}runtimeContractBundle\s*\)/.test(executorText)
+        // 设计路径宪法（2026-08-17）：agentic 清单不建 Stage 机但仍贡献预算画像，
+        // 因此启动预算解析接受 resolveKnowledgeBundle()（= runtimeContractBundle || agenticManifestBundle）。
+        ...(/resolveAutonomousPerformancePolicy\([\s\S]{0,320}(?:runtimeContractBundle|resolveKnowledgeBundle\(\))\s*\)/.test(executorText)
+          && executorText.includes('runtimeContractBundle || agenticManifestBundle')
           ? []
           : ['executor:runtime-bundle-not-passed-to-performance-resolver'])
       ]
@@ -11796,6 +12298,13 @@ async function run() {
           && executorText.includes('不要用反复搜索素材代替任务澄清')
           ? []
           : ['autonomous-agent:task-grounding-discipline-missing']),
+        ...(promptText.includes('【知识冷启动】')
+          && promptText.includes('知识库、项目记忆或参考检索未命中，不代表你不会做')
+          && promptText.includes('模型先验只能提供方法与待验证假设')
+          && promptText.includes('项目观察或工具读回')
+          && executorText.includes('没有命中时使用模型已有知识冷启动')
+          ? []
+          : ['autonomous-agent:model-native-knowledge-cold-start-boundary-missing']),
         ...(toolSchemasText.includes('它不是通用设计开工前置，不能用来发现任务目标')
           && toolExecutorText.includes('【可选参考构图测量】')
           ? []
@@ -11821,7 +12330,8 @@ async function run() {
           : ['agent-runtime:unproven-write-can-claim-viewable-version']),
         ...(agentRuntimeText.includes("const awaitingInteractiveConfirmation = input.stopReason === 'awaiting_user_confirmation';")
           && agentRuntimeText.includes("const awaitingUserInput = input.stopReason === 'awaiting_user_input';")
-          && agentRuntimeText.includes('if (awaitingUserInput) {\n            rawVisibleMessage = input.message;')
+          // 2026-08-18：用户正文永远是模型自己的话（不再被状态口播替换）；提问态自然也不会被投影吞掉。
+          && agentRuntimeText.includes("let rawVisibleMessage = String(input.message || '').trim()")
           && agentRuntimeText.includes("const awaitingInteractiveConfirmation = summary.stopReason === 'awaiting_user_confirmation';")
           && agentRuntimeText.includes("const awaitingUserInput = summary.stopReason === 'awaiting_user_input';")
           && agentRuntimeText.includes('需要你回答上面的问题；收到后会从当前状态继续。')
@@ -11834,8 +12344,8 @@ async function run() {
           : ['agent-runtime:raw-tool-error-entered-user-process']),
         ...(agentRuntimeText.includes('private buildVerificationStepDetail(projection: UserResultProjection): string')
           && agentRuntimeText.includes('detail: this.buildVerificationStepDetail(userResultProjection)')
-          && agentRuntimeText.includes('let rawVisibleMessage = unsupportedBareCompletionClaim')
-          && agentRuntimeText.includes('? input.message\n            : userResultProjection.message;')
+          // 2026-08-18：投影只进 executionSummary（诊断），正文以模型原话为准、投影仅兜底空回复。
+          && agentRuntimeText.includes("let rawVisibleMessage = String(input.message || '').trim()")
           && agentRuntimeText.includes('executionSummary.userVisibleSummary = userResultProjection.summary;')
           && messageParserText.includes("safeDiagnosticText(summary.userVisibleSummary || '')")
           && messageParserText.includes("safeDiagnosticText(summary.userVisibleNextStep || '')")
@@ -12036,7 +12546,7 @@ async function run() {
     },
     {
       id: 'design-intent-schema-follows-runtime-profile-catalog',
-      description: 'declareDesignIntent 的合法 taskType/workMode 必须动态来自已通过发布校验的 Runtime Profile 目录，不能暴露任务注册表中的不可达组合。',
+      description: 'declareDesignIntent 的合法 taskTypeId/workMode 必须动态来自已通过发布校验的 Runtime Profile 目录；匹配 Skill 时直接调用，只有系统给出精确 Profile 且无匹配 Skill 时才声明。',
       violations: [
         ...(toolSchemasText.includes('buildRuntimeDeclarationProfileCatalog')
           ? []
@@ -12046,7 +12556,15 @@ async function run() {
           : ['tool-schema:missing-dynamic-task-type-enum']),
         ...(toolSchemasText.includes('enum: DECLARABLE_RUNTIME_WORK_MODES')
           ? []
-          : ['tool-schema:missing-dynamic-work-mode-enum'])
+          : ['tool-schema:missing-dynamic-work-mode-enum']),
+        ...(toolSchemasText.includes('If a matching Skill tool is already visible, call that Skill directly')
+          && toolSchemasText.includes('only when the system prompt explicitly names the exact Profile id')
+          && toolSchemasText.includes('pass that id as taskTypeId')
+          && executorText.includes('declareDesignIntent({ taskTypeId: <Profile> })')
+          && !executorText.includes('declareDesignIntent({ taskType:')
+          && !toolSchemasText.includes('with that taskType to bind it')
+          ? []
+          : ['tool-schema:declare-design-intent-skill-or-profile-rule-drifted'])
       ]
     },
     {
@@ -12119,7 +12637,10 @@ async function run() {
           ? []
           : ['method-knowledge:r4-selection-invalid']),
         ...(agentRuntimeText.includes('selectRuntimeContextItemsForStage(items, stage)')
-          && agentRuntimeText.includes('compileRuntimeContext({ items: applicableItems, stage })')
+          && agentRuntimeText.includes('compileRuntimeContext({')
+          && agentRuntimeText.includes('items: applicableItems')
+          && agentRuntimeText.includes('stage,')
+          && agentRuntimeText.includes('maxTotalCharacters: this.runtimeContextCharacterBudget')
           && agentRuntimeText.includes('refreshPrimarySystemMessage()')
           ? []
           : ['agent:stage-context-not-refreshed']),
@@ -12268,7 +12789,7 @@ async function run() {
     },
     {
       id: 'subject-aware-fit-has-semantic-anchor-and-write-readback-verdict',
-      description: '主体适配必须按语义锚点求解，并能区分几何通过与明显偏移；几何裁决不代表审美通过。',
+      description: '主体适配的视觉占比与锚点必须由 Agent 或已选参考显式提供；Harness 只求解几何、读回结果并区分几何通过与明显偏移，不把几何裁决冒充审美通过。',
       violations: [
         ...(!subjectFitPlan.ok
           ? [`subject-fit:plan-blocked:${subjectFitPlan.reason}`]
@@ -12282,8 +12803,12 @@ async function run() {
         ...(shiftedSubjectFitVerification?.status === 'failed'
           ? []
           : [`subject-fit:large-shift-not-failed:${shiftedSubjectFitVerification?.status || 'missing'}`]),
-        ...(toolSchemasText.includes('工具会在同一次调用内完成写后主体读回并返回 geometryVerification')
+        ...(toolSchemasText.includes('主体视觉占比必须由 Agent 显式声明')
+          && toolSchemasText.includes('anchor 必须由 Agent 根据本稿构图声明')
+          && toolSchemasText.includes('返回写后 geometryVerification')
           && toolExecutorText.includes('【主体感知缩放与定位】')
+          && toolExecutorText.includes('Harness 不再按品类套用内置占比')
+          && toolExecutorText.includes('Harness 不替 Agent 选择视觉重心')
           ? []
           : ['subject-fit:tool-catalog-semantics-drifted'])
       ]
@@ -12294,7 +12819,7 @@ async function run() {
       violations: [
         ...delegatedCreateDocumentViolations,
         ...(promptText.includes('随意、你决定、看着办、按常用规格、合适就行')
-          && promptText.includes('不是缺少输入')
+          && promptText.includes('不因审美选择可撤回而停工')
           ? []
           : ['autonomy:delegated-reversible-choice-principle-missing']),
         ...(!designDocumentRoleText.includes("context.currentDocumentUse === 'observe_only' && context.targetRole === 'unknown'")
@@ -12340,7 +12865,12 @@ async function run() {
           && ordinaryFailureSignature === null
           && policyGateRepeatGuardText.includes('export function isLedgerAccountableGate')
           ? []
-          : ['policy-gate:unmarked-gate-escapes-repeat-ledger'])
+          : ['policy-gate:unmarked-gate-escapes-repeat-ledger']),
+        // 声明表单驳回必须上账：同一表单被连续驳回到上限就是模型看不懂表单要求，不能无限盲试。
+        ...(typeof declarationRejectionSignature === 'string'
+          && declarationRejectionSignature.includes('runtime_design_brief_declaration_invalid')
+          ? []
+          : ['policy-gate:declaration-rejection-escapes-repeat-ledger'])
       ]
     },
     {
@@ -12356,6 +12886,11 @@ async function run() {
           && !modelProviderFailureText.includes('status === 401 || status === 403')
           ? []
           : ['provider-failure:403-still-collapsed-into-auth']),
+        ...(subscriptionUsageLimitFailure.kind === 'billing'
+          && subscriptionUsageLimitFailure.basis === 'code'
+          && conversationalUnavailableMessageText.includes('订阅用量或重置时间')
+          ? []
+          : ['provider-failure:subscription-usage-limit-not-classified-or-explained']),
         ...(conversationalUnavailableMessageText.includes("kind === 'model_access'")
           && conversationalUnavailableMessageText.includes('API Key 不一定有问题')
           ? []
@@ -12442,17 +12977,26 @@ async function run() {
         ...(!toolExecutorText.includes('product hero image white background')
           ? []
           : ['asset-placement:hidden-white-background-default-restored']),
-        ...(toolExecutorText.includes('params?.autoSelect !== true')
+        ...(toolExecutorText.includes('function resolveExplicitPlaceImageSource')
           && toolExecutorText.includes('params?.imageData || params?.filePath || params?.fileToken')
-          && designPlacementIntelligenceText.includes("top.sourceTreatment === 'matte_and_recompose'")
-          && designPlacementIntelligenceText.includes("top.directUseSuitability !== 'suitable'")
+          && toolExecutorText.includes('__placeImageSourceBlocked: true')
+          && toolExecutorText.includes("nextTool: 'recommendAssets'")
+          && toolSchemasText.includes('This execution tool never scans, ranks, or chooses project assets')
+          && !toolSchemasText.includes("autoSelect: { type: 'boolean', description: 'true 时按 requirement/designRole 自动匹配候选置入")
+          && !toolExecutorText.includes('autoResolvePlaceImageSource')
+          && !toolExecutorText.includes('filePath: topCandidate.path')
           ? []
-          : ['asset-placement:explicit-selection-or-direct-use-boundary-missing']),
+          : ['asset-placement:place-image-still-selects-a-candidate-inside-the-execution-tool']),
         ...(!toolSchemasText.includes('selectionDecisionSource:')
           && designPlacementIntelligenceText.includes("authority: 'harness'")
           && designPlacementIntelligenceText.includes("? 'agent_judgment'")
           ? []
-          : ['asset-placement:model-force-provenance-still-self-authorizing'])
+          : ['asset-placement:model-force-provenance-still-self-authorizing']),
+        ...(composeDesignExecutorText.includes("version: 'compose-design-source-audit/v1'")
+          && composeDesignExecutorText.includes("projectAffinity === 'outside_current_project'")
+          && composeDesignExecutorText.includes('temporaryStoragePath:')
+          ? []
+          : ['asset-placement:compose-design-source-affinity-audit-missing'])
       ]
     },
     {
@@ -12592,6 +13136,11 @@ async function run() {
       id: 'model-owns-visual-style-while-harness-owns-layout-safety',
       description: '模型声明品类中立的视觉样式与方向，Harness 只验证范围、可读性和几何；中性线框不得冒充正式设计。',
       violations: modelOwnedVisualStyleViolations
+    },
+    {
+      id: 'photoshop-modal-recovery-is-observable-and-agent-owned',
+      description: 'Harness 结构化报告 Photoshop 原生弹窗嫌疑并提供整窗观察；Agent 看真实窗口后决定恢复，写状态未知时不得盲目重试。',
+      violations: environmentRecoveryViolations
     },
     {
       id: 'autonomous-design-loop-refreshes-governed-context-and-reviews-complete-visual-sets',

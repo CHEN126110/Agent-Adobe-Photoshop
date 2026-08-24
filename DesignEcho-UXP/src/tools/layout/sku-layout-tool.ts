@@ -147,10 +147,34 @@ async function readLiveSkuLayerBounds(documentId: number, layerId: number): Prom
     if (!Number.isFinite(descriptorLayerId) || descriptorLayerId !== layerId) {
         throw new Error(`SKU 最终边界读回目标不一致：请求图层 ${layerId}，返回 ${String(descriptorLayerId)}。`);
     }
+    // 图层组的 batchPlay `bounds` 描述符在很多情况下返回整张画布（2026-08-18 真机：复制进模板的
+    // 颜色组 DOM 读 250×380，缩放后 batchPlay 读回 800×800/1440×1440 = 画布 → 被判「缩放未生效」，
+    // 18 项 SKU 全败）。组的真实范围以 DOM 的 children 并集为准；只在描述符与画布同尺寸时才改用 DOM，
+    // 普通像素 / 智能对象层仍走描述符。
+    let descriptorBounds = descriptor?.bounds;
+    const isLayerGroup = String(descriptor?.layerSection?._value || '') === 'layerSectionStart';
+    if (isLayerGroup) {
+        const targetDocument = findOpenDocumentById(documentId);
+        const rect = readLayerBoundsRect(descriptorBounds);
+        const canvasW = Number(targetDocument?.width);
+        const canvasH = Number(targetDocument?.height);
+        const looksLikeCanvas = rect && canvasW > 0 && canvasH > 0
+            && Math.abs(rect.width - canvasW) <= 1 && Math.abs(rect.height - canvasH) <= 1;
+        if (looksLikeCanvas && targetDocument) {
+            const domLayer = findLayerById(targetDocument, layerId);
+            const domBounds = domLayer?.bounds;
+            if (domBounds && Number.isFinite(Number(domBounds.left)) && Number.isFinite(Number(domBounds.right))) {
+                descriptorBounds = {
+                    left: Number(domBounds.left), top: Number(domBounds.top),
+                    right: Number(domBounds.right), bottom: Number(domBounds.bottom)
+                };
+            }
+        }
+    }
     return {
-        bounds: readLayerBoundsRect(descriptor?.bounds),
+        bounds: readLayerBoundsRect(descriptorBounds),
         subjectBounds: getSkuAutoLayoutSubjectBounds({
-            bounds: descriptor?.bounds,
+            bounds: descriptorBounds,
             boundsNoEffects: descriptor?.boundsNoEffects
         })
     };
@@ -1019,6 +1043,64 @@ function buildTemplateLayoutInspection(doc: any, expectedItemCount?: number): {
             claimsDesignQuality: false
         }
     };
+}
+
+type SkuTemplateGutter = {
+    gutterPx: number;
+    basis: string;
+};
+
+/**
+ * 从模板本身量出「沟槽宽度」，供矩形占位的区域模型在区域内分槽时使用。
+ *
+ * 矩形占位是「一个矩形 = 一整行」：矩形只声明外框，不声明行内怎么分。此前引擎按
+ * region.width * 2.5% 估间距，于是同一张成品里「区域内的间距」（引擎估）与「区域之间
+ * 的间距」（模板定）是两套口径，必然对不齐——2026-08-18 真机 4双装 1386px 宽的区域
+ * 估出 34.65px，比模板自己的留白宽，用户看到上排 3 张排得比下排松。
+ *
+ * 这里改成只用模板已经给出的证据，按可信度取：
+ *   ① 相邻占位区域之间的实际间隙——设计师亲手摆出来的沟槽；
+ *   ② 占位区域到画布边缘的留白——设计师的留白语言。
+ * 两者都量不出来才返回 null，由调用方回落到旧的比例估算。
+ */
+function resolveSkuTemplateGutterPx(input: {
+    placeholders: SkuReplacementPlaceholder[];
+    canvasWidth: number;
+    canvasHeight: number;
+}): SkuTemplateGutter | null {
+    const boxes = (input.placeholders || []).filter((item) => item && item.width > 0 && item.height > 0);
+    if (boxes.length === 0) return null;
+
+    const gaps: number[] = [];
+    for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i];
+            const b = boxes[j];
+            const horizontal = Math.max(a.left - b.right, b.left - a.right);
+            const vertical = Math.max(a.top - b.bottom, b.top - a.bottom);
+            for (const gap of [horizontal, vertical]) {
+                if (Number.isFinite(gap) && gap > 0.5) gaps.push(gap);
+            }
+        }
+    }
+    if (gaps.length > 0) {
+        return { gutterPx: Math.min(...gaps), basis: '模板中相邻占位区域之间的间隙' };
+    }
+
+    const canvasWidth = Number(input.canvasWidth) || 0;
+    const canvasHeight = Number(input.canvasHeight) || 0;
+    if (canvasWidth <= 0 || canvasHeight <= 0) return null;
+
+    const margins: number[] = [];
+    for (const box of boxes) {
+        for (const margin of [box.left, box.top, canvasWidth - box.right, canvasHeight - box.bottom]) {
+            if (Number.isFinite(margin) && margin > 0.5) margins.push(margin);
+        }
+    }
+    if (margins.length > 0) {
+        return { gutterPx: Math.min(...margins), basis: '模板中占位区域到画布边缘的留白' };
+    }
+    return null;
 }
 
 function resolveSkuRegionCapacities(input: {
@@ -3059,6 +3141,20 @@ export class SKULayoutTool implements Tool {
                     console.log(`[SKULayout]   ${i + 1}. ${p.name || p.layer?.name || '画布'} (${p.width.toFixed(0)}x${p.height.toFixed(0)}) @ (${p.left.toFixed(0)}, ${p.top.toFixed(0)})`);
                 });
 
+                // 矩形占位（区域模型）在区域内分槽时，间距改用从模板量出来的沟槽，
+                // 与「区域之间的间距」用同一把尺子；图层组占位是一位一符、位置本就由模板定，不受影响。
+                const templateGutter = config.autoLayoutWithoutPlaceholders
+                    ? null
+                    : resolveSkuTemplateGutterPx({
+                        placeholders: sortedPlaceholders,
+                        canvasWidth: Number(canvasWidth),
+                        canvasHeight: Number(canvasHeight)
+                    });
+                if (templateGutter) {
+                    console.log(
+                        `[SKULayout] 区域内沟槽 ${templateGutter.gutterPx.toFixed(1)}px（依据：${templateGutter.basis}）`
+                    );
+                }
                 const numRegions = colorRegions.length;
                 const useGlobalFourCardNoteLayout = !config.autoLayoutWithoutPlaceholders
                     && orderedNoteColors.length === 4;
@@ -3170,10 +3266,13 @@ export class SKULayoutTool implements Tool {
                             }], { synchronousExecution: true });
 
                             // 步骤 3：复制到模板文档
+                            // 按文档 id 投递而不是按名：同名 / 相近名文档并存时（2026-08-18 真机同时开着
+                            // 2/3/4双自选备注.tif、4双装.tif、SKU.psb 等），按名投递可能把副本送进别的文档，
+                            // 模板里认领不到新增层，后续就会拿整幅层去缩放（读回 800×800「缩放未生效」）。
                             await action.batchPlay([{
                                 _obj: 'duplicate',
                                 _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
-                                to: { _ref: 'document', _name: templateDoc.name },
+                                to: { _ref: 'document', _id: templateDoc.id },
                                 _options: { dialogOptions: 'dontDisplay' }
                             }], { synchronousExecution: true });
 
@@ -3205,6 +3304,35 @@ export class SKULayoutTool implements Tool {
                                 sourceName: colorName,
                                 previousTargetLayerIds: targetLayerIdsBefore
                             });
+
+                            // 复制后立刻核对尺寸：副本应与色卡里的颜色组同尺寸（允许 5%），且不能等于整张画布。
+                            // 2026-08-18 真机 18 项全败于「缩放写入未生效：读回 800×800」——问题其实出在这一步
+                            //（副本已经不是那块 154×234 的色块），却拖到缩放步才以一句看不懂的话失败。
+                            try {
+                                const srcB = foundLayer?.bounds;
+                                const dstB = copiedLayer?.bounds;
+                                const srcW = Number(srcB?.width ?? (Number(srcB?.right) - Number(srcB?.left)));
+                                const srcH = Number(srcB?.height ?? (Number(srcB?.bottom) - Number(srcB?.top)));
+                                const dstW = Number(dstB?.width ?? (Number(dstB?.right) - Number(dstB?.left)));
+                                const dstH = Number(dstB?.height ?? (Number(dstB?.bottom) - Number(dstB?.top)));
+                                const canvasW = Number(templateDoc.width);
+                                const canvasH = Number(templateDoc.height);
+                                if (srcW > 0 && srcH > 0 && dstW > 0 && dstH > 0) {
+                                    const fillsCanvas = Math.abs(dstW - canvasW) <= 1 && Math.abs(dstH - canvasH) <= 1;
+                                    const ratioOff = Math.abs(dstW / srcW - 1) > 0.05 || Math.abs(dstH / srcH - 1) > 0.05;
+                                    if (fillsCanvas || ratioOff) {
+                                        throw new Error(
+                                            `颜色「${colorName}」复制到模板「${templateDoc.name}」后尺寸不对：色卡里是 ${srcW.toFixed(0)}×${srcH.toFixed(0)}，`
+                                            + `副本读回 ${dstW.toFixed(0)}×${dstH.toFixed(0)}${fillsCanvas ? '（等于整张画布）' : ''}；`
+                                            + `色卡分辨率 ${Number(skuDoc.resolution) || '?'}ppi / 模板 ${Number(templateDoc.resolution) || '?'}ppi。`
+                                            + `请检查模板是否与色卡同尺寸同分辨率、色卡颜色组内是否只含该色块。`
+                                        );
+                                    }
+                                }
+                            } catch (sizeErr: any) {
+                                if (/复制到模板/.test(String(sizeErr?.message || ''))) throw sizeErr;
+                                console.warn(`[SKULayout]   ⚠️ 复制后尺寸核对未能执行：${sizeErr?.message || sizeErr}`);
+                            }
 
                             const newLayerId = Number(copiedLayer.id);
                             const layerParent = copiedLayer.parent;
@@ -3260,7 +3388,8 @@ export class SKULayoutTool implements Tool {
                             strategy: 'single-row',
                             sizingPolicy: useGlobalFourCardNoteLayout
                                 ? 'uniform-width-contain'
-                                : 'shared-scale'
+                                : 'shared-scale',
+                            gutterPx: templateGutter?.gutterPx
                         });
                         if (boundedRegionPlan.status === 'blocked') {
                             throw new Error(
@@ -3862,6 +3991,18 @@ export class SKULayoutTool implements Tool {
                         const inspectionMode = config.autoLayoutWithoutPlaceholders
                             ? 'auto_without_placeholders' as const
                             : resolveSkuTemplateLayoutInspectionMode(templateDoc, orderedPlaceholderInfo);
+                        const templateGutter = config.autoLayoutWithoutPlaceholders
+                            ? null
+                            : resolveSkuTemplateGutterPx({
+                                placeholders: orderedPlaceholderInfo,
+                                canvasWidth: Number(templateDoc.width),
+                                canvasHeight: Number(templateDoc.height)
+                            });
+                        if (templateGutter) {
+                            console.log(
+                                `[SKULayout] 区域内沟槽 ${templateGutter.gutterPx.toFixed(1)}px（依据：${templateGutter.basis}）`
+                            );
+                        }
                         if (
                             inspectionMode === 'ordered_slots'
                             && orderedPlaceholderInfo.length !== comboSize
@@ -4219,7 +4360,8 @@ export class SKULayoutTool implements Tool {
                                     width: placeholderRect.width,
                                     height: placeholderRect.height
                                 },
-                                items: regionItems
+                                items: regionItems,
+                                gutterPx: templateGutter?.gutterPx
                             });
                             autoLayoutPlans.push({
                                 comboIndex,

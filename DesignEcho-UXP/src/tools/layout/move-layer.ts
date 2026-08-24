@@ -52,6 +52,8 @@ interface MoveLayerState {
     parentId: number | null;
     bounds: MoveLayerBounds;
     canvasBounds: MoveLayerCanvasBounds;
+    /** 诊断用：位置 / 全部锁定会让 translate 静默无效（真机 61% 失败里「读回位置未变」的可疑原因） */
+    lockState?: string;
 }
 
 interface MoveLayerBefore extends MoveLayerState {
@@ -168,16 +170,25 @@ function readMoveLayerState(document: any, layerId: number): MoveLayerState {
     if (!location) {
         throw new Error(`写后读回未找到图层 ID ${layerId}。`);
     }
+    const layer = location.layer;
+    const locks = [
+        layer?.allLocked ? 'allLocked' : '',
+        layer?.positionLocked ? 'positionLocked' : '',
+        layer?.pixelsLocked ? 'pixelsLocked' : '',
+        layer?.locked ? 'locked' : '',
+        layer?.visible === false ? 'hidden' : ''
+    ].filter(Boolean);
     return {
         documentId: Number(document.id),
         layerId,
-        layerName: String(location.layer.name || ''),
+        layerName: String(layer.name || ''),
         parentId: location.parentId,
-        bounds: readLayerBounds(location.layer),
+        bounds: readLayerBounds(layer),
         canvasBounds: {
             width: readRequiredNumber(document.width, '画布宽度'),
             height: readRequiredNumber(document.height, '画布高度')
-        }
+        },
+        ...(locks.length ? { lockState: locks.join('+') } : {})
     };
 }
 
@@ -541,10 +552,16 @@ export class MoveLayerTool implements Tool {
                     after.bounds.top,
                     before.targetPosition.y
                 );
+                const unmoved = positionsEqual(after.bounds.left, before.bounds.left)
+                    && positionsEqual(after.bounds.top, before.bounds.top);
                 return {
                     verified: sameTarget && geometryPreserved && positionApplied,
                     message: sameTarget && geometryPreserved
                         ? `写后读回位置 (${after.bounds.left}, ${after.bounds.top})，目标位置 (${before.targetPosition.x}, ${before.targetPosition.y})。`
+                            + (unmoved
+                                ? ` 图层完全没动（仍在 ${before.bounds.left}, ${before.bounds.top}）${before.lockState ? `，图层状态：${before.lockState}` : ''}——位置锁定 / 全部锁定 / 父组锁定都会让移动静默失效，先解锁或换目标；`
+                                : ' 移动量与预期不符，可能是父组变换或文字图层边界重算；')
+                            + '不要原样重试。'
                         : '写后读回的文档、图层、父级、名称或几何尺寸与事务目标不一致。'
                 };
             },

@@ -1,12 +1,30 @@
+/* ══ 说 / 想 / 做 三档层次（2026-08-19 用户要求「想和说要分开、层次分明」）══
+ *
+ * 说 = 正式回复（TextBlock）：满色、最大字号、无框——它是这轮对话的主体内容。
+ * 想 = Agent 的推理 / 观察 / 取舍：过程流的主线，收一档亮度。
+ * 做 = 工具动作：它顺手干的活，最弱一档。
+ *
+ * 三档必须在一个地方定死。字号一旦散在各处重写，就会出现「过程流的字比正文还大」
+ * 这种层次倒挂（窄面板此前正文 11.5px、过程流 13px）。窄面板等场景只覆盖这几个变量。 */
+.thinking-simple,
+.thinking-embedded {
+    --de-process-thought-size: 12.5px;
+    --de-process-thought-color: color-mix(in srgb, var(--de-text) 72%, transparent);
+    --de-process-thought-strong: color-mix(in srgb, var(--de-text) 88%, transparent);
+    --de-process-action-size: 12px;
+    --de-process-action-color: color-mix(in srgb, var(--de-text) 44%, transparent);
+}
+
+/* 过程流不装进卡片：外框 + 底色在对话流里就是多出来的一个矩形，而过程是叙述不是控件。
+ * 层次改由左侧时间线和文字主次承担（2026-08-19 用户要求「去掉底部的矩形」）。 */
 .thinking-simple {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
-    padding: 14px 16px;
+    padding: 2px 0 4px;
     font-size: 13px;
-    background: var(--de-bg-card);
-    border: 1px solid var(--de-border);
-    border-radius: 12px;
+    background: transparent;
+    border: 0;
     margin-bottom: 8px;
     width: 100%;
     inline-size: 100%;
@@ -16,6 +34,17 @@
     max-inline-size: 100%;
     box-sizing: border-box;
     overflow-x: hidden;
+}
+
+/* 嵌在任务卡条目下的过程时间线：没有外框、没有标题，只留步骤本身。 */
+.thinking-embedded {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+    font-size: 13px;
 }
 
 .live-activity-placeholder {
@@ -235,21 +264,24 @@
     transform: translate(-50%, -50%);
     border-radius: 50%;
     box-sizing: border-box;
-    background: var(--de-bg-card);
+    background: var(--de-bg);
     border: 1.5px solid color-mix(in srgb, var(--de-text-secondary) 60%, transparent);
     z-index: 1;
 }
 
-/* 思考 / 观察 / 判断 / 说明：空心弱节点 */
+/* 思考 / 观察 / 判断 / 说明：主线，实心节点 */
 .is-thought .step-node::after {
-    border-color: color-mix(in srgb, var(--de-text-secondary) 55%, transparent);
-    background: var(--de-bg-card);
+    background: color-mix(in srgb, var(--de-text-secondary) 62%, transparent);
+    border-color: transparent;
 }
 
-/* 工具完成：实心中性节点 */
+/* 工具完成：配角，缩一圈的空心点（背景仍要盖住连线，否则线会从点里穿过去） */
 .is-action.success .step-node::after {
-    background: var(--de-text-secondary);
-    border-color: var(--de-text-secondary);
+    width: 5px;
+    height: 5px;
+    background: var(--de-bg);
+    border-width: 1.5px;
+    border-color: color-mix(in srgb, var(--de-text-secondary) 42%, transparent);
 }
 
 /* 工具进行中：主题色旋转环 */
@@ -257,7 +289,7 @@
 .is-action.pending .step-node::after {
     border-color: var(--de-primary);
     border-top-color: transparent;
-    background: var(--de-bg-card);
+    background: var(--de-bg);
     animation: node-spin 0.7s linear infinite;
 }
 
@@ -286,97 +318,77 @@
     word-break: break-word;
 }
 
-/* ── 三类信息的视觉分型 ──
-   层级：文字输出（正式回复，面板外主色 markdown）＞ 执行（动作）＞ Agent 思考（内部推理）。
-   过程面板整体是「辅助信息」，所以思考用次要灰、执行用动作 chip，二者与正式回复明显分层。 */
+/* ── 过程流的主次 ──
+ *
+ * 真机一次「帮我做白底图」13 步里 11 步是工具动作，旧版把最重的视觉权重（chip 底色 + 正文色）
+ * 给了动作、把 Agent 的判断压成次要灰：用户读完只知道它调了哪些工具，不知道它想了什么。
+ * 现在反过来——判断是主线，动作退成一行小字，失败是唯一还需要打断阅读的动作。 */
 
-/* 执行：操作动作——工具名以轻量「动作 chip」呈现，结构上区别于思考的纯文本叙述 */
+/* 做：弱化成一行小字，不再是一块块底色矩形 */
 .is-action .step-text {
-    display: inline-block;
-    align-self: start;
+    display: block;
     max-width: 100%;
     box-sizing: border-box;
-    font-size: 12.5px;
-    line-height: 1.5;
-    font-weight: 500;
-    color: var(--de-text);
-    padding: 2px 9px;
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--de-text-secondary) 9%, transparent);
+    font-size: var(--de-process-action-size);
+    line-height: 1.55;
+    font-weight: 400;
+    color: var(--de-process-action-color);
 }
 
+/* 进行中的动作是此刻的焦点，提到「想」那一档（仍然不加底色，也不越过「说」） */
 .is-action.running .step-text,
 .is-action.pending .step-text {
-    color: var(--de-text);
-    background: var(--de-primary-dim);
+    color: var(--de-process-thought-strong);
 }
 
 .is-action.success .step-text {
-    color: var(--de-text-secondary);
-    font-weight: 400;
-    background: color-mix(in srgb, var(--de-text-secondary) 7%, transparent);
+    color: var(--de-process-action-color);
 }
 
+/* 失败：唯一保留底色的动作——出错必须跳出来，不能和成功动作一样淡 */
 .is-action.error .step-text {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 6px;
     color: var(--de-error);
-    background: color-mix(in srgb, var(--de-error) 10%, transparent);
+    background: color-mix(in srgb, var(--de-error) 12%, transparent);
 }
 
-/* Agent 思考：内部推理叙述——次要灰阶，明显弱于「文字输出」 */
+/* 连着重复的同一动作合并后的次数标记（真机常见「变换图层」连做 3 次） */
+.step-repeat {
+    flex: 0 0 auto;
+    align-self: center;
+    color: var(--de-text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 想：过程流的主线——用户要读的是它怎么想的。比「做」亮、比「说」暗，三者一眼可分。 */
 .pondering-step--reasoning {
-    padding: 6px 0;
+    padding: 7px 0;
 }
 
-.pondering-step--reasoning .step-text {
-    font-size: 13px;
-    line-height: 1.7;
-    color: var(--de-text-secondary);
-}
-
-/* Agent 观察 / 判断 / 说明：最次要的辅助灰阶 */
+.pondering-step--reasoning .step-text,
 .pondering-step--observation .step-text,
 .pondering-step--decision .step-text,
 .pondering-step--agent .step-text {
-    font-size: 12.5px;
-    line-height: 1.6;
-    color: var(--de-text-secondary);
-    opacity: 0.92;
+    font-size: var(--de-process-thought-size);
+    line-height: 1.7;
+    color: var(--de-process-thought-color);
 }
 
 .pondering-step.running .step-text {
-    color: var(--de-text);
+    color: var(--de-process-thought-strong);
 }
 
 .pondering-step.error .step-text {
     color: var(--de-error);
 }
 
-/* ── Light 主题 ── */
-[data-theme="light"] .thinking-simple {
-    background: #f8f9fa;
-    border-color: #e9ebef;
-}
-
-[data-theme="light"] .step-node::after,
-[data-theme="light"] .is-action.running .step-node::after,
-[data-theme="light"] .is-action.pending .step-node::after {
-    background: #f8f9fa;
-}
-
-[data-theme="light"] .is-action .step-text {
-    color: #1a1a1a;
-}
-
-[data-theme="light"] .is-action.success .step-text {
-    color: #6b6b6b;
-}
-
-[data-theme="light"] .pondering-step--reasoning .step-text,
-[data-theme="light"] .pondering-step--observation .step-text,
-[data-theme="light"] .pondering-step--decision .step-text,
-[data-theme="light"] .pondering-step--agent .step-text {
-    color: #5f5f5f;
-}
+/* ── Light 主题 ──
+ * 背景与文字色现已全部走主题变量（--de-bg / --de-text / --de-text-secondary），
+ * 浅色下自动成立，不再需要写死一份色值覆盖。 */
 
 /* ── 步骤结果预览（展开查看"已查看/已读取"的内容） ── */
 .step-body {
@@ -394,6 +406,11 @@
     align-items: flex-start;
     gap: 6px;
     min-width: 0;
+}
+
+/* 动作行：文字 + 次数 + 展开箭头在同一行基线上，不要让弱化后的小字被撑开 */
+.is-action .step-line {
+    align-items: center;
 }
 
 .step-line .step-text {

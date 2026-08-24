@@ -41,6 +41,9 @@ function resolveStepPresentation(status: AgentTaskPlanPresentationStepStatus): S
 
 function TaskPlanStep({ step }: { step: AgentTaskPlanPresentationStep }): React.ReactElement {
     const { Icon, label } = resolveStepPresentation(step.status);
+    // 完成/待做看图标就够了；正在做、失败、被卡这三种「需要用户理解发生了什么」的状态
+    // 把文字亮出来——只靠图标形状区分 failed/blocked 在色弱场景下读不出来。
+    const showVisibleState = step.status === 'running' || step.status === 'failed' || step.status === 'blocked';
     return (
         <li
             className={`task-plan-step task-plan-step--${step.status}`}
@@ -54,7 +57,9 @@ function TaskPlanStep({ step }: { step: AgentTaskPlanPresentationStep }): React.
                 aria-hidden="true"
             />
             <span className="task-plan-step-label">{step.label}</span>
-            <span className="task-plan-step-status sr-only">{label}</span>
+            {showVisibleState
+                ? <span className="task-plan-step-state">{label}</span>
+                : <span className="task-plan-step-status">{label}</span>}
         </li>
     );
 }

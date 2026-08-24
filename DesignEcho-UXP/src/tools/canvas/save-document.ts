@@ -1,5 +1,5 @@
 import { Tool, ToolSchema } from '../types';
-import { saveActiveDocumentWithJsx, saveDocumentViaJsx } from '../../core/jsx-bridge';
+import { saveDocumentViaJsx } from '../../core/jsx-bridge';
 import { getEntryFromPath } from '../../core/file-url';
 import { createToolFailureResult } from '../../core/tool-error-normalizer';
 import {
@@ -53,6 +53,34 @@ function detectFormat(format?: string, filePath?: string): string {
     return 'psd';
 }
 
+/** 逐级确保目录存在：已存在直接返回；缺失就从最近存在的祖先开始 createFolder。 */
+async function ensureDirectoryEntry(uxpFs: any, directoryPath: string): Promise<any> {
+    try {
+        const existing = await getEntryFromPath(uxpFs, directoryPath);
+        if (existing) return existing;
+    } catch {
+        // 不存在，往下建
+    }
+    const normalized = String(directoryPath || '').replace(/[\\/]+$/, '');
+    const slash = Math.max(normalized.lastIndexOf('\\'), normalized.lastIndexOf('/'));
+    if (slash <= 0) {
+        throw new Error(`保存目录不存在且无法创建：${directoryPath}`);
+    }
+    const parent = await ensureDirectoryEntry(uxpFs, normalized.slice(0, slash));
+    const name = normalized.slice(slash + 1);
+    try {
+        return await parent.createFolder(name);
+    } catch (error: any) {
+        try {
+            const raced = await parent.getEntry(name);
+            if (raced && raced.isFolder === true) return raced;
+        } catch {
+            // 继续抛原错误
+        }
+        throw new Error(`创建保存目录失败：${normalized}（${error?.message || error}）`);
+    }
+}
+
 async function createSaveToken(
     filePath: string,
     conflictPolicy: SaveConflictPolicy = 'overwrite',
@@ -88,7 +116,9 @@ async function createSaveToken(
         throw new Error(`Invalid save path: ${normalizedPath}`);
     }
 
-    const directoryEntry = await getEntryFromPath(uxpFs, directoryPath) as any;
+    // 目录不存在就逐级建出来（真机：新项目没有 PSD/ 子目录，色卡做完三张才在保存这步栽掉，
+    // 随后 JSX 兜底还弹出「JavaScript 代码丢失」模态框把 Photoshop 卡住）。路径是调用方定的，目录我们负责建。
+    const directoryEntry = await ensureDirectoryEntry(uxpFs, directoryPath) as any;
     let fileEntry: any;
     try {
         fileEntry = await directoryEntry.createFile(fileName, {
@@ -460,30 +490,9 @@ export class SaveDocumentTool implements Tool {
                     requestedPath
                 );
             }
-            if (conflictPolicy === 'overwrite'
-                && requestedPath
-                && (format === 'psd' || format === 'psb')) {
-                try {
-                    const saveStartedAt = Date.now();
-                    const jsxResult = await saveActiveDocumentWithJsx(requestedPath, format as 'psd' | 'psb');
-                    const editableDocumentArtifact = await readEditableDocumentArtifactProof(
-                        jsxResult.filePath,
-                        format,
-                        app.activeDocument,
-                        saveStartedAt
-                    );
-                    return {
-                        success: true,
-                        savedPath: jsxResult.filePath,
-                        format,
-                        documentId: Number(app.activeDocument?.id),
-                        editableDocumentArtifact,
-                        sourceHistoryStateRef: jsxResult.sourceHistoryStateRef
-                    };
-                } catch (jsxError) {
-                    console.warn('[SaveDocument] JSX fallback failed:', jsxError);
-                }
-            }
+            // 2026-08-19：删除 JSX 保存兜底（用户原则：兜底=上一层有问题，不是治本）。目录缺失已由
+            // ensureDirectoryEntry 在主路径解决；主路径失败就把真实错误交回，不再切通道重试（那条兜底在真机
+            // 弹出「JavaScript 代码丢失」模态框把 Photoshop 卡住）。
 
             return createToolFailureResult({
                 toolName: this.name,
@@ -818,7 +827,7 @@ export class SmartSaveTool implements Tool {
 
     schema: ToolSchema = {
         name: 'smartSave',
-        description: 'Smart save the active document. Saves silently when path exists or is provided.',
+        description: 'Create a recovery checkpoint for the active document. Final user-facing delivery must use saveDocument or an export tool.',
         parameters: {
             type: 'object',
             properties: {

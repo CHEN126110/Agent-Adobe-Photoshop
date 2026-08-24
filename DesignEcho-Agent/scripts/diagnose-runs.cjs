@@ -933,6 +933,40 @@ function printRunRecordTrace(record) {
     if (Array.isArray(record.blockers) && record.blockers.length) {
         console.log(`\n阻塞：${record.blockers.map((item) => oneLine(item, 120)).join('；')}`);
     }
+    printPromptShapeSamples(record);
+}
+
+/**
+ * 提示体量：回答「模型是不是被淹了」。每次模型调用的系统提示 / 历史 / 工具 schema 字符数与 token 数，
+ * 只在新档案（accounting.promptShapeSamples）里有；旧档案只能看 stageBuckets 平均值。
+ */
+function printPromptShapeSamples(record) {
+    const samples = record?.runtimeSession?.accounting?.promptShapeSamples;
+    if (!Array.isArray(samples) || samples.length === 0) return;
+    console.log('\n提示体量（每次模型调用；字符数 / token）：');
+    console.log('  #    阶段  系统提示   历史     工具schema  工具数  图  消息数   输入token  输出token   耗时');
+    for (const sample of samples) {
+        const cells = [
+            String(sample.seq).padStart(3),
+            String(sample.stage || '').padEnd(5),
+            String(sample.systemChars).padStart(8),
+            String(sample.historyChars).padStart(8),
+            String(sample.toolSchemaChars).padStart(11),
+            String(sample.toolCount).padStart(6),
+            String(sample.imageBlocks).padStart(3),
+            String(sample.messageCount).padStart(6),
+            String(sample.inputTokens ?? '-').padStart(10),
+            String(sample.outputTokens ?? '-').padStart(9),
+            `${sample.durationMs}ms`.padStart(8)
+        ];
+        console.log('  ' + cells.join(' '));
+    }
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const maxSystem = Math.max(...samples.map((s) => s.systemChars));
+    const maxTools = Math.max(...samples.map((s) => s.toolSchemaChars));
+    console.log(`  小结：系统提示 ${first.systemChars}→${last.systemChars} 字（峰值 ${maxSystem}），工具 schema 峰值 ${maxTools} 字，历史 ${first.historyChars}→${last.historyChars} 字。`);
+    console.log('  看法：系统提示 + 工具 schema 是每次都重发的固定开销；历史增长是 ReAct 的轮次税。哪个大就先砍哪个。');
 }
 
 function parseArgs(argv) {

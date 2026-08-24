@@ -14,6 +14,7 @@ import {
     Image as ImageIcon,
     Library,
     Lightbulb,
+    NotebookPen,
     PencilLine,
     Plus,
     RefreshCw,
@@ -53,12 +54,13 @@ import {
 } from '../services/knowledge-library.service';
 import { getMemoryService } from '../services/memory.service';
 import { useAppStore } from '../stores/app.store';
+import { DesignNotesPanel } from './DesignNotesPanel';
 import { VisualCaseView } from './DesignLearningReviewSettingsPanel';
 import { KnowledgeLearningCenter } from './KnowledgeLearningCenter';
 
 import './KnowledgeLibraryPage.css';
 
-type KnowledgeSection = 'overview' | 'library' | 'review';
+type KnowledgeSection = 'notes' | 'overview' | 'library' | 'review';
 type ManagedStatusFilter = 'all' | DesignMemoryStatus;
 type EagleAnalysisStatus = 'idle' | 'running' | 'queued' | 'error';
 type EaglePreviewStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -90,6 +92,7 @@ const SECTION_ITEMS: Array<{
     description: string;
     icon: LucideIcon;
 }> = [
+    { id: 'notes', label: '设计笔记', description: '你和 Agent 共写的知识本', icon: NotebookPen },
     { id: 'overview', label: '知识总览', description: '从素材到设计判断', icon: Lightbulb },
     { id: 'library', label: '可用知识', description: '搜索并加入任务', icon: Library },
     { id: 'review', label: '待我审核', description: '决定哪些可以复用', icon: BrainCircuit }
@@ -120,7 +123,7 @@ export function KnowledgeLibraryPage({
     onOpenEagle
 }: KnowledgeLibraryPageProps): React.ReactElement {
     const designKnowledgeSettings = useAppStore((state) => state.designKnowledgeSettings);
-    const [section, setSection] = useState<KnowledgeSection>('overview');
+    const [section, setSection] = useState<KnowledgeSection>('notes');
     const [query, setQuery] = useState('');
     const [sourceFilter, setSourceFilter] = useState<KnowledgeLibrarySearchScope | 'retired'>('all');
     const [statusFilter, setStatusFilter] = useState<ManagedStatusFilter>('active');
@@ -405,8 +408,8 @@ export function KnowledgeLibraryPage({
         <div className="knowledge-library-page" data-testid="knowledge-library-page">
             <aside className="knowledge-library-nav" aria-label="知识库栏目">
                 <div className="knowledge-library-brand">
-                    <div className="knowledge-library-brand__icon"><Lightbulb size={18} aria-hidden="true" /></div>
-                    <div><strong>设计知识</strong><span>让参考变成可复用判断</span></div>
+                    <div className="knowledge-library-brand__icon"><NotebookPen size={18} aria-hidden="true" /></div>
+                    <div><strong>设计知识</strong><span>笔记 · 检索 · 审核</span></div>
                 </div>
                 <nav>
                     {SECTION_ITEMS.map((item) => {
@@ -427,6 +430,7 @@ export function KnowledgeLibraryPage({
             </aside>
 
             <div className="knowledge-library-main">
+                {section === 'notes' && <DesignNotesPanel isActive={isActive && section === 'notes'} />}
                 {section === 'overview' && (
                     <section className="knowledge-overview" aria-labelledby="knowledge-overview-title">
                         <header className="knowledge-overview__hero">

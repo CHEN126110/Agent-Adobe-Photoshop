@@ -1,5 +1,7 @@
 # Design Agent Prompt 与 Capability 治理落地规范
 
+> **2026-08-21 补充：** 本文 P-01～P-20 的 R0–E2 映射只描述 `staged` 规格化生产。`agentic` 开放创意不以 Brief / Strategy / Plan / Evaluation 声明作为写入门票。Global System Prompt 只保留稳定身份、安全和少量跨任务原则；完整方法与 Tool schema 渐进装载。上下文总预算必须来自实际模型窗口，并先预留输出和当前 Tool schema；Provider 未声明窗口时保持 unknown。
+
 ## 1. 文档定位
 
 本文把外部 P-01～P-20 提示词方案映射到 DesignEcho 现有 Agent OS。它不是新的万能 Prompt、Prompt Registry、Workflow Runtime 或状态机，也不替代：
@@ -34,7 +36,7 @@ Harness 负责：
 - Capability 发现、解析与按阶段装载；
 - Context 信任、预算和新鲜度；
 - Tool 权限、串并行、执行和目标绑定；
-- Evidence、Evaluation、停止条件和交付事实；
+- 观察事实的生命周期、Evaluation 调度、停止条件和交付事实；Evaluation 内容与裁决仍由独立 provider /契约拥有；
 - 失败恢复、追踪、成本和审计。
 
 核心不变量：模型内容不能自动获得执行权、阶段推进权或完成权。

@@ -2,7 +2,7 @@
  * 顶部导航栏
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 
 interface HeaderProps {
     isConnected: boolean;
@@ -13,41 +13,13 @@ interface HeaderProps {
     workspaceNavigation?: React.ReactNode;
 }
 
-export const Header: React.FC<HeaderProps> = ({ 
-    isConnected, 
-    onSettingsClick, 
-    projectName, 
+export const Header: React.FC<HeaderProps> = ({
+    isConnected,
+    onSettingsClick,
+    projectName,
     onCloseProject,
-    isHome,
     workspaceNavigation
 }) => {
-    const [isUndoing, setIsUndoing] = useState(false);
-    const [isRedoing, setIsRedoing] = useState(false);
-
-    const handleUndo = async () => {
-        if (!isConnected || isUndoing) return;
-        setIsUndoing(true);
-        try {
-            await window.designEcho?.sendToPlugin('undo', {});
-        } catch (error) {
-            console.error('Undo failed:', error);
-        } finally {
-            setIsUndoing(false);
-        }
-    };
-
-    const handleRedo = async () => {
-        if (!isConnected || isRedoing) return;
-        setIsRedoing(true);
-        try {
-            await window.designEcho?.sendToPlugin('redo', {});
-        } catch (error) {
-            console.error('Redo failed:', error);
-        } finally {
-            setIsRedoing(false);
-        }
-    };
-
     return (
         <header className={`app-header ${workspaceNavigation ? 'with-workspace-tabs' : ''}`}>
             <div className="header-left">
@@ -73,34 +45,6 @@ export const Header: React.FC<HeaderProps> = ({
             {workspaceNavigation && (
                 <div className="header-workspace-navigation">
                     {workspaceNavigation}
-                </div>
-            )}
-
-            {/* 撤销/重做按钮（仅在项目模式下显示） */}
-            {!isHome && (
-                <div className="history-buttons">
-                    <button 
-                        className="history-btn" 
-                        onClick={handleUndo} 
-                        disabled={!isConnected || isUndoing}
-                        title="撤销 (Ctrl+Z)"
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M3 7v6h6" />
-                            <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
-                        </svg>
-                    </button>
-                    <button 
-                        className="history-btn" 
-                        onClick={handleRedo} 
-                        disabled={!isConnected || isRedoing}
-                        title="重做 (Ctrl+Shift+Z)"
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M21 7v6h-6" />
-                            <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7" />
-                        </svg>
-                    </button>
                 </div>
             )}
 
@@ -239,44 +183,11 @@ export const Header: React.FC<HeaderProps> = ({
                     50% { opacity: 0.3; }
                 }
 
+                /* 未连接时的下一步引导：只在 !isConnected 分支渲染，常显即可。 */
                 .connection-hint {
-                    display: none;
                     color: var(--de-text-secondary);
                     opacity: 0.7;
                     margin-left: 4px;
-                }
-
-                .history-buttons {
-                    display: none;
-                    gap: 4px;
-                    padding: 0 10px;
-                    align-items: center;
-                    flex-shrink: 0;
-                }
-
-                .history-btn {
-                    width: 28px;
-                    height: 28px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    background: transparent;
-                    border: 1px solid transparent;
-                    border-radius: 6px;
-                    color: var(--de-text);
-                    cursor: pointer;
-                    transition: all 0.2s;
-                }
-
-                .history-btn:hover:not(:disabled) {
-                    background: var(--de-primary);
-                    border-color: var(--de-primary);
-                    color: white;
-                }
-
-                .history-btn:disabled {
-                    opacity: 0.4;
-                    cursor: not-allowed;
                 }
 
                 .back-btn {

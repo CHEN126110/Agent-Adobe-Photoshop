@@ -2673,6 +2673,18 @@
                         inset 0 1px 0 rgba(255, 255, 255, 0.1);
         }
 
+        /* 停止态：换成中性的深灰而不是红色。停止是"我不等了"这种常规选择，
+           不是危险操作，用红色会让人以为按下去会破坏什么。 */
+        .btn-execute.btn-execute-stop {
+            background: linear-gradient(135deg, #4a4f57 0%, #34383e 100%);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28),
+                        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-execute.btn-execute-stop:hover:not(:disabled) {
+            background: linear-gradient(135deg, #565c65 0%, #3d4249 100%);
+        }
+
         .btn-execute:hover:not(:disabled) {
             background: linear-gradient(135deg, #0088ff 0%, #0066ff 100%);
             transform: translateY(-1px);
@@ -5244,17 +5256,12 @@
                         <button type="button" class="ai-ref-empty" id="btnImageToImageReferenceFile">
                             <span class="ai-ref-empty-icon">＋</span>
                             <span class="ai-ref-empty-main">添加参考图<span class="ai-ref-optional">可选</span></span>
-                            <span class="ai-ref-empty-sub" id="imageToImageReferenceHint">点击选择图片，或按 Ctrl+V 粘贴</span>
+                            <span class="ai-ref-empty-sub" id="imageToImageReferenceHint">点击选择图片（可多选），或按 Ctrl+V 粘贴</span>
                         </button>
-                        <div id="imageToImageReferencePreview" class="ai-ref-filled" style="display:none;">
-                            <img id="imageToImageReferenceThumb" />
-                            <div class="ai-ref-info">
-                                <div class="ai-ref-name" id="imageToImageReferenceName"></div>
-                                <div class="ai-ref-meta" id="imageToImageReferenceMeta"></div>
-                            </div>
-                            <button id="imageToImageReferenceRemove" type="button" title="移除参考图">×</button>
-                        </div>
-                        <input type="file" id="imageToImageReferenceInput" accept="image/*" style="display:none;" />
+                        <!-- 多张参考图：模型侧本来就支持（Gemini 14 张 / GPT 16 张），
+                             这里以前只存一张，等于把已有能力关在门外。每张独立可删。 -->
+                        <div id="imageToImageReferencePreview" style="display:none; flex-wrap:wrap; gap:8px;"></div>
+                        <input type="file" id="imageToImageReferenceInput" accept="image/*" multiple style="display:none;" />
                     </div>
                     <div class="ai-ref-actions">
                         <button type="button" class="ai-link-btn" id="btnImageToImageReferenceFolder">从目录挑一张</button>
@@ -5303,7 +5310,10 @@
                                 <div class="custom-dropdown-option" data-value="doubao-seedream-4-5-251128">Seedream 4.5 - 支持 4K</div>
                                 <div class="custom-dropdown-option" data-value="doubao-seedream-4-0-250828">Seedream 4.0 - 兼容 1K/2K/4K</div>
                                 <div class="custom-dropdown-option" data-value="jimeng-seedream-4-6">即梦AI 图片生成4.6 - 官方图生图</div>
-                                <div class="custom-dropdown-option" data-value="google/gemini-3-pro-image-preview-20251120">Nano Banana Pro (OpenRouter) - 旗舰 4K</div>
+                                <div class="custom-dropdown-option" data-value="google/gemini-3-pro-image-preview">Nano Banana Pro (OpenRouter) - 旗舰 4K</div>
+                                <div class="custom-dropdown-option" data-value="google/gemini-3.1-flash-image-preview">Nano Banana 2 (OpenRouter) - 支持 4K</div>
+                                <div class="custom-dropdown-option" data-value="openai/gpt-image-2">GPT Image 2 (OpenRouter) - 高质量档</div>
+                                <div class="custom-dropdown-option" data-value="openai/gpt-5.4-image-2">GPT-5.4 Image 2 (OpenRouter)</div>
                             </div>
                         </div>
                     </div>
@@ -5413,13 +5423,14 @@
                         <span class="section-label">重绘模型</span>
                     </div>
                     <div class="section-content" style="padding: 8px 14px;">
-                        <div id="inpaintingModelSelect" class="custom-dropdown" data-value="google/gemini-3-pro-image-preview-20251120" style="position: relative; width: 100%;">
+                        <div id="inpaintingModelSelect" class="custom-dropdown" data-value="google/gemini-3-pro-image-preview" style="position: relative; width: 100%;">
                             <div class="custom-dropdown-trigger" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: rgba(255,255,255,0.04); color: var(--de-text-primary); font-size: 12px; cursor: pointer; transition: border-color 0.2s;">
                                 <span class="custom-dropdown-text">Nano Banana Pro (OpenRouter) - 旗舰 4K 图像编辑</span>
                                 <span style="font-size: 9px; opacity: 0.5;">▼</span>
                             </div>
                             <div class="custom-dropdown-menu" id="inpaintingModelDropdownMenu" style="display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 120; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; background: #1a1a24; overflow-y: auto; max-height: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 200px;">
-                                <div class="custom-dropdown-option selected" data-value="google/gemini-3-pro-image-preview-20251120" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Nano Banana Pro (OpenRouter) - 旗舰 4K 图像编辑</div>
+                                <div class="custom-dropdown-option selected" data-value="google/gemini-3-pro-image-preview" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">Nano Banana Pro (OpenRouter) - 旗舰 4K 图像编辑</div>
+                                <div class="custom-dropdown-option" data-value="openai/gpt-image-2" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">GPT Image 2 (OpenRouter) - 高质量档</div>
                                 <div class="custom-dropdown-option" data-value="openai/gpt-5-image" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">GPT-5 Image (OpenRouter) - 高细节图像编辑</div>
                                 <div class="custom-dropdown-option" data-value="openai/gpt-5.4-image-2" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">GPT-5.4 Image 2 (OpenRouter) - 新版图像编辑</div>
                                 <div class="custom-dropdown-option" data-value="openai/gpt-5-image-mini" style="padding: 8px 12px; font-size: 12px; color: var(--de-text-primary); cursor: pointer; transition: background 0.15s;">GPT-5 Image Mini (OpenRouter) - 更快更省</div>
@@ -5484,6 +5495,20 @@
                 <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
                     <div id="imageToImageProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #30cfd0, #5b86e5); border-radius: 2px; transition: width 0.3s ease;"></div>
                 </div>
+                <!-- 等待模型出图期间用不确定态：这些模型 supports_streaming=false，
+                     上游一个中间事件都不给，任何"平滑增长的百分比"都是编的。
+                     流动动画只表示"还在跑"，不声称完成度；真实进度由旁边的计时给出。 -->
+                <style>
+                    #imageToImageProgressBar.de-progress-indeterminate {
+                        width: 35% !important;
+                        transition: none;
+                        animation: deIndeterminateSlide 1.4s ease-in-out infinite;
+                    }
+                    @keyframes deIndeterminateSlide {
+                        0%   { transform: translateX(-100%); }
+                        100% { transform: translateX(320%); }
+                    }
+                </style>
                 <div id="imageToImageProgressDetail" style="display: none; margin-top: 6px; font-size: 11px; color: var(--de-text-secondary); line-height: 1.5;"></div>
             </div>
             <div id="imageToImageFeedback" style="display: none; margin: 6px 0; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03);">
@@ -5493,9 +5518,12 @@
             <!-- 置入不再需要一个独立按钮：点结果图就是置入。
                  少一次点击，也少一个"选了却忘了确认"的状态。 -->
             <div style="display: flex; gap: 10px;">
+                <!-- 同一个按钮承担"开始"和"停止"：生成期间原本只是 disabled，
+                     而 4K 要等好几分钟，一个灰掉的按钮等于告诉用户"你什么都做不了"。
+                     图标与文字在 setImageToImageState 里按状态切换。 -->
                 <button class="btn-execute" id="btnImageToImageGenerate" style="flex: 1;">
-                    <span class="btn-icon">✨</span>
-                    <span>开始生成</span>
+                    <span class="btn-icon" id="btnImageToImageGenerateIcon">✨</span>
+                    <span id="btnImageToImageGenerateLabel">开始生成</span>
                 </button>
             </div>
             </div>
@@ -5863,7 +5891,7 @@
                     optimizeTextApplyingIndex = null;
                     clearOptimizeApplyWatchdog();
                     renderOptimizeTextCandidates(data);
-                    // 如实回显本轮真正执行的模型（跟随主模型时也能看到落到了谁头上）
+                    // 如实回显本轮真正执行的统一 Agent 模型。
                     if (data?.modelUsed?.name) {
                         const modelHintEl = document.getElementById('optimizeModelHint');
                         if (modelHintEl) {
@@ -5969,9 +5997,21 @@
                         updateImageToImageProgress(data.progress || 0, data.message || '处理中...', data.stage || '');
                     }
                     break;
+                case 'imageToImageCanceled':
+                    // 主动停止不是故障，不进错误卡片（红框会让人以为出了问题）
+                    showImageToImageProgress(false);
+                    renderImageToImageCandidatePlaceholders('idle');
+                    setImageToImageState('ready', '已停止，可重新生成');
+                    break;
                 case 'imageToImageError':
                     showImageToImageProgress(false);
                     imageToImageApplyInFlight = false;
+                    // 用户主动停止时 Agent 也会回一个失败，但那不该显示成红色报错
+                    if (data.errorStage === 'provider-canceled') {
+                        renderImageToImageCandidatePlaceholders('idle');
+                        setImageToImageState('ready', '已停止，可重新生成');
+                        break;
+                    }
                     showImageToImageFeedback(
                         'error',
                         data.message || '图生图请求失败',
@@ -6272,9 +6312,12 @@
             meta: null
         };
         let imageToImageState = 'idle';
-        let imageToImageReferenceDataUrl = '';
-        let imageToImageReferenceName = '';
-        let imageToImageReferenceSource = '';
+        /**
+         * 参考图列表。模型侧一直支持多张（images API 的 input_references：
+         * Gemini 到 14 张、GPT 到 16 张），面板此前只留了一个单数变量，
+         * 于是能力被卡在界面这一层。改成数组，上限按当前模型取。
+         */
+        let imageToImageReferences = [];
         let imageToImageReferenceDirectory = '';
         const IMAGE_TO_IMAGE_MODEL_CAPABILITIES = {
             'doubao-seedream-5-0-260128': {
@@ -6309,32 +6352,56 @@
                 supportedSizes: ['1K', '2K', '4K'],
                 sizeHint: '官方图生图走 image_urls 输入，建议先在设置中配置 TOS 公网桶'
             },
-            // 旗舰入口用钉死日期的快照 ID：GA alias 已漂到 20260528 快照丢了 4K，
-            // OpenRouter 的 400 报文自己把 20251120 快照列入 4K 白名单——钉死它就不会再漂。
-            // 下面两个 alias 条目仅作旧持久化选择的兜底展示。
-            'google/gemini-3-pro-image-preview-20251120': {
+            // 档位取值来自图像 API 的 supported_parameters（/api/v1/images/models）。
+            // 模型 id 用不带日期后缀的写法：带日期的不是 OpenRouter 的模型 id，而是条目创建
+            // 日期 / Google 上游快照名。分辨率走图像 API 顶层 resolution，不是 chat 路径的
+            // image_config.image_size（那是 Google 原生字段名，档位因此从未生效）。
+            'google/gemini-3-pro-image-preview': {
                 label: 'Nano Banana Pro (OpenRouter) - 旗舰 4K',
                 defaultSize: '2K',
                 supportedSizes: ['1K', '2K', '4K'],
-                // 档位比例模型：比例走 image_config.aspect_ratio 直发，本地不做像素换算
+                // 档位比例模型：比例走图像 API 的顶层 aspect_ratio 直发，本地不做像素换算
                 aspectRatioTier: true,
                 sizeHint: '走 OpenRouter 平台，需在 Agent 设置中配置 OpenRouter API Key'
             },
-            'google/gemini-3-pro-image-preview': {
-                label: 'Nano Banana Pro preview (OpenRouter)',
+            'google/gemini-3.1-flash-image-preview': {
+                label: 'Nano Banana 2 (OpenRouter) - 支持 4K',
                 defaultSize: '2K',
                 supportedSizes: ['1K', '2K', '4K'],
                 aspectRatioTier: true,
-                sizeHint: '旧别名（会随平台漂移），建议改用上面的旗舰 4K 快照'
+                sizeHint: 'Gemini 3.1 Flash Image，比 Pro 快，同样支持 4K 档位'
             },
-            // GA alias（gemini-3-pro-image → 20260528 快照）同价但 4K 被拒，
-            // 仅作旧持久化选择的兜底展示
             'google/gemini-3-pro-image': {
-                label: 'Gemini 3 Pro Image (OpenRouter)',
+                label: 'Gemini 3 Pro Image GA (OpenRouter)',
                 defaultSize: '2K',
-                supportedSizes: ['1K', '2K'],
+                supportedSizes: ['1K', '2K', '4K'],
                 aspectRatioTier: true,
-                sizeHint: 'GA 快照只支持 1K / 2K，4K 请改用旗舰快照'
+                sizeHint: 'GA 条目，图像 API 声明支持 1K/2K/4K'
+            },
+            'google/gemini-3.1-flash-image': {
+                label: 'Nano Banana 2 GA (OpenRouter)',
+                defaultSize: '2K',
+                supportedSizes: ['1K', '2K', '4K'],
+                aspectRatioTier: true,
+                sizeHint: 'GA 条目，图像 API 声明支持 1K/2K/4K'
+            },
+            // OpenAI 系图像模型：能力形态与 Gemini 系差别很大，如实标注不硬凑。
+            // 它们**没有 1K/2K/4K 档位**（images API 的 supported_parameters 不声明
+            // resolution，输出尺寸由模型自己定），但支持 quality=high、一次请求最多 10 张、
+            // 最多 16 张参考图，且实测返回**无损 PNG**（Gemini 返回的是 4:2:0 有损 JPEG）。
+            'openai/gpt-image-2': {
+                label: 'GPT Image 2 (OpenRouter) - 高质量档',
+                defaultSize: '2K',
+                supportedSizes: ['2K'],
+                aspectRatioTier: true,
+                sizeHint: '按 high 质量档出图，尺寸由模型决定（没有档位可选）；返回无损 PNG，一次可出多张'
+            },
+            'openai/gpt-5.4-image-2': {
+                label: 'GPT-5.4 Image 2 (OpenRouter)',
+                defaultSize: '2K',
+                supportedSizes: ['2K'],
+                aspectRatioTier: true,
+                sizeHint: '同为 high 质量档，尺寸由模型决定；返回无损 PNG'
             }
         };
         const IMAGE_TO_IMAGE_SIZE_LABELS = {
@@ -7143,7 +7210,7 @@
             'doubao-seedream-4-0-250828': { min: 921600, max: 16777216, sequential: true, parallel: true },
             'jimeng-seedream-4-6': { min: 0, max: 0, sequential: false, parallel: false },
             // Gemini 按 aspect_ratio + image_size 档位出图，无像素区间；单图模型，张数锁 1
-            'google/gemini-3-pro-image-preview-20251120': { min: 0, max: 0, sequential: false, parallel: false },
+            'google/gemini-3-pro-image-preview': { min: 0, max: 0, sequential: false, parallel: false },
             'google/gemini-3-pro-image-preview': { min: 0, max: 0, sequential: false, parallel: false },
             'google/gemini-3-pro-image': { min: 0, max: 0, sequential: false, parallel: false }
         };
@@ -7336,7 +7403,15 @@
             if (aspectRatioTier) {
                 const tierRatioLabel = ratioKey === 'auto' ? '跟随源图比例' : ratioKey;
                 if (ratioHintEl) ratioHintEl.textContent = '';
-                if (summaryEl) summaryEl.textContent = sizePreset + ' 档位 · ' + tierRatioLabel + '，具体宽高由模型判断';
+                if (summaryEl) {
+                    // 4K 实测要跑好几分钟（会先做一遍思考过程，输出像素又是 2K 的四倍），
+                    // 不说清楚就会被当成卡死而中途取消——那次调用的钱已经花了。
+                    const slowTierNote = sizePreset === '4K'
+                        ? '；4K 需要数分钟，请勿中途取消'
+                        : '';
+                    summaryEl.textContent = sizePreset + ' 档位 · ' + tierRatioLabel
+                        + '，具体宽高由模型判断' + slowTierNote;
+                }
                 refreshAiImageCountAvailability();
                 return;
             }
@@ -7417,8 +7492,19 @@
             imageToImageState = nextState;
             const statusEl = document.getElementById('imageToImageStatus');
             const generateBtn = document.getElementById('btnImageToImageGenerate');
+            const iconEl = document.getElementById('btnImageToImageGenerateIcon');
+            const labelEl = document.getElementById('btnImageToImageGenerateLabel');
             if (statusEl && statusText) statusEl.textContent = statusText;
-            if (generateBtn) generateBtn.disabled = nextState === 'generating' || !currentImageToImageData.hasSelectedLayer;
+
+            // 生成期间按钮改成"停止生成"而不是灰掉：4K 要等好几分钟，
+            // 期间唯一合理的操作就是放弃这次，一个 disabled 的按钮把这条路也堵了。
+            const isGenerating = nextState === 'generating';
+            if (generateBtn) {
+                generateBtn.disabled = !isGenerating && !currentImageToImageData.hasSelectedLayer;
+                generateBtn.classList.toggle('btn-execute-stop', isGenerating);
+            }
+            if (iconEl) iconEl.textContent = isGenerating ? '■' : '✨';
+            if (labelEl) labelEl.textContent = isGenerating ? '停止生成' : '开始生成';
         }
 
         /** 与局部重绘同理：置入是异步的，期间要挡住重复点击 */
@@ -7491,41 +7577,113 @@
             imageToImageReferenceDirectory = '';
         }
 
+        /** 当前模型能收几张参考图。发超了会被上游直接拒，所以在加的时候就挡住。 */
+        function getImageToImageReferenceLimit() {
+            const model = aiImageMode === 'inpaint'
+                ? (document.getElementById('inpaintingModelSelect')?.dataset?.value || '')
+                : getImageToImageSelectedModel();
+            if (model.startsWith('openai/')) return 16;
+            if (model.startsWith('google/gemini')) return 14;
+            return 1;
+        }
+
         function updateImageToImageReferencePreview() {
             const preview = document.getElementById('imageToImageReferencePreview');
             const empty = document.getElementById('btnImageToImageReferenceFile');
-            const thumb = document.getElementById('imageToImageReferenceThumb');
-            const meta = document.getElementById('imageToImageReferenceMeta');
-            const nameEl = document.getElementById('imageToImageReferenceName');
-            if (!preview || !thumb || !meta) return;
+            if (!preview) return;
 
             // 空态与有图态互斥：共用同一个方框位置，切换时下方内容不会跳动
-            if (!imageToImageReferenceDataUrl) {
+            if (imageToImageReferences.length === 0) {
                 preview.style.display = 'none';
+                preview.innerHTML = '';
                 if (empty) empty.style.display = 'flex';
-                thumb.removeAttribute('src');
-                meta.textContent = '';
-                if (nameEl) nameEl.textContent = '';
                 return;
             }
 
-            thumb.src = imageToImageReferenceDataUrl;
-            // 文件名单独一行、来源作次要信息，比挤成一行更好扫读
-            if (nameEl) nameEl.textContent = imageToImageReferenceName || '已添加参考图';
-            meta.textContent = imageToImageReferenceSource ? `来自${imageToImageReferenceSource}` : '';
+            preview.innerHTML = '';
+            imageToImageReferences.forEach((ref, index) => {
+                const card = document.createElement('div');
+                card.className = 'ai-ref-filled';
+                card.style.cssText = 'position:relative; width:92px;';
+
+                const img = document.createElement('img');
+                img.src = ref.dataUrl;
+                img.style.cssText = 'width:92px; height:92px; object-fit:cover; border-radius:8px; display:block;';
+                card.appendChild(img);
+
+                const name = document.createElement('div');
+                name.className = 'ai-ref-name';
+                name.textContent = ref.name || `参考图 ${index + 1}`;
+                name.style.cssText = 'font-size:10px; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                card.appendChild(name);
+
+                // 每张单独可删：加错一张不该逼用户把整组清空重来
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.title = '移除这张参考图';
+                remove.textContent = '×';
+                remove.style.cssText = 'position:absolute; top:2px; right:2px; width:18px; height:18px; line-height:16px;'
+                    + 'border-radius:9px; border:none; background:rgba(0,0,0,0.6); color:#fff; cursor:pointer; font-size:12px; padding:0;';
+                remove.addEventListener('click', () => removeImageToImageReference(index));
+                card.appendChild(remove);
+
+                preview.appendChild(card);
+            });
+
             preview.style.display = 'flex';
-            if (empty) empty.style.display = 'none';
+            // 还没到上限就把"添加"入口继续留着，不然加完第一张就没法再加
+            if (empty) empty.style.display = imageToImageReferences.length < getImageToImageReferenceLimit() ? 'flex' : 'none';
+        }
+
+        /**
+         * 把一批文件加成参考图。选择 / 拖入 / 粘贴三条路径共用。
+         *
+         * 三条路径原先各写了一遍读文件逻辑，而且都只取第一张——
+         * 于是"支持多张"这件事在选择那条路改完之后，另外两条依然只收一张。
+         * 收拢成一处，多张能力才对所有入口一致生效。
+         */
+        function addImageToImageReferenceFiles(files, sourceLabel) {
+            const list = Array.from(files || []).filter((file) => /^image\//i.test(file?.type || ''));
+            if (list.length === 0) {
+                showToast('只支持图片文件', 'warning');
+                return;
+            }
+            list.forEach((file) => {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const dataUrl = String(ev?.target?.result || '');
+                    if (!dataUrl) {
+                        showToast(`读取「${file.name || '图片'}」失败`, 'error');
+                        return;
+                    }
+                    setImageToImageReference(dataUrl, file.name || 'reference.png', sourceLabel);
+                };
+                reader.onerror = () => showToast(`读取「${file.name || '图片'}」失败`, 'error');
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function removeImageToImageReference(index) {
+            imageToImageReferences.splice(index, 1);
+            updateImageToImageReferencePreview();
+            refreshAiImageReferenceNote();
         }
 
         /** 局部重绘里能吃参考图的重绘模型。其余走的是官方蒙版接口，没有多图输入位 */
         // 能吃多图输入的重绘模型才用得上参考图；即梦走官方蒙版接口，没有多图输入位
+        // 与 Agent 侧 inpainting-service 的 OPENROUTER_MODELS 对齐。
+        // 原先这里 Nano Banana Pro preview 写了两遍、且漏了 gpt-image-2 与 Flash 系——
+        // 漏一个的后果是：用户选了那个模型传参考图，界面会说"本次不会生效"，
+        // 而实际上它是支持的。
         const INPAINTING_MODELS_WITH_REFERENCE_SUPPORT = [
-            'google/gemini-3-pro-image-preview-20251120',
             'google/gemini-3-pro-image-preview',
             'google/gemini-3-pro-image',
+            'google/gemini-3.1-flash-image-preview',
+            'google/gemini-3.1-flash-image',
+            'openai/gpt-image-2',
+            'openai/gpt-5.4-image-2',
             'openai/gpt-5-image',
-            'openai/gpt-5-image-mini',
-            'openai/gpt-5.4-image-2'
+            'openai/gpt-5-image-mini'
         ];
 
         /**
@@ -7536,7 +7694,7 @@
             const note = document.getElementById('aiImageReferenceModelNote');
             if (!note) return;
 
-            if (aiImageMode !== 'inpaint' || !imageToImageReferenceDataUrl) {
+            if (aiImageMode !== 'inpaint' || imageToImageReferences.length === 0) {
                 note.style.display = 'none';
                 note.textContent = '';
                 return;
@@ -7547,14 +7705,12 @@
             note.style.display = 'block';
             note.style.color = supported ? 'var(--de-text-secondary)' : '#ffb454';
             note.textContent = supported
-                ? '本次重绘会带上这张参考图，模型会按它来还原主体的款式、材质和配色。'
-                : '当前重绘模型不支持参考图，这张图本次不会生效。换成 Nano Banana Pro 或 GPT Image 系列才会生效。';
+                ? `本次重绘会带上这 ${imageToImageReferences.length} 张参考图，模型会按它们来还原主体的款式、材质和配色。`
+                : '当前重绘模型不支持参考图，这些图本次不会生效。换成 Nano Banana Pro 或 GPT Image 系列才会生效。';
         }
 
         function clearImageToImageReference(options = {}) {
-            imageToImageReferenceDataUrl = '';
-            imageToImageReferenceName = '';
-            imageToImageReferenceSource = '';
+            imageToImageReferences = [];
             if (!options.preserveFolderPicker) {
                 resetImageToImageReferenceFolderPicker();
             }
@@ -7562,10 +7718,23 @@
             refreshAiImageReferenceNote();
         }
 
+        /** 追加一张参考图。同一张（同 dataUrl）不重复加，超上限如实拒绝并说清上限是多少。 */
         function setImageToImageReference(dataUrl, fileName, sourceLabel, options = {}) {
-            imageToImageReferenceDataUrl = dataUrl;
-            imageToImageReferenceName = fileName || '';
-            imageToImageReferenceSource = sourceLabel || '参考图';
+            if (!dataUrl) return;
+            const limit = getImageToImageReferenceLimit();
+            if (imageToImageReferences.some((ref) => ref.dataUrl === dataUrl)) {
+                showToast('这张参考图已经加过了', 'warning');
+                return;
+            }
+            if (imageToImageReferences.length >= limit) {
+                showToast(`当前模型最多支持 ${limit} 张参考图`, 'warning');
+                return;
+            }
+            imageToImageReferences.push({
+                dataUrl,
+                name: fileName || '',
+                source: sourceLabel || '参考图'
+            });
             if (!options.preserveFolderPicker) {
                 resetImageToImageReferenceFolderPicker();
             }
@@ -7690,25 +7859,16 @@
 
         async function handleImageToImageReferencePaste(event) {
             if (!document.getElementById('pageImageToImage')?.classList.contains('active')) return;
+            // 剪贴板里可能有多张图，全部收下而不是只拿第一张
             const items = Array.from(event.clipboardData?.items || []);
-            const imageItem = items.find((item) => item.type && item.type.startsWith('image/'));
-            if (!imageItem) return;
-
-            const file = imageItem.getAsFile();
-            if (!file) return;
+            const files = items
+                .filter((item) => item.type && item.type.startsWith('image/'))
+                .map((item) => item.getAsFile())
+                .filter(Boolean);
+            if (files.length === 0) return;
             event.preventDefault();
-
-            const reader = new FileReader();
-            reader.onload = function(ev) {
-                const dataUrl = String(ev?.target?.result || '');
-                if (!dataUrl) {
-                    showToast('粘贴参考图失败', 'error');
-                    return;
-                }
-                setImageToImageReference(dataUrl, file.name || 'clipboard-image.png', '剪贴板');
-                showToast('已粘贴效果参考图', 'success');
-            };
-            reader.readAsDataURL(file);
+            addImageToImageReferenceFiles(files, '剪贴板');
+            showToast(files.length > 1 ? `已粘贴 ${files.length} 张参考图` : '已粘贴效果参考图', 'success');
         }
 
         function handleImageToImageData(data) {
@@ -7784,15 +7944,20 @@
                 promptEl.value = '';
             }
 
-            // 换目标图层意味着现有候选已经过期，可以清掉；但"置入某一张"本身也会让
-            // Photoshop 选中新建的结果图层，那不是换目标。UXP 侧已判明这次变化是否仍在本批候选内
-            // （源图层或刚置入的结果图层），属于本批就必须留着——同批其余的图都是按次计费生成的，
-            // 清掉就只能重新花钱生成一遍。
+            // 生成结果**只在用户重新生成时**才重置，切换图层 / 切换文档一律保留。
+            //
+            // 这里原本会在"选中变化且不属于本批候选"时清空候选区，本意是防止用户换了目标之后
+            // 把旧候选置入到新位置。但代价太大：候选是按次计费生成的，而切到别的文档对照原图、
+            // 点开别的图层看一眼，都是看图时最自然的动作，一清就只能重新花钱生成一遍。
+            //
+            // 改成按仓库既有原则处理——**约束放在执行点，不靠提前预判**：候选一直留着，
+            // 真正的错位风险在"置入"这一步由 UXP 侧校验文档归属（见 handleImageToImageApplySelection），
+            // 不匹配时明确拒绝并告知要切回哪个文档，而不是先把结果毁掉来避免出错。
             const belongsToCandidateRun = data.belongsToCandidateRun === true;
 
             if (clearResult && selectionChanged && !belongsToCandidateRun) {
-                renderImageToImageCandidatePlaceholders('idle');
-                currentImageToImageData.meta = null;
+                // 只收掉与"当前选中"绑定的瞬时 UI：上一次的报错提示和进度条不该跟着新目标继续显示。
+                // 候选缩略图与其 meta 都保留。
                 hideImageToImageFeedback();
                 showImageToImageProgress(false);
             }
@@ -7899,6 +8064,9 @@
                 }
             }
 
+            // 结果已经在下面显示了，进度区必须收起——否则会停在 96% 的"正在准备"，
+            // 和旁边"已生成"的卡片自相矛盾，用户不知道到底完没完。
+            showImageToImageProgress(false);
             setImageToImageState('generated', list.length > 1
                 ? '生成完成，点哪张就置入哪张'
                 : '生成完成，点结果图即可置入');
@@ -8047,15 +8215,15 @@
                 'analyze-selection': '正在读取并分析 Photoshop 当前选区。',
                 'crop-region': '正在准备局部重绘区域。',
                 'submit-model': '正在把重绘请求提交给模型。',
-                'provider-auth': '正在检查即梦 AI 的鉴权配置。',
-                'provider-submit': '模型服务已接收请求，正在创建任务。',
-                'provider-queued': '模型任务已创建，正在排队等待执行。',
-                'provider-generating': '模型正在进行局部重绘。',
-                'provider-query': '正在查询模型任务状态。',
-                'provider-ready': '模型已返回结果，正在解析图片。',
-                'provider-download': '正在下载模型生成结果。',
-                'provider-result': '模型返回了异常结果，请调整描述或重试。',
-                'provider-timeout': '模型处理超时，请稍后再试。',
+                'provider-auth': '正在检查即梦 AI 有没有配置好。',
+                'provider-submit': '模型已收到请求，正在准备开始。',
+                'provider-queued': '正在排队，等模型腾出手来。',
+                'provider-generating': '模型正在重绘选中的区域。',
+                'provider-query': '正在等模型画完。',
+                'provider-ready': '模型已经出图，正在取回。',
+                'provider-download': '正在取回生成好的图片。',
+                'provider-result': '模型这次没给出能用的图，换个说法再试一次。',
+                'provider-timeout': '等得太久了，模型没能及时出图，稍后再试。',
                 'composite': '正在合成重绘结果。',
                 'encode-result': '正在准备回传结果。',
                 'transfer-result': '正在把结果传回 Photoshop。',
@@ -8123,6 +8291,9 @@
             const container = document.getElementById('imageToImageProgressContainer');
             if (container) container.style.display = visible ? 'block' : 'none';
             if (!visible) {
+                // 进度区一收起就必须停掉等待计时：无论这轮是成功、失败还是被取消，
+                // 留着它会继续每秒改一个看不见的元素，而且下一轮会读到上一轮的起始时间。
+                stopImageToImageWaitTicker();
                 const detailEl = document.getElementById('imageToImageProgressDetail');
                 if (detailEl) {
                     detailEl.style.display = 'none';
@@ -8132,14 +8303,83 @@
             syncMorphFooterSpacing();
         }
 
+        /**
+         * 等待模型出图这一段的真实反馈。
+         *
+         * 这些模型 `supports_streaming: false`——一次 POST 出去，上游到返回图片之前
+         * 不给任何中间事件。所以"真实生成进度"是拿不到的，硬编一个平滑增长的百分比
+         * 只是在骗人：4K 实测要跑几分钟，进度条停在 46% 会被当成卡死而中途取消，
+         * 而那次调用的钱已经花掉了。
+         *
+         * 能给的真话只有两样：**已经等了多久**（本地计时，准确）和**通常要多久**
+         * （基于真机实测：2K 约 45 秒，4K 数分钟）。百分比在这一段反而是噪音，
+         * 因为它暗示的是完成度，而完成度我们不知道——所以换成计时。
+         */
+        let imageToImageWaitTicker = null;
+        let imageToImageWaitStartedAt = 0;
+        let imageToImageWaitExpectation = '';
+
+        function formatElapsedClock(ms) {
+            const total = Math.max(0, Math.floor(ms / 1000));
+            const mm = Math.floor(total / 60);
+            const ss = total % 60;
+            return mm > 0 ? mm + ' 分 ' + String(ss).padStart(2, '0') + ' 秒' : ss + ' 秒';
+        }
+
+        function startImageToImageWaitTicker() {
+            stopImageToImageWaitTicker();
+
+            const sizePreset = document.getElementById('imageToImageSizePresetSelect')?.dataset?.value || '';
+            // 预期区间来自真机实测，不是估的：2K 一次 45 秒返回，4K 一次 300 秒未返回
+            imageToImageWaitExpectation = String(sizePreset).toUpperCase() === '4K'
+                ? '4K 通常需要 3-8 分钟'
+                : '通常 1 分钟内';
+            imageToImageWaitStartedAt = Date.now();
+
+            const barEl = document.getElementById('imageToImageProgressBar');
+            if (barEl) barEl.classList.add('de-progress-indeterminate');
+
+            const tick = () => {
+                const percentEl = document.getElementById('imageToImageProgressPercent');
+                const msgEl = document.getElementById('imageToImageProgressMsg');
+                if (percentEl) percentEl.textContent = '已等待 ' + formatElapsedClock(Date.now() - imageToImageWaitStartedAt);
+                if (msgEl) msgEl.textContent = '模型正在出图 · ' + imageToImageWaitExpectation;
+            };
+            tick();
+            imageToImageWaitTicker = setInterval(tick, 1000);
+        }
+
+        function stopImageToImageWaitTicker() {
+            if (imageToImageWaitTicker) {
+                clearInterval(imageToImageWaitTicker);
+                imageToImageWaitTicker = null;
+            }
+            const barEl = document.getElementById('imageToImageProgressBar');
+            if (barEl) barEl.classList.remove('de-progress-indeterminate');
+        }
+
         function updateImageToImageProgress(percent, message, stage) {
             const msgEl = document.getElementById('imageToImageProgressMsg');
             const percentEl = document.getElementById('imageToImageProgressPercent');
             const barEl = document.getElementById('imageToImageProgressBar');
             const detailEl = document.getElementById('imageToImageProgressDetail');
-            if (msgEl && message) msgEl.textContent = message;
-            if (percentEl) percentEl.textContent = Math.round(percent) + '%';
-            if (barEl) barEl.style.width = Math.round(percent) + '%';
+
+            // 提交之后进入"等模型"的不确定态；上游一返回（下载/解析/落盘）就切回真实百分比
+            const isWaitingOnModel = stage === 'provider-submit'
+                || stage === 'provider-request'
+                || stage === 'provider-waiting';
+            if (isWaitingOnModel) {
+                if (!imageToImageWaitTicker) startImageToImageWaitTicker();
+            } else {
+                stopImageToImageWaitTicker();
+            }
+
+            if (!isWaitingOnModel) {
+                if (msgEl && message) msgEl.textContent = message;
+                if (percentEl) percentEl.textContent = Math.round(percent) + '%';
+                if (barEl) barEl.style.width = Math.round(percent) + '%';
+            }
+
             if (detailEl) {
                 detailEl.textContent = formatImageToImageStage(stage);
                 detailEl.style.display = detailEl.textContent ? 'block' : 'none';
@@ -8148,19 +8388,24 @@
 
         function formatImageToImageStage(stage) {
             const stageMap = {
-                'validate-source-layer': '请先在 Photoshop 中选中一个要编辑的单图层。',
-                'capture-source-layer': '正在导出当前选中图层作为参考图。',
-                'provider-auth': '正在检查图生图服务配置。',
-                'provider-validate': '正在整理请求参数并校验输入内容。',
-                'provider-upload': '正在把输入图上传到 TOS，供即梦 4.6 官方接口读取。',
-                'provider-submit': '正在把请求提交给模型服务。',
-                'provider-request': '模型服务正在处理当前请求。',
-                'provider-waiting': '模型已经收到请求，正在生成结果。',
-                'provider-download': '模型已返回结果地址，正在下载图片。',
-                'provider-ready': '正在解析模型结果。',
-                'prepare-result-file': '正在准备本地结果文件，稍后会自动回到 Photoshop。',
-                'apply-result': '正在把结果放到 Photoshop 新图层。',
-                'done': '图生图流程已完成。'
+                // 文案只讲"现在到哪一步了、要不要等"，不讲系统内部在做什么。
+                // 用户是设计师，"请求参数""结果地址""解析"这类词对他没有信息量，
+                // 只会让一次正常的等待看起来像出了问题。
+                'validate-source-layer': '请先在 Photoshop 里选中一个要改的图层。',
+                'capture-source-layer': '正在读取选中图层的画面。',
+                'provider-auth': '正在检查生图服务有没有配置好。',
+                'provider-validate': '正在准备这次生成要用的内容。',
+                'provider-upload': '正在上传原图（即梦 4.6 需要先把图放到图床）。',
+                // 下面三个都处在"已经交出去、等图回来"的窗口里，中间拿不到进度，
+                // 所以只说清在等什么，不假装知道快好了——真实等待时长由上方计时给出。
+                'provider-submit': '已经交给模型出图了。出图完成前拿不到中间进度，所以上面显示的是已经等了多久。',
+                'provider-request': '模型正在出图，请保持面板打开。',
+                'provider-waiting': '模型已经开始出图了。',
+                'provider-download': '模型出图完成，正在取回图片。',
+                'provider-ready': '图片已经拿到，正在处理。',
+                'prepare-result-file': '正在准备结果图，马上就能在下面挑。',
+                'apply-result': '正在把选中的结果放进新图层。',
+                'done': '完成。'
             };
             return stageMap[stage] || '';
         }
@@ -10097,13 +10342,21 @@
                 await selectImageToImageReferenceFile();
             });
 
-            document.getElementById('btnImageToImageReferenceFolder')?.addEventListener('click', async () => {
-                await selectImageToImageReferenceFolder();
-            });
-
-            document.getElementById('imageToImageReferenceRemove')?.addEventListener('click', () => {
-                clearImageToImageReference();
-            });
+            // 从目录挑图依赖 Electron 的 selectFolder/readDirectory，UXP webview 里没有这两个能力。
+            // 以前是照常显示、点了才弹"当前环境不支持"——那等于把一个永远点不动的按钮摆在那儿。
+            // 环境不支持就直接不显示：入口存在本身就是一种承诺。
+            const folderBtn = document.getElementById('btnImageToImageReferenceFolder');
+            const supportsFolderPick = !!(window.electronAPI?.selectFolder && window.electronAPI?.readDirectory);
+            if (folderBtn) {
+                if (supportsFolderPick) {
+                    folderBtn.textContent = '从目录挑图';
+                    folderBtn.addEventListener('click', async () => {
+                        await selectImageToImageReferenceFolder();
+                    });
+                } else {
+                    folderBtn.style.display = 'none';
+                }
+            }
 
             // 拖入图片作为增强能力：UXP webview 是否放行系统拖拽无法在此确认，
             // 所以界面文案不承诺"拖入"，只在环境支持时白赚一个更顺手的入口。
@@ -10120,34 +10373,17 @@
                 zone.addEventListener('drop', (e) => {
                     e.preventDefault();
                     setHover(false);
-                    const file = e.dataTransfer?.files?.[0];
-                    if (!file) return;
-                    if (!/^image\//i.test(file.type || '')) {
-                        showToast('只支持拖入图片文件', 'warning');
-                        return;
-                    }
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        setImageToImageReference(String(reader.result || ''), file.name, '拖入的文件');
-                    };
-                    reader.onerror = () => showToast('读取拖入的图片失败', 'error');
-                    reader.readAsDataURL(file);
+                    // 一次拖入多张就全部收下，不再只取第一张
+                    const files = e.dataTransfer?.files;
+                    if (!files || files.length === 0) return;
+                    addImageToImageReferenceFiles(files, '拖入的文件');
                 });
             })();
 
             document.getElementById('imageToImageReferenceInput')?.addEventListener('change', function(e) {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = function(ev) {
-                    const dataUrl = String(ev?.target?.result || '');
-                    if (!dataUrl) {
-                        showToast('读取参考图失败', 'error');
-                        return;
-                    }
-                    setImageToImageReference(dataUrl, file.name || 'reference.png', '本地文件');
-                };
-                reader.readAsDataURL(file);
+                // input 已带 multiple，一次可选多张
+                if (!e.target.files || e.target.files.length === 0) return;
+                addImageToImageReferenceFiles(e.target.files, '本地文件');
                 e.target.value = '';
             });
 
@@ -10156,7 +10392,7 @@
             // 局部重绘 - 生成
             document.getElementById('btnInpaintingGenerate')?.addEventListener('click', () => {
                 const prompt = document.getElementById('inpaintingPrompt').value;
-                const selectedModel = document.getElementById('inpaintingModelSelect')?.dataset?.value || 'google/gemini-3-pro-image-preview-20251120';
+                const selectedModel = document.getElementById('inpaintingModelSelect')?.dataset?.value || 'google/gemini-3-pro-image-preview';
                 const variantCount = getSelectedInpaintingCount();
 
                 hideInpaintingFeedback();
@@ -10172,12 +10408,21 @@
                     // 候选变体数：同一选区并行生成 N 次，N > 1 时按生成次数计费（面板已提示）
                     count: variantCount,
                     // 参考图告诉模型"要哪一只袜子"——光靠文字描述它只能按训练先验猜
-                    referenceImages: imageToImageReferenceDataUrl ? [imageToImageReferenceDataUrl] : [],
+                    referenceImages: imageToImageReferences.map((ref) => ref.dataUrl),
                     documentMeta: currentInpaintingData.documentMeta || null
                 });
             });
 
             document.getElementById('btnImageToImageGenerate')?.addEventListener('click', () => {
+                // 生成期间这个按钮是"停止生成"
+                if (imageToImageState === 'generating') {
+                    sendToUXP('imageToImageCancel', {});
+                    setImageToImageState('ready', '已停止，可重新生成');
+                    showImageToImageProgress(false);
+                    renderImageToImageCandidatePlaceholders('idle');
+                    return;
+                }
+
                 const prompt = document.getElementById('imageToImagePrompt').value;
                 if (!prompt) {
                     showToast('请输入描述', 'warning');
@@ -10220,7 +10465,7 @@
                     ...(resolvedSize ? { size: resolvedSize.size } : {}),
                     ...(aspectRatioTier && selectedRatio !== 'auto' ? { aspectRatio: selectedRatio } : {}),
                     ...(maxImages > 1 ? { maxImages } : {}),
-                    referenceImages: imageToImageReferenceDataUrl ? [imageToImageReferenceDataUrl] : []
+                    referenceImages: imageToImageReferences.map((ref) => ref.dataUrl)
                 });
             });
 

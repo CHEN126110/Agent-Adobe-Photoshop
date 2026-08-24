@@ -19,6 +19,7 @@ import { DesignLearningReviewSettingsPanel } from './DesignLearningReviewSetting
 import { KnowledgeSourceManagementPanel } from './KnowledgeSourceManagementPanel';
 import { UserPreferencesPanel } from './UserPreferencesPanel';
 import { ChatGptSubscriptionCard } from './ChatGptSubscriptionCard';
+import { ClaudeSubscriptionCard } from './ClaudeSubscriptionCard';
 import { getUserFacingSkills } from '../../shared/skills/skill-declarations';
 import { getSkillExecutor } from '../services/skill-executors';
 import { normalizeDesignDimensionSpec } from '../../shared/design-dimension-spec';
@@ -201,6 +202,7 @@ type CloudModelOption = {
 
 /** 刷新结果消息里显示的 provider 中文/渠道名。 */
 const PROVIDER_REFRESH_LABELS: Record<string, string> = {
+    'claude-subscription': 'Claude 订阅',
     'openai-codex': 'ChatGPT 订阅',
     deepseek: 'DeepSeek',
     google: 'Google',
@@ -211,6 +213,7 @@ const PROVIDER_REFRESH_LABELS: Record<string, string> = {
 
 /** 唯一 Agent 模型的云端候选分组。 */
 const CLOUD_MODEL_OPTION_GROUPS = [
+    { provider: 'claude-subscription', label: 'Claude 订阅' },
     { provider: 'openai-codex', label: 'ChatGPT 订阅（Codex）' },
     { provider: 'deepseek', label: 'DeepSeek (官方)' },
     { provider: 'google', label: 'Google AI Studio (官方)' },
@@ -221,6 +224,7 @@ const CLOUD_MODEL_OPTION_GROUPS = [
 
 /** 各 cloud provider 的硬编码模型（简化形态），供下拉默认数据源 + 合并去重的「优先层」。 */
 const HARDCODED_OPTIONS_BY_PROVIDER: Record<string, CloudModelOption[]> = {
+    'claude-subscription': [],
     'openai-codex': [],
     deepseek: DEEPSEEK_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
     google: GOOGLE_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
@@ -981,6 +985,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
     // 自动拉取最新模型：本会话拉到的新模型（硬编码里没有的），按 provider 归档
     const [fetchedModelsByProvider, setFetchedModelsByProvider] = useState<Record<string, CloudModelOption[]>>({});
+    const handleClaudeModelsLoaded = useCallback((models: ModelConfig[]): void => {
+        upsertDynamicModels('claude-subscription', models);
+        setFetchedModelsByProvider((current) => ({
+            ...current,
+            'claude-subscription': models.map((model) => ({
+                id: model.id,
+                name: model.name,
+                vision: model.supportsVision,
+                conversation: isConversationModelConfig(model)
+            }))
+        }));
+    }, []);
+
     const handleCodexModelsLoaded = useCallback((models: ModelConfig[]): void => {
         upsertDynamicModels('openai-codex', models);
         setFetchedModelsByProvider((current) => ({
@@ -2654,7 +2671,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                     </div>
                                 </div>
                                 <p className="section-desc">
-                                    内置 MCP 能力用于 Photoshop 与桌面端桥接；外部 MCP 服务器在这里登记 transport、命令、参数或 URL，避免后续继续散落在代码里硬编码。
+                                    内置 MCP 能力用于 Photoshop 与桌面端桥接。外部 MCP 目前只保存连接配置，尚未进入 Agent 工具面；登记或启用不代表 Agent 已能调用。后续运行接入必须先补齐 Tool 风险分类、任务作用域、批准回执和结果读回，不能把任意命令直接暴露给模型。
                                 </p>
 
                                 <div className="integration-card" style={{ marginBottom: '16px' }}>
@@ -2957,6 +2974,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                     imageGenerationProvider: provider
                                 }))}
                             />
+                            <ClaudeSubscriptionCard onModelsLoaded={handleClaudeModelsLoaded} />
 
                             {/* 模型模式选择 */}
                             <div className="config-section">

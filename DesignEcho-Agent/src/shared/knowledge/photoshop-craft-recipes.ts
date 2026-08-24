@@ -383,7 +383,7 @@ const SUBJECT_AWARE_IMAGE_PLACEMENT: PhotoshopCraftRecipe = {
     requiredObservations: [
         '当前 documentId、revision、画布尺寸、目标区域以及相邻文字/元素的真实空间关系。',
         '图片内容、真实主体、透明/画面留白、清晰度和用途；已明确来源时禁止重新搜索同一素材。',
-        '声明 designType、assetRole 与 intent（主视觉、辅助图、缩略图、满版、槽位或对比网格），由共享预设给出首个视觉占比。',
+        'Agent 根据本稿目的、素材内容与邻接元素显式声明主体占比和锚点；Harness 不从任务类型推导视觉答案。',
         '若用户明确要求匹配某张已选参考，才测量该参考；没有参考不阻断普通置入和设计判断。'
     ],
     stableTargets: [
@@ -403,14 +403,14 @@ const SUBJECT_AWARE_IMAGE_PLACEMENT: PhotoshopCraftRecipe = {
             rule: '来自当前画布、renderLayout 结果、模板槽位或稳定图层边界，不从聊天截图猜 Photoshop 坐标。'
         },
         {
-            field: 'designType / assetRole / intent',
+            field: 'subjectFillRatio / anchor',
             authority: 'designer_decision',
-            rule: '由 Agent 根据交付物目的和素材职责声明；共享智能缩放预设据此产生首个 targetFill、anchor 与视觉偏移。'
+            rule: '由 Agent 根据交付物目的、真实素材和当前构图显式声明；不能让 Harness 用品类预设代填。'
         },
         {
-            field: 'subjectFillRatio / anchor override',
+            field: 'referenceComposition',
             authority: 'project_fact',
-            rule: '只有用户、模板或已选参考给出明确约束时覆盖共享预设；不能为了填参数任意搜索参考或拍百分比。'
+            rule: '只有用户、项目标准或已选参考给出明确约束时使用；不能为了填参数任意搜索参考。'
         }
     ],
     toolOptions: [
@@ -422,7 +422,7 @@ const SUBJECT_AWARE_IMAGE_PLACEMENT: PhotoshopCraftRecipe = {
         },
         {
             toolName: 'fitLayerSubjectToRegion',
-            useWhen: '图片外框不能代表主体视觉大小，且 targetRegion、designType、assetRole、intent 已明确。',
+            useWhen: '图片外框不能代表主体视觉大小，且 targetRegion、subjectFillRatio（或已选参考实测）与 anchor 已明确。',
             doNotUseWhen: '自己先算缩放百分比，或把 measureReferenceComposition 当成通用前置。',
             readback: '消费同一次调用返回的 subjectAfter、frameAfter 与 geometryVerification；failed 才做有依据修订，unknown 不重放。'
         },

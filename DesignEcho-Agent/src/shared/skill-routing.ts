@@ -629,6 +629,46 @@ export function buildRuntimeSelectedSkillHandoffFromRecommendation(
     });
 }
 
+/**
+ * 用户在输入框 Skill 选择器里显式指定技能时的 selection-only handoff（codex 式）。
+ * 与唯一声明命中版的差别：用户点击本身就是权威，跳过文本正则与 mode 推断
+ * （derivedFromTaskText: false）；安全 gate 全部保留——非生产语境（问句/寒暄）、
+ * 禁用 Skill bridge、只读上限时不产生 handoff，选择静默不生效。
+ * 该交接不执行 Skill，也不授予 Tool 权限。
+ */
+export function buildRuntimeSelectedSkillHandoffFromUserSelection(input: {
+    userSelectedSkillId?: string;
+    intentControlPlane?: Pick<
+        AgentIntentControlPlaneDecision,
+        'requestKind' | 'toolScope' | 'executionAuthorization'
+    >;
+    skillBridgePolicy?: 'allow' | 'forbid';
+    deniedToolDomains?: readonly string[];
+    toolScopeCeiling?: 'none' | 'knowledge_search' | 'read_only' | 'write_photoshop';
+}): RuntimeSelectedSkillHandoff | undefined {
+    const skillId = normalizeSkillId(input.userSelectedSkillId);
+    if (!skillId) return undefined;
+    if (input.skillBridgePolicy === 'forbid') return undefined;
+    if (input.toolScopeCeiling === 'none' || input.toolScopeCeiling === 'read_only') return undefined;
+    if (input.deniedToolDomains?.includes('photoshop')) return undefined;
+
+    const intentControlPlane = input.intentControlPlane;
+    if (intentControlPlane?.requestKind !== 'autonomous_execution') return undefined;
+    if (intentControlPlane.toolScope !== 'write_photoshop') return undefined;
+    if (intentControlPlane.executionAuthorization !== 'confirmed_tool_required') return undefined;
+
+    const skill = getSkillById(skillId);
+    if (skill?.routeClass !== 'business-workflow') return undefined;
+    if (skill.modelDirectExecution !== 'forbidden') return undefined;
+
+    return buildRuntimeSelectedSkillHandoff({
+        skillId,
+        source: 'user_explicit_selection',
+        routeClass: skill.routeClass,
+        directExecution: skill.modelDirectExecution
+    });
+}
+
 export function resolveSkillRoutingMode(skillId: string, text: string): string | undefined {
     const normalizedSkillId = normalizeSkillId(skillId);
     if (normalizedSkillId === 'document-management' && isDocumentCreateIntentText(text)) {

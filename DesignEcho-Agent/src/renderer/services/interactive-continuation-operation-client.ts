@@ -30,7 +30,7 @@ function unavailableResult(
         success: false,
         code: 'interactive_continuation_operation_ledger_unavailable',
         message: executionMayHaveStarted
-            ? `${failureDetail}无法确认 Photoshop 是否已经产生写入；请先检查当前画面，系统不会自动重放。`
+            ? `${failureDetail}无法确认 Photoshop 是否已经产生写入；系统不会自动重放，Agent 继续前会先读取当前画面。`
             : `${failureDetail}本轮不会写入 Photoshop。`
     };
 }

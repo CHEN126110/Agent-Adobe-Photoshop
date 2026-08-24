@@ -37,12 +37,18 @@ export interface BuildLegacyToolCapabilityBridgeInput {
 }
 
 export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
-    'agent.interaction.requestConfirmation': ['createInteractiveCard'],
+    // 简短选择、必要事实与授权确认统一走受控选择卡。createInteractiveCard
+    // 只负责多字段可编辑草稿，不能再冒充确认能力。
+    'agent.interaction.requestConfirmation': ['askUserToChoose'],
+    'agent.interaction.editStructuredDraft': ['createInteractiveCard'],
     'agent.intent.declareDesignTask': ['declareDesignIntent'],
     'agent.team.collaborate': ['delegateToAgent', 'runDesignTeamPipeline'],
     'project.listResources': ['listProjectResources'],
     'project.searchResources': ['searchProjectResources'],
     'project.observeAssets': ['analyzeProjectContactSheetOverview'],
+    // 首轮上下文只装载一对一叶子能力；聚合 capability 仍供 Manifest 和按需检索使用。
+    // 这样“9 个能力”不会在 provider 层悄悄膨胀为二十多个 Tool schema。
+    'knowledge.read.getDesignPrinciples': ['getDesignPrinciples'],
     'knowledge.read.designFoundation': [
         'getDesignKnowledge',
         'getDesignPrinciples',
@@ -52,10 +58,21 @@ export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string
         'analyzePsdDesignSource',
         'measureReferenceComposition'
     ],
+    'memory.read.designProjectState': ['getDesignProjectState'],
     'memory.designProjectState': ['getDesignProjectState', 'updateDesignProjectState'],
+    // 设计任务卡：计划 = 完成契约（模型写卡，Harness 核收据打勾）
+    'plan.designTaskCard': ['planDesignTaskCard', 'updateDesignTaskCard', 'getDesignTaskCard', 'askUserToChoose'],
+    // 独立评审器：出稿后评好不好看（四标准 + 硬伤），结果进任务卡「验」栏
+    'review.evaluateDesign': ['evaluateDesign'],
+    // 学习闭环：用户留改弃进候选区 + 「学到了什么」时间线
+    'learn.designCandidates': ['recordDesignVerdict', 'getDesignLearningTimeline', 'learnTasteFromEagle'],
     'preview.renderStoryboard': ['renderLayout'],
+    // 一次成稿车间：单张画面首稿的默认起手式（建画布 → 背景 → 主体 → 文字 → 投影 → 回读）
+    'photoshop.write.composeDesign': ['composeDesign'],
     'eagle.read.searchReferences': ['searchEagleReferences', 'searchDesignKnowledge'],
     'eagle.read.analyzeReference': ['analyzeEagleReference'],
+    // 看参考：带目的说得出好坏并形成可复核学习候选；不能在线沉淀正式原则。
+    'reference.study': ['studyReference'],
     'eagle.read.observeAsset': ['observeEagleAsset'],
     'project.importEagleAsset': ['importEagleAssetToProject'],
     // 外部参考检索（2026-08-16 全量工具审计补齐）：用户贴链接/要联网时，搜索与读页
@@ -68,6 +85,10 @@ export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string
         'readBrowserPage',
         'captureBrowserTab'
     ],
+    // 浏览器是 Harness 提供的跨业务 Tool Provider；Skill 只声明依赖，
+    // 不复制导航和交互实现。两项状态能力按需装载，执行点仍负责审批与副作用约束。
+    'web.navigatePage': ['navigateBrowserTab'],
+    'web.interactPage': ['interactWithBrowserPage'],
     'photoshop.read.getDocumentSummary': [
         'getDocumentInfo',
         'listDocuments',
@@ -75,6 +96,8 @@ export const LEGACY_TOOL_CAPABILITY_MAP: Readonly<Record<string, readonly string
         'getLayerHierarchy'
     ],
     'photoshop.read.getDocumentInfo': ['getDocumentInfo'],
+    'photoshop.read.listDocuments': ['listDocuments'],
+    'photoshop.state.switchDocument': ['switchDocument'],
     'photoshop.read.getLayerHierarchy': ['getLayerHierarchy'],
     'photoshop.read.getAcceptanceSnapshot': ['getAcceptanceSnapshot'],
     'photoshop.read.getCanvasSnapshot': ['getCanvasSnapshot'],

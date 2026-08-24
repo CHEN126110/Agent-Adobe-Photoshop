@@ -13,9 +13,10 @@ export type InpaintingModel =
     | 'jimeng-inpaint'
     | 'google/gemini-3-pro-image-preview'
     | 'google/gemini-3-pro-image'
+    | 'openai/gpt-image-2'
+    | 'openai/gpt-5.4-image-2'
     | 'openai/gpt-5-image'
-    | 'openai/gpt-5-image-mini'
-    | 'openai/gpt-5.4-image-2';
+    | 'openai/gpt-5-image-mini';
 
 export interface InpaintingRequest {
     image: string;
@@ -131,17 +132,19 @@ const SUPPORTED_MODELS: InpaintingModel[] = [
     'jimeng-inpaint',
     'google/gemini-3-pro-image-preview',
     'google/gemini-3-pro-image',
+    'openai/gpt-image-2',
+    'openai/gpt-5.4-image-2',
     'openai/gpt-5-image',
-    'openai/gpt-5-image-mini',
-    'openai/gpt-5.4-image-2'
+    'openai/gpt-5-image-mini'
 ];
 
 const OPENROUTER_MODELS: InpaintingModel[] = [
     'google/gemini-3-pro-image-preview',
     'google/gemini-3-pro-image',
+    'openai/gpt-image-2',
+    'openai/gpt-5.4-image-2',
     'openai/gpt-5-image',
-    'openai/gpt-5-image-mini',
-    'openai/gpt-5.4-image-2'
+    'openai/gpt-5-image-mini'
 ];
 
 /** 不指定模型时的默认重绘通道 */
@@ -234,6 +237,20 @@ export class InpaintingService {
             );
             const fullMaskRaw = await fullMask.clone().raw().toBuffer();
             assertInpaintingMaskHasEditablePixels(fullMaskRaw);
+
+            // 蒙版覆盖率诊断：真机出现过"裁剪窗内一个未选中像素都没有"，
+            // 后果是整个上下文窗口被替换而不只是选区（画面上就是一块突兀的矩形）。
+            // 要区分是选区本来就铺满、还是蒙版与坐标系对不上，得先看到这几个数。
+            let maskWhite = 0;
+            for (let i = 0; i < fullMaskRaw.length; i++) {
+                if (fullMaskRaw[i] > 8) maskWhite++;
+            }
+            const sb = request.selectionBounds || {};
+            console.log(
+                `[Inpainting] 输入几何：图像 ${request.imageWidth}x${request.imageHeight}，`
+                + `蒙版覆盖 ${(maskWhite / fullMaskRaw.length * 100).toFixed(1)}%，`
+                + `selectionBounds ${JSON.stringify(sb)}`
+            );
 
             // 区域只解析一次：这个函数在没有 selectionBounds 时要全图扫蒙版，
             // 算两遍既浪费也有让生成路径与回贴路径算出不同结果的风险。
@@ -399,11 +416,60 @@ export class InpaintingService {
             onProgress
         );
 
-        const generatedRgba = await sharp(generatedCrop)
-            .resize(region.width, region.height, { fit: 'fill' })
+        // 几何诊断：窗口本应已吸附到模型支持的比例，返回图与窗口应当同比。
+        // 一旦不同比，下面的 fit:'fill' 就是非等比拉伸——贴回去纹理会整体错位，
+        // 而且这种错位靠手动缩放拼不回来（真机反馈过）。所以把两边的比例如实记下来。
+        const generatedMeta = await sharp(generatedCrop).metadata();
+        const genW = generatedMeta.width || 0;
+        const genH = generatedMeta.height || 0;
+        const regionAspect = region.width / region.height;
+        const generatedAspect = genW && genH ? genW / genH : 0;
+        const aspectDrift = generatedAspect
+            ? Math.abs(generatedAspect - regionAspect) / regionAspect
+            : 0;
+        const geometryNote = `窗口 ${region.width}x${region.height}(${regionAspect.toFixed(4)}) `
+            + `← 模型返回 ${genW}x${genH}(${generatedAspect.toFixed(4)})`;
+        if (aspectDrift > 0.005) {
+            console.warn(
+                `[Inpainting] 几何错位风险：${geometryNote}，比例差 `
+                + `${(aspectDrift * 100).toFixed(2)}%，贴回时会被非等比拉伸`
+            );
+        } else {
+            console.log(`[Inpainting] 几何对齐：${geometryNote}`);
+        }
+
+        // 返回图小于窗口 = 贴回去要放大 = 这一块的清晰度低于原图。
+        // 触发条件是窗口长边超过该比例下模型的实际输出上限（实测 4K：3:4 出到 4800，
+        // 但 1:1 只有 4096），选区大到接近整幅图时就会撞上，且症状只是"这块发虚"，
+        // 不报错也看不出来源——所以必须记一条。
+        const upscaleFactor = genW > 0 ? region.width / genW : 1;
+        if (upscaleFactor > 1.01) {
+            console.warn(
+                `[Inpainting] 重绘区被放大 ${((upscaleFactor - 1) * 100).toFixed(1)}%：`
+                + `模型最大只出到 ${genW}x${genH}，而窗口是 ${region.width}x${region.height}。`
+                + `这一块会比原图糊——把选区缩小些可以避免。`
+            );
+        }
+
+        // 比例对不上时用 cover（等比放大到盖满窗口 + 居中裁掉多余），不用 fill。
+        // fill 是整体非等比拉伸：真机遇到模型返回 3:2 而窗口是 16:9，比例差 15.62%，
+        // 贴回去整块纹理错位，且手动缩放怎么都拼不回来（因为横竖被拉伸的比例不同）。
+        // cover 只损失边缘一条，画面内的几何关系保持正确——这是可接受得多的代价。
+        const resizeFit: 'fill' | 'cover' = aspectDrift > 0.005 ? 'cover' : 'fill';
+        const rawGeneratedRgba = await sharp(generatedCrop)
+            .resize(region.width, region.height, { fit: resizeFit, position: 'centre' })
             .ensureAlpha()
             .raw()
             .toBuffer();
+
+        // 这里**刻意不做任何颜色修正**。
+        //
+        // 曾经在这里加过"用蒙版外侧锚点测出偏移再减掉"的色调对齐，那是对抗性修复：
+        // 它承认偏差存在并把症状盖住，真因（送出时色彩空间转换、上游 JPEG 4:2:0、
+        // 回程置入的转换）一个都没解决。更坏的是它会**污染诊断**——输出被校正过之后，
+        // 就再也测不到模型的真实偏差，真因反而永远查不出来。
+        // 颜色必须在链路各环节各自正确，而不是在末端凑一个看起来对的结果。
+        const generatedRgba = rawGeneratedRgba;
 
         this.emitProgress(onProgress, {
             progress: 94,

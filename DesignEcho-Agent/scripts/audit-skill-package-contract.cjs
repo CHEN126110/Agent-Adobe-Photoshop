@@ -39,11 +39,15 @@ const {
   classifyAgentToolExecution
 } = require(path.join(root, 'src', 'shared', 'agent-tool-execution-preflight.ts'));
 const {
+  readAgentEnvironmentRecoveryToolNames
+} = require(path.join(root, 'src', 'shared', 'agent-react-observation-contract.ts'));
+const {
   buildAgentCapabilityBaseline,
   buildRecommendedSkillFastPathBaseline,
   createAgentCapabilitySession,
   RECOMMENDED_SKILL_BOOTSTRAP_CAPABILITY_IDS,
-  REQUEST_AGENT_CAPABILITIES_TOOL_NAME
+  REQUEST_AGENT_CAPABILITIES_TOOL_NAME,
+  SEARCH_AGENT_CAPABILITIES_TOOL_NAME
 } = require(path.join(rendererRuntimeRoot, 'capability-session.ts'));
 const {
   DELEGATE_TOOL,
@@ -64,6 +68,88 @@ const candidateTools = [
   ...workflowBridgeTools
 ];
 const workflowBridgeNames = workflowBridgeTools.map((tool) => tool.name);
+
+const designFoundationSession = createAgentCapabilitySession({
+  candidateTools,
+  workflowBridgeNames,
+  baselineCapabilityIds: buildAgentCapabilityBaseline(true)
+});
+const designFoundationInitialTools = designFoundationSession.activeTools.map((tool) => tool.name);
+const designFoundationSchemaSize = JSON.stringify(designFoundationSession.activeTools).length;
+// 2026-08-23 首轮 23→24：readSkillPlaybook（业务工作法手册，官方 skill 包）进首轮——
+// 技能描述引导「开工先读手册」，工具不可见时引导空指（真机：模型跳过手册、按文件名猜前置已完成）。
+assert.strictEqual(
+  designFoundationInitialTools.length,
+  24,
+  `general design first-turn Tool surface grew: ${designFoundationInitialTools.length}`
+);
+// 2026-08-23 预算 33k→35k：参照系教学（composeDesign/renderLayout 比例字段）、联系表收敛指令、
+// 看参考挂定方向前三刀的描述增强共 +1.3k，均为拍板过的行为修复；预算仍是防首轮面无审查膨胀的棘轮。
+assert(
+  designFoundationSchemaSize < 35_000,
+  `general design first-turn Tool schema exceeded the reviewed progressive-disclosure budget: ${designFoundationSchemaSize}`
+);
+for (const requiredDesignFoundationTool of [
+  'analyzeProjectContactSheetOverview',
+  'recommendAssets',
+  'composeDesign',
+  'evaluateDesign',
+  'placeImage',
+  'transformLayer',
+  'createRectangle',
+  'createEllipse',
+  'setTextStyle'
+]) {
+  assert(
+    designFoundationInitialTools.includes(requiredDesignFoundationTool),
+    `general design first turn lost ${requiredDesignFoundationTool}`
+  );
+}
+assert(!designFoundationInitialTools.includes('capturePhotoshopWindow'));
+const environmentRecoverySession = createAgentCapabilitySession({
+  candidateTools,
+  workflowBridgeNames,
+  baselineCapabilityIds: buildAgentCapabilityBaseline(true)
+});
+const environmentRecoveryToolNames = readAgentEnvironmentRecoveryToolNames({
+  success: false,
+  environmentState: 'photoshop_native_modal_suspected',
+  environmentObservation: {
+    capability: 'capturePhotoshopWindow',
+    scope: 'adobe_photoshop_application_window'
+  }
+});
+environmentRecoverySession.activateToolsForContinuation(environmentRecoveryToolNames);
+assert(
+  environmentRecoverySession.activeTools.some((tool) => tool.name === 'capturePhotoshopWindow'),
+  'structured native-modal recovery did not reveal the Photoshop window observation'
+);
+const manifestEnvironmentRecoverySession = createAgentCapabilitySession({
+  candidateTools,
+  workflowBridgeNames,
+  requestedTaskType: manifests[0].task_type,
+  manifest: manifests[0]
+});
+manifestEnvironmentRecoverySession.activateToolsForContinuation(environmentRecoveryToolNames);
+assert(
+  manifestEnvironmentRecoverySession.activeTools.some((tool) => tool.name === 'capturePhotoshopWindow'),
+  'business Manifest ceiling hid the readonly Photoshop environment recovery observation'
+);
+const assetSearch = designFoundationSession.searchCapabilities('分析单个项目素材可见内容', 5);
+const subjectFitSearch = designFoundationSession.searchCapabilities('把图层主体适配到目标区域', 5);
+assert.strictEqual(assetSearch.matches[0]?.capabilityId, 'project.read.analyzeAssetContent');
+assert.strictEqual(subjectFitSearch.matches[0]?.capabilityId, 'photoshop.write.fitLayerSubjectToRegion');
+assert.deepStrictEqual(
+  designFoundationSession.activeTools.map((tool) => tool.name),
+  designFoundationInitialTools,
+  'Capability search changed the active Tool surface or granted permission'
+);
+const subjectFitActivation = designFoundationSession.requestCapabilities([
+  subjectFitSearch.matches[0].capabilityId
+]);
+assert.strictEqual(subjectFitActivation.status, 'activated');
+assert(designFoundationSession.activeTools.some((tool) => tool.name === 'fitLayerSubjectToRegion'));
+
 const resolutions = new Map(manifests.map((manifest) => {
   const session = createAgentCapabilitySession({
     candidateTools,
@@ -92,12 +178,14 @@ assert(report.results.every((result) => result.boundaries.claimsLiveE2E === fals
 
 const skuManifest = manifests.find((manifest) => manifest.task_type === 'ecommerce.sku_batch.v1');
 assert(skuManifest, 'sku-batch manifest missing');
-assert.strictEqual(skuManifest.performance_profile?.budget.max_model_calls, 16);
-assert.strictEqual(skuManifest.performance_profile?.budget.max_tool_calls, 50);
-assert.strictEqual(skuManifest.performance_profile?.budget.max_iterations, 30);
-assert.strictEqual(skuManifest.performance_profile?.budget.max_vision_candidates, 6);
-assert.strictEqual(skuManifest.performance_profile?.budget.max_visual_analyses, 2);
-assert.strictEqual(skuManifest.performance_profile?.budget.soft_time_budget_ms, 420_000);
+// 2026-08-18：16/50/30/420s 在真机 run-20260818020052415 把「缺模板 → 设计三份模板」砍在第 14 轮，
+// 零模板产出；预算是安全网不是终止器，上调到 32/100/50/900s（与未绑清单自主设计起步一致）。
+assert.strictEqual(skuManifest.performance_profile?.budget.max_model_calls, 32);
+assert.strictEqual(skuManifest.performance_profile?.budget.max_tool_calls, 100);
+assert.strictEqual(skuManifest.performance_profile?.budget.max_iterations, 50);
+assert.strictEqual(skuManifest.performance_profile?.budget.max_vision_candidates, 8);
+assert.strictEqual(skuManifest.performance_profile?.budget.max_visual_analyses, 3);
+assert.strictEqual(skuManifest.performance_profile?.budget.soft_time_budget_ms, 900_000);
 const skuSession = createAgentCapabilitySession({
   candidateTools,
   workflowBridgeNames,
@@ -259,10 +347,12 @@ for (const workflowBridgeName of workflowBridgeNames) {
     `broad discovery lost on-demand Skill reachability: ${workflowBridgeName}`
   );
   assert(
-    lateBoundSession.buildPromptSection().includes(`skill.${workflowBridgeName}`),
-    `broad discovery prompt lost compact Skill discovery id: ${workflowBridgeName}`
+    !lateBoundSession.buildPromptSection().includes(`skill.${workflowBridgeName}`),
+    `broad discovery prompt leaked the full Skill capability catalog: ${workflowBridgeName}`
   );
 }
+assert(lateBoundSession.activeTools.some((tool) => tool.name === SEARCH_AGENT_CAPABILITIES_TOOL_NAME));
+assert(lateBoundSession.buildPromptSection().length < 500, 'Capability prompt grew into a catalog');
 
 assert(workflowBridgeTools.length >= 2, 'first-turn Skill surface audit needs at least two user-facing Skills');
 const recommendedWorkflowBridge = workflowBridgeTools[0];
@@ -289,8 +379,14 @@ assert(
   'a non-recommended Skill is no longer available on demand'
 );
 assert(
-  recommendedSession.buildPromptSection().includes(`skill.${onDemandWorkflowBridge.name}`),
-  'a non-recommended Skill id is missing from the compact capability catalog'
+  !recommendedSession.buildPromptSection().includes(`skill.${onDemandWorkflowBridge.name}`),
+  'a non-recommended Skill id leaked into the compact Capability prompt'
+);
+assert(
+  recommendedSession.searchCapabilities(onDemandWorkflowBridge.name, 5).matches.some(
+    (match) => match.capabilityId === `skill.${onDemandWorkflowBridge.name}`
+  ),
+  'a non-recommended Skill is no longer discoverable through Capability search'
 );
 for (const readOnlyBootstrapTool of [
   'getDocumentInfo',
@@ -324,7 +420,8 @@ assert(
 );
 for (const activeTool of recommendedSession.activeTools) {
   if (activeTool.name === recommendedWorkflowBridge.name
-    || activeTool.name === REQUEST_AGENT_CAPABILITIES_TOOL_NAME) {
+    || activeTool.name === REQUEST_AGENT_CAPABILITIES_TOOL_NAME
+    || activeTool.name === SEARCH_AGENT_CAPABILITIES_TOOL_NAME) {
     continue;
   }
   assert.strictEqual(
@@ -395,6 +492,21 @@ assert(
   productionBroadDiscovery.activeTools.some((tool) => tool.name === 'createDocument'),
   'no-recommendation path no longer preserves broad discovery'
 );
+for (const requiredFirstTurnDesignTool of [
+  'analyzeProjectContactSheetOverview',
+  'recommendAssets',
+  'evaluateDesign',
+  'placeImage',
+  'transformLayer',
+  'createRectangle',
+  'createEllipse',
+  'setTextStyle'
+]) {
+  assert(
+    productionBroadDiscovery.activeTools.some((tool) => tool.name === requiredFirstTurnDesignTool),
+    `production broad-discovery first turn lost ${requiredFirstTurnDesignTool}`
+  );
+}
 assert.deepStrictEqual(
   invalidMultiRecommendation.activeTools.map((tool) => tool.name),
   productionBroadDiscovery.activeTools.map((tool) => tool.name),

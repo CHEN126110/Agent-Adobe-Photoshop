@@ -279,7 +279,7 @@ export function buildSkuHumanReviewCard(input: {
         },
         runDisposition: 'post_execution_review',
         status: 'draft',
-        submitAction: 'submitSkuHumanReviewCard',
+        submitAction: 'submitSkillInteractiveReview',
         memoryPolicy: {
             enabled: false,
             mode: 'none',

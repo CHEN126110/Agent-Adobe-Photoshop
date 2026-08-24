@@ -1951,8 +1951,8 @@
 }
 
 .settings-modal .config-section {
-    margin-bottom: 24px;
-    padding: 0 0 24px;
+    margin-bottom: 28px;
+    padding: 0 0 28px;
     border: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 0;
@@ -1965,7 +1965,18 @@
 }
 
 .settings-modal .section-header {
-    margin-bottom: 10px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+/* 描述较长时，右上角登录态曾被 flex 压成两行；标记不参与收缩 */
+.settings-modal .section-header > .status-text {
+    flex: 0 0 auto;
+    padding-top: 1px;
+    white-space: nowrap;
 }
 
 .settings-modal .section-title {
@@ -1995,7 +2006,7 @@
 }
 
 .settings-modal .mode-card {
-    padding: 12px 0;
+    padding: 15px 0;
     border: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 0;
@@ -2021,7 +2032,10 @@
 }
 
 .settings-modal .mode-header {
-    margin-bottom: 3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
 }
 
 .settings-modal .mode-name {
@@ -2101,6 +2115,107 @@
 .settings-modal .modal-footer .btn:hover {
     background: transparent;
     box-shadow: none;
+}
+
+/* ── 订阅卡骨架（ChatGPT / Claude 共用）──────────────────────────
+   两张卡原先各写各的内联盒子，间距、字号、标题语义都不一致，信息挤成一团。
+   统一成五段结构：信息网格 → 度量条 → 分隔行 → 操作区 → 脚注，各段有独立呼吸值。 */
+.subscription-card {
+    display: flex;
+    padding: 16px 18px;
+    flex-direction: column;
+    gap: 16px;
+    border: 1px solid var(--de-border);
+    border-radius: 10px;
+    background: var(--de-bg-light);
+}
+
+.subscription-card__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 32px;
+}
+
+.subscription-card__item {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.subscription-card__label {
+    flex: 0 0 auto;
+    min-width: 58px;
+    color: var(--de-text-secondary);
+    white-space: nowrap;
+}
+
+.subscription-card .status-text {
+    line-height: 1.6;
+}
+
+.subscription-card__value {
+    min-width: 0;
+    color: var(--de-text);
+}
+
+.subscription-card__meters {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+/* 与上一段之间显式断开，避免长说明直接贴住数据区 */
+.subscription-card__divided {
+    padding-top: 16px;
+    border-top: 1px solid var(--de-border);
+}
+
+.subscription-card__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.subscription-card__note {
+    color: var(--de-text-secondary);
+    font-size: 11.5px;
+    line-height: 1.8;
+}
+
+.subscription-card__note + .subscription-card__note {
+    margin-top: -6px;
+}
+
+.settings-modal .subscription-card {
+    gap: 18px;
+    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.settings-modal .subscription-card__label {
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.settings-modal .subscription-card__value {
+    color: rgba(255, 255, 255, 0.82);
+}
+
+.settings-modal .subscription-card__divided {
+    border-top-color: rgba(255, 255, 255, 0.07);
+}
+
+.settings-modal .subscription-card__note {
+    color: rgba(255, 255, 255, 0.46);
+}
+
+@media (max-width: 620px) {
+    .subscription-card__grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+    }
 }
 
 /* .knowledge-capability-grid 已随「当前模型能力」四格卡一并移除 */

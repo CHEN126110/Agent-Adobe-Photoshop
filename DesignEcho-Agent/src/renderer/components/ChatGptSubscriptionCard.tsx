@@ -7,6 +7,7 @@ import type {
 } from '../../shared/codex-subscription-contract';
 import type { ModelConfig } from '../../shared/config/models.config';
 import type { ImageGenerationProvider } from '../stores/app.store';
+import { SubscriptionInfoItem } from './SubscriptionCardParts';
 
 interface ChatGptSubscriptionCardProps {
     onModelsLoaded: (models: ModelConfig[]) => void;
@@ -25,18 +26,31 @@ function reportUiFailure(action: string, error: unknown): string {
     return `${action}失败；请刷新状态后重试。`;
 }
 
+/** 区块右上角的登录态标记：检查中 / 恢复中优先于登录结果展示。 */
+function describeCodexBadge(
+    status: CodexSubscriptionStatus | null,
+    recovering: boolean,
+    signedIn: boolean
+): { text: string; tone: string } {
+    if (status === null) return { text: '检查中', tone: 'warning' };
+    if (recovering) return { text: '恢复中', tone: 'warning' };
+    if (signedIn) return { text: '已登录', tone: 'success' };
+    if (status.runtimeAvailable) return { text: '未登录', tone: 'warning' };
+    return { text: '不可用', tone: 'error' };
+}
+
 function RateLimitRow(props: {
     label: string;
     value: CodexSubscriptionRateLimits['primary'];
 }): JSX.Element | null {
     if (!props.value) return null;
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px' }}>
                 <span>{props.label}</span>
-                <span>已使用 {Math.round(props.value.usedPercent)}%</span>
+                <span style={{ fontVariantNumeric: 'tabular-nums' }}>已使用 {Math.round(props.value.usedPercent)}%</span>
             </div>
-            <div style={{ height: '5px', background: 'var(--de-border)', borderRadius: '99px', overflow: 'hidden' }}>
+            <div style={{ height: '4px', background: 'var(--de-border)', borderRadius: '99px', overflow: 'hidden' }}>
                 <div
                     style={{
                         height: '100%',
@@ -46,7 +60,7 @@ function RateLimitRow(props: {
                     }}
                 />
             </div>
-            <span style={{ fontSize: '11px', color: 'var(--de-text-secondary)' }}>
+            <span className="subscription-card__note">
                 {formatResetTime(props.value.resetsAt)}
             </span>
         </div>
@@ -292,9 +306,12 @@ export const ChatGptSubscriptionCard: React.FC<ChatGptSubscriptionCardProps> = (
     const hasUnsupportedAuthentication = status?.authMode === 'api_key' || status?.authMode === 'unsupported';
     const subscriptionImageAvailable = signedIn && imageCapability?.available === true;
 
+    const badge = describeCodexBadge(status, recovering, signedIn);
+    const hasRateLimits = Boolean(rateLimits?.primary || rateLimits?.secondary);
+
     return (
         <div className="config-section">
-            <div className="section-header" style={{ alignItems: 'flex-start' }}>
+            <div className="section-header">
                 <div>
                     <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         ChatGPT 订阅模型
@@ -304,47 +321,38 @@ export const ChatGptSubscriptionCard: React.FC<ChatGptSubscriptionCardProps> = (
                         通过内置 Codex Runtime 使用 ChatGPT 订阅，与 OpenAI API Key 和 API 账单彼此独立。
                     </p>
                 </div>
-                <span className={`status-text ${status === null || recovering ? 'warning' : signedIn ? 'success' : status.runtimeAvailable ? 'warning' : 'error'}`}>
-                    {status === null ? '检查中' : recovering ? '恢复中' : signedIn ? '已登录' : status.runtimeAvailable ? '未登录' : '不可用'}
-                </span>
+                <span className={`status-text ${badge.tone}`}>{badge.text}</span>
             </div>
 
-            <div style={{
-                marginTop: '12px',
-                padding: '14px',
-                border: '1px solid var(--de-border)',
-                borderRadius: '8px',
-                background: 'var(--de-bg-light)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '10px'
-            }}>
+            <div className="subscription-card">
                 {signedIn && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px 16px', fontSize: '12px' }}>
-                        <span>账户：{status?.accountLabel || '已脱敏'}</span>
-                        <span>套餐：{status?.planType || '运行时未提供'}</span>
-                        <span>模型：{modelCount} 个 GPT-5.6</span>
-                        <span>Runtime：{status?.runtimeVersion || '未知'}</span>
+                    <div className="subscription-card__grid">
+                        <SubscriptionInfoItem label="账户" value={status?.accountLabel || '已脱敏'} title={status?.accountLabel} />
+                        <SubscriptionInfoItem label="套餐" value={status?.planType || '运行时未提供'} />
+                        <SubscriptionInfoItem label="模型" value={`${modelCount} 个 GPT-5.6`} />
+                        <SubscriptionInfoItem label="Runtime" value={status?.runtimeVersion || '未知'} />
                     </div>
                 )}
 
-                {(rateLimits?.primary || rateLimits?.secondary) && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <RateLimitRow label="主要额度窗口" value={rateLimits.primary} />
-                        <RateLimitRow label="次要额度窗口" value={rateLimits.secondary} />
+                {hasRateLimits && (
+                    <div className={`subscription-card__meters${signedIn ? ' subscription-card__divided' : ''}`}>
+                        <RateLimitRow label="主要额度窗口" value={rateLimits?.primary} />
+                        <RateLimitRow label="次要额度窗口" value={rateLimits?.secondary} />
                     </div>
                 )}
 
-                <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '12px',
-                    paddingTop: '4px'
-                }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                <div
+                    className={signedIn || hasRateLimits ? 'subscription-card__divided' : undefined}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '16px'
+                    }}
+                >
+                    <div style={{ display: 'flex', minWidth: 0, flexDirection: 'column', gap: '5px' }}>
                         <span style={{ fontSize: '12px', fontWeight: 500 }}>Agent 生图渠道</span>
-                        <span style={{ fontSize: '11px', color: 'var(--de-text-secondary)' }}>
+                        <span className="subscription-card__note">
                             {subscriptionImageAvailable
                                 ? '订阅通道已验证：gpt-image-2，计入 Codex 通用用量。'
                                 : imageCapability?.error || '登录后会检测当前账户是否开放 gpt-image-2。'}
@@ -365,9 +373,11 @@ export const ChatGptSubscriptionCard: React.FC<ChatGptSubscriptionCardProps> = (
                     </select>
                 </div>
 
-                <span className={`status-text ${status?.error ? 'error' : ''}`}>{message}</span>
+                <div className="subscription-card__divided">
+                    <span className={`status-text ${status?.error ? 'error' : ''}`}>{message}</span>
+                </div>
 
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <div className="subscription-card__actions" style={{ marginTop: '-4px' }}>
                     {!signedIn && !status?.loginPending && !hasUnsupportedAuthentication && !recovering && (
                         <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void handleLogin()}>
                             {busy ? '正在启动…' : '登录 ChatGPT'}

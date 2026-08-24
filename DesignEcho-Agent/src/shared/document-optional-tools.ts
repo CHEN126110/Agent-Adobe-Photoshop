@@ -1,13 +1,9 @@
 /**
  * 无文档可用工具共享常量
  *
- * 统一三层工具过滤中"无文档时仍可调用"的工具列表，
- * 避免工具决策契约（agent-tool-decision-contract.ts）和
- * freshDetailPage 状态机守卫（autonomous-agent.executor.ts）各自维护不同步。
- *
- * 用途：
- * 1. agent-tool-decision-contract.ts: DOCUMENT_OPTIONAL_TOOLS — 工具决策契约判定
- * 2. autonomous-agent.executor.ts: FRESH_DETAIL_PAGE_PRE_DOCUMENT_TOOL_NAMES — 状态机守卫基础列表
+ * 统一"无文档时仍可调用"的工具判据，供工具决策契约
+ * （agent-tool-decision-contract.ts）与执行预检
+ * （agent-tool-execution-preflight.ts）共用，避免两处各自维护不同步。
  */
 
 import { getSkillById } from './skills/skill-declarations';
@@ -19,13 +15,16 @@ import { getSkillById } from './skills/skill-declarations';
 export const BASE_DOCUMENT_OPTIONAL_TOOL_NAMES: readonly string[] = [
     // 交互卡片
     'createInteractiveCard',
-    // Capability Resolver：只扩展下一轮模型 schema，不依赖 Photoshop 文档
+    // Capability 目录检索 / schema 装载都不依赖 Photoshop 文档
+    'searchAgentCapabilities',
     'requestAgentCapabilities',
     // 文档管理（创建/切换/列表不依赖已打开文档）
     'createDocument',
     'listDocuments',
     'switchDocument',
     'getDocumentInfo',
+    // Host 窗口观察独立于 UXP/活动文档，弹窗堵塞时仍必须可用
+    'capturePhotoshopWindow',
     // 项目资源读取
     'listProjectResources',
     'searchProjectResources',
@@ -48,6 +47,17 @@ export const BASE_DOCUMENT_OPTIONAL_TOOL_NAMES: readonly string[] = [
     // 项目状态
     'getDesignProjectState',
     'updateDesignProjectState',
+    // 设计任务卡：开工立卡不需要先有文档
+    'planDesignTaskCard',
+    'updateDesignTaskCard',
+    'getDesignTaskCard',
+    // 让用户帮我选：问用户不需要文档
+    'askUserToChoose',
+    // 学习候选区：记录留改弃 / 看时间线不需要文档；看参考也不需要文档
+    'recordDesignVerdict',
+    'getDesignLearningTimeline',
+    'studyReference',
+    'learnTasteFromEagle',
     'analyzeProjectForDetailPage',
     'matchDetailPageContent',
     // AI 生成

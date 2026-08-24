@@ -40,6 +40,29 @@ export interface RuntimePerformanceUsage {
     observationKeys: string[];
 }
 
+/**
+ * 单次模型调用的「提示体量」样本：回答「模型是不是被淹了」要靠数，不靠感觉。
+ * 只记字符数与条目数（都是可复算的事实），不记正文；每次运行最多保留 48 条。
+ */
+export interface RuntimePromptShapeSample {
+    seq: number;
+    stage: RuntimeAccountingStage;
+    /** provider 报告的用量；未报告为 undefined，不估算 */
+    inputTokens?: number;
+    outputTokens?: number;
+    durationMs: number;
+    /** 系统提示字符数（策略 + 原则 + 知识 + 项目状态 + 历史摘要） */
+    systemChars: number;
+    /** 非系统消息（用户 / 助手 / 工具结果）总字符数 */
+    historyChars: number;
+    messageCount: number;
+    /** 图像块数量（每块按 provider 计费，不算进字符） */
+    imageBlocks: number;
+    toolCount: number;
+    /** 工具 schema JSON 字符数 */
+    toolSchemaChars: number;
+}
+
 export interface RuntimeAccountingLedger {
     version: 'runtime-accounting-ledger/v0';
     startedAt: string;
@@ -61,6 +84,8 @@ export interface RuntimeAccountingLedger {
      */
     performanceUsage: RuntimePerformanceUsage;
     stageBuckets: RuntimeAccountingStageBucket[];
+    /** 每次模型调用的提示体量样本（有界）；缺失表示旧账本或未测量。 */
+    promptShapeSamples?: RuntimePromptShapeSample[];
     boundaries: {
         observationOnly: true;
         reportedUsageOnly: true;
@@ -88,6 +113,8 @@ export interface RuntimeAccountingDigest {
     performanceUsage: RuntimePerformanceUsage;
     wallTimeMs: number;
     stageBuckets: RuntimeAccountingStageBucket[];
+    /** 提示体量样本（有界，同 ledger）；诊断「模型是否被淹」用。 */
+    promptShapeSamples?: RuntimePromptShapeSample[];
     costEstimate: {
         status: 'not_configured';
     };
@@ -232,12 +259,77 @@ export function readRuntimePerformanceUsage(
     return clonePerformanceUsage(ledger.performanceUsage);
 }
 
+const MAX_PROMPT_SHAPE_SAMPLES = 48;
+
+/** 提示体量：从消息与工具 schema 直接量出来（纯逻辑，不看正文语义）。 */
+export interface RuntimePromptShapeInput {
+    messages: ReadonlyArray<{
+        role?: unknown;
+        content?: unknown;
+        contentBlocks?: ReadonlyArray<{ type?: unknown; text?: unknown }>;
+        toolCalls?: ReadonlyArray<{ name?: unknown; arguments?: unknown }>;
+        toolResults?: ReadonlyArray<{ output?: unknown }>;
+    }>;
+    tools: ReadonlyArray<unknown>;
+}
+
+export function measureRuntimePromptShape(input: RuntimePromptShapeInput): Omit<RuntimePromptShapeSample, 'seq' | 'stage' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
+    let systemChars = 0;
+    let historyChars = 0;
+    let imageBlocks = 0;
+    for (const message of input.messages) {
+        let chars = typeof message.content === 'string' ? message.content.length : 0;
+        for (const block of message.contentBlocks || []) {
+            if (block.type === 'image') {
+                imageBlocks += 1;
+            } else if (typeof block.text === 'string') {
+                chars += block.text.length;
+            }
+        }
+        for (const call of message.toolCalls || []) {
+            chars += String(call.name || '').length;
+            try {
+                chars += JSON.stringify(call.arguments ?? {}).length;
+            } catch {
+                chars += 0;
+            }
+        }
+        for (const result of message.toolResults || []) {
+            try {
+                chars += typeof result.output === 'string' ? result.output.length : JSON.stringify(result.output ?? '').length;
+            } catch {
+                chars += 0;
+            }
+        }
+        if (message.role === 'system') {
+            systemChars += chars;
+        } else {
+            historyChars += chars;
+        }
+    }
+    let toolSchemaChars = 0;
+    try {
+        toolSchemaChars = JSON.stringify(input.tools).length;
+    } catch {
+        toolSchemaChars = 0;
+    }
+    return {
+        systemChars,
+        historyChars,
+        messageCount: input.messages.length,
+        imageBlocks,
+        toolCount: input.tools.length,
+        toolSchemaChars
+    };
+}
+
 export function recordRuntimeModelCall(input: {
     ledger: RuntimeAccountingLedger;
     stage?: RuntimeStage;
     durationMs: number;
     succeeded: boolean;
     usage?: { inputTokens?: number; outputTokens?: number };
+    promptShape?: ReturnType<typeof measureRuntimePromptShape>;
     now?: string;
 }): RuntimeAccountingLedger {
     const durationMs = nonNegativeInteger(input.durationMs);
@@ -248,9 +340,23 @@ export function recordRuntimeModelCall(input: {
     );
     const inputTokens = hasReportedUsage ? nonNegativeInteger(input.usage?.inputTokens) : 0;
     const outputTokens = hasReportedUsage ? nonNegativeInteger(input.usage?.outputTokens) : 0;
+    const previousSamples = Array.isArray(input.ledger.promptShapeSamples) ? input.ledger.promptShapeSamples : [];
+    const promptShapeSamples = input.promptShape
+        ? [
+            ...previousSamples,
+            {
+                seq: input.ledger.modelCallCount + 1,
+                stage: normalizeStage(input.stage),
+                ...(hasReportedUsage ? { inputTokens, outputTokens } : {}),
+                durationMs,
+                ...input.promptShape
+            }
+        ].slice(-MAX_PROMPT_SHAPE_SAMPLES)
+        : previousSamples;
     return {
         ...input.ledger,
         lastUpdatedAt: input.now || new Date().toISOString(),
+        ...(promptShapeSamples.length > 0 ? { promptShapeSamples } : {}),
         modelCallCount: input.ledger.modelCallCount + 1,
         modelFailureCount: input.ledger.modelFailureCount + (input.succeeded ? 0 : 1),
         modelDurationMs: input.ledger.modelDurationMs + durationMs,
@@ -339,6 +445,9 @@ export function buildRuntimeAccountingDigest(input: {
         performanceUsage: clonePerformanceUsage(input.ledger.performanceUsage),
         wallTimeMs,
         stageBuckets: cloneBuckets(input.ledger.stageBuckets),
+        ...(Array.isArray(input.ledger.promptShapeSamples) && input.ledger.promptShapeSamples.length > 0
+            ? { promptShapeSamples: input.ledger.promptShapeSamples.map((sample) => ({ ...sample })) }
+            : {}),
         costEstimate: { status: 'not_configured' },
         boundaries: {
             digestOnly: true,

@@ -30,6 +30,10 @@ import {
 } from './design-category-terms';
 import { inferReferenceReplicationArtifactKind } from './reference-replication-output-intent';
 import { getSkillById } from './skills/skill-declarations';
+import {
+    extractUserDeclaredDeliverables,
+    type UserDeclaredDeliverable
+} from './user-declared-deliverables';
 
 export type AgentTaskPlanningContractVersion = 'agent-task-planning-contract/v0';
 
@@ -72,6 +76,8 @@ export interface AgentTaskPlanningBrief {
     methodManifestRefs?: string[];
     goal: string;
     deliverables: string[];
+    /** 用户原文中明确并列点名的交付物；只保真，不据此预选 Skill。 */
+    userDeclaredDeliverables: UserDeclaredDeliverable[];
     constraints: string[];
     needsProjectAssets: boolean;
     needsVisualObservation: boolean;
@@ -675,10 +681,10 @@ function buildSteps(input: {
     }
     if (input.status === 'ready_for_model_planning') {
         return [
-            step('collect-context', 'inspect', 'collectContextBeforePlanning', 'read_only', {
-                requiresInputs: ['context_snapshot'],
+            step('review-available-context', 'plan', 'reviewAvailableContext', 'none', {
+                requiresInputs: ['operating_context_snapshot'],
                 producesOutputs: ['planning_context'],
-                reason: '开放式任务必须先读取当前上下文，再决定是否需要工具。'
+                reason: '先消费 Harness 已提供的环境事实；是否还需要观察项目、文档或画面，由 Agent 根据当前目标决定。'
             }),
             step('build-model-plan', 'plan', 'requestModelDesignPlan', 'none', {
                 requiresInputs: input.requiredInputs,
@@ -694,20 +700,15 @@ function buildSteps(input: {
     if (input.status === 'ready_for_tool_execution') {
         const directOperationSkill = isDeterministicOperationSkill(input.skillId);
         return [
-            step('inspect-tool-context', 'inspect', 'collectToolContext', 'read_only', {
-                requiresInputs: input.requiredInputs,
-                producesOutputs: ['tool_context'],
-                reason: '明确工具任务先读取必要上下文，避免盲写。'
-            }),
             step('execute-tool-sequence', 'execute', directOperationSkill ? 'executeDirectOperationSkill' : 'executeAutonomousToolCalls', 'write_photoshop', {
                 skillId: input.skillId,
                 taskType: input.taskType,
                 workMode: input.workMode,
-                requiresInputs: ['tool_context'],
+                requiresInputs: input.requiredInputs,
                 producesOutputs: ['execution_trace'],
                 reason: directOperationSkill
                     ? '由确定性 operation skill 编排底层工具，不生成固定名称的对外设计方案。'
-                    : '由 Agent 工具循环决定具体工具调用，不强制生成固定名称的对外设计方案。'
+                    : '由 Agent 工具循环决定是否需要补充观察以及具体工具调用，不强制先检查当前画面。'
             }),
             step('verify-tool-result', 'verify', 'readBackToolResult', 'read_only', {
                 requiresInputs: ['execution_trace'],
@@ -826,6 +827,7 @@ export function buildAgentTaskPlanningContract(
     input: BuildAgentTaskPlanningContractInput
 ): AgentTaskPlanningContract {
     const text = normalizeText(input.userInput);
+    const userDeclaredDeliverables = extractUserDeclaredDeliverables(text);
     const route = resolveRoute(input);
     const skillId = resolveSkillId(input);
     const manifestSelection = resolvePlanningManifestSelection(input, skillId);
@@ -893,6 +895,9 @@ export function buildAgentTaskPlanningContract(
             methodManifests,
             scenario
         });
+    if (userDeclaredDeliverables.length > 0) {
+        requiredInputs.push('user_declared_deliverables');
+    }
     const steps = buildSteps({
         status,
         requiresUserApproval,
@@ -928,6 +933,7 @@ export function buildAgentTaskPlanningContract(
                 : undefined,
             goal: text || '未提供明确任务目标。',
             deliverables,
+            userDeclaredDeliverables,
             constraints: buildConstraints({ text, skillId, manifest, methodManifests, requestKind }),
             needsProjectAssets,
             needsVisualObservation,
@@ -963,6 +969,9 @@ export function buildAgentTaskPlanningContract(
                 status === 'ready_read_only_plan' ? 'readonly_summary_matches_project_or_document_observation' : '',
                 status === 'ready_for_tool_execution' ? 'execution_trace_exists' : '',
                 status === 'ready_for_tool_execution' ? 'readback_or_export_result_exists' : '',
+                ...(requestKind === 'autonomous_execution'
+                    ? userDeclaredDeliverables.map((deliverable) => `user_deliverable:${deliverable.id}`)
+                    : []),
                 status === 'ready_for_tool_execution' && scenario === 'copywriting'
                     ? 'requested_change_applied'
                     : '',
@@ -1008,6 +1017,12 @@ export function buildAgentTaskPlanningContract(
                 source: 'agent-request-lifecycle',
                 summary: `route=${route}; skill=${skillId || 'none'}`
             },
+            ...(userDeclaredDeliverables.length > 0 ? [{
+                source: 'user-literal-deliverables',
+                summary: userDeclaredDeliverables.map((deliverable) => (
+                    `${deliverable.id}=${deliverable.label}`
+                )).join('; ')
+            }] : []),
             ...(manifest ? [{
                 source: 'skill-runtime-manifest',
                 summary: `skill=${manifest.skill_id}; version=${manifest.version}; deliverables=${deliverables.join(',')}`

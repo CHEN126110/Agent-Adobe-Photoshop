@@ -35,11 +35,16 @@ export interface VisibleAgentActivity {
     agentId: string;
     agentLabel: string;
     detail?: string;
-    source: 'initial' | 'run_phase' | 'skill_event' | 'teammate_event' | 'progress_event';
+    source: 'initial' | 'run_phase' | 'skill_event' | 'teammate_event' | 'progress_event' | 'model_turn';
     userVisible: true;
     showAsThinking: false;
     isProviderThinking: false;
     canClaimModelReasoning: false;
+    /**
+     * 活动开始时间（ms）。模型回合真机常跑 40–110 秒（带图更久），界面只有一句静态话时用户会以为
+     * 卡死；有了起点，界面可以显示「已 23 秒」让等待可感知。只对模型回合设置。
+     */
+    startedAt?: number;
 }
 
 const VISIBLE_TOOL_EVENT_KINDS = new Set<AgentStepEvent['kind']>([
@@ -63,8 +68,8 @@ const VISIBLE_PROCESS_EVENT_KINDS = new Set<AgentStepEvent['kind']>([
 const DESIGNER_VISIBLE_ACTIVITY_ID = 'design-assistant';
 const DESIGNER_VISIBLE_ACTIVITY_LABEL = '设计助手';
 const VISIBLE_AGENT_RUN_PHASE_DETAIL: Record<VisibleAgentRunPhase, string> = {
-    context_loading: '正在检查当前项目与 Photoshop 状态。',
-    agent_processing: '已完成环境检查，设计助手正在处理当前需求。'
+    context_loading: '正在理解你的需求和当前可用内容。',
+    agent_processing: '设计助手正在根据需求决定下一步。'
 };
 
 function canRenderStepAsUserFacing(event: AgentStepEvent): boolean {
@@ -229,6 +234,33 @@ function buildVisibleTeammateActivityFromStepEvent(
     );
 }
 
+/**
+ * 模型回合的实时活动（用户要求 2026-08-17：「看图那一下别让人以为卡住了，我想看到它在想什么做什么」）。
+ * model_request 事件不进入持久步骤流（那是噪音），但它是唯一能表达「现在轮到模型在想」的信号，
+ * 因此只投影成**实时活动摘要**（带起始时间，界面可显示已等待秒数），模型一回话就被后续事件替换。
+ */
+export function buildVisibleAgentActivityFromModelTurnEvent(
+    event: AgentStepEvent
+): VisibleAgentActivity | null {
+    if (!event || event.kind !== 'model_request' || event.audience !== 'user') return null;
+    const detail = String(event.detail || event.title || '').trim();
+    if (!detail) return null;
+    return {
+        ...buildActivityBase(
+            'autonomous_agent',
+            DESIGNER_VISIBLE_ACTIVITY_ID,
+            DESIGNER_VISIBLE_ACTIVITY_LABEL,
+            'model_turn',
+            detail
+        ),
+        startedAt: Date.now()
+    };
+}
+
+export function isModelTurnFinishedEvent(event: AgentStepEvent): boolean {
+    return Boolean(event) && event.kind === 'model_response';
+}
+
 export function buildVisibleAgentActivityFromStepEvent(
     event: AgentStepEvent
 ): VisibleAgentActivity | null {
@@ -322,6 +354,19 @@ export const formatAgentProcessEventContent = (event: AgentStepEvent): string =>
         .replace(/模型/g, '设计助手');
 };
 
+/**
+ * 过程流里一条动作显示成什么字。
+ *
+ * 规则：文字只说「做了什么」，不说「做到哪一步了」——状态由左侧时间线节点表达
+ * （空心点 = 完成、旋转环 = 进行中、红点 = 失败），文字再说一遍就是重复。
+ *
+ * 这条规则不是排版偏好，是在修一类必然出现的 bug：旧版拼 `已${工具名}` / `${工具名}中`，
+ * 而工具名表里动宾短语（「变换图层」）和名词短语（「任务卡打勾」「学到了什么」）混着，
+ * 前缀能不能加取决于名字的词性——于是真机截出了「已任务卡打勾」「已学到了什么」。
+ * 名字有 200 多个，逐条改名只是把问题推后；让文字不再承担状态，这类错就一次消失。
+ *
+ * 失败是唯一例外：出错必须把话说完整，所以保留「未完成」。
+ */
 export const formatAgentToolEventContent = (event: AgentStepEvent): string => {
     const toolName = String(event.toolName || '').trim();
     const info = getToolDisplayInfo(toolName);
@@ -335,13 +380,9 @@ export const formatAgentToolEventContent = (event: AgentStepEvent): string => {
     }
 
     if (event.status === 'running' || event.status === 'pending') {
-        // TODO(human): 进行中动作的措辞。
-        // 现在是 `${info.name}中` → 「置入图片中」「创建矩形中」「检索设计参考中」。
-        // 这行文字会带扫光动画显示，是用户判断 Agent 意图的第一眼信息。
-        // 请定下这里的措辞规则（下方完成态 `已${info.name}` 也可一并调整，保持一对）。
-        return `${info.name}中`;
+        return `${info.name}…`;
     }
-    return `已${info.name}`;
+    return info.name;
 };
 
 export const isVisiblePonderingStep = (step: VisibleStepLike): boolean => {

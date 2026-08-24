@@ -57,6 +57,11 @@ import { requiresAgentTaskDeliveryProgress } from '../../../shared/agent-task-pl
 import { resolveAgentTaskSpeechAct } from '../../../shared/agent-task-progress-identity';
 import { buildCreativeCompletionArtifactTargetPattern } from '../../../shared/design-category-terms';
 import {
+    collectUserDeliverableFileEvidence,
+    projectUserDeliverableReceipts,
+    type UserDeliverableEvidenceCandidate
+} from '../../../shared/user-deliverable-receipts';
+import {
     resolveRuntimeExecutionTarget,
     sameRuntimeExecutionDocument
 } from '../../../shared/agent-runtime-v5/runtime-execution-target';
@@ -150,7 +155,6 @@ const LAYER_ORGANIZATION_VISUAL_VERIFICATION_TOOLS = new Set([
 
 const DOCUMENT_SAVE_TOOLS = new Set([
     'saveDocument',
-    'smartSave',
     'quickExport',
     'exportDetailPageSlices',
     // 用户导出规范 4.0 移植（2026-07-07）：主图/详情页批量导出——完成契约必须认它为保存结果
@@ -198,6 +202,8 @@ const VISUAL_VERIFICATION_TOOLS = new Set([
 
 // 仅用于旧消息丢失 TaskPlan 时识别“发生过设计行为”的兼容 footprint；
 // 这些工具类别不能反向成为新建画布、主体图或文案的完成义务。
+// createDocument 可直接按成功写入计数；composeDesign 只有 document.mode=new 时才
+// 算新建文档，且复合执行部分失败时必须同时有结构化回执与真实 Host 写入事实。
 const DESIGN_CREATE_DOCUMENT_TOOLS = new Set([
     'createDocument'
 ]);
@@ -206,11 +212,13 @@ const DESIGN_CREATE_DOCUMENT_TOOLS = new Set([
 const DESIGN_SUBJECT_IMAGE_TOOLS = new Set([
     'placeImage',
     'replaceLayerContent',
-    'applyRasterImageResult'
+    'applyRasterImageResult',
+    'composeDesign'
 ]);
 
 const DESIGN_SHAPE_TOOLS = new Set([
     'renderLayout',
+    'composeDesign',
     'createRectangle',
     'createEllipse',
     'createShape',
@@ -220,6 +228,7 @@ const DESIGN_SHAPE_TOOLS = new Set([
 
 const DESIGN_COPY_TOOLS = new Set([
     'renderLayout',
+    'composeDesign',
     'createTextLayer',
     'setTextContent'
 ]);
@@ -770,6 +779,12 @@ function inferTaskKind(input: ContractInput): TaskCompletionKind | null {
         && (countSuccessful(input.toolCallLog, DESIGN_SUBJECT_IMAGE_TOOLS) + compositeResult.subjectCount > 0
             || countSuccessful(input.toolCallLog, DESIGN_SHAPE_TOOLS) + compositeResult.shapeCount > 0)
         && countSuccessful(input.toolCallLog, DESIGN_COPY_TOOLS) + compositeResult.copyCount > 0;
+    const hasUserDeclaredDeliverables = (
+        input.context?.agentTaskPlan?.designBrief.userDeclaredDeliverables?.length || 0
+    ) > 0;
+    if (hasProductionAuthority && hasUserDeclaredDeliverables && !isDocumentManagementTask) {
+        return 'creative_design';
+    }
     if (hasProductionAuthority && hasCreativeDesignIntent && !isDocumentManagementTask) {
         return 'creative_design';
     }
@@ -917,6 +932,20 @@ function hasSuccessfulAfter(toolCallLog: AgentToolCallLogEntry[], names: Set<str
 
 function countSuccessful(toolCallLog: AgentToolCallLogEntry[], names: Set<string>): number {
     return toolCallLog.filter((item) => names.has(item.name) && completionOperationSucceeded(item)).length;
+}
+
+function countCreatedDocuments(toolCallLog: AgentToolCallLogEntry[]): number {
+    const timeline = buildAgentOperationDocumentTimeline(toolCallLog);
+    const directCreateCount = countSuccessful(toolCallLog, DESIGN_CREATE_DOCUMENT_TOOLS);
+    const composeCreateCount = toolCallLog.filter((item, index) => {
+        if (item.name !== 'composeDesign') return false;
+        const documentMode = String(item.arguments?.document?.mode || '').trim();
+        if (documentMode !== 'new') return false;
+        if (completionOperationSucceeded(item)) return true;
+        return item.result?.data?.createdDocument === true
+            && timeline.entries[index]?.photoshopMutationObserved === true;
+    }).length;
+    return directCreateCount + composeCreateCount;
 }
 
 function countFailed(toolCallLog: AgentToolCallLogEntry[], names: Set<string>): number {
@@ -1250,8 +1279,13 @@ interface RenderLayoutQualityState {
     verifiedClosureCount: number;
     unresolvedFindingCount: number;
     reviewedObservationCount: number;
+    criticClosureCount: number;
     ownerCount: number;
     unresolvedOwnerCount: number;
+}
+
+function isLayoutQualityOwnerEntry(entry: AgentToolCallLogEntry): boolean {
+    return entry.name === 'renderLayout' || entry.name === 'composeDesign';
 }
 
 interface LatestRenderLayoutQualityOwner {
@@ -1384,7 +1418,7 @@ function collectLatestRenderLayoutQualityOwners(
     const owners: LatestRenderLayoutQualityOwner[] = [];
     for (let index = 0; index < toolCallLog.length; index += 1) {
         const entry = toolCallLog[index];
-        if (entry.name !== 'renderLayout') continue;
+        if (!isLayoutQualityOwnerEntry(entry)) continue;
         if (!entry.result?.qualityState) continue;
         const documentContext = timeline.entries[index];
         const identity = readRenderLayoutOwnerIdentity(entry);
@@ -1455,7 +1489,7 @@ function observationCoversRenderLayoutOwner(
     index: number,
     owner: LatestRenderLayoutQualityOwner
 ): boolean {
-    if (entry.name === 'renderLayout') return index === owner.layoutLogIndex;
+    if (isLayoutQualityOwnerEntry(entry)) return index === owner.layoutLogIndex;
     if (entry.name === 'getCanvasSnapshot' || entry.name === 'getAnnotatedSnapshot') {
         const coverage = readVisualCoverageRect(entry.arguments?.region || entry.result?.region);
         if (!coverage) return true;
@@ -1482,7 +1516,7 @@ function collectRenderLayoutOwnerVisualReviewCounts(
     let endExclusive = toolCallLog.length;
     for (let index = afterIndex + 1; index < toolCallLog.length; index += 1) {
         const entry = toolCallLog[index];
-        if (entry.name !== 'renderLayout' || !timeline.entries[index]?.photoshopMutationObserved) continue;
+        if (!isLayoutQualityOwnerEntry(entry) || !timeline.entries[index]?.photoshopMutationObserved) continue;
         const identity = readRenderLayoutOwnerIdentity(entry);
         const sameOwner = sameScopedRenderLayoutOwner(owner, identity, timeline.entries[index]);
         if (!sameOwner) {
@@ -1515,6 +1549,94 @@ function collectRenderLayoutOwnerVisualReviewCounts(
     );
 }
 
+function hasVersionBoundIndependentCriticPass(
+    toolCallLog: AgentToolCallLogEntry[],
+    owner: LatestRenderLayoutQualityOwner,
+    afterIndex: number
+): boolean {
+    const timeline = buildAgentOperationDocumentTimeline(toolCallLog);
+    let latestRelevantMutationIndex = afterIndex;
+    for (let index = afterIndex + 1; index < toolCallLog.length; index += 1) {
+        if (timeline.entries[index]?.photoshopMutationObserved
+            && sameAgentOperationDocumentContext(owner.documentContext, timeline.entries[index])) {
+            latestRelevantMutationIndex = index;
+        }
+    }
+    const latestMutationProof = readCompletionMutationProof(toolCallLog[latestRelevantMutationIndex]);
+    const expectedRevision = latestMutationProof?.after
+        || readPhotoshopHistoryStateRef(toolCallLog[latestRelevantMutationIndex]?.result);
+    if (!expectedRevision) return false;
+    return toolCallLog.some((entry, index) => (
+        index > latestRelevantMutationIndex
+        && entry.name === 'evaluateDesign'
+        && completionOperationSucceeded(entry)
+        && entry.result?.evaluationAuthority === 'advisory_visual_critique'
+        && entry.result?.evaluation?.verdict === 'pass'
+        && sameAgentOperationDocumentContext(owner.documentContext, timeline.entries[index])
+        && samePhotoshopHistoryStateRef(
+            readPhotoshopHistoryStateRef(entry.result),
+            expectedRevision
+        )
+    ));
+}
+
+function hasSameDocumentComparativeVisualReviewPass(
+    toolCallLog: AgentToolCallLogEntry[],
+    owner: LatestRenderLayoutQualityOwner,
+    afterIndex: number
+): boolean {
+    const timeline = buildAgentOperationDocumentTimeline(toolCallLog);
+    let endExclusive = toolCallLog.length;
+    for (let index = afterIndex + 1; index < toolCallLog.length; index += 1) {
+        const entry = toolCallLog[index];
+        if (!isLayoutQualityOwnerEntry(entry) || !timeline.entries[index]?.photoshopMutationObserved) continue;
+        const identity = readRenderLayoutOwnerIdentity(entry);
+        if (!sameScopedRenderLayoutOwner(owner, identity, timeline.entries[index])) {
+            endExclusive = index;
+            break;
+        }
+    }
+
+    let latestRelevantMutationIndex = afterIndex;
+    for (let index = afterIndex + 1; index < endExclusive; index += 1) {
+        if (timeline.entries[index]?.photoshopMutationObserved
+            && sameAgentOperationDocumentContext(owner.documentContext, timeline.entries[index])) {
+            latestRelevantMutationIndex = index;
+        }
+    }
+    const latestMutationProof = readCompletionMutationProof(toolCallLog[latestRelevantMutationIndex]);
+    const expectedRevision = latestMutationProof?.after
+        || readPhotoshopHistoryStateRef(toolCallLog[latestRelevantMutationIndex]?.result);
+    if (!expectedRevision) return false;
+
+    for (let index = latestRelevantMutationIndex + 1; index < endExclusive; index += 1) {
+        const entry = toolCallLog[index];
+        if (!DESIGN_REVIEW_TOOLS.has(entry.name)
+            || !completionOperationSucceeded(entry)
+            || !sameAgentOperationDocumentContext(owner.documentContext, timeline.entries[index])
+            || !observationCoversRenderLayoutOwner(entry, index, owner)) {
+            continue;
+        }
+        const receipt = readAgentVisualObservationReceipt(entry.result);
+        if (!receipt
+            || receipt.document !== String(expectedRevision.documentId)
+            || receipt.history !== String(expectedRevision.historyStateId)) {
+            continue;
+        }
+        const hasModelReason = readAgentVisualObservations(entry.result).some((observation) => {
+            const decision = readVisualObservationReviewDecision(
+                observation.reviewDecision,
+                observation.observationKey
+            );
+            return decision?.status === 'passed'
+                && decision.reviewer === 'primary_model'
+                && Boolean(String(decision.comparisonReason || '').trim());
+        });
+        if (hasModelReason) return true;
+    }
+    return false;
+}
+
 function collectRenderLayoutOwnerQualityState(
     toolCallLog: AgentToolCallLogEntry[],
     owner: LatestRenderLayoutQualityOwner
@@ -1530,6 +1652,7 @@ function collectRenderLayoutOwnerQualityState(
     let verifiedClosureCount = 0;
     let unresolvedFindingCount = 0;
     let reviewedObservationCount = 0;
+    let criticClosureCount = 0;
 
     for (const finding of findings) {
         const closureKind = String(finding?.closureKind || (
@@ -1544,6 +1667,20 @@ function collectRenderLayoutOwnerQualityState(
             reviewedObservationCount += visual.reviewedCount;
             if (visual.allPassed) verifiedClosureCount += 1;
             else unresolvedFindingCount += 1;
+            continue;
+        }
+        if (closureKind === 'comparison') {
+            const visual = collectRenderLayoutOwnerVisualReviewCounts(toolCallLog, owner, layoutLogIndex);
+            reviewedObservationCount += visual.reviewedCount;
+            if (visual.allPassed
+                && hasSameDocumentComparativeVisualReviewPass(toolCallLog, owner, layoutLogIndex)) {
+                verifiedClosureCount += 1;
+            } else if (hasVersionBoundIndependentCriticPass(toolCallLog, owner, layoutLogIndex)) {
+                verifiedClosureCount += 1;
+                criticClosureCount += 1;
+            } else {
+                unresolvedFindingCount += 1;
+            }
             continue;
         }
 
@@ -1586,6 +1723,7 @@ function collectRenderLayoutOwnerQualityState(
         verifiedClosureCount,
         unresolvedFindingCount,
         reviewedObservationCount,
+        criticClosureCount,
         ownerCount: 1,
         unresolvedOwnerCount: unresolved ? 1 : 0
     };
@@ -1629,6 +1767,7 @@ function collectLatestRenderLayoutQualityState(
         verifiedClosureCount: ownerStates.reduce((sum, state) => sum + state.verifiedClosureCount, 0),
         unresolvedFindingCount: ownerStates.reduce((sum, state) => sum + state.unresolvedFindingCount, 0),
         reviewedObservationCount: ownerStates.reduce((sum, state) => sum + state.reviewedObservationCount, 0),
+        criticClosureCount: ownerStates.reduce((sum, state) => sum + state.criticClosureCount, 0),
         ownerCount: ownerStates.length,
         unresolvedOwnerCount: unresolvedOwners.length
     };
@@ -2787,7 +2926,7 @@ function buildForbiddenCopyReason(
 function buildCreativeDesignContract(input: ContractInput, acceptance: AcceptanceCounts): TaskCompletionContract {
     const log = input.toolCallLog;
     const compositeResult = collectLayoutReplicationCompositeResult(log);
-    const createdDocumentCount = countSuccessful(log, DESIGN_CREATE_DOCUMENT_TOOLS)
+    const createdDocumentCount = countCreatedDocuments(log)
         + compositeResult.createdDocumentCount;
     const createdDocument = createdDocumentCount > 0;
     const obligations = resolveCreativeTaskObligations(input);
@@ -2835,6 +2974,18 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
             ? true
             : rasterDeliveryCount + editableDeliveryCount > 0);
     const renderLayoutQuality = collectLatestRenderLayoutQualityState(log);
+    const unresolvedComparisonFinding = Boolean(
+        renderLayoutQuality?.unresolved
+        && renderLayoutQuality.findings.some((finding) => finding?.closureKind === 'comparison')
+    );
+    let layoutQualityReason: string | undefined;
+    if (renderLayoutQuality?.unresolved && unresolvedComparisonFinding) {
+        layoutQualityReason = '候选发生了结构性变化，但当前只有变化事实，没有更优证据。可在同文档最新画面上由模型给出明确比较理由，或使用绑定该版本的独立评审证据闭环；不要把删减本身当成好坏结论。';
+    } else if (renderLayoutQuality?.unresolved) {
+        layoutQualityReason = 'renderLayout 的结构化质量发现尚未按 finding 指定的同一工具、图层与参数完成闭环；写类修订后还必须有真实局部视觉复核，不能把任意成功动作当作问题已解决。';
+    }
+    const independentCriticReviewCount = renderLayoutQuality?.criticClosureCount || 0;
+    const creativeReviewPassed = visualReview.allPassed || independentCriticReviewCount > 0;
 
     const executionStatus: TaskCompletionRequirement['status'] = mutationApplied ? 'passed' : 'failed';
     const targetStatus: TaskCompletionRequirement['status'] = !mutationApplied
@@ -3000,17 +3151,18 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
     requirements.push({
             id: 'creative-review',
             label: '画面复核',
-            status: visualReview.allPassed ? 'passed' : 'needs_review',
+            status: creativeReviewPassed ? 'passed' : 'needs_review',
             actual: {
                 expectedCount: visualReview.expectedCount,
                 reviewCount,
+                independentCriticReviewCount,
                 snapshotCount: visualReview.capturedCount,
                 unreviewedCount: visualReview.unreviewedCount,
                 needsFixCount: visualReview.needsFixCount,
                 unreadableCount: visualReview.unreadableCount,
                 overflowCount: visualReview.overflowCount
             },
-            reason: buildCreativeVisualReviewReason(visualReview)
+            reason: creativeReviewPassed ? undefined : buildCreativeVisualReviewReason(visualReview)
     });
 
     if (renderLayoutQuality) {
@@ -3022,6 +3174,7 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
                 qualityState: renderLayoutQuality.qualityState,
                 repairActionCount: renderLayoutQuality.repairActionCount,
                 verifiedClosureCount: renderLayoutQuality.verifiedClosureCount,
+                criticClosureCount: renderLayoutQuality.criticClosureCount,
                 unresolvedFindingCount: renderLayoutQuality.unresolvedFindingCount,
                 reviewedObservationCount: renderLayoutQuality.reviewedObservationCount,
                 ownerCount: renderLayoutQuality.ownerCount,
@@ -3029,9 +3182,7 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
                 findings: renderLayoutQuality.findings,
                 suggestedObservation: renderLayoutQuality.suggestedObservation
             },
-            reason: renderLayoutQuality.unresolved
-                ? 'renderLayout 的结构化质量发现尚未按 finding 指定的同一工具、图层与参数完成闭环；写类修订后还必须有真实局部视觉复核，不能把任意成功动作当作问题已解决。'
-                : undefined
+            reason: layoutQualityReason
         });
     }
 
@@ -3169,7 +3320,7 @@ function buildProfileProductionEvidenceContract(
         && mutationTargetKnown
         && (hasSameTargetPhotoshopObservationAfter(log, latestMutation)
             || hasVerifiedAcceptanceAtOrAfter(log, latestMutation));
-    const createdDocumentCount = countSuccessful(log, DESIGN_CREATE_DOCUMENT_TOOLS)
+    const createdDocumentCount = countCreatedDocuments(log)
         + collectLayoutReplicationCompositeResult(log).createdDocumentCount;
     const currentDocumentOnly = ['edit_existing', 'redesign', 'template_fill'].includes(workMode);
     const currentDocumentViolation = currentDocumentOnly && createdDocumentCount > 0;
@@ -3297,6 +3448,155 @@ function buildProfileProductionEvidenceContract(
     };
 }
 
+const DOCUMENT_RESULT_CONTAINER_KEYS = new Set([
+    'document',
+    'documentInfo',
+    'activeDocument',
+    'targetDocument',
+    'documents',
+    'results',
+    'data'
+]);
+
+function collectDocumentNames(value: unknown, into: Set<string>, depth: number): void {
+    if (!value || depth > 4 || into.size >= 32) return;
+    if (Array.isArray(value)) {
+        for (const item of value) collectDocumentNames(item, into, depth + 1);
+        return;
+    }
+    if (typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    for (const key of ['documentName', 'activeDocumentName', 'targetDocumentName']) {
+        const name = typeof record[key] === 'string' ? record[key].trim() : '';
+        if (name) into.add(name);
+    }
+    for (const [key, nested] of Object.entries(record)) {
+        if (DOCUMENT_RESULT_CONTAINER_KEYS.has(key)) collectDocumentNames(nested, into, depth + 1);
+    }
+}
+
+function collectUserDeliverableDocumentWriteEvidence(
+    log: AgentToolCallLogEntry[]
+): UserDeliverableEvidenceCandidate[] {
+    const timeline = buildAgentOperationDocumentTimeline(log);
+    const candidates: UserDeliverableEvidenceCandidate[] = [];
+    for (const entry of timeline.entries) {
+        if (entry.kind !== 'photoshop_write' || !entry.photoshopMutationObserved) continue;
+        const names = new Set<string>();
+        collectDocumentNames(entry.operation.arguments, names, 0);
+        collectDocumentNames(entry.operation.result, names, 0);
+        if (entry.operation.name === 'createDocument') {
+            const operationArguments = entry.operation.arguments;
+            if (operationArguments
+                && typeof operationArguments === 'object'
+                && !Array.isArray(operationArguments)) {
+                const name = String((operationArguments as Record<string, unknown>).name || '').trim();
+                if (name) names.add(name);
+            }
+        }
+        let nameIndex = 0;
+        for (const name of names) {
+            candidates.push({
+                id: `document:${entry.index}:${nameIndex}`,
+                kind: 'document_write',
+                reference: name,
+                toolName: String(entry.operation.name || ''),
+                logIndex: entry.index
+            });
+            nameIndex += 1;
+        }
+    }
+    return candidates;
+}
+
+function applyUserDeclaredDeliverableReceipts(
+    input: ContractInput,
+    contract: TaskCompletionContract
+): TaskCompletionContract {
+    const deliverables = input.context?.agentTaskPlan?.designBrief.userDeclaredDeliverables || [];
+    if (deliverables.length === 0) return contract;
+
+    const requiresFiles = taskRequestsDelivery(input);
+    const candidates = requiresFiles
+        ? collectUserDeliverableFileEvidence(input.toolCallLog)
+        : collectUserDeliverableDocumentWriteEvidence(input.toolCallLog);
+    const projections = projectUserDeliverableReceipts({
+        deliverables,
+        candidates,
+        requiredKind: requiresFiles ? 'file' : 'document_write'
+    });
+    const receiptRequirements = projections.map((projection): TaskCompletionRequirement => {
+        const requirementId = `user-deliverable:${projection.deliverableId}`;
+        return {
+            id: requirementId,
+            label: `交付用户点名的“${projection.label}”`,
+            status: projection.status,
+            expected: {
+                label: projection.label,
+                evidenceKind: requiresFiles ? 'file' : 'document_write'
+            },
+            actual: projection.receipt
+                ? {
+                    toolName: projection.receipt.toolName,
+                    logIndex: projection.receipt.logIndex,
+                    reference: projection.receipt.reference
+                }
+                : { matchingCandidateIds: projection.matchingCandidateIds },
+            reason: projection.reason,
+            ...qualifiedCompletionFailure(
+                projection.status,
+                'required_artifact_missing',
+                requirementId
+            )
+        };
+    });
+    const requiredById = new Map<string, TaskCompletionRequirement>();
+    for (const requirement of [...contract.required, ...receiptRequirements]) {
+        requiredById.set(requirement.id, requirement);
+    }
+    const required = [...requiredById.values()];
+    const receiptBlockers = receiptRequirements
+        .filter((requirement) => requirement.status === 'failed')
+        .map((requirement) => requirement.reason || `${requirement.label}缺少收据。`);
+    const receiptWarnings = receiptRequirements
+        .filter((requirement) => requirement.status === 'needs_review')
+        .map((requirement) => requirement.reason || `${requirement.label}的收据归属需要复核。`);
+    const blockers = [...new Set([...contract.blockers, ...receiptBlockers])];
+    const warnings = [...new Set([...contract.warnings, ...receiptWarnings])];
+    let status = contract.status;
+    if (receiptBlockers.length > 0) {
+        status = 'failed';
+    } else if (status === 'completed' && receiptWarnings.length > 0) {
+        status = 'needs_review';
+    }
+    const passedCount = receiptRequirements.filter((requirement) => requirement.status === 'passed').length;
+    const completion = contract.completion
+        ? {
+            ...contract.completion,
+            artifactStatus: status === 'completed'
+                ? contract.completion.artifactStatus
+                : 'artifact_incomplete' as const,
+            pendingPublicationReviewCheckKeys: [
+                ...contract.completion.pendingPublicationReviewCheckKeys
+            ],
+            rejectedPublicationReviewCheckKeys: [
+                ...contract.completion.rejectedPublicationReviewCheckKeys
+            ],
+            boundaries: { ...contract.completion.boundaries }
+        }
+        : undefined;
+
+    return {
+        ...contract,
+        status,
+        required,
+        blockers,
+        warnings,
+        ...(completion ? { completion } : {}),
+        summary: `${contract.summary} 用户点名交付物 ${passedCount}/${receiptRequirements.length} 项取得独立${requiresFiles ? '文件' : '文档写入'}收据。`
+    };
+}
+
 function mergeEvaluationProfileWithProductionEvidence(
     profileContract: TaskCompletionContract,
     factualContract: TaskCompletionContract
@@ -3364,43 +3664,43 @@ export function buildTaskCompletionContract(input: ContractInput): TaskCompletio
     const profileContract = buildSkillEvaluationProfileContract(operationInput, acceptance);
     if (profileContract) {
         const factualContract = buildProfileProductionEvidenceContract(operationInput, acceptance);
-        return mergeEvaluationProfileWithProductionEvidence(profileContract, factualContract);
+        return applyUserDeclaredDeliverableReceipts(
+            operationInput,
+            mergeEvaluationProfileWithProductionEvidence(profileContract, factualContract)
+        );
     }
 
     const kind = inferTaskKind(operationInput);
     if (!kind) return undefined;
+    let contract: TaskCompletionContract | undefined;
     if (kind === 'reference_replication') {
-        return buildReferenceContract(operationInput, acceptance);
-    }
-    if (kind === 'creative_design') {
-        return buildCreativeDesignContract(operationInput, acceptance);
-    }
-    if (kind === 'layer_order_edit') {
-        return buildLayerOrderContract(operationInput, acceptance);
-    }
-    if (kind === 'layer_management') {
-        return buildOperationContract(kind, operationInput, acceptance, LAYER_MANAGEMENT_MUTATION_TOOLS, LAYER_MANAGEMENT_VERIFICATION_TOOLS, {
+        contract = buildReferenceContract(operationInput, acceptance);
+    } else if (kind === 'creative_design') {
+        contract = buildCreativeDesignContract(operationInput, acceptance);
+    } else if (kind === 'layer_order_edit') {
+        contract = buildLayerOrderContract(operationInput, acceptance);
+    } else if (kind === 'layer_management') {
+        contract = buildOperationContract(kind, operationInput, acceptance, LAYER_MANAGEMENT_MUTATION_TOOLS, LAYER_MANAGEMENT_VERIFICATION_TOOLS, {
             context: '读取图层上下文',
             mutation: '执行图层管理操作',
             verification: '复核图层状态'
         });
-    }
-    if (kind === 'document_save') {
-        return buildOperationContract(kind, operationInput, acceptance, DOCUMENT_SAVE_TOOLS, DOCUMENT_VERIFICATION_TOOLS, {
+    } else if (kind === 'document_save') {
+        contract = buildOperationContract(kind, operationInput, acceptance, DOCUMENT_SAVE_TOOLS, DOCUMENT_VERIFICATION_TOOLS, {
             context: '读取文档状态',
             mutation: '执行文档保存或导出',
             verification: '复核文档保存结果'
         });
-    }
-    if (kind === 'document_close') {
-        return buildOperationContract(kind, operationInput, acceptance, DOCUMENT_CLOSE_TOOLS, DOCUMENT_VERIFICATION_TOOLS, {
+    } else if (kind === 'document_close') {
+        contract = buildOperationContract(kind, operationInput, acceptance, DOCUMENT_CLOSE_TOOLS, DOCUMENT_VERIFICATION_TOOLS, {
             context: '确认待关闭文档',
             mutation: '执行文档关闭',
             verification: '复核文档关闭结果'
         });
+    } else if (kind === 'text_content_edit' || kind === 'text_typography_edit') {
+        contract = buildTextContract(kind, operationInput, acceptance);
     }
-    if (kind === 'text_content_edit' || kind === 'text_typography_edit') {
-        return buildTextContract(kind, operationInput, acceptance);
-    }
-    return undefined;
+    return contract
+        ? applyUserDeclaredDeliverableReceipts(operationInput, contract)
+        : undefined;
 }

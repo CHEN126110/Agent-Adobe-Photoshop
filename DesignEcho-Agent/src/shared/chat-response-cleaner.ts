@@ -151,21 +151,6 @@ export function looksLikeFormulaicCapabilityExplainer(value: string): boolean {
         && /(执行方案|出图方案|项目资料|项目素材|素材情况|你直接说|直接提出|直接告诉|发给我)/u.test(text);
 }
 
-function looksLikeCapabilityExecutionPromise(value: string): boolean {
-    const text = String(value || '').replace(/\s+/g, ' ').trim();
-    if (!text) return false;
-    if (!/^(?:会做|会的|可以|当然可以|我可以|我能|支持)/u.test(text)) return false;
-
-    const hasSkuCapability = /(SKU|组合图|自选备注|规格备注|规格图)/iu.test(text);
-    if (!hasSkuCapability) return false;
-
-    return /(实际制作时|制作时|真正制作时|真正执行时|需要制作时).{0,50}(读取|调用|当前项目|项目素材|项目资料|配置|模板|规格|PSD|PSB|导出|高效完成|进入|处理流程|规划)/iu.test(text)
-        || /(读取|调用).{0,12}(当前项目|项目).{0,30}(素材|资料|配置|模板|规格|PSD|PSB)/iu.test(text)
-        || /(你说|直接说).{0,18}(帮我做\s*SKU|做\s*SKU).{0,28}(进入|处理|规划|读取)/iu.test(text)
-        || /(进入|再进入).{0,12}(处理流程|受控处理流程)/u.test(text)
-        || /(为你制作|处理素材导出|高效完成|确保输出).{0,30}(SKU|组合图|自选备注|规格图|素材|导出)/iu.test(text);
-}
-
 function looksLikeInternalPromptInstructionLeak(value: string): boolean {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     if (!text) return false;
@@ -330,8 +315,28 @@ function rewriteInternalAssetVocabulary(value: string): string {
         .replace(/\bsku[_-]output\b/gi, 'SKU 成品图');
 }
 
+function rewriteDesignValidationTerms(value: string): string {
+    return String(value || '')
+        .replace(/composeDesign\s*设计稿不完整(?:，本次未修改\s*Photoshop)?\s*[:：]?/giu, '设计方案还不完整：')
+        .replace(/layout\.regions\[(\d+)\]\.id\s*[:：][^；\n]*/giu, (_match, index) => `排版方案中的第 ${Number(index) + 1} 个区域还缺少清楚的图层名称`)
+        .replace(/layout\.regions\[(\d+)\]\.bounds\s*[:：][^；\n]*/giu, (_match, index) => `排版方案中的第 ${Number(index) + 1} 个区域位置或大小超出了画布`)
+        .replace(/layout\.regions\[(\d+)\]\s*[:：][^；\n]*/giu, (_match, index) => `排版方案中的第 ${Number(index) + 1} 个区域还没有说明用途和内容`)
+        .replace(/subject\.shadow(?:\.kind)?\s*[:：][^；\n]*/giu, '主体的阴影处理还没有说明完整')
+        .replace(/subject\.fillRatio\s*[:：][^；\n]*/giu, '主体在画面中的目标占比还没有说明')
+        .replace(/subject\.treatment\s*[:：][^；\n]*/giu, '主体采用整张照片还是抠图的处理方式还没有确定')
+        .replace(/subject\.cutout\s*[:：][^；\n]*/giu, '主体是否需要抠图还没有说明')
+        .replace(/background\.kind\s*[:：][^；\n]*/giu, '主体处理方式和背景方案互相冲突')
+        .replace(/background\.(?:colorHex|gradient|filePath|prompt|referenceFilePath)\s*[:：][^；\n]*/giu, '背景方案还缺少必要内容')
+        .replace(/layout\.groupName\s*[:：][^；\n]*/giu, '图层组还缺少清楚、可读的名称')
+        .replace(/layout\.visualStyle\s*[:：][^；\n]*/giu, '视觉样式还没有说明完整')
+        .replace(/palette\s*[:：][^；\n]*/giu, '画面的基础配色还没有说明完整')
+        .replace(/canvas\s*[:：][^；\n]*/giu, '画布尺寸还没有说明清楚')
+        .replace(/document\.name\s*[:：][^；\n]*/giu, '设计文档还缺少清楚、可读的名称')
+        .replace(/save\s*[:：][^；\n]*/giu, '交付目录或文件格式还没有说明清楚');
+}
+
 function rewriteUserFacingOperationTerms(value: string): string {
-    return rewriteInternalAssetVocabulary(value)
+    return rewriteDesignValidationTerms(rewriteInternalAssetVocabulary(value))
         .replace(/\bRuntime\s+Session\s*的\s*R5\s*尚未通过[（(][^）)]*[）)]，不能把工具结果声明为任务完成。?/giu, '本轮处理已经结束，但最终画面还没有完成复核，暂时不能确认任务已经完成。')
         .replace(/\bRuntime\s+Session\s*的\s*E2\s*尚无真实交付结果[（(][^）)]*[）)]，不能声明任务完成。?/giu, '最终画面已经完成复核，但交付结果还没有验收，暂时不能确认任务已经完成。')
         .replace(/当前处理\s*的\s*当前阶段\s*尚未通过[（(][^）)]*[）)]，不能把工具结果声明为任务完成。?/gu, '本轮处理已经结束，但最终画面还没有完成复核，暂时不能确认任务已经完成。')
@@ -407,6 +412,7 @@ function rewriteUserFacingOperationTerms(value: string): string {
         .replace(/\bmoveLayerToGroup\b/g, '移动到图层组')
         .replace(/\bduplicateLayer\b/g, '复制图层')
         .replace(/\bdeleteLayer\b/g, '删除图层')
+        .replace(/\bcomposeDesign\b/g, '设计首稿')
         .replace(/\bfocusLayer\b/g, '聚焦图层')
         .replace(/\bquickExport\b/g, '快速导出')
         .replace(/结果检查标准/g, '结果检查方式')
@@ -478,11 +484,9 @@ export function sanitizeUserVisibleAgentText(
     if (!content) return content;
 
     const trimmed = String(content).trim();
-    if (!options?.toolResultBacked) {
-        if (looksLikeCannedCapabilityMenu(trimmed)) return '';
-        if (looksLikeFormulaicCapabilityExplainer(trimmed)) return '';
-        if (looksLikeCapabilityExecutionPromise(trimmed)) return '';
-    }
+    // 2026-08-19 减法：不再按「像不像能力菜单 / 套话 / 能力承诺」的正则把整段判空——那是对着某次真机原话
+    // 写的对抗性过滤，模型说了套话用户看到的却是「当前模型没有生成面向用户的判断」，比套话更糟。
+    // 该管的是提示（别罗列能力菜单），不是出口；这里只洗真泄漏：内部提示原文、路由载荷、工具标记。
     if (looksLikeInternalPromptInstructionLeak(trimmed)) return '';
     if (looksLikeStructuredRouterPayload(trimmed)) {
         const cleanedStructured = cleanAssistantResponseContent(trimmed).trim();
@@ -512,35 +516,6 @@ export function sanitizeUserVisibleAssistantBodyText(
     return sanitizeUserVisibleDiagnosticText(agentVisibleText, { preserveNewlines: true }) || agentVisibleText;
 }
 
-function looksLikeEnglishDominantRuntimeMonologue(value: string): boolean {
-    const cjkCount = value.match(/[\u3400-\u9fff]/gu)?.length || 0;
-    const latinCount = value.match(/[a-z]/giu)?.length || 0;
-    if (cjkCount === 0 && latinCount >= 3) return true;
-    if (cjkCount < 2 && latinCount >= 16) return true;
-    if (latinCount > Math.max(60, cjkCount * 5)) return true;
-    return latinCount > 40
-        && /\b(?:the current document|the system is blocking|i need to|let me|the error says)\b/iu.test(value);
-}
-
-function stripLeadingEnglishThinkingNarration(value: string): string {
-    const firstCjkIndex = value.search(/[\u3400-\u9fff]/u);
-    if (firstCjkIndex <= 0) return value;
-    const prefix = value.slice(0, firstCjkIndex).replace(/[*_`#：:·.-]+/gu, ' ').trim();
-    if (!/^(?:the\s+the\s+place|the\s+place|from\s+the\s+snapshot|looking(?:\s+i\s+need\s+to\s+provide)?|now\s+i\s+need\s+to|first\s+blue)\b/iu.test(prefix)) {
-        return value;
-    }
-    return value
-        .slice(firstCjkIndex)
-        .trim()
-        .replace(/^([^*：:\n]{1,24})\*{1,2}(?=[:：])/u, '$1');
-}
-
-function looksLikeMechanicalThinkingNarration(value: string): boolean {
-    return /\b[a-z]+(?:[A-Z][A-Za-z0-9]+)+\b/u.test(value)
-        || /(?:现在|接下来|首先).{0,18}(?:搜索|调用|创建第|置入第|切换文档|获取快照)/u.test(value)
-        || /第[一二三四五六七八九十\d]+个.{0,20}(?:创建成功|已创建).{0,30}(?:现在|接下来).{0,16}(?:创建|置入)/u.test(value);
-}
-
 function looksLikeRunawayThinkingRepetition(value: string): boolean {
     const sentenceCounts = new Map<string, number>();
     const sentences = value
@@ -565,21 +540,22 @@ function looksLikeRunawayThinkingRepetition(value: string): boolean {
     return false;
 }
 
+/**
+ * 过程区里模型的话只洗真泄漏，不评判「像不像人话」。
+ * 2026-08-19 减法：删掉「机械叙述（现在…调用…）」「英文独白」「开头英文剥离」三种内容过滤——
+ * 它们是对着某次真机输出写的正则，代价是设计师的第一人称叙述常被整段判空、用户看不到 Agent 在想什么。
+ * 保留：工具标记 / 工程话术 / 路由载荷（真泄漏）、单句失控重复（界面保护）、独立内部诊断（映射成人话）。
+ */
 export function sanitizeUserVisibleThinkingText(content: string): string {
-    const rawText = stripLeadingEnglishThinkingNarration(String(content || '').trim());
+    const rawText = String(content || '').trim();
     if (!rawText) return '';
     if (containsInternalThinkingLeak(rawText)) return '';
-    if (looksLikeMechanicalThinkingNarration(rawText)) return '';
-    if (looksLikeEnglishDominantRuntimeMonologue(rawText)) return '';
     if (looksLikeRunawayThinkingRepetition(rawText)) return '';
 
     const cleaned = sanitizeUserVisibleAgentText(rawText).trim();
     if (!cleaned) return '';
     if (containsInternalThinkingLeak(cleaned)) return '';
-    if (looksLikeMechanicalThinkingNarration(cleaned)) return '';
     if (looksLikeStandaloneInternalDiagnostic(cleaned)) return '';
-    if (looksLikeEnglishDominantRuntimeMonologue(cleaned)) return '';
-    if (looksLikeRunawayThinkingRepetition(cleaned)) return '';
     return cleaned;
 }
 
@@ -892,3 +868,7 @@ export function cleanAssistantResponseContent(content: string): string {
 
     return removeToolCallMarkup(content);
 }
+export {
+    alignUserVisibleCompletionMessage,
+    synchronizeLastAssistantCompletionMessage
+} from './agent-completion-message-consistency';

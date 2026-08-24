@@ -57,6 +57,10 @@ import {
     type RuntimeActionPlanResumeFreshness,
     type RuntimeResumeContextAnchor
 } from './agent-runtime-v5/runtime-action-plan-resume-freshness';
+import {
+    describeDesignRunToolLogFacts,
+    extractDesignRunToolLogFacts
+} from './design-run-tool-log-facts';
 import type { DesignEvaluationProfileDigest } from './agent-runtime-v5/design-evaluation-profiles';
 import type { DesignVerdict } from './design-quality-verdict-bundle';
 import {
@@ -144,6 +148,12 @@ export interface AgentRunCheckpoint {
      * 续跑摘要带上它，"重新核实现状"才能变成"核对既有清单"，而不是从零重做发现。
      */
     readFindings?: string[];
+    /**
+     * 「做到哪」的自然语言摘要（≤600 字），只陈述工具日志能证明的事实：在哪个文档、看过 / 置入了哪些素材、
+     * Agent 声明了什么版面与标题、导出了什么。续跑摘要读它，下一轮开工就知道上一轮的画面内容，
+     * 而不是只知道「已建文档 / 已排版」两个旗标。
+     */
+    designSummary?: string;
 }
 
 export interface AgentRunModelProviderFailureDigest {
@@ -685,9 +695,46 @@ function derivePlacedLayers(rawLog: unknown[]): AgentRunPlacedLayer[] {
     return placed;
 }
 
-function deriveCheckpoint(calls: AgentRunToolCallEntry[], rawLog: unknown[]): AgentRunCheckpoint {
+interface ComposeDesignCheckpointFacts {
+    documentCreated: boolean;
+    layoutRendered: boolean;
+}
+
+function deriveComposeDesignCheckpointFacts(rawLog: unknown[]): ComposeDesignCheckpointFacts {
     let documentCreated = false;
     let layoutRendered = false;
+    for (const entry of rawLog) {
+        const record = entry as { name?: unknown; arguments?: unknown; result?: unknown } | null;
+        if (!record || String(record.name || '') !== 'composeDesign') continue;
+        const args = record.arguments && typeof record.arguments === 'object'
+            ? record.arguments as Record<string, any>
+            : {};
+        const result = record.result && typeof record.result === 'object'
+            ? record.result as Record<string, any>
+            : {};
+        const transition = readPhotoshopHistoryTransition(result);
+        const mutationObserved = transition?.mutationObserved === true;
+        const requestedNewDocument = String(args.document?.mode || '').trim() === 'new';
+        const succeeded = result.success !== false;
+
+        if (requestedNewDocument
+            && mutationObserved
+            && (succeeded || result.data?.createdDocument === true)) {
+            documentCreated = true;
+        }
+        if (mutationObserved
+            && (result.data?.layoutRendered === true
+                || (succeeded && Boolean(result.layerStructureReceipt)))) {
+            layoutRendered = true;
+        }
+    }
+    return { documentCreated, layoutRendered };
+}
+
+function deriveCheckpoint(calls: AgentRunToolCallEntry[], rawLog: unknown[]): AgentRunCheckpoint {
+    const composeFacts = deriveComposeDesignCheckpointFacts(rawLog);
+    let documentCreated = composeFacts.documentCreated;
+    let layoutRendered = composeFacts.layoutRendered;
     let successfulToolCount = 0;
     const activityCounts: AgentRunActivityCounts = {
         mutation: { successful: 0, failed: 0 },
@@ -715,6 +762,7 @@ function deriveCheckpoint(calls: AgentRunToolCallEntry[], rawLog: unknown[]): Ag
     ));
     const placedLayers = derivePlacedLayers(rawLog);
     const readFindings = deriveReadFindings(calls);
+    const designSummary = deriveDesignSummary(rawLog);
     return {
         documentCreated,
         layoutRendered,
@@ -722,8 +770,21 @@ function deriveCheckpoint(calls: AgentRunToolCallEntry[], rawLog: unknown[]): Ag
         successfulToolCount,
         activityCounts,
         ...(placedLayers.length > 0 ? { placedLayers } : {}),
-        ...(readFindings.length > 0 ? { readFindings } : {})
+        ...(readFindings.length > 0 ? { readFindings } : {}),
+        ...(designSummary ? { designSummary } : {})
     };
+}
+
+const DESIGN_SUMMARY_MAX_CHARS = 600;
+
+/** 从原始工具日志提取「做到哪」摘要；提取失败或没有事实时返回空串，不影响档案其余部分。 */
+function deriveDesignSummary(rawLog: unknown[]): string {
+    try {
+        const facts = extractDesignRunToolLogFacts(rawLog as Array<{ name?: unknown; arguments?: unknown; result?: unknown }>);
+        return cleanText(describeDesignRunToolLogFacts(facts, { maxChars: DESIGN_SUMMARY_MAX_CHARS }), DESIGN_SUMMARY_MAX_CHARS);
+    } catch {
+        return '';
+    }
 }
 
 /** 只读/检索类工具的发现摘要上限（供续跑摘要复用）。 */
@@ -837,7 +898,10 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
         version: 'agent-run-record/v0',
         runId: runtimeSessionIdentity?.runId
             || runtimeSessionDigest?.runId
-            || generateAgentRunId(input.now, goal, digestedAll.map((call) => call.name)),
+            || generateAgentRunId(input.now, goal, [
+                ...(input.parentRunId ? [`parent:${input.parentRunId}`] : []),
+                ...digestedAll.map((call) => call.name)
+            ]),
         ...(runtimeSessionIdentity?.parentRunId
             ? { parentRunId: runtimeSessionIdentity.parentRunId }
             : (runtimeSessionDigest?.parentRunId

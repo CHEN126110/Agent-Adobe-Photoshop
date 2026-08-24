@@ -18,6 +18,8 @@ export const REFERENCE_REPLICATION_MANIFEST: SkillRuntimeManifest = {
     task_type: 'design.reference_replication.v1',
     display_name: '参考版式复刻',
     planning_role: 'method',
+    // 参考复刻属于开放创意（照着参考做但每次画面都不同）：不建 Stage 机（设计路径宪法）。
+    execution_model: 'agentic',
     legacy_skill_ids: ['layout-replication'],
     required_inputs: ['goal', 'reference_image'],
     optional_inputs: ['artifact_kind', 'canvas_size', 'project_path', 'output_mode'],

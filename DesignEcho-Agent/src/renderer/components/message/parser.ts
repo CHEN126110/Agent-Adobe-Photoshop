@@ -9,7 +9,7 @@
  * - 避免不必要的字符串操作
  */
 
-import type { ActionItem, ContentBlock, MultimodalMessage, TextBlock, CodeBlock, ImageBlock, ToolResultBlock, CardBlock, CollapsibleBlock, ThinkingBlock as ThinkingBlockType, TaskPlanBlock as TaskPlanBlockType, InteractiveCardBlock, ComposerContentBlock, ParseOptions } from './types';
+import type { ActionItem, ContentBlock, MultimodalMessage, TextBlock, CodeBlock, ImageBlock, CardBlock, CollapsibleBlock, ThinkingBlock as ThinkingBlockType, TaskPlanBlock as TaskPlanBlockType, InteractiveCardBlock, ComposerContentBlock, ParseOptions } from './types';
 import type {
     InteractiveCardDefinition,
     InteractiveCardSubmission
@@ -28,6 +28,8 @@ import {
     type SkuDeliverySummary,
     type SkuDeliveryStatus
 } from '../../../shared/sku-delivery-summary';
+import type { DesignTaskCard } from '../../../shared/design-task-card';
+import type { ThinkingStep } from '../ThinkingProcess';
 import {
     normalizeChatComposerContentParts,
     stripChatComposerReferenceMarkers,
@@ -51,11 +53,6 @@ import {
     sanitizeUserVisibleDiagnosticText,
     sanitizeUserVisibleThinkingText
 } from '../../../shared/chat-response-cleaner';
-import { buildToolResultPreview } from '../../services/tool-result-preview';
-import {
-    resolveThinkingStepDisplayRole,
-    resolveThinkingStepRoleLabel
-} from './thinkingStepPresentation';
 
 // ==================== 类型定义 ====================
 
@@ -73,6 +70,7 @@ interface LegacyThinkingStep {
     duration?: number;
     filePath?: string;
     lineRange?: string;
+    taskItemId?: string;
 }
 
 // 旧版消息类型
@@ -94,6 +92,7 @@ interface LegacyMessage {
     agentTaskPublicPlanApprovalRecord?: AgentTaskPublicPlanApprovalRecord;
     agentTaskPublicPlanControlledRun?: AgentTaskPublicPlanControlledRun;
     skuDeliverySummary?: SkuDeliverySummary;
+    designTaskCard?: DesignTaskCard;
     interactiveCards?: InteractiveCardDefinition[];
     interactiveCardSubmissions?: InteractiveCardSubmission[];
     assistantReplyOrigin?: AssistantReplyOrigin;
@@ -131,6 +130,7 @@ interface CacheEntry {
     publicPlanApprovalRecordHash: string;
     publicPlanControlledRunHash: string;
     skuDeliverySummaryHash: string;
+    designTaskCardHash: string;
     interactiveCardsHash: string;
     interactiveCardSubmissionsHash: string;
     assistantReplyOriginHash: string;
@@ -391,6 +391,9 @@ function buildThinkingStepsHash(steps?: LegacyThinkingStep[]): string {
         toolName: step.toolName,
         toolParamsHash: hashCachePayload(step.toolParams),
         toolResultHash: hashCachePayload(step.toolResult),
+        // 快照现在参与终态渲染（sourceSteps 直达 ThinkingProcess），imageData 变化必须打穿缓存。
+        // 只取长度做签名：dataURL 一旦写入不会原地改内容，长度足以区分“有无/换图”。
+        imageDataLength: typeof step.imageData === 'string' ? step.imageData.length : 0,
         duration: step.duration,
         filePath: step.filePath,
         lineRange: step.lineRange
@@ -439,14 +442,27 @@ function buildAgentTaskPlanPresentationBlock(
     };
 }
 
-function withActionPayload(
-    params: Record<string, any>,
-    payload: Record<string, any> = params
-): Record<string, any> {
-    return {
-        ...params,
-        payload
-    };
+/** 状态卡开关：用户 2026-08-18 要求关闭；留开关而不删代码，便于诊断时临时打开。 */
+const SHOW_EXECUTION_SUMMARY_CARD = false;
+
+/**
+ * 设计任务卡：卡由模型写、Harness 记账打勾，跨轮更新同一张卡；这就是用户可见的「做到哪了」。
+ * 展示交给专用块 DesignTaskCardBlock（照用户日常任务卡的样子），parser 只投影，不拼字符串。
+ */
+function buildDesignTaskCardBlocks(
+    card: DesignTaskCard | undefined,
+    steps: LegacyThinkingStep[] | undefined,
+    messageId: string,
+    startIndex: number
+): ContentBlock[] {
+    if (!card || !Array.isArray(card.items) || card.items.length === 0) return [];
+    return [{
+        id: createStableId(messageId, 'design-task-card', startIndex),
+        type: 'design_task_card',
+        card,
+        // 这次运行的过程挂在卡里（按 taskItemId 归到条目下），不再另出一个「设计过程」块
+        steps: Array.isArray(steps) && steps.length > 0 ? (steps as ThinkingStep[]) : undefined
+    }];
 }
 
 function buildExecutionSummaryCard(
@@ -455,6 +471,11 @@ function buildExecutionSummaryCard(
     index: number
 ): CardBlock | null {
     if (!summary) return null;
+    // 2026-08-18 用户拍板：不再向用户展示「当前版本：还没做完 / 本轮已经在 Photoshop 中做出实际画面…」这类
+    // Harness 状态口播——它重复、带感叹号、像在数落，而用户要看的是画面本身与模型自己的话。
+    // 事实仍完整保留在 executionSummary（诊断 / 运行档案 / debug:runs 照常可读）；只是不再渲染成卡片。
+    // 完成与否将由「设计任务卡」（planDesignTaskCard，清单打勾）来表达，而不是这张状态卡。
+    if (!SHOW_EXECUTION_SUMMARY_CARD) return null;
     const statusConfig: Record<AgentExecutionSummary['status'], {
         label: string;
         variant: CardBlock['variant'];
@@ -1002,169 +1023,6 @@ function extractTitleAndContent(content: string): { title: string; body: string 
 }
 
 /**
- * 格式化工具结果为人性化摘要
- * 避免向用户暴露原始 JSON 数据
- */
-function formatToolResultSummary(toolName: string, result: any): string | undefined {
-    if (!result) return undefined;
-    
-    // 如果是字符串，尝试解析
-    let data = result;
-    if (typeof result === 'string') {
-        try {
-            data = JSON.parse(result);
-        } catch {
-            // 非 JSON 字符串，截取显示
-            const cleaned = safeDiagnosticText(result);
-            return cleaned.length > 50 ? cleaned.slice(0, 50) + '...' : cleaned;
-        }
-    }
-    
-    // 处理常见工具结果模式
-    if (typeof data !== 'object' || data === null) {
-        return safeDiagnosticText(data);
-    }
-    
-    // 检查是否成功
-    const success = data.success !== false;
-    
-    // 原始 Tool 错误和内部检查摘要属于运行诊断，不直接成为用户文案。
-    // 用户需要知道的阻塞由 Agent 的最终用户结果投影或交互卡片说明。
-    if (!success) {
-        return `${getToolDisplayInfo(toolName).name}没有完成`;
-    }
-    
-    // 根据工具类型生成友好摘要
-    switch (toolName) {
-        case 'getLayerHierarchy':
-            if (data.totalLayers !== undefined) {
-                return `文档 "${data.documentName || '当前文档'}"，共 ${data.totalLayers} 个图层`;
-            }
-            break;
-            
-        case 'getDocumentInfo':
-            if (data.name) {
-                return `${data.name} (${data.width}×${data.height})`;
-            }
-            break;
-            
-        case 'searchProjectResources':
-        case 'listProjectResources':
-            if (data.totalFiles !== undefined) {
-                return `找到 ${data.totalFiles} 个文件`;
-            }
-            if (data.results?.length !== undefined) {
-                return `找到 ${data.results.length} 个匹配项`;
-            }
-            if (Array.isArray(data)) {
-                return `找到 ${data.length} 个文件`;
-            }
-            break;
-            
-        case 'analyzeLayout':
-        case 'layout-analyze':
-            if (data.layout?.type) {
-                return `布局类型: ${data.layout.type}`;
-            }
-            break;
-            
-        case 'removeBackground':
-        case 'applyMattingResult':
-            return success ? '抠图完成' : '抠图失败';
-            
-        case 'placeImage':
-            if (data.layerName) {
-                return `已置入图层 "${data.layerName}"`;
-            }
-            return success ? '图片已置入' : '置入失败';
-            
-        case 'setTextContent':
-            return success ? '文本已更新' : '更新失败';
-
-        case 'setTextStyle': {
-            if (!success) return '文字样式更新失败';
-            if (data.outcome === 'unchanged_already_satisfied') {
-                return '目标文字样式已满足，未产生写入';
-            }
-            const changedProperties = Array.isArray(data.changedProperties)
-                ? data.changedProperties.filter((property: unknown) => typeof property === 'string')
-                : [];
-            const propertyLabels: Record<string, string> = {
-                fontName: '字体',
-                fontSize: '字号',
-                tracking: '字距',
-                leading: '行距'
-            };
-            const changedSummary = changedProperties.length > 0
-                ? `：${changedProperties.map((property: string) => propertyLabels[property] || property).join('、')}`
-                : '';
-            if (data.verification?.status === 'passed') {
-                return `文字样式已按字段更新并验证${changedSummary}`;
-            }
-            return `文字样式已更新，保持性待复核${changedSummary}`;
-        }
-            
-        case 'moveLayer':
-        case 'transformLayer':
-            return success ? '变换已应用' : '变换失败';
-
-        case 'moveLayerToGroup':
-            return success ? '已移动到图层组' : '移动到图层组失败';
-            
-        case 'createGroup':
-        case 'groupLayers':
-            if (data.groupName) {
-                return `已创建组 "${data.groupName}"`;
-            }
-            return success ? '已创建组' : '创建失败';
-            
-        case 'saveDocument':
-        case 'quickExport':
-        case 'exportGroup':
-            if (data.path) {
-                const fileName = data.path.split(/[/\\]/).pop();
-                return `已保存: ${fileName}`;
-            }
-            if (data.outputPath) {
-                const fileName = data.outputPath.split(/[/\\]/).pop();
-                return `已导出: ${fileName}`;
-            }
-            return success ? '保存成功' : '保存失败';
-            
-        case 'getSmartObjectInfo':
-            if (data.data?.isSmartObject) {
-                const linked = data.data.linked ? '链接' : '嵌入';
-                return `${linked}型智能对象`;
-            }
-            break;
-            
-        case 'convertToSmartObject':
-            return success ? '已转换为智能对象' : '转换失败';
-            
-        case 'editSmartObjectContents':
-            return success ? '智能对象已打开编辑' : '打开失败';
-    }
-    
-    // 通用消息字段
-    if (data.message && typeof data.message === 'string') {
-        const cleaned = safeDiagnosticText(data.message);
-        return cleaned.length > 60 ? cleaned.slice(0, 60) + '...' : cleaned;
-    }
-    
-    // 通用成功/失败
-    if (success) {
-        // 尝试提取有意义的字段
-        if (data.name) return data.name;
-        if (data.layerName) return `图层: ${data.layerName}`;
-        if (data.count !== undefined) return `${data.count} 项`;
-        if (data.totalLayers !== undefined) return `${data.totalLayers} 个图层`;
-        return '执行成功';
-    }
-    
-    return '执行完成';
-}
-
-/**
  * 将旧版可见步骤转换为独立的公开过程 / 工具执行块。
  * 这里展示的是用户可见的意图、观察和复核摘要，不展示私密链路推理。
  */
@@ -1206,74 +1064,18 @@ function convertThinkingStepGroup(
     const visibleSteps = steps.filter(isVisibleTimelineStep);
     if (visibleSteps.length === 0) return null;
 
-    const thinkingSteps = visibleSteps.map(step => {
-        let icon = '🔧';
-        let label = step.type === 'thinking' || step.type === 'decision'
-            ? safeThinkingText(step.content || '')
-            : safeDiagnosticText(step.content || '');
-        const isToolStep = Boolean(step.toolName)
-            || step.type === 'tool_call'
-            || step.type === 'tool_result';
-        const displayRole = resolveThinkingStepDisplayRole({
-            type: step.type,
-            toolName: step.toolName,
-            tone: isToolStep ? 'action' : 'thought'
-        });
-        
-        if (step.toolName) {
-            const info = getToolDisplayInfo(step.toolName);
-            icon = info.icon;
-            label = info.name;
-        } else if (step.type === 'thinking' || step.type === 'decision') {
-            icon = '💭';
-        } else if (step.type === 'status') {
-            icon = '⏳';
-        } else if (step.type === 'reading') {
-            icon = '📖';
-            if (step.filePath) {
-                label = `读取 ${step.filePath}${step.lineRange ? ` ${step.lineRange}` : ''}`;
-            }
-        } else if (step.type === 'exploring') {
-            icon = '🔍';
-        } else if (step.type === 'analyzing') {
-            icon = '📊';
-        }
-        
-        return {
-            id: step.id,
-            label,
-            icon,
-            status: step.status,
-            tone: isToolStep ? 'action' as const : 'thought' as const,
-            displayRole,
-            roleLabel: resolveThinkingStepRoleLabel(displayRole, step.type),
-            sourceType: step.type,
-            actionLabel: isToolStep
-                ? step.status === 'error'
-                    ? '未完成'
-                    : step.status === 'running' || step.status === 'pending'
-                        ? '正在制作'
-                        : '已完成'
-                : undefined,
-            detail: step.toolResult ? formatToolResultSummary(step.toolName || '', step.toolResult) : undefined,
-            preview: step.toolResult
-                ? buildToolResultPreview(step.toolName || '', step.toolResult)
-                : undefined,
-            duration: step.duration
-        };
-    });
-    
-    const totalDuration = resolveTimelineDuration(visibleSteps);
-    
     return {
         id: createStableId(messageId, 'thinking', index),
         type: 'thinking',
         title,
-        steps: thinkingSteps,
+        // 原始步骤（含快照 imageData、工具结果）原样交给块，由 ThinkingProcess 渲染。
+        // 不要在这里映射成简化副本：终态展示与运行中必须是同一份数据、同一套时间线，
+        // 否则对话完成/停止后快照与结果细节会随映射一起丢失。
+        sourceSteps: visibleSteps,
         // 过程在运行中保持可见；历史 / 完成 / 失败终态默认只显示一行摘要。
         // MessageRenderer 还会用 active/terminal key 处理同一消息的运行态切换。
         isExpanded: isStreaming,
-        totalDuration
+        totalDuration: resolveTimelineDuration(visibleSteps)
     };
 }
 
@@ -1304,93 +1106,6 @@ function convertThinkingSteps(steps: LegacyThinkingStep[], messageId: string, is
 function resolveThinkingBlockTitle(steps: LegacyThinkingStep[], isStreaming = false): string {
     const hasActiveStep = steps.some((step) => step.status === 'running' || step.status === 'pending');
     return isStreaming && hasActiveStep ? '正在设计' : '设计过程';
-}
-
-/**
- * 将工具调用结果转换为结果块
- */
-function convertToolResult(step: LegacyThinkingStep, messageId: string, index: number): ToolResultBlock | null {
-    if (step.type !== 'tool_result' || !step.toolName) return null;
-    
-    const info = getToolDisplayInfo(step.toolName);
-    
-    return {
-        id: createStableId(messageId, 'tool_result', index),
-        type: 'tool_result',
-        toolName: step.toolName,
-        displayName: info.name,
-        icon: info.icon,
-        success: step.status === 'success',
-        result: step.toolResult,
-        error: step.status === 'error' ? (safeDiagnosticText(step.content || '执行失败') || '执行失败') : undefined,
-        duration: step.duration,
-        details: step.toolResult ? parseToolResultDetails(step.toolResult) : undefined,
-        actions: buildToolResultActions(step, messageId, index)
-    };
-}
-
-function buildToolResultActions(step: LegacyThinkingStep, messageId: string, index: number): ActionItem[] | undefined {
-    const actions: ActionItem[] = [];
-    const summary = formatToolResultSummary(step.toolName || '', step.toolResult);
-
-    if (summary) {
-        actions.push({
-            id: createStableId(messageId, 'tool-result-copy', index + 101),
-            label: '复制摘要',
-            icon: '📋',
-            variant: 'secondary',
-            action: 'copyText',
-            params: withActionPayload({ text: summary })
-        });
-    }
-
-    return actions.length > 0 ? actions : undefined;
-}
-
-const PUBLIC_TOOL_RESULT_FIELD_MAP: Record<string, { label: string; type?: 'text' | 'code' | 'link' }> = {
-    name: { label: '名称' },
-    documentName: { label: '文档' },
-    layerName: { label: '图层' },
-    type: { label: '类型' },
-    count: { label: '数量' },
-    size: { label: '大小' },
-    width: { label: '宽度' },
-    height: { label: '高度' },
-    totalFiles: { label: '文件数量' },
-    totalLayers: { label: '图层数量' },
-    success: { label: '结果' }
-};
-
-/**
- * 解析工具结果详情
- */
-function parseToolResultDetails(result: any): Array<{ label: string; value: string | number; type?: 'text' | 'code' | 'link' }> | undefined {
-    if (!result || typeof result !== 'object') return undefined;
-    
-    const details: Array<{ label: string; value: string | number; type?: 'text' | 'code' | 'link' }> = [];
-    for (const [key, value] of Object.entries(result)) {
-        if (key === 'acceptance') continue;
-        if (value === null || value === undefined) continue;
-        if (typeof value === 'object') continue;
-        const publicField = PUBLIC_TOOL_RESULT_FIELD_MAP[key];
-        const label = publicField?.label;
-        if (!label) continue;
-
-        const displayValue = typeof value === 'boolean' 
-            ? (value ? '是' : '否')
-            : safeDiagnosticText(value);
-        
-        details.push({
-            label,
-            value: displayValue,
-            type: publicField.type || 'text'
-        });
-        
-        // 限制详情数量
-        if (details.length >= 6) break;
-    }
-    
-    return details.length > 0 ? details : undefined;
 }
 
 /**
@@ -1535,6 +1250,9 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
     const skuDeliverySummaryHash = message.skuDeliverySummary
         ? hashString(JSON.stringify(message.skuDeliverySummary))
         : '';
+    const designTaskCardHash = message.designTaskCard
+        ? `${message.designTaskCard.id}:${message.designTaskCard.updatedAt}`
+        : '';
     const interactiveCardsHash = Array.isArray(message.interactiveCards) && message.interactiveCards.length > 0
         ? hashString(JSON.stringify(message.interactiveCards))
         : '';
@@ -1571,6 +1289,7 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         cached.publicPlanApprovalRecordHash === publicPlanApprovalRecordHash &&
         cached.publicPlanControlledRunHash === publicPlanControlledRunHash &&
         cached.skuDeliverySummaryHash === skuDeliverySummaryHash &&
+        cached.designTaskCardHash === designTaskCardHash &&
         cached.interactiveCardsHash === interactiveCardsHash &&
         cached.interactiveCardSubmissionsHash === interactiveCardSubmissionsHash &&
         cached.assistantReplyOriginHash === assistantReplyOriginHash &&
@@ -1617,14 +1336,27 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         } as ImageBlock);
     }
 
-    if (taskPlanPresentationBlock) {
+    // 设计任务卡——有卡就先于其它状态卡展示，它是「做到哪了」的唯一口径。
+    // 运行中（isThinking）不在这里画：实时区域已把卡当过程容器展示，画两份会重复；
+    // 跑完后卡连同这次运行的过程一起落到消息里（过程按条目挂在卡内）。
+    const designTaskCardBlocks = message.isThinking
+        ? []
+        : buildDesignTaskCardBlocks(message.designTaskCard, message.thinkingSteps, message.id, blockIndex);
+    const designTaskCardOwnsProcess = designTaskCardBlocks.length > 0;
+    if (designTaskCardOwnsProcess) {
+        blocks.push(...designTaskCardBlocks);
+        blockIndex += designTaskCardBlocks.length;
+    } else if (taskPlanPresentationBlock) {
+        // 「做到哪了」只允许一张清单：任务卡在场时「设计进度」不再另出一张——
+        // 两张勾选清单各说各话，用户无法判断哪张是真相（结构性互斥，不靠链路约定）。
         blocks.push({
             ...taskPlanPresentationBlock,
             id: createStableId(message.id, 'task-plan', blockIndex++)
         });
     }
 
-    const hasUnifiedTaskPlanPresentation = Boolean(taskPlanPresentationBlock);
+    // 清单在场（任务卡或设计进度任一）即由清单表达状态，其余状态卡按此统一压制。
+    const hasTaskChecklistPresentation = designTaskCardOwnsProcess || Boolean(taskPlanPresentationBlock);
     const hasAuthoritativeNonCompletedResult = Boolean(
         message.executionSummary
         && resolveExecutionSummaryDisplayStatus(message.executionSummary) !== 'completed'
@@ -1642,7 +1374,7 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         || suppressCompletedExecutionSummary
         || hasInteractiveUserAction
         || hasBusinessDeliveryResult
-        || (hasUnifiedTaskPlanPresentation && !hasAuthoritativeNonCompletedResult)
+        || (hasTaskChecklistPresentation && !hasAuthoritativeNonCompletedResult)
         ? null
         : buildExecutionSummaryCard(message.executionSummary, message.id, blockIndex);
     if (executionSummaryCard) {
@@ -1652,7 +1384,7 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
 
     const agentUserVisibleStateCard = compactFailureView
         || (!hasRequiredUserVisibleAction && (
-            hasUnifiedTaskPlanPresentation
+            hasTaskChecklistPresentation
             || shouldSuppressAgentUserVisibleStateCard(message)
         ))
         ? null
@@ -1673,7 +1405,7 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
     }
 
     const publicPlanExecutionRequestCard = (compactFailureView && !hasPublicPlanConfirmationAction)
-        || (hasUnifiedTaskPlanPresentation && !hasPublicPlanConfirmationAction)
+        || (hasTaskChecklistPresentation && !hasPublicPlanConfirmationAction)
         ? null
         : buildPublicPlanExecutionRequestCard(
         message.agentTaskPublicPlanExecutionRequest,
@@ -1687,7 +1419,7 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
     }
 
     const publicPlanControlledRunCard = compactFailureView
-        || (hasUnifiedTaskPlanPresentation && controlledRunIsEquivalentTerminal)
+        || (hasTaskChecklistPresentation && controlledRunIsEquivalentTerminal)
         ? null
         : buildPublicPlanControlledRunCard(
         message.agentTaskPublicPlanControlledRun,
@@ -1709,25 +1441,16 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         blockIndex += skuDeliverySummaryBlocks.length;
     }
 
-    // 2. 如果有思维步骤，添加思考块
+    // 2. 如果有思维步骤，添加思考块（任务卡已把过程挂在卡内时不再重复出「设计过程」块）。
+    // 工具结果只活在过程时间线里，不再复制成独立的「成功/失败」卡片——同一份结果出两处
+    // 是旧版残留的双呈现，卡片堆只会稀释正文。
     if (!compactFailureView && shouldRenderPersistentThinkingSteps(message)) {
-        const thinkingSteps = message.thinkingSteps || [];
-        const thinkingBlocks = convertThinkingSteps(thinkingSteps, message.id, message.isThinking === true);
+        const thinkingBlocks = designTaskCardOwnsProcess
+            ? []
+            : convertThinkingSteps(message.thinkingSteps || [], message.id, message.isThinking === true);
         for (const thinkingBlock of thinkingBlocks) {
             blocks.push(thinkingBlock);
             blockIndex++;
-        }
-        
-        // SKU 交付由结构化摘要卡统一呈现；工具结果已经保留在折叠的设计过程里，
-        // 不再把同一批结果复制成独立卡片。
-        if (!isSkuDeliveryPresentationOwned(message.skuDeliverySummary)) {
-            const resultSteps = thinkingSteps.filter(s => s.type === 'tool_result');
-            for (const step of resultSteps) {
-                const resultBlock = convertToolResult(step, message.id, blockIndex++);
-                if (resultBlock) {
-                    blocks.push(resultBlock);
-                }
-            }
         }
     }
 
@@ -1806,6 +1529,7 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         publicPlanApprovalRecordHash,
         publicPlanControlledRunHash,
         skuDeliverySummaryHash,
+        designTaskCardHash,
         interactiveCardsHash,
         interactiveCardSubmissionsHash,
         assistantReplyOriginHash,

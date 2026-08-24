@@ -43,6 +43,7 @@ import { toAgentImageAttachments } from '../../../shared/design-image-input';
 import { applySharedSkillParamDefaults } from '../../../shared/skill-param-defaults';
 import {
     buildRuntimeSelectedSkillHandoffFromRecommendation,
+    buildRuntimeSelectedSkillHandoffFromUserSelection,
     buildSkillRoutingRecommendation,
     type FindSkillRoutingIntentOptions
 } from '../../../shared/skill-routing';
@@ -2099,7 +2100,7 @@ async function requestAgentTaskPublicPlan(
     callbacks?.onStep?.({
         kind: 'model_request',
         title: '梳理设计方向',
-        detail: '先让模型整理画面重点、版式方向和效果检查方式，本轮先不改动画面。',
+        detail: '正在整理画面重点、版式方向和检查方式，这一步不改动画面',
         status: 'running',
         percent: 27
     });
@@ -2685,7 +2686,7 @@ async function prepareAgentDesignExecutionPreflight(
         options.callbacks?.onStep?.({
             kind: 'model_request',
             title: '设计执行前规划',
-            detail: '请求模型补充目标、层级、配色、修图、选图和验收标准，供当前 Skill 继续规划。',
+            detail: '正在补齐设计目标、配色、选图和验收标准，然后继续制作',
             status: 'running',
             percent: 30
         });
@@ -3641,7 +3642,7 @@ export class DesignAgentEngine {
         callbacks?.onStep?.({
             kind: 'model_request',
             title: '正在理解并处理任务',
-            detail: '普通自然语言直接进入通用 Agent，由主循环结合上下文和真实能力决定回答、观察或行动。',
+            detail: '正在理解需求，决定先看什么、再做什么',
             status: 'running',
             percent: 10,
             source: 'agent_runtime',
@@ -3748,15 +3749,23 @@ export class DesignAgentEngine {
             semanticDecision: semanticIntentDecision,
             capabilityConstraint
         });
+        // 用户在输入框显式选定的技能优先于文本正则推荐（codex 式：选择即权威提示）；
+        // 两者同为 selection-only，安全 gate（生产语境/bridge 策略/写授权）一致。
         const runtimeSelectedSkillHandoff = taskProgressIdentity.progressObligation === 'delivery'
-            ? buildRuntimeSelectedSkillHandoffFromRecommendation({
+            ? (buildRuntimeSelectedSkillHandoffFromUserSelection({
+                userSelectedSkillId: context.userSelectedSkillId,
+                intentControlPlane,
+                skillBridgePolicy: capabilityConstraint.skillBridgePolicy,
+                deniedToolDomains: capabilityConstraint.deniedToolDomains,
+                toolScopeCeiling: capabilityConstraint.toolScopeCeiling
+            }) ?? buildRuntimeSelectedSkillHandoffFromRecommendation({
                 requestText: context.userInput,
                 recommendation: skillRoutingRecommendation,
                 intentControlPlane,
                 skillBridgePolicy: capabilityConstraint.skillBridgePolicy,
                 deniedToolDomains: capabilityConstraint.deniedToolDomains,
                 toolScopeCeiling: capabilityConstraint.toolScopeCeiling
-            })
+            }))
             : undefined;
         const requiresProductionProgress = taskProgressIdentity.requiresTaskProgress;
 
@@ -3764,10 +3773,10 @@ export class DesignAgentEngine {
             && intentControlPlane.executionAuthorization === 'confirmed_tool_required';
         callbacks?.onStep?.({
             kind: 'model_request',
-            title: hasWriteEnvelope ? 'Agent 正在处理任务' : 'Agent 正在理解任务',
+            title: hasWriteEnvelope ? '正在处理任务' : '正在理解任务',
             detail: hasWriteEnvelope
-                ? '主 Agent 可自主选择可逆能力；写入仍受执行预检、事务边界与结果读回约束。'
-                : '主 Agent 可回答并读取必要上下文；当前能力上限不允许有状态写入。',
+                ? '正在动手制作，每一步改动都会检查结果'
+                : '正在了解画面和素材，这一步只看不改',
             status: 'running',
             percent: 20,
             source: 'agent_runtime',

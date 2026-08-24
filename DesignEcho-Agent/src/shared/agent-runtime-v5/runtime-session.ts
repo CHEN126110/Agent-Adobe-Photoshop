@@ -322,9 +322,12 @@ export interface RuntimeSessionToolExecutionGate {
     code?:
         | 'runtime_session_r4_not_ready'
         | 'runtime_task_run_waiting_user'
-        | 'runtime_task_run_revision_reobserve_required';
+        | 'runtime_task_run_revision_reobserve_required'
+        | 'runtime_workflow_owner_first';
     currentStage?: RuntimeStage;
     blockedTool?: string;
+    /** owner 先行被拦时的出口：先调用这个工作流入口 */
+    nextRequiredTool?: string;
     boundaries: {
         executionPointOnly: true;
         executesTools: false;
@@ -1853,6 +1856,7 @@ export function recordRuntimeSessionModelCall(input: {
     durationMs: number;
     succeeded: boolean;
     usage?: { inputTokens?: number; outputTokens?: number };
+    promptShape?: Parameters<typeof recordRuntimeModelCall>[0]['promptShape'];
     now?: string;
 }): RuntimeSession {
     return {
@@ -1863,6 +1867,7 @@ export function recordRuntimeSessionModelCall(input: {
             durationMs: input.durationMs,
             succeeded: input.succeeded,
             usage: input.usage,
+            promptShape: input.promptShape,
             now: input.now
         })
     };
@@ -2323,6 +2328,12 @@ export function evaluateRuntimeSessionToolExecutionGate(input: {
     hasOpenDocument?: boolean;
     /** 该任务是否必须已有打开文档（edit_existing 等为 true，从零为 false）。 */
     taskRequiresOpenDocument?: boolean;
+    /**
+     * 紧凑工作流（有唯一 workflow owner、无 R4）的「owner 先行」：owner 还没跑过、也没有它交出的 handoff 续跑时，
+     * E1 的直接写入不放行——业务写入归 owner；模型直写只在 owner 交接后的范围内。
+     * 真机 2026-08-18：同一批量任务连续三次都跳过 owner 直接往只读来源文档上画。
+     */
+    workflowOwnerFirst?: { ownerToolName: string; pending: boolean };
 }): RuntimeSessionToolExecutionGate {
     const changesExternalState = input.toolKind === 'photoshop_write'
         || input.toolKind === 'save_export'
@@ -2374,7 +2385,11 @@ export function evaluateRuntimeSessionToolExecutionGate(input: {
             hasOpenDocument: input.hasOpenDocument,
             taskRequiresOpenDocument: input.taskRequiresOpenDocument
         });
-    if (allowedInExecutionStage) {
+    const ownerFirst = input.workflowOwnerFirst;
+    const ownerFirstPending = Boolean(ownerFirst?.pending)
+        && Boolean(ownerFirst?.ownerToolName)
+        && cleanText(input.toolName, 80) !== cleanText(ownerFirst?.ownerToolName, 80);
+    if (allowedInExecutionStage && !ownerFirstPending) {
         return {
             status: 'allowed',
             allowed: true,
@@ -2385,9 +2400,14 @@ export function evaluateRuntimeSessionToolExecutionGate(input: {
     return {
         status: 'blocked',
         allowed: false,
-        code: 'runtime_session_r4_not_ready',
+        code: allowedInExecutionStage && ownerFirstPending
+            ? 'runtime_workflow_owner_first'
+            : 'runtime_session_r4_not_ready',
         currentStage: input.session.stageState.currentStage,
         blockedTool: cleanText(input.toolName, 80),
+        ...(allowedInExecutionStage && ownerFirstPending && ownerFirst
+            ? { nextRequiredTool: cleanText(ownerFirst.ownerToolName, 80) }
+            : {}),
         boundaries
     };
 }

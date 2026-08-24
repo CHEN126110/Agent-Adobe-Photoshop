@@ -107,7 +107,8 @@ const PHOTOSHOP_DOCUMENT_SCOPES = new Set<AgentToolDecisionCapabilityScope>([
 ]);
 
 const PHOTOSHOP_CONNECTION_OPTIONAL_TOOLS = new Set([
-    // 只扩展下一轮模型 schema，不访问 Photoshop，也不要求插件连接。
+    // 检索目录 / 扩展下一轮模型 schema都不访问 Photoshop，也不要求插件连接。
+    'searchAgentCapabilities',
     'requestAgentCapabilities'
 ]);
 
@@ -410,13 +411,13 @@ export function buildAgentToolDecisionContract(
                     `工具 ${candidate.name} 会产生写入、外部生成或有状态变更，但当前请求尚未获得明确执行授权。`,
                     '解锁路径（选一条执行，不要反复重试同一动作）：',
                     '1. 只是先了解情况：改用只读观察、知识检索或 Harness 控制能力，把判断告诉用户；',
-                    '2. 确实需要动手：用 createInteractiveCard 向用户说明要执行的动作并请求确认，用户确认后再执行；',
+                    '2. 确实需要动手：用 askUserToChoose 创建 decisionKind="approval" 的明确批准卡，用户确认后再执行；',
                     '3. 用户已经明确要求动手：把用户的授权原话纳入本轮目标后重新发起执行请求。'
                 ].join('\n'),
                 candidate.name,
                 [
                     '改用只读观察或知识检索并回答用户',
-                    '用 createInteractiveCard 请求用户确认该动作',
+                    '用 askUserToChoose 创建 approval 选择卡，请用户确认该动作',
                     '用户明确授权后重新发起执行'
                 ]
             ));

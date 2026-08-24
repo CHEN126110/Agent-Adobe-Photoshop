@@ -69,20 +69,27 @@ function similarityScore(str1: string, str2: string): number {
 /**
  * 在候选列表中找到最相似的匹配
  */
-function findBestMatch(searchName: string, candidates: { name: string; doc: any }[]): { doc: any; score: number; matchedName: string } | null {
-    let bestMatch: { doc: any; score: number; matchedName: string } | null = null;
+function findBestMatch(
+    searchName: string,
+    candidates: { name: string; doc: any }[]
+): { doc: any; score: number; matchedName: string; ambiguousWith: string[] } | null {
+    let bestMatch: { doc: any; score: number; matchedName: string; ambiguousWith: string[] } | null = null;
     
     for (const candidate of candidates) {
         // 去掉扩展名进行匹配
         const nameWithoutExt = candidate.name.replace(/\.(psd|psb|jpg|jpeg|png|gif|tif|tiff)$/i, '');
         
-        // 计算与完整名和无扩展名的相似度，取较高者
+        // 完整名精确匹配 = 1；去扩展名后精确匹配略低（0.98）——真机 2026-08-18：新建文档「SKU」与
+        // 色卡「SKU.psb」同分 1，旧写法取先遇到的色卡，模型的写入被静默送回源稿。
         const score1 = similarityScore(searchName, candidate.name);
-        const score2 = similarityScore(searchName, nameWithoutExt);
+        const score2Raw = similarityScore(searchName, nameWithoutExt);
+        const score2 = score2Raw >= 1 ? 0.98 : score2Raw;
         const score = Math.max(score1, score2);
         
         if (!bestMatch || score > bestMatch.score) {
-            bestMatch = { doc: candidate.doc, score, matchedName: candidate.name };
+            bestMatch = { doc: candidate.doc, score, matchedName: candidate.name, ambiguousWith: [] };
+        } else if (bestMatch && score === bestMatch.score && score >= 0.5 && candidate.name !== bestMatch.matchedName) {
+            bestMatch.ambiguousWith.push(candidate.name);
         }
     }
     
@@ -169,6 +176,15 @@ export class SwitchDocumentTool implements Tool {
                 const bestMatch = findBestMatch(searchName, candidates);
                 
                 if (bestMatch) {
+                    // 同分且不同名（都不是完整名精确匹配）= 说不清要哪个；静默选一个会把写入送错文档，
+                    // 明说并要求用 documentId。
+                    if (bestMatch.score < 1 && bestMatch.ambiguousWith.length > 0) {
+                        return {
+                            success: false,
+                            error: `文档名「${searchName}」同时匹配 ${[bestMatch.matchedName, ...bestMatch.ambiguousWith].map((name) => `"${name}"`).join('、')}，无法确定要切到哪一个；请改用 documentId（见 allDocuments）或写完整文档名（含扩展名）。`,
+                            allDocuments
+                        };
+                    }
                     // 相似度阈值：0.5 以上认为是有效匹配
                     if (bestMatch.score >= 0.5) {
                         targetDoc = bestMatch.doc;

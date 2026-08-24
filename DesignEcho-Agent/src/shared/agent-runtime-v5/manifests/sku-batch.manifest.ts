@@ -45,19 +45,20 @@ export const SKU_BATCH_MANIFEST: SkillRuntimeManifest = {
     performance_profile: {
         version: 'skill-runtime-performance-profile/v0',
         budget: {
-            // 当前链路只有 R0→R2→E1→R5。预算覆盖一次项目观察、缺失的 2/3/4 双
-            // 模板补齐、两轮真实画面复核、批量生产和终局读回；不再沿用旧八阶段的
-            // 26 模型 / 90 工具 / 10 分钟上限，避免把失败探索拖成高成本长任务。
-            max_model_calls: 16,
-            max_tool_calls: 50,
-            max_iterations: 30,
+            // 当前链路只有 R0→R2→E1→R5。模板齐备时批量本身只花几次模型调用；预算主要留给
+            // 「项目缺模板 → Agent 设计 2/3/4 双三份模板」这条真实会走到的路——
+            // 真机 2026-08-18（run-20260818020052415）：16 次上限在第 14 轮把模板设计砍在半路，
+            // 零模板产出。设计路径宪法：预算是安全网不是终止器；正常停机是「做完了」或「无进展」。
+            max_model_calls: 32,
+            max_tool_calls: 100,
+            max_iterations: 50,
             // 常规模板化批量不会消费视觉预算；仅在项目缺模板、Agent 需要真实设计并
-            // 看图调整时使用。6 张候选覆盖 2/3/4 双模板首稿与一次定向复验。
-            max_vision_candidates: 6,
+            // 看图调整时使用。8 张候选覆盖 2/3/4 双模板首稿与各一次定向复验。
+            max_vision_candidates: 8,
             max_initial_vision_candidates: 0,
-            max_visual_analyses: 2,
+            max_visual_analyses: 3,
             max_full_resolution_image_reads: 0,
-            soft_time_budget_ms: 420_000
+            soft_time_budget_ms: 900_000
         },
         verification_tier: 'metadata',
         cost_profile: {

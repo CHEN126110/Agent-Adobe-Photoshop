@@ -288,41 +288,40 @@
     ]
   },
   "activeRequest": {
-    "id": "MAIN-IMAGE-COMMERCIAL-QUALITY-001",
-    "summary": "Raise the Agent's main-image result from an interrupted code-presetted wireframe path to a Manifest-owned, model-directed and evidence-grounded design/review chain using current project facts, reviewed memory and optional references.",
-    "status": "visual_and_run_record_audit_complete_model_autonomy_and_memory_root_fix_implemented_targeted_validation_full_core_22_of_22_and_production_agent_build_passed_real_candidate_preview_comparison_and_live_visual_validation_pending",
+    "id": "DESIGN-QUALITY-REFLEXION-LIVE-001",
+    "summary": "Use the real no-Skill main-image run to make task-size effectiveness visible to the evaluator and return only revision-bound paired diagnoses to one Agent-owned refinement generation without granting Harness aesthetic authorship.",
+    "status": "seventh_live_root_cause_verified_agent_owned_single_reentry_task_neutral_impact_paired_feedback_reviewset_provenance_and_first_write_freshness_implemented_full_34_check_maintenance_and_production_build_passed_eighth_live_replay_blocked_by_shared_subscription_usage_limit_sol_preferences_restored_post_reset_live_replay_pending",
     "mustDo": [
-      "Dispatch every controlled child through its declared autonomous Runtime instead of a legacy executor shortcut.",
-      "Require explicit child-owned output quality evidence before the parent workflow succeeds.",
-      "Treat a main-image placeholder as an unresolved artifact, not a completed visual block.",
-      "Require formal visual drafts to use an explicit model-authored style; keep neutral wireframes visibly unresolved.",
-      "Use only stable-scoped, source-reviewed and task-relevant memory, while preserving current project facts ahead of generic knowledge.",
-      "Inject the full main-image method and keep fresh structure plus fresh visual review as canonical completion owners.",
-      "Validate the final behavior in real Photoshop and compare the finished thumbnail against the supplied market reference patterns."
+      "Keep Agent ownership of goal interpretation, visual strategy, asset choice and revision action; Harness may only return current-revision observations and verification constraints.",
+      "Include task-size effectiveness in the unbound creative evaluation baseline without adding fixed subject ratios, marketing style or category routing.",
+      "Allow at most one completed-aesthetic Agent generation inside the same authorized TaskRun and cumulative performance ledger.",
+      "Carry only paired reliable diagnoses into the completed refinement prompt and remove duplicate warning, failure-analysis and strategy projections.",
+      "Bind completed visual diagnoses to the exact trusted ReviewSet document/history/observation keys, and block only the first write when the current revision changed until the Agent has fully reviewed the new version.",
+      "Preserve independent parent/child Run Records, execution preflight, target revision, cancellation, budget and no-progress stops.",
+      "Rerun the exact natural-language prompt with GPT-5.6-Sol after subscription usage resets and compare the real Photoshop result with the seventh run and user references."
     ],
     "mustNotDo": [
-      "Do not put Skill business knowledge or socks/Taobao rules into the generic Agent core.",
-      "Do not hard-code unverified product claims, prices, promotions or fixed visual ratios as execution authorization.",
-      "Do not replace structural design decisions with prompt adjectives or decorative effects.",
-      "Do not clean, stage, commit or overwrite the large shared dirty worktree.",
-      "Do not add smoke scripts, modify assertions or raise debt baselines to fake green.",
-      "Do not declare live Photoshop or commercial design quality from automated checks alone."
+      "Do not let the evaluator select a layout, copy line, asset or Photoshop Tool for the Agent.",
+      "Do not bind a Skill or Evaluation Profile from task keywords in the generic Harness.",
+      "Do not expand completed feedback with generic scorecard fixes or repeated warnings.",
+      "Do not reset model, Tool, vision or elapsed-time budgets when the Agent is re-entered.",
+      "Do not clean, stage, commit or overwrite unrelated changes in the large shared dirty worktree.",
+      "Do not claim the eighth GPT-5.6 Photoshop replay or commercial quality passed while the subscription provider rejects iteration zero."
     ]
   },
   "activePlan": {
-    "id": "MAIN-IMAGE-COMMERCIAL-QUALITY-001",
+    "id": "DESIGN-QUALITY-REFLEXION-LIVE-001",
     "source": "project-memory/CurrentTask.md",
     "steps": [
-      "完成：基于用户截图、真实会话、Run Record、当前 Photoshop 状态和市场参考定位结构差距与生产路径根因。",
-      "完成：父 workflow 删除 legacy 主图默认铸权，并以结构化 handoff 将主图、详情页、SKU 交给各自 Manifest-owned autonomous Runtime。",
-      "完成：父级成功依赖所有子报告显式质量所有权；未复核或 partial 子项不再被升级为整套成功。",
-      "完成：主视觉无真实素材时生成结构化 unresolved placeholder finding；主图 Profile 与完整 Artifact 方法上下文接线。",
-      "完成：删除 renderLayout 的隐藏商业样式与几何默认值；模型显式声明配色、字体层级、区块几何、图片落位与文字拟合，中性线框不得完成，质量复核按文档 /阶段 /屏幕区域隔离。",
-      "完成：R3 支持按需探索并选择 2–3 个方向；项目事实与已复核相关记忆有稳定身份、可信优先级和可引用证据。",
-      "完成：完整核心预检 22/22、业务行为审计、Renderer/Main 类型检查、UXP production build、Agent production build 与差异检查通过。",
-      "待真机：重新构建加载后用同一项目完成主图，并在 300×300 缩略图下人工核对主体、单一卖点、事实证据、层级和占位清零。",
-      "后续独立切片：建立真实 CandidateSet、非破坏性低成本预览与候选间同 rubric 比较；方向声明本身不得冒充视觉 A/B。",
-      "后续独立切片：普通自然语言运行的 durable active-task 跨重启恢复；不得用历史文本猜测代替结构化任务身份。"
+      "完成：审计第七轮真实 PSD、Run Record 与完整 conversation executionSummary，确认选图合理但双栏画册层级未达到成熟主图。",
+      "完成：确认终局 89 分只覆盖 8 项旧任务中性目录，impact.squint 与 comp.subject-ratio 均未进入评价。",
+      "完成：把任务真实使用尺寸下的第一眼效力加入任务中性评价，同时保持固定主体比例和主图专属断言不进入通用 Harness。",
+      "完成：恢复 completed_aesthetic_improvement 最多一次 Agent-owned 重入，并继续使用同一 TaskRun、累计预算与 execution preflight。",
+      "完成：completed handoff 只保留当前 ReviewSet/history 的 paired diagnosis，清除重复 warning、failureAnalysis 与 strategyAdjustments。",
+      "完成：把 ReviewSet document/history/observationKeys 写入既有 handoff，核对 WeakMap 可信 Artifact，并在下一代第一项写入前防止旧评价直接作用于新版本；观察工具仍由 Agent 选择。",
+      "完成：把 ChatGPT/Codex usage-limit 错误归因成余额/订阅用量边界；Sol 与 Terra 失败后恢复原 Sol 配置。",
+      "待真机：2026-08-28 09:01 额度重置或额度恢复后，在第八轮干净项目用相同 Sol 和相同一句需求复跑父子闭环。",
+      "待验收：核对父子独立 Run Record、子代新 history、再次结构/像素/post-judge 闭合，并与第七轮和用户/Eagle 参考做同尺寸视觉比较。"
     ]
   },
   "convergenceBaseline": {
@@ -341,5 +340,5 @@
     "capabilityDenialSuspectCount": null,
     "note": "治理切片 1/2 代码完成前的历史基线；治理后窗口由真实运行回填并用 debug:runs --convergence 对照。2026-08-16 治理切片 9 补齐两项收敛机制：首次写入延迟（run record toolCalls 增 elapsedMs 时序）与疑似能力误判启发式计数；这两项的基线值为 null（旧档案无时序、无计数口径），待新版本真机运行数据回填后补录再对照。"
   },
-  "lastUpdated": "2026-08-16"
+  "lastUpdated": "2026-08-22"
 }

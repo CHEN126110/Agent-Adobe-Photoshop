@@ -9,6 +9,7 @@ import type { TaskOrchestrator } from '../services/task-orchestrator';
 import type { LogService } from '../services/log-service';
 import type { MattingService } from '../services/matting-service';
 import type { ResourceManagerService } from '../services/resource-manager-service';
+import type { ClaudeSubscriptionService } from '../services/claude-subscription-service';
 import type { CodexSubscriptionService } from '../services/codex-subscription-service';
 
 /**
@@ -22,6 +23,7 @@ export interface IPCContext {
     mattingService: MattingService | null;
     resourceManagerService: ResourceManagerService | null;
     codexSubscriptionService: CodexSubscriptionService | null;
+    claudeSubscriptionService: ClaudeSubscriptionService | null;
     mainWindow: Electron.BrowserWindow | null;
 }
 

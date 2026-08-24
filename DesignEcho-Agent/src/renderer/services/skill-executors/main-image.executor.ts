@@ -15,8 +15,8 @@ import { emitSkillStep } from './skill-step-events';
 import {
     getMainImageDeliveryDocument,
     MAIN_IMAGE_SIZE_SPECS,
-    resolveMainImageSizeKeys,
-} from './main-image-design.skill';
+    resolveMainImageSizeKeys
+} from './main-image-delivery-spec';
 import {
     type MainImageSizePlan
 } from '../../../shared/design-agent-os-contracts';
@@ -227,7 +227,7 @@ function buildMainImageSizePlan(input: {
     targetSizeOverride?: { width: number; height: number };
     providedPlan?: Record<string, any> | null;
     subjectSize: { width: number; height: number };
-    defaultScale: number;
+    defaultScale?: number;
     imageType: string;
     outputDir: string;
 }): MainImageSizePlan | null {
@@ -245,7 +245,11 @@ function buildMainImageSizePlan(input: {
         height: readNumber(providedSubject.height) || input.subjectSize.height
     };
     const providedScale = readNumber(provided.scale);
-    const scale = providedScale !== undefined && providedScale > 0 ? providedScale : input.defaultScale;
+    const fallbackScale = readNumber(input.defaultScale);
+    const scale = providedScale !== undefined && providedScale > 0
+        ? providedScale
+        : (fallbackScale !== undefined && fallbackScale > 0 ? fallbackScale : undefined);
+    if (scale === undefined) return null;
     const providedTargetX = readNumber(provided.targetX);
     const providedTargetY = readNumber(provided.targetY);
     const targetX = targetMatches && providedTargetX !== undefined
@@ -314,7 +318,8 @@ function normalizeMainImageSizePlans(
         width: Number(subjectBounds?.width || 0) || 1,
         height: Number(subjectBounds?.height || 0) || 1
     };
-    const scale = Number(params.productScale || 0.65) || 0.65;
+    const requestedScale = readNumber(params.productScale);
+    const scale = requestedScale !== undefined && requestedScale > 0 ? requestedScale : undefined;
     const imageType = cleanString(params.imageType) || 'click';
     const outputDir = cleanString(params.outputDir);
     const customSize = getExplicitMainImageCustomSize(params);

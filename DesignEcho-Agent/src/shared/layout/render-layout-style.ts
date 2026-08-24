@@ -8,7 +8,7 @@ export type RenderLayoutStyleMode = 'neutral_wireframe' | 'model_authored';
 export type RenderLayoutTextFitMode = 'none' | 'shrink_to_width';
 
 export interface RenderLayoutTypographySpec {
-    /** 必须是 resolveFontName 已确认可写的字体名；省略时沿用 Photoshop 当前默认字体。 */
+    /** 正式 model_authored 样式必须提供 resolveFontName 已确认可写的字体名。 */
     fontName?: string;
     /** 相对当前文字区域高度的字号比例。 */
     fontSizeRatio: number;
@@ -28,6 +28,8 @@ export interface RenderLayoutModelAuthoredVisualStyle {
         primaryTextColorHex: string;
         secondaryTextColorHex: string;
         accentColorHex: string;
+        /** 图片或待替换素材占位层颜色；正式设计不得由 Harness 按底色派生。 */
+        placeholderFillColorHex: string;
         sellingPointTextColorHex: string;
         sellingPointFillColorHex?: string;
     };
@@ -232,6 +234,20 @@ function readRequiredColor(value: unknown, path: string, issues: string[]): stri
     return normalizeHexColor(value);
 }
 
+function readRequiredRatio(
+    value: unknown,
+    path: string,
+    minimum: number,
+    maximum: number,
+    issues: string[]
+): number {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
+        issues.push(`${path}:out_of_range`);
+        return 0;
+    }
+    return value;
+}
+
 function readTypography(
     value: unknown,
     path: string,
@@ -240,9 +256,9 @@ function readTypography(
 ): ResolvedRenderLayoutTypography {
     const record = isRecord(value) ? value : {};
     if (!isRecord(value)) issues.push(`${path}:object_required`);
-    const fontName = record.fontName === undefined ? '' : String(record.fontName || '').trim();
-    if (record.fontName !== undefined && (!fontName || fontName.length > 120)) {
-        issues.push(`${path}.fontName:invalid`);
+    const fontName = String(record.fontName || '').trim();
+    if (!fontName || fontName.length > 120) {
+        issues.push(`${path}.fontName:required_resolved_font`);
     }
     const fontSizeRatio = typeof record.fontSizeRatio === 'number' ? record.fontSizeRatio : Number.NaN;
     const minFontSizeRatio = typeof record.minFontSizeRatio === 'number' ? record.minFontSizeRatio : Number.NaN;
@@ -251,6 +267,13 @@ function readTypography(
     const leadingRatio = typeof record.leadingRatio === 'number' ? record.leadingRatio : Number.NaN;
     if (!Number.isFinite(fontSizeRatio) || fontSizeRatio < 0.08 || fontSizeRatio > 0.9) {
         issues.push(`${path}.fontSizeRatio:out_of_range`);
+        // 真机 2026-08-23 run587：模型按「画布高度比例」直觉给 0.04-0.05，被拦后取下限 0.08，
+        // 渲染在小文字区域上仍是不可见小字，陷入「看图→调字号」返工循环。教学必须点破参照系。
+        if (Number.isFinite(fontSizeRatio) && fontSizeRatio > 0 && fontSizeRatio < 0.08) {
+            issues.push(
+                `${path}.fontSizeRatio 参照系提醒：${fontSizeRatio} 疑似按画布高度比例给出——本字段相对的是该文字区域自身的高度（区域通常只占画布 10%-20% 高），照此渲染会得到几乎不可见的小字。常见值：标题 0.4-0.55、卖点 0.3-0.4、正文 0.25-0.35；想要某个像素字号时用「目标像素 ÷ 该文字区域像素高度」反推`
+            );
+        }
     }
     if (!Number.isFinite(minFontSizeRatio) || minFontSizeRatio < 0.02 || minFontSizeRatio > 0.9
         || (Number.isFinite(fontSizeRatio) && minFontSizeRatio > fontSizeRatio)) {
@@ -377,7 +400,10 @@ export function resolveRenderLayoutVisualStyle(input: {
 }): RenderLayoutStyleResolution {
     const backgroundHex = normalizeHexColor(input.backgroundHex, '#FFFFFF');
     if (input.visualStyle === undefined || input.visualStyle === null) {
-        return { ok: true, style: buildNeutralWireframeStyle(backgroundHex), issues: [] };
+        return {
+            ok: false,
+            issues: ['visualStyle:required_use_model_authored_or_explicit_neutral_wireframe']
+        };
     }
     const visualStyle = isRecord(input.visualStyle) ? input.visualStyle : {};
     if (!isRecord(input.visualStyle)) {
@@ -392,6 +418,9 @@ export function resolveRenderLayoutVisualStyle(input: {
     }
 
     const issues: string[] = [];
+    if (!parseHexColor(input.backgroundHex)) {
+        issues.push('pageBackgroundHex:required_for_model_authored_visual_style');
+    }
     const palette = isRecord(visualStyle.palette) ? visualStyle.palette : {};
     if (!isRecord(visualStyle.palette)) issues.push('visualStyle.palette:object_required');
     const primaryTextColorHex = readRequiredColor(
@@ -407,6 +436,11 @@ export function resolveRenderLayoutVisualStyle(input: {
     const accentColorHex = readRequiredColor(
         palette.accentColorHex,
         'visualStyle.palette.accentColorHex',
+        issues
+    );
+    const placeholderFillColorHex = readRequiredColor(
+        palette.placeholderFillColorHex,
+        'visualStyle.palette.placeholderFillColorHex',
         issues
     );
     const sellingPointTextColorHex = readRequiredColor(
@@ -435,18 +469,22 @@ export function resolveRenderLayoutVisualStyle(input: {
             issues
         );
     }
-    const cornerRadiusRatio = typeof sellingPoint.cornerRadiusRatio === 'number'
-        ? sellingPoint.cornerRadiusRatio
-        : Number.NaN;
-    const paddingRatio = typeof sellingPoint.paddingRatio === 'number'
-        ? sellingPoint.paddingRatio
-        : Number.NaN;
-    if (!Number.isFinite(cornerRadiusRatio) || cornerRadiusRatio < 0 || cornerRadiusRatio > 0.5) {
-        issues.push('visualStyle.sellingPoint.cornerRadiusRatio:out_of_range');
-    }
-    if (!Number.isFinite(paddingRatio) || paddingRatio < 0 || paddingRatio > 0.2) {
-        issues.push('visualStyle.sellingPoint.paddingRatio:out_of_range');
-    }
+    // 两个比例分别真实控制 createRectangle 圆角与卖点文字左右留白，不能由 Harness
+    // 静默补值或夹取；正式 model_authored 样式必须由 Agent 显式声明。
+    const cornerRadiusRatio = readRequiredRatio(
+        sellingPoint.cornerRadiusRatio,
+        'visualStyle.sellingPoint.cornerRadiusRatio',
+        0,
+        0.5,
+        issues
+    );
+    const paddingRatio = readRequiredRatio(
+        sellingPoint.paddingRatio,
+        'visualStyle.sellingPoint.paddingRatio',
+        0,
+        0.2,
+        issues
+    );
 
     const typography = isRecord(visualStyle.typography) ? visualStyle.typography : {};
     if (!isRecord(visualStyle.typography)) issues.push('visualStyle.typography:object_required');
@@ -483,7 +521,7 @@ export function resolveRenderLayoutVisualStyle(input: {
             pageTextColorHex: primaryTextColorHex,
             secondaryTextColorHex,
             accentColorHex,
-            placeholderFillColorHex: relativeLuminance(backgroundHex) < 0.36 ? '#3A3A3A' : '#E5E7EB',
+            placeholderFillColorHex,
             sellingPointBoxFillColorHex: sellingPointFillColorHex || backgroundHex,
             sellingPointTextColorHex,
             sellingPointTreatment: treatment as RenderLayoutStyle['sellingPointTreatment'],

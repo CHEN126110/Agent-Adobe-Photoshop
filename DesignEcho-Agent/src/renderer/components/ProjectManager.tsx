@@ -9,6 +9,7 @@ import React, { useState, useCallback } from 'react';
 import { ArrowUp, FolderOpen, Plus, Sparkles } from 'lucide-react';
 
 import { normalizeModelThinkingPreference } from '../../shared/config/models.config';
+import { canonicalizeProjectSession } from '../services/project-session-identity';
 import { useAppStore, ProjectInfo } from '../stores/app.store';
 import { ThinkingModeControl } from './ThinkingModeControl';
 
@@ -198,19 +199,15 @@ export const ProjectManager: React.FC<{
                 return;
             }
 
-            // 提取项目名称（文件夹名）
-            const pathParts = folderPath.split(/[/\\]/);
-            const projectName = pathParts[pathParts.length - 1] || '未命名项目';
-
             // 创建项目信息
-            const project: ProjectInfo = {
+            const project = await canonicalizeProjectSession({
                 id: crypto.randomUUID(),
-                name: projectName,
+                name: '未命名项目',
                 path: folderPath,
                 createdAt: Date.now(),
                 lastOpenedAt: Date.now(),
                 folders: {}
-            };
+            });
 
             // 添加到最近项目
             addRecentProject(project);
@@ -219,8 +216,8 @@ export const ProjectManager: React.FC<{
             onProjectOpen(project, homePrompt.trim() || undefined);
 
             // 使用项目路径作为导出目录
-            setExportFolderPath(folderPath);
-            console.log('[ProjectManager] ✅ 项目目录:', folderPath);
+            setExportFolderPath(project.path);
+            console.log('[ProjectManager] ✅ 规范项目目录:', project.path);
 
         } catch (error) {
             console.error('[ProjectManager] 导入项目失败:', error);
@@ -234,19 +231,19 @@ export const ProjectManager: React.FC<{
     /**
      * 打开已有项目
      */
-    const handleOpenProject = (project: ProjectInfo): void => {
+    const handleOpenProject = async (project: ProjectInfo): Promise<void> => {
         if (isLoading) return;
         setIsLoading(true);
         setLoadingStatus('正在加载项目...');
         
         try {
-            const openedProject = { ...project, lastOpenedAt: Date.now() };
+            const openedProject = await canonicalizeProjectSession({ ...project, lastOpenedAt: Date.now() });
             addRecentProject(openedProject);
             onProjectOpen(openedProject, homePrompt.trim() || undefined);
             
             // 使用项目路径作为导出目录
-            setExportFolderPath(project.path);
-            console.log('[ProjectManager] ✅ 项目目录:', project.path);
+            setExportFolderPath(openedProject.path);
+            console.log('[ProjectManager] ✅ 规范项目目录:', openedProject.path);
         } catch (error) {
             console.error('[ProjectManager] 打开项目失败:', error);
             alert(`打开项目失败:\n${formatErrorMessage(error, '请检查项目路径和读写权限')}`);

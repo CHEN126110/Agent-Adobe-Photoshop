@@ -337,7 +337,7 @@ export class InteractiveContinuationOperationStore {
                     code: 'interactive_continuation_operation_unknown_after_execution_failure',
                     message: mutationState === 'observed'
                         ? '执行失败前已经观察到画面或文件修改，当前结果已标记为不确定；请先检查 Photoshop，系统不会自动重放。'
-                        : '执行结果缺少可靠的修改统计，无法排除 Photoshop 已发生写入；请先检查当前画面，系统不会自动重放。',
+                        : '执行结果缺少可靠的修改统计，无法排除 Photoshop 已发生写入；系统不会自动重放，Agent 继续前会先读取当前画面。',
                     record: unknown
                 };
             }
@@ -536,7 +536,7 @@ function buildFailedMutationUncertaintyReason(
     mutationState: Exclude<InteractiveContinuationMutationState, 'none'>
 ): string {
     if (mutationState === 'observed') {
-        return '操作没有完整结束，但 Photoshop 已有写入。请先检查当前画面；系统不会自动重复执行。';
+        return '操作没有完整结束，但 Photoshop 已有写入。系统不会自动重复执行；Agent 继续前会先读取当前画面。';
     }
-    return '操作没有完整结束，且无法确认 Photoshop 是否已有部分写入。请先检查当前画面；系统不会自动重复执行。';
+    return '操作没有完整结束，且无法确认 Photoshop 是否已有部分写入。系统不会自动重复执行；Agent 继续前会先读取当前画面。';
 }

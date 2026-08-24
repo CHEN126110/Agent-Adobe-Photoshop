@@ -81,19 +81,19 @@ const RENDER_LAYOUT_TYPOGRAPHY_SCHEMA = {
     properties: {
         fontName: {
             type: 'string',
-            description: '可选。仅填写 resolveFontName 已确认可写的 Photoshop 字体名；省略时沿用当前默认字体。'
+            description: 'resolveFontName 已确认可写的 Photoshop 字体名。正式 model_authored 样式必填，不能回落到当前 Photoshop 默认字体。'
         },
         fontSizeRatio: {
             type: 'number',
             minimum: 0.08,
             maximum: 0.9,
-            description: '相对当前文字区域高度的字号比例，由设计方向决定，不是像素坐标。'
+            description: '相对「该文字区域自身高度」的字号比例——不是画布高度！区域通常只占画布 10%-20% 高，按画布比例给 0.03-0.06 会渲染成不可见小字。常见值：标题 0.4-0.55、卖点 0.3-0.4、正文 0.25-0.35。想要某个像素字号时反推：目标像素 ÷ 该文字区域像素高度。'
         },
         minFontSizeRatio: {
             type: 'number',
             minimum: 0.02,
             maximum: 0.9,
-            description: '拟合时允许的最小字号比例，必须由模型声明且不得大于 fontSizeRatio；执行器不会再用隐藏的 16/18pt 下限覆盖。'
+            description: '拟合时允许的最小字号比例（同样相对该文字区域自身高度，不是画布），必须由模型声明且不得大于 fontSizeRatio；执行器不会再用隐藏的 16/18pt 下限覆盖。'
         },
         fitMode: {
             type: 'string',
@@ -113,7 +113,7 @@ const RENDER_LAYOUT_TYPOGRAPHY_SCHEMA = {
             description: '相对字号的行距比例。'
         }
     },
-    required: ['fontSizeRatio', 'minFontSizeRatio', 'fitMode', 'tracking', 'leadingRatio']
+    required: ['fontName', 'fontSizeRatio', 'minFontSizeRatio', 'fitMode', 'tracking', 'leadingRatio']
 };
 
 const RENDER_LAYOUT_VISUAL_STYLE_SCHEMA = {
@@ -131,6 +131,7 @@ const RENDER_LAYOUT_VISUAL_STYLE_SCHEMA = {
                 primaryTextColorHex: { type: 'string', description: '#RRGGBB，标题与正文主色。' },
                 secondaryTextColorHex: { type: 'string', description: '#RRGGBB，次级信息色。' },
                 accentColorHex: { type: 'string', description: '#RRGGBB，当前方向的强调色。' },
+                placeholderFillColorHex: { type: 'string', description: '#RRGGBB，图片/素材占位层颜色；由 Agent 声明，不从底色派生。' },
                 sellingPointTextColorHex: { type: 'string', description: '#RRGGBB，卖点文字色。' },
                 sellingPointFillColorHex: {
                     type: 'string',
@@ -141,6 +142,7 @@ const RENDER_LAYOUT_VISUAL_STYLE_SCHEMA = {
                 'primaryTextColorHex',
                 'secondaryTextColorHex',
                 'accentColorHex',
+                'placeholderFillColorHex',
                 'sellingPointTextColorHex'
             ]
         },
@@ -208,12 +210,100 @@ const RENDER_LAYOUT_VISUAL_STYLE_SCHEMA = {
     }]
 };
 
+// composeDesign 是开放设计首轮的可逆写入入口，必须控制首轮 schema 预算。
+// 这里保留与 renderLayout 相同的可执行字段和 required 约束，但不复制完整教学文案、
+// oneOf / allOf 说明；运行时仍由 normalizeComposeDesignSpec 与 visual-style validator 严格校验。
+const COMPOSE_DESIGN_IMAGE_PLACEMENT_SCHEMA = {
+    type: 'object',
+    properties: {
+        fit: { type: 'string', enum: ['contain', 'cover'] },
+        anchor: { type: 'string', enum: ['center'] },
+        scale: { type: 'number', enum: [1] },
+        rotation: { type: 'number', enum: [0] },
+        mask: { type: 'string', enum: ['none', 'clipping'] },
+        overflow: { type: 'string', enum: ['clip', 'visible'] },
+        subjectFillRatio: { type: 'number', minimum: 0.3, maximum: 0.98, description: '主体在「该图片区域内」的 contain 占比（相对区域不是画布）；0.9 = 主体撑满区域 90%。' },
+        allowUnderfill: { type: 'boolean' }
+    },
+    required: ['fit', 'anchor', 'scale', 'rotation', 'mask', 'overflow']
+};
+
+// 参照系教学（真机 2026-08-23 run587）：模型曾按「画布高度比例」直觉给 fontSizeRatio 0.04-0.05，
+// 渲染成不可见小字后陷入「看图 → 调字号」返工循环。比例字段的描述必须点破参照系。
+const COMPOSE_DESIGN_TYPOGRAPHY_SCHEMA = {
+    type: 'object',
+    properties: {
+        fontName: { type: 'string', description: 'resolveFontName 已确认可写的字体名。' },
+        fontSizeRatio: {
+            type: 'number',
+            minimum: 0.08,
+            maximum: 0.9,
+            description: '相对「该文字区域自身高度」的字号比例——不是画布高度！区域通常只占画布 10%-20% 高，按画布比例给 0.03-0.06 会渲染成不可见小字。常见值：标题 0.4-0.55、卖点 0.3-0.4、正文 0.25-0.35。想要某个像素字号时反推：目标像素 ÷ 该文字区域像素高度。'
+        },
+        minFontSizeRatio: {
+            type: 'number',
+            minimum: 0.02,
+            maximum: 0.9,
+            description: '拟合缩小时允许的字号下限，同样相对该文字区域自身高度；不得大于 fontSizeRatio。'
+        },
+        fitMode: { type: 'string', enum: ['none', 'shrink_to_width'], description: 'none=保持声明字号；shrink_to_width=过宽时允许缩至下限并换行。' },
+        tracking: { type: 'number', minimum: -1000, maximum: 1000, description: 'Photoshop 字距，单位 1/1000 em；0 为默认。' },
+        leadingRatio: { type: 'number', minimum: 0.8, maximum: 2, description: '行距相对字号的倍数（如 1.2 = 1.2 倍行距）。' }
+    },
+    required: ['fontName', 'fontSizeRatio', 'minFontSizeRatio', 'fitMode', 'tracking', 'leadingRatio']
+};
+
+const COMPOSE_DESIGN_VISUAL_STYLE_SCHEMA = {
+    type: 'object',
+    properties: {
+        mode: { type: 'string', enum: ['model_authored'] },
+        palette: {
+            type: 'object',
+            properties: {
+                primaryTextColorHex: { type: 'string' },
+                secondaryTextColorHex: { type: 'string' },
+                accentColorHex: { type: 'string' },
+                placeholderFillColorHex: { type: 'string' },
+                sellingPointTextColorHex: { type: 'string' },
+                sellingPointFillColorHex: { type: 'string' }
+            },
+            required: [
+                'primaryTextColorHex',
+                'secondaryTextColorHex',
+                'accentColorHex',
+                'placeholderFillColorHex',
+                'sellingPointTextColorHex'
+            ]
+        },
+        typography: {
+            type: 'object',
+            properties: {
+                title: COMPOSE_DESIGN_TYPOGRAPHY_SCHEMA,
+                subtitle: COMPOSE_DESIGN_TYPOGRAPHY_SCHEMA,
+                body: COMPOSE_DESIGN_TYPOGRAPHY_SCHEMA,
+                sellingPoint: COMPOSE_DESIGN_TYPOGRAPHY_SCHEMA
+            },
+            required: ['title', 'subtitle', 'body', 'sellingPoint']
+        },
+        sellingPoint: {
+            type: 'object',
+            properties: {
+                treatment: { type: 'string', enum: ['text_only', 'solid_box'] },
+                cornerRadiusRatio: { type: 'number', minimum: 0, maximum: 0.5, description: '圆角相对卖点框自身高度的比例；0.5 = 胶囊形。' },
+                paddingRatio: { type: 'number', minimum: 0, maximum: 0.2, description: '内边距相对卖点框自身高度的比例。' }
+            },
+            required: ['treatment', 'cornerRadiusRatio', 'paddingRatio']
+        }
+    },
+    required: ['mode', 'palette', 'typography', 'sellingPoint']
+};
+
 const RAW_TOOL_CATALOG: ToolSchema[] = [
     {
         name: 'createInteractiveCard',
-        description: 'Create a generic user-facing confirmation card in the chat for confirming or editing free-form structured choices (for example, a design direction, an open-ended option set, or a reversible draft decision). This does not write Photoshop files and does not select, authorize, or replace any production workflow. Use a domain-specific confirmation surface only when an already selected capability explicitly provides one for its structured data.',
+        description: 'Create an editable structured-draft card only when several user-editable fields are materially clearer than a short choice or normal reply. For 1–3 bounded choices use askUserToChoose; for domain data use the selected Skill, which owns its card Provider. If the user explicitly forbids Skills, this generic card may collect only genuinely user-owned facts after observable facts have been read; it must not claim that an existing artifact is a source, template, draft, or output without readback evidence. Do not create a card for facts you can observe, low-impact reversible decisions, progress reporting, or decorative UI. The card does not write Photoshop or grant workflow authority; after submission the same Agent task resumes with the edited values.',
         inputSchema: objectSchema({
-            cardKind: { type: 'string', enum: ['editable_confirmation', 'generic_confirmation'] },
+            cardKind: { type: 'string', enum: ['editable_confirmation'] },
             title: { type: 'string' },
             description: { type: 'string' },
             fields: {
@@ -250,25 +340,27 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             memoryEnabled: { type: 'boolean' },
             memoryKind: { type: 'string', enum: ['user_preference', 'brand_preference', 'project_rule', 'approved_recipe'] },
             tags: { type: 'array', items: { type: 'string' } }
-        }, ['cardKind'])
+        }, ['cardKind', 'title', 'fields'])
     },
     {
         name: 'createDocument',
-        description: 'Create a new Photoshop document. 修改类任务不要新建：目标文档（如详情页.psb）已打开时直接在它上面操作；读取失败不代表没有文档，先 listDocuments 核实。',
+        description: 'Create a new Photoshop document. 修改类任务不要新建：目标文档（如详情页.psb）已打开时直接在它上面操作；读取失败不代表没有文档，先 listDocuments 核实。任何交付物都能建：屏幕类（主图 / 海报图 / 封面 / 社媒）用像素 + 72ppi；印刷类（明信片 / 海报 / 包装 / 名片 / 画册页）按物理尺寸换算像素（px = mm ÷ 25.4 × dpi，通常 300dpi，四周各加 3mm 出血）并给 resolution=300、colorMode 按印厂要求（多为 CMYK；需要后期滤镜 / 智能对象时可先 RGB 最后转）。',
         inputSchema: objectSchema({
             preset: { type: 'string' },
-            width: { type: 'number' },
-            height: { type: 'number' },
+            width: { type: 'number', description: '像素宽。印刷品先按 mm 与 dpi 换算。' },
+            height: { type: 'number', description: '像素高。' },
+            resolution: { type: 'number', description: 'ppi/dpi：屏幕 72，印刷 300（不给按 72）。' },
+            colorMode: { type: 'string', enum: ['RGB', 'CMYK', 'Grayscale'], description: '色彩模式；印刷交付按印厂要求，多为 CMYK。' },
             name: { type: 'string' },
             backgroundColor: { type: 'string', enum: ['white', 'black', 'transparent'] }
         })
     },
     {
         name: 'listDocuments',
-        description: 'List currently opened Photoshop documents. For polling, request only the fields you need: includePaths does not recursively count layers; includeDetails preserves the legacy full response.',
+        description: 'List all currently opened Photoshop documents in one observation. Each row includes pathState (saved / unsaved / unavailable), current-project affinity derived from the canonical project root, and a structure-based documentNature hint. Use these facts before choosing a target; do not guess documents one by one. Path reading defaults to on and does not recursively count layers; pass includePaths=false only for minimal polling.',
         inputSchema: objectSchema({
             includeDetails: { type: 'boolean' },
-            includePaths: { type: 'boolean' },
+            includePaths: { type: 'boolean', description: '默认 true；读取 pathState 和已保存文件路径，不递归图层。极简轮询才传 false。' },
             includeDimensions: { type: 'boolean' },
             includeLayerCount: { type: 'boolean' }
         })
@@ -297,10 +389,15 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'getDocumentSnapshot',
-        description: 'Capture a snapshot of the current document for visual reasoning. Use it when you need to SEE the whole document at a glance; for verification-quality readback with layers/text/bounds prefer getAcceptanceSnapshot, and for local pixel detail use getCanvasSnapshot with a region.',
+        description: 'Capture a snapshot of the current document for visual reasoning. Use it when you need to SEE the whole document at a glance; for verification-quality readback with layers/text/bounds prefer getAcceptanceSnapshot, and for local pixel detail use getCanvasSnapshot with a region. 它与 getCanvasSnapshot 都会花一次「看图额度」且内容重叠——同一轮只调其中一个，不要两个一起调；纯粹要图层/文字/边界数据（不看像素）用 getAcceptanceSnapshot 或 getLayerHierarchy，不花看图额度。',
         inputSchema: objectSchema({
             maxSize: { type: 'number', description: '截图最大边长（只缩不放），默认 1280' }
         })
+    },
+    {
+        name: 'capturePhotoshopWindow',
+        description: 'Capture the visible Adobe Photoshop application window, including native dialogs and application chrome. Use this only when a real tool failure reports photoshop_native_modal_suspected / a Photoshop dialog may be blocking execution, or when the user explicitly asks you to inspect the whole application window. It is not a canvas-quality check and must not become a generic task-opening screenshot. After seeing it, you decide whether to wait, retry a safe read, or ask the user to close a blocking native dialog; never repeat an uncertain write merely because a screenshot was captured.',
+        inputSchema: objectSchema({})
     },
     {
         name: 'getAcceptanceSnapshot',
@@ -314,9 +411,10 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'getCanvasSnapshot',
-        description: 'Capture the current canvas as an image for a visual or pixel-level judgment. Do not use it merely to verify which file is active; getDocumentInfo plus open/switch readback is sufficient for document navigation. 局部像素修复先用一次全图定位（若位置未知），再用一个带少量上下文的紧凑 region 观察并复用其文档像素坐标；写后只重读同一 region 一次。长文档（详情页等）必须传 region——全图缩放会小到看不清。',
+        description: 'Capture the current active canvas as an image for a visual or pixel-level judgment. It never opens or switches documents. Do not use it merely to verify which file is active; getDocumentInfo plus open/switch readback is sufficient for document navigation. 写后验真或同时打开多份文档时传 expectedDocumentId，使目标不一致在读取像素前失败。局部像素修复先用一次全图定位（若位置未知），再用一个带少量上下文的紧凑 region 观察并复用其文档像素坐标；写后只重读同一 region 一次。长文档（详情页等）必须传 region——全图缩放会小到看不清。',
         inputSchema: objectSchema({
-            maxSize: { type: 'number', description: '截图最大边长（只缩不放），默认 1280' },
+            maxSize: { type: 'number', description: '截图最大边长（只缩不放），默认 1280。COST：视觉回合的耗时随图片大小上升——看整体构图 / 层级 / 留白请传 600–800；只有核对细节或文字可读性才用 1280 以上。' },
+            expectedDocumentId: { type: 'number', description: '可选的活动文档身份断言，使用 getDocumentInfo 或写入回执返回的正整数文档 ID。不匹配会失败；不会自动切换文档。不要传 documentId，后者会被执行边界明确拒绝，避免把当前文档误当成指定文档。' },
             region: {
                 type: 'object',
                 properties: {
@@ -357,7 +455,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'getLayerHierarchy',
-        description: 'Read the layer tree of the active document. 大文档（几十上百层）看某组内部传 rootLayerId 只读子树；找特定图层（按名字/类型）不要翻树——用 findLayers 一步命中。',
+        description: '读取当前文档完整图层层级、图层名称、类型和 layerId。大文档（几十上百层）看某组内部传 rootLayerId 只读子树；找特定图层（按名字/类型）不要翻树——用 findLayers 一步命中。',
         inputSchema: objectSchema({
             includeHidden: { type: 'boolean', description: '包含隐藏图层，默认 false' },
             includeBounds: { type: 'boolean', description: '是否带图层边界（稍慢）' },
@@ -491,7 +589,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'fitLayerSubjectToRegion',
-        description: '主体感知缩放与定位：按自动检测到的真实主体而不是图片外框，把明确 layerId 适配到明确 targetRegion。省略 subjectFillRatio/anchor 时，引擎会根据 designType、assetRole、intent 采用共享设计预设；有已选参考图且需复现其数值构图时，先调 measureReferenceComposition，并把返回的 application 字段透传到 referenceComposition 参数，引擎用参考实测占比覆盖预设；既无显式约束也无参考测量时，不要自己读 bounds 计算缩放百分比。工具会在同一次调用内完成写后主体读回并返回 geometryVerification；几何通过不等于审美通过，随后只需观察一次真实画面，必要时做一次有依据的修订。',
+        description: '主体感知缩放与定位：按真实主体而不是图片外框，把明确 layerId 适配到明确 targetRegion。主体视觉占比必须由 Agent 显式声明，或来自已选参考的实测；anchor 必须由 Agent 根据本稿构图声明。Harness 不按品类、角色或意图套预设，只求解几何并返回写后 geometryVerification。几何通过不等于审美通过。',
         inputSchema: objectSchema({
             layerId: { type: 'number', description: '目标图层 ID（placeImage 结果或 getLayerHierarchy 读回）。' },
             targetRegion: {
@@ -504,7 +602,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                 },
                 description: '期望主体呈现的目标区域（文档像素坐标）。通常是 renderLayout 结果里该块的 x/y/width/height。'
             },
-            subjectFillRatio: { type: 'number', description: '可选的主体 contain 占比 0-1。仅在用户、模板、已选参考或明确设计决策给出数值时填写；省略则使用共享设计预设。' },
+            subjectFillRatio: { type: 'number', description: 'Agent 明确选择的主体 contain 占比 0-1；若改用已选参考实测，可省略并传 referenceComposition。' },
             referenceComposition: {
                 type: 'object',
                 properties: {
@@ -519,31 +617,16 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                         }
                     }
                 },
-                description: '可选。有已选参考图且需复现其数值构图时，把 measureReferenceComposition 返回的 application 字段透传至此；引擎用它覆盖品类默认占比。无参考图时不要填。'
+                description: '可选。有已选参考图且需复现其数值构图时，把 measureReferenceComposition 返回的 application 字段透传至此。无参考图时不要填。'
             },
             maxUpscaleRatio: { type: 'number', description: '相对当前大小的放大上限，默认 3（防画质崩）。' },
-            designType: {
-                type: 'string',
-                enum: ['main-image', 'detail-page', 'sku', 'reference-replication', 'poster', 'banner', 'generic'],
-                description: '当前设计载体；用于选择通用缩放预设，省略为 generic。'
-            },
-            assetRole: {
-                type: 'string',
-                enum: ['product', 'model', 'detail', 'scene', 'icon', 'background', 'group', 'unknown'],
-                description: '该图层在画面中的角色；用于判断视觉占比，不是业务 Skill。'
-            },
-            intent: {
-                type: 'string',
-                enum: ['hero', 'supporting', 'thumbnail', 'full-bleed', 'fit-slot', 'compare-grid'],
-                description: '本次置入意图；hero 与 supporting 等会使用不同的共享视觉占比。'
-            },
             anchor: {
                 type: 'string',
                 enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
-                description: '可选语义锚点；省略则由共享预设决定。'
+                description: '本稿显式语义锚点；Harness 不替 Agent 选择视觉重心。'
             },
-            method: { type: 'string', enum: ['smart', 'alpha'], description: '主体检测方式：smart=Photoshop 选择主体（默认）；alpha=按透明边界（抠图后的透明底图层用这个）。' }
-        }, ['layerId', 'targetRegion'])
+            method: { type: 'string', enum: ['auto', 'alpha', 'smart'], description: '主体检测方式：省略或 auto（默认）= 素材属性 → 透明边界 → 本地分割 → 整框，逐级本地求解并带置信度，不依赖 Photoshop 选择主体；alpha = 只按透明边界（抠好的透明底图层）；smart = 显式用 Photoshop 选择主体。' }
+        }, ['layerId', 'targetRegion', 'anchor'])
     },
     {
         name: 'transformLayer',
@@ -557,7 +640,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             flipHorizontal: { type: 'boolean', description: '水平翻转。' },
             flipVertical: { type: 'boolean', description: '垂直翻转。' },
             fitToCanvas: { type: 'boolean', description: '等比缩放到适应画布，目标占比由 fitPercentage 决定。' },
-            fitPercentage: { type: 'number', description: 'fitToCanvas 时图层占画布的目标百分比，默认 80。' },
+            fitPercentage: { type: 'number', description: 'fitToCanvas 时由 Agent 明确选择的图层占画布百分比；不得省略后让工具套用视觉占比。' },
             targetBounds: {
                 type: 'object',
                 properties: {
@@ -990,13 +1073,330 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
         }, ['x', 'y', 'width', 'height'])
     },
     {
+        name: 'planDesignTaskCard',
+        description: '【复杂任务可选】为多交付物、跨轮续跑或明确清单任务建立可追踪任务卡：记录任务角色、当前判断，以及 fact / decision / deliverable 待办。简单单步修改或单张可直接完成的画面不必立卡。一旦立卡，本轮就应通过 updateDesignTaskCard 用真实观察或产出收据更新，未完成项不会被口头声明成完成。',
+        inputSchema: objectSchema({
+            title: { type: 'string', description: '任务标题：交付物名，可带一句方向（如「SKU」「ins 风格产品图 从用户角度出发」）。' },
+            role: { type: 'string', description: '这张图在链路里干什么、为什么（一句大白话，如「SKU 是用户转化的最后一个关键环节」）。' },
+            judgment: { type: 'string', description: '对产品 / 风格的判断及其设计含义（一句大白话，如「这是 ins 风格的 SKU，应该不需要抠图」）。' },
+            items: {
+                type: 'array',
+                description: '清单，用你自己的话写成一行行要做的事（如「我需要知道色卡颜色有哪些」「我要不要重新设计一个模板」「出 5 张点击图」）。不要写「弄清·」「决定·」这类前缀，界面按 kind 排序不加标签。',
+                items: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string' },
+                        kind: { type: 'string', enum: ['fact', 'decision', 'deliverable'] },
+                        text: { type: 'string', description: '一句大白话，写要弄清什么 / 要定什么 / 要出什么。' },
+                        count: { type: 'number', description: 'deliverable 的数量（如 5 个方案）。' }
+                    }
+                }
+            }
+        }, ['title', 'role', 'judgment', 'items'])
+    },
+    {
+        name: 'updateDesignTaskCard',
+        description: '给任务卡的一项打勾 / 标进行中 / 跳过。打勾要有收据：fact 要写「弄清了什么」且这期间真的看过图 / 读过文档 / 问过用户；decision 要写「决定了什么、为什么」；deliverable 要写「出了什么」且这期间真的有成功写入（车间 / 排版 / 保存）。核对不过不会改状态，并告诉你缺什么。返回整卡与完成情况；complete=true 才可收尾。',
+        inputSchema: objectSchema({
+            itemId: { type: 'string' },
+            status: { type: 'string', enum: ['todo', 'doing', 'done', 'skipped'] },
+            note: { type: 'string', description: 'done / skipped 必填的一句收据。' },
+            imageRef: { type: 'string', description: '可选：出图收据（文件路径）。' },
+            produced: { type: 'number', description: '带 count 的 deliverable 本次新增产出数，默认 1。' }
+        }, ['itemId', 'status'])
+    },
+    {
+        name: 'getDesignTaskCard',
+        description: '读当前任务卡与完成情况（做到哪了、还差什么）。续跑或不确定下一步时先读它。',
+        inputSchema: objectSchema({})
+    },
+    {
+        name: 'askUserToChoose',
+        description: '仅当答案无法从当前素材、文档或环境取得，并且不同答案会实质改变结果时，请用户一次选择 1–3 件事。每题声明 decisionKind：preference=专业偏好（必须给 recommendedId，自动模式可采用推荐继续）；required_fact=只有用户掌握的事实；approval=授权或不可代替的批准。required_fact / approval 禁止预选推荐，自动模式也必须等待用户。能观察到的内容要先读，不要问；可逆且不影响结果的专业判断由你直接做；不要为了展示卡片而增加确认轮次。',
+        inputSchema: objectSchema({
+            intro: { type: 'string', description: '一句开场：为什么现在要问这几件事（可省）。' },
+            questions: {
+                type: 'array',
+                description: '1–3 个真正需要用户决定的问题；只有一个问题时也可以直接使用顶层字段。',
+                items: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string' },
+                        decisionKind: {
+                            type: 'string',
+                            enum: ['preference', 'required_fact', 'approval'],
+                            description: 'preference 可由 Agent 在自动模式采用推荐；required_fact / approval 必须等待用户。'
+                        },
+                        impact: {
+                            type: 'string',
+                            enum: ['material', 'high'],
+                            description: 'material=会明显改变设计或交付；high=涉及事实、授权、不可逆或高成本取舍。'
+                        },
+                        question: { type: 'string', description: '一句话，要用户帮忙定的事。' },
+                        why: { type: 'string', description: '为什么必须由用户决定，以及不同答案怎样影响结果（一句）。' },
+                        options: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    id: { type: 'string' },
+                                    label: { type: 'string', description: '选项名（短）' },
+                                    detail: { type: 'string', description: '选它意味着什么 / 为什么可能对（一句）' }
+                                }
+                            }
+                        },
+                        recommendedId: { type: 'string', description: '只用于 preference，且此时必填；required_fact / approval 不得填写。' }
+                    },
+                    required: ['decisionKind', 'impact', 'question', 'why', 'options']
+                }
+            },
+            decisionKind: { type: 'string', enum: ['preference', 'required_fact', 'approval'], description: '单问：问题类型。' },
+            impact: { type: 'string', enum: ['material', 'high'], description: '单问：结果影响程度。' },
+            question: { type: 'string', description: '单问：问题。' },
+            why: { type: 'string', description: '单问：为什么必须由用户决定，以及答案怎样影响结果。' },
+            options: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string' }, detail: { type: 'string' } } }, description: '单问：选项。' },
+            recommendedId: { type: 'string', description: '单问：仅 preference 使用的推荐选项 id。' },
+            allowFreeText: { type: 'boolean', description: '允许用户不选选项、直接写一句（默认 true）。' }
+        }, [])
+    },
+    {
+        name: 'studyReference',
+        description: '带明确目的分析一张参考图：识别有效与无效处理、推演构图 / 色彩 / 字体 / 主体方法，并给出适配当前产品的归一化构图起手式。模型总结只进入长期知识人工审核队列，批准前不参与生产检索或评审。只在参考会改变当前方向时使用，不照抄表面风格。',
+        inputSchema: objectSchema({
+            filePath: { type: 'string', description: '参考图本地路径（项目内 / Eagle 导入后）。' },
+            imageData: { type: 'string', description: '或：图片 data URL / base64。' },
+            purpose: { type: 'string', description: '看它的目的（如「找网感风格的点击图参考」）。' },
+            deliverable: { type: 'string', description: '我要做的交付物。' },
+            productContext: { type: 'string', description: '我的产品 / 项目背景一句话，便于给出「换成我们该怎么改」。' },
+            approvedReference: { type: 'boolean', description: 'true = 用户明确把它放在认可的参考集合中；只作为候选证据，不自动发布为评审校准。' }
+        })
+    },
+    {
+        name: 'learnTasteFromEagle',
+        description: '从用户指定的 Eagle 参考文件夹批量提取可复核的设计方法候选。文件夹归属证明用户选择了参考集合，但模型对“好在哪”的解释仍是推断，只进入长期知识人工审核队列；批准前不会用于后续设计或评审。每张约 1 分钟，limit 默认 4。',
+        inputSchema: objectSchema({
+            folderName: { type: 'string', description: 'Eagle 文件夹名（含即可，如「点击图-参考」「转化图-卖点参考」「颜色组合参考」）。' },
+            folderId: { type: 'string', description: '或 Eagle 文件夹 id。' },
+            limit: { type: 'number', description: '最多学几张，默认 4，上限 12。' },
+            purpose: { type: 'string', description: '看这些参考的目的（可省）。' },
+            deliverable: { type: 'string' },
+            productContext: { type: 'string' }
+        })
+    },
+    {
+        name: 'recordDesignVerdict',
+        description: '记录用户对一张成稿的「留 / 改 / 弃」和一句为什么（用户原话）。这条反馈会以当前项目作用域正式发布为评审校准；不会自动升级为全局设计原则。用户说「这张留着，因为留白多主体大」「这张不行，太像模板」时调用。没有「为什么」就先问一句再记。',
+        inputSchema: objectSchema({
+            verdict: { type: 'string', enum: ['keep', 'revise', 'discard'] },
+            why: { type: 'string', description: '用户原话的一句理由。' },
+            ref: { type: 'string', description: '强烈建议：被拍板那张图的图像文件路径（导出图 / 预览图）。带路径的「留」样本会成为以后评审的对照参考图——这是用户口味进入评审器的通道；没有图像路径时才退而写文档名 / 图层组名。' }
+        }, ['verdict', 'why'])
+    },
+    {
+        name: 'getDesignLearningTimeline',
+        description: '读当前项目的评审学习时间线：模型评审观察与用户留改弃校准，各带出现次数与状态（◐ 候选 / ★ 已发布 / ✕ 已驳回）。在线只允许发布有结构化用户原话的项目校准；参考图提炼走独立的长期知识人工审核队列。用于用户问「你从这些成稿反馈里学到了什么」。',
+        inputSchema: objectSchema({
+            limit: { type: 'number' },
+            decideId: { type: 'string' },
+            decision: { type: 'string', enum: ['published', 'rejected'] },
+            note: { type: 'string' }
+        })
+    },
+    {
+        name: 'evaluateDesign',
+        description: '【按需取得隔离评审建议】让当前视觉多模态 Agent 在隔离上下文中检查焦点与阅读顺序、比例与留白、字体与色彩、图像处理、缩略图识别，以及孤立或无功能元素，并结合设计说明、已知硬伤和已发布用户校准，返回 advisory 分数、pass / revise / pivot、问题与建议。对照评审是主模式，参照由你自己选——这本身就是审美判断的一部分：用 searchEagleReferences 检索同品类优秀参考后传 referenceEagleItemId（系统内部取图），或把项目 / 店铺里已交付上架的成品图、本稿上一版导出传 referenceFilePath；评审会给出与参照的具体差距。不带参照的单图打分分辨力有限，仅作降级；已发布的用户校准样本只是无参照时的自动兜底，不是主路。可编辑、无报错或看过截图不等于设计成熟；pass 也只表示本次隔离观察暂无明确建议，不代表 canonical 质量通过、正式可交付或可商用。它提供证据，不替主 Agent 决定方向，也不存在第二个视觉模型。首轮可见不表示固定开工或强制验收：主 Agent 只在隔离批评比直接修订或参考比较更有信息增益时调用；局部机械修改或已有充分验收时不必例行调用。',
+        inputSchema: objectSchema({
+            imageData: { type: 'string', description: '可选：要评的图片 data URL / base64；省略评当前活动文档。' },
+            filePath: { type: 'string', description: '可选：要评的导出文件路径。' },
+            referenceFilePath: { type: 'string', description: '推荐：对照参考的文件路径（用户参考图 / 项目已交付成品 / 上一版导出）；带上它评审进入对照模式，差距判断更准。' },
+            referenceEagleItemId: { type: 'string', description: '推荐：searchEagleReferences 返回的 Eagle item id——你选中的参考会由系统内部取图并排对照（不需要文件路径）。选哪张参照就是你的审美判断。' },
+            referenceImageData: { type: 'string', description: '可选：对照参考的 data URL / base64（与以上二选一）。' },
+            referenceKind: { type: 'string', enum: ['user_reference', 'previous_version'], description: '参考类型：user_reference=用户认可的参考方向（默认）；previous_version=这张稿的上一版（用于判断改动是否真的变好）。' },
+            referenceNote: { type: 'string', description: '可选：一句话说明参考是什么、为什么选它对照。' },
+            deliverable: { type: 'string', description: '交付物名（点击图 / 详情页首屏 / SKU 组合图…）。' },
+            rationale: { type: 'object', properties: { purpose: { type: 'string' }, claim: { type: 'string' }, materials: { type: 'string' }, structure: { type: 'string' }, scale: { type: 'string' }, visual: { type: 'string' }, copySource: { type: 'string' } }, description: '你的设计说明（与 composeDesign 同结构），评审据此判断说的和做的是否一致。' },
+            hardFindings: { type: 'array', items: { type: 'string' }, description: '已知硬伤（文案与产品不符 / 字压主体 / 主体太小 / 越界…），评审必须计入。' },
+            calibration: { type: 'array', items: { type: 'object', properties: { kind: { type: 'string', enum: ['good', 'bad'] }, why: { type: 'string' }, ref: { type: 'string' } } }, description: '可选：用户的品味校准样本（好 / 差各一句为什么）。' }
+        })
+    },
+    {
+        name: 'composeDesign',
+        description: '按 Agent 声明执行可编辑候选稿；regions 可含多个图片或文字，Harness 不补设计答案。另建文档产生独立候选，不代表质量升级。使用项目素材时在 rationale.materials 留下自己的选图依据；缺失只记入收据，不阻断写入。',
+        inputSchema: objectSchema({
+            rationale: {
+                type: 'object',
+                properties: {
+                    angle: { type: 'string' },
+                    purpose: { type: 'string' },
+                    claim: { type: 'string' },
+                    materials: {
+                        type: 'string',
+                        description: '最终用了哪些素材、为何适合当前目标；复用近期素材时说明本次依据。Harness 不代写，也不据此证明选择正确。'
+                    },
+                    structure: { type: 'string' }
+                },
+                description: '候选角度、目的、主张、选材和结构；进入收据与候选比较，不是写入门票。'
+            },
+            productFacts: {
+                type: 'array', items: { type: 'string' },
+                description: '有来源的产品事实；不得补造功能与材质。'
+            },
+            canvas: {
+                type: 'object',
+                properties: {
+                    width: { type: 'number', minimum: 200, maximum: 30000 },
+                    height: { type: 'number', minimum: 200, maximum: 30000 },
+                    resolution: { type: 'number' },
+                    colorMode: { type: 'string', enum: ['RGB', 'CMYK', 'Grayscale'] }
+                },
+                required: ['width', 'height'],
+                description: '目标画布规格。'
+            },
+            document: {
+                type: 'object',
+                properties: {
+                    mode: { type: 'string', enum: ['new', 'active'] },
+                    name: { type: 'string', description: '用户可读设计名；mode=new 会另建候选，mode=active 修改当前文档。' }
+                },
+                required: ['mode', 'name']
+            },
+            background: {
+                type: 'object',
+                properties: {
+                    kind: { type: 'string', enum: ['none', 'solid', 'gradient', 'asset', 'generated'] },
+                    colorHex: { type: 'string' },
+                    gradient: {
+                        type: 'object',
+                        properties: { fromHex: { type: 'string' }, toHex: { type: 'string' }, angle: { type: 'number' } },
+                        description: '渐变起止色与角度。'
+                    },
+                    filePath: { type: 'string' },
+                    prompt: { type: 'string', description: 'generated 背景的场景、光线与留白。' },
+                    referenceFilePath: { type: 'string' }
+                },
+                required: ['kind'],
+                description: '背景处理；摄影满幅用 none。'
+            },
+            subject: {
+                type: 'object',
+                description: '可选的主素材便捷别名；仅供 content="subject" 的 main-image 使用，不限制 regions 声明其他独立图片。',
+                properties: {
+                    filePath: { type: 'string' },
+                    existingLayerId: { type: 'number' },
+                    treatment: {
+                        type: 'string', enum: ['photo', 'cutout'],
+                        description: 'photo 必须给 fillRatio 且背景 kind=none；cutout 必须给 cutout，背景不能为 none。'
+                    },
+                    fillRatio: { type: 'number', minimum: 0.3, maximum: 0.98, description: '主体在「其所属模块区域内」的占比（相对该模块不是画布）；0.9 = 主体撑满模块 90%。' },
+                    shadow: {
+                        type: 'object',
+                        properties: {
+                            kind: { type: 'string', enum: ['none', 'drop-shadow'] },
+                            colorHex: { type: 'string', description: 'drop-shadow 必填，#RRGGBB。' },
+                            opacity: { type: 'number', minimum: 0, maximum: 100 },
+                            angle: { type: 'number', minimum: -360, maximum: 360 },
+                            distance: { type: 'number', minimum: 0 },
+                            size: { type: 'number', minimum: 0 },
+                            spread: { type: 'number', minimum: 0, maximum: 100 }
+                        },
+                        required: ['kind'],
+                        description: '显式投影参数，不补固定配方。'
+                    },
+                    cutout: { type: 'boolean' }
+                },
+                oneOf: [
+                    {
+                        properties: { treatment: { enum: ['photo'] } },
+                        required: ['treatment', 'shadow', 'fillRatio']
+                    },
+                    {
+                        properties: { treatment: { enum: ['cutout'] } },
+                        required: ['treatment', 'shadow', 'cutout']
+                    }
+                ]
+            },
+            layout: {
+                type: 'object',
+                properties: {
+                    mode: {
+                        type: 'string',
+                        enum: ['agent_authored'],
+                        description: '只能是 agent_authored；内置版式配方已移除。'
+                    },
+                    regions: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                id: { type: 'string', description: '用户可读、符合项目命名规范并说明真实内容或作用的图层名，例如「主视觉·瑜伽动作」「利益点·稳固防滑」。禁止 headline、scene-line、color-note、main-image 等实现标识；Harness 不会代为改名。' },
+                                role: { type: 'string', enum: ['title', 'subtitle', 'selling-point', 'tag', 'main-image', 'decoration'], description: '机械渲染角色，可重复使用，不代表固定版式或内容类别。' },
+                                content: { type: 'string', description: '文字，或图片绝对路径。main-image / tag / decoration 可各自直接引用独立图片并重复出现；main-image 也可写 "subject" 引用可选 subject。' },
+                                bounds: {
+                                    type: 'object',
+                                    properties: {
+                                        x: { type: 'number', minimum: 0, maximum: 1 },
+                                        y: { type: 'number', minimum: 0, maximum: 1 },
+                                        width: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+                                        height: { type: 'number', exclusiveMinimum: 0, maximum: 1 }
+                                    },
+                                    required: ['x', 'y', 'width', 'height'],
+                                    description: '归一化 0..1，不得越过画布。'
+                                },
+                                hAlign: { type: 'string', enum: ['left', 'center', 'right'] },
+                                fit: { type: 'string', enum: ['contain', 'cover'] },
+                                imagePlacement: COMPOSE_DESIGN_IMAGE_PLACEMENT_SCHEMA
+                            },
+                            required: ['id', 'role', 'content', 'bounds']
+                        },
+                        minItems: 1,
+                        description: 'Agent 自由声明的视觉元素数组：同一 role 可出现多次，可组合多个真实素材、文字和装饰；顺序和数量不构成固定工作流或版式模板。每个图片元素必须声明自己的 imagePlacement。'
+                    },
+                    groupName: { type: 'string', description: '语义图层组名。' },
+                    visualStyle: COMPOSE_DESIGN_VISUAL_STYLE_SCHEMA,
+                    marginScale: { type: 'number', minimum: 0, maximum: 8 },
+                    gutterScale: { type: 'number', minimum: 0, maximum: 8 }
+                },
+                required: ['mode', 'regions', 'groupName', 'visualStyle']
+            },
+            palette: {
+                type: 'object',
+                properties: {
+                    backgroundHex: { type: 'string' },
+                    textHex: { type: 'string' },
+                    secondaryTextHex: { type: 'string' },
+                    accentHex: { type: 'string' },
+                    sellingPointFillHex: { type: 'string' },
+                    sellingPointTextHex: { type: 'string' }
+                },
+                required: ['backgroundHex', 'textHex'],
+                description: '画面基础配色。'
+            },
+            save: {
+                type: 'object',
+                properties: {
+                    projectSubdir: { type: 'string', description: '项目内交付子目录。' },
+                    format: { type: 'string', enum: ['psd', 'psb', 'png', 'jpg'] }
+                },
+                required: ['projectSubdir', 'format']
+            }
+        }, ['canvas', 'document', 'background', 'layout', 'palette'])
+    },
+    {
         name: 'renderLayout',
-        description: '阶段版面草稿，两种模式二选一：blocks=垂直堆叠（自上而下排模块，给"放什么+占多少高"）；regions=二维构图（左右分栏、图文叠压、杂志式版式，给归一化 0..1 的 bounds 区域）。模型负责内容与 visualStyle，Harness 只换算坐标、排序图层并验证越界/可读性，不替模型选择颜色、字体或卖点载体。正式视觉草稿必须把当前 R3 方向翻译为 mode=model_authored 的视觉样式；省略样式只生成 neutral_wireframe，不能作为最终交付。图片块用 imagePlacement 明确 contain/cover、裁切和留白意图；无法可靠执行的锚点/焦点/旋转/蒙版语义会在写入前失败，不生成半成品。主视觉严重欠填、遮挡或游离时结果会返回结构化质量发现，不能在这里收尾。用于主图、详情页、SKU 等当前阶段草稿，不代表最终整张图完成；renderLayout 后按 suggestedObservation 读取当前局部区域，再决定修订或进入下一阶段。',
+        description: '版面渲染。Agent 使用 regions / blocks + 显式 visualStyle 声明构图、内容、配色、字体层级与卖点表现；Harness 只换算坐标、排序图层并验证越界/可读性。内置 recipe 已移除，缺少 visualStyle 会在写入前失败；neutral_wireframe 只在 Agent 显式要求结构预览时可用。图片块用 imagePlacement 明确 contain/cover、裁切和留白意图；无法可靠执行的声明会在写入前失败。写后返回真实结构和快照，由 Agent 判断修订。',
         inputSchema: { ...objectSchema({
             canvas: {
                 type: 'object',
                 properties: { width: { type: 'number' }, height: { type: 'number' } },
                 description: '画布尺寸；必须与 createDocument 的 width/height 一致，不能省略。'
+            },
+            groupName: {
+                type: 'string',
+                description: 'model_authored 正式版面的语义图层组名，必须匹配交付物或项目既有命名规范；不要使用“版面-free”“headline”等实现名。staged 生产链有稳定阶段身份时可省略。'
+            },
+            pageBackgroundHex: {
+                type: 'string',
+                description: '#RRGGBB，model_authored 且没有 background 块时必填；Harness 不默认使用白底。'
             },
             columns: {
                 type: 'integer',
@@ -1028,7 +1428,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                         id: { type: 'string', description: '图层名，用业务命名（如「卖点-透气」「痛点-勒脚」）；不填会落成 role-N 技术名，图层树不可读' },
                         role: { type: 'string', enum: ['background', 'main-image', 'title', 'subtitle', 'selling-point', 'tag', 'decoration'] },
                         content: { type: 'string', description: '文案内容；main-image 给素材文件路径；background 给 #RRGGBB 背景色' },
-                        heightRatio: { type: 'number', exclusiveMinimum: 0, maximum: 1, description: '占可用高度比例 (0,1]；model_authored 正式 blocks 的非背景块必填。' },
+                        heightRatio: { type: 'number', exclusiveMinimum: 0, maximum: 1, description: '占「安全区内容高度」的比例 (0,1]（安全区 = 画布减去四边留白，不是整个画布高）；model_authored 正式 blocks 的非背景块必填。' },
                         widthRatio: { type: 'number', exclusiveMinimum: 0, maximum: 1, description: '占安全区宽度比例 (0,1]；model_authored 正式 blocks 的非背景块必填，不再默认 1。' },
                         hAlign: { type: 'string', enum: ['left', 'center', 'right'], description: '只控制文字排版；真实图片块改用完整 imagePlacement，执行层不会读取 hAlign。' },
                         imagePlacement: RENDER_LAYOUT_IMAGE_PLACEMENT_SCHEMA
@@ -1253,22 +1653,11 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'placeImage',
-        description: 'Place an explicitly sourced image into the current document as an editable layer. This is an execution tool, not a hidden asset picker: when filePath/fileToken/imageData is absent it does not scan by default. If the source is genuinely unresolved, call recommendAssets first, or explicitly set autoSelect=true with requirement + designRole. Auto placement only proceeds when candidates were visually compared, Top1 clears minScore/minMargin, and its sourceTreatment is direct_full_frame or clip_to_container; candidates needing matte_and_recompose are returned without writing. A model-authored force claim has only agent_judgment authority and must pass the same visual, role and threshold checks; only a non-model Harness receipt can authorize a bypass. targetBounds contain/cover is geometric placement, not an aesthetic verdict; use fitLayerSubjectToRegion and structure readback for subject/container completion.',
+        description: 'Place an image already selected by the Agent into the current document as an editable layer. This execution tool never scans, ranks, or chooses project assets. If the source is unresolved, call recommendAssets, inspect its candidate evidence, then call placeImage again with an explicit filePath/fileToken/imageData. targetBounds contain/cover is geometric placement, not an aesthetic verdict; use fitLayerSubjectToRegion and structure readback for subject/container completion.',
         inputSchema: objectSchema({
             filePath: { type: 'string', description: '项目内素材绝对路径（来源：searchProjectResources / recommendAssets 返回的真实路径）' },
             fileToken: { type: 'string', description: '素材引用 token（替代路径，防路径伪造）' },
             imageData: { type: 'string', description: '直接以 base64/数据 URL 置入（如生成的图片结果）' },
-            requirement: { type: 'string', description: '选图需求描述；仅自动选图（autoSelect）时参与匹配' },
-            query: { type: 'string', description: '选图关键词（自动选图用）' },
-            designRole: { type: 'string', enum: ['hero', 'supporting', 'detail', 'background', 'decoration'], description: '当前图片在设计中的结构化职责；自动选图必填，不能只把角色埋在自然语言 requirement 里。' },
-            placementIntent: { type: 'string', enum: ['direct_full_frame', 'clip_to_container', 'matte_and_recompose', 'supporting'], description: '当前预期的素材使用方式；自动推荐会据此判断能否直接置入。' },
-            category: { type: 'string', enum: ['products', 'backgrounds', 'elements', 'references', 'others'], description: '素材分类（自动选图可指定）' },
-            autoSelect: { type: 'boolean', description: 'true 时按 requirement/designRole 自动匹配候选置入；必须经过视觉比较与阈值' },
-            selectionMode: { type: 'string', enum: ['auto', 'suggest', 'force'], description: '选图模式：auto 达标自动置入 / suggest 只返回候选 / force 需 Harness 授权' },
-            strictDeterministic: { type: 'boolean', description: '确定性选图（按阈值严格判定，不达标不置入）' },
-            minScore: { type: 'number', description: '候选最低分阈值（自动选图）' },
-            minMargin: { type: 'number', description: '第一名与第二名的分差下限（自动选图）' },
-            candidateCount: { type: 'number', description: '候选数量上限（自动选图）' },
             name: { type: 'string', description: '置入后图层名（可选）' },
             x: { type: 'number', description: '置入左上角 x（文档像素；未给 targetBounds 时用）' },
             y: { type: 'number', description: '置入左上角 y（文档像素；未给 targetBounds 时用）' },
@@ -1322,7 +1711,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'saveDocument',
-        description: 'Save or export the current document. Existing files are overwritten by default for backward compatibility; use conflictPolicy=fail_if_exists with an explicit path when replacing an existing artifact is not authorized.',
+        description: '正式保存或导出用户可见的交付文件（PSD/PSB/PNG/JPEG 等）。优先使用有意义的 projectSubdir 和当前文档名；省略 path 时运行时使用文档名，不附加时间戳、自动保存标签、尺寸或内部状态词。',
         inputSchema: objectSchema({
             format: { type: 'string', enum: ['psd', 'psb', 'png', 'jpg', 'jpeg', 'tiff', 'pdf'] },
             path: { type: 'string' },
@@ -1348,7 +1737,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'quickExport',
-        description: 'Quick-export the current document without opening an export dialog. outputPath may be an explicit output directory or a complete PNG/JPEG file path. Do not remove the file extension from a user-provided .png/.jpg/.jpeg path; the runtime will route that complete path through saveDocument.',
+        description: '无弹窗快速导出当前文档为 PNG 或 JPEG 成品。outputPath 可以是明确的输出目录或完整文件路径；用户给出扩展名时不要删除。',
         inputSchema: objectSchema({
             format: { type: 'string', enum: ['png', 'jpg'] },
             quality: { type: 'number' },
@@ -1381,11 +1770,9 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'smartSave',
-        description: 'Save using the current document path or an explicit export path.',
+        description: '仅供宿主建立项目内部可编辑恢复点；不属于模型可选择的交付动作，也不产生最终交付收据。',
         inputSchema: objectSchema({
-            exportFormat: { type: 'string', enum: ['psd', 'psb', 'jpg', 'png'] },
-            path: { type: 'string' },
-            exportQuality: { type: 'number' }
+            exportFormat: { type: 'string', enum: ['psd', 'psb'] }
         })
     },
     {
@@ -1420,7 +1807,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'analyzeAssetContent',
-        description: 'Analyze ONE project asset image in depth with the vision model. COST: about 20s per image, and it only ever covers one image — do NOT walk a whole folder with it. When you need to see many assets (choosing colourways, surveying a project, comparing numerous candidates), call analyzeProjectContactSheetOverview once instead: it reads every image in a single vision call, then tells you which few deserve this close-up tool. Returns structured JSON: visibleText (printed text on the image), description, assetNature (raw_photo vs finished_design), category, mainSubject, colors, style, suggestedPlacement, suggestedEffects, composition fields for IMAGE SELECTION — subjectCoverageRatio (dominant/moderate/small), subjectPosition, compositionFocus (what the visual weight actually lands on), mainImageSuitability (suitable/marginal/unsuitable) with mainImageSuitabilityReason — plus SELLING-POINT tagging: shotType (flat_lay/on_model/detail_closeup/package/chart/scene, 设计师式素材归类：平铺看面料材质颜色款式、模特看弹力版型穿搭) and sellingPointObservations (图中可见什么→可支持什么卖点，仅限图中真实可见)。Use the composition fields to judge whether a photo actually spotlights the product before choosing it as a main/hero image, instead of picking by filename. 设计详情页/主图前，先用 analyzeProjectContactSheetOverview 一次看全部素材，再对其中确实需要细看的少数几张用本工具；分析结果用 updateDesignProjectState.upsertFacts 写入来源为 project_asset_observation 的事实候选；Agent 不能自行标记用户已确认。',
+        description: 'Analyze ONE known project asset image in depth with the vision model. COST: about 20s per image, and it only ever covers one image — do NOT walk a whole folder with it. If project inventory, product/content identity or asset-role distribution is still unknown and that uncertainty materially changes an open design direction, consider analyzeProjectContactSheetOverview; otherwise inspect the known file directly. Returns structured JSON: visibleText (printed text on the image), description, assetNature (raw_photo vs finished_design), category, mainSubject, colors, style, suggestedPlacement, suggestedEffects, composition fields for IMAGE SELECTION — subjectCoverageRatio (dominant/moderate/small), subjectPosition, compositionFocus (what the visual weight actually lands on), mainImageSuitability (suitable/marginal/unsuitable) with mainImageSuitabilityReason — plus SELLING-POINT tagging: shotType (flat_lay/on_model/detail_closeup/package/chart/scene, 设计师式素材归类：平铺看面料材质颜色款式、模特看弹力版型穿搭) and sellingPointObservations (图中可见什么→可支持什么卖点，仅限图中真实可见)。Use the composition fields to judge whether a photo actually spotlights the product before choosing it as a hero image, instead of picking by filename. This is not a fixed opening step: use it only for the few files that truly need close review. 分析结果用 updateDesignProjectState.upsertFacts 写入来源为 project_asset_observation 的事实候选；Agent 不能自行标记用户已确认。',
         inputSchema: objectSchema({
             imagePath: { type: 'string', description: '单个项目素材图片路径（先用 searchProjectResources / listProjectResources 找路径）' }
         }, ['imagePath'])
@@ -1434,7 +1821,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'analyzeProjectContactSheetOverview',
-        description: 'Generate a numbered thumbnail contact sheet of all project images, then use the vision model to understand overall product types, shooting styles, asset roles, and which numbered images need close-up review. COST: ONE vision-model call regardless of how many images — roughly a minute. That makes it far cheaper than looking at images one by one: analyzeAssetContent costs about 20s per image, so for a project with dozens of assets this is several times faster in total. Use it whenever you need to see MANY assets at once — picking colourways for an SKU colour card, surveying what a project contains, choosing among numerous candidates. Then use analyzeAssetContent only on the few images the sheet says need a close look. Do NOT use it when the request already names one specific asset or a concrete need that targeted lookup answers — go to recommendAssets or searchProjectResources for that.',
+        description: 'Create one numbered project sheet and use vision to return a bounded visual inventory: visible subject/content groups, variant groups, shooting coverage, unresolved coverage, asset roles and close-review IDs. Positive facts cite rendered IDs; scope lists rendered/failed IDs. It describes only the supplied sheet and does not prove the project is complete, choose a hero, prescribe a design direction or require reference search. Use only when missing project/content/role facts materially affect the Agent\'s decision. It is not a mandatory first step; skip when a named asset or existing observation resolves the decision. COST: one vision call; inspect only materially relevant uncertain images afterward. 看完 sheet 的正确收尾：先明确本次交付物需要哪些素材角色（如可组合的主体单品、成组合影、场景 / 模特、细节特写），把 sheet 里的候选按角色归类并锁定编号；角色候选已够支撑设计时就停止翻查、带着结论直接开工——不要在角色已明确后继续逐个打开文件或换着方式重复检索。',
         inputSchema: objectSchema({
             directory: { type: 'string' },
             maxImages: { type: 'number' },
@@ -1486,7 +1873,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'recommendAssets',
-        description: 'Compare a bounded set of project assets for a concrete design need. Returns ranked paths plus visual evidence about each candidate role, background, direct-use suitability and source treatment (direct full frame, clip to container, matte/recompose, supporting only or reject). A relevance score alone is not permission to place: use the visual evidence and current designRole, then pass the chosen filePath to placeImage. Prefer this targeted comparison when the request names a product/category/use; use a project-wide overview only when the whole inventory is still unknown.',
+        description: 'Visually compare a bounded, source-diverse shortlist for a stated requirement and designRole. It returns the numbered candidate sheet to the main Agent plus role, background, direct-use and treatment evidence. A01/A02 are identity labels only, never rank or priority. Scores are advisory; the Agent chooses after comparing the actual images. It does not establish the project\'s complete inventory, product identity, use context, intended audience, variant system or shooting coverage, and one selected image is not evidence of project-wide understanding. When missing project-wide facts could change the direction, inspect broader or targeted evidence by expected information gain. Optional guidance, not a required sequence.',
         inputSchema: objectSchema({
             requirement: { type: 'string' },
             maxResults: { type: 'number' },
@@ -1569,7 +1956,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'getDesignProjectState',
-        description: 'Read the shared Design Project State (persistent project memory: goals, fact provenance, governed brand/project rules, target user, strategy, layout, review results, versions, learnings). Read it at the start of design tasks to reuse prior consensus. The user\'s current instruction always overrides stored state. Request review cards for unverified facts or rules; legacy strings and Agent proposals are neither confirmed facts nor executable Policy.',
+        description: 'Read the full shared Design Project State (persistent project memory: goals, fact provenance, governed brand/project rules, target user, material assets already looked at, strategy, layout, review results, versions, learnings). 系统提示里的「当前项目摘要」已经是这份记忆的最新摘要——摘要够用就不必再调；只有摘要没写全、需要看某项的完整内容（如全部素材备注、全部事实条目）时才调用。The user\'s current instruction always overrides stored state. Request review cards for unverified facts or rules; legacy strings and Agent proposals are neither confirmed facts nor executable Policy.',
         inputSchema: objectSchema({
             projectPath: { type: 'string', description: '默认当前项目' },
             includeFactReviewCard: { type: 'boolean', description: '存在待确认商品事实时返回用户复核卡；默认 false' },
@@ -1650,7 +2037,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'searchEagleReferences',
-        description: 'Search the user\'s Eagle asset library for creative reference CANDIDATES (read-only metadata only: titles/tags/folders/annotations; never raw images or local paths). This is optional research for a specific unresolved design question, not a universal prerequisite: first reuse an explicit user reference, governed brand template, relevant project PSD/PSB, or project case when available; if external reference would not materially improve the decision, continue from governed design knowledge and real project facts. Search results do not mean the Agent has visually understood a design. For a candidate you want to use, call analyzeEagleReference with its Eagle item id before declaring visual observations. 找参考是一个有预算的收敛过程：先说明要解决的构图、色彩、字体或表达问题，再用 availableFacets 收敛候选；只提取可迁移的方法并标注「来自 Eagle 素材库」，禁止照抄。Eagle 离线或无匹配结果不会阻断普通设计；只有显式参考复刻或用户指定参考约束时才按对应任务契约处理。',
+        description: 'Search the user\'s Eagle asset library for creative reference CANDIDATES (read-only metadata only: titles/tags/folders/annotations; never raw images or local paths). Standard timing: BEFORE settling the design direction — when the project itself has no usable reference or confirmed style benchmark, take a routine reference glance here first (search, then REALLY LOOK at one or two candidates via analyzeEagleReference), and only then decide the direction. This is a normal pre-direction step every professional takes, not an admission of weakness; skip it only when an explicit reference, governed brand material or relevant project work already anchors the direction. Bind the query and availableFacets to a specific unresolved composition, color, typography, narrative or photography-role question. Search results do not mean the Agent has visually understood a design: call analyzeEagleReference for a candidate before declaring visual observations — 检索到标题不等于看过，参考的价值在画面里。Extract transferable relationships and label them as「来自 Eagle 素材库」; never copy a finished work. Eagle offline or no match does not block ordinary design, and no opening announcement or fixed research ritual is required.',
         inputSchema: objectSchema({
             query: { type: 'string', description: '搜索关键词，多个词用空格分隔（如「袜子 详情页」）。支持 AI 语义检索；语义检索超时会降级为逐词关键词匹配。注意：库内条目的标题多为电商商品名，「详情页」「设计参考」这类意图词在标题里没有对应物，只靠品类关键词会一直返回同品类竞品图' },
             limit: { type: 'number', description: '返回条数，默认 8，最大 20' },
@@ -1688,7 +2075,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
         inputSchema: objectSchema({
             artifact: {
                 type: 'string',
-                description: '交付物种类或用户原话，如 poster / banner / social-cover / main-image / detail-page / sku / sku-template / sku-color-card / sku-batch。细分值只选择对应方法论，不代表路由到某个可调用能力；未登记种类返回通用设计框架。'
+                description: '交付物种类或用户原话，如 poster / banner / social-cover / main-image / detail-page / sku / sku-template / sku-color-card / sku-batch；generic = 不限品类、可按需组合的设计判断知识，不规定固定步骤。细分值只选择对应方法论，不代表路由到某个能力；未登记种类返回 generic。'
             },
             focus: {
                 type: 'string',
@@ -1730,14 +2117,41 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
         })
     },
     {
+        name: 'searchDesignNotes',
+        description: 'Search the shared design notes vault (Markdown notes written by BOTH the user and the Agent; Obsidian-compatible). Notes hold the user\'s own design knowledge: preferences, lessons learned, layout recipes, brand rules, project retrospectives. Search by keywords and/or tags; empty query lists the most recently updated notes. Results are metadata + excerpts only — call readDesignNote for full content. 这是用户亲手维护的设计知识笔记，当任务涉及用户偏好、历史经验或既定做法时优先查它；空 query 可浏览最近笔记。检索不到不阻断任务。',
+        inputSchema: objectSchema({
+            query: { type: 'string', description: '搜索关键词，多个词用空格分隔；留空 = 列出最近更新的笔记' },
+            tags: { type: 'array', items: { type: 'string' }, description: '按标签过滤（须全部命中）' },
+            limit: { type: 'number', description: '返回条数，默认 20，最大 50' }
+        })
+    },
+    {
+        name: 'readDesignNote',
+        description: 'Read ONE design note\'s full Markdown content plus its backlinks (other notes that reference it via [[wiki links]]). Use the note id returned by searchDesignNotes. 读取一条设计笔记的完整内容与反向链接；正文里的 [[链接]] 指向其他笔记，可按需继续读取。',
+        inputSchema: objectSchema({
+            id: { type: 'string', description: '笔记 id（searchDesignNotes 返回的相对路径，如「排版/主图排版心得」）' }
+        }, ['id'])
+    },
+    {
+        name: 'writeDesignNote',
+        description: 'Create a new design note, or append to / revise an existing one, in the shared design notes vault. Write down REUSABLE design knowledge worth keeping across tasks: confirmed user preferences, lessons from finished work, layout/color recipes that worked, review conclusions. Do NOT log routine task chatter or transient state (use updateDesignProjectState for project state). When updating an existing note the default mode is append — it never destroys the user\'s original text; only use mode="replace" when the user explicitly asks to rewrite a note. 笔记是用户可见、可编辑的 Markdown 文件；写作风格要像给未来的自己和用户看的知识卡片：说清结论、适用条件与来源。正文可用 [[其他笔记标题]] 建立关联。',
+        inputSchema: objectSchema({
+            id: { type: 'string', description: '要更新的笔记 id；省略 = 新建笔记（此时必须给 title）' },
+            title: { type: 'string', description: '笔记标题（新建必填；更新时可选，改标题用）' },
+            content: { type: 'string', description: '正文 Markdown。append 模式下是追加的段落；replace 模式下是完整新正文' },
+            tags: { type: 'array', items: { type: 'string' }, description: '标签（更新时省略 = 保留原标签）' },
+            mode: { type: 'string', enum: ['append', 'replace'], description: '更新已有笔记时的写入方式，默认 append（追加，不破坏原文）' }
+        }, ['content'])
+    },
+    {
         name: 'declareDesignIntent',
         description: `Optional Runtime profile annotation for a design run whose exact Task Profile is already known. Current published profiles: ${DECLARABLE_RUNTIME_PROFILE_SUMMARY}.
 
-Do NOT call this before a registered Skill: calling the matching Skill directly selects and runs that workflow. Do NOT call it merely to obtain permission to analyze, write Photoshop, or complete a task; it grants none of those. If no Skill matches, plan and execute with the available atomic Tools normally.
+If a matching Skill tool is already visible, call that Skill directly and do not call this tool first. Call declareDesignIntent only when the system prompt explicitly names the exact Profile id and no matching Skill tool is currently visible; pass that id as taskTypeId. Do not infer or choose a Profile from this catalog by yourself. This annotation may expose the bound workflow entry, but it is not permission to analyze, write Photoshop, or complete a task and grants none of those. Without a system-provided Profile, use a matching Skill or plan with the available atomic Tools normally.
 
 Use this only when binding a specific Profile's method knowledge, stage context, budget or evaluation contract materially helps the current run. Pure questions, read-only inspection and fully bounded mechanical edits normally do not need it. Profiles ending in #default MUST omit workMode; a Profile with a mode suffix must use that exact workMode.
 
-这是可选的 Runtime Profile 标注，不是开工许可。匹配已注册 Skill 时直接调用 Skill，不要先声明；没有匹配 Skill 时由主 Agent 自主规划并使用原子工具。只有已明确精确 Task Profile，且确实需要其专属方法、阶段、预算或验收时才调用。`,
+这是可选的 Runtime Profile 标注，不是开工许可。当前已有匹配 Skill 时直接调用 Skill，不要先声明；只有系统明确给出了精确 Profile 且当前没有匹配 Skill 时，才把该值作为 taskTypeId 调用。系统未给 Profile 时不要自行从目录猜选，继续使用匹配 Skill 或原子工具自主完成。`,
         inputSchema: objectSchema({
             taskTypeId: {
                 type: 'string',
@@ -1754,6 +2168,29 @@ Use this only when binding a specific Profile's method knowledge, stage context,
                 description: '（可选）你据以选择该 Runtime Profile 的简短依据，便于运行诊断。'
             }
         }, ['taskTypeId'])
+    },
+    {
+        name: 'readSkillPlaybook',
+        description: '读取业务 Skill 工作法手册（官方 skill 包形态：SKILL.md + references）。无参调用列出全部可用手册（名称+一句话简介）；传 skillId 读该手册正文（工作法、依赖链、各步判据）；再传 reference 读某份深度细则（如 color-card-spec.md）。开始一项有对应手册的业务任务（如 SKU 生产）时先读正文，深入某一步时按需读 reference——渐进披露，不要一次全读。只读知识，不执行任何动作。',
+        inputSchema: objectSchema({
+            skillId: {
+                type: 'string',
+                description: '手册 id（如 sku-production）。省略则列出全部可用手册。'
+            },
+            reference: {
+                type: 'string',
+                description: '（可选）细则文件名（形如 color-card-spec.md），来自手册正文或列表里的 references。'
+            }
+        }, [])
+    },
+    {
+        name: 'runSkillScript',
+        description: '运行业务 Skill 包自带的确定性脚本（skills/<id>/scripts/*.cjs，Node 子进程执行，30 秒超时）。脚本做文件级确定性工作——交付核对、命名校验、数据解析；它没有 Photoshop 通道，不能替代看图或设计判断。可用脚本及各自用途以 readSkillPlaybook 读到的手册正文为准；params 会以 JSON 传给脚本。脚本输出（stdout）是事实报告，不授予权限、不推进阶段。',
+        inputSchema: objectSchema({
+            skillId: { type: 'string', description: '手册 id（如 sku-production）。' },
+            script: { type: 'string', description: '脚本文件名（形如 verify-sku-delivery.cjs），来自手册正文或 readSkillPlaybook 列出的 scripts。' },
+            params: { type: 'object', description: '传给脚本的 JSON 参数，字段含义见手册中该脚本的说明。' }
+        }, ['skillId', 'script'])
     },
     {
         name: 'searchDesignKnowledge',
@@ -1779,11 +2216,11 @@ Use this only when binding a specific Profile's method knowledge, stage context,
     },
     {
         name: 'analyzePsdDesignSource',
-        description: '离线解析设计师 PSD/PSB 源文件为设计规范档案（不打开 Photoshop、不读像素、秒级返回）：分组结构树与命名习惯、文字样式表（字体/字号/颜色）、字号档位、色板、版心边距、分屏节奏。什么时候用：① 项目里存在 PSD/PSB 时，这是了解这个产品与既有设计最可靠的信息源——不必等用户开口，想知道有哪些颜色/图层/版式就直接打开看，比只看文件名或凭空猜可靠得多；② 用户说「照这个 PSD/模板的规范做」「参考我以前的详情页文件」；③ 需要真实排版度量做参照。学模式不学内容：文字只留短样本、不复制任何图片素材。分层 TIFF（.tif）不支持：请在 Photoshop 打开后用 getLayerHierarchy 读取。',
+        description: '离线解析设计师 PSD/PSB 源文件为设计规范档案（不打开 Photoshop、不读像素、秒级返回）：分组结构树与命名习惯、文字样式表（字体/字号/颜色）、字号档位、色板、版心边距、分屏节奏。什么时候用：① 项目里存在 PSD/PSB 时，这是了解既有设计规范（配色 / 版式 / 字号 / 图层组织）最可靠的信息源——想知道有哪些颜色/图层/版式就直接打开看；② 用户说「照这个 PSD/模板的规范做」「参考我以前的详情页文件」；③ 需要真实排版度量做参照。边界：它读到的文字是**上一稿的设计文案，不是产品事实**——里面的功能/材质/工艺词（如「防滑硅胶」）必须先在产品图上核对（analyzeAssetContent / analyzeProjectContactSheetOverview）或经用户确认，才能出现在你的新稿里。学模式不学内容：文字只留短样本、不复制任何图片素材。分层 TIFF（.tif）不支持：请在 Photoshop 打开后用 getLayerHierarchy 读取。',
         inputSchema: objectSchema({
             filePath: {
                 type: 'string',
-                description: '设计源文件完整路径（.psd / .psb）。项目内文件可先用 searchProjectResources / listProjectResources 找到路径。'
+                description: '设计源文件完整路径，只认 .psd / .psb。分层 .tif / .tiff 不支持离线解析（真机 12 次都撞在这）：.tif 请先在 Photoshop 打开再用 getLayerHierarchy(includeBounds:true) 读结构，别用本工具。项目内文件可先用 searchProjectResources / listProjectResources 找到路径。'
             }
         }, ['filePath'])
     },
@@ -1874,7 +2311,7 @@ Use this only when binding a specific Profile's method knowledge, stage context,
     },
     {
         name: 'interactWithBrowserPage',
-        description: 'Interact with a page in the user\'s real browser: click an element, fill a text field, or scroll. 用它在用户真实浏览器里点击、填写输入框或滚动页面来获取信息（如展开更多、翻页、在站内搜索框输入关键词查看结果）。点击/填写前先用 readBrowserPage(includeElements:true) 拿到元素 ref。填写只写入值不会回车提交。红线：涉及支付、下单、发布、删除、修改账号设置等高风险不可逆动作，必须先用 createInteractiveCard 让用户确认，不得自行提交。',
+        description: 'Interact with a page in the user\'s real browser: click an element, fill a text field, or scroll. 用它在用户真实浏览器里点击、填写输入框或滚动页面来获取信息（如展开更多、翻页、在站内搜索框输入关键词查看结果）。点击/填写前先用 readBrowserPage(includeElements:true) 拿到元素 ref。填写只写入值不会回车提交。红线：涉及支付、下单、发布、删除、修改账号设置等高风险不可逆动作，必须先用 askUserToChoose 创建 decisionKind="approval" 的明确批准卡，不得自行提交。',
         inputSchema: objectSchema({
             tabId: { type: 'number', description: '目标标签页 id（必填，来自 listBrowserTabs / readBrowserPage）' },
             action: { type: 'string', enum: ['click', 'fill', 'scroll'], description: '交互动作：click 点击 / fill 填写文本框 / scroll 滚动' },
@@ -2171,10 +2608,10 @@ Use this only when binding a specific Profile's method knowledge, stage context,
     // 由重写后的 audit-tool-registry.cjs 首次发现。见项目记忆 design-agent-governance-audit-20260701。
     {
         name: 'getSubjectBounds',
-        description: 'Read a layer\'s subject bounding box. method="alpha" uses transparency; method="smart" uses Photoshop\'s Select Subject.',
+        description: 'Read a layer\'s subject bounding box. 默认（省略 method）按可靠性逐级求：素材文件属性（透明边界 / 纯色底裁边 / 本地分割模型，一次计算重复使用）→ 图层透明边界 → 图层像素本地分割 → 整个图层外框，结果带 method 与 confidence（certain/high/medium/low）；不依赖 Photoshop 选择主体。method="alpha" 只按透明边界；method="smart" 显式使用 Photoshop 选择主体（复杂场景也未必可靠）。放文字 / 标签 / 装饰前先调它：不花看图额度，直接返回主体（产品、模特身体）在画布上的范围——文字框必须放在这个范围之外的留白区，不能压主体（排版像俄罗斯方块：一格一元素、不叠压）。confidence 为 low 时主体尺度请看画面确认。',
         inputSchema: objectSchema({
             layerId: { type: 'number' },
-            method: { type: 'string', enum: ['alpha', 'smart'] }
+            method: { type: 'string', enum: ['auto', 'alpha', 'smart'], description: '省略或 auto = 逐级本地求解（默认）；alpha = 只按透明边界；smart = 显式用 Photoshop 选择主体。' }
         }, ['layerId'])
     },
     {
@@ -2397,6 +2834,7 @@ const DEFAULT_AGENT_TOOL_NAMES = [
     'closeDocument',
     'getDocumentInfo',
     'getDocumentSnapshot',
+    'capturePhotoshopWindow',
     'getAcceptanceSnapshot',
     'getCanvasSnapshot',
     'diagnoseState',
@@ -2457,6 +2895,15 @@ const DEFAULT_AGENT_TOOL_NAMES = [
     'createEllipse',
     'createTextLayer',
     'placeImage',
+    'planDesignTaskCard',
+    'updateDesignTaskCard',
+    'getDesignTaskCard',
+    'evaluateDesign',
+    'studyReference',
+    'learnTasteFromEagle',
+    'recordDesignVerdict',
+    'getDesignLearningTimeline',
+    'composeDesign',
     'renderLayout',
     'replaceLayerContent',
     'getElementMapping',
@@ -2484,6 +2931,12 @@ const DEFAULT_AGENT_TOOL_NAMES = [
     'getDesignPrinciples',
     'declareDesignIntent',
     'searchDesignKnowledge',
+    'readSkillPlaybook',
+    'runSkillScript',
+    // 设计知识笔记：用户与 Agent 共写的 Markdown 笔记库（Obsidian 兼容）
+    'searchDesignNotes',
+    'readDesignNote',
+    'writeDesignNote',
     'searchEagleReferences',
     'webSearch',
     'analyzeEagleReference',

@@ -287,8 +287,6 @@
 .message-body,
 .message-blocks-wrapper,
 .message-blocks,
-.tool-result-block,
-.tool-result-details,
 .card-block,
 .card-body,
 .card-details,
@@ -296,7 +294,6 @@
 .thinking-block,
 .thinking-header,
 .thinking-steps,
-.thinking-step,
 .table-block,
 .progress-block,
 .file-block,
@@ -920,101 +917,6 @@
     gap: 8px;
 }
 
-/* ============================================
-   工具结果块
-   ============================================ */
-
-.tool-result-block {
-    background: rgba(255, 255, 255, 0.025);
-    border: 1px solid var(--de-border);
-    border-radius: 9px;
-    min-width: 0;
-    max-width: 100%;
-    box-sizing: border-box;
-    contain: inline-size;
-}
-
-.tool-result-block.success {
-    border-color: var(--de-border);
-}
-
-.tool-result-block.error {
-    border-color: rgba(239, 68, 68, 0.34);
-}
-
-.tool-result-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 10px;
-    background: transparent;
-    cursor: pointer;
-    transition: background 0.2s ease;
-    gap: 10px;
-    min-width: 0;
-}
-
-.tool-result-header:hover {
-    background: rgba(255, 255, 255, 0.035);
-}
-
-[data-theme="light"] .tool-result-header:hover {
-    background: rgba(0, 0, 0, 0.08);
-}
-
-.tool-info {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.tool-icon {
-    font-size: 13px;
-    color: var(--de-text-secondary, #94a3b8);
-}
-
-.tool-name {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--de-text, #f8fafc);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.status-badge {
-    font-size: 11px;
-    padding: 0;
-    border-radius: 0;
-    font-weight: 500;
-    opacity: 0.72;
-}
-
-.status-badge.success {
-    background: transparent;
-    color: var(--de-text-secondary, #94a3b8);
-}
-
-.status-badge.error {
-    background: transparent;
-    color: #ef4444;
-}
-
-.tool-meta {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-shrink: 0;
-}
-
-.tool-duration {
-    font-size: 11px;
-    color: var(--de-text-secondary, #94a3b8);
-    opacity: 0.78;
-}
-
 .expand-btn {
     background: none;
     border: none;
@@ -1025,16 +927,6 @@
     align-items: center;
     justify-content: center;
     transition: transform 0.2s ease;
-}
-
-.tool-result-details {
-    padding: 10px;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
-    min-width: 0;
-    max-width: 100%;
-    box-sizing: border-box;
-    overflow-wrap: anywhere;
-    word-break: break-word;
 }
 
 .error-message {
@@ -1053,23 +945,6 @@
     min-width: 0;
     overflow-wrap: anywhere;
     word-break: break-word;
-}
-
-.details-list {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    min-width: 0;
-    max-width: 100%;
-}
-
-.detail-item {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    font-size: 12px;
-    min-width: 0;
-    max-width: 100%;
 }
 
 .detail-label {
@@ -2037,7 +1912,7 @@
 }
 
 /* ============================================
-   视觉观察门禁卡片 / 结构草案卡片
+   视觉观察卡片
    ============================================ */
 
 .visual-observation-card-actions {
@@ -2094,10 +1969,6 @@
 
 .interactive-card-action-button.is-cancel:hover:not(:disabled) {
     background: rgba(71, 85, 105, 0.45);
-}
-
-.structure-only-skeleton-card .interactive-card-status {
-    color: #fbbf24;
 }
 
 .task-context-card .task-context-body {
@@ -2165,30 +2036,6 @@
     flex-shrink: 0;
 }
 
-.structure-skeleton-module-list {
-    list-style: decimal;
-    margin: 10px 0 0;
-    padding-left: 22px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.structure-skeleton-module-intent {
-    font-size: 13px;
-    font-weight: 600;
-    color: #e2e8f0;
-}
-
-.structure-skeleton-module-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-top: 3px;
-    font-size: 12px;
-    color: rgba(148, 163, 184, 0.9);
-}
-
 /* ============================================
    思考过程块（GPT Pondering 风格）
    ============================================ */
@@ -2231,8 +2078,28 @@
     box-sizing: border-box;
 }
 
+/* 无框哲学下的 hover 反馈：不铺底色（那等于画回一个矩形），标题与箭头本身提亮 */
 .thinking-header:hover {
     background: transparent;
+}
+
+.thinking-header:hover .thinking-label {
+    color: var(--de-text);
+}
+
+.thinking-header:hover .expand-toggle {
+    opacity: 1;
+}
+
+/* 头部右侧元信息：N 步 · 用时（Codex 的「Thought for 8s」位）。等宽数字防跳动。 */
+.thinking-meta {
+    flex: 0 0 auto;
+    color: var(--de-text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
+    white-space: nowrap;
 }
 
 .thinking-summary {
@@ -2281,6 +2148,8 @@
 }
 
 .expand-toggle {
+    display: inline-flex;
+    align-items: center;
     background: none;
     border: none;
     color: var(--de-text-secondary);
@@ -2290,18 +2159,25 @@
     flex: 0 0 auto;
 }
 
+/* 折叠开关移到整行后，键盘焦点必须看得见 */
+.thinking-header:focus-visible {
+    outline: 2px solid var(--de-primary, #3b82f6);
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+
 .expand-toggle:hover {
     opacity: 1;
 }
 
-/* 步骤列表 */
+/* 步骤列表：内容是 ThinkingProcess 时间线（与运行中同一套），
+   竖向引导线由时间线的节点列自带，这里不再画第二条左边线。 */
 .thinking-steps {
-    /* DeepSeek 风格：思考内容用左侧细竖灰线 + 左缩进，与主答案区分 */
-    padding: 2px 0 2px 14px;
+    padding: 2px 0;
     margin-left: 4px;
-    border-left: 1px solid color-mix(in srgb, var(--de-border) 65%, transparent);
-    width: 100%;
-    inline-size: 100%;
+    /* auto 会把左侧 4px 缩进计入可用宽度；100% 再叠加 margin-left 会固定溢出 4px。 */
+    width: auto;
+    inline-size: auto;
     min-width: 0;
     min-inline-size: 0;
     max-width: 100%;
@@ -2321,209 +2197,6 @@
     overscroll-behavior-y: contain;
     scrollbar-gutter: stable;
     scroll-behavior: smooth;
-}
-
-.thinking-step {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 4px 0;
-    line-height: 1.65;
-    min-width: 0;
-    min-inline-size: 0;
-    max-width: 100%;
-    max-inline-size: 100%;
-    box-sizing: border-box;
-    overflow-x: hidden;
-}
-
-.thinking-step--thought {
-    padding: 6px 0;
-}
-
-.thinking-step--reasoning {
-    display: block;
-    padding: 8px 0 6px;
-}
-
-.thinking-step--decision,
-.thinking-step--observation,
-.thinking-step--agent {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 5px 0;
-}
-
-.thinking-step--action {
-    align-items: center;
-    color: var(--de-text-secondary);
-}
-
-/* 步骤序号 */
-.thinking-step .step-number {
-    display: none;
-    color: var(--de-text-secondary);
-    font-size: 12px;
-    opacity: 0.5;
-    min-width: 20px;
-    flex-shrink: 0;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-}
-
-.thinking-step .step-action-marker {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 56px;
-    height: 20px;
-    padding: 0 8px;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--de-border) 72%, transparent);
-    background: color-mix(in srgb, var(--de-text-secondary) 8%, transparent);
-    color: color-mix(in srgb, var(--de-text-secondary) 88%, var(--de-text));
-    font-size: 11px;
-    line-height: 1;
-    white-space: nowrap;
-}
-
-[data-theme="light"] .thinking-step .step-action-marker {
-    background: #f4f5f7;
-    border-color: #e5e5e5;
-}
-
-.thinking-step .step-role-marker {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 42px;
-    height: 20px;
-    padding: 0 7px;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--de-border) 72%, transparent);
-    background: color-mix(in srgb, var(--de-text-secondary) 8%, transparent);
-    color: color-mix(in srgb, var(--de-text-secondary) 88%, var(--de-text));
-    font-size: 11px;
-    line-height: 1;
-    white-space: nowrap;
-}
-
-[data-theme="light"] .thinking-step .step-role-marker {
-    background: #f4f5f7;
-    border-color: #e5e5e5;
-}
-
-.thinking-step--decision .step-role-marker {
-    color: color-mix(in srgb, var(--de-text-secondary) 88%, var(--de-text));
-    border-color: color-mix(in srgb, var(--de-border) 72%, transparent);
-    background: color-mix(in srgb, var(--de-text-secondary) 8%, transparent);
-}
-
-.thinking-step--observation .step-role-marker {
-    color: color-mix(in srgb, var(--de-text-secondary) 88%, var(--de-text));
-    border-color: color-mix(in srgb, var(--de-border) 72%, transparent);
-    background: color-mix(in srgb, var(--de-text-secondary) 8%, transparent);
-}
-
-.thinking-step--agent .step-role-marker {
-    color: color-mix(in srgb, var(--de-text-secondary) 88%, var(--de-text));
-    border-color: color-mix(in srgb, var(--de-border) 72%, transparent);
-    background: color-mix(in srgb, var(--de-text-secondary) 8%, transparent);
-}
-
-/* 步骤文本 */
-.thinking-step .step-text {
-    flex: 1 1 0;
-    width: auto;
-    inline-size: auto;
-    min-width: 0;
-    min-inline-size: 0;
-    max-width: 100%;
-    max-inline-size: 100%;
-    font-size: 12px;
-    color: var(--de-text-secondary);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    overflow: visible;
-    text-overflow: clip;
-}
-
-.thinking-step--thought .step-text {
-    display: block;
-    color: var(--de-text);
-    font-size: 14px;
-    line-height: 1.75;
-}
-
-.thinking-step--decision .step-text,
-.thinking-step--observation .step-text,
-.thinking-step--agent .step-text {
-    display: block;
-    color: var(--de-text-secondary);
-    font-size: 13px;
-    line-height: 1.65;
-}
-
-.thinking-step--decision .step-text {
-    color: var(--de-text);
-}
-
-.thinking-step--action .step-text {
-    color: var(--de-text-secondary);
-    font-size: 12px;
-    line-height: 1.55;
-}
-
-.thinking-step.step-success .step-text {
-    color: var(--de-text-secondary);
-}
-
-.thinking-step--decision.step-success .step-text {
-    color: var(--de-text);
-}
-
-/* 模型思考内容（DeepSeek 风）：灰色、正文略小、非斜体，配左侧竖线与主答案区分 */
-.thinking-step--reasoning .step-text,
-.thinking-step--reasoning.step-success .step-text {
-    color: var(--de-text-secondary);
-    opacity: 0.92;
-    font-size: 13.5px;
-    font-style: normal;
-    line-height: 1.7;
-}
-
-.thinking-step.step-error .step-text {
-    color: var(--de-error);
-}
-
-.thinking-step.step-error .step-action-marker {
-    color: var(--de-error);
-    border-color: color-mix(in srgb, var(--de-error) 45%, transparent);
-    background: color-mix(in srgb, var(--de-error) 10%, transparent);
-}
-
-.thinking-step.step-error .step-role-marker {
-    color: var(--de-error);
-    border-color: color-mix(in srgb, var(--de-error) 45%, transparent);
-    background: color-mix(in srgb, var(--de-error) 10%, transparent);
-}
-
-.thinking-step .step-detail {
-    display: block;
-    margin-top: 2px;
-    color: var(--de-text-secondary);
-    font-size: 12px;
-    line-height: 1.55;
-}
-
-.thinking-step .step-duration {
-    font-size: 10px;
-    color: var(--de-text-secondary);
-    opacity: 0.6;
-    margin-left: 8px;
 }
 
 /* ============================================
@@ -2973,75 +2646,4 @@
     min-inline-size: 0;
     max-width: 100%;
     max-inline-size: 100%;
-}
-
-/* ── 历史过程面板的步骤结果预览（展开查看"已查看/已读取"的内容） ── */
-.thinking-step .step-expand-toggle {
-    display: inline-flex;
-    width: 18px;
-    height: 18px;
-    margin-left: 6px;
-    padding: 0;
-    align-items: center;
-    justify-content: center;
-    vertical-align: -3px;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--de-text-secondary);
-    cursor: pointer;
-}
-
-.thinking-step .step-expand-toggle:hover {
-    background: var(--de-hover-bg);
-    color: var(--de-text-primary);
-}
-
-.thinking-step .step-expand-toggle svg {
-    transition: transform 0.18s ease;
-}
-
-.thinking-step .step-expand-toggle.is-expanded svg {
-    transform: rotate(180deg);
-}
-
-.thinking-step .step-preview {
-    display: block;
-    margin-top: 4px;
-    padding: 6px 9px;
-    border-left: 2px solid color-mix(in srgb, var(--de-primary) 45%, var(--de-border));
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--de-bg-card) 82%, transparent);
-    color: var(--de-text-secondary);
-    font-size: 11px;
-    line-height: 1.55;
-}
-
-.thinking-step .step-preview__section {
-    display: block;
-}
-
-.thinking-step .step-preview__section + .step-preview__section {
-    margin-top: 6px;
-}
-
-.thinking-step .step-preview__title {
-    display: block;
-    margin-bottom: 2px;
-    color: var(--de-text-primary);
-    font-size: 10px;
-    font-weight: 600;
-}
-
-.thinking-step .step-preview__list {
-    margin: 0;
-    padding-left: 14px;
-}
-
-.thinking-step .step-preview__list li {
-    overflow-wrap: anywhere;
-}
-
-.thinking-step .step-preview__list li + li {
-    margin-top: 1px;
 }

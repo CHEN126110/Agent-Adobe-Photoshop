@@ -14,7 +14,11 @@ export default defineConfig({
     build: {
         target: 'chrome120',
         outDir: '../../dist/renderer',
-        emptyOutDir: true,
+        /* 不清空产物目录：正在运行的应用持有上一代 hashed chunk 的引用，
+         * 清空会让它的一切懒加载（设置面板/工作台/执行器动态 import）当场 404，
+         * 表现为「点设置/发消息就自动刷新」「启动黑屏」（errors.log 2026-08-17~08-21 多次）。
+         * hash 命名保证新旧共存无冲突；目录清理由 npm run clean 承担（dev 链路已内置）。 */
+        emptyOutDir: false,
         rollupOptions: {
             output: {
                 manualChunks(id) {

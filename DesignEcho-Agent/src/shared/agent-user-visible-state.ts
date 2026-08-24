@@ -36,6 +36,16 @@ export interface AgentUserVisibleState {
     userActionRequired: boolean;
 }
 
+export interface AgentToolPreflightUserProcess {
+    title: string;
+    detail: string;
+}
+
+export interface BuildAgentToolPreflightUserProcessInput {
+    toolDisplayName?: string;
+    blockers?: readonly string[];
+}
+
 const PUBLIC_STATUS_MESSAGES: Array<[RegExp, string]> = [
     [/^needs_model_design_decision$/i, '需要先确认画面重点、素材取舍和结果检查方式；本轮不会直接改动画面。'],
     [/^needs_visual_observation$/i, '需要先确认项目视觉素材和设计方向，再继续处理。'],
@@ -63,6 +73,42 @@ const NEXT_ACTION_PUBLIC_TEXT: Record<string, string> = {
 
 function normalizeText(value: unknown): string {
     return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 将执行预检事实投影成设计师工作过程。原始 blocker 继续留给模型和诊断，
+ * 用户只需要知道设计师正在核对什么、为什么核对，不需要阅读内部身份与权限术语。
+ */
+export function buildAgentToolPreflightUserProcess(
+    input: BuildAgentToolPreflightUserProcessInput
+): AgentToolPreflightUserProcess {
+    const action = normalizeText(input.toolDisplayName) || '继续调整画面';
+    const blockers = (input.blockers || []).map(normalizeText).filter(Boolean).join('；');
+    const needsDocument = /(?:documentId|目标\s*Photoshop\s*文档|目标文档|写入目标|文档身份)/i.test(blockers);
+    const needsLayer = /(?:layerId|目标图层|对象来源|不能猜测目标图层)/i.test(blockers);
+
+    if (needsDocument && needsLayer) {
+        return {
+            title: '确认当前画面和图层',
+            detail: `在${action}前，我先核对当前工作文件和要调整的图层，避免把改动落到错误位置。`
+        };
+    }
+    if (needsDocument) {
+        return {
+            title: '确认当前工作画面',
+            detail: `在${action}前，我先确认正在处理的工作文件，确保调整落在正确画面上。`
+        };
+    }
+    if (needsLayer) {
+        return {
+            title: '确认要调整的图层',
+            detail: `在${action}前，我先确认要调整的图层，避免碰到无关内容。`
+        };
+    }
+    return {
+        title: '补看关键细节',
+        detail: `在${action}前，我先补看会影响这一步的画面或对象，确认后继续调整。`
+    };
 }
 
 function pickStatus(input: BuildAgentUserVisibleStateInput): string {

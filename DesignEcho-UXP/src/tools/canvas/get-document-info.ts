@@ -5,7 +5,8 @@
 import { Tool, ToolSchema, DocumentInfo } from '../types';
 import {
     observeActiveDocumentAtHistoryState,
-    PhotoshopDocumentObservationError
+    PhotoshopDocumentObservationError,
+    type PhotoshopDocumentObservationErrorCode
 } from '../../core/photoshop-document-observation';
 import type { PhotoshopHistoryStateRef } from '../../core/photoshop-history-state-ref';
 
@@ -27,10 +28,7 @@ export class GetDocumentInfoTool implements Tool {
         documentState: 'present' | 'absent' | 'unknown';
         document?: DocumentInfo;
         historyStateRef?: PhotoshopHistoryStateRef;
-        errorCode?: 'no_active_document'
-            | 'history_state_unavailable'
-            | 'document_changed_during_observation'
-            | 'get_document_info_failed';
+        errorCode?: PhotoshopDocumentObservationErrorCode | 'get_document_info_failed';
         /** 瞬时故障（PS 正忙/模态/超时）时为 true，提示上游可稍后重试而不是判定无文档。 */
         retryable?: boolean;
         error?: string;

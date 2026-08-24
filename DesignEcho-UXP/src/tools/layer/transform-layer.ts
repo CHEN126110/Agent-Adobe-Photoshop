@@ -189,7 +189,7 @@ export class TransformLayerTool implements Tool {
                 },
                 fitPercentage: {
                     type: 'number',
-                    description: '适应画布时的目标百分比（如 80 表示占画布的 80%）'
+                    description: '适应画布时由 Agent 明确选择的目标百分比'
                 },
                 targetBounds: {
                     type: 'object',
@@ -292,7 +292,14 @@ export class TransformLayerTool implements Tool {
 
             // 处理适应画布
             if (params.fitToCanvas) {
-                const targetPercent = params.fitPercentage || 80;
+                if (!Number.isFinite(Number(params.fitPercentage)) || Number(params.fitPercentage) <= 0) {
+                    return createToolFailureResult({
+                        toolName: this.name,
+                        error: 'fitToCanvas 需要显式 fitPercentage；工具不再替设计者套用默认视觉占比',
+                        params
+                    });
+                }
+                const targetPercent = Number(params.fitPercentage);
                 const canvasWidth = doc.width;
                 const canvasHeight = doc.height;
                 
@@ -450,7 +457,7 @@ export class TransformLayerTool implements Tool {
         if (params.targetBounds) {
             parts.push(`适配目标区域(${params.targetFit || 'contain'})`);
         } else if (params.fitToCanvas) {
-            parts.push(`适应画布 (${params.fitPercentage || 80}%)`);
+            parts.push(`适应画布 (${params.fitPercentage}%)`);
         } else if (scaleX !== 100 || scaleY !== 100) {
             if (scaleX === scaleY) {
                 parts.push(`缩放 ${scaleX}%`);

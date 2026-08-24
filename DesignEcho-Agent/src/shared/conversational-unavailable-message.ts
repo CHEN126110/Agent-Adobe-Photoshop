@@ -6,7 +6,7 @@ export type ConversationalUnavailableAudience = 'general' | 'capability';
 
 export function buildConversationalUnavailableActionHint(kind: ConversationalProviderFailureKind): string {
     if (kind === 'auth') return '请在设置里检查当前模型的 API Key 后再发。';
-    if (kind === 'billing') return '请充值对应模型服务，或在设置里切换可用模型后重试。';
+    if (kind === 'billing') return '请检查该模型服务的余额、订阅用量或重置时间，或在设置里切换到确实可用的模型后重试。';
     if (kind === 'model_access') return '请在模型服务侧确认该模型的订阅或访问权限，或在设置里切换到当前账号可用的模型；API Key 不一定有问题。';
     if (kind === 'rate_limit') return '稍后再发一次即可。';
     if (kind === 'network') return '稍后再发一次即可。';

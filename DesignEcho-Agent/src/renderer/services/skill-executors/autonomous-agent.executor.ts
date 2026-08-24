@@ -6,7 +6,7 @@ import {
 } from '../../../shared/model-capability-verdict';
 import {
     classifyModelProviderFailure,
-    type ModelProviderFailure
+    ModelProviderCallError
 } from '../../../shared/model-provider-failure';
 import { buildConversationalUnavailableMessage } from '../../../shared/conversational-unavailable-message';
 import { buildCancelledAutonomousAgentResult } from './autonomous-agent-result-projection';
@@ -15,10 +15,14 @@ import {
     buildRecommendedSkillFastPathBaseline,
     createAgentCapabilitySession,
     REQUEST_AGENT_CAPABILITIES_TOOL_NAME,
+    SEARCH_AGENT_CAPABILITIES_TOOL_NAME,
     type AgentCapabilitySession
 } from '../agent-runtime/capability-session';
 import { readAgentVisualObservation } from '../agent-runtime/visual-observation-strategy';
-import { readAgentReActRecoveryToolNames } from '../../../shared/agent-react-observation-contract';
+import {
+    readAgentEnvironmentRecoveryToolNames,
+    readAgentReActRecoveryToolNames
+} from '../../../shared/agent-react-observation-contract';
 import {
     DELEGATE_TOOL,
     TEAM_PIPELINE_TOOL,
@@ -67,17 +71,27 @@ import {
     DESIGN_ECHO_TARGET_GUARD_ARGUMENT,
     EXACT_PROPERTY_EXECUTION_CONTEXT_TOOLS,
     isAgentHarnessControlTool,
+    readObservedDocumentId,
     type ExactPropertyExecutionScope,
     type AgentToolExecutionTargetGuard
 } from '../../../shared/agent-tool-execution-preflight';
-import { createGuardedAtomicToolExecutor } from '../../../shared/agent-skill-atomic-tool-execution';
+import {
+    createGuardedAtomicToolExecutor,
+    resolveSkillWorkflowTargetRebinding,
+    SKILL_WORKFLOW_TARGET_REFRESH_TOOLS
+} from '../../../shared/agent-skill-atomic-tool-execution';
 import {
     findObservedPhotoshopMutationProof,
     readPhotoshopHistoryStateRef
 } from '../../../shared/photoshop-history-state-ref';
 import { getPhotoshopToolSkillSemantics } from '../../../shared/photoshop-tool-skill';
 import { isSkillRoutingRecommendation } from '../../../shared/skill-routing';
-import { getSkillById } from '../../../shared/skills/skill-declarations';
+import {
+    getSkillById,
+    getSkillInternalToolNames,
+    getSkillInternalToolOwnerIds,
+    isSkillProviderInteractionOwner
+} from '../../../shared/skills/skill-declarations';
 import {
     DesignTeamCoordinator,
     DesignTeamWorkspace,
@@ -96,6 +110,7 @@ import {
     createDesignDisciplineState,
     applyDesignDisciplineProgress,
     evaluateDesignToolStateGuard,
+    isAdvisoryDisciplineGuardResult,
     isRuntimeVisualReviewBlocked,
     isStructuralDesignReviewTool,
     type DesignDisciplineContext,
@@ -130,12 +145,15 @@ import {
 import {
     decideQualityAwareReflexionReentry,
     buildQualityLoopHaltMessage,
+    evaluateReflexionReviewProvenance,
     isCompletedAestheticImprovementHandoff
 } from '../../../shared/reflexion-reentry-policy';
 import type { DesignScorecard } from '../../../shared/design-quality-assertion';
 import type { ReflexionHandoff } from '../../../shared/agent-runtime-v5/reflexion-contract';
+import { readTrustedVisualReviewArtifact } from '../agent-runtime/trusted-visual-review-artifact';
 import { getDesignEvaluationProfileVlmAssertions } from '../../../shared/agent-runtime-v5/design-evaluation-profiles';
 import {
+    isAgenticExecutionModel,
     listSkillManifests,
     normalizeRuntimeDesignWorkMode,
     resolveSkillRuntimeManifestSelection
@@ -168,6 +186,7 @@ import {
     type RuntimePlanningContextSeed,
     type RuntimePlanningDeclarations
 } from '../../../shared/agent-runtime-v5/runtime-planning-context-seed';
+import type { RuntimePerformanceUsage } from '../../../shared/agent-runtime-v5/runtime-accounting';
 import { readRuntimeTaskSnapshot } from '../../../shared/agent-runtime-v5/runtime-task-snapshot';
 import {
     readArtifactRepositoryProjection,
@@ -196,7 +215,7 @@ import {
     buildAgentConversationHistoryRuntimeItem,
     selectAgentConversationContext
 } from '../../../shared/agent-conversation-context';
-import { buildConversationHistoryBudget } from '../../../shared/agent-context-allocation';
+import { buildAgentContextCapacityPlan } from '../../../shared/agent-context-allocation';
 import { resolveModelContextWindow } from '../../../shared/config/models.config';
 import { buildAgentOperatingProfilePromptSection } from '../../../shared/agent-runtime-v5/agent-operating-profile';
 import type { RuntimeDesignBriefAvailableInputSource } from '../../../shared/agent-runtime-v5/runtime-design-brief-declaration';
@@ -205,7 +224,9 @@ import {
     buildOperatingContextRuntimeItem,
     resolveOperatingPhotoshopConnection
 } from '../../../shared/agent-runtime-v5/operating-context-snapshot';
-import { buildDesignMethodKnowledgeRuntimeContext } from '../../../shared/agent-runtime-v5/design-method-knowledge';
+import {
+    buildDesignMethodKnowledgeRuntimeContext
+} from '../../../shared/agent-runtime-v5/design-method-knowledge';
 import { buildDesignPrinciplesSummary } from '../../../shared/knowledge/design-principles';
 import { buildDesignArtifactKnowledgeRuntimeItem } from '../../../shared/knowledge/design-artifact-knowledge';
 import { buildPhotoshopCraftRecipeRuntimeItems } from '../../../shared/knowledge/photoshop-craft-recipes';
@@ -228,10 +249,7 @@ import {
     type AgentIntentControlPlaneDecision
 } from '../../../shared/agent-intent-control-plane';
 import type { DesignAgentOsScenario } from '../../../shared/design-agent-os-contracts';
-import {
-    buildDesignerAgentDecisionContract,
-    buildDesignerAgentPromptSection
-} from '../../../shared/designer-agent-decision-contract';
+import { buildDesignerAgentDecisionContract } from '../../../shared/designer-agent-decision-contract';
 import {
     buildDesignerAgentAutonomyPrinciplesPromptSection,
     buildDesignerDecisionOwnershipPromptSection
@@ -364,26 +382,25 @@ function toPlainModelMessages(messages: Parameters<CallModelFn>[1]): Array<Recor
     });
 }
 
-class AutonomousAgentModelCallError extends Error {
-    readonly modelId: string;
-    readonly providerFailure: ModelProviderFailure;
-
-    constructor(modelId: string, providerFailure: ModelProviderFailure) {
-        super(providerFailure.diagnostic || 'model_provider_call_failed');
-        this.name = 'AutonomousAgentModelCallError';
-        this.modelId = modelId;
-        this.providerFailure = providerFailure;
-    }
-}
-
 const AUTONOMOUS_MODEL_TRANSPORT_MAX_ATTEMPTS = 2;
 const AUTONOMOUS_MODEL_TRANSPORT_RETRY_DELAY_MS = 400;
+const AGENT_INTERNAL_PROVIDER_TOOL_NAMES = new Set(['smartSave']);
 
-function isRetryableAutonomousModelCallError(error: Error): error is AutonomousAgentModelCallError {
-    if (!(error instanceof AutonomousAgentModelCallError)) return false;
+function isRetryableAutonomousModelCallError(error: Error): error is ModelProviderCallError {
+    if (!(error instanceof ModelProviderCallError)) return false;
+    // Codex 订阅桥的 idle / wall-clock 上限已经是一次完整等待结论；立刻把同一份
+    // 大上下文再跑一遍只会把用户等待时间翻倍，且不会改变 Harness 的时限条件。
+    if (isHarnessManagedSubscriptionTimeout(error)) return false;
     return error.providerFailure.kind === 'service_unavailable'
         || error.providerFailure.kind === 'network'
         || error.providerFailure.kind === 'timeout';
+}
+
+function isHarnessManagedSubscriptionTimeout(error: ModelProviderCallError): boolean {
+    if (error.providerFailure.kind !== 'timeout') return false;
+    return /^codex_subscription_turn_(?:idle|wall_clock)_timeout$/i.test(
+        String(error.providerFailure.providerCode || '')
+    );
 }
 
 function waitForAutonomousModelTransportRetry(): Promise<void> {
@@ -401,7 +418,7 @@ interface AutonomousAgentRuntimeActivity {
 }
 
 function wrapAutonomousAgentModelCallError(modelId: string, error: unknown): Error {
-    if (error instanceof AutonomousAgentModelCallError) return error;
+    if (error instanceof ModelProviderCallError) return error;
     const providerFailure = classifyModelProviderFailure(error);
     // Renderer 的模型 IPC 边界还可能承载本地 capability、schema、序列化或 UI 回调错误。
     // 只有能确定归因的 Provider 失败才打 Provider 标签；unknown 保留原错误走 Runtime 分支。
@@ -410,7 +427,7 @@ function wrapAutonomousAgentModelCallError(modelId: string, error: unknown): Err
             ? error
             : new Error(String(error || 'unknown_model_call_boundary_failure'));
     }
-    return new AutonomousAgentModelCallError(modelId, providerFailure);
+    return new ModelProviderCallError(modelId, providerFailure);
 }
 
 function createAutonomousAgentRuntimeActivity(): AutonomousAgentRuntimeActivity {
@@ -1378,6 +1395,15 @@ function applyRuntimeManifestBindingFailure(
     };
 }
 
+function resolveTaskCardScope(context?: any, autonomousParams?: Record<string, any>): string {
+    return String(
+        context?.requestId
+        || autonomousParams?.requestId
+        || autonomousParams?.agentTaskPlan?.requestId
+        || ''
+    ).trim();
+}
+
 function createExecuteToolWrapper(
     callbacks?: AgentCallbacks,
     signal?: AbortSignal,
@@ -1403,6 +1429,7 @@ function createExecuteToolWrapper(
     // 每次自主运行一个团队工作区：多次委派之间自动共享队友成果
     const teamWorkspace = new DesignTeamWorkspace();
     const projectPath: string | undefined = context?.projectContext?.projectPath;
+    const taskCardScope = resolveTaskCardScope(context, autonomousParams);
     const effectiveProviderToolDenyPolicy = providerToolDenyPolicy
         || buildAgentProviderToolDenyPolicy(autonomousParams);
     const denyProviderTool: ProviderToolDenyEvaluator = (toolName, toolParams) => (
@@ -1416,7 +1443,10 @@ function createExecuteToolWrapper(
     ): Promise<any> => {
         const capabilityBlock = denyProviderTool(toolName, toolParams);
         if (capabilityBlock) return capabilityBlock;
-        return executeToolCall(toolName, toolParams, options);
+        return executeToolCall(toolName, toolParams, {
+            ...options,
+            ...(taskCardScope ? { taskCardScope } : {})
+        });
     };
     const completedDesignTeamRoles = new Set<DesignTeammateRole>();
     let designTeamPipelineCompleted = false;
@@ -1531,13 +1561,18 @@ function createExecuteToolWrapper(
         hasCurrentDocument: resolveCurrentPhotoshopDocumentPresence(context) === true,
         workMode: normalizeRuntimeDesignWorkMode(autonomousParams?.declaredWorkMode)
     });
-    const hasProtectedSource = designDocumentRoleContext.currentDocumentUse === 'protected';
+    let hasProtectedSource = designDocumentRoleContext.currentDocumentUse === 'protected';
     // 源稿名是写锁的身份依据，只有真的处于保护模式才成立。无条件记住当前文档名会让
     // 这个变量名说谎：开场只读观察（harness_opening_observation 的 getDocumentInfo）
     // 读回同名文档时被判成「回到受保护源稿」，凭空锁死用户本来就要写的那份文档。
-    const protectedDocumentName = hasProtectedSource
+    let protectedDocumentName = hasProtectedSource
         ? designDocumentRoleContext.currentDocumentName
         : '';
+    // 写锁的第二个合法来源：Skill 在交接时声明「这份文档是本次任务的只读来源」（如批量生产的源色卡）。
+    // 真机 2026-08-18 三次「帮我做SKU」都把模板 / 卡片叠到了源色卡上；来源文档 ≠ 产出文档有唯一答案，
+    // 由 Skill 显式声明（带文档名 / id），不靠关键词，也不由开场观察武装。
+    let protectedSourceReason: 'user_request' | 'skill_declared_source' = 'user_request';
+    let protectedSourceNote = '';
     let protectedDocumentId = hasProtectedSource
         ? resolveCurrentPhotoshopDocumentId(context)
         : undefined;
@@ -1615,6 +1650,30 @@ function createExecuteToolWrapper(
             params = stripCreateDocumentPseudoConfirmation(params);
         }
 
+        if (toolName === SEARCH_AGENT_CAPABILITIES_TOOL_NAME) {
+            if (!capabilitySession) {
+                return {
+                    success: false,
+                    error: '当前运行没有 Capability Session，无法检索能力。'
+                };
+            }
+            const query = String(params?.query || '').trim();
+            const result = capabilitySession.searchCapabilities(query, Number(params?.limit));
+            return {
+                success: query.length > 0,
+                message: result.message,
+                data: {
+                    ...result,
+                    changesModelVisibleSchemasOnly: false,
+                    executesPhotoshop: false,
+                    grantsPermission: false,
+                    countsAsObservation: false,
+                    countsAsTaskProgress: false,
+                    countsAsRuntimeToolCall: false
+                }
+            };
+        }
+
         if (toolName === REQUEST_AGENT_CAPABILITIES_TOOL_NAME) {
             if (!capabilitySession) {
                 return {
@@ -1635,7 +1694,13 @@ function createExecuteToolWrapper(
             if (alreadyActiveOnly) {
                 message = '你请求的能力已经可用，请直接调用它提供的具体动作；本次没有重复装载，也没有执行 Photoshop。';
             } else if (activation.status === 'rejected') {
-                message = '没有装载新的能力；请只选择当前目录中尚未启用且未被禁止的能力。';
+                // 真机 08-14→08-19 七次运行各撞一次：只说「没有装载」模型改不对；把每个 id 为什么不行说清，
+                // 它才能一次改对（拼错 / 不在目录 / 被禁止），别再原样重试。
+                const issueLines = (activation.issues || [])
+                    .map((issue: any) => `${issue.capabilityId ? `「${issue.capabilityId}」` : ''}${issue.message || issue.code || ''}`.trim())
+                    .filter(Boolean)
+                    .slice(0, 6);
+                message = `没有装载新的能力：${issueLines.length ? issueLines.join('；') : '请求的 id 不在当前目录里或已被禁止'}。请照能力目录里的 id 原样填写；已经可用的能力不用再请求，直接调用它的动作。`;
             }
             return {
                 success: activation.status !== 'rejected' || alreadyActiveOnly,
@@ -1656,6 +1721,47 @@ function createExecuteToolWrapper(
                     countsAsTaskProgress: false
                 }
             };
+        }
+
+        const internalToolOwnerIds = getSkillInternalToolOwnerIds(toolName);
+        if (internalToolOwnerIds.length > 0) {
+            const activeCapabilityIds = capabilitySession?.getActiveCapabilityIdsForTool(toolName) || [];
+            if (activeCapabilityIds.length === 0) {
+                const skillFreeRun = areSkillBridgesForbidden(autonomousParams);
+                const message = skillFreeRun
+                    ? '这个领域原子能力尚未装载。请先从能力目录按用途检索并装载，再直接完成当前动作；不要因此改回 Skill 或只给方案。'
+                    : '这个领域原子能力当前由业务 Skill owner 管理，不能绕过它直接调用。先让已选 Skill 处理；只有 Skill 明确交回原子续跑能力后，Agent 才能接手该动作。';
+                return {
+                    success: false,
+                    policyGate: true,
+                    code: skillFreeRun
+                        ? 'skill_free_internal_tool_not_loaded'
+                        : 'skill_internal_tool_owner_required',
+                    message,
+                    error: message,
+                    ownerSkillIds: internalToolOwnerIds,
+                    countsAsTaskProgress: false
+                };
+            }
+        }
+
+        if (toolName === 'createInteractiveCard' && !areSkillBridgesForbidden(autonomousParams)) {
+            const interactionOwnerSkillIds = resolveProviderOwnedInteractionSkillIds(
+                autonomousParams,
+                capabilitySession
+            );
+            if (interactionOwnerSkillIds.length > 0) {
+                const message = '当前业务交互由已匹配的 Skill Provider 管理，通用卡片不能复制它的字段、默认值或确认状态。请先完成当前工作流身份绑定，再由对应 Skill 在真实前置条件准备完成后生成领域卡片。';
+                return {
+                    success: false,
+                    policyGate: true,
+                    code: 'skill_provider_interaction_owner_required',
+                    message,
+                    error: message,
+                    ownerSkillIds: interactionOwnerSkillIds,
+                    countsAsTaskProgress: false
+                };
+            }
         }
 
         // 安全是全局最外层，独立于"是不是设计任务"（治理审计 2026-07-08）。V1-7b 正版 HITL：
@@ -1765,7 +1871,9 @@ function createExecuteToolWrapper(
             const mayCreateSeparateTarget = createDocumentTargetBoundary.allowed;
             const documentLabel = protectedDocumentName || '未命名文档';
             const unlockHint = '请换一个目标文档：用 switchDocument / openProjectFile 绑定，或 createDocument 新建；listDocuments 只能列出文档，不会改变写入目标。';
-            const message = `用户明确要求保护当前文档「${documentLabel}」，已阻止对它执行修改、保存或导出。不要在这份文档上写入。${unlockHint}`;
+            const message = protectedSourceReason === 'skill_declared_source'
+                ? `「${documentLabel}」是本次任务的只读来源文档${protectedSourceNote ? `（${protectedSourceNote}）` : ''}，已阻止对它执行修改、保存或导出。产出请在另一份文档里做：createDocument 新建，或 openTemplate / switchDocument 到真正的目标文档。`
+                : `用户明确要求保护当前文档「${documentLabel}」，已阻止对它执行修改、保存或导出。不要在这份文档上写入。${unlockHint}`;
             const unlockOptions = resolveCurrentDocumentWriteUnlockOptions(mayCreateSeparateTarget);
             return {
                 success: false,
@@ -1773,7 +1881,7 @@ function createExecuteToolWrapper(
                 code: 'current_document_write_protected',
                 message,
                 error: message,
-                // 单值字段保留给旧消费点；options 才是真正进 allowlist 的集合。
+                // 单值字段保留给旧消费点；options 是可行出口集合，不授予权限也不限定下一轮工具面。
                 nextRequiredTool: unlockOptions[0],
                 nextRequiredToolOptions: unlockOptions,
                 nextRequiredToolReason: mayCreateSeparateTarget
@@ -1791,7 +1899,12 @@ function createExecuteToolWrapper(
                 && createDocumentTargetBoundary.allowed
                 && ['protected', 'separate_target'].includes(designDocumentRoleContext.currentDocumentUse)
         });
-        if (designDisciplineGuardResult) {
+        // 设计路径宪法（2026-08-17）：「连续写入多次没回看」这类规则只提醒不拦截——工具照常执行，
+        // 提醒附在结果里交给模型（真机 run [471]：主图被它连挡两次 transformLayer 后预算耗尽）。
+        let disciplineAdvice: string | undefined;
+        if (designDisciplineGuardResult && isAdvisoryDisciplineGuardResult(designDisciplineGuardResult)) {
+            disciplineAdvice = designDisciplineGuardResult.message;
+        } else if (designDisciplineGuardResult) {
             // 纪律守卫是"策略重定向/门禁"，不是工具执行失败：打 policyGate，切断
             // "策略否决→连续失败熔断→no_progress 停机"这条把 1-bit 误判放大成任务崩溃的链（治理审计 2026-07-08）。
             return { ...designDisciplineGuardResult, policyGate: true };
@@ -2003,36 +2116,65 @@ function createExecuteToolWrapper(
                 result?: any;
             }> = [];
             if (privateTargetGuard) {
-                // Workflow bridge 内部会继续派发多个原子动作。先让 UXP 的同一 guard owner
-                // 对当前活动文档/图层做一次 fail-closed 校验，再剥离私有参数进入业务 Skill；
+                // Workflow bridge 内部会继续派发多个原子动作，且技能本身就会开模板、切文档。
+                // 这里**不能**拿主循环的期望目标当 fail-closed 门禁——真机 [491] 证明那会让
+                // sku-batch 连续 14 次一步未跑就被中止（期望历史版本恒为 2777，实际一路涨到 3251）。
+                // 正确做法：先做一次不带 guard 的真实观察，再由 shared 决策函数判断能否重新锚定。
                 // 私有守卫不得进入 normalizedParams、Skill 结果或模型可见业务数据。
-                const targetCheck = await executeAllowedProviderToolCall('getDocumentInfo', {
-                    [DESIGN_ECHO_TARGET_GUARD_ARGUMENT]: privateTargetGuard
-                }, { signal });
-                if (targetCheck?.success === false) {
+                const targetCheck = await executeAllowedProviderToolCall('getDocumentInfo', {}, { signal });
+                const observedHistoryStateRef = readPhotoshopHistoryStateRef(targetCheck);
+                const observedDocumentId = readObservedDocumentId('getDocumentInfo', targetCheck)
+                    ?? observedHistoryStateRef?.documentId;
+                const rebinding = resolveSkillWorkflowTargetRebinding({
+                    skillId: toolName,
+                    expected: {
+                        documentId: privateTargetGuard.expectedDocumentId,
+                        activeLayerId: privateTargetGuard.expectedActiveLayerId,
+                        historyStateId: privateTargetGuard.expectedHistoryStateRef?.historyStateId
+                    },
+                    observed: {
+                        documentId: observedDocumentId,
+                        historyStateId: observedHistoryStateRef?.historyStateId,
+                        documentName: String(readResultRecord(targetCheck).documentName || '').trim() || undefined
+                    }
+                });
+                if (rebinding.action === 'block') {
                     return {
-                        ...targetCheck,
                         success: false,
                         policyGate: true,
+                        code: rebinding.code,
+                        blockedTool: toolName,
                         targetGuardCheckFailed: true,
-                        error: targetCheck?.error
-                            || 'Photoshop 执行目标已变化，工作流未开始。请重新读取当前文档后再试。'
+                        error: `${rebinding.error} 只有这些动作会刷新执行目标：`
+                            + `${SKILL_WORKFLOW_TARGET_REFRESH_TOOLS.join('、')}；`
+                            + '项目资源检索、知识查询、状态读取都不会。',
+                        executesPhotoshop: false,
+                        grantsPermission: false,
+                        countsAsObservation: false,
+                        countsAsTaskProgress: false
                     };
                 }
-                const observedHistoryStateRef = readPhotoshopHistoryStateRef(targetCheck)
-                    || privateTargetGuard.expectedHistoryStateRef;
+                // proceed 沿用期望目标；rebind 以真实观察为新锚点。两者都由技能内部
+                // guard owner 继续逐调用签发 guard，保护层级没有下降。
+                const anchorDocumentId = rebinding.action === 'rebind'
+                    ? observedDocumentId
+                    : privateTargetGuard.expectedDocumentId;
+                const anchorHistoryStateRef = rebinding.action === 'rebind'
+                    ? observedHistoryStateRef
+                    : (observedHistoryStateRef || privateTargetGuard.expectedHistoryStateRef);
                 initialAtomicToolCalls.push({
                     name: 'getDocumentInfo',
                     arguments: {},
                     result: {
                         ...readResultRecord(targetCheck),
                         success: true,
-                        documentId: privateTargetGuard.expectedDocumentId,
-                        ...(privateTargetGuard.expectedActiveLayerId !== undefined
+                        documentId: anchorDocumentId,
+                        ...(rebinding.action !== 'rebind'
+                            && privateTargetGuard.expectedActiveLayerId !== undefined
                             ? { activeLayerId: privateTargetGuard.expectedActiveLayerId }
                             : {}),
-                        ...(observedHistoryStateRef
-                            ? { historyStateRef: observedHistoryStateRef }
+                        ...(anchorHistoryStateRef
+                            ? { historyStateRef: anchorHistoryStateRef }
                             : {})
                     }
                 });
@@ -2070,6 +2212,9 @@ function createExecuteToolWrapper(
             capabilitySession?.activateToolsForContinuation(
                 readAgentReActRecoveryToolNames(result)
             );
+            capabilitySession?.activateToolsForContinuation(
+                readAgentEnvironmentRecoveryToolNames(result)
+            );
             recordDesignDisciplineProgress(
                 disciplineContext.frameworkToolName,
                 toolName,
@@ -2095,6 +2240,20 @@ function createExecuteToolWrapper(
             if (result?.success !== false && hasSuccessfulNestedToolExecution(result, 'createDocument')) {
                 activeDocumentWriteProtected = false;
             }
+            const declaredSourceProtection = readSkillDeclaredSourceDocumentProtection(result);
+            if (declaredSourceProtection) {
+                hasProtectedSource = true;
+                protectedSourceReason = 'skill_declared_source';
+                protectedSourceNote = declaredSourceProtection.reason;
+                protectedDocumentName = declaredSourceProtection.documentName;
+                if (declaredSourceProtection.documentId !== undefined) {
+                    protectedDocumentId = declaredSourceProtection.documentId;
+                }
+                mayLearnProtectedDocumentId = protectedDocumentId === undefined;
+                // Skill 交接时活动文档就是这份来源文档；之后 createDocument / switchDocument / getDocumentInfo
+                // 读回按既有逻辑开合这把锁。
+                activeDocumentWriteProtected = true;
+            }
             return trustedResult;
         }
         // H3：外部内容（网页/第三方库）进模型前打 untrusted 标记——数据不是指令（内部工具原样返回）
@@ -2108,6 +2267,15 @@ function createExecuteToolWrapper(
             toolName,
             await executeAllowedProviderToolCall(toolName, atomicExecutionParams, { signal })
         );
+        if (getPhotoshopToolSkillSemantics(toolName, toolParams)?.requiresPhotoshopConnection === true) {
+            capabilitySession?.activateToolsForContinuation(
+                readAgentEnvironmentRecoveryToolNames(result)
+            );
+        }
+        if (disciplineAdvice && result && typeof result === 'object' && !Array.isArray(result)) {
+            // 只提醒：写入已执行，把「该回看一眼了」附在结果里，不改 success、不改任何字段语义。
+            (result as Record<string, unknown>).disciplineAdvice = disciplineAdvice;
+        }
         if (designDisciplineActive && toolName === 'createDocument' && result?.success !== false) {
             const mismatch = buildCreateDocumentResultMismatch({
                 params: toolParams,
@@ -2210,6 +2378,30 @@ function createExecuteToolWrapper(
             return applyRuntimeManifestBindingFailure(result, runtimeBindingFailure);
         }
         return result;
+    };
+}
+
+/**
+ * Skill 在结果 data 里声明的只读来源文档：{ protectSourceDocument: { documentName, documentId?, reason? } }。
+ * 只认结构化字段，不从文案里猜；名字为空时不武装。
+ */
+function readSkillDeclaredSourceDocumentProtection(result: unknown): {
+    documentName: string;
+    documentId?: number;
+    reason: string;
+} | undefined {
+    const data = (result as { data?: unknown } | null | undefined)?.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+    const raw = (data as Record<string, unknown>).protectSourceDocument;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const record = raw as Record<string, unknown>;
+    const documentName = String(record.documentName || '').trim();
+    if (!documentName) return undefined;
+    const documentId = Number(record.documentId);
+    return {
+        documentName,
+        ...(Number.isInteger(documentId) && documentId > 0 ? { documentId } : {}),
+        reason: String(record.reason || '').replace(/\s+/g, ' ').trim().slice(0, 80)
     };
 }
 
@@ -2337,7 +2529,7 @@ function resolveDeclaredDesignTaskTypeIdForAutonomousRun(
 }
 
 /**
- * 能真正解除当前文档写保护的工具——门禁指路只能从这里选。
+ * 能真正解除当前文档写保护的工具——门禁只从这里报告可行出口。
  * 写保护的解除点在 createExecuteToolWrapper 内（createDocument 同步解除；switchDocument
  * 按真实结果重算；openProjectFile 要等后续活动文档观察）；listDocuments 等只读工具不在其中，指向它们会让模型
  * 「照做 → 原样重试 → 撞回同一堵墙」，把工具预算烧干还解不开锁（真机曾 4 次重试全废）。
@@ -2347,7 +2539,7 @@ const CURRENT_DOCUMENT_WRITE_UNLOCK_TOOLS = ['createDocument', 'openProjectFile'
 type CurrentDocumentWriteUnlockTool = typeof CURRENT_DOCUMENT_WRITE_UNLOCK_TOOLS[number];
 
 /**
- * 写保护门禁的指路选择：返回**全部**当前可行的出路，而不是替模型挑一条。
+ * 写保护门禁的出口说明：返回**全部**当前可行的出路，而不是替模型挑一条。
  *
  * 返回类型钉在解锁集合上：写成 listDocuments 之类解不开锁的工具会直接编译失败，
  * 让「指路必可达」成为结构约束而不是靠评审或测试发现。
@@ -2355,14 +2547,13 @@ type CurrentDocumentWriteUnlockTool = typeof CURRENT_DOCUMENT_WRITE_UNLOCK_TOOLS
  * 为什么必须给全集（2026-07-31 真机死锁）：用户开着「详情页.psb」要求调整 SKU，
  * 模型已查明「SKU.psb 已经在 Photoshop 中打开了（id=5095）」、有 6 个颜色变体，
  * 判断完全正确——该切过去改，而不是另建空白文档。但门禁只发了 createDocument 一个值，
- * 而 nextRequiredTool 在 Agent 循环里会被翻译成**单工具 allowlist**（agent.ts
- * applyRequiredToolRecoveryDirective），于是下一轮模型只被允许调 createDocument。
+ * 而旧 Agent 循环曾把 nextRequiredTool 翻译成**单工具 allowlist**，于是下一轮模型只被允许调 createDocument。
  * 它不肯建错文档，又没有第二条被允许的路，只能一直调只读工具，最终 12 次查看、0 次改动。
  *
  * 排序说明：switchDocument 在前只是兼容旧 nextRequiredTool 单值字段时的取值，
  * 不代表系统认定它更对——切到已打开的目标是可逆的，误建空白文档会污染画面且要人工收拾，
  * 这与 design-discipline-runtime 中「存量修改应在已打开的目标文档上进行」同向。
- * 真正的选择权在模型：三条都会进 allowlist。
+ * 真正的选择权在模型：三条只作为事实性恢复选项进入 Tool 结果。
  */
 function resolveCurrentDocumentWriteUnlockOptions(
     mayCreateSeparateTarget: boolean
@@ -2420,16 +2611,6 @@ function resolveDesignerAgentScenario(
     if (declaredTaskTypeSpec) return declaredTaskTypeSpec.runtimeHints.scenario;
     if (isAutonomousCreativeDesignTask(params, _context)) return 'general-design';
     return 'unknown';
-}
-
-function shouldUseDesignerAgentDecisionLayer(
-    params?: Record<string, any>,
-    context?: any
-): boolean {
-    if (params?.requiresDesignerAgentDecision === true) return true;
-    if (isAutonomousCreativeDesignTask(params, context)) return true;
-    const scenario = resolveDesignerAgentScenario(params, context);
-    return scenario !== 'unknown';
 }
 
 function extractDesignerAgentDecision(params?: Record<string, any>): any {
@@ -2605,9 +2786,8 @@ function buildBaseSystemPrompt(params: Record<string, any>, context?: any): stri
         '先判断用户要的是回答、文档或资源操作，还是视觉设计。只有视觉设计任务才从视觉层级、构图、产品真实性、排版、色彩、可读性和转化目标出发判断。',
         '所有用户可见内容与 provider-visible reasoning_content 必须使用简洁的简体中文（Simplified Chinese）。',
         '不要向用户讲内部系统、能力装载、工具名、路由、门禁、轮次或调试过程。受阻时，只说明还缺什么、会影响什么设计决定，以及接下来能怎么处理。',
-        '理解目标后走最短可行路径：只查看会影响下一步的内容，信息足够就开始制作，不强迫所有任务经过同一套固定流程。',
+        '理解目标后按结果风险与信息增益取得足够证据：规格化生产有唯一答案时走最短确定路径；开放创意以成品质量为先，首个安全可执行方案只是候选，不强迫所有任务经过同一套固定流程。',
         '优先可逆、非破坏性的做法，不得臆造文档状态、项目文件或已经完成的结果。',
-        '视觉设计开始前，用一句自然的设计语言说明要实现的效果；后续只在方向、范围或画面发生实质变化时更新用户。',
         '用户可见过程只保留有价值的设计判断，例如主体比例、构图、留白、文字层级和色彩关系，不逐条播报操作。',
         '最终回复只说明当前做出了什么、效果到哪一步和还需要什么；没有做完就如实说，不输出工程诊断或验收报告。',
         '文字回复会结束本轮：如果你声称接下来会行动，就必须在同一响应提交真实动作；纯问答则直接给完整答案，不要为了满足这条规则调用工具。',
@@ -2647,12 +2827,78 @@ function isManifestOwnedSkill(skillId: string): boolean {
     return listManifestOwnedSkillCapabilityIds().includes(`skill.${skillId}`);
 }
 
+function resolveProviderOwnedInteractionSkillIds(
+    params?: Record<string, any>,
+    capabilitySession?: AgentCapabilitySession
+): string[] {
+    const ownerIds = new Set<string>();
+    const recommendation = isSkillRoutingRecommendation(params?.skillRoutingRecommendation)
+        ? params?.skillRoutingRecommendation
+        : undefined;
+    if (recommendation && isSkillProviderInteractionOwner(recommendation.skillId)) {
+        ownerIds.add(recommendation.skillId);
+    }
+
+    const manifestRef = capabilitySession?.getResolution().manifestRef;
+    if (manifestRef) {
+        const manifest = listSkillManifests().find((item) => (
+            item.skill_id === manifestRef.skillId
+            && item.task_type === manifestRef.taskType
+            && item.version === manifestRef.version
+        ));
+        [
+            ...(manifest?.workflow_entry_skill_ids || []),
+            ...(manifest?.legacy_skill_ids || [])
+        ].forEach((skillId) => {
+            if (isSkillProviderInteractionOwner(skillId)) ownerIds.add(skillId);
+        });
+    }
+    return Array.from(ownerIds);
+}
+
+/**
+ * 未绑定任何工作流时给模型的「工作流菜单」：所有 staged（规格化生产）清单的名称 / 何时用 / Profile id。
+ * 意图理解交给模型：匹配当前可见 Skill 时直接调用；只有系统明确给出 Profile、且当前没有匹配
+ * Skill 时，才用 declareDesignIntent 原地绑定。品类词全部来自声明与清单数据，本文件不写死。
+ */
+function buildStagedWorkflowMenuLines(): string[] {
+    const items = listSkillManifests()
+        .filter((manifest) => manifest.execution_model !== 'agentic')
+        .map((manifest) => {
+            const entrySkillId = (manifest.workflow_entry_skill_ids || [])[0] || (manifest.legacy_skill_ids || [])[0];
+            const entrySkill = entrySkillId ? getSkillById(entrySkillId) : undefined;
+            const whenToUse = Array.isArray(entrySkill?.whenToUse) ? String(entrySkill?.whenToUse[0] || '').trim() : '';
+            const label = String(manifest.display_name || manifest.skill_id || '').trim();
+            if (!label || !manifest.task_type) return '';
+            return `  · ${label}（Profile：${manifest.task_type}）${whenToUse ? `——${whenToUse.slice(0, 120)}` : ''}`;
+        })
+        .filter(Boolean);
+    if (items.length === 0) return [];
+    return [
+        '可选的规格化生产能力：当前工具列表已有匹配 Skill 时直接调用 Skill；只有系统在下方明确给出对应 Profile、且当前工具列表没有匹配 Skill 时，才调用 declareDesignIntent({ taskTypeId: <Profile> }) 原地绑定。它不是开工许可；只是提问、查看或把它当来源素材时不要绑定。',
+        ...items
+    ];
+}
+
+/** 候选工作流对应的 Runtime Profile（task_type）：给模型一个可直接绑定的 id，而不是抽象的「结构化设计意图」。 */
+function findManifestTaskTypeForSkill(skillId: string): string | undefined {
+    const normalized = String(skillId || '').trim();
+    if (!normalized) return undefined;
+    const manifest = listSkillManifests().find((item) => (
+        (item.legacy_skill_ids || []).includes(normalized)
+        || (item.workflow_entry_skill_ids || []).includes(normalized)
+    ));
+    return manifest?.task_type ? String(manifest.task_type) : undefined;
+}
+
 function buildBaseRuntimeContext(params: Record<string, any>, context?: any): string {
     const lines: string[] = [];
     if (areSkillBridgesForbidden(params)) {
         lines.push(
             '用户不希望使用专业 Skill。',
-            '- 使用当前可用的项目查看和普通 Photoshop 编辑完成目标，不要重新选择或请求 Skill。'
+            '- 不要重新选择或请求 Skill；你仍然是任务决策者，可以按需检索并使用原子能力，自主完成观察、设计、写入、读回和交付。',
+            '- Skill 或知识库不是你具备通用专业能力的来源；没有命中时使用模型已有知识冷启动，但当前项目事实仍以真实观察和工具读回为准。',
+            '- 不得因为没有 Skill 就只给方案或把可逆专业判断抛给用户；同样以真实产物和读回证据判断完成。'
         );
     }
     const deniedToolDomains = Array.isArray(params.agentCapabilityConstraint?.deniedToolDomains)
@@ -2691,6 +2937,10 @@ function buildBaseRuntimeContext(params: Record<string, any>, context?: any): st
             '- 它受阻或当前稿件需要修正时，使用现在可用的可逆编辑继续处理，再回到原任务。'
         );
     }
+    // 意图理解交给模型：没有 Runtime owner 时，把固定生产流程的菜单给它自己选（关键词白名单只是快路径）。
+    if (!selectedSkillHandoff && !areSkillBridgesForbidden(params) && !params?.declaredTaskType) {
+        lines.push(...buildStagedWorkflowMenuLines());
+    }
     if (
         skillRoutingRecommendation
         && !areSkillBridgesForbidden(params)
@@ -2700,10 +2950,15 @@ function buildBaseRuntimeContext(params: Record<string, any>, context?: any): st
             skillRoutingRecommendation.skillId
         );
         if (recommendationRequiresRuntimeOwner && !selectedSkillHandoff) {
+            // recommendation 只提供候选身份：若 Skill 已在当前工具列表中，模型直接调用；只有
+            // 系统给出了精确 Profile 且 Skill 不可见时，才允许用 declareDesignIntent 原地绑定。
+            const candidateTaskType = findManifestTaskTypeForSkill(skillRoutingRecommendation.skillId);
             lines.push(
-                `候选领域方法是「${recommendedSkill?.displayName || skillRoutingRecommendation.skillId}」。`,
-                '- 这项 recommendation 只帮助理解领域，不能调用兼容 Skill executor 或假定其流程已经开始。',
-                '- 如果它确实拥有当前交付物，先用结构化设计意图绑定；如果只是来源素材或不匹配，使用当前普通设计能力继续完成，不要停在只读调查。'
+                `候选工作流是「${recommendedSkill?.displayName || skillRoutingRecommendation.skillId}」${candidateTaskType ? `（Profile：${candidateTaskType}）` : ''}。`,
+                candidateTaskType
+                    ? `- 如果用户要的就是这类交付物：当前工具列表已有匹配 Skill 就直接调用；只有没有匹配 Skill 时，才使用系统给出的 Profile 调用 declareDesignIntent({ taskTypeId: "${candidateTaskType}" }) 原地绑定。`
+                    : '- 如果它确实拥有当前交付物且当前工具列表已有匹配 Skill，直接调用 Skill；没有系统明确给出的 Profile 时不要自行调用 declareDesignIntent。',
+                '- 如果用户要的只是把它当来源素材或并不匹配，就忽略这项建议，用当前普通设计能力继续完成，不要停在只读调查。'
             );
         } else {
             lines.push(
@@ -2742,11 +2997,8 @@ function buildDynamicDesignTaskOperatingContext(
 ): string {
     const taskGroundingRules = [
         '【和用户沟通】',
-        // 用户需要看见关键设计判断，但展示措辞不能反过来成为执行许可，也不应让每个
-        // 只读动作都产生一条“我先看看”的过程消息。
-        '- 首次进行会改变设计结果的动作前，用一句自然的话说明要实现的效果和当前判断；本轮已经说清楚时不要重复。',
-        '- 这段话是说给用户听的，不是内部记录：不要出现工具名、英文标识、阶段编号、状态码或任何系统术语。',
-        '- 只有设计方向、目标范围或风险发生实质变化时再更新用户；不要逐条播报搜索、读取、坐标计算或原子动作。',
+        '- 只有关键取舍能帮助用户理解结果，或确实需要用户拍板时才说明；沟通与执行互不授权。',
+        '- 面向用户不要出现工具名、英文标识、阶段编号、状态码或任何系统术语；不逐条播报搜索、读取、坐标计算或原子动作。',
         '【把设计做出来】',
         '- 先把当前指令、有界历史对话和实时项目事实合并成一个具体交付目标，再决定需要哪些观察；同一会话里已经明确且尚未完成的交付物，应先核对当前目标后续接，不要重新从项目中漫无目的猜任务。',
         '- 如果当前短指令只有品类名称，且历史对话或项目事实已经唯一确定交付物，就直接承接；仍不能唯一确定交付物时，只问一个决定执行方向的简短问题，不要用反复搜索素材代替任务澄清。',
@@ -2758,12 +3010,13 @@ function buildDynamicDesignTaskOperatingContext(
     if (!spec) {
         return [
             '【自适应设计决策】',
-            '选择最短、足够的信息路径，不把所有设计任务塞进固定流水线：',
+            '按结果风险与信息增益取得足够证据，不把所有设计任务塞进固定流水线：',
             '- 先锁定具体交付物、目标对象和用户硬约束；上下文已经唯一确定时直接承接，不重复做需求分析。',
-            '- 只观察会影响下一步判断的事实。简单局部修改通常只需目标文档与对象属性；新建整套视觉、需要提炼产品利益点时，才扩大到产品素材、受众、版式与表达策略。',
+            '- 只观察会影响设计判断的事实。简单局部修改通常只需目标文档与对象属性；正式开放创意则要取得足以理解对象、用途、受众、素材角色与视觉机会的证据，不能把一张安全可用的候选图当成完整理解。',
             '- 人群、卖点、痛点和营销文案不是所有视觉任务的默认必填项。纯排版、无文字视觉、白底产品图、既有稿局部调整等任务按真实交付需要决定。',
-            '- 参考检索按需触发：当前事实与设计原则足以形成方向时尽早做可逆首稿；只有某个构图、风格或市场判断确实缺依据时才检索，并在获得足够强的参考后停止。不要用搜索推迟动手。',
-            '- 修改后先确认目标、属性和层级是否正确；在首稿、关键视觉变化和最终判断等有意义的时点看新画面，不要为每个小动作重复截图。',
+            '- 参考检索按信息增益触发：陌生对象、缺乏可靠视觉基准或方向仍停留在泛化词时，应主动寻找能区分方向的证据；已有证据足以支撑有品质的判断时可以不查。是否使用 Eagle 或其他参考由你决定，不把任何来源变成固定前置。',
+            '- 首稿可执行不等于完成。开放创意在正式交付前要挑战首个安全方案：判断是否还有一个关键关系、相关参考或批评能显著改善结果，必要时做有界迭代；没有新证据时不为凑步骤反复改稿。',
+            '- 修改后确认目标、属性、层级与真实视觉效果；在首稿、关键视觉变化和最终判断等有意义的时点看新画面，不要为每个小动作重复截图，也不强制调用某个评价工具。',
             '信息不齐时先做能确定的部分，并说清楚缺什么：项目里查得到的自己查（素材、既有设计、图层结构、规格），只有用户才知道的才问（预算、品牌硬性规范、必须保留的元素、最终取舍）。',
             '先判断当前任务是否匹配已注册 Skill：匹配就直接使用；不匹配就自己规划，并使用当前可用的设计操作完成。',
             taskGroundingRules
@@ -2798,7 +3051,7 @@ function buildDesignPrinciplesRuntimeContext(designDisciplineActive: boolean): s
         principles,
         '### 设计落地',
         '- 只有需要精确复现参考构图时才测量比例；没有合适参考时，依据当前画布、组件边界和设计原则继续。',
-        '- 需要建立新视觉结构时尽早做出可逆首稿，主体落位后再根据画面校准。',
+        '- 开放创意中的首稿是可检验的视觉假设，不是完成声明；正式成品应按结果风险挑战首个安全方案，必要时借助相关参考、批评或有界迭代改善关键关系。',
         '- 局部编辑先看清目标容器和相对关系；当前方法失败时立即换用其他可逆方法，不要反复重试同一动作。',
         '- 数值和图层结构正确不代表画面一定好看。涉及构图、排版和整体观感时看更新后的画面；导航、命名、显隐等结构调整无需频繁截图。'
     ].join('\n\n');
@@ -2815,6 +3068,12 @@ function buildRuntimeStageContextItemsForBundle(input: {
     requestedArtifactId?: unknown;
     taskContextItem?: RuntimeContextItem | null;
     designMethodKnowledge?: ReturnType<typeof buildDesignMethodKnowledgeRuntimeContext>;
+    /**
+     * agentic 执行模型没有 Stage，知识不再按 R1/R3/R4 渐进装载，而是从第一轮全部可见——
+     * 设计师动手前脑子里本来就装着方法论。实现上去掉 applicableStages，让
+     * selectRuntimeContextItemsForStage 在无 stage 时也保留这些项。
+     */
+    stageAgnostic?: boolean;
 }): RuntimeContextItem[] {
     const designMethodKnowledge = input.designMethodKnowledge
         || buildDesignMethodKnowledgeRuntimeContext({
@@ -2846,13 +3105,16 @@ function buildRuntimeStageContextItemsForBundle(input: {
         priority: 90,
         freshness: 'current'
     };
-    const rawItems: RuntimeContextItem[] = [
+    const stagedItems: RuntimeContextItem[] = [
         ...designMethodKnowledge.items,
         ...(artifactKnowledgeItem ? [artifactKnowledgeItem] : []),
         ...photoshopCraftRecipeItems,
         designPrinciplesItem,
         ...(input.taskContextItem ? [input.taskContextItem] : [])
     ];
+    const rawItems: RuntimeContextItem[] = input.stageAgnostic
+        ? stagedItems.map(({ applicableStages: _applicableStages, ...item }) => item)
+        : stagedItems;
     const validation = compileRuntimeContext({ items: rawItems });
     if (validation.issues.length > 0) {
         console.warn('[RuntimeContext] 无效的阶段化知识项已降级忽略：', validation.issues);
@@ -2861,8 +3123,51 @@ function buildRuntimeStageContextItemsForBundle(input: {
     return rawItems.filter((item) => !rejectedItemIds.has(item.id));
 }
 
+/**
+ * 普通自然语言设计请求尚未声明精确 Profile 时，仍给模型一份通用、受治理的专业知识底座。
+ * 这不是隐式任务分类，也不建立 Stage、裁剪工具面或授予写入权限；Agent 仍自行判断交付物、
+ * 参考价值、设计方向和工作方法。循环内声明精确 agentic Profile 后，这组通用项会被对应
+ * Manifest 知识原位替换。
+ */
+function buildPlanNeutralDesignKnowledgeRuntimeItems(input: {
+    designDisciplineActive: boolean;
+}): RuntimeContextItem[] {
+    if (!input.designDisciplineActive) return [];
+
+    const designerJudgmentSummary: RuntimeContextItem = {
+        id: 'knowledge.plan-neutral-designer-judgment',
+        kind: 'knowledge',
+        source: 'plan-neutral-designer-judgment-summary',
+        trust: 'governed_knowledge',
+        slot: 'knowledge_context',
+        content: [
+            '## 成熟设计师判断摘要（计划中立）',
+            buildDesignPrinciplesSummary('overview'),
+            '- 这些是可组合的判断维度，不是开工表单：结合当前目标理解对象、用途、受众、素材角色、可靠事实与关键未知。候选短名单只比较某个角色的适配度，不等于对象理解。',
+            '- 只补充会改变概念、选材或表达的证据。是否扩大项目观察、检索 Eagle 或查其他参考，由你按信息增益决定；陌生对象或缺乏可靠视觉基准时主动查，证据足以区分并支持有品质的方向时再收敛，不能因为已有一张安全素材就提前停止。',
+            '- 用“观察证据 → 对受众或使用情境的意义 → 视觉关系”形成方向；事实、推断和设计选择分开表达，不把品类常识、文件名、旧稿文字或参考内容冒充当前事实。',
+            '- 信息足以支持连贯方向时自主制作可逆首稿，但首稿可执行不等于完成；正式成品前要挑战首个安全方案，并按真实画面证据决定是否需要参考、批评或有界迭代。Harness 只执行、校验目标与读回事实，不替你选择构图、风格、素材或文案。',
+            '- 不依赖 Skill 也可以使用当前原子能力完成设计。匹配现有 Skill 时直接调用；需要某个交付物方法或更深的构图、色彩、字体、工艺与复核原则时，按需调用 getDesignKnowledge 或 getDesignPrinciples，不要把全量知识当作每轮必读清单。'
+        ].join('\n'),
+        priority: 90,
+        freshness: 'current'
+    };
+    const validation = compileRuntimeContext({ items: [designerJudgmentSummary] });
+    if (validation.issues.length > 0) {
+        console.warn('[RuntimeContext] 无效的 plan-neutral 设计知识项已降级忽略：', validation.issues);
+    }
+    const rejectedItemIds = new Set(validation.rejectedItemIds);
+    return [designerJudgmentSummary].filter((item) => !rejectedItemIds.has(item.id));
+}
+
 export interface AutonomousCapabilityRuntime {
+    /** staged 执行模型：Stage 机 + 写入门禁 + manifest 裁剪工具面（规格化生产任务）。 */
     runtimeContractBundle?: AgentTaskRuntimeContractBundle;
+    /**
+     * agentic 执行模型解析到的清单：**只**供知识注入、预算画像与任务类型识别，
+     * 不建立 Runtime Session / Stage 机，不作为写入门票，工具面走 broad discovery。
+     */
+    agenticManifestBundle?: AgentTaskRuntimeContractBundle;
     capabilitySession: AgentCapabilitySession;
     runtimeContractStatus: RuntimeContractStatus;
 }
@@ -2996,6 +3301,8 @@ export function resolveAutonomousCapabilityRuntime(
         ...workflowBridgeTools
     ], normalizeRuntimeWriteToolAllowlist(params), readRuntimeExactPropertyScope(params)).filter((tool) => (
         (!isAgentMattingPaused() || !isAgentMattingAtomicTool(tool.name))
+        // 恢复点是宿主容错机制，不是 Agent 的设计或交付选择；UI 仍可直接调用它。
+        && !AGENT_INTERNAL_PROVIDER_TOOL_NAMES.has(tool.name)
         // source-dependent Skill 在可见性阶段保持开放；真正调用时再依据 sourceType
         // 执行 deny-wins。未知来源不是“不支持”，不能提前折成 Photoshop 依赖。
         && !resolveAgentProviderToolDenyMatch(providerToolDenyPolicy, tool.name, {}, 'visibility')
@@ -3020,7 +3327,7 @@ export function resolveAutonomousCapabilityRuntime(
     const structuredSkillId = runtimeSelectedSkillHandoff?.skillId
         || explicitStructuredSkillId
         || undefined;
-    const runtimeContractBundle = handoffInvalid || handoffConflictsWithDeclaration || structuredWorkModeInvalid
+    const resolvedContractBundle = handoffInvalid || handoffConflictsWithDeclaration || structuredWorkModeInvalid
         ? undefined
         : buildRuntimeContractBundleForAgentTask({
             taskType: structuredTaskType,
@@ -3028,10 +3335,15 @@ export function resolveAutonomousCapabilityRuntime(
             ...(structuredWorkMode ? { workMode: structuredWorkMode } : {}),
             executableToolNames: candidateTools.map((tool) => tool.name)
         });
+    // 设计路径宪法：agentic 清单不进 Stage 机——它只留给知识/预算/任务类型识别，
+    // 工具面与写入权限走 broad discovery + 执行点真红线（与 manifest 未命中时完全同一条路）。
+    const agenticExecution = isAgenticExecutionModel(resolvedContractBundle?.manifest);
+    const runtimeContractBundle = agenticExecution ? undefined : resolvedContractBundle;
+    const agenticManifestBundle = agenticExecution ? resolvedContractBundle : undefined;
     const runtimeContractStatus = buildRuntimeContractStatus({
         selectedSkillId: structuredSkillId,
         selectedTaskType: structuredTaskType,
-        manifestSkillId: runtimeContractBundle?.manifest.skill_id,
+        manifestSkillId: resolvedContractBundle?.manifest.skill_id,
         selectionSource: runtimeSelectedSkillHandoff?.source || (
             structuredSkillId || structuredTaskType ? 'explicit_runtime_declaration' : undefined
         ),
@@ -3074,6 +3386,12 @@ export function resolveAutonomousCapabilityRuntime(
                 resolveAutonomousDesignDisciplineContext(params, context).active
                     || designExecutionCapabilityBaselineRequested
             ),
+            // R0 已绑定 Runtime owner 的技能直接进首轮 schema：绑定即系统确认，
+            // 让模型再花两轮 search+request 申请它是纯开销（2026-08-23 时间账本：约 40-60s/次运行）。
+            // 仍只是可见性，不授权执行；未绑定 manifest 时业务技能保持按需目录不变。
+            ...(runtimeContractBundle?.manifest?.skill_id
+                ? [`skill.${runtimeContractBundle.manifest.skill_id}`]
+                : []),
             ...(
                 skillRoutingRecommendation && exposeSkillRoutingRecommendation
                     ? [skillRoutingRecommendation.capabilityId]
@@ -3084,19 +3402,28 @@ export function resolveAutonomousCapabilityRuntime(
     const capabilitySession = createAgentCapabilitySession({
         candidateTools,
         workflowBridgeNames: workflowBridgeTools.map((tool) => tool.name),
-        requestedTaskType: structuredTaskType,
+        // agentic 清单不参与工具面裁剪：requestedTaskType 也不传，避免 resolver 记一条
+        // 「结构化任务类型未注册」的误导性 issue（清单其实已解析，只是刻意不绑）。
+        requestedTaskType: agenticExecution ? undefined : structuredTaskType,
         manifest: runtimeContractBundle?.manifest,
         workMode: runtimeContractBundle?.stagePlan.expectedWorkMode,
         baselineCapabilityIds,
         // 声明了 canonical workflow owner 的业务 Skill 在 Manifest 绑定前一律不可按需激活。
         // 不能只封住“本轮恰好推荐的那一个”，否则模型可绕到另一个 legacy executor。
         manifestRequiredCapabilityIds,
+        // 领域原子工具默认随 Runtime owner 绑定，不在 broad discovery 中泄漏业务旁路。
+        // 用户明确禁用 Skill 时传空集合：裸 Agent 仍可按需装载同一批原子能力，
+        // 这条旁路用于真实能力验证，不把 Skill 变成完成业务任务的硬依赖。
+        manifestRequiredProviderToolNames: areSkillBridgesForbidden(params)
+            ? []
+            : getSkillInternalToolNames(),
         deniedCapabilityKinds: areSkillBridgesForbidden(params) ? ['skill'] : [],
         deniedProviderToolNames: Array.from(providerToolDenyPolicy.deniedProviderToolNames)
     });
 
     return {
         ...(runtimeContractBundle ? { runtimeContractBundle } : {}),
+        ...(agenticManifestBundle ? { agenticManifestBundle } : {}),
         capabilitySession,
         runtimeContractStatus
     };
@@ -3219,10 +3546,6 @@ function resolveAgentThinkingEnabled(modelId: string): boolean {
     } catch {
         return false;
     }
-}
-
-function resolveVisualExpertModelId(): string {
-    return resolveUserConfiguredPrimaryModel('visual');
 }
 
 function createRuntimeSessionNonce(): string {
@@ -3417,6 +3740,18 @@ function isSameRuntimeTaskRunGeneration(
 }
 
 /**
+ * 只有 staged Runtime Session 的 generation 才以 Runtime runId 作为运行档案主键。
+ * plan-neutral Reflexion 保留同一个可晚绑定的 TaskRun identity 来承接预算与权限边界，
+ * 运行档案则走既有 parentRunId 链生成独立记录，避免多轮写到同一 <runId>.json 相互覆盖。
+ */
+function resolveRuntimeRunRecordIdentity(
+    runtimeContractBundle: AgentTaskRuntimeContractBundle | undefined,
+    runtimeSessionIdentity: RuntimeSessionIdentity | undefined
+): RuntimeSessionIdentity | undefined {
+    return runtimeContractBundle ? runtimeSessionIdentity : undefined;
+}
+
+/**
  * Harness v1 · H1：把一轮自主运行持久化为 Run Record（<project>/.designecho/runs/）。
  * 同步组装（纯逻辑摘要化，无原始载荷）、异步落盘 fire-and-forget——记录失败只
  * console.warn 具体原因，绝不影响任务结果（boundaries.neverBlocksTaskResult）。
@@ -3501,6 +3836,24 @@ function deriveReflexionDisciplineSeed(result: unknown): Partial<DesignDisciplin
     }
 }
 
+/**
+ * 开工时念给模型的「同项目近期几稿」摘要（recent-designs.json 指纹）：让它知道自己上几稿做了什么，
+ * 别每次都交同版面签名、同色系、同标题的稿。读不到 / 没有项目 → 空串，不影响开工。
+ */
+async function readRecentDesignsOpeningContext(projectPath?: string): Promise<string> {
+    const path = String(projectPath || '').trim();
+    if (!path) return '';
+    try {
+        const read = await (window as any).designEcho?.invoke?.('designWorkshop:readRecentDesigns', { projectPath: path });
+        const items = read?.success && Array.isArray(read.ledger?.items) ? read.ledger.items : [];
+        if (items.length === 0) return '';
+        const { summarizeRecentDesignsForModel } = await import('../../../shared/design-workshop/recent-designs');
+        return summarizeRecentDesignsForModel(items, 3);
+    } catch {
+        return '';
+    }
+}
+
 export const autonomousAgentExecutor: SkillExecutor = {
     skillId: 'autonomous-agent',
 
@@ -3538,13 +3891,19 @@ export const autonomousAgentExecutor: SkillExecutor = {
         const userDocumentOverrides = extractUserExplicitDocumentOverrides(userTask);
         const capabilityRuntime = resolveAutonomousCapabilityRuntime(runtimeParams, context);
         let runtimeContractBundle = capabilityRuntime.runtimeContractBundle;
+        // agentic 清单（开放创意路径）：只作知识 / 预算 / 任务类型来源，全程不建 Stage 机。
+        // 循环内模型再声明 agentic 任务类型时也只更新这里，不会切回 staged。
+        let agenticManifestBundle = capabilityRuntime.agenticManifestBundle;
+        const resolveKnowledgeBundle = (): AgentTaskRuntimeContractBundle | undefined => (
+            runtimeContractBundle || agenticManifestBundle
+        );
         const capabilitySession = capabilityRuntime.capabilitySession;
         let runtimeContractStatus = capabilityRuntime.runtimeContractStatus;
 
         // R0 已解析 Manifest 时，task_type 直接来自 Manifest 单一真相源，供通用设计纪律
         // 与场景预算消费；不再要求模型额外调用 declareDesignIntent 重复声明。
-        if (!runtimeParams.declaredTaskType && runtimeContractBundle?.manifest.task_type) {
-            runtimeParams.declaredTaskType = runtimeContractBundle.manifest.task_type;
+        if (!runtimeParams.declaredTaskType && resolveKnowledgeBundle()?.manifest.task_type) {
+            runtimeParams.declaredTaskType = resolveKnowledgeBundle()?.manifest.task_type;
         }
         if (!runtimeParams.declaredWorkMode && runtimeContractBundle?.stagePlan.expectedWorkMode) {
             runtimeParams.declaredWorkMode = runtimeContractBundle.stagePlan.expectedWorkMode;
@@ -3583,6 +3942,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
         let runtimeSessionIdentity: RuntimeSessionIdentity | undefined;
         let runtimeSessionSeed: RuntimeSession | undefined;
         let runtimePlanningContextSeed: RuntimePlanningContextSeed | undefined;
+        let requestPerformanceUsageSeed: RuntimePerformanceUsage | undefined;
         let incomingReflexionHandoff: ReflexionHandoff | undefined;
 
         const requestWebSearchIntent = runtimeParams.providerNativeWebSearchIntent as ChatWebSearchIntent | undefined;
@@ -3601,19 +3961,19 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 selectedModelId: modelId,
                 candidateModelIds: [modelId]
             };
-        const visualExpertModelId = resolveVisualExpertModelId();
-        runtimeParams.canObserveAttachedImages = Boolean(
-            findConfiguredModelInRendererState(modelId)?.supportsVision
-            || findConfiguredModelInRendererState(visualExpertModelId)?.supportsVision
+        runtimeParams.canObserveAttachedImages = isAgentMultimodalModelConfig(
+            findConfiguredModelInRendererState(modelId) || undefined
         );
         const designDisciplineContext = resolveAutonomousDesignDisciplineContext(runtimeParams, context);
         const designDisciplineActive = designDisciplineContext.active;
         let effectiveDesignDisciplineContext = designDisciplineContext;
+        // 预算画像跟着清单走：agentic 清单同样贡献 performance_profile（详情页 30/140/70），
+        // 否则会退回未绑定默认档，被真机证明会在干活中途被杀（run 469：14 轮 6 写入后预算耗尽）。
         let autonomousPerformancePolicy = resolveAutonomousPerformancePolicy(
             runtimeParams,
             context,
             designDisciplineContext,
-            runtimeContractBundle
+            resolveKnowledgeBundle()
         );
         const runtimeBudget = buildAutonomousAgentRuntimeBudget({
             requestedMaxIterations: runtimeParams.maxIterations,
@@ -3751,6 +4111,68 @@ export const autonomousAgentExecutor: SkillExecutor = {
         const getDesignStateSnapshotStatus = (): RuntimeContextSnapshotStatus => (
             designStateSnapshotStatus
         );
+        // 运行事实账本：一代结束就把工具日志里的事实（看过 / 用过的素材、图上卖点线索、Agent 版面签名、
+        // 新建画布、导出文件、版本）记进项目记忆。Harness 记事实，模型记判断；写入失败只记日志，
+        // 绝不影响任务结果，也不作为任何门禁依据。
+        const recordRunFactsToProjectStateSafely = async (input: {
+            toolCallLog?: AgentToolCallLogEntry[];
+            executionSummary?: AgentExecutionSummary;
+        }): Promise<void> => {
+            if (!stateProjectPath) return;
+            const log = Array.isArray(input.toolCallLog) ? input.toolCallLog : [];
+            const declaredDeliverables = agentTaskPlan?.designBrief.userDeclaredDeliverables || [];
+            const completionRequirements = input.executionSummary?.taskCompletion?.required || [];
+            const userDeclaredDeliverableProgress = declaredDeliverables.map((deliverable) => {
+                const requirement = completionRequirements.find((item) => (
+                    item.id === `user-deliverable:${deliverable.id}`
+                ));
+                const actual = requirement?.actual
+                    && typeof requirement.actual === 'object'
+                    && !Array.isArray(requirement.actual)
+                    ? requirement.actual as Record<string, unknown>
+                    : undefined;
+                const status = requirement?.status === 'passed'
+                    || requirement?.status === 'needs_review'
+                    || requirement?.status === 'failed'
+                    ? requirement.status
+                    : 'failed';
+                return {
+                    deliverableId: deliverable.id,
+                    label: deliverable.label,
+                    status,
+                    ...(typeof actual?.reference === 'string'
+                        ? { evidenceReference: actual.reference }
+                        : {}),
+                    ...(requirement?.reason
+                        ? { reason: requirement.reason }
+                        : (!requirement
+                            ? { reason: '本轮没有生成该交付物的完成收据。' }
+                            : {}))
+                };
+            });
+            if (log.length === 0 && userDeclaredDeliverableProgress.length === 0) return;
+            const designEchoApi = (window as any).designEcho;
+            if (typeof designEchoApi?.getDesignState !== 'function' || typeof designEchoApi?.updateDesignState !== 'function') return;
+            try {
+                const { buildDesignRunFactLedgerPatch } = await import('../../../shared/design-run-fact-ledger');
+                const stateResp = await designEchoApi.getDesignState(stateProjectPath);
+                const outcome = buildDesignRunFactLedgerPatch({
+                    toolCallLog: log,
+                    currentState: stateResp?.success ? stateResp.state : undefined,
+                    goal: userTask,
+                    userDeclaredDeliverableProgress
+                });
+                if (!outcome.patch) return;
+                const writeResp = await designEchoApi.updateDesignState(stateProjectPath, outcome.patch);
+                if (writeResp?.success !== true) {
+                    console.warn('[RunLedger] 项目记忆事实写入未成功：', writeResp?.error || '未知原因');
+                    return;
+                }
+                console.info('[RunLedger] 已记入项目记忆：', outcome.recorded);
+            } catch (error: any) {
+                console.warn(`[RunLedger] 项目记忆事实写入失败（不影响任务结果）：${error?.message || error}`);
+            }
+        };
         const getFreshDesignProjectStateForRecord = (): unknown => (
             getDesignStateSnapshotStatus() === 'fresh'
                 ? designProjectStateForFreshness
@@ -3794,47 +4216,25 @@ export const autonomousAgentExecutor: SkillExecutor = {
         const baseSystemPrompt = buildBaseSystemPrompt(runtimeParams, context);
         const baseCapabilityPolicyPrompt = buildBaseCapabilityPolicyPrompt(runtimeParams, context);
         const designerAgentDecisionInput = buildDesignerAgentDecisionInput(runtimeParams, context);
-        const designerAgentDecisionContract = shouldUseDesignerAgentDecisionLayer(runtimeParams, context)
+        // 结构化设计判断只是上游已经存在时的可用上下文，不是自主 Agent 开工前必须
+        // 补齐的表单。没有这份数据时，模型直接根据用户目标和真实上下文判断。
+        const designerAgentDecisionContract = designerAgentDecisionInput.agentDecision
             ? buildDesignerAgentDecisionContract(designerAgentDecisionInput)
             : null;
-        const designerAgentTeamConsultationInput = designerAgentDecisionContract
-            ? buildDesignerAgentTeamConsultationInput(runtimeParams, context, designerAgentDecisionContract.status)
+        // 专业团队是 Agent 可选能力；只有结构化 owner 显式要求时才预编译团队协作契约。
+        // 普通设计任务不因品类、表单缺项或视觉缓存缺失而被 Harness 自动安排队友。
+        const designerAgentTeamConsultationInput = runtimeParams.requiresDesignTeamConsultation === true
+            ? buildDesignerAgentTeamConsultationInput(
+                runtimeParams,
+                context,
+                designerAgentDecisionContract?.status
+            )
             : null;
         const designerAgentTeamConsultationContract = designerAgentTeamConsultationInput
             ? buildDesignerAgentTeamConsultationContract(designerAgentTeamConsultationInput)
             : null;
-        if (designerAgentDecisionContract) {
-            agentCallbacks.onStep?.({
-                kind: 'observation',
-                title: '设计判断准备',
-                detail: [
-                    designerAgentDecisionContract.publicDesignIntent,
-                    designerAgentDecisionContract.decisionOptions.length
-                        ? `可选路径：${designerAgentDecisionContract.decisionOptions.slice(0, 4).map((item) => item.label).join('、')}`
-                        : '',
-                    ...designerAgentDecisionContract.blockers.slice(0, 2)
-                ].filter(Boolean).join('\n'),
-                status: designerAgentDecisionContract.status === 'ready' ? 'success' : 'running',
-                percent: 4
-            });
-        }
-        if (
-            designerAgentTeamConsultationContract
-            && designerAgentTeamConsultationContract.status !== 'not_required'
-        ) {
-            agentCallbacks.onStep?.({
-                kind: 'observation',
-                title: '专业团队准备',
-                detail: [
-                    designerAgentTeamConsultationContract.publicTeamIntent,
-                    `角色：${designerAgentTeamConsultationContract.rolePlan.map((item) => item.role).join('、')}`
-                ].filter(Boolean).join('\n'),
-                status: designerAgentTeamConsultationContract.status === 'required' ? 'running' : 'success',
-                percent: 6
-            });
-        }
         const designerAgentPromptSection = designerAgentDecisionContract
-            ? buildDesignerAgentPromptSection(designerAgentDecisionInput)
+            ? designerAgentDecisionContract.promptSection
             : '';
         const designerAgentTeamPromptSection = designerAgentTeamConsultationContract
             && designerAgentTeamConsultationContract.status !== 'not_required'
@@ -3939,18 +4339,19 @@ export const autonomousAgentExecutor: SkillExecutor = {
             }
         }
 
-        const designMethodKnowledge = runtimeContractBundle
+        const startupKnowledgeBundle = resolveKnowledgeBundle();
+        const designMethodKnowledge = startupKnowledgeBundle
             ? buildDesignMethodKnowledgeRuntimeContext({
-                knowledgeRefs: runtimeContractBundle.manifest.knowledge_refs || [],
-                manifestSkillId: runtimeContractBundle.manifest.skill_id
+                knowledgeRefs: startupKnowledgeBundle.manifest.knowledge_refs || [],
+                manifestSkillId: startupKnowledgeBundle.manifest.skill_id
             })
             : undefined;
         if (designMethodKnowledge && designMethodKnowledge.issues.length > 0) {
             throw new Error(`runtime_design_method_knowledge_invalid:${designMethodKnowledge.issues.join(',')}`);
         }
 
-        const knowledgeTaskType = runtimeContractBundle?.artifactManifest?.task_type
-            || runtimeContractBundle?.manifest.task_type
+        const knowledgeTaskType = startupKnowledgeBundle?.artifactManifest?.task_type
+            || startupKnowledgeBundle?.manifest.task_type
             || designDisciplineContext.taskTypeId;
         const requestedArtifactId = runtimeParams.artifactKind
             || runtimeParams.artifact_kind
@@ -3965,7 +4366,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
         let taskContextItem: RuntimeContextItem | null = null;
         let taskContextAuditEvents: Array<{ type: string; taskId: string; resourceId: string; reason: string; pinned: boolean }> = [];
         let taskContextInteractiveCard: unknown = null;
-        const shouldBuildAutomaticTaskContext = Boolean(runtimeContractBundle)
+        const shouldBuildAutomaticTaskContext = Boolean(runtimeContractBundle || agenticManifestBundle)
             && (designMethodKnowledge?.items.length || 0) === 0;
         if (shouldBuildAutomaticTaskContext) {
             try {
@@ -4023,42 +4424,57 @@ export const autonomousAgentExecutor: SkillExecutor = {
             // DI-010：审计事件沉淀为结构化诊断日志（供未来 Context Inspector / 指标分析消费）。
             console.info(`[ContextAudit] taskId=${String(runtimeParams.taskRunId || runtimeParams.runId || 'task')} events=${taskContextAuditEvents.length}`, taskContextAuditEvents);
         }
-        const buildPlanNeutralRuntimeContextItems = (): RuntimeContextItem[] => [];
-        let runtimeStageContextItems: RuntimeContextItem[] = runtimeContractBundle
-            ? [
+        // 知识注入对 staged / agentic 一视同仁；区别只在 agentic 没有 Stage，知识从第一轮全部可见。
+        // Plan-neutral 知识必须由同一重建入口取得，不能静态塞进 contextItems；这样模型声明
+        // 精确 Profile 或项目事实刷新后，旧的通用知识可以被可靠替换，而不是与新上下文叠加。
+        const buildPlanNeutralRuntimeContextItems = (disciplineActive: boolean): RuntimeContextItem[] => [
+            ...generationDataContextItems,
+            ...buildPlanNeutralDesignKnowledgeRuntimeItems({
+                designDisciplineActive: disciplineActive
+            })
+        ];
+        const buildKnowledgeRuntimeContextItems = (input: {
+            disciplineActive: boolean;
+            methodKnowledge?: ReturnType<typeof buildDesignMethodKnowledgeRuntimeContext>;
+        }): RuntimeContextItem[] => {
+            const knowledgeBundle = resolveKnowledgeBundle();
+            if (!knowledgeBundle) {
+                return buildPlanNeutralRuntimeContextItems(input.disciplineActive);
+            }
+            return [
                 ...generationDataContextItems,
                 ...buildRuntimeStageContextItemsForBundle({
-                    runtimeContractBundle,
-                    designDisciplineActive,
+                    runtimeContractBundle: knowledgeBundle,
+                    designDisciplineActive: input.disciplineActive,
                     requestedArtifactId,
                     taskContextItem,
-                    ...(designMethodKnowledge ? { designMethodKnowledge } : {})
+                    ...(input.methodKnowledge ? { designMethodKnowledge: input.methodKnowledge } : {}),
+                    stageAgnostic: !runtimeContractBundle
                 })
-            ]
-            : buildPlanNeutralRuntimeContextItems();
+            ];
+        };
+        let runtimeStageContextItems: RuntimeContextItem[] = buildKnowledgeRuntimeContextItems({
+            disciplineActive: designDisciplineActive,
+            methodKnowledge: designMethodKnowledge
+        });
         const rebuildGenerationRuntimeContextItems = (): void => {
             const currentDisciplineContext = resolveAutonomousDesignDisciplineContext(
                 runtimeParams,
                 context
             );
-            runtimeStageContextItems = runtimeContractBundle
-                ? [
-                    ...generationDataContextItems,
-                    ...buildRuntimeStageContextItemsForBundle({
-                        runtimeContractBundle,
-                        designDisciplineActive: currentDisciplineContext.active,
-                        requestedArtifactId,
-                        taskContextItem
-                    })
-                ]
-                : buildPlanNeutralRuntimeContextItems();
+            runtimeStageContextItems = buildKnowledgeRuntimeContextItems({
+                disciplineActive: currentDisciplineContext.active
+            });
         };
         // 历史预算跟着主模型的真实窗口走：8k 窗口的本地模型给 2.4k 字符保证跑得起来，
         // 1M 窗口的旗舰给到 20k 字符，别让 Agent 在有 1M 空间时只记得住 6.4k 字符。
         // 窗口未知时落回原来的默认档，不因为"不知道"就改变既有行为。
-        const conversationHistoryBudget = buildConversationHistoryBudget(
-            resolveModelContextWindow(modelId)?.tokens
-        );
+        const modelContextWindow = resolveModelContextWindow(modelId)?.tokens;
+        const contextCapacityPlan = buildAgentContextCapacityPlan({
+            windowTokens: modelContextWindow,
+            requestedOutputTokens: autonomousPerformancePolicy?.budget.maxPrimaryOutputTokens
+        });
+        const conversationHistoryBudget = contextCapacityPlan.history;
         const conversationHistoryRuntimeItem = buildAgentConversationHistoryRuntimeItem({
             selection: selectAgentConversationContext({
                 messages: context?.conversationHistory || [],
@@ -4071,6 +4487,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
             id: 'runtime.conversation-history',
             priority: 75
         });
+        const recentDesignsContext = await readRecentDesignsOpeningContext(runRecordProjectPath);
 
         const contextItems = ([
             {
@@ -4178,6 +4595,16 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 freshness: 'current'
             },
             {
+                id: 'project.recent-design-fingerprints',
+                kind: 'project_state',
+                source: 'recent-design-fingerprints',
+                trust: 'governed_project',
+                slot: 'project_context',
+                content: recentDesignsContext,
+                priority: 45,
+                freshness: 'advisory'
+            },
+            {
                 id: 'runtime.resume-advice',
                 kind: 'runtime_summary',
                 source: 'agent-run-record',
@@ -4188,7 +4615,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 freshness: 'advisory'
             }
         ] as RuntimeContextItem[]).filter((item) => Boolean(item.content));
-        const compiledRuntimeContext = compileRuntimeContext({ items: contextItems });
+        const compiledRuntimeContext = compileRuntimeContext({
+            items: contextItems,
+            maxTotalCharacters: contextCapacityPlan.runtimeContextCharacterCeiling
+        });
         const criticalContextIds = new Set([
             'system.base',
             'policy.model-dispatch',
@@ -4320,6 +4750,31 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     code: 'runtime_manifest_switch_forbidden',
                     error: '本轮 Runtime 已绑定其他设计任务类型，不能在同一 TaskRun 中切换。'
                 };
+            }
+            // 设计路径宪法：模型在循环内声明的是 agentic 任务类型时，只登记任务类型并把该清单的
+            // 方法知识加进上下文；不建 Stage 机、不切工具面、不改写入权限——声明是笔记，不是门票。
+            if (isAgenticExecutionModel(declarationResolution.bundle.manifest)) {
+                const agenticCandidate = declarationResolution.bundle;
+                agenticManifestBundle = agenticCandidate;
+                runtimeParams.declaredTaskType = normalizedTaskTypeId;
+                if (agenticCandidate.stagePlan.expectedWorkMode) {
+                    runtimeParams.declaredWorkMode = agenticCandidate.stagePlan.expectedWorkMode;
+                }
+                const agenticDisciplineContext = resolveAutonomousDesignDisciplineContext(
+                    runtimeParams,
+                    context
+                );
+                await refreshGenerationDataContext(agenticDisciplineContext.active);
+                rebuildGenerationRuntimeContextItems();
+                activeAutonomousAgent?.replaceRuntimeStageContextItems(runtimeStageContextItems);
+                runtimeContractStatus = buildRuntimeContractStatus({
+                    selectedTaskType: normalizedTaskTypeId,
+                    manifestSkillId: agenticCandidate.manifest.skill_id,
+                    selectionSource: 'explicit_runtime_declaration',
+                    selectionExpected: true
+                });
+                // 不再播报「这次怎么做：自己动手排…」（用户 08-18：要看 Agent 真实的思考，不要定死的一句）
+                return { success: true };
             }
             const currentAgent = activeAutonomousAgent;
             const currentIdentity = runtimeSessionIdentity;
@@ -4466,18 +4921,20 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 );
             }
             agentCallbacks.onStep?.({
-                kind: 'verification',
-                title: '设计流程已启动',
-                detail: `已进入「${candidateBundle.stagePlan.displayName || candidateBundle.stagePlan.skillId}」的设计阶段。`,
+                kind: 'observation',
+                title: '按你的固定流程',
+                detail: `「${candidateBundle.stagePlan.displayName || candidateBundle.stagePlan.skillId}」——中途需要你拍板的地方会弹卡片确认。`,
                 status: 'success',
                 maxIterations: candidateMaxIterations,
                 source: 'skill_executor',
-                audience: 'agent'
+                audience: 'user',
+                visibility: 'user_process'
             });
             return { success: true };
         };
         const runtimeWriteToolAllowlist = normalizeRuntimeWriteToolAllowlist(runtimeParams);
         const runtimeExactPropertyScope = readRuntimeExactPropertyScope(runtimeParams);
+        const agentTaskCardScope = resolveTaskCardScope(context, runtimeParams);
         const createAutonomousAgent = () => new Agent(
             {
                 systemPrompt: compiledRuntimeContext.prompt,
@@ -4490,17 +4947,16 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 // Runtime Context Compiler 注入；带 applicableStages 的知识仍只在真实 Stage 可见。
                 runtimeStageContextItems,
                 modelId,
-                visualExpertModelId,
+                ...(modelContextWindow ? { contextWindowTokens: modelContextWindow } : {}),
                 thinkingEnabled: resolveAgentThinkingEnabled(modelId),
                 maxIterations,
                 ...(Array.isArray(runtimeParams.initialUserContentParts)
                     ? { initialUserContentParts: runtimeParams.initialUserContentParts }
                     : {}),
-                // 自然语言先交给主 Agent 理解，只预取廉价文档身份；结构化 Runtime 已有
-                // Manifest/Stage owner，维持开场画布观察，避免让模型重复发现显式前置输入。
-                openingCanvasObservationMode: runtimeContractBundle
-                    ? 'canvas_visual'
-                    : 'document_identity',
+                // 通用 Agent 首轮不由 Harness 代选 Photoshop 观察。getDocumentInfo 已在基线能力里，
+                // 模型确认任务确实依赖 Photoshop 后可立即调用。真机 2026-08-21 的「你好啊」与
+                // 「审查系统」都被旧逻辑强制读取文档，既增加延迟，也把非设计任务错误锚定到画布。
+                openingCanvasObservationMode: 'none',
                 ...(autonomousPerformancePolicy ? {
                     performanceBudget: {
                         maxModelCalls: autonomousPerformancePolicy.budget.maxModelCalls,
@@ -4519,8 +4975,16 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 } : {}),
                 signal,
                 ...(agentTaskPlan ? { agentTaskPlan } : {}),
+                ...(agentTaskCardScope
+                    ? { taskCardScope: agentTaskCardScope }
+                    : {}),
                 // plan-neutral 身份也必须交给当前 Agent；循环内声明会在同一 runId/generation 上绑定。
                 ...(runtimeSessionIdentity ? { runtimeSessionIdentity } : {}),
+                // 没有 staged Session 的 Reflexion 仍沿用上一 Agent 的同一请求性能账本。
+                // 这是只会收紧剩余额度的内部投影，不携带 Tool 权限、质量结论或完成状态。
+                ...(!runtimeContractBundle && requestPerformanceUsageSeed
+                    ? { requestPerformanceUsageSeed }
+                    : {}),
                 ...(runtimeContractBundle ? {
                     runtimeLoopContract: runtimeContractBundle.runtimeLoopContract,
                     runtimeStagePlan: runtimeContractBundle.stagePlan,
@@ -4623,10 +5087,29 @@ export const autonomousAgentExecutor: SkillExecutor = {
 
         let lastRunRecordId: string | undefined;
         let accumulatedSuccessfulMutationCalls = 0;
+        // 2026-08-18 用户：不要开场就定死一句「这次怎么做：自己动手排…」——要看的是 Agent 真实的思考。
+        // 模式播报只在「走用户自己的固定流程（staged Skill）」时保留一句（用户要知道是自己的流程在跑），
+        // 其余情况不再播报，让任务卡与模型的判断原话说话。
+        {
+            const stagedName = runtimeContractBundle?.stagePlan.displayName
+                || runtimeContractBundle?.stagePlan.skillId;
+            if (stagedName) {
+                agentCallbacks.onStep?.({
+                    kind: 'observation',
+                    title: '按你的固定流程',
+                    detail: `「${stagedName}」——中途需要你拍板的地方会弹卡片确认。`,
+                    status: 'success',
+                    source: 'skill_executor',
+                    audience: 'user',
+                    visibility: 'user_process'
+                });
+            }
+        }
         try {
             activeAutonomousAgent = createAutonomousAgent();
             let result = await activeAutonomousAgent.run(userTask, runtimeParams.images);
             accumulatedSuccessfulMutationCalls = countSuccessfulMutationCalls(result);
+            await recordRunFactsToProjectStateSafely(result);
             await refreshGenerationDataContext(
                 resolveAutonomousDesignDisciplineContext(runtimeParams, context).active
             );
@@ -4650,9 +5133,13 @@ export const autonomousAgentExecutor: SkillExecutor = {
             // 已完成事实交付后的纯审美 improvement 只允许一次；第二次 Judge 只负责验证/告警，
             // 不参与“分数上涨可扩到三轮”的普通质量返工放宽。
             let completedAestheticImprovementReentryUsed = false;
-            // legacy 无 Runtime Session 时保留旧 parentRunId 链；生产 Session 的 lineage 由 identity 拥有。
+            // plan-neutral / legacy 无 staged Runtime Session 时，运行档案沿用 parentRunId 链；
+            // staged Session 的 lineage 由其逐代 identity 拥有。
             while (!result.cancelled) {
                 if (signal?.aborted) break;
+                // 运行异常不是审美质量返工。不得把 Provider / Runtime 中断误包装成
+                // “自动调整没有改善”，也不得据此创建下一代 Agent 重跑同一上下文。
+                if (result.stopReason === 'error') break;
                 // 停在用户确认点（交互卡片待确认）不是质量门禁失败，不能自动重跑——必须等用户确认。
                 const awaitingUserConfirmation = result.stopReason === 'awaiting_user_confirmation'
                     || (result.data as Record<string, unknown> | undefined)?.awaitingUserConfirmation === true;
@@ -4662,6 +5149,41 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 if (latestScorecard) designScorecardHistory.push(latestScorecard);
                 const reflexionHandoff = ((result.data as Record<string, unknown> | undefined)?.reflexionHandoff
                     || result.executionSummary?.reflexionHandoff) as ReflexionHandoff | undefined;
+                const isCompletedAestheticImprovement = isCompletedAestheticImprovementHandoff({
+                    handoff: reflexionHandoff,
+                    stopReason: result.stopReason,
+                    alreadyReentered: completedAestheticImprovementReentryUsed
+                });
+                if (isCompletedAestheticImprovement) {
+                    const provenance = evaluateReflexionReviewProvenance({
+                        handoff: reflexionHandoff,
+                        artifact: readTrustedVisualReviewArtifact(result)
+                    });
+                    if (!provenance.valid) {
+                        qualityHaltNotice = `当前完成态审美反馈缺少与真实 ReviewSet 一致的版本来源（${provenance.status}），已停止自动返工。`;
+                        qualityHaltUserNotice = '当前版本已保留。刚才的画面反馈无法和当前版本可靠对应，因此没有继续自动修改。';
+                        result = {
+                            ...result,
+                            data: {
+                                ...(result.data || {}),
+                                reflexionReviewProvenance: {
+                                    status: provenance.status,
+                                    valid: false
+                                }
+                            }
+                        };
+                        agentCallbacks.onStep?.({
+                            kind: 'observation',
+                            title: '当前版本已保留',
+                            detail: qualityHaltUserNotice,
+                            status: 'error',
+                            source: 'skill_executor',
+                            audience: 'user',
+                            visibility: 'user_process'
+                        });
+                        break;
+                    }
+                }
                 if (reflexionHandoff && !generationProjectStateRefreshAllowsReentry) {
                     qualityHaltNotice = '当前代已写入 Design Project State，但代际重读未拿到最新快照。为避免下一代根据旧任务状态重复修改 Photoshop，已停止自动返工并保留当前版本。';
                     qualityHaltUserNotice = '当前版本已保留。项目进度还没有及时刷新，为避免重复改动画面，我先停在这里，请先看看当前版本。';
@@ -4676,11 +5198,6 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     });
                     break;
                 }
-                const isCompletedAestheticImprovement = isCompletedAestheticImprovementHandoff({
-                    handoff: reflexionHandoff,
-                    stopReason: result.stopReason,
-                    alreadyReentered: completedAestheticImprovementReentryUsed
-                });
                 if (completedAestheticImprovementReentryUsed) break;
                 const reentryDecision = decideQualityAwareReflexionReentry({
                     handoff: reflexionHandoff,
@@ -4720,22 +5237,27 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     break;
                 }
 
-                // 自动 Reflexion 必须继承同一 Runtime Session 的请求级性能账本。
-                // plan-neutral / legacy 运行没有可承接的 ledger；若在这里新建 Agent，模型、Tool、
-                // 视觉和时间额度会全部归零，等价于悄悄为同一请求重新购买一轮预算。
+                // 自动 Reflexion 必须继承同一请求的性能账本。staged 运行由 Runtime Session
+                // 承接；plan-neutral 运行复用签发时就已存在的同一 TaskRun identity，并从当前
+                // Agent 的 canonical PerformanceLedger 取得只读累计投影。缺身份才停止，不能为
+                // 了返工新建第二 Runtime 或把模型的 VLM 建议变成新的写入授权。
                 if (!runtimeContractBundle) {
-                    qualityHaltNotice = '当前版本已保留，但本次运行没有可承接的请求级成本账本。为避免自动返工重复计费，已停止新建下一代 Agent；请先复核当前结果。';
-                    qualityHaltUserNotice = '当前版本已保留。自动调整无法安全接着进行，我先停在这里，避免重复修改；请先看看当前画面。';
-                    agentCallbacks.onStep?.({
-                        kind: 'observation',
-                        title: '当前版本已保留',
-                        detail: qualityHaltUserNotice,
-                        status: 'error',
-                        source: 'skill_executor',
-                        audience: 'user',
-                        visibility: 'user_process'
-                    });
-                    break;
+                    if (!runtimeSessionIdentity || !activeAutonomousAgent) {
+                        qualityHaltNotice = '当前版本已保留，但本次运行缺少可承接同一请求预算的 TaskRun 身份。为避免自动返工重复计费，已停止继续修改。';
+                        qualityHaltUserNotice = '这次处理已经有画面改动，但现在无法安全承接后续调整。我保留了当前版本。';
+                        agentCallbacks.onStep?.({
+                            kind: 'observation',
+                            title: '当前版本已保留',
+                            detail: qualityHaltUserNotice,
+                            status: 'error',
+                            source: 'skill_executor',
+                            audience: 'user',
+                            visibility: 'user_process'
+                        });
+                        break;
+                    }
+                    requestPerformanceUsageSeed = activeAutonomousAgent
+                        .readRequestPerformanceUsageSnapshot();
                 }
 
                 reflexionReentryCount = reentryDecision.reentryCount;
@@ -4759,10 +5281,19 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     visibility: 'user_process'
                 });
                 const reentryTask = String(userTask);
-                incomingReflexionHandoff = {
-                    ...reflexionHandoff,
-                    nextRoundConstraints: reentryDecision.injectedConstraints.slice(0, 12)
-                };
+                incomingReflexionHandoff = isCompletedAestheticImprovement
+                    ? {
+                        ...reflexionHandoff,
+                        // completed 路径由 issueConstraints 携带 revision-bound 观察；清空同一
+                        // finding 的二次投影，避免把 advisory feedback 叠成 Harness 指令。
+                        failureAnalysis: [],
+                        strategyAdjustments: [],
+                        nextRoundConstraints: []
+                    }
+                    : {
+                        ...reflexionHandoff,
+                        nextRoundConstraints: reentryDecision.injectedConstraints.slice(0, 12)
+                    };
                 // 标记本次是失败复盘后的自动重跑，供后续运行记录与策略读取。
                 runtimeParams.reflexionReentryInProgress = true;
                 // V0-4：把上一轮 run-record checkpoint 的确定性旗标（documentCreated/layoutRendered）
@@ -4781,6 +5312,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
                         : undefined;
                 }
                 // 被复盘取代的这一轮也要留档（失败轨迹是 Eval 的原料），并把 runId 链给下一轮
+                const runRecordRuntimeIdentity = resolveRuntimeRunRecordIdentity(
+                    runtimeContractBundle,
+                    runtimeSessionIdentity
+                );
                 lastRunRecordId = persistAgentRunRecordSafely({
                     result,
                     userTask: String(userTask),
@@ -4788,9 +5323,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     projectPath: runRecordProjectPath,
                     conversationScope: runRecordConversationScope,
                     projectState: getFreshDesignProjectStateForRecord(),
-                    parentRunId: runtimeSessionIdentity ? undefined : lastRunRecordId,
+                    parentRunId: runRecordRuntimeIdentity ? undefined : lastRunRecordId,
                     resumeFreshness: runResumeFreshness,
-                    runtimeSessionIdentity
+                    runtimeSessionIdentity: runRecordRuntimeIdentity
                 });
                 if (runtimeContractBundle) {
                     const previousSession = readRuntimeSessionFromAgentResult(result);
@@ -4850,6 +5385,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 activeAutonomousAgent = createAutonomousAgent();
                 result = await activeAutonomousAgent.run(reentryTask, runtimeParams.images);
                 accumulatedSuccessfulMutationCalls += countSuccessfulMutationCalls(result);
+                await recordRunFactsToProjectStateSafely(result);
                 await refreshGenerationDataContext(
                     resolveAutonomousDesignDisciplineContext(runtimeParams, context).active
                 );
@@ -4863,6 +5399,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
 
             if (result.cancelled) {
                 // 取消也留档：中断轨迹是 H2 续跑与 Eval 的原料
+                const runRecordRuntimeIdentity = resolveRuntimeRunRecordIdentity(
+                    runtimeContractBundle,
+                    runtimeSessionIdentity
+                );
                 persistAgentRunRecordSafely({
                     result,
                     userTask: String(userTask),
@@ -4870,9 +5410,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     projectPath: runRecordProjectPath,
                     conversationScope: runRecordConversationScope,
                     projectState: getFreshDesignProjectStateForRecord(),
-                    parentRunId: runtimeSessionIdentity ? undefined : lastRunRecordId,
+                    parentRunId: runRecordRuntimeIdentity ? undefined : lastRunRecordId,
                     resumeFreshness: runResumeFreshness,
-                    runtimeSessionIdentity
+                    runtimeSessionIdentity: runRecordRuntimeIdentity
                 });
                 return buildCancelledAutonomousAgentResult(result);
             }
@@ -4906,6 +5446,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 };
             }
 
+            const finalRunRecordRuntimeIdentity = resolveRuntimeRunRecordIdentity(
+                runtimeContractBundle,
+                runtimeSessionIdentity
+            );
             const finalRunRecordId = persistAgentRunRecordSafely({
                 result,
                 userTask: String(userTask),
@@ -4913,9 +5457,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 projectPath: runRecordProjectPath,
                 conversationScope: runRecordConversationScope,
                 projectState: getFreshDesignProjectStateForRecord(),
-                parentRunId: runtimeSessionIdentity ? undefined : lastRunRecordId,
+                parentRunId: finalRunRecordRuntimeIdentity ? undefined : lastRunRecordId,
                 resumeFreshness: runResumeFreshness,
-                runtimeSessionIdentity
+                runtimeSessionIdentity: finalRunRecordRuntimeIdentity
             });
 
             const designRunRecord = effectiveDesignDisciplineContext.active
@@ -4964,6 +5508,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                             pendingInteractiveContinuation: (result as any).data.pendingInteractiveContinuation
                         } : {})
                     } : {}),
+                    ...((result as any).data?.userChoiceRequest?.version === 'user-choice-request/v2' ? {
+                        userChoiceRequest: (result as any).data.userChoiceRequest
+                    } : {}),
                     // DI-009：任务知识上下文只读展示卡片（不进入确认态，仅展示）。
                     ...(taskContextInteractiveCard ? {
                         interactiveCards: [
@@ -4995,9 +5542,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     ...(finalRunRecordId ? {
                         runRecordRef: {
                             runId: finalRunRecordId,
-                            ...(runtimeSessionIdentity ? {
-                                sessionId: runtimeSessionIdentity.sessionId,
-                                generation: runtimeSessionIdentity.generation
+                            ...(finalRunRecordRuntimeIdentity ? {
+                                sessionId: finalRunRecordRuntimeIdentity.sessionId,
+                                generation: finalRunRecordRuntimeIdentity.generation
                             } : {})
                         }
                     } : {})
@@ -5007,6 +5554,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
             console.error('[AutonomousAgent] runtime failure:', error);
             // Provider 中断也可能发生在已完成 Project State / Photoshop 写入之后。
             // 失败记录与正常代使用同一代际刷新；loader 自身保留 last-good 且不覆盖原始异常。
+            await recordRunFactsToProjectStateSafely({ toolCallLog: runtimeActivity.completedToolCalls });
             await refreshGenerationDataContext(
                 resolveAutonomousDesignDisciplineContext(runtimeParams, context).active
             );
@@ -5014,7 +5562,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 toolCallLog: runtimeActivity.completedToolCalls
             });
             const rawFailure = String(error?.message || 'unknown_runtime_failure');
-            if (error instanceof AutonomousAgentModelCallError) {
+            if (error instanceof ModelProviderCallError) {
                 const modelConfig = findConfiguredModelInRendererState(error.modelId);
                 const modelLabel = modelConfig?.name || error.modelId;
                 const toolCallsStarted = runtimeActivity.startedToolNames.length > 0;
@@ -5030,24 +5578,27 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 if (failedBeforeFirstToolCall && priorGenerationSuccessfulMutationCalls === 0) {
                     activityMessage = '设计助手还没开始处理文件，这次没有修改 Photoshop 文档。';
                 } else if (failedBeforeFirstToolCall) {
-                    activityMessage = '设计助手在继续调整前停下了，之前的画面或文件改动已经保留。请先检查当前文档，避免整项重做。';
+                    activityMessage = '设计助手在继续调整前停下了，之前的画面或文件改动已经保留；下次继续时会先读取当前文档，再从已有结果接着做。';
                 } else if (successfulMutationCalls > 0) {
-                    activityMessage = '设计助手在任务中途停下了，已经完成的画面或文件改动已保留。请先检查当前文档，避免整项重做。';
+                    activityMessage = '设计助手在任务中途停下了，已经完成的画面或文件改动已保留；下次继续时会先读取当前文档，避免整项重做。';
                 } else if (toolCallsStarted && priorGenerationSuccessfulMutationCalls > 0) {
-                    activityMessage = '设计助手在处理途中停下了，当前结果还不完整；之前的画面或文件改动已保留。请先检查当前文档。';
+                    activityMessage = '设计助手在处理途中停下了，当前结果还不完整；之前的改动已保留，下次会先读取当前文档再继续。';
                 } else if (toolCallsStarted) {
-                    activityMessage = '设计助手在处理途中停下了，当前结果还不完整。请先检查当前文档。';
+                    activityMessage = '设计助手在处理途中停下了，当前结果还不完整；下次会自行读取当前文档后再继续。';
                 } else if (priorGenerationSuccessfulMutationCalls > 0) {
-                    activityMessage = '这次还没开始新的处理，之前的画面或文件改动已经保留。请先检查当前文档。';
+                    activityMessage = '这次还没开始新的处理，之前的画面或文件改动已经保留；下次会从当前文档状态接着做。';
                 } else {
                     activityMessage = '设计助手在开始处理文件前停下了。';
                 }
-                const safeMessage = [
-                    buildConversationalUnavailableMessage({
+                const availabilityMessage = isHarnessManagedSubscriptionTimeout(error)
+                    ? '这次处理等待时间过长，DesignEcho 已停止继续等待；这不代表模型能力不足。'
+                    : buildConversationalUnavailableMessage({
                         audience: 'general',
                         kind: error.providerFailure.kind,
                         failedModelLabel: modelLabel
-                    }),
+                    });
+                const safeMessage = [
+                    availabilityMessage,
                     activityMessage
                 ].join('');
                 const runtimeFailureCode = `model_provider_${error.providerFailure.kind}`;
@@ -5089,6 +5640,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
                         : [],
                     summaryText: safeMessage
                 };
+                const failedRunRecordRuntimeIdentity = resolveRuntimeRunRecordIdentity(
+                    runtimeContractBundle,
+                    runtimeSessionIdentity
+                );
                 const failedRunRecordId = persistAgentRunRecordSafely({
                     result: {
                         success: false,
@@ -5124,9 +5679,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     projectPath: runRecordProjectPath,
                     conversationScope: runRecordConversationScope,
                     projectState: getFreshDesignProjectStateForRecord(),
-                    parentRunId: runtimeSessionIdentity ? undefined : lastRunRecordId,
+                    parentRunId: failedRunRecordRuntimeIdentity ? undefined : lastRunRecordId,
                     resumeFreshness: runResumeFreshness,
-                    runtimeSessionIdentity
+                    runtimeSessionIdentity: failedRunRecordRuntimeIdentity
                 });
                 return {
                     success: false,
@@ -5181,7 +5736,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     }
                 };
             }
-            const safeMessage = '处理过程中出现运行异常，当前结果不能确认完成。为避免继续改动画面，已停止执行，请先检查当前文档。';
+            const safeMessage = '处理过程中出现运行异常，当前结果不能确认完成。为避免继续改动画面，已停止执行；下次继续时会先读取当前文档状态。';
             return {
                 success: false,
                 message: safeMessage,

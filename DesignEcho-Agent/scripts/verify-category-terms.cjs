@@ -130,6 +130,8 @@ function resolveMigrationBaselineRevision() {
         'git',
         [
             'log',
+            '--all',
+            '--reverse',
             '--diff-filter=A',
             '--format=%H',
             '--',
@@ -137,23 +139,28 @@ function resolveMigrationBaselineRevision() {
         ],
         { cwd: REPO_ROOT, encoding: 'utf8', windowsHide: true }
     );
-    const introductionCommit = String(introductionResult.stdout || '')
+    const introductionCommits = String(introductionResult.stdout || '')
         .split(/\r?\n/)
         .map((value) => value.trim())
-        .find(Boolean);
-    if (introductionResult.status !== 0 || !introductionCommit) {
+        .filter(Boolean);
+    if (introductionResult.status !== 0 || introductionCommits.length === 0) {
         throw new Error('无法定位 design-category-terms.ts 的首次引入提交。');
     }
 
-    const parentResult = spawnSync('git', ['rev-parse', `${introductionCommit}^`], {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-        windowsHide: true
-    });
-    if (parentResult.status !== 0) {
-        throw new Error('词条库首次引入提交没有可用父提交，无法确定迁移前基线。');
+    // 当前工作分支可能来自已包含词条库的孤立根快照。此时根提交本身没有迁移前父提交，
+    // 但仓库其他保留 ref 仍包含真实引入历史。按时间正序选择首个有父提交的引入点，
+    // 继续与迁移前消费者逐词对照；不能退回拿当前代码给当前代码作证。
+    for (const introductionCommit of introductionCommits) {
+        const parentResult = spawnSync('git', ['rev-parse', `${introductionCommit}^`], {
+            cwd: REPO_ROOT,
+            encoding: 'utf8',
+            windowsHide: true
+        });
+        if (parentResult.status === 0 && parentResult.stdout.trim()) {
+            return parentResult.stdout.trim();
+        }
     }
-    return parentResult.stdout.trim();
+    throw new Error('词条库引入历史均没有可用父提交，无法确定迁移前基线。');
 }
 
 function main() {

@@ -17,6 +17,12 @@ import type {
     CodexSubscriptionStatusResult
 } from '../shared/codex-subscription-contract';
 import type {
+    ClaudeSubscriptionModelListResult,
+    ClaudeSubscriptionOperationResult,
+    ClaudeSubscriptionProbeResult,
+    ClaudeSubscriptionStatusResult
+} from '../shared/claude-subscription-contract';
+import type {
     ArtifactRepositoryReadProjection,
     ArtifactRepositoryReadResult,
     ArtifactRuntimeBinding
@@ -52,6 +58,7 @@ import type {
     ManualSkuColorCardRendererRequest,
     ManualSkuColorCardResult
 } from '../shared/manual-sku-color-card';
+import type { ProjectSelectionResolution } from '../shared/project-selection-resolution';
 
 export interface DownloadProgress {
     modelId: string;
@@ -243,6 +250,12 @@ export interface DesignEchoAPI {
         baseUrlUsed?: string;
     }>;
 
+    getClaudeSubscriptionStatus?: () => Promise<ClaudeSubscriptionStatusResult>;
+    openClaudeSubscriptionLoginTerminal?: () => Promise<ClaudeSubscriptionOperationResult>;
+    probeClaudeSubscriptionAuth?: () => Promise<ClaudeSubscriptionProbeResult>;
+    listClaudeSubscriptionModels?: () => Promise<ClaudeSubscriptionModelListResult>;
+    logoutClaudeSubscription?: () => Promise<ClaudeSubscriptionOperationResult>;
+    onClaudeSubscriptionModelsReady?: (callback: () => void) => () => void;
     getCodexSubscriptionStatus?: () => Promise<CodexSubscriptionStatusResult>;
     startCodexSubscriptionLogin?: () => Promise<CodexSubscriptionOperationResult>;
     cancelCodexSubscriptionLogin?: () => Promise<CodexSubscriptionOperationResult>;
@@ -584,6 +597,35 @@ export interface DesignEchoAPI {
             };
             sellingPoints: string[];
             imageRoles: Array<{ id: string; role: string; reason?: string }>;
+            visualInventory?: {
+                scope: {
+                    renderedImageIds: string[];
+                    failedImageIds: string[];
+                };
+                visibleSubjectGroups: Array<{
+                    label: string;
+                    visibleTraits: string[];
+                    basisImageIds: string[];
+                    certainty: 'clear' | 'tentative';
+                }>;
+                visibleVariantGroups: Array<{
+                    label: string;
+                    visibleVariants: string[];
+                    basisImageIds: string[];
+                    certainty: 'clear' | 'tentative';
+                }>;
+                shootingCoverage: Array<{
+                    shotType: 'flat_lay' | 'on_model' | 'detail_closeup' | 'package' | 'chart' | 'scene' | 'other';
+                    description?: string;
+                    basisImageIds: string[];
+                    certainty: 'clear' | 'tentative';
+                }>;
+                uncertainCoverage: Array<{
+                    topic: string;
+                    reason?: string;
+                    basisImageIds: string[];
+                }>;
+            };
             nextSingleImageChecks: string[];
             rawText?: string;
         };
@@ -768,6 +810,7 @@ export interface DesignEchoAPI {
     }>;
     
     // ===== 电商项目管理 =====
+    resolveProjectSelection?: (selectedPath: string) => Promise<ProjectSelectionResolution>;
     scanEcommerceProject?: (projectPath: string) => Promise<{
         projectPath: string;
         projectName: string;
@@ -855,6 +898,21 @@ export interface DesignEchoAPI {
         imageBase64?: string;
         mimeType?: string;
         source?: string;
+        error?: string;
+    }>;
+
+    capturePhotoshopWindowScreenshot?: () => Promise<{
+        success: boolean;
+        image?: {
+            base64: string;
+            format: 'png';
+            sourceKind: 'application_window';
+            sourceName: string;
+        };
+        mimeType?: string;
+        source?: 'photoshop-window';
+        sourceName?: string;
+        environmentState?: 'photoshop_window_observed' | 'photoshop_window_unavailable' | 'photoshop_window_capture_failed';
         error?: string;
     }>;
 

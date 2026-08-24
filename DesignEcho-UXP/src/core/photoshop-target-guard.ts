@@ -260,11 +260,14 @@ function buildTargetChangedError(
     if (reason === 'missing_document') {
         return `Photoshop 当前没有可写入的活动文档（预期文档 ID: ${formatId(expected.documentId)}），已在执行前中止。请重新打开或选择目标文档后再试。`;
     }
+    // 出口必须点名（真机 2026-08-18：模型连做 6 次 listDocuments / getLayerHierarchy「重新观察」，
+    // 守卫期望仍是旧版本，同一堵墙撞 8 次）：只有带回文档版本号的观察才会刷新守卫，
+    // 所以直接告诉它调哪个工具、然后一次重试；再撞就换目标或停下说明。
     if (reason === 'document_changed') {
-        return `Photoshop 活动文档已变化（预期文档 ID: ${formatId(expected.documentId)}，实际文档 ID: ${formatId(actual.documentId)}），已在执行前中止。请重新观察目标后再试。`;
+        return `Photoshop 活动文档已变化（预期文档 ID: ${formatId(expected.documentId)}，实际文档 ID: ${formatId(actual.documentId)}），已在执行前中止。先用 switchDocument 切到目标文档、再用 getDocumentInfo 读一次（带回文档与版本号），然后只重试一次；仍失败就换目标或停下说明。`;
     }
     if (reason === 'history_state_changed') {
-        return `Photoshop 文档版本已变化（预期历史版本 ID: ${formatId(expected.historyStateId)}，实际历史版本 ID: ${formatId(actual.historyStateId)}），已在执行前中止。请重新观察当前文档后再试。`;
+        return `Photoshop 文档版本已变化（预期历史版本 ID: ${formatId(expected.historyStateId)}，实际历史版本 ID: ${formatId(actual.historyStateId)}），已在执行前中止。先用 getDocumentInfo 读一次当前文档（它会带回最新版本号，listDocuments / 结构读取不算），看清变了什么，然后只重试一次；仍失败就停下说明，不要反复重试。`;
     }
     return `Photoshop 活动图层已变化（预期图层 ID: ${formatId(expected.activeLayerId)}，实际图层 ID: ${formatId(actual.activeLayerId)}），已在执行前中止。请重新选择目标图层后再试。`;
 }

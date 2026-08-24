@@ -16,6 +16,8 @@ import {
     type ProjectContextSnapshotBuildOptions,
     type ProjectContextSnapshotBuildResult
 } from '../services/project-context-snapshot-service';
+import { resolveProjectSelection } from '../services/project-selection-resolver';
+import type { ProjectSelectionResolution } from '../../shared/project-selection-resolution';
 import type { IPCContext } from './types';
 
 /**
@@ -24,19 +26,32 @@ import type { IPCContext } from './types';
 export function registerEcommerceProjectHandlers(context: IPCContext): void {
     const { logService } = context;
 
+    ipcMain.handle('ecommerce:resolveProjectSelection', async (
+        _event: IpcMainInvokeEvent,
+        selectedPath: string
+    ): Promise<ProjectSelectionResolution> => {
+        const resolution = await resolveProjectSelection(selectedPath);
+        for (const warning of resolution.warnings) {
+            logService?.logAgent('warn', `[EcommerceProject] ${warning}`);
+        }
+        return resolution;
+    });
+
     // 扫描项目结构
     ipcMain.handle('ecommerce:scanProject', async (
         _event: IpcMainInvokeEvent, 
         projectPath: string
     ): Promise<EcommerceProjectStructure> => {
-        logService?.logAgent('info', `[EcommerceProject] 扫描项目: ${projectPath}`);
-        
+        const resolution = await resolveProjectSelection(projectPath);
+        const canonicalProjectPath = resolution.canonicalProjectPath;
+        logService?.logAgent('info', `[EcommerceProject] 扫描项目: ${canonicalProjectPath}`);
+
         try {
-            const structure = await ecommerceProjectService.scanProject(projectPath);
+            const structure = await ecommerceProjectService.scanProject(canonicalProjectPath);
 
             // 自动初始化配置（写配置失败不应阻断素材扫描）
             try {
-                await ecommerceProjectService.initProjectConfig(projectPath, structure);
+                structure.config = await ecommerceProjectService.initProjectConfig(canonicalProjectPath, structure);
             } catch (configError: any) {
                 const msg = configError?.message || String(configError);
                 logService?.logAgent('warn', `[EcommerceProject] 配置初始化失败（已降级继续）: ${msg}`);
@@ -58,7 +73,8 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
         type: FolderType
     ): Promise<void> => {
         logService?.logAgent('info', `[EcommerceProject] 更新文件夹类型: ${folderName} -> ${type}`);
-        await ecommerceProjectService.updateFolderType(projectPath, folderName, type);
+        const resolution = await resolveProjectSelection(projectPath);
+        await ecommerceProjectService.updateFolderType(resolution.canonicalProjectPath, folderName, type);
     });
 
     // 更新图片类型
@@ -69,7 +85,8 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
         type: ImageType
     ): Promise<void> => {
         logService?.logAgent('info', `[EcommerceProject] 更新图片类型: ${imageRelativePath} -> ${type}`);
-        await ecommerceProjectService.updateImageType(projectPath, imageRelativePath, type);
+        const resolution = await resolveProjectSelection(projectPath);
+        await ecommerceProjectService.updateImageType(resolution.canonicalProjectPath, imageRelativePath, type);
     });
 
     // 加载项目配置
@@ -77,7 +94,8 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
         _event: IpcMainInvokeEvent,
         projectPath: string
     ) => {
-        return await ecommerceProjectService.loadProjectConfig(projectPath);
+        const resolution = await resolveProjectSelection(projectPath);
+        return await ecommerceProjectService.loadProjectConfig(resolution.canonicalProjectPath);
     });
 
     // 保存项目配置
@@ -86,7 +104,12 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
         projectPath: string,
         config: any
     ) => {
-        await ecommerceProjectService.saveProjectConfig(projectPath, config);
+        const resolution = await resolveProjectSelection(projectPath);
+        await ecommerceProjectService.saveProjectConfig(resolution.canonicalProjectPath, {
+            ...config,
+            projectPath: resolution.canonicalProjectPath,
+            projectName: resolution.projectName
+        });
     });
 
     // 构建运行时 ContextSnapshot（只读，不初始化或写入项目配置）
@@ -97,10 +120,16 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
         const buildOptions: ProjectContextSnapshotBuildOptions = typeof options === 'string'
             ? { projectPath: options }
             : options;
+        const resolution = await resolveProjectSelection(buildOptions.projectPath);
+        const canonicalBuildOptions: ProjectContextSnapshotBuildOptions = {
+            ...buildOptions,
+            projectPath: resolution.canonicalProjectPath,
+            projectName: buildOptions.projectName || resolution.projectName
+        };
 
-        logService?.logAgent('info', `[EcommerceProject] 构建运行时 ContextSnapshot: ${buildOptions.projectPath}`);
+        logService?.logAgent('info', `[EcommerceProject] 构建运行时 ContextSnapshot: ${canonicalBuildOptions.projectPath}`);
         try {
-            return await projectContextSnapshotService.build(buildOptions);
+            return await projectContextSnapshotService.build(canonicalBuildOptions);
         } catch (error: any) {
             logService?.logAgent('error', `[EcommerceProject] ContextSnapshot 构建失败: ${error.message}`);
             throw error;
@@ -113,9 +142,10 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
         options: { projectPath: string } | string
     ) => {
         const projectPath = typeof options === 'string' ? options : options?.projectPath;
-        logService?.logAgent('info', `[EcommerceProject] 读取视觉理解缓存: ${projectPath}`);
+        const resolution = await resolveProjectSelection(projectPath);
+        logService?.logAgent('info', `[EcommerceProject] 读取视觉理解缓存: ${resolution.canonicalProjectPath}`);
         try {
-            return await projectContextSnapshotService.readPersistedVisualInsightCache(projectPath);
+            return await projectContextSnapshotService.readPersistedVisualInsightCache(resolution.canonicalProjectPath);
         } catch (error: any) {
             logService?.logAgent('error', `[EcommerceProject] 视觉理解缓存读取失败: ${error.message}`);
             throw error;
@@ -131,9 +161,14 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
             nowIso?: string;
         }
     ) => {
-        logService?.logAgent('info', `[EcommerceProject] 写入视觉理解缓存: ${options?.projectPath}`);
+        const resolution = await resolveProjectSelection(options?.projectPath);
+        const canonicalOptions = {
+            ...options,
+            projectPath: resolution.canonicalProjectPath
+        };
+        logService?.logAgent('info', `[EcommerceProject] 写入视觉理解缓存: ${canonicalOptions.projectPath}`);
         try {
-            return await projectContextSnapshotService.writeVisualInsightCache(options);
+            return await projectContextSnapshotService.writeVisualInsightCache(canonicalOptions);
         } catch (error: any) {
             logService?.logAgent('error', `[EcommerceProject] 视觉理解缓存写入失败: ${error.message}`);
             throw error;
@@ -142,4 +177,3 @@ export function registerEcommerceProjectHandlers(context: IPCContext): void {
 
     console.log('[IPC] 电商项目 handlers 已注册');
 }
-

@@ -53,6 +53,14 @@ function normalizeKey(value: unknown): string {
     return String(value || '').trim();
 }
 
+/**
+ * 该 manifest 是否走「agentic」执行模型（开放创意路径：不建 Stage 机、不以声明作写入门票）。
+ * 未声明 execution_model 一律按 'staged' 处理，避免静默改变既有生产任务的行为。
+ */
+export function isAgenticExecutionModel(manifest: SkillRuntimeManifest | undefined): boolean {
+    return manifest?.execution_model === 'agentic';
+}
+
 export interface SkillRuntimeEffectiveContract extends SkillRuntimeWorkModeContract {
     source: 'manifest-default' | 'work-mode-contract';
     workMode?: RuntimeDesignWorkMode;

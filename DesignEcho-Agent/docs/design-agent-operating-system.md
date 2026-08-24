@@ -12,9 +12,9 @@
 
 ### 1.1 当前可实施目标
 
-长期产品目标是一个能够处理开放式设计任务、使用专业知识并通过 Adobe Photoshop 完成真实交付的设计 Agent。当前目标不是抽象地“提高 Agent 智能”，也不是增加更多 Prompt、Manifest 或业务流程，而是在不训练或升级基础模型、不把主图 /详情页 /SKU 写入通用 Agent 核心的前提下，把 v3 真实执行与 v5 治理契约收口为一条生产运行时，并让现有 Runtime Session 原地演进为唯一可挂起 TaskRun，拥有 R0-R5/E1-E2、计划节点、交互等待、操作结果与终态。
+长期产品目标是一个能够处理开放式设计任务、使用专业知识并通过 Adobe Photoshop 完成真实交付的设计 Agent。当前目标不是抽象地“提高 Agent 智能”，也不是增加更多 Prompt、Manifest 或业务流程，而是在不训练或升级基础模型、不把主图 /详情页 /SKU 写入通用 Agent 核心的前提下，把 v3 真实执行与 v5 治理契约收口到同一 TaskRun 与执行安全主干。TaskRun 共同拥有任务身份、交互等待、操作结果与终态；只有 `staged` manifest 的 Runtime Session 拥有 R0-R5/E1-E2 和可调度计划节点，`agentic` 继续由自主循环执行，不建立声明式阶段门票。
 
-主图、详情页、SKU 是第一批可插拔 Skill 验收对象，不是 Agent 的能力边界。开放式设计先由常驻 Design Kernel 提供通用专业底座；海报、社媒视觉、包装或其他设计类型只有在存在品类、渠道或交付物特有方法时才新增 Skill / Knowledge / Evaluation overlay，而不是向通用 Agent 增加品类流程。最终完成必须由真实 Provider +一次性 Photoshop 文档的执行、写后读回、Evaluation、DesignVerdict 和交付检查共同确认；契约存在、离线 Smoke 或单张成功截图都不是完成。
+主图、详情页、SKU 是第一批可插拔 Skill 验收对象，不是 Agent 的能力边界。开放式设计先由常驻 Design Kernel 提供通用专业底座；海报、社媒视觉、包装或其他设计类型只有在存在品类、渠道或交付物特有方法时才新增 Skill / Knowledge / Evaluation overlay，而不是向通用 Agent 增加品类流程。需要 Photoshop mutation 的交付，其完成必须由真实 Provider、目标文档中的真实执行、与风险相称的写后读回、Evaluation 和交付检查共同确认；只读分析按其自身交付契约验收。契约存在、离线测试或单张成功截图都不是完整生产能力的证明。
 
 具体的概念到代码映射可查 `docs/agent-governance-implementation-objective.md`。该文件是 C 层实施参考，G0-G7 等历史分组不拥有当前顺序，也不能要求新增重复 Contract；当前实施顺序只以 `project-memory/Plan.md` 为准。
 
@@ -39,6 +39,20 @@ Agent = Model + Harness
 1. Model 提供推理、语言理解、多模态理解和规划能力，决定 Agent 的智能上限。
 2. Harness 提供任务管理、上下文管理、能力发现、工具调用、知识访问、记忆、工作流、权限、状态和评价闭环，决定模型能否稳定完成真实任务。
 3. Agent 是两者组成的完整智能工作系统。Agent 不等于 Harness；Harness 也不能把某个业务品类的知识、模板或固定步骤伪装成 Agent 本身。
+
+### 2.0.1 职责边界的最终判据
+
+“经验属于 Agent 还是 Harness”这个问法本身会制造错误二选一。经验内容有自己的 owner，Harness 只负责让它在正确时间、正确作用域、正确预算内可达；Agent 只负责在当前任务中解释和使用它。
+
+| 能力 | owner | 不允许越界 |
+|---|---|---|
+| 开放语义理解、创意与取舍 | Agent / Model | Harness 不用关键词、固定表单或阶段顺序替模型作开放判断。 |
+| 生命周期、Context、Capability、Tool 与副作用安全 | Harness | 不承载设计方法正文、品类流程、偏好结论或经验内容。 |
+| 构图、层级、排版、色彩、空间与工艺 | Design Kernel | 不变成固定七步 Workflow，也不按品类复制内核。 |
+| 特有业务方法、交付契约与确定性生产 | Skill overlay | 不拥有 Agent 循环、TaskRun、长期 Memory、Policy 或 Photoshop 事务。 |
+| 事实、偏好、案例、方法及来源 | Memory / Knowledge | 不授予执行权限，不从模型一次输出直接变成正式知识。 |
+| 候选审核、版本化发布与撤回 | Experience Publisher | 不由在线 Agent、自评器、Tool success 或使用次数自动晋升。 |
+| 结果 finding 与质量裁决 | Evaluation | 不拥有品味、知识、Skill 或发布权；开放创意的评价是按需反馈，不是首稿门票。 |
 
 完整 Agent 应该能够：
 
@@ -94,7 +108,7 @@ Task Semantic Binding 解决“用户要的交付物是什么”，不解决“�
 3. 每次 Agent 运行都能取得品类中立的 Design Foundation 概览与紧凑 Task Profile index；基础交付物理解不得取决于模型是否碰巧调用某个 Knowledge Tool。唯一 Context Compiler 消费 binding 引用，按当前 profile 装配基础语义、通用原则、输入缺口和 Knowledge 引用；完整方法、项目知识、参考与 Tool schema 继续按目标和阶段渐进装载，不能全部写入 Global Prompt。
 4. binding 不选择 Skill、不生成第二 Manifest、不授予 Tool 权限、不推进 Runtime Stage。Skill owner、Capability Session、execution preflight 和 TaskRun reducer 继续各自拥有选择、可见性、权限和状态。
 5. 现有 task type、artifact knowledge 与 Manifest 必须通过显式 crosswalk 对齐同一语义来源；crosswalk 只校验身份一致性，不激活 Manifest。不得新增第四套关键词分类器、第二 Task Registry 或第二 Context Compiler。
-6. 冲突按 authority domain 裁决：用户指令拥有本轮目标与取舍，但不能扩大权限或覆盖已观察环境事实；当前项目 /PSD 状态以真实读回为准；商品、品牌与规格以有来源且已确认的事实为准；Knowledge / Memory /参考只提供方法和历史上下文；模型先验只能形成待验证假设。会实质改变结果且无法自行消解的同域冲突才进入 `waiting_user`。
+6. 冲突按 authority domain 裁决：用户指令拥有本轮目标与取舍，但不能扩大权限或覆盖已观察环境事实；当前项目 /PSD 状态以真实读回为准；商品、品牌与规格以有来源且已确认的事实为准；Knowledge / Memory /参考只提供方法和历史上下文；模型先验只能形成待验证假设。会实质改变结果且无法自行消解的同域冲突才进入 `waiting_user`。模型 /环境能力未知时允许可逆真实尝试；写入目标、权限、副作用或写入结果未知时先观察、校验或 reconciliation；可选知识与审美信息未知只降级或告警。明确不支持、未授权、无效或不安全才终止相应动作。
 
 ### 2.2.3 Photoshop Craft Recipe
 
@@ -106,7 +120,7 @@ Tool semantics 回答“一个 Photoshop 动作有哪些参数、副作用和读
 4. 结构读回、像素 /视觉验收、失败降级、unknown 处理与回滚方式。
 5. provenance、适用范围、生命周期和对应 Evaluation 引用。
 
-Recipe 属于 Knowledge / Design Kernel provider，不是 Tool、Skill 或固定 Workflow。Model 可以选择、裁剪或拒绝 Recipe；R4 compiler 才能把选定工艺绑定为 capability/provider、typed arguments、target revision 与 verification。所有 mutation 仍经过唯一 PhotoshopTransactionRunner，Recipe 执行成功也不能替代 R5 质量裁决。
+Recipe 属于 Knowledge / Design Kernel provider，不是 Tool、Skill 或固定 Workflow。Model 可以选择、裁剪或拒绝 Recipe；`staged` 路径由 R4 compiler 把选定工艺绑定为 capability/provider、typed arguments、target revision 与 verification，`agentic` 路径可直接形成受 Tool schema 与执行点约束的行动。所有 mutation 仍经过唯一 PhotoshopTransactionRunner，Recipe 执行成功也不能替代交付质量判断。
 
 ### 2.2.4 唯一生产链与 Owner 收敛
 
@@ -116,11 +130,12 @@ Recipe 属于 Knowledge / Design Kernel provider，不是 Tool、Skill 或固定
 用户目标
   → Task Profile / Semantic Binding
   → Context Compiler
-  → RuntimeSession 原地演进的 TaskRun
-  → R4 Plan nodes
-  → Capability + execution preflight
+  → TaskRun + Capability Session
+      ├─ staged：Runtime Session → R1/R3/R4/E1 等阶段与计划节点
+      └─ agentic：自主 ReAct → 当前行动与 Tool calls（无阶段写入门票）
+  → execution preflight
   → PhotoshopTransactionRunner
-  → operation result + same-target verification
+  → operation result + 必要的 same-target verification
   → DesignVerdict
   → Release / Delivery projection
   → reviewed learning candidate（仅终态之后）
@@ -132,15 +147,27 @@ Recipe 属于 Knowledge / Design Kernel provider，不是 Tool、Skill 或固定
 | 交付物与任务语义 | `design-task-types.ts` 演进的 Task Profile / crosswalk | artifact knowledge 只供方法检索；Manifest 只激活 overlay；document role 只报告观察身份 | 局部实现，仍有重叠 |
 | 事实与设计上下文 | `runtime-context-compiler.ts` | Project State、ProductTruth、Observation、Knowledge、Memory 和参考是输入 provider，不各建 Context | 局部接入，stage 传递未闭合 |
 | 通用设计能力 | Design Kernel（模型先验 + 通用原则 +布局 /排版 /色彩 /工艺知识） | 不是新 Runtime 或固定 Workflow；Skill 只叠加特有方法 | Task Profile 与阶段化 Context 已接通；首条 Craft Recipe 已作为只读 Knowledge 接入，真实 V1 待验证 |
-| 活动任务与生命期 | 现有 `runtime-session` 原地演进的 TaskRun | `DesignTaskRunRecord`、Completion、Run Record、Snapshot、UI 都只能投影 | 尚未具备完整 TaskRun |
-| 计划与调度 | 同一 TaskRun 内的 R4 nodes | public plan、shadow plan、continuation 不拥有第二 DAG | 契约 /shadow，尚不可执行 |
+| 活动任务与生命期 | 同一可挂起 TaskRun；`runtime-session` 只承载 staged 阶段状态 | `DesignTaskRunRecord`、Completion、Run Record、Snapshot、UI 都只能投影 | 尚未具备完整 TaskRun |
+| 计划与调度 | staged 使用同一 TaskRun 内的 R4 nodes；agentic 使用模型当前行动与 Tool calls | public plan、shadow plan、continuation 不拥有第二 DAG；agentic 计划不成为写入门票 | staged 契约 /shadow 尚不可执行，agentic 由现行自主循环执行 |
 | Photoshop mutation | `PhotoshopTransactionRunner` | legacy direct-modal 只在未迁移 capability pack 内兼容，迁移一项退役一项 | 已迁移 5 个 owner |
 | 执行验证 | 节点 operation result + 同 target / revision verification | Tool success、截图、模型文本不能补造验证 | 局部实现 |
 | 设计质量 | `DesignVerdict` | Scorecard / Critic 提供 finding，不独立发布 | 已有 containment，仍待统一消费 |
 | 发布与交付 | 唯一 Release projection | Completion、Reflexion、UI、Run Record 只读消费，不重新裁决 | 目标态，尚未完成 |
-| 经验演进 | 现有 learning runtime 的隔离候选与受审晋升 | 在线 TaskRun 不得直写正式 Knowledge / Skill / Policy | 基础局部存在，生产晋升后置 |
+| 经验演进 | Experience Publisher：项目校准账本 + Memory 人工审核队列 | 在线 TaskRun 不得直写正式 Knowledge / Skill / Policy；Evaluation 只提交 finding | 候选隔离、v1 安全迁移、用户项目校准发布、参考学习人审发布已接入；跨项目自动发布仍禁止 |
 
 因此不新增 `RoleContract → DesignTaskContract → OutcomeContract` 并行链：目标、交付规格、事实、保护关系和执行要求进入 Task Profile / TaskRun；能力引用由 Capability Session 持有；结果由 operation result、Verification、DesignVerdict、Release 和 Delivery 各自拥有。需要统一展示时只做只读 projection，不再发明状态 owner。
+
+### 2.2.5 经验候选、发布与生产消费
+
+生产运行不得把“模型学到了什么”直接拼回 System Prompt。经验治理使用候选—评审—发布三段式，并按内容类型走不同出口：
+
+1. Evaluation 模型的批评只形成项目级 `evaluation_finding` 候选。它可以帮助当前任务修订，但不是通用设计原则，也不会被生产评审器当作校准样本读取。
+2. 用户明确给出的“留 / 改 / 弃 + 原因”可在项目作用域发布为 Evaluation calibration；发布记录必须保留来源候选、发布者、目标和作用域。
+3. `studyReference` 对参考图的分析只生成 `needs_review` 的长期 Memory 候选。用户选择了一张参考图，只证明参考来源是有意选择，不证明模型对它的解释正确；只有现有 Memory 人工审核链批准后，条目才成为 active、可检索的 `local_reviewed` 知识。
+4. 旧 v1 数据只在能证明是用户校准时安全迁移为发布记录；无来源的历史“promoted 原则”一律迁回候选，避免旧自动晋升继续污染生产。
+5. Skill、Policy、通用原则和跨项目 Knowledge 的发布仍需独立离线评测、人工审核、版本、Canary 与撤回机制；当前在线路径没有这项授权，也不得用“暂未实现”做自动写入兜底。
+
+唯一生产读取出口必须按发布目标分开：Evaluation 只读已发布 calibration；Knowledge 检索只读通过 Memory 审核且未撤回 /未过期的 active 条目。候选区可以展示、合并证据、拒绝或送审，但不能被 Context Compiler、评审器或 Agent Prompt 直接消费。
 
 迁移处置固定如下：
 
@@ -165,20 +192,20 @@ DAG 是 Harness 的一种编排能力，不是 Agent 的全部，也不是 Skill
 3. public-plan 只是能力中立、可审查、可回放的执行信封，不得强制 `createDocument → renderLayout`、默认画布、占位文案、品类模块或 Skill 阶段计划。
 4. 显式确认必须绑定一条真实的待确认计划；确认后仍受工具白名单、参数校验、写后读回、执行作用域和项目写入审批约束。
 5. 通用 runner 不得从文档名、preset 或工具参数反推某个 Skill 的专业 Policy。详情页 `stagePlan` 等专属标准只能由已装载的 Skill / Capability 契约启用。
-6. R4 动态计划必须由模型基于已验证 R3 策略、当前上下文和 Capability Resolution 显式声明；Harness 只能验证依赖图和语义 DSL。普通 Tool call、assistant prose 或旧关键词 Planner 都不能补造成完整计划。
+6. 对 `staged` manifest，R4 动态计划由模型基于已验证 R3 策略、当前上下文和 Capability Resolution 显式声明，Harness 只验证依赖图和语义 DSL；普通 Tool call、assistant prose 或旧关键词 Planner 不能补造成完整计划。对 `agentic` manifest，计划是模型可调整的工作笔记，不是写入前置或阶段门票。
 
-### 2.4 Runtime Session 与阶段所有权
+### 2.4 staged Runtime Session 与阶段所有权
 
-Runtime Session 是一次用户目标及其有界修订过程的生产身份与阶段状态容器，不是新的业务流程，也不是第三套 Runtime。
+Runtime Session 是 `staged` manifest 的生产身份与阶段状态容器，不是新的业务流程，也不是第三套 Runtime。`agentic` manifest 不建立 R1 / R3 / R4 写入门禁，只保留任务身份、目标、真实操作结果、必要交互和终态事实。
 
 1. 同一任务共享一个 `sessionId`；首次执行和每次 Reflexion 使用独立的预签发 `runId`，`generation` 单调递增，`parentRunId` 指向上一代。
-2. Runtime Session 绑定当前 Manifest Stage Plan，并在运行中持有唯一 Stage State 与 append-only Stage Trace；Trace 是观察账本，不能在收尾反向重建或覆盖 State。
-3. R1 / R3 / R4 只能由模型声明经过对应 validator 后推进；R2 由项目与画面观察推进，E1 由目标绑定的写入和同目标读回推进，R5 由 DesignVerdict 推进，E2 由真实交付结果推进。
+2. `staged` Runtime Session 绑定当前 Manifest Stage Plan，并在运行中持有唯一 Stage State 与 append-only Stage Trace；Trace 是观察账本，不能在收尾反向重建或覆盖 State。
+3. `staged` 的 R1 / R3 / R4 只能由模型声明经过对应 validator 后推进；R2 由项目与画面观察推进，E1 由目标绑定的写入和同目标读回推进，R5 由 DesignVerdict 推进，E2 由真实交付结果推进。
 4. 普通 Tool success、UI 卡片、legacy 状态机和 assistant 文本都不能越权推进阶段。普通确认只暂停当前阶段，不得跳到交付阶段。
-5. Photoshop 写入、保存、导出和外部生成必须在 R4 ready 后执行；一次写成功仍需后续读回，R5 未通过时不得宣称 E2 或 completed。
+5. `staged` 的 Photoshop 写入、保存、导出和外部生成必须在 R4 ready 后执行。`agentic` 不要求 R4 ready，但仍必须经过 execution preflight、有效目标与 PhotoshopTransactionRunner。一次写成功不能单独证明交付完成。
 6. Reflexion 新 generation 继承 Session lineage，并按回退目标只承接该目标之前、模型产生且 Harness 已校验的 ready Brief / Strategy / Plan；目标及下游 State 与声明必须失效。旧 Resume record 只提供 digest、待核实节点和历史运行摘要，不自动恢复完整声明或当前活动 Session。
 
-截至 2026-07-13，上述 identity、运行中 reducer、R4 前写入门禁、R5 / E2 完成门禁、Reflexion lineage 和同 Session planning-context carry 已接入 manifest-bound 生产路径；R3 Strategy / R4 Plan 也能作为只读上下文进入 Skill bridge。开放式无 Manifest 设计路径尚未全部覆盖。R4 仍是 shadow Plan，不是可执行 DAG Scheduler，真实 Provider + Photoshop 多代 E2E 仍待验证。
+截至 2026-07-13 的接线状态只是一条历史迁移记录，不覆盖 manifest 当前的 `execution_model`。其中 identity、reducer、R4 前写入门禁、R5 / E2 门禁、Reflexion lineage 和 planning-context carry 只适用于 `staged` 路径；`agentic` 路径不得因这段历史描述恢复阶段门禁。实时成熟度以当前代码与按需读取的 Status 为准。
 
 #### 2.4.1 2026-08-03 TaskRun / R4 纵向切换决策（planned）
 
@@ -186,7 +213,7 @@ Runtime Session 是一次用户目标及其有界修订过程的生产身份与�
 
 `waiting_user` 是非终态：不得 finalization、Release、E2 或创建新任务；用户提交绑定 `taskRunId / interactionId / expectedRevision` 的事件后恢复同一 TaskRun。
 
-R4 的目标不再是永久 shadow。Model 拥有节点的设计意图，Harness compiler 在同一节点上绑定 capability/provider、typed arguments、AssetHandle / target revision 与预期结果；声明本身不授予权限，ready 节点只能由 TaskRun scheduler 经过 execution preflight 和唯一 PhotoshopTransactionRunner 执行。当前 shadow / reconciliation / no-redo / freshness 链仅是迁移期实现事实；完成 TaskRun 与事务边界切换后必须退役其重复职责，不再叠加防重做 Guard。
+对 `staged` 路径，R4 的目标不再是永久 shadow。Model 拥有节点的设计意图，Harness compiler 在同一节点上绑定 capability/provider、typed arguments、AssetHandle / target revision 与预期结果；声明本身不授予权限，ready 节点只能由 TaskRun scheduler 经过 execution preflight 和唯一 PhotoshopTransactionRunner 执行。`agentic` 不以 R4 声明作为写入门票。当前 shadow / reconciliation / no-redo / freshness 链仅是迁移期实现事实；完成 TaskRun 与事务边界切换后必须退役其重复职责，不再叠加防重做 Guard。
 
 本节是目标决策，不是完成声明。任一 capability pack 完成 X1 TaskRun / Transaction owner 会合与 X2 节点切换前，当前 R4 继续保持 `shadowOnly=true / executable=false / schedulerAuthority=false`；其它未迁移节点始终保持该状态。
 
@@ -225,6 +252,26 @@ Agent 对“我是谁、DesignEcho 是什么、用户现在指向哪里”的理
 
 最终验收仍是生产 Agent 使用真实 Provider 与 Photoshop 完成观察、理解、策略、计划、执行、读回、评价、修正和交付。离线快照 Smoke、UI 接线、fixture Provider 或单 Tool 成功只证明地基，不得升级为真实设计能力完成。
 
+#### 2.5.2 系统提示、能力面与模型窗口
+
+System Prompt 只承载稳定身份、安全边界和少量跨任务原则，不承载完整方法论、品类流程、工具目录、七步检查表或历史经验。七步工作法、任务卡和 Evaluation 都是按任务复杂度与风险装载的脚手架：简单局部编辑不需要任务卡；开放首稿不以自动评审作为写入许可；高风险交付、复杂多产物任务和明确质量复核才提高结构化程度。
+
+Capability Session 使用渐进披露：首轮保留找项目、识别 /切换文档、读取项目状态、看当前画布、建立画布和可逆首稿等最小供给；其余能力由 `searchAgentCapabilities` 先返回精确 id，再由 `requestAgentCapabilities` 装载。搜索是只读目录操作，不执行 Tool、不授予权限、不改变 active tool surface；真正的执行仍经过 preflight、Policy、目标 / revision 与事务 owner。
+
+上下文预算的唯一上限来自本次实际模型：
+
+```text
+model context window
+  - reserved output tokens
+  - active Tool schema tokens
+  = messages + compiled runtime context 的可用预算
+```
+
+1. 优先使用模型目录或 Provider 返回的真实 `contextWindowTokens`；其次才使用已验证的 Provider 默认值。不得根据模型名称猜窗口，也不得把所有模型写死成同一个数。
+2. Provider 未声明窗口时状态保持 `unknown`。运行时可以采用保守保护上限避免内存失控，但该上限不是模型规格，必须在诊断中保留 `basis=unknown`。
+3. 每次 Provider 调用前都重新预留当前 Tool schema 与最大输出，ContextManager 以完整消息 / Tool exchange 为裁剪单位；System、当前用户目标和受保护事实仍无法容纳时返回 `context_window_budget_exceeded`，不得静默丢目标或让 Provider 用不可解释的截断兜底。
+4. Runtime Context Compiler 的字符预算由同一 capacity plan 派生，不再维护与模型窗口无关的第二固定预算。图片、超长 Tool 结果和旧观察先经过摘要 /脱敏 /候选限制，再进入消息预算。
+
 ### 2.6 Runtime Accounting
 
 Runtime Accounting 是 Runtime Session 的只观察账本，不是执行预算器。
@@ -251,13 +298,13 @@ Artifact Repository 是 Artifact 正文、二进制、权威 hash 和版本 line
 10. 当前自动生产收尾只发布已经存在的五类 Runtime JSON 声明。Visual Observation、Photoshop 文档、预览或导出资产尚未由各自真实生产者完整接入，真实 ApprovalService 也尚无生产发布调用方；producer ownership 不能被外推成所有 R1～R5 / E1～E2 专业生产者均已接线或已通过真实 Provider + Photoshop 验证。
 11. 当前威胁模型把顶层 Renderer 作为受信任 Harness。capability 阻断模型、普通业务调用、subframe、错误窗口、路径或 manifest 的越权，不提供对已攻陷 Renderer / DevTools 的安全隔离。主进程若已完成发布但 IPC 成功响应丢失，当前也没有按已消费 token 取回原成功响应的接口；这是可靠性增强项，不改变不可重放与 fail-closed 边界。
 
-### 2.7 E1 目标绑定与同目标读回
+### 2.7 staged E1 目标绑定与同目标读回
 
-E1 不是“本轮出现过一次写和一次读”就算完成。有效绑定必须同时满足：一个成功的状态变更对应一个 R4 节点；写入与后续读回拥有相同的不透明目标身份；读回序号晚于写入；读回仍对应当前目标且没有歧义。文档名、路径和 Tool payload 不进入目标身份摘要。缺目标、跨目标或无法唯一归因的写入与读回只进入 observation，不形成 E1 完成状态。
+`staged` 的 E1 不是“本轮出现过一次写和一次读”就算完成。有效绑定必须同时满足：一个成功的状态变更对应一个 R4 节点；写入与后续读回拥有相同的不透明目标身份；读回序号晚于写入；读回仍对应当前目标且没有歧义。文档名、路径和 Tool payload 不进入目标身份摘要。缺目标、跨目标或无法唯一归因的写入与读回只进入 observation，不形成 E1 完成状态。`agentic` 不要求 R4 / E1 阶段，但同样不能把跨目标、无目标或时序不明的读回用于完成声明。
 
 ### 2.8 Prompt 与 Capability 权责
 
-Prompt 是模型理解、设计判断和结构化声明的输入，不是生产权限系统。每个 Prompt-like 模块必须声明 owner、implementation、authority、scope、activation、现有 Runtime Stage 和 Capability kind。
+Prompt 是模型理解、设计判断和结构化声明的输入，不是生产权限系统。每个 Prompt-like 模块必须声明 owner、implementation、authority、scope、activation、Capability kind，以及仅在 `staged` 适用时声明 Runtime Stage。
 
 1. `model_prompt` 和 `hybrid` 只能产生 advisory / declarative 内容，不得授予 Tool 权限、执行 Tool、推进阶段或声明完成。
 2. execution / completion 权威只属于 deterministic code；分别由 Agent Runtime / Tool preflight 和 Completion contract / delivery receipt 承担。
@@ -325,9 +372,9 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 
 ### 2.13 任务执行内环与经验演进外环
 
-执行内环只负责当前 TaskRun：语义绑定 → 取得真实上下文与视觉观察 → 模型形成 Brief / Strategy / DesignIR / R4 Plan → TransactionRunner 执行 → 同目标结构与像素读回 → Evaluation → 有界修订 → Release / Delivery。该序列表示必须闭合的责任，不是所有任务都逐项串行执行的固定脚本。
+执行内环只负责当前 TaskRun：语义绑定 → 取得必要的真实上下文与视觉观察 → 模型形成专业判断与可调整计划 → TransactionRunner 执行 → 同目标结构与像素读回 → Evaluation → 有界修订 → Release / Delivery。`staged` 可以把判断和计划声明为 Brief / Strategy / DesignIR / R4 Plan；`agentic` 不要求这些阶段声明。该序列表示需要闭合的责任，不是所有任务都逐项串行执行的固定脚本。
 
-经验演进外环到 M7 才实施；M7 退出前不得作为生产自动化启用。它只消费已经结束且来源可追溯的 TaskRun。设计方法、Recipe 或 Skill 收益候选必须具备真实 operation result、同目标 Verification、DesignVerdict 与相应 Delivery /人工反馈；失败或中止运行可以形成代码、契约、Provider、恢复缺陷、负向设计 finding 或 Evaluation-gap 假设，但不得据此证明设计方法有效。
+经验演进外环已实现最小安全纵切，但没有开放自动发布：项目 Evaluation 候选、用户项目校准发布和参考学习 Memory 人审发布已接通。它只消费来源可追溯的已发生观察 /反馈；设计方法、Recipe 或 Skill 收益候选仍必须具备真实 operation result、同目标 Verification、DesignVerdict 与相应 Delivery /人工反馈，并经过独立离线发布流程。失败或中止运行可以形成代码、契约、Provider、恢复缺陷、负向设计 finding 或 Evaluation-gap 假设，但不得据此证明设计方法有效。
 
 任何在线 TaskRun 都只能写隔离的 `ExperienceCandidate`，不得修改当前或未来运行会读取的 canonical Knowledge、Skill、Policy 或任务语义定义；正式内容只能由唯一发布 owner 在离线对比、人工批准、Canary 与回滚准备完成后变更。
 
@@ -444,7 +491,7 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 | `ExecutionTrace` | 真实工具调用、结果、错误、耗时、focus、acceptance | 部分存在于 onStep 和 executionSummary |
 | `VerificationReport` | 结构验收、bounds、截图、任务级结论、需复核项 | 部分存在于 acceptance 和 QA |
 | `ReleaseDecision` | 只引用执行、同目标验证、DesignVerdict、Delivery 与 Approval 事实并形成唯一发布裁决 | 目标契约，M5 实施；不得成为第二 DesignVerdict |
-| `ExperienceCandidate` | 从已结束且来源可追溯的 TaskRun 派生的隔离候选引用、candidateType、适用范围、证据要求、收益 /缺陷假设与晋升状态 | 目标契约，M7 实施；候选类型决定 evidence，未复核不得进入生产上下文 |
+| `ExperienceCandidate` | 来源可追溯的隔离候选、类型、作用域、证据与发布状态；用户项目校准和参考学习分别进入独立发布出口 | v2 候选账本、v1 安全迁移、Evaluation 生产读取隔离与 Memory 人审纵切已实现；Recipe / Skill / Policy 跨项目自动发布仍禁止 |
 | `ArtifactRepository / ArtifactRef` | 不可变保存正文、二进制、权威 hash 与 lineage；向任务、项目和运行记录提供 refs-only 投影 | 主进程单一 Repository 已接入，真实 producer 覆盖仍不完整 |
 
 ## 5. 设计任务生命周期
@@ -462,22 +509,22 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 9. Revise：必要时修正、降级或请求补充。
 10. Deliver：输出交付结果、质量结论和剩余风险。
 
-任何业务场景都应该产生这些生命周期所要求的关键状态、观察、运行记录和质量检查，但 Planner 可以按任务复杂度跳过不必要阶段、并行独立阶段、在评价失败后回退，或通过 Skill 提供的阶段约束展开任务图。主图、详情页、SKU 和参考图复刻的差异应由 Capability 声明以及 DesignBrief、DesignDSL、ExecutionPlan 和 VerificationReport 表达，而不是各自绕过总控系统，也不是由通用 Harness 写死顺序。
+这些条目表示可能需要闭合的责任，不要求任何业务场景都生成同一组阶段状态、文档和运行记录。`staged` 可按 manifest 产生必要阶段并展开任务图；`agentic` 只保留当前任务所需的目标、观察、行动、operation result 与验收事实。主图、详情页、SKU 和参考图复刻的差异应由 Task Profile、Capability 与相应 Skill / Knowledge 表达，而不是各自绕过总控系统，也不是由通用 Harness 写死顺序。
 
 ### 动态计划与任务图治理
 
 1. 简单任务可以直接执行单步计划，不强制创建 DAG。
 2. 复杂任务可用 DAG 管理依赖、并行、重试、回退和跨轮续跑；节点状态必须来自真实 Task State、工具结果与读回。
 3. Model / Planner 决定任务路径，DAG Runtime 只执行已选路径和状态转换，不替代设计判断。
-4. Capability 单一解析、Tool semantics metadata 与 v5 契约生产接线已经形成 `runtime_integrated` bridge；Stage State / Trace 已观察 R1-R5/E1，并对 E2 做质量后置门禁；R3 策略与 R4 动态行动计划均已有模型拥有、Harness 校验的结构化声明；R4 节点也能与本轮真实执行做 Capability 级影子归属、预期结果核对、失败恢复和漂移检测。上述 shadow 链已完成诊断使命，但也证明事后归属、跨轮 no-redo 与 freshness 不能替代直接执行 owner。
-5. 下一步不是新建第三套 DAG Runtime，也不是继续扩影子防重做，而是在 PhotoshopTransactionRunner 与 TaskRun 完成后，让现有 R4 节点按垂直切片受控接管。切换前影子状态继续如实记录；切换后节点直接拥有 operation result，重复的 reconciliation / no-redo / freshness 执行责任必须退役。
+4. Capability 单一解析、Tool semantics metadata 与 v5 契约生产接线已经形成 `runtime_integrated` bridge；`staged` 的 Stage State / Trace 已观察 R1-R5/E1，并对 E2 做质量后置门禁；R3 策略与 R4 动态行动计划均已有模型拥有、Harness 校验的结构化声明；R4 节点也能与本轮真实执行做 Capability 级影子归属、预期结果核对、失败恢复和漂移检测。上述 shadow 链已完成诊断使命，但也证明事后归属、跨轮 no-redo 与 freshness 不能替代直接执行 owner。
+5. `staged` 的下一步不是新建第三套 DAG Runtime，也不是继续扩影子防重做，而是在 PhotoshopTransactionRunner 与 TaskRun 完成后，让现有 R4 节点按垂直切片受控接管。切换前影子状态继续如实记录；切换后节点直接拥有 operation result，重复的 reconciliation / no-redo / freshness 执行责任必须退役。`agentic` 不参与这条 Stage 迁移。
 
 ### 5.0 当前运行线归一化
 
 为避免把多个阶段性实现误读成多个产品版本，当前统一采用以下裁决口径：
 
 1. `v3` 是当前默认真实执行路径。用户请求实际进入 ChatPanel、DesignAgentEngine、旧 Agent 循环、skill executor、UXP / Photoshop 工具链时，默认仍按 v3 运行线理解。
-2. `v5` 是目标治理与契约层。它承载 Skill manifest、ReAct / Reflexion、阶段计划、视觉观察上下文、质量复核和能力边界；视觉观察不承担执行授权，也不等于 v5 已经完整替代 v3 主循环。
+2. `v5` 是目标治理与契约层。它承载 Skill manifest、执行模型、视觉观察上下文、质量复核和能力边界；只有 `staged` 承载阶段计划，`agentic` 继续使用自主 ReAct。视觉观察不承担执行授权，也不等于 v5 已经完整替代 v3 主循环。
 3. `bridge` 是过渡适配层。它只负责把 v5 契约、manifest 能力声明和旧实际工具 / 旧 skill 入口接起来，不允许沉淀新的业务策略、隐藏流程或第二套工具注册。
 4. `legacy` 是旧入口、旧命名或旧兼容逻辑。它可以保留以避免破坏当前运行，但不应继续扩张；新增能力必须优先说明如何进入 v5 manifest / 契约。
 5. 文档和汇报必须明确状态类型：`contract_ready`、`bridge_ready`、`runtime_integrated`、`photoshop_e2e_verified`。不能把前两类写成完整运行时完成。
@@ -494,19 +541,18 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 
 最小闭环：
 
-1. R0 选择 Skill manifest，并制定阶段计划。
-2. ReAct 循环执行：
-   - Reason：判断当前阶段目标、上下文缺口、已有观察和下一步动作。
+1. R0 选择 Skill manifest，并读取 `execution_model`；只有 `staged` 制定 manifest 阶段计划。
+2. 两条路径都可以使用 ReAct：
+   - Reason：判断当前目标、上下文缺口、已有观察和下一步动作；`staged` 额外考虑当前阶段。
    - Act：调用当前已装载的视觉分析、预览、Photoshop 或交付工具；缺少 schema 时先按需装载，显式 forbidden 始终不可用。
    - Observe：读取工具结果、视觉观察、预览状态或 Photoshop 回读。
-   - Evaluate：判断当前阶段目标是否达成；未达成则带约束继续循环。
-3. R5 Quality Gate 审核 Preview / Plan / Execution 结果。
-4. R5 未通过时，Reflexion 必须回答：为什么失败、哪个阶段的问题、哪些策略应调整、下一轮 ReAct 的约束是什么。
-5. Reflexion 结果重新进入 ReAct，而不是作为一段失败话术结束任务。
+   - Evaluate：按交付义务与风险判断是否继续；`staged` 同步评价阶段目标，`agentic` 不生成阶段门票。
+3. `staged` 的 R5 审核对应阶段结果；`agentic` 的质量评价是事后验收与有界改进输入，不阻止第一次可逆写入。
+4. 评价未通过时，Reflexion 说明真实问题与可执行修法；只有仍有进展空间且预算允许时进入下一轮，不把固定反思轮次变成完成前置。
 
 契约边界：
 
-1. Skill 是任务能力 manifest，描述阶段、输入、读写范围、可用工具和退出条件。
+1. Skill 是任务能力 manifest，首先声明 `execution_model`；`staged` 描述阶段、输入、读写范围、可用工具和退出条件，`agentic` 只提供专业知识、能力画像、任务语义与评价输入，不建立阶段写入门禁。
 2. Tool 是命名空间化的可执行能力，负责单一动作并返回结构化结果；Tool 不等于 Skill。
 3. `available_tools` / `forbidden_tools` 只能列工具能力，不能混入 skill id 或 UI 脚本入口；`available_tools` 是首轮能力种子，不是封闭白名单，`forbidden_tools` 与执行点 Policy 才是硬边界。
 4. 视觉观察不足、`structure_only` 等非完整路径必须携带 Reflexion 契约，不能只弹固定卡片或固定文案收口。
@@ -519,7 +565,7 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 3. 已新增 `legacy-tool-capability-bridge/v0`：旧实际工具名仍是 `createDocument`、`renderLayout`、`getCanvasSnapshot` 等执行器内工具名；v5 manifest 的 `photoshop.read.*` / `preview.*` / `delivery.*` 是能力边界声明。桥接表只描述能力到旧工具的映射，不改写 manifest。
 4. v5 manifest registry 已覆盖核心业务 Profile：`ecommerce.detail_page`、`ecommerce.main_image`、`ecommerce.sku_batch`。注册 Skill（例如 `sku-batch`）仍可作为自主 ReAct 中的 workflow bridge 被模型直接调用；若选择绑定 Profile，Skill 的 legacy id 再映射到 manifest。Skill 调用只是一次行动，结果必须回到 Observe / Evaluate，不能把外层 `success` 当成任务完成。
 5. `runtime-contract-bundle/v0` 只从显式 task type、Planner 声明的 stable Skill id 或 manifest-owned legacy alias 解析 Skill manifest；legacy 文本路由 hint、用户文本、文档名和设计纪律正则不参与 deterministic manifest 选择。显式未知 task type 保持未解析，不猜相似品类。
-6. 生产 `autonomous-agent.executor.ts` 总是创建一个 Capability Session。已有结构化 Runtime Bundle 时注入其 identity / seed、model-visible schemas、`react-reflexion-loop/v0`、stage plan 和 `legacy-tool-capability-bridge/v0`；未绑定时保持普通自主 Agent，可直接选择 Skill 或原子 Tool。模型主动调用可选 `declareDesignIntent` 后，才在同一运行中绑定精确 Profile；这些接线不等于 v5 已完全替代 v3，也不等于 `photoshop_e2e_verified`。
+6. 生产 `autonomous-agent.executor.ts` 总是创建一个 Capability Session。`staged` Runtime Bundle 注入 identity / seed、model-visible schemas、`react-reflexion-loop/v0`、stage plan 和 `legacy-tool-capability-bridge/v0`；`agentic` Manifest Bundle 只注入知识、预算画像与任务语义，不创建 Runtime Session、不按 stage plan 裁工具面。未绑定时保持普通自主 Agent，可直接选择 Skill 或原子 Tool。模型主动调用可选 `declareDesignIntent` 后，才在同一运行中绑定精确 Profile；这些接线不等于 v5 已完全替代 v3，也不等于 `photoshop_e2e_verified`。
 7. manifest 的 `available_tools` 只提供首轮种子；模型可调用 `requestAgentCapabilities`，在下一 ReAct 轮增量装载 Tool / Skill schema。每个模型轮次最多执行一次装载、总计最多 3 项，只改变模型上下文，不执行 Photoshop、不授予权限。`declareDesignIntent` 同样只是可选 Harness 控制工具：它不算环境观察或任务进展，也不是分析、调用 Skill、Photoshop 写入或完成任务的前置许可。
 8. `forbidden_tools` 会保守闭包到共享 legacy provider Tool，不能通过另一条 capability 映射旁路；真实执行仍必须经过 Tool Decision、preflight、HITL、设计纪律、写后读回和质量评价。
 9. 首轮能力面按通用策略分三类：已绑定 Profile 使用 manifest seed；唯一 advisory Skill recommendation 使用“一个推荐 Skill + 极小只读 bootstrap + `requestAgentCapabilities`”快路径，首轮不与通用写 Tool 竞争；零个或多个推荐保持通用原子能力面，不擅自选 Skill。其余 Tool / Skill 继续在紧凑 on-demand 目录中可发现。真正未知的未来 Tool 显式降级为 `legacy_unclassified_tool`，不能静默消失。
@@ -529,14 +575,14 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 13. 后续工具命名空间迁移必须逐项验证旧工具能力、参数、结果结构和回读语义，不能通过直接改名制造假治理。
 14. 旧 `skill-tools.ts` 不是目标形态，只是 `legacy workflow bridge`：注册 Skill 可以作为 ReAct 行动入口被旧 Agent 调用，但它不是原子 Tool，调用结果必须回到 `agent-react-observation/v0`，再由 Agent 继续 Observe / Evaluate / Quality Gate。
 15. 对确认执行类请求（例如已确认 SKU 组合后的生产），允许定位到对应 Skill 工作流桥，但不能绕过 Agent 直接把 `execute_skill` 当最终闭环；必须保留 ReAct 与验收回流。
-16. `runtime-session/v0` 是 manifest-bound 生产路径的运行身份和阶段事实 owner：同一任务保持一个 sessionId，Reflexion generation 单调递增，parentRunId 指向上一代；Stage State 由运行中 reducer 推进，不在收尾从 Trace 重建。
-17. `runtime-stage-state/v0` 只记录 current stage、缺失的阶段条件与 transition，不读取任务文本、不授予权限，也不自行铸造 DesignVerdict 或任务成功。当前 TaskCompletion 仍是独立结果层；按 2026-07-30 切换目标，它必须降为 TaskRun 的只读派生投影，不再从文本或 Tool footprint 重新拥有完成判断。
-18. `runtime-stage-trace/v0` 是 append-only observation ledger。开工观察、执行前契约、R1/R3/R4 模型声明、真实 Tool result、读回和质量通过后的交付事实可以被记录，但只有当前阶段对应的结构化 evaluation 才能推进 State；普通 Tool success、assistant content、UI 卡片和越序 observation 都不能推进。
-19. 状态变更 Tool 只有在当前阶段进入 E1 后才能 dispatch；写入成功只记录一次 mutation，后续同目标读回才可结束 E1。R5 只消费唯一 `DesignVerdict`，E2 还要求 R5 passed 和真实 delivery receipt，final response 不能补造交付。
+16. `runtime-session/v0` 是 `staged` manifest 的运行身份和阶段事实 owner：同一任务保持一个 sessionId，Reflexion generation 单调递增，parentRunId 指向上一代；Stage State 由运行中 reducer 推进，不在收尾从 Trace 重建。
+17. `runtime-stage-state/v0` 只记录 `staged` 的 current stage、缺失条件与 transition，不读取任务文本、不授予权限，也不自行铸造 DesignVerdict 或任务成功。当前 TaskCompletion 仍是独立结果层；按 2026-07-30 切换目标，它必须降为 TaskRun 的只读派生投影，不再从文本或 Tool footprint 重新拥有完成判断。
+18. `runtime-stage-trace/v0` 是 `staged` 的 append-only observation ledger。开工观察、执行前契约、R1/R3/R4 模型声明、真实 Tool result、读回和质量通过后的交付事实可以被记录，但只有当前阶段对应的结构化 evaluation 才能推进 State；普通 Tool success、assistant content、UI 卡片和越序 observation 都不能推进。
+19. `staged` 状态变更 Tool 只有在当前阶段进入 E1 后才能 dispatch；写入成功只记录一次 mutation，后续同目标读回才可结束 E1。`agentic` 写入不经 Stage gate，但仍经过相同执行安全和交付真实性边界。final response 不能补造交付。
 20. Runtime Session 完整 State / Trace 与 Planning Seed 当前只在进程内有界保留，这是待由可暂停 TaskRun 治理的实现缺口，不是目标架构。已经过 Harness 校验的 Brief / Strategy / Action Plan 可以由 Artifact Repository 发布为不可变正文，但 Artifact 不能反向取得活动任务或调度权。Run Record 与 Resume 只保存匹配预签发 runId 的 digest 或 Repository ref；完成 TaskRun 切换后，它们只作审计 / 兼容读取，不再恢复或推进任务。旧 `WorkflowRun` / orchestrator 已退役，不进入生产路径。
    - `runtime-planning-context-seed/v0` 的承接矩阵按 Stage Plan 顺序确定：只承接 Reflexion target 之前的 ready 声明；target 及下游 snapshot、观察记录和声明在新 generation 开始时失效。回退 R4 不能复用旧 Plan；回退 E1 可以承接 Plan，但其 `shadowOnly / executable=false / schedulerAuthority=false` 边界不变。
-   - shadow reconciliation 继续把 missing stage、out-of-order、trace-backed / derived / unbacked transition 如实报告；这些缺口不能被默认完成或固定流程掩盖。R3 与 R4 现在都必须来自各自的结构化模型声明；未声明时继续保持 `unobserved`，不能用普通 Tool call 或自然语言补齐。R4 仍不拥有 Tool 调度权。
-21. Stage Trace 首次接入后暴露 R3 缺少结构化策略声明；该缺口随后由模型拥有的运行时策略声明桥治理，不能再回退到解析 assistant prose 或 Harness 默认策略。
+   - `staged` shadow reconciliation 继续把 missing stage、out-of-order、trace-backed / derived / unbacked transition 如实报告；这些缺口不能被默认完成或固定流程掩盖。`staged` 的 R3 与 R4 必须来自各自的结构化模型声明；未声明时保持 `unobserved`，不能用普通 Tool call 或自然语言补齐。R4 仍不拥有 Tool 调度权。
+21. `staged` Stage Trace 首次接入后暴露 R3 缺少结构化策略声明；该缺口随后由模型拥有的运行时策略声明桥治理，不能再回退到解析 assistant prose 或 Harness 默认策略。`agentic` 不消费该声明门禁。
 22. R3 运行时策略声明复用 immutable CreativeStrategy 的通用字段类型，但 `declareDesignStrategy` 控制调用本身不是 Artifact 发布；只有 Harness 收尾通过唯一 Artifact Repository 发布后，声明正文才取得 Repository ref。模型和调用方仍禁止伪造 artifactId/contentHash/contextSnapshotRef，也不得把品类专属 contentModules 强加给通用设计。
 23. `declareDesignStrategy` 是模型拥有内容、Harness 只校验的控制工具。它的 `contextRefs` 由当轮真实输入、manifest、观察、知识、写入和交付状态动态开放，并使用语义引用而非具体 Tool 名；声明不执行 Photoshop、不授予权限、不算 E1/完成/质量通过。
 24. `runtime-action-plan-declaration/v0` 是模型拥有设计意图、Harness 编译执行细节的 R4 控制契约。它要求 ready 的 R3 策略；模型步骤引用当前 `contextRefs`、`expectedOutcomes`、Capability Resolution 和可选语义 DSL，不直接生成自由 JS、batchPlay 或未经约束的像素动作。Harness compiler 在同一节点绑定 provider、typed arguments、AssetHandle / target revision、依赖和 verification。
@@ -552,9 +598,9 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 34. 跨轮恢复采用两阶段注入：先选择旧档案但不暴露跳过建议，再执行锚点同类只读探针并形成 `verified / mismatch / insufficient_context / probe_failed`，最后生成 resume brief。只有 verified 可以把旧节点描述为已核实建议，其余状态全部作废旧跳过依据。
 35. freshness 只评价旧档案记录与当前只读探针是否仍一致；任务相关性仍由 Model 判断。它不阻断当前任务、不执行写入、不授予权限、不自动跳过、恢复、重试或调度，也不计入任务进展、R5 或 E2。
 36. freshness 必须区分旧计划中已经 completed 的节点与 pending resume 节点；只有前者可以成为 no-redo 候选。长期摘要只允许保留 stepId、kind、实际 Capability 与 `observedOutcomes`，不保存 goal prose、Tool 名、参数或结果。
-37. 当前 R4 step 只有通过模型显式 `resumeMapping` 才能声明与旧 completed 节点等价，并必须选择 `reuse_completed_step` 或 `redo_required`。映射必须一对一且引用 freshness verified id；Harness 不使用文本、品类、Tool 或 Capability 相似度补造关系。
+37. `staged` 的当前 R4 step 只有通过模型显式 `resumeMapping` 才能声明与旧 completed 节点等价，并必须选择 `reuse_completed_step` 或 `redo_required`。映射必须一对一且引用 freshness verified id；Harness 不使用文本、品类、Tool 或 Capability 相似度补造关系。
 38. `runtime-action-plan-no-redo-shadow/v0` 只把复用映射与当前真实 reconciliation attempts 对账：无 attempt 是复用候选，发生 attempt 是 repeat_observed，redo_required 单独记录为 intentional redo。它不改变当前节点依赖、状态或执行结果。
-39. 完整 no-redo decision 只保留在当前结果；execution summary、run record 和下一轮摘要只保存 digest。R3 / R4 重声明必须开启新代次，旧映射与旧 observation 不得污染新计划。
+39. 完整 no-redo decision 只保留在当前结果；execution summary、run record 和下一轮摘要只保存 digest。`staged` 的 R3 / R4 重声明必须开启新代次，旧映射与旧 observation 不得污染新计划。
 40. 真实模型映射质量必须用独立 `agent-no-redo-provider-probe/v0` 评价，不得从 provider prose 猜测。最低 verdict 集应覆盖正确复用、正确重做、正确无映射、遗漏、错误等价、错误节点、错误策略、过度映射、非法声明与 unsafe Tool。
 41. provider 探针只暴露生产 R4 声明 schema，返回调用只进入生产 validator，不进入 Agent executor。报告只能保存 mapping id / policy、issue code 与计数；Prompt、完整计划、arguments、thinking、API key 和路径不得导出。
 42. 所有真实 provider 探针复用同一双重 API opt-in、隔离 userData / 端口与 fake Photoshop 边界。默认必须 guarded skip；未授权 skip 只能证明安全边界，不能证明模型行为。
@@ -603,36 +649,36 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 85. `design-project-rule-policy/v0` 必须显式携带 `doesNotGrantToolPermission=true`，并与 Tool 决策 /安全 Policy 分离。品牌规则可以约束输出，却不能成为绕过执行授权、读后写纪律或用户审批的路径。
 86. 每条进入运行时的设计知识必须绑定 `design-knowledge-governance/v0`：至少包含正文内容 fingerprint、source revision、provenance、lifecycle、retrievedAt、可选 expiresAt / supersededBy 和本地 integrity fingerprint。
 87. Knowledge provider 身份可解析只证明来源入口存在，不证明本轮读取了知识正文。真正使用知识时必须产生 `design-knowledge-usage-snapshot/v0`，按 binding 记录内容 fingerprint、source revision、freshness、allowedUses 与有界计数。
-88. `current / stale / withdrawn / superseded / invalid / legacy_unversioned` 必须保持可区分。只有 current 且允许 `prompt_context` 的知识可进入 Planner 或模型上下文；stale / legacy 只能待复核，withdrawn / superseded / invalid 必须阻断。
+88. `current / stale / withdrawn / superseded / invalid / legacy_unversioned` 必须保持可区分。只有 current 且允许 `prompt_context` 的知识可进入 Planner 或模型上下文；stale / legacy 只能待复核，withdrawn / superseded / invalid 必须阻止该知识项被消费，但不能因此阻断仍可用其它事实与能力完成的整个任务。
 89. bundled curated、人工复核 Memory、本地 Eagle snapshot、实时外部搜索和外部 snapshot 必须保留不同 provenance；sourceRank 只用于同等可用知识的排序，不能覆盖版本、新鲜度、撤回或完整性判断。
 90. 外部趋势、市场洞察和平台规范必须有有限有效期；普通网页 /参考案例也必须形成检索快照并设置有效期。重新检索产生新 binding，不得无期限复用旧摘要。
 91. 知识正文或 governance lifecycle / expiry 被本地修改而 fingerprint / integrity 不匹配时必须标为 invalid；本地 fingerprint 仍不是密码学签名，也不对抗能重算 hash 的恶意用户。
 92. 旧的无版本 `DesignKnowledgeResult` 保留读取兼容，但统一归为 `legacy_unversioned`，不得继续作为 prompt_context。兼容不等于静默升级；必须经当前 provider 重新检索或显式治理后才能使用。
 93. Knowledge usage snapshot 只保留 digest、来源类型、版本与状态，不复制正文、URL 查询参数、用户检索词或本地路径，并固定声明 `doesNotGrantToolPermission=true`、`doesNotProveQuality=true`。
 94. 主图 /详情页方法论、通用设计原则等静态 Knowledge Tool 也必须返回相同 governance binding 与 usage snapshot；“内置知识”不能成为绕过版本治理的例外。
-95. 主图、详情页、SKU 等业务 Skill 的 R1 必须由模型通过 `runtime-design-brief-declaration/v0` 显式声明；Harness 只按当前 manifest 的 required / optional inputs 校验覆盖，不得从任务文本、品类、文件名或默认模板反推输入已提供。
-96. Brief ready 前只允许读取项目上下文、取得视觉 /结构观察和检索 Knowledge。Photoshop 写入、保存导出、外部生成和业务 workflow bridge 必须在执行点 fail closed；读取成功、Capability 可用或普通 Tool batch 都不能代替 R1。
-97. R1 Brief 只描述目标、交付、输入覆盖与约束，不生成 R3 策略、R4 行动计划或 Photoshop 动作，也不授予 Tool 权限、自动装载 Capability、计算任务进度或证明设计质量。
-98. R3 只能在当前 Brief ready 后声明，R4 只能在当前 R3 ready 后声明。Brief 重申必须使旧 R3 / R4 与对应执行观察失效，避免任务目标变化后继续消费旧计划。
-99. 完整 Brief 只允许保留在本轮有界运行结果；跨轮 run record 与 resume 只能持久化 digest、输入状态计数和安全 `contextRefs`，不得复制完整输入、素材路径、图片或敏感载荷。
-100. 品类 Brief / intake 不得成为第二套 Agent R1 真相源。迁移时必须先接通 Harness-owned Brief 上下文和真实消费者，再删除旧入口，并用业务回归证明不是以能力退化换取架构整洁。
-101. Harness 在执行边界统一生成 R1 digest，并把 declaration、digest 和当前 manifest required inputs 传给被选择的 Skill；子 Skill 继承同一上下文。业务 executor 不得各自复制 validator 或 digest 算法。
+95. `staged` 业务 Skill 的 R1 由模型通过 `runtime-design-brief-declaration/v0` 显式声明；Harness 只按当前 manifest 的 required / optional inputs 校验覆盖，不得从任务文本、品类、文件名或默认模板反推输入已提供。`agentic` 的 brief 是可选工作笔记，不作写入门票。
+96. `staged` Brief ready 前只允许读取项目上下文、取得视觉 /结构观察和检索 Knowledge；Photoshop 写入、保存导出、外部生成和业务 workflow bridge 在执行点 fail closed。`agentic` 不受此阶段门禁，仍受 execution preflight、有效目标、读后写与不可逆审批约束。
+97. `staged` R1 Brief 只描述目标、交付、输入覆盖与约束，不生成 R3 策略、R4 行动计划或 Photoshop 动作，也不授予 Tool 权限、自动装载 Capability、计算任务进度或证明设计质量。
+98. `staged` 的 R3 只能在当前 Brief ready 后声明，R4 只能在当前 R3 ready 后声明。Brief 重申必须使旧 R3 / R4 与对应执行观察失效，避免任务目标变化后继续消费旧计划。`agentic` 不使用该顺序门禁。
+99. `staged` 完整 Brief 只允许保留在本轮有界运行结果；跨轮 run record 与 resume 只能持久化 digest、输入状态计数和安全 `contextRefs`，不得复制完整输入、素材路径、图片或敏感载荷。
+100. 品类 Brief / intake 不得成为第二套 `staged` R1 真相源。迁移时必须先接通 Harness-owned Brief 上下文和真实消费者，再删除旧入口，并用业务回归证明不是以能力退化换取架构整洁。
+101. `staged` Harness 在执行边界统一生成 R1 digest，并把 declaration、digest 和当前 manifest required inputs 传给被选择的 Skill；子 Skill 继承同一上下文。业务 executor 不得各自复制 validator 或 digest 算法。
 102. 项目素材理解必须与任务 Brief 分离。`project-product-understanding/v1` 只整理结构化 asset role 与已有视觉观察，作为只读项目上下文，不读取任务文本，也不授予执行权。
-103. 通用 Product Understanding 不得推断品类、组合规则、买家问题、卖点策略或设计方向；这些内容分别归用户 /项目事实、Skill Knowledge、模型 R3 Strategy 与 R4 Plan。
+103. 通用 Product Understanding 不得推断品类、组合规则、买家问题、卖点策略或设计方向；这些内容分别归用户 /项目事实、Skill Knowledge 与模型的专业判断。`staged` 可把判断记录为 R3 Strategy / R4 Plan，`agentic` 不要求阶段声明。
 104. Planner 可以消费 product type、material、scene、style tag、`sellingPointObservations` 和 visual summary，但不能把观察字段升级成已确认商品事实或确定性设计方案。开放式设计 follow-up 仍由模型理解与动态规划。
-105. “存在 live runner”不等于系统级 E2E。主图、详情页、SKU 必须分别完成真实 Agent、真实 Provider、manifest stage plan、被选 Skill bridge、Photoshop、写后读回、Evaluation 和 R4 交付检查。
+105. “存在 live runner”不等于系统级 E2E。主图、详情页、SKU 必须分别完成真实 Agent、真实 Provider、与 `execution_model` 相符的 manifest 路径、被选 Skill bridge、Photoshop、写后读回、Evaluation 和交付检查；只有 `staged` 要求 stage plan / R4。
 106. 系统级 E2E readiness 必须 fail closed：缺任一关键运行结果或质量检查只能是 `partial_runner`，不得由脚本名称、单次导出、Tool success 或人工印象升级为 ready。
 107. 实机验收默认只读。Photoshop 写入至少需要任务级 live 授权与一次性文档 /输出授权；CLI 参数本身不能成为唯一写权限来源。
 108. Provider 可达与 Photoshop Bridge 可达必须分开记录。模型可用但 8768 不可达时，只能报告基础设施部分就绪，不得运行或声称 Photoshop E2E。
 109. 三类业务 Skill 的系统路径验证必须复用生产 Agent、结构化 Manifest Resolver、Capability Session 和 workflow bridge；不得用测试专用第二套 orchestrator 证明生产拓扑。
-110. fixture 模型和 fixture executor 可以证明 R1 / R3 / R4 与被选 Skill 的控制流，但 Evaluation 必须保持未通过，且报告必须明确 `executesPhotoshop=false`、`claimsLiveE2E=false`、`claimsDesignQuality=false`。
+110. fixture 模型和 fixture executor 可以证明 `staged` 的 R1 / R3 / R4 或 `agentic` 工具循环与被选 Skill 的控制流，但 Evaluation 必须保持未通过，且报告必须明确 `executesPhotoshop=false`、`claimsLiveE2E=false`、`claimsDesignQuality=false`。
 111. 治理目标不是通过升级模型掩盖 Harness 缺陷。模型超时、漏字段或重复调用应先检查能力面、阶段可见性、schema 反馈和停机纪律；更换模型只能作为独立 Provider 选择，不得成为架构修复。
-112. R1 / R3 只暴露跨品类只读上下文 Capability 的首选 provider；业务 Skill、Photoshop 写入和交付 schema 必须在 R4 ready 后才进入模型可见面。若 R0 已选出可执行 workflow owner，E1 首次只公开该 Skill bridge 与 Harness 控制，Skill 尝试后才恢复当前 Manifest 已授权的原子调整能力。
+112. `staged` 的 R1 / R3 只暴露跨品类只读上下文 Capability 的首选 provider；业务 Skill、Photoshop 写入和交付 schema 在 R4 ready 后才进入模型可见面。若 R0 已选出可执行 workflow owner，E1 首次只公开该 Skill bridge 与 Harness 控制，Skill 尝试后再恢复当前 Manifest 已授权的原子调整能力。`agentic` 不按 R1 / R3 / R4 裁剪工具面。
 113. 阶段可见性按 Capability id、runtime state 和结构化 selected-Skill owner 决定，不读取用户任务文本、不匹配主图 /详情页 /SKU 关键词，也不形成永久 Tool 白名单。没有 owner 的开放任务保持通用 ReAct；有 owner 的任务也只收窄首次执行入口，不锁死后续调整。
-114. 无效 Harness control declaration 只能进行有界、同工具 schema 修复。Harness 不删除未知字段、不补造缺失上下文引用或预期结果、不代写模型内容；修复超限必须停止并报告。
+114. `staged` 的无效 Harness control declaration 只能进行有界、同工具 schema 修复。Harness 不删除未知字段、不补造缺失上下文引用或预期结果、不代写模型内容；修复超限停止该 staged 路径并报告。`agentic` 不得因可选声明无效而停止工具循环。
 115. 模型路由已选择、但因 Skill declaration 的 `modelDirectExecution=forbidden` 必须转入 autonomous ReAct 的 business-workflow，必须通过 `runtime-selected-skill-handoff/v0` 保留 R0 选择事实。把直接执行决策置空时不得同时丢失 Skill identity。
 116. selected-Skill handoff 只允许来自结构化模型选择和 Skill declaration，不得从任务文本、deterministic hint、文件名或品类正则补造；它不执行 Skill、不授予 Tool 权限，也不证明 R0 之后任何阶段通过。
-117. 一旦存在结构化 Skill / task type 选择，生产 Capability runtime 必须解析到唯一 Manifest；缺失、损坏或互相冲突时必须在模型和 Photoshop 调用前 `selected_manifest_missing` fail closed，禁止静默退回 generic broad discovery。没有结构化选择的开放任务仍可保持通用能力发现。
+117. 一旦存在结构化 Skill / task type 选择，生产 Capability runtime 必须解析到唯一 Manifest。缺失、损坏或互相冲突时，必须阻止该 Skill 的 Photoshop 写入并向模型公开可执行的恢复信息；不得在模型调用前封死只读诊断，也不得静默把已明确选择的 staged 工作流降为 generic broad discovery。没有结构化选择的开放任务仍可保持通用能力发现。
 118. “本轮是否改动画面或文件”必须来自成功的 `photoshop_write | save_export` 事实计数；UI、状态码映射和失败清洗不得把后续阻断改写为“整轮没有改动”。
 119. Workflow Skill 内部 Tool 调用保留在 Skill 结果、Tool log 和验收记录中，但默认不提升为用户顶层步骤；用户过程只呈现 Skill 阶段、必要观察、质量结论与阻塞影响。
 120. Runtime 收口异常不得覆盖已经产生的执行结果。若无法安全进入下一代 Reflexion，应保留当前 Tool result、mutation 与读回记录，停止继续写入并要求复核，而不是返回“本轮不会改动画面”或内部错误码。
@@ -708,6 +754,8 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 5. UXP 是 Photoshop 轻量桥接层，负责安全执行受控工具和回传结果；UXP 面板工具不自动等于 Agent skill。
 6. Photoshop 是真实 PSD、可编辑图层、沙盒落地和最终精修环境；高频试错应优先在桌面端预览或计划层完成。
 7. Eagle 是视觉资产和参考库来源，不是 Agent 大脑；默认只读，不默认全量扫描或写回。
+8. 交互卡 Runtime 只提供声明式组件、安全渲染、身份、幂等、挂起和恢复。Agent 决定是否需要询问与卡片内容；业务 Skill Provider 拥有领域 schema、语义校验、提交和恢复消费。通用 ChatPanel /卡片 Host 不得按 SKU、主图或详情页分支，也不得让模型生成 React、HTML、CSS、脚本或任意执行 action。
+9. Photoshop、项目文件、浏览器、桌面观察和命令执行属于跨 Skill Tool Provider，由 Harness 的现有 Capability Session、preflight、任务作用域和结果读回治理；Skill 只声明依赖并消费结果，不复制 Provider。DesignEcho 不是任意电脑控制 Agent：电脑能力只服务当前视觉设计与交付目标。外部 MCP 的“已登记 /已启用”不能直接等同于模型可见或可执行；桌面写入和命令执行必须先具备任务级授权、目标 /工作目录范围、风险分类、取消 /超时、输出脱敏和副作用核验，缺一项就不接入生产工具面。
 
 ### 5.4 UI 整合边界
 
@@ -719,6 +767,7 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 2. UI 可以产品化呈现 Agent 过程、工具摘要、验收报告和阻塞原因，但不能暴露 raw tool JSON、内部路由、skill id 或开发调试字段。
 3. 技术诊断保留在 Developer Debug / 诊断模式，普通用户界面只显示任务语言、必要观察、质量结论和交付结果。
 4. UI polish 不能替代真实 Agent 能力、Photoshop 实际执行与读回或 QA 通过。
+5. 交互卡只在答案无法从当前事实取得、且不同答案会实质改变结果时打断。短选择、结构化草稿和 Skill 业务卡使用不同 Provider；可观察事实先读取，低影响可逆判断由 Agent 完成，不能为了展示卡片增加确认轮次。
 
 ## 6. 现有文档角色
 
@@ -736,21 +785,21 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 
 本文件位于这些文档之上。其他文档可以继续保留，但必须服务于 Design Agent OS，不应成为第二套架构真相源。
 
-## 7. 依赖约束与纵向收口顺序
+## 7. 历史迁移视图与现行纵向收口边界
 
-从 2026-08-03 起，当前执行顺序以 `project-memory/Plan.md` 顶部主线为准。旧 M3-A → M3-B → M3-C → M3-D 的安全依赖不再解释为“先迁移全仓所有 mutation，再允许任何其它工作”，而是按纵向 capability pack 会合：
+以下顺序记录 2026-08-03 的迁移分解，不是当前开发的强制流水线，也不覆盖当前用户任务、首张 `CurrentTask` 卡、现有代码与 `execution_model`。需要 staged capability 迁移时，可按纵向 capability pack 会合：
 
 1. 标准设计 Agent 的产品身份与边界已在 `Prompt.md` 和本 OS 定义完成，不建立额外 F0 Runtime Contract、任务族枚举或分类器。
-2. F1 / F2：收敛只读 Task Profile crosswalk 与阶段化 Design Context；它们不授予 Tool、Skill、Stage 或完成权限，可以与执行 Owner 工作并行。
-3. X1：现有 RuntimeSession 原地演进为最小可挂起 TaskRun，并与 `PhotoshopTransactionRunner` 共同拥有首个纵切的任务 /文档 /revision /写者 /operation result 责任。
-4. X2：只对同时完成 TaskRun、Capability、preflight、稳定 target / revision 和 TransactionRunner Owner 切换的节点开放 R4 受控执行。
+2. F1 / F2：收敛只读 Task Profile crosswalk 与 Design Context；staged 可按阶段装载，agentic 按当前目标与观察需要装载。它们不授予 Tool、Skill、Stage 或完成权限，可以与执行 Owner 工作并行。
+3. X1：共享生产身份演进为最小可挂起 TaskRun，并与 `PhotoshopTransactionRunner` 共同拥有首个纵切的任务 /文档 /revision /写者 /operation result 责任。
+4. X2：仅对 `staged` 中同时完成 TaskRun、Capability、preflight、稳定 target / revision 和 TransactionRunner Owner 切换的节点开放 R4 受控执行；agentic mutation 不等待 R4。
 5. 每个 capability pack 在同一切片退役其 continuation / recovery / completion / shadow reconciliation 重复责任；未迁移 Tool 继续保持 legacy，不进入该 R4 切片。
 6. V0：先验证目标绑定的“看准、写准、读回准”，不宣称专业设计质量。
 7. F3 / V1：以现有 Knowledge / Design Kernel 承载首条 Craft Recipe，并用真实素材和确定约束打穿无业务 Skill 的受限单画布设计；这不是“从零创作”新子系统。
 8. M5 / M6：V1 接入唯一 Release 首条路径，随后收敛全部消费者并扩展主图、SKU Template / Color Card / Batch 与详情页真实 E2E。
 9. M7：只从已结束、已验证、版本固定的真实 TaskRun 进入指标和受审经验生命周期。
 
-写入依赖仍然严格：Foundation 并行不等于写入并行，任何 Photoshop mutation 都不能缺少上述 X1 / X2 条件。M0–M2 已验证事实继续有效。下方阶段 0–8 保留为能力依赖视图，不再单独拥有排期；任何局部 Skill 修复必须映射到顶部主线，不能插队形成第二个“当前计划”。
+共同写入边界仍然严格：任何 Photoshop mutation 都必须经过有效目标、execution preflight、唯一 TransactionRunner 与必要读回；只有 `staged` R4 节点额外要求 X2。下方阶段 0–8 仅保留为历史能力依赖视图，不拥有排期、授权或阻断权；局部修复以当前任务和真实调用链为准，不必为了映射旧阶段而暂停。
 
 ### 7.1 阶段 0：文档治理与方法论收口
 
@@ -758,7 +807,7 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 2. 固定默认阅读顺序。
 3. 降级高干扰文档。
 
-这是所有后续开发的前置条件。
+这是历史治理阶段的目标说明，不是所有后续开发的前置门禁。
 
 ### 7.2 阶段 1：Agent 认知控制面
 
@@ -791,13 +840,13 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 1. 先让 TaskRun 唯一拥有计划 revision、节点 cursor / state、pending interaction、operation result、review 和终态。
 2. 把 `UserIntent`、`ProductTruth`、`AssetHandle`、`DesignBrief`、`SceneGraph / DesignIR`、`ExecutionPlan`、operation result 与 Verification 真正接成运行时主线。
 3. 让 executor 只消费 TaskRun 当前 ready 节点，不在执行期继续承担大量推理或重新判断任务完成。
-4. 当某个节点具备 TaskRun、Capability、preflight、稳定 target / revision 和 TransactionRunner owner 后，让该 R4 节点受控调度；它只执行已编译计划，不替代视觉理解、审美判断或验收。
+4. 当 `staged` 节点具备 TaskRun、Capability、preflight、稳定 target / revision 和 TransactionRunner owner 后，让该 R4 节点受控调度；它只执行已编译计划，不替代视觉理解、审美判断或验收。`agentic` 不等待这条 R4 调度链。
 5. 每个节点切换时同步删除其 shadow reconciliation、no-redo、freshness、Recovery Queue 和 Completion 重推断重复 owner；未迁移 legacy Tool 不能借此取得 scheduler authority。
 
 ### 7.6 阶段 5：通用设计闭环
 
 1. 建立常驻 Design Kernel，而不是把参考图复刻或任一业务 Skill 当作通用底座。
-2. Task Profile crosswalk、阶段化 Context 与 Photoshop Craft Recipe 属于只读 Foundation，可以在写入 owner 收敛期间推进，但不得单独宣称 Runtime 或 E2E 已完成。
+2. Task Profile crosswalk、`staged` 阶段化 Context 与 Photoshop Craft Recipe 属于只读 Foundation，可以在写入 owner 收敛期间推进，但不得单独宣称 Runtime 或 E2E 已完成；`agentic` 只按目标渐进装载上下文，不消费阶段写入门禁。
 3. 优先用目标替换、语义图层整理打穿“看准 → 写准 → 读回准”，再用真实素材和确定约束完成无业务 Skill 的受限单画布设计，打穿“理解需求 → 设计结构 → 计划 → Photoshop 执行 → 多尺度复核 → 局部修正 → Release 投影”。
 
 这一步通过前，不能把业务 skill 的局部效果误写成通用设计能力完成。
@@ -830,12 +879,12 @@ Release Gate 的输出固定为 `release_ready / review_required / release_rejec
 
 这一层必须后置，不能用“学习能力”掩盖当前基础能力不稳定。
 
-## 8. 冻结规则
+## 8. 现行约束（取代旧冻结规则）
 
-1. 在阶段 1 到阶段 4 没有稳定通过前，主图、详情页、SKU 只允许做必要 bugfix、验收、边界澄清和只读观察，不继续扩新设计策略。
-2. 新的设计知识、网页搜索、视觉模型入口、父子 skill 编排，都必须说明自己服务于哪个阶段；如果没有明确消费者，不进入实现。
-3. 任何 benchmark、synthetic case、单次成功截图，都不能推动阶段跳级。
-4. 任何业务 skill 不得再新增第二套规划入口或第二套控制平面。
+1. 旧阶段完成度不冻结当前业务开发。只有缺少授权、目标或协议，或继续会造成明确不可逆风险时，才阻断对应动作；开放创意不得因旧迁移里程碑未完成而被迫只读。
+2. 新的设计知识、网页搜索、视觉模型入口或父子 Skill 编排应有当前可识别的消费者、职责 owner 和失败边界；不要求映射到旧阶段编号，也不能因“可能有用”全部常驻注入。
+3. benchmark、synthetic case 和单次成功截图只能验证其实际覆盖的能力，不能外推为生产稳定、商业质量或完整 E2E。
+4. 任何业务 Skill 不得新增第二套规划入口、权限系统或控制平面。
 ## 9. 不可外推结论
 
 1. 当前不能宣称“一句话自动设计已经完成”。

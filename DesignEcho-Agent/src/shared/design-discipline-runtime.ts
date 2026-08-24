@@ -57,8 +57,8 @@ export interface DesignDisciplineContext {
     /** 该任务类型的方法论工具（如 getDetailPageDesignFramework）；无专属时为 searchDesignKnowledge */
     frameworkToolName: string;
     /**
-     * 该品类的 renderLayout 是否必须携带阶段计划 stagePlan（从 spec.requiresStagePlanOnRender 派生）。
-     * 默认 false——只有声明了阶段计划契约的品类（如详情页从零设计）才启用。
+     * 该品类是否有可用的 renderLayout 阶段计划契约（从 spec.requiresStagePlanOnRender 派生）。
+     * 这是方法提示，不是开放创意路径的写入门票；命中时只给出 advisory。
      */
     requiresStagePlan: boolean;
     /**
@@ -455,6 +455,27 @@ export interface DesignToolStateGuardResult {
     nextRequiredTool?: string;
     nextRequiredToolOptions?: string[];
     nextRequiredToolReason?: string;
+    /** 命中的规则 id / 大类（由 evaluateDesignToolStateGuard 附加）：调用方据此决定拦截还是降级为提示。 */
+    disciplineRuleId?: string;
+    disciplineRuleCategory?: DisciplineRuleCategory;
+}
+
+/**
+ * 设计路径宪法：不能证明本次动作必然错误的流程/审美纪律只提醒、不拦截。
+ * 阶段计划、方法论读取次数、连续写入次数与保存前观察都可能提高质量，但它们不是开放创意
+ * 的唯一正确路径。调用方照常执行工具，把 message 作为 advisory 交给模型；真实质量由读回、
+ * 独立评价与用户验收承担。
+ */
+export const ADVISORY_DISCIPLINE_RULE_CATEGORIES: readonly DisciplineRuleCategory[] = Object.freeze([
+    'stage-plan',
+    'framework-halt',
+    'redo-cap',
+    'observe-before-export'
+]);
+
+export function isAdvisoryDisciplineGuardResult(result: DesignToolStateGuardResult | null | undefined): boolean {
+    return Boolean(result?.disciplineRuleCategory)
+        && ADVISORY_DISCIPLINE_RULE_CATEGORIES.includes(result!.disciplineRuleCategory!);
 }
 
 export interface DesignToolStateGuardInput {
@@ -483,9 +504,9 @@ function validateDesignDisciplineStagePlan(
 }
 
 /**
- * 通用设计纪律门禁：未激活时返回 null（不拦截）。激活时只保留跨任务安全与运行不变量，
- * 以及仍在迁移中的显式 Skill policy（stagePlan / reference-first）。它不再承担工具白名单、
- * 强制新建画布或强制 renderLayout 等路线选择。
+ * 通用设计纪律评估：未激活时返回 null。流程与审美建议通过 advisory 返回；硬阻断仅保留
+ * 能由结构化目标和真实状态证明会做错的情况（错误目标建档、缺失指定参考、无授权重复建档）。
+ * 它不承担工具白名单、强制新建画布或强制 renderLayout 等路线选择。
  */
 /**
  * 守卫计算上下文（computedCtx）：级联前算一次的共享前置 + 惰性缓存，供所有 DisciplineRule 复用。
@@ -516,7 +537,7 @@ interface DesignToolStateGuardComputedContext {
 /**
  * 规则大类（β 元数据，为未来单一 manifest 铺路）：便于审计与文档生成按类聚合，不参与判定。
  */
-type DisciplineRuleCategory =
+export type DisciplineRuleCategory =
     | 'stage-plan'
     | 'framework-halt'
     | 'redo-cap'
@@ -554,10 +575,11 @@ interface DisciplineRule {
 }
 
 /**
- * 有序设计纪律规则数组（policy-as-code）：从上到下第一个 when 命中即返回 build 结果。
+ * 有序设计纪律规则数组（policy-as-code）：从上到下第一个 when 命中即返回结果；
+ * 是否阻断由规则 category 的 advisory / hard 分类决定。
  *
  * 顺序强相关（不可乱序）：
- *  - block-0(stagePlan) 先于 block-2(重做上限)：同为 renderLayout，先校验显式 Skill policy。
+ *  - block-0(stagePlan) 先于 block-2(重做上限)：同为 renderLayout，优先给出更具体的计划建议。
  *  - createDocument 处理链：编辑现有文档保护 → 显式 reference-first policy → 防重复建档。
  *  - 写后观察是 Harness 不变量，不依赖是否使用 renderLayout。
  */
@@ -565,15 +587,15 @@ const DESIGN_TOOL_STATE_GUARD_RULES: readonly DisciplineRule[] = [
     {
         id: 'block-0-stageplan',
         category: 'stage-plan',
-        note: '0) renderLayout 必带阶段计划 stagePlan（仅启用阶段计划契约的品类，如详情页从零设计）。'
-            + '文档名校验已下沉到 validateDesignDisciplineStagePlan（按 context.canonicalDocumentName 参数化），不写死「详情页」字面量。',
+        note: '0) 已声明阶段计划契约的品类可在 renderLayout 携带 stagePlan。开放创意不以它作为写入门票；'
+            + '文档名校验由 validateDesignDisciplineStagePlan 参数化，并作为 advisory 返回。',
         when: (c) =>
             c.toolName === 'renderLayout'
             && c.context.requiresStagePlan
             && !c.stagePlanValidation().valid,
         build: (c) => {
             const message = [
-                `当前是从零${c.label}设计，renderLayout 需要携带 Agent 自己形成的阶段计划 stagePlan。`,
+                `当前${c.label}能力提供可选的 stagePlan 契约；缺失或不完整不会阻断本次开放式构图，但可用于降低多阶段返工。`,
                 ...c.stagePlanValidation().blockers.slice(0, 4)
             ].join('\n');
             return {
@@ -581,14 +603,14 @@ const DESIGN_TOOL_STATE_GUARD_RULES: readonly DisciplineRule[] = [
                 message,
                 error: message,
                 nextRequiredTool: 'renderLayout',
-                nextRequiredToolReason: `请先基于项目上下文和${c.label}方法论明确当前阶段计划，再用同一次 renderLayout 执行该阶段草稿。`
+                nextRequiredToolReason: `如果任务确实需要分阶段交付，可补充${c.label}阶段计划；简单单画面任务可直接依据当前目标继续。`
             };
         }
     },
     {
         id: 'block-1-framework-repeat',
         category: 'framework-halt',
-        note: '1) 已读过方法论后不要重复读。停机约束：方法论工具受「读一次别重复读」，故 framework 工具刻意不进 OBSERVATION 永远放行集。',
+        note: '1) 已读过方法论后再次读取通常浪费上下文；只提示复用已有知识，不把重复读取当执行失败。',
         when: (c) => c.toolName === c.framework && c.state.frameworkReadCount >= 1,
         build: (c) => {
             const nextRequiredTool = c.state.documentCreated
@@ -694,9 +716,12 @@ const DESIGN_TOOL_STATE_GUARD_RULES: readonly DisciplineRule[] = [
         ],
         note: '5) 已建画布就别重复新建（门禁出口治理 2026-07-02：补状态感知指路，不再只说"不要做什么"）。'
             + '这是通用幂等保护，不规定后续必须使用 renderLayout。',
-        when: (c) => c.state.documentCreated && c.toolName === 'createDocument',
+        when: (c) =>
+            c.state.documentCreated
+            && c.toolName === 'createDocument'
+            && !c.trustedCreateDocumentAuthorization,
         build: (c) => {
-            const message = `本轮已经创建了${c.label}画布，请在当前文档上继续规划、排版、置图或复核，不要再次新建文档。`;
+            const message = `本轮已经创建了${c.label}画布，且当前动作没有另一份独立交付目标的可信授权；请在当前文档上继续，避免误建重复画布。`;
             return {
                 success: false,
                 message,
@@ -709,14 +734,14 @@ const DESIGN_TOOL_STATE_GUARD_RULES: readonly DisciplineRule[] = [
     {
         id: 'block-7-observe-before-save',
         category: 'observe-before-export',
-        note: '7) 改动后未复核就想保存/导出：先做针对性观察（「改后必看」门禁）。'
+        note: '7) 改动后未复核就保存/导出时提示做针对性观察，但不把观察节奏当成开放创意写入门票。'
             + '它适用于任意 Photoshop 写入路径，不依赖是否调用 renderLayout。'
             + '依赖共享前置 observation（=state.observationIntent 映射 DESIGN_OBSERVATION_REQUIREMENTS，缺省 stage_readiness）。',
         when: (c) =>
             DESIGN_DISCIPLINE_EXPORT_TOOL_NAMES.has(c.toolName)
             && c.state.needsObservationAfterMutation,
         build: (c) => {
-            const message = '当前阶段刚调整过画面，还不能直接保存为可验收文件。请先做一次针对性观察，确认画面可读、无遮挡、不重叠后，再决定保存或重排。';
+            const message = '当前阶段刚调整过画面，建议在交付声明前做一次针对性观察，确认可读性、遮挡与重叠；本次保存/导出仍会执行，并由真实读回与后续验收判断质量。';
             return {
                 success: false,
                 message,
@@ -772,8 +797,15 @@ export function evaluateDesignToolStateGuard(
     };
 
     // 有序级联：第一个 when 命中即返回其 build 结果；全不命中 → null（放行）。
+    // 结果附带规则 id / 大类，调用方据此区分「拦截」与「只提醒」（见 ADVISORY_DISCIPLINE_RULE_CATEGORIES）。
     for (const rule of DESIGN_TOOL_STATE_GUARD_RULES) {
-        if (rule.when(ctx)) return rule.build(ctx);
+        if (rule.when(ctx)) {
+            return {
+                ...rule.build(ctx),
+                disciplineRuleId: rule.id,
+                disciplineRuleCategory: rule.category
+            };
+        }
     }
     return null;
 }

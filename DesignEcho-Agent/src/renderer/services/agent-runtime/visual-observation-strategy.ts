@@ -743,12 +743,17 @@ export function buildPrimaryVisualObservationReviewInstruction(
             '这是纯图层结构整理后的复核：只判断图片是否可读、是否出现图层消失、异常裁切或混合/透明度破坏。',
             '不要把原设计既有的审美、文案或排版问题算作本次归组失败；整理前后像素等价由 Harness 指纹另行证明。'
         ]
-        : [];
+        : [
+            '如果这是当前或刚修改的设计画布，只选与当前目标真正相关的少数关系，从实际像素判断焦点与阅读顺序、比例与留白、字体与色彩、图像处理、缩略图识别或孤立元素；它们是判断视角，不是固定打卡表。',
+            '只有能在 summary 中指出可观察的画面关系，并说明它为何支持当前目标时才用 passed；“已生成、可编辑、无报错、结构完整、看过画面”都不是设计质量依据。',
+            '若当前像素还不足以让你确信方向成熟，不要为了闭合记录先写 passed。比较直接修订、相关参考与隔离批评哪一种最能减少当前不确定性，在同一响应自主选择下一步；不要求固定顺序，也不要求三者都做。'
+        ];
     return [
         `视觉观察记录：${label}；observationKey=${observationKey}`,
         '你必须真实查看这张图后，才可在本次回复中附加结构化复核。',
         ...reviewBoundary,
-        `格式：<visual_observation_review>{"version":"${VISUAL_OBSERVATION_REVIEW_BATCH_VERSION}","decisions":[{"version":"${VISUAL_OBSERVATION_REVIEW_DECISION_VERSION}","observationKey":"${observationKey}","status":"passed|needs_fix|unreadable","reviewer":"primary_model","summary":"简短观察","issues":[]}]}</visual_observation_review>`,
+        `格式：<visual_observation_review>{"version":"${VISUAL_OBSERVATION_REVIEW_BATCH_VERSION}","decisions":[{"version":"${VISUAL_OBSERVATION_REVIEW_DECISION_VERSION}","observationKey":"${observationKey}","status":"passed|needs_fix|unreadable","reviewer":"primary_model","summary":"可观察关系及其与当前目标的联系","issues":[]}]}</visual_observation_review>`,
+        '若当前收据要求比较两个候选，只有你实际根据差异与画面判断了为什么保留当前方向时，才在 decision 中增加 "comparisonReason":"选择理由"；没有比较就不要填。',
         '若本次回复没有判断这张图，不要输出该 observationKey；普通回复或工具调用不会被视为已复核。'
     ].join('\n');
 }
@@ -814,6 +819,7 @@ function sameVisualObservationReviewDecision(
 ): boolean {
     return left.status === right.status
         && left.summary === right.summary
+        && left.comparisonReason === right.comparisonReason
         && JSON.stringify(left.issues || []) === JSON.stringify(right.issues || []);
 }
 

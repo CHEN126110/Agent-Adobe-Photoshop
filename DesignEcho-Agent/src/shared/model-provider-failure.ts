@@ -19,6 +19,24 @@ export interface ModelProviderFailure {
     diagnostic: string;
 }
 
+/**
+ * Provider 调用边界的结构化异常。
+ *
+ * Agent 循环据此把传输失败交还给上层 Runtime 归因和记录，而不是把它压扁成
+ * “Agent 执行出错”文本。该类型不代表失败一定由模型能力导致。
+ */
+export class ModelProviderCallError extends Error {
+    readonly modelId: string;
+    readonly providerFailure: ModelProviderFailure;
+
+    constructor(modelId: string, providerFailure: ModelProviderFailure) {
+        super(providerFailure.diagnostic || 'model_provider_call_failed');
+        this.name = 'ModelProviderCallError';
+        this.modelId = modelId;
+        this.providerFailure = providerFailure;
+    }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value && typeof value === 'object' ? value as Record<string, unknown> : null;
 }
@@ -120,7 +138,7 @@ export function classifyModelProviderFailure(error: unknown): ModelProviderFailu
     if (status === 402) {
         return buildFailure('billing', statusBasis, diagnostic, status, providerCode);
     }
-    if (/insufficient[_\s-]*(?:balance|credit|credits|funds|quota)|balance\s+is\s+insufficient|quota[_\s-]*exceeded|余额不足|账户余额|额度不足|配额不足/i.test(normalized)) {
+    if (/insufficient[_\s-]*(?:balance|credit|credits|funds|quota)|balance\s+is\s+insufficient|quota[_\s-]*exceeded|(?:you(?:'|’)ve\s+)?hit\s+(?:your\s+)?usage\s+limit|purchase\s+more\s+credits|余额不足|账户余额|额度不足|配额不足|用量(?:已)?(?:达到|用尽|超出)(?:上限|限额)?/i.test(normalized)) {
         return buildFailure('billing', providerCode ? 'code' : 'message', diagnostic, status, providerCode);
     }
     if (/requires?\s+(?:an?\s+)?subscription|subscription[_\s-]*(?:required|needed)|upgrade(?:\s+your\s+plan)?\s+for\s+access|not\s+(?:allowed|entitled|authorized)\s+to\s+(?:use|access)\s+(?:this\s+)?model|model\s+(?:access|permission)\s+(?:is\s+)?(?:required|denied|not\s+enabled)|no\s+endpoints?\s+found|model\s+(?:not\s+found|does\s+not\s+exist|unavailable)|permission_denied|forbidden|需要.*订阅|订阅.*(?:不足|要求)|升级.*(?:订阅|访问)|模型.*(?:无权|无权限|未开放|不可用)/i.test(normalized)) {

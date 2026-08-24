@@ -62,6 +62,21 @@ function toRawNode(layer: any): RawDesignSourceNode {
         bottom: Number.isFinite(Number(layer?.bottom)) ? Number(layer.bottom) : undefined,
         hasEffects: Boolean(layer?.effects && Object.keys(layer.effects).some((key) => key !== 'disabled'))
     };
+    // 技法参数展开（2026-08-23）：effects 的原始参数（投影距离 / 描边 / 渐变…）是可复用的技法配方，
+    // 只带布尔会把技法信息全部丢掉。H3 普查显示带 effects 图层仅约 1%，完整透传不会膨胀 profile。
+    if (node.hasEffects && layer?.effects && typeof layer.effects === 'object') {
+        const enabledEffects: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(layer.effects as Record<string, unknown>)) {
+            if (key === 'disabled') continue;
+            enabledEffects[key] = value;
+        }
+        if (Object.keys(enabledEffects).length > 0) {
+            node.effects = enabledEffects;
+        }
+    }
+    if (typeof layer?.blendMode === 'string' && layer.blendMode !== 'normal' && layer.blendMode !== 'pass through' && layer.blendMode !== 'passThrough') {
+        node.blendMode = layer.blendMode;
+    }
     if (kind === 'text') {
         node.text = {
             content: typeof layer?.text?.text === 'string' ? layer.text.text : undefined,

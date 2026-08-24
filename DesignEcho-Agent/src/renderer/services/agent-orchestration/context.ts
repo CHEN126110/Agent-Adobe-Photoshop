@@ -16,6 +16,7 @@ import {
     type ProjectVisualInsightCacheReadResult
 } from '../../../shared/project-visual-insight-cache';
 import { readPhotoshopHistoryStateRef } from '../../../shared/photoshop-history-state-ref';
+import type { PhotoshopDocumentInventoryEntry } from '../../../shared/photoshop-document-inventory';
 import { useAppStore } from '../../stores/app.store';
 import { executeToolCall } from '../tool-executor.service';
 import type { PhotoshopContext, ProjectContext } from './types';
@@ -299,9 +300,31 @@ export interface PhotoshopRequestContextCapture {
     connection: 'connected' | 'disconnected' | 'unknown';
     documentState: 'present' | 'absent' | 'unknown';
     context?: PhotoshopContext;
+    openDocuments?: PhotoshopDocumentInventoryEntry[];
     source: string;
     observedAt: string;
     revision: string;
+}
+
+function readOpenDocumentInventory(result: unknown): PhotoshopDocumentInventoryEntry[] {
+    if (!result || typeof result !== 'object') return [];
+    const documents = (result as { documents?: unknown }).documents;
+    if (!Array.isArray(documents)) return [];
+    return documents.filter((document): document is PhotoshopDocumentInventoryEntry => (
+        Boolean(document)
+        && typeof document === 'object'
+        && Number.isInteger(Number((document as { id?: unknown }).id))
+    ));
+}
+
+function buildPhotoshopRequestRevision(
+    context: PhotoshopContext | undefined,
+    documents: PhotoshopDocumentInventoryEntry[]
+): string {
+    const inventoryRevision = documents
+        .map((document) => `${document.id}:${document.pathState}:${document.projectAffinity}:${document.isActive ? 1 : 0}`)
+        .join(',');
+    return `${context?.revision || 'photoshop:document-unknown'}:open:${inventoryRevision || 'none'}`;
 }
 
 function normalizeObservationTimestamp(value: unknown, fallback: string): string {
@@ -415,19 +438,31 @@ export async function capturePhotoshopRequestContext(options: {
             };
         }
 
-        const context = await getPhotoshopContext({ signal: options.signal });
+        const [context, inventoryResult] = await Promise.all([
+            getPhotoshopContext({ signal: options.signal }),
+            executeToolCall('listDocuments', {
+                includePaths: true,
+                includeDimensions: true,
+                includeLayerCount: false
+            }, { signal: options.signal })
+        ]);
+        const openDocuments = readOpenDocumentInventory(inventoryResult);
         const observedAt = context?.observedAt || new Date().toISOString();
+        const documentState = context
+            ? (context.hasDocument
+                ? 'present'
+                : (openDocuments.length > 0 ? 'unknown' : 'absent'))
+            : 'unknown';
         return {
             connection: 'connected',
-            documentState: context
-                ? (context.hasDocument ? 'present' : 'absent')
-                : 'unknown',
+            documentState,
             ...(context ? { context } : {}),
+            ...(openDocuments.length > 0 ? { openDocuments } : {}),
             source: context
-                ? 'main.websocket-status+photoshop.getDocumentInfo'
-                : 'main.websocket-status+photoshop.getDocumentInfo:unknown',
+                ? 'main.websocket-status+photoshop.getDocumentInfo+photoshop.listDocuments'
+                : 'main.websocket-status+photoshop.getDocumentInfo:unknown+photoshop.listDocuments',
             observedAt,
-            revision: context?.revision || 'photoshop:connected:document-unknown'
+            revision: buildPhotoshopRequestRevision(context, openDocuments)
         };
     } catch {
         return {

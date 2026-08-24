@@ -318,6 +318,23 @@ export function readAgentReActRecoveryToolNames(result: unknown): string[] {
     return recovery ? [...recovery.allowedToolNames] : [];
 }
 
+/**
+ * 只把 Harness 自己签发的 Photoshop 原生弹窗事实转换成“下一轮可见工具”。
+ * 这不会执行截图，也不要求 Agent 必须调用；它仅避免 Capability 裁剪让恢复出口不可达。
+ */
+export function readAgentEnvironmentRecoveryToolNames(result: unknown): string[] {
+    const record = asRecord(result);
+    const data = asRecord(record?.data);
+    const candidates = [record, data].filter((value): value is Record<string, unknown> => Boolean(value));
+    const modalObservation = candidates.some((candidate) => {
+        const observation = asRecord(candidate.environmentObservation);
+        return candidate.environmentState === 'photoshop_native_modal_suspected'
+            && observation?.capability === 'capturePhotoshopWindow'
+            && observation.scope === 'adobe_photoshop_application_window';
+    });
+    return modalObservation ? ['capturePhotoshopWindow'] : [];
+}
+
 function hasPendingInteractiveConfirmation(data?: Record<string, unknown>): boolean {
     if (!data) return false;
     const cards = Array.isArray(data.interactiveCards) ? data.interactiveCards : [];

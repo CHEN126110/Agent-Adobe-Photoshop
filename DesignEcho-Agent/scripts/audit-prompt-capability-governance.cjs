@@ -20,10 +20,26 @@ const executorPath = path.join(
   'autonomous-agent.executor.ts'
 );
 const contextCompilerPath = path.join(runtimeRoot, 'runtime-context-compiler.ts');
+const contextCapacityPath = path.join(root, 'src', 'shared', 'agent-context-allocation.ts');
+const agentPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'agent.ts');
+const toolSchemasPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'tool-schemas.ts');
 const { validatePromptCapabilityGovernance } = require(
   path.join(runtimeRoot, 'prompt-capability-governance.ts')
 );
 const { compileRuntimeContext } = require(contextCompilerPath);
+const { buildAgentContextCapacityPlan } = require(contextCapacityPath);
+const { buildAgentOperatingProfilePromptSection } = require(
+  path.join(runtimeRoot, 'agent-operating-profile.ts')
+);
+const { buildDesignerAgentAutonomyPrinciplesPromptSection } = require(
+  path.join(root, 'src', 'shared', 'designer-agent-autonomy-principles.ts')
+);
+const { buildPrimaryVisualObservationReviewInstruction } = require(
+  path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'visual-observation-strategy.ts')
+);
+const { buildAgentToolPreflightUserProcess } = require(
+  path.join(root, 'src', 'shared', 'agent-user-visible-state.ts')
+);
 
 function declaration(promptId, input) {
   return {
@@ -74,6 +90,60 @@ assert.strictEqual(report.boundaries.grantsPermission, false);
 assert.strictEqual(report.boundaries.executesTools, false);
 assert.strictEqual(report.boundaries.declaresCompletion, false);
 
+const operatingProfilePrompt = buildAgentOperatingProfilePromptSection();
+assert(operatingProfilePrompt.includes('先说清能交付什么具体结果'));
+assert(operatingProfilePrompt.includes('不把常识性边界写成免责声明'));
+assert(operatingProfilePrompt.includes('资深商业视觉设计师'));
+assert(operatingProfilePrompt.includes('创意与质量负责人'));
+assert(operatingProfilePrompt.includes('Photoshop 和各项能力只是你的制作媒介，不是你的身份'));
+assert(operatingProfilePrompt.includes('你要对画面有主见'));
+assert(operatingProfilePrompt.includes('向用户表达时使用设计师语言'));
+const autonomyPrinciplesPrompt = buildDesignerAgentAutonomyPrinciplesPromptSection();
+assert(autonomyPrinciplesPrompt.includes('足以支撑成品质量的可逆路径'));
+assert(autonomyPrinciplesPrompt.includes('省步骤或尽快停下都不是开放创意的目标'));
+assert(!autonomyPrinciplesPrompt.includes('走最短可逆路径'));
+assert(autonomyPrinciplesPrompt.includes('生成商品文案或把产品信息写入交付物时'));
+assert(autonomyPrinciplesPrompt.includes('纯能力说明不需要主动罗列这些边界'));
+assert(autonomyPrinciplesPrompt.includes('可编辑、无报错或看过截图只是制作与观察事实，不等于设计已经做好'));
+assert(autonomyPrinciplesPrompt.includes('焦点与阅读顺序、比例与留白、字体与色彩、图像处理、缩略图识别'));
+assert(autonomyPrinciplesPrompt.includes('孤立或无功能元素'));
+assert(autonomyPrinciplesPrompt.includes('再次自我确认容易受既有方向锚定'));
+assert(autonomyPrinciplesPrompt.includes('比较参考、隔离批评与直接修订的信息增益后自主选择'));
+assert(autonomyPrinciplesPrompt.includes('不把其中任何一项变成固定工具顺序'));
+const primaryDesignReviewPrompt = buildPrimaryVisualObservationReviewInstruction(
+  'observation:test-design',
+  'getCanvasSnapshot',
+  'canvas'
+);
+assert(primaryDesignReviewPrompt.includes('从实际像素判断焦点与阅读顺序'));
+assert(primaryDesignReviewPrompt.includes('它们是判断视角，不是固定打卡表'));
+assert(primaryDesignReviewPrompt.includes('指出可观察的画面关系'));
+assert(primaryDesignReviewPrompt.includes('summary":"可观察关系及其与当前目标的联系"'));
+assert(primaryDesignReviewPrompt.includes('“已生成、可编辑、无报错、结构完整、看过画面”都不是设计质量依据'));
+assert(primaryDesignReviewPrompt.includes('比较直接修订、相关参考与隔离批评哪一种最能减少当前不确定性'));
+assert(primaryDesignReviewPrompt.includes('不要求固定顺序，也不要求三者都做'));
+for (const fixedToolRequirement of ['必须调用 Eagle', '必须调用 evaluateDesign', '必须委派 critic']) {
+  assert(!primaryDesignReviewPrompt.includes(fixedToolRequirement));
+}
+const structuralOrganizationReviewPrompt = buildPrimaryVisualObservationReviewInstruction(
+  'observation:test-organization',
+  'getCanvasSnapshot',
+  'semantic-layer-organization-region'
+);
+assert(structuralOrganizationReviewPrompt.includes('只判断图片是否可读'));
+assert(!structuralOrganizationReviewPrompt.includes('从实际像素判断焦点与阅读顺序'));
+const preflightUserProcess = buildAgentToolPreflightUserProcess({
+  toolDisplayName: '添加亮度/对比度调整',
+  blockers: [
+    '已有读取结果未包含可校验的 documentId，不能精确锁定 Photoshop 写入目标。需要先取得带文档身份的只读事实，具体观察方式由 Agent 从当前已授权能力中选择。'
+  ]
+});
+assert.strictEqual(preflightUserProcess.title, '确认当前工作画面');
+assert(preflightUserProcess.detail.includes('确保调整落在正确画面上'));
+for (const internalTerm of ['documentId', '写入目标', '文档身份', '授权能力', 'Harness', '门禁']) {
+  assert(!`${preflightUserProcess.title}\n${preflightUserProcess.detail}`.includes(internalTerm));
+}
+
 const negativeReport = validatePromptCapabilityGovernance({
   declarations: [
     declaration('NEG-FIXED', { owner: 'model', implementation: 'model_prompt', authority: 'declarative', scope: 'capability', activation: 'always', stages: ['R1'], capabilityKinds: ['skill'], fixedSequence: true, createsIndependentRuntimeState: true }),
@@ -103,6 +173,15 @@ for (const code of [
 }
 
 const executorSource = fs.readFileSync(executorPath, 'utf8');
+const toolSchemasSource = fs.readFileSync(toolSchemasPath, 'utf8');
+const evaluateDesignSchemaStart = toolSchemasSource.indexOf("name: 'evaluateDesign'");
+const evaluateDesignSchemaEnd = toolSchemasSource.indexOf("name: 'composeDesign'", evaluateDesignSchemaStart);
+assert(evaluateDesignSchemaStart >= 0 && evaluateDesignSchemaEnd > evaluateDesignSchemaStart);
+const evaluateDesignSchemaSource = toolSchemasSource.slice(evaluateDesignSchemaStart, evaluateDesignSchemaEnd);
+assert(evaluateDesignSchemaSource.includes('可编辑、无报错或看过截图不等于设计成熟'));
+assert(evaluateDesignSchemaSource.includes('孤立或无功能元素'));
+assert(evaluateDesignSchemaSource.includes('隔离批评比直接修订或参考比较更有信息增益时调用'));
+assert(!evaluateDesignSchemaSource.includes('必须调用'));
 const systemPromptStart = executorSource.indexOf('function buildBaseSystemPrompt');
 const capabilityPromptStart = executorSource.indexOf('function buildBaseCapabilityPolicyPrompt');
 assert(systemPromptStart >= 0 && capabilityPromptStart > systemPromptStart);
@@ -124,11 +203,84 @@ assert(executorSource.includes("id: 'policy.execution-discipline'"));
 assert(executorSource.includes('content: baseCapabilityPolicyPrompt'));
 assert(executorSource.includes("slot: 'capability_policy'"));
 
+const planNeutralKnowledgeStart = executorSource.indexOf('function buildPlanNeutralDesignKnowledgeRuntimeItems(');
+const planNeutralKnowledgeEnd = executorSource.indexOf(
+  'export interface AutonomousCapabilityRuntime',
+  planNeutralKnowledgeStart
+);
+assert(planNeutralKnowledgeStart >= 0 && planNeutralKnowledgeEnd > planNeutralKnowledgeStart);
+const planNeutralKnowledgeSource = executorSource.slice(planNeutralKnowledgeStart, planNeutralKnowledgeEnd);
+assert(planNeutralKnowledgeSource.includes("id: 'knowledge.plan-neutral-designer-judgment'"));
+assert(planNeutralKnowledgeSource.includes("buildDesignPrinciplesSummary('overview')"));
+assert(planNeutralKnowledgeSource.includes('getDesignKnowledge 或 getDesignPrinciples'));
+assert(planNeutralKnowledgeSource.includes('首稿可执行不等于完成'));
+assert(planNeutralKnowledgeSource.includes('挑战首个安全方案'));
+assert(planNeutralKnowledgeSource.length <= 5_000, 'plan-neutral design foundation must remain compact');
+for (const fullKnowledgeInjection of [
+  'buildDesignMethodKnowledgeRuntimeContext({',
+  'buildDesignArtifactKnowledgeRuntimeItem({',
+  'buildPhotoshopCraftRecipeRuntimeItems({',
+  'buildDesignPrinciplesRuntimeContext(true)'
+]) {
+  assert(
+    !planNeutralKnowledgeSource.includes(fullKnowledgeInjection),
+    `plan-neutral context must fetch deep knowledge on demand instead of injecting ${fullKnowledgeInjection}`
+  );
+}
+
+assert(!executorSource.includes('declareDesignIntent({ taskType:'));
+assert(executorSource.includes('declareDesignIntent({ taskTypeId: <Profile> })'));
+assert(executorSource.includes('当前工具列表已有匹配 Skill 时直接调用 Skill'));
+assert(executorSource.includes('只有系统在下方明确给出对应 Profile、且当前工具列表没有匹配 Skill 时'));
+assert(executorSource.includes('规格化生产有唯一答案时走最短确定路径'));
+assert(executorSource.includes('开放创意以成品质量为先'));
+assert(executorSource.includes('按结果风险与信息增益取得足够证据'));
+assert(!executorSource.includes('理解目标后走最短可行路径'));
+assert(!executorSource.includes('选择最短、足够的信息路径'));
+assert(!executorSource.includes('需要建立新视觉结构时尽早做出可逆首稿'));
+assert(!executorSource.includes('必须调用 Eagle'));
+assert(!executorSource.includes('必须调用 evaluateDesign'));
+const declareIntentSchemaStart = toolSchemasSource.indexOf("name: 'declareDesignIntent'");
+const declareIntentSchemaEnd = toolSchemasSource.indexOf("name: 'searchDesignKnowledge'", declareIntentSchemaStart);
+assert(declareIntentSchemaStart >= 0 && declareIntentSchemaEnd > declareIntentSchemaStart);
+const declareIntentSchemaSource = toolSchemasSource.slice(declareIntentSchemaStart, declareIntentSchemaEnd);
+assert(declareIntentSchemaSource.includes('pass that id as taskTypeId'));
+assert(declareIntentSchemaSource.includes('If a matching Skill tool is already visible, call that Skill directly'));
+assert(declareIntentSchemaSource.includes('only when the system prompt explicitly names the exact Profile id'));
+assert(declareIntentSchemaSource.includes("}, ['taskTypeId'])"));
+assert(!declareIntentSchemaSource.includes('with that taskType to bind it'));
+
 const contextCompilerSource = fs.readFileSync(contextCompilerPath, 'utf8');
 assert(contextCompilerSource.includes('policySeparatedFromData: true'));
 assert(contextCompilerSource.includes('externalContentDataOnly: true'));
 assert(contextCompilerSource.includes('grantsPermission: false'));
 assert(contextCompilerSource.includes('executesTools: false'));
+
+const smallWindowPlan = buildAgentContextCapacityPlan({
+  windowTokens: 8_000,
+  requestedOutputTokens: 4_000
+});
+assert.strictEqual(smallWindowPlan.basis, 'model_window');
+assert.strictEqual(smallWindowPlan.windowTokens, 8_000);
+assert(smallWindowPlan.outputReserveTokens <= 1_600);
+assert(smallWindowPlan.contextTokenCeiling < smallWindowPlan.windowTokens);
+assert(smallWindowPlan.runtimeContextCharacterCeiling <= 9_000);
+const unknownWindowPlan = buildAgentContextCapacityPlan({
+  requestedOutputTokens: 32_000
+});
+assert.strictEqual(unknownWindowPlan.basis, 'unknown_window_fallback');
+assert.strictEqual(unknownWindowPlan.windowTokens, null);
+assert.strictEqual(unknownWindowPlan.contextTokenCeiling, 100_000);
+assert(unknownWindowPlan.outputReserveTokens <= 8_192);
+
+const agentSource = fs.readFileSync(agentPath, 'utf8');
+assert(agentSource.includes('estimateToolSchemaTokens(iterationTools)'));
+assert(agentSource.includes('this.contextManager.prepare('));
+const contextManagerSource = fs.readFileSync(
+  path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'context-manager.ts'),
+  'utf8'
+);
+assert(contextManagerSource.includes("error.code = 'context_window_budget_exceeded'"));
 
 const designerFacingContext = compileRuntimeContext({
   items: [
@@ -158,6 +310,21 @@ const designerFacingContext = compileRuntimeContext({
     }
   ]
 });
+assert.strictEqual(designerFacingContext.metrics.characterBudget, 64_000);
+const boundedContext = compileRuntimeContext({
+  items: [
+    {
+      id: 'bounded.policy',
+      kind: 'policy',
+      source: 'system',
+      trust: 'trusted_system',
+      slot: 'system_policy',
+      content: '必要规则。'
+    }
+  ],
+  maxTotalCharacters: 1_000
+});
+assert.strictEqual(boundedContext.metrics.characterBudget, 1_000);
 assert(designerFacingContext.prompt.includes('## 本次工作的基本原则'));
 assert(designerFacingContext.prompt.includes('## 项目现状'));
 assert(designerFacingContext.prompt.includes('## 外部参考'));
@@ -187,6 +354,8 @@ console.log(JSON.stringify({
     globalSystemPromptCategoryNeutral: true,
     capabilityPolicySeparated: true,
     contextTrustCompilerRequired: true,
+    modelWindowOwnsRuntimeContextBudget: true,
+    toolSchemasAndOutputReservedBeforeProviderCall: true,
     createsPromptRegistry: false,
     createsWorkflowRuntime: false,
     grantsPermission: false,

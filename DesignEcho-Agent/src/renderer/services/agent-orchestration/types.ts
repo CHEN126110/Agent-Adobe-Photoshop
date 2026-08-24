@@ -24,6 +24,8 @@ import type {
 
 export interface AgentContext {
     userInput: string;
+    /** 用户在输入框 Skill 选择器里显式指定的技能（codex 式：选择即权威提示；仅 selection-only，不执行不授权）。 */
+    userSelectedSkillId?: string;
     conversationHistory: AgentResumableTaskMessageLike[];
     requestId?: string;
     conversationId?: string;
@@ -143,13 +145,12 @@ export interface AgentResult {
     /**
      * 结构化交接：这一步做完后，下一步可以走哪几个工具。
      *
-     * 与 `error` 路径上的同名字段同一套语义（agent.ts resolveRequiredToolRecovery 消费），
-     * 区别只在于：失败时它是「恢复」，成功时它是「交接」。
-     * 技能把「结构做完了但设计还没完」这类状态通过它传给 Agent 循环——
-     * 写在 data 里的 nextSteps 只是散文，模型可读可不读；只有这里会真正进下一轮 allowlist。
+     * 与 `error` 路径上的同名字段同一套语义：失败时报告恢复选项，成功时报告交接选项。
+     * 它不授予权限、不裁剪下一轮工具面，也不替模型选择下一步；未完成义务仍由真实结果、
+     * Evaluation 与交付契约判断。
      */
     nextRequiredToolOptions?: string[];
-    /** 交接理由，人话，会作为下一轮的指令依据。 */
+    /** 交接理由，人话，只作为下一轮的事实依据。 */
     nextRequiredToolReason?: string;
     cancelled?: boolean;
     /**
@@ -174,7 +175,8 @@ export interface ExecutionCallbacks {
     /** R4 + reconciliation 的脱敏展示投影；只更新 UI，不拥有任务完成状态。 */
     onTaskPlanPresentation?: (presentation: AgentTaskPlanPresentation) => void;
     /** Agent 看过的画面快照，转发给用户（内联到「判断与处理」步骤流）。与 AgentCallbacks.onSnapshotImage 同签名。 */
-    onSnapshotImage?: (snapshot: { data: string; mediaType: string; toolName: string; index: number }) => void;
+    /** label 可选：默认「已查看当前画面」；导出 / 出稿收据可传「已导出：2双装/1白色+浅灰.jpg」这类标题。 */
+    onSnapshotImage?: (snapshot: { data: string; mediaType: string; toolName: string; index: number; label?: string }) => void;
 }
 
 export interface ProcessOptions {

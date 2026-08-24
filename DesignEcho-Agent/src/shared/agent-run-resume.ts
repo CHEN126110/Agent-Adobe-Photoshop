@@ -79,7 +79,8 @@ export interface RunResumeBrief {
 }
 
 const DEFAULT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const DEFAULT_MAX_BRIEF_CHARS = 1200;
+// 1200→1800：摘要新增「上次做到」（≤600 字的画面事实），不能把尾部的续接指引挤掉。
+const DEFAULT_MAX_BRIEF_CHARS = 1800;
 
 function isUnfinishedRun(record: AgentRunRecord): boolean {
     if (record.cancelled === true) return true;
@@ -209,10 +210,12 @@ export function buildRunRecordResumeBrief(input: BuildRunResumeBriefInput): RunR
         .filter(Boolean);
     const waitingForUser = record.stopReason === 'awaiting_user_confirmation'
         || record.stopReason === 'awaiting_user_input';
+    const priorDesignSummary = String(record.checkpoint.designSummary || '').trim();
     const lines = [
         '这是同一项设计的续接信息，不是新的用户要求。',
         `原目标：${record.goal || '继续完成当前设计'}`,
         ...(priorDirection ? [`沿用的设计方向：${priorDirection}`] : []),
+        ...(priorDesignSummary ? [`上次做到：${priorDesignSummary}`] : []),
         ...(reusableWork.length > 0
             ? [`已经可以继续使用：${reusableWork.join('；')}。不要重新创建或重复置入。`]
             : []),

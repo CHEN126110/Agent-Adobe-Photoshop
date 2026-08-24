@@ -47,6 +47,17 @@ const { buildMultimodalModelDispatchPlan } = require(
 const { buildAllPrimaryModelOptionGroups } = require(
     path.resolve(__dirname, '..', 'src', 'shared', 'config', 'primary-model-options.ts')
 );
+const {
+    resolvePersistedModelRuntimeState
+} = require(
+    path.resolve(__dirname, '..', 'src', 'shared', 'config', 'persisted-model-runtime.ts')
+);
+const { TaskOrchestrator } = require(
+    path.resolve(__dirname, '..', 'src', 'main', 'services', 'task-orchestrator.ts')
+);
+const { VisualThinkingService } = require(
+    path.resolve(__dirname, '..', 'src', 'main', 'services', 'visual-thinking-service.ts')
+);
 
 let failures = 0;
 
@@ -315,6 +326,104 @@ expectEqual(
         unknownLegacyField: Object.prototype.hasOwnProperty.call(pollutedPreferences, 'unknownLegacyField')
     },
     { dynamicModels: false, unknownLegacyField: false }
+);
+
+console.log('\n=== 跨进程冷启动模型偏好只读投影 ===');
+const persistedDynamicModel = dynamicModel('persisted-vision-model');
+const subscriptionDynamicModel = dynamicModel('persisted-subscription-model', {
+    provider: 'openai-codex'
+});
+const persistedRuntime = resolvePersistedModelRuntimeState({
+    'designecho-storage': JSON.stringify({
+        version: 40,
+        state: {
+            modelPreferences: {
+                ...DEFAULT_MODEL_PREFERENCES,
+                primaryModel: 'google-gemini-3-pro',
+                visualModel: 'google-gemini-3-pro'
+            },
+            dynamicModels: [persistedDynamicModel, subscriptionDynamicModel]
+        }
+    }),
+    rendererState: JSON.stringify({
+        modelPreferences: {
+            ...DEFAULT_MODEL_PREFERENCES,
+            primaryModel: 'xiaomi-mimo-v2.5',
+            visualModel: 'xiaomi-mimo-v2.5'
+        }
+    })
+});
+expectEqual('canonical Zustand 偏好优先于 300ms 备份快照', {
+    source: persistedRuntime.source,
+    primaryModel: persistedRuntime.modelPreferences?.primaryModel
+}, {
+    source: 'designecho-storage',
+    primaryModel: 'google-gemini-3-pro'
+});
+expectEqual(
+    '冷启动只恢复可持久化动态目录，订阅目录仍由当前会话核验',
+    persistedRuntime.dynamicModels.map(model => model.id),
+    ['persisted-vision-model']
+);
+
+const fallbackRuntime = resolvePersistedModelRuntimeState({
+    'designecho-storage': '{malformed',
+    rendererState: JSON.stringify({
+        modelPreferences: {
+            ...DEFAULT_MODEL_PREFERENCES,
+            primaryModel: 'google-gemini-3-pro',
+            visualModel: 'google-gemini-3-pro'
+        }
+    })
+});
+expectEqual('canonical 缺失或损坏时才读取 rendererState 备份', {
+    source: fallbackRuntime.source,
+    primaryModel: fallbackRuntime.modelPreferences?.primaryModel
+}, {
+    source: 'rendererState',
+    primaryModel: 'google-gemini-3-pro'
+});
+
+const coldStartOrchestrator = new TaskOrchestrator({}, persistedRuntime.modelPreferences || undefined);
+expectEqual(
+    'TaskOrchestrator 构造时即使用持久化 Agent 模型',
+    coldStartOrchestrator.getPreferences().primaryModel,
+    'google-gemini-3-pro'
+);
+
+const visualThinkingService = new VisualThinkingService({});
+visualThinkingService.setVisionModelId('google-gemini-3-pro');
+visualThinkingService.setVisionModelId('');
+expectEqual(
+    '视觉服务同步到空模型时清除旧 id，不再沿用上一款模型',
+    visualThinkingService.visionModelId,
+    ''
+);
+
+const mainStartupSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'src', 'main', 'index.ts'),
+    'utf8'
+);
+const appStartupSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'src', 'renderer', 'App.tsx'),
+    'utf8'
+);
+expectEqual(
+    '主进程在 TaskOrchestrator 构造前恢复 persisted model runtime',
+    mainStartupSource.indexOf('resolvePersistedModelRuntimeState(persistedStateEntries)')
+        < mainStartupSource.indexOf('new TaskOrchestrator('),
+    true
+);
+expectEqual(
+    'renderer 模型同步不再藏在 300ms 备份定时器内',
+    appStartupSource.indexOf('window.designEcho?.setModelPreferences?.')
+        < appStartupSource.indexOf('stateSaveTimer.current = window.setTimeout'),
+    true
+);
+expectEqual(
+    '订阅目录暂时失败会重试且不会按空目录覆盖',
+    /if \(!modelResult\.success\) \{[\s\S]*?scheduleHydration\([\s\S]*?return;[\s\S]*?\}[\s\S]*?upsertDynamicModels\('openai-codex', modelResult\.models\)/.test(appStartupSource),
+    true
 );
 
 const referenceReplicationSources = [

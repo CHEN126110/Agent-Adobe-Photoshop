@@ -7,7 +7,7 @@ export type ToolDisplayInfo = {
 };
 
 export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
-    createInteractiveCard: { name: '确认卡片', icon: '[S]', description: '在聊天中创建需要用户确认或编辑的交互卡片。' },
+    createInteractiveCard: { name: '编辑草稿卡', icon: '[S]', description: '在聊天中创建多字段可编辑草稿；简短选择使用选择卡。' },
     createDocument: { name: '创建文档', icon: '[D]', description: '创建新的 Photoshop 文档。' },
     getDocumentInfo: { name: '读取文档信息', icon: '[D]', description: '读取当前文档的尺寸和基础信息。' },
     listDocuments: { name: '检查设计文档', icon: '[D]', description: '检查当前打开的设计文档。' },
@@ -35,6 +35,16 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
     setTextStyle: { name: '按字段修改文本样式', icon: '[T]', description: '只修改指定样式字段，并验证文本与未请求属性保持不变。' },
     createTextLayer: { name: '创建文本图层', icon: '[T]', description: '创建新的文本图层。' },
     renderLayout: { name: '生成阶段草稿', icon: '[L]', description: '生成当前阶段的版面草稿。' },
+    composeDesign: { name: '制作首稿', icon: '[C]', description: '把当前设计方案做成可编辑首稿，并返回真实画面与图层结果。' },
+    planDesignTaskCard: { name: '立任务卡', icon: '[卡]', description: '写下这张图的角色与为什么、判断，以及要弄清 / 要决定 / 要出图的清单。' },
+    updateDesignTaskCard: { name: '任务卡打勾', icon: '[✓]', description: '带收据给任务卡的一项打勾。' },
+    getDesignTaskCard: { name: '看任务卡', icon: '[卡]', description: '读当前任务卡：做到哪了、还差什么。' },
+    askUserToChoose: { name: '请你选一个', icon: '[?]', description: '拿不准的事列几个选项让你定；全自动模式下按 Agent 倾向的继续。' },
+    evaluateDesign: { name: '评审画面', icon: '[评]', description: '独立评审当前画面好不好看：四项打分 + 具体批评 + 下一步。' },
+    studyReference: { name: '看参考', icon: '[参]', description: '带目的看一张参考：好在哪、差在哪、怎么做的、换成我们怎么改。' },
+    learnTasteFromEagle: { name: '分析 Eagle 参考', icon: '[学]', description: '从指定参考集合提取候选，进入长期知识人工审核。' },
+    recordDesignVerdict: { name: '记下你的留改弃', icon: '[学]', description: '把用户对成稿的留 / 改 / 弃和理由发布为当前项目评审校准。' },
+    getDesignLearningTimeline: { name: '学到了什么', icon: '[学]', description: '查看项目经验候选、已发布校准与驳回记录。' },
 
     renameLayer: { name: '重命名图层', icon: '[L]', description: '修改图层名称。' },
     batchRenameLayers: { name: '批量重命名图层', icon: '[L]', description: '按 layerId 批量重命名多个图层。' },
@@ -48,6 +58,7 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
     createGroup: { name: '创建图层组', icon: '[G]', description: '创建新的图层组。' },
 
     getCanvasSnapshot: { name: '读取画布快照', icon: '[C]', description: '获取当前画布快照。' },
+    capturePhotoshopWindow: { name: '观察 Photoshop 窗口', icon: '[W]', description: '查看包含原生弹窗的完整 Photoshop 应用窗口。' },
     getAcceptanceSnapshot: { name: '读取验收快照', icon: '[C]', description: '获取用于验收的画布快照。' },
     getDocumentSnapshot: { name: '读取文档快照', icon: '[C]', description: '获取当前文档快照。' },
     getElementMapping: { name: '分析页面元素', icon: '[A]', description: '识别当前画面中的元素。' },
@@ -147,7 +158,12 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
     declareDesignStrategy: { name: '记录设计策略', icon: '[A]', description: '记录模型基于当前上下文形成的设计目标、信息与视觉方向。' },
     declareRuntimeActionPlan: { name: '记录动态行动计划', icon: '[A]', description: '记录模型基于策略、运行状态与当前能力形成的步骤依赖和语义版面。' },
     searchDesignKnowledge: { name: '检索设计参考', icon: '[W]', description: '检索设计参考、规则、趋势与文案框架。' },
+    readSkillPlaybook: { name: '读工作法手册', icon: '[K]', description: '读取业务技能的工作法手册与细则。' },
+    runSkillScript: { name: '运行技能脚本', icon: '[S]', description: '运行技能包自带的确定性核对脚本。' },
     searchEagleReferences: { name: '检索参考素材', icon: '[W]', description: '从 Eagle 素材库检索参考。' },
+    searchDesignNotes: { name: '检索设计笔记', icon: '[A]', description: '检索用户与 Agent 共写的设计知识笔记。' },
+    readDesignNote: { name: '阅读设计笔记', icon: '[A]', description: '读取一条设计笔记的完整内容与关联笔记。' },
+    writeDesignNote: { name: '记录设计笔记', icon: '[A]', description: '把可复用的设计结论写进共享笔记库。' },
     webSearch: { name: '联网搜索', icon: '[W]', description: '搜索互联网公开信息，结果标注来源 URL。' },
     analyzeEagleReference: { name: '理解 Eagle 参考', icon: '[A]', description: '用视觉模型分析一条 Eagle 参考的设计方法。' },
     analyzePsdDesignSource: { name: '解析设计源文件', icon: '[A]', description: '离线解析设计师 PSD/PSB 的结构、字号、色板与边距作为设计参照。' },
@@ -164,7 +180,7 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
 
     // 文档生命周期 / 详情页 / 图层诊断 / 网页 / 编排（补全：原本缺中文名，UI 会显示英文工具名）
     closeDocument: { name: '关闭文档', icon: '[D]', description: '关闭指定 Photoshop 文档。' },
-    smartSave: { name: '智能保存', icon: '[E]', description: '智能保存当前文档。' },
+    smartSave: { name: '建立恢复点', icon: '[E]', description: '在项目内部保存可恢复版本，不作为最终交付。' },
     fetchWebPageDesignContent: { name: '读取网页内容', icon: '[W]', description: '访问网页并提取设计相关内容。' },
     getScreenSnapshots: { name: '读取屏幕快照', icon: '[C]', description: '获取屏幕快照用于视觉复核。' },
     getScreenSnapshotsWithOverlay: { name: '读取标注屏幕快照', icon: '[C]', description: '获取带标注的屏幕快照。' },

@@ -36,6 +36,127 @@ function getLayerBoundsNoEffects(layer: any): any {
     return layer?.boundsNoEffects || layer?.bounds;
 }
 
+/** 生成图与目标位置的宽高比差异在此比例内，视为"同一个比例"，可以直接等比缩放。 */
+const PLACEMENT_RATIO_MATCH_TOLERANCE = 0.01;
+
+export interface PlacementScaleDecision {
+    /** 传给 PS transform 的宽度百分比 */
+    scaleWidthPercent: number;
+    /** 传给 PS transform 的高度百分比 */
+    scaleHeightPercent: number;
+    /** 需要让用户知道的取舍说明；无取舍时为 undefined */
+    notice?: string;
+}
+
+/**
+ * 决定生成结果置入画布时怎么缩放。
+ *
+ * 抽成纯函数是因为原实现把这个决策藏在了 batchPlay 调用里，而它其实是整条链路上
+ * 唯一会**改变画面几何**的地方：
+ *
+ *     const scaleW = (placementWidth / layerWidth) * 100;
+ *     const scaleH = (placementHeight / layerHeight) * 100;
+ *     ... width: scaleW, height: scaleH, linked: false
+ *
+ * 宽高两个方向各算各的、且 linked:false 明确关掉了等比链接——只要生成图的宽高比
+ * 与目标位置不一致，画面就会被拉伸。真实病历里源图层 3072×4096(0.750)、生成图
+ * 896×1200(0.747)，差 0.45% 尚不明显；用户一旦在面板选了与源图不同的比例（如 1:1），
+ * 变形立刻是灾难级的。这就是"置入时缩放会有变形"的机制。
+ *
+ * 同一段代码还藏着第二个问题：placementWidth/Height 取的是**源图层的原始尺寸**，
+ * 于是不管上游出了多大的图，都会被缩回源图层那么大。4K 档真生效时，
+ * 3456×4736 会被缩到 2044×2724——分辨率白花钱买。
+ */
+export function resolveResultPlacementScale(input: {
+    /** 置入后图层的实际像素宽（即生成图的宽） */
+    imageWidth: number;
+    /** 置入后图层的实际像素高 */
+    imageHeight: number;
+    /** 期望占据的宽度（通常是被替换的源图层宽） */
+    placementWidth: number;
+    /** 期望占据的高度 */
+    placementHeight: number;
+}): PlacementScaleDecision {
+    const { imageWidth, imageHeight, placementWidth, placementHeight } = input;
+
+    const hasUsableInput =
+        imageWidth > 0 && imageHeight > 0 && placementWidth > 0 && placementHeight > 0;
+    if (!hasUsableInput) {
+        return { scaleWidthPercent: 100, scaleHeightPercent: 100 };
+    }
+
+    const imageRatio = imageWidth / imageHeight;
+    const targetRatio = placementWidth / placementHeight;
+    const ratioDelta = Math.abs(imageRatio - targetRatio) / targetRatio;
+
+    // 比例基本一致：等比**铺满**目标位置（cover 语义，取 max）。
+    //
+    // 这里取 max 而不是 min，是被真机打脸后改的：曾经取 min 保证"不溢出"，
+    // 结果 896×1200 落到 5572×7430（比例差 0.435%，在容差内）时宽度只到 5548，
+    // 右边露出 24px 白边——设计师一眼就看见了。而 max 造成的溢出是同一个量级
+    // （高度多 0.44%，约 32px 落到画布外），肉眼根本看不出来。
+    //
+    // 判据是**哪种代价用户看得见**：容差内的比例差本就不可见，此时铺满优先；
+    // 白边可见、且会露出下方图层，是更糟的结果。真正显著的比例差另走下面的策略。
+    if (ratioDelta <= PLACEMENT_RATIO_MATCH_TOLERANCE) {
+        const uniformScale = Math.max(
+            placementWidth / imageWidth,
+            placementHeight / imageHeight
+        ) * 100;
+        return {
+            scaleWidthPercent: uniformScale,
+            scaleHeightPercent: uniformScale
+        };
+    }
+
+    // 比例不一致：这里才是真正的设计取舍，交给下面的落位策略。
+    return resolveMismatchedRatioPlacement(input, imageRatio, targetRatio);
+}
+
+/**
+ * 生成图比例与目标位置比例对不上时的落位策略：**等比 contain，完整保留画面**。
+ *
+ * 出现的场景很常见：用户在面板选了与源图层不同的输出比例，或上游把比例吸附到了最近的
+ * 档位（Gemini 只按 1:1 / 3:4 / 16:9 这类固定档位出图，很少与源图层严格相等）。
+ *
+ * 三种做法各有代价，选 contain 的理由：
+ * - **contain（选它）**：等比缩到完整放进原位置，可能盖不满、露出下方内容。
+ *   代价是可见的——设计师一眼就看到留白，能自己决定怎么处理。
+ * - cover：填满原位置，但生成图边缘被裁掉。代价是**不可见的**：用户不知道被裁掉了什么，
+ *   而那是他花钱生成的内容。宁可让人看见留白，也不要静默丢内容。
+ * - 不缩放保持原尺寸：曾以为能保住 4K 清晰度，但 placeEvent 置入的是**智能对象**，
+ *   缩放是非破坏性的、原始像素仍在，所以这条理由不成立，只剩下"尺寸对不上版面"的坏处。
+ *
+ * 两个方向必须用同一个系数，否则又变回原来那个把画面拉变形的实现。
+ */
+function resolveMismatchedRatioPlacement(
+    input: { imageWidth: number; imageHeight: number; placementWidth: number; placementHeight: number },
+    imageRatio: number,
+    targetRatio: number
+): PlacementScaleDecision {
+    const containScale = Math.min(
+        input.placementWidth / input.imageWidth,
+        input.placementHeight / input.imageHeight
+    );
+    const scalePercent = containScale * 100;
+
+    const fittedWidth = Math.round(input.imageWidth * containScale);
+    const fittedHeight = Math.round(input.imageHeight * containScale);
+    // 哪个方向没盖满，决定了留白出现在左右还是上下——直接说出来，省得用户自己找
+    const gapDirection = imageRatio > targetRatio ? '上下' : '左右';
+
+    return {
+        scaleWidthPercent: scalePercent,
+        scaleHeightPercent: scalePercent,
+        notice:
+            `生成图 ${input.imageWidth}×${input.imageHeight} 与原位置 ` +
+            `${input.placementWidth}×${input.placementHeight} 比例不同，` +
+            `已等比缩放为 ${fittedWidth}×${fittedHeight} 完整置入（未裁切画面），` +
+            `${gapDirection}会留出空隙、可能露出下方图层。` +
+            `图层是智能对象，可直接拖拽调整而不损失画质。`
+    };
+}
+
 async function translateLayer(layer: any, offsetX: number, offsetY: number): Promise<void> {
     if (typeof layer?.translate !== 'function') {
         throw new Error('ApplyRasterImageResult failed: placed raster result layer does not support DOM translate; native move is blocked to avoid Photoshop popups.');
@@ -410,12 +531,20 @@ export class GetSelectionMaskTool implements Tool {
                 // 2. 获取文档复合图像并标准化为 RGBA raw，交给 Agent 用 sharp 转 PNG，
                 // 避免依赖 UXP Canvas / ImageData 兼容性，同时保留无损像素。
                 if (includeImage) {
+                    // colorProfile 必须显式指定 sRGB：不传时 PS 返回的是**文档工作空间**的数值，
+                    // 而这批字节会被当作 sRGB 编成 PNG 送给模型。文档若是 Adobe RGB / Display P3，
+                    // 同一组数值按 sRGB 解释就会系统性偏色，模型照着这份偏色的画面重绘，
+                    // 贴回文档时再转换一次，偏差被固定放大——真机症状是"每次结果都偏红"。
+                    //
+                    // 图生图那条抓图路径（export-layer.ts）早就修过同一个问题，
+                    // 但局部重绘走的是这里，当时漏掉了。两条路径必须保持一致。
                     const imgResult = await imaging.getPixels({
                         documentID: doc.id,
                         ...boundsOption,
                         targetSize: { width: targetWidth, height: targetHeight },
-                        applyAlpha: true  // 返回 RGB（无 alpha），白底合成
-                    });
+                        applyAlpha: true,  // 返回 RGB（无 alpha），白底合成
+                        colorProfile: 'sRGB IEC61966-2.1'
+                    } as any);
                     const imgDataRaw = await imgResult.imageData.getData() as Uint8Array | Uint16Array | Float32Array;
                     const imgData = coerceTypedPixelData(imgDataRaw, imgResult.imageData.componentSize);
                     const rgbaBytes = normalizePixelsToRgba8(
@@ -427,7 +556,9 @@ export class GetSelectionMaskTool implements Tool {
                     actualImageWidth = imgResult.imageData.width;
                     actualImageHeight = imgResult.imageData.height;
                     imageBase64 = uint8ArrayToBase64(new Uint8Array(rgbaBytes.buffer));
-                    console.log(`[GetSelectionMask] 图像: ${imgResult.imageData.width}x${imgResult.imageData.height}, channels=${imgResult.imageData.components}, componentSize=${imgResult.imageData.componentSize}, encoded=raw-rgba-base64`);
+                    // 如实记录 PS 实际给了哪个色彩空间：请求 sRGB 不等于一定拿到 sRGB，
+                    // 排查偏色时这一行是"偏差发生在抓图前还是抓图后"的分界证据。
+                    console.log(`[GetSelectionMask] 图像: ${imgResult.imageData.width}x${imgResult.imageData.height}, channels=${imgResult.imageData.components}, componentSize=${imgResult.imageData.componentSize}, colorProfile=${imgResult.imageData.colorProfile || '(未回报)'}, encoded=raw-rgba-base64`);
                     imgResult.imageData.dispose();
                 }
                 }, { commandName: 'DesignEcho: 获取选区蒙版' });
@@ -717,6 +848,8 @@ export class ApplyRasterImageResultTool implements Tool {
     async execute(params: { imageData: string; filePath?: string; imageBytes?: Uint8Array; imageFormat?: string; isRawRgba?: boolean; layerName?: string; width?: number; height?: number; placementWidth?: number; placementHeight?: number; originalWidth?: number; originalHeight?: number; targetBounds?: { left?: number; top?: number } }): Promise<any> {
         const layerName = params.layerName || '图像结果';
         let createdLayerId: number | null = null;
+        // 落位时做了取舍（比例对不上）就在这里留话，随结果返回给面板；无取舍时保持 undefined
+        let placementNotice: string | undefined;
 
         try {
             const doc = app.activeDocument;
@@ -821,17 +954,37 @@ export class ApplyRasterImageResultTool implements Tool {
                         const layerHeight = initialBounds.bottom - initialBounds.top;
 
                         if (layerWidth > 0 && layerHeight > 0) {
-                            const scaleW = (placementWidth / layerWidth) * 100;
-                            const scaleH = (placementHeight / layerHeight) * 100;
-                            if (Math.abs(scaleW - 100) > 0.1 || Math.abs(scaleH - 100) > 0.1) {
+                            const scaleDecision = resolveResultPlacementScale({
+                                imageWidth: layerWidth,
+                                imageHeight: layerHeight,
+                                placementWidth,
+                                placementHeight
+                            });
+                            placementNotice = scaleDecision.notice;
+
+                            const { scaleWidthPercent, scaleHeightPercent } = scaleDecision;
+                            const needsResize =
+                                Math.abs(scaleWidthPercent - 100) > 0.1 || Math.abs(scaleHeightPercent - 100) > 0.1;
+
+                            console.log(
+                                `[ApplyRasterImageResult] 落位缩放：${layerWidth}x${layerHeight} → ` +
+                                `${scaleWidthPercent.toFixed(2)}% x ${scaleHeightPercent.toFixed(2)}%` +
+                                (scaleDecision.notice ? ` | ${scaleDecision.notice}` : '')
+                            );
+
+                            if (needsResize) {
+                                // linked:true —— 等比链接。原实现是 linked:false 且宽高各算各的，
+                                // 只要生成图比例与目标位置不一致就会把画面拉变形。
+                                // 现在两个方向的系数由 resolveResultPlacementScale 统一决定，
+                                // 比例一致时必然相等；不一致时由落位策略显式取舍并给出说明。
                                 await batchPlay([
                                     {
                                         _obj: 'transform',
                                         _target: [{ _ref: 'layer', _enum: 'ordinal', _value: 'targetEnum' }],
                                         freeTransformCenterState: { _enum: 'quadCenterState', _value: 'QCSAverage' },
-                                        width: { _unit: 'percentUnit', _value: scaleW },
-                                        height: { _unit: 'percentUnit', _value: scaleH },
-                                        linked: false,
+                                        width: { _unit: 'percentUnit', _value: scaleWidthPercent },
+                                        height: { _unit: 'percentUnit', _value: scaleHeightPercent },
+                                        linked: true,
                                         interfaceIconFrameDimmed: { _enum: 'interpolationType', _value: 'bicubic' },
                                         _options: { dialogOptions: 'dontDisplay' }
                                     }
@@ -931,7 +1084,8 @@ export class ApplyRasterImageResultTool implements Tool {
                 layerName,
                 layerId: createdLayerId,
                 writeMode: 'new-layer',
-                sourceDocumentPreserved: true
+                sourceDocumentPreserved: true,
+                placementNotice
             };
 
         } catch (error: any) {

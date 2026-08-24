@@ -765,9 +765,10 @@ export class ReplaceImagePlaceholderTool implements Tool {
                     : canUseSmartScalingDestination
                         ? 'smartScalingDecision'
                         : 'fitFallback';
-                const plannedRect = destinationRect
-                    ? destinationRect
-                    : transformVisibleRect || targetBounds;
+                // 显式 destination 才要求图片外框与目标框完全一致。contain / cover / none
+                // 的正确落位框取决于源图宽高比和对齐方式，不能把 placeholder bounds
+                // 当成实际图片 bounds；否则合法的留白或溢出裁切会被误报为 mismatch。
+                let plannedRect = destinationRect;
 
                 if (destinationRect) {
                     failureStage = 'scale-placed-layer';
@@ -863,6 +864,13 @@ export class ReplaceImagePlaceholderTool implements Tool {
                         desiredLeft = alignBounds.right - currentWidth;
                         desiredTop = alignCenterY - currentHeight / 2;
                     }
+
+                    plannedRect = {
+                        left: desiredLeft,
+                        top: desiredTop,
+                        right: desiredLeft + currentWidth,
+                        bottom: desiredTop + currentHeight
+                    };
 
                     await newLayer.translate(
                         desiredLeft - currentBounds.left,

@@ -27,6 +27,7 @@ const designTeamRegistry = read('src/renderer/services/design-teams/registry.ts'
 const designTeamCoordinator = read('src/renderer/services/design-teams/coordinator.ts');
 const autonomousExecutor = read('src/renderer/services/skill-executors/autonomous-agent.executor.ts');
 const agentRuntime = read('src/renderer/services/agent-runtime/agent.ts');
+const canvasSnapshotTargetBinding = read('src/renderer/services/agent-runtime/canvas-snapshot-target-binding.ts');
 const agentPerformancePolicy = read('src/shared/agent-performance-policy.ts');
 const designTeamConsultationContract = read('src/shared/designer-agent-team-consultation-contract.ts');
 const missingDesignTeamAllowedTools = [];
@@ -397,6 +398,67 @@ const excludedFromAgent = [...uxpDeclaredTools]
     .filter((name) => EXPLICITLY_NOT_EXPOSED_TO_AGENT.has(name))
     .sort();
 
+// getCanvasSnapshot 只读“当前活动文档”，不能把未知的 documentId 静默当作目标选择。
+// 多文档和写后验真由 expectedDocumentId 绑定；不匹配必须在 imaging.getPixels 前失败，
+// Renderer 已有可信文档身份时还应自动注入该断言。这里跨 Agent / UXP 守住同一协议。
+const canvasSnapshotTargetIdentityViolations = [];
+const uxpCanvasSnapshotSource = read('../DesignEcho-UXP/src/tools/canvas/visual-analysis.ts');
+const uxpDocumentObservationSource = read('../DesignEcho-UXP/src/core/photoshop-document-observation.ts');
+const canvasSnapshotSchemaStart = toolSchemasSource.indexOf("name: 'getCanvasSnapshot'");
+const canvasSnapshotSchemaEnd = canvasSnapshotSchemaStart >= 0
+    ? toolSchemasSource.indexOf("\n    },\n    {", canvasSnapshotSchemaStart)
+    : -1;
+const canvasSnapshotSchemaBlock = canvasSnapshotSchemaStart >= 0
+    ? toolSchemasSource.slice(
+        canvasSnapshotSchemaStart,
+        canvasSnapshotSchemaEnd > canvasSnapshotSchemaStart
+            ? canvasSnapshotSchemaEnd
+            : canvasSnapshotSchemaStart + 2400
+    )
+    : '';
+if (!canvasSnapshotSchemaBlock.includes('expectedDocumentId')
+    || !canvasSnapshotSchemaBlock.includes('不会自动切换文档')) {
+    canvasSnapshotTargetIdentityViolations.push('Agent getCanvasSnapshot schema 未声明活动文档身份断言及不切换边界');
+}
+const uxpExpectedBindingIndex = uxpCanvasSnapshotSource.indexOf(
+    'const expectedDocumentId = resolveCanvasSnapshotExpectedDocumentId('
+);
+const uxpPixelReadIndex = uxpCanvasSnapshotSource.indexOf('pixelData = await imaging.getPixels({');
+if (!uxpCanvasSnapshotSource.includes("Object.prototype.hasOwnProperty.call(params, 'documentId')")
+    || !uxpCanvasSnapshotSource.includes("'unsupported_document_id_parameter'")) {
+    canvasSnapshotTargetIdentityViolations.push('UXP getCanvasSnapshot 仍可能静默忽略歧义 documentId 参数');
+}
+if (uxpExpectedBindingIndex < 0
+    || uxpPixelReadIndex < 0
+    || uxpExpectedBindingIndex > uxpPixelReadIndex
+    || !uxpCanvasSnapshotSource.includes('expectedDocumentId,')) {
+    canvasSnapshotTargetIdentityViolations.push('UXP getCanvasSnapshot 未在像素读取前解析并下发 expectedDocumentId');
+}
+const observationIdentityCheckIndex = uxpDocumentObservationSource.indexOf(
+    'if (options.expectedDocumentId !== undefined)'
+);
+const observationReaderIndex = uxpDocumentObservationSource.indexOf('const value = await reader(');
+if (observationIdentityCheckIndex < 0
+    || observationReaderIndex < 0
+    || observationIdentityCheckIndex > observationReaderIndex
+    || !uxpDocumentObservationSource.includes("'unexpected_active_document'")) {
+    canvasSnapshotTargetIdentityViolations.push('稳定文档观察未在 reader 前 fail closed 校验预期活动文档');
+}
+if (/app\.activeDocument\s*=|switchDocument/u.test(uxpCanvasSnapshotSource)) {
+    canvasSnapshotTargetIdentityViolations.push('getCanvasSnapshot 不得自行切换活动文档');
+}
+if (!agentRuntime.includes('bindCanvasSnapshotExpectedDocumentId(call,')
+    || !canvasSnapshotTargetBinding.includes('function bindCanvasSnapshotExpectedDocumentId(')
+    || !canvasSnapshotTargetBinding.includes("call.name !== 'getCanvasSnapshot'")
+    || !canvasSnapshotTargetBinding.includes('expectedDocumentId: targetGuard.expectedDocumentId')) {
+    canvasSnapshotTargetIdentityViolations.push('Agent 在已有可信目标身份时未自动绑定画布快照');
+}
+if (!toolExecutor.includes("if (toolName === 'getCanvasSnapshot')")
+    || !toolExecutor.includes("code: 'unexpected_active_document'")
+    || !toolExecutor.includes('expectedDocumentId: layoutFinalWriteHistoryStateRef.documentId')) {
+    canvasSnapshotTargetIdentityViolations.push('测试桥或复合写后快照未同步目标身份失败语义');
+}
+
 console.log(`工具总数 (tool-schemas): ${schemaTools.length}`);
 console.log(`缺中文显示名: ${missingDisplay.length}${missingDisplay.length ? '  -> ' + missingDisplay.join(', ') : ''}`);
 console.log(`缺权限 scope: ${missingScope.length}${missingScope.length ? '  -> ' + missingScope.join(', ') : ''}`);
@@ -409,8 +471,9 @@ console.log(`素材推荐视觉证据契约缺口: ${assetRecommendationContract
 console.log(`已评审故意不开放给模型: ${excludedFromAgent.length}${excludedFromAgent.length ? '  -> ' + excludedFromAgent.join(', ') : ''}`);
 console.log(`UXP 原生 get 弹窗风险: ${uxpNativeGetModalRisks.length}`);
 uxpNativeGetModalRisks.forEach((risk) => console.log('  -> ' + risk));
+console.log(`画布快照目标身份缺口: ${canvasSnapshotTargetIdentityViolations.length}${canvasSnapshotTargetIdentityViolations.length ? '  -> ' + canvasSnapshotTargetIdentityViolations.join(', ') : ''}`);
 
-if (missingDisplay.length || missingScope.length || setMismatches.length || missingFromAgent.length || missingDesignTeamAllowedTools.length || designTeamRuntimeScopeViolations.length || assetRecommendationContractViolations.length || uxpNativeGetModalRisks.length) {
+if (missingDisplay.length || missingScope.length || setMismatches.length || missingFromAgent.length || missingDesignTeamAllowedTools.length || designTeamRuntimeScopeViolations.length || assetRecommendationContractViolations.length || uxpNativeGetModalRisks.length || canvasSnapshotTargetIdentityViolations.length) {
     console.error('\n[FAIL] 工具注册存在缺口。新增/修改工具时请同步登记：');
     if (missingDisplay.length) console.error('  - 显示名 -> src/renderer/services/tool-display-info.ts (TOOL_NAME_MAP)');
     if (missingScope.length) console.error('  - 权限 scope -> src/shared/photoshop-tool-skill.ts 或 src/shared/agent-tool-execution-preflight.ts');
@@ -420,6 +483,7 @@ if (missingDisplay.length || missingScope.length || setMismatches.length || miss
     if (designTeamRuntimeScopeViolations.length) console.error('  - Design Team 必须在 Agent 的真实 executeTool 回调再次强制 allowedTools');
     if (assetRecommendationContractViolations.length) console.error('  - recommendAssets 必须保持单次视觉比较、metadata-only 失败关闭与跨进程字段一致');
     if (uxpNativeGetModalRisks.length) console.error('  - UXP 原生 get 必须使用有效对象/属性组合并声明 dialogOptions: dontDisplay；DOM 已公开的数据优先改用 DOM');
+    if (canvasSnapshotTargetIdentityViolations.length) console.error('  - getCanvasSnapshot 必须在 Agent / UXP / 测试桥保持同一 expectedDocumentId fail-closed 语义');
     process.exit(1);
 }
 console.log('\n[OK] 工具注册一致性校验通过。');

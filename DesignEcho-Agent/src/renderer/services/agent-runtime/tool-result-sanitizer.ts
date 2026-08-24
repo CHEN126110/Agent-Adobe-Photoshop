@@ -2,8 +2,9 @@
  * 工具结果整理（纯逻辑，可被 smoke 直接测试）
  *
  * 三个职责：
- * 1. sanitizeToolOutputForModel：回填给模型的工具结果做超长字段截断——
- *    此前快照 base64 以完整 JSON 文本进入上下文（token 炸弹且模型无法作为图像理解）
+ * 1. sanitizeToolOutputForModel：回填给模型的工具结果做超长字段截断，并剥离内部下一步
+ *    Tool 规划字段——此前快照 base64 以完整 JSON 文本进入上下文（token 炸弹且模型
+ *    无法作为图像理解），内部恢复契约也会越权成为模型下一步提示
  * 2. extractImageFromToolResult：从快照类工具结果中提取图像，
  *    由 Agent 循环以 user 图像消息回传给视觉模型（模型"看着画布"工作的基础）
  * 3. compactPostWriteImagePayloadForRuntimeLog：图像已经转发给视觉模型和用户后，
@@ -44,6 +45,21 @@ const MAX_IMAGE_COMPACTION_DEPTH = 12;
 const MAX_IMAGE_COMPACTION_NODES = 2048;
 const MAX_IMAGE_COMPACTION_ARRAY_ITEMS = 512;
 /**
+ * Tool / Skill 可以在原始结果里携带内部续跑契约，供 Runtime 对账和 staged 执行点使用；
+ * 这些字段不能回灌模型成为隐式下一步计划。事实、失败原因和普通恢复说明仍会保留。
+ */
+const MODEL_PLANNING_AUTHORITY_FIELD_KEYS = new Set([
+    'allowedtoolnames',
+    'nextrequiredtool',
+    'nextrequiredtools',
+    'nextrequiredtooloptions',
+    'nextrequiredtoolreason',
+    'requirednexttool',
+    'requiredtool',
+    'requiredtoolcall',
+    'requiredarguments'
+]);
+/**
  * 只在这些通用结果容器中向下寻找图像。
  *
  * 这里刻意不递归任意对象：Tool 结果可能同时携带 Host 元数据、调试 payload 或用户内容；
@@ -52,6 +68,9 @@ const MAX_IMAGE_COMPACTION_ARRAY_ITEMS = 512;
 const CONTROLLED_IMAGE_CONTAINER_KEYS = new Set([
     'snapshot',
     'snapshots',
+    // createProjectContactSheetOverview 的总览图（sheet.imageData）：模型「一眼比所有候选」的眼睛，
+    // 此前不在容器名单里，总览图从来到不了主模型（run 498：选图只看文件名）。
+    'sheet',
     'screens',
     'screensnapshots',
     'images',
@@ -172,6 +191,7 @@ function sanitizeValueForModel(value: any, depth: number, fieldKey?: string): an
     if (value && typeof value === 'object') {
         const out: Record<string, any> = {};
         for (const [key, val] of Object.entries(value)) {
+            if (MODEL_PLANNING_AUTHORITY_FIELD_KEYS.has(normalizeFieldKey(key))) continue;
             out[key] = sanitizeValueForModel(val, depth + 1, key);
         }
         return out;
@@ -179,7 +199,7 @@ function sanitizeValueForModel(value: any, depth: number, fieldKey?: string): an
     return value;
 }
 
-/** 深度截断工具输出中的超长字段，并从文本上下文彻底剥离图像像素 */
+/** 深度截断工具输出，并从模型上下文剥离图像像素与内部下一步 Tool 规划字段 */
 export function sanitizeToolOutputForModel(value: any, depth = 0): any {
     return sanitizeValueForModel(value, depth);
 }
@@ -192,7 +212,8 @@ function asModelRecord(value: unknown): Record<string, any> | undefined {
 
 /**
  * Skill 的完整返回值同时服务于 Runtime 记账、续跑、交互卡和开发诊断，不能直接整包回灌模型。
- * 模型只需要知道这项工作做到哪里、形成了什么、还差什么以及下一步是什么。
+ * 模型只需要知道这项工作做到哪里、形成了什么以及还差什么。
+ * Skill 的 nextAction / recovery 属于生产者建议，不能成为主 Agent 的下一步计划。
  *
  * 调用方必须先确认 toolName 是已注册 Skill；这里再校验 runner 签发的规范 observation，
  * 避免普通 Tool 伪造相似字段后取得 Skill 投影待遇。原始返回对象不会被修改。
@@ -204,16 +225,6 @@ function describeSkillWorkState(status: unknown): string {
         case 'blocked': return '等待必要信息';
         case 'failed': return '未完成';
         default: return '需要继续判断';
-    }
-}
-
-function describeSkillNextStep(nextAction: unknown): string {
-    switch (String(nextAction || '').trim()) {
-        case 'repair': return '继续完成或调整当前设计';
-        case 'ask_user': return '只在确实缺少用户决定时请用户补充或确认';
-        case 'finish': return '整理当前结果并交付';
-        case 'stop': return '停止当前工作';
-        default: return '根据当前结果选择最合适的下一步';
     }
 }
 
@@ -257,8 +268,7 @@ export function projectSkillWorkflowOutputForModel(
             ...(detailedResult && detailedResult !== summary ? { result: detailedResult } : {}),
             details,
             issues: Array.isArray(observation.blockers) ? observation.blockers : [],
-            notes: Array.isArray(observation.warnings) ? observation.warnings : [],
-            nextStep: describeSkillNextStep(observation.nextAction)
+            notes: Array.isArray(observation.warnings) ? observation.warnings : []
         },
         ...(data?.requiresUserAction === true || data?.awaitingUserConfirmation === true
             ? { waitingForUser: true }

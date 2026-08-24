@@ -21,7 +21,7 @@ export function normalizeInpaintingError(errorLike: any): NormalizedImageGenerat
 
     if (/econnrefused\s+::1:80|127\.0\.0\.1:80/i.test(rawMessage)) {
         message = '本地代理连接失败';
-        detail = detailFromAgent || '即梦请求被导向本机代理 (::1:80) 并被拒绝连接，请检查代理设置后重试。';
+        detail = detailFromAgent || '请求被本机代理拦下了，代理没有接受连接。请检查系统代理 / 加速工具是否开着，然后重试。';
     } else if (/access key id \/ secret access key 未配置|credentials are not configured/i.test(rawMessage)) {
         message = '未配置即梦AI密钥';
         detail = '请先在设置中填写即梦AI的 Access Key ID 和 Secret Access Key。';
@@ -78,16 +78,16 @@ export function normalizeImageToImageError(errorLike: any): NormalizedImageGener
         detail = '\u8bf7\u5148\u5728 Agent \u8bbe\u7f6e\u4e2d\u586b\u5199\u5373\u68a6 AI \u7684 Access Key ID \u548c Secret Access Key\u3002';
     } else if (/openrouter api key 未配置/i.test(rawMessage)) {
         message = '未配置 OpenRouter API Key';
-        detail = '请先在 Agent 设置中填写 OpenRouter API Key（gemini-3-pro-image 走 OpenRouter 平台）。';
+        detail = '请先在 Agent 设置中填写 OpenRouter API Key —— Nano Banana 系列模型都走 OpenRouter。';
     } else if (/openrouter request failed/i.test(rawMessage) && /401|403|invalid.*key|authentication/i.test(rawMessage)) {
         message = 'OpenRouter 鉴权失败';
         detail = detailFromAgent || '请检查 OpenRouter API Key 是否有效、账户是否有 gemini-3-pro-image 的使用权限。';
     } else if (/image_size.*not supported/i.test(rawMessage)) {
-        // provider 实证：GA alias gemini-3-pro-image（20260528 快照）只支持 1K/2K。
-        // 面板默认走钉死日期的 20251120 快照、Agent 也会提前钳掉 GA 的 4K，
-        // 走到这里说明能力表与快照再次漂移。
-        message = '当前 Gemini 快照不支持所选档位';
-        detail = '该模型快照只支持 1K / 2K。旗舰 4K 请改用 Nano Banana Pro（preview-20251120 快照），或降档到 2K 重试。';
+        // provider 实证：GA 条目 gemini-3-pro-image（Google 快照 20260528）只支持 1K/2K。
+        // 面板默认已走 preview 条目、Agent 也会提前钳掉 GA 的 4K，
+        // 走到这里说明能力表与上游快照再次漂移。
+        message = '当前 Gemini 模型不支持所选档位';
+        detail = '这个模型只能出 1K / 2K。要 4K 请在模型里改选 Nano Banana Pro 或 Nano Banana 2，或者把尺寸降到 2K 再试。';
     } else if (/openrouter did not return an image/i.test(rawMessage)) {
         message = '模型没有返回可用图片';
         detail = detailFromAgent || 'OpenRouter 这次没有返回图片，建议调整描述后重试。';

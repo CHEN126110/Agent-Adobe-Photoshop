@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DesignEcho</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; color: #cbd5e1; font: 12px system-ui, "Microsoft YaHei", sans-serif; }
+  #status { position: absolute; top: 0; left: 0; right: 0; padding: 6px 10px; background: #14141c; border-bottom: 1px solid #26263a; z-index: 2; display: flex; gap: 8px; align-items: center; }
+  #status .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+  #status.ok .dot { background: #34d399; }
+  #status.err .dot { background: #f87171; }
+  #ui { position: absolute; top: 30px; left: 0; right: 0; bottom: 0; width: 100%; height: calc(100% - 30px); border: 0; }
+  #retry { margin-left: auto; background: transparent; border: 1px solid #334; color: #cbd5e1; border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <div id="status"><span class="dot"></span><span id="statusText">正在连接 DesignEcho Agent…</span><button id="retry">重试</button></div>
+  <iframe id="ui" src="about:blank"></iframe>
+  <script src="js/main.js"></script>
+</body>
+</html>

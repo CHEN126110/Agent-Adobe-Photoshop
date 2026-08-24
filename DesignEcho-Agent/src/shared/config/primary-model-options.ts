@@ -51,6 +51,7 @@ export interface PrimaryModelOptionGroup {
 
 /** 云端 provider 分组（顺序与标签与 SettingsModal 主模型下拉一致） */
 const CLOUD_PROVIDER_GROUPS: Array<{ provider: string; label: string; hardcoded: ModelConfig[] }> = [
+    { provider: 'claude-subscription', label: 'Claude 订阅', hardcoded: [] },
     { provider: 'openai-codex', label: 'ChatGPT 订阅（Codex）', hardcoded: [] },
     { provider: 'deepseek', label: 'DeepSeek (官方)', hardcoded: DEEPSEEK_MODELS },
     { provider: 'google', label: 'Google AI Studio (官方)', hardcoded: GOOGLE_MODELS },

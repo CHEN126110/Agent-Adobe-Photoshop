@@ -1,0 +1,274 @@
+/* 设计任务卡：照用户日常任务卡 / Trae IDE 任务列表的朴素样子——标题可收起、几句说明、一列圆角勾选框、细分割线。 */
+
+/* 任务卡不再是一个「框」：外框 + 底色在对话流里就是多出来的一个矩形。
+ * 卡的结构本来就由标题行、说明下的分割线、勾选项列表撑住，不靠边框成立
+ * （2026-08-19 用户要求去掉）。左右内边距一并收掉，让标题与对话正文左对齐。 */
+.design-task-card {
+    box-sizing: border-box;
+    border: 0;
+    background: transparent;
+    color: var(--de-text, #f8fafc);
+}
+
+.design-task-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    padding: 6px 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* 没有卡片底之后，hover 不能再铺一块灰（那等于又画回一个矩形），改成标题本身提亮 */
+.design-task-card-head:hover .design-task-card-title {
+    color: var(--de-text, #f8fafc);
+}
+
+.design-task-card-head:hover .design-task-card-chevron {
+    color: var(--de-text, #f8fafc);
+}
+
+.design-task-card-chevron {
+    flex: 0 0 auto;
+    color: var(--de-text-secondary, #94a3b8);
+}
+
+.design-task-card-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.design-task-card-progress {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--de-text-secondary, #94a3b8);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.4;
+}
+
+.design-task-card--complete .design-task-card-progress {
+    color: var(--de-success, #34d399);
+}
+
+.design-task-card-body {
+    padding: 0 0 6px;
+}
+
+.design-task-card-brief {
+    padding: 2px 0 10px 22px;
+    border-bottom: 1px solid color-mix(in srgb, var(--de-border) 55%, transparent);
+}
+
+.design-task-card-brief-line {
+    margin: 0;
+    color: var(--de-text-secondary, #cbd5e1);
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.design-task-items {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0 0 0 22px;
+    list-style: none;
+}
+
+.design-task-item {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    align-items: start;
+    column-gap: 9px;
+    min-width: 0;
+    padding: 8px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--de-border) 40%, transparent);
+}
+
+.design-task-item:last-child {
+    border-bottom: 0;
+}
+
+/* 圆角勾选框：待做空框 / 正在做转圈 / 已完成绿勾 / 略过短横 */
+.design-task-box {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 15px;
+    height: 15px;
+    margin-top: 2px;
+    border: 1.5px solid color-mix(in srgb, var(--de-text-secondary, #94a3b8) 75%, transparent);
+    border-radius: 5px;
+    color: transparent;
+    flex: 0 0 auto;
+}
+
+.design-task-box--done {
+    border-color: var(--de-success, #34d399);
+    background: var(--de-success, #34d399);
+    color: #0b1220;
+}
+
+.design-task-box--doing {
+    border-color: var(--de-primary, #60a5fa);
+    color: var(--de-primary, #60a5fa);
+}
+
+.design-task-box--doing svg {
+    animation: designTaskSpinner 0.9s linear infinite;
+}
+
+.design-task-box--skipped {
+    color: var(--de-text-secondary, #94a3b8);
+}
+
+.design-task-item-body {
+    min-width: 0;
+}
+
+.design-task-item-line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.design-task-item-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.design-task-item-count {
+    flex: 0 0 auto;
+    color: var(--de-text-secondary, #94a3b8);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.design-task-item-receipt {
+    margin-top: 2px;
+    color: var(--de-text-secondary, #94a3b8);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.design-task-item--done .design-task-item-text,
+.design-task-item--skipped .design-task-item-text {
+    color: var(--de-text-secondary, #94a3b8);
+}
+
+.design-task-card-evaluation {
+    margin: 0;
+    padding: 10px 0 4px 22px;
+    border-top: 1px solid color-mix(in srgb, var(--de-border) 55%, transparent);
+    color: var(--de-text-secondary, #cbd5e1);
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+/* ── 运行中：正在做的条目 / 标题扫光（与「正在设计」标题同一套光带参数） ── */
+.design-task-item-text.is-active,
+.design-task-card-title.is-active {
+    color: var(--de-text-muted, #94a3b8);
+    background-image: linear-gradient(
+        100deg,
+        var(--de-text-muted, #94a3b8) 0%,
+        var(--de-text-muted, #94a3b8) 46%,
+        var(--de-text, #f8fafc) 50%,
+        var(--de-text-muted, #94a3b8) 54%,
+        var(--de-text-muted, #94a3b8) 100%
+    );
+    background-size: 220% 100%;
+    background-repeat: no-repeat;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: designTaskShimmer var(--de-shimmer-duration, 1.9s) linear infinite;
+}
+
+.design-task-card-title.is-active {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+}
+
+@keyframes designTaskShimmer {
+    from { background-position: 100% 0; }
+    to { background-position: 0% 0; }
+}
+
+/* ── 挂在条目下的过程：缩进一格，靠一条细竖线和条目对齐 ── */
+.design-task-item-steps,
+.design-task-steps-fold {
+    margin-top: 6px;
+    min-width: 0;
+}
+
+.design-task-item-steps .thinking-embedded,
+.design-task-steps-fold .thinking-embedded {
+    padding: 2px 0 0 2px;
+}
+
+.design-task-steps-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--de-text-secondary, #94a3b8);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.5;
+    cursor: pointer;
+}
+
+.design-task-steps-toggle:hover {
+    color: var(--de-text, #f8fafc);
+}
+
+.design-task-opening {
+    padding: 8px 0 8px 22px;
+    border-bottom: 1px solid color-mix(in srgb, var(--de-border) 40%, transparent);
+}
+
+@keyframes designTaskSpinner {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .design-task-box--doing svg {
+        animation: none;
+    }
+
+    .design-task-item-text.is-active,
+    .design-task-card-title.is-active {
+        background-image: none;
+        -webkit-text-fill-color: currentColor;
+        color: var(--de-text, #f8fafc);
+        animation: none;
+    }
+}

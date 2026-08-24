@@ -29,7 +29,17 @@ import {
     buildSkuHumanReviewCard,
     buildSkuHumanReviewTarget
 } from '../../../shared/sku-human-review';
+import {
+    buildProductFactSheet,
+    checkCopyAgainstFacts,
+    checkSkuCombosDistinctColors,
+    describeFactCheckFindings
+} from '../../../shared/design-fact-check';
 import { buildSkuColorCardImageProbeReview } from '../../../shared/sku-color-card-image-probes';
+import {
+    buildSkuColorCardSourceReceipt,
+    type SkuArtifactRoleReceipt
+} from '../../../shared/sku-artifact-roles';
 import {
     buildSkuCardAssetCandidateReport,
     type SkuCardAssetCandidateReport
@@ -692,20 +702,14 @@ type SkuFinalExportRecord = {
 };
 
 type SkuStagedNoteExport = {
-    stagedPath: string;
+    tempPath: string;
+    tempPathKey: string;
     finalPath: string;
     finalPathKey: string;
     expectedDimensions?: { width: number; height: number };
 };
 
-type SkuNotePromotionResult = {
-    success: boolean;
-    finalPaths: string[];
-    error?: string;
-    rollbackErrors: string[];
-};
-
-type SkuStagedNoteValidationResult = {
+type SkuNoteValidationResult = {
     success: boolean;
     error?: string;
 };
@@ -809,20 +813,22 @@ function isPathInsideDirectory(filePath?: string, directory?: string): boolean {
     return normalizedFile === normalizedDir || normalizedFile.startsWith(`${normalizedDir}\\`);
 }
 
-function createSkuNoteStagingParent(outputDir: string): string {
-    const normalizedOutputDir = String(outputDir || '').trim().replace(/[\\/]+$/, '');
-    return normalizedOutputDir ? `${normalizedOutputDir}\\.designecho-staging` : '';
+function buildSkuNoteStagingPaths(outputDir: string): { parent: string; root: string } {
+    const normalizedOutputDir = String(outputDir || '')
+        .trim()
+        .replace(/\//g, '\\')
+        .replace(/\\+$/, '');
+    const leafName = normalizedOutputDir.split(/[/\\]/).filter(Boolean).at(-1)?.toLowerCase();
+    if (!normalizedOutputDir || leafName !== 'sku') {
+        throw new Error('SKU 自选备注暂存目录只能建立在当前项目的 SKU 交付目录内。');
+    }
+    const parent = `${normalizedOutputDir}\\.designecho-staging`;
+    const randomId = globalThis.crypto?.randomUUID?.()
+        || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return { parent, root: `${parent}\\${randomId}` };
 }
 
-function createSkuNoteStagingRoot(outputDir: string, size: number): string {
-    const stagingParent = createSkuNoteStagingParent(outputDir);
-    if (!stagingParent) return '';
-    const randomId = typeof globalThis.crypto?.randomUUID === 'function'
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-    return `${stagingParent}\\sku-note-${size}-${randomId}`;
-}
-
+/** 解析暂存导出回执，同时确定唯一正式目标；不把暂存路径提前计入交付。 */
 function parseSkuStagedNoteExport(input: {
     rawFileInfo: string;
     stagingRoot: string;
@@ -835,7 +841,6 @@ function parseSkuStagedNoteExport(input: {
     } catch {
         return { success: false, error: '自选备注导出回执不是有效 JSON。' };
     }
-
     if (String(info.status || '') !== 'exported_jsx') {
         return {
             success: false,
@@ -843,38 +848,36 @@ function parseSkuStagedNoteExport(input: {
         };
     }
 
-    const stagedPath = String(info.path || '').trim().replace(/\//g, '\\');
+    const tempPath = String(info.path || '').trim().replace(/\//g, '\\');
     const stagingRoot = String(input.stagingRoot || '').trim().replace(/\//g, '\\').replace(/\\+$/, '');
     const outputDir = String(input.outputDir || '').trim().replace(/\//g, '\\').replace(/\\+$/, '');
-    if (!stagedPath || !stagingRoot || !outputDir || !isPathInsideDirectory(stagedPath, stagingRoot)) {
+    if (!tempPath || !stagingRoot || !outputDir || !isPathInsideDirectory(tempPath, stagingRoot)) {
         return {
             success: false,
-            error: '自选备注导出回执没有绑定到本规格的临时目录。'
+            error: `自选备注导出回执的路径不在本次暂存目录内：${tempPath || '(空)'}`
         };
     }
 
-    const relativePath = stagedPath.slice(stagingRoot.length).replace(/^[\\/]+/, '');
-    const relativeSegments = relativePath.split(/[\\/]+/).filter(Boolean);
+    const relativeSegments = tempPath
+        .slice(stagingRoot.length)
+        .replace(/^[\\/]+/, '')
+        .split(/[\\/]+/)
+        .filter(Boolean);
     if (relativeSegments.length < 2 || relativeSegments.some((segment) => segment === '.' || segment === '..')) {
-        return {
-            success: false,
-            error: '自选备注导出回执缺少安全的模板目录或文件名。'
-        };
+        return { success: false, error: '自选备注导出回执缺少安全的模板目录或文件名。' };
     }
 
     const finalPath = `${outputDir}\\${relativeSegments.join('\\')}`;
+    const tempPathKey = normalizePathForCompare(tempPath);
     const finalPathKey = normalizePathForCompare(finalPath);
-    if (!finalPathKey || isPathInsideDirectory(finalPath, `${outputDir}\\.designecho-staging`)) {
-        return {
-            success: false,
-            error: '自选备注最终路径无法从临时目录安全映射。'
-        };
+    if (!tempPathKey || !finalPathKey || tempPathKey === finalPathKey) {
+        return { success: false, error: '自选备注暂存路径与正式路径无法安全区分。' };
     }
-
     return {
         success: true,
         artifact: {
-            stagedPath,
+            tempPath,
+            tempPathKey,
             finalPath,
             finalPathKey,
             expectedDimensions: input.expectedDimensions
@@ -882,85 +885,44 @@ function parseSkuStagedNoteExport(input: {
     };
 }
 
-async function cleanupSkuNotePaths(paths: string[]): Promise<string[]> {
-    const invoke = (window as any).designEcho?.invoke;
-    if (typeof invoke !== 'function') {
-        return paths.length > 0 ? ['文件清理能力不可用。'] : [];
-    }
-
-    const errors: string[] = [];
-    for (const filePath of Array.from(new Set(paths.map((item) => String(item || '').trim()).filter(Boolean)))) {
-        try {
-            const result = await invoke('fs:deleteFile', filePath);
-            if (result?.success === false) {
-                errors.push(`${filePath}: ${String(result?.error || '清理失败')}`);
-            }
-        } catch (error: any) {
-            errors.push(`${filePath}: ${String(error?.message || error || '清理失败')}`);
-        }
-    }
-    return errors;
-}
-
-async function cleanupSkuNoteStagingParentIfEmpty(stagingParent: string): Promise<string | undefined> {
-    const normalizedParent = String(stagingParent || '').trim();
-    if (!normalizedParent) return undefined;
-
-    const removeSkuStagingParentIfEmpty = window.designEcho?.removeSkuStagingParentIfEmpty;
-    if (typeof removeSkuStagingParentIfEmpty !== 'function') {
-        return `${normalizedParent}: 空目录清理能力不可用`;
-    }
-
-    try {
-        const result = await removeSkuStagingParentIfEmpty(normalizedParent);
-        if (result?.success === true || result?.reason === 'not_empty') {
-            return undefined;
-        }
-        return `${normalizedParent}: ${String(result?.error || result?.code || '空目录清理失败')}`;
-    } catch (error: any) {
-        return `${normalizedParent}: ${String(error?.message || error || '空目录清理失败')}`;
-    }
-}
-
 async function validateSkuStagedNoteExports(
     artifacts: SkuStagedNoteExport[]
-): Promise<SkuStagedNoteValidationResult> {
+): Promise<SkuNoteValidationResult> {
     const probeImageFile = (window as any).designEcho?.probeImageFile;
     if (artifacts.length === 0) {
-        return { success: false, error: '自选备注没有可验收的临时导出文件。' };
+        return { success: false, error: '自选备注没有可验收的暂存文件。' };
     }
     if (typeof probeImageFile !== 'function') {
-        return { success: false, error: '自选备注文件探针不可用，不能安全提交到正式目录。' };
+        return { success: false, error: '自选备注文件探针不可用，无法确认导出结果。' };
     }
 
     const fileProbes: any[] = [];
     for (const artifact of artifacts) {
-        if (!isProbeableExportPath(artifact.stagedPath)) {
+        if (!isProbeableExportPath(artifact.tempPath)) {
             fileProbes.push({
                 success: false,
-                path: artifact.stagedPath,
+                path: artifact.tempPath,
                 status: 'unsupported_format',
                 rawImagesRedacted: true,
-                error: '自选备注临时文件不是支持验收的图片格式。'
+                error: '自选备注暂存文件不是支持验收的图片格式。'
             });
             continue;
         }
-
         try {
-            const probe = await probeImageFile(artifact.stagedPath);
+            const probe = await probeImageFile(artifact.tempPath);
             fileProbes.push(probe
-                ? { ...probe, path: artifact.stagedPath }
+                ? { ...probe, path: artifact.tempPath }
                 : {
                     success: false,
-                    path: artifact.stagedPath,
+                    path: artifact.tempPath,
                     status: 'decode_failed',
                     rawImagesRedacted: true,
-                    error: '自选备注临时文件没有返回图片探针结果。'
+                    error: '自选备注暂存文件没有返回图片探针结果。'
                 });
         } catch (error) {
             fileProbes.push({
                 success: false,
-                path: artifact.stagedPath,
+                path: artifact.tempPath,
                 status: 'decode_failed',
                 rawImagesRedacted: true,
                 error: error instanceof Error ? error.message : String(error)
@@ -970,7 +932,7 @@ async function validateSkuStagedNoteExports(
 
     const readback = buildSkuExportReadback({
         expectedExports: artifacts.map((artifact) => ({
-            path: artifact.stagedPath,
+            path: artifact.tempPath,
             expectedDimensions: artifact.expectedDimensions
         })),
         fileProbes
@@ -979,78 +941,57 @@ async function validateSkuStagedNoteExports(
         return {
             success: false,
             error: [...readback.blockers, ...readback.warnings].join('；')
-                || `自选备注临时文件验收状态为 ${readback.status}。`
+                || `自选备注暂存文件验收状态为 ${readback.status}。`
         };
     }
     return { success: true };
 }
 
+async function cleanupSkuNotePaths(paths: string[]): Promise<SkuNoteValidationResult> {
+    const uniquePaths = Array.from(new Set(paths.map((value) => String(value || '').trim()).filter(Boolean)));
+    for (const targetPath of uniquePaths) {
+        const result = await (window as any).designEcho?.invoke?.('fs:deleteFile', targetPath);
+        if (result?.success !== true) {
+            return {
+                success: false,
+                error: `无法清理 SKU 自选备注暂存路径：${targetPath}；${String(result?.error || '未知错误')}`
+            };
+        }
+    }
+    return { success: true };
+}
+
+async function cleanupSkuNoteStagingParentIfEmpty(parentPath: string): Promise<SkuNoteValidationResult> {
+    const removeSkuStagingParentIfEmpty = (window as any).designEcho?.removeSkuStagingParentIfEmpty;
+    if (typeof removeSkuStagingParentIfEmpty !== 'function') {
+        return { success: false, error: 'SKU 空暂存目录清理能力不可用。' };
+    }
+    const normalizedParent = String(parentPath || '').trim();
+    const result = await removeSkuStagingParentIfEmpty(normalizedParent);
+    if (result?.success === true || result?.reason === 'not_empty') return { success: true };
+    return { success: false, error: String(result?.error || 'SKU 空暂存目录清理失败。') };
+}
+
 async function promoteSkuStagedNoteExports(
     artifacts: SkuStagedNoteExport[]
-): Promise<SkuNotePromotionResult> {
-    const bridge = (window as any).designEcho;
-    const pathExists = bridge?.pathExists;
-    const invoke = bridge?.invoke;
-    if (typeof pathExists !== 'function' || typeof invoke !== 'function') {
-        return {
-            success: false,
-            finalPaths: [],
-            error: '自选备注文件提交能力不可用。',
-            rollbackErrors: []
-        };
+): Promise<SkuNoteValidationResult> {
+    const invoke = (window as any).designEcho?.invoke;
+    if (typeof invoke !== 'function') {
+        return { success: false, error: 'SKU 暂存文件提交能力不可用。' };
     }
-
-    for (const artifact of artifacts) {
-        if (await pathExists(artifact.stagedPath) !== true) {
-            return {
-                success: false,
-                finalPaths: [],
-                error: `自选备注临时文件不存在：${artifact.stagedPath}`,
-                rollbackErrors: []
-            };
-        }
-    }
-
-    for (const artifact of artifacts) {
-        if (await pathExists(artifact.finalPath) === true) {
-            return {
-                success: false,
-                finalPaths: [],
-                error: `自选备注目标文件已存在，为避免覆盖已停止提交：${artifact.finalPath}`,
-                rollbackErrors: []
-            };
-        }
-    }
-
     const promotedPaths: string[] = [];
     for (const artifact of artifacts) {
-        let copyResult: any;
-        try {
-            copyResult = await invoke('fs:copyFileExclusive', artifact.stagedPath, artifact.finalPath);
-        } catch (error: any) {
-            copyResult = { success: false, error: String(error?.message || error || '复制失败') };
-        }
-        if (copyResult?.success === true) {
-            promotedPaths.push(artifact.finalPath);
-        } else if (String(copyResult?.createdPath || '').trim()) {
-            promotedPaths.push(String(copyResult.createdPath).trim());
-        }
-        if (copyResult?.success !== true || await pathExists(artifact.finalPath) !== true) {
-            const rollbackErrors = await cleanupSkuNotePaths(promotedPaths);
+        const result = await invoke('fs:copyFileExclusive', artifact.tempPath, artifact.finalPath);
+        if (result?.success !== true) {
+            const rollback = await cleanupSkuNotePaths(promotedPaths);
             return {
                 success: false,
-                finalPaths: [],
-                error: `${artifact.finalPath}: ${String(copyResult?.error || '复制后无法确认目标文件')}`,
-                rollbackErrors
+                error: `SKU 自选备注提交失败：${String(result?.error || artifact.finalPath)}${rollback.success ? '' : `；${rollback.error}`}`
             };
         }
+        promotedPaths.push(artifact.finalPath);
     }
-
-    return {
-        success: true,
-        finalPaths: promotedPaths,
-        rollbackErrors: []
-    };
+    return { success: true };
 }
 
 function isDocumentFromTemplateDirectory(doc: any, templateDir?: string): boolean {
@@ -1155,11 +1096,13 @@ function isTruthyExecutionFlag(value: unknown): boolean {
 }
 
 function shouldRunSkuCardVisualConfirmationRefresh(params: Record<string, any>): boolean {
-    return isTruthyExecutionFlag(params.runSkuCardVisualConfirmationBeforeSourcePreparation)
-        || isTruthyExecutionFlag(params.runBusinessVisualObservationRefreshBeforeExecution)
-        || isTruthyExecutionFlag(params.runVisualObservationRefreshBeforeExecution)
-        || isTruthyExecutionFlag(params.executeBusinessVisualObservationRefreshBeforeExecution)
-        || isTruthyExecutionFlag(params.executeVisualObservationRefreshBeforeExecution);
+    // 2026-08-19 真机「帮我做SKU」：源文档缺失 → 技能交回「候选还没有完成视觉确认」→ 模型只能原样重调 → 连败 3 次停机。
+    // 视觉确认此前只在用户原话命中关键词（skill-param-defaults 按措辞推 flag）时才跑，「帮我做SKU」没命中，
+    // 出口就锁死了。看候选图是这个技能自己该做的事：默认跑；只有明确关掉（用户已有源文档 preferExisting）才不跑。
+    if (params.runSkuCardVisualConfirmationBeforeSourcePreparation === false) return false;
+    if (params.runSkuCardVisualConfirmationBeforeSourcePreparation === undefined
+        && params.preferExistingSkuSourceForCardPreparation === true) return false;
+    return true;
 }
 
 function isReasonableSkuSize(value: number): boolean {
@@ -1217,7 +1160,11 @@ function dedupeColorNames(names: string[]): { uniqueColors: string[]; duplicateC
 const NON_SKU_COLOR_LAYER_PATTERNS = [
     /(?:点击图|转化图|主图|首图|详情页|详情长图|白底图|海报|banner|poster)/i,
     /(?:main[-_\s]?image|click[-_\s]?image|conversion[-_\s]?image|detail[-_\s]?page|white[-_\s]?bg)/i,
-    /(?:自选备注|备注图|组合图|模板|配置|参考|背景|标题|文案|卖点|按钮|价格|水印|logo)/i
+    /(?:自选备注|备注图|组合图|模板|配置|参考|背景|标题|文案|卖点|按钮|价格|水印|logo)/i,
+    // 2026-08-23 真机：版面稿「SKU色卡-…-v2.psd」的结构组「SKU色卡」「图片」漏网被当颜色，
+    // 组合卡出现"1 SKU色卡 + 2 图片"。结构/容器组名不是颜色。
+    /(?:色卡|图片|图像|照片|素材|画面|版面|画布)/i,
+    /(?:colou?r[-_\s]?card|images?|photos?|pictures?|assets?|canvas|layout)$/i
 ];
 
 function normalizeSkuLayerName(value: unknown): string {
@@ -2439,8 +2386,10 @@ export const skuBatchExecutor: SkillExecutor = {
             assetIndex: runtimeProjectContext?.assetIndex,
             visualInsightCache: runtimeProjectContext?.visualInsightCache
         });
+        const skuArtifactRoles: SkuArtifactRoleReceipt[] = [];
         const skuPlanningContext = {
             projectProductUnderstanding,
+            skuArtifactRoles,
             ...(runtimeDesignBriefDigest ? { runtimeDesignBriefDigest } : {})
         };
         const earlySkuRequiredColorSlots = resolveEarlySkuRequiredColorSlots(params);
@@ -3279,7 +3228,7 @@ export const skuBatchExecutor: SkillExecutor = {
                             );
                             return {
                                 success: true,
-                                message: `SKU 色卡素材已准备好，已保存到：${outputDocumentPath}`,
+                                message: `SKU 色卡素材已准备好，已保存到：${outputDocumentPath}。要出组合成品时，确认模板后调 stage=full。`,
                                 toolResults: sanitizeSkuToolResultsForPublicResult(skuCardSourcePreparationRun.toolResults || []),
                                 data: {
                                     status: 'source_prepared',
@@ -3350,14 +3299,24 @@ export const skuBatchExecutor: SkillExecutor = {
 
         if (!skuDoc) {
             const planBlockers = skuCardSourcePreparationPlan?.blockers || [];
+            // 出口必须可执行：说清视觉确认到底跑没跑、为什么没成、下一步谁来做什么——不然模型只会原样重调这个技能。
+            const confirmationRun = skuCardVisualConfirmationRun as Record<string, any> | undefined;
+            const confirmationNote = !confirmationRun
+                ? '（本次没有跑候选图视觉确认）'
+                : confirmationRun.status === 'failed'
+                    ? `（候选图视觉确认失败：${confirmationRun.error || '未知原因'}）`
+                    : Number(confirmationRun.successCount || 0) === 0
+                        ? `（看了 ${Number(confirmationRun.attemptedCount || confirmationRun.candidateCount || 0) || '若干'} 张候选图，视觉模型没有给出可用结论——多半是视觉模型不可用或超时）`
+                        : `（已看 ${confirmationRun.successCount} 张候选图，但没有一张被认定为完整单只 / 平铺的合格色卡素材）`;
             const missingSkuSourceMessage = shouldAllowSkuCardSourcePreparation
                 ? [
                     '当前还不能直接生成 SKU：缺少可用的 SKU 源素材文档。',
                     planBlockers.length > 0
-                        ? `还需要先完成：${planBlockers.join('；')}`
-                        : '需要先把已确认的单只/平铺素材整理成 SKU 源文档。'
+                        ? `还需要先完成：${planBlockers.join('；')}${confirmationNote}`
+                        : `需要先把已确认的单只/平铺素材整理成 SKU 源文档。${confirmationNote}`,
+                    '不要原样重调 sku-batch。可走的路：① 项目里已有按颜色分好的 SKU 源 PSD/PSB 就把它打开再调；② 没有的话先用 createProjectContactSheetOverview 看一遍候选、把合格的单只 / 平铺图整理成 PSD/SKU-card-source.psb（每色一层）再调；③ 视觉模型不可用就如实告诉用户，让他指定图或换模型。'
                 ].join('\n')
-                : `当前还缺少 SKU 源素材：没有找到项目内可用的 SKU PSD/PSB。需要先完成 SKU 源素材准备，再继续生成。`;
+                : `当前还缺少 SKU 源素材：没有找到项目内可用的 SKU PSD/PSB。需要先完成 SKU 源素材准备，再继续生成。不要原样重调 sku-batch：先 listProjectResources 找 PSD/PSB，找到就打开它再调；没有就告诉用户缺什么。`;
             emitStep(
                 'warning',
                 'SKU 素材文档未找到',
@@ -3483,13 +3442,57 @@ export const skuBatchExecutor: SkillExecutor = {
                 };
             }
 
+            // stage=template：模板设计不依赖已有色卡内容（占位数与画布由模型声明），
+            // 没有合格色卡时不拦模板站——交回模型自主设计（2026-08-23 真机：v2 假色卡
+            // 让 template 连撞四次「无颜色组」墙后 no_progress 停机，模板站被上游站废墟堵死）。
+            if (skuStage === 'template') {
+                const templateStageSizes = Array.isArray(params.comboSizes)
+                    ? params.comboSizes.map(Number).filter((size: number) => Number.isInteger(size) && size > 0)
+                    : [];
+                const templateHandoffContract = buildSkuTemplateDesignHandoffContract({
+                    missingSizes: templateStageSizes,
+                    colorCount: 0,
+                    sourceCanvas: { width: Number(skuDoc?.width) || undefined, height: Number(skuDoc?.height) || undefined }
+                });
+                const templateHandoffMessage = `当前项目还没有合格的色卡源（「${skuDocName}」里没有颜色图层组，只有：${allLayerNames.slice(0, 6).join('、') || '无图层组'}），但模板设计不因此阻塞：由你用原子工具按声明的画布与占位数自主设计模板并建占位结构。模板完成后，先调 stage=color-card 用单色源图重建色卡（每色一个可编辑图组），再调 stage=full 出组合。`;
+                emitStep(
+                    'observation',
+                    'SKU 模板进入 Agent 自主设计阶段',
+                    `色卡源暂不合格不阻塞模板站：由 Agent 自主设计模板并建占位结构；色卡随后按 stage=color-card 重建。`,
+                    'success',
+                    0.3
+                );
+                return {
+                    success: false,
+                    message: templateHandoffMessage,
+                    error: templateHandoffMessage,
+                    nonFatal: true,
+                    toolResults: sanitizeSkuToolResultsForPublicResult([
+                        { toolName: 'skuLayout-listLayerSets', result: layersResult }
+                    ]),
+                    data: {
+                        status: templateHandoffContract.status,
+                        audience: templateHandoffContract.audience,
+                        skuPrivateDiagnostics: buildSkuPrivateDiagnostics([templateHandoffContract.message]),
+                        declaredDesignTaskTypeId: templateHandoffContract.declaredDesignTaskTypeId,
+                        agentReActContinuation: templateHandoffContract.agentReActContinuation,
+                        skuDocName,
+                        comboSizes: templateStageSizes,
+                        requiredReferenceObservationTools: templateHandoffContract.requiredReferenceObservationTools,
+                        templateDesignToolNames: templateHandoffContract.templateDesignToolNames,
+                        ...skuPlanningContext
+                    }
+                };
+            }
+
             const colorGroupMissingMessage = [
                 `SKU 素材「${skuDocName}」没有识别到可用颜色图层组，暂时不能生成 SKU。`,
                 '',
                 allLayerNames.length > 0
                     ? `当前识别到的图层组：${allLayerNames.slice(0, 12).join('、')}${allLayerNames.length > 12 ? ' 等' : ''}。`
                     : '当前文档没有返回任何图层组。',
-                '请确认项目 PSD/SKU.psb 中存在以颜色命名的袜子图层组，或重新加载最新版 UXP 插件后再试。'
+                '请确认项目 PSD/SKU.psb 中存在以颜色命名的袜子图层组，或重新加载最新版 UXP 插件后再试。',
+                '若该文档只是展示版面（一张合影加文字标签），它不是色卡源文档：请先用单色源图调 stage=color-card 重建「每色一个可编辑图组」的源文档，再回来出组合。'
             ].join('\n');
             emitStep(
                 'warning',
@@ -3520,6 +3523,16 @@ export const skuBatchExecutor: SkillExecutor = {
             'success',
             0.28
         );
+        const skuColorCardSourceReceipt = buildSkuColorCardSourceReceipt({
+            documentName: skuDocName,
+            documentId: skuDoc?.id,
+            filePath: skuSourceResolution.projectSkuSourceFile?.path,
+            projectRelativePath: skuSourceResolution.projectSkuSourceFile?.relativePath,
+            observedColorNames: validColors
+        });
+        if (skuColorCardSourceReceipt) {
+            skuArtifactRoles.push(skuColorCardSourceReceipt);
+        }
         const sourceCardAspectRatio = estimateSkuSourceCardAspectRatio(layersResult, validColors);
         
         // 5. 解析参数与自动推断规格
@@ -3985,12 +3998,87 @@ export const skuBatchExecutor: SkillExecutor = {
             const designGateUnresolvableSizes = Array.from(new Set(
                 designGateUnresolvableTargets.map((target) => target.size)
             ));
+            // 该问的先问、问一次、问在开头（用户 2026-08-18 推演拍板）：规格（哪几种双数）和组合是用户独有的
+            // 业务事实。缺模板时若规格 / 组合还只是 Skill 草稿，先弹同一张组合确认卡（双数可改），用户确认后
+            // 再设计模板——否则按默认 2/3/4 做完三份模板，用户在后面的确认卡上一改规格就白做。
+            // 用户已确认 / 明说不用复核 / 项目配置权威时不问，直接进入模板设计。
+            const draftComboConfirmationBeforeTemplateDesign = designGateUnresolvableTargets.length > 0
+                && skuTemplatePreparationRoute.route === 'agent_design_handoff'
+                && !structuredComboConfirmation.provided
+                && shouldRequestSkuComboConfirmation({
+                    onlyNotes,
+                    lacksAuthoritativeCombinationSpecification: !useConfiguredExecutionPlan
+                        && !structuredComboConfirmation.provided
+                        && requestedExplicitCombos.length === 0,
+                    userExplicitlyRequestsReview: isSkuComboReviewRequestedText(trustedUserInput),
+                    userExplicitlySkipsReview: isSkuComboReviewSkippedText(trustedUserInput),
+                    confirmationApproved: structuredComboConfirmation.provided || confirmedResumeCombos.length > 0
+                });
+            if (draftComboConfirmationBeforeTemplateDesign) {
+                const draftCombosBySize: Record<number, string[][]> = {};
+                for (const size of comboSizes) {
+                    draftCombosBySize[size] = generateCombinationsOfSize(validColors, size, countPerSize);
+                }
+                const comboCardDefaults = deriveSkuCardTemplateDesignCardDefaults(projectProductUnderstanding);
+                const earlyConfirmationRequest = buildSkuComboConfirmationRequest({
+                    availableColors: validColors,
+                    requiredSizes: comboSizes,
+                    combosBySize: draftCombosBySize,
+                    generateSelfSelectNotes: generateNotes,
+                    source: 'algorithm',
+                    memoryScope: skuProjectMemoryScope,
+                    ...(comboCardDefaults.productLabel ? { productType: comboCardDefaults.productLabel } : {}),
+                    ...(comboCardDefaults.styleText ? { style: comboCardDefaults.styleText } : {})
+                });
+                if (earlyConfirmationRequest.card) {
+                    const missingLabel = designGateUnresolvableSizes.map((size) => `${size}双装`).join('、');
+                    emitStep(
+                        'observation',
+                        '先确认规格与组合，再设计模板',
+                        `项目还没有 ${missingLabel} 模板；规格和组合是你的业务事实，先在卡片里确认（双数可改），确认后我再找 / 设计模板并出图。`,
+                        'success',
+                        0.44
+                    );
+                    return {
+                        success: true,
+                        message: [
+                            `项目里还没有 ${missingLabel} 的排版模板，我可以先找现成的合适模板、找不到就新建独立模板——但先要你拍板两件事：要哪几种双数、大致要哪些组合${generateNotes ? '（含自选备注）' : ''}。`,
+                            `候选概览：${earlyConfirmationRequest.review.summary}。`,
+                            '请在下面卡片里确认或修改（双数也可以改），确认后我再开始找 / 设计模板，然后按确认的组合出图；这样不会做出你不需要的规格。'
+                        ].join('\n'),
+                        toolResults: sanitizeSkuToolResultsForPublicResult([
+                            { toolName: 'listDocuments', result: docsResult },
+                            { toolName: 'skuLayout-getCapabilities', result: skuLayoutCapabilitiesResult },
+                            { toolName: 'skuLayout-listLayerSets', result: layersResult }
+                        ]),
+                        data: {
+                            status: 'pending_sku_combo_confirmation',
+                            skuDocName,
+                            comboSizes,
+                            skuSizePlanProvenance,
+                            comboConfirmationRequired: true,
+                            confirmationBeforeTemplateDesign: true,
+                            missingTemplateSizes: designGateUnresolvableSizes,
+                            missingTemplateTargets: designGateUnresolvableTargets,
+                            skuComboConfirmationReview: earlyConfirmationRequest.review,
+                            interactiveCards: [earlyConfirmationRequest.card],
+                            ...skuPlanningContext,
+                            skuCardAssetCandidateReport,
+                            requiresUserAction: true
+                        }
+                    };
+                }
+                emitStatus('组合候选未通过检查，先进入模板设计；组合会在模板齐备后再确认。', 44);
+            }
             if (designGateUnresolvableTargets.length > 0 && skuTemplatePreparationRoute.route === 'agent_design_handoff') {
                 const handoffContract = buildSkuTemplateDesignHandoffContract({
                     missingTargets: designGateUnresolvableTargets,
-                    colorCount: validColors.length
+                    colorCount: validColors.length,
+                    sourceDocumentName: skuDocName,
+                    sourceCanvas: { width: Number(skuDoc?.width) || undefined, height: Number(skuDoc?.height) || undefined },
+                    sourceCardAspectRatio: sourceCardAspectRatio
                 });
-                const handoffUserMessage = `当前缺少${designGateUnresolvableSizes.map((size) => `${size}双`).join('、')}模板，Agent 将先设计可编辑模板并补齐占位符，再继续生成 SKU。`;
+                const handoffUserMessage = `当前缺少${designGateUnresolvableSizes.map((size) => `${size}双`).join('、')}模板。这是站③：不要重调 stage=full——由你决定：调 stage=template 设计可编辑模板并建占位结构；或用 askUserToChoose 让用户提供 / 指定模板；或先只做有模板的规格（comboSizes 去掉缺的）。模板就绪后重调 stage=full 继续出组合——缺件已补不算重复；只有同一站同参数且环境没变时才别连调。`;
                 emitStep(
                     'observation',
                     'SKU 模板进入 Agent 自主设计阶段',
@@ -4024,6 +4112,13 @@ export const skuBatchExecutor: SkillExecutor = {
                         requiredReferenceObservationTools: handoffContract.requiredReferenceObservationTools,
                         templateDesignToolNames: handoffContract.templateDesignToolNames,
                         completionChecklist: handoffContract.completionChecklist,
+                        templateLayoutSuggestions: handoffContract.templateLayoutSuggestions,
+                        // 色卡是颜色来源不是产出文档：交接后自主循环里对它的写入 / 保存 / 导出一律拦下（真机 08-18 三次都叠在色卡上）。
+                        protectSourceDocument: {
+                            documentName: skuDocName,
+                            documentId: Number(skuDoc?.id) || undefined,
+                            reason: 'SKU 色卡是颜色来源，模板和成品不在它上面做'
+                        },
                         ...skuPlanningContext,
                         skuCardAssetCandidateReport
                     }
@@ -4282,6 +4377,16 @@ export const skuBatchExecutor: SkillExecutor = {
                 emitStatus(`已自动去除重复 SKU 组合：${removalSummary}。`);
             }
         }
+        // 「对不对」核对：算法候选里的同色多双组合（白色+深咖+深咖）不是错，但用户常常并不想要——
+        // 在确认卡之前把它们点名说出来，用户在卡上一眼能删；不改生成规则（同色多双是真实 SKU 形态）。
+        if (!onlyNotes && !useConfiguredExecutionPlan) {
+            const duplicateColorFindings = checkSkuCombosDistinctColors(
+                Object.entries(combosBySize).flatMap(([sizeStr, combos]) => (combos || []).map((colors) => ({ size: Number(sizeStr), colors })))
+            );
+            if (duplicateColorFindings.length > 0) {
+                emitStatus(`候选里有 ${duplicateColorFindings.length} 组同色多双（如 ${duplicateColorFindings[0].subject}）；不需要的话请在确认卡里删掉。`);
+            }
+        }
         // 组合执行授权只接受经过校验的结构化回执或真实用户原文。
         // 禁止模型通过未声明的裸布尔参数自行批准候选组合。
         const skuComboConfirmationApproved = structuredComboConfirmation.provided
@@ -4476,6 +4581,45 @@ export const skuBatchExecutor: SkillExecutor = {
                 result: layersResult
             }
         ];
+        // 用户可见的失败句里带上第一条真实原因（去掉「N双批次 i/j:」前缀、截到 140 字）。
+        // 2026-08-18 真机：18 项全败，用户只看到「2双第1组排版没有完成（同类15条）」，真因
+        //「SKU 图层 116 缩放写入未生效：期望 219×219，读回 800×800」躺在被折叠的技术诊断里。
+        const withSkuCause = (userMessage: string, diagnostic: unknown): string => {
+            const raw = String(diagnostic || '').trim();
+            if (!raw) return userMessage;
+            const cause = raw
+                .replace(/^\d+双(自选备注)?批次\s*\d+\/\d+:\s*/u, '')
+                .replace(/^\d+双批次\s*\d+\/\d+\s+/u, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            if (!cause) return userMessage;
+            const clipped = cause.length > 140 ? `${cause.slice(0, 139).trimEnd()}…` : cause;
+            return `${userMessage.replace(/[。！!]+$/u, '')}：${clipped}`;
+        };
+        // 导出成功后把成品缩略图直接贴回对话（用户 2026-08-18：「没看到导出的图片」——不该让人去文件夹翻）。
+        // 只读文件、失败不影响交付；最多贴 16 张，避免刷屏。
+        let postedExportPreviewCount = 0;
+        const postExportPreview = async (filePath: string, label: string): Promise<void> => {
+            if (!callbacks?.onSnapshotImage || postedExportPreviewCount >= 16) return;
+            const cleanPath = String(filePath || '').trim();
+            if (!cleanPath || !/\.(jpe?g|png|webp)$/i.test(cleanPath)) return;
+            try {
+                const raw = await (window as any).designEcho?.readImageBase64?.(cleanPath);
+                const data = typeof raw === 'string' ? raw : (raw?.data || raw?.base64 || raw?.imageData);
+                if (typeof data !== 'string' || !data) return;
+                const mediaType = /\.png$/i.test(cleanPath) ? 'image/png' : /\.webp$/i.test(cleanPath) ? 'image/webp' : 'image/jpeg';
+                postedExportPreviewCount += 1;
+                callbacks.onSnapshotImage({
+                    data: data.startsWith('data:') ? data : `data:${mediaType};base64,${data}`,
+                    mediaType,
+                    toolName: 'sku-batch',
+                    index: postedExportPreviewCount,
+                    label
+                });
+            } catch {
+                // 预览失败不影响交付
+            }
+        };
         const recordSkuDiagnostic = (diagnostic: unknown, userMessage: string): void => {
             const normalizedDiagnostic = String(diagnostic || '').trim();
             const normalizedUserMessage = String(userMessage || '').trim();
@@ -4484,6 +4628,42 @@ export const skuBatchExecutor: SkillExecutor = {
             }
             if (normalizedUserMessage && !skuUserWarnings.includes(normalizedUserMessage)) {
                 skuUserWarnings.push(normalizedUserMessage);
+            }
+        };
+        // 「对不对」核对：读模板文字层，按事实表（色卡颜色名 + 项目产品词）找出别品词。只提示不拦截。
+        const checkedNoteTemplateNames = new Set<string>();
+        const checkNoteTemplateCopyAgainstFacts = async (templateDocName: string, size: number): Promise<void> => {
+            const name = String(templateDocName || '').trim();
+            if (!name || checkedNoteTemplateNames.has(name)) return;
+            checkedNoteTemplateNames.add(name);
+            try {
+                await safeToolCall('switchDocument', { documentName: name }, 8000, `fact-check-switch-${size}`);
+                const textResult: any = await safeToolCall('getAllTextLayers', {}, 12000, `fact-check-texts-${size}`);
+                const layers: any[] = Array.isArray(textResult?.layers) ? textResult.layers
+                    : Array.isArray(textResult?.textLayers) ? textResult.textLayers
+                        : Array.isArray(textResult?.data?.layers) ? textResult.data.layers : [];
+                if (layers.length === 0) return;
+                const observations = projectProductUnderstanding?.observations;
+                const productTerms = [
+                    ...(observations?.productTypes || []),
+                    ...(observations?.materials || []),
+                    ...(observations?.styleTags || []),
+                    ...(observations?.sellingPointObservations || []),
+                    // 素材路径里的系列 / 款式词（如「6047 直板木耳边微压 3.3元」）
+                    ...[...(projectProductUnderstanding?.assetGroups?.skuSourceCandidates || []), ...(projectProductUnderstanding?.assetGroups?.productStillCandidates || [])]
+                        .flatMap((asset) => String(asset?.relativePath || '').split(/[\\/]/).slice(0, -1))
+                ].flatMap((term) => String(term || '').split(/[\s，,、/·]+/u)).filter((term) => term.length >= 2);
+                const facts = buildProductFactSheet({ colorNames: validColors, productTerms, specTerms: comboSizes.map((s) => `${s}双装`) });
+                const findings = checkCopyAgainstFacts(
+                    layers.map((layer) => ({ layerName: String(layer?.name || ''), text: String(layer?.text ?? layer?.content ?? layer?.textContent ?? '') })).filter((entry) => entry.text.trim()),
+                    facts
+                );
+                if (findings.length === 0) return;
+                const summary = describeFactCheckFindings(findings);
+                recordSkuAdvisory(`fact-check:${name}: ${findings.map((f) => f.message).join('；')}`, `模板「${name}」上的文案与本品不符：${findings[0].message}${findings[0].suggestion ? `。建议：${findings[0].suggestion}` : ''}`);
+                emitStep('warning', '模板文案与本品不符', summary, 'error', 0.6);
+            } catch {
+                // 核对失败不影响出图
             }
         };
         const recordSkuAdvisory = (diagnostic: unknown, userMessage: string): void => {
@@ -4732,6 +4912,13 @@ export const skuBatchExecutor: SkillExecutor = {
                     requiredReferenceObservationTools: handoffContract.requiredReferenceObservationTools,
                     templateDesignToolNames: handoffContract.templateDesignToolNames,
                     completionChecklist: handoffContract.completionChecklist,
+                    templateLayoutSuggestions: handoffContract.templateLayoutSuggestions,
+                    // 色卡是颜色来源不是产出文档：交接后自主循环里对它的写入 / 保存 / 导出一律拦下（真机 08-18 三次都叠在色卡上）。
+                    protectSourceDocument: {
+                        documentName: skuDocName,
+                        documentId: Number(skuDoc?.id) || undefined,
+                        reason: 'SKU 色卡是颜色来源，模板和成品不在它上面做'
+                    },
                     ...skuPlanningContext,
                     skuCardAssetCandidateReport
                 }
@@ -5516,12 +5703,15 @@ export const skuBatchExecutor: SkillExecutor = {
             && skuTemplatePreparationRoute.route === 'agent_design_handoff') {
             const handoffContract = buildSkuTemplateDesignHandoffContract({
                 missingTargets: unresolvedTemplateTargets,
-                colorCount: validColors.length
+                colorCount: validColors.length,
+                sourceDocumentName: skuDocName,
+                sourceCanvas: { width: Number(skuDoc?.width) || undefined, height: Number(skuDoc?.height) || undefined },
+                sourceCardAspectRatio: sourceCardAspectRatio
             });
             const missingTemplateLabels = unresolvedTemplateTargets.map((target) => (
                 `${target.size}双${target.mode === 'self_select_note' ? '自选备注' : '组合'}模板`
             ));
-            const handoffUserMessage = `当前缺少${missingTemplateLabels.join('、')}，Agent 将先设计可编辑模板并补齐占位符，再继续生成 SKU。`;
+            const handoffUserMessage = `当前缺少${missingTemplateLabels.join('、')}。这是站③：不要重调 stage=full——由你决定：调 stage=template 设计可编辑模板并建占位结构；或用 askUserToChoose 让用户提供 / 指定模板；或先只做有模板的规格（comboSizes 去掉缺的）。模板就绪后重调 stage=full 继续出组合——缺件已补不算重复；只有同一站同参数且环境没变时才别连调。`;
             return {
                 success: false,
                 message: handoffUserMessage,
@@ -5545,6 +5735,13 @@ export const skuBatchExecutor: SkillExecutor = {
                     requiredReferenceObservationTools: handoffContract.requiredReferenceObservationTools,
                     templateDesignToolNames: handoffContract.templateDesignToolNames,
                     completionChecklist: handoffContract.completionChecklist,
+                    templateLayoutSuggestions: handoffContract.templateLayoutSuggestions,
+                    // 色卡是颜色来源不是产出文档：交接后自主循环里对它的写入 / 保存 / 导出一律拦下（真机 08-18 三次都叠在色卡上）。
+                    protectSourceDocument: {
+                        documentName: skuDocName,
+                        documentId: Number(skuDoc?.id) || undefined,
+                        reason: 'SKU 色卡是颜色来源，模板和成品不在它上面做'
+                    },
                     ...skuPlanningContext,
                     skuCardAssetCandidateReport
                 }
@@ -5772,7 +5969,7 @@ export const skuBatchExecutor: SkillExecutor = {
                 .flatMap((item) => [item.comboTemplateDoc?.name, item.noteTemplateDoc?.name])
                 .map((name) => String(name || '').trim())
                 .filter(Boolean);
-            const summary = `SKU 模板阶段已完成：${templateNames.join('、') || '所需模板'}已通过结构与占位符复验；未继续执行组合批量生产。`;
+            const summary = `SKU 模板阶段已完成：${templateNames.join('、') || '所需模板'}已通过结构与占位符复验；未继续执行组合批量生产。要出成品时接着调 stage=full 消费该模板。`;
             return {
                 success: true,
                 message: summary,
@@ -6023,7 +6220,7 @@ export const skuBatchExecutor: SkillExecutor = {
                     const comboFailureDiagnostics = collectSkuLayoutFailureDiagnostics(executeResult, `${size}双批次 ${batch.batchIndex}/${batch.batchCount}`);
                     appendUniqueDiagnostics(allCopyErrors, comboFailureDiagnostics);
                     if (comboFailureDiagnostics.length > 0) {
-                        recordSkuDiagnostic('', `${size}双第${batch.batchIndex}组排版没有完成。`);
+                        recordSkuDiagnostic('', withSkuCause(`${size}双第${batch.batchIndex}组排版没有完成。`, comboFailureDiagnostics[0]));
                     }
 
                     const comboCleanupFailure = readTerminalSkuLayerCleanupFailure(executeResult);
@@ -6066,6 +6263,7 @@ export const skuBatchExecutor: SkillExecutor = {
                             const resolvedFile = await resolveExportedFileRecord(fileInfo, `${size}\u53cc`);
                             if (resolvedFile.success && resolvedFile.record) {
                                 allFinalFiles.push(resolvedFile.record);
+                                await postExportPreview(resolvedFile.record, `已导出：${String(resolvedFile.record).split(/[\\/]/).slice(-2).join('/')}`);
                                 allFinalExportRecords.push({
                                     path: resolvedFile.record,
                                     expectedDimensions: getDocumentExportDimensions(comboTemplateDocWithPreflight)
@@ -6083,7 +6281,7 @@ export const skuBatchExecutor: SkillExecutor = {
                         || comboFailureDiagnostics[0]
                         || missingComboQaDiagnostic
                         || `${size}双批次 ${batch.batchIndex}/${batch.batchCount}: ${executeResult?.error || '排版失败'}`;
-                    const batchUserMessage = `${size}双第${batch.batchIndex}组排版没有完成。`;
+                    const batchUserMessage = withSkuCause(`${size}双第${batch.batchIndex}组排版没有完成。`, batchError);
                     recordSkuDiagnostic(batchError, batchUserMessage);
                     emitStep('warning', 'SKU 规格排版批次失败', batchUserMessage, 'error', 0.72);
                     if (executeResult?.timeout) {
@@ -6125,20 +6323,21 @@ export const skuBatchExecutor: SkillExecutor = {
 
                 if (noteTemplateDoc) {
                     const noteOutputDir = String(outputDir || '').trim();
-                    const noteStagingParent = createSkuNoteStagingParent(noteOutputDir);
-                    const noteStagingRoot = noteOutputDir
-                        ? createSkuNoteStagingRoot(noteOutputDir, size)
-                        : '';
+                    const noteStagingPaths = noteOutputDir
+                        ? buildSkuNoteStagingPaths(noteOutputDir)
+                        : { parent: '', root: '' };
+                    const noteStagingParent = noteStagingPaths.parent;
+                    const noteStagingRoot = noteStagingPaths.root;
                     try {
-                        if (!noteOutputDir || !noteStagingRoot) {
+                        if (!noteOutputDir) {
                             throw new Error('自选备注缺少有效的正式输出目录。');
                         }
-                        const createStagingResult = await (window as any).designEcho?.invoke?.(
+                        const stagingCreated = await (window as any).designEcho?.invoke?.(
                             'fs:createDirectory',
                             noteStagingRoot
                         );
-                        if (createStagingResult !== true && createStagingResult?.success !== true) {
-                            throw new Error(`无法创建自选备注临时目录：${noteStagingRoot}`);
+                        if (stagingCreated !== true) {
+                            throw new Error('自选备注暂存目录创建失败。');
                         }
 
                         await executeToolCall('switchDocument', { documentName: noteTemplateDoc.name }, { signal });
@@ -6237,6 +6436,11 @@ export const skuBatchExecutor: SkillExecutor = {
                                 break;
                             }
                         }
+                        // 「对不对」核对（每规格一次）：自选备注模板上的示例文案若提到本品没有的颜色 / 款式词
+                        //（真机：别品模板遗留「1双小花+1双条纹」），先说出来——不拦出图，但让用户与模型看见并可改。
+                        if (batch.batchIndex === 1) {
+                            await checkNoteTemplateCopyAgainstFacts(noteTemplateDocWithPreflight.name, size);
+                        }
                         const noteSkuLayoutParams = {
                             action: 'arrangeDynamic',
                             combos: batch.combos,
@@ -6274,7 +6478,7 @@ export const skuBatchExecutor: SkillExecutor = {
                         const noteFailureDiagnostics = collectSkuLayoutFailureDiagnostics(noteResult, `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}`);
                         appendUniqueDiagnostics(allCopyErrors, noteFailureDiagnostics);
                         if (noteFailureDiagnostics.length > 0) {
-                            recordSkuDiagnostic('', `${size}双自选备注没有完成。`);
+                            recordSkuDiagnostic('', withSkuCause(`${size}双自选备注没有完成。`, noteFailureDiagnostics[0]));
                         }
 
                         const noteCleanupFailure = readTerminalSkuLayerCleanupFailure(noteResult);
@@ -6355,7 +6559,7 @@ export const skuBatchExecutor: SkillExecutor = {
                             || missingNoteQaDiagnostic
                             || invalidNoteExportReceiptDiagnostic
                             || `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}: ${String(noteResult?.error || '生成失败')}`;
-                        const noteUserMessage = `${size}双自选备注没有完成。`;
+                        const noteUserMessage = withSkuCause(`${size}双自选备注没有完成。`, noteError);
                         recordSkuDiagnostic(noteError, noteUserMessage);
                         emitStep('warning', 'SKU 自选备注批次失败', noteUserMessage, 'error', 0.84);
                         if (noteResult?.timeout) break;
@@ -6368,32 +6572,35 @@ export const skuBatchExecutor: SkillExecutor = {
                         && pendingNotePathKeys.size === noteBatches.length;
                     let noteSizeCommitted = false;
                     if (allNoteBatchesReadyToCommit) {
-                        const stagedValidation = await validateSkuStagedNoteExports(pendingNoteArtifacts);
-                        if (!stagedValidation.success) {
+                        const exportValidation = await validateSkuStagedNoteExports(pendingNoteArtifacts);
+                        if (!exportValidation.success) {
                             noteBatchFailed = true;
                             recordSkuDiagnostic(
-                                `${size}双自选备注临时文件验收失败：${stagedValidation.error || '未知错误'}`,
-                                `${size}双自选备注文件未通过可解码与尺寸检查，没有提交到正式目录。`
+                                `${size}双自选备注导出文件验收失败：${exportValidation.error || '未知错误'}`,
+                                `${size}双自选备注文件未通过可解码与尺寸检查，该项未计为完成。`
                             );
                         } else {
-                            const promotionResult = await promoteSkuStagedNoteExports(pendingNoteArtifacts);
-                            if (promotionResult.success) {
-                                allFinalFiles.push(...promotionResult.finalPaths);
+                            const promotion = await promoteSkuStagedNoteExports(pendingNoteArtifacts);
+                            if (!promotion.success) {
+                                noteBatchFailed = true;
+                                recordSkuDiagnostic(
+                                    `${size}双自选备注暂存文件提交失败：${promotion.error || '未知错误'}`,
+                                    `${size}双自选备注未能安全提交到交付目录，该项未计为完成。`
+                                );
+                            } else {
+                                for (const artifact of pendingNoteArtifacts) {
+                                    allFinalFiles.push(artifact.finalPath);
+                                    await postExportPreview(
+                                        artifact.finalPath,
+                                        `已导出：${String(artifact.finalPath).split(/[\\/]/).slice(-2).join('/')}`
+                                    );
+                                }
                                 allFinalExportRecords.push(...pendingNoteArtifacts.map((artifact) => ({
                                     path: artifact.finalPath,
                                     expectedDimensions: artifact.expectedDimensions
                                 })));
                                 generatedNoteSizes.add(size);
                                 noteSizeCommitted = true;
-                            } else {
-                                noteBatchFailed = true;
-                                const rollbackDetail = promotionResult.rollbackErrors.length > 0
-                                    ? `；回滚异常：${promotionResult.rollbackErrors.join('；')}`
-                                    : '';
-                                recordSkuDiagnostic(
-                                    `${size}双自选备注文件提交失败：${promotionResult.error || '未知错误'}${rollbackDetail}`,
-                                    `${size}双自选备注没有提交到正式目录，原有文件未被覆盖。`
-                                );
                             }
                         }
                     }
@@ -6430,25 +6637,21 @@ export const skuBatchExecutor: SkillExecutor = {
                     }
                     } catch (error: any) {
                         completedNoteRowsBySize.set(size, 0);
-                        const noteError = `${size}双自选备注暂存或提交失败：${String(error?.message || error || '未知错误')}`;
-                        recordSkuDiagnostic(noteError, `${size}双自选备注没有提交到正式目录。`);
-                        emitStep('warning', 'SKU 自选备注文件事务失败', `${size} 双自选备注没有完成。`, 'error', 0.84);
+                        const noteError = `${size}双自选备注导出失败：${String(error?.message || error || '未知错误')}`;
+                        recordSkuDiagnostic(noteError, `${size}双自选备注没有生成到交付目录。`);
+                        emitStep('warning', 'SKU 自选备注导出失败', `${size} 双自选备注没有完成。`, 'error', 0.84);
                     } finally {
-                        const cleanupErrors = await cleanupSkuNotePaths([noteStagingRoot]);
-                        if (cleanupErrors.length > 0) {
-                            recordSkuAdvisory(
-                                `${size}双自选备注临时目录清理失败：${cleanupErrors.join('；')}`,
-                                `${size}双自选备注已完成，但临时文件需要后续清理。`
-                            );
+                        if (noteStagingRoot) {
+                            const stagingCleanup = await cleanupSkuNotePaths([noteStagingRoot]);
+                            if (!stagingCleanup.success) {
+                                appendUniqueDiagnostics(allCopyErrors, [String(stagingCleanup.error || 'SKU 自选备注暂存文件清理失败')]);
+                            }
                         }
-                        const stagingParentCleanupError = await cleanupSkuNoteStagingParentIfEmpty(
-                            noteStagingParent
-                        );
-                        if (stagingParentCleanupError) {
-                            recordSkuAdvisory(
-                                `${size}双自选备注临时目录父级清理失败：${stagingParentCleanupError}`,
-                                'SKU 临时目录父级需要后续清理，但不影响本轮交付判定。'
-                            );
+                        if (noteStagingParent) {
+                            const parentCleanup = await cleanupSkuNoteStagingParentIfEmpty(noteStagingParent);
+                            if (!parentCleanup.success) {
+                                appendUniqueDiagnostics(allCopyErrors, [String(parentCleanup.error || 'SKU 自选备注空暂存目录清理失败')]);
+                            }
                         }
                     }
                 } else {
@@ -6543,7 +6746,11 @@ export const skuBatchExecutor: SkillExecutor = {
             autoLayoutQaDiagnostics: skuAutoLayoutQaDiagnostics,
             humanReview: skuHumanReviewBinding.review
         });
-        const skuHumanReviewCard = skuVisualReviewIntake.status === 'ready_for_human_review'
+        // 2026-08-18 用户拍板：不再向用户弹「复核当前 SKU 导出结果 / 待人工复核」表单卡（复核结论 / 复核人 /
+        // 人工评分 / 复核备注）。导出成功后直接交付；好不好看交给后续评审器与画廊，不让用户填表。
+        // 复核绑定与要求仍算并留在结果数据里（诊断 / 记录用），只是不再渲染成卡片。
+        const SHOW_SKU_HUMAN_REVIEW_CARD = false;
+        const skuHumanReviewCard = SHOW_SKU_HUMAN_REVIEW_CARD && skuVisualReviewIntake.status === 'ready_for_human_review'
             ? buildSkuHumanReviewCard({
                 target: skuHumanReviewTarget,
                 requirements: skuVisualReviewIntake.requirements

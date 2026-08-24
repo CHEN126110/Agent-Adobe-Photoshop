@@ -27,6 +27,8 @@ export const SINGLE_CANVAS_VISUAL_MANIFEST: SkillRuntimeManifest = {
     version: '0.1.0',
     task_type: 'design.single_canvas_visual.v1',
     display_name: '单画布视觉设计',
+    // 开放创意路径：不建 Stage 机、不以声明作写入门票（设计路径宪法）。
+    execution_model: 'agentic',
     legacy_skill_ids: [],
     required_inputs: ['goal'],
     optional_inputs: [

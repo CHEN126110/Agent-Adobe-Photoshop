@@ -228,6 +228,11 @@ export function normalizePhotoshopToolArguments(
         stripNullEntriesFromObjectParam(normalized, 'targetBounds');
     }
 
-    delete normalized.colorHex;
+    // 这三个效果工具只消费 RGB color，colorHex 在上方完成格式转换后应移除。
+    // createTextLayer / addPhotoFilterAdjustment 原生消费 colorHex，必须原样保留；
+    // 全局删除会把 Agent 已声明的文字色静默改成 Photoshop 默认黑色。
+    if (['addStroke', 'addDropShadow', 'addGlow'].includes(toolName)) {
+        delete normalized.colorHex;
+    }
     return normalized;
 }

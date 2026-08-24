@@ -36,6 +36,26 @@ import { isPolicyGateResult } from './tool-safety-policy';
  */
 export const POLICY_GATE_REPEAT_BLOCK_LIMIT = 5;
 
+/**
+ * 同一堵墙的**不可豁免**上限——达到后任何 Harness 恢复都不能再压住停机。
+ *
+ * 背景（真机病例 2026-08-18，运行档案 [491]）：`photoshop_target_changed_before_execution`
+ * 在一次 run 内挡下 sku-batch **14 次**，签名、code、上账全部正确，累计计数也照常涨到 14，
+ * 却一次都没停机——因为 agent.ts 的停机判断是
+ * `if (repeatedPolicyGate && !options.suppressConsecutiveFailedRound)`，
+ * 而模型每轮都夹一次 requestAgentCapabilities 触发 liveness recovery，
+ * `suppressConsecutiveFailedRound` **每轮都为真**。
+ *
+ * 原设计写着「计数照常累加、只是本轮不停机，下一轮即触发」，这句话隐含了
+ * 「豁免不会每轮都成立」的假设。真机证明该假设不成立：只要模型持续调用控制工具，
+ * 豁免就能无限续期，累计计数彻底失去意义，最后烧穿 performance_budget、零写入。
+ *
+ * 因此豁免本身也要有界：LIMIT 之后仍可宽限，但到 HARD_LIMIT 必须如实停机。
+ * 取 2 倍是因为豁免的正当用途是「让 Harness 排好的恢复动作获得一次真实执行机会」——
+ * 5 次额外机会远超任何一条有界修复所需，再撞就是出口不可达。
+ */
+export const POLICY_GATE_REPEAT_HARD_BLOCK_LIMIT = POLICY_GATE_REPEAT_BLOCK_LIMIT * 2;
+
 /** 一次 run 内的累计状态：墙标识 → 命中次数。 */
 export type PolicyGateRepeatState = Map<string, number>;
 
@@ -49,6 +69,12 @@ export interface PolicyGateRepeatVerdict {
     count: number;
     toolName: string;
     message: string;
+    /**
+     * 本次裁决能否被 Harness 恢复豁免（suppressConsecutiveFailedRound）压住本轮停机。
+     * count 达到 POLICY_GATE_REPEAT_HARD_BLOCK_LIMIT 后为 false：账本自己决定这堵墙
+     * 还能不能宽限，调用方不得再自行判断。
+     */
+    suppressible: boolean;
 }
 
 function readStringField(result: unknown, field: string): string {
@@ -95,10 +121,22 @@ export function isLedgerAccountableGate(result: unknown): boolean {
     if (result == null || typeof result !== 'object') return false;
     const record = result as Record<string, unknown>;
     if (record.success !== false) return false;
+    if (isDeclarationValidationRejection(record)) return true;
     return GATE_STRUCTURAL_FIELDS.some((field) => {
         const value = record[field];
         return typeof value === 'string' && value.trim().length > 0;
     });
+}
+
+/**
+ * Harness 声明表单（declareDesignBrief / Strategy / ActionPlan / ReferenceBrief）的结构校验驳回。
+ * 它不是 Photoshop 失败，也不带 blockedTool——但和门禁一样是「Harness 拒绝模型」：
+ * 真机 2026-08-17 `runtime_design_brief_declaration_invalid` 一次 run 内连撞 7 次不停机、零写入。
+ * 同一表单被连续驳回到上限，就是模型看不懂表单要求，继续盲试没有意义，必须上账并停机说清。
+ */
+function isDeclarationValidationRejection(record: Record<string, unknown>): boolean {
+    const code = String(record.code || '').trim();
+    return code.endsWith('_declaration_invalid');
 }
 
 /**
@@ -176,15 +214,20 @@ export function recordPolicyGateBlockRound(
         const count = (state.get(signature) || 0) + 1;
         state.set(signature, count);
         if (count >= POLICY_GATE_REPEAT_BLOCK_LIMIT && !verdict) {
+            const suppressible = count < POLICY_GATE_REPEAT_HARD_BLOCK_LIMIT;
             verdict = {
                 signature,
                 count,
                 toolName: entry.toolName,
+                suppressible,
                 message: buildPolicyGateRepeatStopMessage({
                     toolName: entry.toolName,
                     count,
                     blockMessage: readStringField(entry.result, 'message')
-                        || readStringField(entry.result, 'error')
+                        || readStringField(entry.result, 'error'),
+                    declarationRejection: entry.result != null && typeof entry.result === 'object'
+                        && isDeclarationValidationRejection(entry.result as Record<string, unknown>),
+                    exhaustedRecoveryGrace: !suppressible
                 })
             };
         }
@@ -200,13 +243,28 @@ export function buildPolicyGateRepeatStopMessage(input: {
     toolName: string;
     count: number;
     blockMessage?: string;
+    declarationRejection?: boolean;
+    /** 已用尽 Harness 恢复宽限（count 达到硬上限），停机不可再被豁免压住。 */
+    exhaustedRecoveryGrace?: boolean;
 }): string {
+    const blockMessage = String(input.blockMessage || '').trim();
+    if (input.declarationRejection) {
+        const lines = [
+            `系统要求先提交的「${input.toolName}」表单已经连续 ${input.count} 次没有通过校验，继续盲试不会有进展，已停止。`,
+            '这是系统表单要求与模型理解之间的问题，不代表你的需求描述错误。'
+        ];
+        if (blockMessage) lines.push(`最后一次校验说明：${blockMessage}`);
+        lines.push('本轮没有完成，运行记录已保留诊断。');
+        return lines.join('\n');
+    }
     const lines = [
         `同一条策略门禁已经挡下 ${input.toolName} ${input.count} 次，继续原样重试不会有进展，已停止。`,
         '这通常说明门禁给出的下一步指引无法真正解除它本身的拦截条件（出口不可达）。'
     ];
-    const blockMessage = String(input.blockMessage || '').trim();
     if (blockMessage) lines.push(`门禁说明：${blockMessage}`);
+    if (input.exhaustedRecoveryGrace) {
+        lines.push('期间系统已经多次安排替代动作重试，仍然撞在同一条门禁上，宽限次数已用尽。');
+    }
     lines.push('这是系统门禁路径问题，不代表你的需求描述错误；本轮没有完成，运行记录已保留诊断。');
     return lines.join('\n');
 }

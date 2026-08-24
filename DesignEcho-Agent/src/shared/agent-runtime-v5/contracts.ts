@@ -214,6 +214,17 @@ export interface SkillRuntimeManifest {
     display_name?: string;
     /** artifact-owner 决定交付物身份；method 只描述实现方法，不得覆盖用户目标产物。 */
     planning_role?: 'artifact-owner' | 'method';
+    /**
+     * 执行模型（设计路径宪法，2026-08-17）：
+     * - 'staged'（默认）：Stage 机是写入门禁——R1/R3/R4 声明通过后才进入 E1 写入，工具面按阶段
+     *   与 manifest 裁剪。只给「有唯一正确答案」的规格化生产任务（SKU 批量 / 色卡 / 模板套版）。
+     * - 'agentic'：开放创意路径。Runtime **不创建** Stage 机、不以任何声明作写入门票、不按 manifest
+     *   裁工具面；模型从第一轮拥有全部看 / 画 / 量工具，写前只受三条真红线约束（PS 连接与文档、
+     *   读后写、不可逆动作确认）。manifest 仍供知识注入、预算画像与评价画像。
+     * 真机依据：2026-08-17 同一项目同一下午，绑定 Stage 机的三次「帮我做详情页」零写入全部死于
+     * 简报表单校验；未绑定的一次续跑写入 6 层。判据见 CLAUDE.md「workflow 与 agent 的分流判据」。
+     */
+    execution_model?: 'staged' | 'agentic';
     /** 迁移期旧 Skill id；alias 归 manifest 所有，Resolver 不维护第二张映射表。 */
     legacy_skill_ids?: string[];
     /**

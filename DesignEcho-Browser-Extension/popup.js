@@ -97,6 +97,19 @@ reconnectButton.addEventListener('click', async () => {
   setTimeout(fetchStatus, 500);
 });
 
+// 收藏动作：发给 service worker 后立即关闭弹窗——框选/选择器需要用户直接操作页面，
+// 结果由页面内 toast（或扩展角标）反馈。
+document.querySelectorAll('.action').forEach((button) => {
+  button.addEventListener('click', async () => {
+    try {
+      await chrome.runtime.sendMessage({ type: 'collect', action: button.dataset.action });
+      window.close();
+    } catch {
+      showHint('无法唤起后台服务，请重新加载扩展后再试', true);
+    }
+  });
+});
+
 loadSettings();
 fetchStatus();
 versionLabel.textContent = 'v' + chrome.runtime.getManifest().version;

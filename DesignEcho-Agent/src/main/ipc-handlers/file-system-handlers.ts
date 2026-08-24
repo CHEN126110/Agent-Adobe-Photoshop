@@ -19,6 +19,23 @@ interface FileEntry {
 
 const MIN_REMOVABLE_DIRECTORY_DEPTH = 2;
 
+function validateExternalUrl(rawUrl: string): string {
+    let parsed: URL;
+    try {
+        parsed = new URL(rawUrl);
+    } catch {
+        throw new Error('外部链接格式无效。');
+    }
+    if (
+        (parsed.protocol !== 'https:' && parsed.protocol !== 'mailto:')
+        || parsed.username
+        || parsed.password
+    ) {
+        throw new Error('仅允许打开不含凭据的 HTTPS 或邮件链接。');
+    }
+    return parsed.toString();
+}
+
 function normalizeDirectoryPathKey(dirPath: string): string {
     const normalized = path.resolve(dirPath);
     return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
@@ -514,7 +531,7 @@ export function registerFileSystemHandlers(context: IPCContext): void {
     // 在默认浏览器中打开链接
     ipcMain.handle('shell:openExternal', async (_event: IpcMainInvokeEvent, url: string) => {
         try {
-            await shell.openExternal(url);
+            await shell.openExternal(validateExternalUrl(url));
             return true;
         } catch (error: any) {
             throw new Error(`打开链接失败: ${error.message}`);

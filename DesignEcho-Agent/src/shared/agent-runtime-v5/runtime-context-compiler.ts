@@ -172,6 +172,7 @@ export interface CompiledRuntimeContext {
         includedItemCount: number;
         rejectedItemCount: number;
         characterCount: number;
+        characterBudget: number;
     };
     boundaries: {
         typedSlots: true;
@@ -404,6 +405,8 @@ export function compileRuntimeContext(input: {
     items: readonly RuntimeContextItem[];
     stage?: RuntimeStage;
     nowMs?: number;
+    /** 来自模型窗口的本轮容量分配；不能超过编译器 64k 硬上限。 */
+    maxTotalCharacters?: number;
 }): CompiledRuntimeContext {
     const candidates: RuntimeContextItem[] = [];
     const included: RuntimeContextItem[] = [];
@@ -461,7 +464,11 @@ export function compileRuntimeContext(input: {
         deconflicted.push(item);
     }
 
-    let remainingCharacters = MAX_TOTAL_CHARACTERS;
+    const requestedCharacterBudget = Number(input.maxTotalCharacters);
+    const characterBudget = Number.isFinite(requestedCharacterBudget)
+        ? Math.min(MAX_TOTAL_CHARACTERS, Math.max(1_000, Math.floor(requestedCharacterBudget)))
+        : MAX_TOTAL_CHARACTERS;
+    let remainingCharacters = characterBudget;
     for (const item of deconflicted) {
         if (item.content.length > remainingCharacters) {
             rejectedItemIds.push(item.id);
@@ -495,7 +502,8 @@ export function compileRuntimeContext(input: {
             inputItemCount: input.items.length,
             includedItemCount: included.length,
             rejectedItemCount: rejectedItemIds.length,
-            characterCount: prompt.length
+            characterCount: prompt.length,
+            characterBudget
         },
         boundaries: {
             typedSlots: true,

@@ -137,6 +137,25 @@ export interface BuildSkuColorCardPlanInput {
     sourceResolution?: Pick<SkuColorCardSourceResolution, 'blockers' | 'warnings'>;
 }
 
+/**
+ * 色卡的主体填充档位：主体占卡片区域的比例。
+ *
+ * 色卡是巴掌大的格子、要看清花色纹理，主体必须顶到 0.9；
+ * 这是色卡自己的构图标准，不适用主图「主体占 40%~60% 留白呼吸」的档位。
+ * 真机 2026-08-01：原图 contain 置入后袜子只占卡片约四成，四周全是拍摄环境。
+ */
+export const SKU_COLOR_CARD_SUBJECT_FILL_RATIO = 0.9;
+
+/** 站①引擎主体缩放的结果记录；method === 'frame' 表示主体检测退化成整框，缩放形同未做。 */
+export interface SkuColorCardSubjectFit {
+    method: string;
+    confidence: string;
+    appliedScalePercent?: number;
+    geometryStatus?: string;
+    /** false = 主体没被真正找到（整框退化），需要视觉站按画面重新处理，不得记成已完成。 */
+    subjectResolved: boolean;
+}
+
 export interface SkuColorCardPreparedCard {
     sourceId: string;
     colorName: string;
@@ -144,14 +163,18 @@ export interface SkuColorCardPreparedCard {
     sourcePath: string;
     groupId: number;
     smartObjectLayerId: number;
-    internalDocumentId: number;
-    internalCanvas: { width: number; height: number };
+    /** 卡片式结构（场景卡）才有：色卡封装 SO 的内部文档；纯底平铺结构不进 SO，不提供。 */
+    internalDocumentId?: number;
+    internalCanvas?: { width: number; height: number };
     imageLayerId: number;
-    labelBackgroundLayerId: number;
+    /** 卡片式结构才有白色标签底；纯底平铺结构（ground truth C-1183）组内只有色名文字。 */
+    labelBackgroundLayerId?: number;
     labelTextLayerId: number;
     clippingVerified: boolean;
     smartObjectVerified: boolean;
     labelTextFitVerified: boolean;
+    /** 站①引擎对原图卡片执行的主体缩放；精修卡片（形态统一主体已归位）不适用。 */
+    subjectFit?: SkuColorCardSubjectFit;
     /** 纯底素材精修启用时的可编辑图层；未启用或场景图时不提供。 */
     sourceBackupLayerId?: number;
     shadowLayerId?: number;
@@ -287,6 +310,13 @@ export function resolveSkuColorCardSources(
             method = 'user_explicit_path';
         } else if (requestedPath && requestedNameKey === colorKey) {
             method = 'provided_exact_name';
+            // 模型只给了文件名 / 相对路径（不是盘符绝对路径）：项目里恰有一张同名图就用它的完整路径——
+            // 真机 2026-08-19：20 张色卡源的绝对路径把工具调用参数撑到输出上限，反复截断；名字就够了。
+            const isAbsolute = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(requestedPath);
+            if (!isAbsolute && exactMatches.length === 1) {
+                resolvedPath = normalizePath(exactMatches[0].path);
+                method = 'project_exact_name';
+            }
         } else if (exactMatches.length === 1) {
             resolvedPath = normalizePath(exactMatches[0].path);
             method = 'project_exact_name';
@@ -298,8 +328,28 @@ export function resolveSkuColorCardSources(
             method = 'unresolved';
             blockers.push(`项目中存在 ${exactMatches.length} 张名为“${colorName}”的图片，无法确定应使用哪一张。`);
         } else if (requestedPath) {
-            method = 'provided_candidate';
-            warnings.push(`项目中没有唯一同名图片“${colorName}”，保留上游选定的候选图，执行前需要确认内容。`);
+            // 2026-08-23 真机：模型传 {filePath:"DSC05918.jpg", colorName:"01 浅灰驼"}（相机文件名+人话色名，
+            // 常态组合）时，按色名找图落空，裸文件名被原样放行 → 下游按应用目录 stat → ENOENT 三连炸。
+            // 这里补按请求文件名 basename 在项目资产里解析；仍找不到且不是绝对路径就 blocker 点名，不放行必炸路径。
+            const fileNameMatches = requestedNameKey
+                ? assets.filter((asset) => comparableName(baseNameWithoutExtension(asset.name || asset.path)) === requestedNameKey)
+                : [];
+            const requestedIsAbsolute = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(requestedPath);
+            if (fileNameMatches.length === 1) {
+                resolvedPath = normalizePath(fileNameMatches[0].path);
+                method = 'project_exact_name';
+            } else if (fileNameMatches.length > 1) {
+                resolvedPath = '';
+                method = 'unresolved';
+                blockers.push(`项目中存在 ${fileNameMatches.length} 张名为“${baseNameWithoutExtension(requestedPath)}”的图片，无法确定“${colorName}”应使用哪一张。`);
+            } else if (requestedIsAbsolute) {
+                method = 'provided_candidate';
+                warnings.push(`项目中没有唯一同名图片“${colorName}”，保留上游选定的候选图，执行前需要确认内容。`);
+            } else {
+                resolvedPath = '';
+                method = 'unresolved';
+                blockers.push(`项目资产里没有名为“${baseNameWithoutExtension(requestedPath)}”的图片（“${colorName}”的来源）。请核对文件名（可先看项目联系表确认编号），或改传项目内的完整路径。`);
+            }
         } else {
             method = 'unresolved';
             blockers.push(`项目中没有找到与“${colorName}”同名的图片。`);
@@ -342,7 +392,7 @@ function normalizeSources(inputs: SkuColorCardSourceInput[] | undefined): {
 } {
     const blockers: string[] = [];
     const seenPaths = new Set<string>();
-    const seenNames = new Set<string>();
+    const seenNames = new Map<string, string>();
     const sources: SkuColorCardSource[] = [];
 
     (Array.isArray(inputs) ? inputs : []).forEach((input, index) => {
@@ -364,12 +414,13 @@ function normalizeSources(inputs: SkuColorCardSourceInput[] | undefined): {
             blockers.push(`色卡来源重复：${filePath}`);
             return;
         }
-        if (seenNames.has(nameKey)) {
-            blockers.push(`颜色名称重复：${colorName}`);
+        const conflictingPath = seenNames.get(nameKey);
+        if (conflictingPath) {
+            blockers.push(`颜色名称重复：「${colorName}」同时来自 ${conflictingPath} 和 ${filePath}。同一颜色只保留一个来源：请在 sources 里去掉其一，或给其中一个传入不同的 colorName。`);
             return;
         }
         seenPaths.add(pathKey);
-        seenNames.add(nameKey);
+        seenNames.set(nameKey, filePath);
         sources.push({
             sourceId: clean(input.assetId) || `source-${index + 1}`,
             filePath,
@@ -527,7 +578,7 @@ export function buildSkuColorCardPlan(input: BuildSkuColorCardPlanInput): SkuCol
         ],
         qualityCriteria: [
             '每个输入图片对应且只对应一个同名颜色组。',
-            '每个颜色组只包含一个可编辑色卡智能对象，商品图在内部以剪切蒙版受圆角底约束。',
+            '纯底精修卡：每色一组内主体件与原影件并列平铺（各为智能对象，无卡片壳、无剪切），中性灰剪切主体，组内色名文字——与店铺纯底样板（C-1183）同构。场景/无精修卡：每色一个可编辑色卡智能对象，商品图在内部以剪切蒙版受圆角底约束。',
             '启用序号时，所有序号只存在于根层级“参考组”，不属于颜色组或可复用卡片资产。',
             '智能对象内部包含白色标签底和标签文字；标签来自权威颜色名，或被明确标记为待确认的 provisional 文件名。',
             '色名文字必须依据 Photoshop 真实 bounds 缩放并在白底内水平、垂直居中。',

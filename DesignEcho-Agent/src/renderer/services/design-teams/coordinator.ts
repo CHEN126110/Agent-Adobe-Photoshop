@@ -42,6 +42,7 @@ import {
 import { extractDesignQualityMeasurements } from '../../../shared/design-quality-measurement';
 import { extractFreshDesignSurfaceSnapshotFromToolResults } from '../../../shared/design-surface-snapshot-normalizer';
 import { classifyAgentToolExecution } from '../../../shared/agent-tool-execution-preflight';
+import { resolveModelContextWindow } from '../../../shared/config/models.config';
 import {
     buildDesignTeamRuntimeBudget,
     getDesignTeamRoleExecutionMinimum,
@@ -347,6 +348,7 @@ export class DesignTeamCoordinator {
         if (workspaceDigest) promptSections.push(workspaceDigest);
         if (request.context) promptSections.push(`Coordinator context:\n${request.context}`);
         const systemPrompt = promptSections.join('\n\n');
+        const modelContextWindow = resolveModelContextWindow(modelId)?.tokens;
 
         const { Agent } = await import('../agent-runtime/agent');
         const agent = new Agent(
@@ -354,10 +356,14 @@ export class DesignTeamCoordinator {
                 systemPrompt,
                 tools,
                 modelId,
+                ...(modelContextWindow ? { contextWindowTokens: modelContextWindow } : {}),
                 maxIterations: stageMaxIterations,
                 ...(options?.stagePerformanceBudget
                     ? { performanceBudget: options.stagePerformanceBudget }
                     : {}),
+                // Design Team 的角色与阶段已经是结构化视觉任务 owner；显式保留原有开场画布观察。
+                // Agent 默认值是 none，不能依赖隐式默认把所有未来调用方绑到 Photoshop。
+                openingCanvasObservationMode: 'canvas_visual',
                 requireInitialToolCall: false,
                 callbacks: callbacks || {},
                 signal

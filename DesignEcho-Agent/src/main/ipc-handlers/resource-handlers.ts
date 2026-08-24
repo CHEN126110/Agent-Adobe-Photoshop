@@ -17,7 +17,7 @@ function splitImageBase64(imageBase64: string): { mediaType: string; data: strin
 }
 
 /**
- * 构造视觉模型调用：只使用用户配置的 visualModel（taskOrchestrator.getAgentModels().vision）。
+ * 构造图像观察调用：复用用户配置的唯一 Agent 模型（兼容读取 getAgentModels().vision）。
  * 图像必须用 ModelService 的 {type:'image', image:{mediaType,data}} 内容块——
  * OpenAI 风格 {type:'image_url'} 会被各 provider 转换器静默丢弃，模型只看到文本（实测教训）。
  */
@@ -26,26 +26,29 @@ export function buildVisionModelCall(
     taskOrchestrator: TaskOrchestrator | null
 ): (imageBase64: string, prompt: string) => Promise<string> {
     return async (imageBase64: string, prompt: string): Promise<string> => {
-        // 只使用用户配置的视觉模型，不硬编码回退到其他供应商模型。
+        // 只使用用户配置的 Agent 模型，不硬编码回退到其他供应商模型。
         const configuredVisionModel = taskOrchestrator?.getAgentModels?.()?.vision;
         if (!configuredVisionModel) {
-            throw new Error('未配置视觉模型。请在设置中选择一个支持视觉的国内模型（如 xiaomi-mimo-v2.5、ollama-cloud-qwen3-vl）。');
+            throw new Error('当前没有可用的视觉多模态 Agent 模型。请在设置中选择已标记视觉能力的模型。');
         }
 
         const { mediaType, data } = splitImageBase64(imageBase64);
         try {
+            // 看图描述 / 返回 JSON 不需要长思考：mimo 系默认开思考时一张素材 20 秒起步，
+            // 还常把预算全花在思考上正文为空（评审器、视觉专家已同一口径关思考）。
             const response = await modelService.chat(
                 configuredVisionModel,
                 [{ role: 'user', content: [
                     { type: 'text', text: prompt },
                     { type: 'image', image: { mediaType, data } }
-                ] as any }]
+                ] as any }],
+                { thinkingEnabled: false, maxTokens: 2500 }
             );
             const text = response.text || '';
             if (text.trim()) return text;
             throw new Error(`${configuredVisionModel}: 返回了空文本`);
         } catch (e) {
-            throw new Error(`视觉模型 ${configuredVisionModel} 调用失败：${e instanceof Error ? e.message : e}`);
+            throw new Error(`Agent 模型 ${configuredVisionModel} 读取画面失败：${e instanceof Error ? e.message : e}`);
         }
     };
 }
@@ -198,7 +201,7 @@ export function registerResourceHandlers(context: IPCContext): void {
         return await resourceManagerService.compareImageFiles(referencePath, resultPath, options);
     });
 
-    // 分析素材内容（使用视觉模型）
+    // 分析素材内容（复用唯一 Agent 模型）
     ipcMain.handle('resource:analyzeAsset', async (_event: IpcMainInvokeEvent, imagePath: string) => {
         if (!resourceManagerService || !modelService) {
             throw new Error('服务未初始化');
@@ -217,7 +220,85 @@ export function registerResourceHandlers(context: IPCContext): void {
         return await resourceManagerService.measureReferenceComposition(imagePath);
     });
 
-    // 分析设计参考图为什么有效（使用视觉模型，只生成待复核经验观察）
+    // 素材主体框（素材属性，一张图只算一次）：alpha → 纯色底裁边 → 本地分割模型 → 整图外框；不依赖 Photoshop 选择主体
+    ipcMain.handle('resource:getAssetSubjectBox', async (_event: IpcMainInvokeEvent, filePath: string) => {
+        const { getAssetSubjectBoxService } = await import('../services/asset-subject-box-service');
+        return await getAssetSubjectBoxService().resolveForFile(String(filePath || ''));
+    });
+
+    // 对 Photoshop 图层像素跑同一条主体框链（插件导出图层像素 → 主进程本地计算 → 相对框 + 文档坐标）
+    ipcMain.handle('resource:detectLayerSubjectBox', async (_event: IpcMainInvokeEvent, request: { layerId?: number; maxSize?: number }) => {
+        const wsServer = context.wsServer;
+        if (!wsServer || !wsServer.isPluginConnected()) {
+            return { success: false, error: '图层主体框检测失败：Photoshop 插件未连接。' };
+        }
+        const layerId = Number(request?.layerId);
+        if (!Number.isFinite(layerId) || layerId <= 0) {
+            return { success: false, error: '图层主体框检测失败：缺少有效 layerId。' };
+        }
+        const { getAssetSubjectBoxService } = await import('../services/asset-subject-box-service');
+        const { createBinaryImageData } = await import('../../shared/binary-protocol');
+        const exportResult = await wsServer.sendRequest('removeBackground', {
+            mode: 'ai',
+            layerId,
+            maxSize: Math.max(256, Math.min(1280, Number(request?.maxSize) || 1024)),
+            sampleAllLayers: false
+        }, 60000);
+        if (!exportResult?.success) {
+            return { success: false, error: `图层主体框检测失败：导出图层像素失败（${exportResult?.error || exportResult?.message || '未知原因'}）。` };
+        }
+        const frame = {
+            left: Number(exportResult.originalLeft),
+            top: Number(exportResult.originalTop),
+            width: Number(exportResult.originalWidth),
+            height: Number(exportResult.originalHeight)
+        };
+        const service = getAssetSubjectBoxService();
+        let outcome;
+        if (typeof exportResult.imageData === 'string' && exportResult.imageData.length >= 100) {
+            outcome = await service.resolveFromEncodedImage(exportResult.imageData);
+        } else if (exportResult.useBinaryTransfer && exportResult.binaryRequestId) {
+            const binary = await wsServer.waitForBinaryData(Number(exportResult.binaryRequestId), 10000);
+            if (!binary) {
+                return { success: false, error: '图层主体框检测失败：等待图层像素二进制数据超时。' };
+            }
+            const image = createBinaryImageData(binary.header.type, binary.imageData, binary.header.width, binary.header.height);
+            if (image.format === 'raw_rgba' || image.format === 'raw_rgb') {
+                outcome = await service.resolveFromRawPixels({
+                    data: new Uint8Array(image.buffer.buffer, image.buffer.byteOffset, image.buffer.byteLength),
+                    width: image.width,
+                    height: image.height,
+                    channels: image.format === 'raw_rgba' ? 4 : 3
+                });
+            } else {
+                outcome = await service.resolveFromEncodedImage(image.buffer);
+            }
+        } else {
+            return { success: false, error: '图层主体框检测失败：插件没有返回图层像素。' };
+        }
+        if (!outcome.success || !outcome.resolution) {
+            return { success: false, error: outcome.error || '图层主体框检测失败：未得到主体框。', attempts: outcome.attempts };
+        }
+        const box = outcome.resolution.box;
+        const hasFrame = Number.isFinite(frame.left) && Number.isFinite(frame.top) && frame.width > 0 && frame.height > 0;
+        return {
+            success: true,
+            layerId,
+            resolution: outcome.resolution,
+            attempts: outcome.attempts,
+            ...(hasFrame ? {
+                frame: { left: frame.left, top: frame.top, right: frame.left + frame.width, bottom: frame.top + frame.height },
+                bounds: {
+                    left: Math.round(frame.left + box.x * frame.width),
+                    top: Math.round(frame.top + box.y * frame.height),
+                    right: Math.round(frame.left + (box.x + box.width) * frame.width),
+                    bottom: Math.round(frame.top + (box.y + box.height) * frame.height)
+                }
+            } : {})
+        };
+    });
+
+    // 分析设计参考图为什么有效（复用唯一 Agent 模型，只生成待复核经验观察）
     ipcMain.handle('resource:analyzeDesignReference', async (_event: IpcMainInvokeEvent, request: {
         imagePath?: string;
         referenceTitle?: string;

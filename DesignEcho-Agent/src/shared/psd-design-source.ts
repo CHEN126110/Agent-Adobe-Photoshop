@@ -51,6 +51,11 @@ export interface RawDesignSourceNode {
         colorHex?: string;
     };
     hasEffects?: boolean;
+    /** 非 normal 的混合模式（multiply/screen/…）；normal 不记，节省体积。技法逆向的第一手数据。 */
+    blendMode?: string;
+    /** 启用的图层样式原始参数（dropShadow/stroke/gradientOverlay…，已去 disabled）。
+     * 2026-08-23 之前这里被压成 hasEffects 布尔——参数才是可复用的技法配方，别再折叠。 */
+    effects?: Record<string, unknown>;
     children?: RawDesignSourceNode[];
 }
 
@@ -90,6 +95,12 @@ export interface PsdDesignSourceProfile {
             avgScreenHeightPx: number;
             inference: string;
         };
+    };
+    /** 技法信号（2026-08-23）：图层样式参数与非 normal 混合模式——可复用的参数化技法配方。
+     * H3 普查：人做的电商 PSD 中此类图层约 1–5%，量小但每条都是「效果 → 参数」的标准答案。 */
+    craft?: {
+        effectLayers: Array<{ name: string; kinds: string[]; effects: Record<string, unknown> }>;
+        blendLayers: Array<{ name: string; blendMode: string }>;
     };
     typography: {
         samples: Array<{
@@ -350,6 +361,31 @@ function inferScreenPattern(
     return undefined;
 }
 
+const CRAFT_SIGNAL_MAX_ITEMS = 24;
+
+function collectCraftSignals(tree: RawDesignSourceNode[]): PsdDesignSourceProfile['craft'] {
+    const effectLayers: Array<{ name: string; kinds: string[]; effects: Record<string, unknown> }> = [];
+    const blendLayers: Array<{ name: string; blendMode: string }> = [];
+    const walk = (nodes: RawDesignSourceNode[]): void => {
+        for (const node of nodes) {
+            if (node.effects && effectLayers.length < CRAFT_SIGNAL_MAX_ITEMS) {
+                effectLayers.push({
+                    name: node.name || '(未命名图层)',
+                    kinds: Object.keys(node.effects),
+                    effects: node.effects
+                });
+            }
+            if (node.blendMode && blendLayers.length < CRAFT_SIGNAL_MAX_ITEMS) {
+                blendLayers.push({ name: node.name || '(未命名图层)', blendMode: node.blendMode });
+            }
+            if (node.children) walk(node.children);
+        }
+    };
+    walk(tree);
+    if (effectLayers.length === 0 && blendLayers.length === 0) return undefined;
+    return { effectLayers, blendLayers };
+}
+
 export function buildPsdDesignSourceProfile(input: {
     fileName: string;
     format: 'psd' | 'psb';
@@ -386,6 +422,7 @@ export function buildPsdDesignSourceProfile(input: {
 
     const leftEdgeClusterPx = clusterLeftEdge(stats.textLeftEdges);
     const namedTotal = Math.max(1, stats.named);
+    const craftSignals = collectCraftSignals(input.tree);
 
     return {
         version: 'psd-design-source-profile/v0',
@@ -431,6 +468,7 @@ export function buildPsdDesignSourceProfile(input: {
             contentPolicy: 'patterns_not_content',
             notPersisted: true
         },
+        ...(craftSignals ? { craft: craftSignals } : {}),
         warnings
     };
 }

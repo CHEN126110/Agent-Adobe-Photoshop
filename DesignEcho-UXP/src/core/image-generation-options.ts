@@ -32,21 +32,41 @@ const IMAGE_TO_IMAGE_MODEL_SIZE_CAPABILITIES: Record<string, { defaultSize: stri
     },
     // OpenRouter Gemini 图像模型：输出走 aspect_ratio + image_size 档位（1K/2K/4K），
     // 比例档位由 Agent 端服务吸附，这里只约束档位下拉与抓图边长。
-    // 旗舰 Nano Banana Pro 在 OpenRouter 上有三种写法：钉死日期的快照 ID
-    // （preview-20251120，OpenRouter 400 报文列入 4K 白名单，是默认集成，alias 漂移防不住它）；
-    // preview alias（当前也解析到 20251120）与 GA alias（20260528 快照，4K 被拒）
-    // 仅作旧持久化选择兜底。Agent 侧另有 capImageSize 钳制，两处要保持一致。
-    'google/gemini-3-pro-image-preview-20251120': {
-        defaultSize: '2K',
-        supportedSizes: ['1K', '2K', '4K']
-    },
+    //
+    // 档位取值来自**图像 API 的 supported_parameters**（/api/v1/images/models，公开免鉴权），
+    // 四个 Gemini 图像条目的 resolution 都含 4K。512 档暂不开放（面板没有这一档）。
+    //
+    // 两个已修正的历史错误，别再退回去：
+    // 1. 模型 id 用不带日期后缀的写法。`...-preview-20251120` 不是 OpenRouter 的模型 id，
+    //    而是条目创建日期 / Google 上游快照名，发出去会被宽松匹配解析回本体。
+    // 2. 分辨率走图像 API 的顶层 `resolution`，不是 chat 路径上的 `image_config.image_size`——
+    //    后者是 Google 原生字段名，OpenRouter 不认，档位因此从未生效（恒出该比例的 1K 档）。
+    // Agent 侧另有 capImageSize 钳制与 legacy 别名解析，三处要保持一致。
     'google/gemini-3-pro-image-preview': {
         defaultSize: '2K',
         supportedSizes: ['1K', '2K', '4K']
     },
     'google/gemini-3-pro-image': {
         defaultSize: '2K',
-        supportedSizes: ['1K', '2K']
+        supportedSizes: ['1K', '2K', '4K']
+    },
+    'google/gemini-3.1-flash-image-preview': {
+        defaultSize: '2K',
+        supportedSizes: ['1K', '2K', '4K']
+    },
+    'google/gemini-3.1-flash-image': {
+        defaultSize: '2K',
+        supportedSizes: ['1K', '2K', '4K']
+    },
+    // OpenAI 系没有分辨率档位（images API 不声明 resolution），尺寸由模型自己定。
+    // 只给一档，避免面板出现选了也不起作用的选项。
+    'openai/gpt-image-2': {
+        defaultSize: '2K',
+        supportedSizes: ['2K']
+    },
+    'openai/gpt-5.4-image-2': {
+        defaultSize: '2K',
+        supportedSizes: ['2K']
     }
 };
 
@@ -66,6 +86,22 @@ export function resolveImageToImageSizePreset(model?: string, sizePreset?: strin
         return normalizedSizePreset;
     }
     return capabilities.defaultSize;
+}
+
+/**
+ * 等待 Agent 返回生成结果的超时（毫秒）。
+ *
+ * 必须**比 Agent 侧更长**：两侧谁先到期决定用户看到哪条错误。Agent 侧的报文带 provider
+ * 原文（如 `timeout of 300000ms exceeded`），UXP 侧只能给出「请求超时: imageToImage.generate」，
+ * 后者对排查毫无帮助。真机踩过这个坑：UXP 296 秒先到期，Agent 300 秒的具体错误没能传回面板。
+ *
+ * 档位对应 Agent 侧 TIMEOUT_MS_BY_IMAGE_SIZE，另加 60 秒余量覆盖 WebSocket 往返与落盘。
+ * 4K 实测 300 秒不够（一次真机超时），给到 900 秒 + 余量。
+ */
+export function resolveImageToImageRequestTimeoutMs(sizePreset?: string): number {
+    const normalized = String(sizePreset || '').trim().toUpperCase();
+    const agentTimeoutMs = normalized === '4K' ? 900_000 : 300_000;
+    return agentTimeoutMs + 60_000;
 }
 
 export function resolveImageToImageSnapshotMaxEdge(model?: string, sizePreset?: string): number {

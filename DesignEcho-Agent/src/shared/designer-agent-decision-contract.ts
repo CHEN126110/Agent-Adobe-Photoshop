@@ -31,7 +31,13 @@ export interface DesignerAgentDecisionOption {
 export interface DesignerAgentDecisionContractInput {
     userTask?: string;
     scenario?: DesignAgentOsScenario;
+    /**
+     * 仅用于已有视觉事实的诊断与摘要。缓存是否存在不能授予或阻止执行。
+     */
     visualInsightCache?: unknown;
+    /**
+     * 上游已经产生时可作为工作笔记使用；不是自主 Agent 开工前必填的表单。
+     */
     agentDecision?: DesignIntelligenceAgentDecision | null;
 }
 
@@ -69,36 +75,11 @@ function cleanStrings(values: unknown, limit = 6): string[] {
     return Array.from(new Set(values.map(cleanString).filter(Boolean))).slice(0, limit);
 }
 
-function hasUsefulDecision(decision?: DesignIntelligenceAgentDecision | null): boolean {
-    if (!decision || typeof decision !== 'object') return false;
-    return Boolean(
-        cleanString(decision.designGoal)
-        || cleanStrings(decision.productUnderstanding).length
-        || cleanString(decision.hierarchy?.primarySubject)
-        || cleanStrings(decision.hierarchy?.informationPriority).length
-        || cleanString(decision.color?.paletteIntent)
-        || cleanString(decision.typography?.tone)
-        || cleanStrings(decision.assetSelection?.selectionPrinciples).length
-        || cleanStrings(decision.acceptanceCriteria).length
-    );
-}
-
-function hasWorkflowAndAcceptance(decision?: DesignIntelligenceAgentDecision | null): boolean {
-    return Boolean(
-        Array.isArray(decision?.toolWorkflow)
-        && decision.toolWorkflow.length > 0
-        && Array.isArray(decision.acceptanceCriteria)
-        && decision.acceptanceCriteria.length > 0
-    );
-}
-
-function resolveStatus(input: DesignerAgentDecisionContractInput): DesignerAgentDecisionStatus {
-    if (!hasUsefulDecision(input.agentDecision) || !hasWorkflowAndAcceptance(input.agentDecision)) {
-        return 'needs_design_decision';
-    }
-    if (!resolveDesignerAgentProjectVisualObservation({ visualInsightCache: input.visualInsightCache })) {
-        return 'needs_visual_observation';
-    }
+/**
+ * v0 结构保留旧 status 联合类型，避免破坏外部消费者；当前生产语义是
+ * “可以把已有判断作为上下文”，不是“表单填完才许执行”。
+ */
+function resolveStatus(_input: DesignerAgentDecisionContractInput): DesignerAgentDecisionStatus {
     return 'ready';
 }
 
@@ -130,9 +111,6 @@ function inferObservationIntents(decision?: DesignIntelligenceAgentDecision | nu
     if (cleanStrings(decision?.acceptanceCriteria).some((item) => /导出|保存|交付/.test(item))) {
         intents.add('export_readiness');
     }
-    if (intents.size === 0) {
-        intents.add('stage_readiness');
-    }
     return Array.from(intents).slice(0, 5);
 }
 
@@ -162,210 +140,72 @@ function buildPublicDesignIntent(input: DesignerAgentDecisionContractInput): str
     if (palette) pieces.push(`配色意图：${palette}`);
     const tone = cleanString(decision?.typography?.tone);
     if (tone) pieces.push(`文字气质：${tone}`);
-    return pieces.join('；') || '需要先形成清楚的设计判断，再决定是否动手。';
+    return pieces.join('；') || '当前目标由用户指令与本轮真实上下文共同确定。';
 }
 
-function buildScenarioToolUseGuidance(input: DesignerAgentDecisionContractInput): string[] {
-    if (input.scenario !== 'sku') return [];
+function buildToolUseGuidance(): string[] {
     return [
-        '通用 SKU 模板默认推进方式：用户只说“通用 SKU 模板”或“SKU 设计模板”时，先按电商通用方形 SKU 卡片模板推进；默认包含商品图或色卡图区域、规格组合区、颜色/款式名称、编号、自选备注和导出占位。平台、模块数量、风格偏好不是开工前必问项。',
-        'SKU 模板素材默认来源：先检查当前 Photoshop 文档、项目目录和 PSD/SKU.psb 或 SKU 目录里的已有色卡素材；能读到可用色卡时先基于真实素材做模板，不要重复生成色卡。',
-        'SKU 模板询问边界：只有缺少项目路径、没有可用 SKU 素材、用户要求互相冲突、继续会覆盖或删除现有文件、组合规则无法从素材或需求推断时，才向用户提问；普通偏好由主 Agent 给出推荐并继续。'
+        '这份内容是可选的设计上下文，不是写入门票。没有结构化设计表、工具步骤或验收清单时，Agent 仍根据目标、已知事实与当前结果自主判断。',
+        '是否需要观察、查参考或请求队友，由 Agent 根据当前决策的信息增益选择；不因缺少项目视觉缓存而例行阻止可逆创作。',
+        '要修改既有 Photoshop 对象时，目标文档、对象身份和 revision 仍必须来自当前读取；权限、副作用与写入目标仍由执行边界确定性校验。',
+        '产生有意义的画面修改后，在会影响下一步判断的节点或交付前取得与目标 / revision 对应的必要结构或画面读回；不强迫每个原子动作后都截图。'
     ];
 }
 
-function buildToolUseGuidance(input: DesignerAgentDecisionContractInput, status: DesignerAgentDecisionStatus): string[] {
-    const common = [
-        '这些是设计边界，不是固定脚本；主 Agent 可以自己选择观察、执行、给建议、请求确认或暂停。',
-        '先判断设计目标、素材适配和观察重点，再选择工具。',
-        '每次写入画面后都要看真实结果，再决定继续、调整、重做或交付。',
-        'renderLayout 只能代表当前阶段草稿，不代表最终稿。'
-    ];
-    const scenarioGuidance = buildScenarioToolUseGuidance(input);
-    if (status === 'ready') {
-        return [
-            ...scenarioGuidance,
-            ...common
-        ];
-    }
-    if (status === 'needs_visual_observation') {
-        return [
-            '先读取项目素材或观察当前画面，不要直接生成最终稿。',
-            ...scenarioGuidance,
-            ...common
-        ];
-    }
+function buildDecisionOptions(): DesignerAgentDecisionOption[] {
     return [
-        '先补齐设计判断，不要直接生成最终稿。',
-        ...scenarioGuidance,
-        ...common
-    ];
-}
-
-function buildBlockers(status: DesignerAgentDecisionStatus): string[] {
-    if (status === 'ready') return [];
-    if (status === 'needs_visual_observation') {
-        return ['还没有观察项目素材或当前画面，不能把设计判断直接变成写入动作。'];
-    }
-    return ['缺少可执行的设计判断：需要先明确目标、视觉层级、选图原则、工具阶段和验收标准。'];
-}
-
-function buildCommonDecisionOptions(status: DesignerAgentDecisionStatus): DesignerAgentDecisionOption[] {
-    const options: DesignerAgentDecisionOption[] = [
         {
-            id: 'inspect_context',
-            label: '先观察真实上下文',
-            whenUseful: '当前项目、画布、素材或用户目标还没有看清。',
+            id: 'act_with_current_judgment',
+            label: '用当前判断推进',
+            whenUseful: '目标、必要事实与写入对象已经足够明确。',
             possibleActions: [
-                '读取项目资源、当前文档、图层或截图。',
-                '只总结真实看到的内容，不把猜测当事实。'
+                '直接完成当前最有信息量的可逆动作。',
+                '根据真实结果继续、修订或换方向。'
             ],
-            userFacingReason: '先看清材料和画面，避免在错误素材或错误文档上开稿。'
+            userFacingReason: '已有信息足够时直接制作，不用仪式性分析推迟实际结果。'
         },
         {
-            id: 'make_stage_draft',
-            label: '做当前阶段草稿',
-            whenUseful: '设计目标、素材和当前阶段已经足够明确。',
+            id: 'inspect_decision_relevant_fact',
+            label: '取得会改变决策的事实',
+            whenUseful: '某个可观察事实会实质改变下一步或写入目标。',
             possibleActions: [
-                '创建或调整当前阶段版面。',
-                '写入后立即观察画面，再决定下一步。'
+                '定向读取项目素材、当前文档、对象属性或必要画面。',
+                '只把真实观察当事实，完成决策后停止重复读取。'
             ],
-            userFacingReason: '先做一小段可观察草稿，再根据真实效果调整。'
+            userFacingReason: '只补会影响决策的真实信息，不做全量扫描。'
         },
         {
-            id: 'ask_or_advise_user',
-            label: '给用户建议或请求确认',
-            whenUseful: '存在多个合理方向且会改变业务交付、覆盖数据或用户取舍；普通设计偏好应先给推荐并推进。',
+            id: 'ask_user_owned_fact',
+            label: '询问最小必要的业务事实',
+            whenUseful: '缺少的内容只有用户知道，且不同答案会实质改变交付、合规或不可逆后果。',
             possibleActions: [
-                '说明可选方案、推荐选择和原因。',
-                '使用交互卡片让用户确认可编辑内容。',
-                '如果不是阻塞问题，给出默认建议后继续执行。'
+                '只问一个会改变当前执行方向的问题。',
+                '普通可逆审美取舍由 Agent 给出专业选择并继续。'
             ],
-            userFacingReason: '把需要业务取舍的地方交给用户确认，而不是假装系统已经知道。'
+            userFacingReason: '用户只承担它真正拥有的业务决策，不代替 Agent 做专业设计。'
         }
     ];
-
-    if (status !== 'ready') {
-        options.unshift({
-            id: 'form_design_decision',
-            label: '先形成设计判断',
-            whenUseful: '还缺少设计目标、素材原则、视觉层级或验收标准。',
-            possibleActions: [
-                '阅读项目上下文、设计知识或专业角色建议。',
-                '把目标、层级、配色、选图和复核点整理成公开判断。'
-            ],
-            userFacingReason: '先想清楚为什么这样做，再决定是否动手。'
-        });
-    }
-
-    return options;
-}
-
-function buildSkuDecisionOptions(): DesignerAgentDecisionOption[] {
-    return [
-        {
-            id: 'inspect_sku_resources',
-            label: '检查已有 SKU 资源',
-            whenUseful: '用户说项目里已有 SKU 色卡、模板或组合，但当前状态还没有被读回确认。',
-            possibleActions: [
-                '查找项目里的 SKU 源文档、模板文件和已导出结果。',
-                '读取当前 Photoshop 文档或图层结构，确认哪些内容真实存在。',
-                '先用已有资源判断模板规格和素材可用性，不把平台、模块数量或风格偏好当成开工前必问项。'
-            ],
-            userFacingReason: '先确认已有资源，避免重复做色卡或误把成品当素材。'
-        },
-        {
-            id: 'design_sku_template',
-            label: '自主设计 SKU 排版模板',
-            whenUseful: '缺少模板、模板不好看，或用户要求做卡片式 SKU 模板。',
-            possibleActions: [
-                '基于已有色卡素材设计 2/3/4 双装和自选备注模板。',
-                '做完一阶段后看截图或图层结果，再调整比例、留白和文字位置。',
-                '用户只说通用模板时，先按电商通用方形 SKU 卡片模板给出推荐方案并动手做当前阶段。'
-            ],
-            userFacingReason: '模板排版属于设计判断，不能交给固定批处理脚本决定。'
-        },
-        {
-            id: 'confirm_sku_combos',
-            label: '创建组合确认卡片',
-            whenUseful: '颜色数量、2/3/4 双组合或自选备注需要用户确认。',
-            possibleActions: [
-                '根据已有颜色生成候选组合。',
-                '用可编辑交互卡片让用户修改并确认组合。'
-            ],
-            userFacingReason: '组合规则影响真实上架，不应该只由脚本猜。'
-        },
-        {
-            id: 'run_sku_batch_production',
-            label: '进入 SKU 批量生产',
-            whenUseful: '色卡源、模板和组合已经明确或已确认。',
-            possibleActions: [
-                '调用 SKU 批处理生成组合图和自选备注。',
-                '导出后读回文件或画面状态，说明哪些结果可验收。'
-            ],
-            userFacingReason: '确定性生产适合交给批处理，设计判断仍由 Agent 负责。'
-        }
-    ];
-}
-
-function buildScenarioDecisionOptions(
-    scenario: DesignAgentOsScenario,
-    status: DesignerAgentDecisionStatus
-): DesignerAgentDecisionOption[] {
-    const options = buildCommonDecisionOptions(status);
-    if (scenario === 'sku') {
-        return uniqueDecisionOptions([
-            ...buildSkuDecisionOptions(),
-            ...options
-        ]);
-    }
-    if (scenario === 'detail-page' || scenario === 'main-image' || scenario === 'reference-replication') {
-        return uniqueDecisionOptions([
-            {
-                id: 'seek_reference_or_knowledge',
-                label: '先找参考或方法论',
-                whenUseful: '版式方向、风格或行业表达不清楚。',
-                possibleActions: [
-                    '读取对应设计方法论或检索参考。',
-                    '把参考转成自己的版式、层级和复核标准。'
-                ],
-                userFacingReason: '用知识和参考辅助判断，但不照搬成品。'
-            },
-            ...options
-        ]);
-    }
-    return options;
-}
-
-function uniqueDecisionOptions(options: DesignerAgentDecisionOption[]): DesignerAgentDecisionOption[] {
-    const seen = new Set<string>();
-    const result: DesignerAgentDecisionOption[] = [];
-    for (const option of options) {
-        const id = cleanString(option.id);
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        result.push(option);
-    }
-    return result.slice(0, 8);
 }
 
 function buildPromptSection(contract: Omit<DesignerAgentDecisionContract, 'promptSection'>): string {
     const lines = [
-        '【设计师 Agent 决策协议】',
-        `状态：${contract.status}`,
-        `公开设计意图：${contract.publicDesignIntent}`,
-        '可选决策路径（不是固定流程，由主 Agent 自己选择）：',
+        '【设计判断支持（非门禁）】',
+        `已有目标与判断：${contract.publicDesignIntent}`,
+        '可选行动（按当前情境选择，没有固定顺序）：',
         ...contract.decisionOptions.map((option, index) => {
             const actions = option.possibleActions.length
                 ? `；可做：${option.possibleActions.slice(0, 2).join(' / ')}`
                 : '';
             return `${index + 1}. ${option.label}：${option.whenUseful}${actions}`;
         }),
-        '观察目标：',
-        ...contract.publicObservationGoals.map((goal, index) => `${index + 1}. ${goal.purpose}`),
-        '执行边界：',
-        ...contract.toolUseGuidance.map((item, index) => `${index + 1}. ${item}`),
-        ...contract.blockers.length ? ['当前阻塞：', ...contract.blockers.map((item) => `- ${item}`)] : []
+        ...contract.publicObservationGoals.length > 0
+            ? [
+                '已有判断建议关注：',
+                ...contract.publicObservationGoals.map((goal, index) => `${index + 1}. ${goal.purpose}`)
+            ]
+            : [],
+        '执行与安全边界：',
+        ...contract.toolUseGuidance.map((item, index) => `${index + 1}. ${item}`)
     ];
     return lines.join('\n');
 }
@@ -381,14 +221,14 @@ export function buildDesignerAgentDecisionContract(
         scenario,
         publicDesignIntent: buildPublicDesignIntent(input),
         publicObservationGoals: buildObservationGoals(input.agentDecision),
-        decisionOptions: buildScenarioDecisionOptions(scenario, status),
-        toolUseGuidance: buildToolUseGuidance(input, status),
-        blockers: buildBlockers(status),
+        decisionOptions: buildDecisionOptions(),
+        toolUseGuidance: buildToolUseGuidance(),
+        blockers: [],
         boundaries: [
-            '设计判断层只决定目标、观察重点和工具使用边界，不直接调用工具。',
-            '工具层只执行明确动作，不负责判断画面好不好看。',
-            '知识、记忆和参考图只能辅助设计判断，不能替代截图复核或人工验收。',
-            '系统规则只提供边界和能力选项，不替主 Agent 决定设计路线。'
+            '设计意图、观察重点和行动路线由 Agent 判断；Harness 不根据表单完整度代替它选择路线。',
+            '结构化设计判断只是可选工作笔记，不授权工具、不推进阶段、不声明完成。',
+            '知识、记忆、参考和专业队友只辅助判断，不替代当前项目事实或真实画面读回。',
+            '执行权限、目标 / revision、写入安全和必要验真仍由确定性执行边界负责。'
         ]
     };
     return {

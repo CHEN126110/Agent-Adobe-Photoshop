@@ -21,6 +21,10 @@ import {
     buildEagleAssetRefPromptLines,
     type EagleAssetRef
 } from '../eagle-asset-ref';
+import type {
+    PhotoshopDocumentPathState,
+    PhotoshopDocumentProjectAffinity
+} from '../photoshop-document-inventory';
 
 export const OPERATING_CONTEXT_SNAPSHOT_VERSION = 'operating-context-snapshot/v0' as const;
 export const OPERATING_CONTEXT_RUNTIME_ITEM_ID = 'context.operating-snapshot' as const;
@@ -80,6 +84,22 @@ export interface OperatingWorkspaceContext {
 interface OperatingPhotoshopContextBase {
     observation: OperatingContextObservation;
     connection: 'connected' | 'disconnected' | 'unknown';
+    openDocuments?: OperatingPhotoshopOpenDocument[];
+}
+
+export interface OperatingPhotoshopOpenDocument {
+    documentId: number;
+    name?: string;
+    isActive: boolean;
+    path?: string;
+    pathState: PhotoshopDocumentPathState;
+    projectAffinity: PhotoshopDocumentProjectAffinity;
+    projectRelativePath?: string;
+    nature: 'source_image' | 'design_document' | 'blank_canvas' | 'unknown';
+    natureReason?: string;
+    width?: number;
+    height?: number;
+    layerCount?: number;
 }
 
 interface OperatingPhotoshopDocumentIdentity {
@@ -122,6 +142,22 @@ interface BuildOperatingPhotoshopContextInput {
     validForMs?: number;
     connection: OperatingPhotoshopContext['connection'];
     documentState: 'present' | 'absent' | 'unknown';
+    openDocuments?: Array<{
+        id: number;
+        name?: string;
+        isActive?: boolean;
+        path?: string;
+        pathState: PhotoshopDocumentPathState;
+        projectAffinity: PhotoshopDocumentProjectAffinity;
+        projectRelativePath?: string;
+        documentNature?: {
+            kind?: OperatingPhotoshopOpenDocument['nature'];
+            reason?: string;
+        };
+        width?: number;
+        height?: number;
+        layerCount?: number;
+    }>;
     document?: {
         documentId: number;
         name?: string;
@@ -403,6 +439,42 @@ function normalizePhotoshopLayer(
     };
 }
 
+function normalizeOpenPhotoshopDocuments(
+    documents?: BuildOperatingPhotoshopContextInput['openDocuments']
+): OperatingPhotoshopOpenDocument[] {
+    if (!Array.isArray(documents)) return [];
+    const normalized: OperatingPhotoshopOpenDocument[] = [];
+    const seen = new Set<number>();
+    for (const document of documents) {
+        const documentId = finitePositiveNumber(document?.id);
+        if (!documentId || seen.has(documentId)) continue;
+        seen.add(documentId);
+        const name = cleanText(document.name, 240);
+        const documentPath = cleanText(document.path, 520);
+        const projectRelativePath = cleanText(document.projectRelativePath, 320);
+        const natureReason = cleanText(document.documentNature?.reason, 360);
+        const width = finitePositiveNumber(document.width);
+        const height = finitePositiveNumber(document.height);
+        const layerCount = finitePositiveNumber(document.layerCount);
+        normalized.push({
+            documentId,
+            ...(name ? { name } : {}),
+            isActive: document.isActive === true,
+            ...(documentPath ? { path: documentPath } : {}),
+            pathState: document.pathState,
+            projectAffinity: document.projectAffinity,
+            ...(projectRelativePath ? { projectRelativePath } : {}),
+            nature: document.documentNature?.kind || 'unknown',
+            ...(natureReason ? { natureReason } : {}),
+            ...(width ? { width } : {}),
+            ...(height ? { height } : {}),
+            ...(layerCount ? { layerCount } : {})
+        });
+        if (normalized.length >= 30) break;
+    }
+    return normalized;
+}
+
 function normalizePhotoshopContext(
     input: BuildOperatingPhotoshopContextInput,
     observation: OperatingContextObservation
@@ -410,6 +482,7 @@ function normalizePhotoshopContext(
     const issues: string[] = [];
     const document = normalizePhotoshopDocument(input.document);
     const activeLayer = normalizePhotoshopLayer(input.activeLayer);
+    const openDocuments = normalizeOpenPhotoshopDocuments(input.openDocuments);
 
     if (input.document && !document) issues.push('photoshop_document_id_invalid');
     if (input.activeLayer && !activeLayer) issues.push('photoshop_layer_id_invalid');
@@ -422,6 +495,7 @@ function normalizePhotoshopContext(
             issues.push('disconnected_photoshop_document_state_not_unknown');
         }
         if (input.activeLayer) issues.push('active_layer_without_document');
+        if (openDocuments.length > 0) issues.push('disconnected_photoshop_has_open_documents');
         return {
             context: {
                 observation,
@@ -435,11 +509,13 @@ function normalizePhotoshopContext(
     if (input.documentState === 'absent') {
         if (input.document) issues.push('photoshop_document_state_conflict');
         if (input.activeLayer) issues.push('active_layer_without_document');
+        if (openDocuments.length > 0) issues.push('photoshop_absent_with_open_documents');
         return {
             context: {
                 observation,
                 connection: input.connection,
-                documentState: 'absent'
+                documentState: 'absent',
+                ...(openDocuments.length > 0 ? { openDocuments } : {})
             },
             issues
         };
@@ -452,7 +528,8 @@ function normalizePhotoshopContext(
             context: {
                 observation,
                 connection: input.connection,
-                documentState: 'unknown'
+                documentState: 'unknown',
+                ...(openDocuments.length > 0 ? { openDocuments } : {})
             },
             issues
         };
@@ -465,6 +542,7 @@ function normalizePhotoshopContext(
                 connection: input.connection,
                 documentState: 'present',
                 document,
+                ...(openDocuments.length > 0 ? { openDocuments } : {}),
                 ...(activeLayer ? { activeLayer } : {})
             },
             issues
@@ -476,7 +554,8 @@ function normalizePhotoshopContext(
         context: {
             observation,
             connection: input.connection,
-            documentState: 'unknown'
+            documentState: 'unknown',
+            ...(openDocuments.length > 0 ? { openDocuments } : {})
         },
         issues
     };
@@ -532,6 +611,9 @@ export function validateOperatingContextSnapshot(
     }
     if (snapshot.photoshop.activeLayer && snapshot.photoshop.activeLayer.layerId <= 0) {
         issues.push('photoshop_layer_id_invalid');
+    }
+    if (snapshot.photoshop.openDocuments?.some((document) => document.documentId <= 0)) {
+        issues.push('photoshop_open_document_id_invalid');
     }
     const boundaries = snapshot.boundaries;
     if (boundaries.requestScoped !== true
@@ -709,6 +791,18 @@ export function buildOperatingContextPromptSection(snapshot: OperatingContextSna
         lines.push(
             `- ${documentLabel}: ${snapshot.photoshop.document.name || '未命名'}；documentId=${snapshot.photoshop.document.documentId}`
         );
+    }
+    if (snapshot.photoshop.openDocuments?.length) {
+        lines.push('- 提交时已打开的 Photoshop 文档（一次性环境清单；项目归属来自真实路径，文档性质是结构提示）：');
+        for (const document of snapshot.photoshop.openDocuments) {
+            const pathFact = document.pathState === 'saved'
+                ? `path=${document.path || '路径缺失'}`
+                : `pathState=${document.pathState}`;
+            lines.push(
+                `  - ${document.isActive ? '[当前活动] ' : ''}${document.name || '未命名'}；documentId=${document.documentId}；${pathFact}；projectAffinity=${document.projectAffinity}${document.projectRelativePath ? `；projectRelativePath=${document.projectRelativePath}` : ''}；nature=${document.nature}${document.natureReason ? `（${document.natureReason}）` : ''}`
+            );
+        }
+        lines.push('- 先依据这份清单选择目标，不要逐个猜文档；outside_current_project 不是当前项目交付物，除非用户明确指定。');
     }
     if (snapshot.photoshop.activeLayer) {
         const layerLabel = snapshot.photoshop.observation.freshness === 'current'

@@ -215,6 +215,28 @@ function auditSkill(skill) {
   if (!Array.isArray(skill.requiredTools)) {
     addIssue(record, 'blockers', 'requiredTools must be an array');
   }
+  if (skill.internalTools !== undefined) {
+    if (!Array.isArray(skill.internalTools)) {
+      addIssue(record, 'blockers', 'internalTools must be an array when declared');
+    } else {
+      const uniqueInternalTools = new Set(skill.internalTools);
+      if (uniqueInternalTools.size !== skill.internalTools.length) {
+        addIssue(record, 'blockers', 'internalTools must not contain duplicates');
+      }
+      if (Array.isArray(skill.requiredTools)) {
+        const requiredTools = new Set(skill.requiredTools);
+        const undeclaredDependencies = skill.internalTools.filter((toolName) => !requiredTools.has(toolName));
+        if (undeclaredDependencies.length > 0) {
+          addIssue(record, 'blockers', 'internalTools must be a subset of requiredTools', {
+            undeclaredDependencies
+          });
+        }
+      }
+    }
+  }
+  if (skill.interactionOwner !== undefined && skill.interactionOwner !== 'skill-provider') {
+    addIssue(record, 'blockers', 'interactionOwner must use the supported skill-provider owner');
+  }
 
   if (!hasItems(skill.examples)) {
     addIssue(record, 'blockers', 'missing examples');
@@ -243,6 +265,8 @@ function auditSkill(skill) {
     hasParameters: Array.isArray(skill.parameters),
     hasOutput: Boolean(skill.output),
     hasRequiredTools: Array.isArray(skill.requiredTools),
+    hasInternalToolOwnership: Array.isArray(skill.internalTools) && skill.internalTools.length > 0,
+    interactionOwner: skill.interactionOwner || null,
     hasExamples: hasItems(skill.examples),
     visualSamplingScenario: skill.visualSamplingScenario || null
   };
@@ -312,6 +336,27 @@ function run() {
     addIssue(skuCase, 'blockers', 'SKU 必须只有一个注册 Skill：sku-batch', { skuSkillIds });
     skuCase.status = 'fail';
   }
+
+  const internalToolOwners = new Map();
+  SKILL_REGISTRY.forEach((skill) => {
+    (skill.internalTools || []).forEach((toolName) => {
+      const ownerIds = internalToolOwners.get(toolName) || [];
+      ownerIds.push(skill.id);
+      internalToolOwners.set(toolName, ownerIds);
+    });
+  });
+  internalToolOwners.forEach((ownerIds, toolName) => {
+    if (ownerIds.length <= 1) return;
+    ownerIds.forEach((ownerId) => {
+      const ownerCase = cases.find((item) => item.id === ownerId);
+      if (!ownerCase) return;
+      addIssue(ownerCase, 'blockers', 'internal Tool must have exactly one Skill owner', {
+        toolName,
+        ownerIds
+      });
+      ownerCase.status = 'fail';
+    });
+  });
 
   const blockerCount = cases.reduce((count, item) => count + item.blockers.length, 0);
   const warningCount = cases.reduce((count, item) => count + item.warnings.length, 0);

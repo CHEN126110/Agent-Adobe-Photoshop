@@ -406,11 +406,11 @@ export const layoutReplicationExecutor: SkillExecutor = {
         try {
             emitStep(
                 'model_request',
-                '调用视觉模型解析参考图',
-                '将参考图解析为结构化元素、画布和基础样式描述。'
+                '正在解析参考图',
+                '正在读取参考图的版式、元素和配色'
             );
             callbacks?.onToolStart?.('analyzeReferenceLayout');
-            callbacks?.onMessage?.('正在调用视觉模型分析元素结构...');
+            callbacks?.onMessage?.('正在分析参考图的元素结构…');
 
             const modelPreferences = useAppStore.getState().modelPreferences;
             const visionModel = getPrimaryModelForPreferenceBucket(modelPreferences, 'visualAnalyze', {

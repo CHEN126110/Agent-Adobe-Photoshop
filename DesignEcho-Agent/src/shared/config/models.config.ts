@@ -41,6 +41,7 @@ export type ModelProvider =
     | 'anthropic'     // Anthropic 直连
     | 'openai'        // OpenAI 直连
     | 'openai-codex'  // ChatGPT 订阅（Codex App Server）
+    | 'claude-subscription'  // Claude 订阅（Claude Agent SDK 内嵌运行时）
     | 'deepseek';     // DeepSeek 官方
 
 /** API Key 类型映射 */
@@ -68,7 +69,7 @@ export type TaskCategory = 'layoutAnalysis' | 'textOptimize' | 'visualAnalyze';
 export type ModelAuthRequirement =
     | { kind: 'none' }
     | { kind: 'api_key'; keyType: ApiKeyType }
-    | { kind: 'account_session'; provider: 'openai-codex' };
+    | { kind: 'account_session'; provider: 'openai-codex' | 'claude-subscription' };
 
 /**
  * 思维过程格式类型
@@ -361,19 +362,26 @@ export const LOCAL_MODELS: ModelConfig[] = [
 export const GOOGLE_MODELS: ModelConfig[] = [
     // ========== Gemini 3 系列（最新）==========
     {
+        // 内部 id 停留在 'google-gemini-3-pro' 是有意的：它只是本地标识，用户已保存的
+        // 模型偏好与 test-model-usage-classification 的 24 处断言都按它对齐。改 id 只会
+        // 让这些引用悬空，换不来任何真实收益——真正对外的身份是 apiModelId。
         id: 'google-gemini-3-pro',
-        name: '⭐ Gemini 3 Pro',
+        name: '⭐ Gemini 3.1 Pro',
         source: 'cloud',
         provider: 'google',
         requiredApiKey: 'google',
-        apiModelId: 'gemini-3-pro-preview',  // Gemini 3 Pro 预览版
+        // gemini-3-pro-preview 已从 Google 目录下架（2026-08-23 实测：50 个线上模型中不存在），
+        // 线上接任的是 3.1。窗口与输出上限取自 models.list 的 inputTokenLimit / outputTokenLimit。
+        apiModelId: 'gemini-3.1-pro-preview',
         roles: ['layout-analysis', 'vision', 'general', 'code'],
         capabilities: ['text-generation', 'vision', 'reasoning', 'code', 'thinking'],
         supportsVision: true,
         supportsStreaming: true,
         maxTokens: 65536,
+        contextWindow: 1_048_576,
         thinking: { supported: true, format: 'think_tag' },
-        pricing: { inputPerMillion: 2.0, outputPerMillion: 15.0 },
+        // 不写 pricing：Google 的 models.list 不返回价格，旧的 2.0/15.0 是 3 Pro 的价，
+        // 照搬给 3.1 就是编数字。该字段在配置文件外无人读取，留空不影响功能。
         recommended: true,
         description: 'Google 最强模型，看图与推理都出色'
     },
@@ -468,21 +476,26 @@ export const XIAOMI_MODELS: ModelConfig[] = [
 
 export const OPENROUTER_MODELS: ModelConfig[] = [
     {
-        id: 'openrouter-claude-3.5-sonnet',
-        name: '⭐ Claude 3.5 Sonnet',
+        // anthropic/claude-3.5-sonnet 已从 OpenRouter 目录下架（2026-08-23 实测：422 个线上模型中不存在）。
+        // 下列规格全部取自 OpenRouter /models 的真实返回：context_length、
+        // top_provider.max_completion_tokens、pricing（每 token 美元 × 1e6）、input_modalities。
+        id: 'openrouter-claude-sonnet-5',
+        name: '⭐ Claude Sonnet 5',
         source: 'cloud',
         provider: 'openrouter',
         requiredApiKey: 'openrouter',
-        apiModelId: 'anthropic/claude-3.5-sonnet',
+        apiModelId: 'anthropic/claude-sonnet-5',
         roles: ['layout-analysis', 'copywriting', 'general', 'code', 'vision'],
         capabilities: ['text-generation', 'vision', 'reasoning', 'code'],
         supportsVision: true,
+        supportsToolUse: true,
         supportsStreaming: true,
-        maxTokens: 8192,
+        maxTokens: 128_000,
+        contextWindow: 1_000_000,
         thinking: { supported: true, format: 'extended_thinking' },
-        pricing: { inputPerMillion: 3, outputPerMillion: 15 },
+        pricing: { inputPerMillion: 2, outputPerMillion: 10 },
         recommended: true,
-        description: 'Anthropic 经典款，能看图，综合稳定'
+        description: 'Anthropic 主力款，能看图，综合稳定'
     },
     {
         id: 'openrouter-gpt-4o',
@@ -606,111 +619,6 @@ export const OPENROUTER_MODELS: ModelConfig[] = [
 
 export const OLLAMA_CLOUD_MODELS: ModelConfig[] = [
     {
-        id: 'ollama-cloud-deepseek-v3.2',
-        name: '⭐ DeepSeek V3.2',
-        source: 'cloud',
-        provider: 'ollama-cloud',
-        requiredApiKey: 'ollamaApiKey',
-        apiModelId: 'deepseek-v3.2',
-        roles: ['layout-analysis', 'copywriting', 'general', 'code'],
-        capabilities: ['text-generation', 'reasoning', 'code', 'chinese'],
-        supportsVision: false,
-        supportsStreaming: true,
-        maxTokens: 8192,
-        thinking: { supported: true, format: 'reasoning_content' },
-        recommended: true,
-        description: 'DeepSeek 通用模型，推理与代码见长'
-    },
-    {
-        id: 'ollama-cloud-kimi-k2.5',
-        name: '⭐ Kimi K2.5',
-        source: 'cloud',
-        provider: 'ollama-cloud',
-        requiredApiKey: 'ollamaApiKey',
-        apiModelId: 'kimi-k2.5',
-        roles: ['copywriting', 'general', 'layout-analysis'],
-        capabilities: ['text-generation', 'reasoning', 'chinese', 'long-context'],
-        supportsVision: false,
-        supportsStreaming: true,
-        maxTokens: 32768,
-        recommended: true,
-        description: '月之暗面模型，中文写作与长文见长'
-    },
-    {
-        id: 'ollama-cloud-qwen3-next-80b',
-        name: '⭐ Qwen3 Next 80B',
-        source: 'cloud',
-        provider: 'ollama-cloud',
-        requiredApiKey: 'ollamaApiKey',
-        apiModelId: 'qwen3-next:80b',
-        roles: ['copywriting', 'general', 'layout-analysis'],
-        capabilities: ['text-generation', 'reasoning', 'chinese'],
-        supportsVision: false,
-        supportsStreaming: true,
-        maxTokens: 32768,
-        thinking: { 
-            supported: true, 
-            format: 'think_tag',
-            requestParams: { enable_thinking: true }
-        },
-        recommended: true,
-        description: '阿里通义千问，中文表现稳定'
-    },
-    {
-        id: 'ollama-cloud-glm-4.7',
-        name: 'GLM-4.7',
-        source: 'cloud',
-        provider: 'ollama-cloud',
-        requiredApiKey: 'ollamaApiKey',
-        apiModelId: 'glm-4.7',
-        roles: ['copywriting', 'general'],
-        capabilities: ['text-generation', 'reasoning', 'chinese'],
-        supportsVision: false,
-        supportsStreaming: true,
-        maxTokens: 8192,
-        description: '智谱清言模型，中文通用对话'
-    },
-    {
-        id: 'ollama-cloud-qwen3-vl',
-        name: '👁️⭐ Qwen3 VL',
-        source: 'cloud',
-        provider: 'ollama-cloud',
-        requiredApiKey: 'ollamaApiKey',
-        apiModelId: 'qwen3-vl',
-        roles: ['vision', 'general', 'layout-analysis'],
-        capabilities: ['text-generation', 'vision', 'reasoning', 'chinese', 'image-analysis'],
-        supportsVision: true,
-        supportsStreaming: true,
-        maxTokens: 8192,
-        thinking: { 
-            supported: true, 
-            format: 'think_tag',
-            requestParams: { enable_thinking: true }
-        },
-        recommended: true,
-        description: '通义千问看图版，中文画面理解好'
-    },
-    {
-        id: 'ollama-cloud-qwen3-vl-235b',
-        name: '👁️ Qwen3 VL 235B',
-        source: 'cloud',
-        provider: 'ollama-cloud',
-        requiredApiKey: 'ollamaApiKey',
-        apiModelId: 'qwen3-vl:235b',
-        roles: ['vision', 'general'],
-        capabilities: ['text-generation', 'vision', 'reasoning', 'chinese'],
-        supportsVision: true,
-        supportsStreaming: true,
-        maxTokens: 4096,
-        thinking: { 
-            supported: true, 
-            format: 'think_tag',
-            requestParams: { enable_thinking: true }
-        },
-        recommended: false,
-        description: '通义千问看图大杯，画面理解更细'
-    },
-    {
         id: 'ollama-cloud-gpt-oss-120b',
         name: 'GPT-OSS 120B',
         source: 'cloud',
@@ -731,7 +639,11 @@ export const OLLAMA_CLOUD_MODELS: ModelConfig[] = [
 // OpenAI 兼容 Base URL：https://api.deepseek.com
 // 官方能力：思考模式、JSON Output、Tool Calls、对话前缀续写、FIM 补全。
 // 项目边界：普通 chat 与 chatWithTools 都按用户「模型思考」偏好请求思考；工具轮次需回传 reasoning_content。
-// 未发现官方视觉输入说明，因此不声明视觉能力。
+// 视觉能力按模型逐条声明：v4-pro / v4-flash 真机验证会返回
+// "This model does not support image"（400），只有 -vision-exp 接受图片输入。
+// DeepSeek 的 /models 是 OpenAI 兼容最小格式（只回 id/object/owned_by），零能力字段，
+// 合并层刻意不按模型名猜 vision，所以视觉模型必须在这里作为能力覆盖层登记，
+// 否则会被主模型候选的 isAgentMultimodalModelConfig 过滤掉——拉得到 id，界面上却选不到。
 export const DEEPSEEK_MODELS: ModelConfig[] = [
     {
         id: 'deepseek-v4-pro',
@@ -757,6 +669,39 @@ export const DEEPSEEK_MODELS: ModelConfig[] = [
         },
         recommended: true,
         description: 'DeepSeek 旗舰模型，中文推理强、上下文很长'
+    },
+    {
+        // 能力字段全部来自真机探针（2026-08-23，api.deepseek.com）：
+        // - 图像输入：左红右蓝测试图回答正确，非视觉型号同请求返回 400 does not support image
+        // - 工具调用：图片 + tools 同一请求返回了 tool_calls
+        // - 思考：返回 reasoning_content，接受 thinking/reasoning_effort 请求参数
+        // - 流式：stream:true 正常分片并以 usage + [DONE] 收尾
+        // - max_tokens：官方报错给出有效区间 [1, 393216]
+        id: 'deepseek-v4-flash-vision-exp',
+        name: 'DeepSeek V4 Flash Vision (实验版·官方)',
+        source: 'cloud',
+        provider: 'deepseek',
+        requiredApiKey: 'deepseek',
+        apiModelId: 'deepseek-v4-flash-vision-exp',
+        roles: ['general', 'vision', 'layout-analysis', 'copywriting'],
+        capabilities: ['text-generation', 'vision', 'reasoning', 'chinese', 'json-output', 'tool-calling'],
+        supportsVision: true,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 393216,
+        // 刻意不声明 contextWindow：官方接口零能力字段、也没在报错里披露上下文上限，
+        // 在这里钉一个数字就是"定死"。交给 PROVIDER_DEFAULT_CONTEXT_WINDOW.deepseek
+        // （官方定价页 CONTEXT LENGTH = 1M，flash 与 pro 同档）统一供给，官方改了只需改一处。
+        thinking: {
+            supported: true,
+            format: 'reasoning_content',
+            requestParams: {
+                thinking: { type: 'enabled' },
+                reasoning_effort: 'high'
+            }
+        },
+        // 实验型号（-exp），官方随时可能变更或下线，不挂推荐星标。
+        description: 'DeepSeek 视觉实验模型，可读图并调用工具'
     }
 ];
 
@@ -1273,7 +1218,9 @@ export const DEFAULT_MODEL_PREFERENCES: ModelPreferences = {
         visualAnalyze: 'local-llava-7b'
     },
     preferredCloudModels: {
-        layoutAnalysis: 'ollama-cloud-qwen3-next-80b',
+        // 原值 ollama-cloud-qwen3-next-80b 随该模型下架一并失效；改指仍在线的 mimo，
+        // 与同组另外两项同渠道，避免默认配置一出厂就指向不存在的模型。
+        layoutAnalysis: 'xiaomi-mimo-v2.5-pro',
         textOptimize: 'xiaomi-mimo-v2.5',
         visualAnalyze: 'xiaomi-mimo-v2.5'
     },

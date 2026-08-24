@@ -113,7 +113,8 @@ export interface ImagePlacementPlanInput {
     assetRole?: SmartScalingAssetRole;
     intent?: SmartScalingIntent;
     cropPolicy?: SmartScalingCropPolicy;
-    presetOverride?: Partial<SmartScalingPreset>;
+    /** 完整放置几何由调用方、模板或 Agent 声明，不能由 Harness 从品类推断。 */
+    presetOverride: SmartScalingPreset;
     requireSubjectBounds?: boolean;
     executionTool?: ImagePlacementExecutionTool;
     sourceTreatment?: ImagePlacementSourceTreatment;
@@ -403,8 +404,8 @@ export function buildImagePlacementPlan(input: ImagePlacementPlanInput): ImagePl
         assetRole,
         intent,
         presetOverride: {
-            ...(input.cropPolicy ? { cropPolicy: input.cropPolicy } : {}),
-            ...(input.presetOverride || {})
+            ...input.presetOverride,
+            ...(input.cropPolicy ? { cropPolicy: input.cropPolicy } : {})
         }
     });
     const inputDetail = resolveInputDetail(input);

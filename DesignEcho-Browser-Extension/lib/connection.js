@@ -16,6 +16,11 @@ const BACKOFF_STEPS_MS = [2000, 4000, 8000, 15000];
 // Chrome 116–119 会把 0.5 分钟钳到 1 分钟（仍然有效），Chrome ≥ 120 支持 30 秒。
 const WATCHDOG_ALARM_NAME = 'designecho-bridge-watchdog';
 
+// 扩展→桥方向请求（用户收藏等）的超时与在途表。id 空间与桥→扩展的 request 独立。
+const CLIENT_REQUEST_TIMEOUT_MS = 30000;
+let clientRequestId = 0;
+const pendingClientRequests = new Map();
+
 let socket = null;
 let state = 'disconnected'; // 'disconnected' | 'connecting' | 'connected'
 let ready = false; // 收到 hello_ack 才算 ready（state 也只在此时置 connected）
@@ -166,6 +171,7 @@ async function connect() {
     stopHeartbeat();
     ready = false;
     connectedAt = null;
+    rejectAllPendingClientRequests('与 DesignEcho Agent 的连接已断开，本次收藏未完成，请重试。');
     if (event.code === 4401) {
       lastError = 'token 不匹配：请在扩展弹窗中填写与 Agent 侧 DESIGNECHO_BROWSER_BRIDGE_TOKEN 一致的 token';
     } else if (event.code === 4000) {
@@ -206,8 +212,63 @@ function handleMessage(ws, raw) {
   }
   if (message.type === 'request') {
     handleRequest(ws, message);
+    return;
+  }
+  if (message.type === 'client_response') {
+    const pending = pendingClientRequests.get(Number(message.id));
+    if (!pending) {
+      return; // 已超时或未知 id，静默忽略
+    }
+    clearTimeout(pending.timer);
+    pendingClientRequests.delete(Number(message.id));
+    if (message.ok) {
+      pending.resolve(message.result);
+    } else {
+      const detail =
+        message.error && message.error.message ? message.error.message : 'Agent 未说明原因';
+      pending.reject(new Error(detail));
+    }
+    return;
   }
   // 其余类型静默忽略（协议向前兼容）
+}
+
+// 扩展主动向 Agent 发起请求（如收藏 collect.save）。未连接时立即失败，
+// 错误信息面向用户 toast 展示（中文、可指路）。
+export function sendClientRequest(method, params) {
+  return new Promise((resolve, reject) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN || !ready) {
+      reject(
+        new Error(
+          '未连接 DesignEcho Agent：请先启动 Agent 应用，并在扩展弹窗确认状态为「已连接」。'
+        )
+      );
+      return;
+    }
+    const id = ++clientRequestId;
+    const timer = setTimeout(() => {
+      pendingClientRequests.delete(id);
+      reject(
+        new Error(`Agent 处理超时（${method}，${CLIENT_REQUEST_TIMEOUT_MS / 1000}s）：内容可能过大或磁盘繁忙，可重试。`)
+      );
+    }, CLIENT_REQUEST_TIMEOUT_MS);
+    pendingClientRequests.set(id, { resolve, reject, timer, method });
+    try {
+      socket.send(JSON.stringify({ type: 'client_request', id, method, params }));
+    } catch (error) {
+      clearTimeout(timer);
+      pendingClientRequests.delete(id);
+      reject(new Error(`向 Agent 发送请求失败（${method}）：${error && error.message ? error.message : String(error)}`));
+    }
+  });
+}
+
+function rejectAllPendingClientRequests(reason) {
+  for (const pending of pendingClientRequests.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
+  }
+  pendingClientRequests.clear();
 }
 
 async function handleRequest(ws, message) {

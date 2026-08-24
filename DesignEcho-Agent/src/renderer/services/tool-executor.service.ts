@@ -25,34 +25,36 @@ import {
     projectVisualCacheEntryMatchesCurrentAsset,
     normalizeProjectVisualInsightCompositionFields,
     pickPreferredProjectVisualInsightCacheEntry,
+    selectDiverseProjectVisualCandidates,
     type ProjectVisualSamplingCacheEntry
 } from '../../shared/project-visual-sampling';
-import {
-    evaluateDesignAssetAutoPlacement,
-    type DesignAssetDirectUseSuitability,
-    type DesignAssetSourceTreatment,
-    type DesignAssetVisualRole
-} from '../../shared/design-placement-intelligence';
 import {
     AcceptanceCaptureResult,
     buildToolAcceptanceVerification,
     formatToolAcceptanceDebug,
     getToolAcceptanceCapturePolicy,
-    shouldCollectAcceptanceVerification
+    shouldCollectAcceptanceVerification,
+    type ToolAcceptanceCapturePolicy
 } from '../../shared/acceptance/tool-acceptance';
 import { sha256Hex } from '../../shared/agent-runtime-v5/content-hash';
 import { sanitizeUserVisibleDiagnosticText } from '../../shared/chat-response-cleaner';
 import { parseEagleAssetRefToken } from '../../shared/eagle-asset-ref';
 import { buildEagleReferenceFacetSummary } from '../../shared/eagle-reference-facets';
+import { describeDesignDocumentNature } from '../../shared/design-document-nature';
 import {
     classifyGroupLayersOperationReconciliation
 } from '../../shared/group-layers-operation-reconciliation';
+import {
+    classifyPlaceImageOperationReconciliation
+} from '../../shared/place-image-operation-reconciliation';
 import { buildPhotoshopToolSkillPromptSection } from '../../shared/photoshop-tool-skill';
+import { enrichPhotoshopDocumentInventory } from '../../shared/photoshop-document-inventory';
 import { normalizePhotoshopToolArguments } from '../../shared/photoshop-tool-parameter-normalizer';
 import {
     classifyAgentToolExecution,
     DESIGN_ECHO_TARGET_GUARD_ARGUMENT
 } from '../../shared/agent-tool-execution-preflight';
+import { isTransientPhotoshopBusyFailure } from '../../shared/photoshop-transient-error';
 import {
     PHOTOSHOP_OPERATION_RESULT_VERSION,
     readPhotoshopOperationResult,
@@ -81,7 +83,6 @@ import {
 import type { DesignKnowledgeResult } from '../../shared/design-knowledge-search';
 import {
     cleanInteractiveCardText,
-    stableInteractiveCardHash,
     type InteractiveCardDefinition
 } from '../../shared/interactive-card-contract';
 import { callPhotoshopMcpTool } from './mcp-host.client';
@@ -95,15 +96,16 @@ import { markExecutedToolResultProvenance } from './agent-runtime/tool-result-pr
  */
 export const AVAILABLE_TOOLS = [
     // === Agent 交互 ===
-    { name: 'createInteractiveCard', description: '创建通用可交互确认卡片，让用户在聊天中确认、修改或提交结构化内容（如设计规划、开放式选项），用 cardKind="editable_confirmation" 并提供 fields。领域 Skill 自己拥有的结构化交互应由对应 Skill 产出，通用卡片不复制其业务状态。', params: '{ cardKind: "editable_confirmation"|"generic_confirmation", title?: string, description?: string, fields?: { id: string, label: string, type?: "short_text"|"long_text"|"choice"|"boolean", value?: string|boolean, required?: boolean, options?: { value: string, label: string }[] }[], initialValue?: any, payload?: any, projectId?: string, memoryEnabled?: boolean, memoryKind?: string, tags?: string[] }' },
+    { name: 'createInteractiveCard', description: '创建通用可编辑草稿卡。只有多个结构化字段明显比简短选择更清楚时使用；短选择使用 askUserToChoose，领域数据默认由对应 Skill Provider 产卡。用户明确禁用 Skill 时也只能收集无法观察的用户事实，不能无证据声明现有文件角色。', params: '{ cardKind: "editable_confirmation", title: string, description?: string, fields: { id: string, label: string, type?: "short_text"|"long_text"|"choice"|"boolean", value?: string|boolean, required?: boolean, options?: { value: string, label: string }[] }[], initialValue?: any, projectId?: string, memoryEnabled?: boolean, memoryKind?: string, tags?: string[] }' },
 
     // === 文档/画布操作 ===
     { name: 'createDocument', description: '创建新文档', params: '{ preset?: string, width?: number, height?: number, name?: string, backgroundColor?: "white"|"black"|"transparent" }' },
-    { name: 'listDocuments', description: '列出所有【已打开】的文档', params: '{ includeDetails?: boolean, includePaths?: boolean, includeDimensions?: boolean, includeLayerCount?: boolean }' },
+    { name: 'listDocuments', description: '一次列出所有【已打开】文档，并返回保存路径状态、当前项目归属和文档性质提示', params: '{ includeDetails?: boolean, includePaths?: boolean, includeDimensions?: boolean, includeLayerCount?: boolean }' },
     { name: 'switchDocument', description: '切换到【已打开】的指定文档（注意：不能打开新文件，只能切换）', params: '{ documentName: string }' },
     { name: 'closeDocument', description: '关闭指定文档（批量操作后清理）。不保存修改除非指定 save: true', params: '{ documentName?: string, documentId?: number, save?: boolean }' },
     { name: 'getDocumentInfo', description: '获取当前文档信息', params: '{}' },
     { name: 'getDocumentSnapshot', description: '获取文档快照（用于视觉分析）', params: '{ maxSize?: number }' },
+    { name: 'capturePhotoshopWindow', description: '读取完整 Photoshop 应用窗口（含原生弹窗），仅用于真实堵塞诊断', params: '{}' },
     { name: 'getAcceptanceSnapshot', description: '获取轻量验收快照（文档、图层、文字、边界、选中状态），用于任务前后验证和 Debug', params: '{ includeHidden?: boolean, includeBounds?: boolean, includeText?: boolean, maxLayers?: number }' },
     { name: 'diagnoseState', description: '诊断 Photoshop 状态', params: '{ verbose?: boolean }' },
     
@@ -169,7 +171,7 @@ export const AVAILABLE_TOOLS = [
     { name: 'findLayers', description: '【查图层】按名称/类型/组内条件查找图层，返回扁平列表（id/类型/边界/路径）。找特定图层用它一步命中，不要翻层级树', params: '{ nameContains?: string, nameEquals?: string, kind?: string, withinGroupId?: number, limit?: number }' },
     
     // === 视觉分析 ===
-    { name: 'getCanvasSnapshot', description: '获取画布截图', params: '{ maxSize?: number }' },
+    { name: 'getCanvasSnapshot', description: '获取当前活动文档的画布截图，可用 expectedDocumentId 做目标身份断言', params: '{ maxSize?: number, expectedDocumentId?: number, region?: { x: number, y: number, width: number, height: number } }' },
     { name: 'getElementMapping', description: '获取元素映射', params: '{ includeHidden?: boolean }' },
     { name: 'analyzeLayout', description: '分析布局', params: '{ detectHierarchy?: boolean }' },
     
@@ -179,16 +181,16 @@ export const AVAILABLE_TOOLS = [
     { name: 'getHistoryInfo', description: '获取历史记录', params: '{}' },
     
     // === 导出 ===
-    { name: 'saveDocument', description: '保存或另存为文档；默认覆盖既有目标，未获覆盖授权时用 conflictPolicy="fail_if_exists" 配合显式路径', params: '{ format?: "psd"|"psb"|"png"|"jpg"|"jpeg"|"tiff"|"pdf", path?: string, saveAs?: boolean, quality?: number, conflictPolicy?: "overwrite"|"fail_if_exists" }' },
+    { name: 'saveDocument', description: '正式保存或导出交付文件；省略 path 时使用当前文档的用户可读名称，不附加时间戳或内部状态词', params: '{ format?: "psd"|"psb"|"png"|"jpg"|"jpeg"|"tiff"|"pdf", path?: string, projectSubdir?: string, saveAs?: boolean, quality?: number, conflictPolicy?: "overwrite"|"fail_if_exists" }' },
     { name: 'quickExport', description: '快速导出到明确目录或完整 PNG/JPEG 文件路径；用户给 .png/.jpg/.jpeg 路径时不要删除扩展名，运行时会转为 saveDocument(path)', params: '{ outputPath: string, format?: "png"|"jpg", quality?: number, suffix?: string }' },
     { name: 'exportGroup', description: '导出指定图层组或图层为 PNG 文件；需要 groupPath 或 layerId 以及完整 outputPath', params: '{ groupPath?: string[], layerId?: number, outputPath: string, format?: "png", targetWidth?: number, targetHeight?: number, maxSize?: number }' },
     { name: 'exportMainImageDocuments', description: '按用户导出规范 4.0 批量导出成品：主图文档（800/750/1200）的「转化图」「点击图」父组下每个非空子组各导一张 JPEG（质量自适应≤3MB）到 <导出目录>/主图/<尺寸>/，详情页文档按切片 Save For Web 导出到 <导出目录>；未打开的文档跳过不中断，处理后恢复历史状态', params: '{ outputDir: string, documents?: string[], mainImageGroups?: string[], maxFileSizeMB?: number }' },
     { name: 'exportWhiteBgFromSkuMaterial', description: '从项目 SKU PSD/PSB 源文件生成 800x800 白底图并保存到完整 JPEG 路径', params: '{ sourceDocumentPath: string, outputPath: string, preferredLayerName?: string, canvasWidth?: number, canvasHeight?: number, targetSubjectHeightPx?: number, horizontalMarginPx?: number, jpegQuality?: number }' },
-    { name: 'smartSave', description: '智能保存（已有路径直接保存，否则弹出对话框），支持显式 PSD/PSB 路径', params: '{ exportFormat?: "psd"|"psb"|"jpg"|"png", path?: string, exportQuality?: number }' },
+    { name: 'smartSave', description: '建立项目内部可编辑恢复点；路径固定由宿主解析到 .designecho/recovery，不属于最终交付', params: '{ exportFormat?: "psd"|"psb" }' },
     
     // === 图像处理 ===
     { name: 'removeBackground', description: '智能抠图', params: '{ targetPrompt?: string, outputFormat?: "layer"|"mask" }' },
-    { name: 'placeImage', description: 'Place an explicitly sourced image as an editable layer. Source discovery is opt-in: autoSelect=true also requires a structured designRole and visual selection evidence; ambiguous or recomposition-required candidates are returned without writing. A model-authored force claim has only agent_judgment authority and must pass the same visual checks.', params: '{ filePath?: string, fileToken?: string, imageData?: string, requirement?: string, query?: string, designRole?: "hero"|"supporting"|"detail"|"background"|"decoration", placementIntent?: "direct_full_frame"|"clip_to_container"|"matte_and_recompose"|"supporting", category?: "products"|"backgrounds"|"elements"|"references"|"others", autoSelect?: boolean, selectionMode?: "auto"|"suggest"|"force", strictDeterministic?: boolean, minScore?: number, minMargin?: number, candidateCount?: number, name?: string, x?: number, y?: number, targetBounds?: { x?: number, y?: number, left?: number, top?: number, right?: number, bottom?: number, width?: number, height?: number }, targetFit?: "contain"|"cover"|"fill", layerOrder?: "front"|"belowText"|"back", center?: boolean, scale?: number, fitToCanvas?: boolean }' },
+    { name: 'placeImage', description: 'Place an image that the Agent has explicitly selected. This execution tool never scans, ranks, or chooses project assets. When no source is supplied, inspect candidates with recommendAssets and call placeImage again with filePath/fileToken/imageData.', params: '{ filePath?: string, fileToken?: string, imageData?: string, name?: string, x?: number, y?: number, targetBounds?: { x?: number, y?: number, left?: number, top?: number, right?: number, bottom?: number, width?: number, height?: number }, targetFit?: "contain"|"cover"|"fill", layerOrder?: "front"|"belowText"|"back", center?: boolean, scale?: number, fitToCanvas?: boolean }' },
     { name: 'replaceLayerContent', description: '目标图层和替换文件都明确后，替换图层内容为新图片', params: '{ filePath: string, layerId?: number }' },
     // === 创建工具 ===
     { name: 'createRectangle', description: '创建矩形', params: '{ x: number, y: number, width: number, height: number, name?: string, color?: {r,g,b}, fillColorHex?: string, cornerRadius?: number }' },
@@ -204,7 +206,7 @@ export const AVAILABLE_TOOLS = [
     { name: 'getSkuPlaceholders', description: '获取 SKU 占位符信息', params: '{}' },
     { name: 'smartLayout', description: '智能布局引擎。只在专门布局流程已确认目标图层/目标区域时使用；不要把它作为普通小工具默认猜测调用。', params: '{ action: "calculateScale"|"applyLayout"|"analyzeLayout"|"getRecommendedConfig"|"smartArrange", sourceLayerName?: string, targetBounds?: { left: number, top: number, width: number, height: number }, layerIds?: number[], layerNames?: string[], config?: object }' },
     { name: 'alignToReference', description: '把显式 layerId 的图层按比例缩放并移动，使主体中心对齐到目标点；必须先读回图层与边界，不按名称猜测参考图层', params: '{ layerId: number, scalePercent: number, targetCenterX: number, targetCenterY: number, subjectOffsetX: number, subjectOffsetY: number }' },
-    { name: 'fitLayerSubjectToRegion', description: '【主体感知缩放与定位】按真实主体适配明确目标区域；省略占比和锚点时由 designType/assetRole/intent 共享预设决定，并在同一次调用内返回写后 geometryVerification。参考测量不是通用前置，几何通过也不等于审美通过。', params: '{ layerId: number, targetRegion: {x,y,width,height}, subjectFillRatio?: number, maxUpscaleRatio?: number, designType?: "main-image"|"detail-page"|"sku"|"reference-replication"|"poster"|"banner"|"generic", assetRole?: "product"|"model"|"detail"|"scene"|"icon"|"background"|"group"|"unknown", intent?: "hero"|"supporting"|"thumbnail"|"full-bleed"|"fit-slot"|"compare-grid", anchor?: "center"|"top-center"|"bottom-center"|"left-center"|"right-center", method?: "smart"|"alpha" }' },
+    { name: 'fitLayerSubjectToRegion', description: '【主体感知缩放与定位】按真实主体适配明确目标区域；视觉占比必须来自 Agent 的明确设计判断或已选参考实测，锚点必须显式声明。Harness 只求解几何并返回写后 geometryVerification。', params: '{ layerId: number, targetRegion: {x,y,width,height}, subjectFillRatio?: number, referenceComposition?: { subjectFillRatioForFullCanvas?: number }, anchor: "center"|"top-center"|"bottom-center"|"left-center"|"right-center", maxUpscaleRatio?: number, method?: "auto"|"alpha"|"smart" }' },
     
     // === 智能对象操作 ===
     { name: 'getSmartObjectInfo', description: '读取指定智能对象图层的真实元数据（类型、原始尺寸、是否链接等）', params: '{ layerId?: number }' },
@@ -224,7 +226,7 @@ export const AVAILABLE_TOOLS = [
     { name: 'openTemplate', description: '打开指定路径的PSD/PSB文件（需要完整路径）', params: '{ psdPath: string }' },
     { name: 'listProjectResources', description: '列出项目目录中的所有资源；资源型任务缺少路径时先列目录，不要直接向用户要文件位置。', params: '{ directory?: string }' },
     { name: 'createProjectContactSheetOverview', description: '把项目图片合成一张带编号的缩略图总览，适合先整体观察款式、素材类型和后续要单独复核的图片。', params: '{ directory?: string, maxImages?: number, columns?: number }' },
-    { name: 'analyzeProjectContactSheetOverview', description: '先生成项目图片总览图，再用视觉模型理解整体款式、拍摄风格、素材角色和后续需要单图复核的编号。', params: '{ directory?: string, maxImages?: number, focus?: string }' },
+    { name: 'analyzeProjectContactSheetOverview', description: '先生成项目图片总览图，再用视觉模型建立带编号依据的有界视觉库存：可见主体群、变体群、拍摄覆盖、仍不确定的覆盖和后续需要单图复核的编号；只提供事实，不替 Agent 选图或决定设计方向。', params: '{ directory?: string, maxImages?: number, focus?: string }' },
     { name: 'prepareSkuRetouchAssets', description: '为一批纯底棚拍 SKU 商品图生成可编辑精修资产：自动选形态基准、受约束形态统一、独立原影、中性灰低频光影修正和预览。sourceMode=auto 会跳过场景图；该工具只生成项目文件，不代表 Photoshop 色卡已完成。', params: '{ sources: [{sourceId?: string, filePath: string, colorName?: string}], projectPath?: string, outputDir?: string, referenceSourcePath?: string, sourceMode?: "auto"|"studio"|"scene", shapeStrength?: number, lightingStrength?: number, maxLongEdge?: number, force?: boolean }' },
     { name: 'generateImage', description: '使用设置中选择的生图渠道生成新素材：ChatGPT/Codex 订阅的 gpt-image-2，或 BFL API 的 FLUX。生成结果不会自动写入 Photoshop，采用前仍需查看。', params: '{ prompt: string, model?: "flux-2-max"|"flux-2-pro"|"flux-2-klein-9b"|"flux-2-klein-4b", width?: number, height?: number, transparentBackground?: boolean }' },
 
@@ -303,7 +305,7 @@ export const AVAILABLE_TOOLS = [
 const TOOL_NAME_ALIASES: Record<string, string> = {};
 
 /** 视觉相关工具 */
-export const VISION_TOOLS = ['getCanvasSnapshot', 'getDocumentSnapshot', 'getAnnotatedSnapshot'];
+export const VISION_TOOLS = ['getCanvasSnapshot', 'getDocumentSnapshot', 'getAnnotatedSnapshot', 'capturePhotoshopWindow'];
 
 /** 长耗时工具超时（ms），默认 30s 不足以完成 SKU 批量排版 */
 const LONG_RUNNING_TOOL_TIMEOUT = 5 * 60 * 1000;  // 5 分钟
@@ -361,8 +363,9 @@ function getToolTimeout(toolName: string, params: any): number | undefined {
             return LONG_RUNNING_TOOL_TIMEOUT;
         }
     }
-    // listDocuments 在 PS 加载文档时可能较慢
-    if (toolName === 'listDocuments') return 60 * 1000;
+    // 正常文档清单是轻量读；20 秒仍无响应时应尽快暴露 modal_suspected，
+    // 不能让一次环境观察把 Agent 卡住整分钟。
+    if (toolName === 'listDocuments') return 20 * 1000;
     return undefined;
 }
 
@@ -383,12 +386,14 @@ function buildPhotoshopNativeModalSuspectedResult(
         error: `${toolName} 处理超时：Photoshop 可能有弹窗未关闭，或仍在处理上一步。`,
         originalError: errorMessage,
         errorCategory: 'photoshop_native_modal_suspected',
+        environmentState: 'photoshop_native_modal_suspected',
         recoveryRequired: true,
-        userActionRequired: {
-            type: 'photoshop_native_dialog',
-            message: '请查看 Photoshop 是否有确认框或提示框；关闭后重载插件，再继续执行。'
+        environmentObservation: {
+            capability: 'capturePhotoshopWindow',
+            scope: 'adobe_photoshop_application_window',
+            purpose: '读取包含原生弹窗和应用界面的真实 Photoshop 窗口；画布快照无法证明是否存在应用级弹窗。'
         },
-        suggestion: '先关闭 Photoshop 里的弹窗并重载插件；恢复前不要重复执行写入步骤，避免继续留下临时文档或触发新的弹窗。',
+        suggestion: '先由 Agent 观察 Photoshop 完整窗口再判断恢复方式；如果真实画面确认有必须人工处理的原生弹窗，再请用户关闭。恢复前不要重复执行写入步骤。',
         toolName,
         params
     };
@@ -572,6 +577,183 @@ async function reconcileRenameLayerOperationReadback(
     };
 }
 
+interface PhotoshopOperationReconciliationContext {
+    acceptanceBefore?: AcceptanceCaptureResult;
+    acceptancePolicy?: ToolAcceptanceCapturePolicy;
+}
+
+function waitForPhotoshopReadbackRetry(): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, 1_100);
+    });
+}
+
+async function captureAcceptanceAfterUnknownOperation(
+    toolName: string,
+    policy: ToolAcceptanceCapturePolicy
+): Promise<AcceptanceCaptureResult> {
+    let latest: AcceptanceCaptureResult = { error: 'Photoshop 写后状态暂时不可读' };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        latest = await captureAcceptanceSnapshot('after', toolName, policy);
+        if (latest.snapshot) return latest;
+        if (attempt < 2) await waitForPhotoshopReadbackRetry();
+    }
+    return latest;
+}
+
+async function reconcilePlaceImageOperationReadback(
+    params: any,
+    operationResult: Record<string, any>,
+    context: PhotoshopOperationReconciliationContext
+): Promise<Record<string, any>> {
+    const operation = readPhotoshopOperationResult(operationResult);
+    if (!operation || !requiresPhotoshopOperationReadback(operationResult)) {
+        return operationResult;
+    }
+    const before = context.acceptanceBefore?.snapshot;
+    if (!before) {
+        return {
+            ...operationResult,
+            readback: {
+                attempted: false,
+                verified: false,
+                classification: 'ambiguous',
+                reasonCode: 'place_image_before_snapshot_unavailable'
+            }
+        };
+    }
+
+    const policy = context.acceptancePolicy || getToolAcceptanceCapturePolicy('placeImage', params);
+    const afterCapture = await captureAcceptanceAfterUnknownOperation('placeImage', policy);
+    const reconciliation = classifyPlaceImageOperationReconciliation({
+        before,
+        after: afterCapture.snapshot
+    });
+    const readback = {
+        attempted: true,
+        verified: reconciliation.classification !== 'ambiguous',
+        classification: reconciliation.classification,
+        reasonCode: reconciliation.reasonCode,
+        expectedHistoryStateRef: reconciliation.expectedHistoryStateRef,
+        observedHistoryStateRef: reconciliation.observedHistoryStateRef,
+        addedLayerIds: reconciliation.addedLayerIds,
+        ...(afterCapture.error ? { error: afterCapture.error } : {})
+    };
+    if (reconciliation.classification === 'ambiguous'
+        || !afterCapture.snapshot
+        || !reconciliation.observedHistoryStateRef) {
+        return {
+            ...operationResult,
+            readback,
+            reconciliationReceipt: reconciliation
+        };
+    }
+    if (reconciliation.classification === 'not_applied') {
+        return {
+            ...operationResult,
+            success: false,
+            code: 'photoshop_place_image_reconciled_not_applied',
+            error: '置入图片没有应用到当前文档；写前与写后图层结构及历史版本保持一致。',
+            recoveryRequired: false,
+            suggestion: '本次未知写入已经结算为未应用；需要时可以重新发起置入。',
+            historyStateRef: reconciliation.observedHistoryStateRef,
+            readback,
+            reconciliationReceipt: reconciliation,
+            photoshopOperationResult: {
+                ...operationResult.photoshopOperationResult,
+                status: 'failed',
+                applicationStatus: 'not_applied',
+                transactionState: 'not_started',
+                effect: 'none',
+                before: reconciliation.expectedHistoryStateRef,
+                after: reconciliation.observedHistoryStateRef,
+                code: 'photoshop_place_image_reconciled_not_applied',
+                message: '同一文档的完整图层快照与历史版本确认图片没有置入。'
+            }
+        };
+    }
+
+    const layer = reconciliation.layer;
+    if (!layer) {
+        return {
+            ...operationResult,
+            readback: {
+                ...readback,
+                verified: false,
+                classification: 'ambiguous',
+                reasonCode: 'reconciled_place_image_layer_missing'
+            },
+            reconciliationReceipt: reconciliation
+        };
+    }
+    const provisionalResult = {
+        success: true,
+        layerId: layer.id,
+        layer: {
+            id: layer.id,
+            name: layer.name,
+            kind: layer.kind,
+            bounds: layer.boundsNoEffects || layer.bounds
+        },
+        data: {
+            layerId: layer.id,
+            layerName: layer.name,
+            bounds: layer.boundsNoEffects || layer.bounds,
+            source: {
+                ...(params?.sourceAssetId ? { assetId: params.sourceAssetId } : {}),
+                ...(params?.sourcePath || params?.filePath ? {
+                    path: params.sourcePath || params.filePath
+                } : {})
+            }
+        },
+        historyStateRef: reconciliation.observedHistoryStateRef
+    };
+    const verifiedResult = attachAcceptanceVerification(
+        'placeImage',
+        params,
+        provisionalResult,
+        context.acceptanceBefore as AcceptanceCaptureResult,
+        afterCapture
+    );
+    if (verifiedResult.acceptance?.verified !== true) {
+        return {
+            ...operationResult,
+            readback: {
+                ...readback,
+                verified: false,
+                classification: 'ambiguous',
+                reasonCode: 'place_image_acceptance_assertion_not_verified'
+            },
+            reconciliationReceipt: reconciliation,
+            acceptance: verifiedResult.acceptance,
+            photoshopHistoryTransition: verifiedResult.photoshopHistoryTransition
+        };
+    }
+
+    const reconciledTransactionState = operation.transactionState === 'transport_unknown'
+        ? 'transport_reconciled'
+        : 'readback_reconciled';
+    return {
+        ...verifiedResult,
+        recoveredAfterTransportFailure: operation.transactionState === 'transport_unknown',
+        reconciledAfterUnknownOperation: true,
+        readback,
+        reconciliationReceipt: reconciliation,
+        message: `已从同一 Photoshop 文档读回并确认图片图层「${layer.name || layer.id}」。`,
+        photoshopOperationResult: {
+            ...operationResult.photoshopOperationResult,
+            status: 'verified',
+            applicationStatus: 'applied',
+            transactionState: reconciledTransactionState,
+            effect: 'applied',
+            before: reconciliation.expectedHistoryStateRef,
+            after: reconciliation.observedHistoryStateRef,
+            code: 'photoshop_place_image_reconciled_applied',
+            message: '同一文档的 revision 变化与完整图层快照共同确认图片已经置入。'
+        }
+    };
+}
+
 async function reconcileGroupLayersOperationReadback(
     params: any,
     operationResult: Record<string, any>
@@ -741,8 +923,12 @@ async function reconcileGroupLayersOperationReadback(
 async function reconcileOperationSpecificPhotoshopReadback(
     toolName: string,
     params: any,
-    operationResult: Record<string, any>
+    operationResult: Record<string, any>,
+    context: PhotoshopOperationReconciliationContext = {}
 ): Promise<Record<string, any>> {
+    if (toolName === 'placeImage') {
+        return reconcilePlaceImageOperationReadback(params, operationResult, context);
+    }
     if (toolName === 'renameLayer') {
         return reconcileRenameLayerOperationReadback(params, operationResult);
     }
@@ -862,13 +1048,205 @@ const RENDERER_LOCAL_TOOLS = [
     'searchEagleReferences',
     'webSearch',
     'analyzeEagleReference',
-    'searchDesignKnowledge'
+    'searchDesignKnowledge',
+    'readSkillPlaybook',
+    'runSkillScript',
+    // 设计知识笔记（用户与 Agent 共写；主进程磁盘存储，Obsidian 兼容）
+    'searchDesignNotes',
+    'readDesignNote',
+    'writeDesignNote'
 ];
 
 // ==================== 执行状态 ====================
 
 let executedToolsInSession: string[] = [];
 let currentRound = 0;
+
+// ==================== 主体框：素材属性而不是画布上的实时识别 ====================
+
+/**
+ * 本会话里「图层 → 来源文件」的记录（placeImage / replaceLayerContent 等成功后写入）。
+ * 有了它，主体框可以直接从素材文件算（主进程本地：alpha → 纯色底裁边 → 分割模型），
+ * 不必在 Photoshop 里跑「选择主体」。图层 id 在不同文档间会重复，所以带 documentId。
+ */
+interface LayerSourceFileRecord {
+    filePath: string;
+    documentId?: number;
+    recordedAt: number;
+}
+const layerSourceFileById = new Map<number, LayerSourceFileRecord>();
+
+function rememberLayerSourceFile(layerId: unknown, filePath: unknown, documentId?: unknown): void {
+    const id = Number(layerId);
+    const file = String(filePath || '').trim();
+    if (!Number.isFinite(id) || id <= 0 || !file) return;
+    const doc = Number(documentId);
+    layerSourceFileById.set(id, {
+        filePath: file,
+        ...(Number.isFinite(doc) && doc > 0 ? { documentId: doc } : {}),
+        recordedAt: Date.now()
+    });
+}
+
+function readLayerSourceFile(layerId: number, documentId?: number): string | undefined {
+    const record = layerSourceFileById.get(layerId);
+    if (!record) return undefined;
+    if (record.documentId && documentId && record.documentId !== documentId) return undefined;
+    return record.filePath;
+}
+
+function readResultDocumentId(result: unknown): number | undefined {
+    const proof = findObservedPhotoshopMutationProof(result);
+    const fromProof = Number(proof?.after?.documentId);
+    if (Number.isFinite(fromProof) && fromProof > 0) return fromProof;
+    const record = result && typeof result === 'object' ? result as Record<string, any> : undefined;
+    const direct = Number(record?.documentId ?? record?.document?.id ?? record?.data?.documentId);
+    return Number.isFinite(direct) && direct > 0 ? direct : undefined;
+}
+
+type SubjectBoundsRect = { left: number; top: number; right: number; bottom: number };
+
+interface ResolvedLayerSubject {
+    bounds: SubjectBoundsRect & { width: number; height: number };
+    /** 主体相对图层外框的位置（0–1）；缩放后按新外框投影即可得到新主体框，不必再检测 */
+    relativeBox?: { x: number; y: number; width: number; height: number };
+    /** 人话方法名：asset:trim / asset:matting / alpha / layer:matting / photoshop / frame */
+    method: string;
+    confidence: 'certain' | 'high' | 'medium' | 'low';
+    note: string;
+    warnings: string[];
+}
+
+function toSubjectRect(value: unknown): SubjectBoundsRect | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const rect = value as Record<string, unknown>;
+    const left = Number(rect.left);
+    const top = Number(rect.top);
+    const right = Number(rect.right);
+    const bottom = Number(rect.bottom);
+    if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) return undefined;
+    return { left, top, right, bottom };
+}
+
+function withSize(rect: SubjectBoundsRect): SubjectBoundsRect & { width: number; height: number } {
+    return { ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top };
+}
+
+/**
+ * 求一个图层的主体框——按可靠性逐级降级，每级带置信度，PS「选择主体」只在显式要求时才用：
+ *  1) 来源文件已知 → 主进程按素材算（alpha / 纯色底裁边 / 本地分割），相对框投影到图层外框
+ *  2) 图层透明边界（插件像素统计，确定）
+ *  3) 图层像素导出 → 主进程本地分割（不依赖 Photoshop 智能功能）
+ *  4) 显式 method="smart" → Photoshop 选择主体
+ *  5) 整个图层外框（低置信，明说）
+ */
+async function resolveLayerSubjectBounds(input: {
+    layerId: number;
+    frameBounds: SubjectBoundsRect;
+    requestedMethod: 'auto' | 'alpha' | 'smart';
+    documentId?: number;
+    options: ToolCallExecutionOptions;
+}): Promise<ResolvedLayerSubject> {
+    const { layerId, frameBounds, requestedMethod, options } = input;
+    const warnings: string[] = [];
+    const bridge = (window as any).designEcho;
+    const { projectRelativeBoxOntoFrame, relativeBoxFromFrame } = await import('../../shared/subject-box-from-pixels');
+
+    const finish = (
+        rect: SubjectBoundsRect,
+        method: string,
+        confidence: ResolvedLayerSubject['confidence'],
+        note: string,
+        relativeBox?: ResolvedLayerSubject['relativeBox']
+    ): ResolvedLayerSubject => ({
+        bounds: withSize(rect),
+        relativeBox: relativeBox || relativeBoxFromFrame(rect, frameBounds),
+        method,
+        confidence,
+        note,
+        warnings
+    });
+
+    const readAlpha = async (): Promise<ResolvedLayerSubject | undefined> => {
+        const alphaResult = await executeToolCall('getSubjectBounds', { layerId, method: 'alpha' }, options);
+        const rect = toSubjectRect(alphaResult?.data?.bounds);
+        if (alphaResult?.success === false || !rect) return undefined;
+        const frameArea = Math.max(1, (frameBounds.right - frameBounds.left) * (frameBounds.bottom - frameBounds.top));
+        const rectArea = (rect.right - rect.left) * (rect.bottom - rect.top);
+        // 几乎等于外框 = 这一层是不透明的整图，alpha 说明不了主体在哪
+        if (rectArea / frameArea > 0.985) return undefined;
+        return finish(rect, 'alpha', 'certain', '透明底图层：主体 = 不透明像素范围');
+    };
+
+    if (requestedMethod === 'smart') {
+        const smart = await executeToolCall('getSubjectBounds', { layerId, method: 'smart' }, options);
+        const rect = toSubjectRect(smart?.data?.bounds);
+        if (smart?.success !== false && rect) {
+            return finish(rect, 'photoshop', 'medium', 'Photoshop 选择主体（显式要求）；复杂场景请看画面确认');
+        }
+        warnings.push(`Photoshop 选择主体未拿到结果（${smart?.error || '未返回主体边界'}），已改用本地方式。`);
+    }
+
+    // 1) 素材属性
+    if (requestedMethod !== 'alpha') {
+        const sourceFile = readLayerSourceFile(layerId, input.documentId);
+        if (sourceFile && typeof bridge?.invoke === 'function') {
+            try {
+                const asset = await bridge.invoke('resource:getAssetSubjectBox', sourceFile);
+                const resolution = asset?.success ? asset.resolution : undefined;
+                if (resolution?.box && resolution.method !== 'frame') {
+                    if (resolution.method === 'alpha') {
+                        // 透明底素材：图层外框可能已经是不透明范围，投影不可靠，直接读图层像素更准
+                        const alpha = await readAlpha();
+                        if (alpha) return alpha;
+                    } else {
+                        const rect = projectRelativeBoxOntoFrame(resolution.box, frameBounds);
+                        return finish(
+                            rect,
+                            `asset:${resolution.method}`,
+                            resolution.confidence,
+                            `${resolution.note}（来自素材文件，一次计算重复使用）`,
+                            resolution.box
+                        );
+                    }
+                }
+            } catch (error: any) {
+                warnings.push(`素材主体框读取失败：${error?.message || error}`);
+            }
+        }
+    }
+
+    // 2) 图层透明边界
+    const alpha = await readAlpha();
+    if (alpha) return alpha;
+    if (requestedMethod === 'alpha') {
+        warnings.push('该图层没有透明边界（整图不透明），alpha 方式说明不了主体在哪，已按整个图层外框处理。');
+        return finish(frameBounds, 'frame', 'low', '按整个图层外框适配；主体尺度请看画面确认');
+    }
+
+    // 3) 图层像素 → 主进程本地分割
+    if (typeof bridge?.invoke === 'function') {
+        try {
+            const detected = await bridge.invoke('resource:detectLayerSubjectBox', { layerId });
+            const rect = toSubjectRect(detected?.bounds);
+            if (detected?.success && rect && detected.resolution?.method !== 'frame') {
+                return finish(
+                    rect,
+                    `layer:${detected.resolution?.method || 'matting'}`,
+                    detected.resolution?.confidence || 'medium',
+                    detected.resolution?.note || '本地分割模型给出的主体框',
+                    detected.resolution?.box
+                );
+            }
+            if (detected?.success === false && detected?.error) warnings.push(String(detected.error));
+        } catch (error: any) {
+            warnings.push(`图层本地主体检测失败：${error?.message || error}`);
+        }
+    }
+
+    // 5) 兜底
+    return finish(frameBounds, 'frame', 'low', '没有可用的主体检测，按整个图层外框适配；文字区域仍由版面结构避开，主体尺度请看画面确认');
+}
 
 export const resetToolSession = () => {
     executedToolsInSession = [];
@@ -1395,6 +1773,30 @@ async function buildChatTestFakePhotoshopResult(toolName: string, params: any): 
     if (toolName === 'getCanvasSnapshot') {
         const activeDocument = await getActiveChatTestFakeDocument();
         const document = activeDocument || chatTestFakePhotoshopState.document;
+        if (Object.prototype.hasOwnProperty.call(params || {}, 'documentId')) {
+            return {
+                success: false,
+                code: 'unsupported_document_id_parameter',
+                error: '画布快照不会按 documentId 选择或切换文档。请改用 expectedDocumentId 断言当前活动文档。'
+            };
+        }
+        if (Object.prototype.hasOwnProperty.call(params || {}, 'expectedDocumentId')) {
+            const expectedDocumentId = params?.expectedDocumentId;
+            if (!Number.isSafeInteger(expectedDocumentId) || expectedDocumentId <= 0) {
+                return {
+                    success: false,
+                    code: 'invalid_expected_document_id',
+                    error: 'expectedDocumentId 必须是正整数文档 ID。'
+                };
+            }
+            if (expectedDocumentId !== document.id) {
+                return {
+                    success: false,
+                    code: 'unexpected_active_document',
+                    error: `画布快照目标不一致：预期活动文档 ${expectedDocumentId}，实际活动文档 ${document.id}。未读取任何像素。`
+                };
+            }
+        }
         return {
             success: true,
             snapshot: {
@@ -1794,435 +2196,25 @@ function extractBase64FromReadResult(readResult: any): string | undefined {
     return undefined;
 }
 
-function extractReadMeta(readResult: any): {
-    mimeType?: string;
-    assetId?: string;
-    checksum?: string;
-    byteLength?: number;
-} {
-    if (!readResult || typeof readResult !== 'object') {
-        return {};
-    }
-    return {
-        mimeType: typeof readResult.mimeType === 'string' ? readResult.mimeType : undefined,
-        assetId: typeof readResult.assetId === 'string' ? readResult.assetId : undefined,
-        checksum: typeof readResult.checksum === 'string' ? readResult.checksum : undefined,
-        byteLength: typeof readResult.byteLength === 'number' ? readResult.byteLength : undefined
-    };
-}
-
-function resolveImageFormat(metaMimeType?: string, pathHint?: string): string {
-    const mime = (metaMimeType || '').toLowerCase();
-    if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
-    if (mime.includes('png')) return 'png';
-    if (mime.includes('gif')) return 'gif';
-    if (mime.includes('webp')) return 'webp';
-    if (mime.includes('tiff')) return 'tiff';
-    if (mime.includes('bmp')) return 'bmp';
-
-    const ext = ((pathHint || '').match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
-    if (ext) return ext;
-    return 'png';
-}
-
-﻿// AUTO_SELECT_BLOCK_START
-
-type AutoSelectFile = {
-    path?: string;
-    name?: string;
-    relativePath?: string;
-    type?: string;
-    extension?: string;
-    dimensions?: { width?: number; height?: number };
-    size?: number;
-};
-
-type AutoSelectRecommendation = {
-    file?: AutoSelectFile;
-    matchScore?: number;
-    matchReason?: string;
-    suggestedUse?: string;
-    visualObserved?: boolean;
-    visualRole?: DesignAssetVisualRole;
-    backgroundType?: string;
-    directUseSuitability?: string;
-    sourceTreatment?: string;
-    visualEvidence?: {
-        observed?: boolean;
-        role?: string;
-        backgroundType?: string;
-        directUseSuitability?: string;
-        sourceTreatment?: string;
-        reason?: string;
-    };
-};
-
-type AutoSelectCandidate = {
-    path: string;
-    name?: string;
-    relativePath?: string;
-    score: number;
-    reason: string;
-    suggestedUse?: string;
-    visualObserved: boolean;
-    visualRole?: string;
-    backgroundType?: string;
-    directUseSuitability: DesignAssetDirectUseSuitability;
-    sourceTreatment: DesignAssetSourceTreatment;
-};
-
-type AutoSelectDecision = {
-    code?: string;
-    requirement: string;
-    designRole?: string;
-    placementIntent?: string;
-    mode: 'auto' | 'suggest' | 'force';
-    strictDeterministic: boolean;
-    thresholds: { minScore: number; minMargin: number };
-    topScore: number;
-    margin: number;
-    selectionAuthority?: 'visual_evidence' | 'agent_judgment' | 'harness_receipt';
-    autoPlacementEligible?: boolean;
-    candidates: AutoSelectCandidate[];
-};
-
-function normalizeAutoSelectEvidenceValue(value: unknown): string {
-    return String(value || '').trim().toLowerCase();
-}
-
-function normalizeDirectUseSuitability(value: unknown): DesignAssetDirectUseSuitability {
-    const normalized = normalizeAutoSelectEvidenceValue(value);
-    if (normalized === 'suitable' || normalized === 'conditional' || normalized === 'unsuitable') {
-        return normalized;
-    }
-    return 'unsuitable';
-}
-
-function normalizeVisualRole(value: unknown): DesignAssetVisualRole {
-    const normalized = normalizeAutoSelectEvidenceValue(value);
-    if (
-        normalized === 'hero_product'
-        || normalized === 'hero_scene'
-        || normalized === 'model_context'
-        || normalized === 'detail_evidence'
-        || normalized === 'material_evidence'
-        || normalized === 'background'
-        || normalized === 'decorative'
-        || normalized === 'reference'
-    ) {
-        return normalized;
-    }
-    return 'unknown';
-}
-
-function normalizeSourceTreatment(value: unknown): DesignAssetSourceTreatment {
-    const normalized = normalizeAutoSelectEvidenceValue(value);
-    if (
-        normalized === 'direct_full_frame'
-        || normalized === 'clip_to_container'
-        || normalized === 'matte_and_recompose'
-        || normalized === 'supporting_only'
-        || normalized === 'reject'
-        || normalized === 'requires_visual_review'
-    ) {
-        return normalized;
-    }
-    return 'requires_visual_review';
-}
-
-function buildPlaceImageSelectionBlock(
-    params: any,
-    decision: Partial<AutoSelectDecision> & { code: string; requirement?: string }
-): any {
-    return {
-        ...params,
-        __autoSelectBlocked: true,
-        __autoSelectDecision: {
-            requirement: decision.requirement || extractPlaceImageRequirement(params),
-            designRole: decision.designRole || String(params?.designRole || '').trim() || undefined,
-            placementIntent: decision.placementIntent || String(params?.placementIntent || '').trim() || undefined,
-            mode: decision.mode || 'suggest',
-            strictDeterministic: decision.strictDeterministic ?? (params?.strictDeterministic === true),
-            thresholds: decision.thresholds || { minScore: 72, minMargin: 8 },
-            topScore: decision.topScore || 0,
-            margin: decision.margin || 0,
-            candidates: decision.candidates || [],
-            autoPlacementEligible: decision.autoPlacementEligible === true,
-            code: decision.code
-        }
-    };
-}
-
-function extractPlaceImageRequirement(params: any): string {
-    const keys = ['requirement', 'query', 'prompt', 'description', 'subject', 'intent', 'keyword'];
-    for (const key of keys) {
-        const value = String(params?.[key] || '').trim();
-        if (value) return value;
-    }
-    return '';
-}
-
-function normalizePlaceImageCategory(value: any): string | undefined {
-    const raw = String(value || '').trim().toLowerCase();
-    if (!raw) return undefined;
-    if (['products', 'backgrounds', 'elements', 'references', 'others'].includes(raw)) {
-        return raw;
-    }
-    return undefined;
-}
-
-function clampAutoScore(score: number): number {
-    if (!Number.isFinite(score)) return 0;
-    return Math.max(0, Math.min(100, Math.round(score)));
-}
-
-function sortAutoSelectCandidates(
-    candidates: AutoSelectCandidate[],
-    strictDeterministic: boolean
-): AutoSelectCandidate[] {
-    return [...candidates].sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        if (strictDeterministic) {
-            return a.path.localeCompare(b.path);
-        }
-        return 0;
-    });
-}
-
-function rankFallbackImagesFromScan(
-    scanResult: any,
-    requirement: string,
-    limit: number = 3,
-    strictDeterministic: boolean = false
-): AutoSelectCandidate[] {
-    const files: AutoSelectFile[] = Array.isArray(scanResult?.files) ? scanResult.files : [];
-    const images = files.filter((f) => typeof f?.path === 'string' && f.path && f.type === 'image');
-    if (images.length === 0) return [];
-
-    const keywords = requirement
-        .toLowerCase()
-        .split(/[\s,;:，。！？、/\\|()[\]{}"'`~!@#$%^&*+=<>?-]+/)
-        .map((k) => k.trim())
-        .filter((k) => k.length >= 2);
-
-    const scored = images.map((file): AutoSelectCandidate => {
-        const name = String(file.name || '').toLowerCase();
-        const relativePath = String(file.relativePath || '').toLowerCase();
-        const searchText = `${name} ${relativePath}`;
-
-        let score = 10;
-        for (const keyword of keywords) {
-            if (searchText.includes(keyword)) {
-                score += 18;
-            }
-        }
-
-        const width = Number(file.dimensions?.width || 0);
-        const height = Number(file.dimensions?.height || 0);
-        if (width > 0 && height > 0) {
-            const megaPixels = (width * height) / 1_000_000;
-            score += Math.min(20, megaPixels * 5);
-        }
-
-        const ext = String(file.extension || '').toLowerCase();
-        if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp') {
-            score += 3;
-        }
-
-        return {
-            path: String(file.path),
-            name: file.name,
-            relativePath: file.relativePath,
-            score: clampAutoScore(score),
-            reason: 'fallback_scan_match',
-            suggestedUse: 'Scored from local scan fallback; visual content was not observed.',
-            visualObserved: false,
-            directUseSuitability: 'unsuitable',
-            sourceTreatment: 'requires_visual_review'
-        };
-    });
-
-    return sortAutoSelectCandidates(scored, strictDeterministic).slice(0, Math.max(1, limit));
-}
-
-async function autoResolvePlaceImageSource(params: any): Promise<any> {
+function resolveExplicitPlaceImageSource(params: any): any {
     if (params?.imageData || params?.filePath || params?.fileToken) {
         return params;
     }
 
-    // placeImage 是执行工具，不拥有素材发现权。缺少 source 时默认不扫描、不猜测；
-    // 调用方必须先显式选择素材，或明确请求一次有视觉证据的自动选择。
-    if (params?.autoSelect !== true) {
-        return buildPlaceImageSelectionBlock(params, {
-            code: 'explicit_source_required',
-            mode: 'suggest'
-        });
-    }
-
-    const designEcho = (window as any).designEcho;
-    if (!designEcho) {
-        return buildPlaceImageSelectionBlock(params, {
-            code: 'asset_selection_service_unavailable',
-            mode: 'suggest'
-        });
-    }
-
-    const requirement = extractPlaceImageRequirement(params);
-    const designRole = String(params?.designRole || '').trim().toLowerCase();
-    const placementIntent = String(params?.placementIntent || '').trim().toLowerCase();
-    const category = normalizePlaceImageCategory(params?.category);
-    const selectionMode = (String(params?.selectionMode || params?.autoSelectMode || 'auto').toLowerCase() as 'auto' | 'suggest' | 'force');
-    const strictDeterministic = params?.strictDeterministic === true;
-    const minScore = Number.isFinite(Number(params?.minScore)) ? Number(params.minScore) : 72;
-    const minMargin = Number.isFinite(Number(params?.minMargin)) ? Number(params.minMargin) : 8;
-    const candidateCountRaw = Number(params?.candidateCount);
-    const candidateCount = Number.isFinite(candidateCountRaw)
-        ? Math.max(1, Math.min(5, Math.floor(candidateCountRaw)))
-        : 3;
-
-    if (!requirement) {
-        return buildPlaceImageSelectionBlock(params, {
-            code: 'selection_requirement_required',
-            designRole,
-            placementIntent,
-            mode: selectionMode,
-            strictDeterministic,
-            thresholds: { minScore, minMargin }
-        });
-    }
-
-    let candidates: AutoSelectCandidate[] = [];
-
-    try {
-        const recommendResult = await designEcho.recommendAssets({
-            requirement,
-            maxResults: Math.max(candidateCount, 5),
-            category,
-            designRole: designRole || undefined,
-            placementIntent: placementIntent || undefined,
-            deterministic: strictDeterministic
-        });
-
-        const recommendations: AutoSelectRecommendation[] = Array.isArray(recommendResult?.recommendations)
-            ? recommendResult.recommendations
-            : [];
-        candidates = recommendations
-            .filter((r) => typeof r?.file?.path === 'string' && !!r.file?.path)
-            .map((r) => {
-                const visualEvidence = r.visualEvidence || {};
-                const visualObserved = r.visualObserved === true || visualEvidence.observed === true;
-                const directUseSuitability = normalizeDirectUseSuitability(
-                    r.directUseSuitability || visualEvidence.directUseSuitability
-                );
-                const sourceTreatment = normalizeSourceTreatment(
-                    r.sourceTreatment || visualEvidence.sourceTreatment
-                );
-                return {
-                    path: String(r.file!.path),
-                    name: r.file?.name,
-                    relativePath: r.file?.relativePath,
-                    score: clampAutoScore(Number(r.matchScore || 0)),
-                    reason: String(r.matchReason || visualEvidence.reason || '').trim() || 'recommendation',
-                    suggestedUse: String(r.suggestedUse || '').trim(),
-                    visualObserved,
-                    visualRole: normalizeVisualRole(r.visualRole || visualEvidence.role),
-                    backgroundType: String(r.backgroundType || visualEvidence.backgroundType || '').trim() || undefined,
-                    directUseSuitability,
-                    sourceTreatment
-                };
-            });
-        candidates = sortAutoSelectCandidates(candidates, strictDeterministic);
-    } catch (error) {
-        console.warn('[placeImage] auto-recommend failed, fallback to local scan:', error);
-    }
-
-    // auto 只有视觉比较结果才能落图；推荐服务失败后再递归扫目录只能得到元数据，
-    // 既无法通过自动置入边界又会制造额外 IO。fallback 仅保留给 suggest/有来源 force 展示候选。
-    if (candidates.length === 0 && selectionMode !== 'auto') {
-        try {
-            const projectPath = await getCurrentProjectPath();
-            if (projectPath && designEcho?.setProjectRoot) {
-                await designEcho.setProjectRoot(projectPath);
-            }
-            const scanResult = await designEcho.scanDirectory(projectPath || undefined, {
-                recursive: true,
-                includeDesignFiles: false,
-                maxDepth: 6
-            });
-            candidates = rankFallbackImagesFromScan(scanResult, requirement, Math.max(candidateCount, 3), strictDeterministic);
-        } catch (error) {
-            console.warn('[placeImage] local scan fallback failed:', error);
-        }
-    }
-
-    if (candidates.length === 0) {
-        return buildPlaceImageSelectionBlock(params, {
-            code: 'no_asset_candidate',
-            requirement,
-            designRole,
-            placementIntent,
-            mode: selectionMode,
-            strictDeterministic,
-            thresholds: { minScore, minMargin }
-        });
-    }
-
-    const topCandidate = candidates[0];
-    const secondCandidate = candidates[1];
-    const margin = secondCandidate ? (topCandidate.score - secondCandidate.score) : topCandidate.score;
-    const decision: AutoSelectDecision = {
-        requirement,
-        designRole: designRole || undefined,
-        placementIntent: placementIntent || undefined,
-        mode: selectionMode,
-        strictDeterministic,
-        thresholds: { minScore, minMargin },
-        topScore: topCandidate.score,
-        margin,
-        candidates: candidates.slice(0, candidateCount)
-    };
-
-    const autoPlacementDecision = evaluateDesignAssetAutoPlacement({
-        mode: selectionMode,
-        designRole,
-        minScore,
-        minMargin,
-        candidates
-    });
-    decision.selectionAuthority = autoPlacementDecision.authority;
-    decision.autoPlacementEligible = autoPlacementDecision.eligible;
-    const blockCode = autoPlacementDecision.eligible ? '' : autoPlacementDecision.code;
-
-    if (blockCode) {
-        return buildPlaceImageSelectionBlock(params, {
-            ...decision,
-            code: blockCode,
-            autoPlacementEligible: false
-        });
-    }
-
-    const fallbackName = String(topCandidate.name || topCandidate.relativePath || '')
-        .split(/[\\/]/)
-        .pop();
-
-    const autoSelected = {
-        ...decision,
-        selectedPath: topCandidate.path,
-        selectedReason: topCandidate.reason
-    };
-
-    console.log('[placeImage] auto-selected candidate:', autoSelected);
-
+    // placeImage 只执行 Agent 已经作出的选择。素材发现与候选比较由 recommendAssets
+    // 单独完成并返回主循环；Harness 不得在执行工具内部把推荐 Top1 变成设计决定。
     return {
         ...params,
-        filePath: topCandidate.path,
-        name: String(params?.name || '').trim() || fallbackName || 'Auto Selected Image',
-        fitToCanvas: params?.fitToCanvas ?? false,
-        autoSelected
+        __placeImageSourceBlocked: true,
+        __placeImageSourceDecision: {
+            code: 'explicit_source_required',
+            searchedCandidates: false,
+            selectedCandidate: false,
+            photoshopWriteAttempted: false,
+            nextTool: 'recommendAssets'
+        }
     };
 }
-
-// AUTO_SELECT_BLOCK_END
 async function getCurrentProjectPath(): Promise<string> {
     try {
         return useAppStore.getState().currentProject?.path || '';
@@ -2250,16 +2242,26 @@ function normalizeNoDialogSaveFormat(value: any): string {
     return 'psd';
 }
 
+function normalizeRecoverySaveFormat(value: any): 'psd' | 'psb' {
+    return String(value || '').trim().toLowerCase() === 'psb' ? 'psb' : 'psd';
+}
+
 function isExplicitRasterFilePath(value: any): boolean {
     return /\.(?:png|jpe?g)$/i.test(String(value || '').trim());
 }
 
 function buildNoDialogSavePath(projectPath: string, documentName?: string, format?: string): string {
     const safeName = sanitizeFileName(documentName || 'document');
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const root = projectPath.replace(/[\\/]+$/, '');
     const ext = normalizeNoDialogSaveFormat(format);
-    return `${root}\\${safeName}_autosave_${stamp}.${ext}`;
+    return `${root}\\${safeName}.${ext}`;
+}
+
+function buildRecoverySavePath(recoveryDirectory: string, documentName?: string, format?: string): string {
+    const safeName = sanitizeFileName(documentName || 'document');
+    const root = recoveryDirectory.replace(/[\\/]+$/, '');
+    const ext = normalizeNoDialogSaveFormat(format);
+    return `${root}\\${safeName}-恢复.${ext}`;
 }
 
 function sanitizeProjectSaveSubdir(value: any): string | undefined {
@@ -2310,12 +2312,51 @@ async function resolveNoDialogSaveRoot(projectPath: string, requestedSubdir?: an
     }
 }
 
+async function resolveProjectRecoveryRoot(projectPath: string): Promise<{
+    directory: string;
+    error?: string;
+}> {
+    const root = projectPath.replace(/[\\/]+$/, '');
+    const metadataDirectory = `${root}\\.designecho`;
+    const recoveryDirectory = `${metadataDirectory}\\recovery`;
+    const bridge = (window as any).designEcho;
+    if (!bridge?.createDirectory) {
+        return {
+            directory: recoveryDirectory,
+            error: '无法建立项目恢复目录：文件系统桥接不可用'
+        };
+    }
+
+    try {
+        for (const directory of [metadataDirectory, recoveryDirectory]) {
+            const exists = bridge.pathExists ? await bridge.pathExists(directory) : false;
+            if (exists) continue;
+            const created = await bridge.createDirectory(directory);
+            if (created?.success === false) {
+                return {
+                    directory: recoveryDirectory,
+                    error: created?.error || `创建项目恢复目录失败：${directory}`
+                };
+            }
+        }
+        return { directory: recoveryDirectory };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error || '未知错误');
+        return {
+            directory: recoveryDirectory,
+            error: `创建项目恢复目录失败：${message}`
+        };
+    }
+}
+
 function hasValue(v: any): boolean {
     return v !== undefined && v !== null && String(v).trim() !== '';
 }
 
 export interface ToolCallExecutionOptions {
     signal?: AbortSignal;
+    /** 请求级任务卡作用域；由 Agent 运行入口签发，不来自模型参数。 */
+    taskCardScope?: string;
 }
 
 function buildCancelledToolResult(toolName: string): Record<string, any> {
@@ -2477,17 +2518,20 @@ function buildInteractiveCardToolResult(params: any): {
     error?: string;
 } {
     const cardKind = cleanInteractiveCardText(params?.cardKind || params?.kind || params?.type);
-    if (cardKind === 'sku_combo_editor') {
-        // 明确拒绝：SKU 组合确认卡必须由 sku-batch 技能产出。sku-batch 会检查项目素材、用规范生成器
-        // 算出真实颜色组合，再经 buildSkuComboConfirmationRequest 把组合预填进可编辑组合表。
-        // createInteractiveCard 没有项目上下文与生成器，硬建只会得到空/臆造的组合卡，用户提交也接不回
-        // SKU 出图管线（即用户反馈的“卡片偏离预期、提交也无法完成 SKU”）。这里指路而非静默兜底建空卡。
+    const supportedKinds = new Set(['editable_confirmation']);
+    if (cardKind && !supportedKinds.has(cardKind)) {
         return {
             success: false,
-            error: 'createInteractiveCard 不能自建 SKU 组合卡。请调用 sku-batch；该 Skill 会依据真实用户指令和项目事实决定直接生产草稿，或在用户明确要求时返回可编辑组合确认卡。'
+            error: `createInteractiveCard 不支持卡片类型「${cardKind}」。业务卡片只能由已选择的 Skill Provider 生成；普通选择请使用 askUserToChoose，可编辑草稿请使用 editable_confirmation。`
         };
     }
-    if (cardKind === 'editable_confirmation' || Array.isArray(params?.fields)) {
+    if (cardKind === 'editable_confirmation') {
+        if (!Array.isArray(params?.fields) || params.fields.length === 0) {
+            return {
+                success: false,
+                error: 'editable_confirmation 至少需要一个可编辑字段；只有简短选择时请使用 askUserToChoose。'
+            };
+        }
         const card = buildEditableConfirmationInteractiveCard({
             id: params?.id,
             title: params?.title,
@@ -2507,29 +2551,9 @@ function buildInteractiveCardToolResult(params: any): {
             interactiveCards: [card]
         };
     }
-
-    const title = cleanInteractiveCardText(params?.title) || '请确认';
-    const payload = params?.payload && typeof params.payload === 'object'
-        ? params.payload
-        : {};
-    const card: InteractiveCardDefinition = {
-        version: 'interactive-card/v0',
-        id: cleanInteractiveCardText(params?.id) || `interactive-card-${stableInteractiveCardHash({ cardKind, title, payload })}`,
-        kind: cardKind || 'generic_confirmation',
-        title,
-        description: cleanInteractiveCardText(params?.description),
-        payload,
-        status: 'draft',
-        submitAction: 'submitInteractiveCard',
-        memoryPolicy: {
-            enabled: false,
-            mode: 'none'
-        }
-    };
     return {
-        success: true,
-        message: '已创建确认卡片。',
-        interactiveCards: [card]
+        success: false,
+        error: '未识别可创建的通用交互卡类型。'
     };
 }
 // ==================== 工具执行 ====================
@@ -2539,6 +2563,9 @@ function buildInteractiveCardToolResult(params: any): {
  */
 const executeToolCallImpl = async (toolName: string, params: any, options: ToolCallExecutionOptions = {}): Promise<any> => {
     const startTime = Date.now();
+    let dispatchedPhotoshopParams = params;
+    let dispatchedPhotoshopAcceptanceBefore: AcceptanceCaptureResult | undefined;
+    let dispatchedPhotoshopAcceptancePolicy: ToolAcceptanceCapturePolicy | undefined;
     console.log(`[ToolCall] 执行: ${toolName}`, params);
 
     if (options.signal?.aborted) {
@@ -2572,18 +2599,168 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
 
         const chatTestFakePhotoshopResult = await buildChatTestFakePhotoshopResult(toolName, params);
         if (chatTestFakePhotoshopResult) {
-            if (chatTestFakePhotoshopResult.success) {
+            const normalizedFakeResult = toolName === 'listDocuments'
+                ? enrichPhotoshopDocumentInventory(
+                    chatTestFakePhotoshopResult,
+                    useAppStore.getState().currentProject?.path
+                )
+                : chatTestFakePhotoshopResult;
+            if (normalizedFakeResult.success) {
                 executedToolsInSession.push(toolName);
-                recordToolExecution(toolName, params, chatTestFakePhotoshopResult);
+                recordToolExecution(toolName, params, normalizedFakeResult);
             }
-            toolLogger.logToolCall(toolName, params, chatTestFakePhotoshopResult, Date.now() - startTime, currentRound);
-            return chatTestFakePhotoshopResult;
+            toolLogger.logToolCall(toolName, params, normalizedFakeResult, Date.now() - startTime, currentRound);
+            return normalizedFakeResult;
         }
-        
+
         // Renderer / Harness 本地工具在 Agent 端处理，禁止误发到 Photoshop UXP。
         if (RENDERER_LOCAL_TOOLS.includes(toolName)) {
-            result = await executeResourceTool(toolName, params);
+            result = await executeResourceTool(toolName, params, options);
             if (result.success) executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
+        // 设计任务卡：模型写卡（角色与为什么 / 判断 / 清单），Harness 核收据打勾；完成 = 清单达成。
+        if (toolName === 'planDesignTaskCard' || toolName === 'updateDesignTaskCard' || toolName === 'getDesignTaskCard') {
+            const store = await import('./design-workshop/design-task-card.store');
+            const taskCardScope = String(options.taskCardScope || '').trim();
+            result = toolName === 'planDesignTaskCard'
+                ? store.executePlanDesignTaskCard(taskCardScope, params)
+                : toolName === 'updateDesignTaskCard'
+                    ? store.executeUpdateDesignTaskCard(taskCardScope, params)
+                    : store.executeGetDesignTaskCard(taskCardScope);
+            if (result?.success) executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
+        // 让用户帮我选：Agent 拿不准时列选项。ask 模式返回 userChoiceRequest（Agent 循环据此暂停本轮）；
+        // auto 模式不停下，按 Agent 自己倾向的选项继续（用户不在场时的全自动）。
+        if (toolName === 'askUserToChoose') {
+            const {
+                canAutoResolveUserChoiceRequest,
+                normalizeUserChoiceRequest,
+                describeAutoDecision,
+                describeChoiceRequestForModel
+            } = await import('../../shared/user-choice-request');
+            const normalized = normalizeUserChoiceRequest(params);
+            if (!normalized.ok || !normalized.request) {
+                result = { success: false, error: `askUserToChoose 选项没写全：${normalized.issues.join('；')}`, issues: normalized.issues };
+            } else if (
+                useAppStore.getState().agentDecisionMode === 'auto'
+                && canAutoResolveUserChoiceRequest(normalized.request)
+            ) {
+                result = {
+                    success: true,
+                    mode: 'auto',
+                    decisions: normalized.request.questions.map((question) => ({
+                        question: question.question,
+                        chosen: question.options.find((item) => item.id === question.recommendedId) || question.options[0]
+                    })),
+                    message: describeAutoDecision(normalized.request)
+                };
+            } else {
+                result = {
+                    success: true,
+                    mode: 'ask',
+                    userChoiceRequest: normalized.request,
+                    message: useAppStore.getState().agentDecisionMode === 'auto'
+                        ? `当前问题涉及用户事实或授权，不能由自动模式代替确认。${describeChoiceRequestForModel(normalized.request)}`
+                        : describeChoiceRequestForModel(normalized.request)
+                };
+            }
+            if (result?.success) executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
+        // 独立评审器：好不好看（四标准）+ 硬伤汇总 → 分数与可执行批评，写进任务卡「验」栏。不写 Photoshop。
+        if (toolName === 'evaluateDesign') {
+            const { executeEvaluateDesign } = await import('./design-workshop/evaluate-design.executor');
+            result = await executeEvaluateDesign(params, {
+                executeToolCall,
+                invokeMain: (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args),
+                readImageBase64: (filePath: string) => (window as any).designEcho?.readImageBase64?.(filePath),
+                projectPath: useAppStore.getState().currentProject?.path,
+                taskCardScope: options.taskCardScope,
+                options
+            });
+            if (result?.success) executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
+        // 从用户指定的 Eagle 参考文件夹批量提取方法候选；进入长期知识人工审核队列，不自动发布。
+        if (toolName === 'learnTasteFromEagle') {
+            const { executeLearnTasteFromEagle } = await import('./design-workshop/learn-taste.executor');
+            result = await executeLearnTasteFromEagle(params, {
+                invokeMain: (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args),
+                readImageBase64: (filePath: string) => (window as any).designEcho?.readImageBase64?.(filePath),
+                projectPath: useAppStore.getState().currentProject?.path
+            });
+            if (result?.success) executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
+        // 看参考：带目的看一张参考——好在哪 / 差在哪 / 怎么做的 / 换成我们怎么改 / 起手式区域 / 沉淀
+        if (toolName === 'studyReference') {
+            const { executeStudyReference } = await import('./design-workshop/study-reference.executor');
+            result = await executeStudyReference(params, {
+                invokeMain: (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args),
+                readImageBase64: (filePath: string) => (window as any).designEcho?.readImageBase64?.(filePath),
+                projectPath: useAppStore.getState().currentProject?.path
+            });
+            if (result?.success) executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
+        // 经验闭环：自动观察只进候选区；用户「留 / 改 / 弃 + 为什么」发布为项目评审校准。
+        // 时间线可读、可驳回；原则 / 配方 / 模型观察不能在在线运行里自行发布。
+        if (toolName === 'recordDesignVerdict' || toolName === 'getDesignLearningTimeline') {
+            const learning = await import('./design-workshop/design-learning.store');
+            const invokeMain = (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args);
+            const projectPath = useAppStore.getState().currentProject?.path;
+            result = toolName === 'recordDesignVerdict'
+                ? await learning.executeRecordDesignVerdict(invokeMain, projectPath, params, options.taskCardScope)
+                : await learning.executeGetDesignLearningTimeline(invokeMain, projectPath, params);
+            if (result?.success) executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
+        // 一次成稿车间：模型给完整设计稿（画布 / 背景方向 / 主体 / 构图 / 文案 / 视觉样式），
+        // 车间串既有工具做完整张首稿（建画布 → 铺背景 → 执行构图 → 主体投影 → 回读）。
+        // Photoshop 原生弹窗会同时阻塞 UXP 画布工具；应用窗口截图必须走 Electron Host，
+        // 不能再发回同一条已堵塞的 Photoshop 工具链。Harness 只提供真实画面，后续恢复由 Agent 判断。
+        if (toolName === 'capturePhotoshopWindow') {
+            const capture = (window as any).designEcho?.capturePhotoshopWindowScreenshot;
+            result = typeof capture === 'function'
+                ? await capture()
+                : {
+                    success: false,
+                    error: '当前运行环境没有提供 Photoshop 应用窗口截图能力。',
+                    environmentState: 'photoshop_window_capture_unavailable'
+                };
+            if (result?.success) executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
+        // 只编排、不新造排版逻辑；每一步失败都指名道姓。
+        if (toolName === 'composeDesign') {
+            const { executeComposeDesign } = await import('./design-workshop/compose-design.executor');
+            result = await executeComposeDesign(params, {
+                executeToolCall,
+                inferLayerId: inferFocusLayerId,
+                invokeMain: (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args),
+                projectPath: useAppStore.getState().currentProject?.path,
+                taskScopeId: options.taskCardScope,
+                options
+            });
+            if (result?.success) executedToolsInSession.push(toolName);
             toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
             return result;
         }
@@ -2603,9 +2780,28 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 resolveRenderLayoutVisualStyle
             } = await import('../../shared/layout/render-layout-style');
             const { validateCreativeStagePlan } = await import('../../shared/creative-stage-plan');
+            if (params.recipe !== undefined) {
+                result = {
+                    success: false,
+                    status: 'failed',
+                    qualityState: 'failed',
+                    continuationRequired: true,
+                    requiresVisualReview: false,
+                    errors: [{
+                        block: 'recipe',
+                        role: 'layout',
+                        error: '内置版式配方已移除；请由 Agent 显式声明 regions / blocks 与 visualStyle'
+                    }],
+                    warnings: [],
+                    message: 'renderLayout 不再接受内置 recipe；本次未修改 Photoshop。开放设计由 Agent 声明构图，规格化生产应由对应 Skill 把用户或项目规范转换为显式布局参数。'
+                };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
             const canvas = (params.canvas && params.canvas.width && params.canvas.height) ? params.canvas : null;
             const rawSpecBlocks = Array.isArray(params.blocks) ? params.blocks : [];
             const rawSpecRegions = Array.isArray(params.regions) ? params.regions : [];
+            const rawOwnedLayers = Array.isArray(params.ownedLayers) ? params.ownedLayers : [];
             // 二维区域模式优先：regions 有值时按归一化 bounds 自由构图（左右分栏/图文叠压），
             // 否则走垂直堆叠。两种模式共用同一套渲染角色、草稿替换与建层管线。
             const regionMode = rawSpecRegions.length > 0;
@@ -2617,6 +2813,18 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     id: id || `${role}-${index + 1}`
                 };
             });
+            // composeDesign 的摄影优先路径已经按 Agent 声明的 main-image region 完成了
+            // 商品图定位。此时 renderLayout 只负责把该既有图层收进语义图层组，不应为了
+            // “至少还有一个待渲染区域”而逼 Agent 虚构文字或装饰。没有 ownedLayers 时仍
+            // 保持原来的 fail-closed：普通模型调用不能用空布局绕过显式构图契约。
+            const ownedLayerOnlyMode = specBlocks.length === 0
+                && rawOwnedLayers.some((entry: any) => {
+                    const layerId = Number(entry?.layerId);
+                    const bucket = String(entry?.bucket || '图片');
+                    return Number.isInteger(layerId)
+                        && layerId > 0
+                        && ['文案', '图标', '图片'].includes(bucket);
+                });
             const stagePlanValidation = params.stagePlan
                 ? validateCreativeStagePlan(params.stagePlan)
                 : null;
@@ -2634,7 +2842,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
                 return result;
             }
-            if (specBlocks.length === 0) {
+            if (specBlocks.length === 0 && !ownedLayerOnlyMode) {
                 result = { success: false, error: 'renderLayout 需要 blocks（垂直堆叠：role + content + heightRatio）或 regions（二维构图：role + content + 归一化 bounds{x,y,width,height}）之一。坐标和图层顺序由引擎确定，你不要填像素坐标或 z。' };
                 toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
                 return result;
@@ -2663,11 +2871,24 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     return result;
                 }
             }
+            // Agent-authored 版面由调用方声明业务可读组名；staged 生产链可使用其稳定阶段身份。
             const stageId = String(params.stagePlan?.currentStage?.id || '').trim();
             const stageTitle = String(params.stagePlan?.currentStage?.title || '').replace(/\s+/g, ' ').trim().slice(0, 12);
+            const explicitGroupName = String(params.groupName || '').replace(/\s+/g, ' ').trim();
+            if (explicitGroupName.length > 40) {
+                result = {
+                    success: false,
+                    error: 'renderLayout.groupName 最多 40 个字符；请使用与交付物和项目规范一致的简短语义名称。'
+                };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
             // 组名用业务可读名（如「A-首屏KV·首屏KV」风格的 id·标题）——图层树本身就是详情页结构文档；
             // 替换识别见下方 isCurrentStageDraftGroupName（兼容旧「阶段草稿-{id}」格式）。
-            const stageGroupName = stageId ? (stageTitle ? `${stageId}·${stageTitle}` : `阶段草稿-${stageId}`) : '';
+            let stageGroupName = explicitGroupName;
+            if (!stageGroupName && stageId) {
+                stageGroupName = stageTitle ? `${stageId}·${stageTitle}` : `阶段草稿-${stageId}`;
+            }
             // 逐屏排版区间：详情页等长文档上，本屏只在 screenRegion 指定的像素区间内求解并平移，
             // 否则每次 renderLayout 都从文档顶部排，多屏必然互相覆盖。
             const screenRegionRaw = params.screenRegion && typeof params.screenRegion === 'object' ? params.screenRegion : null;
@@ -2696,7 +2917,8 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             // 先完成纯逻辑求解与图片语义预检，再删除旧草稿或写 Photoshop。
             // 任何当前执行层尚不支持的声明都必须 fail closed，不能先写半成品再让模型返工。
             const solveCanvas = screenRegion ? { width: canvas.width, height: screenRegion.height } : canvas;
-            const modelAuthoredLayoutValidation = String(params.visualStyle?.mode || '').trim() === 'model_authored'
+            const modelAuthoredLayoutValidation = !ownedLayerOnlyMode
+                && String(params.visualStyle?.mode || '').trim() === 'model_authored'
                 ? validateModelAuthoredLayout({
                     mode: regionMode ? 'regions' : 'blocks',
                     marginScale: params.marginScale,
@@ -2707,6 +2929,20 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     regions: regionMode ? specBlocks : undefined
                 })
                 : null;
+            if (String(params.visualStyle?.mode || '').trim() === 'model_authored' && !stageGroupName) {
+                result = {
+                    success: false,
+                    status: 'failed',
+                    qualityState: 'failed',
+                    continuationRequired: true,
+                    requiresVisualReview: false,
+                    errors: [{ block: 'groupName', role: 'layout', error: 'model_authored 正式版面缺少语义图层组名' }],
+                    warnings: [],
+                    message: 'renderLayout 在写入前拒绝了无语义分组的正式设计；请按交付物和当前项目规范提供 groupName。'
+                };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
             if (modelAuthoredLayoutValidation && !modelAuthoredLayoutValidation.valid) {
                 const layoutModeLabel = regionMode ? 'regions' : 'blocks';
                 result = {
@@ -2744,7 +2980,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 return result;
             }
             // 版面结构参数：边距/间距的唯一来源是栅格刻度，模型只能选档位不能给像素。
-            // neutral_wireframe 可回落中性默认；model_authored 已在上方按显式契约校验。
+            // neutral_wireframe 必须显式请求；model_authored 已在上方按显式契约校验。
             const numericParam = (value: unknown): number | undefined => {
                 if (value === undefined || value === null) return undefined;
                 const parsed = Number(value);
@@ -2756,9 +2992,14 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 gutterScale: numericParam(params.gutterScale)
             };
             const gapScale = numericParam(params.gapScale);
-            const solveOutcome = regionMode
-                ? solveRegionLayout({ canvas: solveCanvas, ...gridOptions, regions: specBlocks })
-                : solveLayout({ canvas: solveCanvas, ...gridOptions, gapScale, blocks: specBlocks });
+            let solveOutcome: ReturnType<typeof solveLayout>;
+            if (ownedLayerOnlyMode) {
+                solveOutcome = { blocks: [], warnings: [], grid: undefined };
+            } else if (regionMode) {
+                solveOutcome = solveRegionLayout({ canvas: solveCanvas, ...gridOptions, regions: specBlocks });
+            } else {
+                solveOutcome = solveLayout({ canvas: solveCanvas, ...gridOptions, gapScale, blocks: specBlocks });
+            }
             const warnings = [...solveOutcome.warnings];
             const resolved = screenRegion
                 ? solveOutcome.blocks.map((block) => ({ ...block, y: block.y + screenRegion.y }))
@@ -2831,8 +3072,10 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             }
             const bgHex = (String(specBlocks.find((b: any) => b.role === 'background')?.content || '')
                 .match(/#[0-9a-fA-F]{6}/) || [])[0];
+            // 配方 background:'none'（车间已铺背景层）时不再画纯色底，但对比度校验仍按声明的页面底色算。
+            const pageBackgroundHint = (String(params.pageBackgroundHex || '').match(/#[0-9a-fA-F]{6}/) || [])[0];
             const styleResolution = resolveRenderLayoutVisualStyle({
-                backgroundHex: bgHex || '#FFFFFF',
+                backgroundHex: bgHex || pageBackgroundHint,
                 visualStyle: params.visualStyle
             });
             if (!styleResolution.ok || !styleResolution.style) {
@@ -2860,7 +3103,12 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         error: issue
                     })),
                     warnings,
-                    message: 'renderLayout 在写入前拒绝了无效视觉样式；没有用代码默认审美替代模型选择。'
+                    // 拒绝必须可执行：给出缺什么 + 一份最小合法样式骨架，模型才能一次改对（真机 run [471] 连拒两次后放弃该工具）。
+                    message: `renderLayout 在写入前拒绝了无效视觉样式（${styleResolution.issues.slice(0, 6).join('；')}）；没有用代码默认审美替代模型选择。`
+                        + ' 修正提示：mode 取 model_authored 时需完整给出 palette{primaryTextColorHex,secondaryTextColorHex,accentColorHex,sellingPointTextColorHex[,sellingPointFillColorHex]}、'
+                        + 'sellingPoint{treatment:text_only|solid_box,cornerRadiusRatio 0–0.5,paddingRatio 0–0.2}、'
+                        + 'typography{title,subtitle,body,sellingPoint 各含已确认可写的 fontName,fontSizeRatio 0.08–0.9,minFontSizeRatio ≤fontSizeRatio,fitMode:none|shrink_to_width,tracking,leadingRatio 0.8–2}；'
+                        + '只想先看结构可用 mode:neutral_wireframe；也可以改用 createTextLayer/placeImage 等原子工具直接排。'
                 };
                 toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
                 return result;
@@ -2922,6 +3170,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 // 无 stageId（未带 stagePlan 的通用重排）时保持原全清语义，避免旧草稿叠加。
                 const isCurrentStageDraftGroupName = (name: string): boolean => {
                     if (!name) return false;
+                    if (explicitGroupName) return name === explicitGroupName;
                     if (stageId) {
                         return name === `阶段草稿-${stageId}`
                             || name === stageGroupName
@@ -2997,6 +3246,19 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             // 分屏结构化（用户规范/详情页方法论）：屏组内固定 文案/图标/图片 三子组，
             // 每层按角色归桶，建组阶段自动分发——图层树本身就是交付物的一部分。
             const createdLayerBuckets = new Map<number, '文案' | '图标' | '图片'>();
+            const ownedLayers = rawOwnedLayers;
+            for (const ownedLayer of ownedLayers) {
+                const layerId = Number(ownedLayer?.layerId);
+                const bucket = String(ownedLayer?.bucket || '图片');
+                if (!Number.isInteger(layerId) || layerId <= 0) continue;
+                if (!['文案', '图标', '图片'].includes(bucket)) continue;
+                if (!layersBeforeSnapshot.some((layer: any) => Number(layer?.id) === layerId)) {
+                    errors.push({ block: stageGroupName || 'renderLayout', role: 'owned-layer', error: `ownedLayers 引用了当前文档中不存在的图层 ${layerId}` });
+                    continue;
+                }
+                createdLayerIds.push(layerId);
+                createdLayerBuckets.set(layerId, bucket as '文案' | '图标' | '图片');
+            }
             // 显式主体图层 id：只收 role==='main-image' 的块（来自布局规格声明，不靠几何猜测），
             // 供画面质量评分判定主体占比/对比等（design-surface-snapshot-normalizer 不臆断主体）。
             const subjectLayerIds: number[] = [];
@@ -3295,9 +3557,12 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 }
             }
             let stageGroupResult: any = null;
+            let stageGroupId: number | undefined;
+            let stageSubgroupIds: Partial<Record<'文案' | '图标' | '图片', number>> = {};
             if (stageGroupName && errors.length === 0 && createdLayerIds.length > 0) {
                 stageGroupResult = await executeToolCall('createGroup', { groupName: stageGroupName }, options);
                 const groupId = inferFocusLayerId('createGroup', {}, stageGroupResult);
+                stageGroupId = groupId;
                 stageRefreshActions.push({ action: 'createStageGroup', groupName: stageGroupName, groupId, success: stageGroupResult?.success !== false });
                 if (!groupId || stageGroupResult?.success === false) {
                     errors.push({ block: stageGroupName, role: 'stage-group', error: stageGroupResult?.error || 'createGroup failed' });
@@ -3369,6 +3634,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                             warnings.push(`子组「${bucket}」创建失败，该类图层将直接放在屏组内：${subgroupResult?.error || 'createGroup failed'}`);
                         }
                     }
+                    stageSubgroupIds = subgroupIds;
                     for (const layerId of createdLayerIds) {
                         const bucket = createdLayerBuckets.get(layerId);
                         const targetGroupId = (bucket && subgroupIds[bucket]) || groupId;
@@ -3455,7 +3721,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 occluderLayerName?: string;
                 message: string;
             }> = [];
-            if (errors.length === 0 && created.length > 0) {
+            if (errors.length === 0 && createdLayerIds.length > 0) {
                 const { detectFullLayerOcclusions } = await import('../../shared/layer-occlusion');
                 const hierarchyAfter = await executeToolCall('getLayerHierarchy', { includeBounds: true }, options);
                 if (hierarchyAfter?.success !== false) {
@@ -3539,7 +3805,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     });
                 }
             }
-            if (created.length > 0 && !layoutFinalWriteHistoryStateRef) {
+            if (createdLayerIds.length > 0 && !layoutFinalWriteHistoryStateRef) {
                 // 超大文档的完整层级读取可能失败；视觉身份不能因此永久卡死。
                 // 仅在缺最终 Host 版本时补一次轻量文档读取。结构复核 finding 保留，
                 // 但局部截图仍可与这个最终版本做同文档、同 historyState 的精确绑定。
@@ -3587,7 +3853,13 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     : { x: 0, y: 0, width: canvas.width, height: canvas.height });
             const suggestedObservation = {
                 toolName: 'getCanvasSnapshot',
-                params: { region: suggestedObservationRegion, maxSize: 1600 },
+                params: {
+                    region: suggestedObservationRegion,
+                    maxSize: 1600,
+                    ...(layoutFinalWriteHistoryStateRef?.documentId
+                        ? { expectedDocumentId: layoutFinalWriteHistoryStateRef.documentId }
+                        : {})
+                },
                 reason: screenRegion || isLongCanvas
                     ? '长文档必须复核本次阶段/内容并集的局部高分辨率画面；全页缩略图只可用于导航，不能判定设计质量。'
                     : '读取本次布局后的完整画面，确认主体、文字层级和可读性。'
@@ -3603,7 +3875,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 error?: string;
             } | undefined;
             let postWriteSnapshot: any;
-            if (created.length > 0) {
+            if (createdLayerIds.length > 0) {
                 // renderLayout 是复合写操作。布局完成后由 Harness 主动读取一次本次区域，
                 // 直接复用 Agent 的图像观察通道，避免再花一轮让模型决定“要不要截图”。
                 // 这只负责取得真实像素；审美判断仍由视觉模型完成，抓图成功不等于质量通过。
@@ -3718,7 +3990,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 status: qualityState === 'passed' ? 'completed' : qualityState,
                 qualityState,
                 continuationRequired: qualityState === 'needs_repair' || qualityState === 'needs_review',
-                requiresVisualReview: created.length > 0,
+                requiresVisualReview: createdLayerIds.length > 0,
                 suggestedObservation,
                 postWriteObservation,
                 historyStateRef: postWriteObservation?.historyStateRef,
@@ -3741,6 +4013,19 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 grid: solveOutcome.grid,
                 occlusionFindings: occlusionFindings.length > 0 ? occlusionFindings : undefined,
                 stageGroupName: stageGroupName || undefined,
+                layerStructureReceipt: stageGroupId
+                    ? {
+                        version: 'render-layout-layer-structure/v1',
+                        groupName: stageGroupName,
+                        groupId: stageGroupId,
+                        subgroupIds: stageSubgroupIds,
+                        ownedLayerIds: ownedLayers
+                            .map((entry: any) => Number(entry?.layerId))
+                            .filter((layerId: number) => Number.isInteger(layerId) && layerId > 0),
+                        semanticNamesRequired: true,
+                        verifiedBy: 'getLayerHierarchy'
+                    }
+                    : undefined,
                 ownerReceipt: {
                     version: 'render-layout-owner/v1',
                     stageId: stageId || undefined,
@@ -3757,13 +4042,13 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     sellingPointTreatment: style.sellingPointTreatment
                 },
                 message: `${qualityState === 'passed' ? '已完成当前版式写入' : qualityState === 'failed' ? '当前版式写入存在执行失败' : '已写入当前版式，但必须继续复核/修订'}：`
-                    + `按${regionMode ? '二维区域' : '垂直堆叠'}规格建 ${created.length} 个图层`
+                    + `按${regionMode ? 'Agent 声明的二维区域' : 'Agent 声明的垂直结构'}建 ${created.length} 个图层`
                     + '（坐标与图层顺序由布局引擎确定，未手填）'
                     + `${errors.length ? `，${errors.length} 个失败` : ''}`
                     + `${qualityFindings.length ? `，${qualityFindings.length} 个质量发现` : ''}`
                     + `${warnings.length ? `；${warnings.join('；')}` : ''}`
             };
-            if (created.length > 0) executedToolsInSession.push('renderLayout');
+            if (createdLayerIds.length > 0) executedToolsInSession.push('renderLayout');
             // ToolLogger 只保留结构化收据；真实像素仍随返回值进入 Agent 视觉通道，
             // 避免同一张 base64 同时在内部截图日志和 renderLayout 日志中重复常驻内存。
             const resultForToolLog = postWriteSnapshot
@@ -3782,39 +4067,68 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
         // 主体感知缩放：模型只声明「哪层主体填哪个区域到什么程度」，缩放/位移由引擎求解，
         // 执行复用 alignToReference（缩放+主体中心对齐一步完成）。把"合适的视觉大小"
         // 从图框适配升级为主体适配（留白多的图不再看起来太小）。
+        // getSubjectBounds 默认不再走 Photoshop「选择主体」：省略 method（或 method="auto"）时按
+        // 素材属性 → 透明边界 → 本地分割 → 整框 逐级求；显式 alpha / smart 仍直达插件。
+        if (toolName === 'getSubjectBounds' && params?.method !== 'alpha' && params?.method !== 'smart') {
+            const subjectLayerId = Number(params?.layerId);
+            if (!Number.isFinite(subjectLayerId) || subjectLayerId <= 0) {
+                result = { success: false, error: 'getSubjectBounds 需要 layerId：先用 getLayerHierarchy 或 placeImage 结果确定目标图层 id。' };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
+            const layerBoundsResult = await executeToolCall('getLayerBounds', { layerId: subjectLayerId }, options);
+            const frameRect = toSubjectRect(layerBoundsResult?.boundsNoEffects || layerBoundsResult?.bounds);
+            if (layerBoundsResult?.success === false || !frameRect) {
+                result = { success: false, error: `getSubjectBounds 读取图层边界失败：${layerBoundsResult?.error || '未返回 bounds'}。` };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
+            const docInfo = await executeToolCall('getDocumentInfo', {}, options);
+            const resolved = await resolveLayerSubjectBounds({
+                layerId: subjectLayerId,
+                frameBounds: frameRect,
+                requestedMethod: 'auto',
+                documentId: readResultDocumentId(docInfo),
+                options
+            });
+            result = {
+                success: true,
+                data: {
+                    bounds: resolved.bounds,
+                    method: resolved.method,
+                    confidence: resolved.confidence,
+                    ...(resolved.relativeBox ? { relativeBox: resolved.relativeBox } : {})
+                },
+                method: resolved.method,
+                confidence: resolved.confidence,
+                note: resolved.note,
+                warnings: resolved.warnings,
+                message: `主体框：${resolved.method}（置信度 ${resolved.confidence}）—— ${resolved.note}`
+            };
+            executedToolsInSession.push(toolName);
+            toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+            return result;
+        }
+
         if (toolName === 'fitLayerSubjectToRegion') {
             const {
                 computeSubjectFitToRegion,
                 verifySubjectFitResult
             } = await import('../../shared/subject-fit');
-            const { getSmartScalingPreset } = await import('../../shared/design-smart-scaling-policy');
             const fitLayerId = Number(params.layerId);
             if (!Number.isFinite(fitLayerId) || fitLayerId <= 0) {
                 result = { success: false, error: 'fitLayerSubjectToRegion 需要 layerId：先用 getLayerHierarchy 或 placeImage 结果确定目标图层 id。' };
                 toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
                 return result;
             }
-            const requestedMethod = params.method === 'alpha' ? 'alpha' : 'smart';
-            let methodUsed: string = requestedMethod;
-            let subjectResult = await executeToolCall('getSubjectBounds', { layerId: fitLayerId, method: requestedMethod }, options);
-            // 降级判据不再匹配错误措辞（2026-08-06）。原条件要求 error 里出现「不支持」或「smart」，
-            // 而真机失败是「处理超时：Photoshop 可能有弹窗未关闭」——两个词都不含，降级被挡在门外，
-            // 整个工具直接失败。smart 走 Photoshop 的选择主体（依赖 PS 状态与 AI 能力，会超时、会弹窗），
-            // alpha 是纯像素边界计算（不依赖 PS 智能功能，稳定得多）：
-            // 只要 smart 没拿到结果，无论什么原因都该退到 alpha，而不是让整条链停在这。
-            if (requestedMethod === 'smart'
-                && (subjectResult?.success === false || !subjectResult?.data?.bounds)) {
-                methodUsed = 'alpha';
-                subjectResult = await executeToolCall('getSubjectBounds', { layerId: fitLayerId, method: 'alpha' }, options);
-            }
-            if (subjectResult?.success === false || !subjectResult?.data?.bounds) {
-                result = {
-                    success: false,
-                    error: `fitLayerSubjectToRegion 读取主体失败（method=${methodUsed}）：${subjectResult?.error || '未返回主体边界'}。可先把图层转换为智能对象，或用 getCanvasSnapshot 人工确认主体后改用 transformLayer。`
-                };
-                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
-                return result;
-            }
+            // 主体框不再默认依赖 Photoshop「选择主体」（用户 2026-08-18：复杂场景不可靠、不想绑死 Adobe 智能功能）：
+            // 先读图层外框，再按「素材属性 → 透明边界 → 本地分割 → （显式才用）PS 选择主体 → 整框」逐级求主体，
+            // 每级带置信度；缩放后主体框按相对框投影，不再做第二次检测。
+            const requestedMethod: 'auto' | 'alpha' | 'smart' = params.method === 'alpha'
+                ? 'alpha'
+                : params.method === 'smart'
+                    ? 'smart'
+                    : 'auto';
             const layerBoundsResult = await executeToolCall('getLayerBounds', { layerId: fitLayerId }, options);
             const frameBounds = layerBoundsResult?.boundsNoEffects || layerBoundsResult?.bounds;
             if (layerBoundsResult?.success === false || !frameBounds) {
@@ -3822,33 +4136,25 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
                 return result;
             }
+            const frameRect = toSubjectRect(frameBounds);
+            if (!frameRect) {
+                result = { success: false, error: 'fitLayerSubjectToRegion 读取图层边界失败：bounds 不是有效矩形。' };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
             const docInfo = await executeToolCall('getDocumentInfo', {}, options);
-            const designTypeValues = [
-                'main-image', 'detail-page', 'sku', 'reference-replication', 'poster', 'banner', 'generic'
-            ];
-            const assetRoleValues = [
-                'product', 'model', 'detail', 'scene', 'icon', 'background', 'group', 'unknown'
-            ];
-            const intentValues = [
-                'hero', 'supporting', 'thumbnail', 'full-bleed', 'fit-slot', 'compare-grid'
-            ];
+            const resolvedSubject = await resolveLayerSubjectBounds({
+                layerId: fitLayerId,
+                frameBounds: frameRect,
+                requestedMethod,
+                documentId: readResultDocumentId(docInfo),
+                options
+            });
+            const methodUsed = resolvedSubject.method;
+            const subjectResult = { data: { bounds: resolvedSubject.bounds } };
             const anchorValues = [
                 'center', 'top-center', 'bottom-center', 'left-center', 'right-center'
             ];
-            const designType = designTypeValues.includes(String(params.designType))
-                ? String(params.designType)
-                : 'generic';
-            const assetRole = assetRoleValues.includes(String(params.assetRole))
-                ? String(params.assetRole)
-                : 'unknown';
-            const intent = intentValues.includes(String(params.intent))
-                ? String(params.intent)
-                : undefined;
-            const preset = getSmartScalingPreset({
-                designType: designType as any,
-                assetRole: assetRole as any,
-                ...(intent ? { intent: intent as any } : {})
-            });
             const explicitFillRatio = Number(params.subjectFillRatio);
             const hasExplicitFillRatio = Number.isFinite(explicitFillRatio)
                 && explicitFillRatio > 0
@@ -3861,10 +4167,24 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 ? explicitFillRatio
                 : hasRefFill
                     ? refFill
-                    : preset.targetFill;
-            const resolvedAnchor = anchorValues.includes(String(params.anchor))
-                ? String(params.anchor)
-                : preset.anchor;
+                    : undefined;
+            if (resolvedFillRatio === undefined) {
+                result = {
+                    success: false,
+                    error: 'fitLayerSubjectToRegion 缺少主体视觉占比：请由 Agent 显式给 subjectFillRatio，或传入已选参考的 referenceComposition.subjectFillRatioForFullCanvas。Harness 不再按品类套用内置占比。'
+                };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
+            if (!anchorValues.includes(String(params.anchor))) {
+                result = {
+                    success: false,
+                    error: 'fitLayerSubjectToRegion 缺少明确 anchor：请根据本稿构图声明 center / top-center / bottom-center / left-center / right-center。Harness 不替 Agent 选择视觉重心。'
+                };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
+            const resolvedAnchor = String(params.anchor);
             const fitPlan = computeSubjectFitToRegion({
                 subjectBounds: subjectResult.data.bounds,
                 layerBounds: frameBounds,
@@ -3872,7 +4192,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 subjectFillRatio: resolvedFillRatio,
                 maxUpscaleRatio: params.maxUpscaleRatio,
                 anchor: resolvedAnchor as any,
-                visualBiasY: preset.visualBiasY,
+                visualBiasY: 0,
                 canvas: (docInfo?.width && docInfo?.height)
                     ? { width: Number(docInfo.width), height: Number(docInfo.height) }
                     : undefined
@@ -3899,19 +4219,28 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 && !Array.isArray(alignResult.acceptance)
                 ? alignResult.acceptance
                 : undefined;
-            const postSubjectResult = await executeToolCall(
-                'getSubjectBounds',
-                { layerId: fitLayerId, method: methodUsed },
-                options
-            );
             const postLayerBoundsResult = await executeToolCall(
                 'getLayerBounds',
                 { layerId: fitLayerId },
                 options
             );
-            const actualSubjectBounds = postSubjectResult?.data?.bounds;
             const actualFrameBounds = postLayerBoundsResult?.boundsNoEffects
                 || postLayerBoundsResult?.bounds;
+            // 读回：alpha 重新量像素（便宜且确定）；其余按相对框投影到新外框——等比缩放 + 平移下投影是精确的，
+            // 不需要（也不该）再跑一次识别。
+            let actualSubjectBounds: any;
+            let postSubjectError = '';
+            const actualFrameRect = toSubjectRect(actualFrameBounds);
+            if (methodUsed === 'alpha') {
+                const postSubjectResult = await executeToolCall('getSubjectBounds', { layerId: fitLayerId, method: 'alpha' }, options);
+                actualSubjectBounds = postSubjectResult?.data?.bounds;
+                postSubjectError = postSubjectResult?.error || '';
+            } else if (actualFrameRect && resolvedSubject.relativeBox) {
+                const { projectRelativeBoxOntoFrame } = await import('../../shared/subject-box-from-pixels');
+                actualSubjectBounds = withSize(projectRelativeBoxOntoFrame(resolvedSubject.relativeBox, actualFrameRect));
+            } else {
+                postSubjectError = postLayerBoundsResult?.error || '未返回图层边界';
+            }
             const geometryVerification = actualSubjectBounds
                 ? verifySubjectFitResult({
                     actualSubjectBounds,
@@ -3924,11 +4253,15 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 : {
                     status: 'needs_review' as const,
                     warnings: [
-                        `缩放已经写入，但同 layerId 主体读回失败：${postSubjectResult?.error || '未返回主体边界'}。`
+                        `缩放已经写入，但同 layerId 主体读回失败：${postSubjectError || '未返回主体边界'}。`
                     ],
                     limitation: '无法完成几何验收；禁止把写入成功声明为视觉质量通过。'
                 };
             const combinedWarnings = [
+                ...resolvedSubject.warnings,
+                ...(resolvedSubject.confidence === 'low'
+                    ? [`主体框置信度低（${resolvedSubject.note}）`]
+                    : []),
                 ...fitPlan.warnings,
                 ...(Array.isArray(geometryVerification.warnings)
                     ? geometryVerification.warnings
@@ -3937,12 +4270,15 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             result = {
                 success: true,
                 methodUsed,
+                subjectDetection: {
+                    method: resolvedSubject.method,
+                    confidence: resolvedSubject.confidence,
+                    note: resolvedSubject.note,
+                    ...(resolvedSubject.relativeBox ? { relativeBox: resolvedSubject.relativeBox } : {})
+                },
                 appliedScalePercent: fitPlan.alignParams.scalePercent,
-                fitSource: hasExplicitFillRatio ? 'explicit' : 'design-preset',
+                fitSource: hasExplicitFillRatio ? 'agent_declared' : 'reference_measured',
                 designSemantics: {
-                    designType,
-                    assetRole,
-                    ...(intent ? { intent } : {}),
                     subjectFillRatio: fitPlan.resolved.subjectFillRatio,
                     anchor: fitPlan.resolved.anchor,
                     visualBiasY: fitPlan.resolved.visualBiasY
@@ -3996,6 +4332,17 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             }
             result = await analyzeBridge(sourceFilePath);
             if (result?.success) executedToolsInSession.push(toolName);
+            // 真机 2026-08-17（两次）：模型把设计源 PSD 里读到的文字（含上一稿编的「防滑硅胶」）当作
+            // 「产品事实（来自详情页真实内容）」抄进新稿。描述里写过不管用——把提醒直接放进结果对象。
+            if (result && typeof result === 'object' && !Array.isArray(result) && result.success !== false) {
+                result = {
+                    ...result,
+                    textProvenance: {
+                        kind: 'design_copy_not_product_fact',
+                        notice: '本文件里的文字是上一稿的设计文案，不是产品事实来源：其中的功能 / 材质 / 工艺 / 参数类描述在写进新稿前，必须先在产品图上核对（analyzeAssetContent / analyzeProjectContactSheetOverview）或经用户确认；画面看不出、用户没说过的一律不写。'
+                    }
+                };
+            }
             toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
             return result;
         }
@@ -4238,19 +4585,35 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 };
             }
 
-            if (toolName === 'smartSave' || (toolName === 'saveDocument' && !hasValue(params?.path))) {
+            if (toolName === 'smartSave'
+                || (toolName === 'saveDocument' && !hasValue(params?.path))) {
                 const projectPath = await getCurrentProjectPath();
                 if (!projectPath) {
                     return {
                         success: false,
                         error: `自动化执行已阻止 ${toolName} 弹窗：未设置当前项目路径`,
-                        suggestion: '请先导入项目，或使用 saveDocument(path) 显式传路径，或设置 allowDialog=true'
+                        suggestion: toolName === 'smartSave'
+                            ? '请先导入项目，再由宿主在项目内部建立恢复点'
+                            : '请先导入项目，或使用 saveDocument(path) 显式传路径，或设置 allowDialog=true'
                     };
                 }
 
                 const docName = await getCurrentDocumentName();
-                const requestedFormat = normalizeNoDialogSaveFormat(params?.format || params?.exportFormat);
-                const saveRoot = await resolveNoDialogSaveRoot(projectPath, params?.projectSubdir);
+                if (!docName) {
+                    return {
+                        success: false,
+                        error: `${toolName} 无法取得当前文档名称，未生成通用工程文件名`,
+                        suggestion: toolName === 'smartSave'
+                            ? '先确认活动文档后再建立恢复点'
+                            : '先确认活动文档名称，或为 saveDocument 显式传入用户可读的完整 path'
+                    };
+                }
+                const requestedFormat = toolName === 'smartSave'
+                    ? normalizeRecoverySaveFormat(params?.exportFormat)
+                    : normalizeNoDialogSaveFormat(params?.format);
+                const saveRoot = toolName === 'smartSave'
+                    ? await resolveProjectRecoveryRoot(projectPath)
+                    : await resolveNoDialogSaveRoot(projectPath, params?.projectSubdir);
                 if (saveRoot.error) {
                     return {
                         success: false,
@@ -4258,7 +4621,9 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         suggestion: '请确认项目路径可写，或使用 saveDocument(path) 显式传入完整保存路径'
                     };
                 }
-                const autoPath = buildNoDialogSavePath(saveRoot.directory, docName, requestedFormat);
+                const autoPath = toolName === 'smartSave'
+                    ? buildRecoverySavePath(saveRoot.directory, docName, requestedFormat)
+                    : buildNoDialogSavePath(saveRoot.directory, docName, requestedFormat);
                 const saveParams: Record<string, any> = {
                     path: autoPath,
                     format: requestedFormat
@@ -4313,7 +4678,20 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 );
 
                 if (saveResult?.success !== false) {
-                    executedToolsInSession.push('saveDocument');
+                    executedToolsInSession.push(toolName);
+                    if (toolName === 'smartSave') {
+                        return {
+                            ...saveResult,
+                            success: true,
+                            message: `已建立项目内部恢复点：${autoPath}`,
+                            recoveryPath: autoPath,
+                            internalCheckpoint: true,
+                            countsAsDelivery: false,
+                            countsAsTaskProgress: false,
+                            countsAsObservation: false,
+                            redirectedFrom: toolName
+                        };
+                    }
                     return {
                         ...saveResult,
                         success: true,
@@ -4326,97 +4704,42 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 return saveResult;
             }
         }
-        // placeImage 自动选图 + 路径预处理
+        // placeImage 只接受 Agent 已明确选中的来源；候选发现与比较必须先回到主循环。
         let finalParams = params;
         if (toolName === 'placeImage') {
-            finalParams = await autoResolvePlaceImageSource(finalParams);
-            if (finalParams?.__autoSelectBlocked) {
-                const decision = finalParams.__autoSelectDecision || {};
-                const code = String(decision.code || 'candidate_confirmation_required');
-                const errorByCode: Record<string, string> = {
-                    explicit_source_required: 'placeImage 需要明确图片来源；当前没有执行素材扫描或 Photoshop 写入。',
-                    asset_selection_service_unavailable: '素材选择服务当前不可用；没有执行 Photoshop 写入。',
-                    selection_requirement_required: '自动选图缺少明确的设计需求；没有执行 Photoshop 写入。',
-                    no_asset_candidate: '没有找到可用素材候选；没有执行 Photoshop 写入。',
-                    design_role_required: '自动置入缺少结构化 designRole，无法判断素材在画面中的职责。',
-                    visual_selection_evidence_required: '候选只有文件名/路径等元数据，没有真实视觉观察，不能自动置入。',
-                    candidate_requires_recomposition: '最佳候选需要去底或重组合成，不能作为原始矩形图片直接置入。',
-                    candidate_role_mismatch: '最佳候选只适合作辅助素材，与当前设计角色不匹配。',
-                    candidate_unsuitable: '最佳候选被视觉判断为不适合当前用途。',
-                    candidate_direct_use_unverified: '最佳候选是否适合直接使用仍不确定。',
-                    candidate_score_below_threshold: '最佳候选没有达到自动置入最低分。',
-                    candidate_margin_below_threshold: '前两名候选过于接近，无法可靠自动选择。',
-                    candidate_confirmation_required: '已返回候选，等待明确选择；没有执行 Photoshop 写入。'
-                };
+            finalParams = resolveExplicitPlaceImageSource(finalParams);
+            if (finalParams?.__placeImageSourceBlocked) {
+                const decision = finalParams.__placeImageSourceDecision || {};
                 const result = {
                     success: false,
-                    error: errorByCode[code] || errorByCode.candidate_confirmation_required,
-                    code,
+                    error: 'placeImage 需要 Agent 明确选择图片来源；当前没有扫描候选，也没有写入 Photoshop。',
+                    code: 'explicit_source_required',
                     recoverable: true,
                     noMutation: true,
                     selectionRequired: true,
-                    requirement: decision.requirement,
-                    designRole: decision.designRole,
-                    placementIntent: decision.placementIntent,
-                    mode: decision.mode,
-                    strictDeterministic: decision.strictDeterministic,
-                    topScore: decision.topScore,
-                    margin: decision.margin,
-                    selectionAuthority: decision.selectionAuthority,
-                    autoPlacementEligible: decision.autoPlacementEligible === true,
-                    thresholds: decision.thresholds,
-                    candidates: decision.candidates || [],
-                    suggestion: code === 'candidate_requires_recomposition'
-                        ? '先明确选择该素材并完成去底/蒙版与合成计划，再用显式 source 置入；不要用 force 绕过合成。'
-                        : '使用 recommendAssets 观察候选并传入明确 filePath；模型填写 force/source/reason 不能替代视觉证据或 Harness receipt。'
+                    searchedCandidates: decision.searchedCandidates === true,
+                    selectedCandidate: decision.selectedCandidate === true,
+                    photoshopWriteAttempted: decision.photoshopWriteAttempted === true,
+                    nextTool: decision.nextTool,
+                    suggestion: '先用 recommendAssets 查看候选，再由 Agent 选择并把明确的 filePath 传给 placeImage。'
                 };
                 toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
                 return result;
             }
         }
 
-        // placeImage 预处理：优先将路径读取为 Base64，规避 UXP 对本地路径/URI 的访问限制
+        // 项目内显式路径直接交给 UXP 创建会话 token。历史上这里先转为 Base64，
+        // 9–12MB 素材会膨胀成超大 JSON 文本帧，实机多次触发 WebSocket UTF-8 帧错误；
+        // 路径直传已经由 UXP 的 getEntryWithUrl + 真实 placeImage 读回验证。
         if (toolName === 'placeImage' && finalParams?.filePath && !finalParams?.imageData && !finalParams?.fileToken) {
-            try {
-                const designEcho = (window as any).designEcho;
-                if (designEcho?.readImageBase64) {
-                    const projectPath = await getCurrentProjectPath();
-                    const filePathCandidates = normalizePlaceImageFilePathCandidates(finalParams.filePath, projectPath);
-                    let usedPath = '';
-                    let imageBase64 = '';
-                    let readMeta: { mimeType?: string; assetId?: string; checksum?: string; byteLength?: number } = {};
-
-                    for (const candidatePath of filePathCandidates) {
-                        const readResult = await designEcho.readImageBase64(candidatePath);
-                        const extracted = extractBase64FromReadResult(readResult);
-                        if (extracted) {
-                            usedPath = candidatePath;
-                            imageBase64 = extracted;
-                            readMeta = extractReadMeta(readResult);
-                            break;
-                        }
-                    }
-
-                    if (imageBase64) {
-                        const imageFormat = resolveImageFormat(readMeta.mimeType, usedPath || finalParams.filePath);
-                        finalParams = {
-                            ...finalParams,
-                            imageData: imageBase64,
-                            imageFormat,
-                            filePath: undefined,
-                            sourceAssetId: readMeta.assetId,
-                            sourceChecksum: readMeta.checksum,
-                            sourceByteLength: readMeta.byteLength,
-                            sourcePath: usedPath || finalParams.filePath
-                        };
-                        console.log('[placeImage] 已从文件路径转为 Base64 置入:', usedPath || finalParams.filePath, `assetId=${readMeta.assetId || 'n/a'}`);
-                    } else {
-                        console.warn('[placeImage] Base64 预读失败，将尝试原始路径:', filePathCandidates);
-                    }
-                }
-            } catch (e) {
-                console.warn('[placeImage] 读取 Base64 失败，将尝试原路径:', e);
-            }
+            const projectPath = await getCurrentProjectPath();
+            const filePathCandidates = normalizePlaceImageFilePathCandidates(finalParams.filePath, projectPath);
+            const resolvedFilePath = filePathCandidates[0] || String(finalParams.filePath);
+            finalParams = {
+                ...finalParams,
+                filePath: resolvedFilePath,
+                sourcePath: finalParams.sourcePath || resolvedFilePath
+            };
         }
 
         // replaceLayerContent 预处理：支持 filePath 输入并在 Agent 侧转成 imageBase64
@@ -4462,6 +4785,8 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
         const timeout = getToolTimeout(toolName, finalParams);
         const acceptancePolicy = getToolAcceptanceCapturePolicy(toolName, finalParams);
         const collectAcceptance = acceptancePolicy.collect && shouldCollectAcceptanceVerification(toolName, finalParams);
+        dispatchedPhotoshopParams = finalParams;
+        dispatchedPhotoshopAcceptancePolicy = acceptancePolicy;
 
         // 写工具执行前验证当前文档：防止用户中途切换/关闭文档导致操作错误文档
         // Agent 启动时的文档快照可能已过期，这里在执行前做一次轻量级实时检查
@@ -4492,13 +4817,49 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 signal: options.signal
             })
             : undefined;
+        dispatchedPhotoshopAcceptanceBefore = acceptanceBefore;
         result = await sendToPluginWithCancellation(uxpToolName, finalParams, timeout, options, toolName);
         if (requiresPhotoshopOperationReadback(result)) {
             result = await reconcileOperationSpecificPhotoshopReadback(
                 toolName,
                 finalParams,
-                result
+                result,
+                {
+                    acceptanceBefore,
+                    acceptancePolicy
+                }
             );
+        }
+        if (toolName === 'listDocuments'
+            && result && typeof result === 'object' && !Array.isArray(result)) {
+            result = enrichPhotoshopDocumentInventory(
+                result,
+                useAppStore.getState().currentProject?.path
+            );
+        }
+        // 文档性质提示（2026-08-17 真机：模型把一张 AI 生图结果 png 当成「主图文档」直接往上排字）：
+        // 按文件名扩展名 + 图层数判断「这是设计文件还是一张图片」，附在结果里给模型看，只提示不拦截。
+        if (toolName === 'getDocumentInfo'
+            && result && typeof result === 'object' && !Array.isArray(result)
+            && result.success !== false
+            && result.document && typeof result.document === 'object') {
+            const document = result.document as Record<string, unknown>;
+            result = {
+                ...result,
+                documentNature: describeDesignDocumentNature({
+                    name: document.name,
+                    layerCount: document.layerCount,
+                    width: document.width,
+                    height: document.height
+                })
+            };
+        }
+        // 记住「这一层来自哪个文件」：主体框以后按素材算，不必在 Photoshop 里识别。
+        if ((toolName === 'placeImage' || toolName === 'replaceLayerContent' || toolName === 'replaceSmartObjectContents' || toolName === 'replaceImagePlaceholder')
+            && result && typeof result === 'object' && result.success !== false) {
+            const placedLayerId = result.layerId ?? result.layer?.id ?? result.data?.layerId ?? result.newLayerId ?? finalParams?.layerId ?? finalParams?.targetLayerId;
+            const sourcePath = finalParams?.sourcePath || finalParams?.filePath || params?.filePath;
+            rememberLayerSourceFile(placedLayerId, sourcePath, readResultDocumentId(result));
         }
         console.log(`[ToolCall] 结果:`, result);
 
@@ -4609,8 +4970,12 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             );
             const reconciledResult = await reconcileOperationSpecificPhotoshopReadback(
                 toolName,
-                params,
-                unknownResult
+                dispatchedPhotoshopParams,
+                unknownResult,
+                {
+                    acceptanceBefore: dispatchedPhotoshopAcceptanceBefore,
+                    acceptancePolicy: dispatchedPhotoshopAcceptancePolicy
+                }
             );
             toolLogger.logToolCall(
                 toolName,
@@ -4640,14 +5005,115 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
  * 统一 Tool 分发边界同时签发对象身份来源。
  * 复合 Skill 只有保留这里返回的原始 result 对象，Runtime 才会承认其嵌套原子调用。
  */
+/** 瞬态忙碌的退避间隔：读类观察失败先等 1.5s 再试，仍失败等 3s 最后一试。 */
+const TRANSIENT_READ_RETRY_DELAYS_MS: readonly number[] = [1500, 3000];
+
+function waitForRetry(delayMs: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 export async function executeToolCall(
     toolName: string,
     params: any,
     options: ToolCallExecutionOptions = {}
 ): Promise<any> {
-    const result = await executeToolCallImpl(toolName, params, options);
+    let result = await executeToolCallImpl(toolName, params, options);
+    // 瞬态重试纪律：只有「只读观察」类工具的短时忙碌失败才自动退避重试（真机病历 [508][509][510]：
+    // "Photoshop 可能正忙" 被当普通失败烧熔断计数，三连即 no_progress 判停）。
+    // 写类 / 导出 / 未知类绝不自动重放——重复副作用交给未知写状态 reconciliation 处理。
+    if (
+        result?.success === false
+        && !result?.cancelled
+        && isTransientPhotoshopBusyFailure(result)
+        && classifyAgentToolExecution(toolName, params) === 'read_only_observation'
+    ) {
+        let retryCount = 0;
+        for (const delayMs of TRANSIENT_READ_RETRY_DELAYS_MS) {
+            if (options.signal?.aborted) {
+                break;
+            }
+            await waitForRetry(delayMs);
+            if (options.signal?.aborted) {
+                break;
+            }
+            retryCount += 1;
+            const retryResult = await executeToolCallImpl(toolName, params, options);
+            if (retryResult?.success !== false) {
+                result = retryResult;
+                if (result && typeof result === 'object') {
+                    result.transientRetryCount = retryCount;
+                }
+                break;
+            }
+            result = retryResult;
+            if (!isTransientPhotoshopBusyFailure(retryResult)) {
+                break;
+            }
+        }
+        if (result?.success === false && result && typeof result === 'object' && retryCount > 0) {
+            result.transientRetriesExhausted = true;
+            result.transientRetryCount = retryCount;
+        }
+    }
     markExecutedToolResultProvenance(toolName, result);
+    // 任务卡证据账本：每次成功调用记一笔（观察 / 写入 / 问用户），供打勾核对；失败不记。
+    try {
+        const store = await import('./design-workshop/design-task-card.store');
+        store.noteToolForTaskCardEvidence(options.taskCardScope || '', toolName, params, result);
+    } catch {
+        // 账本失败不影响工具结果
+    }
+    // 自主沉淀 P1：导出交付 = 正向行为结局，回写本次运行关联的观察候选并跑保守自动晋升。
+    // fire-and-forget：账本 IO 失败只留 warning，绝不影响导出结果。
+    if (
+        result?.success !== false
+        && classifyAgentToolExecution(toolName, params) === 'save_export'
+        && options.taskCardScope
+    ) {
+        const projectPath = useAppStore.getState().currentProject?.path;
+        import('./design-workshop/design-learning.store')
+            .then((learning) => learning.recordDesignRunDeliveryOutcome(
+                (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args),
+                projectPath,
+                options.taskCardScope
+            ))
+            .catch(() => undefined);
+    }
     return result;
+}
+
+// 测试桥（仅 URL 带 designechoChatTestBridge=1 的调试窗口）：让真机验收脚本能不经模型直接调用任一工具，
+// 用于车间 / 引擎类工具的确定性验证与画廊评测。生产窗口不安装。
+try {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search || '').get('designechoChatTestBridge') === '1') {
+        (window as any).__DESIGNECHO_TOOL_TEST_BRIDGE__ = {
+            executeToolCall: (toolName: string, params: any, options?: ToolCallExecutionOptions) => executeToolCall(toolName, params, options || {}),
+            // 技能（sku-batch 等）走技能执行器而非 Photoshop MCP：给车间验收脚本一个不经模型直接跑一站的入口
+            executeSkill: async (skillId: string, params: any) => {
+                const { executeSkillTool } = await import('./skill-executors/skill-tools');
+                const project = useAppStore.getState().currentProject;
+                const steps: any[] = [];
+                const { createGuardedAtomicToolExecutor } = await import('../../shared/agent-skill-atomic-tool-execution');
+                const result = await executeSkillTool(skillId, params || {}, {
+                    callbacks: { onStep: (step: any) => steps.push({ kind: step?.kind, title: step?.title, detail: step?.detail, status: step?.status }) },
+                    // 与手动色卡面板同一做法：测试桥自己签发原子工具执行边界（不经模型）
+                    guardedAtomicToolExecutor: createGuardedAtomicToolExecutor({
+                        userRequest: String(params?.userInput || `测试桥执行 ${skillId}`),
+                        executeTool: (toolName: string, toolParams: any) => executeToolCall(toolName, toolParams, {})
+                    }),
+                    context: {
+                        projectContext: project ? { projectId: project.id, projectPath: project.path } : undefined,
+                        conversationHistory: [],
+                        userInput: String(params?.userInput || ''),
+                        testBridge: true
+                    }
+                });
+                return { ...(result || {}), __steps: steps.slice(-40) };
+            }
+        };
+    }
+} catch {
+    // 非浏览器环境（单元测试）忽略
 }
 
 /**
@@ -4711,13 +5177,27 @@ async function prepareProjectContactSheetInput(params: any, designEcho: any): Pr
             maxDepth: params.maxDepth || 5,
             generateThumbnails: false
         });
-        images = (scan?.files || [])
-            .filter((file: any) => file?.type === 'image' && file?.path)
-            .slice(0, params.maxImages || 40)
+        const scannedImages = (scan?.files || [])
+            .filter((file: any) => file?.type === 'image' && file?.path);
+        images = selectDiverseProjectVisualCandidates(
+            scannedImages.map((file: any) => {
+                const relativePath = String(file.relativePath || file.name || '').replace(/\\/g, '/');
+                const segments = relativePath.split('/').filter(Boolean);
+                return {
+                    file,
+                    path: file.path,
+                    relativePath,
+                    folderType: segments.length > 1 ? segments[segments.length - 2] : undefined,
+                    imageType: file.imageType
+                };
+            }),
+            params.maxImages || 40
+        )
             .map((file: any) => ({
-                path: file.path,
-                relativePath: file.relativePath || file.name,
-                labelHint: file.name
+                path: file.file.path,
+                relativePath: file.relativePath || file.file.relativePath || file.file.name,
+                labelHint: file.file.name,
+                role: file.folderType
             }));
     }
 
@@ -4727,7 +5207,7 @@ async function prepareProjectContactSheetInput(params: any, designEcho: any): Pr
 /**
  * 执行资源工具
  */
-async function executeResourceTool(toolName: string, params: any): Promise<any> {
+async function executeResourceTool(toolName: string, params: any, options: ToolCallExecutionOptions = {}): Promise<any> {
     const designEcho = (window as any).designEcho;
     
     try {
@@ -4864,11 +5344,18 @@ async function executeResourceTool(toolName: string, params: any): Promise<any> 
                     focus: params.focus,
                     userIntent: params.userIntent || params.requirement || params.query
                 });
+                const inventory = result?.observation?.visualInventory;
+                const inventorySummary = inventory
+                    ? `可见主体群 ${inventory.visibleSubjectGroups.length}、变体群 ${inventory.visibleVariantGroups.length}、拍摄覆盖 ${inventory.shootingCoverage.length}；仍不确定 ${inventory.uncertainCoverage.length} 项。`
+                    : `建议重点复核 ${result?.observation?.nextSingleImageChecks?.join('、') || '若干编号'}。`;
 
                 return {
                     ...(result || { success: false, warnings: [], limitations: [] }),
+                    // 主进程的真实结果把像素放在 contactSheet.sheet。提升到受控顶层容器，
+                    // 让同一个主 Agent 直接看到编号总览，而不是只收到内部视觉调用的文字转述。
+                    ...(result?.contactSheet?.sheet ? { sheet: result.contactSheet.sheet } : {}),
                     summary: result?.success
-                        ? `已完成项目素材总览观察：${result.contactSheet?.items?.length || 0} 张图片，建议重点复核 ${result.observation?.nextSingleImageChecks?.join('、') || '若干编号'}。`
+                        ? `已完成项目素材总览观察：${result.contactSheet?.items?.length || 0} 张图片；${inventorySummary}`
                         : (result?.error || '项目素材总览观察失败。')
                 };
             }
@@ -4915,10 +5402,28 @@ async function executeResourceTool(toolName: string, params: any): Promise<any> 
                 console.log('[openProjectFile] 搜索结果:', searchResultsForOpen?.length || 0, '个');
                 
                 if (!searchResultsForOpen || searchResultsForOpen.length === 0) {
-                    return { 
-                        success: false, 
-                        error: `在项目目录中未找到包含 "${params.query}" 的文件`,
-                        searchedDirectory: projectForOpen.path
+                    // 真机 08 月：「未找到包含 "2双装" 的文件」被同一模型连喊 5 次——项目里本来就没有这个名字，
+                    // 但工具只说「没有」不说「有什么」，模型只能换个写法再猜。把不限类型的近似结果一起交回，让它一次改对。
+                    let nearby: string[] = [];
+                    try {
+                        const broad = await designEcho.searchResources(params.query, { directory: searchDir, limit: 8 });
+                        nearby = Array.isArray(broad) ? broad.map((f: any) => String(f?.name || '')).filter(Boolean) : [];
+                        if (nearby.length === 0) {
+                            const tokens = String(params.query || '').split(/[\s_\-·]+/).filter((t) => t.length >= 2);
+                            for (const token of tokens.slice(0, 2)) {
+                                const partial = await designEcho.searchResources(token, { directory: searchDir, limit: 8 });
+                                if (Array.isArray(partial)) nearby.push(...partial.map((f: any) => String(f?.name || '')).filter(Boolean));
+                            }
+                            nearby = Array.from(new Set(nearby)).slice(0, 8);
+                        }
+                    } catch {
+                        nearby = [];
+                    }
+                    return {
+                        success: false,
+                        error: `在项目目录中未找到名字含 "${params.query}" 的可打开文件（默认只找设计文件 psd/psb/tif）。${nearby.length ? `名字相近的有：${nearby.join('、')}——要打开其中一个就用它的原名；` : '相近的名字也没有；'}换关键词或先 listProjectResources 看目录里到底有什么，不要原样重试。`,
+                        searchedDirectory: searchDir,
+                        nearbyFiles: nearby
                     };
                 }
                 
@@ -5235,6 +5740,76 @@ async function executeResourceTool(toolName: string, params: any): Promise<any> 
                 };
             }
 
+            case 'searchDesignNotes': {
+                // 设计知识笔记检索（用户与 Agent 共写的本地 Markdown 笔记库；只读）
+                const noteMatches = await designEcho.invoke('designNotes:search', {
+                    query: String(params.query || '').trim(),
+                    ...(Array.isArray(params.tags) ? { tags: params.tags.map(String) } : {}),
+                    limit: Math.min(Math.max(Number(params.limit) || 20, 1), 50)
+                });
+                const noteList = Array.isArray(noteMatches) ? noteMatches : [];
+                return {
+                    success: true,
+                    resultCount: noteList.length,
+                    results: noteList.map((match: any) => ({
+                        id: match?.note?.id,
+                        title: match?.note?.title,
+                        tags: match?.note?.tags,
+                        author: match?.note?.author,
+                        updatedAt: match?.note?.updatedAt,
+                        excerpt: match?.note?.excerpt,
+                        matchedIn: match?.matchedIn
+                    })),
+                    message: noteList.length > 0
+                        ? `找到 ${noteList.length} 条设计笔记。这是用户与 Agent 共同维护的知识，引用时说明来自哪条笔记；需要全文时用 readDesignNote。`
+                        : '设计笔记库中没有匹配的笔记。可以换关键词再试，或在形成可复用结论后用 writeDesignNote 记录一条。'
+                };
+            }
+
+            case 'readDesignNote': {
+                const noteId = String(params.id || '').trim();
+                if (!noteId) {
+                    return { success: false, error: '读取笔记失败：请提供笔记 id（searchDesignNotes 返回的相对路径）。' };
+                }
+                const readResponse = await designEcho.invoke('designNotes:read', noteId);
+                return {
+                    success: true,
+                    note: readResponse?.note,
+                    backlinks: Array.isArray(readResponse?.backlinks)
+                        ? readResponse.backlinks.map((meta: any) => ({ id: meta?.id, title: meta?.title }))
+                        : [],
+                    message: `已读取笔记「${readResponse?.note?.title || noteId}」。正文中的 [[链接]] 指向其他笔记，可按需继续读取。`
+                };
+            }
+
+            case 'writeDesignNote': {
+                const writeContent = String(params.content || '');
+                if (!writeContent.trim()) {
+                    return { success: false, error: '写入笔记失败：正文（content）为空。' };
+                }
+                const existingId = String(params.id || '').trim();
+                if (!existingId && !String(params.title || '').trim()) {
+                    return { success: false, error: '新建笔记失败：缺少标题（title）。更新已有笔记请传 id。' };
+                }
+                // Agent 更新已有笔记默认追加，避免覆盖用户手写内容；replace 须显式声明
+                const writeMode = params.mode === 'replace' ? 'replace' : 'append';
+                const written = await designEcho.invoke('designNotes:write', {
+                    ...(existingId ? { id: existingId } : {}),
+                    ...(params.title ? { title: String(params.title) } : {}),
+                    content: writeContent,
+                    ...(Array.isArray(params.tags) ? { tags: params.tags.map(String) } : {}),
+                    mode: writeMode,
+                    author: 'agent'
+                });
+                return {
+                    success: true,
+                    note: { id: written?.id, title: written?.title, tags: written?.tags, updatedAt: written?.updatedAt },
+                    message: existingId
+                        ? `已${writeMode === 'append' ? '追加到' : '重写'}笔记「${written?.title || existingId}」。用户可在知识库·设计笔记页查看和修改。`
+                        : `已创建设计笔记「${written?.title}」。用户可在知识库·设计笔记页查看和修改。`
+                };
+            }
+
             case 'webSearch': {
                 // 通用联网搜索（DeepSeek 原生 web_search：只读外部公开信息、标注来源、防照抄；离线优雅降级）
                 const webQuery = String(params.query || '').trim();
@@ -5280,10 +5855,28 @@ async function executeResourceTool(toolName: string, params: any): Promise<any> 
                         error: 'Eagle 参考视觉分析失败：请提供 searchEagleReferences 返回的 item id。'
                     };
                 }
-                return await designEcho.invoke('designKnowledge:analyzeEagleReference', {
+                const eagleAnalysis = await designEcho.invoke('designKnowledge:analyzeEagleReference', {
                     itemId,
                     ...(Array.isArray(params.topics) ? { topics: params.topics.map(String) } : {})
                 });
+                // 自主沉淀 P1.5：参考观察的可迁移启发入候选池（fire-and-forget，失败不影响分析结果）；
+                // 晋升仍由行为验证管辖（启发关联的稿被导出交付才进 provisional），参考解读不直接教评审器。
+                if (eagleAnalysis?.success && eagleAnalysis.observation && typeof eagleAnalysis.observation === 'object') {
+                    const observations = Object.values(eagleAnalysis.observation as Record<string, unknown>)
+                        .filter((value): value is string => typeof value === 'string' && value.trim().length >= 8)
+                        .map((value) => `参考启发：${value.trim()}`);
+                    if (observations.length > 0) {
+                        const projectPath = useAppStore.getState().currentProject?.path;
+                        import('./design-workshop/design-learning.store')
+                            .then((learning) => learning.recordReferenceLearnings(
+                                (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args),
+                                projectPath,
+                                { observations, runScope: options.taskCardScope, eagleItemId: itemId }
+                            ))
+                            .catch(() => undefined);
+                    }
+                }
+                return eagleAnalysis;
             }
 
             case 'getDesignKnowledge': {
@@ -5414,6 +6007,67 @@ async function executeResourceTool(toolName: string, params: any): Promise<any> 
                 };
             }
 
+            case 'readSkillPlaybook': {
+                const playbookId = String(params.skillId || '').trim();
+                if (!playbookId) {
+                    const listResult = await designEcho.invoke('skillPackage:list');
+                    if (!listResult?.success) {
+                        return { success: false, error: listResult?.error || 'Skill 手册列表读取失败。' };
+                    }
+                    const items = (listResult.packages || []).map((item: any) => (
+                        `${item.id}：${item.description || item.name}（references：${(item.references || []).join('、') || '无'}）`
+                    ));
+                    return {
+                        success: true,
+                        packages: listResult.packages,
+                        message: items.length > 0
+                            ? `可用工作法手册 ${items.length} 份：\n${items.join('\n')}\n传 skillId 读正文。`
+                            : '当前没有安装任何工作法手册。'
+                    };
+                }
+                const readResult = await designEcho.invoke(
+                    'skillPackage:read',
+                    playbookId,
+                    String(params.reference || '').trim() || undefined
+                );
+                if (!readResult?.success) {
+                    return { success: false, error: readResult?.error || 'Skill 手册读取失败。' };
+                }
+                return {
+                    success: true,
+                    ...readResult,
+                    message: readResult.reference
+                        ? `手册「${playbookId}」细则 ${readResult.reference}：\n\n${readResult.body}`
+                        : `手册「${playbookId}」正文：\n\n${readResult.body}\n\n可用细则：${(readResult.references || []).join('、') || '无'}（按需再读，不要一次全读）。`
+                };
+            }
+            case 'runSkillScript': {
+                const scriptSkillId = String(params.skillId || '').trim();
+                const scriptName = String(params.script || '').trim();
+                if (!scriptSkillId || !scriptName) {
+                    return { success: false, error: 'runSkillScript：需要 skillId 与 script（脚本文件名，见手册）。' };
+                }
+                const scriptResult = await designEcho.invoke(
+                    'skillPackage:runScript',
+                    scriptSkillId,
+                    scriptName,
+                    params.params && typeof params.params === 'object' ? params.params : {},
+                    useAppStore.getState().currentProject?.path || undefined
+                );
+                if (!scriptResult?.success) {
+                    return {
+                        success: false,
+                        error: scriptResult?.error || `脚本「${scriptName}」执行失败。`,
+                        stdout: scriptResult?.stdout,
+                        stderr: scriptResult?.stderr
+                    };
+                }
+                return {
+                    success: true,
+                    ...scriptResult,
+                    message: `脚本「${scriptName}」执行完成（退出码 ${scriptResult.exitCode}）：\n${scriptResult.stdout || '（无输出）'}`
+                };
+            }
             case 'searchDesignKnowledge': {
                 const kgQuery = String(params.query || '').trim();
                 if (!kgQuery) {

@@ -219,9 +219,12 @@ export class SetBlendModeTool implements Tool {
                 return createToolFailureResult({ toolName: this.name, error: '未找到指定图层', params });
             }
             
-            // 验证混合模式
-            const mode = params.blendMode.toLowerCase();
-            if (!BLEND_MODES.includes(mode)) {
+            // 验证混合模式：比对大小写不敏感，赋值用白名单的规范驼峰形式。
+            // （2026-08-24 真机：原来先 toLowerCase 再和驼峰白名单比对——'softLight' 变 'softlight'
+            //  永远不在名单里，全部驼峰模式被自己堵死；精修链首次走到中性灰一步才暴露。）
+            const requestedMode = String(params.blendMode || '').trim();
+            const mode = BLEND_MODES.find((item) => item.toLowerCase() === requestedMode.toLowerCase());
+            if (!mode) {
                 const failure = createToolFailureResult({
                     toolName: this.name,
                     error: `不支持的混合模式: ${params.blendMode}`,

@@ -13,7 +13,9 @@ export const RUNTIME_CONTRACT_STATUS_VERSION = 'runtime-contract-status/v0' as c
 export type RuntimeSelectedSkillHandoffSource =
     | 'model_router_react_handoff'
     | 'skill_declaration_unique_match'
-    | 'controlled_route_react_handoff';
+    | 'controlled_route_react_handoff'
+    // 用户在输入框 Skill 选择器里显式指定（codex 式：选择即权威，无需文本正则佐证；仍只做 selection-only）。
+    | 'user_explicit_selection';
 
 export interface RuntimeSelectedSkillHandoff {
     version:
@@ -74,7 +76,8 @@ export function buildRuntimeSelectedSkillHandoff(input: {
     if (input.source
         && input.source !== 'model_router_react_handoff'
         && input.source !== 'skill_declaration_unique_match'
-        && input.source !== 'controlled_route_react_handoff') return undefined;
+        && input.source !== 'controlled_route_react_handoff'
+        && input.source !== 'user_explicit_selection') return undefined;
     if (input.routeClass !== 'business-workflow') return undefined;
     if (input.directExecution !== 'forbidden') return undefined;
     return {
@@ -101,7 +104,8 @@ export function validateRuntimeSelectedSkillHandoff(
         || handoff.version === LEGACY_RUNTIME_SELECTED_SKILL_HANDOFF_VERSION;
     const supportedSource = handoff.source === 'model_router_react_handoff'
         || handoff.source === 'skill_declaration_unique_match'
-        || handoff.source === 'controlled_route_react_handoff';
+        || handoff.source === 'controlled_route_react_handoff'
+        || handoff.source === 'user_explicit_selection';
     const expectedDerivedFromTaskText = handoff.source === 'skill_declaration_unique_match';
     const legacyShapeIsValid = handoff.version !== LEGACY_RUNTIME_SELECTED_SKILL_HANDOFF_VERSION
         || handoff.source === 'model_router_react_handoff';

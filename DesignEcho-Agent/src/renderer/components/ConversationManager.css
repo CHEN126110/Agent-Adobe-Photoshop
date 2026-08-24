@@ -15,10 +15,15 @@
     flex: 1;
     align-items: stretch;
     gap: 2px;
+    padding-right: 2px;
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
     touch-action: pan-x;
+    /* 滚动条是隐藏的，标签一旦超出就被右边界硬切成半个，看上去像渲染坏了而不是「还有更多」。
+       右缘渐隐把截断变成可读的信号；未溢出时淡出区落在空白上，不产生副作用。 */
+    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 20px), transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 20px), transparent 100%);
 }
 
 .conversation-tablist::-webkit-scrollbar {

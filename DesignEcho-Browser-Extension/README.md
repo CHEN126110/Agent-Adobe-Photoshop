@@ -63,6 +63,37 @@ DesignEcho Agent（Electron，WebSocket 服务端，只监听 127.0.0.1:8769）
 - **长页拼接截图**：Agent 调用 `captureBrowserTab(fullPage:true)` 时，扩展逐屏滚动截图并
   纵向拼接（默认最多 3 屏、总高封顶），截完自动滚回原滚动位置，不影响用户视图。
 
+## 一键收藏到 DesignEcho（v1.2，Eagle 式能力）
+
+方向与上面的 Agent 工具相反：**你在浏览器里主动收藏内容，推回 DesignEcho 落盘**。
+
+| 功能 | 入口 | 默认快捷键 |
+| --- | --- | --- |
+| 保存链接（含可视区预览图） | 弹窗 / 页面右键菜单 | `Alt+Shift+0` |
+| 批量收藏页面图片（勾选面板） | 弹窗 / 页面右键菜单 | `Alt+Shift+1` |
+| 区域截图（拖拽框选） | 弹窗 / 页面右键菜单 | `Alt+Shift+2` |
+| 可视范围截图 | 弹窗 / 页面右键菜单 | `Alt+Shift+3` |
+| 整页截图（滚动拼接） | 弹窗 / 页面右键菜单 | 未设默认，可自定义 |
+| 收藏单张图片 | 图片上右键 →「DesignEcho 收藏 → 收藏这张图片」 | — |
+
+- 默认快捷键刻意避开 Eagle 扩展占用的 `Alt+0~4`，两个扩展可共存；
+  全部快捷键可在 `chrome://extensions/shortcuts` 修改。
+- **落点：Eagle 当前打开的素材库**（经 DesignEcho Agent 调 Eagle 本机 API 41595 写入，
+  绝不直接改 `.library` 文件）。在 Eagle 里切换素材库，收藏落点自动跟随。
+  需要 Eagle 在运行，否则收藏会明确报错（不静默改存别处）。
+  来源地址/标题/标签/批注写入 Eagle 条目的 website/name/tags/annotation 字段。
+- 保存链接存为 Eagle 书签条目（标题 + 可视区预览图，点击可回到原网页）。
+- 批量收藏和单图收藏保存**原始图片字节**（不重编码、带登录态下载），
+  区域截图存 PNG，可视/整页截图存 JPEG（不缩放，保留屏幕原分辨率）。
+- **兼容 Eagle 收藏属性协议**（[eagle-attributes](https://github.com/eagle-app/eagle-attributes)）：
+  页面或用户脚本在图片元素上标注的 `eagle-src`（原图地址）、`eagle-title`、`eagle-tags`、
+  `eagle-annotation`、`eagle-link` 会被读取——收藏时按原图地址下载、标题/标签/批注进来源记录。
+  你为 Eagle 装的站点用户脚本（Greasy Fork）对本扩展同样生效。
+- 结果反馈：页面右下角 toast（成功/失败原因）；浏览器内部页面无法注入 toast 时，
+  用扩展图标角标 ✓/✗ 提示。
+- 前置条件：DesignEcho Agent 正在运行且扩展已连接，且 Eagle 在运行；
+  任一环节缺失，收藏都会明确报错并说明缺哪个。
+
 ## 常见问题
 
 **弹窗一直显示「未连接」？**

@@ -316,8 +316,6 @@
     align-items: stretch;
 }
 
-.workbench-agent-panel .multimodal-message.assistant .message-blocks,
-.workbench-agent-panel .multimodal-message.assistant .message-block,
 .workbench-agent-panel .multimodal-message.user .message-blocks,
 .workbench-agent-panel .multimodal-message.user .message-block {
     width: auto;
@@ -325,21 +323,33 @@
 }
 
 /*
- * 过程块与状态卡不能继承上面的内容气泡自适应宽度。thinking-block / card-block
- * 使用 contain:inline-size；若父链或自身仍为 auto，Chromium 会形成 0px 宽 /
- * 超长高度的循环布局。
+ * 助手侧的块默认满宽，只有气泡类（text/list/image）按内容收窄——默认值必须是「满宽」。
+ * 机制：card / thinking / tool-result / collapsible / table / progress / file / artifact
+ * 都带 contain:inline-size，内容对内联尺寸零贡献；宽度一旦是 auto 又落在
+ * align-items:flex-start 的 flex 列里，shrink-to-fit 会把宽度算成 0，
+ * 元素塌成「只剩左右各 1px 边框」的一条竖线（实测 2px 宽 × 131px 高）。
+ * 此前是反过来的写法：默认 auto + 逐个块加回 width:100% 的白名单，名单里只有
+ * thinking / tool-result / card 三个。2026-08-18 SKU 交付消息新出现的「SKU 明细」
+ * collapsible 块不在名单内，用户在状态卡下方看到一条无意义竖线。
+ * 白名单挡不住后续新增的块类型，所以改成「默认满宽 + 气泡例外」。
  */
-.workbench-agent-panel .multimodal-message.assistant .message-blocks {
+.workbench-agent-panel .multimodal-message.assistant .message-blocks,
+.workbench-agent-panel .multimodal-message.assistant .message-block {
     width: 100%;
     inline-size: 100%;
+    max-width: 100%;
+}
+
+.workbench-agent-panel .multimodal-message.assistant .message-blocks {
     align-items: flex-start;
 }
 
-.workbench-agent-panel .multimodal-message.assistant .thinking-block,
-.workbench-agent-panel .multimodal-message.assistant .tool-result-block,
-.workbench-agent-panel .multimodal-message.assistant .card-block {
-    width: 100%;
-    inline-size: 100%;
+/* 气泡类例外：这几个块本来就按内容定尺寸（image-block 是 inline-block），保持自适应。 */
+.workbench-agent-panel .multimodal-message.assistant .text-block,
+.workbench-agent-panel .multimodal-message.assistant .list-block,
+.workbench-agent-panel .multimodal-message.assistant .image-block {
+    width: auto;
+    inline-size: auto;
 }
 
 .workbench-agent-panel .text-block {
@@ -347,11 +357,26 @@
     line-height: 1.5;
 }
 
+/* 「说」= Agent 的正式回复：不装气泡。
+ *
+ * 气泡是「一条被框起来的消息」，套在正式回复上等于把这轮对话的主体内容降到过程流同级，
+ * 界面上还多出一个矩形。说话人由左右位置和头像区分就够了——用户气泡保持不变，
+ * 一裸一框正好把两边分开（2026-08-19 用户要求「想和说层次分明」）。
+ * 正文是三档里最亮、最大的一档，过程流的「想 / 做」在下面按变量各降一级。 */
 .workbench-agent-panel .multimodal-message.assistant .text-block {
-    padding: 9px 12px;
-    border-radius: 12px;
-    background: #181b21;
-    color: #e7e9ee;
+    padding: 2px 0 4px;
+    background: transparent;
+    color: var(--de-text, #f3f4f6);
+    /* 与下面 structured-response 的正文同尺寸：两种回复形态本来就该是同一档「说」 */
+    font-size: 13px;
+    line-height: 1.72;
+}
+
+/* 过程流三档跟着窄面板收一号：只覆盖变量，不在这里重写各处字号 */
+.workbench-agent-panel .thinking-simple,
+.workbench-agent-panel .thinking-embedded {
+    --de-process-thought-size: 11.5px;
+    --de-process-action-size: 11px;
 }
 
 .workbench-agent-panel .multimodal-message.user .text-block {
@@ -526,9 +551,26 @@
     background: #2a303a;
 }
 
+/* 时间戳是「需要时才查」的信息，不是对话内容。常显时压到几乎无感，
+   指针落在这条消息上才提亮；用 opacity 而非 display，避免 hover 时消息跳动。 */
 .workbench-agent-panel .message-meta {
     gap: 6px;
     font-size: 9px;
+    opacity: 0.34;
+    transition: opacity 0.16s ease;
+}
+
+.workbench-agent-panel .multimodal-message:hover .message-meta,
+.workbench-agent-panel .multimodal-message:focus-within .message-meta {
+    opacity: 0.78;
+}
+
+/* 编辑按钮（默认隐形）此前按 28px 占位，把用户气泡下方撑出比助手侧多 11px 的空档，
+   一问一答的垂直节奏因此错开。缩到与 9px 时间戳同一量级。 */
+.workbench-agent-panel .inline-edit-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
 }
 
 .workbench-agent-panel .message-text {
@@ -570,6 +612,40 @@
 .workbench-agent-panel .input-toolbar {
     gap: 4px;
     min-height: 28px;
+    align-items: center;
+}
+
+/* 这排图标来自五个各自定义尺寸的组件（附件 32、上下文环 26、Thinking/技能/模式 28、
+   模型 26、发送 30），实测基线相差 3px，看上去像没对齐的一排。尺寸令牌收在容器上，
+   改一处即可，不必回到五个组件文件里各改各的。 */
+.workbench-agent-panel .input-wrapper {
+    --composer-control-size: 28px;
+}
+
+.workbench-agent-panel .attach-button,
+.workbench-agent-panel .input-toolbar .context-usage-button,
+.workbench-agent-panel .input-toolbar .thinking-mode-control-button,
+.workbench-agent-panel .input-toolbar .model-picker-trigger {
+    width: var(--composer-control-size);
+    height: var(--composer-control-size);
+    flex: 0 0 var(--composer-control-size);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 发送是这一行里唯一的主动作，比辅助图标大一档是有意的层级，不是漏网的尺寸。 */
+.workbench-agent-panel .send-button {
+    width: calc(var(--composer-control-size) + 2px);
+    height: calc(var(--composer-control-size) + 2px);
+    flex: 0 0 calc(var(--composer-control-size) + 2px);
+}
+
+/* 三个 grid 区域各自居中，消除附件键与工具条之间 1px 的基线错位 */
+.workbench-agent-panel .attach-menu-container,
+.workbench-agent-panel .input-toolbar,
+.workbench-agent-panel .send-button {
+    align-self: center;
 }
 
 .workbench-agent-panel .thinking-mode-control {

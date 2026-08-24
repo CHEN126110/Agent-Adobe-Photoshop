@@ -98,6 +98,24 @@ const PROVIDER_DEFAULT_TOOL_USE: Partial<Record<ModelProvider, boolean>> = {
     // 只有「对话模型全系支持 function calling 的单一厂商」才配默认值。
 };
 
+/**
+ * 给硬编码里没填 contextWindow 的已知模型补上 provider 返回的真实窗口。
+ *
+ * 必须替换成新对象而不是就地赋值：known 数组来自 getModelsByProvider()，元素是
+ * ALL_MODELS 里的同一批对象引用，就地改会把全局硬编码配置一起改掉。
+ */
+function backfillKnownContextWindow(
+    merged: ModelConfig[],
+    apiModelId: string,
+    fetchedContextWindow: number | undefined
+): void {
+    if (!(typeof fetchedContextWindow === 'number' && fetchedContextWindow > 0)) return;
+    const index = merged.findIndex((model) => model.apiModelId === apiModelId);
+    if (index < 0) return;
+    if (Number(merged[index].contextWindow) > 0) return;
+    merged[index] = { ...merged[index], contextWindow: fetchedContextWindow };
+}
+
 function slugifyModelId(apiModelId: string): string {
     return apiModelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
@@ -196,8 +214,16 @@ export function mergeFetchedProviderModels(
 
     for (const item of Array.isArray(fetched) ? fetched : []) {
         const apiModelId = String(item?.apiModelId || '').trim();
-        // 已知模型以硬编码能力为准，跳过（不被拉取的保守默认覆盖）。
-        if (!apiModelId || seenApiModelIds.has(apiModelId)) continue;
+        if (!apiModelId) continue;
+        // 已知模型的能力以硬编码为准，不被拉取的保守默认覆盖。
+        // 但"硬编码没填"不等于"不许 provider 说"：contextWindow 是可选字段，
+        // undefined 就是没填（supportsVision 这类必填布尔的 false 才是明确声明不支持）。
+        // 不补的话，硬编码模型会一直显示未知窗口，反而挡住 provider 返回的真实值
+        //（真机 2026-08-23：ollama-cloud 的 qwen3-vl 即如此）。
+        if (seenApiModelIds.has(apiModelId)) {
+            backfillKnownContextWindow(merged, apiModelId, item.contextWindow);
+            continue;
+        }
         seenApiModelIds.add(apiModelId);
 
         const usage = classifyModelUsage({

@@ -442,10 +442,9 @@ function checkEcommerceCompletionSemantics() {
 
 function checkGeneralAgentIdentityBoundary() {
   const files = [
-    'src/shared/prompts/agent-prompt.ts',
-    'src/shared/prompts/enhanced-agent-prompt.ts',
+    'src/shared/agent-runtime-v5/agent-operating-profile.ts',
+    'src/renderer/services/skill-executors/autonomous-agent.executor.ts',
     'src/shared/prompts/reference-analysis.ts',
-    'src/shared/prompts/visual-understanding.ts',
     'src/renderer/components/ChatPanel.tsx',
     'src/shared/knowledge/socks-categories.ts',
     'src/renderer/services/skill-executors/project-image-analysis.executor.ts'
@@ -472,26 +471,19 @@ function checkGeneralAgentIdentityBoundary() {
     }
   }
 
-  const agentPrompt = read('src/shared/prompts/agent-prompt.ts');
+  const agentPrompt = read('src/shared/agent-runtime-v5/agent-operating-profile.ts');
   ok = assertIncludes(
     agentPrompt,
-    '通用 Photoshop 设计 Agent',
+    '资深商业视觉设计师',
     'general-agent-identity-boundary',
-    'Agent prompt must define DesignEcho as a general Photoshop design Agent.'
+    'Production operating profile must define DesignEcho as a senior visual designer.'
   ) && ok;
   ok = assertIncludes(
     agentPrompt,
-    '电商、品牌、平面、社媒与商业视觉场景',
+    'Photoshop 和各项能力只是你的制作媒介，不是你的身份',
     'general-agent-identity-boundary',
-    'Agent prompt may list ecommerce only as one business scenario, not identity.'
+    'Production operating profile must not reduce the Agent identity to a tool operator.'
   ) && ok;
-  ok = assertIncludes(
-    read('src/renderer/components/ChatPanel.tsx'),
-    '通用 Photoshop 设计 Agent',
-    'general-agent-identity-boundary',
-    'ChatPanel welcome copy must expose the general Photoshop design Agent identity.'
-  ) && ok;
-
   if (ok) {
     pass(
       'general-agent-identity-boundary',

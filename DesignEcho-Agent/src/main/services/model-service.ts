@@ -40,6 +40,7 @@ import {
     normalizeProviderNativeToolCitations
 } from '../../shared/provider-native-tools';
 import { normalizeStreamTextChunk } from '../../shared/stream-text-normalizer';
+import { ClaudeSubscriptionService } from './claude-subscription-service';
 import { CodexSubscriptionService } from './codex-subscription-service';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
@@ -266,10 +267,16 @@ export class ModelService {
     private ollamaBaseUrl = 'http://127.0.0.1:11434';
     private config: ModelServiceConfig;
     private readonly codexSubscriptionService: CodexSubscriptionService | null;
+    private readonly claudeSubscriptionService: ClaudeSubscriptionService | null;
 
-    constructor(config: ModelServiceConfig, codexSubscriptionService?: CodexSubscriptionService | null) {
+    constructor(
+        config: ModelServiceConfig,
+        codexSubscriptionService?: CodexSubscriptionService | null,
+        claudeSubscriptionService?: ClaudeSubscriptionService | null
+    ) {
         this.config = config;
         this.codexSubscriptionService = codexSubscriptionService || null;
+        this.claudeSubscriptionService = claudeSubscriptionService || null;
         this.initializeClients();
     }
 
@@ -451,6 +458,18 @@ export class ModelService {
                     text: response.content || '',
                     usage: response.usage
                 };
+            }
+            case 'claude-subscription': {
+                if (!this.claudeSubscriptionService) {
+                    throw new Error('Claude 订阅服务尚未初始化。');
+                }
+                const claudeResponse = await this.claudeSubscriptionService.chatWithTools(
+                    model.apiModelId,
+                    this.toAdapterMessages(messages),
+                    [],
+                    { maxTokens: options?.maxTokens }
+                );
+                return { text: claudeResponse.content || '' };
             }
             case 'deepseek':
                 return this.chatDeepSeek(model as any, messages, options);
@@ -1781,6 +1800,17 @@ export class ModelService {
                     timeoutMs: options?.timeoutMs,
                     nativeTools: options?.nativeTools
                 }
+            );
+        }
+        if (provider === 'claude-subscription') {
+            if (!this.claudeSubscriptionService) {
+                throw new Error('Claude 订阅服务尚未初始化。');
+            }
+            return this.claudeSubscriptionService.chatWithTools(
+                apiModelName,
+                messages,
+                tools,
+                { maxTokens: options?.maxTokens, temperature: options?.temperature }
             );
         }
         const adapter = getProviderAdapter(provider, apiModelName);

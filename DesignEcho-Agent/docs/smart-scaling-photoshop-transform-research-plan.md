@@ -151,11 +151,11 @@ flowchart TD
 - `DesignEcho-UXP/src/tools/layout/smart-layout-engine.ts`
   - 目前有独立 fillRatio 算法，后续应改为消费共享策略或至少对齐参数语义。
 
-- `src/renderer/services/design-skills/main-image-design.skill.ts`
-  - 目前主图 scale 和 smartLayoutPayload 是主图内部计算，后续应迁移到智能缩放策略入口。
-
 - `src/renderer/services/skill-executors/main-image.executor.ts`
-  - 当前失败时回退到 `transformLayer(scaleUniform)`，这只能保证有动作，不能保证审美落位。
+  - 2026-08-21 已移除隐藏的主图主体缩放默认值；只有 Runtime 计划或调用参数显式给出尺度时才执行，缺失时不再由 Harness 补审美答案。
+
+- `src/shared/design-smart-scaling-policy.ts`
+  - 共享层只归一和求解显式几何参数，不再按品类、素材角色或意图维护主体占比预设表。
 
 - `src/main/services/aesthetic/aesthetic-decision-service.ts`
   - 当前属于审美决策原型，不能当成已完成能力宣传。

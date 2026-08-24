@@ -94,8 +94,8 @@ export interface DesignTaskTypeSpec {
      */
     canonicalDocumentName?: string;
     /**
-     * 该品类的 renderLayout 是否必须携带阶段计划 stagePlan。
-     * 仅有阶段计划契约的品类（如完整详情页设计）启用；默认 false。
+     * 该品类是否提供 renderLayout 阶段计划 stagePlan 契约。
+     * 开放创意只把它作为按需方法提示；规格化 staged 流程可在自身契约内强制。默认 false。
      */
     requiresStagePlanOnRender?: boolean;
     /**
@@ -399,7 +399,7 @@ export const DESIGN_TASK_TYPE_REGISTRY: readonly DesignTaskTypeSpec[] = Object.f
  *
  * 仅作为 resolveDesignDisciplineContext 的兜底：当确定是创意设计意图（isCreativeDesignIntent，
  * 来自控制面而非关键词）但不匹配任何具体品类时启用，让海报 / 小红书 / Banner / 任意新设计也继承
- * 通用设计纪律（读方法论 → 建画布 → 排版 → 改后必看 → 质量裁决 → 已学记忆注入），但**不套**任何
+ * 通用设计不变量（事实来源、目标与对象身份、可逆执行、真实读回），但**不套**任何
  * 品类专属结构 / 阶段计划 / 文档名校验（无 canonicalDocumentName、无 requiresStagePlanOnRender、
  * 只用通用核心工具集）。这是"扩品类覆盖面"的正解：靠通用兜底而非逐品类堆关键词（理解优于硬编码）。
  */

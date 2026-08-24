@@ -204,7 +204,9 @@ export class VisualThinkingService {
     }
 
     setVisionModelId(modelId: string): void {
-        if (modelId) this.visionModelId = modelId;
+        // 空值同样是有效同步：表示当前唯一 Agent 模型不可用于视觉任务。
+        // 若忽略空值，用户清除/切换到不合格模型后会继续偷偷使用上一款模型。
+        this.visionModelId = String(modelId || '').trim();
     }
     
     /**
@@ -486,6 +488,43 @@ ${promptHint}
             { maxTokens: 2000 }
         );
         return normalizeGenericImageAnalysis(response.text || '', modelId);
+    }
+
+    /**
+     * 用调用方给的完整提示词看一张图，原样返回模型文本（设计评审器等在渲染进程自己解析）。
+     * 不套 analyzeGenericImage 的固定 JSON 模板。
+     */
+    async askAboutImage(
+        imageBase64: string,
+        prompt: string,
+        mediaType?: string,
+        options?: {
+            maxTokens?: number;
+            referenceImage?: { base64: string; mediaType?: string };
+            thumbnailImage?: { base64: string; mediaType?: string };
+        }
+    ): Promise<{ text: string; modelId: string }> {
+        const modelId = String(this.visionModelId || '').trim();
+        if (!modelId) {
+            throw new Error('未配置视觉模型，无法评审画面。请在设置里选一个支持读图的模型作为视觉模型。');
+        }
+        const image = resolveImagePayload(imageBase64, mediaType);
+        // 附图顺序契约（与 design-evaluator 提示词图单一致）：当前稿 → 参考（可选）→ 当前稿缩略图（可选，永远最后）。
+        const content: any[] = [{ type: 'text', text: prompt }, { type: 'image', image }];
+        if (options?.referenceImage?.base64) {
+            content.push({ type: 'image', image: resolveImagePayload(options.referenceImage.base64, options.referenceImage.mediaType) });
+        }
+        if (options?.thumbnailImage?.base64) {
+            content.push({ type: 'image', image: resolveImagePayload(options.thumbnailImage.base64, options.thumbnailImage.mediaType) });
+        }
+        // 固定格式（JSON 评审）任务关闭思考：mimo 这类模型会把输出预算全花在思考上、正文为空
+        //（真机 2026-08-18：thinking 2634 字，正文 0，finish_reason=length）。同时把预算抬到 3000。
+        const response = await this.modelService.chat(
+            modelId,
+            [{ role: 'user', content: content as any }],
+            { maxTokens: Math.max(3000, options?.maxTokens || 0), thinkingEnabled: false }
+        );
+        return { text: String(response.text || ''), modelId };
     }
 
     /**

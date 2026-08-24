@@ -157,6 +157,12 @@ export interface SkillDeclaration {
     
     /** 详细描述（给 AI 看的，用于理解能力边界） */
     description: string;
+
+    /**
+     * 面向用户的一句话中文简介（可选）。输入框 Skill 选择器等用户可见列表用它，
+     * 不要用 description（那是给模型的工具描述，含英文与工程话术）。缺省时显示层截取 description 兜底。
+     */
+    userFacingSummary?: string;
     
     /** 使用场景说明（帮助 AI 判断是否适用） */
     whenToUse: string[];
@@ -180,6 +186,24 @@ export interface SkillDeclaration {
     
     /** 依赖的底层工具（MCP Tools） */
     requiredTools: string[];
+
+    /**
+     * 由该 Skill 编排的领域原子工具。
+     *
+     * 默认运行中，这些工具只有在对应 Runtime owner 已绑定、或 Skill 明确把它们作为
+     * continuation 能力交还给 Agent 后才可见，避免通用 Agent 绕过 Skill 复制业务流程。
+     * 用户明确要求“不使用 Skill”时，Harness 可以把它们作为普通原子能力重新开放，
+     * 以保留裸 Agent 的可验证执行能力。这里仅声明所有权，不授予执行权限。
+     */
+    internalTools?: string[];
+
+    /**
+     * 领域交互是否由 Skill Provider 独占。
+     * 设置后，默认 Skill 通道中的业务表单/确认卡必须由 Skill 包构造；通用 Agent 仍可
+     * 进行普通对话，但不能用 createInteractiveCard 复制该领域的状态与确认语义。
+     * 显式无 Skill 模式不受此项限制。
+     */
+    interactionOwner?: 'skill-provider';
     
     /** 示例用法（给 AI 看的） */
     examples: Array<{

@@ -165,8 +165,9 @@ function normalizeSizePlans(sizePlans: MainImageSizePlan[] | undefined): Normali
             const targetWidth = toPositiveNumber(plan.targetSize?.width);
             const targetHeight = toPositiveNumber(plan.targetSize?.height);
             if (!targetWidth || !targetHeight) return null;
-            const subjectWidth = toPositiveNumber(plan.subjectSize?.width) || targetWidth * 0.78;
-            const subjectHeight = toPositiveNumber(plan.subjectSize?.height) || targetHeight * 0.56;
+            const subjectWidth = toPositiveNumber(plan.subjectSize?.width);
+            const subjectHeight = toPositiveNumber(plan.subjectSize?.height);
+            if (!subjectWidth || !subjectHeight) return null;
             return {
                 sizeKey: cleanString(plan.sizeKey) || `${Math.round(targetWidth)}x${Math.round(targetHeight)}`,
                 targetSize: {
@@ -196,13 +197,11 @@ function getStyleVariants(
 }
 
 function buildSafeBox(targetSize: { width: number; height: number }): ImagePlacementBox {
-    const marginX = Math.round(targetSize.width * 0.06);
-    const marginY = Math.round(targetSize.height * 0.06);
     return {
-        x: marginX,
-        y: marginY,
-        width: Math.max(1, targetSize.width - marginX * 2),
-        height: Math.max(1, targetSize.height - marginY * 2)
+        x: 0,
+        y: 0,
+        width: targetSize.width,
+        height: targetSize.height
     };
 }
 
@@ -224,30 +223,18 @@ function buildTargetSlot(
     sizePlan: NormalizedSizePlan
 ): MainImageVariantPlacementPlan['targetSlot'] {
     const safeBox = buildSafeBox(sizePlan.targetSize);
-    const conversionReserveY = Math.round(sizePlan.targetSize.height * 0.22);
-    const conversionY = Math.max(sizePlan.targetY, safeBox.y + conversionReserveY);
     const rawBox: ImagePlacementBox = {
-        x: variant.imageType === 'click'
-            ? sizePlan.targetX
-            : Math.max(sizePlan.targetX, safeBox.x),
-        y: variant.imageType === 'click'
-            ? sizePlan.targetY
-            : conversionY,
-        width: variant.imageType === 'click'
-            ? Math.round(sizePlan.subjectSize.width * 1.04)
-            : Math.round(sizePlan.subjectSize.width * 0.94),
-        height: variant.imageType === 'click'
-            ? Math.round(sizePlan.subjectSize.height * 1.04)
-            : Math.round(sizePlan.subjectSize.height * 0.94)
+        x: sizePlan.targetX,
+        y: sizePlan.targetY,
+        width: sizePlan.subjectSize.width,
+        height: sizePlan.subjectSize.height
     };
     const box = clampBoxToSafeArea(rawBox, safeBox);
     return {
         box,
         safeBox,
         slotRole: variant.imageType === 'click' ? 'click-hero' : 'conversion-hero',
-        layoutReason: variant.imageType === 'click'
-            ? `点击图优先提高主体识别度：${sizePlan.decisionReason}`
-            : `转化图保留文案和卖点空间：${sizePlan.decisionReason}`
+        layoutReason: `使用 Agent 或上游计划显式声明的主体区域：${sizePlan.decisionReason}`
     };
 }
 
@@ -282,6 +269,18 @@ function buildPlacementPlan(input: {
         designType: 'main-image',
         assetRole: 'product',
         intent: input.variant.imageType === 'click' ? 'hero' : 'fit-slot',
+        presetOverride: {
+            scaleMode: 'contain',
+            targetFill: 1,
+            minFill: 1,
+            maxFill: 1,
+            anchor: 'center',
+            cropPolicy: 'protect-subject',
+            visualBiasY: 0,
+            preserveSubject: true,
+            minScale: 0.01,
+            maxScale: 100
+        },
         cropPolicy: 'protect-subject',
         requireSubjectBounds: true,
         executionTool: 'transformLayer'

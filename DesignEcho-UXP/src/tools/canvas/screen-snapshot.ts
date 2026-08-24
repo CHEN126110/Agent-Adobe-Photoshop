@@ -15,6 +15,18 @@ const { imaging } = require('photoshop');
 
 const OVERLAY_SNAPSHOT_TOOL_VERSION = 'screen-overlay-v2-diagnostic';
 
+/** 深度按 id 找图层（含组内嵌套）；找不到返回 null。 */
+function findLayerByIdDeep(container: any, id: number): any | null {
+    const layers = container?.layers;
+    if (!layers) return null;
+    for (const layer of layers) {
+        if (Number(layer?.id) === id) return layer;
+        const found = findLayerByIdDeep(layer, id);
+        if (found) return found;
+    }
+    return null;
+}
+
 interface ScreenInfo {
     id: number;
     name: string;
@@ -312,8 +324,18 @@ export class GetScreenSnapshotsTool implements Tool {
                 const errors: ScreenSnapshotError[] = [];
                 for (const screen of targetScreens) {
                     try {
-                        // 计算截图尺寸
-                        const b = screen.bounds;
+                        // 计算截图尺寸。模型常只传 {id,name,index}（真机 4/4 次因 bounds 缺失崩在 .width）：
+                        // 没有 bounds 就按图层 id 现读；读不到再报清楚缺什么，不能整批崩掉。
+                        let b = screen?.bounds;
+                        if (!b || !Number.isFinite(Number(b.left)) || !Number.isFinite(Number(b.top))) {
+                            const layer = Number.isFinite(Number(screen?.id)) ? findLayerByIdDeep(doc, Number(screen.id)) : null;
+                            const lb = layer?.bounds;
+                            if (lb && Number.isFinite(Number(lb.left))) {
+                                b = { left: lb.left, top: lb.top, right: lb.right, bottom: lb.bottom, width: lb.right - lb.left, height: lb.bottom - lb.top };
+                            } else {
+                                throw new Error(`屏「${screen?.name || screen?.index}」缺少 bounds，且按 id=${screen?.id} 也找不到对应图层组；请传 parseDetailPageTemplate 返回的完整 screens，或先 getLayerHierarchy(includeBounds:true) 取到 bounds`);
+                            }
+                        }
                         const srcWidth = Math.max(1, b.width || (b.right - b.left));
                         const srcHeight = Math.max(1, b.height || (b.bottom - b.top));
                         const scale = Math.min(maxWidth / srcWidth, 1);

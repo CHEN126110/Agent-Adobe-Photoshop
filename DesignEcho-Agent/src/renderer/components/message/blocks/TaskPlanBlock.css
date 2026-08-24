@@ -1,9 +1,10 @@
+/* 与设计任务卡、过程流同一「无框」气质：外框 + 底色在对话流里就是多出来的矩形，
+ * 清单结构靠标题行和列表本身成立（对齐 2026-08-19「去掉矩形」的拍板）。 */
 .task-plan-block {
     box-sizing: border-box;
-    padding: 11px 12px 10px;
-    border: 1px solid color-mix(in srgb, var(--de-border) 72%, transparent);
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--de-bg-card) 72%, transparent);
+    padding: 4px 0 6px;
+    border: 0;
+    background: transparent;
 }
 
 .task-plan-heading {
@@ -43,7 +44,7 @@
 
 .task-plan-step {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr);
+    grid-template-columns: 16px minmax(0, 1fr) auto;
     align-items: start;
     column-gap: 7px;
     min-width: 0;
@@ -72,6 +73,23 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+}
+
+/* 正在做 / 失败 / 被卡的可见状态文字：小一号、不抢条目正文 */
+.task-plan-step-state {
+    align-self: center;
+    color: var(--de-text-secondary, #94a3b8);
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.task-plan-step--running .task-plan-step-state {
+    color: var(--de-primary, #60a5fa);
+}
+
+.task-plan-step--failed .task-plan-step-state {
+    color: var(--de-error, #f87171);
 }
 
 .task-plan-step--completed .task-plan-step-icon {

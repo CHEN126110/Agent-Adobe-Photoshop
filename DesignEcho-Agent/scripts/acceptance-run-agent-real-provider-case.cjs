@@ -23,13 +23,14 @@ const TEST_PORT_START = 23900;
 const TEST_PORT_END = 24900;
 const GREETING_PROMPT = '\u4f60\u597d\u554a';
 const SKU_EXECUTION_PROMPT = '\u5e2e\u6211\u505aSKU\u4ee5\u53ca\u5bf9\u5e94\u7684\u81ea\u9009\u5907\u6ce8';
-const PROJECT_ASSET_CAPABILITY_PROMPT = '这是开发者只读 Capability 选择验收。只调用一次 requestAgentCapabilities，装载“分析单个项目素材可见内容”所需的最小能力，然后立即停止；不要调用装载后的能力，不要调用 Photoshop、生成、保存或导出工具。';
-const SUBJECT_FIT_CAPABILITY_PROMPT = '这是开发者只读 Capability 选择验收。只调用一次 requestAgentCapabilities，装载“把图层主体适配到目标区域”所需的最小能力，然后立即停止；不要调用装载后的能力，不要修改、保存或导出 Photoshop 文档。';
+const PROJECT_ASSET_CAPABILITY_PROMPT = '这是开发者只读 Capability 选择验收。先检索“分析单个项目素材可见内容”所需的能力目录，再按返回的精确 id 装载最小能力，然后立即停止；不要调用装载后的能力，不要调用 Photoshop、生成、保存或导出工具。';
+const SUBJECT_FIT_CAPABILITY_PROMPT = '这是开发者只读 Capability 选择验收。先检索“把图层主体适配到目标区域”所需的能力目录，再按返回的精确 id 装载最小能力，然后立即停止；不要调用装载后的能力，不要修改、保存或导出 Photoshop 文档。';
 
 let evaluateAgentCapabilityProviderProbe;
 let evaluateAgentNoRedoProviderProbe;
 let createAgentCapabilitySession;
 let REQUEST_AGENT_CAPABILITIES_TOOL_NAME;
+let SEARCH_AGENT_CAPABILITIES_TOOL_NAME;
 let DELEGATE_TOOL;
 let TEAM_PIPELINE_TOOL;
 let getDefaultAgentTools;
@@ -58,7 +59,8 @@ function loadCapabilityProbeRuntime() {
   ));
   ({
     createAgentCapabilitySession,
-    REQUEST_AGENT_CAPABILITIES_TOOL_NAME
+    REQUEST_AGENT_CAPABILITIES_TOOL_NAME,
+    SEARCH_AGENT_CAPABILITIES_TOOL_NAME
   } = require(path.join(ROOT, 'src', 'renderer', 'services', 'agent-runtime', 'capability-session.ts')));
   ({
     DELEGATE_TOOL,
@@ -385,7 +387,7 @@ function buildAcceptanceCases() {
           shouldUseTools: true,
           shouldChangeDocument: false,
           maxIterations: 3,
-          maxToolCalls: 1
+          maxToolCalls: 2
         },
         capabilityProbe: {
           id: 'project-asset-read',
@@ -397,6 +399,8 @@ function buildAcceptanceCases() {
             'external.generate.',
             'context.state.'
           ],
+          requireSearch: true,
+          maxSearchRequests: 1,
           maxControlRequests: 1
         },
         notes: [
@@ -414,7 +418,7 @@ function buildAcceptanceCases() {
           shouldUseTools: true,
           shouldChangeDocument: false,
           maxIterations: 3,
-          maxToolCalls: 1
+          maxToolCalls: 2
         },
         capabilityProbe: {
           id: 'subject-fit',
@@ -424,11 +428,13 @@ function buildAcceptanceCases() {
             'external.generate.',
             'context.state.'
           ],
+          requireSearch: true,
+          maxSearchRequests: 1,
           maxControlRequests: 1
         },
         notes: [
           'Loading a write-capable schema is not write authorization or execution.',
-          'Any Tool other than requestAgentCapabilities fails the probe.'
+          'Only the searchAgentCapabilities → requestAgentCapabilities sequence is allowed.'
         ]
       }
     ];
@@ -760,12 +766,16 @@ async function runNoRedoProviderCase(page, acceptanceCase, modelId) {
 async function runCapabilityProviderCase(page, acceptanceCase, modelId) {
   debugState.stage = 'capability-probe:' + acceptanceCase.id;
   const capabilitySession = createCapabilityProbeSession();
+  const searchTool = capabilitySession.activeTools.find((tool) => (
+    tool.name === SEARCH_AGENT_CAPABILITIES_TOOL_NAME
+  ));
   const requestTool = capabilitySession.activeTools.find((tool) => (
     tool.name === REQUEST_AGENT_CAPABILITIES_TOOL_NAME
   ));
+  assert(searchTool, 'Capability probe could not find searchAgentCapabilities schema.');
   assert(requestTool, 'Capability probe could not find requestAgentCapabilities schema.');
 
-  const response = await page.evaluate(async (input) => {
+  const searchResponse = await page.evaluate(async (input) => {
     return window.designEcho.chatWithTools(
       input.modelId,
       input.messages,
@@ -779,15 +789,15 @@ async function runCapabilityProviderCase(page, acceptanceCase, modelId) {
         role: 'system',
         content: [
           'You are a developer acceptance probe for Agent Capability selection.',
-          'Call requestAgentCapabilities exactly once with the smallest sufficient capability id set.',
-          'Do not answer with plain text and do not request unrelated capabilities.'
+          'First call searchAgentCapabilities exactly once using the user-described missing action.',
+          'Do not guess capability ids, answer with plain text, or call any business tool.'
         ].join(' ')
       },
       { role: 'user', content: acceptanceCase.userInput }
     ],
     tools: capabilitySession.activeTools,
     options: {
-      maxTokens: 256,
+      maxTokens: 320,
       temperature: 0,
       purpose: 'agent_capability_provider_probe',
       silent: true,
@@ -795,9 +805,62 @@ async function runCapabilityProviderCase(page, acceptanceCase, modelId) {
     }
   });
 
-  const toolCalls = Array.isArray(response?.toolCalls) ? response.toolCalls : [];
   const toolEvents = [];
-  for (const toolCall of toolCalls) {
+  const searchToolCalls = Array.isArray(searchResponse?.toolCalls) ? searchResponse.toolCalls : [];
+  let searchResult;
+  for (const toolCall of searchToolCalls) {
+    const toolName = String(toolCall?.name || '').trim() || 'unknown-tool';
+    if (toolName !== SEARCH_AGENT_CAPABILITIES_TOOL_NAME) {
+      toolEvents.push({ name: toolName, success: false });
+      continue;
+    }
+    const query = String(toolCall?.arguments?.query || '').trim();
+    searchResult = capabilitySession.searchCapabilities(query, toolCall?.arguments?.limit);
+    toolEvents.push({
+      name: toolName,
+      success: searchResult.matches.length > 0
+    });
+  }
+
+  let requestResponse;
+  const successfulSearchCount = toolEvents.filter((event) => (
+    event.name === SEARCH_AGENT_CAPABILITIES_TOOL_NAME && event.success
+  )).length;
+  if (successfulSearchCount === 1 && searchResult) {
+    requestResponse = await page.evaluate(async (input) => {
+      return window.designEcho.chatWithTools(
+        input.modelId,
+        input.messages,
+        input.tools,
+        input.options
+      );
+    }, {
+      modelId,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You are the second turn of a developer acceptance probe.',
+            'Use the supplied directory result and call requestAgentCapabilities exactly once with the smallest sufficient capability id set.',
+            'Do not call search again, answer with plain text, or call any business tool.'
+          ].join(' ')
+        },
+        { role: 'user', content: acceptanceCase.userInput },
+        { role: 'user', content: `Capability directory result:\n${JSON.stringify(searchResult)}` }
+      ],
+      tools: capabilitySession.activeTools,
+      options: {
+        maxTokens: 320,
+        temperature: 0,
+        purpose: 'agent_capability_provider_probe_request',
+        silent: true,
+        stream: false
+      }
+    });
+  }
+
+  const requestToolCalls = Array.isArray(requestResponse?.toolCalls) ? requestResponse.toolCalls : [];
+  for (const toolCall of requestToolCalls) {
     const toolName = String(toolCall?.name || '').trim() || 'unknown-tool';
     if (toolName !== REQUEST_AGENT_CAPABILITIES_TOOL_NAME) {
       toolEvents.push({ name: toolName, success: false });
@@ -836,10 +899,11 @@ async function runCapabilityProviderCase(page, acceptanceCase, modelId) {
     issueLayers: status === 'passed' ? [] : ['model', 'tool'],
     metrics: {
       toolCount: toolEvents.length,
-      providerToolCallCount: toolCalls.length,
+      providerToolCallCount: searchToolCalls.length + requestToolCalls.length,
+      providerTurnCount: requestResponse ? 2 : 1,
       exposedToolSchemaCount: capabilitySession.activeTools.length,
-      modelContentChars: String(response?.content || '').length,
-      modelThinkingChars: String(response?.thinking || '').length
+      modelContentChars: String(searchResponse?.content || '').length + String(requestResponse?.content || '').length,
+      modelThinkingChars: String(searchResponse?.thinking || '').length + String(requestResponse?.thinking || '').length
     },
     checkCount: 1,
     capabilityProbe
@@ -1022,7 +1086,7 @@ async function main() {
           'Real provider mode did not set DESIGNECHO_CHAT_TEST_FAKE_MODEL.',
           'Fake Photoshop stayed enabled so the probe cannot modify a real document.',
           'The Harness activated selected Capability ids in memory without executing any loaded Tool.',
-          'Each case required exactly one requestAgentCapabilities call; any competing initial Tool selection failed the probe.',
+          'Each case required one directory search followed by exactly one requestAgentCapabilities call; competing Tool selections failed the probe.',
           'Requested and activated Capability ids satisfied the pure minimal-selection evaluator.'
         ]
       : NO_REDO_PROBE_MODE
@@ -1050,7 +1114,7 @@ async function main() {
           'This probe can call the configured live model provider only when explicitly armed.',
           'It records only allowlisted Capability control fields and never arbitrary Tool arguments.',
           'The provider sees the production generic initial schema set; no returned Tool call is executed.',
-          'Only requestAgentCapabilities selections are applied to the in-memory Capability Session.',
+          'searchAgentCapabilities is read-only; only requestAgentCapabilities selections are applied to the in-memory Capability Session.',
           'It uses fake Photoshop as defense in depth and cannot modify a real document.',
           'It measures constrained Capability selection, not normal conversation or design quality.'
         ]

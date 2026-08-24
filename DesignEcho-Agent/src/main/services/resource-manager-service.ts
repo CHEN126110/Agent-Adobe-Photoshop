@@ -13,6 +13,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import sharp from 'sharp';
 import { readPsd, initializeCanvas } from 'ag-psd';
+import { diversifyAssetRecommendationShortlist } from '../../shared/asset-recommendation-shortlist';
 import { buildAgentResourceCacheBudget } from '../../shared/agent-performance-policy';
 import { extractModelJsonObject } from '../../shared/model-json-extract';
 import { measureComposition } from '../../shared/composition-metrics';
@@ -586,6 +587,39 @@ export interface ProjectContactSheetOverviewObservation {
         role: string;
         reason?: string;
     }>;
+    /**
+     * 这张有界总览内实际可见的视觉库存。它只陈述观察事实与未知，
+     * 不代表完整项目盘点，也不替 Agent 选择素材或设计方向。
+     */
+    visualInventory?: {
+        scope: {
+            renderedImageIds: string[];
+            failedImageIds: string[];
+        };
+        visibleSubjectGroups: Array<{
+            label: string;
+            visibleTraits: string[];
+            basisImageIds: string[];
+            certainty: 'clear' | 'tentative';
+        }>;
+        visibleVariantGroups: Array<{
+            label: string;
+            visibleVariants: string[];
+            basisImageIds: string[];
+            certainty: 'clear' | 'tentative';
+        }>;
+        shootingCoverage: Array<{
+            shotType: ProjectVisualShotType;
+            description?: string;
+            basisImageIds: string[];
+            certainty: 'clear' | 'tentative';
+        }>;
+        uncertainCoverage: Array<{
+            topic: string;
+            reason?: string;
+            basisImageIds: string[];
+        }>;
+    };
     nextSingleImageChecks: string[];
     rawText?: string;
 }
@@ -689,11 +723,25 @@ export interface AssetRecommendationOptions {
 export interface AssetRecommendationResult {
     success: boolean;
     recommendations?: AssetRecommendation[];
+    /**
+     * 与 recommendations 使用同一编号的候选联系表。Runtime 会把这张图作为视觉观察
+     * 回传给主 Agent；排序文字不能代替主 Agent 亲眼比较候选。
+     */
+    sheet?: ProjectContactSheetOverviewResult['sheet'];
+    comparisonItems?: Array<{
+        id: string;
+        path: string;
+        relativePath?: string;
+        status: 'rendered' | 'failed';
+    }>;
     warnings?: string[];
     visualComparison?: {
         status: 'observed' | 'metadata_only';
         comparedCount: number;
         modelCallCount: 0 | 1;
+        /** 推荐分数只提供任务相关证据，不能成为最终选图授权。 */
+        rankingIsAdvisory: true;
+        agentSelectsFinalAsset: true;
     };
     error?: string;
 }
@@ -812,6 +860,14 @@ ${manifest}
 - 完全看不到可识别商品时，status 为 missing；
 - 只有 status=resolved 时才填写 primaryProduct，并至少提供一个实际看见且 status=rendered 的编号作为 basisImageIds。
 
+再把这张有界总览中实际可见的视觉库存说明清楚：
+- visibleSubjectGroups：按可见主体/内容族分组；同一主体的颜色、角度、模特展示通常属于同一组，互不相关的主体才分组。不要用文件夹名替代视觉观察；
+- visibleVariantGroups：记录画面中能分辨的颜色、款式、造型、视角或状态等变体；只写看得见的差异，不声称已经覆盖项目全部变体；
+- shootingCoverage：记录已看见的拍摄/呈现覆盖，shotType 只能是 flat_lay、on_model、detail_closeup、package、chart、scene、other；
+- uncertainCoverage：记录总览仍不能确定的覆盖或关系，例如变体是否齐全、主体组是否属于同一系列、细节是否足以判断。没有看见不等于项目中不存在；
+- 每条主体、变体和拍摄覆盖事实都必须给出至少一个 status=rendered 的 basisImageIds。certainty=clear 表示缩略图足以确认，tentative 表示仍需单图复核；
+- 这份库存只描述所给总览，不选择主视觉、不规定素材用途、不输出设计方案。
+
 输出 JSON，字段：
 {
   "projectStyle": "整体拍摄/视觉风格",
@@ -824,11 +880,56 @@ ${manifest}
   },
   "sellingPoints": ["从画面可支持的卖点或用户关注点"],
   "imageRoles": [{"id":"A01","role":"SKU/主图/详情页/细节/场景/待确认","reason":"依据"}],
+  "visualInventory": {
+    "visibleSubjectGroups": [{"label":"可见主体/内容族","visibleTraits":["可见特征"],"basisImageIds":["A01"],"certainty":"clear|tentative"}],
+    "visibleVariantGroups": [{"label":"变体群","visibleVariants":["画面可见的颜色/款式/视角/状态"],"basisImageIds":["A01"],"certainty":"clear|tentative"}],
+    "shootingCoverage": [{"shotType":"flat_lay|on_model|detail_closeup|package|chart|scene|other","description":"画面实际覆盖","basisImageIds":["A01"],"certainty":"clear|tentative"}],
+    "uncertainCoverage": [{"topic":"仍不能确定的覆盖或关系","reason":"为什么总览不足以确认","basisImageIds":[]}]
+  },
   "nextSingleImageChecks": ["后续需要单图放大复核的编号"]
 }`;
 }
 
-function normalizeContactSheetObservation(rawText: string): ProjectContactSheetOverviewObservation {
+const CONTACT_SHEET_SHOT_TYPE_VALUES: readonly ProjectVisualShotType[] = [
+    'flat_lay',
+    'on_model',
+    'detail_closeup',
+    'package',
+    'chart',
+    'scene',
+    'other'
+];
+
+function normalizeContactSheetEvidenceIds(values: unknown, renderedImageIds: ReadonlySet<string>): string[] {
+    return Array.from(new Set(normalizeContactSheetTextList(values)
+        .map((value) => value.toUpperCase())
+        .filter((value) => renderedImageIds.has(value))));
+}
+
+function normalizeContactSheetCertainty(value: unknown): 'clear' | 'tentative' {
+    return cleanContactSheetText(value).toLowerCase() === 'clear' ? 'clear' : 'tentative';
+}
+
+export function normalizeContactSheetObservation(
+    rawText: string,
+    contactSheetItems: readonly Pick<ProjectContactSheetOverviewItem, 'id' | 'status'>[] = []
+): ProjectContactSheetOverviewObservation {
+    const renderedImageIds = new Set(contactSheetItems
+        .filter((item) => item.status === 'rendered')
+        .map((item) => item.id.toUpperCase()));
+    const failedImageIds = contactSheetItems
+        .filter((item) => item.status === 'failed')
+        .map((item) => item.id.toUpperCase());
+    const emptyVisualInventory: NonNullable<ProjectContactSheetOverviewObservation['visualInventory']> = {
+        scope: {
+            renderedImageIds: Array.from(renderedImageIds),
+            failedImageIds
+        },
+        visibleSubjectGroups: [],
+        visibleVariantGroups: [],
+        shootingCoverage: [],
+        uncertainCoverage: []
+    };
     const parsed = extractModelJsonObject(rawText)?.value as any;
     if (!parsed || typeof parsed !== 'object') {
         return {
@@ -839,6 +940,7 @@ function normalizeContactSheetObservation(rawText: string): ProjectContactSheetO
             },
             sellingPoints: [],
             imageRoles: [],
+            visualInventory: emptyVisualInventory,
             nextSingleImageChecks: [],
             rawText
         };
@@ -849,32 +951,104 @@ function normalizeContactSheetObservation(rawText: string): ProjectContactSheetO
         ? parsed.productResolution
         : {};
     const requestedStatus = cleanContactSheetText(resolution.status).toLowerCase();
-    const status = requestedStatus === 'resolved'
+    let status: ProjectContactSheetOverviewObservation['productResolution']['status'] = requestedStatus === 'resolved'
         || requestedStatus === 'ambiguous'
         || requestedStatus === 'missing'
         ? requestedStatus
         : 'missing';
-    const primaryProduct = status === 'resolved'
+    let primaryProduct = status === 'resolved'
         ? cleanContactSheetText(resolution.primaryProduct)
         : '';
+    const basisImageIds = normalizeContactSheetEvidenceIds(resolution.basisImageIds, renderedImageIds);
+    const candidates = normalizeContactSheetTextList(resolution.candidates);
+    if (status === 'resolved' && (!primaryProduct || basisImageIds.length === 0)) {
+        status = 'ambiguous';
+        if (primaryProduct && !candidates.includes(primaryProduct)) candidates.unshift(primaryProduct);
+        primaryProduct = '';
+    }
+
+    const inventory = parsed.visualInventory && typeof parsed.visualInventory === 'object'
+        ? parsed.visualInventory
+        : {};
+    const subjectGroups = Array.isArray(inventory.visibleSubjectGroups)
+        ? inventory.visibleSubjectGroups
+        : [];
+    const variantGroups = Array.isArray(inventory.visibleVariantGroups)
+        ? inventory.visibleVariantGroups
+        : [];
+    const shootingCoverage = Array.isArray(inventory.shootingCoverage)
+        ? inventory.shootingCoverage
+        : [];
+    const uncertainCoverage = Array.isArray(inventory.uncertainCoverage)
+        ? inventory.uncertainCoverage
+        : [];
+
     return {
         projectStyle: cleanContactSheetText(parsed.projectStyle) || undefined,
         productUnderstanding: cleanContactSheetText(parsed.productUnderstanding) || undefined,
         productResolution: {
             status,
             ...(primaryProduct ? { primaryProduct } : {}),
-            candidates: normalizeContactSheetTextList(resolution.candidates),
-            basisImageIds: normalizeContactSheetTextList(resolution.basisImageIds)
+            candidates,
+            basisImageIds
         },
         sellingPoints: normalizeContactSheetTextList(parsed.sellingPoints),
         imageRoles: roleItems
             .map((item: any) => ({
-                id: cleanContactSheetText(item?.id),
+                id: cleanContactSheetText(item?.id).toUpperCase(),
                 role: cleanContactSheetText(item?.role),
                 reason: cleanContactSheetText(item?.reason) || undefined
             }))
-            .filter((item: { id: string; role: string }) => item.id && item.role),
-        nextSingleImageChecks: normalizeContactSheetTextList(parsed.nextSingleImageChecks),
+            .filter((item: { id: string; role: string }) => (
+                item.id
+                && item.role
+                && renderedImageIds.has(item.id)
+            )),
+        visualInventory: {
+            ...emptyVisualInventory,
+            visibleSubjectGroups: subjectGroups
+                .map((item: any) => ({
+                    label: cleanContactSheetText(item?.label),
+                    visibleTraits: normalizeContactSheetTextList(item?.visibleTraits),
+                    basisImageIds: normalizeContactSheetEvidenceIds(item?.basisImageIds, renderedImageIds),
+                    certainty: normalizeContactSheetCertainty(item?.certainty)
+                }))
+                .filter((item: { label: string; basisImageIds: string[] }) => (
+                    item.label && item.basisImageIds.length > 0
+                )),
+            visibleVariantGroups: variantGroups
+                .map((item: any) => ({
+                    label: cleanContactSheetText(item?.label),
+                    visibleVariants: normalizeContactSheetTextList(item?.visibleVariants),
+                    basisImageIds: normalizeContactSheetEvidenceIds(item?.basisImageIds, renderedImageIds),
+                    certainty: normalizeContactSheetCertainty(item?.certainty)
+                }))
+                .filter((item: { label: string; basisImageIds: string[] }) => (
+                    item.label && item.basisImageIds.length > 0
+                )),
+            shootingCoverage: shootingCoverage
+                .map((item: any) => ({
+                    shotType: cleanContactSheetText(item?.shotType).toLowerCase() as ProjectVisualShotType,
+                    description: cleanContactSheetText(item?.description) || undefined,
+                    basisImageIds: normalizeContactSheetEvidenceIds(item?.basisImageIds, renderedImageIds),
+                    certainty: normalizeContactSheetCertainty(item?.certainty)
+                }))
+                .filter((item: { shotType: ProjectVisualShotType; basisImageIds: string[] }) => (
+                    CONTACT_SHEET_SHOT_TYPE_VALUES.includes(item.shotType)
+                    && item.basisImageIds.length > 0
+                )),
+            uncertainCoverage: uncertainCoverage
+                .map((item: any) => ({
+                    topic: cleanContactSheetText(item?.topic),
+                    reason: cleanContactSheetText(item?.reason) || undefined,
+                    basisImageIds: normalizeContactSheetEvidenceIds(item?.basisImageIds, renderedImageIds)
+                }))
+                .filter((item: { topic: string }) => item.topic)
+        },
+        nextSingleImageChecks: normalizeContactSheetEvidenceIds(
+            parsed.nextSingleImageChecks,
+            renderedImageIds
+        ),
         rawText
     };
 }
@@ -961,6 +1135,7 @@ function buildAssetRecommendationComparisonPrompt(input: {
 ${manifest}
 
 只基于总览图中真实可见内容和清单中的 sourceAlpha 判断，不要根据文件名臆测。
+- A01、A02 等编号只用于绑定图片身份，不表示推荐顺序、排名或优先级；必须比较真实画面后判断。
 - visualScore：该素材对当前设计需求/职责/落位意图的适配度，0-100；视觉内容是主依据。
 - visualRole 只能是 hero_product | hero_scene | model_context | detail_evidence | material_evidence | background | decorative | reference | unknown。
 - assetNature 只能是 raw_photo | finished_design；它只描述素材本质，不代表当前槽位是否可用。无法确认时省略该字段。
@@ -1137,7 +1312,9 @@ export class ResourceManagerService {
         }
 
         // 检查缓存
-        const cacheKey = `${targetPath}:${recursive}:${includeDesignFiles}`;
+        // 扫描结果同时受深度与缩略图生成开关影响；缓存键必须覆盖全部行为参数。
+        // 否则一次浅层扫描会在 TTL 内污染随后更深的候选发现，让 Agent 只看到残缺库存。
+        const cacheKey = `${targetPath}:${recursive}:${includeDesignFiles}:${maxDepth}:${generateThumbnails}`;
         const cachedTime = this.lastCacheTime.get(cacheKey);
         if (cachedTime && Date.now() - cachedTime < this.cacheExpiry) {
             const cached = this.cachedResources.get(cacheKey);
@@ -1534,7 +1711,8 @@ export class ResourceManagerService {
         const warnings = [...contactSheet.warnings];
         const limitations = [
             ...contactSheet.limitations,
-            '总览视觉理解只适合判断整体风格、图片角色和候选方向；关键卖点仍需单图放大复核。'
+            '总览视觉理解只适合判断整体风格、图片角色和候选方向；关键卖点仍需单图放大复核。',
+            '视觉库存只覆盖本次总览成功渲染的编号，不能据此断言项目中不存在其他主体、变体或拍摄类型。'
         ];
 
         if (!contactSheet.success || !contactSheet.sheet?.imageData) {
@@ -1553,7 +1731,7 @@ export class ResourceManagerService {
                 `data:image/jpeg;base64,${contactSheet.sheet!.imageData}`,
                 prompt
             ));
-            const observation = normalizeContactSheetObservation(rawText);
+            const observation = normalizeContactSheetObservation(rawText, contactSheet.items);
 
             return {
                 success: true,
@@ -1862,7 +2040,9 @@ export class ResourceManagerService {
             includeDesignFiles: type !== 'image'
         });
 
-        const queryLower = query.toLowerCase();
+        // 模型省略 query（意图「列出全部」）时不能崩：undefined 归一为空串 = 全量匹配
+        //（真机 2026-08-23：undefined.toLowerCase 让「搜索项目资源」整步标红，其实只是想列目录）。
+        const queryLower = String(query ?? '').toLowerCase();
         
         let results = scanResult.files.filter(file => {
             // 类型筛选
@@ -2934,14 +3114,20 @@ Return JSON only.`;
                     success: true,
                     recommendations: [],
                     warnings,
-                    visualComparison: { status: 'metadata_only', comparedCount: 0, modelCallCount: 0 }
+                    visualComparison: {
+                        status: 'metadata_only',
+                        comparedCount: 0,
+                        modelCallCount: 0,
+                        rankingIsAdvisory: true,
+                        agentSelectsFinalAsset: true
+                    }
                 };
             }
 
             const requirementKeywords = this.getRequirementKeywords(normalizedRequirement);
             const inferredCategory = category ? null : this.inferCategoryFromRequirement(normalizedRequirement);
 
-            const heuristicRanked = candidates
+            const heuristicRanked = diversifyAssetRecommendationShortlist(candidates
                 .map((file) => {
                     const heuristic = this.scoreCandidateFile(file, requirementKeywords, inferredCategory);
                     return {
@@ -2956,8 +3142,7 @@ Return JSON only.`;
                         return String(a.file.path || '').localeCompare(String(b.file.path || ''));
                     }
                     return 0;
-                })
-                .slice(0, 12);
+                }), 12);
 
             const recommendations: AssetRecommendation[] = [];
             // 定点 placeImage 默认比较 5 张；详情页库存冷启动显式请求 12 时仍只做同一次联系表调用，
@@ -2966,6 +3151,8 @@ Return JSON only.`;
             const visionCandidates = heuristicRanked.slice(0, visionCandidateLimit);
             let visionById = new Map<string, AssetRecommendationVisionCandidate>();
             let modelCallCount: 0 | 1 = 0;
+            let comparisonSheet: ProjectContactSheetOverviewResult['sheet'] | undefined;
+            let comparisonItems: AssetRecommendationResult['comparisonItems'];
             if (visionCandidates.length > 0) {
                 try {
                     const contactSheet = await this.createProjectContactSheetOverview({
@@ -2982,15 +3169,18 @@ Return JSON only.`;
                         tileHeight: 360
                     });
                     if (contactSheet.success && contactSheet.sheet?.imageData) {
-                        const comparisonItems = contactSheet.items.map((item, index) => ({
+                        comparisonSheet = contactSheet.sheet;
+                        comparisonItems = contactSheet.items.map((item, index) => ({
                             id: item.id,
-                            file: visionCandidates[index]?.file,
+                            path: visionCandidates[index]?.file.path || item.path,
+                            relativePath: visionCandidates[index]?.file.relativePath || item.relativePath,
                             status: item.status
                         })).filter((item): item is {
                             id: string;
-                            file: ResourceFile;
+                            path: string;
+                            relativePath: string | undefined;
                             status: 'rendered' | 'failed';
-                        } => Boolean(item.file));
+                        } => Boolean(item.path));
                         const renderedIds = new Set(comparisonItems
                             .filter((item) => item.status === 'rendered')
                             .map((item) => item.id.toUpperCase()));
@@ -2998,7 +3188,11 @@ Return JSON only.`;
                             requirement: normalizedRequirement,
                             designRole,
                             placementIntent,
-                            items: comparisonItems
+                            items: comparisonItems.map((item, index) => ({
+                                id: item.id,
+                                file: visionCandidates[index].file,
+                                status: item.status
+                            }))
                         });
                         modelCallCount = 1;
                         const response = await this.runWithVisionCallGate(() => visionModelCall(
@@ -3080,14 +3274,22 @@ Return JSON only.`;
                 }
                 return 0;
             });
+            const modelVisibleRecommendations = diversifyAssetRecommendationShortlist(
+                recommendations,
+                resultLimit
+            );
             return {
                 success: true,
-                recommendations: recommendations.slice(0, resultLimit),
+                recommendations: modelVisibleRecommendations,
+                ...(comparisonSheet ? { sheet: comparisonSheet } : {}),
+                ...(comparisonItems && comparisonItems.length > 0 ? { comparisonItems } : {}),
                 warnings,
                 visualComparison: {
                     status: recommendations.some((item) => item.visualObserved) ? 'observed' : 'metadata_only',
                     comparedCount: recommendations.filter((item) => item.visualObserved).length,
-                    modelCallCount
+                    modelCallCount,
+                    rankingIsAdvisory: true,
+                    agentSelectsFinalAsset: true
                 }
             };
         } catch (e) {

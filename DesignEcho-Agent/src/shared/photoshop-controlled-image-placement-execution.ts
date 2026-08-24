@@ -4,7 +4,20 @@ import {
     type ImagePlacementVerification,
     verifyImagePlacement
 } from './design-image-placement-core';
-import { DEFAULT_SMART_SCALING_PRESET } from './design-smart-scaling-policy';
+import type { SmartScalingPreset } from './design-smart-scaling-policy';
+
+const VERIFICATION_ONLY_GEOMETRY: SmartScalingPreset = Object.freeze({
+    scaleMode: 'contain',
+    targetFill: 1,
+    minFill: 1,
+    maxFill: 1,
+    anchor: 'center',
+    cropPolicy: 'protect-subject',
+    visualBiasY: 0,
+    preserveSubject: true,
+    minScale: 0.01,
+    maxScale: 100
+});
 
 export type ControlledPhotoshopImagePlacementPlanKind = 'image-slot-placement';
 
@@ -581,7 +594,7 @@ function makeFallbackPlacementPlan(
             fallbackUsed: true,
             reasons: ['fallback-controlled-image-placement'],
             warnings: ['fallback placement plan used because source plan was not attached to tool-call compilation'],
-            preset: DEFAULT_SMART_SCALING_PRESET
+            preset: VERIFICATION_ONLY_GEOMETRY
         },
         execution: {
             tool: 'placeImage',

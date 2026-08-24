@@ -12,6 +12,8 @@ import {
 import { useAppStore, EcommerceProjectStructure, type ProjectInfo } from './stores/app.store';
 import { createDesignLearningRuntimeEntryController } from './services/design-learning-runtime-entry.service';
 import { installManualSkuColorCardBridge } from './services/manual-sku-color-card-bridge';
+import { canonicalizeProjectSession } from './services/project-session-identity';
+import { normalizeModelPreferences } from '../shared/config/models.config';
 
 const DesignAgentWorkbench = lazy(() =>
     import('./components/DesignAgentWorkbench').then((module) => ({ default: module.DesignAgentWorkbench }))
@@ -36,6 +38,7 @@ function App() {
         INITIAL_WORKSPACE_TABS_STATE
     );
     const [chatDraftRequest, setChatDraftRequest] = useState<{ revision: number; text: string } | null>(null);
+    const [canonicalProjectReadyPath, setCanonicalProjectReadyPath] = useState<string | null>(null);
     const {
         setPluginConnected,
         isPluginConnected,
@@ -113,7 +116,17 @@ function App() {
 
                 const modelResult = await api.listCodexSubscriptionModels(false);
                 if (disposed || requestRevision !== revision) return;
-                upsertDynamicModels('openai-codex', modelResult.success ? modelResult.models : []);
+                if (!modelResult.success) {
+                    // 已登录但目录暂时不可用，不等于账号没有模型。保留上一次已验证目录并
+                    // 有限重试；清空会让 renderer 与主进程在冷启动阶段形成不同模型事实。
+                    if (attempt < 4) {
+                        scheduleHydration(500 * (attempt + 1), attempt + 1);
+                        return;
+                    }
+                    console.warn('[App] ChatGPT 订阅模型目录恢复失败:', modelResult.error || 'unknown');
+                    return;
+                }
+                upsertDynamicModels('openai-codex', modelResult.models);
             } catch (error) {
                 if (disposed || requestRevision !== revision) return;
                 if (attempt < 4) {
@@ -152,6 +165,27 @@ function App() {
         };
     }, [upsertDynamicModels]);
 
+    // Claude 订阅模型目录：启动拉一次（覆盖持久化旧条目），主进程完成真实型号解析后再拉一次。
+    // 不依赖设置页卡片挂载——用户直接聊天也能拿到带具体型号 id 的最新目录。
+    useEffect(() => {
+        let disposed = false;
+        const pullClaudeModels = async (): Promise<void> => {
+            // 旧主进程可能没有 Claude handlers：IPC 失败静默降级，不抛全局未处理拒绝。
+            const result = await window.designEcho?.listClaudeSubscriptionModels?.().catch(() => null);
+            if (!disposed && result?.success && Array.isArray(result.models) && result.models.length > 0) {
+                upsertDynamicModels('claude-subscription', result.models);
+            }
+        };
+        void pullClaudeModels();
+        const unsubscribeModelsReady = window.designEcho?.onClaudeSubscriptionModelsReady?.(() => {
+            void pullClaudeModels();
+        });
+        return () => {
+            disposed = true;
+            unsubscribeModelsReady?.();
+        };
+    }, [upsertDynamicModels]);
+
     const commitProjectSession = useCallback((project: ProjectInfo | null, pendingDraft?: string): void => {
         const nextSession = project ? `${project.id}:${project.path}` : null;
         if (workspaceProjectSessionRef.current !== nextSession) {
@@ -171,6 +205,42 @@ function App() {
             text: normalizedDraft
         });
     }, [setCurrentProject, setEcommerceStructure]);
+
+    useEffect(() => {
+        const selectedProject = currentProject;
+        if (!selectedProject?.path) {
+            setCanonicalProjectReadyPath(null);
+            return;
+        }
+        if (canonicalProjectReadyPath === selectedProject.path) return;
+
+        let cancelled = false;
+        setCanonicalProjectReadyPath(null);
+        const resolveIdentity = async (): Promise<void> => {
+            try {
+                const canonicalProject = await canonicalizeProjectSession(selectedProject);
+                if (cancelled) return;
+                const latestProject = useAppStore.getState().currentProject;
+                if (latestProject?.id !== selectedProject.id || latestProject.path !== selectedProject.path) return;
+
+                const identityChanged = canonicalProject.path !== selectedProject.path
+                    || canonicalProject.name !== selectedProject.name
+                    || JSON.stringify(canonicalProject.folders) !== JSON.stringify(selectedProject.folders);
+                if (identityChanged) {
+                    useAppStore.getState().addRecentProject(canonicalProject);
+                    setCurrentProject(canonicalProject);
+                    return;
+                }
+                setCanonicalProjectReadyPath(canonicalProject.path);
+            } catch (error) {
+                console.error('[App] 项目身份解析失败，已停止项目扫描以避免写入错误目录:', error);
+            }
+        };
+        void resolveIdentity();
+        return () => {
+            cancelled = true;
+        };
+    }, [canonicalProjectReadyPath, currentProject, setCurrentProject]);
 
     const activateWorkspacePage = useCallback((tabId: WorkspacePageKind): void => {
         dispatchWorkspaceTabs({ type: 'activate', tabId });
@@ -298,12 +368,13 @@ function App() {
     // 持久化恢复或受控测试桥之外的直接 Store 切换也必须进入同一个会话事务。
     useEffect(() => {
         const synchronizedProject = useAppStore.getState().currentProject;
+        if (synchronizedProject && canonicalProjectReadyPath !== synchronizedProject.path) return;
         const currentSession = synchronizedProject
             ? `${synchronizedProject.id}:${synchronizedProject.path}`
             : null;
         if (workspaceProjectSessionRef.current === currentSession) return;
         commitProjectSession(synchronizedProject);
-    }, [commitProjectSession, currentProject?.id, currentProject?.path]);
+    }, [canonicalProjectReadyPath, commitProjectSession, currentProject?.id, currentProject?.path]);
 
     // 启动时同步 API Keys 到主进程（zustand persist 恢复后）
     useEffect(() => {
@@ -364,7 +435,9 @@ function App() {
                 if (!shouldPatch) return;
                 useAppStore.setState({
                     apiKeys: fallbackState.apiKeys || current.apiKeys,
-                    modelPreferences: fallbackState.modelPreferences || current.modelPreferences,
+                    modelPreferences: normalizeModelPreferences(
+                        fallbackState.modelPreferences || current.modelPreferences
+                    ),
                     currentProject: skipFallbackProjectRestore ? current.currentProject : (fallbackState.currentProject || current.currentProject),
                     recentProjects: Array.isArray(fallbackState.recentProjects) ? fallbackState.recentProjects : current.recentProjects
                 });
@@ -377,7 +450,19 @@ function App() {
         return () => clearTimeout(timer);
     }, []);
 
+    // 主进程资源分析与 renderer 主 Agent 必须使用同一个模型选择。模型偏好已由
+    // Zustand 同步水合，挂载和每次修改后立即投影到主进程；备份状态的 300ms 防抖
+    // 只负责磁盘冗余，不能再充当运行时模型同步机制。
     useEffect(() => {
+        Promise.resolve(
+            window.designEcho?.setModelPreferences?.({ ...modelPreferences, dynamicModels })
+        ).catch((error: any) => {
+            console.warn('[App] 同步模型偏好到主进程失败:', error);
+        });
+    }, [dynamicModels, modelPreferences]);
+
+    useEffect(() => {
+        if (currentProject && canonicalProjectReadyPath !== currentProject.path) return;
         if (!stateFallbackLoaded.current) return;
         if (stateSaveTimer.current) {
             clearTimeout(stateSaveTimer.current);
@@ -391,28 +476,18 @@ function App() {
             }).catch((error: any) => {
                 console.warn('[App] 保存主进程备份状态失败:', error);
             });
-            // 同步模型偏好到主进程 taskOrchestrator：主进程启动时是 DEFAULT_PREFERENCES，
-            // 之前只有用户手动改设置才推送——每次重启后主进程的视觉/文案模型选择
-            // 都退回默认（本地 llava），用户配置的视觉模型从未在素材分析中生效（实测）。
-            // 该 effect 在挂载与偏好变化时都会运行，恰好覆盖启动同步。
-            // 同时下发可持久化 provider 的动态模型，作主进程注册表的冷启动回灌。
-            // ChatGPT 订阅目录是会话态，不落盘；它由上面的账户验证流程单独恢复。
-            Promise.resolve(
-                window.designEcho?.setModelPreferences?.({ ...modelPreferences, dynamicModels })
-            ).catch((error: any) => {
-                console.warn('[App] 同步模型偏好到主进程失败:', error);
-            });
         }, 300);
         return () => {
             if (stateSaveTimer.current) {
                 clearTimeout(stateSaveTimer.current);
             }
         };
-    }, [apiKeys, modelPreferences, dynamicModels, currentProject, recentProjects]);
+    }, [apiKeys, canonicalProjectReadyPath, modelPreferences, currentProject, recentProjects]);
 
     // 项目恢复、切换或关闭时，把同一根目录同步给主进程资源服务。
     // UI 项目状态与资源服务必须共享一个真相源，否则重启后 Agent 会看到素材索引，却读不到活动项目身份。
     useEffect(() => {
+        if (currentProject && canonicalProjectReadyPath !== currentProject.path) return;
         const nextProjectRoot = String(currentProject?.path || '').trim();
         if (projectRootSynced.current === nextProjectRoot) return;
 
@@ -431,12 +506,13 @@ function App() {
         return () => {
             cancelled = true;
         };
-    }, [currentProject?.path]);
+    }, [canonicalProjectReadyPath, currentProject?.path]);
 
     // 当项目从存储恢复或切换时，自动扫描电商项目结构
     useEffect(() => {
         const scanProject = async () => {
             if (!currentProject?.path) return;
+            if (canonicalProjectReadyPath !== currentProject.path) return;
             const requestedProjectPath = currentProject.path;
 
             const needsScan = !ecommerceStructure || ecommerceStructure.projectPath !== requestedProjectPath;
@@ -464,10 +540,11 @@ function App() {
 
         const timer = setTimeout(scanProject, 300);
         return () => clearTimeout(timer);
-    }, [currentProject?.path, ecommerceStructure?.projectPath, setEcommerceStructure]);
+    }, [canonicalProjectReadyPath, currentProject?.path, ecommerceStructure?.projectPath, setEcommerceStructure]);
 
     useEffect(() => {
         if (!currentProject && !ecommerceStructure) return;
+        if (currentProject && canonicalProjectReadyPath !== currentProject.path) return;
         const projectKey = [
             currentProject?.id || '',
             currentProject?.path || '',
@@ -495,7 +572,7 @@ function App() {
         }, 600);
 
         return () => clearTimeout(timer);
-    }, [currentProject, ecommerceStructure]);
+    }, [canonicalProjectReadyPath, currentProject, ecommerceStructure]);
 
     const handleProjectOpen = useCallback((project: ProjectInfo, pendingDraft?: string): void => {
         commitProjectSession(project, pendingDraft);

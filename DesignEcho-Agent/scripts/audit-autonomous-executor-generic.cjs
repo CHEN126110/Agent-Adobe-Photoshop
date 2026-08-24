@@ -247,6 +247,18 @@ function run() {
     ];
     const legacyDisciplineToolPolicyViolations = retiredDisciplineToolPolicyNames
         .filter((name) => identifierCount(disciplineSourceFile, name) > 0);
+    const advisoryDisciplineViolations = [
+        ...['stage-plan', 'framework-halt', 'redo-cap', 'observe-before-export']
+            .filter((category) => !disciplineText.includes(`'${category}'`))
+            .map((category) => `missing-advisory-category:${category}`),
+        ...(!disciplineText.includes('isAdvisoryDisciplineGuardResult')
+            || !sourceText.includes('isAdvisoryDisciplineGuardResult(designDisciplineGuardResult)')
+            ? ['missing-advisory-execution-path']
+            : []),
+        ...(!disciplineText.includes('&& !c.trustedCreateDocumentAuthorization')
+            ? ['duplicate-document-guard-missing-independent-target-authorization']
+            : [])
+    ];
 
     const checks = [
         {
@@ -324,6 +336,11 @@ function run() {
             id: 'legacy-discipline-tool-policy-retired',
             description: '设计纪律只消费执行结果，不得恢复已无生产消费者的品类 Tool 放行/暴露策略',
             violations: legacyDisciplineToolPolicyViolations
+        },
+        {
+            id: 'agentic-design-discipline-is-advisory',
+            description: '阶段计划、方法读取、观察节奏与修订次数只能提示；重复建档须允许可信独立交付目标',
+            violations: advisoryDisciplineViolations
         },
         {
             id: 'legacy-skill-bridge-business-neutrality',

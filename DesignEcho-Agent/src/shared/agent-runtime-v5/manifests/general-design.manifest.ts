@@ -29,6 +29,9 @@ export const GENERAL_DESIGN_MANIFEST: SkillRuntimeManifest = {
     version: '0.1.0',
     task_type: 'design.generic.v1',
     display_name: '通用视觉设计',
+    // 开放创意路径：不建 Stage 机、不以声明作写入门票（设计路径宪法）。runtime_stages 仅在
+    // 显式选择 staged 执行模型时才生效，这里保留是为了 manifest 结构完整与历史对照。
+    execution_model: 'agentic',
     legacy_skill_ids: [],
     required_inputs: ['goal'],
     optional_inputs: ['asset_source', 'canvas_size', 'brand_style', 'target_user'],

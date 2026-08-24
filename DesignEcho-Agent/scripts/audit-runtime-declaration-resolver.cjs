@@ -58,7 +58,8 @@ const {
   createPerformanceLedgerState,
   isInMutationExecutionReserveZone,
   readPerformanceBudgetExhaustion,
-  resolveExecutionSupplyReserve
+  resolveExecutionSupplyReserve,
+  takeObservationReserveAdvice
 } = require(path.resolve(
   __dirname,
   '..',
@@ -145,6 +146,24 @@ const {
   bindRuntimeSessionIdentity,
   createRuntimeSessionIdentity
 } = require(path.join(runtimeRoot, 'runtime-session.ts'));
+const {
+  buildDesignReviewSetFromSingleSurface
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'visual-observation-bundle.ts'
+));
+const {
+  extractFreshDesignSurfaceSnapshotFromToolResults
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'design-surface-snapshot-normalizer.ts'
+));
 
 const executableToolNames = Array.from(new Set([
   ...Object.values(LEGACY_TOOL_CAPABILITY_MAP).flat(),
@@ -408,7 +427,7 @@ assert.strictEqual(skuDefault.status, 'resolved');
 assert.deepStrictEqual(skuDefault.canonicalDeclaration, {
   taskType: 'ecommerce.sku_batch.v1'
 });
-assert.strictEqual(skuDefault.bundle.manifest.performance_profile?.budget.max_tool_calls, 50);
+assert.strictEqual(skuDefault.bundle.manifest.performance_profile?.budget.max_tool_calls, 100);
 assert.strictEqual(
   skuDefault.bundle.stagePlan.productionObligation,
   'photoshop_mutation_with_readback',
@@ -1215,8 +1234,8 @@ async function assertDeclaredWorkflowHandoffsDoNotTripFailureBreaker() {
 
 /**
  * 仅有 runner 投影和 nonFatal 标记仍不构成 Workflow handoff：没有声明
- * recovery allowlist 时必须继续计入同名工具失败。前三次 owner 真正执行，
- * Harness 允许一次失败关闭恢复后，第四次模型调用必须在 executor 前被 breaker 拦下。
+ * recovery allowlist 时必须继续计入同名工具失败，并在第三次真实失败后直接停止，
+ * 不再额外购买一个只用于生成阻断结果的模型回合。
  */
 async function assertProjectedBareNonFatalStillTripsFailureBreaker() {
   const skillName = 'sku-batch';
@@ -1289,14 +1308,9 @@ async function assertProjectedBareNonFatalStillTripsFailureBreaker() {
   const result = await agent.run('验证 bare nonFatal 不能绕过同名工具失败熔断');
   const ownerLogs = result.toolCallLog?.filter((entry) => entry.name === skillName) || [];
   assert.strictEqual(ownerExecutions.length, 3, 'projected bare nonFatal reached the owner more than three times');
-  assert.strictEqual(modelCallCount, 4, 'projected bare nonFatal did not reach the breaker verification turn');
+  assert.strictEqual(modelCallCount, 3, 'projected bare nonFatal bought an extra breaker-only model turn');
   assert.strictEqual(result.stopReason, 'no_progress');
-  assert.strictEqual(ownerLogs.length, 4, 'projected bare nonFatal did not record the blocked fourth owner call');
-  assert.strictEqual(
-    ownerLogs[ownerLogs.length - 1]?.result?.blockedByFailureBreaker,
-    true,
-    'projected bare nonFatal was incorrectly trusted as a declared Workflow handoff'
-  );
+  assert.strictEqual(ownerLogs.length, 3, 'projected bare nonFatal created a synthetic fourth owner record');
 }
 
 /**
@@ -2256,6 +2270,90 @@ async function assertKnownNotAppliedWriteDoesNotBlockFollowingSerialWrite() {
   );
 }
 
+/**
+ * 设计路径宪法（2026-08-17）：status=applied 且带同一 modal history 前进证明
+ * （photoshopMutationCommit.before→after）的成功写入，**不**建立写后读回义务，也**不**
+ * 锁住同一模型响应里的下一个串行写入。写入事实已在结果里，再让模型花一轮读回是把同一件事
+ * 买两次（真机 run 469：14 轮只写 6 层）。unknown / verification_failed / 无证明仍锁。
+ */
+async function assertProvenAppliedWriteDoesNotLockFollowingSerialWrite() {
+  const executedToolNames = [];
+  let modelCallCount = 0;
+  const agent = new Agent(
+    buildAgentTestConfig({
+      tools: [
+        requireAgentTool('getDocumentInfo'),
+        requireAgentTool('createRectangle'),
+        requireAgentTool('createEllipse')
+      ],
+      maxIterations: 3,
+      openingCanvasObservationMode: 'document_identity'
+    }),
+    async () => {
+      modelCallCount += 1;
+      if (modelCallCount === 1) {
+        return {
+          toolCalls: [
+            { id: 'applied-write-1', name: 'createRectangle', arguments: { x: 10, y: 10, width: 80, height: 80 } },
+            { id: 'applied-write-2', name: 'createEllipse', arguments: { x: 120, y: 20, width: 60, height: 60 } }
+          ]
+        };
+      }
+      return { content: '两处形状已画好。', stopReason: 'end_turn' };
+    },
+    async (toolName) => {
+      executedToolNames.push(toolName);
+      if (toolName === 'createRectangle' || toolName === 'createEllipse') {
+        const beforeId = toolName === 'createRectangle' ? 9 : 10;
+        return {
+          success: true,
+          documentId: 71,
+          photoshopOperationResult: {
+            version: 'photoshop-operation-result/v1',
+            operationId: `${toolName}-op`,
+            toolName,
+            status: 'applied',
+            applicationStatus: 'applied',
+            transactionState: 'committed',
+            effect: 'applied',
+            rollback: { attempted: false, verified: false },
+            before: { documentId: 71, historyStateId: beforeId },
+            after: { documentId: 71, historyStateId: beforeId + 1 }
+          },
+          photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'document_revision',
+            before: { documentId: 71, historyStateId: beforeId, activeLayerId: null },
+            after: { documentId: 71, historyStateId: beforeId + 1, activeLayerId: 4000 + beforeId },
+            toolActionCompleted: true,
+            mutationObserved: true,
+            documentChanged: false
+          }
+        };
+      }
+      return buildDocumentObservation();
+    }
+  );
+
+  await agent.run('在当前画布画两个形状');
+  assert.deepStrictEqual(
+    executedToolNames.slice(0, 3),
+    ['getDocumentInfo', 'createRectangle', 'createEllipse'],
+    'a proven applied write must not block the next independent serial write in the same turn'
+  );
+  assert.strictEqual(
+    agent.pendingRuntimeActionMutationReadback,
+    undefined,
+    'a proven applied result must not create a model-turn readback obligation'
+  );
+  assert.strictEqual(
+    agent.runtimeActionMutationWriteLocked,
+    false,
+    'a proven applied result must not establish the runtime mutation lock'
+  );
+}
+
 async function assertConfirmedProductionNarrowsAfterBoundedObservation() {
   const intentControlPlane = buildAutonomousExecutionDecisionForEngine(
     'runtime-declaration-audit:confirmed-production'
@@ -2275,11 +2373,12 @@ async function assertConfirmedProductionNarrowsAfterBoundedObservation() {
   const modelToolSurfaces = [];
   const executedToolNames = [];
   let modelCallCount = 0;
+  let maxAdviceMessagesInOneCall = 0;
   const agent = new Agent(
     {
       ...buildAgentTestConfig({
         tools,
-        maxIterations: 8,
+        maxIterations: 10,
         openingCanvasObservationMode: 'none',
         agentTaskPlan
       }),
@@ -2290,9 +2389,13 @@ async function assertConfirmedProductionNarrowsAfterBoundedObservation() {
         currentDocumentUse: 'active_target'
       }
     },
-    async (_modelId, _messages, visibleTools) => {
+    async (_modelId, messages, visibleTools) => {
       modelCallCount += 1;
       modelToolSurfaces.push(visibleTools.map((tool) => tool.name));
+      const adviceMessages = messages.filter((message) => (
+        message?.contextMetadata?.source === 'observation-reserve-advice'
+      )).length;
+      maxAdviceMessagesInOneCall = Math.max(maxAdviceMessagesInOneCall, adviceMessages);
       if (modelCallCount <= 7) {
         return {
           toolCalls: [{
@@ -2303,12 +2406,12 @@ async function assertConfirmedProductionNarrowsAfterBoundedObservation() {
         };
       }
       if (modelCallCount === 8) {
-        // GATE-SIMPLIFY-001：第 7 次写前观察被账本总上限（6）转为执行指令，
-        // 本守卫把收窄消息交给 liveness 恢复，下一轮可见面只含已授权的交付动作。
+        // 设计路径宪法（2026-08-17）：写前观察超限只提醒不拦截、也不收窄工具面——
+        // 第 8 轮模型仍应看见完整工具面（读 + 写），由它自己决定开始写入。
         assert.deepStrictEqual(
-          visibleTools.map((tool) => tool.name),
-          ['createRectangle'],
-          'merged pre-delivery observation limit did not narrow the next turn to an authorized production action'
+          [...visibleTools.map((tool) => tool.name)].sort(),
+          ['createRectangle', 'getDocumentInfo', 'getLayerHierarchy'],
+          'observation limit must not narrow the tool surface (advisory only)'
         );
         return {
           toolCalls: [{
@@ -2344,7 +2447,7 @@ async function assertConfirmedProductionNarrowsAfterBoundedObservation() {
 
   await agent.run('制作一张主图并在当前画布真实写入');
   assert.deepStrictEqual(
-    executedToolNames.slice(0, 7),
+    executedToolNames.slice(0, 8),
     [
       'getDocumentInfo',
       'getLayerHierarchy',
@@ -2352,15 +2455,21 @@ async function assertConfirmedProductionNarrowsAfterBoundedObservation() {
       'getLayerHierarchy',
       'getDocumentInfo',
       'getLayerHierarchy',
+      'getDocumentInfo',
       'createRectangle'
     ],
-    'confirmed production kept observing instead of reaching the first delivery action'
+    'all seven pre-delivery observations must execute (advisory contract), then the model writes'
   );
   assert(modelToolSurfaces[0].includes('getDocumentInfo'));
   assert(modelToolSurfaces[1].includes('getLayerHierarchy'));
   assert(
-    modelToolSurfaces.some((surface) => surface.length === 1 && surface[0] === 'createRectangle'),
-    'the narrowed delivery-tool surface never reached the model'
+    !modelToolSurfaces.some((surface) => surface.length === 1 && surface[0] === 'createRectangle'),
+    'the observation limit must never collapse the tool surface to a single write tool'
+  );
+  assert.strictEqual(
+    maxAdviceMessagesInOneCall,
+    1,
+    `the start-writing advice must reach the model exactly once, saw ${maxAdviceMessagesInOneCall}`
   );
 }
 
@@ -2646,17 +2755,22 @@ function assertExecutionSupplyReservePureAccounting() {
     toolArguments: {}
   });
   assert.strictEqual(fourthRead, undefined, 'fourth reserve-zone observation must pass (allowance 4)');
-  const blockedRead = consumePerformanceToolCallBudget({
+  // 设计路径宪法（2026-08-17）：超出 allowance 的观察**不再被拦截**——照常执行、照常记账，
+  // 账本只生成一次「该动手了」提醒交给模型（拦「看多了」必须降级为提示）。
+  assert.strictEqual(ledger.observationReserveAdviceDue, false, 'no advice before allowance is exceeded');
+  const excessRead = consumePerformanceToolCallBudget({
     ledger,
     budget,
     reserveContext,
     toolName: 'getLayerHierarchy',
     toolArguments: {}
   });
-  assert(blockedRead, 'excess reserve-zone observation must become an execution directive');
-  assert.strictEqual(blockedRead.code, 'agent_observation_budget_reserved');
-  assert.strictEqual(blockedRead.policyGate, true);
-  assert.strictEqual(ledger.toolCallCount, 48, 'blocked observation must not consume tool budget');
+  assert.strictEqual(excessRead, undefined, 'excess reserve-zone observation must still execute (advisory, not a gate)');
+  assert.strictEqual(ledger.toolCallCount, 49, 'executed observation consumes tool budget');
+  assert.strictEqual(ledger.observationReserveAdviceDue, true, 'excess observation must schedule the one-time advice');
+  const advice = takeObservationReserveAdvice(ledger);
+  assert(advice && advice.includes('直接'), 'advice must tell the model it can start writing now');
+  assert.strictEqual(takeObservationReserveAdvice(ledger), null, 'advice is taken exactly once');
 
   const writeAttempt = consumePerformanceToolCallBudget({
     ledger,
@@ -2666,8 +2780,11 @@ function assertExecutionSupplyReservePureAccounting() {
     toolArguments: { layerId: 1 }
   });
   assert.strictEqual(writeAttempt, undefined, 'write-class tools must pass the reserve gate');
+  // 写后读回必须永远放行：另起一本未耗尽的账本，避免与上面「观察照常记账」的硬预算耗尽混淆。
+  const postAttemptLedger = createPerformanceLedgerState();
+  postAttemptLedger.toolCallCount = 49;
   const readAfterAttempt = consumePerformanceToolCallBudget({
-    ledger,
+    ledger: postAttemptLedger,
     budget,
     reserveContext: { ...reserveContext, attemptedDeliveryAction: true },
     toolName: 'getLayerHierarchy',
@@ -2699,13 +2816,23 @@ function assertExecutionSupplyReservePureAccounting() {
     toolName: 'getDocumentInfo',
     toolArguments: {}
   });
-  assert(overLimitRead, 'seventh pre-delivery observation must become an execution directive');
-  assert.strictEqual(overLimitRead.code, 'agent_observation_budget_reserved');
+  assert.strictEqual(overLimitRead, undefined, 'seventh pre-delivery observation still executes (advisory only)');
   assert.strictEqual(
     totalLimitLedger.toolCallCount,
-    6,
-    'blocked observation must not consume tool budget'
+    7,
+    'executed observation consumes tool budget'
   );
+  assert.strictEqual(totalLimitLedger.observationReserveAdviceDue, true, 'total limit schedules the one-time advice');
+  assert(takeObservationReserveAdvice(totalLimitLedger), 'advice can be taken once');
+  const eighthRead = consumePerformanceToolCallBudget({
+    ledger: totalLimitLedger,
+    budget,
+    reserveContext,
+    toolName: 'getDocumentInfo',
+    toolArguments: {}
+  });
+  assert.strictEqual(eighthRead, undefined, 'later observations still execute');
+  assert.strictEqual(totalLimitLedger.observationReserveAdviceDue, false, 'advice is issued at most once per run');
 
   const exhaustedLedger = createPerformanceLedgerState();
   exhaustedLedger.toolCallCount = 50;
@@ -2827,13 +2954,15 @@ async function assertExecutionSupplyReserveGatesObservationInLiveLoop() {
     );
   }
 
-  // 场景 B：第 7 次写前观察被转为执行指令且不真正执行（总上限触发，独立于预算尾部）。
-  // GATE-SIMPLIFY-001 新契约：本轮发出了指令后，若无交付工具可收窄（本场景只有读取工具），
-  // 运行立即诚实停机（no_progress），不再继续把裸错误码回灌模型——模型不必收到指令原文。
+  // 场景 B（设计路径宪法 2026-08-17）：第 7 次及之后的写前观察**照常执行**——观察超限是
+  // 「看多了」不是「做错」，只允许提醒不允许拦截。账本在超限那一轮向模型发**一次**
+  // 「该动手了」提醒（harness control message，source=observation-reserve-advice），
+  // 之后不再重复；运行不得因观察次数本身停机。
   {
     const tools = [requireAgentTool('getLayerBounds')];
     let executedReads = 0;
     let readRequests = 0;
+    let maxAdviceMessagesInOneCall = 0;
     const agent = new Agent(
       buildAgentTestConfig({
         tools,
@@ -2848,8 +2977,18 @@ async function assertExecutionSupplyReserveGatesObservationInLiveLoop() {
           softTimeBudgetMs: 300_000
         }
       }),
-      async (_modelId, _messages) => {
+      async (_modelId, messages) => {
         readRequests += 1;
+        const adviceMessages = messages.filter((message) => (
+          message?.contextMetadata?.source === 'observation-reserve-advice'
+        )).length;
+        maxAdviceMessagesInOneCall = Math.max(maxAdviceMessagesInOneCall, adviceMessages);
+        for (const message of messages) {
+          assert(
+            !JSON.stringify(message).includes('agent_observation_budget_reserved'),
+            'observation reserve must never surface as a blocking directive code'
+          );
+        }
         if (readRequests <= 8) {
           return {
             toolCalls: [{
@@ -2867,17 +3006,16 @@ async function assertExecutionSupplyReserveGatesObservationInLiveLoop() {
         return { success: true, bounds: { left: 0, top: 0, right: 10, bottom: 10 } };
       }
     );
-    const runResult = await agent.run('帮我做SKU');
+    await agent.run('帮我做SKU');
     assert.strictEqual(
       executedReads,
-      6,
-      `merged total limit must allow exactly 6 pre-delivery observations, saw ${executedReads} of ${readRequests}`
+      8,
+      `observations beyond the pre-delivery limit must still execute (advisory only), saw ${executedReads} of ${readRequests}`
     );
-    assert(readRequests >= 7, `the model must attempt the seventh observation, saw ${readRequests}`);
     assert.strictEqual(
-      runResult.success,
-      false,
-      'a read-only-surface run that exhausts the observation allowance must stop honestly'
+      maxAdviceMessagesInOneCall,
+      1,
+      `the "start writing" advice must reach the model exactly once, saw ${maxAdviceMessagesInOneCall}`
     );
   }
 }
@@ -2990,7 +3128,8 @@ async function assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates() {
     async (_modelId, messages) => {
       inspectModelCalls += 1;
       for (const message of messages) {
-        if (JSON.stringify(message).includes('agent_observation_budget_reserved')) {
+        if (JSON.stringify(message).includes('agent_observation_budget_reserved')
+          || message?.contextMetadata?.source === 'observation-reserve-advice') {
           inspectReserveDirectiveCount += 1;
         }
       }
@@ -3020,7 +3159,7 @@ async function assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates() {
   assert.strictEqual(
     inspectReserveDirectiveCount,
     0,
-    'read-only analysis must never receive the execution directive'
+    'read-only analysis must never receive the execution directive or the start-writing advice'
   );
 
   let planRemediationCount = 0;
@@ -3049,54 +3188,64 @@ async function assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates() {
 }
 
 /**
- * 文档写保护兜底恢复（真机 2026-08-14）：技能包装层丢掉结构化 nextRequiredTool 字段时，
- * 失败 code=current_document_write_protected 必须仍能合成切换/打开/新建目标的恢复 allowlist，
- * 且普通失败不得误触发。
+ * Tool 结果中的 nextRequiredToolOptions 只报告可行出口，不取得下一轮规划权。
+ * 写保护仍由执行点硬拦，但 Agent 必须保留完整能力面，自主选择切换、打开、新建、
+ * 补充观察或向用户确认，不能被下游补偿逻辑锁进恢复 allowlist。
  */
-async function assertProtectedDocumentWriteQueuesTargetSwitchRecovery() {
+async function assertToolResultRecoveryOptionsDoNotConstrainAgentToolChoice() {
+  let modelCallCount = 0;
+  let secondTurnToolNames = [];
   const agent = new Agent(
     buildAgentTestConfig({
       tools: [
         requireAgentTool('switchDocument'),
         requireAgentTool('openProjectFile'),
         requireAgentTool('createDocument'),
-        requireAgentTool('getDocumentInfo')
+        requireAgentTool('getDocumentInfo'),
+        requireAgentTool('getCanvasSnapshot')
       ],
-      maxIterations: 2,
+      maxIterations: 3,
       openingCanvasObservationMode: 'none'
     }),
-    async () => ({ content: '未使用。', stopReason: 'end_turn' }),
-    async () => {
-      throw new Error('recovery fixture must not execute Tools');
+    async (_modelId, _messages, visibleTools) => {
+      modelCallCount += 1;
+      if (modelCallCount === 1) {
+        return {
+          toolCalls: [{
+            id: 'protected-write-observation',
+            name: 'getDocumentInfo',
+            arguments: {}
+          }]
+        };
+      }
+      if (modelCallCount === 2) {
+        secondTurnToolNames = visibleTools.map((tool) => tool.name);
+      }
+      return { content: '当前目标受保护，我会根据任务目标重新选择安全路线。', stopReason: 'end_turn' };
+    },
+    async (toolName) => {
+      assert.strictEqual(toolName, 'getDocumentInfo');
+      return {
+        success: false,
+        policyGate: true,
+        code: 'current_document_write_protected',
+        message: '用户明确要求保护当前文档「详情页.psb」，已阻止对它执行修改、保存或导出。',
+        error: '用户明确要求保护当前文档「详情页.psb」，已阻止对它执行修改、保存或导出。',
+        nextRequiredTool: 'switchDocument',
+        nextRequiredToolOptions: ['switchDocument', 'openProjectFile', 'createDocument'],
+        nextRequiredToolReason: '当前结果只报告安全出口，不替 Agent 选择下一步。'
+      };
     }
   );
-  const protectedResult = {
-    callId: 'protected-write-1',
-    success: false,
-    output: {
-      success: false,
-      policyGate: true,
-      code: 'current_document_write_protected',
-      message: '用户明确要求保护当前文档「详情页.psb」，已阻止对它执行修改、保存或导出。',
-      error: '用户明确要求保护当前文档「详情页.psb」，已阻止对它执行修改、保存或导出。'
-    }
-  };
-  const recovery = agent.resolveRequiredToolRecovery([protectedResult]);
-  assert(recovery, 'protection-blocked write must produce a target-switch recovery');
-  assert.strictEqual(recovery.isHandoff, false);
-  assert.deepStrictEqual(
-    [...recovery.toolNames].sort(),
-    ['createDocument', 'openProjectFile', 'switchDocument'],
-    'recovery must narrow to switch/open/create target'
+  await agent.run('检查受保护文档并决定安全的后续路线');
+  assert(modelCallCount >= 2, 'Tool result recovery context did not reach the next Agent decision');
+  assert(
+    secondTurnToolNames.includes('getCanvasSnapshot'),
+    `Tool result options incorrectly removed unrelated observation capability: ${JSON.stringify(secondTurnToolNames)}`
   );
-
-  const ordinaryFailure = {
-    callId: 'ordinary-failure-1',
-    success: false,
-    output: { success: false, code: 'some_other_failure', error: '普通失败' }
-  };
-  const noRecovery = agent.resolveRequiredToolRecovery([ordinaryFailure]);
-  assert.strictEqual(noRecovery, null, 'ordinary failures must not trigger the protection recovery');
+  assert(secondTurnToolNames.includes('switchDocument'), 'Tool result options hid a valid target-switch capability');
+  assert(secondTurnToolNames.includes('openProjectFile'), 'Tool result options hid a valid target-open capability');
+  assert(secondTurnToolNames.includes('createDocument'), 'Tool result options hid a valid target-create capability');
 }
 
 /**
@@ -3424,6 +3573,293 @@ function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
 }
 
 /**
+ * 终局质量事实闭环回归：最后一次写入后只有同 revision 的全画布像素时，pre_judge
+ * 必须补齐同 revision 的画布尺寸和完整层级，再构造 surface 并调用一次 advisory VLM。
+ * Agent 没有主动调用 evaluateDesign 不得使终局 Judge 永久不可达；Harness 只补事实，不产审美答案。
+ */
+async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
+  const documentId = 71;
+  const historyStateId = 102;
+  const historyStateRef = { documentId, historyStateId };
+  const mutationCommit = {
+    version: 'photoshop-mutation-commit/v1',
+    basis: 'same_execute_as_modal',
+    bindingStrength: 'document_revision',
+    before: { documentId, historyStateId: historyStateId - 1 },
+    after: historyStateRef,
+    toolActionCompleted: true,
+    mutationObserved: true
+  };
+  const layerHierarchy = [{
+    id: 12,
+    name: '商品主体',
+    kind: 'smartObject',
+    visible: true,
+    bounds: { left: 80, top: 100, right: 720, bottom: 760 }
+  }];
+  const baseLog = [
+    {
+      name: 'deleteLayer',
+      arguments: { layerId: 9 },
+      result: {
+        success: true,
+        documentId,
+        historyStateRef,
+        photoshopMutationCommit: mutationCommit
+      }
+    },
+    {
+      name: 'getCanvasSnapshot',
+      arguments: { expectedDocumentId: documentId },
+      result: { success: true, documentId, historyStateRef }
+    }
+  ];
+  const builtReviewSet = buildDesignReviewSetFromSingleSurface({
+    identity: {
+      outer: 'getCanvasSnapshot',
+      resultPath: '$',
+      document: String(documentId),
+      history: String(historyStateId),
+      sourceKind: 'canvas',
+      sourceId: `document:${documentId}`
+    },
+    image: {
+      base64: 'aGVsbG8=',
+      mediaType: 'image/png',
+      format: 'png'
+    }
+  });
+  assert.strictEqual(builtReviewSet.status, 'ready');
+
+  let judgeCallCount = 0;
+  const hostToolNames = [];
+  const config = buildAgentTestConfig({
+    tools: [requireAgentTool('getDocumentInfo')],
+    maxIterations: 2,
+    openingCanvasObservationMode: 'none',
+    performanceBudget: {
+      maxModelCalls: 10,
+      maxToolCalls: 20,
+      maxVisionCandidates: 10,
+      maxVisualAnalyses: 10,
+      maxFullResolutionImageReads: 0,
+      softTimeBudgetMs: 300_000
+    }
+  });
+  config.modelId = 'openrouter-gpt-4o';
+  const agent = new Agent(
+    config,
+    async () => {
+      judgeCallCount += 1;
+      return { content: '{}' };
+    },
+    async (toolName) => {
+      hostToolNames.push(toolName);
+      if (toolName === 'getLayerHierarchy') {
+        return {
+          success: true,
+          documentId,
+          historyStateRef,
+          hierarchy: layerHierarchy
+        };
+      }
+      return {
+        success: true,
+        documentId,
+        document: { id: documentId, width: 800, height: 800 },
+        historyStateRef
+      };
+    }
+  );
+  agent.currentTask = '帮我做一张商品主图';
+  agent.toolCallLog = baseLog;
+  agent.latestDesignVisualJudgeSingleReviewSet = {
+    reviewSet: builtReviewSet.reviewSet,
+    images: [{ data: 'aGVsbG8=', mediaType: 'image/png' }],
+    historyStateRef,
+    receipt: {
+      version: 'visual-observation-receipt/v1',
+      document: String(documentId),
+      history: String(historyStateId),
+      sourceTool: 'getCanvasSnapshot'
+    },
+    sourceOutput: {}
+  };
+
+  const assertions = await agent.evaluateDesignQualityVlmAssertions('final_response');
+  assert.strictEqual(judgeCallCount, 1, 'fresh terminal structure must make the advisory VLM Judge reachable');
+  assert.deepStrictEqual(
+    hostToolNames,
+    ['getDocumentInfo', 'getLayerHierarchy', 'getDocumentInfo'],
+    'pre_judge must complete dimensions plus hierarchy before the post-Judge version check'
+  );
+  assert(Array.isArray(assertions) && assertions.length > 0, 'the final Judge result must enter the existing scorecard path');
+  assert.deepStrictEqual(
+    agent.toolCallLog.slice(-3).map((entry) => entry.qualityVerificationPhase),
+    ['pre_judge', 'pre_judge', 'post_judge'],
+    'the terminal version checks must remain distinguishable in the run ledger'
+  );
+
+  const summaryHostToolNames = [];
+  const summaryAgent = new Agent(
+    buildAgentTestConfig({
+      tools: [requireAgentTool('getDocumentInfo'), requireAgentTool('getLayerHierarchy')],
+      maxIterations: 2,
+      openingCanvasObservationMode: 'none'
+    }),
+    async () => ({ content: 'x', stopReason: 'end_turn' }),
+    async (toolName) => {
+      summaryHostToolNames.push(toolName);
+      if (toolName === 'getDocumentInfo') {
+        return {
+          success: true,
+          documentId,
+          document: { id: documentId, width: 800, height: 800 },
+          historyStateRef
+        };
+      }
+      return {
+        success: true,
+        documentId,
+        historyStateRef,
+        hierarchy: layerHierarchy
+      };
+    }
+  );
+  summaryAgent.toolCallLog = [baseLog[0]];
+  const closedHistoryStateRef = await summaryAgent.readCurrentPhotoshopHistoryStateRefForQualityVerification(
+    'final_summary'
+  );
+  const finalSurface = extractFreshDesignSurfaceSnapshotFromToolResults(summaryAgent.toolCallLog, {
+    requiredHistoryStateRef: closedHistoryStateRef
+  });
+  assert.deepStrictEqual(
+    summaryHostToolNames,
+    ['getDocumentInfo', 'getLayerHierarchy'],
+    'final_summary must collect the complete same-revision structure bundle'
+  );
+  assert.deepStrictEqual(closedHistoryStateRef, historyStateRef);
+  assert(finalSurface, 'final_summary must not report missing structure when same-revision dimensions and hierarchy both exist');
+}
+
+/**
+ * plan-neutral Reflexion 不能因为换了 Agent 实例就重新购买模型、Tool、视觉或时间预算。
+ * Seed 只来自上一实例的 PerformanceLedger 投影；有余额时继续累计，没余额时必须原地停机。
+ */
+async function assertPlanNeutralReflexionCarriesRequestPerformanceUsage() {
+  const planNeutralIdentity = createPlanNeutralIdentity('performance-seed');
+  const chatIntent = buildAgentIntentControlPlaneDecision({
+    userInput: '你好',
+    hasImageInput: false,
+    hasDocument: false,
+    photoshopConnected: true
+  });
+  const seed = {
+    modelCalls: 2,
+    toolCalls: 7,
+    iterations: 2,
+    visionCandidates: 2,
+    visualAnalyses: 1,
+    activeElapsedMs: 45_000,
+    observationKeys: ['canvas:71@101', 'canvas:71@102']
+  };
+  let continuedProviderCalls = 0;
+  const continuedConfig = buildAgentTestConfig({
+    tools: [],
+    maxIterations: 8,
+    openingCanvasObservationMode: 'none',
+    runtimeSessionIdentity: planNeutralIdentity,
+    intentControlPlane: chatIntent,
+    performanceBudget: {
+      maxModelCalls: 4,
+      maxToolCalls: 12,
+      maxVisionCandidates: 4,
+      maxVisualAnalyses: 2,
+      maxFullResolutionImageReads: 0,
+      softTimeBudgetMs: 300_000
+    }
+  });
+  continuedConfig.requestPerformanceUsageSeed = seed;
+  const continuedAgent = new Agent(
+    continuedConfig,
+    async () => {
+      continuedProviderCalls += 1;
+      return { content: '你好，我在。', stopReason: 'end_turn' };
+    },
+    async () => {
+      throw new Error('plan-neutral budget fixture must not execute Tools');
+    }
+  );
+  await continuedAgent.run('你好');
+  const continuedUsage = continuedAgent.readRequestPerformanceUsageSnapshot();
+  assert.strictEqual(continuedProviderCalls, 1, 'a plan-neutral reentry with remaining budget must continue once');
+  assert.strictEqual(continuedUsage.modelCalls, 3, 'the reentry must add to, not reset, prior model calls');
+  assert.strictEqual(continuedUsage.toolCalls, seed.toolCalls);
+  assert(continuedUsage.iterations >= seed.iterations);
+  assert.strictEqual(continuedUsage.visionCandidates, seed.visionCandidates);
+  assert.strictEqual(continuedUsage.visualAnalyses, seed.visualAnalyses);
+  assert(continuedUsage.activeElapsedMs >= seed.activeElapsedMs);
+  assert.deepStrictEqual(continuedUsage.observationKeys, seed.observationKeys);
+
+  let exhaustedProviderCalls = 0;
+  const exhaustedConfig = buildAgentTestConfig({
+    tools: [],
+    maxIterations: 8,
+    openingCanvasObservationMode: 'none',
+    runtimeSessionIdentity: planNeutralIdentity,
+    intentControlPlane: chatIntent,
+    performanceBudget: {
+      maxModelCalls: 2,
+      maxToolCalls: 12,
+      maxVisionCandidates: 4,
+      maxVisualAnalyses: 2,
+      maxFullResolutionImageReads: 0,
+      softTimeBudgetMs: 300_000
+    }
+  });
+  exhaustedConfig.requestPerformanceUsageSeed = seed;
+  const exhaustedAgent = new Agent(
+    exhaustedConfig,
+    async () => {
+      exhaustedProviderCalls += 1;
+      return { content: '不应调用', stopReason: 'end_turn' };
+    },
+    async () => {
+      throw new Error('exhausted plan-neutral fixture must not execute Tools');
+    }
+  );
+  const exhaustedResult = await exhaustedAgent.run('你好');
+  assert.strictEqual(exhaustedProviderCalls, 0, 'an exhausted request seed must not buy another model call');
+  assert.strictEqual(exhaustedResult.stopReason, 'performance_budget');
+  assert.strictEqual(
+    exhaustedAgent.readRequestPerformanceUsageSnapshot().modelCalls,
+    seed.modelCalls,
+    'budget stop must preserve the inherited cumulative usage'
+  );
+
+  const anonymousConfig = buildAgentTestConfig({
+    tools: [],
+    maxIterations: 8,
+    openingCanvasObservationMode: 'none',
+    intentControlPlane: chatIntent,
+    performanceBudget: exhaustedConfig.performanceBudget
+  });
+  anonymousConfig.requestPerformanceUsageSeed = seed;
+  const anonymousAgent = new Agent(
+    anonymousConfig,
+    async () => ({ content: '不应调用', stopReason: 'end_turn' }),
+    async () => {
+      throw new Error('anonymous performance seed fixture must not execute Tools');
+    }
+  );
+  await assert.rejects(
+    () => anonymousAgent.run('你好'),
+    /request_performance_usage_seed_requires_task_run_identity/,
+    'a request ledger seed must never float without the same TaskRun identity'
+  );
+}
+
+/**
  * 治理切片 4（GATE-SIMPLIFY-004）：视觉候选/分析/Judge 合并为单一运行级视觉池。
  * 池上限 = 候选硬上限 + 分析上限（总量不变、跨类互通）；(0,0) 零视觉语义不变。
  */
@@ -3497,10 +3933,7 @@ function assertRunLevelVisionPoolMergesKindBudgets() {
   assert(zeroVisionRejected, 'zero-vision budgets must still reject the first vision event');
 }
 
-/**
- * 治理切片 6（GATE-SIMPLIFY-006）：按需目录明细按能力家族分组截断——
- * 每个家族至少保留代表项明细，全局 40 行封顶不变；家族总览覆盖全部家族。
- */
+/** 按需目录不常驻 Prompt；每个能力家族必须经生产只读搜索入口可发现。 */
 function assertOnDemandCatalogShowsEveryCapabilityFamilyWithDetailRepresentatives() {
   const session = createAgentCapabilitySession({
     candidateTools: getDefaultAgentTools()
@@ -3512,24 +3945,19 @@ function assertOnDemandCatalogShowsEveryCapabilityFamilyWithDetailRepresentative
     return segments.length >= 3 ? `${segments[0]}.${segments[1]}` : segments[0];
   }));
   for (const family of families) {
+    const search = session.searchCapabilities(family, 8);
     assert(
-      prompt.includes(family),
-      `capability family ${family} must be visible in the on-demand catalog`
+      search.matches.some((match) => match.family === family),
+      `capability family ${family} must be discoverable through the on-demand search Tool`
     );
   }
-  // 明细层每家族有代表：靠后家族（context.state=浏览器工具）不再被扁平 40 行截断吞掉。
   assert(
-    /- context\.state\./m.test(prompt),
-    'late families must keep detail representatives under per-family truncation'
+    prompt.includes('searchAgentCapabilities'),
+    'the compact prompt must direct the Agent to the production capability search Tool'
   );
   assert(
-    /- photoshop\.write\./m.test(prompt),
-    'write families must keep detail representatives under per-family truncation'
-  );
-  // 全局封顶不变：仍有被省略的明细行并如实上报。
-  assert(
-    prompt.includes('项能力明细未展开'),
-    'the global detail-line cap must remain and report omitted lines'
+    !Array.from(families).some((family) => prompt.includes(`- ${family}.`)),
+    'the compact prompt must not duplicate the complete capability directory'
   );
 }
 
@@ -3620,7 +4048,7 @@ function assertExecutionAuthorizationBlockerCarriesUnlockOptions() {
     'the authorization blocker must carry structured unlock options'
   );
   assert(
-    authorizationBlocker.unlockOptions.some((option) => option.includes('createInteractiveCard')),
+    authorizationBlocker.unlockOptions.some((option) => option.includes('askUserToChoose')),
     'unlock options must include the user-confirmation card path'
   );
 
@@ -3647,9 +4075,12 @@ function assertExecutionAuthorizationBlockerCarriesUnlockOptions() {
 }
 
 async function runBehaviorAssertions() {
+  await assertToolResultRecoveryOptionsDoNotConstrainAgentToolChoice();
   assertDesignDirectionExplorationIsOptionalAndNonAuthoritative();
   assertExecutionSupplyReservePureAccounting();
   assertFinalQualityJudgeReservationRemovedButHardCapStays();
+  await assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation();
+  await assertPlanNeutralReflexionCarriesRequestPerformanceUsage();
   assertRunLevelVisionPoolMergesKindBudgets();
   assertOnDemandCatalogShowsEveryCapabilityFamilyWithDetailRepresentatives();
   assertBareContinuationResumeDecision();
@@ -3657,7 +4088,6 @@ async function runBehaviorAssertions() {
   await assertZeroProgressWriteAuthorizedStopIsPushedBackAndEndsHonestly();
   await assertExecutionSupplyReserveGatesObservationInLiveLoop();
   await assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates();
-  await assertProtectedDocumentWriteQueuesTargetSwitchRecovery();
   await assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2();
   await assertSkuModeGetsOneStructuredRepair();
   await assertPureFirstToolResponseDoesNotCallAuxiliaryModel();
@@ -3673,6 +4103,7 @@ async function runBehaviorAssertions() {
   await assertGeneralDesignUnknownWriteKeepsBoundedReadbackAlive();
   await assertGeneralDesignUnknownWriteUnchangedReadbackRestoresOtherWrites();
   await assertKnownNotAppliedWriteDoesNotBlockFollowingSerialWrite();
+  await assertProvenAppliedWriteDoesNotLockFollowingSerialWrite();
   await assertConfirmedProductionNarrowsAfterBoundedObservation();
   await assertLinkReviewRequestsStayReadOnly();
   await assertObservationObligationRequiresRealReadButNotMutation();

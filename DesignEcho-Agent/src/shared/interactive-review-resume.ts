@@ -1,5 +1,5 @@
 /**
- * 已落盘的确定性人工复核卡承接策略。
+ * 结构化交互卡的自主 Agent 承接策略。
  *
  * 只允许来源消息明确处于 awaiting_confirmation 时恢复原任务；
  * 普通独立复核卡仍然只记录，不会凭卡片点击擅自启动 Agent。
@@ -34,6 +34,7 @@ export const AGENT_INTERNAL_RESUME_VERSION = 'agent-internal-resume/v0' as const
 
 export type AgentInternalResumeKind =
     | 'review_recorded'
+    | 'user_choice_submitted'
     | 'destructive_action_executed'
     | 'destructive_action_cancelled'
     | 'destructive_action_failed';

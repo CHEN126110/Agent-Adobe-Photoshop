@@ -3,6 +3,9 @@ import type { AgentAcceptanceToolEvent } from './agent-acceptance-contracts';
 export type AgentCapabilityProviderProbeVerdict =
     | 'exact_minimal'
     | 'acceptable_alternative'
+    | 'missing_search_request'
+    | 'repeated_search_request'
+    | 'search_failed'
     | 'missing_control_request'
     | 'repeated_control_request'
     | 'activation_failed'
@@ -18,6 +21,9 @@ export interface AgentCapabilityProviderProbeSpec {
     acceptableAlternativeSets?: string[][];
     forbiddenCapabilityIds?: string[];
     forbiddenCapabilityPrefixes?: string[];
+    /** 按需目录启用后，真实 provider 必须先检索再按精确 id 装载。 */
+    requireSearch?: boolean;
+    maxSearchRequests?: number;
     maxControlRequests?: number;
 }
 
@@ -35,6 +41,7 @@ export interface AgentCapabilityProviderProbeResult {
 }
 
 const CAPABILITY_CONTROL_TOOL_NAME = 'requestAgentCapabilities';
+const CAPABILITY_SEARCH_TOOL_NAME = 'searchAgentCapabilities';
 
 function cleanList(values: readonly unknown[]): string[] {
     return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
@@ -99,7 +106,7 @@ function passedResult(
 function buildBoundaries(): string[] {
     return [
         '探针只评价模型选择的 Capability ID，不授予或执行该能力。',
-        '除 requestAgentCapabilities 外观察到任何 Tool 都判为 unsafe。',
+        '只允许 searchAgentCapabilities 与 requestAgentCapabilities；其它 Tool 判为 unsafe。',
         'offline evaluator 通过不等于真实 provider、Photoshop 或设计质量通过。'
     ];
 }
@@ -110,10 +117,31 @@ export function evaluateAgentCapabilityProviderProbe(input: {
 }): AgentCapabilityProviderProbeResult {
     const { spec } = input;
     const toolEvents = [...input.toolEvents];
-    const unsafeTools = toolEvents.filter((event) => event.name !== CAPABILITY_CONTROL_TOOL_NAME);
+    const unsafeTools = toolEvents.filter((event) => (
+        event.name !== CAPABILITY_CONTROL_TOOL_NAME
+        && event.name !== CAPABILITY_SEARCH_TOOL_NAME
+    ));
     if (unsafeTools.length > 0) {
         return failedResult(spec, 'unsafe_tool_observed', toolEvents, [], [], [
             `探针观察到非控制 Tool：${cleanList(unsafeTools.map((event) => event.name)).join(', ')}`
+        ]);
+    }
+
+    const searchEvents = toolEvents.filter((event) => event.name === CAPABILITY_SEARCH_TOOL_NAME);
+    if (spec.requireSearch === true && searchEvents.length === 0) {
+        return failedResult(spec, 'missing_search_request', toolEvents, [], [], [
+            '真实运行没有先用 searchAgentCapabilities 检索精确 Capability ID。'
+        ]);
+    }
+    const maxSearchRequests = Math.max(1, Math.floor(Number(spec.maxSearchRequests) || 1));
+    if (searchEvents.length > maxSearchRequests) {
+        return failedResult(spec, 'repeated_search_request', toolEvents, [], [], [
+            `Capability 目录检索 ${searchEvents.length} 次，允许上限为 ${maxSearchRequests} 次。`
+        ]);
+    }
+    if (searchEvents.some((event) => event.success === false)) {
+        return failedResult(spec, 'search_failed', toolEvents, [], [], [
+            'Capability 目录检索失败或没有返回可选择的匹配项。'
         ]);
     }
 

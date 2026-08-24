@@ -4,14 +4,12 @@ import type {
 } from '../../../shared/interactive-card-contract';
 import type { AgentResponseInterruption } from '../../../shared/agent-response-interruption';
 import type { AgentTaskPlanPresentation } from '../../../shared/agent-task-plan-presentation';
+import type { DesignTaskCard } from '../../../shared/design-task-card';
+import type { ThinkingStep as ThinkingStepRecord } from '../ThinkingProcess';
 import type {
     ChatComposerContentPart,
     ChatMessageImage
 } from '../../../shared/chat-composer-content';
-import type {
-    ThinkingStepDisplayRole,
-    VisibleThinkingStepSourceType
-} from './thinkingStepPresentation';
 
 /**
  * 多模态消息类型定义
@@ -27,7 +25,6 @@ export type ContentBlockType =
     | 'image'          // 图片
     | 'image_gallery'  // 图片画廊
     | 'tool_call'      // 工具调用
-    | 'tool_result'    // 工具结果
     | 'file'           // 文件预览
     | 'card'           // 信息卡片
     | 'list'           // 列表
@@ -38,6 +35,7 @@ export type ContentBlockType =
     | 'success'        // 成功信息
     | 'thinking'       // 思考过程
     | 'task_plan'      // Runtime R4 计划状态投影
+    | 'design_task_card' // 设计任务卡（模型写、Harness 打勾）
     | 'interactive_card' // 可交互确认卡片
     | 'artifact'       // 生成产物（类似 Claude Artifacts）
     | 'action'         // 可操作按钮组
@@ -109,24 +107,6 @@ export interface ToolCallBlock extends BaseContentBlock {
     params?: Record<string, any>;
     status: 'pending' | 'running' | 'success' | 'error';
     duration?: number;
-}
-
-// 工具结果块
-export interface ToolResultBlock extends BaseContentBlock {
-    type: 'tool_result';
-    toolName: string;
-    displayName: string;
-    icon: string;
-    success: boolean;
-    result?: any;
-    error?: string;
-    duration?: number;
-    details?: Array<{
-        label: string;
-        value: string | number;
-        type?: 'text' | 'code' | 'link';
-    }>;
-    actions?: ActionItem[];
 }
 
 // 文件块
@@ -218,31 +198,28 @@ export interface SuccessBlock extends BaseContentBlock {
 export interface ThinkingBlock extends BaseContentBlock {
     type: 'thinking';
     title?: string;
-    steps: ThinkingStep[];
+    /**
+     * 这次运行的原始过程步骤（含画面快照 imageData、工具结果）。
+     * 终态与运行中共用 ThinkingProcess 同一条时间线渲染——过去这里存的是一份
+     * 丢掉快照与结果摘要的映射副本，导致对话完成/停止后细节全部消失。
+     */
+    sourceSteps: ThinkingStepRecord[];
     isExpanded?: boolean;
     totalDuration?: number;
-}
-
-export interface ThinkingStep {
-    id: string;
-    label: string;
-    icon: string;
-    status: 'pending' | 'running' | 'success' | 'error';
-    tone?: 'thought' | 'action';
-    displayRole?: ThinkingStepDisplayRole;
-    roleLabel?: string;
-    sourceType?: VisibleThinkingStepSourceType;
-    actionLabel?: string;
-    detail?: string;
-    /** 工具结果的有界预览（sections 内为已消毒文本），供步骤级展开查看。 */
-    preview?: import('../../services/tool-result-preview').ToolResultPreview;
-    duration?: number;
 }
 
 // 任务计划展示块。只承载共享纯投影，不在 Renderer 重算业务状态。
 export interface TaskPlanBlock extends BaseContentBlock {
     type: 'task_plan';
     presentation: AgentTaskPlanPresentation;
+}
+
+// 设计任务卡块：直接承载 shared 的 DesignTaskCard，不在 Renderer 重算完成态。
+export interface DesignTaskCardBlock extends BaseContentBlock {
+    type: 'design_task_card';
+    card: DesignTaskCard;
+    /** 这次运行的过程步骤（历史消息里由 message.thinkingSteps 带入）；按 taskItemId 挂到条目下。 */
+    steps?: ThinkingStepRecord[];
 }
 
 // 可交互卡片块
@@ -301,7 +278,6 @@ export type ContentBlock =
     | ImageBlock
     | ImageGalleryBlock
     | ToolCallBlock
-    | ToolResultBlock
     | FileBlock
     | CardBlock
     | ListBlock
@@ -312,6 +288,7 @@ export type ContentBlock =
     | SuccessBlock
     | ThinkingBlock
     | TaskPlanBlock
+    | DesignTaskCardBlock
     | InteractiveCardBlock
     | ArtifactBlock
     | ActionBlock

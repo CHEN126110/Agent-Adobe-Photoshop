@@ -145,13 +145,6 @@ interface TextBoundsTypographyContext {
     tracking?: number;
 }
 
-interface SupplementalPlaceholderResult {
-    layerId?: number;
-    box: PixelBox;
-    actualBounds?: PixelBox;
-    textAlignment?: TextBoundsAlignmentResult;
-}
-
 function clamp(n: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, n));
 }
@@ -196,36 +189,26 @@ function roleGroupName(role: TemplateBlueprintElement['role']): '文案' | 'icon
     return '图片';
 }
 
-function placeholderColor(role: TemplateBlueprintElement['role']): string {
-    if (role === 'icon') return '#BFD7EA';
-    if (role === 'image') return '#C7E9B4';
-    if (role === 'background') return '#E0E0E0';
-    if (role === 'decoration') return '#E8DFF5';
-    return '#D9D9D9';
+function resolveFillColor(element: TemplateBlueprintElement): string | undefined {
+    const value = String(element.style?.fillColor || '').trim();
+    return value || undefined;
 }
 
-function resolveFillColor(element: TemplateBlueprintElement): string {
-    return element.style?.fillColor
-        || element.style?.strokeColor
-        || placeholderColor(element.role);
+function resolveTextColor(element: TemplateBlueprintElement): string | undefined {
+    const value = String(element.style?.textColor || '').trim();
+    return value || undefined;
 }
 
-function resolveTextColor(element: TemplateBlueprintElement): string {
-    return element.style?.textColor
-        || element.style?.fillColor
-        || '#333333';
-}
-
-function resolveOpacity(element: TemplateBlueprintElement, fallback: number): number {
+function resolveOpacity(element: TemplateBlueprintElement): number | undefined {
     if (typeof element.style?.opacity !== 'number' || !Number.isFinite(element.style.opacity)) {
-        return fallback;
+        return undefined;
     }
     return clamp(Math.round(element.style.opacity * 100), 8, 100);
 }
 
-function resolveCornerRadius(element: TemplateBlueprintElement, fallback: number): number {
+function resolveCornerRadius(element: TemplateBlueprintElement): number | undefined {
     if (typeof element.style?.cornerRadius !== 'number' || !Number.isFinite(element.style.cornerRadius)) {
-        return fallback;
+        return undefined;
     }
     return clamp(Math.round(element.style.cornerRadius), 0, 80);
 }
@@ -587,78 +570,6 @@ async function applyStyleRecipesToLayer(
     return stats;
 }
 
-async function createSupplementalPlaceholderByRole(
-    role: '文案' | 'icon' | '图片',
-    screenIndex: number,
-    surfaceLabel: string,
-    canvasWidth: number,
-    canvasHeight: number,
-    callbacks: SkillExecuteParams['callbacks']
-): Promise<SupplementalPlaceholderResult> {
-    if (role === '文案') {
-        const content = `[文案占位] ${surfaceLabel}`;
-        const box: PixelBox = {
-            left: 24,
-            top: 24,
-            width: Math.round(canvasWidth * 0.7),
-            height: Math.round(canvasHeight * 0.1)
-        };
-        const fontSize = resolveReferenceTextFontSize({
-            box,
-            canvasHeight,
-            role: 'title',
-            content
-        });
-        const textCreateRequest = buildReferenceTextLayerCreateRequest({
-            content,
-            box,
-            fontSize,
-            colorHex: '#444444'
-        });
-        const textResult = await executeToolCall('createTextLayer', {
-            ...textCreateRequest,
-            name: `文案_占位_${screenIndex}`
-        });
-        const layerId = textResult?.layerId as number | undefined;
-        await safeRenameLayer(layerId, `文案_占位_${screenIndex}`);
-        const textAlignment = await alignLayerBoundsToTargetBox(layerId, box, callbacks, {
-            content,
-            fontSize
-        });
-        return {
-            layerId,
-            box,
-            actualBounds: textAlignment.actualBounds,
-            textAlignment
-        };
-    }
-
-    const box: PixelBox = {
-        left: Math.round(canvasWidth * (role === 'icon' ? 0.05 : 0.1)),
-        top: Math.round(canvasHeight * (role === 'icon' ? 0.12 : 0.18)),
-        width: Math.round(canvasWidth * (role === 'icon' ? 0.12 : 0.7)),
-        height: Math.round(canvasHeight * (role === 'icon' ? 0.08 : 0.24))
-    };
-    const shapeResult = await executeToolCall('createRectangle', {
-        name: `${role}_占位_${screenIndex}`,
-        x: box.left,
-        y: box.top,
-        width: box.width,
-        height: box.height,
-        fillColorHex: role === 'icon' ? '#BFD7EA' : '#C7E9B4',
-        cornerRadius: role === 'icon' ? 18 : 8
-    });
-    const layerId = shapeResult?.layerId as number | undefined;
-    if (layerId) {
-        await executeToolCall('setLayerOpacity', { layerId, opacity: 28 });
-    }
-    return {
-        layerId,
-        box,
-        actualBounds: await readLayerActualPixelBox(layerId)
-    };
-}
-
 export async function applyTemplateBlueprintToDocument(
     blueprint: ReferenceReplicationBlueprint,
     canvas: { width: number; height: number },
@@ -731,7 +642,19 @@ export async function applyTemplateBlueprintToDocument(
 
             try {
                 if (element.role === 'copy') {
-                    const content = String(element.content || '').trim() || `[文案] ${screen.type}`;
+                    const content = String(element.content || '').trim();
+                    const textColorHex = resolveTextColor(element);
+                    if (!content || !textColorHex) {
+                        failedOps++;
+                        elementResults.push({
+                            ...referenceMeta,
+                            status: 'failed',
+                            reason: !content
+                                ? '参考元素没有可追溯文案；未补造占位内容。'
+                                : '参考元素没有可追溯文字颜色；未套用内置字色。'
+                        });
+                        continue;
+                    }
                     const copyRole = resolveReferenceTextPlacementRole({
                         content,
                         name: element.name,
@@ -761,7 +684,7 @@ export async function applyTemplateBlueprintToDocument(
                         content: textLinePlan.content || content,
                         box,
                         fontSize,
-                        colorHex: resolveTextColor(element),
+                        colorHex: textColorHex,
                         tracking,
                         leading,
                         alignment: element.textLayout?.textAlign || 'left'
@@ -833,14 +756,25 @@ export async function applyTemplateBlueprintToDocument(
                     }
                 } else {
                     const layerName = `${group}_${screen.index}_${i + 1}`;
+                    const fillColorHex = resolveFillColor(element);
+                    if (!fillColorHex) {
+                        failedOps++;
+                        elementResults.push({
+                            ...referenceMeta,
+                            status: 'failed',
+                            reason: '参考元素没有可追溯填充色；未按角色套用内置占位色。'
+                        });
+                        continue;
+                    }
+                    const cornerRadius = resolveCornerRadius(element);
                     const shapeResult = await executeToolCall('createRectangle', {
                         name: layerName,
                         x: box.left,
                         y: box.top,
                         width: box.width,
                         height: box.height,
-                        fillColorHex: resolveFillColor(element),
-                        cornerRadius: resolveCornerRadius(element, group === 'icon' ? 16 : 6)
+                        fillColorHex,
+                        ...(cornerRadius !== undefined ? { cornerRadius } : {})
                     });
                     const layerId = shapeResult?.layerId as number | undefined;
                     if (layerId) {
@@ -873,7 +807,10 @@ export async function applyTemplateBlueprintToDocument(
                                 assetKind: recommendAssetTypeByRole(element.role)
                             })
                         });
-                        await executeToolCall('setLayerOpacity', { layerId, opacity: resolveOpacity(element, group === 'icon' ? 35 : 26) });
+                        const opacity = resolveOpacity(element);
+                        if (opacity !== undefined) {
+                            await executeToolCall('setLayerOpacity', { layerId, opacity });
+                        }
                         roleLayerMap[group].push(layerId);
                         createdLayers++;
                         elementResults.push({
@@ -903,64 +840,11 @@ export async function applyTemplateBlueprintToDocument(
         const requiredGroups = normalizeTemplateBlueprintScreenGroups(screen);
         for (const requiredRole of requiredGroups) {
             if (roleLayerMap[requiredRole].length === 0) {
-                const supplemental = await createSupplementalPlaceholderByRole(
-                    requiredRole,
-                    screen.index,
-                    outputIntent.surfaceLabel,
-                    canvas.width,
-                    canvas.height,
-                    callbacks
-                );
-                const supplementalLayerId = supplemental.layerId;
-                if (supplementalLayerId) {
-                    if (requiredRole === '文案') {
-                        if (supplemental.textAlignment && !supplemental.textAlignment.verified) {
-                            failedOps++;
-                            if (supplemental.textAlignment.issue && screenStyleRecipeStats.notes.length < 12) {
-                                screenStyleRecipeStats.notes.push(`文案_占位_${screen.index}: ${supplemental.textAlignment.issue}`);
-                            }
-                        }
-                        generatedCopyPlaceholders.push({
-                            layerId: supplementalLayerId,
-                            layerName: `文案_占位_${screen.index}`,
-                            currentText: `[文案占位] ${outputIntent.surfaceLabel}`,
-                            role: 'title',
-                            sourceKind: 'supplemental',
-                            bounds: supplemental.box,
-                            actualBounds: supplemental.actualBounds,
-                            boundsVerified: supplemental.textAlignment?.verified,
-                            boundsIssue: supplemental.textAlignment?.issue,
-                            sizeVerified: supplemental.textAlignment?.sizeVerified,
-                            widthDelta: supplemental.textAlignment?.widthDelta,
-                            heightDelta: supplemental.textAlignment?.heightDelta,
-                            sizeIssue: supplemental.textAlignment?.sizeIssue
-                        });
-                    } else {
-                        const isIcon = requiredRole === 'icon';
-                        generatedImagePlaceholders.push({
-                            layerId: supplementalLayerId,
-                            layerName: `${requiredRole}_占位_${screen.index}`,
-                            sourceKind: 'supplemental',
-                            bounds: supplemental.box,
-                            actualBounds: supplemental.actualBounds,
-                            aspectRatio: supplemental.box.width > 0 && supplemental.box.height > 0 ? supplemental.box.width / supplemental.box.height : 1,
-                            recommendedAssetType: isIcon ? 'icon' : 'product',
-                            placementPlan: buildPlacementPlan({
-                                elementId: `${requiredRole}_占位_${screen.index}`,
-                                targetBox: {
-                                    x: supplemental.box.left,
-                                    y: supplemental.box.top,
-                                    width: supplemental.box.width,
-                                    height: supplemental.box.height
-                                },
-                                assetKind: isIcon ? 'icon' : 'product'
-                            })
-                        });
-                    }
-                    roleLayerMap[requiredRole].push(supplementalLayerId);
-                    createdLayers++;
-                } else {
-                    failedOps++;
+                failedOps++;
+                if (screenStyleRecipeStats.notes.length < 12) {
+                    screenStyleRecipeStats.notes.push(
+                        `${outputIntent.surfaceLabel}·第${screen.index}屏: 参考蓝图缺少 ${requiredRole} 元素；未用固定坐标、颜色或占位文案补造。`
+                    );
                 }
             }
         }

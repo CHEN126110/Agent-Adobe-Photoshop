@@ -4,7 +4,6 @@
 
 import { app, ipcMain, IpcMainInvokeEvent } from 'electron';
 import fs from 'fs/promises';
-import fsSync from 'fs';
 import path from 'path';
 import type { IPCContext } from './types';
 import type { ModelConfig } from '../../shared/config/models.config';
@@ -92,19 +91,6 @@ export function registerConfigHandlers(context: IPCContext): void {
                     : { success: false, entries, error: 'file write failed' };
         });
         return output;
-    };
-
-    const readStateStoreSync = (): { entries: Record<string, string> } => {
-        try {
-            const raw = fsSync.readFileSync(stateStorePath, 'utf8');
-            const parsed = JSON.parse(raw);
-            if (!parsed || typeof parsed !== 'object' || typeof parsed.entries !== 'object') {
-                return { entries: {} };
-            }
-            return { entries: { ...(parsed.entries as Record<string, string>) } };
-        } catch {
-            return { entries: {} };
-        }
     };
 
     // 更新 API Keys
@@ -267,16 +253,8 @@ export function registerConfigHandlers(context: IPCContext): void {
         }
     });
 
-    ipcMain.on('state:getPersistedValueSync', (event, key: string) => {
-        try {
-            const { entries } = readStateStoreSync();
-            const value = Object.prototype.hasOwnProperty.call(entries, key) ? entries[key] : null;
-            event.returnValue = { success: true, value };
-        } catch (error: any) {
-            logService?.logAgent('error', `[Config] state:getPersistedValueSync failed: ${error?.message || String(error)}`);
-            event.returnValue = { success: false, error: error?.message || String(error), value: null };
-        }
-    });
+    // state:getPersistedValueSync 已前移到 early-state-handlers.ts：
+    // 渲染进程在 setupIPC 之前就会同步水合 persist，这里注册来不及（见该文件头注释）。
 
     // 更新抠图设置
     ipcMain.handle('config:setMattingSettings', async () => {

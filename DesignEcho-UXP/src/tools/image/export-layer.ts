@@ -284,6 +284,13 @@ export interface ExportLayerResult {
     components?: number;
     /** 仅 pixels-rgba 模式：每通道位深（通常 = 8） */
     componentSize?: number;
+    /**
+     * 仅 pixels-rgba 模式：PS 实际返回的色彩配置文件。
+     *
+     * 抓取时会显式要求 sRGB，但"请求 sRGB"不等于"拿到 sRGB"。排查色差时，
+     * 这个字段是判断偏色发生在抓图之前还是之后的分界证据，所以如实带出来。
+     */
+    colorProfile?: string;
 }
 
 /**
@@ -376,6 +383,7 @@ export async function exportLayerAsBase64(params: ExportLayerParams): Promise<To
                     rawPixels: rawResult.rawPixels,
                     components: rawResult.components,
                     componentSize: rawResult.componentSize,
+                    colorProfile: rawResult.colorProfile,
                     contentBounds: {
                         left: bounds.left,
                         top: bounds.top,
@@ -1206,6 +1214,8 @@ interface PixelsRGBAExportResult {
     height: number;
     components: number;
     componentSize: number;
+    /** PS 实际返回的色彩配置文件。用于色差排查——请求 sRGB 不代表一定拿到 sRGB。 */
+    colorProfile: string;
 }
 
 /**
@@ -1255,16 +1265,24 @@ async function exportUsingPixelsRGBA(
         }
 
         // 关键调用：传入 layerID 让 PS 只渲染目标图层的 composite，自带 alpha
+        //
+        // colorProfile 必须显式指定为 sRGB：缺省时 PS 返回的是**文档工作空间**的数值，
+        // 而下游把这批字节编成不带 ICC 的 PNG 发给模型，接收方一律按 sRGB 解释。
+        // 文档若是 Adobe RGB (1998) / Display P3，模型看到的就是一张已经褪了色的图，
+        // 于是不管换哪个模型，重绘结果都照着这份偏色走——表现正是"饱和度变低、颜色不一致"。
+        // 让 PS 自己做色彩空间转换，比在下游猜数值属于哪个空间可靠得多。
         let pixelResult: any;
         try {
             pixelResult = await imaging.getPixels({
                 documentID: docId,
                 layerID: layerId,
-                targetSize: targetSize as any
-            });
+                targetSize: targetSize as any,
+                colorProfile: 'sRGB IEC61966-2.1'
+            } as any);
         } catch (getPixelsError: any) {
             throw new Error(
-                `imaging.getPixels({ layerID=${layerId} }) failed: ${getPixelsError?.message || getPixelsError}`
+                `imaging.getPixels({ layerID=${layerId}, colorProfile='sRGB IEC61966-2.1' }) failed: `
+                + `${getPixelsError?.message || getPixelsError}`
             );
         }
 
@@ -1277,6 +1295,50 @@ async function exportUsingPixelsRGBA(
         const height = imgData.height;
         const components = imgData.components;
         const componentSize = imgData.componentSize || 8;
+
+        // 如实记录 PS 真正给了哪个色彩空间：请求 sRGB 不等于一定拿到 sRGB，
+        // 色差排查时这一行是判断"偏色发生在抓图前还是抓图后"的分界证据。
+        const actualColorProfile = String(imgData.colorProfile || '(未回报)');
+        console.log(
+            `[pixels-rgba] Color profile: requested='sRGB IEC61966-2.1', actual='${actualColorProfile}'`
+        );
+
+        // 送出去的像素到底有没有被改过？这是"模型看到的图 ≠ 用户看到的图"最根本的那一问。
+        // 只回报 profile 名字不够——PS 若把文档工作空间转成 sRGB，数值一定会变，
+        // 而变了多少、朝哪个方向变，只有把两种抓法放在一起比才知道。
+        // 用 64×64 的小尺寸做对照，开销可以忽略，却能把这一环从"假设"变成"已测"。
+        try {
+            const probeSize = { width: 64, height: 64 };
+            const [srgbProbe, nativeProbe] = await Promise.all([
+                imaging.getPixels({ documentID: docId, layerID: layerId, targetSize: probeSize, colorProfile: 'sRGB IEC61966-2.1' } as any),
+                imaging.getPixels({ documentID: docId, layerID: layerId, targetSize: probeSize } as any)
+            ]);
+            const srgbBytes = await srgbProbe.imageData.getData();
+            const nativeBytes = await nativeProbe.imageData.getData();
+            const nativeProfile = String(nativeProbe.imageData.colorProfile || '(未回报)');
+            const chSrgb = srgbProbe.imageData.components || 4;
+            const chNative = nativeProbe.imageData.components || 4;
+            const count = Math.min(srgbBytes.length / chSrgb, nativeBytes.length / chNative);
+            const sum = [0, 0, 0];
+            for (let i = 0; i < count; i++) {
+                for (let c = 0; c < 3; c++) {
+                    sum[c] += (srgbBytes[i * chSrgb + c] || 0) - (nativeBytes[i * chNative + c] || 0);
+                }
+            }
+            const diff = sum.map((v) => v / Math.max(1, count));
+            const maxDiff = Math.max(...diff.map(Math.abs));
+            console.log(
+                `[pixels-rgba] 送出像素校验：文档原生 profile='${nativeProfile}'，`
+                + `转成 sRGB 后均值变化 R${diff[0].toFixed(2)} G${diff[1].toFixed(2)} B${diff[2].toFixed(2)}`
+                + (maxDiff > 1
+                    ? ` ← 发生了实际色彩转换，送给模型的像素与文档原生数值不同`
+                    : ` ← 几乎无变化，文档本身就是 sRGB 口径`)
+            );
+            srgbProbe.imageData.dispose();
+            nativeProbe.imageData.dispose();
+        } catch (probeError: any) {
+            console.log(`[pixels-rgba] 送出像素校验跳过：${probeError?.message || probeError}`);
+        }
 
         if (componentSize !== 8) {
             imgData.dispose();
@@ -1315,7 +1377,8 @@ async function exportUsingPixelsRGBA(
             width,
             height,
             components: 4,
-            componentSize
+            componentSize,
+            colorProfile: actualColorProfile
         };
     }, { commandName: 'DesignEcho: 抓取图层 RGBA 像素（零文档操作）' });
 

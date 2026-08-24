@@ -20,6 +20,19 @@ export interface ConversationHistoryBudget {
     tier: 'tiny' | 'small' | 'large' | 'huge';
 }
 
+export interface AgentContextCapacityPlan {
+    version: 'agent-context-capacity/v1';
+    /** 已知模型窗口；未知时为 null，绝不伪造模型规格。 */
+    windowTokens: number | null;
+    basis: 'model_window' | 'unknown_window_fallback';
+    /** system、消息、Tool schema 与预留输出共用的总 ceiling；已扣除协议安全余量。 */
+    contextTokenCeiling: number;
+    outputReserveTokens: number;
+    safetyReserveTokens: number;
+    runtimeContextCharacterCeiling: number;
+    history: ConversationHistoryBudget;
+}
+
 /**
  * 历史预算不能无限放大：它只是运行时上下文的一项，
  * 还要和系统提示、项目状态、知识检索结果共用编译器的总预算（64k 字符）。
@@ -45,6 +58,56 @@ export function buildConversationHistoryBudget(
     if (window < 64_000) return HISTORY_BUDGET_TIERS[1];
     if (window < 256_000) return HISTORY_BUDGET_TIERS[2];
     return HISTORY_BUDGET_TIERS[3];
+}
+
+/**
+ * 单一上下文容量规划：模型窗口是总盘子，Harness 统一给输出、协议误差、Tool schema、
+ * system/runtime context 与历史分账。调用方不得再各自按 64k 字符或 100k token 猜预算。
+ */
+export function buildAgentContextCapacityPlan(input: {
+    windowTokens?: number | null;
+    requestedOutputTokens?: number | null;
+}): AgentContextCapacityPlan {
+    const rawWindow = Number(input.windowTokens) || 0;
+    const knownWindow = rawWindow > 0 ? Math.floor(rawWindow) : null;
+    const requestedOutput = Math.max(512, Math.floor(Number(input.requestedOutputTokens) || 8192));
+    if (!knownWindow) {
+        return {
+            version: 'agent-context-capacity/v1',
+            windowTokens: null,
+            basis: 'unknown_window_fallback',
+            contextTokenCeiling: 100_000,
+            outputReserveTokens: Math.min(8192, requestedOutput),
+            safetyReserveTokens: 0,
+            runtimeContextCharacterCeiling: 64_000,
+            history: buildConversationHistoryBudget(null)
+        };
+    }
+
+    const safetyReserveTokens = Math.max(512, Math.floor(knownWindow * 0.05));
+    const outputReserveTokens = Math.min(
+        requestedOutput,
+        Math.max(512, Math.floor(knownWindow * 0.20))
+    );
+    const contextTokenCeiling = Math.max(
+        1_000,
+        knownWindow - safetyReserveTokens
+    );
+    let runtimeContextCharacterCeiling = 64_000;
+    if (knownWindow < 16_000) runtimeContextCharacterCeiling = 9_000;
+    else if (knownWindow < 64_000) runtimeContextCharacterCeiling = 18_000;
+    else if (knownWindow < 256_000) runtimeContextCharacterCeiling = 36_000;
+
+    return {
+        version: 'agent-context-capacity/v1',
+        windowTokens: knownWindow,
+        basis: 'model_window',
+        contextTokenCeiling,
+        outputReserveTokens,
+        safetyReserveTokens,
+        runtimeContextCharacterCeiling,
+        history: buildConversationHistoryBudget(knownWindow)
+    };
 }
 
 export type ContextFitVerdict = 'fits' | 'tight' | 'exceeds' | 'unknown';

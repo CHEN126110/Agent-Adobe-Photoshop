@@ -15,7 +15,8 @@
  *   - 非设计任务（无 contract 或 kind 不在 designKinds）→ not_applicable（不评分）。
  *   - 契约里有 qualified failed requirement → failed，且**不看 scorecard**；qualified 表示
  *     确定性失败并携带 blockerKind + proofRef。裸 failed 与审美/可选构成只能进入 needs_review。
- *   - 契约通过但无 scorecard → 回落契约结果（向后兼容：等同当前二元判定）。
+ *   - 契约通过但无 scorecard → passed_unverified：产物完成不冒充专业设计质量通过；
+ *     该状态没有 blocker，不把主观质量评价变成写入门禁。
  *   - 契约通过 + 有 scorecard → 看 scorecard.gate（按"分级"强制力分流，用户 2026-06-29 拍板）：
  *       gate=failed 且有 qualified blocker → failed；qualified 表示确定性失败并携带 blockerKind + proofRef；
  *       gate=failed 但仅 major 梯度缺陷（无 blocker） → needs_review，进 warnings（**软**，只提示不返工）；
@@ -169,9 +170,10 @@ export function buildDesignVerdict(input: BuildDesignVerdictInput): DesignVerdic
         ...unqualifiedFailedRequirements
     ];
 
-    // 3) 契约通过但无 scorecard → 回落契约结果（向后兼容当前二元判定）。
+    // 3) 契约通过但无 scorecard：Completion 只证明产物义务闭合，不能冒充专业质量已评。
+    // passed_unverified 仍无 blocker，因此不会把尚未发生的主观评分变成写入/收尾硬门禁。
     if (!scorecard) {
-        const status: DesignVerdictStatus = contractNeedsReview ? 'needs_review' : 'passed';
+        const status: DesignVerdictStatus = contractNeedsReview ? 'needs_review' : 'passed_unverified';
         return {
             version: DESIGN_QUALITY_VERDICT_CAPABILITY_ID,
             status,
@@ -179,11 +181,13 @@ export function buildDesignVerdict(input: BuildDesignVerdictInput): DesignVerdic
             contractStatus: contract.status,
             contractFailedRequirementIds: [],
             blockers: [],
-            warnings: contractNeedsReviewItems.map(
-                (item) => item.reason || `${item.label || item.id}：待复核`
-            ),
-            summary: status === 'passed'
-                ? '产物齐全（未提供质量评分卡，按契约判定通过）。'
+            warnings: contractNeedsReview
+                ? contractNeedsReviewItems.map(
+                    (item) => item.reason || `${item.label || item.id}：待复核`
+                )
+                : ['完成契约只证明产物义务已满足；本轮未执行专业设计质量评估。'],
+            summary: status === 'passed_unverified'
+                ? '产物已完成，但专业设计质量尚未评价（不据此判失败，也不冒充质量通过）。'
                 : '产物齐全但有待复核项（未提供质量评分卡）。'
         };
     }

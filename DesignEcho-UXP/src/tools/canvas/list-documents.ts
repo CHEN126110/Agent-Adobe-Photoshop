@@ -9,6 +9,14 @@ import { Tool, ToolSchema } from '../types';
 const app = require('photoshop').app;
 const action = require('photoshop').action;
 
+type DocumentPathState = 'saved' | 'unsaved' | 'unavailable' | 'not_requested';
+
+interface DocumentPathObservation {
+    pathState: DocumentPathState;
+    path?: string;
+    pathStatusReason?: string;
+}
+
 export class ListDocumentsTool implements Tool {
     name = 'listDocuments';
 
@@ -24,7 +32,7 @@ export class ListDocumentsTool implements Tool {
                 },
                 includePaths: {
                     type: 'boolean',
-                    description: '是否读取已保存文档路径；可与 includeDetails 分开启用，避免为轮询递归统计全部图层'
+                    description: '是否读取文档路径状态；默认 true。不会递归统计图层，可显式传 false 做极简轮询'
                 },
                 includeDimensions: {
                     type: 'boolean',
@@ -51,6 +59,8 @@ export class ListDocumentsTool implements Tool {
             name: string;
             isActive: boolean;
             path?: string;
+            pathState: DocumentPathState;
+            pathStatusReason?: string;
             width?: number;
             height?: number;
             layerCount?: number;
@@ -79,6 +89,8 @@ export class ListDocumentsTool implements Tool {
                 name: string;
                 isActive: boolean;
                 path?: string;
+                pathState: DocumentPathState;
+                pathStatusReason?: string;
                 width?: number;
                 height?: number;
                 layerCount?: number;
@@ -90,13 +102,16 @@ export class ListDocumentsTool implements Tool {
                     name: string;
                     isActive: boolean;
                     path?: string;
+                    pathState: DocumentPathState;
+                    pathStatusReason?: string;
                     width?: number;
                     height?: number;
                     layerCount?: number;
                 } = {
                     id: doc.id,
                     name: doc.name,
-                    isActive: doc.id === activeDocId
+                    isActive: doc.id === activeDocId,
+                    pathState: 'not_requested'
                 };
 
                 if (params.includeDetails || params.includeDimensions) {
@@ -106,8 +121,13 @@ export class ListDocumentsTool implements Tool {
                 if (params.includeDetails || params.includeLayerCount) {
                     docInfo.layerCount = this.countLayers(doc);
                 }
-                if (params.includeDetails || params.includePaths) {
-                    docInfo.path = await this.getDocumentPath(doc.id);
+                if (params.includeDetails || params.includePaths !== false) {
+                    const pathObservation = await this.getDocumentPath(doc.id);
+                    docInfo.pathState = pathObservation.pathState;
+                    if (pathObservation.path) docInfo.path = pathObservation.path;
+                    if (pathObservation.pathStatusReason) {
+                        docInfo.pathStatusReason = pathObservation.pathStatusReason;
+                    }
                 }
 
                 docList.push(docInfo);
@@ -150,7 +170,7 @@ export class ListDocumentsTool implements Tool {
     /**
      * 读取文档文件路径（仅对已保存文档有效）
      */
-    private async getDocumentPath(documentId: number): Promise<string | undefined> {
+    private async getDocumentPath(documentId: number): Promise<DocumentPathObservation> {
         try {
             const result = await action.batchPlay([
                 {
@@ -166,17 +186,24 @@ export class ListDocumentsTool implements Tool {
             const descriptor = result?.[0];
             const fileReference = descriptor?.fileReference;
             if (typeof fileReference === 'string' && fileReference.trim()) {
-                return fileReference;
+                return { pathState: 'saved', path: fileReference };
             }
             if (fileReference && typeof fileReference === 'object') {
                 const pathLike = fileReference._path || fileReference.path || fileReference.filePath || fileReference._value;
                 if (typeof pathLike === 'string' && pathLike.trim()) {
-                    return pathLike;
+                    return { pathState: 'saved', path: pathLike };
                 }
             }
-        } catch {
-            // 未保存文档或受限文档可能读不到路径，忽略即可
+            return {
+                pathState: 'unsaved',
+                pathStatusReason: 'Photoshop 未返回文件路径；文档尚未保存到本地文件。'
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+                pathState: 'unavailable',
+                pathStatusReason: `Photoshop 无法读取该文档路径；不能据此判断文档是否已保存。${message ? ` ${message}` : ''}`
+            };
         }
-        return undefined;
     }
 }

@@ -10,7 +10,10 @@ import {
     openRouterGeminiImageService
 } from '../services/openrouter-gemini-image-service';
 import { BinaryMessageType, getBinaryTypeName } from '../../shared/binary-protocol';
-import { normalizeImageGenerationResultFormat } from '../../shared/image-generation-result-format';
+import {
+    normalizeImageGenerationResultFormat,
+    type ImageGenerationResultFormat
+} from '../../shared/image-generation-result-format';
 
 /** data URL（或裸 base64）→ Buffer；OpenRouter 图像服务只吃 Buffer，字符串归字符串的归处是火山系服务。 */
 function dataUrlToBuffer(value: string): Buffer {
@@ -148,7 +151,7 @@ function parseImageToImageError(error: any): {
             message: rawMessage,
             stage: 'validate-source-image',
             code: 'InvalidParameter',
-            detail: '上游识别到非法 base64 图像（本地应已拦截，出现该错误请检查 UXP 抓图链路）'
+            detail: '这张图在发送过程中出了问题，模型没能读取。请重新选一次图层后重试。'
         };
     }
 
@@ -204,7 +207,7 @@ function parseImageToImageError(error: any): {
             message: rawMessage,
             stage: 'capture-source-layer',
             code: code || 'BinaryFrameMissing',
-            detail: '原始像素二进制帧未到达 Agent（可能 Agent 未重启加载新代码，或 WebSocket 大帧被中间件丢弃）。请确认 Agent 已重启，然后重试。'
+            detail: '图层画面没能传到 Agent。请重启一次 Agent，然后重试。'
         };
     }
 
@@ -213,7 +216,7 @@ function parseImageToImageError(error: any): {
             message: rawMessage,
             stage: 'capture-source-layer',
             code: code || 'RawRgbaEncodeFailed',
-            detail: '把原始像素编码为 PNG 时失败，通常是尺寸/通道数异常。建议换一个普通像素图层重试。'
+            detail: '这个图层的画面没能转成图片。建议换一个普通像素图层重试——形状层、文字层可能不支持。'
         };
     }
 
@@ -222,7 +225,7 @@ function parseImageToImageError(error: any): {
             message: rawMessage,
             stage: 'capture-source-layer',
             code: code || 'BinarySourceConfig',
-            detail: 'v3 raw RGBA 通路未正确初始化。请确认 Agent 已彻底重启（不只是重载 UXP）。'
+            detail: '图片传输通道还没就绪。请完整重启 Agent（只重载插件不够），然后重试。'
         };
     }
 
@@ -308,6 +311,24 @@ function parseImageToImageError(error: any): {
 export function registerImageToImageHandlers(context: UXPContext): void {
     const { wsServer, logService, binaryImageStore } = context;
 
+    /**
+     * 当前在途的生成请求，用来支持"停止生成"。
+     *
+     * 只保留一个：面板一次只展示一轮结果，第二个请求的结果没有地方呈现。
+     * 真机出现过 16:44 与 16:51 两次 4K 请求并行各自跑满超时——两次都在计费，
+     * 而用户只可能看到一次结果。所以新请求进来时先取消上一个，既符合界面语义也不白花钱。
+     */
+    let activeGeneration: { abort: AbortController; startedAt: number } | null = null;
+
+    function abortActiveGeneration(reason: string): boolean {
+        if (!activeGeneration) return false;
+        const waitedSeconds = ((Date.now() - activeGeneration.startedAt) / 1000).toFixed(1);
+        logService?.logAgent('info', `[ImageToImage] ${reason}，已等待 ${waitedSeconds} 秒的请求被中断`);
+        activeGeneration.abort.abort();
+        activeGeneration = null;
+        return true;
+    }
+
     const imageToImageGenerateHandler = async (params: {
         image?: string;
         prompt: string;
@@ -345,12 +366,23 @@ export function registerImageToImageHandlers(context: UXPContext): void {
 
         const sendProgress = (progress: number, message: string, stage?: string) => {
             wsServer.sendProgress('image-to-image', progress, message, stage);
-            logService?.logAgent('info', `[ImageToImage] ${progress}% - ${message}${stage ? ` (${stage})` : ''}`);
+            // 上传百分比每变一次就来一条，全量写日志会把日志刷爆，只留整十的档位
+            const isNoisyUploadTick = stage === 'provider-upload-progress' && progress % 5 !== 0;
+            if (!isNoisyUploadTick) {
+                logService?.logAgent('info', `[ImageToImage] ${progress}% - ${message}${stage ? ` (${stage})` : ''}`);
+            }
         };
+
+        // 新请求顶掉上一个：两个请求并行时只有一个的结果能被展示，另一个纯属白花钱
+        abortActiveGeneration('收到新的生成请求');
+        const abortController = new AbortController();
+        activeGeneration = { abort: abortController, startedAt: Date.now() };
 
         try {
             // v3 零闪烁分支：从 binary ws 缓存里拉取 raw RGBA，sharp 编 PNG，注入 params.image
             let resolvedSourceImage = typeof params.image === 'string' ? params.image : '';
+            // UXP 直传的原始像素。OpenRouter 路径直接用它，不再经过中间 PNG。
+            let rawSourcePixels: { raw: Buffer; width: number; height: number; channels: 4 } | null = null;
             logService?.logAgent('info', `[ImageToImage] Incoming payload summary: sourceFromBinary=${params.sourceFromBinary === true}, sourceBinaryRequestId=${params.sourceBinaryRequestId}, imageLen=${resolvedSourceImage.length}, refCount=${Array.isArray(params.referenceImages) ? params.referenceImages.length : 0}`);
 
             if (params.sourceFromBinary === true) {
@@ -386,16 +418,38 @@ export function registerImageToImageHandlers(context: UXPContext): void {
                     ? Number(params.sourceBinaryHeight)
                     : binaryEntry.height;
                 logService?.logAgent('info', `[ImageToImage] Decoding raw RGBA: ${width}x${height}, ${(binaryEntry.buffer.length / 1024).toFixed(0)}KB`);
-                sendProgress(15, '正在生成无损 PNG', 'encode-source-png');
-                try {
-                    resolvedSourceImage = await rawRgbaToPngDataUrl(binaryEntry.buffer, width, height);
-                } catch (encodeError: any) {
-                    throw new Error(`Failed to encode raw RGBA to PNG: ${encodeError?.message || encodeError}`);
+
+                // 原始像素直接留着，交给下游只编码一次。
+                //
+                // 这里原本要先把 raw RGBA 编成 PNG（3072×4096 实测 2.2~3.4 秒），
+                // 传给 service 后又被解码、再编码一次。PNG 无损所以数值没变，
+                // 但这一编一解是纯粹白做的功——链路上少一个环节，就少一处出错的余地。
+                rawSourcePixels = {
+                    raw: binaryEntry.buffer,
+                    width,
+                    height,
+                    channels: 4
+                };
+
+                // 火山系 provider 只吃 data URL，只有它们才需要现在就编 PNG；
+                // OpenRouter 走 raw 直通，跳过这一步。
+                if (!isOpenRouterModel) {
+                    sendProgress(15, '正在生成无损 PNG', 'encode-source-png');
+                    try {
+                        resolvedSourceImage = await rawRgbaToPngDataUrl(binaryEntry.buffer, width, height);
+                    } catch (encodeError: any) {
+                        throw new Error(`Failed to encode raw RGBA to PNG: ${encodeError?.message || encodeError}`);
+                    }
+                    logService?.logAgent('info', `[ImageToImage] Raw RGBA → PNG dataUrl ${(resolvedSourceImage.length / 1024).toFixed(0)}KB`);
                 }
-                logService?.logAgent('info', `[ImageToImage] Raw RGBA → PNG dataUrl ${(resolvedSourceImage.length / 1024).toFixed(0)}KB`);
+
+                // 把源图体积如实报给面板：等待时长里有一段就是在传这张图（4K 源图能到 20MB+），
+                // 用户看到"在传多大的东西"才判断得出这次慢是正常还是异常。
+                const sourceMb = (binaryEntry.buffer.length / 1024 / 1024).toFixed(1);
+                sendProgress(18, `原图已准备好（约 ${sourceMb}MB 像素），正在发送`, 'encode-source-png');
             }
 
-            if (!resolvedSourceImage) {
+            if (!resolvedSourceImage && !rawSourcePixels) {
                 throw new Error('Source image is required');
             }
 
@@ -405,21 +459,28 @@ export function registerImageToImageHandlers(context: UXPContext): void {
             let resolvedModel: string;
             let resolvedSizeSpec: string;
             let partialFailures: Array<{ index: number; code?: string; message: string }> = [];
+            // 上游"接受了请求但没照做"时的说明（如请求 4K 实际只给 896×1200）。
+            // 这类降级不是错误、不该中断流程，但必须让用户看见，否则只会体感成"这模型不清晰"。
+            let providerNotice: string | undefined;
 
             if (isOpenRouterModel) {
-                // OpenRouter 图像模型（如 google/gemini-3-pro-image-preview）：整图重生，无蒙版。
-                // 单图模型，张数锁定 1（面板已禁用多选）；比例走 aspect_ratio 档位而非像素尺寸。
+                // OpenRouter 图像模型：整图重生，无蒙版。这些模型单次只能出 1 张
+                // （图像 API 的 supported_parameters 里 n 的 min/max 都是 1），
+                // 要多张就并发发多次——面板早就是这么写的（"2 张会并发 2 次请求"），
+                // 但这里一直只调了一次，用户选 2 张只拿到 1 张。现在按 maxImages 真的发够。
                 if (!openRouterGeminiImageService.hasApiKey()) {
                     throw {
                         message: 'OpenRouter API Key 未配置，请先在设置中填写后重试。',
                         errorStage: 'provider-auth'
                     };
                 }
-                const openRouterResult = await openRouterGeminiImageService.generateFromImage(
+                const openRouterBatch = await openRouterGeminiImageService.generateBatchFromImage(
                     params.prompt,
-                    dataUrlToBuffer(resolvedSourceImage),
+                    rawSourcePixels || dataUrlToBuffer(resolvedSourceImage),
                     {
                         model,
+                        count: params.maxImages,
+                        signal: abortController.signal,
                         aspectRatio: params.aspectRatio,
                         imageSize: ['1K', '2K', '4K'].includes(String(params.sizePreset || '').toUpperCase())
                             ? String(params.sizePreset).toUpperCase() as '1K' | '2K' | '4K'
@@ -430,9 +491,31 @@ export function registerImageToImageHandlers(context: UXPContext): void {
                     },
                     (event) => sendProgress(event.progress, event.message, event.stage)
                 );
-                generatedBuffers = [openRouterResult.image];
+                const openRouterResult = openRouterBatch.results[0];
+                generatedBuffers = openRouterBatch.results.map((item) => item.image);
+                partialFailures = openRouterBatch.failures.map((item) => ({
+                    index: item.index,
+                    message: item.message
+                }));
                 resolvedModel = openRouterResult.model;
                 resolvedSizeSpec = `${openRouterResult.imageSize} @ ${openRouterResult.aspectRatio}`;
+                providerNotice = openRouterResult.sizeDowngradeNotice;
+                if (openRouterBatch.results.length > 1) {
+                    logService?.logAgent(
+                        'info',
+                        `[ImageToImage] OpenRouter 并发出图 ${openRouterBatch.results.length}/${params.maxImages} 张`
+                        + (openRouterBatch.failures.length > 0 ? `，${openRouterBatch.failures.length} 张失败` : '')
+                    );
+                }
+                logService?.logAgent(
+                    'info',
+                    `[ImageToImage] OpenRouter 实际出图 ${openRouterResult.actualWidth}x${openRouterResult.actualHeight}, `
+                    + `请求档位=${openRouterResult.imageSize}, 上游模型=${openRouterResult.upstreamModel || '(未回报)'}`
+                    + (openRouterResult.upstreamProvider ? `, provider=${openRouterResult.upstreamProvider}` : '')
+                );
+                if (providerNotice) {
+                    logService?.logAgent('warn', `[ImageToImage] 档位未生效：${providerNotice}`);
+                }
             } else if (isJimengModel) {
                 const jimengResult = await volcengineJimengImageService.generateFromImage(
                     params.prompt,
@@ -468,16 +551,47 @@ export function registerImageToImageHandlers(context: UXPContext): void {
                 partialFailures = seedreamResult.failures;
             }
 
-            sendProgress(96, 'Preparing result files', 'prepare-result-file');
+            sendProgress(96, '正在准备结果图', 'prepare-result-file');
 
             const prepared = await Promise.all(
                 generatedBuffers.map(async (buffer) => {
                     const metadata = await sharp(buffer).metadata();
-                    const detectedOutputFormat = normalizeImageGenerationResultFormat(metadata.format);
-                    const outputFormat = detectedOutputFormat || 'png';
-                    const persistedImageBuffer = detectedOutputFormat
-                        ? buffer
-                        : await sharp(buffer).png().toBuffer();
+
+                    // 落盘只做**必需的那一步**，不做统一格式化。
+                    //
+                    // 唯一必须解决的问题是：Photoshop 置入不带 ICC 的图时会走"缺失配置文件"
+                    // 策略——数值被直接采纳而不做色彩空间转换，文档不是 sRGB 时显示效果就和
+                    // 模型给的不是一回事。所以**缺 ICC 才需要重编码补上**。
+                    //
+                    // 上游已经带了 ICC 的（实测 Gemini 的 JPEG 带 "sRGB IEC61966-2-1"），
+                    // 原样落盘即可：PS 能直接读 JPEG 并按其 ICC 正确转换。
+                    // 此前这里无论如何都解码再编成 PNG，那一次编解码对带 ICC 的图是纯粹白做的，
+                    // 4096×4096 的 PNG 编码开销还不小——减掉它，像素一个字节都不会动。
+                    const hasUpstreamIcc = !!metadata.icc;
+                    const upstreamFormat = normalizeImageGenerationResultFormat(metadata.format);
+
+                    let persistedImageBuffer: Buffer;
+                    let outputFormat: ImageGenerationResultFormat;
+                    if (hasUpstreamIcc && upstreamFormat) {
+                        persistedImageBuffer = buffer;
+                        outputFormat = upstreamFormat;
+                    } else {
+                        // 缺 ICC：必须重编码才能把配置文件写进去。顺带用无损 PNG，
+                        // 因为 JPEG 重编码会在已有损失上再叠一层。
+                        persistedImageBuffer = await sharp(buffer)
+                            .png({ compressionLevel: 6, adaptiveFiltering: true })
+                            .withIccProfile('srgb')
+                            .toBuffer();
+                        outputFormat = 'png';
+                    }
+
+                    console.log(
+                        `[ImageToImage] 结果落盘：${metadata.width}x${metadata.height} ${metadata.format} → `
+                        + (hasUpstreamIcc && upstreamFormat
+                            ? `原样保留（自带 ICC，零重编码）`
+                            : `png（上游无 ICC，重编码补标 sRGB）`)
+                    );
+
                     const previewBuffer = await sharp(persistedImageBuffer)
                         .resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true })
                         .png()
@@ -510,7 +624,9 @@ export function registerImageToImageHandlers(context: UXPContext): void {
                 // 每张的真实尺寸，供面板按张显示与置入时定位。
                 imageSizes: prepared.map((p) => ({ width: p.width, height: p.height })),
                 partialFailures,
+                providerNotice,
                 meta: {
+                    providerNotice,
                     provider: isOpenRouterModel ? 'openrouter' : (isJimengModel ? 'jimeng' : 'seedream'),
                     model: resolvedModel,
                     outputFormat: primary.outputFormat,
@@ -538,8 +654,29 @@ export function registerImageToImageHandlers(context: UXPContext): void {
                 errorCode: parsedError.code,
                 errorDetail: parsedError.detail
             };
+        } finally {
+            if (activeGeneration?.abort === abortController) {
+                activeGeneration = null;
+            }
         }
     };
 
     wsServer.registerHandler('imageToImage.generate', imageToImageGenerateHandler);
+
+    /**
+     * 停止当前生成。
+     *
+     * 只保证"不再等这次结果"，**不保证上游停止计费**——请求已经发出去，模型那边多半
+     * 已经在算了。这一点必须如实告诉用户，不能让"停止"听起来像撤销订单。
+     */
+    wsServer.registerHandler('imageToImage.cancel', async () => {
+        const aborted = abortActiveGeneration('用户点了停止生成');
+        return {
+            success: true,
+            aborted,
+            message: aborted
+                ? '已停止等待这次生成。模型那边可能已经开始出图了，这次调用的费用不会退。'
+                : '当前没有正在进行的生成。'
+        };
+    });
 }

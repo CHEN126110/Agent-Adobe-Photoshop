@@ -358,26 +358,39 @@ export function selectMainImageAssetCandidate(input: MainImageAssetSelectionInpu
     }
 
     const candidates = dedupeCandidates(rawCandidates).sort((a, b) => b.score - a.score);
-    const selectedAsset = candidates[0];
+    const authoritativeCandidate = candidates.find((candidate) => (
+        candidate.source === 'explicit-asset' || candidate.source === 'selected-project-image'
+    ));
+    const hasProjectCandidates = candidates.some((candidate) => candidate.source === 'project-asset');
+    const hasCurrentDocumentCandidate = candidates.some((candidate) => candidate.source === 'current-document');
+    const selectedAsset = authoritativeCandidate;
     const blockers: string[] = [];
     const warnings: string[] = [];
 
-    if (!selectedAsset) {
+    if (!selectedAsset && candidates.length === 0) {
         warnings.push('缺少明确素材、项目候选图片和当前 Photoshop 文档，不能安全生成主图草案。');
-    } else {
+    } else if (!selectedAsset && hasProjectCandidates) {
+        warnings.push('已找到项目素材候选，但规则排序不代表模型已经选图；需要 Agent 或用户明确选择后再进入生产。');
+    } else if (!selectedAsset && hasCurrentDocumentCandidate) {
+        warnings.push('当前 Photoshop 文档只提供活动上下文，不代表它就是本次主图素材；需要 Agent 或用户明确选择后再进入生产。');
+    } else if (selectedAsset) {
         warnings.push(...selectedAsset.warnings);
         if (!selectedAsset.isImageLike && selectedAsset.source === 'explicit-asset') {
             blockers.push('明确选择的素材不像图片或 Photoshop 设计源，需要用户重新选择。');
         }
+    } else {
+        warnings.push('已发现候选上下文，但没有可证明由 Agent 或用户明确选中的素材。');
     }
 
     const selectionMode: MainImageAssetSelectionMode = selectedAsset
-        ? selectedAsset.source === 'current-document'
-            ? 'active-document-fallback'
-            : selectedAsset.source === 'project-asset'
-                ? 'project-asset-candidate'
-                : selectedAsset.source
-        : 'missing';
+        ? selectedAsset.source === 'explicit-asset'
+            ? 'explicit-asset'
+            : 'selected-project-image'
+        : hasProjectCandidates
+            ? 'project-asset-candidate'
+            : hasCurrentDocumentCandidate
+                ? 'active-document-fallback'
+                : 'missing';
     const assetDecisionSource = resolveAssetDecisionSource(selectionMode);
     const requiresModelAssetDecision = assetDecisionSource === 'heuristic-candidate';
     const readiness: MainImageAssetSelectionReadiness = blockers.length > 0
@@ -409,7 +422,7 @@ export function selectMainImageAssetCandidate(input: MainImageAssetSelectionInpu
         selectionMode,
         assetDecisionSource,
         requiresModelAssetDecision,
-        selectedAsset,
+        ...(selectedAsset ? { selectedAsset } : {}),
         candidates: candidates.slice(0, 8),
         candidateCount: candidates.length,
         blockers,
@@ -435,6 +448,9 @@ export function buildMainImageCandidatePreflightPlan(input: MainImageCandidatePr
     ];
 
     if (!selectedCandidate) {
+        const candidateMessage = candidates.length > 0
+            ? '项目里已有素材候选，但尚未由 Agent 或用户明确选择；规则第一名不会自动进入主图生产。'
+            : '没有可用候选图，无法进入主图素材视觉预检。';
         return {
             status: 'needs_asset',
             enabled,
@@ -447,7 +463,7 @@ export function buildMainImageCandidatePreflightPlan(input: MainImageCandidatePr
             blockers,
             warnings: [
                 ...warnings,
-                '没有可用候选图，无法进入主图素材视觉预检。'
+                candidateMessage
             ],
             limitations
         };

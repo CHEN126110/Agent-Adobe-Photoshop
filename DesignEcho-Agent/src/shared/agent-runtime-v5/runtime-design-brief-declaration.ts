@@ -126,6 +126,16 @@ export type RuntimeDesignBriefWorkModeInputContracts = Partial<
 const MAX_TEXT = 480;
 const MAX_LIST = 16;
 const MAX_ISSUES = 40;
+/** 校验器能自动归一、不该驳回整张简报的问题（只随结果作提醒返回）。 */
+const ADVISORY_ISSUE_CODES = new Set([
+    'array_too_long',
+    'text_too_long',
+    'array_items_duplicate',
+    'unknown_field',
+    'implementation_detail_forbidden',
+    'input_key_not_in_manifest',
+    'context_ref_not_available'
+]);
 const LOCAL_PATH_PATTERN = /(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/]|\/(?:Users|home|tmp|var|private)\/)/;
 const DATA_URL_PATTERN = /data:[^;,]{1,80}(?:;base64)?,/i;
 const BASE64_PATTERN = /[A-Za-z0-9+/]{180,}={0,2}/;
@@ -141,6 +151,56 @@ const DESIGN_WORK_MODE_SEMANTICS: Readonly<Record<RuntimeDesignWorkMode, string>
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * 把校验 issue 翻译成模型能照着改的话：每条说清「哪个字段、哪条限制、允许值是什么」。
+ * 只报 `array_too_long (inputCoverage)` 这种裸码，模型只能盲试——真机连撞 7 次即由此而来。
+ */
+export function describeRuntimeDesignBriefValidationIssues(
+    issues: readonly RuntimeDesignBriefValidationIssue[],
+    context: {
+        allowedContextRefs?: readonly string[];
+        allowedWorkModes?: readonly string[];
+    } = {}
+): string {
+    if (issues.length === 0) return '未知校验问题';
+    const refs = (context.allowedContextRefs || []).slice(0, 12).join(', ');
+    const modes = (context.allowedWorkModes || []).join(' / ');
+    const explain = (issue: RuntimeDesignBriefValidationIssue): string => {
+        const field = issue.path.split('[')[0].split('.')[0];
+        switch (issue.code) {
+            case 'array_too_long':
+                if (field === 'deliverables') return `${issue.path}：最多 8 项`;
+                if (field === 'outputRequirements') return `${issue.path}：最多 12 项`;
+                return `${issue.path}：最多 ${MAX_LIST} 项`;
+            case 'array_required':
+                return `${issue.path}：需要是数组`;
+            case 'array_items_missing':
+                return `${issue.path}：至少要有 1 项非空文本`;
+            case 'array_items_duplicate':
+                return `${issue.path}：有重复项，请去重`;
+            case 'text_required':
+                return `${issue.path}：需要非空文本`;
+            case 'text_too_long':
+                return `${issue.path}：单条不超过 ${MAX_TEXT} 字`;
+            case 'context_ref_not_available':
+                return `${issue.path}：不是当前可引用的上下文${refs ? `，可用：${refs}` : ''}`;
+            case 'work_mode_required':
+            case 'work_mode_invalid':
+            case 'work_mode_mismatch':
+                return `${issue.path || 'workMode'}：${issue.code}${modes ? `，允许：${modes}` : ''}`;
+            case 'sensitive_payload_forbidden':
+                return `${issue.path}：不要写本地路径 / data URL / base64`;
+            case 'implementation_detail_forbidden':
+                return `${issue.path}：这里写设计意图，不写工具名 / 图层编号 / 坐标`;
+            case 'unknown_field':
+                return `${issue.path}：不是本表单的字段，请删除`;
+            default:
+                return `${issue.path || '(root)'}：${issue.code}`;
+        }
+    };
+    return issues.slice(0, 6).map(explain).join('；');
 }
 
 function addIssue(
@@ -194,9 +254,12 @@ function readText(input: {
         if (input.required || input.value !== undefined) addIssue(input.issues, 'text_required', input.path);
         return '';
     }
-    const text = input.value.trim();
-    if (input.required && !text) addIssue(input.issues, 'text_required', input.path);
-    if (text.length > (input.maxLength || MAX_TEXT)) addIssue(input.issues, 'text_too_long', input.path);
+    const rawText = input.value.trim();
+    const maxLength = input.maxLength || MAX_TEXT;
+    if (input.required && !rawText) addIssue(input.issues, 'text_required', input.path);
+    if (rawText.length > maxLength) addIssue(input.issues, 'text_too_long', input.path);
+    // 超长只截断作提醒（advisory），不驳回整张简报
+    const text = rawText.length > maxLength ? rawText.slice(0, maxLength) : rawText;
     if (hasSensitivePayload(text)) addIssue(input.issues, 'sensitive_payload_forbidden', input.path);
     if (hasImplementationDetail(text)) addIssue(input.issues, 'implementation_detail_forbidden', input.path);
     return text;
@@ -223,7 +286,8 @@ function readTextList(input: {
     })).filter(Boolean);
     if (values.length < (input.requiredItems || 0)) addIssue(input.issues, 'array_items_missing', input.path);
     if (new Set(values).size !== values.length) addIssue(input.issues, 'array_items_duplicate', input.path);
-    return values;
+    // 重复项去重后照收（advisory）
+    return Array.from(new Set(values));
 }
 
 function readContextRefs(input: {
@@ -245,7 +309,8 @@ function readContextRefs(input: {
             addIssue(input.issues, 'context_ref_not_available', `${input.path}[${index}]`);
         }
     });
-    return refs;
+    // 引用不到的 ref 丢弃后照收（advisory），不为一个错 ref 驳回整张简报
+    return refs.filter((ref) => input.allowedContextRefs.has(ref));
 }
 
 function readInputCoverage(input: {
@@ -255,33 +320,23 @@ function readInputCoverage(input: {
     resolvedInputs: readonly RuntimeDesignBriefResolvedInput[];
     issues: RuntimeDesignBriefValidationIssue[];
 }): RuntimeDesignBriefInputCoverage[] {
-    const rawItems = input.value === undefined ? [] : input.value;
-    if (!Array.isArray(rawItems)) {
-        addIssue(input.issues, 'array_required', 'inputCoverage');
-    }
+    // inputCoverage 是「可选的模型备注」（见 schema 描述）：事实性的覆盖状态由 Harness 从真实
+    // 来源推导。因此这里**只做宽容读取**——不在 manifest 里的 key、超出条数、重复项、非法
+    // status 一律忽略，不能因为备注写得不合格式而驳回整份简报。
+    // 真机 2026-08-17：`array_too_long (inputCoverage)`（manifest 未登记 input 时上限为 0）与
+    // `input_key_not_in_manifest` 让模型连撞 7 次，零写入。
+    const rawItems = Array.isArray(input.value) ? input.value : [];
     const knownKeys = new Set([...input.requiredInputKeys, ...input.optionalInputKeys]);
-    const seenKeys = new Set<string>();
     const declaredCoverage = new Map<string, {
         status?: RuntimeDesignBriefInputStatus;
         note?: string;
     }>();
-    const coverageItems = Array.isArray(rawItems) ? rawItems : [];
-    if (coverageItems.length > knownKeys.size) addIssue(input.issues, 'array_too_long', 'inputCoverage');
-    coverageItems.slice(0, Math.max(knownKeys.size, 1)).forEach((item, index) => {
+    rawItems.slice(0, MAX_LIST).forEach((item, index) => {
+        if (!isObject(item)) return;
         const path = `inputCoverage[${index}]`;
-        const record = isObject(item) ? item : {};
-        if (!isObject(item)) addIssue(input.issues, 'object_required', path);
-        validateKeys(record, ['inputKey', 'status', 'contextRefs', 'note'], path, input.issues);
+        const record = item;
         const inputKey = cleanInputKey(record.inputKey);
-        if (!inputKey) addIssue(input.issues, 'input_key_invalid', `${path}.inputKey`);
-        if (inputKey && !knownKeys.has(inputKey)) addIssue(input.issues, 'input_key_not_in_manifest', `${path}.inputKey`);
-        if (inputKey && seenKeys.has(inputKey)) addIssue(input.issues, 'input_key_duplicate', `${path}.inputKey`);
-        if (inputKey) seenKeys.add(inputKey);
-        const hasStatus = record.status !== undefined;
-        const statusText = hasStatus ? String(record.status || '').trim() : '';
-        if (hasStatus && !['provided', 'missing', 'assumed'].includes(statusText)) {
-            addIssue(input.issues, 'input_status_invalid', `${path}.status`);
-        }
+        const statusText = record.status !== undefined ? String(record.status || '').trim() : '';
         const note = readText({
             value: record.note,
             path: `${path}.note`,
@@ -507,8 +562,12 @@ export function validateRuntimeDesignBriefDeclaration(input: {
         inputCoverage,
         contextRefs
     };
-    if (issues.length > 0) {
-        return { ok: false, readiness: 'invalid', issues };
+    // 表单洁癖不当门票（真机 08-14→08-18：array_too_long / input_key_not_in_manifest / unknown_field 把模型
+    // 正确的设计判断连拒 4–7 次）：能自动归一的（超长截断、重复去重、多余字段丢弃、多写的 inputKey 忽略、
+    // 引用不可用的 ref 丢弃、措辞里带工具词）只作提醒；只有真缺东西（目标 / 交付物 / workMode）才驳回。
+    const blockingIssues = issues.filter((issue) => !ADVISORY_ISSUE_CODES.has(issue.code));
+    if (blockingIssues.length > 0) {
+        return { ok: false, readiness: 'invalid', issues: blockingIssues };
     }
     const requiredCoverage = new Map(
         inputCoverage
@@ -685,9 +744,9 @@ export function buildDeclareDesignBriefToolSchema(input: {
                 },
                 inputCoverage: {
                     type: 'array',
-                    description: 'Optional model notes about inputs. Harness normalizes factual status and generates omitted required entries from resolved runtime sources.',
+                    description: 'Optional model notes about inputs (may be omitted). Harness normalizes factual status and generates omitted required entries from resolved runtime sources; entries for unknown keys are ignored, never rejected.',
                     minItems: 0,
-                    maxItems: Math.max(knownInputKeys.length, requiredInputKeys.length),
+                    maxItems: MAX_LIST,
                     items: {
                         type: 'object',
                         properties: {

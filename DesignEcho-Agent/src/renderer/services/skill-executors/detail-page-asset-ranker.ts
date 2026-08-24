@@ -26,8 +26,7 @@ import {
 } from '../../../shared/reference-replication-placement';
 import {
     computeSmartScalingDecision,
-    type SmartScalingDecision,
-    type SmartScalingIntent
+    type SmartScalingDecision
 } from '../../../shared/design-smart-scaling-policy';
 import type {
     DesignAssetDirectUseSuitability,
@@ -1632,16 +1631,6 @@ function buildScreenPlanDecisionLines(screenPlan: DetailScreenPlan): string[] {
     return lines;
 }
 
-function resolveSmartScalingIntent(assetType: AssetType, fillMode: FillMode, screenPlan?: DetailScreenPlan): SmartScalingIntent {
-    if (assetType === 'icon') return 'thumbnail';
-    if (screenPlan?.requiresModelDecision) return fillMode === 'cover' ? 'full-bleed' : 'supporting';
-    if (screenPlan?.imageStrategy === 'comparison') return 'compare-grid';
-    if (screenPlan?.screenRole === 'hero' || screenPlan?.imageStrategy === 'hero') return 'hero';
-    if (fillMode === 'cover' && (assetType === 'scene' || assetType === 'model')) return 'full-bleed';
-    if (screenPlan?.imageStrategy === 'detail' || screenPlan?.imageStrategy === 'material') return 'fit-slot';
-    return 'supporting';
-}
-
 function buildSmartScalingCanvas(screen: ParsedScreen, targetBox: { x: number; y: number; width: number; height: number }) {
     const screenBounds = screen.bounds || {};
     return {
@@ -1677,7 +1666,19 @@ function buildPlacementMetadata(
         targetBox,
         designType: 'detail-page',
         assetRole: assetType,
-        intent: resolveSmartScalingIntent(assetType, fillMode, screenPlan)
+        intent: fillMode === 'cover' ? 'full-bleed' : 'fit-slot',
+        presetOverride: {
+            scaleMode: fillMode === 'cover' ? 'cover' : 'contain',
+            targetFill: 1,
+            minFill: 1,
+            maxFill: 1,
+            anchor: 'center',
+            cropPolicy: fillMode === 'cover' ? 'allow-crop' : 'protect-subject',
+            visualBiasY: 0,
+            preserveSubject: true,
+            minScale: 0.01,
+            maxScale: 100
+        }
     });
 
     return {

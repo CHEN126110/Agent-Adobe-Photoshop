@@ -111,18 +111,18 @@ export const REFERENCE_STYLE_RECIPES: ReferenceStyleRecipe[] = [
     {
         id: 'shadow',
         label: '投影 / 阴影',
-        maturity: 'implemented-recipe',
+        maturity: 'planned',
         sourceFields: ['effects.shadow'],
-        currentExecution: '参考图复刻模板落地时，若元素包含 effects.shadow 且未与 stroke 组合冲突，则调用 addDropShadow 应用受控柔和投影。',
-        limitation: '当前使用启发式柔和黑色投影，不反推出原作者真实角度、距离、模糊或混合模式；同层 stroke+shadow 组合暂不执行 shadow，避免未验证的图层样式覆盖。'
+        currentExecution: '只有取得颜色、透明度、角度、距离、扩展和大小的显式参数后才可调用 addDropShadow；仅识别到“有阴影”时不执行。',
+        limitation: '当前参考表示没有完整投影参数，不能用统一黑色柔和阴影冒充原效果。'
     },
     {
         id: 'stroke',
         label: '描边',
-        maturity: 'implemented-recipe',
+        maturity: 'planned',
         sourceFields: ['effects.stroke'],
-        currentExecution: '参考图复刻模板落地时，若元素同时包含 effects.stroke 与 strokeColor，则调用 addStroke 应用内描边。',
-        limitation: '当前只支持纯色内描边，宽度按目标框尺寸启发式推导；不支持渐变描边、图案描边、混合模式或精准还原原作者参数。'
+        currentExecution: '只有取得颜色、宽度、位置和透明度的显式参数后才可调用 addStroke；仅识别到描边颜色时不执行。',
+        limitation: '当前参考表示没有完整描边参数，不能按目标框尺寸猜宽度或默认使用内描边。'
     },
     {
         id: 'glow',
@@ -175,23 +175,6 @@ function normalizeEffectId(effect: string): ReferenceStyleRecipeId {
 
 function isExecutableMaturity(maturity: ReferenceStyleRecipeMaturity): boolean {
     return maturity === 'implemented-basic' || maturity === 'implemented-recipe';
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-    if (!Number.isFinite(value)) return min;
-    return Math.max(min, Math.min(max, value));
-}
-
-function parseHexColor(value?: string): { r: number; g: number; b: number } | undefined {
-    const raw = String(value || '').trim();
-    const match = raw.match(/^#?([a-f0-9]{6})$/i);
-    if (!match) return undefined;
-    const hex = match[1];
-    return {
-        r: Number.parseInt(hex.slice(0, 2), 16),
-        g: Number.parseInt(hex.slice(2, 4), 16),
-        b: Number.parseInt(hex.slice(4, 6), 16)
-    };
 }
 
 function hasEffect(style: MinimalDesignElementStyle | undefined | null, recipeId: ReferenceStyleRecipeId): boolean {
@@ -280,45 +263,24 @@ export function analyzeReferenceStyleRecipes(representation?: MinimalDesignRepre
 
 export function buildReferenceStrokeRecipeExecutionPlan(
     style?: MinimalDesignElementStyle | null,
-    bounds?: { width?: number; height?: number } | null
+    _bounds?: { width?: number; height?: number } | null
 ): ReferenceStrokeRecipeExecutionPlan | null {
     if (!hasStrokeEffect(style)) {
         return null;
     }
 
-    const color = parseHexColor(style?.strokeColor);
-    if (!color) {
-        return {
-            executable: false,
-            recipeId: 'stroke',
-            reason: '解析到 stroke 效果，但缺少可执行的 strokeColor。'
-        };
-    }
-
-    const width = Number(bounds?.width || 0);
-    const height = Number(bounds?.height || 0);
-    const referenceSize = Math.max(1, Math.min(
-        Number.isFinite(width) && width > 0 ? width : 240,
-        Number.isFinite(height) && height > 0 ? height : 120
-    ));
-    const size = Math.round(clampNumber(referenceSize * 0.012, 1, 12));
-
     return {
-        executable: true,
+        executable: false,
         recipeId: 'stroke',
-        reason: 'stroke effect and strokeColor are available.',
-        params: {
-            color,
-            size,
-            position: 'inside',
-            opacity: 100
-        }
+        reason: style?.strokeColor
+            ? '解析到 stroke 与颜色，但宽度、位置和透明度没有被真实测量；不使用内置描边配方。'
+            : '解析到 stroke 效果，但缺少完整可执行参数；不使用内置描边配方。'
     };
 }
 
 export function buildReferenceShadowRecipeExecutionPlan(
     style?: MinimalDesignElementStyle | null,
-    bounds?: { width?: number; height?: number } | null
+    _bounds?: { width?: number; height?: number } | null
 ): ReferenceShadowRecipeExecutionPlan | null {
     if (!hasShadowEffect(style)) {
         return null;
@@ -332,27 +294,10 @@ export function buildReferenceShadowRecipeExecutionPlan(
         };
     }
 
-    const width = Number(bounds?.width || 0);
-    const height = Number(bounds?.height || 0);
-    const referenceSize = Math.max(1, Math.min(
-        Number.isFinite(width) && width > 0 ? width : 240,
-        Number.isFinite(height) && height > 0 ? height : 120
-    ));
-    const distance = Math.round(clampNumber(referenceSize * 0.025, 2, 24));
-    const size = Math.round(clampNumber(referenceSize * 0.06, 4, 48));
-
     return {
-        executable: true,
+        executable: false,
         recipeId: 'shadow',
-        reason: 'shadow effect is available and can be mapped to controlled addDropShadow parameters.',
-        params: {
-            color: { r: 0, g: 0, b: 0 },
-            opacity: 28,
-            angle: 120,
-            distance,
-            spread: 0,
-            size
-        }
+        reason: '解析到 shadow 效果，但颜色、透明度、角度、距离、扩展和大小没有被真实测量；不使用内置阴影配方。'
     };
 }
 

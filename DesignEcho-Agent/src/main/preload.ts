@@ -17,6 +17,12 @@ import type {
     CodexSubscriptionStatusResult
 } from '../shared/codex-subscription-contract';
 import type {
+    ClaudeSubscriptionModelListResult,
+    ClaudeSubscriptionOperationResult,
+    ClaudeSubscriptionProbeResult,
+    ClaudeSubscriptionStatusResult
+} from '../shared/claude-subscription-contract';
+import type {
     ArtifactRuntimeBinding
 } from '../shared/agent-runtime-v5/artifact-repository-contract';
 import type { ArtifactRef } from '../shared/agent-runtime-v5/contracts/common';
@@ -40,6 +46,7 @@ import type {
     ManualSkuColorCardRendererRequest,
     ManualSkuColorCardResult
 } from '../shared/manual-sku-color-card';
+import type { ProjectSelectionResolution } from '../shared/project-selection-resolution';
 
 const chatTestFakePhotoshopEnabled = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
     && process.env.DESIGNECHO_CHAT_TEST_FAKE_PHOTOSHOP === '1';
@@ -137,6 +144,21 @@ const api = {
     // 从某 provider 官方接口拉取最新模型列表（apiKey 由主进程取，渲染侧不传 key）
     listProviderModels: (provider: string) =>
         ipcRenderer.invoke('model:listProviderModels', provider),
+    getClaudeSubscriptionStatus: () =>
+        ipcRenderer.invoke('claudeSubscription:getStatus') as Promise<ClaudeSubscriptionStatusResult>,
+    openClaudeSubscriptionLoginTerminal: () =>
+        ipcRenderer.invoke('claudeSubscription:openLoginTerminal') as Promise<ClaudeSubscriptionOperationResult>,
+    probeClaudeSubscriptionAuth: () =>
+        ipcRenderer.invoke('claudeSubscription:probeAuth') as Promise<ClaudeSubscriptionProbeResult>,
+    listClaudeSubscriptionModels: () =>
+        ipcRenderer.invoke('claudeSubscription:listModels') as Promise<ClaudeSubscriptionModelListResult>,
+    logoutClaudeSubscription: () =>
+        ipcRenderer.invoke('claudeSubscription:logout') as Promise<ClaudeSubscriptionOperationResult>,
+    onClaudeSubscriptionModelsReady: (callback: () => void) => {
+        const handler = () => callback();
+        ipcRenderer.on('claudeSubscription:modelsReady', handler);
+        return () => ipcRenderer.removeListener('claudeSubscription:modelsReady', handler);
+    },
     getCodexSubscriptionStatus: () =>
         ipcRenderer.invoke('codexSubscription:getStatus') as Promise<CodexSubscriptionStatusResult>,
     startCodexSubscriptionLogin: () =>
@@ -403,6 +425,8 @@ const api = {
         ipcRenderer.invoke('screenshot:captureAgentWindow'),
     captureDesktopScreenshot: () =>
         ipcRenderer.invoke('screenshot:captureDesktop'),
+    capturePhotoshopWindowScreenshot: () =>
+        ipcRenderer.invoke('screenshot:capturePhotoshopWindow'),
 
     // ===== Ollama 模型管理 =====
     // 下载 Ollama 模型
@@ -469,6 +493,11 @@ const api = {
         ipcRenderer.invoke('design-state:get', projectPath),
     updateDesignState: (projectPath: string, patch: any) =>
         ipcRenderer.invoke('design-state:update', projectPath, patch),
+    // 素材主体框（素材属性；不依赖 Photoshop 选择主体）
+    getAssetSubjectBox: (filePath: string) =>
+        ipcRenderer.invoke('resource:getAssetSubjectBox', filePath),
+    detectLayerSubjectBox: (request: { layerId: number; maxSize?: number }) =>
+        ipcRenderer.invoke('resource:detectLayerSubjectBox', request),
 
     // 主进程唯一 Artifact Repository；先签发 sender/project-bound 一次性授权，再提交收尾批次。
     issueRuntimeSessionIdentity: (
@@ -671,6 +700,9 @@ const api = {
         ipcRenderer.invoke('model:openModelsFolder'),
 
     // ===== 电商项目管理 =====
+    resolveProjectSelection: (selectedPath: string): Promise<ProjectSelectionResolution> =>
+        ipcRenderer.invoke('ecommerce:resolveProjectSelection', selectedPath),
+
     // 扫描电商项目结构
     scanEcommerceProject: (projectPath: string) =>
         ipcRenderer.invoke('ecommerce:scanProject', projectPath),

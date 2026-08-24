@@ -61,6 +61,12 @@ export interface BrowserBridgeOptions {
     /** 可选共享 token；设置后扩展 hello 必须携带一致 token */
     token?: string;
     onLog?: (level: 'info' | 'warn' | 'error', message: string) => void;
+    /**
+     * 扩展主动发起的请求（client_request，如用户收藏 collect.save）的处理器。
+     * 与桥→扩展的 request/response 方向相反，id 空间彼此独立。
+     * 未设置时扩展会收到明确的「Agent 侧未启用」错误。
+     */
+    onClientRequest?: (method: string, params: any) => Promise<any>;
 }
 
 export class BrowserBridgeService {
@@ -271,6 +277,10 @@ export class BrowserBridgeService {
             try { socket.send(JSON.stringify({ type: 'pong', ts: message?.ts })); } catch { /* 忽略 */ }
             return;
         }
+        if (type === 'client_request') {
+            this.handleClientRequest(socket, message);
+            return;
+        }
         if (type === 'response') {
             const id = Number(message?.id);
             const pending = this.pendingRequests.get(id);
@@ -289,6 +299,40 @@ export class BrowserBridgeService {
             return;
         }
         this.log('warn', `[BrowserBridge] 收到未知类型消息: ${type || '(空)'}`);
+    }
+
+    /**
+     * 扩展→桥方向的请求（用户在浏览器里主动发起，如收藏 collect.save）。
+     * 响应帧固定为 { type: 'client_response', id, ok, result?/error? }，
+     * id 原样回传（扩展侧自增，与桥侧 request 的 id 空间独立）。
+     */
+    private handleClientRequest(socket: WebSocket, message: any): void {
+        const id = Number(message?.id);
+        const method = String(message?.method || '');
+        const respond = (payload: { ok: boolean; result?: any; error?: { message: string } }) => {
+            if (socket.readyState !== WebSocket.OPEN) return;
+            try { socket.send(JSON.stringify({ type: 'client_response', id, ...payload })); } catch { /* 发送失败由 close 兜底 */ }
+        };
+        if (!Number.isInteger(id) || !method) {
+            respond({ ok: false, error: { message: 'client_request 缺少 id 或 method 字段。' } });
+            return;
+        }
+        if (!this.ready) {
+            respond({ ok: false, error: { message: '桥尚未完成 hello 握手，请稍后重试。' } });
+            return;
+        }
+        const handler = this.options.onClientRequest;
+        if (!handler) {
+            respond({ ok: false, error: { message: 'Agent 侧未启用浏览器收藏通道（请更新并重启 DesignEcho Agent）。' } });
+            return;
+        }
+        handler(method, message?.params && typeof message.params === 'object' ? message.params : {})
+            .then((result) => respond({ ok: true, result }))
+            .catch((error: any) => {
+                const detail = error?.message || String(error);
+                this.log('warn', `[BrowserBridge] client_request ${method} 处理失败: ${detail}`);
+                respond({ ok: false, error: { message: detail } });
+            });
     }
 
     private closeIfStale(): void {

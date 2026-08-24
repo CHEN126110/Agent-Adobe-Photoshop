@@ -22,7 +22,8 @@ import {
     Images,
     Monitor,
     Plus,
-    Upload
+    Upload,
+    X
 } from 'lucide-react';
 import { useAppStore } from '../stores/app.store';
 import { SuggestionList, TextSuggestion } from './SuggestionList';
@@ -30,7 +31,13 @@ import { ReferenceUpload } from './ReferenceUpload';
 import { ReferenceReplicator } from './ReferenceReplicator';
 import { LayoutFixList, LayoutFix } from './LayoutFixList';
 import { ThinkingModeControl } from './ThinkingModeControl';
+import { DecisionModeControl } from './DecisionModeControl';
+import { SkillPickerControl } from './SkillPickerControl';
+import { getSkillById } from '../../shared/skills/skill-declarations';
 import { ThinkingProcess, ThinkingStep } from './ThinkingProcess';
+import { DesignTaskCardBlock } from './message/blocks/DesignTaskCardBlock';
+import { getActiveDesignTaskCard } from '../services/design-workshop/design-task-card.store';
+import { resolveCurrentDesignTaskItemId, type DesignTaskCard } from '../../shared/design-task-card';
 import { ConversationManager } from './ConversationManager';
 import './ThinkingProcess.css';
 
@@ -79,9 +86,7 @@ import {
     resolveOperatingPhotoshopConnection,
     type OperatingWorkflowContext
 } from '../../shared/agent-runtime-v5/operating-context-snapshot';
-// 触发详情页结构 preset 自注册（structure_only 骨架按 taskType 取 preset 必需）
-import '../../shared/agent-runtime-v5/manifests/detail-page.structure-preset';
-
+import { resolveMaterialSelectionReasonProjection } from '../../shared/design-workshop/compose-design-rationale-visibility';
 // 保留 useChatActions Hook 的模型选择功能
 import { useChatActions } from '../hooks/useChatActions';
 import {
@@ -182,9 +187,11 @@ import {
     type ChatWebSearchIntent
 } from '../../shared/chat-web-search-policy';
 import {
+    buildVisibleAgentActivityFromModelTurnEvent,
     buildVisibleAgentActivityFromProgress,
     buildVisibleAgentActivityFromRunPhase,
     buildVisibleAgentActivityFromStepEvent,
+    isModelTurnFinishedEvent,
     formatAgentProcessEventContent,
     formatAgentToolEventContent,
     getVisibleAgentProcessStepType,
@@ -225,23 +232,16 @@ import {
     type PendingInteractiveContinuation
 } from '../../shared/pending-interactive-continuation';
 import {
-    buildSkuComboApprovedRecipeMemory,
-    stringifySkuCombo,
-    validateSkuComboEditorValue,
-    type SkuComboEditorCard,
-    type SkuComboEditorValue
-} from '../../shared/sku-combo-interactive-card';
-import {
     buildEditableConfirmationApprovedMemory,
     validateEditableConfirmationValue,
     type EditableConfirmationCard,
     type EditableConfirmationValue
 } from '../../shared/editable-confirmation-interactive-card';
 import {
-    buildSkuHumanReviewIntakeFromCard,
-    isSkuHumanReviewCard,
-    validateSkuHumanReviewCardValue
-} from '../../shared/sku-human-review';
+    normalizeSkillInteractiveCardAction,
+    prepareSkillInteractiveCardSubmission,
+    prepareSkillInteractiveReview
+} from '../services/skill-executors/interaction-cards/registry';
 import {
     buildDesignProjectFactReviewPatch,
     doesDesignProjectFactReviewCardMatchState,
@@ -268,7 +268,7 @@ import {
     resolveModelThinkingEnabledForCall,
     type ModelPreferences
 } from '../../shared/config/models.config';
-// 主模型候选列表（与设置页「AI 模型 · 主模型」同一口径，见模块头注释）
+// Agent 模型候选列表（与设置页「Agent 模型」同一口径，见模块头注释）
 import { buildAllPrimaryModelOptionGroups } from '../../shared/config/primary-model-options';
 import { ModelPicker } from './ModelPicker';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
@@ -1340,9 +1340,14 @@ function normalizePersistedVisibleProcessSteps(steps?: ThinkingStep[]): Thinking
 
 function normalizeStoppedVisibleProcessSteps(steps?: ThinkingStep[]): ThinkingStep[] | undefined {
     if (!Array.isArray(steps) || steps.length === 0) return undefined;
-    return normalizePersistedVisibleProcessSteps(
-        steps.filter((step) => step.status === 'success' || step.status === 'error')
-    );
+    // 停止瞬间还在跑的步骤如实标为「未完成」保留下来，不能整条丢弃：
+    // 用户停在哪一步，历史里就要看得到那一步（丢弃 = 停止后过程凭空少一段）。
+    const settledSteps = steps.map((step) => (
+        step.status === 'running' || step.status === 'pending'
+            ? { ...step, status: 'error' as const }
+            : step
+    ));
+    return normalizePersistedVisibleProcessSteps(settledSteps);
 }
 
 function shouldIncludeMessageInAgentConversationHistory(message: {
@@ -1483,26 +1488,40 @@ function filterRedundantFailureProcessSteps(
  * 输出。合并之后运行状态由末尾这条 running 步骤表达，标题文案与呼吸点的既有判据
  * （hasActiveThinkingStep）自动生效，不需要再引入第二套状态口径。
  */
+/** 模型回合等待超过这个秒数才显示计秒（短回合不制造噪音）。 */
+const LIVE_ACTIVITY_ELAPSED_VISIBLE_AFTER_SECONDS = 6;
+
+function formatLiveActivityContent(activity: LiveActivityState, nowMs: number): string {
+    const detail = String(activity.detail || activity.agentLabel || '').trim();
+    if (!detail) return '';
+    if (typeof activity.startedAt !== 'number') return detail;
+    const elapsedSeconds = Math.floor((nowMs - activity.startedAt) / 1000);
+    if (elapsedSeconds < LIVE_ACTIVITY_ELAPSED_VISIBLE_AFTER_SECONDS) return detail;
+    // 真机模型回合常跑 40–110 秒（带图更久）：让等待可感知，用户不会以为卡死。
+    return `${detail}（已 ${elapsedSeconds} 秒）`;
+}
+
 function appendLiveActivityStep(
     steps: ThinkingStep[],
-    activity: LiveActivityState | null
+    activity: LiveActivityState | null,
+    nowMs: number = Date.now()
 ): ThinkingStep[] {
     if (!activity) return steps;
-    const detail = String(activity.detail || activity.agentLabel || '').trim();
-    if (!detail) return steps;
+    const content = formatLiveActivityContent(activity, nowMs);
+    if (!content) return steps;
     return [
         ...steps,
         {
             id: 'live-activity-tail',
             type: 'status',
-            content: detail,
+            content,
             status: 'running',
-            timestamp: Date.now()
+            timestamp: nowMs
         }
     ];
 }
 
-const LiveActivityIndicator: React.FC<{ activity: LiveActivityState }> = ({ activity }) => (
+const LiveActivityIndicator: React.FC<{ activity: LiveActivityState; nowMs?: number }> = ({ activity, nowMs }) => (
     <div
         className="thinking-simple live-thinking live-activity-placeholder"
         aria-live="polite"
@@ -1510,7 +1529,7 @@ const LiveActivityIndicator: React.FC<{ activity: LiveActivityState }> = ({ acti
     >
         <div className="pondering-header">
             <span className="pondering-dot"></span>
-            <span className="pondering-title">{activity.detail || activity.agentLabel}</span>
+            <span className="pondering-title">{formatLiveActivityContent(activity, nowMs ?? Date.now()) || activity.agentLabel}</span>
         </div>
     </div>
 );
@@ -1574,7 +1593,7 @@ function summarizeAgentToolResultForLog(result: any): Record<string, unknown> {
 // 指纹，同一批未确认内容可在后续 Agent 消息中合法再次出现，因此必须按“来源消息/块 + card.id”
 // 守护一次渲染实例；同卡快速双击被拦，新消息里的新卡仍可提交。
 const submittedDestructiveActionCardIds = new Set<string>();
-const submittedSkuHumanReviewCardInstanceKeys = new Set<string>();
+const submittedSkillInteractiveReviewInstanceKeys = new Set<string>();
 const submittedDesignProjectFactReviewCardInstanceKeys = new Set<string>();
 const submittedDesignProjectRuleReviewCardInstanceKeys = new Set<string>();
 const persistedInteractiveReviewSubmissions = new Map<string, {
@@ -1662,9 +1681,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         setAbortController, stopGeneration,
         modelPreferences,  // 获取用户模型偏好
         setModelPreferences,
-        dynamicModels,  // 动态拉取模型注册表（主模型选择器候选的补全层，与设置页同源）
+        dynamicModels,  // 动态拉取模型注册表（Agent 模型选择器候选的补全层，与设置页同源）
         designKnowledgeSettings,
-        designDimensionSpec
+        designDimensionSpec,
+        agentDecisionMode,
+        setAgentDecisionMode
     } = useAppStore();
 
     // 使用 Hook 获取业务逻辑（模型优先级、Agent 处理等）
@@ -1673,6 +1694,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         detectTaskType
     } = useChatActions({ isPluginConnected });
     const [input, setInput] = useState('');
+    // 输入框 Skill 选择器（codex 式）：null=自动（模型自主）；选定后随发送进 AgentContext 作权威路线提示。
+    const [selectedComposerSkillId, setSelectedComposerSkillId] = useState<string | null>(null);
     const [showUpload, setShowUpload] = useState(false);  // 参考图上传面板
     const [showAttachMenu, setShowAttachMenu] = useState(false);  // 附件菜单（+按钮）
     const [referenceImage, setReferenceImage] = useState<string | null>(null);
@@ -1695,6 +1718,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     const [messageEditSubmitting, setMessageEditSubmitting] = useState(false);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messagesContainerRef = useRef<HTMLDivElement>(null);
+    // 贴底跟随判据：用户本就贴着底部才自动跟随新内容；上滚回看时绝不打断。
+    // ref 供滚动效应同步读取，state 只驱动「回到最新」按钮的显隐。
+    const stickToBottomRef = useRef(true);
+    const lastMessagesScrollTopRef = useRef(0);
+    const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+    const attachMenuContainerRef = useRef<HTMLDivElement>(null);
+    const firstAttachMenuItemRef = useRef<HTMLButtonElement>(null);
     const composerRef = useRef<InlineMultimodalComposerHandle>(null);
     const messageEditComposerRef = useRef<InlineMultimodalComposerHandle>(null);
     const inputAreaRef = useRef<HTMLDivElement>(null);
@@ -2017,8 +2048,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     
     // 可见执行反馈状态
     const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
+    // 本轮运行中的设计任务卡（模型立卡 / 打勾后同步）。运行时它就是过程流的容器：
+    // 过程步骤挂在「正在做」的条目下，而不是另开一个「正在设计」面板。
+    const [liveTaskCard, setLiveTaskCard] = useState<DesignTaskCard | null>(null);
     const [showThinking, setShowThinking] = useState(false);
     const [liveActivity, setLiveActivity] = useState<LiveActivityState | null>(null);
+    // 模型回合计秒：只在带 startedAt 的活动存在时每秒重绘一次，其余时间不跑定时器。
+    const [liveActivityNowMs, setLiveActivityNowMs] = useState<number>(() => Date.now());
+    useEffect(() => {
+        if (typeof liveActivity?.startedAt !== 'number') return undefined;
+        setLiveActivityNowMs(Date.now());
+        const timer = window.setInterval(() => setLiveActivityNowMs(Date.now()), 1000);
+        return () => window.clearInterval(timer);
+    }, [liveActivity]);
     const composerThinkingModelIds = resolveComposerThinkingModelIds(modelPreferences);
     const composerThinkingPreference = normalizeModelThinkingPreference(modelPreferences?.thinking);
     const canShowThinkingModeToggle = composerThinkingModelIds.length > 0;
@@ -2029,7 +2071,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         setModelPreferences({ thinking: { enabled: !currentThinking.enabled } });
     }, [modelPreferences, setModelPreferences]);
 
-    // 输入栏主模型选择器：与设置页「AI 模型 · 主模型」读写同一 store 字段（modelPreferences.primaryModel），
+    // 输入栏 Agent 模型选择器：与设置页读写同一 store 字段（modelPreferences.primaryModel），
     // 候选口径见 primary-model-options 模块（硬编码 + 持久化动态模型，按运行模式过滤）。
     const composerPrimaryModelId = modelPreferences?.primaryModel || '';
     // 输入栏列全渠道候选，由选择器按「本地 / 云端」分页展示；
@@ -2049,14 +2091,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         const nextModelId = nextModelIdRaw.trim();
         if (!nextModelId) return;
         // 运行模式跟着模型走：选了本地模型就是本地模式，选了云端模型就是云端模式。
-        // 用户不需要先去设置页切模式再回来选模型，也不会留下「模式说本地、主模型是云端」的矛盾配置。
+        // 用户不需要先去设置页切模式再回来选模型，也不会留下「模式说本地、Agent 模型是云端」的矛盾配置。
         // 渠道判不出来（动态拉取的新模型还没登记 source）时不动模式——不猜。
         const nextChannel = getModelById(nextModelId)?.source;
         const nextMode = nextChannel === 'local' || nextChannel === 'cloud' ? nextChannel : null;
 
         // 只写 store：zustand persist（partialize 含 modelPreferences）负责落盘，
-        // App.tsx 的偏好同步 effect 会防抖推送 window.designEcho.setModelPreferences 到主进程
-        // （含冷启动回灌），与 Thinking 胶囊同一条同步链路，重启后依然生效。
+        // App.tsx 同步 effect 会立即把同一快照投影到主进程；主进程冷启动则直接读取
+        // 这份持久化 owner，不再依赖延迟回灌。
         setModelPreferences(nextMode
             ? { primaryModel: nextModelId, visualModel: nextModelId, mode: nextMode }
             : { primaryModel: nextModelId, visualModel: nextModelId });
@@ -2261,30 +2303,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         content
     }, deterministicBlockerReplyOrigin(source)), [addLocalAssistantMessage]);
 
-    const isSkuComboEditorCard = (value: unknown): value is SkuComboEditorCard => {
-        const card = value && typeof value === 'object' ? value as Partial<SkuComboEditorCard> : {};
-        return card.version === 'interactive-card/v0'
-            && card.kind === 'sku_combo_editor'
-            && card.payload?.version === 'sku-combo-editor/v0';
-    };
-
     const isEditableConfirmationCard = (value: unknown): value is EditableConfirmationCard => {
         const card = value && typeof value === 'object' ? value as Partial<EditableConfirmationCard> : {};
         return card.version === 'interactive-card/v0'
             && card.kind === 'editable_confirmation'
             && card.payload?.version === 'editable-confirmation/v0';
-    };
-
-    const formatSkuComboConfirmationText = (
-        value: SkuComboEditorValue,
-        options?: { colorPrefix?: boolean }
-    ): string => {
-        const formatCombo = (combo: number[]) => options?.colorPrefix
-            ? combo.map((slot) => `颜色${slot}`).join('+')
-            : stringifySkuCombo(combo);
-        return value.groups
-            .map((group) => `${group.size}双：${group.combos.map(formatCombo).join('，')}`)
-            .join('；');
     };
 
     const formatEditableConfirmationText = (
@@ -2326,7 +2349,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 confirmInteractiveCard: 'submitInteractiveCard',
                 submit_interactive_card: 'submitInteractiveCard'
             };
-            return aliases[actionId] || actionId;
+            return aliases[actionId] || normalizeSkillInteractiveCardAction(actionId) || actionId;
         })();
 
         const emitActionResult = (
@@ -2797,6 +2820,54 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         emitActionResult('success', '已填入输入框。', `length=${prompt.length}`, 'ui.insertPrompt');
                         return;
                     }
+                    // 通用选择卡只携带用户答案，不创建业务 Skill 操作。提交后通过来源消息和 Runtime 身份
+                    // 恢复原自主任务，禁止走普通发送管线新建一轮无归属任务。
+                    case 'submitUserChoice': {
+                        const text = String(params?.text ?? '').trim();
+                        if (!text) {
+                            emitActionResult('skipped', '没有选到内容。', 'choice empty', 'ui.submitUserChoice');
+                            return;
+                        }
+                        const sourceMessageId = String(params?.sourceMessageId || '').trim();
+                        const state = useAppStore.getState();
+                        const conversationId = String(state.currentConversationId || '').trim();
+                        const resumeContext = resolveInteractiveReviewResumeContext({
+                            messages: state.messages,
+                            sourceMessageId
+                        });
+                        if (!resumeContext || !conversationId) {
+                            emitActionResult(
+                                'skipped',
+                                '原等待任务已经不在当前对话中，无法安全继续。请回到原任务重新选择。',
+                                'choice owner missing',
+                                'ui.submitUserChoice'
+                            );
+                            return;
+                        }
+                        const request = buildAgentInternalResumeRequest({
+                            kind: 'user_choice_submitted',
+                            sourceMessageId,
+                            sourceTask: resumeContext.sourceTask,
+                            resolutionSummary: `用户对交互卡的回答：${text}`,
+                            conversationId,
+                            projectId: state.currentProject?.id,
+                            projectPath: state.currentProject?.path,
+                            sourceRuntimeIdentity: resumeContext.sourceRuntimeIdentity
+                        });
+                        const send = handleSendRef.current;
+                        if (!send || !request) {
+                            emitActionResult('skipped', '原任务承接入口暂不可用，请回到原任务重新选择。', 'resume unavailable', 'ui.submitUserChoice');
+                            return;
+                        }
+                        await send({
+                            text: request.sourceTask,
+                            internalResumeRequest: request,
+                            expectedConversationId: request.scope.conversationId,
+                            expectedProjectId: request.scope.projectId,
+                            expectedProjectPath: request.scope.projectPath
+                        });
+                        return;
+                    }
                     case 'openProjectFile': {
                         const query = String(
                             params?.query ??
@@ -2882,24 +2953,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         }
                         //  卡片动作走确定性控制器：直接得结果，绝不重入发送管线（不插用户消息/不重进 Thinking/不重跑 v5）
                         const cardResult = submitVisualObservationCardAction(sourceCard, action);
-                        if (cardResult.type === 'card') {
-                            addLocalAssistantMessage(
-                                {
-                                    content: '',
-                                    interactiveCards: [cardResult.card as unknown as InteractiveCardDefinition],
-                                    isThinking: false
-                                },
-                                uiStatusReplyOrigin('v5:structure-skeleton')
-                            );
-                            return;
-                        }
                         emitActionResult('skipped', cardResult.message, cardResult.code, 'ui.submitVisualObservationCard');
                         return;
                     }
-                    case 'submitSkuHumanReviewCard': {
-                        const card = params?.card;
-                        if (!isSkuHumanReviewCard(card)) {
-                            emitActionResult('skipped', 'SKU 复核卡片数据已失效，请重新生成。', 'invalid sku human review card', 'ui.submitSkuHumanReviewCard');
+                    case 'submitSkillInteractiveReview': {
+                        const card = params?.card as InteractiveCardDefinition | undefined;
+                        if (!card || card.version !== 'interactive-card/v0') {
+                            emitActionResult('skipped', '业务复核卡片数据已失效，请重新生成。', 'invalid skill review card', 'ui.submitSkillInteractiveReview');
+                            return;
+                        }
+                        const preparation = prepareSkillInteractiveReview(card, params?.value);
+                        if (preparation.status === 'unsupported') {
+                            emitActionResult('skipped', '业务复核卡片数据已失效，请重新生成。', 'invalid skill review card', 'ui.submitSkillInteractiveReview');
                             return;
                         }
                         const submissionInstanceKey = buildInteractiveCardSubmissionInstanceKey({
@@ -2908,10 +2973,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             sourceBlockId: params?.sourceBlockId
                         });
                         if (!submissionInstanceKey) {
-                            emitActionResult('skipped', 'SKU 复核卡片缺少提交身份，请重新生成。', 'sku-human-review-card-instance-missing', 'ui.submitSkuHumanReviewCard');
+                            emitActionResult('skipped', '业务复核卡片缺少提交身份，请重新生成。', 'skill-review-card-instance-missing', 'ui.submitSkillInteractiveReview');
                             return;
                         }
-                        if (submittedSkuHumanReviewCardInstanceKeys.has(submissionInstanceKey)) {
+                        if (submittedSkillInteractiveReviewInstanceKeys.has(submissionInstanceKey)) {
                             const persisted = persistedInteractiveReviewSubmissions.get(submissionInstanceKey);
                             if (persisted) {
                                 await resumeAgentAfterRecordedReview({
@@ -2920,62 +2985,46 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 });
                                 return;
                             }
-                            emitActionResult('skipped', '这批 SKU 复核正在写入，请稍候。', 'sku-human-review-card-submission-in-flight', 'ui.submitSkuHumanReviewCard');
+                            emitActionResult('skipped', '这张业务复核卡正在写入，请稍候。', 'skill-review-card-submission-in-flight', 'ui.submitSkillInteractiveReview');
                             return;
                         }
-                        const validation = validateSkuHumanReviewCardValue(card.payload, params?.value);
-                        if (!validation.canSubmit) {
+                        if (preparation.status === 'invalid') {
                             emitActionResult(
                                 'skipped',
-                                validation.blockers.slice(0, 4).join('\n') || '人工复核信息还不完整。',
-                                'sku human review validation failed',
-                                'ui.submitSkuHumanReviewCard'
+                                preparation.message,
+                                'skill review validation failed',
+                                'ui.submitSkillInteractiveReview'
                             );
                             return;
                         }
-                        const intake = buildSkuHumanReviewIntakeFromCard({
-                            card,
-                            value: validation.normalizedValue
-                        });
-                        submittedSkuHumanReviewCardInstanceKeys.add(submissionInstanceKey);
+                        submittedSkillInteractiveReviewInstanceKeys.add(submissionInstanceKey);
                         let reviewPersisted = false;
                         try {
-                            const record = getMemoryService().recordHumanReview({
-                                projectId: card.payload.target.projectFingerprint,
-                                intake
-                            });
+                            const persisted = preparation.persist();
                             reviewPersisted = true;
-                            const submission = buildInteractiveCardSubmission({
-                                card,
-                                value: validation.normalizedValue,
-                                validation
-                            });
+                            const submission = preparation.submission;
                             persistedInteractiveReviewSubmissions.set(submissionInstanceKey, {
                                 submission,
-                                reviewLabel: 'SKU 人工复核'
+                                reviewLabel: preparation.reviewLabel
                             });
                             addLocalToolSummaryMessage(
-                                [
-                                    `已写入当前 SKU 批次的人工复核：${record.statusLabel}。`,
-                                    `复核人：${record.review.reviewer || '未填写'}。`,
-                                    '该结论只对当前导出文件内容哈希有效；文件发生变化后会自动失效。'
-                                ].join('\n'),
-                                'interactive-card:sku-human-review-recorded'
+                                persisted.summary,
+                                `interactive-card:${submission.kind}-recorded`
                             );
                             await resumeAgentAfterRecordedReview({
                                 submission,
-                                reviewLabel: 'SKU 人工复核',
+                                reviewLabel: preparation.reviewLabel,
                                 submissionInstanceKey
                             });
                         } catch (error: any) {
                             if (!reviewPersisted) {
-                                submittedSkuHumanReviewCardInstanceKeys.delete(submissionInstanceKey);
+                                submittedSkillInteractiveReviewInstanceKeys.delete(submissionInstanceKey);
                             }
                             emitActionResult(
                                 'failed',
-                                `SKU 人工复核写入失败：${cleanInteractiveCardText(error?.message) || '本地台账不可用'}`,
-                                'sku human review persistence failed',
-                                'ui.submitSkuHumanReviewCard'
+                                `业务复核写入失败：${cleanInteractiveCardText(error?.message) || '本地台账不可用'}`,
+                                'skill review persistence failed',
+                                'ui.submitSkillInteractiveReview'
                             );
                         }
                         return;
@@ -3176,6 +3225,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 return;
                             }
 
+                            const submissionInstanceKey = buildInteractiveCardSubmissionInstanceKey({
+                                cardId: card.id,
+                                sourceMessageId: params?.sourceMessageId,
+                                sourceBlockId: params?.sourceBlockId
+                            });
+                            if (!submissionInstanceKey) {
+                                emitActionResult(
+                                    'skipped',
+                                    '可编辑卡片缺少来源身份，请重新生成。',
+                                    'editable-card-instance-missing',
+                                    'ui.submitInteractiveCard'
+                                );
+                                return;
+                            }
+
                             const memoryCandidate = card.memoryPolicy?.enabled
                                 ? buildEditableConfirmationApprovedMemory({
                                     card,
@@ -3233,38 +3297,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                         'interactive-card:submission-state-save-failed'
                                     );
                                 }
+                            } else {
+                                persistedInteractiveReviewSubmissions.set(submissionInstanceKey, {
+                                    submission,
+                                    reviewLabel: `「${card.title}」结构化内容确认`
+                                });
+                                await resumeAgentAfterRecordedReview({
+                                    submission,
+                                    reviewLabel: `「${card.title}」结构化内容确认`,
+                                    submissionInstanceKey
+                                });
                             }
                             return;
                         }
-                        if (!isSkuComboEditorCard(card)) {
+                        const skillCardPreparation = prepareSkillInteractiveCardSubmission(
+                            card as InteractiveCardDefinition,
+                            params?.value
+                        );
+                        if (skillCardPreparation.status === 'unsupported') {
                             emitActionResult('skipped', '这张确认卡片暂时不能提交，请重新生成。', 'unsupported interactive card', 'ui.submitInteractiveCard');
                             return;
                         }
-                        const validation = validateSkuComboEditorValue(card.payload, params?.value);
-                        if (!validation.canSubmit) {
+                        if (skillCardPreparation.status === 'invalid') {
                             emitActionResult(
                                 'skipped',
-                                validation.blockers.slice(0, 4).join('\n') || '组合还没有通过检查，请先修改。',
+                                skillCardPreparation.message,
                                 'interactive card validation failed',
                                 'ui.submitInteractiveCard'
                             );
                             return;
                         }
-
-                        const memoryCandidate = card.memoryPolicy?.enabled
-                            ? buildSkuComboApprovedRecipeMemory({
-                                card,
-                                value: validation.normalizedValue,
-                                scope: card.memoryPolicy.scope,
-                                confirmedBy: 'user'
-                            })
-                            : undefined;
-                        const submission = buildInteractiveCardSubmission({
-                            card,
-                            value: validation.normalizedValue,
-                            validation,
-                            memoryCandidate
-                        });
+                        const submission = skillCardPreparation.submission;
                         const decision = await prepareInteractiveCardSubmission(submission, 'resume_required');
                         if ('error' in decision) {
                             emitActionResult('skipped', decision.error, 'interactive continuation claim rejected', 'ui.submitInteractiveCard');
@@ -3273,29 +3336,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         if (decision.mode !== 'resume_operation') {
                             emitActionResult(
                                 'skipped',
-                                'SKU 确认卡没有绑定可恢复操作，本轮不会执行。请重新发起 SKU 任务。',
-                                'sku interactive continuation missing',
+                                '业务确认卡没有绑定可恢复的 Skill 操作，本轮不会执行。请重新发起原任务。',
+                                'skill interactive continuation missing',
                                 'ui.submitInteractiveCard'
                             );
                             return;
                         }
                         let memoryId = '';
                         let memoryError = '';
-                        if (memoryCandidate) {
+                        if (submission.memoryCandidate) {
                             try {
-                                memoryId = getMemoryService().recordUserConfirmedDesignMemoryItem(memoryCandidate).id;
+                                memoryId = getMemoryService().recordUserConfirmedDesignMemoryItem(submission.memoryCandidate).id;
                             } catch (error: any) {
                                 memoryError = cleanInteractiveCardText(error?.message) || '记忆保存失败';
                             }
                         }
-                        const comboText = formatSkuComboConfirmationText(validation.normalizedValue);
                         addLocalToolSummaryMessage(
                             [
-                                `已确认 SKU 组合：${comboText}`,
-                                memoryId ? `已保存为可复用配方。` : '',
-                                memoryError ? `组合已确认，但配方记忆没有保存：${memoryError}` : ''
+                                skillCardPreparation.confirmationText,
+                                memoryId ? skillCardPreparation.memorySavedText : '',
+                                memoryError ? `${skillCardPreparation.memoryFailurePrefix}：${memoryError}` : ''
                                 ].filter(Boolean).join('\n'),
-                            'interactive-card:sku-combo-confirmed'
+                            `interactive-card:${submission.kind}-confirmed`
                         );
                         const send = handleSendRef.current;
                         if (!send) {
@@ -3312,7 +3374,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         if (!finalization.committed) {
                             addLocalBlockerMessage(
                                 finalization.message,
-                                'interactive-card:sku-submission-state-save-failed'
+                                'interactive-card:skill-submission-state-save-failed'
                             );
                         }
                         return;
@@ -3468,6 +3530,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     const clearThinkingSteps = (hideThinking: boolean = true) => {
         setThinkingSteps([]);
         setLiveActivity(null);
+        setLiveTaskCard(null);
         if (hideThinking) {
             setShowThinking(false);
         }
@@ -3748,10 +3811,74 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         }
     }, [messageEditSession, messageEditSnapshot, messageEditSubmitting]);
 
-    // 自动滚动到底部
+    // 自动滚动到底部：仅在用户贴底时跟随。长任务流式更新会高频触发这里，
+    // 无条件滚底会把正在回看历史的用户反复拽回（护栏判据见 handleMessagesScroll）。
     useEffect(() => {
+        if (!stickToBottomRef.current) return;
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
+
+    // 实时过程块（思考步骤/当前动作/任务卡）不在 messages 里，增长时单独跟随。
+    // 用直接置 scrollTop 而不是 smooth：这些更新频率高，叠加平滑动画会抖。
+    useEffect(() => {
+        if (!stickToBottomRef.current) return;
+        const container = messagesContainerRef.current;
+        if (!container) return;
+        container.scrollTop = container.scrollHeight;
+    }, [thinkingSteps, liveActivity, liveTaskCard]);
+
+    // 切换会话后恢复贴底跟随并直接落到最新消息；上一个会话的回看位置不应带过来。
+    useEffect(() => {
+        stickToBottomRef.current = true;
+        setIsPinnedToBottom(true);
+        const container = messagesContainerRef.current;
+        if (container) container.scrollTop = container.scrollHeight;
+    }, [currentConversationId]);
+
+    const handleMessagesScroll = useCallback((): void => {
+        const container = messagesContainerRef.current;
+        if (!container) return;
+        const previousScrollTop = lastMessagesScrollTopRef.current;
+        lastMessagesScrollTopRef.current = container.scrollTop;
+        const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        if (distanceToBottom < 80) {
+            stickToBottomRef.current = true;
+        } else if (container.scrollTop < previousScrollTop) {
+            // 只有 scrollTop 实际变小（用户真的向上滚）才解除跟随。
+            // 不能按「距底部距离超阈值」判：平滑滚动动画途中、或一条较高的
+            // 流式块（图片/任务卡）刚插入时，距离都会瞬时超阈值，误判会让跟随静默失效。
+            stickToBottomRef.current = false;
+        }
+        const pinned = stickToBottomRef.current;
+        setIsPinnedToBottom((current) => (current === pinned ? current : pinned));
+    }, []);
+
+    const handleScrollToLatest = useCallback((): void => {
+        stickToBottomRef.current = true;
+        setIsPinnedToBottom(true);
+        const container = messagesContainerRef.current;
+        if (container) container.scrollTop = container.scrollHeight;
+    }, []);
+
+    // 附件菜单的关闭收口与 WorkspaceTabBar 的加页菜单同一标准：
+    // 外点关闭 + Esc 关闭 + 打开即聚焦首项。菜单只在打开期间挂全局监听。
+    useEffect(() => {
+        if (!showAttachMenu) return;
+        function handlePointerDown(event: PointerEvent): void {
+            if (attachMenuContainerRef.current?.contains(event.target as Node)) return;
+            setShowAttachMenu(false);
+        }
+        function handleEscape(event: KeyboardEvent): void {
+            if (event.key === 'Escape') setShowAttachMenu(false);
+        }
+        document.addEventListener('pointerdown', handlePointerDown);
+        document.addEventListener('keydown', handleEscape);
+        window.requestAnimationFrame(() => firstAttachMenuItemRef.current?.focus());
+        return () => {
+            document.removeEventListener('pointerdown', handlePointerDown);
+            document.removeEventListener('keydown', handleEscape);
+        };
+    }, [showAttachMenu]);
 
     const handleApplySuggestion = async (suggestion: TextSuggestion) => {
         if (!window.designEcho) return;
@@ -5027,10 +5154,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             if (!canApplyRunUpdate()) {
                 return id;
             }
+            // 一字不差的连续重复只留一条（真机 2026-08-19：「结果需要复核：…没有全部成功」同一句连发 5 次、
+            // 「回复未完整，继续整理」×5——Harness 每轮失败各发一步，模型也会逐字重述）。
+            // 只去逐字重复：措辞不同的相邻思考各有信息量，不做模糊合并。
+            const lastStep = collectedSteps[collectedSteps.length - 1];
+            const normalizeStepText = (text: unknown) => String(text || '').replace(/\s+/g, '');
+            if (lastStep
+                && lastStep.type === step.type
+                && !step.imageData
+                && !lastStep.imageData
+                && normalizeStepText(lastStep.content) === normalizeStepText(step.content)) {
+                updateStep(lastStep.id, { status: step.status, content: step.content });
+                return lastStep.id;
+            }
+            // 记下这一步发生时任务卡上「正在做」的条目：界面据此把过程挂到条目下（没有卡就不打标）。
+            const activeCard = getActiveDesignTaskCard(runId);
+            const taskItemId = activeCard ? resolveCurrentDesignTaskItemId(activeCard) : null;
             const newStep: ThinkingStep = {
                 ...step,
                 id,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                ...(taskItemId ? { taskItemId } : {})
             };
             collectedSteps.push(newStep);
             stepStartTimes[id] = Date.now();
@@ -5163,11 +5307,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 summary?.userVisibleNextStep || ''
             ).trim();
             const assistantBody = sanitizeUserVisibleAssistantBodyText(message || '').trim();
-            const visibleMessage = [userVisibleSummary, userVisibleNextStep]
-                .filter(Boolean)
-                .filter((item, index, list) => list.indexOf(item) === index)
-                .join('\n')
-                || assistantBody;
+            // 2026-08-19：没做完时正文也先用模型 / 结果自己的话；Harness 的状态投影（「本轮已经在 Photoshop 中…
+            // 当前版本…下一步…」）只在没有任何正文时垫底——用户明确不要看这种口播。
+            const visibleMessage = assistantBody
+                || [userVisibleSummary, userVisibleNextStep]
+                    .filter(Boolean)
+                    .filter((item, index, list) => list.indexOf(item) === index)
+                    .join('\n');
 
             return formatAssistantFailureContent({
                 message: visibleMessage,
@@ -5290,6 +5436,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
         const handleAgentStep = (event: AgentStepEvent) => {
             if (!canApplyRunUpdate()) return;
+            // 模型回合：只更新实时活动（带起始时间，可显示已等待秒数），不进持久步骤流。
+            // 用户反馈 2026-08-17：看图那一下常常 40–110 秒没有任何动静，会以为卡住了。
+            const modelTurnActivity = buildVisibleAgentActivityFromModelTurnEvent(event);
+            if (modelTurnActivity) {
+                setLiveActivity(modelTurnActivity);
+            } else if (isModelTurnFinishedEvent(event)) {
+                setLiveActivity((current) => (current?.source === 'model_turn' ? null : current));
+            }
             const activity = buildVisibleAgentActivityFromStepEvent(event);
             if (activity) {
                 setLiveActivity(activity);
@@ -5364,6 +5518,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
         let hasVisibleStreamedAssistantContent = false;
         let streamedAssistantMessageId: string | null = null;
+        // 本轮已投影到助手消息上的任务卡（用于察觉账本里的卡被评审器 / 车间改过后再同步）
+        let projectedTaskCard: DesignTaskCard | null = null;
         let streamedThinkingStepId: string | null = null;
 
         const settleLiveThinkingBeforeAnswerStream = (): void => {
@@ -5566,6 +5722,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     revision: photoshopRequestContext.revision,
                     connection: photoshopRequestContext.connection,
                     documentState: photoshopRequestContext.documentState,
+                    openDocuments: photoshopRequestContext.openDocuments,
                     ...(photoshopContext?.hasDocument && photoshopContext.documentId ? {
                         document: {
                             documentId: photoshopContext.documentId,
@@ -5638,6 +5795,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             // 构建 Agent 上下文
             const agentContext: AgentContext = {
                 userInput,
+                userSelectedSkillId: selectedComposerSkillId || undefined,
                 requestId: runId,
                 conversationId: runConversationId || undefined,
                 conversationBranchId: runConversationBranchId || undefined,
@@ -6000,7 +6158,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             : `data:${snapshot.mediaType || 'image/jpeg'};base64,${snapshot.data}`;
                         addStep({
                             type: 'analyzing',
-                            content: '已查看当前画面',
+                            content: String(snapshot.label || '').trim() || '查看当前画面',
                             status: 'success',
                             imageData: snapshotDataUrl
                         });
@@ -6038,6 +6196,74 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         agentLog('info', `[AI Agent] 工具完成: ${toolName}`, summarizeAgentToolResultForLog(toolResult));
                         // 结果仍由 Runtime / Run Record 完整记账；可见状态由结构化 onStep
                         // 完成事件更新，旧回调不再把每个内部 Tool 自动投影给用户。
+                        // composeDesign 的选图依据属于模型原话，不是 Harness 的写入门禁。
+                        // 若本轮可见内容尚未覆盖这条具体理由，则补投影一次；无关的长思考不能替代它。
+                        if (toolName === 'composeDesign') {
+                            const rationaleText = typeof toolResult?.materialSelectionReasonText === 'string'
+                                && toolResult.materialSelectionReasonText.trim()
+                                ? toolResult.materialSelectionReasonText
+                                : toolResult?.designRationaleText;
+                            if (typeof rationaleText === 'string' && rationaleText.trim()) {
+                                const rationaleProjection = resolveMaterialSelectionReasonProjection({
+                                    reasonText: rationaleText,
+                                    visibleContents: collectedSteps.map((step) => step.content)
+                                });
+                                if (rationaleProjection) {
+                                    addStep({
+                                        type: 'thinking',
+                                        content: rationaleProjection,
+                                        status: 'success'
+                                    });
+                                }
+                                if (typeof toolResult?.evaluation?.summary === 'string' && toolResult.evaluation.summary.trim()) {
+                                    addStep({
+                                        type: 'analyzing',
+                                        content: `评审\n${toolResult.evaluation.summary.trim()}`,
+                                        status: 'success'
+                                    });
+                                }
+                            }
+                        }
+                        // 评审器 / 车间会直接改账本里的卡（如写入「验」栏）；运行中的卡跟着账本走。
+                        {
+                            const ledgerCard = getActiveDesignTaskCard(runId);
+                            if (ledgerCard && streamedAssistantMessageId
+                                && projectedTaskCard && projectedTaskCard.id === ledgerCard.id
+                                && projectedTaskCard.updatedAt !== ledgerCard.updatedAt) {
+                                projectedTaskCard = ledgerCard;
+                                setLiveTaskCard(ledgerCard);
+                                updateRunAssistantMessage(
+                                    streamedAssistantMessageId,
+                                    { designTaskCard: ledgerCard },
+                                    uiStatusReplyOrigin('design-task-card:projection')
+                                );
+                            }
+                        }
+                        // 例外：设计任务卡（想 · 做 · 验）——模型立卡 / 打勾后把整卡投影到当前助手消息，
+                        // 跨轮更新同一张卡，这是用户看「做到哪了」的界面。
+                        if (
+                            (toolName === 'planDesignTaskCard' || toolName === 'updateDesignTaskCard' || toolName === 'getDesignTaskCard')
+                            && toolResult?.card && Array.isArray(toolResult.card.items)
+                        ) {
+                            projectedTaskCard = toolResult.card as DesignTaskCard;
+                            setLiveTaskCard(toolResult.card);
+                            if (!streamedAssistantMessageId) {
+                                streamedAssistantMessageId = addRunAssistantMessage({
+                                    content: '',
+                                    designTaskCard: toolResult.card,
+                                    isThinking: true
+                                }, uiStatusReplyOrigin('design-task-card:projection'));
+                                if (activeAgentRunUiRef.current?.runId === runId) {
+                                    activeAgentRunUiRef.current.streamedAssistantMessageId = streamedAssistantMessageId;
+                                }
+                            } else {
+                                updateRunAssistantMessage(
+                                    streamedAssistantMessageId,
+                                    { designTaskCard: toolResult.card },
+                                    uiStatusReplyOrigin('design-task-card:projection')
+                                );
+                            }
+                        }
                     },
                     onThinking: (thinking, meta) => {
                         if (!canApplyRunUpdate()) return;
@@ -6141,8 +6367,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         : []
                 )) as InteractiveCardDefinition[]
                 : [];
+            // Agent 请求用户选择：卡片会暂停当前任务；提交后通过结构化内部恢复回到同一来源任务。
+            const userChoiceRequest = (result as any).data?.userChoiceRequest;
+            const userChoiceCards: InteractiveCardDefinition[] = userChoiceRequest?.version === 'user-choice-request/v2'
+                ? [{
+                    version: 'interactive-card/v0',
+                    id: String(userChoiceRequest.id),
+                    kind: 'user_choice',
+                    title: String(userChoiceRequest.intro || userChoiceRequest.questions?.[0]?.question || '请你选一个'),
+                    description: undefined,
+                    payload: userChoiceRequest,
+                    runDisposition: 'blocks_execution',
+                    submitAction: 'submitUserChoice'
+                }]
+                : [];
             const interactiveCards = Array.from(
-                [...interactiveCardsFromData, ...interactiveCardsFromTools]
+                [...userChoiceCards, ...interactiveCardsFromData, ...interactiveCardsFromTools]
                     .filter((card) => card?.version === 'interactive-card/v0')
                     .reduce((cardsById, card) => {
                         const cardId = String(card.id || '').trim();
@@ -6801,8 +7041,14 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                 onBeforeActiveConversationChange={confirmActiveConversationChange}
             />
 
-            {/* 消息列表 */}
-            <div className="messages-container" data-testid="chat-messages">
+            {/* 消息列表：外层定位容器承载「回到最新」悬浮按钮，滚动仍发生在 messages-container 上 */}
+            <div className="messages-scroll-region">
+            <div
+                className="messages-container"
+                data-testid="chat-messages"
+                ref={messagesContainerRef}
+                onScroll={handleMessagesScroll}
+            >
                 {messages.length === 0 ? (
                     <div className="welcome-message">
                         <div className="welcome-icon">🎨</div>
@@ -6936,24 +7182,47 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                 )}
                 
                 {/* 实时模型反馈 / 工具调用显示（加载过程中） */}
-                {isLoading && activeAgentRunUiRef.current?.conversationId === currentConversationId && showThinking && (thinkingSteps.some(isVisiblePonderingStep) || liveActivity) && (
+                {isLoading && activeAgentRunUiRef.current?.conversationId === currentConversationId && showThinking && (thinkingSteps.some(isVisiblePonderingStep) || liveActivity || liveTaskCard) && (
                     <div className="message assistant live-agent-message">
                         <div className="message-avatar">🤖</div>
                         <div className="message-content">
-                            {thinkingSteps.some(isVisiblePonderingStep) ? (
+                            {liveTaskCard ? (
+                                /* 有任务卡时，卡就是过程的容器：步骤挂在「正在做」的条目下，条目扫光。 */
+                                <DesignTaskCardBlock
+                                    block={{ id: `live-task-card-${liveTaskCard.id}`, type: 'design_task_card', card: liveTaskCard }}
+                                    steps={appendLiveActivityStep(thinkingSteps, liveActivity, liveActivityNowMs)}
+                                    live
+                                />
+                            ) : thinkingSteps.some(isVisiblePonderingStep) ? (
                                 <ThinkingProcess
-                                    steps={appendLiveActivityStep(thinkingSteps, liveActivity)}
+                                    steps={appendLiveActivityStep(thinkingSteps, liveActivity, liveActivityNowMs)}
                                     isExpanded={true}
                                     className="live-thinking"
                                 />
                             ) : liveActivity ? (
-                                <LiveActivityIndicator activity={liveActivity} />
+                                <LiveActivityIndicator activity={liveActivity} nowMs={liveActivityNowMs} />
                             ) : null}
                         </div>
                     </div>
                 )}
                 
                 <div ref={messagesEndRef} />
+            </div>
+
+            {!isPinnedToBottom && (
+                <button
+                    type="button"
+                    className="scroll-to-latest-btn"
+                    onClick={handleScrollToLatest}
+                    aria-label="回到最新消息"
+                    title="回到最新消息"
+                >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <polyline points="18 13 12 19 6 13"></polyline>
+                    </svg>
+                </button>
+            )}
             </div>
 
             {/* 输入区域 */}
@@ -6979,14 +7248,16 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
 
                 <div className="input-wrapper">
                     {/* 附件按钮 - 点击展开菜单 */}
-                    <div className="attach-menu-container">
-                    <button 
+                    <div className="attach-menu-container" ref={attachMenuContainerRef}>
+                    <button
                             className={`attach-button ${showAttachMenu ? 'active' : ''}`}
                             onClick={() => {
                                 if (messageEditSession) return;
                                 setShowAttachMenu(!showAttachMenu);
                             }}
                             disabled={Boolean(messageEditSession)}
+                            aria-haspopup="menu"
+                            aria-expanded={showAttachMenu}
                             title={messageEditSession ? '请先完成当前消息编辑' : '插入素材、知识或图片'}
                         >
                             <Plus size={19} aria-hidden="true" />
@@ -6996,6 +7267,7 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                         {showAttachMenu && (
                             <div className="attach-menu" role="menu" aria-label="添加内容">
                                 <button
+                                    ref={firstAttachMenuItemRef}
                                     type="button"
                                     className="attach-menu-item"
                                     role="menuitem"
@@ -7112,12 +7384,32 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                             </div>
                         )}
 
+                        {/* 已选技能胶囊：让「本次消息带着哪个技能」在输入框里一眼可见、可移除 */}
+                        {selectedComposerSkillId && (
+                            <div className="composer-skill-chip-row">
+                                <span className="composer-skill-chip" data-testid="composer-skill-chip">
+                                    <span className="composer-skill-chip-slug">/{selectedComposerSkillId}</span>
+                                    <span className="composer-skill-chip-name">
+                                        {getSkillById(selectedComposerSkillId)?.displayName || selectedComposerSkillId}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        className="composer-skill-chip-clear"
+                                        aria-label="移除已指定的技能，改回自动"
+                                        onClick={() => setSelectedComposerSkillId(null)}
+                                    >
+                                        <X size={12} strokeWidth={2} aria-hidden="true" />
+                                    </button>
+                                </span>
+                            </div>
+                        )}
+
                         <InlineMultimodalComposer
                             ref={composerRef}
                             /* 占位只说"这里该填什么"这一件事。
                                「可在文字中间插入素材、知识或图片」挪到了 + 按钮的提示上：
                                那是真正执行插入的地方，写在这里既撑成两行，也不是用户此刻要做的动作。 */
-                            placeholder='输入设计需求…'
+                            placeholder={selectedComposerSkillId ? '已指定技能，直接描述需求即可…' : '输入设计需求…'}
                             onSubmit={() => handleSend()}
                             onPaste={handlePaste}
                             onReferenceRemoved={handleComposerReferenceRemoved}
@@ -7141,6 +7433,20 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                                         direction="up"
                                     />
                                 )}
+
+                                {/* Skill 选择器：用户可显式指定本次任务的业务技能（默认自动交模型判断） */}
+                                <SkillPickerControl
+                                    selectedSkillId={selectedComposerSkillId}
+                                    onSelect={setSelectedComposerSkillId}
+                                    direction="up"
+                                />
+
+                                {/* Agent 拿不准时：问我（弹选项） / 全自动（它自己定并说明） */}
+                                <DecisionModeControl
+                                    mode={agentDecisionMode}
+                                    onToggle={() => setAgentDecisionMode(agentDecisionMode === 'auto' ? 'ask' : 'auto')}
+                                    direction="up"
+                                />
 
                                 {canShowComposerModelSelect && (
                                     <ModelPicker
@@ -7204,6 +7510,42 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                     max-width: 100%;
                     max-inline-size: 100%;
                     box-sizing: border-box;
+                }
+
+                /* 滚动区定位容器：只负责给「回到最新」按钮提供 absolute 锚点，
+                   不改变 messages-container 原有的 flex/滚动行为。 */
+                .messages-scroll-region {
+                    position: relative;
+                    flex: 1;
+                    display: flex;
+                    flex-direction: column;
+                    min-height: 0;
+                    min-width: 0;
+                    max-width: 100%;
+                }
+
+                .scroll-to-latest-btn {
+                    position: absolute;
+                    bottom: 14px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 32px;
+                    height: 32px;
+                    border-radius: 50%;
+                    border: 1px solid var(--de-border);
+                    background: var(--de-bg-card);
+                    color: var(--de-text-secondary);
+                    cursor: pointer;
+                    box-shadow: 0 2px 10px var(--de-shadow);
+                    z-index: 5;
+                }
+
+                .scroll-to-latest-btn:hover {
+                    color: var(--de-text);
+                    border-color: var(--de-primary);
                 }
 
                 .messages-container {
@@ -7305,12 +7647,14 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                     margin-bottom: 16px;
                 }
 
+                /* 渐变端点用主题 token：深色下与原先的 #fff→蓝 观感一致，
+                   浅色下自动落到 深字→蓝，不再出现白字压浅底不可见的问题。
+                   （原 'Space Grotesk' 字体从未被打包加载，引用已删，走 body 字体栈。） */
                 .welcome-message h2 {
-                    font-family: 'Space Grotesk', sans-serif;
                     font-size: 28px;
                     font-weight: 600;
                     margin-bottom: 8px;
-                    background: linear-gradient(135deg, #fff 0%, #0066ff 100%);
+                    background: linear-gradient(135deg, var(--de-text) 0%, var(--de-primary) 100%);
                     -webkit-background-clip: text;
                     -webkit-text-fill-color: transparent;
                 }
@@ -7318,35 +7662,6 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                 .welcome-message p {
                     color: var(--de-text-secondary);
                     margin-bottom: 32px;
-                }
-
-                .welcome-tips {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 12px;
-                }
-
-                .tip-card {
-                    display: flex;
-                    align-items: center;
-                    gap: 12px;
-                    padding: 12px 20px;
-                    background: var(--de-bg-card);
-                    border: 1px solid var(--de-border);
-                    border-radius: 8px;
-                    font-size: 14px;
-                    color: var(--de-text-secondary);
-                    cursor: pointer;
-                    transition: all 0.2s;
-                }
-
-                .tip-card:hover {
-                    background: var(--de-bg-light);
-                    border-color: var(--de-primary);
-                }
-
-                .tip-icon {
-                    font-size: 20px;
                 }
 
                 /* 消息 */
@@ -7910,7 +8225,7 @@ ${!isPluginConnected ? '\n⚠️ 请在 Photoshop 中加载 DesignEcho 插件以
                     to { transform: rotate(360deg); }
                 }
 
-                /* 输入栏主模型选择器的样式已迁到 ModelPicker.css（弹层版，带搜索与能力徽标） */
+                /* 输入栏 Agent 模型选择器的样式已迁到 ModelPicker.css（弹层版，带搜索与能力徽标） */
 
                 .mode-close {
                     background: none;

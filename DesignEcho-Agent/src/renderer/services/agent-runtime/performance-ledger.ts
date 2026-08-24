@@ -6,6 +6,7 @@
  */
 
 import { classifyAgentToolExecution } from '../../../shared/agent-tool-execution-preflight';
+import type { RuntimePerformanceUsage } from '../../../shared/agent-runtime-v5/runtime-accounting';
 import type { AgentConfig } from './types';
 
 /** 终局审美 Judge 只允许一次（硬上限）。GATE-SIMPLIFY-003 起不再从普通预算事前扣减。 */
@@ -41,6 +42,14 @@ export interface PerformanceLedgerState {
     reserveZoneObservationCalls: number;
     /** GATE-SIMPLIFY-001：已授权写入且尚无交付动作时，全运行累计的写前观察调用数。 */
     preDeliveryObservationCallCount: number;
+    /**
+     * 写前观察超限后的「该动手了」提醒是否已经发过（每次运行只提醒一次，不拦截）。
+     * 设计路径宪法：拦「说错 / 看多了」必须降级为提示，只有「做错 / 不可逆」才允许拦截。
+     */
+    /** 已发出的「该动手了」提醒次数：每累计 PRE_DELIVERY_OBSERVATION_CALL_LIMIT 次写前观察再提醒一次（真机：模型无视一次提醒后又连看 14 次）。 */
+    observationReserveAdviceIssuedCount: number;
+    /** 提醒已生成、尚未交给模型（由 Agent 在本轮工具结果回填后取走并清零）。 */
+    observationReserveAdviceDue: boolean;
 }
 
 export function createPerformanceLedgerState(): PerformanceLedgerState {
@@ -56,8 +65,93 @@ export function createPerformanceLedgerState(): PerformanceLedgerState {
         budgetDisciplineDirectiveIssued: false,
         harnessQualityVerificationCallCount: 0,
         reserveZoneObservationCalls: 0,
-        preDeliveryObservationCallCount: 0
+        preDeliveryObservationCallCount: 0,
+        observationReserveAdviceIssuedCount: 0,
+        observationReserveAdviceDue: false
     };
+}
+
+/** 当前唯一 PerformanceLedger 的可序列化只读投影；不包含权限、质量或完成状态。 */
+export function projectPerformanceLedgerUsage(
+    ledger: PerformanceLedgerState,
+    iterations: number,
+    nowMs = Date.now()
+): RuntimePerformanceUsage {
+    return {
+        modelCalls: ledger.modelCallCount,
+        toolCalls: ledger.toolCallCount,
+        iterations: Math.max(0, Math.floor(iterations)),
+        visionCandidates: ledger.visionCandidateCount,
+        visualAnalyses: ledger.visualAnalysisCount,
+        activeElapsedMs: readPerformanceActiveElapsedMs(ledger, nowMs),
+        observationKeys: Array.from(ledger.visionCandidateKeys)
+    };
+}
+
+export interface RestoredPerformanceLedgerUsage {
+    ledger: PerformanceLedgerState;
+    iterations: number;
+}
+
+/**
+ * 把同一请求上一 Agent 的累计用量按 max/union 恢复到新账本。纯函数：不修改输入 ledger/usage；
+ * seed 只能收紧剩余额度，不能授予 Tool、执行或完成权限。
+ */
+export function restorePerformanceLedgerUsage(
+    ledger: PerformanceLedgerState,
+    iterations: number,
+    usage: RuntimePerformanceUsage | undefined
+): RestoredPerformanceLedgerUsage {
+    if (!usage) {
+        return {
+            ledger: { ...ledger, visionCandidateKeys: new Set(ledger.visionCandidateKeys) },
+            iterations
+        };
+    }
+    const nonNegativeInteger = (value: unknown): number => (
+        Math.max(0, Math.floor(Number(value) || 0))
+    );
+    const observationKeys = Array.from(new Set(
+        (Array.isArray(usage.observationKeys) ? usage.observationKeys : [])
+            .map((key) => String(key || '').trim())
+            .filter(Boolean)
+    ));
+    return {
+        ledger: {
+            ...ledger,
+            modelCallCount: Math.max(ledger.modelCallCount, nonNegativeInteger(usage.modelCalls)),
+            toolCallCount: Math.max(ledger.toolCallCount, nonNegativeInteger(usage.toolCalls)),
+            visionCandidateCount: Math.max(
+                ledger.visionCandidateCount,
+                nonNegativeInteger(usage.visionCandidates),
+                observationKeys.length
+            ),
+            visualAnalysisCount: Math.max(
+                ledger.visualAnalysisCount,
+                nonNegativeInteger(usage.visualAnalyses)
+            ),
+            activeElapsedBeforeRunMs: Math.max(
+                ledger.activeElapsedBeforeRunMs,
+                nonNegativeInteger(usage.activeElapsedMs)
+            ),
+            visionCandidateKeys: new Set([
+                ...ledger.visionCandidateKeys,
+                ...observationKeys
+            ])
+        },
+        iterations: Math.max(iterations, nonNegativeInteger(usage.iterations))
+    };
+}
+
+/** 取走一次性「该动手了」提醒；没有待发提醒时返回 null。 */
+export function takeObservationReserveAdvice(ledger: PerformanceLedgerState): string | null {
+    if (!ledger.observationReserveAdviceDue) return null;
+    ledger.observationReserveAdviceDue = false;
+    return [
+        '提醒：这一轮已经查看了不少画面和项目信息，还没有做出可以看的设计版本。',
+        '如果手上的信息已经够做决定，就直接在正确目标文档上开始最小的设计写入，写完再看效果；',
+        '如果确实还缺关键信息，可以继续查看，但请只看会改变下一步的内容。'
+    ].join('');
 }
 
 export interface PerformanceBudgetExhaustion {
@@ -222,45 +316,34 @@ export function consumePerformanceToolCallBudget(input: {
         };
     }
     // 执行供给预留（切片 2，治理切片 1 合并后单一 owner）：已授权写入、尚未有任何交付动作
-    // 尝试时的写前观察限量，两层触发返回同一指令码 agent_observation_budget_reserved——
-    // ①全运行总次数上限 PRE_DELIVERY_OBSERVATION_CALL_LIMIT（合并原 agent.ts 轮级守卫，
-    //   从 2 轮放宽为 6 次调用，给真实读后写准备序列留足空间）；
-    // ②预留区 allowance（尾部工具预算只放行 ≤4 次写入前观察，保证探索不耗尽写入供给）。
-    // 已有交付动作尝试后不再设闸：写后读回与 unknown 现场确认必须始终放行。
+    // 尝试时的写前观察计数——
+    // ①全运行总次数 PRE_DELIVERY_OBSERVATION_CALL_LIMIT；
+    // ②预留区 allowance（尾部工具预算里的写入前观察数）。
+    // 设计路径宪法（2026-08-17）：两条阈值到点后**不再拦截观察调用**，只向模型发一次
+    // 「该动手了」的提醒。理由：观察多了是「说错 / 慢」，不是「做错」；真机里这条拦截与
+    // 简报门禁、单工具 allowlist 恢复指令三面夹击造成数学必然死锁（run 466：19 轮零写入）。
+    // 已有交付动作尝试后不再计数：写后读回与 unknown 现场确认必须始终放行。
     const reserveActive = input.reserveContext.authorizedMutationExpectation
         && !input.reserveContext.attemptedDeliveryAction;
     if (reserveActive) {
         const kind = classifyAgentToolExecution(input.toolName, input.toolArguments ?? {});
         const isObservationKind = kind === 'read_only_observation' || kind === 'knowledge_search';
         if (isObservationKind) {
-            const directive = (): Record<string, unknown> => ({
-                success: false,
-                code: 'agent_observation_budget_reserved',
-                error: [
-                    '这一轮还没做出可以看的结果，剩下的处理空间只保留给真正动手。',
-                    '请立即在正确目标文档上完成需要的最小设计写入，写完后查看效果确认。',
-                    '不要再扩展观察或检索；如果还缺关键素材，先用已有素材完成能做的部分。'
-                ].join(''),
-                blockedTool: input.toolName,
-                blockedByPerformanceBudget: true,
-                policyGate: true,
-                executesPhotoshop: false,
-                grantsPermission: false,
-                countsAsObservation: false,
-                countsAsTaskProgress: false
-            });
-            if (ledger.preDeliveryObservationCallCount >= PRE_DELIVERY_OBSERVATION_CALL_LIMIT) {
-                return directive();
-            }
-            if (
-                isInMutationExecutionReserveZone({
-                    ledger,
-                    budget,
-                    authorizedMutationExpectation: input.reserveContext.authorizedMutationExpectation
-                })
-                && ledger.reserveZoneObservationCalls >= EXECUTION_RESERVE_OBSERVATION_ALLOWANCE
-            ) {
-                return directive();
+            const overTotalLimit = ledger.preDeliveryObservationCallCount >= PRE_DELIVERY_OBSERVATION_CALL_LIMIT;
+            const overReserveAllowance = isInMutationExecutionReserveZone({
+                ledger,
+                budget,
+                authorizedMutationExpectation: input.reserveContext.authorizedMutationExpectation
+            })
+                && ledger.reserveZoneObservationCalls >= EXECUTION_RESERVE_OBSERVATION_ALLOWANCE;
+            const issued = ledger.observationReserveAdviceIssuedCount;
+            // 周期性提醒：每多看 PRE_DELIVERY_OBSERVATION_CALL_LIMIT 次再提醒一次，仍不拦截。
+            const periodicDue = overTotalLimit
+                && ledger.preDeliveryObservationCallCount >= PRE_DELIVERY_OBSERVATION_CALL_LIMIT * (issued + 1);
+            const firstReserveDue = overReserveAllowance && issued === 0;
+            if (periodicDue || firstReserveDue) {
+                ledger.observationReserveAdviceIssuedCount = issued + 1;
+                ledger.observationReserveAdviceDue = true;
             }
             ledger.preDeliveryObservationCallCount += 1;
             if (isInMutationExecutionReserveZone({

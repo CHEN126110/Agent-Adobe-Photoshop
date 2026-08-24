@@ -64,6 +64,46 @@ export function registerEagleKnowledgeHandlers(context: IPCContext): void {
         }
     );
 
+    // 评审对照用途：按 Eagle item id 解析预览图像供 evaluateDesign 并排对照。
+    // R0 边界保持：本地路径与原始文件不回传（图像只作为评审模型调用的输入，工具结果不含路径）。
+    ipcMain.handle(
+        'designKnowledge:getEagleReferenceImageForEvaluation',
+        async (_event: IpcMainInvokeEvent, request: {
+            itemId?: string;
+            settings?: Partial<EagleReadonlySettings>;
+        }) => {
+            const { resourceManagerService } = context;
+            if (!resourceManagerService) {
+                return { success: false, error: 'Eagle 参考图不可用：资源服务未初始化。' };
+            }
+            const resolved = await EagleReadonlyKnowledgeService.resolveItemForAnalysis(
+                String(request?.itemId || '').trim(),
+                { settings: request?.settings }
+            );
+            if (!resolved.success || !resolved.item) {
+                return {
+                    success: false,
+                    error: resolved.error || `Eagle 参考条目不可用（itemId=${String(request?.itemId || '')}）。`,
+                    warnings: resolved.warnings
+                };
+            }
+            const preview = await resourceManagerService.getImagePreview(resolved.item.localImagePath, 1024);
+            const imageData = preview.imageData || preview.base64;
+            if (!preview.success || !imageData) {
+                return {
+                    success: false,
+                    error: `Eagle 参考图读取失败：${preview.error || '预览无图像数据'}`
+                };
+            }
+            return {
+                success: true,
+                imageData,
+                item: { id: resolved.item.id, title: resolved.item.title },
+                boundaries: { readonly: true, localPathRedacted: true, doesNotWriteEagle: true }
+            };
+        }
+    );
+
     ipcMain.handle(
         'designKnowledge:analyzeEagleReference',
         async (_event: IpcMainInvokeEvent, request: {

@@ -1114,83 +1114,24 @@ function collectExplicitLayerTargetIds(toolName: string, value: unknown): number
 }
 
 /**
- * Workflow owner 尚未尝试时，E1 保留 owner、Harness 控制和安全读取能力，
- * 隐藏没有 R4 归属的写工具。选择依据全部来自 Runtime/Capability 状态。
+ * 紧凑工作流「owner 先行」判据（纯逻辑）：无 R4 的阶段计划里若只有一个 workflow owner，
+ * 且它还没跑过、也没有它交出的续跑范围，则 E1 的直接外部写入应先让位给 owner。
+ * 业务写入归 owner；模型直写只在 owner 交接后的范围内。
  */
-export function selectInitialAgentWorkflowToolNames(input: {
-    workflowEntryTools: Iterable<string>;
-    availableToolNames: Iterable<string>;
-    progressToolNames: Iterable<string>;
-    attemptedToolNames: Iterable<string>;
-    hasActionResult: boolean;
-}): string[] | undefined {
-    const workflowEntryTools = new Set(input.workflowEntryTools);
-    if (workflowEntryTools.size === 0 || input.hasActionResult) return undefined;
-    const attemptedToolNames = new Set(input.attemptedToolNames);
-    if (Array.from(workflowEntryTools).some((toolName) => attemptedToolNames.has(toolName))) {
-        return undefined;
-    }
-    const progressToolNames = new Set(input.progressToolNames);
-    const selectedWorkflowOwners = new Set(
-        Array.from(workflowEntryTools).filter((toolName) => progressToolNames.has(toolName))
-    );
-    if (selectedWorkflowOwners.size === 0) return undefined;
-    return Array.from(input.availableToolNames).filter((toolName) => {
-        const kind = classifyAgentToolExecution(toolName);
-        return selectedWorkflowOwners.has(toolName)
-            || isAgentHarnessControlTool(toolName)
-            || kind === 'read_only_observation'
-            || kind === 'knowledge_search';
-    });
-}
-
-export interface DeterministicCompactE1WorkflowOwnerCall {
-    name: string;
-    arguments: Record<string, never>;
-}
-
-/**
- * 紧凑 Runtime（无 R4）进入 E1 后，模型可能在唯一 Workflow owner 已经可见时仍只返回文字。
- * 此函数只判定一次确定性的 owner 调用，不执行 Tool、也不授予任何新能力：调用方仍须把
- * 返回值送回既有 preflight / execute / log / accounting 链路。
- *
- * 这里故意要求“当前可见能力”与 Manifest workflow owner 的交集恰好为一个；Manifest 有
- * 多 owner、owner 已尝试、已有 E1 动作、存在 continuation 或写授权不足时全部保持失败关闭。
- */
-export function buildDeterministicCompactE1WorkflowOwnerCall(input: {
-    currentStage?: string;
+export function resolveCompactWorkflowOwnerFirst(input: {
     runtimeStages: Iterable<string>;
     workflowEntryTools: Iterable<string>;
-    visibleAllowedToolNames: Iterable<string>;
     attemptedToolNames: Iterable<string>;
-    writeAuthorized: boolean;
     hasActiveContinuation: boolean;
-    hasActionResult: boolean;
-}): DeterministicCompactE1WorkflowOwnerCall | undefined {
-    if (input.currentStage !== 'E1'
-        || input.writeAuthorized !== true
-        || input.hasActiveContinuation
-        || input.hasActionResult) {
-        return undefined;
-    }
-
+}): { ownerToolName: string; pending: boolean } | undefined {
     const runtimeStages = new Set(normalizeToolNames(Array.from(input.runtimeStages)));
     if (runtimeStages.size === 0 || runtimeStages.has('R4')) return undefined;
-
-    const visibleAllowedToolNames = new Set(
-        normalizeToolNames(Array.from(input.visibleAllowedToolNames))
-    );
-    const visibleWorkflowOwners = normalizeToolNames(Array.from(input.workflowEntryTools))
-        .filter((toolName) => visibleAllowedToolNames.has(toolName));
-    if (visibleWorkflowOwners.length !== 1) return undefined;
-
-    const ownerToolName = visibleWorkflowOwners[0];
-    const attemptedToolNames = new Set(normalizeToolNames(Array.from(input.attemptedToolNames)));
-    if (attemptedToolNames.has(ownerToolName)) return undefined;
-    if (classifyAgentToolExecution(ownerToolName) !== 'photoshop_write') return undefined;
-
+    const owners = normalizeToolNames(Array.from(input.workflowEntryTools));
+    if (owners.length !== 1) return undefined;
+    const ownerToolName = owners[0];
+    const attempted = new Set(normalizeToolNames(Array.from(input.attemptedToolNames)));
     return {
-        name: ownerToolName,
-        arguments: {}
+        ownerToolName,
+        pending: !attempted.has(ownerToolName) && !input.hasActiveContinuation
     };
 }

@@ -366,13 +366,6 @@ __deOutput;
     throw new Error(result.data?.error || result.message || `JSX save failed: ${normalizedPath}`);
 }
 
-export async function saveActiveDocumentWithJsx(
-    filePath: string,
-    format: 'psd' | 'psb'
-): Promise<{ success: true; filePath: string; sourceHistoryStateRef?: PhotoshopHistoryStateRef }> {
-    return await saveDocumentViaJsx(filePath, format);
-}
-
 export async function exportActiveSelectionAsDesignAssetWithJsx(params: {
     fileBasePath: string;
     previewFilePath?: string;

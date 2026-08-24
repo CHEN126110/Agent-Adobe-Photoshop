@@ -49,6 +49,14 @@ export interface SkuBoundedRegionLayoutPlanInput {
     minScalePercent?: number;
     fillRatio?: number;
     sizingPolicy?: SkuAutoLayoutSizingPolicy;
+    /**
+     * 从模板量出来的沟槽宽度（px）。矩形占位是「一个矩形 = 一整行」的区域模型，
+     * 矩形只声明外框、不声明内部怎么分，引擎此前按 region.width*2.5% 估间距——
+     * 于是同一张图里「区域内的间距」（引擎估）和「区域之间的间距」（模板定）是两套口径，
+     * 用户 2026-08-18 在 4双装上看到上排 3 张比下排排得松。传入本值后区域内外同一把尺子。
+     * 不传则回落到旧的比例估算。
+     */
+    gutterPx?: number;
 }
 
 export interface SkuExplicitSingleRowLayoutPlanInput {
@@ -233,8 +241,22 @@ function intersects(a: SkuAutoLayoutRect, b: SkuAutoLayoutRect): boolean {
     return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
-function containsRect(outer: SkuAutoLayoutRect, inner: SkuAutoLayoutRect): boolean {
-    return inner.left >= outer.left && inner.top >= outer.top && inner.right <= outer.right && inner.bottom <= outer.bottom;
+// 规划阶段的几何判定容差。坐标全是浮点：单元格被贴满时 (cellWidth / sourceWidth) * sourceWidth
+// 可能比 cellWidth 大 1e-13，零容差的 <= 会把"正好铺满区域"的最优候选判成溢出。
+// 2026-08-18 真机：3双装区域 770x380 放 3 个 SKU，1×3 候选因 1.1e-13px 被判掉，退化成 2×2（缩到 78%）；
+// 4双装区域 450x684 只放 1 个 SKU 时唯一候选被同样误差判掉，直接报"无法在保持间距的前提下容纳 1 个 SKU"。
+// 执行后 QA 早已按 tolerancePx 判定，规划阶段不应比验收更严。
+const PLAN_GEOMETRY_TOLERANCE_PX = 0.01;
+
+function containsRect(
+    outer: SkuAutoLayoutRect,
+    inner: SkuAutoLayoutRect,
+    tolerancePx: number = PLAN_GEOMETRY_TOLERANCE_PX
+): boolean {
+    return inner.left >= outer.left - tolerancePx
+        && inner.top >= outer.top - tolerancePx
+        && inner.right <= outer.right + tolerancePx
+        && inner.bottom <= outer.bottom + tolerancePx;
 }
 
 function expandRect(rect: SkuAutoLayoutRect, amount: number): SkuAutoLayoutRect {
@@ -479,14 +501,28 @@ function buildCandidate(
     fillRatio: number,
     minScalePercent: number,
     minSpacingPx: number,
-    sizingPolicy: SkuAutoLayoutSizingPolicy = 'shared-scale'
+    sizingPolicy: SkuAutoLayoutSizingPolicy = 'shared-scale',
+    rejections?: string[],
+    gutterPx?: number
 ): CandidateBuildResult | null {
-    const gapX = Math.max(minSpacingPx, clamp(region.width * 0.025, 12, 48));
-    const gapY = Math.max(minSpacingPx, clamp(region.height * 0.035, 12, 56));
+    function reject(reason: string): null {
+        if (rejections) pushUnique(rejections, `${rows}×${cols} 候选被否：${reason}`);
+        return null;
+    }
+
+    const hasTemplateGutter = Number.isFinite(gutterPx) && (gutterPx as number) > 0;
+    const gapX = hasTemplateGutter
+        ? (gutterPx as number)
+        : Math.max(minSpacingPx, clamp(region.width * 0.025, 12, 48));
+    const gapY = hasTemplateGutter
+        ? (gutterPx as number)
+        : Math.max(minSpacingPx, clamp(region.height * 0.035, 12, 56));
     const cellWidth = (region.width - gapX * (cols - 1)) / cols;
     const cellHeight = (region.height - gapY * (rows - 1)) / rows;
 
-    if (cellWidth <= 12 || cellHeight <= 12) return null;
+    if (cellWidth <= 12 || cellHeight <= 12) {
+        return reject(`单元格 ${formatDimension(cellWidth)}x${formatDimension(cellHeight)}px 过小。`);
+    }
 
     const useUniformWidth = sizingPolicy === 'uniform-width-contain' && strategy === 'single-row';
     const plannedItems: Array<{
@@ -506,7 +542,9 @@ function buildCandidate(
         const rowCenterOffsetX = Math.max(0, cols - rowItemCount) * (cellWidth + gapX) / 2;
         const item = items[index];
         const source = useUniformWidth ? normalizeRect(item.bounds) : getItemSourceBounds(item);
-        if (source.width <= 0 || source.height <= 0) return null;
+        if (source.width <= 0 || source.height <= 0) {
+            return reject(`SKU "${item.name || item.id}" 缺少有效源边界。`);
+        }
 
         const cellLeft = region.left + rowCenterOffsetX + column * (cellWidth + gapX);
         const cellTop = region.top + row * (cellHeight + gapY);
@@ -516,7 +554,9 @@ function buildCandidate(
             cellWidth * fillRatio,
             cellHeight * fillRatio * source.width / source.height
         );
-        if (!Number.isFinite(fitScale) || fitScale <= 0) return null;
+        if (!Number.isFinite(fitScale) || fitScale <= 0) {
+            return reject(`SKU "${item.name || item.id}" 无法算出有效缩放比例。`);
+        }
         plannedItems.push({
             item,
             source,
@@ -531,7 +571,9 @@ function buildCandidate(
     const uniformWidth = useUniformWidth
         ? Math.min(...plannedItems.map((entry) => entry.maxUniformWidth))
         : 0;
-    if (useUniformWidth && (!Number.isFinite(uniformWidth) || uniformWidth <= 0)) return null;
+    if (useUniformWidth && (!Number.isFinite(uniformWidth) || uniformWidth <= 0)) {
+        return reject('单行等宽策略算不出有效公共宽度。');
+    }
 
     const sharedScale = useUniformWidth
         ? 0
@@ -543,7 +585,11 @@ function buildCandidate(
     const candidateMinScalePercent = Math.min(
         ...plannedItemsWithScale.map((entry) => entry.targetScale * 100)
     );
-    if (!Number.isFinite(candidateMinScalePercent) || candidateMinScalePercent < minScalePercent) return null;
+    if (!Number.isFinite(candidateMinScalePercent) || candidateMinScalePercent < minScalePercent) {
+        return reject(
+            `最小缩放 ${candidateMinScalePercent.toFixed(1)}% 低于允许值 ${minScalePercent.toFixed(1)}%。`
+        );
+    }
 
     const rowMaxHeights = getRowMaxHeights(
         plannedItemsWithScale,
@@ -560,7 +606,17 @@ function buildCandidate(
             verticalAnchor
         });
 
-        if (!containsRect(safeBox, destinationBox) || !containsRect(region, destinationBox)) return null;
+        if (!containsRect(safeBox, destinationBox) || !containsRect(region, destinationBox)) {
+            const overflowPx = Math.max(
+                rectOverflowPx(safeBox, destinationBox),
+                rectOverflowPx(region, destinationBox)
+            );
+            return reject(
+                `SKU "${entry.item.name || entry.item.id}" 目标框 `
+                + `${formatDimension(destinationBox.width)}x${formatDimension(destinationBox.height)}px `
+                + `超出区域 ${overflowPx.toFixed(2)}px。`
+            );
+        }
 
         placements.push({
             itemId: entry.item.id,
@@ -575,7 +631,7 @@ function buildCandidate(
         });
     }
 
-    if (placements.length === 0) return null;
+    if (placements.length === 0) return reject('没有生成任何可执行 placement。');
 
     let scaleVariance = 0;
     for (const entry of plannedItemsWithScale) {
@@ -650,10 +706,11 @@ function rebuildPlacementsAtSharedScale(
 }
 
 function placementsRespectSpacing(placements: SkuAutoLayoutPlacement[], minSpacingPx: number): boolean {
+    const expandBy = Math.max(0, minSpacingPx - PLAN_GEOMETRY_TOLERANCE_PX) / 2;
     for (let i = 0; i < placements.length; i++) {
         for (let j = i + 1; j < placements.length; j++) {
-            const a = expandRect(placements[i].destinationBox, minSpacingPx / 2);
-            const b = expandRect(placements[j].destinationBox, minSpacingPx / 2);
+            const a = expandRect(placements[i].destinationBox, expandBy);
+            const b = expandRect(placements[j].destinationBox, expandBy);
             if (intersects(a, b)) return false;
         }
     }
@@ -1156,12 +1213,20 @@ export function buildSkuBoundedRegionLayoutPlan(
     const region = normalizeRect(input.region);
     const items = Array.isArray(input.items) ? input.items : [];
     const minSide = Math.min(region.width, region.height);
-    const minSpacingPx = Math.max(0, finite(input.minSpacingPx, clamp(minSide * 0.035, 8, 32)));
+    const templateGutterPx = finite(input.gutterPx, 0);
+    const hasTemplateGutter = templateGutterPx > 0;
+    // 模板量出来的沟槽是权威：它同时充当最小间距，否则会被默认下限抬高、又和模板对不上。
+    const minSpacingPx = hasTemplateGutter
+        ? templateGutterPx
+        : Math.max(0, finite(input.minSpacingPx, clamp(minSide * 0.035, 8, 32)));
     const minScalePercent = Math.max(0, finite(input.minScalePercent, 8));
     const strategy = input.strategy || 'auto';
     const sizingPolicy = input.sizingPolicy || 'shared-scale';
+    // 模板声明的区域就是设计师画好的外框：子槽内按 1.0 贴满、只留 gapX/gapY 作沟槽。
+    // 此前多件默认 0.9——每格四周再留 5%，两格之间的可见间距 = 沟槽 + 两个 5% ≈ 三倍宽，
+    // 用户 2026-08-18 真机指出「间距太宽，和占位符设计的不一样」。调用方仍可显式传 fillRatio。
     const fillRatio = clamp(
-        finite(input.fillRatio, items.length === 1 ? 1 : 0.9),
+        finite(input.fillRatio, 1),
         0.5,
         1
     );
@@ -1194,6 +1259,7 @@ export function buildSkuBoundedRegionLayoutPlan(
     if (blockers.length > 0) return emptyPlan('blocked', region, blockers, [], constraints);
 
     const results: CandidateBuildResult[] = [];
+    const rejections: string[] = [];
     for (const shape of enumerateGridShapes(items.length, strategy)) {
         const candidate = buildCandidate(
             region,
@@ -1206,11 +1272,19 @@ export function buildSkuBoundedRegionLayoutPlan(
             fillRatio,
             minScalePercent,
             minSpacingPx,
-            sizingPolicy
+            sizingPolicy,
+            rejections,
+            hasTemplateGutter ? templateGutterPx : undefined
         );
-        if (candidate && placementsRespectSpacing(candidate.placements, minSpacingPx)) {
-            results.push(candidate);
+        if (!candidate) continue;
+        if (!placementsRespectSpacing(candidate.placements, minSpacingPx)) {
+            pushUnique(
+                rejections,
+                `${shape.rows}×${shape.cols} 候选被否：相邻 SKU 的间距小于 ${formatDimension(minSpacingPx)}px。`
+            );
+            continue;
         }
+        results.push(candidate);
     }
 
     const ranked = results.sort((a, b) => b.candidate.score - a.candidate.score);
@@ -1218,7 +1292,12 @@ export function buildSkuBoundedRegionLayoutPlan(
         return emptyPlan(
             'blocked',
             region,
-            [`模板区域 ${Math.round(region.width)}x${Math.round(region.height)}px 无法在保持间距的前提下容纳 ${items.length} 个 SKU。`],
+            [
+                `模板区域 ${Math.round(region.width)}x${Math.round(region.height)}px 无法在保持间距的前提下容纳 ${items.length} 个 SKU`
+                + `（SKU 原始尺寸 ${formatDimension(getItemSourceBounds(items[0]).width)}x`
+                + `${formatDimension(getItemSourceBounds(items[0]).height)}px）。`,
+                ...rejections
+            ],
             [],
             constraints
         );
@@ -1229,6 +1308,7 @@ export function buildSkuBoundedRegionLayoutPlan(
     if (selected.candidate.minScalePercent < 14) {
         warnings.push('SKU 在模板区域内的缩放比例较小，需要在导出读回中复核可读性。');
     }
+    rejections.forEach((reason) => pushUnique(warnings, reason));
 
     return {
         schema: 'sku-auto-layout-plan/v0',

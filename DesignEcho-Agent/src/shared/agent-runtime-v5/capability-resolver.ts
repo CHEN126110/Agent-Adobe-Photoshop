@@ -37,42 +37,32 @@ export const MAX_ON_DEMAND_CAPABILITY_REQUESTS = 3;
  * 两轮」，模型理性地选脚本；一旦脚本不适用（无模板、从零设计），它除了反复看别无可做，
  * 3 轮相同工具组合即被无进展守卫杀掉（7 步 83 秒、画面改动 0 项）。
  *
- * 这里补上「看得见 + 画得出」的最小设计工具面：看画面、量参考、查原理，以及建画布/铺版面/
- * 置图/写字/变换这几件基本动作。**这只改模型可见的 schema，不授予执行权**——写入仍由
- * evaluateRuntimeSessionToolExecutionGate 要求 currentStage==='E1'（建画布例外见
- * isCanvasBootstrapAction），破坏性动作守卫与读后写纪律一律不变。
+ * Harness baseline 只保留跨任务必需的定位 / 项目上下文能力。设计任务的「眼、脑、可逆首稿」
+ * 由调用方按结构化任务委托追加；其余动作通过 searchAgentCapabilities →
+ * requestAgentCapabilities 即时发现和装载。这样基线不再随着事故复盘无限膨胀。
  */
+/**
+ * 环境恢复不是业务 Skill 的能力。它不进入首轮 schema 或业务 Manifest ceiling，
+ * 只在结构化堵塞结果出现后由 Capability Session 暴露；Harness 不自动截图或判断弹窗。
+ */
+export const HARNESS_ENVIRONMENT_RECOVERY_CAPABILITY_IDS: readonly string[] = Object.freeze([
+    'photoshop.read.capturePhotoshopWindow'
+]);
+
 export const HARNESS_BASELINE_CAPABILITY_IDS: readonly string[] = Object.freeze([
     'project.listResources',
     'project.searchResources',
-    'memory.designProjectState',
-    'photoshop.read.getDocumentSummary',
+    'memory.read.designProjectState',
+    'photoshop.read.getDocumentInfo',
+    'photoshop.read.listDocuments',
     // 写保护门禁的三条法定出口必须全部可达，否则门禁本身会变成死锁：
-    // createDocument / switchDocument 分别由 sandbox.createDocument、read.getDocumentSummary
-    // 带进来，openProjectFile 此前不属于任何基线能力——于是「目标文件在磁盘上但还没打开」
+    // createDocument / switchDocument 分别由设计执行基座和独立叶子能力带入；
+    // openProjectFile 此前不属于任何基线能力——于是「目标文件在磁盘上但还没打开」
     // 时模型无路可走。2026-07-31 真机即如此：模型判断出应当打开既有目标文件并说明了意图，
     // 下一步却只得到「工具被阻止了」，因为该工具不在它的可见集里
     //（当时 on-demand 池为空，requestAgentCapabilities 也申请不到）。
     'photoshop.state.openProjectFile',
-    // 眼：看得见画面，才谈得上判断与复核
-    'photoshop.read.getVisualSnapshot',
-    'photoshop.read.inspectLayers',
-    // 脑：设计原理与参考构图，让尺寸/占比有依据而不是拍脑袋
-    'knowledge.read.designFoundation',
-    'eagle.read.searchReferences',
-    // 外部参考（2026-08-16 补齐）：用户贴链接或要求联网时，搜索与读页必须第一轮可见。
-    // 此前 webSearch / fetchWebPageDesignContent / 浏览器扩展工具只在按需目录里，
-    // 而目录被截断到 40 行，模型看不见任何「看网页」能力，只能诚实但错误地宣称
-    // 「不具备实时抓取网页内容的能力」（2026-08-16 13:05 淘宝链接真机案例）。
-    'web.searchInternet',
-    'web.readPageContent',
-    // 手：从零设计的最小动作集（建画布→铺版面→置图→写字→变换）
-    'photoshop.sandbox.createDocument',
-    'photoshop.sandbox.createScreenGroup',
-    'photoshop.sandbox.placeImage',
-    'photoshop.sandbox.writeText',
-    'photoshop.sandbox.transformLayer',
-    'preview.renderStoryboard'
+    'photoshop.state.switchDocument'
 ]);
 
 /**
@@ -85,16 +75,6 @@ const HARNESS_MANIFEST_BASELINE_CAPABILITY_IDS: readonly string[] = Object.freez
     'project.searchResources',
     'memory.designProjectState',
     'photoshop.read.getDocumentSummary'
-]);
-
-/**
- * 通用 autonomous Agent 不是可恢复操作的 owner：它创建的通用卡提交后只能
- * record_only，却会先把整轮停在 awaiting_confirmation。该模型可调用能力因此
- * 不进入任何 autonomous Capability Session；叶子 Skill 原生卡和 Harness 内建
- * HITL 不通过这条 schema 暴露链，不受影响。
- */
-const AUTONOMOUS_AGENT_UNOWNED_CAPABILITY_IDS: readonly string[] = Object.freeze([
-    'agent.interaction.requestConfirmation'
 ]);
 
 export interface BuildRuntimeCapabilityInventoryInput {
@@ -543,8 +523,7 @@ export function resolveAgentCapabilities(
         ...(input.manifest?.forbidden_tools || []),
         ...(input.deniedCapabilityIds || []),
         ...manifestOwnedDeniedCapabilityIds,
-        ...manifestRetiredControlCapabilityIds,
-        ...AUTONOMOUS_AGENT_UNOWNED_CAPABILITY_IDS
+        ...manifestRetiredControlCapabilityIds
     ]);
     const deniedSet = new Set(deniedCapabilityIds);
     const capabilityCeilingIds = input.capabilityCeilingIds
@@ -564,8 +543,13 @@ export function resolveAgentCapabilities(
     // 若只给只读工具它除了反复看别无可做，3 轮相同调用即被无进展守卫杀掉）。
     // 命中 manifest 时，工具面由该 manifest 的 available_tools 独家负责——否则基线会叠加到
     // 每个 Skill 上，既撑破首轮 schema 预算，也架空了 manifest「按任务给最小充分集」的设计。
-    const baselineIds = input.baselineCapabilityIds
-        || (input.manifest ? HARNESS_MANIFEST_BASELINE_CAPABILITY_IDS : HARNESS_BASELINE_CAPABILITY_IDS);
+    // Manifest 是 staged Skill 首轮工具面的唯一 owner。调用方的 broad / design baseline
+    // 只服务未绑定自主发现，不能在 Manifest 已选后穿透 work-mode seed 或 ceiling。
+    // 过去这里优先采用 input.baselineCapabilityIds，导致调用方传入的通用设计基线叠加到
+    // scoped edit；聚合 capability 恰好被 ceiling 过滤时问题被掩盖，拆成叶子能力后会泄露。
+    const baselineIds = input.manifest
+        ? HARNESS_MANIFEST_BASELINE_CAPABILITY_IDS
+        : (input.baselineCapabilityIds || HARNESS_BASELINE_CAPABILITY_IDS);
     const baselineCapabilityIds = unique(baselineIds).filter((capabilityId) => (
         // Manifest 已经提供结构化 task_type，R0 不需要再让模型调用影子声明工具。
         // 该工具只服务 broad discovery；继续暴露会产生无意义的重复分类，甚至与

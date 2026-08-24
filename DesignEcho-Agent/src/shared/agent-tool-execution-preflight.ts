@@ -139,6 +139,7 @@ const PRIOR_DOCUMENT_READ_TOOLS = new Set([
 ]);
 
 const CONTEXT_READ_TOOLS = new Set([
+    'capturePhotoshopWindow',
     'listDocuments',
     'listProjectResources',
     'searchProjectResources',
@@ -148,6 +149,9 @@ const CONTEXT_READ_TOOLS = new Set([
     'matchDetailPageContent',
     'resolveFontName',
     'getDesignProjectState',
+    'getDesignTaskCard',
+    'evaluateDesign',
+    'studyReference',
     // 素材理解 / 推荐：只读分析，不改 Photoshop
     'analyzeAssetContent',
     'recommendAssets',
@@ -162,7 +166,8 @@ const CONTEXT_READ_TOOLS = new Set([
 ]);
 
 export const AGENT_HARNESS_CONTROL_TOOL_NAMES: readonly string[] = Object.freeze([
-    // Capability Resolver：只改变下一轮模型可见 schema，不执行 Photoshop、也不算画面观察或任务进展。
+    // Capability 目录检索不执行动作、不改变 schema；装载请求只改变下一轮模型可见 schema。
+    'searchAgentCapabilities',
     'requestAgentCapabilities',
     // V2「意图交给 Agent 理解」：模型自主声明本轮设计任务类型（元/控制工具，只读、不写 PS）。
     // 刻意归 stateful_context 而非 read_only_observation——它声明上下文、不观察画面，绝不能被完成门禁
@@ -189,6 +194,7 @@ export function isAgentInputCollectionTool(toolName: unknown): boolean {
 }
 
 export const READ_ONLY_AGENT_CONTEXT_TOOL_NAMES: readonly string[] = Object.freeze([
+    'searchAgentCapabilities',
     'requestAgentCapabilities',
     'switchDocument',
     'selectLayer',
@@ -201,6 +207,8 @@ export function isReadOnlyAgentContextTool(toolName: unknown): boolean {
 }
 
 const STATEFUL_CONTEXT_TOOLS = new Set([
+    // Skill 包脚本是黑盒子进程（可能读写项目文件），强制串行、写预检可见全部前序结果。
+    'runSkillScript',
     'createInteractiveCard',
     ...AGENT_HARNESS_CONTROL_TOOL_NAMES,
     'switchDocument',
@@ -210,6 +218,17 @@ const STATEFUL_CONTEXT_TOOLS = new Set([
     'delegateToAgent',
     // 写共享项目状态文件（非 Photoshop 写入），归为状态上下文类
     'updateDesignProjectState',
+    // 设计任务卡（会话内计划与完成契约，非 Photoshop 写入）；与 photoshop-tool-skill.ts 同步
+    'planDesignTaskCard',
+    'updateDesignTaskCard',
+    // 让用户帮我选（列选项、可能暂停本轮）；非 Photoshop 写入
+    'askUserToChoose',
+    // 学习候选区（写项目 .designecho，非 Photoshop 写入）
+    'recordDesignVerdict',
+    'getDesignLearningTimeline',
+    'learnTasteFromEagle',
+    // 设计知识笔记写入（写本地笔记库 Markdown，非 Photoshop 写入）；与 photoshop-tool-skill.ts 同步
+    'writeDesignNote',
     // Eagle 素材复制进项目（P3）：写项目目录（非 Photoshop 写入），需串行；与 photoshop-tool-skill.ts 同步
     'importEagleAssetToProject',
     // 撤销/重做：改变历史与文档状态，需串行执行，但不要求前置文档读取
@@ -249,6 +268,10 @@ const KNOWLEDGE_SEARCH_TOOLS = new Set([
     'searchEagleReferences',
     'webSearch',
     'searchDesignKnowledge',
+    'readSkillPlaybook',
+    // 设计知识笔记只读工具（与 photoshop-tool-skill.ts 的 KNOWLEDGE_SEARCH_TOOLS 保持同步，audit:tools 校验）
+    'searchDesignNotes',
+    'readDesignNote',
     // 浏览器扩展只读工具（与 photoshop-tool-skill.ts 的 KNOWLEDGE_SEARCH_TOOLS 保持同步，audit:tools 校验）
     'listBrowserTabs',
     'readBrowserPage'
@@ -264,6 +287,8 @@ const EXTRA_PHOTOSHOP_WRITE_TOOLS = new Set([
 
 const DOCUMENT_CONTEXT_BARRIER_TOOLS = new Set([
     'createDocument',
+    // 一次成稿车间默认新建画布并切为活动文档
+    'composeDesign',
     'switchDocument',
     'openProjectFile',
     'openTemplate',
@@ -356,6 +381,15 @@ function normalizeAssistantContent(value: unknown): string {
     return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function createsOwnedDocumentBeforeWriting(
+    toolCalls: Array<{ name: string; arguments?: any }>,
+    toolName: string
+): boolean {
+    if (toolName !== 'composeDesign') return false;
+    const call = toolCalls.find((candidate) => normalizeToolName(candidate?.name) === toolName);
+    return String(call?.arguments?.document?.mode || '').trim().toLowerCase() === 'new';
+}
+
 function isPriorDocumentReadTool(name: string): boolean {
     return PRIOR_DOCUMENT_READ_TOOLS.has(name);
 }
@@ -384,6 +418,16 @@ function readFirstPositiveInteger(values: unknown[]): number | undefined {
         if (parsed !== undefined) return parsed;
     }
     return undefined;
+}
+
+/**
+ * 从一次真实观察结果里读出活动文档 id。
+ *
+ * 对外导出供 Skill workflow bridge 使用：技能启动前需要知道「当前真实活动文档是谁」，
+ * 才能与模型上下文里的期望目标比对；这里是同一份读取口径，不另建第二套解析。
+ */
+export function readObservedDocumentId(toolName: string, result: any): number | undefined {
+    return readDocumentIdFromObservationResult(toolName, result);
 }
 
 function readDocumentIdFromObservationResult(toolName: string, result: any): number | undefined {
@@ -609,29 +653,6 @@ function resolveLatestToolExecutionTargetGuard(
         };
     }
     return undefined;
-}
-
-function readRequiredToolName(result: any): string {
-    if (!result || typeof result !== 'object') return '';
-    return normalizeToolName(
-        result.nextRequiredTool
-        || result.requiredNextTool
-        || result.requiredTool
-        || result.data?.nextRequiredTool
-        || result.data?.requiredNextTool
-        || result.data?.requiredTool
-    );
-}
-
-function hasRecoveryContextForTool(toolName: string, completedToolCalls: AgentToolExecutionPreflightLogEntry[]): boolean {
-    const normalizedToolName = normalizeToolName(toolName);
-    if (!normalizedToolName) return false;
-    for (const entry of [...completedToolCalls].reverse()) {
-        const requiredToolName = readRequiredToolName(entry.result);
-        if (!requiredToolName) continue;
-        return requiredToolName === normalizedToolName;
-    }
-    return false;
 }
 
 function hasNonEmptyParam(params: any, keys: string[]): boolean {
@@ -1756,18 +1777,12 @@ export function buildAgentToolExecutionPreflight(
         .map((entry) => normalizeToolName(entry.name));
     const hasPriorDocumentRead = priorReadTools.length > 0;
     const hasUserVisiblePreActionRationale = assistantContent.length >= 12 && PRE_ACTION_RATIONALE_KEYWORDS.test(assistantContent);
-    const recoveryToolNames = new Set(
-        tools
-            .filter((tool) => tool.guarded && hasRecoveryContextForTool(tool.name, completedToolCalls))
-            .map((tool) => tool.name)
-    );
     const guardedToolNames = tools
         .filter((tool) => tool.guarded)
         .map((tool) => tool.name);
     const hasOnlySimpleMechanicalGuardedTools = guardedToolNames.length > 0
         && guardedToolNames.every((name) => SIMPLE_MECHANICAL_GUARDED_TOOLS.has(name));
     const hasVerificationTarget = VERIFICATION_KEYWORDS.test(assistantContent)
-        || recoveryToolNames.size > 0
         || hasExplicitSaveExportTarget(input.toolCalls || [])
         || hasExplicitReadbackVerificationTarget(verificationToolCalls || []);
     const latestTargetObservation = resolveLatestToolExecutionTargetGuard(completedToolCalls);
@@ -1837,14 +1852,15 @@ export function buildAgentToolExecutionPreflight(
     if (!hasVerificationTarget && !hasOnlySimpleMechanicalGuardedTools) {
         expressionWarnings.push('没有说明执行后如何复核，改完记得回读或截图确认。');
     }
-    const guardedToolCanStartWithoutOpenDocument = canAgentToolStartWithoutOpenDocument(guardedTool.name);
+    const guardedToolCanStartWithoutOpenDocument = canAgentToolStartWithoutOpenDocument(guardedTool.name)
+        || createsOwnedDocumentBeforeWriting(input.toolCalls || [], guardedTool.name);
     if (!hasPriorDocumentRead && !guardedToolCanStartWithoutOpenDocument) {
         blockers.push('尚未读取目标 Photoshop 文档或画面，不能确认目标文档、图层或画面状态。');
     }
     if (hasPriorDocumentRead
         && !preconditions.targetGuard
         && !guardedToolCanStartWithoutOpenDocument) {
-        blockers.push('已有读取结果未包含可校验的 documentId，不能精确锁定 Photoshop 写入目标。请先调用 getDocumentInfo 或其他会返回文档身份的只读工具。');
+        blockers.push('已有读取结果未包含可校验的 documentId，不能精确锁定 Photoshop 写入目标。需要先取得带文档身份的只读事实，具体观察方式由 Agent 从当前已授权能力中选择。');
     }
     const requestedLayerIds = collectRequestedLayerIds(input.toolCalls || []);
     const unknownLayerIds = requestedLayerIds.filter((id) => !preconditions.knownLayerIds.includes(id));

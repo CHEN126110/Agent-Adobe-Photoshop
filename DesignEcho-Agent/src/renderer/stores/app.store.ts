@@ -46,6 +46,7 @@ import type { AgentTaskPublicPlanApprovalRecord } from '../../shared/agent-task-
 import type { AgentTaskPublicPlanControlledRun } from '../../shared/agent-task-public-plan-controlled-runner';
 import { stripRuntimeParamsFromPublicPlanControlledRun } from '../../shared/agent-task-public-plan-controlled-runner';
 import { sanitizeUserVisibleAssistantBodyText } from '../../shared/chat-response-cleaner';
+import type { AgentDecisionMode } from '../../shared/user-choice-request';
 import {
     DEFAULT_DESIGN_KNOWLEDGE_SETTINGS,
     normalizeDesignKnowledgeSettings,
@@ -65,8 +66,10 @@ import {
     type ModelPreferencesPatch
 } from '../../shared/config/models.config';
 import { setDynamicModels } from '../../shared/config/dynamic-model-registry';
-import { normalizeDynamicModelUsageConfig } from '../../shared/config/provider-model-merge';
-import { CODEX_SUBSCRIPTION_PROVIDER } from '../../shared/codex-subscription-contract';
+import {
+    excludeSessionBoundDynamicModels,
+    normalizePersistedDynamicModels
+} from '../../shared/config/persisted-model-runtime';
 import { SKILL_REGISTRY } from '../../shared/skills/skill-declarations';
 import type { DesignDimensionSpec } from '../../shared/design-dimension-spec';
 
@@ -112,6 +115,8 @@ interface Message {
     agentTaskPublicPlanApprovalRecord?: AgentTaskPublicPlanApprovalRecord;
     agentTaskPublicPlanControlledRun?: AgentTaskPublicPlanControlledRun;
     skuDeliverySummary?: SkuDeliverySummary;
+    /** 设计任务卡（想 · 做 · 验）：由 planDesignTaskCard / updateDesignTaskCard 工具结果投影，跨轮更新同一张卡。 */
+    designTaskCard?: import('../../shared/design-task-card').DesignTaskCard;
     interactiveCards?: InteractiveCardDefinition[];
     interactiveCardSubmissions?: InteractiveCardSubmission[];
     pendingInteractiveContinuation?: PendingInteractiveContinuation;
@@ -601,6 +606,10 @@ interface AppState {
     integrationSettings: IntegrationSettings;
     setIntegrationSettings: (settings: Partial<IntegrationSettings>) => void;
 
+    /** Agent 拿不准时：ask = 弹选项让用户选（默认）；auto = 全自动，按自己倾向的继续并说明 */
+    agentDecisionMode: AgentDecisionMode;
+    setAgentDecisionMode: (mode: AgentDecisionMode) => void;
+
     // 设计知识设置
     designKnowledgeSettings: DesignKnowledgeRuntimeSettings;
     setDesignKnowledgeSettings: (settings: Partial<DesignKnowledgeRuntimeSettings>) => void;
@@ -615,24 +624,6 @@ interface AppState {
 
 // 默认模型偏好 - 从统一配置导入
 const defaultModelPreferences: ModelPreferences = normalizeModelPreferences(DEFAULT_MODEL_PREFERENCES);
-
-function normalizePersistedDynamicModels(value: unknown): ModelConfig[] {
-    if (!Array.isArray(value)) return [];
-    return value
-        .filter((model): model is ModelConfig => (
-            !!model
-            && typeof model === 'object'
-            && typeof model.id === 'string'
-            && model.id.trim().length > 0
-            && typeof model.apiModelId === 'string'
-            && model.apiModelId.trim().length > 0
-        ))
-        .map(normalizeDynamicModelUsageConfig);
-}
-
-function excludeSessionBoundDynamicModels(models: ModelConfig[]): ModelConfig[] {
-    return models.filter((model) => model.provider !== CODEX_SUBSCRIPTION_PROVIDER);
-}
 
 function migrateRetiredXiaomiMimoModels(cloudModels?: TaskModelConfig): boolean {
     if (!cloudModels) return false;
@@ -653,6 +644,51 @@ function migrateRetiredXiaomiMimoModels(cloudModels?: TaskModelConfig): boolean 
         }
         if (current === 'openrouter-mimo-v2' || current === 'openrouter-mimo-v2-omni') {
             (cloudModels as any)[key] = 'openrouter-mimo-v2.5';
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+/**
+ * v41 退役模型映射：2026-08-23 清理时，这些内部 id 对应的模型已从 provider 目录下架
+ *（真机比对：OpenRouter 422 个、Ollama Cloud 19 个线上模型中均不存在）。
+ *
+ * 映射到新 id = 用户无感换到接任模型；映射到空串 = 清掉该项，让偏好回落到默认模型。
+ * 两者都合理，取舍在于「用户当初选的是这个厂牌，还是这个具体版本」。
+ */
+const RETIRED_MODEL_ID_REPLACEMENTS: Record<string, string> = {
+    // 同厂同定位的直接接任，按等价替换处理。
+    'openrouter-claude-3.5-sonnet': 'openrouter-claude-sonnet-5',
+    // TODO(human): 补齐 ollama-cloud 这 5 个下架模型的去向
+};
+
+/**
+ * 把已保存偏好里指向退役模型的 id 换成接任 id；映射为空串的直接删除该项，由
+ * normalizeModelPreferences / resolvePrimaryModelForPreferences 回落到默认模型。
+ * 覆盖 primaryModel、visualModel 与 preferredCloudModels 三处——只改其中一处会留下
+ *「主模型换了、任务偏好还指着死 id」的半迁移状态。
+ */
+function migrateRetiredModelIds(preferences?: ModelPreferences): boolean {
+    if (!preferences) return false;
+    let changed = false;
+    const remap = (value: unknown): string | null => {
+        const current = String(value || '').trim();
+        if (!current || !(current in RETIRED_MODEL_ID_REPLACEMENTS)) return null;
+        return RETIRED_MODEL_ID_REPLACEMENTS[current];
+    };
+    for (const slot of ['primaryModel', 'visualModel'] as const) {
+        const next = remap((preferences as any)[slot]);
+        if (next === null) continue;
+        (preferences as any)[slot] = next;
+        changed = true;
+    }
+    const cloudModels = preferences.preferredCloudModels as any;
+    if (cloudModels) {
+        for (const key of Object.keys(cloudModels)) {
+            const next = remap(cloudModels[key]);
+            if (next === null) continue;
+            cloudModels[key] = next;
             changed = true;
         }
     }
@@ -1045,8 +1081,8 @@ export const useAppStore = create<AppState>()(
                 console.log(`[AppStore] 切换项目: ${oldProjectId} -> ${newProjectId}, 对话数: ${newProjectConversations.length}`);
             },
             addRecentProject: (project) => set((state) => {
-                // 移除重复项
-                const filtered = state.recentProjects.filter(p => p.path !== project.path);
+                // 同一项目在路径规范化后仍沿用原 id，按 id 或路径去重，避免留下嵌套根的旧入口。
+                const filtered = state.recentProjects.filter(p => p.id !== project.id && p.path !== project.path);
                 // 添加到最前面，最多保留 10 个
                 return {
                     recentProjects: [{ ...project, lastOpenedAt: Date.now() }, ...filtered].slice(0, 10)
@@ -1756,6 +1792,9 @@ export const useAppStore = create<AppState>()(
                 })
             })),
 
+            agentDecisionMode: 'ask',
+            setAgentDecisionMode: (mode) => set({ agentDecisionMode: mode === 'auto' ? 'auto' : 'ask' }),
+
             designKnowledgeSettings: defaultDesignKnowledgeSettings,
             setDesignKnowledgeSettings: (settings) => set((state) => ({
                 designKnowledgeSettings: normalizeDesignKnowledgeSettings({
@@ -1806,7 +1845,7 @@ export const useAppStore = create<AppState>()(
         }),
         {
             name: 'designecho-storage',
-            version: 40,  // v40: 主/视觉双槽迁移为单一全模态 Agent 模型
+            version: 41,  // v41: 迁移指向已下架模型的偏好 id
             storage: persistedStorage,
             partialize: (state) => ({
                 // 只持久化小体积配置数据（< 50KB）
@@ -1818,6 +1857,7 @@ export const useAppStore = create<AppState>()(
                 customModels: state.customModels,
                 mattingSettings: state.mattingSettings,
                 integrationSettings: state.integrationSettings,
+                agentDecisionMode: state.agentDecisionMode,
                 designKnowledgeSettings: state.designKnowledgeSettings,
                 designDimensionSpec: state.designDimensionSpec,
                 currentConversationId: state.currentConversationId,
@@ -1969,6 +2009,12 @@ export const useAppStore = create<AppState>()(
                 if (version < 38 && state?.modelPreferences) {
                     console.log('[Store] 迁移 v38: 从旧主模型/视觉槽初始化独立视觉模型');
                     state.modelPreferences = normalizeModelPreferences(state.modelPreferences);
+                }
+
+                if (version < 41 && state?.modelPreferences) {
+                    if (migrateRetiredModelIds(state.modelPreferences)) {
+                        console.log('[Store] 迁移 v41: 已把偏好中指向下架模型的 id 换成接任模型');
+                    }
                 }
 
                 if (!state.designKnowledgeSettings) {

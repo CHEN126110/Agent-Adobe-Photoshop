@@ -29,6 +29,9 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
     version: '0.1.0',
     task_type: 'ecommerce.detail_page.v1',
     display_name: '电商详情页设计',
+    // 开放创意路径：不建 Stage 机、不以声明作写入门票（设计路径宪法）。
+    // 真机 2026-08-17：绑定 Stage 机的三次详情页任务全部死于简报表单校验，零写入。
+    execution_model: 'agentic',
     legacy_skill_ids: ['detail-page-design'],
     // 未声明 workMode 时只使用中性契约，不能默认把局部编辑升级为从零创作。
     required_inputs: ['goal'],
@@ -71,7 +74,10 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
     performance_profile: {
         version: 'skill-runtime-performance-profile/v0',
         budget: {
-            max_model_calls: 30,
+            // 2026-08-23 真机病历：详情页 performance_budget 死亡样本（[465] 迭代 5、[428] 30 工具全成功）
+            // 均远未触及 iterations/tools 上限，真凶是 soft_time 600s 硬终止 + 视觉回合慢。
+            // 12 屏任务规模至少是主图（900s/36 calls）的 2 倍，预算是安全网不是终止器。
+            max_model_calls: 56,
             max_tool_calls: 140,
             max_iterations: 70,
             // 12 屏首轮 + 12 屏一次有界修订 + 最多 5 张用户附件 + 1 张开场画布。
@@ -83,7 +89,7 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
             // 视觉专家每次最多批量复核 6 屏；30 屏只需 5 次，仍给终局 Judge 留 1 次。
             max_visual_analyses: 10,
             max_full_resolution_image_reads: 0,
-            soft_time_budget_ms: 600_000
+            soft_time_budget_ms: 1_800_000
         },
         verification_tier: 'manual',
         cost_profile: {
@@ -237,7 +243,8 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
         'design-discipline-runtime/v0',
         'tool-safety-policy/v0'
     ],
-    template_families: ['detail_page.standard.v1'],
+    // agentic 详情页不绑定内置标准版式；模板仅来自用户、项目或显式参考。
+    template_families: [],
     review_rubric_ref: DETAIL_PAGE_EVALUATION_PROFILE_ID,
     delivery_outputs: ['detail_page_psd', 'change_or_delivery_record'],
     exit_criteria: [

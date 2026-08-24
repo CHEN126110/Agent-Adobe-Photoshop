@@ -43,6 +43,7 @@ import type {
     RuntimeSessionDigest,
     RuntimeSessionIdentity
 } from '../../../shared/agent-runtime-v5/runtime-session';
+import type { RuntimePerformanceUsage } from '../../../shared/agent-runtime-v5/runtime-accounting';
 import type { RuntimeDeliveryVerification } from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
 import type { ArtifactRepositoryReadProjection } from '../../../shared/agent-runtime-v5/artifact-repository-contract';
 import type { AgentCapabilityResolution } from '../../../shared/agent-runtime-v5/contracts/capability-resolution';
@@ -162,6 +163,8 @@ export interface AgentConfig {
     systemPrompt: string;
     tools: ToolSchema[];
     modelId: string;
+    /** 来自模型注册表 / provider 的真实上下文窗口；未知时省略，禁止猜测。 */
+    contextWindowTokens?: number;
     maxIterations: number;
     /** 当前用户消息的有序文本/引用投影；只用于构造首条模型消息，不建立第二消息 owner。 */
     initialUserContentParts?: readonly ChatComposerContentPart[];
@@ -170,7 +173,8 @@ export interface AgentConfig {
      * - none：不自动读取 Photoshop；
      * - document_identity：只读取活动文档身份，不读像素；
      * - canvas_visual：读取文档身份后，再预取标注画布。
-     * 未配置时保留历史 canvas_visual 行为，调用方可逐步迁移。
+     * 未配置时按 none 处理。自动观察必须由结构化调用方显式选择，避免新增 Agent
+     * 在没有任务 owner 的情况下被 Harness 锚定到当前 Photoshop 文档。
      */
     openingCanvasObservationMode?: 'none' | 'document_identity' | 'canvas_visual';
     /** Agent 核心执行硬上限；由已选 Skill performance_profile 经全局 ceiling 截断后注入。 */
@@ -204,6 +208,8 @@ export interface AgentConfig {
     runtimeExactPropertyScope?: ExactPropertyExecutionScope;
     /** 请求级规划真相源；用于判断本轮是否必须产生真实任务进展。 */
     agentTaskPlan?: AgentTaskPlanningContract;
+    /** 请求级任务卡作用域；用于隔离并行任务与项目，绝不暴露为模型可写参数。 */
+    taskCardScope?: string;
     /** 对话任务计划投影的作用域；只用于防跨会话/跨项目更新，不授予执行权。 */
     taskPlanPresentationScope?: {
         conversationId: string;
@@ -222,6 +228,12 @@ export interface AgentConfig {
     runtimeSessionIdentity?: RuntimeSessionIdentity;
     /** Reflexion 新代继承的已推进 Session；必须已切换到新 generation 且尚未 finalize。 */
     runtimeSessionSeed?: RuntimeSession;
+    /**
+     * 没有 staged Runtime Session 的 plan-neutral Reflexion 复用同一请求性能账本时使用。
+     * 该值只能由上一 Agent 实例的 PerformanceLedger 只读投影产生；它只收紧剩余额度，
+     * 不授予 Tool、写入、任务完成或质量权限，也不建立第二套 Runtime / Store。
+     */
+    requestPerformanceUsageSeed?: RuntimePerformanceUsage;
     /** 同一活动 Session 内、按回退目标承接的模型规划声明；不得从 Run Record digest 补造。 */
     runtimePlanningContextSeed?: RuntimePlanningContextSeed;
     reflexionHandoff?: ReflexionHandoff;
@@ -250,11 +262,6 @@ export interface AgentConfig {
     ) => Promise<ArtifactRepositoryReadProjection | undefined>;
     callbacks: AgentCallbacks;
     callModelStream?: CallModelStreamFn;
-    /**
-     * 视觉槽专家模型 id：当主模型不支持读图时，用它替主模型读取快照并把观察结果注入上下文
-     * （强模型主导 + 视觉专家协同）。由调用方按用户的 visualModel 配置注入。
-     */
-    visualExpertModelId?: string;
     /**
      * 工具循环是否开启原生思考（reasoning_content）。由调用方按用户「模型思考」开关 +
      * 模型能力（isModelThinkingUserControllable）解析注入；agent 透传给 callModel/callModelStream，
@@ -298,7 +305,7 @@ export interface AgentCallbacks {
      * Agent 看过的画面快照，转发给用户聊天，让用户看到「Agent 看到的是什么」。
      * 独立于喂给模型的视觉观察；带去重与张数上限以防刷屏。
      */
-    onSnapshotImage?: (snapshot: { data: string; mediaType: string; toolName: string; index: number }) => void;
+    onSnapshotImage?: (snapshot: { data: string; mediaType: string; toolName: string; index: number; label?: string }) => void;
 }
 
 export type AgentStopReason =

@@ -120,10 +120,11 @@ function isModelEmptyContentError(error: any): boolean {
 
 export class TaskOrchestrator {
     private modelService: ModelService;
-    private preferences: ModelPreferences = DEFAULT_PREFERENCES;
+    private preferences: ModelPreferences;
 
-    constructor(modelService: ModelService) {
+    constructor(modelService: ModelService, initialPreferences: ModelPreferencesPatch = DEFAULT_PREFERENCES) {
         this.modelService = modelService;
+        this.preferences = normalizeModelPreferences(initialPreferences);
     }
 
     /**

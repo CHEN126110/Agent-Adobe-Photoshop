@@ -566,7 +566,6 @@ function painPointSpecificText(point: PainPoint): string {
 }
 
 function painPointToKnowledgeResult(point: PainPoint, queryText: string): DesignKnowledgeResult {
-    const suggestion = point.designSuggestion;
     const specificHit = tokenMatches(painPointSpecificText(point), queryText);
     return {
         id: `market-insight:pain:${point.id}`,
@@ -575,7 +574,6 @@ function painPointToKnowledgeResult(point: PainPoint, queryText: string): Design
         sourceType: 'manual_rule',
         summary: `用户心声：「${point.userVoice}」（场景：${point.scenario}）。解决方案：${point.solutionDescription}`,
         sourceNotes: [
-            `视觉表现建议：${suggestion.visualElements.join(' / ')}；配色风格：${suggestion.colorStyle}；文案风格：${suggestion.copyStyle}`,
             `严重程度：${point.severity}/5；痛点类型：${point.type}；适用类目：${point.categories.join('、')}`,
             ...(point.relatedSellingPoints.length
                 ? [`关联卖点 id：${point.relatedSellingPoints.join('、')}（可用于组织该屏卖点与画面信息）`]
@@ -622,7 +620,6 @@ function sellingPointToKnowledgeResult(point: SellingPoint, queryText: string): 
         summary: `${point.description}${point.detail ? `。${point.detail}` : ''}`,
         sourceNotes: [
             `卖点类型：${point.type}；优先级：${point.priority}/5；适用场景：${point.scenes.join('、')}`,
-            ...(point.labelStyle ? [`建议标签样式：${point.labelStyle}${point.suggestedColors?.length ? `；推荐配色：${point.suggestedColors.join(' ')}` : ''}`] : []),
             '提炼原则：有效卖点 = 产品优势 ∩ 用户在意 ∩ 竞品不突出；落屏时须与素材和产品事实一致，不可堆砌空话',
             MARKET_INSIGHT_SOURCE_NOTE
         ],

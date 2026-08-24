@@ -106,35 +106,35 @@ export const COPYWRITING_TEMPLATES: CopywritingFrameworkTemplate[] = [
         name: '视觉承接型',
         suitableFor: '图片氛围明显、人物状态清晰、产品露出自然。',
         formula: '[画面气质]，也可以[产品功能/使用状态]。',
-        examples: ['甜美，也可以随时开跑。', '好看，不必牺牲舒服。', '松弛一点，状态反而更好。']
+        examples: []
     },
     {
         id: 'scene-empathy',
         name: '场景共鸣型',
         suitableFor: '日常使用品类，需要让用户代入具体生活场景。',
         formula: '[具体场景]，也能[理想状态]。',
-        examples: ['通勤路上，也要走得轻松。', '周末出门，不用在好看和舒服之间选。', '一整天在外，也要保持自在。']
+        examples: []
     },
     {
         id: 'pain-relief',
         name: '痛点化解型',
         suitableFor: '用户有怕累、怕闷、怕不好搭、怕麻烦等顾虑。',
         formula: '不用[用户顾虑]，也能[理想结果]。',
-        examples: ['不用为了好看，委屈舒服。', '久走的日子，也可以轻松一点。', '不用复杂搭配，也能轻松出门。']
+        examples: []
     },
     {
         id: 'emotion-identity',
         name: '情绪认同型',
         suitableFor: '品牌要传递态度、生活方式或审美感。',
         formula: '[一种生活态度] + [产品带来的支持]。',
-        examples: ['今天不赶路，只跟着心情走。', '喜欢好看的，也喜欢好走的。', '慢慢走，也是在认真生活。']
+        examples: []
     },
     {
         id: 'function-benefit',
         name: '功能佐证型',
         suitableFor: '产品有明确功能卖点，需要降低广告感并提高可信度。',
         formula: '[产品功能] -> [用户感受]。',
-        examples: ['脚步轻了，路就没那么长。', '闷热的天气，也给双脚留点呼吸感。', '每一步都稳，才敢走得更自在。']
+        examples: []
     }
 ];
 
@@ -236,11 +236,10 @@ export function formatCopywritingFrameworkForPrompt(): string {
         '5. 产品解决的问题：轻便=少负担，透气=不闷，防滑=安心，好搭=少纠结；不要只堆功能词。',
         '6. 有记忆点的表达：短、顺、有画面、有分寸，不要广告腔。',
         '',
-        '【推荐模板】',
+        '【可选表达思路】（只用于理解结构，不得照抄固定句式）',
         ...COPYWRITING_TEMPLATES.map((template) => [
             `- ${template.name}: ${template.formula}`,
-            `  适用：${template.suitableFor}`,
-            `  示例：${template.examples.join(' / ')}`
+            `  适用：${template.suitableFor}`
         ].join('\n')),
         '',
         '【安全检查】',
@@ -249,7 +248,7 @@ export function formatCopywritingFrameworkForPrompt(): string {
         '【评分标准】',
         ...COPYWRITING_SCORE_CRITERIA.map((item) => `- ${item.label} ${item.points}分：${item.question}`),
         '',
-        '输出文案前必须自检：人群、兴趣、场景、产品、情绪、事实、图文、风险。低于 70 分应重写。'
+        '输出文案前按当前任务自检：人群、兴趣、场景、产品、情绪、事实、图文和风险；不要用统一分数替代具体问题判断。'
     ].join('\n');
 }
 

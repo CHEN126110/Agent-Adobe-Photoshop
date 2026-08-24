@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DesignEcho CEP 版（老 Photoshop 支持层）：
+  - 面板 = 浏览器，直接加载 Electron Agent 的界面（http://127.0.0.1:8766），与 UXP 版同一套 UI；
+  - Photoshop 执行手 = jsx/host.jsx（ExtendScript），能力是 UXP 版的子集（无像素接口，截图走临时文件导出）；
+  - CEP 9 = Photoshop 2019（20.x）；Host 上限放开以便 2020/2021 也能装（这些版本同时装了 UXP 的应优先用 UXP 版）。
+-->
+<ExtensionManifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ExtensionBundleId="com.designecho.cep" ExtensionBundleName="DesignEcho" ExtensionBundleVersion="0.1.0" Version="9.0">
+  <ExtensionList>
+    <Extension Id="com.designecho.cep.panel" Version="0.1.0" />
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PHXS" Version="[20.0,99.9]" />
+      <Host Name="PHSP" Version="[20.0,99.9]" />
+    </HostList>
+    <LocaleList>
+      <Locale Code="All" />
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="9.0" />
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.designecho.cep.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/host.jsx</ScriptPath>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>DesignEcho</Menu>
+          <Geometry>
+            <Size>
+              <Height>760</Height>
+              <Width>360</Width>
+            </Size>
+            <MinSize>
+              <Height>500</Height>
+              <Width>320</Width>
+            </MinSize>
+            <MaxSize>
+              <Height>1200</Height>
+              <Width>560</Width>
+            </MaxSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>

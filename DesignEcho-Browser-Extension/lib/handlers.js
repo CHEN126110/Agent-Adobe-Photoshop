@@ -60,7 +60,7 @@ export const handlers = {
 
 // ---------- 通用辅助 ----------
 
-function sleep(ms) {
+export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -182,7 +182,7 @@ function waitForTabComplete(tabId, timeoutMs = PAGE_LOAD_TIMEOUT_MS) {
 }
 
 // 注入 page-scripts.js 里的纯函数并取回结果；页面脚本以 {error:'中文原因'} 表达失败。
-async function runPageScript(tab, func, args, actionLabel) {
+export async function runPageScript(tab, func, args, actionLabel) {
   assertInjectable(tab, actionLabel);
   let injection;
   try {
@@ -502,7 +502,7 @@ async function capture(params) {
   return await captureFullPage(tab, maxWidth, maxSlices);
 }
 
-async function captureSingleSlice(tab, maxWidth) {
+export async function captureSingleSlice(tab, maxWidth) {
   let dataUrl;
   try {
     dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 80 });
@@ -530,7 +530,7 @@ async function captureSingleSlice(tab, maxWidth) {
  * 长页拼接截图：按真实 scrollY 逐屏滚动截图，OffscreenCanvas 纵向拼接，
  * 完成后滚回初始位置。切片数 / 总高均封顶，超长页标记 truncatedFullPage。
  */
-async function captureFullPage(tab, maxWidth, maxSlices) {
+export async function captureFullPage(tab, maxWidth, maxSlices) {
   const initial = await runPageScript(tab, readScrollScript, [], '读取滚动位置');
   const initialScrollY = typeof initial.scrollY === 'number' ? initial.scrollY : 0;
   const viewportCssHeight =

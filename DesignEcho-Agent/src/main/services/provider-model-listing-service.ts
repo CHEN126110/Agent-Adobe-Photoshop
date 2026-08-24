@@ -127,13 +127,15 @@ interface RawHttpResponse {
 }
 
 /**
- * 用 Node 原生 https/http 发 GET 请求，带系统代理 agent 与超时。
+ * 用 Node 原生 https/http 发请求，带系统代理 agent 与超时。
  * agent 经 http(s).request 的 agent 选项透传，代理必然生效（不像 undici fetch 会忽略 agent）。
  */
-function httpGet(
+function httpRequestJson(
+    method: 'GET' | 'POST',
     targetUrl: string,
     headers: Record<string, string>,
-    timeoutMs: number
+    timeoutMs: number,
+    requestBody?: string
 ): Promise<RawHttpResponse> {
     return new Promise((resolve, reject) => {
         let url: URL;
@@ -153,8 +155,17 @@ function httpGet(
                 hostname: url.hostname,
                 port: url.port || (isHttps ? 443 : 80),
                 path: `${url.pathname}${url.search}`,
-                method: 'GET',
-                headers: { Accept: 'application/json', ...headers },
+                method,
+                headers: {
+                    Accept: 'application/json',
+                    ...(requestBody === undefined
+                        ? {}
+                        : {
+                            'Content-Type': 'application/json',
+                            'Content-Length': String(Buffer.byteLength(requestBody))
+                        }),
+                    ...headers
+                },
                 ...(agent ? { agent } : {}),
                 timeout: timeoutMs
             },
@@ -187,8 +198,26 @@ function httpGet(
             req.destroy(new Error(`请求超时（${timeoutMs}ms）`));
         });
         req.on('error', (err: Error) => reject(err));
+        if (requestBody !== undefined) req.write(requestBody);
         req.end();
     });
+}
+
+function httpGet(
+    targetUrl: string,
+    headers: Record<string, string>,
+    timeoutMs: number
+): Promise<RawHttpResponse> {
+    return httpRequestJson('GET', targetUrl, headers, timeoutMs);
+}
+
+function httpPostJson(
+    targetUrl: string,
+    headers: Record<string, string>,
+    timeoutMs: number,
+    payload: unknown
+): Promise<RawHttpResponse> {
+    return httpRequestJson('POST', targetUrl, headers, timeoutMs, JSON.stringify(payload));
 }
 
 /** 把网络/超时类异常转成可读文案，并标注所用地址。 */
@@ -509,6 +538,69 @@ async function listGoogle(apiKey: string, timeoutMs: number): Promise<ListModels
 }
 
 /**
+ * /api/show 补齐的并发上限：19 个模型串行要十几秒，一次全发又会给同一台 Ollama 压力。
+ */
+const OLLAMA_SHOW_CONCURRENCY = 4;
+
+/**
+ * 用 /api/show 补齐 tags 没给出的上下文窗口与能力声明。
+ *
+ * 云端 ollama.com 的 /api/tags 只回 name/size/digest，details 里的字段全是空串
+ *（真机 2026-08-23：19 个模型无一带 context_length），真实窗口只在 /api/show 的
+ * model_info["{架构}.context_length"] 里，例如 deepseek4.context_length = 1048576。
+ * 本地 Ollama 的 tags 自带 details.context_length，命中的模型不会进这里，零额外请求。
+ *
+ * 逐个模型独立失败：补不到就保持 undefined，由上层如实显示"未知"，不猜、不拿别的模型顶替。
+ */
+async function fillOllamaModelDetails(
+    baseURL: string,
+    apiKey: string | undefined,
+    models: FetchedProviderModel[],
+    timeoutMs: number
+): Promise<void> {
+    const pending = models.filter(
+        (model) => !(typeof model.contextWindow === 'number' && model.contextWindow > 0)
+    );
+    if (pending.length === 0) return;
+
+    const headers: Record<string, string> = {};
+    if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+
+    let cursor = 0;
+    async function worker(): Promise<void> {
+        while (cursor < pending.length) {
+            const model = pending[cursor];
+            cursor += 1;
+            const res = await httpPostJson(
+                `${baseURL}/api/show`,
+                headers,
+                timeoutMs,
+                { name: model.apiModelId }
+            ).catch(() => null);
+            if (!res || res.statusCode < 200 || res.statusCode >= 300) continue;
+            const detail = safeParseJson(res.body);
+            if (!detail) continue;
+            const contextWindow = extractContextWindow(detail);
+            if (contextWindow) model.contextWindow = contextWindow;
+            // capabilities（如 ["completion","tools","thinking","vision"]）是 provider 的真实声明，
+            // 交给用途分类层解释，好过让这些模型停在 assumed。
+            const capabilityNames = extractCapabilityNames(detail);
+            if (capabilityNames.length > 0) {
+                model.capabilityNames = capabilityNames;
+                // 这里是 provider 明确声明，不是按模型名猜测——合并层的护栏针对的是后者。
+                // 不声明就不改动（保持 undefined 的"未知"），绝不把"没说"写成 false。
+                if (capabilityNames.includes('vision')) model.supportsVision = true;
+                if (capabilityNames.includes('tools')) model.supportsToolUse = true;
+            }
+        }
+    }
+
+    await Promise.all(
+        Array.from({ length: Math.min(OLLAMA_SHOW_CONCURRENCY, pending.length) }, () => worker())
+    );
+}
+
+/**
  * Ollama 风格 tags 接口（ollama-cloud 用 https://ollama.com，本地用 {ollamaUrl}）：
  * GET {base}/api/tags，models[].name → apiModelId。cloud 带 Bearer，本地不带。
  */
@@ -543,11 +635,12 @@ async function listOllamaTags(
                 outputModalities: extractOutputModalities(item),
                 capabilityNames: extractCapabilityNames(item),
                 supportedMethods: extractSupportedMethods(item),
-                // Ollama 的 /api/tags 直接在 details.context_length 里给了真实窗口，
-                // 不需要再对每个模型多打一次 /api/show
+                // 本地 Ollama 的 /api/tags 在 details.context_length 里直接给了真实窗口；
+                // 云端 ollama.com 不给，缺的部分下面用 /api/show 补。
                 contextWindow: extractContextWindow(item)
             });
         }
+        await fillOllamaModelDetails(baseURL, apiKey, models, timeoutMs);
         return { success: true, models, baseUrlUsed: url };
     } catch (error: any) {
         return { success: false, models: [], baseUrlUsed: url, error: describeRequestError(error, url) };

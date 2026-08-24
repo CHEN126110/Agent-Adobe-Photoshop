@@ -199,6 +199,12 @@ export function applyDesignProjectStatePatch(
     return next;
 }
 
+function basenameOf(value: unknown): string {
+    const normalized = String(value || '').trim().replace(/\\/g, '/');
+    const segments = normalized.split('/').filter(Boolean);
+    return segments.length > 0 ? segments[segments.length - 1] : normalized;
+}
+
 function summaryLine(label: string, value: string | undefined): string | null {
     const text = String(value || '').trim();
     return text ? `- ${label}：${text}` : null;
@@ -221,14 +227,19 @@ function formatProductionTaskStatus(status: unknown): string {
 }
 
 /**
- * 长任务的模型侧续接提醒。真实运行记录与文档版本由 Runtime 自动保存；模型只在
- * 即将暂停或交接时补充人能读懂的设计进度，避免为了维护状态而推迟实际制作。
+ * 长任务的模型侧续接提醒。事实类进度（看过哪些素材、图上有什么、用了哪个版面、
+ * 文档与图层组、导出文件、版本）由 Harness 在每次运行结束时自动记进项目记忆；
+ * 模型只负责记它自己才知道的判断，不为维护状态推迟实际制作。
+ *
+ * 旧写法「只有即将暂停时才记录」在自然完成的运行里永远不成立——真机 472 次运行 9% 写过记忆。
  */
 export function buildTaskStateDisciplineSection(): string {
     return [
-        '## 长任务的续接方式',
+        '## 项目记忆怎么用',
         '- 先理解和制作，不要为了记录进度而推迟第一版设计。',
-        '- 只有任务即将暂停、切换目标或需要跨轮继续时，才简要记录：已经做了什么、正在做什么、下一步是什么，以及关键产物的名称或路径。',
+        '- 看过哪些素材、图上有什么、用了哪个版面、文档和导出文件这些事实会在每次运行结束时自动记进项目记忆，不用你重复记录。',
+        '- 只有你才知道的判断请随手记一句：为什么选这张图、这个方向为什么成立、用户拍板了什么、下一步打算做什么（updateDesignProjectState 的 visualDirection / productionTasks / appendLearning）。',
+        '- 系统提示里的「当前项目摘要」已经是最新记忆；只有摘要里没写全、需要细看某项时才调用 getDesignProjectState。',
         '- 继续任务时先确认当前文档和画面仍是上次保留的内容，然后从未完成处接着做；不要重复已经完成的制作。'
     ].join('\n');
 }
@@ -243,6 +254,12 @@ export function buildDesignProjectStateSummary(state: DesignProjectState | null 
     const factRecords = listDesignProjectFactRecords(normalized);
     const factSummary = buildDesignProjectFactProvenanceSummary(normalized);
     const trustedFacts = factRecords.filter(canDesignProjectFactSupportEvaluation);
+    // 图片观察得来的未确认线索单独列出：有来源（哪张图）但没经用户核对，是「待核」不是「已知」。
+    const assetObservedFacts = factRecords.filter((fact) => (
+        fact.status === 'active'
+        && fact.confirmation === 'unverified'
+        && fact.sources.some((source) => source.kind === 'project_asset_observation')
+    ));
     const rulePolicy = buildDesignProjectRulePolicy(normalized, {
         taskType: normalized.taskType,
         channel: normalized.platform
@@ -267,11 +284,20 @@ export function buildDesignProjectStateSummary(state: DesignProjectState | null 
             ? '- 项目要求在正式交付前取得用户确认'
             : null,
         summaryLine('目标用户', normalized.targetUser),
+        // 素材记忆：看过 / 用过哪些图、图上是什么。没有这一行，Harness 记的账模型看不见，下一轮又要重新看图。
+        Array.isArray(normalized.materialAssets) && normalized.materialAssets.length > 0
+            ? `- 已看过的素材：${normalized.materialAssets.slice(-6).map((asset) => (
+                `${basenameOf(asset.path)}${asset.note ? `（${String(asset.note).slice(0, 60)}）` : ''}`
+            )).join('；')}${normalized.materialAssets.length > 6 ? `（共 ${normalized.materialAssets.length} 张，其余用 getDesignProjectState 查看）` : ''}`
+            : null,
         summaryList('产品事实', normalized.productFacts),
         trustedFacts.length > 0
             ? `- 已确认事实：${trustedFacts.slice(0, 8).map((fact) => fact.statement).join('；')}${trustedFacts.length > 8 ? `（共 ${trustedFacts.length} 条）` : ''}`
             : null,
-        factSummary.needsReview > 0
+        assetObservedFacts.length > 0
+            ? `- 素材上看到的卖点线索（来自图片观察，未经用户确认，写进文案前先核对）：${assetObservedFacts.slice(0, 6).map((fact) => fact.statement).join('；')}${assetObservedFacts.length > 6 ? `（共 ${assetObservedFacts.length} 条）` : ''}`
+            : null,
+        factSummary.needsReview > assetObservedFacts.length
             ? '- 还有一些项目资料尚未确认；涉及关键文案或不可逆决定时不要自行当成确定信息'
             : null,
         summaryList('用户痛点', normalized.painPoints),

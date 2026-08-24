@@ -75,6 +75,45 @@ Agent 循环(renderer) ──executeToolCall──> IPC browserBridge:call ─�
 - **elementRef**：`readPage(includeElements:true)` 时给页面可交互元素打 `data-designecho-ref` 标记并返回 ref 编号 + CSS selector 兜底；导航后失效，需重新 read。
 - **tabId 显式传参**（对齐 findLayers 查询式一等工具先例）：桥不维护"当前标签页"隐式状态；省略 tabId 的只读方法作用于当前活动标签页。
 
+## 用户收藏通道（扩展 → 桥，v1.2 新增，Eagle 式能力）
+
+方向与上表相反：**用户在浏览器里主动发起**（快捷键 / 右键菜单 / 弹窗按钮），
+扩展经 `client_request` 把内容推给 Agent 落盘。与桥→扩展的 `request/response`
+共用同一条 WebSocket，但 id 空间彼此独立（各自自增，互不关联）。
+
+```jsonc
+// 扩展 → 桥
+{ "type": "client_request", "id": 1, "method": "collect.save", "params": { ... } }
+// 桥 → 扩展
+{ "type": "client_response", "id": 1, "ok": true, "result": { ... } }
+{ "type": "client_response", "id": 1, "ok": false, "error": { "message": "中文原因" } }
+```
+
+`collect.save` params：`{ kind: "image"|"screenshot"|"link", variant?: "region"|"visible"|"fullpage", base64?, format?: "jpeg"|"png"|"webp"|"gif", sourceUrl, imageSrc?, title?, alt?, tags?, annotation?, link?, width?, height? }`；
+result：`{ savedTo: "eagle", fileName, targetLabel, itemId? }`。
+
+图片收藏兼容 **Eagle 收藏属性协议**（github.com/eagle-app/eagle-attributes）：扩展读取页面
+元素上的 `eagle-src`（原图地址，替代缩略图下载）、`eagle-title`（覆盖标题→`alt` 字段与文件名）、
+`eagle-tags` / `eagle-annotation` / `eagle-link`（→ `tags`/`annotation`/`link` 字段，进来源追踪）。
+为热门站点写的 Eagle 用户脚本（Greasy Fork 生态）对本扩展同样生效。这些属性是页面可控的
+不可信外部数据：Agent 侧逐字段清洗（长度封顶、控制字符剔除、link 强制 http/https、tags ≤10 条）。
+
+Agent 侧处理在 `src/main/services/browser-collection-service.ts`（经 `BrowserBridgeOptions.onClientRequest` 接线）：
+
+- **落点：Eagle 当前打开的素材库**（Eagle 本机 API `127.0.0.1:41595`）。
+  图片/截图先落主进程临时文件（`<temp>/designecho-eagle-import/`，24h TTL 自清扫——
+  addFromPath 是异步导入队列，立即删有竞态）再 `POST /api/item/addFromPath`；
+  链接走 `POST /api/item/addBookmark`（标题+预览图）。用户在 Eagle 里切库即切落点。
+- 来源追踪：写入 Eagle 条目自身字段（website=eagle-link||页面地址、name、tags、annotation），
+  不再维护独立注册表。
+- 边界：写 Eagle 只走官方 API，绝不直接改 `.library`；唯一入口是用户手动收藏动作
+  （与 eagle-writeback「用户确认才写」红线同构），不作为 Agent 工具暴露，Agent 对 Eagle
+  保持只读；Eagle 未运行时明确报错，不静默改存别处；条目名逐字符白名单清洗、
+  扩展名白名单、单条图像 ≤40MB；`sourceUrl` 必须是 http/https。
+- 扩展侧功能与快捷键详见 `DesignEcho-Browser-Extension/README.md`
+  （保存链接 `Alt+Shift+0` / 批量收藏 `Alt+Shift+1` / 区域截图 `Alt+Shift+2` /
+  可视截图 `Alt+Shift+3` / 整页截图；默认键位刻意避开 Eagle 的 `Alt+0~4`）。
+
 ## Agent 工具面（模型可见，5 个）
 
 | 工具 | 分类 | 说明 |
@@ -83,9 +122,9 @@ Agent 循环(renderer) ──executeToolCall──> IPC browserBridge:call ─�
 | `readBrowserPage` | knowledge_search（只读、可并行） | 读页面正文/链接/可交互元素；可带 url（后台新标签页打开） |
 | `captureBrowserTab` | stateful_context（串行） | 截图进模型视觉通道；会临时切前台，故按有副作用串行，不并行抢前台 |
 | `navigateBrowserTab` | stateful_context（串行） | 导航/新开标签页 |
-| `interactWithBrowserPage` | stateful_context（串行） | 点击/填输入框/滚动；**红线：支付、下单、发布、删除、账号设置类动作必须先经 createInteractiveCard 用户确认** |
+| `interactWithBrowserPage` | stateful_context（串行） | 点击/填输入框/滚动；**红线：支付、下单、发布、删除、账号设置类动作必须先经 `askUserToChoose` 创建 `decisionKind="approval"` 的批准卡** |
 
-登记点（全部完成，`npm run smoke:browser-bridge` 钉桩守护）：
+登记点（全部完成，由 `npm run audit:tools` 与核心维护验证守护）：
 
 1. `tool-schemas.ts` — RAW_TOOL_CATALOG + DEFAULT_AGENT_TOOL_NAMES（模型可见）
 2. `tool-display-info.ts` — 中文显示名

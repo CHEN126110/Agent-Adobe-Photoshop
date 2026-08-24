@@ -27,6 +27,8 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
     version: '0.1.0',
     task_type: 'ecommerce.main_image.v1',
     display_name: '电商主图设计',
+    // 开放创意路径：不建 Stage 机、不以声明作写入门票（设计路径宪法）。
+    execution_model: 'agentic',
     legacy_skill_ids: ['main-image-design'],
     required_inputs: ['product', 'asset_source'],
     optional_inputs: ['platform_size', 'image_type', 'brand_style', 'target_user', 'selling_points'],
@@ -62,13 +64,15 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
     performance_profile: {
         version: 'skill-runtime-performance-profile/v0',
         budget: {
-            max_model_calls: 22,
-            max_tool_calls: 60,
-            max_iterations: 35,
-            max_vision_candidates: 4,
-            max_visual_analyses: 3,
+            // 2026-08-17 真机 run [471]（agentic 主图）：看产品图 + 建档 + 铺图 + 文字 + 调整用了 28 轮、
+            // 33 次工具、5 次视觉回合，仍在预算耗尽前没做完。预算是安全网不是终止器——抬到设计师工作量级。
+            max_model_calls: 36,
+            max_tool_calls: 120,
+            max_iterations: 60,
+            max_vision_candidates: 16,
+            max_visual_analyses: 6,
             max_full_resolution_image_reads: 0,
-            soft_time_budget_ms: 600_000
+            soft_time_budget_ms: 900_000
         },
         verification_tier: 'screenshot',
         cost_profile: {
@@ -188,7 +192,8 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
         'design-discipline-runtime/v0',
         'tool-safety-policy/v0'
     ],
-    template_families: ['main_image.standard.v1'],
+    // agentic 主图不绑定内置模板；真实用户模板、项目案例或参考仅作为可选输入。
+    template_families: [],
     review_rubric_ref: MAIN_IMAGE_EVALUATION_PROFILE_ID,
     delivery_outputs: ['main_image_psd', 'main_image_preview', 'delivery_manifest'],
     exit_criteria: [

@@ -10,6 +10,7 @@ import {
     buildRuntimeCapabilityInventory,
     expandAgentCapabilities,
     HARNESS_BASELINE_CAPABILITY_IDS,
+    HARNESS_ENVIRONMENT_RECOVERY_CAPABILITY_IDS,
     MAX_ON_DEMAND_CAPABILITY_REQUESTS,
     resolveAgentCapabilities
 } from '../../../shared/agent-runtime-v5/capability-resolver';
@@ -28,12 +29,36 @@ import type {
     RuntimeCapabilityProviderIdentity,
     RuntimeCapabilityInventoryEntry
 } from '../../../shared/agent-runtime-v5/contracts/capability-resolution';
+import { getPhotoshopToolSkillSemantics } from '../../../shared/photoshop-tool-skill';
+import { getToolDisplayInfo } from '../tool-display-info';
 import type { ToolSchema } from './types';
 
 export const REQUEST_AGENT_CAPABILITIES_TOOL_NAME = 'requestAgentCapabilities';
+export const SEARCH_AGENT_CAPABILITIES_TOOL_NAME = 'searchAgentCapabilities';
+
+export function isAgentCapabilityLoadTool(value: unknown): boolean {
+    return cleanName(value) === REQUEST_AGENT_CAPABILITIES_TOOL_NAME;
+}
 
 export function isAgentCapabilityControlTool(value: unknown): boolean {
-    return cleanName(value) === REQUEST_AGENT_CAPABILITIES_TOOL_NAME;
+    const name = cleanName(value);
+    return isAgentCapabilityLoadTool(name)
+        || name === SEARCH_AGENT_CAPABILITIES_TOOL_NAME;
+}
+
+export interface AgentCapabilitySearchMatch {
+    capabilityId: string;
+    family: string;
+    providerToolNames: string[];
+    description: string;
+    availability: 'active' | 'loadable';
+}
+
+export interface AgentCapabilitySearchResult {
+    query: string;
+    matches: AgentCapabilitySearchMatch[];
+    availableCount: number;
+    message: string;
 }
 
 export interface CreateAgentCapabilitySessionInput {
@@ -51,6 +76,12 @@ export interface CreateAgentCapabilitySessionInput {
      * 用于区分 advisory recommendation 与已选 Runtime owner；不影响普通原子 Tool。
      */
     manifestRequiredCapabilityIds?: readonly string[];
+    /**
+     * 默认通道中只有绑定 Manifest 后才能被检索或装载的领域原子 Tool。
+     * Tool 仍保留在 Session inventory，late bind 后可按 Manifest ceiling 正常恢复；
+     * 显式无 Skill 模式应传空集合，使裸 Agent 能自行使用这些原子能力。
+     */
+    manifestRequiredProviderToolNames?: readonly string[];
     /** 精确禁止 provider Tool/Skill bridge 名称；先从候选面移除，on-demand 无 provider 可复活。 */
     deniedProviderToolNames?: readonly string[];
     /** 扩展包可登记非执行 provider 身份；不会因此新增 Tool schema。 */
@@ -77,6 +108,8 @@ export interface AgentCapabilitySession {
      * 先前已按需激活且仍被新 Manifest 允许的能力保留，被禁止的自然丢弃。
      */
     bindManifest(manifest: SkillRuntimeManifest, workMode?: RuntimeDesignWorkMode): void;
+    /** 在未激活能力里检索精确 id；只读目录，不修改 schema、不授予权限。 */
+    searchCapabilities(query: string, limit?: number): AgentCapabilitySearchResult;
     requestCapabilities(capabilityIds: readonly string[]): AgentCapabilityActivationResult;
     /**
      * Skill 交接声明了后续原子 Tool 时，仅把其中仍属于本会话 on-demand 候选的 schema
@@ -101,15 +134,32 @@ function unique(values: readonly string[]): string[] {
  * 非设计对话继续只拿 Harness baseline，不暴露写入起手式。
  */
 export const DESIGN_EXECUTION_FOUNDATION_CAPABILITY_IDS: readonly string[] = Object.freeze([
-    'knowledge.read.designFoundation',
-    'photoshop.read.getVisualSnapshot',
+    // 项目级观察与候选比较都在首轮可见，只降低能力发现成本，不规定设计步骤：
+    // 总览用于会改变开放设计方向的库存/商品身份/素材角色未知；推荐只比较具体需求的候选。
+    'project.observeAssets',
+    'project.read.recommendAssets',
+    // 参考研究是设计师可自行选择的思考资源，不是 Harness 前置流程。首轮直接提供只读
+    // 搜索与单图视觉分析，避免模型为了“有没有参考能力”先消耗能力发现回合；是否调用、
+    // 查什么、何时停止仍由 Agent 按当前设计问题决定。
+    'eagle.read.searchReferences',
+    'eagle.read.analyzeReference',
+    // 业务工作法手册（官方 skill 包）首轮可见：技能描述会引导「开工先读手册」，
+    // 手册工具不可见时该引导就是空指（2026-08-23 真机：模型跳过读手册、按文件名猜色卡站已完成）。
+    'knowledge.search.readSkillPlaybook',
+    'photoshop.read.getCanvasSnapshot',
+    // 设计写入后的图层身份是跨品类基础事实；直接提供层级读取，避免模型靠画面猜结构。
+    'photoshop.read.getLayerHierarchy',
     'photoshop.sandbox.createDocument',
-    'preview.renderStoryboard',
-    'photoshop.write.fitLayerSubjectToRegion',
-    // 抠图是通用电商设计基本工艺，不是白底图/SKU 等业务 Skill 的专属能力。
-    // 放入基础自我认知后，模型在 R3 就知道普通项目图片可以在 E1 抠图，
-    // 不会因为按需目录截断而把“透明底素材”误报为只能由用户提供的阻塞输入。
-    'photoshop.write.removeBackground'
+    // 单画面开放创意保留一个可逆、由 Agent 完整声明设计参数的首稿入口。独立评价同样
+    // 首轮可见，但只是 Agent 可自行取用的视觉证据，不是开工或交付门禁。
+    'photoshop.write.composeDesign',
+    'review.evaluateDesign',
+    // 首稿快照暴露问题后，模型必须有最小的局部修订手柄；这些能力不规定先后、修改对象
+    // 或审美答案，只让模型能增补素材、调整几何、建立图形关系与修改文字样式。
+    'photoshop.write.placeImage',
+    'photoshop.write.transformLayer',
+    'photoshop.sandbox.createShape',
+    'photoshop.write.setTextStyle'
 ]);
 
 /**
@@ -140,25 +190,29 @@ export function buildRecommendedSkillFastPathBaseline(
 export function buildAgentCapabilityBaseline(
     designExecutionRequired: boolean
 ): string[] {
+    // 设计运行开始时已经把同一份 Project State 摘要注入模型；首轮不再重复暴露读取 Tool，
+    // 为真正影响选图的视觉推荐腾出一个 schema。后续仍可从按需目录重新取得完整状态读取。
+    const baselineCapabilityIds = designExecutionRequired
+        ? HARNESS_BASELINE_CAPABILITY_IDS.filter((id) => id !== 'memory.read.designProjectState')
+        : HARNESS_BASELINE_CAPABILITY_IDS;
     return unique([
-        ...HARNESS_BASELINE_CAPABILITY_IDS,
+        ...baselineCapabilityIds,
         ...(designExecutionRequired ? DESIGN_EXECUTION_FOUNDATION_CAPABILITY_IDS : [])
     ]);
 }
 
 function buildRequestToolSchema(resolution: AgentCapabilityResolution): ToolSchema {
-    const capabilityIds = [...resolution.onDemandCapabilityIds];
     const capabilityItemSchema: Record<string, any> = {
         type: 'string',
-        description: '要在下一轮装载的能力 id。只选择完成当前下一步真正需要的能力。'
+        description: `要在下一轮装载的精确能力 id；必须来自 ${SEARCH_AGENT_CAPABILITIES_TOOL_NAME} 的当前结果。`
     };
-    if (capabilityIds.length > 0) capabilityItemSchema.enum = capabilityIds;
 
     return {
         name: REQUEST_AGENT_CAPABILITIES_TOOL_NAME,
         description: [
-            '当下一步真正需要的动作不在当前工具列表时，临时加入相应能力。',
-            '一次只选择马上要用的最少项；加入后直接使用具体动作，不要重复申请。'
+            '按精确 capability id 临时加入下一步需要的动作。',
+            `id 不确定时先用 ${SEARCH_AGENT_CAPABILITIES_TOOL_NAME} 检索；一次只加入最少项。`,
+            `当前还有 ${resolution.onDemandCapabilityIds.length} 项可按需装载。`
         ].join(' '),
         inputSchema: {
             type: 'object',
@@ -180,6 +234,34 @@ function buildRequestToolSchema(resolution: AgentCapabilityResolution): ToolSche
     };
 }
 
+function buildSearchToolSchema(resolution: AgentCapabilityResolution): ToolSchema {
+    return {
+        name: SEARCH_AGENT_CAPABILITIES_TOOL_NAME,
+        description: [
+            '检索当前能力目录，返回精确 capability id、具体动作以及 active/loadable 状态。',
+            'active 项已经可以直接调用 providerToolNames，不要再次申请；只有 loadable 项需要装载。',
+            '只读目录，不执行动作、不改变权限。',
+            `当前可检索 ${resolution.onDemandCapabilityIds.length} 项。`
+        ].join(' '),
+        inputSchema: {
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description: '用自然语言描述马上缺少的动作，例如「读取网页」「主体抠图」「导出 PNG」。'
+                },
+                limit: {
+                    type: 'number',
+                    minimum: 1,
+                    maximum: 8,
+                    description: '返回数量，默认 5。'
+                }
+            },
+            required: ['query']
+        }
+    };
+}
+
 /** 取 Tool schema 描述的第一句作为能力目录的一句话说明；过长时截断。 */
 function firstSentence(value: unknown): string {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
@@ -189,13 +271,19 @@ function firstSentence(value: unknown): string {
     return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }
 
-const MAX_ON_DEMAND_CATALOG_TOOL_LINES = 40;
-const MAX_ON_DEMAND_CATALOG_OTHER_LINES = 10;
-// GATE-SIMPLIFY-006：明细按能力家族分组截断时，每个家族至少可见的代表项行数。
-const MAX_ON_DEMAND_CATALOG_TOOL_LINES_PER_FAMILY = 3;
-// 能力家族总览永不截断：模型必须始终知道自己还有哪些能力家族可申请，
-// 能力自知不能依赖目录明细的 40 行窗口（2026-08-16 淘宝链接「我无法抓取网页」事故）。
-const MAX_CAPABILITY_FAMILY_SUMMARY_LINES = 30;
+/** 中文长句不能只按整句匹配；从真实查询中抽 2–4 字短语，不维护第二张业务同义词表。 */
+function buildCapabilitySearchTerms(query: string): string[] {
+    const terms = unique(query.split(/[\s,，。；;、/|]+/u));
+    const cjkRuns = query.match(/[\p{Script=Han}]{2,}/gu) || [];
+    for (const run of cjkRuns) {
+        for (let size = Math.min(4, run.length); size >= 2; size -= 1) {
+            for (let index = 0; index <= run.length - size; index += 1) {
+                terms.push(run.slice(index, index + size));
+            }
+        }
+    }
+    return unique(terms).filter((term) => term.length >= 2).slice(0, 60);
+}
 
 export function createAgentCapabilitySession(
     input: CreateAgentCapabilitySessionInput
@@ -219,9 +307,21 @@ export function createAgentCapabilitySession(
             .map((entry) => entry.capabilityId)
     ]);
     const manifestRequiredCapabilityIds = unique(input.manifestRequiredCapabilityIds || []);
+    const manifestRequiredProviderToolNames = new Set(
+        unique(input.manifestRequiredProviderToolNames || [])
+    );
+    const manifestRequiredProviderCapabilityIds = inventory
+        .filter((entry) => entry.providerToolNames.some((toolName) => (
+            manifestRequiredProviderToolNames.has(toolName)
+        )))
+        .map((entry) => entry.capabilityId);
     const initialDeniedCapabilityIds = input.manifest
         ? baseDeniedCapabilityIds
-        : unique([...baseDeniedCapabilityIds, ...manifestRequiredCapabilityIds]);
+        : unique([
+            ...baseDeniedCapabilityIds,
+            ...manifestRequiredCapabilityIds,
+            ...manifestRequiredProviderCapabilityIds
+        ]);
     let resolution = resolveAgentCapabilities({
         manifest: input.manifest,
         requestedTaskType: input.requestedTaskType,
@@ -235,11 +335,25 @@ export function createAgentCapabilitySession(
     });
     const activeTools: ToolSchema[] = [];
     const onDemandActivatedCapabilityIds = new Set<string>();
+    // 只由结构化运行结果触发。它不进入 Manifest ceiling / on-demand 目录，
+    // 避免环境诊断污染业务能力面或首轮 schema。
+    const environmentRecoveryCapabilityIds = new Set<string>();
+    const allowedEnvironmentRecoveryCapabilityIds = new Set(
+        HARNESS_ENVIRONMENT_RECOVERY_CAPABILITY_IDS
+    );
 
     function refreshActiveTools(): void {
         const selectedSet = new Set(resolution.selectedToolNames);
+        const deniedToolNames = new Set(resolution.deniedToolNames);
+        inventory.forEach((entry) => {
+            if (!environmentRecoveryCapabilityIds.has(entry.capabilityId)) return;
+            entry.providerToolNames.forEach((toolName) => {
+                if (!deniedToolNames.has(toolName)) selectedSet.add(toolName);
+            });
+        });
         const nextTools = candidateTools.filter((tool) => selectedSet.has(tool.name));
         if (resolution.onDemandCapabilityIds.length > 0) {
+            nextTools.push(buildSearchToolSchema(resolution));
             nextTools.push(buildRequestToolSchema(resolution));
         }
         activeTools.splice(0, activeTools.length, ...nextTools);
@@ -247,19 +361,18 @@ export function createAgentCapabilitySession(
 
     refreshActiveTools();
 
-    const toolDescriptionByName = new Map<string, string>(
-        candidateTools.map((tool) => [tool.name, firstSentence(tool.description)])
+    const toolSearchTextByName = new Map<string, string>(
+        candidateTools.map((tool) => {
+            const semantics = getPhotoshopToolSkillSemantics(tool.name);
+            const displayInfo = getToolDisplayInfo(tool.name);
+            return [tool.name, [
+                displayInfo.name,
+                displayInfo.description,
+                firstSentence(tool.description),
+                semantics?.userIntentBoundary || ''
+            ].filter(Boolean).join(' ')] as [string, string];
+        })
     );
-
-    function buildCapabilityLine(entry: RuntimeCapabilityInventoryEntry): string {
-        const providerNames = entry.providerToolNames.slice(0, 3);
-        const providerSuffix = entry.providerToolNames.length > providerNames.length
-            ? ` +${entry.providerToolNames.length - providerNames.length}`
-            : '';
-        const description = toolDescriptionByName.get(entry.providerToolNames[0] || '') || '';
-        const detailText = description ? ` — ${description}` : '';
-        return `- ${entry.capabilityId} → ${providerNames.join(', ')}${providerSuffix}${detailText}`;
-    }
 
     /** 能力 id 的家族名：≥3 段取前两段（photoshop.write.moveLayer → photoshop.write），否则取首段。 */
     function familyOfCapabilityId(capabilityId: string): string {
@@ -268,88 +381,68 @@ export function createAgentCapabilitySession(
         return segments[0] || capabilityId;
     }
 
-    /**
-     * 全量能力家族摘要：所有 on-demand 能力按家族聚合，每族一行（家族名 + 数量 +
-     * 首工具一句话描述 + 1-2 个示例 id）。requestAgentCapabilities 的 enum 本就含全部 id，
-     * 此前缺的是「这些裸 id 是什么」的全局地图——明细目录被 40 行截断后，模型会
-     * 完全不知道被截断的那部分能力存在。此摘要不截断（封顶 30 族，实际约 20 族）。
-     */
-    function buildCapabilityFamilySummaryLines(): string[] {
-        if (resolution.onDemandCapabilityIds.length === 0) return [];
-        const byId = new Map(inventory.map((entry) => [entry.capabilityId, entry]));
-        const families = new Map<string, RuntimeCapabilityInventoryEntry[]>();
-        resolution.onDemandCapabilityIds.forEach((capabilityId) => {
-            const entry = byId.get(capabilityId);
-            if (!entry) return;
-            const family = familyOfCapabilityId(capabilityId);
-            const entries = families.get(family) || [];
-            entries.push(entry);
-            families.set(family, entries);
-        });
-        const lines: string[] = [];
-        for (const [family, entries] of families) {
-            const exampleIds = entries.slice(0, 2).map((entry) => entry.capabilityId).join('、');
-            const description = toolDescriptionByName.get(entries[0].providerToolNames[0] || '') || '';
-            lines.push(`- ${family}（${entries.length} 项）${description ? ` — ${description}` : ''}；申请时用具体 id，如 ${exampleIds}`);
+    function searchCapabilityInventory(query: string, limit: number = 5): AgentCapabilitySearchResult {
+        const normalizedQuery = cleanName(query).toLowerCase();
+        const boundedLimit = Math.min(8, Math.max(1, Math.floor(Number(limit) || 5)));
+        if (!normalizedQuery) {
+            return {
+                query: '',
+                matches: [],
+                availableCount: resolution.onDemandCapabilityIds.length,
+                message: '请描述马上缺少的具体动作，例如「读取网页」「主体抠图」或「导出 PNG」。'
+            };
         }
-        return lines.slice(0, MAX_CAPABILITY_FAMILY_SUMMARY_LINES);
-    }
-
-    /**
-     * On-demand 能力的可读目录：裸 id 列表对模型没有信息量——它无法从
-     * photoshop.sandbox.writeText 这种 id 推断用途。目录把每个 id 映射到首个
-     * provider Tool 的一句话描述，requestAgentCapabilities 才真正可用。
-     * GATE-SIMPLIFY-006：明细按能力家族分组截断——每个家族至少可见前
-     * MAX_ON_DEMAND_CATALOG_TOOL_LINES_PER_FAMILY 行代表项，全局行数封顶，
-     * 不再出现「靠前的家族占满 40 行、靠后的家族一条明细都没有」。
-     */
-    function buildOnDemandCatalogLines(): string[] {
-        if (resolution.onDemandCapabilityIds.length === 0) return [];
-        const byId = new Map(inventory.map((entry) => [entry.capabilityId, entry]));
-        const skillLines: string[] = [];
-        const toolLinesByFamily = new Map<string, string[]>();
-        const otherLines: string[] = [];
-        resolution.onDemandCapabilityIds.forEach((capabilityId) => {
-            const entry = byId.get(capabilityId);
-            const line = entry ? buildCapabilityLine(entry) : `- ${capabilityId}`;
-            if (entry?.kind === 'skill') {
-                skillLines.push(line);
-            } else if (entry?.kind === 'tool') {
-                const family = familyOfCapabilityId(capabilityId);
-                const familyLines = toolLinesByFamily.get(family) || [];
-                familyLines.push(line);
-                toolLinesByFamily.set(family, familyLines);
-            } else {
-                otherLines.push(line);
-            }
-        });
-        const lines: string[] = ['还可按需加入的能力：'];
-        skillLines.forEach((line) => lines.push(line));
-        let toolLinesEmitted = 0;
-        const totalToolLines = Array.from(toolLinesByFamily.values())
-            .reduce((sum, familyLines) => sum + familyLines.length, 0);
-        for (const familyLines of toolLinesByFamily.values()) {
-            familyLines
-                .slice(0, MAX_ON_DEMAND_CATALOG_TOOL_LINES_PER_FAMILY)
-                .forEach((line) => {
-                    if (toolLinesEmitted >= MAX_ON_DEMAND_CATALOG_TOOL_LINES) return;
-                    lines.push(line);
-                    toolLinesEmitted += 1;
-                });
-        }
-        if (toolLinesEmitted < totalToolLines) {
-            lines.push(`- 还有 ${totalToolLines - toolLinesEmitted} 项能力明细未展开（完整家族总览见下）`);
-        }
-        otherLines.slice(0, MAX_ON_DEMAND_CATALOG_OTHER_LINES).forEach((line) => lines.push(line));
-        if (otherLines.length > MAX_ON_DEMAND_CATALOG_OTHER_LINES) {
-            lines.push(`- 还有 ${otherLines.length - MAX_ON_DEMAND_CATALOG_OTHER_LINES} 项其他能力未展开`);
-        }
-        const familyLines = buildCapabilityFamilySummaryLines();
-        if (familyLines.length > 0) {
-            lines.push('全部能力家族总览（上面没列全的在这里；需要时按示例 id 申请，id 全表见 requestAgentCapabilities 可选值）：');
-            lines.push(...familyLines);
-        }
-        return lines;
+        const terms = buildCapabilitySearchTerms(normalizedQuery);
+        const loadableIds = new Set(resolution.onDemandCapabilityIds);
+        const activeIds = new Set([
+            ...resolution.selectedCapabilityIds,
+            ...environmentRecoveryCapabilityIds
+        ]);
+        const scored = inventory
+            .filter((entry) => loadableIds.has(entry.capabilityId) || activeIds.has(entry.capabilityId))
+            .map((entry) => {
+                const description = toolSearchTextByName.get(entry.providerToolNames[0] || '') || '';
+                const family = familyOfCapabilityId(entry.capabilityId);
+                const haystack = [
+                    entry.capabilityId,
+                    family,
+                    ...entry.providerToolNames,
+                    description
+                ].join(' ').toLowerCase();
+                let score = 0;
+                if (entry.capabilityId.toLowerCase() === normalizedQuery) score += 1000;
+                if (entry.providerToolNames.some((name) => name.toLowerCase() === normalizedQuery)) score += 800;
+                if (haystack.includes(normalizedQuery)) score += 200;
+                for (const term of terms) {
+                    const termWeight = 10 + Math.min(30, term.length * 5);
+                    if (haystack.includes(term)) score += termWeight;
+                    if (entry.capabilityId.toLowerCase().includes(term)) score += Math.ceil(termWeight / 2);
+                }
+                return { entry, description, family, score };
+            })
+            .filter((item) => item.score > 0)
+            .sort((left, right) => (
+                right.score - left.score
+                || left.entry.capabilityId.localeCompare(right.entry.capabilityId)
+            ))
+            .slice(0, boundedLimit);
+        const matches: AgentCapabilitySearchMatch[] = scored.map((item) => ({
+            capabilityId: item.entry.capabilityId,
+            family: item.family,
+            providerToolNames: item.entry.providerToolNames.slice(0, 4),
+            description: item.description,
+            availability: activeIds.has(item.entry.capabilityId) ? 'active' : 'loadable'
+        }));
+        const activeMatchCount = matches.filter((match) => match.availability === 'active').length;
+        const loadableMatchCount = matches.length - activeMatchCount;
+        return {
+            query: normalizedQuery,
+            matches,
+            availableCount: resolution.onDemandCapabilityIds.length,
+            message: matches.length > 0
+                ? `找到 ${matches.length} 项：${activeMatchCount} 项已可直接调用，${loadableMatchCount} 项需要装载；不要申请 active 项。`
+                : '没有匹配项。请换成动作和对象描述重试；不要猜 capability id。'
+        };
     }
 
     return {
@@ -362,7 +455,10 @@ export function createAgentCapabilitySession(
         getActiveCapabilityIdsForTool(toolName: string): string[] {
             const normalizedToolName = cleanName(toolName);
             if (!normalizedToolName || resolution.deniedToolNames.includes(normalizedToolName)) return [];
-            const selectedCapabilityIds = new Set(resolution.selectedCapabilityIds);
+            const selectedCapabilityIds = new Set([
+                ...resolution.selectedCapabilityIds,
+                ...environmentRecoveryCapabilityIds
+            ]);
             return unique(inventory
                 .filter((entry) => (
                     selectedCapabilityIds.has(entry.capabilityId)
@@ -413,6 +509,9 @@ export function createAgentCapabilitySession(
             });
             refreshActiveTools();
         },
+        searchCapabilities(query: string, limit?: number): AgentCapabilitySearchResult {
+            return searchCapabilityInventory(query, limit);
+        },
         requestCapabilities(capabilityIds: readonly string[]): AgentCapabilityActivationResult {
             const activation = expandAgentCapabilities({
                 resolution,
@@ -455,15 +554,25 @@ export function createAgentCapabilitySession(
                 });
                 resolution = activation.resolution;
             }
+            const selectedCapabilityIds = new Set(resolution.selectedCapabilityIds);
+            const deniedToolNames = new Set(resolution.deniedToolNames);
+            inventory.forEach((entry) => {
+                if (!allowedEnvironmentRecoveryCapabilityIds.has(entry.capabilityId)) return;
+                if (selectedCapabilityIds.has(entry.capabilityId)) return;
+                if (!entry.providerToolNames.some((toolName) => requestedToolNames.has(toolName))) return;
+                if (!entry.providerToolNames.some((toolName) => !deniedToolNames.has(toolName))) return;
+                if (environmentRecoveryCapabilityIds.has(entry.capabilityId)) return;
+                environmentRecoveryCapabilityIds.add(entry.capabilityId);
+                activatedCapabilityIds.push(entry.capabilityId);
+            });
             refreshActiveTools();
             return unique(activatedCapabilityIds);
         },
         buildPromptSection(): string {
             return [
-                '当前工具列表就是现在可以直接使用的动作。下一步已经能做时直接执行，不要重复申请能力。',
-                ...buildOnDemandCatalogLines(),
+                '当前工具列表就是现在可以直接使用的动作。下一步已经能做时直接执行；搜索结果为 active 时使用其 providerToolNames，不要重复申请能力。',
                 resolution.onDemandCapabilityIds.length > 0
-                    ? `只有下一步确实缺少动作时，才用 ${REQUEST_AGENT_CAPABILITIES_TOOL_NAME} 从上面选择最少的相关能力；加入后直接继续制作。`
+                    ? `缺少下一步动作时，先用 ${SEARCH_AGENT_CAPABILITIES_TOOL_NAME} 按用途检索，再把返回的精确 id 交给 ${REQUEST_AGENT_CAPABILITIES_TOOL_NAME}；加入后直接继续。`
                     : '当前没有需要额外加入的能力，直接使用具体动作。',
                 '只查看会影响下一步设计的内容；目标明确时尽早做出可逆版本，修改后再看当前效果。',
                 '动作失败时只调整当前这一步，不要重新猜整个任务，也不要用随机调用试探能力。'

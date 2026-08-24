@@ -68,6 +68,11 @@ export interface VisualObservationReviewDecision {
     status: VisualObservationReviewStatus;
     reviewer: 'primary_model' | 'visual_expert';
     summary: string;
+    /**
+     * 只有模型实际比较了当前候选与前一候选时才填写。
+     * 这是模型的选择理由，Harness 不根据元素增减自行生成。
+     */
+    comparisonReason?: string;
     issues?: string[];
 }
 
@@ -281,6 +286,7 @@ export function readVisualObservationReviewDecision(
     }
     const observationKey = cleanIdentityPart(value.observationKey, '');
     const summary = cleanIdentityPart(value.summary, '');
+    const comparisonReason = cleanIdentityPart(value.comparisonReason, '');
     if (!observationKey || !summary || (expectedObservationKey && observationKey !== expectedObservationKey)) {
         return undefined;
     }
@@ -294,6 +300,7 @@ export function readVisualObservationReviewDecision(
         status: value.status,
         reviewer: value.reviewer,
         summary,
+        ...(comparisonReason ? { comparisonReason } : {}),
         ...(issues.length > 0 ? { issues } : {})
     };
 }

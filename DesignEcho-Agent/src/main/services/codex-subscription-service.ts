@@ -145,7 +145,9 @@ interface ActiveTurn {
     violation?: Error;
     resolve: (value: CompletedStructuredTurn) => void;
     reject: (reason: Error) => void;
-    timer: NodeJS.Timeout;
+    idleTimeoutMs: number;
+    timer?: NodeJS.Timeout;
+    hardTimer?: NodeJS.Timeout;
     detachAbort?: () => void;
 }
 
@@ -216,6 +218,7 @@ const ALLOWED_IMAGE_GENERATION_PASSIVE_ITEM_TYPES = new Set([
 const MODEL_CATALOG_CACHE_MS = 5 * 60_000;
 const MAX_TURNS_BEFORE_WORKER_ROTATION = 24;
 const DEFAULT_TURN_TIMEOUT_MS = 180_000;
+const MAX_TURN_WALL_CLOCK_TIMEOUT_MS = 15 * 60_000;
 const IMAGE_GENERATION_TURN_TIMEOUT_MS = 8 * 60_000;
 const MAX_MODEL_CATALOG_PAGES = 20;
 const MAX_TOOL_ARGUMENTS_JSON_LENGTH = 100_000;
@@ -225,12 +228,56 @@ const MAX_GENERATED_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_IMAGE_GENERATION_PROMPT_LENGTH = 20_000;
 const FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const ALLOWED_IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const REPAIRABLE_STRUCTURED_OUTPUT_ERROR_CODES = new Set([
+    'codex_subscription_output_invalid_json',
+    'codex_subscription_output_invalid_shape',
+    'codex_subscription_tool_arguments_invalid_json',
+    'codex_subscription_tool_arguments_invalid_shape',
+    'codex_subscription_tool_arguments_schema_mismatch'
+]);
 
 function createSubscriptionError(message: string, code: string): Error {
     const error = new Error(message) as Error & { code?: string };
     error.name = 'CodexSubscriptionError';
     error.code = code;
     return error;
+}
+
+function readSubscriptionErrorCode(error: unknown): string {
+    return typeof (error as { code?: unknown })?.code === 'string'
+        ? String((error as { code?: string }).code)
+        : '';
+}
+
+export function isRepairableCodexStructuredOutputError(error: unknown): boolean {
+    return REPAIRABLE_STRUCTURED_OUTPUT_ERROR_CODES.has(readSubscriptionErrorCode(error));
+}
+
+export function buildCodexStructuredOutputRepairInput(error: unknown): unknown[] {
+    const code = readSubscriptionErrorCode(error) || 'codex_subscription_structured_output_invalid';
+    return [{
+        type: 'text',
+        text: [
+            'Your previous response could not be accepted because its structured encoding was invalid.',
+            `Failure code: ${code}.`,
+            'Re-emit the same decision as exactly one complete JSON object matching the required output schema.',
+            'Preserve the intended content and tool choices. Correct only the structured encoding and function arguments.',
+            'Each argumentsJson value must itself be a complete valid JSON object string that satisfies the selected function inputSchema.',
+            'Do not add commentary outside the JSON object and do not simulate any function result.'
+        ].join(' '),
+        text_elements: []
+    }];
+}
+
+function combineTokenUsage(
+    first: TokenUsageBreakdown | undefined,
+    second: TokenUsageBreakdown | undefined
+): TokenUsageBreakdown | undefined {
+    if (!first && !second) return undefined;
+    return {
+        inputTokens: Number(first?.inputTokens || 0) + Number(second?.inputTokens || 0),
+        outputTokens: Number(first?.outputTokens || 0) + Number(second?.outputTokens || 0)
+    };
 }
 
 function createImageUsageLimitError(failure: CodexImageGenerationFailure): Error {
@@ -353,11 +400,18 @@ function stringifyToolCatalog(value: unknown): string {
 
 function normalizeMessageText(message: AdapterMessage): string {
     const parts: string[] = [];
-    if (typeof message.content === 'string' && message.content.trim()) {
-        parts.push(message.content);
+    const seen = new Set<string>();
+    const appendUniqueText = (value: unknown): void => {
+        const text = typeof value === 'string' ? value.trim() : '';
+        if (!text || seen.has(text)) return;
+        seen.add(text);
+        parts.push(text);
+    };
+    if (typeof message.content === 'string') {
+        appendUniqueText(message.content);
     }
     for (const block of message.contentBlocks || []) {
-        if (block.type === 'text' && block.text) parts.push(block.text);
+        if (block.type === 'text') appendUniqueText(block.text);
     }
     return parts.join('\n');
 }
@@ -1114,7 +1168,7 @@ export class CodexSubscriptionService {
                     }
                 );
             }
-            const completed = await this.runStructuredTurn({
+            let completed = await this.runStructuredTurn({
                 threadId,
                 apiModelId,
                 currentInput: prepared.currentInput,
@@ -1124,12 +1178,40 @@ export class CodexSubscriptionService {
                 signal,
                 workerGeneration
             });
-            const structured = parseStructuredAssistantOutput(completed.text, outputValidator);
-            const toolCalls = this.validateAndNormalizeToolCalls(
-                structured.toolCalls,
-                tools,
-                completed.turnId
-            );
+            let structured: StructuredAssistantOutput;
+            let toolCalls: ToolCall[];
+            try {
+                structured = parseStructuredAssistantOutput(completed.text, outputValidator);
+                toolCalls = this.validateAndNormalizeToolCalls(
+                    structured.toolCalls,
+                    tools,
+                    completed.turnId
+                );
+            } catch (error) {
+                if (!isRepairableCodexStructuredOutputError(error) || signal?.aborted) throw error;
+                const firstUsage = completed.usage;
+                console.warn(`[CodexSubscription] repairing structured response after ${readSubscriptionErrorCode(error)}`);
+                const repaired = await this.runStructuredTurn({
+                    threadId,
+                    apiModelId,
+                    currentInput: buildCodexStructuredOutputRepairInput(error),
+                    outputSchema,
+                    effort: normalizeReasoningEffort(rawModel),
+                    timeoutMs: options?.timeoutMs,
+                    signal,
+                    workerGeneration
+                });
+                structured = parseStructuredAssistantOutput(repaired.text, outputValidator);
+                toolCalls = this.validateAndNormalizeToolCalls(
+                    structured.toolCalls,
+                    tools,
+                    repaired.turnId
+                );
+                completed = {
+                    ...repaired,
+                    usage: combineTokenUsage(firstUsage, repaired.usage)
+                };
+            }
             const content = structured.content.trim();
             if (toolCalls.length === 0 && !content) {
                 throw createSubscriptionError(
@@ -1416,24 +1498,27 @@ export class CodexSubscriptionService {
                 'codex_subscription_turn_aborted'
             );
         }
-        const timeoutMs = Math.max(10_000, Math.min(15 * 60_000, input.timeoutMs || DEFAULT_TURN_TIMEOUT_MS));
+        const timeoutMs = Math.max(10_000, Math.min(MAX_TURN_WALL_CLOCK_TIMEOUT_MS, input.timeoutMs || DEFAULT_TURN_TIMEOUT_MS));
+        const wallClockTimeoutMs = Math.min(
+            MAX_TURN_WALL_CLOCK_TIMEOUT_MS,
+            Math.max(DEFAULT_TURN_TIMEOUT_MS, timeoutMs * 4)
+        );
         const completion = new Promise<CompletedStructuredTurn>((resolve, reject) => {
-            const timer = setTimeout(() => {
-                const active = this.activeTurns.get(input.threadId);
-                if (!active) return;
-                this.requestActiveTurnCancellation(active, createSubscriptionError(
-                    'GPT 订阅模型本轮响应超时，已中断。',
-                    'codex_subscription_turn_timeout'
-                ));
-            }, timeoutMs);
             const active: ActiveTurn = {
                 threadId: input.threadId,
                 workerGeneration: input.workerGeneration,
                 turnStartSettled: false,
                 resolve,
                 reject,
-                timer
+                idleTimeoutMs: timeoutMs
             };
+            active.hardTimer = setTimeout(() => {
+                if (!this.activeTurns.has(active.threadId)) return;
+                this.requestActiveTurnCancellation(active, createSubscriptionError(
+                    `DesignEcho 订阅桥等待本轮完成已达到总时限（${Math.ceil(wallClockTimeoutMs / 1000)} 秒），已中断。`,
+                    'codex_subscription_turn_wall_clock_timeout'
+                ));
+            }, wallClockTimeoutMs);
             if (input.signal) {
                 const abort = () => {
                     if (!this.activeTurns.has(input.threadId)) return;
@@ -1446,6 +1531,7 @@ export class CodexSubscriptionService {
                 active.detachAbort = () => input.signal?.removeEventListener('abort', abort);
             }
             this.activeTurns.set(input.threadId, active);
+            this.refreshActiveTurnIdleDeadline(active);
             if (input.signal?.aborted) {
                 this.requestActiveTurnCancellation(active, createSubscriptionError(
                     'GPT 订阅模型调用已取消。',
@@ -1723,6 +1809,16 @@ export class CodexSubscriptionService {
         const active = this.activeTurns.get(threadId);
         if (!active) return;
 
+        // App Server 的文本 / 推理 delta 证明模型仍在推进。旧实现只用固定墙钟倒计时，
+        // 即使 delta 正持续返回也会到点 interrupt；这里改为无进度超时，同时保留独立总上限。
+        if (notification.method === 'turn/started'
+            || notification.method === 'thread/tokenUsage/updated'
+            || notification.method === 'item/started'
+            || notification.method === 'item/completed'
+            || notification.method.endsWith('/delta')) {
+            this.refreshActiveTurnIdleDeadline(active);
+        }
+
         if (notification.method === 'turn/started') {
             active.turnId = params.turn?.id || active.turnId;
             if (active.cancelRequested) this.requestInterrupt(active);
@@ -1951,7 +2047,8 @@ export class CodexSubscriptionService {
         if (!this.activeTurns.has(active.threadId)) return;
         if (!active.cancelRequested) {
             active.cancelRequested = error;
-            clearTimeout(active.timer);
+            if (active.timer) clearTimeout(active.timer);
+            if (active.hardTimer) clearTimeout(active.hardTimer);
             active.detachAbort?.();
             active.detachAbort = undefined;
         }
@@ -1970,7 +2067,8 @@ export class CodexSubscriptionService {
     private finishActiveTurn(active: ActiveTurn, result: CompletedStructuredTurn): void {
         if (!this.activeTurns.has(active.threadId)) return;
         this.activeTurns.delete(active.threadId);
-        clearTimeout(active.timer);
+        if (active.timer) clearTimeout(active.timer);
+        if (active.hardTimer) clearTimeout(active.hardTimer);
         active.detachAbort?.();
         active.resolve(result);
     }
@@ -1978,9 +2076,22 @@ export class CodexSubscriptionService {
     private finishActiveTurnWithError(active: ActiveTurn, error: Error): void {
         if (!this.activeTurns.has(active.threadId)) return;
         this.activeTurns.delete(active.threadId);
-        clearTimeout(active.timer);
+        if (active.timer) clearTimeout(active.timer);
+        if (active.hardTimer) clearTimeout(active.hardTimer);
         active.detachAbort?.();
         active.reject(error);
+    }
+
+    private refreshActiveTurnIdleDeadline(active: ActiveTurn): void {
+        if (!this.activeTurns.has(active.threadId) || active.cancelRequested) return;
+        if (active.timer) clearTimeout(active.timer);
+        active.timer = setTimeout(() => {
+            if (!this.activeTurns.has(active.threadId)) return;
+            this.requestActiveTurnCancellation(active, createSubscriptionError(
+                `DesignEcho 订阅桥连续 ${Math.ceil(active.idleTimeoutMs / 1000)} 秒未收到新的模型进度，已中断本轮。`,
+                'codex_subscription_turn_idle_timeout'
+            ));
+        }, active.idleTimeoutMs);
     }
 
     private requestImageTurnCancellation(active: ActiveImageGenerationTurn, error: Error): void {

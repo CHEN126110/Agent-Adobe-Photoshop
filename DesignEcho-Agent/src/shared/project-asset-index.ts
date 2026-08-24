@@ -384,11 +384,15 @@ function inferImageRole(input: {
             confidence: tall ? 0.62 : 0.7
         };
     }
-    if (lowerPath.includes('/模特/')) {
-        return { role: 'raw-model-wear', reasons: ['model folder image'], confidence: 0.78 };
+    const sourceFolderText = pathParts(relativePath).slice(0, -1).join(' ').toLowerCase();
+    if (/模特|上身|穿着|穿搭|model|on[_ -]?model|wear/.test(sourceFolderText)) {
+        return { role: 'raw-model-wear', reasons: ['model/wearing source folder image'], confidence: 0.82 };
     }
-    if (lowerPath.includes('/平铺/')) {
-        return { role: 'raw-product-still', reasons: ['flat-lay product folder image'], confidence: 0.78 };
+    if (/平铺|静物|棚拍|纯底|白底|flat[_ -]?lay|product[_ -]?still/.test(sourceFolderText)) {
+        return { role: 'raw-product-still', reasons: ['flat-lay/product-still source folder image'], confidence: 0.82 };
+    }
+    if (/细节|材质|纹理|特写|detail|material|close[_ -]?up/.test(sourceFolderText)) {
+        return { role: 'raw-detail-closeup', reasons: ['detail/material source folder image'], confidence: 0.8 };
     }
     if (folderRole === 'source') {
         return { role: 'raw-product-still', reasons: ['source folder image without stronger role signal'], confidence: 0.55 };

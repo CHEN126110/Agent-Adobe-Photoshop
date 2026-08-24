@@ -29,6 +29,7 @@ import { normalizeImageToImageError, normalizeInpaintingError } from './core/ima
 import {
     DEFAULT_IMAGE_TO_IMAGE_SIZE_PRESET,
     normalizeImageToImageModel,
+    resolveImageToImageRequestTimeoutMs,
     resolveImageToImageSizePreset,
     resolveImageToImageSnapshotMaxEdge,
     resolveImageToImageSnapshotMaxEdgeForExplicitSize
@@ -220,10 +221,17 @@ async function renderPanel(container: HTMLElement) {
     (webviewElement as HTMLElement).style.height = '100%';
     (webviewElement as HTMLElement).style.display = 'block';
     syncEmbeddedWebViewSize(container, true);
-    webviewResizeObserver = new ResizeObserver(() => {
-        syncEmbeddedWebViewSize(container);
-    });
-    webviewResizeObserver.observe(container);
+    // ResizeObserver 是 UXP v8.1（PS 26.1）才有的 API；支持版本下探到 PS 25.0 后按能力选路：
+    // 有就用（精确跟随容器），没有就监听窗口 resize + 面板 show 时同步——两条路都显式声明，不是静默兜底。
+    if (typeof ResizeObserver === 'function') {
+        webviewResizeObserver = new ResizeObserver(() => {
+            syncEmbeddedWebViewSize(container);
+        });
+        webviewResizeObserver.observe(container);
+    } else {
+        console.log('[DesignEcho] 该 Photoshop 版本无 ResizeObserver（<26.1），改用 window resize 同步 WebView 尺寸');
+        window.addEventListener('resize', () => syncEmbeddedWebViewSize(container));
+    }
     
     console.log('[DesignEcho] WebView element created, src:', WEBVIEW_URL);
     
@@ -457,6 +465,10 @@ async function handleWebViewAction(data: any) {
 
         case 'imageToImageGenerate':
             await handleImageToImageGenerate(payload);
+            break;
+
+        case 'imageToImageCancel':
+            await handleImageToImageCancel();
             break;
 
         case 'imageToImageApplySelection':
@@ -1727,8 +1739,7 @@ async function requestOptimizeTextClipboardImage() {
 }
 
 /**
- * 拉取撰写文案可选的模型清单（精选 + 关键字搜索）。
- * 清单在 Agent 侧生成：只有主进程知道注册表能力、动态模型和哪些 provider key 已配置。
+ * 读取当前 Agent 模型，供 Photoshop 面板如实展示实际执行身份。
  */
 async function handleLoadOptimizeTextModels(payload: any) {
     const query = String(payload?.query || '');
@@ -4145,7 +4156,9 @@ async function handleInpaintingGenerate(payload: any) {
         const documentMeta = maskResult.documentMeta || payload?.documentMeta || null;
         console.log(`[DesignEcho] 实时选区快照获取成功 (format: ${maskResult.maskFormat || 'unknown'}, maskCh=${maskResult.maskChannels}, imgCh=${maskResult.imageChannels})`);
 
-        const selectedModel = payload?.model || 'google/gemini-3-pro-image-preview-20251120';
+        // 用 OpenRouter models API 里真实存在的 id（不带日期后缀）。带日期的写法会被
+        // OpenRouter 宽松匹配解析回本体，image_config 在那条路径上会被丢弃。
+        const selectedModel = payload?.model || 'google/gemini-3-pro-image-preview';
         let imageBinaryMeta: { requestId: number; width: number; height: number } | null = null;
         let maskBinaryMeta: { requestId: number; width: number; height: number } | null = null;
 
@@ -4292,6 +4305,7 @@ async function handleInpaintingGenerate(payload: any) {
                 fallbackHeight: maskResult.height,
                 fallbackOriginalWidth: maskResult.originalWidth || maskResult.width,
                 fallbackOriginalHeight: maskResult.originalHeight || maskResult.height,
+                sourceDocumentId: toPhotoshopEntityId(require('photoshop').app.activeDocument?.id),
                 appliedLayerId: null
             };
 
@@ -4357,6 +4371,8 @@ let pendingInpaintingCandidates: {
     fallbackHeight: number;
     fallbackOriginalWidth: number;
     fallbackOriginalHeight: number;
+    /** 生成这批候选时所在的文档。删旧结果图层前要比对它——deleteLayer 只认当前活动文档 */
+    sourceDocumentId: number | null;
     /** 本轮已经置入的图层。切换候选时先删掉它，避免几张候选在图层面板里越堆越多 */
     appliedLayerId: number | null;
 } | null = null;
@@ -4374,10 +4390,30 @@ let pendingInpaintingCandidates: {
  * 同名图层还得手动清理。删除本身进 PS 历史记录，用户可以撤销。
  * 删除失败不阻断本次置入，但必须如实告知，否则用户会以为只有一个图层。
  */
-async function removeAppliedResultLayer(layerId: number, layerLabel: string): Promise<void> {
+async function removeAppliedResultLayer(
+    layerId: number,
+    layerLabel: string,
+    expectedDocumentId?: number | null
+): Promise<void> {
     if (!toolRegistry) return;
     const deleteTool = toolRegistry.getTool('deleteLayer');
     if (!deleteTool) return;
+
+    // deleteLayer 只认 app.activeDocument（不接受 documentId）。用户在多个文档标签之间
+    // 切换是常态，此时上一张结果图层还好好待在**原来那个文档**里，在当前文档当然找不到。
+    // 不先校验就删，会拿到"未找到指定图层"，再翻译成"图层面板里有两个同名图层"——
+    // 一个既不成立、又指挥用户去删不存在的图层的结论。
+    if (typeof expectedDocumentId === 'number') {
+        const { app } = require('photoshop');
+        const activeDocumentId = toPhotoshopEntityId(app.activeDocument?.id);
+        if (activeDocumentId !== expectedDocumentId) {
+            console.log(
+                `[DesignEcho] 跳过移除上一次置入的${layerLabel}(id=${layerId})：` +
+                `它属于文档 ${expectedDocumentId}，当前活动文档是 ${activeDocumentId}`
+            );
+            return;
+        }
+    }
 
     try {
         const raw = await deleteTool.execute({ layerId });
@@ -4388,8 +4424,20 @@ async function removeAppliedResultLayer(layerId: number, layerLabel: string): Pr
     } catch (error: any) {
         const reason = error?.message || String(error);
         console.warn(`[DesignEcho] 未能移除上一次置入的${layerLabel}(id=${layerId}):`, reason);
+
+        // 区分两种失败：图层压根不在了（用户已手动删除或撤销过）是正常情况，
+        // 不该报警；只有图层确实还在却删不掉，才会真的多出一个同名图层要用户处理。
+        if (/未找到指定图层|not found/i.test(reason)) {
+            console.log(`[DesignEcho] 上一次置入的${layerLabel}已不存在，无需移除`);
+            return;
+        }
+
+        // 面板上只说用户能处理的事。原因（含内部工具名与调用建议）留在控制台供排查——
+        // 真机截图里出现过把 "deleteLayer 缺少可操作的目标对象：先调用 listDocuments、
+        // getLayerHierarchy..." 整段吐给设计师的情况，那些词对他没有任何信息量，
+        // 只会让一次可以手动解决的小状况看起来像系统坏了。
         sendToWebView('toast', {
-            message: `上一张${layerLabel}没能自动移除（${reason}），图层面板里会有两个同名图层，请手动删掉多余的那个`,
+            message: `上一张${layerLabel}没能自动删掉，图层面板里会有两个同名图层，手动删掉多余的那个就行`,
             type: 'warning'
         });
     }
@@ -4428,7 +4476,11 @@ async function handleInpaintingApplySelection(payload: any) {
         });
 
         if (typeof candidates.appliedLayerId === 'number') {
-            await removeAppliedResultLayer(candidates.appliedLayerId, '局部重绘结果');
+            await removeAppliedResultLayer(
+                candidates.appliedLayerId,
+                '局部重绘结果',
+                candidates.sourceDocumentId
+            );
             candidates.appliedLayerId = null;
         }
 
@@ -4524,6 +4576,28 @@ async function handleImageToImageApplySelection(payload: any) {
             return;
         }
 
+        // 候选现在不会因为切图层 / 切文档而被清空（那些结果是按次计费买来的，见 webview
+        // applyImageToImageSelection 的说明），所以「会不会落错文档」这道防线必须放在写入这一步。
+        //
+        // 置入走的是 app.activeDocument。如果用户切到了别的文档，静默置入就会把结果贴进
+        // 不相干的文档里，而且 targetBounds 是按原文档坐标算的，位置也是错的。
+        // 这属于不可逆写入，宁可拒绝并说清要切回哪里，也不要"帮用户猜"。
+        const { app: photoshopApp } = require('photoshop');
+        const activeDocumentId = toPhotoshopEntityId(photoshopApp.activeDocument?.id);
+        if (
+            typeof candidates.sourceDocumentId === 'number'
+            && activeDocumentId !== null
+            && activeDocumentId !== candidates.sourceDocumentId
+        ) {
+            const activeName = String(photoshopApp.activeDocument?.name || '当前文档');
+            sendToWebView('toast', {
+                message: `这批结果是为另一个文档生成的，当前在「${activeName}」。请切回原文档再置入——`
+                    + `直接贴进来位置会错，结果也会留在不相干的文档里。`,
+                type: 'warning'
+            });
+            return;
+        }
+
         const meta = candidates.meta || {};
         const selectedSize = candidates.sizes[index];
         const resultImageFormat = resolveImageResultFormatHint({
@@ -4539,7 +4613,11 @@ async function handleImageToImageApplySelection(payload: any) {
         });
 
         if (typeof candidates.appliedLayerId === 'number') {
-            await removeAppliedResultLayer(candidates.appliedLayerId, 'AI 生图结果');
+            await removeAppliedResultLayer(
+                candidates.appliedLayerId,
+                'AI 生图结果',
+                candidates.sourceDocumentId
+            );
             candidates.appliedLayerId = null;
         }
 
@@ -4566,6 +4644,16 @@ async function handleImageToImageApplySelection(payload: any) {
         }
 
         candidates.appliedLayerId = toPhotoshopEntityId(applyResult.layerId);
+
+        // 落位做过取舍（生成图比例与原位置对不上）时如实说明。
+        // 沉默地把画面拉伸到原位置尺寸，用户只会看到"图变形了"却不知道发生在哪一步。
+        const placementNotice = typeof applyResult.placementNotice === 'string'
+            ? applyResult.placementNotice.trim()
+            : '';
+        if (placementNotice) {
+            console.warn('[I2I] placement notice:', placementNotice);
+            sendToWebView('toast', { message: placementNotice, type: 'warning' });
+        }
 
         sendToWebView('imageToImageProgress', {
             progress: 100,
@@ -4595,6 +4683,36 @@ async function handleImageToImageApplySelection(payload: any) {
         if (imageToImagePollingTimer) {
             pollImageToImageSelection();
         }
+    }
+}
+
+/**
+ * 用户点「停止生成」。
+ *
+ * 只停止等待，不代表上游停止出图——请求早就发出去了。所以这里的措辞是"已停止等待"
+ * 而不是"已取消"，并且明确说费用不退：把它说成撤销订单是在骗人。
+ */
+async function handleImageToImageCancel() {
+    if (!wsClient || !wsClient.isConnected()) {
+        sendToWebView('imageToImageError', {
+            message: '停止失败：Agent 未连接',
+            errorStage: 'provider-canceled'
+        });
+        return;
+    }
+
+    try {
+        const result = await wsClient.sendRequest('imageToImage.cancel', {}, 15000);
+        const message = String(result?.message || '已停止等待这次生成。');
+        console.log('[I2I] cancel result:', result);
+        sendToWebView('imageToImageCanceled', { message });
+        sendToWebView('toast', { message, type: 'warning' });
+    } catch (error: any) {
+        console.error('[DesignEcho] Image-to-image cancel error:', error);
+        sendToWebView('toast', {
+            message: '没能通知 Agent 停止，这次生成可能还在后台跑',
+            type: 'warning'
+        });
     }
 }
 
@@ -4837,7 +4955,10 @@ async function handleImageToImageGenerate(payload: any) {
             stage: 'provider-submit'
         });
 
-        const result = await wsClient.sendRequest('imageToImage.generate', requestPayload, 300000);
+        // 等待时间按档位取，且必须长于 Agent 侧——否则这边先到期，Agent 那条带 provider
+        // 原文的错误就传不回来，用户只能看到「请求超时」这种无信息量的提示。
+        const requestTimeoutMs = resolveImageToImageRequestTimeoutMs(sizePreset);
+        const result = await wsClient.sendRequest('imageToImage.generate', requestPayload, requestTimeoutMs);
         if (!result?.success) {
             throw {
                 message: result?.error || 'Image-to-image generation failed',
@@ -4878,10 +4999,19 @@ async function handleImageToImageGenerate(payload: any) {
             appliedLayerId: null
         };
 
+        // 上游"接受了档位但没照做"（如请求 4K 实际只出 896×1200）不是错误，不该中断流程，
+        // 但沉默会让用户把它体感成"这个模型不清晰"。如实说出来，用户才判断得了要不要换档位。
+        const providerNotice = typeof result.providerNotice === 'string' ? result.providerNotice.trim() : '';
+        if (providerNotice) {
+            console.warn('[I2I] provider notice:', providerNotice);
+            sendToWebView('toast', { message: providerNotice, type: 'warning' });
+        }
+
         sendToWebView('imageToImageGenerated', {
             images,
             imageSizes,
             meta: generatedMeta,
+            providerNotice: providerNotice || undefined,
             partialFailures: Array.isArray(result.partialFailures) ? result.partialFailures : []
         });
 

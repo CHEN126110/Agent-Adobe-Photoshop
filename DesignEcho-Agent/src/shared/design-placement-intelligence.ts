@@ -408,6 +408,18 @@ function buildCandidates(input: DesignPlacementIntelligenceInput): DesignPlaceme
             designType: input.scenario === 'main-image' ? 'main-image' : input.scenario === 'detail-page' ? 'detail-page' : 'generic',
             assetRole: 'product',
             intent: input.scenario === 'main-image' ? 'hero' : 'fit-slot',
+            presetOverride: {
+                scaleMode: 'contain',
+                targetFill: 1,
+                minFill: 1,
+                maxFill: 1,
+                anchor: 'center',
+                cropPolicy: 'protect-subject',
+                visualBiasY: 0,
+                preserveSubject: true,
+                minScale: 0.01,
+                maxScale: 100
+            },
             executionTool: target.executionTool || 'custom-adapter'
         }));
         const reviewRequirements = buildCandidateReviewRequirements({ visualObservation, placementPlan, preferenceMatch });

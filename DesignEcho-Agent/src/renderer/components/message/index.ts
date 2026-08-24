@@ -12,7 +12,6 @@ export type {
     ImageBlock,
     ImageGalleryBlock,
     ToolCallBlock,
-    ToolResultBlock,
     FileBlock,
     CardBlock,
     ListBlock,
@@ -22,7 +21,6 @@ export type {
     WarningBlock,
     SuccessBlock,
     ThinkingBlock,
-    ThinkingStep,
     ArtifactBlock,
     ActionItem,
     ActionBlock,
@@ -38,7 +36,6 @@ export {
     TextBlock as TextBlockComponent,
     CodeBlock as CodeBlockComponent,
     ImageBlock as ImageBlockComponent,
-    ToolResultBlock as ToolResultBlockComponent,
     CardBlock as CardBlockComponent,
     ThinkingBlock as ThinkingBlockComponent
 } from './blocks';

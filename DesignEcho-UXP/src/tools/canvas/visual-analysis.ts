@@ -5,7 +5,10 @@
  */
 
 import { Tool, ToolSchema } from '../types';
-import { observeActiveDocumentAtHistoryState } from '../../core/photoshop-document-observation';
+import {
+    observeActiveDocumentAtHistoryState,
+    PhotoshopDocumentObservationError
+} from '../../core/photoshop-document-observation';
 import type { PhotoshopHistoryStateRef } from '../../core/photoshop-history-state-ref';
 import {
     encodePhotoshopImageDataAsJpeg,
@@ -14,6 +17,57 @@ import {
 
 const app = require('photoshop').app;
 const { imaging } = require('photoshop');
+
+type CanvasSnapshotTargetBindingErrorCode =
+    | 'unsupported_document_id_parameter'
+    | 'invalid_expected_document_id';
+
+function createCanvasSnapshotTargetBindingError(
+    code: CanvasSnapshotTargetBindingErrorCode,
+    message: string
+): Error & { code: CanvasSnapshotTargetBindingErrorCode } {
+    return Object.assign(new Error(message), { code });
+}
+
+function isCanvasSnapshotTargetBindingError(
+    error: unknown
+): error is Error & { code: CanvasSnapshotTargetBindingErrorCode } {
+    if (!(error instanceof Error) || !('code' in error)) return false;
+    return error.code === 'unsupported_document_id_parameter'
+        || error.code === 'invalid_expected_document_id';
+}
+
+function resolveCanvasSnapshotExpectedDocumentId(
+    params: Record<string, unknown>
+): number | undefined {
+    if (Object.prototype.hasOwnProperty.call(params, 'documentId')) {
+        throw createCanvasSnapshotTargetBindingError(
+            'unsupported_document_id_parameter',
+            '画布快照不会按 documentId 选择或切换文档。请先明确切换到目标文档，再把该 ID 作为 expectedDocumentId 重试。'
+        );
+    }
+    if (!Object.prototype.hasOwnProperty.call(params, 'expectedDocumentId')) {
+        return undefined;
+    }
+    const expectedDocumentId = params.expectedDocumentId;
+    if (typeof expectedDocumentId !== 'number'
+        || !Number.isSafeInteger(expectedDocumentId)
+        || expectedDocumentId <= 0) {
+        throw createCanvasSnapshotTargetBindingError(
+            'invalid_expected_document_id',
+            'expectedDocumentId 必须是 Photoshop 返回的正整数文档 ID，未开始读取像素。'
+        );
+    }
+    return expectedDocumentId;
+}
+
+function readCanvasSnapshotErrorCode(error: unknown): string | undefined {
+    if (isCanvasSnapshotTargetBindingError(error)
+        || error instanceof PhotoshopDocumentObservationError) {
+        return error.code;
+    }
+    return undefined;
+}
 
 /**
  * 获取画布快照工具
@@ -42,6 +96,10 @@ export class GetCanvasSnapshotTool implements Tool {
                     type: 'number',
                     description: '兼容字段；当前由 Photoshop Imaging API 统一编码'
                 },
+                expectedDocumentId: {
+                    type: 'number',
+                    description: '可选的活动文档身份断言。写后验真或同时打开多份文档时，传入 getDocumentInfo / 写入回执中的文档 ID；不匹配会在读取像素前失败。此字段不会自动打开或切换文档。'
+                },
                 region: {
                     type: 'object',
                     description: '只截取文档中的一个区域（文档像素坐标 {x,y,width,height}）。长文档（如详情页）观察某一屏时必用：全图缩放会小到看不清',
@@ -60,9 +118,11 @@ export class GetCanvasSnapshotTool implements Tool {
         maxSize?: number;
         format?: string;
         quality?: number;
+        expectedDocumentId?: number;
         region?: { x?: number; y?: number; width?: number; height?: number };
     }): Promise<{
         success: boolean;
+        code?: string;
         snapshot?: {
             base64: string;
             width: number;
@@ -83,12 +143,16 @@ export class GetCanvasSnapshotTool implements Tool {
         error?: string;
     }> {
         try {
+            const expectedDocumentId = resolveCanvasSnapshotExpectedDocumentId(
+                params as unknown as Record<string, unknown>
+            );
             const maxSize = params.maxSize || 1024;
             const requestedFormat = params.format || 'jpeg';
             const outputFormat = 'jpeg';
             const observation = await observeActiveDocumentAtHistoryState({
                 commandName: 'DesignEcho: 获取画布快照',
                 timeOut: 5,
+                expectedDocumentId,
                 unavailableMessage: '无法读取 Photoshop 文档历史版本，未返回可能过期的画布快照。',
                 changedMessage: '截图期间 Photoshop 文档发生变化，已丢弃这张不一致的画布快照。'
             }, async (doc) => {
@@ -190,8 +254,10 @@ export class GetCanvasSnapshotTool implements Tool {
 
         } catch (error) {
             console.error('[GetCanvasSnapshot] Error:', error);
+            const code = readCanvasSnapshotErrorCode(error);
             return {
                 success: false,
+                ...(code ? { code } : {}),
                 error: toSnapshotErrorMessage(error)
             };
         }

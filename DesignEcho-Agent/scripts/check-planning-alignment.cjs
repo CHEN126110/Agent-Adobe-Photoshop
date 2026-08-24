@@ -73,22 +73,70 @@ function extractMarkdownSections(text) {
   return sections;
 }
 
+function extractFirstH2Card(text) {
+  const matches = [...text.matchAll(/^##\s+(.+)$/gm)];
+  if (matches.length === 0) {
+    throw new Error('CurrentTask.md must contain one current H2 task card');
+  }
+
+  const first = matches[0];
+  const start = first.index || 0;
+  const end = matches.length > 1 ? matches[1].index || text.length : text.length;
+  return {
+    title: first[1].trim(),
+    body: text.slice(start, end)
+  };
+}
+
+function extractTaskId(title) {
+  const match = title.match(/\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+-\d{3}\b/);
+  return match ? match[0] : '';
+}
+
+function collectPlanningWarnings(currentCard, projectState) {
+  const warnings = [];
+  const currentTaskId = extractTaskId(currentCard.title);
+
+  if (!currentTaskId) {
+    warnings.push('CurrentTask first H2 title has no machine-readable task ID');
+    return warnings;
+  }
+
+  if (currentTaskId !== projectState.activeRequest.id) {
+    warnings.push(
+      `CurrentTask ${currentTaskId} differs from project-state activeRequest ${projectState.activeRequest.id}`
+    );
+  }
+  if (currentTaskId !== projectState.activePlan.id) {
+    warnings.push(
+      `CurrentTask ${currentTaskId} differs from project-state activePlan ${projectState.activePlan.id}`
+    );
+  }
+
+  return warnings;
+}
+
 function assertCurrentTask(text) {
+  const currentCard = extractFirstH2Card(text);
   [
-    '用户原始需求',
-    '必须做',
-    '禁止做',
-    '归属层级',
-    '当前计划',
-    '验收证据',
+    '目标',
+    '当前事实',
+    '实施边界',
+    '下一步',
+    '验证与未知',
     '状态'
   ].forEach((section) => {
-    if (!extractMarkdownSections(text).has(section)) {
-      throw new Error(`CurrentTask.md missing section: ${section}`);
+    if (!extractMarkdownSections(currentCard.body).has(section)) {
+      throw new Error(`CurrentTask.md first H2 card missing section: ${section}`);
     }
   });
 
-  assertIncludesAny(text, ['in_progress', 'validated', 'done', 'paused'], 'CurrentTask.md');
+  assertIncludesAny(
+    currentCard.body,
+    ['in_progress', 'validated', 'done', 'paused'],
+    'CurrentTask.md first H2 card'
+  );
+  return currentCard;
 }
 
 function parseIntakeEntries(text) {
@@ -171,19 +219,21 @@ function assertMethodologyReferences(agentRoot) {
 
   for (const [label, text] of [
     ['AGENTS.md', agents],
-    ['project-memory/README.md', readme],
-    ['project-memory/Implement.md', implement]
+    ['project-memory/README.md', readme]
   ]) {
     assertIncludes(text, 'CurrentTask.md', label);
     assertIncludes(text, 'Intake.md', label);
   }
 
+  assertIncludes(implement, '条件性执行参考', 'project-memory/Implement.md');
+  assertIncludes(implement, '不得覆盖', 'project-memory/Implement.md');
+
   [
     'Intake',
     'Orient',
     'Classify',
-    'Evidence Check',
-    'Design Gate',
+    '事实与未知',
+    '方案判断',
     'Implement',
     'Verify',
     'Write Back'
@@ -207,19 +257,23 @@ function main() {
   const intake = readText(agentRoot, 'project-memory/Intake.md');
   const projectState = readJson(agentRoot, 'project-memory/project-state.json');
 
-  assertCurrentTask(currentTask);
+  const currentCard = assertCurrentTask(currentTask);
   assertIntake(intake);
   assertProjectState(projectState);
   assertMethodologyReferences(agentRoot);
+  const warnings = collectPlanningWarnings(currentCard, projectState);
 
   console.log(JSON.stringify({
     success: true,
     checks: [
-      'CurrentTask demand alignment card has required sections',
+      'CurrentTask first H2 card has the compact required sections',
       'Intake planning pool has valid entries and statuses',
-      'project-state activeRequest and activePlan are present',
-      'AGENTS README Implement methodology and capability-map references are aligned'
+      'project-state activeRequest and activePlan are present; semantic drift is reported as a warning',
+      'AGENTS and README references are aligned; Implement is explicitly conditional',
+      'methodology and capability-map references are present'
     ],
+    warnings,
+    currentTask: currentCard.title,
     activeRequest: projectState.activeRequest.id,
     activePlan: projectState.activePlan.id,
     intakeCount: parseIntakeEntries(intake).length

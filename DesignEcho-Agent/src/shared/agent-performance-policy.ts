@@ -58,7 +58,13 @@ export const AGENT_GLOBAL_SKILL_BUDGET_LIMITS: Readonly<AgentPerformanceBudget> 
     // max_iterations(100) 与各技能 soft_time_budget(≥240s)，导致 model_calls 永远先触顶，
     // 完整 v5 纪律流程（R0→E2 八阶段 + 声明 + 执行 + 复核）还没到执行就被这个人为低顶饿死。
     // 抬到 30，让「时间预算」或「真实完成」成为约束，而不是一个过低的模型调用数。
-    maxModelCalls: 30,
+    // 2026-08-17 再抬到 40 / 15 分钟：预算是防失控的安全网，不是正常终止器——一次真实的详情页
+    // 设计（十余屏、几十个图层动作、写后回看）本就需要几十轮，被预算掐断的运行占全部真机运行
+    // 的 17%（performance_budget 58 + tool_budget 21 / 469）。真正的停机条件应是「做完了」或
+    // 「无进展」，其余交给续跑与上下文压缩。
+    // 2026-08-23 详情页死亡样本定罪：真凶是时间硬终止而非迭代失控（远未及 max_iterations），
+    // manifest 已提到 56 次 / 30 分钟；安全网同步抬到 64 / 30 分钟，保持「全局管安全、manifest 管收紧」。
+    maxModelCalls: 64,
     maxToolCalls: 200,
     maxIterations: 100,
     // 全局上限只负责资源安全，具体 Skill 仍由 manifest 收紧。长详情页需要允许
@@ -66,7 +72,7 @@ export const AGENT_GLOBAL_SKILL_BUDGET_LIMITS: Readonly<AgentPerformanceBudget> 
     maxVisionCandidates: 40,
     maxVisualAnalyses: 10,
     maxFullResolutionImageReads: 0,
-    softTimeBudgetMs: 600_000,
+    softTimeBudgetMs: 1_800_000,
     maxPrimaryOutputTokens: 8192,
     allowProviderThinking: true
 });
@@ -1297,14 +1303,20 @@ export function buildAgentUnboundAutonomousPerformancePolicy(): AgentPerformance
         scenario: 'unknown',
         action: 'unknown',
         budget: {
-            maxModelCalls: 16,
-            maxToolCalls: 50,
-            maxIterations: 30,
-            maxVisionCandidates: 6,
-            maxInitialVisionCandidates: 2,
-            maxVisualAnalyses: 3,
+            // 2026-08-17：16/50/7min 是聊天助理量级，不是设计师干活量级。真机 run 469 未绑定
+            // 清单的详情页续跑，14 轮里成功置入 6 层、零失败，却在第 14 轮被预算掐断。
+            // 预算是安全网；抬到接近全局上限的一档，让「做完 / 无进展」成为常态停机条件。
+            // 同日 run [471]：32 次模型调用在第 28 轮（含视觉回合）耗尽，任务仍未完成——再抬到全局上限。
+            maxModelCalls: 40,
+            maxToolCalls: 120,
+            maxIterations: 60,
+            // 眼睛不能中途失明：一次主图 / 详情页任务开工看产品图 + 每次改完回看，8 张远远不够
+            // （真机：模型宣布「画面读取额度已用尽，无法核验」）。超出后还会以缩略图降级读入。
+            maxVisionCandidates: 16,
+            maxInitialVisionCandidates: 3,
+            maxVisualAnalyses: 6,
             maxFullResolutionImageReads: 0,
-            softTimeBudgetMs: 420_000,
+            softTimeBudgetMs: 900_000,
             ...resolveAgentModelCallCostControls(costProfile.modelCallClass)
         },
         verificationTier: 'bounds',

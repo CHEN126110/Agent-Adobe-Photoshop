@@ -170,6 +170,8 @@ export interface SkuTemplateDesignHandoffContract {
     completionChecklist: string[];
     /** 交还主 Agent 后持续限定为本次模板补齐所需的最小观察、设计和读回能力。 */
     agentReActContinuation: AgentReActSkillContinuation;
+    /** 每个待建规格一套确定性版式建议（三份共用同一刻度）；缺画布尺寸时为空。 */
+    templateLayoutSuggestions: SkuTemplateLayoutSuggestion[];
 }
 
 export interface SkuTemplateLayoutRepairTarget {
@@ -186,11 +188,152 @@ export interface SkuTemplateDesignTarget {
     expectedItemCount: number;
 }
 
+export interface SkuTemplateLayoutBox {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
+/**
+ * 一份 SKU 组合模板的确定性版式建议（引擎给数字，模型定风格）：
+ * 三份规格共用同一套边距 / 间距 / 圆角 / 字号，先做完一份看效果，其余按同一规则派生，
+ * 避免「三份各画各的」。全部是建议，模型看过画面后可以调，但改一份就要三份一起改。
+ */
+export interface SkuTemplateLayoutSuggestion {
+    size: number;
+    mode: 'combo' | 'self_select_note';
+    slotCount: number;
+    canvas: { width: number; height: number };
+    /** 共用刻度：三份一致 */
+    tokens: { margin: number; gutter: number; cornerRadius: number; titleFontSize: number; subtitleFontSize: number };
+    cardFrame: SkuTemplateLayoutBox;
+    /** 按阅读顺序（左→右、上→下）的占位槽，直接作为 createSkuPlaceholders 的 slots */
+    slots: SkuTemplateLayoutBox[];
+    titleBox: SkuTemplateLayoutBox;
+    subtitleBox: SkuTemplateLayoutBox;
+    summary: string;
+}
+
+const SKU_TEMPLATE_DEFAULT_CARD_ASPECT = 0.66;
+
+function roundBox(box: SkuTemplateLayoutBox): SkuTemplateLayoutBox {
+    return {
+        x: Math.round(box.x),
+        y: Math.round(box.y),
+        width: Math.round(box.width),
+        height: Math.round(box.height)
+    };
+}
+
+/**
+ * 纯几何：给定画布、双数与色块宽高比，算出一套占位槽 + 标题区。
+ * 槽位纵向居中于内容区；超过 4 个（自选备注按色数）自动分两行。
+ */
+export function buildSkuTemplateLayoutSuggestion(input: {
+    size: number;
+    mode?: 'combo' | 'self_select_note';
+    slotCount?: number;
+    canvas: { width: number; height: number };
+    /** 色卡里单个色块的宽高比（宽/高）；缺省按竖版 0.66 */
+    cardAspectRatio?: number;
+}): SkuTemplateLayoutSuggestion | undefined {
+    const width = Math.round(Number(input.canvas?.width) || 0);
+    const height = Math.round(Number(input.canvas?.height) || 0);
+    const size = Math.round(Number(input.size) || 0);
+    if (width < 200 || height < 200 || size <= 0) return undefined;
+    const mode = input.mode === 'self_select_note' ? 'self_select_note' : 'combo';
+    const slotCount = Math.max(1, Math.round(Number(input.slotCount) || size));
+    const aspect = Number(input.cardAspectRatio) > 0.2 && Number(input.cardAspectRatio) < 3
+        ? Number(input.cardAspectRatio)
+        : SKU_TEMPLATE_DEFAULT_CARD_ASPECT;
+    const unit = Math.min(width, height);
+    const tokens = {
+        margin: Math.round(unit * 0.05),
+        gutter: Math.round(unit * 0.03),
+        cornerRadius: Math.round(unit * 0.015),
+        titleFontSize: Math.max(18, Math.round(unit * 0.035)),
+        subtitleFontSize: Math.max(14, Math.round(unit * 0.025))
+    };
+    const titleAreaHeight = Math.round(height * 0.16);
+    const cardFrame = roundBox({
+        x: tokens.margin,
+        y: tokens.margin,
+        width: width - tokens.margin * 2,
+        height: height - tokens.margin * 2
+    });
+    const contentTop = cardFrame.y + tokens.gutter;
+    const contentBottom = cardFrame.y + cardFrame.height - titleAreaHeight - tokens.gutter;
+    const contentHeight = Math.max(1, contentBottom - contentTop);
+    const contentLeft = cardFrame.x + tokens.gutter;
+    const contentWidth = Math.max(1, cardFrame.width - tokens.gutter * 2);
+    const rows = slotCount > 4 ? 2 : 1;
+    const perRow = Math.ceil(slotCount / rows);
+    const rowGap = tokens.gutter;
+    const slotWidthByColumns = (contentWidth - (perRow - 1) * tokens.gutter) / perRow;
+    const rowHeightAvailable = (contentHeight - (rows - 1) * rowGap) / rows;
+    let slotWidth = slotWidthByColumns;
+    let slotHeight = slotWidth / aspect;
+    if (slotHeight > rowHeightAvailable) {
+        slotHeight = rowHeightAvailable;
+        slotWidth = slotHeight * aspect;
+    }
+    const slots: SkuTemplateLayoutBox[] = [];
+    for (let row = 0; row < rows; row += 1) {
+        const inThisRow = Math.min(perRow, slotCount - row * perRow);
+        if (inThisRow <= 0) break;
+        const rowWidth = inThisRow * slotWidth + (inThisRow - 1) * tokens.gutter;
+        const startX = contentLeft + (contentWidth - rowWidth) / 2;
+        const totalRowsHeight = rows * slotHeight + (rows - 1) * rowGap;
+        const startY = contentTop + (contentHeight - totalRowsHeight) / 2 + row * (slotHeight + rowGap);
+        for (let column = 0; column < inThisRow; column += 1) {
+            slots.push(roundBox({
+                x: startX + column * (slotWidth + tokens.gutter),
+                y: startY,
+                width: slotWidth,
+                height: slotHeight
+            }));
+        }
+    }
+    const titleBox = roundBox({
+        x: contentLeft,
+        y: contentBottom + tokens.gutter,
+        width: contentWidth,
+        height: tokens.titleFontSize * 1.4
+    });
+    const subtitleBox = roundBox({
+        x: contentLeft,
+        y: titleBox.y + titleBox.height + Math.round(tokens.gutter * 0.5),
+        width: contentWidth,
+        height: tokens.subtitleFontSize * 1.4
+    });
+    const label = mode === 'self_select_note' ? `${size}双装自选备注` : `${size}双装`;
+    const summary = `${label}（${width}×${height}）：卡片框 (${cardFrame.x},${cardFrame.y}) ${cardFrame.width}×${cardFrame.height}；占位槽 ${slots.length} 个，每个 ${slots[0]?.width || 0}×${slots[0]?.height || 0}，首槽起点 (${slots[0]?.x || 0},${slots[0]?.y || 0})，间距 ${tokens.gutter}${rows > 1 ? '，分两行' : ''}；标题区 y ${titleBox.y}（字号 ${tokens.titleFontSize}），副标题 y ${subtitleBox.y}（字号 ${tokens.subtitleFontSize}）`;
+    return {
+        size,
+        mode,
+        slotCount,
+        canvas: { width, height },
+        tokens,
+        cardFrame,
+        slots,
+        titleBox,
+        subtitleBox,
+        summary
+    };
+}
+
 export function buildSkuTemplateDesignHandoffContract(input: {
     missingSizes?: number[];
     missingTargets?: SkuTemplateDesignTarget[];
     colorCount?: number;
     repairTargets?: SkuTemplateLayoutRepairTarget[];
+    /** 色卡源文档名（只读的颜色来源）；给出后会明说「不要在它上面建模板」。 */
+    sourceDocumentName?: string;
+    /** 色卡文档画布尺寸；模板画布默认沿用它。 */
+    sourceCanvas?: { width?: number; height?: number };
+    /** 色卡里单个色块的宽高比（宽/高），用于给占位槽合适的比例。 */
+    sourceCardAspectRatio?: number;
 }): SkuTemplateDesignHandoffContract {
     const repairTargets = Array.isArray(input.repairTargets) ? input.repairTargets : [];
     const missingTargets: SkuTemplateDesignTarget[] = [
@@ -220,11 +363,14 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         'searchProjectResources',
         'analyzeProjectContactSheetOverview',
         'searchEagleReferences',
+        'observeEagleAsset',
         'searchDesignKnowledge'
     ];
     const templateDesignToolNames = [
         'listDocuments',
         'switchDocument',
+        'openTemplate',
+        'importEagleAssetToProject',
         'getDocumentInfo',
         'getLayerHierarchy',
         'getLayerProperties',
@@ -244,13 +390,46 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         'saveDocument',
         'getAcceptanceSnapshot'
     ];
+    const sourceDocumentName = String(input.sourceDocumentName || '').trim();
+    const sourceCanvasText = input.sourceCanvas?.width && input.sourceCanvas?.height
+        ? `${input.sourceCanvas.width}×${input.sourceCanvas.height}`
+        : '';
+    // 真机 2026-08-18（run-20260818020052415）：模型把色卡文档当成模板底版，在色卡上叠了「组合 01」卡片，
+    // 又以为模板需要先把颜色图置入才算数——它并不知道「模板」在这条链里是什么。定义要写在这里，不能靠猜。
+    const templateLayoutSuggestions: SkuTemplateLayoutSuggestion[] = repairsExistingTemplate
+        ? []
+        : missingTargets
+            .map((target) => buildSkuTemplateLayoutSuggestion({
+                size: target.size,
+                mode: target.mode,
+                slotCount: target.expectedItemCount,
+                canvas: { width: Number(input.sourceCanvas?.width) || 0, height: Number(input.sourceCanvas?.height) || 0 },
+                cardAspectRatio: input.sourceCardAspectRatio
+            }))
+            .filter((item): item is SkuTemplateLayoutSuggestion => Boolean(item));
+    const templateDefinition = [
+        `模板是什么：每个规格一份**独立的新文档**（${sizesText} 各一份），画布${sourceCanvasText ? `沿用色卡文档的 ${sourceCanvasText}` : '沿用色卡文档尺寸或用户给的平台规格'}；里面只有版式骨架、占位符和固定文案 / 装饰。`,
+        '模板里不置入任何颜色图——颜色由批量生产按组合从色卡自动填进占位符；把袜子图放进模板是在做成品，不是在做模板。',
+        sourceDocumentName
+            ? `色卡文档「${sourceDocumentName}」是只读的颜色来源：不要在它上面新建任何图层、占位或文字；它里面遗留的隐藏矩形 / 旧占位不是模板，忽略。新文档不要与它同名（用规格命名，如「2双装」）。`
+            : '色卡源文档是只读的颜色来源：不要在它上面新建任何图层、占位或文字；它里面遗留的隐藏矩形 / 旧占位不是模板，忽略。新文档用规格命名（如「2双装」），不要与色卡同名。'
+    ];
     const completionChecklist = [
+        ...(repairsExistingTemplate ? [] : templateDefinition),
+        ...(repairsExistingTemplate
+            ? []
+            : ['先找现成再新建：项目「模板文件」目录里没有时，用 searchEagleReferences 搜「SKU 模板」「N双装」类目，候选用 observeEagleAsset 看一眼；「合适」分两半——确定的一半自己量：importEagleAssetToProject 导进项目模板目录 → openTemplate → skuLayout inspectTemplateLayout（expectedItemCount=双数）无 blockers 且槽位 / 区域容量与双数一致、getDocumentInfo 画布与色卡尺寸一致或可等比；判断的一半才看图：风格与项目、品牌一致。两半都过才算合适，合适的模板要以含规格的名字落到模板目录（文件名没有「N双」字样时用 saveDocument 按规格另存，如「3双装-Eagle候选」）——批量站按文件名里的规格识别模板，无规格名会被判缺模板；找不到合适的就 createDocument 从空白新建，不要拿不合适的凑数。']),
         '优先复用本轮已经取得的项目素材观察和产品事实；只有现有证据不足以确定版式时，才补充项目联系表、Eagle 参考或设计知识检索，不为走流程重复看图。',
         ...(repairsExistingTemplate
             ? ['先切换到待修模板，用 skuLayout.inspectTemplateLayout、getLayerHierarchy、getLayerBounds 和画布快照读取真实占位类型、layerId、面板顺序与 bounds；不要凭文件名或默认参数猜结构。']
             : []),
         `用通用 Photoshop 工具为 ${sizesText} 设计可编辑模板${colorText}，改动后用截图观察真实画面。`,
-        '添加占位符也是排版设计：先用截图和 getLayerBounds 读取已设计版面，再选择 ordered_slots（6.3，一色一槽，物理槽数=双数）或 region_composition（6.0，一个矩形区域可放多色，显式 regionCapacities 总和=双数）；把规划好的 slots 显式传给 createSkuPlaceholders，只有空白裸模板才允许只传 count 让工具均分。',
+        ...(templateLayoutSuggestions.length > 0
+            ? [
+                `版式起点（引擎按色卡尺寸算好的数字，三份共用同一套边距 / 间距 / 圆角 / 字号；先做完一份看效果，其余按同一规则派生，改一份就三份一起改）：${templateLayoutSuggestions.map((item) => item.summary).join('｜')}。占位槽坐标可直接作为 createSkuPlaceholders 的 slots（placementMethod=ordered_slots）。`
+            ]
+            : ['三份模板共用同一套边距 / 间距 / 圆角 / 字号：先做完一份看效果，其余按同一规则派生，不要各画各的。']),
+        '添加占位符也是排版设计：先用截图和 getLayerBounds 读取已设计版面，再选择 ordered_slots（6.3，一色一槽，物理槽数=双数）或 region_composition（6.0，一个矩形区域可放多色，必须显式传 regionCapacities：数组、每项正整数、总和=双数）；把规划好的 slots 显式传给 createSkuPlaceholders，只有空白裸模板才允许只传 count 让工具均分。',
         '用 skuLayout 的 inspectTemplateLayout 读取 layerId/type/panelIndex/bounds 并形成 TemplateLayoutPlan；调整现有占位时用 transformLayer 修改目标 layerId 后重新 inspect，不要新建第二套占位。',
         '用 saveDocument 把模板另存为项目「模板文件」目录中的新文件，必须显式提供 path 和 conflictPolicy=fail_if_exists；命名用规格本身、与用户既有模板同风格（组合模板如「3双装-DesignEcho候选」，自选备注模板如「3双装自选备注-DesignEcho候选」），绝不覆盖作为参考读取的源模板。',
         '模板齐备后再回到 sku-batch 继续组合规划；候选组合生成后先显示组合确认卡，用户确认后再批量出图。只有用户明确要求跳过组合确认，或项目已经提供受信的权威组合时才可直接继续。由资源扫描和模板结构读回确认模板已经存在，不要用裸布尔参数跳过验证。'
@@ -260,7 +439,7 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         .join('\n');
     const opening = repairsExistingTemplate
         ? `当前 ${sizesText} 模板的占位结构需要修复：完整 SKU 任务已进入自主修复阶段，由 Agent 读取真实 layerId / bounds 后调整或重建可编辑占位，不把结构问题变成用户确认。`
-        : `当前项目缺少 ${missingTargetSummary || sizesText} 的排版模板：完整 SKU 任务已进入自主补齐阶段，由 Agent 根据现有产品素材直接设计，不使用通用占位脚本代替设计稿。`;
+        : `当前项目缺少 ${missingTargetSummary || sizesText} 的排版模板：完整 SKU 任务已进入自主补齐阶段，由 Agent 先找现成的合适模板、找不到再新建独立模板文档，不使用通用占位脚本代替设计稿。`;
     const message = [
         opening,
         ...(repairSummary ? [`待修问题：\n${repairSummary}`] : []),
@@ -270,7 +449,8 @@ export function buildSkuTemplateDesignHandoffContract(input: {
     const agentWorkDetails = [
         repairsExistingTemplate
             ? `需要修复：${repairSummary || `${sizesText} 模板的占位结构`}`
-            : `需要设计：${missingTargetSummary || sizesText} 的可编辑模板${colorText}`,
+            : `需要设计：${missingTargetSummary || sizesText} 的可编辑模板${colorText}——每个规格一份独立新文档，只放版式与占位符，不置入颜色图${sourceDocumentName ? `；色卡「${sourceDocumentName}」只读，不在它上面建` : '；色卡文档只读，不在它上面建'}。`,
+        ...(repairsExistingTemplate ? [] : ['先找现成：项目模板目录 → Eagle「SKU 模板」类目（规格、尺寸、占位数、风格都合适才用，importEagleAssetToProject 导入后 openTemplate）→ 都没有再 createDocument 新建。']),
         '先看当前模板或项目素材，再决定版式；占位符数量、位置和阅读顺序要与实际规格一致，不能重叠、越界或压住文案。',
         '保留色卡、文字和占位结构的可编辑性；完成一版后查看整体画面并调整间距、比例和视觉重心。',
         '保存为项目模板目录中的新版本，不覆盖作为参考的源文件。',
@@ -284,6 +464,7 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         requiredReferenceObservationTools,
         templateDesignToolNames,
         completionChecklist,
+        templateLayoutSuggestions,
         agentReActContinuation: {
             status: 'needs_repair',
             summary: repairsExistingTemplate

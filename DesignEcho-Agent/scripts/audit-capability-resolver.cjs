@@ -54,11 +54,13 @@ const files = {
   executor: 'src/renderer/services/skill-executors/autonomous-agent.executor.ts',
   engine: 'src/renderer/services/design-agent/engine.ts',
   agent: 'src/renderer/services/agent-runtime/agent.ts',
+  taskPlanning: 'src/shared/agent-task-planning-contract.ts',
   performanceLedger: 'src/renderer/services/agent-runtime/performance-ledger.ts',
   agentTypes: 'src/renderer/services/agent-runtime/types.ts',
   toolExecutor: 'src/renderer/services/tool-executor.service.ts',
   skillTools: 'src/renderer/services/skill-executors/skill-tools.ts',
   skillExecutorTypes: 'src/renderer/services/skill-executors/types.ts',
+  skillDeclarations: 'src/shared/skills/skill-declarations.ts',
   skuExecutor: 'src/renderer/services/skill-executors/sku-batch.executor.ts',
   decisionContract: 'src/shared/agent-tool-decision-contract.ts',
   preflight: 'src/shared/agent-tool-execution-preflight.ts',
@@ -83,6 +85,7 @@ const files = {
   runResume: 'src/shared/agent-run-resume.ts',
   generalManifest: 'src/shared/agent-runtime-v5/manifests/general-design.manifest.ts',
   toolCapabilityBridge: 'src/shared/agent-runtime-v5/tool-capability-bridge.ts',
+  photoshopToolSkill: 'src/shared/photoshop-tool-skill.ts',
   uxpRenameLayer: '../DesignEcho-UXP/src/tools/layout/rename-layer.ts',
   uxpGroupLayersSafely: '../DesignEcho-UXP/src/tools/layout/group-layers-safely.ts',
   uxpMoveLayer: '../DesignEcho-UXP/src/tools/layout/move-layer.ts',
@@ -115,6 +118,11 @@ requireToken('resolver', 'MAX_ON_DEMAND_CAPABILITY_REQUESTS', 'On-demand expansi
 requireToken('resolver', 'initialCapabilityIds', 'Resolver must accept a work-mode-owned minimal initial Capability seed.');
 requireToken('resolver', 'capabilityCeilingIds', 'Resolver must support a work-mode-owned Capability allow ceiling.');
 requireToken('resolver', 'isWithinCapabilityCeiling', 'Manifest seeds and on-demand discovery must share the same ceiling membership check.');
+requireToken('resolver', 'HARNESS_ENVIRONMENT_RECOVERY_CAPABILITY_IDS', 'Readonly environment recovery must have one explicit Harness-owned capability set.');
+requireToken('resolver', "'photoshop.read.capturePhotoshopWindow'", 'Photoshop window observation must remain reachable after a native-modal suspicion.');
+requireToken('session', 'HARNESS_ENVIRONMENT_RECOVERY_CAPABILITY_IDS', 'Capability Session must consume the explicit environment recovery set.');
+requireToken('session', 'environmentRecoveryCapabilityIds', 'Structured environment recovery must remain separate from business and model-requested capabilities.');
+requireToken('executor', 'readAgentEnvironmentRecoveryToolNames', 'Structured native-modal results must reveal the readonly window observation only for continuation.');
 requireToken('resolver', 'manifestOwnedDeniedCapabilityIds', 'Bound Manifest must deny non-owner Skill bridges across initial, on-demand and expansion.');
 requireToken('resolver', 'manifestWorkflowEntryCapabilityIds', 'Only explicit workflow entries may become executable Skill capabilities after Manifest binding.');
 forbidPattern('resolver', /legacy_skill_ids/, 'Legacy Manifest aliases must not enter the executable Capability set.');
@@ -148,8 +156,25 @@ requireToken('executor', 'listSkillManifests().flatMap(', 'The pre-Manifest deny
 requireToken('executor', 'manifest.workflow_entry_skill_ids', 'Workflow entries must remain unavailable until their owning Manifest is selected.');
 requireToken('executor', 'manifestRequiredCapabilityIds,', 'The complete pre-Manifest owner deny set must be passed into the Capability Session.');
 requireToken('session', 'manifestRequiredCapabilityIds?: readonly string[];', 'Capability Session must represent the pre-Manifest owner boundary explicitly.');
+requireToken('session', 'manifestRequiredProviderToolNames?: readonly string[];', 'Capability Session must represent pre-Manifest internal Tool ownership explicitly.');
+requireToken('session', 'manifestRequiredProviderCapabilityIds', 'Internal Tool ownership must close over real Capability inventory entries.');
 requireToken('session', 'initialDeniedCapabilityIds', 'Pre-Manifest owner capabilities must be denied without becoming a permanent provider deny.');
 requireToken('session', 'deniedCapabilityIds: baseDeniedCapabilityIds', 'Binding a Manifest must remove only the temporary owner-selection deny.');
+requireToken('skillDeclarations', 'internalTools', 'Internal Tool ownership must be declared by Skill packages.');
+requireToken('skillDeclarations', 'interactionOwner', 'Domain interaction ownership must be declared by Skill packages.');
+requireToken('executor', 'manifestRequiredProviderToolNames: areSkillBridgesForbidden(params)', 'Executor must preserve the explicit no-Skill atomic Tool path.');
+requireToken('executor', ': getSkillInternalToolNames()', 'Default broad discovery must derive internal Tool isolation from declarations.');
+requireToken('executor', "code: 'skill_provider_interaction_owner_required'", 'Generic interaction cards must not impersonate a declared Skill Provider.');
+requireToken('executor', "'skill_free_internal_tool_not_loaded'", 'Explicit no-Skill mode must load internal atomic Tools through the normal Capability path.');
+const internalOwnershipBoundaryStart = source.executor.indexOf('const internalToolOwnerIds = getSkillInternalToolOwnerIds(toolName);');
+const internalOwnershipBoundaryEnd = source.executor.indexOf('// 安全是全局最外层', internalOwnershipBoundaryStart);
+const internalOwnershipBoundary = internalOwnershipBoundaryStart >= 0
+  && internalOwnershipBoundaryEnd > internalOwnershipBoundaryStart
+  ? source.executor.slice(internalOwnershipBoundaryStart, internalOwnershipBoundaryEnd)
+  : '';
+if (/SKU|详情页|主图|sku-batch|detail-page-design|main-image-design/i.test(internalOwnershipBoundary)) {
+  violations.push('Internal Tool and interaction ownership enforcement contains a business-specific branch.');
+}
 const recommendedFastPathStart = source.executor.indexOf('const useRecommendedSkillFastPath = Boolean(');
 const recommendedFastPathEnd = source.executor.indexOf('return {', recommendedFastPathStart);
 const recommendedFastPath = recommendedFastPathStart >= 0 && recommendedFastPathEnd > recommendedFastPathStart
@@ -162,7 +187,8 @@ if (!recommendedFastPath.includes('!runtimeContractBundle')
 if (/SKU|详情页|主图|sku-batch|detail-page-design|main-image-design/i.test(recommendedFastPath)) {
   violations.push('Recommendation fast path contains a business-specific branch or label.');
 }
-requireToken('session', '还可按需加入的能力：', 'Non-prefetched Skills must remain discoverable through a compact on-demand id catalog.');
+requireToken('session', 'SEARCH_AGENT_CAPABILITIES_TOOL_NAME', 'Non-prefetched capabilities must remain discoverable through an on-demand search Tool.');
+forbidPattern('session', /capabilityItemSchema\.enum\s*=|MAX_ON_DEMAND_CATALOG_TOOL_LINES/, 'Capability discovery must not duplicate the full id catalog into every prompt and request schema.');
 requireToken('agent', 'this.carryPlanNeutralObservationIntoBoundRuntime();', 'Late Runtime binding must carry the same-run opening observation instead of forcing a duplicate read.');
 requireToken('agent', 'emitDeterministicPreActionDisclosureBeforeFirstToolResult', 'Pure first-turn Tool calls must use a deterministic Harness progress disclosure.');
 forbidPattern('agent', /requestInitialVisibleReasoningIfNeeded/, 'Pure first-turn Tool calls must not trigger an auxiliary model request for progress prose.');
@@ -183,25 +209,15 @@ if (!deterministicDisclosure.includes('this.currentTask')
 if (/SKU|详情页|主图|sku-batch|detail-page-design|main-image-design/i.test(deterministicDisclosure)) {
   violations.push('Deterministic pre-action disclosure contains a business-specific branch or label.');
 }
-const requiredControlNoCallIndex = source.agent.indexOf('this.handleRequiredToolNoCallConstraint(response)');
 const genericNoToolCompletionIndex = source.agent.indexOf('const unfinishedTurnContinues = this.applyUnfinishedTurnContinuation({');
-if (requiredControlNoCallIndex < 0
-  || genericNoToolCompletionIndex < 0
-  || requiredControlNoCallIndex > genericNoToolCompletionIndex) {
-  violations.push('Required workflow recovery must run before generic no-Tool completion handling.');
+if (genericNoToolCompletionIndex < 0) {
+  violations.push('No-Tool turns must still pass through the generic unfinished/completion truth checks.');
 }
-const requiredControlHandlerStart = source.agent.indexOf('private handleRequiredToolNoCallConstraint(');
-const requiredControlHandlerEnd = source.agent.indexOf('private recoverTextEncodedToolCalls(', requiredControlHandlerStart);
-const requiredControlHandler = requiredControlHandlerStart >= 0 && requiredControlHandlerEnd > requiredControlHandlerStart
-  ? source.agent.slice(requiredControlHandlerStart, requiredControlHandlerEnd)
-  : '';
-if (!requiredControlHandler.includes("source: 'required_tool_no_call'")
-  || requiredControlHandler.includes("obligationClass: 'control' as const")) {
-  violations.push('Required workflow recovery must stay bounded without reintroducing a recommendation-derived control obligation.');
-}
-if (/response\.toolCalls\s*=|String\(response\.content/.test(requiredControlHandler)) {
-  violations.push('Required workflow recovery must not fabricate Tool calls or infer obligations from model response text.');
-}
+forbidPattern(
+  'agent',
+  /AgentRecoveryQueue|queueRecovery\(|getActiveRecoveryToolNames|handleRequiredToolNoCallConstraint|required_tool_no_call/,
+  'Harness must not recreate a next-turn Tool allowlist or required-Tool no-call planner; unfinished work stays a fact handled by generic completion truth.'
+);
 requireToken('resolver', "version: 'runtime-capability-reference-resolution/v0'", 'Resolver must emit the six-kind provider-backed reference contract.');
 requireToken(
   'resolver',
@@ -399,11 +415,12 @@ requireToken('skillRuntimeRegistry', 'manifestByLegacySkillId', 'Manifest-owned 
 
 requireToken('session', 'activeTools.splice', 'Capability Session must update the existing Agent tool array in place.');
 requireToken('session', 'REQUEST_AGENT_CAPABILITIES_TOOL_NAME', 'Capability Session must expose compact on-demand discovery.');
+requireToken('session', 'searchCapabilities(query: string', 'Capability Session must expose searchable just-in-time capability discovery.');
 requireToken('session', 'maxItems: MAX_ON_DEMAND_CAPABILITY_REQUESTS', 'Capability request schema must expose the same batch budget.');
 requireToken('session', 'getActiveCapabilityIdsForTool', 'Plan execution reconciliation must reuse the live Capability Session inventory.');
 requireToken('session', 'selectedCapabilityIds.has(entry.capabilityId)', 'Tool attribution must be limited to currently active Capability ids.');
 requireToken('session', '当前工具列表就是现在可以直接使用的动作', 'Capability Prompt must tell the Agent to act with the currently visible tools.');
-requireToken('session', '只有下一步确实缺少动作时', 'Capability Prompt must keep on-demand discovery bounded to the next concrete action.');
+requireToken('session', '缺少下一步动作时', 'Capability Prompt must keep on-demand discovery bounded to the next concrete action.');
 requireToken('session', '不要用随机调用试探能力', 'Capability Prompt must prohibit Tool probing as capability discovery.');
 requireToken('session', 'getResolution(): AgentCapabilityResolution', 'Structured capability resolution must remain available to Runtime and audits outside the model prompt.');
 forbidPattern(
@@ -411,7 +428,7 @@ forbidPattern(
   /Capability self-model:|Provider-backed refs:|Unavailable refs:|Explicitly denied capabilities:|Manifest:/,
   'Internal capability accounting must stay in Runtime state instead of the designer model prompt.'
 );
-requireToken('session', "'photoshop.write.removeBackground'", 'A design-execution session must know background removal as a generic Photoshop craft capability without requiring a business Skill.');
+requireToken('photoshopToolSkill', "'removeBackground'", 'Background removal must remain a discoverable generic Photoshop craft capability without requiring a business Skill.');
 forbidPattern('agent', /applyPromisedToolNoCallRecoveryDirective|buildPromisedToolNoCallRecovery|resolvePromisedToolNameFromText/, 'Task continuation must not infer executable Tool ownership from assistant prose.');
 requireToken('agent', 'R3 契约已经把 blocking 定义为「只能由用户提供」', 'R3 blocking inputs must remain user-owned instead of reopening project/reference search.');
 requireToken('executor', 'buildDynamicDesignTaskOperatingContext', 'The autonomous executor must project the declared Task Profile as live operating context.');
@@ -507,6 +524,10 @@ requireToken('executor', 'toolCapabilityBridge: runtimeContractBundle.toolCapabi
 requireToken('executor', 'getCapabilityResolution: () => capabilitySession.getResolution()', 'R4 planning must validate against the live Capability Session instead of a copied registry.');
 requireToken('executor', 'capabilitySession.getActiveCapabilityIdsForTool(toolName)', 'Production Agent reconciliation must consume the same Capability Session mapping.');
 requireToken('executor', 'capabilitySession.requestCapabilities', 'Tool wrapper must route on-demand requests into the same session.');
+requireToken('executor', 'capabilitySession.searchCapabilities', 'Tool wrapper must route read-only Capability directory searches into the same session.');
+requireToken('session', 'SEARCH_AGENT_CAPABILITIES_TOOL_NAME', 'Capability Session must expose a read-only directory search Tool.');
+requireToken('session', 'searchCapabilities(query: string, limit?: number)', 'Capability search must be a first-class read-only Session operation.');
+forbidPattern('session', /enum:\s*resolution\.onDemandCapabilityIds|onDemandCapabilityIds\.slice\(0,\s*40\)/, 'The initial prompt/schema must not embed the complete on-demand Capability catalog.');
 requireToken('executor', 'executesPhotoshop: false', 'Capability request result must declare that it does not execute Photoshop.');
 requireToken('executor', 'grantsPermission: false', 'Capability request result must not claim execution permission.');
 requireToken('executor', 'countsAsObservation: false', 'Capability loading must not count as task observation.');
@@ -649,6 +670,8 @@ requireToken('realProviderRunner', "process.argv.includes('--no-redo-probe')", '
 requireToken('realProviderRunner', 'tools: [runtime.tool]', 'The no-redo provider must see only the production R4 declaration schema.');
 requireToken('realProviderRunner', 'validateRuntimeActionPlanDeclaration', 'Provider R4 output must pass the production validator in memory.');
 requireToken('realProviderRunner', 'evaluateAgentNoRedoProviderProbe', 'Provider mapping output must pass the deterministic no-redo evaluator.');
+requireToken('realProviderRunner', 'searchAgentCapabilities exactly once', 'The live Capability probe must exercise directory search before exact-id loading.');
+requireToken('realProviderRunner', 'capabilitySession.searchCapabilities', 'The live Capability probe must execute only the in-memory read-only search owner.');
 requireToken('realProviderRunner', 'DESIGNECHO_REAL_PROVIDER_AGENT_ACCEPTANCE_ALLOW_API', 'No-redo provider calls must retain the existing double opt-in boundary.');
 forbidPattern('realProviderRunner', /executeToolCall\(/, 'The focused real-provider runner must not execute returned Tools.');
 requireToken('runRecord', 'buildRuntimeResumeContextAnchor', 'Run records must persist a digest-only final Context Anchor.');
@@ -742,10 +765,18 @@ forbidPattern('planningContext', /taskText|详情页|主图|SKU|sku-batch|detail
 forbidPattern('planningContext', /executeTool\(|callModel\(/, 'Planning-context carry must not execute Tools or call models.');
 forbidPattern('agent', /import\s*\{[\s\S]{0,260}buildDeclareRuntimeActionPlanToolSchema[\s\S]{0,260}from\s+['"][^'"]*runtime-action-plan-declaration/, 'Agent must not statically pull the heavy R4 declaration module into the initial renderer chunk.');
 forbidPattern('agent', /source:\s*'model_tool_plan'/, 'Ordinary Tool calls must not masquerade as a structured R4 plan record.');
-requireToken('agent', 'isAgentCapabilityControlTool', 'Per-iteration capability budget must remain specific to capability requests.');
+requireToken('agent', 'isAgentCapabilityLoadTool', 'Per-iteration capability budget must apply only to schema-changing capability load requests.');
+requireToken('agent', "this.config.openingCanvasObservationMode || 'none'", 'Agent must fail closed to no opening Photoshop observation unless a structured caller explicitly opts in.');
 requireToken('agent', '!this.hasTaskProgressToolCalls()', 'Capability loading alone must not satisfy the first real task action.');
 requireToken('agent', "if (!this.hasTaskProgressToolCalls()) return 'R0';", 'Reflexion routing must treat control-only runs as no real task progress.');
-requireToken('agent', 'capabilityControlCallExecutedThisIteration', 'Agent must enforce one capability-control call per model iteration.');
+requireToken('session', 'export function isAgentCapabilityLoadTool', 'Capability Session must distinguish schema-changing loads from read-only directory searches.');
+requireToken('agent', 'capabilityLoadCallExecutedThisIteration', 'Agent must enforce one schema-changing capability load per model iteration.');
+forbidPattern('agent', /output === undefined\s*&&\s*isAgentCapabilityControlTool\(call\.name\)[\s\S]{0,420}capability_request_round_budget_exceeded/, 'Read-only Capability search must not consume the schema-load round budget.');
+requireToken('executor', "openingCanvasObservationMode: 'none'", 'The generic autonomous Agent must leave opening Photoshop observation to the model.');
+forbidPattern('executor', /openingCanvasObservationMode:\s*'document_identity'/, 'The generic autonomous Agent must not force every natural-language request to read the active Photoshop document.');
+requireToken('taskPlanning', "step('review-available-context', 'plan', 'reviewAvailableContext', 'none'", 'Generic planning must review already-available context without manufacturing a mandatory observation step.');
+requireToken('taskPlanning', '由 Agent 工具循环决定是否需要补充观察以及具体工具调用，不强制先检查当前画面。', 'Generic execution planning must leave additional observation decisions to the Agent.');
+forbidPattern('taskPlanning', /inspect-tool-context|collectToolContext/, 'Generic planning must not restore a fixed opening Photoshop inspection step.');
 requireToken('decisionContract', "intentScope === 'knowledge_search'", 'Knowledge-search tasks must be able to request additional capabilities.');
 requireToken('generalManifest', "task_type: 'design.generic.v1'", 'Generic design manifest must be selected by structured task type.');
 forbidPattern('generalManifest', /matchSignals|taskText|\.test\(/, 'Generic manifest must not contain task-text matching logic.');
@@ -782,6 +813,7 @@ const report = {
     'in-loop design intent declaration atomically binds the same TaskRun generation, Runtime bundle, stage context, Capability Session, Evaluation, budget and Artifact finalizer',
     'bounded required-workflow recovery cannot be recreated from advisory Skill recommendations or model prose',
     'capability loading is not execution permission, an observation, or task progress',
+    'generic planning reviews available context without forcing an opening Photoshop observation',
     'already-active Capability requests remain successful idempotent no-ops but stop after a bounded no-progress loop',
     'when an optional Runtime Profile is active, its R1 Design Brief remains model-authored and manifest-bound before governed state changes',
     'R3 strategy is model-authored, context-grounded Harness control rather than a Tool capability',

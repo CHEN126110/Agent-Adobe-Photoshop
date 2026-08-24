@@ -93,9 +93,14 @@ const PROJECT_READ_TOOLS = new Set([
 ]);
 
 const ASSISTED_READ_TOOLS = new Set([
+    'capturePhotoshopWindow',
     'resolveFontName',
     'describeImage',
-    'getDesignProjectState'
+    'getDesignProjectState',
+    'getDesignTaskCard',
+    // 独立评审器 / 看参考：只读画面 + 视觉模型，不写 Photoshop
+    'evaluateDesign',
+    'studyReference'
 ]);
 
 const STATEFUL_CONTEXT_TOOLS = new Set([
@@ -110,6 +115,17 @@ const STATEFUL_CONTEXT_TOOLS = new Set([
     'selectLayer',
     'focusLayer',
     'updateDesignProjectState',
+    // 设计任务卡（会话内计划与完成契约，非 Photoshop 写入）；与 execution-preflight 同步
+    'planDesignTaskCard',
+    'updateDesignTaskCard',
+    // 让用户帮我选（列选项、可能暂停本轮）；非 Photoshop 写入
+    'askUserToChoose',
+    // 学习候选区（写项目 .designecho，非 Photoshop 写入）
+    'recordDesignVerdict',
+    'getDesignLearningTimeline',
+    'learnTasteFromEagle',
+    // 设计知识笔记写入（写本地笔记库 Markdown，非 Photoshop 写入）；与 execution-preflight 同步
+    'writeDesignNote',
     // Eagle 素材复制进项目（P3）：写项目目录（非 Photoshop 写入），需串行；与 execution-preflight 同步
     'importEagleAssetToProject',
     'delegateToAgent',
@@ -179,6 +195,7 @@ const PHOTOSHOP_WRITE_TOOLS = new Set([
     'createEllipse',
     'createTextLayer',
     'renderLayout',
+    'composeDesign',
     'placeImage',
     'replaceLayerContent',
     'fixLayerIssues',
@@ -235,6 +252,10 @@ const KNOWLEDGE_SEARCH_TOOLS = new Set([
     'searchEagleReferences',
     'webSearch',
     'searchDesignKnowledge',
+    'readSkillPlaybook',
+    // 设计知识笔记只读工具（与 agent-tool-execution-preflight.ts 的 KNOWLEDGE_SEARCH_TOOLS 保持同步，audit:tools 校验）
+    'searchDesignNotes',
+    'readDesignNote',
     // 浏览器扩展只读工具（读用户真实浏览器的标签页与页面内容；外部内容、可并行、不依赖 Photoshop）
     'listBrowserTabs',
     'readBrowserPage'
@@ -247,6 +268,7 @@ const EXTERNAL_GENERATION_TOOLS = new Set([
 
 const USER_INTENT_BOUNDARY_OVERRIDES: Record<string, string> = {
     createInteractiveCard: '在用户需要确认或编辑结构化选择时创建聊天确认卡片；不读取、不修改 Photoshop 文档。',
+    capturePhotoshopWindow: '只在工具明确报告 Photoshop 原生弹窗可能阻塞，或用户明确要求查看应用窗口时读取完整窗口；截图供 Agent 判断，不自动关闭弹窗、不修改文档。',
     getDocumentInfo: '只读取当前 Photoshop 文档状态，用于理解上下文或执行前检查，不修改画面。',
     getAnnotatedSnapshot: '只读取当前画面的标注截图和元素映射，用于空间判断、遮挡检查和执行后复核。',
     getClippingMaskInfo: '只读取指定图层的剪切蒙版关系，用于判断图片是否被约束在目标区域。',
@@ -280,6 +302,10 @@ const USER_INTENT_BOUNDARY_OVERRIDES: Record<string, string> = {
     webSearch: '通用联网搜索（只读外部公开信息）：本地知识库、项目事实、Eagle 参考或用户给的链接已能回答时不要搜；结果必须标注来源 URL，商品/品牌/价格等事实仍需以有来源且已确认的信息为准，不是已核实事实。',
     fetchWebPageDesignContent: '用无头浏览器抓取公开网页的设计内容（标题/正文/图片元数据），不带登录态、图片不进视觉理解；需要登录态、页面交互或真实看到图片时改用浏览器扩展工具（readBrowserPage/captureBrowserTab 等）。',
     searchDesignKnowledge: '检索设计方法与参考（本地知识库为主，可选联网聚合）；知识只作方法参考，不授予权限、不推进阶段、不冒充完成。',
+    readSkillPlaybook: '读取业务 Skill 工作法手册（SKILL.md + references，渐进披露）；只读知识，不授予权限、不执行动作。',
+    searchDesignNotes: '检索用户与 Agent 共写的设计知识笔记（本地 Markdown 笔记库，只读）；涉及用户偏好、既定做法或历史经验时优先查它，空 query 可浏览最近笔记。',
+    readDesignNote: '读取一条设计笔记的完整 Markdown 正文与反向链接；id 来自 searchDesignNotes，正文里的 [[链接]] 指向其他笔记。',
+    writeDesignNote: '把可跨任务复用的设计结论写进共享笔记库（用户可见可编辑）；更新已有笔记默认追加不覆盖原文，重写须显式 mode=replace；临时任务状态用 updateDesignProjectState，不写进笔记。',
     searchEagleReferences: '检索用户 Eagle 素材库的创意参考候选（只读元数据）；真要看某条参考的视觉内容，用 analyzeEagleReference 拿它的视觉观察。',
     cropDocument: '把当前文档画布裁切到明确像素矩形（破坏性，矩形外内容被移除）；裁切前先读文档尺寸，裁切后截图复核构图。',
     resizeCanvas: '按锚点修改画布大小（放大留白、缩小裁边，不动像素缩放）；整图缩放用 resizeImage。',
@@ -296,7 +322,7 @@ const USER_INTENT_BOUNDARY_OVERRIDES: Record<string, string> = {
     createRectangle: '按明确几何参数创建矩形形状图层；用于色块/底板等确定形状，不是布局推断工具。',
     createEllipse: '按明确几何参数创建椭圆形状图层；只在确定需要椭圆形状时使用。',
     quickExport: '按明确输出配置快速导出当前文档；导出后读回文件存在与尺寸。',
-    smartSave: '智能保存当前文档；只有用户要求保存/交付时使用，保存后读回确认。',
+    smartSave: '建立项目内部恢复点；它不证明最终交付，正式文件仍使用 saveDocument 或导出能力。',
     deleteLayer: '删除明确图层（不可逆）；删除前必须确认目标 layerId 来源可靠，删除后读回确认该图层已移除。',
     setLayerOpacity: '修改明确图层的透明度；基于设计意图微调，改后读回确认。',
     setBlendMode: '修改明确图层的混合模式；基于已读取的图层关系选择模式，改后读回确认。',
@@ -313,6 +339,7 @@ const USER_INTENT_BOUNDARY_OVERRIDES: Record<string, string> = {
     transformLayer: '对明确图层做几何变换；基于已读取的当前几何执行，变换后读回确认。',
     quickScale: '按比例缩放明确图层；基于目标尺寸执行，缩放后读回确认。',
     renderLayout: '按模型声明的布局规格渲染版面；只声明角色/比例/对齐，坐标由引擎计算，渲染后按建议观察读回。',
+    composeDesign: '一次成稿车间：开放创意由 Agent 声明构图、视觉样式与语义图层组，车间只执行制作工序、坐标换算、安全校验和写后读回；固定配方仅用于明确的重复生产。',
     clearLayerEffects: '清除明确图层的全部图层样式；清除后读回确认效果已移除。',
     delegateToAgent: '把单个聚焦子任务派给只读队友（scene-analyst/design-strategist/critic）分析或评审；不用于绕过主循环执行写入或消耗无谓预算。',
     runDesignTeamPipeline: '运行完整设计团队流水线（分析→策略→执行→评审→修订）；只用于明确需要多角色协作的完整创意任务，重复启动有预算代价。',
@@ -323,6 +350,10 @@ const DO_NOT_USE_OVERRIDES: Record<string, string[]> = {
     createInteractiveCard: [
         '不要把创建确认卡片当成 Photoshop 已执行。',
         '不要在模型可以直接继续读取或执行时用卡片拖慢流程。'
+    ],
+    capturePhotoshopWindow: [
+        '不要把它当成创意任务固定开场，也不要用它替代画布快照。',
+        '不要根据截图自动点击、关闭或确认 Photoshop 原生弹窗。'
     ],
     getAnnotatedSnapshot: [
         '不要把截图读取当成写入操作。',
@@ -494,6 +525,7 @@ const DO_NOT_USE_OVERRIDES: Record<string, string[]> = {
 
 const VERIFY_OVERRIDES: Record<string, string[]> = {
     createInteractiveCard: ['用户提交的 card payload', '后续执行参数'],
+    capturePhotoshopWindow: ['完整 Photoshop 应用窗口图像', 'Agent 对真实堵塞状态的后续判断'],
     getAnnotatedSnapshot: ['标注截图', '元素表 layerId/bounds 映射'],
     getClippingMaskInfo: ['剪切基底与被剪切图层关系'],
     getAllClippingMasks: ['文档级剪切蒙版清单'],
@@ -688,7 +720,9 @@ function resolveSideEffect(
     if (capabilityKind === 'save_export') return 'file_export';
     if (capabilityKind === 'photoshop_write') return 'photoshop_write';
     if (capabilityKind === 'stateful_context') {
-        return toolName === 'updateDesignProjectState' || toolName === 'importEagleAssetToProject'
+        return toolName === 'updateDesignProjectState'
+            || toolName === 'importEagleAssetToProject'
+            || toolName === 'writeDesignNote'
             ? 'state_write'
             : 'photoshop_state';
     }
@@ -703,6 +737,8 @@ function requiresPhotoshopConnection(
 ): boolean {
     if (toolName === 'createInteractiveCard') return false;
     if (toolName === 'updateDesignProjectState' || toolName === 'getDesignProjectState') return false;
+    // 设计知识笔记写本地笔记库，不依赖 Photoshop 连接
+    if (toolName === 'writeDesignNote') return false;
     if (PROJECT_READ_TOOLS.has(toolName)) return false;
     if (KNOWLEDGE_SEARCH_TOOLS.has(toolName) || EXTERNAL_GENERATION_TOOLS.has(toolName)) return false;
     if (BROWSER_EXTENSION_TOOLS.has(toolName)) return false;
@@ -716,6 +752,8 @@ function requiresOpenDocument(
 ): boolean {
     if (toolName === 'createInteractiveCard') return false;
     if (['createDocument', 'listDocuments', 'openProjectFile', 'closeDocument'].includes(toolName)) return false;
+    // 设计知识笔记写本地笔记库，不要求打开 Photoshop 文档
+    if (toolName === 'writeDesignNote') return false;
     if (PROJECT_READ_TOOLS.has(toolName)) return false;
     if (ASSISTED_READ_TOOLS.has(toolName)) return false;
     if (KNOWLEDGE_SEARCH_TOOLS.has(toolName) || EXTERNAL_GENERATION_TOOLS.has(toolName)) return false;

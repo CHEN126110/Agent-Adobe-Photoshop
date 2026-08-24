@@ -15,6 +15,15 @@ interface ContextManagerConfig {
     keepRecentRounds: number;
 }
 
+export interface ContextBudgetAssessment {
+    estimatedMessageTokens: number;
+    reservedTokens: number;
+    contextTokenCeiling: number;
+    totalEstimatedInputTokens: number;
+    fits: boolean;
+    overByTokens: number;
+}
+
 interface MessageUnit {
     messages: AgentMessage[];
     protected: boolean;
@@ -239,10 +248,12 @@ export class ContextManager {
      * 3. 先结构化压缩旧 Tool result，再按完整单元删除最旧历史。
      * 4. 最近单元最后压缩；绝不以固定“三条消息”等价一轮。
      */
-    trim(messages: AgentMessage[]): AgentMessage[] {
+    trim(messages: AgentMessage[], reservedTokens: number = 0): AgentMessage[] {
+        const reserved = Math.max(0, Math.ceil(Number(reservedTokens) || 0));
+        const messageTokenBudget = Math.max(0, this.config.maxTokens - reserved);
         const protocolSafe = preserveToolCallProtocol(messages);
         let units = removeSupersededEphemeralMessages(buildMessageUnits(protocolSafe));
-        if (estimateMessages(flattenUnits(units)) <= this.config.maxTokens) {
+        if (estimateMessages(flattenUnits(units)) <= messageTokenBudget) {
             return flattenUnits(units);
         }
 
@@ -256,26 +267,26 @@ export class ContextManager {
         units = units.map((unit) => unit.recent || unit.protected
             ? unit
             : { ...unit, messages: unit.messages.map(compressToolResultMessage) });
-        if (estimateMessages(flattenUnits(units)) <= this.config.maxTokens) {
+        if (estimateMessages(flattenUnits(units)) <= messageTokenBudget) {
             return flattenUnits(units);
         }
 
         for (let index = 0; index < units.length; index += 1) {
-            if (estimateMessages(flattenUnits(units)) <= this.config.maxTokens) break;
+            if (estimateMessages(flattenUnits(units)) <= messageTokenBudget) break;
             const unit = units[index];
             if (unit.protected || unit.recent) continue;
             units.splice(index, 1);
             index -= 1;
         }
 
-        if (estimateMessages(flattenUnits(units)) > this.config.maxTokens) {
+        if (estimateMessages(flattenUnits(units)) > messageTokenBudget) {
             units = units.map((unit) => unit.protected
                 ? unit
                 : { ...unit, messages: unit.messages.map(compressToolResultMessage) });
         }
 
         for (let index = 0; index < units.length; index += 1) {
-            if (estimateMessages(flattenUnits(units)) <= this.config.maxTokens) break;
+            if (estimateMessages(flattenUnits(units)) <= messageTokenBudget) break;
             if (units[index].protected) continue;
             units.splice(index, 1);
             index -= 1;
@@ -286,5 +297,35 @@ export class ContextManager {
 
     estimateTotal(messages: AgentMessage[]): number {
         return estimateMessages(messages);
+    }
+
+    assess(messages: AgentMessage[], reservedTokens: number = 0): ContextBudgetAssessment {
+        const estimatedMessageTokens = estimateMessages(messages);
+        const reserved = Math.max(0, Math.ceil(Number(reservedTokens) || 0));
+        const totalEstimatedInputTokens = estimatedMessageTokens + reserved;
+        const overByTokens = Math.max(0, totalEstimatedInputTokens - this.config.maxTokens);
+        return {
+            estimatedMessageTokens,
+            reservedTokens: reserved,
+            contextTokenCeiling: this.config.maxTokens,
+            totalEstimatedInputTokens,
+            fits: overByTokens === 0,
+            overByTokens
+        };
+    }
+
+    /**
+     * Provider 调用前的唯一容量闸：先按完整消息单元压缩，再验证受保护内容与预留是否仍可容纳。
+     */
+    prepare(messages: AgentMessage[], reservedTokens: number = 0): AgentMessage[] {
+        const trimmed = this.trim(messages, reservedTokens);
+        const assessment = this.assess(trimmed, reservedTokens);
+        if (assessment.fits) return trimmed;
+        const error: Error & { code?: string; contextAssessment?: unknown } = new Error(
+            `当前模型上下文无法容纳本轮必要的系统规则、用户目标和工具定义：估算超出 ${assessment.overByTokens} tokens。`
+        );
+        error.code = 'context_window_budget_exceeded';
+        error.contextAssessment = assessment;
+        throw error;
     }
 }

@@ -129,9 +129,17 @@ export function buildContextWindowUsage(input: {
     };
 }
 
-/** 展示用的紧凑数字：1234 → 1.2k */
+/**
+ * 展示用的紧凑数字：1234 → 1.2k，1000000 → 1M。
+ *
+ * M 档不是装饰：Claude 订阅、DeepSeek、部分 OpenRouter 模型的真实窗口就是 1M，
+ * 只有 k 档时面板会写成 "1000k"——读起来像四位数的 k，反而比 100k 更难一眼判断余量。
+ */
 export function formatTokenCount(tokens: number): string {
     const value = Math.max(0, Math.round(tokens));
     if (value < 1000) return String(value);
-    return `${(value / 1000).toFixed(value >= 100000 ? 0 : 1)}k`;
+    if (value < 1_000_000) return `${(value / 1000).toFixed(value >= 100_000 ? 0 : 1)}k`;
+    const millions = value / 1_000_000;
+    // 1M / 2M 这类整数窗口不写成 "1.0M"，省掉一个没有信息量的小数位。
+    return Number.isInteger(millions) ? `${millions}M` : `${millions.toFixed(1)}M`;
 }

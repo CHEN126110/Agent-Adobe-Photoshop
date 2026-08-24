@@ -805,6 +805,14 @@ export function resolveSkuSkillStage(input: {
     sourceOnly?: unknown;
     userInput?: unknown;
 }): SkuSkillStage {
+    // 模型显式声明的 stage 是第一权威：循环内模型按站③指引调 stage=template 时，
+    // 不得被用户原话的正则猜测覆盖（2026-08-23 真机：'帮我做SKU' 命中执行正则，
+    // 把模型三次 stage=template 全改道成 full，缺模板预检三连败熔断）。
+    // 文本正则只在没有显式声明时兜底。
+    const declared = String(input.stage || '').trim();
+    if (declared === 'full' || declared === 'color-card' || declared === 'template' || declared === 'config') {
+        return declared;
+    }
     const userInput = String(input.userInput || '');
     if (
         input.sourceOnly === true
@@ -814,10 +822,5 @@ export function resolveSkuSkillStage(input: {
     if (isSkuTemplateDesignRequestText(userInput)) return 'template';
     if (isSkuConfigurationRequestText(userInput)) return 'config';
     if (isSkuExecutionRequestText(userInput)) return 'full';
-    const declared = String(input.stage || '').trim();
-    if (declared === 'full' || declared === 'color-card' || declared === 'template' || declared === 'config') {
-        return declared;
-    }
-    if (input.sourceOnly === true) return 'color-card';
     return 'full';
 }

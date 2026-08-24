@@ -29,6 +29,8 @@ export interface ThinkingStep {
     duration?: number;
     filePath?: string;
     lineRange?: string;
+    /** 这一步发生时任务卡上「正在做」的条目 id（Harness 记录时打上），界面据此把过程挂到条目下。 */
+    taskItemId?: string;
 }
 
 interface ThinkingProcessProps {
@@ -36,6 +38,8 @@ interface ThinkingProcessProps {
     isExpanded?: boolean;
     onToggle?: () => void;
     className?: string;
+    /** 嵌在任务卡条目下时：不画外框与「正在设计」标题，只出步骤时间线。 */
+    embedded?: boolean;
 }
 
 const VISIBLE_STEP_TYPES = new Set<ThinkingStep['type']>([
@@ -51,6 +55,48 @@ const VISIBLE_STEP_TYPES = new Set<ThinkingStep['type']>([
 
 function isActionStep(step: ThinkingStep): boolean {
     return step.type === 'tool_call' || step.type === 'tool_result';
+}
+
+/** 连着重复的同一动作合并后的一组：key 取组内第一条（流式追加时不变），step 取最后一条（结果最新）。 */
+interface MergedThinkingStep {
+    key: string;
+    step: ThinkingStep;
+    repeat: number;
+}
+
+/**
+ * 把相邻的同一个动作合并成一条，右侧标次数。
+ *
+ * 真机 2026-08-19「帮我做白底图」13 步里连着 3 条「变换图层」、2 条「读取图层属性」：
+ * 逐条列出既读不出信息量，还让人以为它卡在原地重复劳动。
+ *
+ * 合并条件收得很紧——只合「相邻 + 同工具 + 都成功 + 都没带快照」：
+ * 带快照的每一张都是新画面，失败的每一条原因可能不同，思考步各说各的，都不能吞。
+ */
+function mergeRepeatedSteps(steps: ThinkingStep[]): MergedThinkingStep[] {
+    const merged: MergedThinkingStep[] = [];
+    for (const step of steps) {
+        const previous = merged[merged.length - 1];
+        const mergeable = Boolean(
+            previous
+            && isActionStep(step)
+            && isActionStep(previous.step)
+            && step.status === 'success'
+            && previous.step.status === 'success'
+            && step.toolName
+            && previous.step.toolName === step.toolName
+            && !step.imageData
+            && !previous.step.imageData
+        );
+        if (mergeable && previous) {
+            // 展示改用最新一条：用户点开要看的是这批动作最后落到什么结果
+            previous.step = step;
+            previous.repeat += 1;
+            continue;
+        }
+        merged.push({ key: step.id, step, repeat: 1 });
+    }
+    return merged;
 }
 
 function getDisplayRole(step: ThinkingStep): ThinkingStepDisplayRole {
@@ -131,7 +177,8 @@ function resolveSnapshotDisplayMode(ratio: number): SnapshotDisplayMode {
 
 export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     steps,
-    className = ''
+    className = '',
+    embedded = false
 }) => {
     // 已展开步骤（看"已查看/已读取"的具体内容）；默认收起，保持过程面板清爽。
     const [expandedStepIds, setExpandedStepIds] = useState<Record<string, boolean>>({});
@@ -140,10 +187,14 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     // 各步骤快照的真实宽高比（宽/高），由图片 onLoad 后的 naturalWidth/Height 得到。
     // data URL 在解码前拿不到尺寸，所以先按 contain 渲染，量到之后再切换到最终呈现方式。
     const [snapshotRatios, setSnapshotRatios] = useState<Record<string, number>>({});
+    // 文案为空但带 toolName 的步骤仍然显示：getStepText 会回退到工具显示名。
+    // 终态「设计过程」块也走这条时间线，这类步骤不能因为没配文案就凭空消失。
     const validSteps = steps.filter((step) =>
         VISIBLE_STEP_TYPES.has(step.type)
-        && typeof step.content === 'string'
-        && step.content.trim().length > 0
+        && (
+            (typeof step.content === 'string' && step.content.trim().length > 0)
+            || Boolean(step.toolName)
+        )
     );
     if (validSteps.length === 0) {
         return null;
@@ -169,19 +220,21 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     };
 
     const renderStepPanel = (title: string, panelSteps: ThinkingStep[]) => panelSteps.length > 0 ? (
-        <div className={`thinking-simple ${className}`}>
-            <div className="pondering-header">
-                {/* 状态点进行中才亮蓝呼吸（样式钩子 is-active），与对话标签页的执行指示点同一套观感 */}
-                <span className={`pondering-dot ${hasActiveThinkingStep(panelSteps) ? 'is-active' : ''}`}></span>
-                {/* 标题在进行中才带扫光（样式钩子 is-active）：强调留给整体状态这一行，
-                    下面的明细列表保持静态，否则满屏都在动反而没有重点。 */}
-                <span className={`pondering-title ${hasActiveThinkingStep(panelSteps) ? 'is-active' : ''}`}>
-                    {title}
-                </span>
-            </div>
+        <div className={`${embedded ? 'thinking-embedded' : 'thinking-simple'} ${className}`}>
+            {!embedded && (
+                <div className="pondering-header">
+                    {/* 状态点进行中才亮蓝呼吸（样式钩子 is-active），与对话标签页的执行指示点同一套观感 */}
+                    <span className={`pondering-dot ${hasActiveThinkingStep(panelSteps) ? 'is-active' : ''}`}></span>
+                    {/* 标题在进行中才带扫光（样式钩子 is-active）：强调留给整体状态这一行，
+                        下面的明细列表保持静态，否则满屏都在动反而没有重点。 */}
+                    <span className={`pondering-title ${hasActiveThinkingStep(panelSteps) ? 'is-active' : ''}`}>
+                        {title}
+                    </span>
+                </div>
+            )}
 
             <div className="pondering-steps">
-                {panelSteps.map((step) => {
+                {mergeRepeatedSteps(panelSteps).map(({ key: stepKey, step, repeat }) => {
                     const displayRole = getDisplayRole(step);
                     const isTool = isActionStep(step) || displayRole === 'action';
                     // 语义标签不再以文字 pill 占据版面，转为可访问性属性（hover/读屏可见）；
@@ -192,17 +245,17 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                     const preview = isTool && step.toolName
                         ? buildToolResultPreview(step.toolName, step.toolResult)
                         : undefined;
-                    const expanded = Boolean(preview && expandedStepIds[step.id]);
+                    const expanded = Boolean(preview && expandedStepIds[stepKey]);
                     const snapshotSrc = step.imageData ? resolveSnapshotSrc(step.imageData) : '';
                     // 还没量到比例时按 contain 保守渲染：宁可留白，也不要在不知道画面
                     // 长什么样的时候先裁一刀。
-                    const snapshotRatio = snapshotRatios[step.id];
+                    const snapshotRatio = snapshotRatios[stepKey];
                     const snapshotMode = snapshotRatio
                         ? resolveSnapshotDisplayMode(snapshotRatio)
                         : { objectFit: 'contain' as const, objectPosition: 'center', badge: '' };
                     return (
                         <div
-                            key={step.id}
+                            key={stepKey}
                             className={`pondering-step ${step.status} ${isTool ? 'is-action' : 'is-thought'} pondering-step--${displayRole}`}
                             title={semanticLabel}
                             aria-label={semanticLabel}
@@ -211,13 +264,16 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                             <div className="step-body">
                                 <div className={`step-line ${preview ? 'step-line--expandable' : ''}`}>
                                     <span className="step-text">{getStepText(step)}</span>
+                                    {repeat > 1 && (
+                                        <span className="step-repeat" aria-label={"连续 " + repeat + " 次"}>×{repeat}</span>
+                                    )}
                                     {preview && (
                                         <button
                                             type="button"
                                             className={`step-expand-toggle ${expanded ? 'is-expanded' : ''}`}
                                             aria-expanded={expanded}
                                             aria-label={expanded ? '收起结果内容' : '展开查看结果内容'}
-                                            onClick={() => toggleStepExpanded(step.id)}
+                                            onClick={() => toggleStepExpanded(stepKey)}
                                         >
                                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
                                                 <polyline points="6 9 12 15 18 9"></polyline>
@@ -275,9 +331,9 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                                             if (!image.naturalWidth || !image.naturalHeight) return;
                                             const ratio = image.naturalWidth / image.naturalHeight;
                                             setSnapshotRatios((current) => (
-                                                current[step.id] === ratio
+                                                current[stepKey] === ratio
                                                     ? current
-                                                    : { ...current, [step.id]: ratio }
+                                                    : { ...current, [stepKey]: ratio }
                                             ));
                                         }}
                                     />

@@ -156,6 +156,20 @@ export interface DesignLearningMemoryOptions {
     now?: string | number;
 }
 
+export interface BuildWorkshopReferenceLearningCandidateInput {
+    title?: string;
+    summary: string;
+    whatLooksGood?: string[];
+    whyItWorks?: string[];
+    reusableHeuristics?: string[];
+    suitableScenarios?: string[];
+    limitations?: string[];
+    scope?: DesignMemoryScope;
+    analysisSource?: string;
+    userCuratedReference?: boolean;
+    now?: string | number;
+}
+
 const UNSAFE_PAYLOAD_TOKENS = [
     'data:image',
     'raw-image-payload',
@@ -292,6 +306,65 @@ export function designLearningExperiencesToMemoryItems(
             createdAt: now,
             updatedAt: now
         }));
+}
+
+/**
+ * Design Workshop 的单图参考分析进入现有长期记忆审核队列的唯一转换口。
+ * 这里只生成 needs_review 候选；是否发布由 MemoryService 的人工复核链决定。
+ */
+export function buildWorkshopReferenceLearningCandidate(
+    input: BuildWorkshopReferenceLearningCandidateInput
+): DesignMemoryItem | null {
+    const summary = cleanString(input.summary);
+    const whatLooksGood = uniqueStrings(input.whatLooksGood || []).slice(0, 8);
+    const whyItWorks = uniqueStrings(input.whyItWorks || []).slice(0, 8);
+    const reusableHeuristics = uniqueStrings(input.reusableHeuristics || []).slice(0, 10);
+    if (!summary || (whatLooksGood.length === 0 && reusableHeuristics.length === 0)) return null;
+    const now = normalizeDateTime(input.now) || new Date().toISOString();
+    const title = cleanString(input.title) || '参考设计学习候选';
+    const suitableScenarios = uniqueStrings(input.suitableScenarios || []).slice(0, 8);
+    const limitations = uniqueStrings([
+        ...(input.limitations || []),
+        '该结论来自模型对参考图的解释，必须经人工复核后才能进入长期知识。',
+        '使用时仍需结合当前产品事实、素材、平台规格和真实画面验证。'
+    ]).slice(0, 8);
+    const candidateKey = [title, summary, ...whatLooksGood, ...reusableHeuristics].join('|');
+    return {
+        id: `design-learning-workshop-${stableHash(candidateKey)}`,
+        kind: 'visual_case',
+        scope: input.scope || { type: 'user' },
+        status: 'needs_review',
+        source: 'imported_case',
+        title,
+        summary,
+        learnedInsights: {
+            whatLooksGood,
+            whyItWorks,
+            reusableHeuristics,
+            suitableScenarios,
+            limitations
+        },
+        sourceNotes: [{
+            source: 'design-learning-experience',
+            summary: [
+                `analysis_source=${cleanString(input.analysisSource) || 'design-workshop-reference-study'}`,
+                `user_curated_reference=${input.userCuratedReference === true ? 'true' : 'false'}`,
+                'publication=human_review_required'
+            ].join('; '),
+            status: 'needs_review'
+        }],
+        tags: uniqueStrings([
+            'design-learning',
+            'design-workshop',
+            'reference-study',
+            ...suitableScenarios
+        ]),
+        appliesTo: ['reference', 'recipe'],
+        allowedUses: ['prompt_context', 'user_reference', 'recipe_hint'],
+        sourceRank: 0,
+        createdAt: now,
+        updatedAt: now
+    };
 }
 
 export function buildDesignLearningBoundary(): DesignLearningBoundary {

@@ -163,6 +163,19 @@ export interface ReflexionIssueConstraint {
     issueId: string;
     description: string;
     expectedFix: string;
+    /** Exact visual evidence that produced this diagnosis. Text alone is not provenance. */
+    sourceId?: string;
+    observationKey?: string;
+}
+
+/**
+ * Photoshop revision reviewed by R5 before a visual Reflexion handoff was issued.
+ * This is evidence provenance only: it never grants write permission or selects a repair.
+ */
+export interface ReflexionReviewBinding {
+    documentId: number;
+    historyStateId: number;
+    observationKeys: string[];
 }
 
 export interface ReflexionHandoff {
@@ -188,9 +201,72 @@ export interface ReflexionHandoff {
      * should prefer this paired structure so two screens cannot exchange fixes by index.
      */
     issueConstraints?: ReflexionIssueConstraint[];
+    /**
+     * Optional for legacy and non-visual handoffs. A completed aesthetic improvement must carry
+     * this binding and the executor must reconcile it against the live Host before re-entry.
+     */
+    reviewBinding?: ReflexionReviewBinding;
     failureAnalysis: string[];
     strategyAdjustments: string[];
     nextRoundConstraints: string[];
+}
+
+function readPositiveSafeInteger(value: unknown): number | undefined {
+    const numeric = Number(value);
+    return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : undefined;
+}
+
+function readDistinctObservationKeys(value: unknown): string[] | undefined {
+    if (!Array.isArray(value) || value.length === 0 || value.length > 64) return undefined;
+    const keys = value.map((item) => compactText(item));
+    if (keys.some((key) => !key) || new Set(keys).size !== keys.length) return undefined;
+    return keys;
+}
+
+/** Validate persisted/untrusted handoff provenance without inferring it from prose. */
+export function readReflexionReviewBinding(
+    handoff?: { reviewBinding?: unknown } | null
+): ReflexionReviewBinding | undefined {
+    const value = handoff?.reviewBinding;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    const documentId = readPositiveSafeInteger(record.documentId);
+    const historyStateId = readPositiveSafeInteger(record.historyStateId);
+    const observationKeys = readDistinctObservationKeys(record.observationKeys);
+    if (documentId === undefined || historyStateId === undefined || !observationKeys) return undefined;
+    return { documentId, historyStateId, observationKeys };
+}
+
+/** Attach validated ReviewSet provenance to the existing handoff; no second state owner is created. */
+export function bindReflexionHandoffReviewEvidence(input: {
+    handoff: ReflexionHandoff;
+    historyStateRef?: { documentId?: number; historyStateId?: number };
+    observationKeys?: readonly string[];
+}): ReflexionHandoff | undefined {
+    const candidate: ReflexionHandoff = {
+        ...input.handoff,
+        reviewBinding: {
+            documentId: Number(input.historyStateRef?.documentId),
+            historyStateId: Number(input.historyStateRef?.historyStateId),
+            observationKeys: [...(input.observationKeys || [])]
+        }
+    };
+    return readReflexionReviewBinding(candidate) ? candidate : undefined;
+}
+
+/** Marker-only check used to fail closed when a persisted handoff has malformed provenance. */
+export function hasCompletedAestheticImprovementMarker(
+    handoff?: {
+        status?: unknown;
+        sourceOwner?: unknown;
+        targetStage?: unknown;
+        trigger?: unknown;
+    } | null
+): boolean {
+    return handoff?.status === 'reflexion_required'
+        && handoff.sourceOwner === 'R5'
+        && handoff.targetStage === 'R4'
+        && handoff.trigger === COMPLETED_AESTHETIC_IMPROVEMENT_TRIGGER;
 }
 
 /**
@@ -203,12 +279,28 @@ export function isCompletedAestheticImprovementReflexionHandoff(
         sourceOwner?: unknown;
         targetStage?: unknown;
         trigger?: unknown;
+        reviewBinding?: unknown;
+        issueConstraints?: unknown;
     } | null
 ): boolean {
-    return handoff?.status === 'reflexion_required'
-        && handoff.sourceOwner === 'R5'
-        && handoff.targetStage === 'R4'
-        && handoff.trigger === COMPLETED_AESTHETIC_IMPROVEMENT_TRIGGER;
+    if (!hasCompletedAestheticImprovementMarker(handoff)) return false;
+    const reviewBinding = readReflexionReviewBinding(handoff);
+    if (!reviewBinding || !Array.isArray(handoff?.issueConstraints) || handoff.issueConstraints.length === 0) {
+        return false;
+    }
+    const allowedObservationKeys = new Set(reviewBinding.observationKeys);
+    return handoff.issueConstraints.every((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const issue = value as Record<string, unknown>;
+        const observationKey = compactText(issue.observationKey);
+        return Boolean(
+            compactText(issue.issueId)
+            && compactText(issue.description)
+            && compactText(issue.expectedFix)
+            && observationKey
+            && allowedObservationKeys.has(observationKey)
+        );
+    });
 }
 
 export type RuntimeEvolutionDiagnosisTarget =
@@ -509,7 +601,11 @@ export function buildReflexionHandoffFromReviewReport(reviewReport: any): Reflex
             return {
                 issueId: compactText(issue?.issueId) || `review-issue-${index + 1}`,
                 description,
-                expectedFix
+                expectedFix,
+                ...(compactText(issue?.sourceId) ? { sourceId: compactText(issue.sourceId) } : {}),
+                ...(compactText(issue?.observationKey)
+                    ? { observationKey: compactText(issue.observationKey) }
+                    : {})
             };
         })
         .filter((item: ReflexionIssueConstraint | undefined): item is ReflexionIssueConstraint => Boolean(item));

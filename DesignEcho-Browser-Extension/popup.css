@@ -63,6 +63,49 @@ h1 {
 
 .hidden { display: none; }
 
+.actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e3e5ea;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.actions .action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid #e3e5ea;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2433;
+  text-align: left;
+  font-size: 13px;
+}
+
+.actions .action:hover {
+  background: #eef1f7;
+  border-color: #c9cedb;
+}
+
+.actions .action kbd {
+  font-family: inherit;
+  font-size: 11px;
+  color: #8a8f9d;
+  background: #f1f2f6;
+  border: 1px solid #e0e2ea;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.actions .meta {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .settings {
   margin-top: 12px;
   padding-top: 12px;

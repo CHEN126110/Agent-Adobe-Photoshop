@@ -18,10 +18,10 @@ import {
     TextBlock,
     CodeBlock,
     ImageBlock,
-    ToolResultBlock,
     CardBlock,
     ThinkingBlock,
     TaskPlanBlock,
+    DesignTaskCardBlock,
     InteractiveCardBlock
 } from './blocks';
 import './MessageRenderer.css';
@@ -64,16 +64,6 @@ const renderBlock = (
         case 'image':
             return <ImageBlock key={block.id} block={block} />;
             
-        case 'tool_result':
-            return (
-                <ToolResultBlock
-                    key={getProcessBlockRenderKey(block.id, collapseProcessBlocks)}
-                    block={block}
-                    onAction={onAction}
-                    collapseForTerminalState={collapseProcessBlocks}
-                />
-            );
-            
         case 'card':
         case 'success':
         case 'warning':
@@ -113,6 +103,9 @@ const renderBlock = (
 
         case 'task_plan':
             return <TaskPlanBlock key={block.id} block={block} />;
+
+        case 'design_task_card':
+            return <DesignTaskCardBlock key={block.id} block={block} />;
 
         case 'interactive_card':
             return <InteractiveCardBlock key={block.id} block={block} onAction={onAction} />;
@@ -564,6 +557,12 @@ function normalizeMessageRendererSignatureValue(value: unknown, depth = 0): unkn
         return '[function]';
     }
 
+    if (typeof value === 'string' && value.length > 2048) {
+        // 过程步骤携带 base64 快照（imageData）后，块签名不能整段序列化兆级字符串：
+        // memo 每次比较都会跑一遍。快照写入后不会原地改内容，首尾片段 + 总长足以判变。
+        return `${value.slice(0, 256)}…${value.slice(-64)}#len:${value.length}`;
+    }
+
     if (typeof value !== 'object') {
         return value;
     }
@@ -641,9 +640,10 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
     const isProcessActive = isStreaming === true || message.isStreaming === true;
     const collapseProcessBlocks = message.role === 'assistant' && !isProcessActive;
     
-    // 缓存时间格式化结果
+    // 缓存时间格式化结果。只到分钟：一轮对话里的多条消息往往落在同一秒，
+    // 秒级时间戳既回答不了「什么时候聊的」，又在每条消息下方留一行噪音。
     const formattedTime = useMemo(() => {
-        return new Date(message.timestamp).toLocaleTimeString();
+        return new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     }, [message.timestamp]);
     
     // 渲染内容块（带缓存）

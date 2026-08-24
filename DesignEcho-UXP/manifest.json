@@ -1,12 +1,12 @@
 {
-  "manifestVersion": 6,
+  "manifestVersion": 5,
   "id": "com.designecho.photoshop",
   "name": "DesignEcho",
   "version": "2.0.0",
   "main": "dist/runtime.js",
   "host": {
     "app": "PS",
-    "minVersion": "26.0.0"
+    "minVersion": "25.0.0"
   },
   "entrypoints": [
     {
@@ -37,15 +37,27 @@
           "width": 23,
           "height": 23,
           "path": "icons/light.png",
-          "scale": [1, 2],
-          "theme": ["darkest", "dark"]
+          "scale": [
+            1,
+            2
+          ],
+          "theme": [
+            "darkest",
+            "dark"
+          ]
         },
         {
           "width": 23,
           "height": 23,
           "path": "icons/dark.png",
-          "scale": [1, 2],
-          "theme": ["lightest", "light"]
+          "scale": [
+            1,
+            2
+          ],
+          "theme": [
+            "lightest",
+            "light"
+          ]
         }
       ]
     }
@@ -55,17 +67,33 @@
       "width": 48,
       "height": 48,
       "path": "icons/lightPlugin.png",
-      "scale": [1, 2],
-      "theme": ["darkest", "dark"],
-      "species": ["pluginList"]
+      "scale": [
+        1,
+        2
+      ],
+      "theme": [
+        "darkest",
+        "dark"
+      ],
+      "species": [
+        "pluginList"
+      ]
     },
     {
       "width": 48,
       "height": 48,
       "path": "icons/darkPlugin.png",
-      "scale": [1, 2],
-      "theme": ["lightest", "light"],
-      "species": ["pluginList"]
+      "scale": [
+        1,
+        2
+      ],
+      "theme": [
+        "lightest",
+        "light"
+      ],
+      "species": [
+        "pluginList"
+      ]
     }
   ],
   "requiredPermissions": {
@@ -74,8 +102,10 @@
     },
     "webview": {
       "allow": "yes",
-      "domains": ["http://127.0.0.1:8766", "http://localhost:8766"],
-      "allowLocalRendering": "yes",
+      "domains": [
+        "http://127.0.0.1:8766",
+        "http://localhost:8766"
+      ],
       "enableMessageBridge": "localAndRemote"
     },
     "clipboard": "readAndWrite",
