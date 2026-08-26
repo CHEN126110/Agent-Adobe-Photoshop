@@ -9,12 +9,41 @@ import { executeToolCall } from '../tool-executor.service';
 import { useAppStore } from '../../stores/app.store';
 import { decideSkuSelfSelectNoteGeneration } from '../../../shared/sku-self-select-note-policy';
 import {
+    buildSkuExpectedExportInventory,
     buildSkuExportReadback,
     evaluateSkuRequestedOutputCompletion,
     resolveSkuBatchDeliveryOutcome,
-    sanitizeSkuToolResultsForPublicResult
+    sanitizeSkuToolResultsForPublicResult,
+    type SkuExpectedExportInventoryItem
 } from '../../../shared/sku-export-readback';
+import {
+    captureSkuExportPathBaselines,
+    finalizeSkuStagingCleanup,
+    isSkuPathInsideDirectory as isPathInsideDirectory,
+    issueSkuStagingTransaction,
+    normalizeSkuExportPathForCompare as normalizePathForCompare,
+    parseSkuStagedRasterExport,
+    promoteSkuStagedDeliverySet,
+    validateSkuStagedRasterExports,
+    verifySkuExportFreshness,
+    type SkuExportFileBaseline,
+    type SkuIssuedStagingTransaction,
+    type SkuStagedDeliveryResult,
+    type SkuStagedRasterExport
+} from './sku-export-transaction.service';
+import {
+    buildSkuEditableDeliveryReadback,
+    buildSkuRuntimeDeliveryArtifacts,
+    finalizeSkuEditableDeliveryReceipts,
+    REQUIRED_SKU_PAIRED_EDITABLE_DELIVERY_REVISION,
+    supportsSkuPairedEditableDelivery,
+    validateSkuEditableDeliveryResult,
+    type SkuEditableDeliveryReceipt
+} from './sku-editable-delivery.service';
 import { buildSkuDeliverySummary } from '../../../shared/sku-delivery-summary';
+import {
+    buildRuntimeDeliveryReceipt
+} from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
 import {
     buildSkuConfiguredExecutionPlan,
     buildSkuConfiguredExecutionBlockerMessage,
@@ -332,8 +361,16 @@ function evaluateSkuNoPlaceholderRuntimeReadiness(result: any): SkuNoPlaceholder
     const returnsActualSubjectBoundsQa = noPlaceholderAutoLayout.returnsActualSubjectBoundsQa === true;
     const hasRecursiveColorGroups = supportsRecursiveSkuColorGroups(result);
     const hasComboExportNaming = supportsSkuComboExportNaming(result);
+    const hasPairedEditableDelivery = supportsSkuPairedEditableDelivery(result);
 
-    if (!supportsNoPlaceholderAutoLayout || !supportsExecute || !supportsNote || !hasCurrentRevision || !returnsActualSubjectBoundsQa || !hasRecursiveColorGroups || !hasComboExportNaming) {
+    if (!supportsNoPlaceholderAutoLayout
+        || !supportsExecute
+        || !supportsNote
+        || !hasCurrentRevision
+        || !returnsActualSubjectBoundsQa
+        || !hasRecursiveColorGroups
+        || !hasComboExportNaming
+        || !hasPairedEditableDelivery) {
         const missing = [
             !supportsNoPlaceholderAutoLayout ? 'supportsNoPlaceholderAutoLayout' : '',
             !supportsExecute ? 'execute' : '',
@@ -341,14 +378,17 @@ function evaluateSkuNoPlaceholderRuntimeReadiness(result: any): SkuNoPlaceholder
             !hasCurrentRevision ? `revision=${REQUIRED_SKU_NO_PLACEHOLDER_REVISION}` : '',
             !returnsActualSubjectBoundsQa ? 'returnsActualSubjectBoundsQa' : '',
             !hasRecursiveColorGroups ? `revision=${REQUIRED_SKU_RECURSIVE_COLOR_GROUPS_REVISION}` : '',
-            !hasComboExportNaming ? `revision=${REQUIRED_SKU_COMBO_EXPORT_NAMING_REVISION}` : ''
+            !hasComboExportNaming ? `revision=${REQUIRED_SKU_COMBO_EXPORT_NAMING_REVISION}` : '',
+            !hasPairedEditableDelivery
+                ? `revision=${REQUIRED_SKU_PAIRED_EDITABLE_DELIVERY_REVISION}`
+                : ''
         ].filter(Boolean).join(' / ');
         return {
             ready: false,
             result,
             data,
             userMessage: buildSkuRuntimeUserMessage(),
-            error: buildSkuNoPlaceholderRuntimeError(`skuLayout 能力信息缺少当前无占位符自动排版契约：${missing}`)
+            error: buildSkuNoPlaceholderRuntimeError(`skuLayout 能力信息缺少当前 SKU 生产契约：${missing}`)
         };
     }
 
@@ -370,7 +410,9 @@ function summarizeSkuNoPlaceholderRuntimeReadiness(readiness: SkuNoPlaceholderRu
         returnsActualSubjectBoundsQa: readiness.data?.noPlaceholderAutoLayout?.returnsActualSubjectBoundsQa === true,
         supportsRecursiveSkuColorGroups: supportsRecursiveSkuColorGroups(readiness.result),
         comboExportNamingRevision: readiness.data?.comboExportNaming?.revision,
-        supportsSkuComboExportNaming: supportsSkuComboExportNaming(readiness.result)
+        supportsSkuComboExportNaming: supportsSkuComboExportNaming(readiness.result),
+        pairedEditableDeliveryRevision: readiness.data?.pairedEditableDelivery?.revision,
+        supportsSkuPairedEditableDelivery: supportsSkuPairedEditableDelivery(readiness.result)
     };
 }
 
@@ -685,24 +727,6 @@ type SkuTemplateContentRepairRecord = {
     error?: string;
 };
 
-type SkuFinalExportRecord = {
-    path: string;
-    expectedDimensions?: { width: number; height: number };
-};
-
-type SkuStagedNoteExport = {
-    tempPath: string;
-    tempPathKey: string;
-    finalPath: string;
-    finalPathKey: string;
-    expectedDimensions?: { width: number; height: number };
-};
-
-type SkuNoteValidationResult = {
-    success: boolean;
-    error?: string;
-};
-
 function summarizeSkuTemplateContentConsistency(
     stage: string,
     evaluation: SkuTemplateContentConsistencyEvaluation
@@ -785,202 +809,6 @@ function getSkuDocumentNameScore(doc: any, skuKeyword: string): number {
 
     if (role === 'sku') score = Math.max(score, 60);
     return score;
-}
-
-function normalizePathForCompare(input: string): string {
-    return String(input || '')
-        .trim()
-        .replace(/\//g, '\\')
-        .replace(/\\+$/, '')
-        .toLowerCase();
-}
-
-function isPathInsideDirectory(filePath?: string, directory?: string): boolean {
-    const normalizedFile = normalizePathForCompare(filePath || '');
-    const normalizedDir = normalizePathForCompare(directory || '');
-    if (!normalizedFile || !normalizedDir) return false;
-    return normalizedFile === normalizedDir || normalizedFile.startsWith(`${normalizedDir}\\`);
-}
-
-function buildSkuNoteStagingPaths(outputDir: string): { parent: string; root: string } {
-    const normalizedOutputDir = String(outputDir || '')
-        .trim()
-        .replace(/\//g, '\\')
-        .replace(/\\+$/, '');
-    const leafName = normalizedOutputDir.split(/[/\\]/).filter(Boolean).at(-1)?.toLowerCase();
-    if (!normalizedOutputDir || leafName !== 'sku') {
-        throw new Error('SKU 自选备注暂存目录只能建立在当前项目的 SKU 交付目录内。');
-    }
-    const parent = `${normalizedOutputDir}\\.designecho-staging`;
-    const randomId = globalThis.crypto?.randomUUID?.()
-        || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    return { parent, root: `${parent}\\${randomId}` };
-}
-
-/** 解析暂存导出回执，同时确定唯一正式目标；不把暂存路径提前计入交付。 */
-function parseSkuStagedNoteExport(input: {
-    rawFileInfo: string;
-    stagingRoot: string;
-    outputDir: string;
-    expectedDimensions?: { width: number; height: number };
-}): { success: boolean; artifact?: SkuStagedNoteExport; error?: string } {
-    let info: Record<string, unknown>;
-    try {
-        info = JSON.parse(String(input.rawFileInfo || '')) as Record<string, unknown>;
-    } catch {
-        return { success: false, error: '自选备注导出回执不是有效 JSON。' };
-    }
-    if (String(info.status || '') !== 'exported_jsx') {
-        return {
-            success: false,
-            error: `自选备注导出回执状态必须为 exported_jsx，实际为 ${String(info.status || 'missing')}。`
-        };
-    }
-
-    const tempPath = String(info.path || '').trim().replace(/\//g, '\\');
-    const stagingRoot = String(input.stagingRoot || '').trim().replace(/\//g, '\\').replace(/\\+$/, '');
-    const outputDir = String(input.outputDir || '').trim().replace(/\//g, '\\').replace(/\\+$/, '');
-    if (!tempPath || !stagingRoot || !outputDir || !isPathInsideDirectory(tempPath, stagingRoot)) {
-        return {
-            success: false,
-            error: `自选备注导出回执的路径不在本次暂存目录内：${tempPath || '(空)'}`
-        };
-    }
-
-    const relativeSegments = tempPath
-        .slice(stagingRoot.length)
-        .replace(/^[\\/]+/, '')
-        .split(/[\\/]+/)
-        .filter(Boolean);
-    if (relativeSegments.length < 2 || relativeSegments.some((segment) => segment === '.' || segment === '..')) {
-        return { success: false, error: '自选备注导出回执缺少安全的模板目录或文件名。' };
-    }
-
-    const finalPath = `${outputDir}\\${relativeSegments.join('\\')}`;
-    const tempPathKey = normalizePathForCompare(tempPath);
-    const finalPathKey = normalizePathForCompare(finalPath);
-    if (!tempPathKey || !finalPathKey || tempPathKey === finalPathKey) {
-        return { success: false, error: '自选备注暂存路径与正式路径无法安全区分。' };
-    }
-    return {
-        success: true,
-        artifact: {
-            tempPath,
-            tempPathKey,
-            finalPath,
-            finalPathKey,
-            expectedDimensions: input.expectedDimensions
-        }
-    };
-}
-
-async function validateSkuStagedNoteExports(
-    artifacts: SkuStagedNoteExport[]
-): Promise<SkuNoteValidationResult> {
-    const probeImageFile = (window as any).designEcho?.probeImageFile;
-    if (artifacts.length === 0) {
-        return { success: false, error: '自选备注没有可验收的暂存文件。' };
-    }
-    if (typeof probeImageFile !== 'function') {
-        return { success: false, error: '自选备注文件探针不可用，无法确认导出结果。' };
-    }
-
-    const fileProbes: any[] = [];
-    for (const artifact of artifacts) {
-        if (!isProbeableExportPath(artifact.tempPath)) {
-            fileProbes.push({
-                success: false,
-                path: artifact.tempPath,
-                status: 'unsupported_format',
-                rawImagesRedacted: true,
-                error: '自选备注暂存文件不是支持验收的图片格式。'
-            });
-            continue;
-        }
-        try {
-            const probe = await probeImageFile(artifact.tempPath);
-            fileProbes.push(probe
-                ? { ...probe, path: artifact.tempPath }
-                : {
-                    success: false,
-                    path: artifact.tempPath,
-                    status: 'decode_failed',
-                    rawImagesRedacted: true,
-                    error: '自选备注暂存文件没有返回图片探针结果。'
-                });
-        } catch (error) {
-            fileProbes.push({
-                success: false,
-                path: artifact.tempPath,
-                status: 'decode_failed',
-                rawImagesRedacted: true,
-                error: error instanceof Error ? error.message : String(error)
-            });
-        }
-    }
-
-    const readback = buildSkuExportReadback({
-        expectedExports: artifacts.map((artifact) => ({
-            path: artifact.tempPath,
-            expectedDimensions: artifact.expectedDimensions
-        })),
-        fileProbes
-    });
-    if (readback.status !== 'ready_for_review') {
-        return {
-            success: false,
-            error: [...readback.blockers, ...readback.warnings].join('；')
-                || `自选备注暂存文件验收状态为 ${readback.status}。`
-        };
-    }
-    return { success: true };
-}
-
-async function cleanupSkuNotePaths(paths: string[]): Promise<SkuNoteValidationResult> {
-    const uniquePaths = Array.from(new Set(paths.map((value) => String(value || '').trim()).filter(Boolean)));
-    for (const targetPath of uniquePaths) {
-        const result = await (window as any).designEcho?.invoke?.('fs:deleteFile', targetPath);
-        if (result?.success !== true) {
-            return {
-                success: false,
-                error: `无法清理 SKU 自选备注暂存路径：${targetPath}；${String(result?.error || '未知错误')}`
-            };
-        }
-    }
-    return { success: true };
-}
-
-async function cleanupSkuNoteStagingParentIfEmpty(parentPath: string): Promise<SkuNoteValidationResult> {
-    const removeSkuStagingParentIfEmpty = (window as any).designEcho?.removeSkuStagingParentIfEmpty;
-    if (typeof removeSkuStagingParentIfEmpty !== 'function') {
-        return { success: false, error: 'SKU 空暂存目录清理能力不可用。' };
-    }
-    const normalizedParent = String(parentPath || '').trim();
-    const result = await removeSkuStagingParentIfEmpty(normalizedParent);
-    if (result?.success === true || result?.reason === 'not_empty') return { success: true };
-    return { success: false, error: String(result?.error || 'SKU 空暂存目录清理失败。') };
-}
-
-async function promoteSkuStagedNoteExports(
-    artifacts: SkuStagedNoteExport[]
-): Promise<SkuNoteValidationResult> {
-    const invoke = (window as any).designEcho?.invoke;
-    if (typeof invoke !== 'function') {
-        return { success: false, error: 'SKU 暂存文件提交能力不可用。' };
-    }
-    const promotedPaths: string[] = [];
-    for (const artifact of artifacts) {
-        const result = await invoke('fs:copyFileExclusive', artifact.tempPath, artifact.finalPath);
-        if (result?.success !== true) {
-            const rollback = await cleanupSkuNotePaths(promotedPaths);
-            return {
-                success: false,
-                error: `SKU 自选备注提交失败：${String(result?.error || artifact.finalPath)}${rollback.success ? '' : `；${rollback.error}`}`
-            };
-        }
-        promotedPaths.push(artifact.finalPath);
-    }
-    return { success: true };
 }
 
 function isDocumentFromTemplateDirectory(doc: any, templateDir?: string): boolean {
@@ -4665,7 +4493,12 @@ export const skuBatchExecutor: SkillExecutor = {
         );
 
         const allFinalFiles: string[] = [];
-        const allFinalExportRecords: SkuFinalExportRecord[] = [];
+        const exportInventoryViolations: string[] = [];
+        const skuEditableDeliveryViolations: string[] = [];
+        const skuEditableDeliveryReceipts = new Map<string, SkuEditableDeliveryReceipt>();
+        const provisionalEditableDeliveryReceipts = new Map<string, SkuEditableDeliveryReceipt>();
+        const pendingRasterArtifactsByItemId = new Map<string, SkuStagedRasterExport>();
+        const acceptedStagedPathKeys = new Set<string>();
         const allCopyErrors: string[] = [];
         const skuUserWarnings: string[] = [];
         const skuMaintenanceDiagnostics: string[] = [];
@@ -5481,61 +5314,8 @@ export const skuBatchExecutor: SkillExecutor = {
         const skippedNoteSizes = new Set<number>();
         const completedComboRowsBySize = new Map<number, number>();
         const completedNoteRowsBySize = new Map<number, number>();
-
-        const resolveExportedFileRecord = async (
-            rawFileInfo: string,
-            relativeDirName: string
-        ): Promise<{ success: boolean; record?: string; error?: string }> => {
-            try {
-                const info = JSON.parse(rawFileInfo);
-
-                if (info.status === 'exported_to_temp' && info.tempPath) {
-                    const correctTargetDir = outputDir || info.targetDir;
-                    const targetPath = `${correctTargetDir}\\${relativeDirName}\\${info.targetName}`;
-
-                    const copyFn = (window as any).designEcho?.copyFile;
-                    if (!copyFn) {
-                        return { success: false, error: `${info.targetName}: copyFile unavailable` };
-                    }
-
-                    const copyResult = await copyFn(info.tempPath, targetPath);
-                    if (!copyResult?.success) {
-                        return { success: false, error: `${info.targetName}: ${copyResult?.error || '复制失败'}` };
-                    }
-
-                    try {
-                        await (window as any).designEcho?.invoke?.('fs:deleteFile', info.tempPath);
-                    } catch (e) {
-                        // ignore temp cleanup failures
-                    }
-
-                    return { success: true, record: targetPath };
-                }
-
-                if (info.status === 'exported_jsx') {
-                    const exportedPath = String(info.path || '').trim();
-                    if (exportedPath) {
-                        return { success: true, record: exportedPath };
-                    }
-                    return { success: false, error: `${info.targetName || rawFileInfo}: exported_jsx 缺少真实导出路径` };
-                }
-
-                if (!info.status) {
-                    const exportedPath = String(info.path || '').trim();
-                    return exportedPath
-                        ? { success: true, record: exportedPath }
-                        : { success: false, error: `${rawFileInfo}: 导出回执缺少 status/path` };
-                }
-
-                return { success: false, error: `${rawFileInfo}: unsupported export status ${info.status}` };
-            } catch (e) {
-                const rawPath = String(rawFileInfo || '').trim();
-                const looksLikeStructuredReceipt = rawPath.startsWith('{') || rawPath.startsWith('[');
-                return rawPath && !looksLikeStructuredReceipt
-                    ? { success: true, record: rawPath }
-                    : { success: false, error: `${rawFileInfo}: 导出回执 JSON 无法解析` };
-            }
-        };
+        const stagedComboRowsBySize = new Map<number, number>();
+        const stagedNoteRowsBySize = new Map<number, number>();
 
         const resolveComboTemplateDocument = async (
             size: number
@@ -6120,6 +5900,179 @@ export const skuBatchExecutor: SkillExecutor = {
             } as AgentResult;
         }
 
+        const expectedExportInventory = buildSkuExpectedExportInventory({
+            outputDir,
+            specs: Array.from(resolvedSkuAssetsBySize.values()).map((item) => {
+                const noteRows = item.shouldRunNote
+                    ? (configuredNoteCombosBySize[item.size]?.length > 0
+                        ? configuredNoteCombosBySize[item.size]
+                        : [validColors])
+                    : [];
+                return {
+                    size: item.size,
+                    combos: item.shouldRunCombo ? (combosBySize[item.size] || []) : [],
+                    comboTemplateName: item.comboTemplateDoc?.name,
+                    comboExpectedDimensions: getDocumentExportDimensions(item.comboTemplateDoc),
+                    noteRows,
+                    noteTemplateName: item.noteTemplateDoc?.name,
+                    noteExpectedDimensions: getDocumentExportDimensions(item.noteTemplateDoc)
+                };
+            })
+        });
+        if (expectedExportInventory.status !== 'ready') {
+            const diagnostic = expectedExportInventory.blockers.join('；') || '无法冻结 SKU 精确交付清单。';
+            const userMessage = 'SKU 输出目录、模板或命名计划还不能形成唯一交付清单，本次尚未开始制作。';
+            return {
+                success: false,
+                message: userMessage,
+                error: userMessage,
+                toolResults: sanitizeSkuToolResultsForPublicResult(allToolResults),
+                data: {
+                    status: 'blocked_invalid_sku_export_inventory',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([diagnostic]),
+                    skuDocName,
+                    comboSizes,
+                    skuSizePlanProvenance,
+                    expectedExportFileNames: expectedExportInventory.items.map((item) => item.fileName),
+                    ...skuPlanningContext,
+                    skuCardAssetCandidateReport
+                }
+            } as AgentResult;
+        }
+
+        const expectedExportItemsById = new Map(
+            expectedExportInventory.items.map((item) => [item.id, item] as const)
+        );
+        const settledOutputDir = String(outputDir || '').trim();
+        let outputDirectoryCreated = false;
+        try {
+            outputDirectoryCreated = await (window as any).designEcho?.invoke?.(
+                'fs:createDirectory',
+                settledOutputDir
+            ) === true;
+        } catch (error) {
+            const diagnostic = error instanceof Error ? error.message : String(error);
+            const userMessage = '无法准备本次 SKU 输出位置，本次尚未开始制作。';
+            return {
+                success: false,
+                message: userMessage,
+                error: userMessage,
+                data: {
+                    status: 'blocked_sku_output_directory_unavailable',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([diagnostic])
+                }
+            } as AgentResult;
+        }
+        if (!outputDirectoryCreated) {
+            const diagnostic = 'SKU 正式交付目录初始化失败。';
+            const userMessage = '无法准备本次 SKU 输出位置，本次尚未开始制作。';
+            return {
+                success: false,
+                message: userMessage,
+                error: userMessage,
+                data: {
+                    status: 'blocked_sku_output_directory_unavailable',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([diagnostic])
+                }
+            } as AgentResult;
+        }
+
+        let skuStagingTransaction: SkuIssuedStagingTransaction;
+        try {
+            skuStagingTransaction = await issueSkuStagingTransaction(settledOutputDir);
+        } catch (error) {
+            const diagnostic = error instanceof Error ? error.message : String(error);
+            const userMessage = '无法安全准备本次 SKU 输出，本次尚未开始制作。';
+            return {
+                success: false,
+                message: userMessage,
+                error: userMessage,
+                toolResults: sanitizeSkuToolResultsForPublicResult(allToolResults),
+                data: {
+                    status: 'blocked_sku_staging_transaction_unavailable',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([diagnostic]),
+                    skuDocName,
+                    comboSizes,
+                    skuSizePlanProvenance,
+                    ...skuPlanningContext,
+                    skuCardAssetCandidateReport
+                }
+            } as AgentResult;
+        }
+        const skuStagingRoot = skuStagingTransaction.stagingRoot;
+        const editableStagingOutputDir = `${skuStagingRoot}\\可编辑`;
+        let preserveSkuStagingRoot = false;
+        let skuStagingRecoveryPath = '';
+        let skuStagingCleanupFinished = false;
+        let skuStagingCleanupResult: SkuStagedDeliveryResult | undefined;
+        const finalizeSkuStagingOnce = async (): Promise<SkuStagedDeliveryResult> => {
+            if (skuStagingCleanupFinished && skuStagingCleanupResult) {
+                return skuStagingCleanupResult;
+            }
+            skuStagingCleanupFinished = true;
+            const cleanup = await finalizeSkuStagingCleanup({
+                transaction: skuStagingTransaction,
+                preserveStagingRoot: preserveSkuStagingRoot,
+                ...(skuStagingRecoveryPath ? { recoveryPath: skuStagingRecoveryPath } : {})
+            });
+            skuStagingCleanupResult = cleanup;
+            appendUniqueDiagnostics(skuMaintenanceDiagnostics, [
+                ...(!cleanup.success
+                    ? [String(cleanup.error || 'SKU 事务暂存目录清理失败')]
+                    : []),
+                ...(cleanup.warnings || [])
+            ]);
+            return cleanup;
+        };
+
+        let expectedExportBaselines: Map<string, SkuExportFileBaseline>;
+        let expectedEditableBaselines: Map<string, SkuExportFileBaseline>;
+        try {
+            const allDestinationBaselines = await captureSkuExportPathBaselines(
+                expectedExportInventory.items.flatMap((item) => [item.path, item.editablePath]),
+                skuStagingTransaction.transactionToken
+            );
+            expectedExportBaselines = new Map(expectedExportInventory.items.map((item) => ([
+                normalizePathForCompare(item.path),
+                allDestinationBaselines.get(normalizePathForCompare(item.path))!
+            ] as const)));
+            expectedEditableBaselines = new Map(expectedExportInventory.items.map((item) => ([
+                normalizePathForCompare(item.editablePath),
+                allDestinationBaselines.get(normalizePathForCompare(item.editablePath))!
+            ] as const)));
+            if ([...expectedExportBaselines.values(), ...expectedEditableBaselines.values()].some(
+                (baseline) => !baseline
+            )) {
+                throw new Error('SKU 主进程基线回执缺少冻结目标。');
+            }
+        } catch (error) {
+            const diagnostic = error instanceof Error ? error.message : String(error);
+            const cleanup = await finalizeSkuStagingOnce();
+            const userMessage = '检测到输出目录中的既有结果可能与本次任务冲突。为避免误覆盖，本次尚未开始制作。';
+            return {
+                success: false,
+                message: userMessage,
+                error: userMessage,
+                toolResults: sanitizeSkuToolResultsForPublicResult(allToolResults),
+                data: {
+                    status: 'blocked_sku_export_baseline_unavailable',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([
+                        diagnostic,
+                        ...(!cleanup.success ? [String(cleanup.error || '')] : [])
+                    ]),
+                    skuDocName,
+                    comboSizes,
+                    skuSizePlanProvenance,
+                    expectedExportFileNames: expectedExportInventory.items.map((item) => item.fileName),
+                    expectedEditableFileNames: expectedExportInventory.items.map((item) => item.editableFileName),
+                    ...skuPlanningContext,
+                    skuCardAssetCandidateReport
+                }
+            } as AgentResult;
+        }
+
+        try {
+
         const skuExecutionManifest = Array.from(resolvedSkuAssetsBySize.values()).map((item) => {
             const blockers = [
                 item.shouldRunCombo && !item.comboTemplateDoc ? item.comboTemplateError || `${item.size}双模板不可用` : '',
@@ -6134,6 +6087,13 @@ export const skuBatchExecutor: SkillExecutor = {
             return {
                 size: item.size,
                 comboCount: item.comboCount,
+                deliveryMode: 'paired_editable_and_raster' as const,
+                expectedRasterCount: expectedExportInventory.items.filter((entry) => (
+                    entry.size === item.size
+                )).length,
+                expectedEditableCount: expectedExportInventory.items.filter((entry) => (
+                    entry.size === item.size
+                )).length,
                 plannedActions,
                 comboTemplateName: item.comboTemplateDoc?.name,
                 noteTemplateName: item.noteTemplateDoc?.name,
@@ -6240,6 +6200,23 @@ export const skuBatchExecutor: SkillExecutor = {
                         emitStep('warning', 'SKU 规格模板批次不可用', batchUserMessage, 'error', 0.72);
                         break;
                     }
+                    const expectedBatchItems = (batch.combos || []).map((_, comboIndex) => (
+                        expectedExportItemsById.get(`combo:${size}:${batch.rowStartIndex + comboIndex + 1}`)
+                    ));
+                    const batchTemplateName = normalizeNameWithoutExt(batchTemplateDoc.name || '');
+                    const hasExactFrozenBatchPlan = expectedBatchItems.length === (batch.combos || []).length
+                        && expectedBatchItems.every((item) => (
+                            item?.kind === 'combo'
+                            && item.size === size
+                            && item.templateName.toLowerCase() === batchTemplateName
+                        ));
+                    if (!hasExactFrozenBatchPlan) {
+                        const diagnostic = `${size}双批次 ${batch.batchIndex}/${batch.batchCount}: 当前模板或批次行无法匹配执行前冻结的精确导出清单。`;
+                        exportInventoryViolations.push(diagnostic);
+                        recordSkuDiagnostic(diagnostic, `${size}双执行目标发生变化，已停止该规格，避免导出到错误文件名或目录。`);
+                        shouldStopComboBatches = true;
+                        break;
+                    }
                     const comboExpectedItemCount = Math.max(1, Number(batch.combos?.[0]?.length || size || 1));
                     const comboTemplateDocWithPreflight = batch.batchIndex === 1
                         && batchTemplateDoc.skuTemplateLayoutPreflight
@@ -6316,7 +6293,16 @@ export const skuBatchExecutor: SkillExecutor = {
                             : undefined,
                         outputFormat: 'jpg',
                         quality: 12,
-                        outputDir: outputDir,
+                        outputDir: skuStagingRoot,
+                        editableOutputDir: editableStagingOutputDir,
+                        deliveryPlan: {
+                            version: 'sku-layout-delivery-plan/v1',
+                            items: expectedBatchItems.map((item) => ({
+                                itemId: item!.id,
+                                rasterOutputPath: `${skuStagingRoot}\\${item!.templateName}\\${item!.fileName}`,
+                                editableOutputPath: `${editableStagingOutputDir}\\${item!.templateName}\\${item!.editableFileName}`
+                            }))
+                        },
                         // 组合图文件名带序号（「1白色+黑色」），序号须在同规格内连续。
                         // combos 是分批下发的、批内下标每批从 0 重来，所以要带上本批起始下标，
                         // 否则第二批会又从「1」开始，同一规格目录里出现重复序号。
@@ -6380,23 +6366,81 @@ export const skuBatchExecutor: SkillExecutor = {
                         && comboQaDiagnostics.length === 0
                         && comboFailureDiagnostics.length === 0;
                     if (comboBatchDeliverable) {
-                        const exportedFiles = executeResult.data?.exportedFiles || [];
+                        const exportedFiles = Array.isArray(executeResult?.data?.exportedFiles)
+                            ? executeResult.data.exportedFiles
+                            : [];
+                        const editableDocuments = Array.isArray(executeResult?.data?.editableDocuments)
+                            ? executeResult.data.editableDocuments
+                            : [];
+                        const hasExactComboExportReceipt = executeResult?.data?.exportedCount === expectedBatchItems.length
+                            && exportedFiles.length === expectedBatchItems.length
+                            && editableDocuments.length === expectedBatchItems.length;
+                        if (!hasExactComboExportReceipt) {
+                            const diagnostic = `${size}双批次 ${batch.batchIndex}/${batch.batchCount}: 成对交付回执数量与冻结清单不一致，计划 ${expectedBatchItems.length} 对，实际 exportedCount=${String(executeResult?.data?.exportedCount)}、JPG=${exportedFiles.length}、PSB=${editableDocuments.length}。`;
+                            exportInventoryViolations.push(diagnostic);
+                            recordSkuDiagnostic(diagnostic, `${size}双导出回执与计划不一致，已停止该规格。`);
+                            shouldStopComboBatches = true;
+                            break;
+                        }
 
-                        for (const fileInfo of exportedFiles) {
-                            const resolvedFile = await resolveExportedFileRecord(fileInfo, `${size}\u53cc`);
-                            if (resolvedFile.success && resolvedFile.record) {
-                                allFinalFiles.push(resolvedFile.record);
-                                await postExportPreview(resolvedFile.record, `已导出：${String(resolvedFile.record).split(/[\\/]/).slice(-2).join('/')}`);
-                                allFinalExportRecords.push({
-                                    path: resolvedFile.record,
-                                    expectedDimensions: getDocumentExportDimensions(comboTemplateDocWithPreflight)
-                                });
+                        let comboReceiptMismatch = false;
+                        for (let fileIndex = 0; fileIndex < exportedFiles.length; fileIndex += 1) {
+                            const fileInfo = exportedFiles[fileIndex];
+                            const expectedItem = expectedBatchItems[fileIndex] as SkuExpectedExportInventoryItem;
+                            const parsedRaster = parseSkuStagedRasterExport({
+                                rawFileInfo: fileInfo,
+                                stagingRoot: skuStagingRoot,
+                                outputDir: settledOutputDir,
+                                expectedFinalPath: expectedItem.path,
+                                expectedDimensions: expectedItem.expectedDimensions
+                            });
+                            const editableValidation = await validateSkuEditableDeliveryResult({
+                                expected: expectedItem,
+                                toolResult: executeResult,
+                                stagedEditablePath: `${editableStagingOutputDir}\\${expectedItem.templateName}\\${expectedItem.editableFileName}`
+                            });
+                            const rasterArtifact = parsedRaster.artifact;
+                            const editableStagedPathKey = editableValidation.success
+                                ? normalizePathForCompare(editableValidation.receipt.stagedPath || '')
+                                : '';
+                            if (parsedRaster.success
+                                && rasterArtifact
+                                && editableValidation.success) {
+                                if (acceptedStagedPathKeys.has(rasterArtifact.tempPathKey)
+                                    || acceptedStagedPathKeys.has(editableStagedPathKey)) {
+                                    const diagnostic = `${size}双批次 ${batch.batchIndex}/${batch.batchCount}: 重复返回计划路径 ${expectedItem.fileName}。`;
+                                    exportInventoryViolations.push(diagnostic);
+                                    recordSkuDiagnostic(diagnostic, `${size}双导出路径重复，已停止该规格。`);
+                                    comboReceiptMismatch = true;
+                                    continue;
+                                }
+                                acceptedStagedPathKeys.add(rasterArtifact.tempPathKey);
+                                acceptedStagedPathKeys.add(editableStagedPathKey);
+                                pendingRasterArtifactsByItemId.set(expectedItem.id, rasterArtifact);
+                                provisionalEditableDeliveryReceipts.set(
+                                    expectedItem.id,
+                                    editableValidation.receipt
+                                );
                                 producedComboFiles += 1;
-                            } else if (resolvedFile.error) {
-                                recordSkuDiagnostic(resolvedFile.error, `${size}双有一个导出文件无法确认，已跳过该文件。`);
+                            } else if (!parsedRaster.success) {
+                                const rasterError = parsedRaster.error || `${expectedItem.id} 暂存 JPG 回执无效。`;
+                                exportInventoryViolations.push(rasterError);
+                                recordSkuDiagnostic(rasterError, `${size}双有一个暂存 JPG 无法确认，已停止该规格。`);
+                                comboReceiptMismatch = true;
+                            } else if (!editableValidation.success) {
+                                skuEditableDeliveryViolations.push(editableValidation.error);
+                                recordSkuDiagnostic(
+                                    editableValidation.error,
+                                    `${size}双有一个可编辑源稿无法确认，已停止该规格。`
+                                );
+                                comboReceiptMismatch = true;
                             }
                         }
 
+                        if (comboReceiptMismatch) {
+                            shouldStopComboBatches = true;
+                            break;
+                        }
                         continue;
                     }
 
@@ -6413,19 +6457,13 @@ export const skuBatchExecutor: SkillExecutor = {
                     }
                 }
 
-                completedComboRowsBySize.set(size, producedComboFiles);
+                stagedComboRowsBySize.set(size, producedComboFiles);
 
                 if (producedComboFiles > 0) {
-                    if (producedComboFiles === combos.length) completedComboSizes.add(size);
-                    processedSizes.push(
-                        producedComboFiles === combos.length
-                            ? `${size}双 (${combos.length}组)`
-                            : `${size}双 (${producedComboFiles}/${combos.length}组)`
-                    );
                     emitStep(
                         producedComboFiles === combos.length ? 'verification' : 'warning',
-                        producedComboFiles === combos.length ? 'SKU 规格排版完成' : 'SKU 规格排版部分完成',
-                        `${size} 双导出 ${producedComboFiles}/${combos.length} 个组合文件。`,
+                        producedComboFiles === combos.length ? 'SKU 规格暂存准备完成' : 'SKU 规格暂存准备不完整',
+                        `${size} 双已准备 ${producedComboFiles}/${combos.length} 组 JPG/PSB 暂存文件，尚未提交正式目录。`,
                         producedComboFiles === combos.length ? 'success' : 'error',
                         0.72
                     );
@@ -6445,22 +6483,10 @@ export const skuBatchExecutor: SkillExecutor = {
                 const noteTemplateDoc = resolvedAssets.noteTemplateDoc || null;
 
                 if (noteTemplateDoc) {
-                    const noteOutputDir = String(outputDir || '').trim();
-                    const noteStagingPaths = noteOutputDir
-                        ? buildSkuNoteStagingPaths(noteOutputDir)
-                        : { parent: '', root: '' };
-                    const noteStagingParent = noteStagingPaths.parent;
-                    const noteStagingRoot = noteStagingPaths.root;
+                    const noteOutputDir = settledOutputDir;
                     try {
                         if (!noteOutputDir) {
                             throw new Error('自选备注缺少有效的正式输出目录。');
-                        }
-                        const stagingCreated = await (window as any).designEcho?.invoke?.(
-                            'fs:createDirectory',
-                            noteStagingRoot
-                        );
-                        if (stagingCreated !== true) {
-                            throw new Error('自选备注暂存目录创建失败。');
                         }
 
                         await executeToolCall('switchDocument', { documentName: noteTemplateDoc.name }, { signal });
@@ -6472,9 +6498,8 @@ export const skuBatchExecutor: SkillExecutor = {
                         combos: noteCombos,
                         maxRowsPerToolCall: 1
                     });
-                    const pendingNoteArtifacts: SkuStagedNoteExport[] = [];
-                    const pendingNotePathKeys = new Set<string>();
-                    const existingFinalPathKeys = new Set(allFinalFiles.map(normalizePathForCompare));
+                    const pendingNoteArtifacts: SkuStagedRasterExport[] = [];
+                    const pendingNoteEditableReceipts = new Map<string, SkuEditableDeliveryReceipt>();
                     let completedNoteBatches = 0;
                     let noteBatchFailed = false;
 
@@ -6489,6 +6514,21 @@ export const skuBatchExecutor: SkillExecutor = {
                             const noteUserMessage = `${size}双自选备注无法打开可用模板，本次未生成该项。`;
                             recordSkuDiagnostic(noteError, noteUserMessage);
                             emitStep('warning', 'SKU 自选备注模板批次不可用', noteUserMessage, 'error', 0.84);
+                            break;
+                        }
+                        const expectedNoteItem = expectedExportItemsById.get(
+                            `note:${size}:${batch.rowStartIndex + 1}`
+                        );
+                        const batchNoteTemplateName = normalizeNameWithoutExt(batchNoteTemplateDoc.name || '');
+                        if (
+                            !expectedNoteItem
+                            || expectedNoteItem.kind !== 'note'
+                            || expectedNoteItem.templateName.toLowerCase() !== batchNoteTemplateName
+                        ) {
+                            noteBatchFailed = true;
+                            const diagnostic = `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}: 当前模板或批次行无法匹配执行前冻结的精确导出清单。`;
+                            exportInventoryViolations.push(diagnostic);
+                            recordSkuDiagnostic(diagnostic, `${size}双自选备注执行目标发生变化，已停止该规格。`);
                             break;
                         }
                         const noteExpectedItemCount = Math.max(1, Number(batch.combos?.[0]?.length || size || 1));
@@ -6575,10 +6615,17 @@ export const skuBatchExecutor: SkillExecutor = {
                                 : undefined,
                             outputFormat: 'jpg',
                             quality: 12,
-                            outputDir: noteStagingRoot,
-                            noteFilePrefix: noteBatches.length > 1
-                                ? `${size}双自选备注-${batch.batchIndex}`
-                                : `${size}双自选备注`
+                            outputDir: skuStagingRoot,
+                            editableOutputDir: editableStagingOutputDir,
+                            deliveryPlan: {
+                                version: 'sku-layout-delivery-plan/v1',
+                                items: [{
+                                    itemId: expectedNoteItem.id,
+                                    rasterOutputPath: `${skuStagingRoot}\\${expectedNoteItem.templateName}\\${expectedNoteItem.fileName}`,
+                                    editableOutputPath: `${editableStagingOutputDir}\\${expectedNoteItem.templateName}\\${expectedNoteItem.editableFileName}`
+                                }]
+                            },
+                            noteFilePrefix: expectedNoteItem.fileName.replace(/\.jpg$/i, '')
                         };
                         const noteResult = await executeSkuLayoutWithModalRetry(
                             noteSkuLayoutParams,
@@ -6636,12 +6683,17 @@ export const skuBatchExecutor: SkillExecutor = {
                         const noteFiles = Array.isArray(noteResult?.data?.exportedFiles)
                             ? noteResult.data.exportedFiles
                             : [];
+                        const noteEditableDocuments = Array.isArray(noteResult?.data?.editableDocuments)
+                            ? noteResult.data.editableDocuments
+                            : [];
                         const hasExactNoteExportReceipt = noteResult?.data?.exportedCount === 1
-                            && noteFiles.length === 1;
+                            && noteFiles.length === 1
+                            && noteEditableDocuments.length === 1;
                         const invalidNoteExportReceiptDiagnostic = hasExactNoteExportReceipt
                             ? ''
-                            : `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}: 导出回执必须满足 exportedCount===1 且 exportedFiles 恰好包含 1 项，实际为 exportedCount=${String(noteResult?.data?.exportedCount)}、exportedFiles=${noteFiles.length} 项。`;
+                            : `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}: 成对交付回执必须包含 1 张 JPG 和 1 份 PSB，实际 exportedCount=${String(noteResult?.data?.exportedCount)}、JPG=${noteFiles.length}、PSB=${noteEditableDocuments.length}。`;
                         if (invalidNoteExportReceiptDiagnostic) {
+                            exportInventoryViolations.push(invalidNoteExportReceiptDiagnostic);
                             recordSkuDiagnostic(invalidNoteExportReceiptDiagnostic, `${size}双自选备注导出回执不完整，该批次未计为交付。`);
                         }
                         const noteBatchDeliverable = noteResult?.success === true
@@ -6650,27 +6702,49 @@ export const skuBatchExecutor: SkillExecutor = {
                             && noteFailureDiagnostics.length === 0
                             && hasExactNoteExportReceipt;
                         if (noteBatchDeliverable) {
-                            const parsedArtifact = parseSkuStagedNoteExport({
+                            const editableValidation = await validateSkuEditableDeliveryResult({
+                                expected: expectedNoteItem,
+                                toolResult: noteResult,
+                                stagedEditablePath: `${editableStagingOutputDir}\\${expectedNoteItem.templateName}\\${expectedNoteItem.editableFileName}`
+                            });
+                            const parsedArtifact = parseSkuStagedRasterExport({
                                 rawFileInfo: noteFiles[0],
-                                stagingRoot: noteStagingRoot,
+                                stagingRoot: skuStagingRoot,
                                 outputDir: noteOutputDir,
-                                expectedDimensions: getDocumentExportDimensions(noteTemplateDocWithPreflight)
+                                expectedFinalPath: expectedNoteItem.path,
+                                expectedDimensions: expectedNoteItem.expectedDimensions
                             });
                             const artifact = parsedArtifact.artifact;
-                            const artifactPathKey = artifact?.finalPathKey || '';
-                            const isDuplicateResolvedPath = Boolean(artifactPathKey)
-                                && (pendingNotePathKeys.has(artifactPathKey) || existingFinalPathKeys.has(artifactPathKey));
-                            if (parsedArtifact.success && artifact && !isDuplicateResolvedPath) {
+                            const artifactStagedPathKey = artifact?.tempPathKey || '';
+                            const editableStagedPathKey = editableValidation.success
+                                ? normalizePathForCompare(editableValidation.receipt.stagedPath || '')
+                                : '';
+                            const isDuplicateResolvedPath = Boolean(artifactStagedPathKey)
+                                && (acceptedStagedPathKeys.has(artifactStagedPathKey)
+                                    || acceptedStagedPathKeys.has(editableStagedPathKey));
+                            if (parsedArtifact.success
+                                && artifact
+                                && editableValidation.success
+                                && !isDuplicateResolvedPath) {
                                 pendingNoteArtifacts.push(artifact);
-                                pendingNotePathKeys.add(artifact.finalPathKey);
+                                pendingNoteEditableReceipts.set(
+                                    expectedNoteItem.id,
+                                    editableValidation.receipt
+                                );
                                 completedNoteBatches += 1;
                                 continue;
                             }
 
                             noteBatchFailed = true;
                             const noteResolveError = isDuplicateResolvedPath
-                                ? `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}: 最终导出路径与本规格其他批次或已有交付重复：${String(artifact?.finalPath || '')}`
-                                : parsedArtifact.error || `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}: 未解析出唯一有效的临时导出文件`;
+                                ? `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}: 暂存路径与其他批次重复：${String(artifact?.tempPath || '')}`
+                                : (!editableValidation.success
+                                    ? editableValidation.error
+                                    : parsedArtifact.error || `${size}双自选备注批次 ${batch.batchIndex}/${batch.batchCount}: 未解析出唯一有效的临时导出文件`);
+                            if (!editableValidation.success) {
+                                skuEditableDeliveryViolations.push(editableValidation.error);
+                            }
+                            exportInventoryViolations.push(noteResolveError);
                             recordSkuDiagnostic(noteResolveError, `${size}双自选备注导出路径无法唯一确认，该批次未计为交付。`);
                             emitStep('warning', 'SKU 自选备注导出路径无效', `${size}双自选备注没有完成。`, 'error', 0.84);
                             continue;
@@ -6692,48 +6766,39 @@ export const skuBatchExecutor: SkillExecutor = {
                         && !noteBatchFailed
                         && completedNoteBatches === noteBatches.length
                         && pendingNoteArtifacts.length === noteBatches.length
-                        && pendingNotePathKeys.size === noteBatches.length;
-                    let noteSizeCommitted = false;
+                        && pendingNoteEditableReceipts.size === noteBatches.length;
+                    let noteSizeStaged = false;
                     if (allNoteBatchesReadyToCommit) {
-                        const exportValidation = await validateSkuStagedNoteExports(pendingNoteArtifacts);
-                        if (!exportValidation.success) {
-                            noteBatchFailed = true;
-                            recordSkuDiagnostic(
-                                `${size}双自选备注导出文件验收失败：${exportValidation.error || '未知错误'}`,
-                                `${size}双自选备注文件未通过可解码与尺寸检查，该项未计为完成。`
-                            );
-                        } else {
-                            const promotion = await promoteSkuStagedNoteExports(pendingNoteArtifacts);
-                            if (!promotion.success) {
+                        const expectedNoteItems = expectedExportInventory.items.filter((item) => (
+                            item.kind === 'note' && item.size === size
+                        ));
+                        for (let index = 0; index < expectedNoteItems.length; index += 1) {
+                            const expectedNoteItem = expectedNoteItems[index];
+                            const artifact = pendingNoteArtifacts[index];
+                            const editableReceipt = pendingNoteEditableReceipts.get(expectedNoteItem.id);
+                            if (!artifact || !editableReceipt) {
                                 noteBatchFailed = true;
-                                recordSkuDiagnostic(
-                                    `${size}双自选备注暂存文件提交失败：${promotion.error || '未知错误'}`,
-                                    `${size}双自选备注未能安全提交到交付目录，该项未计为完成。`
-                                );
-                            } else {
-                                for (const artifact of pendingNoteArtifacts) {
-                                    allFinalFiles.push(artifact.finalPath);
-                                    await postExportPreview(
-                                        artifact.finalPath,
-                                        `已导出：${String(artifact.finalPath).split(/[\\/]/).slice(-2).join('/')}`
-                                    );
-                                }
-                                allFinalExportRecords.push(...pendingNoteArtifacts.map((artifact) => ({
-                                    path: artifact.finalPath,
-                                    expectedDimensions: artifact.expectedDimensions
-                                })));
-                                generatedNoteSizes.add(size);
-                                noteSizeCommitted = true;
+                                break;
                             }
+                            acceptedStagedPathKeys.add(artifact.tempPathKey);
+                            acceptedStagedPathKeys.add(
+                                normalizePathForCompare(editableReceipt.stagedPath || '')
+                            );
+                            pendingRasterArtifactsByItemId.set(expectedNoteItem.id, artifact);
+                            provisionalEditableDeliveryReceipts.set(
+                                expectedNoteItem.id,
+                                editableReceipt
+                            );
                         }
+                        noteSizeStaged = !noteBatchFailed;
                     }
 
-                    completedNoteRowsBySize.set(size, noteSizeCommitted ? noteBatches.length : 0);
-                    if (noteSizeCommitted) {
+                    stagedNoteRowsBySize.set(size, noteSizeStaged ? noteBatches.length : 0);
+                    if (noteSizeStaged) {
                         emitStep(
                             'verification',
-                            'SKU 自选备注生成完成',
-                            `${size} 双自选备注导出 ${pendingNoteArtifacts.length} 个文件。`,
+                            'SKU 自选备注暂存准备完成',
+                            `${size} 双自选备注已准备 ${pendingNoteArtifacts.length} 组 JPG/PSB，尚未提交正式目录。`,
                             'success',
                             0.84
                         );
@@ -6754,28 +6819,11 @@ export const skuBatchExecutor: SkillExecutor = {
                         emitStep('warning', 'SKU 自选备注无导出', `${size} 双自选备注没有导出文件。`, 'error', 0.84);
                     }
 
-                    if (noteSizeCommitted
-                        && !processedSizes.some((item) => item.startsWith(`${size}双 (`))) {
-                        processedSizes.push(`${size}双 (自选备注)`);
-                    }
                     } catch (error: any) {
-                        completedNoteRowsBySize.set(size, 0);
+                        stagedNoteRowsBySize.set(size, 0);
                         const noteError = `${size}双自选备注导出失败：${String(error?.message || error || '未知错误')}`;
                         recordSkuDiagnostic(noteError, `${size}双自选备注没有生成到交付目录。`);
                         emitStep('warning', 'SKU 自选备注导出失败', `${size} 双自选备注没有完成。`, 'error', 0.84);
-                    } finally {
-                        if (noteStagingRoot) {
-                            const stagingCleanup = await cleanupSkuNotePaths([noteStagingRoot]);
-                            if (!stagingCleanup.success) {
-                                appendUniqueDiagnostics(allCopyErrors, [String(stagingCleanup.error || 'SKU 自选备注暂存文件清理失败')]);
-                            }
-                        }
-                        if (noteStagingParent) {
-                            const parentCleanup = await cleanupSkuNoteStagingParentIfEmpty(noteStagingParent);
-                            if (!parentCleanup.success) {
-                                appendUniqueDiagnostics(allCopyErrors, [String(parentCleanup.error || 'SKU 自选备注空暂存目录清理失败')]);
-                            }
-                        }
                     }
                 } else {
                     recordSkuDiagnostic(
@@ -6787,20 +6835,107 @@ export const skuBatchExecutor: SkillExecutor = {
             }
         }
         
-        // 8. 汇总结果
-        const completedCombosBySize = Object.fromEntries(
-            Object.entries(combosBySize).filter(([size]) => completedComboSizes.has(Number(size)))
-        ) as Record<string, string[][]>;
-        const totalCombos = Object.values(completedCombosBySize).reduce((sum, arr) => sum + arr.length, 0);
-        const noteCount = generatedNoteSizes.size;
-        
-        const exportFileNames = allFinalFiles.map(f => {
-            const fileName = f.split(/[/\\]/).pop() || f;
-            return fileName;
-        });
+        // 8. 只有冻结清单中的全部 JPG/PSB 都通过暂存验收后，才允许一次性提交正式目录。
+        const allStagedPairsReady = pendingRasterArtifactsByItemId.size
+            === expectedExportInventory.items.length
+            && provisionalEditableDeliveryReceipts.size === expectedExportInventory.items.length
+            && expectedExportInventory.items.every((item) => (
+                pendingRasterArtifactsByItemId.has(item.id)
+                && Boolean(provisionalEditableDeliveryReceipts.get(item.id)?.stagedPath)
+            ));
+        let pairedPromotionSucceeded = false;
+        if (!allStagedPairsReady) {
+            const diagnostic = `SKU 成对交付只准备了 JPG ${pendingRasterArtifactsByItemId.size}/${expectedExportInventory.items.length}、PSB ${provisionalEditableDeliveryReceipts.size}/${expectedExportInventory.items.length}，未提交任何正式文件。`;
+            exportInventoryViolations.push(diagnostic);
+            skuEditableDeliveryViolations.push(diagnostic);
+            appendUniqueDiagnostics(allCopyErrors, [diagnostic]);
+        } else {
+            const stagedRasterArtifacts = expectedExportInventory.items.map((item) => (
+                pendingRasterArtifactsByItemId.get(item.id)!
+            ));
+            const stagedRasterValidation = await validateSkuStagedRasterExports(stagedRasterArtifacts);
+            if (!stagedRasterValidation.success) {
+                const diagnostic = `SKU 暂存 JPG 验收失败：${stagedRasterValidation.error || '未知错误'}`;
+                exportInventoryViolations.push(diagnostic);
+                appendUniqueDiagnostics(allCopyErrors, [diagnostic]);
+            } else {
+                const editableArtifacts = new Map(expectedExportInventory.items.map((item) => {
+                    const receipt = provisionalEditableDeliveryReceipts.get(item.id)!;
+                    return [item.id, {
+                        stagedPath: receipt.stagedPath!,
+                        finalPath: item.editablePath
+                    }] as const;
+                }));
+                const destinationBaselines = new Map([
+                    ...expectedExportBaselines,
+                    ...expectedEditableBaselines
+                ]);
+                const promotion = await promoteSkuStagedDeliverySet({
+                    expectedItems: expectedExportInventory.items,
+                    rasterArtifacts: pendingRasterArtifactsByItemId,
+                    editableArtifacts,
+                    destinationBaselines,
+                    transaction: skuStagingTransaction
+                });
+                if (!promotion.success) {
+                    preserveSkuStagingRoot = promotion.preserveStagingRoot === true;
+                    skuStagingRecoveryPath = String(promotion.recoveryPath || '').trim();
+                    const diagnostic = `SKU ${expectedExportInventory.items.length * 2} 文件成对事务提交失败：${promotion.error || '未知错误'}`
+                        + (skuStagingRecoveryPath
+                            ? `；恢复位置：${skuStagingRecoveryPath}`
+                            : preserveSkuStagingRoot
+                                ? `；暂存目录已保留：${skuStagingRoot}`
+                                : '；正式目录已回滚到事务前状态。');
+                    exportInventoryViolations.push(diagnostic);
+                    skuEditableDeliveryViolations.push(diagnostic);
+                    appendUniqueDiagnostics(allCopyErrors, [diagnostic]);
+                } else {
+                    pairedPromotionSucceeded = true;
+                    allFinalFiles.push(...expectedExportInventory.items.map((item) => item.path));
+                    const finalizedEditable = await finalizeSkuEditableDeliveryReceipts({
+                        receipts: provisionalEditableDeliveryReceipts,
+                        baselines: expectedEditableBaselines
+                    });
+                    for (const [itemId, receipt] of finalizedEditable.receipts) {
+                        skuEditableDeliveryReceipts.set(itemId, receipt);
+                    }
+                    appendUniqueDiagnostics(
+                        skuEditableDeliveryViolations,
+                        finalizedEditable.violations
+                    );
+                    for (const item of expectedExportInventory.items) {
+                        await postExportPreview(
+                            item.path,
+                            `已导出：${String(item.path).split(/[\\/]/).slice(-2).join('/')}`
+                        );
+                    }
+                    for (const [sizeText, combos] of Object.entries(combosBySize)) {
+                        const size = Number(sizeText);
+                        const stagedCount = stagedComboRowsBySize.get(size) || 0;
+                        completedComboRowsBySize.set(size, stagedCount);
+                        if (stagedCount === combos.length && combos.length > 0) {
+                            completedComboSizes.add(size);
+                        }
+                        if (stagedCount > 0) {
+                            processedSizes.push(
+                                stagedCount === combos.length
+                                    ? `${size}双 (${combos.length}组)`
+                                    : `${size}双 (${stagedCount}/${combos.length}组)`
+                            );
+                        }
+                    }
+                    for (const size of comboSizes) {
+                        const stagedNoteCount = stagedNoteRowsBySize.get(size) || 0;
+                        completedNoteRowsBySize.set(size, stagedNoteCount);
+                        if (stagedNoteCount > 0) {
+                            generatedNoteSizes.add(size);
+                            processedSizes.push(`${size}双 (自选备注)`);
+                        }
+                    }
+                }
+            }
+        }
 
-        const totalGenerated = totalCombos + noteCount;
-        const skippedNoteCount = skippedNoteSizes.size;
         const skuExportFileProbes: any[] = [];
         const probeImageFile = (window as any).designEcho?.probeImageFile;
         if (allFinalFiles.length > 0 && typeof probeImageFile === 'function') {
@@ -6808,23 +6943,84 @@ export const skuBatchExecutor: SkillExecutor = {
                 if (!isProbeableExportPath(exportedPath)) continue;
                 try {
                     const probe = await probeImageFile(exportedPath);
-                    if (probe) skuExportFileProbes.push(probe);
+                    const freshness = await verifySkuExportFreshness({
+                        filePath: exportedPath,
+                        baseline: expectedExportBaselines.get(normalizePathForCompare(exportedPath))
+                    });
+                    if (probe) {
+                        skuExportFileProbes.push({
+                            ...probe,
+                            path: exportedPath,
+                            freshnessVerified: freshness.verified,
+                            freshnessProof: freshness.proof,
+                            ...(freshness.error && !probe.error ? { error: freshness.error } : {})
+                        });
+                    } else {
+                        skuExportFileProbes.push({
+                            success: false,
+                            path: exportedPath,
+                            status: 'decode_failed',
+                            rawImagesRedacted: true,
+                            freshnessVerified: freshness.verified,
+                            freshnessProof: freshness.proof,
+                            error: freshness.error || '图片探针没有返回结果。'
+                        });
+                    }
                 } catch (error) {
                     skuExportFileProbes.push({
                         success: false,
                         path: exportedPath,
                         status: 'decode_failed',
                         rawImagesRedacted: true,
+                        freshnessVerified: false,
+                        freshnessProof: 'unverified',
                         error: error instanceof Error ? error.message : String(error)
                     });
                 }
             }
         }
         const skuExportReadback = buildSkuExportReadback({
-            expectedExportPaths: allFinalFiles,
-            expectedExports: allFinalExportRecords,
-            fileProbes: skuExportFileProbes
+            expectedExports: expectedExportInventory.items.map((item) => ({
+                path: item.path,
+                expectedDimensions: item.expectedDimensions
+            })),
+            actualExportPaths: allFinalFiles,
+            fileProbes: skuExportFileProbes,
+            inventoryViolations: exportInventoryViolations
         });
+        const skuEditableDeliveryReadback = buildSkuEditableDeliveryReadback({
+            expectedItems: expectedExportInventory.items,
+            receipts: skuEditableDeliveryReceipts,
+            violations: skuEditableDeliveryViolations
+        });
+        if (skuEditableDeliveryReadback.status !== 'ready') {
+            const editableDiagnostics = [
+                ...skuEditableDeliveryReadback.violations,
+                ...skuEditableDeliveryReadback.missingItemIds.map((itemId) => (
+                    `${itemId} 缺少成对的可编辑 PSB。`
+                ))
+            ];
+            appendUniqueDiagnostics(allCopyErrors, editableDiagnostics);
+            recordSkuDiagnostic(
+                `SKU 可编辑源稿读回失败：${editableDiagnostics.join('；') || '成对 PSB 不完整'}`,
+                '还有 SKU 可编辑源稿没有通过成对校验，本次结果未标记为完成。'
+            );
+        }
+        if (!pairedPromotionSucceeded) {
+            completedComboRowsBySize.clear();
+            completedNoteRowsBySize.clear();
+            completedComboSizes.clear();
+            generatedNoteSizes.clear();
+        }
+        const completedCombosBySize = Object.fromEntries(
+            Object.entries(combosBySize).filter(([size]) => completedComboSizes.has(Number(size)))
+        ) as Record<string, string[][]>;
+        const totalCombos = Object.values(completedCombosBySize).reduce((sum, arr) => sum + arr.length, 0);
+        const noteCount = generatedNoteSizes.size;
+        const exportFileNames = allFinalFiles.map((filePath) => (
+            filePath.split(/[/\\]/).pop() || filePath
+        ));
+        const totalGenerated = totalCombos + noteCount;
         const designPlanner = buildSkuBatchPlannerContext({
             userInput: trustedUserInput.trim(),
             params,
@@ -6914,22 +7110,69 @@ export const skuBatchExecutor: SkillExecutor = {
         const deliveryOutcome = resolveSkuBatchDeliveryOutcome({
             hasAnyProcessedOutput,
             allRequestedOutputsComplete,
-            hasExecutionWarnings: hasWarnings,
+            hasExecutionWarnings: hasWarnings || skuEditableDeliveryReadback.status !== 'ready',
             exportReadbackStatus: skuExportReadback.status,
             blockedByInvalidSkuTemplateLayout
         });
-        let deliveryStatus: 'failed' | 'partial' | 'completed';
-        if (!hasAnyProcessedOutput) deliveryStatus = 'failed';
-        else if (deliveryOutcome.success) deliveryStatus = 'completed';
-        else deliveryStatus = 'partial';
         const resultStatus = deliveryOutcome.status;
         const requiresDraftReview = skuSizePlanProvenance.requiresReviewBeforePublishing
             || skuCombinationProvenance.requiresReviewBeforePublishing;
         const publicationNotice = requiresDraftReview
             ? '本轮规格或组合是 Agent 根据当前色卡生成的可撤回草稿，并非用户或项目已确认的业务事实；文件制作完成后，正式发布前仍需复核规格与组合。'
             : undefined;
+        const runtimeDeliveryResultRefs = expectedExportInventory.items.map((item) => (
+            `workflow:sku-batch:export:${item.id}`
+        ));
+        const runtimeDeliveryArtifacts = buildSkuRuntimeDeliveryArtifacts({
+            expectedItems: expectedExportInventory.items,
+            rasterFileProbes: skuExportFileProbes,
+            editableReceipts: skuEditableDeliveryReceipts
+        });
+        const expectedRuntimeDeliveryArtifacts = expectedExportInventory.items.flatMap((item) => ([{
+            path: item.path,
+            kind: 'raster_export' as const,
+            proof: 'file_probe' as const
+        }, {
+            path: item.editablePath,
+            kind: 'editable_document' as const,
+            proof: 'staged_editable_document_promotion' as const
+        }]));
+        const runtimeArtifactSetExact = runtimeDeliveryArtifacts.length
+            === expectedRuntimeDeliveryArtifacts.length
+            && runtimeDeliveryArtifacts.every((artifact, index) => {
+                const expected = expectedRuntimeDeliveryArtifacts[index];
+                return artifact.kind === expected.kind
+                    && artifact.proof === expected.proof
+                    && normalizePathForCompare(artifact.path) === normalizePathForCompare(expected.path);
+            });
+        const finalDeliverySuccess = deliveryOutcome.success && runtimeArtifactSetExact;
+        const stagingCleanup = await finalizeSkuStagingOnce();
+        const stagingCleanupNotices = Array.from(new Set([
+            ...(!stagingCleanup.success
+                ? [String(stagingCleanup.error || 'SKU 事务暂存目录未能自动清理。')]
+                : []),
+            ...(stagingCleanup.warnings || [])
+        ].map((message) => message.trim()).filter(Boolean)));
+        if (stagingCleanupNotices.length > 0) {
+            const recoveryPath = String(
+                stagingCleanup.recoveryPath
+                || skuStagingRecoveryPath
+                || (stagingCleanup.preserveStagingRoot ? skuStagingRoot : '')
+            ).trim();
+            const cleanupNotice = finalDeliverySuccess
+                ? `SKU 文件已完整交付，但有临时文件未能自动清理${recoveryPath ? `；位置：${recoveryPath}` : ''}。`
+                : `本次 SKU 文件没有完整交付；为避免覆盖或丢失文件，已保留可恢复文件${recoveryPath ? `；位置：${recoveryPath}` : ''}。`;
+            if (finalDeliverySuccess) {
+                appendUniqueDiagnostics(skuUserAdvisories, [cleanupNotice]);
+            } else {
+                appendUniqueDiagnostics(skuUserWarnings, [cleanupNotice]);
+            }
+        }
+        let finalDeliveryStatus: 'failed' | 'partial' | 'completed' = 'failed';
+        if (finalDeliverySuccess) finalDeliveryStatus = 'completed';
+        else if (hasAnyProcessedOutput) finalDeliveryStatus = 'partial';
         const skuDeliverySummary = buildSkuDeliverySummary({
-            status: deliveryStatus,
+            status: finalDeliveryStatus,
             skuDocName,
             requestedSizes: requestedOutputRequirements.map((requirement) => requirement.size),
             processedSizes,
@@ -6944,7 +7187,47 @@ export const skuBatchExecutor: SkillExecutor = {
             exportReadbackStatus: skuExportReadback.status,
             publicationNotice
         });
-        const successMessage = skuDeliverySummary.compactText;
+        const finalResultStatus = !finalDeliverySuccess && resultStatus === 'completed'
+            ? 'partial'
+            : resultStatus;
+        const successMessage = finalDeliverySuccess
+            ? `${skuDeliverySummary.compactText} 同步生成 ${skuEditableDeliveryReadback.verifiedCount} 份逐行可编辑 PSB。`
+            : `${skuDeliverySummary.compactText} 最终文件集合未通过完整核对，本次未标记为完成。`;
+        const runtimeDeliveryReceipt = buildRuntimeDeliveryReceipt({
+            settlementScope: 'multi_document_task',
+            status: finalDeliverySuccess
+                && allRequestedOutputsComplete
+                && skuExportReadback.status === 'ready_for_review'
+                && skuEditableDeliveryReadback.status === 'ready'
+                && runtimeArtifactSetExact
+                ? 'ready'
+                : 'incomplete',
+            outputs: [
+                'editable_sku_batch_documents',
+                'sku_images',
+                'sku_manifest',
+                'review_report'
+            ],
+            resultRefs: runtimeDeliveryResultRefs,
+            resultRefProofs: runtimeDeliveryResultRefs.map((resultRef) => ({
+                resultRef,
+                effect: 'save_export' as const
+            })),
+            artifacts: runtimeDeliveryArtifacts,
+            issues: [
+                ...(!allRequestedOutputsComplete ? ['SKU 输出集合与执行前精确计划不一致。'] : []),
+                ...(skuExportReadback.status !== 'ready_for_review'
+                    ? [`SKU 文件读回状态为 ${skuExportReadback.status}。`]
+                    : []),
+                ...(skuEditableDeliveryReadback.status !== 'ready'
+                    ? ['SKU 可编辑 PSB 与 JPG 没有形成完整逐行配对。']
+                    : []),
+                ...(!runtimeArtifactSetExact
+                    ? ['SKU 最终 artifact 集合没有逐项精确匹配冻结的 JPG/PSB 清单。']
+                    : []),
+                ...(!finalDeliverySuccess ? ['SKU 交付结果没有达到完整成功状态。'] : [])
+            ]
+        });
         const skuPlanInputs: SkuBatchPlanInput[] = Object.entries(combosBySize)
             .map(([size, combos]) => ({
                 size: Number(size),
@@ -6960,9 +7243,9 @@ export const skuBatchExecutor: SkillExecutor = {
             totalCombinations: totalCombos,
             specs: skuPlanInputs,
             toolResults: publicToolResults,
-            success: deliveryOutcome.success,
+            success: finalDeliverySuccess,
             warnings: allCopyErrors,
-            blockers: deliveryOutcome.success
+            blockers: finalDeliverySuccess
                 ? []
                 : (allCopyErrors.length > 0 ? allCopyErrors : ['SKU 交付未满足完整规格与文件读回要求。'])
         });
@@ -6970,12 +7253,12 @@ export const skuBatchExecutor: SkillExecutor = {
             'finalizing',
             'SKU 批量生成结果已汇总',
             `处理规格 ${processedSizes.length} 个，组合 ${totalCombos} 个，导出文件 ${allFinalFiles.length} 个，警告 ${allCopyErrors.length} 条。`,
-            deliveryOutcome.success ? 'success' : 'error',
+            finalDeliverySuccess ? 'success' : 'error',
             1
         );
         
         return {
-            success: deliveryOutcome.success,
+            success: finalDeliverySuccess,
             message: successMessage,
             toolResults: publicToolResults,
             data: {
@@ -6983,10 +7266,11 @@ export const skuBatchExecutor: SkillExecutor = {
                 totalGenerated,
                 processedSizes,
                 exportCount: allFinalFiles.length,
+                editableDocumentCount: skuEditableDeliveryReadback.verifiedCount,
                 warningCount: skuUserWarnings.length,
                 advisoryCount: skuUserAdvisories.length,
-                status: resultStatus,
-                partial: deliveryOutcome.partial,
+                status: finalResultStatus,
+                partial: deliveryOutcome.partial || !finalDeliverySuccess,
                 warnings: skuUserWarnings,
                 advisories: skuUserAdvisories,
                 skuPrivateDiagnostics: buildSkuPrivateDiagnostics(
@@ -7008,6 +7292,8 @@ export const skuBatchExecutor: SkillExecutor = {
                 skuCardTemplatePreparationPlan,
                 skuCardTemplatePreparationRun,
                 skuExportReadback,
+                skuEditableDeliveryReadback,
+                runtimeDeliveryReceipt,
                 skuVisualReviewIntake,
                 skuHumanReviewTarget,
                 skuHumanReviewBinding,
@@ -7033,5 +7319,8 @@ export const skuBatchExecutor: SkillExecutor = {
                 designPlanner
             }
         };
+        } finally {
+            await finalizeSkuStagingOnce();
+        }
     }
 };

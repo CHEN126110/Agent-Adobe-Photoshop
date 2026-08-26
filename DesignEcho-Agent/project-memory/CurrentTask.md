@@ -17,7 +17,13 @@
 - `cd8f22ac` 已收口普通文字 Skill 推荐越权：推荐只是模型可忽略候选，只有用户明选或模型 `declareDesignIntent` 能绑定 Runtime Skill，未绑定推荐也不再抢占交互卡 owner。
 - 单次提交会冻结当时的唯一多模态模型、Provider 与思考档，TaskRun 中途不跟随 UI 设置漂移。正式调试写入桥要求 token、精确项目/模型/DesignEcho Build/Photoshop Build、干净真实运行时和单租约；提交前与完成后均重新校验 `dist/main` / `dist/renderer` 实际摘要，不信任启动缓存。
 - Provider 一次输出截断只在 debug trace 记录并静默续接，不再向用户显示“长度上限、正在补全”。连续恢复失败仍返回 `success:false`，并只依据可信 Photoshop mutation 区分“已保留改动”与“尚未修改画面”；普通轮次也不再无条件先压到 4096 输出 token。
+- Provider 输出现在按两阶段事务结算：content、reasoning 和 Tool arguments 在取得唯一、无冲突的完整终态前都只是临时缓冲；成功恢复只提交完整最终响应，失败则整轮丢弃半成品并返回自然、诚实的失败说明。恢复次数、终态冲突和底层诊断只进入结构化 Debug 记录，不进入普通对话正文。当前找到的历史实例来自旧 DeepSeek 视觉运行，不足以归因到新接入的 GPT 5.6 订阅通道。
+- 初始图片观察、视觉批次、工具禁用后的重规划、强制收尾、静默总结、增强总结与最终视觉 Judge 等辅助模型调用也统一消费同一完整终态 reader；`max_tokens`、内容拦截、传输未完成、缺少终态、意外 Tool 或终态冲突都返回空的不可消费结果，不得把半句话写入项目事实、最终回复或“图片已观察”状态。
+- Agent 普通结果不再携带本机最终文件路径或 Debug request id；E2 只把内部 resultRef 投影到请求级 Debug sidecar。主图与 SKU 统一消费 `runtime-delivery-receipt/v2` 这一份收据 owner，后补任意 `saveDocument` 不再解锁或拼接复合 Skill 的交付物。
 - SKU 正常缺源路径已改为零写入 handoff：候选只有稳定身份，Agent 必须在首次写入前显式选素材、选择 flat/card 结构，并声明画布底色、卡片、网格对齐、标签字体/字距/内边距、序号样式、配色、主体占比和锚点；Runtime 收据精确绑定 `assetId → path → order`，Skill 只验证与求解几何。同名目录素材不再按格式优先级暗选，模型参数也不能把文件名升级为权威色名。
+- SKU 批量生产契约已从“19 张 JPG + 事后任意保存一个 PSD”收紧为执行前冻结的 19 组逐行配对：每组在同一次 Photoshop QA/history 上导出 JPG、保存分层 PSB、读回图层结构，再由同卷 staging transaction 一次晋升。正式 artifacts 只登记已通过新鲜度文件探针的 JPG 和已完成事务晋升、路径仍匹配冻结 inventory 的 PSB；晋升或回滚状态未知时保留 staging/recovery 现场，不删除证据也不宣称交付。
+- SKU 的文件晋升由 Main 签发不可伪造的事务令牌并冻结每个正式目标的 SHA-256 基线；Renderer 回传值必须与 Main 冻结值完全一致。同一令牌只有一个提交 owner，正式安装和旧文件回滚都使用原子 no-replace link，外部并发占位不会被覆盖或删除。崩溃后只有可逐项证明的 `committed` / `rollback_complete` 残留会自动清理；非终态、损坏或身份不一致的现场会保留并阻止新事务，返回精确恢复位置。这是 fail-closed 检测与现场保留，不是无证据自动续做或自动回滚。
+- 主图、详情页与 SKU Skill 已补入“沿用用户交付习惯”的方法：只观察少量同类既有设计成品，提炼目录、规格、版本、可编辑稿/导出图配对与图层命名候选；优先级为用户当前要求、已确认项目规则、同类重复习惯、Skill 基线。最终约定由 Agent 选择并冻结，Harness 只验证路径、冲突、数量与真实读回，单个旧文件或目录多数票不能自动升级成规范。
 - 手工 SKU 面板的 legacy Profile 只能通过不可序列化的内部 capability 调用；模型伪造 provenance 或历史隐藏布尔值会在零写入状态下被拒绝。
 - `placeImage` / `transformLayer` 的 Provider schema 与 UXP 执行点同时拒绝 `targetBounds` 冲突参数，并要求 Agent 显式给出 `targetFit` 与 `targetAnchor`；执行端不再偷偷回退到 `contain + center`，`focalPoint` 与旋转/翻转冲突也在写入前 fail closed。
 - 开发可靠性评测已改为 append-only Attempt 事件：所有已提交 Attempt 都进分母，旧 Suite/Case 排除但不丢安全账本，严格状态机、Run/Attempt 身份全量绑定、同一 Run 不可重复计数，自定义 data root 不能绕开 canonical fixture/unknown-write 账本。每个 Case 至少 5 次，技术通过样本必须有严格盲评覆盖。
@@ -32,22 +38,27 @@
 
 ### 下一步
 
-1. 当用户的 Photoshop 活动文档已安全保存并关闭时，重建并重启 DesignEcho 与 UXP 到 `cd8f22ac`，从固定摄影输入复制一份全新隔离 Fixture。
+1. 当用户的 Photoshop 活动文档已安全保存并关闭时，重建并重启 DesignEcho 与 UXP 到当前分支最新提交，使用已经冻结的新隔离 Fixture `main-image-c1163-r2`；不得把当前 8 个打开文档或未保存文档当作测试目标。
 2. 用自然请求运行真实 Agent → Provider → Photoshop 链路，记录模型身份、实际观察、选图依据、工具调用、文档 / history、PSD/JPG 收据、首次写入和总耗时；不在运行中人工纠偏。
 3. 将候选成稿与用户作品、Eagle 锚点做盲化成对评审；单次链路安全闭合后，在同一 Git / Case / 模型 / 请求下按 Suite 口径重复至少 5 次，并按 owner 归因失败。
 
 ### 验证与未知
 
 - `maintenance:validate` 已通过 45 个核心检查，包含 Agent/Main/Renderer 类型检查、Electron preload sandbox、Runtime 构建身份篡改、UXP 测试与 production build、作者权、可靠性分母、上下文、SKU、composeDesign 和图片落位执行点合同；无 smoke 依赖。
+- Provider 输出事务回归覆盖缺失/冲突终态、长度截断、内容拦截、SSE 跨 Buffer 中文、取消、工具参数残缺、成功静默恢复与最终失败；SKU 回归覆盖旧 UXP capability 拒绝、冻结 JPG/PSB 身份、同 history、结构读回、文件新鲜度、事务回滚保留和 exactArtifactSet 不过度声明。
+- 辅助 Provider 终态回归覆盖明确 `stop`、空 `end_turn` 正例，以及 `max_tokens`、`content_blocked`、缺少终态、意外 Tool、残缺 Tool 名、终态冲突和传输未完成负例；截断视觉判断不能再把图片记为已观察。
+- SKU 文件事务故障注入覆盖 Main 冻结基线防伪、同令牌并发 owner、旧文件等长同 mtime 篡改、安装前/回滚前外部占位、38 文件完整提交与全组回滚、正确终态残留验证清理和不确定残留保留阻断；公开回复不再口播主进程、SHA、基线或事务细节，底层错误仍保留在私有诊断中。
 - 首轮通用设计 Tool schema 为 42592 字符，低于现有 43000 渐进披露棘轮；本轮没有为新参数提高上限。
 - 两份独立提交前审查已完成；写入桥、超时取消、收据身份、Attempt 分母、SKU 作者权和 UXP 参数合同的已发现 P0/P1 均已修复，对应定向回归通过。敏感信息扫描未发现 Token、本机用户目录或临时路径进入新增 diff。
 - 尚未在本文件所在提交上完成真实 Provider → Agent → Photoshop 成稿和人工盲评，因此不能宣称 Agent 已达到专业设计师水平，也不能宣称审美成功率已经提高。
+- 逐行可编辑 SKU 的 19 JPG + 19 PSB 目前只完成代码、契约、纯逻辑和 UXP production build 验证，尚未做真实 Photoshop 批量 E2E；高分辨率嵌入内容可能产生数 GB 交付，且单个超过 512MB 的 PSB 仍会使现有 benchmark 保持 evidence incomplete，不能为通过评测而放宽真实性上限。
 - `composeDesign` / `renderLayout` 的复合图片路径仍将额外 scale 限定为 1、rotation 限定为 0；原子 `transformLayer` 能发送旋转，但尚缺可靠的最终角度读回收据。这是已知 P1 能力缺口，本轮没有靠放宽 schema 假装完成。
 - 可靠性评测仍有已知 P1：超过 512MB 的 PSD 尚无 Photoshop reopen fallback；详情页/SKU 的 artifact 几何与 Save/Export → hash/documentId 绑定仍不完整；strict blind 还是字段自证，未生成匿名 Review Packet。
+- SKU 事务还保留一个非阻断 P2：随机内部 staging root 中的源文件恢复是“确认目标不存在后 rename”，理论上仍有窄 TOCTOU 窗口；它不接触正式交付目录，无法绕过正式目标和旧文件恢复的 hard-link no-replace 边界。若后续把 staging 目录也提升到对抗外部篡改级别，应改为 link-no-replace 后按 inode 身份清理。
 
 ### 状态
 
-`in_progress / authorship_and_truncation_governance_code_complete / sku_fixed_first_draft_removed / reliability_attempt_denominator_closed / runtime_and_first_side_effect_guarded / full_core_validation_45_passed / current_user_document_untouched / independent_review_complete / code_checkpoint_cd8f22ac_remote_verified / isolated_live_photoshop_run_pending / blind_pairwise_review_pending`
+`in_progress / provider_output_two_phase_commit_complete / provider_auxiliary_complete_terminal_guarded / partial_content_reasoning_and_tools_discarded / debug_artifact_sidecar_isolated / runtime_delivery_receipt_single_owner / skill_delivery_conventions_agent_selected / sku_fixed_first_draft_removed / sku_paired_jpg_psb_contract_code_complete / sku_staging_transaction_fail_closed / sku_user_failures_plain_language / reliability_attempt_denominator_closed / runtime_and_first_side_effect_guarded / full_core_validation_45_passed / current_eight_photoshop_documents_untouched / isolated_fixture_r2_ready / latest_live_photoshop_run_pending / blind_pairwise_review_pending`
 
 ---
 

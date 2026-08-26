@@ -256,7 +256,7 @@ export const SKUSkill: SkillDeclaration = {
             '如果用户只要自选备注或备注图，设置 onlyNotes=true。',
             '组合数量、具体颜色组合和是否生成自选备注必须来自用户消息、项目配置/CSV 或结构化确认卡；裸“帮我做 SKU”可以生成候选，但默认必须经组合卡确认后才批量生产，不得填入每规格 5 组或默认备注。',
             '已有、现成、已经准备好的 SKU 色卡素材/源文件应优先复用；不要在批量生产中重新选择图片或制作第二份色卡。',
-            '上游已经确认颜色素材映射、但缺少可生产色卡资产时，stage=color-card 可用 retouchMode=auto 确定性准备纯底棚拍主体、独立原影和中性灰低频光影层；场景图自动跳过该链并保留给通用设计方向。不要把场景图强制改成纯底，也不要用旧形态位移实验冒充生产精修。',
+            '上游已经确认颜色素材映射、但缺少可生产色卡资产时，stage=color-card 可用 retouchMode=auto 只为适用的纯底棚拍素材抠出透明主体，保持真实版型并等比缩放到同批统一尺度；场景图自动跳过该链并保留给通用设计方向。当前阶段不做形态变形、独立阴影或光影修正，不要把场景图强制改成纯底。',
             '“完成后只说明结果/保存路径”是执行后的汇报约束，不等同于“只说明、不执行”。',
             '“我还需要对应的 SKU 自选备注”是补备注任务，设置 onlyNotes=true，不要把 SKU 这个领域词误判为新增颜色组合。',
             '如果用户说“2-3-4 的自选备注”之类，提取 comboSizes=[2,3,4]。',
@@ -417,7 +417,7 @@ export const SKUSkill: SkillDeclaration = {
                 }
             ]
         },
-        strParam('retouchMode', 'stage=color-card only: auto classifies studio vs scene and prepares editable retouch layers; layout_only preserves legacy layout-only behavior; studio_retouch_required fails when the sources are not suitable studio images.', false, {
+        strParam('retouchMode', 'stage=color-card only: auto classifies studio vs scene and prepares transparent studio subjects on a shared uniform scale without warping; layout_only preserves legacy layout-only behavior; studio_retouch_required fails when the sources are not suitable studio images.', false, {
             enum: ['auto', 'layout_only', 'studio_retouch_required'],
             default: 'auto'
         }),
@@ -425,9 +425,7 @@ export const SKUSkill: SkillDeclaration = {
             enum: ['auto', 'studio', 'scene'],
             default: 'auto'
         }),
-        strParam('referenceSourcePath', 'stage=color-card only: optional explicit shape reference path; when omitted the batch medoid is selected automatically.'),
-        numParam('shapeStrength', 'stage=color-card only: constrained shape normalization strength 0~1; default 0.72.'),
-        numParam('lightingStrength', 'stage=color-card only: neutral-gray low-frequency lighting correction strength 0~1; default 0.68.'),
+        strParam('referenceSourcePath', 'stage=color-card only: optional explicit uniform-scale reference source; when omitted the batch medoid is selected automatically.'),
         numParam('retouchMaxLongEdge', 'stage=color-card only: deterministic retouch working long edge 1024~3072; default 2048.'),
         boolParam('forceRetouch', 'stage=color-card only: ignore an existing versioned asset cache and rebuild it.', false),
         strParam('configAction', 'stage=config only: exact preparation action.', false, {

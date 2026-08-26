@@ -3,6 +3,7 @@ import type {
     ProviderNativeToolRequest,
     ProviderNativeToolUsage
 } from '../../../shared/provider-native-tools';
+import type { ProviderStreamStopReason } from '../../../shared/provider-stream-completion';
 import type { ModelVisualPresentationReceipt } from '../../../shared/model-visual-presentation-receipt';
 
 /**
@@ -43,6 +44,11 @@ export interface ProviderResponse {
     content?: string;
     /** 工具调用列表 */
     toolCalls?: ToolCall[];
+    /**
+     * Provider 未完整收尾时仅保留的工具名诊断；不含参数、不可执行。Agent 仍需与当轮
+     * 可见工具求交集后才能用于压缩续接提示。
+     */
+    incompleteToolCallNames?: string[];
     /** 思维过程 */
     thinking?: string;
     /** token 用量 */
@@ -55,7 +61,7 @@ export interface ProviderResponse {
     /** provider-native 工具用量，例如 web_search_usage */
     nativeToolUsage?: ProviderNativeToolUsage[];
     /** 模型停止原因 */
-    stopReason?: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
+    stopReason?: ProviderStreamStopReason | 'stop_sequence';
     /**
      * 仅由实际 Provider serializer 在成功返回边界签发；普通 adapter 未实现时必须缺席。
      * 不能从入站 messages、预算记账或调用成功布尔值补造。

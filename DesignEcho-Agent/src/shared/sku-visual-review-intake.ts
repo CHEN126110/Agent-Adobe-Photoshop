@@ -352,10 +352,9 @@ function buildRetouchReview(value: unknown): SkuVisualReviewRetouchReview | unde
     const requirements = uniqueStrings([
         ...mapRetouchRequirementLabels(strategy.reviewRequirements),
         ...mapRetouchRequirementLabels(patchRetouch?.reviewRequirements),
-        '核对 SKU 色卡袜口顶部、袜身轴线、后跟位置、脚尖角度和底部基线是否统一。',
-        '核对花边罗口、特殊罗口和真实款式差异是否被保留，不能为了统一造成失真。',
-        '核对中性灰式光影修正后针织纹理、白袜高光和黑袜暗部细节是否仍然可见。',
-        '核对白场处理后阴影层、正片叠底效果、接触阴影方向和边缘灰影是否自然。'
+        '核对各颜色透明主体高度是否统一，且没有因为原图留白导致视觉大小失衡。',
+        '核对原始宽高比、花边罗口、特殊罗口和真实版型是否完整保留。',
+        '核对主体没有被裁断、拉伸、压扁或误删针织纹理。'
     ]);
 
     return {
@@ -366,22 +365,20 @@ function buildRetouchReview(value: unknown): SkuVisualReviewRetouchReview | unde
         shapeChecks: uniqueStrings([
             ...mapRetouchRequirementLabels(shapeStrategy?.reviewRequirements),
             ...mapRetouchRequirementLabels(shapeStrategy?.unifiedPoseTargets),
-            '袜口、袜身、后跟、脚尖和底部基线统一复核'
+            '主体高度、原始宽高比、完整裁切和画布重心复核'
         ]).slice(0, 12),
         lightChecks: uniqueStrings([
             ...mapRetouchRequirementLabels(lightStrategy?.reviewRequirements),
-            ...mapRetouchRequirementLabels(lightStrategy?.methods),
-            '白点、体积光、明暗过渡和针织纹理复核'
+            ...mapRetouchRequirementLabels(lightStrategy?.methods)
         ]).slice(0, 12),
         shadowChecks: uniqueStrings([
             ...mapRetouchRequirementLabels(shadowStrategy?.reviewRequirements),
             ...mapRetouchRequirementLabels(shadowStrategy?.methods),
-            ...mapRetouchRequirementLabels(shadowStrategy?.whiteFieldPolicy),
-            '阴影分离、正片叠底、接触阴影和白底边缘复核'
+            ...mapRetouchRequirementLabels(shadowStrategy?.whiteFieldPolicy)
         ]).slice(0, 12),
         boundaries: uniqueStrings([
             ...normalizeTextList(strategy.limitations),
-            '该复核入口只检查色卡精修目标，不执行 Photoshop，也不把策略通过升级为设计质量完成。'
+            '该复核入口只检查当前透明主体统一尺度与排版目标；阴影和光影工序不在本阶段，也不把策略通过升级为设计质量完成。'
         ]).slice(0, 12)
     };
 }
@@ -397,6 +394,12 @@ function mapRetouchRequirementLabels(value: unknown): string[] {
 }
 
 const RETOUCH_REQUIREMENT_LABELS: Record<string, string> = {
+    uniform_subject_height_review_required: '复核同批透明主体高度在明确容差内一致。',
+    aspect_ratio_preservation_review_required: '复核每张主体保持原始宽高比，没有拉伸或压扁。',
+    complete_subject_crop_review_required: '复核主体完整、边缘干净且没有被画布裁断。',
+    uniform_subject_height: '统一主体高度。',
+    common_transparent_canvas: '使用同尺寸透明画布。',
+    centered_subject_on_canvas: '主体在统一画布中保持稳定重心。',
     shape_consistency_review_required: '复核袜子形态、姿态、比例和基线是否统一。',
     cuff_shape_manual_review_required: '人工复核袜口、罗口、花边和特殊造型是否保真。',
     texture_distortion_review_required: '复核针织纹理没有被拉伸、压扁或涂抹。',

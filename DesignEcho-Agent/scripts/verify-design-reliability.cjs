@@ -9,14 +9,18 @@ const path = require("path");
 const ts = require("typescript");
 
 const {
+  LEGACY_REVIEW_VERSION,
   REVIEW_VERSION,
   buildCaseDigest,
+  buildRubricDigest,
   buildDesignReliabilityCohortReport,
   calculateWeightedOverall,
   compareDesignReliabilityCohorts,
   deriveDesignReliabilityRunObservation,
   evaluateDesignReliabilityReleaseGates,
   requiredComparisonEvidenceKinds,
+  sha256Text,
+  stableStringify,
   validateDesignReliabilityCase,
   validateDesignReliabilityReview,
   validateDesignReliabilityRun
@@ -24,6 +28,7 @@ const {
 const {
   buildCanonicalAttemptSafetyLedger,
   buildPreflight,
+  buildSkuLiveDeliveryEvidence,
   buildStatus,
   buildSuiteCaseSetDigest,
   buildSuiteRubricSetDigest,
@@ -31,18 +36,29 @@ const {
   collectSidecars,
   evaluateFixtureInventory,
   evaluateLiveEnvironmentSafety,
+  inspectFixture,
   inspectEditablePsd,
   isOfficialAttemptCohortReady,
   loadSuite,
+  parseArgs,
+  prepareFixture,
+  readFixtureInstance,
+  retainContextuallyValidReviews,
   retainContextuallyValidAttemptEvents,
   resolveReliabilityEvidenceRoots,
+  resolveSidecarOutputPath,
   sidecarRoots,
   validateAttemptEventStateMachine,
   validateDebugBridgeReceipt,
+  validateRubric,
   validateMutationBaselineAgainstObservation
 } = require("./design-reliability.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
+require("ts-node").register({
+  transpileOnly: true,
+  project: path.join(ROOT, "tsconfig.main.json")
+});
 const CASE_PATH = path.join(
   ROOT,
   "benchmarks",
@@ -76,6 +92,17 @@ function loadSelfContainedTypeScriptModule(filePath) {
   loaded._compile(transpiled.outputText, filePath);
   return loaded.exports;
 }
+const {
+  buildRuntimeDeliveryReceipt,
+  findRuntimeDeliverySourceHistoryStateRef,
+  readRuntimeDeliveryReceipt
+} = require(path.join(
+  ROOT,
+  "src",
+  "shared",
+  "agent-runtime-v5",
+  "runtime-delivery-receipt.ts"
+));
 const SKU_CASE_PATH = path.join(
   ROOT,
   "benchmarks",
@@ -89,6 +116,20 @@ const SKU_RUBRIC_PATH = path.join(
   "design-reliability",
   "rubrics",
   "sku-production-v1.json"
+);
+const DETAIL_CASE_PATH = path.join(
+  ROOT,
+  "benchmarks",
+  "design-reliability",
+  "cases",
+  "detail-page-c1163-v1.json"
+);
+const DETAIL_RUBRIC_PATH = path.join(
+  ROOT,
+  "benchmarks",
+  "design-reliability",
+  "rubrics",
+  "detail-page-commercial-v1.json"
 );
 
 function readCase() {
@@ -105,6 +146,35 @@ function readSkuCase() {
 
 function readSkuRubric() {
   return JSON.parse(fs.readFileSync(SKU_RUBRIC_PATH, "utf8"));
+}
+
+function readDetailCase() {
+  return JSON.parse(fs.readFileSync(DETAIL_CASE_PATH, "utf8"));
+}
+
+function readDetailRubric() {
+  return JSON.parse(fs.readFileSync(DETAIL_RUBRIC_PATH, "utf8"));
+}
+
+function buildComparisonRefsForTest(caseSpec, run) {
+  const finalRasterRefs = new Set((run.finalArtifactManifest?.artifacts || [])
+    .filter((item) => item.kind === "raster_export")
+    .map((item) => item.ref));
+  const candidateRefs = (run.evidenceRefs || [])
+    .filter((item) => item.kind === "raster_export"
+      && item.verified === true
+      && finalRasterRefs.has(item.ref))
+    .map((item) => ({
+      kind: "candidate_final",
+      ref: `candidate:${String(item.ref).replace(/\\/g, "/")}@${String(item.digest).toLowerCase()}`
+    }));
+  const referenceRefs = (caseSpec.task?.reviewOnlyReferences || []).map((reference) => ({
+    kind: reference.kind === "user_design" ? "user_design_anchor" : "eagle_anchor",
+    ref: reference.kind === "user_design"
+      ? `user-design:${reference.ref}`
+      : reference.ref
+  }));
+  return [...candidateRefs, ...referenceRefs];
 }
 
 function mutationCall(seq, elapsedMs, historyStateId) {
@@ -233,6 +303,19 @@ function evidenceRefs() {
   ];
 }
 
+function finalArtifactManifest(refs = evidenceRefs()) {
+  const artifacts = refs
+    .filter((item) => ["editable_psd", "raster_export"].includes(item.kind) && item.verified === true)
+    .map((item) => ({ kind: item.kind, ref: item.ref, digest: item.digest }))
+    .sort((left, right) => left.ref.localeCompare(right.ref) || left.kind.localeCompare(right.kind));
+  return {
+    version: "design-reliability-final-artifact-manifest/v1",
+    declaredBy: "agent_delivery_receipt",
+    artifacts,
+    manifestDigest: sha256Text(stableStringify(artifacts))
+  };
+}
+
 function buildPassingObservation() {
   const first = runRecord({
     runId: "run-1",
@@ -273,11 +356,172 @@ function buildPassingObservation() {
       provider: "provider-a",
       modelId: "model-a"
     },
-    evidenceRefs: evidenceRefs()
+    evidenceRefs: evidenceRefs(),
+    finalArtifactManifest: finalArtifactManifest()
   });
 }
 
 async function main() {
+  const debugFinalArtifactRefsModule = loadSelfContainedTypeScriptModule(path.join(
+    ROOT,
+    "src",
+    "shared",
+    "debug-final-artifact-refs.ts"
+  ));
+  assert.deepStrictEqual(
+    debugFinalArtifactRefsModule.normalizeDebugFinalArtifactRefs([
+      "C:\\fixture\\project\\主图\\成稿.psd",
+      "C:\\fixture\\project\\主图\\成稿.jpg",
+      "C:\\fixture\\project-other\\secret.jpg",
+      "../escape.png",
+      "file:C:/escape.png",
+      "主图/成稿.jpg"
+    ], "C:\\fixture\\project"),
+    ["主图/成稿.psd", "主图/成稿.jpg"],
+    "Debug 最终交付收据只能保留当前 fixture 内由 Runtime 验证的相对文件引用"
+  );
+  const skuDebugProjectRoot = "C:\\fixture\\project";
+  const skuRasterRefs = ["SKU/2双装/1白色+黑色.jpg", "SKU/2双装/2浅肤+深肤.jpg"];
+  const skuEditableRefs = [
+    "SKU/可编辑/2双装/1白色+黑色.psb",
+    "SKU/可编辑/2双装/2浅肤+深肤.psb"
+  ];
+  const absoluteSkuRef = (ref) => `${skuDebugProjectRoot}\\${ref.replace(/\//g, "\\")}`;
+  const skuDebugSource = {
+    version: "agent-debug-sku-delivery-source/v1",
+    runtimeDeliveryReceipt: {
+      status: "ready",
+      settlementScope: "multi_document_task",
+      outputs: ["editable_sku_batch_documents", "sku_images", "sku_manifest", "review_report"],
+      resultRefs: ["workflow:sku-batch:export:1", "workflow:sku-batch:export:2"],
+      resultRefProofs: [
+        { resultRef: "workflow:sku-batch:export:1", effect: "save_export" },
+        { resultRef: "workflow:sku-batch:export:2", effect: "save_export" }
+      ],
+      artifacts: skuRasterRefs.flatMap((ref, index) => ([{
+        path: absoluteSkuRef(ref),
+        kind: "raster_export",
+        proof: "file_probe"
+      }, {
+        path: absoluteSkuRef(skuEditableRefs[index]),
+        kind: "editable_document",
+        proof: "staged_editable_document_promotion"
+      }]))
+    },
+    skuExportReadback: {
+      version: "sku-export-readback/v0",
+      status: "ready_for_review",
+      expectedExportCount: 2,
+      actualExportCount: 2,
+      fileProbeCount: 2,
+      okFileProbeCount: 2,
+      failedFileProbeCount: 0,
+      missingFileProbeCount: 0,
+      dimensionMismatchCount: 0,
+      staleFileProbeCount: 0,
+      visualMetricBlockerCount: 0,
+      missingVisualMetricCount: 0
+    },
+    skuEditableDeliveryReadback: {
+      version: "sku-editable-delivery-readback/v1",
+      status: "ready",
+      expectedCount: 2,
+      verifiedCount: 2,
+      expectedPaths: skuEditableRefs.map(absoluteSkuRef),
+      verifiedPaths: skuEditableRefs.map(absoluteSkuRef),
+      missingItemIds: [],
+      violations: [],
+      items: skuRasterRefs.map((rasterRef, index) => ({
+        itemId: `combo:2:${index + 1}`,
+        rasterPath: absoluteSkuRef(rasterRef),
+        editablePath: absoluteSkuRef(skuEditableRefs[index]),
+        templateName: "2双装",
+        combination: index === 0 ? ["白色", "黑色"] : ["浅肤", "深肤"],
+        sourceHistoryStateRef: { documentId: 90 + index, historyStateId: 700 + index },
+        copiedLayerIds: [300 + index * 2, 301 + index * 2],
+        copiedLayerNames: index === 0 ? ["SKU_01_白色", "SKU_02_黑色"] : ["SKU_01_浅肤", "SKU_02_深肤"],
+        freshnessProof: "new_path",
+        promotionVerified: true
+      }))
+    }
+  };
+  const normalizedSkuDebugEvidence = debugFinalArtifactRefsModule.normalizeDebugSkuDeliveryEvidence(
+    skuDebugSource,
+    skuDebugProjectRoot
+  );
+  assert(normalizedSkuDebugEvidence, "完整的 paired SKU Debug source 必须形成项目相对证据投影");
+  const malformedSkuDebugSources = [
+    { path: ["skuEditableDeliveryReadback", "verifiedCount"], value: 1 },
+    { path: ["skuEditableDeliveryReadback", "missingItemIds"], value: ["combo:2:2"] },
+    { path: ["skuExportReadback", "failedFileProbeCount"], value: 1 },
+    { path: ["skuExportReadback", "missingVisualMetricCount"], value: 1 },
+    { path: ["runtimeDeliveryReceipt", "outputs"], value: ["sku_images"] },
+    {
+      path: ["runtimeDeliveryReceipt", "artifacts", 0, "path"],
+      value: absoluteSkuRef("SKU/2双装/错位.jpg")
+    }
+  ];
+  for (const mutation of malformedSkuDebugSources) {
+    const forged = JSON.parse(JSON.stringify(skuDebugSource));
+    let target = forged;
+    for (const segment of mutation.path.slice(0, -1)) target = target[segment];
+    target[mutation.path.at(-1)] = mutation.value;
+    assert.strictEqual(
+      debugFinalArtifactRefsModule.normalizeDebugSkuDeliveryEvidence(forged, skuDebugProjectRoot),
+      undefined,
+      `自相矛盾的 SKU Debug source 必须失败关闭：${mutation.path.join(".")}`
+    );
+  }
+  const skuEvidenceCase = {
+    taskFamily: "sku",
+    oracle: {
+      outputInventory: {
+        exactRasterExports: 2,
+        exactEditableDocuments: 2,
+        expectedRasterRefs: skuRasterRefs,
+        expectedEditableRefs: skuEditableRefs
+      }
+    }
+  };
+  const skuArtifactEvidenceRefs = [
+    ...skuRasterRefs.map((ref, index) => ({
+      kind: "raster_export",
+      ref,
+      digest: `sha256:${String(index + 1).repeat(64).slice(0, 64)}`,
+      verified: true,
+      artifactMetadata: { format: "jpeg", width: 1000, height: 1000 }
+    })),
+    ...skuEditableRefs.map((ref, index) => ({
+      kind: "editable_psd",
+      ref,
+      digest: `sha256:${String(index + 3).repeat(64).slice(0, 64)}`,
+      verified: true,
+      artifactMetadata: { format: "psb", width: 1000, height: 1000, layerCount: 3 }
+    }))
+  ];
+  assert.strictEqual(buildSkuLiveDeliveryEvidence(
+    skuEvidenceCase,
+    {
+      finalArtifactRefs: [...skuRasterRefs, ...skuEditableRefs],
+      skuDeliveryEvidence: normalizedSkuDebugEvidence
+    },
+    skuArtifactEvidenceRefs
+  ).length, 4, "完整 producer receipt/readback/file evidence 必须签发四种 SKU live evidence");
+  assert.strictEqual(buildSkuLiveDeliveryEvidence(
+    skuEvidenceCase,
+    { finalArtifactRefs: [...skuRasterRefs, ...skuEditableRefs] },
+    skuArtifactEvidenceRefs
+  ).length, 0, "缺少 Runtime producer source 时不能按扩展名补造 SKU live evidence");
+  const forgedNormalizedSkuEvidence = JSON.parse(JSON.stringify(normalizedSkuDebugEvidence));
+  forgedNormalizedSkuEvidence.runtimeDeliveryReceipt.artifacts[0].path = "SKU/2双装/错位.jpg";
+  assert.strictEqual(buildSkuLiveDeliveryEvidence(
+    skuEvidenceCase,
+    {
+      finalArtifactRefs: [...skuRasterRefs, ...skuEditableRefs],
+      skuDeliveryEvidence: forgedNormalizedSkuEvidence
+    },
+    skuArtifactEvidenceRefs
+  ).length, 0, "伪造或错位的 Runtime producer source 不能签发 SKU live evidence");
   const guardedBaselineModule = loadSelfContainedTypeScriptModule(path.join(
     ROOT,
     "src",
@@ -359,6 +603,78 @@ async function main() {
     "skill-executors",
     "autonomous-agent.executor.ts"
   ), "utf8");
+  const agentRuntimeSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "agent-runtime",
+    "agent.ts"
+  ), "utf8");
+  const mainImageExecutorSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "skill-executors",
+    "main-image.executor.ts"
+  ), "utf8");
+  const skuBatchExecutorSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "skill-executors",
+    "sku-batch.executor.ts"
+  ), "utf8");
+  const skuEditableDeliverySource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "skill-executors",
+    "sku-editable-delivery.service.ts"
+  ), "utf8");
+  const finalArtifactPathsSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "shared",
+    "runtime-final-artifact-paths.ts"
+  ), "utf8");
+  const agentFinalArtifactCollectorSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "agent-runtime",
+    "final-delivery-artifact-collector.ts"
+  ), "utf8");
+  const debugFinalArtifactSidecarSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "debug-final-artifact-sidecar.ts"
+  ), "utf8");
+  const debugFinalArtifactRefsSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "shared",
+    "debug-final-artifact-refs.ts"
+  ), "utf8");
+  const designReliabilityCliSource = fs.readFileSync(path.join(
+    ROOT,
+    "scripts",
+    "design-reliability.cjs"
+  ), "utf8");
+  const agentRuntimeTypesSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "agent-runtime",
+    "types.ts"
+  ), "utf8");
   const debugBridgeSource = fs.readFileSync(path.join(
     ROOT,
     "src",
@@ -407,6 +723,68 @@ async function main() {
   assert(chatPanelSource.includes("completedPhotoshopRuntimeBuildId !== expectedPhotoshopRuntimeBuildId")
     && chatPanelSource.includes("任务完成时 Photoshop Runtime Build 已变化或无法读取"),
   "受控 Debug bridge 必须在完成时 Photoshop Build 漂移处直接 fail closed");
+  assert(chatPanelSource.includes("readDebugFinalArtifactPaths(debugRequestId)")
+    && chatPanelSource.includes("finalArtifactRefs,")
+    && chatPanelSource.includes("normalizeDebugFinalArtifactRefs("),
+  "正式收据必须消费 Runtime 已验证交付结果，而不是扫描目录或把全部导出猜成最终稿");
+  assert(agentRuntimeSource.includes("delete data.finalDeliveryArtifactRequestId;")
+    && agentRuntimeSource.includes("delete data.finalDeliveryArtifactPaths;")
+    && agentRuntimeSource.includes("executionSummary.runtimeDeliveryResultRefs = Array.from(new Set(")
+    && !agentRuntimeTypesSource.includes("captureFinalDeliveryArtifactPaths")
+    && agentFinalArtifactCollectorSource.includes("collectRuntimeFinalArtifactPaths({")
+    && agentFinalArtifactCollectorSource.includes("producerReceiptCallRefs,")
+    && agentFinalArtifactCollectorSource.includes("producerReceiptE2CallRefs,")
+    && finalArtifactPathsSource.includes("readRuntimeDeliveryReceipt(entry.result)")
+    && finalArtifactPathsSource.includes("samePhotoshopHistoryStateRef(receipt.sourceHistoryStateRef, input.finalRevision)")
+    && finalArtifactPathsSource.includes("hasMutationAfter(input.timeline, index)")
+    && finalArtifactPathsSource.includes("receipt.settlementScope === 'multi_document_task'")
+    && finalArtifactPathsSource.includes("index !== latestMutationIndex")
+    && finalArtifactPathsSource.includes("e2BoundCompositeProducer")
+    && finalArtifactPathsSource.includes("if (!e2BoundCompositeProducer || index !== latestMutationIndex)")
+    && !agentRuntimeSource.includes("data.finalDeliveryArtifactPaths = [...finalDeliveryArtifactPaths]")
+    && autonomousExecutorSource.includes("context?.guardedPhotoshopExecutionBaseline")
+    && autonomousExecutorSource.includes("result.executionSummary?.runtimeDeliveryResultRefs")
+    && agentFinalArtifactCollectorSource.includes("collectAgentFinalDeliveryDebugProjection(")
+    && agentFinalArtifactCollectorSource.includes("collectDebugSkuDeliverySource(")
+    && autonomousExecutorSource.includes("collectAgentFinalDeliveryDebugProjection({")
+    && autonomousExecutorSource.includes("publishDebugFinalDeliveryProjection(guardedFinalDeliveryRequestId, projection)")
+    && !autonomousExecutorSource.includes("finalDeliveryArtifactRequestId:")
+    && !autonomousExecutorSource.includes("finalDeliveryArtifactPaths:")
+    && debugFinalArtifactSidecarSource.includes("debugFinalArtifactCaptureByRequest.has(normalizedRequestId)")
+    && debugFinalArtifactSidecarSource.includes("export function publishDebugFinalDeliveryProjection(")
+    && debugFinalArtifactSidecarSource.includes("skuDeliverySource: projection.skuDeliverySource")
+    && debugFinalArtifactSidecarSource.includes("export function readDebugSkuDeliverySource(")
+    && chatPanelSource.includes("beginDebugFinalArtifactCapture(debugRequestId)")
+    && chatPanelSource.includes("clearDebugFinalArtifactCapture(debugRequestId)")
+    && chatPanelSource.includes("normalizeDebugSkuDeliveryEvidence(")
+    && chatPanelSource.includes("readDebugSkuDeliverySource(debugRequestId)")
+    && chatPanelSource.includes("...(skuDeliveryEvidence ? { skuDeliveryEvidence } : {})")
+    && debugFinalArtifactRefsSource.includes("export function normalizeDebugSkuDeliveryEvidence(")
+    && debugFinalArtifactRefsSource.includes("receipt.artifacts.length === 0")
+    && debugFinalArtifactRefsSource.includes("items.length !== editableReadback.items.length")
+    && designReliabilityCliSource.includes("function buildSkuLiveDeliveryEvidence(")
+    && designReliabilityCliSource.includes("const source = bindingProof?.skuDeliveryEvidence")
+    && designReliabilityCliSource.includes("receipt.artifacts.length !== expectedCount * 2")
+    && !chatPanelSource.includes("runtimeResultData?.finalDeliveryArtifactRequestId")
+    && !chatPanelSource.includes("runtimeResultData?.finalDeliveryArtifactPaths"),
+  "最终交付路径与 SKU producer 证据只能由 E2 调用谱系投影到受控 Debug sidecar，并经 fail-closed 规范化后进入可靠性证据；AgentConfig 与普通 result.data 不得承载调试路径");
+  assert(mainImageExecutorSource.includes("buildRuntimeDeliveryReceipt({")
+    && mainImageExecutorSource.includes("settlementScope: 'single_document_revision'")
+    && skuBatchExecutorSource.includes("settlementScope: 'multi_document_task'")
+    && skuBatchExecutorSource.includes("buildRuntimeDeliveryReceipt({")
+    && !mainImageExecutorSource.includes("runtimeFinalArtifactReceipt")
+    && !skuBatchExecutorSource.includes("runtimeFinalArtifactReceipt")
+    && skuBatchExecutorSource.includes("'editable_sku_batch_documents',")
+    && skuBatchExecutorSource.includes('buildSkuRuntimeDeliveryArtifacts({')
+    && skuBatchExecutorSource.includes("skuEditableDeliveryReadback.status === 'ready'")
+    && skuEditableDeliverySource.includes("hasVerifiedEditableDocumentArtifact(record)")
+    && skuEditableDeliverySource.includes("proof: 'staged_editable_document_promotion'")
+    && skuEditableDeliverySource.includes('editableReceipt?.promotionVerified === true')
+    && skuEditableDeliverySource.includes("structure.autoLayoutQaStatus !== 'ready'")
+    && skuEditableDeliverySource.includes("verifySkuExportFreshness({")
+    && skuBatchExecutorSource.includes("effect: 'save_export' as const")
+    && skuBatchExecutorSource.includes("skuExportReadback.status === 'ready_for_review'"),
+  "主图和 SKU 复合 Skill 必须用精确、文件读回后的 typed receipt 声明最终集合");
   assert.strictEqual(
     chatPanelSource.split("createGuardedPhotoshopExecutionBaseline({").length - 1,
     1,
@@ -548,7 +926,8 @@ async function main() {
       status: "not_reached",
       requestId: "debug-request-1",
       expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId
-    }
+    },
+    finalArtifactRefs: ["主图/候选.psd", "主图/候选.jpg"]
   };
   const validDebugReceiptInput = {
     fixtureRoot: "C:/fixture/project",
@@ -794,9 +1173,179 @@ async function main() {
   unsafeCase.task.agentVisibleInputs[0].ref = "C:\\private\\image.jpg";
   unsafeCase.caseDigest = buildCaseDigest(unsafeCase);
   assert.strictEqual(validateDesignReliabilityCase(unsafeCase).ok, false, "absolute fixture refs must fail");
+  const designDirectiveFactsCase = JSON.parse(JSON.stringify(caseSpec));
+  designDirectiveFactsCase.task.fixtureGeneratedInputs[0].facts.product_claims[0].value = "主体居中并使用浅粉背景色";
+  designDirectiveFactsCase.caseDigest = buildCaseDigest(designDirectiveFactsCase);
+  assert.strictEqual(
+    validateDesignReliabilityCase(designDirectiveFactsCase).ok,
+    false,
+    "带 provenance 的 claim 也不能伪装设计指令进入 fixture facts"
+  );
+  const designDirectiveProductTypeCase = JSON.parse(JSON.stringify(caseSpec));
+  designDirectiveProductTypeCase.task.fixtureGeneratedInputs[0].facts.product_type = "主体居中并使用浅粉背景色";
+  designDirectiveProductTypeCase.caseDigest = buildCaseDigest(designDirectiveProductTypeCase);
+  assert.strictEqual(validateDesignReliabilityCase(designDirectiveProductTypeCase).ok, false,
+    "所有自由文本事实叶子都必须拒绝设计指令，不只检查 product_claims");
+  const designDirectiveColorMappingCase = JSON.parse(JSON.stringify(readSkuCase()));
+  designDirectiveColorMappingCase.task.fixtureGeneratedInputs[0]
+    .facts.color_mapping["1"].displayName = "主体居中粉底白字";
+  designDirectiveColorMappingCase.caseDigest = buildCaseDigest(designDirectiveColorMappingCase);
+  assert.strictEqual(validateDesignReliabilityCase(designDirectiveColorMappingCase).ok, false,
+    "颜色映射的展示名也不能夹带版式、配色或排版决定");
+  const unknownFactCase = JSON.parse(JSON.stringify(caseSpec));
+  unknownFactCase.task.fixtureGeneratedInputs[0].facts.selected_asset = "S82646/YYC_8814.jpg";
+  unknownFactCase.caseDigest = buildCaseDigest(unknownFactCase);
+  assert.strictEqual(validateDesignReliabilityCase(unknownFactCase).ok, false,
+    "fixture facts 未知字段不得偷渡素材或版式选择");
+
+  const exactFinalArtifactReceipt = buildRuntimeDeliveryReceipt({
+    status: "ready",
+    settlementScope: "single_document_revision",
+    outputs: ["main_image_preview"],
+    resultRefs: ["main-image-export-1"],
+    sourceHistoryStateRef: { documentId: 7, historyStateId: 20 },
+    artifacts: [{
+      path: "C:/fixture/project/主图/最终候选.jpg",
+      kind: "raster_export",
+      proof: "file_probe"
+    }]
+  });
+  const readExactFinalArtifactReceipt = readRuntimeDeliveryReceipt({
+    success: true,
+    data: {
+      runtimeDeliveryReceipt: exactFinalArtifactReceipt,
+      unrelatedPreviewPath: "C:/fixture/project/主图/过程预览.jpg"
+    }
+  });
+  assert.deepStrictEqual(
+    readExactFinalArtifactReceipt?.artifacts.map((artifact) => artifact.path),
+    ["C:/fixture/project/主图/最终候选.jpg"],
+    "typed final-artifact receipt 只能返回生产者声明的精确最终集合，不能扫描同一结果中的其他路径"
+  );
+  assert.deepStrictEqual(
+    readExactFinalArtifactReceipt?.sourceHistoryStateRef,
+    { documentId: 7, historyStateId: 20 },
+    "通用交付收据必须保留精确 Host 源版本，供最终集合结算而不是供 benchmark/debug 持久化"
+  );
+  const multiDocumentResultRefs = Array.from(
+    { length: 19 },
+    (_, index) => `workflow:sku-batch:export:${index + 1}`
+  );
+  const multiDocumentFinalArtifactReceipt = buildRuntimeDeliveryReceipt({
+    status: "ready",
+    settlementScope: "multi_document_task",
+    outputs: ["sku_images"],
+    resultRefs: multiDocumentResultRefs,
+    resultRefProofs: multiDocumentResultRefs.map((resultRef) => ({
+      resultRef,
+      effect: "save_export"
+    })),
+    artifacts: Array.from({ length: 19 }, (_, index) => ({
+      path: `C:/fixture/project/SKU/${String(index + 1).padStart(2, "0")}.jpg`,
+      kind: "raster_export",
+      proof: "file_probe"
+    }))
+  });
+  assert.strictEqual(multiDocumentFinalArtifactReceipt.status, "ready",
+    "跨 Photoshop 文档的 SKU 精确批次必须诚实声明 multi_document_task，而不是伪造单 revision");
+  assert.strictEqual(multiDocumentFinalArtifactReceipt.sourceHistoryStateRef, undefined,
+    "multi_document_task 不得携带虚假的单一 Photoshop 源版本");
+  assert.strictEqual(buildRuntimeDeliveryReceipt({
+    status: "ready",
+    settlementScope: "multi_document_task",
+    outputs: ["sku_images"],
+    resultRefs: ["workflow:sku-batch:export:1"],
+    resultRefProofs: [{ resultRef: "workflow:sku-batch:export:1", effect: "save_export" }],
+    sourceHistoryStateRef: { documentId: 7, historyStateId: 20 },
+    artifacts: [{
+      path: "C:/fixture/project/SKU/错误单版本.jpg",
+      kind: "raster_export",
+      proof: "file_probe"
+    }]
+  }).status, "incomplete", "多文档批次不能伪装为单一 Photoshop revision");
+  assert.strictEqual(findRuntimeDeliverySourceHistoryStateRef([
+    { sourceHistoryStateRef: { documentId: 7, historyStateId: 20 } },
+    { sourceHistoryStateRef: { documentId: 8, historyStateId: 30 } }
+  ]), undefined, "跨文档生产结果不能被压成一个共同 sourceHistoryStateRef");
+  assert.deepStrictEqual(findRuntimeDeliverySourceHistoryStateRef([
+    { historyStateRef: { documentId: 7, historyStateId: 10 } },
+    { historyStateRef: { documentId: 7, historyStateId: 11 } }
+  ], {
+    historyStateRef: { documentId: 7, historyStateId: 12 }
+  }), { documentId: 7, historyStateId: 12 },
+  "主图早期多次写入不能让共同 revision 求交失败；只接受显式最终 acceptance 的稳定版本");
+  assert.strictEqual(findRuntimeDeliverySourceHistoryStateRef([
+    { sourceHistoryStateRef: { documentId: 7, historyStateId: 11 } }
+  ], {
+    historyStateRef: { documentId: 7, historyStateId: 12 }
+  }), undefined, "文件提交 source revision 与最终 acceptance 不一致时必须拒绝");
+  assert.strictEqual(findRuntimeDeliverySourceHistoryStateRef([
+    { sourceHistoryStateRef: { documentId: 7, historyStateId: 0 } }
+  ], {
+    historyStateRef: { documentId: 7, historyStateId: 12 }
+  }), undefined, "无效 export source revision 不能被最终 acceptance 静默覆盖");
+  assert.strictEqual(
+    Object.keys(exactFinalArtifactReceipt).some((key) => /benchmark|debug|finalDeliveryArtifactPaths/i.test(key)),
+    false,
+    "生产 typed receipt 不得夹带 benchmark/debug 专属状态或瞬态最终路径"
+  );
+  const forgedFinalArtifactReceipt = JSON.parse(JSON.stringify(exactFinalArtifactReceipt));
+  forgedFinalArtifactReceipt.boundaries.completesDeliveryByItself = true;
+  assert.strictEqual(readRuntimeDeliveryReceipt({
+    data: { runtimeDeliveryReceipt: forgedFinalArtifactReceipt }
+  }), undefined, "最终文件收据不能取得任务完成权");
+  const legacyFinalArtifactReceipt = JSON.parse(JSON.stringify(exactFinalArtifactReceipt));
+  legacyFinalArtifactReceipt.version = "runtime-delivery-receipt/v0";
+  const legacyDeliveryReceipt = readRuntimeDeliveryReceipt({
+    data: { runtimeDeliveryReceipt: legacyFinalArtifactReceipt }
+  });
+  assert.strictEqual(legacyDeliveryReceipt?.status, "incomplete",
+    "v0 交付收据只能作为历史不完整事实读取");
+  assert.deepStrictEqual(legacyDeliveryReceipt?.artifacts, [],
+    "旧协议不能携带新版精确最终文件集合");
+  const invalidRevisionFinalArtifactReceipt = JSON.parse(JSON.stringify(exactFinalArtifactReceipt));
+  invalidRevisionFinalArtifactReceipt.sourceHistoryStateRef.historyStateId = 0;
+  assert.strictEqual(readRuntimeDeliveryReceipt({
+    data: { runtimeDeliveryReceipt: invalidRevisionFinalArtifactReceipt }
+  }), undefined, "无效 Host revision 不能取得最终集合结算资格");
+  assert.strictEqual(buildRuntimeDeliveryReceipt({
+    status: "ready",
+    settlementScope: "single_document_revision",
+    outputs: ["main_image_preview"],
+    resultRefs: ["main-image-export-invalid"],
+    sourceHistoryStateRef: { documentId: 7, historyStateId: 20 },
+    artifacts: [{
+      path: "C:/fixture/project/主图/伪装成品.txt",
+      kind: "raster_export",
+      proof: "file_probe"
+    }]
+  }).status, "incomplete", "文件类型与 artifact kind 不一致时必须 fail closed");
 
   const passing = buildPassingObservation();
   assert.strictEqual(validateDesignReliabilityRun(passing).ok, true, "derived run must validate");
+  for (const unsafeRef of [
+    "debug:C:\\Users\\x.png",
+    "file:C:/x.png",
+    "../private.jpg",
+    "debug:/etc/passwd",
+    "receipt:/Users/x"
+  ]) {
+    const unsafeRun = JSON.parse(JSON.stringify(passing));
+    unsafeRun.evidenceRefs.push({ kind: "debug", ref: unsafeRef, verified: true });
+    assert.strictEqual(validateDesignReliabilityRun(unsafeRun).ok, false,
+      `Run evidence 必须拒绝不安全引用：${unsafeRef}`);
+  }
+  const sidecarRoot = path.join(os.tmpdir(), "designecho-sidecar-path-test");
+  const safeSidecarPath = resolveSidecarOutputPath(
+    sidecarRoot,
+    ["reviews", "../../outside"],
+    "debug:C:\\Users\\review.json"
+  );
+  assert.strictEqual(path.relative(sidecarRoot, safeSidecarPath).startsWith(".."), false,
+    "sidecar 文件名 ID 必须经过安全化并保持在指定 root 内");
+  const dotDotSidecarPath = resolveSidecarOutputPath(sidecarRoot, ["reviews", ".."], "..");
+  assert.strictEqual(path.relative(sidecarRoot, dotDotSidecarPath).startsWith(".."), false,
+    "sidecar 的精确 .. ID 也不能穿越 root");
   assert.strictEqual(passing.sourceRunRefs.length, 2, "one TaskRun may span multiple Agent runs");
   assert.strictEqual(passing.observed.correctSkillBinding, true);
   assert.strictEqual(passing.observed.writeToolSuccesses, 2, "save is a write-class tool success");
@@ -928,7 +1477,8 @@ async function main() {
     cohortId: "candidate",
     userInterventionCount: 0,
     environment: { provider: "provider-a", modelId: "model-a" },
-    evidenceRefs: evidenceRefs()
+    evidenceRefs: evidenceRefs(),
+    finalArtifactManifest: finalArtifactManifest()
   });
   assert.strictEqual(terminalNeedsReview.observed.runStatus, "needs_review");
   assert.strictEqual(
@@ -1245,26 +1795,32 @@ async function main() {
 
   const rubric = readRubric();
   const passingScores = Object.fromEntries(rubric.dimensions.map((dimension) => [dimension.id, 0.8]));
+  const expectedReviewComparisonRefs = [
+    {
+      kind: 'candidate_final',
+      ref: `candidate:output/main.jpg@sha256:${'b'.repeat(64)}`
+    },
+    ...caseSpec.task.reviewOnlyReferences.map((reference) => ({
+      kind: reference.kind === 'user_design' ? 'user_design_anchor' : 'eagle_anchor',
+      ref: reference.kind === 'user_design'
+        ? `user-design:${reference.ref}`
+        : reference.ref
+    }))
+  ];
   const review = {
     version: REVIEW_VERSION,
     reviewId: "review-1",
     runObservationId: passing.runObservationId,
     rubricId: caseSpec.oracle.rubricId,
+    rubricDigest: buildRubricDigest(rubric),
     reviewerId: "designer-a",
     reviewedAt: "2026-08-24T02:00:00.000Z",
     blindedToCohort: true,
     blindedToCandidateOrigin: true,
-    evidenceRefs: [
-      "candidate:output/main.jpg",
-      "anchor:user-design:main-image-c1163",
-      "anchor:eagle:item-MPTG3FF6XEROR"
-    ],
+    evidenceProtocol: "bound_self_reported",
+    evidenceRefs: expectedReviewComparisonRefs.map((item) => item.ref),
     comparisonEvidenceKinds: requiredComparisonEvidenceKinds(caseSpec),
-    comparisonEvidenceRefs: [
-      { kind: "candidate_final", ref: "candidate:output/main.jpg" },
-      { kind: "user_design_anchor", ref: "anchor:user-design:main-image-c1163" },
-      { kind: "eagle_anchor", ref: "anchor:eagle:item-MPTG3FF6XEROR" }
-    ],
+    comparisonEvidenceRefs: expectedReviewComparisonRefs,
     decision: "pass",
     scores: passingScores,
     weightedOverall: calculateWeightedOverall(rubric, passingScores),
@@ -1279,7 +1835,84 @@ async function main() {
   assert.strictEqual(
     validateDesignReliabilityReview(review, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
     true,
-    "完整盲评协议、阈值、pairwise 与适用参考齐全时 pass 才合法"
+    "当前 Run / Case 证据绑定、阈值、pairwise 与适用参考齐全时诊断评审才合法"
+  );
+  const runWithPreview = JSON.parse(JSON.stringify(passing));
+  runWithPreview.evidenceRefs.push({
+    kind: "raster_export",
+    ref: "output/preview.jpg",
+    digest: `sha256:${"8".repeat(64)}`,
+    verified: true
+  });
+  assert.strictEqual(
+    validateDesignReliabilityReview(review, {
+      rubric,
+      caseSpec,
+      run: runWithPreview,
+      enforceBlindProtocol: true
+    }).ok,
+    true,
+    "未进入 Agent finalArtifactManifest 的预览图不得被强制当作最终候选"
+  );
+  const runWithoutFinalManifest = JSON.parse(JSON.stringify(passing));
+  delete runWithoutFinalManifest.finalArtifactManifest;
+  assert.strictEqual(
+    validateDesignReliabilityReview(review, {
+      rubric,
+      caseSpec,
+      run: runWithoutFinalManifest,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "可评分 Review 必须绑定 Agent 声明的最终交付清单，不能把全部导出自动视为最终稿"
+  );
+  const previewAsFinalReview = JSON.parse(JSON.stringify(review));
+  const previewRef = `candidate:output/preview.jpg@sha256:${"8".repeat(64)}`;
+  previewAsFinalReview.evidenceRefs.push(previewRef);
+  previewAsFinalReview.comparisonEvidenceRefs.push({ kind: "candidate_final", ref: previewRef });
+  assert.strictEqual(
+    validateDesignReliabilityReview(previewAsFinalReview, {
+      rubric,
+      caseSpec,
+      run: runWithPreview,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "评审不得把 Run 中存在但未声明为最终交付的预览图夹带进候选集合"
+  );
+  for (const unsafeRef of [
+    "debug:C:\\Users\\x.png",
+    "file:C:/x.png",
+    "../private.jpg",
+    "debug:/etc/passwd",
+    "receipt:/Users/x"
+  ]) {
+    const unsafeReview = JSON.parse(JSON.stringify(review));
+    unsafeReview.evidenceRefs.push(unsafeRef);
+    assert.strictEqual(
+      validateDesignReliabilityReview(unsafeReview, {
+        rubric,
+        caseSpec,
+        run: passing,
+        enforceBlindProtocol: true
+      }).ok,
+      false,
+      `Review evidence 必须拒绝不安全引用：${unsafeRef}`
+    );
+  }
+  const unsupportedAnonymousReview = {
+    ...JSON.parse(JSON.stringify(review)),
+    evidenceProtocol: "anonymous_packet_verified"
+  };
+  assert.strictEqual(
+    validateDesignReliabilityReview(unsupportedAnonymousReview, {
+      rubric,
+      caseSpec,
+      run: passing,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "匿名评审包尚未接入验证器时，自报协议不得进入正式成功率"
   );
 
   const formalAttemptRun = JSON.parse(JSON.stringify(passing));
@@ -1403,10 +2036,10 @@ async function main() {
     value: 0.5
   }, "Provider 失败必须作为 0 留在所有 submitted Attempt 的正式分母中");
   assert.deepStrictEqual(formalAttemptCohort.commercialUsableRate, {
-    numerator: 1,
+    numerator: 0,
     denominator: 2,
-    value: 0.5
-  });
+    value: 0
+  }, "bound_self_reported 只能提供诊断分数，不能冒充正式商业可用样本");
   assert.strictEqual(formalAttemptCohort.protocolValid, true);
   assert.strictEqual(formalAttemptCohort.allSubmittedAttemptsTerminal, true);
   assert.strictEqual(isOfficialAttemptCohortReady(formalAttemptCohort), true,
@@ -1487,7 +2120,165 @@ async function main() {
 
   const fullSuite = loadSuite();
   assert.strictEqual(fullSuite.ok, true);
+  const invalidAnchorRubric = JSON.parse(JSON.stringify(readRubric()));
+  invalidAnchorRubric.scoreAnchorValues.strong = 0.8;
+  assert.strictEqual(validateRubric(invalidAnchorRubric).ok, false,
+    "Rubric 的数值锚点必须全套固定，不能只靠四段描述自行漂移");
+  assert(fullSuite.cases.every((suiteCase) => {
+    const rubric = fullSuite.rubrics.find((item) => item.rubricId === suiteCase.oracle?.rubricId);
+    return rubric && rubric.taskFamily === suiteCase.taskFamily;
+  }), "Suite 中 Case 与其 Rubric 的 taskFamily 必须逐项一致");
+  const unionFixtureTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'designecho-union-fixture-'));
+  const unionFixtureSource = path.join(unionFixtureTempRoot, 'source');
+  const unionFixtureDestination = path.join(unionFixtureTempRoot, 'destination');
+  fs.mkdirSync(unionFixtureSource, { recursive: true });
+  try {
+    assert.throws(
+      () => prepareFixture(fullSuite, parseArgs([
+        'node',
+        'design-reliability.cjs',
+        'prepare-fixture',
+        '--fixture-id',
+        'neveralone-c1163-input-v1',
+        '--source-root',
+        unionFixtureSource,
+        '--destination',
+        unionFixtureDestination,
+        '--allow-create'
+      ])),
+      /正式 live fixture 必须使用 --case 单独准备/,
+      '多个 Case 共用 fixtureId 时不得创建随后无法用于单 Case live 的联合目录'
+    );
+    assert.strictEqual(
+      fs.existsSync(unionFixtureDestination),
+      false,
+      'prepare-fixture 在验证 source 与 Case 唯一性之前不得留下部分目标目录'
+    );
+  } finally {
+    fs.rmSync(unionFixtureTempRoot, { recursive: true, force: true });
+  }
+  const junctionFixtureTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-junction-fixture-"));
+  const junctionFixtureSource = path.join(junctionFixtureTempRoot, "source");
+  const junctionFixtureTarget = path.join(junctionFixtureSource, "junction-target");
+  const junctionFixtureDestination = path.join(junctionFixtureTempRoot, "destination-link");
+  fs.mkdirSync(junctionFixtureTarget, { recursive: true });
+  try {
+    fs.symlinkSync(
+      junctionFixtureTarget,
+      junctionFixtureDestination,
+      process.platform === "win32" ? "junction" : "dir"
+    );
+    assert.throws(
+      () => prepareFixture(fullSuite, parseArgs([
+        "node",
+        "design-reliability.cjs",
+        "prepare-fixture",
+        "--case",
+        caseSpec.caseId,
+        "--source-root",
+        junctionFixtureSource,
+        "--destination",
+        junctionFixtureDestination,
+        "--allow-create"
+      ])),
+      /真实路径不能位于源项目内部|junction \/ symlink/,
+      "destination 通过 junction / symlink 回指源项目时必须在复制前拒绝"
+    );
+    assert.strictEqual(fs.readdirSync(junctionFixtureTarget).length, 0,
+      "被拒绝的 junction fixture 不得向源项目写入任何文件");
+  } finally {
+    fs.rmSync(junctionFixtureTempRoot, { recursive: true, force: true });
+  }
+  const unsafeInventoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-unsafe-inventory-"));
+  const unsafeInventoryTarget = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-unsafe-target-"));
+  try {
+    fs.symlinkSync(
+      unsafeInventoryTarget,
+      path.join(unsafeInventoryRoot, ".hidden-input"),
+      process.platform === "win32" ? "junction" : "dir"
+    );
+    const unsafeInspection = inspectFixture([caseSpec], unsafeInventoryRoot);
+    assert.deepStrictEqual(unsafeInspection.unsafeLinks, [".hidden-input"]);
+    assert.strictEqual(unsafeInspection.ready, false);
+    assert.strictEqual(unsafeInspection.freshRunReady, false,
+      "fixture 内隐藏 junction / symlink 必须显式阻止 fresh run");
+  } finally {
+    fs.rmSync(unsafeInventoryRoot, { recursive: true, force: true });
+    fs.rmSync(unsafeInventoryTarget, { recursive: true, force: true });
+  }
   const currentCase = fullSuite.cases.find((item) => item.caseId === caseSpec.caseId);
+  const generatedFixtureTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-generated-fixture-"));
+  const generatedFixtureSource = path.join(generatedFixtureTempRoot, "source");
+  const generatedFixtureDestination = path.join(generatedFixtureTempRoot, "destination");
+  const generatedFixtureReports = path.join(generatedFixtureTempRoot, "reports");
+  fs.mkdirSync(generatedFixtureSource, { recursive: true });
+  for (const input of currentCase.task.agentVisibleInputs) {
+    const sourcePath = path.join(generatedFixtureSource, ...input.ref.replace(/\\/g, "/").split("/"));
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, `fixture:${input.ref}`, "utf8");
+  }
+  try {
+    const preparedGeneratedFixture = prepareFixture(
+      { manifest: fullSuite.manifest, cases: [currentCase] },
+      parseArgs([
+        "node",
+        "design-reliability.cjs",
+        "prepare-fixture",
+        "--case",
+        currentCase.caseId,
+        "--source-root",
+        generatedFixtureSource,
+        "--destination",
+        generatedFixtureDestination,
+        "--allow-create"
+      ]),
+      generatedFixtureReports
+    );
+    const generatedInput = currentCase.task.fixtureGeneratedInputs[0];
+    const generatedBrief = path.join(
+      generatedFixtureDestination,
+      ...generatedInput.ref.replace(/\\/g, "/").split("/")
+    );
+    assert.strictEqual(fs.existsSync(generatedBrief), true,
+      "prepare-fixture 必须把 Case 中冻结的事实 brief 写入 Agent 可见测试目录");
+    const generatedFacts = JSON.parse(fs.readFileSync(generatedBrief, "utf8"));
+    assert.strictEqual(generatedFacts.boundaries.factsOnly, true);
+    assert(Array.isArray(generatedFacts.facts.product_claims));
+    assert(generatedFacts.facts.product_claims.every((claim) => claim.provenance?.kind));
+    assert.strictEqual(
+      fs.existsSync(path.join(
+        generatedFixtureSource,
+        ...generatedInput.ref.replace(/\\/g, "/").split("/")
+      )),
+      false,
+      "测试事实输入不能反写用户源项目"
+    );
+    assert.strictEqual(
+      preparedGeneratedFixture.report.copiedFileCount,
+      currentCase.task.agentVisibleInputs.length + currentCase.task.fixtureGeneratedInputs.length
+    );
+    assert.deepStrictEqual(preparedGeneratedFixture.report.caseRefs, [{
+      caseId: currentCase.caseId,
+      revision: currentCase.revision,
+      caseDigest: currentCase.caseDigest
+    }], "fixture receipt 必须绑定 Case revision 与 digest，不能只存 caseId");
+    const preparedInspection = inspectFixture([currentCase], generatedFixtureDestination);
+    assert(readFixtureInstance(
+      generatedFixtureDestination,
+      [currentCase],
+      preparedInspection,
+      generatedFixtureReports
+    ), "同一 Case revision/digest 应能读回 fixture receipt");
+    const revisedCase = { ...currentCase, revision: currentCase.revision + 1 };
+    assert.strictEqual(readFixtureInstance(
+      generatedFixtureDestination,
+      [revisedCase],
+      preparedInspection,
+      generatedFixtureReports
+    ), undefined, "Case revision 变化后旧 fixture receipt 必须失效");
+  } finally {
+    fs.rmSync(generatedFixtureTempRoot, { recursive: true, force: true });
+  }
   const currentContextBase = {
     ...formalAttemptEvents(formalPassInput)[0],
     caseRef: {
@@ -1651,6 +2442,7 @@ async function main() {
     ...JSON.parse(JSON.stringify(review)),
     runObservationId: skuRun.runObservationId,
     rubricId: skuRubric.rubricId,
+    rubricDigest: buildRubricDigest(skuRubric),
     scores: belowSkuThresholdScores,
     weightedOverall: calculateWeightedOverall(skuRubric, belowSkuThresholdScores),
     comparisonEvidenceKinds: requiredComparisonEvidenceKinds(skuCase),
@@ -1667,6 +2459,179 @@ async function main() {
     }).ok,
     false,
     "SKU decision=pass 必须达到 0.80 rubric 阈值"
+  );
+
+  const skuMultiOutputRun = JSON.parse(JSON.stringify(skuRun));
+  skuMultiOutputRun.evidenceRefs = [
+    ...skuMultiOutputRun.evidenceRefs.filter((item) => (
+      item.kind !== "raster_export" && item.kind !== "editable_psd"
+    )),
+    ...skuCase.oracle.outputInventory.expectedRasterRefs.map((ref, index) => ({
+      kind: "raster_export",
+      ref,
+      digest: `sha256:${(index + 1).toString(16).padStart(64, "0")}`,
+      size: 1000 + index,
+      verified: true
+    })),
+    ...skuCase.oracle.outputInventory.expectedEditableRefs.map((ref, index) => ({
+      kind: "editable_psd",
+      ref,
+      digest: `sha256:${(index + 101).toString(16).padStart(64, "0")}`,
+      size: 5000 + index,
+      verified: true
+    })),
+    ...[
+      "paired_editable_delivery_receipt",
+      "sku_structure_readback_set",
+      "sku_visual_readback_set",
+      "sku_pair_binding"
+    ].map((kind) => ({
+      kind,
+      ref: `evidence/${kind}.json`,
+      verified: true
+    }))
+  ];
+  skuMultiOutputRun.finalArtifactManifest = finalArtifactManifest(skuMultiOutputRun.evidenceRefs);
+  const skuMultiComparisonRefs = buildComparisonRefsForTest(skuCase, skuMultiOutputRun);
+  const skuPassingScores = Object.fromEntries(
+    skuRubric.dimensions.map((dimension) => [dimension.id, 0.85])
+  );
+  const skuMultiOutputReview = {
+    ...JSON.parse(JSON.stringify(review)),
+    reviewId: "review-sku-multi-output",
+    runObservationId: skuMultiOutputRun.runObservationId,
+    rubricId: skuRubric.rubricId,
+    rubricDigest: buildRubricDigest(skuRubric),
+    evidenceRefs: skuMultiComparisonRefs.map((item) => item.ref),
+    comparisonEvidenceKinds: requiredComparisonEvidenceKinds(skuCase),
+    comparisonEvidenceRefs: skuMultiComparisonRefs,
+    scores: skuPassingScores,
+    weightedOverall: calculateWeightedOverall(skuRubric, skuPassingScores)
+  };
+  assert.strictEqual(
+    validateDesignReliabilityReview(skuMultiOutputReview, {
+      rubric: skuRubric,
+      caseSpec: skuCase,
+      run: skuMultiOutputRun,
+      enforceBlindProtocol: true
+    }).ok,
+    true,
+    "SKU 的 19 组 JPG/PSB 必须能够作为同一个完整候选集合通过绑定"
+  );
+  const wrongSkuNamesRun = JSON.parse(JSON.stringify(skuMultiOutputRun));
+  const wrongSkuRaster = wrongSkuNamesRun.evidenceRefs.find((item) => item.kind === "raster_export");
+  wrongSkuRaster.ref = "SKU/2双装/错误命名.jpg";
+  wrongSkuNamesRun.finalArtifactManifest = finalArtifactManifest(wrongSkuNamesRun.evidenceRefs);
+  const wrongSkuNameComparisonRefs = buildComparisonRefsForTest(skuCase, wrongSkuNamesRun);
+  const wrongSkuNamesReview = {
+    ...JSON.parse(JSON.stringify(skuMultiOutputReview)),
+    evidenceRefs: wrongSkuNameComparisonRefs.map((item) => item.ref),
+    comparisonEvidenceRefs: wrongSkuNameComparisonRefs
+  };
+  assert.strictEqual(
+    validateDesignReliabilityReview(wrongSkuNamesReview, {
+      rubric: skuRubric,
+      caseSpec: skuCase,
+      run: wrongSkuNamesRun,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "SKU 即使仍有 19 张也必须逐项匹配冻结的文件名，不能只按数量通过"
+  );
+  const missingSkuOutputReview = JSON.parse(JSON.stringify(skuMultiOutputReview));
+  missingSkuOutputReview.comparisonEvidenceRefs = missingSkuOutputReview.comparisonEvidenceRefs
+    .filter((item, index) => item.kind !== "candidate_final" || index !== 0);
+  missingSkuOutputReview.comparisonEvidenceKinds = [
+    ...new Set(missingSkuOutputReview.comparisonEvidenceRefs.map((item) => item.kind))
+  ];
+  assert.strictEqual(
+    validateDesignReliabilityReview(missingSkuOutputReview, {
+      rubric: skuRubric,
+      caseSpec: skuCase,
+      run: skuMultiOutputRun,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "SKU 候选集合漏掉任一最终导出时必须拒绝"
+  );
+  const extraSkuOutputReview = JSON.parse(JSON.stringify(skuMultiOutputReview));
+  const extraSkuRef = `candidate:output/not-in-run.jpg@sha256:${"f".repeat(64)}`;
+  extraSkuOutputReview.evidenceRefs.push(extraSkuRef);
+  extraSkuOutputReview.comparisonEvidenceRefs.push({
+    kind: "candidate_final",
+    ref: extraSkuRef
+  });
+  assert.strictEqual(
+    validateDesignReliabilityReview(extraSkuOutputReview, {
+      rubric: skuRubric,
+      caseSpec: skuCase,
+      run: skuMultiOutputRun,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "SKU 候选集合夹带 Run 外导出时必须拒绝"
+  );
+
+  const detailCase = readDetailCase();
+  const detailRubric = readDetailRubric();
+  const detailMultiOutputRun = JSON.parse(JSON.stringify(passing));
+  detailMultiOutputRun.runObservationId = "detail-review-run";
+  detailMultiOutputRun.caseRef = {
+    suiteId: detailCase.suiteId,
+    caseId: detailCase.caseId,
+    revision: detailCase.revision,
+    caseDigest: detailCase.caseDigest
+  };
+  detailMultiOutputRun.evidenceRefs = [
+    ...detailMultiOutputRun.evidenceRefs.filter((item) => item.kind !== "raster_export"),
+    ...Array.from({ length: 3 }, (_, index) => ({
+      kind: "raster_export",
+      ref: `output/detail-${index + 1}.jpg`,
+      digest: `sha256:${(index + 31).toString(16).padStart(64, "0")}`,
+      size: 2000 + index,
+      verified: true
+    }))
+  ];
+  detailMultiOutputRun.finalArtifactManifest = finalArtifactManifest(detailMultiOutputRun.evidenceRefs);
+  const detailComparisonRefs = buildComparisonRefsForTest(detailCase, detailMultiOutputRun);
+  const detailScores = Object.fromEntries(
+    detailRubric.dimensions.map((dimension) => [dimension.id, 0.85])
+  );
+  const detailMultiOutputReview = {
+    ...JSON.parse(JSON.stringify(review)),
+    reviewId: "review-detail-multi-output",
+    runObservationId: detailMultiOutputRun.runObservationId,
+    rubricId: detailRubric.rubricId,
+    rubricDigest: buildRubricDigest(detailRubric),
+    evidenceRefs: detailComparisonRefs.map((item) => item.ref),
+    comparisonEvidenceKinds: requiredComparisonEvidenceKinds(detailCase),
+    comparisonEvidenceRefs: detailComparisonRefs,
+    scores: detailScores,
+    weightedOverall: calculateWeightedOverall(detailRubric, detailScores)
+  };
+  assert.strictEqual(
+    validateDesignReliabilityReview(detailMultiOutputReview, {
+      rubric: detailRubric,
+      caseSpec: detailCase,
+      run: detailMultiOutputRun,
+      enforceBlindProtocol: true
+    }).ok,
+    true,
+    "详情页多屏最终导出必须作为完整候选集合通过绑定"
+  );
+  const missingDetailOutputReview = JSON.parse(JSON.stringify(detailMultiOutputReview));
+  const detailCandidateIndex = missingDetailOutputReview.comparisonEvidenceRefs
+    .findIndex((item) => item.kind === "candidate_final");
+  missingDetailOutputReview.comparisonEvidenceRefs.splice(detailCandidateIndex, 1);
+  assert.strictEqual(
+    validateDesignReliabilityReview(missingDetailOutputReview, {
+      rubric: detailRubric,
+      caseSpec: detailCase,
+      run: detailMultiOutputRun,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "详情页多屏漏掉任一最终导出时必须拒绝"
   );
 
   const exposedCandidatePass = JSON.parse(JSON.stringify(review));
@@ -1709,6 +2674,25 @@ async function main() {
     "comparisonEvidenceKinds 齐全但没有逐项绑定到 evidenceRefs 时不能记录为 pass"
   );
 
+  const formattedButFakeEvidencePass = JSON.parse(JSON.stringify(review));
+  formattedButFakeEvidencePass.comparisonEvidenceRefs = [
+    { kind: 'candidate_final', ref: `candidate:not-real.png@sha256:${'9'.repeat(64)}` },
+    { kind: 'user_design_anchor', ref: 'user-design:not-in-case.png' },
+    { kind: 'eagle_anchor', ref: 'eagle:item:not-in-case' }
+  ];
+  formattedButFakeEvidencePass.evidenceRefs = formattedButFakeEvidencePass.comparisonEvidenceRefs
+    .map((item) => item.ref);
+  assert.strictEqual(
+    validateDesignReliabilityReview(formattedButFakeEvidencePass, {
+      rubric,
+      caseSpec,
+      run: passing,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    '格式正确但不属于当前 Run / Case 的候选、用户成稿和 Eagle 引用不能伪造严格盲评'
+  );
+
   const hiddenAbsolutePathPass = JSON.parse(JSON.stringify(review));
   const hiddenAbsoluteRef = "candidate:C:\\Users\\example\\secret.jpg";
   hiddenAbsolutePathPass.evidenceRefs = hiddenAbsolutePathPass.evidenceRefs.map((ref) => (
@@ -1726,6 +2710,19 @@ async function main() {
     }).ok,
     false,
     "typed ref 的类型前缀后不能隐藏绝对用户路径"
+  );
+
+  const extraAbsoluteEvidencePass = JSON.parse(JSON.stringify(review));
+  extraAbsoluteEvidencePass.evidenceRefs.push("C:\\Users\\example\\private-review.png");
+  assert.strictEqual(
+    validateDesignReliabilityReview(extraAbsoluteEvidencePass, {
+      rubric,
+      caseSpec,
+      run: passing,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "comparison refs 合法时也不能在普通 evidenceRefs 中夹带绝对用户路径"
   );
 
   const blockerPass = JSON.parse(JSON.stringify(review));
@@ -1752,9 +2749,21 @@ async function main() {
     false,
     "手工伪造 weightedOverall 必须被自动计算对账拒绝"
   );
+  const mismatchedRubricDigest = JSON.parse(JSON.stringify(review));
+  mismatchedRubricDigest.rubricDigest = `sha256:${"0".repeat(64)}`;
+  assert.strictEqual(
+    validateDesignReliabilityReview(mismatchedRubricDigest, {
+      rubric,
+      caseSpec,
+      run: passing,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "Review v2 必须绑定当前 Rubric 内容摘要，不能只绑定 rubricId"
+  );
 
   const legacyNeedsFix = {
-    version: REVIEW_VERSION,
+    version: LEGACY_REVIEW_VERSION,
     reviewId: "legacy-review",
     runObservationId: passing.runObservationId,
     rubricId: caseSpec.oracle.rubricId,
@@ -1770,15 +2779,44 @@ async function main() {
     missingEvidence: [],
     boundaries: { devBenchmarkSidecarOnly: true, neverAffectsRuntime: true }
   };
-  assert.strictEqual(
-    validateDesignReliabilityReview(legacyNeedsFix, { rubric, caseSpec, run: passing }).ok,
-    true,
-    "历史 needs_fix sidecar 可继续读取，但不能升级为新协议 pass"
+  const reviewRoundTripRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-review-roundtrip-"));
+  fs.mkdirSync(path.join(reviewRoundTripRoot, "runs"), { recursive: true });
+  fs.mkdirSync(path.join(reviewRoundTripRoot, "reviews"), { recursive: true });
+  fs.writeFileSync(
+    path.join(reviewRoundTripRoot, "runs", "run.json"),
+    JSON.stringify(passing, null, 2),
+    "utf8"
   );
+  fs.writeFileSync(
+    path.join(reviewRoundTripRoot, "reviews", "review.json"),
+    JSON.stringify(review, null, 2),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(reviewRoundTripRoot, "reviews", "legacy.json"),
+    JSON.stringify(legacyNeedsFix, null, 2),
+    "utf8"
+  );
+  const collectedReviewRoundTrip = collectSidecars([reviewRoundTripRoot]);
+  assert.strictEqual(collectedReviewRoundTrip.reviews.length, 1,
+    "合法 v2 Review 在无上下文 sidecar 扫描阶段不得被误判为无效");
+  assert.strictEqual(collectedReviewRoundTrip.invalid.length, 0);
+  assert.strictEqual(collectedReviewRoundTrip.excludedEvidence.some((item) => (
+    item.id === legacyNeedsFix.reviewId
+    && item.reason === "historical_review_protocol_non_official"
+  )), true, "旧 v1 Review 应保留为 historical_non_official，而不是同版本突然损坏");
+  const retainedReviewRoundTrip = retainContextuallyValidReviews(
+    collectedReviewRoundTrip,
+    { cases: [caseSpec], rubrics: [rubric] }
+  );
+  assert.strictEqual(retainedReviewRoundTrip.reviews.length, 1,
+    "Review 经 collectSidecars 后必须还能完成当前 Case / Run / Rubric 精确绑定");
+  fs.rmSync(reviewRoundTripRoot, { recursive: true, force: true });
   const report = buildDesignReliabilityCohortReport({
     suiteId: caseSpec.suiteId,
     cohortId: "candidate",
     cases: [caseSpec],
+    rubrics: [rubric],
     runs: [passing, falseCompletion],
     reviews: [review],
     attributions: [],
@@ -1795,7 +2833,10 @@ async function main() {
     value: 0.5
   });
   assert.strictEqual(report.coverage.humanReviewedRuns, 1);
-  assert.strictEqual(report.overall.quality.humanPassRate.denominator, 1);
+  assert.strictEqual(report.overall.quality.strictHumanReviewedRate.numerator, 0);
+  assert.strictEqual(report.overall.quality.humanPassRate.denominator, 0,
+    "自报来源盲评没有匿名包收据时不得进入正式通过率分母");
+  assert.strictEqual(report.overall.quality.humanUsableRate.numerator, 0);
   assert.deepStrictEqual(report.overall.reliability.agenticDecisionPreservationEvidenceCoverage, {
     numerator: 1,
     denominator: 2,
@@ -1818,11 +2859,13 @@ async function main() {
     suiteId: caseSpec.suiteId,
     cohortId: "candidate",
     cases: [caseSpec],
+    rubrics: [rubric],
     runs: [passing],
     reviews: [review, conflictingReview],
     attributions: []
   });
-  assert.strictEqual(conflictReport.overall.quality.conflictingReviewRunCount, 1);
+  assert.strictEqual(conflictReport.overall.quality.conflictingReviewRunCount, 0,
+    "诊断评审冲突不得伪装成正式严格评审冲突统计");
   assert.strictEqual(conflictReport.overall.quality.humanUsableRate.numerator, 0,
     "同一成稿出现 pass / needs_fix 冲突时不能按任一 pass 冒充商业可用");
   assert.strictEqual(
@@ -1830,10 +2873,28 @@ async function main() {
     false,
     "同一 cohort 混入不同 Git / dirty / model / fixture 维度时必须显式失去同质性"
   );
+  const changedFixtureRun = JSON.parse(JSON.stringify(passing));
+  changedFixtureRun.runObservationId = "same-case-different-fixture";
+  changedFixtureRun.cohortDimensions.fixtureDigest = `sha256:${"9".repeat(64)}`;
+  const fixtureIdentityReport = buildDesignReliabilityCohortReport({
+    suiteId: caseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [caseSpec],
+    rubrics: [rubric],
+    runs: [passing, changedFixtureRun],
+    reviews: [],
+    attributions: []
+  });
+  assert.strictEqual(fixtureIdentityReport.cohortIntegrity.homogeneous, false,
+    "同一 Case 但 fixtureDigest 不同的样本不得被视为同质 cohort");
 
   const differentCaseSet = JSON.parse(JSON.stringify(report));
   differentCaseSet.selector.caseSetDigest = `sha256:${"d".repeat(64)}`;
   assert.strictEqual(compareDesignReliabilityCohorts(report, differentCaseSet).comparable, false);
+  const differentRubricSet = JSON.parse(JSON.stringify(report));
+  differentRubricSet.selector.rubricSetDigest = `sha256:${"e".repeat(64)}`;
+  assert.strictEqual(compareDesignReliabilityCohorts(report, differentRubricSet).comparable, false,
+    "Rubric 内容身份不同的 cohort 禁止直接比较");
   assert.strictEqual(compareDesignReliabilityCohorts(report, report).comparable, true);
 
   const releaseGates = {

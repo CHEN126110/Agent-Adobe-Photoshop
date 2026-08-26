@@ -40,6 +40,15 @@ interface EditableDocumentArtifactProof {
     };
 }
 
+export interface EditableDocumentSnapshotSaveResult {
+    success: true;
+    savedPath: string;
+    format: 'psd' | 'psb';
+    documentId: number;
+    editableDocumentArtifact: EditableDocumentArtifactProof;
+    sourceHistoryStateRef: PhotoshopHistoryStateRef;
+}
+
 function detectFormat(format?: string, filePath?: string): string {
     const explicit = String(format || '').trim().toLowerCase();
     if (explicit) return explicit;
@@ -328,6 +337,47 @@ async function batchPlaySave(descriptor: any, options: { token?: string; dialog?
         command.saveStage = { _enum: 'saveStageType', _value: 'saveBegin' };
     }
     await action.batchPlay([command], { synchronousExecution: true });
+}
+
+/**
+ * 在调用方已经持有 Photoshop modal 的时候，保存当前分层画面的可编辑快照。
+ * 该函数不建立第二个 modal，也不决定业务输出路径；调用方必须在清理临时图层之前调用。
+ */
+export async function saveEditableDocumentSnapshotInModal(input: {
+    document: any;
+    path: string;
+}): Promise<EditableDocumentSnapshotSaveResult> {
+    const savedPath = String(input.path || '').trim();
+    const format = detectFormat(undefined, savedPath);
+    if (format !== 'psd' && format !== 'psb') {
+        throw new Error(`可编辑快照只支持 PSD/PSB：${savedPath}`);
+    }
+    const documentId = Number(input.document?.id);
+    if (!Number.isSafeInteger(documentId) || documentId <= 0
+        || Number(app.activeDocument?.id) !== documentId) {
+        throw new Error('可编辑快照保存前活动文档已变化。');
+    }
+    const sourceHistoryStateRef = readActiveHistoryStateRef(input.document);
+    if (!sourceHistoryStateRef) {
+        throw new Error('可编辑快照保存前无法读取 Photoshop 文档版本。');
+    }
+    const saveStartedAt = Date.now();
+    const token = await createSaveToken(savedPath, 'overwrite');
+    await batchPlaySave(getSaveDescriptor(format), { token, dialog: 'dontDisplay' });
+    const editableDocumentArtifact = await readEditableDocumentArtifactProof(
+        savedPath,
+        format,
+        input.document,
+        saveStartedAt
+    );
+    return {
+        success: true,
+        savedPath,
+        format,
+        documentId,
+        editableDocumentArtifact,
+        sourceHistoryStateRef
+    };
 }
 
 /**

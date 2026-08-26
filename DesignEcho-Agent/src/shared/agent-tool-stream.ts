@@ -16,6 +16,8 @@ export interface AgentToolStreamResponse {
     content?: string;
     thinking?: string;
     toolCalls?: AgentToolStreamToolCall[];
+    /** 未完整 Tool delta 中提取的名称诊断；不含参数且不可执行。 */
+    incompleteToolCallNames?: string[];
     usage?: {
         inputTokens: number;
         outputTokens: number;

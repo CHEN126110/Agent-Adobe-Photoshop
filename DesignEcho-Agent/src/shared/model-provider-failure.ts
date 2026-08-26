@@ -164,7 +164,7 @@ export function classifyModelProviderFailure(error: unknown): ModelProviderFailu
     if (/econnrefused|econnreset|enotfound|dns|network\s*(?:error|failed|failure)|failed\s+to\s+fetch|socket\s*(?:closed|hang\s*up)|网络连接失败/i.test(normalized)) {
         return buildFailure('network', providerCode ? 'code' : 'message', diagnostic, status, providerCode);
     }
-    if (/^codex_subscription_(?:output|tool_arguments)_(?:invalid_json|invalid_shape|schema_mismatch)$/i.test(providerCode || '')) {
+    if (/^(?:model_output_incomplete|codex_subscription_(?:output|tool_arguments)_(?:invalid_json|invalid_shape|schema_mismatch))$/i.test(providerCode || '')) {
         return buildFailure('protocol', 'code', diagnostic, status, providerCode);
     }
     if (/response\s+parse\s+error|invalid\s+json|malformed\s+(?:response|sse)|invalid\s+response|protocol\s+error|unexpected\s+token.*json|响应解析失败|协议响应异常/i.test(normalized)) {

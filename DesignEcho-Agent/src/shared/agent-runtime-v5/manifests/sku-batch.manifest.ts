@@ -121,11 +121,17 @@ export const SKU_BATCH_MANIFEST: SkillRuntimeManifest = {
     ],
     template_families: ['sku.batch.standard.v1'],
     review_rubric_ref: SKU_BATCH_EVALUATION_PROFILE_ID,
-    delivery_outputs: ['sku_images', 'sku_manifest', 'review_report'],
+    delivery_outputs: [
+        'editable_sku_batch_documents',
+        'sku_images',
+        'sku_manifest',
+        'review_report'
+    ],
     production_obligation: 'photoshop_mutation_with_readback',
     exit_criteria: [
         'SKU 组合计划来自项目上下文或用户确认',
-        '每轮执行后必须检查导出结果或当前画面',
+        '每个冻结 SKU row 的 JPG 与可编辑 PSB 必须来自同一次已通过实时 QA 的生产状态',
+        '每轮执行后必须检查逐行路径、图层结构与导出文件读回',
         'R5 review 通过后才能进入交付说明'
     ]
 };

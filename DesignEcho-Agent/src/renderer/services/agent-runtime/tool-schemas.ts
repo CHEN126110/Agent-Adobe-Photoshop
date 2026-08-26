@@ -2069,7 +2069,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'prepareSkuRetouchAssets',
-        description: '为同品类纯底棚拍 SKU 图片生成确定性精修资产。自动判断纯底/场景、选择批次中位形态作为基准，输出透明主体、独立真实原影、可置为 Soft Light 的中性灰光影修正层和预览。只生成项目文件，不写 Photoshop，也不能单独证明色卡完成；场景图不要强制使用。',
+        description: '为同品类纯底棚拍 SKU 图片生成确定性的透明主体统一尺度资产。自动判断纯底/场景；只对适用的纯底素材抠出透明主体，保持真实版型，并按同批基准等比缩放到共同尺度。当前阶段不做形态变形、阴影/投影分离或光影修正。只生成项目文件，不写 Photoshop，也不能单独证明色卡完成；场景图会跳过。',
         inputSchema: objectSchema({
             sources: {
                 type: 'array',
@@ -2085,11 +2085,9 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             },
             projectPath: { type: 'string' },
             outputDir: { type: 'string' },
-            referenceSourcePath: { type: 'string' },
+            referenceSourcePath: { type: 'string', description: '可选的统一尺度参考源路径；未提供时自动从同批适用素材中选择基准。' },
             sourceMode: { type: 'string', enum: ['auto', 'studio', 'scene'] },
-            shapeStrength: { type: 'number', description: '0~1，默认 0.72；不要用 1 抹掉款式差异。' },
-            lightingStrength: { type: 'number', description: '0~1，默认 0.68；只修低频受光，不统一商品固有明度。' },
-            maxLongEdge: { type: 'number', description: '1024~3072，默认 2048。' },
+            maxLongEdge: { type: 'number', description: '透明主体提取工作图长边，1024~3072，默认 2048。' },
             force: { type: 'boolean' }
         }, ['sources'])
     },
@@ -2774,6 +2772,26 @@ Use this only when binding a specific Profile's method knowledge, stage context,
             skuDocName: { type: 'string' },
             templateDocName: { type: 'string' },
             outputDir: { type: 'string' },
+            editableOutputDir: { type: 'string' },
+            deliveryPlan: {
+                type: 'object',
+                properties: {
+                    version: { type: 'string', enum: ['sku-layout-delivery-plan/v1'] },
+                    items: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                itemId: { type: 'string' },
+                                rasterOutputPath: { type: 'string' },
+                                editableOutputPath: { type: 'string' }
+                            },
+                            required: ['itemId', 'rasterOutputPath', 'editableOutputPath']
+                        }
+                    }
+                },
+                required: ['version', 'items']
+            },
             noteFilePrefix: { type: 'string' },
             autoLayoutWithoutPlaceholders: { type: 'boolean' },
             expectedItemCount: { type: 'number' },

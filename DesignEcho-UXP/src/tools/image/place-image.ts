@@ -6,6 +6,7 @@
  */
 
 import { getEntryFromPath } from '../../core/file-url';
+import { assertImageSourceIdentity } from '../../core/image-source-identity';
 import {
     measureImageTargetFitOutcome,
     normalizeImageTargetBounds,
@@ -102,7 +103,7 @@ export interface PlaceImageParams {
     layerOrder?: 'front' | 'belowText' | 'back';
     /** 来源资产ID（Agent 侧传入，用于追踪） */
     sourceAssetId?: string;
-    /** 来源校验和（Agent 侧传入，用于一致性校验） */
+    /** 来源快速校验和（fnv1a32:<8hex>；Agent 侧传入，用于本次置入字节一致性校验） */
     sourceChecksum?: string;
     /** 来源字节长度（Agent 侧传入，用于一致性校验） */
     sourceByteLength?: number;
@@ -343,17 +344,6 @@ async function applyPlacedLayerOrder(doc: any, layer: any, layerOrder: PlaceImag
         layer.sendToBack();
         await selectLayerById(layer.id);
     }
-}
-
-function calcChecksum(bytes: Uint8Array): string {
-    // FNV-1a 32-bit, same as Agent side.
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < bytes.length; i++) {
-        hash ^= bytes[i];
-        hash = Math.imul(hash, 0x01000193);
-    }
-    const hex = (hash >>> 0).toString(16).padStart(8, '0');
-    return `fnv1a32:${hex}`;
 }
 
 function extensionFromPath(filePath: string): string {
@@ -615,6 +605,7 @@ export class PlaceImageTool implements Tool {
         }
 
         const operationId = `placeImage:${String(context?.requestId || Date.now())}`;
+        let sourceIdentityVerified = false;
         return await photoshopTransactionRunner.run<
             PlaceImageBefore,
             PlaceImageReadback,
@@ -648,7 +639,10 @@ export class PlaceImageTool implements Tool {
                 throwIfRequestCancelled(context);
                 // 使用 batchPlay 置入图片
                 if (params.fileToken || filePath) {
-                    tokenPath = params.fileToken;
+                    const sourceIdentityDeclared = sourceByteLength !== undefined || Boolean(sourceChecksum);
+                    // 一旦调用方声明来源身份，就必须从可读 filePath 建立本次 session token；
+                    // 不能让另一个不透明 fileToken 绕过刚核对过的实际字节。
+                    tokenPath = sourceIdentityDeclared && filePath ? undefined : params.fileToken;
                     if (!tokenPath && filePath) {
                         const fileEntry = await getEntryFromPath(fs, filePath);
                         if (!fileEntry) {
@@ -660,7 +654,18 @@ export class PlaceImageTool implements Tool {
                             formatHint: extensionFromPath(filePath),
                             sourceLabel: `图片文件「${filePath.split(/[\\/]/).pop() || filePath}」`
                         });
+                        assertImageSourceIdentity({
+                            bytes,
+                            expectedByteLength: sourceByteLength,
+                            expectedChecksum: sourceChecksum
+                        });
+                        sourceIdentityVerified = Number.isSafeInteger(sourceByteLength)
+                            && Number(sourceByteLength) > 0
+                            && /^fnv1a32:[a-f0-9]{8}$/i.test(String(sourceChecksum || ''));
                         tokenPath = await fs.createSessionToken(fileEntry);
+                    }
+                    if (tokenPath && !filePath && sourceIdentityDeclared) {
+                        throw new Error('仅提供 fileToken 时无法重新读取并核对源图字节身份；请使用可读 filePath 或移除来源身份声明。');
                     }
 
                     // 从文件路径置入
@@ -710,15 +715,14 @@ export class PlaceImageTool implements Tool {
                         formatHint: ext || decoded.mimeType,
                         sourceLabel: name ? `图片「${name}」` : 'Base64 图片'
                     });
-                    if (typeof sourceByteLength === 'number' && sourceByteLength > 0 && sourceByteLength !== bytes.length) {
-                        throw new Error(`源图字节长度不一致: expected=${sourceByteLength}, actual=${bytes.length}`);
-                    }
-                    if (sourceChecksum) {
-                        const actualChecksum = calcChecksum(bytes);
-                        if (actualChecksum !== sourceChecksum) {
-                            throw new Error(`源图校验失败: expected=${sourceChecksum}, actual=${actualChecksum}`);
-                        }
-                    }
+                    assertImageSourceIdentity({
+                        bytes,
+                        expectedByteLength: sourceByteLength,
+                        expectedChecksum: sourceChecksum
+                    });
+                    sourceIdentityVerified = Number.isSafeInteger(sourceByteLength)
+                        && Number(sourceByteLength) > 0
+                        && /^fnv1a32:[a-f0-9]{8}$/i.test(String(sourceChecksum || ''));
                     if (sourceAssetId) {
                         console.log(`[placeImage] 置入来源 assetId=${sourceAssetId}, sourcePath=${sourcePath || filePath || 'n/a'}`);
                     }
@@ -847,7 +851,13 @@ export class PlaceImageTool implements Tool {
                             source: {
                                 assetId: sourceAssetId,
                                 checksum: sourceChecksum,
-                                byteLength: sourceByteLength
+                                byteLength: sourceByteLength,
+                                ...(sourceIdentityVerified ? {
+                                    identityProof: {
+                                        version: 'place-image-source-identity/v1',
+                                        verified: true
+                                    }
+                                } : {})
                             },
                             ...(placement ? { placement } : {}),
                             message: `已执行图片置入“${name}”，等待 Photoshop 状态读回。`
@@ -927,7 +937,13 @@ export class PlaceImageTool implements Tool {
                         source: {
                             assetId: sourceAssetId,
                             checksum: sourceChecksum,
-                            byteLength: sourceByteLength
+                            byteLength: sourceByteLength,
+                            ...(sourceIdentityVerified ? {
+                                identityProof: {
+                                    version: 'place-image-source-identity/v1',
+                                    verified: true
+                                }
+                            } : {})
                         },
                         ...(placement ? { placement } : {}),
                         message: `成功置入图片“${placedLayer.layerName}”，并读回确认非空 bounds。`

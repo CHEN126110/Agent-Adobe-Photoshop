@@ -23,6 +23,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import http from 'http';
 import { EventEmitter } from 'events';
+import { StringDecoder } from 'string_decoder';
 import {
     ALL_MODELS,
     ModelConfig,
@@ -46,14 +47,20 @@ import {
     normalizeProviderNativeToolCitations
 } from '../../shared/provider-native-tools';
 import { normalizeStreamTextChunk } from '../../shared/stream-text-normalizer';
+import {
+    canExecuteProviderStreamToolCalls,
+    mergeProviderFinishReason,
+    resolveProviderStreamStopReason
+} from '../../shared/provider-stream-completion';
 import { ClaudeSubscriptionService } from './claude-subscription-service';
 import { CodexSubscriptionService } from './codex-subscription-service';
+import { ProviderSseDecoder } from './provider-sse-decoder';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEEPSEEK_TEST_MODEL = 'deepseek-v4-pro';
 const OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS = 45_000;
 const OPENAI_COMPATIBLE_MIN_TIMEOUT_MS = 5_000;
-const OPENAI_COMPATIBLE_MAX_TIMEOUT_MS = 120_000;
+const OPENAI_COMPATIBLE_MAX_TIMEOUT_MS = 300_000;
 const XIAOMI_MIMO_DEFAULT_TEMPERATURE = 1.0;
 const XIAOMI_MIMO_DEFAULT_TOP_P = 0.95;
 const OLLAMA_CLOUD_BASE_URL = 'https://ollama.com';
@@ -71,6 +78,11 @@ export type ModelEmptyContentError = Error & {
     thinkingOnly: boolean;
     finishReason: string;
     maxTokens: number;
+};
+
+type ModelOutputIncompleteError = Error & {
+    code: 'model_output_incomplete';
+    stopReason: string;
 };
 
 /**
@@ -124,6 +136,36 @@ function createModelProviderHttpError(
     return error;
 }
 
+function assertPlainModelOutputComplete(input: {
+    providerName: string;
+    finishReason: unknown;
+    transportComplete?: boolean;
+}): void {
+    const stopReason = resolveProviderStreamStopReason({
+        finishReason: input.finishReason,
+        hasToolCalls: false,
+        transportComplete: input.transportComplete
+    });
+    if (stopReason === 'end_turn') return;
+
+    const message = stopReason === 'content_blocked'
+        ? `${input.providerName} 模型服务拦截了本次输出，未返回可交付的完整内容。`
+        : `${input.providerName} 模型输出没有完整结束，已丢弃未确认的部分内容。`;
+    const error = new Error(message) as ModelOutputIncompleteError;
+    error.name = 'ModelOutputIncompleteError';
+    error.code = 'model_output_incomplete';
+    error.stopReason = stopReason;
+    throw error;
+}
+
+function isModelOutputIncompleteError(error: unknown): error is ModelOutputIncompleteError {
+    return Boolean(
+        error
+        && typeof error === 'object'
+        && (error as { code?: unknown }).code === 'model_output_incomplete'
+    );
+}
+
 function buildAgentToolStreamErrorChunk(
     error: unknown
 ): Extract<AgentToolStreamChunk, { type: 'error' }> {
@@ -158,6 +200,68 @@ function resolveOpenAICompatibleTimeoutMs(options?: ModelChatOptions): number {
         );
     }
     return OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS;
+}
+
+function createModelStreamAbortError(): Error & { code: string } {
+    const error = new Error('模型流式请求已取消') as Error & { code: string };
+    error.name = 'AbortError';
+    error.code = 'stream_aborted';
+    return error;
+}
+
+function awaitModelCallWithCancellation<T>(
+    createPending: () => Promise<T>,
+    signal: AbortSignal,
+    timeoutMs?: number
+): Promise<T> {
+    if (signal.aborted) return Promise.reject(createModelStreamAbortError());
+
+    return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const requestedTimeout = Number(timeoutMs);
+        const hasTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        function cleanup(): void {
+            signal.removeEventListener('abort', handleAbort);
+            if (timer) clearTimeout(timer);
+        }
+
+        function settleResolve(value: T): void {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(value);
+        }
+
+        function settleReject(error: unknown): void {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(error);
+        }
+
+        function handleAbort(): void {
+            settleReject(createModelStreamAbortError());
+        }
+
+        signal.addEventListener('abort', handleAbort, { once: true });
+        if (hasTimeout) {
+            timer = setTimeout(() => {
+                const error = new Error(
+                    `模型请求在 ${Math.round(requestedTimeout)}ms 内没有完成`
+                ) as Error & { code?: string };
+                error.code = 'model_request_timeout';
+                settleReject(error);
+            }, requestedTimeout);
+        }
+        Promise.resolve()
+            .then(() => {
+                if (signal.aborted) throw createModelStreamAbortError();
+                return createPending();
+            })
+            .then(settleResolve, settleReject);
+    });
 }
 
 function resolveChatMaxTokens(
@@ -203,17 +307,6 @@ interface AccumulatedToolCall {
     argumentsText: string;
 }
 
-function normalizeProviderStreamStopReason(
-    providerFinishReason: string | undefined,
-    hasToolCalls: boolean
-): string {
-    if (providerFinishReason === 'length') return 'max_tokens';
-    if (providerFinishReason === 'tool_calls') return 'tool_use';
-    if (providerFinishReason === 'stop') return 'end_turn';
-    if (providerFinishReason) return providerFinishReason;
-    return hasToolCalls ? 'tool_use' : 'end_turn';
-}
-
 function safeParseToolArguments(value: string): Record<string, any> {
     const trimmed = String(value || '').trim();
     if (!trimmed) return {};
@@ -225,15 +318,57 @@ function safeParseToolArguments(value: string): Record<string, any> {
     }
 }
 
-function buildToolCallsFromDeltas(calls: Map<number, AccumulatedToolCall>): AgentToolStreamToolCall[] {
-    return [...calls.entries()]
+function parseExecutableToolArguments(value: string): {
+    valid: boolean;
+    arguments: Record<string, any>;
+} {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return { valid: false, arguments: {} };
+    try {
+        const parsed = JSON.parse(trimmed);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? { valid: true, arguments: parsed }
+            : { valid: false, arguments: {} };
+    } catch {
+        return { valid: false, arguments: {} };
+    }
+}
+
+function buildToolCallsFromDeltas(calls: Map<number, AccumulatedToolCall>): {
+    toolCalls: AgentToolStreamToolCall[];
+    valid: boolean;
+} {
+    const candidates = [...calls.entries()]
         .sort(([a], [b]) => a - b)
-        .map(([index, call]) => ({
-            id: call.id || `stream_call_${index}`,
-            name: call.name || '',
-            arguments: safeParseToolArguments(call.argumentsText)
-        }))
-        .filter((call) => call.name);
+        .map(([, call]) => {
+            const id = String(call.id || '').trim();
+            const name = String(call.name || '').trim();
+            const parsedArguments = parseExecutableToolArguments(call.argumentsText);
+            return {
+                valid: Boolean(id && name && parsedArguments.valid),
+                toolCall: {
+                    id,
+                    name,
+                    arguments: parsedArguments.arguments
+                }
+            };
+        });
+    return {
+        toolCalls: candidates.map((candidate) => candidate.toolCall),
+        valid: candidates.every((candidate) => candidate.valid)
+    };
+}
+
+function collectIncompleteToolCallNames(
+    calls: Map<number, AccumulatedToolCall>,
+    stopReason: unknown
+): string[] {
+    if (stopReason !== 'max_tokens' && stopReason !== 'stream_incomplete') return [];
+    return Array.from(new Set(
+        [...calls.values()]
+            .map((call) => String(call.name || '').trim())
+            .filter(Boolean)
+    ));
 }
 
 export interface DeepSeekTestResult {
@@ -612,6 +747,11 @@ export class ModelService {
                             return;
                         }
                         const parsed = JSON.parse(data);
+                        assertPlainModelOutputComplete({
+                            providerName: 'Ollama',
+                            finishReason: parsed.done_reason,
+                            transportComplete: parsed.done === true
+                        });
                         
                         // 动态模型默认尝试 xml_tag 格式
                         const { thinking, content } = extractThinkingFromModel(parsed, undefined);
@@ -625,6 +765,10 @@ export class ModelService {
                             }
                         });
                     } catch (e) {
+                        if (isModelOutputIncompleteError(e)) {
+                            reject(e);
+                            return;
+                        }
                         reject(new Error(`Failed to parse Ollama response: ${e}`));
                     }
                 });
@@ -696,6 +840,10 @@ export class ModelService {
                             return;
                         }
                         const parsed = JSON.parse(data);
+                        assertPlainModelOutputComplete({
+                            providerName: 'OpenRouter',
+                            finishReason: parsed.choices?.[0]?.finish_reason
+                        });
                         
                         // 动态模型默认尝试 reasoning_content 格式
                         const dynamicThinkingConfig: ThinkingConfig = {
@@ -713,6 +861,10 @@ export class ModelService {
                             }
                         });
                     } catch (e) {
+                        if (isModelOutputIncompleteError(e)) {
+                            reject(e);
+                            return;
+                        }
                         reject(new Error(`❌ OpenRouter 响应解析失败\n\n请稍后重试`));
                     }
                 });
@@ -759,6 +911,10 @@ export class ModelService {
             max_tokens: resolveChatMaxTokens(options),
             temperature: options?.temperature,
             messages: anthropicMessages
+        });
+        assertPlainModelOutputComplete({
+            providerName: 'Anthropic',
+            finishReason: response.stop_reason
         });
 
         // 使用统一的 ThinkingExtractor 提取思维过程
@@ -820,6 +976,10 @@ export class ModelService {
         });
 
         const response = await result.response;
+            assertPlainModelOutputComplete({
+                providerName: 'Google AI',
+                finishReason: response.candidates?.[0]?.finishReason
+            });
             const rawText = response.text();
             
             // 使用统一的 ThinkingExtractor 提取思维过程
@@ -837,6 +997,7 @@ export class ModelService {
             }
         };
         } catch (error: any) {
+            if (isModelOutputIncompleteError(error)) throw error;
             // 详细错误日志
             console.error(`[ModelService] ❌ Google AI 调用失败`);
             console.error(`[ModelService] 原始错误:`, error);
@@ -1400,6 +1561,10 @@ export class ModelService {
             throw error;
         }
 
+        assertPlainModelOutputComplete({
+            providerName,
+            finishReason: response?.choices?.[0]?.finish_reason
+        });
         // 使用统一的 ThinkingExtractor 提取思维过程
         const { thinking, content } = this.extractThinkingForResponse(response, model, options);
 
@@ -1496,6 +1661,11 @@ export class ModelService {
                         }
 
                         const parsed = JSON.parse(data);
+                        assertPlainModelOutputComplete({
+                            providerName: 'Ollama',
+                            finishReason: parsed.done_reason,
+                            transportComplete: parsed.done === true
+                        });
                         
                         // 使用统一的 ThinkingExtractor 提取思维过程
                         const { thinking, content } = this.extractThinkingForResponse(parsed, model, options);
@@ -1509,6 +1679,10 @@ export class ModelService {
                             }
                         });
                     } catch (e) {
+                        if (isModelOutputIncompleteError(e)) {
+                            reject(e);
+                            return;
+                        }
                         reject(new Error(`Failed to parse Ollama response: ${e}`));
                     }
                 });
@@ -1601,6 +1775,11 @@ export class ModelService {
         }
 
         const data = await response.json();
+        assertPlainModelOutputComplete({
+            providerName: 'Ollama Cloud',
+            finishReason: data.done_reason,
+            transportComplete: data.done === true
+        });
         
         // 使用统一的 ThinkingExtractor 提取思维过程
         const { thinking, content } = this.extractThinkingForResponse(data, model, options);
@@ -1676,6 +1855,10 @@ export class ModelService {
                         }
 
                         const parsed = JSON.parse(data);
+                        assertPlainModelOutputComplete({
+                            providerName: 'OpenRouter',
+                            finishReason: parsed.choices?.[0]?.finish_reason
+                        });
                         
                         // 使用统一的 ThinkingExtractor 提取思维过程
                         const { thinking, content } = this.extractThinkingForResponse(parsed, model, options);
@@ -1689,6 +1872,10 @@ export class ModelService {
                             }
                         });
                     } catch (e) {
+                        if (isModelOutputIncompleteError(e)) {
+                            reject(e);
+                            return;
+                        }
                         reject(new Error(`❌ OpenRouter 响应解析失败\n\n请稍后重试`));
                     }
                 });
@@ -2037,15 +2224,23 @@ export class ModelService {
         const emitter = new EventEmitter() as AgentToolStreamHandle;
         const abortController = new AbortController();
         let aborted = false;
+        let terminalEmitted = false;
 
         const emitChunk = (chunk: AgentToolStreamChunk): void => {
+            if (terminalEmitted) return;
             if (aborted && chunk.type !== 'error') return;
+            if (chunk.type === 'done' || chunk.type === 'error') terminalEmitted = true;
             emitter.emit('chunk', chunk);
         };
 
         emitter.abort = () => {
+            if (aborted || terminalEmitted) return;
             aborted = true;
             abortController.abort();
+            const error = new Error('Agent 工具流式请求已取消') as Error & { code?: string };
+            error.name = 'AbortError';
+            error.code = 'stream_aborted';
+            emitChunk(buildAgentToolStreamErrorChunk(error));
         };
 
         setImmediate(() => {
@@ -2124,7 +2319,13 @@ export class ModelService {
         });
 
         if (provider === 'openrouter') {
-            await this.streamOpenRouterWithTools(apiModelName, formatted, signal, emitChunk);
+            await this.streamOpenRouterWithTools(
+                apiModelName,
+                formatted,
+                options?.timeoutMs,
+                signal,
+                emitChunk
+            );
             return;
         }
 
@@ -2135,13 +2336,18 @@ export class ModelService {
                 client,
                 apiModelName,
                 formatted,
+                options?.timeoutMs,
                 signal,
                 emitChunk
             );
             return;
         }
 
-        const parsed = await this.chatWithTools(modelId, messages, tools, options);
+        const parsed = await awaitModelCallWithCancellation(
+            () => this.chatWithTools(modelId, messages, tools, options),
+            signal,
+            options?.timeoutMs
+        );
         emitChunk({
             type: 'done',
             response: this.toAgentToolStreamResponse(parsed, 'fallback')
@@ -2166,6 +2372,7 @@ export class ModelService {
         client: OpenAI,
         model: string,
         formatted: any,
+        timeoutMs: number | undefined,
         signal: AbortSignal,
         emitChunk: (chunk: AgentToolStreamChunk) => void
     ): Promise<void> {
@@ -2176,6 +2383,8 @@ export class ModelService {
         const annotations: unknown[] = [];
         let webSearchUsage: unknown;
         let providerFinishReason: string | undefined;
+        let protocolInvalid = false;
+        let providerRefusalSeen = false;
 
         let stream: any;
         try {
@@ -2184,7 +2393,10 @@ export class ModelService {
                 ...formatted,
                 stream: true
                 // thinking 请求参数已由 adapter.formatMessages 写入 formatted；这里不按 provider 名覆盖。
-            } as any, { signal } as any);
+            } as any, {
+                signal,
+                timeout: resolveOpenAICompatibleTimeoutMs({ timeoutMs })
+            } as any);
         } catch (error: any) {
             if (provider === 'xiaomi') {
                 throw new Error(this.formatXiaomiError(error, model));
@@ -2197,10 +2409,18 @@ export class ModelService {
                 if (signal.aborted) return;
                 const choice = chunk?.choices?.[0];
                 if (choice?.finish_reason) {
-                    providerFinishReason = String(choice.finish_reason);
+                    const merged = mergeProviderFinishReason(
+                        providerFinishReason,
+                        choice.finish_reason
+                    );
+                    providerFinishReason = merged.finishReason;
+                    protocolInvalid = protocolInvalid || merged.conflict;
                 }
                 const delta = choice?.delta;
                 if (!delta) continue;
+                if (String(delta.refusal || '').trim()) {
+                    providerRefusalSeen = true;
+                }
 
                 if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
                     const norm = normalizeStreamTextChunk(thinking, delta.reasoning_content);
@@ -2236,9 +2456,23 @@ export class ModelService {
             throw error;
         }
 
-        const toolCalls = providerFinishReason === 'length'
-            ? []
-            : buildToolCallsFromDeltas(accumulatedToolCalls);
+        const candidateToolCallResult = buildToolCallsFromDeltas(accumulatedToolCalls);
+        const parsedStopReason = resolveProviderStreamStopReason({
+            finishReason: providerRefusalSeen
+                ? 'refusal'
+                : (protocolInvalid ? undefined : providerFinishReason),
+            hasToolCalls: candidateToolCallResult.toolCalls.length > 0
+        });
+        const stopReason = candidateToolCallResult.valid
+            ? parsedStopReason
+            : 'stream_incomplete';
+        const toolCalls = canExecuteProviderStreamToolCalls(stopReason)
+            ? candidateToolCallResult.toolCalls
+            : [];
+        const incompleteToolCallNames = collectIncompleteToolCallNames(
+            accumulatedToolCalls,
+            stopReason
+        );
         const citations = provider === 'xiaomi'
             ? normalizeProviderNativeToolCitations(annotations, { provider: 'xiaomi' })
             : [];
@@ -2251,12 +2485,13 @@ export class ModelService {
                 content,
                 thinking: thinking || undefined,
                 toolCalls,
+                ...(incompleteToolCallNames.length > 0 ? { incompleteToolCallNames } : {}),
                 usage,
                 citations,
                 nativeToolUsage: provider === 'xiaomi' && webSearchUsage
                     ? [{ provider: 'xiaomi', toolType: 'web_search', rawUsage: webSearchUsage }]
                     : undefined,
-                stopReason: normalizeProviderStreamStopReason(providerFinishReason, toolCalls.length > 0),
+                stopReason,
                 streamMode: 'stream'
             }
         });
@@ -2265,6 +2500,7 @@ export class ModelService {
     private streamOpenRouterWithTools(
         model: string,
         formatted: any,
+        timeoutMs: number | undefined,
         signal: AbortSignal,
         emitChunk: (chunk: AgentToolStreamChunk) => void
     ): Promise<void> {
@@ -2277,17 +2513,40 @@ export class ModelService {
             const accumulatedToolCalls = new Map<number, AccumulatedToolCall>();
             let content = '';
             let thinking = '';
-            let buffer = '';
+            const decoder = new ProviderSseDecoder();
+            const utf8Decoder = new StringDecoder('utf8');
             let usage = { inputTokens: 0, outputTokens: 0 };
             let settled = false;
             let providerFinishReason: string | undefined;
+            let protocolInvalid = false;
+            let providerRefusalSeen = false;
+
+            const fail = (error: Error): void => {
+                if (settled || signal.aborted) return;
+                settled = true;
+                reject(error);
+            };
 
             const finish = (): void => {
                 if (settled || signal.aborted) return;
                 settled = true;
-                const toolCalls = providerFinishReason === 'length'
-                    ? []
-                    : buildToolCallsFromDeltas(accumulatedToolCalls);
+                const candidateToolCallResult = buildToolCallsFromDeltas(accumulatedToolCalls);
+                const parsedStopReason = resolveProviderStreamStopReason({
+                    finishReason: providerRefusalSeen
+                        ? 'refusal'
+                        : (protocolInvalid ? undefined : providerFinishReason),
+                    hasToolCalls: candidateToolCallResult.toolCalls.length > 0
+                });
+                const stopReason = candidateToolCallResult.valid
+                    ? parsedStopReason
+                    : 'stream_incomplete';
+                const toolCalls = canExecuteProviderStreamToolCalls(stopReason)
+                    ? candidateToolCallResult.toolCalls
+                    : [];
+                const incompleteToolCallNames = collectIncompleteToolCallNames(
+                    accumulatedToolCalls,
+                    stopReason
+                );
                 for (const toolCall of toolCalls) {
                     emitChunk({ type: 'tool_call_ready', toolCall });
                 }
@@ -2297,8 +2556,9 @@ export class ModelService {
                         content,
                         thinking: thinking || undefined,
                         toolCalls,
+                        ...(incompleteToolCallNames.length > 0 ? { incompleteToolCallNames } : {}),
                         usage,
-                        stopReason: normalizeProviderStreamStopReason(providerFinishReason, toolCalls.length > 0),
+                        stopReason,
                         streamMode: 'stream'
                     }
                 });
@@ -2323,37 +2583,64 @@ export class ModelService {
                     'X-Title': 'DesignEcho Agent',
                     'Content-Length': Buffer.byteLength(requestBody)
                 },
-                timeout: 120000
+                timeout: resolveOpenAICompatibleTimeoutMs({ timeoutMs })
             }, (res: any) => {
                 if (res.statusCode !== 200) {
                     let errorBody = '';
                     res.on('data', (chunk: Buffer) => { errorBody += chunk.toString(); });
-                    res.on('end', () => reject(new Error(this.formatOpenRouterError(res.statusCode, safeParseToolArguments(errorBody), model))));
+                    res.on('end', () => fail(new Error(this.formatOpenRouterError(
+                        res.statusCode,
+                        safeParseToolArguments(errorBody),
+                        model
+                    ))));
                     return;
                 }
 
-                res.on('data', (chunk: Buffer) => {
-                    if (signal.aborted) return;
-                    buffer += chunk.toString();
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
+                const consumeEvent = (eventData: string): void => {
+                    if (settled || signal.aborted) return;
+                    const data = eventData.trim();
+                    if (!data) return;
+                    if (data === '[DONE]') {
+                        finish();
+                        return;
+                    }
 
-                    for (const line of lines) {
-                        if (!line.startsWith('data: ')) continue;
-                        const data = line.slice(6).trim();
-                        if (!data) continue;
-                        if (data === '[DONE]') {
-                            finish();
-                            return;
-                        }
-
-                        try {
+                    try {
                             const parsed = JSON.parse(data);
+                            if (parsed?.error) {
+                                const providerError = parsed.error;
+                                const status = Number(
+                                    providerError.status
+                                    || providerError.status_code
+                                    || 0
+                                );
+                                const message = String(
+                                    providerError.message
+                                    || providerError.code
+                                    || 'OpenRouter 流返回错误'
+                                );
+                                if (Number.isInteger(status) && status > 0) {
+                                    fail(createModelProviderHttpError('OpenRouter', status, message));
+                                } else {
+                                    const error = new Error(message) as Error & { code?: string };
+                                    error.code = String(providerError.code || 'openrouter_stream_error');
+                                    fail(error);
+                                }
+                                return;
+                            }
                             const choice = parsed.choices?.[0];
                             if (choice?.finish_reason) {
-                                providerFinishReason = String(choice.finish_reason);
+                                const merged = mergeProviderFinishReason(
+                                    providerFinishReason,
+                                    choice.finish_reason
+                                );
+                                providerFinishReason = merged.finishReason;
+                                protocolInvalid = protocolInvalid || merged.conflict;
                             }
                             const delta = choice?.delta;
+                            if (String(delta?.refusal || '').trim()) {
+                                providerRefusalSeen = true;
+                            }
                             if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content) {
                                 const norm = normalizeStreamTextChunk(thinking, delta.reasoning_content);
                                 thinking = norm.fullText;
@@ -2370,22 +2657,47 @@ export class ModelService {
                                     outputTokens: parsed.usage.completion_tokens || 0
                                 };
                             }
-                        } catch {
-                            // Ignore malformed SSE fragments.
+                    } catch {
+                        protocolInvalid = true;
+                    }
+                };
+
+                res.on('data', (chunk: Buffer) => {
+                    if (signal.aborted) return;
+                    try {
+                        for (const eventData of decoder.push(utf8Decoder.write(chunk))) {
+                            consumeEvent(eventData);
                         }
+                    } catch (error: any) {
+                        fail(error instanceof Error ? error : new Error('OpenRouter SSE 响应无效'));
+                        res.destroy?.();
                     }
                 });
 
-                res.on('end', finish);
-                res.on('error', (error: Error) => reject(error));
+                res.on('end', () => {
+                    try {
+                        const utf8Tail = utf8Decoder.end();
+                        if (utf8Tail) {
+                            for (const eventData of decoder.push(utf8Tail)) consumeEvent(eventData);
+                        }
+                        for (const eventData of decoder.finish()) {
+                            consumeEvent(eventData);
+                        }
+                        finish();
+                    } catch (error: any) {
+                        fail(error instanceof Error ? error : new Error('OpenRouter SSE 响应无效'));
+                        res.destroy?.();
+                    }
+                });
+                res.on('error', fail);
             });
 
             req.on('error', (error: Error) => {
-                if (!signal.aborted) reject(error);
+                fail(error);
             });
             req.on('timeout', () => {
                 req.destroy();
-                reject(new Error('OpenRouter timeout'));
+                fail(new Error('OpenRouter timeout'));
             });
             signal.addEventListener('abort', () => req.destroy());
             req.write(requestBody);
@@ -2426,6 +2738,7 @@ export class ModelService {
             content: response.content,
             thinking: response.thinking,
             toolCalls: response.toolCalls,
+            incompleteToolCallNames: response.incompleteToolCallNames,
             usage: response.usage,
             citations: response.citations,
             nativeToolUsage: response.nativeToolUsage,

@@ -141,7 +141,7 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
     analyzeAssetContent: { name: '分析素材内容', icon: '[A]', description: '理解素材的主体、文字与本质（原片/成品）。' },
     createProjectContactSheetOverview: { name: '生成项目总览', icon: '[A]', description: '把项目图片合成带编号的缩略图总览。' },
     analyzeProjectContactSheetOverview: { name: '观察项目总览', icon: '[A]', description: '用视觉模型理解项目缩略图总览。' },
-    prepareSkuRetouchAssets: { name: '准备 SKU 精修资产', icon: '[A]', description: '生成形态统一、原影和中性灰修正资产。' },
+    prepareSkuRetouchAssets: { name: '准备 SKU 统一尺度资产', icon: '[A]', description: '为适用的纯底素材生成透明主体等比统一尺度资产。' },
     // project-image-analysis / design-reference-search 等技能 id 不在此登记——
     // 技能显示名单一来源是 SkillDeclaration.displayName（见 getSkillToolDisplayInfo）。
     analyzeProjectForDetailPage: { name: '分析详情页素材', icon: '[A]', description: '为详情页分析项目素材。' },

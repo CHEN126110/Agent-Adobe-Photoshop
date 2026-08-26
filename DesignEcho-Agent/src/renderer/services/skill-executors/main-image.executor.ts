@@ -46,6 +46,10 @@ import {
 } from '../../../shared/main-image-screenshot-probe-readiness';
 import { buildMainImageQaReport } from '../../../shared/main-image-qa-report';
 import {
+    buildRuntimeDeliveryReceipt,
+    findRuntimeDeliverySourceHistoryStateRef
+} from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
+import {
     hasConcreteProjectVisualInsight,
     normalizeProjectVisualInsightCompositionFields,
     pickPreferredProjectVisualInsightCacheEntry
@@ -1506,6 +1510,52 @@ async function runControlledMainImageProductPath(input: {
     );
     const runnerCompleted = runner.status === 'completed_requires_review';
     const hasReviewableMainImageOutput = runnerCompleted || reviewableResultCount > 0;
+    const verifiedResultPathKeys = new Set(
+        controlledResultFileProbes
+            .filter((probe) => probe.status === 'ok' && probe.exists !== false && probe.isFile !== false)
+            .map((probe) => cleanString(probe.path).replace(/\\/g, '/').toLowerCase())
+            .filter(Boolean)
+    );
+    const exactResultPaths = uniquePaths(controlledResultPaths);
+    const verifiedResultPaths = exactResultPaths.filter((resultPath) => (
+        verifiedResultPathKeys.has(cleanString(resultPath).replace(/\\/g, '/').toLowerCase())
+    ));
+    const runtimeDeliverySourceHistoryStateRef = findRuntimeDeliverySourceHistoryStateRef([
+        ...runner.operationResults
+            .filter((operation) => operation.phase === 'export')
+            .flatMap((operation) => [
+                operation.actualResult,
+                ...operation.readbackResults.map((readback) => readback.data)
+            ])
+    ], runner.finalAcceptanceSnapshot?.data);
+    const runtimeDeliveryResultRefs = runner.operationResults
+        .filter((operation) => operation.phase === 'export' && operation.success)
+        .map((operation) => operation.requestId);
+    data.runtimeDeliveryReceipt = buildRuntimeDeliveryReceipt({
+        settlementScope: 'single_document_revision',
+        status: runnerCompleted
+            && exactResultPaths.length > 0
+            && verifiedResultPaths.length === exactResultPaths.length
+            && runtimeDeliveryResultRefs.length > 0
+            ? 'ready'
+            : 'incomplete',
+        outputs: ['main_image_preview', 'delivery_manifest'],
+        resultRefs: runtimeDeliveryResultRefs,
+        artifacts: verifiedResultPaths.map((resultPath) => ({
+            path: resultPath,
+            kind: 'raster_export' as const,
+            proof: 'file_probe' as const
+        })),
+        sourceHistoryStateRef: runtimeDeliverySourceHistoryStateRef,
+        issues: [
+            ...(!runnerCompleted ? [`主图执行状态为 ${runner.status}。`] : []),
+            ...(exactResultPaths.length === 0 ? ['主图没有返回精确导出路径。'] : []),
+            ...(runtimeDeliveryResultRefs.length === 0 ? ['主图没有返回精确导出操作引用。'] : []),
+            ...(verifiedResultPaths.length !== exactResultPaths.length
+                ? ['部分主图导出文件没有通过文件读回。']
+                : [])
+        ]
+    });
     data.status = hasReviewableMainImageOutput ? 'needs_review' : 'failed';
     data.outputCount = reviewableResultCount;
     data.exportCount = reviewableResultCount;

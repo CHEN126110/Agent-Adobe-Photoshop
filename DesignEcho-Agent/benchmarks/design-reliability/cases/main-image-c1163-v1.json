@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "main-image-c1163-v1",
-  "revision": 1,
-  "caseDigest": "sha256:6074bac0347a54d14e56840ef993df338ed9dde61caaa27e67aadd6b85a5c88f",
+  "revision": 2,
+  "caseDigest": "sha256:3364db760582d004ad22439c25f92642ca29f15e9a8ba270cb5ae4999cc949e2",
   "status": "active",
   "taskFamily": "main_image",
   "executionModel": "agentic",
@@ -26,6 +26,23 @@
       { "ref": "S82646/ZZY_9905.jpg", "role": "still_life_candidate" },
       { "ref": "S82646/ZZY_9907.jpg", "role": "detail_candidate" },
       { "ref": "S82646/ZZY_9884.jpg", "role": "still_life_candidate" }
+    ],
+    "fixtureGeneratedInputs": [
+      {
+        "ref": "测试输入/商品事实.json",
+        "role": "verified_product_brief",
+        "encoding": "utf8",
+        "facts": {
+          "product_type": "女士浅口隐形袜",
+          "available_colors": ["白色", "浅肤", "深肤", "浅蓝", "浅紫", "黑色"],
+          "product_claims": [
+            { "category": "wearing_cut", "value": "浅口", "provenance": { "kind": "source_observable", "ref": "S82646/YYC_8814.jpg" } },
+            { "category": "wearing_scenario", "value": "隐形穿着场景", "provenance": { "kind": "source_observable", "ref": "S82646/YYC_8824.jpg" } },
+            { "category": "color_availability", "value": "多色可选", "provenance": { "kind": "source_observable", "ref": "S82646/ZZY_9886.jpg" } }
+          ],
+          "prohibited_claim_categories": ["material_composition", "performance", "certification"]
+        }
+      }
     ],
     "reviewOnlyReferences": [
       { "kind": "user_design", "ref": "主图/800/800-1.jpg" },
@@ -79,6 +96,7 @@
       { "id": "save_tool_receipt", "required": true },
       { "id": "editable_psd_evidence", "required": true },
       { "id": "raster_export_evidence", "required": true },
+      { "id": "final_artifact_manifest_evidence", "required": true },
       { "id": "no_unresolved_blockers", "required": true },
       { "id": "terminal_task_run", "required": true }
     ]
@@ -87,6 +105,7 @@
     "devBenchmarkOnly": true,
     "neverAffectsRuntime": true,
     "reviewOnlyReferencesExcludedFromAgentContext": true,
+    "fixtureGeneratedInputsContainFactsOnly": true,
     "harnessDoesNotChooseDesign": true
   }
 }

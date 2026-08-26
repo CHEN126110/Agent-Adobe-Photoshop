@@ -1,3 +1,5 @@
+import { MAX_RUNTIME_DELIVERY_RESULT_REFS } from './agent-runtime-v5/runtime-delivery-receipt';
+
 export type SkuExportReadbackStatus = 'no_exports' | 'needs_file_probe' | 'ready_for_review' | 'blocked';
 
 export type SkuBatchDeliveryOutcomeStatus =
@@ -49,6 +51,12 @@ export type SkuExportFileProbeInput = {
     dimensions?: { width?: number; height?: number };
     visualMetrics?: SkuExportVisualMetricsInput;
     sha256?: string;
+    /**
+     * 该文件是否由本次运行新建或在执行前基线之后发生了修改。
+     * undefined 表示调用方没有启用新鲜度校验；false 必须阻断交付，避免旧文件自证。
+     */
+    freshnessVerified?: boolean;
+    freshnessProof?: 'new_path' | 'modified_since_baseline' | 'unverified' | string;
     rawImagesRedacted?: boolean;
     error?: string;
 };
@@ -124,25 +132,74 @@ export type SkuExportReadbackProbe = {
     expectedDimensions?: { width: number; height: number };
     visualMetrics?: SkuExportVisualMetrics;
     sha256?: string;
+    freshnessVerified?: boolean;
+    freshnessProof?: string;
     rawImagesRedacted: boolean;
     error?: string;
 };
+
+interface SkuExportProbeEntry {
+    pathKey: string;
+    probe: SkuExportReadbackProbe;
+}
 
 export type SkuExpectedExportReadbackInput = {
     path?: string;
     expectedDimensions?: { width?: number; height?: number } | null;
 };
 
+export type SkuExpectedExportInventorySpec = {
+    size: number;
+    combos?: string[][] | null;
+    comboTemplateName?: string | null;
+    comboExpectedDimensions?: { width?: number; height?: number } | null;
+    noteRows?: string[][] | null;
+    noteTemplateName?: string | null;
+    noteExpectedDimensions?: { width?: number; height?: number } | null;
+};
+
+export type SkuExpectedExportInventoryItem = {
+    id: string;
+    kind: 'combo' | 'note';
+    size: number;
+    rowIndex: number;
+    combination: string[];
+    templateName: string;
+    fileName: string;
+    path: string;
+    editableFileName: string;
+    editablePath: string;
+    expectedDimensions?: { width: number; height: number };
+};
+
+export type SkuExpectedExportInventory = {
+    version: 'sku-expected-export-inventory/v1';
+    status: 'ready' | 'blocked';
+    items: SkuExpectedExportInventoryItem[];
+    blockers: string[];
+    boundaries: {
+        frozenBeforeExecution: true;
+        doesNotScanSourceDirectory: true;
+        doesNotAcceptObservedFilesAsExpectation: true;
+    };
+};
+
 export type SkuExportReadback = {
     version: 'sku-export-readback/v0';
     status: SkuExportReadbackStatus;
     expectedExportCount: number;
+    actualExportCount: number;
+    missingActualExportCount: number;
+    unexpectedActualExportCount: number;
+    duplicateActualExportCount: number;
     fileProbeCount: number;
     okFileProbeCount: number;
     failedFileProbeCount: number;
     missingFileProbeCount: number;
     dimensionMismatchCount: number;
+    staleFileProbeCount: number;
     visualMetricBlockerCount: number;
+    missingVisualMetricCount: number;
     resultFileNames: string[];
     fileProbes: SkuExportReadbackProbe[];
     blockers: string[];
@@ -158,8 +215,12 @@ export type SkuExportReadback = {
 export type BuildSkuExportReadbackInput = {
     expectedExportPaths?: string[] | null;
     expectedExports?: SkuExpectedExportReadbackInput[] | null;
+    /** 仅接受本次执行返回并验收过的最终路径；不得由目录扫描补齐。 */
+    actualExportPaths?: string[] | null;
     fileProbes?: SkuExportFileProbeInput[] | null;
     expectedDimensions?: { width?: number; height?: number } | null;
+    /** 工具回执数量、格式或命名异常等无法仅靠最终路径集合表达的违例。 */
+    inventoryViolations?: string[] | null;
 };
 
 function normalizeOutputRowCount(value: unknown): number {
@@ -172,6 +233,169 @@ function normalizeSkuSize(value: unknown): number | undefined {
     const numberValue = Number(value);
     if (!Number.isFinite(numberValue) || numberValue <= 0) return undefined;
     return Math.floor(numberValue);
+}
+
+function normalizeInventoryPath(value: unknown): string {
+    return String(value || '')
+        .trim()
+        .replace(/\//g, '\\')
+        .replace(/\\+$/g, '');
+}
+
+function normalizeInventoryTemplateName(value: unknown): string {
+    const raw = String(value || '').trim();
+    if (!raw || /[\\/]/.test(raw)) return '';
+    const withoutExtension = raw.replace(/\.[^.]+$/, '').trim();
+    if (!withoutExtension || withoutExtension === '.' || withoutExtension === '..') return '';
+    if (/[<>:"|?*\x00-\x1F]/.test(withoutExtension)) return '';
+    return withoutExtension;
+}
+
+/** 与 Photoshop SKU 工具的导出命名规则保持一致。 */
+function normalizeInventoryFileNamePart(value: unknown, fallback: string): string {
+    const cleaned = String(value || '')
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+        .replace(/\s+/g, '')
+        .replace(/-+/g, '-')
+        .replace(/^[.\-\s]+|[.\-\s]+$/g, '')
+        .trim();
+    return cleaned || fallback;
+}
+
+function normalizeInventoryCombination(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value.map((entry) => String(entry || '').trim()).filter(Boolean);
+}
+
+/**
+ * 从已经冻结的规格、组合、模板身份、输出目录与命名规则建立精确交付清单。
+ * 该函数不读取目录，也不接收执行结果，因此旧文件和实际结果不能反向成为期望。
+ */
+export function buildSkuExpectedExportInventory(input: {
+    outputDir?: string | null;
+    specs: SkuExpectedExportInventorySpec[];
+}): SkuExpectedExportInventory {
+    const outputDir = normalizeInventoryPath(input.outputDir);
+    const blockers: string[] = [];
+    const items: SkuExpectedExportInventoryItem[] = [];
+    const pathKeys = new Set<string>();
+
+    if (!outputDir || !looksLikeAbsoluteLocalPath(outputDir)) {
+        blockers.push('SKU 精确交付清单缺少绝对输出目录。');
+    }
+
+    for (const rawSpec of input.specs || []) {
+        const size = normalizeSkuSize(rawSpec?.size);
+        if (!size) {
+            blockers.push('SKU 精确交付清单包含无效规格。');
+            continue;
+        }
+
+        const combos = Array.isArray(rawSpec?.combos) ? rawSpec.combos : [];
+        if (combos.length > 0) {
+            const templateName = normalizeInventoryTemplateName(rawSpec?.comboTemplateName);
+            if (!templateName) {
+                blockers.push(`${size}双组合交付缺少安全、稳定的模板名称。`);
+            } else {
+                combos.forEach((rawCombination, index) => {
+                    const combination = normalizeInventoryCombination(rawCombination);
+                    if (combination.length !== size) {
+                        blockers.push(`${size}双第${index + 1}组包含 ${combination.length} 个颜色，不能建立精确文件名。`);
+                        return;
+                    }
+                    const colorPart = normalizeInventoryFileNamePart(combination.join('+'), '');
+                    const baseName = colorPart ? `${index + 1}${colorPart}` : `组合${index + 1}`;
+                    const fileName = `${baseName}.jpg`;
+                    const itemPath = `${outputDir}\\${templateName}\\${fileName}`;
+                    const editableFileName = `${baseName}.psb`;
+                    const editablePath = `${outputDir}\\可编辑\\${templateName}\\${editableFileName}`;
+                    const pathKey = normalizePathKey(itemPath);
+                    const editablePathKey = normalizePathKey(editablePath);
+                    if (pathKeys.has(pathKey) || pathKeys.has(editablePathKey)) {
+                        blockers.push(`SKU 精确交付清单出现重复路径：${fileName}`);
+                        return;
+                    }
+                    pathKeys.add(pathKey);
+                    pathKeys.add(editablePathKey);
+                    items.push({
+                        id: `combo:${size}:${index + 1}`,
+                        kind: 'combo',
+                        size,
+                        rowIndex: index + 1,
+                        combination,
+                        templateName,
+                        fileName,
+                        path: itemPath,
+                        editableFileName,
+                        editablePath,
+                        expectedDimensions: normalizeExpectedDimensions(rawSpec?.comboExpectedDimensions)
+                    });
+                });
+            }
+        }
+
+        const noteRows = Array.isArray(rawSpec?.noteRows) ? rawSpec.noteRows : [];
+        if (noteRows.length > 0) {
+            const templateName = normalizeInventoryTemplateName(rawSpec?.noteTemplateName);
+            if (!templateName) {
+                blockers.push(`${size}双自选备注交付缺少安全、稳定的模板名称。`);
+            } else {
+                noteRows.forEach((rawCombination, index) => {
+                    const combination = normalizeInventoryCombination(rawCombination);
+                    if (combination.length === 0) {
+                        blockers.push(`${size}双自选备注第${index + 1}行没有颜色，不能建立精确文件名。`);
+                        return;
+                    }
+                    const baseName = noteRows.length > 1
+                        ? `${size}双自选备注-${index + 1}`
+                        : `${size}双自选备注`;
+                    const fileName = `${baseName}.jpg`;
+                    const itemPath = `${outputDir}\\${templateName}\\${fileName}`;
+                    const editableFileName = `${baseName}.psb`;
+                    const editablePath = `${outputDir}\\可编辑\\${templateName}\\${editableFileName}`;
+                    const pathKey = normalizePathKey(itemPath);
+                    const editablePathKey = normalizePathKey(editablePath);
+                    if (pathKeys.has(pathKey) || pathKeys.has(editablePathKey)) {
+                        blockers.push(`SKU 精确交付清单出现重复路径：${fileName}`);
+                        return;
+                    }
+                    pathKeys.add(pathKey);
+                    pathKeys.add(editablePathKey);
+                    items.push({
+                        id: `note:${size}:${index + 1}`,
+                        kind: 'note',
+                        size,
+                        rowIndex: index + 1,
+                        combination,
+                        templateName,
+                        fileName,
+                        path: itemPath,
+                        editableFileName,
+                        editablePath,
+                        expectedDimensions: normalizeExpectedDimensions(rawSpec?.noteExpectedDimensions)
+                    });
+                });
+            }
+        }
+    }
+
+    if (items.length === 0) blockers.push('SKU 精确交付清单为空。');
+    if (items.length > MAX_RUNTIME_DELIVERY_RESULT_REFS) {
+        blockers.push(
+            `SKU 精确交付清单最多支持 ${MAX_RUNTIME_DELIVERY_RESULT_REFS} 行，本次为 ${items.length} 行。`
+        );
+    }
+    return {
+        version: 'sku-expected-export-inventory/v1',
+        status: blockers.length > 0 ? 'blocked' : 'ready',
+        items,
+        blockers: uniqueStrings(blockers),
+        boundaries: {
+            frozenBeforeExecution: true,
+            doesNotScanSourceDirectory: true,
+            doesNotAcceptObservedFilesAsExpectation: true
+        }
+    };
 }
 
 /**
@@ -296,13 +520,19 @@ function normalizeExpectedDimensions(
     return { width, height };
 }
 
+export function isSuccessfulSkuExportFileProbe(probe: SkuExportFileProbeInput): boolean {
+    return probe?.success === true
+        && probe?.status === 'ok'
+        && probe?.rawImagesRedacted === true;
+}
+
 function sanitizeProbe(
     probe: SkuExportFileProbeInput,
     expectedDimensions?: { width: number; height: number }
 ): SkuExportReadbackProbe {
     const width = normalizeDimension(probe?.dimensions?.width);
     const height = normalizeDimension(probe?.dimensions?.height);
-    const success = probe?.success === true && probe?.status === 'ok' && probe?.rawImagesRedacted === true;
+    const success = isSuccessfulSkuExportFileProbe(probe);
     return {
         fileName: basename(probe?.path) || 'unknown',
         status: String(probe?.status || (success ? 'ok' : 'unknown')),
@@ -314,6 +544,10 @@ function sanitizeProbe(
         expectedDimensions,
         visualMetrics: sanitizeVisualMetrics(probe?.visualMetrics),
         sha256: probe?.sha256 ? String(probe.sha256).slice(0, 16) : undefined,
+        freshnessVerified: typeof probe?.freshnessVerified === 'boolean'
+            ? probe.freshnessVerified
+            : undefined,
+        freshnessProof: probe?.freshnessProof ? String(probe.freshnessProof) : undefined,
         rawImagesRedacted: probe?.rawImagesRedacted === true,
         error: probe?.error ? String(probe.error) : undefined
     };
@@ -506,12 +740,45 @@ export function buildSkuExportReadback(
             expectedDimensions: normalizeExpectedDimensions(item?.expectedDimensions)
         }))
         .filter((item) => Boolean(item.path));
-    const expectedExportPaths = Array.from(new Set((explicitExpectedExports.length > 0
+    const rawExpectedExportPaths = explicitExpectedExports.length > 0
         ? explicitExpectedExports.map((item) => item.path)
-        : (input.expectedExportPaths || []))
-        .map((item) => String(item || '').trim())
-        .filter(Boolean)));
+        : (input.expectedExportPaths || []);
+    const expectedExportPathMap = new Map<string, string>();
+    const expectedPathCountByKey = new Map<string, number>();
+    for (const candidate of rawExpectedExportPaths) {
+        const exportPath = String(candidate || '').trim();
+        const pathKey = normalizePathKey(exportPath);
+        if (!pathKey) continue;
+        expectedPathCountByKey.set(pathKey, (expectedPathCountByKey.get(pathKey) || 0) + 1);
+        if (!expectedExportPathMap.has(pathKey)) expectedExportPathMap.set(pathKey, exportPath);
+    }
+    const expectedExportPaths = Array.from(expectedExportPathMap.values());
+    const expectedPathKeys = new Set(expectedExportPathMap.keys());
     const expectedFileNames = Array.from(new Set(expectedExportPaths.map(basename).filter(Boolean)));
+    const duplicateExpectedPathKeys = Array.from(expectedPathCountByKey.entries())
+        .filter(([, count]) => count > 1)
+        .map(([pathKey]) => pathKey);
+    const actualExportPathsProvided = Array.isArray(input.actualExportPaths);
+    const actualExportPaths = (input.actualExportPaths || [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean);
+    const actualPathCountByKey = new Map<string, number>();
+    for (const actualPath of actualExportPaths) {
+        const pathKey = normalizePathKey(actualPath);
+        if (!pathKey) continue;
+        actualPathCountByKey.set(pathKey, (actualPathCountByKey.get(pathKey) || 0) + 1);
+    }
+    const missingActualPathKeys = actualExportPathsProvided
+        ? Array.from(expectedPathKeys).filter((pathKey) => !actualPathCountByKey.has(pathKey))
+        : [];
+    const unexpectedActualPaths = actualExportPathsProvided
+        ? actualExportPaths.filter((actualPath) => !expectedPathKeys.has(normalizePathKey(actualPath)))
+        : [];
+    const duplicateActualPathKeys = actualExportPathsProvided
+        ? Array.from(actualPathCountByKey.entries())
+            .filter(([, count]) => count > 1)
+            .map(([pathKey]) => pathKey)
+        : [];
     const globalExpectedDimensions = normalizeExpectedDimensions(input.expectedDimensions);
     const expectedDimensionsByPath = new Map<string, { width: number; height: number }>();
     const expectedDimensionsByFileName = new Map<string, { width: number; height: number }>();
@@ -531,22 +798,60 @@ export function buildSkuExportReadback(
         }
         return globalExpectedDimensions;
     };
-    const fileProbes = (input.fileProbes || []).map((probe) => sanitizeProbe(probe, getExpectedDimensionsForProbe(probe)));
+    const probeEntries: SkuExportProbeEntry[] = (input.fileProbes || []).map((probe) => ({
+        pathKey: normalizePathKey(probe?.path),
+        probe: sanitizeProbe(probe, getExpectedDimensionsForProbe(probe))
+    }));
+    const fileProbes = probeEntries.map((entry) => entry.probe);
+    const probeCountByPath = new Map<string, number>();
+    for (const entry of probeEntries) {
+        probeCountByPath.set(entry.pathKey, (probeCountByPath.get(entry.pathKey) || 0) + 1);
+    }
+    const missingExpectedPathKeys = Array.from(expectedPathKeys).filter(
+        (pathKey) => !probeCountByPath.has(pathKey)
+    );
+    const extraProbeEntries = probeEntries.filter(
+        (entry) => !entry.pathKey || !expectedPathKeys.has(entry.pathKey)
+    );
+    const duplicateProbePathKeys = Array.from(probeCountByPath.entries())
+        .filter(([pathKey, count]) => Boolean(pathKey) && expectedPathKeys.has(pathKey) && count > 1)
+        .map(([pathKey]) => pathKey);
     const failedProbes = fileProbes.filter((probe) => !probe.success);
     const dimensionMismatchProbes = fileProbes.filter((probe) => hasDimensionMismatch(probe));
+    const staleFileProbes = fileProbes.filter((probe) => probe.freshnessVerified === false);
     const finalImageMetricBlockers = uniqueStrings(fileProbes
         .map(getFinalImageMetricBlocker)
         .filter(Boolean) as string[]);
     const missingVisualMetricCount = fileProbes.filter((probe) => probe.success && !probe.visualMetrics).length;
-    const missingFileProbeCount = Math.max(0, expectedExportPaths.length - fileProbes.length);
+    const missingFileProbeCount = missingExpectedPathKeys.length;
     const blockers: string[] = [];
     const warnings: string[] = [];
+    const inventoryViolations = uniqueStrings(input.inventoryViolations || []);
 
     if (expectedExportPaths.length === 0) {
         warnings.push('SKU 工具没有返回导出文件路径，无法进行文件读回。');
     }
+    if (duplicateExpectedPathKeys.length > 0) {
+        blockers.push(`执行前 SKU 精确交付清单包含 ${duplicateExpectedPathKeys.length} 个重复路径。`);
+    }
+    if (missingActualPathKeys.length > 0) {
+        blockers.push(`本次执行结果缺少 ${missingActualPathKeys.length} 个计划内 SKU 导出路径。`);
+    }
+    if (unexpectedActualPaths.length > 0) {
+        blockers.push(`本次执行返回 ${unexpectedActualPaths.length} 个计划外 SKU 导出路径：${unexpectedActualPaths.map(basename).join('、')}`);
+    }
+    if (duplicateActualPathKeys.length > 0) {
+        blockers.push(`本次执行重复返回 ${duplicateActualPathKeys.length} 个 SKU 导出路径。`);
+    }
+    blockers.push(...inventoryViolations.map((message) => `SKU 导出清单违例：${message}`));
     if (missingFileProbeCount > 0) {
         blockers.push(`缺少 ${missingFileProbeCount} 个 SKU 导出文件探针。`);
+    }
+    if (extraProbeEntries.length > 0) {
+        blockers.push(`发现 ${extraProbeEntries.length} 个不属于本次精确导出集合的文件探针：${extraProbeEntries.map((entry) => entry.probe.fileName).join('、')}`);
+    }
+    if (duplicateProbePathKeys.length > 0) {
+        blockers.push(`同一导出路径存在重复文件探针 ${duplicateProbePathKeys.length} 个；已拒绝用重复探针替代其他文件的读回。`);
     }
     if (failedProbes.length > 0) {
         blockers.push(`导出文件探针失败 ${failedProbes.length} 个：${failedProbes.map((probe) => probe.fileName).join('、')}`);
@@ -554,27 +859,51 @@ export function buildSkuExportReadback(
     if (dimensionMismatchProbes.length > 0) {
         blockers.push(`导出文件尺寸不符合预期 ${dimensionMismatchProbes.length} 个：${dimensionMismatchProbes.map((probe) => probe.fileName).join('、')}`);
     }
+    if (staleFileProbes.length > 0) {
+        blockers.push(`有 ${staleFileProbes.length} 个导出文件未能证明由本次运行新建或修改：${staleFileProbes.map((probe) => probe.fileName).join('、')}`);
+    }
     blockers.push(...finalImageMetricBlockers);
     if (missingVisualMetricCount > 0) {
         warnings.push(`有 ${missingVisualMetricCount} 个导出文件缺少 visualMetrics，只能确认文件存在、可解码和尺寸，无法做最终图片像素验收。`);
     }
 
+    const hasPathIdentityBlocker = extraProbeEntries.length > 0
+        || duplicateProbePathKeys.length > 0
+        || duplicateExpectedPathKeys.length > 0
+        || missingActualPathKeys.length > 0
+        || unexpectedActualPaths.length > 0
+        || duplicateActualPathKeys.length > 0
+        || inventoryViolations.length > 0;
     const status: SkuExportReadbackStatus = expectedExportPaths.length === 0
         ? 'no_exports'
         : blockers.length > 0
-            ? (failedProbes.length > 0 || dimensionMismatchProbes.length > 0 || finalImageMetricBlockers.length > 0 ? 'blocked' : 'needs_file_probe')
+            ? (failedProbes.length > 0
+                || dimensionMismatchProbes.length > 0
+                || staleFileProbes.length > 0
+                || finalImageMetricBlockers.length > 0
+                || hasPathIdentityBlocker
+                ? 'blocked'
+                : 'needs_file_probe')
             : 'ready_for_review';
 
     return {
         version: 'sku-export-readback/v0',
         status,
         expectedExportCount: expectedExportPaths.length,
+        actualExportCount: actualExportPaths.length,
+        missingActualExportCount: missingActualPathKeys.length,
+        unexpectedActualExportCount: unexpectedActualPaths.length,
+        duplicateActualExportCount: duplicateActualPathKeys.length,
         fileProbeCount: fileProbes.length,
         okFileProbeCount: fileProbes.filter((probe) => probe.success).length,
-        failedFileProbeCount: failedProbes.length + dimensionMismatchProbes.length,
+        failedFileProbeCount: fileProbes.filter((probe) => (
+            !probe.success || hasDimensionMismatch(probe) || probe.freshnessVerified === false
+        )).length,
         missingFileProbeCount,
         dimensionMismatchCount: dimensionMismatchProbes.length,
+        staleFileProbeCount: staleFileProbes.length,
         visualMetricBlockerCount: finalImageMetricBlockers.length,
+        missingVisualMetricCount,
         resultFileNames: expectedFileNames,
         fileProbes,
         blockers,

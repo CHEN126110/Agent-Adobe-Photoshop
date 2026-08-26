@@ -9,6 +9,7 @@ import type {
     ToolCall, AdapterMessage, AdapterOptions
 } from './types';
 import { buildAgentProviderTokenBudget } from '../../../shared/agent-performance-policy';
+import { resolveProviderStreamStopReason } from '../../../shared/provider-stream-completion';
 
 export class GeminiAdapter implements ProviderAdapter {
     supportsNativeTools(): boolean {
@@ -118,6 +119,16 @@ export class GeminiAdapter implements ProviderAdapter {
         const candidate = raw.candidates?.[0];
         if (!candidate) {
             result.content = '';
+            result.toolCalls = [];
+            result.stopReason = resolveProviderStreamStopReason({
+                finishReason: raw?.promptFeedback?.blockReason
+                    || raw?.prompt_feedback?.block_reason,
+                hasToolCalls: false
+            });
+            result.usage = {
+                inputTokens: raw.usageMetadata?.promptTokenCount || 0,
+                outputTokens: raw.usageMetadata?.candidatesTokenCount || 0
+            };
             return result;
         }
 
@@ -125,15 +136,22 @@ export class GeminiAdapter implements ProviderAdapter {
         const textParts: string[] = [];
         const toolCalls: ToolCall[] = [];
         let callIndex = 0;
+        let toolPayloadValid = true;
 
         for (const part of parts) {
             if (part.text) {
                 textParts.push(part.text);
             } else if (part.functionCall) {
+                const name = String(part.functionCall.name || '').trim();
+                const args = part.functionCall.args;
+                if (!name || !args || typeof args !== 'object' || Array.isArray(args)) {
+                    toolPayloadValid = false;
+                    continue;
+                }
                 toolCalls.push({
                     id: `gemini_call_${callIndex++}`,
-                    name: part.functionCall.name,
-                    arguments: part.functionCall.args || {}
+                    name,
+                    arguments: args
                 });
             }
         }
@@ -144,12 +162,25 @@ export class GeminiAdapter implements ProviderAdapter {
             || candidate.finish_reason
             || ''
         ).trim().toUpperCase();
-        if (finishReason === 'MAX_TOKENS') {
+        const completionStopReason = resolveProviderStreamStopReason({
+            finishReason,
+            hasToolCalls: false
+        });
+        if (!toolPayloadValid) {
             result.toolCalls = [];
-            result.stopReason = 'max_tokens';
+            result.stopReason = 'stream_incomplete';
+        } else if (completionStopReason !== 'end_turn') {
+            result.toolCalls = [];
+            result.stopReason = completionStopReason;
         } else {
             result.toolCalls = toolCalls; // always set (empty array if none)
             result.stopReason = toolCalls.length > 0 ? 'tool_use' : 'end_turn';
+        }
+        if ((result.stopReason === 'max_tokens' || result.stopReason === 'stream_incomplete')
+            && toolCalls.length > 0) {
+            result.incompleteToolCallNames = Array.from(new Set(
+                toolCalls.map((call) => call.name).filter(Boolean)
+            ));
         }
 
         // Usage

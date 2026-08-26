@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "sku-c1163-v1",
-  "revision": 1,
-  "caseDigest": "sha256:a822ce14595de7702a8334027069dcf8158cc8982e38287c6ed340d2f880a118",
+  "revision": 3,
+  "caseDigest": "sha256:2238ae4183cf90605c0991bd1d8bbbef00ef0fb3b5206d5fe780eb85aad6bebe",
   "status": "active",
   "taskFamily": "sku",
   "executionModel": "staged",
@@ -26,6 +26,26 @@
       { "ref": "S82646/新建文件夹/浅紫.jpg", "role": "completed_color_source_card" },
       { "ref": "S82646/新建文件夹/黑色.jpg", "role": "completed_color_source_card" }
     ],
+    "fixtureGeneratedInputs": [
+      {
+        "ref": "测试输入/SKU生产事实.json",
+        "role": "verified_sku_mapping",
+        "encoding": "utf8",
+        "facts": {
+          "source_encoding": "gbk",
+          "source_asset_semantics": "completed_color_cards",
+          "production_spec_semantics": "template_plus_color_indices",
+          "color_mapping": {
+            "1": { "sourceRef": "S82646/新建文件夹/白色.jpg", "displayName": "白色" },
+            "2": { "sourceRef": "S82646/新建文件夹/浅肤.jpg", "displayName": "浅肤" },
+            "3": { "sourceRef": "S82646/新建文件夹/身肤.jpg", "displayName": "深肤" },
+            "4": { "sourceRef": "S82646/新建文件夹/浅蓝.jpg", "displayName": "浅蓝" },
+            "5": { "sourceRef": "S82646/新建文件夹/浅紫.jpg", "displayName": "浅紫" },
+            "6": { "sourceRef": "S82646/新建文件夹/黑色.jpg", "displayName": "黑色" }
+          }
+        }
+      }
+    ],
     "reviewOnlyReferences": [
       { "kind": "user_design", "ref": "SKU/2双装/1白色+白色.jpg" },
       { "kind": "user_design", "ref": "SKU/2双装/4浅肤+浅蓝.jpg" },
@@ -46,9 +66,10 @@
       "agent_run_record_task_run_chain",
       "expected_project_binding",
       "source_input_integrity",
-      "photoshop_history_or_commit",
-      "post_write_structure_readback",
-      "post_write_visual_readback",
+      "paired_editable_delivery_receipt",
+      "sku_structure_readback_set",
+      "sku_visual_readback_set",
+      "sku_pair_binding",
       "editable_psd",
       "raster_export_set",
       "sku_output_inventory",
@@ -68,7 +89,50 @@
     ],
     "outputInventory": {
       "exactRasterExports": 19,
-      "basis": "配置文件/6色 2-3-4.csv 的 19 条组合规格"
+      "exactEditableDocuments": 19,
+      "basis": "配置文件/6色 2-3-4.csv 的 19 条组合规格",
+      "expectedRasterRefs": [
+        "SKU/2双装/1白色+白色.jpg",
+        "SKU/2双装/2浅肤+浅肤.jpg",
+        "SKU/2双装/3深肤+深肤.jpg",
+        "SKU/2双装/4浅肤+浅蓝.jpg",
+        "SKU/2双装/5深肤+浅紫.jpg",
+        "SKU/2双装/6黑色+白色.jpg",
+        "SKU/3双装/1白色+白色+白色.jpg",
+        "SKU/3双装/2浅肤+浅肤+浅肤.jpg",
+        "SKU/3双装/3深肤+深肤+深肤.jpg",
+        "SKU/3双装/4白色+浅肤+深肤.jpg",
+        "SKU/3双装/5浅蓝+浅紫+黑色.jpg",
+        "SKU/4双装/1白色+白色+白色+白色.jpg",
+        "SKU/4双装/2白色+白色+浅肤+浅肤.jpg",
+        "SKU/4双装/3浅肤+浅肤+深肤+深肤.jpg",
+        "SKU/4双装/4白色+浅肤+深肤+黑色.jpg",
+        "SKU/4双装/5白色+浅蓝+浅紫+黑色.jpg",
+        "SKU/2双自选备注/2双自选备注.jpg",
+        "SKU/3双自选备注/3双自选备注.jpg",
+        "SKU/4双自选备注/4双自选备注.jpg"
+      ],
+      "expectedEditableRefs": [
+        "SKU/可编辑/2双装/1白色+白色.psb",
+        "SKU/可编辑/2双装/2浅肤+浅肤.psb",
+        "SKU/可编辑/2双装/3深肤+深肤.psb",
+        "SKU/可编辑/2双装/4浅肤+浅蓝.psb",
+        "SKU/可编辑/2双装/5深肤+浅紫.psb",
+        "SKU/可编辑/2双装/6黑色+白色.psb",
+        "SKU/可编辑/3双装/1白色+白色+白色.psb",
+        "SKU/可编辑/3双装/2浅肤+浅肤+浅肤.psb",
+        "SKU/可编辑/3双装/3深肤+深肤+深肤.psb",
+        "SKU/可编辑/3双装/4白色+浅肤+深肤.psb",
+        "SKU/可编辑/3双装/5浅蓝+浅紫+黑色.psb",
+        "SKU/可编辑/4双装/1白色+白色+白色+白色.psb",
+        "SKU/可编辑/4双装/2白色+白色+浅肤+浅肤.psb",
+        "SKU/可编辑/4双装/3浅肤+浅肤+深肤+深肤.psb",
+        "SKU/可编辑/4双装/4白色+浅肤+深肤+黑色.psb",
+        "SKU/可编辑/4双装/5白色+浅蓝+浅紫+黑色.psb",
+        "SKU/可编辑/2双自选备注/2双自选备注.psb",
+        "SKU/可编辑/3双自选备注/3双自选备注.psb",
+        "SKU/可编辑/4双自选备注/4双自选备注.psb"
+      ]
     },
     "machineChecks": [
       { "id": "correct_skill_binding", "required": true },
@@ -78,13 +142,14 @@
       { "id": "source_input_integrity_evidence", "required": true },
       { "id": "observed_photoshop_mutation", "required": true },
       { "id": "committed_photoshop_mutation", "required": true },
-      { "id": "post_write_structure_readback", "required": true },
-      { "id": "post_write_visual_readback", "required": true },
-      { "id": "post_write_readback_target_verified", "required": true },
-      { "id": "save_tool_receipt", "required": true },
+      { "id": "paired_editable_delivery_receipt", "required": true },
+      { "id": "sku_structure_readback_set", "required": true },
+      { "id": "sku_visual_readback_set", "required": true },
+      { "id": "sku_pair_binding", "required": true },
       { "id": "editable_psd_evidence", "required": true },
       { "id": "raster_export_evidence", "required": true },
       { "id": "sku_output_inventory_evidence", "required": true },
+      { "id": "final_artifact_manifest_evidence", "required": true },
       { "id": "no_unresolved_blockers", "required": true },
       { "id": "terminal_task_run", "required": true }
     ]
@@ -93,6 +158,7 @@
     "devBenchmarkOnly": true,
     "neverAffectsRuntime": true,
     "reviewOnlyReferencesExcludedFromAgentContext": true,
+    "fixtureGeneratedInputsContainFactsOnly": true,
     "harnessDoesNotChooseDesign": true
   }
 }

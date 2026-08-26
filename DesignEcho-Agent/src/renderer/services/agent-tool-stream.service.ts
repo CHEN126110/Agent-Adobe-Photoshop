@@ -26,6 +26,13 @@ let listenerRegistered = false;
 
 type AgentToolStreamErrorChunk = Extract<AgentToolStreamChunk, { type: 'error' }>;
 
+function createAgentToolStreamAbortError(): Error & { code: string } {
+    const error = new Error('Agent 工具流式请求已取消') as Error & { code: string };
+    error.name = 'AbortError';
+    error.code = 'stream_aborted';
+    return error;
+}
+
 export function restoreAgentToolStreamError(chunk: AgentToolStreamErrorChunk): Error {
     const error = new Error(String(chunk.error || 'Agent 工具流式请求失败')) as Error & {
         code?: string;
@@ -120,18 +127,30 @@ export function streamChatWithTools(
         }
     };
 
+    let streamSettled = false;
+    let rejectAborted: (() => void) | null = null;
     const promise = new Promise<AgentToolStreamResponse>((resolve, reject) => {
         wrappedCallbacks.onDone = (response) => {
+            if (streamSettled) return;
+            streamSettled = true;
             callbacks.onDone?.(response);
             resolve({
                 ...response,
-                content: response.content ?? fullContent,
+                // content_delta 只是未提交传输缓冲；最终正文只能来自 Provider 的终态响应。
+                content: response.content,
                 thinking: response.thinking ?? (fullThinking || undefined)
             });
         };
         wrappedCallbacks.onError = (error) => {
+            if (streamSettled) return;
+            streamSettled = true;
             callbacks.onError?.(error);
             reject(error);
+        };
+        rejectAborted = () => {
+            if (streamSettled) return;
+            streamSettled = true;
+            reject(createAgentToolStreamAbortError());
         };
     });
 
@@ -156,10 +175,11 @@ export function streamChatWithTools(
     return {
         requestId,
         abort: async () => {
+            rejectAborted?.();
+            activeCallbacks.delete(requestId);
             if (designEcho.abortStream) {
                 await designEcho.abortStream(requestId);
             }
-            activeCallbacks.delete(requestId);
         },
         promise
     };
@@ -169,7 +189,9 @@ export async function streamChatWithToolsAsync(
     modelId: string,
     messages: any[],
     tools: any[],
-    options?: AgentToolStreamRequest['options'] & AgentToolStreamCallbacks
+    options?: AgentToolStreamRequest['options'] & AgentToolStreamCallbacks & {
+        signal?: AbortSignal;
+    }
 ): Promise<AgentToolStreamResponse> {
     const {
         onContentDelta,
@@ -178,8 +200,11 @@ export async function streamChatWithToolsAsync(
         onToolCallReady,
         onDone,
         onError,
+        signal,
         ...streamOptions
     } = options || {};
+
+    if (signal?.aborted) throw createAgentToolStreamAbortError();
 
     const handle = streamChatWithTools(
         modelId,
@@ -196,5 +221,14 @@ export async function streamChatWithToolsAsync(
         streamOptions
     );
 
-    return handle.promise;
+    const handleAbort = (): void => {
+        void handle.abort().catch(() => undefined);
+    };
+    signal?.addEventListener('abort', handleAbort, { once: true });
+    if (signal?.aborted) handleAbort();
+    try {
+        return await handle.promise;
+    } finally {
+        signal?.removeEventListener('abort', handleAbort);
+    }
 }

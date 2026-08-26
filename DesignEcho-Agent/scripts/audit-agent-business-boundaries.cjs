@@ -13,6 +13,8 @@ require('ts-node').register({
 });
 
 const fs = require('fs');
+const crypto = require('crypto');
+const os = require('os');
 const path = require('path');
 const ts = require('typescript');
 const {
@@ -20,6 +22,27 @@ const {
 } = require('./lib/sku-prerequisite-repair-audit.cjs');
 
 const root = path.resolve(__dirname, '..');
+const {
+  promoteStagedFileSet
+} = require(path.join(root, 'src', 'main', 'services', 'staged-file-promotion.ts'));
+const {
+  captureSkuStagingDestinationBaselines,
+  issueSkuStagingTransaction,
+  removeSkuStagingParentIfEmpty,
+  removeSkuStagingTransactionRoot
+} = require(path.join(root, 'src', 'main', 'services', 'sku-staging-transaction.service.ts'));
+const {
+  finalizeSkuStagingCleanup,
+  promoteSkuStagedDeliverySet,
+  validateSkuStagedRasterExports
+} = require(path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'skill-executors',
+  'sku-export-transaction.service.ts'
+));
 const performancePolicyPath = path.join(root, 'src', 'shared', 'agent-performance-policy.ts');
 const projectAssetIndexPath = path.join(root, 'src', 'shared', 'project-asset-index.ts');
 const visualSamplingPath = path.join(root, 'src', 'shared', 'project-visual-sampling.ts');
@@ -280,6 +303,9 @@ const designEvaluationProfilesPath = path.join(
 );
 const skuConfigExecutorPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'sku-config.executor.ts');
 const skuBatchExecutorPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'sku-batch.executor.ts');
+const skuExportTransactionPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'sku-export-transaction.service.ts');
+const stagedFilePromotionPath = path.join(root, 'src', 'main', 'services', 'staged-file-promotion.ts');
+const skuStagingTransactionServicePath = path.join(root, 'src', 'main', 'services', 'sku-staging-transaction.service.ts');
 const skillToolsPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'skill-tools.ts');
 const skuExportReadbackPath = path.join(root, 'src', 'shared', 'sku-export-readback.ts');
 const skuDeliverySummaryPath = path.join(root, 'src', 'shared', 'sku-delivery-summary.ts');
@@ -1159,6 +1185,826 @@ function countBusinessReferences(filePath) {
   return (read(filePath).match(new RegExp(protectedBusinessPattern.source, 'gi')) || []).length;
 }
 
+async function exerciseStagedFilePromotion() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'designecho-staged-promotion-'));
+  const destinationRoot = path.join(tempRoot, 'SKU');
+  fs.mkdirSync(destinationRoot, { recursive: true });
+  const readBaseline = (filePath) => {
+    if (!fs.existsSync(filePath)) return { exists: false };
+    const stat = fs.statSync(filePath);
+    return {
+      exists: true,
+      modifiedTimeMs: Math.round(stat.mtimeMs),
+      byteLength: stat.size
+    };
+  };
+  const buildItem = (sourcePath, destinationPath, baseline = readBaseline(destinationPath)) => ({
+    sourcePath,
+    destinationPath,
+    expectedDestinationBaseline: baseline
+  });
+  const issueTransaction = async () => {
+    const issued = await issueSkuStagingTransaction(destinationRoot);
+    if (issued.success !== true
+      || !issued.transactionToken
+      || !issued.transactionId
+      || !issued.stagingRoot
+      || !issued.stagingParent
+      || !issued.outputDir) {
+      throw new Error(`SKU staging issue failed in audit: ${JSON.stringify(issued)}`);
+    }
+    return {
+      transactionToken: issued.transactionToken,
+      transactionId: issued.transactionId,
+      stagingRoot: issued.stagingRoot,
+      stagingParent: issued.stagingParent,
+      outputDir: issued.outputDir
+    };
+  };
+  const bindMainBaselines = async (transactionToken, items) => {
+    const captured = await captureSkuStagingDestinationBaselines({
+      transactionToken,
+      destinationPaths: items.map((item) => item.destinationPath)
+    });
+    if (captured.success !== true || captured.baselines?.length !== items.length) {
+      throw new Error(`SKU baseline capture failed in audit: ${JSON.stringify(captured)}`);
+    }
+    return items.map((item, index) => ({
+      ...item,
+      expectedDestinationBaseline: {
+        exists: captured.baselines[index].exists,
+        ...(captured.baselines[index].exists ? {
+          modifiedTimeMs: captured.baselines[index].modifiedTimeMs,
+          byteLength: captured.baselines[index].byteLength,
+          sha256: captured.baselines[index].sha256
+        } : {})
+      }
+    }));
+  };
+  const cleanupTransaction = async (transactionToken) => {
+    const rootCleanup = await removeSkuStagingTransactionRoot(transactionToken);
+    if (rootCleanup.success !== true) return rootCleanup;
+    return removeSkuStagingParentIfEmpty(transactionToken);
+  };
+  const sha256Text = (value) => crypto.createHash('sha256').update(value).digest('hex');
+  const createCommittedCrashFixture = (name, tamperDestination = false) => {
+    const crashDestinationRoot = path.join(tempRoot, name, 'SKU');
+    const stagingParent = path.join(crashDestinationRoot, '.designecho-staging');
+    const transactionId = crypto.randomUUID();
+    const stagingRoot = path.join(stagingParent, transactionId);
+    const rollbackRoot = path.join(stagingRoot, `.rollback-${transactionId}`);
+    const sourcePath = path.join(stagingRoot, 'JPG', '01.jpg');
+    const destinationPath = path.join(crashDestinationRoot, 'JPG', '01.jpg');
+    const backupPath = path.join(rollbackRoot, '000.bak');
+    const sourceContent = 'committed-new-content';
+    const baselineContent = 'committed-old-content';
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    fs.mkdirSync(rollbackRoot, { recursive: true });
+    fs.writeFileSync(
+      destinationPath,
+      tamperDestination ? 'tampered-new-content' : sourceContent,
+      'utf8'
+    );
+    fs.writeFileSync(backupPath, baselineContent, 'utf8');
+    const now = new Date().toISOString();
+    fs.writeFileSync(path.join(stagingRoot, '.designecho-transaction-owner.json'), `${JSON.stringify({
+      version: 'sku-staging-owner/v1',
+      transactionId,
+      createdAt: now,
+      updatedAt: now,
+      phase: 'promoting',
+      stagingRoot,
+      stagingParent,
+      destinationRoot: crashDestinationRoot
+    }, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(path.join(rollbackRoot, 'transaction-manifest.json'), `${JSON.stringify({
+      version: 'staged-file-transaction-manifest/v1',
+      transactionId,
+      createdAt: now,
+      stagingRoot,
+      destinationRoot: crashDestinationRoot,
+      items: [{
+        index: 0,
+        sourcePath,
+        destinationPath,
+        backupPath,
+        sourceByteLength: Buffer.byteLength(sourceContent),
+        sourceSha256: sha256Text(sourceContent),
+        expectedDestinationBaseline: {
+          exists: true,
+          byteLength: Buffer.byteLength(baselineContent),
+          sha256: sha256Text(baselineContent)
+        }
+      }]
+    }, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(path.join(rollbackRoot, 'transaction-journal.jsonl'), [
+      JSON.stringify({ phase: 'prepared', transactionId, itemCount: 1, at: now }),
+      JSON.stringify({ phase: 'committed', transactionId, itemCount: 1, at: now })
+    ].join('\n') + '\n', 'utf8');
+    return {
+      destinationRoot: crashDestinationRoot,
+      stagingRoot,
+      destinationPath
+    };
+  };
+  const makePairedFiles = (stagingRoot, count, prefix) => {
+    const items = [];
+    for (let index = 0; index < count; index += 1) {
+      const kind = index % 2 === 0 ? 'JPG' : 'PSB';
+      const extension = kind === 'JPG' ? '.jpg' : '.psb';
+      const relative = path.join(kind, `${String(index).padStart(3, '0')}${extension}`);
+      const sourcePath = path.join(stagingRoot, relative);
+      const destinationPath = path.join(destinationRoot, relative);
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+      fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+      fs.writeFileSync(destinationPath, `old-${prefix}-${index}`, 'utf8');
+      fs.writeFileSync(sourcePath, `new-${prefix}-${index}`, 'utf8');
+      items.push(buildItem(sourcePath, destinationPath));
+    }
+    return items;
+  };
+  try {
+    const atomicTransaction = await issueTransaction();
+    const stagingRoot = atomicTransaction.stagingRoot;
+    const atomicItems = await bindMainBaselines(
+      atomicTransaction.transactionToken,
+      makePairedFiles(stagingRoot, 38, 'atomic')
+    );
+    const committed = await promoteStagedFileSet({
+      transactionToken: atomicTransaction.transactionToken,
+      items: atomicItems
+    });
+    const atomicCommitVerified = committed.success === true
+      && committed.committedPaths.length === 38
+      && committed.replacedPaths.length === 38
+      && atomicItems.every((item, index) => (
+        fs.readFileSync(item.destinationPath, 'utf8') === `new-atomic-${index}`
+        && !fs.existsSync(item.sourcePath)
+      ));
+    const atomicCleanup = await cleanupTransaction(atomicTransaction.transactionToken);
+    const escapedTransaction = await issueTransaction();
+    const escapedSource = path.join(escapedTransaction.stagingRoot, 'escape.jpg');
+    fs.mkdirSync(path.dirname(escapedSource), { recursive: true });
+    fs.writeFileSync(escapedSource, 'escape', 'utf8');
+    const escaped = await promoteStagedFileSet({
+      transactionToken: escapedTransaction.transactionToken,
+      items: [buildItem(escapedSource, path.join(tempRoot, 'outside.jpg'), { exists: false })]
+    });
+    const escapedSourcePreserved = fs.existsSync(escapedSource);
+    const escapedCleanup = await cleanupTransaction(escapedTransaction.transactionToken);
+    const relativeItemTransaction = await issueTransaction();
+    const relativeItemSource = path.join(relativeItemTransaction.stagingRoot, 'relative-item.jpg');
+    fs.writeFileSync(relativeItemSource, 'relative-item', 'utf8');
+    const relativeItemDestination = path.join(destinationRoot, 'relative-item.jpg');
+    const relativeItem = await promoteStagedFileSet({
+      transactionToken: relativeItemTransaction.transactionToken,
+      items: [{
+        sourcePath: path.relative(process.cwd(), relativeItemSource),
+        destinationPath: relativeItemDestination,
+        expectedDestinationBaseline: { exists: false }
+      }]
+    });
+    const relativeItemSourcePreserved = fs.existsSync(relativeItemSource);
+    const relativeItemCleanup = await cleanupTransaction(relativeItemTransaction.transactionToken);
+    const invalidTokenTransaction = await issueTransaction();
+    const relativeRootSource = path.join(invalidTokenTransaction.stagingRoot, 'relative-root.jpg');
+    fs.writeFileSync(relativeRootSource, 'relative-root', 'utf8');
+    const relativeRootDestination = path.join(destinationRoot, 'relative-root.jpg');
+    const relativeRoot = await promoteStagedFileSet({
+      transactionToken: 'relative-token-is-not-authority',
+      items: [buildItem(relativeRootSource, relativeRootDestination, { exists: false })]
+    });
+    const invalidTokenSourcePreserved = fs.existsSync(relativeRootSource);
+    const invalidTokenCleanup = await cleanupTransaction(invalidTokenTransaction.transactionToken);
+
+    const driftTransaction = await issueTransaction();
+    const driftStagingRoot = driftTransaction.stagingRoot;
+    const driftSource = path.join(driftStagingRoot, 'JPG', 'drift.jpg');
+    const driftDestination = path.join(destinationRoot, 'JPG', 'drift.jpg');
+    fs.mkdirSync(path.dirname(driftSource), { recursive: true });
+    fs.mkdirSync(path.dirname(driftDestination), { recursive: true });
+    fs.writeFileSync(driftSource, 'new-drift', 'utf8');
+    fs.writeFileSync(driftDestination, 'old-drift', 'utf8');
+    const [driftItem] = await bindMainBaselines(
+      driftTransaction.transactionToken,
+      [buildItem(driftSource, driftDestination)]
+    );
+    fs.writeFileSync(driftDestination, 'concurrent-user-change', 'utf8');
+    const driftTime = new Date(Date.now() + 5000);
+    fs.utimesSync(driftDestination, driftTime, driftTime);
+    const drifted = await promoteStagedFileSet({
+      transactionToken: driftTransaction.transactionToken,
+      items: [driftItem]
+    });
+    const driftSourcePreserved = fs.existsSync(driftSource);
+    const driftCleanup = await cleanupTransaction(driftTransaction.transactionToken);
+    const appearedTransaction = await issueTransaction();
+    const appearedStagingRoot = appearedTransaction.stagingRoot;
+    const appearedSource = path.join(appearedStagingRoot, 'JPG', 'appeared.jpg');
+    const appearedDestination = path.join(destinationRoot, 'JPG', 'appeared.jpg');
+    fs.mkdirSync(path.dirname(appearedSource), { recursive: true });
+    fs.writeFileSync(appearedSource, 'new-appeared', 'utf8');
+    const [appearedItem] = await bindMainBaselines(
+      appearedTransaction.transactionToken,
+      [buildItem(appearedSource, appearedDestination, { exists: false })]
+    );
+    fs.writeFileSync(appearedDestination, 'external-created', 'utf8');
+    const appeared = await promoteStagedFileSet({
+      transactionToken: appearedTransaction.transactionToken,
+      items: [appearedItem]
+    });
+    const appearedSourcePreserved = fs.existsSync(appearedSource);
+    const appearedCleanup = await cleanupTransaction(appearedTransaction.transactionToken);
+
+    const forgedBaselineTransaction = await issueTransaction();
+    const forgedBaselineSource = path.join(forgedBaselineTransaction.stagingRoot, 'JPG', 'forged.jpg');
+    const forgedBaselineDestination = path.join(destinationRoot, 'Forged', 'forged.jpg');
+    fs.mkdirSync(path.dirname(forgedBaselineSource), { recursive: true });
+    fs.mkdirSync(path.dirname(forgedBaselineDestination), { recursive: true });
+    fs.writeFileSync(forgedBaselineSource, 'forged-new-output', 'utf8');
+    fs.writeFileSync(forgedBaselineDestination, 'baseline-before-capture', 'utf8');
+    const [mainFrozenItem] = await bindMainBaselines(
+      forgedBaselineTransaction.transactionToken,
+      [buildItem(forgedBaselineSource, forgedBaselineDestination)]
+    );
+    fs.writeFileSync(forgedBaselineDestination, 'concurrent-after-capture', 'utf8');
+    const forgedStat = fs.statSync(forgedBaselineDestination);
+    const rendererForgedItem = {
+      ...mainFrozenItem,
+      expectedDestinationBaseline: {
+        exists: true,
+        modifiedTimeMs: Math.trunc(forgedStat.mtimeMs),
+        byteLength: forgedStat.size,
+        sha256: sha256Text('concurrent-after-capture')
+      }
+    };
+    const forgedBaselinePromotion = await promoteStagedFileSet({
+      transactionToken: forgedBaselineTransaction.transactionToken,
+      items: [rendererForgedItem]
+    });
+    const mainFrozenBaselineAuthoritative = forgedBaselinePromotion.success === false
+      && fs.readFileSync(forgedBaselineDestination, 'utf8') === 'concurrent-after-capture'
+      && fs.readFileSync(forgedBaselineSource, 'utf8') === 'forged-new-output';
+    const forgedBaselineCleanup = await cleanupTransaction(
+      forgedBaselineTransaction.transactionToken
+    );
+
+    const concurrentTransaction = await issueTransaction();
+    const concurrentSource = path.join(concurrentTransaction.stagingRoot, 'JPG', 'concurrent.jpg');
+    const concurrentDestination = path.join(destinationRoot, 'Concurrent', 'concurrent.jpg');
+    fs.mkdirSync(path.dirname(concurrentSource), { recursive: true });
+    fs.writeFileSync(concurrentSource, 'concurrent-new', 'utf8');
+    const [concurrentItem] = await bindMainBaselines(
+      concurrentTransaction.transactionToken,
+      [buildItem(concurrentSource, concurrentDestination, { exists: false })]
+    );
+    const concurrentResults = await Promise.all([
+      promoteStagedFileSet({
+        transactionToken: concurrentTransaction.transactionToken,
+        items: [concurrentItem]
+      }),
+      promoteStagedFileSet({
+        transactionToken: concurrentTransaction.transactionToken,
+        items: [concurrentItem]
+      })
+    ]);
+    const concurrentPromotionSingleOwner = concurrentResults.filter((result) => result.success).length === 1
+      && concurrentResults.filter((result) => !result.success).length === 1
+      && fs.readFileSync(concurrentDestination, 'utf8') === 'concurrent-new'
+      && !fs.existsSync(concurrentSource);
+    const concurrentCleanup = await cleanupTransaction(concurrentTransaction.transactionToken);
+
+    const fullRollbackTransaction = await issueTransaction();
+    const fullRollbackRoot = fullRollbackTransaction.stagingRoot;
+    const fullRollbackItems = await bindMainBaselines(
+      fullRollbackTransaction.transactionToken,
+      makePairedFiles(fullRollbackRoot, 38, 'rollback')
+    );
+    const originalLink = fs.promises.link;
+    const injectedInstallSource = fullRollbackItems[16].sourcePath;
+    const injectedInstallDestination = fullRollbackItems[16].destinationPath;
+    let installFailureInjected = false;
+    fs.promises.link = async (sourcePath, destinationPath) => {
+      if (!installFailureInjected
+        && String(sourcePath) === injectedInstallSource
+        && String(destinationPath) === injectedInstallDestination) {
+        installFailureInjected = true;
+        const injected = new Error('injected item 17 install failure');
+        injected.code = 'EACCES';
+        throw injected;
+      }
+      return originalLink.call(fs.promises, sourcePath, destinationPath);
+    };
+    let fullRollback;
+    try {
+      fullRollback = await promoteStagedFileSet({
+        transactionToken: fullRollbackTransaction.transactionToken,
+        items: fullRollbackItems
+      });
+    } finally {
+      fs.promises.link = originalLink;
+    }
+    const fullRollbackRestored = fullRollback.success === false
+      && fullRollback.rollbackComplete === true
+      && fullRollbackItems.every((item, index) => (
+        fs.readFileSync(item.destinationPath, 'utf8') === `old-rollback-${index}`
+        && fs.readFileSync(item.sourcePath, 'utf8') === `new-rollback-${index}`
+      ));
+    const fullRollbackCleanup = await cleanupTransaction(fullRollbackTransaction.transactionToken);
+
+    const committedCrashFixture = createCommittedCrashFixture('crash-committed-valid');
+    const committedCrashIssue = await issueSkuStagingTransaction(
+      committedCrashFixture.destinationRoot
+    );
+    const committedCrashReconciled = committedCrashIssue.success === true
+      && Boolean(committedCrashIssue.transactionToken)
+      && !fs.existsSync(committedCrashFixture.stagingRoot)
+      && fs.readFileSync(committedCrashFixture.destinationPath, 'utf8') === 'committed-new-content';
+    const committedCrashCleanup = committedCrashIssue.transactionToken
+      ? await cleanupTransaction(committedCrashIssue.transactionToken)
+      : { success: false };
+    const tamperedCrashFixture = createCommittedCrashFixture('crash-committed-tampered', true);
+    const tamperedCrashIssue = await issueSkuStagingTransaction(
+      tamperedCrashFixture.destinationRoot
+    );
+    const freshProcessReconciliationFailClosed = committedCrashReconciled
+      && committedCrashCleanup.success === true
+      && tamperedCrashIssue.success === false
+      && tamperedCrashIssue.code === 'staging_recovery_required'
+      && path.resolve(String(tamperedCrashIssue.recoveryPath || ''))
+        === path.resolve(tamperedCrashFixture.stagingRoot)
+      && fs.existsSync(tamperedCrashFixture.stagingRoot)
+      && fs.readFileSync(tamperedCrashFixture.destinationPath, 'utf8') === 'tampered-new-content';
+
+    const backupRaceDestinationRoot = path.join(tempRoot, 'backup-race', 'SKU');
+    fs.mkdirSync(backupRaceDestinationRoot, { recursive: true });
+    const backupRaceIssued = await issueSkuStagingTransaction(backupRaceDestinationRoot);
+    if (!backupRaceIssued.success
+      || !backupRaceIssued.transactionToken
+      || !backupRaceIssued.stagingRoot) {
+      throw new Error(`backup race transaction issue failed: ${JSON.stringify(backupRaceIssued)}`);
+    }
+    const backupRaceSource = path.join(backupRaceIssued.stagingRoot, 'JPG', 'race.jpg');
+    const backupRaceDestination = path.join(backupRaceDestinationRoot, 'JPG', 'race.jpg');
+    fs.mkdirSync(path.dirname(backupRaceSource), { recursive: true });
+    fs.mkdirSync(path.dirname(backupRaceDestination), { recursive: true });
+    fs.writeFileSync(backupRaceSource, 'race-new-output', 'utf8');
+    fs.writeFileSync(backupRaceDestination, 'race-baseline-old', 'utf8');
+    const backupRaceCaptured = await captureSkuStagingDestinationBaselines({
+      transactionToken: backupRaceIssued.transactionToken,
+      destinationPaths: [backupRaceDestination]
+    });
+    if (backupRaceCaptured.success !== true || backupRaceCaptured.baselines?.length !== 1) {
+      throw new Error(`backup race baseline capture failed: ${JSON.stringify(backupRaceCaptured)}`);
+    }
+    const backupRaceItem = {
+      sourcePath: backupRaceSource,
+      destinationPath: backupRaceDestination,
+      expectedDestinationBaseline: {
+        exists: true,
+        modifiedTimeMs: backupRaceCaptured.baselines[0].modifiedTimeMs,
+        byteLength: backupRaceCaptured.baselines[0].byteLength,
+        sha256: backupRaceCaptured.baselines[0].sha256
+      }
+    };
+    const originalRenameForBackupRace = fs.promises.rename;
+    let backupRaceInjected = false;
+    fs.promises.rename = async (sourcePath, destinationPath) => {
+      if (!backupRaceInjected
+        && String(sourcePath) === backupRaceDestination
+        && String(destinationPath).includes('.rollback-')) {
+        backupRaceInjected = true;
+        fs.writeFileSync(backupRaceDestination, 'race-concurrent-user-file', 'utf8');
+      }
+      return originalRenameForBackupRace.call(fs.promises, sourcePath, destinationPath);
+    };
+    let backupRacePromotion;
+    try {
+      backupRacePromotion = await promoteStagedFileSet({
+        transactionToken: backupRaceIssued.transactionToken,
+        items: [backupRaceItem]
+      });
+    } finally {
+      fs.promises.rename = originalRenameForBackupRace;
+    }
+    const backupMoveRacePreservesExternalFile = backupRaceInjected
+      && backupRacePromotion.success === false
+      && backupRacePromotion.rollbackComplete === false
+      && Boolean(backupRacePromotion.recoveryPath)
+      && fs.readFileSync(backupRaceDestination, 'utf8') === 'race-concurrent-user-file'
+      && fs.readFileSync(backupRaceSource, 'utf8') === 'race-new-output'
+      && fs.existsSync(String(backupRacePromotion.recoveryPath));
+
+    const restoreRaceDestinationRoot = path.join(tempRoot, 'restore-race', 'SKU');
+    fs.mkdirSync(restoreRaceDestinationRoot, { recursive: true });
+    const restoreRaceIssued = await issueSkuStagingTransaction(restoreRaceDestinationRoot);
+    if (!restoreRaceIssued.success
+      || !restoreRaceIssued.transactionToken
+      || !restoreRaceIssued.stagingRoot) {
+      throw new Error(`restore race transaction issue failed: ${JSON.stringify(restoreRaceIssued)}`);
+    }
+    const restoreRaceSource = path.join(restoreRaceIssued.stagingRoot, 'JPG', 'restore-race.jpg');
+    const restoreRaceDestination = path.join(restoreRaceDestinationRoot, 'JPG', 'restore-race.jpg');
+    fs.mkdirSync(path.dirname(restoreRaceSource), { recursive: true });
+    fs.mkdirSync(path.dirname(restoreRaceDestination), { recursive: true });
+    fs.writeFileSync(restoreRaceSource, 'restore-race-new-output', 'utf8');
+    fs.writeFileSync(restoreRaceDestination, 'restore-race-baseline', 'utf8');
+    const restoreRaceCaptured = await captureSkuStagingDestinationBaselines({
+      transactionToken: restoreRaceIssued.transactionToken,
+      destinationPaths: [restoreRaceDestination]
+    });
+    if (restoreRaceCaptured.success !== true || restoreRaceCaptured.baselines?.length !== 1) {
+      throw new Error(`restore race baseline capture failed: ${JSON.stringify(restoreRaceCaptured)}`);
+    }
+    const restoreRaceItem = {
+      sourcePath: restoreRaceSource,
+      destinationPath: restoreRaceDestination,
+      expectedDestinationBaseline: {
+        exists: true,
+        modifiedTimeMs: restoreRaceCaptured.baselines[0].modifiedTimeMs,
+        byteLength: restoreRaceCaptured.baselines[0].byteLength,
+        sha256: restoreRaceCaptured.baselines[0].sha256
+      }
+    };
+    let restoreInstallFailed = false;
+    let restoreLinkRaceInjected = false;
+    fs.promises.link = async (sourcePath, destinationPath) => {
+      if (!restoreInstallFailed
+        && String(sourcePath) === restoreRaceSource
+        && String(destinationPath) === restoreRaceDestination) {
+        restoreInstallFailed = true;
+        const injected = new Error('injected install failure before baseline restore');
+        injected.code = 'EACCES';
+        throw injected;
+      }
+      if (!restoreLinkRaceInjected
+        && String(sourcePath).includes('.rollback-')
+        && String(sourcePath).endsWith('000.bak')
+        && String(destinationPath) === restoreRaceDestination) {
+        restoreLinkRaceInjected = true;
+        fs.writeFileSync(restoreRaceDestination, 'restore-race-external-target', 'utf8');
+      }
+      return originalLink.call(fs.promises, sourcePath, destinationPath);
+    };
+    let restoreRacePromotion;
+    try {
+      restoreRacePromotion = await promoteStagedFileSet({
+        transactionToken: restoreRaceIssued.transactionToken,
+        items: [restoreRaceItem]
+      });
+    } finally {
+      fs.promises.link = originalLink;
+    }
+    const restoreRaceBackupPath = restoreRacePromotion?.recoveryPath
+      ? path.join(restoreRacePromotion.recoveryPath, '000.bak')
+      : '';
+    const rollbackRestoreNoReplace = restoreInstallFailed
+      && restoreLinkRaceInjected
+      && restoreRacePromotion.success === false
+      && restoreRacePromotion.rollbackComplete === false
+      && Boolean(restoreRacePromotion.recoveryPath)
+      && fs.readFileSync(restoreRaceDestination, 'utf8') === 'restore-race-external-target'
+      && fs.readFileSync(restoreRaceSource, 'utf8') === 'restore-race-new-output'
+      && fs.existsSync(restoreRaceBackupPath)
+      && fs.readFileSync(restoreRaceBackupPath, 'utf8') === 'restore-race-baseline';
+
+    const rollbackTransaction = await issueTransaction();
+    const rollbackStagingRoot = rollbackTransaction.stagingRoot;
+    const rollbackSource = path.join(rollbackStagingRoot, '4双', '自选备注.jpg');
+    const rollbackDestination = path.join(destinationRoot, '4双', '自选备注.jpg');
+    fs.mkdirSync(path.dirname(rollbackSource), { recursive: true });
+    fs.mkdirSync(path.dirname(rollbackDestination), { recursive: true });
+    fs.writeFileSync(rollbackSource, 'new-four-note', 'utf8');
+    fs.writeFileSync(rollbackDestination, 'old-four-note', 'utf8');
+    const [rollbackItem] = await bindMainBaselines(
+      rollbackTransaction.transactionToken,
+      [buildItem(rollbackSource, rollbackDestination)]
+    );
+    const rollbackBaseline = rollbackItem.expectedDestinationBaseline;
+    fs.promises.link = async (sourcePath, destinationPath) => {
+      if (String(sourcePath) === rollbackSource && String(destinationPath) === rollbackDestination) {
+        fs.writeFileSync(rollbackDestination, 'concurrent-user-file', 'utf8');
+      }
+      return originalLink.call(fs.promises, sourcePath, destinationPath);
+    };
+    let failedRollback;
+    try {
+      failedRollback = await promoteStagedFileSet({
+        transactionToken: rollbackTransaction.transactionToken,
+        items: [rollbackItem]
+      });
+    } finally {
+      fs.promises.link = originalLink;
+    }
+    const preservedBackupPath = failedRollback?.recoveryPath
+      ? path.join(failedRollback.recoveryPath, '000.bak')
+      : '';
+    const recoveryManifestPath = failedRollback?.recoveryPath
+      ? path.join(failedRollback.recoveryPath, 'transaction-manifest.json')
+      : '';
+    const recoveryManifest = recoveryManifestPath && fs.existsSync(recoveryManifestPath)
+      ? JSON.parse(fs.readFileSync(recoveryManifestPath, 'utf8'))
+      : null;
+
+    const expectedItem = {
+      id: 'note:4:1',
+      path: rollbackDestination,
+      editablePath: path.join(destinationRoot, '可编辑', '4双', '自选备注.psb')
+    };
+    const editableSource = path.join(rollbackStagingRoot, '可编辑', '4双', '自选备注.psb');
+    fs.mkdirSync(path.dirname(editableSource), { recursive: true });
+    fs.writeFileSync(editableSource, 'new-editable', 'utf8');
+    const rasterArtifact = {
+      tempPath: rollbackSource,
+      tempPathKey: rollbackSource.toLowerCase(),
+      finalPath: rollbackDestination,
+      finalPathKey: rollbackDestination.toLowerCase()
+    };
+    const editableArtifact = {
+      stagedPath: editableSource,
+      finalPath: expectedItem.editablePath
+    };
+    const destinationBaselines = new Map([
+      [rollbackDestination.toLowerCase(), rollbackBaseline],
+      [expectedItem.editablePath.toLowerCase(), { path: expectedItem.editablePath, exists: false }]
+    ]);
+    const rendererHostCalls = [];
+    const rendererHost = {
+      promoteStagedFileSet: async () => {
+        rendererHostCalls.push('promoteStagedFileSet');
+        return {
+          success: false,
+          committedPaths: [],
+          replacedPaths: [],
+          cleanupWarnings: [],
+          rollbackComplete: false,
+          recoveryPath: path.join(rollbackStagingRoot, '.rollback-renderer'),
+          error: 'injected renderer rollback failure'
+        };
+      },
+      removeSkuStagingTransactionRoot: async () => {
+        rendererHostCalls.push('removeSkuStagingTransactionRoot');
+        return { success: true };
+      },
+      removeSkuStagingParentIfEmpty: async () => {
+        rendererHostCalls.push('removeSkuStagingParentIfEmpty');
+        return { success: true };
+      }
+    };
+    const rendererPromotion = await promoteSkuStagedDeliverySet({
+      expectedItems: [expectedItem],
+      rasterArtifacts: new Map([[expectedItem.id, rasterArtifact]]),
+      editableArtifacts: new Map([[expectedItem.id, editableArtifact]]),
+      destinationBaselines,
+      transaction: rollbackTransaction,
+      host: rendererHost
+    });
+    const rendererCleanup = await finalizeSkuStagingCleanup({
+      transaction: rollbackTransaction,
+      preserveStagingRoot: rendererPromotion.preserveStagingRoot === true,
+      recoveryPath: rendererPromotion.recoveryPath,
+      host: rendererHost
+    });
+    const rejectedHostCalls = [];
+    const rejectedHost = {
+      promoteStagedFileSet: async () => {
+        rejectedHostCalls.push('promoteStagedFileSet');
+        throw new Error('injected lost IPC response');
+      },
+      removeSkuStagingTransactionRoot: async () => {
+        rejectedHostCalls.push('removeSkuStagingTransactionRoot');
+        return { success: true };
+      },
+      removeSkuStagingParentIfEmpty: async () => {
+        rejectedHostCalls.push('removeSkuStagingParentIfEmpty');
+        return { success: true };
+      }
+    };
+    const rejectedPromotion = await promoteSkuStagedDeliverySet({
+      expectedItems: [expectedItem],
+      rasterArtifacts: new Map([[expectedItem.id, rasterArtifact]]),
+      editableArtifacts: new Map([[expectedItem.id, editableArtifact]]),
+      destinationBaselines,
+      transaction: rollbackTransaction,
+      host: rejectedHost
+    });
+    await finalizeSkuStagingCleanup({
+      transaction: rollbackTransaction,
+      preserveStagingRoot: rejectedPromotion.preserveStagingRoot === true,
+      host: rejectedHost
+    });
+    const malformedHostCalls = [];
+    const malformedHost = {
+      promoteStagedFileSet: async () => {
+        malformedHostCalls.push('promoteStagedFileSet');
+        return undefined;
+      },
+      removeSkuStagingTransactionRoot: async () => {
+        malformedHostCalls.push('removeSkuStagingTransactionRoot');
+        return { success: true };
+      },
+      removeSkuStagingParentIfEmpty: async () => {
+        malformedHostCalls.push('removeSkuStagingParentIfEmpty');
+        return { success: true };
+      }
+    };
+    const malformedPromotion = await promoteSkuStagedDeliverySet({
+      expectedItems: [expectedItem],
+      rasterArtifacts: new Map([[expectedItem.id, rasterArtifact]]),
+      editableArtifacts: new Map([[expectedItem.id, editableArtifact]]),
+      destinationBaselines,
+      transaction: rollbackTransaction,
+      host: malformedHost
+    });
+    const mismatchedSuccessCalls = [];
+    const mismatchedSuccessHost = {
+      promoteStagedFileSet: async () => {
+        mismatchedSuccessCalls.push('promoteStagedFileSet');
+        return {
+          success: true,
+          committedPaths: [],
+          replacedPaths: [],
+          cleanupWarnings: [],
+          rollbackComplete: true
+        };
+      },
+      removeSkuStagingTransactionRoot: async () => {
+        mismatchedSuccessCalls.push('removeSkuStagingTransactionRoot');
+        return { success: true };
+      },
+      removeSkuStagingParentIfEmpty: async () => {
+        mismatchedSuccessCalls.push('removeSkuStagingParentIfEmpty');
+        return { success: true };
+      }
+    };
+    const mismatchedSuccessPromotion = await promoteSkuStagedDeliverySet({
+      expectedItems: [expectedItem],
+      rasterArtifacts: new Map([[expectedItem.id, rasterArtifact]]),
+      editableArtifacts: new Map([[expectedItem.id, editableArtifact]]),
+      destinationBaselines,
+      transaction: rollbackTransaction,
+      host: mismatchedSuccessHost
+    });
+    await finalizeSkuStagingCleanup({
+      transaction: rollbackTransaction,
+      preserveStagingRoot: mismatchedSuccessPromotion.preserveStagingRoot === true,
+      host: mismatchedSuccessHost
+    });
+    const cleanupRejectCalls = [];
+    const cleanupRejectResult = await finalizeSkuStagingCleanup({
+      transaction: rollbackTransaction,
+      preserveStagingRoot: false,
+      host: {
+        removeSkuStagingTransactionRoot: async () => {
+          cleanupRejectCalls.push('removeSkuStagingTransactionRoot');
+          throw new Error('injected cleanup transport failure');
+        },
+        removeSkuStagingParentIfEmpty: async () => {
+          cleanupRejectCalls.push('removeSkuStagingParentIfEmpty');
+          return { success: true };
+        }
+      }
+    });
+    const parentCleanupRejectCalls = [];
+    const parentCleanupRejectResult = await finalizeSkuStagingCleanup({
+      transaction: rollbackTransaction,
+      preserveStagingRoot: false,
+      host: {
+        removeSkuStagingTransactionRoot: async () => {
+          parentCleanupRejectCalls.push('removeSkuStagingTransactionRoot');
+          return { success: true };
+        },
+        removeSkuStagingParentIfEmpty: async () => {
+          parentCleanupRejectCalls.push('removeSkuStagingParentIfEmpty');
+          throw new Error('injected parent cleanup transport failure');
+        }
+      }
+    });
+    await finalizeSkuStagingCleanup({
+      transaction: rollbackTransaction,
+      preserveStagingRoot: malformedPromotion.preserveStagingRoot === true,
+      host: malformedHost
+    });
+    const validRasterValidation = await validateSkuStagedRasterExports([rasterArtifact], {
+      probeImageFile: async () => ({
+        success: true,
+        status: 'ok',
+        rawImagesRedacted: true,
+        dimensions: { width: 1000, height: 1000 },
+        visualMetrics: {
+          sampleSize: { width: 100, height: 100 },
+          nonWhitePixelRatio: 0.5,
+          nonWhiteBounds: { x: 10, y: 10, width: 80, height: 80, centerX: 0.5, centerY: 0.5, widthRatio: 0.8, heightRatio: 0.8 },
+          edgeOccupancy: { top: 0, right: 0, bottom: 0, left: 0 },
+          rawImagesRedacted: true
+        }
+      })
+    });
+    const duplicateRasterValidation = await validateSkuStagedRasterExports([
+      rasterArtifact,
+      { ...rasterArtifact }
+    ], {
+      probeImageFile: async () => ({ success: true, status: 'ok', rawImagesRedacted: true })
+    });
+    const missingRasterValidation = await validateSkuStagedRasterExports([rasterArtifact], {
+      probeImageFile: async () => null
+    });
+    const rollbackResiduePaths = [];
+    const scanRollbackResidue = (directoryPath) => {
+      if (!fs.existsSync(directoryPath)) return;
+      for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const entryPath = path.join(directoryPath, entry.name);
+        if (entry.name.startsWith('.rollback-')) rollbackResiduePaths.push(path.resolve(entryPath));
+        scanRollbackResidue(entryPath);
+      }
+    };
+    scanRollbackResidue(destinationRoot);
+    const expectedRecoveryPath = failedRollback?.recoveryPath
+      ? path.resolve(failedRollback.recoveryPath)
+      : '';
+    const rollbackResidueCount = rollbackResiduePaths.length === 1
+      && rollbackResiduePaths[0] === expectedRecoveryPath
+      ? 0
+      : rollbackResiduePaths.length + 1;
+    return {
+      overwriteCommitted: atomicCommitVerified && atomicCleanup.success === true,
+      escapedPathRejected: escaped.success === false
+        && escapedSourcePreserved
+        && escapedCleanup.success === true
+        && !fs.existsSync(path.join(tempRoot, 'outside.jpg')),
+      relativePathsRejected: relativeItem.success === false
+        && relativeRoot.success === false
+        && relativeItemSourcePreserved
+        && invalidTokenSourcePreserved
+        && relativeItemCleanup.success === true
+        && invalidTokenCleanup.success === true
+        && !fs.existsSync(relativeItemDestination)
+        && !fs.existsSync(relativeRootDestination),
+      destinationDriftRejected: drifted.success === false
+        && drifted.code === 'destination_changed_since_baseline'
+        && fs.readFileSync(driftDestination, 'utf8') === 'concurrent-user-change'
+        && driftSourcePreserved
+        && driftCleanup.success === true
+        && appeared.success === false
+        && appeared.code === 'destination_changed_since_baseline'
+        && fs.readFileSync(appearedDestination, 'utf8') === 'external-created'
+        && appearedSourcePreserved
+        && appearedCleanup.success === true,
+      mainFrozenBaselineAuthoritative: mainFrozenBaselineAuthoritative
+        && forgedBaselineCleanup.success === true,
+      concurrentPromotionSingleOwner: concurrentPromotionSingleOwner
+        && concurrentCleanup.success === true,
+      fullRollbackRestored: fullRollbackRestored && fullRollbackCleanup.success === true,
+      freshProcessReconciliationFailClosed,
+      backupMoveRacePreservesExternalFile,
+      rollbackRestoreNoReplace,
+      failedRollbackBackupPreserved: failedRollback?.success === false
+        && failedRollback.rollbackComplete === false
+        && Boolean(failedRollback.recoveryPath)
+        && fs.existsSync(preservedBackupPath)
+        && fs.readFileSync(preservedBackupPath, 'utf8') === 'old-four-note'
+        && fs.existsSync(rollbackSource)
+        && fs.readFileSync(rollbackDestination, 'utf8') === 'concurrent-user-file',
+      recoveryManifestMapped: recoveryManifest?.version === 'staged-file-transaction-manifest/v1'
+        && recoveryManifest.items?.length === 1
+        && recoveryManifest.items[0]?.sourcePath === rollbackSource
+        && recoveryManifest.items[0]?.destinationPath === rollbackDestination
+        && recoveryManifest.items[0]?.backupPath === preservedBackupPath
+        && fs.existsSync(path.join(failedRollback.recoveryPath, 'transaction-journal.jsonl')),
+      rendererPreservesFailedRollbackStaging: rendererPromotion.success === false
+        && rendererPromotion.preserveStagingRoot === true
+        && Boolean(rendererPromotion.recoveryPath)
+        && rendererCleanup.success === true
+        && rendererCleanup.preserveStagingRoot === true
+        && rendererHostCalls.length === 1
+        && rendererHostCalls[0] === 'promoteStagedFileSet',
+      rendererPreservesUnknownTransactionState: rejectedPromotion.success === false
+        && rejectedPromotion.preserveStagingRoot === true
+        && rejectedHostCalls.length === 1
+        && rejectedHostCalls[0] === 'promoteStagedFileSet'
+        && malformedPromotion.success === false
+        && malformedPromotion.preserveStagingRoot === true
+        && malformedHostCalls.length === 1
+        && malformedHostCalls[0] === 'promoteStagedFileSet',
+      rendererPreservesMismatchedSuccessReceipt: mismatchedSuccessPromotion.success === false
+        && mismatchedSuccessPromotion.preserveStagingRoot === true
+        && mismatchedSuccessCalls.length === 1
+        && mismatchedSuccessCalls[0] === 'promoteStagedFileSet',
+      cleanupTransportErrorsAreNormalized: cleanupRejectResult.success === false
+        && cleanupRejectCalls.join(',') === 'removeSkuStagingTransactionRoot'
+        && parentCleanupRejectResult.success === false
+        && parentCleanupRejectCalls.join(',') === 'removeSkuStagingTransactionRoot,removeSkuStagingParentIfEmpty',
+      stagedRasterValidationStrict: validRasterValidation.success === true
+        && duplicateRasterValidation.success === false
+        && missingRasterValidation.success === false,
+      rollbackResidueCount
+    };
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
 async function run() {
   const performanceText = read(performancePolicyPath);
   const performanceLedgerText = read(performanceLedgerPath);
@@ -1256,6 +2102,10 @@ async function run() {
   const skuConfigExecutorText = read(skuConfigExecutorPath);
   const skuBatchExecutorSource = parse(skuBatchExecutorPath);
   const skuBatchExecutorText = read(skuBatchExecutorPath);
+  const skuExportTransactionText = read(skuExportTransactionPath);
+  const stagedFilePromotionText = read(stagedFilePromotionPath);
+  const skuStagingTransactionServiceSource = parse(skuStagingTransactionServicePath);
+  const skuStagingTransactionServiceText = read(skuStagingTransactionServicePath);
   const skuColorResolutionFunctionNames = [
     'escapeRegExp',
     'normalizeColorKey',
@@ -1285,27 +2135,30 @@ async function run() {
   )?.getText(skuBatchExecutorSource) || '';
   const fileSystemHandlersSource = parse(fileSystemHandlersPath);
   const fileSystemHandlersText = read(fileSystemHandlersPath);
-  const safeEmptyDirectoryPathResolverText = findFunction(
-    fileSystemHandlersSource,
-    'resolveSafeSkuStagingParentRemovalPath'
-  )?.getText(fileSystemHandlersSource) || '';
-  const removeEmptyDirectoryHandlerStart = fileSystemHandlersText.indexOf(
-    "ipcMain.handle('fs:removeSkuStagingParentIfEmpty'"
-  );
-  let removeEmptyDirectoryHandlerText = '';
-  if (removeEmptyDirectoryHandlerStart >= 0) {
-    const nextHandlerStart = fileSystemHandlersText.indexOf(
-      "ipcMain.handle('",
-      removeEmptyDirectoryHandlerStart + 24
-    );
-    const removeEmptyDirectoryHandlerEnd = nextHandlerStart > removeEmptyDirectoryHandlerStart
-      ? nextHandlerStart
-      : fileSystemHandlersText.length;
-    removeEmptyDirectoryHandlerText = fileSystemHandlersText.slice(
-      removeEmptyDirectoryHandlerStart,
-      removeEmptyDirectoryHandlerEnd
-    );
-  }
+  const resolveLocalStagingPathText = findFunction(
+    skuStagingTransactionServiceSource,
+    'resolveRequiredLocalAbsolutePath'
+  )?.getText(skuStagingTransactionServiceSource) || '';
+  const reparseSegmentGuardText = findFunction(
+    skuStagingTransactionServiceSource,
+    'assertNoReparsePointInExistingSegments'
+  )?.getText(skuStagingTransactionServiceSource) || '';
+  const validatedTransactionRemovalText = findFunction(
+    skuStagingTransactionServiceSource,
+    'removeValidatedTransactionRoot'
+  )?.getText(skuStagingTransactionServiceSource) || '';
+  const transactionIssueText = findFunction(
+    skuStagingTransactionServiceSource,
+    'issueSkuStagingTransactionUnlocked'
+  )?.getText(skuStagingTransactionServiceSource) || '';
+  const transactionRootCleanupText = findFunction(
+    skuStagingTransactionServiceSource,
+    'removeSkuStagingTransactionRoot'
+  )?.getText(skuStagingTransactionServiceSource) || '';
+  const transactionParentCleanupText = findFunction(
+    skuStagingTransactionServiceSource,
+    'removeSkuStagingParentIfEmpty'
+  )?.getText(skuStagingTransactionServiceSource) || '';
   const skillToolsText = read(skillToolsPath);
   const skuDeliverySummaryText = read(skuDeliverySummaryPath);
   const interactiveContinuationOperationStoreText = read(interactiveContinuationOperationStorePath);
@@ -2813,11 +3666,24 @@ async function run() {
     verifySkuAutoLayoutResult
   } = require(uxpSkuAutoLayoutPlanPath);
   const {
+    buildSkuExpectedExportInventory,
     buildSkuExportReadback,
     evaluateSkuRequestedOutputCompletion,
     resolveSkuBatchDeliveryOutcome,
     sanitizeSkuToolResultsForPublicResult
   } = require(skuExportReadbackPath);
+  const {
+    buildSkuColorCardUniformScalePlacementReceipt
+  } = require(skuColorCardContractPath);
+  const {
+    DESIGN_EVALUATION_RESULT_ADAPTER_CONTRIBUTIONS
+  } = require(path.join(
+    root,
+    'src',
+    'shared',
+    'agent-runtime-v5',
+    'design-evaluation-result-adapter-contributions.ts'
+  ));
   const {
     buildSkuDeliverySummary,
     isSkuDeliveryPresentationSummary
@@ -11856,6 +12722,226 @@ async function run() {
       dimensions: { width: 800, height: 1000 }
     }]
   });
+  const wrongPathSameCountReadback = buildSkuExportReadback({
+    expectedExportPaths: [
+      'C:\\project\\SKU\\2双\\combo-a.jpg',
+      'C:\\project\\SKU\\2双\\combo-b.jpg'
+    ],
+    fileProbes: [{
+      success: true,
+      path: 'C:\\project\\SKU\\2双\\combo-a.jpg',
+      status: 'ok',
+      rawImagesRedacted: true,
+      dimensions: { width: 1000, height: 1000 }
+    }, {
+      success: true,
+      path: 'C:\\project\\SKU\\2双\\unrelated.jpg',
+      status: 'ok',
+      rawImagesRedacted: true,
+      dimensions: { width: 1000, height: 1000 }
+    }]
+  });
+  const duplicatePathProbeReadback = buildSkuExportReadback({
+    expectedExportPaths: [
+      'C:\\project\\SKU\\2双\\combo-a.jpg',
+      'C:\\project\\SKU\\2双\\combo-b.jpg'
+    ],
+    fileProbes: [{
+      success: true,
+      path: 'C:\\project\\SKU\\2双\\combo-a.jpg',
+      status: 'ok',
+      rawImagesRedacted: true,
+      dimensions: { width: 1000, height: 1000 }
+    }, {
+      success: true,
+      path: 'c:/project/SKU/2双/combo-a.jpg',
+      status: 'ok',
+      rawImagesRedacted: true,
+      dimensions: { width: 1000, height: 1000 }
+    }]
+  });
+  const frozenSkuExportInventory = buildSkuExpectedExportInventory({
+    outputDir: 'C:\\project\\SKU',
+    specs: [{
+      size: 2,
+      combos: [['奶 白', '黑色'], ['浅咖', '深咖']],
+      comboTemplateName: '2双组合.psd',
+      comboExpectedDimensions: { width: 1000, height: 1000 },
+      noteRows: [['奶白', '黑色'], ['浅咖', '深咖']],
+      noteTemplateName: '2双自选备注.psb',
+      noteExpectedDimensions: { width: 1000, height: 1000 }
+    }, {
+      size: 3,
+      combos: [['奶白', '浅咖', '黑色']],
+      comboTemplateName: '3双组合.tif',
+      noteRows: [['奶白', '浅咖', '黑色']],
+      noteTemplateName: '3双自选备注.psd'
+    }, {
+      size: 4,
+      combos: [['奶白', '浅咖', '深咖', '黑色']],
+      comboTemplateName: '4双组合.psb',
+      noteRows: [['奶白', '浅咖', '深咖', '黑色']],
+      noteTemplateName: '4双自选备注.tif'
+    }]
+  });
+  const frozenSkuExpectedExports = frozenSkuExportInventory.items.map((item) => ({
+    path: item.path,
+    expectedDimensions: item.expectedDimensions
+  }));
+  const frozenSkuExpectedPaths = frozenSkuExportInventory.items.map((item) => item.path);
+  const buildReadyFrozenSkuProbes = (freshnessVerified = true) => (
+    frozenSkuExportInventory.items.map((item) => ({
+      success: true,
+      path: item.path,
+      status: 'ok',
+      rawImagesRedacted: true,
+      dimensions: item.expectedDimensions || { width: 1000, height: 1000 },
+      freshnessVerified,
+      freshnessProof: freshnessVerified ? 'new_path' : 'unverified'
+    }))
+  );
+  const exactFrozenSkuReadback = buildSkuExportReadback({
+    expectedExports: frozenSkuExpectedExports,
+    actualExportPaths: frozenSkuExpectedPaths,
+    fileProbes: buildReadyFrozenSkuProbes(true)
+  });
+  const wrongActualSkuPaths = [...frozenSkuExpectedPaths];
+  wrongActualSkuPaths[1] = 'C:\\project\\SKU\\2双组合\\2错误文件名.jpg';
+  const wrongActualSameCountSkuReadback = buildSkuExportReadback({
+    expectedExports: frozenSkuExpectedExports,
+    actualExportPaths: wrongActualSkuPaths,
+    fileProbes: buildReadyFrozenSkuProbes(true)
+  });
+  const duplicateActualSkuPaths = [...frozenSkuExpectedPaths];
+  duplicateActualSkuPaths[1] = duplicateActualSkuPaths[0].toUpperCase();
+  const duplicateActualSkuReadback = buildSkuExportReadback({
+    expectedExports: frozenSkuExpectedExports,
+    actualExportPaths: duplicateActualSkuPaths,
+    fileProbes: buildReadyFrozenSkuProbes(true)
+  });
+  const staleFrozenSkuReadback = buildSkuExportReadback({
+    expectedExports: frozenSkuExpectedExports,
+    actualExportPaths: frozenSkuExpectedPaths,
+    fileProbes: buildReadyFrozenSkuProbes(false)
+  });
+  const violatedFrozenSkuReadback = buildSkuExportReadback({
+    expectedExports: frozenSkuExpectedExports,
+    actualExportPaths: frozenSkuExpectedPaths,
+    fileProbes: buildReadyFrozenSkuProbes(true),
+    inventoryViolations: ['工具回执额外返回 1 个计划外文件。']
+  });
+  const placementReceiptBase = {
+    sourceId: 'S01',
+    placedLayerId: 81,
+    documentId: 17,
+    expectedDocumentId: 17,
+    observedDocumentId: 17,
+    asset: {
+      path: 'C:\\project\\.designecho\\sku-retouch\\S01-product.png',
+      sha256: 'a'.repeat(64),
+      checksum: 'fnv1a32:1234abcd',
+      byteLength: 4096,
+      width: 800,
+      height: 1200,
+      alphaEnvelopeSafe: true
+    },
+    placedSource: {
+      assetId: 'S01',
+      checksum: 'fnv1a32:1234abcd',
+      byteLength: 4096,
+      identityProofVersion: 'place-image-source-identity/v1',
+      identityVerified: true
+    },
+    targetBounds: { left: 100, top: 120, width: 400, height: 600 },
+    actualBounds: { left: 100, top: 120, width: 400, height: 600 },
+    smartObjectBounds: { left: 100, top: 120, width: 400, height: 600 },
+    placementActualBounds: { left: 100, top: 120, width: 400, height: 600 },
+    smartObjectFileReference: 'S01-product.png',
+    editableSmartObject: true,
+    layerBoundsReadSucceeded: true,
+    placementGeometryVerified: true,
+    outsideTargetFraction: 0,
+    outsideTargetEdges: []
+  };
+  const validUniformScalePlacementReceipt = buildSkuColorCardUniformScalePlacementReceipt(
+    placementReceiptBase
+  );
+  const wrongIdentityUniformScalePlacementReceipt = buildSkuColorCardUniformScalePlacementReceipt({
+    ...placementReceiptBase,
+    placedSource: {
+      ...placementReceiptBase.placedSource,
+      checksum: 'fnv1a32:deadbeef'
+    }
+  });
+  const staleUxpUniformScalePlacementReceipt = buildSkuColorCardUniformScalePlacementReceipt({
+    ...placementReceiptBase,
+    placedSource: {
+      ...placementReceiptBase.placedSource,
+      identityProofVersion: '',
+      identityVerified: false
+    }
+  });
+  const missingDocumentIdentityPlacementReceipt = buildSkuColorCardUniformScalePlacementReceipt({
+    ...placementReceiptBase,
+    observedDocumentId: undefined
+  });
+  const croppedUniformScalePlacementReceipt = buildSkuColorCardUniformScalePlacementReceipt({
+    ...placementReceiptBase,
+    actualBounds: { left: 90, top: 120, width: 420, height: 630 },
+    smartObjectBounds: { left: 90, top: 120, width: 420, height: 630 },
+    placementActualBounds: { left: 90, top: 120, width: 420, height: 630 },
+    outsideTargetFraction: 0.08,
+    outsideTargetEdges: ['left', 'bottom']
+  });
+  const stretchedNarrowPlacementReceipt = buildSkuColorCardUniformScalePlacementReceipt({
+    ...placementReceiptBase,
+    asset: {
+      ...placementReceiptBase.asset,
+      width: 100,
+      height: 1000
+    },
+    targetBounds: { left: 100, top: 120, width: 120, height: 1000 },
+    actualBounds: { left: 100, top: 120, width: 120, height: 1000 },
+    smartObjectBounds: { left: 100, top: 120, width: 120, height: 1000 },
+    placementActualBounds: { left: 100, top: 120, width: 120, height: 1000 }
+  });
+  const skuColorCardEvaluationAdapter = DESIGN_EVALUATION_RESULT_ADAPTER_CONTRIBUTIONS.find(
+    (contribution) => contribution.sourceToolName === 'sku-color-card'
+  );
+  const flatClippingRecords = skuColorCardEvaluationAdapter?.buildRecords({
+    report: {
+      version: 'sku-color-card-execution-report/v2',
+      presentationMode: 'flat',
+      checks: {
+        finalStructureReadback: 'passed',
+        sourceCoverage: 'passed',
+        smartObjectEditability: 'passed',
+        clippingStructure: 'not_applicable',
+        labelTextFit: 'passed',
+        visualComposition: 'needs_review'
+      }
+    }
+  }) || [];
+  const cardMissingClippingRecords = skuColorCardEvaluationAdapter?.buildRecords({
+    report: {
+      version: 'sku-color-card-execution-report/v2',
+      presentationMode: 'card',
+      checks: {
+        finalStructureReadback: 'passed',
+        sourceCoverage: 'passed',
+        smartObjectEditability: 'passed',
+        clippingStructure: 'not_applicable',
+        labelTextFit: 'passed',
+        visualComposition: 'needs_review'
+      }
+    }
+  }) || [];
+  const flatClippingRecord = flatClippingRecords.find(
+    (record) => record.key === 'sku_color_card_clipping_structure'
+  );
+  const cardMissingClippingRecord = cardMissingClippingRecords.find(
+    (record) => record.key === 'sku_color_card_clipping_structure'
+  );
   const completedSkuDeliveryOutcome = resolveSkuBatchDeliveryOutcome({
     hasAnyProcessedOutput: true,
     allRequestedOutputsComplete: true,
@@ -12138,11 +13224,11 @@ async function run() {
     && agentNoteDeliverableStart > agentNoteCleanupFailureStart
     ? skuBatchExecuteMethodText.slice(agentNoteCleanupFailureStart, agentNoteDeliverableStart)
     : '';
-  const skuStagingFileCleanupIndex = skuBatchExecutorText.lastIndexOf(
-    'cleanupSkuNotePaths([noteStagingRoot])'
+  const skuStagingFileCleanupIndex = skuExportTransactionText.lastIndexOf(
+    'const stagingCleanup = await cleanupSkuStagingPaths('
   );
-  const skuStagingParentCleanupIndex = skuBatchExecutorText.lastIndexOf(
-    'cleanupSkuNoteStagingParentIfEmpty('
+  const skuStagingParentCleanupIndex = skuExportTransactionText.lastIndexOf(
+    'return cleanupSkuStagingParentIfEmpty(input.transaction.transactionToken, input.host)'
   );
   const skuProductionSafetyRegressionViolations = [
     ...(skuMutationTargetAssertionText.includes("{ _ref: 'document', _id: documentId }")
@@ -12351,8 +13437,10 @@ async function run() {
       && !skuDeleteCopiedLayersText.includes('layerIds.length = 0')
       && skuExecuteComboLayoutText.includes('errors.push(`组合 ${comboIndex + 1}:')
       && skuExecuteComboLayoutText.includes(
-        'const allCombosExported = exportedFiles.length === config.combos.length && errors.length === 0'
+        'const allCombosExported = exportedFiles.length === config.combos.length'
       )
+      && skuExecuteComboLayoutText.includes('&& editableDocumentsComplete')
+      && skuExecuteComboLayoutText.includes('&& errors.length === 0')
       ? []
       : ['sku-delete:cleanup-failure-can-continue-or-report-the-current-combo-as-success']),
     ...(detectedTerminalSkuLayerCleanupFailure
@@ -12382,8 +13470,10 @@ async function run() {
       && skuBatchExecuteMethodText.includes('&& !noteBatchFailed')
       && skuBatchExecuteMethodText.indexOf('const noteFiles = Array.isArray(noteResult?.data?.exportedFiles)')
         > agentNoteCleanupFailureStart
-      && skuBatchExecuteMethodText.indexOf('promoteSkuStagedNoteExports(pendingNoteArtifacts)')
+      && skuBatchExecuteMethodText.indexOf('const allStagedPairsReady =')
         > agentNoteCleanupFailureStart
+      && skuBatchExecuteMethodText.indexOf('promoteSkuStagedDeliverySet({')
+        > skuBatchExecuteMethodText.indexOf('const allStagedPairsReady =')
       ? []
       : ['sku-agent-batch:note-cleanup-failure-can-continue-or-promote-staged-artifacts']),
     ...(skuPlaceholderFixtureInspection?.success === true
@@ -12419,28 +13509,55 @@ async function run() {
       && !skuAutoLayoutApplicationText.includes('actualBounds: placement.destinationBox')
       ? []
       : ['sku-layout:unmoved-live-bounds-were-replaced-by-planned-destination']),
-    ...(safeEmptyDirectoryPathResolverText.includes('path.resolve(')
-      && safeEmptyDirectoryPathResolverText.includes('path.isAbsolute(')
-      && safeEmptyDirectoryPathResolverText.includes("leafName !== '.designecho-staging'")
-      && safeEmptyDirectoryPathResolverText.includes("parentName !== 'sku'")
-      && safeEmptyDirectoryPathResolverText.includes("segment.includes(':')")
-      && safeEmptyDirectoryPathResolverText.includes('/[. ]$/')
-      && removeEmptyDirectoryHandlerText.includes('fsPromises.lstat(')
-      && removeEmptyDirectoryHandlerText.includes('.isSymbolicLink()')
-      && removeEmptyDirectoryHandlerText.includes('fsPromises.rmdir(')
-      && removeEmptyDirectoryHandlerText.includes("reason: 'not_empty'")
-      && !removeEmptyDirectoryHandlerText.includes('recursive: true')
-      && !removeEmptyDirectoryHandlerText.includes('fsPromises.rm(')
-      && !removeEmptyDirectoryHandlerText.includes('shell.trashItem(')
+    ...(resolveLocalStagingPathText.includes('path.isAbsolute(rawPath)')
+      && resolveLocalStagingPathText.includes('isUnsupportedPathNamespace(rawPath)')
+      && resolveLocalStagingPathText.includes("segment.includes(':')")
+      && resolveLocalStagingPathText.includes('/[. ]$/')
+      && reparseSegmentGuardText.includes('currentStat.isSymbolicLink()')
+      && validatedTransactionRemovalText.includes('findReparsePointInsideDirectory(stagingRoot)')
+      && validatedTransactionRemovalText.includes('fsPromises.rm(stagingRoot, { recursive: true, force: false })')
+      && transactionIssueText.includes('randomBytes(32).toString')
+      && transactionIssueText.includes('writeDurableJsonExclusive(ownerMarkerPath(stagingRoot)')
+      && transactionIssueText.includes('guardStagingParentAgainstUnresolvedTransactions(')
+      && transactionRootCleanupText.includes("transaction.phase === 'promoting'")
+      && transactionRootCleanupText.includes("transaction.phase === 'recovery_required'")
+      && transactionRootCleanupText.includes('inspectTransactionForReconciliation(marker)')
+      && transactionRootCleanupText.includes('removeValidatedTransactionRoot(transaction.stagingRoot)')
+      && transactionParentCleanupText.includes("transaction.phase !== 'root_cleaned'")
+      && transactionParentCleanupText.includes('fsPromises.rmdir(transaction.stagingParent)')
+      && transactionParentCleanupText.includes("reason = 'not_empty'")
+      && !transactionParentCleanupText.includes('recursive: true')
+      && !skuStagingTransactionServiceText.includes('shell.trashItem(')
+      && fileSystemHandlersText.includes("ipcMain.handle('fs:issueSkuStagingTransaction'")
+      && fileSystemHandlersText.includes("ipcMain.handle('fs:captureSkuStagingDestinationBaselines'")
       && preloadText.includes('removeSkuStagingParentIfEmpty')
       && preloadText.includes("ipcRenderer.invoke('fs:removeSkuStagingParentIfEmpty'")
+      && preloadText.includes('removeSkuStagingTransactionRoot')
+      && preloadText.includes("ipcRenderer.invoke('fs:removeSkuStagingTransactionRoot'")
+      && preloadText.includes('promoteStagedFileSet: (')
       && rendererTypesText.includes('removeSkuStagingParentIfEmpty')
-      && skuBatchExecutorText.includes('const noteStagingParent =')
-      && skuBatchExecutorText.includes('const result = await removeSkuStagingParentIfEmpty(normalizedParent)')
-      && skuBatchExecutorText.includes("result?.reason === 'not_empty'")
+      && rendererTypesText.includes('removeSkuStagingTransactionRoot')
+      && rendererTypesText.includes('promoteStagedFileSet: (input: StagedFilePromotionInput)')
+      && skuBatchExecutorText.includes('skuStagingTransaction = await issueSkuStagingTransaction(settledOutputDir)')
+      && skuBatchExecutorText.includes('skuStagingTransaction.transactionToken')
+      && skuBatchExecutorText.includes('const finalizeSkuStagingOnce = async (): Promise<SkuStagedDeliveryResult> =>')
+      && skuExportTransactionText.includes('result = await host.removeSkuStagingParentIfEmpty(')
+      && skuExportTransactionText.includes('result = await host.removeSkuStagingTransactionRoot(token)')
+      && skuExportTransactionText.includes('SKU 空暂存目录清理响应中断')
+      && skuExportTransactionText.includes('SKU 暂存事务根清理响应中断')
+      && skuExportTransactionText.includes("result?.reason === 'not_empty'")
+      && skuExportTransactionText.includes('if (input.preserveStagingRoot)')
+      && skuExportTransactionText.includes('preserveStagingRoot: true')
+      && skuExportTransactionText.includes('result?.rollbackComplete !== true')
+      && skuExportTransactionText.includes('文件写入状态未知，已保留暂存目录')
+      && skuBatchExecutorText.includes('preserveSkuStagingRoot = promotion.preserveStagingRoot === true')
+      && skuBatchExecutorText.includes('finalizeSkuStagingCleanup({')
+      && skuBatchExecutorText.includes('preserveStagingRoot: preserveSkuStagingRoot')
       && skuStagingFileCleanupIndex >= 0
       && skuStagingParentCleanupIndex > skuStagingFileCleanupIndex
-      && !skuBatchExecutorText.includes('cleanupSkuNotePaths([noteStagingParent])')
+      && !skuBatchExecutorText.includes('noteStagingRoot')
+      && !skuBatchExecutorText.includes('buildSkuStagingPaths')
+      && !skuBatchExecutorText.includes('finalizeSkuNoteStagingCleanup')
       ? []
       : ['sku-staging:empty-parent-cleanup-is-not-atomic-non-recursive-and-wired-after-file-cleanup'])
   ];
@@ -12479,7 +13596,11 @@ async function run() {
       && groupedFailureRenderedMessage.blocks.filter((block) => block.type === 'collapsible').length === 1
       && groupedFailureRenderedMessage.blocks.filter((block) => block.type === 'text').length === 0
       && groupedFailureRenderedMessage.blocks.filter((block) => block.type === 'tool_result').length === 0
-      && skuBatchExecutorText.includes('const successMessage = skuDeliverySummary.compactText;')
+      && skuBatchExecutorText.includes('const successMessage = finalDeliverySuccess')
+      && skuBatchExecutorText.includes(
+        '? `${skuDeliverySummary.compactText} 同步生成 ${skuEditableDeliveryReadback.verifiedCount} 份逐行可编辑 PSB。`'
+      )
+      && skuBatchExecutorText.includes('最终文件集合未通过完整核对，本次未标记为完成。')
       && messageParserText.includes('function isSkuDeliveryPresentationOwned(')
       && !messageParserText.includes('normalizedContent === normalizedCompact')
       && !chatPanelText.includes("if (!finalization.committed || finalization.status !== 'succeeded')")
@@ -12623,8 +13744,64 @@ async function run() {
       && invalidStagedNoteReadback.failedFileProbeCount > 0
       && wrongSizeStagedNoteReadback.status === 'blocked'
       && wrongSizeStagedNoteReadback.dimensionMismatchCount === 1
+      && wrongPathSameCountReadback.status === 'blocked'
+      && wrongPathSameCountReadback.missingFileProbeCount === 1
+      && wrongPathSameCountReadback.blockers.some((message) => message.includes('不属于本次精确导出集合'))
+      && duplicatePathProbeReadback.status === 'blocked'
+      && duplicatePathProbeReadback.missingFileProbeCount === 1
+      && duplicatePathProbeReadback.blockers.some((message) => message.includes('重复文件探针'))
       ? []
-      : ['sku-delivery:invalid-staged-note-file-could-be-promoted-before-probe']),
+      : ['sku-delivery:file-probes-were-not-bound-one-to-one-to-exact-export-paths']),
+    ...(frozenSkuExportInventory.status === 'ready'
+      && frozenSkuExportInventory.items.length === 8
+      && frozenSkuExportInventory.boundaries.frozenBeforeExecution === true
+      && frozenSkuExportInventory.boundaries.doesNotScanSourceDirectory === true
+      && frozenSkuExportInventory.boundaries.doesNotAcceptObservedFilesAsExpectation === true
+      && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\2双组合\\1奶白+黑色.jpg')
+      && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\2双组合\\2浅咖+深咖.jpg')
+      && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\2双自选备注\\2双自选备注-1.jpg')
+      && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\2双自选备注\\2双自选备注-2.jpg')
+      && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\3双组合\\1奶白+浅咖+黑色.jpg')
+      && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\3双自选备注\\3双自选备注.jpg')
+      && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\4双组合\\1奶白+浅咖+深咖+黑色.jpg')
+      && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\4双自选备注\\4双自选备注.jpg')
+      && exactFrozenSkuReadback.status === 'ready_for_review'
+      && exactFrozenSkuReadback.actualExportCount === 8
+      && exactFrozenSkuReadback.missingActualExportCount === 0
+      && exactFrozenSkuReadback.unexpectedActualExportCount === 0
+      && exactFrozenSkuReadback.duplicateActualExportCount === 0
+      && exactFrozenSkuReadback.staleFileProbeCount === 0
+      && wrongActualSameCountSkuReadback.status === 'blocked'
+      && wrongActualSameCountSkuReadback.missingActualExportCount === 1
+      && wrongActualSameCountSkuReadback.unexpectedActualExportCount === 1
+      && duplicateActualSkuReadback.status === 'blocked'
+      && duplicateActualSkuReadback.missingActualExportCount === 1
+      && duplicateActualSkuReadback.duplicateActualExportCount === 1
+      && staleFrozenSkuReadback.status === 'blocked'
+      && staleFrozenSkuReadback.staleFileProbeCount === 8
+      && violatedFrozenSkuReadback.status === 'blocked'
+      && violatedFrozenSkuReadback.blockers.some((message) => message.includes('导出清单违例'))
+      ? []
+      : ['sku-delivery:frozen-export-inventory-did-not-bind-plan-results-probes-and-freshness']),
+    ...(validUniformScalePlacementReceipt.verified === true
+      && validUniformScalePlacementReceipt.doesNotClaimAestheticQuality === true
+      && wrongIdentityUniformScalePlacementReceipt.verified === false
+      && wrongIdentityUniformScalePlacementReceipt.checks.sourceIdentity === false
+      && staleUxpUniformScalePlacementReceipt.verified === false
+      && staleUxpUniformScalePlacementReceipt.checks.sourceIdentity === false
+      && missingDocumentIdentityPlacementReceipt.verified === false
+      && missingDocumentIdentityPlacementReceipt.checks.documentIdentity === false
+      && croppedUniformScalePlacementReceipt.verified === false
+      && croppedUniformScalePlacementReceipt.checks.containedWithoutFrameCrop === false
+      && stretchedNarrowPlacementReceipt.verified === false
+      && stretchedNarrowPlacementReceipt.checks.assetAspectRatioPreserved === false
+      ? []
+      : ['sku-color-card:uniform-scale-placement-was-not-bound-to-source-bounds-and-alpha-facts']),
+    ...(flatClippingRecord?.status === 'passed'
+      && flatClippingRecord.verificationRef === 'quality-adapter:sku-color-card-clipping:not-applicable-flat'
+      && cardMissingClippingRecord?.status === 'needs_review'
+      ? []
+      : ['sku-color-card:flat-clipping-not-applicable-was-missing-or-falsely-applied-to-card']),
     ...(completedSkuDeliveryOutcome.success === true
       && completedSkuDeliveryOutcome.status === 'completed'
       && partialSkuDeliveryOutcome.success === false
@@ -12661,28 +13838,64 @@ async function run() {
       && skuBatchExecutorText.includes('if (shouldRunCombo && templateDoc)')
       && skuBatchExecutorText.includes('if (shouldRunNote)')
       && skuBatchExecutorText.includes('const requestedOutputRequirements = Array.from(resolvedSkuAssetsBySize.values())')
-      && skuBatchExecutorText.includes('const pendingNoteArtifacts: SkuStagedNoteExport[] = []')
-      && skuBatchExecutorText.includes('outputDir: noteStagingRoot')
-      && skuBatchExecutorText.includes('parseSkuStagedNoteExport({')
-      && skuBatchExecutorText.includes('const allNoteBatchesReadyToCommit = noteBatches.length > 0')
-      && skuBatchExecutorText.includes('completedNoteBatches === noteBatches.length')
-      && skuBatchExecutorText.includes('pendingNotePathKeys.size === noteBatches.length')
-      && skuBatchExecutorText.includes('validateSkuStagedNoteExports(pendingNoteArtifacts)')
-      && skuBatchExecutorText.includes("readback.status !== 'ready_for_review'")
-      && skuBatchExecutorText.indexOf('validateSkuStagedNoteExports(pendingNoteArtifacts)')
-        < skuBatchExecutorText.indexOf('promoteSkuStagedNoteExports(pendingNoteArtifacts)')
-      && skuBatchExecutorText.includes('promoteSkuStagedNoteExports(pendingNoteArtifacts)')
-      && skuBatchExecutorText.includes("invoke('fs:copyFileExclusive'")
-      && skuBatchExecutorText.includes('cleanupSkuNotePaths([noteStagingRoot])')
+      && skuBatchExecutorText.includes('const expectedExportInventory = buildSkuExpectedExportInventory({')
+      && skuBatchExecutorText.includes('skuStagingTransaction = await issueSkuStagingTransaction(settledOutputDir)')
+      && skuBatchExecutorText.includes('const allDestinationBaselines = await captureSkuExportPathBaselines(')
+      && skuBatchExecutorText.includes('skuStagingTransaction.transactionToken')
+      && skuBatchExecutorText.includes('const expectedExportItemsById = new Map(')
+      && skuBatchExecutorText.includes('expectedExportItemsById.get(`combo:${size}:${batch.rowStartIndex + comboIndex + 1}`)')
+      && skuBatchExecutorText.includes('expectedExportItemsById.get(')
+      && skuBatchExecutorText.includes('`note:${size}:${batch.rowStartIndex + 1}`')
+      && skuBatchExecutorText.includes('expectedFinalPath: expectedNoteItem.path')
+      && skuBatchExecutorText.includes('actualExportPaths: allFinalFiles')
+      && skuBatchExecutorText.includes('expectedExports: expectedExportInventory.items.map((item) => ({')
+      && skuBatchExecutorText.includes('inventoryViolations: exportInventoryViolations')
+      && skuBatchExecutorText.includes('freshnessVerified: freshness.verified')
+      && !skuBatchExecutorText.includes('expectedExportPaths: allFinalFiles')
+      && !skuBatchExecutorText.includes('expectedExports: allFinalExportRecords')
+      && skuBatchExecutorText.includes('const pendingRasterArtifactsByItemId = new Map<string, SkuStagedRasterExport>()')
+      && skuBatchExecutorText.includes('const provisionalEditableDeliveryReceipts = new Map<string, SkuEditableDeliveryReceipt>()')
+      && skuBatchExecutorText.includes('outputDir: skuStagingRoot')
+      && skuBatchExecutorText.includes('editableOutputDir: editableStagingOutputDir')
+      && skuBatchExecutorText.includes('parseSkuStagedRasterExport({')
+      && skuBatchExecutorText.includes('const allStagedPairsReady = pendingRasterArtifactsByItemId.size')
+      && skuBatchExecutorText.includes('pendingRasterArtifactsByItemId.size')
+      && skuBatchExecutorText.includes('provisionalEditableDeliveryReceipts.size')
+      && skuBatchExecutorText.includes('validateSkuStagedRasterExports(stagedRasterArtifacts)')
+      && skuExportTransactionText.includes("readback.status !== 'ready_for_review'")
+      && skuBatchExecutorText.indexOf('validateSkuStagedRasterExports(stagedRasterArtifacts)')
+        < skuBatchExecutorText.indexOf('promoteSkuStagedDeliverySet({')
+      && skuBatchExecutorText.includes('promoteSkuStagedDeliverySet({')
+      && skuBatchExecutorText.includes('transaction: skuStagingTransaction')
+      && skuExportTransactionText.includes('result = await host.promoteStagedFileSet({')
+      && skuExportTransactionText.includes('transactionToken: input.transaction.transactionToken')
+      && skuBatchExecutorText.includes('finalizeSkuStagingCleanup({')
+      && skuBatchExecutorText.includes('preserveSkuStagingRoot = promotion.preserveStagingRoot === true')
+      && skuExportTransactionText.includes('if (input.preserveStagingRoot)')
+      && skuExportTransactionText.includes('result?.rollbackComplete !== true')
+      && skuBatchExecutorText.indexOf('const stagingCleanup = await finalizeSkuStagingOnce()')
+        < skuBatchExecutorText.indexOf('const skuDeliverySummary = buildSkuDeliverySummary({')
+      && skuBatchExecutorText.includes('appendUniqueDiagnostics(skuUserAdvisories, [cleanupNotice])')
       && skuBatchExecutorText.includes('evaluateSkuRequestedOutputCompletion({')
       && skuBatchExecutorText.includes('const allRequestedOutputsComplete = requestedOutputCompletion.allRequestedOutputsComplete')
-      && fileSystemHandlersText.includes("ipcMain.handle('fs:copyFileExclusive'")
-      && fileSystemHandlersText.includes('fs.constants.COPYFILE_EXCL')
+      && skuBatchExecutorText.includes('const runtimeArtifactSetExact = runtimeDeliveryArtifacts.length')
+      && skuBatchExecutorText.includes('const finalDeliverySuccess = deliveryOutcome.success && runtimeArtifactSetExact')
+      && fileSystemHandlersText.includes("ipcMain.handle('fs:promoteStagedFileSet'")
+      && skuStagingTransactionServiceText.includes('destinationBaselines: Map<string, SkuStagingDestinationBaseline>')
+      && skuStagingTransactionServiceText.includes('readSkuStagingFrozenDestinationBaseline(')
+      && stagedFilePromotionText.includes('await fsPromises.rename(item.destinationPath, item.backupPath)')
+      && stagedFilePromotionText.includes('readSkuStagingFrozenDestinationBaseline(')
+      && stagedFilePromotionText.includes('sameDestinationBaseline(rendererBaseline, expectedDestinationBaseline)')
+      && stagedFilePromotionText.includes('await fsPromises.link(item.sourcePath, item.destinationPath)')
+      && stagedFilePromotionText.includes('installedIdentity.sha256 !== item.sourceSha256')
+      && stagedFilePromotionText.includes('const rollbackErrors = await rollbackPromotion(')
+      && stagedFilePromotionText.includes("path.join(rollbackRoot, 'transaction-manifest.json')")
+      && stagedFilePromotionText.includes("path.join(rollbackRoot, 'transaction-journal.jsonl')")
       && skuBatchExecutorText.includes('function hasReadySkuNoteAutoLayoutQa(result: any, expectedItemCount: number): boolean')
       && skuBatchExecutorText.includes('actualLayerIds.size === expected')
       && skuBatchExecutorText.includes('hasReadySkuNoteAutoLayoutQa(noteResult, noteExpectedItemCount)')
       && skuBatchExecutorText.includes('resolveSkuBatchDeliveryOutcome({')
-      && skuBatchExecutorText.includes('success: deliveryOutcome.success')
+      && skuBatchExecutorText.includes('success: finalDeliverySuccess')
       ? []
       : ['sku-layout:bounded-region-or-delivery-outcome-production-wiring-incomplete']),
     ...(skuProductionRecommendation?.skillId === 'sku-batch'
@@ -13467,7 +14680,68 @@ async function run() {
     runResumeBranchViolations.push('run-resume:conversation-branch-identity-not-wired-end-to-end');
   }
 
+  const stagedFilePromotionAudit = await exerciseStagedFilePromotion();
   const checks = [
+    {
+      id: 'sku-staged-export-transaction-supports-safe-rerun',
+      description: 'SKU 全部 JPG/PSB 以同卷单事务替换旧交付；目标基线漂移零写入，完整回滚恢复全组，失败恢复保留可映射清单。',
+      violations: [
+        ...(!stagedFilePromotionAudit.overwriteCommitted
+          ? ['sku-staged-promotion:existing-output-was-not-atomically-replaced']
+          : []),
+        ...(!stagedFilePromotionAudit.escapedPathRejected
+          ? ['sku-staged-promotion:path-escape-was-not-rejected']
+          : []),
+        ...(!stagedFilePromotionAudit.relativePathsRejected
+          ? ['sku-staged-promotion:relative-path-was-not-rejected']
+          : []),
+        ...(!stagedFilePromotionAudit.destinationDriftRejected
+          ? ['sku-staged-promotion:destination-baseline-drift-was-overwritten']
+          : []),
+        ...(!stagedFilePromotionAudit.mainFrozenBaselineAuthoritative
+          ? ['sku-staged-promotion:renderer-could-replace-main-frozen-baseline']
+          : []),
+        ...(!stagedFilePromotionAudit.concurrentPromotionSingleOwner
+          ? ['sku-staged-promotion:same-token-concurrent-owner-was-not-exclusive']
+          : []),
+        ...(!stagedFilePromotionAudit.fullRollbackRestored
+          ? ['sku-staged-promotion:paired-set-was-not-fully-restored']
+          : []),
+        ...(!stagedFilePromotionAudit.freshProcessReconciliationFailClosed
+          ? ['sku-staged-promotion:crash-residue-reconciliation-was-not-hash-bound']
+          : []),
+        ...(!stagedFilePromotionAudit.backupMoveRacePreservesExternalFile
+          ? ['sku-staged-promotion:backup-move-race-lost-concurrent-user-file']
+          : []),
+        ...(!stagedFilePromotionAudit.rollbackRestoreNoReplace
+          ? ['sku-staged-promotion:rollback-restore-overwrote-concurrent-target']
+          : []),
+        ...(!stagedFilePromotionAudit.failedRollbackBackupPreserved
+          ? ['sku-staged-promotion:failed-rollback-backup-was-not-preserved']
+          : []),
+        ...(!stagedFilePromotionAudit.recoveryManifestMapped
+          ? ['sku-staged-promotion:recovery-backups-have-no-durable-mapping']
+          : []),
+        ...(!stagedFilePromotionAudit.rendererPreservesFailedRollbackStaging
+          ? ['sku-staged-promotion:renderer-cleanup-removed-recovery-backup']
+          : []),
+        ...(!stagedFilePromotionAudit.rendererPreservesUnknownTransactionState
+          ? ['sku-staged-promotion:unknown-write-state-cleaned-staging']
+          : []),
+        ...(!stagedFilePromotionAudit.rendererPreservesMismatchedSuccessReceipt
+          ? ['sku-staged-promotion:mismatched-success-receipt-cleaned-staging']
+          : []),
+        ...(!stagedFilePromotionAudit.cleanupTransportErrorsAreNormalized
+          ? ['sku-staged-promotion:cleanup-transport-error-escaped-finally']
+          : []),
+        ...(!stagedFilePromotionAudit.stagedRasterValidationStrict
+          ? ['sku-staged-promotion:raster-staging-validation-is-not-exact']
+          : []),
+        ...(stagedFilePromotionAudit.rollbackResidueCount !== 0
+          ? [`sku-staged-promotion:rollback-residue=${stagedFilePromotionAudit.rollbackResidueCount}`]
+          : [])
+      ]
+    },
     {
       id: 'skill-results-project-design-work-without-runtime-accounting',
       description: 'Skill 原始结果继续供 Runtime、续跑与诊断使用；设计模型只接收工作结果和实际问题，不接收 nextAction、OS、验收报告、执行轨迹或能力 allowlist。',
@@ -14066,12 +15340,14 @@ async function run() {
     },
     {
       id: 'delivery-and-scoped-edit-verification-cannot-be-shortcut',
-      description: '有声明交付物时原始 save 不能绕过 E2 receipt；receipt 后再写入必须使其失效；局部修改必须验证目标达成且范围外未受影响。',
+      description: '有声明交付物时原始 save 不能绕过 E2 receipt；单文档收据后续 save/写入、多文档收据后续内容 mutation 必须使其失效；局部修改必须验证目标达成且范围外未受影响。',
       violations: [
         ...(agentRuntimeText.includes('if (requiredOutputs.length === 0)')
           ? []
           : ['delivery:raw-save-can-bypass-declared-outputs']),
-        ...(agentRuntimeText.includes('const laterMutationExists = this.toolCallLog.slice(receiptIndex + 1)')
+        ...(agentRuntimeText.includes('const laterContentMutationExists = findLatestObservedPhotoshopMutationIndex(laterEntries) >= 0;')
+          && agentRuntimeText.includes("receipt.settlementScope === 'multi_document_task'")
+          && agentRuntimeText.includes('laterSaveExportExists || laterContentMutationExists')
           && agentRuntimeText.includes('if (laterMutationExists) continue;')
           ? []
           : ['delivery:post-receipt-write-does-not-invalidate-receipt']),

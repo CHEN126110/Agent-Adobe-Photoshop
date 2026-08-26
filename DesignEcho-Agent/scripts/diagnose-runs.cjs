@@ -45,6 +45,7 @@ const STOP_REASON_MEANING = {
     tool_preflight_blocked: { text: '工具预检拦截，无法继续', level: 'severe' },
     plan_execution_mismatch: { text: '计划与执行对不上被判停', level: 'severe' },
     provider_output_truncated: { text: '模型输出被截断', level: 'severe' },
+    provider_output_blocked: { text: '模型服务拦截了输出', level: 'severe' },
     empty_final_response: { text: '模型最终答复为空', level: 'severe' },
     error: { text: '运行异常终止', level: 'severe' },
     failed: { text: '运行失败', level: 'severe' }
@@ -984,9 +985,22 @@ function readRuntimeAccounting(record) {
  */
 function printPromptShapeSamples(record) {
     const accounting = readRuntimeAccounting(record);
+    if (accounting) {
+        console.log(`\n运行会计：模型 ${accounting.modelCallCount} 次 / ${accounting.modelDurationMs}ms；工具 ${accounting.toolCallCount} 次 / ${accounting.toolDurationMs}ms；usage 未上报 ${accounting.unreportedUsageCallCount} 次。`);
+        const recoveryAttempts = Number(accounting.providerOutputRecoveryAttemptCount || 0);
+        const recoverySuccesses = Number(accounting.providerOutputRecoverySuccessCount || 0);
+        const recoveryFailures = Number(accounting.providerOutputRecoveryFailureCount || 0);
+        if (recoveryAttempts > 0 || recoverySuccesses > 0 || recoveryFailures > 0) {
+            const failureCounts = accounting.providerOutputRecoveryFailureCounts || {};
+            console.log(
+                `Provider 输出恢复：请求 ${recoveryAttempts} 次，成功 ${recoverySuccesses} 次，失败 ${recoveryFailures} 次`
+                + `（长度 ${Number(failureCounts.max_tokens || 0)}，流不完整 ${Number(failureCounts.stream_incomplete || 0)}，`
+                + `内容拦截 ${Number(failureCounts.content_blocked || 0)}，请求错误 ${Number(failureCounts.request_error || 0)}）。`
+            );
+        }
+    }
     const samples = accounting?.promptShapeSamples;
     if (!Array.isArray(samples) || samples.length === 0) return;
-    console.log(`\n运行会计：模型 ${accounting.modelCallCount} 次 / ${accounting.modelDurationMs}ms；工具 ${accounting.toolCallCount} 次 / ${accounting.toolDurationMs}ms；usage 未上报 ${accounting.unreportedUsageCallCount} 次。`);
     console.log('\n提示体量（每次模型调用；字符数 / token）：');
     console.log('  #    阶段  系统提示   历史     工具schema  工具数  图  消息数   输入token  输出token   耗时');
     for (const sample of samples) {

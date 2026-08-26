@@ -3,19 +3,27 @@
   "rubricId": "sku-production-v1",
   "taskFamily": "sku",
   "scale": "0..1",
+  "scoreAnchorValues": { "poor": 0, "acceptable": 0.5, "strong": 0.75, "excellent": 1 },
   "dimensions": [
-    { "id": "sourceCardPreservation", "weight": 0.18 },
-    { "id": "combinationCorrectness", "weight": 0.22 },
-    { "id": "layoutConsistency", "weight": 0.14 },
-    { "id": "subjectScaleCrop", "weight": 0.12 },
-    { "id": "namingAndInventory", "weight": 0.14 },
-    { "id": "visualPolish", "weight": 0.1 },
-    { "id": "editability", "weight": 0.1 }
+    { "id": "sourceCardPreservation", "weight": 0.18, "description": "六张用户已完成单色卡是否被当作权威源卡保留，而非当空模板重做或被不可逆修改。", "scoreAnchors": { "poor": "源卡被重做、覆盖或内容改变。", "acceptable": "内容基本保留但缩放/清晰度有轻微漂移。", "strong": "源卡内容完整、清晰且可追溯。", "excellent": "在完全保真的同时建立可复用的智能对象/分组结构。" } },
+    { "id": "combinationCorrectness", "weight": 0.22, "description": "每个 2/3/4 双组合是否严格对应 GBK 配置和编号映射，顺序、颜色与重复数量均正确。", "scoreAnchors": { "poor": "任一组合颜色、数量或顺序错误。", "acceptable": "全部组合正确但验证记录不清。", "strong": "组合全部正确且可由清单逐项核对。", "excellent": "组合正确并具备清楚、可重复的生成与复核结构。" } },
+    { "id": "layoutConsistency", "weight": 0.14, "description": "同一模板家族中的间距、基线、对齐和视觉重量是否一致，不要求 Harness 写死具体坐标。", "scoreAnchors": { "poor": "卡片跳位、间距不一或视觉失衡。", "acceptable": "基本对齐但细节漂移。", "strong": "同族版式稳定、整齐。", "excellent": "一致性精确且不同双数之间保持自然比例与节奏。" } },
+    { "id": "subjectScaleCrop", "weight": 0.12, "description": "每张源卡植入模板后的缩放、完整性与清晰度是否合适；不得机械 cover 导致袜子关键部位被切掉。", "scoreAnchors": { "poor": "明显裁切、拉伸或主体大小失控。", "acceptable": "完整可见但个别卡大小不协调。", "strong": "各卡视觉重量一致且保持原比例。", "excellent": "尺度微调兼顾一致性与每张源图的自然外观。" } },
+    { "id": "namingAndInventory", "weight": 0.14, "description": "输出数量、目录、显示色名和文件名是否与配置清单完全一致，包括源文件“身肤”到业务名“深肤”的明确映射。", "scoreAnchors": { "poor": "缺图、多图、错名或覆盖。", "acceptable": "数量正确但命名/清单有轻微不一致。", "strong": "数量、路径、名称全部可核对。", "excellent": "交付清单与文件系统、PSD 结构一一对应且无歧义。" } },
+    { "id": "visualPolish", "weight": 0.1, "description": "在规格完全正确之后，整体留白、编号/说明、背景与细节是否达到用户既有 SKU 的专业整洁度。", "scoreAnchors": { "poor": "明显粗糙或像工程占位图。", "acceptable": "可用但细节普通。", "strong": "整洁、统一并达到既有生产标准。", "excellent": "精致且在不牺牲效率和一致性的前提下更易读。" } },
+    { "id": "editability", "weight": 0.1, "description": "模板、组合、源卡与文字是否按语义分组并可批量替换，最终 PSD/PSB 不依赖不可解释的扁平结果。", "scoreAnchors": { "poor": "不可编辑或源卡关系丢失。", "acceptable": "可编辑但结构重复、难维护。", "strong": "分组、命名和替换关系清楚。", "excellent": "结构可复用、可增删组合且另一位设计师可直接接手。" } }
   ],
   "decisionRule": {
     "passRequiresNoBlocker": true,
     "passMinimumOverall": 0.8,
-    "pairwiseTarget": "matches_user_production_standard"
+    "pairwiseTarget": "matches_user_production_standard",
+    "blockingConditions": [
+      "任一配置组合的颜色、数量或顺序错误",
+      "任一要求输出缺失、额外生成或文件名错误",
+      "用户已完成单色源卡被覆盖、重做或不可逆改变",
+      "关键商品部位被意外裁切、拉伸或严重失真",
+      "PSD/PSB 不可编辑或交付清单无法与文件一一对应"
+    ]
   },
   "boundaries": {
     "humanVerdictRequired": true,

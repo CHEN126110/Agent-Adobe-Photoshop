@@ -10,15 +10,20 @@ import {
     createRuntimeAccountingLedger,
     recordRuntimeModelCall,
     recordRuntimePerformanceUsage,
+    recordRuntimeProviderOutputRecoveryAttempt,
+    recordRuntimeProviderOutputRecoveryOutcome,
     recordRuntimeRecoveryAttempt,
     recordRuntimeToolCall,
     type RuntimeAccountingDigest,
     type RuntimeAccountingLedger,
-    type RuntimePerformanceUsage
+    type RuntimePerformanceUsage,
+    type RuntimeProviderOutputRecoveryFailureReason
 } from '../../../shared/agent-runtime-v5/runtime-accounting';
 import {
     recordRuntimeSessionModelCall,
     recordRuntimeSessionPerformanceUsage,
+    recordRuntimeSessionProviderOutputRecoveryAttempt,
+    recordRuntimeSessionProviderOutputRecoveryOutcome,
     recordRuntimeSessionRecoveryAttempt,
     recordRuntimeSessionToolCall,
     type RuntimeSession
@@ -131,6 +136,39 @@ export class ActiveRuntimeAccounting {
         }
         if (this.unboundLedger) {
             this.unboundLedger = recordRuntimeRecoveryAttempt(this.unboundLedger);
+        }
+        return undefined;
+    }
+
+    recordProviderOutputRecoveryAttempt(
+        runtimeSession: RuntimeSession | undefined
+    ): RuntimeSession | undefined {
+        if (runtimeSession) {
+            this.unboundLedger = undefined;
+            return recordRuntimeSessionProviderOutputRecoveryAttempt({ session: runtimeSession });
+        }
+        if (this.unboundLedger) {
+            this.unboundLedger = recordRuntimeProviderOutputRecoveryAttempt(this.unboundLedger);
+        }
+        return undefined;
+    }
+
+    recordProviderOutputRecoveryOutcome(
+        runtimeSession: RuntimeSession | undefined,
+        outcome: 'succeeded' | RuntimeProviderOutputRecoveryFailureReason
+    ): RuntimeSession | undefined {
+        if (runtimeSession) {
+            this.unboundLedger = undefined;
+            return recordRuntimeSessionProviderOutputRecoveryOutcome({
+                session: runtimeSession,
+                outcome
+            });
+        }
+        if (this.unboundLedger) {
+            this.unboundLedger = recordRuntimeProviderOutputRecoveryOutcome(
+                this.unboundLedger,
+                outcome
+            );
         }
         return undefined;
     }

@@ -382,7 +382,7 @@ export const TOOL_DEPENDENCIES: Record<string, ToolDependency> = {
     prepareSkuRetouchAssets: {
         requires: [],
         optional: ['analyzeProjectContactSheetOverview', 'analyzeAssetContent'],
-        description: '为明确的一批纯底 SKU 素材生成形态、原影和中性灰精修资产；内部自行做适用性分类'
+        description: '为明确的一批纯底 SKU 素材生成保持真实版型的透明主体等比统一尺度资产；内部自行做适用性分类'
     },
     
     getProjectStructure: {

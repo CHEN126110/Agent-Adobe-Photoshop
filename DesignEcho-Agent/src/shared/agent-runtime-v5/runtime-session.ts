@@ -61,12 +61,15 @@ import {
     readRuntimePerformanceUsage,
     recordRuntimeModelCall,
     recordRuntimePerformanceUsage,
+    recordRuntimeProviderOutputRecoveryAttempt,
+    recordRuntimeProviderOutputRecoveryOutcome,
     recordRuntimeRecoveryAttempt,
     recordRuntimeReflexion,
     recordRuntimeToolCall,
     type RuntimeAccountingDigest,
     type RuntimeAccountingLedger,
-    type RuntimePerformanceUsage
+    type RuntimePerformanceUsage,
+    type RuntimeProviderOutputRecoveryFailureReason
 } from './runtime-accounting';
 
 export const RUNTIME_SESSION_IDENTITY_VERSION = 'runtime-session-identity/v0' as const;
@@ -2683,6 +2686,34 @@ export function recordRuntimeSessionRecoveryAttempt(input: {
     return {
         ...input.session,
         accounting: recordRuntimeRecoveryAttempt(input.session.accounting, input.now)
+    };
+}
+
+export function recordRuntimeSessionProviderOutputRecoveryAttempt(input: {
+    session: RuntimeSession;
+    now?: string;
+}): RuntimeSession {
+    return {
+        ...input.session,
+        accounting: recordRuntimeProviderOutputRecoveryAttempt(
+            input.session.accounting,
+            input.now
+        )
+    };
+}
+
+export function recordRuntimeSessionProviderOutputRecoveryOutcome(input: {
+    session: RuntimeSession;
+    outcome: 'succeeded' | RuntimeProviderOutputRecoveryFailureReason;
+    now?: string;
+}): RuntimeSession {
+    return {
+        ...input.session,
+        accounting: recordRuntimeProviderOutputRecoveryOutcome(
+            input.session.accounting,
+            input.outcome,
+            input.now
+        )
     };
 }
 

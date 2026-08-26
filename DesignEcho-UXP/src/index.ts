@@ -2976,7 +2976,8 @@ async function handleManualSkuColorCardPickOutputFolder(): Promise<void> {
 
 let manualSkuColorCardInFlight = false;
 let manualSkuColorCardAvailabilityPromise: Promise<boolean> | null = null;
-const MANUAL_SKU_COLOR_CARD_BRIDGE_VERSION = 'manual-sku-color-card-bridge/v1';
+const MANUAL_SKU_COLOR_CARD_BRIDGE_VERSION = 'manual-sku-color-card-bridge/v2';
+const MANUAL_SKU_COLOR_CARD_RESULT_VERSION = 'manual-sku-color-card-result/v2';
 const MANUAL_SKU_COLOR_CARD_OUTDATED_MESSAGE = '当前运行的 DesignEcho Agent 尚未加载色卡制作后端。请完全退出并重新启动 DesignEcho Agent；仅刷新 UXP 面板无效。';
 
 function manualSkuColorCardErrorMessage(error: any): string {
@@ -3133,6 +3134,20 @@ async function handleManualSkuColorCardExecute(payload: any): Promise<void> {
             errorCode: 'execution_failed',
             error: '统一色卡执行器没有返回结果。'
         };
+        if (normalizedResult?.version !== MANUAL_SKU_COLOR_CARD_RESULT_VERSION) {
+            sendToWebView('manualSkuColorCardAvailability', {
+                available: false,
+                state: 'unsupported',
+                reason: MANUAL_SKU_COLOR_CARD_OUTDATED_MESSAGE
+            });
+            sendToWebView('manualSkuColorCardResult', {
+                version: MANUAL_SKU_COLOR_CARD_RESULT_VERSION,
+                success: false,
+                errorCode: 'bridge_unavailable',
+                error: MANUAL_SKU_COLOR_CARD_OUTDATED_MESSAGE
+            });
+            return;
+        }
         if (normalizedResult?.errorCode === 'bridge_unavailable') {
             sendToWebView('manualSkuColorCardAvailability', {
                 available: false,

@@ -28,6 +28,28 @@ const {
     buildSkuColorCardPlan
 } = require(path.join(root, 'src/shared/sku-color-card-skill.ts'));
 const {
+    buildSkuRetouchUniformScaleMetrics
+} = require(path.join(root, 'src/shared/sku-retouch-contract.ts'));
+const {
+    buildRuntimeDeliveryReceipt
+} = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-delivery-receipt.ts'));
+const {
+    buildSkuExpectedExportInventory
+} = require(path.join(root, 'src/shared/sku-export-readback.ts'));
+const {
+    collectRuntimeFinalArtifactPaths
+} = require(path.join(root, 'src/shared/runtime-final-artifact-paths.ts'));
+const {
+    buildSkuEditableDeliveryReadback,
+    buildSkuRuntimeDeliveryArtifacts,
+    finalizeSkuEditableDeliveryReceipts,
+    supportsSkuPairedEditableDelivery,
+    validateSkuEditableDeliveryResult
+} = require(path.join(
+    root,
+    'src/renderer/services/skill-executors/sku-editable-delivery.service.ts'
+));
+const {
     bindSkuColorCardRuntimeSelection,
     createSkuColorCardRuntimeSelectionReceipt
 } = require(path.join(root, 'src/shared/sku-color-card-runtime-selection.ts'));
@@ -37,6 +59,44 @@ const {
     formatAgentProcessEventContent,
     isVisibleAgentProcessEvent
 } = require(path.join(root, 'src/renderer/services/agent-visible-feedback.ts'));
+const {
+    canExecuteProviderStreamToolCalls,
+    isProviderStreamOutputBlocked,
+    isProviderStreamOutputIncomplete,
+    mergeProviderFinishReason,
+    resolveCanonicalProviderStopReason,
+    resolveProviderStreamStopReason
+} = require(path.join(root, 'src/shared/provider-stream-completion.ts'));
+const {
+    parseDsmlToolCallBatch
+} = require(path.join(root, 'src/shared/model-tool-call-markup.ts'));
+const {
+    parseToolCallsFromText
+} = require(path.join(root, 'src/main/services/provider-adapters/prompt-tool-parser.ts'));
+const { OpenAIAdapter } = require(path.join(root, 'src/main/services/provider-adapters/openai-adapter.ts'));
+const { AnthropicAdapter } = require(path.join(root, 'src/main/services/provider-adapters/anthropic-adapter.ts'));
+const { GeminiAdapter } = require(path.join(root, 'src/main/services/provider-adapters/gemini-adapter.ts'));
+const { OllamaAdapter } = require(path.join(root, 'src/main/services/provider-adapters/ollama-adapter.ts'));
+const { BaseStreamAdapter } = require(path.join(root, 'src/main/services/stream-adapter.ts'));
+const { ProviderSseDecoder } = require(path.join(root, 'src/main/services/provider-sse-decoder.ts'));
+const {
+    buildRuntimeAccountingDigest,
+    createRuntimeAccountingLedger,
+    measureRuntimePromptShape,
+    recordRuntimeProviderOutputRecoveryAttempt,
+    recordRuntimeProviderOutputRecoveryOutcome,
+    validatePersistedRuntimeAccountingDigest,
+    validateRuntimeAccountingDigest
+} = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-accounting.ts'));
+const {
+    buildProviderOutputContinuationPrompt,
+    buildProviderOutputFailurePresentation,
+    ProviderOutputRecoveryController,
+    readCompleteProviderTextContent,
+    resolveProviderOutputRecoveryOutcome,
+    settleProviderToolResponse
+} = require(path.join(root, 'src/renderer/services/agent-runtime/provider-output-recovery.ts'));
+const { StringDecoder } = require('string_decoder');
 
 async function main() {
 const failures = [];
@@ -60,6 +120,9 @@ const composeExecutor = source('src/renderer/services/design-workshop/compose-de
 const scalingPolicy = source('src/shared/design-smart-scaling-policy.ts');
 const mainImagePlacement = source('src/shared/main-image-variant-placement-strategy.ts');
 const skillDeclarations = source('src/shared/skills/skill-declarations.ts');
+const mainImageSkillPlaybook = source('skills/main-image-design/SKILL.md');
+const detailPageSkillPlaybook = source('skills/detail-page-design/SKILL.md');
+const skuProductionSkillPlaybook = source('skills/sku-production/SKILL.md');
 const referenceStyleRecipes = source('src/shared/reference-replication-style-recipes.ts');
 const referenceApply = source('src/renderer/services/skill-executors/layout-replication-apply.ts');
 const composeSpec = source('src/shared/design-workshop/compose-design-spec.ts');
@@ -75,6 +138,7 @@ const autonomousExecutor = source('src/renderer/services/skill-executors/autonom
 const designAgentEngineSource = source('src/renderer/services/design-agent/engine.ts');
 const skillRoutingSource = source('src/shared/skill-routing.ts');
 const agentRuntime = source('src/renderer/services/agent-runtime/agent.ts');
+const providerOutputRecoverySource = source('src/renderer/services/agent-runtime/provider-output-recovery.ts');
 const agentMessageContext = source('src/renderer/services/agent-runtime/message-context.ts');
 const mcpHostClient = source('src/renderer/services/mcp-host.client.ts');
 const preloadSource = source('src/main/preload.ts');
@@ -84,6 +148,10 @@ const detailPagePlanUtils = source('src/renderer/services/skill-executors/detail
 const uxpDetailPageFiller = source('../DesignEcho-UXP/src/tools/layout/detail-page-filler.ts');
 const mainImageProjectStyleStrategy = source('src/shared/main-image-project-style-strategy.ts');
 const skuTemplateManifest = source('src/shared/agent-runtime-v5/manifests/sku-template.manifest.ts');
+const skuColorCardManifestSource = source('src/shared/agent-runtime-v5/manifests/sku-color-card.manifest.ts');
+const skuColorCardRetouchStrategySource = source('src/shared/sku-color-card-retouch-strategy.ts');
+const skuVisualReviewIntakeSource = source('src/shared/sku-visual-review-intake.ts');
+const toolDependenciesSource = source('src/shared/config/tool-dependencies.ts');
 const skuTemplateDesignLoop = source('src/shared/sku-template-design-loop.ts');
 const modelProviderFailureBoundary = source('src/renderer/services/agent-runtime/model-provider-failure-boundary.ts');
 const modelProviderTransportPolicy = source('src/shared/model-provider-transport-policy.ts');
@@ -104,17 +172,36 @@ const skuColorCardExecutorSource = source('src/renderer/services/skill-executors
 const skuColorCardContractSource = source('src/shared/sku-color-card-skill.ts');
 const skuCardSourcePreparationSource = source('src/shared/sku-card-source-preparation-plan.ts');
 const manualSkuColorCardBridgeSource = source('src/renderer/services/manual-sku-color-card-bridge.ts');
+const manualSkuColorCardContractSource = source('src/shared/manual-sku-color-card.ts');
+const manualSkuColorCardHandlerSource = source('src/main/uxp-handlers/manual-sku-color-card-handlers.ts');
+const uxpIndexSource = source('../DesignEcho-UXP/src/index.ts');
 const skillToolsSource = source('src/renderer/services/skill-executors/skill-tools.ts');
 const chatPanelSource = source('src/renderer/components/ChatPanel.tsx');
+const streamChatSource = source('src/renderer/services/stream-chat.service.ts');
+const agentToolStreamSource = source('src/renderer/services/agent-tool-stream.service.ts');
+const streamAdapterSource = source('src/main/services/stream-adapter.ts');
+const modelServiceSource = source('src/main/services/model-service.ts');
+const skuRetouchServiceSource = source('src/main/services/sku-retouch-service.ts');
+const skuRetouchContractSource = source('src/shared/sku-retouch-contract.ts');
+const claudeSubscriptionSource = source('src/main/services/claude-subscription-service.ts');
+const agentRunRecordSource = source('src/shared/agent-run-record.ts');
 
 const skuSourcePreparationSlice = skuBatchExecutorSource.slice(
     skuBatchExecutorSource.indexOf('const executeSkuCardSourcePreparationPlan = async'),
     skuBatchExecutorSource.indexOf('const executeSkuCardTemplatePreparationPlan = async')
 );
+const skuRetouchToolSchemaSlice = toolSchemas.slice(
+    toolSchemas.indexOf("name: 'prepareSkuRetouchAssets'"),
+    toolSchemas.indexOf("name: 'generateImage'", toolSchemas.indexOf("name: 'prepareSkuRetouchAssets'"))
+);
 
 const interactionOwnerResolverSource = autonomousExecutor.slice(
     autonomousExecutor.indexOf('function resolveProviderOwnedInteractionSkillIds('),
     autonomousExecutor.indexOf('function buildWorkflowMenuLines(')
+);
+const providerTruncationRecoveryBranchSource = agentRuntime.slice(
+    agentRuntime.indexOf('if (isProviderOutputTruncated(response.stopReason))'),
+    agentRuntime.indexOf('if (isProviderOutputBlocked(response.stopReason))')
 );
 check(
     '普通文字推荐不能在模型理解前绑定 Runtime Skill 身份',
@@ -134,21 +221,34 @@ check(
     !agentRuntime.includes('回复未完整，继续整理')
         && agentRuntime.includes("title: 'Provider 输出截断，后台续接'")
         && agentRuntime.includes("audience: 'debug'")
+        && !providerTruncationRecoveryBranchSource.includes('createAssistantHistoryMessage(')
         && !agentRuntime.includes('如 sourceDirectory')
         && agentRuntime.includes('这次没有拿到完整结果')
 );
 const providerTruncationDebugEvent = {
     kind: 'warning',
     title: 'Provider 输出截断，后台续接',
-    detail: '保留已完成内容并请求有界续接；残缺 Tool 调用不会执行。',
+    detail: '丢弃本次未提交输出并请求有界续接；残缺 Tool 调用不会执行。',
     status: 'running',
     audience: 'debug',
     issue: 'provider_output_truncated'
 };
-const providerTruncationResultSlice = agentRuntime.slice(
-    agentRuntime.indexOf('private async buildProviderOutputTruncatedResult('),
-    agentRuntime.indexOf('private async requestForcedFinalResponse(')
-);
+const providerTruncationWithMutation = buildProviderOutputFailurePresentation({
+    kind: 'truncated',
+    phase: 'agent_turn',
+    recoveryAttempts: 2,
+    recoveryAttemptsInRun: 4,
+    hasPhotoshopMutation: true,
+    taskProgressPreserved: true
+});
+const providerTruncationWithoutMutation = buildProviderOutputFailurePresentation({
+    kind: 'truncated',
+    phase: 'agent_turn',
+    recoveryAttempts: 2,
+    recoveryAttemptsInRun: 4,
+    hasPhotoshopMutation: false,
+    taskProgressPreserved: false
+});
 const guardedProviderProcessText = formatAgentProcessEventContent({
     ...providerTruncationDebugEvent,
     audience: 'user',
@@ -163,20 +263,1235 @@ check(
         && buildVisibleAgentActivityFromProgress('本轮消耗 4096 token，后台续接') === null
         && guardedProviderProcessText === '当前处理条件还不完整，暂时不能确认画面结果。'
         && !/token|轮次|Provider|Harness|后台续接/u.test(guardedProviderProcessText)
-        && providerTruncationResultSlice.includes('const hasPhotoshopMutation = this.hasObservedTaskMutation()')
-        && providerTruncationResultSlice.includes('photoshopMutationPreserved: hasPhotoshopMutation')
-        && providerTruncationResultSlice.includes('前面的 Photoshop 改动已保留')
-        && providerTruncationResultSlice.includes('尚未修改 Photoshop 画面')
-        && providerTruncationResultSlice.includes('success: false')
-        && providerTruncationResultSlice.includes("stopReason: 'provider_output_truncated'")
-        && !/token|轮次|Provider|Harness|后台续接/u.test(
-            '这次没有拿到完整结果。前面的 Photoshop 改动已保留，但任务还没有完成。为避免用残缺内容继续修改画面，我已停止本轮。'
-        )
+        && providerTruncationWithMutation.message.includes('前面的 Photoshop 改动已保留')
+        && providerTruncationWithoutMutation.message.includes('尚未修改 Photoshop 画面')
+        && providerTruncationWithMutation.stopReason === 'provider_output_truncated'
+        && !/token|轮次|Provider|Harness|后台续接/u.test(providerTruncationWithMutation.message)
         && chatPanelSource.includes('const activity = buildVisibleAgentActivityFromStepEvent(event)')
         && chatPanelSource.includes('if (event?.title && isVisibleAgentProcessEvent(event))')
         && chatPanelSource.includes('buildVisibleAgentActivityFromProgress(message, current) || current')
         && chatPanelSource.includes('const resultVisibleMessage = resolvedVisibleResult.content')
         && chatPanelSource.includes('const formattedFailureContent = formatFailureContent(')
+);
+const plainTextContinuationPrompt = buildProviderOutputContinuationPrompt({
+    truncatedToolNames: [],
+    requiresRealAction: false
+});
+check(
+    '纯文本截断恢复重新生成完整终稿而不是只交付续写后半段',
+    plainTextContinuationPrompt.includes('完整、精简、可独立阅读的最终回答')
+        && plainTextContinuationPrompt.includes('不要只续写后半段')
+        && !plainTextContinuationPrompt.includes('请直接补全当前回复')
+        && !plainTextContinuationPrompt.includes('不要重复已经说过的内容，请继续完成当前判断')
+);
+check(
+    'Provider 终态缺失、长度截断和内容拦截不会冒充完整回复或可执行 Tool',
+    resolveProviderStreamStopReason({ finishReason: 'stop' }) === 'end_turn'
+        && resolveProviderStreamStopReason({ finishReason: 'tool_calls', hasToolCalls: true }) === 'tool_use'
+        && resolveProviderStreamStopReason({ finishReason: 'tool_calls', hasToolCalls: false }) === 'stream_incomplete'
+        && resolveProviderStreamStopReason({ finishReason: 'length', hasToolCalls: true }) === 'max_tokens'
+        && resolveProviderStreamStopReason({ finishReason: 'MAX_TOKENS' }) === 'max_tokens'
+        && resolveProviderStreamStopReason({ finishReason: 'SAFETY' }) === 'content_blocked'
+        && resolveProviderStreamStopReason({ finishReason: undefined, hasToolCalls: true }) === 'stream_incomplete'
+        && resolveProviderStreamStopReason({ finishReason: 'stop', transportComplete: true }) === 'end_turn'
+        && resolveProviderStreamStopReason({ finishReason: 'stop', transportComplete: false }) === 'stream_incomplete'
+        && resolveProviderStreamStopReason({ finishReason: 'length', transportComplete: true }) === 'max_tokens'
+        && resolveProviderStreamStopReason({ finishReason: 'length', transportComplete: false }) === 'stream_incomplete'
+        && resolveProviderStreamStopReason({ finishReason: undefined, transportComplete: true }) === 'stream_incomplete'
+        && isProviderStreamOutputIncomplete('stream_incomplete') === true
+        && isProviderStreamOutputBlocked('content_blocked') === true
+        && canExecuteProviderStreamToolCalls('tool_use') === true
+        && canExecuteProviderStreamToolCalls('max_tokens') === false
+        && canExecuteProviderStreamToolCalls('stream_incomplete') === false
+        && ['end_turn', 'tool_use', 'max_tokens', 'stream_incomplete', 'content_blocked']
+            .every((reason) => resolveCanonicalProviderStopReason(reason) === reason)
+);
+const conflictingFinishReason = mergeProviderFinishReason('length', 'stop');
+const repeatedFinishReason = mergeProviderFinishReason('tool_calls', 'tool_calls');
+const validSettledToolResponse = settleProviderToolResponse({
+    stopReason: 'tool_use',
+    toolCalls: [{ id: 'call-1', name: 'saveDocument', arguments: {} }]
+});
+const missingToolSettledResponse = settleProviderToolResponse({
+    stopReason: 'tool_use',
+    toolCalls: []
+});
+const unexpectedToolSettledResponse = settleProviderToolResponse({
+    stopReason: 'end_turn',
+    toolCalls: [{ id: 'call-2', name: 'saveDocument', arguments: {} }]
+});
+const duplicateToolIdSettledResponse = settleProviderToolResponse({
+    stopReason: 'tool_use',
+    toolCalls: [
+        { id: 'duplicate', name: 'saveDocument', arguments: {} },
+        { id: 'duplicate', name: 'getDocumentInfo', arguments: {} }
+    ]
+});
+check(
+    '冲突 finish reason 与 stopReason/ToolCall 协议矛盾统一 fail closed',
+    conflictingFinishReason.finishReason === 'length'
+        && conflictingFinishReason.conflict === true
+        && repeatedFinishReason.finishReason === 'tool_calls'
+        && repeatedFinishReason.conflict === false
+        && validSettledToolResponse.stopReason === 'tool_use'
+        && validSettledToolResponse.toolCalls.length === 1
+        && missingToolSettledResponse.stopReason === 'stream_incomplete'
+        && missingToolSettledResponse.toolCalls.length === 0
+        && unexpectedToolSettledResponse.stopReason === 'stream_incomplete'
+        && unexpectedToolSettledResponse.toolCalls.length === 0
+        && duplicateToolIdSettledResponse.stopReason === 'stream_incomplete'
+        && duplicateToolIdSettledResponse.toolCalls.length === 0
+);
+const completeAuxiliaryText = readCompleteProviderTextContent({
+    stopReason: 'stop',
+    content: '完整正文。',
+    toolCalls: []
+});
+const emptyCompleteAuxiliaryText = readCompleteProviderTextContent({
+    stopReason: 'end_turn',
+    content: '',
+    toolCalls: []
+});
+const rejectedAuxiliaryTexts = [
+    readCompleteProviderTextContent({ stopReason: 'max_tokens', content: '半句话' }),
+    readCompleteProviderTextContent({ stopReason: 'content_blocked', content: '不可消费' }),
+    readCompleteProviderTextContent({ content: '缺少终态' }),
+    readCompleteProviderTextContent({
+        stopReason: 'end_turn',
+        content: '与工具调用冲突',
+        toolCalls: [{ id: 'call-3', name: 'saveDocument', arguments: {} }]
+    }),
+    readCompleteProviderTextContent({
+        stopReason: 'end_turn',
+        content: '带残缺工具名',
+        incompleteToolCallNames: ['saveDocument']
+    }),
+    readCompleteProviderTextContent({
+        stopReason: 'end_turn',
+        content: '冲突终态',
+        terminalConflict: true
+    }),
+    readCompleteProviderTextContent({
+        stopReason: 'end_turn',
+        content: '传输未完成',
+        transportComplete: false
+    })
+];
+check(
+    '辅助模型正文只在无 Tool 的完整自然终态后可消费',
+    completeAuxiliaryText.complete === true
+        && completeAuxiliaryText.content === '完整正文。'
+        && completeAuxiliaryText.stopReason === 'end_turn'
+        && emptyCompleteAuxiliaryText.complete === true
+        && emptyCompleteAuxiliaryText.content === ''
+        && rejectedAuxiliaryTexts.every((result) => (
+            result.complete === false
+            && result.content === ''
+        ))
+);
+check(
+    '初始图片、视觉批次、强制收尾、no-tool replan 与两类总结共用完整终态 reader',
+    (agentRuntime.match(/readCompleteProviderTextContent\(/g) || []).length >= 7
+        && !agentRuntime.includes("const observation = String(response?.content || '').trim()")
+        && !agentRuntime.includes("const judgment = String(expertResponse?.content || '').trim()")
+        && agentRuntime.includes('if (!terminalContent.complete)')
+        && agentRuntime.includes("throw new Error('视觉评审模型没有返回可消费的完整终态')")
+);
+check(
+    'Provider 恢复结果按完整、截断、拦截和未知终态稳定归类',
+    resolveProviderOutputRecoveryOutcome('end_turn') === 'succeeded'
+        && resolveProviderOutputRecoveryOutcome('tool_use') === 'succeeded'
+        && resolveProviderOutputRecoveryOutcome('length') === 'max_tokens'
+        && resolveProviderOutputRecoveryOutcome('max_tokens') === 'max_tokens'
+        && resolveProviderOutputRecoveryOutcome('content_blocked') === 'content_blocked'
+        && resolveProviderOutputRecoveryOutcome(undefined) === 'stream_incomplete'
+        && resolveProviderOutputRecoveryOutcome('future_unknown_reason') === 'stream_incomplete'
+);
+const providerRecoveryController = new ProviderOutputRecoveryController();
+providerRecoveryController.schedule([{ name: 'first' }]);
+const recoveredToolSnapshot = providerRecoveryController.consumePendingTools();
+recoveredToolSnapshot[0].name = 'mutated-outside';
+providerRecoveryController.schedule([{ name: 'second' }]);
+const exhaustedConsecutiveRecovery = providerRecoveryController.canSchedule() === false;
+providerRecoveryController.markComplete();
+providerRecoveryController.schedule([{ name: 'third' }]);
+providerRecoveryController.markComplete();
+providerRecoveryController.schedule([{ name: 'fourth' }]);
+providerRecoveryController.markComplete();
+check(
+    '未结算正文与 reasoning delta 不持久化，Provider 恢复按连续 2 次、整轮 4 次限额并隔离工具快照',
+    agentRuntime.includes('onContentDelta: () => {}')
+        && agentRuntime.includes('onThinkingDelta: () => {}')
+        && !agentRuntime.includes("this.emitVisibleReasoning(fullThinking, { source: 'provider_thinking_delta' })")
+        && !agentRuntime.includes("this.emitVisibleReasoning(fullContent, { source: 'model_visible_reasoning_delta' })")
+        && exhaustedConsecutiveRecovery === true
+        && providerRecoveryController.recoveryAttempts === 0
+        && providerRecoveryController.recoveryAttemptsInRun === 4
+        && providerRecoveryController.canSchedule() === false
+        && recoveredToolSnapshot[0].name === 'mutated-outside'
+        && providerOutputRecoverySource.includes('tools.map((tool) => ({ ...tool }))')
+);
+check(
+    '交互重入 lease 只在完整 Provider 终态后提交，截断或拦截不会提前消费',
+    agentRuntime.indexOf('interactiveReentryState?.adoptAfterSuccessfulModelResponse()')
+        > agentRuntime.indexOf('this.providerOutputRecovery.markComplete()')
+        && agentRuntime.indexOf('this.providerOutputRecovery.markComplete()')
+            > agentRuntime.indexOf('if (isProviderOutputBlocked(response.stopReason))')
+);
+check(
+    '主图、详情页与 SKU Skill 从用户设计目录学习交付习惯，但不把目录多数票写进 Harness 决策',
+    [mainImageSkillPlaybook, detailPageSkillPlaybook, skuProductionSkillPlaybook].every((playbook) => (
+        playbook.includes('用户当前')
+        && playbook.includes('updateDesignProjectState')
+        && playbook.includes('delivery')
+        && playbook.includes('Harness')
+    ))
+        && mainImageSkillPlaybook.includes('既有设计成品')
+        && detailPageSkillPlaybook.includes('既有详情页成品')
+        && skuProductionSkillPlaybook.includes('交付惯例候选')
+        && skuProductionSkillPlaybook.includes('不自行从目录多数票决定名称')
+        && !agentRuntime.includes('交付惯例候选')
+        && !autonomousExecutor.includes('交付惯例候选')
+);
+const openAiUnknownTerminal = new OpenAIAdapter('deepseek').parseResponse({
+    choices: [{
+        finish_reason: null,
+        message: {
+            content: '这句话有句号，但 Provider 没有给出终态。',
+            tool_calls: [{ id: 'partial-call', function: { name: 'saveDocument', arguments: '{}' } }]
+        }
+    }]
+});
+const validDsmlBatch = parseDsmlToolCallBatch(
+    '<｜｜DSML｜｜tool_calls>'
+    + '<｜｜DSML｜｜invoke name="saveDocument">'
+    + '<｜｜DSML｜｜parameter name="path" string="true">output.psd</｜｜DSML｜｜parameter>'
+    + '</｜｜DSML｜｜invoke>'
+    + '</｜｜DSML｜｜tool_calls>'
+);
+const mixedMalformedDsmlBatch = parseDsmlToolCallBatch(
+    '<｜｜DSML｜｜tool_calls>'
+    + '<｜｜DSML｜｜invoke name="saveDocument"></｜｜DSML｜｜invoke>'
+    + '<｜｜DSML｜｜invoke><｜｜DSML｜｜parameter name="path">"x"</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke>'
+    + '</｜｜DSML｜｜tool_calls>'
+);
+const partialDsmlBatch = parseDsmlToolCallBatch(
+    '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="saveDocument">'
+);
+const validPromptToolBatch = parseToolCallsFromText(
+    '<tool_call>{"name":"saveDocument","arguments":{"path":"output.psd"}}</tool_call>'
+);
+const mixedPartialPromptToolBatch = parseToolCallsFromText(
+    '<tool_call>{"name":"saveDocument","arguments":{}}</tool_call>'
+    + '<tool_call>{"name":"getDocumentInfo","arguments":{}}'
+);
+const whitespacePromptMarkerBatch = parseToolCallsFromText(
+    '<tool_call >{"name":"saveDocument","arguments":{}}</tool_call>'
+);
+check(
+    '文本 Tool 协议按整批解析：完整 DSML/XML 可用，混合残缺或变体一律零执行',
+    validDsmlBatch.valid === true
+        && validDsmlBatch.candidates.length === 1
+        && validDsmlBatch.candidates[0].name === 'saveDocument'
+        && validDsmlBatch.candidates[0].arguments.path === 'output.psd'
+        && mixedMalformedDsmlBatch.valid === false
+        && mixedMalformedDsmlBatch.candidates.length === 0
+        && partialDsmlBatch.valid === false
+        && partialDsmlBatch.candidates.length === 0
+        && validPromptToolBatch.valid === true
+        && validPromptToolBatch.toolCalls.length === 1
+        && mixedPartialPromptToolBatch.valid === false
+        && mixedPartialPromptToolBatch.toolCalls.length === 0
+        && whitespacePromptMarkerBatch.valid === false
+        && whitespacePromptMarkerBatch.toolCalls.length === 0
+);
+const anthropicLengthTerminal = new AnthropicAdapter().parseResponse({
+    stop_reason: 'max_tokens',
+    content: [{ type: 'tool_use', id: 'partial-call', name: 'saveDocument', input: {} }]
+});
+const geminiSafetyTerminal = new GeminiAdapter().parseResponse({
+    candidates: [{
+        finishReason: 'SAFETY',
+        content: { parts: [{ functionCall: { name: 'saveDocument', args: {} } }] }
+    }]
+});
+const ollamaLengthTerminal = new OllamaAdapter('qwen3').parseResponse({
+    done: true,
+    done_reason: 'length',
+    message: { content: '看似完整。', tool_calls: [{ function: { name: 'saveDocument', arguments: {} } }] }
+});
+const ollamaFalseDoneTerminal = new OllamaAdapter('qwen3').parseResponse({
+    done: false,
+    done_reason: 'stop',
+    message: { content: '', tool_calls: [{ function: { name: 'saveDocument', arguments: {} } }] }
+});
+const openAiMissingChoice = new OpenAIAdapter('openai').parseResponse({ choices: [] });
+const openAiMalformedToolArguments = new OpenAIAdapter('openai').parseResponse({
+    choices: [{
+        finish_reason: 'tool_calls',
+        message: {
+            content: '',
+            tool_calls: [{
+                id: 'malformed-call',
+                function: { name: 'saveDocument', arguments: '{"path":' }
+            }]
+        }
+    }]
+});
+const geminiMissingCandidateBlocked = new GeminiAdapter().parseResponse({
+    candidates: [],
+    promptFeedback: { blockReason: 'SAFETY' }
+});
+const openAiRefusalTerminal = new OpenAIAdapter('openai').parseResponse({
+    choices: [{
+        finish_reason: 'stop',
+        message: { content: null, refusal: 'blocked by policy' }
+    }],
+    usage: { prompt_tokens: 11, completion_tokens: 3 }
+});
+check(
+    '各 Provider 非完整终态优先隔离残缺 Tool，不能被句号或已解析参数升级为成功',
+    openAiUnknownTerminal.stopReason === 'stream_incomplete'
+        && openAiUnknownTerminal.toolCalls.length === 0
+        && openAiUnknownTerminal.incompleteToolCallNames[0] === 'saveDocument'
+        && anthropicLengthTerminal.stopReason === 'max_tokens'
+        && anthropicLengthTerminal.toolCalls.length === 0
+        && geminiSafetyTerminal.stopReason === 'content_blocked'
+        && geminiSafetyTerminal.toolCalls.length === 0
+        && ollamaLengthTerminal.stopReason === 'max_tokens'
+        && ollamaLengthTerminal.toolCalls.length === 0
+        && ollamaLengthTerminal.incompleteToolCallNames[0] === 'saveDocument'
+        && ollamaFalseDoneTerminal.stopReason === 'stream_incomplete'
+        && ollamaFalseDoneTerminal.toolCalls.length === 0
+        && openAiMissingChoice.stopReason === 'stream_incomplete'
+        && openAiMissingChoice.toolCalls.length === 0
+        && openAiMalformedToolArguments.stopReason === 'stream_incomplete'
+        && openAiMalformedToolArguments.toolCalls.length === 0
+        && geminiMissingCandidateBlocked.stopReason === 'content_blocked'
+        && geminiMissingCandidateBlocked.toolCalls.length === 0
+        && openAiRefusalTerminal.stopReason === 'content_blocked'
+        && openAiRefusalTerminal.toolCalls.length === 0
+        && openAiRefusalTerminal.usage.inputTokens === 11
+        && openAiRefusalTerminal.usage.outputTokens === 3
+        && agentRuntime.includes('(response.incompleteToolCallNames || [])')
+        && agentRuntime.includes('.filter((name) => visibleToolNames.has(name))')
+);
+let providerRecoveryLedger = recordRuntimeProviderOutputRecoveryAttempt(
+    createRuntimeAccountingLedger('2026-08-26T00:00:00.000Z'),
+    '2026-08-26T00:00:01.000Z'
+);
+providerRecoveryLedger = recordRuntimeProviderOutputRecoveryOutcome(
+    providerRecoveryLedger,
+    'succeeded',
+    '2026-08-26T00:00:02.000Z'
+);
+providerRecoveryLedger = recordRuntimeProviderOutputRecoveryAttempt(
+    providerRecoveryLedger,
+    '2026-08-26T00:00:03.000Z'
+);
+providerRecoveryLedger = recordRuntimeProviderOutputRecoveryOutcome(
+    providerRecoveryLedger,
+    'stream_incomplete',
+    '2026-08-26T00:00:04.000Z'
+);
+const providerRecoveryDigest = buildRuntimeAccountingDigest({
+    ledger: providerRecoveryLedger,
+    now: '2026-08-26T00:00:04.000Z'
+});
+const historicalRuntimeAccountingDigest = {
+    version: 'runtime-accounting-digest/v0',
+    modelCallCount: 1,
+    modelFailureCount: 0,
+    modelDurationMs: 1200,
+    inputTokens: 320,
+    outputTokens: 90,
+    unreportedUsageCallCount: 0,
+    toolCallCount: 1,
+    toolFailureCount: 0,
+    toolDurationMs: 80,
+    recoveryAttemptCount: 0,
+    reflexionCount: 0,
+    wallTimeMs: 1500,
+    stageBuckets: [],
+    costEstimate: { status: 'not_configured' },
+    boundaries: {
+        digestOnly: true,
+        observationOnly: true,
+        reportedUsageOnly: true,
+        missingUsageNotEstimated: true,
+        enforcesBudget: false,
+        grantsPermission: false,
+        changesTaskResult: false
+    }
+};
+check(
+    'Provider 输出恢复分别记录真实请求、成功与失败，真实历史 v0 摘要保持可读',
+    providerRecoveryDigest.providerOutputRecoveryAttemptCount === 2
+        && providerRecoveryDigest.providerOutputRecoverySuccessCount === 1
+        && providerRecoveryDigest.providerOutputRecoveryFailureCount === 1
+        && providerRecoveryDigest.providerOutputRecoveryFailureCounts.stream_incomplete === 1
+        && providerRecoveryDigest.recoveryAttemptCount === 2
+        && validateRuntimeAccountingDigest(providerRecoveryDigest).ok === true
+        && validateRuntimeAccountingDigest(historicalRuntimeAccountingDigest).ok === false
+        && validatePersistedRuntimeAccountingDigest(historicalRuntimeAccountingDigest).ok === true
+);
+const unclosedProviderRecoveryDigest = buildRuntimeAccountingDigest({
+    ledger: recordRuntimeProviderOutputRecoveryAttempt(
+        createRuntimeAccountingLedger('2026-08-26T00:00:00.000Z'),
+        '2026-08-26T00:00:01.000Z'
+    ),
+    now: '2026-08-26T00:00:01.000Z'
+});
+const forgedRecoveryDigest = {
+    ...providerRecoveryDigest,
+    providerOutputRecoveryAttemptCount: providerRecoveryDigest.recoveryAttemptCount + 1
+};
+check(
+    'Provider 输出恢复子计数不能超过总恢复事实，staged Run 复用同一严格校验器',
+    validateRuntimeAccountingDigest(forgedRecoveryDigest).ok === false
+        && validateRuntimeAccountingDigest(unclosedProviderRecoveryDigest).ok === false
+        && agentRunRecordSource.includes('validatePersistedRuntimeAccountingDigest(\n            r.runtimeSession.accounting')
+);
+const noSpaceSse = new ProviderSseDecoder();
+const noSpaceEvents = noSpaceSse.push('data:{"choices":[{"finish_reason":"stop"}]}\n\n');
+const tailSse = new ProviderSseDecoder();
+const tailEventsBeforeEnd = tailSse.push('data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"}"}}]}}]}');
+const tailEventsAfterEnd = tailSse.finish();
+const bomSse = new ProviderSseDecoder();
+const bomEvents = bomSse.push('\ufeffdata: {"choices":[{"delta":{"content":"首帧"}}]}\n\n');
+const utf8Sse = new ProviderSseDecoder();
+const utf8StringDecoder = new StringDecoder('utf8');
+const utf8Payload = Buffer.from('data: {"choices":[{"delta":{"content":"中文"}}]}\n\n', 'utf8');
+const firstChineseByte = utf8Payload.indexOf(Buffer.from('中', 'utf8'));
+const utf8Events = [
+    ...utf8Sse.push(utf8StringDecoder.write(utf8Payload.subarray(0, firstChineseByte + 1))),
+    ...utf8Sse.push(utf8StringDecoder.write(utf8Payload.subarray(firstChineseByte + 1))),
+    ...utf8Sse.push(utf8StringDecoder.end()),
+    ...utf8Sse.finish()
+];
+let oversizedSseRejected = false;
+try {
+    new ProviderSseDecoder().push(`data: ${'x'.repeat(4 * 1024 * 1024 + 1)}`);
+} catch (error) {
+    oversizedSseRejected = error?.code === 'provider_sse_frame_too_large';
+}
+check(
+    '共享 SSE 解码器保留 BOM 首帧、跨 Buffer 中文并在 HTTP end 消费无尾换行帧',
+    noSpaceEvents.length === 1
+        && JSON.parse(noSpaceEvents[0]).choices[0].finish_reason === 'stop'
+        && tailEventsBeforeEnd.length === 0
+        && tailEventsAfterEnd.length === 1
+        && JSON.parse(tailEventsAfterEnd[0]).choices[0].delta.tool_calls[0].function.arguments === '}'
+        && JSON.parse(bomEvents[0]).choices[0].delta.content === '首帧'
+        && JSON.parse(utf8Events[0]).choices[0].delta.content === '中文'
+        && oversizedSseRejected === true
+        && streamAdapterSource.includes("import { ProviderSseDecoder } from './provider-sse-decoder'")
+        && modelServiceSource.includes("import { ProviderSseDecoder } from './provider-sse-decoder'")
+        && streamAdapterSource.includes('SSE 响应无效')
+        && modelServiceSource.includes("fail(error instanceof Error ? error : new Error('OpenRouter SSE 响应无效'))")
+);
+class TerminalProbeAdapter extends BaseStreamAdapter {
+    stream() {
+        this.beginStream();
+        this.emitDone({ text: '完整', stopReason: 'end_turn' });
+        this.emitError('迟到错误');
+    }
+}
+const terminalProbe = new TerminalProbeAdapter();
+const terminalProbeChunks = [];
+terminalProbe.on('chunk', (chunk) => terminalProbeChunks.push(chunk));
+terminalProbe.stream();
+check(
+    '普通 Provider 流只允许一个终态，done 后迟到 error 不会再次发出',
+    terminalProbeChunks.length === 1 && terminalProbeChunks[0].type === 'done'
+);
+const abortProbe = new TerminalProbeAdapter();
+const abortProbeChunks = [];
+abortProbe.on('chunk', (chunk) => abortProbeChunks.push(chunk));
+abortProbe.abort();
+abortProbe.abort();
+check(
+    '主动取消只发出一个 error 终态，不把取消伪装成 done',
+    abortProbeChunks.length === 1
+        && abortProbeChunks[0].type === 'error'
+        && abortProbeChunks[0].error.includes('已取消')
+);
+check(
+    'Agent 运行级取消直接终止当前 renderer 流句柄，不把 AbortSignal 经 IPC 序列化',
+    agentToolStreamSource.includes("signal?.addEventListener('abort', handleAbort, { once: true })")
+        && agentToolStreamSource.includes('void handle.abort().catch(() => undefined)')
+        && agentToolStreamSource.includes('if (signal?.aborted) handleAbort()')
+        && autonomousExecutor.includes('signal: runSignal')
+        && autonomousExecutor.includes('if (runSignal?.aborted) throw createAutonomousModelStreamAbortError()')
+        && autonomousExecutor.includes('runtimeActivity,\n                    signal')
+        && agentRuntime.includes('if (this.config.signal?.aborted) continue agentLoop;')
+        && !preloadSource.includes('signal: AbortSignal')
+);
+check(
+    '普通文本流只在明确完整终态后一次性提交 Message Store，失败时丢弃临时缓冲',
+    streamChatSource.includes('Provider 原始内容增量不进入 Message Store')
+        && streamChatSource.includes('const committedText = response.text;')
+        && !streamChatSource.includes('response.text || fullContent')
+        && streamChatSource.indexOf('onProgress?.(committedText, committedText)')
+            > streamChatSource.indexOf('isProviderStreamOutputBlocked(response.stopReason)')
+        && !streamChatSource.slice(
+            streamChatSource.indexOf('onContent: (content) =>'),
+            streamChatSource.indexOf('refreshStreamInactivityTimeout();', streamChatSource.indexOf('onThinking:'))
+        ).includes('onProgress?.(')
+);
+check(
+    '带工具模型流同样不把原始 content delta 回退晋升为终稿',
+    agentToolStreamSource.includes('content: response.content,')
+        && !agentToolStreamSource.includes('response.content ?? fullContent')
+        && !agentToolStreamSource.includes('response.content || fullContent')
+);
+const previousWindow = global.window;
+let privateReasoningStreamListener = null;
+const privateReasoningContentCommits = [];
+const privateReasoningThinkingCommits = [];
+global.window = {
+    designEcho: {
+        onStreamChunk(listener) {
+            privateReasoningStreamListener = listener;
+        },
+        async chatStream({ requestId }) {
+            queueMicrotask(() => {
+                privateReasoningStreamListener?.({
+                    requestId,
+                    chunk: {
+                        type: 'content',
+                        content: '<think>私有推理</think>'
+                    }
+                });
+                privateReasoningStreamListener?.({
+                    requestId,
+                    chunk: {
+                        type: 'done',
+                        fullResponse: {
+                            text: '',
+                            thinking: '私有推理',
+                            stopReason: 'end_turn'
+                        }
+                    }
+                });
+            });
+            return { success: true };
+        },
+        async abortStream() {}
+    }
+};
+let privateReasoningStreamResult;
+try {
+    const { streamChatAsync } = require(path.join(root, 'src/renderer/services/stream-chat.service.ts'));
+    privateReasoningStreamResult = await streamChatAsync(
+        'private-reasoning-probe',
+        [{ role: 'user', content: '测试' }],
+        {
+            onProgress(content, chunk) {
+                privateReasoningContentCommits.push({ content, chunk });
+            },
+            onThinkingProgress(thinking, chunk) {
+                privateReasoningThinkingCommits.push({ thinking, chunk });
+            }
+        }
+    );
+} finally {
+    global.window = previousWindow;
+}
+check(
+    '终态清洗正文为空时不回退提交原始 think 增量，私有推理只进入 thinking 通道',
+    privateReasoningStreamResult?.text === ''
+        && privateReasoningStreamResult?.thinking === '私有推理'
+        && privateReasoningContentCommits.length === 0
+        && privateReasoningThinkingCommits.length === 1
+        && privateReasoningThinkingCommits[0].thinking === '私有推理'
+        && privateReasoningThinkingCommits[0].chunk === '私有推理',
+    JSON.stringify({
+        result: privateReasoningStreamResult,
+        contentCommits: privateReasoningContentCommits,
+        thinkingCommits: privateReasoningThinkingCommits
+    })
+);
+let toolStreamListener = null;
+const toolStreamRawDeltas = [];
+global.window = {
+    designEcho: {
+        onStreamChunk(listener) {
+            toolStreamListener = listener;
+        },
+        async chatWithToolsStream({ requestId }) {
+            queueMicrotask(() => {
+                toolStreamListener?.({
+                    requestId,
+                    chunk: { type: 'content_delta', content: 'RAW_PARTIAL' }
+                });
+                toolStreamListener?.({
+                    requestId,
+                    chunk: {
+                        type: 'done',
+                        response: { stopReason: 'end_turn', toolCalls: [] }
+                    }
+                });
+            });
+            return { success: true };
+        },
+        async abortStream() {}
+    }
+};
+let toolStreamMissingTerminalContentResult;
+try {
+    const toolStreamModulePath = require.resolve(path.join(
+        root,
+        'src/renderer/services/agent-tool-stream.service.ts'
+    ));
+    delete require.cache[toolStreamModulePath];
+    const { streamChatWithToolsAsync } = require(toolStreamModulePath);
+    toolStreamMissingTerminalContentResult = await streamChatWithToolsAsync(
+        'tool-stream-commit-probe',
+        [{ role: 'user', content: '测试' }],
+        [],
+        {
+            onContentDelta(fullContent, delta) {
+                toolStreamRawDeltas.push({ fullContent, delta });
+            }
+        }
+    );
+} finally {
+    global.window = previousWindow;
+}
+check(
+    '工具流终态缺少 content 时丢弃原始增量，不把 RAW_PARTIAL 写回 Agent 响应',
+    toolStreamRawDeltas.length === 1
+        && toolStreamRawDeltas[0].fullContent === 'RAW_PARTIAL'
+        && toolStreamRawDeltas[0].delta === 'RAW_PARTIAL'
+        && toolStreamMissingTerminalContentResult?.content === undefined,
+    JSON.stringify({
+        result: toolStreamMissingTerminalContentResult,
+        rawDeltas: toolStreamRawDeltas
+    })
+);
+check(
+    'Claude 订阅文本必须有显式 success，Tool 只能消费 MCP handler 捕获的完整参数',
+    claudeSubscriptionSource.includes("resultSubtype !== 'success'")
+        && claudeSubscriptionSource.includes('const toolCalls = benignEnd ? handlerToolCalls : []')
+        && claudeSubscriptionSource.includes("missingTerminal ? 'model_output_incomplete'")
+        && !claudeSubscriptionSource.includes(': blockToolCalls.map((call) => ({')
+);
+check(
+    'Plain Provider 的结构化不完整错误跨外围 catch 保留，HTTP 200 error 帧不会伪装成截断',
+    modelServiceSource.includes('if (isModelOutputIncompleteError(e))')
+        && modelServiceSource.includes('if (isModelOutputIncompleteError(error)) throw error;')
+        && modelServiceSource.includes('if (parsed?.error)')
+        && modelServiceSource.includes('transportComplete: input.transportComplete')
+        && (modelServiceSource.match(/transportComplete: parsed\.done === true/g) || []).length === 2
+        && modelServiceSource.includes('transportComplete: data.done === true')
+        && streamAdapterSource.includes('流返回错误')
+);
+const reasoningPromptShape = measureRuntimePromptShape({
+    messages: [{ role: 'assistant', content: '公开内容', reasoningContent: '隐藏推理内容' }],
+    tools: []
+});
+check(
+    'Prompt 体量诊断把 Provider reasoning_content 计入历史而不是低报上下文',
+    reasoningPromptShape.reasoningChars === '隐藏推理内容'.length
+        && reasoningPromptShape.historyChars === '公开内容'.length + '隐藏推理内容'.length
+);
+
+const narrowUniformScaleMetrics = buildSkuRetouchUniformScaleMetrics({
+    originalSubjectWidth: 100,
+    originalSubjectHeight: 200,
+    outputSubjectWidth: 75,
+    outputSubjectHeight: 150,
+    targetSubjectHeight: 150
+});
+const wideUniformScaleMetrics = buildSkuRetouchUniformScaleMetrics({
+    originalSubjectWidth: 80,
+    originalSubjectHeight: 100,
+    outputSubjectWidth: 120,
+    outputSubjectHeight: 150,
+    targetSubjectHeight: 150
+});
+check(
+    'SKU v2 只做等比统一尺度，并以结构化指标证明同高、保比例和无旧精修参数',
+    narrowUniformScaleMetrics.subjectHeightUniform === true
+        && narrowUniformScaleMetrics.aspectRatioPreserved === true
+        && wideUniformScaleMetrics.subjectHeightUniform === true
+        && wideUniformScaleMetrics.aspectRatioPreserved === true
+        && narrowUniformScaleMetrics.outputSubjectWidth !== wideUniformScaleMetrics.outputSubjectWidth
+        && skuRetouchContractSource.includes("sku-retouch-report/v2")
+        && skuRetouchServiceSource.includes('buildSubjectCropPlan(item, referenceSubjectHeight)')
+        && skuRetouchServiceSource.includes('.resize({ height: cropPlan.targetHeight')
+        && skuRetouchServiceSource.includes('Math.abs(subjectHeight - referenceSubjectHeight) > 1')
+        && skuRetouchServiceSource.includes('sourcePixelsPreserved')
+        && skuRetouchServiceSource.includes('outputEdgesClear')
+        && !skuRetouchServiceSource.includes('warpSkuRetouchSource')
+        && !skuRetouchServiceSource.includes('shapeStrength')
+        && !skuRetouchServiceSource.includes('lightingStrength')
+        && !skuRetouchServiceSource.includes('shadowPath')
+        && !skuRetouchServiceSource.includes('neutralGrayPath')
+        && skuColorCardExecutorSource.includes('uniformScalePlacementVerified')
+        && manualSkuColorCardBridgeSource.includes('card.uniformScalePlacementVerified === true')
+        && !skuRetouchToolSchemaSlice.includes('shapeStrength')
+        && !skuRetouchToolSchemaSlice.includes('lightingStrength')
+        && !skuColorCardManifestSource.includes('独立原影')
+        && !skuColorCardRetouchStrategySource.includes("id: 'light_retouch'")
+        && !skuColorCardRetouchStrategySource.includes("id: 'shadow_isolation'")
+        && !skuColorCardRetouchStrategySource.includes('minor_warp_for_body_axis')
+        && !skuVisualReviewIntakeSource.includes('核对中性灰式光影修正后')
+        && !toolDependenciesSource.includes('形态、原影和中性灰精修资产')
+);
+check(
+    'SKU 色卡在首次 Photoshop 写入前检查全部源文件，flat 剪切保持 not_applicable，置入身份要求新版 UXP 证明',
+    skuColorCardExecutorSource.indexOf('const sourceFilePreflight = await preflightSkuSourceFilesBeforePhotoshopWrite(')
+        < skuColorCardExecutorSource.indexOf("callTool('createDocument'")
+        && skuColorCardExecutorSource.includes("'source-file-preflight'")
+        && skuColorCardExecutorSource.includes('probeImageFile(source.filePath)')
+        && skuColorCardExecutorSource.includes('analyzePsdDesignSource(source.filePath)')
+        && skuColorCardExecutorSource.includes('clippingRequired: false')
+        && skuColorCardExecutorSource.includes('clippingVerified: false')
+        && skuColorCardExecutorSource.includes('resolveClippingStructureCheck(preparedCards)')
+        && skuColorCardContractSource.includes("identityProofVersion === 'place-image-source-identity/v1'")
+        && skuColorCardContractSource.includes('input.placedSource.identityVerified === true')
+        && skuColorCardContractSource.includes('Number.isSafeInteger(input.observedDocumentId)'),
+    'SKU source preflight, clipping N/A, or current UXP placement identity proof is missing.'
+);
+check(
+    'SKU 色卡公开失败说明只交代用户可理解的进度与文件状态，工程诊断仍保留在 error 和报告中',
+    skuColorCardExecutorSource.includes('buildSkuColorCardPublicFailureMessage')
+        && skuColorCardExecutorSource.includes('detail: userMessage')
+        && skuColorCardExecutorSource.includes('message: userMessage')
+        && skuColorCardExecutorSource.includes('error: userMessage')
+        && !skuColorCardExecutorSource.includes('message: `SKU 色卡没有完成：${error}`')
+);
+const producerArtifactReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'single_document_revision',
+    outputs: ['main_image_preview'],
+    resultRefs: ['producer-export'],
+    sourceHistoryStateRef: { documentId: 7, historyStateId: 20 },
+    artifacts: [{
+        path: 'C:/fixture/SKU/最终-1.jpg',
+        kind: 'raster_export',
+        proof: 'file_probe'
+    }]
+});
+const oldProducerArtifactReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'single_document_revision',
+    outputs: ['main_image_preview'],
+    resultRefs: ['old-producer-export'],
+    sourceHistoryStateRef: { documentId: 7, historyStateId: 19 },
+    artifacts: [{
+        path: 'C:/fixture/SKU/旧候选.jpg',
+        kind: 'raster_export',
+        proof: 'file_probe'
+    }]
+});
+const wrongTargetProducerArtifactReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'single_document_revision',
+    outputs: ['main_image_preview'],
+    resultRefs: ['wrong-target-export'],
+    sourceHistoryStateRef: { documentId: 8, historyStateId: 20 },
+    artifacts: [{
+        path: 'C:/fixture/SKU/其他文档候选.jpg',
+        kind: 'raster_export',
+        proof: 'file_probe'
+    }]
+});
+const finalArtifactSettlementEntries = [{
+    callId: 'old-skill-call',
+    name: 'main-image-design',
+    result: {
+        success: true,
+        data: { runtimeDeliveryReceipt: oldProducerArtifactReceipt }
+    }
+}, {
+    callId: 'skill-call',
+    name: 'main-image-design',
+    result: {
+        success: true,
+        data: {
+            runtimeDeliveryReceipt: producerArtifactReceipt,
+            unrelatedPreviewPath: 'C:/fixture/SKU/过程预览.jpg'
+        }
+    }
+}, {
+    callId: 'psd-save-call',
+    name: 'saveDocument',
+    result: {
+        success: true,
+        sourceHistoryStateRef: { documentId: 7, historyStateId: 20 },
+        savedPath: 'C:/fixture/SKU/最终可编辑.psd',
+        editableDocumentArtifact: {
+            path: 'C:/fixture/SKU/最终可编辑.psd'
+        }
+    }
+}, {
+    callId: 'unselected-call',
+    name: 'quickExport',
+    result: { success: true, outputPath: 'C:/fixture/SKU/未声明.jpg' }
+}];
+const collectedFinalArtifactPaths = collectRuntimeFinalArtifactPaths({
+    entries: finalArtifactSettlementEntries,
+    resultRefs: ['psd-save-call'],
+    producerReceiptCallRefs: ['old-skill-call', 'skill-call'],
+    includeProducerReceipts: true
+});
+const collectedBatchArtifactPaths = collectRuntimeFinalArtifactPaths({
+    entries: [{
+        callId: 'batch-export-call',
+        name: 'batchExport',
+        result: {
+            success: true,
+            sourceHistoryStateRef: { documentId: 7, historyStateId: 20 },
+            data: {
+                exportedFiles: [
+                    { filePath: 'C:/fixture/SKU/最终-2.jpg' },
+                    { path: 'C:/fixture/SKU/最终-3.png' }
+                ]
+            }
+        }
+    }],
+    resultRefs: ['batch-export-call'],
+    includeProducerReceipts: false
+});
+const collectedSingleCompositePaths = collectRuntimeFinalArtifactPaths({
+    entries: [finalArtifactSettlementEntries[1]],
+    resultRefs: ['producer-export'],
+    producerReceiptCallRefs: ['skill-call'],
+    producerReceiptE2CallRefs: ['skill-call'],
+    includeProducerReceipts: true
+});
+function buildSkuInventoryBoundaryFixture(rowCount) {
+    return buildSkuExpectedExportInventory({
+        outputDir: 'C:\\fixture\\SKU',
+        specs: [{
+            size: 2,
+            comboTemplateName: '2双装',
+            combos: Array.from({ length: rowCount }, (_, index) => ([
+                `颜色${index + 1}甲`,
+                `颜色${index + 1}乙`
+            ]))
+        }]
+    });
+}
+function buildSkuReceiptBoundaryFixture(rowCount) {
+    const resultRefs = Array.from({ length: rowCount }, (_, index) => `sku-row-${index + 1}`);
+    return buildRuntimeDeliveryReceipt({
+        status: 'ready',
+        settlementScope: 'multi_document_task',
+        outputs: ['sku_images', 'editable_sku_batch_documents'],
+        resultRefs,
+        resultRefProofs: resultRefs.map((resultRef) => ({ resultRef, effect: 'save_export' })),
+        artifacts: resultRefs.flatMap((_, index) => ([{
+            path: `C:/fixture/SKU/${index + 1}.jpg`,
+            kind: 'raster_export',
+            proof: 'file_probe'
+        }, {
+            path: `C:/fixture/SKU/可编辑/${index + 1}.psb`,
+            kind: 'editable_document',
+            proof: 'staged_editable_document_promotion'
+        }]))
+    });
+}
+const skuInventory32 = buildSkuInventoryBoundaryFixture(32);
+const skuInventory33 = buildSkuInventoryBoundaryFixture(33);
+const skuInventory48 = buildSkuInventoryBoundaryFixture(48);
+const skuInventory49 = buildSkuInventoryBoundaryFixture(49);
+const skuReceipt32 = buildSkuReceiptBoundaryFixture(32);
+const skuReceipt33 = buildSkuReceiptBoundaryFixture(33);
+const skuReceipt48 = buildSkuReceiptBoundaryFixture(48);
+const skuReceipt49 = buildSkuReceiptBoundaryFixture(49);
+const emptyMultiDocumentReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'multi_document_task',
+    outputs: ['sku_images'],
+    resultRefs: ['sku-empty'],
+    resultRefProofs: [{ resultRef: 'sku-empty', effect: 'save_export' }],
+    artifacts: []
+});
+check(
+    'SKU 2N 交付容量在 32/33/48 行保持完整，49 行与空 artifact fail closed',
+    skuInventory32.status === 'ready'
+        && skuInventory33.status === 'ready'
+        && skuInventory48.status === 'ready'
+        && skuInventory48.items.length === 48
+        && skuInventory49.status === 'blocked'
+        && skuInventory49.blockers.some((message) => message.includes('最多支持 48 行'))
+        && skuReceipt32.status === 'ready'
+        && skuReceipt32.artifacts.length === 64
+        && skuReceipt33.status === 'ready'
+        && skuReceipt33.artifacts.length === 66
+        && skuReceipt48.status === 'ready'
+        && skuReceipt48.artifacts.length === 96
+        && skuReceipt49.status === 'incomplete'
+        && emptyMultiDocumentReceipt.status === 'incomplete'
+);
+check(
+    'SKU 文件安全故障保留私有诊断与恢复位置，但公开说明不口播主进程、基线或事务术语',
+    skuBatchExecutorSource.includes('无法安全准备本次 SKU 输出，本次尚未开始制作。')
+        && skuBatchExecutorSource.includes('为避免误覆盖，本次尚未开始制作。')
+        && skuBatchExecutorSource.includes('已保留可恢复文件')
+        && skuBatchExecutorSource.includes('error: userMessage')
+        && !skuBatchExecutorSource.includes('受主进程保护的 SKU 文件事务')
+        && !skuBatchExecutorSource.includes('SKU 导出文件的执行前基线')
+        && !skuBatchExecutorSource.includes('stagingCleanupNotices.join(')
+);
+const skuBatchRasterPaths = Array.from(
+    { length: 19 },
+    (_, index) => `C:/fixture/SKU/${String(index + 1).padStart(2, '0')}.jpg`
+);
+const skuBatchEditablePaths = skuBatchRasterPaths.map((artifactPath, index) => (
+    `C:/fixture/SKU/可编辑/${String(index + 1).padStart(2, '0')}.psb`
+));
+const skuRuntimeDeliveryResultRefs = skuBatchRasterPaths.map((_, index) => (
+    `workflow:sku-batch:export:${index + 1}`
+));
+const multiDocumentSkuReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'multi_document_task',
+    outputs: ['editable_sku_batch_documents', 'sku_images'],
+    resultRefs: skuRuntimeDeliveryResultRefs,
+    resultRefProofs: skuRuntimeDeliveryResultRefs.map((resultRef) => ({
+        resultRef,
+        effect: 'save_export'
+    })),
+    artifacts: skuBatchRasterPaths.flatMap((artifactPath, index) => ([{
+        path: artifactPath,
+        kind: 'raster_export',
+        proof: 'file_probe'
+    }, {
+        path: skuBatchEditablePaths[index],
+        kind: 'editable_document',
+        proof: 'staged_editable_document_promotion'
+    }]))
+});
+const multiDocumentSkuEntries = [{
+    callId: 'sku-batch-producer',
+    name: 'sku-batch',
+    result: {
+        success: true,
+        data: { runtimeDeliveryReceipt: multiDocumentSkuReceipt }
+    }
+}, {
+    callId: 'sku-psd-save',
+    name: 'saveDocument',
+    result: {
+        success: true,
+        sourceHistoryStateRef: { documentId: 88, historyStateId: 901 },
+        savedPath: 'C:/fixture/SKU/SKU批量可编辑.psb',
+        editableDocumentArtifact: { path: 'C:/fixture/SKU/SKU批量可编辑.psb' }
+    }
+}];
+const collectedMultiDocumentSkuPaths = collectRuntimeFinalArtifactPaths({
+    entries: multiDocumentSkuEntries,
+    resultRefs: ['sku-psd-save'],
+    producerReceiptCallRefs: ['sku-batch-producer'],
+    includeProducerReceipts: true
+});
+const collectedStagedSkuPaths = collectRuntimeFinalArtifactPaths({
+    entries: [multiDocumentSkuEntries[0]],
+    resultRefs: skuRuntimeDeliveryResultRefs,
+    producerReceiptCallRefs: ['sku-batch-producer'],
+    producerReceiptE2CallRefs: ['sku-batch-producer'],
+    includeProducerReceipts: true
+});
+check(
+    '单文档按最终 revision、多文档按最后 mutation + E2 save/export 结算，旧收据不会混入',
+    collectedFinalArtifactPaths.length === 2
+        && collectedFinalArtifactPaths.includes('C:/fixture/SKU/最终-1.jpg')
+        && collectedFinalArtifactPaths.includes('C:/fixture/SKU/最终可编辑.psd')
+        && !collectedFinalArtifactPaths.includes('C:/fixture/SKU/旧候选.jpg')
+        && !collectedFinalArtifactPaths.includes('C:/fixture/SKU/过程预览.jpg')
+        && !collectedFinalArtifactPaths.includes('C:/fixture/SKU/未声明.jpg')
+        && collectedBatchArtifactPaths.length === 2
+        && collectedBatchArtifactPaths.includes('C:/fixture/SKU/最终-2.jpg')
+        && collectedBatchArtifactPaths.includes('C:/fixture/SKU/最终-3.png')
+        && collectedSingleCompositePaths.length === 1
+        && collectedSingleCompositePaths[0] === 'C:/fixture/SKU/最终-1.jpg'
+        && collectedMultiDocumentSkuPaths.length === 1
+        && !skuBatchRasterPaths.some((artifactPath) => (
+            collectedMultiDocumentSkuPaths.includes(artifactPath)
+        ))
+        && !skuBatchEditablePaths.some((artifactPath) => (
+            collectedMultiDocumentSkuPaths.includes(artifactPath)
+        ))
+        && collectedMultiDocumentSkuPaths.includes('C:/fixture/SKU/SKU批量可编辑.psb')
+        && collectedStagedSkuPaths.length === 38
+        && skuBatchRasterPaths.every((artifactPath) => collectedStagedSkuPaths.includes(artifactPath))
+        && skuBatchEditablePaths.every((artifactPath) => collectedStagedSkuPaths.includes(artifactPath))
+        && !collectedStagedSkuPaths.includes('C:/fixture/SKU/SKU批量可编辑.psb')
+        && collectRuntimeFinalArtifactPaths({
+            entries: [multiDocumentSkuEntries[0]],
+            resultRefs: skuRuntimeDeliveryResultRefs,
+            producerReceiptCallRefs: ['sku-batch-producer'],
+            includeProducerReceipts: true
+        }).length === 0
+        && !collectRuntimeFinalArtifactPaths({
+            entries: [
+                ...multiDocumentSkuEntries,
+                {
+                    callId: 'sku-later-content-write',
+                    name: 'setTextContent',
+                    result: { success: true, activeDocumentId: 88 }
+                }
+            ],
+            resultRefs: ['sku-psd-save'],
+            producerReceiptCallRefs: ['sku-batch-producer'],
+            includeProducerReceipts: true
+        }).includes(skuBatchRasterPaths[0])
+        && !collectRuntimeFinalArtifactPaths({
+            entries: [
+                multiDocumentSkuEntries[0],
+                {
+                    callId: 'not-a-delivery-result',
+                    name: 'getDocumentInfo',
+                    result: {
+                        success: true,
+                        historyStateRef: { documentId: 88, historyStateId: 901 }
+                    }
+                }
+            ],
+            resultRefs: ['not-a-delivery-result'],
+            producerReceiptCallRefs: ['sku-batch-producer'],
+            includeProducerReceipts: true
+        }).includes(skuBatchRasterPaths[0])
+        && collectRuntimeFinalArtifactPaths({
+            entries: [finalArtifactSettlementEntries[1]],
+            resultRefs: [],
+            producerReceiptCallRefs: ['skill-call'],
+            includeProducerReceipts: true
+        }).includes('C:/fixture/SKU/最终-1.jpg')
+        && !collectRuntimeFinalArtifactPaths({
+            entries: [finalArtifactSettlementEntries[1]],
+            resultRefs: [],
+            producerReceiptCallRefs: [],
+            includeProducerReceipts: true
+        }).includes('C:/fixture/SKU/最终-1.jpg')
+        && !collectRuntimeFinalArtifactPaths({
+            entries: [
+                ...finalArtifactSettlementEntries.slice(1, 3),
+                {
+                    callId: 'later-mutation',
+                    name: 'createRectangle',
+                    result: { success: true, activeDocumentId: 7 }
+                }
+            ],
+            resultRefs: ['psd-save-call'],
+            producerReceiptCallRefs: ['skill-call'],
+            includeProducerReceipts: true
+        }).includes('C:/fixture/SKU/最终-1.jpg')
+        && !collectRuntimeFinalArtifactPaths({
+            entries: [{
+                callId: 'wrong-target-skill',
+                name: 'main-image-design',
+                result: {
+                    success: true,
+                    data: { runtimeDeliveryReceipt: wrongTargetProducerArtifactReceipt }
+                }
+            }, finalArtifactSettlementEntries[2]],
+            resultRefs: ['psd-save-call'],
+            producerReceiptCallRefs: ['wrong-target-skill'],
+            includeProducerReceipts: true
+        }).includes('C:/fixture/SKU/其他文档候选.jpg')
+        && collectRuntimeFinalArtifactPaths({
+            entries: [{
+                callId: 'skill-call',
+                name: 'main-image-design',
+                result: { success: true, data: { runtimeDeliveryReceipt: producerArtifactReceipt } }
+            }],
+            resultRefs: [],
+            producerReceiptCallRefs: ['skill-call'],
+            includeProducerReceipts: false
+        }).length === 0
+);
+
+const editableExpectedItem = {
+    id: 'combo:2:1',
+    kind: 'combo',
+    size: 2,
+    rowIndex: 1,
+    combination: ['白色', '黑色'],
+    templateName: '2双装',
+    fileName: '1白色+黑色.jpg',
+    path: 'C:\\fixture\\SKU\\2双装\\1白色+黑色.jpg',
+    editableFileName: '1白色+黑色.psb',
+    editablePath: 'C:\\fixture\\SKU\\可编辑\\2双装\\1白色+黑色.psb'
+};
+const currentPairedEditableCapability = {
+    success: true,
+    data: {
+        pairedEditableDelivery: {
+            revision: 'sku-paired-editable-delivery/v1',
+            deliveryPlanVersion: 'sku-layout-delivery-plan/v1',
+            actions: ['execute', 'arrangeDynamic'],
+            savesAfterGeometryQa: true,
+            savesBeforeCopiedLayerCleanup: true,
+            returnsEditableDocumentArtifact: true,
+            returnsStructureReadback: true,
+            bindsRasterAndEditableHistory: true
+        }
+    }
+};
+check(
+    '旧 UXP 未声明逐行 JPG/PSB 配对能力时必须在首次写入前失败关闭',
+    supportsSkuPairedEditableDelivery(currentPairedEditableCapability) === true
+        && supportsSkuPairedEditableDelivery({ success: true, data: {} }) === false
+        && supportsSkuPairedEditableDelivery({
+            ...currentPairedEditableCapability,
+            data: {
+                pairedEditableDelivery: {
+                    ...currentPairedEditableCapability.data.pairedEditableDelivery,
+                    bindsRasterAndEditableHistory: false
+                }
+            }
+        }) === false
+);
+const editableStagedPath = 'C:\\fixture\\SKU\\.designecho-staging\\run-1\\可编辑\\2双装\\1白色+黑色.psb';
+const editableToolRecord = {
+    success: true,
+    deliveryItemId: editableExpectedItem.id,
+    savedPath: editableStagedPath,
+    format: 'psb',
+    sourceHistoryStateRef: { documentId: 91, historyStateId: 707 },
+    rasterSourceHistoryStateRef: { documentId: 91, historyStateId: 707 },
+    editableDocumentArtifact: {
+        version: 'runtime-editable-document-artifact/v1',
+        basis: 'uxp_post_save_file_metadata',
+        path: editableStagedPath,
+        format: 'psb',
+        byteLength: 4096,
+        modifiedAt: Date.now(),
+        documentId: 91,
+        canvas: { width: 1000, height: 1000 }
+    },
+    structureReadback: {
+        schema: 'sku-editable-structure-readback/v1',
+        templateName: '2双装',
+        combination: ['白色', '黑色'],
+        copiedLayerIds: [301, 302],
+        copiedLayerNames: ['SKU_01_白色', 'SKU_02_黑色'],
+        flattened: false,
+        autoLayoutQaStatus: 'ready'
+    }
+};
+const editableValidationHost = {
+    invoke: async (channel) => {
+        if (channel === 'fs:exists') return true;
+        if (channel === 'fs:getFileInfo') {
+            return {
+                isFile: true,
+                size: 4096,
+                modified: new Date().toISOString()
+            };
+        }
+        throw new Error(`unexpected editable validation channel: ${channel}`);
+    }
+};
+const editableValidation = await validateSkuEditableDeliveryResult({
+    expected: editableExpectedItem,
+    toolResult: {
+        success: true,
+        data: { editableDocuments: [editableToolRecord] }
+    },
+    baseline: { path: editableExpectedItem.editablePath, exists: false },
+    stagedEditablePath: editableStagedPath,
+    host: editableValidationHost
+});
+const forgedEditableValidation = await validateSkuEditableDeliveryResult({
+    expected: editableExpectedItem,
+    toolResult: {
+        success: true,
+        data: {
+            editableDocuments: [{
+                ...editableToolRecord,
+                deliveryItemId: 'combo:2:2'
+            }]
+        }
+    },
+    baseline: { path: editableExpectedItem.editablePath, exists: false },
+    stagedEditablePath: editableStagedPath,
+    host: editableValidationHost
+});
+const finalizedEditableValidation = await finalizeSkuEditableDeliveryReceipts({
+    receipts: new Map(editableValidation.success
+        ? [[editableExpectedItem.id, editableValidation.receipt]]
+        : []),
+    baselines: new Map([[
+        editableExpectedItem.editablePath.toLowerCase(),
+        { path: editableExpectedItem.editablePath, exists: false }
+    ]]),
+    host: editableValidationHost
+});
+const editableReadback = buildSkuEditableDeliveryReadback({
+    expectedItems: [editableExpectedItem],
+    receipts: finalizedEditableValidation.receipts
+});
+const provisionalEditableArtifacts = buildSkuRuntimeDeliveryArtifacts({
+    expectedItems: [editableExpectedItem],
+    rasterFileProbes: [{
+        success: true,
+        path: editableExpectedItem.path,
+        status: 'ok',
+        rawImagesRedacted: true,
+        freshnessVerified: true
+    }],
+    editableReceipts: new Map(editableValidation.success
+        ? [[editableExpectedItem.id, editableValidation.receipt]]
+        : [])
+});
+const finalizedEditableArtifacts = buildSkuRuntimeDeliveryArtifacts({
+    expectedItems: [editableExpectedItem],
+    rasterFileProbes: [{
+        success: true,
+        path: editableExpectedItem.path,
+        status: 'ok',
+        rawImagesRedacted: true,
+        freshnessVerified: true
+    }],
+    editableReceipts: finalizedEditableValidation.receipts
+});
+const failedRasterProbeArtifacts = buildSkuRuntimeDeliveryArtifacts({
+    expectedItems: [editableExpectedItem],
+    rasterFileProbes: [{
+        success: false,
+        path: editableExpectedItem.path,
+        status: 'decode_failed',
+        rawImagesRedacted: true,
+        freshnessVerified: false
+    }],
+    editableReceipts: finalizedEditableValidation.receipts
+});
+const malformedRasterProbeArtifacts = buildSkuRuntimeDeliveryArtifacts({
+    expectedItems: [editableExpectedItem],
+    rasterFileProbes: [{
+        success: true,
+        path: editableExpectedItem.path,
+        status: 'decode_failed',
+        rawImagesRedacted: false,
+        freshnessVerified: true
+    }],
+    editableReceipts: new Map()
+});
+check(
+    'SKU 可编辑源稿必须逐行绑定冻结路径、组合、图层结构、UXP 文件证明与本轮新鲜度',
+    editableValidation.success === true
+        && editableReadback.status === 'ready'
+        && editableReadback.verifiedCount === 1
+        && editableReadback.items.length === 1
+        && editableReadback.items[0]?.rasterPath === editableExpectedItem.path
+        && editableReadback.items[0]?.editablePath === editableExpectedItem.editablePath
+        && editableReadback.items[0]?.sourceHistoryStateRef?.historyStateId === 707
+        && forgedEditableValidation.success === false
+        && provisionalEditableArtifacts.length === 1
+        && provisionalEditableArtifacts[0]?.kind === 'raster_export'
+        && finalizedEditableArtifacts.length === 2
+        && finalizedEditableArtifacts[1]?.kind === 'editable_document'
+        && finalizedEditableArtifacts[1]?.proof === 'staged_editable_document_promotion'
+        && failedRasterProbeArtifacts.length === 1
+        && failedRasterProbeArtifacts[0]?.kind === 'editable_document'
+        && malformedRasterProbeArtifacts.length === 0
 );
 
 const skuColorCardSources = [{
@@ -218,6 +1533,17 @@ check(
         && manualSkuColorCardBridgeSource.includes('MANUAL_SKU_COLOR_CARD_LEGACY_PROFILE_CAPABILITY')
         && !manualSkuColorCardBridgeSource.includes('__manualPanelLegacyProfileAuthorized: true')
         && skillToolsSource.includes("'__manualPanelLegacyProfileAuthorized'")
+);
+
+check(
+    '手工 SKU 色卡桥与结果协议同版本握手，旧 Renderer/UXP 不能冒充 v2 成功',
+    manualSkuColorCardContractSource.includes("manual-sku-color-card-result/v2")
+        && manualSkuColorCardContractSource.includes("manual-sku-color-card-bridge/v2")
+        && manualSkuColorCardHandlerSource.includes('payload.version !== MANUAL_SKU_COLOR_CARD_RESULT_VERSION')
+        && uxpIndexSource.includes("MANUAL_SKU_COLOR_CARD_BRIDGE_VERSION = 'manual-sku-color-card-bridge/v2'")
+        && uxpIndexSource.includes("MANUAL_SKU_COLOR_CARD_RESULT_VERSION = 'manual-sku-color-card-result/v2'")
+        && uxpIndexSource.includes('normalizedResult?.version !== MANUAL_SKU_COLOR_CARD_RESULT_VERSION'),
+    'Manual SKU card protocol versions must fail closed across Main, Renderer, and UXP.'
 );
 
 const authoredSkuColorCardDesignSpec = {

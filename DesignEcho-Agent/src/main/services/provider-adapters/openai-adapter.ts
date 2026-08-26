@@ -11,6 +11,10 @@ import type {
 } from './types';
 import { buildAgentProviderTokenBudget } from '../../../shared/agent-performance-policy';
 import { normalizeProviderNativeToolCitations } from '../../../shared/provider-native-tools';
+import {
+    canExecuteProviderStreamToolCalls,
+    resolveProviderStreamStopReason
+} from '../../../shared/provider-stream-completion';
 import { shouldReplayProviderReasoningContent } from '../../../shared/agent-model-transport-policy';
 
 export class OpenAIAdapter implements ProviderAdapter {
@@ -140,32 +144,58 @@ export class OpenAIAdapter implements ProviderAdapter {
         // Handle OpenAI chat completion format
         const choice = raw.choices?.[0];
         if (!choice) {
+            const providerError = raw?.error;
+            if (providerError) {
+                const message = String(providerError.message || providerError.code || 'Provider 返回错误响应');
+                const error = new Error(message) as Error & { code?: string; status?: number };
+                error.code = String(providerError.code || 'provider_response_error');
+                const status = Number(providerError.status || providerError.status_code || 0);
+                if (Number.isInteger(status) && status > 0) error.status = status;
+                throw error;
+            }
             result.content = '';
+            result.toolCalls = [];
+            result.stopReason = 'stream_incomplete';
             return result;
         }
 
         const message = choice.message;
+        const refusalSeen = Boolean(String(message?.refusal || '').trim());
         result.content = message?.content || '';
+        const toolCallCandidates = message?.tool_calls?.length
+            ? message.tool_calls.map((tc: any) => {
+                const parsedArguments = parseToolArguments(tc.function?.arguments);
+                const id = String(tc.id || '').trim();
+                const name = String(tc.function?.name || '').trim();
+                return {
+                    valid: Boolean(id && name && parsedArguments.valid),
+                    toolCall: { id, name, arguments: parsedArguments.value }
+                };
+            })
+            : [];
+        const candidateToolCalls = toolCallCandidates.map((candidate: any) => candidate.toolCall);
+        const parsedStopReason = resolveProviderStreamStopReason({
+            finishReason: refusalSeen ? 'refusal' : choice.finish_reason,
+            hasToolCalls: candidateToolCalls.length > 0
+        });
+        let stopReason = parsedStopReason;
+        if (refusalSeen) {
+            stopReason = 'content_blocked';
+        } else if (!toolCallCandidates.every((candidate: any) => candidate.valid)) {
+            stopReason = 'stream_incomplete';
+        }
 
-        // A length-limited response may contain an incomplete streamed/non-streamed
-        // function payload. The transport stop reason must win over tool presence;
-        // quarantining the partial call keeps non-stream behavior aligned with the
-        // streaming adapter and prevents default/partial arguments from executing.
-        if (choice.finish_reason === 'length') {
-            result.toolCalls = [];
-            result.stopReason = 'max_tokens';
-        } else if (message?.tool_calls?.length) {
-            result.toolCalls = message.tool_calls.map((tc: any) => ({
-                id: tc.id,
-                name: tc.function?.name || '',
-                arguments: safeParse(tc.function?.arguments)
-            }));
-            result.stopReason = 'tool_use';
-        } else {
-            result.toolCalls = [];
-            if (choice.finish_reason === 'stop') {
-                result.stopReason = 'end_turn';
-            }
+        // 只有明确完整的 provider 终态才能执行 Tool；length、未知 finish reason、
+        // content_filter 或残缺 function payload 一律隔离并交给 Agent 有界恢复。
+        result.toolCalls = canExecuteProviderStreamToolCalls(stopReason)
+            ? candidateToolCalls
+            : [];
+        result.stopReason = stopReason;
+        if ((stopReason === 'max_tokens' || stopReason === 'stream_incomplete')
+            && candidateToolCalls.length > 0) {
+            result.incompleteToolCallNames = Array.from(new Set(
+                candidateToolCalls.map((call: any) => String(call.name || '').trim()).filter(Boolean)
+            ));
         }
 
         // Extract reasoning：deepseek/小米用 reasoning_content，openrouter 用 reasoning（格式可能非字符串）。
@@ -203,12 +233,20 @@ export class OpenAIAdapter implements ProviderAdapter {
     }
 }
 
-function safeParse(jsonStr: any): Record<string, any> {
-    if (typeof jsonStr === 'object' && jsonStr !== null) return jsonStr;
-    if (typeof jsonStr !== 'string') return {};
+function parseToolArguments(value: unknown): {
+    valid: boolean;
+    value: Record<string, any>;
+} {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return { valid: true, value: value as Record<string, any> };
+    }
+    if (typeof value !== 'string' || !value.trim()) return { valid: false, value: {} };
     try {
-        return JSON.parse(jsonStr);
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? { valid: true, value: parsed }
+            : { valid: false, value: {} };
     } catch {
-        return {};
+        return { valid: false, value: {} };
     }
 }

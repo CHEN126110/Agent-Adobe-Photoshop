@@ -2,10 +2,17 @@
  * 文件系统相关 IPC Handlers
  */
 
-import { ipcMain, dialog, shell, app, IpcMainInvokeEvent, BrowserWindow } from 'electron';
+import { ipcMain, dialog, shell, IpcMainInvokeEvent, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import type { IPCContext } from './types';
+import { promoteStagedFileSet } from '../services/staged-file-promotion';
+import {
+    captureSkuStagingDestinationBaselines,
+    issueSkuStagingTransaction,
+    removeSkuStagingParentIfEmpty,
+    removeSkuStagingTransactionRoot
+} from '../services/sku-staging-transaction.service';
 
 const fsPromises = fs.promises;
 
@@ -16,8 +23,6 @@ interface FileEntry {
     size?: number;
     ext?: string;
 }
-
-const MIN_REMOVABLE_DIRECTORY_DEPTH = 2;
 
 function validateExternalUrl(rawUrl: string): string {
     let parsed: URL;
@@ -34,86 +39,6 @@ function validateExternalUrl(rawUrl: string): string {
         throw new Error('仅允许打开不含凭据的 HTTPS 或邮件链接。');
     }
     return parsed.toString();
-}
-
-function normalizeDirectoryPathKey(dirPath: string): string {
-    const normalized = path.resolve(dirPath);
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-}
-
-function getProtectedDirectoryPathKeys(): Set<string> {
-    const protectedPaths = [
-        process.cwd(),
-        app.getAppPath(),
-        app.getPath('home'),
-        app.getPath('appData'),
-        app.getPath('userData'),
-        app.getPath('temp'),
-        app.getPath('desktop'),
-        app.getPath('documents'),
-        app.getPath('downloads')
-    ];
-    return new Set(protectedPaths.map(normalizeDirectoryPathKey));
-}
-
-function resolveSafeSkuStagingParentRemovalPath(input: unknown): {
-    success: boolean;
-    path: string;
-    code?: 'invalid_directory_path' | 'dangerous_directory_path';
-    error?: string;
-} {
-    const requestedPath = typeof input === 'string' ? input.trim() : '';
-    if (!requestedPath || requestedPath.includes('\0') || !path.isAbsolute(requestedPath)) {
-        return {
-            success: false,
-            path: requestedPath,
-            code: 'invalid_directory_path',
-            error: '只能清理明确的绝对目录路径。'
-        };
-    }
-
-    const rawSegments = requestedPath.split(/[\\/]+/).filter(Boolean);
-    if (rawSegments.some((segment, index) => {
-        const isDriveSegment = index === 0 && /^[a-z]:$/i.test(segment);
-        return segment === '.'
-            || segment === '..'
-            || (!isDriveSegment && segment.includes(':'))
-            || /[. ]$/.test(segment);
-    })) {
-        return {
-            success: false,
-            path: requestedPath,
-            code: 'invalid_directory_path',
-            error: '目录路径包含不可用的路径段。'
-        };
-    }
-
-    const resolvedPath = path.resolve(requestedPath);
-    const rootPath = path.parse(resolvedPath).root;
-    const relativePath = path.relative(rootPath, resolvedPath);
-    const relativeSegments = relativePath.split(path.sep).filter(Boolean);
-    const normalizedPathKey = normalizeDirectoryPathKey(resolvedPath);
-    const isDeviceNamespace = resolvedPath.startsWith('\\\\.\\') || resolvedPath.startsWith('\\\\?\\');
-    const leafName = relativeSegments.at(-1)?.toLowerCase();
-    const parentName = relativeSegments.at(-2)?.toLowerCase();
-    if (
-        isDeviceNamespace
-        || !relativePath
-        || relativePath.startsWith('..')
-        || relativeSegments.length < MIN_REMOVABLE_DIRECTORY_DEPTH
-        || leafName !== '.designecho-staging'
-        || parentName !== 'sku'
-        || getProtectedDirectoryPathKeys().has(normalizedPathKey)
-    ) {
-        return {
-            success: false,
-            path: resolvedPath,
-            code: 'dangerous_directory_path',
-            error: `只允许清理 SKU 交付目录中的 .designecho-staging 空目录: ${resolvedPath}`
-        };
-    }
-
-    return { success: true, path: resolvedPath };
 }
 
 /**
@@ -316,62 +241,24 @@ export function registerFileSystemHandlers(context: IPCContext): void {
         }
     });
 
-    // 排他复制文件：仅用于先暂存、后提交的生产交付，目标已存在时绝不覆盖。
-    ipcMain.handle('fs:copyFileExclusive', async (_event: IpcMainInvokeEvent, sourcePath: string, destPath: string) => {
-        let targetCreated = false;
-        try {
-            const sourceStat = await fsPromises.stat(sourcePath);
-            if (!sourceStat.isFile() || sourceStat.size <= 0) {
-                return { success: false, code: 'invalid_source_file', error: `源文件不是有效的非空文件: ${sourcePath}` };
-            }
+    // main 签发唯一 SKU staging root 与不可伪造令牌；renderer 不再自报清理/提交根路径。
+    ipcMain.handle('fs:issueSkuStagingTransaction', async (
+        _event: IpcMainInvokeEvent,
+        outputDirectory: unknown
+    ) => issueSkuStagingTransaction(outputDirectory));
 
-            const destDir = path.dirname(destPath);
-            await fsPromises.mkdir(destDir, { recursive: true });
-            await fsPromises.copyFile(sourcePath, destPath, fs.constants.COPYFILE_EXCL);
-            targetCreated = true;
+    // 既有目标基线由 main 读取并计算 SHA-256，renderer 不能自行拼装可信基线。
+    ipcMain.handle('fs:captureSkuStagingDestinationBaselines', async (
+        _event: IpcMainInvokeEvent,
+        input: unknown
+    ) => captureSkuStagingDestinationBaselines(
+        input as Parameters<typeof captureSkuStagingDestinationBaselines>[0]
+    ));
 
-            const targetStat = await fsPromises.stat(destPath);
-            if (!targetStat.isFile() || targetStat.size !== sourceStat.size) {
-                let rollbackError = '';
-                try {
-                    await fsPromises.unlink(destPath);
-                    targetCreated = false;
-                } catch (error: any) {
-                    rollbackError = String(error?.message || error || '删除失败');
-                }
-                return {
-                    success: false,
-                    code: 'copy_verification_failed',
-                    error: `复制后的文件大小或类型不一致: ${destPath}`,
-                    ...(targetCreated ? { createdPath: destPath, rollbackError } : {})
-                };
-            }
-
-            console.log(`[fs:copyFileExclusive] 文件排他复制成功: ${sourcePath} -> ${destPath}`);
-            return { success: true, path: destPath, byteLength: targetStat.size };
-        } catch (error: any) {
-            const code = String(error?.code || 'copy_failed');
-            const message = code === 'EEXIST'
-                ? `目标文件已存在，未执行覆盖: ${destPath}`
-                : String(error?.message || '排他复制失败');
-            let rollbackError = '';
-            if (targetCreated) {
-                try {
-                    await fsPromises.unlink(destPath);
-                    targetCreated = false;
-                } catch (rollbackFailure: any) {
-                    rollbackError = String(rollbackFailure?.message || rollbackFailure || '删除失败');
-                }
-            }
-            console.error(`[fs:copyFileExclusive] 文件复制失败: ${message}`);
-            return {
-                success: false,
-                code,
-                error: message,
-                ...(targetCreated ? { createdPath: destPath, rollbackError } : {})
-            };
-        }
-    });
+    // 一组已验收暂存文件的事务提交；根目录只从 main 的令牌租约解析。
+    ipcMain.handle('fs:promoteStagedFileSet', async (_event: IpcMainInvokeEvent, input: unknown) => (
+        promoteStagedFileSet(input as Parameters<typeof promoteStagedFileSet>[0])
+    ));
 
     // 删除文件（用于清理临时文件）
     // 修改：使用 shell.trashItem 安全删除，避免不可逆操作
@@ -392,95 +279,17 @@ export function registerFileSystemHandlers(context: IPCContext): void {
         }
     });
 
-    // 原子删除空目录：不递归、不清空目录，也不跟随符号链接。
-    ipcMain.handle('fs:removeSkuStagingParentIfEmpty', async (_event: IpcMainInvokeEvent, dirPath: string) => {
-        const pathResolution = resolveSafeSkuStagingParentRemovalPath(dirPath);
-        if (!pathResolution.success) {
-            return {
-                success: false,
-                removed: false,
-                path: pathResolution.path,
-                code: pathResolution.code,
-                error: pathResolution.error
-            };
-        }
+    // 永久递归清理只接受当前主进程签发的 opaque token，不接受 renderer 路径。
+    ipcMain.handle('fs:removeSkuStagingTransactionRoot', async (
+        _event: IpcMainInvokeEvent,
+        transactionToken: unknown
+    ) => removeSkuStagingTransactionRoot(transactionToken));
 
-        const resolvedPath = pathResolution.path;
-        let directoryStat: fs.Stats;
-        try {
-            directoryStat = await fsPromises.lstat(resolvedPath);
-        } catch (error: any) {
-            if (error?.code === 'ENOENT') {
-                return {
-                    success: true,
-                    removed: false,
-                    path: resolvedPath,
-                    reason: 'missing'
-                };
-            }
-            return {
-                success: false,
-                removed: false,
-                path: resolvedPath,
-                code: 'directory_inspection_failed',
-                error: String(error?.message || '无法检查目标目录')
-            };
-        }
-
-        if (directoryStat.isSymbolicLink()) {
-            return {
-                success: false,
-                removed: false,
-                path: resolvedPath,
-                code: 'directory_is_symbolic_link',
-                error: `拒绝清理符号链接目录: ${resolvedPath}`
-            };
-        }
-        if (!directoryStat.isDirectory()) {
-            return {
-                success: false,
-                removed: false,
-                path: resolvedPath,
-                code: 'path_not_directory',
-                error: `目标路径不是普通目录: ${resolvedPath}`
-            };
-        }
-
-        try {
-            // rmdir 自身原子检查“目录为空”并删除；未使用 recursive，竞态写入会以 ENOTEMPTY 拒绝。
-            await fsPromises.rmdir(resolvedPath);
-            console.log(`[fs:removeSkuStagingParentIfEmpty] SKU 空暂存目录已删除: ${resolvedPath}`);
-            return {
-                success: true,
-                removed: true,
-                path: resolvedPath
-            };
-        } catch (error: any) {
-            if (error?.code === 'ENOENT') {
-                return {
-                    success: true,
-                    removed: false,
-                    path: resolvedPath,
-                    reason: 'missing'
-                };
-            }
-            if (error?.code === 'ENOTEMPTY' || error?.code === 'EEXIST') {
-                return {
-                    success: true,
-                    removed: false,
-                    path: resolvedPath,
-                    reason: 'not_empty'
-                };
-            }
-            return {
-                success: false,
-                removed: false,
-                path: resolvedPath,
-                code: 'directory_remove_failed',
-                error: String(error?.message || '空目录删除失败')
-            };
-        }
-    });
+    // staging parent 仍用非递归 rmdir；也必须沿用同一事务令牌。
+    ipcMain.handle('fs:removeSkuStagingParentIfEmpty', async (
+        _event: IpcMainInvokeEvent,
+        transactionToken: unknown
+    ) => removeSkuStagingParentIfEmpty(transactionToken));
 
     // 新增：移动到垃圾桶（显式语义）
     ipcMain.handle('fs:moveToTrash', async (_event: IpcMainInvokeEvent, filePath: string) => {

@@ -11,7 +11,12 @@ import type {
     ToolCall, AdapterMessage, AdapterOptions
 } from './types';
 import { buildAgentProviderTokenBudget } from '../../../shared/agent-performance-policy';
-import { buildToolSystemPrompt, parseToolCallsFromText } from './prompt-tool-parser';
+import { resolveProviderStreamStopReason } from '../../../shared/provider-stream-completion';
+import {
+    buildToolSystemPrompt,
+    containsPromptToolCallMarkup,
+    parseToolCallsFromText
+} from './prompt-tool-parser';
 
 /** 已知支持原生 tool use 的 Ollama 模型前缀 */
 const NATIVE_TOOL_MODELS = [
@@ -56,28 +61,82 @@ export class OllamaAdapter implements ProviderAdapter {
         };
 
         const messageContent = raw.message?.content || '';
+        if (raw.done !== true) {
+            result.content = messageContent;
+            result.toolCalls = [];
+            result.stopReason = 'stream_incomplete';
+            const incompleteNames = (raw.message?.tool_calls || [])
+                .map((call: any) => String(call?.function?.name || '').trim())
+                .filter(Boolean);
+            if (incompleteNames.length > 0) {
+                result.incompleteToolCallNames = Array.from(new Set(incompleteNames));
+            }
+            return result;
+        }
+        const completionStopReason = resolveProviderStreamStopReason({
+            finishReason: raw.done_reason,
+            hasToolCalls: false
+        });
+        if (completionStopReason !== 'end_turn') {
+            result.content = messageContent;
+            result.toolCalls = [];
+            result.stopReason = completionStopReason;
+            const incompleteNames = (raw.message?.tool_calls || [])
+                .map((call: any) => String(call?.function?.name || '').trim())
+                .filter(Boolean);
+            if ((completionStopReason === 'max_tokens' || completionStopReason === 'stream_incomplete')
+                && incompleteNames.length > 0) {
+                result.incompleteToolCallNames = Array.from(new Set(incompleteNames));
+            }
+            return result;
+        }
 
         // Check for native tool calls first
         if (raw.message?.tool_calls?.length) {
-            result.toolCalls = raw.message.tool_calls.map((tc: any, i: number) => ({
-                id: `ollama_call_${i}`,
-                name: tc.function?.name || '',
-                arguments: tc.function?.arguments || {}
-            }));
+            const toolCalls = raw.message.tool_calls.map((tc: any, i: number) => {
+                const name = String(tc.function?.name || '').trim();
+                const argumentsValue = tc.function?.arguments;
+                return {
+                    valid: Boolean(
+                        name
+                        && argumentsValue
+                        && typeof argumentsValue === 'object'
+                        && !Array.isArray(argumentsValue)
+                    ),
+                    toolCall: {
+                        id: `ollama_call_${i}`,
+                        name,
+                        arguments: argumentsValue || {}
+                    }
+                };
+            });
             result.content = messageContent;
-            result.stopReason = 'tool_use';
+            if (toolCalls.every((candidate: any) => candidate.valid)) {
+                result.toolCalls = toolCalls.map((candidate: any) => candidate.toolCall);
+                result.stopReason = 'tool_use';
+            } else {
+                result.toolCalls = [];
+                result.stopReason = 'stream_incomplete';
+                result.incompleteToolCallNames = Array.from(new Set(
+                    toolCalls.map((candidate: any) => candidate.toolCall.name).filter(Boolean)
+                ));
+            }
             return result;
         }
 
         // Try prompt-based parsing
-        if (messageContent.includes('<tool_call>')) {
-            const { toolCalls, cleanedText } = parseToolCallsFromText(messageContent);
-            if (toolCalls.length > 0) {
+        if (containsPromptToolCallMarkup(messageContent)) {
+            const { toolCalls, cleanedText, valid } = parseToolCallsFromText(messageContent);
+            if (valid && toolCalls.length > 0) {
                 result.toolCalls = toolCalls;
                 result.content = cleanedText;
                 result.stopReason = 'tool_use';
                 return result;
             }
+            result.content = cleanedText;
+            result.toolCalls = [];
+            result.stopReason = 'stream_incomplete';
+            return result;
         }
 
         result.content = messageContent;

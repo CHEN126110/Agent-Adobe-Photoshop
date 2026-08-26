@@ -51,6 +51,10 @@ const DSML_TAG_PATTERN = new RegExp(
     `<\\s*\\/?${DSML_PREFIX_PATTERN}(?:tool_calls?|function_calls?|invoke|parameter|画面处理)(?=\\s|>)[^>]*>`,
     'giu'
 );
+const DSML_STRUCTURAL_TAG_PATTERN = new RegExp(
+    `<\\s*(\\/?)${DSML_PREFIX_PATTERN}(tool_calls?|function_calls?|invoke|parameter|画面处理)(?=\\s|>)[^>]*>`,
+    'giu'
+);
 
 const MAX_DSML_CALLS = 4;
 const MAX_DSML_PARAMETERS = 32;
@@ -83,7 +87,10 @@ function parseParameterValue(rawValue: string, attributes: string): unknown {
     }
 }
 
-function parseDsmlArguments(body: string): Record<string, unknown> | undefined {
+function parseDsmlArguments(body: string): {
+    arguments: Record<string, unknown>;
+    parameterCount: number;
+} | undefined {
     const args: Record<string, unknown> = {};
     const parameterNames = new Set<string>();
     let parameterCount = 0;
@@ -104,7 +111,7 @@ function parseDsmlArguments(body: string): Record<string, unknown> | undefined {
         .replace(DSML_COMPLETE_PARAMETER_PATTERN, '')
         .trim();
     if (unparsedBody && DSML_PROTOCOL_MARKER_PATTERN.test(unparsedBody)) return undefined;
-    return args;
+    return { arguments: args, parameterCount };
 }
 
 export function containsDsmlToolCallMarkup(value: unknown): boolean {
@@ -114,23 +121,61 @@ export function containsDsmlToolCallMarkup(value: unknown): boolean {
 export function parseDsmlToolCallCandidates(
     value: unknown
 ): TextEncodedToolCallCandidate[] {
+    const batch = parseDsmlToolCallBatch(value);
+    return batch.valid ? batch.candidates : [];
+}
+
+export function parseDsmlToolCallBatch(value: unknown): {
+    candidates: TextEncodedToolCallCandidate[];
+    valid: boolean;
+} {
     const text = String(value || '');
     if (!text || text.length > MAX_DSML_TEXT_LENGTH || !containsDsmlToolCallMarkup(text)) {
-        return [];
+        return { candidates: [], valid: false };
+    }
+
+    const stack: string[] = [];
+    let structuralTagCount = 0;
+    let openingInvokeCount = 0;
+    let openingParameterCount = 0;
+    DSML_STRUCTURAL_TAG_PATTERN.lastIndex = 0;
+    let structuralMatch: RegExpExecArray | null;
+    while ((structuralMatch = DSML_STRUCTURAL_TAG_PATTERN.exec(text)) !== null) {
+        structuralTagCount += 1;
+        const closing = structuralMatch[1] === '/';
+        const tagName = structuralMatch[2].toLocaleLowerCase();
+        if (!closing) {
+            stack.push(tagName);
+            if (tagName === 'invoke') openingInvokeCount += 1;
+            if (tagName === 'parameter') openingParameterCount += 1;
+        } else if (stack.pop() !== tagName) {
+            return { candidates: [], valid: false };
+        }
+    }
+    const unmatchedProtocolText = text.replace(DSML_STRUCTURAL_TAG_PATTERN, '');
+    if (structuralTagCount === 0 || stack.length > 0 || containsDsmlToolCallMarkup(unmatchedProtocolText)) {
+        return { candidates: [], valid: false };
     }
 
     const calls: TextEncodedToolCallCandidate[] = [];
+    let parsedParameterCount = 0;
     let match: RegExpExecArray | null;
     DSML_INVOKE_PATTERN.lastIndex = 0;
     while ((match = DSML_INVOKE_PATTERN.exec(text)) !== null) {
         const name = decodeXmlEntities(match[2]).trim();
-        if (!TOOL_NAME_PATTERN.test(name)) continue;
-        const args = parseDsmlArguments(match[3]);
-        if (!args) continue;
-        calls.push({ name, arguments: args });
-        if (calls.length >= MAX_DSML_CALLS) break;
+        if (!TOOL_NAME_PATTERN.test(name)) return { candidates: [], valid: false };
+        const parsedArguments = parseDsmlArguments(match[3]);
+        if (!parsedArguments) return { candidates: [], valid: false };
+        parsedParameterCount += parsedArguments.parameterCount;
+        calls.push({ name, arguments: parsedArguments.arguments });
+        if (calls.length > MAX_DSML_CALLS) return { candidates: [], valid: false };
     }
-    return calls;
+    const batchIsComplete = calls.length > 0
+        && calls.length === openingInvokeCount
+        && parsedParameterCount === openingParameterCount;
+    return batchIsComplete
+        ? { candidates: calls, valid: true }
+        : { candidates: [], valid: false };
 }
 
 /**

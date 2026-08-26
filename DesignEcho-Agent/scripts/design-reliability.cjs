@@ -15,11 +15,13 @@ const {
   ATTRIBUTION_VERSION,
   COMPARISON_EVIDENCE_KINDS,
   FAILURE_MODES,
+  LEGACY_REVIEW_VERSION,
   PAIRWISE_OUTCOMES,
   REVIEW_DECISIONS,
   REVIEW_VERSION,
   RUN_VERSION,
   buildDesignReliabilityCohortReport,
+  buildRubricDigest,
   calculateWeightedOverall,
   deriveDesignReliabilityRunObservation,
   evaluateDesignReliabilityReleaseGates,
@@ -115,7 +117,14 @@ function writeJsonReplace(filePath, value) {
 
 function safePathSegment(value) {
   const normalized = String(value || "").trim().replace(/[^A-Za-z0-9._-]+/g, "-");
-  return normalized || "unknown";
+  if (!normalized || normalized === "." || normalized === "..") return "unknown";
+  return normalized;
+}
+
+function resolveSidecarOutputPath(root, directorySegments, fileId) {
+  const safeSegments = (Array.isArray(directorySegments) ? directorySegments : [])
+    .map(safePathSegment);
+  return resolveInside(root, path.join(...safeSegments, `${safePathSegment(fileId)}.json`));
 }
 
 function buildLiveAttemptId(caseId) {
@@ -197,6 +206,17 @@ function normalizeRelativePath(value) {
   return String(value || "").replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
+function isUnsafeProjectRelativeRef(value) {
+  const normalized = normalizeRelativePath(value).trim();
+  return !normalized
+    || normalized.includes("\0")
+    || normalized.includes(":")
+    || path.isAbsolute(normalized)
+    || normalized.startsWith("/")
+    || normalized.startsWith("//")
+    || normalized.split("/").includes("..");
+}
+
 function normalizePathIdentity(value) {
   const raw = cleanString(value);
   if (!raw) return "";
@@ -204,6 +224,39 @@ function normalizePathIdentity(value) {
     .replace(/\\/g, "/")
     .replace(/\/+$/, "");
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isSameOrNestedRealPath(parentPath, candidatePath) {
+  const parentIdentity = normalizePathIdentity(parentPath);
+  const candidateIdentity = normalizePathIdentity(candidatePath);
+  return Boolean(
+    parentIdentity
+    && candidateIdentity
+    && (candidateIdentity === parentIdentity || candidateIdentity.startsWith(`${parentIdentity}/`))
+  );
+}
+
+function resolveProjectedRealPath(targetPath) {
+  let existingAncestor = path.resolve(targetPath);
+  const suffix = [];
+  while (!fs.existsSync(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) {
+      throw new Error(`无法解析路径的真实父目录：${targetPath}`);
+    }
+    suffix.unshift(path.basename(existingAncestor));
+    existingAncestor = parent;
+  }
+  return path.resolve(fs.realpathSync.native(existingAncestor), ...suffix);
+}
+
+function assertFixtureDestinationOutsideSource(sourceRoot, destination) {
+  const sourceRealPath = fs.realpathSync.native(sourceRoot);
+  const destinationRealPath = resolveProjectedRealPath(destination);
+  if (isSameOrNestedRealPath(sourceRealPath, destinationRealPath)) {
+    throw new Error("destination 的真实路径不能位于源项目内部（包括 junction / symlink）。 ");
+  }
+  return sourceRealPath;
 }
 
 function fileSha256(filePath) {
@@ -219,6 +272,19 @@ function validateRubric(rubric) {
     return { ok: false, errors: ["Rubric version 非法。"] };
   }
   if (!cleanString(rubric.rubricId)) errors.push("rubricId 不能为空。");
+  if (!["main_image", "detail_page", "sku"].includes(rubric.taskFamily)) {
+    errors.push("Rubric taskFamily 非法。");
+  }
+  if (rubric.scale !== "0..1") errors.push("Rubric scale 必须严格为 0..1。");
+  const anchorValues = rubric.scoreAnchorValues;
+  if (!isRecord(anchorValues)
+    || anchorValues.poor !== 0
+    || anchorValues.acceptable !== 0.5
+    || anchorValues.strong !== 0.75
+    || anchorValues.excellent !== 1
+    || Object.keys(anchorValues).length !== 4) {
+    errors.push("Rubric scoreAnchorValues 必须统一为 poor=0、acceptable=0.5、strong=0.75、excellent=1。");
+  }
   if (!Array.isArray(rubric.dimensions) || rubric.dimensions.length === 0) {
     errors.push("dimensions 不能为空。");
   } else {
@@ -233,10 +299,30 @@ function validateRubric(rubric) {
       } else {
         weightTotal += dimension.weight;
       }
+      if (!cleanString(dimension?.description)) {
+        errors.push(`Rubric 维度 ${id || "unknown"} 缺少可判断的 description。`);
+      }
+      const anchors = dimension?.scoreAnchors;
+      if (!isRecord(anchors)
+        || ["poor", "acceptable", "strong", "excellent"].some((key) => !cleanString(anchors[key]))) {
+        errors.push(`Rubric 维度 ${id || "unknown"} 缺少 poor/acceptable/strong/excellent 评分锚点。`);
+      } else if (new Set(Object.values(anchors).map(cleanString)).size !== 4) {
+        errors.push(`Rubric 维度 ${id || "unknown"} 的四级评分锚点必须相互不同。`);
+      }
     }
     if (Math.abs(weightTotal - 1) > 0.000001) {
       errors.push(`Rubric 权重之和必须为 1，当前为 ${weightTotal}。`);
     }
+  }
+  if (!isRecord(rubric.decisionRule)
+    || rubric.decisionRule.passRequiresNoBlocker !== true
+    || !Number.isFinite(rubric.decisionRule.passMinimumOverall)
+    || rubric.decisionRule.passMinimumOverall < 0
+    || rubric.decisionRule.passMinimumOverall > 1
+    || !Array.isArray(rubric.decisionRule.blockingConditions)
+    || rubric.decisionRule.blockingConditions.length === 0
+    || rubric.decisionRule.blockingConditions.some((item) => !cleanString(item))) {
+    errors.push("Rubric decisionRule 缺少通过阈值或明确 blocker。 ");
   }
   if (!isRecord(rubric.boundaries)
     || rubric.boundaries.humanVerdictRequired !== true
@@ -346,8 +432,11 @@ function loadSuite() {
   const rubricIds = rubrics.map((item) => item.rubricId);
   if (new Set(rubricIds).size !== rubricIds.length) errors.push("Rubric id 重复。");
   for (const caseSpec of cases) {
-    if (!rubricIds.includes(caseSpec.oracle?.rubricId)) {
+    const rubric = rubrics.find((item) => item.rubricId === caseSpec.oracle?.rubricId);
+    if (!rubric) {
       errors.push(`${caseSpec.caseId}: 找不到 rubric ${caseSpec.oracle?.rubricId || "unknown"}。`);
+    } else if (rubric.taskFamily !== caseSpec.taskFamily) {
+      errors.push(`${caseSpec.caseId}: taskFamily 与 rubric ${rubric.rubricId} 不一致。`);
     }
   }
   return { manifest, cases, rubrics, errors, ok: errors.length === 0 };
@@ -372,13 +461,8 @@ function buildSuiteCaseSetDigest(suite) {
 function buildSuiteRubricSetDigest(suite) {
   return sha256Text(stableStringify(suite.rubrics
     .map((rubric) => ({
-      version: rubric.version,
       rubricId: rubric.rubricId,
-      taskFamily: rubric.taskFamily,
-      scale: rubric.scale,
-      dimensions: rubric.dimensions,
-      decisionRule: rubric.decisionRule,
-      boundaries: rubric.boundaries
+      rubricDigest: buildRubricDigest(rubric)
     }))
     .sort((left, right) => left.rubricId.localeCompare(right.rubricId))));
 }
@@ -434,6 +518,7 @@ function collectSidecars(dataRoots) {
   const attributions = [];
   const attemptEvents = [];
   const invalid = [];
+  const excludedEvidence = [];
   const seenIds = new Set();
   for (const root of dataRoots) {
     for (const filePath of collectJsonFiles(root)) {
@@ -459,6 +544,13 @@ function collectSidecars(dataRoots) {
         validation = validateDesignReliabilityReview(payload);
         identity = payload.reviewId;
         if (validation.ok) reviews.push(payload);
+      } else if (payload?.version === LEGACY_REVIEW_VERSION) {
+        excludedEvidence.push({
+          kind: "human_review",
+          id: cleanString(payload.reviewId) || normalizeRelativePath(filePath),
+          reason: "historical_review_protocol_non_official"
+        });
+        continue;
       } else if (payload?.version === ATTRIBUTION_VERSION) {
         validation = validateDesignReliabilityAttribution(payload);
         identity = payload.attributionId;
@@ -482,7 +574,7 @@ function collectSidecars(dataRoots) {
       }
     }
   }
-  return { runs, reviews, attributions, attemptEvents, invalid };
+  return { runs, reviews, attributions, attemptEvents, invalid, excludedEvidence };
 }
 
 function findCase(suite, caseId) {
@@ -543,12 +635,38 @@ function readGitEnvironment() {
 function fixtureInputs(cases) {
   const byRef = new Map();
   for (const caseSpec of cases) {
-    for (const input of caseSpec.task.agentVisibleInputs) {
+    const inputs = [
+      ...caseSpec.task.agentVisibleInputs,
+      ...(caseSpec.task.fixtureGeneratedInputs || []).map((input) => ({
+        ...input,
+        generatedContent: `${JSON.stringify({
+          version: "design-reliability-fixture-facts/v1",
+          facts: input.facts,
+          boundaries: {
+            factsOnly: true,
+            noAssetSelection: true,
+            noLayoutPreset: true,
+            designerOwnsVisualDecisions: true
+          }
+        }, null, 2)}\n`
+      }))
+    ];
+    for (const input of inputs) {
       const ref = normalizeRelativePath(input.ref);
       const existing = byRef.get(ref);
       if (!existing) {
-        byRef.set(ref, { ref, roles: [input.role], caseIds: [caseSpec.caseId] });
+        byRef.set(ref, {
+          ref,
+          roles: [input.role],
+          caseIds: [caseSpec.caseId],
+          ...(input.generatedContent !== undefined
+            ? { generatedContent: String(input.generatedContent) }
+            : {})
+        });
         continue;
+      }
+      if (existing.generatedContent !== input.generatedContent) {
+        throw new Error(`同一 fixture ref 同时声明为不同来源或内容：${ref}`);
       }
       if (!existing.roles.includes(input.role)) existing.roles.push(input.role);
       if (!existing.caseIds.includes(caseSpec.caseId)) existing.caseIds.push(caseSpec.caseId);
@@ -558,13 +676,19 @@ function fixtureInputs(cases) {
 }
 
 function collectFixtureFileRefs(root) {
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return { files: [], unsafeLinks: [] };
+  if (fs.lstatSync(root).isSymbolicLink()) return { files: [], unsafeLinks: ["."] };
   const pending = [path.resolve(root)];
   const files = [];
+  const unsafeLinks = [];
   while (pending.length > 0) {
     const current = pending.pop();
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const absolutePath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        unsafeLinks.push(normalizeRelativePath(path.relative(root, absolutePath)));
+        continue;
+      }
       if (entry.isDirectory()) {
         pending.push(absolutePath);
         continue;
@@ -573,7 +697,7 @@ function collectFixtureFileRefs(root) {
       files.push(normalizeRelativePath(path.relative(root, absolutePath)));
     }
   }
-  return files.sort();
+  return { files: files.sort(), unsafeLinks: unsafeLinks.sort() };
 }
 
 function evaluateFixtureInventory(expectedRefsInput, actualRefsInput) {
@@ -611,13 +735,16 @@ function selectFixtureCases(suite, args) {
 function inspectFixture(cases, fixtureRoot) {
   const inputs = fixtureInputs(cases);
   const expectedRefs = inputs.map((input) => normalizeRelativePath(input.ref));
-  const actualRefs = collectFixtureFileRefs(fixtureRoot);
+  const collected = collectFixtureFileRefs(fixtureRoot);
+  const actualRefs = collected.files;
   const inventory = evaluateFixtureInventory(expectedRefs, actualRefs);
   const files = [];
   const missing = [];
   for (const input of inputs) {
     const absolutePath = resolveInside(fixtureRoot, input.ref);
-    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+    if (!fs.existsSync(absolutePath)
+      || fs.lstatSync(absolutePath).isSymbolicLink()
+      || !fs.statSync(absolutePath).isFile()) {
       missing.push(input.ref);
       continue;
     }
@@ -635,23 +762,27 @@ function inspectFixture(cases, fixtureRoot) {
     digest: file.digest
   }))));
   return {
-    ready: missing.length === 0,
-    freshRunReady: missing.length === 0 && inventory.unexpected.length === 0,
+    ready: missing.length === 0 && collected.unsafeLinks.length === 0,
+    freshRunReady: missing.length === 0
+      && inventory.unexpected.length === 0
+      && collected.unsafeLinks.length === 0,
     fixtureDigest,
     files,
     missing,
     unexpected: inventory.unexpected,
+    unsafeLinks: collected.unsafeLinks,
     actualFileCount: actualRefs.length,
     expectedFileCount: expectedRefs.length,
     boundaries: {
       reviewOnlyReferencesExcluded: true,
       absolutePathsNotPersisted: true,
-      unexpectedFilesFailFreshRun: true
+      unexpectedFilesFailFreshRun: true,
+      unsafeLinksFailFixture: true
     }
   };
 }
 
-function prepareFixture(suite, args) {
+function prepareFixture(suite, args, dataRoot = DEFAULT_DATA_ROOT) {
   const sourceRoot = path.resolve(args.get("--source-root"));
   const destination = path.resolve(args.get("--destination"));
   if (!args.hasFlag("--allow-create")) {
@@ -665,33 +796,64 @@ function prepareFixture(suite, args) {
   if (sourceToDestination && !sourceToDestination.startsWith("..") && !path.isAbsolute(sourceToDestination)) {
     throw new Error("destination 不能放在源项目内部。 ");
   }
+  const sourceRealPath = assertFixtureDestinationOutsideSource(sourceRoot, destination);
+  const selectedCases = selectFixtureCases(suite, args);
+  if (selectedCases.length !== 1) {
+    throw new Error(
+      `fixtureId ${selectedCases[0]?.task?.fixtureId || 'unknown'} 被 ${selectedCases.length} 个 Case 共用；`
+      + '正式 live fixture 必须使用 --case 单独准备，不能生成随后会被单 Case 判为 unexpected 的联合目录。'
+    );
+  }
+  const inputs = fixtureInputs(selectedCases);
+  const missing = inputs
+    .filter((input) => {
+      if (input.generatedContent !== undefined) return false;
+      const sourcePath = resolveInside(sourceRoot, input.ref);
+      return !fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile();
+    })
+    .map((input) => input.ref);
+  if (missing.length > 0) {
+    throw new Error(`源 fixture 缺少 ${missing.length} 个文件：${missing.join("、")}`);
+  }
+  for (const input of inputs) {
+    if (input.generatedContent !== undefined) continue;
+    const sourcePath = resolveInside(sourceRoot, input.ref);
+    const sourceInputRealPath = fs.realpathSync.native(sourcePath);
+    if (!isSameOrNestedRealPath(sourceRealPath, sourceInputRealPath)) {
+      throw new Error(`源 fixture 输入通过 junction / symlink 越出源项目：${input.ref}`);
+    }
+  }
   if (fs.existsSync(destination)) {
+    if (fs.lstatSync(destination).isSymbolicLink()) {
+      throw new Error(`destination 不能是 junction / symlink：${destination}`);
+    }
     const existing = fs.readdirSync(destination);
     if (existing.length > 0) throw new Error(`destination 已存在且非空，拒绝覆盖：${destination}`);
   } else {
     fs.mkdirSync(destination, { recursive: true });
   }
-  const selectedCases = selectFixtureCases(suite, args);
-  const inputs = fixtureInputs(selectedCases);
-  const missing = [];
+  assertFixtureDestinationOutsideSource(sourceRoot, destination);
   const copied = [];
   for (const input of inputs) {
-    const sourcePath = resolveInside(sourceRoot, input.ref);
-    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
-      missing.push(input.ref);
-      continue;
-    }
     const destinationPath = resolveInside(destination, input.ref);
     fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
-    fs.copyFileSync(sourcePath, destinationPath, fs.constants.COPYFILE_EXCL);
+    if (input.generatedContent !== undefined) {
+      fs.writeFileSync(destinationPath, input.generatedContent, {
+        encoding: "utf8",
+        flag: "wx"
+      });
+    } else {
+      const sourcePath = resolveInside(sourceRoot, input.ref);
+      fs.copyFileSync(sourcePath, destinationPath, fs.constants.COPYFILE_EXCL);
+    }
     copied.push(input.ref);
-  }
-  if (missing.length > 0) {
-    throw new Error(`源 fixture 缺少 ${missing.length} 个文件：${missing.join("、")}`);
   }
   const inspection = inspectFixture(selectedCases, destination);
   if (!inspection.freshRunReady) {
-    throw new Error(`新 fixture 出现未声明文件：${inspection.unexpected.join("、")}`);
+    throw new Error(`新 fixture 不安全或出现未声明文件：${[
+      ...inspection.unexpected,
+      ...inspection.unsafeLinks.map((ref) => `junction/symlink:${ref}`)
+    ].join("、")}`);
   }
   const compactTime = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
   const instanceId = `fixture-${compactTime}-${crypto.randomBytes(6).toString("hex")}`;
@@ -701,6 +863,11 @@ function prepareFixture(suite, args) {
     fixtureId: selectedCases[0]?.task?.fixtureId || "unknown",
     suiteId: suite.manifest.suiteId,
     caseIds: selectedCases.map((item) => item.caseId).sort(),
+    caseRefs: selectedCases.map((item) => ({
+      caseId: item.caseId,
+      revision: item.revision,
+      caseDigest: item.caseDigest
+    })).sort((left, right) => left.caseId.localeCompare(right.caseId)),
     preparedAt: new Date().toISOString(),
     copiedFileCount: copied.length,
     fixtureDigest: inspection.fixtureDigest,
@@ -713,15 +880,23 @@ function prepareFixture(suite, args) {
       benchmarkMetadataNotWrittenIntoAgentProject: true
     }
   };
-  const reportPath = path.join(DEFAULT_DATA_ROOT, "fixtures", `${report.fixtureId}-${instanceId}.json`);
+  const reportPath = resolveInside(dataRoot, path.join(
+    "fixtures",
+    `${safePathSegment(report.fixtureId)}-${safePathSegment(instanceId)}.json`
+  ));
   writeJsonExclusive(reportPath, report);
   return { report, reportPath, destination };
 }
 
-function readFixtureInstance(fixtureRoot, selectedCases, inspection) {
-  const reportsRoot = path.join(DEFAULT_DATA_ROOT, "fixtures");
+function readFixtureInstance(fixtureRoot, selectedCases, inspection, dataRoot = DEFAULT_DATA_ROOT) {
+  const reportsRoot = path.join(dataRoot, "fixtures");
   if (!fs.existsSync(reportsRoot)) return undefined;
   const expectedCaseIds = selectedCases.map((item) => item.caseId).sort();
+  const expectedCaseRefs = selectedCases.map((item) => ({
+    caseId: item.caseId,
+    revision: item.revision,
+    caseDigest: item.caseDigest
+  })).sort((left, right) => left.caseId.localeCompare(right.caseId));
   const matches = [];
   for (const filePath of collectJsonFiles(reportsRoot)) {
     let report;
@@ -734,7 +909,9 @@ function readFixtureInstance(fixtureRoot, selectedCases, inspection) {
       || !cleanString(report.instanceId)
       || report.fixtureDigest !== inspection.fixtureDigest
       || stableStringify(Array.isArray(report.caseIds) ? [...report.caseIds].sort() : [])
-        !== stableStringify(expectedCaseIds)) {
+        !== stableStringify(expectedCaseIds)
+      || stableStringify(Array.isArray(report.caseRefs) ? report.caseRefs : [])
+        !== stableStringify(expectedCaseRefs)) {
       continue;
     }
     const expectedPathBinding = sha256Text(
@@ -771,6 +948,40 @@ function parseEvidenceArgs(args, fixtureRoot) {
     });
   }
   return evidenceRefs;
+}
+
+function normalizeDeclaredFinalArtifactRefs(value) {
+  const refs = (Array.isArray(value) ? value : []).map(normalizeRelativePath);
+  const unsafe = refs.find(isUnsafeProjectRelativeRef);
+  if (unsafe) throw new Error(`Agent 最终交付声明包含不安全项目引用：${unsafe}`);
+  return [...new Set(refs.filter(Boolean))].sort();
+}
+
+function buildAgentFinalArtifactManifest(declaredRefsInput, evidenceRefs) {
+  const declaredRefs = normalizeDeclaredFinalArtifactRefs(declaredRefsInput);
+  const evidenceByRef = new Map(evidenceRefs.map((evidence) => [
+    normalizeRelativePath(evidence.ref),
+    evidence
+  ]));
+  const artifacts = declaredRefs.map((ref) => {
+    const evidence = evidenceByRef.get(ref);
+    if (!evidence
+      || evidence.verified !== true
+      || !["editable_psd", "raster_export"].includes(evidence.kind)) {
+      throw new Error(`Agent 最终交付声明没有绑定已验证 PSD/位图产物：${ref}`);
+    }
+    return {
+      kind: evidence.kind,
+      ref,
+      digest: evidence.digest
+    };
+  });
+  return {
+    version: "design-reliability-final-artifact-manifest/v1",
+    declaredBy: "agent_delivery_receipt",
+    artifacts,
+    manifestDigest: sha256Text(stableStringify(artifacts))
+  };
 }
 
 function collectRunRecordFiles(fixtureRoot) {
@@ -885,6 +1096,193 @@ function artifactGeometryMatchesCase(caseSpec, metadata) {
   return true;
 }
 
+function exactRefSetMatches(actualInput, expectedInput) {
+  const actual = normalizeDeclaredFinalArtifactRefs(actualInput);
+  const expected = normalizeDeclaredFinalArtifactRefs(expectedInput);
+  return actual.length === expected.length
+    && stableStringify(actual) === stableStringify(expected);
+}
+
+function buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs) {
+  if (caseSpec.taskFamily !== "sku") return [];
+  const source = bindingProof?.skuDeliveryEvidence;
+  if (!isRecord(source) || source.version !== "debug-sku-delivery-evidence/v1") return [];
+  const receipt = source.runtimeDeliveryReceipt;
+  const exportReadback = source.skuExportReadback;
+  const editableReadback = source.skuEditableDeliveryReadback;
+  const expectedRasterRefs = Array.isArray(caseSpec.oracle?.outputInventory?.expectedRasterRefs)
+    ? caseSpec.oracle.outputInventory.expectedRasterRefs.map(normalizeRelativePath)
+    : [];
+  const expectedEditableRefs = Array.isArray(caseSpec.oracle?.outputInventory?.expectedEditableRefs)
+    ? caseSpec.oracle.outputInventory.expectedEditableRefs.map(normalizeRelativePath)
+    : [];
+  const expectedCount = Number(caseSpec.oracle?.outputInventory?.exactRasterExports);
+  const expectedEditableCount = Number(caseSpec.oracle?.outputInventory?.exactEditableDocuments);
+  const expectedFinalRefs = [...expectedRasterRefs, ...expectedEditableRefs];
+  if (!Number.isInteger(expectedCount)
+    || expectedCount <= 0
+    || expectedEditableCount !== expectedCount
+    || expectedRasterRefs.length !== expectedCount
+    || expectedEditableRefs.length !== expectedCount
+    || !isRecord(receipt)
+    || receipt.status !== "ready"
+    || receipt.settlementScope !== "multi_document_task"
+    || !Array.isArray(receipt.outputs)
+    || !["editable_sku_batch_documents", "sku_images", "sku_manifest", "review_report"]
+      .every((output) => receipt.outputs.includes(output))
+    || !Array.isArray(receipt.resultRefs)
+    || receipt.resultRefs.length !== expectedCount
+    || new Set(receipt.resultRefs).size !== expectedCount
+    || !Array.isArray(receipt.resultRefProofs)
+    || receipt.resultRefProofs.length !== expectedCount
+    || !receipt.resultRefProofs.every((proof) => (
+      isRecord(proof)
+      && proof.effect === "save_export"
+      && receipt.resultRefs.includes(proof.resultRef)
+    ))
+    || !Array.isArray(receipt.artifacts)
+    || receipt.artifacts.length !== expectedCount * 2
+    || !exactRefSetMatches(bindingProof.finalArtifactRefs, expectedFinalRefs)) {
+    return [];
+  }
+  const rasterArtifacts = receipt.artifacts.filter((artifact) => (
+    artifact?.kind === "raster_export" && artifact?.proof === "file_probe"
+  ));
+  const editableArtifacts = receipt.artifacts.filter((artifact) => (
+    artifact?.kind === "editable_document"
+    && artifact?.proof === "staged_editable_document_promotion"
+  ));
+  if (rasterArtifacts.length !== expectedCount
+    || editableArtifacts.length !== expectedCount
+    || !exactRefSetMatches(rasterArtifacts.map((artifact) => artifact.path), expectedRasterRefs)
+    || !exactRefSetMatches(editableArtifacts.map((artifact) => artifact.path), expectedEditableRefs)
+    || !isRecord(exportReadback)
+    || exportReadback.version !== "sku-export-readback/v0"
+    || exportReadback.status !== "ready_for_review"
+    || exportReadback.expectedExportCount !== expectedCount
+    || exportReadback.actualExportCount !== expectedCount
+    || exportReadback.fileProbeCount !== expectedCount
+    || exportReadback.okFileProbeCount !== expectedCount
+    || exportReadback.failedFileProbeCount !== 0
+    || exportReadback.missingFileProbeCount !== 0
+    || exportReadback.dimensionMismatchCount !== 0
+    || exportReadback.staleFileProbeCount !== 0
+    || exportReadback.visualMetricBlockerCount !== 0
+    || exportReadback.missingVisualMetricCount !== 0
+    || !isRecord(editableReadback)
+    || editableReadback.version !== "sku-editable-delivery-readback/v1"
+    || editableReadback.status !== "ready"
+    || editableReadback.expectedCount !== expectedCount
+    || editableReadback.verifiedCount !== expectedCount
+    || !exactRefSetMatches(editableReadback.expectedPaths, expectedEditableRefs)
+    || !exactRefSetMatches(editableReadback.verifiedPaths, expectedEditableRefs)
+    || !Array.isArray(editableReadback.missingItemIds)
+    || editableReadback.missingItemIds.length !== 0
+    || !Array.isArray(editableReadback.violations)
+    || editableReadback.violations.length !== 0
+    || !Array.isArray(editableReadback.items)
+    || editableReadback.items.length !== expectedCount) {
+    return [];
+  }
+  const itemIds = new Set();
+  const itemRasterRefs = [];
+  const itemEditableRefs = [];
+  for (const item of editableReadback.items) {
+    if (!isRecord(item)
+      || !cleanString(item.itemId)
+      || itemIds.has(item.itemId)
+      || item.promotionVerified !== true
+      || !["new_path", "modified_since_baseline"].includes(item.freshnessProof)
+      || !cleanString(item.templateName)
+      || !Array.isArray(item.combination)
+      || item.combination.length === 0
+      || !Array.isArray(item.copiedLayerIds)
+      || !Array.isArray(item.copiedLayerNames)
+      || item.copiedLayerIds.length !== item.combination.length
+      || item.copiedLayerNames.length !== item.combination.length
+      || item.copiedLayerIds.some((layerId) => !Number.isSafeInteger(layerId) || layerId <= 0)
+      || item.copiedLayerNames.some((name) => !cleanString(name))
+      || !isRecord(item.sourceHistoryStateRef)
+      || !Number.isSafeInteger(item.sourceHistoryStateRef.documentId)
+      || item.sourceHistoryStateRef.documentId <= 0
+      || !Number.isSafeInteger(item.sourceHistoryStateRef.historyStateId)
+      || item.sourceHistoryStateRef.historyStateId <= 0) {
+      return [];
+    }
+    itemIds.add(item.itemId);
+    itemRasterRefs.push(normalizeRelativePath(item.rasterPath));
+    itemEditableRefs.push(normalizeRelativePath(item.editablePath));
+  }
+  if (!exactRefSetMatches(itemRasterRefs, expectedRasterRefs)
+    || !exactRefSetMatches(itemEditableRefs, expectedEditableRefs)) {
+    return [];
+  }
+  const rasterEvidence = evidenceRefs.filter((evidence) => (
+    evidence.kind === "raster_export" && evidence.verified === true
+  ));
+  const editableEvidence = evidenceRefs.filter((evidence) => (
+    evidence.kind === "editable_psd" && evidence.verified === true
+  ));
+  if (!exactRefSetMatches(rasterEvidence.map((evidence) => evidence.ref), expectedRasterRefs)
+    || !exactRefSetMatches(editableEvidence.map((evidence) => evidence.ref), expectedEditableRefs)) {
+    return [];
+  }
+  const pairedReceiptFact = {
+    outputs: receipt.outputs,
+    resultRefs: receipt.resultRefs,
+    resultRefProofs: receipt.resultRefProofs,
+    artifacts: receipt.artifacts
+  };
+  const structureFact = editableReadback.items.map((item) => ({
+    itemId: item.itemId,
+    editablePath: item.editablePath,
+    templateName: item.templateName,
+    combination: item.combination,
+    sourceHistoryStateRef: item.sourceHistoryStateRef,
+    copiedLayerIds: item.copiedLayerIds,
+    copiedLayerNames: item.copiedLayerNames
+  }));
+  const visualFact = {
+    exportReadback,
+    rasterArtifacts: rasterEvidence.map((evidence) => ({
+      ref: evidence.ref,
+      digest: evidence.digest,
+      artifactMetadata: evidence.artifactMetadata
+    }))
+  };
+  const pairFact = editableReadback.items.map((item) => ({
+    itemId: item.itemId,
+    rasterPath: item.rasterPath,
+    editablePath: item.editablePath,
+    sourceHistoryStateRef: item.sourceHistoryStateRef
+  }));
+  return [{
+    kind: "paired_editable_delivery_receipt",
+    ref: "receipt:sku-paired-editable-delivery",
+    digest: sha256Text(stableStringify(pairedReceiptFact)),
+    count: expectedCount,
+    verified: true
+  }, {
+    kind: "sku_structure_readback_set",
+    ref: "receipt:sku-structure-readback-set",
+    digest: sha256Text(stableStringify(structureFact)),
+    count: structureFact.length,
+    verified: true
+  }, {
+    kind: "sku_visual_readback_set",
+    ref: "receipt:sku-visual-readback-set",
+    digest: sha256Text(stableStringify(visualFact)),
+    count: rasterEvidence.length,
+    verified: true
+  }, {
+    kind: "sku_pair_binding",
+    ref: "receipt:sku-pair-binding",
+    digest: sha256Text(stableStringify(pairFact)),
+    count: pairFact.length,
+    verified: true
+  }];
+}
+
 async function outputEvidenceFromChanges(
   caseSpec,
   fixtureRoot,
@@ -944,19 +1342,35 @@ async function outputEvidenceFromChanges(
       }
     });
   }
+  const finalArtifactRefs = normalizeDeclaredFinalArtifactRefs(bindingProof.finalArtifactRefs);
   if (caseSpec.taskFamily === "sku") {
-    const rasterRefs = evidenceRefs.filter((item) => item.kind === "raster_export").map((item) => item.ref).sort();
+    const rasterRefs = finalArtifactRefs.filter((ref) => (
+      evidenceRefs.some((item) => item.kind === "raster_export" && item.ref === ref && item.verified === true)
+    )).sort();
     const expectedCount = Number(caseSpec.oracle?.outputInventory?.exactRasterExports);
+    const expectedRefs = [...new Set(
+      Array.isArray(caseSpec.oracle?.outputInventory?.expectedRasterRefs)
+        ? caseSpec.oracle.outputInventory.expectedRasterRefs.map(normalizeRelativePath)
+        : []
+    )].sort();
     evidenceRefs.push({
       kind: "sku_output_inventory",
       ref: "receipt:sku-output-inventory",
       digest: sha256Text(stableStringify(rasterRefs)),
       count: rasterRefs.length,
       expectedCount: Number.isInteger(expectedCount) ? expectedCount : undefined,
-      verified: Number.isInteger(expectedCount) ? rasterRefs.length === expectedCount : rasterRefs.length > 0
+      verified: Number.isInteger(expectedCount)
+        && rasterRefs.length === expectedCount
+        && expectedRefs.length === expectedCount
+        && stableStringify(rasterRefs) === stableStringify(expectedRefs),
+      expectedRefsDigest: sha256Text(stableStringify(expectedRefs))
     });
+    evidenceRefs.push(...buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs));
   }
-  return evidenceRefs;
+  return {
+    evidenceRefs,
+    finalArtifactManifest: buildAgentFinalArtifactManifest(finalArtifactRefs, evidenceRefs)
+  };
 }
 
 function recordRun(suite, args) {
@@ -984,6 +1398,11 @@ function recordRun(suite, args) {
     provider: runtimeModelIdentity.ok ? runtimeModelIdentity.identity.provider : "unknown",
     modelId: runtimeModelIdentity.ok ? runtimeModelIdentity.identity.modelId : "unknown"
   };
+  const evidenceRefs = parseEvidenceArgs(args, fixtureRoot);
+  const finalArtifactManifest = buildAgentFinalArtifactManifest(
+    args.getAll("--final-artifact"),
+    evidenceRefs
+  );
   const observation = deriveDesignReliabilityRunObservation({
     caseSpec,
     runRecords,
@@ -995,15 +1414,15 @@ function recordRun(suite, args) {
       : Number(args.get("--user-interventions")),
     fixtureDigest: fixture.fixtureDigest,
     environment,
-    evidenceRefs: parseEvidenceArgs(args, fixtureRoot)
+    evidenceRefs,
+    finalArtifactManifest
   });
   const validation = validateDesignReliabilityRun(observation);
   if (!validation.ok) throw new Error(validation.errors.join("；"));
-  const outputPath = path.join(
+  const outputPath = resolveSidecarOutputPath(
     DEFAULT_DATA_ROOT,
-    "runs",
-    observation.cohortId,
-    `${observation.runObservationId}.json`
+    ["runs", observation.cohortId],
+    observation.runObservationId
   );
   writeJsonExclusive(outputPath, observation);
   return { observation, outputPath };
@@ -1092,10 +1511,12 @@ function recordReview(suite, args) {
     reviewId,
     runObservationId: run.runObservationId,
     rubricId: rubric.rubricId,
+    rubricDigest: buildRubricDigest(rubric),
     reviewerId,
     reviewedAt: timestamp,
     blindedToCohort: !args.hasFlag("--not-blinded"),
     blindedToCandidateOrigin: args.hasFlag("--blinded-to-candidate-origin"),
+    evidenceProtocol: "bound_self_reported",
     evidenceRefs: [...new Set([
       ...args.getAll("--evidence-ref"),
       ...comparisonEvidenceRefs.map((item) => item.ref)
@@ -1123,7 +1544,11 @@ function recordReview(suite, args) {
     enforceBlindProtocol: true
   });
   if (!validation.ok) throw new Error(validation.errors.join("；"));
-  const outputPath = path.join(DEFAULT_DATA_ROOT, "reviews", run.runObservationId, `${reviewId}.json`);
+  const outputPath = resolveSidecarOutputPath(
+    DEFAULT_DATA_ROOT,
+    ["reviews", run.runObservationId],
+    reviewId
+  );
   writeJsonExclusive(outputPath, review);
   return { review, outputPath };
 }
@@ -1164,7 +1589,11 @@ function recordAttribution(args) {
   };
   const validation = validateDesignReliabilityAttribution(attribution);
   if (!validation.ok) throw new Error(validation.errors.join("；"));
-  const outputPath = path.join(DEFAULT_DATA_ROOT, "attributions", run.runObservationId, `${attributionId}.json`);
+  const outputPath = resolveSidecarOutputPath(
+    DEFAULT_DATA_ROOT,
+    ["attributions", run.runObservationId],
+    attributionId
+  );
   writeJsonExclusive(outputPath, attribution);
   return { attribution, outputPath };
 }
@@ -1314,7 +1743,8 @@ function retainContextuallyValidReviews(sidecars, suite) {
 }
 
 function isStrictBlindReview(review) {
-  return review?.blindedToCohort === true
+  return review?.evidenceProtocol === "anonymous_packet_verified"
+    && review?.blindedToCohort === true
     && review?.blindedToCandidateOrigin === true
     && Number.isFinite(review?.weightedOverall)
     && Array.isArray(review?.comparisonEvidenceRefs)
@@ -1759,6 +2189,7 @@ function buildStatus(suite, args) {
       suiteId: suite.manifest.suiteId,
       cohortId,
       cases: suite.cases,
+      rubrics: suite.rubrics,
       runs: reportRuns,
       reviews: sidecars.reviews,
       attributions: sidecars.attributions
@@ -1807,7 +2238,7 @@ function buildStatus(suite, args) {
       "未绑定固定 Case 的历史运行不进入正式成功率分母。",
       "请求一旦进入 submission_started 就必须有 terminal Attempt；缺少 Run Observation 的失败不会被静默移出分母。",
       "没有人工评审时只能报告技术可靠性，不能宣称设计质量达标。",
-      "不同 caseSetDigest 的 cohort 禁止直接比较。"
+      "不同 caseSetDigest、rubricSetDigest 或 fixtureDigest 的 cohort 禁止直接比较。"
     ]
   };
 }
@@ -2183,6 +2614,14 @@ function validateDebugBridgeReceipt(response, input) {
   }
   if (!cleanString(receipt.requestId)) errors.push("运行窗口没有返回请求身份。");
   if (!cleanString(receipt.conversationId)) errors.push("运行窗口没有返回对话身份。");
+  if (!Array.isArray(receipt.finalArtifactRefs)
+    || receipt.finalArtifactRefs.length === 0
+    || receipt.finalArtifactRefs.some((ref) => {
+      const normalized = normalizeRelativePath(ref);
+      return isUnsafeProjectRelativeRef(normalized);
+    })) {
+    errors.push("运行窗口没有返回 Agent 交付声明绑定的安全 finalArtifactRefs。 ");
+  }
   return { ok: errors.length === 0, errors, receipt };
 }
 
@@ -2316,15 +2755,7 @@ async function runLiveCase(suite, args) {
   const cohortId = args.get("--cohort", "candidate");
   const repeatIndex = Number(args.get("--repeat", "1"));
   const rubric = suite.rubrics.find((item) => item.rubricId === caseSpec.oracle.rubricId);
-  const rubricDigest = sha256Text(stableStringify({
-    version: rubric?.version,
-    rubricId: rubric?.rubricId,
-    taskFamily: rubric?.taskFamily,
-    scale: rubric?.scale,
-    dimensions: rubric?.dimensions,
-    decisionRule: rubric?.decisionRule,
-    boundaries: rubric?.boundaries
-  }));
+  const rubricDigest = buildRubricDigest(rubric);
   const instructionDigest = sha256Text(caseSpec.task.instruction);
   const runtime = preflight.infrastructure.liveEnvironment.runtime;
   const runtimeBuildId = runtime?.buildId;
@@ -2471,7 +2902,7 @@ async function runLiveCase(suite, args) {
       receiptApiModelId: cleanString(receiptValidation.receipt.submittedApiModelId) || undefined,
       receiptProvider: receiptValidation.receipt.provider
     }));
-    const evidenceRefs = await outputEvidenceFromChanges(
+    const evidenceBundle = await outputEvidenceFromChanges(
       caseSpec,
       fixtureRoot,
       changedRefs,
@@ -2481,7 +2912,9 @@ async function runLiveCase(suite, args) {
         modelIdentityDigest,
         modelIdentityVerified: true,
         projectBindingDigest,
-        projectBindingVerified: receiptValidation.ok && sourceInputIntact
+        projectBindingVerified: receiptValidation.ok && sourceInputIntact,
+        finalArtifactRefs: receiptValidation.receipt.finalArtifactRefs,
+        skuDeliveryEvidence: receiptValidation.receipt.skuDeliveryEvidence
       },
       fixtureBefore,
       fixtureAfter
@@ -2514,7 +2947,8 @@ async function runLiveCase(suite, args) {
         suiteRubricSetDigest,
         cohortFingerprint
       },
-      evidenceRefs
+      evidenceRefs: evidenceBundle.evidenceRefs,
+      finalArtifactManifest: evidenceBundle.finalArtifactManifest
     });
     const baselineValidation = validateMutationBaselineAgainstObservation(
       receiptValidation.receipt,
@@ -2524,7 +2958,11 @@ async function runLiveCase(suite, args) {
     if (!baselineValidation.ok) throw new Error(baselineValidation.errors.join("；"));
     const validation = validateDesignReliabilityRun(observation);
     if (!validation.ok) throw new Error(validation.errors.join("；"));
-    const outputPath = path.join(DEFAULT_DATA_ROOT, "runs", observation.cohortId, `${observation.runObservationId}.json`);
+    const outputPath = resolveSidecarOutputPath(
+      DEFAULT_DATA_ROOT,
+      ["runs", observation.cohortId],
+      observation.runObservationId
+    );
     writeJsonExclusive(outputPath, observation);
     const attemptReport = {
       version: "design-reliability-live-attempt/v1",
@@ -2544,7 +2982,11 @@ async function runLiveCase(suite, args) {
         aestheticReviewStillRequired: true
       }
     };
-    const attemptPath = path.join(DEFAULT_DATA_ROOT, "attempts", `${observation.runObservationId}.json`);
+    const attemptPath = resolveSidecarOutputPath(
+      DEFAULT_DATA_ROOT,
+      ["attempts"],
+      observation.runObservationId
+    );
     writeJsonExclusive(attemptPath, attemptReport);
     const terminalStatus = observation.observed.technicalDeliveryPassed
       ? "technical_delivery_passed"
@@ -2869,11 +3311,13 @@ function printHelp() {
     "  record-run --case id --run-record file [--run-record file...] --fixture-root dir",
     "      --cohort id --provider id --model id --repeat N --user-interventions N",
     "      --evidence editable_psd=relative/path --evidence raster_export=relative/path",
+    "      --final-artifact relative/path（可重复；必须来自 Agent delivery receipt，不得把全部导出猜成最终稿）",
     "  record-review --run-observation file --reviewer alias --decision pass|needs_fix|unscorable",
     "      --scores dimension=0.8,... [--pairwise comparable|better|weaker]",
-    "      --blinded-to-candidate-origin --comparison-evidence-ref candidate_final=candidate:relative/path",
-    "      --comparison-evidence-ref user_design_anchor=anchor:user-design:token",
-    "      --comparison-evidence-ref eagle_anchor=eagle:item-id [--blocker text]",
+    "      --blinded-to-candidate-origin --comparison-evidence-ref candidate_final=candidate:relative/path@sha256:<64位摘要>",
+    "      --comparison-evidence-ref user_design_anchor=user-design:<Case中的相对路径>",
+    "      --comparison-evidence-ref eagle_anchor=eagle:item:<Case中的条目ID> [--blocker text]",
+    "      当前 record-review 只生成 bound_self_reported 诊断评审；匿名评审包落地前不计入正式成功率。",
     "  record-attribution --run-observation file --owner owner --failure-mode mode",
     "      --status hypothesis|confirmed|rejected --rationale text --evidence-ref token",
     "",
@@ -2949,6 +3393,7 @@ module.exports = {
   buildPreflight,
   buildLiveAttemptCoverage,
   buildStatus,
+  buildSkuLiveDeliveryEvidence,
   collectSidecars,
   evaluateLiveEnvironmentSafety,
   evaluateFixtureInventory,
@@ -2958,16 +3403,20 @@ module.exports = {
   loadSuite,
   parseArgs,
   prepareFixture,
+  readFixtureInstance,
   recordAttribution,
   recordReview,
   recordRun,
   reconcileLiveAttempt,
   resolveReliabilityEvidenceRoots,
+  resolveSidecarOutputPath,
   retainContextuallyValidAttemptEvents,
+  retainContextuallyValidReviews,
   runObservationMatchesAttempt,
   sidecarRoots,
   validateAttemptEventStateMachine,
   validateDebugBridgeReceipt,
+  validateRubric,
   validateMutationBaselineAgainstObservation,
   runLiveCase
 };

@@ -59,27 +59,18 @@ import type {
     ManualSkuColorCardResult
 } from '../shared/manual-sku-color-card';
 import type { ProjectSelectionResolution } from '../shared/project-selection-resolution';
+import type {
+    CaptureSkuStagingDestinationBaselinesResult,
+    SkuStagingTransactionResult,
+    StagedFilePromotionInput,
+    StagedFilePromotionResult
+} from '../shared/sku-staging-transaction-contract';
 
 export interface DownloadProgress {
     modelId: string;
     percent: number;
     downloaded: number;
     total: number;
-}
-
-export interface RemoveSkuStagingParentIfEmptyResult {
-    success: boolean;
-    removed: boolean;
-    path: string;
-    reason?: 'missing' | 'not_empty';
-    code?:
-        | 'invalid_directory_path'
-        | 'dangerous_directory_path'
-        | 'directory_inspection_failed'
-        | 'directory_is_symbolic_link'
-        | 'path_not_directory'
-        | 'directory_remove_failed';
-    error?: string;
 }
 
 export interface DesignEchoAPI {
@@ -494,7 +485,14 @@ export interface DesignEchoAPI {
         ext?: string;
         size?: number;
     }[] | null>;
-    removeSkuStagingParentIfEmpty: (path: string) => Promise<RemoveSkuStagingParentIfEmptyResult>;
+    issueSkuStagingTransaction: (outputDir: string) => Promise<SkuStagingTransactionResult>;
+    captureSkuStagingDestinationBaselines: (
+        transactionToken: string,
+        destinationPaths: string[]
+    ) => Promise<CaptureSkuStagingDestinationBaselinesResult>;
+    promoteStagedFileSet: (input: StagedFilePromotionInput) => Promise<StagedFilePromotionResult>;
+    removeSkuStagingParentIfEmpty: (transactionToken: string) => Promise<SkuStagingTransactionResult>;
+    removeSkuStagingTransactionRoot: (transactionToken: string) => Promise<SkuStagingTransactionResult>;
     openPath: (path: string) => Promise<void>;
     
     // 日志

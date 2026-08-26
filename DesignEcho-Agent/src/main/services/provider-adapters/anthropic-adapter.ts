@@ -9,6 +9,10 @@ import type {
     ToolCall, AdapterMessage, AdapterOptions
 } from './types';
 import { buildAgentProviderTokenBudget } from '../../../shared/agent-performance-policy';
+import {
+    canExecuteProviderStreamToolCalls,
+    resolveProviderStreamStopReason
+} from '../../../shared/provider-stream-completion';
 
 export class AnthropicAdapter implements ProviderAdapter {
     supportsNativeTools(): boolean {
@@ -97,19 +101,11 @@ export class AnthropicAdapter implements ProviderAdapter {
             }
         };
 
-        // Parse stop reason
-        if (raw.stop_reason === 'tool_use') {
-            result.stopReason = 'tool_use';
-        } else if (raw.stop_reason === 'end_turn') {
-            result.stopReason = 'end_turn';
-        } else if (raw.stop_reason === 'max_tokens') {
-            result.stopReason = 'max_tokens';
-        }
-
         // Parse content blocks
         const contentBlocks = raw.content || [];
         const textParts: string[] = [];
         const toolCalls: ToolCall[] = [];
+        let toolPayloadValid = true;
 
         for (const block of contentBlocks) {
             if (block.type === 'text') {
@@ -117,20 +113,37 @@ export class AnthropicAdapter implements ProviderAdapter {
             } else if (block.type === 'thinking') {
                 result.thinking = block.thinking;
             } else if (block.type === 'tool_use') {
+                const id = String(block.id || '').trim();
+                const name = String(block.name || '').trim();
+                const input = block.input;
+                if (!id || !name || !input || typeof input !== 'object' || Array.isArray(input)) {
+                    toolPayloadValid = false;
+                    continue;
+                }
                 toolCalls.push({
-                    id: block.id,
-                    name: block.name,
-                    arguments: block.input || {}
+                    id,
+                    name,
+                    arguments: input
                 });
             }
         }
 
         result.content = textParts.join('');
-        // max_tokens 可能截断 tool_use 的 input。与 OpenAI/Gemini 保持同一安全边界：
-        // transport 截断优先于工具存在，残缺调用不得进入 Agent 历史或执行链。
-        result.toolCalls = result.stopReason === 'max_tokens'
-            ? []
-            : toolCalls; // always set (empty array if none)
+        const parsedStopReason = resolveProviderStreamStopReason({
+            finishReason: raw.stop_reason,
+            hasToolCalls: toolCalls.length > 0
+        });
+        result.stopReason = toolPayloadValid ? parsedStopReason : 'stream_incomplete';
+        // transport 截断或未知终态优先于工具存在，残缺调用不得进入 Agent 历史或执行链。
+        result.toolCalls = canExecuteProviderStreamToolCalls(result.stopReason)
+            ? toolCalls
+            : [];
+        if ((result.stopReason === 'max_tokens' || result.stopReason === 'stream_incomplete')
+            && toolCalls.length > 0) {
+            result.incompleteToolCallNames = Array.from(new Set(
+                toolCalls.map((call) => call.name).filter(Boolean)
+            ));
+        }
 
         return result;
     }

@@ -1,9 +1,10 @@
 /**
  * E2 交付收据契约。
  *
- * 复合 Skill 可以声明自己真实形成了哪些交付物；Runtime 仍会独立核对目标文档、
- * 文件提交时的源 Host 版本、已复核全图和 Manifest 要求。普通 success、旧收据、
- * 同文档不同 revision 或未读图截图都不能直接推进 E2。
+ * 复合 Skill 可以声明自己真实形成了哪些交付物。单文档交付由 Runtime 核对目标、
+ * 文件提交源 Host 版本与已复核全图；多文档批次必须逐项声明 save/export resultRef，
+ * 再由 Runtime 绑定同一 TaskRun 的最后 mutation。普通 success、旧收据、部分文件、
+ * 错目标或收据后的内容修改都不能直接推进 E2。
  */
 
 import {
@@ -20,8 +21,11 @@ import type {
     SkillRuntimeDeliveryOutputBinding
 } from './contracts';
 
-export const RUNTIME_DELIVERY_RECEIPT_VERSION = 'runtime-delivery-receipt/v1' as const;
-const LEGACY_RUNTIME_DELIVERY_RECEIPT_VERSION = 'runtime-delivery-receipt/v0' as const;
+export const RUNTIME_DELIVERY_RECEIPT_VERSION = 'runtime-delivery-receipt/v2' as const;
+export const MAX_RUNTIME_DELIVERY_RESULT_REFS = 48;
+export const MAX_RUNTIME_DELIVERY_ARTIFACTS = 96;
+const LEGACY_RUNTIME_DELIVERY_RECEIPT_V1 = 'runtime-delivery-receipt/v1' as const;
+const LEGACY_RUNTIME_DELIVERY_RECEIPT_V0 = 'runtime-delivery-receipt/v0' as const;
 export const RUNTIME_EDITABLE_DOCUMENT_ARTIFACT_VERSION =
     'runtime-editable-document-artifact/v1' as const;
 export const RUNTIME_SCREEN_SET_ARTIFACT_VERSION =
@@ -49,17 +53,48 @@ export interface RuntimeScreenSetArtifactProof {
     exportedScreenIds: string[];
 }
 
+export type RuntimeDeliverySettlementScope =
+    | 'single_document_revision'
+    | 'multi_document_task';
+
+export interface RuntimeDeliveryResultRefProof {
+    resultRef: string;
+    effect: 'save_export';
+}
+
+export type RuntimeDeliveryArtifactKind = 'editable_document' | 'raster_export';
+export type RuntimeDeliveryArtifactProof =
+    | 'editable_document_artifact'
+    | 'file_probe'
+    | 'staged_editable_document_promotion'
+    | 'uxp_export_readback';
+
+export interface RuntimeDeliveryArtifactEntry {
+    path: string;
+    kind: RuntimeDeliveryArtifactKind;
+    proof: RuntimeDeliveryArtifactProof;
+}
+
 export interface RuntimeDeliveryReceipt {
     version: typeof RUNTIME_DELIVERY_RECEIPT_VERSION;
     status: 'ready' | 'incomplete';
+    settlementScope: RuntimeDeliverySettlementScope;
     outputs: string[];
     resultRefs: string[];
+    resultRefProofs: RuntimeDeliveryResultRefProof[];
+    /** 生产者已逐文件读回的精确交付集合；不扫描目录，也不单独推进 E2。 */
+    artifacts: RuntimeDeliveryArtifactEntry[];
     issues: string[];
     /** 实际保存/导出边界所读取的源 Photoshop 文档版本；不是普通观察信用。 */
     sourceHistoryStateRef?: PhotoshopHistoryStateRef;
     boundaries: {
         workflowDeclaredOnly: true;
         manifestBoundAtomicProofAllowed: true;
+        settlementScopeDeclaredOnly: true;
+        multiDocumentTaskVerifiedByRuntime: false;
+        resultRefProofsProducerDeclaredOnly: true;
+        exactArtifactSet: true;
+        producerArtifactReadbackRequired: true;
         targetVerifiedByRuntime: false;
         previewVerifiedByRuntime: false;
         sourceHistoryDeclaredOnly: true;
@@ -93,19 +128,22 @@ export interface RuntimeManifestDeliveryReceiptProjection {
 }
 
 export interface RuntimeDeliveryVerification {
-    version: 'runtime-delivery-verification/v1';
+    version: 'runtime-delivery-verification/v2';
     status: 'passed' | 'incomplete';
+    settlementScope: RuntimeDeliverySettlementScope;
     requiredOutputs: string[];
     confirmedOutputs: string[];
     missingOutputs: string[];
     targetBound: boolean;
     reviewedPreviewBound: boolean;
     sourceHistoryStateBound: boolean;
+    multiDocumentTaskBound: boolean;
     boundaries: {
         manifestRequirementsOnly: true;
         explicitReceiptRequired: true;
         sameTargetPreviewRequired: true;
         exactSourceHistoryRequired: true;
+        multiDocumentTaskBindingRequired: true;
         qualityVerdictAuthority: false;
         grantsPermission: false;
         executesTools: false;
@@ -130,6 +168,18 @@ function uniqueText(values: readonly unknown[], limit = 24): string[] {
         .slice(0, limit);
 }
 
+function normalizeResultRefProofs(value: unknown): RuntimeDeliveryResultRefProof[] {
+    if (!Array.isArray(value)) return [];
+    const proofs: RuntimeDeliveryResultRefProof[] = [];
+    for (const candidate of value.slice(0, MAX_RUNTIME_DELIVERY_RESULT_REFS)) {
+        if (!isRecord(candidate) || candidate.effect !== 'save_export') continue;
+        const resultRef = uniqueIdentifiers([candidate.resultRef], 1)[0];
+        if (!resultRef || proofs.some((proof) => proof.resultRef === resultRef)) continue;
+        proofs.push({ resultRef, effect: 'save_export' });
+    }
+    return proofs;
+}
+
 function readResultRecords(value: unknown): Record<string, unknown>[] {
     if (!isRecord(value)) return [];
     return [
@@ -140,6 +190,58 @@ function readResultRecords(value: unknown): Record<string, unknown>[] {
 
 function readPath(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+function cleanArtifactPath(value: unknown): string {
+    return String(value || '').replace(/[\r\n\0]/g, '').trim().slice(0, 2048);
+}
+
+function isDeliveryArtifactPathCompatible(
+    path: string,
+    kind: RuntimeDeliveryArtifactKind
+): boolean {
+    const normalized = path.replace(/\\/g, '/');
+    const hasUriScheme = /^[a-z][a-z0-9+.-]*:/i.test(normalized)
+        && !/^[a-z]:\//i.test(normalized);
+    if (!normalized || hasUriScheme || normalized.split('/').includes('..')) return false;
+    if (kind === 'editable_document') return /\.(?:psd|psb)$/i.test(path);
+    return /\.(?:jpe?g|png|webp)$/i.test(path);
+}
+
+function normalizeDeliveryArtifacts(value: unknown): {
+    artifacts: RuntimeDeliveryArtifactEntry[];
+    invalidCount: number;
+    inputCount: number;
+} {
+    if (!Array.isArray(value)) return { artifacts: [], invalidCount: 0, inputCount: 0 };
+    const artifacts: RuntimeDeliveryArtifactEntry[] = [];
+    let invalidCount = 0;
+    for (const candidate of value.slice(0, MAX_RUNTIME_DELIVERY_ARTIFACTS + 1)) {
+        if (!isRecord(candidate)) {
+            invalidCount += 1;
+            continue;
+        }
+        const path = cleanArtifactPath(candidate.path);
+        const kind = candidate.kind;
+        const proof = candidate.proof;
+        if ((kind !== 'editable_document' && kind !== 'raster_export')
+            || (proof !== 'editable_document_artifact'
+                && proof !== 'file_probe'
+                && proof !== 'staged_editable_document_promotion'
+                && proof !== 'uxp_export_readback')
+            || !isDeliveryArtifactPathCompatible(path, kind)) {
+            invalidCount += 1;
+            continue;
+        }
+        if (!artifacts.some((artifact) => artifact.kind === kind && artifact.path === path)) {
+            artifacts.push({ path, kind, proof });
+        }
+    }
+    return {
+        artifacts: artifacts.slice(0, MAX_RUNTIME_DELIVERY_ARTIFACTS),
+        invalidCount,
+        inputCount: value.length
+    };
 }
 
 function normalizeArtifactPath(value: unknown): string {
@@ -306,32 +408,71 @@ export function readRuntimeDeliveryProofKinds(
 
 export function buildRuntimeDeliveryReceipt(input: {
     status: RuntimeDeliveryReceipt['status'];
+    settlementScope?: RuntimeDeliverySettlementScope;
     outputs: readonly string[];
     resultRefs: readonly string[];
+    resultRefProofs?: readonly RuntimeDeliveryResultRefProof[];
+    artifacts?: readonly RuntimeDeliveryArtifactEntry[];
     issues?: readonly string[];
     sourceHistoryStateRef?: PhotoshopHistoryStateRef;
 }): RuntimeDeliveryReceipt {
     const outputs = uniqueIdentifiers(input.outputs);
-    const resultRefs = uniqueIdentifiers(input.resultRefs, 48);
+    const resultRefs = uniqueIdentifiers(input.resultRefs, MAX_RUNTIME_DELIVERY_RESULT_REFS);
+    const resultRefProofs = normalizeResultRefProofs(input.resultRefProofs || []);
     const issues = uniqueText(input.issues || []);
+    const artifactSet = normalizeDeliveryArtifacts(input.artifacts || []);
+    if (artifactSet.invalidCount > 0 || artifactSet.inputCount > MAX_RUNTIME_DELIVERY_ARTIFACTS) {
+        issues.push(`存在 ${artifactSet.invalidCount + Math.max(0, artifactSet.inputCount - MAX_RUNTIME_DELIVERY_ARTIFACTS)} 个无效最终文件声明。`);
+    }
+    if (artifactSet.artifacts.length !== artifactSet.inputCount
+        && artifactSet.invalidCount === 0
+        && artifactSet.inputCount <= MAX_RUNTIME_DELIVERY_ARTIFACTS) {
+        issues.push('最终文件声明存在重复项。');
+    }
+    const settlementScope = input.settlementScope || 'single_document_revision';
     const sourceHistoryStateRef = readPhotoshopSourceHistoryStateRef({
         sourceHistoryStateRef: input.sourceHistoryStateRef
     });
+    const multiDocumentProofsComplete = settlementScope === 'multi_document_task'
+        && resultRefProofs.length === resultRefs.length
+        && resultRefs.every((resultRef) => (
+            resultRefProofs.some((proof) => proof.resultRef === resultRef)
+        ));
+    if (settlementScope === 'single_document_revision' && !sourceHistoryStateRef) {
+        issues.push('单文档交付收据缺少源 Photoshop revision。');
+    }
+    if (settlementScope === 'multi_document_task' && input.sourceHistoryStateRef !== undefined) {
+        issues.push('多文档交付收据不能伪装成单一 Photoshop revision。');
+    }
+    if (settlementScope === 'multi_document_task' && !multiDocumentProofsComplete) {
+        issues.push('多文档交付收据的 save/export resultRef 证明不完整。');
+    }
     const ready = input.status === 'ready'
         && outputs.length > 0
         && resultRefs.length > 0
-        && Boolean(sourceHistoryStateRef)
+        && (settlementScope !== 'multi_document_task' || artifactSet.artifacts.length > 0)
+        && (settlementScope === 'single_document_revision'
+            ? Boolean(sourceHistoryStateRef)
+            : multiDocumentProofsComplete)
         && issues.length === 0;
     return {
         version: RUNTIME_DELIVERY_RECEIPT_VERSION,
         status: ready ? 'ready' : 'incomplete',
+        settlementScope,
         outputs,
         resultRefs,
+        resultRefProofs,
+        artifacts: artifactSet.artifacts,
         issues,
         ...(sourceHistoryStateRef ? { sourceHistoryStateRef } : {}),
         boundaries: {
             workflowDeclaredOnly: true,
             manifestBoundAtomicProofAllowed: true,
+            settlementScopeDeclaredOnly: true,
+            multiDocumentTaskVerifiedByRuntime: false,
+            resultRefProofsProducerDeclaredOnly: true,
+            exactArtifactSet: true,
+            producerArtifactReadbackRequired: true,
             targetVerifiedByRuntime: false,
             previewVerifiedByRuntime: false,
             sourceHistoryDeclaredOnly: true,
@@ -341,6 +482,61 @@ export function buildRuntimeDeliveryReceipt(input: {
             completesDeliveryByItself: false
         }
     };
+}
+
+function hasNamedHistoryStateRefValue(
+    value: unknown,
+    field: 'sourceHistoryStateRef' | 'historyStateRef'
+): boolean {
+    if (!isRecord(value)) return false;
+    return value[field] !== undefined
+        || (isRecord(value.data) && value.data[field] !== undefined);
+}
+
+function readNamedHistoryStateRef(
+    value: unknown,
+    field: 'sourceHistoryStateRef' | 'historyStateRef'
+): PhotoshopHistoryStateRef | undefined {
+    if (field === 'sourceHistoryStateRef') return readPhotoshopSourceHistoryStateRef(value);
+    if (!isRecord(value)) return undefined;
+    return readPhotoshopSourceHistoryStateRef({
+        sourceHistoryStateRef: value.historyStateRef
+            || (isRecord(value.data) ? value.data.historyStateRef : undefined)
+    });
+}
+
+/**
+ * 从生产者自己的有序执行结果中读取最后稳定文件版本；不扫描业务对象或目录。
+ */
+export function findRuntimeDeliverySourceHistoryStateRef(
+    orderedToolResults: readonly unknown[],
+    finalAcceptanceResult?: unknown
+): PhotoshopHistoryStateRef | undefined {
+    const results = Array.isArray(orderedToolResults) ? orderedToolResults : [];
+    const finalAcceptanceRevision = readNamedHistoryStateRef(
+        finalAcceptanceResult,
+        'historyStateRef'
+    );
+    const declaredSourceRevisions = results
+        .map((value) => readNamedHistoryStateRef(value, 'sourceHistoryStateRef'))
+        .filter((value): value is PhotoshopHistoryStateRef => Boolean(value));
+    const declaredSourceValueCount = results.filter((value) => (
+        hasNamedHistoryStateRefValue(value, 'sourceHistoryStateRef')
+    )).length;
+    if (declaredSourceRevisions.length !== declaredSourceValueCount) return undefined;
+    if (declaredSourceRevisions.length === 0) return finalAcceptanceRevision;
+    const first = declaredSourceRevisions[0];
+    const commonSourceRevision = declaredSourceRevisions.every((revision) => (
+        samePhotoshopHistoryStateRef(first, revision)
+    ))
+        ? first
+        : undefined;
+    if (!commonSourceRevision
+        || (finalAcceptanceRevision
+            && !samePhotoshopHistoryStateRef(finalAcceptanceRevision, commonSourceRevision))) {
+        return undefined;
+    }
+    return finalAcceptanceRevision || commonSourceRevision;
 }
 
 /**
@@ -401,6 +597,7 @@ export function projectManifestBoundRuntimeDeliveryReceipt(input: {
         && allTargetsMatch;
     const receipt = buildRuntimeDeliveryReceipt({
         status: allRequiredProofPresent ? 'ready' : 'incomplete',
+        settlementScope: 'single_document_revision',
         outputs: confirmedOutputRefs,
         resultRefs: selected.map((proof) => proof.resultRef),
         issues: [
@@ -431,20 +628,58 @@ export function readRuntimeDeliveryReceipt(toolResult: unknown): RuntimeDelivery
     const candidate = toolResult.data.runtimeDeliveryReceipt;
     if (!isRecord(candidate)
         || (candidate.version !== RUNTIME_DELIVERY_RECEIPT_VERSION
-            && candidate.version !== LEGACY_RUNTIME_DELIVERY_RECEIPT_VERSION)
+            && candidate.version !== LEGACY_RUNTIME_DELIVERY_RECEIPT_V1
+            && candidate.version !== LEGACY_RUNTIME_DELIVERY_RECEIPT_V0)
         || (candidate.status !== 'ready' && candidate.status !== 'incomplete')
         || !Array.isArray(candidate.outputs)
         || !Array.isArray(candidate.resultRefs)
         || !Array.isArray(candidate.issues)) {
         return undefined;
     }
+    const isCurrent = candidate.version === RUNTIME_DELIVERY_RECEIPT_VERSION;
+    if (isCurrent
+        && ((candidate.settlementScope !== 'single_document_revision'
+            && candidate.settlementScope !== 'multi_document_task')
+            || !Array.isArray(candidate.resultRefProofs)
+            || !Array.isArray(candidate.artifacts)
+            || !isRecord(candidate.boundaries)
+            || candidate.boundaries.workflowDeclaredOnly !== true
+            || candidate.boundaries.manifestBoundAtomicProofAllowed !== true
+            || candidate.boundaries.settlementScopeDeclaredOnly !== true
+            || candidate.boundaries.multiDocumentTaskVerifiedByRuntime !== false
+            || candidate.boundaries.resultRefProofsProducerDeclaredOnly !== true
+            || candidate.boundaries.exactArtifactSet !== true
+            || candidate.boundaries.producerArtifactReadbackRequired !== true
+            || candidate.boundaries.targetVerifiedByRuntime !== false
+            || candidate.boundaries.previewVerifiedByRuntime !== false
+            || candidate.boundaries.sourceHistoryDeclaredOnly !== true
+            || candidate.boundaries.sourceHistoryVerifiedByRuntime !== false
+            || candidate.boundaries.grantsPermission !== false
+            || candidate.boundaries.changesQualityVerdict !== false
+            || candidate.boundaries.completesDeliveryByItself !== false)) {
+        return undefined;
+    }
+    if (candidate.sourceHistoryStateRef !== undefined
+        && !readPhotoshopSourceHistoryStateRef(candidate)) {
+        return undefined;
+    }
     return buildRuntimeDeliveryReceipt({
-        // v0 没有源 Host 版本，只能作为 legacy/incomplete 读取，绝不能推进 E2。
-        status: candidate.version === RUNTIME_DELIVERY_RECEIPT_VERSION
-            ? candidate.status
-            : 'incomplete',
+        // v0 没有源 Host 版本，只能作为 legacy/incomplete 读取，绝不能推进 E2；
+        // v1 是旧单文档协议，继续按严格 source revision 读取。
+        status: candidate.version === LEGACY_RUNTIME_DELIVERY_RECEIPT_V0
+            ? 'incomplete'
+            : candidate.status,
+        settlementScope: isCurrent
+            ? candidate.settlementScope as RuntimeDeliverySettlementScope
+            : 'single_document_revision',
         outputs: candidate.outputs,
         resultRefs: candidate.resultRefs,
+        resultRefProofs: isCurrent
+            ? candidate.resultRefProofs as RuntimeDeliveryResultRefProof[]
+            : [],
+        artifacts: isCurrent
+            ? candidate.artifacts as RuntimeDeliveryArtifactEntry[]
+            : [],
         issues: candidate.issues,
         sourceHistoryStateRef: readPhotoshopSourceHistoryStateRef(candidate)
     });
@@ -456,8 +691,10 @@ export function verifyRuntimeDelivery(input: {
     receiptTarget: RuntimeExecutionTargetAnchor | undefined;
     reviewedPreviewTarget?: RuntimeExecutionTargetAnchor;
     reviewedPreviewHistoryStateRef?: PhotoshopHistoryStateRef;
+    multiDocumentTaskBound?: boolean;
 }): RuntimeDeliveryVerification {
     const requiredOutputs = uniqueIdentifiers(input.requiredOutputs);
+    const settlementScope = input.receipt?.settlementScope || 'single_document_revision';
     const targetBound = Boolean(input.receiptTarget);
     const reviewedPreviewBound = sameRuntimeExecutionDocument(
         input.receiptTarget,
@@ -468,9 +705,13 @@ export function verifyRuntimeDelivery(input: {
             input.receipt?.sourceHistoryStateRef,
             input.reviewedPreviewHistoryStateRef
         );
+    const multiDocumentTaskBound = settlementScope === 'multi_document_task'
+        && input.multiDocumentTaskBound === true;
+    const settlementBound = settlementScope === 'multi_document_task'
+        ? multiDocumentTaskBound
+        : targetBound && sourceHistoryStateBound;
     const confirmedOutputs = input.receipt?.status === 'ready'
-        && targetBound
-        && sourceHistoryStateBound
+        && settlementBound
         ? uniqueIdentifiers([
             ...input.receipt.outputs,
             'delivery_record',
@@ -479,25 +720,27 @@ export function verifyRuntimeDelivery(input: {
         : [];
     const missingOutputs = requiredOutputs.filter((output) => !confirmedOutputs.includes(output));
     return {
-        version: 'runtime-delivery-verification/v1',
+        version: 'runtime-delivery-verification/v2',
         status: input.receipt?.status === 'ready'
-            && targetBound
-            && sourceHistoryStateBound
+            && settlementBound
             && requiredOutputs.length > 0
             && missingOutputs.length === 0
             ? 'passed'
             : 'incomplete',
+        settlementScope,
         requiredOutputs,
         confirmedOutputs,
         missingOutputs,
         targetBound,
         reviewedPreviewBound,
         sourceHistoryStateBound,
+        multiDocumentTaskBound,
         boundaries: {
             manifestRequirementsOnly: true,
             explicitReceiptRequired: true,
             sameTargetPreviewRequired: true,
             exactSourceHistoryRequired: true,
+            multiDocumentTaskBindingRequired: true,
             qualityVerdictAuthority: false,
             grantsPermission: false,
             executesTools: false

@@ -4734,8 +4734,8 @@
                             <span class="manual-sku-mode-detail">保留原图和场景，只做卡片排版、色名与序号。</span>
                         </button>
                         <button class="manual-sku-mode active" data-manual-sku-mode="studio" type="button">
-                            <span class="manual-sku-mode-title">纯底精修色卡</span>
-                            <span class="manual-sku-mode-detail">抠图、形态统一、独立原影与中性灰光影修正。</span>
+                            <span class="manual-sku-mode-title">纯底统一尺度色卡</span>
+                            <span class="manual-sku-mode-detail">抠出透明主体、保持真实版型，并按同批基准等比统一尺度。</span>
                         </button>
                     </div>
                 </div>
@@ -4782,7 +4782,7 @@
                 <button class="manual-sku-row-action" id="btnManualSkuRecheck" type="button">重新检测</button>
             </div>
             <div class="manual-sku-result" id="manualSkuResult">
-                纯底模式会先生成可编辑精修资产，再建立色卡智能对象；INS 模式会跳过精修链路。
+                纯底模式会先生成透明主体等比统一尺度资产，再建立色卡智能对象；INS 模式会保留原图与场景。
             </div>
         </main>
         <footer class="morph-footer">
@@ -8604,7 +8604,7 @@
                     footer.textContent = '色卡执行器尚未就绪，请重新检测。';
                 } else {
                     footer.textContent = hasSources && hasOutput
-                        ? `准备生成 ${manualSkuColorCardSources.length} 个颜色的${manualSkuColorCardMode === 'studio' ? '纯底精修' : 'INS 卡片'}色卡。`
+                        ? `准备生成 ${manualSkuColorCardSources.length} 个颜色的${manualSkuColorCardMode === 'studio' ? '纯底统一尺度' : 'INS 卡片'}色卡。`
                         : '选择图片和输出目录后即可制作。';
                 }
             }
@@ -8686,10 +8686,10 @@
                 result.style.color = success ? '#86efac' : '#fca5a5';
                 result.innerHTML = success
                     ? [
-                        `<strong>${manualSkuColorCardMode === 'studio' ? '纯底精修色卡结构已生成' : 'INS 卡片色卡结构已生成'}</strong>`,
+                        `<strong>${manualSkuColorCardMode === 'studio' ? '纯底统一尺度色卡结构已生成' : 'INS 卡片色卡结构已生成'}</strong>`,
                         `<div style="margin-top:5px;">${escapeSockLayoutHtml(data?.message || '')}</div>`,
                         data?.outputPath ? `<div style="margin-top:5px;color:var(--de-text-secondary);">文件：${escapeSockLayoutHtml(data.outputPath)}</div>` : '',
-                        data?.needsVisualReview ? '<div style="margin-top:5px;color:#fcd34d;">当前文档仍需人工检查轮廓、裁切、纹理与光影；工具没有把“结构生成”假报成“专业精修验收完成”。</div>' : ''
+                        data?.needsVisualReview ? '<div style="margin-top:5px;color:#fcd34d;">当前文档仍需人工检查主体完整性、尺度、重心、裁切与纹理；工具没有把“结构生成”假报成“视觉质量已通过”。</div>' : ''
                     ].join('')
                     : escapeSockLayoutHtml(data?.error || data?.message || '手动色卡执行失败。');
             }
@@ -8728,7 +8728,7 @@
             if (result) {
                 result.style.color = 'var(--de-text-secondary)';
                 result.textContent = manualSkuColorCardMode === 'studio'
-                    ? '正在进行纯底素材准备、抠图、形态与光影统一，再建立可编辑色卡...'
+                    ? '正在抠出纯底透明主体并等比统一尺度，再建立可编辑色卡...'
                     : '正在保留原图/场景并建立 INS 卡片色卡...';
             }
             if (bar) bar.style.display = 'block';
@@ -9975,7 +9975,7 @@
                     if (result) {
                         result.style.color = 'var(--de-text-secondary)';
                         result.textContent = manualSkuColorCardMode === 'studio'
-                            ? '纯底模式会先生成可编辑精修资产，再建立色卡智能对象。'
+                            ? '纯底模式会先生成透明主体等比统一尺度资产，再建立色卡智能对象。'
                             : 'INS 模式保留原图和场景，只建立卡片、色名、序号与可编辑智能对象。';
                     }
                     updateManualSkuReadyState();

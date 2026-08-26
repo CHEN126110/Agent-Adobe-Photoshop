@@ -152,6 +152,7 @@ function createFailureResult(input: {
         message: input.error,
         sourceCount: input.sourceCount || 0,
         preparedCardCount: 0,
+        uniformScalePlacedCardCount: 0,
         retouchedCardCount: 0,
         needsVisualReview: false,
         errorCode: input.errorCode || 'execution_failed',
@@ -215,6 +216,16 @@ function requestRendererExecution(
         const handleResult = (event: IpcMainEvent, payload: ManualSkuColorCardResult): void => {
             if (event.sender.id !== target.id) return;
             if (!payload || payload.requestId !== request.requestId) return;
+            if (payload.version !== MANUAL_SKU_COLOR_CARD_RESULT_VERSION) {
+                finish(createFailureResult({
+                    requestId: request.requestId,
+                    mode: request.mode,
+                    sourceCount: request.sources.length,
+                    errorCode: 'bridge_unavailable',
+                    error: 'DesignEcho 界面执行器返回了旧版色卡结果协议。请完全退出并重新启动 DesignEcho Agent 后再试。'
+                }));
+                return;
+            }
             finish(payload);
         };
 

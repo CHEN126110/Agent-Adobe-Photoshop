@@ -335,11 +335,20 @@ import {
 } from '../../../shared/chat-response-cleaner';
 import {
     containsDsmlToolCallMarkup,
-    parseDsmlToolCallCandidates,
+    parseDsmlToolCallBatch,
     removeDsmlToolCallMarkup
 } from '../../../shared/model-tool-call-markup';
 import { splitAssistantReplyReasoningPrefix } from '../../../shared/assistant-reply-reasoning-split';
 import { ActiveRuntimeAccounting } from './active-runtime-accounting';
+import {
+    buildProviderOutputFailurePresentation,
+    buildProviderOutputContinuationPrompt,
+    isProviderOutputTruncated,
+    isProviderOutputBlocked,
+    ProviderOutputRecoveryController,
+    readCompleteProviderTextContent,
+    requestWithProviderOutputRecoveryAccounting
+} from './provider-output-recovery';
 import { ContextManager } from './context-manager';
 import {
     isFinalQualityReviewStopReason,
@@ -561,7 +570,6 @@ const MAX_HARNESS_CONTROL_REPAIR_ATTEMPTS = 3;
 const MAX_RUNTIME_DESIGN_INTENT_REPAIR_ATTEMPTS = 1;
 const MAX_LIVENESS_RECOVERY_ATTEMPTS_PER_PROGRESS_KEY = 2;
 const MAX_RUNTIME_ACTION_PLAN_PROVIDER_REPLAN_ATTEMPTS = 2;
-const MAX_PROVIDER_TRUNCATION_RECOVERY_ATTEMPTS = 2;
 // 同一个输入缺口只允许有限的环境探索；超过预算后必须转为用户确认，不能循环读取。
 const MAX_RUNTIME_INPUT_OBSERVATION_CALLS = 8;
 // E1 是执行阶段，不是无限探索阶段。新事实最多获得两次进展信用；之后只有目标/版本、
@@ -578,10 +586,6 @@ function canAttemptModelVision(model: { supportsVision?: boolean } | undefined):
         declared: model.supportsVision,
         subjectLabel: '当前模型'
     }, '读图'));
-}
-
-function isProviderOutputTruncated(stopReason?: string): boolean {
-    return /^(?:max_tokens|length|token_limit)$/iu.test(String(stopReason || '').trim());
 }
 
 /**
@@ -1294,12 +1298,7 @@ export class Agent {
     private harnessControlRepairAttemptsByName = new Map<string, number>();
     /** 同一稳定进展键下，Liveness Policy 已授予的额外恢复机会；阶段或事实推进后自然换键。 */
     private livenessRecoveryAttemptsByProgressKey = new Map<string, number>();
-    /** Consecutive provider token-limit recoveries; reset after the next complete provider response. */
-    private providerTruncationRecoveryAttempts = 0;
-    /** The incomplete provider turn resumes with the exact same ordered model-visible Tool surface. */
-    private providerContinuationTools: ToolSchema[] | undefined;
-    /** True only when a truncated provider turn must consume the snapshot again. */
-    private providerContinuationPending = false;
+    private readonly providerOutputRecovery = new ProviderOutputRecoveryController<ToolSchema>();
 
     // ── Core state ──
     private currentTask = '';
@@ -2028,7 +2027,7 @@ export class Agent {
             baseMaxTokens: performanceMaxTokens > 0 ? performanceMaxTokens : 4096,
             configuredMaxTokens,
             performanceMaxTokens,
-            recoveryAttempt: this.providerTruncationRecoveryAttempts
+            recoveryAttempt: this.providerOutputRecovery.recoveryAttemptForTokenBudget
         });
         return Math.min(
             requestedMaxTokens,
@@ -2232,8 +2231,7 @@ export class Agent {
         // Capability/Stage 切换后，旧阶段生成的 continuation schema 不能跨边界复用。
         this.workflowContinuationScope = undefined;
         this.pendingDirectWorkflowHandoff = undefined;
-        this.providerContinuationTools = undefined;
-        this.providerContinuationPending = false;
+        this.providerOutputRecovery.clearPending();
     }
 
     /**
@@ -2267,8 +2265,7 @@ export class Agent {
             maxIterations: input.maxIterations
         };
         // Profile 已由模型在本轮主动声明；后续不再展示同一个声明入口，避免重复绑定空转。
-        this.providerContinuationTools = undefined;
-        this.providerContinuationPending = false;
+        this.providerOutputRecovery.clearPending();
         this.refreshPrimarySystemMessage();
     }
 
@@ -5116,6 +5113,7 @@ export class Agent {
     ): {
         verification?: RuntimeDeliveryVerification;
         deliveryEvidencePassed: boolean;
+        finalDeliveryResultRefs?: string[];
     } {
         const verdictAllowsDeliveryEvidence = summary.designVerdict?.status === 'passed'
             || (summary.status === 'completed'
@@ -5195,7 +5193,10 @@ export class Agent {
                 toolName: savedDelivery.name,
                 toolKind: 'save_export'
             });
-            return { deliveryEvidencePassed: true };
+            return {
+                deliveryEvidencePassed: true,
+                ...(savedDelivery.callId ? { finalDeliveryResultRefs: [savedDelivery.callId] } : {})
+            };
         }
         let latestDeliveryVerification: RuntimeDeliveryVerification | undefined;
         const manifestHasAtomicDeliveryBindings = Boolean(
@@ -5211,20 +5212,36 @@ export class Agent {
             const receipt = readRuntimeDeliveryReceipt(receiptEntry.result);
             if (!receipt) continue;
             const laterEntries = this.toolCallLog.slice(receiptIndex + 1);
-            const laterMutationExists = this.toolCallLog.slice(receiptIndex + 1).some((entry) => (
+            const laterSaveExportExists = laterEntries.some((entry) => (
                 entry.result?.success !== false
                 && !isAgentHarnessControlTool(entry.name)
                 && classifyAgentToolExecution(entry.name, entry.arguments) === 'save_export'
-            ))
-                || findLatestObservedPhotoshopMutationIndex(laterEntries) >= 0;
+            ));
+            const laterContentMutationExists = findLatestObservedPhotoshopMutationIndex(laterEntries) >= 0;
+            const laterMutationExists = receipt.settlementScope === 'multi_document_task'
+                ? laterContentMutationExists
+                : laterSaveExportExists || laterContentMutationExists;
             if (laterMutationExists) continue;
             const receiptTarget = resolveRuntimeExecutionTarget({
                 arguments: receiptEntry.arguments,
                 result: receiptEntry.result
             });
-            if (!receiptTarget) continue;
+            if (receipt.settlementScope === 'single_document_revision' && !receiptTarget) continue;
 
-            const reviewedPreview = latestReviewedPreviewForReceipt
+            const multiDocumentTaskBound = receipt.settlementScope === 'multi_document_task'
+                && Boolean(receiptEntry.callId)
+                && Boolean(getSkillById(receiptEntry.name))
+                && receiptIndex === findLatestObservedPhotoshopMutationIndex(this.toolCallLog)
+                && receipt.resultRefs.length > 0
+                && receipt.resultRefProofs.length === receipt.resultRefs.length
+                && receipt.resultRefs.every((resultRef) => (
+                    receipt.resultRefProofs.some((proof) => (
+                        proof.resultRef === resultRef && proof.effect === 'save_export'
+                    ))
+                ));
+
+            const reviewedPreview = receipt.settlementScope === 'single_document_revision'
+                && latestReviewedPreviewForReceipt
                 && sameRuntimeExecutionDocument(
                     receiptTarget,
                     latestReviewedPreviewForReceipt.target
@@ -5241,7 +5258,8 @@ export class Agent {
                 receipt,
                 receiptTarget,
                 reviewedPreviewTarget: reviewedPreview?.target,
-                reviewedPreviewHistoryStateRef: reviewedPreview?.historyStateRef
+                reviewedPreviewHistoryStateRef: reviewedPreview?.historyStateRef,
+                multiDocumentTaskBound
             });
             if (!latestDeliveryVerification) latestDeliveryVerification = deliveryVerification;
             if (deliveryVerification.status !== 'passed') continue;
@@ -5254,7 +5272,8 @@ export class Agent {
             });
             return {
                 verification: deliveryVerification,
-                deliveryEvidencePassed: true
+                deliveryEvidencePassed: true,
+                finalDeliveryResultRefs: [...receipt.resultRefs]
             };
         }
 
@@ -5343,7 +5362,8 @@ export class Agent {
                 });
                 return {
                     verification: deliveryVerification,
-                    deliveryEvidencePassed: true
+                    deliveryEvidencePassed: true,
+                    finalDeliveryResultRefs: [...manifestProjection.receipt.resultRefs]
                 };
             }
         }
@@ -5547,9 +5567,7 @@ export class Agent {
         this.runtimeStageNovelFactFingerprints = new Map();
         this.harnessControlRepairAttemptsByName = new Map();
         this.livenessRecoveryAttemptsByProgressKey = new Map();
-        this.providerTruncationRecoveryAttempts = 0;
-        this.providerContinuationTools = undefined;
-        this.providerContinuationPending = false;
+        this.providerOutputRecovery.reset();
         this.workflowContinuationScope = undefined;
         this.toolImageObservationCount = 0;
         this.latestDesignVisualJudgeBundleReviewSet = undefined;
@@ -6049,7 +6067,7 @@ export class Agent {
                     stopReason: 'cancelled'
                 });
             }
-            const providerTruncationRecoveryRequest = this.providerContinuationPending;
+            const providerTruncationRecoveryRequest = this.providerOutputRecovery.hasPendingRequest;
             let performanceBudgetExhaustion = this.readPerformanceBudgetExhaustion();
             // Provider 截断恢复是同一个模型回合的传输补偿，不再占用任务模型调用配额；
             // 例外只覆盖 model_calls。软时限和工具配额仍必须按原规则终止。
@@ -6120,28 +6138,36 @@ export class Agent {
                     audience: 'user',
                     visibility: 'user_process'
                 });
-                const response = await this.requestModelWithOptionalStream(
-                    this.config.modelId,
-                    this.messages,
-                    iterationTools,
-                    {
-                        maxTokens: iterationProviderMaxTokens,
-                        temperature: 0.7,
-                        timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS
+                const response = await requestWithProviderOutputRecoveryAccounting({
+                    recoveryRequest: providerTruncationRecoveryRequest,
+                    onRecoveryAttempt: () => {
+                        this.runtimeSession = this.runtimeAccounting
+                            .recordProviderOutputRecoveryAttempt(this.runtimeSession);
                     },
-                    providerTruncationRecoveryRequest
-                        ? 'provider_truncation_recovery'
-                        : 'task'
-                );
-                interactiveReentryState?.adoptAfterSuccessfulModelResponse();
+                    onRecoveryOutcome: (outcome) => {
+                        this.runtimeSession = this.runtimeAccounting
+                            .recordProviderOutputRecoveryOutcome(this.runtimeSession, outcome);
+                    },
+                    request: () => this.requestModelWithOptionalStream(
+                        this.config.modelId,
+                        this.messages,
+                        iterationTools,
+                        {
+                            maxTokens: iterationProviderMaxTokens,
+                            temperature: 0.7,
+                            timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS
+                        },
+                        providerTruncationRecoveryRequest
+                            ? 'provider_truncation_recovery'
+                            : 'task'
+                    )
+                });
                 if (isProviderOutputTruncated(response.stopReason)) {
-                    if (
-                        this.providerTruncationRecoveryAttempts < MAX_PROVIDER_TRUNCATION_RECOVERY_ATTEMPTS
-                    ) {
+                    if (this.providerOutputRecovery.canSchedule()) {
                         this.emitStep({
                             kind: 'warning',
                             title: 'Provider 输出截断，后台续接',
-                            detail: '保留已完成内容并请求有界续接；残缺 Tool 调用不会执行。',
+                            detail: '丢弃本次未提交内容并重新请求完整结果；残缺 Tool 调用不会执行。',
                             status: 'running',
                             iteration: this.iteration + 1,
                             maxIterations: this.config.maxIterations,
@@ -6149,38 +6175,45 @@ export class Agent {
                             source: 'agent_runtime',
                             audience: 'debug'
                         });
-                        this.providerTruncationRecoveryAttempts += 1;
-                        // Provider 截断时 tool_calls 可能只有工具名或半截参数。只保留可见文本与
-                        // provider-native reasoning；残缺调用既不能执行，也不能进入历史后被
-                        // ensureToolCallProtocolIntegrity 合成为“未执行”的伪工具回合。
-                        this.messages.push(createAssistantHistoryMessage(response, {
-                            includeToolCalls: false
-                        }));
-                        this.preserveProviderContinuationState(iterationTools);
+                        // Provider 截断时 content、reasoning 与 tool_calls 都属于同一份未提交输出。
+                        // 整份丢弃，不能把半截推理单独写回历史；DeepSeek 只要求回放已经形成
+                        // 完整 Tool call 的 reasoning_content，残缺 Tool 参数不具备该资格。
+                        this.providerOutputRecovery.schedule(iterationTools);
                         // 真机 2026-08-19：模型给 sku-batch 传 20 条绝对路径的 sources，参数把输出撑到上限，
                         // 「继续完成当前判断」的提示让它原样再发一遍，截断循环 5 次。截断发生在工具调用上时，
                         // 必须点名是参数太长、怎么缩：文件名 / 相对路径 / 目录级参数 / 分批。
-                        const truncatedToolNames = Array.from(new Set((response.toolCalls || []).map((call) => String(call?.name || '')).filter(Boolean)));
-                        this.messages.push(createHarnessControlMessage([
-                                truncatedToolNames.length
-                                    ? `上一次输出因长度上限中断，中断发生在工具调用 ${truncatedToolNames.join(' / ')} 的参数上。请只保留必要字段；项目内资源优先使用相对路径或稳定引用；当前 schema 提供目录、批量或集合参数时优先使用；仍然过长就拆成有界的多次调用，不要原样重发。`
-                                    : '上一次输出因长度上限中断。不要重复已经说过的内容，请继续完成当前判断。',
-                                this.hasUnfinishedExecutionObligation() || requireInitialToolCall
-                                    ? '当前任务仍要求真实动作；请停止扩展分析，直接从本轮仍可用的工具中选择下一项必要动作。'
-                                    : '请直接补全当前回复，不要重新开始分析。',
-                                '所有用户可见内容和 provider-visible reasoning_content 都使用简体中文。',
-                                '从设计目标、视觉依据和下一步动作表达，不复述系统、Harness、工具名、路由、门禁、轮次或调试信息。'
-                            ].join('\n'), 'provider-truncation-recovery', 'provider-output-recovery'));
+                        const visibleToolNames = new Set(iterationTools.map((tool) => tool.name));
+                        const truncatedToolNames = Array.from(new Set(
+                            (response.incompleteToolCallNames || [])
+                                .map((name) => String(name || '').trim())
+                                .filter((name) => visibleToolNames.has(name))
+                        ));
+                        const requiresRealAction = this.hasUnfinishedExecutionObligation()
+                            || requireInitialToolCall;
+                        this.messages.push(createHarnessControlMessage(
+                            buildProviderOutputContinuationPrompt({
+                                truncatedToolNames,
+                                requiresRealAction
+                            }),
+                            'provider-truncation-recovery',
+                            'provider-output-recovery'
+                        ));
                         continue;
                     }
-                    return await this.buildProviderOutputTruncatedResult(this.iteration, {
+                    return await this.buildProviderOutputFailureResult(this.iteration, 'truncated', {
                         phase: 'agent_turn',
-                        recoveryAttempts: this.providerTruncationRecoveryAttempts
+                        recoveryAttempts: this.providerOutputRecovery.recoveryAttempts,
+                        recoveryAttemptsInRun: this.providerOutputRecovery.recoveryAttemptsInRun
                     });
                 }
+                if (isProviderOutputBlocked(response.stopReason)) {
+                    return await this.buildProviderOutputFailureResult(this.iteration, 'blocked');
+                }
+                if (this.config.signal?.aborted) continue agentLoop;
                 // This is a consecutive transport-recovery counter, not a run-global allowance.
                 // A complete provider response starts a fresh streak for later Agent turns.
-                this.providerTruncationRecoveryAttempts = 0;
+                this.providerOutputRecovery.markComplete();
+                interactiveReentryState?.adoptAfterSuccessfulModelResponse();
                 if (!response.toolCalls?.length) {
                     const recoveredToolCalls = this.recoverTextEncodedToolCalls(response.content, iterationTools);
                     if (recoveredToolCalls.length > 0) {
@@ -7651,9 +7684,9 @@ export class Agent {
                 { maxTokens: 1600, temperature: 0.2, timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS },
                 { visualAnalysis: true }
             );
-            const observation = String(response?.content || '').trim();
+            const observation = readCompleteProviderTextContent(response).content.trim();
             if (!observation) {
-                throw new Error('视觉模型返回空结果');
+                throw new Error('视觉模型没有返回完整结果');
             }
             this.messages.push(createRuntimeObservationMessage(
                 `（视觉模型 ${expertModelId} 已读取用户上传图片。以下是可验证的视觉观察，供你规划；最终判断仍由你负责：\n${observation}）`,
@@ -8288,18 +8321,12 @@ export class Agent {
                     { maxTokens: 1800, temperature: 0.2, timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS, thinkingEnabled: false },
                     { visualAnalysis: true }
                 );
-                const judgment = String(expertResponse?.content || '').trim();
-                const responseTruncated = isProviderOutputTruncated(
-                    typeof expertResponse?.stopReason === 'string'
-                        ? expertResponse.stopReason
-                        : undefined
+                const judgment = readCompleteProviderTextContent(expertResponse).content.trim();
+                if (!judgment) throw new Error('视觉模型没有返回完整结果');
+                const reviewBatch = parseVisualExpertReviewBatch(
+                    judgment,
+                    promptItems.map((item) => item.observationKey)
                 );
-                const reviewBatch = responseTruncated
-                    ? undefined
-                    : parseVisualExpertReviewBatch(
-                        judgment,
-                        promptItems.map((item) => item.observationKey)
-                    );
                 const decisionsByKey = new Map(
                     (reviewBatch?.decisions || []).map((decision) => [decision.observationKey, decision])
                 );
@@ -8335,7 +8362,7 @@ export class Agent {
                         strategy: 'visual-expert',
                         toolName: candidate.toolName,
                         ...candidate.observationSource,
-                        reason: judgment && !responseTruncated
+                        reason: judgment
                             ? 'visual_expert_invalid_review'
                             : 'visual_expert_empty'
                     });
@@ -8564,42 +8591,43 @@ export class Agent {
             && remainingIterations <= 1;
     }
 
-    private async buildProviderOutputTruncatedResult(
+    private async buildProviderOutputFailureResult(
         iterations: number,
+        kind: 'truncated' | 'blocked',
         input: {
             phase: 'agent_turn' | 'forced_final_summary';
             recoveryAttempts: number;
-        }
+            recoveryAttemptsInRun?: number;
+        } = { phase: 'agent_turn', recoveryAttempts: 0 }
     ): Promise<AgentRunResult> {
         const hasPhotoshopMutation = this.hasObservedTaskMutation();
-        const message = hasPhotoshopMutation
-            ? '这次没有拿到完整结果。前面的 Photoshop 改动已保留，但任务还没有完成。为避免用残缺内容继续修改画面，我已停止本轮。'
-            : '这次没有拿到完整结果，尚未修改 Photoshop 画面。为避免根据残缺内容误操作，我已停止本轮。';
+        const presentation = buildProviderOutputFailurePresentation({
+            kind,
+            ...input,
+            recoveryAttemptsInRun: input.recoveryAttemptsInRun
+                ?? this.providerOutputRecovery.recoveryAttemptsInRun,
+            taskProgressPreserved: this.hasTaskProgressToolCalls(),
+            hasPhotoshopMutation
+        });
         this.emitStep({
             kind: 'stopped',
-            title: '回复不完整，已停止',
-            detail: message,
+            title: presentation.title,
+            detail: presentation.message,
             status: 'error',
             iteration: iterations,
             maxIterations: this.config.maxIterations,
-            issue: 'provider_output_truncated',
+            issue: presentation.issue,
             audience: 'user',
             visibility: 'user_process'
         });
-        this.config.callbacks.onProgress?.('回复不完整，本次已停止', 100);
+        this.config.callbacks.onProgress?.(presentation.progress, 100);
         return this.buildRunResult({
             success: false,
-            message,
+            message: presentation.message,
             iterations,
-            error: 'provider_output_truncated',
-            stopReason: 'provider_output_truncated',
-            data: {
-                providerOutputTruncated: {
-                    phase: input.phase,
-                    recoveryAttempts: input.recoveryAttempts,
-                    taskProgressPreserved: this.hasTaskProgressToolCalls(), photoshopMutationPreserved: hasPhotoshopMutation
-                }
-            }
+            error: presentation.issue,
+            stopReason: presentation.stopReason,
+            data: presentation.data
         });
     }
 
@@ -8620,6 +8648,7 @@ export class Agent {
             ].join('\n'), 'tool-budget-exhausted', 'finalization-control'));
 
         let response: Awaited<ReturnType<CallModelFn>>;
+        let terminalContent: ReturnType<typeof readCompleteProviderTextContent>;
         try {
             response = await this.callModelWithAccounting(
                 this.config.modelId,
@@ -8636,21 +8665,20 @@ export class Agent {
                         || this.pendingPrimaryVisualObservations.length > 0
                 }
             );
-            const primaryVisualInputConsumed = this.consumePrimaryVisualObservationReviews(response);
+            terminalContent = readCompleteProviderTextContent(response);
+            const primaryVisualInputConsumed = terminalContent.complete
+                && this.consumePrimaryVisualObservationReviews(response);
             this.pendingPrimaryVisualObservations = [];
             if (this.initialImagesPendingPrimaryObservation) {
                 this.attachedImageObservationAvailable = primaryVisualInputConsumed;
                 if (primaryVisualInputConsumed) {
                     this.observedInputImageCount = Math.max(
                         this.observedInputImageCount,
-                        Math.min(
-                            this.currentInputImageCount,
-                            this.getPerformanceInitialVisionCandidateLimit()
-                        )
+                        Math.min(this.currentInputImageCount, this.getPerformanceInitialVisionCandidateLimit())
                     );
                 }
-                this.initialImagesPendingPrimaryObservation = false;
             }
+            this.initialImagesPendingPrimaryObservation = false;
         } catch (error) {
             this.initialImagesPendingPrimaryObservation = false;
             this.pendingPrimaryVisualObservations = [];
@@ -8658,10 +8686,14 @@ export class Agent {
         } finally {
             retireDeliveredAgentMessageImages(this.messages);
         }
-        if (isProviderOutputTruncated(response.stopReason)) {
-            return this.buildProviderOutputTruncatedResult(iterations, {
+        if (!terminalContent.complete) {
+            if (isProviderOutputBlocked(response.stopReason)) {
+                return this.buildProviderOutputFailureResult(iterations, 'blocked');
+            }
+            return this.buildProviderOutputFailureResult(iterations, 'truncated', {
                 phase: 'forced_final_summary',
-                recoveryAttempts: 0
+                recoveryAttempts: 0,
+                recoveryAttemptsInRun: this.providerOutputRecovery.recoveryAttemptsInRun
             });
         }
 
@@ -8670,7 +8702,7 @@ export class Agent {
             this.emitVisibleReasoning(modelThinking, { source: 'provider_final_thinking' });
         }
 
-        let finalMessage = sanitizeUserVisibleAgentText(String(response.content || '')).trim();
+        let finalMessage = sanitizeUserVisibleAgentText(terminalContent.content).trim();
         if (!finalMessage) {
             finalMessage = buildObservedDesignDraftSummary(this.toolCallLog)
                 || this.buildSummaryFromStatefulWrites()
@@ -9645,14 +9677,6 @@ export class Agent {
             ));
     }
 
-    private preserveProviderContinuationState(iterationTools: ToolSchema[]): void {
-        this.providerContinuationTools = iterationTools.map((tool) => ({
-            ...tool,
-            inputSchema: tool.inputSchema
-        }));
-        this.providerContinuationPending = true;
-    }
-
     /**
      * 无参数、幂等只读 Tool 已有本轮新鲜结果时，不再让模型为同一事实多付一轮 Tool call。
      *
@@ -9660,9 +9684,7 @@ export class Agent {
      * 下一轮自动恢复可见。mutation unknown 的强制读回必须取得真实 Host 新鲜值，因此不隐藏。
      */
     private async consumeToolsForIteration(): Promise<ToolSchema[]> {
-        const providerContinuationTools = this.providerContinuationTools;
-        this.providerContinuationTools = undefined;
-        this.providerContinuationPending = false;
+        const providerContinuationTools = this.providerOutputRecovery.consumePendingTools();
         let modelVisibleTools = providerContinuationTools
             ? providerContinuationTools.map((tool) => ({
                 ...tool,
@@ -10226,66 +10248,29 @@ export class Agent {
 
     private recoverTextEncodedToolCalls(content: unknown, iterationTools: ToolSchema[]): ToolCall[] {
         const text = String(content || '').trim();
-        const hasJsonToolCallShape = /```|"\s*(name|toolName|arguments|args)\s*"/i.test(text);
-        if (!text || (!hasJsonToolCallShape && !containsDsmlToolCallMarkup(text))) return [];
+        if (!text || !containsDsmlToolCallMarkup(text)) return [];
 
         const allowedToolNames = new Set(iterationTools.map((tool) => tool.name));
         if (allowedToolNames.size === 0) return [];
 
-        const candidates = [
-            ...this.extractJsonToolRequestCandidates(text),
-            ...parseDsmlToolCallCandidates(text)
-        ];
-        const calls: ToolCall[] = [];
-        for (const candidate of candidates) {
-            const toolName = String(candidate?.name || candidate?.toolName || candidate?.tool || '').trim();
-            const args = candidate?.arguments ?? candidate?.args ?? candidate?.parameters ?? {};
-            if (!toolName || !allowedToolNames.has(toolName) || !this.isPlainObject(args)) continue;
-            calls.push({
-                id: `text-recovered-${this.iteration}-${calls.length}-${toolName}`,
+        const dsmlBatch = parseDsmlToolCallBatch(text);
+        if (!dsmlBatch.valid) return [];
+        const calls = dsmlBatch.candidates.map((candidate, index): ToolCall | undefined => {
+            const toolName = String(candidate.name || '').trim();
+            const args = candidate.arguments;
+            if (!toolName || !allowedToolNames.has(toolName) || !this.isPlainObject(args)) return undefined;
+            return {
+                id: `text-recovered-${this.iteration}-${index}-${toolName}`,
                 name: toolName,
                 arguments: args
-            });
-            if (calls.length >= 4) break;
-        }
-        return calls;
-    }
-
-    private extractJsonToolRequestCandidates(text: string): any[] {
-        const candidates: any[] = [];
-        const pushParsed = (raw: string): void => {
-            const trimmed = raw.trim();
-            if (!trimmed) return;
-            try {
-                const parsed = JSON.parse(trimmed);
-                if (Array.isArray(parsed)) {
-                    candidates.push(...parsed);
-                } else if (Array.isArray(parsed?.toolCalls)) {
-                    candidates.push(...parsed.toolCalls);
-                } else if (Array.isArray(parsed?.tools)) {
-                    candidates.push(...parsed.tools);
-                } else {
-                    candidates.push(parsed);
-                }
-            } catch {
-                // Invalid JSON remains a plain-text model response and must not be executed.
-            }
-        };
-
-        for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
-            pushParsed(match[1] || '');
-        }
-
-        if (candidates.length === 0 && /^\s*\{[\s\S]*\}\s*$/.test(text)) {
-            pushParsed(text);
-        }
-        return candidates;
+            };
+        });
+        return calls.length <= 4 && calls.every(Boolean) ? calls as ToolCall[] : [];
     }
 
     private stripTextEncodedToolCallBlocks(content: unknown): string {
         const text = removeDsmlToolCallMarkup(content);
         const stripped = text
-            .replace(/```(?:json)?\s*[\s\S]*?```/gi, '')
             .replace(/执行步骤如下[:：]?/g, '')
             .replace(/^\s*[-*]?\s*$/gm, '')
             .replace(/\n{3,}/g, '\n\n')
@@ -10550,17 +10535,10 @@ export class Agent {
                 ...options,
                 thinkingEnabled: this.resolveProviderThinkingEnabled(),
                 reasoningEffort: options.reasoningEffort || this.config.reasoningEffort,
-                onThinkingDelta: (fullThinking) => {
-                    this.emitVisibleReasoning(fullThinking, { source: 'provider_thinking_delta' });
-                },
-                // 真机诊断 2026-08-06：这里原本是空实现，公开推理摘要的增量被直接丢弃，
-                // 于是"动手前的说明"总是整段突然出现，而不是像在写字一样逐句浮现。
-                // UI 侧早就支持增量（ChatPanel 首条 addStep、后续 updateStep + mergeVisibleThinking），
-                // 缺的只是这一路推送。注意传的是 fullContent 而非 delta：合并端按全量收敛，
-                // 避免丢包或乱序拼出错字。
-                onContentDelta: (fullContent) => {
-                    this.emitVisibleReasoning(fullContent, { source: 'model_visible_reasoning_delta' });
-                },
+                // Provider 的正文与 reasoning 增量在完整终态前都只是传输缓冲；
+                // 最终 thinking 由本轮权威响应一次提交，截断轮次不向过程区泄露半段判断。
+                onThinkingDelta: () => {},
+                onContentDelta: () => {},
                 onToolCallDelta: () => {}
             });
             this.recordModelAccounting({
@@ -10637,7 +10615,7 @@ export class Agent {
                     return null;
                 }
 
-                const finalMessage = sanitizeUserVisibleAgentText(String(response.content || '')).trim();
+                const finalMessage = sanitizeUserVisibleAgentText(readCompleteProviderTextContent(response).content).trim();
                 if (!finalMessage) {
                     this.emitStep({
                         kind: 'warning',
@@ -11122,7 +11100,7 @@ export class Agent {
                         thinkingEnabled: this.resolveProviderThinkingEnabled()
                     }
                 );
-                const text = sanitizeUserVisibleAgentText(String(response?.content || '')).trim();
+                const text = sanitizeUserVisibleAgentText(readCompleteProviderTextContent(response).content).trim();
                 if (text) return text;
             } catch (error: any) {
                 console.warn(`[Agent] 静默收尾补救第 ${attempt + 1} 次失败：${error?.message || error}`);
@@ -11183,7 +11161,7 @@ export class Agent {
                     thinkingEnabled: this.resolveProviderThinkingEnabled()
                 }
             );
-            const text = sanitizeUserVisibleAgentText(String(response?.content || '')).trim();
+            const text = sanitizeUserVisibleAgentText(readCompleteProviderTextContent(response).content).trim();
             return this.shouldRequestRicherFinalSummary(text) ? '' : text;
         } catch (error: any) {
             console.warn(`[Agent] 工具执行后总结补充失败：${error?.message || error}`);
@@ -11568,6 +11546,8 @@ export class Agent {
         // Snapshot / Repository 投影只能由 Harness owner 回填；普通 result.data 不得夹带。
         delete data.runtimeTaskSnapshot;
         delete data.artifactRepositoryReadProjection;
+        delete data.finalDeliveryArtifactRequestId;
+        delete data.finalDeliveryArtifactPaths;
         const contract = this.config.runtimeLoopContract;
         if (contract) {
             data.runtimeLoopContract = {
@@ -11713,6 +11693,13 @@ export class Agent {
         const executionSummary = this.buildExecutionSummary(input.stopReason, input.iterations, vlmAssertions);
         const deliveryStageEvidence = this.appendDeliveryStageTraceIfEligible(executionSummary);
         const runtimeDeliveryVerification = deliveryStageEvidence.verification;
+        if (deliveryStageEvidence.finalDeliveryResultRefs?.length) {
+            executionSummary.runtimeDeliveryResultRefs = Array.from(new Set(
+                deliveryStageEvidence.finalDeliveryResultRefs
+                    .map((value) => String(value || '').trim())
+                    .filter(Boolean)
+            ));
+        }
         const reflexionHandoff = input.reflexionHandoff
             || this.buildQualityGateReflexionHandoff(
                 executionSummary,
@@ -12207,15 +12194,20 @@ export class Agent {
             configuredSoftTimeBudgetMs: this.config.performanceBudget?.softTimeBudgetMs,
             maxRequestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS,
             readActiveElapsedMs: () => this.readPerformanceActiveElapsedMs(),
-            callModel: (budgetClass, { messages, ...requestOptions }, presentation) => (
-                this.callModelWithAccounting(judgeModelId, messages, [], requestOptions, {
+            callModel: async (budgetClass, { messages, ...requestOptions }, presentation) => {
+                const response = await this.callModelWithAccounting(judgeModelId, messages, [], requestOptions, {
                     visualAnalysis: true,
                     budgetClass,
                     directVisionCandidateCount: presentation.candidateCount,
                     directVisionCandidateKeys: presentation.candidateKeys,
                     billDirectVisionCandidatesByPresentation: true
-                })
-            ),
+                });
+                const terminalContent = readCompleteProviderTextContent(response);
+                if (!terminalContent.complete) {
+                    throw new Error('视觉评审模型没有返回可消费的完整终态');
+                }
+                return { ...response, content: terminalContent.content };
+            },
             readPostModelHistoryStateRef: () => (
                 this.readCurrentPhotoshopHistoryStateRefForQualityVerification('post_judge')
             ),
@@ -12361,6 +12353,10 @@ export class Agent {
             blockers.push(completionObservationGate.mutationCount > 0
                 ? '这次没有拿到完整结果；前面的真实改动已保留，但还没完成。'
                 : '这次没有拿到完整结果，这次还没开始动手。');
+        } else if (stopReason === 'provider_output_blocked') {
+            blockers.push(completionObservationGate.mutationCount > 0
+                ? '模型服务没有返回可用结果；前面的真实改动已保留，但还没完成。'
+                : '模型服务没有返回可用结果，这次还没开始动手。');
         } else if (stopReason === 'performance_budget') {
             blockers.push(completionObservationGate.mutationCount > 0
                 ? '这稿先做到这里、还没做完，你可以先看看现在的效果，或让我接着做。'

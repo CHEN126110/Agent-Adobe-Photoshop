@@ -655,7 +655,7 @@ export class ClaudeSubscriptionService {
         if (signal?.aborted) {
             throw createClaudeSubscriptionError('Claude 订阅模型调用已取消。', 'claude_subscription_turn_aborted');
         }
-        // 参数优先取 handler 捕获（完整可靠）；assistant block 只补充 handler 未及触发的调用（无参数时给空对象）。
+        // 只有 MCP handler 捕获到的完整参数可以成为可执行 Tool；assistant block 仅用于补充调用 ID。
         const blockToolCalls = capturedToolUses
             .filter((call) => call.name)
             .map((call) => ({
@@ -669,34 +669,49 @@ export class ClaudeSubscriptionService {
         const toObjectArguments = (value: unknown): Record<string, any> => (
             value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {}
         );
-        const toolCalls = (handlerCapturedCalls.length > 0
-            ? handlerCapturedCalls.map((call, index) => ({
-                id: blockToolCalls.find((blockCall) => blockCall.name === call.name)?.id || `call-${index + 1}`,
+        const validHandlerCapturedCalls = handlerCapturedCalls.filter((call) => (
+            Boolean(String(call.name || '').trim())
+            && call.args !== null
+            && typeof call.args === 'object'
+            && !Array.isArray(call.args)
+        ));
+        const blockIdsByToolName = new Map<string, string[]>();
+        for (const blockCall of blockToolCalls) {
+            const ids = blockIdsByToolName.get(blockCall.name) || [];
+            ids.push(blockCall.id);
+            blockIdsByToolName.set(blockCall.name, ids);
+        }
+        const handlerToolCalls = validHandlerCapturedCalls.map((call, index) => ({
+                id: blockIdsByToolName.get(call.name)?.shift() || `claude-handler-${index + 1}`,
                 name: call.name,
                 arguments: toObjectArguments(call.args)
-            }))
-            : blockToolCalls.map((call) => ({
-                id: call.id,
-                name: call.name,
-                arguments: toObjectArguments(call.input)
-            })));
+            }));
+        const handlerToolCallIdsAreUnique = new Set(
+            handlerToolCalls.map((call) => call.id)
+        ).size === handlerToolCalls.length;
+        const handlerArgumentsInvalid = validHandlerCapturedCalls.length !== handlerCapturedCalls.length
+            || !handlerToolCallIdsAreUnique;
+        // 只有 handler 已经捕获到完整结构化 Tool 参数时，主动 abort / max-turns 才是合法收尾。
+        // 文本路径必须收到显式 result:success；AsyncIterable 自然结束不代表模型完整收尾。
         const benignEnd = toolCaptureTriggered
-            || resultSubtype === 'error_max_turns'
-            || (iterationError instanceof Error && /maximum number of turns|aborted/i.test(iterationError.message));
-        const failedHard = toolCalls.length === 0 && (
-            (resultSubtype !== '' && resultSubtype !== 'success' && !benignEnd)
-            || (iterationError !== null && !benignEnd)
-        );
+            && handlerToolCalls.length > 0
+            && !handlerArgumentsInvalid;
+        const failedHard = handlerArgumentsInvalid
+            || (!benignEnd && (resultSubtype !== 'success' || iterationError !== null));
         if (failedHard) {
             const detail = resultDetail
                 || (iterationError instanceof Error ? iterationError.message : '')
                 || replyText.slice(0, 200)
                 || '无详情';
+            const missingTerminal = resultSubtype === '' && iterationError === null;
             throw createClaudeSubscriptionError(
-                `Claude 订阅模型调用失败（${resultSubtype || 'iteration_error'}）：${detail}。未登录请先在设置里完成 Claude 订阅登录；额度耗尽请等待窗口重置。`,
-                'claude_subscription_turn_failed'
+                missingTerminal
+                    ? 'Claude 订阅模型流没有返回明确完成状态，已丢弃未确认的文本和工具调用。'
+                    : `Claude 订阅模型调用失败（${resultSubtype || 'iteration_error'}）：${detail}。未登录请先在设置里完成 Claude 订阅登录；额度耗尽请等待窗口重置。`,
+                missingTerminal ? 'model_output_incomplete' : 'claude_subscription_turn_failed'
             );
         }
+        const toolCalls = benignEnd ? handlerToolCalls : [];
         if (toolCalls.length === 0 && !replyText.trim()) {
             throw createClaudeSubscriptionError(
                 'Claude 订阅模型没有返回内容（无文本也无工具调用）。请重试；若持续出现请检查登录与额度状态。',

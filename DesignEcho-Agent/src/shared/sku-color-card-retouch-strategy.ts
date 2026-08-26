@@ -102,27 +102,25 @@ function userRequestsRetouchStrategy(userText: string): boolean {
 function buildShapeStrategy(): SkuColorCardRetouchStrategy['shapeStrategy'] {
   return {
     unifiedPoseTargets: [
-      'aligned_cuff_top',
-      'consistent_sock_body_axis',
-      'consistent_heel_turn_position',
-      'consistent_toe_angle',
-      'consistent_bottom_baseline'
+      'uniform_subject_height',
+      'common_transparent_canvas',
+      'centered_subject_on_canvas'
     ],
     allowedShapeAdjustments: [
-      'translate_rotate_scale_to_reference_pose',
-      'minor_warp_for_body_axis_only_after_texture_review',
+      'proportional_scale_to_reference_height',
+      'transparent_canvas_centering',
       'mask_edge_cleanup_without_changing_product_identity'
     ],
     fidelityBoundaries: [
-      'preserve_special_cuff_shape',
-      'do_not_force_lace_or_flower_cuff_into_plain_cuff',
-      'do_not_stretch_knit_texture_beyond_manual_review',
+      'preserve_original_aspect_ratio',
+      'do_not_warp_product_shape',
+      'preserve_special_cuff_and_knit_structure',
       'do_not_hide_real_style_differences_between_colors'
     ],
     reviewRequirements: [
-      'shape_consistency_review_required',
-      'cuff_shape_manual_review_required',
-      'texture_distortion_review_required',
+      'uniform_subject_height_review_required',
+      'aspect_ratio_preservation_review_required',
+      'complete_subject_crop_review_required',
       'product_identity_preservation_required'
     ]
   };
@@ -130,60 +128,22 @@ function buildShapeStrategy(): SkuColorCardRetouchStrategy['shapeStrategy'] {
 
 function buildLightStrategy(): SkuColorCardRetouchStrategy['lightStrategy'] {
   return {
-    goals: [
-      'unified_white_balance_without_color_fact_changes',
-      'consistent_volume_light_across_colors',
-      'natural_highlight_shadow_transition',
-      'dark_color_texture_visibility'
-    ],
-    methods: [
-      'white_point_reference_review',
-      'neutral_gray_dodge_burn_review',
-      'per_color_tone_curve_review',
-      'highlight_clipping_check',
-      'dark_texture_detail_check'
-    ],
+    goals: [],
+    methods: [],
     textureProtection: [
       'preserve_knit_texture_detail',
-      'preserve_rib_structure',
-      'avoid_flat_overexposure_on_white_socks',
-      'avoid_crushed_shadow_on_black_socks'
+      'preserve_original_product_tone'
     ],
-    reviewRequirements: [
-      'lighting_consistency_review_required',
-      'white_point_manual_review_required',
-      'knit_texture_detail_review_required',
-      'dark_light_color_separate_review_required'
-    ]
+    reviewRequirements: []
   };
 }
 
 function buildShadowStrategy(): SkuColorCardRetouchStrategy['shadowStrategy'] {
   return {
-    goals: [
-      'consistent_contact_shadow_direction',
-      'natural_soft_shadow_under_each_sock',
-      'separate_shadow_from_product_color',
-      'consistent_shadow_strength_across_colors'
-    ],
-    methods: [
-      'shadow_layer_isolation_review',
-      'multiply_shadow_layer_review',
-      'shadow_group_b_comparison_review',
-      'edge_halo_cleanup_review'
-    ],
-    whiteFieldPolicy: [
-      'separate_product_from_shadow_after_white_point',
-      'keep_shadow_layer_reviewable_after_background_cleanup',
-      'do_not_erase_contact_shadow_when_exporting_white_background',
-      'do_not_bake_unreviewed_shadow_into_product_layer'
-    ],
-    reviewRequirements: [
-      'shadow_consistency_review_required',
-      'multiply_blend_shadow_review_required',
-      'white_background_edge_review_required',
-      'contact_shadow_position_review_required'
-    ]
+    goals: [],
+    methods: [],
+    whiteFieldPolicy: [],
+    reviewRequirements: []
   };
 }
 
@@ -196,27 +156,15 @@ function buildRetouchSequence(): SkuColorCardRetouchStrategy['retouchSequence'] 
       mustReview: true
     },
     {
-      id: 'shape_reference',
-      title: '建立参考袜形',
-      purpose: '以一个最稳定颜色作为姿态参考，统一袜身轴线、袜口顶部、后跟和脚尖角度。',
+      id: 'scale_reference',
+      title: '建立主体尺度参考',
+      purpose: '从同批适用纯底素材中选择参考主体高度；它只提供尺度，不改写任何颜色的真实版型。',
       mustReview: true
     },
     {
-      id: 'shape_normalization',
-      title: '形态统一与保真检查',
-      purpose: '只做平移、旋转、缩放和轻微形态修正；花边、特殊罗口和真实款式差异必须保留。',
-      mustReview: true
-    },
-    {
-      id: 'light_retouch',
-      title: '中性灰式光影统一',
-      purpose: '统一体积光与明暗过渡，同时保留针织纹理和不同颜色的真实色阶。',
-      mustReview: true
-    },
-    {
-      id: 'shadow_isolation',
-      title: '阴影分离与正片叠底复核',
-      purpose: '白场后保留可独立复核的阴影层，按正片叠底方向检查接触阴影和边缘灰影。',
+      id: 'uniform_scale',
+      title: '透明主体等比统一尺度',
+      purpose: '抠出完整主体，保持原始宽高比缩放到参考高度，并居中放入同尺寸透明画布。',
       mustReview: true
     },
     {
@@ -230,11 +178,9 @@ function buildRetouchSequence(): SkuColorCardRetouchStrategy['retouchSequence'] 
 
 function buildReviewRequirements(): string[] {
   return [
-    'shape_consistency_review_required',
-    'cuff_shape_manual_review_required',
-    'lighting_consistency_review_required',
-    'shadow_consistency_review_required',
-    'white_background_edge_review_required',
+    'uniform_subject_height_review_required',
+    'aspect_ratio_preservation_review_required',
+    'complete_subject_crop_review_required',
     'knit_texture_detail_review_required',
     'result_screenshot_or_manual_review_required',
     'export_readback_required'
@@ -254,10 +200,10 @@ export function buildSkuColorCardRetouchStrategy(
   const shadowStrategy = buildShadowStrategy();
   const retouchSequence = buildRetouchSequence();
   const reviewRequirements = buildReviewRequirements();
-  const boundary = 'SKU 色卡精修策略只能进入设计规划、模型决策和人工复核；它不直接执行 Photoshop、不改变 skuLayout 参数、不声明输出质量完成。';
+  const boundary = 'SKU 色卡当前只规划透明主体等比统一尺度与排版复核；不包含形态变形、阴影分离或光影修正，也不直接取得 Photoshop 权限或质量完成权。';
   const warnings = unique([
     sourceHints.length === 0 ? '未提供可复核的 SKU 源图提示，执行前仍需从项目文件确认单色源图。' : '',
-    !requestedByUser ? '用户未明确要求色卡精修时，该策略只能作为默认质量边界，不应扩大执行范围。' : '',
+    !requestedByUser ? '用户未明确要求纯底统一尺度处理时，该策略只能作为候选质量边界，不应扩大执行范围。' : '',
     colorCount <= 0 ? '未获得颜色数量，色卡间距和统一性仍需执行前补充。' : ''
   ]);
 
@@ -290,9 +236,8 @@ export function buildSkuColorCardRetouchStrategy(
     limitations: [
       '该策略不直接执行 Photoshop，也不生成或修改图层。',
       '该策略不改变 SKU 组合、自选备注、项目 CSV、模板选择或 skuLayout 参数。',
-      '形态统一必须经过特殊罗口/花边罗口保真复核，不能为追求统一而造成失真。',
-      '光影统一必须保留针织纹理和真实商品颜色，不能把白袜过曝或黑袜压暗。',
-      '阴影层建议独立复核，白场处理后仍需人工确认接触阴影自然。'
+      '统一尺度必须保持原始宽高比与特殊罗口/花边结构，不能为追求整齐而改变版型。',
+      '阴影、投影分离与光影修正属于后续工序；当前策略不会生成、检查或宣称这些结果。'
     ],
     canClaimOutputQuality: false,
     canClaimDesignComplete: false,

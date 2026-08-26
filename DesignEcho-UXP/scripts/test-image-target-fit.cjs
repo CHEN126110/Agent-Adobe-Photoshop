@@ -55,6 +55,90 @@ function assertJpegQualityNormalizationContract() {
     assert.equal(normalize(Number.NaN, 80), 10, 'invalid input must use the caller default semantics');
 }
 
+function assertImageSourceIdentityContract() {
+    const identity = loadTypeScriptModule(
+        '../src/core/image-source-identity.ts',
+        'image-source-identity.ts'
+    );
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 250]);
+    const checksum = identity.calculateImageSourceChecksum(bytes);
+    assert.match(checksum, /^fnv1a32:[a-f0-9]{8}$/);
+    assert.doesNotThrow(() => identity.assertImageSourceIdentity({
+        bytes,
+        expectedByteLength: bytes.length,
+        expectedChecksum: checksum
+    }));
+    assert.throws(() => identity.assertImageSourceIdentity({
+        bytes,
+        expectedByteLength: bytes.length + 1,
+        expectedChecksum: checksum
+    }), /字节长度不一致/);
+    assert.throws(() => identity.assertImageSourceIdentity({
+        bytes,
+        expectedByteLength: bytes.length,
+        expectedChecksum: 'fnv1a32:deadbeef'
+    }), /源图校验失败/);
+    assert.throws(() => identity.assertImageSourceIdentity({
+        bytes,
+        expectedChecksum: 'sha256:abc'
+    }), /格式不受支持/);
+
+    const placeImagePath = path.resolve(__dirname, '../src/tools/image/place-image.ts');
+    const placeImageSource = fs.readFileSync(placeImagePath, 'utf8');
+    assert.ok(
+        (placeImageSource.match(/assertImageSourceIdentity\s*\(\s*\{/g) || []).length >= 2,
+        'filePath and imageData placement must both verify the actual source bytes'
+    );
+    assert.ok(
+        placeImageSource.includes('仅提供 fileToken 时无法重新读取并核对源图字节身份'),
+        'fileToken-only placement must fail closed when source identity was declared'
+    );
+    assert.ok(
+        placeImageSource.includes("version: 'place-image-source-identity/v1'")
+            && placeImageSource.includes('identityProof:')
+            && placeImageSource.includes('sourceIdentityVerified ?'),
+        'source identity proof must be emitted only after current UXP bytes were actually verified'
+    );
+}
+
+function assertSkuPairedEditableDeliveryContract() {
+    const skuLayoutPath = path.resolve(__dirname, '../src/tools/layout/sku-layout-tool.ts');
+    const saveDocumentPath = path.resolve(__dirname, '../src/tools/canvas/save-document.ts');
+    const skuLayoutSource = fs.readFileSync(skuLayoutPath, 'utf8');
+    const saveDocumentSource = fs.readFileSync(saveDocumentPath, 'utf8');
+    const noteQaIndex = skuLayoutSource.indexOf('const allNoteQaReady =');
+    const noteEditableSaveIndex = skuLayoutSource.indexOf(
+        'saveEditableDocumentSnapshotInModal({',
+        noteQaIndex
+    );
+    const noteCloseIndex = skuLayoutSource.indexOf(
+        "commandName: '关闭自选备注模板文档'",
+        noteEditableSaveIndex
+    );
+    const comboQaIndex = skuLayoutSource.lastIndexOf('最终实时边界 QA 未达到 ready');
+    const comboEditableSaveIndex = skuLayoutSource.indexOf(
+        'saveEditableDocumentSnapshotInModal({',
+        comboQaIndex
+    );
+    const comboCleanupIndex = skuLayoutSource.indexOf(
+        'await deleteCopiedSkuLayers(',
+        comboEditableSaveIndex
+    );
+    assert.ok(noteQaIndex >= 0 && noteQaIndex < noteEditableSaveIndex && noteEditableSaveIndex < noteCloseIndex,
+        'note PSB must be saved after live QA and before document close');
+    assert.ok(comboQaIndex >= 0 && comboQaIndex < comboEditableSaveIndex && comboEditableSaveIndex < comboCleanupIndex,
+        'combo PSB must be saved after live QA and before copied-layer cleanup');
+    assert.ok(skuLayoutSource.includes("version: 'sku-layout-delivery-plan/v1'")
+        && skuLayoutSource.includes("schema: 'sku-editable-structure-readback/v1'")
+        && skuLayoutSource.includes("autoLayoutQaStatus: 'ready'")
+        && skuLayoutSource.includes(".psb`"),
+    'SKU paired delivery must carry frozen item identity, structure readback, ready QA and PSB paths');
+    assert.ok(saveDocumentSource.includes('const sourceHistoryStateRef = readActiveHistoryStateRef(input.document)')
+        && saveDocumentSource.includes('await batchPlaySave(getSaveDescriptor(format)')
+        && saveDocumentSource.includes('readEditableDocumentArtifactProof('),
+    'editable snapshot must bind pre-save Photoshop history and post-save file metadata');
+}
+
 function closeTo(actual, expected, tolerance = 0.001) {
     assert.ok(
         Math.abs(actual - expected) <= tolerance,
@@ -486,5 +570,7 @@ assert.throws(
 assertTransformTargetBoundsTransactionContract();
 assertImagePlacementParameterConflictContracts();
 assertJpegQualityNormalizationContract();
+assertImageSourceIdentityContract();
+assertSkuPairedEditableDeliveryContract();
 
-console.log('image-target-fit: 17 geometry cases, parameter conflicts, JPEG quality contract, and targetBounds transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, source identity, paired SKU editable delivery, parameter conflicts, JPEG quality, and transaction audit passed');

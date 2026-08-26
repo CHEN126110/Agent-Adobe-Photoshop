@@ -29,22 +29,6 @@ export interface SkuRetouchShapeAnalysis {
     maxWidth: number;
 }
 
-export interface SkuRetouchOutputGeometry {
-    width: number;
-    height: number;
-    subjectTop: number;
-    subjectLeft: number;
-    subjectWidth: number;
-    subjectHeight: number;
-}
-
-export interface SkuRetouchWarpResult {
-    productRgba: Buffer;
-    shadowAlpha: Buffer;
-    output: SkuRetouchOutputGeometry;
-    maxDisplacementPx: number;
-}
-
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
 }
@@ -252,94 +236,4 @@ export function chooseSkuRetouchReferenceIndex(shapes: SkuRetouchShapeAnalysis[]
         }
     }
     return bestIndex;
-}
-
-function sampleChannel(
-    data: Buffer,
-    width: number,
-    height: number,
-    channels: number,
-    x: number,
-    y: number,
-    channel: number
-): number {
-    const safeX = clamp(x, 0, width - 1);
-    const safeY = clamp(y, 0, height - 1);
-    const x0 = Math.floor(safeX);
-    const y0 = Math.floor(safeY);
-    const x1 = Math.min(width - 1, x0 + 1);
-    const y1 = Math.min(height - 1, y0 + 1);
-    const fx = safeX - x0;
-    const fy = safeY - y0;
-    const top = lerp(data[(y0 * width + x0) * channels + channel], data[(y0 * width + x1) * channels + channel], fx);
-    const bottom = lerp(data[(y1 * width + x0) * channels + channel], data[(y1 * width + x1) * channels + channel], fx);
-    return lerp(top, bottom, fy);
-}
-
-export function warpSkuRetouchSource(input: {
-    raster: SkuRetouchRaster;
-    mask: Buffer;
-    shape: SkuRetouchShapeAnalysis;
-    reference: SkuRetouchShapeAnalysis;
-    strength: number;
-}): SkuRetouchWarpResult {
-    const { raster, mask, shape, reference } = input;
-    const strength = clamp(input.strength, 0, 1);
-    const horizontalPad = Math.max(12, Math.round(reference.bounds.width * 0.16));
-    const shadowPad = Math.max(horizontalPad, Math.round(reference.bounds.width * 0.28));
-    const verticalPad = Math.max(12, Math.round(reference.bounds.height * 0.045));
-    const outputWidth = reference.bounds.width + horizontalPad + shadowPad;
-    const outputHeight = reference.bounds.height + verticalPad * 2;
-    const product = Buffer.alloc(outputWidth * outputHeight * 4);
-    const shadow = Buffer.alloc(outputWidth * outputHeight);
-    let maxDisplacementPx = 0;
-
-    for (let y = 0; y < outputHeight; y += 1) {
-        const normalizedY = (y - verticalPad) / Math.max(1, reference.bounds.height - 1);
-        if (normalizedY < 0 || normalizedY > 1) continue;
-        const normalizedClamped = clamp(normalizedY, 0, 1);
-        const sourceRow = sampleProfileAt(shape, normalizedClamped);
-        const referenceRow = sampleProfileAt(reference, normalizedClamped);
-        const projectedCenter = horizontalPad
-            + ((sourceRow.center - shape.bounds.left) / Math.max(1, shape.bounds.width)) * reference.bounds.width;
-        const projectedWidth = sourceRow.width / Math.max(1, shape.bounds.width) * reference.bounds.width;
-        const referenceCenter = horizontalPad + referenceRow.center - reference.bounds.left;
-        const targetCenter = lerp(projectedCenter, referenceCenter, strength);
-        const targetWidth = Math.max(2, lerp(projectedWidth, referenceRow.width, strength));
-        const sourceY = shape.bounds.top + normalizedClamped * Math.max(1, shape.bounds.height - 1);
-        const rowScale = sourceRow.width / targetWidth;
-        maxDisplacementPx = Math.max(
-            maxDisplacementPx,
-            Math.abs(targetCenter - projectedCenter) + Math.abs(targetWidth - projectedWidth) / 2
-        );
-
-        for (let x = 0; x < outputWidth; x += 1) {
-            const sourceX = sourceRow.center + (x - targetCenter) * rowScale;
-            if (sourceX < 0 || sourceX >= raster.width || sourceY < 0 || sourceY >= raster.height) continue;
-            const alpha = sampleChannel(mask, raster.width, raster.height, 1, sourceX, sourceY, 0);
-            const pixelIndex = y * outputWidth + x;
-            const outputIndex = pixelIndex * 4;
-            if (alpha > 0.5) {
-                product[outputIndex] = Math.round(sampleChannel(raster.data, raster.width, raster.height, 3, sourceX, sourceY, 0));
-                product[outputIndex + 1] = Math.round(sampleChannel(raster.data, raster.width, raster.height, 3, sourceX, sourceY, 1));
-                product[outputIndex + 2] = Math.round(sampleChannel(raster.data, raster.width, raster.height, 3, sourceX, sourceY, 2));
-                product[outputIndex + 3] = Math.round(alpha);
-                shadow[pixelIndex] = Math.round(alpha);
-            }
-        }
-    }
-
-    return {
-        productRgba: product,
-        shadowAlpha: shadow,
-        output: {
-            width: outputWidth,
-            height: outputHeight,
-            subjectTop: verticalPad,
-            subjectLeft: horizontalPad,
-            subjectWidth: reference.bounds.width,
-            subjectHeight: reference.bounds.height
-        },
-        maxDisplacementPx
-    };
 }

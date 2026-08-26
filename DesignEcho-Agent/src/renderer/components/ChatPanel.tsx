@@ -101,6 +101,12 @@ import {
 } from '../../shared/design-image-input';
 import { buildAgentResumeReadonlyToolHandlers } from '../services/agent-orchestration/resume-readonly-handlers';
 import { createPublicPlanPhotoshopAdapter } from '../services/agent-orchestration/public-plan-photoshop-adapter';
+import {
+    beginDebugFinalArtifactCapture,
+    clearDebugFinalArtifactCapture,
+    readDebugFinalArtifactPaths,
+    readDebugSkuDeliverySource
+} from '../services/debug-final-artifact-sidecar';
 import { getEagleLibraryPreview } from '../services/eagle-library.service';
 
 // 导入统一 AI Agent 服务
@@ -150,6 +156,10 @@ import {
     resolveAgentResponseInterruption
 } from '../../shared/agent-response-interruption';
 import { decideAgentRunResultDisposition } from '../../shared/agent-run-result-disposition';
+import {
+    normalizeDebugFinalArtifactRefs,
+    normalizeDebugSkuDeliveryEvidence
+} from '../../shared/debug-final-artifact-refs';
 import { resolveAgentExecutionPresentationDisposition } from '../../shared/agent-completion-message-consistency';
 import type { BusinessSkillVisualObservationFeedback } from '../../shared/business-skill-visual-observation-feedback';
 import type { SkuDeliverySummary } from '../../shared/sku-delivery-summary';
@@ -5113,6 +5123,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     // 这是进入 handleSend 前最后一个同步检查。检查与函数调用之间没有 await，
                     // 后续一旦让出事件循环，handleSend 已建立本轮 AbortController，取消会正常中断。
                     throwIfDebugRequestCancelled();
+                    beginDebugFinalArtifactCapture(debugRequestId);
                     await handleSend({
                         text,
                         image: null,
@@ -5122,6 +5133,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         publicPlanConfirmationRequestId: request.publicPlanConfirmationRequestId,
                         publicPlanDisposableLiveAdapter: request.publicPlanDisposableLiveAdapter
                     });
+                    const finalArtifactRefs = normalizeDebugFinalArtifactRefs(
+                        readDebugFinalArtifactPaths(debugRequestId),
+                        request.expectedProjectPath
+                    );
+                    const skuDeliveryEvidence = normalizeDebugSkuDeliveryEvidence(
+                        readDebugSkuDeliverySource(debugRequestId),
+                        request.expectedProjectPath
+                    );
                     const snapshot = buildChatTestSnapshot();
                     const completedState = useAppStore.getState();
                     const completedProjectPath = String(completedState.currentProject?.path || '')
@@ -5195,6 +5214,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                     || expectedProvider === String(submittedModel?.provider || '').trim())
                             ),
                             conversationId: String(completedState.currentConversationId || '').trim(),
+                            finalArtifactRefs,
+                            ...(skuDeliveryEvidence ? { skuDeliveryEvidence } : {}),
                             completedAt: new Date().toISOString()
                         }
                     };
@@ -5209,6 +5230,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     activeDebugBridgeRequestIdRef.current = null;
                 }
                 cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
+                clearDebugFinalArtifactCapture(debugRequestId);
             }
         });
         return () => {

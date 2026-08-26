@@ -285,7 +285,7 @@ const USER_INTENT_BOUNDARY_OVERRIDES: Record<string, string> = {
     alignToReference: '按显式 layerId、缩放比例、目标中心点和主体偏移缩放/移动图层；用于已读取真实几何数据后的精准对齐，不用于自动猜测参考图层。',
     saveDocument: '在用户明确要求保存或导出，并已确认路径、格式和结果复核目标时执行。',
     generateImage: '从模型生成新图片，不读取或修改 Photoshop；生成结果进入文档前仍需要后续确认。',
-    prepareSkuRetouchAssets: '只为已确认的同品类纯底棚拍 SKU 批次生成精修资产文件；场景图应跳过，生成后仍需写入 Photoshop 并读回验收。',
+    prepareSkuRetouchAssets: '只为已确认的同品类纯底棚拍 SKU 批次生成透明主体等比统一尺度资产文件；保持真实版型，不做形态变形、阴影/投影分离或光影修正。场景图应跳过，生成后仍需写入 Photoshop 并读回验收。',
     updateDesignProjectState: '写入项目记忆中的状态、偏好、版本记录或带来源的事实候选；Agent 不能自行把事实候选标记为用户已确认。',
     undo: '撤销最近的 Photoshop 操作；只有当前一步工具结果异常且需要回退时使用。',
     redo: '重做最近被撤销的 Photoshop 操作；只有确认撤销过度且需要恢复时使用。',
@@ -422,9 +422,9 @@ const DO_NOT_USE_OVERRIDES: Record<string, string[]> = {
         '不要在用户只要求搜索参考或查看项目时调用。'
     ],
     prepareSkuRetouchAssets: [
-        '不要把离线精修资产生成当成 Photoshop 色卡已经完成。',
-        '不要强制把场景图套进纯底形态与中性灰处理。',
-        '不要用单张商品图宣称已经完成跨颜色批次的光影统一。'
+        '不要把离线统一尺度资产生成当成 Photoshop 色卡已经完成。',
+        '不要强制把场景图套进纯底透明主体处理。',
+        '不要把等比统一尺度宣称为形态变形、阴影分离或光影修正已经完成。'
     ],
     updateDesignProjectState: [
         '不要把一次模型猜测写成长期偏好。',
@@ -542,7 +542,7 @@ const VERIFY_OVERRIDES: Record<string, string[]> = {
     alignToReference: ['getLayerBounds', 'getAcceptanceSnapshot'],
     saveDocument: ['probeImageFile 或文件读回', 'getAcceptanceSnapshot'],
     generateImage: ['返回图片 URL 或下载结果', '人工确认是否采用'],
-    prepareSkuRetouchAssets: ['版本化 report.json', '主体/原影/中性灰文件探针', '后续 Photoshop 图层读回与画面快照'],
+    prepareSkuRetouchAssets: ['版本化 report.json', '透明主体文件与统一画布/尺度检查', '后续 Photoshop 置入结构读回与画面快照'],
     updateDesignProjectState: ['getDesignProjectState'],
     undo: ['getDocumentInfo', 'getAcceptanceSnapshot'],
     redo: ['getDocumentInfo', 'getAcceptanceSnapshot']

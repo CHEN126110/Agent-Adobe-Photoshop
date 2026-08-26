@@ -5,8 +5,8 @@ import type {
 } from './sku-color-card-skill';
 
 export const MANUAL_SKU_COLOR_CARD_REQUEST_VERSION = 'manual-sku-color-card-request/v1' as const;
-export const MANUAL_SKU_COLOR_CARD_RESULT_VERSION = 'manual-sku-color-card-result/v1' as const;
-export const MANUAL_SKU_COLOR_CARD_BRIDGE_VERSION = 'manual-sku-color-card-bridge/v1' as const;
+export const MANUAL_SKU_COLOR_CARD_RESULT_VERSION = 'manual-sku-color-card-result/v2' as const;
+export const MANUAL_SKU_COLOR_CARD_BRIDGE_VERSION = 'manual-sku-color-card-bridge/v2' as const;
 
 export type ManualSkuColorCardMode = 'ins' | 'studio';
 export type ManualSkuColorCardAvailabilityState = 'ready' | 'starting' | 'unavailable';
@@ -71,6 +71,9 @@ export interface ManualSkuColorCardResult {
     documentId?: number;
     sourceCount: number;
     preparedCardCount: number;
+    /** 已完成资产身份与真实 bounds 读回的统一尺度置入卡片数。 */
+    uniformScalePlacedCardCount: number;
+    /** @deprecated v2 兼容旧面板字段；值与 uniformScalePlacedCardCount 相同。 */
     retouchedCardCount: number;
     status?: SkuColorCardExecutionReport['status'];
     checks?: SkuColorCardExecutionReport['checks'];
@@ -166,7 +169,7 @@ export function validateManualSkuColorCardRequest(
     const record = value as Record<string, unknown>;
     const mode = normalizeMode(record.mode);
     if (!mode) {
-        return { success: false, error: '请选择 INS 卡片色卡或纯底精修色卡。' };
+        return { success: false, error: '请选择 INS 卡片色卡或纯底统一尺度色卡。' };
     }
 
     const sources = normalizeSources(record.sources);

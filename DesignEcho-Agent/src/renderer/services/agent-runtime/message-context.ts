@@ -155,11 +155,11 @@ export function createRuntimeObservationMessage(
 }
 
 /**
- * Preserve the replayable parts of an assistant turn when the Agent continues
- * after a partial response. OpenAI-compatible providers can round-trip the
- * string reasoning field; providers whose native reasoning needs extra
- * protocol data (for example Anthropic's signature) must omit a reasoning-only
- * turn in their adapter instead of serializing an empty assistant message.
+ * Preserve the replayable parts of a completed assistant turn. Provider 输出若未完整结算，
+ * 调用方必须整轮丢弃，不能借本函数只回放半截 reasoning。OpenAI-compatible providers
+ * can round-trip the string reasoning field; providers whose native reasoning needs extra
+ * protocol data (for example Anthropic's signature) must omit a reasoning-only turn in
+ * their adapter instead of serializing an empty assistant message.
  */
 export function createAssistantHistoryMessage(
     response: {
@@ -168,13 +168,14 @@ export function createAssistantHistoryMessage(
         toolCalls?: AgentMessage['toolCalls'];
     },
     options?: {
+        includeContent?: boolean;
         includeToolCalls?: boolean;
     }
 ): AgentMessage {
     const includeToolCalls = options?.includeToolCalls !== false;
     return {
         role: 'assistant',
-        content: String(response.content || ''),
+        content: options?.includeContent === false ? '' : String(response.content || ''),
         ...(includeToolCalls && response.toolCalls?.length ? { toolCalls: response.toolCalls } : {}),
         ...(response.thinking ? { reasoningContent: response.thinking } : {})
     };

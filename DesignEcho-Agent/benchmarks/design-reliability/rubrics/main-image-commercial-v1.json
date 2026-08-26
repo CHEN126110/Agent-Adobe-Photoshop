@@ -3,21 +3,73 @@
   "rubricId": "main-image-commercial-v1",
   "taskFamily": "main_image",
   "scale": "0..1",
+  "scoreAnchorValues": { "poor": 0, "acceptable": 0.5, "strong": 0.75, "excellent": 1 },
   "dimensions": [
-    { "id": "taskUnderstanding", "weight": 0.08 },
-    { "id": "productGrounding", "weight": 0.1 },
-    { "id": "assetSelection", "weight": 0.14 },
-    { "id": "compositionHierarchy", "weight": 0.16 },
-    { "id": "subjectScaleCrop", "weight": 0.14 },
-    { "id": "typography", "weight": 0.1 },
-    { "id": "colorStyle", "weight": 0.1 },
-    { "id": "commercialEffectiveness", "weight": 0.12 },
-    { "id": "editability", "weight": 0.06 }
+    {
+      "id": "taskUnderstanding",
+      "weight": 0.08,
+      "description": "成稿是否明确解决 800×800 电商主图的点击与商品识别目标，而非误做成详情屏、SKU 卡或普通拼图。",
+      "scoreAnchors": { "poor": "目标类型错误或主体不明。", "acceptable": "类型正确但信息优先级普通。", "strong": "一眼识别商品与主诉求。", "excellent": "目标、受众与点击动机高度统一且不堆信息。" }
+    },
+    {
+      "id": "productGrounding",
+      "weight": 0.1,
+      "description": "所有商品、颜色和文案判断是否来自冻结输入或画面可观察事实；不因参考图存在而复制未提供卖点。",
+      "scoreAnchors": { "poor": "商品认错或出现虚构事实。", "acceptable": "事实基本正确但表达含糊。", "strong": "事实准确且视觉表达与商品一致。", "excellent": "在不虚构的前提下把真实特征转化为清晰购买理由。" }
+    },
+    {
+      "id": "assetSelection",
+      "weight": 0.14,
+      "description": "所选摄影图是否最能展示商品、姿态自然、遮挡少、清晰度足，并与当前创意方向匹配；不得因目录顺序反复选同一张。",
+      "scoreAnchors": { "poor": "选图遮挡严重、主体弱或明显不适合主图。", "acceptable": "商品可见但角度或表现力一般。", "strong": "选图清楚、有吸引力且支持构图。", "excellent": "选图本身形成强记忆点并优于可见替代候选。" }
+    },
+    {
+      "id": "compositionHierarchy",
+      "weight": 0.16,
+      "description": "主体、留白、辅助元素和可选文案是否形成清楚视觉层级与稳定平衡。",
+      "scoreAnchors": { "poor": "拥挤、松散或没有视觉中心。", "acceptable": "结构可读但平衡与节奏普通。", "strong": "视觉中心明确、留白和辅助元素服务主体。", "excellent": "层级、张力和节奏成熟，缩略图下仍然成立。" }
+    },
+    {
+      "id": "subjectScaleCrop",
+      "weight": 0.14,
+      "description": "主体缩放、裁切、边缘安全和视觉重量是否合适；裁切必须是明确构图选择，不得意外切断商品关键部位。",
+      "scoreAnchors": { "poor": "主体过小、过大或关键部位被意外裁切。", "acceptable": "完整可见但视觉重量一般。", "strong": "主体占比、裁切和安全边距协调。", "excellent": "尺度与裁切显著增强商品吸引力且保持自然。" }
+    },
+    {
+      "id": "typography",
+      "weight": 0.1,
+      "description": "若使用文字，字体、字号、行距、对齐和层级是否专业；若合理选择无文字主图，则按该选择是否提升画面评分，不自动扣分。",
+      "scoreAnchors": { "poor": "文字难读、抢主体或风格冲突。", "acceptable": "可读但层级与细节普通。", "strong": "文字精炼、清晰并与商品气质统一。", "excellent": "字形、节奏和位置成为构图的一部分而不喧宾夺主。" }
+    },
+    {
+      "id": "colorStyle",
+      "weight": 0.1,
+      "description": "色彩、背景、对比和光感是否统一商品气质，并与肤色、商品色保持自然。",
+      "scoreAnchors": { "poor": "脏灰、失真、冲突或套用感强。", "acceptable": "色彩协调但缺少识别度。", "strong": "色彩统一、自然且支持层级。", "excellent": "建立明确品牌气质，同时保留真实商品颜色。" }
+    },
+    {
+      "id": "commercialEffectiveness",
+      "weight": 0.12,
+      "description": "与用户成稿和 Eagle 类目参考并看时，成稿是否具备相当的专业完成度、点击吸引力和商品可信度，而不是机械相似。",
+      "scoreAnchors": { "poor": "像草稿、模板或无法用于电商。", "acceptable": "基本可用但明显弱于参考。", "strong": "达到同类商业成稿水平。", "excellent": "在保持真实的前提下比参考更聚焦、更有说服力。" }
+    },
+    {
+      "id": "editability",
+      "weight": 0.06,
+      "description": "PSD 是否按语义分层、命名可读、主要元素可独立调整，且无不必要的扁平化。",
+      "scoreAnchors": { "poor": "不可编辑或图层混乱。", "acceptable": "主要元素可改但组织一般。", "strong": "图层清楚、命名和分组便于接手。", "excellent": "结构像成熟设计师交付，可快速复用与局部调整。" }
+    }
   ],
   "decisionRule": {
     "passRequiresNoBlocker": true,
     "passMinimumOverall": 0.7,
-    "pairwiseTarget": "comparable_or_better_than_user_and_eagle_anchors"
+    "pairwiseTarget": "comparable_or_better_than_user_and_eagle_anchors",
+    "blockingConditions": [
+      "商品或任务类型识别错误",
+      "虚构材质、功效、认证或其他未提供商品事实",
+      "关键商品部位被意外裁切或严重遮挡",
+      "没有可编辑 PSD 或最终导出与复核画面不一致"
+    ]
   },
   "boundaries": {
     "humanVerdictRequired": true,

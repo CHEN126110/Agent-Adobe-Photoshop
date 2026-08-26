@@ -100,6 +100,7 @@ function buildLayoutReplicationDeliveryResult(success: boolean, finalDocumentInf
     return {
         runtimeDeliveryReceipt: buildRuntimeDeliveryReceipt({
             status: 'ready',
+            settlementScope: 'single_document_revision',
             outputs: ['editable_design_document', 'replication_report'],
             resultRefs: [
                 'workflow:layout-replication:document-change',

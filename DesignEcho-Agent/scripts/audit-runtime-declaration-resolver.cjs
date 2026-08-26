@@ -55,6 +55,7 @@ const {
   'runtime-declaration-sibling-policy.ts'
 ));
 const {
+  buildRuntimeDeliveryReceipt,
   projectManifestBoundRuntimeDeliveryReceipt,
   readRuntimeDeliveryProofKinds,
   verifyRuntimeDelivery
@@ -62,6 +63,9 @@ const {
 const {
   resolveRuntimeExecutionTarget
 } = require(path.join(runtimeRoot, 'runtime-execution-target.ts'));
+const {
+  readStrictRuntimeDeliveryVerification
+} = require(path.join(runtimeRoot, 'runtime-artifact-declaration-readers.ts'));
 const {
   resolveRuntimeStagePlanEffectiveContract
 } = require(path.join(runtimeRoot, 'runtime-stage-plan.ts'));
@@ -3241,6 +3245,172 @@ assert.strictEqual(
   'passed',
   JSON.stringify(templateDeliveryVerification, null, 2)
 );
+const skuBatchDeliveryResultRefs = Array.from(
+  { length: 19 },
+  (_, index) => `workflow:sku-batch:export:${index + 1}`
+);
+const skuBatchDeliveryArtifacts = Array.from(
+  { length: 19 },
+  (_, index) => {
+    const row = index + 1;
+    return [
+      {
+        path: `C:/audit/SKU/${row}.jpg`,
+        kind: 'raster_export',
+        proof: 'uxp_export_readback'
+      },
+      {
+        path: `C:/audit/SKU/${row}.psb`,
+        kind: 'editable_document',
+        proof: 'staged_editable_document_promotion'
+      }
+    ];
+  }
+).flat();
+const skuBatchDeliveryReceipt = buildRuntimeDeliveryReceipt({
+  status: 'ready',
+  settlementScope: 'multi_document_task',
+  outputs: skuDefault.bundle.stagePlan.deliveryOutputs,
+  resultRefs: skuBatchDeliveryResultRefs,
+  resultRefProofs: skuBatchDeliveryResultRefs.map((resultRef) => ({
+    resultRef,
+    effect: 'save_export'
+  })),
+  artifacts: skuBatchDeliveryArtifacts
+});
+assert.strictEqual(skuBatchDeliveryReceipt.status, 'ready');
+const skuBatchDeliveryVerification = verifyRuntimeDelivery({
+  requiredOutputs: skuDefault.bundle.stagePlan.deliveryOutputs,
+  receipt: skuBatchDeliveryReceipt,
+  receiptTarget: undefined,
+  multiDocumentTaskBound: true
+});
+assert.strictEqual(skuBatchDeliveryVerification.status, 'passed');
+assert.strictEqual(skuBatchDeliveryVerification.settlementScope, 'multi_document_task');
+assert.strictEqual(skuBatchDeliveryVerification.multiDocumentTaskBound, true);
+assert.deepStrictEqual(
+  readStrictRuntimeDeliveryVerification(skuBatchDeliveryVerification),
+  skuBatchDeliveryVerification
+);
+const legacyTemplateDeliveryVerification = {
+  ...templateDeliveryVerification,
+  version: 'runtime-delivery-verification/v1',
+  boundaries: { ...templateDeliveryVerification.boundaries }
+};
+delete legacyTemplateDeliveryVerification.settlementScope;
+delete legacyTemplateDeliveryVerification.multiDocumentTaskBound;
+delete legacyTemplateDeliveryVerification.boundaries.multiDocumentTaskBindingRequired;
+const normalizedLegacyTemplateDeliveryVerification = readStrictRuntimeDeliveryVerification(
+  legacyTemplateDeliveryVerification
+);
+assert.strictEqual(normalizedLegacyTemplateDeliveryVerification?.version, 'runtime-delivery-verification/v2');
+assert.strictEqual(
+  normalizedLegacyTemplateDeliveryVerification?.settlementScope,
+  'single_document_revision'
+);
+assert.strictEqual(verifyRuntimeDelivery({
+  requiredOutputs: skuDefault.bundle.stagePlan.deliveryOutputs,
+  receipt: skuBatchDeliveryReceipt,
+  receiptTarget: undefined,
+  multiDocumentTaskBound: false
+}).status, 'incomplete', 'multi-document receipt must remain incomplete without TaskRun binding');
+assert.strictEqual(verifyRuntimeDelivery({
+  requiredOutputs: skuDefault.bundle.stagePlan.deliveryOutputs,
+  receipt: buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'multi_document_task',
+    outputs: ['sku_images'],
+    resultRefs: skuBatchDeliveryResultRefs,
+    resultRefProofs: skuBatchDeliveryResultRefs.map((resultRef) => ({
+      resultRef,
+      effect: 'save_export'
+    })),
+    artifacts: skuBatchDeliveryArtifacts
+  }),
+  receiptTarget: undefined,
+  multiDocumentTaskBound: true
+}).status, 'incomplete', 'missing Manifest delivery outputs must keep E2 incomplete');
+assert.strictEqual(buildRuntimeDeliveryReceipt({
+  status: 'ready',
+  settlementScope: 'multi_document_task',
+  outputs: skuDefault.bundle.stagePlan.deliveryOutputs,
+  resultRefs: skuBatchDeliveryResultRefs,
+  resultRefProofs: skuBatchDeliveryResultRefs.slice(1).map((resultRef) => ({
+    resultRef,
+    effect: 'save_export'
+  })),
+  artifacts: skuBatchDeliveryArtifacts
+}).status, 'incomplete', 'partial SKU save/export proof set must not produce a ready receipt');
+const wrongTemplateTarget = resolveRuntimeExecutionTarget({ result: { documentId: 72 } });
+assert.strictEqual(verifyRuntimeDelivery({
+  requiredOutputs: skuTemplate.bundle.stagePlan.deliveryOutputs,
+  receipt: templateDeliveryProjection.receipt,
+  receiptTarget: templateDeliveryProjection.receiptTarget,
+  reviewedPreviewTarget: wrongTemplateTarget,
+  reviewedPreviewHistoryStateRef: templateHistoryStateRef
+}).status, 'incomplete', 'single-document delivery must reject a reviewed preview from another target');
+
+const skuBatchE2Agent = new Agent(
+  {
+    ...buildAgentTestConfig({ maxIterations: 2 }),
+    runtimeStagePlan: skuDefault.bundle.stagePlan
+  },
+  async () => ({ content: '', stopReason: 'end_turn' }),
+  async () => ({ success: true })
+);
+const passedSkuSummary = {
+  status: 'completed',
+  blockers: [],
+  designVerdict: { status: 'passed', blockers: [], warnings: [] }
+};
+skuBatchE2Agent.toolCallLog = [{
+  callId: 'sku-batch-e2-call',
+  name: 'sku-batch',
+  arguments: { stage: 'full' },
+  result: { success: true, data: { runtimeDeliveryReceipt: skuBatchDeliveryReceipt } },
+  origin: 'model_tool_call'
+}];
+const skuBatchE2Evidence = skuBatchE2Agent.appendDeliveryStageTraceIfEligible(passedSkuSummary);
+assert.strictEqual(skuBatchE2Evidence.deliveryEvidencePassed, true);
+assert.deepStrictEqual(skuBatchE2Evidence.finalDeliveryResultRefs, skuBatchDeliveryResultRefs);
+
+skuBatchE2Agent.toolCallLog.push({
+  callId: 'unbound-editable-save',
+  name: 'saveDocument',
+  arguments: { path: 'C:/audit/unbound.psb' },
+  result: {
+    success: true,
+    format: 'psb',
+    savedPath: 'C:/audit/unbound.psb',
+    sourceHistoryStateRef: { documentId: 999, historyStateId: 3 },
+    editableDocumentArtifact: {
+      version: 'runtime-editable-document-artifact/v1',
+      basis: 'uxp_post_save_file_metadata',
+      path: 'C:/audit/unbound.psb',
+      format: 'psb',
+      byteLength: 4096,
+      modifiedAt: 1,
+      documentId: 999,
+      canvas: { width: 800, height: 800 }
+    }
+  },
+  origin: 'model_tool_call'
+});
+const skuBatchE2AfterUnboundSave = skuBatchE2Agent.appendDeliveryStageTraceIfEligible(passedSkuSummary);
+assert.strictEqual(skuBatchE2AfterUnboundSave.deliveryEvidencePassed, true);
+assert(!skuBatchE2AfterUnboundSave.finalDeliveryResultRefs.includes('unbound-editable-save'),
+  'an unrelated editable save must not become part of the SKU final artifact set');
+
+skuBatchE2Agent.toolCallLog.push({
+  callId: 'sku-batch-later-write',
+  name: 'setTextContent',
+  arguments: { layerId: 9, content: 'changed' },
+  result: { success: true, activeDocumentId: 88 },
+  origin: 'model_tool_call'
+});
+const staleSkuBatchE2Evidence = skuBatchE2Agent.appendDeliveryStageTraceIfEligible(passedSkuSummary);
+assert.strictEqual(staleSkuBatchE2Evidence.deliveryEvidencePassed, false,
+  'a later Photoshop content mutation must invalidate the multi-document SKU receipt');
 
 const methodAsArtifact = resolveRuntimeDeclarationForAgentTask({
   taskType: 'design.reference_replication.v1',
@@ -3462,6 +3632,7 @@ async function assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2() {
         assert(visibleTools.some((tool) => tool.name === 'declareDesignIntent'));
         assert(visibleTools.some((tool) => tool.name === 'getDocumentInfo'));
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'declare-sku-default',
             name: 'declareDesignIntent',
@@ -3626,6 +3797,7 @@ async function assertDeclarationCarriesCompatibleReadsWithoutHijackingSiblingCal
       if (modelCallCount === 1) {
         // 复刻 r18 Provider 顺序：两个读取在声明之前，另带一个不可顺带放行的写调用。
         return {
+          stopReason: 'tool_use',
           toolCalls: [
             { id: 'same-turn-recommend', name: 'recommendAssets', arguments: { limit: 6 } },
             { id: 'same-turn-eagle', name: 'searchEagleReferences', arguments: { query: '袜子 主图' } },
@@ -3715,6 +3887,7 @@ async function assertAgentRuntimeDeclarationFailureAndAmbiguityStayFailClosed() 
         modelCalls += 1;
         if (modelCalls === 1) {
           return {
+            stopReason: 'tool_use',
             toolCalls: [
               { id: 'failed-declaration-read', name: 'searchEagleReferences', arguments: { query: '主图' } },
               {
@@ -3753,6 +3926,7 @@ async function assertAgentRuntimeDeclarationFailureAndAmbiguityStayFailClosed() 
       ambiguousModelCalls += 1;
       if (ambiguousModelCalls === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [
             {
               id: 'ambiguous-main',
@@ -3803,6 +3977,7 @@ async function assertStagedDeclarationUsesTruePostBindingToolSurface() {
       modelCalls += 1;
       if (modelCalls === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [
             { id: 'staged-hidden-recommend', name: 'recommendAssets', arguments: { limit: 4 } },
             {
@@ -4021,9 +4196,10 @@ async function assertSkuModeGetsOneStructuredRepair() {
         )).length
       );
       if (modelCallCount > 2) {
-        return { content: 'Runtime declaration repair audit complete.' };
+        return { content: 'Runtime declaration repair audit complete.', stopReason: 'end_turn' };
       }
       return {
+        stopReason: 'tool_use',
         toolCalls: [{
           id: `declare-sku-${modelCallCount}`,
           name: 'declareDesignIntent',
@@ -4073,6 +4249,7 @@ async function assertPureFirstToolResponseDoesNotCallAuxiliaryModel() {
       modelCallCount += 1;
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'read-document-first-turn',
             name: 'getDocumentInfo',
@@ -4082,7 +4259,7 @@ async function assertPureFirstToolResponseDoesNotCallAuxiliaryModel() {
       }
       if ((visibleTools || []).length === 0 && toolCallCount === 0) {
         auxiliaryModelCallCount += 1;
-        return { content: '不应发生的额外过程说明调用。' };
+        return { content: '不应发生的额外过程说明调用。', stopReason: 'end_turn' };
       }
       return { content: '已读取当前文档状态。', stopReason: 'end_turn' };
     },
@@ -4149,6 +4326,7 @@ async function assertCorrectRecommendationCanCallSkillOnFirstTurn() {
       modelToolSurfaces.push(visibleTools.map((tool) => tool.name));
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'recommended-skill-first-turn',
             name: recommendedSkillName,
@@ -4198,6 +4376,7 @@ async function assertWrongRecommendationRecoversWithOneCapabilityRequest() {
       modelToolSurfaces.push(visibleTools.map((tool) => tool.name));
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'request-replacement-skill',
             name: REQUEST_AGENT_CAPABILITIES_TOOL_NAME,
@@ -4207,6 +4386,7 @@ async function assertWrongRecommendationRecoversWithOneCapabilityRequest() {
       }
       if (modelCallCount === 2) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'use-replacement-skill',
             name: replacementSkillName,
@@ -4295,6 +4475,7 @@ async function assertDeclaredWorkflowHandoffsDoNotTripFailureBreaker() {
       modelCallCount += 1;
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-owner-1',
             name: skillName,
@@ -4305,6 +4486,7 @@ async function assertDeclaredWorkflowHandoffsDoNotTripFailureBreaker() {
       if (modelCallCount >= 2 && modelCallCount <= 4) {
         const ownerNumber = modelCallCount;
         return {
+          stopReason: 'tool_use',
           toolCalls: [
             readCalls[modelCallCount - 2],
             {
@@ -4416,6 +4598,7 @@ async function assertProjectedBareNonFatalStillTripsFailureBreaker() {
       modelCallCount += 1;
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'bare-owner-1',
             name: skillName,
@@ -4425,6 +4608,7 @@ async function assertProjectedBareNonFatalStillTripsFailureBreaker() {
       }
       if (modelCallCount === 2 || modelCallCount === 3) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [
             readCalls[modelCallCount - 2],
             {
@@ -4436,6 +4620,7 @@ async function assertProjectedBareNonFatalStillTripsFailureBreaker() {
         };
       }
       return {
+        stopReason: 'tool_use',
         toolCalls: [{
           id: `bare-owner-${modelCallCount}`,
           name: skillName,
@@ -4496,6 +4681,7 @@ async function assertUnprojectedRawContinuationStillTripsFailureBreaker() {
       modelCallCount += 1;
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'raw-owner-1',
             name: skillName,
@@ -4505,6 +4691,7 @@ async function assertUnprojectedRawContinuationStillTripsFailureBreaker() {
       }
       if (modelCallCount === 2 || modelCallCount === 3) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [
             readCalls[modelCallCount - 2],
             {
@@ -4516,6 +4703,7 @@ async function assertUnprojectedRawContinuationStillTripsFailureBreaker() {
         };
       }
       return {
+        stopReason: 'tool_use',
         toolCalls: [{
           id: `raw-owner-${modelCallCount}`,
           name: skillName,
@@ -4597,6 +4785,7 @@ async function assertCancelledProjectedWorkflowHandoffStopsImmediately() {
     async () => {
       modelCallCount += 1;
       return {
+        stopReason: 'tool_use',
         toolCalls: [{
           id: `cancelled-owner-${modelCallCount}`,
           name: skillName,
@@ -4653,6 +4842,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
       stagesBeforeModel.push(agent.runtimeSession?.stageState?.currentStage);
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'declare-workflow-repair-runtime',
             name: 'declareDesignIntent',
@@ -4663,6 +4853,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
       if (modelCallCount === 2) {
         assert.strictEqual(agent.runtimeSession?.stageState?.currentStage, 'E1');
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-repair-handoff',
             name: 'sku-batch',
@@ -4683,6 +4874,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
         assert(visibleTools.some((tool) => tool.name === 'createRectangle'));
         return {
           content: '我会先完成可逆结构修复。',
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-atomic-repair-1',
             name: 'createRectangle',
@@ -4701,6 +4893,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
           'Workflow owner became visible before the latest mutation had an exact readback'
         );
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-repair-readback-1',
             name: 'getLayerHierarchy',
@@ -4719,6 +4912,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
           'Workflow owner did not become visible after the exact repair readback'
         );
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-owner-second-handoff',
             name: 'sku-batch',
@@ -4744,6 +4938,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
           'new repair epoch discarded the prior exact readback evidence'
         );
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-atomic-repair-2',
             name: 'createRectangle',
@@ -4758,6 +4953,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
           'Workflow owner became visible before the second epoch latest mutation readback'
         );
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-repair-readback-2',
             name: 'getLayerHierarchy',
@@ -4772,6 +4968,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
           'Workflow owner did not become visible after the second epoch exact readback'
         );
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-owner-accept-repair',
             name: 'sku-batch',
@@ -4795,6 +4992,7 @@ async function assertDirectRuntimeRepairStaysInE1UntilOwnerAccepts(handoffSucces
           'accepted Workflow owner lost its declared exact-readback tool'
         );
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'workflow-owner-final-mutation-readback',
             name: 'getLayerHierarchy',
@@ -5083,6 +5281,7 @@ async function assertGeneralDesignUnknownWriteKeepsBoundedReadbackAlive() {
       modelToolSurfaces.push(visibleTools.map((tool) => tool.name));
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'unknown-write',
             name: 'createRectangle',
@@ -5092,11 +5291,13 @@ async function assertGeneralDesignUnknownWriteKeepsBoundedReadbackAlive() {
       }
       if (modelCallCount === 2) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{ id: 'first-generic-readback', name: 'getDocumentInfo', arguments: {} }]
         };
       }
       if (modelCallCount === 3) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{ id: 'second-generic-readback', name: 'getLayerHierarchy', arguments: {} }]
         };
       }
@@ -5206,6 +5407,7 @@ async function assertGeneralDesignUnknownWriteUnchangedReadbackRestoresOtherWrit
       modelToolSurfaces.push(visibleTools.map((tool) => tool.name));
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'unknown-write-no-change',
             name: 'createRectangle',
@@ -5215,6 +5417,7 @@ async function assertGeneralDesignUnknownWriteUnchangedReadbackRestoresOtherWrit
       }
       if (modelCallCount === 2) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{ id: 'unchanged-readback', name: 'getDocumentInfo', arguments: {} }]
         };
       }
@@ -5228,6 +5431,7 @@ async function assertGeneralDesignUnknownWriteUnchangedReadbackRestoresOtherWrit
           'the unknown write provider was exposed for replay after unchanged readback'
         );
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'alternate-write-after-readback',
             name: 'createEllipse',
@@ -5343,6 +5547,7 @@ async function assertKnownNotAppliedWriteDoesNotBlockFollowingSerialWrite() {
         // 同一模型响应中的两个写调用必须串行执行。第一个结果由 Host 明确证明
         // not_applied；它不能污染同批次第二个、彼此独立的写调用。
         return {
+          stopReason: 'tool_use',
           toolCalls: [
             {
               id: 'known-not-applied-write',
@@ -5448,6 +5653,7 @@ async function assertProvenAppliedWriteDoesNotLockFollowingSerialWrite() {
       modelCallCount += 1;
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [
             { id: 'applied-write-1', name: 'createRectangle', arguments: { x: 10, y: 10, width: 80, height: 80 } },
             { id: 'applied-write-2', name: 'createEllipse', arguments: { x: 120, y: 20, width: 60, height: 60 } }
@@ -5553,6 +5759,7 @@ async function assertConfirmedProductionNarrowsAfterBoundedObservation() {
       maxAdviceMessagesInOneCall = Math.max(maxAdviceMessagesInOneCall, adviceMessages);
       if (modelCallCount <= 7) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: `pre-delivery-read-${modelCallCount}`,
             name: modelCallCount % 2 === 1 ? 'getDocumentInfo' : 'getLayerHierarchy',
@@ -5569,6 +5776,7 @@ async function assertConfirmedProductionNarrowsAfterBoundedObservation() {
           'observation limit must not narrow the tool surface (advisory only)'
         );
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'pre-delivery-write-1',
             name: 'createRectangle',
@@ -5664,6 +5872,7 @@ async function assertObservationObligationRequiresRealReadButNotMutation() {
       }
       if (modelCallCount === 2) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{ id: 'observation-progress-read', name: 'getDocumentInfo', arguments: {} }]
         };
       }
@@ -5772,6 +5981,7 @@ async function assertBareCompletionClaimsCannotBypassTextExits() {
       noToolModelCalls += 1;
       if (noToolModelCalls === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'blocked-create-rectangle',
             name: 'createRectangle',
@@ -5804,6 +6014,7 @@ async function assertBareCompletionClaimsCannotBypassTextExits() {
       readOnlyModelCalls += 1;
       if (readOnlyModelCalls === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{ id: 'bare-claim-read', name: 'getDocumentInfo', arguments: {} }]
         };
       }
@@ -6085,6 +6296,7 @@ async function assertExecutionSupplyReserveGatesObservationInLiveLoop() {
         }
         if (readRequests <= 6) {
           return {
+            stopReason: 'tool_use',
             toolCalls: [{
               id: `reserve-read-${readRequests}`,
               name: 'getLayerBounds',
@@ -6150,6 +6362,7 @@ async function assertExecutionSupplyReserveGatesObservationInLiveLoop() {
         }
         if (readRequests <= 8) {
           return {
+            stopReason: 'tool_use',
             toolCalls: [{
               id: `reserve-read-${readRequests}`,
               name: 'getLayerBounds',
@@ -6254,6 +6467,7 @@ async function assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates() {
       }
       if (readOnlyModelCalls === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{ id: 'guard-read-doc', name: 'getDocumentInfo', arguments: {} }]
         };
       }
@@ -6302,6 +6516,7 @@ async function assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates() {
       }
       if (inspectModelCalls <= 14) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: `inspect-read-${inspectModelCalls}`,
             name: 'getLayerBounds',
@@ -6378,6 +6593,7 @@ async function assertToolResultRecoveryOptionsDoNotConstrainAgentToolChoice() {
       modelCallCount += 1;
       if (modelCallCount === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{
             id: 'protected-write-observation',
             name: 'getDocumentInfo',
@@ -6670,6 +6886,7 @@ async function assertLinkReviewRequestsStayReadOnly() {
       reviewModelCalls += 1;
       if (reviewModelCalls === 1) {
         return {
+          stopReason: 'tool_use',
           toolCalls: [{ id: 'link-review-read-1', name: 'getDocumentInfo', arguments: {} }]
         };
       }
@@ -6971,11 +7188,11 @@ async function assertFinalQualityDiagnosisRepairModelProtocol() {
     readActiveElapsedMs: () => 1000,
     callJudge: async (request) => {
       calls.push({ kind: 'judge', request });
-      return { content: firstJudgeResponse };
+      return { content: firstJudgeResponse, stopReason: 'end_turn' };
     },
     callDiagnosisRepair: async (request) => {
       calls.push({ kind: 'repair', request });
-      return { content: repairResponse };
+      return { content: repairResponse, stopReason: 'end_turn' };
     },
     readPostModelHistoryStateRef: async () => {
       historyReads += 1;
@@ -7083,7 +7300,7 @@ async function assertFinalQualityDiagnosisRepairModelProtocol() {
     callJudge: async () => ({ content: firstJudgeResponse }),
     callDiagnosisRepair: async () => {
       unverifiedRepairCalled = true;
-      return { content: repairResponse };
+      return { content: repairResponse, stopReason: 'end_turn' };
     },
     readPostModelHistoryStateRef: async () => historyStateRef
   });
@@ -7260,6 +7477,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
         assert(visualPresentationReceipt, 'the first Judge call must return a matching Provider presentation receipt');
         return {
           content: judgeResponse,
+          stopReason: 'end_turn',
           visualPresentationReceipt,
           transportAttempts: [{
             durationMs: 1,
@@ -7288,6 +7506,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
       assert(visualPresentationReceipt, 'diagnosis repair must sign its own matching presentation receipt');
       return {
         content: diagnosisResponse,
+        stopReason: 'end_turn',
         visualPresentationReceipt,
         transportAttempts: [{
           durationMs: 1,

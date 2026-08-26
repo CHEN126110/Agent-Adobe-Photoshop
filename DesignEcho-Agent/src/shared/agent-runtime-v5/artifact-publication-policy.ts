@@ -381,29 +381,44 @@ function validateRuntimeDeliveryVerification(
     value: unknown,
     issues: ArtifactPublicationPolicyIssue[]
 ): void {
+    const normalizedLegacy = readStrictRuntimeDeliveryVerification(value);
+    if (isRecord(value)
+        && value.version === 'runtime-delivery-verification/v1'
+        && normalizedLegacy) {
+        value = normalizedLegacy;
+    }
     if (!validateExactObject(
         value,
         [
             'version', 'status', 'requiredOutputs', 'confirmedOutputs', 'missingOutputs',
-            'targetBound', 'reviewedPreviewBound', 'sourceHistoryStateBound', 'boundaries'
+            'settlementScope', 'targetBound', 'reviewedPreviewBound',
+            'sourceHistoryStateBound', 'multiDocumentTaskBound', 'boundaries'
         ],
         [],
         'request.payload.value',
         issues
     )) return;
-    validateLiteral(value.version, 'runtime-delivery-verification/v1', 'request.payload.value.version', issues);
+    validateLiteral(value.version, 'runtime-delivery-verification/v2', 'request.payload.value.version', issues);
     validateEnum(value.status, ['passed', 'incomplete'], 'request.payload.value.status', issues);
+    validateEnum(
+        value.settlementScope,
+        ['single_document_revision', 'multi_document_task'],
+        'request.payload.value.settlementScope',
+        issues
+    );
     validateStringArray(value.requiredOutputs, 'request.payload.value.requiredOutputs', issues);
     validateStringArray(value.confirmedOutputs, 'request.payload.value.confirmedOutputs', issues);
     validateStringArray(value.missingOutputs, 'request.payload.value.missingOutputs', issues);
     validateBoolean(value.targetBound, 'request.payload.value.targetBound', issues);
     validateBoolean(value.reviewedPreviewBound, 'request.payload.value.reviewedPreviewBound', issues);
     validateBoolean(value.sourceHistoryStateBound, 'request.payload.value.sourceHistoryStateBound', issues);
+    validateBoolean(value.multiDocumentTaskBound, 'request.payload.value.multiDocumentTaskBound', issues);
     validateLiteralBoundaries(value.boundaries, {
         manifestRequirementsOnly: true,
         explicitReceiptRequired: true,
         sameTargetPreviewRequired: true,
         exactSourceHistoryRequired: true,
+        multiDocumentTaskBindingRequired: true,
         qualityVerdictAuthority: false,
         grantsPermission: false,
         executesTools: false

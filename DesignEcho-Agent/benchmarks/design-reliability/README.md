@@ -34,7 +34,7 @@ Case（测什么）
 1. 实际绑定了目标 Skill；
 2. Photoshop history transition 或 mutation commit 证明发生过真实写入；
 3. 最后一次写入后有同任务的结构读回与视觉读回；
-4. 可编辑 PSD 与栅格导出文件真实存在并记录 hash；
+4. 可编辑 PSD 与栅格导出文件真实存在并记录 hash，且只把 Agent delivery receipt 明确声明的文件作为最终交付；
 5. TaskRun 进入终态，没有未解决 blocker；
 6. 人工评审认为无需推倒重做；
 7. 没有错文档、覆盖源稿、跨 revision 写入或假完成。
@@ -66,6 +66,12 @@ Case（测什么）
 
 `cases/` 中只保存相对于一个本地 source fixture 的路径，不保存 `D:\...` 等绝对路径。准备测试目录时只复制 `agentVisibleInputs`；`reviewOnlyReferences`（用户成稿与 Eagle 参考）绝不能复制进 Agent 可见项目，否则 Agent 可能把成稿当模板或直接复用，测试失去意义。
 
+当摄影图或 GBK 配置本身不足以表达商品事实、颜色编号等业务输入时，Case 可用
+`fixtureGeneratedInputs` 写入一份冻结的 UTF-8 结构化事实说明。商品 claim 必须逐项带受控
+provenance，禁止 claim、商品类型、颜色或映射字段夹带选图、构图、字号、配色、版式答案或本机路径；
+准备脚本只把它写入一次性 fixture，不反写用户源项目。Fixture 中任何 symlink / junction 都会使
+本次样本失效，避免扫描跳过的链接把外部文件带入评测。
+
 默认的本地数据与报告写入 `tmp/design-reliability/`，不进入 Git。真实输入原目录保持只读，Photoshop 只操作一次性 fixture 副本。
 
 ## 命令
@@ -85,6 +91,16 @@ npm run maintenance:business-skills-live-e2e:require-live
 ```
 
 当套件包含多个独立输入源时，准备或检查 fixture 必须显式指定 `--case` 或 `--fixture-id`，避免把两个商品目录混成一个测试项目。
+如果同一个 `fixtureId` 被主图、详情页、SKU 等多个 Case 共用，`prepare-fixture` 必须使用
+单个 `--case`：正式 live 会按 Case 检查零额外文件，联合目录既会污染输入边界，也无法形成可用样本。
+
+严格人工评审中的比较证据不能由评审者自由写标记：候选必须同时属于当前 Run 的已验证
+`raster_export` 和 Agent 声明的 `finalArtifactManifest`，用户成稿和 Eagle 条目必须逐项来自当前 Case 的
+`reviewOnlyReferences`。格式正确但不属于当前 Run / Case 的字符串会被拒绝。匿名随机
+评审包仍是后续增强项；在它落地前，`record-review` 只产生
+`bound_self_reported` 诊断评审，不得把自报的 `blindedToCandidateOrigin` 当作完整盲评证明，
+也不得进入 strict / official 成功率。Review v2 同时绑定 Rubric 内容摘要；Cohort 只有在 Case、
+Rubric 与 fixture 摘要一致时才能比较。旧 v1 评审保留为历史诊断证据，但不会按新协议冒充正式样本。
 
 具体录制、评审和归因参数使用：
 

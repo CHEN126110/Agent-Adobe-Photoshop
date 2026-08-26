@@ -3,22 +3,29 @@
   "rubricId": "detail-page-commercial-v1",
   "taskFamily": "detail_page",
   "scale": "0..1",
+  "scoreAnchorValues": { "poor": 0, "acceptable": 0.5, "strong": 0.75, "excellent": 1 },
   "dimensions": [
-    { "id": "taskUnderstanding", "weight": 0.06 },
-    { "id": "productGrounding", "weight": 0.12 },
-    { "id": "assetSelection", "weight": 0.1 },
-    { "id": "narrativeStructure", "weight": 0.16 },
-    { "id": "crossScreenConsistency", "weight": 0.12 },
-    { "id": "compositionHierarchy", "weight": 0.12 },
-    { "id": "subjectScaleCrop", "weight": 0.1 },
-    { "id": "typography", "weight": 0.08 },
-    { "id": "commercialEffectiveness", "weight": 0.09 },
-    { "id": "editability", "weight": 0.05 }
+    { "id": "taskUnderstanding", "weight": 0.06, "description": "是否完成一套承担商品理解与转化的详情页，而非重复主图或无目的长图。", "scoreAnchors": { "poor": "任务类型或交付物错误。", "acceptable": "有多屏但目标分工含糊。", "strong": "每屏承担明确的信息或情绪任务。", "excellent": "整套围绕用户决策形成完整说服路径。" } },
+    { "id": "productGrounding", "weight": 0.12, "description": "商品事实、颜色和可见结构是否有输入依据；没有提供的材质、抗菌、防滑等卖点不得从参考图借用。", "scoreAnchors": { "poor": "认错商品或虚构卖点。", "acceptable": "事实正确但表达笼统。", "strong": "事实与摄影证据一致且表达清楚。", "excellent": "把有限真实事实转化为可信、具体的购买理解。" } },
+    { "id": "assetSelection", "weight": 0.1, "description": "不同屏是否选择最适合场景、结构、细节和颜色展示的素材，避免重复使用同一弱图。", "scoreAnchors": { "poor": "选图与屏幕目的不符或大量重复。", "acceptable": "大部分可用但角色区分不强。", "strong": "素材角色清楚且互补。", "excellent": "每张图都不可替代地推进叙事。" } },
+    { "id": "narrativeStructure", "weight": 0.16, "description": "开场、商品理解、场景/细节、选择信息与收尾之间是否有因果和节奏；不要求固定屏数或固定顺序。", "scoreAnchors": { "poor": "只是图片堆叠，没有推进。", "acceptable": "顺序可读但转化逻辑弱。", "strong": "信息从吸引到理解自然推进。", "excellent": "节奏成熟，关键疑问在恰当位置被解决。" } },
+    { "id": "crossScreenConsistency", "weight": 0.12, "description": "各屏的色彩、字体、间距、图形语言和商品表现是否属于同一套设计，同时保留必要变化。", "scoreAnchors": { "poor": "各屏像来自不同模板。", "acceptable": "基本统一但细节漂移。", "strong": "系统一致且有节奏变化。", "excellent": "统一语言贯穿全套，变化恰好服务内容。" } },
+    { "id": "compositionHierarchy", "weight": 0.12, "description": "每屏视觉中心、文字层级、留白与阅读路径是否明确。", "scoreAnchors": { "poor": "阅读顺序混乱或画面失衡。", "acceptable": "基本可读但层级普通。", "strong": "重点清楚、留白和节奏稳定。", "excellent": "复杂信息仍能被轻松理解并保持审美张力。" } },
+    { "id": "subjectScaleCrop", "weight": 0.1, "description": "跨屏主体大小和裁切是否适合对应目的；关键结构不得因机械 cover 被切掉。", "scoreAnchors": { "poor": "多处意外裁切或主体比例失控。", "acceptable": "可见但部分屏视觉重量不稳。", "strong": "尺度与裁切针对每屏角色调整。", "excellent": "远近、全貌与细节的尺度变化形成专业节奏。" } },
+    { "id": "typography", "weight": 0.08, "description": "文字是否精炼、可读、对齐一致，并与图片关系自然；事实不足时少写优于编造。", "scoreAnchors": { "poor": "难读、堆字或出现虚构文案。", "acceptable": "可读但层级和版式一般。", "strong": "标题、说明与图片配合清楚。", "excellent": "文案节奏与字体细节显著提升整套质感。" } },
+    { "id": "commercialEffectiveness", "weight": 0.09, "description": "与用户成稿和 Eagle 参考并看时，是否达到可上架的完整度、可信度和转化表达，而不是照抄其内容。", "scoreAnchors": { "poor": "像草稿或无法上架。", "acceptable": "可用但明显弱于参考。", "strong": "达到同类商业详情页水平。", "excellent": "更聚焦、可信且具有鲜明但合适的设计表达。" } },
+    { "id": "editability", "weight": 0.05, "description": "长图或分屏 PSD 是否按屏与语义分组，主要图像和文字可独立调整并可正确导出。", "scoreAnchors": { "poor": "扁平、混乱或无法稳定导出。", "acceptable": "可修改但组织一般。", "strong": "分屏、图层和命名清楚。", "excellent": "可被另一位设计师快速接手、复用和局部改版。" } }
   ],
   "decisionRule": {
     "passRequiresNoBlocker": true,
     "passMinimumOverall": 0.7,
-    "pairwiseTarget": "comparable_or_better_than_user_and_eagle_anchors"
+    "pairwiseTarget": "comparable_or_better_than_user_and_eagle_anchors",
+    "blockingConditions": [
+      "虚构任何未提供的材质、功效、认证或规格事实",
+      "整套没有叙事推进，仅机械重复同一构图或素材",
+      "关键商品结构在最终导出中被意外裁切",
+      "分屏缺失、最终导出集合不完整或 PSD 不可编辑"
+    ]
   },
   "boundaries": {
     "humanVerdictRequired": true,

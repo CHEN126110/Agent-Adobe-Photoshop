@@ -777,8 +777,11 @@ requireToken('agent', 'runtimeActionPlanDeclaration: this.runtimeActionPlanDecla
 requireToken('agent', 'buildRuntimeActionPlanReconciliationDigest', 'Agent execution summary must expose digest-only R4 execution reconciliation.');
 requireToken('agent', 'buildRuntimeActionPlanNoRedoShadowDecision', 'Agent must derive the no-redo shadow decision from the current declaration and reconciliation.');
 requireToken('agent', 'if (requiredOutputs.length === 0)', 'A raw save may satisfy E2 only when the effective contract declares no delivery outputs.');
-requireToken('agent', 'const laterMutationExists = this.toolCallLog.slice(receiptIndex + 1)', 'Delivery receipts must be checked for later Photoshop mutations.');
-requireToken('agent', 'if (laterMutationExists) continue;', 'A post-receipt write or save must invalidate that stale delivery receipt.');
+requireToken('agent', 'const laterEntries = this.toolCallLog.slice(receiptIndex + 1);', 'Delivery receipts must inspect every later Tool result.');
+requireToken('agent', 'const laterSaveExportExists = laterEntries.some', 'Single-document delivery must detect a later save/export boundary.');
+requireToken('agent', 'const laterContentMutationExists = findLatestObservedPhotoshopMutationIndex(laterEntries)', 'Every delivery scope must detect later Photoshop content mutations.');
+requireToken('agent', "receipt.settlementScope === 'multi_document_task'", 'Delivery invalidation must distinguish a multi-document batch from one document revision.');
+requireToken('agent', 'if (laterMutationExists) continue;', 'A later content write, or a later single-document save, must invalidate the stale receipt.');
 requireToken('scopedChangeRecords', "key: 'requested_change_applied' | 'outside_scope_preserved'", 'Scoped edits must produce explicit target-applied and outside-scope-preserved verification keys.');
 requireToken('agent', 'buildRuntimeScopedChangeVerificationRecords(this.toolCallLog, {', 'The live Agent evaluation must derive scoped-edit verification from actual acceptance records.');
 requireToken('agent', 'exactPropertyScope: this.config.runtimeExactPropertyScope', 'Scoped-edit verification must bind the Engine-signed exact property scope instead of trusting model-selected Tool arguments.');

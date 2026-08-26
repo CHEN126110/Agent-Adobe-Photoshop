@@ -83,7 +83,8 @@ function startChatTestFakeStream(
             usage: {
                 inputTokens: 0,
                 outputTokens: 0
-            }
+            },
+            stopReason: 'end_turn'
         }
     }), 1));
 }

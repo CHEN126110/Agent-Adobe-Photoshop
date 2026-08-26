@@ -40,6 +40,12 @@ import type {
     SkuRetouchReport
 } from '../shared/sku-retouch-contract';
 import type {
+    CaptureSkuStagingDestinationBaselinesResult,
+    SkuStagingTransactionResult,
+    StagedFilePromotionInput,
+    StagedFilePromotionResult
+} from '../shared/sku-staging-transaction-contract';
+import type {
     ManualSkuColorCardBridgeProbe,
     ManualSkuColorCardBridgeReady,
     ManualSkuColorCardProgress,
@@ -406,9 +412,32 @@ const api = {
     createDirectory: (dirPath: string) =>
         ipcRenderer.invoke('fs:createDirectory', dirPath),
 
-    // 仅原子删除 SKU 交付目录中已清空的 .designecho-staging 父目录。
-    removeSkuStagingParentIfEmpty: (dirPath: string) =>
-        ipcRenderer.invoke('fs:removeSkuStagingParentIfEmpty', dirPath),
+    // 由 main 在指定 SKU 输出目录下签发 exact staging root 与 opaque token。
+    issueSkuStagingTransaction: (outputDir: string): Promise<SkuStagingTransactionResult> =>
+        ipcRenderer.invoke('fs:issueSkuStagingTransaction', outputDir),
+
+    // 通过事务令牌读取目标文件的 main SHA-256 基线。
+    captureSkuStagingDestinationBaselines: (
+        transactionToken: string,
+        destinationPaths: string[]
+    ): Promise<CaptureSkuStagingDestinationBaselinesResult> =>
+        ipcRenderer.invoke('fs:captureSkuStagingDestinationBaselines', {
+            transactionToken,
+            destinationPaths
+        }),
+
+    // 安全事务提交走显式契约，避免 renderer 通过通用 invoke 丢失类型约束。
+    promoteStagedFileSet: (
+        input: StagedFilePromotionInput
+    ): Promise<StagedFilePromotionResult> => ipcRenderer.invoke('fs:promoteStagedFileSet', input),
+
+    // 仅原子删除当前事务所属、已经清空的 .designecho-staging 父目录。
+    removeSkuStagingParentIfEmpty: (transactionToken: string): Promise<SkuStagingTransactionResult> =>
+        ipcRenderer.invoke('fs:removeSkuStagingParentIfEmpty', transactionToken),
+
+    // 只用 main 签发的 opaque token 永久清理对应事务根；不会接受 renderer 路径授权。
+    removeSkuStagingTransactionRoot: (transactionToken: string): Promise<SkuStagingTransactionResult> =>
+        ipcRenderer.invoke('fs:removeSkuStagingTransactionRoot', transactionToken),
     
     // 复制文件（用于将临时导出文件复制到目标目录）
     copyFile: (sourcePath: string, destPath: string) =>
@@ -534,7 +563,7 @@ const api = {
     mattingRemoveBackground: (imageBase64: string, options?: any) =>
         ipcRenderer.invoke('matting:removeBackground', imageBase64, options),
 
-    // SKU 纯底素材精修：生成形态统一主体、独立原影、中性灰修正与预览资产
+    // SKU 纯底素材处理：生成保持真实版型的透明主体等比统一尺度资产
     prepareSkuRetouchAssets: (input: PrepareSkuRetouchAssetsInput): Promise<SkuRetouchReport> =>
         ipcRenderer.invoke('skuRetouch:prepareAssets', input),
 

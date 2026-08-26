@@ -18,10 +18,16 @@
  */
 
 import { EventEmitter } from 'events';
+import { StringDecoder } from 'string_decoder';
 import { ModelConfig } from '../../shared/config/models.config';
 import { buildAgentProviderTokenBudget } from '../../shared/agent-performance-policy';
+import {
+    mergeProviderFinishReason,
+    resolveProviderStreamStopReason
+} from '../../shared/provider-stream-completion';
 import { normalizeStreamTextChunk } from '../../shared/stream-text-normalizer';
 import { getHttpRequestAgent } from './network-proxy';
+import { ProviderSseDecoder } from './provider-sse-decoder';
 import { getThinkingRequestParams } from './thinking-extractor';
 
 // ==================== 类型定义 ====================
@@ -41,6 +47,7 @@ export interface StreamChunk {
             inputTokens: number;
             outputTokens: number;
         };
+        stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stream_incomplete' | 'content_blocked';
     };
     /** 错误信息 */
     error?: string;
@@ -57,6 +64,14 @@ export interface StreamOptions {
     timeoutMs?: number;
     /** 取消信号 */
     signal?: AbortSignal;
+}
+
+function resolveStreamRequestTimeoutMs(options?: StreamOptions): number {
+    const requested = Number(options?.timeoutMs);
+    if (Number.isFinite(requested) && requested > 0) {
+        return Math.min(300_000, Math.max(5_000, Math.floor(requested)));
+    }
+    return 120_000;
 }
 
 export type StreamMessageContent = string | Array<{
@@ -195,6 +210,7 @@ function attachHttpErrorResponseHandler(
 
 export abstract class BaseStreamAdapter extends EventEmitter {
     protected aborted = false;
+    private terminalSettled = false;
     
     constructor() {
         super();
@@ -208,20 +224,30 @@ export abstract class BaseStreamAdapter extends EventEmitter {
         messages: StreamMessage[],
         options?: StreamOptions
     ): void;
+
+    protected beginStream(): void {
+        this.aborted = false;
+        this.terminalSettled = false;
+    }
     
     /**
      * 取消请求
      */
     abort(): void {
+        if (this.terminalSettled) return;
         this.aborted = true;
-        this.emit('chunk', { type: 'done' } as StreamChunk);
+        this.terminalSettled = true;
+        this.emit('chunk', {
+            type: 'error',
+            error: '模型流式请求已取消'
+        } as StreamChunk);
     }
     
     /**
      * 发送内容块
      */
     protected emitContent(content: string): void {
-        if (!this.aborted) {
+        if (!this.aborted && !this.terminalSettled) {
             this.emit('chunk', { type: 'content', content } as StreamChunk);
         }
     }
@@ -230,7 +256,7 @@ export abstract class BaseStreamAdapter extends EventEmitter {
      * 发送思维过程块
      */
     protected emitThinking(thinking: string): void {
-        if (!this.aborted) {
+        if (!this.aborted && !this.terminalSettled) {
             this.emit('chunk', { type: 'thinking', thinking } as StreamChunk);
         }
     }
@@ -239,15 +265,17 @@ export abstract class BaseStreamAdapter extends EventEmitter {
      * 发送完成信号
      */
     protected emitDone(fullResponse: StreamChunk['fullResponse']): void {
-        if (!this.aborted) {
-            this.emit('chunk', { type: 'done', fullResponse } as StreamChunk);
-        }
+        if (this.aborted || this.terminalSettled) return;
+        this.terminalSettled = true;
+        this.emit('chunk', { type: 'done', fullResponse } as StreamChunk);
     }
     
     /**
      * 发送错误
      */
     protected emitError(error: string): void {
+        if (this.aborted || this.terminalSettled) return;
+        this.terminalSettled = true;
         this.emit('chunk', { type: 'error', error } as StreamChunk);
     }
 }
@@ -269,7 +297,7 @@ export class OllamaStreamAdapter extends BaseStreamAdapter {
         messages: StreamMessage[],
         options?: StreamOptions
     ): void {
-        this.aborted = false;
+        this.beginStream();
         
         const modelName = typeof model === 'string' 
             ? model 
@@ -318,7 +346,7 @@ export class OllamaStreamAdapter extends BaseStreamAdapter {
             path: '/api/chat',
             method: 'POST',
             headers,
-            timeout: 120000
+            timeout: resolveStreamRequestTimeoutMs(options)
         }, (res: any) => {
             const statusCode = Number(res.statusCode || 0);
             if (statusCode < 200 || statusCode >= 300) {
@@ -333,75 +361,73 @@ export class OllamaStreamAdapter extends BaseStreamAdapter {
             }
 
             let fullContent = '';
-            let fullThinking = '';
             let buffer = '';
-            
+            const utf8Decoder = new StringDecoder('utf8');
+            let finished = false;
+            let failed = false;
+
+            const finish = (data?: any): void => {
+                if (finished || failed || this.aborted) return;
+                finished = true;
+                const result = isStreamThinkingEnabled(options)
+                    ? this.extractThinking(fullContent)
+                    : { thinking: null, content: fullContent };
+                this.emitDone({
+                    text: result.content,
+                    thinking: result.thinking || undefined,
+                    usage: {
+                        inputTokens: data?.prompt_eval_count || 0,
+                        outputTokens: data?.eval_count || 0
+                    },
+                    stopReason: resolveProviderStreamStopReason({
+                        finishReason: data?.done_reason,
+                        hasToolCalls: false
+                    })
+                });
+            };
+
+            const consumeLine = (line: string): void => {
+                if (!line.trim() || finished || failed || this.aborted) return;
+                try {
+                    const data = JSON.parse(line);
+                    if (data.message?.content) {
+                        const content = data.message.content;
+                        fullContent += content;
+
+                        // 检查是否有思维过程标签
+                        if (content.includes('<think>') || fullContent.includes('<think>')) {
+                            // 暂时累积，最后统一处理
+                        } else {
+                            this.emitContent(content);
+                        }
+                    }
+                    if (data.done) finish(data);
+                } catch {
+                    failed = true;
+                    this.emitError('Ollama 流返回了无法解析的响应，已丢弃未完整内容。');
+                }
+            };
+
             res.on('data', (chunk: Buffer) => {
                 if (this.aborted) return;
                 
-                buffer += chunk.toString();
+                buffer += utf8Decoder.write(chunk);
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
                 
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    
-                    try {
-                        const data = JSON.parse(line);
-                        
-                        if (data.message?.content) {
-                            const content = data.message.content;
-                            fullContent += content;
-                            
-                            // 检查是否有思维过程标签
-                            if (content.includes('<think>') || fullContent.includes('<think>')) {
-                                // 暂时累积，最后统一处理
-                            } else {
-                                this.emitContent(content);
-                            }
-                        }
-                        
-                        if (data.done) {
-                            const result = isStreamThinkingEnabled(options)
-                                ? this.extractThinking(fullContent)
-                                : { thinking: null, content: fullContent };
-                            
-                            this.emitDone({
-                                text: result.content,
-                                thinking: result.thinking || undefined,
-                                usage: {
-                                    inputTokens: data.prompt_eval_count || 0,
-                                    outputTokens: data.eval_count || 0
-                                }
-                            });
-                        }
-                    } catch {
-                        // 忽略解析错误的行
-                    }
-                }
+                for (const line of lines) consumeLine(line);
             });
             
             res.on('end', () => {
-                // 处理剩余 buffer
-                if (buffer.trim() && !this.aborted) {
-                    try {
-                        const data = JSON.parse(buffer);
-                        if (!data.done) {
-                            const result = isStreamThinkingEnabled(options)
-                                ? this.extractThinking(fullContent)
-                                : { thinking: null, content: fullContent };
-                            this.emitDone({
-                                text: result.content,
-                                thinking: result.thinking || undefined
-                            });
-                        }
-                    } catch {
-                        // 忽略
-                    }
-                }
+                buffer += utf8Decoder.end();
+                if (buffer.trim()) consumeLine(buffer);
+                // HTTP end 但没有 Ollama 的 done=true / done_reason，只能证明连接结束。
+                finish();
             });
             
             res.on('error', (err: Error) => {
+                if (finished || failed || this.aborted) return;
+                failed = true;
                 this.emitError(err.message);
             });
         });
@@ -457,7 +483,7 @@ export class OpenRouterStreamAdapter extends BaseStreamAdapter {
         messages: StreamMessage[],
         options?: StreamOptions
     ): void {
-        this.aborted = false;
+        this.beginStream();
         
         const modelId = typeof model === 'string' 
             ? model 
@@ -488,7 +514,7 @@ export class OpenRouterStreamAdapter extends BaseStreamAdapter {
                 'X-Title': 'DesignEcho Agent',
                 'Content-Length': Buffer.byteLength(requestBody)
             },
-            timeout: 120000
+            timeout: resolveStreamRequestTimeoutMs(options)
         }, (res: any) => {
             const statusCode = Number(res.statusCode || 0);
             if (statusCode < 200 || statusCode >= 300) {
@@ -504,33 +530,64 @@ export class OpenRouterStreamAdapter extends BaseStreamAdapter {
 
             let fullContent = '';
             let fullThinking = '';
-            let buffer = '';
+            const decoder = new ProviderSseDecoder();
+            const utf8Decoder = new StringDecoder('utf8');
             let usage = { inputTokens: 0, outputTokens: 0 };
+            let providerFinishReason: string | undefined;
+            let finished = false;
+            let protocolInvalid = false;
+            let providerRefusalSeen = false;
+
+            const finish = (): void => {
+                if (finished || this.aborted) return;
+                finished = true;
+                const result = isStreamThinkingEnabled(options)
+                    ? this.extractThinking(fullContent)
+                    : { thinking: null, content: fullContent };
+                this.emitDone({
+                    text: result.content,
+                    thinking: isStreamThinkingEnabled(options)
+                        ? (fullThinking || result.thinking || undefined)
+                        : undefined,
+                    usage,
+                    stopReason: resolveProviderStreamStopReason({
+                        finishReason: providerRefusalSeen
+                            ? 'refusal'
+                            : (protocolInvalid ? undefined : providerFinishReason),
+                        hasToolCalls: false
+                    })
+                });
+            };
             
-            res.on('data', (chunk: Buffer) => {
-                if (this.aborted) return;
-                
-                buffer += chunk.toString();
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-                
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
+            const consumeEvent = (eventData: string): void => {
+                if (finished || this.aborted) return;
+                const data = eventData.trim();
+                if (!data) return;
+                if (data === '[DONE]') {
+                    finish();
+                    return;
+                }
                     
-                    const data = line.slice(6);
-                    if (data === '[DONE]') {
-                        const { thinking, content: cleanContent } = this.extractThinking(fullContent);
-                        this.emitDone({
-                            text: cleanContent,
-                            thinking: thinking || undefined,
-                            usage
-                        });
-                        return;
-                    }
-                    
-                    try {
+                try {
                         const parsed = JSON.parse(data);
-                        const delta = parsed.choices?.[0]?.delta;
+                        if (parsed?.error) {
+                            const message = compactProviderErrorBody(JSON.stringify(parsed.error));
+                            this.emitError(`OpenRouter 流返回错误${message ? `: ${message}` : ''}`);
+                            return;
+                        }
+                        const choice = parsed.choices?.[0];
+                        if (choice?.finish_reason) {
+                            const merged = mergeProviderFinishReason(
+                                providerFinishReason,
+                                choice.finish_reason
+                            );
+                            providerFinishReason = merged.finishReason;
+                            protocolInvalid = protocolInvalid || merged.conflict;
+                        }
+                        const delta = choice?.delta;
+                        if (String(delta?.refusal || '').trim()) {
+                            providerRefusalSeen = true;
+                        }
                         
                         // 检查 reasoning_content（DeepSeek 等）
                         if (isStreamThinkingEnabled(options) && delta?.reasoning_content) {
@@ -552,22 +609,36 @@ export class OpenRouterStreamAdapter extends BaseStreamAdapter {
                                 outputTokens: parsed.usage.completion_tokens || 0
                             };
                         }
-                    } catch {
-                        // 忽略解析错误
+                } catch {
+                    protocolInvalid = true;
+                }
+            };
+
+            res.on('data', (chunk: Buffer) => {
+                if (this.aborted) return;
+                try {
+                    for (const eventData of decoder.push(utf8Decoder.write(chunk))) {
+                        consumeEvent(eventData);
                     }
+                } catch (error: any) {
+                    this.emitError(error?.message || 'OpenRouter SSE 响应无效');
+                    res.destroy?.();
                 }
             });
             
             res.on('end', () => {
-                if (!this.aborted && fullContent) {
-                    const result = isStreamThinkingEnabled(options)
-                        ? this.extractThinking(fullContent)
-                        : { thinking: null, content: fullContent };
-                    this.emitDone({
-                        text: result.content,
-                        thinking: isStreamThinkingEnabled(options) ? (fullThinking || result.thinking || undefined) : undefined,
-                        usage
-                    });
+                try {
+                    const utf8Tail = utf8Decoder.end();
+                    if (utf8Tail) {
+                        for (const eventData of decoder.push(utf8Tail)) consumeEvent(eventData);
+                    }
+                    for (const eventData of decoder.finish()) {
+                        consumeEvent(eventData);
+                    }
+                    finish();
+                } catch (error: any) {
+                    this.emitError(error?.message || 'OpenRouter SSE 响应无效');
+                    res.destroy?.();
                 }
             });
             
@@ -624,7 +695,7 @@ export class GeminiStreamAdapter extends BaseStreamAdapter {
         messages: StreamMessage[],
         options?: StreamOptions
     ): Promise<void> {
-        this.aborted = false;
+        this.beginStream();
         
         const { GoogleGenerativeAI } = require('@google/generative-ai');
         const genAI = new GoogleGenerativeAI(this.apiKey);
@@ -667,12 +738,18 @@ export class GeminiStreamAdapter extends BaseStreamAdapter {
             }
             
             if (!this.aborted) {
+                const response = await result.response;
+                const candidate = response?.candidates?.[0];
                 this.emitDone({
                     text: fullContent,
                     usage: {
-                        inputTokens: 0,
-                        outputTokens: 0
-                    }
+                        inputTokens: response?.usageMetadata?.promptTokenCount || 0,
+                        outputTokens: response?.usageMetadata?.candidatesTokenCount || 0
+                    },
+                    stopReason: resolveProviderStreamStopReason({
+                        finishReason: candidate?.finishReason || candidate?.finish_reason,
+                        hasToolCalls: false
+                    })
                 });
             }
         } catch (error: any) {
@@ -698,7 +775,7 @@ export class OpenAICompatibleStreamAdapter extends BaseStreamAdapter {
         messages: StreamMessage[],
         options?: StreamOptions
     ): void {
-        this.aborted = false;
+        this.beginStream();
 
         const modelId = typeof model === 'string'
             ? model
@@ -738,7 +815,7 @@ export class OpenAICompatibleStreamAdapter extends BaseStreamAdapter {
                 'Authorization': `Bearer ${this.apiKey}`,
                 'Content-Length': Buffer.byteLength(requestBody)
             },
-            timeout: 120000
+            timeout: resolveStreamRequestTimeoutMs(options)
         }, (res: any) => {
             const statusCode = Number(res.statusCode || 0);
             if (statusCode < 200 || statusCode >= 300) {
@@ -754,34 +831,60 @@ export class OpenAICompatibleStreamAdapter extends BaseStreamAdapter {
 
             let fullContent = '';
             let fullThinking = '';
-            let buffer = '';
+            const decoder = new ProviderSseDecoder();
+            const utf8Decoder = new StringDecoder('utf8');
             let usage = { inputTokens: 0, outputTokens: 0 };
+            let providerFinishReason: string | undefined;
+            let finished = false;
+            let protocolInvalid = false;
+            let providerRefusalSeen = false;
 
-            res.on('data', (chunk: Buffer) => {
-                if (this.aborted) return;
+            const finish = (): void => {
+                if (finished || this.aborted) return;
+                finished = true;
+                this.emitDone({
+                    text: fullContent,
+                    thinking: isStreamThinkingEnabled(options) ? (fullThinking || undefined) : undefined,
+                    usage,
+                    stopReason: resolveProviderStreamStopReason({
+                        finishReason: providerRefusalSeen
+                            ? 'refusal'
+                            : (protocolInvalid ? undefined : providerFinishReason),
+                        hasToolCalls: false
+                    })
+                });
+            };
 
-                buffer += chunk.toString();
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
+            const consumeEvent = (eventData: string): void => {
+                if (finished || this.aborted) return;
+                const data = eventData.trim();
+                if (!data) return;
 
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
+                if (data === '[DONE]') {
+                    finish();
+                    return;
+                }
 
-                    const data = line.slice(6).trim();
-                    if (!data) continue;
-
-                    if (data === '[DONE]') {
-                        this.emitDone({
-                            text: fullContent,
-                            thinking: isStreamThinkingEnabled(options) ? (fullThinking || undefined) : undefined,
-                            usage
-                        });
-                        return;
-                    }
-
-                    try {
+                try {
                         const parsed = JSON.parse(data);
-                        const delta = parsed.choices?.[0]?.delta;
+                        if (parsed?.error) {
+                            const message = compactProviderErrorBody(JSON.stringify(parsed.error));
+                            this.emitError(`${this.providerName} 流返回错误${message ? `: ${message}` : ''}`);
+                            return;
+                        }
+                        const choice = parsed.choices?.[0];
+                        if (choice?.finish_reason) {
+                            const merged = mergeProviderFinishReason(
+                                providerFinishReason,
+                                choice.finish_reason
+                            );
+                            providerFinishReason = merged.finishReason;
+                            protocolInvalid = protocolInvalid || merged.conflict;
+                        }
+                        const delta = choice?.delta;
+                        if (String(delta?.refusal || '').trim()) {
+                            providerRefusalSeen = true;
+                        }
 
                         if (isStreamThinkingEnabled(options) && delta?.reasoning_content) {
                             const normalized = normalizeStreamTextChunk(fullThinking, delta.reasoning_content);
@@ -800,18 +903,36 @@ export class OpenAICompatibleStreamAdapter extends BaseStreamAdapter {
                                 outputTokens: parsed.usage.completion_tokens || 0
                             };
                         }
-                    } catch {
+                } catch {
+                    protocolInvalid = true;
+                }
+            };
+
+            res.on('data', (chunk: Buffer) => {
+                if (this.aborted) return;
+                try {
+                    for (const eventData of decoder.push(utf8Decoder.write(chunk))) {
+                        consumeEvent(eventData);
                     }
+                } catch (error: any) {
+                    this.emitError(error?.message || `${this.providerName} SSE 响应无效`);
+                    res.destroy?.();
                 }
             });
 
             res.on('end', () => {
-                if (!this.aborted) {
-                    this.emitDone({
-                        text: fullContent,
-                        thinking: isStreamThinkingEnabled(options) ? (fullThinking || undefined) : undefined,
-                        usage
-                    });
+                try {
+                    const utf8Tail = utf8Decoder.end();
+                    if (utf8Tail) {
+                        for (const eventData of decoder.push(utf8Tail)) consumeEvent(eventData);
+                    }
+                    for (const eventData of decoder.finish()) {
+                        consumeEvent(eventData);
+                    }
+                    finish();
+                } catch (error: any) {
+                    this.emitError(error?.message || `${this.providerName} SSE 响应无效`);
+                    res.destroy?.();
                 }
             });
 

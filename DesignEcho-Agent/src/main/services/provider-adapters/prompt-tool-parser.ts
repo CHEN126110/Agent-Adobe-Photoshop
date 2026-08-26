@@ -7,6 +7,12 @@
 
 import type { ToolCall, ToolSchema } from './types';
 
+const PROMPT_TOOL_CALL_MARKER_PATTERN = /<\/?tool_call(?=\s|>)/iu;
+
+export function containsPromptToolCallMarkup(value: unknown): boolean {
+    return PROMPT_TOOL_CALL_MARKER_PATTERN.test(String(value || ''));
+}
+
 /**
  * 生成工具描述的系统提示注入
  */
@@ -37,39 +43,42 @@ ${toolDescriptions}
 /**
  * 从文本中提取 tool_call 标签
  */
-export function parseToolCallsFromText(text: string): { toolCalls: ToolCall[]; cleanedText: string } {
+export function parseToolCallsFromText(text: string): {
+    toolCalls: ToolCall[];
+    cleanedText: string;
+    valid: boolean;
+} {
     const toolCalls: ToolCall[] = [];
     let callIndex = 0;
+    let matchedTagCount = 0;
+    let invalidTagCount = 0;
+    const openingTagCount = (text.match(/<tool_call(?=\s|>)[^>]*>/giu) || []).length;
+    const closingTagCount = (text.match(/<\/tool_call\s*>/giu) || []).length;
 
     // Match <tool_call>...</tool_call> tags
     const tagRegex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
     let match;
 
     while ((match = tagRegex.exec(text)) !== null) {
+        matchedTagCount += 1;
         try {
             const parsed = JSON.parse(match[1].trim());
-            if (parsed.name) {
-                toolCalls.push({
-                    id: `prompt_call_${callIndex++}`,
-                    name: parsed.name,
-                    arguments: parsed.arguments || parsed.params || {}
-                });
+            const name = typeof parsed?.name === 'string' ? parsed.name.trim() : '';
+            const argumentsValue = parsed?.arguments ?? parsed?.params;
+            if (!name
+                || !argumentsValue
+                || typeof argumentsValue !== 'object'
+                || Array.isArray(argumentsValue)) {
+                invalidTagCount += 1;
+                continue;
             }
-        } catch (e) {
-            // Try extracting name and arguments from malformed JSON
-            try {
-                const nameMatch = match[1].match(/"name"\s*:\s*"([^"]+)"/);
-                const argsMatch = match[1].match(/"arguments"\s*:\s*(\{[\s\S]*\})/);
-                if (nameMatch) {
-                    toolCalls.push({
-                        id: `prompt_call_${callIndex++}`,
-                        name: nameMatch[1],
-                        arguments: argsMatch ? JSON.parse(argsMatch[1]) : {}
-                    });
-                }
-            } catch {
-                console.warn('[PromptToolParser] Failed to parse tool_call:', match[1]);
-            }
+            toolCalls.push({
+                id: `prompt_call_${callIndex++}`,
+                name,
+                arguments: argumentsValue
+            });
+        } catch {
+            invalidTagCount += 1;
         }
     }
 
@@ -79,5 +88,14 @@ export function parseToolCallsFromText(text: string): { toolCalls: ToolCall[]; c
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
-    return { toolCalls, cleanedText };
+    const valid = matchedTagCount > 0
+        && invalidTagCount === 0
+        && openingTagCount === matchedTagCount
+        && closingTagCount === matchedTagCount
+        && toolCalls.length === matchedTagCount;
+    return {
+        toolCalls: valid ? toolCalls : [],
+        cleanedText,
+        valid
+    };
 }

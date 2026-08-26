@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "detail-page-c1163-v1",
-  "revision": 1,
-  "caseDigest": "sha256:5bc72abe3abf0864e2b8485fa70979919686dddf004944c5ef81b1e0c04de2b9",
+  "revision": 2,
+  "caseDigest": "sha256:e64f3a4d34668cd82a7c748efd09d4aff54a00cfaaa55a64ed40812107dd9c26",
   "status": "active",
   "taskFamily": "detail_page",
   "executionModel": "agentic",
@@ -26,6 +26,29 @@
       { "ref": "S82646/ZZY_9905.jpg", "role": "product_structure_candidate" },
       { "ref": "S82646/ZZY_9907.jpg", "role": "material_detail_candidate" },
       { "ref": "S82646/ZZY_9884.jpg", "role": "product_structure_candidate" }
+    ],
+    "fixtureGeneratedInputs": [
+      {
+        "ref": "测试输入/商品事实.json",
+        "role": "verified_product_brief",
+        "encoding": "utf8",
+        "facts": {
+          "product_type": "女士浅口隐形袜",
+          "available_colors": ["白色", "浅肤", "深肤", "浅蓝", "浅紫", "黑色"],
+          "product_claims": [
+            { "category": "wearing_cut", "value": "浅口", "provenance": { "kind": "source_observable", "ref": "S82646/YYC_8814.jpg" } },
+            { "category": "wearing_scenario", "value": "隐形穿着场景", "provenance": { "kind": "source_observable", "ref": "S82646/YYC_8824.jpg" } },
+            { "category": "color_availability", "value": "多色可选", "provenance": { "kind": "source_observable", "ref": "S82646/ZZY_9886.jpg" } }
+          ],
+          "prohibited_claim_categories": [
+            "material_composition",
+            "performance",
+            "certification",
+            "quantified_durability",
+            "medical_or_antimicrobial"
+          ]
+        }
+      }
     ],
     "reviewOnlyReferences": [
       { "kind": "user_design", "ref": "images/详情页_01.jpg" },
@@ -86,6 +109,7 @@
       { "id": "save_tool_receipt", "required": true },
       { "id": "editable_psd_evidence", "required": true },
       { "id": "raster_export_evidence", "required": true },
+      { "id": "final_artifact_manifest_evidence", "required": true },
       { "id": "no_unresolved_blockers", "required": true },
       { "id": "terminal_task_run", "required": true }
     ]
@@ -94,6 +118,7 @@
     "devBenchmarkOnly": true,
     "neverAffectsRuntime": true,
     "reviewOnlyReferencesExcludedFromAgentContext": true,
+    "fixtureGeneratedInputsContainFactsOnly": true,
     "harnessDoesNotChooseDesign": true
   }
 }

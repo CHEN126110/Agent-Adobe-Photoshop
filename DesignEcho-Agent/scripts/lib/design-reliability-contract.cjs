@@ -5,7 +5,8 @@ const path = require("path");
 
 const CASE_VERSION = "design-reliability-case/v1";
 const RUN_VERSION = "design-reliability-run/v1";
-const REVIEW_VERSION = "design-reliability-human-review/v1";
+const REVIEW_VERSION = "design-reliability-human-review/v2";
+const LEGACY_REVIEW_VERSION = "design-reliability-human-review/v1";
 const ATTRIBUTION_VERSION = "design-reliability-attribution/v1";
 const COHORT_VERSION = "design-reliability-cohort/v1";
 
@@ -20,9 +21,13 @@ const COMPARISON_EVIDENCE_KINDS = Object.freeze([
 ]);
 const COMPARISON_EVIDENCE_REF_PREFIXES = Object.freeze({
   candidate_final: ["candidate:"],
-  user_design_anchor: ["user-design:", "anchor:user-design:"],
-  eagle_anchor: ["eagle:", "anchor:eagle:"]
+  user_design_anchor: ["user-design:"],
+  eagle_anchor: ["eagle:item:"]
 });
+const REVIEW_EVIDENCE_PROTOCOLS = Object.freeze([
+  "bound_self_reported",
+  "anonymous_packet_verified"
+]);
 const DECISION_PRESERVATION_VERSION = "decision-preservation-observation/v1";
 const DECISION_PRESERVATION_STATUSES = Object.freeze(["passed", "failed", "unscorable"]);
 const HARNESS_TOOL_ORIGINS = new Set([
@@ -61,6 +66,56 @@ const FAILURE_MODES = Object.freeze([
   "measurement",
   "unknown"
 ]);
+const FIXTURE_FACT_KEYS = new Set([
+  "product_type",
+  "available_colors",
+  "product_claims",
+  "prohibited_claim_categories",
+  "source_encoding",
+  "color_mapping",
+  "source_asset_semantics",
+  "production_spec_semantics"
+]);
+const PRODUCT_CLAIM_PROVENANCE_KINDS = new Set([
+  "user_provided",
+  "project_spec",
+  "source_observable"
+]);
+const PRODUCT_CLAIM_CATEGORIES = new Set([
+  "wearing_cut",
+  "wearing_scenario",
+  "color_availability",
+  "visible_structure",
+  "visible_pattern",
+  "visible_finish"
+]);
+const PROHIBITED_CLAIM_CATEGORIES = new Set([
+  "material_composition",
+  "performance",
+  "certification",
+  "quantified_durability",
+  "medical_or_antimicrobial"
+]);
+const DESIGN_DIRECTIVE_PATTERN = /(?:版式|构图|排版|字体|字号|字距|配色|色板|背景|渐变|标题层级|主体(?:占比|缩放|大小|\s*\d+\s*%)|占画面|选择|固定|使用.{0,8}(?:模板|版式)|放大|缩小|裁切|居中|左对齐|右对齐|[粉白黑灰蓝紫绿红黄]底[粉白黑灰蓝紫绿红黄]字)/i;
+const SIMPLE_FACT_LABEL_PATTERN = /^[\p{L}\p{N}·\-\s]{1,40}$/u;
+
+function isUnsafeFixtureFactText(value) {
+  const text = cleanString(value);
+  return !text
+    || DESIGN_DIRECTIVE_PATTERN.test(text)
+    || /(?:^|\s)file:/i.test(text)
+    || /[a-z]:[\\/]/i.test(text)
+    || text.startsWith("/")
+    || text.startsWith("\\\\")
+    || text.replace(/\\/g, "/").split("/").includes("..");
+}
+
+function isInvalidSimpleFixtureFactLabel(value, limit = 40) {
+  const text = cleanString(value);
+  return text.length > limit
+    || !SIMPLE_FACT_LABEL_PATTERN.test(text)
+    || isUnsafeFixtureFactText(text);
+}
 
 const VISUAL_READBACK_TOOLS = new Set([
   "getDocumentSnapshot",
@@ -137,6 +192,70 @@ function requiredComparisonEvidenceKinds(caseSpec) {
   return [...kinds];
 }
 
+function buildExpectedComparisonEvidenceRefs(caseSpec, run) {
+  const expected = new Map(COMPARISON_EVIDENCE_KINDS.map((kind) => [kind, new Set()]));
+  const runEvidence = Array.isArray(run?.evidenceRefs) ? run.evidenceRefs : [];
+  const finalRasterRefs = new Set(
+    (Array.isArray(run?.finalArtifactManifest?.artifacts) ? run.finalArtifactManifest.artifacts : [])
+      .filter((artifact) => cleanString(artifact?.kind) === "raster_export")
+      .map((artifact) => cleanString(artifact?.ref).replace(/\\/g, "/"))
+      .filter(Boolean)
+  );
+  for (const evidence of runEvidence) {
+    if (cleanString(evidence?.kind) !== 'raster_export' || evidence?.verified !== true) continue;
+    const ref = cleanString(evidence.ref).replace(/\\/g, '/');
+    if (!finalRasterRefs.has(ref)) continue;
+    const digest = cleanString(evidence.digest).toLowerCase();
+    if (!ref || !/^sha256:[a-f0-9]{64}$/.test(digest)) continue;
+    expected.get('candidate_final').add(`candidate:${ref}@${digest}`);
+  }
+
+  const references = Array.isArray(caseSpec?.task?.reviewOnlyReferences)
+    ? caseSpec.task.reviewOnlyReferences
+    : [];
+  for (const reference of references) {
+    const kind = cleanString(reference?.kind);
+    const ref = cleanString(reference?.ref).replace(/\\/g, '/');
+    if (kind === 'user_design' && ref) {
+      expected.get('user_design_anchor').add(`user-design:${ref}`);
+    } else if (kind === 'eagle_item' && ref.startsWith('eagle:item:')) {
+      expected.get('eagle_anchor').add(ref);
+    }
+  }
+  return expected;
+}
+
+function validateComparisonEvidenceBindings(value, caseSpec, run, errors) {
+  const expected = buildExpectedComparisonEvidenceRefs(caseSpec, run);
+  const actual = new Map(COMPARISON_EVIDENCE_KINDS.map((kind) => [kind, new Set()]));
+  for (const item of value) {
+    if (!actual.has(item.kind)) continue;
+    actual.get(item.kind).add(item.ref);
+  }
+
+  for (const kind of requiredComparisonEvidenceKinds(caseSpec)) {
+    const expectedRefs = expected.get(kind) || new Set();
+    if (expectedRefs.size === 0) {
+      errors.push(`当前 Run / Case 没有可绑定的 ${kind} 真实证据。`);
+      continue;
+    }
+    for (const ref of expectedRefs) {
+      if (!actual.get(kind)?.has(ref)) {
+        errors.push(`comparisonEvidenceRefs 缺少当前 Run / Case 的真实证据：${kind}=${ref}。`);
+      }
+    }
+  }
+
+  for (const [kind, refs] of actual.entries()) {
+    const expectedRefs = expected.get(kind) || new Set();
+    for (const ref of refs) {
+      if (!expectedRefs.has(ref)) {
+        errors.push(`comparisonEvidenceRefs 不属于当前 Run / Case：${kind}=${ref}。`);
+      }
+    }
+  }
+}
+
 function validateComparisonEvidenceRefs(value, evidenceRefs, errors) {
   if (!Array.isArray(value)) {
     if (value !== undefined) errors.push("comparisonEvidenceRefs 必须是数组。");
@@ -189,6 +308,28 @@ function validateComparisonEvidenceRefs(value, evidenceRefs, errors) {
   return normalized;
 }
 
+function isSafeReviewEvidenceRef(ref) {
+  const normalized = cleanString(ref).replace(/\\/g, "/");
+  const typedPrefix = /^(candidate:|user-design:|receipt:|eagle:item:)/i.exec(normalized)?.[0] || "";
+  const payload = typedPrefix ? normalized.slice(typedPrefix.length) : normalized;
+  return Boolean(
+    normalized
+    && !path.isAbsolute(normalized)
+    && !/^[a-z]:\//i.test(normalized)
+    && !/(?:^|:)[a-z]:\//i.test(normalized)
+    && !/(?:^|:)\//.test(normalized)
+    && !normalized.startsWith("/")
+    && !normalized.split("/").includes("..")
+    && !/^file:/i.test(normalized)
+    && !/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)
+    && !path.isAbsolute(payload)
+    && !/^[a-z]:\//i.test(payload)
+    && !payload.startsWith("/")
+    && !payload.startsWith("//")
+    && !payload.split("/").includes("..")
+  );
+}
+
 function isBlockingReviewFinding(finding) {
   if (!isRecord(finding)) return false;
   return finding.blocking === true
@@ -228,14 +369,29 @@ function buildCaseDigest(caseSpec) {
   return sha256Text(stableStringify(digestInput));
 }
 
+function buildRubricDigest(rubric) {
+  const digestInput = cloneJson(rubric);
+  delete digestInput.__file;
+  return sha256Text(stableStringify(digestInput));
+}
+
 function isAbsoluteOrUnsafeRef(value) {
   const ref = cleanString(value);
   if (!ref) return true;
-  if (ref.startsWith("eagle:item:")) return false;
-  if (/^[a-z]+:\/\//i.test(ref)) return true;
+  if (/^eagle:item:[A-Za-z0-9._-]+$/.test(ref)) return false;
+  if (/^file:/i.test(ref) || /^[a-z]+:\/\//i.test(ref)) return true;
   if (/^[a-z]:[\\/]/i.test(ref) || ref.startsWith("\\\\") || ref.startsWith("/")) return true;
   const normalized = ref.replace(/\\/g, "/");
-  return normalized.split("/").includes("..");
+  const typedPrefix = /^(candidate:|user-design:|receipt:|eagle:item:)/i.exec(normalized)?.[0] || "";
+  const payload = typedPrefix ? normalized.slice(typedPrefix.length) : normalized;
+  return normalized.split("/").includes("..")
+    || /(?:^|:)[a-z]:\//i.test(normalized)
+    || /(?:^|:)\//.test(normalized)
+    || path.isAbsolute(payload)
+    || /^[a-z]:\//i.test(payload)
+    || payload.startsWith("/")
+    || payload.startsWith("//")
+    || payload.split("/").includes("..");
 }
 
 function validateInputRef(input, fieldName, errors) {
@@ -248,6 +404,92 @@ function validateInputRef(input, fieldName, errors) {
   }
   if (!cleanString(input.role)) {
     errors.push(`${fieldName}.role 不能为空。`);
+  }
+}
+
+function validateGeneratedInput(input, fieldName, errors) {
+  validateInputRef(input, fieldName, errors);
+  if (!isRecord(input)) return;
+  if (Object.keys(input).some((key) => !["ref", "role", "encoding", "facts"].includes(key))) {
+    errors.push(`${fieldName} 含未声明字段，生成输入只能保存 ref/role/encoding/facts。`);
+  }
+  if (input.encoding !== "utf8") {
+    errors.push(`${fieldName}.encoding 必须是 utf8。`);
+  }
+  if (!isRecord(input.facts) || Object.keys(input.facts).length === 0) {
+    errors.push(`${fieldName}.facts 必须是非空结构化事实对象。`);
+    return;
+  }
+  for (const key of Object.keys(input.facts)) {
+    if (!FIXTURE_FACT_KEYS.has(key)) {
+      errors.push(`${fieldName}.facts 含非事实字段：${key}。`);
+    }
+  }
+  if (input.facts.available_colors !== undefined
+    && (!Array.isArray(input.facts.available_colors)
+      || input.facts.available_colors.length > 24
+      || input.facts.available_colors.some((item) => (
+        isInvalidSimpleFixtureFactLabel(item, 24)
+      )))) {
+    errors.push(`${fieldName}.facts.available_colors 必须是有界非空字符串数组。`);
+  }
+  if (input.facts.product_claims !== undefined) {
+    if (!Array.isArray(input.facts.product_claims)
+      || input.facts.product_claims.length > 24
+      || input.facts.product_claims.some((claim) => (
+        !isRecord(claim)
+        || Object.keys(claim).some((key) => !["category", "value", "provenance"].includes(key))
+        || Object.keys(claim).length !== 3
+        || !PRODUCT_CLAIM_CATEGORIES.has(cleanString(claim.category))
+        || !cleanString(claim.value)
+        || isInvalidSimpleFixtureFactLabel(claim.value, 40)
+        || !isRecord(claim.provenance)
+        || Object.keys(claim.provenance).some((key) => !["kind", "ref"].includes(key))
+        || Object.keys(claim.provenance).length !== 2
+        || !PRODUCT_CLAIM_PROVENANCE_KINDS.has(cleanString(claim.provenance.kind))
+        || isAbsoluteOrUnsafeRef(claim.provenance.ref)
+      ))) {
+      errors.push(`${fieldName}.facts.product_claims 必须是带受控 provenance 的原子商品事实，不能包含设计指令。`);
+    }
+  }
+  if (input.facts.prohibited_claim_categories !== undefined
+    && (!Array.isArray(input.facts.prohibited_claim_categories)
+      || input.facts.prohibited_claim_categories.length > PROHIBITED_CLAIM_CATEGORIES.size
+      || input.facts.prohibited_claim_categories.some((category) => (
+        !PROHIBITED_CLAIM_CATEGORIES.has(cleanString(category))
+      )))) {
+    errors.push(`${fieldName}.facts.prohibited_claim_categories 含未受控类别。`);
+  }
+  if (input.facts.product_type !== undefined
+    && isInvalidSimpleFixtureFactLabel(input.facts.product_type, 40)) {
+    errors.push(`${fieldName}.facts.product_type 非法。`);
+  }
+  if (input.facts.source_encoding !== undefined
+    && !["gbk", "utf8"].includes(cleanString(input.facts.source_encoding).toLowerCase())) {
+    errors.push(`${fieldName}.facts.source_encoding 非法。`);
+  }
+  if (input.facts.source_asset_semantics !== undefined
+    && input.facts.source_asset_semantics !== "completed_color_cards") {
+    errors.push(`${fieldName}.facts.source_asset_semantics 非法。`);
+  }
+  if (input.facts.production_spec_semantics !== undefined
+    && input.facts.production_spec_semantics !== "template_plus_color_indices") {
+    errors.push(`${fieldName}.facts.production_spec_semantics 非法。`);
+  }
+  if (input.facts.color_mapping !== undefined) {
+    const mapping = input.facts.color_mapping;
+    if (!isRecord(mapping)
+      || Object.keys(mapping).length === 0
+      || Object.keys(mapping).some((key) => !/^\d{1,2}$/.test(key))
+      || Object.values(mapping).some((value) => (
+        !isRecord(value)
+        || Object.keys(value).some((key) => !["sourceRef", "displayName"].includes(key))
+        || Object.keys(value).length !== 2
+        || isAbsoluteOrUnsafeRef(value.sourceRef)
+        || isInvalidSimpleFixtureFactLabel(value.displayName, 24)
+      ))) {
+      errors.push(`${fieldName}.facts.color_mapping 必须是编号到 { sourceRef, displayName } 的受控映射。`);
+    }
   }
 }
 
@@ -319,6 +561,43 @@ function validateDesignReliabilityCase(caseSpec) {
         errors.push("active Case 至少需要一个 Agent 可见输入。 ");
       }
     }
+    if (caseSpec.task.fixtureGeneratedInputs !== undefined) {
+      if (!Array.isArray(caseSpec.task.fixtureGeneratedInputs)) {
+        errors.push("task.fixtureGeneratedInputs 必须是数组。 ");
+      } else {
+        caseSpec.task.fixtureGeneratedInputs.forEach((item, index) => {
+          validateGeneratedInput(item, `task.fixtureGeneratedInputs[${index}]`, errors);
+        });
+        const visibleRefs = new Set(
+          (caseSpec.task.agentVisibleInputs || []).map((item) => cleanString(item?.ref).replace(/\\/g, "/"))
+        );
+        for (const generated of caseSpec.task.fixtureGeneratedInputs) {
+          if (visibleRefs.has(cleanString(generated?.ref).replace(/\\/g, "/"))) {
+            errors.push("fixtureGeneratedInputs 不能覆盖 source-root 中声明的 Agent 输入。 ");
+          }
+          for (const claim of Array.isArray(generated?.facts?.product_claims)
+            ? generated.facts.product_claims
+            : []) {
+            const provenanceRef = cleanString(claim?.provenance?.ref).replace(/\\/g, "/");
+            if (provenanceRef && !visibleRefs.has(provenanceRef)) {
+              errors.push(`fixtureGeneratedInputs 的 claim provenance 必须绑定 Agent 可见源输入：${provenanceRef}。`);
+            }
+          }
+          for (const mapping of Object.values(isRecord(generated?.facts?.color_mapping)
+            ? generated.facts.color_mapping
+            : {})) {
+            const sourceRef = cleanString(mapping?.sourceRef).replace(/\\/g, "/");
+            if (sourceRef && !visibleRefs.has(sourceRef)) {
+              errors.push(`fixtureGeneratedInputs 的 color_mapping sourceRef 必须绑定 Agent 可见源输入：${sourceRef}。`);
+            }
+          }
+        }
+        if (caseSpec.task.fixtureGeneratedInputs.length > 0
+          && caseSpec.boundaries?.fixtureGeneratedInputsContainFactsOnly !== true) {
+          errors.push("包含 fixtureGeneratedInputs 时必须声明只含事实、不含设计预设。 ");
+        }
+      }
+    }
     if (!Array.isArray(caseSpec.task.reviewOnlyReferences)) {
       errors.push("task.reviewOnlyReferences 必须是数组。");
     } else {
@@ -342,6 +621,28 @@ function validateDesignReliabilityCase(caseSpec) {
     }
     if (!Array.isArray(caseSpec.oracle.machineChecks) || caseSpec.oracle.machineChecks.length === 0) {
       errors.push("oracle.machineChecks 至少需要一项。 ");
+    }
+    if (caseSpec.taskFamily === "sku") {
+      const expectedRasterRefs = caseSpec.oracle?.outputInventory?.expectedRasterRefs;
+      const expectedEditableRefs = caseSpec.oracle?.outputInventory?.expectedEditableRefs;
+      const exactRasterExports = Number(caseSpec.oracle?.outputInventory?.exactRasterExports);
+      const exactEditableDocuments = Number(caseSpec.oracle?.outputInventory?.exactEditableDocuments);
+      if (!Number.isInteger(exactRasterExports)
+        || exactRasterExports < 1
+        || !Array.isArray(expectedRasterRefs)
+        || expectedRasterRefs.length !== exactRasterExports
+        || new Set(expectedRasterRefs.map((ref) => cleanString(ref).replace(/\\/g, "/"))).size !== exactRasterExports
+        || expectedRasterRefs.some(isAbsoluteOrUnsafeRef)) {
+        errors.push("SKU oracle.outputInventory 必须逐项冻结安全、唯一的 expectedRasterRefs，不能只记录数量。 ");
+      }
+      if (!Number.isInteger(exactEditableDocuments)
+        || exactEditableDocuments < 1
+        || !Array.isArray(expectedEditableRefs)
+        || expectedEditableRefs.length !== exactEditableDocuments
+        || new Set(expectedEditableRefs.map((ref) => cleanString(ref).replace(/\\/g, "/"))).size !== exactEditableDocuments
+        || expectedEditableRefs.some(isAbsoluteOrUnsafeRef)) {
+        errors.push("SKU oracle.outputInventory 必须逐项冻结安全、唯一的 expectedEditableRefs。 ");
+      }
     }
   }
   if (!isRecord(caseSpec.boundaries)
@@ -738,6 +1039,22 @@ function hasEvidence(evidenceRefs, kind) {
   ));
 }
 
+function normalizeFinalArtifactManifest(value) {
+  if (!isRecord(value) || value.declaredBy !== "agent_delivery_receipt") return undefined;
+  const artifacts = (Array.isArray(value.artifacts) ? value.artifacts : []).map((candidate) => ({
+    kind: cleanString(candidate?.kind),
+    ref: cleanString(candidate?.ref).replace(/\\/g, "/"),
+    digest: cleanString(candidate?.digest).toLowerCase()
+  }));
+  artifacts.sort((left, right) => left.ref.localeCompare(right.ref) || left.kind.localeCompare(right.kind));
+  return {
+    version: "design-reliability-final-artifact-manifest/v1",
+    declaredBy: "agent_delivery_receipt",
+    artifacts,
+    manifestDigest: sha256Text(stableStringify(artifacts))
+  };
+}
+
 function buildMachineCheckResults(caseSpec, facts) {
   const knownChecks = {
     correct_skill_binding: facts.correctSkillBinding,
@@ -747,9 +1064,14 @@ function buildMachineCheckResults(caseSpec, facts) {
     post_write_visual_readback: facts.postWriteVisualReadback,
     post_write_readback_target_verified: facts.postWriteReadbackTargetVerified,
     save_tool_receipt: facts.saveToolReceipt,
+    paired_editable_delivery_receipt: facts.pairedEditableDeliveryReceipt,
+    sku_structure_readback_set: facts.skuStructureReadbackSet,
+    sku_visual_readback_set: facts.skuVisualReadbackSet,
+    sku_pair_binding: facts.skuPairBinding,
     editable_psd_evidence: facts.editablePsdEvidence,
     raster_export_evidence: facts.rasterExportEvidence,
     sku_output_inventory_evidence: facts.skuOutputInventoryEvidence,
+    final_artifact_manifest_evidence: facts.finalArtifactManifestEvidence,
     fixture_instance_evidence: facts.fixtureInstanceEvidence,
     runtime_model_identity_evidence: facts.runtimeModelIdentityEvidence,
     expected_project_binding_evidence: facts.expectedProjectBindingEvidence,
@@ -932,6 +1254,9 @@ function deriveDesignReliabilityRunObservation(input) {
     ? findSuccessfulCallAfter(flattened.calls, EXPORT_TOOLS, lastMutationOrdinal)
     : undefined;
   const evidenceRefs = Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [];
+  const finalArtifactManifest = normalizeFinalArtifactManifest(input.finalArtifactManifest);
+  const finalArtifactManifestErrors = [];
+  validateFinalArtifactManifest(finalArtifactManifest, evidenceRefs, caseSpec, finalArtifactManifestErrors);
   const runStatus = resolveRunStatus(finalRecord);
   // 技术交付与人工审美是两条分母：needs_review 表示完整成稿只等待开发侧人工审美评审；
   // waiting_user 表示产品任务仍在等用户输入 / 确认，不是技术终态，不能以完整收据掩盖自主完成失败。
@@ -948,6 +1273,10 @@ function deriveDesignReliabilityRunObservation(input) {
     postWriteReadbackTargetVerified,
     saveToolReceipt: Boolean(saveReceipt),
     exportToolReceipt: Boolean(exportReceipt),
+    pairedEditableDeliveryReceipt: hasEvidence(evidenceRefs, "paired_editable_delivery_receipt"),
+    skuStructureReadbackSet: hasEvidence(evidenceRefs, "sku_structure_readback_set"),
+    skuVisualReadbackSet: hasEvidence(evidenceRefs, "sku_visual_readback_set"),
+    skuPairBinding: hasEvidence(evidenceRefs, "sku_pair_binding"),
     editablePsdEvidence: hasEvidence(evidenceRefs, "editable_psd"),
     rasterExportEvidence: hasEvidence(evidenceRefs, "raster_export"),
     skuOutputInventoryEvidence: hasEvidence(evidenceRefs, "sku_output_inventory"),
@@ -955,6 +1284,7 @@ function deriveDesignReliabilityRunObservation(input) {
     runtimeModelIdentityEvidence: hasEvidence(evidenceRefs, "runtime_model_identity"),
     expectedProjectBindingEvidence: hasEvidence(evidenceRefs, "expected_project_binding"),
     sourceInputIntegrityEvidence: hasEvidence(evidenceRefs, "source_input_integrity"),
+    finalArtifactManifestEvidence: finalArtifactManifestErrors.length === 0,
     unresolvedBlockerCount,
     terminalTaskRun
   };
@@ -979,13 +1309,21 @@ function deriveDesignReliabilityRunObservation(input) {
   if (!userInterventionKnown) missingEvidence.push("user_intervention_count");
   if (!facts.editablePsdEvidence) missingEvidence.push("editable_psd");
   if (!facts.rasterExportEvidence) missingEvidence.push("raster_export");
-  if (!facts.postWriteStructureReadback) missingEvidence.push("post_write_structure_readback");
-  if (!facts.postWriteVisualReadback) missingEvidence.push("post_write_visual_readback");
-  if (!facts.postWriteReadbackTargetVerified) missingEvidence.push("post_write_readback_target_verified");
+  if (caseSpec?.taskFamily === "sku") {
+    if (!facts.pairedEditableDeliveryReceipt) missingEvidence.push("paired_editable_delivery_receipt");
+    if (!facts.skuStructureReadbackSet) missingEvidence.push("sku_structure_readback_set");
+    if (!facts.skuVisualReadbackSet) missingEvidence.push("sku_visual_readback_set");
+    if (!facts.skuPairBinding) missingEvidence.push("sku_pair_binding");
+  } else {
+    if (!facts.postWriteStructureReadback) missingEvidence.push("post_write_structure_readback");
+    if (!facts.postWriteVisualReadback) missingEvidence.push("post_write_visual_readback");
+    if (!facts.postWriteReadbackTargetVerified) missingEvidence.push("post_write_readback_target_verified");
+  }
   if (!facts.expectedProjectBindingEvidence) missingEvidence.push("expected_project_binding");
   if (!facts.fixtureInstanceEvidence) missingEvidence.push("fixture_instance");
   if (!facts.runtimeModelIdentityEvidence) missingEvidence.push("runtime_model_identity");
   if (!facts.sourceInputIntegrityEvidence) missingEvidence.push("source_input_integrity");
+  if (!facts.finalArtifactManifestEvidence) missingEvidence.push("final_artifact_manifest");
   const symptoms = buildObservedSymptoms({
     ...facts,
     runStatus,
@@ -1094,6 +1432,7 @@ function deriveDesignReliabilityRunObservation(input) {
       symptoms
     },
     evidenceRefs,
+    ...(finalArtifactManifest ? { finalArtifactManifest } : {}),
     missingEvidence: [...new Set(missingEvidence)].sort(),
     boundaries: {
       devBenchmarkSidecarOnly: true,
@@ -1114,11 +1453,100 @@ function validateEvidenceRef(evidence, fieldName, errors) {
   if (!cleanString(evidence.kind) || !cleanString(evidence.ref)) {
     errors.push(`${fieldName} 需要 kind 与 ref。`);
   }
-  if (path.isAbsolute(cleanString(evidence.ref))) {
-    errors.push(`${fieldName}.ref 不得保存绝对路径。`);
+  if (isAbsoluteOrUnsafeRef(evidence.ref)) {
+    errors.push(`${fieldName}.ref 不得保存绝对路径、URL 或目录穿越。`);
   }
   if (evidence.digest !== undefined && !/^sha256:[a-f0-9]{64}$/i.test(cleanString(evidence.digest))) {
     errors.push(`${fieldName}.digest 必须是 sha256:<64 hex>。`);
+  }
+}
+
+function validateFinalArtifactManifest(manifest, evidenceRefs, caseSpec, errors) {
+  if (!isRecord(manifest)) {
+    errors.push("finalArtifactManifest 必须是对象。");
+    return;
+  }
+  if (manifest.version !== "design-reliability-final-artifact-manifest/v1") {
+    errors.push("finalArtifactManifest.version 非法。");
+  }
+  if (manifest.declaredBy !== "agent_delivery_receipt") {
+    errors.push("finalArtifactManifest.declaredBy 必须是 agent_delivery_receipt，不能由评测器猜测最终交付。");
+  }
+  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0) {
+    errors.push("finalArtifactManifest.artifacts 不能为空。");
+    return;
+  }
+  const evidenceByRef = new Map((Array.isArray(evidenceRefs) ? evidenceRefs : []).map((item) => [
+    cleanString(item?.ref).replace(/\\/g, "/"),
+    item
+  ]));
+  const identities = new Set();
+  for (let index = 0; index < manifest.artifacts.length; index += 1) {
+    const artifact = manifest.artifacts[index];
+    const fieldName = `finalArtifactManifest.artifacts[${index}]`;
+    if (!isRecord(artifact)) {
+      errors.push(`${fieldName} 必须是对象。`);
+      continue;
+    }
+    const kind = cleanString(artifact.kind);
+    const ref = cleanString(artifact.ref).replace(/\\/g, "/");
+    const digest = cleanString(artifact.digest).toLowerCase();
+    if (!["editable_psd", "raster_export"].includes(kind)) {
+      errors.push(`${fieldName}.kind 只能是 editable_psd 或 raster_export。`);
+    }
+    if (isAbsoluteOrUnsafeRef(ref)) errors.push(`${fieldName}.ref 必须是安全的项目相对路径。`);
+    if (!/^sha256:[a-f0-9]{64}$/.test(digest)) errors.push(`${fieldName}.digest 非法。`);
+    const evidence = evidenceByRef.get(ref);
+    if (!evidence
+      || cleanString(evidence.kind) !== kind
+      || evidence.verified !== true
+      || cleanString(evidence.digest).toLowerCase() !== digest) {
+      errors.push(`${fieldName} 未精确绑定同一 Run 的已验证产物证据。`);
+    }
+    const identity = `${kind}\u0000${ref}`;
+    if (identities.has(identity)) errors.push("finalArtifactManifest.artifacts 不能重复。");
+    identities.add(identity);
+  }
+  const editableCount = manifest.artifacts.filter((item) => item?.kind === "editable_psd").length;
+  const editableRefs = manifest.artifacts
+    .filter((item) => item?.kind === "editable_psd")
+    .map((item) => cleanString(item.ref).replace(/\\/g, "/"))
+    .sort();
+  const rasterRefs = manifest.artifacts
+    .filter((item) => item?.kind === "raster_export")
+    .map((item) => cleanString(item.ref).replace(/\\/g, "/"))
+    .sort();
+  if (editableCount < 1) errors.push("finalArtifactManifest 至少需要一个可编辑 PSD/PSB 最终交付。");
+  if (rasterRefs.length < 1) errors.push("finalArtifactManifest 至少需要一个最终位图交付。");
+  if (caseSpec?.taskFamily === "sku") {
+    const expectedRefs = [...new Set(
+      Array.isArray(caseSpec?.oracle?.outputInventory?.expectedRasterRefs)
+        ? caseSpec.oracle.outputInventory.expectedRasterRefs.map((ref) => cleanString(ref).replace(/\\/g, "/"))
+        : []
+    )].sort();
+    const expectedEditableRefs = [...new Set(
+      Array.isArray(caseSpec?.oracle?.outputInventory?.expectedEditableRefs)
+        ? caseSpec.oracle.outputInventory.expectedEditableRefs.map((ref) => cleanString(ref).replace(/\\/g, "/"))
+        : []
+    )].sort();
+    if (expectedRefs.length === 0) {
+      errors.push("SKU Case 缺少 oracle.outputInventory.expectedRasterRefs，不能只按数量冒充完整交付。");
+    } else if (stableStringify(rasterRefs) !== stableStringify(expectedRefs)) {
+      errors.push("SKU finalArtifactManifest 必须逐项匹配 Case 冻结的 expectedRasterRefs。");
+    }
+    if (expectedEditableRefs.length === 0) {
+      errors.push("SKU Case 缺少 oracle.outputInventory.expectedEditableRefs。");
+    } else if (stableStringify(editableRefs) !== stableStringify(expectedEditableRefs)) {
+      errors.push("SKU finalArtifactManifest 必须逐项匹配 Case 冻结的 expectedEditableRefs。");
+    }
+  }
+  const expectedDigest = sha256Text(stableStringify(manifest.artifacts.map((artifact) => ({
+    kind: cleanString(artifact?.kind),
+    ref: cleanString(artifact?.ref).replace(/\\/g, "/"),
+    digest: cleanString(artifact?.digest).toLowerCase()
+  }))));
+  if (cleanString(manifest.manifestDigest) !== expectedDigest) {
+    errors.push(`finalArtifactManifest.manifestDigest 不匹配；期望 ${expectedDigest}。`);
   }
 }
 
@@ -1251,6 +1679,9 @@ function validateDesignReliabilityRun(run) {
   } else {
     run.evidenceRefs.forEach((evidence, index) => validateEvidenceRef(evidence, `evidenceRefs[${index}]`, errors));
   }
+  if (run.finalArtifactManifest !== undefined) {
+    validateFinalArtifactManifest(run.finalArtifactManifest, run.evidenceRefs, undefined, errors);
+  }
   if (!isRecord(run.boundaries)
     || run.boundaries.devBenchmarkSidecarOnly !== true
     || run.boundaries.neverAffectsRuntime !== true
@@ -1312,6 +1743,23 @@ function validateDesignReliabilityReview(review, context = {}) {
     }
   }
   const evidenceRefs = uniqueCleanStrings(review.evidenceRefs);
+  if (Array.isArray(review.evidenceRefs)) {
+    if (evidenceRefs.length !== review.evidenceRefs.length) {
+      errors.push("evidenceRefs 不能包含空值或重复项。 ");
+    }
+    for (let index = 0; index < evidenceRefs.length; index += 1) {
+      if (!isSafeReviewEvidenceRef(evidenceRefs[index])) {
+        errors.push(`evidenceRefs[${index}] 不能包含绝对路径、URL 或目录穿越。`);
+      }
+    }
+  }
+  const evidenceProtocol = cleanString(review.evidenceProtocol);
+  if (!REVIEW_EVIDENCE_PROTOCOLS.includes(evidenceProtocol)) {
+    errors.push(`evidenceProtocol 必须是 ${REVIEW_EVIDENCE_PROTOCOLS.join(" / ")}。`);
+  }
+  if (evidenceProtocol === "anonymous_packet_verified") {
+    errors.push("anonymous_packet_verified 尚未接入可验证评审包，因此不能进入正式成功率。 ");
+  }
   const comparisonEvidenceRefs = validateComparisonEvidenceRefs(
     review.comparisonEvidenceRefs,
     evidenceRefs,
@@ -1353,6 +1801,12 @@ function validateDesignReliabilityReview(review, context = {}) {
   const run = isRecord(context.run) ? context.run : undefined;
   if (rubric && cleanString(review.rubricId) !== cleanString(rubric.rubricId)) {
     errors.push("Review rubricId 与当前 rubric 不一致。");
+  }
+  if (rubric && cleanString(review.rubricDigest) !== buildRubricDigest(rubric)) {
+    errors.push("Review rubricDigest 与当前 rubric 内容不一致。");
+  }
+  if (!/^sha256:[a-f0-9]{64}$/i.test(cleanString(review.rubricDigest))) {
+    errors.push("Review rubricDigest 必须是 sha256:<64 hex>。");
   }
   if (caseSpec && cleanString(review.rubricId) !== cleanString(caseSpec.oracle?.rubricId)) {
     errors.push("Review rubricId 与固定 Case 不一致。");
@@ -1399,6 +1853,17 @@ function validateDesignReliabilityReview(review, context = {}) {
       } else if (!comparisonEvidenceKindsFromRefs.includes(kind)) {
         errors.push(`可评分结果缺少 comparisonEvidenceRefs：${kind}。`);
       }
+    }
+    if (caseSpec && run) {
+      validateFinalArtifactManifest(run.finalArtifactManifest, run.evidenceRefs, caseSpec, errors);
+      validateComparisonEvidenceBindings(
+        comparisonEvidenceRefs,
+        caseSpec,
+        run,
+        errors
+      );
+    } else if (caseSpec || run || context.enforceContextBinding === true) {
+      errors.push('可评分结果必须绑定当前 Case 与 Run，不能只提交自报证据字符串。');
     }
   }
 
@@ -1465,6 +1930,12 @@ function validateDesignReliabilityAttribution(attribution) {
   if (!cleanString(attribution.rationale)) errors.push("rationale 不能为空。");
   if (!Array.isArray(attribution.evidenceRefs) || attribution.evidenceRefs.length === 0) {
     errors.push("归因至少需要一个证据引用。");
+  } else {
+    attribution.evidenceRefs.forEach((ref, index) => {
+      if (!isSafeReviewEvidenceRef(ref)) {
+        errors.push(`evidenceRefs[${index}] 不能包含绝对路径、URL 或目录穿越。`);
+      }
+    });
   }
   if (!isRecord(attribution.boundaries)
     || attribution.boundaries.devBenchmarkSidecarOnly !== true
@@ -1517,6 +1988,8 @@ function hasPassedRequiredMachineChecks(run, checkIds) {
 function aggregateFamily(runs, reviews) {
   const reviewedRunIds = new Set(reviews.map((review) => review.runObservationId));
   const strictBlindReviews = reviews.filter((review) => (
+    review.evidenceProtocol === "anonymous_packet_verified"
+    &&
     review.blindedToCohort === true
     && review.blindedToCandidateOrigin === true
     && isFiniteNumber(review.weightedOverall)
@@ -1764,6 +2237,25 @@ function buildRunControlledDimensionFingerprint(run) {
     runtimeAppVersion: cleanString(dimensions.runtimeAppVersion) || "unknown",
     photoshopRuntimeBuildId: cleanString(dimensions.photoshopRuntimeBuildId) || "unknown",
     timeoutMs: Number.isFinite(dimensions.timeoutMs) ? dimensions.timeoutMs : null,
+    fixtureDigest: cleanString(dimensions.fixtureDigest) || "unknown",
+    suiteCaseSetDigest: cleanString(dimensions.suiteCaseSetDigest) || "unknown",
+    suiteRubricSetDigest: cleanString(dimensions.suiteRubricSetDigest) || "unknown"
+  }));
+}
+
+function buildRunGlobalControlledDimensionFingerprint(run) {
+  const dimensions = isRecord(run?.cohortDimensions) ? run.cohortDimensions : {};
+  return sha256Text(stableStringify({
+    gitCommit: cleanString(dimensions.gitCommit) || "unknown",
+    dirty: dimensions.dirty === true,
+    dirtyFingerprint: cleanString(dimensions.dirtyFingerprint) || "unknown",
+    provider: cleanString(dimensions.provider) || "unknown",
+    modelId: cleanString(dimensions.modelId) || "unknown",
+    runtimeGitCommit: cleanString(dimensions.runtimeGitCommit) || "unknown",
+    runtimeBuildId: cleanString(dimensions.runtimeBuildId) || "unknown",
+    runtimeAppVersion: cleanString(dimensions.runtimeAppVersion) || "unknown",
+    photoshopRuntimeBuildId: cleanString(dimensions.photoshopRuntimeBuildId) || "unknown",
+    timeoutMs: Number.isFinite(dimensions.timeoutMs) ? dimensions.timeoutMs : null,
     suiteCaseSetDigest: cleanString(dimensions.suiteCaseSetDigest) || "unknown",
     suiteRubricSetDigest: cleanString(dimensions.suiteRubricSetDigest) || "unknown"
   }));
@@ -1790,8 +2282,32 @@ function buildDesignReliabilityCohortReport(input) {
     revision: item.revision,
     caseDigest: item.caseDigest
   })).sort((left, right) => left.caseId.localeCompare(right.caseId))));
+  const rubricSetDigest = sha256Text(stableStringify(
+    (Array.isArray(input?.rubrics) ? input.rubrics : [])
+      .map((rubric) => ({
+        rubricId: cleanString(rubric?.rubricId),
+        rubricDigest: buildRubricDigest(rubric)
+      }))
+      .sort((left, right) => left.rubricId.localeCompare(right.rubricId))
+  ));
   const confirmedAttributions = attributions.filter((item) => item.status === "confirmed");
-  const controlledDimensionFingerprints = runs.map(buildRunControlledDimensionFingerprint);
+  const controlledFingerprintsByCase = new Map();
+  const fixtureDigestsByCase = {};
+  for (const run of runs) {
+    const caseId = cleanString(run?.caseRef?.caseId) || "unknown";
+    const fingerprints = controlledFingerprintsByCase.get(caseId) || new Set();
+    fingerprints.add(buildRunControlledDimensionFingerprint(run));
+    controlledFingerprintsByCase.set(caseId, fingerprints);
+    const fixtureDigests = fixtureDigestsByCase[caseId] || [];
+    const fixtureDigest = cleanString(run?.cohortDimensions?.fixtureDigest) || "unknown";
+    if (!fixtureDigests.includes(fixtureDigest)) fixtureDigests.push(fixtureDigest);
+    fixtureDigestsByCase[caseId] = fixtureDigests.sort();
+  }
+  const perCaseFingerprintCounts = [...controlledFingerprintsByCase.values()]
+    .map((fingerprints) => fingerprints.size);
+  const globalControlledFingerprints = new Set(
+    runs.map(buildRunGlobalControlledDimensionFingerprint)
+  );
   const explicitFingerprintRuns = runs.filter((run) => cleanString(run?.cohortDimensions?.cohortFingerprint));
   const explicitFingerprints = explicitFingerprintRuns.map((run) => (
     cleanString(run.cohortDimensions.cohortFingerprint)
@@ -1822,6 +2338,8 @@ function buildDesignReliabilityCohortReport(input) {
     selector: {
       suiteId: cleanString(input.suiteId),
       caseSetDigest,
+      rubricSetDigest,
+      fixtureDigestsByCase,
       caseRefs: uniqueCaseRefs(runs),
       filters: isRecord(input.filters) ? input.filters : {}
     },
@@ -1834,9 +2352,12 @@ function buildDesignReliabilityCohortReport(input) {
       missingCaseIds
     },
     cohortIntegrity: {
-      homogeneous: new Set(controlledDimensionFingerprints).size <= 1
+      homogeneous: globalControlledFingerprints.size <= 1
+        && perCaseFingerprintCounts.every((count) => count <= 1)
         && new Set(explicitFingerprints).size <= 1,
-      controlledDimensionFingerprintCount: new Set(controlledDimensionFingerprints).size,
+      controlledDimensionFingerprintCount: perCaseFingerprintCounts.length > 0
+        ? Math.max(globalControlledFingerprints.size, ...perCaseFingerprintCounts)
+        : globalControlledFingerprints.size,
       explicitFingerprintCoverage: rate(explicitFingerprintRuns.length, runs.length),
       explicitFingerprintCount: new Set(explicitFingerprints).size
     },
@@ -1861,11 +2382,15 @@ function buildDesignReliabilityCohortReport(input) {
 function compareDesignReliabilityCohorts(baseline, candidate) {
   const comparable = baseline?.version === COHORT_VERSION
     && candidate?.version === COHORT_VERSION
-    && baseline.selector?.caseSetDigest === candidate.selector?.caseSetDigest;
+    && baseline.selector?.caseSetDigest === candidate.selector?.caseSetDigest
+    && cleanString(baseline.selector?.rubricSetDigest)
+    && baseline.selector?.rubricSetDigest === candidate.selector?.rubricSetDigest
+    && stableStringify(baseline.selector?.fixtureDigestsByCase || {})
+      === stableStringify(candidate.selector?.fixtureDigestsByCase || {});
   if (!comparable) {
     return {
       comparable: false,
-      reason: "两个 cohort 的固定 Case 集不同，禁止用总体平均值伪装前后效果。"
+      reason: "两个 cohort 的固定 Case、Rubric 或逐 Case 输入摘要不同，禁止用总体平均值伪装前后效果。"
     };
   }
   function delta(pathReader) {
@@ -1877,6 +2402,7 @@ function compareDesignReliabilityCohorts(baseline, candidate) {
   return {
     comparable: true,
     caseSetDigest: baseline.selector.caseSetDigest,
+    rubricSetDigest: baseline.selector.rubricSetDigest,
     deltas: {
       technicalDeliveryRate: delta((report) => report.overall.reliability.technicalDeliveryRate.value),
       postWriteVisualReadbackRate: delta((report) => report.overall.reliability.postWriteVisualReadbackRate.value),
@@ -1897,11 +2423,14 @@ module.exports = {
   FAILURE_MODES,
   COMPARISON_EVIDENCE_KINDS,
   PAIRWISE_OUTCOMES,
+  LEGACY_REVIEW_VERSION,
+  REVIEW_EVIDENCE_PROTOCOLS,
   REVIEW_DECISIONS,
   REVIEW_VERSION,
   RUN_VERSION,
   TASK_FAMILIES,
   buildCaseDigest,
+  buildRubricDigest,
   buildDesignReliabilityCohortReport,
   calculateWeightedOverall,
   compareDesignReliabilityCohorts,

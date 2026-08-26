@@ -356,6 +356,7 @@ export type AgentStopReason =
     | 'final_response'
     | 'tool_budget_final_response'
     | 'provider_output_truncated'
+    | 'provider_output_blocked'
     | 'tool_preflight_blocked'
     | 'plan_execution_mismatch'
     | 'max_iterations'
@@ -563,6 +564,11 @@ export interface AgentExecutionSummary {
     acceptanceFailed: number;
     acceptanceNeedsReview: number;
     noDocumentChangeRisks: number;
+    /**
+     * E2 已精确归属的本轮 save/export 调用引用。这里只保留执行谱系，不含文件路径，
+     * 不授予权限、不改变完成或质量裁决；调试适配器可在运行结束后据此投影产物事实。
+     */
+    runtimeDeliveryResultRefs?: string[];
     lastToolName?: string;
     lastError?: string;
     blockers: string[];
@@ -664,6 +670,7 @@ export type CallModelFn = (
 ) => Promise<{
     content?: string;
     toolCalls?: ToolCall[];
+    incompleteToolCallNames?: string[];
     thinking?: string;
     usage?: { inputTokens: number; outputTokens: number };
     stopReason?: string;
@@ -696,6 +703,7 @@ export type CallModelStreamFn = (
 ) => Promise<{
     content?: string;
     toolCalls?: ToolCall[];
+    incompleteToolCallNames?: string[];
     thinking?: string;
     usage?: { inputTokens: number; outputTokens: number };
     stopReason?: string;

@@ -1060,14 +1060,14 @@ const SKU_COLOR_CARD_PROFILE: DesignEvaluationProfile = Object.freeze({
         verificationCheck({
             id: 'sku-color-card.clipping-structure',
             key: 'sku_color_card_clipping_structure',
-            label: '商品图剪切结构',
+            label: '商品图裁切结构适用性',
             dimension: 'craft',
             weight: 5,
             // 分档（用户决策 2026-07-24）：质量梯度：剪切结构不理想属可改进项，交付并标注。
             severity: 'major',
             owner: 'execution',
             required: true,
-            expectedFix: '确认每张商品图都在智能对象内部剪切到圆角底。'
+            expectedFix: 'card 模式确认每张商品图在智能对象内部剪切到圆角底；flat 模式确认其无剪切结构，不得补造剪切关系。'
         }),
         verificationCheck({
             id: 'sku-color-card.label-text-fit',

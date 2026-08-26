@@ -10,15 +10,18 @@ import type { SkillExecuteParams } from './types';
 import {
     SKU_COLOR_CARD_EXECUTION_REPORT_VERSION,
     buildInternalSkuColorCardGeometry,
+    buildSkuColorCardUniformScalePlacementReceipt,
     buildSkuColorCardPlan,
     isSkuColorCardClippingReadbackVerified,
     resolveSkuColorCardSources,
     type SkuColorCardColorNameSource,
     type SkuColorCardExecutionReport,
+    type SkuColorCardPlacementRect,
     type SkuColorCardPreparedCard,
     type SkuColorCardSourceResolution,
     type SkuColorCardSourceInput,
-    type SkuColorCardSubjectFit
+    type SkuColorCardSubjectFit,
+    type SkuColorCardUniformScalePlacementReceipt
 } from '../../../shared/sku-color-card-skill';
 import {
     bindSkuColorCardRuntimeSelection,
@@ -54,6 +57,15 @@ interface TextFitResult {
     textBounds?: LayerBounds;
     error?: string;
 }
+
+interface SkuSourceFilePreflight {
+    success: boolean;
+    failures: Array<{ sourceId: string; colorName: string; reason: string }>;
+}
+
+const SKU_RASTER_SOURCE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp']);
+const SKU_PSD_SOURCE_EXTENSIONS = new Set(['.psd', '.psb']);
+const MAX_SKU_SOURCE_PSD_PREFLIGHT_BYTES = 512 * 1024 * 1024;
 
 function buildSubjectPlacementBounds(input: {
     cardBounds: { x: number; y: number; width: number; height: number };
@@ -94,6 +106,112 @@ function fileBaseNameWithoutExtension(filePath: string): string {
     const normalized = clean(filePath).replace(/\\/g, '/');
     const baseName = normalized.split('/').filter(Boolean).pop() || '';
     return baseName.replace(/\.[^.]+$/, '').trim();
+}
+
+function fileExtension(filePath: string): string {
+    const normalized = clean(filePath).replace(/\\/g, '/');
+    const slashIndex = normalized.lastIndexOf('/');
+    const dotIndex = normalized.lastIndexOf('.');
+    return dotIndex > slashIndex ? normalized.slice(dotIndex).toLocaleLowerCase('en-US') : '';
+}
+
+async function preflightSkuSourceFilesBeforePhotoshopWrite(
+    sources: Array<{ sourceId: string; colorName: string; filePath: string }>
+): Promise<SkuSourceFilePreflight> {
+    const bridge = (window as any).designEcho;
+    const getFileInfo = bridge?.getFileInfo;
+    const probeImageFile = bridge?.probeImageFile;
+    const analyzePsdDesignSource = bridge?.analyzePsdDesignSource;
+    if (typeof getFileInfo !== 'function') {
+        return {
+            success: false,
+            failures: sources.map((source) => ({
+                sourceId: source.sourceId,
+                colorName: source.colorName,
+                reason: '当前桌面运行时缺少只读文件信息探针'
+            }))
+        };
+    }
+
+    const failures: SkuSourceFilePreflight['failures'] = [];
+    for (const source of sources) {
+        const extension = fileExtension(source.filePath);
+        try {
+            const fileInfo = await getFileInfo(source.filePath);
+            if (fileInfo?.isFile !== true || !Number.isFinite(Number(fileInfo?.size)) || Number(fileInfo.size) <= 0) {
+                failures.push({
+                    sourceId: source.sourceId,
+                    colorName: source.colorName,
+                    reason: '路径不存在、不是普通文件或文件为空'
+                });
+                continue;
+            }
+            if (SKU_RASTER_SOURCE_EXTENSIONS.has(extension)) {
+                if (typeof probeImageFile !== 'function') {
+                    failures.push({
+                        sourceId: source.sourceId,
+                        colorName: source.colorName,
+                        reason: '当前桌面运行时缺少位图解码探针'
+                    });
+                    continue;
+                }
+                const probe = await probeImageFile(source.filePath);
+                if (probe?.success !== true
+                    || probe?.status !== 'ok'
+                    || probe?.isFile !== true
+                    || !Number.isFinite(Number(probe?.dimensions?.width))
+                    || Number(probe.dimensions.width) <= 0
+                    || !Number.isFinite(Number(probe?.dimensions?.height))
+                    || Number(probe.dimensions.height) <= 0) {
+                    failures.push({
+                        sourceId: source.sourceId,
+                        colorName: source.colorName,
+                        reason: clean(probe?.error) || '位图无法完整解码'
+                    });
+                }
+                continue;
+            }
+            if (SKU_PSD_SOURCE_EXTENSIONS.has(extension)) {
+                if (Number(fileInfo.size) > MAX_SKU_SOURCE_PSD_PREFLIGHT_BYTES) {
+                    failures.push({
+                        sourceId: source.sourceId,
+                        colorName: source.colorName,
+                        reason: 'PSD/PSB 超过 512MB，只读预检无法在安全内存预算内完成'
+                    });
+                    continue;
+                }
+                if (typeof analyzePsdDesignSource !== 'function') {
+                    failures.push({
+                        sourceId: source.sourceId,
+                        colorName: source.colorName,
+                        reason: '当前桌面运行时缺少 PSD/PSB 只读解析探针'
+                    });
+                    continue;
+                }
+                const analysis = await analyzePsdDesignSource(source.filePath);
+                if (analysis?.success !== true) {
+                    failures.push({
+                        sourceId: source.sourceId,
+                        colorName: source.colorName,
+                        reason: clean(analysis?.error) || 'PSD/PSB 无法完整解析'
+                    });
+                }
+                continue;
+            }
+            failures.push({
+                sourceId: source.sourceId,
+                colorName: source.colorName,
+                reason: `不支持的素材格式 ${extension || '(无扩展名)'}`
+            });
+        } catch (error) {
+            failures.push({
+                sourceId: source.sourceId,
+                colorName: source.colorName,
+                reason: error instanceof Error ? error.message : String(error)
+            });
+        }
+    }
+    return { success: failures.length === 0, failures };
 }
 
 function userAuthorizesFilenameLabels(userInput: string): boolean {
@@ -265,6 +383,50 @@ function toolError(result: any, fallback: string): string {
     return clean(result?.error || result?.message) || fallback;
 }
 
+function readSkuColorCardFailureSubject(diagnostic: string): string {
+    const match = diagnostic.match(/“([^”]{1,80})”/);
+    return match ? `“${match[1]}”` : '';
+}
+
+function buildSkuColorCardPublicFailureMessage(input: {
+    stage: string;
+    diagnostic: string;
+    cancelled: boolean;
+}): string {
+    if (input.cancelled) {
+        return 'SKU 色卡制作已停止，当前画面已保留。';
+    }
+
+    const subject = readSkuColorCardFailureSubject(input.diagnostic);
+    if (input.stage === 'blocked_invalid_design_spec') {
+        return '还缺少完整的色卡设计信息，本次尚未开始制作。';
+    }
+    if (input.stage === 'skill-atomic-tool-owner-unavailable') {
+        return '当前无法可靠连接要编辑的 Photoshop 文档，本次尚未开始制作。';
+    }
+    if (input.stage === 'prepare-sku-retouch-assets'
+        || input.stage === 'source-file-preflight'
+        || input.stage === 'blocked_flat_assets_not_ready'
+        || input.stage === 'blocked_retouch_asset_identity_incomplete') {
+        return `${subject ? `${subject}素材` : '有素材'}无法安全读取或准备，本次尚未写入 Photoshop。`;
+    }
+    if (input.stage === 'create-document' || input.stage === 'create-document-readback') {
+        return '无法创建或确认本次 SKU 色卡画布，本次没有继续制作。';
+    }
+    if (input.stage === 'save-output') {
+        return 'SKU 色卡已经制作，但未能安全保存；当前画面已保留。';
+    }
+    if (input.stage.startsWith('verify-')
+        || input.stage.startsWith('read-')
+        || input.stage.startsWith('rebind-')
+        || input.stage === 'return-to-main-document'
+        || input.stage === 'final-structure-readback'
+        || input.stage === 'draft-visual-snapshot') {
+        return `${subject ? `${subject}的` : ''}当前结果无法确认完整，已停止保存；当前画面已保留。`;
+    }
+    return `${subject ? `${subject}在` : 'SKU 色卡在'}制作过程中遇到问题，已停止后续修改；当前画面已保留。`;
+}
+
 function isSmartObjectVerified(result: any): boolean {
     return result?.success === true && (
         result?.isSmartObject === true
@@ -273,14 +435,125 @@ function isSmartObjectVerified(result: any): boolean {
     );
 }
 
-function isSoftLightVerified(result: any): boolean {
-    const value = clean(
-        result?.blendMode
-        || result?.data?.blendMode
-        || result?.properties?.blendMode
-        || result?.data?.properties?.blendMode
-    ).toLocaleLowerCase('en-US').replace(/[\s_-]+/g, '');
-    return result?.success === true && (value === 'softlight' || value === '柔光');
+function readPlacementRect(value: unknown): SkuColorCardPlacementRect | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const record = value as Record<string, unknown>;
+    const left = Number(record.left ?? record.x);
+    const top = Number(record.top ?? record.y);
+    const width = Number(record.width);
+    const height = Number(record.height);
+    if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+        return undefined;
+    }
+    return { left, top, width, height };
+}
+
+function readPlacedSourceProof(result: any): {
+    assetId: string;
+    checksum: string;
+    byteLength: number;
+    identityProofVersion: string;
+    identityVerified: boolean;
+} {
+    const source = result?.data?.source || result?.source || {};
+    const identityProof = source?.identityProof || {};
+    return {
+        assetId: clean(source.assetId),
+        checksum: clean(source.checksum).toLocaleLowerCase('en-US'),
+        byteLength: Number(source.byteLength) || 0,
+        identityProofVersion: clean(identityProof.version),
+        identityVerified: identityProof.verified === true
+    };
+}
+
+function buildUniformScalePlacementReceiptFromToolResults(input: {
+    source: SkuRetouchPreparedSource;
+    sourceId: string;
+    placedLayerId: number;
+    documentId: number;
+    expectedDocumentId: number;
+    targetBounds: { x: number; y: number; width: number; height: number };
+    placeResult: any;
+    smartObjectInfo: any;
+    layerBoundsResult: any;
+}): SkuColorCardUniformScalePlacementReceipt {
+    const assetSha256 = clean(input.source.productSha256).toLocaleLowerCase('en-US');
+    const assetByteLength = Number(input.source.productByteLength) || 0;
+    const assetWidth = Number(input.source.width) || 0;
+    const assetHeight = Number(input.source.height) || 0;
+    const placedSource = readPlacedSourceProof(input.placeResult);
+    const targetBounds: SkuColorCardPlacementRect = {
+        left: input.targetBounds.x,
+        top: input.targetBounds.y,
+        width: input.targetBounds.width,
+        height: input.targetBounds.height
+    };
+    const placement = input.placeResult?.data?.placement || input.placeResult?.placement;
+    const actualLayerBounds = readLayerBounds(input.layerBoundsResult);
+    const smartObjectBounds = readLayerBounds(input.smartObjectInfo);
+    const actualBounds = actualLayerBounds
+        ? {
+            left: actualLayerBounds.left,
+            top: actualLayerBounds.top,
+            width: actualLayerBounds.width,
+            height: actualLayerBounds.height
+        }
+        : undefined;
+    const smartBoundsAgree = Boolean(actualLayerBounds && smartObjectBounds)
+        && Math.abs(actualLayerBounds!.left - smartObjectBounds!.left) <= 2
+        && Math.abs(actualLayerBounds!.top - smartObjectBounds!.top) <= 2
+        && Math.abs(actualLayerBounds!.width - smartObjectBounds!.width) <= 2
+        && Math.abs(actualLayerBounds!.height - smartObjectBounds!.height) <= 2;
+    const placementActualBounds = readPlacementRect(placement?.actualBounds);
+    const placementBoundsAgree = !placementActualBounds || Boolean(actualBounds)
+        && Math.abs(placementActualBounds.left - actualBounds!.left) <= 2
+        && Math.abs(placementActualBounds.top - actualBounds!.top) <= 2
+        && Math.abs(placementActualBounds.width - actualBounds!.width) <= 2
+        && Math.abs(placementActualBounds.height - actualBounds!.height) <= 2;
+    const observedDocumentId = readPositiveId(input.smartObjectInfo, ['documentId'])
+        || readPositiveId(input.layerBoundsResult, ['documentId']);
+    const infoFileReference = clean(
+        input.smartObjectInfo?.fileReference || input.smartObjectInfo?.data?.fileReference
+    );
+    return buildSkuColorCardUniformScalePlacementReceipt({
+        sourceId: input.sourceId,
+        placedLayerId: input.placedLayerId,
+        documentId: input.documentId,
+        expectedDocumentId: input.expectedDocumentId,
+        observedDocumentId,
+        asset: {
+            path: input.source.productPath || '',
+            sha256: assetSha256,
+            checksum: clean(input.source.productChecksum).toLocaleLowerCase('en-US'),
+            byteLength: assetByteLength,
+            width: assetWidth,
+            height: assetHeight,
+            alphaEnvelopeSafe: input.source.alphaSafety?.sourcePixelsPreserved === true
+                && input.source.alphaSafety?.outputEdgesClear === true
+        },
+        placedSource,
+        targetBounds,
+        actualBounds,
+        smartObjectBounds: smartObjectBounds
+            ? {
+                left: smartObjectBounds.left,
+                top: smartObjectBounds.top,
+                width: smartObjectBounds.width,
+                height: smartObjectBounds.height
+            }
+            : undefined,
+        placementActualBounds,
+        smartObjectFileReference: infoFileReference,
+        editableSmartObject: isSmartObjectVerified(input.smartObjectInfo),
+        layerBoundsReadSucceeded: input.layerBoundsResult?.success === true
+            && smartBoundsAgree
+            && placementBoundsAgree,
+        placementGeometryVerified: placement?.geometryVerification?.verified === true,
+        outsideTargetFraction: Number(placement?.outsideTargetFraction || 0),
+        outsideTargetEdges: Array.isArray(placement?.outsideTargetEdges)
+            ? placement.outsideTargetEdges.map((edge: unknown) => clean(edge)).filter(Boolean)
+            : ['unreadable']
+    });
 }
 
 function resolveRetouchMode(value: unknown): 'auto' | 'layout_only' | 'studio_retouch_required' {
@@ -289,12 +562,62 @@ function resolveRetouchMode(value: unknown): 'auto' | 'layout_only' | 'studio_re
     return 'auto';
 }
 
-function resolveRetouchLayerStructureCheck(
+function hasUniformScaleAssetIdentity(
+    source: SkuRetouchPreparedSource | undefined
+): source is SkuRetouchPreparedSource & Required<Pick<
+    SkuRetouchPreparedSource,
+    'productPath' | 'previewPath' | 'productSha256' | 'productChecksum' | 'productByteLength' | 'width' | 'height' | 'alphaSafety'
+>> {
+    return isPreparedSkuRetouchSource(source)
+        && /^[a-f0-9]{64}$/i.test(clean(source.productSha256))
+        && /^fnv1a32:[a-f0-9]{8}$/i.test(clean(source.productChecksum))
+        && Number.isFinite(Number(source.productByteLength))
+        && Number(source.productByteLength) > 0
+        && Number.isFinite(Number(source.width))
+        && Number(source.width) > 0
+        && Number.isFinite(Number(source.height))
+        && Number(source.height) > 0
+        && source.alphaSafety?.sourcePixelsPreserved === true
+        && source.alphaSafety?.outputEdgesClear === true;
+}
+
+function resolveUniformScaleLayerStructureCheck(
     cards: SkuColorCardPreparedCard[]
 ): 'passed' | 'not_applicable' | 'failed' {
-    const retouchedCards = cards.filter((card) => card.retouchLayersVerified !== undefined);
-    if (retouchedCards.length === 0) return 'not_applicable';
-    return retouchedCards.every((card) => card.retouchLayersVerified === true) ? 'passed' : 'failed';
+    const uniformScaleCards = cards.filter((card) => card.uniformScaleAssetApplied === true);
+    if (uniformScaleCards.length === 0) return 'not_applicable';
+    return uniformScaleCards.every((card) => (
+        card.uniformScalePlacementVerified === true
+        && card.uniformScalePlacementReceipt?.verified === true
+    ))
+        ? 'passed'
+        : 'failed';
+}
+
+function resolveClippingStructureCheck(
+    cards: SkuColorCardPreparedCard[]
+): 'passed' | 'not_applicable' | 'failed' {
+    if (cards.length === 0) return 'failed';
+    const requiredCards = cards.filter((card) => card.clippingRequired === true);
+    if (requiredCards.length === 0) return 'not_applicable';
+    return requiredCards.every((card) => card.clippingVerified === true)
+        ? 'passed'
+        : 'failed';
+}
+
+function resolveRetouchAssetsCheck(input: {
+    cards: SkuColorCardPreparedCard[];
+    retouchReport?: SkuRetouchReport;
+    expectedSourceCount: number;
+}): 'passed' | 'not_applicable' | 'failed' {
+    if (!input.retouchReport) return 'not_applicable';
+    if (input.retouchReport.workflowStatus !== 'prepared') return 'failed';
+    const verifiedCards = input.cards.filter((card) => (
+        card.uniformScaleAssetApplied === true
+        && card.uniformScalePlacementVerified === true
+        && card.uniformScalePlacementReceipt?.verified === true
+    ));
+    return verifiedCards.length === input.expectedSourceCount ? 'passed' : 'failed';
 }
 
 function resolveSourceCoverageStatus(
@@ -306,8 +629,19 @@ function resolveSourceCoverageStatus(
     return 'passed';
 }
 
+function allPreparedCardsSatisfy(
+    cards: SkuColorCardPreparedCard[],
+    expectedSourceCount: number,
+    predicate: (card: SkuColorCardPreparedCard) => boolean
+): boolean {
+    return expectedSourceCount > 0
+        && cards.length === expectedSourceCount
+        && cards.every(predicate);
+}
+
 function buildFailureReport(input: {
     outputPath: string;
+    presentationMode: SkuColorCardExecutionReport['presentationMode'];
     sourceCount: number;
     preparedCards: SkuColorCardPreparedCard[];
     stage: string;
@@ -319,13 +653,22 @@ function buildFailureReport(input: {
         version: SKU_COLOR_CARD_EXECUTION_REPORT_VERSION,
         status: 'failed',
         outputPath: input.outputPath,
+        presentationMode: input.presentationMode,
         sourceCount: input.sourceCount,
         preparedCards: input.preparedCards,
         checks: {
             sourceCoverage: resolveSourceCoverageStatus(input.preparedCards, input.sourceCount),
-            smartObjectEditability: input.preparedCards.every((card) => card.smartObjectVerified) ? 'passed' : 'failed',
-            clippingStructure: input.preparedCards.every((card) => card.clippingVerified) ? 'passed' : 'failed',
-            labelTextFit: input.preparedCards.every((card) => card.labelTextFitVerified) ? 'passed' : 'failed',
+            smartObjectEditability: allPreparedCardsSatisfy(
+                input.preparedCards,
+                input.sourceCount,
+                (card) => card.smartObjectVerified
+            ) ? 'passed' : 'failed',
+            clippingStructure: resolveClippingStructureCheck(input.preparedCards),
+            labelTextFit: allPreparedCardsSatisfy(
+                input.preparedCards,
+                input.sourceCount,
+                (card) => card.labelTextFitVerified
+            ) ? 'passed' : 'failed',
             indexReferenceIsolation: input.indexReferenceIsolation,
             finalStructureReadback: input.finalStructureReadback ? 'passed' : 'failed',
             visualComposition: 'failed'
@@ -362,7 +705,7 @@ export async function executeSkuColorCardStrategy(
                 const files: any[] = Array.isArray(scan?.files) ? scan.files : (Array.isArray(scan?.images) ? scan.images : []);
                 const images = files
                     .map((f: any) => clean(f?.path || f?.filePath || f))
-                    .filter((fp: string) => /\.(?:png|jpe?g|webp|tif{1,2}|psd)$/i.test(fp))
+                    .filter((fp: string) => /\.(?:png|jpe?g|webp|tif{1,2}|ps[db])$/i.test(fp))
                     .sort((a: string, b: string) => a.localeCompare(b, 'zh'));
                 if (images.length === 0) {
                     { const error = `sourceDirectory「${dirRaw}」里没有图片（解析为 ${dirPath}）；换目录或改传 sources。`; return { success: false, error, message: error }; }
@@ -620,8 +963,15 @@ export async function executeSkuColorCardStrategy(
         }
 
         function fail(stage: string, error: string): AgentResult {
+            const isCancelled = cancelled();
+            const userMessage = buildSkuColorCardPublicFailureMessage({
+                stage,
+                diagnostic: error,
+                cancelled: isCancelled
+            });
             const report = buildFailureReport({
                 outputPath: plan.outputPath,
+                presentationMode: plan.presentationMode,
                 sourceCount: plan.slots.length,
                 preparedCards,
                 stage,
@@ -631,16 +981,16 @@ export async function executeSkuColorCardStrategy(
             emitSkillStep(callbacks, {
                 kind: 'verification',
                 title: 'SKU 色卡未完成',
-                detail: error,
+                detail: userMessage,
                 status: 'error',
                 percent: 100,
                 issue: stage
             });
             return {
                 success: false,
-                message: `SKU 色卡没有完成：${error}`,
-                error,
-                cancelled: cancelled(),
+                message: userMessage,
+                error: userMessage,
+                cancelled: isCancelled,
                 toolResults: observations,
                 data: { plan, report, sourceResolution }
             };
@@ -682,7 +1032,7 @@ export async function executeSkuColorCardStrategy(
             emitSkillStep(callbacks, {
                 kind: 'tool_planned',
                 title: '准备纯底 SKU 精修资产',
-                detail: '先判断纯底/场景，再生成形态统一主体、独立原影和中性灰光影修正层。',
+                detail: '先判断纯底/场景，再生成等比缩放统一尺度的透明底主体（不变形保版型；阴影与光影修正属下一阶段）。',
                 status: 'running',
                 percent: 8
             });
@@ -698,8 +1048,6 @@ export async function executeSkuColorCardStrategy(
                 sourceMode: params.sourceMode === 'studio' || params.sourceMode === 'scene'
                     ? params.sourceMode
                     : 'auto',
-                shapeStrength: params.shapeStrength,
-                lightingStrength: params.lightingStrength,
                 maxLongEdge: params.retouchMaxLongEdge,
                 force: params.forceRetouch === true
             }, 'prepare-sku-retouch-assets');
@@ -710,12 +1058,18 @@ export async function executeSkuColorCardStrategy(
                 );
             }
             retouchReport = retouchResult as SkuRetouchReport;
-            if (retouchMode === 'studio_retouch_required' && retouchReport.workflowStatus !== 'prepared') {
-                return fail('prepare-sku-retouch-assets', '当前任务要求纯底精修，但素材没有通过纯底适用性检查。');
+            const missingRequiredRetouchSources = plan.slots.filter((slot) => !hasUniformScaleAssetIdentity(
+                retouchReport?.sources.find((source) => source.sourceId === slot.source.sourceId)
+            ));
+            if (retouchMode === 'studio_retouch_required' && missingRequiredRetouchSources.length > 0) {
+                return fail(
+                    'prepare-sku-retouch-assets',
+                    `当前任务要求所有纯底素材形成统一尺度资产，但 ${missingRequiredRetouchSources.map((slot) => `“${slot.source.colorName}”`).join('、')} 未通过适用性检查。`
+                );
             }
             emitSkillStep(callbacks, {
                 kind: 'verification',
-                title: retouchReport.workflowStatus === 'prepared' ? 'SKU 精修资产已生成' : '已跳过纯底精修',
+                title: retouchReport.workflowStatus === 'prepared' ? 'SKU 统一尺度资产已生成' : '已跳过纯底统一处理',
                 detail: retouchReport.workflowStatus === 'prepared'
                     ? `基准：${retouchReport.referenceSourceId || '自动'}；已生成 ${retouchReport.sources.filter((source) => source.status === 'prepared').length} 组可编辑资产。`
                     : '素材不适用纯底处理，将保留原图进入色卡结构并等待场景方向复核。',
@@ -725,15 +1079,32 @@ export async function executeSkuColorCardStrategy(
         }
 
         if (plan.presentationMode === 'flat') {
-            const unavailableFlatSources = plan.slots.filter((slot) => !isPreparedSkuRetouchSource(
+            const unavailableFlatSources = plan.slots.filter((slot) => !hasUniformScaleAssetIdentity(
                 retouchReport?.sources.find((source) => source.sourceId === slot.source.sourceId)
             ));
             if (unavailableFlatSources.length > 0) {
                 return fail(
                     'blocked_flat_assets_not_ready',
-                    `Agent 选择了 flat 平铺结构，但 ${unavailableFlatSources.map((slot) => `“${slot.source.colorName}”`).join('、')} 没有形成所需的主体、原影与中性灰可编辑资产。首次 Photoshop 写入前已停止。`
+                    `Agent 选择了 flat 平铺结构，但 ${unavailableFlatSources.map((slot) => `“${slot.source.colorName}”`).join('、')} 没有形成所需的统一尺度主体资产。首次 Photoshop 写入前已停止。`
                 );
             }
+        }
+
+        const sourceFilePreflight = await preflightSkuSourceFilesBeforePhotoshopWrite(
+            plan.slots.map((slot) => ({
+                sourceId: slot.source.sourceId,
+                colorName: slot.source.colorName,
+                filePath: slot.source.filePath
+            }))
+        );
+        if (!sourceFilePreflight.success) {
+            const detail = sourceFilePreflight.failures
+                .map((failure) => `“${failure.colorName}”：${failure.reason}`)
+                .join('；');
+            return fail(
+                'source-file-preflight',
+                `SKU 色卡素材在首次 Photoshop 写入前未通过完整文件检查：${detail}`
+            );
         }
 
         callbacks?.onProgress?.('创建 SKU 色卡文档', 10);
@@ -787,13 +1158,13 @@ export async function executeSkuColorCardStrategy(
                 (source) => source.sourceId === sourceId
             );
 
-            // Agent 显式选择 flat 时，Skill 只把已准备的主体、原影和中性灰资产
-            // 编译为可编辑平铺结构；精修结果本身不能把 card 自动改成 flat。
+            // Agent 显式选择 flat 时，Skill 只把已准备的统一尺度主体资产
+            // 编译为可编辑平铺结构；离线处理结果本身不能把 card 自动改成 flat。
             if (plan.presentationMode === 'flat') {
-                if (!isPreparedSkuRetouchSource(earlyRetouchSource)) {
+                if (!hasUniformScaleAssetIdentity(earlyRetouchSource)) {
                     return fail(
                         'blocked_flat_assets_not_ready',
-                        `“${slot.source.colorName}”缺少 flat 平铺结构所需的可编辑精修资产。`
+                        `“${slot.source.colorName}”缺少 flat 平铺结构所需的完整统一尺度资产身份或 alpha 安全收据。`
                     );
                 }
                 const flatGeometry = buildInternalSkuColorCardGeometry({
@@ -816,9 +1187,8 @@ export async function executeSkuColorCardStrategy(
 
                 const placeIntoGroup = async (
                     stage: string,
-                    input: Record<string, any>,
-                    failText: string
-                ): Promise<number | undefined> => {
+                    input: Record<string, any>
+                ): Promise<{ layerId: number; placeResult: any } | undefined> => {
                     const placed = await callTool('placeImage', input, stage, sourceId);
                     const placedLayerId = readPositiveId(placed, ['layerId', 'placedLayerId', 'createdLayerId']);
                     if (!placed?.success || !placedLayerId) {
@@ -830,71 +1200,43 @@ export async function executeSkuColorCardStrategy(
                         position: 'inside'
                     }, `${stage}-group`, sourceId);
                     if (!moved?.success) return undefined;
-                    return placedLayerId;
+                    return { layerId: placedLayerId, placeResult: placed };
                 };
 
-                const flatBackupLayerId = await placeIntoGroup('place-flat-source-backup', {
+                const flatBackupPlacement = await placeIntoGroup('place-flat-source-backup', {
                     filePath: slot.source.filePath,
                     name: `${slot.source.colorName}-原始素材（备份）`,
                     targetBounds: flatImageBounds,
                     targetFit: 'contain',
                     targetAnchor: plan.imagePlacement.anchor,
-                    layerOrder: 'front',
-                    visible: false
-                }, '原始素材备份置入失败');
-                if (!flatBackupLayerId) {
+                    layerOrder: 'front'
+                });
+                if (!flatBackupPlacement) {
                     return fail('place-flat-source-backup', `“${slot.source.colorName}”原始素材备份置入或入组失败。`);
                 }
-                const flatShadowLayerId = await placeIntoGroup('place-flat-shadow', {
-                    filePath: earlyRetouchSource.shadowPath,
-                    name: `${slot.source.colorName}-原影`,
-                    targetBounds: flatImageBounds,
-                    targetFit: 'contain',
-                    targetAnchor: plan.imagePlacement.anchor,
-                    layerOrder: 'front'
-                }, '原影置入失败');
-                if (!flatShadowLayerId) {
-                    return fail('place-flat-shadow', `“${slot.source.colorName}”原影层置入或入组失败。`);
+                const hideFlatBackupResult = await callTool('setLayerVisibility', {
+                    layerId: flatBackupPlacement.layerId,
+                    visible: false
+                }, 'hide-flat-source-backup', sourceId);
+                if (!hideFlatBackupResult?.success) {
+                    return fail('hide-flat-source-backup', `“${slot.source.colorName}”原始素材备份无法隐藏。`);
                 }
-                const flatProductLayerId = await placeIntoGroup('place-flat-product', {
+                const flatProductPlacement = await placeIntoGroup('place-flat-product', {
                     filePath: earlyRetouchSource.productPath,
-                    name: `${slot.source.colorName}-形态统一主体`,
+                    sourcePath: earlyRetouchSource.productPath,
+                    sourceAssetId: sourceId,
+                    sourceChecksum: earlyRetouchSource.productChecksum,
+                    sourceByteLength: earlyRetouchSource.productByteLength,
+                    name: `${slot.source.colorName}-统一尺度主体`,
                     targetBounds: flatImageBounds,
                     targetFit: 'contain',
                     targetAnchor: plan.imagePlacement.anchor,
                     layerOrder: 'front'
-                }, '主体置入失败');
-                if (!flatProductLayerId) {
-                    return fail('place-flat-product', `“${slot.source.colorName}”形态统一主体置入或入组失败。`);
+                });
+                if (!flatProductPlacement) {
+                    return fail('place-flat-product', `“${slot.source.colorName}”统一尺度主体置入或入组失败。`);
                 }
-                const flatNeutralLayerId = await placeIntoGroup('place-flat-neutral-gray', {
-                    filePath: earlyRetouchSource.neutralGrayPath,
-                    name: `${slot.source.colorName}-中性灰光影修正`,
-                    targetBounds: flatImageBounds,
-                    targetFit: 'contain',
-                    targetAnchor: plan.imagePlacement.anchor,
-                    layerOrder: 'front'
-                }, '中性灰置入失败');
-                if (!flatNeutralLayerId) {
-                    return fail('place-flat-neutral-gray', `“${slot.source.colorName}”中性灰修正层置入或入组失败。`);
-                }
-                const flatBlendResult = await callTool('setBlendMode', {
-                    layerId: flatNeutralLayerId,
-                    blendMode: 'softLight'
-                }, 'flat-neutral-soft-light', sourceId);
-                if (!flatBlendResult?.success) {
-                    return fail('flat-neutral-soft-light', toolError(flatBlendResult, `“${slot.source.colorName}”中性灰层无法设为柔光。`));
-                }
-                const flatClipResult = await callTool('createClippingMask', {
-                    layerId: flatNeutralLayerId
-                }, 'flat-clip-neutral-gray', sourceId);
-                const flatClipReadback = flatClipResult?.success
-                    ? await callTool('getClippingMaskInfo', { layerId: flatNeutralLayerId }, 'flat-verify-neutral-clipping', sourceId)
-                    : flatClipResult;
-                const flatNeutralVerified = isSkuColorCardClippingReadbackVerified(flatClipReadback);
-                if (!flatNeutralVerified) {
-                    return fail('flat-verify-neutral-clipping', `“${slot.source.colorName}”中性灰未读回为剪切到主体的有效剪切关系。`);
-                }
+                const flatProductLayerId = flatProductPlacement.layerId;
 
                 const flatTextResult = await callTool('createTextLayer', {
                     content: slot.source.colorName,
@@ -952,6 +1294,27 @@ export async function executeSkuColorCardStrategy(
                 if (!flatProductVerified) {
                     return fail('verify-flat-product-smart-object', toolError(flatProductInfo, `“${slot.source.colorName}”主体未读回为可编辑智能对象。`));
                 }
+                const flatProductBounds = await callTool('getLayerBounds', {
+                    layerId: flatProductLayerId,
+                    includeEffects: true
+                }, 'verify-flat-product-bounds', sourceId);
+                const flatPlacementReceipt = buildUniformScalePlacementReceiptFromToolResults({
+                    source: earlyRetouchSource,
+                    sourceId,
+                    placedLayerId: flatProductLayerId,
+                    documentId: mainDocumentId,
+                    expectedDocumentId: mainDocumentId,
+                    targetBounds: flatImageBounds,
+                    placeResult: flatProductPlacement.placeResult,
+                    smartObjectInfo: flatProductInfo,
+                    layerBoundsResult: flatProductBounds
+                });
+                if (!flatPlacementReceipt.verified) {
+                    return fail(
+                        'verify-flat-product-placement',
+                        `“${slot.source.colorName}”统一尺度主体的来源身份、真实边界、比例或 alpha 安全收据未通过，已停止保存。`
+                    );
+                }
 
                 preparedCards.push({
                     sourceId,
@@ -962,19 +1325,21 @@ export async function executeSkuColorCardStrategy(
                     smartObjectLayerId: flatProductLayerId,
                     imageLayerId: flatProductLayerId,
                     labelTextLayerId: flatTextLayerId,
-                    clippingVerified: flatNeutralVerified,
+                    // flat 平铺没有剪切关系要求；必须明确记 not_applicable，不能冒充读回通过。
+                    clippingRequired: false,
+                    clippingVerified: false,
                     smartObjectVerified: flatProductVerified,
                     labelTextFitVerified: flatTextFitResult.verified,
-                    sourceBackupLayerId: flatBackupLayerId,
-                    shadowLayerId: flatShadowLayerId,
-                    neutralGrayLayerId: flatNeutralLayerId,
-                    retouchLayersVerified: flatNeutralVerified,
+                    sourceBackupLayerId: flatBackupPlacement.layerId,
+                    uniformScaleAssetApplied: true,
+                    uniformScalePlacementVerified: flatPlacementReceipt.verified,
+                    uniformScalePlacementReceipt: flatPlacementReceipt,
                     retouchAssetReportPath: retouchReport?.reportPath
                 });
                 emitSkillStep(callbacks, {
                     kind: 'verification',
                     title: `“${slot.source.colorName}”纯底色卡组已就绪`,
-                    detail: '主体件与原影件并列平铺（无卡片壳），中性灰剪切主体，色名文字已入组。',
+                    detail: '统一尺度主体平铺（无卡片壳），色名文字已入组；阴影与光影修正属下一阶段。',
                     status: 'success',
                     percent: 40
                 });
@@ -1026,16 +1391,20 @@ export async function executeSkuColorCardStrategy(
                 (source) => source.sourceId === sourceId
             );
             let sourceBackupLayerId: number | undefined;
-            let shadowLayerId: number | undefined;
-            let neutralGrayLayerId: number | undefined;
             let imageLayerId: number;
             let clippingVerified = false;
-            let retouchLayersVerified: boolean | undefined;
             let subjectFit: SkuColorCardSubjectFit | undefined;
+            let uniformScalePlacementReceipt: SkuColorCardUniformScalePlacementReceipt | undefined;
 
-            // card + studio_retouch_required 仍保持 Agent 选择的 card 外壳；精修结果只提供
-            // 主体、原影和中性灰资产，不得把 presentationMode 改成 flat。
+            // card + studio_retouch_required 仍保持 Agent 选择的 card 外壳；离线处理只提供
+            // 等比缩放统一尺度的主体资产，不得把 presentationMode 改成 flat。
             if (isPreparedSkuRetouchSource(retouchSource)) {
+                if (!hasUniformScaleAssetIdentity(retouchSource)) {
+                    return fail(
+                        'blocked_retouch_asset_identity_incomplete',
+                        `“${slot.source.colorName}”统一尺度资产缺少摘要、尺寸或 alpha 安全收据，不能写入 Photoshop。`
+                    );
+                }
                 const retouchedCardImageBounds = buildSubjectPlacementBounds({
                     cardBounds: {
                         x: internalGeometry.image.x,
@@ -1066,31 +1435,13 @@ export async function executeSkuColorCardStrategy(
                     return fail('hide-source-backup', toolError(hideBackupResult, `“${slot.source.colorName}”原始素材备份无法隐藏。`));
                 }
 
-                const shadowResult = await callTool('placeImage', {
-                    filePath: retouchSource.shadowPath,
-                    name: `${slot.source.colorName}-原影`,
-                    targetBounds: retouchedCardImageBounds,
-                    targetFit: 'contain',
-                    targetAnchor: plan.imagePlacement.anchor,
-                    layerOrder: 'front'
-                }, 'place-retouched-shadow', sourceId);
-                shadowLayerId = readPositiveId(shadowResult, ['layerId', 'placedLayerId', 'createdLayerId']);
-                if (!shadowResult?.success || !shadowLayerId) {
-                    return fail('place-retouched-shadow', toolError(shadowResult, `“${slot.source.colorName}”原影层置入失败。`));
-                }
-                const shadowClipResult = await callTool('createClippingMask', {
-                    layerId: shadowLayerId
-                }, 'clip-retouched-shadow', sourceId);
-                const shadowClipReadback = shadowClipResult?.success
-                    ? await callTool('getClippingMaskInfo', { layerId: shadowLayerId }, 'verify-retouched-shadow-clipping', sourceId)
-                    : shadowClipResult;
-                if (!isSkuColorCardClippingReadbackVerified(shadowClipReadback)) {
-                    return fail('verify-retouched-shadow-clipping', toolError(shadowClipReadback, `“${slot.source.colorName}”原影层剪切关系未通过读回。`));
-                }
-
                 const productResult = await callTool('placeImage', {
                     filePath: retouchSource.productPath,
-                    name: `${slot.source.colorName}-形态统一主体`,
+                    sourcePath: retouchSource.productPath,
+                    sourceAssetId: sourceId,
+                    sourceChecksum: retouchSource.productChecksum,
+                    sourceByteLength: retouchSource.productByteLength,
+                    name: `${slot.source.colorName}-统一尺度主体`,
                     targetBounds: retouchedCardImageBounds,
                     targetFit: 'contain',
                     targetAnchor: plan.imagePlacement.anchor,
@@ -1098,7 +1449,7 @@ export async function executeSkuColorCardStrategy(
                 }, 'place-retouched-product', sourceId);
                 imageLayerId = readPositiveId(productResult, ['layerId', 'placedLayerId', 'createdLayerId']) || 0;
                 if (!productResult?.success || !imageLayerId) {
-                    return fail('place-retouched-product', toolError(productResult, `“${slot.source.colorName}”形态统一主体置入失败。`));
+                    return fail('place-retouched-product', toolError(productResult, `“${slot.source.colorName}”统一尺度主体置入失败。`));
                 }
                 const productClipResult = await callTool('createClippingMask', {
                     layerId: imageLayerId
@@ -1110,39 +1461,29 @@ export async function executeSkuColorCardStrategy(
                 if (!clippingVerified) {
                     return fail('verify-retouched-product-clipping', toolError(productClipReadback, `“${slot.source.colorName}”主体层剪切关系未通过读回。`));
                 }
-
-                const neutralGrayResult = await callTool('placeImage', {
-                    filePath: retouchSource.neutralGrayPath,
-                    name: `${slot.source.colorName}-中性灰光影修正`,
+                const productSmartObjectInfo = await callTool('getSmartObjectInfo', {
+                    layerId: imageLayerId
+                }, 'verify-retouched-product-smart-object', sourceId);
+                const productBoundsResult = await callTool('getLayerBounds', {
+                    layerId: imageLayerId,
+                    includeEffects: true
+                }, 'verify-retouched-product-bounds', sourceId);
+                uniformScalePlacementReceipt = buildUniformScalePlacementReceiptFromToolResults({
+                    source: retouchSource,
+                    sourceId,
+                    placedLayerId: imageLayerId,
+                    documentId: internalDocumentId,
+                    expectedDocumentId: internalDocumentId,
                     targetBounds: retouchedCardImageBounds,
-                    targetFit: 'contain',
-                    targetAnchor: plan.imagePlacement.anchor,
-                    layerOrder: 'front'
-                }, 'place-neutral-gray-correction', sourceId);
-                neutralGrayLayerId = readPositiveId(neutralGrayResult, ['layerId', 'placedLayerId', 'createdLayerId']);
-                if (!neutralGrayResult?.success || !neutralGrayLayerId) {
-                    return fail('place-neutral-gray-correction', toolError(neutralGrayResult, `“${slot.source.colorName}”中性灰修正层置入失败。`));
-                }
-                const blendResult = await callTool('setBlendMode', {
-                    layerId: neutralGrayLayerId,
-                    blendMode: 'softLight'
-                }, 'set-neutral-gray-soft-light', sourceId);
-                if (!blendResult?.success) {
-                    return fail('set-neutral-gray-soft-light', toolError(blendResult, `“${slot.source.colorName}”中性灰层无法设为柔光。`));
-                }
-                const neutralClipResult = await callTool('createClippingMask', {
-                    layerId: neutralGrayLayerId
-                }, 'clip-neutral-gray-correction', sourceId);
-                const neutralClipReadback = neutralClipResult?.success
-                    ? await callTool('getClippingMaskInfo', { layerId: neutralGrayLayerId }, 'verify-neutral-gray-clipping', sourceId)
-                    : neutralClipResult;
-                const neutralProperties = await callTool('getLayerProperties', {
-                    layerId: neutralGrayLayerId
-                }, 'verify-neutral-gray-properties', sourceId);
-                retouchLayersVerified = isSkuColorCardClippingReadbackVerified(neutralClipReadback)
-                    && isSoftLightVerified(neutralProperties);
-                if (!retouchLayersVerified) {
-                    return fail('verify-neutral-gray-layer', '中性灰修正层未同时读回为柔光模式和有效剪切关系。');
+                    placeResult: productResult,
+                    smartObjectInfo: productSmartObjectInfo,
+                    layerBoundsResult: productBoundsResult
+                });
+                if (!uniformScalePlacementReceipt.verified) {
+                    return fail(
+                        'verify-retouched-product-placement',
+                        `“${slot.source.colorName}”统一尺度主体的来源身份、真实边界、比例或 alpha 安全收据未通过，已停止保存智能对象。`
+                    );
                 }
             } else {
                 const imageResult = await callTool('placeImage', {
@@ -1313,14 +1654,15 @@ export async function executeSkuColorCardStrategy(
                 labelBackgroundLayerId,
                 labelTextLayerId,
                 clippingVerified,
+                clippingRequired: true,
                 smartObjectVerified,
                 labelTextFitVerified: textFitResult.verified,
                 subjectFit,
                 sourceBackupLayerId,
-                shadowLayerId,
-                neutralGrayLayerId,
-                retouchLayersVerified,
-                retouchAssetReportPath: isPreparedSkuRetouchSource(retouchSource)
+                uniformScaleAssetApplied: Boolean(uniformScalePlacementReceipt),
+                uniformScalePlacementVerified: uniformScalePlacementReceipt?.verified,
+                uniformScalePlacementReceipt,
+                retouchAssetReportPath: uniformScalePlacementReceipt
                     ? retouchReport?.reportPath
                     : undefined
             });
@@ -1440,28 +1782,42 @@ export async function executeSkuColorCardStrategy(
             version: SKU_COLOR_CARD_EXECUTION_REPORT_VERSION,
             status: 'structure_ready',
             outputPath: plan.outputPath,
+            presentationMode: plan.presentationMode,
             documentId: mainDocumentId,
             sourceCount: plan.slots.length,
             preparedCards,
             checks: {
                 sourceCoverage: resolveSourceCoverageStatus(preparedCards, plan.slots.length),
-                smartObjectEditability: preparedCards.every((card) => card.smartObjectVerified) ? 'passed' : 'failed',
-                clippingStructure: preparedCards.every((card) => card.clippingVerified) ? 'passed' : 'failed',
-                labelTextFit: preparedCards.every((card) => card.labelTextFitVerified) ? 'passed' : 'failed',
+                smartObjectEditability: allPreparedCardsSatisfy(
+                    preparedCards,
+                    plan.slots.length,
+                    (card) => card.smartObjectVerified
+                ) ? 'passed' : 'failed',
+                clippingStructure: resolveClippingStructureCheck(preparedCards),
+                labelTextFit: allPreparedCardsSatisfy(
+                    preparedCards,
+                    plan.slots.length,
+                    (card) => card.labelTextFitVerified
+                ) ? 'passed' : 'failed',
                 indexReferenceIsolation,
                 finalStructureReadback: 'passed',
                 visualComposition: 'needs_review',
-                retouchAssets: retouchReport?.workflowStatus === 'prepared'
-                    ? 'passed'
-                    : 'not_applicable',
-                retouchLayerStructure: resolveRetouchLayerStructureCheck(preparedCards)
+                retouchAssets: resolveRetouchAssetsCheck({
+                    cards: preparedCards,
+                    retouchReport,
+                    expectedSourceCount: plan.slots.length
+                }),
+                uniformScaleLayerStructure: resolveUniformScaleLayerStructureCheck(preparedCards)
             },
             retouchReport
         };
-        const retouchedCardCount = preparedCards.filter((card) => card.retouchLayersVerified === true).length;
-        // 主体缩放已在站①由引擎按色卡标准执行；只有主体检测退化成整框的卡片才需要视觉站补做。
+        // 统一尺度卡 = 离线等比缩放资产已置入的卡（跨色尺度由资产画布保证，无需再缩放）。
+        const uniformScaledCardCount = preparedCards.filter((card) => (
+            card.uniformScaleAssetApplied === true && card.uniformScalePlacementVerified === true
+        )).length;
+        // 主体缩放已在站①由引擎按色卡标准执行；只有主体检测退化成整框的原图卡片才需要视觉站补做。
         const cardsNeedingSubjectReview = preparedCards.filter((card) =>
-            card.retouchLayersVerified !== true && card.subjectFit?.subjectResolved !== true
+            card.uniformScaleAssetApplied !== true && card.subjectFit?.subjectResolved !== true
         );
         const subjectReviewCardNames = cardsNeedingSubjectReview.map((card) => card.colorName).join('、');
         const visualAdjustmentHandoff = {
@@ -1478,7 +1834,9 @@ export async function executeSkuColorCardStrategy(
                 labelBackgroundLayerId: card.labelBackgroundLayerId,
                 labelTextLayerId: card.labelTextLayerId,
                 internalCanvas: card.internalCanvas,
-                retouchLayersVerified: card.retouchLayersVerified === true,
+                /** 该卡是否已置入离线等比缩放的统一尺度主体（true 时跨色尺度由资产画布保证）。 */
+                uniformScaleApplied: card.uniformScaleAssetApplied === true
+                    && card.uniformScalePlacementVerified === true,
                 /** 站①引擎主体缩放结果；subjectResolved=false 的卡片商品大小仍是原图状态。 */
                 subjectFit: card.subjectFit,
                 /**
@@ -1488,7 +1846,7 @@ export async function executeSkuColorCardStrategy(
                  * subjectFillRatio:<本卡片判断>, anchor:<本卡片判断>)
                  * 重试一次，或按画面用 transformLayer/moveLayer 小步调整。
                  */
-                subjectFitPendingVisualFix: card.retouchLayersVerified !== true
+                subjectFitPendingVisualFix: card.uniformScaleAssetApplied !== true
                     && card.subjectFit?.subjectResolved !== true
             })),
             reviewQuestions: [
@@ -1502,7 +1860,7 @@ export async function executeSkuColorCardStrategy(
                 ...(cardsNeedingSubjectReview.length > 0
                     ? [`${subjectReviewCardNames} 的主体检测退化成整框、商品大小仍是原图状态：请先看画面确认主体位置，再按本卡片判断显式提供 subjectFillRatio 与 anchor 调用 fitLayerSubjectToRegion（method:"smart"）重试一次；仍失败就按画面用 transformLayer/moveLayer 小步调整，不要重复阻塞调用。`]
                     : []),
-                '已有「形态统一主体 / 原影 / 中性灰光影修正」图层的卡片只在画面确实需要时做小步调整，不重复运行旧形态位移工具。',
+                '已置入「统一尺度主体」的卡片跨色大小由离线资产保证，只在画面确实需要时做小步调整，不重复执行主体缩放。',
                 '只有画面确实需要修改时才执行一次小步调整；每次调整后重新取得快照复核，再保存关闭智能对象并返回 SKU 主文档。',
                 '同一对象的写后验收未通过时停止重复动作，改用其他方法或如实说明阻塞原因。',
                 '全部色卡复核后保存主文档，并读取最终画面与结构；视觉未复核时不得声明设计完成。'
@@ -1511,7 +1869,7 @@ export async function executeSkuColorCardStrategy(
         emitSkillStep(callbacks, {
             kind: 'observation',
             title: 'SKU 色卡结构草稿已生成',
-            detail: `已创建 ${preparedCards.length} 个可编辑颜色卡，其中 ${retouchedCardCount} 个包含形态、原影和中性灰精修层；下一步需要 Agent 依据真实快照完成视觉验收。`,
+            detail: `已创建 ${preparedCards.length} 个可编辑颜色卡，其中 ${uniformScaledCardCount} 个已置入等比缩放统一尺度主体；下一步需要 Agent 依据真实快照完成视觉验收。`,
             status: 'running',
             percent: 88
         });
@@ -1525,9 +1883,9 @@ export async function executeSkuColorCardStrategy(
                 ? ['getAnnotatedSnapshot', 'getCanvasSnapshot', 'editSmartObjectContents', 'transformLayer']
                 : ['getAnnotatedSnapshot', 'getCanvasSnapshot', 'editSmartObjectContents', 'fitLayerSubjectToRegion', 'getSubjectBounds', 'transformLayer'],
             nextRequiredToolReason: cardsNeedingSubjectReview.length === 0
-                ? '所有卡片的结构与主体大小已由引擎写入并读回（原图卡片按色卡标准完成主体缩放，精修卡片形态已归位）；请查看真实画面，比较各颜色的主体大小、重心、受光和裁切，只在有明确视觉问题时小步修订，不重复执行主体缩放。'
+                ? '所有卡片的结构与主体大小已由引擎写入并读回（原图卡片按色卡标准完成主体缩放，统一尺度卡片由离线资产保证跨色一致）；请查看真实画面，比较各颜色的主体大小、重心、受光和裁切，只在有明确视觉问题时小步修订，不重复执行主体缩放。'
                 : `${subjectReviewCardNames} 的主体检测退化成整框、商品大小仍是原图状态；请先看真实画面，再只对这些卡片按画面显式提供 subjectFillRatio 与 anchor 使用 fitLayerSubjectToRegion（method:"smart"），或用 transformLayer 小步修正，其余卡片不要重复缩放。`,
-            message: `SKU 色卡可编辑结构已生成：${preparedCards.length} 个颜色，${retouchedCardCount} 个已写入形态、原影和中性灰精修层，原图卡片主体已按 Agent 声明的 ${Math.round(plan.imagePlacement.subjectFillRatio * 100)}% 占比与 ${plan.imagePlacement.anchor} 锚点完成几何落位${cardsNeedingSubjectReview.length > 0 ? `（${subjectReviewCardNames} 主体检测退化成整框，大小待视觉修正）` : ''}，已保存到 ${plan.outputPath}；仍需 Agent 根据真实快照完成最终视觉验收。${preparedCards.some((card) => card.colorNameSource !== 'provided') ? '部分标签来自文件名或未经证实的候选，真实颜色名仍待确认。' : ''}`,
+            message: `SKU 色卡可编辑结构已生成：${preparedCards.length} 个颜色，${uniformScaledCardCount} 个已置入等比缩放统一尺度主体（保版型不变形；阴影与光影修正属下一阶段），原图卡片主体已按 Agent 声明的 ${Math.round(plan.imagePlacement.subjectFillRatio * 100)}% 占比与 ${plan.imagePlacement.anchor} 锚点完成几何落位${cardsNeedingSubjectReview.length > 0 ? `（${subjectReviewCardNames} 主体检测退化成整框，大小待视觉修正）` : ''}，已保存到 ${plan.outputPath}；仍需 Agent 根据真实快照完成最终视觉验收。${preparedCards.some((card) => card.colorNameSource !== 'provided') ? '部分标签来自文件名或未经证实的候选，真实颜色名仍待确认。' : ''}`,
             toolResults: observations,
             data: {
                 plan,
@@ -1540,15 +1898,15 @@ export async function executeSkuColorCardStrategy(
                 visualAdjustmentHandoff,
                 agentReActContinuation: {
                     status: 'needs_decision',
-                    summary: 'SKU 色卡可编辑结构与可用精修层已生成，但轮廓、光影、原影、重心和裁切尚未由 Agent 根据真实画面确认。',
+                    summary: 'SKU 色卡可编辑结构与统一尺度主体已生成，但主体大小、重心和裁切尚未由 Agent 根据真实画面确认。',
                     details: [
                         `已创建 ${preparedCards.length} 个可编辑色卡智能对象。`,
-                        `其中 ${retouchedCardCount} 个已写入形态统一主体、独立原影和中性灰光影修正层。`,
+                        `其中 ${uniformScaledCardCount} 个已置入等比缩放统一尺度主体（阴影与光影修正属下一阶段）。`,
                         '色名文字已按 Photoshop 真实 bounds 完成宽度适配和水平/垂直居中。',
                         '已取得 SKU 主文档写后视觉快照。'
                     ],
                     warnings: [
-                        '当前只完成结构和离线精修资产写入；没有通过真实快照视觉验收，不得直接宣称专业精修完成。',
+                        '当前只完成结构和统一尺度主体写入（阴影与光影修正属下一阶段）；没有通过真实快照视觉验收，不得直接宣称色卡完成。',
                         ...(preparedCards.some((card) => card.colorNameSource !== 'provided')
                             ? ['部分色名只是文件名或模型/上游推断生成的 provisional 资产标签；确认真实颜色名之前不得宣称色名准确性通过。']
                             : []),

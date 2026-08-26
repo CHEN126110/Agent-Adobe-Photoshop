@@ -16,6 +16,10 @@
  */
 
 import { normalizeStreamTextChunk } from '../../shared/stream-text-normalizer';
+import {
+    isProviderStreamOutputBlocked,
+    isProviderStreamOutputIncomplete
+} from '../../shared/provider-stream-completion';
 
 // ==================== 类型定义 ====================
 
@@ -30,6 +34,7 @@ export interface StreamChunk {
             inputTokens: number;
             outputTokens: number;
         };
+        stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stream_incomplete' | 'content_blocked';
     };
     error?: string;
 }
@@ -148,24 +153,34 @@ export function streamChat(
         };
     }
     
-    // 存储回调
-    activeCallbacks.set(requestId, callbacks);
-    
     // 创建 Promise 用于等待完成
+    let streamSettled = false;
+    let rejectAborted: (() => void) | null = null;
+    const wrappedCallbacks: StreamCallbacks = { ...callbacks };
     const promise = new Promise<StreamChunk['fullResponse'] | null>((resolve, reject) => {
-        const originalOnDone = callbacks.onDone;
-        const originalOnError = callbacks.onError;
-        
-        callbacks.onDone = (response) => {
-            originalOnDone?.(response);
+        wrappedCallbacks.onDone = (response) => {
+            if (streamSettled) return;
+            streamSettled = true;
+            callbacks.onDone?.(response);
             resolve(response || null);
         };
-        
-        callbacks.onError = (error) => {
-            originalOnError?.(error);
+        wrappedCallbacks.onError = (error) => {
+            if (streamSettled) return;
+            streamSettled = true;
+            callbacks.onError?.(error);
             reject(new Error(error));
         };
+        rejectAborted = () => {
+            if (streamSettled) return;
+            streamSettled = true;
+            const error = new Error('模型流式请求已取消') as Error & { code?: string };
+            error.name = 'AbortError';
+            error.code = 'stream_aborted';
+            reject(error);
+        };
     });
+
+    activeCallbacks.set(requestId, wrappedCallbacks);
     
     // 发起请求
     designEcho.chatStream({
@@ -175,17 +190,18 @@ export function streamChat(
         options
     }).then((result: { success: boolean; error?: string }) => {
         if (!result.success) {
-            callbacks.onError?.(result.error || '请求失败');
+            wrappedCallbacks.onError?.(result.error || '请求失败');
             activeCallbacks.delete(requestId);
         }
     }).catch((error: Error) => {
-        callbacks.onError?.(error.message);
+        wrappedCallbacks.onError?.(error.message);
         activeCallbacks.delete(requestId);
     });
     
     return {
         requestId,
         abort: async () => {
+            rejectAborted?.();
             activeCallbacks.delete(requestId);
             if (designEcho.abortStream) {
                 await designEcho.abortStream(requestId);
@@ -208,7 +224,6 @@ export async function streamChatAsync(
         onThinkingProgress?: (thinking: string, chunk: string) => void;
     }
 ): Promise<{ text: string; thinking?: string }> {
-    let fullContent = '';
     let fullThinking = '';
     const { onProgress, onThinkingProgress, ...streamOptions } = options || {};
     const timeoutMs = Number(options?.timeoutMs || 0);
@@ -246,16 +261,13 @@ export async function streamChatAsync(
         {
             onContent: (content) => {
                 if (!content) return;
-                fullContent += content;
                 refreshStreamInactivityTimeout();
-                onProgress?.(fullContent, content);
             },
             onThinking: (thinking) => {
                 const normalized = normalizeStreamTextChunk(fullThinking, thinking);
                 fullThinking = normalized.fullText;
                 if (normalized.deltaText) {
                     refreshStreamInactivityTimeout();
-                    onThinkingProgress?.(fullThinking, normalized.deltaText);
                 }
             }
         },
@@ -270,9 +282,25 @@ export async function streamChatAsync(
                 ? Promise.race([handle.promise, timeoutPromise])
                 : handle.promise
         );
+        if (!response) {
+            throw new Error('模型流没有返回明确完成状态，已丢弃未确认的部分内容。');
+        }
+        if (response && isProviderStreamOutputIncomplete(response.stopReason)) {
+            throw new Error('模型流没有完整结束，已丢弃未确认的部分内容。');
+        }
+        if (response && isProviderStreamOutputBlocked(response.stopReason)) {
+            throw new Error('模型服务没有返回可交付的完整内容。');
+        }
+        const committedText = response.text;
+        const committedThinking = response.thinking || fullThinking || undefined;
+        // Provider 原始内容增量不进入 Message Store；只提交完整终态返回的权威清洗文本。
+        if (committedText) onProgress?.(committedText, committedText);
+        if (committedThinking) {
+            onThinkingProgress?.(committedThinking, committedThinking);
+        }
         return {
-            text: response?.text || fullContent,
-            thinking: response?.thinking || fullThinking || undefined
+            text: committedText,
+            thinking: committedThinking
         };
     } finally {
         streamSettled = true;

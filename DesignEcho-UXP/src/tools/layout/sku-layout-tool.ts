@@ -11,6 +11,7 @@
  */
 
 import { Tool, ToolExecutionContext, ToolResult, ToolSchema } from '../types';
+import { saveEditableDocumentSnapshotInModal } from '../canvas/save-document';
 import { getDirectExportTarget, saveAsJPEGViaJSX } from './export-folder-service';
 import { normalizePhotoshopToolError } from '../../core/tool-error-normalizer';
 import {
@@ -2191,6 +2192,73 @@ function normalizeSkuNoteColorRegions(combos: string[][] | undefined): string[][
     return regions;
 }
 
+interface SkuLayoutDeliveryPlanItem {
+    itemId: string;
+    rasterOutputPath: string;
+    editableOutputPath: string;
+}
+
+interface SkuLayoutDeliveryPlan {
+    version: 'sku-layout-delivery-plan/v1';
+    items: SkuLayoutDeliveryPlanItem[];
+}
+
+function normalizeSkuDeliveryPath(value: unknown): string {
+    return String(value || '')
+        .trim()
+        .replace(/\//g, '\\')
+        .replace(/\\+/g, '\\')
+        .toLowerCase();
+}
+
+function isAbsoluteSkuDeliveryPath(value: string): boolean {
+    return /^[a-z]:\\/i.test(value) || /^\\\\[^\\]+\\[^\\]+/i.test(value);
+}
+
+function readSkuLayoutDeliveryPlan(
+    value: unknown,
+    expectedItemCount: number
+): SkuLayoutDeliveryPlan | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const candidate = value as Record<string, unknown>;
+    if (candidate.version !== 'sku-layout-delivery-plan/v1'
+        || !Array.isArray(candidate.items)
+        || candidate.items.length !== expectedItemCount
+        || expectedItemCount <= 0) {
+        return undefined;
+    }
+    const items: SkuLayoutDeliveryPlanItem[] = [];
+    const identities = new Set<string>();
+    const paths = new Set<string>();
+    for (const rawItem of candidate.items) {
+        if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) return undefined;
+        const item = rawItem as Record<string, unknown>;
+        const itemId = String(item.itemId || '').trim();
+        const rasterOutputPath = String(item.rasterOutputPath || '').trim();
+        const editableOutputPath = String(item.editableOutputPath || '').trim();
+        const rasterPathKey = normalizeSkuDeliveryPath(rasterOutputPath);
+        const editablePathKey = normalizeSkuDeliveryPath(editableOutputPath);
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(itemId)
+            || !isAbsoluteSkuDeliveryPath(rasterPathKey)
+            || !isAbsoluteSkuDeliveryPath(editablePathKey)
+            || !/\.jpe?g$/i.test(rasterOutputPath)
+            || !/\.psb$/i.test(editableOutputPath)
+            || /(?:^|\\)\.\.(?:\\|$)/.test(rasterPathKey)
+            || /(?:^|\\)\.\.(?:\\|$)/.test(editablePathKey)
+            || identities.has(itemId)
+            || paths.has(rasterPathKey)
+            || paths.has(editablePathKey)
+            || rasterPathKey === editablePathKey) {
+            return undefined;
+        }
+        identities.add(itemId);
+        paths.add(rasterPathKey);
+        paths.add(editablePathKey);
+        items.push({ itemId, rasterOutputPath, editableOutputPath });
+    }
+    return { version: 'sku-layout-delivery-plan/v1', items };
+}
+
 /**
  * SKU 排版工具
  */
@@ -2242,6 +2310,36 @@ export class SKULayoutTool implements Tool {
                 outputDir: {
                     type: 'string',
                     description: '输出目录路径'
+                },
+                editableOutputDir: {
+                    type: 'string',
+                    description: '可选的可编辑 PSD/PSB 配对输出根目录；只在最终几何 QA 通过后、清理复制图层前保存'
+                },
+                deliveryPlan: {
+                    type: 'object',
+                    description: '由 SKU Skill 在执行前冻结的逐行 JPG/PSB 精确路径与 itemId；生产结果必须逐项匹配',
+                    properties: {
+                        version: {
+                            type: 'string',
+                            enum: ['sku-layout-delivery-plan/v1'],
+                            description: '冻结交付计划协议版本'
+                        },
+                        items: {
+                            type: 'array',
+                            description: '与 combos 同序的一组精确交付项',
+                            items: {
+                                type: 'object',
+                                description: '一行 SKU 的 JPG/PSB 配对目标',
+                                properties: {
+                                    itemId: { type: 'string', description: '冻结清单中的逐行身份' },
+                                    rasterOutputPath: { type: 'string', description: '本行 JPG 绝对路径' },
+                                    editableOutputPath: { type: 'string', description: '本行 PSB 绝对路径' }
+                                },
+                                required: ['itemId', 'rasterOutputPath', 'editableOutputPath']
+                            }
+                        }
+                    },
+                    required: ['version', 'items']
                 },
                 autoLayoutWithoutPlaceholders: {
                     type: 'boolean',
@@ -2304,6 +2402,8 @@ export class SKULayoutTool implements Tool {
         skuDocName?: string;
         templateDocName?: string;
         outputDir?: string;
+        editableOutputDir?: string;
+        deliveryPlan?: SkuLayoutDeliveryPlan;
         autoLayoutWithoutPlaceholders?: boolean;
         expectedItemCount?: number;
         regionCapacities?: number[];
@@ -2358,6 +2458,8 @@ export class SKULayoutTool implements Tool {
                         skuDocName: params.skuDocName,
                         templateDocName: params.templateDocName,
                         outputDir: params.outputDir,
+                        editableOutputDir: params.editableOutputDir,
+                        deliveryPlan: params.deliveryPlan,
                         format: params.outputFormat || 'jpg',
                         quality: params.quality || 12,
                         autoLayoutWithoutPlaceholders: params.autoLayoutWithoutPlaceholders,
@@ -2371,6 +2473,8 @@ export class SKULayoutTool implements Tool {
                     // ★ 自选备注专用：直接导出当前文档，不复制图层
                     return await this.exportNoteTemplate({
                         outputDir: params.outputDir,
+                        editableOutputDir: params.editableOutputDir,
+                        deliveryPlan: params.deliveryPlan,
                         format: params.outputFormat || 'jpg',
                         quality: params.quality || 12,
                         noteFileName: params.noteFilePrefix || '自选备注'
@@ -2388,6 +2492,8 @@ export class SKULayoutTool implements Tool {
                         skuDocName: params.skuDocName,
                         templateDocName: params.templateDocName,
                         outputDir: params.outputDir,
+                        editableOutputDir: params.editableOutputDir,
+                        deliveryPlan: params.deliveryPlan,
                         format: params.outputFormat || 'jpg',
                         quality: params.quality || 12,
                         autoLayoutWithoutPlaceholders: params.autoLayoutWithoutPlaceholders,
@@ -2454,6 +2560,16 @@ export class SKULayoutTool implements Tool {
                     revision: 'sku-combo-export-naming/v1',
                     usesColorComboAsFileName: true,
                     keepsExecutionOrderOutOfFileName: true
+                },
+                pairedEditableDelivery: {
+                    revision: 'sku-paired-editable-delivery/v1',
+                    deliveryPlanVersion: 'sku-layout-delivery-plan/v1',
+                    actions: ['execute', 'arrangeDynamic'],
+                    savesAfterGeometryQa: true,
+                    savesBeforeCopiedLayerCleanup: true,
+                    returnsEditableDocumentArtifact: true,
+                    returnsStructureReadback: true,
+                    bindsRasterAndEditableHistory: true
                 },
                 orderedPlaceholders: {
                     revision: 'sku-ordered-placeholder-recognition/v4',
@@ -2951,6 +3067,8 @@ export class SKULayoutTool implements Tool {
         skuDocName?: string;
         templateDocName?: string;
         outputDir?: string;
+        editableOutputDir?: string;
+        deliveryPlan?: SkuLayoutDeliveryPlan;
         format: string;
         quality: number;
         autoLayoutWithoutPlaceholders?: boolean;
@@ -2982,6 +3100,15 @@ export class SKULayoutTool implements Tool {
         const totalColors = orderedNoteColors.length;
         if (totalColors === 0) {
             return { success: false, error: '颜色列表为空', data: null };
+        }
+        const deliveryPlan = config.deliveryPlan
+            ? readSkuLayoutDeliveryPlan(config.deliveryPlan, 1)
+            : undefined;
+        if (config.deliveryPlan && !deliveryPlan) {
+            return { success: false, error: '自选备注交付计划无效或与组合数量不一致。', data: null };
+        }
+        if (config.editableOutputDir && !deliveryPlan) {
+            return { success: false, error: '保存可编辑自选备注必须提供冻结的逐项交付计划。', data: null };
         }
         const noteAutoLayoutPlans: any[] = [];
         const noteLayerIdsForCleanup: number[] = [];
@@ -3564,13 +3691,30 @@ export class SKULayoutTool implements Tool {
             if (!allNoteQaReady) {
                 throw new Error('自选备注最终实时边界 QA 未达到 ready，已停止导出。');
             }
+            const uniqueNoteLayerIds = Array.from(new Set(notePlannerLayerIds));
+            const copiedLayerNames = uniqueNoteLayerIds
+                .map((layerId) => String(findLayerById(noteTemplateDoc?.layers, layerId)?.name || '').trim())
+                .filter(Boolean);
+            if (uniqueNoteLayerIds.length !== orderedNoteColors.length
+                || copiedLayerNames.length !== uniqueNoteLayerIds.length) {
+                throw new Error('自选备注可编辑结构无法绑定全部复制颜色组。');
+            }
 
             // 5. 导出到临时目录
             const exportResult = await this.exportNoteTemplate({
                 outputDir: config.outputDir,
+                editableOutputDir: config.editableOutputDir,
+                deliveryPlan: config.deliveryPlan,
                 format: config.format,
                 quality: config.quality,
-                noteFileName: config.noteFileName
+                noteFileName: config.noteFileName,
+                structureReadback: {
+                    combination: [...orderedNoteColors],
+                    copiedLayerIds: uniqueNoteLayerIds,
+                    copiedLayerNames,
+                    flattened: false,
+                    autoLayoutQaStatus: 'ready'
+                }
             });
 
             if (!exportResult.success || exportResult.data?.closeWarning) {
@@ -3652,9 +3796,18 @@ export class SKULayoutTool implements Tool {
      */
     private async exportNoteTemplate(config: {
         outputDir?: string;
+        editableOutputDir?: string;
+        deliveryPlan?: SkuLayoutDeliveryPlan;
         format: string;
         quality: number;
         noteFileName: string;
+        structureReadback?: {
+            combination: string[];
+            copiedLayerIds: number[];
+            copiedLayerNames: string[];
+            flattened: false;
+            autoLayoutQaStatus: 'ready';
+        };
     }): Promise<ToolResult<any>> {
         this.throwIfCancelled();
         // 前置校验
@@ -3676,7 +3829,29 @@ export class SKULayoutTool implements Tool {
         const outputFileName = config.noteFileName;
         const targetDir = `${config.outputDir}\\${templateName}`;
         const fullPath = `${targetDir}\\${outputFileName}.jpg`;
+        const deliveryPlan = config.deliveryPlan
+            ? readSkuLayoutDeliveryPlan(config.deliveryPlan, 1)
+            : undefined;
+        const deliveryItem = deliveryPlan?.items[0];
+        const editablePath = config.editableOutputDir
+            ? `${config.editableOutputDir}\\${templateName}\\${outputFileName}.psb`
+            : '';
+        if (config.deliveryPlan && !deliveryPlan) {
+            return { success: false, error: '自选备注冻结交付计划无效。', data: null };
+        }
+        if (deliveryItem
+            && (normalizeSkuDeliveryPath(deliveryItem.rasterOutputPath) !== normalizeSkuDeliveryPath(fullPath)
+                || normalizeSkuDeliveryPath(deliveryItem.editableOutputPath) !== normalizeSkuDeliveryPath(editablePath))) {
+            return { success: false, error: '自选备注实际输出路径与执行前冻结计划不一致。', data: null };
+        }
+        if (config.editableOutputDir && (!deliveryItem || !config.structureReadback)) {
+            return { success: false, error: '自选备注缺少可编辑配对身份或图层结构读回。', data: null };
+        }
 
+        const pairHistoryStateRef = readActiveHistoryStateRef(templateDoc);
+        if (!pairHistoryStateRef) {
+            return { success: false, error: '自选备注导出前无法读取 Photoshop 文档版本。', data: null };
+        }
         // 使用 JSX 脚本保存（通过 token/临时 JSX 完成受控保存）
         const saveSuccess = await saveAsJPEGViaJSX(fullPath, config.quality);
 
@@ -3687,8 +3862,55 @@ export class SKULayoutTool implements Tool {
                 data: null
             };
         }
+        const afterRasterHistoryStateRef = readActiveHistoryStateRef(templateDoc);
+        if (!afterRasterHistoryStateRef
+            || !sameHistoryStateRef(pairHistoryStateRef, afterRasterHistoryStateRef)) {
+            return {
+                success: false,
+                error: '自选备注 JPG 导出后 Photoshop 文档版本发生变化，无法与可编辑 PSB 形成同画面配对。',
+                data: { partialRasterPath: fullPath }
+            };
+        }
 
         console.log(`[SKULayout] ✅ 导出成功: ${fullPath}`);
+        let editableDocument: any;
+        if (config.editableOutputDir) {
+            try {
+                await core.executeAsModal(async () => {
+                    app.activeDocument = templateDoc;
+                    const savedEditableDocument = await saveEditableDocumentSnapshotInModal({
+                        document: templateDoc,
+                        path: editablePath
+                    });
+                    if (!sameHistoryStateRef(
+                        pairHistoryStateRef,
+                        savedEditableDocument.sourceHistoryStateRef
+                    )) {
+                        throw new Error('JPG 与 PSB 不是同一 Photoshop 文档版本。');
+                    }
+                    editableDocument = {
+                        ...savedEditableDocument,
+                        deliveryItemId: deliveryItem?.itemId,
+                        rasterSourceHistoryStateRef: pairHistoryStateRef,
+                        structureReadback: {
+                            schema: 'sku-editable-structure-readback/v1',
+                            templateName,
+                            ...config.structureReadback
+                        }
+                    };
+                }, { commandName: '保存 SKU 自选备注可编辑源稿' });
+            } catch (error: any) {
+                return {
+                    success: false,
+                    error: `自选备注 JPG 已导出，但同画面可编辑 PSD 保存失败：${error?.message || error}`,
+                    data: {
+                        exportedCount: 0,
+                        expectedExportCount: 1,
+                        partialRasterPath: fullPath
+                    }
+                };
+            }
+        }
 
         // 关闭自选备注模板文档（不保存修改，与组合模板一致）。
         // Photoshop 在 JSX 保存后偶发进入 modal state；导出已经成功时，关闭失败不应覆盖任务结果。
@@ -3713,6 +3935,7 @@ export class SKULayoutTool implements Tool {
                     targetName: `${outputFileName}.jpg`,
                     status: 'exported_jsx'
                 })],
+                ...(editableDocument ? { editableDocuments: [editableDocument] } : {}),
                 outputDir: config.outputDir,
                 closeWarning
             }
@@ -3747,6 +3970,8 @@ export class SKULayoutTool implements Tool {
     private async executeComboLayout(config: {
         combos: string[][];      // 颜色组合列表
         outputDir?: string;      // 输出目录
+        editableOutputDir?: string; // 与每张 raster 同画面的可编辑 PSD 根目录
+        deliveryPlan?: SkuLayoutDeliveryPlan;
         format: string;          // 输出格式
         quality: number;         // JPEG 质量
         skuDocName?: string;     // 明确指定 SKU 素材文档名称
@@ -3763,6 +3988,15 @@ export class SKULayoutTool implements Tool {
         this.throwIfCancelled();
         if (!config.combos || config.combos.length === 0) {
             return { success: false, error: '没有提供颜色组合', data: null };
+        }
+        const deliveryPlan = config.deliveryPlan
+            ? readSkuLayoutDeliveryPlan(config.deliveryPlan, config.combos.length)
+            : undefined;
+        if (config.deliveryPlan && !deliveryPlan) {
+            return { success: false, error: 'SKU 组合交付计划无效或与组合数量不一致。', data: null };
+        }
+        if (config.editableOutputDir && !deliveryPlan) {
+            return { success: false, error: '保存可编辑 SKU 组合必须提供冻结的逐项交付计划。', data: null };
         }
 
         try {
@@ -3886,7 +4120,9 @@ export class SKULayoutTool implements Tool {
             console.log(`[SKULayout] ====================================================`);
             console.log(`[SKULayout] 待处理组合: ${config.combos.length} 个`);
 
+            const templateOutputName = templateDoc.name.replace(/\.[^.]+$/, '');
             const exportedFiles: string[] = [];
+            const editableDocuments: any[] = [];
             const errors: string[] = [];
             const placeholderMismatches: SkuPlaceholderMismatchData[] = [];
             const autoLayoutPlans: any[] = [];
@@ -4413,9 +4649,17 @@ export class SKULayoutTool implements Tool {
                         if (!currentComboQaReady) {
                             throw new Error(`组合 ${comboIndex + 1} 最终实时边界 QA 未达到 ready，已停止导出。`);
                         }
+                        const copiedLayerIds = Array.from(new Set(comboLayerIdsForCleanup));
+                        const copiedLayerNames = copiedLayerIds
+                            .map((layerId) => String(findLayerById(templateDoc.layers, layerId)?.name || '').trim())
+                            .filter(Boolean);
+                        if (copiedLayerIds.length !== comboSize
+                            || copiedLayerNames.length !== copiedLayerIds.length) {
+                            throw new Error(`组合 ${comboIndex + 1} 无法把可编辑结构绑定到全部颜色组。`);
+                        }
 
                         // 获取模板名称（去掉扩展名）
-                        const templateName = templateDoc.name.replace(/\.[^.]+$/, '');
+                        const templateName = templateOutputName;
 
                         // 构建输出文件名
                         // 如果是自选备注模式（isNoteTemplate），使用简化格式
@@ -4449,6 +4693,24 @@ export class SKULayoutTool implements Tool {
                         } else {
                             const targetDir = `${config.outputDir}\\${templateName}`;
                             const fullPath = `${targetDir}\\${outputFileName}.jpg`;
+                            const editablePath = config.editableOutputDir
+                                ? `${config.editableOutputDir}\\${templateName}\\${outputFileName}.psb`
+                                : '';
+                            const deliveryItem = deliveryPlan?.items[comboIndex];
+                            if (deliveryItem
+                                && (normalizeSkuDeliveryPath(deliveryItem.rasterOutputPath)
+                                    !== normalizeSkuDeliveryPath(fullPath)
+                                    || normalizeSkuDeliveryPath(deliveryItem.editableOutputPath)
+                                        !== normalizeSkuDeliveryPath(editablePath))) {
+                                throw new Error(`组合 ${comboIndex + 1} 的实际输出路径与执行前冻结计划不一致。`);
+                            }
+                            if (config.editableOutputDir && !deliveryItem) {
+                                throw new Error(`组合 ${comboIndex + 1} 缺少可编辑配对身份。`);
+                            }
+                            const pairHistoryStateRef = readActiveHistoryStateRef(templateDoc);
+                            if (!pairHistoryStateRef) {
+                                throw new Error(`组合 ${comboIndex + 1} 导出前无法读取 Photoshop 文档版本。`);
+                            }
 
                             // 使用 JSX 脚本保存（通过 token/临时 JSX 完成受控保存）
                             const saveSuccess = await saveAsJPEGViaJSX(fullPath, quality);
@@ -4456,6 +4718,37 @@ export class SKULayoutTool implements Tool {
                             if (!saveSuccess) {
                                 errors.push(`组合 ${comboIndex + 1}: JSX 保存失败 ${fullPath}`);
                             } else {
+                                const afterRasterHistoryStateRef = readActiveHistoryStateRef(templateDoc);
+                                if (!afterRasterHistoryStateRef
+                                    || !sameHistoryStateRef(pairHistoryStateRef, afterRasterHistoryStateRef)) {
+                                    throw new Error(`组合 ${comboIndex + 1} JPG 导出后文档版本发生变化。`);
+                                }
+                                if (config.editableOutputDir) {
+                                    const savedEditableDocument = await saveEditableDocumentSnapshotInModal({
+                                        document: templateDoc,
+                                        path: editablePath
+                                    });
+                                    if (!sameHistoryStateRef(
+                                        pairHistoryStateRef,
+                                        savedEditableDocument.sourceHistoryStateRef
+                                    )) {
+                                        throw new Error(`组合 ${comboIndex + 1} 的 JPG 与 PSB 不是同一文档版本。`);
+                                    }
+                                    editableDocuments.push({
+                                        ...savedEditableDocument,
+                                        deliveryItemId: deliveryItem?.itemId,
+                                        rasterSourceHistoryStateRef: pairHistoryStateRef,
+                                        structureReadback: {
+                                            schema: 'sku-editable-structure-readback/v1',
+                                            templateName,
+                                            combination: [...combo],
+                                            copiedLayerIds,
+                                            copiedLayerNames,
+                                            flattened: false,
+                                            autoLayoutQaStatus: 'ready'
+                                        }
+                                    });
+                                }
                                 exportedFiles.push(JSON.stringify({
                                     path: fullPath,
                                     targetName: `${outputFileName}.jpg`,
@@ -4517,7 +4810,11 @@ export class SKULayoutTool implements Tool {
             }, { commandName: '关闭模板文档' });
             console.log(`[SKULayout] ✅ 已关闭模板文档: ${templateNameForClose}`);
 
-            const allCombosExported = exportedFiles.length === config.combos.length && errors.length === 0;
+            const editableDocumentsComplete = !config.editableOutputDir
+                || editableDocuments.length === config.combos.length;
+            const allCombosExported = exportedFiles.length === config.combos.length
+                && editableDocumentsComplete
+                && errors.length === 0;
             return {
                 success: allCombosExported,
                 error: !allCombosExported
@@ -4532,6 +4829,7 @@ export class SKULayoutTool implements Tool {
                     expectedExportCount: config.combos.length,
                     partial: exportedFiles.length > 0 && !allCombosExported,
                     exportedFiles,
+                    ...(config.editableOutputDir ? { editableDocuments } : {}),
                     errors: errors.length > 0 ? errors : undefined,
                     placeholderMismatches: placeholderMismatches.length > 0 ? placeholderMismatches : undefined,
                     templateLayoutPlans: templateLayoutPlans.length > 0 ? templateLayoutPlans : undefined,

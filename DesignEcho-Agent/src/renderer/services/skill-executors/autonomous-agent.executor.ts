@@ -24,7 +24,12 @@ import {
     SEARCH_AGENT_CAPABILITIES_TOOL_NAME,
     type AgentCapabilitySession
 } from '../agent-runtime/capability-session';
+import { collectAgentFinalDeliveryDebugProjection } from '../agent-runtime/final-delivery-artifact-collector';
 import { readAgentVisualObservation } from '../agent-runtime/visual-observation-strategy';
+import {
+    publishDebugFinalArtifactPaths,
+    publishDebugFinalDeliveryProjection
+} from '../debug-final-artifact-sidecar';
 import {
     readAgentEnvironmentRecoveryToolNames,
     readAgentReActRecoveryToolNames
@@ -44,6 +49,7 @@ import type {
     AgentConfig,
     AgentCallbacks,
     AgentExecutionSummary,
+    AgentRunResult,
     AgentToolCallLogEntry,
     AgenticArtifactCompletionContract,
     CallModelFn,
@@ -615,10 +621,18 @@ function createCallModelViaIPC(
     };
 }
 
+function createAutonomousModelStreamAbortError(): Error & { code: string } {
+    const error = new Error('Agent 模型请求已取消') as Error & { code: string };
+    error.name = 'AbortError';
+    error.code = 'stream_aborted';
+    return error;
+}
+
 function createCallModelStreamViaIPC(
     requestWebSearchIntent?: ChatWebSearchIntent,
     webSearchVisibility?: WebSearchVisibilityState,
-    runtimeActivity?: AutonomousAgentRuntimeActivity
+    runtimeActivity?: AutonomousAgentRuntimeActivity,
+    runSignal?: AbortSignal
 ): CallModelStreamFn {
     return async (modelId, messages, tools, options) => {
         const {
@@ -675,8 +689,12 @@ function createCallModelStreamViaIPC(
                     modelId,
                     messages,
                     tools,
-                    optionsWithNativeTools
+                    {
+                        ...optionsWithNativeTools,
+                        signal: runSignal
+                    }
                 );
+                if (runSignal?.aborted) throw createAutonomousModelStreamAbortError();
                 transportAttempts.push(buildModelTransportAttempt(
                     attemptStartedAtMs,
                     true,
@@ -696,6 +714,9 @@ function createCallModelStreamViaIPC(
                     undefined,
                     attemptFailure
                 ));
+                if (runSignal?.aborted) {
+                    throw attachModelTransportAttempts(wrappedError, transportAttempts);
+                }
                 const canRetry = isRetryableAutonomousModelCallError({
                     error: wrappedError,
                     attempt,
@@ -5282,6 +5303,20 @@ export const autonomousAgentExecutor: SkillExecutor = {
         const runtimeWriteToolAllowlist = normalizeRuntimeWriteToolAllowlist(runtimeParams);
         const runtimeExactPropertyScope = readRuntimeExactPropertyScope(runtimeParams);
         const agentTaskCardScope = resolveTaskCardScope(context, runtimeParams);
+        const guardedFinalDeliveryRequestId = String(
+            context?.guardedPhotoshopExecutionBaseline?.requestId || ''
+        ).trim();
+        const captureGuardedFinalDeliveryArtifacts = (result: AgentRunResult): void => {
+            if (!guardedFinalDeliveryRequestId) return;
+            const projection = collectAgentFinalDeliveryDebugProjection({
+                entries: result.toolCallLog,
+                resultRefs: result.executionSummary?.runtimeDeliveryResultRefs,
+                includeProducerReceipts: result.success === true
+                    && result.cancelled !== true
+                    && result.executionSummary?.status !== 'failed'
+            });
+            publishDebugFinalDeliveryProjection(guardedFinalDeliveryRequestId, projection);
+        };
         const createAutonomousAgent = () => new Agent(
             {
                 systemPrompt: compiledRuntimeContext.prompt,
@@ -5415,7 +5450,8 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 callModelStream: createCallModelStreamViaIPC(
                     requestWebSearchIntent,
                     webSearchVisibility,
-                    runtimeActivity
+                    runtimeActivity,
+                    signal
                 )
             },
             createCallModelViaIPC(requestWebSearchIntent, webSearchVisibility, runtimeActivity),
@@ -5471,8 +5507,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
         // 2026-08-25 过程流 codex 化：staged 模式播报同样退役（对照板刀 B）——
         // 模型的开场叙述会说明走哪条流程；需要拍板时交互卡本身就是通知。
         try {
+            publishDebugFinalArtifactPaths(guardedFinalDeliveryRequestId, []);
             activeAutonomousAgent = createAutonomousAgent();
             let result = await activeAutonomousAgent.run(userTask, runtimeParams.images);
+            captureGuardedFinalDeliveryArtifacts(result);
             runtimeInteractiveReentryForAgent = undefined;
             adoptRuntimeInteractiveReentryForAgent = undefined;
             accumulatedSuccessfulMutationCalls = countSuccessfulMutationCalls(result);
@@ -5761,8 +5799,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 // 每个 Reflexion generation 都有独立运行记录；失败审计不得把上一代 Tool
                 // 重新归到新的 runId。跨代累计只由 accumulatedSuccessfulMutationCalls 承担。
                 runtimeActivity = createAutonomousAgentRuntimeActivity();
+                publishDebugFinalArtifactPaths(guardedFinalDeliveryRequestId, []);
                 activeAutonomousAgent = createAutonomousAgent();
                 result = await activeAutonomousAgent.run(reentryTask, runtimeParams.images);
+                captureGuardedFinalDeliveryArtifacts(result);
                 accumulatedSuccessfulMutationCalls += countSuccessfulMutationCalls(result);
                 await recordRunFactsToProjectStateSafely(result);
                 await refreshGenerationDataContext(
@@ -5940,6 +5980,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 }
             };
         } catch (error: any) {
+            publishDebugFinalArtifactPaths(guardedFinalDeliveryRequestId, []);
             console.error('[AutonomousAgent] runtime failure:', error);
             // Provider 中断也可能发生在已完成 Project State / Photoshop 写入之后。
             // 失败记录与正常代使用同一代际刷新；loader 自身保留 last-good 且不覆盖原始异常。

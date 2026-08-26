@@ -65,6 +65,8 @@ export interface RuntimePromptShapeSample {
     systemChars: number;
     /** 非系统消息（用户 / 助手 / 工具结果）总字符数 */
     historyChars: number;
+    /** historyChars 中由 Provider 原生 reasoning_content 贡献的字符数。 */
+    reasoningChars?: number;
     messageCount: number;
     /** 图像块数量（每块按 provider 计费，不算进字符） */
     imageBlocks: number;
@@ -83,6 +85,19 @@ export interface RuntimeModelFailureSample {
     status?: number;
 }
 
+export type RuntimeProviderOutputRecoveryFailureReason =
+    | 'max_tokens'
+    | 'stream_incomplete'
+    | 'content_blocked'
+    | 'request_error';
+
+export interface RuntimeProviderOutputRecoveryFailureCounts {
+    max_tokens: number;
+    stream_incomplete: number;
+    content_blocked: number;
+    request_error: number;
+}
+
 export interface RuntimeAccountingLedger {
     version: 'runtime-accounting-ledger/v0';
     startedAt: string;
@@ -97,6 +112,13 @@ export interface RuntimeAccountingLedger {
     toolFailureCount: number;
     toolDurationMs: number;
     recoveryAttemptCount: number;
+    /** 实际发出的 Provider 输出恢复请求；只用于诊断，不改变预算或任务结果。 */
+    providerOutputRecoveryAttemptCount?: number;
+    /** 恢复请求得到明确完整终态的次数。 */
+    providerOutputRecoverySuccessCount?: number;
+    /** 恢复请求仍未得到可交付终态的次数。 */
+    providerOutputRecoveryFailureCount?: number;
+    providerOutputRecoveryFailureCounts?: RuntimeProviderOutputRecoveryFailureCounts;
     reflexionCount: number;
     /**
      * 同一 Runtime Session 的请求级性能用量。Ledger 仍不自行判定预算；
@@ -131,6 +153,10 @@ export interface RuntimeAccountingDigest {
     toolFailureCount: number;
     toolDurationMs: number;
     recoveryAttemptCount: number;
+    providerOutputRecoveryAttemptCount?: number;
+    providerOutputRecoverySuccessCount?: number;
+    providerOutputRecoveryFailureCount?: number;
+    providerOutputRecoveryFailureCounts?: RuntimeProviderOutputRecoveryFailureCounts;
     reflexionCount: number;
     performanceUsage: RuntimePerformanceUsage;
     wallTimeMs: number;
@@ -161,6 +187,9 @@ export function cloneRuntimeAccountingDigest(
     const modelFailureSamples = cloneModelFailureSamples(digest.modelFailureSamples);
     const cloned: RuntimeAccountingDigest = {
         ...digest,
+        ...(digest.providerOutputRecoveryFailureCounts
+            ? { providerOutputRecoveryFailureCounts: { ...digest.providerOutputRecoveryFailureCounts } }
+            : {}),
         performanceUsage: cloneDigestPerformanceUsage(digest.performanceUsage),
         stageBuckets: cloneBuckets(digest.stageBuckets),
         costEstimate: { ...digest.costEstimate },
@@ -185,12 +214,35 @@ const RUNTIME_ACCOUNTING_DIGEST_ALLOWED_KEYS = new Set([
     'toolFailureCount',
     'toolDurationMs',
     'recoveryAttemptCount',
+    'providerOutputRecoveryAttemptCount',
+    'providerOutputRecoverySuccessCount',
+    'providerOutputRecoveryFailureCount',
+    'providerOutputRecoveryFailureCounts',
     'reflexionCount',
     'performanceUsage',
     'wallTimeMs',
     'stageBuckets',
     'promptShapeSamples',
     'modelFailureSamples',
+    'costEstimate',
+    'boundaries'
+]);
+
+const LEGACY_RUNTIME_ACCOUNTING_DIGEST_ALLOWED_KEYS = new Set([
+    'version',
+    'modelCallCount',
+    'modelFailureCount',
+    'modelDurationMs',
+    'inputTokens',
+    'outputTokens',
+    'unreportedUsageCallCount',
+    'toolCallCount',
+    'toolFailureCount',
+    'toolDurationMs',
+    'recoveryAttemptCount',
+    'reflexionCount',
+    'wallTimeMs',
+    'stageBuckets',
     'costEstimate',
     'boundaries'
 ]);
@@ -203,6 +255,13 @@ const RUNTIME_ACCOUNTING_PERFORMANCE_USAGE_ALLOWED_KEYS = new Set([
     'visualAnalyses',
     'activeElapsedMs',
     'observationKeys'
+]);
+
+const RUNTIME_PROVIDER_OUTPUT_RECOVERY_FAILURE_COUNT_KEYS = new Set([
+    'max_tokens',
+    'stream_incomplete',
+    'content_blocked',
+    'request_error'
 ]);
 
 const RUNTIME_ACCOUNTING_STAGE_BUCKET_ALLOWED_KEYS = new Set([
@@ -226,6 +285,7 @@ const RUNTIME_ACCOUNTING_PROMPT_SAMPLE_ALLOWED_KEYS = new Set([
     'durationMs',
     'systemChars',
     'historyChars',
+    'reasoningChars',
     'messageCount',
     'imageBlocks',
     'toolCount',
@@ -307,6 +367,56 @@ export function validateRuntimeAccountingDigest(
     ];
     if (numericKeys.some((key) => !isNonNegativeSafeInteger(digest[key]))) {
         return { ok: false, reason: 'Runtime accounting 含非法计数或耗时' };
+    }
+    const providerRecoveryNumericKeys = [
+        'providerOutputRecoveryAttemptCount',
+        'providerOutputRecoverySuccessCount',
+        'providerOutputRecoveryFailureCount'
+    ];
+    if (providerRecoveryNumericKeys.some((key) => (
+        digest[key] !== undefined && !isNonNegativeSafeInteger(digest[key])
+    ))) {
+        return { ok: false, reason: 'Runtime accounting Provider 输出恢复计数非法' };
+    }
+    const providerRecoveryAttempts = Number(digest.providerOutputRecoveryAttemptCount || 0);
+    const providerRecoverySuccesses = Number(digest.providerOutputRecoverySuccessCount || 0);
+    const providerRecoveryFailures = Number(digest.providerOutputRecoveryFailureCount || 0);
+    if (providerRecoveryAttempts > Number(digest.recoveryAttemptCount)) {
+        return { ok: false, reason: 'Runtime accounting Provider 输出恢复次数超过总恢复次数' };
+    }
+    if (providerRecoverySuccesses + providerRecoveryFailures !== providerRecoveryAttempts) {
+        return { ok: false, reason: 'Runtime accounting Provider 输出恢复请求与结果未闭合' };
+    }
+    if (providerRecoveryFailures > 0
+        && digest.providerOutputRecoveryFailureCounts === undefined) {
+        return { ok: false, reason: 'Runtime accounting Provider 输出恢复失败缺少分类计数' };
+    }
+    if (digest.providerOutputRecoveryFailureCounts !== undefined) {
+        if (!digest.providerOutputRecoveryFailureCounts
+            || typeof digest.providerOutputRecoveryFailureCounts !== 'object'
+            || Array.isArray(digest.providerOutputRecoveryFailureCounts)) {
+            return { ok: false, reason: 'Runtime accounting Provider 输出恢复失败分类非法' };
+        }
+        const failureCounts = digest.providerOutputRecoveryFailureCounts as Record<string, unknown>;
+        const unknownFailureKey = findUnknownAccountingKey(
+            failureCounts,
+            RUNTIME_PROVIDER_OUTPUT_RECOVERY_FAILURE_COUNT_KEYS
+        );
+        if (unknownFailureKey) {
+            return {
+                ok: false,
+                reason: `Runtime accounting Provider 输出恢复失败分类含未知字段：${unknownFailureKey}`
+            };
+        }
+        if ([...RUNTIME_PROVIDER_OUTPUT_RECOVERY_FAILURE_COUNT_KEYS]
+            .some((key) => !isNonNegativeSafeInteger(failureCounts[key]))) {
+            return { ok: false, reason: 'Runtime accounting Provider 输出恢复失败分类计数非法' };
+        }
+        const classifiedFailureCount = [...RUNTIME_PROVIDER_OUTPUT_RECOVERY_FAILURE_COUNT_KEYS]
+            .reduce((sum, key) => sum + Number(failureCounts[key]), 0);
+        if (classifiedFailureCount !== providerRecoveryFailures) {
+            return { ok: false, reason: 'Runtime accounting Provider 输出恢复失败分类与总数不一致' };
+        }
     }
 
     if (!digest.performanceUsage
@@ -402,6 +512,10 @@ export function validateRuntimeAccountingDigest(
             ].some((key) => !isNonNegativeSafeInteger(sample[key]))) {
                 return { ok: false, reason: 'Runtime accounting prompt sample 含非法计数或耗时' };
             }
+            if (sample.reasoningChars !== undefined
+                && !isNonNegativeSafeInteger(sample.reasoningChars)) {
+                return { ok: false, reason: 'Runtime accounting prompt reasoningChars 非法' };
+            }
             if (sample.inputTokens !== undefined && !isNonNegativeSafeInteger(sample.inputTokens)) {
                 return { ok: false, reason: 'Runtime accounting prompt sample inputTokens 非法' };
             }
@@ -483,6 +597,47 @@ export function validateRuntimeAccountingDigest(
         return { ok: false, reason: 'Runtime accounting 真实性边界非法' };
     }
     return { ok: true };
+}
+
+/**
+ * Runtime Session 历史档案兼容校验。
+ *
+ * 早期 v0 摘要尚无 performanceUsage；该形态已真实存在于用户历史会话中。只接受当时
+ * 已知的精确字段集合，并通过补零的验证投影复用当前真实性/数值/边界校验。补零仅用于
+ * 校验，不会回写历史文件，也不把缺失遥测伪装成已采集数据。
+ */
+export function validatePersistedRuntimeAccountingDigest(
+    value: unknown
+): { ok: boolean; reason?: string } {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return { ok: false, reason: 'Runtime accounting 不是对象' };
+    }
+    const digest = value as Record<string, unknown>;
+    if (digest.performanceUsage !== undefined) {
+        return validateRuntimeAccountingDigest(value);
+    }
+    const unknownLegacyKey = findUnknownAccountingKey(
+        digest,
+        LEGACY_RUNTIME_ACCOUNTING_DIGEST_ALLOWED_KEYS
+    );
+    if (unknownLegacyKey) {
+        return {
+            ok: false,
+            reason: `历史 Runtime accounting 含未知字段：${unknownLegacyKey}`
+        };
+    }
+    return validateRuntimeAccountingDigest({
+        ...digest,
+        performanceUsage: {
+            modelCalls: 0,
+            toolCalls: 0,
+            iterations: 0,
+            visionCandidates: 0,
+            visualAnalyses: 0,
+            activeElapsedMs: 0,
+            observationKeys: []
+        }
+    });
 }
 
 function nonNegativeInteger(value: unknown): number {
@@ -627,6 +782,15 @@ export function createRuntimeAccountingLedger(now = new Date().toISOString()): R
         toolFailureCount: 0,
         toolDurationMs: 0,
         recoveryAttemptCount: 0,
+        providerOutputRecoveryAttemptCount: 0,
+        providerOutputRecoverySuccessCount: 0,
+        providerOutputRecoveryFailureCount: 0,
+        providerOutputRecoveryFailureCounts: {
+            max_tokens: 0,
+            stream_incomplete: 0,
+            content_blocked: 0,
+            request_error: 0
+        },
         reflexionCount: 0,
         performanceUsage: clonePerformanceUsage(),
         stageBuckets: [],
@@ -656,6 +820,9 @@ export function cloneRuntimeAccountingLedger(
     const modelFailureSamples = cloneModelFailureSamples(ledger.modelFailureSamples);
     const cloned: RuntimeAccountingLedger = {
         ...ledger,
+        ...(ledger.providerOutputRecoveryFailureCounts
+            ? { providerOutputRecoveryFailureCounts: { ...ledger.providerOutputRecoveryFailureCounts } }
+            : {}),
         performanceUsage: clonePerformanceUsage(ledger.performanceUsage),
         stageBuckets: cloneBuckets(ledger.stageBuckets),
         boundaries: { ...ledger.boundaries }
@@ -716,6 +883,7 @@ export interface RuntimePromptShapeInput {
     messages: ReadonlyArray<{
         role?: unknown;
         content?: unknown;
+        reasoningContent?: unknown;
         contentBlocks?: ReadonlyArray<{ type?: unknown; text?: unknown }>;
         toolCalls?: ReadonlyArray<{ name?: unknown; arguments?: unknown }>;
         toolResults?: ReadonlyArray<{ output?: unknown }>;
@@ -726,9 +894,14 @@ export interface RuntimePromptShapeInput {
 export function measureRuntimePromptShape(input: RuntimePromptShapeInput): Omit<RuntimePromptShapeSample, 'seq' | 'stage' | 'inputTokens' | 'outputTokens' | 'durationMs'> {
     let systemChars = 0;
     let historyChars = 0;
+    let reasoningChars = 0;
     let imageBlocks = 0;
     for (const message of input.messages) {
         let chars = typeof message.content === 'string' ? message.content.length : 0;
+        if (typeof message.reasoningContent === 'string') {
+            chars += message.reasoningContent.length;
+            reasoningChars += message.reasoningContent.length;
+        }
         for (const block of message.contentBlocks || []) {
             if (block.type === 'image') {
                 imageBlocks += 1;
@@ -766,6 +939,7 @@ export function measureRuntimePromptShape(input: RuntimePromptShapeInput): Omit<
     return {
         systemChars,
         historyChars,
+        ...(reasoningChars > 0 ? { reasoningChars } : {}),
         messageCount: input.messages.length,
         imageBlocks,
         toolCount: input.tools.length,
@@ -883,6 +1057,54 @@ export function recordRuntimeRecoveryAttempt(
     };
 }
 
+export function recordRuntimeProviderOutputRecoveryAttempt(
+    ledger: RuntimeAccountingLedger,
+    now = new Date().toISOString()
+): RuntimeAccountingLedger {
+    return {
+        ...ledger,
+        lastUpdatedAt: now,
+        recoveryAttemptCount: ledger.recoveryAttemptCount + 1,
+        providerOutputRecoveryAttemptCount: nonNegativeInteger(
+            ledger.providerOutputRecoveryAttemptCount
+        ) + 1,
+        stageBuckets: cloneBuckets(ledger.stageBuckets)
+    };
+}
+
+export function recordRuntimeProviderOutputRecoveryOutcome(
+    ledger: RuntimeAccountingLedger,
+    outcome: 'succeeded' | RuntimeProviderOutputRecoveryFailureReason,
+    now = new Date().toISOString()
+): RuntimeAccountingLedger {
+    if (outcome === 'succeeded') {
+        return {
+            ...ledger,
+            lastUpdatedAt: now,
+            providerOutputRecoverySuccessCount: nonNegativeInteger(
+                ledger.providerOutputRecoverySuccessCount
+            ) + 1,
+            stageBuckets: cloneBuckets(ledger.stageBuckets)
+        };
+    }
+    const failureCounts: RuntimeProviderOutputRecoveryFailureCounts = {
+        max_tokens: nonNegativeInteger(ledger.providerOutputRecoveryFailureCounts?.max_tokens),
+        stream_incomplete: nonNegativeInteger(ledger.providerOutputRecoveryFailureCounts?.stream_incomplete),
+        content_blocked: nonNegativeInteger(ledger.providerOutputRecoveryFailureCounts?.content_blocked),
+        request_error: nonNegativeInteger(ledger.providerOutputRecoveryFailureCounts?.request_error)
+    };
+    failureCounts[outcome] += 1;
+    return {
+        ...ledger,
+        lastUpdatedAt: now,
+        providerOutputRecoveryFailureCount: nonNegativeInteger(
+            ledger.providerOutputRecoveryFailureCount
+        ) + 1,
+        providerOutputRecoveryFailureCounts: failureCounts,
+        stageBuckets: cloneBuckets(ledger.stageBuckets)
+    };
+}
+
 export function recordRuntimeReflexion(
     ledger: RuntimeAccountingLedger,
     now = new Date().toISOString()
@@ -918,6 +1140,29 @@ export function buildRuntimeAccountingDigest(input: {
         toolFailureCount: input.ledger.toolFailureCount,
         toolDurationMs: input.ledger.toolDurationMs,
         recoveryAttemptCount: input.ledger.recoveryAttemptCount,
+        providerOutputRecoveryAttemptCount: nonNegativeInteger(
+            input.ledger.providerOutputRecoveryAttemptCount
+        ),
+        providerOutputRecoverySuccessCount: nonNegativeInteger(
+            input.ledger.providerOutputRecoverySuccessCount
+        ),
+        providerOutputRecoveryFailureCount: nonNegativeInteger(
+            input.ledger.providerOutputRecoveryFailureCount
+        ),
+        providerOutputRecoveryFailureCounts: {
+            max_tokens: nonNegativeInteger(
+                input.ledger.providerOutputRecoveryFailureCounts?.max_tokens
+            ),
+            stream_incomplete: nonNegativeInteger(
+                input.ledger.providerOutputRecoveryFailureCounts?.stream_incomplete
+            ),
+            content_blocked: nonNegativeInteger(
+                input.ledger.providerOutputRecoveryFailureCounts?.content_blocked
+            ),
+            request_error: nonNegativeInteger(
+                input.ledger.providerOutputRecoveryFailureCounts?.request_error
+            )
+        },
         reflexionCount: input.ledger.reflexionCount,
         performanceUsage: projectPerformanceUsageForDigest(input.ledger.performanceUsage),
         wallTimeMs,

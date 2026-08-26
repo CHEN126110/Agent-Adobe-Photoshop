@@ -271,7 +271,8 @@ function buildSkuRecords(data: Record<string, any>): DesignEvaluationVerificatio
 
 function buildSkuColorCardRecords(data: Record<string, any>): DesignEvaluationVerificationRecord[] {
     const report = readRecord(data.report);
-    if (report?.version !== 'sku-color-card-execution-report/v1') return [];
+    if (report?.version !== 'sku-color-card-execution-report/v1'
+        && report?.version !== 'sku-color-card-execution-report/v2') return [];
     const checks = readRecord(report.checks);
     if (!checks) return [];
 
@@ -284,7 +285,12 @@ function buildSkuColorCardRecords(data: Record<string, any>): DesignEvaluationVe
     const finalStructureStatus = statusForCheck(checks.finalStructureReadback);
     const sourceCoverageStatus = statusForCheck(checks.sourceCoverage);
     const smartObjectStatus = statusForCheck(checks.smartObjectEditability);
-    const clippingStatus = statusForCheck(checks.clippingStructure);
+    const flatClippingNotApplicable = report.version === 'sku-color-card-execution-report/v2'
+        && report.presentationMode === 'flat'
+        && checks.clippingStructure === 'not_applicable';
+    const clippingStatus = flatClippingNotApplicable
+        ? 'passed'
+        : statusForCheck(checks.clippingStructure);
     const labelTextFitStatus = statusForCheck(checks.labelTextFit);
     const visualCompositionStatus = statusForCheck(checks.visualComposition);
     return [
@@ -306,7 +312,9 @@ function buildSkuColorCardRecords(data: Record<string, any>): DesignEvaluationVe
         verificationRecord(
             'sku_color_card_clipping_structure',
             clippingStatus,
-            `quality-adapter:sku-color-card-clipping:${clippingStatus}`
+            flatClippingNotApplicable
+                ? 'quality-adapter:sku-color-card-clipping:not-applicable-flat'
+                : `quality-adapter:sku-color-card-clipping:${clippingStatus}`
         ),
         verificationRecord(
             'sku_color_card_label_text_fit',

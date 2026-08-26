@@ -373,29 +373,56 @@ export function readStrictDesignVerdict(value: unknown): DesignVerdict | undefin
 export function readStrictRuntimeDeliveryVerification(
     value: unknown
 ): RuntimeDeliveryVerification | undefined {
+    if (isRecord(value) && value.version === 'runtime-delivery-verification/v1') {
+        if (!hasExactKeys(value, [
+            'version', 'status', 'requiredOutputs', 'confirmedOutputs', 'missingOutputs',
+            'targetBound', 'reviewedPreviewBound', 'sourceHistoryStateBound', 'boundaries'
+        ]) || !isRecord(value.boundaries) || !hasExactKeys(value.boundaries, [
+            'manifestRequirementsOnly', 'explicitReceiptRequired', 'sameTargetPreviewRequired',
+            'exactSourceHistoryRequired', 'qualityVerdictAuthority', 'grantsPermission', 'executesTools'
+        ])) {
+            return undefined;
+        }
+        return readStrictRuntimeDeliveryVerification({
+            ...value,
+            version: 'runtime-delivery-verification/v2',
+            settlementScope: 'single_document_revision',
+            multiDocumentTaskBound: false,
+            boundaries: {
+                ...value.boundaries,
+                multiDocumentTaskBindingRequired: true
+            }
+        });
+    }
     if (!isRecord(value)
         || !hasExactKeys(value, [
             'version',
             'status',
+            'settlementScope',
             'requiredOutputs',
             'confirmedOutputs',
             'missingOutputs',
             'targetBound',
             'reviewedPreviewBound',
             'sourceHistoryStateBound',
+            'multiDocumentTaskBound',
             'boundaries'
         ])
-        || value.version !== 'runtime-delivery-verification/v1'
+        || value.version !== 'runtime-delivery-verification/v2'
         || (value.status !== 'passed' && value.status !== 'incomplete')
+        || (value.settlementScope !== 'single_document_revision'
+            && value.settlementScope !== 'multi_document_task')
         || typeof value.targetBound !== 'boolean'
         || typeof value.reviewedPreviewBound !== 'boolean'
         || typeof value.sourceHistoryStateBound !== 'boolean'
+        || typeof value.multiDocumentTaskBound !== 'boolean'
         || !isRecord(value.boundaries)
         || !hasExactKeys(value.boundaries, [
             'manifestRequirementsOnly',
             'explicitReceiptRequired',
             'sameTargetPreviewRequired',
             'exactSourceHistoryRequired',
+            'multiDocumentTaskBindingRequired',
             'qualityVerdictAuthority',
             'grantsPermission',
             'executesTools'
@@ -413,9 +440,13 @@ export function readStrictRuntimeDeliveryVerification(
         || (value.status === 'passed'
             && (requiredOutputs.length === 0
                 || missingOutputs.length > 0
-                || !value.targetBound
-                || !value.reviewedPreviewBound
-                || !value.sourceHistoryStateBound))) {
+                || (value.settlementScope === 'single_document_revision'
+                    && (!value.targetBound
+                        || !value.reviewedPreviewBound
+                        || !value.sourceHistoryStateBound
+                        || value.multiDocumentTaskBound))
+                || (value.settlementScope === 'multi_document_task'
+                    && !value.multiDocumentTaskBound)))) {
         return undefined;
     }
     const boundaries = value.boundaries;
@@ -423,6 +454,7 @@ export function readStrictRuntimeDeliveryVerification(
         || boundaries.explicitReceiptRequired !== true
         || boundaries.sameTargetPreviewRequired !== true
         || boundaries.exactSourceHistoryRequired !== true
+        || boundaries.multiDocumentTaskBindingRequired !== true
         || boundaries.qualityVerdictAuthority !== false
         || boundaries.grantsPermission !== false
         || boundaries.executesTools !== false) {

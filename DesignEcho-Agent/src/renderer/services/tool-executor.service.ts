@@ -249,7 +249,7 @@ export const AVAILABLE_TOOLS = [
     { name: 'listProjectResources', description: '列出项目目录中的所有资源；资源型任务缺少路径时先列目录，不要直接向用户要文件位置。', params: '{ directory?: string }' },
     { name: 'createProjectContactSheetOverview', description: '把项目图片按角色和桶内跨度抽样后合成带编号的缩略图总览；结果分开披露候选全集、选入渲染、成功展示、渲染失败和未展示数，只有真正可见的图片才计入展示。抽样只扩大事实覆盖，不排序，也不替 Agent 选最终素材。', params: '{ directory?: string, maxImages?: number, columns?: number }' },
     { name: 'analyzeProjectContactSheetOverview', description: '先按角色和桶内跨度抽样生成项目图片总览，再把同一张带编号总览直接交给当前多模态 Agent 建立有界视觉库存；顶层 Agent 路径不让第二个模型重复解释相同像素。结果分开披露选入渲染、成功展示、渲染失败和未展示数，只提供事实，不排序、不替 Agent 选图或决定设计方向。', params: '{ directory?: string, maxImages?: number, focus?: string }' },
-    { name: 'prepareSkuRetouchAssets', description: '为一批纯底棚拍 SKU 商品图生成可编辑精修资产：自动选形态基准、受约束形态统一、独立原影、中性灰低频光影修正和预览。sourceMode=auto 会跳过场景图；该工具只生成项目文件，不代表 Photoshop 色卡已完成。', params: '{ sources: [{sourceId?: string, filePath: string, colorName?: string}], projectPath?: string, outputDir?: string, referenceSourcePath?: string, sourceMode?: "auto"|"studio"|"scene", shapeStrength?: number, lightingStrength?: number, maxLongEdge?: number, force?: boolean }' },
+    { name: 'prepareSkuRetouchAssets', description: '为一批纯底棚拍 SKU 商品图生成透明主体等比统一尺度资产：保持真实版型，不做形态变形、阴影/投影分离或光影修正。sourceMode=auto 会跳过场景图；该工具只生成项目文件，不代表 Photoshop 色卡已完成。', params: '{ sources: [{sourceId?: string, filePath: string, colorName?: string}], projectPath?: string, outputDir?: string, referenceSourcePath?: string, sourceMode?: "auto"|"studio"|"scene", maxLongEdge?: number, force?: boolean }' },
     { name: 'generateImage', description: '使用设置中选择的生图渠道生成新素材：ChatGPT/Codex 订阅的 gpt-image-2，或 BFL API 的 FLUX。生成结果不会自动写入 Photoshop，采用前仍需查看。', params: '{ prompt: string, model?: "flux-2-max"|"flux-2-pro"|"flux-2-klein-9b"|"flux-2-klein-4b", width?: number, height?: number, transparentBackground?: boolean }' },
 
     // === 设计源解析（PSD 知识库）===
@@ -6729,13 +6729,13 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
                     projectPath: params.projectPath || currentProject?.path
                 });
                 if (!result) {
-                    return { success: false, error: 'SKU 素材精修服务未接入当前应用版本。' };
+                    return { success: false, error: 'SKU 透明主体统一尺度服务未接入当前应用版本。' };
                 }
-                let summary = result.error || 'SKU 素材精修失败。';
+                let summary = result.error || 'SKU 透明主体统一尺度资产准备失败。';
                 if (result.workflowStatus === 'prepared') {
-                    summary = `已生成 ${result.sources?.filter((source: any) => source.status === 'prepared').length || 0} 组 SKU 精修资产；仍需写入 Photoshop 并读回验收。`;
+                    summary = `已生成 ${result.sources?.filter((source: any) => source.status === 'prepared').length || 0} 组透明主体等比统一尺度资产；仍需写入 Photoshop 并读回验收。`;
                 } else if (result.workflowStatus === 'not_applicable') {
-                    summary = '当前素材不适用纯底 SKU 精修链，应改走场景图设计方向。';
+                    summary = '当前素材不适用纯底透明主体统一尺度链，应保留原图并改走场景图设计方向。';
                 }
                 return { ...result, summary };
             }

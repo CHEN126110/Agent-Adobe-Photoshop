@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 形态统一集成测试运行器
+ * 图像形态与 SKU 统一尺度集成测试运行器
  */
 
 try {
@@ -19,9 +19,11 @@ try {
     process.exit(1);
 }
 
-const { runIntegrationTests } = require('../src/main/services/morphing/integration-test');
+const { runIntegrationTests } = require('./tests/morphing-integration.test');
+const { runSkuRetouchIntegrationTests } = require('./tests/sku-retouch-integration.test');
 
 runIntegrationTests()
+    .then(() => runSkuRetouchIntegrationTests())
     .then(() => process.exit(0))
     .catch(err => {
         console.error('测试运行失败:', err);

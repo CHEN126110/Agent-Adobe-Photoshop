@@ -9,16 +9,16 @@
  * 5. 解压缩与应用
  */
 
-import { JFADistanceField } from './jfa-distance-field';
-import { SmartCuffDetector } from './smart-cuff-detector';
-import { MLSDeformation } from './mls-deformation';
-import { CuffType } from './types';
+import { JFADistanceField } from '../../src/main/services/morphing/jfa-distance-field';
+import { SmartCuffDetector } from '../../src/main/services/morphing/smart-cuff-detector';
+import { MLSDeformation } from '../../src/main/services/morphing/mls-deformation';
+import { CuffType } from '../../src/main/services/morphing/types';
 import { 
     compressDisplacementField, 
     serializeSparseDisplacement, 
     deserializeSparseDisplacement 
-} from './sparse-displacement';
-import { Point2D, BoundingBox, DisplacementField } from './types';
+} from '../../src/main/services/morphing/sparse-displacement';
+import { Point2D, BoundingBox, DisplacementField } from '../../src/main/services/morphing/types';
 import sharp from 'sharp';
 
 /**

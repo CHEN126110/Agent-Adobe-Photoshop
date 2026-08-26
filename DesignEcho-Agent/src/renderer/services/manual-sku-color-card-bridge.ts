@@ -33,17 +33,17 @@ function buildUserAuthorizationText(request: ManualSkuColorCardRendererRequest):
 function buildSuccessMessage(input: {
     request: ManualSkuColorCardRendererRequest;
     report?: SkuColorCardExecutionReport;
-    retouchedCardCount: number;
+    uniformScalePlacedCardCount: number;
 }): string {
     const outputPath = input.report?.outputPath || input.request.outputPath;
     if (input.request.mode === 'ins') {
         return `INS 卡片色卡的可编辑结构已生成并保存到 ${outputPath}。`
-            + '本模式保留原图与场景，没有执行抠图、形态统一或中性灰修正；请在 Photoshop 中检查主体裁切和卡片节奏。';
+            + '本模式保留原图与场景，没有进入纯底透明主体统一尺度处理；请在 Photoshop 中检查主体裁切和卡片节奏。';
     }
 
-    return `纯底精修色卡的可编辑结构已生成并保存到 ${outputPath}。`
-        + `已为 ${input.retouchedCardCount}/${input.request.sources.length} 张图片写入形态统一主体、独立原影和中性灰光影修正层；`
-        + '请在 Photoshop 中检查特殊袜口、边缘、纹理和各颜色受光，确认后再导出成品。';
+    return `纯底统一尺度色卡的可编辑结构已生成并保存到 ${outputPath}。`
+        + `已为 ${input.uniformScalePlacedCardCount}/${input.request.sources.length} 张图片置入并读回确认保持真实版型的透明主体等比统一尺度资产；`
+        + '当前阶段不包含形态变形、阴影分离或光影修正。请在 Photoshop 中检查主体完整性、尺度、重心、裁切和纹理，确认后再导出成品。';
 }
 
 function compactResult(
@@ -52,7 +52,9 @@ function compactResult(
 ): ManualSkuColorCardResult {
     const report = result.data?.report as SkuColorCardExecutionReport | undefined;
     const preparedCards = Array.isArray(report?.preparedCards) ? report.preparedCards : [];
-    const retouchedCardCount = preparedCards.filter((card) => card.retouchLayersVerified === true).length;
+    const uniformScalePlacedCardCount = preparedCards.filter((card) => (
+        card.uniformScaleAssetApplied === true && card.uniformScalePlacementVerified === true
+    )).length;
     const success = result.success === true && report?.status !== 'failed';
     const failure = String(result.error || report?.error || result.message || '手动色卡执行失败。');
 
@@ -62,13 +64,14 @@ function compactResult(
         success,
         mode: request.mode,
         message: success
-            ? buildSuccessMessage({ request, report, retouchedCardCount })
+            ? buildSuccessMessage({ request, report, uniformScalePlacedCardCount })
             : failure,
         outputPath: report?.outputPath || request.outputPath,
         documentId: report?.documentId,
         sourceCount: report?.sourceCount || request.sources.length,
         preparedCardCount: preparedCards.length,
-        retouchedCardCount,
+        uniformScalePlacedCardCount,
+        retouchedCardCount: uniformScalePlacedCardCount,
         status: report?.status,
         checks: report?.checks,
         retouchReportPath: report?.retouchReport?.reportPath,
@@ -88,6 +91,7 @@ async function executeManualSkuColorCard(request: ManualSkuColorCardRendererRequ
             message: 'Renderer 已有一个手动色卡任务正在执行。',
             sourceCount: request.sources.length,
             preparedCardCount: 0,
+            uniformScalePlacedCardCount: 0,
             retouchedCardCount: 0,
             needsVisualReview: false,
             errorCode: 'busy',
@@ -100,7 +104,7 @@ async function executeManualSkuColorCard(request: ManualSkuColorCardRendererRequ
     sendProgress({
         requestId: request.requestId,
         progress: 2,
-        message: request.mode === 'studio' ? '正在准备纯底精修色卡...' : '正在准备 INS 卡片色卡...',
+        message: request.mode === 'studio' ? '正在准备纯底统一尺度色卡...' : '正在准备 INS 卡片色卡...',
         stage: 'starting'
     });
 
@@ -118,9 +122,7 @@ async function executeManualSkuColorCard(request: ManualSkuColorCardRendererRequ
                     columns: request.columns
                 },
                 retouchMode: request.mode === 'studio' ? 'studio_retouch_required' : 'layout_only',
-                sourceMode: request.mode === 'studio' ? 'studio' : 'scene',
-                shapeStrength: 0.72,
-                lightingStrength: 0.68
+                sourceMode: request.mode === 'studio' ? 'studio' : 'scene'
             },
             context: {
                 userInput: buildUserAuthorizationText(request),
@@ -185,6 +187,7 @@ async function executeManualSkuColorCard(request: ManualSkuColorCardRendererRequ
             message,
             sourceCount: request.sources.length,
             preparedCardCount: 0,
+            uniformScalePlacedCardCount: 0,
             retouchedCardCount: 0,
             needsVisualReview: false,
             errorCode: 'execution_failed',

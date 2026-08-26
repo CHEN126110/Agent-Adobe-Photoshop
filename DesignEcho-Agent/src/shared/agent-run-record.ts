@@ -45,6 +45,7 @@ import type { RuntimePlanningContextSeedDigest } from './agent-runtime-v5/runtim
 import {
     cloneRuntimeAccountingDigest,
     validateRuntimeAccountingDigest,
+    validatePersistedRuntimeAccountingDigest,
     type RuntimeAccountingDigest
 } from './agent-runtime-v5/runtime-accounting';
 import {
@@ -1523,19 +1524,11 @@ export function validateAgentRunRecordForPersist(record: unknown): { ok: boolean
     if (r.runtimeSession && (!Number.isInteger(r.runtimeSession.generation) || r.runtimeSession.generation < 1)) {
         return { ok: false, reason: 'Runtime Session generation 非法' };
     }
-    // 旧 staged Run Record 保持原兼容校验；G1 只为新顶层 plan-neutral accounting
-    // 增加严格结构校验，不能借机让历史 Runtime Session 档案失效。
-    if (r.runtimeSession?.accounting
-        && r.runtimeSession.accounting.version !== 'runtime-accounting-digest/v0') {
-        return { ok: false, reason: 'Runtime accounting digest 版本非法' };
-    }
-    if (r.runtimeSession?.accounting && (
-        r.runtimeSession.accounting.boundaries.reportedUsageOnly !== true
-        || r.runtimeSession.accounting.boundaries.missingUsageNotEstimated !== true
-        || r.runtimeSession.accounting.boundaries.enforcesBudget !== false
-        || r.runtimeSession.accounting.costEstimate.status !== 'not_configured'
-    )) {
-        return { ok: false, reason: 'Runtime accounting 真实性边界非法' };
+    if (r.runtimeSession?.accounting) {
+        const accountingValidation = validatePersistedRuntimeAccountingDigest(
+            r.runtimeSession.accounting
+        );
+        if (!accountingValidation.ok) return accountingValidation;
     }
     const hasStandaloneRuntimeAccounting = hasOwn(r, 'runtimeAccounting');
     const hasStandaloneRuntimeAccountingBoundary = hasOwn(

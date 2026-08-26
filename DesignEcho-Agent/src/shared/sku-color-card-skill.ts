@@ -19,7 +19,7 @@ import {
 } from './sku-color-card-design-spec';
 
 export const SKU_COLOR_CARD_SKILL_VERSION = 'sku-color-card-skill/v1' as const;
-export const SKU_COLOR_CARD_EXECUTION_REPORT_VERSION = 'sku-color-card-execution-report/v1' as const;
+export const SKU_COLOR_CARD_EXECUTION_REPORT_VERSION = 'sku-color-card-execution-report/v2' as const;
 
 export type SkuColorCardPlanStatus =
     | 'ready'
@@ -171,36 +171,216 @@ export interface SkuColorCardPreparedCard {
     /** Agent 选择 card 时才有标签底；flat 结构组内只有 Agent 声明区域中的色名文字。 */
     labelBackgroundLayerId?: number;
     labelTextLayerId: number;
+    clippingRequired: boolean;
     clippingVerified: boolean;
     smartObjectVerified: boolean;
     labelTextFitVerified: boolean;
     /** 对原图卡片执行主体检测缩放时的结果；使用已准备精修资产时不提供。 */
     subjectFit?: SkuColorCardSubjectFit;
-    /** Skill 准备并使用精修资产时的可编辑图层；未启用或未使用时不提供。 */
+    /** Skill 准备并使用离线资产时保留的原始素材备份；未启用或未使用时不提供。 */
     sourceBackupLayerId?: number;
-    shadowLayerId?: number;
-    neutralGrayLayerId?: number;
-    retouchLayersVerified?: boolean;
+    /** 当前卡片实际采用了 v2 透明主体统一尺度资产。 */
+    uniformScaleAssetApplied?: boolean;
+    /** 统一尺度主体的来源身份、真实 bounds、比例、目标区域与可编辑性均已读回。 */
+    uniformScalePlacementVerified?: boolean;
+    /** 精确绑定本卡、素材摘要、Photoshop 文档与写后几何的结构化收据。 */
+    uniformScalePlacementReceipt?: SkuColorCardUniformScalePlacementReceipt;
+    /** 资产批次报告仅作为 provenance，不能代替当前卡片的置入与读回收据。 */
     retouchAssetReportPath?: string;
+}
+
+export interface SkuColorCardPlacementRect {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}
+
+export interface SkuColorCardUniformScalePlacementReceipt {
+    version: 'sku-color-card-uniform-scale-placement/v0';
+    sourceId: string;
+    placedLayerId: number;
+    documentId: number;
+    asset: {
+        path: string;
+        sha256: string;
+        checksum: string;
+        byteLength: number;
+        width: number;
+        height: number;
+    };
+    placedSource: {
+        assetId: string;
+        checksum: string;
+        byteLength: number;
+        identityProofVersion: string;
+        identityVerified: boolean;
+    };
+    targetBounds: SkuColorCardPlacementRect;
+    actualBounds?: SkuColorCardPlacementRect;
+    checks: {
+        sourceIdentity: boolean;
+        documentIdentity: boolean;
+        editableSmartObject: boolean;
+        geometryReadback: boolean;
+        containedWithoutFrameCrop: boolean;
+        assetAspectRatioPreserved: boolean;
+        alphaEnvelopeSafe: boolean;
+    };
+    verified: boolean;
+    /** 结构与像素完整性收据不声明构图、重心或审美质量。 */
+    doesNotClaimAestheticQuality: true;
+}
+
+export interface BuildSkuColorCardUniformScalePlacementReceiptInput {
+    sourceId: string;
+    placedLayerId: number;
+    documentId: number;
+    expectedDocumentId: number;
+    observedDocumentId?: number;
+    asset: SkuColorCardUniformScalePlacementReceipt['asset'] & {
+        alphaEnvelopeSafe: boolean;
+    };
+    placedSource: SkuColorCardUniformScalePlacementReceipt['placedSource'];
+    targetBounds: SkuColorCardPlacementRect;
+    actualBounds?: SkuColorCardPlacementRect;
+    smartObjectBounds?: SkuColorCardPlacementRect;
+    placementActualBounds?: SkuColorCardPlacementRect;
+    smartObjectFileReference?: string;
+    editableSmartObject: boolean;
+    layerBoundsReadSucceeded: boolean;
+    placementGeometryVerified: boolean;
+    outsideTargetFraction: number;
+    outsideTargetEdges: string[];
+}
+
+function placementIdentityPath(value: unknown): string {
+    return String(value || '').trim().replace(/\//g, '\\').toLocaleLowerCase('en-US');
+}
+
+function placementIdentityFileName(value: unknown): string {
+    const normalized = placementIdentityPath(value);
+    return normalized.split('\\').filter(Boolean).pop() || normalized;
+}
+
+function placementRectsAgree(
+    left: SkuColorCardPlacementRect | undefined,
+    right: SkuColorCardPlacementRect | undefined,
+    tolerance = 2
+): boolean {
+    if (!left || !right) return false;
+    return Math.abs(left.left - right.left) <= tolerance
+        && Math.abs(left.top - right.top) <= tolerance
+        && Math.abs(left.width - right.width) <= tolerance
+        && Math.abs(left.height - right.height) <= tolerance;
+}
+
+function placementRectIsContained(
+    actual: SkuColorCardPlacementRect | undefined,
+    target: SkuColorCardPlacementRect,
+    tolerance = 2
+): boolean {
+    if (!actual) return false;
+    return actual.left >= target.left - tolerance
+        && actual.top >= target.top - tolerance
+        && actual.left + actual.width <= target.left + target.width + tolerance
+        && actual.top + actual.height <= target.top + target.height + tolerance;
+}
+
+/**
+ * 把准备资产、Photoshop 写收据和写后 bounds 合成一张逐卡结构收据。
+ * 该函数只核对事实，不选择 subjectFillRatio、锚点或审美方向。
+ */
+export function buildSkuColorCardUniformScalePlacementReceipt(
+    input: BuildSkuColorCardUniformScalePlacementReceiptInput
+): SkuColorCardUniformScalePlacementReceipt {
+    const expectedRatio = input.asset.width > 0 && input.asset.height > 0
+        ? input.asset.width / input.asset.height
+        : 0;
+    const actualRatio = input.actualBounds
+        ? input.actualBounds.width / input.actualBounds.height
+        : 0;
+    const relativeRatioError = expectedRatio > 0 && actualRatio > 0
+        ? Math.abs(actualRatio / expectedRatio - 1)
+        : Number.POSITIVE_INFINITY;
+    const expectedWidthAtActualHeight = input.actualBounds
+        ? input.actualBounds.height * expectedRatio
+        : 0;
+    const ratioWidthDeltaPixels = input.actualBounds
+        ? Math.abs(input.actualBounds.width - expectedWidthAtActualHeight)
+        : Number.POSITIVE_INFINITY;
+    const fileReference = String(input.smartObjectFileReference || '').trim();
+    const fileReferenceMatches = !fileReference
+        || placementIdentityPath(fileReference) === placementIdentityPath(input.asset.path)
+        || placementIdentityFileName(fileReference) === placementIdentityFileName(input.asset.path);
+    const checks = {
+        sourceIdentity: /^[a-f0-9]{64}$/i.test(input.asset.sha256)
+            && input.asset.byteLength > 0
+            && input.placedSource.assetId === input.sourceId
+            && /^fnv1a32:[a-f0-9]{8}$/i.test(input.asset.checksum)
+            && input.placedSource.checksum.toLocaleLowerCase('en-US') === input.asset.checksum.toLocaleLowerCase('en-US')
+            && input.placedSource.byteLength === input.asset.byteLength
+            && input.placedSource.identityProofVersion === 'place-image-source-identity/v1'
+            && input.placedSource.identityVerified === true
+            && fileReferenceMatches,
+        documentIdentity: Number.isSafeInteger(input.observedDocumentId)
+            && Number(input.observedDocumentId) > 0
+            && input.documentId === input.expectedDocumentId
+            && input.observedDocumentId === input.expectedDocumentId,
+        editableSmartObject: input.editableSmartObject,
+        geometryReadback: input.layerBoundsReadSucceeded
+            && input.placementGeometryVerified
+            && placementRectsAgree(input.actualBounds, input.smartObjectBounds)
+            && (!input.placementActualBounds
+                || placementRectsAgree(input.actualBounds, input.placementActualBounds)),
+        containedWithoutFrameCrop: placementRectIsContained(input.actualBounds, input.targetBounds)
+            && input.outsideTargetFraction <= 0.0001
+            && input.outsideTargetEdges.length === 0,
+        assetAspectRatioPreserved: expectedRatio > 0
+            && actualRatio > 0
+            && (relativeRatioError <= 0.02 || ratioWidthDeltaPixels <= 2),
+        alphaEnvelopeSafe: input.asset.alphaEnvelopeSafe
+    };
+    return {
+        version: 'sku-color-card-uniform-scale-placement/v0',
+        sourceId: input.sourceId,
+        placedLayerId: input.placedLayerId,
+        documentId: input.documentId,
+        asset: {
+            path: input.asset.path,
+            sha256: input.asset.sha256,
+            checksum: input.asset.checksum,
+            byteLength: input.asset.byteLength,
+            width: input.asset.width,
+            height: input.asset.height
+        },
+        placedSource: input.placedSource,
+        targetBounds: input.targetBounds,
+        actualBounds: input.actualBounds,
+        checks,
+        verified: Object.values(checks).every(Boolean),
+        doesNotClaimAestheticQuality: true
+    };
 }
 
 export interface SkuColorCardExecutionReport {
     version: typeof SKU_COLOR_CARD_EXECUTION_REPORT_VERSION;
     status: 'structure_ready' | 'completed' | 'failed';
     outputPath: string;
+    presentationMode: SkuColorCardPresentationMode | null;
     documentId?: number;
     sourceCount: number;
     preparedCards: SkuColorCardPreparedCard[];
     checks: {
         sourceCoverage: 'passed' | 'needs_review' | 'failed';
         smartObjectEditability: 'passed' | 'failed';
-        clippingStructure: 'passed' | 'failed';
+        clippingStructure: 'passed' | 'not_applicable' | 'failed';
         labelTextFit: 'passed' | 'failed';
         indexReferenceIsolation: 'passed' | 'failed' | 'not_requested';
         finalStructureReadback: 'passed' | 'failed';
         visualComposition: 'passed' | 'needs_review' | 'failed';
         retouchAssets?: 'passed' | 'not_applicable' | 'failed';
-        retouchLayerStructure?: 'passed' | 'not_applicable' | 'failed';
+        uniformScaleLayerStructure?: 'passed' | 'not_applicable' | 'failed';
     };
     retouchReport?: SkuRetouchReport;
     failureStage?: string;
@@ -527,7 +707,7 @@ export function buildSkuColorCardPlan(input: BuildSkuColorCardPlanInput): SkuCol
     const presentationQualityCriteria: string[] = [];
     if (designSpec?.presentationMode === 'flat') {
         presentationQualityCriteria.push(
-            'Agent 选择 flat 时，每色组保留主体、原影、中性灰和色名的可编辑平铺结构，不生成 card 外壳或标签底。',
+            'Agent 选择 flat 时，每色组保留原始素材备份、统一尺度透明主体和色名的可编辑平铺结构，不生成 card 外壳或标签底。',
             'flat 色名文字必须依据 Photoshop 真实 bounds 缩放，并在 Agent 声明的标签区域内满足水平对齐与垂直居中。'
         );
     } else if (designSpec?.presentationMode === 'card') {
