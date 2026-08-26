@@ -318,6 +318,68 @@ export function readAgentReActRecoveryToolNames(result: unknown): string[] {
     return recovery ? [...recovery.allowedToolNames] : [];
 }
 
+export interface PhotoshopModalRecoveryEvidence {
+    environmentState: 'photoshop_native_modal_suspected';
+    recoveryRequired: true;
+    environmentObservation: {
+        capability: 'capturePhotoshopWindow';
+        scope: 'adobe_photoshop_application_window';
+        purpose?: string;
+    };
+    errorCategory?: string;
+    suggestion?: string;
+    originalError?: string;
+}
+
+/**
+ * 只承认失败结果自身携带的严格 Photoshop 弹窗恢复事实。
+ * 调用方不得根据 error 文案补造 recoveryRequired 或整窗观察能力。
+ */
+export function readPhotoshopModalRecoveryEvidence(
+    result: unknown
+): PhotoshopModalRecoveryEvidence | undefined {
+    const record = asRecord(result);
+    const observation = asRecord(record?.environmentObservation);
+    if (record?.success !== false
+        || record.recoveryRequired !== true
+        || record.environmentState !== 'photoshop_native_modal_suspected'
+        || observation?.capability !== 'capturePhotoshopWindow'
+        || observation.scope !== 'adobe_photoshop_application_window') {
+        return undefined;
+    }
+    return {
+        environmentState: 'photoshop_native_modal_suspected',
+        recoveryRequired: true,
+        environmentObservation: {
+            capability: 'capturePhotoshopWindow',
+            scope: 'adobe_photoshop_application_window',
+            ...(typeof observation.purpose === 'string'
+                ? { purpose: observation.purpose }
+                : {})
+        },
+        ...(typeof record.errorCategory === 'string'
+            ? { errorCategory: record.errorCategory }
+            : {}),
+        ...(typeof record.suggestion === 'string'
+            ? { suggestion: record.suggestion }
+            : {}),
+        ...(typeof record.originalError === 'string'
+            ? { originalError: record.originalError }
+            : {})
+    };
+}
+
+/** 已通过特定读回证明 applied 时不再把 transport timeout 冒充仍有弹窗；其余未知状态保留恢复出口。 */
+export function attachPhotoshopModalRecoveryEvidenceIfUnresolved(
+    result: Record<string, unknown>,
+    evidence: PhotoshopModalRecoveryEvidence | undefined
+): Record<string, unknown> {
+    if (!evidence) return result;
+    const operation = asRecord(result.photoshopOperationResult);
+    if (operation?.applicationStatus === 'applied') return result;
+    return { ...result, ...evidence };
+}
+
 /**
  * 只把 Harness 自己签发的 Photoshop 原生弹窗事实转换成“下一轮可见工具”。
  * 这不会执行截图，也不要求 Agent 必须调用；它仅避免 Capability 裁剪让恢复出口不可达。
@@ -326,12 +388,9 @@ export function readAgentEnvironmentRecoveryToolNames(result: unknown): string[]
     const record = asRecord(result);
     const data = asRecord(record?.data);
     const candidates = [record, data].filter((value): value is Record<string, unknown> => Boolean(value));
-    const modalObservation = candidates.some((candidate) => {
-        const observation = asRecord(candidate.environmentObservation);
-        return candidate.environmentState === 'photoshop_native_modal_suspected'
-            && observation?.capability === 'capturePhotoshopWindow'
-            && observation.scope === 'adobe_photoshop_application_window';
-    });
+    const modalObservation = candidates.some((candidate) => Boolean(
+        readPhotoshopModalRecoveryEvidence(candidate)
+    ));
     return modalObservation ? ['capturePhotoshopWindow'] : [];
 }
 

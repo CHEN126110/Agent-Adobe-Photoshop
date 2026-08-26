@@ -136,12 +136,31 @@ const environmentRecoverySession = createAgentCapabilitySession({
 });
 const environmentRecoveryToolNames = readAgentEnvironmentRecoveryToolNames({
   success: false,
+  recoveryRequired: true,
   environmentState: 'photoshop_native_modal_suspected',
   environmentObservation: {
     capability: 'capturePhotoshopWindow',
     scope: 'adobe_photoshop_application_window'
   }
 });
+assert.deepStrictEqual(readAgentEnvironmentRecoveryToolNames({
+  success: true,
+  recoveryRequired: true,
+  environmentState: 'photoshop_native_modal_suspected',
+  environmentObservation: {
+    capability: 'capturePhotoshopWindow',
+    scope: 'adobe_photoshop_application_window'
+  }
+}), [], '成功结果不能伪造 Photoshop 弹窗恢复能力');
+assert.deepStrictEqual(readAgentEnvironmentRecoveryToolNames({
+  success: false,
+  recoveryRequired: false,
+  environmentState: 'photoshop_native_modal_suspected',
+  environmentObservation: {
+    capability: 'capturePhotoshopWindow',
+    scope: 'adobe_photoshop_application_window'
+  }
+}), [], '未要求恢复的结果不能伪造 Photoshop 弹窗恢复能力');
 environmentRecoverySession.activateToolsForContinuation(environmentRecoveryToolNames);
 assert(
   environmentRecoverySession.activeTools.some((tool) => tool.name === 'capturePhotoshopWindow'),

@@ -39,8 +39,13 @@ import {
     shouldCollectAcceptanceVerification,
     type ToolAcceptanceCapturePolicy
 } from '../../shared/acceptance/tool-acceptance';
+import {
+    attachPhotoshopModalRecoveryEvidenceIfUnresolved,
+    readPhotoshopModalRecoveryEvidence
+} from '../../shared/agent-react-observation-contract';
 import { sha256Hex } from '../../shared/agent-runtime-v5/content-hash';
 import { sanitizeUserVisibleDiagnosticText } from '../../shared/chat-response-cleaner';
+import { buildCompoundPhotoshopWriteExceptionSettlement } from '../../shared/compound-photoshop-write-settlement';
 import { parseEagleAssetRefToken } from '../../shared/eagle-asset-ref';
 import { buildEagleReferenceFacetSummary } from '../../shared/eagle-reference-facets';
 import { describeDesignDocumentNature } from '../../shared/design-document-nature';
@@ -81,6 +86,7 @@ import {
 } from '../../shared/visual-observation-bundle';
 import { buildImagePlacementReviewPlan } from '../../shared/layout/image-placement-review-plan';
 import type { ImagePlacementSpec } from '../../shared/layout/layout-engine';
+import { preflightResolvedImagePlacements } from '../../shared/layout/resolved-image-placement-preflight';
 import {
     buildEditableConfirmationInteractiveCard
 } from '../../shared/editable-confirmation-interactive-card';
@@ -2736,6 +2742,8 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
     let dispatchedPhotoshopParams = params;
     let dispatchedPhotoshopAcceptanceBefore: AcceptanceCaptureResult | undefined;
     let dispatchedPhotoshopAcceptancePolicy: ToolAcceptanceCapturePolicy | undefined;
+    let compoundWriteStartHistoryStateRef: PhotoshopHistoryStateRef | undefined;
+    let compoundWriteExecutionArmed = false;
     console.log(`[ToolCall] 执行: ${toolName}`, params);
 
     if (options.signal?.aborted) {
@@ -3178,138 +3186,17 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             const resolved = screenRegion
                 ? solveOutcome.blocks.map((block) => ({ ...block, y: block.y + screenRegion.y }))
                 : solveOutcome.blocks;
-            const placementPreflightFindings: any[] = [];
-            const placementPrewritePlansByBlockId = new Map<string, any>();
-            const {
-                buildImagePlacementPrewritePlan
-            } = await import('../../shared/layout/image-placement-prewrite-plan');
+            const placementPreflight = await preflightResolvedImagePlacements({
+                blocks: resolved,
+                canvas,
+                executorLabel: 'renderLayout',
+                readAssetSubjectBox: (sourcePath: string) => (
+                    (window as any).designEcho?.invoke?.('resource:getAssetSubjectBox', sourcePath)
+                )
+            });
+            const placementPreflightFindings = placementPreflight.findings;
+            const placementPrewritePlansByBlockId = placementPreflight.plansByBlockId;
             const { verifySubjectFitResult } = await import('../../shared/subject-fit');
-            for (const block of resolved) {
-                if (!rendersLayoutBlockAsImage(block)) continue;
-                const placement: Partial<ImagePlacementSpec> = block.imagePlacement
-                    && typeof block.imagePlacement === 'object'
-                    ? block.imagePlacement
-                    : {};
-                const unsupportedSemantics: string[] = [];
-                const scale = placement.scale === undefined ? 1 : Number(placement.scale);
-                if (!Number.isFinite(scale) || Math.abs(scale - 1) > 0.001) {
-                    unsupportedSemantics.push(`scale=${String(placement.scale)}`);
-                }
-                const rotation = placement.rotation === undefined ? 0 : Number(placement.rotation);
-                if (!Number.isFinite(rotation) || Math.abs(rotation) > 0.001) {
-                    unsupportedSemantics.push(`rotation=${String(placement.rotation)}`);
-                }
-                if (placement.mask === 'shape') unsupportedSemantics.push('shape mask');
-
-                const fit = placement.fit === 'cover' ? 'cover' : 'contain';
-                const hasRectangularClip = placement.mask === 'clipping' || placement.overflow === 'clip';
-                const isWholeDocument = Math.abs(block.x) <= 1
-                    && Math.abs(block.y) <= 1
-                    && Math.abs(block.width - Number(canvas.width)) <= 1
-                    && Math.abs(block.height - Number(canvas.height)) <= 1;
-                if (fit === 'cover' && !hasRectangularClip && !isWholeDocument) {
-                    unsupportedSemantics.push('cover without clipping/clip on a non-document region');
-                }
-                if (unsupportedSemantics.length > 0) {
-                    placementPreflightFindings.push({
-                        code: 'placement_semantics_unsupported_prewrite',
-                        severity: 'repair',
-                        closureKind: 'replan',
-                        blockId: block.id,
-                        role: block.role,
-                        message: `图片块「${block.id}」包含当前 renderLayout 尚不能可靠执行的语义：`
-                            + `${unsupportedSemantics.join('、')}。本次未写入任何草稿，请先重规划为已支持语义。`,
-                        recommendedStrategies: [
-                            '保持 scale=1、rotation=0；图框对齐使用已支持的锚点或归一化 focalPoint',
-                            '非整画布 cover 必须声明 mask=clipping 或 overflow=clip',
-                            '需要形状蒙版或旋转构图时改用具备对应读回收据的专用执行路径'
-                        ]
-                    });
-                    continue;
-                }
-
-                const sourcePath = String(block.content || '').trim();
-                let assetSubject: any;
-                try {
-                    assetSubject = await (window as any).designEcho?.invoke?.(
-                        'resource:getAssetSubjectBox',
-                        sourcePath
-                    );
-                } catch (error: any) {
-                    assetSubject = {
-                        success: false,
-                        error: error?.message || String(error)
-                    };
-                }
-                const sourceWidth = Number(assetSubject?.imageWidth);
-                const sourceHeight = Number(assetSubject?.imageHeight);
-                const rawSubjectBox = assetSubject?.resolution?.box;
-                const subjectMethod = String(assetSubject?.resolution?.method || '').trim();
-                const subjectConfidence = String(assetSubject?.resolution?.confidence || '').trim();
-                const validSubjectMethods = ['alpha', 'trim', 'matting', 'frame'];
-                const validSubjectConfidence = ['certain', 'high', 'medium', 'low'];
-                const sourceSubject = rawSubjectBox
-                    && [rawSubjectBox.x, rawSubjectBox.y, rawSubjectBox.width, rawSubjectBox.height]
-                        .every((value) => Number.isFinite(Number(value)))
-                    && Number(rawSubjectBox.width) > 0
-                    && Number(rawSubjectBox.height) > 0
-                    && validSubjectMethods.includes(subjectMethod)
-                    && validSubjectConfidence.includes(subjectConfidence)
-                    ? {
-                        box: {
-                            x: Number(rawSubjectBox.x),
-                            y: Number(rawSubjectBox.y),
-                            width: Number(rawSubjectBox.width),
-                            height: Number(rawSubjectBox.height)
-                        },
-                        method: subjectMethod,
-                        confidence: subjectConfidence
-                    }
-                    : undefined;
-                const prewriteResult = buildImagePlacementPrewritePlan({
-                    source: {
-                        width: sourceWidth,
-                        height: sourceHeight,
-                        ...(sourceSubject ? { subject: sourceSubject as any } : {})
-                    },
-                    target: {
-                        x: Number(block.x),
-                        y: Number(block.y),
-                        width: Number(block.width),
-                        height: Number(block.height)
-                    },
-                    placement: {
-                        fit,
-                        anchor: placement.anchor as any,
-                        cropPolicy: placement.cropPolicy as any,
-                        ...(placement.focalPoint ? { focalPoint: placement.focalPoint as any } : {}),
-                        ...(placement.subjectFillRatio !== undefined
-                            ? { subjectFillRatio: Number(placement.subjectFillRatio) }
-                            : {})
-                    },
-                    canvas
-                });
-                if (!prewriteResult.ok) {
-                    placementPreflightFindings.push(...prewriteResult.issues.map((issue) => ({
-                        code: issue.code,
-                        severity: 'repair',
-                        closureKind: issue.stage === 'subject-protection'
-                            && issue.code !== 'protected_subject_crop_detected_prewrite'
-                            ? 'observation'
-                            : 'replan',
-                        blockId: block.id,
-                        role: block.role,
-                        message: `图片块「${block.id}」写入前没有通过落位预演：${issue.message} 本次未修改 Photoshop。`,
-                        ...(issue.facts ? { facts: issue.facts } : {}),
-                        recommendedStrategies: [
-                            '保持 Agent 的设计目标，补齐或修正源图、区域、锚点、关注点与裁切意图后重新预演',
-                            '若裁切是有意设计，由 Agent 看过素材后明确选择 allow-crop；Harness 不会替它放行'
-                        ]
-                    })));
-                    continue;
-                }
-                placementPrewritePlansByBlockId.set(block.id, prewriteResult.plan);
-            }
             if (placementPreflightFindings.length > 0) {
                 result = {
                     success: false,
@@ -3519,6 +3406,13 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     .filter((layer: any) => !matchedPreviousStageGroupIds.has(Number(layer?.id)))
                     .filter((layer: any) => reusableDraftLayerNames.has(String(layer?.name || '')));
             }
+            if (!layoutStartHistoryStateRef) {
+                const startDocumentInfo = await executeToolCall('getDocumentInfo', {}, options);
+                layoutStartHistoryStateRef = readPhotoshopHistoryStateRef(startDocumentInfo);
+            }
+            // 所有写前语义/owned-layer 校验都已通过；从这里开始任何异常都必须按复合写结算。
+            compoundWriteStartHistoryStateRef = layoutStartHistoryStateRef;
+            compoundWriteExecutionArmed = true;
             const created = [];
             const errors = [];
             const cleanupFailures: Array<{
@@ -3954,13 +3848,21 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         alignment: b.hAlign || 'left',
                         name: `${b.id}-文字`
                     }, options);
+                    const boxLayerId = inferFocusLayerId('createRectangle', {}, boxResult);
+                    const textLayerId = inferFocusLayerId('createTextLayer', {}, textResult);
+                    // 每个成功原子写都必须立即进入 retained ledger。不能等同组的后续文字也成功
+                    // 才登记底块，否则“底块已创建、文字失败”会让真实图层从失败收据中消失。
+                    if (boxLayerId) {
+                        createdLayerIds.push(boxLayerId);
+                        createdLayerBuckets.set(boxLayerId, '图片');
+                    }
+                    if (textLayerId) {
+                        createdLayerIds.push(textLayerId);
+                        createdLayerBuckets.set(textLayerId, '文案');
+                    }
                     if (boxResult && boxResult.success === false) errors.push({ block: b.id, role: b.role, error: boxResult.error });
                     if (textResult && textResult.success === false) errors.push({ block: b.id, role: b.role, error: textResult.error });
                     if (!(boxResult && boxResult.success === false) && !(textResult && textResult.success === false)) {
-                        const boxLayerId = inferFocusLayerId('createRectangle', {}, boxResult);
-                        const textLayerId = inferFocusLayerId('createTextLayer', {}, textResult);
-                        if (boxLayerId) { createdLayerIds.push(boxLayerId); createdLayerBuckets.set(boxLayerId, '图片'); }
-                        if (textLayerId) { createdLayerIds.push(textLayerId); createdLayerBuckets.set(textLayerId, '文案'); }
                         created.push({ id: b.id, role: b.role, x: b.x, y: b.y, width: b.width, height: b.height });
                     }
                     continue;
@@ -4663,10 +4565,9 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     });
                 }
             }
-            if (retainedCreatedLayerIds.length > 0 && !layoutFinalWriteHistoryStateRef) {
-                // 超大文档的完整层级读取可能失败；视觉身份不能因此永久卡死。
-                // 仅在缺最终 Host 版本时补一次轻量文档读取。结构复核 finding 保留，
-                // 但局部截图仍可与这个最终版本做同文档、同 historyState 的精确绑定。
+            if (layoutStartHistoryStateRef && !layoutFinalWriteHistoryStateRef) {
+                // 失败路径也必须结算最终 Host revision。不能用 errors.length 或已登记图层数决定
+                // 是否读回：原子写可能已经发生，却在登记 layerId 前失败。
                 const finalDocumentInfo = await executeToolCall('getDocumentInfo', {}, options);
                 if (finalDocumentInfo?.success !== false) {
                     layoutFinalWriteHistoryStateRef = readPhotoshopHistoryStateRef(finalDocumentInfo);
@@ -5904,6 +5805,62 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             executionKind === 'photoshop_write'
             || executionKind === 'save_export'
         );
+        if (toolName === 'renderLayout' && compoundWriteExecutionArmed) {
+            let finalDocumentInfo: any;
+            try {
+                finalDocumentInfo = await executeToolCallImpl('getDocumentInfo', {}, options);
+            } catch (settlementError) {
+                finalDocumentInfo = {
+                    success: false,
+                    error: settlementError instanceof Error
+                        ? settlementError.message
+                        : String(settlementError)
+                };
+            }
+            const finalHistoryStateRef = finalDocumentInfo?.success === false
+                ? undefined
+                : readPhotoshopHistoryStateRef(finalDocumentInfo);
+            const settlement = buildCompoundPhotoshopWriteExceptionSettlement({
+                operationId: `render-layout-exception-${startTime}-${currentRound}`,
+                toolName,
+                before: compoundWriteStartHistoryStateRef,
+                after: finalHistoryStateRef,
+                message: errorMessage
+            });
+            const modalRecoveryResult = isPhotoshopNativeModalTimeout(errorMessage)
+                ? buildPhotoshopNativeModalSuspectedResult(toolName, errorMessage, params)
+                : undefined;
+            const modalRecovery = readPhotoshopModalRecoveryEvidence(modalRecoveryResult);
+            const compoundFailure = {
+                success: false,
+                status: 'failed',
+                qualityState: 'failed',
+                continuationRequired: true,
+                applicationStatus: settlement.photoshopOperationResult.applicationStatus,
+                mutationStatus: settlement.mutationObserved ? 'applied' : 'unknown',
+                ...(settlement.mutationObserved ? { partialMutation: true } : {}),
+                ...settlement,
+                ...(finalHistoryStateRef ? { finalHistoryStateRef } : {}),
+                ...(modalRecovery ? {
+                    errorCategory: modalRecovery.errorCategory,
+                    environmentState: modalRecovery.environmentState,
+                    recoveryRequired: modalRecovery.recoveryRequired,
+                    environmentObservation: modalRecovery.environmentObservation,
+                    suggestion: modalRecovery.suggestion,
+                    ...(modalRecovery.originalError
+                        ? { originalError: modalRecovery.originalError }
+                        : {})
+                } : {}),
+                error: modalRecoveryResult?.error
+                    || sanitizeUserVisibleDiagnosticText(errorMessage)
+                    || errorMessage,
+                message: settlement.mutationObserved
+                    ? 'renderLayout 未完整完成，但最终 Host 版本证明已经发生部分写入；请先查看当前文档，不能直接重放整次布局。'
+                    : 'renderLayout 未完整完成，且最终写入状态无法证明；请先读取当前文档与版本，不能直接重放整次布局。'
+            };
+            toolLogger.logToolCall(toolName, params, compoundFailure, Date.now() - startTime, currentRound);
+            return compoundFailure;
+        }
         const dispatchFailure = readPhotoshopToolDispatchFailure(error);
         if (dispatchFailure?.phase === 'pre_dispatch') {
             const notDispatchedResult = isPhotoshopWrite
@@ -5947,14 +5904,21 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     acceptancePolicy: dispatchedPhotoshopAcceptancePolicy
                 }
             );
+            const modalRecoveryResult = isPhotoshopNativeModalTimeout(errorMessage)
+                ? buildPhotoshopNativeModalSuspectedResult(toolName, errorMessage, params)
+                : undefined;
+            const resultWithRecovery = attachPhotoshopModalRecoveryEvidenceIfUnresolved(
+                reconciledResult,
+                readPhotoshopModalRecoveryEvidence(modalRecoveryResult)
+            );
             toolLogger.logToolCall(
                 toolName,
                 params,
-                reconciledResult,
+                resultWithRecovery,
                 Date.now() - startTime,
                 currentRound
             );
-            return reconciledResult;
+            return resultWithRecovery;
         }
         if (isPhotoshopNativeModalTimeout(errorMessage)) {
             const modalResult = buildPhotoshopNativeModalSuspectedResult(toolName, errorMessage, params);

@@ -44,6 +44,17 @@ const {
     buildToolAcceptanceVerification
 } = require(path.join(root, 'src/shared/acceptance/tool-acceptance.ts'));
 const {
+    buildCompoundPhotoshopWriteExceptionSettlement
+} = require(path.join(root, 'src/shared/compound-photoshop-write-settlement.ts'));
+const {
+    attachPhotoshopModalRecoveryEvidenceIfUnresolved,
+    readPhotoshopModalRecoveryEvidence
+} = require(path.join(root, 'src/shared/agent-react-observation-contract.ts'));
+const {
+    readPhotoshopOperationResult,
+    requiresPhotoshopOperationReadback
+} = require(path.join(root, 'src/shared/photoshop-operation-result.ts'));
+const {
     generateToolSchemas
 } = require(path.join(root, 'src/renderer/services/agent-runtime/tool-schemas.ts'));
 const {
@@ -66,6 +77,10 @@ const toolExecutorSource = fs.readFileSync(
 );
 const composeExecutorSource = fs.readFileSync(
     path.join(root, 'src/renderer/services/design-workshop/compose-design.executor.ts'),
+    'utf8'
+);
+const resolvedImagePreflightSource = fs.readFileSync(
+    path.join(root, 'src/shared/layout/resolved-image-placement-preflight.ts'),
     'utf8'
 );
 const toolSchemasSource = fs.readFileSync(
@@ -285,12 +300,112 @@ const renderLayoutExecutionSource = toolExecutorSource.slice(
 );
 check(
     'renderLayout 在图片写入前预演主体与图框，subjectFillRatio 由单次 placeImage 兑现',
-    renderLayoutExecutionSource.includes('buildImagePlacementPrewritePlan({')
-        && renderLayoutExecutionSource.includes('placementPrewritePlansByBlockId.set(')
+    renderLayoutExecutionSource.includes('preflightResolvedImagePlacements({')
+        && resolvedImagePreflightSource.includes('buildImagePlacementPrewritePlan({')
+        && resolvedImagePreflightSource.includes('plansByBlockId.set(block.id, prewriteResult.plan)')
         && renderLayoutExecutionSource.includes('const finalTargetBounds = prewritePlan?.finalWrite?.targetBounds')
         && renderLayoutExecutionSource.includes("'precomputed_subject_fit_single_place'")
         && !renderLayoutExecutionSource.includes("executeToolCall('fitLayerSubjectToRegion'"),
     'renderLayout 仍存在首写后再调用 subject-fit 的二次变换路径'
+);
+check(
+    'composeDesign 与 renderLayout 共用同一图片写前预演，并且外层预演早于首个 Photoshop 写入',
+    composeExecutorSource.includes('preflightResolvedImagePlacements({')
+        && composeExecutorSource.indexOf("step: '预演构图中的全部图片落位'")
+            < composeExecutorSource.indexOf("run('建画布', 'createDocument'")
+        && (toolExecutorSource.match(/preflightResolvedImagePlacements\(\{/g) || []).length === 1
+        && (composeExecutorSource.match(/preflightResolvedImagePlacements\(\{/g) || []).length === 1,
+    '图片落位预演仍在两个执行器中各写一套，或 composeDesign 仍先写后验'
+);
+check(
+    'renderLayout 每个成功原子写立即登记图层，并在失败路径同样读取最终 Host revision',
+    renderLayoutExecutionSource.indexOf("createdLayerIds.push(boxLayerId)")
+        < renderLayoutExecutionSource.indexOf("if (boxResult && boxResult.success === false)")
+        && renderLayoutExecutionSource.indexOf("createdLayerIds.push(textLayerId)")
+            < renderLayoutExecutionSource.indexOf("if (textResult && textResult.success === false)")
+        && renderLayoutExecutionSource.includes('if (layoutStartHistoryStateRef && !layoutFinalWriteHistoryStateRef)'),
+    'selling-point 半成功图层仍可能从收据消失，或失败后没有最终版本结算'
+);
+check(
+    'standalone renderLayout 的非结构化异常也用写前 Host revision 结算为 applied 或 unknown',
+    toolExecutorSource.includes('compoundWriteStartHistoryStateRef = layoutStartHistoryStateRef')
+        && toolExecutorSource.includes('compoundWriteExecutionArmed = true')
+        && renderLayoutExecutionSource.indexOf('compoundWriteExecutionArmed = true')
+            < renderLayoutExecutionSource.indexOf('for (const b of resolved)')
+        && toolExecutorSource.includes("if (toolName === 'renderLayout' && compoundWriteExecutionArmed)")
+        && toolExecutorSource.includes('buildCompoundPhotoshopWriteExceptionSettlement({')
+        && toolExecutorSource.includes('不能直接重放整次布局'),
+    'renderLayout 抛出异常时仍可能绕过最终 Host revision 结算'
+);
+const appliedCompoundSettlement = buildCompoundPhotoshopWriteExceptionSettlement({
+    operationId: 'render-layout-applied-fixture',
+    toolName: 'renderLayout',
+    before: { documentId: 8, historyStateId: 10 },
+    after: { documentId: 8, historyStateId: 11 },
+    message: 'fixture exception'
+});
+check(
+    'renderLayout 异常结算在同文档 history 前进时生成 Runtime 可读的 applied operation envelope',
+    appliedCompoundSettlement.mutationObserved === true
+        && appliedCompoundSettlement.photoshopHistoryTransition?.after?.historyStateId === 11
+        && readPhotoshopOperationResult(appliedCompoundSettlement)?.status === 'applied'
+        && requiresPhotoshopOperationReadback(appliedCompoundSettlement) === true,
+    JSON.stringify(appliedCompoundSettlement)
+);
+const unknownCompoundSettlement = buildCompoundPhotoshopWriteExceptionSettlement({
+    operationId: 'render-layout-unknown-fixture',
+    toolName: 'renderLayout',
+    before: { documentId: 8, historyStateId: 10 },
+    message: 'fixture exception without final revision'
+});
+check(
+    'renderLayout 异常结算缺最终 revision 时生成正式 unknown envelope，Runtime 必须建立读回写锁',
+    unknownCompoundSettlement.mutationObserved === false
+        && readPhotoshopOperationResult(unknownCompoundSettlement)?.status === 'unknown'
+        && requiresPhotoshopOperationReadback(unknownCompoundSettlement) === true,
+    JSON.stringify(unknownCompoundSettlement)
+);
+const strictModalRecoveryEvidence = readPhotoshopModalRecoveryEvidence({
+    success: false,
+    recoveryRequired: true,
+    environmentState: 'photoshop_native_modal_suspected',
+    environmentObservation: {
+        capability: 'capturePhotoshopWindow',
+        scope: 'adobe_photoshop_application_window'
+    }
+});
+const unresolvedWithModalRecovery = attachPhotoshopModalRecoveryEvidenceIfUnresolved(
+    unknownCompoundSettlement,
+    strictModalRecoveryEvidence
+);
+const appliedWithoutModalRecovery = attachPhotoshopModalRecoveryEvidenceIfUnresolved(
+    appliedCompoundSettlement,
+    strictModalRecoveryEvidence
+);
+check(
+    '普通写入 timeout 只有在 operation 仍未决时保留严格 modal 恢复证据，已证明 applied 时不伪报堵塞',
+    unresolvedWithModalRecovery.environmentState === 'photoshop_native_modal_suspected'
+        && unresolvedWithModalRecovery.environmentObservation?.capability === 'capturePhotoshopWindow'
+        && appliedWithoutModalRecovery.environmentState === undefined
+        && readPhotoshopModalRecoveryEvidence({
+            success: true,
+            recoveryRequired: true,
+            environmentState: 'photoshop_native_modal_suspected',
+            environmentObservation: {
+                capability: 'capturePhotoshopWindow',
+                scope: 'adobe_photoshop_application_window'
+            }
+        }) === undefined
+        && readPhotoshopModalRecoveryEvidence({
+            success: false,
+            recoveryRequired: false,
+            environmentState: 'photoshop_native_modal_suspected',
+            environmentObservation: {
+                capability: 'capturePhotoshopWindow',
+                scope: 'adobe_photoshop_application_window'
+            }
+        }) === undefined,
+    JSON.stringify({ unresolvedWithModalRecovery, appliedWithoutModalRecovery })
 );
 check(
     'renderLayout 用组级 swap 延迟删除旧稿，保护 owned 后代并如实记录失败清理',
@@ -1811,7 +1926,12 @@ async function verifyComposeDesignResultProjection() {
         inferLayerId: (toolName, _params, toolResult) => toolResult?.layerId || toolLayerIds[toolName],
         invokeMain: async (channel) => {
             if (channel === 'resource:getAssetSubjectBox') {
-                return { success: false, error: 'fixture deliberately omits subject geometry' };
+                return {
+                    success: true,
+                    imageWidth: 1200,
+                    imageHeight: 1800,
+                    error: 'fixture deliberately omits subject geometry'
+                };
             }
             if (channel === 'designWorkshop:readRecentDesigns') {
                 return { success: false };
@@ -2086,6 +2206,459 @@ async function verifyComposeDesignResultProjection() {
             && !photoConflictCalls.includes('createDocument')
             && !photoConflictCalls.includes('placeImage'),
         JSON.stringify({ photoConflictResult, photoConflictCalls })
+    );
+
+    const nestedImagePreflightCalls = [];
+    const nestedImagePreflightResult = await executeComposeDesign({
+        ...good,
+        layout: {
+            ...good.layout,
+            regions: [
+                ...good.layout.regions,
+                {
+                    id: '装饰·局部产品图',
+                    role: 'decoration',
+                    content: 'E:/project/independent-product.jpg',
+                    bounds: { x: 0.06, y: 0.58, width: 0.28, height: 0.28 },
+                    imagePlacement: {
+                        fit: 'cover', anchor: 'center', scale: 1, rotation: 0,
+                        mask: 'clipping', overflow: 'clip', cropPolicy: 'protect-subject'
+                    }
+                }
+            ]
+        }
+    }, {
+        executeToolCall: async (toolName) => {
+            nestedImagePreflightCalls.push(toolName);
+            return { success: true };
+        },
+        inferLayerId: () => undefined,
+        invokeMain: async (channel, sourcePath) => {
+            if (channel === 'resource:getAssetSubjectBox') {
+                return {
+                    success: true,
+                    imageWidth: 1200,
+                    imageHeight: 1800,
+                    ...(String(sourcePath).includes('independent-product')
+                        ? {}
+                        : {
+                            resolution: {
+                                box: { x: 0.2, y: 0.1, width: 0.6, height: 0.8 },
+                                method: 'alpha',
+                                confidence: 'certain'
+                            }
+                        })
+                };
+            }
+            return { success: false };
+        }
+    });
+    check(
+        'composeDesign 在任何 Photoshop 写入前预演独立图片区域，失败不留下空文档或背景层',
+        nestedImagePreflightResult.success === false
+            && nestedImagePreflightResult.failedStep === '构图图片写前预演'
+            && nestedImagePreflightResult.data?.partialMutation === false
+            && nestedImagePreflightResult.data?.mutationStatus === 'not_observed'
+            && nestedImagePreflightResult.placementPreflightFindings?.some((finding) => (
+                finding.blockId === '装饰·局部产品图'
+                && finding.code === 'subject_facts_required_for_protection'
+            ))
+            && nestedImagePreflightCalls.length === 0,
+        JSON.stringify({ nestedImagePreflightResult, nestedImagePreflightCalls })
+    );
+
+    let openingModalReadCount = 0;
+    const openingModalResult = await executeComposeDesign({
+        ...good,
+        document: { mode: 'active', name: '开场弹窗活动文档' }
+    }, {
+        executeToolCall: async (toolName) => {
+            if (toolName === 'getDocumentInfo') {
+                openingModalReadCount += 1;
+                return {
+                    success: false,
+                    error: 'getDocumentInfo 处理超时：Photoshop 可能有弹窗未关闭。',
+                    errorCategory: 'photoshop_native_modal_suspected',
+                    environmentState: 'photoshop_native_modal_suspected',
+                    recoveryRequired: true,
+                    environmentObservation: {
+                        capability: 'capturePhotoshopWindow',
+                        scope: 'adobe_photoshop_application_window',
+                        purpose: '读取包含原生弹窗的真实 Photoshop 窗口。'
+                    }
+                };
+            }
+            return { success: true };
+        },
+        inferLayerId: () => undefined,
+        invokeMain: async () => ({ success: false })
+    });
+    check(
+        'composeDesign 开场只读确认就遇到原生弹窗时，也把整窗观察出口交回 Agent',
+        openingModalResult.success === false
+            && openingModalResult.failedStep === '确认活动文档'
+            && openingModalResult.data?.mutationStatus === 'not_observed'
+            && openingModalResult.environmentState === 'photoshop_native_modal_suspected'
+            && openingModalResult.environmentObservation?.capability === 'capturePhotoshopWindow'
+            && openingModalResult.environmentObservation?.scope === 'adobe_photoshop_application_window'
+            && openingModalReadCount === 1,
+        JSON.stringify(openingModalResult)
+    );
+
+    let failureSettlementReadCount = 0;
+    const partialCommitCalls = [];
+    const partialCommitResult = await executeComposeDesign({
+        ...good,
+        document: { mode: 'active', name: '活动文档局部修订' },
+        subject: {
+            ...good.subject,
+            shadow: { kind: 'none' }
+        }
+    }, {
+        executeToolCall: async (toolName) => {
+            partialCommitCalls.push(toolName);
+            if (toolName === 'getDocumentInfo') {
+                failureSettlementReadCount += 1;
+                const historyStateId = failureSettlementReadCount === 1 ? 8049 : 8053;
+                return {
+                    success: true,
+                    document: { id: 701, width: 800, height: 800 },
+                    historyStateRef: { documentId: 701, historyStateId }
+                };
+            }
+            if (toolName === 'createRectangle') {
+                return {
+                    success: true,
+                    layerId: 11,
+                    photoshopHistoryTransition: {
+                        version: 'photoshop-history-transition/v1',
+                        basis: 'acceptance_snapshot_pair',
+                        before: { documentId: 701, historyStateId: 8049 },
+                        after: { documentId: 701, historyStateId: 8050 },
+                        mutationObserved: true,
+                        documentChanged: false
+                    }
+                };
+            }
+            if (toolName === 'renderLayout') {
+                return {
+                    success: false,
+                    status: 'failed',
+                    error: 'Photoshop 可能正忙：卖点文字创建失败，候选底块已经保留',
+                    createdLayerIds: [12],
+                    photoshopHistoryTransition: {
+                        version: 'photoshop-history-transition/v1',
+                        basis: 'acceptance_snapshot_pair',
+                        before: { documentId: 701, historyStateId: 8050 },
+                        after: { documentId: 701, historyStateId: 8053 },
+                        mutationObserved: true,
+                        documentChanged: false
+                    }
+                };
+            }
+            return { success: true };
+        },
+        inferLayerId: (_toolName, _params, toolResult) => toolResult?.layerId,
+        invokeMain: async (channel) => {
+            if (channel === 'resource:getAssetSubjectBox') {
+                return { success: true, imageWidth: 1200, imageHeight: 1800 };
+            }
+            return { success: false };
+        }
+    });
+    check(
+        'composeDesign 失败子调用即使 success=false 也保留真实 History 证据并做最终版本结算',
+        partialCommitResult.success === false
+            && partialCommitResult.data?.partialMutation === true
+            && partialCommitResult.data?.mutationStatus === 'applied'
+            && partialCommitResult.photoshopHistoryTransition?.before?.historyStateId === 8049
+            && partialCommitResult.photoshopHistoryTransition?.after?.historyStateId === 8053
+            && partialCommitResult.toolResults?.some((entry) => (
+                entry.toolName === 'renderLayout'
+                && entry.result?.success === false
+                && entry.result?.photoshopHistoryTransition?.after?.historyStateId === 8053
+            ))
+            && partialCommitResult.message.includes('Photoshop 已发生部分改动')
+            && !partialCommitResult.message.includes('未修改')
+            && partialCommitCalls.filter((toolName) => toolName === 'renderLayout').length === 1
+            && partialCommitCalls.filter((toolName) => toolName === 'getDocumentInfo').length === 2,
+        JSON.stringify({ partialCommitResult, partialCommitCalls })
+    );
+
+    let modalSettlementReads = 0;
+    let modalRenderCalls = 0;
+    const modalFailureResult = await executeComposeDesign({
+        ...good,
+        document: { mode: 'active', name: '弹窗堵塞活动文档' },
+        subject: { ...good.subject, shadow: { kind: 'none' } }
+    }, {
+        executeToolCall: async (toolName) => {
+            if (toolName === 'getDocumentInfo') {
+                modalSettlementReads += 1;
+                return {
+                    success: true,
+                    document: { id: 705, width: 800, height: 800 },
+                    historyStateRef: {
+                        documentId: 705,
+                        historyStateId: modalSettlementReads === 1 ? 300 : 301
+                    }
+                };
+            }
+            if (toolName === 'createRectangle') {
+                return {
+                    success: true,
+                    layerId: 41,
+                    photoshopHistoryTransition: {
+                        version: 'photoshop-history-transition/v1', basis: 'acceptance_snapshot_pair',
+                        before: { documentId: 705, historyStateId: 300 },
+                        after: { documentId: 705, historyStateId: 301 },
+                        mutationObserved: true, documentChanged: false
+                    }
+                };
+            }
+            if (toolName === 'renderLayout') {
+                modalRenderCalls += 1;
+                return {
+                    success: false,
+                    error: 'renderLayout 处理超时：Photoshop 可能有弹窗未关闭。',
+                    errorCategory: 'photoshop_native_modal_suspected',
+                    environmentState: 'photoshop_native_modal_suspected',
+                    recoveryRequired: true,
+                    environmentObservation: {
+                        capability: 'capturePhotoshopWindow',
+                        scope: 'adobe_photoshop_application_window',
+                        purpose: '读取包含原生弹窗的真实 Photoshop 窗口。'
+                    },
+                    suggestion: '先观察完整 Photoshop 窗口，不要重复写入。'
+                };
+            }
+            return { success: true };
+        },
+        inferLayerId: (_toolName, _params, toolResult) => toolResult?.layerId,
+        invokeMain: async (channel) => channel === 'resource:getAssetSubjectBox'
+            ? { success: true, imageWidth: 1200, imageHeight: 1800 }
+            : { success: false }
+    });
+    check(
+        'composeDesign 遇到 Photoshop 原生弹窗嫌疑时不重放整单，并把整窗观察出口投影回 Agent',
+        modalFailureResult.success === false
+            && modalRenderCalls === 1
+            && modalSettlementReads === 2
+            && modalFailureResult.environmentState === 'photoshop_native_modal_suspected'
+            && modalFailureResult.recoveryRequired === true
+            && modalFailureResult.environmentObservation?.capability === 'capturePhotoshopWindow'
+            && modalFailureResult.environmentObservation?.scope === 'adobe_photoshop_application_window'
+            && modalFailureResult.toolResults?.some((entry) => (
+                entry.toolName === 'renderLayout'
+                && entry.result?.environmentState === 'photoshop_native_modal_suspected'
+            )),
+        JSON.stringify(modalFailureResult)
+    );
+
+    let settlementModalReads = 0;
+    const settlementModalResult = await executeComposeDesign({
+        ...good,
+        document: { mode: 'active', name: '结算读回弹窗活动文档' },
+        subject: { ...good.subject, shadow: { kind: 'none' } }
+    }, {
+        executeToolCall: async (toolName) => {
+            if (toolName === 'getDocumentInfo') {
+                settlementModalReads += 1;
+                if (settlementModalReads === 1) {
+                    return {
+                        success: true,
+                        document: { id: 706, width: 800, height: 800 },
+                        historyStateRef: { documentId: 706, historyStateId: 400 }
+                    };
+                }
+                return {
+                    success: false,
+                    recoveryRequired: true,
+                    environmentState: 'photoshop_native_modal_suspected',
+                    environmentObservation: {
+                        capability: 'capturePhotoshopWindow',
+                        scope: 'adobe_photoshop_application_window'
+                    },
+                    error: '失败结算读取时 Photoshop 出现原生弹窗嫌疑。'
+                };
+            }
+            if (toolName === 'createRectangle') {
+                return { success: false, error: '背景写入没有返回可确认结果。' };
+            }
+            return { success: true };
+        },
+        inferLayerId: () => undefined,
+        invokeMain: async (channel) => channel === 'resource:getAssetSubjectBox'
+            ? { success: true, imageWidth: 1200, imageHeight: 1800 }
+            : { success: false }
+    });
+    check(
+        '原始写失败未携带弹窗字段、但失败结算读回发现弹窗时，恢复证据仍能到达 Agent',
+        settlementModalResult.success === false
+            && settlementModalResult.data?.mutationStatus === 'unknown'
+            && settlementModalResult.environmentState === 'photoshop_native_modal_suspected'
+            && settlementModalResult.environmentObservation?.capability === 'capturePhotoshopWindow'
+            && settlementModalReads === 2,
+        JSON.stringify(settlementModalResult)
+    );
+
+    let conflictingSettlementReads = 0;
+    const conflictingProofResult = await executeComposeDesign({
+        ...good,
+        document: { mode: 'active', name: '冲突证据活动文档' },
+        subject: { ...good.subject, shadow: { kind: 'none' } }
+    }, {
+        executeToolCall: async (toolName) => {
+            if (toolName === 'getDocumentInfo') {
+                conflictingSettlementReads += 1;
+                return {
+                    success: true,
+                    document: { id: 702, width: 800, height: 800 },
+                    historyStateRef: { documentId: 702, historyStateId: 900 }
+                };
+            }
+            if (toolName === 'createRectangle') {
+                return {
+                    success: true,
+                    layerId: 21,
+                    photoshopHistoryTransition: {
+                        version: 'photoshop-history-transition/v1', basis: 'acceptance_snapshot_pair',
+                        before: { documentId: 702, historyStateId: 900 },
+                        after: { documentId: 702, historyStateId: 901 },
+                        mutationObserved: true, documentChanged: false
+                    }
+                };
+            }
+            if (toolName === 'renderLayout') {
+                return {
+                    success: false,
+                    error: '局部构图失败后外部发生了撤销',
+                    photoshopHistoryTransition: {
+                        version: 'photoshop-history-transition/v1', basis: 'acceptance_snapshot_pair',
+                        before: { documentId: 702, historyStateId: 901 },
+                        after: { documentId: 702, historyStateId: 902 },
+                        mutationObserved: true, documentChanged: false
+                    }
+                };
+            }
+            return { success: true };
+        },
+        inferLayerId: (_toolName, _params, toolResult) => toolResult?.layerId,
+        invokeMain: async (channel) => channel === 'resource:getAssetSubjectBox'
+            ? { success: true, imageWidth: 1200, imageHeight: 1800 }
+            : { success: false }
+    });
+    check(
+        'composeDesign 遇到子工具 mutation proof 与最终原版本冲突时保持 unknown，不把撤销或切换冒充未修改',
+        conflictingProofResult.success === false
+            && conflictingProofResult.data?.mutationStatus === 'unknown'
+            && conflictingProofResult.data?.partialMutation === undefined
+            && conflictingProofResult.photoshopHistoryTransition === undefined
+            && conflictingProofResult.data?.mutationSettlement?.reason?.includes('证据冲突')
+            && conflictingSettlementReads === 2,
+        JSON.stringify(conflictingProofResult)
+    );
+
+    let createdDocumentSettlementReads = 0;
+    const failedCreateDocumentResult = await executeComposeDesign(good, {
+        executeToolCall: async (toolName) => {
+            if (toolName === 'createDocument') {
+                return {
+                    success: false,
+                    error: '文档已创建，但激活后的尺寸读回失败',
+                    photoshopMutationCommit: {
+                        version: 'photoshop-mutation-commit/v1',
+                        basis: 'same_execute_as_modal',
+                        bindingStrength: 'unguarded',
+                        changeKind: 'document_creation',
+                        beforeOpenDocumentIds: [70],
+                        createdDocumentId: 703,
+                        after: { documentId: 703, historyStateId: 1, activeLayerId: null },
+                        toolActionCompleted: false,
+                        mutationObserved: true,
+                        documentChanged: true
+                    }
+                };
+            }
+            if (toolName === 'getDocumentInfo') {
+                createdDocumentSettlementReads += 1;
+                return {
+                    success: true,
+                    document: { id: 703, width: 800, height: 800 },
+                    historyStateRef: { documentId: 703, historyStateId: 1 }
+                };
+            }
+            return { success: true };
+        },
+        inferLayerId: () => undefined,
+        invokeMain: async (channel) => channel === 'resource:getAssetSubjectBox'
+            ? { success: true, imageWidth: 1200, imageHeight: 1800 }
+            : { success: false }
+    });
+    check(
+        'createDocument 返回失败但 Host commit 证明新文档已创建时，composeDesign 不再把 createdDocument 写成 false',
+        failedCreateDocumentResult.success === false
+            && failedCreateDocumentResult.documentId === 703
+            && failedCreateDocumentResult.data?.documentId === 703
+            && failedCreateDocumentResult.data?.createdDocument === true
+            && failedCreateDocumentResult.data?.partialMutation === true
+            && failedCreateDocumentResult.data?.mutationStatus === 'applied'
+            && createdDocumentSettlementReads === 1,
+        JSON.stringify(failedCreateDocumentResult)
+    );
+
+    let exceptionSettlementReads = 0;
+    const thrownAfterWriteResult = await executeComposeDesign({
+        ...good,
+        document: { mode: 'active', name: '异常结算活动文档' },
+        subject: { ...good.subject, shadow: { kind: 'none' } }
+    }, {
+        executeToolCall: async (toolName) => {
+            if (toolName === 'getDocumentInfo') {
+                exceptionSettlementReads += 1;
+                const historyStateId = exceptionSettlementReads === 1 ? 1000 : 1001;
+                return {
+                    success: true,
+                    document: { id: 704, width: 800, height: 800 },
+                    historyStateRef: { documentId: 704, historyStateId }
+                };
+            }
+            if (toolName === 'createRectangle') {
+                return {
+                    success: true,
+                    layerId: 31,
+                    photoshopHistoryTransition: {
+                        version: 'photoshop-history-transition/v1', basis: 'acceptance_snapshot_pair',
+                        before: { documentId: 704, historyStateId: 1000 },
+                        after: { documentId: 704, historyStateId: 1001 },
+                        mutationObserved: true, documentChanged: false
+                    }
+                };
+            }
+            if (toolName === 'renderLayout') {
+                const structuredError = new Error('fixture renderLayout unexpected exception');
+                structuredError.success = true;
+                throw structuredError;
+            }
+            return { success: true };
+        },
+        inferLayerId: (_toolName, _params, toolResult) => toolResult?.layerId,
+        invokeMain: async (channel) => channel === 'resource:getAssetSubjectBox'
+            ? { success: true, imageWidth: 1200, imageHeight: 1800 }
+            : { success: false }
+    });
+    check(
+        'composeDesign 在先写入后发生非结构化异常时仍走同一失败结算，不以 reject 丢失现场事实',
+        thrownAfterWriteResult.success === false
+            && thrownAfterWriteResult.failedStep === '执行异常'
+            && thrownAfterWriteResult.unexpectedException === true
+            && thrownAfterWriteResult.data?.partialMutation === true
+            && thrownAfterWriteResult.photoshopHistoryTransition?.after?.historyStateId === 1001
+            && thrownAfterWriteResult.toolResults?.some((entry) => (
+                entry.toolName === 'renderLayout' && entry.result?.success === false
+            ))
+            && exceptionSettlementReads === 2,
+        JSON.stringify(thrownAfterWriteResult)
     );
 
     const chatPanelSource = fs.readFileSync(

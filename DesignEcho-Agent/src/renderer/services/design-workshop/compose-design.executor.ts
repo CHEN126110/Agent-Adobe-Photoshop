@@ -8,6 +8,7 @@
  * 说清「哪一步、为什么、还能怎么做」，已完成的步骤如实列出（不回滚——半成品也是模型可续的起点）。
  */
 
+import { readPhotoshopModalRecoveryEvidence } from '../../../shared/agent-react-observation-contract';
 import {
     buildBackdropPrompt,
     isComposeDesignSubjectAliasRegion,
@@ -34,14 +35,23 @@ import {
     type ImagePlacementPrewriteSubjectFacts
 } from '../../../shared/layout/image-placement-prewrite-plan';
 import { buildImagePlacementReviewPlan } from '../../../shared/layout/image-placement-review-plan';
-import { rendersLayoutBlockAsImage } from '../../../shared/layout/layout-engine';
+import {
+    rendersLayoutBlockAsImage,
+    solveRegionLayout,
+    type NormalizedRegionBlock
+} from '../../../shared/layout/layout-engine';
 import { resolveRenderLayoutVisualStyle } from '../../../shared/layout/render-layout-style';
+import { preflightResolvedImagePlacements } from '../../../shared/layout/resolved-image-placement-preflight';
 import { classifyFilesystemProjectAffinity } from '../../../shared/photoshop-document-inventory';
 import {
+    buildPhotoshopHistoryTransition,
+    findObservedPhotoshopMutationProof,
     readPhotoshopHistoryStateRef,
+    readPhotoshopHistoryTransition,
+    readPhotoshopMutationCommit,
     samePhotoshopHistoryStateRef
 } from '../../../shared/photoshop-history-state-ref';
-import { isTransientPhotoshopBusyFailure } from '../../../shared/photoshop-transient-error';
+import type { PhotoshopHistoryStateRef } from '../../../shared/photoshop-history-state-ref';
 
 export interface ComposeDesignExecutorDeps {
     executeToolCall: (toolName: string, params: any, options?: any) => Promise<any>;
@@ -73,6 +83,16 @@ interface WorkshopStep {
     layerId?: number;
 }
 
+type ComposeMutationSettlementStatus = 'applied' | 'not_observed' | 'unknown';
+
+interface ComposeMutationSettlement {
+    status: ComposeMutationSettlementStatus;
+    attemptedMutationTools: string[];
+    successfulMutationTools: string[];
+    finalHistoryStateRef?: PhotoshopHistoryStateRef;
+    reason: string;
+}
+
 interface ComposePhotoSubjectEvidence {
     box: { x: number; y: number; width: number; height: number };
     method?: string;
@@ -94,6 +114,17 @@ const COMPOSE_DESIGN_MUTATION_TOOLS: ReadonlySet<string> = new Set([
     'renderLayout',
     'addDropShadow'
 ]);
+
+function readComposeEnvironmentRecoveryEvidence(
+    toolResults: Array<{ toolName: string; result: unknown }>
+): Record<string, unknown> {
+    for (let index = toolResults.length - 1; index >= 0; index -= 1) {
+        const value = toolResults[index]?.result;
+        const evidence = readPhotoshopModalRecoveryEvidence(value);
+        if (evidence) return { ...evidence };
+    }
+    return {};
+}
 
 interface ComposeDesignIssueDetail {
     code: string;
@@ -399,15 +430,6 @@ function describeVersionComparison(comparison?: DesignVersionComparison): string
     ].filter(Boolean).join(' ');
 }
 
-function sleep(ms: number): Promise<void> {
-    return new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
-/** 只有明确的短时忙碌才允许同一复合步骤重试；原生弹窗/写状态未知必须交回 Agent 观察（判定收拢到 shared/photoshop-transient-error）。 */
-function isRetryablePhotoshopBusyFailure(result: any): boolean {
-    return isTransientPhotoshopBusyFailure(result);
-}
-
 function failure(
     step: string,
     reason: string,
@@ -433,6 +455,9 @@ function executionFailure(
     steps: WorkshopStep[],
     extra: Record<string, unknown> = {}
 ): Record<string, unknown> {
+    const attemptedMutationTools = steps
+        .filter((item) => COMPOSE_DESIGN_MUTATION_TOOLS.has(item.tool))
+        .map((item) => item.tool);
     const successfulMutationTools = steps
         .filter((item) => item.ok && COMPOSE_DESIGN_MUTATION_TOOLS.has(item.tool))
         .map((item) => item.tool);
@@ -440,16 +465,52 @@ function executionFailure(
         ? extra.data as Record<string, unknown>
         : {};
     const { data: _data, ...rest } = extra;
+    const mutationSettlement = extraData.mutationSettlement
+        && typeof extraData.mutationSettlement === 'object'
+        && !Array.isArray(extraData.mutationSettlement)
+        ? extraData.mutationSettlement as ComposeMutationSettlement
+        : undefined;
+    const observedMutationProof = findObservedPhotoshopMutationProof(extra);
+    const createdDocumentByHostProof = Array.isArray(extra.toolResults)
+        && extra.toolResults.some((entry: any) => {
+            if (entry?.toolName !== 'createDocument') return false;
+            const commit = readPhotoshopMutationCommit(entry.result);
+            return commit?.changeKind === 'document_creation'
+                && commit.mutationObserved === true;
+        });
+    let mutationStatus: ComposeMutationSettlementStatus;
+    if (mutationSettlement?.status) {
+        mutationStatus = mutationSettlement.status;
+    } else if (observedMutationProof) {
+        mutationStatus = 'applied';
+    } else if (attemptedMutationTools.length > 0) {
+        mutationStatus = 'unknown';
+    } else {
+        mutationStatus = 'not_observed';
+    }
+    let failureMessage: string;
+    if (mutationStatus === 'applied') {
+        failureMessage = `首稿在「${step}」没有完整完成，但 Photoshop 已发生部分改动。不要直接重复整单；先查看当前文档，再由 Agent 决定续做或重建。`;
+    } else if (mutationStatus === 'unknown') {
+        failureMessage = `首稿在「${step}」没有完整完成，而且暂时无法确认 Photoshop 的最终写入状态。请先读取当前文档和版本，再决定下一步，避免叠加修改。`;
+    } else {
+        failureMessage = `首稿在「${step}」没有完成；失败结算没有观察到本次复合调用留下 Photoshop 改动。`;
+    }
     return failure(step, reason, steps, {
         ...rest,
+        message: failureMessage,
         documentId,
         data: {
             version: 'compose-design-execution/v1',
             createdDocument: spec.document.mode === 'new'
-                && steps.some((item) => item.ok && item.tool === 'createDocument'),
+                && (steps.some((item) => item.ok && item.tool === 'createDocument')
+                    || createdDocumentByHostProof),
             layoutRendered: steps.some((item) => item.ok && item.tool === 'renderLayout'),
-            partialMutation: successfulMutationTools.length > 0,
+            ...(mutationStatus === 'applied' ? { partialMutation: true } : {}),
+            ...(mutationStatus === 'not_observed' ? { partialMutation: false } : {}),
+            mutationStatus,
             completedStepCount: steps.filter((item) => item.ok).length,
+            attemptedMutationTools,
             successfulMutationTools,
             ...(documentId !== undefined ? { documentId } : {}),
             ...extraData
@@ -462,6 +523,9 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
     const steps: WorkshopStep[] = [];
     const warnings: string[] = [];
     let latestMutationEvidence: Record<string, unknown> = {};
+    let latestEnvironmentRecoveryEvidence: Record<string, unknown> = {};
+    const mutationToolResults: Array<{ toolName: string; result: unknown }> = [];
+    let composeStartHistoryStateRef: PhotoshopHistoryStateRef | undefined;
     let documentId: number | undefined;
     const { executeToolCall, inferLayerId, invokeMain, options } = deps;
 
@@ -505,6 +569,23 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
         warnings.push(`素材来源审计：${outsideSources.map((source: any) => `${source.role}=${source.path}`).join('；')} 不在当前项目目录；这是路径事实，不自动等于错误，但交付说明必须能追溯到用户附件或导入来源。`);
     }
 
+    const recordMutationToolResult = (tool: string, result: unknown): void => {
+        if (!COMPOSE_DESIGN_MUTATION_TOOLS.has(tool)) return;
+        mutationToolResults.push({ toolName: tool, result });
+        const mutationCommit = readPhotoshopMutationCommit(result);
+        const historyTransition = readPhotoshopHistoryTransition(result);
+        if (tool === 'createDocument'
+            && mutationCommit?.changeKind === 'document_creation'
+            && mutationCommit.createdDocumentId) {
+            documentId = mutationCommit.createdDocumentId;
+        }
+        const mutationEvidence = {
+            ...(mutationCommit?.mutationObserved === true ? { photoshopMutationCommit: mutationCommit } : {}),
+            ...(historyTransition?.mutationObserved === true ? { photoshopHistoryTransition: historyTransition } : {})
+        };
+        if (Object.keys(mutationEvidence).length > 0) latestMutationEvidence = mutationEvidence;
+    };
+
     const run = async (
         step: string,
         tool: string,
@@ -512,22 +593,38 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
         executionOptions: any = options
     ): Promise<{ result: any; layerId?: number }> => {
         const t0 = Date.now();
-        const result = await executeToolCall(tool, params, executionOptions);
+        let result: any;
+        try {
+            result = await executeToolCall(tool, params, executionOptions);
+        } catch (error: any) {
+            const thrownResult = error && typeof error === 'object' && !Array.isArray(error)
+                ? { ...error, success: false, error: error?.message || String(error) }
+                : { success: false, error: String(error) };
+            const environmentRecovery = readComposeEnvironmentRecoveryEvidence([
+                { toolName: tool, result: thrownResult }
+            ]);
+            if (Object.keys(environmentRecovery).length > 0) {
+                latestEnvironmentRecoveryEvidence = environmentRecovery;
+            }
+            recordMutationToolResult(tool, thrownResult);
+            steps.push({
+                step,
+                tool,
+                ok: false,
+                ms: Date.now() - t0,
+                detail: String(thrownResult.error).slice(0, 300)
+            });
+            throw error;
+        }
         const ok = result?.success !== false;
         const layerId = ok ? inferLayerId(tool, params, result) : undefined;
-        if (ok && COMPOSE_DESIGN_MUTATION_TOOLS.has(tool)) {
-            const mutationEvidence = {
-                ...(result?.photoshopMutationCommit ? {
-                    photoshopMutationCommit: result.photoshopMutationCommit
-                } : {}),
-                ...(result?.photoshopHistoryTransition ? {
-                    photoshopHistoryTransition: result.photoshopHistoryTransition
-                } : {})
-            };
-            if (Object.keys(mutationEvidence).length > 0) {
-                latestMutationEvidence = mutationEvidence;
-            }
+        const environmentRecovery = readComposeEnvironmentRecoveryEvidence([
+            { toolName: tool, result }
+        ]);
+        if (Object.keys(environmentRecovery).length > 0) {
+            latestEnvironmentRecoveryEvidence = environmentRecovery;
         }
+        recordMutationToolResult(tool, result);
         steps.push({
             step,
             tool,
@@ -539,22 +636,132 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
         return { result, layerId };
     };
 
-    const failExecution = (
+    const settleFailedMutationState = async (): Promise<ComposeMutationSettlement> => {
+        const attemptedMutationTools = steps
+            .filter((item) => COMPOSE_DESIGN_MUTATION_TOOLS.has(item.tool))
+            .map((item) => item.tool);
+        const successfulMutationTools = steps
+            .filter((item) => item.ok && COMPOSE_DESIGN_MUTATION_TOOLS.has(item.tool))
+            .map((item) => item.tool);
+        if (attemptedMutationTools.length === 0) {
+            return {
+                status: 'not_observed',
+                attemptedMutationTools,
+                successfulMutationTools,
+                reason: '失败发生在第一个 Photoshop 写入调用之前。'
+            };
+        }
+
+        const t0 = Date.now();
+        let settlementRead: any;
+        try {
+            settlementRead = await executeToolCall('getDocumentInfo', {}, options);
+        } catch (error: any) {
+            settlementRead = error && typeof error === 'object' && !Array.isArray(error)
+                ? { ...error, success: false, error: error?.message || String(error) }
+                : { success: false, error: String(error) };
+        }
+        const settlementEnvironmentRecovery = readComposeEnvironmentRecoveryEvidence([
+            { toolName: 'getDocumentInfo', result: settlementRead }
+        ]);
+        if (Object.keys(settlementEnvironmentRecovery).length > 0) {
+            latestEnvironmentRecoveryEvidence = settlementEnvironmentRecovery;
+        }
+        const finalHistoryStateRef = settlementRead?.success === false
+            ? undefined
+            : readPhotoshopHistoryStateRef(settlementRead);
+        steps.push({
+            step: '结算失败后的 Photoshop 版本',
+            tool: 'getDocumentInfo',
+            ok: Boolean(finalHistoryStateRef),
+            ms: Date.now() - t0,
+            detail: finalHistoryStateRef
+                ? `document=${finalHistoryStateRef.documentId}, history=${finalHistoryStateRef.historyStateId}`
+                : String(settlementRead?.error || '未取得最终 historyStateRef').slice(0, 300)
+        });
+        const observedMutationProof = findObservedPhotoshopMutationProof({
+            ...latestMutationEvidence,
+            toolResults: mutationToolResults
+        });
+
+        if (composeStartHistoryStateRef && finalHistoryStateRef) {
+            if (composeStartHistoryStateRef.documentId !== finalHistoryStateRef.documentId) {
+                latestMutationEvidence = {};
+                return {
+                    status: 'unknown',
+                    attemptedMutationTools,
+                    successfulMutationTools,
+                    finalHistoryStateRef,
+                    reason: '失败结算时活动文档身份已经变化，不能把其他文档版本冒充本次写入结果。'
+                };
+            }
+            const transition = buildPhotoshopHistoryTransition(
+                { historyStateRef: composeStartHistoryStateRef },
+                { historyStateRef: finalHistoryStateRef }
+            );
+            if (transition.mutationObserved === true) {
+                latestMutationEvidence = { photoshopHistoryTransition: transition };
+                return {
+                    status: 'applied',
+                    attemptedMutationTools,
+                    successfulMutationTools,
+                    finalHistoryStateRef,
+                    reason: `同一 Photoshop 文档 history ${composeStartHistoryStateRef.historyStateId} → ${finalHistoryStateRef.historyStateId}。`
+                };
+            }
+            latestMutationEvidence = {};
+            return {
+                status: 'unknown',
+                attemptedMutationTools,
+                successfulMutationTools,
+                finalHistoryStateRef,
+                reason: observedMutationProof
+                    ? '子工具报告过真实变更，但最终活动文档回到了起始版本；可能发生撤销、回滚或文档切换，证据冲突，不能声明未修改。'
+                    : '已经派发写调用；虽然最终活动文档与起始版本相同，但缺少每个调用均未应用或已验证回滚的收据。'
+            };
+        }
+
+        if (observedMutationProof) {
+            return {
+                status: 'applied',
+                attemptedMutationTools,
+                successfulMutationTools,
+                ...(finalHistoryStateRef ? { finalHistoryStateRef } : {}),
+                reason: '至少一个子工具返回了 Host 绑定的真实变更证明；最终复合调用没有完整完成。'
+            };
+        }
+        latestMutationEvidence = {};
+        return {
+            status: 'unknown',
+            attemptedMutationTools,
+            successfulMutationTools,
+            ...(finalHistoryStateRef ? { finalHistoryStateRef } : {}),
+            reason: '已经派发 Photoshop 写入调用，但没有取得可证明应用或未应用的最终版本对账。'
+        };
+    };
+
+    const failExecution = async (
         step: string,
         reason: string,
         extra: Record<string, unknown> = {}
-    ): Record<string, unknown> => executionFailure(
-        step,
-        reason,
-        spec,
-        documentId,
-        steps,
-        {
+    ): Promise<Record<string, unknown>> => {
+        const mutationSettlement = await settleFailedMutationState();
+        const existingData = extra.data && typeof extra.data === 'object' && !Array.isArray(extra.data)
+            ? extra.data as Record<string, unknown>
+            : {};
+        return executionFailure(step, reason, spec, documentId, steps, {
             ...extra,
-            ...latestMutationEvidence
-        }
-    );
+            ...latestMutationEvidence,
+            ...latestEnvironmentRecoveryEvidence,
+            toolResults: mutationToolResults,
+            data: {
+                ...existingData,
+                mutationSettlement
+            }
+        });
+    };
 
+    try {
     // 活动文档的真实画布是后续纯几何预演的输入，因此先只读确认；新文档则等所有
     // 可确定的素材/主体/摄影约束都通过后再创建，避免预演失败留下空文档。
     if (spec.document.mode === 'active') {
@@ -563,6 +770,7 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
             return failExecution('确认活动文档', result?.error || '没有可用的活动文档；document.mode=active 需要先打开或切换到目标文档');
         }
         documentId = Number(result.document.id) || undefined;
+        composeStartHistoryStateRef = readPhotoshopHistoryStateRef(result);
         const w = Number(result.document.width);
         const h = Number(result.document.height);
         if (w && h && (Math.abs(w - spec.canvas.width) > 1 || Math.abs(h - spec.canvas.height) > 1)) {
@@ -832,6 +1040,65 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
                 reliableSubjectEvidence
             };
         }
+    }
+
+    const renderRegions = spec.layout.regions.map((region) => (
+        isComposeDesignSubjectAliasRegion(region) && subjectFilePath
+            ? { ...region, content: subjectFilePath }
+            : region
+    ));
+    // 摄影优先时 primary subject 已由上方一次性 placeImage 计划负责；其余独立图片仍须
+    // 在 composeDesign 的任何 Photoshop 写入之前通过与 renderLayout 相同的落位预演。
+    const effectiveRegions = photoFirst
+        ? renderRegions.filter((_region, index) => index !== primarySubjectRegionIndex)
+        : renderRegions;
+    const renderLayoutBaseParams = {
+        canvas: spec.canvas,
+        regions: effectiveRegions,
+        visualStyle: spec.layout.visualStyle,
+        marginScale: spec.layout.marginScale,
+        gutterScale: spec.layout.gutterScale,
+        pageBackgroundHex: spec.palette.backgroundHex,
+        groupName: spec.layout.groupName
+    };
+    const solvedLayout = solveRegionLayout({
+        canvas: spec.canvas,
+        marginScale: spec.layout.marginScale,
+        gutterScale: spec.layout.gutterScale,
+        // normalizeComposeDesignSpec 已把空 id 判为无效；这里仅把该运行时事实收窄给布局类型，
+        // 不生成替代名称，也不改写 Agent 的语义图层名。
+        regions: effectiveRegions.map((region) => ({
+            ...region,
+            id: region.id!
+        })) as NormalizedRegionBlock[]
+    });
+    const layoutImagePreflightStartedAt = Date.now();
+    const layoutImagePreflight = await preflightResolvedImagePlacements({
+        blocks: solvedLayout.blocks,
+        canvas: spec.canvas,
+        executorLabel: 'composeDesign / renderLayout',
+        readAssetSubjectBox: (sourcePath: string) => (
+            invokeMain('resource:getAssetSubjectBox', sourcePath)
+        )
+    });
+    steps.push({
+        step: '预演构图中的全部图片落位',
+        tool: 'resource:getAssetSubjectBox',
+        ok: layoutImagePreflight.ok,
+        ms: Date.now() - layoutImagePreflightStartedAt,
+        detail: layoutImagePreflight.ok
+            ? `已预演 ${layoutImagePreflight.plansByBlockId.size} 个图片区域`
+            : layoutImagePreflight.findings.map((finding) => finding.message).join('；').slice(0, 300)
+    });
+    if (!layoutImagePreflight.ok) {
+        return failExecution(
+            '构图图片写前预演',
+            `${layoutImagePreflight.findings.map((finding) => finding.message).join('；')} Harness 没有替 Agent 改写图片、图框、关注点或裁切策略；本次没有创建或修改 Photoshop 文档。`,
+            {
+                placementPreflightFindings: layoutImagePreflight.findings,
+                layoutWarnings: solvedLayout.warnings
+            }
+        );
     }
 
     // 所有能在源素材坐标中判定的摄影约束已经通过，才允许创建新文档。
@@ -1116,23 +1383,8 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
     }
 
     // ③ 执行 Agent 构图（主体 + 文字；背景已在上方处理）。
-    const renderRegions = spec.layout.regions.map((region) => (
-            isComposeDesignSubjectAliasRegion(region) && subjectFilePath
-                ? { ...region, content: subjectFilePath }
-                : region
-        ));
-    // 摄影优先时只有 primary subject 区域用于上一步定位摄影图；其余独立图片元素照常渲染。
-    const effectiveRegions = photoFirst
-        ? renderRegions.filter((_region, index) => index !== primarySubjectRegionIndex)
-        : renderRegions;
     const renderLayoutParams = {
-        canvas: spec.canvas,
-        regions: effectiveRegions,
-        visualStyle: spec.layout.visualStyle,
-        marginScale: spec.layout.marginScale,
-        gutterScale: spec.layout.gutterScale,
-        pageBackgroundHex: spec.palette.backgroundHex,
-        groupName: spec.layout.groupName,
+        ...renderLayoutBaseParams,
         ownedLayers: backgroundLayerId !== undefined
             ? [{ layerId: backgroundLayerId, bucket: '图片' }]
             : []
@@ -1142,31 +1394,24 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
         ...options,
         deferCompositeVisualObservation: true
     };
-    let layout = await run(
+    const layout = await run(
         layoutStepName,
         'renderLayout',
         renderLayoutParams,
         deferredLayoutObservationOptions
     );
-    let layoutResult = layout.result;
-    // 仅短时忙碌重试一次。modal_suspected 可能已经派发写入，必须先让 Agent 用
-    // capturePhotoshopWindow 看完整 Photoshop 窗口，不能由 Harness 盲目重复写。
-    if (layoutResult?.success === false && isRetryablePhotoshopBusyFailure(layoutResult)) {
-        await sleep(2000);
-        layout = await run(
-            `${layoutStepName}（忙碌后重试）`,
-            'renderLayout',
-            renderLayoutParams,
-            deferredLayoutObservationOptions
-        );
-        layoutResult = layout.result;
-    }
+    const layoutResult = layout.result;
     if (layoutResult?.success === false) {
         return failExecution('执行 Agent 构图', layoutResult?.error || (Array.isArray(layoutResult?.errors) ? layoutResult.errors.map((e: any) => e?.error).join('；') : 'renderLayout 未成功'), {
             layoutResult: {
                 message: layoutResult?.message,
                 errors: layoutResult?.errors,
-                warnings: layoutResult?.warnings
+                warnings: layoutResult?.warnings,
+                createdLayerIds: layoutResult?.createdLayerIds,
+                cleanupFailures: layoutResult?.cleanupFailures,
+                stageSwapReceipt: layoutResult?.stageSwapReceipt,
+                photoshopHistoryTransition: layoutResult?.photoshopHistoryTransition,
+                photoshopMutationCommit: layoutResult?.photoshopMutationCommit
             }
         });
     }
@@ -1576,4 +1821,14 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
         warnings: warnings.length ? warnings : undefined,
         elapsedMs
     };
+    } catch (error: any) {
+        // 用户结果只投影有界错误与真实 Host 结算；完整 stack 留在内部日志供病历定位，
+        // 不能因安全投影而让非预期依赖异常失去根因。
+        console.error('[composeDesign] 非预期执行异常', error);
+        return failExecution(
+            '执行异常',
+            String(error?.message || error || 'composeDesign 未知异常'),
+            { unexpectedException: true }
+        );
+    }
 }

@@ -1222,6 +1222,7 @@ async function run() {
   const runtimeStageStateText = read(runtimeStageStatePath);
   const agentRuntimeLivenessPolicyText = read(agentRuntimeLivenessPolicyPath);
   const agentReadResultCacheText = read(agentReadResultCachePath);
+  const agentReActObservationContractText = read(agentReActObservationContractPath);
   const runtimeScopedChangeRecordsText = read(runtimeScopedChangeRecordsPath);
   const runtimeMethodKnowledgeText = read(runtimeMethodKnowledgePath);
   const taskProfileText = read(taskProfilePath);
@@ -5913,13 +5914,33 @@ async function run() {
     || toolSchemasText.includes('【首稿首选 recipe 模式】')) {
     modelOwnedVisualStyleViolations.push('compose-design:harness-can-still-impersonate-design-authorship');
   }
+  const composeDisablesAutomaticBusyRetry = !composeDesignExecutorText.includes('isRetryablePhotoshopBusyFailure')
+    && !composeDesignExecutorText.includes('isTransientPhotoshopBusyFailure')
+    && !composeDesignExecutorText.includes('（忙碌后重试）')
+    && !composeDesignExecutorText.includes('await sleep(2000)');
+  const composePreservesModalRecoveryEvidence = composeDesignExecutorText.includes(
+    'readComposeEnvironmentRecoveryEvidence'
+  )
+    && composeDesignExecutorText.includes('readPhotoshopModalRecoveryEvidence')
+    && agentReActObservationContractText.includes("environmentState: 'photoshop_native_modal_suspected'")
+    && agentReActObservationContractText.includes("capability: 'capturePhotoshopWindow'")
+    && agentReActObservationContractText.includes("scope: 'adobe_photoshop_application_window'")
+    && agentReActObservationContractText.includes("record?.success !== false")
+    && agentReActObservationContractText.includes("record.recoveryRequired !== true")
+    && toolExecutorText.includes('const modalRecoveryResult = isPhotoshopNativeModalTimeout(errorMessage)')
+    && toolExecutorText.includes('readPhotoshopModalRecoveryEvidence(modalRecoveryResult)')
+    && toolExecutorText.includes('environmentObservation: modalRecovery.environmentObservation')
+    && toolExecutorText.includes('attachPhotoshopModalRecoveryEvidenceIfUnresolved(')
+    && composeDesignExecutorText.includes('settlementEnvironmentRecovery');
   if (!toolSchemasText.includes("name: 'capturePhotoshopWindow'")
     || !toolExecutorText.includes("toolName === 'capturePhotoshopWindow'")
     || !toolExecutorText.includes("environmentState: 'photoshop_native_modal_suspected'")
     || !toolExecutorText.includes("capability: 'capturePhotoshopWindow'")
-    || !composeDesignExecutorText.includes('isRetryablePhotoshopBusyFailure')
-    // 2026-08-23 瞬态判定收拢到 shared/photoshop-transient-error（弹窗/写状态未知不重试的单一真相源），executor 薄委托。
-    || !composeDesignExecutorText.includes('isTransientPhotoshopBusyFailure')
+    // 复合设计写不能因“busy”重放整单；失败必须把真实 modal 观察出口投影回 Agent。
+    || !composeDisablesAutomaticBusyRetry
+    || !composePreservesModalRecoveryEvidence
+    // 普通只读观察的瞬态退避仍只消费 shared 单一真相源，写类不进入该重试路径。
+    || !toolExecutorText.includes('isTransientPhotoshopBusyFailure(result)')
     || !photoshopTransientErrorText.includes('photoshop_native_modal_suspected')
     || !screenshotHandlersText.includes("types: ['window']")
     || !screenshotHandlersText.includes("source: 'photoshop-window'")
