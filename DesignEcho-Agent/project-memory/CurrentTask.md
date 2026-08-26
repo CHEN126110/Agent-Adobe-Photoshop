@@ -10,10 +10,11 @@
 
 ### 当前事实
 
-- 当前已推送基线为 `6d2440ec71b696d54b43a7708f0db6eb96959790`；本节新增的可验证盲评、完整 Runtime 身份、Debug 写前预检、Skill 交付约定和 SKU 事务收口均在该基线上实现，提交前整仓 46 项核心检查已通过。
+- 当前功能提交与远端 `codex/agent-uxp` 已同步到 `cf0fce5a8e563dff65784f5e527572c01c9acc60`；本节新增的可验证盲评、完整 Runtime 身份、Debug 写前预检、Skill 交付约定和 SKU 事务收口均已进入该提交，提交前整仓 46 项核心检查通过。
 - 固定 Skill / Prompt 开工顺序、SKU 默认版式、规则 Top-1 自动选图、项目列表首图冒充选定、按 role 写死层序和无条件文字吸附已移除或降为显式可选机械能力。
 - 提交前独立审查发现并修复两处真实成功率根因：详情页多槽选择会被后续排序逐个作废；长历史压缩会丢失第 5 个以后未决选图槽。两者均有行为回归覆盖。
 - 最新只读实机审计确认当前 DesignEcho 仍是旧运行时，Renderer 选择的是 `claude-subscription-opus` 而不是本轮目标 GPT 5.6；当前项目为 `E:\WERKE\C-1257`，活动详情页文档来自 `E:\WERKE\C-1256`，Photoshop 共打开 8 个文档且至少 1 个未保存。本轮没有关闭、保存或修改这些文档，也没有用测试桥冒充端到端 Agent 成功。
+- 已基于 `main-image-c1163-v1@revision=3` 创建全新隔离 Fixture：`C:\Users\12611\Desktop\DesignEcho固定测试\main-image-c1163-cf0fce5a-r3`，9 个文件与 fixture/path binding 摘要均通过只读核验，原始 `D:\A1 neveralone旗舰店\C-1163` 未改动。随后预检确认 UXP 已自动加载 `cf0fce5a` 的干净 production build；正式采集仍因桌面 Agent 旧运行时身份不可用、当前项目未绑定 Fixture、8 个 Photoshop 文档未关闭、Renderer preflight/写令牌未就绪而保持零写入阻断。
 - `cd8f22ac` 已收口普通文字 Skill 推荐越权：推荐只是模型可忽略候选，只有用户明选或模型 `declareDesignIntent` 能绑定 Runtime Skill，未绑定推荐也不再抢占交互卡 owner。
 - 单次提交会冻结当时的唯一多模态模型、Provider 与思考档，TaskRun 中途不跟随 UI 设置漂移。正式调试写入桥要求 token、精确项目/模型/DesignEcho Build/Photoshop Build、干净真实运行时和单租约；提交前与完成后均重新校验 `dist/main` / `dist/renderer` 实际摘要，不信任启动缓存。
 - Provider 一次输出截断只在 debug trace 记录并静默续接，不再向用户显示“长度上限、正在补全”。连续恢复失败仍返回 `success:false`，并只依据可信 Photoshop mutation 区分“已保留改动”与“尚未修改画面”；普通轮次也不再无条件先压到 4096 输出 token。
@@ -44,7 +45,7 @@
 
 ### 下一步
 
-1. 当前代码提交后重新构建 Agent 与 UXP，以干净 Git 身份重启唯一 DesignEcho Runtime；随后按已升版的 `main-image-c1163-v1@revision=3` 创建一个全新、路径唯一的隔离 Fixture。旧 `main-image-c1163-r2` 绑定的是旧 Case 摘要，不得复用；当前 8 个 Photoshop 文档未安全关闭前不得启动写测试。
+1. 以最终干净 Git 身份重启唯一 DesignEcho Runtime，并把当前项目切换到已创建的 revision 3 Fixture；旧 `main-image-c1163-r2` 绑定的是旧 Case 摘要，不得复用。当前 8 个 Photoshop 文档未由用户安全处理前不得启动写测试。
 2. 用自然请求运行真实 Agent → Provider → Photoshop 链路，记录模型身份、实际观察、选图依据、工具调用、文档 / history、PSD/JPG 收据、首次写入和总耗时；不在运行中人工纠偏。
 3. 将候选成稿与用户作品、Eagle 锚点做盲化成对评审；单次链路安全闭合后，在同一 Git / Case / 模型 / 请求下按 Suite 口径重复至少 5 次，并按 owner 归因失败。
 
@@ -65,7 +66,7 @@
 
 ### 状态
 
-`in_progress / provider_output_two_phase_commit_complete / provider_auxiliary_complete_terminal_guarded / partial_content_reasoning_and_tools_discarded / debug_artifact_sidecar_isolated / runtime_delivery_receipt_plan_bound / skill_delivery_conventions_agent_selected / sku_batch_inventory_frozen_before_batch_write / sku_paired_jpg_psb_contract_code_complete / sku_main_owned_directory_creation / sku_staging_transaction_fail_closed / reliability_attempt_denominator_closed / anonymous_review_bundle_disk_reverified / agent_and_photoshop_runtime_identity_verified / debug_seed_credential_free / full_core_validation_46_passed / current_eight_photoshop_documents_untouched / fresh_revision3_fixture_pending / latest_live_photoshop_run_pending / blind_pairwise_review_pending`
+`in_progress / provider_output_two_phase_commit_complete / provider_auxiliary_complete_terminal_guarded / partial_content_reasoning_and_tools_discarded / debug_artifact_sidecar_isolated / runtime_delivery_receipt_plan_bound / skill_delivery_conventions_agent_selected / sku_batch_inventory_frozen_before_batch_write / sku_paired_jpg_psb_contract_code_complete / sku_main_owned_directory_creation / sku_staging_transaction_fail_closed / reliability_attempt_denominator_closed / anonymous_review_bundle_disk_reverified / agent_and_photoshop_runtime_identity_verified / debug_seed_credential_free / full_core_validation_46_passed / current_eight_photoshop_documents_untouched / fresh_revision3_fixture_ready / latest_live_photoshop_run_pending / blind_pairwise_review_pending`
 
 ---
 
