@@ -12,6 +12,7 @@ import {
     buildSkuExpectedExportInventory,
     buildSkuExportReadback,
     evaluateSkuRequestedOutputCompletion,
+    resolveSkuFullDeliveryConvention,
     resolveSkuBatchDeliveryOutcome,
     sanitizeSkuToolResultsForPublicResult,
     type SkuExpectedExportInventoryItem
@@ -21,6 +22,7 @@ import {
     finalizeSkuStagingCleanup,
     isSkuPathInsideDirectory as isPathInsideDirectory,
     issueSkuStagingTransaction,
+    joinSkuExportPath,
     normalizeSkuExportPathForCompare as normalizePathForCompare,
     parseSkuStagedRasterExport,
     promoteSkuStagedDeliverySet,
@@ -44,6 +46,7 @@ import { buildSkuDeliverySummary } from '../../../shared/sku-delivery-summary';
 import {
     buildRuntimeDeliveryReceipt
 } from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
+import type { StagedCommittedFileIdentity } from '../../../shared/sku-staging-transaction-contract';
 import {
     buildSkuConfiguredExecutionPlan,
     buildSkuConfiguredExecutionBlockerMessage,
@@ -2138,6 +2141,21 @@ export const skuBatchExecutor: SkillExecutor = {
             sourceOnly: params.sourceOnly,
             userInput: trustedUserInput
         });
+        const deliveryConventionResolution = resolveSkuFullDeliveryConvention(params.deliveryConvention);
+        if (deliveryConventionResolution.status === 'blocked') {
+            const userMessage = '本次交付目录、命名或版本约定不安全，尚未读取或修改 Photoshop 文档。';
+            return {
+                success: false,
+                message: userMessage,
+                error: userMessage,
+                data: {
+                    status: 'blocked_invalid_skill_delivery_convention',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics(
+                        deliveryConventionResolution.blockers
+                    )
+                }
+            } as AgentResult;
+        }
         if (skuStage === 'color-card') {
             return executeSkuColorCardStrategy({
                 params,
@@ -2225,9 +2243,14 @@ export const skuBatchExecutor: SkillExecutor = {
         let skuCardTemplatePreparationPlan: SkuCardTemplatePreparationPlan | null = null;
         let skuCardTemplatePreparationRun: Record<string, any> | null = null;
 
-        const templateDir = projectContext?.projectPath ? `${projectContext.projectPath}\\模板文件` : undefined;
-        const configDir = projectContext?.projectPath ? `${projectContext.projectPath}\\配置文件` : undefined;
-        const outputDir = projectContext?.projectPath ? `${projectContext.projectPath}\\SKU` : undefined;
+        const templateDir = projectContext?.projectPath
+            ? joinSkuExportPath(projectContext.projectPath, '模板文件')
+            : undefined;
+        // 兼容基线只在 Agent / 用户没有传 deliveryConvention 时使用；正式目录由
+        // SKU Skill 将本轮已选 convention 编译成 exact inventory，Harness 不扫描目录替它选。
+        const fallbackOutputDir = projectContext?.projectPath
+            ? joinSkuExportPath(projectContext.projectPath, 'SKU')
+            : undefined;
         let [projectSkuTemplates, projectSkuConfigFiles] = await Promise.all([
             scanProjectTemplateFiles(templateDir),
             // 治理2026-07-01：不再读取本地 SKU 配置 CSV（用户明确要求"不看本地CSV配置直接生成"）。
@@ -3179,7 +3202,7 @@ export const skuBatchExecutor: SkillExecutor = {
                             );
                             return {
                                 success: true,
-                                message: `SKU 色卡素材已准备好，已保存到：${outputDocumentPath}。要出组合成品时，确认模板后调 stage=full。`,
+                                message: 'SKU 色卡素材已准备好，并保存到项目内的交付位置。确认模板后即可继续生成组合成品。',
                                 toolResults: sanitizeSkuToolResultsForPublicResult(skuCardSourcePreparationRun.toolResults || []),
                                 data: {
                                     status: 'source_prepared',
@@ -3196,7 +3219,42 @@ export const skuBatchExecutor: SkillExecutor = {
                                 }
                             };
                         }
-                        emitStatus('已准备 SKU 源文档，继续生成 SKU。', 20);
+                        const outputDocumentPath = skuCardSourcePreparationRun.outputDocumentPath
+                            || skuCardSourcePreparationPlan.outputDocumentPath;
+                        const preparedGroupCount = Array.isArray(skuCardSourcePreparationRun.preparedGroups)
+                            ? skuCardSourcePreparationRun.preparedGroups.length
+                            : 0;
+                        emitStatus('SKU 色卡源文档已作为独立前置交付完成；批量成品将在下一轮冻结计划后开始。', 100);
+                        return {
+                            success: true,
+                            message: 'SKU 色卡源文档已准备并保存到项目内的交付位置。本轮尚未开始批量成品；下一步会沿用当前结果，先确认交付目录和同名文件冲突，再继续生成组合图。',
+                            toolResults: sanitizeSkuToolResultsForPublicResult(
+                                skuCardSourcePreparationRun.toolResults || []
+                            ),
+                            data: {
+                                status: 'sku_source_prerequisite_prepared',
+                                sourceOnly: false,
+                                outputDocumentPath,
+                                preparedGroupCount,
+                                exportCount: 0,
+                                agentReActContinuation: {
+                                    status: 'ready_to_continue',
+                                    summary: 'SKU 色卡源前置交付已完成，批量成品尚未开始。',
+                                    details: [
+                                        '继续完成本次 SKU 批量成品。',
+                                        '继续前先确认交付目录、命名和同名文件冲突，避免覆盖既有文件。'
+                                    ],
+                                    nextAction: 'decide_next',
+                                    sourceStatus: 'sku_source_prerequisite_prepared'
+                                },
+                                ...skuPlanningContext,
+                                skuCardAssetCandidateReport,
+                                skuCardVisualConfirmationPlan,
+                                skuCardVisualConfirmationRun,
+                                skuCardSourcePreparationPlan,
+                                skuCardSourcePreparationRun
+                            }
+                        } as AgentResult;
                     } else {
                         const readbackError = 'SKU 源文档已保存，但 Photoshop 文档列表暂时没有读回该文档。';
                         emitStep(
@@ -3405,7 +3463,7 @@ export const skuBatchExecutor: SkillExecutor = {
                     colorCount: 0,
                     sourceCanvas: { width: Number(skuDoc?.width) || undefined, height: Number(skuDoc?.height) || undefined }
                 });
-                const templateHandoffMessage = `当前项目还没有合格的色卡源（「${skuDocName}」里没有颜色图层组，只有：${allLayerNames.slice(0, 6).join('、') || '无图层组'}），但模板设计不因此阻塞：由你用原子工具按声明的画布与占位数自主设计模板并建占位结构。模板完成后，先调 stage=color-card 用单色源图重建色卡（每色一个可编辑图组），再调 stage=full 出组合。`;
+                const templateHandoffMessage = `当前项目还没有合格的色卡源（「${skuDocName}」里没有颜色图层组，只有：${allLayerNames.slice(0, 6).join('、') || '无图层组'}），但模板设计可以继续：请按已确定的画布与数量设计模板并建立可编辑占位结构。模板完成后，先用单色源图整理色卡（每色一个可编辑图组），再继续生成组合成品。`;
                 emitStep(
                     'observation',
                     'SKU 模板进入 Agent 自主设计阶段',
@@ -3903,7 +3961,32 @@ export const skuBatchExecutor: SkillExecutor = {
                 if (templateDir) {
                     projectSkuTemplates = await scanProjectTemplateFiles(templateDir);
                 }
-                emitStatus('已生成通用占位模板（非设计稿），继续批量出图。', 46);
+                emitStatus('通用占位模板已作为独立前置交付完成；批量成品将在下一轮冻结计划后开始。', 100);
+                return {
+                    success: true,
+                    message: '通用占位模板已经生成并保存。本轮尚未开始批量成品；下一步会沿用当前模板，先确认交付目录和同名文件冲突，再继续生成成品。',
+                    toolResults: sanitizeSkuToolResultsForPublicResult(
+                        skuCardTemplatePreparationRun.toolResults || []
+                    ),
+                    data: {
+                        status: 'sku_template_prerequisite_prepared',
+                        exportCount: 0,
+                        agentReActContinuation: {
+                            status: 'ready_to_continue',
+                            summary: 'SKU 模板前置交付已完成，批量成品尚未开始。',
+                            details: [
+                                '继续完成本次 SKU 批量成品。',
+                                '继续前先确认交付目录、命名和同名文件冲突，避免覆盖既有文件。'
+                            ],
+                            nextAction: 'decide_next',
+                            sourceStatus: 'sku_template_prerequisite_prepared'
+                        },
+                        ...skuPlanningContext,
+                        skuCardAssetCandidateReport,
+                        skuCardTemplatePreparationPlan,
+                        skuCardTemplatePreparationRun
+                    }
+                } as AgentResult;
             } else {
                 const templatePlanBlockers = skuCardTemplatePreparationPlan.blockers || [];
                 emitStep(
@@ -4745,7 +4828,7 @@ export const skuBatchExecutor: SkillExecutor = {
                         expectedItemCount: input.expectedItemCount,
                         placeholderCount: preflight.placeholderCount,
                         userMessage: `插件无法完整读取${templateLabel}的占位结构和规格文字，本次已停止该规格，避免排版错误。`,
-                        message: 'SKU 模板数量一致性缺少当前 Photoshop 修订上的完整结构或文字证据，已停止该模板生产；请重新加载最新 UXP 后重试。',
+                        message: '当前模板版本缺少完整的结构或文字检查结果，已停止使用这个模板；请重新加载最新插件后再试。',
                         proofRef: contentEvaluation.report.proofRef
                     };
                 }
@@ -5138,7 +5221,7 @@ export const skuBatchExecutor: SkillExecutor = {
             emitStep(
                 'verification',
                 '已修复 SKU 模板数量文字',
-                `检测到「${repairProposal.previousCount}双」与执行计划不一致，已定点改为「${repairProposal.expectedCount}双」并在新 Photoshop 修订上复验通过。`,
+                `检测到「${repairProposal.previousCount}双」与本次规格不一致，已定点改为「${repairProposal.expectedCount}双」并重新检查通过。`,
                 'success',
                 0.7
             );
@@ -5289,7 +5372,7 @@ export const skuBatchExecutor: SkillExecutor = {
                     emitStep(
                         'verification',
                         '已验证 Agent 新版 SKU 模板',
-                        `${input.size}双${input.noteMode ? '自选备注' : '组合'}候选已通过精确路径、当前 Photoshop 修订、占位结构与内容预检，优先于旧模板继续生产。`,
+                        `${input.size}双${input.noteMode ? '自选备注' : '组合'}候选已通过文件、当前文档版本、占位结构与内容检查，优先于旧模板继续生产。`,
                         'success',
                         0.7
                     );
@@ -5298,7 +5381,7 @@ export const skuBatchExecutor: SkillExecutor = {
             }
 
             const diagnostic = priorityDecision.diagnostics.join('；')
-                || `${input.size}双候选没有取得可验证的当前 Photoshop 修订。`;
+                || `${input.size}双候选没有取得可验证的当前文档版本。`;
             emitStep(
                 'warning',
                 'Agent 新版 SKU 模板未通过验证',
@@ -5867,12 +5950,43 @@ export const skuBatchExecutor: SkillExecutor = {
             } as AgentResult;
         }
 
+        const completedTemplateContentRepairs = skuTemplateContentRepairs.filter(
+            (repair) => repair.status === 'repaired'
+        );
+        if (skuStage === 'full' && completedTemplateContentRepairs.length > 0) {
+            return {
+                success: true,
+                message: `已完成 ${completedTemplateContentRepairs.length} 项 SKU 模板文字修复并重新检查通过。本轮尚未开始批量成品；下一步会沿用修复结果，先确认交付文件，再继续生成成品。`,
+                toolResults: sanitizeSkuToolResultsForPublicResult(allToolResults),
+                data: {
+                    status: 'sku_template_repair_prerequisite_completed',
+                    exportCount: 0,
+                    skuDocName,
+                    comboSizes,
+                    skuSizePlanProvenance,
+                    skuTemplateContentRepairs: completedTemplateContentRepairs,
+                    agentReActContinuation: {
+                        status: 'ready_to_continue',
+                        summary: 'SKU 模板修复前置交付已完成，批量成品尚未开始。',
+                        details: [
+                            '继续完成本次 SKU 批量成品。',
+                            '继续前先确认交付目录、命名和同名文件冲突，避免覆盖既有文件。'
+                        ],
+                        nextAction: 'decide_next',
+                        sourceStatus: 'sku_template_repair_prerequisite_completed'
+                    },
+                    ...skuPlanningContext,
+                    skuCardAssetCandidateReport
+                }
+            } as AgentResult;
+        }
+
         if (skuStage === 'template') {
             const templateNames = Array.from(resolvedSkuAssetsBySize.values())
                 .flatMap((item) => [item.comboTemplateDoc?.name, item.noteTemplateDoc?.name])
                 .map((name) => String(name || '').trim())
                 .filter(Boolean);
-            const summary = `SKU 模板阶段已完成：${templateNames.join('、') || '所需模板'}已通过结构与占位符复验；未继续执行组合批量生产。要出成品时接着调 stage=full 消费该模板。`;
+            const summary = `SKU 模板已完成：${templateNames.join('、') || '所需模板'}已通过结构与占位符复验；本轮尚未生成组合成品，后续可直接沿用这些模板继续。`;
             return {
                 success: true,
                 message: summary,
@@ -5901,7 +6015,9 @@ export const skuBatchExecutor: SkillExecutor = {
         }
 
         const expectedExportInventory = buildSkuExpectedExportInventory({
-            outputDir,
+            outputDir: fallbackOutputDir,
+            projectPath: projectContext?.projectPath,
+            deliveryConvention: params.deliveryConvention,
             specs: Array.from(resolvedSkuAssetsBySize.values()).map((item) => {
                 const noteRows = item.shouldRunNote
                     ? (configuredNoteCombosBySize[item.size]?.length > 0
@@ -5921,7 +6037,7 @@ export const skuBatchExecutor: SkillExecutor = {
         });
         if (expectedExportInventory.status !== 'ready') {
             const diagnostic = expectedExportInventory.blockers.join('；') || '无法冻结 SKU 精确交付清单。';
-            const userMessage = 'SKU 输出目录、模板或命名计划还不能形成唯一交付清单，本次尚未开始制作。';
+            const userMessage = 'SKU 输出目录、模板或命名计划还不能形成唯一交付清单，批量成品阶段尚未开始。';
             return {
                 success: false,
                 message: userMessage,
@@ -5943,43 +6059,14 @@ export const skuBatchExecutor: SkillExecutor = {
         const expectedExportItemsById = new Map(
             expectedExportInventory.items.map((item) => [item.id, item] as const)
         );
-        const settledOutputDir = String(outputDir || '').trim();
-        let outputDirectoryCreated = false;
-        try {
-            outputDirectoryCreated = await (window as any).designEcho?.invoke?.(
-                'fs:createDirectory',
-                settledOutputDir
-            ) === true;
-        } catch (error) {
-            const diagnostic = error instanceof Error ? error.message : String(error);
-            const userMessage = '无法准备本次 SKU 输出位置，本次尚未开始制作。';
-            return {
-                success: false,
-                message: userMessage,
-                error: userMessage,
-                data: {
-                    status: 'blocked_sku_output_directory_unavailable',
-                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([diagnostic])
-                }
-            } as AgentResult;
-        }
-        if (!outputDirectoryCreated) {
-            const diagnostic = 'SKU 正式交付目录初始化失败。';
-            const userMessage = '无法准备本次 SKU 输出位置，本次尚未开始制作。';
-            return {
-                success: false,
-                message: userMessage,
-                error: userMessage,
-                data: {
-                    status: 'blocked_sku_output_directory_unavailable',
-                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([diagnostic])
-                }
-            } as AgentResult;
-        }
+        const settledOutputDir = String(expectedExportInventory.outputDir || '').trim();
 
         let skuStagingTransaction: SkuIssuedStagingTransaction;
         try {
-            skuStagingTransaction = await issueSkuStagingTransaction(settledOutputDir);
+            skuStagingTransaction = await issueSkuStagingTransaction(
+                settledOutputDir,
+                String(projectContext?.projectPath || '').trim()
+            );
         } catch (error) {
             const diagnostic = error instanceof Error ? error.message : String(error);
             const userMessage = '无法安全准备本次 SKU 输出，本次尚未开始制作。';
@@ -6000,7 +6087,7 @@ export const skuBatchExecutor: SkillExecutor = {
             } as AgentResult;
         }
         const skuStagingRoot = skuStagingTransaction.stagingRoot;
-        const editableStagingOutputDir = `${skuStagingRoot}\\可编辑`;
+        const editableStagingOutputDir = joinSkuExportPath(skuStagingRoot, '可编辑');
         let preserveSkuStagingRoot = false;
         let skuStagingRecoveryPath = '';
         let skuStagingCleanupFinished = false;
@@ -6044,6 +6131,31 @@ export const skuBatchExecutor: SkillExecutor = {
                 (baseline) => !baseline
             )) {
                 throw new Error('SKU 主进程基线回执缺少冻结目标。');
+            }
+            const versionPolicy = expectedExportInventory.deliveryConvention.versionPolicy;
+            const existingDestination = [
+                ...expectedExportBaselines.values(),
+                ...expectedEditableBaselines.values()
+            ].find((baseline) => baseline.exists === true);
+            if (versionPolicy !== 'replace_exact_set' && existingDestination) {
+                const cleanup = await finalizeSkuStagingOnce();
+                const userMessage = versionPolicy === 'new_version'
+                    ? '本次约定要求生成新版本，但选定的版本名称已经存在；批量成品阶段尚未开始。'
+                    : '本次约定禁止覆盖同名文件，但目标位置已有文件；批量成品阶段尚未开始。';
+                return {
+                    success: false,
+                    message: userMessage,
+                    error: userMessage,
+                    toolResults: sanitizeSkuToolResultsForPublicResult(allToolResults),
+                    data: {
+                        status: 'blocked_sku_delivery_version_conflict',
+                        skuPrivateDiagnostics: buildSkuPrivateDiagnostics([
+                            `deliveryConvention.versionPolicy=${versionPolicy}`,
+                            String(existingDestination.path || ''),
+                            ...(!cleanup.success ? [String(cleanup.error || '')] : [])
+                        ])
+                    }
+                } as AgentResult;
             }
         } catch (error) {
             const diagnostic = error instanceof Error ? error.message : String(error);
@@ -6299,8 +6411,14 @@ export const skuBatchExecutor: SkillExecutor = {
                             version: 'sku-layout-delivery-plan/v1',
                             items: expectedBatchItems.map((item) => ({
                                 itemId: item!.id,
-                                rasterOutputPath: `${skuStagingRoot}\\${item!.templateName}\\${item!.fileName}`,
-                                editableOutputPath: `${editableStagingOutputDir}\\${item!.templateName}\\${item!.editableFileName}`
+                                rasterOutputPath: joinSkuExportPath(
+                                    skuStagingRoot,
+                                    item!.stagedRasterRelativePath
+                                ),
+                                editableOutputPath: joinSkuExportPath(
+                                    skuStagingRoot,
+                                    item!.stagedEditableRelativePath
+                                )
                             }))
                         },
                         // 组合图文件名带序号（「1白色+黑色」），序号须在同规格内连续。
@@ -6391,13 +6509,20 @@ export const skuBatchExecutor: SkillExecutor = {
                                 rawFileInfo: fileInfo,
                                 stagingRoot: skuStagingRoot,
                                 outputDir: settledOutputDir,
+                                expectedStagedPath: joinSkuExportPath(
+                                    skuStagingRoot,
+                                    expectedItem.stagedRasterRelativePath
+                                ),
                                 expectedFinalPath: expectedItem.path,
                                 expectedDimensions: expectedItem.expectedDimensions
                             });
                             const editableValidation = await validateSkuEditableDeliveryResult({
                                 expected: expectedItem,
                                 toolResult: executeResult,
-                                stagedEditablePath: `${editableStagingOutputDir}\\${expectedItem.templateName}\\${expectedItem.editableFileName}`
+                                stagedEditablePath: joinSkuExportPath(
+                                    skuStagingRoot,
+                                    expectedItem.stagedEditableRelativePath
+                                )
                             });
                             const rasterArtifact = parsedRaster.artifact;
                             const editableStagedPathKey = editableValidation.success
@@ -6621,11 +6746,19 @@ export const skuBatchExecutor: SkillExecutor = {
                                 version: 'sku-layout-delivery-plan/v1',
                                 items: [{
                                     itemId: expectedNoteItem.id,
-                                    rasterOutputPath: `${skuStagingRoot}\\${expectedNoteItem.templateName}\\${expectedNoteItem.fileName}`,
-                                    editableOutputPath: `${editableStagingOutputDir}\\${expectedNoteItem.templateName}\\${expectedNoteItem.editableFileName}`
+                                    rasterOutputPath: joinSkuExportPath(
+                                        skuStagingRoot,
+                                        expectedNoteItem.stagedRasterRelativePath
+                                    ),
+                                    editableOutputPath: joinSkuExportPath(
+                                        skuStagingRoot,
+                                        expectedNoteItem.stagedEditableRelativePath
+                                    )
                                 }]
                             },
-                            noteFilePrefix: expectedNoteItem.fileName.replace(/\.jpg$/i, '')
+                            noteFilePrefix: String(
+                                expectedNoteItem.stagedRasterRelativePath.split(/[\\/]+/).at(-1) || ''
+                            ).replace(/\.jpg$/i, '')
                         };
                         const noteResult = await executeSkuLayoutWithModalRetry(
                             noteSkuLayoutParams,
@@ -6705,12 +6838,19 @@ export const skuBatchExecutor: SkillExecutor = {
                             const editableValidation = await validateSkuEditableDeliveryResult({
                                 expected: expectedNoteItem,
                                 toolResult: noteResult,
-                                stagedEditablePath: `${editableStagingOutputDir}\\${expectedNoteItem.templateName}\\${expectedNoteItem.editableFileName}`
+                                stagedEditablePath: joinSkuExportPath(
+                                    skuStagingRoot,
+                                    expectedNoteItem.stagedEditableRelativePath
+                                )
                             });
                             const parsedArtifact = parseSkuStagedRasterExport({
                                 rawFileInfo: noteFiles[0],
                                 stagingRoot: skuStagingRoot,
                                 outputDir: noteOutputDir,
+                                expectedStagedPath: joinSkuExportPath(
+                                    skuStagingRoot,
+                                    expectedNoteItem.stagedRasterRelativePath
+                                ),
                                 expectedFinalPath: expectedNoteItem.path,
                                 expectedDimensions: expectedNoteItem.expectedDimensions
                             });
@@ -6844,6 +6984,7 @@ export const skuBatchExecutor: SkillExecutor = {
                 && Boolean(provisionalEditableDeliveryReceipts.get(item.id)?.stagedPath)
             ));
         let pairedPromotionSucceeded = false;
+        const committedFileIdentities = new Map<string, StagedCommittedFileIdentity>();
         if (!allStagedPairsReady) {
             const diagnostic = `SKU 成对交付只准备了 JPG ${pendingRasterArtifactsByItemId.size}/${expectedExportInventory.items.length}、PSB ${provisionalEditableDeliveryReceipts.size}/${expectedExportInventory.items.length}，未提交任何正式文件。`;
             exportInventoryViolations.push(diagnostic);
@@ -6891,10 +7032,14 @@ export const skuBatchExecutor: SkillExecutor = {
                     appendUniqueDiagnostics(allCopyErrors, [diagnostic]);
                 } else {
                     pairedPromotionSucceeded = true;
+                    for (const identity of promotion.committedFiles || []) {
+                        committedFileIdentities.set(normalizePathForCompare(identity.path), identity);
+                    }
                     allFinalFiles.push(...expectedExportInventory.items.map((item) => item.path));
                     const finalizedEditable = await finalizeSkuEditableDeliveryReceipts({
                         receipts: provisionalEditableDeliveryReceipts,
-                        baselines: expectedEditableBaselines
+                        baselines: expectedEditableBaselines,
+                        committedFiles: committedFileIdentities
                     });
                     for (const [itemId, receipt] of finalizedEditable.receipts) {
                         skuEditableDeliveryReceipts.set(itemId, receipt);
@@ -7126,7 +7271,8 @@ export const skuBatchExecutor: SkillExecutor = {
         const runtimeDeliveryArtifacts = buildSkuRuntimeDeliveryArtifacts({
             expectedItems: expectedExportInventory.items,
             rasterFileProbes: skuExportFileProbes,
-            editableReceipts: skuEditableDeliveryReceipts
+            editableReceipts: skuEditableDeliveryReceipts,
+            committedFiles: committedFileIdentities
         });
         const expectedRuntimeDeliveryArtifacts = expectedExportInventory.items.flatMap((item) => ([{
             path: item.path,
@@ -7200,6 +7346,7 @@ export const skuBatchExecutor: SkillExecutor = {
                 && skuExportReadback.status === 'ready_for_review'
                 && skuEditableDeliveryReadback.status === 'ready'
                 && runtimeArtifactSetExact
+                && Boolean(expectedExportInventory.deliveryPlanDigest)
                 ? 'ready'
                 : 'incomplete',
             outputs: [
@@ -7209,6 +7356,12 @@ export const skuBatchExecutor: SkillExecutor = {
                 'review_report'
             ],
             resultRefs: runtimeDeliveryResultRefs,
+            expectedDeliveryPlan: expectedExportInventory.deliveryPlanDigest
+                ? {
+                    digest: expectedExportInventory.deliveryPlanDigest,
+                    convention: expectedExportInventory.deliveryConvention
+                }
+                : undefined,
             resultRefProofs: runtimeDeliveryResultRefs.map((resultRef) => ({
                 resultRef,
                 effect: 'save_export' as const
@@ -7224,6 +7377,9 @@ export const skuBatchExecutor: SkillExecutor = {
                     : []),
                 ...(!runtimeArtifactSetExact
                     ? ['SKU 最终 artifact 集合没有逐项精确匹配冻结的 JPG/PSB 清单。']
+                    : []),
+                ...(!expectedExportInventory.deliveryPlanDigest
+                    ? ['SKU 执行前交付计划缺少稳定摘要。']
                     : []),
                 ...(!finalDeliverySuccess ? ['SKU 交付结果没有达到完整成功状态。'] : [])
             ]
@@ -7293,6 +7449,9 @@ export const skuBatchExecutor: SkillExecutor = {
                 skuCardTemplatePreparationRun,
                 skuExportReadback,
                 skuEditableDeliveryReadback,
+                ...(expectedExportInventory.deliveryPlanDigest
+                    ? { expectedDeliveryPlanDigest: expectedExportInventory.deliveryPlanDigest }
+                    : {}),
                 runtimeDeliveryReceipt,
                 skuVisualReviewIntake,
                 skuHumanReviewTarget,

@@ -80,11 +80,12 @@ export const SKU_BATCH_MANIFEST: SkillRuntimeManifest = {
     optional_model_profiles: ['review.strict'],
     read_scopes: ['brief', 'assets', 'photoshop', 'execution_tasks', 'review'],
     write_scopes: ['brief', 'layout_plan', 'execution_tasks', 'review', 'delivery'],
-    tool_namespaces: ['project.', 'preview.', 'photoshop.read.', 'photoshop.sandbox.', 'delivery.'],
+    tool_namespaces: ['project.', 'knowledge.', 'preview.', 'photoshop.read.', 'photoshop.sandbox.', 'delivery.'],
     available_tools: [
         'project.listResources',
         'project.searchResources',
         'project.observeAssets',
+        'knowledge.search.readSkillPlaybook',
         'preview.renderStoryboard',
         'photoshop.read.getDocumentSummary',
         'photoshop.read.getAcceptanceSnapshot',

@@ -82,6 +82,42 @@ const candidateTools = [
 ];
 const workflowBridgeNames = workflowBridgeTools.map((tool) => tool.name);
 
+const expectedPlaybookBySkillId = new Map([
+  ['main-image-design', 'main-image-design'],
+  ['detail-page-design', 'detail-page-design'],
+  ['sku-batch', 'sku-production']
+]);
+for (const [skillId, playbookId] of expectedPlaybookBySkillId) {
+  const declaration = SKILL_REGISTRY.find((candidate) => candidate.id === skillId);
+  const workflowTool = workflowBridgeTools.find((candidate) => candidate.name === skillId);
+  assert(declaration, `missing Skill declaration: ${skillId}`);
+  assert.strictEqual(declaration.playbookId, playbookId, `${skillId} playbook crosswalk drifted`);
+  assert(
+    fs.existsSync(path.join(root, 'skills', playbookId, 'SKILL.md')),
+    `${skillId} playbook package is missing: ${playbookId}`
+  );
+  assert(
+    workflowTool?.description.includes(`readSkillPlaybook("${playbookId}")`),
+    `${skillId} workflow schema does not expose its playbook crosswalk`
+  );
+  assert(
+    workflowTool?.inputSchema?.properties?.deliveryConvention?.additionalProperties === false,
+    `${skillId} workflow schema lost strict deliveryConvention`
+  );
+  assert.deepStrictEqual(
+    workflowTool?.inputSchema?.properties?.deliveryConvention?.properties?.versionPolicy?.enum,
+    ['new_version', 'fail_if_exists'],
+    `${skillId} public deliveryConvention must not let the model authorize overwrite`
+  );
+  if (skillId === 'sku-batch') {
+    assert.deepStrictEqual(
+      workflowTool?.inputSchema?.properties?.deliveryConvention?.properties?.raster?.properties?.format?.enum,
+      ['jpg'],
+      'sku-batch public deliveryConvention must match the exact JPG/PSB production transaction'
+    );
+  }
+}
+
 const designFoundationSession = createAgentCapabilitySession({
   candidateTools,
   workflowBridgeNames,
@@ -111,6 +147,7 @@ assert(
   'ordinary Harness baseline must not expose design Runtime Profile declaration'
 );
 for (const requiredDesignFoundationTool of [
+  'readSkillPlaybook',
   'declareDesignIntent',
   'analyzeProjectContactSheetOverview',
   'recommendAssets',
@@ -243,6 +280,7 @@ assert.strictEqual(skuSession.getResolution().status, 'resolved');
 const skuActiveToolNames = new Set(skuSession.activeTools.map((tool) => tool.name));
 for (const requiredToolName of [
   'sku-batch',
+  'readSkillPlaybook',
   'listProjectResources',
   'searchProjectResources',
   'analyzeProjectContactSheetOverview',
@@ -258,6 +296,19 @@ for (const requiredToolName of [
 ]) {
   assert(skuActiveToolNames.has(requiredToolName), `sku template continuation missing Tool: ${requiredToolName}`);
 }
+const skuColorCardManifest = manifests.find((manifest) => manifest.task_type === 'ecommerce.sku_color_card.v1');
+assert(skuColorCardManifest, 'sku-color-card manifest missing');
+const skuColorCardSession = createAgentCapabilitySession({
+  candidateTools,
+  workflowBridgeNames,
+  baselineCapabilityIds: buildAgentCapabilityBaseline(true),
+  requestedTaskType: skuColorCardManifest.task_type,
+  manifest: skuColorCardManifest
+});
+assert(
+  skuColorCardSession.activeTools.some((tool) => tool.name === 'readSkillPlaybook'),
+  'sku-color-card first turn cannot read the sku-production playbook'
+);
 assert(!skuActiveToolNames.has('deleteLayer'), 'sku template continuation unexpectedly exposes deleteLayer');
 
 const detailManifest = manifests.find((manifest) => manifest.task_type === 'ecommerce.detail_page.v1');

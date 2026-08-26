@@ -4,10 +4,21 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
+const os = require("os");
 const path = require("path");
 const { readPsd } = require("ag-psd");
 const sharp = require("sharp");
 const { spawnSync } = require("child_process");
+const {
+  buildPhotoshopRuntimeBinding,
+  photoshopRuntimeBindingsMatch,
+  validatePhotoshopRuntimeBinding,
+  verifyPhotoshopRuntimeBuildIdentity
+} = require("./lib/photoshop-runtime-build-identity.cjs");
+const {
+  createDesignReliabilityReviewPacket,
+  verifyDesignReliabilityReviewerResponse
+} = require("./lib/design-reliability-review-packet.cjs");
 
 const {
   ATTRIBUTION_OWNERS,
@@ -37,13 +48,45 @@ const {
 const ROOT = path.resolve(__dirname, "..");
 const BENCHMARK_ROOT = path.join(ROOT, "benchmarks", "design-reliability");
 const MANIFEST_PATH = path.join(BENCHMARK_ROOT, "suites.manifest.json");
-const DEFAULT_DATA_ROOT = path.join(ROOT, "tmp", "design-reliability");
+const LEGACY_DATA_ROOT = path.join(ROOT, "tmp", "design-reliability");
+const DEFAULT_DATA_ROOT = resolvePersistentDataRoot();
 const CANONICAL_ATTEMPT_EVENTS_ROOT = path.join(DEFAULT_DATA_ROOT, "attempt-events");
+const CANONICAL_REVIEW_BUNDLES_ROOT = path.join(DEFAULT_DATA_ROOT, "review-verification-bundles");
+const OFFICIAL_REVIEW_DISK_TRUST = Symbol.for("designecho.designReliability.officialReviewDiskVerified");
+const REVIEW_VERIFICATION_BUNDLE_VERSION = "design-reliability-review-verification-bundle/v1";
 const DEFAULT_DEBUG_BRIDGE = "http://127.0.0.1:8767";
 const DEFAULT_PHOTOSHOP_MCP_HEALTH = "http://127.0.0.1:8768/health";
 const DEFAULT_PHOTOSHOP_MCP_ENDPOINT = "http://127.0.0.1:8768/mcp";
 const MAX_LIVE_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const LIVE_ATTEMPT_EVENT_VERSION = "design-reliability-attempt-event/v1";
+const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = "debug-bridge-chat-preflight/v1";
+const DEBUG_BRIDGE_CHAT_FAILURE_VERSION = "debug-bridge-chat-execution-failure/v1";
+const SAFE_PRE_SUBMIT_STAGES = new Set([
+  "bridge_preflight",
+  "main_preflight",
+  "renderer_preflight",
+  "before_handle_send"
+]);
+
+function resolvePersistentDataRoot() {
+  if (process.platform === "win32") {
+    const appData = cleanString(process.env.APPDATA);
+    const base = appData || path.join(os.homedir(), "AppData", "Roaming");
+    return path.resolve(base, "designecho-agent", "design-reliability");
+  }
+  if (process.platform === "darwin") {
+    return path.resolve(
+      os.homedir(),
+      "Library",
+      "Application Support",
+      "designecho-agent",
+      "design-reliability"
+    );
+  }
+  const xdgConfigHome = cleanString(process.env.XDG_CONFIG_HOME);
+  const base = xdgConfigHome || path.join(os.homedir(), ".config");
+  return path.resolve(base, "designecho-agent", "design-reliability");
+}
 
 function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -108,11 +151,62 @@ function writeJsonExclusive(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
 }
 
-function writeJsonReplace(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(tempPath, filePath);
+function ensurePrivateDirectory(directoryPath) {
+  fs.mkdirSync(directoryPath, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(directoryPath);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error("canonical private bundle root 必须是普通目录。 ");
+  }
+  if (process.platform !== "win32") fs.chmodSync(directoryPath, 0o700);
+}
+
+function hardenPrivateTree(rootPath) {
+  if (process.platform === "win32" || !fs.existsSync(rootPath)) return;
+  const stack = [rootPath];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink()) throw new Error("canonical private bundle 不能包含符号链接。 ");
+    if (stat.isDirectory()) {
+      fs.chmodSync(current, 0o700);
+      for (const entry of fs.readdirSync(current)) stack.push(path.join(current, entry));
+    } else if (stat.isFile()) {
+      fs.chmodSync(current, 0o600);
+    }
+  }
+}
+
+function assertPrivateTreePermissions(rootPath) {
+  if (process.platform === "win32") return;
+  const stack = [rootPath];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) {
+      throw new Error("canonical private bundle 权限不是 owner-only。 ");
+    }
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(current)) stack.push(path.join(current, entry));
+    }
+  }
+}
+
+function writePrivateJsonExclusive(filePath, value) {
+  writeJsonExclusive(filePath, value);
+  if (process.platform !== "win32") fs.chmodSync(filePath, 0o600);
+}
+
+function writePreflightReport(report, dataRoot = DEFAULT_DATA_ROOT) {
+  const generatedAt = cleanString(report?.generatedAt) || new Date().toISOString();
+  const timestamp = generatedAt.replace(/[-:.TZ]/g, "").slice(0, 14) || "unknown-time";
+  const reportId = `preflight-${timestamp}-${crypto.randomBytes(6).toString("hex")}`;
+  const reportPath = resolveSidecarOutputPath(dataRoot, ["preflight"], reportId);
+  writeJsonExclusive(reportPath, report);
+  return reportPath;
+}
+
+function shouldPersistPreflightReport(args) {
+  return Boolean(args?.hasFlag?.("--write-report"));
 }
 
 function safePathSegment(value) {
@@ -135,10 +229,43 @@ function buildLiveAttemptId(caseId) {
 function sanitizeAttemptDiagnostic(value) {
   return String(value || "")
     .split(ROOT).join("[PROJECT_ROOT]")
-    .replace(/[A-Za-z]:[\\/][^\r\n"']+/g, "[LOCAL_PATH]")
+    .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;"']+/ig, "$1[redacted]")
+    .replace(/((?:api[_\s-]?key|(?:[a-z0-9]+[_\s-]?)?token|secret|password|credential|client[_\s-]?secret)\s*[:=]\s*)["']?[^\s,;"']+/ig, "$1[redacted]")
+    .replace(/\b(?:sk|key|token)-[A-Za-z0-9_-]{12,}\b/g, "[redacted]")
+    .replace(/([?&](?:api[_-]?key|(?:[a-z0-9]+[_-]?)?token|secret|password|credential|client[_-]?secret)=)[^&#\s]+/ig, "$1[redacted]")
+    .replace(/file:\/{2,3}(?:[A-Za-z]:|\/)[^\r\n,;"'|)]*/ig, "[LOCAL_PATH]")
+    .replace(/\\\\[^\r\n"'|,;)]+/g, "[LOCAL_PATH]")
+    .replace(/[A-Za-z]:[\\/][^\r\n"'|,;)]*/g, "[LOCAL_PATH]")
+    .replace(/(^|[\s("'=:])\/(?!\/)[^\r\n"'|,;)]*/g, "$1[LOCAL_PATH]")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
+}
+
+function resolveLoopbackDebugBridge(value) {
+  const raw = cleanString(value) || DEFAULT_DEBUG_BRIDGE;
+  let target;
+  try {
+    target = new URL(raw);
+  } catch {
+    throw new Error("--debug-bridge 必须是有效的本机 HTTP 地址。");
+  }
+  const hostname = target.hostname.toLowerCase();
+  const loopback = hostname === "127.0.0.1"
+    || hostname === "localhost"
+    || hostname === "[::1]"
+    || hostname === "::1";
+  const pathName = target.pathname.replace(/\/+$/g, "") || "";
+  if (target.protocol !== "http:"
+    || !loopback
+    || target.username
+    || target.password
+    || target.search
+    || target.hash
+    || pathName) {
+    throw new Error("--debug-bridge 只允许无凭据、无路径的 loopback HTTP origin（127.0.0.1、localhost 或 [::1]）。");
+  }
+  return target.origin;
 }
 
 function classifyLiveAttemptFailure(error) {
@@ -149,6 +276,51 @@ function classifyLiveAttemptFailure(error) {
   if (/Photoshop|UXP|文档|写入|document/i.test(message)) return "photoshop_or_document_failed";
   if (/不一致|指定提交|指定模型|指定 Provider|fixture/i.test(message)) return "submission_rejected";
   return "execution_failed";
+}
+
+function readDebugBridgeExecutionFailure(value) {
+  if (!isRecord(value)) return null;
+  const candidate = isRecord(value.debugBridgeFailure)
+    ? value.debugBridgeFailure
+    : (isRecord(value.failure) ? value.failure : null);
+  if (!candidate
+    || candidate.version !== DEBUG_BRIDGE_CHAT_FAILURE_VERSION
+    || typeof candidate.stage !== "string"
+    || typeof candidate.writePossible !== "boolean"
+    || !cleanString(candidate.message)) {
+    return null;
+  }
+  return {
+    version: DEBUG_BRIDGE_CHAT_FAILURE_VERSION,
+    stage: cleanString(candidate.stage),
+    writePossible: candidate.writePossible === true,
+    message: cleanString(candidate.message).slice(0, 500),
+    ...(cleanString(candidate.code) ? { code: cleanString(candidate.code).slice(0, 120) } : {}),
+    ...(cleanString(candidate.requestId)
+      ? { requestId: cleanString(candidate.requestId).slice(0, 160) }
+      : {})
+  };
+}
+
+function readDebugBridgeFailureFromError(error) {
+  if (!isRecord(error)) return null;
+  return readDebugBridgeExecutionFailure(error)
+    || readDebugBridgeExecutionFailure(error.debugBridgeResponse);
+}
+
+function isSafePreSubmitFailure(failure) {
+  return Boolean(
+    failure
+    && failure.writePossible === false
+    && SAFE_PRE_SUBMIT_STAGES.has(failure.stage)
+  );
+}
+
+function classifyUntrustedDebugBridgeFailure(error) {
+  const failure = readDebugBridgeFailureFromError(error);
+  return isSafePreSubmitFailure(failure)
+    ? "submission_rejected_before_execution"
+    : "submission_unknown_write_state";
 }
 
 function writeLiveAttemptEvent(context, sequence, eventType, payload = {}) {
@@ -200,6 +372,11 @@ function resolveInside(root, relativePath) {
     throw new Error(`路径越出允许根目录：${relativePath}`);
   }
   return absolutePath;
+}
+
+function isPathInside(parentPath, childPath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function normalizeRelativePath(value) {
@@ -469,6 +646,11 @@ function buildSuiteRubricSetDigest(suite) {
 
 function collectJsonFiles(root) {
   if (!fs.existsSync(root)) return [];
+  if (path.basename(path.resolve(root)) === path.basename(CANONICAL_REVIEW_BUNDLES_ROOT)
+    || path.resolve(root) === path.resolve(CANONICAL_REVIEW_BUNDLES_ROOT)
+    || isPathInside(CANONICAL_REVIEW_BUNDLES_ROOT, root)) {
+    return [];
+  }
   const pending = [root];
   const files = [];
   while (pending.length > 0) {
@@ -476,6 +658,11 @@ function collectJsonFiles(root) {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const absolutePath = path.join(current, entry.name);
       if (entry.isDirectory()) {
+        if (entry.name === path.basename(CANONICAL_REVIEW_BUNDLES_ROOT)
+          || path.resolve(absolutePath) === path.resolve(CANONICAL_REVIEW_BUNDLES_ROOT)
+          || isPathInside(CANONICAL_REVIEW_BUNDLES_ROOT, absolutePath)) {
+          continue;
+        }
         pending.push(absolutePath);
       } else if (entry.isFile() && entry.name.endsWith(".json")) {
         files.push(absolutePath);
@@ -505,6 +692,17 @@ function validateLiveAttemptEvent(event) {
   }
   if (!cleanString(event?.suiteCaseSetDigest) || !cleanString(event?.suiteRubricSetDigest)) {
     errors.push("Attempt 缺少当前 Suite Case / Rubric 摘要。");
+  }
+  const photoshopRuntimeBinding = event?.environment?.photoshopRuntimeBinding;
+  const photoshopRuntimeBindingDigest = cleanString(
+    event?.environment?.photoshopRuntimeBindingDigest
+  );
+  if (!validatePhotoshopRuntimeBinding(photoshopRuntimeBinding)
+    || !photoshopRuntimeBindingDigest
+    || photoshopRuntimeBindingDigest !== sha256Text(stableStringify(photoshopRuntimeBinding))
+    || cleanString(event?.environment?.photoshopRuntimeBuildId)
+      !== cleanString(photoshopRuntimeBinding?.live?.buildId)) {
+    errors.push("Attempt 没有绑定可重算的 Photoshop Runtime 完整身份。");
   }
   if (["terminal", "reconciled"].includes(event?.eventType) && !cleanString(event?.status)) {
     errors.push("Attempt 终态 / 对账事件缺少 status。");
@@ -1106,7 +1304,7 @@ function exactRefSetMatches(actualInput, expectedInput) {
 function buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs) {
   if (caseSpec.taskFamily !== "sku") return [];
   const source = bindingProof?.skuDeliveryEvidence;
-  if (!isRecord(source) || source.version !== "debug-sku-delivery-evidence/v1") return [];
+  if (!isRecord(source) || source.version !== "debug-sku-delivery-evidence/v2") return [];
   const receipt = source.runtimeDeliveryReceipt;
   const exportReadback = source.skuExportReadback;
   const editableReadback = source.skuEditableDeliveryReadback;
@@ -1152,6 +1350,32 @@ function buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs) {
     artifact?.kind === "editable_document"
     && artifact?.proof === "staged_editable_document_promotion"
   ));
+  const artifactByRef = new Map();
+  for (const artifact of receipt.artifacts) {
+    if (!isRecord(artifact)) return [];
+    const ref = normalizeRelativePath(artifact?.path);
+    const sha256 = cleanString(artifact?.fileIdentity?.sha256).toLowerCase();
+    const byteLength = Number(artifact?.fileIdentity?.byteLength);
+    const documentId = Number(artifact?.sourceHistoryStateRef?.documentId);
+    const historyStateId = Number(artifact?.sourceHistoryStateRef?.historyStateId);
+    if (!ref
+      || artifactByRef.has(ref)
+      || !/^[a-f0-9]{64}$/.test(sha256)
+      || !Number.isSafeInteger(byteLength)
+      || byteLength <= 0
+      || !Number.isSafeInteger(documentId)
+      || documentId <= 0
+      || !Number.isSafeInteger(historyStateId)
+      || historyStateId <= 0) {
+      return [];
+    }
+    artifactByRef.set(ref, {
+      ...artifact,
+      ref,
+      fileIdentity: { sha256, byteLength },
+      sourceHistoryStateRef: { documentId, historyStateId }
+    });
+  }
   if (rasterArtifacts.length !== expectedCount
     || editableArtifacts.length !== expectedCount
     || !exactRefSetMatches(rasterArtifacts.map((artifact) => artifact.path), expectedRasterRefs)
@@ -1188,6 +1412,12 @@ function buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs) {
   const itemRasterRefs = [];
   const itemEditableRefs = [];
   for (const item of editableReadback.items) {
+    const rasterRef = normalizeRelativePath(item?.rasterPath);
+    const editableRef = normalizeRelativePath(item?.editablePath);
+    const rasterArtifact = artifactByRef.get(rasterRef);
+    const editableArtifact = artifactByRef.get(editableRef);
+    const itemSha256 = cleanString(item?.fileIdentity?.sha256).toLowerCase();
+    const itemByteLength = Number(item?.fileIdentity?.byteLength);
     if (!isRecord(item)
       || !cleanString(item.itemId)
       || itemIds.has(item.itemId)
@@ -1206,7 +1436,18 @@ function buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs) {
       || !Number.isSafeInteger(item.sourceHistoryStateRef.documentId)
       || item.sourceHistoryStateRef.documentId <= 0
       || !Number.isSafeInteger(item.sourceHistoryStateRef.historyStateId)
-      || item.sourceHistoryStateRef.historyStateId <= 0) {
+      || item.sourceHistoryStateRef.historyStateId <= 0
+      || !rasterArtifact
+      || !editableArtifact
+      || !/^[a-f0-9]{64}$/.test(itemSha256)
+      || !Number.isSafeInteger(itemByteLength)
+      || itemByteLength <= 0
+      || editableArtifact.fileIdentity.sha256 !== itemSha256
+      || editableArtifact.fileIdentity.byteLength !== itemByteLength
+      || rasterArtifact.sourceHistoryStateRef.documentId !== item.sourceHistoryStateRef.documentId
+      || rasterArtifact.sourceHistoryStateRef.historyStateId !== item.sourceHistoryStateRef.historyStateId
+      || editableArtifact.sourceHistoryStateRef.documentId !== item.sourceHistoryStateRef.documentId
+      || editableArtifact.sourceHistoryStateRef.historyStateId !== item.sourceHistoryStateRef.historyStateId) {
       return [];
     }
     itemIds.add(item.itemId);
@@ -1227,6 +1468,19 @@ function buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs) {
     || !exactRefSetMatches(editableEvidence.map((evidence) => evidence.ref), expectedEditableRefs)) {
     return [];
   }
+  const evidenceByRef = new Map(
+    [...rasterEvidence, ...editableEvidence].map((evidence) => [normalizeRelativePath(evidence.ref), evidence])
+  );
+  for (const [ref, artifact] of artifactByRef) {
+    const evidence = evidenceByRef.get(ref);
+    const expectedKind = artifact.kind === "raster_export" ? "raster_export" : "editable_psd";
+    if (!evidence
+      || evidence.kind !== expectedKind
+      || cleanString(evidence.digest).toLowerCase() !== `sha256:${artifact.fileIdentity.sha256}`
+      || Number(evidence.size) !== artifact.fileIdentity.byteLength) {
+      return [];
+    }
+  }
   const pairedReceiptFact = {
     outputs: receipt.outputs,
     resultRefs: receipt.resultRefs,
@@ -1239,6 +1493,7 @@ function buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs) {
     templateName: item.templateName,
     combination: item.combination,
     sourceHistoryStateRef: item.sourceHistoryStateRef,
+    fileIdentity: item.fileIdentity,
     copiedLayerIds: item.copiedLayerIds,
     copiedLayerNames: item.copiedLayerNames
   }));
@@ -1254,7 +1509,9 @@ function buildSkuLiveDeliveryEvidence(caseSpec, bindingProof, evidenceRefs) {
     itemId: item.itemId,
     rasterPath: item.rasterPath,
     editablePath: item.editablePath,
-    sourceHistoryStateRef: item.sourceHistoryStateRef
+    sourceHistoryStateRef: item.sourceHistoryStateRef,
+    rasterFileIdentity: artifactByRef.get(normalizeRelativePath(item.rasterPath))?.fileIdentity,
+    editableFileIdentity: item.fileIdentity
   }));
   return [{
     kind: "paired_editable_delivery_receipt",
@@ -1553,6 +1810,211 @@ function recordReview(suite, args) {
   return { review, outputPath };
 }
 
+function readReviewPacketContext(suite, args) {
+  const caseId = args.get("--case");
+  const runObservationPath = args.get("--run-observation");
+  if (!caseId || !runObservationPath) {
+    throw new Error("匿名评审包需要 --case 与 --run-observation。 ");
+  }
+  const caseSpec = findCase(suite, caseId);
+  const run = readJson(path.resolve(runObservationPath));
+  const rubric = suite.rubrics.find((item) => item.rubricId === caseSpec.oracle?.rubricId);
+  if (!rubric) throw new Error(`Case ${caseId} 缺少 Rubric。`);
+  return { caseSpec, run, rubric };
+}
+
+function parseReviewPacketSourceBindings(args) {
+  const bindings = [];
+  const bindingsJsonPath = args.get("--source-bindings-json");
+  if (bindingsJsonPath) {
+    const fromFile = readJson(path.resolve(bindingsJsonPath));
+    if (!Array.isArray(fromFile)) {
+      throw new Error("--source-bindings-json 必须是 [{evidenceRef,sourcePath}] 数组。 ");
+    }
+    bindings.push(...fromFile);
+  }
+  for (const encoded of args.getAll("--source-binding")) {
+    const separator = encoded.indexOf("=");
+    if (separator <= 0 || separator === encoded.length - 1) {
+      throw new Error("--source-binding 格式必须是 evidenceRef=绝对文件路径。 ");
+    }
+    bindings.push({
+      evidenceRef: encoded.slice(0, separator),
+      sourcePath: encoded.slice(separator + 1)
+    });
+  }
+  if (bindings.length === 0) {
+    throw new Error("prepare-review-packet 需要 --source-bindings-json 或至少一个 --source-binding。 ");
+  }
+  return bindings;
+}
+
+function reviewBundleDirectory(packetId, bundleRoot = CANONICAL_REVIEW_BUNDLES_ROOT) {
+  return resolveInside(bundleRoot, safePathSegment(packetId));
+}
+
+function markReviewDiskVerified(review) {
+  Object.defineProperty(review, OFFICIAL_REVIEW_DISK_TRUST, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false
+  });
+  return review;
+}
+
+async function prepareAnonymousReviewPacket(suite, args, bundleRoot = CANONICAL_REVIEW_BUNDLES_ROOT) {
+  if (!args.hasFlag("--allow-create")) {
+    throw new Error("prepare-review-packet 需要显式 --allow-create；目标目录和密封映射均为 fail-if-exists。 ");
+  }
+  const reviewerPacketDirectory = args.get("--reviewer-packet-dir");
+  if (!reviewerPacketDirectory) {
+    throw new Error("prepare-review-packet 需要 --reviewer-packet-dir。 ");
+  }
+  const context = readReviewPacketContext(suite, args);
+  const packetId = `review-packet-${crypto.randomBytes(16).toString("hex")}`;
+  ensurePrivateDirectory(bundleRoot);
+  const bundleDirectory = reviewBundleDirectory(packetId, bundleRoot);
+  fs.mkdirSync(bundleDirectory, { mode: 0o700 });
+  if (process.platform !== "win32") fs.chmodSync(bundleDirectory, 0o700);
+  const sealedMappingPath = path.join(bundleDirectory, "sealed-mapping.json");
+  const result = await createDesignReliabilityReviewPacket({
+    ...context,
+    sourceBindings: parseReviewPacketSourceBindings(args),
+    reviewerPacketDirectory: path.resolve(reviewerPacketDirectory),
+    sealedMappingPath,
+    packetId
+  });
+  if (process.platform !== "win32") fs.chmodSync(sealedMappingPath, 0o600);
+  writePrivateJsonExclusive(path.join(bundleDirectory, "preparation.json"), {
+    version: "design-reliability-review-bundle-preparation/v1",
+    packetId,
+    packetDigest: result.packet.packetDigest,
+    caseRef: {
+      caseId: context.caseSpec.caseId,
+      revision: context.caseSpec.revision,
+      caseDigest: context.caseSpec.caseDigest
+    },
+    runObservationId: context.run.runObservationId,
+    createdAt: result.packet.createdAt,
+    boundaries: {
+      privateCanonicalRecord: true,
+      neverGiveToReviewer: true
+    }
+  });
+  return {
+    success: true,
+    packetId: result.packet.packetId,
+    packetDigest: result.packet.packetDigest,
+    anonymousItemCount: result.packet.anonymousGroups.length,
+    reviewerPacketDirectory: result.reviewerPacketDirectory,
+    boundaries: {
+      sealedMappingNotPrinted: true,
+      sealedMappingStoredInCanonicalPrivateBundle: true,
+      reviewerPacketContainsNoOriginMetadata: true,
+      failIfExists: true
+    }
+  };
+}
+
+async function recordAnonymousReview(
+  suite,
+  args,
+  dataRoot = DEFAULT_DATA_ROOT,
+  bundleRoot = CANONICAL_REVIEW_BUNDLES_ROOT
+) {
+  const packetId = args.get("--packet-id");
+  const reviewerPacketDirectory = args.get("--reviewer-packet-dir");
+  const reviewerResponsePath = args.get("--reviewer-response");
+  if (!packetId || !reviewerPacketDirectory || !reviewerResponsePath) {
+    throw new Error("record-anonymous-review 需要 --packet-id、--reviewer-packet-dir 与 --reviewer-response。 ");
+  }
+  const context = readReviewPacketContext(suite, args);
+  const bundleDirectory = reviewBundleDirectory(packetId, bundleRoot);
+  const preparationPath = path.join(bundleDirectory, "preparation.json");
+  const sealedMappingPath = path.join(bundleDirectory, "sealed-mapping.json");
+  if (!fs.existsSync(preparationPath) || !fs.existsSync(sealedMappingPath)) {
+    throw new Error(`packetId ${packetId} 没有完整的 canonical 私有准备记录。`);
+  }
+  const preparation = readJson(preparationPath);
+  if (preparation.version !== "design-reliability-review-bundle-preparation/v1"
+    || preparation.packetId !== packetId
+    || preparation.runObservationId !== context.run.runObservationId
+    || preparation.caseRef?.caseId !== context.caseSpec.caseId
+    || preparation.caseRef?.revision !== context.caseSpec.revision
+    || preparation.caseRef?.caseDigest !== context.caseSpec.caseDigest
+    || preparation.boundaries?.privateCanonicalRecord !== true
+    || preparation.boundaries?.neverGiveToReviewer !== true) {
+    throw new Error("packetId 的私有准备记录与当前 Case / Run 不一致。 ");
+  }
+  const archivedPacketDirectory = path.join(bundleDirectory, "reviewer-packet");
+  const archivedResponsePath = path.join(bundleDirectory, "reviewer-response.json");
+  if (fs.existsSync(archivedPacketDirectory) || fs.existsSync(archivedResponsePath)) {
+    throw new Error("该 packetId 已经归档过评审材料；official bundle 必须 fail-if-exists。 ");
+  }
+  fs.cpSync(path.resolve(reviewerPacketDirectory), archivedPacketDirectory, {
+    recursive: true,
+    errorOnExist: true,
+    force: false
+  });
+  fs.copyFileSync(path.resolve(reviewerResponsePath), archivedResponsePath, fs.constants.COPYFILE_EXCL);
+  hardenPrivateTree(archivedPacketDirectory);
+  if (process.platform !== "win32") fs.chmodSync(archivedResponsePath, 0o600);
+  const verifiedAt = new Date().toISOString();
+  const result = await verifyDesignReliabilityReviewerResponse({
+    ...context,
+    reviewerPacketDirectory: archivedPacketDirectory,
+    sealedMappingPath,
+    reviewerResponsePath: archivedResponsePath,
+    verifiedAt
+  });
+  if (result.verifiedPacketProof.packetDigest !== preparation.packetDigest) {
+    throw new Error("归档 public packet 与 prepare 阶段冻结摘要不一致。 ");
+  }
+  const bundleManifest = {
+    version: REVIEW_VERIFICATION_BUNDLE_VERSION,
+    packetId,
+    reviewId: result.review.reviewId,
+    runObservationId: result.review.runObservationId,
+    caseRef: result.verifiedPacketProof.caseRef,
+    verifiedAt,
+    files: {
+      reviewerPacketDirectory: "reviewer-packet",
+      sealedMapping: "sealed-mapping.json",
+      reviewerResponse: "reviewer-response.json"
+    },
+    packetDigest: result.verifiedPacketProof.packetDigest,
+    sealedMappingDigest: result.verifiedPacketProof.sealedMappingDigest,
+    reviewerResponseDigest: result.verifiedPacketProof.reviewerResponseDigest,
+    reviewProjectionDigest: result.verifiedPacketProof.reviewProjectionDigest,
+    boundaries: {
+      canonicalVerificationBundle: true,
+      diskRevalidationRequiredForStrictMetrics: true,
+      failIfExists: true
+    }
+  };
+  bundleManifest.bundleDigest = sha256Text(stableStringify(bundleManifest));
+  writePrivateJsonExclusive(path.join(bundleDirectory, "bundle.json"), bundleManifest);
+  const outputPath = resolveSidecarOutputPath(
+    dataRoot,
+    ["reviews", result.review.runObservationId],
+    result.review.reviewId
+  );
+  writeJsonExclusive(outputPath, result.review);
+  markReviewDiskVerified(result.review);
+  return {
+    success: true,
+    review: result.review,
+    outputPath,
+    packetId: result.verifiedPacketProof.packetId,
+    evidenceProtocol: result.review.evidenceProtocol,
+    boundaries: {
+      strictTrustIsProcessLocal: true,
+      bundlePathNotPrinted: true
+    }
+  };
+}
+
 function recordAttribution(args) {
   const runPath = path.resolve(args.get("--run-observation"));
   const run = readJson(runPath);
@@ -1600,10 +2062,12 @@ function recordAttribution(args) {
 
 function sidecarRoots(args) {
   const requested = args.getAll("--data-root").map((item) => path.resolve(item));
-  // Attempt 安全账本始终由 canonical DEFAULT_DATA_ROOT 提供；--data-root 只能追加
-  // 报告来源，不能把既有 armed / unknown-write / fixture 使用记录从 preflight 隐藏。
+  // Attempt 安全账本始终由仓库外的 canonical DEFAULT_DATA_ROOT 提供；--data-root
+  // 只能追加报告来源，不能把既有 armed / unknown-write / fixture 使用记录从
+  // preflight 隐藏。仓库内旧 tmp 仅作历史报告兼容读取，不再承担正式分母。
   return [...new Set([
     DEFAULT_DATA_ROOT,
+    LEGACY_DATA_ROOT,
     path.join(BENCHMARK_ROOT, "curated"),
     ...requested
   ])];
@@ -1742,6 +2206,96 @@ function retainContextuallyValidReviews(sidecars, suite) {
   };
 }
 
+function buildReviewBundleDigest(bundle) {
+  const projection = JSON.parse(JSON.stringify(bundle));
+  delete projection.bundleDigest;
+  return sha256Text(stableStringify(projection));
+}
+
+async function revalidateOfficialReviewBundles(
+  sidecars,
+  suite,
+  bundleRoot = CANONICAL_REVIEW_BUNDLES_ROOT
+) {
+  const runById = new Map(sidecars.runs.map((run) => [run.runObservationId, run]));
+  const reviews = sidecars.reviews.map((review) => JSON.parse(JSON.stringify(review)));
+  const excludedEvidence = Array.isArray(sidecars.excludedEvidence)
+    ? [...sidecars.excludedEvidence]
+    : [];
+  for (const review of reviews) {
+    if (review.evidenceProtocol !== "anonymous_packet_verified") continue;
+    const packetId = cleanString(review.verifiedPacketProof?.packetId);
+    const run = runById.get(review.runObservationId);
+    const caseSpec = run
+      ? suite.cases.find((item) => item.caseId === run.caseRef?.caseId)
+      : undefined;
+    const rubric = caseSpec
+      ? suite.rubrics.find((item) => item.rubricId === caseSpec.oracle?.rubricId)
+      : undefined;
+    try {
+      if (!packetId || !run || !caseSpec || !rubric) {
+        throw new Error("Review 缺少 canonical bundle 重验所需上下文。");
+      }
+      const bundleRootStat = fs.lstatSync(bundleRoot);
+      if (!bundleRootStat.isDirectory() || bundleRootStat.isSymbolicLink()) {
+        throw new Error("canonical review bundle root 不是普通目录。");
+      }
+      const bundleDirectory = reviewBundleDirectory(packetId, bundleRoot);
+      const bundleStat = fs.lstatSync(bundleDirectory);
+      if (!bundleStat.isDirectory() || bundleStat.isSymbolicLink()) {
+        throw new Error("canonical review bundle 不是普通目录。");
+      }
+      assertPrivateTreePermissions(bundleDirectory);
+      const bundle = readJson(path.join(bundleDirectory, "bundle.json"));
+      if (bundle.version !== REVIEW_VERIFICATION_BUNDLE_VERSION
+        || bundle.packetId !== packetId
+        || bundle.reviewId !== review.reviewId
+        || bundle.runObservationId !== review.runObservationId
+        || bundle.caseRef?.caseId !== caseSpec.caseId
+        || bundle.caseRef?.revision !== caseSpec.revision
+        || bundle.caseRef?.caseDigest !== caseSpec.caseDigest
+        || bundle.bundleDigest !== buildReviewBundleDigest(bundle)
+        || bundle.files?.reviewerPacketDirectory !== "reviewer-packet"
+        || bundle.files?.sealedMapping !== "sealed-mapping.json"
+        || bundle.files?.reviewerResponse !== "reviewer-response.json"
+        || bundle.boundaries?.canonicalVerificationBundle !== true
+        || bundle.boundaries?.diskRevalidationRequiredForStrictMetrics !== true
+        || bundle.boundaries?.failIfExists !== true) {
+        throw new Error("canonical review bundle manifest 不完整或摘要不匹配。");
+      }
+      const result = await verifyDesignReliabilityReviewerResponse({
+        caseSpec,
+        run,
+        rubric,
+        reviewerPacketDirectory: path.join(bundleDirectory, "reviewer-packet"),
+        sealedMappingPath: path.join(bundleDirectory, "sealed-mapping.json"),
+        reviewerResponsePath: path.join(bundleDirectory, "reviewer-response.json"),
+        verifiedAt: bundle.verifiedAt
+      });
+      if (stableStringify(result.review) !== stableStringify(review)
+        || result.verifiedPacketProof.packetDigest !== bundle.packetDigest
+        || result.verifiedPacketProof.sealedMappingDigest !== bundle.sealedMappingDigest
+        || result.verifiedPacketProof.reviewerResponseDigest !== bundle.reviewerResponseDigest
+        || result.verifiedPacketProof.reviewProjectionDigest !== bundle.reviewProjectionDigest) {
+        throw new Error("canonical bundle 重验结果与持久化 Review 不一致。");
+      }
+      markReviewDiskVerified(review);
+    } catch (error) {
+      excludedEvidence.push({
+        kind: "human_review",
+        id: review.reviewId,
+        reason: "official_review_bundle_unverified",
+        detail: sanitizeAttemptDiagnostic(error instanceof Error ? error.message : String(error))
+      });
+    }
+  }
+  return {
+    ...sidecars,
+    reviews,
+    excludedEvidence
+  };
+}
+
 function isStrictBlindReview(review) {
   return review?.evidenceProtocol === "anonymous_packet_verified"
     && review?.blindedToCohort === true
@@ -1749,7 +2303,8 @@ function isStrictBlindReview(review) {
     && Number.isFinite(review?.weightedOverall)
     && Array.isArray(review?.comparisonEvidenceRefs)
     && review.comparisonEvidenceRefs.length > 0
-    && Array.isArray(review?.blockers);
+    && Array.isArray(review?.blockers)
+    && review[OFFICIAL_REVIEW_DISK_TRUST] === true;
 }
 
 function buildStrictReviewVerdicts(reviews) {
@@ -1846,6 +2401,7 @@ function runObservationMatchesAttempt(run, event, caseSpec, attemptId) {
     && dimensions.runtimeBuildId === environment.runtimeBuildId
     && dimensions.runtimeAppVersion === environment.runtimeAppVersion
     && dimensions.photoshopRuntimeBuildId === environment.photoshopRuntimeBuildId
+    && dimensions.photoshopRuntimeBindingDigest === environment.photoshopRuntimeBindingDigest
     && dimensions.timeoutMs === event.timeoutMs
     && dimensions.instructionDigest === event.instructionDigest
     && dimensions.rubricDigest === event.rubricDigest
@@ -2154,7 +2710,7 @@ function isOfficialAttemptCohortReady(attemptCohort) {
   );
 }
 
-function buildStatus(suite, args) {
+async function buildStatus(suite, args) {
   const evidenceRoots = resolveReliabilityEvidenceRoots(args);
   const canonicalAttemptSidecars = collectSidecars(evidenceRoots.canonicalAttemptRoots);
   const collectedSidecars = collectSidecars(evidenceRoots.reportRoots);
@@ -2162,10 +2718,11 @@ function buildStatus(suite, args) {
   // Run / Review / Attribution 可以从附加 report root 读取，但正式 Attempt
   // 分母只能来自 run-live 的 canonical append-only 账本。否则 --data-root
   // 中伪造的 terminal 链可以绕过真实提交失败。
-  const sidecars = retainContextuallyValidReviews({
+  const contextuallyValidSidecars = retainContextuallyValidReviews({
     ...collectedSidecars,
     attemptEvents: canonicalAttemptSidecars.attemptEvents
   }, suite);
+  const sidecars = await revalidateOfficialReviewBundles(contextuallyValidSidecars, suite);
   const attemptCoverage = buildLiveAttemptCoverage(
     sidecars.attemptEvents,
     sidecars.runs,
@@ -2206,6 +2763,12 @@ function buildStatus(suite, args) {
   return {
     success: suite.ok && sidecars.invalid.length === 0,
     generatedAt: new Date().toISOString(),
+    storage: {
+      canonicalDataRoot: DEFAULT_DATA_ROOT,
+      canonicalAttemptEventsRoot: CANONICAL_ATTEMPT_EVENTS_ROOT,
+      legacyReportRoot: LEGACY_DATA_ROOT,
+      repositoryCleanupSafe: true
+    },
     suite: {
       suiteId: suite.manifest.suiteId,
       activeCases: suite.cases.filter((item) => item.status === "active").map((item) => ({
@@ -2238,6 +2801,7 @@ function buildStatus(suite, args) {
       "未绑定固定 Case 的历史运行不进入正式成功率分母。",
       "请求一旦进入 submission_started 就必须有 terminal Attempt；缺少 Run Observation 的失败不会被静默移出分母。",
       "没有人工评审时只能报告技术可靠性，不能宣称设计质量达标。",
+      "anonymous proof 只有在 canonical verification bundle 每次磁盘重验通过后才进入 strict；附加 data root 只能提供诊断记录。",
       "不同 caseSetDigest、rubricSetDigest 或 fixtureDigest 的 cohort 禁止直接比较。"
     ]
   };
@@ -2250,10 +2814,17 @@ function httpProbe(url, timeoutMs = 1200, headers = {}) {
       response.setEncoding("utf8");
       response.on("data", (chunk) => { body += chunk; });
       response.on("end", () => {
+        let responseBody = null;
+        try {
+          responseBody = body ? JSON.parse(body) : null;
+        } catch {
+          responseBody = null;
+        }
         resolve({
           reachable: response.statusCode >= 200 && response.statusCode < 300,
           status: response.statusCode,
-          bodyPreview: body.slice(0, 240)
+          bodyPreview: body.slice(0, 240),
+          responseBody
         });
       });
     });
@@ -2289,7 +2860,13 @@ function httpPostJson(url, payload, timeoutMs, extraHeaders = {}) {
           responseBody = { parseError: true, preview: responseText.slice(0, 500) };
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(`Debug Bridge HTTP ${response.statusCode}: ${responseBody?.error || responseText.slice(0, 200)}`));
+          const error = new Error(
+            `Debug Bridge HTTP ${response.statusCode}: ${responseBody?.error || responseText.slice(0, 200)}`
+          );
+          error.debugBridgeResponse = responseBody;
+          const failure = readDebugBridgeExecutionFailure(responseBody);
+          if (failure) error.debugBridgeFailure = failure;
+          reject(error);
           return;
         }
         resolve(responseBody);
@@ -2368,6 +2945,13 @@ function evaluateLiveEnvironmentSafety(input) {
     ? input.photoshopDiagnosisStatus.result
     : undefined;
   const photoshopRuntime = photoshopDiagnosis?.state?.runtime;
+  const photoshopBuildVerification = isRecord(input.photoshopRuntimeBuildVerification)
+    ? input.photoshopRuntimeBuildVerification
+    : null;
+  const verifiedPhotoshopBuildIdentity = isRecord(photoshopBuildVerification?.artifacts?.identity)
+    ? photoshopBuildVerification.artifacts.identity
+    : null;
+  const photoshopRuntimeBinding = buildPhotoshopRuntimeBinding(photoshopBuildVerification);
   const projectRootResult = input.projectRootStatus?.ok ? input.projectRootStatus.result : undefined;
   const documents = normalizeOpenDocumentState(input.documentListStatus);
   const expectedProjectPath = normalizePathIdentity(input.expectedProjectPath);
@@ -2392,6 +2976,18 @@ function evaluateLiveEnvironmentSafety(input) {
   }
   if (!input.photoshopDiagnosisStatus?.ok || !cleanString(photoshopRuntime?.buildId)) {
     blockers.push("photoshop_runtime_identity_unavailable");
+  }
+  if (photoshopBuildVerification?.version !== "designecho-photoshop-runtime-build-verification/v1"
+    || photoshopBuildVerification.ready !== true
+    || !photoshopRuntimeBinding) {
+    blockers.push("photoshop_runtime_build_identity_mismatch");
+  } else {
+    if (verifiedPhotoshopBuildIdentity?.gitDirty !== false) {
+      blockers.push("photoshop_runtime_built_from_dirty_worktree");
+    }
+    if (verifiedPhotoshopBuildIdentity?.buildMode !== "production") {
+      blockers.push("photoshop_runtime_not_production");
+    }
   }
   if (!Number.isFinite(pendingRequestCount)) {
     blockers.push("photoshop_pending_request_state_unavailable");
@@ -2423,6 +3019,12 @@ function evaluateLiveEnvironmentSafety(input) {
       currentWorktreeClean: currentGit.dirty === false,
       photoshopConnected: connection?.connected === true && systemStatus?.pluginConnected === true,
       photoshopRuntimeIdentityAvailable: Boolean(cleanString(photoshopRuntime?.buildId)),
+      photoshopRuntimeArtifactsVerified: photoshopBuildVerification?.artifacts?.artifactsVerified === true,
+      photoshopRuntimeManifestMatchesCheckout: photoshopBuildVerification?.manifestMatchesCurrentCheckout === true,
+      photoshopRuntimeMatchesManifest: photoshopBuildVerification?.live?.matchesManifest === true,
+      photoshopRuntimeMatchesCheckout: photoshopBuildVerification?.live?.matchesCurrentCheckout === true,
+      photoshopRuntimeBuiltClean: verifiedPhotoshopBuildIdentity?.gitDirty === false,
+      photoshopRuntimeProductionBuild: verifiedPhotoshopBuildIdentity?.buildMode === "production",
       noPendingPhotoshopRequests: pendingRequestCount === 0,
       currentProjectMatchesFixture: Boolean(
         expectedProjectPath
@@ -2451,6 +3053,15 @@ function evaluateLiveEnvironmentSafety(input) {
       connected: connection?.connected === true,
       runtimeBuildId: cleanString(photoshopRuntime?.buildId) || null,
       runtimeLoadedAt: cleanString(photoshopRuntime?.loadedAt) || null,
+      runtimeGitCommit: cleanString(photoshopRuntime?.gitCommit) || null,
+      runtimeSourceDigest: cleanString(photoshopRuntime?.sourceDigest) || null,
+      runtimeArtifactDigest: cleanString(verifiedPhotoshopBuildIdentity?.runtimeDigest) || null,
+      runtimeManifestDigest: cleanString(verifiedPhotoshopBuildIdentity?.manifestDigest) || null,
+      runtimeBinding: photoshopRuntimeBinding,
+      buildIdentityVerified: photoshopBuildVerification?.ready === true,
+      buildIdentityIssueCodes: Array.isArray(photoshopBuildVerification?.issues)
+        ? photoshopBuildVerification.issues.map((issue) => cleanString(issue?.code)).filter(Boolean)
+        : [],
       pendingRequestCount: Number.isFinite(pendingRequestCount) ? pendingRequestCount : null,
       openDocumentCount: documents.count,
       hasUnsavedDocument: documents.hasUnsavedDocument
@@ -2480,15 +3091,72 @@ async function inspectLiveEnvironment(args, fixtureRoot) {
       arguments: { includeDetails: true }
     })
   ]);
+  const livePhotoshopRuntime = photoshopDiagnosisStatus?.ok
+    ? photoshopDiagnosisStatus.result?.state?.runtime
+    : undefined;
+  let photoshopRuntimeBuildVerification;
+  try {
+    photoshopRuntimeBuildVerification = verifyPhotoshopRuntimeBuildIdentity({
+      liveRuntime: livePhotoshopRuntime,
+      requireLive: true
+    });
+  } catch (error) {
+    photoshopRuntimeBuildVerification = {
+      version: "designecho-photoshop-runtime-build-verification/v1",
+      ready: false,
+      issues: [{
+        code: "photoshop_runtime_build_verification_failed",
+        message: error instanceof Error ? error.message : String(error)
+      }]
+    };
+  }
   return evaluateLiveEnvironmentSafety({
     currentGitEnvironment: readGitEnvironment(),
     expectedProjectPath: fixtureRoot,
     systemStatus,
     connectionStatus,
     photoshopDiagnosisStatus,
+    photoshopRuntimeBuildVerification,
     projectRootStatus,
     documentListStatus
   });
+}
+
+async function inspectPhotoshopRuntimeBinding(args) {
+  const endpoint = args.get("--photoshop-mcp", DEFAULT_PHOTOSHOP_MCP_ENDPOINT);
+  const diagnosis = await safeCallMcpTool(endpoint, "photoshop.tools.call", {
+    name: "diagnoseState",
+    arguments: { verbose: false }
+  });
+  if (!diagnosis.ok) {
+    return {
+      ready: false,
+      binding: null,
+      issues: [{ code: "photoshop_runtime_diagnosis_failed", message: diagnosis.error }]
+    };
+  }
+  let verification;
+  try {
+    verification = verifyPhotoshopRuntimeBuildIdentity({
+      liveRuntime: diagnosis.result?.state?.runtime,
+      requireLive: true
+    });
+  } catch (error) {
+    return {
+      ready: false,
+      binding: null,
+      issues: [{
+        code: "photoshop_runtime_build_verification_failed",
+        message: error instanceof Error ? error.message : String(error)
+      }]
+    };
+  }
+  const binding = buildPhotoshopRuntimeBinding(verification);
+  return {
+    ready: verification.ready === true && Boolean(binding),
+    binding,
+    issues: verification.issues || []
+  };
 }
 
 function summarizeDebugResponse(response) {
@@ -2584,6 +3252,7 @@ function validateDebugBridgeReceipt(response, input) {
     errors.push("运行窗口没有证明提交模型前 Photoshop 处于空文档隔离基线。");
   }
   const expectedPhotoshopRuntimeBuildId = cleanString(input.photoshopRuntimeBuildId);
+  const expectedPhotoshopRuntimeBinding = input.photoshopRuntimeBinding;
   const submittedPhotoshopRuntimeBuildId = cleanString(receipt.submittedPhotoshopRuntimeBuildId);
   const completedPhotoshopRuntimeBuildId = cleanString(receipt.completedPhotoshopRuntimeBuildId);
   if (!expectedPhotoshopRuntimeBuildId
@@ -2594,13 +3263,53 @@ function validateDebugBridgeReceipt(response, input) {
     || receipt.photoshopRuntimeUnchangedThroughCompletion !== true) {
     errors.push("运行窗口没有证明 Photoshop Runtime Build 在提交前与完成后始终匹配指定版本。");
   }
+  const receiptExpectedPhotoshopRuntimeBinding = receipt.expectedPhotoshopRuntimeBinding;
+  const submittedPhotoshopRuntimeBinding = validatePhotoshopRuntimeBinding(
+    expectedPhotoshopRuntimeBinding
+  ) && isRecord(receipt.submittedPhotoshopRuntimeIdentity)
+    ? {
+      ...expectedPhotoshopRuntimeBinding,
+      live: receipt.submittedPhotoshopRuntimeIdentity
+    }
+    : null;
+  const completedPhotoshopRuntimeBinding = validatePhotoshopRuntimeBinding(
+    expectedPhotoshopRuntimeBinding
+  ) && isRecord(receipt.completedPhotoshopRuntimeIdentity)
+    ? {
+      ...expectedPhotoshopRuntimeBinding,
+      live: receipt.completedPhotoshopRuntimeIdentity
+    }
+    : null;
+  if (!validatePhotoshopRuntimeBinding(expectedPhotoshopRuntimeBinding)
+    || !validatePhotoshopRuntimeBinding(receiptExpectedPhotoshopRuntimeBinding)
+    || !photoshopRuntimeBindingsMatch(
+      receiptExpectedPhotoshopRuntimeBinding,
+      expectedPhotoshopRuntimeBinding
+    )
+    || !photoshopRuntimeBindingsMatch(
+      submittedPhotoshopRuntimeBinding,
+      expectedPhotoshopRuntimeBinding
+    )
+    || !photoshopRuntimeBindingsMatch(
+      completedPhotoshopRuntimeBinding,
+      expectedPhotoshopRuntimeBinding
+    )
+    || receipt.photoshopRuntimeBindingMatchedAtSubmission !== true
+    || receipt.photoshopRuntimeBindingUnchangedThroughCompletion !== true) {
+    errors.push("运行窗口没有把 Photoshop live 全身份与 runtime.js / manifest 摘要贯穿提交和完成收据。");
+  }
   const firstMutationBaseline = receipt.firstPhotoshopMutationBaseline;
   if (!isRecord(firstMutationBaseline)
     || firstMutationBaseline.version !== "guarded-photoshop-execution-baseline-receipt/v0"
     || !["not_reached", "passed", "blocked"].includes(firstMutationBaseline.status)
     || cleanString(firstMutationBaseline.requestId) !== cleanString(receipt.requestId)
     || cleanString(firstMutationBaseline.expectedPhotoshopRuntimeBuildId)
-      !== expectedPhotoshopRuntimeBuildId) {
+      !== expectedPhotoshopRuntimeBuildId
+    || !validatePhotoshopRuntimeBinding(firstMutationBaseline.expectedPhotoshopRuntimeBinding)
+    || !photoshopRuntimeBindingsMatch(
+      firstMutationBaseline.expectedPhotoshopRuntimeBinding,
+      expectedPhotoshopRuntimeBinding
+    )) {
     errors.push("运行窗口没有返回可信的首次 Photoshop 写入隔离基线收据。");
   } else if (firstMutationBaseline.status === "blocked"
     && !cleanString(firstMutationBaseline.error)) {
@@ -2609,6 +3318,10 @@ function validateDebugBridgeReceipt(response, input) {
     && (firstMutationBaseline.openDocumentCount !== 0
       || cleanString(firstMutationBaseline.observedPhotoshopRuntimeBuildId)
         !== expectedPhotoshopRuntimeBuildId
+      || !photoshopRuntimeBindingsMatch({
+        ...expectedPhotoshopRuntimeBinding,
+        live: firstMutationBaseline.observedPhotoshopRuntimeIdentity
+      }, expectedPhotoshopRuntimeBinding)
       || !cleanString(firstMutationBaseline.firstMutationToolName))) {
     errors.push("首次 Photoshop 写入隔离基线收据与空文档或 Runtime Build 事实不一致。");
   }
@@ -2633,10 +3346,57 @@ function validateMutationBaselineAgainstObservation(receipt, observation, expect
   if (!isRecord(baseline)
     || baseline.status !== "passed"
     || baseline.openDocumentCount !== 0
-    || cleanString(baseline.observedPhotoshopRuntimeBuildId) !== cleanString(expectedBuildId)) {
+    || cleanString(baseline.observedPhotoshopRuntimeBuildId) !== cleanString(expectedBuildId)
+    || !validatePhotoshopRuntimeBinding(baseline.expectedPhotoshopRuntimeBinding)
+    || !photoshopRuntimeBindingsMatch({
+      ...baseline.expectedPhotoshopRuntimeBinding,
+      live: baseline.observedPhotoshopRuntimeIdentity
+    }, baseline.expectedPhotoshopRuntimeBinding)) {
     errors.push("RunRecord 已观察到 Photoshop 写入，但首次写入隔离基线没有通过。");
   }
   return { ok: errors.length === 0, errors };
+}
+
+function buildFirstMutationBaselineProof(receipt) {
+  const baseline = isRecord(receipt?.firstPhotoshopMutationBaseline)
+    ? receipt.firstPhotoshopMutationBaseline
+    : null;
+  if (!baseline
+    || baseline.version !== "guarded-photoshop-execution-baseline-receipt/v0"
+    || !["not_reached", "passed", "blocked"].includes(baseline.status)
+    || !cleanString(baseline.requestId)
+    || !cleanString(baseline.expectedPhotoshopRuntimeBuildId)
+    || !validatePhotoshopRuntimeBinding(baseline.expectedPhotoshopRuntimeBinding)) {
+    return null;
+  }
+  const expectedPhotoshopRuntimeBindingDigest = sha256Text(
+    stableStringify(baseline.expectedPhotoshopRuntimeBinding)
+  );
+  const proofCore = {
+    version: "design-reliability-first-mutation-baseline-proof/v1",
+    status: baseline.status,
+    requestIdDigest: sha256Text(cleanString(baseline.requestId)),
+    expectedPhotoshopRuntimeBuildId: cleanString(baseline.expectedPhotoshopRuntimeBuildId),
+    expectedPhotoshopRuntimeBindingDigest,
+    ...(cleanString(baseline.observedPhotoshopRuntimeBuildId)
+      ? { observedPhotoshopRuntimeBuildId: cleanString(baseline.observedPhotoshopRuntimeBuildId) }
+      : {}),
+    ...(Number.isSafeInteger(baseline.openDocumentCount)
+      ? { openDocumentCount: baseline.openDocumentCount }
+      : {}),
+    ...(cleanString(baseline.firstMutationToolName)
+      ? { firstMutationToolName: cleanString(baseline.firstMutationToolName).slice(0, 160) }
+      : {})
+  };
+  return {
+    ...proofCore,
+    proofDigest: sha256Text(stableStringify(proofCore)),
+    boundaries: {
+      responsePayloadNotPersisted: true,
+      rawToolPayloadNotPersisted: true,
+      absolutePathsNotPersisted: true
+    }
+  };
 }
 
 function readRunModelIdentity(runRecords) {
@@ -2759,7 +3519,17 @@ async function runLiveCase(suite, args) {
   const instructionDigest = sha256Text(caseSpec.task.instruction);
   const runtime = preflight.infrastructure.liveEnvironment.runtime;
   const runtimeBuildId = runtime?.buildId;
-  const photoshopRuntimeBuildId = preflight.infrastructure.liveEnvironment.photoshop.runtimeBuildId;
+  const photoshopRuntime = preflight.infrastructure.liveEnvironment.photoshop;
+  const photoshopRuntimeBuildId = photoshopRuntime.runtimeBuildId;
+  const photoshopRuntimeGitCommit = photoshopRuntime.runtimeGitCommit;
+  const photoshopRuntimeSourceDigest = photoshopRuntime.runtimeSourceDigest;
+  const photoshopRuntimeArtifactDigest = photoshopRuntime.runtimeArtifactDigest;
+  const photoshopRuntimeManifestDigest = photoshopRuntime.runtimeManifestDigest;
+  const photoshopRuntimeBinding = photoshopRuntime.runtimeBinding;
+  if (!validatePhotoshopRuntimeBinding(photoshopRuntimeBinding)) {
+    throw new Error("正式样本缺少可验证的 Photoshop Runtime 完整身份。 ");
+  }
+  const photoshopRuntimeBindingDigest = sha256Text(stableStringify(photoshopRuntimeBinding));
   const suiteCaseSetDigest = buildSuiteCaseSetDigest(suite);
   const suiteRubricSetDigest = buildSuiteRubricSetDigest(suite);
   const cohortFingerprint = sha256Text(stableStringify({
@@ -2772,6 +3542,11 @@ async function runLiveCase(suite, args) {
     runtimeBuildId,
     runtimeAppVersion: runtime?.appVersion,
     photoshopRuntimeBuildId,
+    photoshopRuntimeGitCommit,
+    photoshopRuntimeSourceDigest,
+    photoshopRuntimeArtifactDigest,
+    photoshopRuntimeManifestDigest,
+    photoshopRuntimeBindingDigest,
     provider,
     modelId,
     timeoutMs
@@ -2810,6 +3585,12 @@ async function runLiveCase(suite, args) {
       runtimeBuildId,
       runtimeAppVersion: runtime?.appVersion,
       photoshopRuntimeBuildId,
+      photoshopRuntimeGitCommit,
+      photoshopRuntimeSourceDigest,
+      photoshopRuntimeArtifactDigest,
+      photoshopRuntimeManifestDigest,
+      photoshopRuntimeBinding,
+      photoshopRuntimeBindingDigest,
       suiteCaseSetDigest,
       suiteRubricSetDigest,
       cohortFingerprint
@@ -2821,7 +3602,7 @@ async function runLiveCase(suite, args) {
     attemptFingerprint,
     cohortFingerprint
   };
-  const debugBridge = args.get("--debug-bridge", DEFAULT_DEBUG_BRIDGE);
+  const debugBridge = resolveLoopbackDebugBridge(args.get("--debug-bridge", DEFAULT_DEBUG_BRIDGE));
   const debugToken = args.get("--debug-token", process.env.DESIGNECHO_DEBUG_TOKEN || "");
   if (!debugToken) {
     throw new Error("run-live 需要 --debug-token 或 DESIGNECHO_DEBUG_TOKEN；未授权的本地进程不能启动真实 Agent 写入。");
@@ -2845,6 +3626,7 @@ async function runLiveCase(suite, args) {
       expectedRuntimeGitCommit: environmentAtSubmission.gitCommit,
       expectedRuntimeBuildId: runtimeBuildId,
       expectedPhotoshopRuntimeBuildId: photoshopRuntimeBuildId,
+      expectedPhotoshopRuntimeBinding: photoshopRuntimeBinding,
       expectedProvider: provider,
       expectedModelId: modelId,
       requireCleanRuntimeGitState: true,
@@ -2858,12 +3640,26 @@ async function runLiveCase(suite, args) {
       modelId,
       gitCommit: environmentAtSubmission.gitCommit,
       runtimeBuildId,
-      photoshopRuntimeBuildId
+      photoshopRuntimeBuildId,
+      photoshopRuntimeBinding
     });
     if (!receiptValidation.ok) {
       throw new Error(`Debug Bridge 运行收据不可信：${receiptValidation.errors.join("；")}`);
     }
     trustedCompletionReceipt = true;
+    const completionPhotoshopRuntime = await inspectPhotoshopRuntimeBinding(args);
+    if (!completionPhotoshopRuntime.ready
+      || !photoshopRuntimeBindingsMatch(
+        completionPhotoshopRuntime.binding,
+        photoshopRuntimeBinding
+      )) {
+      const issueCodes = (completionPhotoshopRuntime.issues || [])
+        .map((issue) => cleanString(issue?.code))
+        .filter(Boolean);
+      throw new Error(
+        `Photoshop Runtime 在任务完成时未通过独立全身份复验：${issueCodes.join("、") || "runtime_binding_drift"}`
+      );
+    }
     const settled = await waitForBoundRunRecordChain({
       fixtureRoot,
       beforeRunFiles,
@@ -2939,6 +3735,7 @@ async function runLiveCase(suite, args) {
         runtimeBuildId,
         runtimeAppVersion: runtime?.appVersion,
         photoshopRuntimeBuildId,
+        photoshopRuntimeBindingDigest,
         timeoutMs,
         instructionDigest,
         rubricDigest,
@@ -2974,6 +3771,7 @@ async function runLiveCase(suite, args) {
       sourceRunIds: observation.sourceRunRefs.map((item) => item.agentRunId),
       changedOutputRefs: changedRefs.filter((ref) => !caseSpec.task.agentVisibleInputs.some((input) => normalizeRelativePath(input.ref) === ref)),
       debugResponse: summarizeDebugResponse(response),
+      firstMutationBaselineProof: buildFirstMutationBaselineProof(receiptValidation.receipt),
       status: observation.observed.technicalDeliveryPassed ? "technical_delivery_passed" : "evidence_incomplete",
       boundaries: {
         noRuntimeStateChangedByRecorder: true,
@@ -2995,7 +3793,8 @@ async function runLiveCase(suite, args) {
       status: terminalStatus,
       runObservationId: observation.runObservationId,
       sourceRunIds: observation.sourceRunRefs.map((item) => item.agentRunId),
-      technicalDeliveryPassed: observation.observed.technicalDeliveryPassed === true
+      technicalDeliveryPassed: observation.observed.technicalDeliveryPassed === true,
+      firstMutationBaselineProof: buildFirstMutationBaselineProof(receiptValidation.receipt)
     });
     return {
       observation,
@@ -3010,12 +3809,21 @@ async function runLiveCase(suite, args) {
       }
     };
   } catch (error) {
+    const debugBridgeFailure = readDebugBridgeFailureFromError(error);
     writeLiveAttemptEvent(attemptContext, 3, "terminal", {
       status: trustedCompletionReceipt
         ? classifyLiveAttemptFailure(error)
-        : "submission_unknown_write_state",
+        : classifyUntrustedDebugBridgeFailure(error),
       technicalDeliveryPassed: false,
-      diagnostic: sanitizeAttemptDiagnostic(error instanceof Error ? error.message : String(error))
+      diagnostic: sanitizeAttemptDiagnostic(error instanceof Error ? error.message : String(error)),
+      ...(debugBridgeFailure ? {
+        debugBridgeFailure: {
+          version: debugBridgeFailure.version,
+          stage: debugBridgeFailure.stage,
+          writePossible: debugBridgeFailure.writePossible,
+          ...(debugBridgeFailure.code ? { code: debugBridgeFailure.code } : {})
+        }
+      } : {})
     });
     throw error;
   }
@@ -3107,6 +3915,86 @@ async function reconcileLiveAttempt(args) {
   };
 }
 
+function evaluateDebugRendererPreflight(input) {
+  const responseBody = isRecord(input?.probe?.responseBody)
+    ? input.probe.responseBody
+    : null;
+  const renderer = isRecord(responseBody?.renderer) ? responseBody.renderer : null;
+  const expectedProvider = cleanString(input?.expectedProvider);
+  const expectedModelId = cleanString(input?.expectedModelId);
+  const expectedProjectPath = normalizePathIdentity(input?.expectedProjectPath);
+  const selectedProvider = cleanString(renderer?.selectedProvider);
+  const selectedModelId = cleanString(renderer?.selectedModelId);
+  const selectedApiModelId = cleanString(renderer?.selectedApiModelId);
+  const capturedAt = Date.parse(cleanString(renderer?.capturedAt));
+  const available = Boolean(
+    input?.probe?.reachable === true
+    && responseBody?.success === true
+    && responseBody?.guardedWriteProtocol === "debug-bridge-chat-submit/v1"
+    && renderer?.version === DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION
+    && Number.isFinite(capturedAt)
+    && typeof renderer?.selectedModelResolved === "boolean"
+    && typeof renderer?.projectPath === "string"
+    && typeof renderer?.chatBusy === "boolean"
+  );
+  const providerMatches = Boolean(
+    available
+    && expectedProvider
+    && selectedProvider === expectedProvider
+  );
+  const modelMatches = Boolean(
+    available
+    && expectedModelId
+    && (selectedModelId === expectedModelId || selectedApiModelId === expectedModelId)
+  );
+  const projectMatches = Boolean(
+    available
+    && expectedProjectPath
+    && normalizePathIdentity(renderer.projectPath) === expectedProjectPath
+  );
+  return {
+    version: "design-reliability-renderer-preflight/v1",
+    available,
+    expectedProviderSupplied: Boolean(expectedProvider),
+    expectedModelSupplied: Boolean(expectedModelId),
+    selectedProvider,
+    selectedModelId,
+    selectedApiModelId,
+    selectedModelResolved: renderer?.selectedModelResolved === true,
+    providerMatches,
+    modelMatches,
+    projectMatches,
+    chatBusy: renderer?.chatBusy === true,
+    ready: Boolean(
+      available
+      && renderer?.selectedModelResolved === true
+      && providerMatches
+      && modelMatches
+      && projectMatches
+      && renderer?.chatBusy === false
+    )
+  };
+}
+
+function summarizeDebugWriteAuthorization(probe) {
+  const responseBody = isRecord(probe?.responseBody) ? probe.responseBody : null;
+  const failure = readDebugBridgeExecutionFailure(responseBody);
+  return {
+    reachable: probe?.reachable === true,
+    ...(Number.isInteger(probe?.status) ? { status: probe.status } : {}),
+    ...(cleanString(probe?.reason) ? { reason: cleanString(probe.reason) } : {}),
+    guardedWriteProtocol: cleanString(responseBody?.guardedWriteProtocol) || null,
+    ...(failure ? {
+      failure: {
+        version: failure.version,
+        stage: failure.stage,
+        writePossible: failure.writePossible,
+        ...(failure.code ? { code: failure.code } : {})
+      }
+    } : {})
+  };
+}
+
 async function buildPreflight(suite, args) {
   const fixtureRoot = args.get("--fixture-root");
   const debugWriteTokenSupplied = Boolean(
@@ -3149,17 +4037,31 @@ async function buildPreflight(suite, args) {
     }
   }
   const debugToken = args.get("--debug-token", process.env.DESIGNECHO_DEBUG_TOKEN || "");
+  const debugBridgeUrl = resolveLoopbackDebugBridge(
+    args.get("--debug-bridge", DEFAULT_DEBUG_BRIDGE)
+  );
   const [debugBridge, debugWriteAuthorization, photoshopMcp] = await Promise.all([
-    httpProbe(`${args.get("--debug-bridge", DEFAULT_DEBUG_BRIDGE)}/health`),
+    httpProbe(`${debugBridgeUrl}/health`),
     debugToken
       ? httpProbe(
-        `${args.get("--debug-bridge", DEFAULT_DEBUG_BRIDGE)}/chat/submit/preflight`,
+        `${debugBridgeUrl}/chat/submit/preflight`,
         1200,
         { "x-designecho-debug-token": debugToken }
       )
       : Promise.resolve({ reachable: false, reason: "debug_write_token_missing" }),
     httpProbe(args.get("--photoshop-health", DEFAULT_PHOTOSHOP_MCP_HEALTH))
   ]);
+  const rendererPreflight = evaluateDebugRendererPreflight({
+    probe: debugWriteAuthorization,
+    expectedProvider: args.get("--provider"),
+    expectedModelId: args.get("--model"),
+    expectedProjectPath: fixture.supplied && fixture.ready === true
+      ? path.resolve(fixtureRoot)
+      : ""
+  });
+  const debugWriteAuthorizationSummary = summarizeDebugWriteAuthorization(
+    debugWriteAuthorization
+  );
   const liveEnvironment = photoshopMcp.reachable === true
     ? await inspectLiveEnvironment(
       args,
@@ -3183,7 +4085,7 @@ async function buildPreflight(suite, args) {
         currentProjectMatchesFixture: false
       }
     };
-  const status = buildStatus(suite, args);
+  const status = await buildStatus(suite, args);
   const fixtureInstanceAlreadyUsed = Boolean(
     fixture.instance?.instanceId
     && status.evidence.attemptSafetyLedger.usedFixtureInstanceIds.includes(fixture.instance.instanceId)
@@ -3210,6 +4112,28 @@ async function buildPreflight(suite, args) {
     ...(debugBridge.reachable ? [] : ["debug_bridge_unreachable"]),
     ...(debugWriteTokenSupplied ? [] : ["debug_write_token_missing"]),
     ...(debugWriteAuthorization.reachable ? [] : ["debug_write_authorization_failed"]),
+    ...(rendererPreflight.expectedProviderSupplied ? [] : ["expected_provider_missing"]),
+    ...(rendererPreflight.expectedModelSupplied ? [] : ["expected_model_missing"]),
+    ...(rendererPreflight.available ? [] : ["debug_renderer_preflight_unavailable"]),
+    ...(rendererPreflight.available && !rendererPreflight.selectedModelResolved
+      ? ["renderer_selected_model_unresolved"]
+      : []),
+    ...(rendererPreflight.available
+      && rendererPreflight.expectedProviderSupplied
+      && !rendererPreflight.providerMatches
+      ? ["renderer_provider_mismatch"]
+      : []),
+    ...(rendererPreflight.available
+      && rendererPreflight.expectedModelSupplied
+      && !rendererPreflight.modelMatches
+      ? ["renderer_model_mismatch"]
+      : []),
+    ...(rendererPreflight.available && !rendererPreflight.projectMatches
+      ? ["renderer_project_not_bound_to_fixture"]
+      : []),
+    ...(rendererPreflight.available && rendererPreflight.chatBusy
+      ? ["renderer_chat_busy"]
+      : []),
     ...(photoshopMcp.reachable ? [] : ["photoshop_mcp_unreachable"]),
     ...liveEnvironment.blockers,
     ...(invalidAttemptSidecar ? ["attempt_safety_ledger_invalid"] : []),
@@ -3228,7 +4152,8 @@ async function buildPreflight(suite, args) {
     infrastructure: {
       debugBridge,
       debugWriteTokenSupplied,
-      debugWriteAuthorization,
+      debugWriteAuthorization: debugWriteAuthorizationSummary,
+      rendererPreflight,
       photoshopMcp,
       liveEnvironment,
       unreconciledLiveAttempt,
@@ -3251,6 +4176,7 @@ async function buildPreflight(suite, args) {
 
 function printStatus(status) {
   console.log("DesignEcho Design Reliability");
+  console.log(`持久账本: ${status.storage.canonicalDataRoot}`);
   console.log(`Suite: ${status.suite.suiteId}`);
   console.log(`固定 Case: ${status.suite.activeCases.length}`);
   for (const item of status.suite.activeCases) {
@@ -3299,8 +4225,9 @@ function printHelp() {
     "      校验固定 Case、Rubric、digest 与开发/生产边界。",
     "  status [--cohort id] [--data-root dir]",
     "      汇总固定 cohort；没有 Case 身份的历史 Run 不进入分母。",
-    "  preflight [--case id|--fixture-id id] [--fixture-root dir] [--require-live]",
-    "      只读检查 fixture、Debug Bridge、Photoshop MCP 与已有实机证据。",
+    "  preflight [--case id|--fixture-id id] [--fixture-root dir] [--provider id] [--model id] [--require-capture-ready] [--require-live] [--write-report]",
+    "      默认零落盘地只读检查 fixture、Renderer 当前模型/项目、Debug Bridge、Photoshop MCP 与已有实机证据；显式 --write-report 才追加保存报告。",
+    "      --require-capture-ready 检查能否安全开始下一次实机 Case；--require-live 检查三类 Skill 的正式发布证据是否已经完整。",
     "  prepare-fixture --case id|--fixture-id id --source-root dir --destination dir --allow-create",
     "      只复制 Agent 可见输入到一次性目录；用户成稿/Eagle 参考不会复制。",
     "  run-live --case id --fixture-root dir --provider id --model id --live --allow-photoshop-write",
@@ -3315,13 +4242,17 @@ function printHelp() {
     "  record-review --run-observation file --reviewer alias --decision pass|needs_fix|unscorable",
     "      --scores dimension=0.8,... [--pairwise comparable|better|weaker]",
     "      --blinded-to-candidate-origin --comparison-evidence-ref candidate_final=candidate:relative/path@sha256:<64位摘要>",
-    "      --comparison-evidence-ref user_design_anchor=user-design:<Case中的相对路径>",
-    "      --comparison-evidence-ref eagle_anchor=eagle:item:<Case中的条目ID> [--blocker text]",
-    "      当前 record-review 只生成 bound_self_reported 诊断评审；匿名评审包落地前不计入正式成功率。",
+    "      --comparison-evidence-ref user_design_anchor=user-design:<Case相对路径>@sha256:<冻结摘要>",
+    "      --comparison-evidence-ref eagle_anchor=eagle:item:<条目ID>@sha256:<冻结摘要> [--blocker text]",
+    "      record-review 始终只生成 bound_self_reported 诊断评审；正式成功率必须走下面的匿名评审包命令。",
+    "  prepare-review-packet --case id --run-observation file --reviewer-packet-dir dir --allow-create",
+    "      --source-bindings-json file，或重复 --source-binding evidenceRef=绝对文件路径；密封映射按 packetId 自动私有保存且不打印路径。",
+    "  record-anonymous-review --case id --run-observation file --packet-id id --reviewer-packet-dir dir --reviewer-response file",
+    "      归档 canonical verification bundle；status 每次从磁盘重算包、映射、响应和资产后才授予 strict 身份。",
     "  record-attribution --run-observation file --owner owner --failure-mode mode",
     "      --status hypothesis|confirmed|rejected --rationale text --evidence-ref token",
     "",
-    "所有生成 sidecar 默认写入 tmp/design-reliability，append-only，不反写 Runtime 或 Case。"
+    `所有正式 sidecar 默认写入仓库外持久目录 ${DEFAULT_DATA_ROOT}，append-only，不反写 Runtime 或 Case；仓库卫生清理不会重置成功率分母。`
   ].join("\n"));
 }
 
@@ -3339,16 +4270,22 @@ async function main() {
   }
   if (!suite.ok) throw new Error(`Design Reliability 套件无效：\n${suite.errors.join("\n")}`);
   if (args.command === "status" || args.command === "report") {
-    const status = buildStatus(suite, args);
+    const status = await buildStatus(suite, args);
     if (args.hasFlag("--json")) console.log(JSON.stringify(status, null, 2));
     else printStatus(status);
     return;
   }
   if (args.command === "preflight") {
     const report = await buildPreflight(suite, args);
-    const reportPath = path.join(DEFAULT_DATA_ROOT, "preflight", "latest.json");
-    writeJsonReplace(reportPath, report);
-    console.log(JSON.stringify({ ...report, reportPath }, null, 2));
+    const reportPath = shouldPersistPreflightReport(args)
+      ? writePreflightReport(report)
+      : undefined;
+    console.log(JSON.stringify({
+      ...report,
+      reportPersisted: Boolean(reportPath),
+      ...(reportPath ? { reportPath } : {})
+    }, null, 2));
+    if (args.hasFlag("--require-capture-ready") && report.readyForLiveCapture !== true) process.exitCode = 1;
     if (args.hasFlag("--require-live") && report.liveEvidencePassed !== true) process.exitCode = 1;
     return;
   }
@@ -3377,6 +4314,16 @@ async function main() {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
+  if (args.command === "prepare-review-packet") {
+    const result = await prepareAnonymousReviewPacket(suite, args);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (args.command === "record-anonymous-review") {
+    const result = await recordAnonymousReview(suite, args);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
   if (args.command === "record-attribution") {
     const result = recordAttribution(args);
     console.log(JSON.stringify(result, null, 2));
@@ -3388,6 +4335,8 @@ async function main() {
 module.exports = {
   buildAttemptEventIdentityKey,
   buildCanonicalAttemptSafetyLedger,
+  buildFirstMutationBaselineProof,
+  classifyUntrustedDebugBridgeFailure,
   buildSuiteCaseSetDigest,
   buildSuiteRubricSetDigest,
   buildPreflight,
@@ -3396,28 +4345,38 @@ module.exports = {
   buildSkuLiveDeliveryEvidence,
   collectSidecars,
   evaluateLiveEnvironmentSafety,
+  evaluateDebugRendererPreflight,
   evaluateFixtureInventory,
   inspectFixture,
   inspectEditablePsd,
   isOfficialAttemptCohortReady,
   loadSuite,
   parseArgs,
+  parseReviewPacketSourceBindings,
   prepareFixture,
+  prepareAnonymousReviewPacket,
   readFixtureInstance,
+  readDebugBridgeExecutionFailure,
+  revalidateOfficialReviewBundles,
   recordAttribution,
+  recordAnonymousReview,
   recordReview,
   recordRun,
   reconcileLiveAttempt,
   resolveReliabilityEvidenceRoots,
+  resolveLoopbackDebugBridge,
   resolveSidecarOutputPath,
   retainContextuallyValidAttemptEvents,
   retainContextuallyValidReviews,
   runObservationMatchesAttempt,
   sidecarRoots,
+  shouldPersistPreflightReport,
+  sanitizeAttemptDiagnostic,
   validateAttemptEventStateMachine,
   validateDebugBridgeReceipt,
   validateRubric,
   validateMutationBaselineAgainstObservation,
+  writePreflightReport,
   runLiveCase
 };
 

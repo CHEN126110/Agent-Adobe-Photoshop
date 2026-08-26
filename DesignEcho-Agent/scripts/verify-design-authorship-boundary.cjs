@@ -31,11 +31,21 @@ const {
     buildSkuRetouchUniformScaleMetrics
 } = require(path.join(root, 'src/shared/sku-retouch-contract.ts'));
 const {
-    buildRuntimeDeliveryReceipt
+    buildRuntimeDeliveryReceipt,
+    readRuntimeDeliveryReceipt,
+    verifyRuntimeDelivery
 } = require(path.join(root, 'src/shared/agent-runtime-v5/runtime-delivery-receipt.ts'));
 const {
     buildSkuExpectedExportInventory
 } = require(path.join(root, 'src/shared/sku-export-readback.ts'));
+const {
+    buildSkillDeliveryPlanDigest,
+    isSkillDeliveryPlanDigest,
+    resolveSkillDeliveryConvention
+} = require(path.join(root, 'src/shared/skills/skill-delivery-convention.ts'));
+const {
+    normalizeStableSourceReference
+} = require(path.join(root, 'src/shared/stable-source-reference.ts'));
 const {
     collectRuntimeFinalArtifactPaths
 } = require(path.join(root, 'src/shared/runtime-final-artifact-paths.ts'));
@@ -48,6 +58,12 @@ const {
 } = require(path.join(
     root,
     'src/renderer/services/skill-executors/sku-editable-delivery.service.ts'
+));
+const {
+    normalizeSkuExportPathForCompare
+} = require(path.join(
+    root,
+    'src/renderer/services/skill-executors/sku-export-transaction.service.ts'
 ));
 const {
     bindSkuColorCardRuntimeSelection,
@@ -120,6 +136,7 @@ const composeExecutor = source('src/renderer/services/design-workshop/compose-de
 const scalingPolicy = source('src/shared/design-smart-scaling-policy.ts');
 const mainImagePlacement = source('src/shared/main-image-variant-placement-strategy.ts');
 const skillDeclarations = source('src/shared/skills/skill-declarations.ts');
+const skillParamDefaults = source('src/shared/skill-param-defaults.ts');
 const mainImageSkillPlaybook = source('skills/main-image-design/SKILL.md');
 const detailPageSkillPlaybook = source('skills/detail-page-design/SKILL.md');
 const skuProductionSkillPlaybook = source('skills/sku-production/SKILL.md');
@@ -450,8 +467,261 @@ check(
         && detailPageSkillPlaybook.includes('既有详情页成品')
         && skuProductionSkillPlaybook.includes('交付惯例候选')
         && skuProductionSkillPlaybook.includes('不自行从目录多数票决定名称')
+        && skillDeclarations.includes('不能由早期参数默认器抢先冻结')
+        && !skillParamDefaults.includes('fallback.sizes = [...MAIN_IMAGE_DEFAULT_SIZE_KEYS]')
+        && agentRuntime.includes('expectedDeliveryPlanDigest: typeof receiptEntry.result?.data?.expectedDeliveryPlanDigest')
+        && skuBatchExecutorSource.includes('expectedDeliveryPlanDigest: expectedExportInventory.deliveryPlanDigest')
         && !agentRuntime.includes('交付惯例候选')
         && !autonomousExecutor.includes('交付惯例候选')
+);
+const agentSelectedDeliveryConvention = {
+    version: 'skill-delivery-convention/v0',
+    provenance: 'agent_examples',
+    supportRefs: [
+        'document:sku-example-01',
+        'project-file:SKU/参考成品/2双组合.psb'
+    ],
+    raster: {
+        projectRelativeRoot: '客户交付/色卡成品',
+        folderPattern: '规格{size}双',
+        fileNamePattern: '第 {index} 组 - {colors}',
+        format: 'jpg'
+    },
+    editable: {
+        projectRelativeRoot: '客户交付/色卡成品/源稿',
+        folderPattern: '规格{size}双',
+        fileNamePattern: '源稿 {index} - {colors}',
+        format: 'psb'
+    },
+    pairing: 'one_editable_per_raster',
+    versionPolicy: 'fail_if_exists'
+};
+const selectedDeliveryResolution = resolveSkillDeliveryConvention(agentSelectedDeliveryConvention);
+const visualDecisionDeliveryResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    colorPalette: ['粉色']
+});
+const absoluteDeliveryResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    raster: {
+        ...agentSelectedDeliveryConvention.raster,
+        projectRelativeRoot: 'D:\\成品\\SKU'
+    }
+});
+const absoluteProjectFileRefResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    supportRefs: ['project-file:D:\\成品\\SKU\\2双组合.psb']
+});
+const disguisedAbsoluteDocumentRefResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    supportRefs: ['document:C:/Users/12611/private.psb']
+});
+const disguisedUrlDocumentRefResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    supportRefs: ['document:https://example.invalid/private.psb']
+});
+const disguisedRelativePathDocumentRefResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    supportRefs: ['document:Users/12611/private.psb']
+});
+const disguisedSensitivePrefixResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    supportRefs: ['api-key:sk-example-secret']
+});
+const genericSensitiveSourceRefsBlocked = [
+    'api-key:sk-example',
+    'secret:opaque-id',
+    'document:access-token',
+    'bearer:opaque-id'
+].every((reference) => normalizeStableSourceReference(reference) === undefined);
+const genericStableSourceRefAccepted = normalizeStableSourceReference('document:stable-id')
+    === 'document:stable-id';
+const unauthorizedReplaceDeliveryResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    provenance: 'user',
+    supportRefs: ['user-instruction:current-turn'],
+    versionPolicy: 'replace_exact_set'
+});
+const customDeliveryInventory = buildSkuExpectedExportInventory({
+    outputDir: 'C:\\project\\SKU',
+    projectPath: 'C:\\project',
+    deliveryConvention: agentSelectedDeliveryConvention,
+    specs: [{
+        size: 2,
+        combos: [['奶白', '黑色']],
+        comboTemplateName: '2双组合.psd'
+    }]
+});
+const compatibilityDeliveryInventory = buildSkuExpectedExportInventory({
+    outputDir: 'C:\\project\\SKU',
+    specs: [{
+        size: 2,
+        combos: [['奶白', '黑色']],
+        comboTemplateName: '2双组合.psd'
+    }]
+});
+const posixDeliveryInventory = buildSkuExpectedExportInventory({
+    projectPath: '/Users/designer/Project',
+    deliveryConvention: agentSelectedDeliveryConvention,
+    specs: [{
+        size: 2,
+        combos: [['奶白', '黑色']],
+        comboTemplateName: '2双组合.psd'
+    }]
+});
+const posixVolumeFallbackInventory = buildSkuExpectedExportInventory({
+    outputDir: '/Volumes/Design Disk/Project/SKU',
+    specs: [{
+        size: 2,
+        combos: [['奶白', '黑色']],
+        comboTemplateName: '2双组合.psd'
+    }]
+});
+const jpegSkuDeliveryInventory = buildSkuExpectedExportInventory({
+    projectPath: 'C:\\project',
+    deliveryConvention: {
+        ...agentSelectedDeliveryConvention,
+        raster: { ...agentSelectedDeliveryConvention.raster, format: 'jpeg' }
+    },
+    specs: [{
+        size: 2,
+        combos: [['奶白', '黑色']],
+        comboTemplateName: '2双组合.psd'
+    }]
+});
+const windowsDigestUpper = buildSkillDeliveryPlanDigest({
+    convention: agentSelectedDeliveryConvention,
+    artifactPaths: ['C:\\Project\\SKU\\A.jpg']
+});
+const windowsDigestLower = buildSkillDeliveryPlanDigest({
+    convention: agentSelectedDeliveryConvention,
+    artifactPaths: ['c:/project/sku/a.jpg']
+});
+const posixDigestUpper = buildSkillDeliveryPlanDigest({
+    convention: agentSelectedDeliveryConvention,
+    artifactPaths: ['/Users/Designer/Project/SKU/A.jpg']
+});
+const posixDigestLower = buildSkillDeliveryPlanDigest({
+    convention: agentSelectedDeliveryConvention,
+    artifactPaths: ['/Users/Designer/Project/SKU/a.jpg']
+});
+const customDeliveryArtifacts = customDeliveryInventory.items.flatMap((item, index) => ([{
+    path: item.path,
+    kind: 'raster_export',
+    proof: 'file_probe',
+    fileIdentity: { sha256: (index + 1).toString(16).padStart(64, '0'), byteLength: 10_001 + index },
+    sourceHistoryStateRef: { documentId: index + 1, historyStateId: 101 + index }
+}, {
+    path: item.editablePath,
+    kind: 'editable_document',
+    proof: 'staged_editable_document_promotion',
+    fileIdentity: { sha256: (index + 101).toString(16).padStart(64, '0'), byteLength: 20_001 + index },
+    sourceHistoryStateRef: { documentId: index + 1, historyStateId: 101 + index }
+}]));
+const customDeliveryReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'multi_document_task',
+    outputs: ['sku_images', 'editable_sku_batch_documents'],
+    resultRefs: ['sku-custom-row'],
+    resultRefProofs: [{ resultRef: 'sku-custom-row', effect: 'save_export' }],
+    artifacts: customDeliveryArtifacts,
+    expectedDeliveryPlan: {
+        digest: customDeliveryInventory.deliveryPlanDigest,
+        convention: customDeliveryInventory.deliveryConvention
+    }
+});
+const mismatchedDeliveryReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'multi_document_task',
+    outputs: ['sku_images'],
+    resultRefs: ['sku-wrong-row'],
+    resultRefProofs: [{ resultRef: 'sku-wrong-row', effect: 'save_export' }],
+    artifacts: [{
+        path: 'C:\\project\\SKU\\unrelated.jpg',
+        kind: 'raster_export',
+        proof: 'file_probe',
+        fileIdentity: { sha256: 'f'.repeat(64), byteLength: 999 },
+        sourceHistoryStateRef: { documentId: 99, historyStateId: 999 }
+    }],
+    expectedDeliveryPlan: {
+        digest: customDeliveryInventory.deliveryPlanDigest,
+        convention: customDeliveryInventory.deliveryConvention
+    }
+});
+const roundTrippedCustomDeliveryReceipt = readRuntimeDeliveryReceipt({
+    data: { runtimeDeliveryReceipt: customDeliveryReceipt }
+});
+const matchingDeliveryPlanVerification = verifyRuntimeDelivery({
+    requiredOutputs: ['sku_images', 'editable_sku_batch_documents'],
+    receipt: roundTrippedCustomDeliveryReceipt,
+    receiptTarget: undefined,
+    multiDocumentTaskBound: true,
+    expectedDeliveryPlanDigest: customDeliveryInventory.deliveryPlanDigest
+});
+const missingExpectedDeliveryPlanVerification = verifyRuntimeDelivery({
+    requiredOutputs: ['sku_images', 'editable_sku_batch_documents'],
+    receipt: roundTrippedCustomDeliveryReceipt,
+    receiptTarget: undefined,
+    multiDocumentTaskBound: true
+});
+const mismatchedDeliveryPlanVerification = verifyRuntimeDelivery({
+    requiredOutputs: ['sku_images'],
+    receipt: roundTrippedCustomDeliveryReceipt,
+    receiptTarget: undefined,
+    multiDocumentTaskBound: true,
+    expectedDeliveryPlanDigest: `skill-delivery-plan/v0:${'f'.repeat(64)}`
+});
+check(
+    'Skill 交付约定严格绑定来源、跨平台路径、exact artifact 与非覆盖授权',
+    selectedDeliveryResolution.status === 'ready'
+        && visualDecisionDeliveryResolution.status === 'blocked'
+        && visualDecisionDeliveryResolution.blockers.some((message) => message.includes('不允许字段 colorPalette'))
+        && absoluteDeliveryResolution.status === 'blocked'
+        && absoluteProjectFileRefResolution.status === 'blocked'
+        && disguisedAbsoluteDocumentRefResolution.status === 'blocked'
+        && disguisedUrlDocumentRefResolution.status === 'blocked'
+        && disguisedRelativePathDocumentRefResolution.status === 'blocked'
+        && disguisedSensitivePrefixResolution.status === 'blocked'
+        && genericSensitiveSourceRefsBlocked
+        && genericStableSourceRefAccepted
+        && unauthorizedReplaceDeliveryResolution.status === 'blocked'
+        && unauthorizedReplaceDeliveryResolution.blockers.some((message) => message.includes('不能授权覆盖同名文件'))
+        && customDeliveryInventory.status === 'ready'
+        && customDeliveryInventory.outputDir === 'C:\\project\\客户交付\\色卡成品'
+        && customDeliveryInventory.items[0]?.path === 'C:\\project\\客户交付\\色卡成品\\规格2双\\第 1 组 - 奶白+黑色.jpg'
+        && customDeliveryInventory.items[0]?.editablePath === 'C:\\project\\客户交付\\色卡成品\\源稿\\规格2双\\源稿 1 - 奶白+黑色.psb'
+        && customDeliveryInventory.items[0]?.stagedRasterRelativePath === '2双组合\\1奶白+黑色.jpg'
+        && customDeliveryInventory.items[0]?.stagedEditableRelativePath === '可编辑\\2双组合\\1奶白+黑色.psb'
+        && compatibilityDeliveryInventory.items[0]?.path === 'C:\\project\\SKU\\2双组合\\1奶白+黑色.jpg'
+        && posixDeliveryInventory.items[0]?.path === '/Users/designer/Project/客户交付/色卡成品/规格2双/第 1 组 - 奶白+黑色.jpg'
+        && posixDeliveryInventory.items[0]?.editablePath === '/Users/designer/Project/客户交付/色卡成品/源稿/规格2双/源稿 1 - 奶白+黑色.psb'
+        && posixDeliveryInventory.items[0]?.stagedRasterRelativePath === '2双组合\\1奶白+黑色.jpg'
+        && posixDeliveryInventory.items[0]?.stagedEditableRelativePath === '可编辑\\2双组合\\1奶白+黑色.psb'
+        && posixVolumeFallbackInventory.status === 'ready'
+        && posixVolumeFallbackInventory.outputDir === '/Volumes/Design Disk/Project/SKU'
+        && posixVolumeFallbackInventory.items[0]?.path === '/Volumes/Design Disk/Project/SKU/2双组合/1奶白+黑色.jpg'
+        && skuBatchExecutorSource.includes("joinSkuExportPath(projectContext.projectPath, '模板文件')")
+        && skuBatchExecutorSource.includes("joinSkuExportPath(projectContext.projectPath, 'SKU')")
+        && !skuBatchExecutorSource.includes('`${projectContext.projectPath}\\\\SKU`')
+        && jpegSkuDeliveryInventory.status === 'blocked'
+        && windowsDigestUpper === windowsDigestLower
+        && posixDigestUpper !== posixDigestLower
+        && isSkillDeliveryPlanDigest(customDeliveryInventory.deliveryPlanDigest)
+        && /^skill-delivery-plan\/v0:[a-f0-9]{64}$/.test(customDeliveryInventory.deliveryPlanDigest || '')
+        && customDeliveryReceipt.status === 'ready'
+        && customDeliveryReceipt.deliveryPlanDigest === customDeliveryInventory.deliveryPlanDigest
+        && customDeliveryReceipt.deliveryPlanConvention?.version === 'skill-delivery-convention/v0'
+        && roundTrippedCustomDeliveryReceipt?.status === 'ready'
+        && matchingDeliveryPlanVerification.status === 'passed'
+        && matchingDeliveryPlanVerification.deliveryPlanBound === true
+        && missingExpectedDeliveryPlanVerification.status === 'incomplete'
+        && missingExpectedDeliveryPlanVerification.deliveryPlanBound === false
+        && mismatchedDeliveryPlanVerification.status === 'incomplete'
+        && mismatchedDeliveryPlanVerification.deliveryPlanBound === false
+        && mismatchedDeliveryReceipt.status === 'incomplete'
+        && mismatchedDeliveryReceipt.deliveryPlanDigest === undefined
+        && mismatchedDeliveryReceipt.issues.some((message) => message.includes('artifact 集合不一致'))
+        && !skillDeclarations.includes('colorPalette: deliveryConvention')
 );
 const openAiUnknownTerminal = new OpenAIAdapter('deepseek').parseResponse({
     choices: [{
@@ -1087,11 +1357,15 @@ function buildSkuReceiptBoundaryFixture(rowCount) {
         artifacts: resultRefs.flatMap((_, index) => ([{
             path: `C:/fixture/SKU/${index + 1}.jpg`,
             kind: 'raster_export',
-            proof: 'file_probe'
+            proof: 'file_probe',
+            fileIdentity: { sha256: (index + 1).toString(16).padStart(64, '0'), byteLength: 10_000 + index },
+            sourceHistoryStateRef: { documentId: index + 1, historyStateId: 101 + index }
         }, {
             path: `C:/fixture/SKU/可编辑/${index + 1}.psb`,
             kind: 'editable_document',
-            proof: 'staged_editable_document_promotion'
+            proof: 'staged_editable_document_promotion',
+            fileIdentity: { sha256: (index + 101).toString(16).padStart(64, '0'), byteLength: 20_000 + index },
+            sourceHistoryStateRef: { documentId: index + 1, historyStateId: 101 + index }
         }]))
     });
 }
@@ -1160,11 +1434,15 @@ const multiDocumentSkuReceipt = buildRuntimeDeliveryReceipt({
     artifacts: skuBatchRasterPaths.flatMap((artifactPath, index) => ([{
         path: artifactPath,
         kind: 'raster_export',
-        proof: 'file_probe'
+        proof: 'file_probe',
+        fileIdentity: { sha256: (index + 1).toString(16).padStart(64, '0'), byteLength: 10_000 + index },
+        sourceHistoryStateRef: { documentId: index + 1, historyStateId: 101 + index }
     }, {
         path: skuBatchEditablePaths[index],
         kind: 'editable_document',
-        proof: 'staged_editable_document_promotion'
+        proof: 'staged_editable_document_promotion',
+        fileIdentity: { sha256: (index + 101).toString(16).padStart(64, '0'), byteLength: 20_000 + index },
+        sourceHistoryStateRef: { documentId: index + 1, historyStateId: 101 + index }
     }]))
 });
 const multiDocumentSkuEntries = [{
@@ -1414,14 +1692,29 @@ const forgedEditableValidation = await validateSkuEditableDeliveryResult({
     stagedEditablePath: editableStagedPath,
     host: editableValidationHost
 });
+const editableRasterIdentity = {
+    path: editableExpectedItem.path,
+    byteLength: 2048,
+    sha256: 'a'.repeat(64)
+};
+const editableDocumentIdentity = {
+    path: editableExpectedItem.editablePath,
+    byteLength: 4096,
+    sha256: 'b'.repeat(64)
+};
+const editableCommittedFiles = new Map([
+    [normalizeSkuExportPathForCompare(editableExpectedItem.path), editableRasterIdentity],
+    [normalizeSkuExportPathForCompare(editableExpectedItem.editablePath), editableDocumentIdentity]
+]);
 const finalizedEditableValidation = await finalizeSkuEditableDeliveryReceipts({
     receipts: new Map(editableValidation.success
         ? [[editableExpectedItem.id, editableValidation.receipt]]
         : []),
     baselines: new Map([[
-        editableExpectedItem.editablePath.toLowerCase(),
+        normalizeSkuExportPathForCompare(editableExpectedItem.editablePath),
         { path: editableExpectedItem.editablePath, exists: false }
     ]]),
+    committedFiles: editableCommittedFiles,
     host: editableValidationHost
 });
 const editableReadback = buildSkuEditableDeliveryReadback({
@@ -1435,11 +1728,14 @@ const provisionalEditableArtifacts = buildSkuRuntimeDeliveryArtifacts({
         path: editableExpectedItem.path,
         status: 'ok',
         rawImagesRedacted: true,
-        freshnessVerified: true
+        freshnessVerified: true,
+        byteLength: editableRasterIdentity.byteLength,
+        sha256: editableRasterIdentity.sha256
     }],
     editableReceipts: new Map(editableValidation.success
         ? [[editableExpectedItem.id, editableValidation.receipt]]
-        : [])
+        : []),
+    committedFiles: editableCommittedFiles
 });
 const finalizedEditableArtifacts = buildSkuRuntimeDeliveryArtifacts({
     expectedItems: [editableExpectedItem],
@@ -1448,9 +1744,12 @@ const finalizedEditableArtifacts = buildSkuRuntimeDeliveryArtifacts({
         path: editableExpectedItem.path,
         status: 'ok',
         rawImagesRedacted: true,
-        freshnessVerified: true
+        freshnessVerified: true,
+        byteLength: editableRasterIdentity.byteLength,
+        sha256: editableRasterIdentity.sha256
     }],
-    editableReceipts: finalizedEditableValidation.receipts
+    editableReceipts: finalizedEditableValidation.receipts,
+    committedFiles: editableCommittedFiles
 });
 const failedRasterProbeArtifacts = buildSkuRuntimeDeliveryArtifacts({
     expectedItems: [editableExpectedItem],
@@ -1461,7 +1760,22 @@ const failedRasterProbeArtifacts = buildSkuRuntimeDeliveryArtifacts({
         rawImagesRedacted: true,
         freshnessVerified: false
     }],
-    editableReceipts: finalizedEditableValidation.receipts
+    editableReceipts: finalizedEditableValidation.receipts,
+    committedFiles: editableCommittedFiles
+});
+const replacedRasterProbeArtifacts = buildSkuRuntimeDeliveryArtifacts({
+    expectedItems: [editableExpectedItem],
+    rasterFileProbes: [{
+        success: true,
+        path: editableExpectedItem.path,
+        status: 'ok',
+        rawImagesRedacted: true,
+        freshnessVerified: true,
+        byteLength: editableRasterIdentity.byteLength,
+        sha256: 'c'.repeat(64)
+    }],
+    editableReceipts: finalizedEditableValidation.receipts,
+    committedFiles: editableCommittedFiles
 });
 const malformedRasterProbeArtifacts = buildSkuRuntimeDeliveryArtifacts({
     expectedItems: [editableExpectedItem],
@@ -1472,10 +1786,11 @@ const malformedRasterProbeArtifacts = buildSkuRuntimeDeliveryArtifacts({
         rawImagesRedacted: false,
         freshnessVerified: true
     }],
-    editableReceipts: new Map()
+    editableReceipts: new Map(),
+    committedFiles: editableCommittedFiles
 });
 check(
-    'SKU 可编辑源稿必须逐行绑定冻结路径、组合、图层结构、UXP 文件证明与本轮新鲜度',
+    'SKU 可编辑源稿必须逐行绑定冻结路径、完整文件身份、组合、图层结构、Photoshop revision 与本轮新鲜度',
     editableValidation.success === true
         && editableReadback.status === 'ready'
         && editableReadback.verifiedCount === 1
@@ -1491,6 +1806,8 @@ check(
         && finalizedEditableArtifacts[1]?.proof === 'staged_editable_document_promotion'
         && failedRasterProbeArtifacts.length === 1
         && failedRasterProbeArtifacts[0]?.kind === 'editable_document'
+        && replacedRasterProbeArtifacts.length === 1
+        && replacedRasterProbeArtifacts[0]?.kind === 'editable_document'
         && malformedRasterProbeArtifacts.length === 0
 );
 

@@ -1,6 +1,7 @@
 import {
     hasVerifiedEditableDocumentArtifact,
     type RuntimeDeliveryArtifactEntry,
+    type RuntimeDeliveryArtifactFileIdentity,
     type RuntimeEditableDocumentArtifactProof
 } from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
 import {
@@ -18,6 +19,7 @@ import {
     type SkuExportFileBaseline,
     type SkuExportTransactionHost
 } from './sku-export-transaction.service';
+import type { StagedCommittedFileIdentity } from '../../../shared/sku-staging-transaction-contract';
 
 export interface SkuEditableDeliveryReceipt {
     itemId: string;
@@ -37,6 +39,7 @@ export interface SkuEditableDeliveryReceipt {
     };
     freshnessProof: 'staged_uxp_proof' | 'new_path' | 'modified_since_baseline';
     promotionVerified: boolean;
+    fileIdentity?: RuntimeDeliveryArtifactFileIdentity;
 }
 
 export interface SkuEditableDeliveryReadback {
@@ -55,6 +58,7 @@ export interface SkuEditableDeliveryReadback {
         templateName: string;
         combination: string[];
         sourceHistoryStateRef: { documentId: number; historyStateId: number };
+        fileIdentity: RuntimeDeliveryArtifactFileIdentity;
         copiedLayerIds: number[];
         copiedLayerNames: string[];
         freshnessProof: 'new_path' | 'modified_since_baseline';
@@ -117,30 +121,49 @@ export function buildSkuRuntimeDeliveryArtifacts(input: {
     expectedItems: readonly SkuExpectedExportInventoryItem[];
     rasterFileProbes: readonly SkuExportFileProbeInput[];
     editableReceipts: ReadonlyMap<string, SkuEditableDeliveryReceipt>;
+    committedFiles: ReadonlyMap<string, StagedCommittedFileIdentity>;
 }): RuntimeDeliveryArtifactEntry[] {
-    const verifiedRasterPathKeys = new Set(input.rasterFileProbes
-        .filter((probe) => (
-            isSuccessfulSkuExportFileProbe(probe) && probe.freshnessVerified === true
-        ))
-        .map((probe) => normalizeSkuExportPathForCompare(String(probe.path || '')))
-        .filter(Boolean));
+    const verifiedRasterProbes = new Map(input.rasterFileProbes.flatMap((probe) => {
+        const pathKey = normalizeSkuExportPathForCompare(String(probe.path || ''));
+        const committed = input.committedFiles.get(pathKey);
+        const sha256 = String(probe.sha256 || '').trim().toLowerCase();
+        const byteLength = Number(probe.byteLength);
+        if (!pathKey
+            || !committed
+            || !isSuccessfulSkuExportFileProbe(probe)
+            || probe.freshnessVerified !== true
+            || !/^[a-f0-9]{64}$/.test(sha256)
+            || !Number.isSafeInteger(byteLength)
+            || byteLength <= 0
+            || sha256 !== committed.sha256
+            || byteLength !== committed.byteLength) {
+            return [];
+        }
+        return [[pathKey, { sha256, byteLength }] as const];
+    }));
     return input.expectedItems.flatMap((item) => {
         const artifacts: RuntimeDeliveryArtifactEntry[] = [];
-        if (verifiedRasterPathKeys.has(normalizeSkuExportPathForCompare(item.path))) {
+        const editableReceipt = input.editableReceipts.get(item.id);
+        const rasterIdentity = verifiedRasterProbes.get(normalizeSkuExportPathForCompare(item.path));
+        if (rasterIdentity && editableReceipt?.sourceHistoryStateRef) {
             artifacts.push({
                 path: item.path,
                 kind: 'raster_export',
-                proof: 'file_probe'
+                proof: 'file_probe',
+                fileIdentity: rasterIdentity,
+                sourceHistoryStateRef: editableReceipt.sourceHistoryStateRef
             });
         }
-        const editableReceipt = input.editableReceipts.get(item.id);
         if (editableReceipt?.promotionVerified === true
+            && editableReceipt.fileIdentity
             && normalizeSkuExportPathForCompare(editableReceipt.path)
                 === normalizeSkuExportPathForCompare(item.editablePath)) {
             artifacts.push({
                 path: editableReceipt.path,
                 kind: 'editable_document',
-                proof: 'staged_editable_document_promotion'
+                proof: 'staged_editable_document_promotion',
+                fileIdentity: editableReceipt.fileIdentity,
+                sourceHistoryStateRef: editableReceipt.sourceHistoryStateRef
             });
         }
         return artifacts;
@@ -246,6 +269,7 @@ export async function validateSkuEditableDeliveryResult(input: {
 export async function finalizeSkuEditableDeliveryReceipts(input: {
     receipts: ReadonlyMap<string, SkuEditableDeliveryReceipt>;
     baselines: ReadonlyMap<string, SkuExportFileBaseline>;
+    committedFiles: ReadonlyMap<string, StagedCommittedFileIdentity>;
     host?: SkuExportTransactionHost;
 }): Promise<{
     receipts: Map<string, SkuEditableDeliveryReceipt>;
@@ -254,9 +278,18 @@ export async function finalizeSkuEditableDeliveryReceipts(input: {
     const receipts = new Map<string, SkuEditableDeliveryReceipt>();
     const violations: string[] = [];
     for (const [itemId, receipt] of input.receipts) {
+        const pathKey = normalizeSkuExportPathForCompare(receipt.path);
+        const committedFile = input.committedFiles.get(pathKey);
+        if (!committedFile
+            || normalizeSkuExportPathForCompare(committedFile.path) !== pathKey
+            || !/^[a-f0-9]{64}$/.test(committedFile.sha256)
+            || committedFile.byteLength !== receipt.editableDocumentArtifact.byteLength) {
+            violations.push(`${itemId} 的可编辑 PSB 没有与 Main 提交终态 SHA-256/字节身份一致。`);
+            continue;
+        }
         const freshness = await verifySkuExportFreshness({
             filePath: receipt.path,
-            baseline: input.baselines.get(normalizeSkuExportPathForCompare(receipt.path)),
+            baseline: input.baselines.get(pathKey),
             host: input.host
         });
         if (!freshness.verified || freshness.proof === 'unverified') {
@@ -267,6 +300,10 @@ export async function finalizeSkuEditableDeliveryReceipts(input: {
         }
         receipts.set(itemId, {
             ...receipt,
+            fileIdentity: {
+                sha256: committedFile.sha256,
+                byteLength: committedFile.byteLength
+            },
             freshnessProof: freshness.proof,
             promotionVerified: true
         });
@@ -281,11 +318,15 @@ export function buildSkuEditableDeliveryReadback(input: {
 }): SkuEditableDeliveryReadback {
     const expectedPaths = input.expectedItems.map((item) => item.editablePath);
     const missingItemIds = input.expectedItems
-        .filter((item) => input.receipts.get(item.id)?.promotionVerified !== true)
+        .filter((item) => {
+            const receipt = input.receipts.get(item.id);
+            return receipt?.promotionVerified !== true || !receipt.fileIdentity;
+        })
         .map((item) => item.id);
     const items = input.expectedItems.flatMap((item) => {
         const receipt = input.receipts.get(item.id);
         if (receipt?.promotionVerified !== true
+            || !receipt.fileIdentity
             || (receipt.freshnessProof !== 'new_path'
                 && receipt.freshnessProof !== 'modified_since_baseline')) {
             return [];
@@ -297,6 +338,7 @@ export function buildSkuEditableDeliveryReadback(input: {
             templateName: receipt.structureReadback.templateName,
             combination: [...receipt.structureReadback.combination],
             sourceHistoryStateRef: { ...receipt.sourceHistoryStateRef },
+            fileIdentity: { ...receipt.fileIdentity! },
             copiedLayerIds: [...receipt.structureReadback.copiedLayerIds],
             copiedLayerNames: [...receipt.structureReadback.copiedLayerNames],
             freshnessProof: receipt.freshnessProof,

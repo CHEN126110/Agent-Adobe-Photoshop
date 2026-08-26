@@ -3,6 +3,7 @@ import path from 'path';
 import { MAX_RUNTIME_DELIVERY_ARTIFACTS } from '../../shared/agent-runtime-v5/runtime-delivery-receipt';
 import type {
     SkuStagingTransactionLease,
+    StagedCommittedFileIdentity,
     StagedFilePromotionInput,
     StagedFilePromotionItem,
     StagedFilePromotionResult
@@ -502,6 +503,7 @@ export async function promoteStagedFileSet(
     input: StagedFilePromotionInput
 ): Promise<StagedFilePromotionResult> {
     const committedPaths: string[] = [];
+    const committedFiles: StagedCommittedFileIdentity[] = [];
     const replacedPaths: string[] = [];
     const cleanupWarnings: string[] = [];
     let transaction: SkuStagingTransactionLease | undefined;
@@ -604,6 +606,11 @@ export async function promoteStagedFileSet(
                 || finalIdentity.inode !== item.sourceInode) {
                 throw new Error(`提交终态文件身份已变化：${item.destinationPath}`);
             }
+            committedFiles.push({
+                path: item.destinationPath,
+                byteLength: finalIdentity.byteLength,
+                sha256: finalIdentity.sha256
+            });
         }
         await appendDurableJournalEvent(journalPath, {
             phase: 'final_set_verified',
@@ -628,6 +635,7 @@ export async function promoteStagedFileSet(
             return {
                 success: false,
                 committedPaths: [],
+                committedFiles: [],
                 replacedPaths: [],
                 rollbackComplete: false,
                 cleanupWarnings,
@@ -639,6 +647,7 @@ export async function promoteStagedFileSet(
         return {
             success: true,
             committedPaths,
+            committedFiles,
             replacedPaths,
             rollbackComplete: true,
             cleanupWarnings
@@ -649,6 +658,7 @@ export async function promoteStagedFileSet(
             return {
                 success: false,
                 committedPaths: [],
+                committedFiles: [],
                 replacedPaths: [],
                 rollbackComplete: false,
                 cleanupWarnings,
@@ -692,6 +702,7 @@ export async function promoteStagedFileSet(
         return {
             success: false,
             committedPaths: [],
+            committedFiles: [],
             replacedPaths: [],
             rollbackComplete,
             cleanupWarnings,

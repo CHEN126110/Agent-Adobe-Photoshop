@@ -6,6 +6,7 @@ import { ipcMain, dialog, shell, IpcMainInvokeEvent, BrowserWindow } from 'elect
 import path from 'path';
 import fs from 'fs';
 import type { IPCContext } from './types';
+import type { IssueSkuStagingTransactionInput } from '../../shared/sku-staging-transaction-contract';
 import { promoteStagedFileSet } from '../services/staged-file-promotion';
 import {
     captureSkuStagingDestinationBaselines,
@@ -244,8 +245,8 @@ export function registerFileSystemHandlers(context: IPCContext): void {
     // main 签发唯一 SKU staging root 与不可伪造令牌；renderer 不再自报清理/提交根路径。
     ipcMain.handle('fs:issueSkuStagingTransaction', async (
         _event: IpcMainInvokeEvent,
-        outputDirectory: unknown
-    ) => issueSkuStagingTransaction(outputDirectory));
+        input: IssueSkuStagingTransactionInput
+    ) => issueSkuStagingTransaction(input?.outputDir, input?.projectRoot));
 
     // 既有目标基线由 main 读取并计算 SHA-256，renderer 不能自行拼装可信基线。
     ipcMain.handle('fs:captureSkuStagingDestinationBaselines', async (

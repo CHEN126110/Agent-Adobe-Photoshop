@@ -67,6 +67,12 @@ const {
   readStrictRuntimeDeliveryVerification
 } = require(path.join(runtimeRoot, 'runtime-artifact-declaration-readers.ts'));
 const {
+  validateArtifactPublicationPolicy
+} = require(path.join(runtimeRoot, 'artifact-publication-policy.ts'));
+const {
+  buildRuntimeArtifactId
+} = require(path.join(runtimeRoot, 'runtime-artifact-finalization.ts'));
+const {
   resolveRuntimeStagePlanEffectiveContract
 } = require(path.join(runtimeRoot, 'runtime-stage-plan.ts'));
 const {
@@ -3257,12 +3263,22 @@ const skuBatchDeliveryArtifacts = Array.from(
       {
         path: `C:/audit/SKU/${row}.jpg`,
         kind: 'raster_export',
-        proof: 'uxp_export_readback'
+        proof: 'uxp_export_readback',
+        fileIdentity: {
+          sha256: row.toString(16).padStart(64, '0'),
+          byteLength: 10_000 + row
+        },
+        sourceHistoryStateRef: { documentId: row, historyStateId: 100 + row }
       },
       {
         path: `C:/audit/SKU/${row}.psb`,
         kind: 'editable_document',
-        proof: 'staged_editable_document_promotion'
+        proof: 'staged_editable_document_promotion',
+        fileIdentity: {
+          sha256: (100 + row).toString(16).padStart(64, '0'),
+          byteLength: 20_000 + row
+        },
+        sourceHistoryStateRef: { documentId: row, historyStateId: 100 + row }
       }
     ];
   }
@@ -3292,6 +3308,86 @@ assert.deepStrictEqual(
   readStrictRuntimeDeliveryVerification(skuBatchDeliveryVerification),
   skuBatchDeliveryVerification
 );
+assert.strictEqual(
+  skuBatchDeliveryVerification.version,
+  'runtime-delivery-verification/v3'
+);
+const legacyV2SkuBatchDeliveryVerification = {
+  ...skuBatchDeliveryVerification,
+  version: 'runtime-delivery-verification/v2',
+  boundaries: { ...skuBatchDeliveryVerification.boundaries }
+};
+delete legacyV2SkuBatchDeliveryVerification.deliveryPlanBound;
+const normalizedLegacyV2SkuBatchDeliveryVerification = readStrictRuntimeDeliveryVerification(
+  legacyV2SkuBatchDeliveryVerification
+);
+assert.strictEqual(
+  normalizedLegacyV2SkuBatchDeliveryVerification?.version,
+  'runtime-delivery-verification/v3'
+);
+assert.strictEqual(normalizedLegacyV2SkuBatchDeliveryVerification?.deliveryPlanBound, true);
+assert.strictEqual(normalizedLegacyV2SkuBatchDeliveryVerification?.status, 'passed');
+const deliveryVerificationRuntimeBinding = {
+  sessionId: 'audit-delivery-verification-session',
+  runId: 'audit-delivery-verification-run',
+  generation: 1
+};
+const buildDeliveryVerificationPublicationRequest = (value) => ({
+  artifactId: buildRuntimeArtifactId(
+    'runtime_delivery_verification',
+    deliveryVerificationRuntimeBinding
+  ),
+  artifactType: 'runtime_delivery_verification',
+  projectId: 'audit-project',
+  skillId: 'sku-batch',
+  sourceRevision: 1,
+  sourceRefs: [],
+  capabilityStatus: 'manual_verification_pending',
+  runtimeBinding: deliveryVerificationRuntimeBinding,
+  payload: { kind: 'json', value }
+});
+assert.strictEqual(validateArtifactPublicationPolicy({
+  authority: 'runtime_renderer',
+  transport: 'renderer_ipc',
+  request: buildDeliveryVerificationPublicationRequest(
+    legacyV2SkuBatchDeliveryVerification
+  )
+}).ok, true, 'publication policy must accept and validate the historical v2 shape');
+assert.strictEqual(validateArtifactPublicationPolicy({
+  authority: 'runtime_renderer',
+  transport: 'renderer_ipc',
+  request: buildDeliveryVerificationPublicationRequest(skuBatchDeliveryVerification)
+}).ok, true, 'publication policy must accept the strict v3 shape');
+const invalidV3WithoutDeliveryPlanBound = { ...skuBatchDeliveryVerification };
+delete invalidV3WithoutDeliveryPlanBound.deliveryPlanBound;
+assert.strictEqual(
+  readStrictRuntimeDeliveryVerification(invalidV3WithoutDeliveryPlanBound),
+  undefined,
+  'v3 must require deliveryPlanBound explicitly'
+);
+assert.strictEqual(validateArtifactPublicationPolicy({
+  authority: 'runtime_renderer',
+  transport: 'renderer_ipc',
+  request: buildDeliveryVerificationPublicationRequest(
+    invalidV3WithoutDeliveryPlanBound
+  )
+}).ok, false, 'publication policy must reject v3 without deliveryPlanBound');
+assert.strictEqual(
+  readStrictRuntimeDeliveryVerification({
+    ...skuBatchDeliveryVerification,
+    unexpectedField: true
+  }),
+  undefined,
+  'v3 must reject undeclared fields'
+);
+assert.strictEqual(
+  readStrictRuntimeDeliveryVerification({
+    ...skuBatchDeliveryVerification,
+    version: 'runtime-delivery-verification/v2'
+  }),
+  undefined,
+  'legacy v2 migration must accept only the historical v2 shape'
+);
 const legacyTemplateDeliveryVerification = {
   ...templateDeliveryVerification,
   version: 'runtime-delivery-verification/v1',
@@ -3299,11 +3395,12 @@ const legacyTemplateDeliveryVerification = {
 };
 delete legacyTemplateDeliveryVerification.settlementScope;
 delete legacyTemplateDeliveryVerification.multiDocumentTaskBound;
+delete legacyTemplateDeliveryVerification.deliveryPlanBound;
 delete legacyTemplateDeliveryVerification.boundaries.multiDocumentTaskBindingRequired;
 const normalizedLegacyTemplateDeliveryVerification = readStrictRuntimeDeliveryVerification(
   legacyTemplateDeliveryVerification
 );
-assert.strictEqual(normalizedLegacyTemplateDeliveryVerification?.version, 'runtime-delivery-verification/v2');
+assert.strictEqual(normalizedLegacyTemplateDeliveryVerification?.version, 'runtime-delivery-verification/v3');
 assert.strictEqual(
   normalizedLegacyTemplateDeliveryVerification?.settlementScope,
   'single_document_revision'

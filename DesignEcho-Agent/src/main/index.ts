@@ -64,7 +64,20 @@ import { cleanupStreams } from './ipc-handlers/stream-handlers';
 import { CODEX_SUBSCRIPTION_PROVIDER } from '../shared/codex-subscription-contract';
 import { getDynamicModels, setDynamicModels } from '../shared/config/dynamic-model-registry';
 import { resolvePersistedModelRuntimeState } from '../shared/config/persisted-model-runtime';
-import { MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS } from '../shared/debug-bridge-chat';
+import {
+    buildDebugBridgeChatExecutionFailure,
+    createDebugBridgeChatExecutionError,
+    debugBridgePhotoshopRuntimeBindingsMatch,
+    debugBridgePhotoshopRuntimeLiveIdentitiesMatch,
+    readDebugBridgeChatExecutionFailure,
+    readDebugBridgeChatPreflightSnapshot,
+    readDebugBridgePhotoshopRuntimeBinding,
+    readDebugBridgePhotoshopRuntimeLiveIdentity,
+    MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS,
+    type DebugBridgeChatExecutionStage,
+    type DebugBridgeChatPreflightSnapshot,
+    type DebugBridgePhotoshopRuntimeBinding
+} from '../shared/debug-bridge-chat';
 
 // ============ 全局变量 ============
 
@@ -166,19 +179,115 @@ function captureCurrentRuntimeBuildIdentity(): DesignEchoRuntimeBuildIdentity {
     });
 }
 
+function buildDebugChatError(input: {
+    stage: DebugBridgeChatExecutionStage;
+    writePossible: boolean;
+    message: string;
+    code: string;
+    requestId?: string;
+}): Error {
+    return createDebugBridgeChatExecutionError(buildDebugBridgeChatExecutionFailure(input));
+}
+
+function readChatPreflightFromCurrentWindow(): Promise<DebugBridgeChatPreflightSnapshot> {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: 'DesignEcho 主窗口不可用，不能读取运行窗口预检。',
+            code: 'main_window_unavailable'
+        }));
+    }
+    const requestId = `debug_preflight_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const resultChannel = 'debug-bridge:chat-preflight-result';
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(buildDebugChatError({
+                stage: 'renderer_preflight',
+                writePossible: false,
+                message: '运行窗口预检超时。',
+                code: 'renderer_preflight_timeout',
+                requestId
+            }));
+        }, 5000);
+
+        const cleanup = (): void => {
+            clearTimeout(timer);
+            ipcMain.removeListener(resultChannel, handleResult);
+        };
+
+        const handleResult = (event: IpcMainEvent, payload: any): void => {
+            if (!mainWindow
+                || mainWindow.isDestroyed()
+                || event.sender.id !== mainWindow.webContents.id) return;
+            if (!payload || payload.requestId !== requestId) return;
+            cleanup();
+            if (payload.success !== true) {
+                const failure = readDebugBridgeChatExecutionFailure(payload)
+                    || buildDebugBridgeChatExecutionFailure({
+                        stage: 'renderer_preflight',
+                        writePossible: false,
+                        message: payload.error || '运行窗口预检失败',
+                        code: 'renderer_preflight_failed',
+                        requestId
+                    });
+                reject(createDebugBridgeChatExecutionError(failure));
+                return;
+            }
+            const snapshot = readDebugBridgeChatPreflightSnapshot(payload.result);
+            if (!snapshot) {
+                reject(buildDebugChatError({
+                    stage: 'renderer_preflight',
+                    writePossible: false,
+                    message: '运行窗口返回了无效的预检快照。',
+                    code: 'renderer_preflight_snapshot_invalid',
+                    requestId
+                }));
+                return;
+            }
+            resolve(snapshot);
+        };
+
+        ipcMain.on(resultChannel, handleResult);
+        try {
+            mainWindow!.webContents.send('debug-bridge:chat-preflight', { requestId });
+        } catch (error) {
+            cleanup();
+            reject(buildDebugChatError({
+                stage: 'main_preflight',
+                writePossible: false,
+                message: error instanceof Error ? error.message : String(error),
+                code: 'renderer_preflight_dispatch_failed',
+                requestId
+            }));
+        }
+    });
+}
+
 function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<unknown> {
     if (!mainWindow || mainWindow.isDestroyed()) {
-        return Promise.reject(new Error('DesignEcho 主窗口不可用，不能提交运行窗口消息。'));
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: 'DesignEcho 主窗口不可用，不能提交运行窗口消息。',
+            code: 'main_window_unavailable'
+        }));
     }
     const expectedRuntimeGitCommit = String(input.expectedRuntimeGitCommit || '').trim().toLowerCase();
     const expectedRuntimeBuildId = String(input.expectedRuntimeBuildId || '').trim();
     const expectedPhotoshopRuntimeBuildId = String(
         input.expectedPhotoshopRuntimeBuildId || ''
     ).trim();
+    const expectedPhotoshopRuntimeBinding = readDebugBridgePhotoshopRuntimeBinding(
+        input.expectedPhotoshopRuntimeBinding
+    );
     const completeGuard = Boolean(
         expectedRuntimeGitCommit
         && expectedRuntimeBuildId
         && expectedPhotoshopRuntimeBuildId
+        && expectedPhotoshopRuntimeBinding
+        && expectedPhotoshopRuntimeBinding.live.buildId === expectedPhotoshopRuntimeBuildId
         && String(input.expectedProjectPath || '').trim()
         && String(input.expectedProvider || '').trim()
         && String(input.expectedModelId || '').trim()
@@ -186,25 +295,60 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
         && input.requireNoOpenPhotoshopDocuments === true
     );
     if (!completeGuard) {
-        return Promise.reject(new Error('受控调试提交缺少完整的项目、构建、模型或 Photoshop 写前约束。'));
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: '受控调试提交缺少完整的项目、构建、模型或 Photoshop 写前约束。',
+            code: 'main_submission_guard_incomplete'
+        }));
     }
     // 启动时身份只用于日志与诊断。正式受控提交必须重新读取 manifest 并逐文件验摘要，
     // 防止 watch/rebuild/Renderer reload 后继续沿用旧的 artifactsVerified 缓存。
-    const submissionRuntimeBuildIdentity = captureCurrentRuntimeBuildIdentity();
+    let submissionRuntimeBuildIdentity: DesignEchoRuntimeBuildIdentity;
+    try {
+        submissionRuntimeBuildIdentity = captureCurrentRuntimeBuildIdentity();
+    } catch (error) {
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: error instanceof Error ? error.message : String(error),
+            code: 'runtime_identity_submission_failed'
+        }));
+    }
     if (submissionRuntimeBuildIdentity.version !== 'designecho-runtime-build-identity/v1'
         || submissionRuntimeBuildIdentity.gitCommit !== expectedRuntimeGitCommit
         || submissionRuntimeBuildIdentity.buildId !== expectedRuntimeBuildId
         || submissionRuntimeBuildIdentity.artifactsVerified !== true) {
-        return Promise.reject(new Error('当前 DesignEcho 实际构建与受控调试指定版本不一致，请重新构建并重启。'));
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: '当前 DesignEcho 实际构建与受控调试指定版本不一致，请重新构建并重启。',
+            code: 'runtime_build_mismatch'
+        }));
     }
     if (submissionRuntimeBuildIdentity.gitDirty !== false) {
-        return Promise.reject(new Error('当前 DesignEcho 构建来自未提交工作树，不能进入受控质量样本。'));
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: '当前 DesignEcho 构建来自未提交工作树，不能进入受控质量样本。',
+            code: 'runtime_build_dirty'
+        }));
     }
     if (submissionRuntimeBuildIdentity.fakeModelEnabled || submissionRuntimeBuildIdentity.fakePhotoshopEnabled) {
-        return Promise.reject(new Error('当前 DesignEcho 启用了测试替身，不能执行真实模型与 Photoshop 质量采集。'));
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: '当前 DesignEcho 启用了测试替身，不能执行真实模型与 Photoshop 质量采集。',
+            code: 'fake_runtime_forbidden'
+        }));
     }
     if (debugChatSubmissionLeaseId) {
-        return Promise.reject(new Error('已有受控调试请求尚未闭合；在它完成或应用重启前不会启动第二轮。'));
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: '已有受控调试请求尚未闭合；在它完成或应用重启前不会启动第二轮。',
+            code: 'debug_submission_lease_held'
+        }));
     }
 
     const requestId = `debug_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -229,7 +373,13 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                     `[DebugBridge] Failed to dispatch timeout cancellation (${error instanceof Error ? error.name : 'Error'})`
                 );
             }
-            reject(new Error(`运行窗口消息提交超时：${timeoutMs}ms`));
+            reject(buildDebugChatError({
+                stage: 'handle_send_started',
+                writePossible: true,
+                message: `运行窗口消息提交超时：${timeoutMs}ms`,
+                code: 'debug_submission_timeout',
+                requestId
+            }));
         }, timeoutMs + 5000);
 
         const cleanup = (): void => {
@@ -255,7 +405,13 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                     completedRuntimeBuildIdentity = captureCurrentRuntimeBuildIdentity();
                 } catch (error) {
                     cleanup();
-                    reject(error);
+                    reject(buildDebugChatError({
+                        stage: 'completion',
+                        writePossible: true,
+                        message: error instanceof Error ? error.message : String(error),
+                        code: 'runtime_identity_completion_failed',
+                        requestId
+                    }));
                     return;
                 }
                 const runtimeArtifactsUnchangedThroughCompletion = Boolean(
@@ -267,7 +423,13 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                 );
                 if (!runtimeArtifactsUnchangedThroughCompletion) {
                     cleanup();
-                    reject(new Error('DesignEcho 构建产物在受控任务期间发生变化，本轮不能计入正式质量样本。'));
+                    reject(buildDebugChatError({
+                        stage: 'completion',
+                        writePossible: true,
+                        message: 'DesignEcho 构建产物在受控任务期间发生变化，本轮不能计入正式质量样本。',
+                        code: 'runtime_artifacts_changed',
+                        requestId
+                    }));
                     return;
                 }
                 const result: Record<string, unknown> = payload.result && typeof payload.result === 'object' && !Array.isArray(payload.result)
@@ -277,6 +439,46 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                 const receipt = resultReceipt && typeof resultReceipt === 'object' && !Array.isArray(resultReceipt)
                     ? resultReceipt as Record<string, unknown>
                     : {};
+                const receiptExpectedPhotoshopBinding = readDebugBridgePhotoshopRuntimeBinding(
+                    receipt['expectedPhotoshopRuntimeBinding']
+                );
+                const submittedPhotoshopRuntimeIdentity = readDebugBridgePhotoshopRuntimeLiveIdentity(
+                    receipt['submittedPhotoshopRuntimeIdentity']
+                );
+                const completedPhotoshopRuntimeIdentity = readDebugBridgePhotoshopRuntimeLiveIdentity(
+                    receipt['completedPhotoshopRuntimeIdentity']
+                );
+                const photoshopReceiptBound = Boolean(
+                    expectedPhotoshopRuntimeBinding
+                    && receiptExpectedPhotoshopBinding
+                    && submittedPhotoshopRuntimeIdentity
+                    && completedPhotoshopRuntimeIdentity
+                    && debugBridgePhotoshopRuntimeBindingsMatch(
+                        receiptExpectedPhotoshopBinding,
+                        expectedPhotoshopRuntimeBinding
+                    )
+                    && debugBridgePhotoshopRuntimeLiveIdentitiesMatch(
+                        submittedPhotoshopRuntimeIdentity,
+                        expectedPhotoshopRuntimeBinding.live
+                    )
+                    && debugBridgePhotoshopRuntimeLiveIdentitiesMatch(
+                        completedPhotoshopRuntimeIdentity,
+                        expectedPhotoshopRuntimeBinding.live
+                    )
+                    && receipt['photoshopRuntimeBindingMatchedAtSubmission'] === true
+                    && receipt['photoshopRuntimeBindingUnchangedThroughCompletion'] === true
+                );
+                if (!photoshopReceiptBound) {
+                    cleanup();
+                    reject(buildDebugChatError({
+                        stage: 'completion',
+                        writePossible: true,
+                        message: 'Photoshop Runtime 完整身份没有贯穿受控任务，本轮不能计入正式质量样本。',
+                        code: 'photoshop_runtime_binding_changed',
+                        requestId
+                    }));
+                    return;
+                }
                 cleanup();
                 resolve({
                     ...result,
@@ -288,6 +490,8 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                         expectedRuntimeGitCommit: expectedRuntimeGitCommit || null,
                         expectedRuntimeBuildId: expectedRuntimeBuildId || null,
                         expectedPhotoshopRuntimeBuildId: expectedPhotoshopRuntimeBuildId || null,
+                        expectedPhotoshopRuntimeBinding:
+                            expectedPhotoshopRuntimeBinding as DebugBridgePhotoshopRuntimeBinding,
                         runtimeIdentityMatchedAtSubmission: Boolean(
                             expectedRuntimeGitCommit
                             && submissionRuntimeBuildIdentity.gitCommit === expectedRuntimeGitCommit
@@ -299,7 +503,15 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                 });
             } else {
                 cleanup();
-                reject(new Error(String(payload.error || '运行窗口消息提交失败')));
+                const failure = readDebugBridgeChatExecutionFailure(payload)
+                    || buildDebugBridgeChatExecutionFailure({
+                        stage: 'unknown',
+                        writePossible: true,
+                        message: payload.error || '运行窗口消息提交失败',
+                        code: 'renderer_submission_failed_unclassified',
+                        requestId
+                    });
+                reject(createDebugBridgeChatExecutionError(failure));
             }
         };
 
@@ -312,7 +524,13 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
             });
         } catch (error) {
             cleanup();
-            reject(error);
+            reject(buildDebugChatError({
+                stage: 'main_preflight',
+                writePossible: false,
+                message: error instanceof Error ? error.message : String(error),
+                code: 'renderer_submission_dispatch_failed',
+                requestId
+            }));
         }
     });
 }
@@ -897,6 +1115,7 @@ async function initializeServices(): Promise<void> {
         host: WEBVIEW_BIND_HOST,
         port: DEBUG_BRIDGE_PORT,
         dataDir: path.join(app.getPath('userData'), 'debug-bridge'),
+        onChatSubmitPreflight: readChatPreflightFromCurrentWindow,
         onChatSubmit: submitChatToCurrentWindow,
         onEvent: (event) => {
             if (event.type === 'session.created') {

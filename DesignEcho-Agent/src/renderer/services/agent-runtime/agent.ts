@@ -5252,14 +5252,14 @@ export class Agent {
                 )
                 ? latestReviewedPreviewForReceipt
                 : undefined;
-
             const deliveryVerification = verifyRuntimeDelivery({
                 requiredOutputs,
                 receipt,
                 receiptTarget,
                 reviewedPreviewTarget: reviewedPreview?.target,
                 reviewedPreviewHistoryStateRef: reviewedPreview?.historyStateRef,
-                multiDocumentTaskBound
+                multiDocumentTaskBound,
+                expectedDeliveryPlanDigest: typeof receiptEntry.result?.data?.expectedDeliveryPlanDigest === 'string' ? receiptEntry.result.data.expectedDeliveryPlanDigest : undefined
             });
             if (!latestDeliveryVerification) latestDeliveryVerification = deliveryVerification;
             if (deliveryVerification.status !== 'passed') continue;

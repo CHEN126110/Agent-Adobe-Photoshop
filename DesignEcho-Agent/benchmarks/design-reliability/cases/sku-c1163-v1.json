@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "sku-c1163-v1",
-  "revision": 3,
-  "caseDigest": "sha256:2238ae4183cf90605c0991bd1d8bbbef00ef0fb3b5206d5fe780eb85aad6bebe",
+  "revision": 4,
+  "caseDigest": "sha256:df5aed44f8b35d97bad896c85ac42551167f432deeef9864a881538b94d61af3",
   "status": "active",
   "taskFamily": "sku",
   "executionModel": "staged",
@@ -47,12 +47,12 @@
       }
     ],
     "reviewOnlyReferences": [
-      { "kind": "user_design", "ref": "SKU/2双装/1白色+白色.jpg" },
-      { "kind": "user_design", "ref": "SKU/2双装/4浅肤+浅蓝.jpg" },
-      { "kind": "user_design", "ref": "SKU/3双装/1白色+白色+白色.jpg" },
-      { "kind": "user_design", "ref": "SKU/3双装/4白色+浅肤+深肤.jpg" },
-      { "kind": "user_design", "ref": "SKU/4双装/1白色+白色+白色+白色.jpg" },
-      { "kind": "user_design", "ref": "SKU/4双装/4白色+浅肤+深肤+黑色.jpg" }
+      { "kind": "user_design", "ref": "SKU/2双装/1白色+白色.jpg", "digest": "sha256:09b61807aa470bfb21914061c8d3559dbde0a6dce33ae91f1d945f1c5b34f1cf" },
+      { "kind": "user_design", "ref": "SKU/2双装/4浅肤+浅蓝.jpg", "digest": "sha256:2b8bf6b35822bf6e2453acc469c243385268e4df52f0f23c5d7c054852c788f4" },
+      { "kind": "user_design", "ref": "SKU/3双装/1白色+白色+白色.jpg", "digest": "sha256:fc30c97e5d079357970f6ef922608f58bee127a156f0905acfa3c7fca9337819" },
+      { "kind": "user_design", "ref": "SKU/3双装/4白色+浅肤+深肤.jpg", "digest": "sha256:85b46c3c151f406b4d49248c8afd8db38a15878a9fbeaa8cce86ad83f3b3c5e2" },
+      { "kind": "user_design", "ref": "SKU/4双装/1白色+白色+白色+白色.jpg", "digest": "sha256:22367428eebee6513390a4f6fc6ac518d8b74cd4512763d715e9abbe06e17f44" },
+      { "kind": "user_design", "ref": "SKU/4双装/4白色+浅肤+深肤+黑色.jpg", "digest": "sha256:50c09732b54ff11d2013ed0f5341b77ecac9cea2070088a883e09752cd81b0d0" }
     ]
   },
   "source": {

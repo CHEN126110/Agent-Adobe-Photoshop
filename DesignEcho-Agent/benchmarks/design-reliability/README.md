@@ -72,7 +72,10 @@ provenance，禁止 claim、商品类型、颜色或映射字段夹带选图、�
 准备脚本只把它写入一次性 fixture，不反写用户源项目。Fixture 中任何 symlink / junction 都会使
 本次样本失效，避免扫描跳过的链接把外部文件带入评测。
 
-默认的本地数据与报告写入 `tmp/design-reliability/`，不进入 Git。真实输入原目录保持只读，Photoshop 只操作一次性 fixture 副本。
+正式 Attempt 安全账本、fixture 身份、Run、Review 与 Attribution 默认写入应用的仓库外持久目录
+`<userData>/design-reliability/`（Windows 通常是 `%APPDATA%/designecho-agent/design-reliability/`），
+不进入 Git，也不会被 `maintenance:repo-hygiene` 清除。仓库内旧 `tmp/design-reliability/` 只作历史报告兼容读取，
+不再承担正式分母。真实输入原目录保持只读，Photoshop 只操作一次性 fixture 副本。
 
 ## 命令
 
@@ -83,12 +86,26 @@ npm run maintenance:design-reliability:validate
 # 查看固定案例、真实运行、人工评审和失败归因的当前覆盖度
 npm run maintenance:design-reliability:status
 
-# 只读检查 Debug Bridge、Photoshop MCP 与本地 fixture 是否具备实机条件
+# 默认零落盘地只读检查 Debug Bridge、Photoshop MCP 与本地 fixture 是否具备实机条件；
+# 需要保留报告时显式追加 --write-report，不再覆盖 latest.json
 npm run maintenance:design-reliability:preflight
+
+# fixture 已准备好时，用这个闸门判断能否安全开始下一次 Case；它不要求历史三 Skill 已经全部通过
+npm run maintenance:design-reliability:require-capture-ready -- --case <case-id> --fixture-root <一次性目录> --provider <provider-id> --model <configured-model-id>
 
 # 只有需要三类 Skill 都具备真实完整证据时才使用；未执行绝不会被算成通过
 npm run maintenance:business-skills-live-e2e:require-live
 ```
+
+正式 Case 推荐使用隔离 Debug userData，并在启动时冻结已配置的模型 ID；`--model` 只改复制出来的
+临时状态，不改用户正常 DesignEcho 配置，也不会输出 Provider 凭据：
+
+```bash
+node scripts/launch-chat-ui-debug-window.cjs --port auto --use-default-runtime-ports --seed-user-state --model codex-subscription-gpt-5-6-sol --project <一次性目录>
+```
+
+`preflight` 会从 Renderer 实时读回脱敏的 provider、内部 model ID、API model ID、项目和 busy 状态；
+不匹配会在 Attempt `armed` 之前阻止 `run-live`，不会先写入 Photoshop 再报告模型用错。
 
 当套件包含多个独立输入源时，准备或检查 fixture 必须显式指定 `--case` 或 `--fixture-id`，避免把两个商品目录混成一个测试项目。
 如果同一个 `fixtureId` 被主图、详情页、SKU 等多个 Case 共用，`prepare-fixture` 必须使用
@@ -96,10 +113,14 @@ npm run maintenance:business-skills-live-e2e:require-live
 
 严格人工评审中的比较证据不能由评审者自由写标记：候选必须同时属于当前 Run 的已验证
 `raster_export` 和 Agent 声明的 `finalArtifactManifest`，用户成稿和 Eagle 条目必须逐项来自当前 Case 的
-`reviewOnlyReferences`。格式正确但不属于当前 Run / Case 的字符串会被拒绝。匿名随机
-评审包仍是后续增强项；在它落地前，`record-review` 只产生
-`bound_self_reported` 诊断评审，不得把自报的 `blindedToCandidateOrigin` 当作完整盲评证明，
-也不得进入 strict / official 成功率。Review v2 同时绑定 Rubric 内容摘要；Cohort 只有在 Case、
+`reviewOnlyReferences`，并匹配 Case revision 冻结的 SHA-256。格式正确但内容摘要不属于当前 Run / Case 的文件会被拒绝。
+不同比较证据不能复用同一内容，参考锚点也不能指向候选成稿。`record-review` 仍只产生
+`bound_self_reported` 诊断评审，不能靠自报的 `blindedToCandidateOrigin` 进入正式成功率。
+正式评审必须先用 `prepare-review-packet` 生成随机匿名公开包与物理分离的 sealed mapping，再由另一位评审者
+完成全部匿名项评分和全部无序 pair；`record-anonymous-review` 会重算包、映射、响应和所有资产哈希，只有完整
+canonical verification bundle 才能让 `anonymous_packet_verified` 进入 strict 指标。持久化 Review 中的
+`verifiedPacketProof` 只是可审计索引，不能自行授予 strict 身份；每次 `status` 都会从私有 bundle 磁盘回读并重新验证。
+Review v2 同时绑定 Rubric 内容摘要；Cohort 只有在 Case、
 Rubric 与 fixture 摘要一致时才能比较。旧 v1 评审保留为历史诊断证据，但不会按新协议冒充正式样本。
 
 具体录制、评审和归因参数使用：
@@ -107,6 +128,28 @@ Rubric 与 fixture 摘要一致时才能比较。旧 v1 评审保留为历史诊
 ```bash
 node scripts/design-reliability.cjs --help
 ```
+
+匿名评审的 `source-bindings.json` 是开发侧一次性绑定文件，格式为：
+
+```json
+[
+  { "evidenceRef": "candidate:主图/成稿.jpg@sha256:<Run冻结摘要>", "sourcePath": "<候选成稿绝对路径>" },
+  { "evidenceRef": "user-design:主图/800/800-1.jpg@sha256:<Case冻结摘要>", "sourcePath": "<用户成稿绝对路径>" },
+  { "evidenceRef": "eagle:item:<item-id>@sha256:<Case冻结摘要>", "sourcePath": "<Eagle 条目文件绝对路径>" }
+]
+```
+
+随后执行：
+
+```bash
+node scripts/design-reliability.cjs prepare-review-packet --case <case-id> --run-observation <run.json> --reviewer-packet-dir <公开包目录> --source-bindings-json <bindings.json> --allow-create
+node scripts/design-reliability.cjs record-anonymous-review --case <case-id> --run-observation <run.json> --packet-id <prepare返回的packetId> --reviewer-packet-dir <公开包目录> --reviewer-response <评审响应.json>
+```
+
+公开包可以交给评审者；sealed mapping 由 CLI 按 packetId 自动保存到 owner-only 的 canonical 私有目录，
+不会返回或打印路径，bindings 与原始路径也不得交给评审者。所有公开图片先真解码、应用方向并统一重编码为
+无源元数据的 sRGB PNG；即使候选有多张输出，也会与锚点一样拆成单文件匿名项，避免通过组大小、扩展名或
+EXIF/XMP/Photoshop 导出信息泄漏来源。`--data-root` 与旧 tmp 中自造的 proof 只能作为诊断记录，不能进入 strict。
 
 ## 当前固定案例
 

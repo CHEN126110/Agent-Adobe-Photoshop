@@ -383,7 +383,8 @@ function validateRuntimeDeliveryVerification(
 ): void {
     const normalizedLegacy = readStrictRuntimeDeliveryVerification(value);
     if (isRecord(value)
-        && value.version === 'runtime-delivery-verification/v1'
+        && (value.version === 'runtime-delivery-verification/v1'
+            || value.version === 'runtime-delivery-verification/v2')
         && normalizedLegacy) {
         value = normalizedLegacy;
     }
@@ -392,13 +393,13 @@ function validateRuntimeDeliveryVerification(
         [
             'version', 'status', 'requiredOutputs', 'confirmedOutputs', 'missingOutputs',
             'settlementScope', 'targetBound', 'reviewedPreviewBound',
-            'sourceHistoryStateBound', 'multiDocumentTaskBound', 'boundaries'
+            'sourceHistoryStateBound', 'multiDocumentTaskBound', 'deliveryPlanBound', 'boundaries'
         ],
         [],
         'request.payload.value',
         issues
     )) return;
-    validateLiteral(value.version, 'runtime-delivery-verification/v2', 'request.payload.value.version', issues);
+    validateLiteral(value.version, 'runtime-delivery-verification/v3', 'request.payload.value.version', issues);
     validateEnum(value.status, ['passed', 'incomplete'], 'request.payload.value.status', issues);
     validateEnum(
         value.settlementScope,
@@ -413,6 +414,7 @@ function validateRuntimeDeliveryVerification(
     validateBoolean(value.reviewedPreviewBound, 'request.payload.value.reviewedPreviewBound', issues);
     validateBoolean(value.sourceHistoryStateBound, 'request.payload.value.sourceHistoryStateBound', issues);
     validateBoolean(value.multiDocumentTaskBound, 'request.payload.value.multiDocumentTaskBound', issues);
+    validateBoolean(value.deliveryPlanBound, 'request.payload.value.deliveryPlanBound', issues);
     validateLiteralBoundaries(value.boundaries, {
         manifestRequirementsOnly: true,
         explicitReceiptRequired: true,

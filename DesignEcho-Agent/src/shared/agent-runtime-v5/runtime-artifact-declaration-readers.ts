@@ -385,13 +385,36 @@ export function readStrictRuntimeDeliveryVerification(
         }
         return readStrictRuntimeDeliveryVerification({
             ...value,
-            version: 'runtime-delivery-verification/v2',
+            version: 'runtime-delivery-verification/v3',
             settlementScope: 'single_document_revision',
             multiDocumentTaskBound: false,
+            deliveryPlanBound: true,
             boundaries: {
                 ...value.boundaries,
                 multiDocumentTaskBindingRequired: true
             }
+        });
+    }
+    if (isRecord(value) && value.version === 'runtime-delivery-verification/v2') {
+        if (!hasExactKeys(value, [
+            'version', 'status', 'settlementScope',
+            'requiredOutputs', 'confirmedOutputs', 'missingOutputs',
+            'targetBound', 'reviewedPreviewBound', 'sourceHistoryStateBound',
+            'multiDocumentTaskBound', 'boundaries'
+        ]) || !isRecord(value.boundaries) || !hasExactKeys(value.boundaries, [
+            'manifestRequirementsOnly', 'explicitReceiptRequired', 'sameTargetPreviewRequired',
+            'exactSourceHistoryRequired', 'multiDocumentTaskBindingRequired',
+            'qualityVerdictAuthority', 'grantsPermission', 'executesTools'
+        ])) {
+            return undefined;
+        }
+        return readStrictRuntimeDeliveryVerification({
+            ...value,
+            version: 'runtime-delivery-verification/v3',
+            // v2 predates delivery-plan verification. For a historical declaration there
+            // was no expected plan to mismatch, so migration preserves its prior verdict
+            // while v3 requires every newly produced object to carry this explicit field.
+            deliveryPlanBound: true
         });
     }
     if (!isRecord(value)
@@ -406,9 +429,10 @@ export function readStrictRuntimeDeliveryVerification(
             'reviewedPreviewBound',
             'sourceHistoryStateBound',
             'multiDocumentTaskBound',
+            'deliveryPlanBound',
             'boundaries'
         ])
-        || value.version !== 'runtime-delivery-verification/v2'
+        || value.version !== 'runtime-delivery-verification/v3'
         || (value.status !== 'passed' && value.status !== 'incomplete')
         || (value.settlementScope !== 'single_document_revision'
             && value.settlementScope !== 'multi_document_task')
@@ -416,6 +440,7 @@ export function readStrictRuntimeDeliveryVerification(
         || typeof value.reviewedPreviewBound !== 'boolean'
         || typeof value.sourceHistoryStateBound !== 'boolean'
         || typeof value.multiDocumentTaskBound !== 'boolean'
+        || typeof value.deliveryPlanBound !== 'boolean'
         || !isRecord(value.boundaries)
         || !hasExactKeys(value.boundaries, [
             'manifestRequirementsOnly',
@@ -440,6 +465,7 @@ export function readStrictRuntimeDeliveryVerification(
         || (value.status === 'passed'
             && (requiredOutputs.length === 0
                 || missingOutputs.length > 0
+                || !value.deliveryPlanBound
                 || (value.settlementScope === 'single_document_revision'
                     && (!value.targetBound
                         || !value.reviewedPreviewBound

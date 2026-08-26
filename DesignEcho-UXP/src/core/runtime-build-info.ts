@@ -1,4 +1,24 @@
-export const PHOTOSHOP_RUNTIME_BUILD_ID = 'photoshop-tool-stability/v1';
+export interface PhotoshopRuntimeBuildInfo {
+    version: 'designecho-uxp-runtime-build/v1';
+    buildId: string;
+    builtAt: string;
+    loadedAt: string;
+    buildMode: 'development' | 'production';
+    gitCommit: string;
+    gitDirty: boolean;
+    dirtyScope: string;
+    sourceDigest: string;
+    features: string[];
+}
+
+declare const __DESIGNECHO_UXP_RUNTIME_BUILD__: Omit<
+    PhotoshopRuntimeBuildInfo,
+    'loadedAt' | 'features'
+>;
+
+const embeddedRuntimeBuild = __DESIGNECHO_UXP_RUNTIME_BUILD__;
+
+export const PHOTOSHOP_RUNTIME_BUILD_ID = embeddedRuntimeBuild.buildId;
 
 export const PHOTOSHOP_RUNTIME_FEATURES = [
     'diagnoseState.runtimeInfo',
@@ -14,13 +34,9 @@ export const PHOTOSHOP_RUNTIME_FEATURES = [
 
 const loadedAt = new Date().toISOString();
 
-export function getPhotoshopRuntimeBuildInfo(): {
-    buildId: string;
-    loadedAt: string;
-    features: string[];
-} {
+export function getPhotoshopRuntimeBuildInfo(): PhotoshopRuntimeBuildInfo {
     return {
-        buildId: PHOTOSHOP_RUNTIME_BUILD_ID,
+        ...embeddedRuntimeBuild,
         loadedAt,
         features: [...PHOTOSHOP_RUNTIME_FEATURES]
     };

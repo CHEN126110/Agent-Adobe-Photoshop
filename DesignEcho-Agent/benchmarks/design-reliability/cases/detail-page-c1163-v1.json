@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "detail-page-c1163-v1",
-  "revision": 2,
-  "caseDigest": "sha256:e64f3a4d34668cd82a7c748efd09d4aff54a00cfaaa55a64ed40812107dd9c26",
+  "revision": 3,
+  "caseDigest": "sha256:1121cf7dae337be642c7a7ce8eb2a57fc4d6242943263fefe71a661f4eff3a27",
   "status": "active",
   "taskFamily": "detail_page",
   "executionModel": "agentic",
@@ -51,18 +51,18 @@
       }
     ],
     "reviewOnlyReferences": [
-      { "kind": "user_design", "ref": "images/详情页_01.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_02.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_03.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_04.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_05.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_06.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_07.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_08.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_09.jpg" },
-      { "kind": "user_design", "ref": "images/详情页_10.jpg" },
-      { "kind": "eagle_item", "ref": "eagle:item:MR8IM75QKQ1K9" },
-      { "kind": "eagle_item", "ref": "eagle:item:MQRO3L9OZTT7A" }
+      { "kind": "user_design", "ref": "images/详情页_01.jpg", "digest": "sha256:4f9b23b70218150c5e4ce9619dcc0fd9701863f65d98ea287434c27acd1b4031" },
+      { "kind": "user_design", "ref": "images/详情页_02.jpg", "digest": "sha256:db60836e0b8ccd2b9e1d7de80a55c0c03b899a00203dfe6e4518244d78766474" },
+      { "kind": "user_design", "ref": "images/详情页_03.jpg", "digest": "sha256:b36887089d259c302098c1ce8f020c12321bcc88f0f0dd6456996bb0b16ca5d4" },
+      { "kind": "user_design", "ref": "images/详情页_04.jpg", "digest": "sha256:f7712a435ad6da652b48adff1b155a46892f48a7c8cd55f98743a2cda09b2954" },
+      { "kind": "user_design", "ref": "images/详情页_05.jpg", "digest": "sha256:e656158792330bab3adb8dec8b5b8585bf15b2ab49f9f6ea3948cfc4bab019af" },
+      { "kind": "user_design", "ref": "images/详情页_06.jpg", "digest": "sha256:4bce3fa7a1802a2b7bd84ae99f1c5c515b67c5ea2f6ac8fe5bca71dc61a44f2f" },
+      { "kind": "user_design", "ref": "images/详情页_07.jpg", "digest": "sha256:c4b358e727d25e15e5738bce7667d9799fa295d79166f22b5d6e9e6cb5ed3176" },
+      { "kind": "user_design", "ref": "images/详情页_08.jpg", "digest": "sha256:75ddff7c6c6fa42a27a8a1fd74694b86c30a4d9dabb5db51e9ec09eaa3928757" },
+      { "kind": "user_design", "ref": "images/详情页_09.jpg", "digest": "sha256:0b7b8b1a47e0d24d7ad48dac7e029f4d41c064ccb41649f984c5c4d97534b1b5" },
+      { "kind": "user_design", "ref": "images/详情页_10.jpg", "digest": "sha256:32d532dbdfaa9d1023c63e163e00f29b4579b2038ae4052ed8f786c6fc602749" },
+      { "kind": "eagle_item", "ref": "eagle:item:MR8IM75QKQ1K9", "digest": "sha256:4d52d6cdbe28c0daa5052332736a8518e035e880f2edde56f810ffea3bdf130c" },
+      { "kind": "eagle_item", "ref": "eagle:item:MQRO3L9OZTT7A", "digest": "sha256:3acd32e564ba384e9fe06f22e6c501555994425626e694c4b2e2593d5616701b" }
     ]
   },
   "source": {

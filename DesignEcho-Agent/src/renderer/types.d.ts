@@ -2,6 +2,11 @@ import type { ContextSnapshot, ProjectAssetIndex } from '../shared/project-asset
 import type { ProjectVisualInsightCacheReadResult } from '../shared/project-visual-insight-cache';
 import type { DesignAgentOsRecord } from '../shared/design-agent-os-contracts';
 import type {
+    DebugBridgeChatPreflightRequest,
+    DebugBridgeChatPreflightSnapshot,
+    DebugBridgePhotoshopRuntimeBinding
+} from '../shared/debug-bridge-chat';
+import type {
     DesignKnowledgeResult,
     DesignKnowledgeSearchResponse
 } from '../shared/design-knowledge-search';
@@ -61,6 +66,7 @@ import type {
 import type { ProjectSelectionResolution } from '../shared/project-selection-resolution';
 import type {
     CaptureSkuStagingDestinationBaselinesResult,
+    IssueSkuStagingTransactionInput,
     SkuStagingTransactionResult,
     StagedFilePromotionInput,
     StagedFilePromotionResult
@@ -485,7 +491,9 @@ export interface DesignEchoAPI {
         ext?: string;
         size?: number;
     }[] | null>;
-    issueSkuStagingTransaction: (outputDir: string) => Promise<SkuStagingTransactionResult>;
+    issueSkuStagingTransaction: (
+        input: IssueSkuStagingTransactionInput
+    ) => Promise<SkuStagingTransactionResult>;
     captureSkuStagingDestinationBaselines: (
         transactionToken: string,
         destinationPaths: string[]
@@ -902,6 +910,9 @@ export interface DesignEchoAPI {
     onProjectIndexProgress?: (callback: (data: { projectId: string; current: number; total: number; phase?: 'project' | 'file'; fileName?: string }) => void) => () => void;
 
     // ===== Debug Bridge 运行窗口调试 =====
+    onDebugBridgeChatPreflight?: (callback: (
+        request: DebugBridgeChatPreflightRequest
+    ) => Promise<DebugBridgeChatPreflightSnapshot> | DebugBridgeChatPreflightSnapshot) => () => void;
     onDebugBridgeChatSubmit?: (callback: (request: {
         requestId: string;
         text: string;
@@ -912,6 +923,7 @@ export interface DesignEchoAPI {
         expectedRuntimeGitCommit?: string;
         expectedRuntimeBuildId?: string;
         expectedPhotoshopRuntimeBuildId?: string;
+        expectedPhotoshopRuntimeBinding?: DebugBridgePhotoshopRuntimeBinding;
         expectedProvider?: string;
         expectedModelId?: string;
         requireCleanRuntimeGitState?: boolean;

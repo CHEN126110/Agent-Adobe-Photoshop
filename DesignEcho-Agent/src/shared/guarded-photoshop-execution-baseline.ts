@@ -1,3 +1,11 @@
+import {
+    debugBridgePhotoshopRuntimeLiveIdentitiesMatch,
+    readDebugBridgePhotoshopRuntimeBinding,
+    readDebugBridgePhotoshopRuntimeLiveIdentity,
+    type DebugBridgePhotoshopRuntimeBinding,
+    type DebugBridgePhotoshopRuntimeLiveIdentity
+} from './debug-bridge-chat';
+
 export const GUARDED_PHOTOSHOP_EXECUTION_BASELINE_VERSION =
     'guarded-photoshop-execution-baseline/v0' as const;
 
@@ -15,11 +23,13 @@ export interface GuardedPhotoshopExecutionBaseline {
     requestId: string;
     requireNoOpenDocuments: true;
     expectedPhotoshopRuntimeBuildId: string;
+    expectedPhotoshopRuntimeBinding: DebugBridgePhotoshopRuntimeBinding;
     state: GuardedPhotoshopExecutionBaselineState;
     firstMutationToolName?: string;
     checkedAt?: string;
     openDocumentCount?: number;
     observedPhotoshopRuntimeBuildId?: string;
+    observedPhotoshopRuntimeIdentity?: DebugBridgePhotoshopRuntimeLiveIdentity;
     error?: string;
     checkPromise?: Promise<GuardedPhotoshopExecutionBaselineDecision>;
 }
@@ -29,10 +39,12 @@ export interface GuardedPhotoshopExecutionBaselineReceipt {
     status: 'not_reached' | 'checking' | 'passed' | 'blocked';
     requestId: string;
     expectedPhotoshopRuntimeBuildId: string;
+    expectedPhotoshopRuntimeBinding: DebugBridgePhotoshopRuntimeBinding;
     firstMutationToolName?: string;
     checkedAt?: string;
     openDocumentCount?: number;
     observedPhotoshopRuntimeBuildId?: string;
+    observedPhotoshopRuntimeIdentity?: DebugBridgePhotoshopRuntimeLiveIdentity;
     error?: string;
 }
 
@@ -43,7 +55,7 @@ export interface GuardedPhotoshopExecutionBaselineDecision {
 }
 
 export interface GuardedPhotoshopExecutionBaselineObservers {
-    observePhotoshopRuntimeBuildId: () => Promise<string | undefined>;
+    observePhotoshopRuntimeIdentity: () => Promise<DebugBridgePhotoshopRuntimeLiveIdentity | undefined>;
     observeOpenDocumentCount: () => Promise<number | undefined>;
     now?: () => string;
 }
@@ -70,17 +82,25 @@ function blockBaseline(
 export function createGuardedPhotoshopExecutionBaseline(input: {
     requestId: string;
     expectedPhotoshopRuntimeBuildId: string;
+    expectedPhotoshopRuntimeBinding: DebugBridgePhotoshopRuntimeBinding;
 }): GuardedPhotoshopExecutionBaseline {
     const requestId = cleanString(input.requestId);
     const expectedPhotoshopRuntimeBuildId = cleanString(input.expectedPhotoshopRuntimeBuildId);
-    if (!requestId || !expectedPhotoshopRuntimeBuildId) {
-        throw new Error('受控 Photoshop 执行基线缺少 requestId 或 Photoshop Runtime Build 身份。');
+    const expectedPhotoshopRuntimeBinding = readDebugBridgePhotoshopRuntimeBinding(
+        input.expectedPhotoshopRuntimeBinding
+    );
+    if (!requestId
+        || !expectedPhotoshopRuntimeBuildId
+        || !expectedPhotoshopRuntimeBinding
+        || expectedPhotoshopRuntimeBinding.live.buildId !== expectedPhotoshopRuntimeBuildId) {
+        throw new Error('受控 Photoshop 执行基线缺少 requestId 或 Photoshop Runtime 完整身份。');
     }
     return {
         version: GUARDED_PHOTOSHOP_EXECUTION_BASELINE_VERSION,
         requestId,
         requireNoOpenDocuments: true,
         expectedPhotoshopRuntimeBuildId,
+        expectedPhotoshopRuntimeBinding,
         state: 'pending'
     };
 }
@@ -96,6 +116,7 @@ export function readGuardedPhotoshopExecutionBaselineReceipt(
         status,
         requestId: baseline.requestId,
         expectedPhotoshopRuntimeBuildId: baseline.expectedPhotoshopRuntimeBuildId,
+        expectedPhotoshopRuntimeBinding: baseline.expectedPhotoshopRuntimeBinding,
         ...(baseline.firstMutationToolName
             ? { firstMutationToolName: baseline.firstMutationToolName }
             : {}),
@@ -105,6 +126,9 @@ export function readGuardedPhotoshopExecutionBaselineReceipt(
             : {}),
         ...(baseline.observedPhotoshopRuntimeBuildId
             ? { observedPhotoshopRuntimeBuildId: baseline.observedPhotoshopRuntimeBuildId }
+            : {}),
+        ...(baseline.observedPhotoshopRuntimeIdentity
+            ? { observedPhotoshopRuntimeIdentity: baseline.observedPhotoshopRuntimeIdentity }
             : {}),
         ...(baseline.error ? { error: baseline.error } : {})
     });
@@ -135,19 +159,26 @@ export async function enforceGuardedPhotoshopExecutionBaseline(
     baseline.firstMutationToolName = cleanString(firstMutationToolName) || 'unknown';
     baseline.checkPromise = (async (): Promise<GuardedPhotoshopExecutionBaselineDecision> => {
         try {
-            const observedBuildId = cleanString(await observers.observePhotoshopRuntimeBuildId());
+            const observedRuntimeIdentity = readDebugBridgePhotoshopRuntimeLiveIdentity(
+                await observers.observePhotoshopRuntimeIdentity()
+            );
+            const observedBuildId = cleanString(observedRuntimeIdentity?.buildId);
             baseline.observedPhotoshopRuntimeBuildId = observedBuildId || undefined;
-            if (!observedBuildId) {
+            baseline.observedPhotoshopRuntimeIdentity = observedRuntimeIdentity;
+            if (!observedRuntimeIdentity) {
                 return blockBaseline(
                     baseline,
                     '首次 Photoshop 写入前无法读取 Photoshop Runtime Build 身份。',
                     now
                 );
             }
-            if (observedBuildId !== baseline.expectedPhotoshopRuntimeBuildId) {
+            if (!debugBridgePhotoshopRuntimeLiveIdentitiesMatch(
+                observedRuntimeIdentity,
+                baseline.expectedPhotoshopRuntimeBinding.live
+            )) {
                 return blockBaseline(
                     baseline,
-                    `首次 Photoshop 写入前 Runtime Build 已变化（期望 ${baseline.expectedPhotoshopRuntimeBuildId}，实际 ${observedBuildId}）。`,
+                    `首次 Photoshop 写入前 Runtime 完整身份已变化（期望 ${baseline.expectedPhotoshopRuntimeBuildId}，实际 ${observedBuildId}）。`,
                     now
                 );
             }

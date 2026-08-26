@@ -1,4 +1,15 @@
 import { MAX_RUNTIME_DELIVERY_RESULT_REFS } from './agent-runtime-v5/runtime-delivery-receipt';
+import {
+    buildSkillDeliveryPlanDigest,
+    normalizeSkillDeliveryArtifactPath,
+    renderSkillDeliveryPattern,
+    resolveSkillDeliveryConvention,
+    resolveSkillDeliveryProjectPath,
+    SKILL_DELIVERY_CONVENTION_VERSION,
+    type SkillDeliveryConvention,
+    type SkillDeliveryConventionResolution,
+    type SkillDeliveryPatternValues
+} from './skills/skill-delivery-convention';
 
 export type SkuExportReadbackStatus = 'no_exports' | 'needs_file_probe' | 'ready_for_review' | 'blocked';
 
@@ -169,18 +180,26 @@ export type SkuExpectedExportInventoryItem = {
     path: string;
     editableFileName: string;
     editablePath: string;
+    /** UXP 写入事务暂存区时沿用其稳定名称；正式晋升可按 convention 改名。 */
+    stagedRasterRelativePath: string;
+    stagedEditableRelativePath: string;
     expectedDimensions?: { width: number; height: number };
 };
 
 export type SkuExpectedExportInventory = {
     version: 'sku-expected-export-inventory/v1';
     status: 'ready' | 'blocked';
+    outputDir: string;
+    editableOutputDir: string;
+    deliveryConvention: SkillDeliveryConvention;
+    deliveryPlanDigest?: string;
     items: SkuExpectedExportInventoryItem[];
     blockers: string[];
     boundaries: {
-        frozenBeforeExecution: true;
+        frozenBeforeBatchExecution: true;
         doesNotScanSourceDirectory: true;
         doesNotAcceptObservedFilesAsExpectation: true;
+        conventionContainsNoVisualDecisions: true;
     };
 };
 
@@ -236,10 +255,14 @@ function normalizeSkuSize(value: unknown): number | undefined {
 }
 
 function normalizeInventoryPath(value: unknown): string {
-    return String(value || '')
-        .trim()
-        .replace(/\//g, '\\')
-        .replace(/\\+$/g, '');
+    const rawPath = String(value || '').trim();
+    const windowsStyle = /^[a-z]:[\\/]/i.test(rawPath)
+        || rawPath.startsWith('\\\\')
+        || rawPath.includes('\\');
+    if (windowsStyle) {
+        return rawPath.replace(/\//g, '\\').replace(/\\+$/g, '');
+    }
+    return rawPath === '/' ? rawPath : rawPath.replace(/\/+$/g, '');
 }
 
 function normalizeInventoryTemplateName(value: unknown): string {
@@ -267,21 +290,164 @@ function normalizeInventoryCombination(value: unknown): string[] {
     return value.map((entry) => String(entry || '').trim()).filter(Boolean);
 }
 
+function normalizePathForContainment(value: unknown): string {
+    return normalizeSkillDeliveryArtifactPath(normalizeInventoryPath(value));
+}
+
+function isPathInsideDirectory(candidatePath: string, directoryPath: string): boolean {
+    const candidate = normalizePathForContainment(candidatePath);
+    const directory = normalizePathForContainment(directoryPath);
+    const directoryPrefix = directory.endsWith('/') ? directory : `${directory}/`;
+    return Boolean(candidate) && Boolean(directory)
+        && (candidate === directory || candidate.startsWith(directoryPrefix));
+}
+
+function joinInventoryPath(root: string, ...segments: string[]): string {
+    const normalizedRoot = normalizeInventoryPath(root);
+    const separator = /^[a-z]:[\\/]/i.test(normalizedRoot)
+        || normalizedRoot.startsWith('\\\\')
+        || normalizedRoot.includes('\\')
+        ? '\\'
+        : '/';
+    const cleanSegments = segments
+        .map((segment) => String(segment || '').replace(/^[\\/]+|[\\/]+$/g, ''))
+        .map((segment) => segment.replace(/[\\/]+/g, separator))
+        .filter(Boolean);
+    const base = normalizedRoot === separator ? '' : normalizedRoot;
+    return `${base}${separator}${cleanSegments.join(separator)}`;
+}
+
+export function resolveSkuFullDeliveryConvention(
+    value: unknown
+): SkillDeliveryConventionResolution {
+    const resolution = resolveSkillDeliveryConvention(value);
+    if (resolution.status !== 'ready' || !resolution.convention) return resolution;
+    const blockers: string[] = [];
+    if (!resolution.convention.raster || !resolution.convention.editable) {
+        blockers.push('SKU full 交付约定必须同时声明 raster 与 editable。');
+    }
+    if (resolution.convention.pairing !== 'one_editable_per_raster') {
+        blockers.push('SKU full 交付必须使用 one_editable_per_raster，保证每张 JPG 有同画面 PSB。');
+    }
+    if (resolution.convention.raster?.format !== 'jpg') {
+        blockers.push('当前 SKU full 事务只接受 .jpg raster 交付。');
+    }
+    if (resolution.convention.editable?.format !== 'psb') {
+        blockers.push('当前 SKU full 事务只支持逐行 PSB 可编辑交付。');
+    }
+    return blockers.length > 0
+        ? { status: 'blocked', blockers }
+        : resolution;
+}
+
+function fallbackSkuDeliveryConvention(): SkillDeliveryConvention {
+    return {
+        version: SKILL_DELIVERY_CONVENTION_VERSION,
+        provenance: 'skill_fallback',
+        supportRefs: [],
+        editable: {
+            projectRelativeRoot: 'SKU/可编辑',
+            folderPattern: '{template}',
+            fileNamePattern: '{defaultName}',
+            format: 'psb'
+        },
+        raster: {
+            projectRelativeRoot: 'SKU',
+            folderPattern: '{template}',
+            fileNamePattern: '{defaultName}',
+            format: 'jpg'
+        },
+        pairing: 'one_editable_per_raster',
+        versionPolicy: 'replace_exact_set'
+    };
+}
+
+function renderInventoryName(
+    pattern: string,
+    values: SkillDeliveryPatternValues,
+    label: string,
+    blockers: string[]
+): string {
+    const rendered = renderSkillDeliveryPattern(pattern, values);
+    if (rendered.status !== 'ready' || !rendered.value) {
+        blockers.push(`${label} 无法按交付约定生成安全名称：${rendered.blockers.join('；')}`);
+        return '';
+    }
+    return rendered.value;
+}
+
+function buildInventoryArtifactPath(input: {
+    root: string;
+    folderPattern?: string;
+    fileNamePattern: string;
+    extension: string;
+    values: SkillDeliveryPatternValues;
+    label: string;
+    blockers: string[];
+}): { fileName: string; path: string } {
+    const stem = renderInventoryName(
+        input.fileNamePattern,
+        input.values,
+        `${input.label}文件名`,
+        input.blockers
+    );
+    const folder = input.folderPattern
+        ? renderInventoryName(
+            input.folderPattern,
+            { ...input.values, defaultName: input.values.template || input.values.defaultName },
+            `${input.label}文件夹`,
+            input.blockers
+        )
+        : '';
+    if (!stem) return { fileName: '', path: '' };
+    const fileName = `${stem}.${input.extension}`;
+    return {
+        fileName,
+        path: folder
+            ? joinInventoryPath(input.root, folder, fileName)
+            : joinInventoryPath(input.root, fileName)
+    };
+}
+
 /**
  * 从已经冻结的规格、组合、模板身份、输出目录与命名规则建立精确交付清单。
  * 该函数不读取目录，也不接收执行结果，因此旧文件和实际结果不能反向成为期望。
  */
 export function buildSkuExpectedExportInventory(input: {
     outputDir?: string | null;
+    projectPath?: string | null;
+    deliveryConvention?: unknown;
     specs: SkuExpectedExportInventorySpec[];
 }): SkuExpectedExportInventory {
-    const outputDir = normalizeInventoryPath(input.outputDir);
     const blockers: string[] = [];
     const items: SkuExpectedExportInventoryItem[] = [];
     const pathKeys = new Set<string>();
 
+    const conventionResolution = resolveSkuFullDeliveryConvention(input.deliveryConvention);
+    blockers.push(...conventionResolution.blockers);
+    const deliveryConvention = conventionResolution.status === 'ready' && conventionResolution.convention
+        ? conventionResolution.convention
+        : fallbackSkuDeliveryConvention();
+    const projectPath = normalizeInventoryPath(input.projectPath);
+    const hasExplicitConvention = conventionResolution.status === 'ready';
+    const rasterConvention = deliveryConvention.raster;
+    const editableConvention = deliveryConvention.editable;
+    const outputDir = hasExplicitConvention && rasterConvention && projectPath
+        ? normalizeInventoryPath(resolveSkillDeliveryProjectPath(projectPath, rasterConvention.projectRelativeRoot))
+        : normalizeInventoryPath(input.outputDir);
+    const editableOutputDir = hasExplicitConvention && editableConvention && projectPath
+        ? normalizeInventoryPath(resolveSkillDeliveryProjectPath(projectPath, editableConvention.projectRelativeRoot))
+        : joinInventoryPath(outputDir, '可编辑');
+
+    if (hasExplicitConvention && !projectPath) {
+        blockers.push('SKU 交付约定需要当前项目路径才能解析安全项目相对目录。');
+    }
+
     if (!outputDir || !looksLikeAbsoluteLocalPath(outputDir)) {
         blockers.push('SKU 精确交付清单缺少绝对输出目录。');
+    }
+    if (!editableOutputDir || !isPathInsideDirectory(editableOutputDir, outputDir)) {
+        blockers.push('SKU editable 项目相对根目录必须位于 raster 事务目录内。');
     }
 
     for (const rawSpec of input.specs || []) {
@@ -305,10 +471,38 @@ export function buildSkuExpectedExportInventory(input: {
                     }
                     const colorPart = normalizeInventoryFileNamePart(combination.join('+'), '');
                     const baseName = colorPart ? `${index + 1}${colorPart}` : `组合${index + 1}`;
-                    const fileName = `${baseName}.jpg`;
-                    const itemPath = `${outputDir}\\${templateName}\\${fileName}`;
-                    const editableFileName = `${baseName}.psb`;
-                    const editablePath = `${outputDir}\\可编辑\\${templateName}\\${editableFileName}`;
+                    const patternValues: SkillDeliveryPatternValues = {
+                        defaultName: baseName,
+                        index: index + 1,
+                        row: index + 1,
+                        size,
+                        colors: combination.join('+'),
+                        template: templateName,
+                        kind: 'combo',
+                        name: baseName
+                    };
+                    const rasterArtifact = buildInventoryArtifactPath({
+                        root: outputDir,
+                        folderPattern: rasterConvention?.folderPattern,
+                        fileNamePattern: rasterConvention?.fileNamePattern || '{defaultName}',
+                        extension: 'jpg',
+                        values: patternValues,
+                        label: `${size}双第${index + 1}组 raster`,
+                        blockers
+                    });
+                    const editableArtifact = buildInventoryArtifactPath({
+                        root: editableOutputDir,
+                        folderPattern: editableConvention?.folderPattern,
+                        fileNamePattern: editableConvention?.fileNamePattern || '{defaultName}',
+                        extension: 'psb',
+                        values: patternValues,
+                        label: `${size}双第${index + 1}组 editable`,
+                        blockers
+                    });
+                    const fileName = rasterArtifact.fileName;
+                    const itemPath = rasterArtifact.path;
+                    const editableFileName = editableArtifact.fileName;
+                    const editablePath = editableArtifact.path;
                     const pathKey = normalizePathKey(itemPath);
                     const editablePathKey = normalizePathKey(editablePath);
                     if (pathKeys.has(pathKey) || pathKeys.has(editablePathKey)) {
@@ -328,6 +522,8 @@ export function buildSkuExpectedExportInventory(input: {
                         path: itemPath,
                         editableFileName,
                         editablePath,
+                        stagedRasterRelativePath: `${templateName}\\${baseName}.jpg`,
+                        stagedEditableRelativePath: `可编辑\\${templateName}\\${baseName}.psb`,
                         expectedDimensions: normalizeExpectedDimensions(rawSpec?.comboExpectedDimensions)
                     });
                 });
@@ -349,10 +545,38 @@ export function buildSkuExpectedExportInventory(input: {
                     const baseName = noteRows.length > 1
                         ? `${size}双自选备注-${index + 1}`
                         : `${size}双自选备注`;
-                    const fileName = `${baseName}.jpg`;
-                    const itemPath = `${outputDir}\\${templateName}\\${fileName}`;
-                    const editableFileName = `${baseName}.psb`;
-                    const editablePath = `${outputDir}\\可编辑\\${templateName}\\${editableFileName}`;
+                    const patternValues: SkillDeliveryPatternValues = {
+                        defaultName: baseName,
+                        index: index + 1,
+                        row: index + 1,
+                        size,
+                        colors: combination.join('+'),
+                        template: templateName,
+                        kind: 'note',
+                        name: baseName
+                    };
+                    const rasterArtifact = buildInventoryArtifactPath({
+                        root: outputDir,
+                        folderPattern: rasterConvention?.folderPattern,
+                        fileNamePattern: rasterConvention?.fileNamePattern || '{defaultName}',
+                        extension: 'jpg',
+                        values: patternValues,
+                        label: `${size}双自选备注第${index + 1}行 raster`,
+                        blockers
+                    });
+                    const editableArtifact = buildInventoryArtifactPath({
+                        root: editableOutputDir,
+                        folderPattern: editableConvention?.folderPattern,
+                        fileNamePattern: editableConvention?.fileNamePattern || '{defaultName}',
+                        extension: 'psb',
+                        values: patternValues,
+                        label: `${size}双自选备注第${index + 1}行 editable`,
+                        blockers
+                    });
+                    const fileName = rasterArtifact.fileName;
+                    const itemPath = rasterArtifact.path;
+                    const editableFileName = editableArtifact.fileName;
+                    const editablePath = editableArtifact.path;
                     const pathKey = normalizePathKey(itemPath);
                     const editablePathKey = normalizePathKey(editablePath);
                     if (pathKeys.has(pathKey) || pathKeys.has(editablePathKey)) {
@@ -372,6 +596,8 @@ export function buildSkuExpectedExportInventory(input: {
                         path: itemPath,
                         editableFileName,
                         editablePath,
+                        stagedRasterRelativePath: `${templateName}\\${baseName}.jpg`,
+                        stagedEditableRelativePath: `可编辑\\${templateName}\\${baseName}.psb`,
                         expectedDimensions: normalizeExpectedDimensions(rawSpec?.noteExpectedDimensions)
                     });
                 });
@@ -385,15 +611,27 @@ export function buildSkuExpectedExportInventory(input: {
             `SKU 精确交付清单最多支持 ${MAX_RUNTIME_DELIVERY_RESULT_REFS} 行，本次为 ${items.length} 行。`
         );
     }
+    const uniqueBlockers = uniqueStrings(blockers);
+    const deliveryPlanDigest = uniqueBlockers.length === 0 && items.length > 0
+        ? buildSkillDeliveryPlanDigest({
+            convention: deliveryConvention,
+            artifactPaths: items.flatMap((item) => [item.path, item.editablePath])
+        })
+        : undefined;
     return {
         version: 'sku-expected-export-inventory/v1',
-        status: blockers.length > 0 ? 'blocked' : 'ready',
+        status: uniqueBlockers.length > 0 || !deliveryPlanDigest ? 'blocked' : 'ready',
+        outputDir,
+        editableOutputDir,
+        deliveryConvention,
+        ...(deliveryPlanDigest ? { deliveryPlanDigest } : {}),
         items,
-        blockers: uniqueStrings(blockers),
+        blockers: uniqueBlockers,
         boundaries: {
-            frozenBeforeExecution: true,
+            frozenBeforeBatchExecution: true,
             doesNotScanSourceDirectory: true,
-            doesNotAcceptObservedFilesAsExpectation: true
+            doesNotAcceptObservedFilesAsExpectation: true,
+            conventionContainsNoVisualDecisions: true
         }
     };
 }
@@ -668,14 +906,20 @@ function getFinalImageMetricBlocker(probe: SkuExportReadbackProbe): string | und
 }
 
 function normalizePathKey(value: unknown): string {
-    return String(value || '').trim().replace(/\//g, '\\').toLowerCase();
+    return normalizeSkillDeliveryArtifactPath(value);
 }
 
 function looksLikeAbsoluteLocalPath(value: string): boolean {
     const text = String(value || '').trim();
-    return /^[a-zA-Z]:[\\/]/.test(text)
-        || text.startsWith('\\\\')
-        || /^\/(users|home|var|tmp|mnt)\//i.test(text);
+    if (/^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')) return true;
+    if (!text.startsWith('/') || text.startsWith('//')) return false;
+    const segments = text.split('/').slice(1);
+    return segments.length > 0 && segments.every((segment) => (
+        Boolean(segment)
+        && segment !== '.'
+        && segment !== '..'
+        && !segment.includes('\0')
+    ));
 }
 
 function isSensitivePathKey(key?: string): boolean {

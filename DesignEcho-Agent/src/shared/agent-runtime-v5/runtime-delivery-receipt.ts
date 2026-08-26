@@ -16,6 +16,12 @@ import {
     sameRuntimeExecutionDocument,
     type RuntimeExecutionTargetAnchor
 } from './runtime-execution-target';
+import {
+    buildSkillDeliveryPlanDigest,
+    isSkillDeliveryPlanDigest,
+    resolveRuntimeSkillDeliveryConvention,
+    type SkillDeliveryConvention
+} from '../skills/skill-delivery-convention';
 import type {
     RuntimeDeliveryProofKind,
     SkillRuntimeDeliveryOutputBinding
@@ -69,10 +75,19 @@ export type RuntimeDeliveryArtifactProof =
     | 'staged_editable_document_promotion'
     | 'uxp_export_readback';
 
+export interface RuntimeDeliveryArtifactFileIdentity {
+    /** Main 或受信文件探针对正式目标重新读取的完整 SHA-256（64 位小写 hex）。 */
+    sha256: string;
+    byteLength: number;
+}
+
 export interface RuntimeDeliveryArtifactEntry {
     path: string;
     kind: RuntimeDeliveryArtifactKind;
     proof: RuntimeDeliveryArtifactProof;
+    fileIdentity?: RuntimeDeliveryArtifactFileIdentity;
+    /** 生成该文件内容的 Photoshop document/history；批次内逐文件保存，不伪造单一 revision。 */
+    sourceHistoryStateRef?: PhotoshopHistoryStateRef;
 }
 
 export interface RuntimeDeliveryReceipt {
@@ -84,6 +99,10 @@ export interface RuntimeDeliveryReceipt {
     resultRefProofs: RuntimeDeliveryResultRefProof[];
     /** 生产者已逐文件读回的精确交付集合；不扫描目录，也不单独推进 E2。 */
     artifacts: RuntimeDeliveryArtifactEntry[];
+    /** 可选的执行前 Skill exact artifact plan 摘要；只绑定组织计划，不包含视觉决定。 */
+    deliveryPlanDigest?: string;
+    /** 仅用于重算 plan digest 的严格交付组织契约；不得包含视觉决定。 */
+    deliveryPlanConvention?: SkillDeliveryConvention;
     issues: string[];
     /** 实际保存/导出边界所读取的源 Photoshop 文档版本；不是普通观察信用。 */
     sourceHistoryStateRef?: PhotoshopHistoryStateRef;
@@ -128,7 +147,7 @@ export interface RuntimeManifestDeliveryReceiptProjection {
 }
 
 export interface RuntimeDeliveryVerification {
-    version: 'runtime-delivery-verification/v2';
+    version: 'runtime-delivery-verification/v3';
     status: 'passed' | 'incomplete';
     settlementScope: RuntimeDeliverySettlementScope;
     requiredOutputs: string[];
@@ -138,6 +157,7 @@ export interface RuntimeDeliveryVerification {
     reviewedPreviewBound: boolean;
     sourceHistoryStateBound: boolean;
     multiDocumentTaskBound: boolean;
+    deliveryPlanBound: boolean;
     boundaries: {
         manifestRequirementsOnly: true;
         explicitReceiptRequired: true;
@@ -224,17 +244,40 @@ function normalizeDeliveryArtifacts(value: unknown): {
         const path = cleanArtifactPath(candidate.path);
         const kind = candidate.kind;
         const proof = candidate.proof;
+        const fileIdentity = isRecord(candidate.fileIdentity)
+            && /^[a-f0-9]{64}$/i.test(String(candidate.fileIdentity.sha256 || '').trim())
+            && Number.isSafeInteger(Number(candidate.fileIdentity.byteLength))
+            && Number(candidate.fileIdentity.byteLength) > 0
+            ? {
+                sha256: String(candidate.fileIdentity.sha256).trim().toLowerCase(),
+                byteLength: Number(candidate.fileIdentity.byteLength)
+            }
+            : undefined;
+        const sourceHistoryStateRef = readPhotoshopSourceHistoryStateRef({
+            sourceHistoryStateRef: candidate.sourceHistoryStateRef
+        });
+        const malformedIdentity = candidate.fileIdentity !== undefined && !fileIdentity;
+        const malformedSourceHistory = candidate.sourceHistoryStateRef !== undefined
+            && !sourceHistoryStateRef;
         if ((kind !== 'editable_document' && kind !== 'raster_export')
             || (proof !== 'editable_document_artifact'
                 && proof !== 'file_probe'
                 && proof !== 'staged_editable_document_promotion'
                 && proof !== 'uxp_export_readback')
+            || malformedIdentity
+            || malformedSourceHistory
             || !isDeliveryArtifactPathCompatible(path, kind)) {
             invalidCount += 1;
             continue;
         }
         if (!artifacts.some((artifact) => artifact.kind === kind && artifact.path === path)) {
-            artifacts.push({ path, kind, proof });
+            artifacts.push({
+                path,
+                kind,
+                proof,
+                ...(fileIdentity ? { fileIdentity } : {}),
+                ...(sourceHistoryStateRef ? { sourceHistoryStateRef } : {})
+            });
         }
     }
     return {
@@ -413,6 +456,10 @@ export function buildRuntimeDeliveryReceipt(input: {
     resultRefs: readonly string[];
     resultRefProofs?: readonly RuntimeDeliveryResultRefProof[];
     artifacts?: readonly RuntimeDeliveryArtifactEntry[];
+    expectedDeliveryPlan?: {
+        digest: string;
+        convention: SkillDeliveryConvention;
+    };
     issues?: readonly string[];
     sourceHistoryStateRef?: PhotoshopHistoryStateRef;
 }): RuntimeDeliveryReceipt {
@@ -421,6 +468,29 @@ export function buildRuntimeDeliveryReceipt(input: {
     const resultRefProofs = normalizeResultRefProofs(input.resultRefProofs || []);
     const issues = uniqueText(input.issues || []);
     const artifactSet = normalizeDeliveryArtifacts(input.artifacts || []);
+    const expectedPlanDigest = input.expectedDeliveryPlan?.digest;
+    const conventionResolution = input.expectedDeliveryPlan
+        ? resolveRuntimeSkillDeliveryConvention(input.expectedDeliveryPlan.convention)
+        : { status: 'not_provided' as const, blockers: [] as string[] };
+    const deliveryPlanConvention = conventionResolution.status === 'ready'
+        ? conventionResolution.convention
+        : undefined;
+    const recomputedDeliveryPlanDigest = deliveryPlanConvention
+        ? buildSkillDeliveryPlanDigest({
+            convention: deliveryPlanConvention,
+            artifactPaths: artifactSet.artifacts.map((artifact) => artifact.path)
+        })
+        : undefined;
+    const deliveryPlanDigest = isSkillDeliveryPlanDigest(expectedPlanDigest)
+        && expectedPlanDigest === recomputedDeliveryPlanDigest
+        ? expectedPlanDigest
+        : undefined;
+    if (input.expectedDeliveryPlan && !deliveryPlanDigest) {
+        issues.push(
+            conventionResolution.blockers[0]
+            || 'Skill 交付计划摘要与规范化最终 artifact 集合不一致。'
+        );
+    }
     if (artifactSet.invalidCount > 0 || artifactSet.inputCount > MAX_RUNTIME_DELIVERY_ARTIFACTS) {
         issues.push(`存在 ${artifactSet.invalidCount + Math.max(0, artifactSet.inputCount - MAX_RUNTIME_DELIVERY_ARTIFACTS)} 个无效最终文件声明。`);
     }
@@ -438,6 +508,12 @@ export function buildRuntimeDeliveryReceipt(input: {
         && resultRefs.every((resultRef) => (
             resultRefProofs.some((proof) => proof.resultRef === resultRef)
         ));
+    const multiDocumentArtifactIdentitiesComplete = settlementScope === 'multi_document_task'
+        && artifactSet.artifacts.length > 0
+        && artifactSet.artifacts.every((artifact) => (
+            Boolean(artifact.fileIdentity)
+            && Boolean(artifact.sourceHistoryStateRef)
+        ));
     if (settlementScope === 'single_document_revision' && !sourceHistoryStateRef) {
         issues.push('单文档交付收据缺少源 Photoshop revision。');
     }
@@ -447,13 +523,16 @@ export function buildRuntimeDeliveryReceipt(input: {
     if (settlementScope === 'multi_document_task' && !multiDocumentProofsComplete) {
         issues.push('多文档交付收据的 save/export resultRef 证明不完整。');
     }
+    if (settlementScope === 'multi_document_task' && !multiDocumentArtifactIdentitiesComplete) {
+        issues.push('多文档交付收据缺少逐文件 SHA-256、字节数或 Photoshop document/history 身份。');
+    }
     const ready = input.status === 'ready'
         && outputs.length > 0
         && resultRefs.length > 0
         && (settlementScope !== 'multi_document_task' || artifactSet.artifacts.length > 0)
         && (settlementScope === 'single_document_revision'
             ? Boolean(sourceHistoryStateRef)
-            : multiDocumentProofsComplete)
+            : multiDocumentProofsComplete && multiDocumentArtifactIdentitiesComplete)
         && issues.length === 0;
     return {
         version: RUNTIME_DELIVERY_RECEIPT_VERSION,
@@ -463,6 +542,8 @@ export function buildRuntimeDeliveryReceipt(input: {
         resultRefs,
         resultRefProofs,
         artifacts: artifactSet.artifacts,
+        ...(deliveryPlanDigest ? { deliveryPlanDigest } : {}),
+        ...(deliveryPlanConvention && deliveryPlanDigest ? { deliveryPlanConvention } : {}),
         issues,
         ...(sourceHistoryStateRef ? { sourceHistoryStateRef } : {}),
         boundaries: {
@@ -663,6 +744,12 @@ export function readRuntimeDeliveryReceipt(toolResult: unknown): RuntimeDelivery
         && !readPhotoshopSourceHistoryStateRef(candidate)) {
         return undefined;
     }
+    const hasDeliveryPlanDigest = candidate.deliveryPlanDigest !== undefined;
+    const hasDeliveryPlanConvention = candidate.deliveryPlanConvention !== undefined;
+    if (hasDeliveryPlanDigest !== hasDeliveryPlanConvention
+        || (hasDeliveryPlanDigest && !isSkillDeliveryPlanDigest(candidate.deliveryPlanDigest))) {
+        return undefined;
+    }
     return buildRuntimeDeliveryReceipt({
         // v0 没有源 Host 版本，只能作为 legacy/incomplete 读取，绝不能推进 E2；
         // v1 是旧单文档协议，继续按严格 source revision 读取。
@@ -680,6 +767,14 @@ export function readRuntimeDeliveryReceipt(toolResult: unknown): RuntimeDelivery
         artifacts: isCurrent
             ? candidate.artifacts as RuntimeDeliveryArtifactEntry[]
             : [],
+        expectedDeliveryPlan: isCurrent
+            && typeof candidate.deliveryPlanDigest === 'string'
+            && candidate.deliveryPlanConvention !== undefined
+            ? {
+                digest: candidate.deliveryPlanDigest,
+                convention: candidate.deliveryPlanConvention as SkillDeliveryConvention
+            }
+            : undefined,
         issues: candidate.issues,
         sourceHistoryStateRef: readPhotoshopSourceHistoryStateRef(candidate)
     });
@@ -692,6 +787,7 @@ export function verifyRuntimeDelivery(input: {
     reviewedPreviewTarget?: RuntimeExecutionTargetAnchor;
     reviewedPreviewHistoryStateRef?: PhotoshopHistoryStateRef;
     multiDocumentTaskBound?: boolean;
+    expectedDeliveryPlanDigest?: string;
 }): RuntimeDeliveryVerification {
     const requiredOutputs = uniqueIdentifiers(input.requiredOutputs);
     const settlementScope = input.receipt?.settlementScope || 'single_document_revision';
@@ -710,8 +806,15 @@ export function verifyRuntimeDelivery(input: {
     const settlementBound = settlementScope === 'multi_document_task'
         ? multiDocumentTaskBound
         : targetBound && sourceHistoryStateBound;
+    const receiptDeliveryPlanDigest = input.receipt?.deliveryPlanDigest;
+    const deliveryPlanBindingRequired = receiptDeliveryPlanDigest !== undefined
+        || input.expectedDeliveryPlanDigest !== undefined;
+    const deliveryPlanBound = !deliveryPlanBindingRequired
+        || (isSkillDeliveryPlanDigest(input.expectedDeliveryPlanDigest)
+            && receiptDeliveryPlanDigest === input.expectedDeliveryPlanDigest);
     const confirmedOutputs = input.receipt?.status === 'ready'
         && settlementBound
+        && deliveryPlanBound
         ? uniqueIdentifiers([
             ...input.receipt.outputs,
             'delivery_record',
@@ -720,9 +823,10 @@ export function verifyRuntimeDelivery(input: {
         : [];
     const missingOutputs = requiredOutputs.filter((output) => !confirmedOutputs.includes(output));
     return {
-        version: 'runtime-delivery-verification/v2',
+        version: 'runtime-delivery-verification/v3',
         status: input.receipt?.status === 'ready'
             && settlementBound
+            && deliveryPlanBound
             && requiredOutputs.length > 0
             && missingOutputs.length === 0
             ? 'passed'
@@ -735,6 +839,7 @@ export function verifyRuntimeDelivery(input: {
         reviewedPreviewBound,
         sourceHistoryStateBound,
         multiDocumentTaskBound,
+        deliveryPlanBound,
         boundaries: {
             manifestRequirementsOnly: true,
             explicitReceiptRequired: true,

@@ -2,8 +2,11 @@ import {
     buildSkuExportReadback,
     type SkuExpectedExportInventoryItem
 } from '../../../shared/sku-export-readback';
+import { normalizeSkillDeliveryArtifactPath } from '../../../shared/skills/skill-delivery-convention';
 import type {
     CaptureSkuStagingDestinationBaselinesResult,
+    IssueSkuStagingTransactionInput,
+    StagedCommittedFileIdentity,
     SkuStagingDestinationBaseline,
     SkuStagingTransactionResult,
     StagedFilePromotionInput,
@@ -13,7 +16,9 @@ import type {
 export interface SkuExportTransactionHost {
     invoke?: (channel: string, ...args: unknown[]) => Promise<any>;
     probeImageFile?: (filePath: string) => Promise<any>;
-    issueSkuStagingTransaction?: (outputDir: string) => Promise<SkuStagingTransactionResult>;
+    issueSkuStagingTransaction?: (
+        input: IssueSkuStagingTransactionInput
+    ) => Promise<SkuStagingTransactionResult>;
     captureSkuStagingDestinationBaselines?: (
         transactionToken: string,
         destinationPaths: string[]
@@ -50,6 +55,7 @@ export interface SkuStagedDeliveryResult {
     /** 为 true 时上层不得清理 staging root 或其父目录。 */
     preserveStagingRoot?: boolean;
     committedPaths?: string[];
+    committedFiles?: StagedCommittedFileIdentity[];
 }
 
 export type SkuExportFileBaseline = SkuStagingDestinationBaseline;
@@ -74,18 +80,29 @@ function isProbeableExportPath(filePath: string): boolean {
 }
 
 export function normalizeSkuExportPathForCompare(input: string): string {
-    return String(input || '')
-        .trim()
-        .replace(/\//g, '\\')
-        .replace(/\\+$/, '')
-        .toLowerCase();
+    return normalizeSkillDeliveryArtifactPath(input).replace(/\/+$/g, '');
+}
+
+export function joinSkuExportPath(root: string, ...segments: string[]): string {
+    const rawRoot = String(root || '').trim();
+    const windowsStyle = /^[a-z]:[\\/]/i.test(rawRoot)
+        || rawRoot.startsWith('\\\\')
+        || rawRoot.includes('\\');
+    const separator = windowsStyle ? '\\' : '/';
+    const base = rawRoot === separator ? '' : rawRoot.replace(/[\\/]+$/g, '');
+    const relative = segments
+        .flatMap((segment) => String(segment || '').split(/[\\/]+/))
+        .map((segment) => segment.trim())
+        .filter(Boolean)
+        .join(separator);
+    return `${base}${separator}${relative}`;
 }
 
 export function isSkuPathInsideDirectory(filePath?: string, directory?: string): boolean {
     const normalizedFile = normalizeSkuExportPathForCompare(filePath || '');
     const normalizedDir = normalizeSkuExportPathForCompare(directory || '');
     if (!normalizedFile || !normalizedDir) return false;
-    return normalizedFile === normalizedDir || normalizedFile.startsWith(`${normalizedDir}\\`);
+    return normalizedFile === normalizedDir || normalizedFile.startsWith(`${normalizedDir}/`);
 }
 
 function parseFileModifiedTimeMs(value: unknown): number | undefined {
@@ -210,15 +227,23 @@ export async function verifySkuExportFreshness(input: {
 
 export async function issueSkuStagingTransaction(
     outputDir: string,
+    projectRoot: string,
     host: SkuExportTransactionHost = currentHost()
 ): Promise<SkuIssuedStagingTransaction> {
     if (typeof host.issueSkuStagingTransaction !== 'function') {
         throw new Error('SKU 主进程事务签发能力不可用。');
     }
     const requestedOutputDir = String(outputDir || '').trim();
+    const requestedProjectRoot = String(projectRoot || '').trim();
+    if (!requestedOutputDir || !requestedProjectRoot) {
+        throw new Error('SKU 暂存事务缺少项目根或交付目录。');
+    }
     let result: SkuStagingTransactionResult;
     try {
-        result = await host.issueSkuStagingTransaction(requestedOutputDir);
+        result = await host.issueSkuStagingTransaction({
+            outputDir: requestedOutputDir,
+            projectRoot: requestedProjectRoot
+        });
     } catch (error) {
         throw new Error(`SKU 暂存事务签发响应中断：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -241,10 +266,12 @@ export async function issueSkuStagingTransaction(
         || normalizeSkuExportPathForCompare(settledOutputDir)
             !== normalizeSkuExportPathForCompare(requestedOutputDir)
         || normalizeSkuExportPathForCompare(stagingRoot).startsWith(
-            `${normalizeSkuExportPathForCompare(stagingParent)}\\`
+            `${normalizeSkuExportPathForCompare(stagingParent)}/`
         ) !== true
         || normalizeSkuExportPathForCompare(stagingParent)
-            !== `${normalizeSkuExportPathForCompare(settledOutputDir)}\\.designecho-staging`) {
+            !== normalizeSkuExportPathForCompare(
+                joinSkuExportPath(settledOutputDir, '.designecho-staging')
+            )) {
         throw new Error('SKU 主进程事务签发回执与请求目录不一致。');
     }
     return {
@@ -261,6 +288,7 @@ export function parseSkuStagedRasterExport(input: {
     rawFileInfo: string;
     stagingRoot: string;
     outputDir: string;
+    expectedStagedPath?: string;
     expectedFinalPath: string;
     expectedDimensions?: { width: number; height: number };
 }): { success: boolean; artifact?: SkuStagedRasterExport; error?: string } {
@@ -276,43 +304,54 @@ export function parseSkuStagedRasterExport(input: {
             error: `SKU 暂存位图导出回执状态必须为 exported_jsx，实际为 ${String(info.status || 'missing')}。`
         };
     }
-    const tempPath = String(info.path || '').trim().replace(/\//g, '\\');
-    const stagingRoot = String(input.stagingRoot || '').trim().replace(/\//g, '\\').replace(/\\+$/, '');
-    const outputDir = String(input.outputDir || '').trim().replace(/\//g, '\\').replace(/\\+$/, '');
-    const expectedFinalPath = String(input.expectedFinalPath || '').trim().replace(/\//g, '\\');
+    const tempPath = String(info.path || '').trim();
+    const stagingRoot = String(input.stagingRoot || '').trim().replace(/[\\/]+$/, '');
+    const outputDir = String(input.outputDir || '').trim().replace(/[\\/]+$/, '');
+    const expectedStagedPath = String(input.expectedStagedPath || '').trim();
+    const expectedFinalPath = String(input.expectedFinalPath || '').trim();
     if (!tempPath
         || !stagingRoot
         || !outputDir
         || !expectedFinalPath
         || !isSkuPathInsideDirectory(tempPath, stagingRoot)
+        || (expectedStagedPath && !isSkuPathInsideDirectory(expectedStagedPath, stagingRoot))
         || !isSkuPathInsideDirectory(expectedFinalPath, outputDir)) {
         return {
             success: false,
             error: `SKU 暂存位图回执或计划路径不在本次受控目录内：${tempPath || '(空)'}`
         };
     }
-    const relativeSegments = tempPath
-        .slice(stagingRoot.length)
+    const normalizedTempPath = normalizeSkuExportPathForCompare(tempPath);
+    const normalizedStagingRoot = normalizeSkuExportPathForCompare(stagingRoot);
+    const normalizedFinalPath = normalizeSkuExportPathForCompare(expectedFinalPath);
+    const normalizedOutputDir = normalizeSkuExportPathForCompare(outputDir);
+    const relativeSegments = normalizedTempPath
+        .slice(normalizedStagingRoot.length)
         .replace(/^[\\/]+/, '')
         .split(/[\\/]+/)
         .filter(Boolean);
-    const expectedRelativeSegments = expectedFinalPath
-        .slice(outputDir.length)
+    const expectedRelativeSegments = normalizedFinalPath
+        .slice(normalizedOutputDir.length)
         .replace(/^[\\/]+/, '')
         .split(/[\\/]+/)
         .filter(Boolean);
+    const stagedPathMatches = expectedStagedPath
+        ? normalizeSkuExportPathForCompare(tempPath) === normalizeSkuExportPathForCompare(expectedStagedPath)
+        : relativeSegments.join('/') === expectedRelativeSegments.join('/');
     if (relativeSegments.length < 2
-        || expectedRelativeSegments.length < 2
+        || expectedRelativeSegments.length < 1
         || relativeSegments.some((segment) => segment === '.' || segment === '..')
         || expectedRelativeSegments.some((segment) => segment === '.' || segment === '..')
-        || relativeSegments.join('\\').toLowerCase() !== expectedRelativeSegments.join('\\').toLowerCase()) {
+        || !stagedPathMatches) {
         return {
             success: false,
             error: `SKU 暂存位图路径与执行前精确计划不一致：${relativeSegments.join('\\') || '(空)'}`
         };
     }
     const targetName = String(info.targetName || '').trim();
-    const expectedFileName = expectedRelativeSegments.at(-1) || '';
+    const expectedFileName = expectedStagedPath
+        ? expectedStagedPath.split(/[\\/]+/).at(-1) || ''
+        : expectedRelativeSegments.at(-1) || '';
     if (targetName && targetName.toLowerCase() !== expectedFileName.toLowerCase()) {
         return { success: false, error: `SKU 暂存位图文件名与执行前精确计划不一致：${targetName}` };
     }
@@ -503,8 +542,28 @@ async function promoteSkuStagedFiles(input: {
     const committedPaths = Array.isArray(result.committedPaths)
         ? result.committedPaths.map(normalizeSkuExportPathForCompare)
         : [];
+    const committedFiles = Array.isArray(result.committedFiles)
+        ? result.committedFiles.flatMap((file, index) => {
+            const expectedPath = input.items[index]?.destinationPath;
+            const filePath = String(file?.path || '').trim();
+            const byteLength = Number(file?.byteLength);
+            const sha256 = String(file?.sha256 || '').trim().toLowerCase();
+            if (!expectedPath
+                || normalizeSkuExportPathForCompare(filePath)
+                    !== normalizeSkuExportPathForCompare(expectedPath)
+                || !Number.isSafeInteger(byteLength)
+                || byteLength <= 0
+                || !/^[a-f0-9]{64}$/.test(sha256)) {
+                return [];
+            }
+            return [{ path: expectedPath, byteLength, sha256 }];
+        })
+        : [];
     if (committedPaths.length !== expectedPaths.length
-        || !expectedPaths.every((filePath, index) => filePath === committedPaths[index])) {
+        || !expectedPaths.every((filePath, index) => filePath === committedPaths[index])
+        || !Array.isArray(result.committedFiles)
+        || result.committedFiles.length !== expectedPaths.length
+        || committedFiles.length !== expectedPaths.length) {
         return {
             success: false,
             preserveStagingRoot: true,
@@ -514,6 +573,7 @@ async function promoteSkuStagedFiles(input: {
     return {
         success: true,
         committedPaths: input.items.map((item) => item.destinationPath),
+        committedFiles,
         warnings: Array.isArray(result.cleanupWarnings)
             ? result.cleanupWarnings.map((warning: unknown) => String(warning || '').trim()).filter(Boolean)
             : []

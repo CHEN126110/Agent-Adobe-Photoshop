@@ -19,6 +19,16 @@ const {
   buildRuntimeBuildManifest,
   writeRuntimeBuildManifest
 } = require("./write-runtime-build-manifest.cjs");
+const {
+  buildPhotoshopRuntimeBinding,
+  calculatePhotoshopSourceDigest,
+  photoshopRuntimeBindingsMatch,
+  verifyPhotoshopRuntimeBuildIdentity
+} = require("./lib/photoshop-runtime-build-identity.cjs");
+const {
+  createRuntimeBuildIdentity: createPhotoshopRuntimeBuildIdentity,
+  createRuntimeBuildManifest: createPhotoshopRuntimeBuildManifest
+} = require("../../DesignEcho-UXP/scripts/runtime-build-identity.cjs");
 
 const APP_VERSION = "9.8.7-test";
 const GIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
@@ -78,6 +88,56 @@ function withAppRoot(test) {
     test(root);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function createPhotoshopRuntimeRoot(options = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-photoshop-runtime-"));
+  const sourceRoot = path.join(root, "src");
+  const distRoot = path.join(root, "dist");
+  fs.mkdirSync(sourceRoot, { recursive: true });
+  fs.mkdirSync(distRoot, { recursive: true });
+  fs.writeFileSync(path.join(sourceRoot, "index.ts"), "export const runtime = 'test';\n", "utf8");
+  const gitDirty = options.gitDirty === true;
+  const identity = createPhotoshopRuntimeBuildIdentity({
+    repoRoot: root,
+    uxpRoot: root,
+    buildMode: "production",
+    builtAt: "2026-08-27T00:00:00.000Z",
+    gitIdentity: {
+      gitCommit: GIT_COMMIT,
+      gitDirty,
+      dirtyScope: "DesignEcho-UXP"
+    }
+  });
+  const runtimeBuffer = Buffer.from("module.exports = 'photoshop-runtime';\n", "utf8");
+  const manifest = createPhotoshopRuntimeBuildManifest(identity, runtimeBuffer);
+  fs.writeFileSync(path.join(distRoot, "runtime.js"), runtimeBuffer);
+  fs.writeFileSync(
+    path.join(distRoot, "runtime-build-manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8"
+  );
+  const currentCheckoutIdentity = {
+    gitCommit: identity.gitCommit,
+    gitDirty: identity.gitDirty,
+    dirtyScope: identity.dirtyScope,
+    sourceDigest: identity.sourceDigest
+  };
+  const liveRuntime = {
+    ...identity,
+    loadedAt: "2026-08-27T00:00:01.000Z",
+    features: ["diagnoseState.runtimeInfo"]
+  };
+  return { root, identity, manifest, currentCheckoutIdentity, liveRuntime };
+}
+
+function withPhotoshopRuntimeRoot(options, test) {
+  const fixture = createPhotoshopRuntimeRoot(options);
+  try {
+    test(fixture);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
   }
 }
 
@@ -154,4 +214,141 @@ withAppRoot((root) => {
   assert.equal(freshIdentity.artifactsVerified, false, "fresh capture must detect post-start rewrite");
 });
 
-console.log("[OK] Runtime build identity verifies real artifacts and rejects tampering, drift, and path escape.");
+withPhotoshopRuntimeRoot({ gitDirty: true }, (fixture) => {
+  assert.equal(
+    calculatePhotoshopSourceDigest(path.join(fixture.root, "src")),
+    fixture.identity.sourceDigest,
+    "Agent-side source digest must independently reproduce the UXP build digest"
+  );
+  const verification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: fixture.root,
+    uxpRoot: fixture.root,
+    currentCheckoutIdentity: fixture.currentCheckoutIdentity,
+    liveRuntime: fixture.liveRuntime
+  });
+  assert.equal(verification.ready, true, "matching dirty artifacts, checkout, and live runtime must verify");
+  assert.equal(verification.artifacts.artifactsVerified, true);
+  assert.equal(verification.manifestMatchesCurrentCheckout, true);
+  assert.equal(verification.live.matchesManifest, true);
+  assert.equal(verification.live.matchesCurrentCheckout, true);
+  assert.equal(verification.artifacts.identity.gitDirty, true, "dirty identity must remain explicit");
+  const binding = buildPhotoshopRuntimeBinding(verification);
+  assert.ok(binding, "verified artifacts and live Runtime must produce a full Debug Bridge binding");
+  assert.equal(binding.runtimeDigest, fixture.manifest.runtimeFile.digest);
+  assert.equal(binding.manifestDigest, fixture.manifest.manifestDigest);
+  assert.equal(photoshopRuntimeBindingsMatch(binding, binding), true);
+  assert.equal(photoshopRuntimeBindingsMatch(binding, {
+    ...binding,
+    live: {
+      ...binding.live,
+      loadedAt: "2026-08-27T00:00:02.000Z"
+    }
+  }), false, "same buildId after a UXP reload must not reuse the previous live binding");
+});
+
+withPhotoshopRuntimeRoot({ gitDirty: false }, (fixture) => {
+  fs.appendFileSync(path.join(fixture.root, "dist", "runtime.js"), "tampered\n", "utf8");
+  const verification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: fixture.root,
+    uxpRoot: fixture.root,
+    currentCheckoutIdentity: fixture.currentCheckoutIdentity,
+    liveRuntime: fixture.liveRuntime
+  });
+  assert.equal(verification.ready, false);
+  assert.equal(verification.artifacts.runtimeDigestVerified, false);
+  assert.ok(
+    verification.issues.some((issue) => issue.code === "runtime_digest_mismatch"),
+    "runtime.js tampering must be reported"
+  );
+});
+
+withPhotoshopRuntimeRoot({ gitDirty: false }, (fixture) => {
+  const manifestPath = path.join(fixture.root, "dist", "runtime-build-manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.manifestDigest = `sha256:${"0".repeat(64)}`;
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const verification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: fixture.root,
+    uxpRoot: fixture.root,
+    currentCheckoutIdentity: fixture.currentCheckoutIdentity
+  });
+  assert.equal(verification.artifacts.manifestDigestVerified, false);
+  assert.ok(
+    verification.issues.some((issue) => issue.code === "manifest_digest_mismatch"),
+    "manifest tampering must be reported"
+  );
+});
+
+withPhotoshopRuntimeRoot({ gitDirty: false }, (fixture) => {
+  const manifestPath = path.join(fixture.root, "dist", "runtime-build-manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.unversionedField = true;
+  const { manifestDigest: _oldDigest, ...manifestCore } = manifest;
+  manifest.manifestDigest = sha256(stableStringify(manifestCore));
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const verification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: fixture.root,
+    uxpRoot: fixture.root,
+    currentCheckoutIdentity: fixture.currentCheckoutIdentity
+  });
+  assert.equal(verification.artifacts.schemaVerified, false);
+  assert.ok(
+    verification.issues.some((issue) => issue.code === "manifest_schema_mismatch"),
+    "manifest fields outside the versioned schema must be rejected even with a recomputed digest"
+  );
+});
+
+withPhotoshopRuntimeRoot({ gitDirty: true }, (fixture) => {
+  const verification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: fixture.root,
+    uxpRoot: fixture.root,
+    currentCheckoutIdentity: {
+      ...fixture.currentCheckoutIdentity,
+      gitDirty: false
+    },
+    liveRuntime: fixture.liveRuntime
+  });
+  assert.equal(verification.ready, false);
+  assert.equal(verification.manifestMatchesCurrentCheckout, false);
+  assert.ok(
+    verification.issues.some((issue) => issue.code === "manifest_checkout_gitDirty_mismatch"),
+    "build-time dirty state must be compared with the current UXP checkout"
+  );
+});
+
+withPhotoshopRuntimeRoot({ gitDirty: false }, (fixture) => {
+  const sameBuildIdButDifferentRuntime = {
+    ...fixture.liveRuntime,
+    builtAt: "2026-08-27T00:00:02.000Z"
+  };
+  assert.equal(sameBuildIdButDifferentRuntime.buildId, fixture.liveRuntime.buildId);
+  const verification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: fixture.root,
+    uxpRoot: fixture.root,
+    currentCheckoutIdentity: fixture.currentCheckoutIdentity,
+    liveRuntime: sameBuildIdButDifferentRuntime
+  });
+  assert.equal(verification.ready, false);
+  assert.equal(verification.live.schemaVerified, true);
+  assert.equal(verification.live.matchesManifest, false);
+  assert.ok(
+    verification.issues.some((issue) => issue.code === "live_manifest_builtAt_mismatch"),
+    "a matching buildId must not hide a mismatched live runtime identity"
+  );
+});
+
+withPhotoshopRuntimeRoot({ gitDirty: false }, (fixture) => {
+  const verification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: fixture.root,
+    uxpRoot: fixture.root,
+    currentCheckoutIdentity: fixture.currentCheckoutIdentity,
+    requireLive: true
+  });
+  assert.equal(verification.ready, false);
+  assert.ok(
+    verification.issues.some((issue) => issue.code === "live_runtime_identity_unavailable"),
+    "a live-required verification must not fall back to disk-only identity"
+  );
+});
+
+console.log("[OK] Runtime build identity verifies Agent and Photoshop artifacts, full live identity, dirty state, tampering, drift, and path escape.");

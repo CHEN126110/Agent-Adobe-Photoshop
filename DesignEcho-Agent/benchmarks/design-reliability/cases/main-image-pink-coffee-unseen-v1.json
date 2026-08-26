@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "main-image-pink-coffee-unseen-v1",
-  "revision": 1,
-  "caseDigest": "sha256:fccee3b3b9803c633ca70d02ef36974830fd824f86a9755fc495b45e7187faa2",
+  "revision": 2,
+  "caseDigest": "sha256:e719f1476a70c3449eed95798351392b2de1a289126fa21927ac3332e89feb3c",
   "status": "active",
   "taskFamily": "main_image",
   "executionModel": "agentic",
@@ -88,9 +88,9 @@
       { "ref": "原图/DSC08150.JPG", "role": "camera_original_candidate" }
     ],
     "reviewOnlyReferences": [
-      { "kind": "eagle_item", "ref": "eagle:item:LAKLHIYBNKNWN", "qualityRole": "category_anchor" },
-      { "kind": "eagle_item", "ref": "eagle:item:LAKLE0ETHZ6AF", "qualityRole": "category_anchor" },
-      { "kind": "eagle_item", "ref": "eagle:item:MK6GJVHBBCK6F", "qualityRole": "commercial_style_anchor" }
+      { "kind": "eagle_item", "ref": "eagle:item:LAKLHIYBNKNWN", "digest": "sha256:f97b98cce3756cc052ba2f00902a28806ac5b7dbf3f52423c15a5ed8f0c6cfa3", "qualityRole": "category_anchor" },
+      { "kind": "eagle_item", "ref": "eagle:item:LAKLE0ETHZ6AF", "digest": "sha256:50a2597b55b8882bab3725d77efeeeaa6cea2cf836426945ea3ad2270a15aa82", "qualityRole": "category_anchor" },
+      { "kind": "eagle_item", "ref": "eagle:item:MK6GJVHBBCK6F", "digest": "sha256:ac69b9b3a13b943abe0cc98adc092660885a5d7fd178fbfcd57f87a24005d025", "qualityRole": "commercial_style_anchor" }
     ]
   },
   "source": {

@@ -2,17 +2,21 @@
 "use strict";
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const Module = require("module");
 const os = require("os");
 const path = require("path");
+const sharp = require("sharp");
 const ts = require("typescript");
 
 const {
   LEGACY_REVIEW_VERSION,
   REVIEW_VERSION,
   buildCaseDigest,
+  buildComparisonEvidenceDigest,
   buildRubricDigest,
+  buildReviewPacketProjectionDigest,
   buildDesignReliabilityCohortReport,
   calculateWeightedOverall,
   compareDesignReliabilityCohorts,
@@ -26,7 +30,18 @@ const {
   validateDesignReliabilityRun
 } = require("./lib/design-reliability-contract.cjs");
 const {
+  REVIEWER_RESPONSE_VERSION,
+  createDesignReliabilityReviewPacket,
+  verifyDesignReliabilityReviewerResponse
+} = require("./lib/design-reliability-review-packet.cjs");
+const {
+  buildPhotoshopRuntimeBinding,
+  deriveBuildId
+} = require("./lib/photoshop-runtime-build-identity.cjs");
+const {
   buildCanonicalAttemptSafetyLedger,
+  buildFirstMutationBaselineProof,
+  classifyUntrustedDebugBridgeFailure,
   buildPreflight,
   buildSkuLiveDeliveryEvidence,
   buildStatus,
@@ -35,23 +50,33 @@ const {
   buildLiveAttemptCoverage,
   collectSidecars,
   evaluateFixtureInventory,
+  evaluateDebugRendererPreflight,
   evaluateLiveEnvironmentSafety,
   inspectFixture,
   inspectEditablePsd,
   isOfficialAttemptCohortReady,
   loadSuite,
   parseArgs,
+  parseReviewPacketSourceBindings,
   prepareFixture,
+  prepareAnonymousReviewPacket,
   readFixtureInstance,
+  recordAnonymousReview,
+  readDebugBridgeExecutionFailure,
+  revalidateOfficialReviewBundles,
   retainContextuallyValidReviews,
   retainContextuallyValidAttemptEvents,
+  resolveLoopbackDebugBridge,
   resolveReliabilityEvidenceRoots,
   resolveSidecarOutputPath,
+  sanitizeAttemptDiagnostic,
+  shouldPersistPreflightReport,
   sidecarRoots,
   validateAttemptEventStateMachine,
   validateDebugBridgeReceipt,
   validateRubric,
-  validateMutationBaselineAgainstObservation
+  validateMutationBaselineAgainstObservation,
+  writePreflightReport
 } = require("./design-reliability.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -171,8 +196,8 @@ function buildComparisonRefsForTest(caseSpec, run) {
   const referenceRefs = (caseSpec.task?.reviewOnlyReferences || []).map((reference) => ({
     kind: reference.kind === "user_design" ? "user_design_anchor" : "eagle_anchor",
     ref: reference.kind === "user_design"
-      ? `user-design:${reference.ref}`
-      : reference.ref
+      ? `user-design:${reference.ref}@${reference.digest}`
+      : `${reference.ref}@${reference.digest}`
   }));
   return [...candidateRefs, ...referenceRefs];
 }
@@ -362,6 +387,72 @@ function buildPassingObservation() {
 }
 
 async function main() {
+  assert.strictEqual(resolveLoopbackDebugBridge("http://127.0.0.1:8767"), "http://127.0.0.1:8767");
+  assert.strictEqual(resolveLoopbackDebugBridge("http://localhost:8767/"), "http://localhost:8767");
+  assert.strictEqual(resolveLoopbackDebugBridge("http://[::1]:8767"), "http://[::1]:8767");
+  for (const unsafeDebugBridge of [
+    "https://127.0.0.1:8767",
+    "http://example.com:8767",
+    "http://user:pass@127.0.0.1:8767",
+    "http://127.0.0.1:8767/chat",
+    "http://127.0.0.1:8767?token=secret",
+    "http://127.0.0.1:8767#fragment"
+  ]) {
+    assert.throws(
+      () => resolveLoopbackDebugBridge(unsafeDebugBridge),
+      /loopback|本机 HTTP/,
+      `Debug Bridge 必须拒绝非本机安全 origin：${unsafeDebugBridge}`
+    );
+  }
+  const sanitizedDiagnostic = sanitizeAttemptDiagnostic([
+    "Authorization: Bearer bearer-secret-value",
+    "api_key=api-secret-value",
+    "debug_token: debug-secret-value",
+    "refresh_token=refresh-secret-value",
+    "token: generic-secret-value",
+    "password=password-secret-value",
+    "sk-abcdefghijklmnop",
+    "C:\\Users\\person\\private.psd",
+    "C:\\Users\\John Doe\\private design.psd",
+    "\\\\server\\share\\private.psd",
+    "\\\\server\\Customer Files\\private design.psd",
+    "/Users/person/private.psd",
+    "/Volumes/customer/private.psd",
+    "/Volumes/Customer Files/private design.psd",
+    "/var/folders/aa/private.psd",
+    "/opt/designecho/private.json",
+    "/mnt/project/private.psd",
+    "/workspace/customer/private.psd",
+    "/root/private/token.txt",
+    "/data/Customer Files/private.psd",
+    "/srv/customer/private.psd",
+    "/media/customer/private.psd",
+    "/app/customer/private.psd",
+    "/run/user/1000/private.psd",
+    "error_code=E42"
+  ].join(" | "));
+  for (const leaked of [
+    "bearer-secret-value",
+    "api-secret-value",
+    "debug-secret-value",
+    "refresh-secret-value",
+    "generic-secret-value",
+    "password-secret-value",
+    "abcdefghijklmnop",
+    "person/private.psd",
+    "John Doe",
+    "server\\share",
+    "Customer Files",
+    "customer/private.psd",
+    "designecho/private.json",
+    "project/private.psd",
+    "private/token.txt"
+  ]) {
+    assert.strictEqual(sanitizedDiagnostic.includes(leaked), false, `Attempt diagnostic 泄露：${leaked}`);
+  }
+  assert.ok(sanitizedDiagnostic.includes("[redacted]"));
+  assert.ok(sanitizedDiagnostic.includes("[LOCAL_PATH]"));
+  assert.ok(sanitizedDiagnostic.includes("error_code=E42"), "脱敏后必须保留非敏感错误码");
   const debugFinalArtifactRefsModule = loadSelfContainedTypeScriptModule(path.join(
     ROOT,
     "src",
@@ -386,6 +477,14 @@ async function main() {
     "SKU/可编辑/2双装/1白色+黑色.psb",
     "SKU/可编辑/2双装/2浅肤+深肤.psb"
   ];
+  const skuRasterFileIdentities = skuRasterRefs.map((_ref, index) => ({
+    sha256: String(index + 1).repeat(64).slice(0, 64),
+    byteLength: 10_000 + index
+  }));
+  const skuEditableFileIdentities = skuEditableRefs.map((_ref, index) => ({
+    sha256: String(index + 3).repeat(64).slice(0, 64),
+    byteLength: 20_000 + index
+  }));
   const absoluteSkuRef = (ref) => `${skuDebugProjectRoot}\\${ref.replace(/\//g, "\\")}`;
   const skuDebugSource = {
     version: "agent-debug-sku-delivery-source/v1",
@@ -401,11 +500,15 @@ async function main() {
       artifacts: skuRasterRefs.flatMap((ref, index) => ([{
         path: absoluteSkuRef(ref),
         kind: "raster_export",
-        proof: "file_probe"
+        proof: "file_probe",
+        fileIdentity: skuRasterFileIdentities[index],
+        sourceHistoryStateRef: { documentId: 90 + index, historyStateId: 700 + index }
       }, {
         path: absoluteSkuRef(skuEditableRefs[index]),
         kind: "editable_document",
-        proof: "staged_editable_document_promotion"
+        proof: "staged_editable_document_promotion",
+        fileIdentity: skuEditableFileIdentities[index],
+        sourceHistoryStateRef: { documentId: 90 + index, historyStateId: 700 + index }
       }]))
     },
     skuExportReadback: {
@@ -438,6 +541,7 @@ async function main() {
         templateName: "2双装",
         combination: index === 0 ? ["白色", "黑色"] : ["浅肤", "深肤"],
         sourceHistoryStateRef: { documentId: 90 + index, historyStateId: 700 + index },
+        fileIdentity: skuEditableFileIdentities[index],
         copiedLayerIds: [300 + index * 2, 301 + index * 2],
         copiedLayerNames: index === 0 ? ["SKU_01_白色", "SKU_02_黑色"] : ["SKU_01_浅肤", "SKU_02_深肤"],
         freshnessProof: "new_path",
@@ -459,6 +563,18 @@ async function main() {
     {
       path: ["runtimeDeliveryReceipt", "artifacts", 0, "path"],
       value: absoluteSkuRef("SKU/2双装/错位.jpg")
+    },
+    {
+      path: ["runtimeDeliveryReceipt", "artifacts", 0, "fileIdentity", "sha256"],
+      value: "not-a-sha256"
+    },
+    {
+      path: ["runtimeDeliveryReceipt", "artifacts", 1, "sourceHistoryStateRef", "historyStateId"],
+      value: 999
+    },
+    {
+      path: ["skuEditableDeliveryReadback", "items", 0, "fileIdentity", "byteLength"],
+      value: 1
     }
   ];
   for (const mutation of malformedSkuDebugSources) {
@@ -487,14 +603,16 @@ async function main() {
     ...skuRasterRefs.map((ref, index) => ({
       kind: "raster_export",
       ref,
-      digest: `sha256:${String(index + 1).repeat(64).slice(0, 64)}`,
+       digest: `sha256:${skuRasterFileIdentities[index].sha256}`,
+       size: skuRasterFileIdentities[index].byteLength,
       verified: true,
       artifactMetadata: { format: "jpeg", width: 1000, height: 1000 }
     })),
     ...skuEditableRefs.map((ref, index) => ({
       kind: "editable_psd",
       ref,
-      digest: `sha256:${String(index + 3).repeat(64).slice(0, 64)}`,
+       digest: `sha256:${skuEditableFileIdentities[index].sha256}`,
+       size: skuEditableFileIdentities[index].byteLength,
       verified: true,
       artifactMetadata: { format: "psb", width: 1000, height: 1000, layerCount: 3 }
     }))
@@ -522,24 +640,54 @@ async function main() {
     },
     skuArtifactEvidenceRefs
   ).length, 0, "伪造或错位的 Runtime producer source 不能签发 SKU live evidence");
+  const replacedAfterProbeEvidenceRefs = JSON.parse(JSON.stringify(skuArtifactEvidenceRefs));
+  replacedAfterProbeEvidenceRefs[0].digest = `sha256:${"e".repeat(64)}`;
+  assert.strictEqual(buildSkuLiveDeliveryEvidence(
+    skuEvidenceCase,
+    {
+      finalArtifactRefs: [...skuRasterRefs, ...skuEditableRefs],
+      skuDeliveryEvidence: normalizedSkuDebugEvidence
+    },
+    replacedAfterProbeEvidenceRefs
+  ).length, 0, "文件在生产者探针后被替换时，当前 evidence SHA-256 必须使正式 SKU 证据失败关闭");
   const guardedBaselineModule = loadSelfContainedTypeScriptModule(path.join(
     ROOT,
     "src",
     "shared",
     "guarded-photoshop-execution-baseline.ts"
   ));
-  const expectedPhotoshopBuildId = "photoshop-runtime-build-v1";
+  const baselineRuntimeIdentity = {
+    version: "designecho-uxp-runtime-build/v1",
+    buildId: "",
+    builtAt: "2026-08-26T00:00:00.000Z",
+    loadedAt: "2026-08-26T00:00:01.000Z",
+    buildMode: "production",
+    gitCommit: "b".repeat(40),
+    gitDirty: false,
+    dirtyScope: "DesignEcho-UXP",
+    sourceDigest: `sha256:${"c".repeat(64)}`,
+    features: ["diagnoseState.runtimeInfo"]
+  };
+  baselineRuntimeIdentity.buildId = deriveBuildId(baselineRuntimeIdentity);
+  const expectedPhotoshopBuildId = baselineRuntimeIdentity.buildId;
+  const baselineRuntimeBinding = {
+    version: "debug-bridge-photoshop-runtime-binding/v1",
+    live: baselineRuntimeIdentity,
+    runtimeDigest: `sha256:${"d".repeat(64)}`,
+    manifestDigest: `sha256:${"e".repeat(64)}`
+  };
   const passingBaseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
     requestId: "debug-request-pass",
-    expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId
+    expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+    expectedPhotoshopRuntimeBinding: baselineRuntimeBinding
   });
   let runtimeObservationCount = 0;
   let documentObservationCount = 0;
   let fakeMutationDispatchCount = 0;
   const passingObservers = {
-    observePhotoshopRuntimeBuildId: async () => {
+    observePhotoshopRuntimeIdentity: async () => {
       runtimeObservationCount += 1;
-      return expectedPhotoshopBuildId;
+      return baselineRuntimeIdentity;
     },
     observeOpenDocumentCount: async () => {
       documentObservationCount += 1;
@@ -568,19 +716,27 @@ async function main() {
   assert.strictEqual(fakeMutationDispatchCount, 2, "通过后同一请求的后续 mutation 可继续执行");
 
   for (const blockedCase of [
-    { name: "runtime mismatch", runtimeBuildId: "other-build", openDocuments: 0 },
-    { name: "document already open", runtimeBuildId: expectedPhotoshopBuildId, openDocuments: 1 },
-    { name: "document state unavailable", runtimeBuildId: expectedPhotoshopBuildId, openDocuments: undefined }
+    {
+      name: "same build reloaded",
+      runtimeIdentity: {
+        ...baselineRuntimeIdentity,
+        loadedAt: "2026-08-26T00:00:02.000Z"
+      },
+      openDocuments: 0
+    },
+    { name: "document already open", runtimeIdentity: baselineRuntimeIdentity, openDocuments: 1 },
+    { name: "document state unavailable", runtimeIdentity: baselineRuntimeIdentity, openDocuments: undefined }
   ]) {
     const baseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
       requestId: `debug-request-${blockedCase.name}`,
-      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: baselineRuntimeBinding
     });
     const decision = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
       baseline,
       "createDocument",
       {
-        observePhotoshopRuntimeBuildId: async () => blockedCase.runtimeBuildId,
+        observePhotoshopRuntimeIdentity: async () => blockedCase.runtimeIdentity,
         observeOpenDocumentCount: async () => blockedCase.openDocuments
       }
     );
@@ -682,6 +838,18 @@ async function main() {
     "services",
     "debug-bridge-service.ts"
   ), "utf8");
+  const preloadSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "main",
+    "preload.ts"
+  ), "utf8");
+  const debugBridgeChatContractSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "shared",
+    "debug-bridge-chat.ts"
+  ), "utf8");
   const chatPanelSource = fs.readFileSync(path.join(
     ROOT,
     "src",
@@ -718,11 +886,14 @@ async function main() {
   assert(autonomousExecutorSource.includes("createExecuteToolForTeammate(denyProviderTool, baseExecutionOptions)"),
     "teammate Tool 执行必须继承相同的 signed baseline options");
   assert(debugBridgeSource.includes("typeof body.expectedPhotoshopRuntimeBuildId === 'string'")
-    && debugBridgeSource.includes("Boolean(body.expectedPhotoshopRuntimeBuildId.trim())"),
-  "受控 Debug POST 缺少 expectedPhotoshopRuntimeBuildId 时必须在协议入口拒绝");
-  assert(chatPanelSource.includes("completedPhotoshopRuntimeBuildId !== expectedPhotoshopRuntimeBuildId")
-    && chatPanelSource.includes("任务完成时 Photoshop Runtime Build 已变化或无法读取"),
-  "受控 Debug bridge 必须在完成时 Photoshop Build 漂移处直接 fail closed");
+    && debugBridgeSource.includes("readDebugBridgePhotoshopRuntimeBinding(")
+    && debugBridgeSource.includes("expectedPhotoshopRuntimeBinding?.live.buildId"),
+  "受控 Debug POST 必须在协议入口同时要求 buildId 与版本化完整 Runtime binding");
+  assert(chatPanelSource.includes("debugBridgePhotoshopRuntimeLiveIdentitiesMatch(")
+    && chatPanelSource.includes("任务完成时 Photoshop Runtime 完整身份已变化或无法读取")
+    && mainProcessSource.includes("photoshop_runtime_binding_changed")
+    && designReliabilityCliSource.includes("inspectPhotoshopRuntimeBinding(args)"),
+  "受控 Debug bridge 必须在提交、完成与 recorder 独立复验三处按完整身份 fail closed");
   assert(chatPanelSource.includes("readDebugFinalArtifactPaths(debugRequestId)")
     && chatPanelSource.includes("finalArtifactRefs,")
     && chatPanelSource.includes("normalizeDebugFinalArtifactRefs("),
@@ -807,7 +978,13 @@ async function main() {
       "if (!guardedDebugRequestId && !interactiveContinuationRequest"
     ),
   "受控 Debug 请求必须在斜杠/单词快捷命令前检查取消，并跳过不携带 baseline 的本地快捷写入");
-  const debugTimeoutStart = mainProcessSource.indexOf("const timer = setTimeout(() => {");
+  const submitChatToCurrentWindowIndex = mainProcessSource.indexOf(
+    "function submitChatToCurrentWindow"
+  );
+  const debugTimeoutStart = mainProcessSource.indexOf(
+    "const timer = setTimeout(() => {",
+    submitChatToCurrentWindowIndex
+  );
   const debugCleanupStart = mainProcessSource.indexOf("const cleanup = (): void => {", debugTimeoutStart);
   const debugTimeoutBody = mainProcessSource.slice(debugTimeoutStart, debugCleanupStart);
   assert(debugTimeoutStart > 0
@@ -819,6 +996,37 @@ async function main() {
   assert(mainProcessSource.includes("if (timedOut) {")
     && mainProcessSource.includes("debugChatSubmissionLeaseId === requestId"),
   "Renderer 迟到结果必须只闭合超时 lease，不得再将结果当成本轮成功");
+  assert(debugBridgeSource.includes("onChatSubmitPreflight")
+    && debugBridgeSource.includes("renderer: rendererSnapshot")
+    && preloadSource.includes("onDebugBridgeChatPreflight")
+    && chatPanelSource.includes("selectedApiModelId: String(selectedModel?.apiModelId || '').trim()")
+    && chatPanelSource.includes("projectPath: String(state.currentProject?.path || '').trim()")
+    && !chatPanelSource.includes("apiKeys: state.apiKeys"),
+  "Debug preflight 必须只返回脱敏模型/Provider/项目事实，不得暴露凭据");
+  const handleSendStageIndex = chatPanelSource.indexOf("executionStage = 'handle_send_started'");
+  const handleSendCallIndex = chatPanelSource.indexOf("await handleSend({", handleSendStageIndex);
+  assert(handleSendStageIndex > 0
+    && handleSendCallIndex > handleSendStageIndex
+    && chatPanelSource.slice(handleSendStageIndex, handleSendCallIndex).includes("writePossible = true")
+    && chatPanelSource.includes("return await submitAndWait();")
+    && chatPanelSource.includes("return await runWithSkillBridgesSuppressed(submitAndWait);")
+    && debugBridgeChatContractSource.includes("'before_handle_send'")
+    && debugBridgeChatContractSource.includes("writePossible: boolean"),
+  "结构化拒绝必须在 handleSend 前保持 writePossible=false，进入 handleSend 前同步翻为 true");
+  assert(mainProcessSource.includes("readDebugBridgeChatExecutionFailure(payload)")
+    && preloadSource.includes("readPreloadDebugBridgeChatFailureEnvelope(result)")
+    && debugBridgeSource.includes("error: failure.message,")
+    && debugBridgeSource.includes("sendExecutionFailure("),
+  "Renderer/Main/HTTP 必须原样传递结构化执行阶段与副作用可能性");
+  const runLivePreflightIndex = designReliabilityCliSource.indexOf("const preflight = await buildPreflight");
+  const runLiveArmedIndex = designReliabilityCliSource.indexOf("const armedAttempt = writeLiveAttemptEvent", runLivePreflightIndex);
+  assert(runLivePreflightIndex > 0
+    && runLiveArmedIndex > runLivePreflightIndex
+    && designReliabilityCliSource.includes("renderer_model_mismatch")
+    && designReliabilityCliSource.includes("renderer_provider_mismatch")
+    && designReliabilityCliSource.includes("renderer_project_not_bound_to_fixture")
+    && designReliabilityCliSource.includes("classifyUntrustedDebugBridgeFailure(error)"),
+  "run-live 必须在 armed 前核对 Renderer 模型/Provider/项目，并只按结构化副作用事实分流终态");
 
   const malformedPsdDir = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-psd-evidence-"));
   try {
@@ -844,6 +1052,44 @@ async function main() {
   assert.strictEqual(validateDesignReliabilityCase(caseSpec).ok, true, "real case must validate");
 
   const expectedCommit = "a".repeat(40);
+  const expectedPhotoshopSourceDigest = `sha256:${"d".repeat(64)}`;
+  const verifiedPhotoshopBuildId = deriveBuildId({
+    buildMode: "production",
+    gitCommit: expectedCommit,
+    gitDirty: false,
+    sourceDigest: expectedPhotoshopSourceDigest
+  });
+  const safePhotoshopRuntime = {
+    version: "designecho-uxp-runtime-build/v1",
+    buildId: verifiedPhotoshopBuildId,
+    builtAt: "2026-08-26T00:00:00.000Z",
+    loadedAt: "2026-08-26T00:00:01.000Z",
+    buildMode: "production",
+    gitCommit: expectedCommit,
+    gitDirty: false,
+    dirtyScope: "DesignEcho-UXP",
+    sourceDigest: expectedPhotoshopSourceDigest,
+    features: ["diagnoseState.runtimeInfo"]
+  };
+  const safePhotoshopBuildVerification = {
+    version: "designecho-photoshop-runtime-build-verification/v1",
+    ready: true,
+    artifacts: {
+      artifactsVerified: true,
+      identity: {
+        ...safePhotoshopRuntime,
+        runtimeDigest: `sha256:${"e".repeat(64)}`,
+        manifestDigest: `sha256:${"f".repeat(64)}`
+      }
+    },
+    manifestMatchesCurrentCheckout: true,
+    live: {
+      identity: safePhotoshopRuntime,
+      matchesManifest: true,
+      matchesCurrentCheckout: true
+    },
+    issues: []
+  };
   const safeLiveEnvironmentInput = {
     currentGitEnvironment: { gitCommit: expectedCommit, dirty: false },
     expectedProjectPath: "C:/fixture/project",
@@ -875,13 +1121,11 @@ async function main() {
       result: {
         success: true,
         state: {
-          runtime: {
-            buildId: "photoshop-tool-stability/v1",
-            loadedAt: "2026-08-26T00:00:00.000Z"
-          }
+          runtime: safePhotoshopRuntime
         }
       }
     },
+    photoshopRuntimeBuildVerification: safePhotoshopBuildVerification,
     projectRootStatus: {
       ok: true,
       result: { success: true, projectRoot: "C:/fixture/project" }
@@ -893,6 +1137,102 @@ async function main() {
   };
   const safeLiveEnvironment = evaluateLiveEnvironmentSafety(safeLiveEnvironmentInput);
   assert.strictEqual(safeLiveEnvironment.ready, true, "clean matching runtime with zero documents should pass");
+  assert.strictEqual(safeLiveEnvironment.checks.photoshopRuntimeArtifactsVerified, true);
+  assert.strictEqual(safeLiveEnvironment.photoshop.runtimeArtifactDigest, `sha256:${"e".repeat(64)}`);
+  const safePhotoshopRuntimeBinding = buildPhotoshopRuntimeBinding(
+    safePhotoshopBuildVerification
+  );
+  assert.deepStrictEqual(
+    safeLiveEnvironment.photoshop.runtimeBinding,
+    safePhotoshopRuntimeBinding,
+    "preflight 必须把已独立验证的 live 全身份与 runtime/manifest 摘要签成正式绑定"
+  );
+  assert.strictEqual(evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    photoshopRuntimeBuildVerification: {
+      ...safePhotoshopBuildVerification,
+      ready: false,
+      issues: [{ code: "runtime_digest_mismatch" }]
+    }
+  }).blockers.includes("photoshop_runtime_build_identity_mismatch"), true,
+  "磁盘 runtime.js、清单、checkout 或 live 身份任一不一致时必须阻止正式 Case");
+
+  const matchingRendererPreflight = evaluateDebugRendererPreflight({
+    probe: {
+      reachable: true,
+      status: 200,
+      responseBody: {
+        success: true,
+        guardedWriteProtocol: "debug-bridge-chat-submit/v1",
+        renderer: {
+          version: "debug-bridge-chat-preflight/v1",
+          capturedAt: "2026-08-26T00:00:00.000Z",
+          selectedProvider: "openai-codex",
+          selectedModelId: "codex-subscription-gpt-5-6-sol",
+          selectedApiModelId: "gpt-5.6-sol",
+          selectedModelResolved: true,
+          projectPath: "C:/fixture/project",
+          chatBusy: false
+        }
+      }
+    },
+    expectedProvider: "openai-codex",
+    expectedModelId: "gpt-5.6-sol",
+    expectedProjectPath: "C:/fixture/project"
+  });
+  assert.strictEqual(matchingRendererPreflight.ready, true,
+    "Renderer 模型 API ID、Provider 与项目均匹配时应通过写前预检");
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(matchingRendererPreflight, "projectPath"), false,
+    "持久化 preflight 摘要不得复制 Renderer 的本机绝对项目路径");
+  assert.strictEqual(evaluateDebugRendererPreflight({
+    ...matchingRendererPreflight,
+    probe: {
+      reachable: true,
+      responseBody: {
+        success: true,
+        guardedWriteProtocol: "debug-bridge-chat-submit/v1",
+        renderer: {
+          version: "debug-bridge-chat-preflight/v1",
+          capturedAt: "2026-08-26T00:00:00.000Z",
+          selectedProvider: "claude-subscription",
+          selectedModelId: "claude-subscription-opus",
+          selectedApiModelId: "opus",
+          selectedModelResolved: true,
+          projectPath: "C:/fixture/project",
+          chatBusy: false
+        }
+      }
+    },
+    expectedProvider: "openai-codex",
+    expectedModelId: "gpt-5.6-sol",
+    expectedProjectPath: "C:/fixture/project"
+  }).ready, false, "错误模型不得等到 submission_started 后才发现");
+  const safePreSubmitFailure = {
+    version: "debug-bridge-chat-execution-failure/v1",
+    stage: "before_handle_send",
+    writePossible: false,
+    message: "selected model mismatch",
+    code: "renderer_submission_rejected_before_handle_send"
+  };
+  assert.deepStrictEqual(
+    readDebugBridgeExecutionFailure({ failure: safePreSubmitFailure }),
+    safePreSubmitFailure
+  );
+  assert.strictEqual(classifyUntrustedDebugBridgeFailure({
+    debugBridgeResponse: { failure: safePreSubmitFailure }
+  }), "submission_rejected_before_execution",
+  "handleSend 前的结构化拒绝必须形成安全终态，不要求 unknown-write reconciliation");
+  assert.strictEqual(classifyUntrustedDebugBridgeFailure({
+    debugBridgeFailure: {
+      ...safePreSubmitFailure,
+      stage: "handle_send_started",
+      writePossible: true
+    }
+  }), "submission_unknown_write_state",
+  "进入 handleSend 后没有 completion receipt 时必须保持 unknown-write");
+  assert.strictEqual(classifyUntrustedDebugBridgeFailure(new Error("模型不一致")),
+    "submission_unknown_write_state",
+  "不得再用错误文案猜测写入安全性");
 
   const validDebugReceipt = {
     version: "debug-bridge-chat-submit-receipt/v1",
@@ -916,16 +1256,22 @@ async function main() {
     photoshopDocumentPolicy: "none_open",
     photoshopDocumentGuardPassedAtSubmission: true,
     openPhotoshopDocumentCountAtSubmission: 0,
-    expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
-    submittedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
-    completedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+    expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+    expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
+    submittedPhotoshopRuntimeIdentity: safePhotoshopRuntime,
+    completedPhotoshopRuntimeIdentity: safePhotoshopRuntime,
+    submittedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+    completedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
     expectedPhotoshopRuntimeMatchedAtSubmission: true,
     photoshopRuntimeUnchangedThroughCompletion: true,
+    photoshopRuntimeBindingMatchedAtSubmission: true,
+    photoshopRuntimeBindingUnchangedThroughCompletion: true,
     firstPhotoshopMutationBaseline: {
       version: "guarded-photoshop-execution-baseline-receipt/v0",
       status: "not_reached",
       requestId: "debug-request-1",
-      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId
+      expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding
     },
     finalArtifactRefs: ["主图/候选.psd", "主图/候选.jpg"]
   };
@@ -935,12 +1281,20 @@ async function main() {
     modelId: "model-a",
     gitCommit: expectedCommit,
     runtimeBuildId: "designecho-test-build",
-    photoshopRuntimeBuildId: expectedPhotoshopBuildId
+    photoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+    photoshopRuntimeBinding: safePhotoshopRuntimeBinding
   };
   assert.strictEqual(validateDebugBridgeReceipt(
     { result: { receipt: validDebugReceipt } },
     validDebugReceiptInput
   ).ok, true, "提交前、首次写与完成后协议字段完整时 receipt 必须可信");
+  const firstMutationBaselineProof = buildFirstMutationBaselineProof(validDebugReceipt);
+  assert.strictEqual(firstMutationBaselineProof.status, "not_reached");
+  assert.match(firstMutationBaselineProof.requestIdDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.match(firstMutationBaselineProof.proofDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(firstMutationBaselineProof, "requestId"), false);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(firstMutationBaselineProof, "error"), false,
+    "Attempt 只持久化脱敏首次写入证明，不能保存原始响应或错误正文");
   const missingExpectedPhotoshopBuild = JSON.parse(JSON.stringify(validDebugReceipt));
   delete missingExpectedPhotoshopBuild.expectedPhotoshopRuntimeBuildId;
   assert.strictEqual(validateDebugBridgeReceipt(
@@ -956,6 +1310,42 @@ async function main() {
     { result: { receipt: completedPhotoshopBuildDrift } },
     validDebugReceiptInput
   ).ok, false, "Photoshop Runtime Build 完成时漂移必须拒绝");
+  const sameBuildIdDifferentLiveIdentity = {
+    ...validDebugReceipt,
+    submittedPhotoshopRuntimeIdentity: {
+      ...safePhotoshopRuntime,
+      builtAt: "2026-08-26T00:00:02.000Z"
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: sameBuildIdDifferentLiveIdentity } },
+    validDebugReceiptInput
+  ).ok, false,
+  "preflight 后重载同 buildId、不同 builtAt 的 UXP Runtime 必须被完整身份收据拒绝");
+  const sameBuildIdDifferentRuntimeArtifact = {
+    ...validDebugReceipt,
+    expectedPhotoshopRuntimeBinding: {
+      ...safePhotoshopRuntimeBinding,
+      runtimeDigest: `sha256:${"0".repeat(64)}`
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: sameBuildIdDifferentRuntimeArtifact } },
+    validDebugReceiptInput
+  ).ok, false,
+  "同 buildId 但 runtime.js 摘要漂移的收据不得复用 preflight 身份");
+  const sameBuildIdReloadedAtCompletion = {
+    ...validDebugReceipt,
+    completedPhotoshopRuntimeIdentity: {
+      ...safePhotoshopRuntime,
+      loadedAt: "2026-08-26T00:00:03.000Z"
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: sameBuildIdReloadedAtCompletion } },
+    validDebugReceiptInput
+  ).ok, false,
+  "执行中重新加载同 buildId Runtime 必须因 loadedAt 漂移被拒绝");
   const completedRuntimeArtifactDrift = {
     ...validDebugReceipt,
     completedRuntimeBuildIdentity: {
@@ -980,12 +1370,12 @@ async function main() {
   assert.strictEqual(validateMutationBaselineAgainstObservation(
     validDebugReceipt,
     { observed: { observedMutationCalls: 0 } },
-    expectedPhotoshopBuildId
+    verifiedPhotoshopBuildId
   ).ok, true, "没有 mutation 时 not_reached 由技术交付判失败，不伪造成协议错误");
   assert.strictEqual(validateMutationBaselineAgainstObservation(
     validDebugReceipt,
     { observed: { observedMutationCalls: 1 } },
-    expectedPhotoshopBuildId
+    verifiedPhotoshopBuildId
   ).ok, false, "已有 mutation 时 baseline=not_reached 必须拒绝");
   const blockedMutationReceipt = {
     ...validDebugReceipt,
@@ -993,7 +1383,8 @@ async function main() {
       version: "guarded-photoshop-execution-baseline-receipt/v0",
       status: "blocked",
       requestId: "debug-request-1",
-      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
       error: "Photoshop 当前已有既有文档"
     }
   };
@@ -1004,7 +1395,7 @@ async function main() {
   assert.strictEqual(validateMutationBaselineAgainstObservation(
     blockedMutationReceipt,
     { observed: { observedMutationCalls: 0 } },
-    expectedPhotoshopBuildId
+    verifiedPhotoshopBuildId
   ).ok, true);
   const passedMutationReceipt = {
     ...validDebugReceipt,
@@ -1012,8 +1403,10 @@ async function main() {
       version: "guarded-photoshop-execution-baseline-receipt/v0",
       status: "passed",
       requestId: "debug-request-1",
-      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
-      observedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
+      observedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+      observedPhotoshopRuntimeIdentity: safePhotoshopRuntime,
       openDocumentCount: 0,
       firstMutationToolName: "createDocument"
     }
@@ -1021,7 +1414,7 @@ async function main() {
   assert.strictEqual(validateMutationBaselineAgainstObservation(
     passedMutationReceipt,
     { observed: { observedMutationCalls: 1 } },
-    expectedPhotoshopBuildId
+    verifiedPhotoshopBuildId
   ).ok, true, "真实 mutation 与 passed baseline 必须能够闭合");
 
   const userDocumentOpen = evaluateLiveEnvironmentSafety({
@@ -1243,7 +1636,12 @@ async function main() {
     artifacts: Array.from({ length: 19 }, (_, index) => ({
       path: `C:/fixture/project/SKU/${String(index + 1).padStart(2, "0")}.jpg`,
       kind: "raster_export",
-      proof: "file_probe"
+      proof: "file_probe",
+      fileIdentity: {
+        sha256: (index + 1).toString(16).padStart(64, "0"),
+        byteLength: 10_000 + index
+      },
+      sourceHistoryStateRef: { documentId: index + 1, historyStateId: index + 101 }
     }))
   });
   assert.strictEqual(multiDocumentFinalArtifactReceipt.status, "ready",
@@ -1260,7 +1658,9 @@ async function main() {
     artifacts: [{
       path: "C:/fixture/project/SKU/错误单版本.jpg",
       kind: "raster_export",
-      proof: "file_probe"
+      proof: "file_probe",
+      fileIdentity: { sha256: "a".repeat(64), byteLength: 10_000 },
+      sourceHistoryStateRef: { documentId: 7, historyStateId: 20 }
     }]
   }).status, "incomplete", "多文档批次不能伪装为单一 Photoshop revision");
   assert.strictEqual(findRuntimeDeliverySourceHistoryStateRef([
@@ -1803,8 +2203,8 @@ async function main() {
     ...caseSpec.task.reviewOnlyReferences.map((reference) => ({
       kind: reference.kind === 'user_design' ? 'user_design_anchor' : 'eagle_anchor',
       ref: reference.kind === 'user_design'
-        ? `user-design:${reference.ref}`
-        : reference.ref
+        ? `user-design:${reference.ref}@${reference.digest}`
+        : `${reference.ref}@${reference.digest}`
     }))
   ];
   const review = {
@@ -1915,6 +2315,574 @@ async function main() {
     "匿名评审包尚未接入验证器时，自报协议不得进入正式成功率"
   );
 
+  const anonymousPacketRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-anonymous-review-"));
+  const anonymousSourceRoot = path.join(anonymousPacketRoot, "sources");
+  const anonymousSealedRoot = path.join(anonymousPacketRoot, "sealed");
+  const reviewerPacketDirectory = path.join(anonymousPacketRoot, "reviewer-packet");
+  const sealedMappingPath = path.join(anonymousSealedRoot, "mapping.json");
+  fs.mkdirSync(anonymousSourceRoot, { recursive: true });
+  fs.mkdirSync(anonymousSealedRoot, { recursive: true });
+  const candidateSourcePath = path.join(anonymousSourceRoot, "candidate-final.jpg");
+  await sharp({
+    create: { width: 48, height: 48, channels: 3, background: { r: 210, g: 120, b: 130 } }
+  }).withMetadata({ exif: { IFD0: { Artist: "candidate-origin-secret" } } })
+    .jpeg({ quality: 92 })
+    .toFile(candidateSourcePath);
+  const candidateDigest = `sha256:${crypto.createHash("sha256")
+    .update(fs.readFileSync(candidateSourcePath)).digest("hex")}`;
+  const secondCandidateSourcePath = path.join(anonymousSourceRoot, "candidate-final-second.jpg");
+  await sharp({
+    create: { width: 48, height: 48, channels: 3, background: { r: 80, g: 150, b: 220 } }
+  }).jpeg({ quality: 92 }).toFile(secondCandidateSourcePath);
+  const secondCandidateDigest = `sha256:${crypto.createHash("sha256")
+    .update(fs.readFileSync(secondCandidateSourcePath)).digest("hex")}`;
+  const packetCaseSpec = JSON.parse(JSON.stringify(caseSpec));
+  const anchorSourceByBaseRef = new Map();
+  for (let index = 0; index < packetCaseSpec.task.reviewOnlyReferences.length; index += 1) {
+    const reference = packetCaseSpec.task.reviewOnlyReferences[index];
+    const sourcePath = path.join(anonymousSourceRoot, `anchor-${String(index).padStart(2, "0")}.jpg`);
+    await sharp({
+      create: {
+        width: 48,
+        height: 48,
+        channels: 3,
+        background: { r: 30 + index * 20, g: 200 - index * 10, b: 60 + index * 15 }
+      }
+    }).jpeg({ quality: 90 }).toFile(sourcePath);
+    reference.digest = `sha256:${crypto.createHash("sha256")
+      .update(fs.readFileSync(sourcePath)).digest("hex")}`;
+    anchorSourceByBaseRef.set(reference.ref, sourcePath);
+  }
+  packetCaseSpec.revision += 1;
+  packetCaseSpec.caseDigest = buildCaseDigest(packetCaseSpec);
+  const anonymousPacketRun = JSON.parse(JSON.stringify(passing));
+  anonymousPacketRun.caseRef.revision = packetCaseSpec.revision;
+  anonymousPacketRun.caseRef.caseDigest = packetCaseSpec.caseDigest;
+  const packetRasterEvidence = anonymousPacketRun.evidenceRefs.find((item) => item.kind === "raster_export");
+  packetRasterEvidence.digest = candidateDigest;
+  anonymousPacketRun.evidenceRefs.push({
+    kind: "raster_export",
+    ref: "output/main-alt.jpg",
+    digest: secondCandidateDigest,
+    verified: true
+  });
+  anonymousPacketRun.finalArtifactManifest = finalArtifactManifest(anonymousPacketRun.evidenceRefs);
+  const packetComparisonRefs = buildComparisonRefsForTest(packetCaseSpec, anonymousPacketRun);
+  const sourceBindings = packetComparisonRefs.map((item, index) => {
+    if (item.kind === "candidate_final") {
+      return {
+        evidenceRef: item.ref,
+        sourcePath: item.ref.includes("main-alt.jpg") ? secondCandidateSourcePath : candidateSourcePath
+      };
+    }
+    const baseRef = item.ref
+      .replace(/^user-design:/, "")
+      .replace(/^eagle:item:/, "eagle:item:")
+      .replace(/@sha256:[a-f0-9]{64}$/i, "");
+    return { evidenceRef: item.ref, sourcePath: anchorSourceByBaseRef.get(baseRef) };
+  });
+  const fakeImagePath = path.join(anonymousSourceRoot, "not-an-image.jpg");
+  fs.writeFileSync(fakeImagePath, "not an image", "utf8");
+  const fakeImageBindings = JSON.parse(JSON.stringify(sourceBindings));
+  fakeImageBindings.find((item) => item.evidenceRef.startsWith("user-design:")).sourcePath = fakeImagePath;
+  await assert.rejects(
+    () => createDesignReliabilityReviewPacket({
+      caseSpec: packetCaseSpec,
+      run: anonymousPacketRun,
+      rubric,
+      sourceBindings: fakeImageBindings,
+      reviewerPacketDirectory: path.join(anonymousPacketRoot, "fake-image-packet"),
+      sealedMappingPath: path.join(anonymousSealedRoot, "fake-image-mapping.json")
+    }),
+    /可解码的真实图片/,
+    "仅有图片扩展名的文本文件不能进入匿名评审包"
+  );
+  const duplicateReferenceCase = JSON.parse(JSON.stringify(packetCaseSpec));
+  duplicateReferenceCase.task.reviewOnlyReferences[1].digest =
+    duplicateReferenceCase.task.reviewOnlyReferences[0].digest;
+  duplicateReferenceCase.caseDigest = buildCaseDigest(duplicateReferenceCase);
+  assert.strictEqual(validateDesignReliabilityCase(duplicateReferenceCase).ok, false,
+    "Case 必须拒绝两个参考冻结相同内容摘要");
+  const unfrozenReferenceCase = JSON.parse(JSON.stringify(packetCaseSpec));
+  delete unfrozenReferenceCase.task.reviewOnlyReferences[0].digest;
+  unfrozenReferenceCase.caseDigest = buildCaseDigest(unfrozenReferenceCase);
+  assert.strictEqual(validateDesignReliabilityCase(unfrozenReferenceCase).ok, false,
+    "Case 中任何用户设计或 Eagle 参考缺少冻结摘要时都必须拒绝");
+  const candidateAsAnchorCase = JSON.parse(JSON.stringify(packetCaseSpec));
+  candidateAsAnchorCase.task.reviewOnlyReferences[0].digest = candidateDigest;
+  candidateAsAnchorCase.caseDigest = buildCaseDigest(candidateAsAnchorCase);
+  const candidateAsAnchorRun = JSON.parse(JSON.stringify(anonymousPacketRun));
+  candidateAsAnchorRun.caseRef.caseDigest = candidateAsAnchorCase.caseDigest;
+  const candidateAsAnchorRefs = buildComparisonRefsForTest(candidateAsAnchorCase, candidateAsAnchorRun);
+  const candidateAsAnchorBindings = candidateAsAnchorRefs.map((item) => {
+    if (item.kind === "candidate_final" || item.ref.includes(candidateDigest)) {
+      return {
+        evidenceRef: item.ref,
+        sourcePath: item.ref.includes("main-alt.jpg") ? secondCandidateSourcePath : candidateSourcePath
+      };
+    }
+    const baseRef = item.ref
+      .replace(/^user-design:/, "")
+      .replace(/@sha256:[a-f0-9]{64}$/i, "");
+    return { evidenceRef: item.ref, sourcePath: anchorSourceByBaseRef.get(baseRef) };
+  });
+  await assert.rejects(
+    () => createDesignReliabilityReviewPacket({
+      caseSpec: candidateAsAnchorCase,
+      run: candidateAsAnchorRun,
+      rubric,
+      sourceBindings: candidateAsAnchorBindings,
+      reviewerPacketDirectory: path.join(anonymousPacketRoot, "candidate-anchor-packet"),
+      sealedMappingPath: path.join(anonymousSealedRoot, "candidate-anchor-mapping.json")
+    }),
+    /相同内容摘要|参考锚点不能绑定候选/,
+    "参考锚点不能复用候选成稿内容"
+  );
+  const packetCreation = await createDesignReliabilityReviewPacket({
+    caseSpec: packetCaseSpec,
+    run: anonymousPacketRun,
+    rubric,
+    sourceBindings,
+    reviewerPacketDirectory,
+    sealedMappingPath,
+    packetId: "review-packet-contract-test",
+    createdAt: "2026-08-24T01:30:00.000Z",
+    randomBytes(size) {
+      return Buffer.alloc(size, 0x5a);
+    }
+  });
+  assert.strictEqual(fs.existsSync(path.join(reviewerPacketDirectory, "packet.json")), true);
+  assert.strictEqual(fs.existsSync(sealedMappingPath), true);
+  assert.strictEqual(fs.existsSync(path.join(reviewerPacketDirectory, "mapping.json")), false,
+    "sealed mapping 不能混入发给评审者的目录");
+  assert.strictEqual(
+    packetCreation.packet.anonymousGroups.every((group) => (
+      group.assets.length === 1
+      && Object.keys(group.assets[0]).sort().join(",") === "assetId,ref"
+    )),
+    true,
+    "公开包必须把候选与锚点统一拆成单文件匿名项，且不能暴露源文件 digest / size"
+  );
+  assert.strictEqual(packetCreation.packet.anonymousGroups.length, packetComparisonRefs.length,
+    "多候选输出不能通过匿名组基数暴露其来源集合");
+  for (const group of packetCreation.packet.anonymousGroups) {
+    const publicAssetRef = group.assets[0].ref;
+    assert.strictEqual(path.extname(publicAssetRef), ".png", "公开匿名资产必须统一为 PNG");
+    const publicAssetPath = path.join(reviewerPacketDirectory, ...publicAssetRef.split("/"));
+    const publicMetadata = await sharp(publicAssetPath).metadata();
+    assert.strictEqual(publicMetadata.format, "png");
+    assert.strictEqual(publicMetadata.space, "srgb");
+    assert.strictEqual(Boolean(publicMetadata.exif || publicMetadata.xmp || publicMetadata.iptc), false,
+      "公开匿名资产不能保留源 EXIF / XMP / IPTC");
+    assert.strictEqual(fs.readFileSync(publicAssetPath).includes(Buffer.from("candidate-origin-secret")), false,
+      "公开匿名资产不能保留源作者或来源标记");
+  }
+  const publicPacketText = fs.readFileSync(path.join(reviewerPacketDirectory, "packet.json"), "utf8");
+  for (const privateValue of [
+    anonymousSourceRoot,
+    anonymousPacketRun.runObservationId,
+    caseSpec.caseId,
+    "candidate:",
+    "user-design:",
+    "eagle:item:"
+  ]) {
+    assert.strictEqual(publicPacketText.includes(privateValue), false,
+      `公开匿名包不能泄漏来源或运行身份：${privateValue}`);
+  }
+  assert.strictEqual(publicPacketText.includes(candidateDigest), false,
+    "公开匿名包不能暴露可用于已知文件反查的源资产摘要");
+  assert.strictEqual(publicPacketText.includes(secondCandidateDigest), false);
+  await assert.rejects(
+    () => createDesignReliabilityReviewPacket({
+      caseSpec: packetCaseSpec,
+      run: anonymousPacketRun,
+      rubric,
+      sourceBindings,
+      reviewerPacketDirectory,
+      sealedMappingPath,
+      packetId: "review-packet-contract-test-duplicate"
+    }),
+    /fail-if-exists|已存在/,
+    "匿名包目标存在时必须拒绝覆盖"
+  );
+  const packetLabels = packetCreation.packet.anonymousGroups.map((group) => group.label).sort();
+  const responseAssessments = packetLabels.map((label) => ({
+    label,
+    decision: "pass",
+    scores: passingScores,
+    findings: [],
+    blockers: [],
+    confidence: "high",
+    missingEvidence: []
+  }));
+  const pairwiseComparisons = [];
+  for (let left = 0; left < packetLabels.length; left += 1) {
+    for (let right = left + 1; right < packetLabels.length; right += 1) {
+      pairwiseComparisons.push({
+        leftLabel: packetLabels[left],
+        rightLabel: packetLabels[right],
+        outcome: "comparable",
+        rationale: "两组商业完成度相当。"
+      });
+    }
+  }
+  const reviewerResponse = {
+    version: REVIEWER_RESPONSE_VERSION,
+    packetId: packetCreation.packet.packetId,
+    packetDigest: packetCreation.packet.packetDigest,
+    rubricId: rubric.rubricId,
+    rubricDigest: buildRubricDigest(rubric),
+    reviewerId: "designer-anonymous-a",
+    reviewedAt: "2026-08-24T02:00:00.000Z",
+    assessments: responseAssessments,
+    pairwiseComparisons
+  };
+  const verifiedAnonymous = await verifyDesignReliabilityReviewerResponse({
+    caseSpec: packetCaseSpec,
+    run: anonymousPacketRun,
+    rubric,
+    reviewerPacketDirectory,
+    sealedMappingPath,
+    reviewerResponse,
+    verifiedAt: "2026-08-24T02:00:01.000Z"
+  });
+  assert.strictEqual(
+    validateDesignReliabilityReview(verifiedAnonymous.review, {
+      rubric,
+      caseSpec: packetCaseSpec,
+      run: anonymousPacketRun,
+      enforceBlindProtocol: true
+    }).ok,
+    true,
+    "只有文件、映射、随机标签、完整响应和 Review 投影全部复核后才接受匿名协议"
+  );
+  const packetSuite = { cases: [packetCaseSpec], rubrics: [rubric] };
+  const cliPacketDirectory = path.join(anonymousPacketRoot, "reviewer-packet-cli");
+  const cliBundleRoot = path.join(anonymousPacketRoot, "review-verification-bundles");
+  const sourceBindingsPath = path.join(anonymousSourceRoot, "bindings.json");
+  const runObservationPath = path.join(anonymousSourceRoot, "run-observation.json");
+  fs.writeFileSync(sourceBindingsPath, `${JSON.stringify(sourceBindings, null, 2)}\n`, "utf8");
+  fs.writeFileSync(runObservationPath, `${JSON.stringify(anonymousPacketRun, null, 2)}\n`, "utf8");
+  const preparePacketArgs = parseArgs([
+    "node",
+    "design-reliability.cjs",
+    "prepare-review-packet",
+    "--case",
+    packetCaseSpec.caseId,
+    "--run-observation",
+    runObservationPath,
+    "--reviewer-packet-dir",
+    cliPacketDirectory,
+    "--source-bindings-json",
+    sourceBindingsPath,
+    "--allow-create"
+  ]);
+  assert.strictEqual(parseReviewPacketSourceBindings(preparePacketArgs).length, sourceBindings.length);
+  const cliPacketResult = await prepareAnonymousReviewPacket(packetSuite, preparePacketArgs, cliBundleRoot);
+  assert.strictEqual(cliPacketResult.success, true);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(cliPacketResult, "sealedMapping"), false,
+    "prepare-review-packet CLI 不能把密封来源映射打印到 stdout");
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(cliPacketResult, "sealedMappingPath"), false,
+    "prepare-review-packet CLI 不能泄漏密封映射路径");
+  const cliPrivateBundleDirectory = path.join(cliBundleRoot, cliPacketResult.packetId);
+  const preparationText = fs.readFileSync(
+    path.join(cliPrivateBundleDirectory, "preparation.json"),
+    "utf8"
+  );
+  assert.strictEqual(preparationText.includes(cliPacketDirectory), false,
+    "私有 preparation 也不应持久化外部公开包绝对路径");
+  if (process.platform !== "win32") {
+    assert.strictEqual(fs.statSync(cliBundleRoot).mode & 0o077, 0);
+    assert.strictEqual(fs.statSync(cliPrivateBundleDirectory).mode & 0o077, 0);
+    assert.strictEqual(
+      fs.statSync(path.join(cliPrivateBundleDirectory, "sealed-mapping.json")).mode & 0o077,
+      0
+    );
+  }
+  const cliPacket = JSON.parse(fs.readFileSync(path.join(cliPacketDirectory, "packet.json"), "utf8"));
+  const cliLabels = cliPacket.anonymousGroups.map((group) => group.label).sort();
+  const cliPairwiseComparisons = [];
+  for (let left = 0; left < cliLabels.length; left += 1) {
+    for (let right = left + 1; right < cliLabels.length; right += 1) {
+      cliPairwiseComparisons.push({
+        leftLabel: cliLabels[left],
+        rightLabel: cliLabels[right],
+        outcome: "comparable",
+        rationale: "两组商业完成度相当。"
+      });
+    }
+  }
+  const cliResponsePath = path.join(anonymousSourceRoot, "reviewer-response.json");
+  fs.writeFileSync(cliResponsePath, `${JSON.stringify({
+    version: REVIEWER_RESPONSE_VERSION,
+    packetId: cliPacket.packetId,
+    packetDigest: cliPacket.packetDigest,
+    rubricId: rubric.rubricId,
+    rubricDigest: buildRubricDigest(rubric),
+    reviewerId: "designer-cli-a",
+    reviewedAt: "2026-08-24T02:30:00.000Z",
+    assessments: cliLabels.map((label) => ({
+      label,
+      decision: "pass",
+      scores: passingScores,
+      findings: [],
+      blockers: [],
+      confidence: "high",
+      missingEvidence: []
+    })),
+    pairwiseComparisons: cliPairwiseComparisons
+  }, null, 2)}\n`, "utf8");
+  const recordPacketArgs = parseArgs([
+    "node",
+    "design-reliability.cjs",
+    "record-anonymous-review",
+    "--case",
+    packetCaseSpec.caseId,
+    "--run-observation",
+    runObservationPath,
+    "--packet-id",
+    cliPacketResult.packetId,
+    "--reviewer-packet-dir",
+    cliPacketDirectory,
+    "--reviewer-response",
+    cliResponsePath
+  ]);
+  const recordedAnonymous = await recordAnonymousReview(
+    packetSuite,
+    recordPacketArgs,
+    path.join(anonymousPacketRoot, "recorded"),
+    cliBundleRoot
+  );
+  assert.strictEqual(recordedAnonymous.evidenceProtocol, "anonymous_packet_verified");
+  assert.strictEqual(fs.existsSync(recordedAnonymous.outputPath), true,
+    "record-anonymous-review CLI 必须把已验证 Review 追加到指定可靠性数据根");
+  const persistedAnonymousReview = JSON.parse(fs.readFileSync(recordedAnonymous.outputPath, "utf8"));
+  const diskVerifiedSidecars = await revalidateOfficialReviewBundles({
+    runs: [anonymousPacketRun],
+    reviews: [persistedAnonymousReview],
+    attributions: [],
+    attemptEvents: [],
+    invalid: [],
+    excludedEvidence: []
+  }, packetSuite, cliBundleRoot);
+  assert.strictEqual(diskVerifiedSidecars.excludedEvidence.length, 0);
+  assert.strictEqual(
+    collectSidecars([cliBundleRoot]).runs.length
+      + collectSidecars([cliBundleRoot]).reviews.length
+      + collectSidecars([cliBundleRoot]).invalid.length,
+    0,
+    "通用 sidecar 扫描必须跳过 canonical 私有 bundle，避免 mapping/preparation 被误报 invalid"
+  );
+  const anonymousReport = buildDesignReliabilityCohortReport({
+    suiteId: packetCaseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [packetCaseSpec],
+    rubrics: [rubric],
+    runs: [anonymousPacketRun],
+    reviews: [verifiedAnonymous.review],
+    attributions: []
+  });
+  assert.strictEqual(anonymousReport.overall.quality.strictHumanReviewedRate.numerator, 0,
+    "仅有可序列化 proof、未从 canonical bundle 磁盘重验的 Review 不能进入 strict");
+  assert.strictEqual(anonymousReport.overall.quality.humanPassRate.numerator, 0);
+  const officialAnonymousReport = buildDesignReliabilityCohortReport({
+    suiteId: packetCaseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [packetCaseSpec],
+    rubrics: [rubric],
+    runs: [anonymousPacketRun],
+    reviews: [diskVerifiedSidecars.reviews[0]],
+    attributions: []
+  });
+  assert.strictEqual(officialAnonymousReport.overall.quality.strictHumanReviewedRate.numerator, 1,
+    "只有 canonical bundle 磁盘验证后附加进程内信任标记的 Review 才能进入 strict");
+  const forgedAnonymousReview = JSON.parse(JSON.stringify(verifiedAnonymous.review));
+  forgedAnonymousReview.reviewId = "review-forged-without-bundle";
+  forgedAnonymousReview.verifiedPacketProof.packetId = "review-packet-forged-without-disk";
+  for (const field of [
+    "packetDigest",
+    "sealedMappingDigest",
+    "reviewerResponseDigest",
+    "assetSetDigest",
+    "sourceBindingDigest"
+  ]) {
+    forgedAnonymousReview.verifiedPacketProof[field] = `sha256:${"f".repeat(64)}`;
+  }
+  forgedAnonymousReview.verifiedPacketProof.comparisonEvidenceDigest = buildComparisonEvidenceDigest(
+    forgedAnonymousReview.comparisonEvidenceRefs
+  );
+  forgedAnonymousReview.verifiedPacketProof.reviewProjectionDigest = buildReviewPacketProjectionDigest(
+    forgedAnonymousReview
+  );
+  assert.strictEqual(validateDesignReliabilityReview(forgedAnonymousReview, {
+    rubric,
+    caseSpec: packetCaseSpec,
+    run: anonymousPacketRun,
+    enforceBlindProtocol: true
+  }).ok, true, "可序列化 proof 仍可作为诊断格式读取，但不能拥有 official strict 信任");
+  const forgedCustomRoot = path.join(anonymousPacketRoot, "custom-report-root");
+  fs.mkdirSync(path.join(forgedCustomRoot, "reviews"), { recursive: true });
+  fs.writeFileSync(
+    path.join(forgedCustomRoot, "reviews", "forged.json"),
+    `${JSON.stringify(forgedAnonymousReview, null, 2)}\n`,
+    "utf8"
+  );
+  fs.mkdirSync(path.join(forgedCustomRoot, "runs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(forgedCustomRoot, "runs", "run.json"),
+    `${JSON.stringify(anonymousPacketRun, null, 2)}\n`,
+    "utf8"
+  );
+  const forgedCollected = collectSidecars([forgedCustomRoot]);
+  const forgedContextual = retainContextuallyValidReviews(forgedCollected, packetSuite);
+  const forgedRevalidated = await revalidateOfficialReviewBundles(
+    forgedContextual,
+    packetSuite,
+    cliBundleRoot
+  );
+  const forgedReport = buildDesignReliabilityCohortReport({
+    suiteId: packetCaseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [packetCaseSpec],
+    rubrics: [rubric],
+    runs: [anonymousPacketRun],
+    reviews: forgedRevalidated.reviews,
+    attributions: []
+  });
+  assert.strictEqual(forgedReport.overall.quality.strictHumanReviewedRate.numerator, 0,
+    "--data-root 中从零伪造的 proof 不能进入 official strict");
+  assert(forgedRevalidated.excludedEvidence.some((item) => (
+    item.id === forgedAnonymousReview.reviewId
+    && item.reason === "official_review_bundle_unverified"
+  )));
+  const officialBundleDirectory = path.join(cliBundleRoot, cliPacketResult.packetId);
+  const officialBundleManifestPath = path.join(officialBundleDirectory, "bundle.json");
+  const hiddenBundleManifestPath = path.join(officialBundleDirectory, "bundle.json.missing-test");
+  fs.renameSync(officialBundleManifestPath, hiddenBundleManifestPath);
+  const missingBundleRevalidation = await revalidateOfficialReviewBundles({
+    runs: [anonymousPacketRun],
+    reviews: [persistedAnonymousReview],
+    attributions: [],
+    attemptEvents: [],
+    invalid: [],
+    excludedEvidence: []
+  }, packetSuite, cliBundleRoot);
+  assert.strictEqual(buildDesignReliabilityCohortReport({
+    suiteId: packetCaseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [packetCaseSpec],
+    rubrics: [rubric],
+    runs: [anonymousPacketRun],
+    reviews: missingBundleRevalidation.reviews,
+    attributions: []
+  }).overall.quality.strictHumanReviewedRate.numerator, 0,
+  "canonical bundle manifest 缺失时不能沿用旧的进程内 strict 信任");
+  fs.renameSync(hiddenBundleManifestPath, officialBundleManifestPath);
+  const archivedPacket = JSON.parse(fs.readFileSync(
+    path.join(officialBundleDirectory, "reviewer-packet", "packet.json"),
+    "utf8"
+  ));
+  const archivedAssetPath = path.join(
+    officialBundleDirectory,
+    "reviewer-packet",
+    ...archivedPacket.anonymousGroups[0].assets[0].ref.split("/")
+  );
+  const archivedAssetBytes = fs.readFileSync(archivedAssetPath);
+  fs.appendFileSync(archivedAssetPath, "bundle-tamper");
+  const tamperedBundleRevalidation = await revalidateOfficialReviewBundles({
+    runs: [anonymousPacketRun],
+    reviews: [persistedAnonymousReview],
+    attributions: [],
+    attemptEvents: [],
+    invalid: [],
+    excludedEvidence: []
+  }, packetSuite, cliBundleRoot);
+  assert.strictEqual(buildDesignReliabilityCohortReport({
+    suiteId: packetCaseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [packetCaseSpec],
+    rubrics: [rubric],
+    runs: [anonymousPacketRun],
+    reviews: tamperedBundleRevalidation.reviews,
+    attributions: []
+  }).overall.quality.strictHumanReviewedRate.numerator, 0,
+  "canonical bundle 资产被篡改时必须撤销 strict 信任");
+  fs.writeFileSync(archivedAssetPath, archivedAssetBytes);
+  const changedAfterProof = JSON.parse(JSON.stringify(verifiedAnonymous.review));
+  changedAfterProof.decision = "needs_fix";
+  changedAfterProof.pairwiseOutcome = "weaker";
+  assert.strictEqual(
+    validateDesignReliabilityReview(changedAfterProof, {
+      rubric,
+      caseSpec: packetCaseSpec,
+      run: anonymousPacketRun,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "verifiedPacketProof 不能复用到被修改过的 Review"
+  );
+  const incompleteBlindResponse = JSON.parse(JSON.stringify(reviewerResponse));
+  incompleteBlindResponse.assessments.pop();
+  await assert.rejects(
+    () => verifyDesignReliabilityReviewerResponse({
+      caseSpec: packetCaseSpec,
+      run: anonymousPacketRun,
+      rubric,
+      reviewerPacketDirectory,
+      sealedMappingPath,
+      reviewerResponse: incompleteBlindResponse
+    }),
+    /每个匿名组恰好评审一次/,
+    "评审者不能只对事后猜中的候选标签给分"
+  );
+  const originalSealedMappingText = fs.readFileSync(sealedMappingPath, "utf8");
+  const tamperedSealedMapping = JSON.parse(originalSealedMappingText);
+  tamperedSealedMapping.groups[0].assets[0].digest = `sha256:${"0".repeat(64)}`;
+  fs.writeFileSync(sealedMappingPath, JSON.stringify(tamperedSealedMapping, null, 2), "utf8");
+  await assert.rejects(
+    () => verifyDesignReliabilityReviewerResponse({
+      caseSpec: packetCaseSpec,
+      run: anonymousPacketRun,
+      rubric,
+      reviewerPacketDirectory,
+      sealedMappingPath,
+      reviewerResponse
+    }),
+    /sealed mapping 摘要校验失败/,
+    "密封来源映射被修改后不能继续签发 proof"
+  );
+  fs.writeFileSync(sealedMappingPath, originalSealedMappingText, "utf8");
+  const unexpectedPublicFile = path.join(reviewerPacketDirectory, "origin.txt");
+  fs.writeFileSync(unexpectedPublicFile, "candidate", "utf8");
+  await assert.rejects(
+    () => verifyDesignReliabilityReviewerResponse({
+      caseSpec: packetCaseSpec,
+      run: anonymousPacketRun,
+      rubric,
+      reviewerPacketDirectory,
+      sealedMappingPath,
+      reviewerResponse
+    }),
+    /未声明文件/,
+    "公开匿名包不能夹带未声明的来源提示文件"
+  );
+  fs.rmSync(unexpectedPublicFile);
+  const firstAnonymousAsset = packetCreation.packet.anonymousGroups[0].assets[0].ref;
+  fs.appendFileSync(path.join(reviewerPacketDirectory, ...firstAnonymousAsset.split("/")), "tampered");
+  await assert.rejects(
+    () => verifyDesignReliabilityReviewerResponse({
+      caseSpec: packetCaseSpec,
+      run: anonymousPacketRun,
+      rubric,
+      reviewerPacketDirectory,
+      sealedMappingPath,
+      reviewerResponse
+    }),
+    /哈希或字节数校验失败/,
+    "匿名包中的任何资产被替换后都不能继续签发可信 proof"
+  );
+  fs.rmSync(anonymousPacketRoot, { recursive: true, force: true });
+
   const formalAttemptRun = JSON.parse(JSON.stringify(passing));
   formalAttemptRun.cohortId = "cohort-formal-denominator";
   const formalAttemptReview = {
@@ -1931,7 +2899,9 @@ async function main() {
     runtimeGitCommit: "formal-git-commit",
     runtimeBuildId: "formal-runtime-build",
     runtimeAppVersion: "1.0.0",
-    photoshopRuntimeBuildId: "formal-photoshop-build"
+    photoshopRuntimeBuildId: safePhotoshopRuntimeBinding.live.buildId,
+    photoshopRuntimeBinding: safePhotoshopRuntimeBinding,
+    photoshopRuntimeBindingDigest: sha256Text(stableStringify(safePhotoshopRuntimeBinding))
   };
   function formalAttemptEvents(input) {
     const inputCase = input.caseSpec;
@@ -2365,14 +3335,51 @@ async function main() {
 
   const customDataRoot = path.join(os.tmpdir(), "designecho-custom-reliability-root");
   const roots = sidecarRoots({ getAll: () => [customDataRoot] });
-  assert(roots.includes(path.join(ROOT, "tmp", "design-reliability")),
-    "自定义 data-root 不能替换 canonical Attempt 安全账本");
+  const persistentDataRoot = roots[0];
+  const legacyDataRoot = path.join(ROOT, "tmp", "design-reliability");
+  const relativeToRepoTmp = path.relative(path.join(ROOT, "tmp"), persistentDataRoot);
+  assert(relativeToRepoTmp.startsWith("..") || path.isAbsolute(relativeToRepoTmp),
+    "canonical Attempt 安全账本必须位于仓库 tmp 之外，不能被 repo hygiene 清空");
+  assert(roots.includes(legacyDataRoot), "旧 tmp 报告应保持只读兼容来源");
   assert(roots.includes(customDataRoot), "自定义 data-root 仍可作为附加报告来源");
   const evidenceRoots = resolveReliabilityEvidenceRoots({ getAll: () => [customDataRoot] });
   assert(evidenceRoots.reportRoots.includes(customDataRoot));
   assert.strictEqual(evidenceRoots.canonicalAttemptRoots.length, 1);
+  assert(evidenceRoots.canonicalAttemptRoots[0].startsWith(persistentDataRoot),
+    "正式 Attempt 分母必须绑定仓库外持久根目录");
   assert(!evidenceRoots.canonicalAttemptRoots.includes(customDataRoot),
     "自定义 report root 的 terminal/reconciled Event 不能进入 canonical 写入安全账本");
+  assert.strictEqual(
+    shouldPersistPreflightReport(parseArgs(["node", "design-reliability.cjs", "preflight"])),
+    false,
+    "preflight 默认必须零落盘"
+  );
+  assert.strictEqual(
+    shouldPersistPreflightReport(parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "preflight",
+      "--write-report"
+    ])),
+    true,
+    "只有显式 --write-report 才允许保存 preflight 报告"
+  );
+  const preflightReportRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-preflight-report-"));
+  try {
+    const samplePreflight = {
+      success: true,
+      generatedAt: "2026-08-27T12:34:56.000Z",
+      mode: "read_only_design_reliability_preflight"
+    };
+    const firstPreflightPath = writePreflightReport(samplePreflight, preflightReportRoot);
+    const secondPreflightPath = writePreflightReport(samplePreflight, preflightReportRoot);
+    assert.notStrictEqual(firstPreflightPath, secondPreflightPath,
+      "显式保存的 preflight 报告必须追加新文件，不能覆盖 latest.json");
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(firstPreflightPath, "utf8")), samplePreflight);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(secondPreflightPath, "utf8")), samplePreflight);
+  } finally {
+    fs.rmSync(preflightReportRoot, { recursive: true, force: true });
+  }
   const injectedAttemptRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-injected-attempt-"));
   try {
     const injectedAttempt = {
@@ -2395,9 +3402,11 @@ async function main() {
       getAll: (name) => name === "--data-root" ? [injectedAttemptRoot] : [],
       get: (_name, fallback) => fallback
     };
-    const canonicalAttemptCount = buildStatus(fullSuite, emptyStatusArgs)
-      .evidence.attemptCoverage.totalAttempts;
-    const injectedAttemptCount = buildStatus(fullSuite, injectedStatusArgs)
+    const canonicalStatus = await buildStatus(fullSuite, emptyStatusArgs);
+    assert.strictEqual(canonicalStatus.storage.repositoryCleanupSafe, true);
+    assert.strictEqual(canonicalStatus.storage.canonicalDataRoot, persistentDataRoot);
+    const canonicalAttemptCount = canonicalStatus.evidence.attemptCoverage.totalAttempts;
+    const injectedAttemptCount = (await buildStatus(fullSuite, injectedStatusArgs))
       .evidence.attemptCoverage.totalAttempts;
     assert.strictEqual(injectedAttemptCount, canonicalAttemptCount,
       "--data-root 中伪造的 Attempt Event 不得进入正式分母；分母只能消费 canonical append-only 账本");

@@ -47,6 +47,7 @@ const COMMANDS = [
   { label: "终审跨代可信证据", cwd: agentRoot, args: ["run", "test:trusted-final-comparison-evidence"] },
   { label: "终审 Provider 逐图出站回执", cwd: agentRoot, args: ["run", "test:model-visual-presentation-receipt"] },
   { label: "设计可靠性评测契约", cwd: agentRoot, args: ["run", "test:design-reliability"] },
+  { label: "隔离调试窗口与模型冻结", cwd: agentRoot, args: ["run", "test:debug-window-launcher"] },
   { label: "Runtime 构建身份", cwd: agentRoot, args: ["run", "test:runtime-build-identity"] },
   { label: "主体框纯逻辑", cwd: agentRoot, args: ["run", "test:subject-box"] },
   { label: "图片落位写前预览", cwd: agentRoot, args: ["run", "test:image-placement-preview"] },

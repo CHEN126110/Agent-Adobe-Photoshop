@@ -1,5 +1,6 @@
 import type {
     SkillDeclaration,
+    SkillParameter,
     SkillParameterSchema
 } from '../types/skill.types';
 import { SKU_FULL_PRODUCTION_DRAFT_COMBO_SIZES } from '../sku-intent-params';
@@ -64,6 +65,59 @@ const objParam = (name: string, description: string, required = false) => ({
     description,
     required
 });
+
+function deliveryTargetConventionParam(
+    name: 'editable' | 'raster',
+    formats: string[]
+): SkillParameter {
+    return {
+        name,
+        type: 'object',
+        description: `${name} 交付组织；只声明项目相对目录、文件夹/文件命名 pattern 与格式，不包含任何视觉设计参数。`,
+        required: false,
+        additionalProperties: false,
+        properties: [
+            strParam('projectRelativeRoot', '项目内相对目录；禁止盘符、UNC、绝对路径和 ..。', true),
+            strParam('folderPattern', '可选单层文件夹 pattern；可用 {defaultName}/{index}/{size}/{colors}/{template}/{kind}/{row}/{name}/{version}/{screen}。'),
+            strParam('fileNamePattern', '不含扩展名的文件名 pattern；可用 {defaultName}/{index}/{size}/{colors}/{template}/{kind}/{row}/{name}/{version}/{screen}。', true),
+            strParam('format', '交付格式。', true, { enum: formats })
+        ]
+    };
+}
+
+function deliveryConventionParam(
+    rasterFormats: string[] = ['jpg', 'jpeg', 'png']
+): SkillParameter {
+    return {
+        name: 'deliveryConvention',
+        type: 'object',
+        description: '由用户或 Agent 在查看项目同类成品后选定的交付组织约定。只控制目录、命名、可编辑稿/导出图配对与版本策略；Harness 不扫描目录替你选择，也不得在此声明选图、版式、颜色、字号或其他视觉决定。未提供时才使用对应 Skill 的兼容基线。',
+        required: false,
+        additionalProperties: false,
+        properties: [
+            strParam('version', '固定契约版本。', true, { enum: ['skill-delivery-convention/v0'] }),
+            strParam('provenance', '本次约定的选择来源。agent_examples 必须由 Agent 真正查看过同类项目样本。', true, {
+                enum: ['user', 'confirmed_project', 'agent_examples', 'skill_fallback']
+            }),
+            arrParam('supportRefs', '稳定来源引用；禁止本机绝对路径。confirmed_project/agent_examples 至少一项。', true, {
+                items: { type: 'string' },
+                maxItems: 12,
+                uniqueItems: true
+            }),
+            deliveryTargetConventionParam('editable', ['psd', 'psb', 'tif']),
+            deliveryTargetConventionParam('raster', rasterFormats),
+            strParam('pairing', '可编辑稿与导出图的配对关系。', true, {
+                enum: ['one_editable_per_raster', 'one_master_many_rasters']
+            }),
+            strParam(
+                'versionPolicy',
+                '同名目标的版本/冲突策略。公开参数不能授权覆盖；未提供 deliveryConvention 时，Skill 内部兼容事务才保留既有精确替换行为。',
+                true,
+                { enum: ['new_version', 'fail_if_exists'] }
+            )
+        ]
+    };
+}
 
 export const MatteProductSkill: SkillDeclaration = {
     id: 'matte-product',
@@ -183,6 +237,7 @@ export const SmartLayoutSkill: SkillDeclaration = {
 
 export const SKUSkill: SkillDeclaration = {
     id: 'sku-batch',
+    playbookId: 'sku-production',
     name: 'SKU Design and Production',
     displayName: 'SKU 设计与生产',
     userFacingSummary: '从项目摄影图到成套 SKU 组合图：建色卡、做模板、按确认的组合批量出图',
@@ -201,7 +256,7 @@ export const SKUSkill: SkillDeclaration = {
     // 模型路由不得直执（用户拍板红线，smoke-skill-route-guard-declaration 钉桩）：
     // sku-batch 必须经 Agent 自主 ReAct 循环，防止退回脚本直调。
     modelDirectExecution: 'forbidden',
-    description: 'SKU 生产能力：可创建和验证可编辑色卡源、规格模板与多色组合成品，并对数量、槽位、命名、文件身份和导出完整性做确定性校验。先根据用户目标与当前真实项目状态判断缺少什么，再自行选择最有效的观察、设计和执行方式；只有当前判断需要时才读取工作法或参考，不把色卡、模板、组合写成固定开工顺序。文件名或画面文字不能单独证明文档身份，应以必要的结构或画面事实为准。素材选择、模板版式、视觉层级、色彩组合和是否需要参考由 Agent 或用户决定；缺少创意模板时返回可继续设计的候选与事实，不由 Harness 注入固定版式。',
+    description: 'SKU 生产能力：工作法包是 sku-production，可用 readSkillPlaybook("sku-production") 按需读取。可创建和验证可编辑色卡源、规格模板与多色组合成品，并对数量、槽位、命名、文件身份和导出完整性做确定性校验。先根据用户目标与当前真实项目状态判断缺少什么，再自行选择最有效的观察、设计和执行方式；只有当前判断需要时才读取工作法或参考，不把色卡、模板、组合写成固定开工顺序。文件名或画面文字不能单独证明文档身份，应以必要的结构或画面事实为准。素材选择、模板版式、视觉层级、色彩组合和是否需要参考由 Agent 或用户决定；缺少创意模板时返回可继续设计的候选与事实，不由 Harness 注入固定版式。',
     whenToUse: [
         'User asks the Agent to make, design, complete, improve, or batch-produce SKU deliverables, including a bare execution request such as "帮我做 SKU".',
         'User asks for an editable SKU color card, SKU card template, combination image, pack-size variant, self-select note, or a complete 2/3/4-pack SKU set.',
@@ -242,7 +297,7 @@ export const SKUSkill: SkillDeclaration = {
         parameterExtractionHints: [
             '根据用户真正要交付的 SKU 产物抽取 stage：完整 SKU/组合图/备注图或裸执行请求使用 full；独立色卡使用 color-card；独立模板设计或修复使用 template；纯配置动作使用 config。',
             '先读取项目事实、当前文档和既有 TaskRun；已有规格直接复用，缺失的可逆前置设计由 Agent 在 Skill 内完成。候选组合准备好后默认交给结构化组合卡确认，不得用 Harness 默认值或模型参数伪装成用户确认事实。',
-            'stage=full 抽取 comboSizes、countPerSize、specifiedColors、onlyNotes；stage=color-card 抽取 sources/sourcePaths/colorNames、版面参数和 retouchMode/sourceMode；stage=config 抽取 configAction、placeholderCount、placeholderLayout。组合确认只由真实用户原文或结构化 continuation 决定，不接受模型布尔参数授权。'
+            'stage=full 抽取 comboSizes、countPerSize、specifiedColors、onlyNotes 和 Agent/用户选定的 deliveryConvention；stage=color-card 抽取 sources/sourcePaths/colorNames、版面参数和 retouchMode/sourceMode；stage=config 抽取 configAction、placeholderCount、placeholderLayout。组合确认只由真实用户原文或结构化 continuation 决定，不接受模型布尔参数授权。'
         ],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['先用项目、文档与视觉观察消解任务；只有交付物类型或商品事实仍有多个会实质改变结果的解释时，才请求一个最小澄清。用户委托 Agent 后，色卡、模板和组合候选应自主准备；组合卡属于准备完成后的单次生产确认，不是开工前澄清。'],
@@ -284,6 +339,7 @@ export const SKUSkill: SkillDeclaration = {
             enum: ['full', 'color-card', 'template', 'config'],
             default: 'full'
         }),
+        deliveryConventionParam(['jpg']),
         arrParam(
             'comboSizes',
             'Combination size list. Current full-production draft defaults to [2,3,4] when the user/project has not supplied an authoritative size plan; this default remains non-authoritative and requires publication review.',
@@ -1559,6 +1615,7 @@ export const EcommerceSocksDesignSkill: SkillDeclaration = {
 
 export const MainImageSkill: SkillDeclaration = {
     id: 'main-image-design',
+    playbookId: 'main-image-design',
     name: 'Main Image Design',
     displayName: '主图设计',
     userFacingSummary: '电商主图从想法到成稿：定方向、构图、文案与光影精修，一次交付可用主图',
@@ -1599,12 +1656,12 @@ export const MainImageSkill: SkillDeclaration = {
         canonicalProductionEntries: [
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:设计|做|制作|出|生成|完成|导出|修复|改|修改|调整|优化|处理)\\s*(?:一张|一个|一版|这个|当前)?\\s*(?:(?:新的?|创意|电商|商品)\\s*){0,3}(?:白底图|点击图|转化图|主图|首图|封面)$'
         ],
-        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir；未显式指定 size/sizes 时默认规划 800/750/1200 三规格；普通主图交付包含点击图和转化图规则，1200 只出点击图不出转化图；白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
+        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir；未显式指定 size/sizes 时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 显式选择规格；只有没有更可靠项目证据时，才可选择 Skill 的 800/750/1200 三规格基线。普通主图交付包含点击图和转化图规则，1200 只出点击图不出转化图；白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果用户同时提到模板和现有主图优化，先问是新建模板还是处理当前画面'],
         decisionGuidance: [
             '如果用户是在处理现有主图的优化、导出或排版，使用这个 skill，而不是模板创建 skill。',
-            '普通“做主图”默认规划 800/750/1200 三个交付文档，不要退化成单 800 点击图。',
+            '普通“做主图”未给规格时，先让 Agent 从当前项目的同类成品与已确认 delivery 规则中选择交付规格；800/750/1200 是无更可靠项目证据时的 Skill 基线，不能由早期参数默认器抢先冻结。',
             '1200/9:16 只允许点击图，不能生成转化图；白底图是 SKU 源文件导出，不从点击图或转化图裁切。',
             '先判断用户是在询问/规划还是明确要求生成文件；工具边界负责限制写入范围，不要用固定规则禁止模型根据任务选择工具。',
             '普通创意主图请求默认先形成策略和设计计划；明确的 SKU 白底图导出请求属于确定性素材生产，可使用 product-disposable-live 白底图专用工具。'
@@ -1615,6 +1672,7 @@ export const MainImageSkill: SkillDeclaration = {
         }
     },
     parameters: [
+        deliveryConventionParam(),
         strParam('size', 'Output size preset', false, {
             enum: ['800', '750', '1200', 'custom']
         }),
@@ -1692,6 +1750,7 @@ export const MainImageSkill: SkillDeclaration = {
 
 export const DetailPageDesignSkill: SkillDeclaration = {
     id: 'detail-page-design',
+    playbookId: 'detail-page-design',
     name: 'Detail Page Design',
     displayName: '详情页设计',
     userFacingSummary: '电商详情页整页制作：套用你的模板或从零设计，逐屏完成并导出切片',
@@ -1754,6 +1813,7 @@ export const DetailPageDesignSkill: SkillDeclaration = {
         }
     },
     parameters: [
+        deliveryConventionParam(),
         strParam('workMode', 'Detail-page work mode selected from the manifest contract', false, {
             enum: ['create_new', 'redesign', 'template_fill', 'edit_existing', 'analyze_only', 'export_only']
         }),

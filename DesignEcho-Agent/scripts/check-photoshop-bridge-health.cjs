@@ -3,6 +3,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const {
+  verifyPhotoshopRuntimeBuildIdentity
+} = require('./lib/photoshop-runtime-build-identity.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const TMP_DIR = path.join(ROOT, 'tmp', 'photoshop-bridge-health');
@@ -193,6 +196,26 @@ function buildMissingRuntimeFeatures(requiredRuntimeFeatures, diagnoseState) {
   return requiredRuntimeFeatures.filter((feature) => !available.has(feature));
 }
 
+function summarizeRuntimeBuildVerification(verification) {
+  return {
+    version: verification.version,
+    ready: verification.ready,
+    liveProvided: verification.liveProvided,
+    liveRequired: verification.liveRequired,
+    artifacts: {
+      schemaVerified: verification.artifacts.schemaVerified,
+      manifestDigestVerified: verification.artifacts.manifestDigestVerified,
+      runtimeDigestVerified: verification.artifacts.runtimeDigestVerified,
+      artifactsVerified: verification.artifacts.artifactsVerified,
+      identity: verification.artifacts.identity
+    },
+    currentCheckout: verification.currentCheckout,
+    manifestMatchesCurrentCheckout: verification.manifestMatchesCurrentCheckout,
+    live: verification.live,
+    issues: verification.issues
+  };
+}
+
 function summarizeSystemStatus(systemStatus) {
   if (!systemStatus.ok) return { ok: false, error: systemStatus.error };
   const result = systemStatus.result || {};
@@ -328,6 +351,10 @@ function classifyBridgeHealth(input) {
     return 'photoshop_tool_registry_unavailable';
   }
 
+  if (input.runtimeBuildIdentityReady === false) {
+    return 'photoshop_runtime_build_identity_mismatch';
+  }
+
   if (
     input.missingTools.length > 0
     || input.missingToolProperties?.length > 0
@@ -394,6 +421,13 @@ function buildRecoveryActions(healthStatus, bridgeBlockerHints = []) {
         '重载后重新运行本健康检查，确认缺失工具和缺失 schema 字段都恢复。'
       ];
       break;
+    case 'photoshop_runtime_build_identity_mismatch':
+      actions = [
+        '当前 Photoshop 中运行的 UXP 身份、磁盘 runtime.js、构建清单或本地源码并不一致。',
+        '先重新构建 DesignEcho-UXP，再通过受控加载刷新插件；不要仅依据 buildId 判断已经加载最新版本。',
+        '刷新后重新运行本健康检查，确认 commit、源摘要、dirty 状态及 runtime.js SHA-256 全部一致。'
+      ];
+      break;
     default:
       actions = ['查看 blockers 字段，先恢复桥接健康状态，再进入 live 或业务验收。'];
       break;
@@ -434,6 +468,14 @@ async function buildBridgeHealthReport(options = {}) {
   const missingTools = buildMissingPhotoshopToolNames(requiredToolNames, photoshopTools);
   const missingToolProperties = buildMissingPhotoshopToolProperties(requiredToolProperties, photoshopTools);
   const missingRuntimeFeatures = buildMissingRuntimeFeatures(requiredRuntimeFeatures, diagnoseState);
+  const liveRuntime = diagnoseState.ok ? diagnoseState.result?.state?.runtime || null : null;
+  const runtimeBuildVerification = verifyPhotoshopRuntimeBuildIdentity({
+    repoRoot: path.resolve(ROOT, '..'),
+    uxpRoot: path.resolve(ROOT, '..', 'DesignEcho-UXP'),
+    requireLive: true,
+    ...(liveRuntime ? { liveRuntime } : {})
+  });
+  const runtimeBuildIdentityReady = Boolean(liveRuntime) && runtimeBuildVerification.ready;
   const blockers = [];
 
   if (!toolsList.ok) blockers.push(`MCP tools/list failed: ${toolsList.error}`);
@@ -442,8 +484,11 @@ async function buildBridgeHealthReport(options = {}) {
     blockers.push('Photoshop UXP plugin is not connected.');
   }
   if (!photoshopTools.ok) blockers.push(`photoshop.tools.list failed: ${photoshopTools.error}`);
-  if (requiredRuntimeFeatures.length > 0 && !diagnoseState.ok) {
+  if (!diagnoseState.ok) {
     blockers.push(`diagnoseState failed: ${diagnoseState.error}`);
+  }
+  if (diagnoseState.ok && !liveRuntime) {
+    blockers.push('diagnoseState did not return a complete Photoshop runtime identity.');
   }
   if (missingTools.length > 0) {
     blockers.push(`Missing Photoshop tools: ${missingTools.join(', ')}`);
@@ -454,6 +499,10 @@ async function buildBridgeHealthReport(options = {}) {
   if (missingRuntimeFeatures.length > 0) {
     blockers.push(`Missing Photoshop runtime features: ${missingRuntimeFeatures.join(', ')}`);
   }
+  if (diagnoseState.ok && !runtimeBuildVerification.ready) {
+    const issueCodes = runtimeBuildVerification.issues.map((issue) => issue.code);
+    blockers.push(`Photoshop runtime build identity mismatch: ${issueCodes.join(', ') || 'unknown_identity_mismatch'}`);
+  }
 
   const healthStatus = classifyBridgeHealth({
     toolsList,
@@ -461,7 +510,8 @@ async function buildBridgeHealthReport(options = {}) {
     photoshopTools,
     missingTools,
     missingToolProperties,
-    missingRuntimeFeatures
+    missingRuntimeFeatures,
+    runtimeBuildIdentityReady
   });
   const bridgeBlockerHints = buildBridgeBlockerHints(diagnosticSystemStatus, photoshopTools);
   const pluginActivity = summarizePluginActivityDiagnostics(diagnosticSystemStatus);
@@ -489,8 +539,10 @@ async function buildBridgeHealthReport(options = {}) {
       && photoshopTools.ok
       && missingTools.length === 0
       && missingToolProperties.length === 0
-      && missingRuntimeFeatures.length === 0,
-    runtime: diagnoseState.ok ? diagnoseState.result?.state?.runtime || null : null,
+      && missingRuntimeFeatures.length === 0
+      && runtimeBuildIdentityReady,
+    runtime: liveRuntime,
+    runtimeBuildVerification: summarizeRuntimeBuildVerification(runtimeBuildVerification),
     systemStatus: summarizeSystemStatus(systemStatus),
     postPhotoshopToolsSystemStatus: postPhotoshopToolsSystemStatus
       ? summarizeSystemStatus(postPhotoshopToolsSystemStatus)
@@ -509,6 +561,7 @@ async function buildBridgeHealthReport(options = {}) {
       missingTools,
       missingToolProperties,
       missingRuntimeFeatures,
+      runtimeBuildVerification: summarizeRuntimeBuildVerification(runtimeBuildVerification),
       hostDiagnostics: {
         source: diagnosticSystemStatus === postPhotoshopToolsSystemStatus
           ? 'post_photoshop_tools_timeout_system_status'
@@ -559,12 +612,26 @@ function renderMarkdown(report) {
   lines.push('', '## Runtime', '');
   if (report.runtime) {
     lines.push(`- buildId: ${report.runtime.buildId || ''}`);
+    lines.push(`- builtAt: ${report.runtime.builtAt || ''}`);
     lines.push(`- loadedAt: ${report.runtime.loadedAt || ''}`);
+    lines.push(`- buildMode: ${report.runtime.buildMode || ''}`);
+    lines.push(`- gitCommit: ${report.runtime.gitCommit || ''}`);
+    lines.push(`- gitDirty: ${String(report.runtime.gitDirty ?? '')}`);
+    lines.push(`- dirtyScope: ${report.runtime.dirtyScope || ''}`);
+    lines.push(`- sourceDigest: ${report.runtime.sourceDigest || ''}`);
     lines.push(`- requiredRuntimeFeatures: ${report.requiredRuntimeFeatures.join(', ') || 'none'}`);
     lines.push(`- availableRuntimeFeatures: ${(report.runtime.features || []).join(', ') || 'none'}`);
   } else {
     lines.push('- unavailable');
   }
+
+  lines.push('', '## Runtime Build Verification', '');
+  lines.push(`- ready: ${report.runtimeBuildVerification.ready}`);
+  lines.push(`- artifactsVerified: ${report.runtimeBuildVerification.artifacts.artifactsVerified}`);
+  lines.push(`- manifestMatchesCurrentCheckout: ${report.runtimeBuildVerification.manifestMatchesCurrentCheckout}`);
+  lines.push(`- liveMatchesManifest: ${String(report.runtimeBuildVerification.live?.matchesManifest ?? false)}`);
+  lines.push(`- liveMatchesCurrentCheckout: ${String(report.runtimeBuildVerification.live?.matchesCurrentCheckout ?? false)}`);
+  lines.push(`- issues: ${report.runtimeBuildVerification.issues.map((issue) => issue.code).join(', ') || 'none'}`);
 
   lines.push('', '## Diagnostics', '', '```json', JSON.stringify(report.diagnostics, null, 2), '```', '');
   return `${lines.join('\n')}\n`;
@@ -776,6 +843,18 @@ function runSelfTest() {
     }) === 'photoshop_runtime_tool_mismatch',
     'Successful registry read with missing runtime features must be classified as photoshop_runtime_tool_mismatch.'
   );
+  assert(
+    classifyBridgeHealth({
+      toolsList: readyToolsList,
+      systemStatus: connectedStatus,
+      photoshopTools: { ok: true, result: { tools: [] } },
+      missingTools: [],
+      missingToolProperties: [],
+      missingRuntimeFeatures: [],
+      runtimeBuildIdentityReady: false
+    }) === 'photoshop_runtime_build_identity_mismatch',
+    'Full Photoshop runtime identity mismatch must not pass on buildId alone.'
+  );
 
   console.log(JSON.stringify({
     success: true,
@@ -786,6 +865,7 @@ function runSelfTest() {
       'connected plugin plus photoshop.tools.list timeout exposes bridge blocker hint',
       'runtime schema property guard detects stale UXP tool schema',
       'runtime feature guard detects stale UXP bundles missing required fixes',
+      'full runtime identity mismatch is detected beyond buildId',
       'stale host diagnostics are visible when pending request diagnostics are absent',
       'stale host diagnostics add a desktop restart recovery action',
       'post-timeout system.status snapshot is collected and used for diagnostics',

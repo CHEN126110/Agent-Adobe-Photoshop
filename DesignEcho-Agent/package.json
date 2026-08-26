@@ -44,6 +44,8 @@
     "maintenance:design-reliability:validate": "node scripts/design-reliability.cjs validate",
     "maintenance:design-reliability:status": "node scripts/design-reliability.cjs status",
     "maintenance:design-reliability:preflight": "node scripts/design-reliability.cjs preflight",
+    "maintenance:design-reliability:require-capture-ready": "node scripts/design-reliability.cjs preflight --require-capture-ready",
+    "test:debug-window-launcher": "node scripts/launch-chat-ui-debug-window.cjs --self-test",
     "exam:sku:card": "node scripts/run-sku-card-exam.cjs",
     "test": "npm run audit:handlers && npm run test:morphing",
     "test:proposition-ledger": "node scripts/test-proposition-ledger.cjs",

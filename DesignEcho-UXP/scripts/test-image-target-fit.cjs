@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
@@ -32,6 +33,122 @@ function loadTypeScriptModule(relativePath, moduleName) {
 
 function loadImageTargetFitModule() {
     return loadTypeScriptModule('../src/core/image-target-fit.ts', 'image-target-fit.ts');
+}
+
+function assertRuntimeBuildIdentityContract() {
+    const runtimeBuild = require('./runtime-build-identity.cjs');
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'designecho-uxp-build-'));
+    const sourceRoot = path.join(testRoot, 'src');
+    fs.mkdirSync(path.join(sourceRoot, 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, 'entry.ts'), 'export const value = 1;\n', 'utf8');
+    fs.writeFileSync(path.join(sourceRoot, 'nested', 'feature.ts'), 'export const enabled = true;\n', 'utf8');
+
+    try {
+        const firstDigest = runtimeBuild.calculateSourceDigest(sourceRoot);
+        const repeatedDigest = runtimeBuild.calculateSourceDigest(sourceRoot);
+        assert.match(firstDigest, /^sha256:[0-9a-f]{64}$/);
+        assert.equal(repeatedDigest, firstDigest, 'unchanged UXP source must keep a stable digest');
+        fs.appendFileSync(path.join(sourceRoot, 'entry.ts'), 'export const changed = true;\n', 'utf8');
+        assert.notEqual(
+            runtimeBuild.calculateSourceDigest(sourceRoot),
+            firstDigest,
+            'UXP source changes must change the source digest'
+        );
+
+        const gitCommit = '0123456789abcdef0123456789abcdef01234567';
+        const identity = runtimeBuild.createRuntimeBuildIdentity({
+            repoRoot: testRoot,
+            uxpRoot: testRoot,
+            buildMode: 'production',
+            builtAt: '2026-08-27T00:00:00.000Z',
+            gitIdentity: {
+                gitCommit,
+                gitDirty: true,
+                dirtyScope: 'DesignEcho-UXP'
+            }
+        });
+        assert.equal(identity.version, 'designecho-uxp-runtime-build/v1');
+        assert.equal(identity.gitCommit, gitCommit);
+        assert.equal(identity.gitDirty, true);
+        assert.equal(identity.buildMode, 'production');
+        assert.match(identity.buildId, /^designecho-uxp-production-[0-9a-f]{12}-[0-9a-f]{12}-dirty$/);
+        const cleanIdentity = runtimeBuild.createRuntimeBuildIdentity({
+            repoRoot: testRoot,
+            uxpRoot: testRoot,
+            buildMode: 'production',
+            builtAt: '2026-08-27T00:00:00.000Z',
+            gitIdentity: {
+                gitCommit,
+                gitDirty: false,
+                dirtyScope: 'DesignEcho-UXP'
+            }
+        });
+        assert.match(cleanIdentity.buildId, /^designecho-uxp-production-[0-9a-f]{12}-[0-9a-f]{12}$/);
+
+        const runtimeAsset = Buffer.from('module.exports = "runtime";\n', 'utf8');
+        const manifest = runtimeBuild.createRuntimeBuildManifest(identity, runtimeAsset);
+        assert.equal(manifest.version, 'designecho-uxp-runtime-build-manifest/v1');
+        assert.equal(manifest.buildId, identity.buildId);
+        assert.equal(manifest.runtimeFile.ref, 'runtime.js');
+        assert.equal(manifest.runtimeFile.size, runtimeAsset.length);
+        assert.match(manifest.runtimeFile.digest, /^sha256:[0-9a-f]{64}$/);
+        assert.match(manifest.manifestDigest, /^sha256:[0-9a-f]{64}$/);
+        assert.equal(runtimeBuild.verifyRuntimeBuildManifest(manifest, runtimeAsset), true);
+        assert.equal(
+            runtimeBuild.verifyRuntimeBuildManifest(manifest, Buffer.from('tampered', 'utf8')),
+            false,
+            'runtime.js tampering must invalidate the UXP build manifest'
+        );
+        assert.equal(
+            runtimeBuild.verifyRuntimeBuildManifest({
+                ...manifest,
+                sourceDigest: `sha256:${'0'.repeat(64)}`
+            }, runtimeAsset),
+            false,
+            'manifest metadata tampering must invalidate the manifest digest'
+        );
+
+        globalThis.__DESIGNECHO_UXP_RUNTIME_BUILD__ = identity;
+        const runtimeInfoModule = loadTypeScriptModule(
+            '../src/core/runtime-build-info.ts',
+            'runtime-build-info.ts'
+        );
+        const runtimeInfo = runtimeInfoModule.getPhotoshopRuntimeBuildInfo();
+        assert.equal(runtimeInfo.buildId, identity.buildId);
+        assert.equal(runtimeInfo.gitCommit, gitCommit);
+        assert.equal(runtimeInfo.gitDirty, true);
+        assert.equal(runtimeInfo.sourceDigest, identity.sourceDigest);
+        assert.equal(runtimeInfo.builtAt, identity.builtAt);
+        assert.match(runtimeInfo.loadedAt, /^\d{4}-\d{2}-\d{2}T/);
+        assert.ok(runtimeInfo.features.includes('diagnoseState.runtimeInfo'));
+    } finally {
+        delete globalThis.__DESIGNECHO_UXP_RUNTIME_BUILD__;
+        fs.rmSync(testRoot, { recursive: true, force: true });
+    }
+
+    const webpackSource = fs.readFileSync(
+        path.resolve(__dirname, '../webpack.config.js'),
+        'utf8'
+    );
+    assert.ok(
+        webpackSource.includes('new webpack.DefinePlugin({')
+            && webpackSource.includes('__DESIGNECHO_UXP_RUNTIME_BUILD__')
+            && webpackSource.includes('new RuntimeBuildManifestPlugin(runtimeBuildIdentity)'),
+        'webpack must embed the UXP identity and emit the runtime manifest in the same compilation'
+    );
+
+    const distRoot = path.resolve(__dirname, '../dist');
+    const manifestPath = path.join(distRoot, 'runtime-build-manifest.json');
+    const runtimePath = path.join(distRoot, 'runtime.js');
+    if (fs.existsSync(manifestPath) && fs.existsSync(runtimePath)) {
+        const generatedManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        const generatedRuntime = fs.readFileSync(runtimePath);
+        assert.equal(
+            runtimeBuild.verifyRuntimeBuildManifest(generatedManifest, generatedRuntime),
+            true,
+            'generated runtime-build-manifest.json must verify the emitted runtime.js bytes'
+        );
+    }
 }
 
 function assertJpegQualityNormalizationContract() {
@@ -572,5 +689,6 @@ assertImagePlacementParameterConflictContracts();
 assertJpegQualityNormalizationContract();
 assertImageSourceIdentityContract();
 assertSkuPairedEditableDeliveryContract();
+assertRuntimeBuildIdentityContract();
 
-console.log('image-target-fit: 17 geometry cases, source identity, paired SKU editable delivery, parameter conflicts, JPEG quality, and transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, runtime build identity, source identity, paired SKU editable delivery, parameter conflicts, JPEG quality, and transaction audit passed');

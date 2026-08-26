@@ -133,6 +133,45 @@ async function assertNoReparsePointInExistingSegments(targetPath: string): Promi
     }
 }
 
+async function assertRegularDirectoryIdentity(directoryPath: string, label: string): Promise<void> {
+    const directoryStat = await fsPromises.lstat(directoryPath);
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+        throw new Error(`${label}不是可信普通目录：${directoryPath}`);
+    }
+    const realPath = await fsPromises.realpath(directoryPath);
+    if (normalizePathKey(realPath) !== normalizePathKey(directoryPath)) {
+        throw new Error(`${label}真实路径与声明路径不一致：${directoryPath}`);
+    }
+}
+
+async function ensureProjectContainedDirectory(
+    projectRootValue: unknown,
+    destinationRoot: string
+): Promise<string> {
+    const fallbackProjectRoot = path.dirname(destinationRoot);
+    const projectRoot = resolveRequiredLocalAbsolutePath(
+        projectRootValue || fallbackProjectRoot,
+        'SKU 项目根目录'
+    );
+    const relative = path.relative(projectRoot, destinationRoot);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error('SKU 交付目录必须位于当前项目根目录内。');
+    }
+    await assertNoReparsePointInExistingSegments(projectRoot);
+    await assertRegularDirectoryIdentity(projectRoot, 'SKU 项目根目录');
+
+    let currentDirectory = projectRoot;
+    for (const segment of relative.split(path.sep).filter(Boolean)) {
+        currentDirectory = path.join(currentDirectory, segment);
+        if (!await pathExists(currentDirectory)) {
+            await fsPromises.mkdir(currentDirectory, { recursive: false });
+        }
+        await assertNoReparsePointInExistingSegments(currentDirectory);
+        await assertRegularDirectoryIdentity(currentDirectory, 'SKU 交付目录路径段');
+    }
+    return projectRoot;
+}
+
 async function findReparsePointInsideDirectory(rootPath: string): Promise<string | undefined> {
     const pending = [rootPath];
     while (pending.length > 0) {
@@ -616,22 +655,12 @@ async function updateTransactionPhase(
 }
 
 async function issueSkuStagingTransactionUnlocked(
-    outputDirectory: unknown
+    outputDirectory: unknown,
+    projectRootValue?: unknown
 ): Promise<SkuStagingTransactionResult> {
     try {
         const destinationRoot = resolveRequiredLocalAbsolutePath(outputDirectory, 'SKU 交付目录');
-        if (path.basename(destinationRoot).toLowerCase() !== 'sku') {
-            throw new Error('SKU 暂存事务只能签发给当前项目的 SKU 交付目录。');
-        }
-        await assertNoReparsePointInExistingSegments(destinationRoot);
-        const destinationStat = await fsPromises.lstat(destinationRoot);
-        if (destinationStat.isSymbolicLink() || !destinationStat.isDirectory()) {
-            throw new Error(`SKU 交付目录不是可信普通目录：${destinationRoot}`);
-        }
-        const destinationRealPath = await fsPromises.realpath(destinationRoot);
-        if (normalizePathKey(destinationRealPath) !== normalizePathKey(destinationRoot)) {
-            throw new Error('SKU 交付目录真实路径与签发路径不一致。');
-        }
+        await ensureProjectContainedDirectory(projectRootValue, destinationRoot);
         const activeForDestination = Array.from(activeTransactions.values()).find(
             (candidate) => normalizePathKey(candidate.destinationRoot) === normalizePathKey(destinationRoot)
                 && candidate.phase !== 'root_cleaned'
@@ -704,7 +733,8 @@ async function issueSkuStagingTransactionUnlocked(
 }
 
 export async function issueSkuStagingTransaction(
-    outputDirectory: unknown
+    outputDirectory: unknown,
+    projectRootValue?: unknown
 ): Promise<SkuStagingTransactionResult> {
     const previousIssuance = transactionIssuanceQueue;
     let releaseIssuance: () => void = () => undefined;
@@ -713,7 +743,7 @@ export async function issueSkuStagingTransaction(
     });
     await previousIssuance;
     try {
-        return await issueSkuStagingTransactionUnlocked(outputDirectory);
+        return await issueSkuStagingTransactionUnlocked(outputDirectory, projectRootValue);
     } finally {
         releaseIssuance();
     }

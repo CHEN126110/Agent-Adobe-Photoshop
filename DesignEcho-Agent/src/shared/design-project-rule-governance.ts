@@ -11,6 +11,10 @@ import type {
     DesignProjectRuleWriteAuthority,
     DesignProjectState
 } from './types/design-project-state.types';
+import {
+    normalizeStableSourceReference,
+    normalizeStableSourceReferenceList
+} from './stable-source-reference';
 
 const MAX_RULE_RECORDS = 160;
 const SAFE_RULE_ID = /^project-rule-[a-f0-9]{16}$/;
@@ -351,9 +355,10 @@ function normalizeSource(value: unknown): DesignProjectRuleSource | undefined {
     const kind = SOURCE_KINDS.has(raw.kind as DesignProjectRuleSourceKind) ? raw.kind as DesignProjectRuleSourceKind : undefined;
     if (!kind) return undefined;
     const sourceRef = sanitizeSourceRef(raw.sourceRef);
-    const supportRefs = Array.isArray(raw.supportRefs)
-        ? Array.from(new Set(raw.supportRefs.map((item) => sanitizeShortText(item, 240)).filter(isSafeSupportRef))).slice(0, 12)
-        : [];
+    const supportRefs = normalizeStableSourceReferenceList(raw.supportRefs || [], {
+        allowProjectFile: true,
+        maxItems: 12
+    }).refs;
     return { kind, ...(sourceRef ? { sourceRef } : {}), ...(supportRefs.length ? { supportRefs } : {}) };
 }
 
@@ -452,17 +457,11 @@ function normalizeOptionalIsoTime(value: unknown): string | undefined {
 }
 
 function isSafeSupportRef(value: unknown): boolean {
-    const text = sanitizeShortText(value, 240);
-    return /^(?:document|brand-guideline|project-brief|knowledge|design-memory):[a-z0-9._:/-]+$/i.test(text);
+    return Boolean(normalizeStableSourceReference(value, { allowProjectFile: true }));
 }
 
 function sanitizeSourceRef(value: unknown): string {
-    const text = sanitizeShortText(value, 240);
-    if (!text) return '';
-    if (/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(text)) return '';
-    if (/^(?:https?:|file:|data:)/i.test(text)) return '';
-    if (/(?:api[_-]?key|secret|token|password)/i.test(text)) return '';
-    return /^[a-z0-9._-]+:[a-z0-9._:/-]+$/i.test(text) ? text : '';
+    return normalizeStableSourceReference(value, { allowProjectFile: true }) || '';
 }
 
 function createStableFingerprint(prefix: string, value: string): string {

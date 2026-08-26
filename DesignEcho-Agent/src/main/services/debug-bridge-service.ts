@@ -2,6 +2,16 @@ import crypto from 'crypto';
 import fs from 'fs';
 import http from 'http';
 import path from 'path';
+import {
+    buildDebugBridgeChatExecutionFailure,
+    createDebugBridgeChatExecutionError,
+    readDebugBridgeChatExecutionFailure,
+    readDebugBridgeChatPreflightSnapshot,
+    readDebugBridgePhotoshopRuntimeBinding,
+    type DebugBridgeChatExecutionFailure,
+    type DebugBridgeChatPreflightSnapshot,
+    type DebugBridgePhotoshopRuntimeBinding
+} from '../../shared/debug-bridge-chat';
 
 export interface DebugBridgeMessage {
     id: string;
@@ -91,6 +101,8 @@ export interface DebugBridgeChatSubmitInput {
     expectedRuntimeBuildId?: string;
     /** 受控样本必须绑定当前 Photoshop UXP Runtime build。 */
     expectedPhotoshopRuntimeBuildId?: string;
+    /** 正式样本绑定 live 全身份及 runtime.js / manifest 摘要，buildId 不能单独授权。 */
+    expectedPhotoshopRuntimeBinding?: DebugBridgePhotoshopRuntimeBinding;
     /** 开发评测写前绑定；Renderer 必须在调用模型前核对当前选择。 */
     expectedProvider?: string;
     expectedModelId?: string;
@@ -145,6 +157,7 @@ interface DebugBridgeOptions {
     host: string;
     port: number;
     dataDir: string;
+    onChatSubmitPreflight?: () => Promise<DebugBridgeChatPreflightSnapshot>;
     onChatSubmit?: (input: DebugBridgeChatSubmitInput) => Promise<unknown>;
     onEvent?: (event: {
         type: 'session.created' | 'message.appended';
@@ -192,6 +205,20 @@ function sendJson(res: http.ServerResponse, statusCode: number, body: unknown, r
     res.end(payload);
 }
 
+function sendExecutionFailure(
+    res: http.ServerResponse,
+    statusCode: number,
+    failure: DebugBridgeChatExecutionFailure,
+    req: http.IncomingMessage,
+    port: number
+): void {
+    sendJson(res, statusCode, {
+        success: false,
+        error: failure.message,
+        failure
+    }, req, port);
+}
+
 function readRequestBody(req: http.IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
@@ -225,6 +252,7 @@ export class DebugBridgeService {
     private readonly port: number;
     private readonly dataDir: string;
     private readonly sessionsDir: string;
+    private readonly onChatSubmitPreflight?: DebugBridgeOptions['onChatSubmitPreflight'];
     private readonly onChatSubmit?: DebugBridgeOptions['onChatSubmit'];
     private readonly onEvent?: DebugBridgeOptions['onEvent'];
 
@@ -233,6 +261,7 @@ export class DebugBridgeService {
         this.port = options.port;
         this.dataDir = options.dataDir;
         this.sessionsDir = path.join(this.dataDir, 'sessions');
+        this.onChatSubmitPreflight = options.onChatSubmitPreflight;
         this.onChatSubmit = options.onChatSubmit;
         this.onEvent = options.onEvent;
         fs.mkdirSync(this.sessionsDir, { recursive: true });
@@ -259,10 +288,14 @@ export class DebugBridgeService {
             try {
                 await this.handleRequest(req, res);
             } catch (error: any) {
-                sendJson(res, 500, {
-                    success: false,
-                    error: error?.message || 'Debug bridge internal error'
-                }, req, this.port);
+                const failure = readDebugBridgeChatExecutionFailure(error)
+                    || buildDebugBridgeChatExecutionFailure({
+                        stage: 'unknown',
+                        writePossible: true,
+                        message: error?.message || 'Debug bridge internal error',
+                        code: 'debug_bridge_internal_error'
+                    });
+                sendExecutionFailure(res, 500, failure, req, this.port);
             }
         });
 
@@ -381,37 +414,86 @@ export class DebugBridgeService {
 
         if (method === 'GET' && pathname === '/chat/submit/preflight') {
             if (!this.canUseWriteBridge(String(req.headers['x-designecho-debug-token'] || ''))) {
-                sendJson(res, 403, { success: false, error: 'Debug write token is missing or invalid' }, req, this.port);
+                sendExecutionFailure(res, 403, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: 'Debug write token is missing or invalid',
+                    code: 'debug_write_token_invalid'
+                }), req, this.port);
                 return;
+            }
+            if (!this.onChatSubmitPreflight) {
+                sendExecutionFailure(res, 503, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: 'Chat submit preflight bridge is unavailable',
+                    code: 'chat_submit_preflight_unavailable'
+                }), req, this.port);
+                return;
+            }
+            const rendererSnapshot = readDebugBridgeChatPreflightSnapshot(
+                await this.onChatSubmitPreflight()
+            );
+            if (!rendererSnapshot) {
+                throw createDebugBridgeChatExecutionError(buildDebugBridgeChatExecutionFailure({
+                    stage: 'renderer_preflight',
+                    writePossible: false,
+                    message: 'Renderer returned an invalid chat preflight snapshot',
+                    code: 'renderer_preflight_snapshot_invalid'
+                }));
             }
             sendJson(res, 200, {
                 success: true,
-                guardedWriteProtocol: 'debug-bridge-chat-submit/v1'
+                guardedWriteProtocol: 'debug-bridge-chat-submit/v1',
+                renderer: rendererSnapshot
             }, req, this.port);
             return;
         }
 
         if (method === 'POST' && pathname === '/chat/submit') {
             if (!this.onChatSubmit) {
-                sendJson(res, 503, { success: false, error: 'Chat submit bridge is unavailable' }, req, this.port);
+                sendExecutionFailure(res, 503, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: 'Chat submit bridge is unavailable',
+                    code: 'chat_submit_unavailable'
+                }), req, this.port);
                 return;
             }
             if (!this.canUseWriteBridge(String(req.headers['x-designecho-debug-token'] || ''))) {
-                sendJson(res, 403, { success: false, error: 'Debug write token is missing or invalid' }, req, this.port);
+                sendExecutionFailure(res, 403, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: 'Debug write token is missing or invalid',
+                    code: 'debug_write_token_invalid'
+                }), req, this.port);
                 return;
             }
 
             const body = safeJsonParse<Record<string, unknown>>(await readRequestBody(req));
             if (!body) {
-                sendJson(res, 400, { success: false, error: 'Invalid JSON body' }, req, this.port);
+                sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: 'Invalid JSON body',
+                    code: 'chat_submit_body_invalid'
+                }), req, this.port);
                 return;
             }
 
             const text = typeof body.text === 'string' ? body.text.trim() : '';
             if (!text) {
-                sendJson(res, 400, { success: false, error: 'text is required' }, req, this.port);
+                sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: 'text is required',
+                    code: 'chat_submit_text_missing'
+                }), req, this.port);
                 return;
             }
+            const expectedPhotoshopRuntimeBinding = readDebugBridgePhotoshopRuntimeBinding(
+                body.expectedPhotoshopRuntimeBinding
+            );
             const hasFormalWriteGuard = typeof body.expectedProjectPath === 'string'
                 && Boolean(body.expectedProjectPath.trim())
                 && typeof body.expectedRuntimeGitCommit === 'string'
@@ -420,6 +502,9 @@ export class DebugBridgeService {
                 && Boolean(body.expectedRuntimeBuildId.trim())
                 && typeof body.expectedPhotoshopRuntimeBuildId === 'string'
                 && Boolean(body.expectedPhotoshopRuntimeBuildId.trim())
+                && Boolean(expectedPhotoshopRuntimeBinding)
+                && expectedPhotoshopRuntimeBinding?.live.buildId
+                    === body.expectedPhotoshopRuntimeBuildId.trim()
                 && typeof body.expectedProvider === 'string'
                 && Boolean(body.expectedProvider.trim())
                 && typeof body.expectedModelId === 'string'
@@ -427,10 +512,12 @@ export class DebugBridgeService {
                 && body.requireCleanRuntimeGitState === true
                 && body.requireNoOpenPhotoshopDocuments === true;
             if (!hasFormalWriteGuard) {
-                sendJson(res, 400, {
-                    success: false,
-                    error: 'Debug chat submit requires the complete guarded-write protocol'
-                }, req, this.port);
+                sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: 'Debug chat submit requires the complete guarded-write protocol',
+                    code: 'chat_submit_guard_incomplete'
+                }), req, this.port);
                 return;
             }
 
@@ -451,6 +538,7 @@ export class DebugBridgeService {
                 expectedPhotoshopRuntimeBuildId: typeof body.expectedPhotoshopRuntimeBuildId === 'string'
                     ? body.expectedPhotoshopRuntimeBuildId.trim().slice(0, 256)
                     : undefined,
+                expectedPhotoshopRuntimeBinding,
                 expectedProvider: typeof body.expectedProvider === 'string'
                     ? body.expectedProvider.trim().slice(0, 128)
                     : undefined,

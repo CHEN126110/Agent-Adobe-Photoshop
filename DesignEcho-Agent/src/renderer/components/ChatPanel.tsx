@@ -107,6 +107,16 @@ import {
     readDebugFinalArtifactPaths,
     readDebugSkuDeliverySource
 } from '../services/debug-final-artifact-sidecar';
+import {
+    buildDebugBridgeChatExecutionFailure,
+    buildDebugBridgeChatFailureEnvelope,
+    debugBridgePhotoshopRuntimeLiveIdentitiesMatch,
+    DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION,
+    readDebugBridgePhotoshopRuntimeBinding,
+    readDebugBridgePhotoshopRuntimeLiveIdentity,
+    type DebugBridgeChatExecutionStage,
+    type DebugBridgePhotoshopRuntimeLiveIdentity
+} from '../../shared/debug-bridge-chat';
 import { getEagleLibraryPreview } from '../services/eagle-library.service';
 
 // 导入统一 AI Agent 服务
@@ -321,15 +331,15 @@ type ChatSendOverride = {
     inlineMessageEdit?: InlineMessageEditSubmission;
 };
 
-function readDebugPhotoshopRuntimeBuildId(value: unknown): string {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+function readDebugPhotoshopRuntimeIdentity(
+    value: unknown
+): DebugBridgePhotoshopRuntimeLiveIdentity | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     const state = (value as any).state;
     const runtime = state && typeof state === 'object' && !Array.isArray(state)
         ? state.runtime
         : undefined;
-    return runtime && typeof runtime === 'object' && !Array.isArray(runtime)
-        ? String(runtime.buildId || '').trim()
-        : '';
+    return readDebugBridgePhotoshopRuntimeLiveIdentity(runtime);
 }
 
 type ComposerRuntimeReference =
@@ -4997,6 +5007,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }, [buildChatTestSnapshot, handleSend, resetChatTestConversation, waitForChatIdle, waitForChatRunStartOrAssistant]);
 
     useEffect(() => {
+        const unsubscribe = window.designEcho?.onDebugBridgeChatPreflight?.(() => {
+            const state = useAppStore.getState();
+            const selectedModelId = String(state.modelPreferences?.primaryModel || '').trim();
+            const selectedModel = getModelById(selectedModelId);
+            return {
+                version: DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION,
+                capturedAt: new Date().toISOString(),
+                selectedProvider: String(selectedModel?.provider || '').trim(),
+                selectedModelId,
+                selectedApiModelId: String(selectedModel?.apiModelId || '').trim(),
+                selectedModelResolved: Boolean(selectedModel),
+                projectPath: String(state.currentProject?.path || '').trim(),
+                chatBusy: Boolean(chatSubmissionInFlightRef.current || state.isLoading)
+            };
+        });
+        return () => {
+            unsubscribe?.();
+        };
+    }, []);
+
+    useEffect(() => {
         const unsubscribe = window.designEcho?.onDebugBridgeChatCancel?.((request) => {
             const requestId = String(request?.requestId || '').trim();
             if (!requestId || activeDebugBridgeRequestIdRef.current !== requestId) return;
@@ -5013,23 +5044,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
     useEffect(() => {
         const unsubscribe = window.designEcho?.onDebugBridgeChatSubmit?.(async (request) => {
+            let executionStage: DebugBridgeChatExecutionStage = 'renderer_preflight';
+            let writePossible = false;
             const text = String(request?.text || '').trim();
             const debugRequestId = String(request?.requestId || '').trim();
-            if (!text) {
-                throw new Error('Debug Bridge chat submit requires text.');
-            }
-            if (!debugRequestId) {
-                throw new Error('Debug Bridge chat submit requires request identity.');
-            }
-            if (chatSubmissionInFlightRef.current || useAppStore.getState().isLoading) {
-                throw new Error('当前已有设计任务正在执行，请等待完成或先停止当前任务。');
-            }
-            if (activeDebugBridgeRequestIdRef.current) {
-                throw new Error('已有受控调试请求尚未闭合，本轮不会启动。');
-            }
-            activeDebugBridgeRequestIdRef.current = debugRequestId;
-            cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
             try {
+                if (!text) {
+                    throw new Error('Debug Bridge chat submit requires text.');
+                }
+                if (!debugRequestId) {
+                    throw new Error('Debug Bridge chat submit requires request identity.');
+                }
+                if (chatSubmissionInFlightRef.current || useAppStore.getState().isLoading) {
+                    throw new Error('当前已有设计任务正在执行，请等待完成或先停止当前任务。');
+                }
+                if (activeDebugBridgeRequestIdRef.current) {
+                    throw new Error('已有受控调试请求尚未闭合，本轮不会启动。');
+                }
+                activeDebugBridgeRequestIdRef.current = debugRequestId;
+                cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
+                executionStage = 'before_handle_send';
                 const throwIfDebugRequestCancelled = (): void => {
                     if (cancelledDebugBridgeRequestIdsRef.current.has(debugRequestId)) {
                         throw new Error('受控调试请求已取消，本轮不会继续提交模型或 Photoshop 写入。');
@@ -5055,8 +5089,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 const expectedPhotoshopRuntimeBuildId = String(
                     request?.expectedPhotoshopRuntimeBuildId || ''
                 ).trim();
-                if (!expectedPhotoshopRuntimeBuildId) {
-                    throw new Error('受控调试缺少 Photoshop Runtime Build 身份，本轮不会提交。');
+                const expectedPhotoshopRuntimeBinding = readDebugBridgePhotoshopRuntimeBinding(
+                    request?.expectedPhotoshopRuntimeBinding
+                );
+                if (!expectedPhotoshopRuntimeBuildId
+                    || !expectedPhotoshopRuntimeBinding
+                    || expectedPhotoshopRuntimeBinding.live.buildId !== expectedPhotoshopRuntimeBuildId) {
+                    throw new Error('受控调试缺少完整 Photoshop Runtime 身份，本轮不会提交。');
                 }
                 const selectedState = useAppStore.getState();
                 const selectedModelId = String(selectedState.modelPreferences?.primaryModel || '').trim();
@@ -5073,13 +5112,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     verbose: false
                 });
                 throwIfDebugRequestCancelled();
-                const submittedPhotoshopRuntimeBuildId = readDebugPhotoshopRuntimeBuildId(
+                const submittedPhotoshopRuntimeIdentity = readDebugPhotoshopRuntimeIdentity(
                     submittedPhotoshopRuntimeResult
                 );
-                if (!submittedPhotoshopRuntimeBuildId
-                    || submittedPhotoshopRuntimeBuildId !== expectedPhotoshopRuntimeBuildId) {
+                const submittedPhotoshopRuntimeBuildId = submittedPhotoshopRuntimeIdentity?.buildId || '';
+                if (!submittedPhotoshopRuntimeIdentity
+                    || !debugBridgePhotoshopRuntimeLiveIdentitiesMatch(
+                        submittedPhotoshopRuntimeIdentity,
+                        expectedPhotoshopRuntimeBinding.live
+                    )) {
                     throw new Error(
-                        `当前 Photoshop Runtime Build 与受控调试指定版本不一致（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${submittedPhotoshopRuntimeBuildId || 'unknown'}）。`
+                        `当前 Photoshop Runtime 完整身份与受控调试指定版本不一致（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${submittedPhotoshopRuntimeBuildId || 'unknown'}）。`
                     );
                 }
                 let openPhotoshopDocumentCountAtSubmission: number | null = null;
@@ -5100,7 +5143,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 }
                 const guardedPhotoshopExecutionBaseline = createGuardedPhotoshopExecutionBaseline({
                     requestId: debugRequestId,
-                    expectedPhotoshopRuntimeBuildId
+                    expectedPhotoshopRuntimeBuildId,
+                    expectedPhotoshopRuntimeBinding
                 });
                 if (request.resetConversation) {
                     resetChatTestConversation();
@@ -5124,6 +5168,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     // 后续一旦让出事件循环，handleSend 已建立本轮 AbortController，取消会正常中断。
                     throwIfDebugRequestCancelled();
                     beginDebugFinalArtifactCapture(debugRequestId);
+                    executionStage = 'handle_send_started';
+                    writePossible = true;
                     await handleSend({
                         text,
                         image: null,
@@ -5133,6 +5179,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         publicPlanConfirmationRequestId: request.publicPlanConfirmationRequestId,
                         publicPlanDisposableLiveAdapter: request.publicPlanDisposableLiveAdapter
                     });
+                    executionStage = 'completion';
                     const finalArtifactRefs = normalizeDebugFinalArtifactRefs(
                         readDebugFinalArtifactPaths(debugRequestId),
                         request.expectedProjectPath
@@ -5153,13 +5200,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     const completedPhotoshopRuntimeResult = await executeToolCall('diagnoseState', {
                         verbose: false
                     });
-                    const completedPhotoshopRuntimeBuildId = readDebugPhotoshopRuntimeBuildId(
+                    const completedPhotoshopRuntimeIdentity = readDebugPhotoshopRuntimeIdentity(
                         completedPhotoshopRuntimeResult
                     );
-                    if (!completedPhotoshopRuntimeBuildId
-                        || completedPhotoshopRuntimeBuildId !== expectedPhotoshopRuntimeBuildId) {
+                    const completedPhotoshopRuntimeBuildId = completedPhotoshopRuntimeIdentity?.buildId || '';
+                    if (!completedPhotoshopRuntimeIdentity
+                        || !debugBridgePhotoshopRuntimeLiveIdentitiesMatch(
+                            completedPhotoshopRuntimeIdentity,
+                            expectedPhotoshopRuntimeBinding.live
+                        )) {
                         throw new Error(
-                            `任务完成时 Photoshop Runtime Build 已变化或无法读取（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${completedPhotoshopRuntimeBuildId || 'unknown'}）。`
+                            `任务完成时 Photoshop Runtime 完整身份已变化或无法读取（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${completedPhotoshopRuntimeBuildId || 'unknown'}）。`
                         );
                     }
                     const firstPhotoshopMutationBaseline = readGuardedPhotoshopExecutionBaselineReceipt(
@@ -5187,6 +5238,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 && openPhotoshopDocumentCountAtSubmission === 0
                             ),
                             expectedPhotoshopRuntimeBuildId,
+                            expectedPhotoshopRuntimeBinding,
+                            submittedPhotoshopRuntimeIdentity,
+                            completedPhotoshopRuntimeIdentity,
                             submittedPhotoshopRuntimeBuildId,
                             completedPhotoshopRuntimeBuildId,
                             expectedPhotoshopRuntimeMatchedAtSubmission: Boolean(
@@ -5197,6 +5251,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 submittedPhotoshopRuntimeBuildId
                                 && completedPhotoshopRuntimeBuildId === submittedPhotoshopRuntimeBuildId
                             ),
+                            photoshopRuntimeBindingMatchedAtSubmission:
+                                debugBridgePhotoshopRuntimeLiveIdentitiesMatch(
+                                    submittedPhotoshopRuntimeIdentity,
+                                    expectedPhotoshopRuntimeBinding.live
+                                ),
+                            photoshopRuntimeBindingUnchangedThroughCompletion:
+                                debugBridgePhotoshopRuntimeLiveIdentitiesMatch(
+                                    completedPhotoshopRuntimeIdentity,
+                                    submittedPhotoshopRuntimeIdentity
+                                ),
                             firstPhotoshopMutationBaseline,
                             submittedModelId,
                             submittedApiModelId: String(submittedModel?.apiModelId || '').trim(),
@@ -5222,9 +5286,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 };
                 if (request.disableSkillBridges === true) {
                     const { runWithSkillBridgesSuppressed } = await import('../services/skill-executors/skill-tools');
-                    return runWithSkillBridgesSuppressed(submitAndWait);
+                    return await runWithSkillBridgesSuppressed(submitAndWait);
                 }
-                return submitAndWait();
+                return await submitAndWait();
+            } catch (error) {
+                return buildDebugBridgeChatFailureEnvelope(buildDebugBridgeChatExecutionFailure({
+                    stage: executionStage,
+                    writePossible,
+                    message: error instanceof Error ? error.message : String(error),
+                    code: writePossible
+                        ? 'renderer_execution_failed_after_handle_send'
+                        : 'renderer_submission_rejected_before_handle_send',
+                    requestId: String(request?.requestId || '').trim()
+                }));
             } finally {
                 if (activeDebugBridgeRequestIdRef.current === debugRequestId) {
                     activeDebugBridgeRequestIdRef.current = null;

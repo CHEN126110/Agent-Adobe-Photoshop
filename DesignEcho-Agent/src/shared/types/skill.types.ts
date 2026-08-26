@@ -135,6 +135,12 @@ export interface SkillRoutingMetadata {
 export interface SkillDeclaration {
     /** 唯一标识 */
     id: string;
+
+    /**
+     * 对应的官方工作法包 id（skills/<playbookId>/SKILL.md）。
+     * 显式 crosswalk 避免 Runtime Skill id 与 playbook 目录名不一致时让模型猜测。
+     */
+    playbookId?: string;
     
     /** 技能名称（给 AI 和用户看的） */
     name: string;

@@ -62,10 +62,11 @@ export const SKU_COLOR_CARD_MANIFEST: SkillRuntimeManifest = {
     optional_model_profiles: ['review.strict'],
     read_scopes: ['brief', 'assets', 'photoshop', 'review'],
     write_scopes: ['layout_plan', 'execution_tasks', 'review', 'delivery'],
-    tool_namespaces: ['project.', 'photoshop.read.', 'photoshop.sandbox.', 'delivery.'],
+    tool_namespaces: ['project.', 'knowledge.', 'photoshop.read.', 'photoshop.sandbox.', 'delivery.'],
     available_tools: [
         'project.listResources',
         'project.searchResources',
+        'knowledge.search.readSkillPlaybook',
         'photoshop.read.getDocumentSummary',
         'photoshop.read.getVisualSnapshot',
         'photoshop.read.inspectLayers',

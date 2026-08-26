@@ -8,12 +8,15 @@ import type {
     DesignProjectFactWriteAuthority,
     DesignProjectState
 } from './types/design-project-state.types';
+import {
+    normalizeStableSourceReference,
+    normalizeStableSourceReferenceList
+} from './stable-source-reference';
 
 const MAX_FACT_RECORDS = 80;
 const MAX_FACT_SOURCES = 8;
 const MAX_SUPPORT_REFS = 8;
 const SAFE_FACT_ID = /^project-fact-[a-f0-9]{16}$/;
-const SAFE_SOURCE_REF = /^[a-z][a-z0-9-]{1,40}:[a-z0-9._:-]{1,160}$/i;
 const SOURCE_KINDS = new Set<DesignProjectFactSourceKind>([
     'user_statement',
     'project_asset_observation',
@@ -323,7 +326,7 @@ function normalizeSource(value: unknown): DesignProjectFactSource | undefined {
         ? raw.kind as DesignProjectFactSourceKind
         : undefined;
     if (!kind) return undefined;
-    const sourceRef = SAFE_SOURCE_REF.test(String(raw.sourceRef || '')) ? String(raw.sourceRef) : undefined;
+    const sourceRef = normalizeStableSourceReference(raw.sourceRef, { allowProjectFile: true });
     const supportRefs = normalizeSupportRefs(raw.supportRefs);
     return {
         kind,
@@ -376,11 +379,10 @@ function mergeSources(
 }
 
 function normalizeSupportRefs(value: unknown): string[] {
-    if (!Array.isArray(value)) return [];
-    return Array.from(new Set(value
-        .map((item) => String(item || '').trim())
-        .filter((item) => SAFE_SOURCE_REF.test(item))))
-        .slice(0, MAX_SUPPORT_REFS);
+    return normalizeStableSourceReferenceList(value || [], {
+        allowProjectFile: true,
+        maxItems: MAX_SUPPORT_REFS
+    }).refs;
 }
 
 function normalizeAuthority(value: unknown): DesignProjectFactWriteAuthority {

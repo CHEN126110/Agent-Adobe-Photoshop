@@ -13,14 +13,11 @@ import {
     isSkuCardSourceOnlyText,
     resolveSkuSkillStage
 } from './sku-intent-params';
-import { MAIN_IMAGE_DELIVERY_DOCUMENTS } from './main-image-design-core';
 import { resolveMainImageWhiteBackgroundIntentDefaults } from './main-image-white-background-export-contract';
 import {
     isProjectContextMainImageDeliveryIntent,
     isProjectImageAnalysisInventoryOverviewIntent
 } from './project-image-analysis-intent';
-
-const MAIN_IMAGE_DEFAULT_SIZE_KEYS = MAIN_IMAGE_DELIVERY_DOCUMENTS.map((doc) => doc.folderKey);
 
 function extractFontName(userInput: string): string | undefined {
     const match = String(userInput || '').match(/(?:改成|换成|改为|换为)\s*([^\n，。,.!！?？]+)/i);
@@ -201,8 +198,6 @@ function buildMainImageFallbacks(input: SkillParamDefaultsInput): Record<string,
             }
         } else if (inferredSize) {
             fallback.size = inferredSize;
-        } else {
-            fallback.sizes = [...MAIN_IMAGE_DEFAULT_SIZE_KEYS];
         }
     } else if (!hasCustomSizeParam && inferredPixelSize && params.size === 'custom') {
         fallback.customSize = inferredPixelSize;

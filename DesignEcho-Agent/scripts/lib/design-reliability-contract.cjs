@@ -7,8 +7,10 @@ const CASE_VERSION = "design-reliability-case/v1";
 const RUN_VERSION = "design-reliability-run/v1";
 const REVIEW_VERSION = "design-reliability-human-review/v2";
 const LEGACY_REVIEW_VERSION = "design-reliability-human-review/v1";
+const VERIFIED_REVIEW_PACKET_PROOF_VERSION = "design-reliability-verified-review-packet-proof/v1";
 const ATTRIBUTION_VERSION = "design-reliability-attribution/v1";
 const COHORT_VERSION = "design-reliability-cohort/v1";
+const OFFICIAL_REVIEW_DISK_TRUST = Symbol.for("designecho.designReliability.officialReviewDiskVerified");
 
 const TASK_FAMILIES = Object.freeze(["main_image", "detail_page", "sku"]);
 const EXECUTION_MODELS = Object.freeze(["agentic", "staged"]);
@@ -216,13 +218,23 @@ function buildExpectedComparisonEvidenceRefs(caseSpec, run) {
   for (const reference of references) {
     const kind = cleanString(reference?.kind);
     const ref = cleanString(reference?.ref).replace(/\\/g, '/');
-    if (kind === 'user_design' && ref) {
-      expected.get('user_design_anchor').add(`user-design:${ref}`);
-    } else if (kind === 'eagle_item' && ref.startsWith('eagle:item:')) {
-      expected.get('eagle_anchor').add(ref);
+    const digest = cleanString(reference?.digest).toLowerCase();
+    if (kind === 'user_design' && ref && isSha256Digest(digest)) {
+      expected.get('user_design_anchor').add(`user-design:${ref}@${digest}`);
+    } else if (kind === 'eagle_item' && ref.startsWith('eagle:item:') && isSha256Digest(digest)) {
+      expected.get('eagle_anchor').add(`${ref}@${digest}`);
     }
   }
   return expected;
+}
+
+function buildExpectedComparisonEvidenceList(caseSpec, run) {
+  const expected = buildExpectedComparisonEvidenceRefs(caseSpec, run);
+  return COMPARISON_EVIDENCE_KINDS.flatMap((kind) => (
+    [...(expected.get(kind) || [])]
+      .sort()
+      .map((ref) => ({ kind, ref }))
+  ));
 }
 
 function validateComparisonEvidenceBindings(value, caseSpec, run, errors) {
@@ -353,6 +365,151 @@ function stableStringify(value) {
 
 function sha256Text(value) {
   return `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`;
+}
+
+function isSha256Digest(value) {
+  return /^sha256:[a-f0-9]{64}$/i.test(cleanString(value));
+}
+
+function buildReviewPacketProjection(review) {
+  if (!isRecord(review)) return {};
+  const projection = cloneJson(review);
+  delete projection.verifiedPacketProof;
+  return projection;
+}
+
+function buildReviewPacketProjectionDigest(review) {
+  return sha256Text(stableStringify(buildReviewPacketProjection(review)));
+}
+
+function buildComparisonEvidenceDigest(value) {
+  const refs = Array.isArray(value)
+    ? value
+      .filter(isRecord)
+      .map((item) => ({ kind: cleanString(item.kind), ref: cleanString(item.ref) }))
+      .sort((left, right) => left.kind.localeCompare(right.kind) || left.ref.localeCompare(right.ref))
+    : [];
+  return sha256Text(stableStringify(refs));
+}
+
+function validateVerifiedReviewPacketProof(proof, review, context = {}) {
+  const errors = [];
+  if (!isRecord(proof)) {
+    return { ok: false, errors: ["verifiedPacketProof 缺失或不是对象。"] };
+  }
+  if (proof.version !== VERIFIED_REVIEW_PACKET_PROOF_VERSION) {
+    errors.push(`verifiedPacketProof.version 必须是 ${VERIFIED_REVIEW_PACKET_PROOF_VERSION}。`);
+  }
+  const packetId = cleanString(proof.packetId);
+  if (!/^[a-z0-9][a-z0-9._-]{7,127}$/i.test(packetId)) {
+    errors.push("verifiedPacketProof.packetId 不是安全、稳定的包身份。 ");
+  }
+  for (const field of [
+    "packetDigest",
+    "sealedMappingDigest",
+    "reviewerResponseDigest",
+    "assetSetDigest",
+    "sourceBindingDigest",
+    "comparisonEvidenceDigest",
+    "reviewProjectionDigest"
+  ]) {
+    if (!isSha256Digest(proof[field])) {
+      errors.push(`verifiedPacketProof.${field} 必须是 sha256:<64 hex>。`);
+    }
+  }
+  if (!cleanString(proof.runObservationId)
+    || cleanString(proof.runObservationId) !== cleanString(review?.runObservationId)) {
+    errors.push("verifiedPacketProof.runObservationId 与 Review 不一致。 ");
+  }
+  if (!cleanString(proof.rubricId)
+    || cleanString(proof.rubricId) !== cleanString(review?.rubricId)) {
+    errors.push("verifiedPacketProof.rubricId 与 Review 不一致。 ");
+  }
+  if (!isSha256Digest(proof.rubricDigest)
+    || cleanString(proof.rubricDigest).toLowerCase() !== cleanString(review?.rubricDigest).toLowerCase()) {
+    errors.push("verifiedPacketProof.rubricDigest 与 Review 不一致。 ");
+  }
+  if (!cleanString(proof.reviewerId)
+    || cleanString(proof.reviewerId) !== cleanString(review?.reviewerId)) {
+    errors.push("verifiedPacketProof.reviewerId 与 Review 不一致。 ");
+  }
+  if (!cleanString(proof.reviewedAt)
+    || cleanString(proof.reviewedAt) !== cleanString(review?.reviewedAt)) {
+    errors.push("verifiedPacketProof.reviewedAt 与 Review 不一致。 ");
+  }
+  if (!isRecord(proof.caseRef)
+    || !cleanString(proof.caseRef.caseId)
+    || !Number.isInteger(proof.caseRef.revision)
+    || proof.caseRef.revision < 1
+    || !isSha256Digest(proof.caseRef.caseDigest)) {
+    errors.push("verifiedPacketProof.caseRef 不完整。 ");
+  }
+  if (cleanString(proof.reviewProjectionDigest).toLowerCase()
+    !== buildReviewPacketProjectionDigest(review).toLowerCase()) {
+    errors.push("verifiedPacketProof 未绑定当前完整 Review 投影。 ");
+  }
+  if (cleanString(proof.comparisonEvidenceDigest).toLowerCase()
+    !== buildComparisonEvidenceDigest(review?.comparisonEvidenceRefs).toLowerCase()) {
+    errors.push("verifiedPacketProof 未绑定当前 comparisonEvidenceRefs。 ");
+  }
+  const requiredChecks = [
+    "packetDigestVerified",
+    "sealedMappingDigestVerified",
+    "reviewerResponseBound",
+    "assetHashesVerified",
+    "sourceBindingsVerified",
+    "randomizedLabelsVerified",
+    "completeBlindResponseVerified"
+  ];
+  if (!isRecord(proof.verification)
+    || requiredChecks.some((field) => proof.verification[field] !== true)
+    || Object.keys(proof.verification).some((field) => !requiredChecks.includes(field))) {
+    errors.push("verifiedPacketProof.verification 必须完整且只能包含受信验证器签发的检查项。 ");
+  }
+  if (!isRecord(proof.boundaries)
+    || proof.boundaries.sealedMappingExcludedFromReviewerPacket !== true
+    || proof.boundaries.noOriginMetadataInReviewerPacket !== true
+    || proof.boundaries.noAbsolutePathsInReviewerPacket !== true
+    || proof.boundaries.uniformSingleAssetAnonymousGroups !== true
+    || proof.boundaries.devBenchmarkOnly !== true) {
+    errors.push("verifiedPacketProof.boundaries 不完整。 ");
+  }
+  if (!cleanString(proof.verifiedAt) || !Number.isFinite(Date.parse(proof.verifiedAt))) {
+    errors.push("verifiedPacketProof.verifiedAt 必须是有效时间。 ");
+  }
+
+  const caseSpec = isRecord(context.caseSpec) ? context.caseSpec : undefined;
+  const run = isRecord(context.run) ? context.run : undefined;
+  const rubric = isRecord(context.rubric) ? context.rubric : undefined;
+  if (caseSpec) {
+    if (cleanString(proof.caseRef?.caseId) !== cleanString(caseSpec.caseId)
+      || proof.caseRef?.revision !== caseSpec.revision
+      || cleanString(proof.caseRef?.caseDigest).toLowerCase()
+        !== cleanString(caseSpec.caseDigest).toLowerCase()) {
+      errors.push("verifiedPacketProof.caseRef 与当前 Case 不一致。 ");
+    }
+  }
+  if (run) {
+    if (cleanString(proof.runObservationId) !== cleanString(run.runObservationId)) {
+      errors.push("verifiedPacketProof 与当前 Run 不一致。 ");
+    }
+    if (cleanString(proof.caseRef?.caseDigest).toLowerCase()
+      !== cleanString(run.caseRef?.caseDigest).toLowerCase()) {
+      errors.push("verifiedPacketProof 没有绑定当前 Run 的 Case 摘要。 ");
+    }
+  }
+  if (rubric && cleanString(proof.rubricDigest).toLowerCase() !== buildRubricDigest(rubric).toLowerCase()) {
+    errors.push("verifiedPacketProof 没有绑定当前 Rubric 内容。 ");
+  }
+  if (caseSpec && run) {
+    const expectedDigest = buildComparisonEvidenceDigest(
+      buildExpectedComparisonEvidenceList(caseSpec, run)
+    );
+    if (cleanString(proof.comparisonEvidenceDigest).toLowerCase() !== expectedDigest.toLowerCase()) {
+      errors.push("verifiedPacketProof 没有绑定当前 Case / Run 的完整比较证据集合。 ");
+    }
+  }
+  return { ok: errors.length === 0, errors };
 }
 
 function cloneJson(value) {
@@ -500,12 +657,19 @@ function validateReviewRef(input, fieldName, errors) {
   }
   const kind = cleanString(input.kind);
   const ref = cleanString(input.ref);
-  if (!kind || !ref) {
-    errors.push(`${fieldName} 需要 kind 与 ref。`);
+  const digest = cleanString(input.digest).toLowerCase();
+  if (!kind || !ref || !digest) {
+    errors.push(`${fieldName} 需要 kind、ref 与冻结 digest。`);
     return;
   }
+  if (!['user_design', 'eagle_item'].includes(kind)) {
+    errors.push(`${fieldName}.kind 非法。`);
+  }
+  if (!isSha256Digest(digest)) {
+    errors.push(`${fieldName}.digest 必须是 sha256:<64 hex>。`);
+  }
   if (kind === "eagle_item") {
-    if (!ref.startsWith("eagle:item:")) {
+    if (!/^eagle:item:[A-Za-z0-9._-]+$/.test(ref)) {
       errors.push(`${fieldName}.ref 必须使用 eagle:item:<id>。`);
     }
     return;
@@ -604,6 +768,12 @@ function validateDesignReliabilityCase(caseSpec) {
       caseSpec.task.reviewOnlyReferences.forEach((item, index) => {
         validateReviewRef(item, `task.reviewOnlyReferences[${index}]`, errors);
       });
+      const reviewDigests = caseSpec.task.reviewOnlyReferences
+        .map((item) => cleanString(item?.digest).toLowerCase())
+        .filter(Boolean);
+      if (new Set(reviewDigests).size !== reviewDigests.length) {
+        errors.push("task.reviewOnlyReferences 不能冻结重复内容摘要。 ");
+      }
     }
   }
   if (!isRecord(caseSpec.oracle)) {
@@ -1379,6 +1549,9 @@ function deriveDesignReliabilityRunObservation(input) {
       ...(cleanString(environment.photoshopRuntimeBuildId)
         ? { photoshopRuntimeBuildId: cleanString(environment.photoshopRuntimeBuildId) }
         : {}),
+      ...(cleanString(environment.photoshopRuntimeBindingDigest)
+        ? { photoshopRuntimeBindingDigest: cleanString(environment.photoshopRuntimeBindingDigest) }
+        : {}),
       ...(Number.isFinite(environment.timeoutMs) ? { timeoutMs: Math.round(environment.timeoutMs) } : {}),
       ...(cleanString(environment.instructionDigest)
         ? { instructionDigest: cleanString(environment.instructionDigest) }
@@ -1757,8 +1930,11 @@ function validateDesignReliabilityReview(review, context = {}) {
   if (!REVIEW_EVIDENCE_PROTOCOLS.includes(evidenceProtocol)) {
     errors.push(`evidenceProtocol 必须是 ${REVIEW_EVIDENCE_PROTOCOLS.join(" / ")}。`);
   }
-  if (evidenceProtocol === "anonymous_packet_verified") {
-    errors.push("anonymous_packet_verified 尚未接入可验证评审包，因此不能进入正式成功率。 ");
+  if (evidenceProtocol === "anonymous_packet_verified" && !isRecord(review.verifiedPacketProof)) {
+    errors.push("anonymous_packet_verified 必须携带受信验证器签发的 verifiedPacketProof。 ");
+  }
+  if (evidenceProtocol !== "anonymous_packet_verified" && review.verifiedPacketProof !== undefined) {
+    errors.push("只有 anonymous_packet_verified 可以携带 verifiedPacketProof。 ");
   }
   const comparisonEvidenceRefs = validateComparisonEvidenceRefs(
     review.comparisonEvidenceRefs,
@@ -1799,6 +1975,14 @@ function validateDesignReliabilityReview(review, context = {}) {
   const rubric = isRecord(context.rubric) ? context.rubric : undefined;
   const caseSpec = isRecord(context.caseSpec) ? context.caseSpec : undefined;
   const run = isRecord(context.run) ? context.run : undefined;
+  if (evidenceProtocol === "anonymous_packet_verified" && isRecord(review.verifiedPacketProof)) {
+    const proofValidation = validateVerifiedReviewPacketProof(
+      review.verifiedPacketProof,
+      review,
+      { rubric, caseSpec, run }
+    );
+    errors.push(...proofValidation.errors);
+  }
   if (rubric && cleanString(review.rubricId) !== cleanString(rubric.rubricId)) {
     errors.push("Review rubricId 与当前 rubric 不一致。");
   }
@@ -1989,13 +2173,14 @@ function aggregateFamily(runs, reviews) {
   const reviewedRunIds = new Set(reviews.map((review) => review.runObservationId));
   const strictBlindReviews = reviews.filter((review) => (
     review.evidenceProtocol === "anonymous_packet_verified"
-    &&
-    review.blindedToCohort === true
+    && review.blindedToCohort === true
     && review.blindedToCandidateOrigin === true
     && isFiniteNumber(review.weightedOverall)
     && Array.isArray(review.comparisonEvidenceRefs)
     && review.comparisonEvidenceRefs.length > 0
     && Array.isArray(review.blockers)
+    && validateVerifiedReviewPacketProof(review.verifiedPacketProof, review).ok
+    && review[OFFICIAL_REVIEW_DISK_TRUST] === true
   ));
   const strictReviewsByRun = new Map();
   for (const review of strictBlindReviews) {
@@ -2429,8 +2614,12 @@ module.exports = {
   REVIEW_VERSION,
   RUN_VERSION,
   TASK_FAMILIES,
+  VERIFIED_REVIEW_PACKET_PROOF_VERSION,
   buildCaseDigest,
+  buildComparisonEvidenceDigest,
+  buildExpectedComparisonEvidenceList,
   buildRubricDigest,
+  buildReviewPacketProjectionDigest,
   buildDesignReliabilityCohortReport,
   calculateWeightedOverall,
   compareDesignReliabilityCohorts,
@@ -2445,5 +2634,6 @@ module.exports = {
   validateDesignReliabilityAttribution,
   validateDesignReliabilityCase,
   validateDesignReliabilityReview,
-  validateDesignReliabilityRun
+  validateDesignReliabilityRun,
+  validateVerifiedReviewPacketProof
 };

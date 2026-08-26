@@ -33,6 +33,8 @@ const {
 } = require(path.join(root, 'src', 'main', 'services', 'sku-staging-transaction.service.ts'));
 const {
   finalizeSkuStagingCleanup,
+  joinSkuExportPath,
+  normalizeSkuExportPathForCompare,
   promoteSkuStagedDeliverySet,
   validateSkuStagedRasterExports
 } = require(path.join(
@@ -441,6 +443,10 @@ const interactiveContinuationOperationStorePath = path.join(
   'interactive-continuation-operation-store.ts'
 );
 const preloadPath = path.join(root, 'src', 'main', 'preload.ts');
+const mainIndexPath = path.join(root, 'src', 'main', 'index.ts');
+const debugBridgeServicePath = path.join(root, 'src', 'main', 'services', 'debug-bridge-service.ts');
+const debugBridgeChatContractPath = path.join(root, 'src', 'shared', 'debug-bridge-chat.ts');
+const designReliabilityCliPath = path.join(root, 'scripts', 'design-reliability.cjs');
 const fileSystemHandlersPath = path.join(root, 'src', 'main', 'ipc-handlers', 'file-system-handlers.ts');
 const rendererTypesPath = path.join(root, 'src', 'renderer', 'types.d.ts');
 const websocketHandlersPath = path.join(root, 'src', 'main', 'ipc-handlers', 'websocket-handlers.ts');
@@ -1187,8 +1193,16 @@ function countBusinessReferences(filePath) {
 
 async function exerciseStagedFilePromotion() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'designecho-staged-promotion-'));
-  const destinationRoot = path.join(tempRoot, 'SKU');
-  fs.mkdirSync(destinationRoot, { recursive: true });
+  const destinationRoot = path.join(tempRoot, '客户交付', '色卡成品');
+  const containmentProjectRoot = path.join(tempRoot, 'contained-project');
+  const escapedDestinationRoot = path.join(tempRoot, 'outside-project', 'SKU');
+  fs.mkdirSync(containmentProjectRoot, { recursive: true });
+  const escapedTransactionIssue = await issueSkuStagingTransaction(
+    escapedDestinationRoot,
+    containmentProjectRoot
+  );
+  const projectContainmentRejected = escapedTransactionIssue.success === false
+    && !fs.existsSync(escapedDestinationRoot);
   const readBaseline = (filePath) => {
     if (!fs.existsSync(filePath)) return { exists: false };
     const stat = fs.statSync(filePath);
@@ -1204,7 +1218,7 @@ async function exerciseStagedFilePromotion() {
     expectedDestinationBaseline: baseline
   });
   const issueTransaction = async () => {
-    const issued = await issueSkuStagingTransaction(destinationRoot);
+    const issued = await issueSkuStagingTransaction(destinationRoot, tempRoot);
     if (issued.success !== true
       || !issued.transactionToken
       || !issued.transactionId
@@ -1336,9 +1350,13 @@ async function exerciseStagedFilePromotion() {
     });
     const atomicCommitVerified = committed.success === true
       && committed.committedPaths.length === 38
+      && committed.committedFiles.length === 38
       && committed.replacedPaths.length === 38
       && atomicItems.every((item, index) => (
         fs.readFileSync(item.destinationPath, 'utf8') === `new-atomic-${index}`
+        && committed.committedFiles[index]?.path === item.destinationPath
+        && committed.committedFiles[index]?.byteLength === Buffer.byteLength(`new-atomic-${index}`)
+        && committed.committedFiles[index]?.sha256 === sha256Text(`new-atomic-${index}`)
         && !fs.existsSync(item.sourcePath)
       ));
     const atomicCleanup = await cleanupTransaction(atomicTransaction.transactionToken);
@@ -1716,17 +1734,20 @@ async function exerciseStagedFilePromotion() {
     fs.writeFileSync(editableSource, 'new-editable', 'utf8');
     const rasterArtifact = {
       tempPath: rollbackSource,
-      tempPathKey: rollbackSource.toLowerCase(),
+      tempPathKey: normalizeSkuExportPathForCompare(rollbackSource),
       finalPath: rollbackDestination,
-      finalPathKey: rollbackDestination.toLowerCase()
+      finalPathKey: normalizeSkuExportPathForCompare(rollbackDestination)
     };
     const editableArtifact = {
       stagedPath: editableSource,
       finalPath: expectedItem.editablePath
     };
     const destinationBaselines = new Map([
-      [rollbackDestination.toLowerCase(), rollbackBaseline],
-      [expectedItem.editablePath.toLowerCase(), { path: expectedItem.editablePath, exists: false }]
+      [normalizeSkuExportPathForCompare(rollbackDestination), rollbackBaseline],
+      [
+        normalizeSkuExportPathForCompare(expectedItem.editablePath),
+        { path: expectedItem.editablePath, exists: false }
+      ]
     ]);
     const rendererHostCalls = [];
     const rendererHost = {
@@ -1735,6 +1756,7 @@ async function exerciseStagedFilePromotion() {
         return {
           success: false,
           committedPaths: [],
+          committedFiles: [],
           replacedPaths: [],
           cleanupWarnings: [],
           rollbackComplete: false,
@@ -1818,11 +1840,12 @@ async function exerciseStagedFilePromotion() {
     });
     const mismatchedSuccessCalls = [];
     const mismatchedSuccessHost = {
-      promoteStagedFileSet: async () => {
+      promoteStagedFileSet: async (input) => {
         mismatchedSuccessCalls.push('promoteStagedFileSet');
         return {
           success: true,
-          committedPaths: [],
+          committedPaths: input.items.map((item) => item.destinationPath),
+          committedFiles: [],
           replacedPaths: [],
           cleanupWarnings: [],
           rollbackComplete: true
@@ -1928,6 +1951,8 @@ async function exerciseStagedFilePromotion() {
       ? 0
       : rollbackResiduePaths.length + 1;
     return {
+      transactionOwnerCreatedDirectory: fs.existsSync(destinationRoot),
+      projectContainmentRejected,
       overwriteCommitted: atomicCommitVerified && atomicCleanup.success === true,
       escapedPathRejected: escaped.success === false
         && escapedSourcePreserved
@@ -3501,7 +3526,55 @@ async function run() {
   const resourceManagerServiceText = read(resourceManagerServicePath);
   const templateKnowledgeServiceText = read(templateKnowledgeServicePath);
   const preloadText = read(preloadPath);
+  const mainIndexText = read(mainIndexPath);
+  const debugBridgeServiceText = read(debugBridgeServicePath);
+  const debugBridgeChatContractText = read(debugBridgeChatContractPath);
+  const designReliabilityCliText = read(designReliabilityCliPath);
   const rendererTypesText = read(rendererTypesPath);
+  const debugBridgePreflightSafetyViolations = [];
+  if (!preloadText.includes('onDebugBridgeChatPreflight:')
+    || !rendererTypesText.includes('onDebugBridgeChatPreflight?:')
+    || !debugBridgeServiceText.includes('onChatSubmitPreflight')
+    || !chatPanelText.includes('selectedProvider: String(selectedModel?.provider || \'\').trim()')
+    || !chatPanelText.includes('selectedApiModelId: String(selectedModel?.apiModelId || \'\').trim()')
+    || !chatPanelText.includes('projectPath: String(state.currentProject?.path || \'\').trim()')
+    || chatPanelText.includes('apiKeys: state.apiKeys')) {
+    debugBridgePreflightSafetyViolations.push(
+      'debug-preflight:renderer-model-project-snapshot-is-missing-or-not-redacted'
+    );
+  }
+  const handleSendStageIndex = chatPanelText.indexOf("executionStage = 'handle_send_started'");
+  const handleSendCallIndex = chatPanelText.indexOf('await handleSend({', handleSendStageIndex);
+  if (handleSendStageIndex < 0
+    || handleSendCallIndex <= handleSendStageIndex
+    || !chatPanelText.slice(handleSendStageIndex, handleSendCallIndex).includes('writePossible = true')
+    || !chatPanelText.includes('return await submitAndWait();')
+    || !chatPanelText.includes('return await runWithSkillBridgesSuppressed(submitAndWait);')
+    || !debugBridgeChatContractText.includes("| 'before_handle_send'")
+    || !mainIndexText.includes('readDebugBridgeChatExecutionFailure(payload)')
+    || !preloadText.includes('readPreloadDebugBridgeChatFailureEnvelope(result)')
+    || !debugBridgeServiceText.includes('error: failure.message,')) {
+    debugBridgePreflightSafetyViolations.push(
+      'debug-preflight:execution-stage-or-write-possibility-is-not-preserved-end-to-end'
+    );
+  }
+  const runLivePreflightIndex = designReliabilityCliText.indexOf(
+    'const preflight = await buildPreflight'
+  );
+  const runLiveArmedIndex = designReliabilityCliText.indexOf(
+    'const armedAttempt = writeLiveAttemptEvent',
+    runLivePreflightIndex
+  );
+  if (runLivePreflightIndex < 0
+    || runLiveArmedIndex <= runLivePreflightIndex
+    || !designReliabilityCliText.includes('renderer_model_mismatch')
+    || !designReliabilityCliText.includes('renderer_provider_mismatch')
+    || !designReliabilityCliText.includes('renderer_project_not_bound_to_fixture')
+    || !designReliabilityCliText.includes('classifyUntrustedDebugBridgeFailure(error)')) {
+    debugBridgePreflightSafetyViolations.push(
+      'debug-preflight:run-live-arms-before-renderer-identity-or-guesses-safe-rejection'
+    );
+  }
   const websocketHandlersText = read(websocketHandlersPath);
   const uxpSkuLayoutSource = parse(uxpSkuLayoutPath);
   const uxpSkuLayoutText = read(uxpSkuLayoutPath);
@@ -12784,6 +12857,69 @@ async function run() {
       noteTemplateName: '4双自选备注.tif'
     }]
   });
+  const selectedSkuDeliveryConvention = {
+    version: 'skill-delivery-convention/v0',
+    provenance: 'confirmed_project',
+    supportRefs: ['project-file:SKU/参考成品/2双组合.psb'],
+    raster: {
+      projectRelativeRoot: '店铺交付/色卡成品',
+      folderPattern: '{size}双成品',
+      fileNamePattern: '{index}-{colors}',
+      format: 'jpg'
+    },
+    editable: {
+      projectRelativeRoot: '店铺交付/色卡成品/分层源稿',
+      folderPattern: '{size}双成品',
+      fileNamePattern: '{index}-{colors}-分层',
+      format: 'psb'
+    },
+    pairing: 'one_editable_per_raster',
+    versionPolicy: 'fail_if_exists'
+  };
+  const selectedConventionSkuInventory = buildSkuExpectedExportInventory({
+    outputDir: 'C:\\project\\SKU',
+    projectPath: 'C:\\project',
+    deliveryConvention: selectedSkuDeliveryConvention,
+    specs: [{
+      size: 2,
+      combos: [['奶白', '黑色']],
+      comboTemplateName: '2双组合.psd'
+    }]
+  });
+  const posixStagingPath = joinSkuExportPath(
+    '/tmp/project/SKU/.designecho-staging/run-1',
+    '可编辑\\2双组合',
+    '1白+黑.psb'
+  );
+  const posixVolumeFallbackSkuInventory = buildSkuExpectedExportInventory({
+    outputDir: '/Volumes/Design Disk/Project/SKU',
+    specs: [{
+      size: 2,
+      combos: [['奶白', '黑色']],
+      comboTemplateName: '2双组合.psd'
+    }]
+  });
+  const windowsStagingIdentityMatches = normalizeSkuExportPathForCompare(
+    'C:\\Project\\SKU\\A.jpg'
+  ) === normalizeSkuExportPathForCompare('c:/project/sku/a.jpg');
+  const posixStagingIdentityPreservesCase = normalizeSkuExportPathForCompare(
+    '/Users/Designer/Project/SKU/A.jpg'
+  ) !== normalizeSkuExportPathForCompare('/Users/Designer/Project/SKU/a.jpg');
+  const unauthorizedReplaceSkuInventory = buildSkuExpectedExportInventory({
+    outputDir: 'C:\\project\\SKU',
+    projectPath: 'C:\\project',
+    deliveryConvention: {
+      ...selectedSkuDeliveryConvention,
+      provenance: 'user',
+      supportRefs: ['user-instruction:current-turn'],
+      versionPolicy: 'replace_exact_set'
+    },
+    specs: [{
+      size: 2,
+      combos: [['奶白', '黑色']],
+      comboTemplateName: '2双组合.psd'
+    }]
+  });
   const frozenSkuExpectedExports = frozenSkuExportInventory.items.map((item) => ({
     path: item.path,
     expectedDimensions: item.expectedDimensions
@@ -13538,7 +13674,9 @@ async function run() {
       && rendererTypesText.includes('removeSkuStagingParentIfEmpty')
       && rendererTypesText.includes('removeSkuStagingTransactionRoot')
       && rendererTypesText.includes('promoteStagedFileSet: (input: StagedFilePromotionInput)')
-      && skuBatchExecutorText.includes('skuStagingTransaction = await issueSkuStagingTransaction(settledOutputDir)')
+      && skuBatchExecutorText.includes('skuStagingTransaction = await issueSkuStagingTransaction(')
+      && skuBatchExecutorText.includes("String(projectContext?.projectPath || '').trim()")
+      && !skuBatchExecutorText.includes("'fs:createDirectory',\n                settledOutputDir")
       && skuBatchExecutorText.includes('skuStagingTransaction.transactionToken')
       && skuBatchExecutorText.includes('const finalizeSkuStagingOnce = async (): Promise<SkuStagedDeliveryResult> =>')
       && skuExportTransactionText.includes('result = await host.removeSkuStagingParentIfEmpty(')
@@ -13754,7 +13892,7 @@ async function run() {
       : ['sku-delivery:file-probes-were-not-bound-one-to-one-to-exact-export-paths']),
     ...(frozenSkuExportInventory.status === 'ready'
       && frozenSkuExportInventory.items.length === 8
-      && frozenSkuExportInventory.boundaries.frozenBeforeExecution === true
+      && frozenSkuExportInventory.boundaries.frozenBeforeBatchExecution === true
       && frozenSkuExportInventory.boundaries.doesNotScanSourceDirectory === true
       && frozenSkuExportInventory.boundaries.doesNotAcceptObservedFilesAsExpectation === true
       && frozenSkuExportInventory.items.some((item) => item.path === 'C:\\project\\SKU\\2双组合\\1奶白+黑色.jpg')
@@ -13783,6 +13921,42 @@ async function run() {
       && violatedFrozenSkuReadback.blockers.some((message) => message.includes('导出清单违例'))
       ? []
       : ['sku-delivery:frozen-export-inventory-did-not-bind-plan-results-probes-and-freshness']),
+    ...(selectedConventionSkuInventory.status === 'ready'
+      && selectedConventionSkuInventory.outputDir === 'C:\\project\\店铺交付\\色卡成品'
+      && selectedConventionSkuInventory.editableOutputDir === 'C:\\project\\店铺交付\\色卡成品\\分层源稿'
+      && selectedConventionSkuInventory.items[0]?.path === 'C:\\project\\店铺交付\\色卡成品\\2双成品\\1-奶白+黑色.jpg'
+      && selectedConventionSkuInventory.items[0]?.editablePath === 'C:\\project\\店铺交付\\色卡成品\\分层源稿\\2双成品\\1-奶白+黑色-分层.psb'
+      && selectedConventionSkuInventory.items[0]?.stagedRasterRelativePath === '2双组合\\1奶白+黑色.jpg'
+      && selectedConventionSkuInventory.items[0]?.stagedEditableRelativePath === '可编辑\\2双组合\\1奶白+黑色.psb'
+      && selectedConventionSkuInventory.deliveryPlanDigest?.startsWith('skill-delivery-plan/v0:')
+      && /^skill-delivery-plan\/v0:[a-f0-9]{64}$/.test(selectedConventionSkuInventory.deliveryPlanDigest || '')
+      && selectedConventionSkuInventory.boundaries.conventionContainsNoVisualDecisions === true
+      && posixStagingPath === '/tmp/project/SKU/.designecho-staging/run-1/可编辑/2双组合/1白+黑.psb'
+      && posixVolumeFallbackSkuInventory.status === 'ready'
+      && posixVolumeFallbackSkuInventory.outputDir === '/Volumes/Design Disk/Project/SKU'
+      && posixVolumeFallbackSkuInventory.items[0]?.path === '/Volumes/Design Disk/Project/SKU/2双组合/1奶白+黑色.jpg'
+      && windowsStagingIdentityMatches
+      && posixStagingIdentityPreservesCase
+      && unauthorizedReplaceSkuInventory.status === 'blocked'
+      && unauthorizedReplaceSkuInventory.deliveryPlanDigest === undefined
+      && unauthorizedReplaceSkuInventory.blockers.some((message) => message.includes('不能授权覆盖同名文件'))
+      && skuBatchExecutorText.indexOf('const deliveryConventionResolution = resolveSkuFullDeliveryConvention(params.deliveryConvention)')
+        < skuBatchExecutorText.indexOf("if (skuStage === 'color-card')")
+      && skuBatchExecutorText.includes("status: 'blocked_invalid_skill_delivery_convention'")
+      && skuBatchExecutorText.includes('const fallbackOutputDir = projectContext?.projectPath')
+      && !skuBatchExecutorText.includes('const outputDir = projectContext?.projectPath ? `${projectContext.projectPath}\\\\SKU`')
+      && skuBatchExecutorText.includes("joinSkuExportPath(projectContext.projectPath, '模板文件')")
+      && skuBatchExecutorText.includes("joinSkuExportPath(projectContext.projectPath, 'SKU')")
+      && !skuBatchExecutorText.includes('`${projectContext.projectPath}\\\\SKU`')
+      && skuBatchExecutorText.includes('deliveryConvention: params.deliveryConvention')
+      && skuBatchExecutorText.includes('const settledOutputDir = String(expectedExportInventory.outputDir || \'\').trim()')
+      && skuBatchExecutorText.includes('expectedStagedPath: joinSkuExportPath(')
+      && skuBatchExecutorText.includes('expectedDeliveryPlan: expectedExportInventory.deliveryPlanDigest')
+      && skuBatchExecutorText.includes("status: 'sku_source_prerequisite_prepared'")
+      && skuBatchExecutorText.includes("status: 'sku_template_prerequisite_prepared'")
+      && skuBatchExecutorText.includes("status: 'sku_template_repair_prerequisite_completed'")
+      ? []
+      : ['sku-delivery:skill-selected-convention-did-not-compile-and-bind-exact-artifacts']),
     ...(validUniformScalePlacementReceipt.verified === true
       && validUniformScalePlacementReceipt.doesNotClaimAestheticQuality === true
       && wrongIdentityUniformScalePlacementReceipt.verified === false
@@ -13839,7 +14013,7 @@ async function run() {
       && skuBatchExecutorText.includes('if (shouldRunNote)')
       && skuBatchExecutorText.includes('const requestedOutputRequirements = Array.from(resolvedSkuAssetsBySize.values())')
       && skuBatchExecutorText.includes('const expectedExportInventory = buildSkuExpectedExportInventory({')
-      && skuBatchExecutorText.includes('skuStagingTransaction = await issueSkuStagingTransaction(settledOutputDir)')
+      && skuBatchExecutorText.includes('skuStagingTransaction = await issueSkuStagingTransaction(')
       && skuBatchExecutorText.includes('const allDestinationBaselines = await captureSkuExportPathBaselines(')
       && skuBatchExecutorText.includes('skuStagingTransaction.transactionToken')
       && skuBatchExecutorText.includes('const expectedExportItemsById = new Map(')
@@ -14686,6 +14860,12 @@ async function run() {
       id: 'sku-staged-export-transaction-supports-safe-rerun',
       description: 'SKU 全部 JPG/PSB 以同卷单事务替换旧交付；目标基线漂移零写入，完整回滚恢复全组，失败恢复保留可映射清单。',
       violations: [
+        ...(!stagedFilePromotionAudit.transactionOwnerCreatedDirectory
+          ? ['sku-staged-promotion:transaction-owner-did-not-safely-create-output-directory']
+          : []),
+        ...(!stagedFilePromotionAudit.projectContainmentRejected
+          ? ['sku-staged-promotion:project-containment-was-not-enforced-before-directory-create']
+          : []),
         ...(!stagedFilePromotionAudit.overwriteCommitted
           ? ['sku-staged-promotion:existing-output-was-not-atomically-replaced']
           : []),
@@ -16229,6 +16409,11 @@ async function run() {
       id: 'sku-full-production-repairs-prerequisites-after-real-inventory-check',
       description: 'SKU full 仅由结构化阶段开启缺源/缺模板修复；执行器先查项目 PSD/PSB，确认缺失后才准备，inspect 与显式禁用保持 fail-closed。',
       violations: skuPrerequisiteRepairViolations
+    },
+    {
+      id: 'debug-live-case-preflight-is-redacted-and-write-state-is-structured',
+      description: '正式 Debug Case 在 armed 前核对 Renderer 当前模型、Provider 与项目；只暴露脱敏身份，并按结构化 stage/writePossible 区分安全拒绝与未知写状态。',
+      violations: debugBridgePreflightSafetyViolations
     },
     {
       id: 'transitional-business-coupling-ratchet',

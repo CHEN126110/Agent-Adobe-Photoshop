@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "main-image-c1163-v1",
-  "revision": 2,
-  "caseDigest": "sha256:3364db760582d004ad22439c25f92642ca29f15e9a8ba270cb5ae4999cc949e2",
+  "revision": 3,
+  "caseDigest": "sha256:6d13c5238972ac99bc4ecb355b9513ab36b83fea43087e652f7a7708815625a2",
   "status": "active",
   "taskFamily": "main_image",
   "executionModel": "agentic",
@@ -45,11 +45,11 @@
       }
     ],
     "reviewOnlyReferences": [
-      { "kind": "user_design", "ref": "主图/800/800-1.jpg" },
-      { "kind": "user_design", "ref": "主图/800/2.jpg" },
-      { "kind": "user_design", "ref": "主图/800/3.jpg" },
-      { "kind": "eagle_item", "ref": "eagle:item:MPTG3FF6XEROR" },
-      { "kind": "eagle_item", "ref": "eagle:item:MQKCMKNG86GJI" }
+      { "kind": "user_design", "ref": "主图/800/800-1.jpg", "digest": "sha256:12eee43f4656d60514dbd255be09ba4d91d2e4206e6ae7cd8d105b81fcc90598" },
+      { "kind": "user_design", "ref": "主图/800/2.jpg", "digest": "sha256:f01cf0977d9a1e0dea30dbbc2c2bf5d12b2f4011db55fd6cd6ae523e0f26e733" },
+      { "kind": "user_design", "ref": "主图/800/3.jpg", "digest": "sha256:de5aa68597069262c2445ca93e71a6c67b2a936fb2b57171e37860ecdaedca7c" },
+      { "kind": "eagle_item", "ref": "eagle:item:MPTG3FF6XEROR", "digest": "sha256:ae9812cf911540606c7f6ecb63fd4ab9e1cd52bc3196c63609b45f6ebe7cda43" },
+      { "kind": "eagle_item", "ref": "eagle:item:MQKCMKNG86GJI", "digest": "sha256:5d9a5e4d1e2f810fd9fbf3700d5a13c0640e16f4a6ed9062c6889db7a81664ad" }
     ]
   },
   "source": {

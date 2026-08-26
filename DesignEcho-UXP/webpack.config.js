@@ -1,4 +1,9 @@
 const path = require('path');
+const webpack = require('webpack');
+const {
+    createRuntimeBuildIdentity,
+    createRuntimeBuildManifest
+} = require('./scripts/runtime-build-identity.cjs');
 
 class LegacyIndexProxyPlugin {
     apply(compiler) {
@@ -25,8 +30,47 @@ class LegacyIndexProxyPlugin {
     }
 }
 
+class RuntimeBuildManifestPlugin {
+    constructor(runtimeBuildIdentity) {
+        this.runtimeBuildIdentity = runtimeBuildIdentity;
+    }
+
+    apply(compiler) {
+        compiler.hooks.thisCompilation.tap('RuntimeBuildManifestPlugin', (compilation) => {
+            compilation.hooks.processAssets.tap(
+                {
+                    name: 'RuntimeBuildManifestPlugin',
+                    stage: compiler.webpack.Compilation.PROCESS_ASSETS_STAGE_REPORT
+                },
+                () => {
+                    const runtimeAsset = compilation.getAsset('runtime.js');
+                    if (!runtimeAsset) {
+                        throw new Error('UXP Runtime 构建缺少 runtime.js，无法生成可验证清单。');
+                    }
+                    const runtimeBuffer = Buffer.from(runtimeAsset.source.buffer());
+                    const manifest = createRuntimeBuildManifest(
+                        this.runtimeBuildIdentity,
+                        runtimeBuffer
+                    );
+                    const { RawSource } = compiler.webpack.sources;
+                    compilation.emitAsset(
+                        'runtime-build-manifest.json',
+                        new RawSource(`${JSON.stringify(manifest, null, 2)}\n`)
+                    );
+                }
+            );
+        });
+    }
+}
+
 module.exports = (_env, argv = {}) => {
     const mode = argv.mode === 'production' ? 'production' : 'development';
+    const uxpRoot = __dirname;
+    const runtimeBuildIdentity = createRuntimeBuildIdentity({
+        repoRoot: path.resolve(uxpRoot, '..'),
+        uxpRoot,
+        buildMode: mode
+    });
 
     return {
         mode,
@@ -79,7 +123,11 @@ module.exports = (_env, argv = {}) => {
             uxp: 'commonjs2 uxp'
         },
         plugins: [
-            new LegacyIndexProxyPlugin()
+            new webpack.DefinePlugin({
+                __DESIGNECHO_UXP_RUNTIME_BUILD__: JSON.stringify(runtimeBuildIdentity)
+            }),
+            new LegacyIndexProxyPlugin(),
+            new RuntimeBuildManifestPlugin(runtimeBuildIdentity)
         ],
         // UXP loads one plugin runtime bundle. Keep an explicit budget so growth
         // is visible without duplicating the runtime for the legacy index entry.

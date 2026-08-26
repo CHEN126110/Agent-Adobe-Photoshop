@@ -27,6 +27,14 @@ import type {
 } from '../shared/agent-runtime-v5/artifact-repository-contract';
 import type { ArtifactRef } from '../shared/agent-runtime-v5/contracts/common';
 import type {
+    DebugBridgeChatExecutionFailure,
+    DebugBridgeChatExecutionStage,
+    DebugBridgeChatFailureEnvelope,
+    DebugBridgeChatPreflightRequest,
+    DebugBridgeChatPreflightSnapshot,
+    DebugBridgePhotoshopRuntimeBinding
+} from '../shared/debug-bridge-chat';
+import type {
     RuntimeArtifactAuthorizationRequest,
     RuntimeArtifactFinalizationRequest,
     RuntimeSessionIdentityIssuanceRequest
@@ -41,6 +49,7 @@ import type {
 } from '../shared/sku-retouch-contract';
 import type {
     CaptureSkuStagingDestinationBaselinesResult,
+    IssueSkuStagingTransactionInput,
     SkuStagingTransactionResult,
     StagedFilePromotionInput,
     StagedFilePromotionResult
@@ -56,6 +65,77 @@ import type { ProjectSelectionResolution } from '../shared/project-selection-res
 
 const chatTestFakePhotoshopEnabled = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
     && process.env.DESIGNECHO_CHAT_TEST_FAKE_PHOTOSHOP === '1';
+
+/**
+ * Sandbox preload 必须保持单文件运行时边界，不能 import 相对本地模块。
+ * 这里仅实现跨 IPC 所需的最小序列化校验；共享契约仍通过 type-only import
+ * 约束字段形状，Main/Renderer 的语义 owner 仍是 shared/debug-bridge-chat.ts。
+ */
+const PRELOAD_DEBUG_BRIDGE_CHAT_FAILURE_VERSION = 'debug-bridge-chat-execution-failure/v1' as const;
+const PRELOAD_DEBUG_BRIDGE_CHAT_FAILURE_ENVELOPE_VERSION = 'debug-bridge-chat-failure-envelope/v1' as const;
+
+function cleanPreloadDebugBridgeText(value: unknown, maxLength: number): string {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return text.slice(0, maxLength);
+}
+
+function buildPreloadDebugBridgeChatExecutionFailure(input: {
+    stage: DebugBridgeChatExecutionStage;
+    writePossible: boolean;
+    message: unknown;
+    code?: unknown;
+    requestId?: unknown;
+}): DebugBridgeChatExecutionFailure {
+    const message = cleanPreloadDebugBridgeText(input.message, 500)
+        || 'Debug Bridge chat execution failed';
+    const code = cleanPreloadDebugBridgeText(input.code, 120);
+    const requestId = cleanPreloadDebugBridgeText(input.requestId, 160);
+    return {
+        version: PRELOAD_DEBUG_BRIDGE_CHAT_FAILURE_VERSION,
+        stage: input.stage,
+        writePossible: input.writePossible === true,
+        message,
+        ...(code ? { code } : {}),
+        ...(requestId ? { requestId } : {})
+    };
+}
+
+function readPreloadDebugBridgeChatFailureEnvelope(
+    value: unknown
+): DebugBridgeChatFailureEnvelope | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    if (record['version'] !== PRELOAD_DEBUG_BRIDGE_CHAT_FAILURE_ENVELOPE_VERSION) return undefined;
+    const candidate = record['failure'];
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
+    const failure = candidate as Partial<DebugBridgeChatExecutionFailure>;
+    const validStages: DebugBridgeChatExecutionStage[] = [
+        'bridge_preflight',
+        'main_preflight',
+        'renderer_preflight',
+        'before_handle_send',
+        'handle_send_started',
+        'completion',
+        'unknown'
+    ];
+    if (failure.version !== PRELOAD_DEBUG_BRIDGE_CHAT_FAILURE_VERSION
+        || !validStages.includes(failure.stage as DebugBridgeChatExecutionStage)
+        || typeof failure.writePossible !== 'boolean'
+        || typeof failure.message !== 'string'
+        || !failure.message.trim()) {
+        return undefined;
+    }
+    return {
+        version: PRELOAD_DEBUG_BRIDGE_CHAT_FAILURE_ENVELOPE_VERSION,
+        failure: buildPreloadDebugBridgeChatExecutionFailure({
+            stage: failure.stage as DebugBridgeChatExecutionStage,
+            writePossible: failure.writePossible,
+            message: failure.message,
+            code: failure.code,
+            requestId: failure.requestId
+        })
+    };
+}
 
 // 模型偏好类型
 interface ModelPreferences {
@@ -413,8 +493,10 @@ const api = {
         ipcRenderer.invoke('fs:createDirectory', dirPath),
 
     // 由 main 在指定 SKU 输出目录下签发 exact staging root 与 opaque token。
-    issueSkuStagingTransaction: (outputDir: string): Promise<SkuStagingTransactionResult> =>
-        ipcRenderer.invoke('fs:issueSkuStagingTransaction', outputDir),
+    issueSkuStagingTransaction: (
+        input: IssueSkuStagingTransactionInput
+    ): Promise<SkuStagingTransactionResult> =>
+        ipcRenderer.invoke('fs:issueSkuStagingTransaction', input),
 
     // 通过事务令牌读取目标文件的 main SHA-256 基线。
     captureSkuStagingDestinationBaselines: (
@@ -873,6 +955,36 @@ const api = {
     },
 
     // ===== Debug Bridge 运行窗口调试 =====
+    onDebugBridgeChatPreflight: (callback: (
+        request: DebugBridgeChatPreflightRequest
+    ) => Promise<DebugBridgeChatPreflightSnapshot> | DebugBridgeChatPreflightSnapshot) => {
+        const handler = async (_event: any, request: DebugBridgeChatPreflightRequest) => {
+            try {
+                const result = await callback(request);
+                ipcRenderer.send('debug-bridge:chat-preflight-result', {
+                    requestId: request?.requestId,
+                    success: true,
+                    result
+                });
+            } catch (error: any) {
+                const failure = buildPreloadDebugBridgeChatExecutionFailure({
+                    stage: 'renderer_preflight',
+                    writePossible: false,
+                    message: error?.message || String(error),
+                    code: 'renderer_preflight_callback_failed',
+                    requestId: request?.requestId
+                });
+                ipcRenderer.send('debug-bridge:chat-preflight-result', {
+                    requestId: request?.requestId,
+                    success: false,
+                    error: failure.message,
+                    failure
+                });
+            }
+        };
+        ipcRenderer.on('debug-bridge:chat-preflight', handler);
+        return () => ipcRenderer.removeListener('debug-bridge:chat-preflight', handler);
+    },
     onDebugBridgeChatSubmit: (callback: (request: {
         requestId: string;
         text: string;
@@ -883,6 +995,7 @@ const api = {
         expectedRuntimeGitCommit?: string;
         expectedRuntimeBuildId?: string;
         expectedPhotoshopRuntimeBuildId?: string;
+        expectedPhotoshopRuntimeBinding?: DebugBridgePhotoshopRuntimeBinding;
         expectedProvider?: string;
         expectedModelId?: string;
         requireCleanRuntimeGitState?: boolean;
@@ -894,16 +1007,34 @@ const api = {
         const handler = async (_event: any, request: any) => {
             try {
                 const result = await callback(request);
+                const failureEnvelope = readPreloadDebugBridgeChatFailureEnvelope(result);
+                if (failureEnvelope) {
+                    ipcRenderer.send('debug-bridge:chat-submit-result', {
+                        requestId: request?.requestId,
+                        success: false,
+                        error: failureEnvelope.failure.message,
+                        failure: failureEnvelope.failure
+                    });
+                    return;
+                }
                 ipcRenderer.send('debug-bridge:chat-submit-result', {
                     requestId: request?.requestId,
                     success: true,
                     result
                 });
             } catch (error: any) {
+                const failure = buildPreloadDebugBridgeChatExecutionFailure({
+                    stage: 'unknown',
+                    writePossible: true,
+                    message: error?.message || String(error),
+                    code: 'renderer_submit_callback_failed_unclassified',
+                    requestId: request?.requestId
+                });
                 ipcRenderer.send('debug-bridge:chat-submit-result', {
                     requestId: request?.requestId,
                     success: false,
-                    error: error?.message || String(error)
+                    error: failure.message,
+                    failure
                 });
             }
         };

@@ -68,6 +68,10 @@ import {
     enforceGuardedPhotoshopExecutionBaseline,
     type GuardedPhotoshopExecutionBaseline
 } from '../../shared/guarded-photoshop-execution-baseline';
+import {
+    readDebugBridgePhotoshopRuntimeLiveIdentity,
+    type DebugBridgePhotoshopRuntimeLiveIdentity
+} from '../../shared/debug-bridge-chat';
 import { isTransientPhotoshopBusyFailure } from '../../shared/photoshop-transient-error';
 import { preserveJpegQualityAcrossToolRedirect } from '../../shared/jpeg-export-quality-semantics';
 import {
@@ -2418,16 +2422,15 @@ export interface ToolCallExecutionOptions {
     guardedPhotoshopExecutionBaseline?: GuardedPhotoshopExecutionBaseline;
 }
 
-function readGuardedPhotoshopRuntimeBuildId(value: unknown): string | undefined {
+function readGuardedPhotoshopRuntimeIdentity(
+    value: unknown
+): DebugBridgePhotoshopRuntimeLiveIdentity | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     const state = (value as any).state;
     const runtime = state && typeof state === 'object' && !Array.isArray(state)
         ? state.runtime
         : undefined;
-    const buildId = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
-        ? String(runtime.buildId || '').trim()
-        : '';
-    return buildId || undefined;
+    return readDebugBridgePhotoshopRuntimeLiveIdentity(runtime);
 }
 
 function readGuardedOpenDocumentCount(value: unknown): number | undefined {
@@ -2467,8 +2470,8 @@ async function sendToPluginWithCancellation(
             guardedBaseline,
             publicToolName,
             {
-                observePhotoshopRuntimeBuildId: async (): Promise<string | undefined> => (
-                    readGuardedPhotoshopRuntimeBuildId(await callPhotoshopMcpTool(
+                observePhotoshopRuntimeIdentity: async (): Promise<DebugBridgePhotoshopRuntimeLiveIdentity | undefined> => (
+                    readGuardedPhotoshopRuntimeIdentity(await callPhotoshopMcpTool(
                         'diagnoseState',
                         { verbose: false },
                         { signal, timeoutMs: 5_000 }

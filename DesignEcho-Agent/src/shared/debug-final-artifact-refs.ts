@@ -39,7 +39,7 @@ export function normalizeDebugFinalArtifactRefs(
 }
 
 export interface DebugSkuDeliveryEvidence {
-    version: 'debug-sku-delivery-evidence/v1';
+    version: 'debug-sku-delivery-evidence/v2';
     runtimeDeliveryReceipt: {
         status: 'ready';
         settlementScope: 'multi_document_task';
@@ -50,6 +50,8 @@ export interface DebugSkuDeliveryEvidence {
             path: string;
             kind: 'editable_document' | 'raster_export';
             proof: 'file_probe' | 'staged_editable_document_promotion';
+            fileIdentity: { sha256: string; byteLength: number };
+            sourceHistoryStateRef: { documentId: number; historyStateId: number };
         }>;
     };
     skuExportReadback: {
@@ -82,6 +84,7 @@ export interface DebugSkuDeliveryEvidence {
             templateName: string;
             combination: string[];
             sourceHistoryStateRef: { documentId: number; historyStateId: number };
+            fileIdentity: { sha256: string; byteLength: number };
             copiedLayerIds: number[];
             copiedLayerNames: string[];
             freshnessProof: 'new_path' | 'modified_since_baseline';
@@ -108,6 +111,15 @@ function readPositiveInteger(value: unknown): number | undefined {
 function readNonNegativeInteger(value: unknown): number | undefined {
     const numeric = Number(value);
     return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
+function readFileIdentity(value: unknown): { sha256: string; byteLength: number } | undefined {
+    if (!isRecord(value)) return undefined;
+    const sha256 = String(value.sha256 || '').trim().toLowerCase();
+    const byteLength = readPositiveInteger(value.byteLength);
+    return /^[a-f0-9]{64}$/.test(sha256) && byteLength
+        ? { sha256, byteLength }
+        : undefined;
 }
 
 function readExactTextArray(value: unknown, limit: number): string[] | undefined {
@@ -186,11 +198,32 @@ export function normalizeDebugSkuDeliveryEvidence(
         if (!isRecord(artifact)) return [];
         const kind = artifact.kind;
         const proof = artifact.proof;
+        const fileIdentity = readFileIdentity(artifact.fileIdentity);
+        const sourceHistoryStateRef = isRecord(artifact.sourceHistoryStateRef)
+            ? {
+                documentId: readPositiveInteger(artifact.sourceHistoryStateRef.documentId),
+                historyStateId: readPositiveInteger(artifact.sourceHistoryStateRef.historyStateId)
+            }
+            : undefined;
         if ((kind !== 'editable_document' && kind !== 'raster_export')
             || (proof !== 'file_probe' && proof !== 'staged_editable_document_promotion')) {
             return [];
         }
-            return [{ path: artifactPaths[index], kind, proof }];
+        if (!fileIdentity
+            || !sourceHistoryStateRef?.documentId
+            || !sourceHistoryStateRef.historyStateId) {
+            return [];
+        }
+            return [{
+                path: artifactPaths[index],
+                kind,
+                proof,
+                fileIdentity,
+                sourceHistoryStateRef: {
+                    documentId: sourceHistoryStateRef.documentId,
+                    historyStateId: sourceHistoryStateRef.historyStateId
+                }
+            }];
         });
     if (artifacts.length !== receipt.artifacts.length) return undefined;
 
@@ -236,6 +269,7 @@ export function normalizeDebugSkuDeliveryEvidence(
             : [];
         const documentId = readPositiveInteger(item.sourceHistoryStateRef.documentId);
         const historyStateId = readPositiveInteger(item.sourceHistoryStateRef.historyStateId);
+        const fileIdentity = readFileIdentity(item.fileIdentity);
         const itemId = String(item.itemId || '').trim();
         const templateName = String(item.templateName || '').trim();
         if (!rasterPath
@@ -249,7 +283,8 @@ export function normalizeDebugSkuDeliveryEvidence(
             || copiedLayerIds.length !== copiedLayerNames.length
             || copiedLayerIds.length !== combination.length
             || !documentId
-            || !historyStateId) {
+            || !historyStateId
+            || !fileIdentity) {
             return [];
         }
             const freshnessProof = item.freshnessProof as 'new_path' | 'modified_since_baseline';
@@ -260,6 +295,7 @@ export function normalizeDebugSkuDeliveryEvidence(
             templateName,
             combination,
             sourceHistoryStateRef: { documentId, historyStateId },
+            fileIdentity,
             copiedLayerIds: copiedLayerIds as number[],
             copiedLayerNames,
             freshnessProof,
@@ -303,6 +339,21 @@ export function normalizeDebugSkuDeliveryEvidence(
             && artifact.proof === 'staged_editable_document_promotion'
         ))
         .map((artifact) => artifact.path);
+    const artifactsByPath = new Map(artifacts.map((artifact) => [artifact.path, artifact]));
+    const itemArtifactIdentitiesBound = items.every((item) => {
+        const rasterArtifact = artifactsByPath.get(item.rasterPath);
+        const editableArtifact = artifactsByPath.get(item.editablePath);
+        return Boolean(
+            rasterArtifact
+            && editableArtifact
+            && editableArtifact.fileIdentity.sha256 === item.fileIdentity.sha256
+            && editableArtifact.fileIdentity.byteLength === item.fileIdentity.byteLength
+            && rasterArtifact.sourceHistoryStateRef.documentId === item.sourceHistoryStateRef.documentId
+            && rasterArtifact.sourceHistoryStateRef.historyStateId === item.sourceHistoryStateRef.historyStateId
+            && editableArtifact.sourceHistoryStateRef.documentId === item.sourceHistoryStateRef.documentId
+            && editableArtifact.sourceHistoryStateRef.historyStateId === item.sourceHistoryStateRef.historyStateId
+        );
+    });
     const exportCountsReady = normalizedExportReadback.expectedExportCount === expectedCount
         && normalizedExportReadback.actualExportCount === expectedCount
         && normalizedExportReadback.fileProbeCount === expectedCount
@@ -325,11 +376,12 @@ export function normalizeDebugSkuDeliveryEvidence(
         || !sameStringSet(expectedPaths, itemEditablePaths)
         || !sameStringSet(rasterArtifactPaths, itemRasterPaths)
         || !sameStringSet(editableArtifactPaths, itemEditablePaths)
+        || !itemArtifactIdentitiesBound
         || !exportCountsReady) {
         return undefined;
     }
     return {
-        version: 'debug-sku-delivery-evidence/v1',
+        version: 'debug-sku-delivery-evidence/v2',
         runtimeDeliveryReceipt: {
             status: 'ready',
             settlementScope: 'multi_document_task',

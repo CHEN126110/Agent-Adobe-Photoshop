@@ -165,6 +165,9 @@ export function buildSkillToolSchemas(): ToolSchema[] {
 
             const descriptionLines = [
                 `【设计方法】${skill.description}`,
+                skill.playbookId
+                    ? `工作法包: ${skill.playbookId}；需要正文时调用 readSkillPlaybook("${skill.playbookId}")。`
+                    : '',
                 '这是可以直接完成一组相关工作的专业方法，不是单个 Photoshop 动作。使用后根据实际结果继续设计、调整或交付。',
                 skill.whenToUse.length > 0 ? `适合: ${skill.whenToUse.join('；')}` : '',
                 skill.whenNotToUse && skill.whenNotToUse.length > 0 ? `不适合: ${skill.whenNotToUse.join('；')}` : '',

@@ -571,7 +571,7 @@ function buildEvaluation(verdict: DesignVerdict | undefined): RuntimeTaskSnapsho
 
 function buildDelivery(input: BuildRuntimeTaskSnapshotInput): RuntimeTaskSnapshot['delivery'] {
     const verification = input.runtimeDeliveryVerification;
-    if (verification?.version === 'runtime-delivery-verification/v2') {
+    if (verification?.version === 'runtime-delivery-verification/v3') {
         return {
             status: verification.status,
             source: 'runtime_delivery_verification',
@@ -1280,6 +1280,7 @@ function hasSnapshotSources(value: unknown): boolean {
         )
         && hasOptionalExactValue(value, 'designVerdict', 'design-quality-verdict/v0')
         && (!hasOwn(value, 'runtimeDeliveryVerification')
+            || value.runtimeDeliveryVerification === 'runtime-delivery-verification/v3'
             || value.runtimeDeliveryVerification === 'runtime-delivery-verification/v2'
             || value.runtimeDeliveryVerification === 'runtime-delivery-verification/v1');
 }
