@@ -288,40 +288,38 @@
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-QUALITY-REFLEXION-LIVE-001",
-    "summary": "Use the real no-Skill main-image run to make task-size effectiveness visible to the evaluator and return only revision-bound paired diagnoses to one Agent-owned refinement generation without granting Harness aesthetic authorship.",
-    "status": "seventh_live_root_cause_verified_agent_owned_single_reentry_task_neutral_impact_paired_feedback_reviewset_provenance_and_first_write_freshness_implemented_full_34_check_maintenance_and_production_build_passed_eighth_live_replay_blocked_by_shared_subscription_usage_limit_sol_preferences_restored_post_reset_live_replay_pending",
+    "id": "AGENT-DESIGN-AUTHORSHIP-LIVE-001",
+    "summary": "Verify on an isolated fixed case that the multimodal Agent owns task understanding, reference and asset choice, visual direction and Photoshop revision while Harness only preserves facts, permissions, transactions and readback evidence.",
+    "status": "authorship_and_runtime_governance_committed_remote_sha_verified_core_43_passed_isolated_live_photoshop_run_and_blind_pairwise_review_pending",
     "mustDo": [
-      "Keep Agent ownership of goal interpretation, visual strategy, asset choice and revision action; Harness may only return current-revision observations and verification constraints.",
-      "Include task-size effectiveness in the unbound creative evaluation baseline without adding fixed subject ratios, marketing style or category routing.",
-      "Allow at most one completed-aesthetic Agent generation inside the same authorized TaskRun and cumulative performance ledger.",
-      "Carry only paired reliable diagnoses into the completed refinement prompt and remove duplicate warning, failure-analysis and strategy projections.",
-      "Bind completed visual diagnoses to the exact trusted ReviewSet document/history/observation keys, and block only the first write when the current revision changed until the Agent has fully reviewed the new version.",
-      "Preserve independent parent/child Run Records, execution preflight, target revision, cancellation, budget and no-progress stops.",
-      "Rerun the exact natural-language prompt with GPT-5.6-Sol after subscription usage resets and compare the real Photoshop result with the seventh run and user references."
+      "Run the latest committed build only after the user's current Photoshop document is safely closed, using a fresh isolated fixture and a natural one-sentence request with zero in-run human correction.",
+      "Keep Agent ownership of task interpretation, information-gain decisions, reference and asset choice, visual strategy, layout, copy, tool composition and revision action.",
+      "Keep Harness ownership limited to project and document identity, current revision facts, capability and permission boundaries, transaction safety, structured receipts and post-write readback.",
+      "Record actual model identity, observations, selection rationale, Tool calls, document and history identities, PSD/JPG receipts, first-write latency and total duration.",
+      "Blindly compare each candidate with the user's work and Eagle anchors, then attribute failures separately to Agent judgment, Harness facts, Skill capability, Photoshop execution or model limits.",
+      "Repeat the same Git, case, model and request at least three times after one safe end-to-end run closes, so the result has a real denominator."
     ],
     "mustNotDo": [
-      "Do not let the evaluator select a layout, copy line, asset or Photoshop Tool for the Agent.",
-      "Do not bind a Skill or Evaluation Profile from task keywords in the generic Harness.",
-      "Do not expand completed feedback with generic scorecard fixes or repeated warnings.",
-      "Do not reset model, Tool, vision or elapsed-time budgets when the Agent is re-entered.",
-      "Do not clean, stage, commit or overwrite unrelated changes in the large shared dirty worktree.",
-      "Do not claim the eighth GPT-5.6 Photoshop replay or commercial quality passed while the subscription provider rejects iteration zero."
+      "Do not touch the user's current Photoshop document or use a direct debug Tool call as evidence of Agent end-to-end success.",
+      "Do not reintroduce fixed Eagle-first, screenshot-first, Top-1 asset, category workflow, layout recipe or aesthetic score gates into the generic Harness.",
+      "Do not let an evaluator, Skill executor or layout engine choose a visual answer for the Agent.",
+      "Do not expose the user's finished design or Eagle review anchor to the Agent as a hidden target during the candidate run.",
+      "Do not claim professional aesthetics, commercial readiness, success-rate improvement or speed distribution from static tests, machine scores or a single generated file.",
+      "Do not clean, overwrite or commit unrelated user data while preparing the isolated run."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-QUALITY-REFLEXION-LIVE-001",
+    "id": "AGENT-DESIGN-AUTHORSHIP-LIVE-001",
     "source": "project-memory/CurrentTask.md",
     "steps": [
-      "完成：审计第七轮真实 PSD、Run Record 与完整 conversation executionSummary，确认选图合理但双栏画册层级未达到成熟主图。",
-      "完成：确认终局 89 分只覆盖 8 项旧任务中性目录，impact.squint 与 comp.subject-ratio 均未进入评价。",
-      "完成：把任务真实使用尺寸下的第一眼效力加入任务中性评价，同时保持固定主体比例和主图专属断言不进入通用 Harness。",
-      "完成：恢复 completed_aesthetic_improvement 最多一次 Agent-owned 重入，并继续使用同一 TaskRun、累计预算与 execution preflight。",
-      "完成：completed handoff 只保留当前 ReviewSet/history 的 paired diagnosis，清除重复 warning、failureAnalysis 与 strategyAdjustments。",
-      "完成：把 ReviewSet document/history/observationKeys 写入既有 handoff，核对 WeakMap 可信 Artifact，并在下一代第一项写入前防止旧评价直接作用于新版本；观察工具仍由 Agent 选择。",
-      "完成：把 ChatGPT/Codex usage-limit 错误归因成余额/订阅用量边界；Sol 与 Terra 失败后恢复原 Sol 配置。",
-      "待真机：2026-08-28 09:01 额度重置或额度恢复后，在第八轮干净项目用相同 Sol 和相同一句需求复跑父子闭环。",
-      "待验收：核对父子独立 Run Record、子代新 history、再次结构/像素/post-judge 闭合，并与第七轮和用户/Eagle 参考做同尺寸视觉比较。"
+      "完成：移除或降级通用 Prompt、SKU handoff、详情页候选、主图素材和布局引擎中的隐性设计代决策。",
+      "完成：修复多占位候选集选择漂移、未决素材上下文丢失、model-authored 层序账本和二进制资源 owner 边界。",
+      "完成：重新通过 43 项核心验证、独立代码审查、Git 卫生和敏感信息审查。",
+      "完成：提交并推送 1203e797；本地与 legacy/codex/agent-uxp 远端 SHA 读回一致。",
+      "待环境：用户保存并关闭当前 Photoshop 活动文档，DesignEcho 重启到 1203e797。",
+      "待真机：从固定摄影素材创建全新隔离 Fixture，用自然一句需求运行真实 Agent → Provider → Photoshop 链路，0 人工纠偏。",
+      "待验收：核对真实观察、选图依据、Tool / document / history / PSD / JPG 收据、耗时，并与用户作品和 Eagle 锚点做盲化成对评审。",
+      "待重复：首轮安全闭合后在相同 cohort 至少运行 3 次，形成最低成功率分母并按 owner 归因失败。"
     ]
   },
   "convergenceBaseline": {
@@ -340,5 +338,5 @@
     "capabilityDenialSuspectCount": null,
     "note": "治理切片 1/2 代码完成前的历史基线；治理后窗口由真实运行回填并用 debug:runs --convergence 对照。2026-08-16 治理切片 9 补齐两项收敛机制：首次写入延迟（run record toolCalls 增 elapsedMs 时序）与疑似能力误判启发式计数；这两项的基线值为 null（旧档案无时序、无计数口径），待新版本真机运行数据回填后补录再对照。"
   },
-  "lastUpdated": "2026-08-22"
+  "lastUpdated": "2026-08-26"
 }

@@ -1,5 +1,45 @@
 # Current Task
 
+## 2026-08-26 AGENT-DESIGN-AUTHORSHIP-LIVE-001：验证 Agent 设计自主权与真实成稿质量
+
+### 目标
+
+1. 在固定摄影素材、自然的一句话需求、同一多模态模型和零人工干预条件下，验证 Agent 能否自主理解任务、选择素材与参考、形成设计方向、操作 Photoshop 并正确交付。
+2. Harness 只提供项目 / 文档 / 版本事实、能力、权限、事务与读回验证；不替 Agent 决定是否看 Eagle、选哪张图、采用什么版式、文字层级、审美方向或修订方法。
+3. 以用户作品和 Eagle 参考做盲化成对比较，先证明设计效果达到最低预期，再讨论提速；静态测试、机器分数和“生成了文件”都不能代替真实审美验收。
+
+### 当前事实
+
+- 设计作者权与运行稳定性治理已提交为 `1203e797` 并推送到 `legacy/codex/agent-uxp`；本地与远端 SHA 已读回一致，工作树干净。
+- 固定 Skill / Prompt 开工顺序、SKU 默认版式、规则 Top-1 自动选图、项目列表首图冒充选定、按 role 写死层序和无条件文字吸附已移除或降为显式可选机械能力。
+- 提交前独立审查发现并修复两处真实成功率根因：详情页多槽选择会被后续排序逐个作废；长历史压缩会丢失第 5 个以后未决选图槽。两者均有行为回归覆盖。
+- 当前运行中的 DesignEcho 可能仍是提交前构建，Photoshop 还保留用户活动文档；本轮没有重启应用、修改该文档或用测试桥冒充端到端 Agent 成功。
+
+### 实施边界
+
+- Agent 拥有目标解释、信息增益判断、参考与素材选择、构图、文案、审美取舍、工具组合和修订策略；Skill 只提供可调用的专业能力，不成为隐藏指挥链。
+- Harness 可以因目标文档身份、权限、未知写状态、事务或收据不可靠而阻断危险写入，但只能返回事实与恢复出口，不能把某个截图、参考、版式或修改方法指定为设计答案。
+- 真机测试只使用隔离 Fixture 和全新输出，不读取人工成稿作为模型提示，不触碰用户当前 Photoshop 文档，也不把单次成功外推成总体成功率。
+
+### 下一步
+
+1. 用户保存并关闭当前 Photoshop 活动文档、重启到 `1203e797` 后，从固定摄影输入复制一份全新隔离 Fixture。
+2. 用自然请求运行真实 Agent → Provider → Photoshop 链路，记录模型身份、实际观察、选图依据、工具调用、文档 / history、PSD/JPG 收据、首次写入和总耗时；不在运行中人工纠偏。
+3. 将候选成稿与用户作品、Eagle 锚点做盲化成对评审；按 Agent 判断、Harness 事实、Skill 能力、Photoshop 执行和模型能力分别归因，不再按单张截图追加局部补丁。
+4. 单次链路安全闭合后，在同一 Git / Case / 模型 / 请求下重复至少 3 次，形成可比较的最低成功率样本。
+
+### 验证与未知
+
+- `maintenance:validate` 已重新通过 43 个核心检查，包含 Agent/Main/Renderer 类型检查、UXP 测试与 production build、作者权、上下文、详情页、SKU、composeDesign、图片落位和二进制资源边界；无 smoke 依赖。
+- 独立代码、Git 卫生与敏感信息审查均无提交阻断项；新增 Stack Ledger 行为测试覆盖复合块、owned layer、移动中断和错误层序读回。
+- 尚未在 `1203e797` 上完成真实 Provider → Agent → Photoshop 成稿和人工盲评，因此不能宣称 Agent 已达到专业设计师水平，也不能宣称审美成功率已经提高。
+
+### 状态
+
+`in_progress / authorship_governance_committed / remote_sha_verified / core_validation_43_passed / current_user_document_untouched / isolated_live_photoshop_run_pending / blind_pairwise_review_pending`
+
+---
+
 ## 2026-08-26 AGENT-RUNTIME-RESOURCE-EFFICIENCY-001：运行时资源边界与低风险性能治理
 
 ### 切换原因
