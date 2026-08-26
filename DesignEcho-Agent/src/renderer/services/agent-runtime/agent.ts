@@ -103,6 +103,7 @@ import {
     requiresUserVisiblePreActionRationaleForToolCalls,
     type AgentToolExecutionPreflight
 } from '../../../shared/agent-tool-execution-preflight';
+import { createRuntimeDeclarationSiblingTurn } from '../../../shared/runtime-declaration-sibling-policy';
 import { classifyRunToolActivity } from '../../../shared/agent-run-record';
 import { ensureAgentToolFailureDiagnostics } from '../../../shared/agent-tool-failure-diagnostic';
 import { areEquivalentToolFailureReasons, buildRepeatedToolFailureBlocker, CONSECUTIVE_SAME_TOOL_FAILURE_LIMIT, firstToolFailureReason, hasRepeatedToolFailureExhausted } from './tool-failure-breaker';
@@ -6447,12 +6448,18 @@ export class Agent {
                     ...call,
                     arguments: stripPrivateTargetGuardArgument(call.arguments)
                 }));
-                const runtimeDeclarationControlCall = response.toolCalls.find(
-                    (call) => call.name === 'declareDesignIntent'
-                );
-                const toolCallsForCurrentControlTurn = runtimeDeclarationControlCall
-                    ? [runtimeDeclarationControlCall]
-                    : response.toolCalls;
+                const runtimeDeclarationTurn = createRuntimeDeclarationSiblingTurn(response.toolCalls, {
+                    readVisibleToolsAfterBinding: () => this.buildModelVisibleToolsForIteration(),
+                    isCapabilityControlTool: isAgentCapabilityControlTool,
+                    decisionContext: {
+                        userInput: this.currentTask, intentControlPlane: this.runIntentControlPlaneDecision,
+                        completedToolCalls: this.toolCallLog,
+                        runtime: { photoshopConnected: this.config.toolDecisionContext?.photoshopConnected, hasDocument: this.config.toolDecisionContext?.hasDocument }
+                    }
+                });
+                response.toolCalls = runtimeDeclarationTurn.orderedCalls;
+                const runtimeDeclarationControlCall = runtimeDeclarationTurn.declarationCall;
+                const toolCallsForCurrentControlTurn = runtimeDeclarationControlCall ? [runtimeDeclarationControlCall] : response.toolCalls;
                 this.emitStep({
                     kind: 'model_response',
                     title: `准备处理 ${toolCallsForCurrentControlTurn.length} 项内容`,
@@ -6646,23 +6653,15 @@ export class Agent {
                 const sourceTextForToolTargetResolution = [this.currentTask, String(response.content || '')]
                     .filter(Boolean)
                     .join('\n');
-                // searchAgentCapabilities 是纯目录读取，同一轮可以在不同对象上检索多次；
-                // 只限制会改变下一轮 schema 的装载；只读目录搜索不消费此预算（真机 2026-08-21）。
+                // 只限制会改变下一轮 schema 的装载；纯目录搜索不消费此预算。
                 let capabilityLoadCallExecutedThisIteration = false;
-                const runtimeDeclarationControlCallId = runtimeDeclarationControlCall?.id;
-                const shouldDeferForRuntimeDeclaration = (call: ToolCall): boolean => (
-                    Boolean(runtimeDeclarationControlCallId)
-                    && call.id !== runtimeDeclarationControlCallId
-                );
+                const shouldDeferForRuntimeDeclaration = runtimeDeclarationTurn.shouldDefer;
                 const executeCallWithIterationCapabilityBudget = async (
                     call: ToolCall,
                     toolExecutionPreflight?: AgentToolExecutionPreflight
                 ): Promise<any> => {
                     const startedAtMs = Date.now();
                     let output: any;
-                    // Runtime Profile 声明是本轮唯一提交动作。无论模型把其他读取/写入排在
-                    // 声明前还是声明后，都推迟到下一轮，让它们基于新 Stage/Capability schema
-                    // 重新规划；这些合成结果不消耗 Tool budget，也不进入 Runtime usage。
                     if (shouldDeferForRuntimeDeclaration(call)) {
                         output = {
                             success: false,
@@ -6737,6 +6736,7 @@ export class Agent {
                             output = await this.executeToolWithDiagnostics(call.name, executionArguments);
                         }
                     }
+                    await runtimeDeclarationTurn.recordResult(call, output);
                     if (output?.countsAsRuntimeToolCall !== false) {
                         this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
                             durationMs: Date.now() - startedAtMs,

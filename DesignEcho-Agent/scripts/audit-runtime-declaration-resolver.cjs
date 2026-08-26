@@ -45,6 +45,16 @@ const {
   buildRuntimeReferenceEvaluationContext
 } = require(path.join(runtimeRoot, 'runtime-reference-context.ts'));
 const {
+  createRuntimeDeclarationSiblingTurn,
+  resolveRuntimeDeclarationSiblingPolicy
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'runtime-declaration-sibling-policy.ts'
+));
+const {
   projectManifestBoundRuntimeDeliveryReceipt,
   readRuntimeDeliveryProofKinds,
   verifyRuntimeDelivery
@@ -651,6 +661,8 @@ assert(toolExecutorSource.includes('validatedByRuntimeResolver: false'));
 assert(!toolExecutorSource.includes('声明设计意图失败：workMode'));
 assert(!toolExecutorSource.includes('声明设计意图失败：taskTypeId'));
 assert(agentSource.includes("code: 'tool_deferred_after_runtime_declaration'"));
+assert(agentSource.includes('createRuntimeDeclarationSiblingTurn(response.toolCalls'));
+assert(agentSource.includes('runtimeDeclarationTurn.recordResult(call, output)'));
 assert(agentSource.includes('const hasPhotoshopChange = this.hasObservedTaskMutation();'));
 assert(agentSource.includes('const hasViewableVersion = hasPhotoshopChange || hasSavedOrExportedFile;'));
 assert(!agentSource.includes('const hasRecordedMutation = Number(summary.successfulMutationCalls || 0) > 0;'));
@@ -664,6 +676,37 @@ assert(/if \(output === undefined\s+&& !isAgentHarnessControlTool\(call\.name\)\
 assert(agentSource.includes('const MAX_RUNTIME_DESIGN_INTENT_REPAIR_ATTEMPTS = 1'));
 assert(agentSource.includes("'runtime_design_intent_declaration_invalid'"));
 assert(agentSource.includes("code === 'runtime_design_intent_configuration_error'"));
+
+assert.deepStrictEqual(resolveRuntimeDeclarationSiblingPolicy({
+  declarationPresent: true,
+  isDeclarationCall: false,
+  declarationSucceeded: true,
+  visibleAfterBinding: true,
+  executionKind: 'knowledge_search',
+  isHarnessControlTool: false,
+  isCapabilityControlTool: false
+}), {
+  disposition: 'execute_after_binding',
+  reason: 'compatible_read_only_call'
+});
+assert.strictEqual(resolveRuntimeDeclarationSiblingPolicy({
+  declarationPresent: true,
+  isDeclarationCall: false,
+  declarationSucceeded: true,
+  visibleAfterBinding: true,
+  executionKind: 'photoshop_write',
+  isHarnessControlTool: false,
+  isCapabilityControlTool: false
+}).disposition, 'defer');
+assert.strictEqual(resolveRuntimeDeclarationSiblingPolicy({
+  declarationPresent: true,
+  isDeclarationCall: false,
+  declarationSucceeded: true,
+  visibleAfterBinding: false,
+  executionKind: 'read_only_observation',
+  isHarnessControlTool: false,
+  isCapabilityControlTool: false
+}).disposition, 'defer');
 
 for (const profile of catalog.declarableProfiles) {
   const result = resolveRuntimeDeclarationForAgentTask({
@@ -3342,6 +3385,55 @@ function activateSkuRuntime(input) {
   return { success: true };
 }
 
+function activateMainImageAgenticRuntime(input) {
+  const resolution = resolveRuntimeDeclarationForAgentTask({
+    taskType: input.arguments.taskTypeId,
+    workMode: input.arguments.workMode,
+    executableToolNames
+  });
+  assert.strictEqual(resolution.status, 'resolved');
+  const effectiveContract = resolveRuntimeStagePlanEffectiveContract(
+    resolution.bundle.stagePlan,
+    input.arguments.workMode
+  );
+  assert(effectiveContract, 'main-image agentic effective contract is missing');
+  const methodKnowledge = buildDesignMethodKnowledgeRuntimeContext({
+    knowledgeRefs: resolution.bundle.manifest.knowledge_refs || [],
+    manifestSkillId: resolution.bundle.manifest.skill_id
+  });
+  assert.deepStrictEqual(methodKnowledge.issues, []);
+  input.agent.activateAgenticRuntimeContractFromDeclaration({
+    artifactContract: {
+      version: 'agentic-artifact-completion-contract/v0',
+      skillId: resolution.bundle.manifest.skill_id,
+      taskType: resolution.bundle.manifest.task_type,
+      workMode: effectiveContract.workMode,
+      productionObligation: effectiveContract.productionObligation,
+      deliveryOutputs: [...effectiveContract.deliveryOutputs],
+      exitCriteria: [...effectiveContract.exitCriteria],
+      reviewRubricRef: effectiveContract.reviewRubricRef
+    },
+    referencePolicy: resolution.bundle.stagePlan.referencePolicy,
+    runtimeStageContextItems: methodKnowledge.items.map((item) => {
+      const { applicableStages: _applicableStages, ...stageAgnosticItem } = item;
+      return stageAgnosticItem;
+    }),
+    evaluationProfile: resolution.bundle.evaluationProfile,
+    performanceBudget: {
+      maxModelCalls: 36,
+      maxToolCalls: 120,
+      maxVisionCandidates: 16,
+      maxInitialVisionCandidates: 8,
+      maxVisualAnalyses: 6,
+      maxFullResolutionImageReads: 0,
+      softTimeBudgetMs: 900_000
+    },
+    reasoningEffort: 'high',
+    maxIterations: input.maxIterations || 60
+  });
+  return { success: true };
+}
+
 async function assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2() {
   const identity = createPlanNeutralIdentity('successful-bind');
   const tools = [
@@ -3408,6 +3500,340 @@ async function assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2() {
     'declareDesignIntent',
   ]);
   assert.strictEqual(result.executionSummary?.runtimeStageState?.currentStage, 'E1');
+}
+
+async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
+  const declaration = {
+    id: 'policy-declaration',
+    name: 'declareDesignIntent',
+    arguments: { taskTypeId: 'ecommerce.main_image.v1', workMode: 'create_new' }
+  };
+  const read = { id: 'policy-read', name: 'searchEagleReferences', arguments: { query: '主图' } };
+  const readyDecision = buildAutonomousExecutionDecisionForEngine('runtime-sibling-policy-ready');
+  let visibleSurfaceReads = 0;
+  const turn = createRuntimeDeclarationSiblingTurn([read, declaration], {
+    readVisibleToolsAfterBinding: async () => {
+      visibleSurfaceReads += 1;
+      return [read];
+    },
+    isCapabilityControlTool: () => false,
+    decisionContext: {
+      userInput: '读取主图参考',
+      intentControlPlane: readyDecision,
+      completedToolCalls: [],
+      runtime: { photoshopConnected: true, hasDocument: true }
+    }
+  });
+  assert.deepStrictEqual(turn.orderedCalls.map((call) => call.id), [declaration.id, read.id]);
+  await turn.recordResult(declaration, {});
+  assert.strictEqual(turn.shouldDefer(read), true, 'missing explicit declaration success leaked a sibling read');
+  assert.strictEqual(visibleSurfaceReads, 0, 'failed declaration should not build a post-binding Tool surface');
+  await turn.recordResult(declaration, { success: true });
+  assert.strictEqual(visibleSurfaceReads, 1);
+  assert.strictEqual(turn.shouldDefer(read), false, 'valid compatible read was not carried after explicit success');
+
+  const hiddenTurn = createRuntimeDeclarationSiblingTurn([declaration, read], {
+    readVisibleToolsAfterBinding: async () => [],
+    isCapabilityControlTool: () => false,
+    decisionContext: {
+      userInput: '读取主图参考', intentControlPlane: readyDecision, completedToolCalls: [],
+      runtime: { photoshopConnected: true, hasDocument: true }
+    }
+  });
+  await hiddenTurn.recordResult(declaration, { success: true });
+  assert.strictEqual(hiddenTurn.shouldDefer(read), true, 'post-binding hidden Tool leaked through carry-over');
+
+  const unreadableSurfaceTurn = createRuntimeDeclarationSiblingTurn([declaration, read], {
+    readVisibleToolsAfterBinding: async () => { throw new Error('surface unavailable'); },
+    isCapabilityControlTool: () => false,
+    decisionContext: {
+      userInput: '读取主图参考', intentControlPlane: readyDecision, completedToolCalls: [],
+      runtime: { photoshopConnected: true, hasDocument: true }
+    }
+  });
+  await unreadableSurfaceTurn.recordResult(declaration, { success: true });
+  assert.strictEqual(unreadableSurfaceTurn.shouldDefer(read), true, 'unreadable post-binding surface failed open');
+
+  const planOnlyIntent = {
+    ...readyDecision,
+    requestKind: 'plan_only',
+    toolScope: 'none',
+    executionAuthorization: 'none'
+  };
+  const decisionBlockedTurn = createRuntimeDeclarationSiblingTurn([declaration, read], {
+    readVisibleToolsAfterBinding: async () => [read],
+    isCapabilityControlTool: () => false,
+    decisionContext: {
+      userInput: '只做方案，不调用工具', intentControlPlane: planOnlyIntent, completedToolCalls: [],
+      runtime: { photoshopConnected: true, hasDocument: true }
+    }
+  });
+  await decisionBlockedTurn.recordResult(declaration, { success: true });
+  assert.strictEqual(decisionBlockedTurn.shouldDefer(read), true, 'Tool Decision blocker was bypassed after declaration');
+
+  const secondDeclaration = {
+    id: 'policy-declaration-2',
+    name: 'declareDesignIntent',
+    arguments: { taskTypeId: 'ecommerce.sku_batch.v1' }
+  };
+  const ambiguousTurn = createRuntimeDeclarationSiblingTurn([declaration, secondDeclaration, read], {
+    readVisibleToolsAfterBinding: async () => [read],
+    isCapabilityControlTool: () => false,
+    decisionContext: {
+      userInput: '设计商品图', intentControlPlane: readyDecision, completedToolCalls: [],
+      runtime: { photoshopConnected: true, hasDocument: true }
+    }
+  });
+  assert.strictEqual(ambiguousTurn.ambiguousDeclaration, true);
+  assert.strictEqual(ambiguousTurn.declarationCall, undefined);
+  assert(ambiguousTurn.orderedCalls.every((call) => ambiguousTurn.shouldDefer(call)));
+
+  const duplicateIdTurn = createRuntimeDeclarationSiblingTurn([
+    declaration,
+    { ...read, id: declaration.id }
+  ], {
+    readVisibleToolsAfterBinding: async () => [read],
+    isCapabilityControlTool: () => false,
+    decisionContext: {
+      userInput: '读取主图参考', intentControlPlane: readyDecision, completedToolCalls: [],
+      runtime: { photoshopConnected: true, hasDocument: true }
+    }
+  });
+  assert.strictEqual(duplicateIdTurn.invalidCallIdentity, true);
+  assert.strictEqual(duplicateIdTurn.orderedCalls.length, 2, 'duplicate Call ID silently dropped a sibling');
+  assert(duplicateIdTurn.orderedCalls.every((call) => duplicateIdTurn.shouldDefer(call)));
+}
+
+async function assertDeclarationCarriesCompatibleReadsWithoutHijackingSiblingCalls() {
+  const identity = createPlanNeutralIdentity('same-turn-compatible-reads');
+  const declarationTool = requireAgentTool('declareDesignIntent');
+  const recommendTool = requireAgentTool('recommendAssets');
+  const eagleTool = requireAgentTool('searchEagleReferences');
+  const writeTool = requireAgentTool('createRectangle');
+  const tools = [declarationTool, recommendTool, eagleTool, writeTool];
+  const executedToolNames = [];
+  let modelCallCount = 0;
+  let agent;
+  agent = new Agent(
+    buildAgentTestConfig({
+      tools,
+      maxIterations: 2,
+      runtimeSessionIdentity: identity,
+      openingCanvasObservationMode: 'none'
+    }),
+    async () => {
+      modelCallCount += 1;
+      if (modelCallCount === 1) {
+        // 复刻 r18 Provider 顺序：两个读取在声明之前，另带一个不可顺带放行的写调用。
+        return {
+          toolCalls: [
+            { id: 'same-turn-recommend', name: 'recommendAssets', arguments: { limit: 6 } },
+            { id: 'same-turn-eagle', name: 'searchEagleReferences', arguments: { query: '袜子 主图' } },
+            {
+              id: 'same-turn-write',
+              name: 'createRectangle',
+              arguments: { x: 0, y: 0, width: 100, height: 100, fillColorHex: '#FFFFFF' }
+            },
+            {
+              id: 'same-turn-declare',
+              name: 'declareDesignIntent',
+              arguments: { taskTypeId: 'ecommerce.main_image.v1', workMode: 'create_new' }
+            }
+          ]
+        };
+      }
+      return { content: '已读取当前素材与参考事实。', stopReason: 'end_turn' };
+    },
+    async (toolName, arguments_) => {
+      executedToolNames.push(toolName);
+      if (toolName === 'declareDesignIntent') {
+        return activateMainImageAgenticRuntime({
+          agent,
+          arguments: arguments_,
+          maxIterations: 2
+        });
+      }
+      if (toolName === 'recommendAssets') {
+        return { success: true, candidates: [{ path: 'E:/project/product.jpg' }] };
+      }
+      if (toolName === 'searchEagleReferences') {
+        return { success: true, items: [{ id: 'eagle-reference-1' }] };
+      }
+      throw new Error(`声明同轮不应执行写工具：${toolName}`);
+    }
+  );
+
+  await agent.run('整理主图设计所需的素材与参考事实');
+  assert.strictEqual(modelCallCount, 2, 'compatible reads still forced an extra model turn');
+  assert.deepStrictEqual(
+    executedToolNames.slice(0, 3),
+    ['declareDesignIntent', 'recommendAssets', 'searchEagleReferences'],
+    'Harness did not preserve the model-authored compatible reads or leaked the sibling write'
+  );
+  assert(!executedToolNames.includes('createRectangle'), 'runtime declaration leaked a sibling Photoshop write');
+  const recommendEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-recommend');
+  const eagleEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-eagle');
+  const writeEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-write');
+  assert.strictEqual(recommendEntry?.result?.success, true);
+  assert.strictEqual(eagleEntry?.result?.success, true);
+  assert.notStrictEqual(recommendEntry?.failureDisposition, 'control_turn_deferred');
+  assert.notStrictEqual(eagleEntry?.failureDisposition, 'control_turn_deferred');
+  assert.strictEqual(writeEntry?.result?.code, 'tool_deferred_after_runtime_declaration');
+  assert.strictEqual(writeEntry?.failureDisposition, 'control_turn_deferred');
+  const historyAssistant = agent.messages.find((message) => (
+    message.role === 'assistant'
+    && message.toolCalls?.some((call) => call.id === 'same-turn-declare')
+  ));
+  const historyToolResult = agent.messages.find((message) => (
+    message.role === 'tool_result'
+    && message.toolResults?.some((result) => result.callId === 'same-turn-declare')
+  ));
+  const expectedCallIds = [
+    'same-turn-declare',
+    'same-turn-recommend',
+    'same-turn-eagle',
+    'same-turn-write'
+  ];
+  assert.deepStrictEqual(historyAssistant?.toolCalls?.map((call) => call.id), expectedCallIds);
+  assert.deepStrictEqual(historyToolResult?.toolResults?.map((result) => result.callId), expectedCallIds);
+  assert.strictEqual(new Set(historyToolResult?.toolResults?.map((result) => result.callId)).size, 4);
+}
+
+async function assertAgentRuntimeDeclarationFailureAndAmbiguityStayFailClosed() {
+  const declarationTool = requireAgentTool('declareDesignIntent');
+  const readTool = requireAgentTool('searchEagleReferences');
+  for (const declarationOutput of [{ success: false }, {}]) {
+    let modelCalls = 0;
+    const executed = [];
+    const agent = new Agent(
+      buildAgentTestConfig({
+        tools: [declarationTool, readTool],
+        maxIterations: 2,
+        openingCanvasObservationMode: 'none'
+      }),
+      async () => {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          return {
+            toolCalls: [
+              { id: 'failed-declaration-read', name: 'searchEagleReferences', arguments: { query: '主图' } },
+              {
+                id: 'failed-declaration',
+                name: 'declareDesignIntent',
+                arguments: { taskTypeId: 'ecommerce.main_image.v1', workMode: 'create_new' }
+              }
+            ]
+          };
+        }
+        return { content: '声明没有成功，未执行同轮读取。', stopReason: 'end_turn' };
+      },
+      async (toolName) => {
+        executed.push(toolName);
+        assert.strictEqual(toolName, 'declareDesignIntent');
+        return declarationOutput;
+      }
+    );
+    await agent.run('准备主图设计');
+    assert.deepStrictEqual(executed, ['declareDesignIntent']);
+    assert.strictEqual(
+      agent.toolCallLog.find((entry) => entry.callId === 'failed-declaration-read')?.failureDisposition,
+      'control_turn_deferred'
+    );
+  }
+
+  let ambiguousExecutorCalls = 0;
+  let ambiguousModelCalls = 0;
+  const ambiguousAgent = new Agent(
+    buildAgentTestConfig({
+      tools: [declarationTool, readTool],
+      maxIterations: 2,
+      openingCanvasObservationMode: 'none'
+    }),
+    async () => {
+      ambiguousModelCalls += 1;
+      if (ambiguousModelCalls === 1) {
+        return {
+          toolCalls: [
+            {
+              id: 'ambiguous-main',
+              name: 'declareDesignIntent',
+              arguments: { taskTypeId: 'ecommerce.main_image.v1', workMode: 'create_new' }
+            },
+            {
+              id: 'ambiguous-sku',
+              name: 'declareDesignIntent',
+              arguments: { taskTypeId: 'ecommerce.sku_batch.v1' }
+            },
+            { id: 'ambiguous-read', name: 'searchEagleReferences', arguments: { query: '商品图' } }
+          ]
+        };
+      }
+      return { content: '检测到互相冲突的任务声明，本轮没有绑定任一 Runtime。', stopReason: 'end_turn' };
+    },
+    async () => {
+      ambiguousExecutorCalls += 1;
+      return { success: true };
+    }
+  );
+  await ambiguousAgent.run('设计商品图');
+  assert.strictEqual(ambiguousExecutorCalls, 0, 'ambiguous declarations arbitrarily committed the first profile');
+  assert(
+    ambiguousAgent.toolCallLog
+      .filter((entry) => ['ambiguous-main', 'ambiguous-sku', 'ambiguous-read'].includes(entry.callId))
+      .every((entry) => entry.failureDisposition === 'control_turn_deferred')
+  );
+}
+
+async function assertStagedDeclarationUsesTruePostBindingToolSurface() {
+  const identity = createPlanNeutralIdentity('staged-hidden-sibling');
+  const declarationTool = requireAgentTool('declareDesignIntent');
+  const recommendTool = requireAgentTool('recommendAssets');
+  const tools = [declarationTool, recommendTool];
+  const executed = [];
+  let modelCalls = 0;
+  let agent;
+  agent = new Agent(
+    buildAgentTestConfig({
+      tools,
+      maxIterations: 2,
+      runtimeSessionIdentity: identity,
+      openingCanvasObservationMode: 'none'
+    }),
+    async () => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return {
+          toolCalls: [
+            { id: 'staged-hidden-recommend', name: 'recommendAssets', arguments: { limit: 4 } },
+            {
+              id: 'staged-hidden-declaration',
+              name: 'declareDesignIntent',
+              arguments: { taskTypeId: 'ecommerce.sku_batch.v1' }
+            }
+          ]
+        };
+      }
+      return { content: '已按绑定后的 SKU 阶段继续。', stopReason: 'end_turn' };
+    },
+    async (toolName, arguments_) => {
+      executed.push(toolName);
+      assert.strictEqual(toolName, 'declareDesignIntent');
+      return activateSkuRuntime({
+        agent,
+        identity,
+        tools,
+        arguments: arguments_,
+        maxIterations: 2,
+        nextTools: [recommendTool]
+      });
+    }
+  );
+  await agent.run('完成 SKU 生产');
+  assert.deepStrictEqual(executed, ['declareDesignIntent']);
+  assert.strictEqual(
+    agent.toolCallLog.find((entry) => entry.callId === 'staged-hidden-recommend')?.failureDisposition,
+    'control_turn_deferred'
+  );
 }
 
 async function assertAgenticDeclarationActivatesArtifactContractWithoutStageRuntime() {
@@ -7463,6 +7889,10 @@ async function runBehaviorAssertions() {
   await assertExecutionSupplyReserveGatesObservationInLiveLoop();
   await assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates();
   await assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2();
+  await assertRuntimeDeclarationSiblingPolicyFailsClosed();
+  await assertDeclarationCarriesCompatibleReadsWithoutHijackingSiblingCalls();
+  await assertAgentRuntimeDeclarationFailureAndAmbiguityStayFailClosed();
+  await assertStagedDeclarationUsesTruePostBindingToolSurface();
   await assertAgenticDeclarationActivatesArtifactContractWithoutStageRuntime();
   await assertSkuModeGetsOneStructuredRepair();
   await assertPureFirstToolResponseDoesNotCallAuxiliaryModel();
