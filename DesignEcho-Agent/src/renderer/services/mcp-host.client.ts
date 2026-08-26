@@ -7,7 +7,7 @@ import {
 } from '../../shared/photoshop-operation-result';
 import { readPhotoshopToolDispatchFailure } from '../../shared/photoshop-tool-dispatch-error';
 
-const MCP_HOST_ENDPOINT = 'http://127.0.0.1:8768/mcp';
+const DEFAULT_MCP_HOST_ENDPOINT = 'http://127.0.0.1:8768/mcp';
 const MCP_HOST_TIMEOUT_MS = 1500;
 const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS = 30_000;
 
@@ -68,6 +68,22 @@ function getInvokeBridge(): InvokeBridge | null {
     const maybeInvoke = (window as any)?.designEcho?.invoke;
     if (typeof maybeInvoke !== 'function') return null;
     return maybeInvoke as InvokeBridge;
+}
+
+function getDesignEchoBridge(): Record<string, any> | null {
+    if (typeof window === 'undefined') return null;
+    const bridge = (window as any)?.designEcho;
+    return bridge && typeof bridge === 'object' ? bridge as Record<string, any> : null;
+}
+
+function resolveMcpHostEndpoint(): string {
+    const bridge = getDesignEchoBridge();
+    const endpoint = typeof bridge?.getMcpHostEndpoint === 'function'
+        ? String(bridge.getMcpHostEndpoint() || '').trim()
+        : '';
+    return /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\/mcp$/i.test(endpoint)
+        ? endpoint
+        : DEFAULT_MCP_HOST_ENDPOINT;
 }
 
 function createMcpRequestKey(toolName: string): string {
@@ -158,7 +174,7 @@ async function postMcpRequest(
     const timeoutId = setTimeout(() => controller.abort(), normalizeMcpHostTimeoutMs(timeoutMs));
 
     try {
-        const response = await fetch(MCP_HOST_ENDPOINT, {
+        const response = await fetch(resolveMcpHostEndpoint(), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -231,6 +247,19 @@ function buildDispatchedMutationOutcomeUnknownError(input: {
 }
 
 export async function getPhotoshopConnectionStatus(): Promise<{ connected: boolean; source: 'mcp-host' | 'ipc' }> {
+    const bridge = getDesignEchoBridge();
+    if (typeof bridge?.getConnectionStatus === 'function') {
+        try {
+            const local = asRecord(await bridge.getConnectionStatus());
+            return {
+                connected: Boolean(local.connected),
+                source: 'ipc'
+            };
+        } catch {
+            // Electron 内必须对当前 Runtime owner fail closed，不能改读另一个实例的默认端口。
+            return { connected: false, source: 'ipc' };
+        }
+    }
     try {
         const result = asRecord(await callHostTool('photoshop.connection_status'));
         return {
@@ -329,13 +358,11 @@ async function checkPhotoshopBridgeReadinessOnce(): Promise<PhotoshopBridgeReadi
 }
 
 export async function listPhotoshopMcpTools(): Promise<unknown> {
-    try {
-        return await callHostTool('photoshop.tools.list');
-    } catch {
-        const invoke = getInvokeBridge();
-        if (!invoke) throw new Error('MCP host unavailable and IPC bridge is not available');
+    const invoke = getInvokeBridge();
+    if (invoke) {
         return await invoke('mcp:tools:list');
     }
+    return await callHostTool('photoshop.tools.list');
 }
 
 export async function callPhotoshopMcpTool(

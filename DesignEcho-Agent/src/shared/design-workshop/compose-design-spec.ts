@@ -52,6 +52,7 @@ export interface ComposeDesignLayoutRegion {
     content: string;
     bounds: { x: number; y: number; width: number; height: number };
     hAlign?: 'left' | 'center' | 'right';
+    columnPlacement?: { start: number; span: number };
     fit?: 'contain' | 'cover';
     imagePlacement?: ImagePlacementSpec;
 }
@@ -61,6 +62,7 @@ export interface ComposeDesignLayoutInput {
     regions?: ComposeDesignLayoutRegion[];
     groupName?: string;
     visualStyle?: RenderLayoutModelAuthoredVisualStyle;
+    columns?: number;
     marginScale?: number;
     gutterScale?: number;
     headline?: string | string[];
@@ -409,6 +411,7 @@ export function normalizeComposeDesignSpec(input: ComposeDesignSpecInput | any):
     }
     const layoutValidation = validateModelAuthoredLayout({
         mode: 'regions',
+        columns: layout.columns,
         marginScale: layout.marginScale,
         gutterScale: layout.gutterScale,
         regions: regions.map((region: any) => (

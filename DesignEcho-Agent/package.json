@@ -93,6 +93,8 @@
     "audit:entry-doc-sync": "node scripts/audit-entry-doc-sync.cjs",
     "audit:category-terms": "node scripts/verify-category-terms.cjs",
     "test:model-usage-classification": "node scripts/test-model-usage-classification.cjs",
+    "test:binary-message-store": "node scripts/verify-binary-message-store.cjs",
+    "test:agent-context-manager": "node scripts/verify-agent-context-manager.cjs",
     "test:openrouter-image-request": "node scripts/test-openrouter-image-request.cjs",
     "audit:inpainting-model-registry": "node scripts/audit-inpainting-model-registry.cjs",
     "test:design-authorship-boundary": "node scripts/verify-design-authorship-boundary.cjs",

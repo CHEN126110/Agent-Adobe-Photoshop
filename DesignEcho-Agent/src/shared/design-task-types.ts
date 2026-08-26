@@ -1,8 +1,8 @@
 /**
  * 设计任务类型（data-driven design task types）
  *
- * 目标：把「详情页 = 6-8 屏默认结构 + 这几个阻塞问题 + 这几个素材入口」这类
- * 任务类型知识做成数据，而不是硬编码进 Agent。自主设计循环在识别到某个设计
+ * 目标：把交付物语义、真实阻塞问题与素材入口做成数据，而不是硬编码进 Agent。
+ * 屏数、模块与阅读顺序属于当前设计决策，应从按需方法知识和真实内容形成。自主设计循环在识别到某个设计
  * 任务类型后，用同一份 Profile 取得交付物语义、Manifest、知识与文档角色映射；
  * 它不规定固定脚本，也不把用户可逆的设计取舍升级为确认门禁。
  *
@@ -134,16 +134,8 @@ const DETAIL_PAGE_DESIGN_TASK_TYPE: DesignTaskTypeSpec = {
         '导出当前', '当前文档导出', '保存', '另存'
     ],
     defaultCanvasWidth: 750,
-    defaultStructure: [
-        { id: 'detail-01-kv', title: '首屏 KV', purpose: '第一眼建立产品认知与点击理由' },
-        { id: 'detail-02-core-selling', title: '核心卖点', purpose: '一句话讲清最能促成转化的核心卖点' },
-        { id: 'detail-03-pain-point', title: '用户痛点解决', purpose: '回应目标用户最关心的疑虑' },
-        { id: 'detail-04-material', title: '面料 / 材质', purpose: '用细节画面说明材质卖点' },
-        { id: 'detail-05-detail', title: '产品细节', purpose: '放大关键工艺与结构细节' },
-        { id: 'detail-06-color-style', title: '颜色 / 款式', purpose: '展示可选颜色与款式，辅助选择' },
-        { id: 'detail-07-spec', title: '参数 / 使用说明', purpose: '给出规格、尺码与使用说明' },
-        { id: 'detail-08-brand', title: '品牌 / 服务背书', purpose: '用品牌与售后服务建立信任' }
-    ],
+    // 详情页屏数与叙事结构必须由 Agent 根据产品、受众、事实和素材动态形成。
+    defaultStructure: [],
     intakeQuestions: [
         { key: 'product', question: '产品是什么？', blocking: true },
         {
@@ -181,13 +173,8 @@ const MAIN_IMAGE_DESIGN_TASK_TYPE: DesignTaskTypeSpec = {
     matchSignals: ['主图', '首图', '主视觉', '点击图', 'main image'],
     excludeSignals: ['白底图', '自底图', '白底', 'sku', '模板填充', '看一下', '检查', '结构', '保存', '导出当前'],
     defaultCanvasWidth: 800,
-    defaultStructure: [
-        { id: 'main-01-hero', title: '主视觉首图', purpose: '突出产品主体与核心点击理由' },
-        { id: 'main-02-selling', title: '卖点图', purpose: '用一个最强卖点强化点击动机' },
-        { id: 'main-03-scene', title: '场景图', purpose: '建立使用场景与代入感' },
-        { id: 'main-04-detail', title: '细节图', purpose: '展示关键细节或材质' },
-        { id: 'main-05-compare', title: '对比 / 参数图', purpose: '用对比或参数减少购买疑虑' }
-    ],
+    // 用户委托一张或多张时按真实目标形成结构，不能把固定五图清单扩成默认交付范围。
+    defaultStructure: [],
     intakeQuestions: [
         { key: 'product', question: '产品是什么？', blocking: true },
         {
@@ -354,14 +341,8 @@ const SKU_TEMPLATE_DESIGN_TASK_TYPE: DesignTaskTypeSpec = {
     // 批量出图 / 看检查 / 导出 等属于 SKU 批量生产或只读路径，不进入 SKU 模板设计语义
     excludeSignals: ['批量', '出图', '看一下', '看看', '检查', '导出当前', '保存', '填充'],
     defaultCanvasWidth: 800,
-    defaultStructure: [
-        { id: 'sku-01-product', title: '产品 / 色卡区', purpose: '展示产品主体或各颜色色卡' },
-        { id: 'sku-02-combo', title: '组合区', purpose: '按规格展示 SKU 颜色 / 款式组合' },
-        { id: 'sku-03-name', title: '颜色 / 款式名', purpose: '标注每个组合的颜色或款式名称' },
-        { id: 'sku-04-number', title: '编号', purpose: '给每个组合编号 / 序号，便于下单对应' },
-        { id: 'sku-05-note', title: '自选备注区', purpose: '放置自选备注说明文案' },
-        { id: 'sku-06-export', title: '导出槽位', purpose: '导出切片定位（占位区域不参与最终导出）' }
-    ],
+    // 规格与占位数量可校验，但视觉区域、层级和阅读顺序由 Agent 动态设计。
+    defaultStructure: [],
     intakeQuestions: [
         {
             key: 'template_variants',

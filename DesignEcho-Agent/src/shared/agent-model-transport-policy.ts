@@ -14,6 +14,24 @@ export interface AgentModelTransportInput {
     hasProviderNativeTools: boolean;
 }
 
+export interface ProviderReasoningReplayInput {
+    provider?: unknown;
+    thinkingEnabled?: boolean;
+}
+
+/**
+ * 只有这些 OpenAI-compatible 通道会在开启思考时把字符串 reasoning 历史原样回放。
+ * Anthropic 需要签名、Codex/Gemini/Ollama 不发送该字段，不能把它们误算进请求容量。
+ */
+export function shouldReplayProviderReasoningContent(
+    input: ProviderReasoningReplayInput
+): boolean {
+    if (input.thinkingEnabled !== true) return false;
+    return input.provider === 'deepseek'
+        || input.provider === 'xiaomi'
+        || input.provider === 'openrouter';
+}
+
 /**
  * 工具协议属于整段消息历史，而不是本轮工具 schema 的附属状态。
  * 一旦历史进入过工具 / reasoning 协议，就必须继续经 provider adapter 序列化；

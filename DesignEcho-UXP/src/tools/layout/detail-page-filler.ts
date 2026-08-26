@@ -56,6 +56,21 @@ interface ImageFillItem {
     assetType: AssetType;
     needsMatting?: boolean;
     executionDeferred?: boolean;
+    assetCandidates?: Array<{
+        candidateSetId: string;
+        candidateId: string;
+        imagePath: string;
+    }>;
+    selectionReceipt?: {
+        version: 'detail-asset-selection-receipt/v0';
+        screenId: number;
+        placeholderLayerId: number;
+        candidateSetId: string;
+        candidateId: string;
+        selectedAssetPath: string;
+        selectedBy: 'agent' | 'user';
+        decisionId: string;
+    };
     subjectAlign?: 'center' | 'left' | 'right' | 'top' | 'bottom';
     isClippingMask?: boolean;
     baseLayerId?: number;
@@ -126,6 +141,7 @@ interface ImagePlacementActualRelation {
 }
 
 type DeferredImageReasonCode =
+    | 'asset_selection_required'
     | 'plan_marked_deferred'
     | 'matting_required'
     | 'clip_base_missing'
@@ -531,7 +547,7 @@ export class DetailPageFiller {
         }
 
         for (const image of plan.images || []) {
-            const imageDeferral = this.resolveImageDeferral(image);
+            const imageDeferral = this.resolveImageDeferral(image, plan.screenId);
             if (imageDeferral) {
                 deferredImages.push(imageDeferral);
                 warnings.push(`图片已延后 [${image.layerName}]: ${imageDeferral.reason}`);
@@ -600,7 +616,7 @@ export class DetailPageFiller {
         return results;
     }
 
-    private resolveImageDeferral(item: ImageFillItem): DeferredImageRecord | null {
+    private resolveImageDeferral(item: ImageFillItem, screenId: number): DeferredImageRecord | null {
         const record = (
             reasonCode: DeferredImageReasonCode,
             reason: string,
@@ -613,6 +629,13 @@ export class DetailPageFiller {
             recoverable: true,
             requiredAction
         });
+        if ((item.imagePath || item.imageData) && !this.hasValidAssetSelectionReceipt(item, screenId)) {
+            return record(
+                'asset_selection_required',
+                '图片仍是候选态，缺少与当前屏、占位和候选集绑定的 Agent / 用户选择收据。',
+                '由主 Agent 查看候选画面并提交当前 candidateSetId / candidateId 的明确选择后，仅重试该图片。'
+            );
+        }
         if (
             item.needsMatting === true
             || item.sourceTreatment?.backgroundTreatment === 'matte_to_mask'
@@ -651,6 +674,31 @@ export class DetailPageFiller {
             );
         }
         return null;
+    }
+
+    private hasValidAssetSelectionReceipt(item: ImageFillItem, screenId: number): boolean {
+        const receipt = item.selectionReceipt;
+        if (!receipt || receipt.version !== 'detail-asset-selection-receipt/v0') return false;
+        if (Number(receipt.screenId || 0) !== Number(screenId || 0)) return false;
+        if (Number(receipt.placeholderLayerId || 0) !== Number(item.layerId || 0)) return false;
+        if (!String(receipt.decisionId || '').trim()
+            || !String(receipt.candidateSetId || '').trim()
+            || !String(receipt.candidateId || '').trim()) {
+            return false;
+        }
+        const normalizePath = (value: unknown): string => {
+            const normalized = String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+            return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+        };
+        if (item.imagePath
+            && normalizePath(receipt.selectedAssetPath) !== normalizePath(item.imagePath)) {
+            return false;
+        }
+        return (item.assetCandidates || []).some((candidate) => (
+            candidate.candidateSetId === receipt.candidateSetId
+            && candidate.candidateId === receipt.candidateId
+            && normalizePath(candidate.imagePath) === normalizePath(receipt.selectedAssetPath)
+        ));
     }
 
     private async fillCopy(item: CopyFillItem): Promise<void> {

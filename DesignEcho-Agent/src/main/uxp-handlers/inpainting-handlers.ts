@@ -50,35 +50,29 @@ async function persistInpaintingImageToTempFile(imageBuffer: Buffer, extension: 
 }
 
 async function waitForBinarySource(
-    store: UXPContext['binaryImageStore'],
+    wsServer: UXPContext['wsServer'],
     requestId: number,
     expectedType: BinaryMessageType,
     timeoutMs: number = 8000
 ): Promise<{ buffer: Buffer; width: number; height: number; type: number }> {
-    const start = Date.now();
-    const pollIntervalMs = 50;
-    while (Date.now() - start < timeoutMs) {
-        const cached = store.get(requestId);
-        if (cached && cached.type === expectedType) {
-            store.delete(requestId);
-            return {
-                buffer: cached.data,
-                width: cached.width,
-                height: cached.height,
-                type: cached.type
-            };
-        }
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const received = await wsServer.waitForBinaryData(requestId, timeoutMs);
+    if (received.header.type !== expectedType) {
+        throw new Error(
+            `Unexpected binary source type: requestId=${requestId}, expected=${getBinaryTypeName(expectedType)}, actual=${getBinaryTypeName(received.header.type)}`
+        );
     }
-    throw new Error(
-        `Timed out waiting for binary source frame: requestId=${requestId}, expected=${getBinaryTypeName(expectedType)}, waited=${timeoutMs}ms`
-    );
+    return {
+        buffer: received.imageData,
+        width: received.header.width,
+        height: received.header.height,
+        type: received.header.type
+    };
 }
 /**
  * Register inpainting handlers.
  */
 export function registerInpaintingHandlers(context: UXPContext): void {
-    const { wsServer, logService, inpaintingService, binaryImageStore } = context;
+    const { wsServer, logService, inpaintingService } = context;
 
     const inpaintingGenerateHandler = async (params: {
         image?: string;
@@ -154,20 +148,13 @@ export function registerInpaintingHandlers(context: UXPContext): void {
                 if (!Number.isFinite(requestId) || requestId <= 0) {
                     throw new Error('imageFromBinary=true but imageBinaryRequestId is missing/invalid');
                 }
-                if (!binaryImageStore) {
-                    throw new Error('binaryImageStore is unavailable on UXPContext');
-                }
                 sendProgress(8, '正在接收原始图像', 'receive-image-binary');
                 let binaryEntry;
                 try {
-                    binaryEntry = await waitForBinarySource(binaryImageStore, requestId, BinaryMessageType.RAW_RGBA, 8000);
+                    binaryEntry = await waitForBinarySource(wsServer, requestId, BinaryMessageType.RAW_RGBA, 8000);
                 } catch (waitError: any) {
-                    const snapshot = Array.from(binaryImageStore.entries()).map(([id, v]) => ({
-                        id,
-                        type: getBinaryTypeName(v.type as BinaryMessageType),
-                        bytes: v.data?.length
-                    }));
-                    logService?.logAgent('error', `[Inpainting] Image binary wait timeout. expected requestId=${requestId}, type=RAW_RGBA. store snapshot=${JSON.stringify(snapshot)}`);
+                    const cache = wsServer.getConnectionDiagnostics().binaryCache;
+                    logService?.logAgent('error', `[Inpainting] Image binary wait failed. expected requestId=${requestId}, type=RAW_RGBA. cache=${JSON.stringify(cache)}`);
                     throw new Error(`Raw RGBA binary frame did not arrive (requestId=${requestId}): ${waitError?.message || waitError}`);
                 }
                 const width = Number(params.imageBinaryWidth) > 0 ? Number(params.imageBinaryWidth) : binaryEntry.width;
@@ -189,20 +176,13 @@ export function registerInpaintingHandlers(context: UXPContext): void {
                 if (!Number.isFinite(requestId) || requestId <= 0) {
                     throw new Error('maskFromBinary=true but maskBinaryRequestId is missing/invalid');
                 }
-                if (!binaryImageStore) {
-                    throw new Error('binaryImageStore is unavailable on UXPContext');
-                }
                 sendProgress(10, '正在接收选区蒙版', 'receive-mask-binary');
                 let binaryEntry;
                 try {
-                    binaryEntry = await waitForBinarySource(binaryImageStore, requestId, BinaryMessageType.RAW_MASK, 8000);
+                    binaryEntry = await waitForBinarySource(wsServer, requestId, BinaryMessageType.RAW_MASK, 8000);
                 } catch (waitError: any) {
-                    const snapshot = Array.from(binaryImageStore.entries()).map(([id, v]) => ({
-                        id,
-                        type: getBinaryTypeName(v.type as BinaryMessageType),
-                        bytes: v.data?.length
-                    }));
-                    logService?.logAgent('error', `[Inpainting] Mask binary wait timeout. expected requestId=${requestId}, type=RAW_MASK. store snapshot=${JSON.stringify(snapshot)}`);
+                    const cache = wsServer.getConnectionDiagnostics().binaryCache;
+                    logService?.logAgent('error', `[Inpainting] Mask binary wait failed. expected requestId=${requestId}, type=RAW_MASK. cache=${JSON.stringify(cache)}`);
                     throw new Error(`Raw mask binary frame did not arrive (requestId=${requestId}): ${waitError?.message || waitError}`);
                 }
                 const width = Number(params.maskBinaryWidth) > 0 ? Number(params.maskBinaryWidth) : binaryEntry.width;

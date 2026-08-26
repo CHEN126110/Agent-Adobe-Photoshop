@@ -1,5 +1,15 @@
-import type { DetailScreenPlan, DetailScreenRole } from '../../../shared/detail-page-screen-plan';
-import type { DetailAssetUsageDecision, FillPlan, ParsedScreen } from './detail-page.types';
+import type {
+    DetailScreenAssetSelection,
+    DetailScreenPlan,
+    DetailScreenRole
+} from '../../../shared/detail-page-screen-plan';
+import type {
+    DetailAssetCandidateProposal,
+    DetailAssetSelectionReceipt,
+    DetailAssetUsageDecision,
+    FillPlan,
+    ParsedScreen
+} from './detail-page.types';
 import type { DesignScene } from '../../../shared/types/design-context.types';
 import type { SelectedElementContext } from '../../../shared/types/design-scene.types';
 import type { SelectedModuleContext } from '../../../shared/types/design-graph.types';
@@ -80,6 +90,11 @@ type MatchCandidate = {
     asset: DetailProjectAsset;
     score: number;
     reasons: string[];
+};
+
+type DetailAssetCandidateSet = {
+    candidateSetId: string;
+    proposals: DetailAssetCandidateProposal[];
 };
 
 type PlacementMetadata = {
@@ -702,18 +717,108 @@ function rankAssetsForPlaceholder(
         .sort((a, b) => b.score - a.score);
 }
 
-function selectDetailAssetCandidate(
+function normalizeDetailAssetPath(value: unknown): string {
+    const normalized = String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function stableDetailCandidateHash(value: string): string {
+    let hash = 0x811c9dc5;
+    for (const char of value) {
+        hash ^= char.codePointAt(0) || 0;
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
+}
+
+function buildDetailAssetCandidateSet(
+    screen: ParsedScreen,
+    placeholder: any,
     ranked: MatchCandidate[],
+    recommendedPaths: Set<string>,
     screenPlan?: DetailScreenPlan
-): MatchCandidate | undefined {
-    const executable = ranked.find((candidate) => (
-        candidate.score >= 0.55
-        && resolveDetailAssetUsageDecision(candidate.asset, screenPlan).automaticPlacementEligible
+): DetailAssetCandidateSet {
+    const stableShortlist = ranked.slice(0, 3);
+    // 候选集由占位、素材版本和基础相关性唯一决定；跨槽位多样性只能调整推荐展示顺序，
+    // 不能改变已经签发给 Agent 的 candidateSetId / candidateId。
+    const shortlist = [...stableShortlist].sort((left, right) => {
+        const leftUsed = recommendedPaths.has(normalizeDetailAssetPath(left.asset.path));
+        const rightUsed = recommendedPaths.has(normalizeDetailAssetPath(right.asset.path));
+        if (leftUsed !== rightUsed) return leftUsed ? 1 : -1;
+        return stableShortlist.indexOf(left) - stableShortlist.indexOf(right);
+    });
+    const assetIdentity = [...stableShortlist]
+        .sort((left, right) => normalizeDetailAssetPath(left.asset.path).localeCompare(
+            normalizeDetailAssetPath(right.asset.path)
+        ))
+        .map((candidate) => [
+        normalizeDetailAssetPath(candidate.asset.path),
+        Number(candidate.asset.sizeBytes || 0),
+        Number(candidate.asset.modifiedTimeMs || 0)
+    ].join(':')).join('|');
+    const identity = [
+        String(screenPlan?.screenRole || ''),
+        String(screenPlan?.imageStrategy || ''),
+        String(screenPlan?.visualPriority || ''),
+        assetIdentity
+    ].join('|');
+    const candidateSetId = `detail-candidates:${Number(screen.id || 0)}:${Number(placeholder?.layerId || 0)}:${stableDetailCandidateHash(identity)}`;
+    const recommendedPath = normalizeDetailAssetPath(shortlist[0]?.asset?.path);
+    if (recommendedPath) recommendedPaths.add(recommendedPath);
+    return {
+        candidateSetId,
+        proposals: shortlist.map((candidate) => {
+            const assetUsageDecision = resolveDetailAssetUsageDecision(candidate.asset, screenPlan);
+            return {
+                candidateSetId,
+                candidateId: `${candidateSetId}:${stableDetailCandidateHash(normalizeDetailAssetPath(candidate.asset.path))}`,
+                imagePath: candidate.asset.path,
+                score: candidate.score,
+                reasons: [...candidate.reasons],
+                // 相关性分数只决定候选展示顺序，不能否决 Agent 对第二、第三候选的设计选择。
+                // 执行资格只消费与直接置入安全有关的已观察事实。
+                placementSafetyEligible: assetUsageDecision.automaticPlacementEligible,
+                needsMatting: assetUsageDecision.sourceTreatment === 'matte_and_recompose',
+                assetUsageDecision
+            };
+        })
+    };
+}
+
+function findExplicitDetailAssetSelection(
+    screenPlan: DetailScreenPlan | undefined,
+    placeholder: any,
+    candidateSet: DetailAssetCandidateSet
+): {
+    proposal: DetailAssetCandidateProposal;
+    selection: DetailScreenAssetSelection;
+    receipt: DetailAssetSelectionReceipt;
+} | null {
+    const placeholderLayerId = Number(placeholder?.layerId || 0);
+    const selection = screenPlan?.agentDecision?.imageSelections?.find((item) => (
+        Number(item.placeholderLayerId || 0) === placeholderLayerId
     ));
-    if (executable) return executable;
-    return ranked.find((candidate) => (
-        resolveDetailAssetUsageDecision(candidate.asset, screenPlan).sourceTreatment === 'matte_and_recompose'
-    )) || ranked[0];
+    if (!selection || selection.candidateSetId !== candidateSet.candidateSetId) return null;
+    const proposal = candidateSet.proposals.find((candidate) => (
+        candidate.candidateId === selection.candidateId
+        && normalizeDetailAssetPath(candidate.imagePath) === normalizeDetailAssetPath(selection.imagePath)
+    ));
+    if (!proposal) return null;
+    return {
+        proposal,
+        selection,
+        receipt: {
+            version: 'detail-asset-selection-receipt/v0',
+            screenId: Number(screenPlan?.screenId || screenPlan?.agentDecision?.screenId || 0),
+            placeholderLayerId,
+            candidateSetId: candidateSet.candidateSetId,
+            candidateId: proposal.candidateId,
+            selectedAssetPath: proposal.imagePath,
+            selectedBy: 'agent',
+            decisionId: selection.decisionId,
+            ...(selection.rationale ? { rationale: selection.rationale } : {})
+        }
+    };
 }
 
 function buildDetailPlacementSourceTreatment(decision: DetailAssetUsageDecision): {
@@ -1763,30 +1868,59 @@ async function generateScreenPlan(
         ? []
         : sortPlaceholdersByFocusedModule(screen.imagePlaceholders || [], focusedModuleLayerIds);
     for (const placeholder of imagePlaceholders) {
-        const ranked = rankAssetsForPlaceholder(screen, placeholder, availableAssets, usedPaths, screenPlan);
-        const best = selectDetailAssetCandidate(ranked, screenPlan);
+        // candidateSet 必须与之前签发给 Agent 的集合稳定一致，因此基础排名不消费本轮选择状态。
+        // usedPaths 在这里仅记录各槽位的推荐展示，保留多样性体验而不参与候选身份。
+        const ranked = rankAssetsForPlaceholder(screen, placeholder, availableAssets, new Set<string>(), screenPlan);
+        const candidateSet = buildDetailAssetCandidateSet(screen, placeholder, ranked, usedPaths, screenPlan);
+        const explicitSelection = findExplicitDetailAssetSelection(screenPlan, placeholder, candidateSet);
+        const recommendedCandidate = candidateSet.proposals[0];
+        const selectedAsset = explicitSelection
+            ? availableAssets.find((asset) => (
+                normalizeDetailAssetPath(asset.path)
+                === normalizeDetailAssetPath(explicitSelection.proposal.imagePath)
+            ))
+            : undefined;
+        const planningAsset = selectedAsset
+            || (recommendedCandidate
+                ? availableAssets.find((asset) => (
+                    normalizeDetailAssetPath(asset.path)
+                    === normalizeDetailAssetPath(recommendedCandidate.imagePath)
+                ))
+                : undefined);
 
-        if (best?.asset?.path) {
-            const assetType = normalizeAssetType(best.asset.type);
-            const assetUsageDecision = resolveDetailAssetUsageDecision(best.asset, screenPlan);
+        if (planningAsset?.path) {
+            const assetType = normalizeAssetType(planningAsset.type);
+            const assetUsageDecision = explicitSelection?.proposal.assetUsageDecision
+                || recommendedCandidate?.assetUsageDecision
+                || resolveDetailAssetUsageDecision(planningAsset, screenPlan);
             const fillMode = resolveInitialFillMode(assetType, screenType, placeholder, screenPlan);
-            const placementMetadata = buildPlacementMetadata(screen, placeholder, assetType, fillMode, screenPlan, best.asset);
+            const placementMetadata = buildPlacementMetadata(screen, placeholder, assetType, fillMode, screenPlan, planningAsset);
             const placementRelation = buildDetailPlacementRelation(screen, placeholder);
-            const executableSource = assetUsageDecision.automaticPlacementEligible;
-            const mattingCandidate = assetUsageDecision.sourceTreatment === 'matte_and_recompose';
-            usedPaths.add(best.asset.path);
-            imageScores.push(best.score);
+            const selectedForDirectPlacement = Boolean(
+                explicitSelection?.proposal.placementSafetyEligible
+            );
+            const selectedForMatting = Boolean(
+                explicitSelection?.proposal.needsMatting
+            );
+            imageScores.push(explicitSelection?.proposal.score ?? recommendedCandidate?.score ?? 0);
             images.push({
                 layerId: placeholder.layerId,
                 layerName: placeholder.layerName,
-                imagePath: executableSource || mattingCandidate ? best.asset.path : '',
+                imagePath: selectedForDirectPlacement
+                    ? explicitSelection!.proposal.imagePath
+                    : '',
                 fillMode,
                 assetType,
-                needsMatting: mattingCandidate,
+                needsMatting: selectedForMatting,
                 subjectAlign: 'center',
-                selectionReason: `${summarizeCandidate(best)}; ${assetUsageDecision.reason}`,
+                selectionReason: explicitSelection
+                    ? `主 Agent 已选择候选 ${explicitSelection.proposal.candidateId}；${explicitSelection.selection.rationale || assetUsageDecision.reason}`
+                    : `Harness 仅整理了 ${candidateSet.proposals.length} 个候选；排序第一名不是生产选定。`,
                 assetUsageDecision,
-                executionDeferred: !executableSource,
+                assetCandidates: candidateSet.proposals,
+                requiresModelAssetDecision: !explicitSelection,
+                ...(explicitSelection ? { selectionReceipt: explicitSelection.receipt } : {}),
+                executionDeferred: !selectedForDirectPlacement,
                 sourceTreatment: buildDetailPlacementSourceTreatment(assetUsageDecision),
                 ...placementRelation,
                 ...placementMetadata
@@ -1817,7 +1951,8 @@ async function generateScreenPlan(
     const baseConfidence = clamp01((imageCoverage * 0.55) + (averageImageScore * 0.45));
     const planPenalty = screenPlan?.requiresModelDecision ? 0.12 : 0;
     const confidence = clamp01(baseConfidence - planPenalty);
-    const requiresModelDecision = Boolean(screenPlan?.requiresModelDecision);
+    const requiresModelDecision = Boolean(screenPlan?.requiresModelDecision)
+        || images.some((image) => image.requiresModelAssetDecision === true);
     const hasFailedCopy = copies.some((copy) => copy.generationStatus === 'failed');
     const hasFlaggedLowScoreCopy = resolvedPolicy.reviewEnabled
         && resolvedPolicy.lowScoreStrategy === 'flag'
@@ -1845,10 +1980,12 @@ async function generateScreenPlan(
         decisionBoundary: {
             screenDecisionSource: screenPlan?.decisionSource || 'missing',
             requiresModelDecision,
-            assetSelectionSource: requiresModelDecision ? 'heuristic-candidate-ranking' : 'agent-guided-ranking',
-            note: requiresModelDecision
-                ? '素材排序只代表结构和文件候选信号，仍需模型 Agent 决定最终视觉叙事。'
-                : '素材排序已使用模型 Agent 的屏幕决策作为约束。'
+            assetSelectionSource: images.some((image) => image.requiresModelAssetDecision === true)
+                ? 'candidate_only'
+                : 'agent_explicit_selection',
+            note: images.some((image) => image.requiresModelAssetDecision === true)
+                ? '素材排序只提供有限候选；主 Agent 尚未在当前候选集上逐占位选定，图片不会进入 filler。'
+                : '每个可执行图片路径都绑定了主 Agent 在当前候选集上的选择收据。'
         },
         ranking: {
             matchedImages: imageScores.length,

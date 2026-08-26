@@ -9,7 +9,23 @@ const {
 const {
     extractImagesFromToolResult
 } = require(path.join(root, 'src/renderer/services/agent-runtime/tool-result-sanitizer.ts'));
+const {
+    hasValidDetailAssetSelectionReceipt,
+    resolveDetailImageExecutionDeferral
+} = require(path.join(root, 'src/renderer/services/skill-executors/detail-page-plan-utils.ts'));
+const {
+    matchDetailPageContentPlans
+} = require(path.join(root, 'src/renderer/services/skill-executors/detail-page-asset-ranker.ts'));
+const {
+    solveLayout,
+    solveRegionLayout,
+    validateModelAuthoredLayout
+} = require(path.join(root, 'src/shared/layout/layout-engine.ts'));
+const {
+    buildRenderLayoutStackPlan
+} = require(path.join(root, 'src/shared/layout/render-layout-stack-plan.ts'));
 
+async function main() {
 const failures = [];
 
 function source(relativePath) {
@@ -44,6 +60,16 @@ const codexStrictOutputSchema = source('src/main/services/codex-strict-output-sc
 const capabilitySession = source('src/renderer/services/agent-runtime/capability-session.ts');
 const autonomousExecutor = source('src/renderer/services/skill-executors/autonomous-agent.executor.ts');
 const agentRuntime = source('src/renderer/services/agent-runtime/agent.ts');
+const agentMessageContext = source('src/renderer/services/agent-runtime/message-context.ts');
+const mcpHostClient = source('src/renderer/services/mcp-host.client.ts');
+const preloadSource = source('src/main/preload.ts');
+const detailPageAssetRanker = source('src/renderer/services/skill-executors/detail-page-asset-ranker.ts');
+const detailPageExecutor = source('src/renderer/services/skill-executors/detail-page.executor.ts');
+const detailPagePlanUtils = source('src/renderer/services/skill-executors/detail-page-plan-utils.ts');
+const uxpDetailPageFiller = source('../DesignEcho-UXP/src/tools/layout/detail-page-filler.ts');
+const mainImageProjectStyleStrategy = source('src/shared/main-image-project-style-strategy.ts');
+const skuTemplateManifest = source('src/shared/agent-runtime-v5/manifests/sku-template.manifest.ts');
+const skuTemplateDesignLoop = source('src/shared/sku-template-design-loop.ts');
 const modelProviderFailureBoundary = source('src/renderer/services/agent-runtime/model-provider-failure-boundary.ts');
 const modelProviderTransportPolicy = source('src/shared/model-provider-transport-policy.ts');
 const failureBreaker = source('src/renderer/services/agent-runtime/tool-failure-breaker.ts');
@@ -57,10 +83,223 @@ const projectVisualSamplingSource = source('src/shared/project-visual-sampling.t
 const resourceManagerSource = source('src/main/services/resource-manager-service.ts');
 const toolResultSanitizerSource = source('src/renderer/services/agent-runtime/tool-result-sanitizer.ts');
 const uxpTemplateTool = source('../DesignEcho-UXP/src/tools/layout/template-tool.ts');
+const layoutEngineSource = source('src/shared/layout/layout-engine.ts');
 
 check(
     '内置版式配方实现已删除',
     !fs.existsSync(path.join(root, 'src/shared/layout/layout-recipes.ts'))
+);
+check(
+    '布局引擎不再按 role 固定层级或无条件吸附文字区域',
+    !layoutEngineSource.includes('const ROLE_Z')
+        && !layoutEngineSource.includes('shouldSnapRegionToColumns(')
+        && layoutEngineSource.includes('columnPlacement')
+        && toolExecutor.includes('moveModelAuthoredLayerByStackLedger')
+        && toolExecutor.includes("position: 'inside-top'")
+);
+const authoredRegionOrder = solveRegionLayout({
+    canvas: { width: 1_000, height: 1_000 },
+    regions: [
+        { id: '文字在底', role: 'title', content: '标题', hAlign: 'left', bounds: { x: 0.1, y: 0.1, width: 0.3, height: 0.1 } },
+        { id: '图片在中', role: 'main-image', content: 'C:/fixture/product.jpg', bounds: { x: 0.2, y: 0.2, width: 0.6, height: 0.6 } },
+        { id: '装饰在顶', role: 'decoration', content: 'C:/fixture/decor.png', bounds: { x: 0.7, y: 0.05, width: 0.2, height: 0.2 } },
+        { id: '背景', role: 'background', content: '#ffffff', bounds: { x: 0, y: 0, width: 1, height: 1 } }
+    ]
+});
+check(
+    '二维正式布局按 Agent 数组顺序叠放非背景图层，背景仅作为公开机械底层例外',
+    authoredRegionOrder.blocks.map((block) => block.id).join('|') === '背景|文字在底|图片在中|装饰在顶',
+    JSON.stringify(authoredRegionOrder.blocks.map((block) => ({ id: block.id, z: block.z })))
+);
+const lateBackgroundValidation = validateModelAuthoredLayout({
+    mode: 'regions',
+    regions: [
+        { id: '标题', role: 'title', content: '标题', hAlign: 'left', bounds: { x: 0.1, y: 0.1, width: 0.3, height: 0.1 } },
+        { id: '背景', role: 'background', content: '#ffffff', bounds: { x: 0, y: 0, width: 1, height: 1 } }
+    ]
+});
+check(
+    'model_authored 背景若不是数组底层会写前失败，不由 Harness 静默重排',
+    lateBackgroundValidation.valid === false
+        && lateBackgroundValidation.issues.includes('regions[1].role:background_must_precede_visual_layers'),
+    JSON.stringify(lateBackgroundValidation)
+);
+const boundsOwnedRegion = {
+    id: '自由标题',
+    role: 'title',
+    content: '自由构图',
+    hAlign: 'left',
+    bounds: { x: 0.123, y: 0.15, width: 0.333, height: 0.12 }
+};
+const noColumnPlacement = solveRegionLayout({
+    canvas: { width: 1_000, height: 1_000 },
+    columns: 4,
+    marginScale: 2,
+    gutterScale: 2,
+    regions: [boundsOwnedRegion]
+});
+const explicitColumnPlacement = solveRegionLayout({
+    canvas: { width: 1_000, height: 1_000 },
+    columns: 4,
+    marginScale: 2,
+    gutterScale: 2,
+    regions: [{ ...boundsOwnedRegion, columnPlacement: { start: 2, span: 2 } }]
+});
+check(
+    'columns 只建立网格；没有 columnPlacement 时 Harness 不改 Agent 的 x/width',
+    noColumnPlacement.blocks[0]?.x === 123
+        && noColumnPlacement.blocks[0]?.width === 333
+        && explicitColumnPlacement.blocks[0]?.x !== 123
+        && explicitColumnPlacement.blocks[0]?.width !== 333,
+    JSON.stringify({ noColumnPlacement, explicitColumnPlacement })
+);
+const invalidColumnPlacement = validateModelAuthoredLayout({
+    mode: 'regions',
+    columns: 4,
+    marginScale: 2,
+    gutterScale: 2,
+    regions: [{ ...boundsOwnedRegion, columnPlacement: { start: 4, span: 2 } }]
+});
+check(
+    '显式列落位越界会在写前失败，不由执行层猜最近列',
+    invalidColumnPlacement.valid === false
+        && invalidColumnPlacement.issues.includes('regions[0].columnPlacement:must_fit_declared_columns'),
+    JSON.stringify(invalidColumnPlacement)
+);
+const authoredBlockOrder = solveLayout({
+    canvas: { width: 1_000, height: 1_000 },
+    marginScale: 2,
+    gapScale: 2,
+    blocks: [
+        { id: '装饰先叠', role: 'decoration', content: 'C:/fixture/decor.png', heightRatio: 0.1, widthRatio: 0.2 },
+        { id: '主体后叠', role: 'main-image', content: 'C:/fixture/product.jpg', heightRatio: 0.6, widthRatio: 0.8 },
+        { id: '标题最上', role: 'title', content: '标题', heightRatio: 0.1, widthRatio: 0.8, hAlign: 'left' }
+    ]
+});
+check(
+    '垂直 blocks 的非背景层序同样保持 Agent 数组顺序',
+    authoredBlockOrder.blocks.map((block) => block.id).join('|') === '装饰先叠|主体后叠|标题最上'
+);
+const stackPlan = buildRenderLayoutStackPlan([
+    { blockId: '已置入摄影主体', stackOrder: 0, layerIdsBottomToTop: [10] },
+    { blockId: '实底卖点', stackOrder: 2, layerIdsBottomToTop: [20, 21] },
+    { blockId: '裁切图片', stackOrder: 1, layerIdsBottomToTop: [30, 31] }
+]);
+check(
+    'model_authored 堆叠账本同时保持区域顺序和裁切/底块原子内部关系',
+    stackPlan.valid
+        && stackPlan.layerIdsBottomToTop.join(',') === '10,30,31,20,21'
+        && stackPlan.layerIdsTopToBottom.join(',') === '21,20,31,30,10',
+    JSON.stringify(stackPlan)
+);
+
+function simulateModelAuthoredStackLedger(input) {
+    const plan = buildRenderLayoutStackPlan(input.units);
+    const actualLayerIdsTopToBottom = [...(input.initialLayerIdsTopToBottom || [])];
+    const moveCalls = [];
+    let failedMove;
+
+    if (plan.valid) {
+        for (const layerId of plan.layerIdsBottomToTop) {
+            const call = {
+                layerId,
+                targetGroupId: input.targetGroupId,
+                position: 'inside-top'
+            };
+            moveCalls.push(call);
+            if (layerId === input.failOnLayerId) {
+                failedMove = call;
+                break;
+            }
+            const previousIndex = actualLayerIdsTopToBottom.indexOf(layerId);
+            if (previousIndex >= 0) actualLayerIdsTopToBottom.splice(previousIndex, 1);
+            actualLayerIdsTopToBottom.unshift(layerId);
+        }
+    }
+
+    const movesCompleted = plan.valid && !failedMove;
+    const readbackRequested = movesCompleted;
+    const readbackLayerIdsTopToBottom = readbackRequested
+        ? [...(input.readbackLayerIdsTopToBottom || actualLayerIdsTopToBottom)]
+        : [];
+    const orderVerified = readbackRequested
+        && readbackLayerIdsTopToBottom.length === plan.layerIdsTopToBottom.length
+        && readbackLayerIdsTopToBottom.every((layerId, index) => (
+            layerId === plan.layerIdsTopToBottom[index]
+        ));
+
+    return {
+        plan,
+        moveCalls,
+        failedMove,
+        movesCompleted,
+        readbackRequested,
+        actualLayerIdsTopToBottom,
+        readbackLayerIdsTopToBottom,
+        orderVerified
+    };
+}
+
+const stackLedgerUnits = [
+    { blockId: '摄影主体', stackOrder: 0, layerIdsBottomToTop: [101] },
+    { blockId: '裁切复合块', stackOrder: 1, layerIdsBottomToTop: [201, 202] },
+    { blockId: '模型已拥有图层', stackOrder: 2, layerIdsBottomToTop: [301] }
+];
+const successfulStackLedgerRun = simulateModelAuthoredStackLedger({
+    units: stackLedgerUnits,
+    targetGroupId: 900,
+    initialLayerIdsTopToBottom: [301]
+});
+check(
+    'model-authored stack ledger 把复合 block 与 owned layer 合成唯一底到顶账本',
+    successfulStackLedgerRun.plan.unitsBottomToTop[1]?.blockId === '裁切复合块'
+        && successfulStackLedgerRun.plan.unitsBottomToTop[1]?.layerIdsBottomToTop.join(',') === '201,202'
+        && successfulStackLedgerRun.plan.unitsBottomToTop[2]?.layerIdsBottomToTop.join(',') === '301'
+        && successfulStackLedgerRun.plan.layerIdsBottomToTop.join(',') === '101,201,202,301',
+    JSON.stringify(successfulStackLedgerRun)
+);
+check(
+    'stack ledger 按底到顶顺序逐层 inside-top 移动后得到期望的顶到底读回',
+    successfulStackLedgerRun.moveCalls.every((call) => (
+        call.targetGroupId === 900 && call.position === 'inside-top'
+    ))
+        && successfulStackLedgerRun.moveCalls.map((call) => call.layerId).join(',') === '101,201,202,301'
+        && successfulStackLedgerRun.actualLayerIdsTopToBottom.join(',') === '301,202,201,101'
+        && successfulStackLedgerRun.orderVerified,
+    JSON.stringify(successfulStackLedgerRun)
+);
+
+const interruptedStackLedgerRun = simulateModelAuthoredStackLedger({
+    units: stackLedgerUnits,
+    targetGroupId: 900,
+    initialLayerIdsTopToBottom: [301],
+    failOnLayerId: 202
+});
+check(
+    'stack ledger 移动中途失败会立即停止，不继续移动 owned layer 或伪造完整读回',
+    interruptedStackLedgerRun.movesCompleted === false
+        && interruptedStackLedgerRun.failedMove?.layerId === 202
+        && interruptedStackLedgerRun.moveCalls.map((call) => call.layerId).join(',') === '101,201,202'
+        && !interruptedStackLedgerRun.moveCalls.some((call) => call.layerId === 301)
+        && interruptedStackLedgerRun.readbackRequested === false
+        && interruptedStackLedgerRun.orderVerified === false,
+    JSON.stringify(interruptedStackLedgerRun)
+);
+
+const wrongReadbackStackLedgerRun = simulateModelAuthoredStackLedger({
+    units: stackLedgerUnits,
+    targetGroupId: 900,
+    initialLayerIdsTopToBottom: [301],
+    readbackLayerIdsTopToBottom: [301, 201, 202, 101]
+});
+check(
+    'stack ledger 即使所有 inside-top 移动成功，读回顺序错误仍不得通过',
+    wrongReadbackStackLedgerRun.movesCompleted
+        && wrongReadbackStackLedgerRun.readbackRequested
+        && wrongReadbackStackLedgerRun.readbackLayerIdsTopToBottom.join(',') === '301,201,202,101'
+        && wrongReadbackStackLedgerRun.plan.layerIdsTopToBottom.join(',') === '301,202,201,101'
+        && wrongReadbackStackLedgerRun.orderVerified === false,
+    JSON.stringify(wrongReadbackStackLedgerRun)
 );
 check(
     'renderLayout 不再动态展开 recipe',
@@ -250,6 +489,184 @@ check(
         && toolSchemas.includes('optional evidence, not a fixed opening ritual')
         && !toolSchemas.includes('七步思考脚手架')
         && !toolSchemas.includes('先说明要解决的构图、色彩、字体或表达问题')
+);
+check(
+    '回复纪律不再把 Eagle 或其他参考来源变成固定开工步骤',
+    agentMessageContext.includes('参考研究由你按信息增益决定')
+        && agentMessageContext.includes('不把任何参考来源变成固定开工步骤')
+        && !agentMessageContext.includes('先检索 Eagle 同品类参考并真看一两张画面再定方向')
+);
+check(
+    '隔离 Runtime 的连接事实与实际 Photoshop 调用绑定同一个 owner',
+    preloadSource.includes('getMcpHostEndpoint: () => `http://${WEBVIEW_BIND_HOST}:${MCP_HOST_PORT}/mcp`')
+        && mcpHostClient.includes('fetch(resolveMcpHostEndpoint()')
+        && mcpHostClient.includes('Electron 内必须对当前 Runtime owner fail closed')
+        && !mcpHostClient.includes("const MCP_HOST_ENDPOINT = 'http://127.0.0.1:8768/mcp'")
+);
+check(
+    '详情页素材排序只生成候选，缺少 Agent / 用户选择收据不能进入 Photoshop',
+    detailPageAssetRanker.includes('buildDetailAssetCandidateSet(')
+        && detailPageAssetRanker.includes('findExplicitDetailAssetSelection(')
+        && detailPageAssetRanker.includes('requiresModelAssetDecision: !explicitSelection')
+        && detailPageAssetRanker.includes('排序第一名不是生产选定')
+        && !detailPageAssetRanker.includes('selectDetailAssetCandidate(')
+        && detailPageExecutor.includes('buildDetailAssetSelectionHandoffResult({')
+        && detailPagePlanUtils.includes('hasValidDetailAssetSelectionReceipt(')
+        && toolExecutor.includes("code: 'detail_asset_selection_receipt_required'")
+        && uxpDetailPageFiller.includes("'asset_selection_required'")
+        && uxpDetailPageFiller.includes('hasValidAssetSelectionReceipt(item, screenId)')
+);
+const detailCandidateSetId = 'detail-candidates:7:42:fixture';
+const detailAssetCandidates = [
+    {
+        candidateSetId: detailCandidateSetId,
+        candidateId: `${detailCandidateSetId}:1`,
+        imagePath: 'C:/fixture/first.jpg'
+    },
+    {
+        candidateSetId: detailCandidateSetId,
+        candidateId: `${detailCandidateSetId}:2`,
+        imagePath: 'C:/fixture/second.jpg'
+    }
+];
+const explicitlySelectedSecondDetailAsset = {
+    layerId: 42,
+    layerName: '商品图片区',
+    imagePath: 'C:/fixture/second.jpg',
+    fillMode: 'contain',
+    assetType: 'product',
+    assetCandidates: detailAssetCandidates,
+    selectionReceipt: {
+        version: 'detail-asset-selection-receipt/v0',
+        screenId: 7,
+        placeholderLayerId: 42,
+        candidateSetId: detailCandidateSetId,
+        candidateId: `${detailCandidateSetId}:2`,
+        selectedAssetPath: 'C:/fixture/second.jpg',
+        selectedBy: 'agent',
+        decisionId: 'agent-choice-second'
+    }
+};
+check(
+    '详情页 Agent 明确选择第二候选时，Harness 尊重该选择而不是改回规则第一名',
+    hasValidDetailAssetSelectionReceipt(explicitlySelectedSecondDetailAsset, 7)
+        && resolveDetailImageExecutionDeferral(explicitlySelectedSecondDetailAsset, 7) === null
+        && !detailPageAssetRanker.includes('candidate.score >= 0.55\n                    && assetUsageDecision.automaticPlacementEligible'),
+    JSON.stringify(explicitlySelectedSecondDetailAsset)
+);
+const forgedDetailAssetPath = {
+    ...explicitlySelectedSecondDetailAsset,
+    imagePath: 'C:/fixture/unlisted.jpg'
+};
+check(
+    '详情页选择收据不能被换路径、旧屏或候选集外素材复用',
+    hasValidDetailAssetSelectionReceipt(forgedDetailAssetPath, 7) === false
+        && hasValidDetailAssetSelectionReceipt(explicitlySelectedSecondDetailAsset, 8) === false
+        && resolveDetailImageExecutionDeferral(forgedDetailAssetPath, 7)?.code === 'asset_selection_required'
+);
+const multiSlotScreen = {
+    id: 17,
+    name: '多图片区稳定候选测试',
+    type: 'PRODUCT',
+    copyPlaceholders: [],
+    imagePlaceholders: [101, 102, 103].map((layerId) => ({
+        layerId,
+        layerName: `图片区 ${layerId}`,
+        bounds: { left: 0, top: 0, right: 320, bottom: 320 }
+    }))
+};
+const multiSlotAssets = ['a', 'b', 'c'].map((name, index) => ({
+    path: `C:/fixture/detail-${name}.jpg`,
+    type: 'model',
+    width: 1_200,
+    height: 1_200,
+    sizeBytes: 10_000 + index,
+    modifiedTimeMs: 1_700_000_000_000 + index,
+    visionSignal: {
+        visualObserved: true,
+        assetNature: 'raw_photo',
+        shotType: 'on_model',
+        backgroundType: 'scene'
+    }
+}));
+const multiSlotBaseDecision = {
+    screenId: 17,
+    screenName: multiSlotScreen.name,
+    screenRole: 'hero',
+    mainMessage: '展示商品',
+    supportingPoints: [],
+    copyStrategy: 'none',
+    imageStrategy: 'hero',
+    visualPriority: 'image-first'
+};
+const multiSlotBasePlan = {
+    ...multiSlotBaseDecision,
+    decisionSource: 'agent',
+    requiresModelDecision: false,
+    confidence: 1,
+    agentDecision: { ...multiSlotBaseDecision }
+};
+const firstMultiSlotMatch = await matchDetailPageContentPlans({
+    screens: [multiSlotScreen],
+    projectAssets: { images: multiSlotAssets },
+    screenPlans: [multiSlotBasePlan],
+    aiCopyGeneration: false
+});
+const firstMultiSlotImages = firstMultiSlotMatch.plans[0]?.images || [];
+const imageSelections = firstMultiSlotImages.map((image, index) => {
+    const candidates = image.assetCandidates || [];
+    const selected = candidates[(index + 1) % candidates.length];
+    return {
+        placeholderLayerId: image.layerId,
+        candidateSetId: selected.candidateSetId,
+        candidateId: selected.candidateId,
+        imagePath: selected.imagePath,
+        decisionId: `agent-multi-slot-${image.layerId}`,
+        rationale: '按各图片区叙事职责一次性完成选择'
+    };
+});
+const secondMultiSlotMatch = await matchDetailPageContentPlans({
+    screens: [multiSlotScreen],
+    projectAssets: { images: multiSlotAssets },
+    screenPlans: [{
+        ...multiSlotBasePlan,
+        agentDecision: {
+            ...multiSlotBaseDecision,
+            imageSelections
+        }
+    }],
+    aiCopyGeneration: false
+});
+const secondMultiSlotImages = secondMultiSlotMatch.plans[0]?.images || [];
+check(
+    '详情页 3 个图片区首轮签发稳定候选，第二轮一次提交全部选择后全部晋升',
+    firstMultiSlotImages.length === 3
+        && imageSelections.length === 3
+        && secondMultiSlotImages.length === 3
+        && secondMultiSlotImages.every((image, index) => (
+            image.requiresModelAssetDecision === false
+            && image.executionDeferred === false
+            && image.imagePath === imageSelections[index].imagePath
+            && image.selectionReceipt?.candidateSetId === imageSelections[index].candidateSetId
+        ))
+        && secondMultiSlotMatch.plans.every((plan) => (
+            !(plan.images || []).some((image) => image.requiresModelAssetDecision === true)
+        )),
+    JSON.stringify({ imageSelections, secondMultiSlotImages })
+);
+check(
+    '主图风格策略不再把项目扫描列表第一项冒充已选素材',
+    mainImageProjectStyleStrategy.includes('项目素材存在不等于已经选定')
+        && !mainImageProjectStyleStrategy.includes('return normalizeAssets(input.projectAssets)[0]')
+);
+check(
+    'SKU 模板以 agentic 执行并且普通 handoff 不注入固定参考顺序或版式数值',
+    skuTemplateManifest.includes("execution_model: 'agentic'")
+        && skuTemplateDesignLoop.includes('input.includeMechanicalLayoutCandidate !== true')
+        && skuTemplateDesignLoop.includes('顺序和工具由你决定')
+        && skuTemplateDesignLoop.includes('Harness 不提供默认版式数值')
+        && !skuTemplateDesignLoop.includes('先找现成再新建：')
+        && !skuTemplateDesignLoop.includes('项目模板目录 → Eagle')
 );
 check(
     '图片 contain/cover 的验收框来自 Agent 选择的 fit 与真实宽高比，不强迫填满占位框',
@@ -521,9 +938,12 @@ check(
 );
 check(
     'composeDesign 把 regions 暴露为可重复的多视觉元素，而不是单素材固定槽位',
-    /多个真实素材/.test(composeDesignProperties.layout?.properties?.regions?.description || '')
-        && /可重复使用/.test(composeRegionSchema?.properties?.role?.description || '')
-        && /独立图片/.test(composeRegionSchema?.properties?.content?.description || '')
+    composeDesignProperties.layout?.properties?.regions?.type === 'array'
+        && composeDesignProperties.layout?.properties?.regions?.maxItems === undefined
+        && composeDesignProperties.layout?.properties?.regions?.uniqueItems !== true
+        && composeRegionSchema?.properties?.role?.enum?.includes('main-image')
+        && composeRegionSchema?.properties?.imagePlacement?.type === 'object'
+        && /从下到上/.test(composeDesignProperties.layout?.properties?.regions?.description || '')
         && /不限制 regions/.test(composeDesignProperties.subject?.description || ''),
     JSON.stringify(composeDesignProperties.layout?.properties?.regions)
 );
@@ -955,3 +1375,9 @@ if (failures.length > 0) {
 }
 
 console.log('\n设计作者权边界验证通过。');
+}
+
+main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});

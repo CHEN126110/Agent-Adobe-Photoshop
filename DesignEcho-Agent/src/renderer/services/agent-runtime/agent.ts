@@ -1781,7 +1781,7 @@ export class Agent {
         });
         this.contextManager = new ContextManager({
             maxTokens: contextCapacity.contextTokenCeiling,
-            keepRecentRounds: 6
+            keepRecentRounds: 6, includeReasoningContent: config.replayProviderReasoningContent === true
         });
         this.runtimeContextCharacterBudget = contextCapacity.runtimeContextCharacterCeiling;
     }
@@ -6066,11 +6066,12 @@ export class Agent {
 
             this.addFinalizationNudgeIfNeeded();
             this.refreshPrimarySystemMessage();
-
             const progressPercent = Math.round(
                 (this.iteration / this.config.maxIterations) * 100
             );
             const iterationTools = await this.consumeToolsForIteration();
+            const iterationProviderMaxTokens = this.resolvePrimaryTurnProviderMaxTokens();
+            const iterationReservedTokens = estimateToolSchemaTokens(iterationTools) + iterationProviderMaxTokens;
             const runtimeStageProgressKeyAtIterationStart = this.readRuntimeStageProgressKey();
             this.config.callbacks.onProgress?.(
                 this.buildIterationProgressLabel(),
@@ -6085,7 +6086,6 @@ export class Agent {
                 maxIterations: this.config.maxIterations,
                 percent: progressPercent
             });
-
             try {
                 if (this.shouldForceFinalResponse()) {
                     return await this.requestForcedFinalResponse();
@@ -6099,7 +6099,7 @@ export class Agent {
                 // 每次调用前按当前动态工具面重新核算；能力按需扩展后也不能绕过容量治理。
                 this.messages = this.contextManager.prepare(
                     this.messages,
-                    estimateToolSchemaTokens(iterationTools) + this.resolvePrimaryTurnProviderMaxTokens()
+                    iterationReservedTokens
                 );
                 // 占位纪律（2026-08-23 用户指正）：只陈述可观察事实（带图 / 在等模型），不代笔思考内容——真实思考由流式 thinking 显示；真机模型回合常跑 40–110 秒，无状态显示用户会以为卡住。
             const modelTurnLooksAtImages = this.pendingPrimaryVisualObservations.length > 0
@@ -6125,7 +6125,7 @@ export class Agent {
                     this.messages,
                     iterationTools,
                     {
-                        maxTokens: this.resolvePrimaryTurnProviderMaxTokens(),
+                        maxTokens: iterationProviderMaxTokens,
                         temperature: 0.7,
                         timeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS
                     },
@@ -7482,7 +7482,7 @@ export class Agent {
                 // 7. 上下文管理（按本轮 Tool schema + 输出预留压缩旧结果；下一次调用前还会复核）。
                 this.messages = this.contextManager.trim(
                     this.messages,
-                    estimateToolSchemaTokens(iterationTools) + this.resolvePrimaryTurnProviderMaxTokens()
+                    iterationReservedTokens
                 );
 
                 // 8. 通知迭代完成

@@ -26,29 +26,23 @@ function dataUrlToBuffer(value: string): Buffer {
  * 等待二进制 raw RGBA 帧到达（处理 ws 帧到达顺序晚于 JSON 请求的情况）
  */
 async function waitForBinarySource(
-    store: UXPContext['binaryImageStore'],
+    wsServer: UXPContext['wsServer'],
     requestId: number,
     expectedType: BinaryMessageType,
     timeoutMs: number = 8000
 ): Promise<{ buffer: Buffer; width: number; height: number; type: number }> {
-    const start = Date.now();
-    const pollIntervalMs = 50;
-    while (Date.now() - start < timeoutMs) {
-        const cached = store.get(requestId);
-        if (cached && cached.type === expectedType) {
-            store.delete(requestId);
-            return {
-                buffer: cached.data,
-                width: cached.width,
-                height: cached.height,
-                type: cached.type
-            };
-        }
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const received = await wsServer.waitForBinaryData(requestId, timeoutMs);
+    if (received.header.type !== expectedType) {
+        throw new Error(
+            `Unexpected binary source type: requestId=${requestId}, expected=${getBinaryTypeName(expectedType)}, actual=${getBinaryTypeName(received.header.type)}`
+        );
     }
-    throw new Error(
-        `Timed out waiting for binary source frame: requestId=${requestId}, expected=${getBinaryTypeName(expectedType)}, waited=${timeoutMs}ms`
-    );
+    return {
+        buffer: received.imageData,
+        width: received.header.width,
+        height: received.header.height,
+        type: received.header.type
+    };
 }
 
 /**
@@ -309,7 +303,7 @@ function parseImageToImageError(error: any): {
 }
 
 export function registerImageToImageHandlers(context: UXPContext): void {
-    const { wsServer, logService, binaryImageStore } = context;
+    const { wsServer, logService } = context;
 
     /**
      * 当前在途的生成请求，用来支持"停止生成"。
@@ -390,25 +384,18 @@ export function registerImageToImageHandlers(context: UXPContext): void {
                 if (!Number.isFinite(requestId) || requestId <= 0) {
                     throw new Error('sourceFromBinary=true but sourceBinaryRequestId is missing/invalid');
                 }
-                if (!binaryImageStore) {
-                    throw new Error('binaryImageStore is unavailable on UXPContext');
-                }
                 sendProgress(12, '正在解码原始像素', 'decode-source-binary');
                 let binaryEntry;
                 try {
                     binaryEntry = await waitForBinarySource(
-                        binaryImageStore,
+                        wsServer,
                         requestId,
                         BinaryMessageType.RAW_RGBA,
                         8000
                     );
                 } catch (waitError: any) {
-                    const snapshot = Array.from(binaryImageStore.entries()).map(([id, v]) => ({
-                        id,
-                        type: getBinaryTypeName(v.type),
-                        bytes: v.data?.length
-                    }));
-                    logService?.logAgent('error', `[ImageToImage] Binary wait timeout. expected requestId=${requestId}, type=RAW_RGBA. store snapshot=${JSON.stringify(snapshot)}`);
+                    const cache = wsServer.getConnectionDiagnostics().binaryCache;
+                    logService?.logAgent('error', `[ImageToImage] Binary wait failed. expected requestId=${requestId}, type=RAW_RGBA. cache=${JSON.stringify(cache)}`);
                     throw new Error(`Raw RGBA binary frame did not arrive (requestId=${requestId}): ${waitError?.message || waitError}`);
                 }
                 const width = Number(params.sourceBinaryWidth) > 0

@@ -47,6 +47,7 @@ import type {
     ManualSkuColorCardResult
 } from '../shared/manual-sku-color-card';
 import type { ProjectSelectionResolution } from '../shared/project-selection-resolution';
+import { MCP_HOST_PORT, WEBVIEW_BIND_HOST } from './config/network-ports';
 
 const chatTestFakePhotoshopEnabled = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
     && process.env.DESIGNECHO_CHAT_TEST_FAKE_PHOTOSHOP === '1';
@@ -266,6 +267,8 @@ const api = {
 
     cancelMcpToolRequest: (requestKey: string, awaitFinalResult?: boolean) =>
         ipcRenderer.invoke('mcp:tools:cancel', requestKey, awaitFinalResult),
+
+    getMcpHostEndpoint: () => `http://${WEBVIEW_BIND_HOST}:${MCP_HOST_PORT}/mcp`,
     
     getConnectionStatus: () =>
         chatTestFakePhotoshopEnabled

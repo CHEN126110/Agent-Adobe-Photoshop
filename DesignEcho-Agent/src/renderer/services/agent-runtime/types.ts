@@ -307,6 +307,11 @@ export interface AgentConfig {
      * 最终由 main 侧 adapter 决定是否下发 thinking:{type:'disabled'} 与是否回写 reasoning。
      */
     thinkingEnabled?: boolean;
+    /**
+     * 当前 Provider 在后续请求中是否原样回放字符串 reasoningContent。
+     * 只描述真实 serializer 行为；Codex/Anthropic 等未回放该字段的通道必须为 false。
+     */
+    replayProviderReasoningContent?: boolean;
 }
 
 export interface RuntimeArtifactPublicationInput {

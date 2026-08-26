@@ -201,7 +201,7 @@ export const SKUSkill: SkillDeclaration = {
     // 模型路由不得直执（用户拍板红线，smoke-skill-route-guard-declaration 钉桩）：
     // sku-batch 必须经 Agent 自主 ReAct 循环，防止退回脚本直调。
     modelDirectExecution: 'forbidden',
-    description: 'SKU 生产 Skill（内部三站，你判断、我执行；每次只调一站，别裸调 stage=full 让我猜）。开工先用 readSkillPlaybook("sku-production") 读工作法手册（认料/色卡/模板/编排四步与判据），再弄懂：哪几张是色卡源图、每色叫什么、要出哪些规格组合、项目里有没有 SKU 源文档和对应规格模板（拿不准用 askUserToChoose 问用户）。项目里名字带「色卡」的文档不等于色卡源：必须打开读图层结构验证每色一个颜色组才算色卡站完成——文件名和画面上的色名文字都不是证据。生产顺序=色卡→模板→组合编排，缺谁先补谁、不跳站。站① stage=color-card 建色卡源文档：源图必须是单色的完整单只 / 平铺照（多色合影、带吊牌腰封的成品照不是色卡源）；传 sourceDirectory="目录名"（目录里图片按文件名当色名，一句话搞定）或 sources=[{filePath,colorName}]（filePath 写文件名即可，别写一堆绝对路径把调用撑爆）。站② stage=full 批量出组合：需要源文档 + 模板，用 specifiedColors=[[色,色],…] 给出你定好的组合（或 comboSizes+countPerSize 出候选弹确认卡）。站③ 缺模板时我会点名缺哪些规格：从 Eagle 素材库找现成模板拷进项目（importEagleAssetToProject，Eagle 原件只读）、调 stage=template 设计可编辑模板（可先看 Eagle 同类模板参考）、让用户提供（askUserToChoose）、或先只做有模板的规格；不要重调 stage=full。每条失败都会说清卡在哪一站、下一步谁做什么；同一站同参数别连调两次。确定性规则只管数量、槽位、命名与导出读回，不替你做视觉判断。',
+    description: 'SKU 生产能力：可创建和验证可编辑色卡源、规格模板与多色组合成品，并对数量、槽位、命名、文件身份和导出完整性做确定性校验。先根据用户目标与当前真实项目状态判断缺少什么，再自行选择最有效的观察、设计和执行方式；只有当前判断需要时才读取工作法或参考，不把色卡、模板、组合写成固定开工顺序。文件名或画面文字不能单独证明文档身份，应以必要的结构或画面事实为准。素材选择、模板版式、视觉层级、色彩组合和是否需要参考由 Agent 或用户决定；缺少创意模板时返回可继续设计的候选与事实，不由 Harness 注入固定版式。',
     whenToUse: [
         'User asks the Agent to make, design, complete, improve, or batch-produce SKU deliverables, including a bare execution request such as "帮我做 SKU".',
         'User asks for an editable SKU color card, SKU card template, combination image, pack-size variant, self-select note, or a complete 2/3/4-pack SKU set.',
@@ -270,7 +270,7 @@ export const SKUSkill: SkillDeclaration = {
             '不要主动要求 autoLayoutWithoutPlaceholders、无占位符自动避让、自动元素避开或隐式智能分区；模板无法识别时应修正模板、调整占位符或更换模板。',
             '调整既有占位符时，先从 inspectTemplateLayout 取得目标 layerId/bounds，用 transformLayer 修改该层，再次 inspectTemplateLayout 复验；不要叠加创建第二套占位结构。',
             '缺少或不匹配色卡源文档时，stage=color-card 基于真实项目素材完成素材选择、版式设计、写入和读回复核，再把可编辑结果交给后续组合生产。',
-            '缺少 2/3/4 双模板时，stage=template 在当前 SKU Skill 内完成文案、排版、风格和视觉层级设计；先做可编辑稿并看图，再建立显式占位结构供 full 阶段消费。',
+            '缺少目标规格模板时，可用 stage=template 承接 Agent 已形成的设计意图并制作可编辑模板；模板的文案、排版、风格和视觉层级由 Agent 决定，Harness 只校验后续生产所需的显式占位结构。',
             '模板方向 checkpoint 只从真实用户原文或受信结构化续跑读取；不要让模型布尔参数制造人工确认点。',
             '用户明确委托 Agent 做可逆组合选择时，允许以 agent_proposal 身份完成候选设计，但这不等于 user_confirmed；默认仍展示组合卡，确认后再生产。只有用户明确说跳过组合确认时，才允许继续非权威草稿，并保持发布前复核状态。',
             '卡片式 SKU 源文档和模板只能使用当前项目素材与已观察事实；参考成品只用于质量评估，不能复制其素材、模板、文案或项目事实，也不能把局部特写、模特图、多只合照擅自认定为颜色组源图。'

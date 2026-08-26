@@ -11,6 +11,7 @@ import type {
 } from './types';
 import { buildAgentProviderTokenBudget } from '../../../shared/agent-performance-policy';
 import { normalizeProviderNativeToolCitations } from '../../../shared/provider-native-tools';
+import { shouldReplayProviderReasoningContent } from '../../../shared/agent-model-transport-policy';
 
 export class OpenAIAdapter implements ProviderAdapter {
     constructor(private readonly provider = 'openai') {}
@@ -78,7 +79,10 @@ export class OpenAIAdapter implements ProviderAdapter {
                 // 思考模式 + 工具调用：DeepSeek/小米要求后续轮次原样回传 reasoning_content，OpenRouter 用 reasoning。
                 // 仅在本次开启思考且历史确有 reasoning 时回写（首轮无历史 reasoning 不写，避免塞空字段触发校验）；
                 // openai 原生不吃这两个字段，不回写以免被拒。
-                if (options?.thinkingEnabled && msg.reasoningContent) {
+                if (msg.reasoningContent && shouldReplayProviderReasoningContent({
+                    provider: this.provider,
+                    thinkingEnabled: options?.thinkingEnabled
+                })) {
                     if (this.provider === 'deepseek' || this.provider === 'xiaomi') {
                         assistantMsg.reasoning_content = msg.reasoningContent;
                     } else if (this.provider === 'openrouter') {

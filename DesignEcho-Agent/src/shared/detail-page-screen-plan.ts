@@ -30,6 +30,15 @@ export type DetailScreenVisualPriority = 'copy-first' | 'image-first' | 'balance
 
 export type DetailScreenDecisionSource = 'agent' | 'heuristic';
 
+export interface DetailScreenAssetSelection {
+    placeholderLayerId: number;
+    candidateSetId: string;
+    candidateId: string;
+    imagePath: string;
+    decisionId: string;
+    rationale?: string;
+}
+
 export interface DetailScreenAgentDecision {
     screenId?: number;
     screenName?: string;
@@ -42,6 +51,11 @@ export interface DetailScreenAgentDecision {
     rationale?: string[];
     /** 只允许来自详情页事实目录的稳定引用，不携带事实原文。 */
     supportRefs?: string[];
+    /**
+     * 主 Agent 对当前候选集作出的逐占位选图决定。候选集身份与路径必须由
+     * matchDetailPageContent 当前调用重新校验；Harness 排序不能生成此字段。
+     */
+    imageSelections?: DetailScreenAssetSelection[];
 }
 
 export interface DetailScreenStructuralSignals {
@@ -156,6 +170,30 @@ function normalizeAgentDecision(value: DetailScreenAgentDecision | undefined): D
     const supportRefs = uniqueCleanStrings(value.supportRefs, 8)
         .filter((ref) => /^detail-fact:(?:[a-z0-9-]+:[0-9]+(?::[0-9]+)?|state-record:[a-f0-9]{16})$/.test(ref));
     if (supportRefs.length) normalized.supportRefs = supportRefs;
+    const imageSelections = (Array.isArray(value.imageSelections) ? value.imageSelections : [])
+        .map((selection) => {
+            const placeholderLayerId = Number(selection?.placeholderLayerId || 0);
+            const candidateSetId = cleanText(selection?.candidateSetId);
+            const candidateId = cleanText(selection?.candidateId);
+            const imagePath = cleanText(selection?.imagePath);
+            const decisionId = cleanText(selection?.decisionId);
+            const rationale = cleanText(selection?.rationale);
+            if (!Number.isSafeInteger(placeholderLayerId) || placeholderLayerId <= 0
+                || !candidateSetId || !candidateId || !imagePath || !decisionId) {
+                return null;
+            }
+            return {
+                placeholderLayerId,
+                candidateSetId,
+                candidateId,
+                imagePath,
+                decisionId,
+                ...(rationale ? { rationale } : {})
+            };
+        })
+        .filter(Boolean)
+        .slice(0, 24) as DetailScreenAssetSelection[];
+    if (imageSelections.length) normalized.imageSelections = imageSelections;
     return Object.keys(normalized).length > 0 ? normalized : null;
 }
 

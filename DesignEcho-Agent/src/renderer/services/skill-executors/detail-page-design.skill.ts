@@ -1128,6 +1128,8 @@ export function applyAttachedImagesToDetailFillPlans(
         String(image?.data || '').trim().length > 0
     ));
     if (usableImages.length === 0) return plans.slice();
+    const totalImageSlots = plans.reduce((count, plan) => count + (plan.images || []).length, 0);
+    const unambiguousSinglePlacement = usableImages.length === 1 && totalImageSlots === 1;
     let attachmentIndex = 0;
     return plans.map((plan) => ({
         ...plan,
@@ -1135,13 +1137,59 @@ export function applyAttachedImagesToDetailFillPlans(
             const attachment = usableImages[attachmentIndex];
             if (!attachment) return image;
             attachmentIndex += 1;
+            const attachmentRef = `attachment:${String(attachment.id || attachment.name || attachmentIndex).trim()}`;
+            const candidateSetId = `detail-attachments:${Number(plan.screenId || 0)}:${Number(image.layerId || 0)}`;
+            const candidateId = `${candidateSetId}:${attachmentIndex}`;
+            const assetUsageDecision = image.assetUsageDecision || {
+                visualObserved: true,
+                visualRole: 'unknown' as const,
+                backgroundType: 'unknown' as const,
+                directUseSuitability: 'conditional' as const,
+                sourceTreatment: 'requires_visual_review' as const,
+                automaticPlacementEligible: false,
+                reason: '用户提供了附件，但多个附件或多个图片区之间的映射仍需主 Agent 决定。'
+            };
+            const assetCandidates = [{
+                candidateSetId,
+                candidateId,
+                imagePath: attachmentRef,
+                score: 1,
+                reasons: ['user_attachment'],
+                placementSafetyEligible: unambiguousSinglePlacement,
+                needsMatting: false,
+                assetUsageDecision
+            }];
+            if (!unambiguousSinglePlacement) {
+                return {
+                    ...image,
+                    imagePath: '',
+                    imageData: undefined,
+                    assetCandidates,
+                    requiresModelAssetDecision: true,
+                    executionDeferred: true,
+                    selectionReason: '用户附件已进入候选集；主 Agent 尚未决定它对应哪个详情页图片区。'
+                };
+            }
             return {
                 ...image,
                 imagePath: '',
                 imageData: String(attachment.data).trim(),
                 imageFormat: resolveAttachedImageFormat(attachment.mediaType),
                 assetType: image.assetType || 'product',
-                fitReason: image.fitReason || `用户附件 ${attachment.name || attachment.id}`
+                fitReason: image.fitReason || `用户附件 ${attachment.name || attachment.id}`,
+                assetCandidates,
+                requiresModelAssetDecision: false,
+                selectionReceipt: {
+                    version: 'detail-asset-selection-receipt/v0',
+                    screenId: Number(plan.screenId || 0),
+                    placeholderLayerId: Number(image.layerId || 0),
+                    candidateSetId,
+                    candidateId,
+                    selectedAssetPath: attachmentRef,
+                    selectedBy: 'user',
+                    decisionId: `user-attachment:${String(attachment.id || attachment.name || attachmentIndex).trim()}`
+                },
+                executionDeferred: false
             };
         })
     }));
@@ -1662,7 +1710,7 @@ export async function prepareDetailScreenExecutionPlan(params: {
     let quality = calculateDetailPlanQuality(plan);
     const hasMissingImagePlan = (screen.imagePlaceholders?.length || 0) > 0
         && (plan.images || []).some((image) => (
-            !resolveDetailImageExecutionDeferral(image)
+            !resolveDetailImageExecutionDeferral(image, plan?.screenId)
             && !String(image?.imagePath || '').trim()
             && !String(image?.imageData || '').trim()
         ));
@@ -1708,11 +1756,13 @@ export async function prepareDetailScreenExecutionPlan(params: {
         notes.push('当前屏视觉边界与结构边界不一致，结果需要重点复核');
     }
     const deferredImages = (riskFilteredPlan.images || [])
-        .map((image) => resolveDetailImageExecutionDeferral(image))
+        .map((image) => resolveDetailImageExecutionDeferral(image, riskFilteredPlan.screenId))
         .filter((item): item is DetailImageExecutionDeferral => Boolean(item));
     const filteredPlan: FillPlan = {
         ...riskFilteredPlan,
-        images: (riskFilteredPlan.images || []).filter((image) => !resolveDetailImageExecutionDeferral(image))
+        images: (riskFilteredPlan.images || []).filter((image) => (
+            !resolveDetailImageExecutionDeferral(image, riskFilteredPlan.screenId)
+        ))
     };
     if (deferredImages.length > 0) {
         notes.push(`已延后 ${deferredImages.length} 个当前没有可信处理结果的图片项，不送入 filler。`);

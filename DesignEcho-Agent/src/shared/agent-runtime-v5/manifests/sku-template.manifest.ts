@@ -20,6 +20,9 @@ export const SKU_TEMPLATE_MANIFEST: SkillRuntimeManifest = {
     version: '0.1.0',
     task_type: 'ecommerce.sku_template.v1',
     display_name: 'SKU 组合模板设计',
+    // 规格数量、命名、占位数与交付完整性可以确定性校验；版式、视觉层级与参考选择
+    // 属于开放设计，必须保留在自主循环中，不能用 R1/R3/R4 声明作为写入门票。
+    execution_model: 'agentic',
     legacy_skill_ids: [],
     workflow_entry_skill_ids: ['sku-batch'],
     required_inputs: ['goal'],

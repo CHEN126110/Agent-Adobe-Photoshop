@@ -21,6 +21,7 @@ import {
     type DetailAssetVisionSignal,
     type DetailProjectAsset
 } from './skill-executors/detail-page-asset-ranker';
+import { hasValidDetailAssetSelectionReceipt } from './skill-executors/detail-page-plan-utils';
 import {
     buildProjectContactSheetCandidateCoverage,
     projectVisualCacheEntryMatchesCurrentAsset,
@@ -2947,8 +2948,8 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             return result;
         }
 
-        // 声明式版面渲染：模型声明内容、视觉样式与语义区域；Harness 只求解坐标、
-        // 图层顺序和确定性可读性约束。模型无需手填像素坐标，但代码也不得替模型选择审美。
+        // 声明式版面渲染：模型声明内容、视觉样式、语义区域、数组叠放顺序与可选列落位；
+        // Harness 只换算坐标和应用确定性可读性约束，不能按 role 替模型改图层顺序或吸附区域。
         if (toolName === 'renderLayout') {
             const {
                 rendersLayoutBlockAsImage,
@@ -2956,6 +2957,9 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 solveRegionLayout,
                 validateModelAuthoredLayout
             } = await import('../../shared/layout/layout-engine');
+            const { buildRenderLayoutStackPlan } = await import(
+                '../../shared/layout/render-layout-stack-plan'
+            );
             const { evaluateImagePlacementQuality } = await import('../../shared/layout/image-placement-quality');
             const {
                 fitRenderLayoutTextToWidth,
@@ -3025,7 +3029,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 return result;
             }
             if (specBlocks.length === 0 && !ownedLayerOnlyMode) {
-                result = { success: false, error: 'renderLayout 需要 blocks（垂直堆叠：role + content + heightRatio）或 regions（二维构图：role + content + 归一化 bounds{x,y,width,height}）之一。坐标和图层顺序由引擎确定，你不要填像素坐标或 z。' };
+                result = { success: false, error: 'renderLayout 需要 blocks（垂直堆叠：role + content + heightRatio）或 regions（二维构图：role + content + 归一化 bounds{x,y,width,height}）之一。非背景图层按 Agent 数组顺序从下到上叠放；Harness 只把比例换成像素，所以不要填像素坐标或 z。' };
                 toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
                 return result;
             }
@@ -3143,7 +3147,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         recommendedStrategies: regionMode
                             ? [
                                 '为文字类 region 显式声明 hAlign',
-                                '若声明 columns，同时显式选择 marginScale 与 gutterScale 档位'
+                                '若声明 columns，同时显式选择 marginScale 与 gutterScale；只有需要列落位的 region 才声明 columnPlacement'
                             ]
                             : [
                                 '显式选择 marginScale 与 gapScale 档位',
@@ -3296,6 +3300,8 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             const validatedOwnedLayers: Array<{
                 layerId: number;
                 bucket: '文案' | '图标' | '图片';
+                blockId: string;
+                stackOrder: number;
                 originalParentId: number | null;
             }> = [];
             let previousStageGroups: any[] = [];
@@ -3324,12 +3330,20 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 for (const ownedLayer of rawOwnedLayers) {
                     const layerId = Number(ownedLayer?.layerId);
                     const bucket = String(ownedLayer?.bucket || '图片');
+                    const stackOrder = Number(ownedLayer?.stackOrder);
+                    const blockId = String(ownedLayer?.blockId || `owned-layer-${String(ownedLayer?.layerId)}`).trim();
                     if (!Number.isInteger(layerId) || layerId <= 0) {
                         ownedLayerPreflightIssues.push(`ownedLayers 含无效 layerId=${String(ownedLayer?.layerId)}`);
                         continue;
                     }
                     if (!['文案', '图标', '图片'].includes(bucket)) {
                         ownedLayerPreflightIssues.push(`ownedLayers 图层 ${layerId} 的 bucket「${bucket}」无效`);
+                        continue;
+                    }
+                    if (style.mode === 'model_authored' && !Number.isFinite(stackOrder)) {
+                        ownedLayerPreflightIssues.push(
+                            `ownedLayers 图层 ${layerId} 缺少原始 stackOrder，无法兑现 Agent 数组层序`
+                        );
                         continue;
                     }
                     if (seenOwnedLayerIds.has(layerId)) {
@@ -3347,6 +3361,8 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     validatedOwnedLayers.push({
                         layerId,
                         bucket: bucket as '文案' | '图标' | '图片',
+                        blockId,
+                        stackOrder: Number.isFinite(stackOrder) ? stackOrder : -1,
                         originalParentId: Number.isInteger(Number(ownedLayerNode?.parentId))
                             && Number(ownedLayerNode.parentId) > 0
                             ? Number(ownedLayerNode.parentId)
@@ -3486,9 +3502,17 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 baseLayerId: number;
                 receipt: any;
             }> = [];
-            // 分屏结构化（用户规范/详情页方法论）：屏组内固定 文案/图标/图片 三子组，
-            // 每层按角色归桶，建组阶段自动分发——图层树本身就是交付物的一部分。
+            // 三桶只服务 neutral/staged 兼容结构；model_authored 使用独立 stack ledger。
             const createdLayerBuckets = new Map<number, '文案' | '图标' | '图片'>();
+            const modelAuthoredStackUnits: Array<{
+                blockId: string;
+                stackOrder: number;
+                layerIdsBottomToTop: number[];
+            }> = validatedOwnedLayers.map((ownedLayer) => ({
+                blockId: ownedLayer.blockId,
+                stackOrder: ownedLayer.stackOrder,
+                layerIdsBottomToTop: [ownedLayer.layerId]
+            }));
             for (const ownedLayer of validatedOwnedLayers) {
                 createdLayerIds.push(ownedLayer.layerId);
                 createdLayerBuckets.set(ownedLayer.layerId, ownedLayer.bucket);
@@ -3860,6 +3884,15 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         createdLayerIds.push(textLayerId);
                         createdLayerBuckets.set(textLayerId, '文案');
                     }
+                    const sellingPointLayerIds = [boxLayerId, textLayerId]
+                        .filter((layerId): layerId is number => Number.isInteger(layerId) && Number(layerId) > 0);
+                    if (sellingPointLayerIds.length > 0) {
+                        modelAuthoredStackUnits.push({
+                            blockId: b.id,
+                            stackOrder: b.z,
+                            layerIdsBottomToTop: sellingPointLayerIds
+                        });
+                    }
                     if (boxResult && boxResult.success === false) errors.push({ block: b.id, role: b.role, error: boxResult.error });
                     if (textResult && textResult.success === false) errors.push({ block: b.id, role: b.role, error: textResult.error });
                     if (!(boxResult && boxResult.success === false) && !(textResult && textResult.success === false)) {
@@ -3930,6 +3963,17 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         createdLayerIds.push(clippingBaseLayerId);
                         createdLayerBuckets.set(clippingBaseLayerId, '图片');
                     }
+                    const blockLayerIds = [clippingBaseLayerId, layerId]
+                        .filter((candidate): candidate is number => (
+                            Number.isInteger(candidate) && Number(candidate) > 0
+                        ));
+                    if (blockLayerIds.length > 0) {
+                        modelAuthoredStackUnits.push({
+                            blockId: b.id,
+                            stackOrder: b.z,
+                            layerIdsBottomToTop: blockLayerIds
+                        });
+                    }
                     if (layerId && b.role === 'main-image' && mainImageHasRealSrc) subjectLayerIds.push(layerId);
                     created.push({
                         id: b.id,
@@ -3946,6 +3990,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             let stageGroupId: number | undefined;
             let stageSubgroupIds: Partial<Record<'文案' | '图标' | '图片', number>> = {};
             let stageSwapReceipt: Record<string, unknown> | undefined;
+            let modelAuthoredStackReceipt: Record<string, unknown> | undefined;
             const hasStageReplacementTargets = previousStageGroups.length > 0
                 || deferredOwnedAncestorGroups.length > 0
                 || previousReusableLayers.length > 0;
@@ -4016,34 +4061,117 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                             }
                         }
                     }
-                    // 分屏结构化：屏组内固定 文案/图标/图片 三子组（用户分屏规范/详情页方法论）。
-                    // 空桶不建组（真机教训：空组会成为剪切蒙版的无效基底）；子组建失败时该桶
-                    // 图层退回直接进屏组（分组是增益不是门闸），并记入 warnings。
-                    const subgroupIds: Partial<Record<'文案' | '图标' | '图片', number>> = {};
-                    for (const bucket of ['图片', '图标', '文案'] as const) {
-                        if (![...createdLayerBuckets.values()].includes(bucket)) continue;
-                        const subgroupResult = await executeToolCall('createGroup', { groupName: bucket }, options);
-                        const subgroupId = inferFocusLayerId('createGroup', {}, subgroupResult);
-                        stageRefreshActions.push({ action: 'createStageSubgroup', groupName: bucket, groupId: subgroupId, success: subgroupResult?.success !== false });
-                        if (subgroupId && subgroupResult?.success !== false) {
-                            const subgroupMove = await executeToolCall('moveLayerToGroup', { layerId: subgroupId, targetGroupId: groupId, position: 'inside' }, options);
-                            if (subgroupMove?.success !== false) {
-                                subgroupIds[bucket] = subgroupId;
-                            } else {
-                                warnings.push(`子组「${bucket}」移入屏组失败，该类图层将直接放在屏组内：${subgroupMove?.error || 'moveLayerToGroup failed'}`);
-                            }
+                    if (style.mode === 'model_authored') {
+                        const stackPlan = buildRenderLayoutStackPlan(modelAuthoredStackUnits);
+                        const stackLayerIds = new Set(stackPlan.layerIdsBottomToTop);
+                        const missingLayerIds = createdLayerIds.filter((layerId) => !stackLayerIds.has(layerId));
+                        modelAuthoredStackReceipt = {
+                            version: 'render-layout-stack-receipt/v0',
+                            source: 'agent_array_order',
+                            valid: stackPlan.valid && missingLayerIds.length === 0,
+                            issues: [...stackPlan.issues],
+                            missingLayerIds,
+                            expectedLayerIdsBottomToTop: stackPlan.layerIdsBottomToTop,
+                            expectedLayerIdsTopToBottom: stackPlan.layerIdsTopToBottom,
+                            units: stackPlan.unitsBottomToTop
+                        };
+                        if (!stackPlan.valid || missingLayerIds.length > 0) {
+                            errors.push({
+                                block: stageGroupName,
+                                role: 'stage-group',
+                                error: `model_authored 层序账本无效：${[
+                                    ...stackPlan.issues,
+                                    ...(missingLayerIds.length > 0
+                                        ? [`未登记图层 ${missingLayerIds.join('、')}`]
+                                        : [])
+                                ].join('；')}`
+                            });
                         } else {
-                            warnings.push(`子组「${bucket}」创建失败，该类图层将直接放在屏组内：${subgroupResult?.error || 'createGroup failed'}`);
+                            for (const layerId of stackPlan.layerIdsBottomToTop) {
+                                const moveResult = await executeToolCall('moveLayerToGroup', {
+                                    layerId,
+                                    targetGroupId: groupId,
+                                    position: 'inside-top'
+                                }, options);
+                                stageRefreshActions.push({
+                                    action: 'moveModelAuthoredLayerByStackLedger',
+                                    layerId,
+                                    groupId,
+                                    position: 'inside-top',
+                                    success: moveResult?.success !== false
+                                });
+                                if (moveResult?.success === false) {
+                                    errors.push({
+                                        block: stageGroupName,
+                                        role: 'stage-group',
+                                        error: moveResult.error || `moveLayerToGroup failed for ${layerId}`
+                                    });
+                                }
+                            }
+                            if (errors.length === 0) {
+                                const stackReadback = await executeToolCall(
+                                    'getLayerHierarchy',
+                                    { includeBounds: false },
+                                    options
+                                );
+                                const stackHierarchy = Array.isArray(stackReadback?.hierarchy)
+                                    ? stackReadback.hierarchy
+                                    : Array.isArray(stackReadback?.layers) ? stackReadback.layers : [];
+                                const stackGroup = flattenHierarchyLayers(stackHierarchy)
+                                    .find((layer: any) => Number(layer?.id) === groupId);
+                                const directChildren = Array.isArray(stackGroup?.children)
+                                    ? stackGroup.children
+                                    : Array.isArray(stackGroup?.layers) ? stackGroup.layers : [];
+                                const actualLayerIdsTopToBottom = directChildren
+                                    .map((layer: any) => Number(layer?.id))
+                                    .filter((layerId: number) => stackLayerIds.has(layerId));
+                                const orderVerified = stackReadback?.success === true
+                                    && actualLayerIdsTopToBottom.length === stackPlan.layerIdsTopToBottom.length
+                                    && actualLayerIdsTopToBottom.every((layerId: number, index: number) => (
+                                        layerId === stackPlan.layerIdsTopToBottom[index]
+                                    ));
+                                modelAuthoredStackReceipt = {
+                                    ...modelAuthoredStackReceipt,
+                                    actualLayerIdsTopToBottom,
+                                    orderVerified
+                                };
+                                if (!orderVerified) {
+                                    errors.push({
+                                        block: stageGroupName,
+                                        role: 'stage-group',
+                                        error: `model_authored 图层层序读回不一致：期望 top→bottom ${stackPlan.layerIdsTopToBottom.join('、')}，实际 ${actualLayerIdsTopToBottom.join('、') || '不可读取'}`
+                                    });
+                                }
+                            }
                         }
-                    }
-                    stageSubgroupIds = subgroupIds;
-                    for (const layerId of createdLayerIds) {
-                        const bucket = createdLayerBuckets.get(layerId);
-                        const targetGroupId = (bucket && subgroupIds[bucket]) || groupId;
-                        const moveResult = await executeToolCall('moveLayerToGroup', { layerId, targetGroupId, position: 'inside' }, options);
-                        stageRefreshActions.push({ action: 'moveLayerToStageGroup', layerId, groupId: targetGroupId, success: moveResult?.success !== false });
-                        if (moveResult?.success === false) {
-                            errors.push({ block: stageGroupName, role: 'stage-group', error: moveResult.error || `moveLayerToGroup failed for ${layerId}` });
+                    } else {
+                        // neutral/staged 兼容生产结构：继续使用文案/图标/图片三桶。
+                        const subgroupIds: Partial<Record<'文案' | '图标' | '图片', number>> = {};
+                        for (const bucket of ['图片', '图标', '文案'] as const) {
+                            if (![...createdLayerBuckets.values()].includes(bucket)) continue;
+                            const subgroupResult = await executeToolCall('createGroup', { groupName: bucket }, options);
+                            const subgroupId = inferFocusLayerId('createGroup', {}, subgroupResult);
+                            stageRefreshActions.push({ action: 'createStageSubgroup', groupName: bucket, groupId: subgroupId, success: subgroupResult?.success !== false });
+                            if (subgroupId && subgroupResult?.success !== false) {
+                                const subgroupMove = await executeToolCall('moveLayerToGroup', { layerId: subgroupId, targetGroupId: groupId, position: 'inside' }, options);
+                                if (subgroupMove?.success !== false) {
+                                    subgroupIds[bucket] = subgroupId;
+                                } else {
+                                    warnings.push(`子组「${bucket}」移入屏组失败，该类图层将直接放在屏组内：${subgroupMove?.error || 'moveLayerToGroup failed'}`);
+                                }
+                            } else {
+                                warnings.push(`子组「${bucket}」创建失败，该类图层将直接放在屏组内：${subgroupResult?.error || 'createGroup failed'}`);
+                            }
+                        }
+                        stageSubgroupIds = subgroupIds;
+                        for (const layerId of createdLayerIds) {
+                            const bucket = createdLayerBuckets.get(layerId);
+                            const targetGroupId = (bucket && subgroupIds[bucket]) || groupId;
+                            const moveResult = await executeToolCall('moveLayerToGroup', { layerId, targetGroupId, position: 'inside' }, options);
+                            stageRefreshActions.push({ action: 'moveLayerToStageGroup', layerId, groupId: targetGroupId, success: moveResult?.success !== false });
+                            if (moveResult?.success === false) {
+                                errors.push({ block: stageGroupName, role: 'stage-group', error: moveResult.error || `moveLayerToGroup failed for ${layerId}` });
+                            }
                         }
                     }
                 }
@@ -4793,6 +4921,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                             : stageCandidateGroupName,
                         groupId: stageGroupId,
                         subgroupIds: stageSubgroupIds,
+                        modelAuthoredStackReceipt,
                         ownedLayerIds: validatedOwnedLayers.map((entry) => entry.layerId),
                         semanticNamesRequired: true,
                         verifiedBy: 'getLayerHierarchy'
@@ -4806,6 +4935,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         : undefined
                 },
                 stageSwapReceipt,
+                modelAuthoredStackReceipt,
                 stageRefreshActions: stageRefreshActions.length > 0 ? stageRefreshActions : undefined,
                 stagePlan: params.stagePlan || undefined,
                 stagePlanValidation: stagePlanValidation || undefined,
@@ -5283,6 +5413,35 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             if (result.success) executedToolsInSession.push(toolName);
             toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
             return result;
+        }
+
+        if (toolName === 'fillDetailPage') {
+            const plans = Array.isArray(params?.plans)
+                ? params.plans
+                : params?.plan ? [params.plan] : [];
+            const missingSelectionReceipts = plans.flatMap((plan: any) => (
+                (Array.isArray(plan?.images) ? plan.images : [])
+                    .filter((image: any) => (
+                        (String(image?.imagePath || '').trim() || String(image?.imageData || '').trim())
+                        && !hasValidDetailAssetSelectionReceipt(image, Number(plan?.screenId || 0))
+                    ))
+                    .map((image: any) => ({
+                        screenId: Number(plan?.screenId || 0),
+                        placeholderLayerId: Number(image?.layerId || 0),
+                        layerName: String(image?.layerName || '')
+                    }))
+            ));
+            if (missingSelectionReceipts.length > 0) {
+                result = {
+                    success: false,
+                    code: 'detail_asset_selection_receipt_required',
+                    error: '详情页图片仍是候选态，缺少与当前屏、占位和候选集绑定的 Agent / 用户选择，已停止置入。',
+                    missingSelectionReceipts,
+                    executesPhotoshop: false
+                };
+                toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                return result;
+            }
         }
 
         // 标注式空间快照：UXP 返回截图+图层边界映射，Agent 端叠印编号边框后

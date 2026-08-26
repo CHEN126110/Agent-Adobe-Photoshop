@@ -9,6 +9,7 @@ export interface DetailImageAnchorAlert {
 }
 
 export type DetailImageExecutionDeferralCode =
+    | 'asset_selection_required'
     | 'matting_required'
     | 'plan_marked_deferred'
     | 'clip_base_missing';
@@ -21,14 +22,54 @@ export interface DetailImageExecutionDeferral {
     recoverable: true;
 }
 
+function normalizeDetailSelectionPath(value: unknown): string {
+    const normalized = String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+export function hasValidDetailAssetSelectionReceipt(
+    image: FillPlan['images'][number],
+    screenId?: number
+): boolean {
+    if (!String(image.imagePath || '').trim() && !String(image.imageData || '').trim()) return true;
+    const receipt = image.selectionReceipt;
+    if (!receipt || receipt.version !== 'detail-asset-selection-receipt/v0') return false;
+    if (Number(receipt.placeholderLayerId || 0) !== Number(image.layerId || 0)) return false;
+    if (screenId && Number(receipt.screenId || 0) !== Number(screenId)) return false;
+    if (!String(receipt.decisionId || '').trim()
+        || !String(receipt.candidateSetId || '').trim()
+        || !String(receipt.candidateId || '').trim()) {
+        return false;
+    }
+    if (image.imagePath
+        && normalizeDetailSelectionPath(receipt.selectedAssetPath)
+            !== normalizeDetailSelectionPath(image.imagePath)) {
+        return false;
+    }
+    return (image.assetCandidates || []).some((candidate) => (
+        candidate.candidateSetId === receipt.candidateSetId
+        && candidate.candidateId === receipt.candidateId
+        && normalizeDetailSelectionPath(candidate.imagePath)
+            === normalizeDetailSelectionPath(receipt.selectedAssetPath)
+    ));
+}
+
 export function resolveDetailImageExecutionDeferral(
-    image: FillPlan['images'][number]
+    image: FillPlan['images'][number],
+    screenId?: number
 ): DetailImageExecutionDeferral | null {
     const base = {
         layerId: Number(image.layerId || 0),
         layerName: String(image.layerName || ''),
         recoverable: true as const
     };
+    if (!hasValidDetailAssetSelectionReceipt(image, screenId)) {
+        return {
+            ...base,
+            code: 'asset_selection_required',
+            reason: '图片只有 Harness 候选或缺少与当前屏、占位和候选集绑定的 Agent / 用户选择收据。'
+        };
+    }
     if (
         image.needsMatting === true
         || image.sourceTreatment?.backgroundTreatment === 'matte_to_mask'
@@ -69,7 +110,9 @@ export function calculateDetailPlanQuality(plan: FillPlan | undefined): PlanQual
     const images = plan?.images || [];
     const copies = plan?.copies || [];
 
-    const executableImages = images.filter((image) => !resolveDetailImageExecutionDeferral(image));
+    const executableImages = images.filter((image) => (
+        !resolveDetailImageExecutionDeferral(image, plan?.screenId)
+    ));
     const imageDeferred = images.length - executableImages.length;
     const imageTotal = executableImages.length;
     const imageMatched = executableImages.filter((img) => !!img.imagePath || !!img.imageData).length;

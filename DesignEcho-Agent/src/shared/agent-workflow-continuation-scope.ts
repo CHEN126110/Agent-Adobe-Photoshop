@@ -258,6 +258,7 @@ function isToolAllowedForContinuationPurpose(
             || kind === 'read_only_observation'
             || kind === 'knowledge_search'
             || kind === 'photoshop_write'
+            || kind === 'save_export'
             || kind === 'external_generation'
             || kind === 'stateful_context';
     }

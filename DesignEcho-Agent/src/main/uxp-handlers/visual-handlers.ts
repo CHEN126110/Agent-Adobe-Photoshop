@@ -25,7 +25,7 @@ function generateSimpleMapping(layers: any[]): string {
 }
 
 export function registerVisualHandlers(context: UXPContext): void {
-    const { wsServer, logService, mattingService, binaryImageStore } = context;
+    const { wsServer, logService, mattingService } = context;
     const MATTING_EXPORT_MAX_SIZE = 1024;
     let nextMattingBinaryResponseId = 1000000000;
 
@@ -55,22 +55,17 @@ export function registerVisualHandlers(context: UXPContext): void {
 
         if (exportResult?.useBinaryTransfer && exportResult?.binaryRequestId) {
             const binaryResult = await wsServer.waitForBinaryData(exportResult.binaryRequestId, 10000);
-            if (binaryResult) {
-                // 二进制先于 JSON 到达时，WebSocket cache 与 legacy shared store 都会短暂持有它。
-                // 本 handler 已取得唯一输入后立即清理 legacy 副本，避免大图在内存中保留 5 分钟。
-                binaryImageStore.delete(Number(exportResult.binaryRequestId));
-                const binaryImage = createBinaryImageData(
-                    binaryResult.header.type,
-                    binaryResult.imageData,
-                    binaryResult.header.width,
-                    binaryResult.header.height
-                );
-                logService?.logAgent(
-                    'info',
-                    `[UXP Handler] Loaded binary image from cache: ${binaryImage.format} ${binaryImage.width}x${binaryImage.height}, ${(binaryResult.imageData.length / 1024).toFixed(0)}KB`
-                );
-                return binaryImage;
-            }
+            const binaryImage = createBinaryImageData(
+                binaryResult.header.type,
+                binaryResult.imageData,
+                binaryResult.header.width,
+                binaryResult.header.height
+            );
+            logService?.logAgent(
+                'info',
+                `[UXP Handler] Loaded binary image from cache: ${binaryImage.format} ${binaryImage.width}x${binaryImage.height}, ${(binaryResult.imageData.length / 1024).toFixed(0)}KB`
+            );
+            return binaryImage;
         }
 
         return null;

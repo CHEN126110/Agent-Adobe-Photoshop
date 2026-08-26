@@ -565,6 +565,64 @@ function buildDetailPageCreateNewHandoffResult(input: {
     };
 }
 
+function buildDetailAssetSelectionHandoffResult(input: {
+    intake: DetailPageAgentIntake;
+    toolResults: any[];
+    projectPath: string;
+    screens: ParsedScreen[];
+    screenPlans: DetailScreenPlan[];
+    fillPlans: FillPlan[];
+}): AgentResult {
+    const requests = input.fillPlans.flatMap((plan) => (
+        (plan.images || [])
+            .filter((image) => image.requiresModelAssetDecision === true)
+            .map((image) => ({
+                screenId: plan.screenId,
+                screenName: plan.screenName,
+                placeholderLayerId: image.layerId,
+                placeholderLayerName: image.layerName,
+                candidates: image.assetCandidates || []
+            }))
+    ));
+    const summary = `已整理 ${requests.length} 个图片区的有限候选，但尚未替主 Agent 选图；本轮没有把规则第一名写入 Photoshop。`;
+    return {
+        success: true,
+        message: summary,
+        skillOutcome: {
+            version: 'skill-execution-outcome/v0',
+            status: 'partial',
+            summary,
+            outputs: ['候选集和占位映射已准备，具体素材仍由主 Agent 决定。'],
+            blockers: [],
+            warnings: input.intake.warnings,
+            sourceStatus: 'detail_asset_selection_required'
+        },
+        toolResults: input.toolResults,
+        data: {
+            status: 'detail_asset_selection_required',
+            projectPath: input.projectPath,
+            screens: input.screens,
+            screenPlans: input.screenPlans,
+            fillPlans: input.fillPlans.map(omitDetailFillPlanImagePayloads),
+            assetDecisionRequests: requests,
+            detailPageAgentIntake: input.intake,
+            agentReActContinuation: {
+                status: 'needs_decision',
+                summary,
+                details: [
+                    '先根据本屏目的和候选真实画面选择素材；排序分数只用于缩小观察范围。',
+                    '选定后，把候选返回的 placeholderLayerId、candidateSetId、candidateId、imagePath 连同新的 decisionId 写入 screenPlans[].agentDecision.imageSelections，再重新调用 matchDetailPageContent 生成可执行计划。',
+                    '需要抠图的候选必须先取得真实处理结果；不能把原始候选路径直接当成成品置入。'
+                ],
+                blockers: [],
+                warnings: input.intake.warnings,
+                nextAction: 'decide_next',
+                sourceStatus: 'detail_asset_selection_required'
+            }
+        }
+    };
+}
+
 function countExportedDetailFiles(exportResult: any): number {
     const candidates = [
         exportResult?.files,
@@ -1759,6 +1817,25 @@ export const detailPageExecutor: SkillExecutor = {
                     requestedChange: String(params.requestedChange || '').trim(),
                     editContentMode: editContentMode as DetailPageEditContentMode
                 }));
+            }
+            if (fillPlans.some((plan) => (
+                (plan.images || []).some((image) => image.requiresModelAssetDecision === true)
+            ))) {
+                emitStep(
+                    'observation',
+                    '等待主 Agent 选择详情页素材',
+                    '候选排序已经完成，但没有把规则第一名提升为生产选定。',
+                    'running',
+                    0.54
+                );
+                return buildDetailAssetSelectionHandoffResult({
+                    intake: detailPageAgentIntake,
+                    toolResults: results,
+                    projectPath,
+                    screens: planningScreens,
+                    screenPlans: executionScreenPlans,
+                    fillPlans
+                });
             }
             const projectedCopyAudit = plannedContent.projectedCopyAudit;
             const anchorDiagnostics = plannedContent.anchorDiagnostics;

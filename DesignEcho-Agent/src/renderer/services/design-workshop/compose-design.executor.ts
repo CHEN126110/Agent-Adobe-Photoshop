@@ -1042,11 +1042,12 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
         }
     }
 
-    const renderRegions = spec.layout.regions.map((region) => (
-        isComposeDesignSubjectAliasRegion(region) && subjectFilePath
+    const renderRegions = spec.layout.regions.map((region, stackOrder) => ({
+        ...(isComposeDesignSubjectAliasRegion(region) && subjectFilePath
             ? { ...region, content: subjectFilePath }
-            : region
-    ));
+            : region),
+        stackOrder
+    }));
     // 摄影优先时 primary subject 已由上方一次性 placeImage 计划负责；其余独立图片仍须
     // 在 composeDesign 的任何 Photoshop 写入之前通过与 renderLayout 相同的落位预演。
     const effectiveRegions = photoFirst
@@ -1056,6 +1057,7 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
         canvas: spec.canvas,
         regions: effectiveRegions,
         visualStyle: spec.layout.visualStyle,
+        columns: spec.layout.columns,
         marginScale: spec.layout.marginScale,
         gutterScale: spec.layout.gutterScale,
         pageBackgroundHex: spec.palette.backgroundHex,
@@ -1063,6 +1065,7 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
     };
     const solvedLayout = solveRegionLayout({
         canvas: spec.canvas,
+        columns: spec.layout.columns,
         marginScale: spec.layout.marginScale,
         gutterScale: spec.layout.gutterScale,
         // normalizeComposeDesignSpec 已把空 id 判为无效；这里仅把该运行时事实收窄给布局类型，
@@ -1386,7 +1389,14 @@ export async function executeComposeDesign(rawParams: any, deps: ComposeDesignEx
     const renderLayoutParams = {
         ...renderLayoutBaseParams,
         ownedLayers: backgroundLayerId !== undefined
-            ? [{ layerId: backgroundLayerId, bucket: '图片' }]
+            ? [{
+                layerId: backgroundLayerId,
+                bucket: '图片',
+                blockId: photoFirst
+                    ? String(spec.layout.regions[primarySubjectRegionIndex]?.id || '摄影主体')
+                    : '背景',
+                stackOrder: photoFirst ? primarySubjectRegionIndex : -1
+            }]
             : []
     };
     const layoutStepName = '按 Agent 设计稿排版';

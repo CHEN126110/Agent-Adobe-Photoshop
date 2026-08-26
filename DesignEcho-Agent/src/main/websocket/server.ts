@@ -22,6 +22,13 @@ import {
     base64ToBuffer
 } from '../../shared/binary-protocol';
 import { createPhotoshopToolDispatchError } from '../../shared/photoshop-tool-dispatch-error';
+import {
+    BoundedBinaryMessageStore,
+    MAX_BINARY_FRAME_BYTES,
+    validateIncomingBinaryFrame,
+    type BinaryMessageStoreDiagnostics,
+    type CachedBinaryMessage
+} from './binary-message-store';
 
 // 重新导出二进制协议类型，供其他模块使用
 export { BinaryMessageType, BinaryHeader } from '../../shared/binary-protocol';
@@ -78,6 +85,7 @@ export interface WebSocketConnectionDiagnostics {
     appHeartbeatStale: boolean;
     missedNativePongs: number;
     lastError: string | null;
+    binaryCache: BinaryMessageStoreDiagnostics;
     pendingRequestCount: number;
     pendingRequests: Array<{
         id: string;
@@ -116,14 +124,6 @@ type CancelRequestOptions = {
 // 请求处理器类型
 type RequestHandler = (params: any) => Promise<any>;
 
-// 二进制请求处理器类型
-type BinaryRequestHandler = (header: BinaryHeader, imageData: Buffer) => Promise<{
-    type: BinaryMessageType;
-    width: number;
-    height: number;
-    data: Buffer;
-} | null>;
-
 // 二进制请求待处理项
 type PendingBinaryRequest = {
     resolve: (data: { header: BinaryHeader; imageData: Buffer }) => void;
@@ -131,18 +131,23 @@ type PendingBinaryRequest = {
     timeout: ReturnType<typeof setTimeout>;
 };
 
-type CachedBinaryMessage = {
-    header: BinaryHeader;
-    imageData: Buffer;
-    timestamp: number;
+type BinaryTransferError = Error & {
+    code: string;
+    requestId: number;
 };
+
+function createBinaryTransferError(code: string, requestId: number, reason: string): BinaryTransferError {
+    const error = new Error(reason) as BinaryTransferError;
+    error.code = code;
+    error.requestId = requestId;
+    return error;
+}
 
 export class WebSocketServer {
     private requestHandlers: Map<string, RequestHandler> = new Map();
-    private binaryHandler: BinaryRequestHandler | null = null;  // 二进制消息处理器
     private pendingBinaryRequests: Map<number, PendingBinaryRequest> = new Map();  // 二进制请求
-    private receivedBinaryCache: Map<number, CachedBinaryMessage> = new Map();  // 已到达但未被 waitForBinaryData 消费的数据
-    private receivedBinaryCacheTimers: Map<number, ReturnType<typeof setTimeout>> = new Map();
+    /** 二进制先于 JSON 到达时的唯一暂存 owner；带条目数、字节数和 TTL 硬上限。 */
+    private readonly receivedBinaryStore = new BoundedBinaryMessageStore();
     private wss: WSServer | null = null;
     private port: number;
     private pluginSocket: WebSocket | null = null;
@@ -179,14 +184,15 @@ export class WebSocketServer {
         const maxRetries = 3;
         const retryDelay = 1000; // 1秒
         
-        // 参考 sd-ppp: max_http_buffer_size=524288000 (500MB)
+        // 图像帧必须先通过协议几何与单帧预算；传输层也同步拒绝超大 payload，
+        // 避免 ws 在业务校验前就为 500MB 单帧分配内存。
         this.wss = new WSServer({ 
             port: this.port,
-            maxPayload: 500 * 1024 * 1024  // 500MB - 支持超大图像传输（sd-ppp 标准）
+            maxPayload: MAX_BINARY_FRAME_BYTES + BINARY_HEADER_SIZE
         });
 
         this.wss.on('listening', () => {
-            console.log(`[WebSocket Server] Listening on port ${this.port} (maxPayload: 500MB)`);
+            console.log(`[WebSocket Server] Listening on port ${this.port} (maxPayload: ${Math.round(MAX_BINARY_FRAME_BYTES / 1024 / 1024)}MB)`);
         });
 
         this.wss.on('connection', (socket: WebSocket) => {
@@ -400,14 +406,6 @@ export class WebSocketServer {
 
     // ==================== 二进制传输方法 ====================
 
-    /**
-     * 注册二进制消息处理器
-     */
-    setBinaryHandler(handler: BinaryRequestHandler): void {
-        this.binaryHandler = handler;
-        console.log('[WebSocket Server] Binary handler registered');
-    }
-
     private takePendingBinaryRequest(requestId: number): PendingBinaryRequest | undefined {
         const pending = this.pendingBinaryRequests.get(requestId);
         if (!pending) return undefined;
@@ -420,38 +418,36 @@ export class WebSocketServer {
         const requestIds = Array.from(this.pendingBinaryRequests.keys());
         requestIds.forEach((requestId) => {
             const pending = this.takePendingBinaryRequest(requestId);
-            pending?.reject(new Error(`二进制请求已终止：${requestId}`));
+            pending?.reject(createBinaryTransferError(
+                'binary_request_terminated',
+                requestId,
+                `二进制请求已终止：${requestId}`
+            ));
         });
     }
 
     private takeReceivedBinaryCache(requestId: number): CachedBinaryMessage | undefined {
-        const cached = this.receivedBinaryCache.get(requestId);
-        if (!cached) return undefined;
-        const timer = this.receivedBinaryCacheTimers.get(requestId);
-        if (timer) clearTimeout(timer);
-        this.receivedBinaryCacheTimers.delete(requestId);
-        this.receivedBinaryCache.delete(requestId);
-        return cached;
+        return this.receivedBinaryStore.take(requestId);
     }
 
-    private cacheReceivedBinaryMessage(message: CachedBinaryMessage): void {
-        this.takeReceivedBinaryCache(message.header.requestId);
-        this.receivedBinaryCache.set(message.header.requestId, message);
-        const timer = setTimeout(() => {
-            if (this.receivedBinaryCache.get(message.header.requestId) === message) {
-                this.receivedBinaryCache.delete(message.header.requestId);
-            }
-            if (this.receivedBinaryCacheTimers.get(message.header.requestId) === timer) {
-                this.receivedBinaryCacheTimers.delete(message.header.requestId);
-            }
-        }, 30000);
-        this.receivedBinaryCacheTimers.set(message.header.requestId, timer);
+    private cacheReceivedBinaryMessage(message: CachedBinaryMessage): boolean {
+        const outcome = this.receivedBinaryStore.put(message);
+        if (!outcome.accepted) {
+            console.warn(
+                `[WebSocket Server] 二进制暂存被拒绝 requestId=${message.header.requestId}: ${outcome.reason}`
+            );
+            this.sendNotification('binary.rejected', {
+                requestId: message.header.requestId,
+                code: outcome.code,
+                reason: outcome.reason,
+                cache: this.receivedBinaryStore.getDiagnostics()
+            });
+        }
+        return outcome.accepted;
     }
 
     private clearReceivedBinaryCache(): void {
-        this.receivedBinaryCacheTimers.forEach((timer) => clearTimeout(timer));
-        this.receivedBinaryCacheTimers.clear();
-        this.receivedBinaryCache.clear();
+        this.receivedBinaryStore.clear();
     }
 
     /**
@@ -459,7 +455,16 @@ export class WebSocketServer {
      *
      * 用于 UXP handler 中获取二进制图像传输的数据
      */
-    waitForBinaryData(requestId: number, timeoutMs: number = 10000): Promise<{ header: BinaryHeader; imageData: Buffer } | null> {
+    waitForBinaryData(requestId: number, timeoutMs: number = 10000): Promise<{ header: BinaryHeader; imageData: Buffer }> {
+        const rejection = this.receivedBinaryStore.takeRejection(requestId);
+        if (rejection) {
+            console.warn(`[WebSocket Server] 二进制请求已被拒绝 requestId=${requestId}: ${rejection.reason}`);
+            return Promise.reject(createBinaryTransferError(
+                rejection.code,
+                requestId,
+                rejection.reason
+            ));
+        }
         // 先检查是否已经到达（二进制可能先于 JSON 到达）
         const cached = this.takeReceivedBinaryCache(requestId);
         if (cached) {
@@ -467,13 +472,21 @@ export class WebSocketServer {
         }
 
         if (this.pendingBinaryRequests.has(requestId)) {
-            return Promise.reject(new Error(`二进制请求正在等待中，不能重复注册：${requestId}`));
+            return Promise.reject(createBinaryTransferError(
+                'binary_wait_already_registered',
+                requestId,
+                `二进制请求正在等待中，不能重复注册：${requestId}`
+            ));
         }
 
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             const timeoutId = setTimeout(() => {
                 const pending = this.takePendingBinaryRequest(requestId);
-                pending?.reject(new Error(`二进制请求等待超时：${requestId}`));
+                pending?.reject(createBinaryTransferError(
+                    'binary_wait_timeout',
+                    requestId,
+                    `二进制请求等待超时：${requestId}（${timeoutMs}ms）`
+                ));
             }, timeoutMs);
 
             this.pendingBinaryRequests.set(requestId, {
@@ -481,9 +494,9 @@ export class WebSocketServer {
                     clearTimeout(timeoutId);
                     resolve(data);
                 },
-                reject: () => {
+                reject: (error) => {
                     clearTimeout(timeoutId);
-                    resolve(null);
+                    reject(error);
                 },
                 timeout: timeoutId
             });
@@ -530,8 +543,42 @@ export class WebSocketServer {
     private async handleBinaryMessage(data: Buffer, sourceSocket: WebSocket): Promise<void> {
         console.log(`[WebSocket Server] 收到二进制消息: ${(data.length / 1024).toFixed(1)}KB`);
 
-        // 解析消息
-        const { header, imageData } = parseBinaryMessage(data);
+        let parsed: ReturnType<typeof parseBinaryMessage>;
+        try {
+            parsed = parseBinaryMessage(data);
+        } catch (error) {
+            console.warn('[WebSocket Server] 二进制消息头解析失败:', error);
+            return;
+        }
+        const { header, imageData } = parsed;
+        const validation = validateIncomingBinaryFrame(header, imageData);
+        if (!validation.ok) {
+            const pending = this.takePendingBinaryRequest(header.requestId);
+            if (pending) {
+                pending.reject(createBinaryTransferError(
+                    validation.code,
+                    header.requestId,
+                    validation.reason
+                ));
+            } else {
+                this.receivedBinaryStore.recordRejection(
+                    header.requestId,
+                    validation.code,
+                    validation.reason
+                );
+            }
+            console.warn(
+                `[WebSocket Server] 拒绝二进制消息 requestId=${header.requestId}, code=${validation.code}: ${validation.reason}`
+            );
+            if (this.pluginSocket === sourceSocket) {
+                this.sendNotification('binary.rejected', {
+                    requestId: header.requestId,
+                    code: validation.code,
+                    reason: validation.reason
+                });
+            }
+            return;
+        }
         
         console.log(`[WebSocket Server] 二进制消息: ${getBinaryTypeName(header.type)}, ` +
             `requestId=${header.requestId}, ${header.width}x${header.height}, ` +
@@ -544,33 +591,8 @@ export class WebSocketServer {
             return;
         }
 
-        // 缓存二进制数据，供后续 waitForBinaryData 调用消费
+        // 二进制可能先于其 JSON 元数据到达；单一 owner 有界暂存，后续消费即释放。
         this.cacheReceivedBinaryMessage({ header, imageData, timestamp: Date.now() });
-
-        // 调用二进制处理器
-        if (this.binaryHandler) {
-            try {
-                const result = await this.binaryHandler(header, imageData);
-                if (result && this.pluginSocket === sourceSocket) {
-                    // 返回处理结果
-                    this.sendBinaryData(
-                        result.type,
-                        header.requestId,  // 使用相同的 requestId 关联响应
-                        result.width,
-                        result.height,
-                        result.data
-                    );
-                }
-            } catch (error: any) {
-                console.error(`[WebSocket Server] 二进制处理失败:`, error);
-                // 发送错误响应（使用 JSON-RPC）
-                if (this.pluginSocket === sourceSocket) {
-                    this.sendErrorResponse(header.requestId, -32000, error.message || '二进制处理失败', sourceSocket);
-                }
-            }
-        } else {
-            console.warn('[WebSocket Server] 没有注册二进制处理器');
-        }
     }
 
     /**
@@ -596,6 +618,7 @@ export class WebSocketServer {
             appHeartbeatStale: this.isAppHeartbeatStale(),
             missedNativePongs: this.missedNativePongs,
             lastError: this.lastSocketError,
+            binaryCache: this.receivedBinaryStore.getDiagnostics(),
             pendingRequestCount: this.pendingRequests.size,
             pendingRequests: this.getPendingRequestDiagnostics()
         };

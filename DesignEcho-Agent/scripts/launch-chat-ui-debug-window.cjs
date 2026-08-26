@@ -18,7 +18,7 @@ function usage() {
     "Launches a persistent DesignEcho Electron window with the chat test bridge and a CDP port.",
     "This command does not close the window automatically; use inspect-chat-ui-running-window.cjs to attach to it.",
     "The debug window uses an isolated runtime port block by default so it does not disturb a normal running Agent window.",
-    "Use --use-default-runtime-ports only for live validation against the normal Photoshop MCP bridge."
+    "Use --use-default-runtime-ports only after the normal runtime has stopped; the debug window becomes the sole owner for live Photoshop validation."
   ].join("\n");
 }
 
@@ -483,7 +483,7 @@ async function main() {
   console.log(`DesignEcho debug chat window launched. cdp=http://127.0.0.1:${parsed.port}`);
   console.log(`Runtime port offset: ${parsed.portOffset}`);
   if (parsed.useDefaultRuntimePorts) {
-    console.log("Default runtime ports enabled: this window may share the normal Photoshop MCP bridge.");
+    console.log("Default runtime ports enabled: this window is the sole DesignEcho runtime owner for live Photoshop validation.");
   }
   if (log) console.log(`Log file: ${log.path}`);
   console.log("Use: node scripts/inspect-chat-ui-running-window.cjs --port " + parsed.port);

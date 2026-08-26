@@ -6,7 +6,7 @@
  *
  * 设计原则：
  * - 声明式：调用方（模型）只描述"放什么、各占多少、怎么对齐"，不算坐标。
- * - 确定性：同样的规格永远得到同样的、对齐网格、不溢出画布的布局。
+ * - 确定性：同样的规格永远得到同样的、不溢出画布的布局；是否吸附网格与叠放顺序由调用方显式表达。
  * - 垂直分区为主：电商主图/详情页屏的主体结构是自上而下的区块堆叠（标题→主图→卖点）。
  *
  * 这是 A 路线"手"的地基；smart-layout-service 负责单个主体图的精确缩放定位，二者互补。
@@ -74,7 +74,7 @@ export interface LayoutBlock {
     role: BlockRole;
     /** 文案内容或素材标识（引擎不关心其含义，原样透传给渲染层） */
     content?: string;
-    /** 占可用高度的比例(0-1)。背景固定满画布；不填时按 role 给默认值 */
+    /** 占可用高度的比例(0-1)。model_authored 必填；仅 neutral_wireframe 可使用 role 中性默认。 */
     heightRatio?: number;
     /** 占可用宽度的比例(0-1)，默认 1（占满安全区宽度） */
     widthRatio?: number;
@@ -82,9 +82,6 @@ export interface LayoutBlock {
     hAlign?: HAlign;
     /** 图片角色的落位语义；非图片角色会原样保留但不执行。 */
     imagePlacement?: ImagePlacementSpec;
-    // 刻意不暴露图层层级(z)。图层前后顺序是确定性的设计规则(背景在底、文字压在图上、
-    // 装饰最顶)，由 role 直接决定，不交给模型——从根上杜绝"图层顺序写错"，
-    // 而不是"让模型写、引擎再纠正"。模型只描述放什么、占多少，不碰顺序。
 }
 
 /** 版面的结构参数：只描述"分几列、版心多松、列间多宽"，不含业务品类。 */
@@ -101,7 +98,7 @@ export interface LayoutSpec extends LayoutGridOptions {
     canvas: { width: number; height: number };
     /** 相邻模块垂直间距的**档位下标**（spacingScale 索引），不是像素。省略走默认档。 */
     gapScale?: number;
-    /** 按视觉从上到下的顺序排列（background 可放任意位置，会被单独满铺） */
+    /** 按视觉从上到下排列；同时作为非背景图层从下到上的叠放顺序。background 始终机械垫底。 */
     blocks: LayoutBlock[];
 }
 
@@ -131,7 +128,7 @@ export interface LayoutResult {
     grid?: {
         liveArea: { x: number; y: number; width: number; height: number };
         columns: number;
-        /** 未声明 columns 时为 false：本次没有做列对齐。 */
+        /** 未声明 columns 时为 false；为 true 只表示列盒可用，不表示任一区域已自动吸附。 */
         columnAlignmentActive: boolean;
         spacingScale: number[];
         gapScaleIndex: number;
@@ -147,18 +144,6 @@ const DEFAULT_HEIGHT_RATIO: Record<BlockRole, number> = {
     'selling-point': 0.1,
     tag: 0.06,
     decoration: 0.06
-};
-
-// 图层前后顺序 = 确定性的设计规则，由 role 直接决定，模型不参与：
-// 背景垫底 → 主图 → 文字(压在图上) → 标签/装饰(最顶)。
-const ROLE_Z: Record<BlockRole, number> = {
-    background: 0,
-    'main-image': 10,
-    subtitle: 18,
-    title: 20,
-    'selling-point': 22,
-    tag: 28,
-    decoration: 30
 };
 
 const TEXT_ROLES: ReadonlySet<BlockRole> = new Set(['title', 'subtitle', 'selling-point', 'tag']);
@@ -352,7 +337,8 @@ function validateUniqueModelAuthoredIds(
  *
  * neutral_wireframe 可以使用本文件的中性默认值；正式视觉稿则必须把会改变构图的
  * 边距、间距、模块高宽比例和对齐全部显式声明。regions 虽已用 bounds 声明几何，
- * 文字对齐仍是构图决策；声明 columns 后，margin/gutter 会改变吸附结果，也必须显式。
+ * 文字对齐仍是构图决策；声明 columnPlacement 时，columns 与 margin/gutter 共同决定列盒，
+ * 因此都必须显式。仅声明 columns 只提供网格事实，不得改写区域坐标。
  * 这里仅验证结构，不替模型补值。
  */
 export function validateModelAuthoredLayout(input: {
@@ -375,11 +361,18 @@ export function validateModelAuthoredLayout(input: {
         const regions = Array.isArray(input.regions) ? input.regions : [];
         if (regions.length === 0) issues.push('regions:non_empty_array_required');
         validateUniqueModelAuthoredIds(regions, 'regions', issues);
+        let nonBackgroundRegionSeen = false;
         regions.forEach((candidate, index) => {
             const region = candidate && typeof candidate === 'object'
                 ? candidate as Record<string, unknown>
                 : {};
             const path = `regions[${index}]`;
+            const role = String(region.role || '').trim();
+            if (role === 'background' && nonBackgroundRegionSeen) {
+                issues.push(`${path}.role:background_must_precede_visual_layers`);
+            } else if (role !== 'background') {
+                nonBackgroundRegionSeen = true;
+            }
             if (requiresModelAuthoredTextAlignment(region)
                 && !['left', 'center', 'right'].includes(String(region.hAlign || ''))) {
                 issues.push(`${path}.hAlign:explicit_alignment_required`);
@@ -387,6 +380,29 @@ export function validateModelAuthoredLayout(input: {
             validateModelAuthoredBackground(region, path, issues);
             validateModelAuthoredRegionBounds(region, path, issues);
             validateModelAuthoredImagePlacement(region, path, issues);
+            if (region.columnPlacement !== undefined && region.columnPlacement !== null) {
+                const placement = region.columnPlacement && typeof region.columnPlacement === 'object'
+                    && !Array.isArray(region.columnPlacement)
+                    ? region.columnPlacement as Record<string, unknown>
+                    : {};
+                const start = placement.start;
+                const span = placement.span;
+                const columnCount = Number(input.columns);
+                if (!Number.isInteger(start) || Number(start) < 1) {
+                    issues.push(`${path}.columnPlacement.start:positive_integer_required`);
+                }
+                if (!Number.isInteger(span) || Number(span) < 1) {
+                    issues.push(`${path}.columnPlacement.span:positive_integer_required`);
+                }
+                if (!Number.isInteger(input.columns)
+                    || columnCount < 1
+                    || columnCount > 24
+                    || (Number.isInteger(start)
+                        && Number.isInteger(span)
+                        && Number(start) + Number(span) - 1 > columnCount)) {
+                    issues.push(`${path}.columnPlacement:must_fit_declared_columns`);
+                }
+            }
         });
         if (input.columns !== undefined && input.columns !== null) {
             if (!Number.isInteger(input.columns) || Number(input.columns) < 1 || Number(input.columns) > 24) {
@@ -405,12 +421,18 @@ export function validateModelAuthoredLayout(input: {
     if (blocks.length === 0) issues.push('blocks:non_empty_array_required');
     validateUniqueModelAuthoredIds(blocks, 'blocks', issues);
     let flowHeightRatioSum = 0;
+    let nonBackgroundBlockSeen = false;
     blocks.forEach((candidate, index) => {
         const block = candidate && typeof candidate === 'object'
             ? candidate as Record<string, unknown>
             : {};
         const role = String(block.role || '').trim();
         const path = `blocks[${index}]`;
+        if (role === 'background' && nonBackgroundBlockSeen) {
+            issues.push(`${path}.role:background_must_precede_visual_layers`);
+        } else if (role !== 'background') {
+            nonBackgroundBlockSeen = true;
+        }
         validateModelAuthoredBackground(block, path, issues);
         validateModelAuthoredImagePlacement(block, path, issues);
         if (role === 'background') return;
@@ -514,15 +536,15 @@ export function solveLayout(spec: LayoutSpec): LayoutResult {
     const resolved: ResolvedBlock[] = [];
 
     // 背景：满画布，z 垫底
-    for (const bg of backgrounds) {
+    backgrounds.forEach((bg, index) => {
         resolved.push({
             id: bg.id, role: bg.role, content: bg.content,
             x: 0, y: 0, width: cw, height: ch,
-            z: ROLE_Z.background,
+            z: index - backgrounds.length,
             hAlign: bg.hAlign,
             imagePlacement: bg.imagePlacement
         });
-    }
+    });
 
     // 流式模块：垂直堆叠
     const n = flow.length;
@@ -552,7 +574,8 @@ export function solveLayout(spec: LayoutSpec): LayoutResult {
             resolved.push({
                 id: b.id, role: b.role, content: b.content,
                 x, y: cursorY, width: w, height: h,
-                z: ROLE_Z[b.role],
+                // 非背景图层按 Agent 给出的 blocks 顺序从下到上叠放，不再按 role 改写。
+                z: i + 1,
                 hAlign,
                 imagePlacement: b.imagePlacement
             });
@@ -590,7 +613,7 @@ export function solveLayout(spec: LayoutSpec): LayoutResult {
 // ── 二维区域模式（渲染桥）──
 // solveLayout 只会垂直堆叠，做不了左右分栏/图文叠压/杂志式构图；v5 契约（LayoutRegion）
 // 用归一化 0..1 区域描述版面。本模式接受同一套渲染角色 + 归一化 bounds，换算像素并保持
-// 两条不变量：坐标由引擎换算（调用方不给像素）、图层顺序由 role 决定（调用方不排 z）。
+// 两条不变量：坐标由引擎换算（调用方不给像素）、非背景图层按 Agent 数组顺序叠放。
 
 export interface NormalizedRegionBlock {
     id: string;
@@ -601,6 +624,13 @@ export interface NormalizedRegionBlock {
     bounds: { x: number; y: number; width: number; height: number };
     /** 文字对齐；model_authored 的文字类 region 必须显式声明，neutral 可省略。 */
     hAlign?: HAlign;
+    /**
+     * 可选的显式列落位。只有 Agent 同时声明 columns 与本字段时，引擎才把 x/width
+     * 换算为列盒；省略时 bounds 原样生效，不能由 role 自动吸附。
+     */
+    columnPlacement?: { start: number; span: number };
+    /** 内部桥接用的原数组序号；composeDesign 抽出已置入主体后仍靠它保持原始层序。 */
+    stackOrder?: number;
     /** 图片角色的落位语义；由 v5 图片槽位与区域契约共同生成。 */
     imagePlacement?: ImagePlacementSpec;
 }
@@ -616,72 +646,49 @@ function rectsOverlap(a: ResolvedBlock, b: ResolvedBlock): boolean {
     return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
-/**
- * 对齐诊断阈值：把握度低于此值说明给的区域离任何列区间都明显偏远。
- * 它只影响 warning 文案，**不否决吸附**——判据说"必须对齐"就该真的对齐，
- * 否则栅格会退化成"碰巧接近才生效"，等于没有栅格。
- */
+/** 对齐诊断阈值只产生 warning，不授权 Harness 改坐标。 */
 const COLUMN_ALIGNMENT_WARN_SCORE = 0.5;
 
 /**
- * 判断某个角色的区域是否必须吸附到列栅格。
- * 只在调用方声明了 columns（版面确实有并列结构）时才会被问到。
- *
- * 返回 true  → 左右边界无条件吸附到最近的列区间，这些元素因此共享同一批对齐基准线。
- * 返回 false → 保留调用方给的归一化位置，仅在明显偏离列时记 warning，不改坐标。
- *
- * 这是"对齐纪律"与"构图自由"的分界线：判据只依据角色在画面中的职责，
- * 不依据业务品类——栅格已经不含品类信息，可用的只有 role 与结构化的 grid。
+ * 列网格是 Agent 可选择的几何能力，不是按 role 自动生效的设计规则。
+ * - 没有 columnPlacement：保留 bounds，只报告明显偏离。
+ * - 明确给出 start/span：确定性换算为列盒。
+ * 非法声明在正式 model_authored 路径会先被 validator 拒绝；本函数仍安全保留原坐标。
  */
-function shouldSnapRegionToColumns(role: BlockRole, grid: DesignGridSpec): boolean {
-    // 文字类角色强制对齐：标题、副标、卖点、标签共享同一批基准线，
-    // 这是消除"假居中/无关键线"（design-principles 列举的反模式）最直接的手段，
-    // 而吸附对文字块的代价只是宽度变成列宽整数倍，不损伤内容。
-    //
-    // 主视觉与装饰不吸附：出血、非对称构图、自由摆放的装饰都是正当版式，
-    // 且吸附只改 x/width 不改 height，会连带改变图片区域的宽高比意图。
-    //
-    // 复用 TEXT_ROLES 而非另建集合：目前"文字角色"与"需共享基准线的角色"完全重合，
-    // 重复定义只会让两处将来悄悄分叉。若日后装饰也需入栅，再拆成独立集合。
-    return TEXT_ROLES.has(role);
-}
-
-/**
- * 把已换算成像素的区域吸附到最近的列区间，只动水平方向（x / width），保留垂直位置。
- * 判据说必须对齐就无条件吸附：共享同一批基准线的收益，大于几十像素位移的损失。
- */
-function snapRegionToColumns(
+function resolveRegionColumnPlacement(
     box: { x: number; y: number; width: number; height: number },
     grid: DesignGridSpec,
-    regionId: string,
-    role: BlockRole,
+    region: NormalizedRegionBlock,
     warnings: string[]
 ): { x: number; width: number } {
-    const nearest = inferNearestGridColumnSpan(grid, box);
-
-    if (!shouldSnapRegionToColumns(role, grid)) {
+    const placement = region.columnPlacement;
+    if (!placement) {
+        const nearest = inferNearestGridColumnSpan(grid, box);
         if (nearest.score < COLUMN_ALIGNMENT_WARN_SCORE) {
             warnings.push(
-                `区域 ${regionId}(${role}) 未贴合 ${grid.columns.count} 列栅格（最接近列区间把握度 ${nearest.score.toFixed(2)}）；` +
-                `该角色按判据允许破格，坐标保持不变。`
+                `区域 ${region.id}(${region.role}) 未贴合 ${grid.columns.count} 列栅格（最接近列区间把握度 ${nearest.score.toFixed(2)}）；` +
+                '未声明 columnPlacement，因此按 Agent 给出的 bounds 保持不变。'
             );
         }
         return { x: box.x, width: box.width };
     }
 
-    const columnBox = getGridColumnBox(grid, nearest.columnStart, nearest.columnSpan);
-    const snappedX = Math.round(columnBox.x);
-    const snappedWidth = Math.round(columnBox.width);
-
-    if (nearest.score < COLUMN_ALIGNMENT_WARN_SCORE) {
+    const start = Number(placement.start);
+    const span = Number(placement.span);
+    if (!Number.isInteger(start)
+        || !Number.isInteger(span)
+        || start < 1
+        || span < 1
+        || start + span - 1 > grid.columns.count) {
         warnings.push(
-            `区域 ${regionId}(${role}) 原始位置离 ${grid.columns.count} 列栅格较远（把握度 ${nearest.score.toFixed(2)}），` +
-            `已吸附到第 ${nearest.columnStart}~${nearest.columnStart + nearest.columnSpan - 1} 列：` +
-            `x ${box.x}→${snappedX}px、宽 ${box.width}→${snappedWidth}px。` +
-            `若这是有意的破格构图，应改用允许破格的角色，而不是给一个偏离栅格的 bounds。`
+            `区域 ${region.id}(${region.role}) 的 columnPlacement=${String(placement.start)}/${String(placement.span)} ` +
+            `超出 ${grid.columns.count} 列范围，已保留原始 bounds。`
         );
+        return { x: box.x, width: box.width };
     }
-    return { x: snappedX, width: snappedWidth };
+
+    const columnBox = getGridColumnBox(grid, start, span);
+    return { x: Math.round(columnBox.x), width: Math.round(columnBox.width) };
 }
 
 /**
@@ -697,22 +704,21 @@ export function solveRegionLayout(spec: RegionLayoutSpec): LayoutResult {
 
     const regions = Array.isArray(spec.regions) ? spec.regions : [];
     const resolved: ResolvedBlock[] = [];
-    // 二维模式同样受栅格约束：坐标仍由模型的归一化 bounds 表达构图意图，
-    // 但需要共享对齐基准的角色会被吸附到列区间，避免"看起来差不多"的假对齐。
+    // 二维模式可声明栅格作为几何能力；只有 region 显式给出 columnPlacement 才换算列盒。
     const { grid, columnAlignmentActive } = resolveLayoutGrid({ width: cw, height: ch }, spec, warnings);
     if (!columnAlignmentActive) {
         warnings.push(
-            '未声明 columns，本次二维构图不做列对齐：各区域按给定的归一化 bounds 落位。' +
-            '若版面存在并列结构（分栏、并排卖点），声明列数可让同组元素共享对齐基准线。'
+            '未声明 columns，本次二维构图不提供列落位能力：各区域按给定的归一化 bounds 落位。'
         );
     }
 
-    for (const region of regions) {
+    for (let regionIndex = 0; regionIndex < regions.length; regionIndex += 1) {
+        const region = regions[regionIndex];
         if (region.role === 'background') {
             resolved.push({
                 id: region.id, role: region.role, content: region.content,
                 x: 0, y: 0, width: cw, height: ch,
-                z: ROLE_Z.background,
+                z: regionIndex - regions.length,
                 imagePlacement: region.imagePlacement
             });
             continue;
@@ -737,13 +743,16 @@ export function solveRegionLayout(spec: RegionLayoutSpec): LayoutResult {
         }
         const y = Math.round(ch * ny);
         const rawX = Math.round(cw * nx);
-        const snapped = columnAlignmentActive
-            ? snapRegionToColumns({ x: rawX, y, width, height }, grid, region.id, region.role, warnings)
+        const horizontalPlacement = columnAlignmentActive
+            ? resolveRegionColumnPlacement({ x: rawX, y, width, height }, grid, region, warnings)
             : { x: rawX, width };
         resolved.push({
             id: region.id, role: region.role, content: region.content,
-            x: snapped.x, y, width: snapped.width, height,
-            z: ROLE_Z[region.role],
+            x: horizontalPlacement.x, y, width: horizontalPlacement.width, height,
+            // 非背景图层按 Agent regions 数组顺序从下到上；role 不再替模型决定前后关系。
+            z: Number.isFinite(Number(region.stackOrder))
+                ? Number(region.stackOrder) + 1
+                : regionIndex + 1,
             hAlign: region.hAlign,
             imagePlacement: region.imagePlacement
         });

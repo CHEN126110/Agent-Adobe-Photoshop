@@ -432,6 +432,7 @@ export interface DesignEchoAPI {
     cancelPluginRequest?: (requestKey: string, awaitFinalResult?: boolean) => Promise<{ success: boolean; cancelled: boolean; error?: string }>;
     callMcpToolCancellable?: (requestKey: string, name: string, args?: any, timeout?: number) => Promise<any>;
     cancelMcpToolRequest?: (requestKey: string, awaitFinalResult?: boolean) => Promise<{ success: boolean; cancelled: boolean; error?: string }>;
+    getMcpHostEndpoint?: () => string;
     
     getConnectionStatus: () => Promise<{ connected: boolean }>;
 

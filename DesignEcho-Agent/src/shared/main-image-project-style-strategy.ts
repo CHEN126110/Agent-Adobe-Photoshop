@@ -175,7 +175,9 @@ function getSelectedAsset(input: MainImageProjectStyleStrategyInput): MainImageD
     if (input.selectedAsset && (cleanString(input.selectedAsset.name) || cleanString(input.selectedAsset.path))) {
         return input.selectedAsset;
     }
-    return normalizeAssets(input.projectAssets)[0];
+    // 项目素材存在不等于已经选定。列表顺序、文件名或扫描先后都不能成为主图设计输入；
+    // 没有用户 / Agent 明确选择时保持 undefined，让上游继续形成候选与视觉判断。
+    return undefined;
 }
 
 function getStatus(input: {

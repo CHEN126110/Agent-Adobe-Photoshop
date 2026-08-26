@@ -8,14 +8,14 @@
  * 都会落到 ②——用户观察到的"有概率用硬编码"即来源于此。
  *
  * 新语义（单一真相源在本模块）：
- *   - 默认路径（用户只说做 SKU 且无模板）→ 直接移交 Agent 自主设计
- *     （参考先行 → 设计 → 观察 → createSkuPlaceholders 加占位 → inspectTemplateLayout 验证 →
- *      存入 模板文件/ → 回到批量）。
+ *   - 默认路径（用户只说做 SKU 且无模板）→ 直接移交 Agent 自主设计；参考、工具与
+ *     行动顺序由 Agent 按当前证据和信息增益决定，Harness 只校验规格、占位、命名与交付事实。
  *   - 硬编码占位模板只在用户原话显式要求快速/默认/占位模板时可达；
  *     模型参数不能代替用户授权。
  *   - 占位模板产物命名与完成消息必须明示「通用占位模板（非设计稿）」。
  *
- * 红线：本模块给模型机制、不替模型决策——门禁拦「无参考观察/无占位」，不拦「路径」；
+ * 红线：本模块给模型机制、不替模型决策——没有参考不是普通模板设计的阻断条件；
+ * 只有用户指定参考复刻时才要求消费该参考。占位与交付结构可以校验，但不能由代码决定版式；
  * 每个拒绝都指路当前状态下真实可达的动作（门禁出口治理惯例，见 design-discipline-runtime）。
  */
 
@@ -136,14 +136,14 @@ export function resolveSkuTemplatePreparationRoute(
     if (input.templateDesignConfirmed) {
         return {
             route: 'agent_design_handoff',
-            reason: '模板方向已确认，移交 Agent 自主设计模板（参考先行 → 设计 → 占位符 → 验证 → 存模板）。'
+            reason: '模板方向已确认，移交 Agent 自主设计模板；Harness 只校验规格、占位结构与交付事实。'
         };
     }
 
     if (shouldDesignTemplateWithoutAsking(input)) {
         return {
             route: 'agent_design_handoff',
-            reason: '完整 SKU 生产途中发现缺模板：不打断用户，直接自主设计模板（参考先行 → 设计 → 占位符 → 验证 → 存模板），完成后在交付说明里报告模板为本次新建。'
+            reason: '完整 SKU 生产途中发现缺模板：不打断用户，把开放版式设计交给主 Agent；完成后在交付说明里报告模板为本次新建。'
         };
     }
 
@@ -162,15 +162,15 @@ export interface SkuTemplateDesignHandoffContract {
     message: string;
     /** 兼容既有遥测；失败态 handoff 不会据此切换当前 Runtime 任务身份。 */
     declaredDesignTaskTypeId: string;
-    /** 项目观察优先、外部参考按需补充的可达工具。 */
+    /** 可选观察与参考工具目录；不是必调清单。 */
     requiredReferenceObservationTools: string[];
-    /** 同一 SKU Workflow 续跑内允许的最小模板设计工具；不授予新的 Runtime 能力。 */
+    /** 模板设计相关工具目录；直接 agentic 请求不裁剪，staged 父任务交接时仅作子任务能力边界。 */
     templateDesignToolNames: string[];
-    /** 设计完成后的占位闭环步骤（确定性顺序，缺一不可进入批量）。 */
+    /** 进入批量前要满足的结果约束；顺序与实现方式由 Agent 决定。 */
     completionChecklist: string[];
-    /** 交还主 Agent 后持续限定为本次模板补齐所需的最小观察、设计和读回能力。 */
+    /** staged SKU 批量父任务中的创意子任务能力边界；不规定顺序、来源或视觉参数。 */
     agentReActContinuation: AgentReActSkillContinuation;
-    /** 每个待建规格一套确定性版式建议（三份共用同一刻度）；缺画布尺寸时为空。 */
+    /** 仅在显式请求机械线框候选时返回；普通设计 handoff 必须为空。 */
     templateLayoutSuggestions: SkuTemplateLayoutSuggestion[];
 }
 
@@ -334,6 +334,8 @@ export function buildSkuTemplateDesignHandoffContract(input: {
     sourceCanvas?: { width?: number; height?: number };
     /** 色卡里单个色块的宽高比（宽/高），用于给占位槽合适的比例。 */
     sourceCardAspectRatio?: number;
+    /** 仅用于显式线框/占位候选，不得在普通设计 handoff 中默认开启。 */
+    includeMechanicalLayoutCandidate?: boolean;
 }): SkuTemplateDesignHandoffContract {
     const repairTargets = Array.isArray(input.repairTargets) ? input.repairTargets : [];
     const missingTargets: SkuTemplateDesignTarget[] = [
@@ -367,6 +369,14 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         'searchDesignKnowledge'
     ];
     const templateDesignToolNames = [
+        // staged 父任务完成创意子任务后需要回到同一个业务 owner 对账；这不是固定执行顺序。
+        'sku-batch',
+        'getDesignKnowledge',
+        'getDesignPrinciples',
+        'recommendAssets',
+        'evaluateDesign',
+        'delegateToAgent',
+        'runDesignTeamPipeline',
         'listDocuments',
         'switchDocument',
         'openTemplate',
@@ -381,6 +391,9 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         'createTextLayer',
         'setTextContent',
         'setTextStyle',
+        'composeDesign',
+        'renderLayout',
+        'generateImage',
         'placeImage',
         'createSkuPlaceholders',
         'getLayerBounds',
@@ -397,6 +410,7 @@ export function buildSkuTemplateDesignHandoffContract(input: {
     // 真机 2026-08-18（run-20260818020052415）：模型把色卡文档当成模板底版，在色卡上叠了「组合 01」卡片，
     // 又以为模板需要先把颜色图置入才算数——它并不知道「模板」在这条链里是什么。定义要写在这里，不能靠猜。
     const templateLayoutSuggestions: SkuTemplateLayoutSuggestion[] = repairsExistingTemplate
+        || input.includeMechanicalLayoutCandidate !== true
         ? []
         : missingTargets
             .map((target) => buildSkuTemplateLayoutSuggestion({
@@ -418,17 +432,17 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         ...(repairsExistingTemplate ? [] : templateDefinition),
         ...(repairsExistingTemplate
             ? []
-            : ['先找现成再新建：项目「模板文件」目录里没有时，用 searchEagleReferences 搜「SKU 模板」「N双装」类目，候选用 observeEagleAsset 看一眼；「合适」分两半——确定的一半自己量：importEagleAssetToProject 导进项目模板目录 → openTemplate → skuLayout inspectTemplateLayout（expectedItemCount=双数）无 blockers 且槽位 / 区域容量与双数一致、getDocumentInfo 画布与色卡尺寸一致或可等比；判断的一半才看图：风格与项目、品牌一致。两半都过才算合适，合适的模板要以含规格的名字落到模板目录（文件名没有「N双」字样时用 saveDocument 按规格另存，如「3双装-Eagle候选」）——批量站按文件名里的规格识别模板，无规格名会被判缺模板；找不到合适的就 createDocument 从空白新建，不要拿不合适的凑数。']),
-        '优先复用本轮已经取得的项目素材观察和产品事实；只有现有证据不足以确定版式时，才补充项目联系表、Eagle 参考或设计知识检索，不为走流程重复看图。',
+            : ['先确认项目、当前 Photoshop 文档或用户输入里是否已有可复用模板；是否查看 Eagle、项目案例或其他参考，由你按当前对象熟悉度、风格基准和信息增益决定。参考只能提供候选与方法，不能替你决定版式；没有合适参考时可以自主新建设计。']),
+        '复用本轮已经取得且仍与当前对象、版本相符的项目观察和产品事实；只有现有证据不足以支持设计决定时才补充观察，不为走流程重复看图。',
         ...(repairsExistingTemplate
             ? ['先切换到待修模板，用 skuLayout.inspectTemplateLayout、getLayerHierarchy、getLayerBounds 和画布快照读取真实占位类型、layerId、面板顺序与 bounds；不要凭文件名或默认参数猜结构。']
             : []),
         `用通用 Photoshop 工具为 ${sizesText} 设计可编辑模板${colorText}，改动后用截图观察真实画面。`,
         ...(templateLayoutSuggestions.length > 0
             ? [
-                `版式起点（引擎按色卡尺寸算好的数字，三份共用同一套边距 / 间距 / 圆角 / 字号；先做完一份看效果，其余按同一规则派生，改一份就三份一起改）：${templateLayoutSuggestions.map((item) => item.summary).join('｜')}。占位槽坐标可直接作为 createSkuPlaceholders 的 slots（placementMethod=ordered_slots）。`
+                `用户显式要求了机械线框候选：${templateLayoutSuggestions.map((item) => item.summary).join('｜')}。这些坐标只是一份可移除候选，不是正式版式答案；使用前仍由你观察并决定。`
             ]
-            : ['三份模板共用同一套边距 / 间距 / 圆角 / 字号：先做完一份看效果，其余按同一规则派生，不要各画各的。']),
+            : ['各规格需要形成同一视觉系统，但边距、间距、圆角、字号、槽位关系和阅读顺序由你根据真实画面设计；Harness 不提供默认版式数值。']),
         '添加占位符也是排版设计：先用截图和 getLayerBounds 读取已设计版面，再选择 ordered_slots（6.3，一色一槽，物理槽数=双数）或 region_composition（6.0，一个矩形区域可放多色，必须显式传 regionCapacities：数组、每项正整数、总和=双数）；把规划好的 slots 显式传给 createSkuPlaceholders，只有空白裸模板才允许只传 count 让工具均分。',
         '用 skuLayout 的 inspectTemplateLayout 读取 layerId/type/panelIndex/bounds 并形成 TemplateLayoutPlan；调整现有占位时用 transformLayer 修改目标 layerId 后重新 inspect，不要新建第二套占位。',
         '用 saveDocument 把模板另存为项目「模板文件」目录中的新文件，必须显式提供 path 和 conflictPolicy=fail_if_exists；命名用规格本身、与用户既有模板同风格（组合模板如「3双装-DesignEcho候选」，自选备注模板如「3双装自选备注-DesignEcho候选」），绝不覆盖作为参考读取的源模板。',
@@ -439,19 +453,19 @@ export function buildSkuTemplateDesignHandoffContract(input: {
         .join('\n');
     const opening = repairsExistingTemplate
         ? `当前 ${sizesText} 模板的占位结构需要修复：完整 SKU 任务已进入自主修复阶段，由 Agent 读取真实 layerId / bounds 后调整或重建可编辑占位，不把结构问题变成用户确认。`
-        : `当前项目缺少 ${missingTargetSummary || sizesText} 的排版模板：完整 SKU 任务已进入自主补齐阶段，由 Agent 先找现成的合适模板、找不到再新建独立模板文档，不使用通用占位脚本代替设计稿。`;
+        : `当前项目缺少 ${missingTargetSummary || sizesText} 的排版模板：完整 SKU 任务已进入自主补齐阶段，由 Agent 根据现有项目、参考价值和设计目标决定复用或新建，不使用通用占位脚本代替设计稿。`;
     const message = [
         opening,
         ...(repairSummary ? [`待修问题：\n${repairSummary}`] : []),
-        `设计闭环要求（按顺序执行）：`,
+        `进入批量前必须满足的结果约束（顺序和工具由你决定）：`,
         ...completionChecklist.map((item, index) => `${index + 1}. ${item}`)
     ].join('\n');
     const agentWorkDetails = [
         repairsExistingTemplate
             ? `需要修复：${repairSummary || `${sizesText} 模板的占位结构`}`
             : `需要设计：${missingTargetSummary || sizesText} 的可编辑模板${colorText}——每个规格一份独立新文档，只放版式与占位符，不置入颜色图${sourceDocumentName ? `；色卡「${sourceDocumentName}」只读，不在它上面建` : '；色卡文档只读，不在它上面建'}。`,
-        ...(repairsExistingTemplate ? [] : ['先找现成：项目模板目录 → Eagle「SKU 模板」类目（规格、尺寸、占位数、风格都合适才用，importEagleAssetToProject 导入后 openTemplate）→ 都没有再 createDocument 新建。']),
-        '先看当前模板或项目素材，再决定版式；占位符数量、位置和阅读顺序要与实际规格一致，不能重叠、越界或压住文案。',
+        ...(repairsExistingTemplate ? [] : ['可复用合适的项目模板，也可在参考确有信息增益时查看 Eagle / 项目案例，或者直接新建；根据当前证据选择，不按固定来源顺序执行。']),
+        '取得足以支持当前设计判断的模板或素材事实后再决定版式；占位符数量要与实际规格一致，位置和阅读顺序由你设计，并在真实画面中检查重叠、越界和文案关系。',
         '保留色卡、文字和占位结构的可编辑性；完成一版后查看整体画面并调整间距、比例和视觉重心。',
         '保存为项目模板目录中的新版本，不覆盖作为参考的源文件。',
         '模板完成后重新使用 sku-batch，继续组合规划和批量制作。'
@@ -475,23 +489,20 @@ export function buildSkuTemplateDesignHandoffContract(input: {
             sourceStatus: SKU_TEMPLATE_DESIGN_HANDOFF_STATUS,
             recovery: {
                 mode: 'allowlist',
-                purpose: 'repair',
+                purpose: repairsExistingTemplate ? 'repair' : 'execute',
                 allowedToolNames: [
                     ...requiredReferenceObservationTools,
                     ...templateDesignToolNames
                 ],
                 toolArgumentConstraints: {
-                    skuLayout: {
-                        argumentEquals: { action: 'inspectTemplateLayout' }
-                    },
                     saveDocument: {
                         argumentEquals: { conflictPolicy: 'fail_if_exists' },
                         requiredArgumentKeys: ['path']
                     }
                 },
                 reason: repairsExistingTemplate
-                    ? '占位结构修复由当前 SKU 工作流负责：只允许读取模板结构、完成可逆调整或新版本设计、看图复验、保存和结构读回；模板通过后重新调用 sku-batch 继续批量。'
-                    : '缺失模板由当前 SKU 工作流负责补齐：只允许读取相关素材、完成模板原子设计、看图调整、保存和结构读回；模板齐备后重新调用 sku-batch 继续批量。'
+                    ? '这是 staged SKU 批量中的模板修复子任务能力边界：它只限制副作用范围，不规定版式、参考来源或行动顺序。'
+                    : '这是 staged SKU 批量中的开放模板设计子任务能力边界：它只限制副作用范围，不规定版式、参考来源或行动顺序。'
             }
         }
     };

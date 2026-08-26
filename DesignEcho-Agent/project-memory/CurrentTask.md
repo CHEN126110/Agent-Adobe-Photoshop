@@ -1,5 +1,60 @@
 # Current Task
 
+## 2026-08-26 AGENT-RUNTIME-RESOURCE-EFFICIENCY-001：运行时资源边界与低风险性能治理
+
+### 切换原因
+
+用户要求继续整理项目，在不牺牲 Agent 任务成功率、视觉证据、目标版本与安全门禁的前提下，提高代码质量、运行效率和长期稳定性，尤其收敛 CPU 重复工作、无界图片缓存和资源生命周期风险。本轮以当前 41 项全绿基线为起点，不做大规模格式化或主循环重写。
+
+### 目标
+
+1. 优先修复有实证的资源根因，不以减少必要观察、降低推理档或隐藏失败换取表面速度。
+2. 把长历史上下文裁剪从近 O(n²) 的重复遍历/序列化改为单次调用内线性计量，且保持 Tool call/result 原子性、消息权限和精确预算语义。
+3. 收敛 UXP 二进制图片为单一内存 owner，建立单帧、总字节、条目数、TTL 与 RAW 几何硬边界，消费、断线和 stop 均释放。
+4. 用可复用自动测试和整仓验证证明边界，没有行为回归后再进入下一批资源治理。
+
+### 当前事实
+
+- r18 总墙钟 536130 ms 中 Runtime 模型调用占 406299 ms，仍是主要延迟；普通 JavaScript 微优化不能被宣传为整体数量级提速。
+- Agent 设计执行首轮当前约 26 个可见 Tool，schema 估算约 28452 tokens，其中 `composeDesign` 约 7981 tokens。直接删 Tool 或逐轮改写工具面可能破坏能力可达性和 Provider 前缀缓存，当前没有 A/B 证据支持默认启用。
+- 旧 `ContextManager.trim()` 在删除多个历史 unit 时反复 flatten 全历史并重新 JSON 序列化；1002 条合成长历史基准约 206.17 ms/次。当前改为 unit 局部测量、running total 递减和 prepare assessment 复用后约 28.42 ms/次，约 7.3×；这是长历史 CPU/分配改善，不等同于端到端 Agent 7.3×。
+- 同一 iteration 的 Tool schema 与输出预留原来计算两次；现在只计算一次并复用于调用前硬闸和 Tool 结果后的预裁剪。`reasoningContent` 按真实 Provider serializer 条件计量：DeepSeek/Xiaomi/OpenRouter 开启思考并回放该字段时进入硬预算；Codex/Anthropic 等未回放通道不虚占容量。
+- 旧 WebSocket 允许 500MB 单帧；二进制先到时在 Server 暂存 30 秒，同时 `main/index.ts` 再保存同一 Buffer 5 分钟，两层均无总字节上限。当前已删除 legacy Map/轮询副本，所有消费者统一使用 `waitForBinaryData`。
+- 新二进制 owner 默认限制为 128MiB/帧、192MiB 总驻留、最多 8 帧、TTL 30 秒、最大 30000 单边和 8000 万像素；RAW_MASK/RGB/RGBA 必须与宽高×通道字节数精确一致。超限/非法帧形成显式拒绝事实，不进入缓存。
+- 整仓收口时发现并发版式改动已移除按角色写死的 `ROLE_Z`，但二维 `solveRegionLayout` 仍有两处旧引用，导致 `composeDesign` 10 项回归连锁失败；现按该改动本身的声明顺序语义修正为背景负层级垫底、其他区域依次叠放，契约测试恢复全绿。
+- 提交前独立代码审查发现详情页多占位候选集会被已接受选择反向改序，导致同轮后续选择失效；现把候选身份冻结在占位、屏幕语义和素材版本上，多样性只调整推荐展示顺序。另补齐 `detail_asset_selection_required` 的专用有界上下文投影，长历史压缩后仍保留未决槽、候选身份和置入安全事实，不把完整 `fillPlans` 泛开放给模型。
+- Codex app-server 本机 0.149 协议允许每 turn 更换 `outputSchema`，但当前 DesignEcho 的 `developerInstructions` 含动态 Runtime/Tool 上下文并在线程级建立。未经上下文前缀与权限隔离实验，不能直接把每轮 ephemeral thread 改成长驻复用，否则可能串用旧阶段规则或旧工具面。
+
+### 实施边界
+
+- `ContextManager` 只做本次 trim/prepare 内局部计量，不跨 iteration 缓存消息估值；受保护 system/当前用户内容超窗仍 fail closed。
+- Tool schema token 只在当前 iteration 复用，不按工具名做长期缓存；Stage/Capability 改变后下一轮自然重新计算。
+- 二进制缓存不静默淘汰已有乱序帧来腾空间；容量不足时拒绝新帧并保留小型、同 TTL 的拒绝标记，让后续 waiter 立即失败而不是空等。
+- 不修改用户 Photoshop 文档，不启动真实 Provider 成稿，也不把纯逻辑/构建通过写成视觉质量或正式速度分布已经改善。
+- 本轮期间工作区另有并发详情页/SKU/UXP 变更；这些变更完整保留，但不计入本任务成果。整仓验证以合并后的当前工作树执行。
+
+### 验证与未知
+
+- 新增二进制资源测试覆盖：RAW 几何、单帧/像素拒绝、count+bytes 容量、同 ID 替换计量、TTL、binary→JSON 与 JSON→binary 两种乱序、一次性消费、非法帧即时拒绝和 stop 清理。
+- Prompt/Context 治理测试新增：低预算不改写、ephemeral 同 scope 去旧、Tool 协议成对、孤立/不完整结果移除、精确 token 边界、受保护内容溢出、reasoning 计量、120 轮长历史确定性，以及 6 个未决图片区在压缩后完整保留槽位身份和 Top-3 安全候选。
+- 设计作者权行为回归新增：同屏 3 个图片区首轮签发稳定候选，第二轮一次提交全部选择后同时晋升；model-authored 复合图层块、既有 owned layer、`inside-top` 移动失败和错误层序读回均按账本 fail closed。
+- `maintenance:validate` 已通过 43 个核心检查，无 smoke 依赖；Agent 简化棘轮保持 12878 行，Main/Renderer 类型检查、`composeDesign` 契约与 UXP production build 均通过。
+- 尚未在真实长任务上取得新 cohort 的 Provider input token、TTFT、总 duration、峰值 RSS 与 GC 数据；7.3× 只代表刻意施压的上下文管理微基准。
+- 当前仍存在下一批明确风险：Electron async `before-quit` 未形成可等待的统一 shutdown、ResourceManager/PSD 与 Eagle preview 大缓存缺少总字节 LRU、Final Judge comparison replay 缺少 run 级总像素预算、SAM cache/timer、continuation 终态压缩与临时文件配额。
+
+### 下一步
+
+1. 第二批先建立统一、可等待且幂等的 Main shutdown，纳入 WebView、WebSocket、SAM、Codex、浏览器桥与日志；用延迟 owner 测试证明 app.quit 发生在清理之后。
+2. 为 ResourceManager PSD/缩略图与 Eagle preview 增加 count+estimatedBytes LRU/TTL、项目/库 revision 失效、请求 deadline 与可取消队列；禁止只用“过期不命中”而不回收对象。
+3. 把同一 Tool Result 的 Bundle 扫描、Base64 提取和 SHA 计算收敛为当前 round 一次性视觉投影，并为 Final Judge/Comparison 建立 Agent run 总 encodedChars/语义槽预算和 finalize 显式清理。
+4. 在隔离固定 Case 上做上下文高/低水位检查点压缩与 Codex thread segment 复用 A/B；同时比较成功率、cached input、TTFT、总耗时和峰值内存，只有质量与安全不退化才默认启用。
+
+### 状态
+
+`validated / code_complete_phase1 / context_trim_linearized / provider_aware_reasoning_budget / iteration_schema_reserve_reused / binary_single_owner_bounded / layout_order_runtime_regression_fixed / core_validation_43_passed / live_provider_speed_distribution_unverified / shutdown_and_large_cache_phase2_pending`
+
+---
+
 ## 2026-08-26 MAIN-IMAGE-RELIABILITY-R18：固定样本下的 Agent + Harness 质量成功率与运行效率
 
 ### 切换原因

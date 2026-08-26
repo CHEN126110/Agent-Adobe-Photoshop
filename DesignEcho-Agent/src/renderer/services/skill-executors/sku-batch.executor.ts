@@ -4078,7 +4078,7 @@ export const skuBatchExecutor: SkillExecutor = {
                     sourceCanvas: { width: Number(skuDoc?.width) || undefined, height: Number(skuDoc?.height) || undefined },
                     sourceCardAspectRatio: sourceCardAspectRatio
                 });
-                const handoffUserMessage = `当前缺少${designGateUnresolvableSizes.map((size) => `${size}双`).join('、')}模板。这是站③，模板设计是你的设计职责，不需要用户拍板：**默认动作=你现在就调 stage=template 自主设计可编辑模板并建占位结构**（先看项目/Eagle 有没有现成模板可用）。仅当用户明确说过要自己提供模板时才 askUserToChoose。不要把这段话转述给用户后停下——缺模板不是终点，是你接着干的活。模板就绪后重调 stage=full 继续出组合——缺件已补不算重复；只有同一站同参数且环境没变时才别连调。`;
+                const handoffUserMessage = `当前缺少${designGateUnresolvableSizes.map((size) => `${size}双`).join('、')}模板。我会把模板设计作为同一任务的下一步继续处理：根据现有项目、参考价值和真实画面自主完成可编辑版式与占位结构，复核通过后继续生成组合。除非出现只有你知道、且会改变交付结果的业务取舍，否则不需要额外确认。`;
                 emitStep(
                     'observation',
                     'SKU 模板进入 Agent 自主设计阶段',
@@ -5711,7 +5711,7 @@ export const skuBatchExecutor: SkillExecutor = {
             const missingTemplateLabels = unresolvedTemplateTargets.map((target) => (
                 `${target.size}双${target.mode === 'self_select_note' ? '自选备注' : '组合'}模板`
             ));
-            const handoffUserMessage = `当前缺少${missingTemplateLabels.join('、')}。这是站③，模板设计是你的设计职责，不需要用户拍板：**默认动作=你现在就调 stage=template 自主设计可编辑模板并建占位结构**（先看项目/Eagle 有没有现成模板可用）。仅当用户明确说过要自己提供模板时才 askUserToChoose。不要把这段话转述给用户后停下——缺模板不是终点，是你接着干的活。模板就绪后重调 stage=full 继续出组合——缺件已补不算重复；只有同一站同参数且环境没变时才别连调。`;
+            const handoffUserMessage = `当前缺少${missingTemplateLabels.join('、')}。我会把模板设计作为同一任务的下一步继续处理：根据现有项目、参考价值和真实画面自主完成可编辑版式与占位结构，复核通过后继续生成组合。除非出现只有你知道、且会改变交付结果的业务取舍，否则不需要额外确认。`;
             return {
                 success: false,
                 message: handoffUserMessage,

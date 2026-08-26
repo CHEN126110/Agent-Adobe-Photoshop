@@ -85,6 +85,29 @@ export interface DetailAssetUsageDecision {
     reason: string;
 }
 
+export interface DetailAssetCandidateProposal {
+    candidateSetId: string;
+    candidateId: string;
+    imagePath: string;
+    score: number;
+    reasons: string[];
+    placementSafetyEligible: boolean;
+    needsMatting: boolean;
+    assetUsageDecision: DetailAssetUsageDecision;
+}
+
+export interface DetailAssetSelectionReceipt {
+    version: 'detail-asset-selection-receipt/v0';
+    screenId: number;
+    placeholderLayerId: number;
+    candidateSetId: string;
+    candidateId: string;
+    selectedAssetPath: string;
+    selectedBy: 'agent' | 'user';
+    decisionId: string;
+    rationale?: string;
+}
+
 export interface FillPlan {
     screenId: number;
     screenName: string;
@@ -182,6 +205,12 @@ export interface FillPlan {
         smartScalingDecision?: SmartScalingDecision;
         /** 视觉观察到槽位用途的可审计判定；不等同于 Photoshop 已完成处理。 */
         assetUsageDecision?: DetailAssetUsageDecision;
+        /** Harness 给主 Agent 的有限候选；排序第一名仍不是生产选定。 */
+        assetCandidates?: DetailAssetCandidateProposal[];
+        /** 没有当前候选集上的 Agent / 用户选择时必须为 true。 */
+        requiresModelAssetDecision?: boolean;
+        /** 只有绑定当前屏、占位和候选集的选择收据才能把 imagePath 晋升为可执行路径。 */
+        selectionReceipt?: DetailAssetSelectionReceipt;
         /** 素材可作为候选，但所需去底/复核尚未完成，本图片项不得写入。 */
         executionDeferred?: boolean;
         sourceTreatment?: ImagePlacementSourceTreatment;

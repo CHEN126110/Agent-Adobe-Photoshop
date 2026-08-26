@@ -57,7 +57,6 @@ import { setupIPCHandlers, IPCContext } from './ipc-handlers';
 import { registerEarlyStateStoreHandlers } from './ipc-handlers/early-state-handlers';
 import { registerUXPHandlers, UXPContext } from './uxp-handlers';
 import { cleanupStreams } from './ipc-handlers/stream-handlers';
-import { BinaryMessageType, getBinaryTypeName } from '../shared/binary-protocol';
 import { CODEX_SUBSCRIPTION_PROVIDER } from '../shared/codex-subscription-contract';
 import { getDynamicModels, setDynamicModels } from '../shared/config/dynamic-model-registry';
 import { resolvePersistedModelRuntimeState } from '../shared/config/persisted-model-runtime';
@@ -216,26 +215,6 @@ type PersistedApiKeys = {
     volcengineTosPublicBaseUrl?: string;
     volcengineTosKeyPrefix?: string;
 };
-
-// ============ 二进制图像缓存（WebSocket 接收的原始图像数据） ============
-const receivedBinaryImages: Map<number, { 
-    type: number; 
-    width: number; 
-    height: number; 
-    data: Buffer;
-    timestamp: number;
-}> = new Map();
-
-// 定期清理过期的二进制图像缓存，避免内存泄漏
-setInterval(() => {
-    const now = Date.now();
-    for (const [id, cache] of receivedBinaryImages) {
-        if (now - cache.timestamp > 5 * 60 * 1000) {
-            receivedBinaryImages.delete(id);
-            console.log(`[Binary Cache] Expired binary image cache removed. requestId=${id}`);
-        }
-    }
-}, 60 * 1000);
 
 /**
  * 释放指定端口上占用的进程（仅 Windows 支持）
@@ -764,28 +743,6 @@ async function initializeServices(): Promise<void> {
         }
     });
 
-    // 设置二进制消息处理器（接收 UXP 端发送的图像二进制数据，避免 Base64 编码开销）
-    wsServer.setBinaryHandler(async (header, imageData) => {
-        console.log(`[Binary Handler] Received image payload. type=${getBinaryTypeName(header.type)}, requestId=${header.requestId}, ${header.width}x${header.height}, ${(imageData.length / 1024).toFixed(0)}KB`);
-        
-        if (header.type === BinaryMessageType.JPEG || 
-            header.type === BinaryMessageType.PNG ||
-            header.type === BinaryMessageType.RAW_RGB ||
-            header.type === BinaryMessageType.RAW_RGBA ||
-            header.type === BinaryMessageType.RAW_MASK) {
-            receivedBinaryImages.set(header.requestId, {
-                type: header.type,
-                width: header.width,
-                height: header.height,
-                data: imageData,
-                timestamp: Date.now()
-            });
-            console.log(`[Binary Handler] Cached image payload. type=${getBinaryTypeName(header.type)}, requestId=${header.requestId}`);
-        }
-        
-        return null;
-    });
-    
     // 注册 UXP 消息处理器
     const uxpContext: UXPContext = {
         wsServer,
@@ -796,8 +753,7 @@ async function initializeServices(): Promise<void> {
         subjectDetectionService,
         contourService,
         samService,
-        mainWindow,
-        binaryImageStore: receivedBinaryImages
+        mainWindow
     };
     registerUXPHandlers(uxpContext);
 

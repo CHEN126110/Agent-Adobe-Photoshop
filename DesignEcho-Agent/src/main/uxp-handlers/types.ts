@@ -12,18 +12,6 @@ import type { ContourService } from '../services/contour-service';
 import type { SAMService } from '../services/sam-service';
 
 /**
- * 二进制图像缓存条目（UXP 通过 ws binary frame 发来的原始像素 / 编码图像）
- */
-export interface BinaryImageCacheEntry {
-    /** BinaryMessageType 数值（JPEG/PNG/RAW_RGB/RAW_RGBA 等） */
-    type: number;
-    width: number;
-    height: number;
-    data: Buffer;
-    timestamp: number;
-}
-
-/**
  * UXP Handler 上下文 - 包含所有可能需要的服务引用
  */
 export interface UXPContext {
@@ -36,11 +24,6 @@ export interface UXPContext {
     contourService: ContourService | null;
     samService: SAMService | null;
     mainWindow: Electron.BrowserWindow | null;
-    /**
-     * 共享的二进制图像缓存（由 main/index.ts 的 setBinaryHandler 维护）。
-     * UXP 通过 binary ws frame 发送原始像素 / 编码图像后，handlers 通过 requestId 拉取。
-     */
-    binaryImageStore: Map<number, BinaryImageCacheEntry>;
 }
 
 /**

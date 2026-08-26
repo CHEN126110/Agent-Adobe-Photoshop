@@ -74,7 +74,10 @@ import {
     type ChatWebSearchIntent
 } from '../../../shared/chat-web-search-policy';
 import { buildProviderNativeToolPlan } from '../../../shared/provider-native-tools';
-import { resolveAgentModelTransport } from '../../../shared/agent-model-transport-policy';
+import {
+    resolveAgentModelTransport,
+    shouldReplayProviderReasoningContent
+} from '../../../shared/agent-model-transport-policy';
 import {
     classifyAgentToolExecution,
     DESIGN_ECHO_TARGET_GUARD_ARGUMENT,
@@ -4204,6 +4207,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 candidateModelIds: [modelId]
             };
         const runtimeModelConfig = findConfiguredModelInRendererState(modelId) || undefined;
+        const primaryThinkingEnabled = resolveAgentThinkingEnabled(modelId);
         const runRecordModelIdentity = runtimeModelConfig?.provider
             ? {
                 modelId,
@@ -5280,7 +5284,14 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     runtimeContractBundle?.manifest || agenticManifestBundle?.manifest
                 ),
                 ...(modelContextWindow ? { contextWindowTokens: modelContextWindow } : {}),
-                thinkingEnabled: resolveAgentThinkingEnabled(modelId),
+                thinkingEnabled: primaryThinkingEnabled,
+                replayProviderReasoningContent: Boolean(
+                    shouldReplayProviderReasoningContent({
+                        provider: runtimeModelConfig?.provider,
+                        thinkingEnabled: primaryThinkingEnabled
+                            && autonomousPerformancePolicy?.budget.allowProviderThinking !== false
+                    })
+                ),
                 maxIterations,
                 ...(Array.isArray(runtimeParams.initialUserContentParts)
                     ? { initialUserContentParts: runtimeParams.initialUserContentParts }

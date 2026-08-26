@@ -13,6 +13,8 @@ interface ContextManagerConfig {
     maxTokens: number;
     /** 保留最近 N 个完整模型轮次 / 消息单元。 */
     keepRecentRounds: number;
+    /** 当前 Provider 会把 assistant reasoningContent 作为请求历史重新发送。 */
+    includeReasoningContent: boolean;
 }
 
 export interface ContextBudgetAssessment {
@@ -28,13 +30,21 @@ interface MessageUnit {
     messages: AgentMessage[];
     protected: boolean;
     recent: boolean;
+    /** 仅在本次 trim/prepare 内有效；消息一旦被压缩就立即重算。 */
+    estimatedTokens: number;
+}
+
+interface ContextTrimResult {
+    messages: AgentMessage[];
+    assessment: ContextBudgetAssessment;
 }
 
 const DEFAULT_CONTEXT_BUDGET = buildAgentContextWindowBudget();
 
 const DEFAULT_CONFIG: ContextManagerConfig = {
     maxTokens: DEFAULT_CONTEXT_BUDGET.maxTokens,
-    keepRecentRounds: DEFAULT_CONTEXT_BUDGET.keepRecentRounds
+    keepRecentRounds: DEFAULT_CONTEXT_BUDGET.keepRecentRounds,
+    includeReasoningContent: false
 };
 
 const SAFE_TOOL_RESULT_KEYS = [
@@ -58,9 +68,81 @@ const SAFE_TOOL_RESULT_KEYS = [
     'countsAsTaskProgress'
 ] as const;
 
-function estimateTokens(message: AgentMessage): number {
+const TOOL_EVIDENCE_PRIMITIVE_KEYS = new Set([
+    'projectId',
+    'projectRoot',
+    'projectPath',
+    'runId',
+    'taskRunId',
+    'documentId',
+    'documentName',
+    'historyStateId',
+    'layerId',
+    'layerName',
+    'screenId',
+    'placeholderLayerId',
+    'path',
+    'filePath',
+    'imagePath',
+    'selectedAssetPath',
+    'outputPath',
+    'artifactId',
+    'artifactPath',
+    'artifactRevision',
+    'revision',
+    'revisionHash',
+    'schemaVersion',
+    'version',
+    'contentHash',
+    'previewHash',
+    'reviewHash',
+    'candidateSetId',
+    'candidateId',
+    'decisionId',
+    'selectedBy',
+    'x',
+    'y',
+    'width',
+    'height',
+    'left',
+    'top',
+    'right',
+    'bottom'
+]);
+
+const TOOL_EVIDENCE_CONTAINER_KEYS = new Set([
+    'data',
+    'document',
+    'target',
+    'before',
+    'after',
+    'historyStateRef',
+    'expectedHistoryStateRef',
+    'mutationCommit',
+    'historyTransition',
+    'receipt',
+    'selectionReceipt',
+    'assetCandidates',
+    'candidate',
+    'images',
+    'plans',
+    'bounds',
+    'targetBounds',
+    'actualBounds',
+    'sourceBounds'
+]);
+
+const MAX_TOOL_EVIDENCE_DEPTH = 4;
+const MAX_TOOL_EVIDENCE_ARRAY_ITEMS = 4;
+const MAX_DETAIL_ASSET_DECISION_REQUESTS = 24;
+const MAX_DETAIL_ASSET_DECISION_CANDIDATES = 3;
+
+function estimateTokens(message: AgentMessage, includeReasoningContent: boolean = false): number {
     let chars = 0;
     if (message.content) chars += message.content.length;
+    if (includeReasoningContent && message.reasoningContent) {
+        chars += message.reasoningContent.length;
+    }
     for (const block of message.contentBlocks || []) {
         if (block.type === 'text') chars += String(block.text || '').length;
         if (block.type === 'image') chars += 1200;
@@ -78,8 +160,14 @@ function estimateTokens(message: AgentMessage): number {
     return Math.ceil(chars / 1.5);
 }
 
-function estimateMessages(messages: readonly AgentMessage[]): number {
-    return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+function estimateMessages(
+    messages: readonly AgentMessage[],
+    includeReasoningContent: boolean = false
+): number {
+    return messages.reduce(
+        (sum, message) => sum + estimateTokens(message, includeReasoningContent),
+        0
+    );
 }
 
 function compactText(value: unknown, maxCharacters: number): string {
@@ -90,6 +178,131 @@ function compactText(value: unknown, maxCharacters: number): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function compactToolEvidencePrimitive(value: unknown): string | number | boolean | null | undefined {
+    if (typeof value === 'string') return compactText(value, 320);
+    if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+    return undefined;
+}
+
+function collectToolResultEvidence(value: unknown, depth: number = 0): unknown {
+    if (depth > MAX_TOOL_EVIDENCE_DEPTH) return undefined;
+    if (Array.isArray(value)) {
+        const items = value
+            .slice(0, MAX_TOOL_EVIDENCE_ARRAY_ITEMS)
+            .map((item) => collectToolResultEvidence(item, depth + 1))
+            .filter((item) => item !== undefined);
+        return items.length > 0 ? items : undefined;
+    }
+    if (!isRecord(value)) return undefined;
+
+    const evidence: Record<string, unknown> = {};
+    for (const [key, candidate] of Object.entries(value)) {
+        if (TOOL_EVIDENCE_PRIMITIVE_KEYS.has(key)) {
+            const primitive = compactToolEvidencePrimitive(candidate);
+            if (primitive !== undefined) evidence[key] = primitive;
+            continue;
+        }
+        if (!TOOL_EVIDENCE_CONTAINER_KEYS.has(key)) continue;
+        const nested = collectToolResultEvidence(candidate, depth + 1);
+        if (nested !== undefined) evidence[key] = nested;
+    }
+    return Object.keys(evidence).length > 0 ? evidence : undefined;
+}
+
+function compactDetailAssetDecisionSafety(candidate: Record<string, unknown>): Record<string, unknown> {
+    const usageDecision = isRecord(candidate.assetUsageDecision)
+        ? candidate.assetUsageDecision
+        : undefined;
+    const safety: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries({
+        placementSafetyEligible: candidate.placementSafetyEligible,
+        needsMatting: candidate.needsMatting,
+        visualObserved: usageDecision?.visualObserved,
+        visualRole: usageDecision?.visualRole,
+        backgroundType: usageDecision?.backgroundType,
+        directUseSuitability: usageDecision?.directUseSuitability,
+        sourceTreatment: usageDecision?.sourceTreatment,
+        automaticPlacementEligible: usageDecision?.automaticPlacementEligible,
+        reason: usageDecision?.reason
+    })) {
+        const compactValue = compactToolEvidencePrimitive(value);
+        if (compactValue !== undefined) safety[key] = compactValue;
+    }
+    return safety;
+}
+
+function collectDetailAssetSelectionEvidence(record: Record<string, unknown>): Record<string, unknown> | undefined {
+    const data = isRecord(record.data) ? record.data : undefined;
+    if (data?.status !== 'detail_asset_selection_required'
+        || !Array.isArray(data.assetDecisionRequests)) {
+        return undefined;
+    }
+
+    const sourceRequests = data.assetDecisionRequests;
+    const requests = sourceRequests
+        .slice(0, MAX_DETAIL_ASSET_DECISION_REQUESTS)
+        .flatMap((requestValue) => {
+            if (!isRecord(requestValue) || !Array.isArray(requestValue.candidates)) return [];
+            const screenId = Number(requestValue.screenId);
+            const placeholderLayerId = Number(requestValue.placeholderLayerId);
+            if (!Number.isSafeInteger(screenId) || screenId <= 0
+                || !Number.isSafeInteger(placeholderLayerId) || placeholderLayerId <= 0) {
+                return [];
+            }
+            const sourceCandidates = requestValue.candidates;
+            const candidates = sourceCandidates
+                .slice(0, MAX_DETAIL_ASSET_DECISION_CANDIDATES)
+                .flatMap((candidateValue) => {
+                    if (!isRecord(candidateValue)) return [];
+                    const candidateId = compactText(candidateValue.candidateId, 512);
+                    const imagePath = compactText(candidateValue.imagePath, 1024);
+                    if (!candidateId || !imagePath) return [];
+                    return [{
+                        candidateId,
+                        imagePath,
+                        safety: compactDetailAssetDecisionSafety(candidateValue)
+                    }];
+                });
+            const candidateSetId = compactText(
+                requestValue.candidateSetId
+                    || (isRecord(sourceCandidates[0]) ? sourceCandidates[0].candidateSetId : ''),
+                512
+            );
+            if (!candidateSetId || candidates.length === 0) return [];
+            return [{
+                screenId,
+                placeholderLayerId,
+                candidateSetId,
+                candidateCount: sourceCandidates.length,
+                omittedCandidateCount: Math.max(0, sourceCandidates.length - candidates.length),
+                candidates
+            }];
+        });
+    if (requests.length === 0) return undefined;
+    return {
+        status: 'detail_asset_selection_required',
+        assetDecisionRequestCount: sourceRequests.length,
+        omittedAssetDecisionRequestCount: Math.max(0, sourceRequests.length - requests.length),
+        assetDecisionRequests: requests
+    };
+}
+
+function mergeToolResultEvidence(
+    genericEvidence: unknown,
+    detailAssetSelectionEvidence: Record<string, unknown> | undefined
+): unknown {
+    if (!detailAssetSelectionEvidence) return genericEvidence;
+    const evidence = isRecord(genericEvidence) ? genericEvidence : {};
+    const genericData = isRecord(evidence.data) ? evidence.data : {};
+    return {
+        ...evidence,
+        data: {
+            ...genericData,
+            ...detailAssetSelectionEvidence
+        }
+    };
 }
 
 function buildCompressedToolOutput(result: ToolResult): Record<string, unknown> {
@@ -109,6 +322,11 @@ function buildCompressedToolOutput(result: ToolResult): Record<string, unknown> 
                 compact[key] = value;
             }
         }
+        const contextEvidence = mergeToolResultEvidence(
+            collectToolResultEvidence(record),
+            collectDetailAssetSelectionEvidence(record)
+        );
+        if (contextEvidence !== undefined) compact.contextEvidence = contextEvidence;
     } else if (raw !== undefined) {
         compact.summary = compactText(raw, result.success ? 240 : 360);
     }
@@ -177,7 +395,10 @@ function isCurrentUserMessage(message: AgentMessage, currentUserFound: boolean):
     return !currentUserFound;
 }
 
-function buildMessageUnits(messages: AgentMessage[]): MessageUnit[] {
+function buildMessageUnits(
+    messages: AgentMessage[],
+    includeReasoningContent: boolean
+): MessageUnit[] {
     const units: MessageUnit[] = [];
     let currentUserFound = false;
     for (let index = 0; index < messages.length; index += 1) {
@@ -200,22 +421,32 @@ function buildMessageUnits(messages: AgentMessage[]): MessageUnit[] {
                 unitMessages.push(candidate);
                 index += 1;
             }
-            units.push({ messages: unitMessages, protected: false, recent: false });
+            units.push({
+                messages: unitMessages,
+                protected: false,
+                recent: false,
+                estimatedTokens: estimateMessages(unitMessages, includeReasoningContent)
+            });
             continue;
         }
 
+        const unitMessages = [message];
         units.push({
-            messages: [message],
+            messages: unitMessages,
             protected: message.role === 'system'
                 || currentUser
                 || message.contextMetadata?.retention === 'pinned',
-            recent: false
+            recent: false,
+            estimatedTokens: estimateMessages(unitMessages, includeReasoningContent)
         });
     }
     return units;
 }
 
-function removeSupersededEphemeralMessages(units: MessageUnit[]): MessageUnit[] {
+function removeSupersededEphemeralMessages(
+    units: MessageUnit[],
+    includeReasoningContent: boolean
+): MessageUnit[] {
     const seenScopes = new Set<string>();
     const reversed = [...units].reverse().map((unit) => {
         const messages = [...unit.messages].reverse().filter((message) => {
@@ -225,13 +456,51 @@ function removeSupersededEphemeralMessages(units: MessageUnit[]): MessageUnit[] 
             seenScopes.add(metadata.scope);
             return true;
         }).reverse();
-        return { ...unit, messages };
+        return {
+            ...unit,
+            messages,
+            estimatedTokens: estimateMessages(messages, includeReasoningContent)
+        };
     }).reverse();
     return reversed.filter((unit) => unit.messages.length > 0);
 }
 
 function flattenUnits(units: readonly MessageUnit[]): AgentMessage[] {
     return units.flatMap((unit) => unit.messages);
+}
+
+function estimateUnits(units: readonly MessageUnit[]): number {
+    return units.reduce((sum, unit) => sum + unit.estimatedTokens, 0);
+}
+
+function compressUnitToolResults(
+    unit: MessageUnit,
+    includeReasoningContent: boolean
+): MessageUnit {
+    const messages = unit.messages.map(compressToolResultMessage);
+    return {
+        ...unit,
+        messages,
+        estimatedTokens: estimateMessages(messages, includeReasoningContent)
+    };
+}
+
+function buildContextBudgetAssessment(
+    estimatedMessageTokens: number,
+    reservedTokens: number,
+    contextTokenCeiling: number
+): ContextBudgetAssessment {
+    const reserved = Math.max(0, Math.ceil(Number(reservedTokens) || 0));
+    const totalEstimatedInputTokens = estimatedMessageTokens + reserved;
+    const overByTokens = Math.max(0, totalEstimatedInputTokens - contextTokenCeiling);
+    return {
+        estimatedMessageTokens,
+        reservedTokens: reserved,
+        contextTokenCeiling,
+        totalEstimatedInputTokens,
+        fits: overByTokens === 0,
+        overByTokens
+    };
 }
 
 export class ContextManager {
@@ -248,13 +517,28 @@ export class ContextManager {
      * 3. 先结构化压缩旧 Tool result，再按完整单元删除最旧历史。
      * 4. 最近单元最后压缩；绝不以固定“三条消息”等价一轮。
      */
-    trim(messages: AgentMessage[], reservedTokens: number = 0): AgentMessage[] {
+    private trimWithAssessment(
+        messages: AgentMessage[],
+        reservedTokens: number = 0
+    ): ContextTrimResult {
         const reserved = Math.max(0, Math.ceil(Number(reservedTokens) || 0));
         const messageTokenBudget = Math.max(0, this.config.maxTokens - reserved);
         const protocolSafe = preserveToolCallProtocol(messages);
-        let units = removeSupersededEphemeralMessages(buildMessageUnits(protocolSafe));
-        if (estimateMessages(flattenUnits(units)) <= messageTokenBudget) {
-            return flattenUnits(units);
+        let units = removeSupersededEphemeralMessages(
+            buildMessageUnits(protocolSafe, this.config.includeReasoningContent),
+            this.config.includeReasoningContent
+        );
+        let estimatedMessageTokens = estimateUnits(units);
+        if (estimatedMessageTokens <= messageTokenBudget) {
+            const preparedMessages = flattenUnits(units);
+            return {
+                messages: preparedMessages,
+                assessment: buildContextBudgetAssessment(
+                    estimatedMessageTokens,
+                    reserved,
+                    this.config.maxTokens
+                )
+            };
         }
 
         let recentRemaining = this.config.keepRecentRounds;
@@ -266,66 +550,82 @@ export class ContextManager {
 
         units = units.map((unit) => unit.recent || unit.protected
             ? unit
-            : { ...unit, messages: unit.messages.map(compressToolResultMessage) });
-        if (estimateMessages(flattenUnits(units)) <= messageTokenBudget) {
-            return flattenUnits(units);
+            : compressUnitToolResults(unit, this.config.includeReasoningContent));
+        estimatedMessageTokens = estimateUnits(units);
+        if (estimatedMessageTokens <= messageTokenBudget) {
+            const preparedMessages = flattenUnits(units);
+            return {
+                messages: preparedMessages,
+                assessment: buildContextBudgetAssessment(
+                    estimatedMessageTokens,
+                    reserved,
+                    this.config.maxTokens
+                )
+            };
         }
 
         for (let index = 0; index < units.length; index += 1) {
-            if (estimateMessages(flattenUnits(units)) <= messageTokenBudget) break;
+            if (estimatedMessageTokens <= messageTokenBudget) break;
             const unit = units[index];
             if (unit.protected || unit.recent) continue;
+            estimatedMessageTokens -= unit.estimatedTokens;
             units.splice(index, 1);
             index -= 1;
         }
 
-        if (estimateMessages(flattenUnits(units)) > messageTokenBudget) {
+        if (estimatedMessageTokens > messageTokenBudget) {
             units = units.map((unit) => unit.protected
                 ? unit
-                : { ...unit, messages: unit.messages.map(compressToolResultMessage) });
+                : compressUnitToolResults(unit, this.config.includeReasoningContent));
+            estimatedMessageTokens = estimateUnits(units);
         }
 
         for (let index = 0; index < units.length; index += 1) {
-            if (estimateMessages(flattenUnits(units)) <= messageTokenBudget) break;
+            if (estimatedMessageTokens <= messageTokenBudget) break;
             if (units[index].protected) continue;
+            estimatedMessageTokens -= units[index].estimatedTokens;
             units.splice(index, 1);
             index -= 1;
         }
 
-        return preserveToolCallProtocol(flattenUnits(units));
+        const preparedMessages = preserveToolCallProtocol(flattenUnits(units));
+        return {
+            messages: preparedMessages,
+            assessment: buildContextBudgetAssessment(
+                estimatedMessageTokens,
+                reserved,
+                this.config.maxTokens
+            )
+        };
+    }
+
+    trim(messages: AgentMessage[], reservedTokens: number = 0): AgentMessage[] {
+        return this.trimWithAssessment(messages, reservedTokens).messages;
     }
 
     estimateTotal(messages: AgentMessage[]): number {
-        return estimateMessages(messages);
+        return estimateMessages(messages, this.config.includeReasoningContent);
     }
 
     assess(messages: AgentMessage[], reservedTokens: number = 0): ContextBudgetAssessment {
-        const estimatedMessageTokens = estimateMessages(messages);
-        const reserved = Math.max(0, Math.ceil(Number(reservedTokens) || 0));
-        const totalEstimatedInputTokens = estimatedMessageTokens + reserved;
-        const overByTokens = Math.max(0, totalEstimatedInputTokens - this.config.maxTokens);
-        return {
-            estimatedMessageTokens,
-            reservedTokens: reserved,
-            contextTokenCeiling: this.config.maxTokens,
-            totalEstimatedInputTokens,
-            fits: overByTokens === 0,
-            overByTokens
-        };
+        return buildContextBudgetAssessment(
+            estimateMessages(messages, this.config.includeReasoningContent),
+            reservedTokens,
+            this.config.maxTokens
+        );
     }
 
     /**
      * Provider 调用前的唯一容量闸：先按完整消息单元压缩，再验证受保护内容与预留是否仍可容纳。
      */
     prepare(messages: AgentMessage[], reservedTokens: number = 0): AgentMessage[] {
-        const trimmed = this.trim(messages, reservedTokens);
-        const assessment = this.assess(trimmed, reservedTokens);
-        if (assessment.fits) return trimmed;
+        const prepared = this.trimWithAssessment(messages, reservedTokens);
+        if (prepared.assessment.fits) return prepared.messages;
         const error: Error & { code?: string; contextAssessment?: unknown } = new Error(
-            `当前模型上下文无法容纳本轮必要的系统规则、用户目标和工具定义：估算超出 ${assessment.overByTokens} tokens。`
+            `当前模型上下文无法容纳本轮必要的系统规则、用户目标和工具定义：估算超出 ${prepared.assessment.overByTokens} tokens。`
         );
         error.code = 'context_window_budget_exceeded';
-        error.contextAssessment = assessment;
+        error.contextAssessment = prepared.assessment;
         throw error;
     }
 }

@@ -1466,18 +1466,28 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                                     description: '归一化 0..1，不得越过画布。'
                                 },
                                 hAlign: { type: 'string', enum: ['left', 'center', 'right'] },
+                                columnPlacement: {
+                                    type: 'object',
+                                    properties: {
+                                        start: { type: 'integer', minimum: 1 },
+                                        span: { type: 'integer', minimum: 1 }
+                                    },
+                                    required: ['start', 'span'],
+                                    description: '可选显式列落位；需同时声明 layout.columns。省略时 bounds 原样生效。'
+                                },
                                 fit: { type: 'string', enum: ['contain', 'cover'] },
                                 imagePlacement: COMPOSE_DESIGN_IMAGE_PLACEMENT_SCHEMA
                             },
                             required: ['id', 'role', 'content', 'bounds']
                         },
                         minItems: 1,
-                        description: 'Agent 自由声明的视觉元素数组：同一 role 可出现多次，可组合多个真实素材、文字和装饰；顺序和数量不构成固定工作流或版式模板。每个图片元素必须声明自己的 imagePlacement。'
+                        description: '自由视觉元素；同一 role 可重复。数组按非背景图层从下到上排列，每个图片元素自带 imagePlacement。'
                     },
                     groupName: { type: 'string', description: '语义图层组名。' },
                     visualStyle: COMPOSE_DESIGN_VISUAL_STYLE_SCHEMA,
-                    marginScale: { type: 'number', minimum: 0, maximum: 8 },
-                    gutterScale: { type: 'number', minimum: 0, maximum: 8 }
+                    columns: { type: 'integer', minimum: 1, maximum: 24, description: '可选列网格；只有 region.columnPlacement 会消费，不按 role 自动吸附。' },
+                    marginScale: { type: 'integer', enum: [0, 1, 2, 3, 4, 5] },
+                    gutterScale: { type: 'integer', enum: [0, 1, 2, 3, 4, 5] }
                 },
                 required: ['mode', 'regions', 'groupName', 'visualStyle']
             },
@@ -1498,7 +1508,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'renderLayout',
-        description: '版面渲染。Agent 使用 regions / blocks + 显式 visualStyle 声明构图、内容、配色、字体层级与卖点表现；Harness 只换算坐标、排序图层并验证越界/可读性。内置 recipe 已移除，缺少 visualStyle 会在写入前失败；neutral_wireframe 只在 Agent 显式要求结构预览时可用。图片块用 imagePlacement 明确 contain/cover、裁切和留白意图；无法可靠执行的声明会在写入前失败。写后返回真实结构和快照，由 Agent 判断修订。',
+        description: '渲染 Agent 声明的 regions / blocks 与 visualStyle；数组决定非背景层序，Harness 只换算坐标和验收边界。正式稿缺 visualStyle 会写前失败；结构预览需显式 neutral_wireframe。图片用 imagePlacement 声明落位，写后返回结构与快照。',
         inputSchema: { ...objectSchema({
             canvas: {
                 type: 'object',
@@ -1517,12 +1527,12 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                 type: 'integer',
                 minimum: 1,
                 maximum: 24,
-                description: '版面的并列单元数，由内容结构决定：三个并排卖点写 3、左图右文写 2、单栏叙述不填。仅 regions 模式生效——声明后，需要共享对齐基准的区域会被吸附到列，消除"看起来差不多但差几像素"的假对齐。没有并列结构就不要填。'
+                description: 'regions 可选列网格。只建列盒，不自动改坐标；区域入列需显式 columnPlacement，其他区域保留 bounds。'
             },
             marginScale: {
                 type: 'integer',
                 enum: [0, 1, 2, 3, 4, 5],
-                description: '版心边距的**档位下标**，0 最窄、5 最宽。model_authored + blocks 或 model_authored + regions + columns 必须显式填写；只有不启用列吸附的 regions 可不填这个构图参数。'
+                description: '版心边距档位 0..5；model_authored blocks 或声明 columns 时必填。'
             },
             gutterScale: {
                 type: 'integer',
@@ -1549,7 +1559,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                         imagePlacement: RENDER_LAYOUT_IMAGE_PLACEMENT_SCHEMA
                     }
                 },
-                description: '垂直堆叠模式：按视觉顺序自上而下排列模块，适合"标题→主图→卖点"式常规版式。你只给 role + content + 占比，不要填 x/y/z。与 regions 二选一。'
+                description: '垂直堆叠；数组同时表示自上而下版面和非背景从下到上层序，background 垫底。与 regions 二选一。'
             },
             regions: {
                 type: 'array',
@@ -1575,10 +1585,19 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                             enum: ['left', 'center', 'right'],
                             description: '文字水平对齐。model_authored 中真正渲染为文字的 title/subtitle/selling-point/tag/decoration 必填；带真实图片素材路径的 tag/decoration 不执行此字段，改为显式声明 imagePlacement。'
                         },
+                        columnPlacement: {
+                            type: 'object',
+                            properties: {
+                                start: { type: 'integer', minimum: 1, description: '从 1 开始的列号。' },
+                                span: { type: 'integer', minimum: 1, description: '跨越列数；start + span - 1 不能超过 columns。' }
+                            },
+                            required: ['start', 'span'],
+                            description: '显式列落位；需顶层 columns。省略时保留 bounds。'
+                        },
                         imagePlacement: RENDER_LAYOUT_IMAGE_PLACEMENT_SCHEMA
                     }
                 },
-                description: '二维构图模式：垂直堆叠做不到的版式（左右分栏、文字压图、非对称构图）用这个。文字区域互相重叠会告警；文字压在图上是正当用法。与 blocks 二选一，regions 优先生效。'
+                description: '二维构图；数组表示非背景从下到上层序。文字互叠会告警；仅显式 columnPlacement 改 x/width。与 blocks 二选一。'
             },
             screenRegion: {
                 type: 'object',
@@ -1590,7 +1609,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             },
             stagePlan: {
                 type: 'object',
-                description: '详情页从零设计时必填。Agent 自己形成的当前阶段设计计划，不是工具结果：targetDocumentName、productUnderstanding、currentStage.id/title/purpose/sellingPoint/imageIntent/layoutRoles/observationFocus。currentStage.id 用「A-首屏KV」「H-痛点解决」这类结构化命名——引擎按「id·标题」为本屏建组，图层树就是详情页结构文档。'
+                description: '可选的多阶段设计笔记，不是开放创意的写入门票。复杂长详情页可由 Agent 用它保持目标文档、产品理解与当前屏目的的一致性：targetDocumentName、productUnderstanding、currentStage.id/title/purpose/sellingPoint/imageIntent/layoutRoles/observationFocus。简单单画面可不填；使用时 currentStage.id 可用「A-首屏KV」「H-痛点解决」这类结构化命名，引擎按「id·标题」为本屏建组。'
             }
         }, ['canvas']),
         // Provider 支持条件 JSON Schema 时直接约束；不支持条件关键字的 Provider 仍由执行点的
@@ -2055,7 +2074,37 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
         inputSchema: objectSchema({
             screens: { type: 'array', items: { type: 'object' } },
             projectPath: { type: 'string' },
-            screenPlans: { type: 'array', items: { type: 'object' } },
+            screenPlans: {
+                type: 'array',
+                description: '可选的主 Agent 屏级决定。具体选图必须放在 agentDecision.imageSelections，并逐项复制上一次候选返回的 placeholderLayerId、candidateSetId、candidateId、imagePath，再提供本轮 decisionId；只给图片策略或排序偏好不算选定。',
+                items: {
+                    type: 'object',
+                    properties: {
+                        screenId: { type: 'number' },
+                        screenName: { type: 'string' },
+                        agentDecision: {
+                            type: 'object',
+                            properties: {
+                                imageSelections: {
+                                    type: 'array',
+                                    items: {
+                                        type: 'object',
+                                        properties: {
+                                            placeholderLayerId: { type: 'number' },
+                                            candidateSetId: { type: 'string' },
+                                            candidateId: { type: 'string' },
+                                            imagePath: { type: 'string' },
+                                            decisionId: { type: 'string' },
+                                            rationale: { type: 'string' }
+                                        },
+                                        required: ['placeholderLayerId', 'candidateSetId', 'candidateId', 'imagePath', 'decisionId']
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
             selectedScene: { type: 'object', properties: {} },
             selectedDesignContext: { type: 'object', properties: {} },
             selectedElementContext: { type: 'object', properties: {} },
@@ -2064,7 +2113,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'fillDetailPage',
-        description: 'Fill text and images into detail-page placeholders using plans from matchDetailPageContent. 只替换内容：文字走样式保留写入、图片进占位框适配，不改占位框位置/尺寸/版式（用户模板的版式主权）。After filling, verify with getScreenSnapshots or auditDetailPagePlacement before claiming completion.',
+        description: 'Fill text and images into detail-page placeholders using plans from matchDetailPageContent. 只替换内容：文字走样式保留写入、图片进占位框适配，不改占位框位置/尺寸/版式（用户模板的版式主权）。项目图片只有在 imagePath 同时携带当前 candidateSetId / candidateId 对应的 selectionReceipt 时才会执行；机械排序第一名仍是候选。After filling, verify with getScreenSnapshots or auditDetailPagePlacement before claiming completion.',
         inputSchema: objectSchema({
             plan: { type: 'object', properties: {} },
             plans: { type: 'array', items: { type: 'object' } }

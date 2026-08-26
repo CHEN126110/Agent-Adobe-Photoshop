@@ -1,4 +1,4 @@
-// SKU 缺模板 handoff 契约纯逻辑测试：模板定义、色卡只读、先找现成、版式建议几何。
+// SKU 缺模板 handoff 契约纯逻辑测试：模板定义、色卡只读、Agent 自主设计与显式线框候选。
 const path = require('path');
 const root = path.resolve(__dirname, '..');
 require('ts-node').register({ transpileOnly: true, project: path.join(root, 'tsconfig.main.json') });
@@ -32,17 +32,36 @@ const handoff = buildSkuTemplateDesignHandoffContract({
 const msg = handoff.message;
 check(/独立的新文档/.test(msg) && /不置入任何颜色图/.test(msg), '定义：独立新文档 + 不置入颜色图');
 check(/「SKU\.psb」是只读的颜色来源/.test(msg) && /不要与它同名/.test(msg), '色卡只读、不同名');
-check(/先找现成再新建/.test(msg) && /importEagleAssetToProject/.test(msg) && /inspectTemplateLayout/.test(msg), '先找现成 + 合适判据分两半');
+check(/是否查看 Eagle.*信息增益/.test(msg) && /没有合适参考时可以自主新建设计/.test(msg), '参考按信息增益决定');
 check(/regionCapacities：数组/.test(msg), 'region_composition 参数要求写明');
 check(handoff.templateDesignToolNames.includes('openTemplate') && handoff.templateDesignToolNames.includes('importEagleAssetToProject'), '工具面含 openTemplate / importEagleAssetToProject');
 check(!/模板方向已确认/.test(msg), '缺模板 handoff 不声称方向已确认');
-check(handoff.templateLayoutSuggestions.length === 3, '三份版式建议', String(handoff.templateLayoutSuggestions.length));
-check(/版式起点/.test(msg) && /三份共用同一套/.test(msg), '版式建议进入 message 且强调三份一致');
+check(handoff.templateLayoutSuggestions.length === 0, '普通设计 handoff 不注入机械版式建议', String(handoff.templateLayoutSuggestions.length));
+check(!/按顺序执行|项目模板目录\s*→\s*Eagle|版式起点/.test(msg), 'handoff 不固定行动顺序或版式起点');
+check(
+    handoff.agentReActContinuation.recovery?.purpose === 'execute'
+        && handoff.agentReActContinuation.recovery.allowedToolNames.includes('evaluateDesign')
+        && handoff.agentReActContinuation.recovery.allowedToolNames.includes('composeDesign')
+        && !handoff.agentReActContinuation.recovery.toolArgumentConstraints?.skuLayout,
+    'staged 父任务只限制创意子任务副作用范围，不固定版式工具顺序'
+);
 
 console.log('[2] 版式建议几何');
+const mechanicalHandoff = buildSkuTemplateDesignHandoffContract({
+    missingTargets: [
+        { size: 2, mode: 'combo', expectedItemCount: 2 },
+        { size: 3, mode: 'combo', expectedItemCount: 3 },
+        { size: 4, mode: 'combo', expectedItemCount: 4 }
+    ],
+    sourceCanvas: { width: 800, height: 800 },
+    sourceCardAspectRatio: 154 / 234,
+    includeMechanicalLayoutCandidate: true
+});
 function inside(a, b) { return a.x >= b.x && a.y >= b.y && a.x + a.width <= b.x + b.width && a.y + a.height <= b.y + b.height; }
 function overlap(a, b) { return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height; }
-for (const suggestion of handoff.templateLayoutSuggestions) {
+check(mechanicalHandoff.templateLayoutSuggestions.length === 3, '显式请求时返回三份机械线框候选');
+check(/机械线框候选/.test(mechanicalHandoff.message) && /不是正式版式答案/.test(mechanicalHandoff.message), '线框候选明确不冒充设计答案');
+for (const suggestion of mechanicalHandoff.templateLayoutSuggestions) {
     const canvasBox = { x: 0, y: 0, width: 800, height: 800 };
     check(suggestion.slots.length === suggestion.size, `${suggestion.size}双装 槽位数 = 双数`);
     check(suggestion.slots.every((s) => inside(s, suggestion.cardFrame)), `${suggestion.size}双装 槽位都在卡片框内`, JSON.stringify(suggestion.slots));
@@ -59,7 +78,7 @@ for (const suggestion of handoff.templateLayoutSuggestions) {
     check(suggestion.subtitleBox.y + suggestion.subtitleBox.height <= suggestion.cardFrame.y + suggestion.cardFrame.height, `${suggestion.size}双装 副标题不出卡片框`);
     check(suggestion.slots.every((s) => s.width >= 100), `${suggestion.size}双装 槽位不至于太窄（≥100）`, JSON.stringify(suggestion.slots[0]));
 }
-const tokens = handoff.templateLayoutSuggestions.map((s) => JSON.stringify(s.tokens));
+const tokens = mechanicalHandoff.templateLayoutSuggestions.map((s) => JSON.stringify(s.tokens));
 check(new Set(tokens).size === 1, '三份共用同一套刻度');
 
 console.log('[3] 自选备注 5 色分两行 / 缺尺寸不建议');

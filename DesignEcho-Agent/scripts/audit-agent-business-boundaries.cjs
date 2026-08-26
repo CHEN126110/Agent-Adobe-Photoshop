@@ -2204,6 +2204,8 @@ async function run() {
     : undefined;
   const requiredAutonomousTemplateTools = [
     'sku-batch',
+    'evaluateDesign',
+    'composeDesign',
     'skuLayout',
     'switchDocument',
     'createDocument',
@@ -2217,7 +2219,7 @@ async function run() {
     projectedTemplateResult
   );
   if (templateContinuationUpdate.kind !== 'activate'
-    || templateContinuationUpdate.scope.purpose !== 'repair'
+    || templateContinuationUpdate.scope.purpose !== 'execute'
     || templateContinuationUpdate.scope.source !== 'declared'
     || !requiredAutonomousTemplateTools.every((toolName) => (
       toolName === 'sku-batch'
@@ -2251,7 +2253,7 @@ async function run() {
     }
   });
   if (!inspectSkuLayoutAccess.allowed
-    || executeSkuLayoutAccess.allowed
+    || !executeSkuLayoutAccess.allowed
     || unsafeTemplateSaveAccess.allowed
     || !versionedTemplateSaveAccess.allowed) {
     skuAutonomousTemplateViolations.push('sku-template:repair-argument-constraints-not-enforced');
@@ -2271,9 +2273,12 @@ async function run() {
   })) {
     skuAutonomousTemplateViolations.push('workflow-handoff:nonfatal-control-transfer-trust-boundary-invalid');
   }
-  if (templateHandoff.agentReActContinuation.recovery?.purpose !== 'repair'
+  if (templateHandoff.agentReActContinuation.recovery?.purpose !== 'execute'
     || templateHandoff.message.includes('模板方向已确认')
+    || /按顺序执行|项目模板目录\s*→\s*Eagle|版式起点/.test(templateHandoff.message)
+    || templateHandoff.templateLayoutSuggestions.length !== 0
     || !templateRepairHandoff.message.includes('占位结构需要修复')
+    || templateRepairHandoff.agentReActContinuation.recovery?.purpose !== 'repair'
     || !templateRepairHandoff.templateDesignToolNames.includes('skuLayout')
     || !templateRepairHandoff.templateDesignToolNames.includes('transformLayer')
     || !templateRepairHandoff.completionChecklist.some((item) => item.includes('重新 inspect'))) {
@@ -14888,9 +14893,12 @@ async function run() {
           && unresolvedScreenDecision.sourceTreatment === 'requires_visual_review'
           ? []
           : [`detail-asset:unresolved-screen-role-auto-executed:${JSON.stringify(unresolvedScreenDecision)}`]),
-        ...(detailPageAssetRankerText.includes('selectDetailAssetCandidate(')
-          && detailPageAssetRankerText.includes('assetUsageDecision')
-          && detailPageAssetRankerText.includes('executionDeferred: !executableSource')
+        ...(detailPageAssetRankerText.includes('buildDetailAssetCandidateSet(')
+          && detailPageAssetRankerText.includes('findExplicitDetailAssetSelection(')
+          && detailPageAssetRankerText.includes("assetSelectionSource: images.some((image) => image.requiresModelAssetDecision === true)")
+          && detailPageAssetRankerText.includes('排序第一名不是生产选定')
+          && detailPageExecutorText.includes('buildDetailAssetSelectionHandoffResult({')
+          && toolExecutorText.includes("code: 'detail_asset_selection_receipt_required'")
           && !detailPageAssetRankerText.includes("needsMatting: assetType === 'product'")
           ? []
           : ['detail-asset:ranker-usage-contract-incomplete']),
