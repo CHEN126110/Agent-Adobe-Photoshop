@@ -9,10 +9,13 @@ const {
   REVIEW_VERSION,
   buildCaseDigest,
   buildDesignReliabilityCohortReport,
+  calculateWeightedOverall,
   compareDesignReliabilityCohorts,
   deriveDesignReliabilityRunObservation,
   evaluateDesignReliabilityReleaseGates,
+  requiredComparisonEvidenceKinds,
   validateDesignReliabilityCase,
+  validateDesignReliabilityReview,
   validateDesignReliabilityRun
 } = require("./lib/design-reliability-contract.cjs");
 
@@ -24,9 +27,42 @@ const CASE_PATH = path.join(
   "cases",
   "main-image-c1163-v1.json"
 );
+const RUBRIC_PATH = path.join(
+  ROOT,
+  "benchmarks",
+  "design-reliability",
+  "rubrics",
+  "main-image-commercial-v1.json"
+);
+const SKU_CASE_PATH = path.join(
+  ROOT,
+  "benchmarks",
+  "design-reliability",
+  "cases",
+  "sku-c1163-v1.json"
+);
+const SKU_RUBRIC_PATH = path.join(
+  ROOT,
+  "benchmarks",
+  "design-reliability",
+  "rubrics",
+  "sku-production-v1.json"
+);
 
 function readCase() {
   return JSON.parse(fs.readFileSync(CASE_PATH, "utf8"));
+}
+
+function readRubric() {
+  return JSON.parse(fs.readFileSync(RUBRIC_PATH, "utf8"));
+}
+
+function readSkuCase() {
+  return JSON.parse(fs.readFileSync(SKU_CASE_PATH, "utf8"));
+}
+
+function readSkuRubric() {
+  return JSON.parse(fs.readFileSync(SKU_RUBRIC_PATH, "utf8"));
 }
 
 function mutationCall(seq, elapsedMs, historyStateId) {
@@ -35,6 +71,7 @@ function mutationCall(seq, elapsedMs, historyStateId) {
     name: "composeDesign",
     riskClass: "write",
     activityClass: "mutation",
+    origin: "model_tool_call",
     success: true,
     elapsedMs,
     photoshopMutationCommit: {
@@ -218,6 +255,15 @@ function main() {
     1,
     "successful history transition must use the same committed-mutation semantics as production"
   );
+  assert.strictEqual(
+    passing.observed.decisionPreservation.status,
+    "passed",
+    "Agentic 设计写入全部由模型发起时，一级决策保全证据应通过"
+  );
+  assert.strictEqual(passing.observed.decisionPreservation.attemptedDesignMutationCount, 1);
+  assert.strictEqual(passing.observed.decisionPreservation.committedDesignMutationCount, 1);
+  assert.strictEqual(passing.observed.decisionPreservation.modelOwnedCommittedMutationCount, 1);
+  assert.strictEqual(passing.observed.decisionPreservation.harnessCommittedMutationCount, 0);
   assert.strictEqual(passing.observed.postWriteStructureReadback, true);
   assert.strictEqual(passing.observed.postWriteVisualReadback, true);
   assert.strictEqual(passing.observed.postWriteReadbackTargetVerified, true);
@@ -444,6 +490,142 @@ function main() {
   assert.strictEqual(falseCompletion.observed.observedMutationCalls, 0);
   assert.strictEqual(falseCompletion.observed.technicalDeliveryPassed, false);
   assert.strictEqual(falseCompletion.observed.falseCompletionSuspected, true);
+  assert.strictEqual(
+    falseCompletion.observed.decisionPreservation.status,
+    "unscorable",
+    "只有保存、没有设计写入时不能伪造决策保全通过"
+  );
+
+  const harnessOwnedMutation = mutationCall(1, 1000, 19);
+  harnessOwnedMutation.origin = "harness_compact_workflow_owner";
+  harnessOwnedMutation.success = false;
+  harnessOwnedMutation.summary = "Harness write attempt failed";
+  delete harnessOwnedMutation.photoshopMutationCommit;
+  delete harnessOwnedMutation.photoshopHistoryTransition;
+  const harnessOwnedRecord = runRecord({
+    runId: "run-harness-owned-write",
+    generation: 1,
+    issuedAt: "2026-08-24T01:02:00.000Z",
+    endedAt: "2026-08-24T01:02:10.000Z",
+    success: false,
+    stopReason: "final_response",
+    taskRunStatus: "failed",
+    toolCalls: [harnessOwnedMutation]
+  });
+  const harnessOwnedObservation = deriveDesignReliabilityRunObservation({
+    caseSpec,
+    runRecords: [harnessOwnedRecord],
+    cohortId: "candidate",
+    environment: { provider: "provider-a", modelId: "model-a" },
+    evidenceRefs: []
+  });
+  assert.strictEqual(validateDesignReliabilityRun(harnessOwnedObservation).ok, true);
+  assert.strictEqual(
+    harnessOwnedObservation.observed.decisionPreservation.status,
+    "unscorable",
+    "未提交的 Harness 写入尝试不能冒充成稿已经被篡改"
+  );
+  assert.strictEqual(harnessOwnedObservation.observed.decisionPreservation.harnessAttemptCount, 1);
+  assert.strictEqual(harnessOwnedObservation.observed.decisionPreservation.harnessWriteAttemptObserved, true);
+  assert.strictEqual(
+    harnessOwnedObservation.observed.decisionPreservation.committedDesignMutationCount,
+    0,
+    "失败的 Harness 写入只进入尝试诊断，不能进入真实提交分母"
+  );
+
+  const committedHarnessMutation = mutationCall(1, 1000, 20);
+  committedHarnessMutation.origin = "harness_compact_workflow_owner";
+  const committedHarnessRecord = runRecord({
+    runId: "run-harness-committed-write",
+    generation: 1,
+    issuedAt: "2026-08-24T01:02:20.000Z",
+    endedAt: "2026-08-24T01:02:30.000Z",
+    success: false,
+    stopReason: "final_response",
+    taskRunStatus: "failed",
+    toolCalls: [committedHarnessMutation]
+  });
+  const committedHarnessObservation = deriveDesignReliabilityRunObservation({
+    caseSpec,
+    runRecords: [committedHarnessRecord],
+    cohortId: "candidate",
+    environment: { provider: "provider-a", modelId: "model-a" },
+    evidenceRefs: []
+  });
+  assert.strictEqual(
+    committedHarnessObservation.observed.decisionPreservation.status,
+    "failed",
+    "只有真实已提交的 Harness-origin 设计写入才判为决策保全失败"
+  );
+
+  const failedModelMutation = mutationCall(1, 1000, 21);
+  failedModelMutation.success = false;
+  delete failedModelMutation.photoshopMutationCommit;
+  delete failedModelMutation.photoshopHistoryTransition;
+  const failedModelRecord = runRecord({
+    runId: "run-model-failed-write",
+    generation: 1,
+    issuedAt: "2026-08-24T01:02:40.000Z",
+    endedAt: "2026-08-24T01:02:50.000Z",
+    success: false,
+    stopReason: "final_response",
+    taskRunStatus: "failed",
+    toolCalls: [failedModelMutation]
+  });
+  const failedModelObservation = deriveDesignReliabilityRunObservation({
+    caseSpec,
+    runRecords: [failedModelRecord],
+    cohortId: "candidate",
+    environment: { provider: "provider-a", modelId: "model-a" },
+    evidenceRefs: []
+  });
+  assert.strictEqual(
+    failedModelObservation.observed.decisionPreservation.status,
+    "unscorable",
+    "失败的模型写入不能伪造 Agent 决策已经落到成稿"
+  );
+
+  const uncommittedModelMutation = mutationCall(1, 1000, 22);
+  delete uncommittedModelMutation.photoshopMutationCommit;
+  delete uncommittedModelMutation.photoshopHistoryTransition;
+  const uncommittedModelRecord = runRecord({
+    runId: "run-model-uncommitted-write",
+    generation: 1,
+    issuedAt: "2026-08-24T01:03:00.000Z",
+    endedAt: "2026-08-24T01:03:10.000Z",
+    success: true,
+    stopReason: "final_response",
+    taskRunStatus: "failed",
+    toolCalls: [uncommittedModelMutation]
+  });
+  const uncommittedModelObservation = deriveDesignReliabilityRunObservation({
+    caseSpec,
+    runRecords: [uncommittedModelRecord],
+    cohortId: "candidate",
+    environment: { provider: "provider-a", modelId: "model-a" },
+    evidenceRefs: []
+  });
+  assert.strictEqual(
+    uncommittedModelObservation.observed.decisionPreservation.status,
+    "unscorable",
+    "success=true 但没有 Host mutation proof 时不能判为模型主导通过"
+  );
+
+  const stagedCase = JSON.parse(JSON.stringify(caseSpec));
+  stagedCase.executionModel = "staged";
+  stagedCase.caseDigest = buildCaseDigest(stagedCase);
+  const stagedObservation = deriveDesignReliabilityRunObservation({
+    caseSpec: stagedCase,
+    runRecords: [harnessOwnedRecord],
+    cohortId: "candidate",
+    environment: { provider: "provider-a", modelId: "model-a" },
+    evidenceRefs: []
+  });
+  assert.strictEqual(
+    stagedObservation.observed.decisionPreservation.status,
+    "unscorable",
+    "Staged 生产在缺少参数等价收据时不能把工具来源冒充为模型决策保全"
+  );
 
   const unrelated = runRecord({
     runId: "run-unrelated",
@@ -473,6 +655,8 @@ function main() {
     "不同 TaskRun / 会话的 mutation 与交付证据不得拼成假成功"
   );
 
+  const rubric = readRubric();
+  const passingScores = Object.fromEntries(rubric.dimensions.map((dimension) => [dimension.id, 0.8]));
   const review = {
     version: REVIEW_VERSION,
     reviewId: "review-1",
@@ -481,14 +665,185 @@ function main() {
     reviewerId: "designer-a",
     reviewedAt: "2026-08-24T02:00:00.000Z",
     blindedToCohort: true,
-    evidenceRefs: ["output/main.jpg"],
+    blindedToCandidateOrigin: true,
+    evidenceRefs: [
+      "candidate:output/main.jpg",
+      "anchor:user-design:main-image-c1163",
+      "anchor:eagle:item-MPTG3FF6XEROR"
+    ],
+    comparisonEvidenceKinds: requiredComparisonEvidenceKinds(caseSpec),
+    comparisonEvidenceRefs: [
+      { kind: "candidate_final", ref: "candidate:output/main.jpg" },
+      { kind: "user_design_anchor", ref: "anchor:user-design:main-image-c1163" },
+      { kind: "eagle_anchor", ref: "anchor:eagle:item-MPTG3FF6XEROR" }
+    ],
     decision: "pass",
-    scores: { overall: 0.8 },
+    scores: passingScores,
+    weightedOverall: calculateWeightedOverall(rubric, passingScores),
+    pairwiseOutcome: "comparable",
     findings: [],
+    blockers: [],
     confidence: "high",
     missingEvidence: [],
     boundaries: { devBenchmarkSidecarOnly: true, neverAffectsRuntime: true }
   };
+  assert.strictEqual(review.weightedOverall, 0.8, "weightedOverall 必须按 rubric 权重自动计算");
+  assert.strictEqual(
+    validateDesignReliabilityReview(review, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
+    true,
+    "完整盲评协议、阈值、pairwise 与适用参考齐全时 pass 才合法"
+  );
+
+  const lowScorePass = JSON.parse(JSON.stringify(review));
+  lowScorePass.scores = Object.fromEntries(rubric.dimensions.map((dimension) => [dimension.id, 0.6]));
+  lowScorePass.weightedOverall = calculateWeightedOverall(rubric, lowScorePass.scores);
+  assert.strictEqual(
+    validateDesignReliabilityReview(lowScorePass, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
+    false,
+    "低于 rubric 阈值的 decision=pass 必须失败"
+  );
+
+  const skuCase = readSkuCase();
+  const skuRubric = readSkuRubric();
+  const skuRun = JSON.parse(JSON.stringify(passing));
+  skuRun.runObservationId = "sku-review-run";
+  skuRun.caseRef = {
+    suiteId: skuCase.suiteId,
+    caseId: skuCase.caseId,
+    revision: skuCase.revision,
+    caseDigest: skuCase.caseDigest
+  };
+  const belowSkuThresholdScores = Object.fromEntries(
+    skuRubric.dimensions.map((dimension) => [dimension.id, 0.79])
+  );
+  const belowSkuThresholdPass = {
+    ...JSON.parse(JSON.stringify(review)),
+    runObservationId: skuRun.runObservationId,
+    rubricId: skuRubric.rubricId,
+    scores: belowSkuThresholdScores,
+    weightedOverall: calculateWeightedOverall(skuRubric, belowSkuThresholdScores),
+    comparisonEvidenceKinds: requiredComparisonEvidenceKinds(skuCase),
+    comparisonEvidenceRefs: review.comparisonEvidenceRefs.filter((item) => (
+      requiredComparisonEvidenceKinds(skuCase).includes(item.kind)
+    ))
+  };
+  assert.strictEqual(
+    validateDesignReliabilityReview(belowSkuThresholdPass, {
+      rubric: skuRubric,
+      caseSpec: skuCase,
+      run: skuRun,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "SKU decision=pass 必须达到 0.80 rubric 阈值"
+  );
+
+  const exposedCandidatePass = JSON.parse(JSON.stringify(review));
+  exposedCandidatePass.blindedToCandidateOrigin = false;
+  assert.strictEqual(
+    validateDesignReliabilityReview(exposedCandidatePass, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
+    false,
+    "知道候选来源的结果不能记录为盲评 pass"
+  );
+
+  const weakerPass = JSON.parse(JSON.stringify(review));
+  weakerPass.pairwiseOutcome = "weaker";
+  assert.strictEqual(
+    validateDesignReliabilityReview(weakerPass, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
+    false,
+    "pairwise weaker 不能记录为 pass"
+  );
+
+  const incompleteComparisonPass = JSON.parse(JSON.stringify(review));
+  incompleteComparisonPass.comparisonEvidenceKinds = ["candidate_final", "user_design_anchor"];
+  incompleteComparisonPass.comparisonEvidenceRefs = incompleteComparisonPass.comparisonEvidenceRefs.filter((item) => (
+    item.kind !== "eagle_anchor"
+  ));
+  assert.strictEqual(
+    validateDesignReliabilityReview(incompleteComparisonPass, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
+    false,
+    "Case 存在 Eagle anchor 时，缺少 Eagle 比较证据不能记录为 pass"
+  );
+
+  const unboundComparisonPass = JSON.parse(JSON.stringify(review));
+  unboundComparisonPass.evidenceRefs = ["untyped-single-token"];
+  assert.strictEqual(
+    validateDesignReliabilityReview(unboundComparisonPass, {
+      rubric,
+      caseSpec,
+      run: passing,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "comparisonEvidenceKinds 齐全但没有逐项绑定到 evidenceRefs 时不能记录为 pass"
+  );
+
+  const hiddenAbsolutePathPass = JSON.parse(JSON.stringify(review));
+  const hiddenAbsoluteRef = "candidate:C:\\Users\\example\\secret.jpg";
+  hiddenAbsolutePathPass.evidenceRefs = hiddenAbsolutePathPass.evidenceRefs.map((ref) => (
+    ref.startsWith("candidate:") ? hiddenAbsoluteRef : ref
+  ));
+  hiddenAbsolutePathPass.comparisonEvidenceRefs = hiddenAbsolutePathPass.comparisonEvidenceRefs.map((item) => (
+    item.kind === "candidate_final" ? { ...item, ref: hiddenAbsoluteRef } : item
+  ));
+  assert.strictEqual(
+    validateDesignReliabilityReview(hiddenAbsolutePathPass, {
+      rubric,
+      caseSpec,
+      run: passing,
+      enforceBlindProtocol: true
+    }).ok,
+    false,
+    "typed ref 的类型前缀后不能隐藏绝对用户路径"
+  );
+
+  const blockerPass = JSON.parse(JSON.stringify(review));
+  blockerPass.blockers = ["critical_product_mismatch"];
+  assert.strictEqual(
+    validateDesignReliabilityReview(blockerPass, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
+    false,
+    "含 blocker 的评审不能记录为 pass"
+  );
+
+  const invalidPairwise = JSON.parse(JSON.stringify(review));
+  invalidPairwise.decision = "needs_fix";
+  invalidPairwise.pairwiseOutcome = "similar_enough";
+  assert.strictEqual(
+    validateDesignReliabilityReview(invalidPairwise, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
+    false,
+    "pairwiseOutcome 必须使用固定枚举"
+  );
+
+  const mismatchedWeightedOverall = JSON.parse(JSON.stringify(review));
+  mismatchedWeightedOverall.weightedOverall = 0.91;
+  assert.strictEqual(
+    validateDesignReliabilityReview(mismatchedWeightedOverall, { rubric, caseSpec, run: passing, enforceBlindProtocol: true }).ok,
+    false,
+    "手工伪造 weightedOverall 必须被自动计算对账拒绝"
+  );
+
+  const legacyNeedsFix = {
+    version: REVIEW_VERSION,
+    reviewId: "legacy-review",
+    runObservationId: passing.runObservationId,
+    rubricId: caseSpec.oracle.rubricId,
+    reviewerId: "designer-a",
+    reviewedAt: "2026-08-24T01:00:00.000Z",
+    blindedToCohort: true,
+    evidenceRefs: ["legacy-review-evidence"],
+    decision: "needs_fix",
+    scores: passingScores,
+    pairwiseOutcome: "weaker",
+    findings: [],
+    confidence: "medium",
+    missingEvidence: [],
+    boundaries: { devBenchmarkSidecarOnly: true, neverAffectsRuntime: true }
+  };
+  assert.strictEqual(
+    validateDesignReliabilityReview(legacyNeedsFix, { rubric, caseSpec, run: passing }).ok,
+    true,
+    "历史 needs_fix sidecar 可继续读取，但不能升级为新协议 pass"
+  );
   const report = buildDesignReliabilityCohortReport({
     suiteId: caseSpec.suiteId,
     cohortId: "candidate",
@@ -510,6 +865,17 @@ function main() {
   });
   assert.strictEqual(report.coverage.humanReviewedRuns, 1);
   assert.strictEqual(report.overall.quality.humanPassRate.denominator, 1);
+  assert.deepStrictEqual(report.overall.reliability.agenticDecisionPreservationEvidenceCoverage, {
+    numerator: 1,
+    denominator: 2,
+    value: 0.5
+  });
+  assert.deepStrictEqual(report.overall.reliability.agenticLevelOneDecisionPreservationRate, {
+    numerator: 1,
+    denominator: 1,
+    value: 1
+  });
+  assert.strictEqual(report.overall.reliability.agenticHarnessWriteAttemptRunCount, 0);
 
   const differentCaseSet = JSON.parse(JSON.stringify(report));
   differentCaseSet.selector.caseSetDigest = `sha256:${"d".repeat(64)}`;

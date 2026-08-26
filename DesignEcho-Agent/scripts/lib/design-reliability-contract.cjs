@@ -12,6 +12,24 @@ const COHORT_VERSION = "design-reliability-cohort/v1";
 const TASK_FAMILIES = Object.freeze(["main_image", "detail_page", "sku"]);
 const EXECUTION_MODELS = Object.freeze(["agentic", "staged"]);
 const REVIEW_DECISIONS = Object.freeze(["pass", "needs_fix", "unscorable"]);
+const PAIRWISE_OUTCOMES = Object.freeze(["better", "comparable", "weaker", "unscorable"]);
+const COMPARISON_EVIDENCE_KINDS = Object.freeze([
+  "candidate_final",
+  "user_design_anchor",
+  "eagle_anchor"
+]);
+const COMPARISON_EVIDENCE_REF_PREFIXES = Object.freeze({
+  candidate_final: ["candidate:"],
+  user_design_anchor: ["user-design:", "anchor:user-design:"],
+  eagle_anchor: ["eagle:", "anchor:eagle:"]
+});
+const DECISION_PRESERVATION_VERSION = "decision-preservation-observation/v1";
+const DECISION_PRESERVATION_STATUSES = Object.freeze(["passed", "failed", "unscorable"]);
+const HARNESS_TOOL_ORIGINS = new Set([
+  "harness_compact_workflow_owner",
+  "harness_opening_observation",
+  "harness_quality_verification"
+]);
 const ATTRIBUTION_STATUSES = Object.freeze(["hypothesis", "confirmed", "rejected"]);
 const ATTRIBUTION_OWNERS = Object.freeze([
   "case_fixture",
@@ -59,6 +77,17 @@ const SAVE_TOOLS = new Set([
 const EXPORT_TOOLS = new Set([
   "exportMainImageDocuments"
 ]);
+const DELIVERY_TOOLS = new Set([
+  "saveDocument",
+  "smartSave",
+  "quickExport",
+  "exportGroup",
+  "exportMainImageDocuments",
+  "exportDetailPageSlices",
+  "exportWhiteBgFromSkuMaterial",
+  "exportToSkuDir",
+  "batchExport"
+]);
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -70,6 +99,101 @@ function cleanString(value) {
 
 function isFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function uniqueCleanStrings(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map(cleanString).filter(Boolean))];
+}
+
+function calculateWeightedOverall(rubric, scores) {
+  if (!isRecord(rubric) || !Array.isArray(rubric.dimensions) || !isRecord(scores)) return undefined;
+  let weightedTotal = 0;
+  let weightTotal = 0;
+  for (const dimension of rubric.dimensions) {
+    const id = cleanString(dimension?.id);
+    const weight = Number(dimension?.weight);
+    const score = scores[id];
+    if (!id || !Number.isFinite(weight) || weight <= 0 || !isFiniteNumber(score) || score < 0 || score > 1) {
+      return undefined;
+    }
+    weightedTotal += score * weight;
+    weightTotal += weight;
+  }
+  if (weightTotal <= 0) return undefined;
+  return Math.round((weightedTotal / weightTotal) * 10000) / 10000;
+}
+
+function requiredComparisonEvidenceKinds(caseSpec) {
+  const kinds = new Set(["candidate_final"]);
+  const references = Array.isArray(caseSpec?.task?.reviewOnlyReferences)
+    ? caseSpec.task.reviewOnlyReferences
+    : [];
+  if (references.some((reference) => cleanString(reference?.kind) === "user_design")) {
+    kinds.add("user_design_anchor");
+  }
+  if (references.some((reference) => cleanString(reference?.kind) === "eagle_item")) {
+    kinds.add("eagle_anchor");
+  }
+  return [...kinds];
+}
+
+function validateComparisonEvidenceRefs(value, evidenceRefs, errors) {
+  if (!Array.isArray(value)) {
+    if (value !== undefined) errors.push("comparisonEvidenceRefs 必须是数组。");
+    return [];
+  }
+  const normalized = [];
+  const identities = new Set();
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    if (!isRecord(item)) {
+      errors.push(`comparisonEvidenceRefs[${index}] 必须是对象。`);
+      continue;
+    }
+    const kind = cleanString(item.kind);
+    const ref = cleanString(item.ref);
+    if (!COMPARISON_EVIDENCE_KINDS.includes(kind)) {
+      errors.push(`comparisonEvidenceRefs[${index}].kind 非法。`);
+      continue;
+    }
+    if (!ref || path.isAbsolute(ref)) {
+      errors.push(`comparisonEvidenceRefs[${index}].ref 必须是非绝对路径的稳定证据引用。`);
+      continue;
+    }
+    const allowedPrefixes = COMPARISON_EVIDENCE_REF_PREFIXES[kind] || [];
+    const matchedPrefix = allowedPrefixes.find((prefix) => ref.startsWith(prefix));
+    if (!matchedPrefix) {
+      errors.push(`comparisonEvidenceRefs[${index}].ref 与 ${kind} 的证据前缀不匹配。`);
+    } else {
+      const payload = ref.slice(matchedPrefix.length).trim();
+      const normalizedPayload = payload.replace(/\\/g, "/");
+      if (!payload
+        || path.isAbsolute(payload)
+        || /^[a-z]:\//i.test(normalizedPayload)
+        || normalizedPayload.startsWith("/")
+        || normalizedPayload.split("/").includes("..")) {
+        errors.push(`comparisonEvidenceRefs[${index}].ref 不能在类型前缀后隐藏绝对路径或目录穿越。`);
+      }
+    }
+    if (!evidenceRefs.includes(ref)) {
+      errors.push(`comparisonEvidenceRefs[${index}].ref 未绑定到 evidenceRefs。`);
+    }
+    const identity = `${kind}\u0000${ref}`;
+    if (identities.has(identity)) {
+      errors.push("comparisonEvidenceRefs 不能包含重复项。");
+      continue;
+    }
+    identities.add(identity);
+    normalized.push({ kind, ref });
+  }
+  return normalized;
+}
+
+function isBlockingReviewFinding(finding) {
+  if (!isRecord(finding)) return false;
+  return finding.blocking === true
+    || ["blocker", "blocking"].includes(cleanString(finding.severity).toLowerCase())
+    || ["blocker", "blocking"].includes(cleanString(finding.status).toLowerCase());
 }
 
 function sortJson(value) {
@@ -262,6 +386,89 @@ function hasCommittedMutation(call) {
     && Number.isInteger(transition.before?.historyStateId)
     && Number.isInteger(transition.after?.documentId)
     && Number.isInteger(transition.after?.historyStateId);
+}
+
+function buildDecisionPreservationObservation(caseSpec, flattenedCalls, finalRecord) {
+  const attemptedDesignMutations = flattenedCalls.filter((entry) => (
+    entry.call?.activityClass === "mutation"
+    && !DELIVERY_TOOLS.has(cleanString(entry.call?.name))
+  ));
+  const committedDesignMutations = attemptedDesignMutations.filter((entry) => (
+    hasCommittedMutation(entry.call)
+  ));
+  const modelOwnedAttemptCount = attemptedDesignMutations.filter((entry) => (
+    cleanString(entry.call?.origin) === "model_tool_call"
+  )).length;
+  const harnessAttemptCount = attemptedDesignMutations.filter((entry) => (
+    HARNESS_TOOL_ORIGINS.has(cleanString(entry.call?.origin))
+  )).length;
+  const unattributedAttemptCount = Math.max(
+    0,
+    attemptedDesignMutations.length - modelOwnedAttemptCount - harnessAttemptCount
+  );
+  const modelOwnedCommittedMutationCount = committedDesignMutations.filter((entry) => (
+    cleanString(entry.call?.origin) === "model_tool_call"
+  )).length;
+  const harnessCommittedMutationCount = committedDesignMutations.filter((entry) => (
+    HARNESS_TOOL_ORIGINS.has(cleanString(entry.call?.origin))
+  )).length;
+  const unattributedCommittedMutationCount = Math.max(
+    0,
+    committedDesignMutations.length
+      - modelOwnedCommittedMutationCount
+      - harnessCommittedMutationCount
+  );
+  let status = "unscorable";
+  let reason = committedDesignMutations.length === 0
+    ? "当前运行没有已提交的设计写入，不能判断成稿的决策归属。"
+    : "当前运行没有足够的已提交设计写入来源证据。";
+  if (caseSpec.executionModel === "agentic" && harnessCommittedMutationCount > 0) {
+    status = "failed";
+    reason = "Agentic 设计中观察到 Harness-origin 的已提交设计写入。";
+  } else if (caseSpec.executionModel === "agentic"
+    && committedDesignMutations.length > 0
+    && modelOwnedCommittedMutationCount === committedDesignMutations.length) {
+    status = "passed";
+    reason = "所有已提交设计写入均由 model_tool_call 发起，未观察到 Harness 提交设计改动。";
+  } else if (caseSpec.executionModel === "staged") {
+    reason = "Staged 生产允许 Harness 执行已签名计划；缺参数等价收据时保持不可评分。";
+  }
+  if (caseSpec.executionModel === "agentic" && harnessAttemptCount > harnessCommittedMutationCount) {
+    reason += ` 另观察到 ${harnessAttemptCount - harnessCommittedMutationCount} 次未提交的 Harness-origin 写入尝试；只记为边界诊断，不冒充成稿变化。`;
+  }
+  const evidenceScope = finalRecord?.quality?.finalQualityModelProtocol?.evidenceScope;
+  return {
+    version: DECISION_PRESERVATION_VERSION,
+    status,
+    basis: "tool_origin_level_1",
+    attemptedDesignMutationCount: attemptedDesignMutations.length,
+    committedDesignMutationCount: committedDesignMutations.length,
+    modelOwnedAttemptCount,
+    harnessAttemptCount,
+    unattributedAttemptCount,
+    modelOwnedCommittedMutationCount,
+    harnessCommittedMutationCount,
+    unattributedCommittedMutationCount,
+    harnessWriteAttemptObserved: caseSpec.executionModel === "agentic" && harnessAttemptCount > 0,
+    modelIntentDeclared: flattenedCalls.some((entry) => (
+      entry.call?.name === "declareDesignIntent"
+      && entry.call?.success === true
+      && entry.call?.origin === "model_tool_call"
+    )),
+    comparisonEvidenceScope: {
+      finalArtifactObserved: evidenceScope?.finalArtifactObserved === true,
+      selectedSourceCompared: evidenceScope?.selectedSourceCompared === true,
+      declaredReferenceCompared: evidenceScope?.declaredReferenceCompared === true,
+      candidateSetCompared: evidenceScope?.candidateSetCompared === true
+    },
+    reason,
+    boundaries: {
+      levelOneOriginEvidenceOnly: true,
+      strongParameterEquivalenceAvailable: false,
+      neverAffectsRuntime: true,
+      doesNotJudgeAesthetics: true
+    }
+  };
 }
 
 function parseTime(value) {
@@ -677,6 +884,11 @@ function deriveDesignReliabilityRunObservation(input) {
   const correctSkillBinding = actualSkillIds.some((skillId) => expectedSkillIds.includes(skillId));
   const observedMutations = flattened.calls.filter((entry) => hasObservedMutation(entry.call));
   const committedMutations = flattened.calls.filter((entry) => hasCommittedMutation(entry.call));
+  const decisionPreservation = buildDecisionPreservationObservation(
+    caseSpec,
+    flattened.calls,
+    finalRecord
+  );
   const lastObservedMutation = observedMutations.at(-1);
   const lastMutationOrdinal = lastObservedMutation ? lastObservedMutation.ordinal : -1;
   const postWriteStructure = lastMutationOrdinal >= 0
@@ -806,6 +1018,7 @@ function deriveDesignReliabilityRunObservation(input) {
       )).length,
       observedMutationCalls: facts.observedMutationCount,
       committedMutationCalls: facts.committedMutationCount,
+      decisionPreservation,
       observationCalls: flattened.calls.filter((entry) => (
         entry.call?.activityClass === "observation" && entry.call?.success === true
       )).length,
@@ -852,6 +1065,116 @@ function validateEvidenceRef(evidence, fieldName, errors) {
   }
 }
 
+function validateDecisionPreservationObservation(observation, executionModel, errors) {
+  if (observation === undefined) return;
+  if (!isRecord(observation)) {
+    errors.push("observed.decisionPreservation 必须是对象。");
+    return;
+  }
+  if (observation.version !== DECISION_PRESERVATION_VERSION) {
+    errors.push(`observed.decisionPreservation.version 必须是 ${DECISION_PRESERVATION_VERSION}。`);
+  }
+  if (!DECISION_PRESERVATION_STATUSES.includes(observation.status)) {
+    errors.push("observed.decisionPreservation.status 非法。");
+  }
+  if (observation.basis !== "tool_origin_level_1") {
+    errors.push("observed.decisionPreservation.basis 必须是 tool_origin_level_1。");
+  }
+  const countFields = [
+    "attemptedDesignMutationCount",
+    "committedDesignMutationCount",
+    "modelOwnedAttemptCount",
+    "harnessAttemptCount",
+    "unattributedAttemptCount",
+    "modelOwnedCommittedMutationCount",
+    "harnessCommittedMutationCount",
+    "unattributedCommittedMutationCount"
+  ];
+  for (const field of countFields) {
+    if (!Number.isSafeInteger(observation[field]) || observation[field] < 0) {
+      errors.push(`observed.decisionPreservation.${field} 必须是非负整数。`);
+    }
+  }
+  if (Number.isSafeInteger(observation.attemptedDesignMutationCount)
+    && Number.isSafeInteger(observation.modelOwnedAttemptCount)
+    && Number.isSafeInteger(observation.harnessAttemptCount)
+    && Number.isSafeInteger(observation.unattributedAttemptCount)
+    && observation.attemptedDesignMutationCount !== observation.modelOwnedAttemptCount
+      + observation.harnessAttemptCount
+      + observation.unattributedAttemptCount) {
+    errors.push("observed.decisionPreservation 的尝试来源计数与设计写入尝试总数不一致。");
+  }
+  if (Number.isSafeInteger(observation.committedDesignMutationCount)
+    && Number.isSafeInteger(observation.modelOwnedCommittedMutationCount)
+    && Number.isSafeInteger(observation.harnessCommittedMutationCount)
+    && Number.isSafeInteger(observation.unattributedCommittedMutationCount)
+    && observation.committedDesignMutationCount !== observation.modelOwnedCommittedMutationCount
+      + observation.harnessCommittedMutationCount
+      + observation.unattributedCommittedMutationCount) {
+    errors.push("observed.decisionPreservation 的提交来源计数与已提交设计写入总数不一致。");
+  }
+  if (Number.isSafeInteger(observation.committedDesignMutationCount)
+    && Number.isSafeInteger(observation.attemptedDesignMutationCount)
+    && observation.committedDesignMutationCount > observation.attemptedDesignMutationCount) {
+    errors.push("committedDesignMutationCount 不能大于 attemptedDesignMutationCount。");
+  }
+  if (typeof observation.harnessWriteAttemptObserved !== "boolean") {
+    errors.push("observed.decisionPreservation.harnessWriteAttemptObserved 必须是布尔值。");
+  } else if (Number.isSafeInteger(observation.harnessAttemptCount)
+    && observation.harnessWriteAttemptObserved !== (
+      executionModel === "agentic" && observation.harnessAttemptCount > 0
+    )) {
+    errors.push("harnessWriteAttemptObserved 与 Agentic Harness 尝试计数不一致。");
+  }
+  if (typeof observation.modelIntentDeclared !== "boolean") {
+    errors.push("observed.decisionPreservation.modelIntentDeclared 必须是布尔值。");
+  }
+  if (!isRecord(observation.comparisonEvidenceScope)
+    || typeof observation.comparisonEvidenceScope.finalArtifactObserved !== "boolean"
+    || typeof observation.comparisonEvidenceScope.selectedSourceCompared !== "boolean"
+    || typeof observation.comparisonEvidenceScope.declaredReferenceCompared !== "boolean"
+    || typeof observation.comparisonEvidenceScope.candidateSetCompared !== "boolean") {
+    errors.push("observed.decisionPreservation.comparisonEvidenceScope 不完整。");
+  }
+  if (!cleanString(observation.reason)) {
+    errors.push("observed.decisionPreservation.reason 不能为空。");
+  }
+  if (!isRecord(observation.boundaries)
+    || observation.boundaries.levelOneOriginEvidenceOnly !== true
+    || observation.boundaries.strongParameterEquivalenceAvailable !== false
+    || observation.boundaries.neverAffectsRuntime !== true
+    || observation.boundaries.doesNotJudgeAesthetics !== true) {
+    errors.push("observed.decisionPreservation.boundaries 不完整。");
+  }
+  if (executionModel === "staged" && observation.status !== "unscorable") {
+    errors.push("Staged 运行缺少参数等价收据时，decisionPreservation 必须保持 unscorable。");
+  }
+  let expectedStatus = "unscorable";
+  if (executionModel === "agentic" && observation.harnessCommittedMutationCount > 0) {
+    expectedStatus = "failed";
+  } else if (executionModel === "agentic"
+    && observation.committedDesignMutationCount > 0
+    && observation.modelOwnedCommittedMutationCount === observation.committedDesignMutationCount) {
+    expectedStatus = "passed";
+  }
+  if (DECISION_PRESERVATION_STATUSES.includes(observation.status)
+    && observation.status !== expectedStatus) {
+    errors.push(`observed.decisionPreservation.status 与提交事实不一致；期望 ${expectedStatus}。`);
+  }
+  if (observation.status === "passed"
+    && (executionModel !== "agentic"
+      || observation.committedDesignMutationCount <= 0
+      || observation.modelOwnedCommittedMutationCount !== observation.committedDesignMutationCount
+      || observation.harnessCommittedMutationCount !== 0
+      || observation.unattributedCommittedMutationCount !== 0)) {
+    errors.push("decisionPreservation=passed 要求 Agentic 已提交设计写入全部来自模型调用。");
+  }
+  if (observation.status === "failed"
+    && (executionModel !== "agentic" || observation.harnessCommittedMutationCount <= 0)) {
+    errors.push("decisionPreservation=failed 必须有 Agentic Harness-origin 已提交设计写入证据。");
+  }
+}
+
 function validateDesignReliabilityRun(run) {
   const errors = [];
   if (!isRecord(run)) return { ok: false, errors: ["Run observation 不是对象。"] };
@@ -861,6 +1184,11 @@ function validateDesignReliabilityRun(run) {
   if (!isRecord(run.caseRef) || !cleanString(run.caseRef.caseDigest)) errors.push("caseRef 不完整。");
   if (!Array.isArray(run.sourceRunRefs) || run.sourceRunRefs.length === 0) errors.push("sourceRunRefs 不能为空。");
   if (!isRecord(run.observed) || !Array.isArray(run.observed.machineChecks)) errors.push("observed.machineChecks 缺失。");
+  validateDecisionPreservationObservation(
+    run.observed?.decisionPreservation,
+    cleanString(run.cohortDimensions?.executionModel),
+    errors
+  );
   if (!Array.isArray(run.evidenceRefs)) {
     errors.push("evidenceRefs 必须是数组。");
   } else {
@@ -891,7 +1219,7 @@ function validateScoreMap(scores, errors) {
   }
 }
 
-function validateDesignReliabilityReview(review) {
+function validateDesignReliabilityReview(review, context = {}) {
   const errors = [];
   if (!isRecord(review)) return { ok: false, errors: ["Review 不是对象。"] };
   if (review.version !== REVIEW_VERSION) errors.push(`version 必须是 ${REVIEW_VERSION}。`);
@@ -904,6 +1232,56 @@ function validateDesignReliabilityReview(review) {
   if (!REVIEW_DECISIONS.includes(review.decision)) errors.push("decision 非法。");
   validateScoreMap(review.scores, errors);
   if (!Array.isArray(review.findings)) errors.push("findings 必须是数组。");
+  if (!PAIRWISE_OUTCOMES.includes(review.pairwiseOutcome)) {
+    errors.push(`pairwiseOutcome 必须是 ${PAIRWISE_OUTCOMES.join(" / ")}。`);
+  }
+  if (typeof review.blindedToCohort !== "boolean") errors.push("blindedToCohort 必须是布尔值。");
+  if (review.blindedToCandidateOrigin !== undefined
+    && typeof review.blindedToCandidateOrigin !== "boolean") {
+    errors.push("blindedToCandidateOrigin 必须是布尔值。");
+  }
+  const comparisonEvidenceKinds = uniqueCleanStrings(review.comparisonEvidenceKinds);
+  if (review.comparisonEvidenceKinds !== undefined) {
+    if (!Array.isArray(review.comparisonEvidenceKinds)) {
+      errors.push("comparisonEvidenceKinds 必须是数组。");
+    } else {
+      const invalidKinds = comparisonEvidenceKinds.filter((kind) => !COMPARISON_EVIDENCE_KINDS.includes(kind));
+      if (invalidKinds.length > 0) {
+        errors.push(`comparisonEvidenceKinds 含非法类型：${invalidKinds.join("、")}。`);
+      }
+      if (comparisonEvidenceKinds.length !== review.comparisonEvidenceKinds.length) {
+        errors.push("comparisonEvidenceKinds 不能包含空值或重复项。");
+      }
+    }
+  }
+  const evidenceRefs = uniqueCleanStrings(review.evidenceRefs);
+  const comparisonEvidenceRefs = validateComparisonEvidenceRefs(
+    review.comparisonEvidenceRefs,
+    evidenceRefs,
+    errors
+  );
+  const comparisonEvidenceKindsFromRefs = uniqueCleanStrings(
+    comparisonEvidenceRefs.map((item) => item.kind)
+  );
+  if (review.comparisonEvidenceRefs !== undefined
+    && comparisonEvidenceKinds.slice().sort().join("\u0000")
+      !== comparisonEvidenceKindsFromRefs.slice().sort().join("\u0000")) {
+    errors.push("comparisonEvidenceKinds 必须由 comparisonEvidenceRefs 一一推导。 ");
+  }
+  if (review.weightedOverall !== undefined
+    && (!isFiniteNumber(review.weightedOverall) || review.weightedOverall < 0 || review.weightedOverall > 1)) {
+    errors.push("weightedOverall 必须是 0..1。");
+  }
+  if (review.blockers !== undefined) {
+    if (!Array.isArray(review.blockers)) {
+      errors.push("blockers 必须是数组。");
+    } else if (uniqueCleanStrings(review.blockers).length !== review.blockers.length) {
+      errors.push("blockers 不能包含空值或重复项。");
+    }
+  }
+  if (review.missingEvidence !== undefined && !Array.isArray(review.missingEvidence)) {
+    errors.push("missingEvidence 必须是数组。");
+  }
   if (!Array.isArray(review.evidenceRefs) || review.evidenceRefs.length === 0) {
     errors.push("人工评审至少需要一个证据引用。");
   }
@@ -911,6 +1289,108 @@ function validateDesignReliabilityReview(review) {
     || review.boundaries.devBenchmarkSidecarOnly !== true
     || review.boundaries.neverAffectsRuntime !== true) {
     errors.push("Review 边界声明不完整。 ");
+  }
+
+  const rubric = isRecord(context.rubric) ? context.rubric : undefined;
+  const caseSpec = isRecord(context.caseSpec) ? context.caseSpec : undefined;
+  const run = isRecord(context.run) ? context.run : undefined;
+  if (rubric && cleanString(review.rubricId) !== cleanString(rubric.rubricId)) {
+    errors.push("Review rubricId 与当前 rubric 不一致。");
+  }
+  if (caseSpec && cleanString(review.rubricId) !== cleanString(caseSpec.oracle?.rubricId)) {
+    errors.push("Review rubricId 与固定 Case 不一致。");
+  }
+  if (run && cleanString(review.runObservationId) !== cleanString(run.runObservationId)) {
+    errors.push("Review runObservationId 与当前 Run 不一致。");
+  }
+  if (run && caseSpec && cleanString(run.caseRef?.caseId) !== cleanString(caseSpec.caseId)) {
+    errors.push("当前 Run 与固定 Case 不一致。");
+  }
+  const hasBlindProtocolFields = review.weightedOverall !== undefined
+    || review.blindedToCandidateOrigin !== undefined
+    || review.comparisonEvidenceKinds !== undefined
+    || review.comparisonEvidenceRefs !== undefined
+    || review.blockers !== undefined;
+  const enforceBlindProtocol = context.enforceBlindProtocol === true
+    || hasBlindProtocolFields
+    || review.decision === "pass";
+  const scoreable = review.decision !== "unscorable";
+
+  if (enforceBlindProtocol && scoreable) {
+    if (review.blindedToCohort !== true) errors.push("可评分结果必须对 cohort 保持盲评。");
+    if (review.blindedToCandidateOrigin !== true) {
+      errors.push("可评分结果必须确认 blindedToCandidateOrigin=true。");
+    }
+    if (!isFiniteNumber(review.weightedOverall)) errors.push("可评分结果必须包含自动计算的 weightedOverall。");
+    if (!Array.isArray(review.comparisonEvidenceRefs) || comparisonEvidenceRefs.length === 0) {
+      errors.push("可评分结果必须包含逐项绑定的 comparisonEvidenceRefs。 ");
+    }
+    if (review.pairwiseOutcome === "unscorable") {
+      errors.push("可评分结果的 pairwiseOutcome 不能是 unscorable。");
+    }
+    const requiredKinds = caseSpec
+      ? requiredComparisonEvidenceKinds(caseSpec)
+      : [
+          "candidate_final",
+          ...(comparisonEvidenceKinds.some((kind) => kind === "user_design_anchor" || kind === "eagle_anchor")
+            ? []
+            : ["applicable_reference_anchor"])
+        ];
+    for (const kind of requiredKinds) {
+      if (kind === "applicable_reference_anchor") {
+        errors.push("可评分结果至少需要 user_design_anchor 或 eagle_anchor。");
+      } else if (!comparisonEvidenceKindsFromRefs.includes(kind)) {
+        errors.push(`可评分结果缺少 comparisonEvidenceRefs：${kind}。`);
+      }
+    }
+  }
+
+  if (rubric && scoreable && enforceBlindProtocol) {
+    const expectedDimensions = rubric.dimensions.map((dimension) => cleanString(dimension?.id)).filter(Boolean);
+    const actualDimensions = Object.keys(isRecord(review.scores) ? review.scores : {}).sort();
+    if (expectedDimensions.slice().sort().join("\u0000") !== actualDimensions.join("\u0000")) {
+      errors.push("可评分结果必须完整且仅包含当前 rubric 的评分维度。");
+    }
+    const calculated = calculateWeightedOverall(rubric, review.scores);
+    if (!isFiniteNumber(calculated)) {
+      errors.push("无法从 rubric 与 scores 计算 weightedOverall。");
+    } else if (!isFiniteNumber(review.weightedOverall)
+      || Math.abs(review.weightedOverall - calculated) > 0.0001) {
+      errors.push(`weightedOverall 与 rubric 自动计算结果不一致；期望 ${calculated}。`);
+    }
+  }
+
+  if (review.decision === "pass") {
+    const minimumOverall = Number(rubric?.decisionRule?.passMinimumOverall);
+    if (Number.isFinite(minimumOverall)
+      && (!isFiniteNumber(review.weightedOverall) || review.weightedOverall < minimumOverall)) {
+      errors.push(`decision=pass 要求 weightedOverall >= ${minimumOverall}。`);
+    }
+    if (review.pairwiseOutcome !== "better" && review.pairwiseOutcome !== "comparable") {
+      errors.push("decision=pass 要求 pairwiseOutcome 为 better 或 comparable。");
+    }
+    if (!Array.isArray(review.blockers)) {
+      errors.push("decision=pass 必须显式记录 blockers=[]。 ");
+    } else if (review.blockers.length > 0) {
+      errors.push("decision=pass 不能包含人工评审 blocker。");
+    }
+    if (Array.isArray(review.findings) && review.findings.some(isBlockingReviewFinding)) {
+      errors.push("decision=pass 不能包含 blocking finding。");
+    }
+    if (Array.isArray(review.missingEvidence) && review.missingEvidence.length > 0) {
+      errors.push("decision=pass 不能包含 missingEvidence。");
+    }
+    if (run) {
+      if (run.observed?.technicalDeliveryPassed !== true) {
+        errors.push("decision=pass 要求对应 Run 通过技术交付检查。");
+      }
+      if (Number(run.observed?.unresolvedBlockerCount) !== 0) {
+        errors.push("decision=pass 要求对应 Run 没有 unresolved blocker。");
+      }
+      if (run.observed?.falseCompletionSuspected === true) {
+        errors.push("decision=pass 不能绑定疑似假完成 Run。");
+      }
+    }
   }
   return { ok: errors.length === 0, errors };
 }
@@ -981,6 +1461,11 @@ function aggregateFamily(runs, reviews) {
   const reviewedRunIds = new Set(reviews.map((review) => review.runObservationId));
   const passRunIds = new Set(reviews.filter((review) => review.decision === "pass").map((review) => review.runObservationId));
   const completedRuns = runs.filter((run) => run?.observed?.runStatus === "completed");
+  const agenticRuns = runs.filter((run) => run?.cohortDimensions?.executionModel === "agentic");
+  const decisionPreservationScorableRuns = agenticRuns.filter((run) => (
+    run?.observed?.decisionPreservation?.status === "passed"
+    || run?.observed?.decisionPreservation?.status === "failed"
+  ));
   const artifactCheckIds = new Set([
     "editable_psd_evidence",
     "raster_export_evidence",
@@ -1005,6 +1490,19 @@ function aggregateFamily(runs, reviews) {
         hasPassedRequiredMachineChecks(run, artifactCheckIds)
       )).length, completedRuns.length),
       falseCompletionRate: rate(runs.filter((run) => run.observed.falseCompletionSuspected === true).length, runs.length),
+      agenticDecisionPreservationEvidenceCoverage: rate(
+        decisionPreservationScorableRuns.length,
+        agenticRuns.length
+      ),
+      agenticLevelOneDecisionPreservationRate: rate(
+        decisionPreservationScorableRuns.filter((run) => (
+          run.observed.decisionPreservation.status === "passed"
+        )).length,
+        decisionPreservationScorableRuns.length
+      ),
+      agenticHarnessWriteAttemptRunCount: agenticRuns.filter((run) => (
+        run?.observed?.decisionPreservation?.harnessWriteAttemptObserved === true
+      )).length,
       wrongDocumentOrOverwriteCount: runs.filter((run) => (
         !hasPassedRequiredMachineChecks(run, projectSafetyCheckIds)
       )).length
@@ -1182,19 +1680,24 @@ module.exports = {
   ATTRIBUTION_VERSION,
   CASE_VERSION,
   COHORT_VERSION,
+  DECISION_PRESERVATION_VERSION,
   EXECUTION_MODELS,
   FAILURE_MODES,
+  COMPARISON_EVIDENCE_KINDS,
+  PAIRWISE_OUTCOMES,
   REVIEW_DECISIONS,
   REVIEW_VERSION,
   RUN_VERSION,
   TASK_FAMILIES,
   buildCaseDigest,
   buildDesignReliabilityCohortReport,
+  calculateWeightedOverall,
   compareDesignReliabilityCohorts,
   deriveDesignReliabilityRunObservation,
   evaluateDesignReliabilityReleaseGates,
   hasCommittedMutation,
   hasObservedMutation,
+  requiredComparisonEvidenceKinds,
   sha256Text,
   stableStringify,
   validateAgentRunRecordChain,

@@ -11,11 +11,14 @@ const {
   ATTRIBUTION_OWNERS,
   ATTRIBUTION_STATUSES,
   ATTRIBUTION_VERSION,
+  COMPARISON_EVIDENCE_KINDS,
   FAILURE_MODES,
+  PAIRWISE_OUTCOMES,
   REVIEW_DECISIONS,
   REVIEW_VERSION,
   RUN_VERSION,
   buildDesignReliabilityCohortReport,
+  calculateWeightedOverall,
   deriveDesignReliabilityRunObservation,
   evaluateDesignReliabilityReleaseGates,
   sha256Text,
@@ -726,6 +729,28 @@ function parseScores(value) {
   return scores;
 }
 
+function parseComparisonEvidenceRefs(args) {
+  const refs = [];
+  const identities = new Set();
+  for (const encoded of args.getAll("--comparison-evidence-ref")) {
+    const separator = encoded.indexOf("=");
+    if (separator <= 0) {
+      throw new Error(`--comparison-evidence-ref 必须使用 kind=ref：${encoded}`);
+    }
+    const kind = cleanString(encoded.slice(0, separator));
+    const ref = cleanString(encoded.slice(separator + 1));
+    if (!COMPARISON_EVIDENCE_KINDS.includes(kind)) {
+      throw new Error(`--comparison-evidence-ref kind 非法：${kind}`);
+    }
+    if (!ref) throw new Error(`--comparison-evidence-ref 缺少 ref：${encoded}`);
+    const identity = `${kind}\u0000${ref}`;
+    if (identities.has(identity)) throw new Error(`--comparison-evidence-ref 重复：${encoded}`);
+    identities.add(identity);
+    refs.push({ kind, ref });
+  }
+  return refs;
+}
+
 function recordReview(suite, args) {
   const runPath = path.resolve(args.get("--run-observation"));
   const run = readJson(runPath);
@@ -735,6 +760,10 @@ function recordReview(suite, args) {
   const rubric = suite.rubrics.find((item) => item.rubricId === caseSpec.oracle.rubricId);
   const decision = args.get("--decision");
   if (!REVIEW_DECISIONS.includes(decision)) throw new Error(`--decision 必须是 ${REVIEW_DECISIONS.join(" / ")}。`);
+  const pairwiseOutcome = args.get("--pairwise", "unscorable");
+  if (!PAIRWISE_OUTCOMES.includes(pairwiseOutcome)) {
+    throw new Error(`--pairwise 必须是 ${PAIRWISE_OUTCOMES.join(" / ")}。`);
+  }
   const scores = parseScores(args.get("--scores"));
   const rubricDimensions = new Set(rubric.dimensions.map((item) => item.id));
   for (const dimension of Object.keys(scores)) {
@@ -743,8 +772,26 @@ function recordReview(suite, args) {
   if (decision !== "unscorable" && Object.keys(scores).length !== rubricDimensions.size) {
     throw new Error(`可评分结果必须填写全部 ${rubricDimensions.size} 个维度。`);
   }
+  const weightedOverall = decision === "unscorable"
+    ? undefined
+    : calculateWeightedOverall(rubric, scores);
+  if (decision !== "unscorable" && typeof weightedOverall !== "number") {
+    throw new Error("当前 scores 无法按 rubric 自动计算 weightedOverall。 ");
+  }
   const reviewerId = args.get("--reviewer");
   if (!reviewerId) throw new Error("--reviewer 不能为空，建议使用本地代号。 ");
+  const comparisonEvidenceRefs = parseComparisonEvidenceRefs(args);
+  const comparisonEvidenceKinds = [...new Set(comparisonEvidenceRefs.map((item) => item.kind))];
+  const declaredComparisonEvidenceKinds = [
+    ...new Set(args.getAll("--comparison-evidence-kind").map(cleanString).filter(Boolean))
+  ];
+  if (declaredComparisonEvidenceKinds.length > 0
+    && declaredComparisonEvidenceKinds.slice().sort().join("\u0000")
+      !== comparisonEvidenceKinds.slice().sort().join("\u0000")) {
+    throw new Error("--comparison-evidence-kind 不能独立声明；必须与 --comparison-evidence-ref 一一对应。 ");
+  }
+  const findings = args.get("--findings-json") ? readJson(path.resolve(args.get("--findings-json"))) : [];
+  const blockers = [...new Set(args.getAll("--blocker").map(cleanString).filter(Boolean))];
   const timestamp = new Date().toISOString();
   const reviewId = `${run.runObservationId}-${reviewerId}-${timestamp.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
   const review = {
@@ -755,11 +802,19 @@ function recordReview(suite, args) {
     reviewerId,
     reviewedAt: timestamp,
     blindedToCohort: !args.hasFlag("--not-blinded"),
-    evidenceRefs: args.getAll("--evidence-ref"),
+    blindedToCandidateOrigin: args.hasFlag("--blinded-to-candidate-origin"),
+    evidenceRefs: [...new Set([
+      ...args.getAll("--evidence-ref"),
+      ...comparisonEvidenceRefs.map((item) => item.ref)
+    ])],
+    comparisonEvidenceKinds,
+    comparisonEvidenceRefs,
     decision,
     scores,
-    pairwiseOutcome: args.get("--pairwise", "unscorable"),
-    findings: args.get("--findings-json") ? readJson(path.resolve(args.get("--findings-json"))) : [],
+    ...(weightedOverall !== undefined ? { weightedOverall } : {}),
+    pairwiseOutcome,
+    findings,
+    blockers,
     confidence: args.get("--confidence", "medium"),
     missingEvidence: args.getAll("--missing-evidence"),
     boundaries: {
@@ -768,7 +823,12 @@ function recordReview(suite, args) {
       humanOwnsAestheticVerdict: true
     }
   };
-  const validation = validateDesignReliabilityReview(review);
+  const validation = validateDesignReliabilityReview(review, {
+    rubric,
+    caseSpec,
+    run,
+    enforceBlindProtocol: true
+  });
   if (!validation.ok) throw new Error(validation.errors.join("；"));
   const outputPath = path.join(DEFAULT_DATA_ROOT, "reviews", run.runObservationId, `${reviewId}.json`);
   writeJsonExclusive(outputPath, review);
@@ -822,8 +882,42 @@ function sidecarRoots(args) {
   return [DEFAULT_DATA_ROOT, path.join(BENCHMARK_ROOT, "curated")];
 }
 
+function retainContextuallyValidReviews(sidecars, suite) {
+  const runById = new Map(sidecars.runs.map((run) => [run.runObservationId, run]));
+  const validReviews = [];
+  for (const review of sidecars.reviews) {
+    const run = runById.get(review.runObservationId);
+    const caseSpec = run
+      ? suite.cases.find((item) => item.caseId === run.caseRef?.caseId)
+      : undefined;
+    const rubric = caseSpec
+      ? suite.rubrics.find((item) => item.rubricId === caseSpec.oracle?.rubricId)
+      : undefined;
+    if (!run || !caseSpec || !rubric) {
+      sidecars.invalid.push({
+        file: `review:${review.reviewId || "unknown"}`,
+        errors: ["人工评审无法绑定到当前固定 Case、Run 与 rubric。"]
+      });
+      continue;
+    }
+    const validation = validateDesignReliabilityReview(review, { rubric, caseSpec, run });
+    if (!validation.ok) {
+      sidecars.invalid.push({
+        file: `review:${review.reviewId || "unknown"}`,
+        errors: validation.errors
+      });
+      continue;
+    }
+    validReviews.push(review);
+  }
+  return { ...sidecars, reviews: validReviews };
+}
+
 function buildStatus(suite, args) {
-  const sidecars = collectSidecars(sidecarRoots(args));
+  const sidecars = retainContextuallyValidReviews(
+    collectSidecars(sidecarRoots(args)),
+    suite
+  );
   const cohortIds = [...new Set(sidecars.runs.map((run) => run.cohortId))].sort();
   const requestedCohort = args.get("--cohort");
   const reports = {};
@@ -1303,6 +1397,9 @@ function printStatus(status) {
     console.log(`  真实写入: ${formatRate(report.overall.reliability.observedMutationRate)}`);
     console.log(`  写后看图: ${formatRate(report.overall.reliability.postWriteVisualReadbackRate)}`);
     console.log(`  假完成: ${formatRate(report.overall.reliability.falseCompletionRate)}`);
+    console.log(`  Agentic 决策归属证据: ${formatRate(report.overall.reliability.agenticDecisionPreservationEvidenceCoverage)}`);
+    console.log(`  Agentic 模型主导（一级）: ${formatRate(report.overall.reliability.agenticLevelOneDecisionPreservationRate)}`);
+    console.log(`  Agentic Harness 写入尝试: ${report.overall.reliability.agenticHarnessWriteAttemptRunCount}`);
     console.log(`  人工可用: ${formatRate(report.overall.quality.humanPassRate)}`);
   }
 }
@@ -1331,7 +1428,10 @@ function printHelp() {
     "      --cohort id --provider id --model id --repeat N --user-interventions N",
     "      --evidence editable_psd=relative/path --evidence raster_export=relative/path",
     "  record-review --run-observation file --reviewer alias --decision pass|needs_fix|unscorable",
-    "      --scores dimension=0.8,... --evidence-ref token [--pairwise comparable|better|weaker]",
+    "      --scores dimension=0.8,... [--pairwise comparable|better|weaker]",
+    "      --blinded-to-candidate-origin --comparison-evidence-ref candidate_final=candidate:relative/path",
+    "      --comparison-evidence-ref user_design_anchor=anchor:user-design:token",
+    "      --comparison-evidence-ref eagle_anchor=eagle:item-id [--blocker text]",
     "  record-attribution --run-observation file --owner owner --failure-mode mode",
     "      --status hypothesis|confirmed|rejected --rationale text --evidence-ref token",
     "",
