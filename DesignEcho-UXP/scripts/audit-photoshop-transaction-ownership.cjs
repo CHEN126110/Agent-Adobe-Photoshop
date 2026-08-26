@@ -268,7 +268,9 @@ async function assertTargetGuardMismatchHasActionableDiagnostics() {
     );
     assert(
       result[field].includes("活动文档已变化")
-        && result[field].includes("重新观察目标后再试"),
+        && result[field].includes("switchDocument")
+        && result[field].includes("getDocumentInfo")
+        && result[field].includes("只重试一次"),
       `target mismatch ${field} must state the mismatch and the next action`
     );
   }

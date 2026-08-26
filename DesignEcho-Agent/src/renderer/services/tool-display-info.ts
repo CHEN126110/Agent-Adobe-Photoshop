@@ -160,6 +160,7 @@ export const TOOL_NAME_MAP: Record<string, ToolDisplayInfo> = {
     searchDesignKnowledge: { name: '检索设计参考', icon: '[W]', description: '检索设计参考、规则、趋势与文案框架。' },
     readSkillPlaybook: { name: '读工作法手册', icon: '[K]', description: '读取业务技能的工作法手册与细则。' },
     runSkillScript: { name: '运行技能脚本', icon: '[S]', description: '运行技能包自带的确定性核对脚本。' },
+    proposeSkillImprovement: { name: '提议手册改进', icon: '[P]', description: '把样板推理出的工艺差异提议为手册修改，待用户批准。' },
     searchEagleReferences: { name: '检索参考素材', icon: '[W]', description: '从 Eagle 素材库检索参考。' },
     searchDesignNotes: { name: '检索设计笔记', icon: '[A]', description: '检索用户与 Agent 共写的设计知识笔记。' },
     readDesignNote: { name: '阅读设计笔记', icon: '[A]', description: '读取一条设计笔记的完整内容与关联笔记。' },

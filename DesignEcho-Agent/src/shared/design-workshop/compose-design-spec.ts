@@ -7,6 +7,7 @@
 
 import {
     rendersLayoutBlockAsImage,
+    validateModelAuthoredLayout,
     type ImagePlacementSpec
 } from '../layout/layout-engine';
 import type { RenderLayoutModelAuthoredVisualStyle } from '../layout/render-layout-style';
@@ -42,6 +43,7 @@ export interface ComposeDesignBackgroundInput {
     filePath?: string;
     prompt?: string;
     referenceFilePath?: string;
+    imagePlacement?: ImagePlacementSpec;
 }
 
 export interface ComposeDesignLayoutRegion {
@@ -97,7 +99,6 @@ export interface ComposeDesignSpecInput {
     };
     layout: ComposeDesignLayoutInput;
     palette: ComposeDesignPalette;
-    save?: { projectSubdir?: string; format?: 'psd' | 'psb' | 'png' | 'jpg' };
 }
 
 export interface ComposeDesignSpec {
@@ -121,7 +122,6 @@ export interface ComposeDesignSpec {
         visualStyle: RenderLayoutModelAuthoredVisualStyle;
     };
     palette: ComposeDesignPalette;
-    save?: { projectSubdir: string; format: 'psd' | 'psb' | 'png' | 'jpg' };
 }
 
 export interface ComposeDesignSpecNormalization {
@@ -245,6 +245,34 @@ function normalizeBackground(
         const referenceFilePath = String(raw.referenceFilePath || '').trim();
         if (referenceFilePath) background.referenceFilePath = referenceFilePath;
     }
+    if (kind === 'asset' || kind === 'generated') {
+        const placement = raw.imagePlacement && typeof raw.imagePlacement === 'object'
+            && !Array.isArray(raw.imagePlacement)
+            ? raw.imagePlacement as ImagePlacementSpec
+            : undefined;
+        if (!placement) {
+            issues.push('background.imagePlacement：图片背景必须由 Agent 显式声明 fit / anchor / cropPolicy 等落位意图');
+        } else {
+            if (placement.cropPolicy === 'protect-subject') {
+                issues.push('background.imagePlacement.cropPolicy：背景图片没有可验证的主体框，不能使用 protect-subject；请由 Agent 选择完整保留或允许裁切，仅在需要保留特定背景位置时再提供 focalPoint');
+            }
+            if (placement.subjectFillRatio !== undefined) {
+                issues.push('background.imagePlacement.subjectFillRatio：背景图片没有可验证的主体框；请用 fit 与 anchor 表达构图，仅在需要保留特定背景位置时再提供 focalPoint');
+            }
+            const placementValidation = validateModelAuthoredLayout({
+                mode: 'regions',
+                regions: [{
+                    id: '背景素材',
+                    role: 'main-image',
+                    content: '__declared_background__.png',
+                    bounds: { x: 0, y: 0, width: 1, height: 1 },
+                    imagePlacement: placement
+                }]
+            });
+            issues.push(...placementValidation.issues.map((issue) => `background.${issue}`));
+            background.imagePlacement = placement;
+        }
+    }
     return background;
 }
 
@@ -309,10 +337,10 @@ export function normalizeComposeDesignSpec(input: ComposeDesignSpecInput | any):
             issues.push('subject.treatment：必须由 Agent 显式选择 photo 或 cutout；Harness 不根据是否有背景猜测');
         }
         shadow = normalizeSubjectShadow(subjectRaw.shadow, issues);
-        if (treatment === 'photo') {
+        if (treatment === 'photo' && subjectRaw.fillRatio !== undefined) {
             const fillRatio = Number(subjectRaw.fillRatio);
-            if (!(fillRatio >= 0.3 && fillRatio <= 0.98)) {
-                issues.push('subject.fillRatio：摄影满幅构图必须由 Agent 显式给 0.3–0.98 的主体目标占比');
+            if (!(fillRatio > 0 && fillRatio <= 1)) {
+                issues.push('subject.fillRatio：若 Agent 选择按主体框控制摄影占比，必须显式给 (0,1] 的有限数值；普通完整摄影构图请省略该字段并使用 region.imagePlacement');
             }
         }
         if (treatment === 'cutout' && typeof subjectRaw.cutout !== 'boolean') {
@@ -371,6 +399,25 @@ export function normalizeComposeDesignSpec(input: ComposeDesignSpecInput | any):
     if (regions.some(isComposeDesignSubjectAliasRegion) && !hasSubjectSource) {
         issues.push('subject：只有 content="subject" 的视觉元素需要 subject.filePath 或 existingLayerId；直接图片路径可独立声明多个视觉元素');
     }
+    if (treatment === 'photo') {
+        regions.forEach((region: any, index: number) => {
+            if (!isComposeDesignSubjectAliasRegion(region)) return;
+            if (region?.imagePlacement?.fit !== 'cover') {
+                issues.push(`layout.regions[${index}].imagePlacement.fit：subject.treatment=photo 表示全画布摄影底，必须显式声明 cover；非满幅照片请作为普通图片 region 使用`);
+            }
+        });
+    }
+    const layoutValidation = validateModelAuthoredLayout({
+        mode: 'regions',
+        marginScale: layout.marginScale,
+        gutterScale: layout.gutterScale,
+        regions: regions.map((region: any) => (
+            isComposeDesignSubjectAliasRegion(region)
+                ? { ...region, content: subjectFilePath || '__declared_subject__.png' }
+                : region
+        ))
+    });
+    issues.push(...layoutValidation.issues.map((issue) => `layout.${issue}`));
 
     const documentMode = String(input?.document?.mode || 'new') === 'active' ? 'active' : 'new';
     const declaredDocumentName = String(input?.document?.name || '').replace(/\s+/g, ' ').trim();
@@ -378,15 +425,8 @@ export function normalizeComposeDesignSpec(input: ComposeDesignSpecInput | any):
         issues.push('document.name：新建设计必须由 Agent 声明不超过 80 字符的用户可读名称；Harness 不用尺寸或时间戳生成工程名');
     }
     const documentName = declaredDocumentName || groupName;
-    let save: ComposeDesignSpec['save'];
     if (input?.save !== undefined) {
-        const projectSubdir = String(input.save?.projectSubdir || '').trim();
-        const format = String(input.save?.format || '');
-        if (!projectSubdir || !['psd', 'psb', 'png', 'jpg'].includes(format)) {
-            issues.push('save：若要求保存，必须显式给 projectSubdir 与 format；Harness 不替用户选择交付格式');
-        } else {
-            save = { projectSubdir, format: format as 'psd' | 'psb' | 'png' | 'jpg' };
-        }
+        issues.push('save：composeDesign 不在 Agent 看见写后真实画面前保存；请先完成视觉复核，再单独调用 saveDocument 或导出工具');
     }
 
     if (issues.length > 0) return { ok: false, issues, notes };
@@ -413,7 +453,9 @@ export function normalizeComposeDesignSpec(input: ComposeDesignSpecInput | any):
                 ? {
                     filePath: subjectFilePath || undefined,
                     existingLayerId,
-                    fillRatio: treatment === 'photo' ? Number(subjectRaw.fillRatio) : undefined,
+                    fillRatio: treatment === 'photo' && subjectRaw.fillRatio !== undefined
+                        ? Number(subjectRaw.fillRatio)
+                        : undefined,
                     shadow: shadow!,
                     treatment: treatment!,
                     cutout: treatment === 'cutout' ? Boolean(subjectRaw.cutout) : false
@@ -426,8 +468,7 @@ export function normalizeComposeDesignSpec(input: ComposeDesignSpecInput | any):
                 groupName,
                 visualStyle: layout.visualStyle
             },
-            palette,
-            save
+            palette
         }
     };
 }
@@ -476,7 +517,30 @@ export function planPhotoFullBleedPlacement(input: {
     subjectBox: { x: number; y: number; width: number; height: number };
     targetRegion: { x: number; y: number; width: number; height: number };
     fillRatio: number;
-}): { x: number; y: number; width: number; height: number; scale: number; coverLimited: boolean; notes: string[] } | null {
+    anchor: ImagePlacementSpec['anchor'];
+    focalPoint?: ImagePlacementSpec['focalPoint'];
+}): {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    scale: number;
+    coverLimited: boolean;
+    focusSource: { x: number; y: number; kind: 'subject-anchor' | 'focal-point' };
+    focusTarget: { x: number; y: number };
+    actualFocus: { x: number; y: number };
+    focusDeviationPx: number;
+    focusIntentSatisfied: boolean;
+    requestedFillRatio: number;
+    actualFillRatio: number;
+    fillIntentSatisfied: boolean;
+    designIntentSatisfied: boolean;
+    constraintIssues: Array<
+        'full_canvas_cover_conflicts_with_subject_fill'
+        | 'focus_position_conflicts_with_subject_fill'
+    >;
+    notes: string[];
+} | null {
     const canvasWidth = Number(input.canvas?.width);
     const canvasHeight = Number(input.canvas?.height);
     const photoWidth = Number(input.photo?.width);
@@ -487,7 +551,8 @@ export function planPhotoFullBleedPlacement(input: {
     if (!(canvasWidth > 0 && canvasHeight > 0 && photoWidth > 0 && photoHeight > 0)
         || !box || !region
         || !(box.width > 0 && box.height > 0 && region.width > 0 && region.height > 0)
-        || !(fill >= 0.3 && fill <= 0.98)) {
+        || !(fill > 0 && fill <= 1)
+        || !['center', 'top-center', 'bottom-center', 'left-center', 'right-center'].includes(input.anchor)) {
         return null;
     }
     const notes: string[] = [];
@@ -497,35 +562,89 @@ export function planPhotoFullBleedPlacement(input: {
     const regionHeight = region.height * canvasHeight;
     const scaleForFill = fill * Math.min(regionWidth / subjectWidth, regionHeight / subjectHeight);
     const scaleForCover = Math.max(canvasWidth / photoWidth, canvasHeight / photoHeight);
-    const subjectCenterXRatio = box.x + box.width / 2;
-    const subjectCenterYRatio = box.y + box.height / 2;
-    const targetCenterX = (region.x + region.width / 2) * canvasWidth;
-    const targetCenterY = (region.y + region.height / 2) * canvasHeight;
+    const anchorRatios: Record<ImagePlacementSpec['anchor'], { x: number; y: number }> = {
+        center: { x: 0.5, y: 0.5 },
+        'top-center': { x: 0.5, y: 0 },
+        'bottom-center': { x: 0.5, y: 1 },
+        'left-center': { x: 0, y: 0.5 },
+        'right-center': { x: 1, y: 0.5 }
+    };
+    const anchorRatio = anchorRatios[input.anchor];
+    const focalX = Number(input.focalPoint?.x);
+    const focalY = Number(input.focalPoint?.y);
+    const hasFocalPoint = Number.isFinite(focalX) && Number.isFinite(focalY)
+        && focalX >= 0 && focalX <= 1 && focalY >= 0 && focalY <= 1;
+    const sourceFocusXRatio = hasFocalPoint ? focalX : box.x + box.width * anchorRatio.x;
+    const sourceFocusYRatio = hasFocalPoint ? focalY : box.y + box.height * anchorRatio.y;
+    const targetFocusX = (region.x + region.width * (hasFocalPoint ? 0.5 : anchorRatio.x)) * canvasWidth;
+    const targetFocusY = (region.y + region.height * (hasFocalPoint ? 0.5 : anchorRatio.y)) * canvasHeight;
     const positionScales = [
-        subjectCenterXRatio > 0 ? targetCenterX / (subjectCenterXRatio * photoWidth) : 0,
-        subjectCenterXRatio < 1 ? (canvasWidth - targetCenterX) / ((1 - subjectCenterXRatio) * photoWidth) : 0,
-        subjectCenterYRatio > 0 ? targetCenterY / (subjectCenterYRatio * photoHeight) : 0,
-        subjectCenterYRatio < 1 ? (canvasHeight - targetCenterY) / ((1 - subjectCenterYRatio) * photoHeight) : 0
+        sourceFocusXRatio > 0 ? targetFocusX / (sourceFocusXRatio * photoWidth) : 0,
+        sourceFocusXRatio < 1 ? (canvasWidth - targetFocusX) / ((1 - sourceFocusXRatio) * photoWidth) : 0,
+        sourceFocusYRatio > 0 ? targetFocusY / (sourceFocusYRatio * photoHeight) : 0,
+        sourceFocusYRatio < 1 ? (canvasHeight - targetFocusY) / ((1 - sourceFocusYRatio) * photoHeight) : 0
     ].filter((value) => Number.isFinite(value) && value > 0);
     const scaleForPosition = positionScales.length ? Math.max(...positionScales) : 0;
-    const maxCropScale = scaleForCover * 2.2;
     let scale = Math.max(scaleForFill, scaleForCover);
     let coverLimited = false;
+    const constraintIssues: Array<
+        'full_canvas_cover_conflicts_with_subject_fill'
+        | 'focus_position_conflicts_with_subject_fill'
+    > = [];
     if (scaleForFill < scaleForCover) {
         coverLimited = true;
-        notes.push('目标主体占比会使照片露底，已提升到刚好覆盖画布的机械下限');
+        constraintIssues.push('full_canvas_cover_conflicts_with_subject_fill');
+        notes.push('声明的主体占比与摄影满幅覆盖不能同时满足；当前几何仅用于返回冲突事实，执行器不得直接写入');
     }
     if (scaleForPosition > scale) {
-        scale = Math.min(scaleForPosition, maxCropScale);
-        if (scaleForPosition > maxCropScale) notes.push('目标位置要求的裁切过大，已受最大裁切保护限制');
+        scale = scaleForPosition;
+        constraintIssues.push('focus_position_conflicts_with_subject_fill');
+        notes.push('声明的主体占比与锚点/关注点满幅位置不能同时满足；当前几何仅用于返回冲突事实，执行器不得直接写入');
     }
     const width = photoWidth * scale;
     const height = photoHeight * scale;
-    let x = targetCenterX - subjectCenterXRatio * width;
-    let y = targetCenterY - subjectCenterYRatio * height;
+    let x = targetFocusX - sourceFocusXRatio * width;
+    let y = targetFocusY - sourceFocusYRatio * height;
     x = Math.max(canvasWidth - width, Math.min(0, x));
     y = Math.max(canvasHeight - height, Math.min(0, y));
-    return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height), scale, coverLimited, notes };
+    const actualFocus = {
+        x: x + sourceFocusXRatio * width,
+        y: y + sourceFocusYRatio * height
+    };
+    const focusDeviationPx = Math.hypot(
+        actualFocus.x - targetFocusX,
+        actualFocus.y - targetFocusY
+    );
+    const focusTolerancePx = Math.max(2, Math.min(canvasWidth, canvasHeight) * 0.01);
+    const actualFillRatio = Math.max(
+        (subjectWidth * scale) / regionWidth,
+        (subjectHeight * scale) / regionHeight
+    );
+    const fillIntentSatisfied = scale === scaleForFill;
+    const focusIntentSatisfied = focusDeviationPx <= focusTolerancePx;
+    return {
+        x: Math.round(x),
+        y: Math.round(y),
+        width: Math.round(width),
+        height: Math.round(height),
+        scale,
+        coverLimited,
+        focusSource: {
+            x: sourceFocusXRatio,
+            y: sourceFocusYRatio,
+            kind: hasFocalPoint ? 'focal-point' : 'subject-anchor'
+        },
+        focusTarget: { x: targetFocusX, y: targetFocusY },
+        actualFocus,
+        focusDeviationPx,
+        focusIntentSatisfied,
+        requestedFillRatio: fill,
+        actualFillRatio,
+        fillIntentSatisfied,
+        designIntentSatisfied: fillIntentSatisfied && focusIntentSatisfied,
+        constraintIssues,
+        notes
+    };
 }
 
 /** 透传并复制 Agent 显式声明的 Photoshop 投影参数；不生成或选择视觉配方。 */
@@ -554,9 +673,9 @@ export function describeComposeDesignForModel(): string {
         'layout.mode 只能是 agent_authored；regions 是元素数组而不是固定模板，同一 role 可以出现多次。main-image / tag / decoration 可直接给各自图片绝对路径；subject 只是其中一个可选别名，不是单素材上限。',
         '每个 region.id 必须是用户可读、符合当前项目命名规范且能说明真实内容或作用的语义名称；Harness 只校验，绝不自动把 headline / scene-line / color-note 等实现标识改成设计答案。',
         '必须显式给 mode=model_authored 的 visualStyle、栅格档位与语义 groupName。',
-        '主体 treatment、摄影构图的 fillRatio、完整 shadow 参数、背景颜色或渐变、保存格式都由 Agent 根据用户目标与真实素材决定；Harness 不提供品类预设。',
+        '主体 treatment、完整 shadow 参数、背景颜色或渐变都由 Agent 根据用户目标与真实素材决定；普通完整摄影构图用 region.imagePlacement 表达，只有需要按可靠主体框精确控制占比时才声明 subject.fillRatio。Harness 不提供品类预设。',
         'document.mode=new 会另建独立候选，不会修改或自动胜出于上一稿；同素材候选发生结构变化时，返回 before / after 角色与元素事实，变化本身不等于质量结论。',
         '产品本体必须来自可追溯真实素材；背景生成只生成空场景；文字保持可编辑。',
-        '返回的结构收据与快照是事实，不是审美结论；是否评审、修订以及如何修订由 Agent 根据风险与画面决定。'
+        '返回的结构收据与快照是事实，不是审美结论；是否评审、修订以及如何修订由 Agent 根据风险与画面决定。保存与导出必须发生在 Agent 看过当前版本之后。'
     ].join('\n');
 }

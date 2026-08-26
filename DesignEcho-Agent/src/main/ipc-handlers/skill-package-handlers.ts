@@ -4,7 +4,7 @@
 
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 
-import { listSkillPackages, readSkillPackage, runSkillScript } from '../services/skill-package-service';
+import { applySkillImprovement, listSkillPackages, readSkillPackage, runSkillScript } from '../services/skill-package-service';
 
 export function registerSkillPackageHandlers(): void {
     ipcMain.handle('skillPackage:list', async () => {
@@ -17,6 +17,20 @@ export function registerSkillPackageHandlers(): void {
             };
         }
     });
+
+    ipcMain.handle(
+        'skillPackage:applyImprovement',
+        async (_event: IpcMainInvokeEvent, input: { skillId: string; file: string; find: string; replace: string }) => {
+            try {
+                return applySkillImprovement(input);
+            } catch (error) {
+                return {
+                    success: false,
+                    error: `改进写入失败：${error instanceof Error ? error.message : String(error)}`
+                };
+            }
+        }
+    );
 
     ipcMain.handle(
         'skillPackage:runScript',

@@ -14,7 +14,14 @@
  * 提不到就不记，不臆造。
  */
 
+import {
+    readDirectObservedPhotoshopMutationProof,
+    readPhotoshopHistoryStateRef
+} from './photoshop-history-state-ref';
+
 export interface DesignRunToolLogEntryLike {
+    callId?: unknown;
+    modelTurn?: unknown;
     name?: unknown;
     arguments?: unknown;
     result?: unknown;
@@ -66,6 +73,49 @@ export interface DesignRunMaterialSelectionTrace {
     };
 }
 
+export type DesignRunSupportingSourceSlot =
+    | 'direct_placement'
+    | 'subject'
+    | 'background'
+    | 'layout_region';
+
+/**
+ * 一次成功 placeImage / composeDesign / 内容替换已实际消费的本地图片来源。
+ *
+ * 这是从 Tool 调用与 Host 结果派生的事实，不是候选排序或素材推荐。目标身份只在结果
+ * 确实返回对应 layer / document / history 时出现；缺失时保持未知，不从参数或图层名称猜。
+ * supporting_source 只供后续终审理解“成品由哪张源图产生”，绝不能被当成最终画面或交付收据。
+ */
+export interface DesignRunSupportingSourcePlacement {
+    version: 'design-run-supporting-source-placement/v0';
+    path: string;
+    sourceTool:
+        | 'placeImage'
+        | 'composeDesign'
+        | 'replaceLayerContent'
+        | 'replaceImagePlaceholder'
+        | 'replaceSmartObjectContents';
+    sourceSlot: DesignRunSupportingSourceSlot;
+    /** composeDesign 中由模型声明的区域角色；direct placement 不从图层名猜角色。 */
+    declaredRole?: string;
+    /** composeDesign 中由模型声明的区域 id，用于与 imagePlacementReceipts.blockId 对账。 */
+    declaredRegionId?: string;
+    layerId?: number;
+    documentId?: number;
+    historyStateId?: number;
+    /** Provider / Agent 日志已经携带时原样投影；缺失时不补造。 */
+    callId?: string;
+    modelTurn?: number;
+    usage: 'supporting_source';
+    boundaries: {
+        extractedFromSuccessfulToolCall: true;
+        ranksCandidates: false;
+        selectsWinner: false;
+        countsAsFinalSurface: false;
+        countsAsDeliveryEvidence: false;
+    };
+}
+
 export interface DesignRunLayoutFact {
     /** 从 Agent 显式声明的 regions / blocks 生成的事实签名，不是 Harness 设计配方。 */
     layoutSignature: string;
@@ -88,6 +138,8 @@ export interface DesignRunToolLogFacts {
     assets: DesignRunObservedAsset[];
     layouts: DesignRunLayoutFact[];
     materialSelections: DesignRunMaterialSelectionTrace[];
+    /** 成功写入实际消费的源图；只作终审辅助上下文，不是 ReviewSet 成品画面或交付证据。 */
+    supportingSourcePlacements: DesignRunSupportingSourcePlacement[];
     document: DesignRunDocumentFacts;
     /** 成功写入的文字内容（去重、≤8 条） */
     textContents: string[];
@@ -106,6 +158,7 @@ const MAX_TEXT_CHARS = 60;
 const MAX_OBSERVATION_CHARS = 100;
 const MAX_SELECTION_ASSETS = 12;
 const MAX_VISUAL_CANDIDATES = 12;
+const MAX_SUPPORTING_SOURCE_PLACEMENTS = 32;
 
 const ASSET_ANALYSIS_TOOLS: ReadonlySet<string> = new Set(['analyzeAssetContent']);
 const PLACEMENT_TOOLS: ReadonlySet<string> = new Set(['placeImage', 'replaceLayerContent', 'replaceImagePlaceholder', 'replaceSmartObjectContents']);
@@ -157,6 +210,19 @@ function firstNumber(...values: unknown[]): number | undefined {
     return undefined;
 }
 
+function firstPositiveInteger(...values: unknown[]): number | undefined {
+    for (const value of values) {
+        const numeric = typeof value === 'number' ? value : Number(value);
+        if (Number.isSafeInteger(numeric) && numeric > 0) return numeric;
+    }
+    return undefined;
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+    const numeric = typeof value === 'number' ? value : Number(value);
+    return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
 export function normalizeAssetPathKey(value: unknown): string {
     return String(value || '').trim().replace(/\\/g, '/').toLowerCase();
 }
@@ -203,11 +269,354 @@ function collectComposeSelectedAssets(args: Record<string, unknown>): Array<Pick
     return Array.from(selected.values());
 }
 
+interface ComposeSupportingSourceCandidate {
+    path: string;
+    sourceSlot: Exclude<DesignRunSupportingSourceSlot, 'direct_placement'>;
+    declaredRole?: string;
+    declaredRegionId?: string;
+}
+
+function collectComposeSupportingSourceCandidates(
+    args: Record<string, unknown>
+): ComposeSupportingSourceCandidate[] {
+    const candidates: ComposeSupportingSourceCandidate[] = [];
+    const subject = isRecord(args.subject) ? args.subject : undefined;
+    const layout = isRecord(args.layout) ? args.layout : undefined;
+    const regions = Array.isArray(layout?.regions) ? layout.regions.filter(isRecord) : [];
+    const subjectRegion = regions.find((region) => String(region.content || '').trim() === 'subject');
+    if (looksLikeFilePath(subject?.filePath)) {
+        candidates.push({
+            path: subject.filePath.trim(),
+            sourceSlot: 'subject',
+            ...(cleanText(subjectRegion?.role, 40)
+                ? { declaredRole: cleanText(subjectRegion?.role, 40) }
+                : {}),
+            ...(cleanText(subjectRegion?.id, 80)
+                ? { declaredRegionId: cleanText(subjectRegion?.id, 80) }
+                : {})
+        });
+    }
+
+    const background = isRecord(args.background) ? args.background : undefined;
+    if (background?.kind === 'asset' && looksLikeFilePath(background.filePath)) {
+        candidates.push({
+            path: background.filePath.trim(),
+            sourceSlot: 'background',
+            declaredRole: 'background'
+        });
+    }
+
+    for (const region of regions) {
+        const content = firstString(region.content);
+        if (!looksLikeFilePath(content)) continue;
+        const declaredRole = cleanText(region.role, 40);
+        const declaredRegionId = cleanText(region.id, 80);
+        candidates.push({
+            path: content,
+            sourceSlot: 'layout_region',
+            ...(declaredRole ? { declaredRole } : {}),
+            ...(declaredRegionId ? { declaredRegionId } : {})
+        });
+    }
+    return candidates.slice(0, MAX_SUPPORTING_SOURCE_PLACEMENTS);
+}
+
+function readResultTarget(result: Record<string, unknown>): {
+    documentId?: number;
+    historyStateId?: number;
+} {
+    const directHistory = readPhotoshopHistoryStateRef(result);
+    const mutationHistory = readDirectObservedPhotoshopMutationProof(result)?.after;
+    const history = directHistory || mutationHistory;
+    if (history) {
+        return {
+            documentId: history.documentId,
+            historyStateId: history.historyStateId
+        };
+    }
+    const data = isRecord(result.data) ? result.data : undefined;
+    const artifactFacts = isRecord(result.artifactFacts) ? result.artifactFacts : undefined;
+    const artifactDocument = isRecord(artifactFacts?.document) ? artifactFacts.document : undefined;
+    const documentId = firstPositiveInteger(
+        result.documentId,
+        data?.documentId,
+        artifactDocument?.id
+    );
+    return documentId === undefined ? {} : { documentId };
+}
+
+function readToolCallProvenance(entry: DesignRunToolLogEntryLike): {
+    callId?: string;
+    modelTurn?: number;
+} {
+    const callId = cleanText(entry.callId, 160);
+    const modelTurn = readNonNegativeInteger(entry.modelTurn);
+    return {
+        ...(callId ? { callId } : {}),
+        ...(modelTurn !== undefined ? { modelTurn } : {})
+    };
+}
+
+function supportingSourceBoundaries(): DesignRunSupportingSourcePlacement['boundaries'] {
+    return {
+        extractedFromSuccessfulToolCall: true,
+        ranksCandidates: false,
+        selectsWinner: false,
+        countsAsFinalSurface: false,
+        countsAsDeliveryEvidence: false
+    };
+}
+
+function readPlaceImageSupportingSource(
+    entry: DesignRunToolLogEntryLike,
+    args: Record<string, unknown>,
+    result: Record<string, unknown>
+): DesignRunSupportingSourcePlacement | undefined {
+    if (result.success !== true) return undefined;
+    const data = isRecord(result.data) ? result.data : undefined;
+    const path = firstString(
+        result.filePath,
+        result.imagePath,
+        result.selectedPath,
+        result.sourcePath,
+        args.filePath,
+        args.sourcePath
+    );
+    if (!looksLikeFilePath(path)) return undefined;
+    const layerId = firstPositiveInteger(
+        result.layerId,
+        result.placedLayerId,
+        data?.layerId,
+        data?.placedLayerId
+    );
+    return {
+        version: 'design-run-supporting-source-placement/v0',
+        path,
+        sourceTool: 'placeImage',
+        sourceSlot: 'direct_placement',
+        ...readResultTarget(result),
+        ...(layerId !== undefined ? { layerId } : {}),
+        ...readToolCallProvenance(entry),
+        usage: 'supporting_source',
+        boundaries: supportingSourceBoundaries()
+    };
+}
+
+function readReplacementLayerId(
+    toolName: 'replaceLayerContent' | 'replaceImagePlaceholder' | 'replaceSmartObjectContents',
+    result: Record<string, unknown>
+): number | undefined {
+    const data = isRecord(result.data) ? result.data : undefined;
+    switch (toolName) {
+        case 'replaceLayerContent':
+            return firstPositiveInteger(
+                data?.newLayerId,
+                result.newLayerId,
+                result.layerId,
+                data?.layerId
+            );
+        case 'replaceImagePlaceholder':
+            return firstPositiveInteger(
+                result.layerId,
+                result.placedLayerId,
+                data?.layerId,
+                data?.placedLayerId,
+                data?.newLayerId
+            );
+        case 'replaceSmartObjectContents':
+            return firstPositiveInteger(result.layerId, data?.layerId);
+    }
+}
+
+function readReplacementInvalidatedLayerIds(
+    toolName: 'replaceLayerContent' | 'replaceImagePlaceholder' | 'replaceSmartObjectContents',
+    result: Record<string, unknown>
+): number[] {
+    const data = isRecord(result.data) ? result.data : undefined;
+    const invalidated = new Set<number>();
+    const add = (value: unknown): void => {
+        const layerId = firstPositiveInteger(value);
+        if (layerId !== undefined) invalidated.add(layerId);
+    };
+    if (toolName === 'replaceLayerContent') {
+        add(result.originalLayerId);
+        add(data?.originalLayerId);
+    } else if (toolName === 'replaceImagePlaceholder') {
+        add(result.targetLayerId);
+        add(data?.targetLayerId);
+    }
+    return Array.from(invalidated);
+}
+
+function readReplacementSupportingSource(
+    entry: DesignRunToolLogEntryLike,
+    toolName: 'replaceLayerContent' | 'replaceImagePlaceholder' | 'replaceSmartObjectContents',
+    args: Record<string, unknown>,
+    result: Record<string, unknown>
+): {
+    placement: DesignRunSupportingSourcePlacement;
+    invalidatedLayerIds: number[];
+} | undefined {
+    if (result.success !== true) return undefined;
+    const data = isRecord(result.data) ? result.data : undefined;
+    const path = firstString(
+        result.filePath,
+        result.imagePath,
+        result.sourcePath,
+        data?.filePath,
+        data?.imagePath,
+        data?.sourcePath,
+        args.filePath,
+        args.imagePath,
+        args.sourcePath
+    );
+    if (!looksLikeFilePath(path)) return undefined;
+    const target = readResultTarget(result);
+    const layerId = readReplacementLayerId(toolName, result);
+    // 替换只有在 Host 真实返回 document + 最终 layer 时才形成新来源绑定；
+    // 参数里的目标 id 只能表达意图，不能证明哪一层最终承载了新内容。
+    if (target.documentId === undefined || layerId === undefined) return undefined;
+    return {
+        placement: {
+            version: 'design-run-supporting-source-placement/v0',
+            path,
+            sourceTool: toolName,
+            sourceSlot: 'direct_placement',
+            ...target,
+            layerId,
+            ...readToolCallProvenance(entry),
+            usage: 'supporting_source',
+            boundaries: supportingSourceBoundaries()
+        },
+        invalidatedLayerIds: readReplacementInvalidatedLayerIds(toolName, result)
+    };
+}
+
+function recordSupportingSourcePlacement(
+    placements: DesignRunSupportingSourcePlacement[],
+    placement: DesignRunSupportingSourcePlacement,
+    invalidatedLayerIds: readonly number[] = []
+): void {
+    if (placement.documentId !== undefined) {
+        const invalidated = new Set(invalidatedLayerIds);
+        if (placement.layerId !== undefined) invalidated.add(placement.layerId);
+        for (let index = placements.length - 1; index >= 0; index -= 1) {
+            const previous = placements[index];
+            if (previous.documentId === placement.documentId
+                && previous.layerId !== undefined
+                && invalidated.has(previous.layerId)) {
+                placements.splice(index, 1);
+            }
+        }
+    }
+    placements.push(placement);
+    if (placements.length > MAX_SUPPORTING_SOURCE_PLACEMENTS) {
+        placements.splice(0, placements.length - MAX_SUPPORTING_SOURCE_PLACEMENTS);
+    }
+}
+
+function readComposePlacementReceiptLayerId(
+    result: Record<string, unknown>,
+    declaredRegionId: string | undefined
+): number | undefined {
+    if (!declaredRegionId) return undefined;
+    const receiptCandidates = [
+        ...(Array.isArray(result.imagePlacementReceipts)
+            ? result.imagePlacementReceipts.filter(isRecord)
+            : []),
+        ...(isRecord(result.photoPlacement) ? [result.photoPlacement] : []),
+        ...(isRecord(result.backgroundPlacement) ? [result.backgroundPlacement] : [])
+    ];
+    const receipt = receiptCandidates.find((candidate) => (
+        String(candidate.blockId || '').trim() === declaredRegionId
+    ));
+    return firstPositiveInteger(receipt?.layerId);
+}
+
+function readSingleSubjectLayerId(result: Record<string, unknown>): number | undefined {
+    if (!Array.isArray(result.subjectLayerIds) || result.subjectLayerIds.length !== 1) return undefined;
+    return firstPositiveInteger(result.subjectLayerIds[0]);
+}
+
+function readComposeSupportingSources(
+    entry: DesignRunToolLogEntryLike,
+    args: Record<string, unknown>,
+    result: Record<string, unknown>
+): DesignRunSupportingSourcePlacement[] {
+    if (result.success !== true) return [];
+    const target = readResultTarget(result);
+    const provenance = readToolCallProvenance(entry);
+    return collectComposeSupportingSourceCandidates(args).map((candidate) => {
+        let layerId = readComposePlacementReceiptLayerId(result, candidate.declaredRegionId);
+        if (layerId === undefined && candidate.sourceSlot === 'subject') {
+            layerId = firstPositiveInteger(result.photoLayerId, readSingleSubjectLayerId(result));
+        } else if (layerId === undefined && candidate.sourceSlot === 'background') {
+            layerId = firstPositiveInteger(result.backgroundLayerId);
+        }
+        return {
+            version: 'design-run-supporting-source-placement/v0',
+            path: candidate.path,
+            sourceTool: 'composeDesign',
+            sourceSlot: candidate.sourceSlot,
+            ...(candidate.declaredRole ? { declaredRole: candidate.declaredRole } : {}),
+            ...(candidate.declaredRegionId ? { declaredRegionId: candidate.declaredRegionId } : {}),
+            ...target,
+            ...(layerId !== undefined ? { layerId } : {}),
+            ...provenance,
+            usage: 'supporting_source' as const,
+            boundaries: supportingSourceBoundaries()
+        };
+    });
+}
+
+function hasVerifiedCandidateVisualConsumption(result: Record<string, unknown>): boolean {
+    const handoff = isRecord(result.visualObservationHandoff)
+        ? result.visualObservationHandoff
+        : undefined;
+    if (handoff?.owner !== 'calling_agent') {
+        const visualComparison = isRecord(result.visualComparison)
+            ? result.visualComparison
+            : undefined;
+        return !visualComparison
+            || (visualComparison.status === 'observed'
+                && visualComparison.modelCallCount === 1);
+    }
+    const sheet = isRecord(result.sheet) ? result.sheet : undefined;
+    const expectedSourceId = firstString(sheet?.sourceId);
+    if (!expectedSourceId) return false;
+    const observations = Array.isArray(result.agentVisualObservations)
+        ? result.agentVisualObservations.filter(isRecord)
+        : [];
+    return observations.some((observation) => {
+        const observationIdentity = isRecord(observation.observationIdentity)
+            ? observation.observationIdentity
+            : undefined;
+        const observedSourceId = firstString(
+            observationIdentity?.sourceId,
+            observation.sourceId
+        );
+        return observation.version === 'agent-visual-observation/v1'
+            && observation.status === 'presented_to_primary'
+            && observation.observer === 'primary_model'
+            && observation.strategy === 'primary-self'
+            && Number.isSafeInteger(observation.consumedModelTurn)
+            && Number(observation.consumedModelTurn) >= 0
+            && observedSourceId === expectedSourceId;
+    });
+}
+
 function readVisualCandidateEvidence(result: Record<string, unknown>): {
     status: 'visually_compared' | 'not_available';
     comparedPaths: string[];
     evidenceIds: string[];
 } {
+    if (!hasVerifiedCandidateVisualConsumption(result)) {
+        return {
+            status: 'not_available',
+            comparedPaths: [],
+            evidenceIds: []
+        };
+    }
     const comparedPaths: string[] = [];
     const evidenceIds: string[] = [];
     const seen = new Set<string>();
@@ -391,6 +800,7 @@ export function extractDesignRunToolLogFacts(log: readonly DesignRunToolLogEntry
     const assets = new Map<string, DesignRunObservedAsset>();
     const layouts: DesignRunLayoutFact[] = [];
     const materialSelections: DesignRunMaterialSelectionTrace[] = [];
+    const supportingSourcePlacements: DesignRunSupportingSourcePlacement[] = [];
     const document: DesignRunDocumentFacts = {};
     const textContents = new Set<string>();
     const deliveryFiles = new Set<string>();
@@ -529,6 +939,9 @@ export function extractDesignRunToolLogFacts(log: readonly DesignRunToolLogEntry
                 upsertAsset(assets, selectedAsset.path, { usedInLayout: true });
             }
             if (name === 'composeDesign') {
+                for (const placement of readComposeSupportingSources(entry, args, result)) {
+                    recordSupportingSourcePlacement(supportingSourcePlacements, placement);
+                }
                 const candidateKeys = new Set(currentCandidateEvidence.comparedPaths.map(normalizeAssetPathKey));
                 const selectedWithEvidence: DesignRunSelectedAsset[] = selectedAssets.map((asset) => ({
                     ...asset,
@@ -578,6 +991,23 @@ export function extractDesignRunToolLogFacts(log: readonly DesignRunToolLogEntry
             successfulMutationCount += 1;
             const path = firstString(result.filePath, result.imagePath, result.selectedPath, result.sourcePath, args.filePath, args.imagePath);
             if (path && looksLikeFilePath(path)) upsertAsset(assets, path, { usedInLayout: true });
+            if (name === 'placeImage') {
+                const supportingSource = readPlaceImageSupportingSource(entry, args, result);
+                if (supportingSource) {
+                    recordSupportingSourcePlacement(supportingSourcePlacements, supportingSource);
+                }
+            } else if (name === 'replaceLayerContent'
+                || name === 'replaceImagePlaceholder'
+                || name === 'replaceSmartObjectContents') {
+                const replacementSource = readReplacementSupportingSource(entry, name, args, result);
+                if (replacementSource) {
+                    recordSupportingSourcePlacement(
+                        supportingSourcePlacements,
+                        replacementSource.placement,
+                        replacementSource.invalidatedLayerIds
+                    );
+                }
+            }
             continue;
         }
 
@@ -608,6 +1038,7 @@ export function extractDesignRunToolLogFacts(log: readonly DesignRunToolLogEntry
         assets: Array.from(assets.values()),
         layouts,
         materialSelections,
+        supportingSourcePlacements,
         document,
         textContents: Array.from(textContents).slice(0, MAX_TEXTS),
         deliveryFiles: Array.from(deliveryFiles).slice(0, MAX_DELIVERY_FILES),

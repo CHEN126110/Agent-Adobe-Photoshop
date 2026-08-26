@@ -5,12 +5,21 @@ import type { ExactPropertyExecutionScope } from '../../../shared/agent-tool-exe
 import type { AgentTaskPlanPresentation } from '../../../shared/agent-task-plan-presentation';
 import type { ChatComposerContentPart } from '../../../shared/chat-composer-content';
 import type { CurrentDocumentUseMode } from '../../../shared/design-document-role';
+import type { ModelReasoningEffort } from '../../../shared/config/models.config';
+import type { ModelProviderFailureKind } from '../../../shared/model-provider-failure';
+import type {
+    ModelVisualPresentationReceipt,
+    ModelVisualPresentationReceiptRef
+} from '../../../shared/model-visual-presentation-receipt';
 import type {
     ReActReflexionLoopContract,
     ReflexionHandoff
 } from '../../../shared/agent-runtime-v5/reflexion-contract';
 import type { LegacyToolCapabilityBridge } from '../../../shared/agent-runtime-v5/tool-capability-bridge';
-import type { RuntimeStagePlan } from '../../../shared/agent-runtime-v5/runtime-stage-plan';
+import type {
+    RuntimeStagePlan,
+    RuntimeStagePlanEffectiveContract
+} from '../../../shared/agent-runtime-v5/runtime-stage-plan';
 import type { RuntimeStageState } from '../../../shared/agent-runtime-v5/runtime-stage-state';
 import type { RuntimeStageTraceDigest } from '../../../shared/agent-runtime-v5/runtime-stage-trace';
 import type { RuntimeContextItem } from '../../../shared/agent-runtime-v5/runtime-context-compiler';
@@ -21,7 +30,8 @@ import type {
 } from '../../../shared/agent-runtime-v5/runtime-design-brief-declaration';
 import type {
     RuntimeReferenceBriefDeclaration,
-    RuntimeReferenceBriefDigest
+    RuntimeReferenceBriefDigest,
+    RuntimeReferencePolicyProjection
 } from '../../../shared/agent-runtime-v5/runtime-reference-context';
 import type {
     RuntimeDesignStrategyDeclaration,
@@ -35,6 +45,8 @@ import type {
     RuntimePlanningContextSeed,
     RuntimePlanningContextSeedDigest
 } from '../../../shared/agent-runtime-v5/runtime-planning-context-seed';
+import type { RuntimeInteractiveReentry } from '../../../shared/agent-runtime-v5/runtime-interactive-reentry';
+import type { TaskRunDocumentCreationEvidence } from '../../../shared/task-run-document-creation-evidence';
 import type { RuntimeActionPlanReconciliationDigest } from '../../../shared/agent-runtime-v5/runtime-action-plan-reconciliation';
 import type { RuntimeActionPlanNoRedoShadowDigest } from '../../../shared/agent-runtime-v5/runtime-action-plan-no-redo-shadow';
 import type { RuntimeActionPlanResumeFreshness } from '../../../shared/agent-runtime-v5/runtime-action-plan-resume-freshness';
@@ -43,7 +55,10 @@ import type {
     RuntimeSessionDigest,
     RuntimeSessionIdentity
 } from '../../../shared/agent-runtime-v5/runtime-session';
-import type { RuntimePerformanceUsage } from '../../../shared/agent-runtime-v5/runtime-accounting';
+import type {
+    RuntimeAccountingDigest,
+    RuntimePerformanceUsage
+} from '../../../shared/agent-runtime-v5/runtime-accounting';
 import type { RuntimeDeliveryVerification } from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
 import type { ArtifactRepositoryReadProjection } from '../../../shared/agent-runtime-v5/artifact-repository-contract';
 import type { AgentCapabilityResolution } from '../../../shared/agent-runtime-v5/contracts/capability-resolution';
@@ -55,7 +70,8 @@ import type {
 import type { ProviderNativeToolRequest } from '../../../shared/provider-native-tools';
 import type {
     DesignQualityBlockerKind,
-    DesignScorecard
+    DesignScorecard,
+    FinalQualityModelProtocolDigest
 } from '../../../shared/design-quality-assertion';
 import type { DesignVerdict } from '../../../shared/design-quality-verdict-bundle';
 import type { AgentMessageContextMetadata } from './message-context';
@@ -163,6 +179,8 @@ export interface AgentConfig {
     systemPrompt: string;
     tools: ToolSchema[];
     modelId: string;
+    /** Manifest 声明的推理质量偏好；不改变模型身份，Provider 不支持时按其真实能力降级。 */
+    reasoningEffort?: ModelReasoningEffort;
     /** 来自模型注册表 / provider 的真实上下文窗口；未知时省略，禁止猜测。 */
     contextWindowTokens?: number;
     maxIterations: number;
@@ -181,7 +199,10 @@ export interface AgentConfig {
     performanceBudget?: {
         maxModelCalls: number;
         maxToolCalls: number;
-        /** 本轮允许进入模型视觉上下文的候选图像总数。 */
+        /**
+         * 普通运行中允许进入模型视觉上下文的候选总数，同时限制唯一一次 Final Judge
+         * 的单次图像 presentation；终局验收不与普通观察争用剩余额度。
+         */
         maxVisionCandidates: number;
         /** 用户附件在开工阶段可占用的候选上限；其余预算留给设计结果与修订复核。 */
         maxInitialVisionCandidates?: number;
@@ -218,6 +239,17 @@ export interface AgentConfig {
     runtimeLoopContract?: ReActReflexionLoopContract;
     runtimeStagePlan?: RuntimeStagePlan;
     /**
+     * agentic Manifest 的任务语义、评价与交付义务投影。它不创建 Runtime Session，
+     * 不推进 Stage、不裁剪 Tool 面，也不授予写入权限；只让同一个 Agent 知道本次
+     * 开放创意任务最终需要交付什么，并据真实 save/export 收据判断能否完成。
+     */
+    agenticArtifactContract?: AgenticArtifactCompletionContract;
+    /**
+     * agentic Manifest reference_policy 的冻结只读投影。Manifest 仍是唯一语义 owner；
+     * 本字段只供参考检索预算和失败记账消费，不创建 R2 Stage 或写入门禁。
+     */
+    agenticReferencePolicy?: RuntimeReferencePolicyProjection;
+    /**
      * 由 Manifest / Task Profile 选择、由现有 Runtime Context Compiler 按当前阶段动态编译的
      * data-only/advisory 上下文。不得包含权限或完成判定。
      */
@@ -236,6 +268,13 @@ export interface AgentConfig {
     requestPerformanceUsageSeed?: RuntimePerformanceUsage;
     /** 同一活动 Session 内、按回退目标承接的模型规划声明；不得从 Run Record digest 补造。 */
     runtimePlanningContextSeed?: RuntimePlanningContextSeed;
+    /**
+     * 交互卡确认后在同一 generation 恢复的可信上下文；与 Reflexion 跨代 seed 互斥。
+     * 只恢复现有 Session、模型声明和 Workflow continuation，不授予新权限。
+     */
+    runtimeInteractiveReentry?: RuntimeInteractiveReentry;
+    /** Engine 的 checkpoint lease 只在同代交互上下文完成恢复后由 Agent 原子接管。 */
+    adoptRuntimeInteractiveReentry?: () => boolean;
     reflexionHandoff?: ReflexionHandoff;
     toolCapabilityBridge?: LegacyToolCapabilityBridge;
     /** manifest-selected Evaluation Capability；只改变评价标准，不拥有最终 verdict。 */
@@ -345,6 +384,8 @@ export type AgentToolCallOrigin =
 export interface AgentToolCallLogEntry {
     /** Provider tool_call identity; post-repair visual review uses it to bind the exact fresh result. */
     callId?: string;
+    /** 选择本次调用的模型回合；同回合工具结果尚未回填模型，不能证明模型已观察。 */
+    modelTurn?: number;
     name: string;
     arguments: any;
     result: any;
@@ -446,6 +487,21 @@ export interface TaskCompletionContract {
     summary: string;
 }
 
+/**
+ * agentic Manifest 到完成层的最小、只读产物契约。它刻意不携带 Stage、Capability、
+ * input gate 或执行范围，避免开放创意路径因复用 staged 数据结构而取得门禁语义。
+ */
+export interface AgenticArtifactCompletionContract {
+    version: 'agentic-artifact-completion-contract/v0';
+    skillId: string;
+    taskType: string;
+    workMode?: RuntimeStagePlanEffectiveContract['workMode'];
+    productionObligation?: RuntimeStagePlanEffectiveContract['productionObligation'];
+    deliveryOutputs: string[];
+    exitCriteria: string[];
+    reviewRubricRef?: string;
+}
+
 export interface TaskCompletionContext {
     skillId?: string;
     intentMode?: string;
@@ -455,8 +511,22 @@ export interface TaskCompletionContext {
      * 推进 Runtime Stage 或直接宣告交付完成。
      */
     agentTaskPlan?: AgentTaskPlanningContract;
+    /**
+     * Manifest 解析后的有效任务契约，只供完成事实消费。它不授权 Tool、不要求
+     * agentic 路径声明阶段，也不能把审美建议升级为写入门禁。
+     */
+    agenticArtifactContract?: AgenticArtifactCompletionContract;
     /** 仅由运行时在视觉模型真实消费参考输入后签发。 */
     referenceObservation?: TaskCompletionReferenceObservation;
+    /**
+     * 同一授权 TaskRun 的内部完成取证身份。只允许 Completion 对账跨 Reflexion generation
+     * 的 Host 文档创建事实；它不授权 Tool，也不从 Run Record、项目记忆或名称恢复。
+     */
+    taskRunDocumentCreation?: {
+        taskRunId: string;
+        generation: number;
+        evidence: TaskRunDocumentCreationEvidence;
+    };
 }
 
 export interface AgentExecutionSummary {
@@ -512,10 +582,17 @@ export interface AgentExecutionSummary {
     designEvaluationProfileDigest?: DesignEvaluationProfileDigest;
     /** R5 单一机读裁决；下游 Stage State / run record 只能消费它，不得重拼第二套质量判断。 */
     designVerdict?: DesignVerdict;
+    /** Final Judge / diagnosis repair 的有界诊断事实；不参与完成、权限或质量裁决。 */
+    finalQualityModelProtocolDigest?: FinalQualityModelProtocolDigest;
     /** 只读观察阶段状态；不调度 Tool、不改变本轮 success/failure。 */
     runtimeStageState?: RuntimeStageState;
     /** 同一生产 Session 的身份与阶段摘要；绑定 Stage State / Trace / Run Record。 */
     runtimeSessionDigest?: RuntimeSessionDigest;
+    /**
+     * 没有可持久化 runtimeSession digest 时的只读会计摘要，包括普通 Agent 与 staged failure fallback。
+     * 与 runtimeSessionDigest.accounting 互斥；本字段不影响预算、权限或结果。
+     */
+    runtimeAccountingDigest?: RuntimeAccountingDigest;
     /** Reflexion 代际规划上下文承接摘要；完整声明只留在当前活动 Session。 */
     runtimePlanningContextSeedDigest?: RuntimePlanningContextSeedDigest;
     /** shadow trace 对账摘要；完整有界 trace 仅进入 result.data，不写入长期运行摘要。 */
@@ -552,17 +629,41 @@ export interface AgentRunResult {
     data?: Record<string, unknown>;
 }
 
+/** 真实 Provider 传输尝试；同一语义模型回合可能因无副作用传输恢复包含两次尝试。 */
+export interface ModelTransportAttemptAccounting {
+    durationMs: number;
+    succeeded: boolean;
+    usage?: { inputTokens: number; outputTokens: number };
+    /** 失败尝试只保留有界结构身份；禁止保存错误正文、堆栈或请求载荷。 */
+    failureKind?: ModelProviderFailureKind;
+    providerCode?: string;
+    status?: number;
+    /** 成功 attempt 返回的有界视觉回执引用；不保存像素或 Provider 原始标识。 */
+    visualPresentationReceiptRef?: ModelVisualPresentationReceiptRef;
+}
+
 export type CallModelFn = (
     modelId: string,
     messages: AgentMessage[],
     tools: ToolSchema[],
-    options?: { maxTokens?: number; temperature?: number; nativeTools?: ProviderNativeToolRequest[]; timeoutMs?: number; thinkingEnabled?: boolean }
+    options?: {
+        maxTokens?: number;
+        temperature?: number;
+        nativeTools?: ProviderNativeToolRequest[];
+        timeoutMs?: number;
+        thinkingEnabled?: boolean;
+        reasoningEffort?: ModelReasoningEffort;
+        /** 与本次 outgoing 图片顺序一一对应；只作回执关联，不参与 Provider Prompt。 */
+        visualPresentationCandidateKeys?: string[];
+    }
 ) => Promise<{
     content?: string;
     toolCalls?: ToolCall[];
     thinking?: string;
     usage?: { inputTokens: number; outputTokens: number };
     stopReason?: string;
+    transportAttempts?: ModelTransportAttemptAccounting[];
+    visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }>;
 
 export type CallModelStreamFn = (
@@ -575,6 +676,8 @@ export type CallModelStreamFn = (
         nativeTools?: ProviderNativeToolRequest[];
         timeoutMs?: number;
         thinkingEnabled?: boolean;
+        reasoningEffort?: ModelReasoningEffort;
+        visualPresentationCandidateKeys?: string[];
         onContentDelta?: (fullContent: string, delta: string) => void;
         onThinkingDelta?: (fullThinking: string, delta: string) => void;
         onToolCallDelta?: (chunk: {
@@ -592,6 +695,8 @@ export type CallModelStreamFn = (
     usage?: { inputTokens: number; outputTokens: number };
     stopReason?: string;
     streamMode?: 'stream' | 'fallback';
+    transportAttempts?: ModelTransportAttemptAccounting[];
+    visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }>;
 
 export interface ExecuteToolRuntimeContext {

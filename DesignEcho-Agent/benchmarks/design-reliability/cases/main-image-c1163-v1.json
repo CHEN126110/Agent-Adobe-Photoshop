@@ -1,0 +1,92 @@
+{
+  "version": "design-reliability-case/v1",
+  "suiteId": "business-skills-quality-v1",
+  "caseId": "main-image-c1163-v1",
+  "revision": 1,
+  "caseDigest": "sha256:6074bac0347a54d14e56840ef993df338ed9dde61caaa27e67aadd6b85a5c88f",
+  "status": "active",
+  "taskFamily": "main_image",
+  "executionModel": "agentic",
+  "skillContract": {
+    "userFacingSkillId": "main-image-design",
+    "runtimeSkillIds": [
+      "ecommerce.main_image"
+    ]
+  },
+  "task": {
+    "instruction": "用这个项目里的素材帮我做一张 800×800 的商品主图。",
+    "instructionStyle": "natural_user_request",
+    "fixtureId": "neveralone-c1163-input-v1",
+    "agentVisibleInputs": [
+      { "ref": "S82646/YYC_8814.jpg", "role": "model_product_candidate" },
+      { "ref": "S82646/YYC_8824.jpg", "role": "model_product_candidate" },
+      { "ref": "S82646/YYC_8811.jpg", "role": "model_product_candidate" },
+      { "ref": "S82646/ZZY_9886.jpg", "role": "still_life_candidate" },
+      { "ref": "S82646/ZZY_9892.jpg", "role": "detail_candidate" },
+      { "ref": "S82646/ZZY_9905.jpg", "role": "still_life_candidate" },
+      { "ref": "S82646/ZZY_9907.jpg", "role": "detail_candidate" },
+      { "ref": "S82646/ZZY_9884.jpg", "role": "still_life_candidate" }
+    ],
+    "reviewOnlyReferences": [
+      { "kind": "user_design", "ref": "主图/800/800-1.jpg" },
+      { "kind": "user_design", "ref": "主图/800/2.jpg" },
+      { "kind": "user_design", "ref": "主图/800/3.jpg" },
+      { "kind": "eagle_item", "ref": "eagle:item:MPTG3FF6XEROR" },
+      { "kind": "eagle_item", "ref": "eagle:item:MQKCMKNG86GJI" }
+    ]
+  },
+  "source": {
+    "kind": "user_project_with_eagle_quality_anchors",
+    "qualityClaimEligible": true,
+    "boundary": "Agent 只看摄影输入；用户成稿与 Eagle 条目只供成稿后的人工盲评。"
+  },
+  "oracle": {
+    "rubricId": "main-image-commercial-v1",
+    "requiredEvidence": [
+      "agent_run_record_chain",
+      "expected_project_binding",
+      "source_input_integrity",
+      "photoshop_history_or_commit",
+      "post_write_structure_readback",
+      "post_write_visual_readback",
+      "editable_psd",
+      "raster_export",
+      "human_blind_review"
+    ],
+    "invariants": [
+      "输出为 800×800 可编辑主图",
+      "商品事实不得编造",
+      "最后一次写入后必须复核同一成稿",
+      "保存到一次性 fixture 项目，不覆盖源项目"
+    ],
+    "forbiddenBehaviors": [
+      "不得把用户成稿或 Eagle 参考暴露给 Agent 作为可复制素材",
+      "不得只推荐素材而不制作",
+      "不得把 Tool success 当成交付完成",
+      "不得在没有真实画面复核时声明设计质量通过"
+    ],
+    "machineChecks": [
+      { "id": "correct_skill_binding", "required": true },
+      { "id": "fixture_instance_evidence", "required": true },
+      { "id": "runtime_model_identity_evidence", "required": true },
+      { "id": "expected_project_binding_evidence", "required": true },
+      { "id": "source_input_integrity_evidence", "required": true },
+      { "id": "observed_photoshop_mutation", "required": true },
+      { "id": "committed_photoshop_mutation", "required": true },
+      { "id": "post_write_structure_readback", "required": true },
+      { "id": "post_write_visual_readback", "required": true },
+      { "id": "post_write_readback_target_verified", "required": true },
+      { "id": "save_tool_receipt", "required": true },
+      { "id": "editable_psd_evidence", "required": true },
+      { "id": "raster_export_evidence", "required": true },
+      { "id": "no_unresolved_blockers", "required": true },
+      { "id": "terminal_task_run", "required": true }
+    ]
+  },
+  "boundaries": {
+    "devBenchmarkOnly": true,
+    "neverAffectsRuntime": true,
+    "reviewOnlyReferencesExcludedFromAgentContext": true,
+    "harnessDoesNotChooseDesign": true
+  }
+}

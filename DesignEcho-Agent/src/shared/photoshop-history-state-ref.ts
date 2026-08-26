@@ -309,6 +309,18 @@ function readObservedPhotoshopMutationProof(
     return undefined;
 }
 
+/**
+ * 只读取当前 Tool 结果节点自身携带的 Host mutation proof。
+ *
+ * 与 `findObservedPhotoshopMutationProof` 不同，本函数绝不递归信任复合结果内部自报的
+ * `toolResults`。需要跨 Tool 聚合时，调用方必须逐个结果完成 provenance 校验后再调用。
+ */
+export function readDirectObservedPhotoshopMutationProof(
+    value: unknown
+): ObservedPhotoshopMutationProof | undefined {
+    return readObservedPhotoshopMutationProof(value);
+}
+
 function readDeclaredWorkflowToolResults(value: unknown): unknown[] {
     if (!isRecord(value) || !Array.isArray(value.toolResults)) return [];
     return value.toolResults

@@ -23,7 +23,13 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import http from 'http';
 import { EventEmitter } from 'events';
-import { ALL_MODELS, ModelConfig, getModelById, ThinkingConfig } from '../../shared/config/models.config';
+import {
+    ALL_MODELS,
+    ModelConfig,
+    getModelById,
+    ThinkingConfig,
+    type ModelReasoningEffort
+} from '../../shared/config/models.config';
 import { buildAgentProviderTokenBudget } from '../../shared/agent-performance-policy';
 import type {
     AgentToolStreamChunk,
@@ -118,11 +124,29 @@ function createModelProviderHttpError(
     return error;
 }
 
+function buildAgentToolStreamErrorChunk(
+    error: unknown
+): Extract<AgentToolStreamChunk, { type: 'error' }> {
+    const failure = classifyModelProviderFailure(error);
+    const rawName = error instanceof Error ? error.name : '';
+    const errorName = String(rawName || '')
+        .replace(/[^A-Za-z0-9_.-]/g, '')
+        .slice(0, 80);
+    return {
+        type: 'error',
+        error: failure.diagnostic || '模型流式请求失败',
+        ...(failure.providerCode ? { errorCode: failure.providerCode } : {}),
+        ...(failure.status ? { errorStatus: failure.status } : {}),
+        ...(errorName ? { errorName } : {})
+    };
+}
+
 interface ModelChatOptions {
     maxTokens?: number;
     temperature?: number;
     timeoutMs?: number;
     thinkingEnabled?: boolean;
+    reasoningEffort?: ModelReasoningEffort;
 }
 
 function resolveOpenAICompatibleTimeoutMs(options?: ModelChatOptions): number {
@@ -256,6 +280,10 @@ interface ModelToolCallOptions {
     timeoutMs?: number;
     /** 工具循环是否开启原生思考(reasoning_content)；透传给 adapter.formatMessages 决定思考开关与 reasoning 回写。 */
     thinkingEnabled?: boolean;
+    /** 只在 Provider 目录真实声明支持时采用；其它 Provider 保持现有请求语义。 */
+    reasoningEffort?: ModelReasoningEffort;
+    /** 与本次 outgoing 图片顺序一一对应；只有实现回执的 Provider 才消费。 */
+    visualPresentationCandidateKeys?: string[];
 }
 
 export class ModelService {
@@ -451,7 +479,8 @@ export class ModelService {
                     this.toAdapterMessages(messages),
                     [],
                     {
-                        timeoutMs: options?.timeoutMs
+                        timeoutMs: options?.timeoutMs,
+                        reasoningEffort: options?.reasoningEffort
                     }
                 );
                 return {
@@ -1798,7 +1827,9 @@ export class ModelService {
                 tools,
                 {
                     timeoutMs: options?.timeoutMs,
-                    nativeTools: options?.nativeTools
+                    nativeTools: options?.nativeTools,
+                    reasoningEffort: options?.reasoningEffort,
+                    visualPresentationCandidateKeys: options?.visualPresentationCandidateKeys
                 }
             );
         }
@@ -2027,7 +2058,7 @@ export class ModelService {
                 emitChunk
             ).catch((error: any) => {
                 if (!aborted) {
-                    emitChunk({ type: 'error', error: error?.message || String(error) });
+                    emitChunk(buildAgentToolStreamErrorChunk(error));
                 }
             });
         });
@@ -2068,7 +2099,9 @@ export class ModelService {
                 tools,
                 {
                     timeoutMs: options?.timeoutMs,
-                    nativeTools: options?.nativeTools
+                    nativeTools: options?.nativeTools,
+                    reasoningEffort: options?.reasoningEffort,
+                    visualPresentationCandidateKeys: options?.visualPresentationCandidateKeys
                 },
                 signal
             );
@@ -2397,6 +2430,7 @@ export class ModelService {
             citations: response.citations,
             nativeToolUsage: response.nativeToolUsage,
             stopReason: response.stopReason,
+            visualPresentationReceipt: response.visualPresentationReceipt,
             streamMode
         };
     }

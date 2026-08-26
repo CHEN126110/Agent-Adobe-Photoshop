@@ -6,6 +6,7 @@ import type { ChatComposerContentPart } from '../../../shared/chat-composer-cont
 import type { AgentResumableTaskMessageLike } from '../../../shared/agent-resumable-task-contract';
 import type { AgentResumeReadonlyToolHandlers } from '../../../shared/agent-resume-context-pipeline';
 import type { SkillExecutionOutcome } from '../../../shared/agent-react-observation-contract';
+import type { SkillExecutionEffectReceipt } from '../../../shared/skill-execution-effect';
 import type { ContextSnapshot, ProjectAssetIndex } from '../../../shared/project-asset-index';
 import type { ProjectVisualInsightCacheReadResult } from '../../../shared/project-visual-insight-cache';
 import type { ProjectVisualSamplingPlan } from '../../../shared/project-visual-sampling';
@@ -138,6 +139,11 @@ export interface AgentResult {
      * `success` 只表示没有致命执行错误；只有这里显式为 completed 才能声明任务完成。
      */
     skillOutcome?: SkillExecutionOutcome;
+    /**
+     * Skill 统一执行出口签发的真实效果收据。它只说明是否观察到 Photoshop mutation、
+     * 是否正在等待交互或交还 Agent，不等于质量通过或任务完成。
+     */
+    skillExecutionReceipt?: SkillExecutionEffectReceipt;
     assistantReplyOrigin?: AssistantReplyOrigin;
     userVisibleNotice?: AgentUserVisibleNotice;
     toolResults?: any[];

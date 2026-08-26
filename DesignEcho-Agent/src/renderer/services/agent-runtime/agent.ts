@@ -28,7 +28,7 @@ import {
     clearProducerVisualRuntimeAnnotations,
     consumePrimaryVisualObservationReviewBatch,
     deriveAgentVisualObservationReceipt,
-    hasAgentVisualDeliveryObservationCoverage,
+    hasAgentVisualDeliveryObservationCoverage, markPrimaryVisualObservationsConsumed,
     parseVisualExpertReviewBatch,
     readAgentVisualObservation,
     readAgentVisualObservationReceipt,
@@ -37,6 +37,7 @@ import {
     resolveVisualObservationStrategy,
     writeAgentVisualObservationOverflow,
     writeAgentVisualObservation,
+    writeAgentVisualObservationPresentationDigest,
     writeAgentVisualObservationReceipt,
     VISUAL_EXPERT_INPUT_PROMPT,
     type AgentVisualObservation
@@ -145,7 +146,7 @@ import { evaluateCompletionObservationGate } from '../../../shared/completion-ob
 import {
     buildIncomingReflexionObservationSection,
     buildIncomingReflexionPromptSection,
-    isWarningOnlyNeedsReviewTerminal
+    shouldStopWarningOnlyNeedsReviewReflexion
 } from '../../../shared/reflexion-reentry-policy';
 import {
     bindReflexionHandoffReviewEvidence,
@@ -154,7 +155,10 @@ import {
     COMPLETED_AESTHETIC_IMPROVEMENT_TRIGGER,
     type ReflexionHandoff
 } from '../../../shared/agent-runtime-v5/reflexion-contract';
-import type { RuntimeStage } from '../../../shared/agent-runtime-v5/contracts';
+import type {
+    RuntimeDesignWorkMode,
+    RuntimeStage
+} from '../../../shared/agent-runtime-v5/contracts';
 import { deriveDesignTaskCompletion } from '../../../shared/design-task-card';
 import {
     compileRuntimeActionExecutionEnvelope,
@@ -177,10 +181,7 @@ import {
     readRuntimeSessionPerformanceUsage,
     recordRuntimeSessionNodeResultUnbound,
     recordRuntimeSessionOperationResult,
-    recordRuntimeSessionModelCall,
     recordRuntimeSessionPerformanceUsage,
-    recordRuntimeSessionRecoveryAttempt,
-    recordRuntimeSessionToolCall,
     reconcileRuntimeSessionDocumentRevision,
     replanRuntimeSessionAfterProviderFailure,
     replanRuntimeSessionAfterProviderHandoff,
@@ -190,6 +191,7 @@ import {
 } from '../../../shared/agent-runtime-v5/runtime-session';
 import {
     measureRuntimePromptShape,
+    type RuntimeAccountingDigest,
     type RuntimePerformanceUsage
 } from '../../../shared/agent-runtime-v5/runtime-accounting';
 import {
@@ -202,7 +204,6 @@ import {
     canAttachedImageObservationSatisfyRuntimeR2,
     isRuntimeStageToolVisible,
     resolveRuntimeStagePlanEffectiveContract,
-    runtimeDesignTaskRequiresOpenDocument,
     type RuntimeStagePlanEffectiveContract
 } from '../../../shared/agent-runtime-v5/runtime-stage-plan';
 import {
@@ -215,11 +216,7 @@ import {
     type RuntimeInputExplorationRequest,
     type RuntimeInputObservationToolKind
 } from '../../../shared/agent-runtime-v5/runtime-input-exploration';
-import {
-    buildRuntimePlanningContextSeedDigest,
-    validateRuntimePlanningContextSeed,
-    type RuntimePlanningContextSeedDigest
-} from '../../../shared/agent-runtime-v5/runtime-planning-context-seed';
+import type { RuntimePlanningContextSeedDigest } from '../../../shared/agent-runtime-v5/runtime-planning-context-seed';
 import {
     buildRuntimeStageTraceDigest,
     type RuntimeStageTrace,
@@ -248,9 +245,22 @@ import {
     isRuntimeReferenceVisualTool,
     normalizeRuntimeReferenceContextObservation,
     validateRuntimeReferenceBriefDeclaration,
-    type RuntimeReferenceBriefDeclaration,
-    type RuntimeReferenceContextState
+    type RuntimeReferenceBriefDeclaration
 } from '../../../shared/agent-runtime-v5/runtime-reference-context';
+import {
+    buildAgentDesignBriefRequiredBlocker,
+    buildAgentReferenceContextBlocker,
+    buildAgentReferenceSearchBudgetBlocker,
+    buildAgentRuntimeReferenceContextState,
+    describeRuntimeReferenceStage,
+    isFromScratchRuntimeDesignTask,
+    isSuccessfulRuntimeToolObservation as isSuccessfulAgentRuntimeToolObservation,
+    reconcileAgentReferenceFailureDispositions,
+    requiresRuntimeReferenceContextResolution,
+    resolveActiveReferencePolicy as resolveAgentActiveReferencePolicy,
+    resolveActiveReferenceWorkMode as resolveAgentActiveReferenceWorkMode,
+    resolveAgentReferenceFailureDisposition
+} from './runtime-reference-adapter';
 import {
     buildDeclareDesignStrategyToolSchema,
     buildRuntimeDesignStrategyDigest,
@@ -307,7 +317,6 @@ import {
     getDesignEvaluationProfileById,
     getDesignEvaluationProfileSharedAssertions,
     getDesignEvaluationProfileVlmAssertions,
-    type DesignEvaluationVerificationRecord,
     type DesignEvaluationProfile,
     type DesignEvaluationProfileDigest,
     type DesignEvaluationProfileResult
@@ -329,7 +338,15 @@ import {
     removeDsmlToolCallMarkup
 } from '../../../shared/model-tool-call-markup';
 import { splitAssistantReplyReasoningPrefix } from '../../../shared/assistant-reply-reasoning-split';
+import { ActiveRuntimeAccounting } from './active-runtime-accounting';
 import { ContextManager } from './context-manager';
+import {
+    isFinalQualityReviewStopReason,
+    projectFinalQualityReviewOutcome,
+    resolveFinalQualityJudgeModelId,
+    runFinalQualityReviewRuntime,
+    type PendingTrustedFinalComparisonWrite
+} from './final-quality-review-runtime';
 import {
     AGENT_REPLY_OUTPUT_DISCIPLINE_PROMPT,
     AGENT_RUNTIME_MESSAGE_BOUNDARY_PROMPT,
@@ -348,22 +365,33 @@ import {
     shouldRequestRicherFinalSummary as shouldRequestRicherFinalSummaryFromModule
 } from './final-summary';
 import {
-    MAX_FINAL_QUALITY_JUDGE_CALLS,
     MAX_HARNESS_QUALITY_VERIFICATION_CALLS,
+    applyPerformanceModelBudgetClassAllowance,
     buildPerformanceBudgetExhaustionMessage as buildPerformanceBudgetExhaustionMessageFromLedger,
     consumeHarnessQualityVerificationCallBudget as consumeHarnessQualityVerificationCallBudgetFromLedger,
+    consumePerformanceModelCallUsage,
     consumePerformanceToolCallBudget as consumePerformanceToolCallBudgetFromLedger,
     createPerformanceLedgerState,
     isInMutationExecutionReserveZone as isInMutationExecutionReserveZoneFromLedger,
     projectPerformanceLedgerUsage,
     readPerformanceActiveElapsedMs as readPerformanceActiveElapsedMsFromLedger,
     readPerformanceBudgetExhaustion as readPerformanceBudgetExhaustionFromLedger,
+    readPerformanceModelBudgetClassViolation,
+    resetPerformanceLedgerStateForRun,
+    shouldIssuePerformanceBudgetDisciplineDirective,
     restorePerformanceLedgerUsage,
+    resolveRunLevelVisualPresentationCapacity,
     resolveExecutionSupplyReserve as resolveExecutionSupplyReserveFromLedger,
     takeObservationReserveAdvice as takeObservationReserveAdviceFromLedger,
     type PerformanceBudgetExhaustion,
-    type PerformanceLedgerState
+    type PerformanceLedgerState,
+    type PerformanceModelBudgetClass
 } from './performance-ledger';
+import {
+    resolvePerformanceVisionBudgetSnapshot,
+    resolvePerformanceVisionCallCapacity as resolvePerformanceVisionCallCapacityFromPolicy,
+    type PerformanceVisionBudgetSnapshot
+} from './performance-vision-policy';
 import {
     VISION_DEGRADED_CANDIDATE_ALLOWANCE,
     VISION_THUMBNAIL_MAX_EDGE,
@@ -383,6 +411,15 @@ import {
     extractImagesFromToolResult
 } from './tool-result-sanitizer';
 import type { ToolResultImage } from './tool-result-sanitizer';
+import {
+    attachRuntimeInteractiveCheckpointState, reconcileRuntimeSkillEffectBeforeAgentAction,
+    releaseRuntimeSessionWriterAfterAgentFinalization,
+    resolveRuntimeInteractiveAgentReentryState
+} from './runtime-interactive-reentry-adapter';
+import {
+    buildRuntimePlanningContextPrompt,
+    resolveRuntimePlanningContextSeedState
+} from './runtime-planning-context-adapter';
 import { partitionToolCallsForParallelExecution } from '../../../shared/agent-parallel-execution-policy';
 import {
     attachRuntimeTaskRunBindingToPendingContinuation,
@@ -403,8 +440,7 @@ import {
     requiresPhotoshopOperationReadback
 } from '../../../shared/photoshop-operation-result';
 import {
-    getModelById,
-    isAgentMultimodalModelId
+    getModelById
 } from '../../../shared/config/models.config';
 import {
     extractDesignSurfaceSnapshotFromToolResults,
@@ -412,9 +448,7 @@ import {
 } from '../../../shared/design-surface-snapshot-normalizer';
 import {
     isFullSurfaceVisualJudgeObservationEntry,
-    planDesignReviewImages,
     resolveDirectVisionCandidateCharge,
-    resolveVisionCandidateLimitForFinalQuality,
     resolveDesignReviewSetItemForDiagnosis,
     selectDesignReviewSetForFinalJudge
 } from '../../../shared/design-visual-judge-observation';
@@ -437,9 +471,6 @@ import {
     evaluateDeterministicAssertions,
     scoreDesignAssertions,
     getVlmJudgeAssertions,
-    buildVlmJudgeSystemPrompt,
-    buildVlmJudgeContextMessage,
-    parseVlmJudgeResponse,
     isReliableVlmJudgeBatchComplete,
     isActionableReliableVlmDiagnosisResult,
     buildDesignReflexionConstraints
@@ -448,7 +479,7 @@ import { buildDesignQualityReflexionIssues } from '../../../shared/design-qualit
 import type {
     DesignAssertion,
     DesignAssertionResult,
-    DesignScorecard
+    DesignScorecard, FinalQualityModelProtocolDigest
 } from '../../../shared/design-quality-assertion';
 import {
     buildDesignVerdict,
@@ -457,7 +488,19 @@ import {
 import { getToolDisplayInfo } from '../tool-display-info';
 import { isAgentCapabilityControlTool, isAgentCapabilityLoadTool } from './capability-session';
 import {
+    buildDesignQualityVerificationToolRequests,
+    projectFinalSupportingSourceCarryover, reconcileDesignFinalReviewStructureVerificationRecords,
+} from './design-final-review-evidence';
+import {
+    writeDesignFinalComparisonPresentationReplay
+} from './design-final-comparison-evidence';
+import {
+    appendMutationBoundDesignIntent,
+    type MutationBoundDesignIntent
+} from './mutation-bound-design-intent';
+import {
     readTrustedVisualReviewArtifact,
+    writeTrustedFinalComparisonEvidenceAfterJudge,
     writeTrustedVisualReviewArtifact
 } from './trusted-visual-review-artifact';
 
@@ -626,24 +669,6 @@ function buildRuntimeNovelFactFingerprint(result: unknown): string | undefined {
     return computeFastFingerprint({ facts: facts.slice().sort() });
 }
 
-function appendDesignJudgeContextPart(
-    parts: string[],
-    label: string,
-    value: string | readonly string[] | undefined,
-    maxLength = 160,
-    maxItems = 4,
-    maxItemLength = 120
-): void {
-    const raw = Array.isArray(value)
-        ? value
-            .slice(0, maxItems)
-            .map((item) => String(item || '').replace(/\s+/g, ' ').trim().slice(0, maxItemLength))
-            .filter(Boolean)
-            .join('、')
-        : String(value || '').trim();
-    const text = raw.replace(/\s+/g, ' ').slice(0, maxLength);
-    if (text) parts.push(`${label}：${text}`);
-}
 type RuntimeActionPlanModule = typeof import('../../../shared/agent-runtime-v5/runtime-action-plan-declaration');
 const AGENT_MODEL_REQUEST_TIMEOUT_MS = 180_000; // Inactivity window; the run budget remains the hard boundary.
 const AGENT_AUXILIARY_MODEL_TIMEOUT_MS = 90_000;
@@ -1143,8 +1168,15 @@ export class Agent {
     private performanceLedger: PerformanceLedgerState = createPerformanceLedgerState();
     /** 本轮唯一生产 Session owner；统一身份、实时 Stage State 与白名单 Trace。 */
     private runtimeSession: RuntimeSession | undefined;
+    private readonly runtimeAccounting = new ActiveRuntimeAccounting();
     /** 同一活动 Session 内的 Reflexion 规划上下文承接摘要；完整声明不持久化。 */
     private runtimePlanningContextSeedDigest: RuntimePlanningContextSeedDigest | undefined;
+    private finalQualityModelProtocolDigest: FinalQualityModelProtocolDigest | undefined;
+    /**
+     * Final Judge 已真实返回后才形成的同 run WeakMap 写入意图。它不进入 Run Record；
+     * current 保存本代实际 presentation，inherited 只承接已复验的父代 exact presentation。
+     */
+    private pendingTrustedFinalComparisonWrite: PendingTrustedFinalComparisonWrite | undefined;
     /** 最近一次通过 Harness 校验的模型 R1 Design Brief 声明。 */
     private runtimeDesignBriefDeclaration: RuntimeDesignBriefDeclaration | undefined;
     /** 最近一次通过 Skill reference_policy 与真实视觉观察校验的 R2 Reference Brief。 */
@@ -1218,6 +1250,8 @@ export class Agent {
      */
     private latestDesignVisualJudgeBundleReviewSet: DesignVisualJudgeReviewSet | undefined;
     private latestDesignVisualJudgeSingleReviewSet: DesignVisualJudgeReviewSet | undefined;
+    /** 只保留与真实 Photoshop mutation 同回合的公开设计判断，供最终同一 Judge 对照。 */
+    private mutationBoundDesignIntents: MutationBoundDesignIntent[] = [];
     /** 已送入主模型下一次请求、等待该请求真正读取的视觉观察。 */
     private pendingPrimaryVisualObservations: AgentVisualObservation[] = [];
     /** 已发给用户看的快照张数（独立于模型观察上限，cap = MAX_USER_SNAPSHOT_IMAGES）。 */
@@ -1508,6 +1542,7 @@ export class Agent {
             && !isAgentHarnessControlTool(name)
             && !isAgentInputCollectionTool(name)) {
             const kind = classifyAgentToolExecution(name, args);
+            this.runtimeSession = reconcileRuntimeSkillEffectBeforeAgentAction({ session: this.runtimeSession, reentry: this.config.runtimeInteractiveReentry, toolCallLog: this.toolCallLog, nextToolName: name, nextToolKind: kind, nextToolIsSkill: Boolean(getSkillById(name)), currentModelTurn: this.iteration });
             const runtimeGate = evaluateRuntimeSessionToolExecutionGate({
                 session: this.runtimeSession,
                 toolName: name,
@@ -1520,6 +1555,10 @@ export class Agent {
                 let error = '当前 Runtime Session 尚未由通过校验的 R4 计划进入 E1，已阻止状态变更。';
                 if (runtimeGate.code === 'runtime_task_run_waiting_user') {
                     error = '任务正在等待绑定的用户交互；普通消息或旧工具调用不能取得写入权限。';
+                } else if (runtimeGate.code === 'runtime_task_run_writer_conflict') {
+                    error = '当前 Photoshop 文档仍由另一项活动任务持有写入身份；本轮不会启动第二次写入。';
+                } else if (runtimeGate.code === 'runtime_task_run_side_effect_unknown') {
+                    error = '上一次操作是否修改了 Photoshop 或其他外部状态还无法确定；完成专用对账前，不会继续叠加新写入。';
                 } else if (runtimeGate.code === 'runtime_task_run_revision_reobserve_required') {
                     error = 'Photoshop 文档或历史版本已经变化；重新观察并明确决策前，不会自动重放旧写入。';
                 } else if (runtimeGate.code === 'runtime_workflow_owner_first') {
@@ -1727,7 +1766,6 @@ export class Agent {
     private latestVisiblePreActionRationale = '';
     /** Workflow owner 未完成时的跨模型轮次最小能力范围；Stage/Session 改变后自动失效。 */
     private workflowContinuationScope: AgentWorkflowContinuationScope | undefined;
-
     constructor(
         config: AgentConfig,
         callModel: CallModelFn,
@@ -1746,7 +1784,6 @@ export class Agent {
         });
         this.runtimeContextCharacterBudget = contextCapacity.runtimeContextCharacterCeiling;
     }
-
     private hasObservedTaskMutation(): boolean {
         return this.toolCallLog.some((entry) => (
             !isAgentHarnessControlTool(entry.name)
@@ -1778,108 +1815,77 @@ export class Agent {
 
     private readPerformanceBudgetExhaustion(
         scope: 'all' | 'model' | 'tool' = 'all',
-        budgetClass: 'task' | 'final_quality_judge' = 'task'
+        budgetClass: PerformanceModelBudgetClass = 'task'
     ): PerformanceBudgetExhaustion | undefined {
         const budget = this.config.performanceBudget;
         if (!budget) return undefined;
-        // GATE-SIMPLIFY-003：普通任务预算不再为终局 Judge 事前扣减（扣减是预防性税）；
-        // Judge 的一次性硬上限在 beginPerformanceModelCall 按 budgetClass 保留。
-        return readPerformanceBudgetExhaustionFromLedger({
+        const exhaustion = readPerformanceBudgetExhaustionFromLedger({
             ledger: this.performanceLedger,
             budget,
             elapsedMs: this.readPerformanceActiveElapsedMs(),
             scope,
             hasObservedTaskMutation: this.hasObservedTaskMutation()
         });
+        return applyPerformanceModelBudgetClassAllowance(
+            this.performanceLedger,
+            budgetClass,
+            exhaustion
+        );
     }
 
-    private getPerformanceVisionCandidateHardLimit(): number {
-        const configured = this.config.performanceBudget?.maxVisionCandidates;
-        if (typeof configured !== 'number' || !Number.isFinite(configured)) {
-            return Agent.DEFAULT_MAX_VISION_CANDIDATES;
-        }
-        return Math.max(0, Math.floor(configured));
-    }
-
-    /**
-     * GATE-SIMPLIFY-004：单一运行级视觉池消耗 = 候选 + 分析 + 终局 Judge 之和。
-     * 每类计数器保留（上报/审计/子 Agent 合并依赖），池只是执行层的统一闸口。
-     */
-    private readRunLevelVisionBudgetConsumed(): number {
-        return this.performanceLedger.visionCandidateCount
-            + this.performanceLedger.visualAnalysisCount
-            + this.performanceLedger.finalQualityJudgeCallCount;
-    }
-
-    /**
-     * GATE-SIMPLIFY-004：池上限 = 候选硬上限 + 配置的分析上限。
-     * 总量与原两档之和相等（只放宽不收紧）；分析上限未配置时维持旧的不受限语义。
-     */
-    private getRunLevelVisionBudgetLimit(): number {
-        const candidateHard = this.getPerformanceVisionCandidateHardLimit();
-        const configuredAnalyses = this.config.performanceBudget?.maxVisualAnalyses;
-        const analysisHard = typeof configuredAnalyses === 'number' && Number.isFinite(configuredAnalyses)
-            ? Math.max(0, Math.floor(configuredAnalyses))
-            : 0;
-        return candidateHard + analysisHard;
-    }
-
-    private getPerformanceVisionCandidateLimit(): number {
-        // GATE-SIMPLIFY-003：取消「是否预留终局 Judge」的前置税（模型调用/软时间/视觉分析的
-        // 事前扣减已删除），但 ReviewSet 感知的候选上限保留且不再依赖预留开关——同版本完整
-        // ReviewSet 必须始终装得进视觉候选预算（终审契约），没有 ReviewSet 时返回硬上限。
-        const hardLimit = this.getPerformanceVisionCandidateHardLimit();
+    private resolvePerformanceVisionBudget(): PerformanceVisionBudgetSnapshot {
         const requiresMultiSurface = this.resolveFinalReviewSetRequirements(
             this.resolveRuntimeEvaluationProfile()
         ).requireMultiSurface;
-        const finalReviewCandidate = this.findLatestDesignVisualJudgeReviewSet(requiresMultiSurface);
-        const configuredInitialLimit = Number(
-            this.config.performanceBudget?.maxInitialVisionCandidates
-        );
-        const maxInitialVisionCandidates = Number.isFinite(configuredInitialLimit)
-            ? configuredInitialLimit
-            : Math.min(5, hardLimit);
-        const reviewSetAwareLimit = resolveVisionCandidateLimitForFinalQuality({
-            hardLimit,
-            maxInitialVisionCandidates,
+        return resolvePerformanceVisionBudgetSnapshot({
+            ledger: this.performanceLedger,
+            budget: this.config.performanceBudget,
+            defaultMaxVisionCandidates: Agent.DEFAULT_MAX_VISION_CANDIDATES,
             requiresMultiSurface,
-            reviewSet: finalReviewCandidate?.reviewSet
+            reviewSet: this.findLatestDesignVisualJudgeReviewSet(requiresMultiSurface)?.reviewSet,
+            visualAnalysisAlreadyPending: this.initialImagesPendingPrimaryObservation
+                || this.pendingPrimaryVisualObservations.length > 0
         });
-        // GATE-SIMPLIFY-004：候选额度再受单一运行级视觉池剩余量约束（分析/Judge 消耗同一池）。
-        const poolRemaining = Math.max(
-            0,
-            this.getRunLevelVisionBudgetLimit() - this.readRunLevelVisionBudgetConsumed()
-        );
-        return Math.min(reviewSetAwareLimit, poolRemaining);
+    }
+
+    private getPerformanceVisionCandidateLimit(): number {
+        return this.resolvePerformanceVisionBudget().candidateLimit;
     }
 
     private getPerformanceInitialVisionCandidateLimit(): number {
-        const totalLimit = this.getPerformanceVisionCandidateLimit();
-        const configured = this.config.performanceBudget?.maxInitialVisionCandidates;
-        if (typeof configured === 'number' && Number.isFinite(configured)) {
-            return Math.max(0, Math.min(totalLimit, Math.floor(configured)));
-        }
-        if (totalLimit <= 2) return totalLimit;
-        const reservedForToolResults = Math.max(2, Math.ceil(totalLimit / 2));
-        return Math.min(5, Math.max(0, totalLimit - reservedForToolResults));
+        return this.resolvePerformanceVisionBudget().initialCandidateLimit;
+    }
+
+    private resolvePerformanceVisionCallCapacity(
+        visualAnalysis: boolean,
+        budgetClass: PerformanceModelBudgetClass
+    ): { hasFixedEventCapacity: boolean; remainingCandidateCount: number } {
+        return resolvePerformanceVisionCallCapacityFromPolicy({
+            ledger: this.performanceLedger,
+            snapshot: this.resolvePerformanceVisionBudget(),
+            visualAnalysis,
+            budgetClass
+        });
     }
 
     private hasPerformanceVisualAnalysisCapacity(
-        budgetClass: 'task' | 'final_quality_judge' = 'task'
+        budgetClass: PerformanceModelBudgetClass = 'task'
     ): boolean {
         const configured = this.config.performanceBudget?.maxVisualAnalyses;
-        if (typeof configured !== 'number' || !Number.isFinite(configured)) return true;
-        // GATE-SIMPLIFY-004：视觉分析消耗单一运行级视觉池（Judge 的一次性硬上限在
-        // beginPerformanceModelCall 按 budgetClass 单独强制）。
-        return this.readRunLevelVisionBudgetConsumed() < this.getRunLevelVisionBudgetLimit();
+        return typeof configured !== 'number'
+            || !Number.isFinite(configured)
+            || this.resolvePerformanceVisionCallCapacity(true, budgetClass).hasFixedEventCapacity;
+    }
+
+    private canQueuePrimaryVisualPresentation(): boolean {
+        return this.resolvePerformanceVisionBudget().canQueuePrimaryVisualPresentation;
     }
 
     private synchronizeRuntimePerformanceUsage(): void {
-        if (!this.runtimeSession) return;
-        this.runtimeSession = recordRuntimeSessionPerformanceUsage({
-            session: this.runtimeSession,
-            usage: this.readRequestPerformanceUsageSnapshot()
-        });
+        this.runtimeSession = this.runtimeAccounting.synchronizePerformanceUsage(
+            this.runtimeSession,
+            this.readRequestPerformanceUsageSnapshot()
+        );
     }
 
     /**
@@ -1888,6 +1894,10 @@ export class Agent {
      */
     readRequestPerformanceUsageSnapshot(): RuntimePerformanceUsage {
         return projectPerformanceLedgerUsage(this.performanceLedger, this.iteration);
+    }
+
+    readRuntimeAccountingDigest(): RuntimeAccountingDigest | undefined {
+        return this.runtimeAccounting.readDigest(this.runtimeSession);
     }
 
     private readPerformanceActiveElapsedMs(nowMs = Date.now()): number {
@@ -1921,10 +1931,21 @@ export class Agent {
     }
 
     private selectPerformanceVisionCandidates<T>(candidates: readonly T[]): T[] {
-        const remaining = Math.max(
+        const configuredAnalyses = this.config.performanceBudget?.maxVisualAnalyses;
+        const visionBudget = this.resolvePerformanceVisionBudget();
+        const candidateRemaining = Math.max(
             0,
-            this.getPerformanceVisionCandidateLimit() - this.performanceLedger.visionCandidateCount
+            visionBudget.candidateLimit - this.performanceLedger.visionCandidateCount
         );
+        const poolCapacity = typeof configuredAnalyses === 'number' && Number.isFinite(configuredAnalyses)
+            ? resolveRunLevelVisualPresentationCapacity({
+                limit: visionBudget.runLevelLimit,
+                consumed: visionBudget.runLevelConsumed,
+                visualAnalysisAlreadyPending: this.initialImagesPendingPrimaryObservation
+                    || this.pendingPrimaryVisualObservations.length > 0
+            })
+            : candidateRemaining;
+        const remaining = Math.min(candidateRemaining, poolCapacity);
         const selected = candidates.slice(0, remaining);
         this.performanceLedger.visionCandidateCount += selected.length;
         this.synchronizeRuntimePerformanceUsage();
@@ -1933,17 +1954,28 @@ export class Agent {
 
     private beginPerformanceModelCall(
         visualAnalysis = false,
-        budgetClass: 'task' | 'final_quality_judge' = 'task',
+        budgetClass: PerformanceModelBudgetClass = 'task',
         directVisionCandidateCount = 0,
         directVisionCandidateKeys: readonly string[] = [],
         billDirectVisionCandidatesByPresentation = false
     ): void {
-        if (budgetClass === 'final_quality_judge'
-            && this.performanceLedger.finalQualityJudgeCallCount >= MAX_FINAL_QUALITY_JUDGE_CALLS) {
-            const error = new Error('本轮终局视觉质量 Judge 已经调用过一次，不再重复评价。') as Error & {
-                code?: string;
-            };
-            error.code = 'agent_final_quality_judge_budget_exhausted';
+        const directVisionCharge = resolveDirectVisionCandidateCharge({
+            directVisionCandidateCount,
+            directVisionCandidateKeys,
+            billedObservationKeys: this.performanceLedger.visionCandidateKeys,
+            billByProviderPresentation: billDirectVisionCandidatesByPresentation
+        });
+        const classViolation = readPerformanceModelBudgetClassViolation(
+            this.performanceLedger,
+            budgetClass,
+            {
+                candidateCount: directVisionCharge.billedCandidateCount,
+                candidateKeys: directVisionCharge.normalizedObservationKeys
+            }
+        );
+        if (classViolation) {
+            const error = new Error(classViolation.message) as Error & { code?: string };
+            error.code = classViolation.code;
             throw error;
         }
         const exhaustion = this.readPerformanceBudgetExhaustion('model', budgetClass);
@@ -1956,47 +1988,29 @@ export class Agent {
             error.performanceBudgetExhaustion = exhaustion;
             throw error;
         }
-        if (visualAnalysis && !this.hasPerformanceVisualAnalysisCapacity(budgetClass)) {
+        const visionCallCapacity = this.resolvePerformanceVisionCallCapacity(visualAnalysis, budgetClass);
+        if ((visualAnalysis || budgetClass !== 'task')
+            && !visionCallCapacity.hasFixedEventCapacity) {
             const error = new Error('已达到本轮视觉分析次数上限，不再发起新的读图判断。') as Error & {
                 code?: string;
             };
             error.code = 'agent_visual_analysis_budget_exhausted';
             throw error;
         }
-        const directVisionCharge = resolveDirectVisionCandidateCharge({
-            directVisionCandidateCount,
-            directVisionCandidateKeys,
-            billedObservationKeys: this.performanceLedger.visionCandidateKeys,
-            billByProviderPresentation: billDirectVisionCandidatesByPresentation
-        });
         const billedDirectVisionCandidateCount = directVisionCharge.billedCandidateCount;
-        if (billedDirectVisionCandidateCount > 0) {
-            // GATE-SIMPLIFY-004：Judge 类候选额度的上限同时受单一视觉池剩余量约束（池=候选+分析+Judge）。
-            const candidateLimit = budgetClass === 'final_quality_judge'
-                ? Math.min(
-                    this.getPerformanceVisionCandidateHardLimit(),
-                    Math.max(0, this.getRunLevelVisionBudgetLimit() - this.readRunLevelVisionBudgetConsumed())
-                )
-                : this.getPerformanceVisionCandidateLimit();
-            if (this.performanceLedger.visionCandidateCount + billedDirectVisionCandidateCount > candidateLimit) {
-                const error = new Error('已达到本轮视觉候选上限，不再向模型发送新的图像候选。') as Error & {
-                    code?: string;
-                };
-                error.code = 'agent_vision_candidate_budget_exhausted';
-                throw error;
-            }
+        if (billedDirectVisionCandidateCount > visionCallCapacity.remainingCandidateCount) {
+            const error = new Error('已达到本轮视觉候选上限，不再向模型发送新的图像候选。') as Error & {
+                code?: string;
+            };
+            error.code = 'agent_vision_candidate_budget_exhausted';
+            throw error;
         }
-        this.performanceLedger.modelCallCount += 1;
-        if (visualAnalysis) this.performanceLedger.visualAnalysisCount += 1;
-        if (billedDirectVisionCandidateCount > 0) {
-            this.performanceLedger.visionCandidateCount += billedDirectVisionCandidateCount;
-        }
-        for (const key of directVisionCharge.normalizedObservationKeys) {
-            this.performanceLedger.visionCandidateKeys.add(key);
-        }
-        if (budgetClass === 'final_quality_judge') this.performanceLedger.finalQualityJudgeCallCount += 1;
+        consumePerformanceModelCallUsage(this.performanceLedger, budgetClass, {
+            visualAnalysis,
+            billedVisionCandidateCount: billedDirectVisionCandidateCount,
+            visionCandidateKeys: directVisionCharge.normalizedObservationKeys
+        });
         this.synchronizeRuntimePerformanceUsage();
-        this.maybePushBudgetDisciplineDirective();
     }
 
     /**
@@ -2034,16 +2048,19 @@ export class Agent {
      * 容易把调用花在反复观察上，轮到写入时预算已空。剩余约 1/4 时提醒一次：
      * 停止新观察，优先用已取得信息完成最小可交付动作。
      */
-    private maybePushBudgetDisciplineDirective(): void {
+    private maybePushBudgetDisciplineDirective(imminentModelCalls = 0): void {
         const budget = this.config.performanceBudget;
-        if (!budget || budget.maxModelCalls < 0) return;
-        const remaining = budget.maxModelCalls - this.performanceLedger.modelCallCount;
-        const threshold = Math.max(2, Math.floor(budget.maxModelCalls / 4));
-        if (remaining <= 0 || remaining > threshold) return;
-        if (this.performanceLedger.budgetDisciplineDirectiveIssued) return;
+        if (!shouldIssuePerformanceBudgetDisciplineDirective({
+            budget,
+            ledger: this.performanceLedger,
+            activeElapsedMs: this.readPerformanceActiveElapsedMs(),
+            imminentModelCalls,
+            requestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS
+        })) return;
         this.performanceLedger.budgetDisciplineDirectiveIssued = true;
         this.messages.push(createHarnessControlMessage([
-            '这次制作时间已经不多。停止扩展观察和检索，使用已经确认的信息完成最小可看版本，然后收尾。',
+            '这次制作已经进入收尾区。不要再启动新的独立评审、广泛检索或多版本探索；使用已经确认的信息完成当前版本。',
+            '如仍需改动，只做现有画面证据支持的最小可逆调整，然后完成最后一次写后读回，并保存当前版本。',
             '如果无法做出版本，就如实说明还缺什么，不要向用户解释内部限制。'
         ].join('\n'), 'budget-discipline', 'performance-budget'));
     }
@@ -2114,12 +2131,9 @@ export class Agent {
     private emitStep(step: AgentStepEvent): void {
         const title = String(step.title || '').trim();
         if (!title) return;
-        if (this.runtimeSession
-            && step.kind === 'warning'
+        if (step.kind === 'warning'
             && /(?:retry|replan|recovery|repair)/i.test(String(step.issue || ''))) {
-            this.runtimeSession = recordRuntimeSessionRecoveryAttempt({
-                session: this.runtimeSession
-            });
+            this.runtimeSession = this.runtimeAccounting.recordRecoveryAttempt(this.runtimeSession);
         }
         this.config.callbacks.onStep?.({
             ...step,
@@ -2151,6 +2165,7 @@ export class Agent {
         getOnDemandActivatedCapabilityIds: NonNullable<AgentConfig['getOnDemandActivatedCapabilityIds']>;
         finalizeRuntimeArtifacts: NonNullable<AgentConfig['finalizeRuntimeArtifacts']>;
         performanceBudget: NonNullable<AgentConfig['performanceBudget']>;
+        reasoningEffort?: AgentConfig['reasoningEffort'];
         maxIterations: number;
         runtimeActionPlanResumeFreshness?: AgentConfig['runtimeActionPlanResumeFreshness'];
     }): void {
@@ -2175,17 +2190,13 @@ export class Agent {
         // 先完整构造 Session；校验失败时不触碰正在运行的 Agent 状态。
         let nextRuntimeSession = createRuntimeSession({
             identity: input.runtimeSessionIdentity,
-            plan: input.runtimeStagePlan
+            plan: input.runtimeStagePlan,
+            ...(this.runtimeAccounting.readUnboundLedgerForTransfer()
+                ? { accountingSeed: this.runtimeAccounting.readUnboundLedgerForTransfer() }
+                : {})
         });
-        // plan-neutral 首轮模型调用发生在 Runtime Session 绑定前。把这些已经真实发生、但
-        // provider 未向旧 owner 上报 usage 的调用记为 unreported，避免 Reflexion 换代后重新购买。
-        for (let index = 0; index < this.performanceLedger.modelCallCount; index += 1) {
-            nextRuntimeSession = recordRuntimeSessionModelCall({
-                session: nextRuntimeSession,
-                durationMs: 0,
-                succeeded: true
-            });
-        }
+        // plan-neutral 首轮的真实调用、时长、usage 与 prompt shape 已通过 accountingSeed
+        // 转移到同一个 Session owner；不再按调用次数补造 durationMs=0 的假样本。
         nextRuntimeSession = recordRuntimeSessionPerformanceUsage({
             session: nextRuntimeSession,
             usage: this.readRequestPerformanceUsageSnapshot()
@@ -2205,13 +2216,18 @@ export class Agent {
             getOnDemandActivatedCapabilityIds: input.getOnDemandActivatedCapabilityIds,
             finalizeRuntimeArtifacts: input.finalizeRuntimeArtifacts,
             performanceBudget: input.performanceBudget,
+            reasoningEffort: input.reasoningEffort,
             maxIterations: input.maxIterations,
             ...(input.runtimeActionPlanResumeFreshness
                 ? { runtimeActionPlanResumeFreshness: input.runtimeActionPlanResumeFreshness }
                 : {})
         };
         this.runtimeSession = nextRuntimeSession;
+        this.runtimeAccounting.releaseUnboundLedgerAfterBinding();
         this.carryPlanNeutralObservationIntoBoundRuntime();
+        // plan-neutral 使用当前 Agent 直接消费候选像素；staged Runtime 改为 Tool 内产出
+        // 结构化观察。两种结果契约不能共用同一只读缓存条目。
+        this.readResultCache.clear();
         // Capability/Stage 切换后，旧阶段生成的 continuation schema 不能跨边界复用。
         this.workflowContinuationScope = undefined;
         this.pendingDirectWorkflowHandoff = undefined;
@@ -2220,14 +2236,38 @@ export class Agent {
     }
 
     /**
-     * agentic 执行模型（开放创意路径）在循环内声明任务类型时，只更新知识上下文——不建 Runtime
-     * Session、不改工具面、不改写入权限。下一轮模型的 system 消息立即带上新的方法知识。
+     * agentic 执行模型（开放创意路径）在循环内声明任务类型时，原位接入 Manifest 的
+     * 方法上下文、评价标准、执行预算与结构化交付义务。它不创建 Runtime Session，
+     * 不推进 Stage、不裁剪 Capability，也不授予 Photoshop 写入权限。
      */
-    replaceRuntimeStageContextItems(items: NonNullable<AgentConfig['runtimeStageContextItems']>): void {
+    activateAgenticRuntimeContractFromDeclaration(input: {
+        artifactContract: NonNullable<AgentConfig['agenticArtifactContract']>;
+        referencePolicy?: NonNullable<AgentConfig['agenticReferencePolicy']>;
+        runtimeStageContextItems: NonNullable<AgentConfig['runtimeStageContextItems']>;
+        evaluationProfile: NonNullable<AgentConfig['evaluationProfile']>;
+        performanceBudget: NonNullable<AgentConfig['performanceBudget']>;
+        reasoningEffort?: AgentConfig['reasoningEffort'];
+        maxIterations: number;
+    }): void {
+        if (this.config.runtimeStagePlan || this.runtimeSession) {
+            throw new Error('agentic_runtime_contract_cannot_replace_staged_runtime');
+        }
+        if (!Number.isInteger(input.maxIterations) || input.maxIterations <= 0) {
+            throw new Error('agentic_runtime_iteration_budget_invalid');
+        }
         this.config = {
             ...this.config,
-            runtimeStageContextItems: items
+            agenticArtifactContract: input.artifactContract,
+            agenticReferencePolicy: input.referencePolicy,
+            runtimeStageContextItems: input.runtimeStageContextItems,
+            evaluationProfile: input.evaluationProfile,
+            performanceBudget: input.performanceBudget,
+            reasoningEffort: input.reasoningEffort,
+            maxIterations: input.maxIterations
         };
+        // Profile 已由模型在本轮主动声明；后续不再展示同一个声明入口，避免重复绑定空转。
+        this.providerContinuationTools = undefined;
+        this.providerContinuationPending = false;
         this.refreshPrimarySystemMessage();
     }
 
@@ -2391,14 +2431,14 @@ export class Agent {
         succeeded: boolean;
         usage?: { inputTokens: number; outputTokens: number };
         promptShape?: ReturnType<typeof measureRuntimePromptShape>;
+        outcome?: unknown;
     }): void {
-        if (!this.runtimeSession) return;
-        this.runtimeSession = recordRuntimeSessionModelCall({
-            session: this.runtimeSession,
+        this.runtimeSession = this.runtimeAccounting.recordModelCall(this.runtimeSession, {
             durationMs: Date.now() - input.startedAtMs,
             succeeded: input.succeeded,
             usage: input.usage,
-            promptShape: input.promptShape
+            promptShape: input.promptShape,
+            outcome: input.outcome
         });
     }
 
@@ -2409,7 +2449,7 @@ export class Agent {
         options?: Parameters<CallModelFn>[3],
         accounting?: {
             visualAnalysis?: boolean;
-            budgetClass?: 'task' | 'final_quality_judge';
+            budgetClass?: PerformanceModelBudgetClass;
             directVisionCandidateCount?: number;
             directVisionCandidateKeys?: string[];
             billDirectVisionCandidatesByPresentation?: boolean;
@@ -2426,17 +2466,20 @@ export class Agent {
             );
         }
         const startedAtMs = Date.now();
+        const promptShape = measureRuntimePromptShape({ messages, tools });
+        const effectiveOptions = this.config.reasoningEffort && !options?.reasoningEffort
+            ? { ...options, reasoningEffort: this.config.reasoningEffort }
+            : options;
         try {
-            const response = await this.callModel(modelId, messages, tools, options);
+            const response = await this.callModel(modelId, messages, tools, effectiveOptions);
             this.recordModelAccounting({
                 startedAtMs,
                 succeeded: true,
-                usage: response.usage,
-                promptShape: measureRuntimePromptShape({ messages, tools })
+                usage: response.usage, promptShape, outcome: response
             });
             return response;
         } catch (error) {
-            this.recordModelAccounting({ startedAtMs, succeeded: false });
+            this.recordModelAccounting({ startedAtMs, succeeded: false, promptShape, outcome: error });
             throw error;
         }
     }
@@ -2474,12 +2517,44 @@ export class Agent {
         return Boolean(this.config.runtimeStagePlan?.steps.some((step) => step.stage === 'R1'));
     }
 
+    private resolveActiveReferencePolicy() {
+        return resolveAgentActiveReferencePolicy(this.config);
+    }
+
+    private resolveActiveReferenceWorkMode(): RuntimeDesignWorkMode | undefined {
+        return resolveAgentActiveReferenceWorkMode({
+            config: this.config,
+            designBrief: this.runtimeDesignBriefDeclaration
+        });
+    }
+
+    private resolveReferenceFailureDisposition(
+        toolName: string,
+        result: unknown
+    ): AgentToolCallLogEntry['failureDisposition'] {
+        return resolveAgentReferenceFailureDisposition({
+            config: this.config,
+            designBrief: this.runtimeDesignBriefDeclaration,
+            referenceBrief: this.runtimeReferenceBriefDeclaration,
+            toolName,
+            result
+        });
+    }
+
+    private reconcileReferenceFailureDispositions(): void {
+        reconcileAgentReferenceFailureDispositions({
+            config: this.config,
+            designBrief: this.runtimeDesignBriefDeclaration,
+            referenceBrief: this.runtimeReferenceBriefDeclaration,
+            toolCallLog: this.toolCallLog
+        });
+    }
+
     private requiresReferenceContextResolution(): boolean {
-        const policy = this.config.runtimeStagePlan?.referencePolicy;
-        if (!policy) return false;
-        const workMode = this.runtimeDesignBriefDeclaration?.payload.workMode;
-        if (!workMode) return true;
-        return getReferenceRequirement(policy, workMode) !== 'not_required';
+        return requiresRuntimeReferenceContextResolution({
+            plan: this.config.runtimeStagePlan,
+            designBrief: this.runtimeDesignBriefDeclaration
+        });
     }
 
     private buildRuntimeR2Outcomes(): string[] {
@@ -2492,165 +2567,56 @@ export class Agent {
         ];
     }
 
-    private buildReferenceContextState(): RuntimeReferenceContextState {
-        const allowedContextRefs = new Set<string>();
-        const visualObservations: RuntimeReferenceContextState['visualObservations'] = [];
-        let searchAttemptCount = 0;
-        let searchFailureCount = 0;
-        let visualAnalysisFailureCount = 0;
-        this.toolCallLog.forEach((entry, index) => {
-            if (isRuntimeReferenceSearchTool(entry.name)) {
-                searchAttemptCount += 1;
-                const resultCount = Number(entry.result?.resultCount || 0);
-                if (entry.result?.success !== true || resultCount <= 0) {
-                    searchFailureCount += 1;
-                    return;
-                }
-                allowedContextRefs.add(`context:reference_candidates:${index + 1}`);
-                return;
-            }
-            if (isRuntimeReferenceVisualTool(entry.name)) {
-                if (entry.result?.success !== true) {
-                    visualAnalysisFailureCount += 1;
-                    return;
-                }
-                const itemId = String(
-                    entry.result?.item?.id
-                    || entry.arguments?.itemId
-                    || entry.arguments?.id
-                    || index + 1
-                ).trim().replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 96);
-                const observationRef = `context:reference_visual:${itemId || index + 1}`;
-                const observation = normalizeRuntimeReferenceContextObservation(
-                    observationRef,
-                    entry.result?.observation
-                );
-                if (!observation) {
-                    visualAnalysisFailureCount += 1;
-                    return;
-                }
-                allowedContextRefs.add(observationRef);
-                visualObservations.push(observation);
-            }
-        });
-        return {
-            allowedContextRefs: Array.from(allowedContextRefs),
-            visualObservations,
-            searchAttemptCount,
-            searchFailureCount,
-            visualAnalysisFailureCount
-        };
+    private buildReferenceContextState() {
+        return buildAgentRuntimeReferenceContextState(this.toolCallLog);
     }
 
     private buildRuntimeReferenceStageReason(
         declaration: RuntimeReferenceBriefDeclaration | undefined
     ): string {
-        switch (declaration?.readiness) {
-            case 'ready':
-                return 'R2 Reference Brief 已引用真实视觉工具返回的结构化观察。';
-            case 'degraded':
-                return 'R2 参考检索已达到预算并记录限制，后续策略必须保持待复核。';
-            case 'waived':
-                return '当前工作模式按 Skill 策略无需新增参考。';
-            default:
-                return 'R2 Reference Brief 未形成可用参考上下文。';
-        }
+        return describeRuntimeReferenceStage(declaration);
     }
 
     private isSuccessfulRuntimeToolObservation(call: ToolCall, result: any): boolean {
-        if (result?.success === false || isAgentReadResultCacheHit(result)) return false;
-        if (!isRuntimeReferenceVisualTool(call.name)) return true;
-        return Boolean(normalizeRuntimeReferenceContextObservation(
-            'runtime-reference-observation',
-            result?.observation
-        ));
+        return isSuccessfulAgentRuntimeToolObservation(call, result);
     }
 
-    /**
-     * 从零设计任务判定：当前 workMode 的有效契约没有任何「必需输入」来源于已打开的 Photoshop 文档。
-     * create_new / template_fill / 无 work_mode 的创意清单（主图/海报/参考复刻）→ true；
-     * edit_existing / redesign / analyze_only / export_only（required existing_document → photoshop_document）→ false。
-     * 用途：无文档（getDocumentInfo 返回 documentState:'absent'）时，是否把 R2 记为「已确认空画布起点」，
-     * 只放行从零任务推进去 E1 建画布，绝不放行「改既有文档」（那些必须继续记 R2 failed、保留先观察纪律）。
-     */
     private isFromScratchDesignTask(): boolean {
-        const plan = this.config.runtimeStagePlan;
-        if (!plan) return false;
-        // Brief 尚未声明时 workMode 未知。此时若回落到 manifest 的保守必需输入，
-        // 「从零做详情页」也会被判成需要已打开文档——而建画布能力在 E1，没有文档
-        // 就永远走不到 E1（真机：getDocumentInfo 反复失败 → 工具逐个熔断 → 模型无路可走）。
-        // 未声明期间按「不要求已有文档」处理；Brief 一旦声明，需要文档的 workMode
-        // 立即恢复约束，缺文档也仍会由工具执行时的真实错误如实暴露。
-        if (!this.runtimeDesignBriefDeclaration) return true;
-        return !runtimeDesignTaskRequiresOpenDocument(
-            plan,
-            this.runtimeDesignBriefDeclaration.payload.workMode
-        );
+        return isFromScratchRuntimeDesignTask({
+            plan: this.config.runtimeStagePlan,
+            designBrief: this.runtimeDesignBriefDeclaration
+        });
     }
 
     private buildReferenceContextBlocker(toolName: string): Record<string, unknown> {
-        const policy = this.config.runtimeStagePlan?.referencePolicy;
-        const workMode = this.runtimeDesignBriefDeclaration?.payload.workMode;
-        const requirement = policy && workMode ? getReferenceRequirement(policy, workMode) : undefined;
-        return {
-            success: false,
-            blockedByRuntimeReferenceContext: true,
-            code: 'runtime_reference_context_required',
-            blockedTool: toolName,
-            workMode: workMode || 'not_declared',
-            requirement: requirement || 'unknown',
-            readiness: this.runtimeReferenceBriefDeclaration?.readiness || 'not_declared',
-            error: '当前 Skill 要求先形成参考决策。请根据 workMode 检索并真实分析参考、复用已有参考，或明确声明无需参考；候选列表不能替代视觉理解。',
-            executesPhotoshop: false,
-            grantsPermission: false,
-            countsAsObservation: false,
-            countsAsTaskProgress: false
-        };
+        return buildAgentReferenceContextBlocker({
+            toolName,
+            plan: this.config.runtimeStagePlan,
+            designBrief: this.runtimeDesignBriefDeclaration,
+            referenceBrief: this.runtimeReferenceBriefDeclaration
+        });
     }
 
     private buildReferenceSearchBudgetBlocker(toolName: string): Record<string, unknown> | undefined {
-        const policy = this.config.runtimeStagePlan?.referencePolicy;
-        if (!policy || !isRuntimeReferenceSearchTool(toolName)) return undefined;
+        const policy = this.resolveActiveReferencePolicy();
+        const workMode = this.resolveActiveReferenceWorkMode();
         const context = this.buildReferenceContextState();
-        if (context.searchAttemptCount < policy.max_search_rounds) return undefined;
-        return {
-            success: false,
-            blockedByRuntimeReferenceSearchBudget: true,
-            code: 'runtime_reference_search_budget_exhausted',
-            blockedTool: toolName,
-            searchAttemptCount: context.searchAttemptCount,
-            maxSearchRounds: policy.max_search_rounds,
-            error: `参考检索已达到 Skill 规定的 ${policy.max_search_rounds} 轮上限。请分析已有候选，或按 reference_policy 如实声明受限降级，不要继续无界检索。`,
-            executesPhotoshop: false,
-            grantsPermission: false,
-            countsAsObservation: false,
-            countsAsTaskProgress: false
-        };
+        return buildAgentReferenceSearchBudgetBlocker({
+            toolName,
+            policy,
+            workMode,
+            context
+        });
     }
 
     private buildDesignBriefRequiredBlocker(toolName: string): Record<string, unknown> {
         const brief = this.runtimeDesignBriefDeclaration;
         const requiredInputKeys = this.resolveRuntimeDesignBriefEffectiveContract(brief)?.requiredInputs || [];
-        const missingRequiredInputs = brief
-            ? requiredInputKeys.filter((key) => (
-                brief.payload.inputCoverage.find((item) => item.inputKey === key)?.status !== 'provided'
-            ))
-            : requiredInputKeys;
-        return {
-            success: false,
-            blockedByRuntimeDesignBrief: true,
-            code: 'runtime_design_brief_required',
-            blockedTool: toolName,
-            readiness: brief?.readiness || 'not_declared',
-            missingRequiredInputs,
-            error: brief
-                ? 'R1 Design Brief 仍缺少必需输入。先用当前开放的只读工具检查文档或项目；仅在读取不可用、失败、已穷尽或仍有歧义时询问用户，补齐后重新声明 Brief。'
-                : '执行设计动作前必须先基于当前上下文声明 R1 Design Brief。',
-            executesPhotoshop: false,
-            grantsPermission: false,
-            countsAsObservation: false,
-            countsAsTaskProgress: false
-        };
+        return buildAgentDesignBriefRequiredBlocker({
+            toolName,
+            brief,
+            requiredInputKeys
+        });
     }
 
     private resolveRuntimeDesignBriefEffectiveContract(
@@ -2671,12 +2637,16 @@ export class Agent {
     private resolveFinalReviewSetRequirements(profile?: DesignEvaluationProfile): {
         requireMultiSurface: boolean;
         requiredSourceKind?: string;
+        requiredViews: Array<'native_surface' | 'list_thumbnail'>;
     } {
         const finalReview = profile?.finalReview;
         const requireMultiSurface = finalReview?.surfaceMode === 'declared_multi_surface';
         const requiredSourceKind = finalReview?.requiredSourceKind;
         return {
             requireMultiSurface,
+            requiredViews: finalReview?.requiredViews
+                ? [...finalReview.requiredViews]
+                : ['native_surface'],
             ...(requireMultiSurface && requiredSourceKind
                 ? { requiredSourceKind }
                 : {})
@@ -2998,9 +2968,30 @@ export class Agent {
             if (this.runtimeActionMutationWriteLocked || this.runtimeActionProviderRecoveryBlocked) {
                 return [];
             }
-            return this.config.tools.filter((tool) => (
+            const modelVisibleTools = this.config.tools.filter((tool) => (
                 !this.isRuntimeActionProviderUnavailable(tool.name)
+                && (!this.config.agenticArtifactContract
+                    || tool.name !== 'declareDesignIntent')
             ));
+            // agentic 路径不建立 R2 Stage，也不把 Reference Brief 变成写入门票；但当
+            // Agent 已主动取得真实参考视觉观察后，必须给它一个可选的结构化绑定出口，
+            // 让终审知道哪些参考确实影响了本稿。没有观察时不暴露，避免固定参考仪式。
+            const referencePolicy = this.resolveActiveReferencePolicy();
+            const referenceWorkMode = this.resolveActiveReferenceWorkMode();
+            const referenceContext = this.buildReferenceContextState();
+            if (this.config.agenticArtifactContract
+                && referencePolicy
+                && referenceWorkMode
+                && !this.runtimeReferenceBriefDeclaration
+                && referenceContext.visualObservations.length > 0) {
+                const referenceTool = buildDeclareReferenceBriefToolSchema({
+                    policy: referencePolicy,
+                    workMode: referenceWorkMode,
+                    context: referenceContext
+                }) as ToolSchema;
+                this.upsertModelVisibleTool(modelVisibleTools, referenceTool);
+            }
+            return modelVisibleTools;
         }
         const currentStage = this.runtimeSession?.stageState.currentStage;
         if (!currentStage) return [];
@@ -3318,13 +3309,13 @@ export class Agent {
     }
 
     private executeReferenceBriefDeclaration(value: unknown): any {
-        const policy = this.config.runtimeStagePlan?.referencePolicy;
-        const workMode = this.runtimeDesignBriefDeclaration?.payload.workMode;
+        const policy = this.resolveActiveReferencePolicy();
+        const workMode = this.resolveActiveReferenceWorkMode();
         if (!policy || !workMode) {
             return {
                 success: false,
                 code: 'runtime_reference_policy_or_work_mode_missing',
-                error: '当前 Skill 未声明 reference_policy，或 R1 Brief 尚未声明 workMode。',
+                error: '当前任务没有可用的 reference_policy 或工作模式，无法绑定参考上下文。',
                 executesPhotoshop: false,
                 grantsPermission: false,
                 countsAsObservation: false,
@@ -3362,6 +3353,7 @@ export class Agent {
         this.runtimeActionPlanExecutionJournal = undefined;
         this.runtimeActionExecutionEnvelopeByCallId.clear();
         this.runtimeReferenceBriefDeclaration = validation.declaration;
+        this.reconcileReferenceFailureDispositions();
         return {
             success: true,
             readiness: validation.declaration.readiness,
@@ -5561,6 +5553,7 @@ export class Agent {
         this.toolImageObservationCount = 0;
         this.latestDesignVisualJudgeBundleReviewSet = undefined;
         this.latestDesignVisualJudgeSingleReviewSet = undefined;
+        this.mutationBoundDesignIntents = [];
         this.pendingPrimaryVisualObservations = [];
         this.userSnapshotEmitCount = 0;
         this.lastUserSnapshotSignature = '';
@@ -5576,7 +5569,13 @@ export class Agent {
             this.buildIncomingImageObservationPromptSection(),
             this.buildRuntimeStagePlanPromptSection(),
             this.buildRuntimeStageContextPromptSection(),
-            this.buildRuntimePlanningContextPromptSection(),
+            buildRuntimePlanningContextPrompt({
+                digest: this.runtimePlanningContextSeedDigest,
+                brief: this.runtimeDesignBriefDeclaration,
+                referenceBrief: this.runtimeReferenceBriefDeclaration,
+                strategy: this.runtimeDesignStrategyDeclaration,
+                actionPlan: this.runtimeActionPlanDeclaration
+            }),
             this.buildToolCapabilityBridgePromptSection(),
             buildIncomingReflexionPromptSection(this.config.reflexionHandoff)
         ].filter((section) => String(section || '').trim());
@@ -5703,79 +5702,6 @@ export class Agent {
         return lines.join('\n');
     }
 
-    private buildRuntimePlanningContextPromptSection(): string {
-        const digest = this.runtimePlanningContextSeedDigest;
-        if (!digest) return '';
-        const brief = this.runtimeDesignBriefDeclaration;
-        const referenceBrief = this.runtimeReferenceBriefDeclaration;
-        const strategy = this.runtimeDesignStrategyDeclaration;
-        const plan = this.runtimeActionPlanDeclaration;
-        const lines = [
-            '这是当前版本的调整续接。保留仍然有效的目标和设计方向，只重新处理复盘指出的问题；除非新画面已经推翻原判断，不要从头规划。'
-        ];
-        if (brief) {
-            lines.push(`原目标：${brief.payload.taskGoal}`);
-            lines.push(`要交付：${brief.payload.deliverables.slice(0, 8).join('；')}`);
-            if (brief.payload.constraints.length > 0) {
-                lines.push(`继续遵守：${brief.payload.constraints.slice(0, 10).join('；')}`);
-            }
-        }
-        if (referenceBrief) {
-            const referenceDirection = referenceBrief.insights.slice(0, 6)
-                .map((insight) => insight.application || insight.observation)
-                .filter(Boolean)
-                .join('；');
-            lines.push(`参考方向保持为：${referenceDirection || '沿用当前项目与画面判断'}。`);
-        }
-        if (strategy) {
-            lines.push(`设计目标：${strategy.payload.objective.primaryGoal}`);
-            lines.push(`主要信息：${strategy.payload.messageArchitecture.primaryMessage}`);
-            lines.push(`视觉方向：${[
-                ...strategy.payload.visualDirection.moodKeywords,
-                ...strategy.payload.visualDirection.compositionIntent
-            ].slice(0, 12).join('；')}`);
-            const selectedDirection = strategy.payload.directionExploration?.find((candidate) => (
-                candidate.variantId === strategy.payload.selectedDirectionId
-            ));
-            if (selectedDirection) {
-                lines.push(`已选方向：${selectedDirection.label}（${selectedDirection.intent}）`);
-                if (strategy.payload.selectionRationale) {
-                    lines.push(`选择依据：${strategy.payload.selectionRationale}`);
-                }
-            }
-        }
-        if (plan) {
-            lines.push(`当前制作目标：${plan.payload.planGoal}`);
-        }
-        return lines.join('\n');
-    }
-
-    private restoreRuntimePlanningContextSeed(): void {
-        this.runtimePlanningContextSeedDigest = undefined;
-        const seed = this.config.runtimePlanningContextSeed;
-        if (!seed) return;
-        if (!this.runtimeSession || !this.config.runtimeStagePlan) {
-            throw new Error('runtime_planning_context_seed_without_session');
-        }
-        const validation = validateRuntimePlanningContextSeed({
-            seed,
-            session: this.runtimeSession,
-            plan: this.config.runtimeStagePlan
-        });
-        if (!validation.ok) throw new Error(validation.issues.join(','));
-        this.runtimeDesignBriefDeclaration = seed.declarations.brief;
-        this.runtimeReferenceBriefDeclaration = seed.declarations.referenceBrief;
-        this.runtimeDesignStrategyDeclaration = seed.declarations.strategy;
-        this.runtimeActionPlanDeclaration = seed.declarations.actionPlan;
-        this.runtimeActionPlanExecutionJournal = seed.declarations.actionPlan
-            ? createRuntimeActionPlanExecutionJournal()
-            : undefined;
-        this.runtimePlanningContextSeedDigest = buildRuntimePlanningContextSeedDigest(seed);
-        if (this.runtimeDesignBriefDeclaration) {
-            this.tightenPerformanceBudgetForDeclaredWorkMode(this.runtimeDesignBriefDeclaration);
-        }
-    }
-
     private emitRuntimeLoopContractStep(): void {
         const contract = this.config.runtimeLoopContract;
         if (!contract) return;
@@ -5826,13 +5752,10 @@ export class Agent {
 
             const documentInfoStartedAtMs = Date.now();
             const documentInfoResult = await this.executeToolWithDiagnostics('getDocumentInfo', {});
-            if (this.runtimeSession) {
-                this.runtimeSession = recordRuntimeSessionToolCall({
-                    session: this.runtimeSession,
-                    durationMs: Date.now() - documentInfoStartedAtMs,
-                    succeeded: documentInfoResult?.success !== false
-                });
-            }
+            this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
+                durationMs: Date.now() - documentInfoStartedAtMs,
+                succeeded: documentInfoResult?.success !== false
+            });
             if (!documentInfoResult || documentInfoResult.success === false) return;
             const openingRevision = readPhotoshopHistoryStateRef(documentInfoResult);
             if (this.runtimeSession && openingRevision) {
@@ -5886,13 +5809,10 @@ export class Agent {
             // 走带止损护栏的执行入口，args 用默认（工具 schema 自带默认尺寸/过滤）。
             const startedAtMs = Date.now();
             const result = await this.executeToolWithDiagnostics('getAnnotatedSnapshot', {});
-            if (this.runtimeSession) {
-                this.runtimeSession = recordRuntimeSessionToolCall({
-                    session: this.runtimeSession,
-                    durationMs: Date.now() - startedAtMs,
-                    succeeded: result?.success !== false
-                });
-            }
+            this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
+                durationMs: Date.now() - startedAtMs,
+                succeeded: result?.success !== false
+            });
             if (!result || result.success === false) return;
 
             const image = extractImageFromToolResult(result);
@@ -5979,17 +5899,11 @@ export class Agent {
         const requireInitialToolCall = this.shouldRequireInitialToolCallForCurrentTask();
         this.iteration = 0;
         this.toolCallLog = [];
-        this.performanceLedger.modelCallCount = 0;
-        this.performanceLedger.toolCallCount = 0;
-        this.performanceLedger.budgetDisciplineDirectiveIssued = false;
+        this.finalQualityModelProtocolDigest = undefined;
+        this.pendingTrustedFinalComparisonWrite = undefined;
         this.readResultCache.clear();
-        this.performanceLedger.harnessQualityVerificationCallCount = 0;
-        this.performanceLedger.finalQualityJudgeCallCount = 0;
-        this.performanceLedger.visionCandidateCount = 0;
-        this.performanceLedger.visionCandidateKeys.clear();
-        this.performanceLedger.visualAnalysisCount = 0;
-        this.performanceLedger.activeElapsedBeforeRunMs = 0;
-        this.performanceLedger.runStartedAtMs = Date.now();
+        const runStartedAtMs = Date.now();
+        resetPerformanceLedgerStateForRun(this.performanceLedger, runStartedAtMs);
         this.currentInputImageCount = Array.isArray(images) ? images.length : 0;
         this.observedInputImageCount = 0;
         this.attachedImageObservationAvailable = false;
@@ -6022,7 +5936,9 @@ export class Agent {
                 throw new Error('runtime_session_seed_identity_mismatch');
             }
             this.runtimeSession = this.config.runtimeSessionSeed;
-            if (this.runtimeSession.identity.generation > 1 && !this.config.runtimePlanningContextSeed) {
+            if (this.runtimeSession.identity.generation > 1
+                && !this.config.runtimePlanningContextSeed
+                && !this.config.runtimeInteractiveReentry) {
                 throw new Error('runtime_planning_context_seed_required');
             }
         } else if (this.config.runtimeStagePlan && this.config.runtimeSessionIdentity) {
@@ -6038,7 +5954,22 @@ export class Agent {
         } else {
             this.runtimeSession = undefined;
         }
-        this.restoreRuntimePlanningContextSeed();
+        this.runtimeAccounting.beginRun(runStartedAtMs, this.runtimeSession);
+        this.runtimePlanningContextSeedDigest = undefined;
+        const planningSeedState = resolveRuntimePlanningContextSeedState({
+            seed: this.config.runtimePlanningContextSeed,
+            session: this.runtimeSession,
+            plan: this.config.runtimeStagePlan
+        });
+        if (planningSeedState) Object.assign(this, planningSeedState);
+        const interactiveReentryState = resolveRuntimeInteractiveAgentReentryState({
+            config: this.config,
+            session: this.runtimeSession
+        });
+        if (interactiveReentryState) Object.assign(this, interactiveReentryState.planning);
+        if (this.runtimeDesignBriefDeclaration) {
+            this.tightenPerformanceBudgetForDeclaredWorkMode(this.runtimeDesignBriefDeclaration);
+        }
         if (this.config.requestPerformanceUsageSeed && !this.config.runtimeSessionIdentity) {
             throw new Error('request_performance_usage_seed_requires_task_run_identity');
         }
@@ -6078,6 +6009,7 @@ export class Agent {
         ];
         this.lastToolBatchSignature = '';
         this.resetGuardState();
+        if (interactiveReentryState) Object.assign(this, interactiveReentryState.runtime);
         this.finalizationNudgeSent = false;
         this.visibleReasoningSent = false;
         this.latestVisiblePreActionRationale = '';
@@ -6092,7 +6024,6 @@ export class Agent {
         });
         this.config.callbacks.onProgress?.('开始处理...', 0);
         this.emitRuntimeLoopContractStep();
-
         await this.attachInitialImageObservations(task, images);
 
         // 通用 Agent 默认不读 Photoshop；getDocumentInfo 仍在首轮能力中，由模型按需选择。
@@ -6201,6 +6132,7 @@ export class Agent {
                         ? 'provider_truncation_recovery'
                         : 'task'
                 );
+                interactiveReentryState?.adoptAfterSuccessfulModelResponse();
                 if (isProviderOutputTruncated(response.stopReason)) {
                     if (
                         this.providerTruncationRecoveryAttempts < MAX_PROVIDER_TRUNCATION_RECOVERY_ATTEMPTS
@@ -6360,12 +6292,37 @@ export class Agent {
                         // iterations 才 26（预算 60），是判定把任务杀了而不是预算耗尽；而且终止前
                         // 已经把提示 push 进 messages，模型根本没机会消费。这里改成有界推回：
                         // 带着具体缺口让它继续做，反复补不上才交回用户。
-                        this.stageIncompleteRecoveryAttempts += 1;
+                        const nextStageRecoveryAttempt = this.stageIncompleteRecoveryAttempts + 1;
+                        const runtimeTaskRun = this.runtimeSession?.taskRun;
+                        const runtimeDocumentBinding = runtimeTaskRun?.documentBinding;
                         const stageRecovery = decideStageIncompleteRecovery({
                             obligation: unfinishedExecutionObligation,
                             stageState: this.runtimeSession?.stageState,
-                            attempt: this.stageIncompleteRecoveryAttempts
+                            runtimeState: {
+                                taskRunStatus: runtimeTaskRun?.status,
+                                documentBindingStatus: runtimeDocumentBinding?.status,
+                                documentConflictKind: runtimeDocumentBinding?.conflict?.kind,
+                                hasPendingInteraction: Boolean(runtimeTaskRun?.pendingInteraction),
+                                hasAgentHandoff: Boolean(this.pendingDirectWorkflowHandoff)
+                            },
+                            attempt: nextStageRecoveryAttempt
                         });
+
+                        if (stageRecovery.countsAsRecoveryAttempt) {
+                            this.stageIncompleteRecoveryAttempts = nextStageRecoveryAttempt;
+                        }
+
+                        if (stageRecovery.disposition === 'defer_to_structural_owner') {
+                            this.messages.push({ role: 'assistant', content: stageRecovery.deferredMessage });
+                            return this.buildRunResult({
+                                success: false,
+                                message: stageRecovery.deferredMessage,
+                                iterations: this.iteration + 1,
+                                stopReason: 'tool_preflight_blocked',
+                                error: stageRecovery.structuralBlockerCode
+                                    || 'structural_runtime_owner_required'
+                            });
+                        }
 
                         if (stageRecovery.shouldRetry) {
                             this.emitStep({
@@ -6780,9 +6737,8 @@ export class Agent {
                             output = await this.executeToolWithDiagnostics(call.name, executionArguments);
                         }
                     }
-                    if (this.runtimeSession && output?.countsAsRuntimeToolCall !== false) {
-                        this.runtimeSession = recordRuntimeSessionToolCall({
-                            session: this.runtimeSession,
+                    if (output?.countsAsRuntimeToolCall !== false) {
+                        this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
                             durationMs: Date.now() - startedAtMs,
                             succeeded: output?.success !== false
                         });
@@ -7089,16 +7045,25 @@ export class Agent {
                             output: result
                         });
                         const toolCallElapsedMs = this.readRunElapsedMsOrUndefined();
+                        let failureDispositionFields: Pick<AgentToolCallLogEntry, 'failureDisposition'> | Record<string, never> = {};
+                        if (isRuntimeDeclarationDeferred) {
+                            failureDispositionFields = {
+                                failureDisposition: 'control_turn_deferred' as const
+                            };
+                        } else if (!success) {
+                            const referenceDisposition = this.resolveReferenceFailureDisposition(call.name, result);
+                            if (referenceDisposition) {
+                                failureDispositionFields = { failureDisposition: referenceDisposition };
+                            }
+                        }
                         this.toolCallLog.push({
                             callId: call.id,
                             name: call.name,
                             arguments: call.arguments,
                             result,
-                            origin: 'model_tool_call',
+                            origin: 'model_tool_call', modelTurn: this.iteration,
                             ...(toolCallElapsedMs !== undefined ? { elapsedMs: toolCallElapsedMs } : {}),
-                            ...(isRuntimeDeclarationDeferred
-                                ? { failureDisposition: 'control_turn_deferred' as const }
-                                : {})
+                            ...failureDispositionFields
                         });
                     });
                     workflowContinuationScopeApplied = this.applyWorkflowContinuationScope(
@@ -7289,6 +7254,13 @@ export class Agent {
                         });
                     }
                 }
+                this.mutationBoundDesignIntents = appendMutationBoundDesignIntent({
+                    current: this.mutationBoundDesignIntents,
+                    modelTurn: this.iteration,
+                    publicText: sanitizeUserVisibleAgentText(String(response.content || '')),
+                    toolCalls: response.toolCalls,
+                    toolResults
+                });
                 this.currentBatchMutationWriteLocked = false;
 
                 // 6. 添加 tool_result 消息（回填模型的副本做超长字段截断；
@@ -7344,10 +7316,22 @@ export class Agent {
                     // 判据必须是「执行分类为只读观察」（getDocumentInfo / getLayerHierarchy 等），
                     // 不是 isReadOnlyAgentContextTool——后者只含 requestAgentCapabilities/switchDocument/
                     // selectLayer/focusLayer 四个上下文控制工具，用它会让本分支永不命中（已在真机复现）。
-                    const allFailuresReadOnly = failedToolNames.length > 0
+                    const allFailuresOrdinaryReadOnly = failedToolNames.length > 0
                         && failedToolNames.every((name) => (
-                            classifyAgentToolExecution(name, {}) === 'read_only_observation'
-                            || isReadOnlyAgentContextTool(name)
+                            !isRuntimeReferenceSearchTool(name)
+                            && !isRuntimeReferenceVisualTool(name)
+                            && (
+                                classifyAgentToolExecution(name, {}) === 'read_only_observation'
+                                || isReadOnlyAgentContextTool(name)
+                            )
+                        ));
+                    const failedLogEntries = this.toolCallLog.filter((entry) => (
+                        Boolean(entry.callId) && failedCallIds.has(String(entry.callId))
+                    ));
+                    const allFailuresExplicitlyNonBlocking = failedTaskResults.length > 0
+                        && failedTaskResults.length === failedLogEntries.length
+                        && failedLogEntries.every((entry) => (
+                            entry.failureDisposition === 'non_blocking_observation'
                         ));
                     // 「Photoshop 连接断开」是运行环境问题，不是任务/模型问题：反复重试画布工具
                     // 只会空转到无进展停机（真机 2026-08-04：用户手动操作 PS 导致 UXP WebSocket
@@ -7378,7 +7362,7 @@ export class Agent {
                                 'Photoshop 连接已经断开，这不是设计内容本身的问题。',
                                 '不要继续重试画布操作。可以保留已经完成的分析，但需要告诉用户先在 Photoshop 中恢复 DesignEcho UXP 连接，之后才能继续制作。'
                             ].join('\n'), 'photoshop-connection-lost', 'environment-recovery'));
-                    } else if (allFailuresReadOnly) {
+                    } else if (allFailuresOrdinaryReadOnly || allFailuresExplicitlyNonBlocking) {
                     // 「没有打开的文档」是确定性事实，不是读取故障：反复重读只会空转到无进展停机。
                     // 结构化字段优先；结果可能被包一层（data/result）或只回错误文本，故同时接受
                     // errorCode / documentState 与错误文案，避免识别落空（真机曾显示通用文案致模型空转重读）。
@@ -7398,7 +7382,16 @@ export class Agent {
                             );
                             this.toolCallLog.forEach((entry) => {
                                 if (entry.callId && nonBlockingCallIds.has(entry.callId)) {
-                                    entry.failureDisposition = 'non_blocking_observation';
+                                    if (isRuntimeReferenceSearchTool(entry.name)
+                                        || isRuntimeReferenceVisualTool(entry.name)) {
+                                        const disposition = this.resolveReferenceFailureDisposition(
+                                            entry.name,
+                                            entry.result
+                                        );
+                                        if (disposition) entry.failureDisposition = disposition;
+                                    } else {
+                                        entry.failureDisposition = 'non_blocking_observation';
+                                    }
                                 }
                             });
                         }
@@ -7899,13 +7892,22 @@ export class Agent {
             .map((observation) => String(observation.observationKey || '').trim())
             .filter(Boolean));
         const observationKeys = candidate.reviewSet.items.map((item) => item.observationKey);
-        writeTrustedVisualReviewArtifact(owner, {
+        const coreArtifactWritten = writeTrustedVisualReviewArtifact(owner, {
             receipt: candidate.receipt,
             reviewSet: candidate.reviewSet,
             historyStateRef: candidate.historyStateRef,
             observationKeys,
             reviewedObservationKeys: observationKeys.filter((key) => reviewedKeys.has(key)),
-            fullyReviewed: false
+            fullyReviewed: false,
+            supportingSourcePlacements: projectFinalSupportingSourceCarryover(
+                this.toolCallLog, candidate.historyStateRef, readTrustedVisualReviewArtifact(this.config.reflexionHandoff)?.supportingSourcePlacements,
+                this.finalQualityModelProtocolDigest?.evidenceScope.selectedSourceCompared === true
+            )
+        });
+        if (!coreArtifactWritten || !this.pendingTrustedFinalComparisonWrite) return;
+        writeTrustedFinalComparisonEvidenceAfterJudge({
+            targetOwner: owner,
+            ...this.pendingTrustedFinalComparisonWrite
         });
     }
 
@@ -7995,6 +7997,27 @@ export class Agent {
                     ...(image.observationKey ? { observationKey: image.observationKey } : {})
                 };
 
+                // A primary-model image is not a complete budget event by itself: the next
+                // provider request must still have one visual-analysis slot. Reserve both
+                // atomically before queuing pixels, including the degraded-thumbnail path.
+                if (strategy === 'primary-self' && !this.canQueuePrimaryVisualPresentation()) {
+                    writeAgentVisualObservation(item.output, {
+                        status: 'not_observed',
+                        reviewed: false,
+                        observer: 'none',
+                        strategy,
+                        toolName,
+                        ...observationSource,
+                        reason: 'visual_analysis_budget_exhausted'
+                    });
+                    this.messages.push(createRuntimeObservationMessage(
+                        `（${toolName} 产生了画布图像，但剩余视觉预算不足以同时发送这张图并完成下一次读图判断，因此这张画面没有被真实读取。不要基于臆想描述画面；请使用已有读回事实继续完成保存或如实说明待复核。）`,
+                        'tool-image-visual-presentation-budget-exhausted',
+                        { scope: `tool-visual:${toolName}`, origin: 'visual_observation' }
+                    ));
+                    continue;
+                }
+
                 const visionCandidateLimit = this.getPerformanceVisionCandidateLimit();
                 // 设计路径宪法：候选额度用尽不等于失明。主模型自己能看图时，超额部分改为缩略图读入
                 // （≤512px，成本约全图 1/6），只用于判断整体；再超过防失控硬顶或缩图失败才走下面的诚实路径。
@@ -8056,14 +8079,39 @@ export class Agent {
                 if (strategy === 'primary-self') {
                 this.toolImageObservationCount++;
                 const observation = writeAgentVisualObservation(item.output, {
-                    status: 'presented_to_primary',
+                    status: 'presented_to_primary', presentedModelTurn: this.iteration + 1,
                     reviewed: false,
                     observer: 'primary_model',
                     strategy,
                     toolName,
                     ...observationSource
                 });
-                if (observation) this.pendingPrimaryVisualObservations.push(observation);
+                if (observation) {
+                    this.pendingPrimaryVisualObservations.push(observation);
+                    if (observation.observationKey) {
+                        const presentedPixelDigest = writeAgentVisualObservationPresentationDigest({
+                            toolResult: item.output,
+                            observationKey: observation.observationKey,
+                            // image 已经过当前预算的真实缩图处理；摘要必须绑定即将加入
+                            // Provider contentBlocks 的最终 bytes，不能回看 Tool 原图。
+                            presentedImageData: image.data
+                        });
+                        if (presentedPixelDigest) {
+                            // Tool log 会在本轮末尾释放大像素；只为候选集/显式参考保留本 run
+                            // 的 Runtime-owned presentation 重放副本。该缓存不持久化、不排名，
+                            // 且必须与刚签发的主模型实际 presentation digest 完全一致。
+                            writeDesignFinalComparisonPresentationReplay({
+                                toolResult: item.output,
+                                toolName,
+                                observationKey: observation.observationKey,
+                                replayImage: {
+                                    data: image.data,
+                                    mediaType: image.mediaType
+                                }
+                            });
+                        }
+                    }
+                }
                 this.messages.push(createRuntimeObservationMessage('', 'tool-image-observation', {
                     scope: `tool-visual:${toolName}`,
                     origin: 'visual_observation',
@@ -8372,6 +8420,7 @@ export class Agent {
         stopReason?: unknown;
     }): boolean {
         const consumedVisualInput = this.primaryModelResponseConsumedVisualInput(response);
+        markPrimaryVisualObservationsConsumed({ observations: this.pendingPrimaryVisualObservations, modelTurn: this.iteration, consumed: consumedVisualInput });
         if (isProviderOutputTruncated(
             typeof response.stopReason === 'string' ? response.stopReason : undefined
         )) {
@@ -8380,7 +8429,6 @@ export class Agent {
         const parsed = consumePrimaryVisualObservationReviewBatch(response.content);
         response.content = parsed.content;
         if (!parsed.batch) return consumedVisualInput;
-
         const decisionsByKey = new Map(
             parsed.batch.decisions.map((decision) => [decision.observationKey, decision])
         );
@@ -10460,9 +10508,20 @@ export class Agent {
         modelId: string,
         messages: AgentMessage[],
         tools: ToolCall[] | any[],
-        options: { maxTokens?: number; temperature?: number; nativeTools?: ProviderNativeToolRequest[]; timeoutMs?: number },
+        options: {
+            maxTokens?: number;
+            temperature?: number;
+            nativeTools?: ProviderNativeToolRequest[];
+            timeoutMs?: number;
+            reasoningEffort?: AgentConfig['reasoningEffort'];
+        },
         performanceChargeKind: 'task' | 'provider_truncation_recovery' = 'task'
     ): ReturnType<CallModelFn> {
+        if (performanceChargeKind !== 'provider_truncation_recovery') {
+            // The directive must be added before message governance snapshots the request.
+            // Counting the imminent call avoids the former one-turn delay at the threshold.
+            this.maybePushBudgetDisciplineDirective(1);
+        }
         const governedMessages = prepareAgentMessagesForModel(messages);
         const visualAnalysis = this.initialImagesPendingPrimaryObservation
             || this.pendingPrimaryVisualObservations.length > 0;
@@ -10485,10 +10544,12 @@ export class Agent {
             this.beginPerformanceModelCall(visualAnalysis);
         }
         const startedAtMs = Date.now();
+        const promptShape = measureRuntimePromptShape({ messages: governedMessages, tools });
         try {
             const response = await this.config.callModelStream(modelId, governedMessages, tools as any, {
                 ...options,
                 thinkingEnabled: this.resolveProviderThinkingEnabled(),
+                reasoningEffort: options.reasoningEffort || this.config.reasoningEffort,
                 onThinkingDelta: (fullThinking) => {
                     this.emitVisibleReasoning(fullThinking, { source: 'provider_thinking_delta' });
                 },
@@ -10505,12 +10566,11 @@ export class Agent {
             this.recordModelAccounting({
                 startedAtMs,
                 succeeded: true,
-                usage: response.usage,
-                promptShape: measureRuntimePromptShape({ messages: governedMessages, tools })
+                usage: response.usage, promptShape, outcome: response
             });
             return response;
         } catch (error) {
-            this.recordModelAccounting({ startedAtMs, succeeded: false });
+            this.recordModelAccounting({ startedAtMs, succeeded: false, promptShape, outcome: error });
             this.initialImagesPendingPrimaryObservation = false;
             this.pendingPrimaryVisualObservations = [];
             throw error;
@@ -10630,7 +10690,10 @@ export class Agent {
         const userVisibleFinalMessage = unsupportedCompletionClaim
             ? '这次只给出一句完成声明，没有真正做出内容，也没有给出可以查看的结果，所以不能算完成。'
             : finalMessage;
-        this.config.callbacks.onMessage?.(userVisibleFinalMessage);
+        // 这里的正文仍只是模型候选终稿：buildRunResult 尚未完成 Final Judge、
+        // Photoshop history 收尾、完成话术对齐和 Reflexion handoff。它可以进入
+        // Agent 内部历史供结算使用，但不能经 onMessage 提前成为用户可见进展；
+        // ChatPanel 只在外层自主执行（含可能的 Reflexion）返回最终 result.message 后交付正文。
         this.messages.push({
             role: 'assistant',
             content: userVisibleFinalMessage
@@ -11008,6 +11071,9 @@ export class Agent {
         return {
             ...base,
             ...(this.config.agentTaskPlan ? { agentTaskPlan: this.config.agentTaskPlan } : {}),
+            ...(this.config.agenticArtifactContract
+                ? { agenticArtifactContract: this.config.agenticArtifactContract }
+                : {}),
             ...(referenceObservation ? { referenceObservation } : {})
         };
     }
@@ -11344,16 +11410,18 @@ export class Agent {
             || summary.status === 'awaiting_confirmation') {
             return undefined;
         }
-        // 只有 warning、没有 blocker 的 needs_review 通常是“保留现有成果并等待复核”，不是失败返工。
-        // 唯一例外是可靠 VLM 已给出合法的三层问题诊断：它足以提出一次 R4 有界重规划；低置信、
-        // 漏项、协议冲突和非法诊断没有 diagnosis，仍在这里终止并等待人工复核。Profile 只描述
-        // “缺什么”，不能签发恢复路线；只有已声明计划未闭合或写后观察门禁留下的明确补证动作可例外续跑。
+        // 只有 warning、没有 blocker 的 needs_review 是“保留现有成果并等待复核”，不是失败返工。
+        // 即使可靠 VLM 给出了合法三层诊断，它也只证明存在审美改进空间，不能把已交付版本升级成
+        // “重放原任务”的失败恢复授权。Profile 只描述“缺什么”，不能签发恢复路线；只有已声明
+        // 计划未闭合或写后观察门禁留下的明确补证动作可例外续跑。
         // 外层重入会创建新 Agent 且不会继承上一轮工具日志；此时重放原任务既不能补齐读取结果，
         // 还可能重复写入并用后续失败覆盖首轮成功结果。
-        if (isWarningOnlyNeedsReviewTerminal({
+        if (shouldStopWarningOnlyNeedsReviewReflexion({
             status: summary.status,
-            blockers: summary.blockers
-        }) && !hasActionableVlmDiagnosis && !hasActionableRequiredProfileIssue) {
+            blockers: summary.blockers,
+            hasActionableVlmDiagnosis,
+            hasActionableRequiredProfileIssue
+        })) {
             return undefined;
         }
 
@@ -11578,6 +11646,7 @@ export class Agent {
         if (runtimeActionPlanDeclaration) {
             data.runtimeActionPlanDeclaration = runtimeActionPlanDeclaration;
         }
+        attachRuntimeInteractiveCheckpointState({ data, actionPlanExecutionJournal: this.runtimeActionPlanExecutionJournal, workflowContinuationScope: this.readActiveWorkflowContinuationScope() });
         if (runtimeActionPlanReconciliation) {
             data.runtimeActionPlanReconciliation = runtimeActionPlanReconciliation;
         }
@@ -11589,7 +11658,6 @@ export class Agent {
         }
         return Object.keys(data).length ? data : undefined;
     }
-
     private emitReflexionHandoffStep(handoff: ReflexionHandoff): void {
         if (handoff.status !== 'reflexion_required') return;
         this.emitStep({
@@ -11658,10 +11726,10 @@ export class Agent {
             executionSummary.reflexionHandoff = reflexionHandoff;
             this.emitReflexionHandoffStep(reflexionHandoff);
         }
+        // Judge、最终 history 复核和摘要构建都发生在入口 checkpoint 之后；在收尾前
+        // 同步一次累计性能用量。plan-neutral 写入 unbound ledger，staged 写入 Session ledger。
+        this.synchronizeRuntimePerformanceUsage();
         if (this.config.runtimeStagePlan && this.runtimeSession) {
-            // Judge、最终 history 复核和摘要构建都发生在入口 checkpoint 之后；在 Session
-            // finalize 前再写一次累计快照，确保下一 generation 不会漏掉最后一段真实成本。
-            this.synchronizeRuntimePerformanceUsage();
             this.runtimeSession = finalizeRuntimeSession({
                 plan: this.config.runtimeStagePlan,
                 session: this.runtimeSession,
@@ -11692,6 +11760,7 @@ export class Agent {
             const completionProjection = projectRuntimeSessionCompletion({
                 executionStatus: executionSummary.status,
                 stageState: runtimeStageState,
+                sideEffectState: this.runtimeSession?.taskRun.sideEffectState?.status,
                 ...(reflexionHandoff ? { reflexionHandoff } : {})
             });
             executionSummary.status = completionProjection.status;
@@ -11704,6 +11773,9 @@ export class Agent {
             if (completionProjection.summaryText) {
                 executionSummary.summaryText = completionProjection.summaryText;
             }
+        }
+        if (!this.runtimeSession) {
+            executionSummary.runtimeAccountingDigest = this.runtimeAccounting.readDigest();
         }
         const runtimeDesignBriefEffectiveContract = this.resolveRuntimeDesignBriefEffectiveContract();
         const runtimeDesignBriefDigest = this.runtimeDesignBriefDeclaration
@@ -11879,20 +11951,14 @@ export class Agent {
                 visibility: 'user_process'
             });
         }
-        // 运行结束（完成 / 失败 / 取消 / 空转停机）就交还文档写入身份。此前只有几条特定路径释放，
-        // 用户点停止或熔断停机后写入身份仍挂在旧 TaskRun 上，同一会话里下一次运行的每个写工具都撞
-        // 「另一个 TaskRun 已持有当前 Photoshop 文档的写入身份」（2026-08-18 15:28 真机 SKU 全败）。
-        // 等待用户确认 / 补充输入时不释放：续跑要沿用同一 TaskRun 身份。
-        if (!awaitingUserResponse) {
-            const taskRunId = this.runtimeSession?.taskRun?.taskRunId;
-            if (taskRunId) {
-                try {
-                    releaseRuntimeTaskRunWriterBinding({ taskRunId });
-                } catch {
-                    // 释放失败不影响收尾
-                }
-            }
-        }
+        // adopt 后由 Agent 成为 writer 生命周期唯一 owner；但只有结构化终态证明可安全释放时
+        // 才交还 claim。needs_reobserve / operation unknown / 未知 mutation 继续由原 TaskRun 承接。
+        releaseRuntimeSessionWriterAfterAgentFinalization({
+            session: this.runtimeSession,
+            awaitingUserResponse,
+            executionStatus: executionSummary.status,
+            successfulMutationCalls: executionSummary.successfulMutationCalls
+        });
         const alignedVisibleMessage = alignUserVisibleCompletionMessage({ message: replySplit.body, executionStatus: executionSummary.status, requirements: executionSummary.taskCompletion?.required, designVerdict: executionSummary.designVerdict });
         const publicMessages = synchronizeLastAssistantCompletionMessage({ messages: this.messages, originalMessage: rawVisibleMessage, alignedMessage: alignedVisibleMessage });
         const runResult: AgentRunResult = {
@@ -11968,31 +12034,21 @@ export class Agent {
     private async readCurrentPhotoshopHistoryStateRefForQualityVerification(
         phase: 'pre_judge' | 'post_judge' | 'final_summary'
     ): Promise<PhotoshopHistoryStateRef | undefined> {
-        // 终局确定性测量同时需要画布尺寸（getDocumentInfo）与完整图层结构
-        // （getLayerHierarchy）。pre_judge 必须先补齐这组同 revision 事实，不能假定模型在
-        // 最后一次写入后已经主动读取了 hierarchy；post_judge 只复核 history 是否变化。
-        // final_summary 同样取得完整事实包。三次读取恰好落在既有每轮 Host 质量复核上限内，
-        // 只闭合事实，不取得设计判断权。
-        const toolNames = phase === 'post_judge'
-            ? ['getDocumentInfo']
-            : ['getDocumentInfo', 'getLayerHierarchy'];
+        const toolRequests = buildDesignQualityVerificationToolRequests(phase);
         let verifiedHistoryStateRef: PhotoshopHistoryStateRef | undefined;
-        for (const toolName of toolNames) {
+        for (const request of toolRequests) {
             const startedAtMs = Date.now();
-            const result = await this.executeToolWithDiagnostics(toolName, {}, {
+            const result = await this.executeToolWithDiagnostics(request.name, request.arguments, {
                 budgetClass: 'harness_quality_verification'
             });
-            if (this.runtimeSession) {
-                this.runtimeSession = recordRuntimeSessionToolCall({
-                    session: this.runtimeSession,
-                    durationMs: Date.now() - startedAtMs,
-                    succeeded: result?.success !== false
-                });
-            }
+            this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
+                durationMs: Date.now() - startedAtMs,
+                succeeded: result?.success !== false
+            });
             const qualityCheckElapsedMs = this.readRunElapsedMsOrUndefined();
             this.toolCallLog.push({
-                name: toolName,
-                arguments: {},
+                name: request.name,
+                arguments: request.arguments,
                 result,
                 origin: 'harness_quality_verification',
                 qualityVerificationPhase: phase,
@@ -12080,15 +12136,7 @@ export class Agent {
         if (!this.canRunDesignQualityVerification()) return null;
         // 仅在「产出了可判画面」的收尾态做昂贵视觉判定：完成/到预算/超限/无进展（后两者也利于 reflexion）；
         // 阻断/出错/取消/未成形/待用户确认等态不判（无可判产物或不应耗费模型调用）。
-        const JUDGEABLE_STOP_REASONS: AgentStopReason[] = [
-            'final_response',
-            'tool_budget_final_response',
-            'max_iterations',
-            // 预算耗尽与 max_iterations 拆分后一并保留为可判态（有产物时利于评价与 reflexion）。
-            'performance_budget',
-            'no_progress'
-        ];
-        if (!JUDGEABLE_STOP_REASONS.includes(stopReason)) return null;
+        if (!isFinalQualityReviewStopReason(stopReason)) return null;
         const evaluationProfile = this.resolveRuntimeEvaluationProfile();
         // 有 manifest-selected Evaluation Profile 时由 Skill 自己定义是否需要视觉断言；
         // 未迁移任务才回退旧 creative_design 完成契约。这里不再从任务文本重判已选 Skill。
@@ -12109,9 +12157,7 @@ export class Agent {
         if (!reviewCandidate) return null;
 
         // 最终视觉裁决继续使用同一个 Agent 模型；目录未明确 supportsVision=true 时诚实跳过。
-        const judgeModelId = isAgentMultimodalModelId(this.config.modelId)
-            ? this.config.modelId
-            : '';
+        const judgeModelId = resolveFinalQualityJudgeModelId(this.config.modelId);
         if (!judgeModelId) return null;
 
         const pending = evaluationProfile
@@ -12126,7 +12172,8 @@ export class Agent {
         const preJudgeHistoryStateRef = await this.readCurrentPhotoshopHistoryStateRefForQualityVerification(
             'pre_judge'
         );
-        if (!samePhotoshopHistoryStateRef(reviewCandidate.historyStateRef, preJudgeHistoryStateRef)) {
+        if (!preJudgeHistoryStateRef
+            || !samePhotoshopHistoryStateRef(reviewCandidate.historyStateRef, preJudgeHistoryStateRef)) {
             this.emitStaleDesignQualityObservation(
                 '终审画面集合与视觉评审前的 Photoshop 当前版本不一致，已停止本次判定；需要重新观察当前画面。'
             );
@@ -12138,203 +12185,71 @@ export class Agent {
         const surfaceSnapshot = extractFreshDesignSurfaceSnapshotFromToolResults(this.toolCallLog, {
             requiredHistoryStateRef: preJudgeHistoryStateRef
         });
-        if (!surfaceSnapshot) return null;
-
-        const briefParts: string[] = [];
-        const brief = this.runtimeDesignBriefDeclaration?.readiness === 'ready'
-            ? this.runtimeDesignBriefDeclaration.payload
-            : undefined;
-        appendDesignJudgeContextPart(briefParts, '目标', brief?.taskGoal, 180);
-        appendDesignJudgeContextPart(briefParts, '受众', brief?.targetAudience, 180);
-        appendDesignJudgeContextPart(briefParts, '媒介', brief?.channel, 80);
-        appendDesignJudgeContextPart(briefParts, '交付', brief?.deliverables, 1600, 16, 100);
-        appendDesignJudgeContextPart(briefParts, '输出要求', brief?.outputRequirements, 1600, 16, 100);
-        appendDesignJudgeContextPart(briefParts, '约束', brief?.constraints, 1600, 16, 100);
-
-        const strategyParts: string[] = [];
-        const strategyDeclaration = this.runtimeDesignStrategyDeclaration?.readiness === 'ready'
-            ? this.runtimeDesignStrategyDeclaration
-            : undefined;
-        const strategy = strategyDeclaration?.payload;
-        const strategyDigest = strategyDeclaration
-            ? buildRuntimeDesignStrategyDigest(strategyDeclaration)
-            : undefined;
-        appendDesignJudgeContextPart(strategyParts, '首要目标', strategyDigest?.primaryGoal, 180);
-        appendDesignJudgeContextPart(strategyParts, '受众判断', strategyDigest?.targetAudienceSummary, 180);
-        appendDesignJudgeContextPart(strategyParts, '主信息', strategyDigest?.primaryMessage, 180);
-        appendDesignJudgeContextPart(strategyParts, '策略约束', strategy?.constraints, 1440, 12, 120);
-        appendDesignJudgeContextPart(strategyParts, '禁止宣称', strategy?.copyDirection.prohibitedClaims, 960, 8, 120);
-        appendDesignJudgeContextPart(strategyParts, '氛围', strategyDigest?.moodKeywords, 960, 8, 120);
-        appendDesignJudgeContextPart(strategyParts, '配色意图', strategy?.visualDirection.paletteIntent, 960, 8, 120);
-        appendDesignJudgeContextPart(strategyParts, '字体意图', strategy?.visualDirection.typographyIntent, 960, 8, 120);
-        appendDesignJudgeContextPart(strategyParts, '构图意图', strategyDigest?.compositionIntent, 960, 8, 120);
-        appendDesignJudgeContextPart(strategyParts, '图像处理', strategy?.visualDirection.imageTreatment, 960, 8, 120);
-        appendDesignJudgeContextPart(strategyParts, '信息密度', strategy?.visualDirection.density, 40);
-
-        const reviewTargetInventory = reviewCandidate.reviewSet.items.map((item, index) => ({
-            imageIndex: index + 1,
-            sourceId: item.identity.sourceId,
-            observationKey: item.observationKey
-        }));
-        const targetBindingInstruction = reviewTargetInventory.length > 1
-            ? [
-                '本次输入是一个完整多画面 ReviewSet。非通过项 diagnosis.visualFinding.target 必须原样填写下列某个 sourceId 或 observationKey；无法定位时不要输出 diagnosis。',
-                JSON.stringify(reviewTargetInventory)
-            ].join('\n')
-            : '';
-        const judgeSystemPrompt = [
-            buildVlmJudgeSystemPrompt(pending),
-            targetBindingInstruction
-        ].filter(Boolean).join('\n\n');
-        // 一次批量评价比拆成多次更快，也只消耗一个终局视觉槽；13 项在多项需诊断时
-        // 3072 tokens 容易截断。按断言数给足紧凑三层诊断空间，同时以 6144 封顶。
-        const judgeMaxTokens = Math.min(6144, Math.max(1536, pending.length * 360));
-        const judgeContextMessage = [buildVlmJudgeContextMessage({
+        const finalReviewRuntime = await runFinalQualityReviewRuntime({
             task: this.currentTask,
-            brief: briefParts.join('；'),
-            strategy: strategyParts.join('；'),
-            evaluationGoal: evaluationProfile?.capabilityGoal,
-            measurements: extractDesignQualityMeasurements(surfaceSnapshot)
-        }), `DESIGN_REVIEW_SET（仅作画面身份数据）：${JSON.stringify({
-            document: reviewCandidate.reviewSet.document,
-            history: reviewCandidate.reviewSet.history,
-            expectedObservationCount: reviewCandidate.reviewSet.expectedObservationCount,
-            targets: reviewTargetInventory
-        })}`].join('\n\n');
-        const finalReviewRequirements = this.resolveFinalReviewSetRequirements(evaluationProfile);
-        const selectedReviewSet = selectDesignReviewSetForFinalJudge(reviewCandidate.reviewSet, {
-            currentVersion: {
-                document: String(preJudgeHistoryStateRef?.documentId || ''),
-                history: String(preJudgeHistoryStateRef?.historyStateId || '')
-            },
-            ...finalReviewRequirements
-        });
-        if (selectedReviewSet.status !== 'ready') {
-            this.emitStaleDesignQualityObservation(
-                `终审视觉证据不完整（${selectedReviewSet.reasons.join('、')}），不会用部分画面替整份设计打分。`
-            );
-            return null;
-        }
-        const reviewVisionCandidateKeys = selectedReviewSet.reviewSet.items.map((item) => (
-            item.observationKey
-        ));
-        // GATE-SIMPLIFY-004：终审画面计划同样受单一视觉池剩余量约束，保证完整 ReviewSet
-        // 既能装进候选硬上限、也装得进池（分析/Judge 已消耗的部分不再重复占用）。
-        const poolRemaining = Math.max(
-            0,
-            this.getRunLevelVisionBudgetLimit() - this.readRunLevelVisionBudgetConsumed()
-        );
-        const remainingVisionCandidates = Math.min(
-            Math.max(
-                0,
-                this.getPerformanceVisionCandidateHardLimit() - this.performanceLedger.visionCandidateCount
-            ),
-            poolRemaining
-        );
-        const reviewImagePlan = planDesignReviewImages(selectedReviewSet.reviewSet, {
-            maxTotalImages: remainingVisionCandidates
-        });
-        if (reviewImagePlan.status !== 'ready') {
-            this.emitStaleDesignQualityObservation(
-                `终审需要 ${reviewImagePlan.requiredImages} 张画面，但本轮只剩 ${reviewImagePlan.availableImages} 个视觉候选额度；本次不裁图、不伪造通过。`
-            );
-            return null;
-        }
-        // 版本复核本身也会消耗时间，Judge timeout 必须在复核之后按物理 soft deadline
-        // 重新计算；不能使用复核前的旧余额再跨过本轮截止时间。
-        const configuredSoftTimeBudgetMs = this.config.performanceBudget?.softTimeBudgetMs;
-        const elapsedAfterPreJudgeMs = this.readPerformanceActiveElapsedMs();
-        const remainingJudgeTimeMs = typeof configuredSoftTimeBudgetMs === 'number'
-            && Number.isFinite(configuredSoftTimeBudgetMs)
-            ? configuredSoftTimeBudgetMs - elapsedAfterPreJudgeMs
-            : AGENT_MODEL_REQUEST_TIMEOUT_MS;
-        if (remainingJudgeTimeMs <= 0) {
-            this.emitStaleDesignQualityObservation(
-                '终局视觉评审的物理时间预算已耗尽，本次不发起越过截止时间的模型调用。'
-            );
-            return null;
-        }
-        const judgeTimeoutMs = Math.max(
-            1,
-            Math.min(AGENT_MODEL_REQUEST_TIMEOUT_MS, Math.floor(remainingJudgeTimeMs))
-        );
-        const reviewImageBlocks: ContentBlock[] = [];
-        for (let index = 0; index < reviewImagePlan.items.length; index += 1) {
-            const reviewItem = reviewImagePlan.items[index];
-            const image = reviewCandidate.images[index];
-            if (!image?.data) return null;
-            reviewImageBlocks.push({
-                type: 'text',
-                text: `画面 ${index + 1}｜sourceId=${reviewItem.identity.sourceId}｜observationKey=${reviewItem.observationKey}`
-            });
-            reviewImageBlocks.push({
-                type: 'image',
-                data: image.data,
-                mediaType: image.mediaType
-            });
-        }
-
-        try {
-            const response = await this.callModelWithAccounting(
-                judgeModelId,
-                [
-                    { role: 'system', content: judgeSystemPrompt },
-                    {
-                        role: 'user',
-                        content: judgeContextMessage,
-                        contentBlocks: [
-                            { type: 'text', text: judgeContextMessage },
-                            ...reviewImageBlocks
-                        ]
-                    }
-                ],
-                [],
-                { maxTokens: judgeMaxTokens, temperature: 0.2, timeoutMs: judgeTimeoutMs },
-                {
+            toolCallLog: this.toolCallLog,
+            reviewCandidate,
+            preJudgeHistoryStateRef,
+            surfaceSnapshot: surfaceSnapshot || undefined,
+            pendingAssertions: pending,
+            evaluationProfile,
+            finalReviewRequirements: this.resolveFinalReviewSetRequirements(evaluationProfile),
+            designBrief: this.runtimeDesignBriefDeclaration,
+            designStrategy: this.runtimeDesignStrategyDeclaration,
+            referenceBrief: this.runtimeReferenceBriefDeclaration,
+            mutationBoundDesignIntents: this.mutationBoundDesignIntents,
+            remainingVisionCandidates: this.resolvePerformanceVisionCallCapacity(
+                true,
+                'final_quality_judge'
+            ).remainingCandidateCount,
+            taskRunId: String(this.config.runtimeSessionIdentity?.sessionId || '').trim(),
+            reflexionHandoff: this.config.reflexionHandoff,
+            configuredSoftTimeBudgetMs: this.config.performanceBudget?.softTimeBudgetMs,
+            maxRequestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS,
+            readActiveElapsedMs: () => this.readPerformanceActiveElapsedMs(),
+            callModel: (budgetClass, { messages, ...requestOptions }, presentation) => (
+                this.callModelWithAccounting(judgeModelId, messages, [], requestOptions, {
                     visualAnalysis: true,
-                    budgetClass: 'final_quality_judge',
-                    // Judge 直接把完整 ReviewSet 发给模型，不经过普通 Tool-image 附件选择；
-                    // 即使 Critic 此前看过同一个 observationKey，像素再次发送给 provider 仍会
-                    // 产生真实图像输入费用，因此这里按 presentation 全额计入请求级总账。
-                    directVisionCandidateCount: reviewImagePlan.totalImages,
-                    directVisionCandidateKeys: reviewVisionCandidateKeys,
+                    budgetClass,
+                    directVisionCandidateCount: presentation.candidateCount,
+                    directVisionCandidateKeys: presentation.candidateKeys,
                     billDirectVisionCandidatesByPresentation: true
-                }
-            );
-            const postJudgeHistoryStateRef = await this.readCurrentPhotoshopHistoryStateRefForQualityVerification(
-                'post_judge'
-            );
-            if (!samePhotoshopHistoryStateRef(reviewCandidate.historyStateRef, postJudgeHistoryStateRef)) {
-                this.emitStaleDesignQualityObservation(
-                    '视觉评审期间 Photoshop 画面版本发生变化，模型返回已作废；不会把旧版本评分并入当前结果。'
-                );
-                return null;
-            }
-            const results = parseVlmJudgeResponse(String(response?.content || ''), pending);
+                })
+            ),
+            readPostModelHistoryStateRef: () => (
+                this.readCurrentPhotoshopHistoryStateRefForQualityVerification('post_judge')
+            ),
+            isActionableDiagnosis: (result) => (
+                this.isActionableVlmDiagnosisForLatestReviewSet(result)
+            ),
+            getResourcePreview: typeof window !== 'undefined'
+                ? window.designEcho?.getResourcePreview
+                : undefined
+        }, judgeModelId);
+        const reviewOutcome = projectFinalQualityReviewOutcome({
+            runtimeResult: finalReviewRuntime,
+            judgeModelId,
+            pendingAssertionCount: pending.length
+        });
+        if (reviewOutcome.protocolDigest) {
+            this.finalQualityModelProtocolDigest = reviewOutcome.protocolDigest;
+        }
+        if (reviewOutcome.pendingTrustedComparisonWrite) {
+            this.pendingTrustedFinalComparisonWrite =
+                reviewOutcome.pendingTrustedComparisonWrite;
+        }
+        if (reviewOutcome.staleDetail) {
+            this.emitStaleDesignQualityObservation(reviewOutcome.staleDetail);
+        }
+        for (const step of reviewOutcome.steps) {
             this.emitStep({
-                kind: 'observation',
-                title: '设计质量已视觉判定',
-                detail: `视觉判官（${judgeModelId}）已查看 ${reviewImagePlan.totalImages} 个同版本画面，并逐条评了 ${pending.length} 项主观设计标准。`,
-                status: 'success',
+                ...step,
                 iteration: this.iteration + 1,
                 maxIterations: this.config.maxIterations,
                 audience: 'agent'
             });
-            return results;
-        } catch (error: any) {
-            // 调用失败 → 诚实退回纯确定性裁决（不把"没判过"伪造成"判过"）
-            this.emitStep({
-                kind: 'warning',
-                title: '视觉质量判定未完成',
-                detail: `视觉判官调用失败，本次设计质量仅用确定性指标评估：${error?.message || error}`,
-                status: 'error',
-                iteration: this.iteration + 1,
-                maxIterations: this.config.maxIterations,
-                audience: 'agent',
-                issue: 'design_quality_vlm_unavailable'
-            });
-            return null;
         }
+        return reviewOutcome.results;
     }
 
     private buildExecutionSummary(
@@ -12564,9 +12479,6 @@ export class Agent {
                     lastMutationIndex
                 });
                 const profileCheckKeys = new Set(effectiveEvaluationProfile.checks.map((check) => check.key));
-                const freshStructureChecks = effectiveEvaluationProfile.checks.filter((check) => (
-                    check.runtime?.evidence === 'fresh_structure'
-                ));
                 const freshVisualChecks = effectiveEvaluationProfile.checks.filter((check) => (
                     check.runtime?.evidence === 'fresh_visual'
                 ));
@@ -12589,42 +12501,36 @@ export class Agent {
                             })
                     })
                     : undefined;
-                const verificationRecords: DesignEvaluationVerificationRecord[] = [
-                    ...(surfaceSnapshot && !evaluatesScopedChanges ? freshStructureChecks.map((check) => ({
-                        key: check.key,
-                        status: 'passed' as const,
-                        source: 'runtime_observation' as const,
-                        verificationRef: 'runtime:fresh-structure-snapshot'
-                    })) : []),
-                    ...(hasFreshVisualEvaluation ? freshVisualChecks.map((check) => ({
-                        key: check.key,
-                        status: 'passed' as const,
-                        source: 'runtime_observation' as const,
-                        verificationRef: 'runtime:profile-vlm-evaluation'
-                    })) : []),
-                    ...(evaluatesScopedChanges
-                        ? buildRuntimeScopedChangeVerificationRecords(this.toolCallLog, {
-                            exactPropertyScope: this.config.runtimeExactPropertyScope,
-                            requiredHistoryStateRef: verifiedCurrentHistoryStateRef
-                        }).filter((record) => profileCheckKeys.has(record.key))
-                        : []),
-                    ...(evaluatesScopedChanges
-                        ? buildRuntimeScopedVisualReviewVerificationRecords(this.toolCallLog, {
-                            hasFreshVisualEvaluation
-                        }).filter((record) => profileCheckKeys.has(record.key))
-                        : []),
-                    ...(wholeTaskExecutionClosure ? declaredPlanClosureChecks.map((check) => ({
-                        key: check.key,
-                        status: wholeTaskExecutionClosure.complete
-                            ? 'passed' as const
-                            : 'needs_review' as const,
-                        source: 'runtime_observation' as const,
-                        verificationRef: wholeTaskExecutionClosure.complete
-                            ? 'runtime:whole-task-execution-closure:passed'
-                            : 'runtime:whole-task-execution-closure:pending'
-                    })) : []),
-                    ...adaptedBusinessResults.records
-                ];
+                const verificationRecords = reconcileDesignFinalReviewStructureVerificationRecords(this.toolCallLog, effectiveEvaluationProfile, Boolean(surfaceSnapshot && !evaluatesScopedChanges), [
+                        ...(hasFreshVisualEvaluation ? freshVisualChecks.map((check) => ({
+                            key: check.key,
+                            status: 'passed' as const,
+                            source: 'runtime_observation' as const,
+                            verificationRef: 'runtime:profile-vlm-evaluation'
+                        })) : []),
+                        ...(evaluatesScopedChanges
+                            ? buildRuntimeScopedChangeVerificationRecords(this.toolCallLog, {
+                                exactPropertyScope: this.config.runtimeExactPropertyScope,
+                                requiredHistoryStateRef: verifiedCurrentHistoryStateRef
+                            }).filter((record) => profileCheckKeys.has(record.key))
+                            : []),
+                        ...(evaluatesScopedChanges
+                            ? buildRuntimeScopedVisualReviewVerificationRecords(this.toolCallLog, {
+                                hasFreshVisualEvaluation
+                            }).filter((record) => profileCheckKeys.has(record.key))
+                            : []),
+                        ...(wholeTaskExecutionClosure ? declaredPlanClosureChecks.map((check) => ({
+                            key: check.key,
+                            status: wholeTaskExecutionClosure.complete
+                                ? 'passed' as const
+                                : 'needs_review' as const,
+                            source: 'runtime_observation' as const,
+                            verificationRef: wholeTaskExecutionClosure.complete
+                                ? 'runtime:whole-task-execution-closure:passed'
+                                : 'runtime:whole-task-execution-closure:pending'
+                        })) : []),
+                        ...adaptedBusinessResults.records
+                ]);
                 designEvaluationProfileResult = evaluateDesignEvaluationProfile({
                     profile: effectiveEvaluationProfile,
                     assertionResults,
@@ -12759,6 +12665,7 @@ export class Agent {
             ...(designScorecard ? { designScorecard } : {}),
             ...(designEvaluationProfileDigest ? { designEvaluationProfileDigest } : {}),
             ...(designVerdict ? { designVerdict } : {}),
+            ...(this.finalQualityModelProtocolDigest ? { finalQualityModelProtocolDigest: this.finalQualityModelProtocolDigest } : {}),
             summaryText: stopReason === 'tool_preflight_blocked'
                 ? (completionObservationGate.mutationCount > 0
                     ? '这稿已经改了一部分，但后面暂时做不下去了，你先看看现在的。'
@@ -12958,7 +12865,6 @@ export class Agent {
                     break;
             }
         }
-
         const lines = [outcome, versionState, nextAction].filter(Boolean);
         return {
             title,

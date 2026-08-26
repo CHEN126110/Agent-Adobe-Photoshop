@@ -110,9 +110,30 @@ export {
     type RuntimePlanningDeclarations
 } from './runtime-planning-context-seed';
 export {
+    RUNTIME_INTERACTIVE_CHECKPOINT_VERSION,
+    RUNTIME_INTERACTIVE_HANDOFF_IDENTITY_VERSION,
+    RUNTIME_INTERACTIVE_REENTRY_VERSION,
+    buildRuntimeInteractiveReentryTask,
+    createRuntimeInteractiveBoundaries,
+    isRuntimeInteractiveAgentHandoff,
+    projectRuntimeInteractiveWorkflowResult,
+    shouldDeferRuntimeArtifactFinalizationForInteraction,
+    validateRuntimeInteractiveCheckpoint,
+    validateRuntimeInteractiveReentry
+} from './runtime-interactive-reentry';
+export type {
+    RuntimeInteractiveActionPlanJournalCheckpoint,
+    RuntimeInteractiveBoundaries,
+    RuntimeInteractiveCheckpoint,
+    RuntimeInteractiveHandoffIdentity,
+    RuntimeInteractiveReentry,
+    RuntimeInteractiveValidation
+} from './runtime-interactive-reentry';
+export {
     RUNTIME_SESSION_DIGEST_VERSION,
     RUNTIME_SESSION_IDENTITY_VERSION,
     RUNTIME_SESSION_VERSION,
+    RUNTIME_SKILL_EFFECT_RECONCILIATION_VERSION,
     RUNTIME_TASK_RUN_INTERACTION_BINDING_VERSION,
     RUNTIME_TASK_RUN_STATE_VERSION,
     advanceRuntimeSessionGeneration,
@@ -130,8 +151,11 @@ export {
     finalizeRuntimeSession,
     observeRuntimeSessionDocumentRevision,
     projectRuntimeSessionCompletion,
+    markRuntimeSessionSkillEffectUnknown,
+    reconcileRuntimeSessionSkillEffectUnknown,
     recordRuntimeSessionNodeResultUnbound,
     recordRuntimeSessionOperationResult,
+    recordRuntimeSessionSkillRevisionTransition,
     recordRuntimeSessionModelCall,
     recordRuntimeSessionRecoveryAttempt,
     recordRuntimeSessionToolCall,
@@ -156,22 +180,29 @@ export type {
     RuntimeTaskRunNodeExecutionRef,
     RuntimeTaskRunNodeState,
     RuntimeTaskRunOperationResultRef,
+    RuntimeTaskRunSkillRevisionProjectionRef,
     RuntimeTaskRunPendingInteraction,
     RuntimeTaskRunResumeDecision,
+    RuntimeTaskRunSideEffectState,
     RuntimeTaskRunState,
     RuntimeTaskRunStatus,
     RuntimeTaskRunWriterClaim,
-    RuntimeTaskRunWriterDecision
+    RuntimeTaskRunWriterDecision,
+    RuntimeSkillEffectReconciliationDecision,
+    RuntimeSkillEffectReconciliationReceipt
 } from './runtime-session';
 export {
     buildRuntimeAccountingDigest,
+    cloneRuntimeAccountingDigest,
+    cloneRuntimeAccountingLedger,
     createRuntimeAccountingLedger,
     readRuntimePerformanceUsage,
     recordRuntimePerformanceUsage,
     recordRuntimeModelCall,
     recordRuntimeRecoveryAttempt,
     recordRuntimeReflexion,
-    recordRuntimeToolCall
+    recordRuntimeToolCall,
+    validateRuntimeAccountingDigest
 } from './runtime-accounting';
 export type {
     RuntimeAccountingDigest,
@@ -207,6 +238,7 @@ export {
     DETAIL_PAGE_METHOD_KNOWLEDGE_ID,
     MAIN_IMAGE_METHOD_KNOWLEDGE_ID,
     SKU_COLOR_CARD_METHOD_KNOWLEDGE_ID,
+    SKU_TEMPLATE_METHOD_KNOWLEDGE_ID,
     SKU_BATCH_METHOD_KNOWLEDGE_ID,
     buildDesignMethodKnowledgeContext,
     listDesignMethodKnowledgeDefinitions,
@@ -231,6 +263,7 @@ export {
     evaluateDesignEvaluationProfile,
     getDesignEvaluationProfileAssertions,
     getDesignEvaluationProfileById,
+    getDesignEvaluationProfileScoringAssertions,
     getDesignEvaluationProfileVlmAssertions,
     isDesignEvaluationProfileApplicableToTask,
     listDesignEvaluationProfileCapabilityProviders,

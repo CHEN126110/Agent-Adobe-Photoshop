@@ -83,21 +83,27 @@ function alignUnverifiedClaimsInEditableSpan(value: string): { text: string; cha
         };
 
         // 只处理以句末、并列连接词或标点闭合的明确声明，避免把文件名、用途说明或限定表达当承诺。
+        // “主图已完成复核并交付”这类短句没有“视觉/质量”等限定词；质量裁决仍为
+        // needs_review 时只保留已经发生的交付事实，不能让 plain `复核` 漏过事实对齐。
         replaceClaim(
-            /((?:已|已经)?(?:全部|整体)?(?:完成|做好|做完|制作完成|处理完成))(?:了)?[ \t]*(?:并|且|、)[ \t]*(?:已经|已)?(?:完成)?(?:最终)?(?:视觉|画面|设计|质量|成品)?复核(?:完成|完毕|通过)?(?=[ \t]*(?:$|并|且|同时|因此|所以))/gu,
+            /(?:已经|已)完成(?:最终)?(?:(?:视觉|画面|设计|质量|成品))?复核(?:完成|完毕|通过)?[ \t]*(?:并|且)[ \t]*(?:已经|已)?(?=交付)/gu,
+            '已'
+        );
+        replaceClaim(
+            /((?:已|已经)?(?:全部|整体)?(?:完成|做好|做完|制作完成|处理完成))(?:了)?[ \t]*(?:并|且|、)[ \t]*(?:已经|已)?(?:完成)?(?:最终)?(?:视觉|画面|设计|质量|成品)?复核(?:完成|完毕|通过)?(?=[ \t]*(?:$|并|且|同时|因此|所以|:|：))/gu,
             (_match, completedClaim) => String(completedClaim || '')
         );
         replaceClaim(
-            /(?:已经|已)(?:完成)?(?:最终)?(?:视觉|画面|设计|质量|成品)复核(?:完成|完毕|通过)?(?=[ \t]*(?:$|并|且|同时|因此|所以))/gu,
+            /(?:已经|已)(?:完成)?(?:最终)?(?:视觉|画面|设计|质量|成品)复核(?:完成|完毕|通过)?(?=[ \t]*(?:$|并|且|同时|因此|所以|:|：))/gu,
             ''
         );
         replaceClaim(
-            /(?:最终)?(?:视觉|画面|设计|质量|成品)复核(?:已经|已)?(?:完成|完毕|通过)(?=[ \t]*(?:$|并|且|同时|因此|所以))/gu,
+            /(?:最终)?(?:视觉|画面|设计|质量|成品)复核(?:已经|已)?(?:完成|完毕|通过)(?=[ \t]*(?:$|并|且|同时|因此|所以|:|：))/gu,
             ''
         );
-        replaceClaim(/(?:最终)?复核(?:已经|已)?通过(?=[ \t]*$)/gu, '');
+        replaceClaim(/(?:最终)?复核(?:已经|已)?通过(?=[ \t]*(?:$|:|：))/gu, '');
         replaceClaim(
-            /(?:经|经过)(?:最终)?(?:视觉|画面|设计|质量|成品)复核(?:确认|检查|通过)?(?=[ \t]*(?:$|并|且|同时|因此|所以))/gu,
+            /(?:经|经过)(?:最终)?(?:视觉|画面|设计|质量|成品)复核(?:确认|检查|通过)?(?=[ \t]*(?:$|并|且|同时|因此|所以|:|：))/gu,
             ''
         );
         replaceClaim(
@@ -176,9 +182,11 @@ function alignUnprovenDesignQualityClaims(message: string, notice: string): stri
         changed = changed || line.changed;
         return line.text;
     }).join('');
-    if (!changed) return message;
-
     if (aligned.includes(notice)) return aligned;
+    // 正则只能清理已知的冲突措辞，不能穷举“审核完毕 / 检查结束 / 已看过”等自然语言。
+    // 结构化 verdict 才是事实源：只要正文没有诚实说明质量仍待确认，就追加一次状态事实。
+    // 这样新措辞最多形成“模型说完成 + 系统明确待复核”的可见冲突，不会继续静默假完成。
+    if (!changed && clauseAlreadyStatesQualityUncertainty(String(message || ''))) return message;
     return [aligned, notice].filter(Boolean).join('\n\n');
 }
 
@@ -186,6 +194,30 @@ function resolveUnprovenDesignQualityNotice(status: unknown): string | undefined
     if (status === 'passed_unverified') return UNVERIFIED_DESIGN_QUALITY_NOTICE;
     if (status === 'needs_review') return NEEDS_REVIEW_DESIGN_QUALITY_NOTICE;
     return undefined;
+}
+
+export type AgentExecutionPresentationDisposition = 'result' | 'failure';
+
+/**
+ * UI 展示优先消费结构化执行状态，不能把 `needs_review` 因顶层
+ * `success=false` 误排成故障消息。这个函数只决定展示通道，不改写
+ * Run 的 success、blocker、质量裁决或完成事实。
+ */
+export function resolveAgentExecutionPresentationDisposition(input: {
+    resultSuccess: boolean;
+    executionStatus?: unknown;
+}): AgentExecutionPresentationDisposition {
+    switch (input.executionStatus) {
+        case 'completed':
+        case 'awaiting_confirmation':
+        case 'needs_review':
+            return 'result';
+        case 'failed':
+        case 'cancelled':
+            return 'failure';
+        default:
+            return input.resultSuccess ? 'result' : 'failure';
+    }
 }
 
 export function synchronizeLastAssistantCompletionMessage<T extends { role?: unknown; content?: unknown }>(input: {

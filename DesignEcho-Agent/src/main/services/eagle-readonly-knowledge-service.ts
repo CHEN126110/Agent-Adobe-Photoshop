@@ -35,6 +35,12 @@ interface EagleToolCallResult {
     body: unknown;
 }
 
+interface EagleKeywordQueryBatchResult {
+    items: unknown[];
+    successfulRequestCount: number;
+    primaryResultCount: number;
+}
+
 const EAGLE_AI_STATUS_TIMEOUT_MS = 1200;
 const EAGLE_AI_SEARCH_TIMEOUT_MS = 3000;
 const EAGLE_KEYWORD_FALLBACK_TIMEOUT_MS = 1500;
@@ -299,10 +305,12 @@ export class EagleReadonlyKnowledgeService {
         }
 
         const warnings: string[] = [];
-        let searchCall: EagleMcpToolCallBody | undefined;
+        if (shouldAttemptAiSearch(query)) {
+            return searchEagleWithOptionalAi(query, settings, fetchImpl);
+        }
         const deadlineAt = Date.now() + settings.timeoutMs;
         try {
-            searchCall = await chooseSearchCall(query, settings, fetchImpl, warnings, deadlineAt);
+            const searchCall = buildDirectSearchCall(query);
             const primaryTimeoutMs = resolveSearchCallTimeout(searchCall.tool, deadlineAt);
             const result = await callEagleTool(
                 settings,
@@ -317,72 +325,43 @@ export class EagleReadonlyKnowledgeService {
                     `Eagle 只读知识搜索失败：HTTP ${result.status}。`
                 );
             }
+            const primaryValue = unwrapEagleResult(result.body);
+            if (searchCall.tool === 'item_query'
+                && query.query
+                && extractEagleItems(primaryValue).length === 0) {
+                const keywordQueries = buildKeywordFallbackQueries(query.query)
+                    .filter((keyword) => keyword !== String(query.query || '').trim());
+                const fallback = await runKeywordFallbackQueries({
+                    queries: keywordQueries,
+                    limit: clampSearchLimit(query.limit),
+                    settings,
+                    fetchImpl,
+                    warnings,
+                    deadlineAt
+                });
+                if (fallback.items.length > 0) {
+                    warnings.push(
+                        `Eagle 整句关键词没有命中，已用 ${keywordQueries.join('、')} 做宽松只读召回；候选仍由 Agent 观察后选择。`
+                    );
+                    return normalizeEagleReadonlyKnowledgeResults(
+                        query,
+                        fallback.items,
+                        {
+                            sourceTool: 'item_query',
+                            warnings
+                        }
+                    );
+                }
+            }
             return normalizeEagleReadonlyKnowledgeResults(
                 query,
-                unwrapEagleResult(result.body),
+                primaryValue,
                 {
                     sourceTool: searchCall.tool,
                     warnings
                 }
             );
         } catch (error) {
-            // AI 语义检索冷启动可达 50 秒以上（Eagle 的 FAISS 索引闲置 180 秒即休眠），
-            // 超时后降级为不走 AI 后端的 item_query 关键词匹配（毫秒级响应），
-            // 让用户先拿到基础结果而不是空手而归。
-            // item_query 是整串匹配（「袜子详情页」匹配不到名为「袜子…」的素材），
-            // 因此按空格拆词逐个查询并合并去重。
-            if (searchCall?.tool === 'ai_search_by_text' && query.query) {
-                warnings.push(
-                    `Eagle AI 语义检索超时（索引可能正在从休眠中唤醒，稍后重试可恢复），本次已降级为关键词匹配：${formatError(error)}。`
-                );
-                try {
-                    const keywordQueries = buildKeywordFallbackQueries(query.query);
-                    const mergedItems: unknown[] = [];
-                    const seenIds = new Set<string>();
-                    for (const keyword of keywordQueries) {
-                        const fallbackTimeoutMs = resolveRemainingTimeout(
-                            deadlineAt,
-                            EAGLE_KEYWORD_FALLBACK_TIMEOUT_MS
-                        );
-                        if (!fallbackTimeoutMs) {
-                            warnings.push('Eagle 关键词匹配已到达本次检索的整体时间上限，剩余候选词未再请求。');
-                            break;
-                        }
-                        const fallbackCall = buildEagleMcpToolCallBody('item_query', {
-                            query: keyword,
-                            fullDetails: false
-                        });
-                        const fallbackResult = await callEagleTool(
-                            settings,
-                            fetchImpl,
-                            fallbackCall.tool,
-                            fallbackCall.params,
-                            fallbackTimeoutMs
-                        );
-                        if (!fallbackResult.ok) continue;
-                        const items = unwrapEagleResult(fallbackResult.body);
-                        for (const item of Array.isArray(items) ? items : []) {
-                            const id = String((item as any)?.id || '');
-                            if (id && seenIds.has(id)) continue;
-                            if (id) seenIds.add(id);
-                            mergedItems.push(item);
-                        }
-                    }
-                    if (mergedItems.length > 0) {
-                        return normalizeEagleReadonlyKnowledgeResults(
-                            query,
-                            mergedItems,
-                            {
-                                sourceTool: 'item_query',
-                                warnings
-                            }
-                        );
-                    }
-                    warnings.push(`Eagle 关键词匹配（${keywordQueries.join('、')}）没有命中素材。`);
-                } catch (fallbackError) {
-                    warnings.push(`Eagle 关键词匹配降级也失败：${formatError(fallbackError)}。`);
-                }
-            }
             return buildEagleReadonlyUnavailableResponse(
                 query,
                 `Eagle 只读知识连接器不可用：${formatError(error)}。`,
@@ -538,13 +517,7 @@ function redactPublicDiagnostic(value: unknown, fallback: string): string {
         .slice(0, 1000);
 }
 
-async function chooseSearchCall(
-    query: EagleReadonlyKnowledgeQuery,
-    settings: Required<EagleReadonlySettings>,
-    fetchImpl: EagleReadonlyFetchImpl,
-    warnings: string[],
-    deadlineAt: number
-): Promise<EagleMcpToolCallBody> {
+function buildDirectSearchCall(query: EagleReadonlyKnowledgeQuery): EagleMcpToolCallBody {
     // 选择和结构过滤是用户显式边界，优先级必须高于 AI 语义检索；AI 接口不支持这些过滤条件。
     if (query.selectedOnly) {
         return buildEagleMcpToolCallBody('item_get_selected', {
@@ -562,41 +535,130 @@ async function chooseSearchCall(
         });
     }
 
-    if (query.preferAiSearch) {
-        try {
-            const statusTimeoutMs = resolveRemainingTimeout(deadlineAt, EAGLE_AI_STATUS_TIMEOUT_MS);
-            if (!statusTimeoutMs) {
-                warnings.push('Eagle AI Search 状态检查已到达本次检索的整体时间上限，已降级为只读 item_query。');
-                return buildEagleMcpToolCallBody('item_query', {
-                    query: query.query,
-                    fullDetails: false
-                });
-            }
-            const status = await callEagleTool(
-                settings,
-                fetchImpl,
-                'ai_search_status',
-                {},
-                statusTimeoutMs
-            );
-            const aiStatus = unwrapEagleResult(status.body);
-            if (status.ok && isAiSearchReady(aiStatus)) {
-                return buildEagleMcpToolCallBody('ai_search_by_text', {
-                    query: query.query,
-                    limit: clampSearchLimit(query.limit),
-                    fullDetails: false
-                });
-            }
-            warnings.push('Eagle AI Search 未就绪，已降级为只读 item_query。');
-        } catch (error) {
-            warnings.push(`Eagle AI Search 状态检查失败，已降级为只读 item_query：${formatError(error)}。`);
-        }
-    }
-
     return buildEagleMcpToolCallBody('item_query', {
         query: query.query,
         fullDetails: false
     });
+}
+
+function shouldAttemptAiSearch(query: EagleReadonlyKnowledgeQuery): boolean {
+    return query.preferAiSearch === true
+        && query.selectedOnly !== true
+        && !query.tags?.length
+        && !query.folders?.length
+        && !query.ext
+        && Boolean(String(query.query || '').trim());
+}
+
+async function searchEagleWithOptionalAi(
+    query: EagleReadonlyKnowledgeQuery,
+    settings: Required<EagleReadonlySettings>,
+    fetchImpl: EagleReadonlyFetchImpl
+): Promise<EagleReadonlyKnowledgeResponse> {
+    // Eagle MCP 的 AI Search 后端可能在状态检查或语义检索期间占住服务端请求。
+    // 先完成一条独立、只读的关键词基线，再尝试可选 AI 通道。AI 超时后直接
+    // 返回已取得的基线，绝不能让 AI 的 deadline 或服务端挂起吞掉 fallback。
+    const keywordWarnings: string[] = [];
+    const keywordQueries = buildKeywordFallbackQueries(query.query);
+    const keywordResult = await runKeywordFallbackQueries({
+        queries: keywordQueries,
+        limit: clampSearchLimit(query.limit),
+        settings,
+        fetchImpl,
+        warnings: keywordWarnings,
+        deadlineAt: Date.now() + settings.timeoutMs,
+        stopAfterPrimaryMatch: true
+    });
+    if (keywordResult.primaryResultCount === 0
+        && keywordResult.items.length > 0
+        && keywordQueries.length > 1) {
+        keywordWarnings.push(
+            `Eagle 整句关键词没有命中，已用 ${keywordQueries.slice(1).join('、')} 做宽松只读召回；候选仍由 Agent 观察后选择。`
+        );
+    }
+    const aiWarnings: string[] = [];
+
+    let status: EagleToolCallResult;
+    try {
+        status = await callEagleTool(
+            settings,
+            fetchImpl,
+            'ai_search_status',
+            {},
+            EAGLE_AI_STATUS_TIMEOUT_MS
+        );
+    } catch (error) {
+        aiWarnings.push(`Eagle AI Search 状态检查失败，本次使用只读关键词结果：${formatError(error)}。`);
+        return buildKeywordFallbackResponse(
+            query,
+            keywordResult,
+            [...aiWarnings, ...keywordWarnings]
+        );
+    }
+
+    const aiStatus = unwrapEagleResult(status.body);
+    if (!status.ok || !isAiSearchReady(aiStatus)) {
+        aiWarnings.push(status.ok
+            ? 'Eagle AI Search 未就绪，本次使用只读关键词结果。'
+            : `Eagle AI Search 状态检查失败（HTTP ${status.status}），本次使用只读关键词结果。`);
+        return buildKeywordFallbackResponse(
+            query,
+            keywordResult,
+            [...aiWarnings, ...keywordWarnings]
+        );
+    }
+
+    try {
+        const aiCall = buildEagleMcpToolCallBody('ai_search_by_text', {
+            query: query.query,
+            limit: clampSearchLimit(query.limit),
+            fullDetails: false
+        });
+        const aiResult = await callEagleTool(
+            settings,
+            fetchImpl,
+            aiCall.tool,
+            aiCall.params,
+            EAGLE_AI_SEARCH_TIMEOUT_MS
+        );
+        const aiValue = unwrapEagleResult(aiResult.body);
+        if (aiResult.ok && extractEagleItems(aiValue).length > 0) {
+            return normalizeEagleReadonlyKnowledgeResults(query, aiValue, {
+                sourceTool: aiCall.tool,
+                warnings: aiWarnings
+            });
+        }
+        aiWarnings.push(aiResult.ok
+            ? 'Eagle AI 语义检索没有命中，本次使用只读关键词结果。'
+            : `Eagle AI 语义检索失败（HTTP ${aiResult.status}），本次使用只读关键词结果。`);
+    } catch (error) {
+        aiWarnings.push(`Eagle AI 语义检索超时或不可用，本次使用只读关键词结果：${formatError(error)}。`);
+    }
+
+    return buildKeywordFallbackResponse(
+        query,
+        keywordResult,
+        [...aiWarnings, ...keywordWarnings]
+    );
+}
+
+function buildKeywordFallbackResponse(
+    query: EagleReadonlyKnowledgeQuery,
+    keywordResult: EagleKeywordQueryBatchResult,
+    warnings: string[]
+): EagleReadonlyKnowledgeResponse {
+    if (keywordResult.successfulRequestCount > 0) {
+        return normalizeEagleReadonlyKnowledgeResults(query, keywordResult.items, {
+            sourceTool: 'item_query',
+            warnings
+        });
+    }
+    return buildEagleReadonlyUnavailableResponse(
+        query,
+        'Eagle 只读关键词检索不可用。',
+        'unavailable',
+        warnings
+    );
 }
 
 async function callEagleTool(
@@ -734,6 +796,84 @@ function buildKeywordFallbackQueries(rawQuery: string): string[] {
         queries.push(full.slice(-3));
     }
     return [...new Set(queries)].slice(0, 4);
+}
+
+async function runKeywordFallbackQueries(input: {
+    queries: readonly string[];
+    limit: number;
+    settings: Required<EagleReadonlySettings>;
+    fetchImpl: EagleReadonlyFetchImpl;
+    warnings: string[];
+    deadlineAt: number;
+    stopAfterPrimaryMatch?: boolean;
+}): Promise<EagleKeywordQueryBatchResult> {
+    const resultLimit = clampSearchLimit(input.limit);
+    const querySamples: Array<Array<Record<string, unknown>>> = [];
+    let successfulRequestCount = 0;
+    let primaryResultCount = 0;
+    for (let queryIndex = 0; queryIndex < input.queries.length; queryIndex += 1) {
+        const keyword = input.queries[queryIndex];
+        const fallbackTimeoutMs = resolveRemainingTimeout(
+            input.deadlineAt,
+            EAGLE_KEYWORD_FALLBACK_TIMEOUT_MS
+        );
+        if (!fallbackTimeoutMs) {
+            input.warnings.push('Eagle 关键词匹配已到达本次检索的整体时间上限，剩余候选词未再请求。');
+            break;
+        }
+        const fallbackCall = buildEagleMcpToolCallBody('item_query', {
+            query: keyword,
+            limit: resultLimit,
+            fullDetails: false
+        });
+        try {
+            const fallbackResult = await callEagleTool(
+                input.settings,
+                input.fetchImpl,
+                fallbackCall.tool,
+                fallbackCall.params,
+                fallbackTimeoutMs
+            );
+            if (!fallbackResult.ok) {
+                input.warnings.push(`Eagle 关键词“${keyword}”查询失败：HTTP ${fallbackResult.status}。`);
+                continue;
+            }
+            successfulRequestCount += 1;
+            const sample = extractEagleItems(unwrapEagleResult(fallbackResult.body))
+                .slice(0, resultLimit);
+            if (queryIndex === 0) primaryResultCount = sample.length;
+            querySamples.push(sample);
+            if (input.stopAfterPrimaryMatch && queryIndex === 0 && sample.length > 0) break;
+        } catch (error) {
+            input.warnings.push(`Eagle 关键词“${keyword}”查询不可用：${formatError(error)}。`);
+        }
+    }
+    return {
+        items: mergeKeywordSamplesRoundRobin(querySamples, resultLimit),
+        successfulRequestCount,
+        primaryResultCount
+    };
+}
+
+function mergeKeywordSamplesRoundRobin(
+    samples: ReadonlyArray<ReadonlyArray<Record<string, unknown>>>,
+    limit: number
+): unknown[] {
+    const mergedItems: unknown[] = [];
+    const seenIds = new Set<string>();
+    const maxSampleLength = samples.reduce((max, sample) => Math.max(max, sample.length), 0);
+    for (let itemIndex = 0; itemIndex < maxSampleLength; itemIndex += 1) {
+        for (const sample of samples) {
+            const item = sample[itemIndex];
+            if (!item) continue;
+            const id = String(item.id || '').trim();
+            if (id && seenIds.has(id)) continue;
+            if (id) seenIds.add(id);
+            mergedItems.push(item);
+            if (mergedItems.length >= limit) return mergedItems;
+        }
+    }
+    return mergedItems;
 }
 
 function formatError(error: unknown): string {

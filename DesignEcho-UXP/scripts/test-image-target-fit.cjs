@@ -1,0 +1,365 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const ts = require('typescript');
+
+function loadTypeScriptModule(relativePath, moduleName) {
+    const sourcePath = path.resolve(__dirname, relativePath);
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    const transpiled = ts.transpileModule(source, {
+        compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2020,
+            strict: true
+        },
+        fileName: sourcePath,
+        reportDiagnostics: true
+    });
+    const errors = (transpiled.diagnostics || []).filter(
+        diagnostic => diagnostic.category === ts.DiagnosticCategory.Error
+    );
+    assert.equal(errors.length, 0, `${moduleName} transpile diagnostics should be empty`);
+
+    const loadedModule = { exports: {} };
+    const wrapper = vm.runInThisContext(
+        `(function (require, module, exports) { ${transpiled.outputText}\n})`,
+        { filename: sourcePath }
+    );
+    wrapper(require, loadedModule, loadedModule.exports);
+    return loadedModule.exports;
+}
+
+function loadImageTargetFitModule() {
+    return loadTypeScriptModule('../src/core/image-target-fit.ts', 'image-target-fit.ts');
+}
+
+function assertJpegQualityNormalizationContract() {
+    const jpegQuality = loadTypeScriptModule(
+        '../src/core/jpeg-quality.ts',
+        'jpeg-quality.ts'
+    );
+    const normalize = jpegQuality.normalizePhotoshopJpegQuality;
+
+    assert.equal(normalize(undefined), 12, 'saveDocument omission must default to native quality 12');
+    assert.equal(normalize(1), 1, 'native minimum must remain native quality 1');
+    assert.equal(normalize(6), 6, 'native quality must not be interpreted as a percentage');
+    assert.equal(normalize(12), 12, 'native maximum must not collapse to quality 1');
+    assert.equal(normalize(13), 2, '13 starts the percentage-style compatibility range');
+    assert.equal(normalize(50), 6, 'percentage-style quality must map to the native scale');
+    assert.equal(normalize(80, 80), 10, 'quickExport default 80 must retain native quality 10');
+    assert.equal(normalize(85, 85), 10, 'batchExport default 85 must retain native quality 10');
+    assert.equal(normalize(100), 12, 'percentage maximum must map to native quality 12');
+    assert.equal(normalize(200), 12, 'out-of-range high values must be clamped safely');
+    assert.equal(normalize(0), 1, 'out-of-range low values must be clamped safely');
+    assert.equal(normalize(Number.NaN, 80), 10, 'invalid input must use the caller default semantics');
+}
+
+function closeTo(actual, expected, tolerance = 0.001) {
+    assert.ok(
+        Math.abs(actual - expected) <= tolerance,
+        `expected ${actual} to be within ${tolerance} of ${expected}`
+    );
+}
+
+function assertTransformTargetBoundsTransactionContract() {
+    const transformPath = path.resolve(
+        __dirname,
+        '../src/tools/layer/transform-layer.ts'
+    );
+    const runnerPath = path.resolve(
+        __dirname,
+        '../src/core/photoshop-transaction-runner.ts'
+    );
+    const transformSource = fs.readFileSync(transformPath, 'utf8');
+    const runnerSource = fs.readFileSync(runnerPath, 'utf8');
+    const ownerStart = transformSource.indexOf('private async executeTargetBoundsTransaction');
+    const ownerEnd = transformSource.indexOf('private buildTargetBoundsSuccessResult', ownerStart);
+    assert.ok(ownerStart >= 0 && ownerEnd > ownerStart, 'targetBounds transaction owner must exist');
+    const owner = transformSource.slice(ownerStart, ownerEnd);
+    const fitStart = transformSource.indexOf('async function fitLayerToTargetBounds');
+    const fitEnd = transformSource.indexOf('async function selectTransformTargetLayer', fitStart);
+    assert.ok(fitStart >= 0 && fitEnd > fitStart, 'targetBounds mutation helper must exist');
+    const fitOwner = transformSource.slice(fitStart, fitEnd);
+
+    assert.ok(
+        owner.includes('photoshopTransactionRunner.run<'),
+        'targetBounds mutations must use the canonical Photoshop transaction runner'
+    );
+    assert.ok(
+        owner.includes("historyMode: 'suspend'")
+            && owner.includes("rollbackTargetPolicy: 'document_revision'"),
+        'targetBounds transaction must suspend history and declare a rollback target'
+    );
+    assert.ok(
+        owner.includes('placement?.geometryVerification.verified === true'),
+        'geometry verification false must fail transaction verification'
+    );
+    assert.ok(
+        owner.includes('verifyRolledBack')
+            && owner.includes('sameTransformLayerBounds(before.bounds, after.bounds)'),
+        'rollback must read back and verify the pre-write layer bounds'
+    );
+    assert.ok(
+        owner.includes('await fitLayerToTargetBounds(')
+            && !owner.includes('core.executeAsModal'),
+        'scale and translate must execute inside the transaction callback, not a second modal owner'
+    );
+    assert.ok(
+        fitOwner.includes('await transformLayerPercent(')
+            && fitOwner.includes('await translateLayerWithoutNativeMove(')
+            && !fitOwner.includes('try {'),
+        'a scale-then-translate failure must propagate to the transaction runner without being swallowed'
+    );
+    const mutationFailureStart = runnerSource.indexOf(
+        'if (mutationError || mutationResult?.success === false)'
+    );
+    const mutationFailureEnd = runnerSource.indexOf(
+        'const settledMutationResult',
+        mutationFailureStart
+    );
+    const mutationFailureOwner = runnerSource.slice(
+        mutationFailureStart,
+        mutationFailureEnd
+    );
+    const verificationFailureStart = runnerSource.indexOf(
+        'if (verificationError || !verification.verified)'
+    );
+    const verificationFailureEnd = runnerSource.indexOf(
+        'if (isPhotoshopTransactionCancellationRequested',
+        verificationFailureStart
+    );
+    const verificationFailureOwner = runnerSource.slice(
+        verificationFailureStart,
+        verificationFailureEnd
+    );
+    assert.ok(
+        mutationFailureOwner.includes('if (historySuspension)')
+            && mutationFailureOwner.includes('return await this.rollbackFailure({')
+            && verificationFailureOwner.includes('if (historySuspension)')
+            && verificationFailureOwner.includes('return await this.rollbackFailure({'),
+        'canonical runner must retain rollback paths for mutation exceptions and verification failure'
+    );
+}
+
+const geometry = loadImageTargetFitModule();
+const target = { left: 0, top: 0, width: 750, height: 426 };
+const portrait = { left: 100, top: 50, width: 4672, height: 6453 };
+
+assert.deepEqual(
+    geometry.normalizeImageTargetBounds({ x: '12', y: 20, right: 112, bottom: 220 }),
+    { left: 12, top: 20, width: 100, height: 200 }
+);
+assert.equal(
+    geometry.normalizeImageTargetBounds({ x: 0, y: 0, width: 0, height: 100 }),
+    null
+);
+assert.equal(
+    geometry.normalizeImageTargetBounds({ x: false, y: 0, width: 10, height: 10 }),
+    null
+);
+
+const containPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: portrait,
+    targetBounds: target,
+    fit: 'contain',
+    targetAnchor: 'center'
+});
+closeTo(containPlan.expectedBounds.height, 426);
+closeTo(containPlan.expectedBounds.width, 308.4258484425848);
+closeTo(containPlan.expectedBounds.left, 220.7870757787076);
+closeTo(containPlan.expectedBounds.top, 0);
+assert.equal(containPlan.effectiveAlignment, 'anchor');
+const containOutcome = geometry.measureImageTargetFitOutcome(
+    containPlan,
+    containPlan.expectedBounds
+);
+closeTo(containOutcome.insideTargetRatio, 1);
+closeTo(containOutcome.outsideTargetFraction, 0);
+assert.deepEqual(containOutcome.outsideTargetEdges, []);
+assert.deepEqual(containOutcome.geometryVerification, { verified: true, issues: [] });
+
+const coverPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: portrait,
+    targetBounds: target,
+    fit: 'cover',
+    targetAnchor: 'center'
+});
+closeTo(coverPlan.expectedBounds.width, 750);
+closeTo(coverPlan.expectedBounds.height, 1035.9053938356165);
+closeTo(coverPlan.expectedBounds.left, 0);
+closeTo(coverPlan.expectedBounds.top, -304.9526969178082);
+const coverOutcome = geometry.measureImageTargetFitOutcome(
+    coverPlan,
+    coverPlan.expectedBounds
+);
+closeTo(coverOutcome.targetCoverageRatio, 1);
+closeTo(coverOutcome.insideTargetRatio, 0.41123446459011315);
+closeTo(coverOutcome.outsideTargetFraction, 0.5887655354098869);
+assert.deepEqual(coverOutcome.outsideTargetEdges, ['top', 'bottom']);
+assert.equal('croppedFraction' in coverOutcome, false);
+assert.equal('clippedEdges' in coverOutcome, false);
+assert.deepEqual(coverOutcome.geometryVerification, { verified: true, issues: [] });
+
+const shiftedCoverOutcome = geometry.measureImageTargetFitOutcome(
+    coverPlan,
+    { ...coverPlan.expectedBounds, left: 20 }
+);
+assert.equal(shiftedCoverOutcome.geometryVerification.verified, false);
+assert.ok(shiftedCoverOutcome.geometryVerification.issues.includes('position_mismatch'));
+
+const topPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: portrait,
+    targetBounds: target,
+    fit: 'cover',
+    targetAnchor: 'top-center'
+});
+closeTo(topPlan.expectedBounds.top, 0);
+assert.deepEqual(
+    geometry.measureImageTargetFitOutcome(topPlan, topPlan.expectedBounds).outsideTargetEdges,
+    ['bottom']
+);
+
+const bottomPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: portrait,
+    targetBounds: target,
+    fit: 'cover',
+    targetAnchor: 'bottom-center'
+});
+closeTo(bottomPlan.expectedBounds.top, target.height - bottomPlan.expectedBounds.height);
+
+const rightPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: { left: 0, top: 0, width: 200, height: 100 },
+    targetBounds: { left: 0, top: 0, width: 100, height: 100 },
+    fit: 'cover',
+    targetAnchor: 'right-center'
+});
+closeTo(rightPlan.expectedBounds.left, -100);
+assert.deepEqual(
+    geometry.measureImageTargetFitOutcome(rightPlan, rightPlan.expectedBounds).outsideTargetEdges,
+    ['left']
+);
+
+const leftPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: { left: 0, top: 0, width: 200, height: 100 },
+    targetBounds: { left: 0, top: 0, width: 100, height: 100 },
+    fit: 'cover',
+    targetAnchor: 'left-center'
+});
+closeTo(leftPlan.expectedBounds.left, 0);
+assert.deepEqual(
+    geometry.measureImageTargetFitOutcome(leftPlan, leftPlan.expectedBounds).outsideTargetEdges,
+    ['right']
+);
+
+const focalPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: { left: 0, top: 0, width: 100, height: 200 },
+    targetBounds: { left: 0, top: 0, width: 100, height: 100 },
+    fit: 'cover',
+    targetAnchor: 'bottom-center',
+    focalPoint: { x: 0.5, y: 0.25 }
+});
+assert.equal(focalPlan.effectiveAlignment, 'focal-point');
+assert.equal(focalPlan.focalPointApplied, true);
+assert.equal(focalPlan.focalPointClamped, false);
+closeTo(focalPlan.expectedBounds.top, 0);
+const focalOutcome = geometry.measureImageTargetFitOutcome(
+    focalPlan,
+    focalPlan.expectedBounds
+);
+assert.deepEqual(focalOutcome.actualFocalPosition, { x: 50, y: 50 });
+assert.deepEqual(focalOutcome.targetFocalPosition, { x: 50, y: 50 });
+closeTo(focalOutcome.focalDeviationPx, 0);
+
+const clampedFocalPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: { left: 0, top: 0, width: 100, height: 200 },
+    targetBounds: { left: 0, top: 0, width: 100, height: 100 },
+    fit: 'cover',
+    focalPoint: { x: 0.5, y: 0 }
+});
+closeTo(clampedFocalPlan.expectedBounds.top, 0);
+assert.equal(clampedFocalPlan.focalPointApplied, true);
+assert.equal(clampedFocalPlan.focalPointClamped, true);
+const clampedFocalOutcome = geometry.measureImageTargetFitOutcome(
+    clampedFocalPlan,
+    clampedFocalPlan.expectedBounds
+);
+assert.deepEqual(clampedFocalOutcome.actualFocalPosition, { x: 50, y: 0 });
+assert.deepEqual(clampedFocalOutcome.targetFocalPosition, { x: 50, y: 50 });
+closeTo(clampedFocalOutcome.focalDeviationPx, 50);
+assert.equal(clampedFocalOutcome.geometryVerification.verified, true);
+assert.deepEqual(clampedFocalOutcome.geometryVerification.issues, []);
+
+const leftContainPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: { left: 0, top: 0, width: 100, height: 50 },
+    targetBounds: { left: 10, top: 20, width: 300, height: 300 },
+    fit: 'contain',
+    targetAnchor: 'left-center'
+});
+assert.deepEqual(leftContainPlan.expectedBounds, {
+    left: 10,
+    top: 95,
+    width: 300,
+    height: 150
+});
+
+const fillPlan = geometry.resolveImageTargetFitPlan({
+    sourceBounds: { left: 20, top: 30, width: 100, height: 50 },
+    targetBounds: { left: 10, top: 15, width: 300, height: 200 },
+    fit: 'fill'
+});
+assert.equal(fillPlan.effectiveAlignment, 'fill-exact');
+assert.equal(fillPlan.focalPointApplied, false);
+assert.deepEqual(fillPlan.expectedBounds, {
+    left: 10,
+    top: 15,
+    width: 300,
+    height: 200
+});
+
+assert.throws(
+    () => geometry.resolveImageTargetFitPlan({
+        sourceBounds: portrait,
+        targetBounds: target,
+        fit: 'stretch'
+    }),
+    /targetFit 不支持/
+);
+assert.throws(
+    () => geometry.resolveImageTargetFitPlan({
+        sourceBounds: portrait,
+        targetBounds: target,
+        targetAnchor: 'top-left'
+    }),
+    /targetAnchor 不支持/
+);
+assert.throws(
+    () => geometry.resolveImageTargetFitPlan({
+        sourceBounds: portrait,
+        targetBounds: target,
+        focalPoint: { x: 1.2, y: 0.5 }
+    }),
+    /focalPoint\.x\/y/
+);
+assert.throws(
+    () => geometry.resolveImageTargetFitPlan({
+        sourceBounds: portrait,
+        targetBounds: target,
+        focalPoint: { x: '0.5', y: 0.5 }
+    }),
+    /focalPoint\.x\/y/
+);
+assert.throws(
+    () => geometry.resolveImageTargetFitPlan({
+        sourceBounds: portrait,
+        targetBounds: target,
+        fit: 'fill',
+        focalPoint: { x: 0.5, y: 0.5 }
+    }),
+    /不能同时使用 focalPoint/
+);
+
+assertTransformTargetBoundsTransactionContract();
+assertJpegQualityNormalizationContract();
+
+console.log('image-target-fit: 17 geometry cases, JPEG quality contract, and targetBounds transaction audit passed');

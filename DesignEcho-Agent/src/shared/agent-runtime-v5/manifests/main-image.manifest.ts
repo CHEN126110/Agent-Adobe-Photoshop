@@ -94,7 +94,7 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
             exit_criteria: [
                 '主图阶段草稿已生成并经过工具观察',
                 'R5 review 通过或产生下一轮 Reflexion 约束',
-                '用户确认交付范围后再导出文件'
+                '用户已经明确委托成品时，将可编辑文档与预览保存到当前项目的派生交付位置并读回；只有覆盖既有文件、写出项目或交付范围冲突时才需要再次确认'
             ]
         },
         redesign: {
@@ -128,7 +128,9 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
         }
     },
     runtime_stages: ['R0', 'R1', 'R2', 'R3', 'R4', 'E1', 'R5', 'E2'],
-    required_model_profiles: ['reasoning.default'],
+    // 当前阶段已明确质量优先于速度；仍使用用户选中的同一多模态模型，
+    // Runtime 只请求 Provider 真实支持的高推理档，不切换第二模型。
+    required_model_profiles: ['reasoning.quality'],
     optional_model_profiles: ['vision.reference', 'review.strict'],
     read_scopes: ['brief', 'product_analysis', 'assets', 'visual_direction', 'image_placement_plan', 'photoshop'],
     write_scopes: ['brief', 'layout_plan', 'preview_versions', 'review', 'delivery'],
@@ -199,6 +201,6 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
     exit_criteria: [
         '主图阶段草稿已生成并经过工具观察',
         'R5 review 通过或产生下一轮 Reflexion 约束',
-        '用户确认交付范围后再导出文件'
+        '用户已经明确委托成品时，将可编辑文档与预览保存到当前项目的派生交付位置并读回；只有覆盖既有文件、写出项目或交付范围冲突时才需要再次确认'
     ]
 };

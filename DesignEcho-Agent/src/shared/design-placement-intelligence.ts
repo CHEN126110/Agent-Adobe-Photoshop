@@ -416,7 +416,6 @@ function buildCandidates(input: DesignPlacementIntelligenceInput): DesignPlaceme
                 anchor: 'center',
                 cropPolicy: 'protect-subject',
                 visualBiasY: 0,
-                preserveSubject: true,
                 minScale: 0.01,
                 maxScale: 100
             },

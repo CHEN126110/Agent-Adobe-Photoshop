@@ -161,6 +161,22 @@ export interface ProjectImageAnalysisCloseupPlan<TCandidate extends ProjectImage
     skippedCandidateCount: number;
 }
 
+export interface ProjectContactSheetCandidateCoverage {
+    version: 'project-contact-sheet-candidate-coverage/v0';
+    candidateUniverseCount: number;
+    attemptedCandidateCount: number;
+    displayedCandidateCount: number;
+    failedRenderCount: number;
+    samplingOmittedCandidateCount: number;
+    omittedCandidateCount: number;
+    status: 'complete' | 'sampled';
+    universeScope: 'provided_candidates' | 'project_scan';
+    /** 跨桶与桶内跨度采样只扩大事实覆盖，不产生审美名次。 */
+    doesNotRank: true;
+    /** Harness 不把抽样结果中的任何一张指定为最终素材。 */
+    doesNotSelectWinner: true;
+}
+
 const ROLE_PREFERENCE_BY_SCENARIO: Record<ProjectVisualSamplingScenario, ProjectAssetRole[]> = {
     'main-image': ['raw-model-wear', 'raw-product-still', 'color-single', 'raw-detail-closeup', 'unknown'],
     'detail-page': ['raw-detail-closeup', 'raw-model-wear', 'raw-product-still', 'color-single', 'unknown'],
@@ -241,6 +257,78 @@ function projectVisualDiversityKey(candidate: ProjectImageAnalysisCloseupCandida
     return parts.length > 1 ? `folder:${parts[parts.length - 2].toLowerCase()}` : 'unknown';
 }
 
+function sampleProjectVisualBucketAcrossSpan<TCandidate>(
+    bucket: readonly TCandidate[],
+    sampleCount: number
+): TCandidate[] {
+    const normalizedCount = Math.max(0, Math.min(bucket.length, Math.round(sampleCount)));
+    if (normalizedCount === 0) return [];
+    if (normalizedCount >= bucket.length) return [...bucket];
+    if (normalizedCount === 1) {
+        return [bucket[Math.floor((bucket.length - 1) / 2)]];
+    }
+
+    const selected: TCandidate[] = [];
+    const lastIndex = bucket.length - 1;
+    for (let index = 0; index < normalizedCount; index += 1) {
+        const bucketIndex = Math.round(index * lastIndex / (normalizedCount - 1));
+        selected.push(bucket[bucketIndex]);
+    }
+    return selected;
+}
+
+export function buildProjectContactSheetCandidateCoverage(input: {
+    candidateUniverseCount: number;
+    attemptedCandidateCount?: number;
+    displayedCandidateCount: number;
+    universeScope: ProjectContactSheetCandidateCoverage['universeScope'];
+}): ProjectContactSheetCandidateCoverage {
+    const candidateUniverseCount = Math.max(0, Math.round(Number(input.candidateUniverseCount) || 0));
+    const attemptedCandidateCount = Math.max(
+        0,
+        Math.min(
+            candidateUniverseCount,
+            Math.round(Number(input.attemptedCandidateCount ?? input.displayedCandidateCount) || 0)
+        )
+    );
+    const displayedCandidateCount = Math.max(
+        0,
+        Math.min(attemptedCandidateCount, Math.round(Number(input.displayedCandidateCount) || 0))
+    );
+    const failedRenderCount = Math.max(0, attemptedCandidateCount - displayedCandidateCount);
+    const samplingOmittedCandidateCount = Math.max(0, candidateUniverseCount - attemptedCandidateCount);
+    const omittedCandidateCount = Math.max(0, candidateUniverseCount - displayedCandidateCount);
+    return {
+        version: 'project-contact-sheet-candidate-coverage/v0',
+        candidateUniverseCount,
+        attemptedCandidateCount,
+        displayedCandidateCount,
+        failedRenderCount,
+        samplingOmittedCandidateCount,
+        omittedCandidateCount,
+        status: omittedCandidateCount > 0 ? 'sampled' : 'complete',
+        universeScope: input.universeScope,
+        doesNotRank: true,
+        doesNotSelectWinner: true
+    };
+}
+
+export function reconcileProjectContactSheetCandidateCoverage(input: {
+    plannedCoverage: ProjectContactSheetCandidateCoverage;
+    renderedItems?: ReadonlyArray<{ status?: unknown }>;
+    sheetAvailable: boolean;
+}): ProjectContactSheetCandidateCoverage {
+    const displayedCandidateCount = input.sheetAvailable
+        ? (input.renderedItems || []).filter((item) => item?.status === 'rendered').length
+        : 0;
+    return buildProjectContactSheetCandidateCoverage({
+        candidateUniverseCount: input.plannedCoverage.candidateUniverseCount,
+        attemptedCandidateCount: input.plannedCoverage.attemptedCandidateCount,
+        displayedCandidateCount,
+        universeScope: input.plannedCoverage.universeScope
+    });
+}
+
 export function selectDiverseProjectVisualCandidates<TCandidate extends ProjectImageAnalysisCloseupCandidate>(
     candidates: readonly TCandidate[],
     limit: number
@@ -248,9 +336,20 @@ export function selectDiverseProjectVisualCandidates<TCandidate extends ProjectI
     const normalizedLimit = Math.max(0, Math.round(Number(limit) || 0));
     if (normalizedLimit === 0) return [];
 
+    const stableCandidates = candidates
+        .map((candidate, index) => ({
+            candidate,
+            index,
+            path: normalizeText(candidate.relativePath || candidate.path).replace(/\\/g, '/').toLowerCase()
+        }))
+        .sort((left, right) => {
+            if (left.path < right.path) return -1;
+            if (left.path > right.path) return 1;
+            return left.index - right.index;
+        });
     const seenPaths = new Set<string>();
     const buckets = new Map<string, TCandidate[]>();
-    for (const candidate of candidates) {
+    for (const { candidate } of stableCandidates) {
         const path = normalizeText(candidate.path).replace(/\\/g, '/').toLowerCase();
         if (!path || seenPaths.has(path)) continue;
         seenPaths.add(path);
@@ -260,8 +359,28 @@ export function selectDiverseProjectVisualCandidates<TCandidate extends ProjectI
         buckets.set(key, bucket);
     }
 
+    const bucketList = Array.from(buckets.values());
+    const sampleCounts = bucketList.map(() => 0);
+    const targetCount = Math.min(normalizedLimit, seenPaths.size);
+    let allocatedCount = 0;
+    while (allocatedCount < targetCount) {
+        let allocatedInRound = false;
+        for (let index = 0; index < bucketList.length; index += 1) {
+            if (sampleCounts[index] >= bucketList[index].length) continue;
+            sampleCounts[index] += 1;
+            allocatedCount += 1;
+            allocatedInRound = true;
+            if (allocatedCount >= targetCount) break;
+        }
+        if (!allocatedInRound) break;
+    }
+
+    // 每个角色桶都按完整桶跨度取样。单张取中点，多张包含两端并等距展开；
+    // 这只改善证据覆盖，不计算质量分、不产生审美排序，也不替 Agent 选最终素材。
+    const queues = bucketList.map((bucket, index) => (
+        sampleProjectVisualBucketAcrossSpan(bucket, sampleCounts[index])
+    ));
     const selected: TCandidate[] = [];
-    const queues = Array.from(buckets.values()).map((bucket) => [...bucket]);
     while (selected.length < normalizedLimit) {
         let consumed = false;
         for (const queue of queues) {

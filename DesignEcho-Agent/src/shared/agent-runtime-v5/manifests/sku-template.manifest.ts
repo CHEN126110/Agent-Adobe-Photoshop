@@ -10,7 +10,8 @@ import type { SkillRuntimeManifest } from '../contracts';
 import {
     DESIGN_ART_DIRECTION_KNOWLEDGE_ID,
     DESIGN_CONTENT_STRATEGY_KNOWLEDGE_ID,
-    DESIGN_LAYOUT_PLANNING_KNOWLEDGE_ID
+    DESIGN_LAYOUT_PLANNING_KNOWLEDGE_ID,
+    SKU_TEMPLATE_METHOD_KNOWLEDGE_ID
 } from '../design-method-knowledge';
 import { GENERAL_DESIGN_EVALUATION_PROFILE_ID } from '../design-evaluation-profiles';
 
@@ -106,6 +107,7 @@ export const SKU_TEMPLATE_MANIFEST: SkillRuntimeManifest = {
         DESIGN_CONTENT_STRATEGY_KNOWLEDGE_ID,
         DESIGN_ART_DIRECTION_KNOWLEDGE_ID,
         DESIGN_LAYOUT_PLANNING_KNOWLEDGE_ID,
+        SKU_TEMPLATE_METHOD_KNOWLEDGE_ID,
         'tool:getDesignKnowledge',
         'tool:getDesignPrinciples',
         'tool:searchDesignKnowledge',

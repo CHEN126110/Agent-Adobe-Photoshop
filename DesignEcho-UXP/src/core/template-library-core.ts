@@ -43,6 +43,37 @@ export function getTemplateLibrarySelectionBaseName(doc: any, selectedLayers: an
     return docBaseName || 'design-asset';
 }
 
+/**
+ * 按图层面板从上到下的堆叠顺序收集选中图层 ID。
+ * 选中的组整组计入且不再深入其子层——若用户同时选中了组和组内子层，
+ * 子层会随组一起导出，单独再复制一次反而会产生重复内容。
+ */
+export function collectTemplateLibraryLayerIdsInStackOrder(doc: any, selectedLayers: any[]): number[] {
+    const selectedIds = new Set<number>();
+    for (const layer of selectedLayers || []) {
+        const id = Math.floor(Number(layer?.id));
+        if (Number.isSafeInteger(id) && id > 0) {
+            selectedIds.add(id);
+        }
+    }
+
+    const ordered: number[] = [];
+    function walk(layers: any): void {
+        if (!layers || typeof layers.length !== 'number') return;
+        for (let index = 0; index < layers.length; index++) {
+            const layer = layers[index];
+            const id = Math.floor(Number(layer?.id));
+            if (selectedIds.has(id)) {
+                ordered.push(id);
+                continue;
+            }
+            walk(layer?.layers);
+        }
+    }
+    walk(doc?.layers);
+    return ordered;
+}
+
 export function sanitizeTemplateLibraryAssetFileName(input: string): string {
     return stripTemplateLibraryExtension(String(input || ''))
         .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')

@@ -39,6 +39,15 @@ const {
   classifyAgentToolExecution
 } = require(path.join(root, 'src', 'shared', 'agent-tool-execution-preflight.ts'));
 const {
+  attachSkillExecutionEffectReceipt,
+  readSkillExecutionEffectReceipt
+} = require(path.join(root, 'src', 'shared', 'skill-execution-effect.ts'));
+const {
+  buildClaimedInteractiveContinuationOperationRecord,
+  markInteractiveContinuationOperationRunning,
+  resolveInteractiveContinuationMutationState
+} = require(path.join(root, 'src', 'shared', 'interactive-continuation-operation.ts'));
+const {
   readAgentEnvironmentRecoveryToolNames
 } = require(path.join(root, 'src', 'shared', 'agent-react-observation-contract.ts'));
 const {
@@ -54,6 +63,10 @@ const {
   TEAM_PIPELINE_TOOL,
   getDefaultAgentTools
 } = require(path.join(rendererRuntimeRoot, 'tool-schemas.ts'));
+const {
+  markExecutedToolResultProvenance,
+  readExecutedToolResultProvenance
+} = require(path.join(rendererRuntimeRoot, 'tool-result-provenance.ts'));
 const { buildSkillToolSchemas } = require(path.join(executorRoot, 'skill-tools.ts'));
 const {
   resolveAutonomousCapabilityRuntime
@@ -76,26 +89,36 @@ const designFoundationSession = createAgentCapabilitySession({
 });
 const designFoundationInitialTools = designFoundationSession.activeTools.map((tool) => tool.name);
 const designFoundationSchemaSize = JSON.stringify(designFoundationSession.activeTools).length;
-// 2026-08-23 首轮 23→24：readSkillPlaybook（业务工作法手册，官方 skill 包）进首轮——
-// 技能描述引导「开工先读手册」，工具不可见时引导空指（真机：模型跳过手册、按文件名猜前置已完成）。
+// 2026-08-25 首轮 25→26：设计委托已确认时直接暴露一次性 Runtime Profile 声明入口。
+// 它只让模型记录自己的语义判断，不选择 Profile、不授权 Tool，绑定后由 Resolver 退役。
 assert.strictEqual(
   designFoundationInitialTools.length,
-  24,
+  26,
   `general design first-turn Tool surface grew: ${designFoundationInitialTools.length}`
 );
-// 2026-08-23 预算 33k→35k：参照系教学（composeDesign/renderLayout 比例字段）、联系表收敛指令、
-// 看参考挂定方向前三刀的描述增强共 +1.3k，均为拍板过的行为修复；预算仍是防首轮面无审查膨胀的棘轮。
+// Runtime Profile 枚举和边界说明约增加 2.9k；43k 是本次实测后的审查棘轮，继续防止
+// 首轮能力面未经审查膨胀。
 assert(
-  designFoundationSchemaSize < 35_000,
+  designFoundationSchemaSize < 43_000,
   `general design first-turn Tool schema exceeded the reviewed progressive-disclosure budget: ${designFoundationSchemaSize}`
 );
+assert(
+  buildAgentCapabilityBaseline(true).includes('agent.intent.declareDesignTask'),
+  'design execution baseline lost the one-shot Runtime Profile declaration capability'
+);
+assert(
+  !buildAgentCapabilityBaseline(false).includes('agent.intent.declareDesignTask'),
+  'ordinary Harness baseline must not expose design Runtime Profile declaration'
+);
 for (const requiredDesignFoundationTool of [
+  'declareDesignIntent',
   'analyzeProjectContactSheetOverview',
   'recommendAssets',
   'composeDesign',
   'evaluateDesign',
   'placeImage',
   'transformLayer',
+  'fitLayerSubjectToRegion',
   'createRectangle',
   'createEllipse',
   'setTextStyle'
@@ -147,7 +170,11 @@ assert.deepStrictEqual(
 const subjectFitActivation = designFoundationSession.requestCapabilities([
   subjectFitSearch.matches[0].capabilityId
 ]);
-assert.strictEqual(subjectFitActivation.status, 'activated');
+assert.strictEqual(subjectFitActivation.status, 'rejected');
+assert(
+  subjectFitActivation.issues.some((issue) => issue.code === 'requested_capability_already_active'),
+  'first-turn subject-fit capability should report already active instead of consuming another activation round'
+);
 assert(designFoundationSession.activeTools.some((tool) => tool.name === 'fitLayerSubjectToRegion'));
 
 const resolutions = new Map(manifests.map((manifest) => {
@@ -759,6 +786,298 @@ for (const expectation of scopedEditExpectations) {
     );
   }
 }
+
+function readTrustedFixtureToolName(result) {
+  return readExecutedToolResultProvenance(result)?.toolName;
+}
+
+const fixtureRuntimeLineageScope = {
+  version: 'skill-execution-runtime-lineage/v0',
+  sessionId: 'runtime-fixture-session',
+  runId: 'run-fixture-generation-one',
+  generation: 1,
+  taskRunId: 'runtime-fixture-task-run',
+  planRevision: 3,
+  continuationId: 'continuation-fixture',
+  workflowCallId: 'workflow-call-fixture'
+};
+
+function attachFixtureSkillEffect(skillId, result, overrides = {}) {
+  return attachSkillExecutionEffectReceipt(result, {
+    skillId,
+    executionStarted: true,
+    readTrustedToolName: readTrustedFixtureToolName,
+    runtimeLineage: { ...fixtureRuntimeLineageScope, skillId },
+    ...overrides
+  });
+}
+
+// Skill Effect receipt 必须以统一 Tool 分发器登记的对象身份为 mutation 信用边界。
+// 相同 JSON 的序列化副本即使带合法 Host revision，也不能冒充真实执行结果。
+const trustedMutationResult = {
+  success: true,
+  photoshopMutationCommit: {
+    version: 'photoshop-mutation-commit/v1',
+    basis: 'same_execute_as_modal',
+    bindingStrength: 'document_revision',
+    before: { documentId: 17, historyStateId: 31, activeLayerId: 4 },
+    after: { documentId: 17, historyStateId: 32, activeLayerId: 4 },
+    toolActionCompleted: true
+  }
+};
+markExecutedToolResultProvenance('transformLayer', trustedMutationResult);
+const appliedSkillResult = attachFixtureSkillEffect('fixture.applied', {
+  success: true,
+  toolResults: [{ toolName: 'transformLayer', result: trustedMutationResult }]
+});
+const appliedSkillReceipt = readSkillExecutionEffectReceipt(appliedSkillResult);
+assert(appliedSkillReceipt, 'unified Skill exit did not sign an effect receipt');
+assert(Object.isFrozen(appliedSkillReceipt));
+assert(Object.isFrozen(appliedSkillReceipt.revisions));
+assert.strictEqual(appliedSkillReceipt.effect, 'applied');
+assert.strictEqual(appliedSkillReceipt.mutationCount, 1);
+assert.strictEqual(appliedSkillReceipt.revisions.length, 1);
+assert(appliedSkillReceipt.evidence.includes('trusted_tool_provenance'));
+assert.strictEqual(resolveInteractiveContinuationMutationState(appliedSkillResult), 'observed');
+
+const forgedMutationResult = JSON.parse(JSON.stringify(trustedMutationResult));
+const forgedMutationSkillResult = attachFixtureSkillEffect('fixture.forged-mutation', {
+  success: true,
+  message: '已经完成 Photoshop 修改。',
+  toolResults: [{ toolName: 'transformLayer', result: forgedMutationResult }],
+  executionSummary: { successfulMutationCalls: 3 }
+});
+const forgedMutationReceipt = readSkillExecutionEffectReceipt(forgedMutationSkillResult);
+assert(forgedMutationReceipt, 'forged mutation fixture did not receive a runtime receipt');
+assert.strictEqual(forgedMutationReceipt.effect, 'unknown');
+assert.strictEqual(forgedMutationReceipt.mutationCount, null);
+assert.strictEqual(forgedMutationReceipt.revisions.length, 0);
+assert(forgedMutationReceipt.evidence.includes('declared_write_attempt'));
+assert.strictEqual(resolveInteractiveContinuationMutationState(forgedMutationSkillResult), 'unknown');
+
+const partialSkillResult = attachFixtureSkillEffect('fixture.partial', {
+  success: false,
+  error: 'execution interrupted after Host mutation',
+  toolResults: [{ toolName: 'transformLayer', result: trustedMutationResult }]
+}, { outcomeStatus: 'failed' });
+const partialSkillReceipt = readSkillExecutionEffectReceipt(partialSkillResult);
+assert(partialSkillReceipt);
+assert.strictEqual(partialSkillReceipt.effect, 'partial');
+assert.strictEqual(partialSkillReceipt.mutationCount, 1);
+assert.strictEqual(resolveInteractiveContinuationMutationState(partialSkillResult), 'observed');
+
+// Executor 自报数组即使包含真实只读 Tool，也不能证明它没有省略其他内部写调用。
+const trustedReadResult = {
+  success: true,
+  document: { id: 17, name: 'fixture.psd' },
+  historyStateRef: { documentId: 17, historyStateId: 32 }
+};
+markExecutedToolResultProvenance('getDocumentInfo', trustedReadResult);
+const ordinaryReadSkillResult = attachFixtureSkillEffect('fixture.ordinary-read', {
+  success: true,
+  toolResults: [{ toolName: 'getDocumentInfo', result: trustedReadResult }]
+});
+const ordinaryReadSkillReceipt = readSkillExecutionEffectReceipt(ordinaryReadSkillResult);
+assert(ordinaryReadSkillReceipt);
+assert.strictEqual(ordinaryReadSkillReceipt.effect, 'unknown');
+assert.strictEqual(ordinaryReadSkillReceipt.mutationCount, null);
+assert.strictEqual(resolveInteractiveContinuationMutationState(ordinaryReadSkillResult), 'unknown');
+
+const trustedReadWithForgedNestedProof = {
+  success: true,
+  toolResults: [{
+    toolName: 'transformLayer',
+    result: JSON.parse(JSON.stringify(trustedMutationResult))
+  }]
+};
+markExecutedToolResultProvenance('getDocumentInfo', trustedReadWithForgedNestedProof);
+const forgedNestedProofResult = attachFixtureSkillEffect('fixture.read-with-forged-proof', {
+  success: true,
+  toolResults: [{ toolName: 'getDocumentInfo', result: trustedReadWithForgedNestedProof }]
+});
+const forgedNestedProofReceipt = readSkillExecutionEffectReceipt(forgedNestedProofResult);
+assert(forgedNestedProofReceipt);
+assert.strictEqual(forgedNestedProofReceipt.effect, 'unknown');
+assert.strictEqual(forgedNestedProofReceipt.revisions.length, 0);
+
+const pendingInteractionResult = attachFixtureSkillEffect('fixture.pending-card', {
+  success: true,
+  data: { awaitingUserConfirmation: true }
+}, { outcomeStatus: 'awaiting_confirmation' });
+const pendingInteractionReceipt = readSkillExecutionEffectReceipt(pendingInteractionResult);
+assert(pendingInteractionReceipt);
+assert.strictEqual(pendingInteractionReceipt.effect, 'unknown');
+assert.strictEqual(pendingInteractionReceipt.pendingInteraction, true);
+assert.strictEqual(resolveInteractiveContinuationMutationState(pendingInteractionResult), 'unknown');
+
+const readOnlyPendingInteractionResult = attachFixtureSkillEffect('fixture.read-only-pending-card', {
+  success: true,
+  data: { awaitingUserConfirmation: true },
+  toolResults: [{ toolName: 'getDocumentInfo', result: trustedReadResult }]
+}, { outcomeStatus: 'awaiting_confirmation' });
+const readOnlyPendingInteractionReceipt = readSkillExecutionEffectReceipt(
+  readOnlyPendingInteractionResult
+);
+assert(readOnlyPendingInteractionReceipt);
+assert.strictEqual(readOnlyPendingInteractionReceipt.effect, 'unknown');
+assert.strictEqual(readOnlyPendingInteractionReceipt.pendingInteraction, true);
+
+const declaredReadOnlyPendingResult = attachFixtureSkillEffect('fixture.declared-read-only-pending', {
+  success: true,
+  data: { awaitingUserConfirmation: true }
+}, {
+  outcomeStatus: 'awaiting_confirmation',
+  declaredProviderToolNames: ['getDocumentInfo']
+});
+const declaredReadOnlyPendingReceipt = readSkillExecutionEffectReceipt(
+  declaredReadOnlyPendingResult
+);
+assert(declaredReadOnlyPendingReceipt);
+assert.strictEqual(declaredReadOnlyPendingReceipt.effect, 'none');
+
+const preExecutionPendingResult = attachFixtureSkillEffect('fixture.pre-execution-pending', {
+  success: true,
+  data: { awaitingUserConfirmation: true }
+}, {
+  executionStarted: false,
+  outcomeStatus: 'awaiting_confirmation'
+});
+const preExecutionPendingReceipt = readSkillExecutionEffectReceipt(preExecutionPendingResult);
+assert(preExecutionPendingReceipt);
+assert.strictEqual(preExecutionPendingReceipt.effect, 'none');
+
+const uncertainPendingInteractionResult = attachFixtureSkillEffect('fixture.pending-after-unproven-write', {
+  success: true,
+  data: { awaitingUserConfirmation: true },
+  executionSummary: { successfulMutationCalls: 1 }
+}, { outcomeStatus: 'awaiting_confirmation' });
+const uncertainPendingInteractionReceipt = readSkillExecutionEffectReceipt(
+  uncertainPendingInteractionResult
+);
+assert(uncertainPendingInteractionReceipt);
+assert.strictEqual(uncertainPendingInteractionReceipt.effect, 'unknown');
+assert.strictEqual(uncertainPendingInteractionReceipt.pendingInteraction, true);
+
+const claimedCardOperation = buildClaimedInteractiveContinuationOperationRecord({
+  claim: {
+    continuationId: 'continuation-fixture',
+    sourceMessageId: 'message-fixture',
+    cardId: 'card-fixture',
+    submissionFingerprint: 'submission-fixture',
+    submission: { version: 'interactive-card-submission/v0' },
+    continuation: {
+      version: 'pending-interactive-continuation/v0',
+      id: 'continuation-fixture',
+      scope: {},
+      operation: {},
+      card: {},
+      oneTime: true
+    },
+    sourceCard: {}
+  },
+  now: '2026-08-24T08:00:00.000Z'
+});
+assert.strictEqual(claimedCardOperation.mutationState, 'none');
+const runningCardOperation = markInteractiveContinuationOperationRunning({
+  record: claimedCardOperation,
+  hostSessionId: 'host-fixture',
+  rendererOwnerId: 'renderer-fixture',
+  executionRunId: 'run-fixture',
+  now: '2026-08-24T08:00:01.000Z'
+});
+assert.strictEqual(runningCardOperation.mutationState, undefined);
+
+const agentHandoffResult = attachFixtureSkillEffect('fixture.agent-handoff', {
+  success: false,
+  nonFatal: true,
+  nextRequiredToolOptions: ['getLayerHierarchy'],
+  data: { agentReActContinuation: { status: 'needs_repair' } }
+});
+const agentHandoffReceipt = readSkillExecutionEffectReceipt(agentHandoffResult);
+assert(agentHandoffReceipt);
+assert.strictEqual(agentHandoffReceipt.effect, 'unknown');
+assert.strictEqual(agentHandoffReceipt.agentHandoff, true);
+assert.strictEqual(resolveInteractiveContinuationMutationState(agentHandoffResult), 'unknown');
+
+const readOnlyAgentHandoffResult = attachFixtureSkillEffect('fixture.read-only-agent-handoff', {
+  success: false,
+  nonFatal: true,
+  nextRequiredToolOptions: ['getLayerHierarchy'],
+  data: { agentReActContinuation: { status: 'needs_repair' } },
+  toolResults: [{ toolName: 'getDocumentInfo', result: trustedReadResult }]
+});
+const readOnlyAgentHandoffReceipt = readSkillExecutionEffectReceipt(readOnlyAgentHandoffResult);
+assert(readOnlyAgentHandoffReceipt);
+assert.strictEqual(readOnlyAgentHandoffReceipt.effect, 'unknown');
+assert.strictEqual(readOnlyAgentHandoffReceipt.agentHandoff, true);
+
+// 父 Skill 可消费同一进程内真实签发的子 Skill receipt；JSON 克隆会丢失 WeakSet 身份。
+const signedNestedEnvelope = {
+  success: true,
+  skillExecutionReceipt: appliedSkillReceipt
+};
+const signedNestedParent = attachFixtureSkillEffect('fixture.signed-parent', {
+  success: true,
+  operationResults: [{ toolName: 'fixture.child', result: signedNestedEnvelope }]
+});
+const signedNestedParentReceipt = readSkillExecutionEffectReceipt(signedNestedParent);
+assert(signedNestedParentReceipt);
+assert.strictEqual(signedNestedParentReceipt.effect, 'applied');
+assert.strictEqual(signedNestedParentReceipt.mutationCount, 1);
+assert(signedNestedParentReceipt.evidence.includes('nested_skill_receipt'));
+
+const staleGenerationChild = attachFixtureSkillEffect('fixture.stale-child', {
+  success: true,
+  toolResults: [{ toolName: 'transformLayer', result: trustedMutationResult }]
+}, {
+  runtimeLineage: {
+    ...fixtureRuntimeLineageScope,
+    runId: 'run-fixture-generation-two',
+    generation: 2,
+    skillId: 'fixture.stale-child'
+  }
+});
+const staleGenerationParent = attachFixtureSkillEffect('fixture.current-parent', {
+  success: true,
+  operationResults: [{ toolName: 'fixture.stale-child', result: staleGenerationChild }]
+});
+const staleGenerationParentReceipt = readSkillExecutionEffectReceipt(staleGenerationParent);
+assert(staleGenerationParentReceipt);
+assert.strictEqual(staleGenerationParentReceipt.effect, 'unknown');
+assert(staleGenerationParentReceipt.evidence.includes('nested_receipt_lineage_rejected'));
+
+const mismatchedSkillLineageResult = attachSkillExecutionEffectReceipt({ success: true }, {
+  skillId: 'fixture.lineage-owner-a',
+  executionStarted: true,
+  runtimeLineage: {
+    ...fixtureRuntimeLineageScope,
+    skillId: 'fixture.lineage-owner-b'
+  },
+  declaredProviderToolNames: ['getDocumentInfo']
+});
+const mismatchedSkillLineageReceipt = readSkillExecutionEffectReceipt(mismatchedSkillLineageResult);
+assert(mismatchedSkillLineageReceipt);
+assert.strictEqual(
+  mismatchedSkillLineageReceipt.runtimeLineage,
+  undefined,
+  'a receipt signer must not bind one Skill result to another Skill lineage'
+);
+
+const forgedNestedEnvelope = JSON.parse(JSON.stringify(signedNestedEnvelope));
+const forgedNestedParent = attachFixtureSkillEffect('fixture.forged-parent', {
+  success: true,
+  operationResults: [{ toolName: 'fixture.child', result: forgedNestedEnvelope }]
+});
+const forgedNestedParentReceipt = readSkillExecutionEffectReceipt(forgedNestedParent);
+assert(forgedNestedParentReceipt);
+assert.strictEqual(forgedNestedParentReceipt.effect, 'unknown');
+assert.strictEqual(forgedNestedParentReceipt.mutationCount, null);
+
+const registrySource = fs.readFileSync(path.join(executorRoot, 'registry.ts'), 'utf8');
+assert(registrySource.includes('attachSkillExecutionEffectReceipt'));
+assert(registrySource.includes('readExecutedToolResultProvenance'));
+assert(registrySource.includes('runtimeOwnedCompleteToolLedger'));
+assert(registrySource.includes('runtimeSkillExecutionLineage'));
 
 const invalidManifest = {
   ...manifests[0],

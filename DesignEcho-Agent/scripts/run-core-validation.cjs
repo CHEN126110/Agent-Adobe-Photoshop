@@ -41,10 +41,16 @@ const COMMANDS = [
   { label: "让用户帮我选（选项卡）", cwd: agentRoot, args: ["run", "test:user-choice-request"] },
   { label: "学习候选区", cwd: agentRoot, args: ["run", "test:design-learning-candidates"] },
   { label: "运行事实账本", cwd: agentRoot, args: ["run", "test:run-fact-ledger"] },
+  { label: "终审候选与参考证据", cwd: agentRoot, args: ["run", "test:design-final-comparison-evidence"] },
+  { label: "终审跨代可信证据", cwd: agentRoot, args: ["run", "test:trusted-final-comparison-evidence"] },
+  { label: "终审 Provider 逐图出站回执", cwd: agentRoot, args: ["run", "test:model-visual-presentation-receipt"] },
+  { label: "设计可靠性评测契约", cwd: agentRoot, args: ["run", "test:design-reliability"] },
   { label: "主体框纯逻辑", cwd: agentRoot, args: ["run", "test:subject-box"] },
+  { label: "图片落位写前预览", cwd: agentRoot, args: ["run", "test:image-placement-preview"] },
   { label: "SKU 模板 handoff", cwd: agentRoot, args: ["run", "test:sku-template-handoff"] },
   { label: "Agent 核心测试", cwd: agentRoot, args: ["test"] },
   { label: "Agent 类型检查", cwd: agentRoot, args: ["run", "build:typecheck:renderer"] },
+  { label: "UXP 核心测试", cwd: uxpRoot, args: ["test"] },
   { label: "UXP 构建", cwd: uxpRoot, args: ["run", "build"] }
 ];
 

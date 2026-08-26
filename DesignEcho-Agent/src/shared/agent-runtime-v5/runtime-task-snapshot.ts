@@ -165,6 +165,11 @@ export interface RuntimeTaskSnapshotTaskRun {
         writerTaskRunId?: string;
         conflictKind?: string;
     };
+    sideEffect?: {
+        status: 'unknown';
+        workflowToolName: string;
+        recordedAt: string;
+    };
     operationResults: Array<{
         operationId: string;
         toolName: string;
@@ -662,6 +667,13 @@ function buildTaskRunProjection(session: RuntimeSession): RuntimeTaskSnapshotTas
                     : {})
             }
         } : {}),
+        ...(taskRun.sideEffectState ? {
+            sideEffect: {
+                status: taskRun.sideEffectState.status,
+                workflowToolName: cleanText(taskRun.sideEffectState.workflowToolName, 120),
+                recordedAt: taskRun.sideEffectState.recordedAt
+            }
+        } : {}),
         operationResults: taskRun.operationResults.slice(-MAX_LIST).map((result) => ({
             operationId: cleanText(result.operationId, 160),
             toolName: cleanText(result.toolName, 120),
@@ -891,7 +903,7 @@ const EXECUTION_STATUS_VALUES: readonly RuntimeTaskSnapshotExecutionStatus[] = [
     'completed', 'needs_review', 'failed', 'cancelled', 'awaiting_confirmation'
 ];
 const TASK_RUN_STATUS_VALUES: readonly RuntimeTaskRunStatus[] = [
-    'active', 'waiting_user', 'needs_reobserve', 'needs_review', 'completed', 'failed', 'cancelled'
+    'active', 'waiting_user', 'writer_conflict', 'needs_reobserve', 'needs_review', 'completed', 'failed', 'cancelled'
 ];
 const TASK_RUN_NODE_STATUS_VALUES: readonly RuntimeTaskRunNodeStatus[] = [
     'pending', 'ready', 'in_progress', 'waiting_user', 'applied', 'verified',
@@ -1115,11 +1127,19 @@ function hasTaskRunOperationResult(value: unknown): boolean {
         ] as const);
 }
 
+function hasTaskRunSideEffect(value: unknown): boolean {
+    if (!isRecord(value)) return false;
+    return hasOnlyKeys(value, ['status', 'workflowToolName', 'recordedAt'])
+        && value.status === 'unknown'
+        && hasBoundedString(value.workflowToolName, 120)
+        && hasBoundedString(value.recordedAt, 80);
+}
+
 function hasSnapshotTaskRun(value: unknown): boolean {
     if (!isRecord(value)
         || !hasOnlyKeys(value, [
             'taskRunId', 'status', 'planRevision', 'cursor', 'currentNodeId', 'nodes',
-            'pendingInteraction', 'document', 'operationResults'
+            'pendingInteraction', 'document', 'sideEffect', 'operationResults'
         ])
         || !hasBoundedString(value.taskRunId, 160)
         || !hasEnumValue(value.status, TASK_RUN_STATUS_VALUES)
@@ -1132,6 +1152,7 @@ function hasSnapshotTaskRun(value: unknown): boolean {
         || (hasOwn(value, 'pendingInteraction')
             && !hasTaskRunPendingInteraction(value.pendingInteraction))
         || (hasOwn(value, 'document') && !hasTaskRunDocument(value.document))
+        || (hasOwn(value, 'sideEffect') && !hasTaskRunSideEffect(value.sideEffect))
         || !Array.isArray(value.operationResults)
         || value.operationResults.length > MAX_LIST
         || !value.operationResults.every(hasTaskRunOperationResult)) {

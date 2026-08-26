@@ -58,11 +58,21 @@ export interface DesignFingerprintSelectedAsset {
     role?: string;
 }
 
+export interface DesignFingerprintImagePlacement {
+    fit: 'contain' | 'cover';
+    anchor: 'center' | 'top-center' | 'bottom-center' | 'left-center' | 'right-center';
+    cropPolicy: 'avoid-crop' | 'protect-subject' | 'allow-crop';
+    subjectFillRatio?: number;
+    focalPoint?: { x: number; y: number };
+}
+
 export interface DesignFingerprintRegion {
     id: string;
     role: string;
     contentKind: 'image' | 'editable_text';
     contentSummary?: string;
+    /** Agent 当时真实声明的图片落位摘要；用于复盘和候选比较，不是审美分数。 */
+    imagePlacement?: DesignFingerprintImagePlacement;
 }
 
 export interface DesignVersionComparison {
@@ -213,12 +223,45 @@ function normalizeFingerprintRegions(value: unknown): DesignFingerprintRegion[] 
             const role = String(record.role || '').replace(/\s+/g, ' ').trim();
             const contentKind = record.contentKind === 'image' ? 'image' : 'editable_text';
             const contentSummary = String(record.contentSummary || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+            const placementRecord = record.imagePlacement
+                && typeof record.imagePlacement === 'object'
+                && !Array.isArray(record.imagePlacement)
+                ? record.imagePlacement as Record<string, unknown>
+                : undefined;
+            const placementFit = placementRecord?.fit === 'cover' ? 'cover' : 'contain';
+            const placementAnchor = String(placementRecord?.anchor || '');
+            const placementCropPolicy = String(placementRecord?.cropPolicy || '');
+            const placementValid = contentKind === 'image'
+                && ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'].includes(placementAnchor)
+                && ['avoid-crop', 'protect-subject', 'allow-crop'].includes(placementCropPolicy);
+            const subjectFillRatio = Number(placementRecord?.subjectFillRatio);
+            const focalPointRecord = placementRecord?.focalPoint
+                && typeof placementRecord.focalPoint === 'object'
+                && !Array.isArray(placementRecord.focalPoint)
+                ? placementRecord.focalPoint as Record<string, unknown>
+                : undefined;
+            const focalX = Number(focalPointRecord?.x);
+            const focalY = Number(focalPointRecord?.y);
             if (!id || !role) return undefined;
             return {
                 id,
                 role,
                 contentKind,
-                ...(contentSummary ? { contentSummary } : {})
+                ...(contentSummary ? { contentSummary } : {}),
+                ...(placementValid ? {
+                    imagePlacement: {
+                        fit: placementFit,
+                        anchor: placementAnchor as DesignFingerprintImagePlacement['anchor'],
+                        cropPolicy: placementCropPolicy as DesignFingerprintImagePlacement['cropPolicy'],
+                        ...(Number.isFinite(subjectFillRatio) && subjectFillRatio > 0 && subjectFillRatio <= 1
+                            ? { subjectFillRatio }
+                            : {}),
+                        ...(Number.isFinite(focalX) && Number.isFinite(focalY)
+                            && focalX >= 0 && focalX <= 1 && focalY >= 0 && focalY <= 1
+                            ? { focalPoint: { x: focalX, y: focalY } }
+                            : {})
+                    }
+                } : {})
             };
         })
         .filter((item): item is DesignFingerprintRegion => Boolean(item));
@@ -229,7 +272,10 @@ function fingerprintRegionKey(region: DesignFingerprintRegion): string {
         region.contentKind,
         region.role.toLowerCase(),
         region.id.toLowerCase(),
-        String(region.contentSummary || '').toLowerCase()
+        String(region.contentSummary || '').toLowerCase(),
+        region.imagePlacement
+            ? JSON.stringify(region.imagePlacement)
+            : ''
     ].join('|');
 }
 

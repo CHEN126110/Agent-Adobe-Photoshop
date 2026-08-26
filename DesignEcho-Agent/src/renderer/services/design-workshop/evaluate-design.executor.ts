@@ -3,7 +3,8 @@
  *
  * 流程：取画面（参数 imageData / 文件路径 / 当前文档快照）→ 组评审提示（设计说明 + 硬项 + 用户校准样本）
  * → 视觉模型 → 解析为分数与批评 → 记进任务卡「验」栏 → 返回。
- * 生成器（模型）据此改 1–2 处或换方向；本工具不写 Photoshop，也不宣布正式质量通过或可交付。
+ * 主 Agent 据此判断局部修订、替换关系或换方向；本工具不写 Photoshop，
+ * 也不宣布正式质量通过或可交付。
  */
 
 import {
@@ -301,7 +302,7 @@ export async function executeEvaluateDesign(params: any, deps: EvaluateDesignDep
         elapsedMs: Date.now() - startedAt,
         repeatedTopCritique,
         message: result.criteria.length > 0
-            ? `${summary}${result.referenceGap ? `\n与参考差距（${formatReferenceGapLabel(result.referenceGap.gap)}）：${result.referenceGap.points.join('；')}` : ''}\n${result.critiques.map((item, index) => `${index + 1}. ${item}`).join('\n')}${result.nextMoves.length ? `\n下一步：${result.nextMoves.join('；')}` : ''}${result.verdict === 'pass' ? '' : '\n据此只改 1–2 处或换方向，改完再评一次；不要为改而改。'}${repeatedTopCritique ? '\n注意：上一次评审的首要问题和这次一样——你刚才的改动没有解决它。别再微调尺寸 / 位置 / 投影：要么换方法（换一张素材、去掉杂物、换角度重出），要么如实告诉用户这一点做不到、问他怎么办。' : ''}${result.comparisonMode === 'single' ? '\n提示：本次是单图评审，分数分辨力有限。下次先自己选一张参照（searchEagleReferences 检索同品类参考 / 项目里已交付上架的成品图 / 本稿上一版导出）传 referenceFilePath——选参照就是你的审美判断，对照评审比单图打分准得多。' : ''}${autoReferenceNote ? `\n本次对照参考来自${autoReferenceNote}。` : ''}${referenceLoadWarning ? `\n${referenceLoadWarning}` : ''}`
+            ? `${summary}${result.referenceGap ? `\n与参考差距（${formatReferenceGapLabel(result.referenceGap.gap)}）：${result.referenceGap.points.join('；')}` : ''}\n${result.critiques.map((item, index) => `${index + 1}. ${item}`).join('\n')}${result.nextMoves.length ? `\n下一步：${result.nextMoves.join('；')}` : ''}${result.verdict === 'pass' ? '' : '\n请根据问题之间的因果关系，选择能解决最高目标影响根因的修订；“最小”指副作用最少，不是改动数量最少。如果问题来自素材、构图机制或方向，只移动、缩放或叠加局部元素不算解决；修订后重新查看真实结果。'}${repeatedTopCritique ? '\n注意：上一次评审的首要问题和这次一样——你刚才的改动没有解决它。别再微调尺寸 / 位置 / 投影：要么换方法（换一张素材、去掉杂物、换角度重出），要么如实告诉用户这一点做不到、问他怎么办。' : ''}${result.comparisonMode === 'single' ? '\n提示：本次是单图评审，分数分辨力有限。下次先自己选一张参照（searchEagleReferences 检索同品类参考 / 项目里已交付上架的成品图 / 本稿上一版导出）传 referenceFilePath——选参照就是你的审美判断，对照评审比单图打分准得多。' : ''}${autoReferenceNote ? `\n本次对照参考来自${autoReferenceNote}。` : ''}${referenceLoadWarning ? `\n${referenceLoadWarning}` : ''}`
             : `评审未得到分数：${result.critiques[0]}`
     };
 }

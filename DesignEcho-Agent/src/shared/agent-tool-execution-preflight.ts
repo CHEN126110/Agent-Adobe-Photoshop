@@ -209,6 +209,8 @@ export function isReadOnlyAgentContextTool(toolName: unknown): boolean {
 const STATEFUL_CONTEXT_TOOLS = new Set([
     // Skill 包脚本是黑盒子进程（可能读写项目文件），强制串行、写预检可见全部前序结果。
     'runSkillScript',
+    // 手册改进提议写学习候选账本（项目文件），串行防并发写乱；不写 Photoshop 不改手册本身。
+    'proposeSkillImprovement',
     'createInteractiveCard',
     ...AGENT_HARNESS_CONTROL_TOOL_NAMES,
     'switchDocument',

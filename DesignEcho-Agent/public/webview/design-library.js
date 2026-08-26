@@ -34,7 +34,8 @@ var templateLibraryRenamingAssetPath = '';
 var templateLibraryCardSizeResizeBound = false;
 // 拖缩放期间复用上一帧的正文高度，避免每帧对每张卡片强制重排（松手后会精确重测）
 var templateLibraryGridLayoutReuseBodyHeight = false;
-var templateLibraryColumnShiftTimer = 0;
+// 最近一次布局的行结构（每行的卡片序号与横向中心），供方向键上下行导航
+var templateLibraryGridNavRows = [];
 // 缩放控件的外观刷新入口（bind 时赋值），换算初始视图后用它把滑块拨到对应位置
 var templateLibraryCardSizeRenderUI = null;
 var templateLibraryStateHydrated = false;
@@ -60,23 +61,24 @@ var templateLibraryRenderedRegions = {
     templateList: ''
 };
 
-// —— 瀑布流与浏览体验 ——
-// 卡片按真实宽高比占位（消除图片解码后的跳动），卡片宽度由缩放值连续决定、列数是推导结果。
+// —— 整齐排列（justified rows）与浏览体验 ——
+// 2026-08-25 用户两条硬要求：①素材墙左右铺满；②拖缩放时卡片连续变大变小。
+// 固定列的瀑布流给不出这两条的交集（铺满 ⇒ 列宽只有整数列几个取值），
+// 整齐排列可以：缩放值连续决定目标行高，每一整行按比例缩放到恰好铺满，
+// 行间距/卡间距恒定 8px，放大时墙沿纵向连续伸展。
 var TEMPLATE_LIBRARY_GRID_GAP = 8;
+// 仅用于旧"列数档位"偏好的一次性换算（getLegacyTemplateLibraryColumns）
 var TEMPLATE_LIBRARY_MIN_CARD_WIDTH = 92;
 var TEMPLATE_LIBRARY_MAX_COLUMNS = 6;
-// 加减按钮/方向键每步的卡片放大倍率：按比例而不是按滑块百分比走，
-// 否则同样"点一下"在小卡片时只动 1px、在大卡片时动 30px
+// 加减按钮/方向键每步的行高放大倍率：按比例走，小图和大图"点一下"的感知步幅一致
 var TEMPLATE_LIBRARY_CARD_SIZE_STEP_RATIO = 1.08;
-// 缩放值语义版本：写进本地偏好，用来区分旧的"列数档位"与现在的"卡片宽度"
-var TEMPLATE_LIBRARY_CARD_SIZE_MODEL = 'width-v1';
-// 缩放曲线指数：>1 把行程往小卡片一侧偏。纯等比映射下"单列大图"会占掉六成行程，
-// 而日常在窄面板里调的是 2~3 列，行程要留给它们
-var TEMPLATE_LIBRARY_CARD_SIZE_CURVE = 1.8;
-// 无历史偏好时的初始视图：窄面板下正好是一行 3 张铺满
+// 缩放值语义版本：写进本地偏好；旧值（列数档位 width-v1 之前 / 连续宽度 width-v1）
+// 都会在首次布局时按等效列数换算成行高语义
+var TEMPLATE_LIBRARY_CARD_SIZE_MODEL = 'row-height-v2';
+// 缩放最小档的目标行高（像素）：再小就读不清缩略图了
+var TEMPLATE_LIBRARY_MIN_ROW_HEIGHT = 96;
+// 无历史偏好时的初始视图：约等于一行 3 张
 var TEMPLATE_LIBRARY_DEFAULT_COLUMNS = 3;
-// 拖动经过"整数列铺满"时的吸附半径（卡片宽度像素）：整齐的落点值得给手一点磁性
-var TEMPLATE_LIBRARY_CARD_SIZE_SNAP_PX = 5;
 // 预览高度上限（相对列宽）：超长图（详情页整页）不允许把一张卡片撑成几屏
 var TEMPLATE_LIBRARY_MAX_PREVIEW_RATIO = 1.9;
 var TEMPLATE_LIBRARY_MIN_PREVIEW_RATIO = 0.42;
@@ -688,59 +690,21 @@ function renderTemplateLibrarySelectedAssetPanel(item) {
         return '';
     }
 
-    if (selectedPaths.length > 1) {
-        return [
-            '<div class="template-library-dock is-multi">',
-            '<div class="template-library-dock-main">',
-            '<div class="template-library-dock-title">\u5df2\u9009 ' + escapeHtml(String(selectedPaths.length)) + ' \u4e2a\u7d20\u6750</div>',
-            '<div class="template-library-dock-sub">\u6279\u91cf\u6dfb\u52a0\u6807\u7b7e\u4f1a\u4f9d\u6b21\u5199\u5165\u6bcf\u4e2a\u7d20\u6750</div>',
-            '</div>',
-            '<div class="template-library-dock-actions">',
-            '<button type="button" class="template-library-selection-action" id="btnTemplateLibraryEditSelectedTags">\u6279\u91cf\u6807\u7b7e</button>',
-            '<button type="button" class="template-library-selection-action is-quiet" id="btnTemplateLibraryClearSelection">\u53d6\u6d88\u9009\u62e9</button>',
-            '</div>',
-            '</div>'
-        ].join('');
+    // \u5355\u9009\u4e0d\u518d\u663e\u793a\u4fe1\u606f\u6761\uff082026-08-25 \u7528\u6237\u8981\u6c42\u7b80\u5316\uff1a\u5355\u7d20\u6750\u7684\u7f6e\u5165/\u6807\u7b7e/\u91cd\u547d\u540d
+    // \u5df2\u7531\u53f3\u952e\u83dc\u5355\u5168\u8986\u76d6\uff09\u3002\u53ea\u4fdd\u7559\u591a\u9009\u5f62\u6001\u2014\u2014\u6279\u91cf\u6807\u7b7e\u5728\u53f3\u952e\u91cc\u6ca1\u6709\u66ff\u4ee3\u5165\u53e3\u3002
+    if (selectedPaths.length <= 1) {
+        return '';
     }
-
-    var assetName = escapeHtml(item?.name || '\u672a\u547d\u540d\u7d20\u6750');
-    var formatLabel = escapeHtml(String(item?.fileFormat || '').toUpperCase() || 'FILE');
-    var dimensionLabel = formatTemplateLibraryDimensionLabel(item);
-    var metaParts = [formatLabel];
-    if (dimensionLabel) {
-        metaParts.push(dimensionLabel);
-    }
-    if (item?.fileSize) {
-        metaParts.push(String(item.fileSize));
-    }
-    if (item?.updatedLabel) {
-        metaParts.push(String(item.updatedLabel));
-    }
-
-    var tags = normalizeTemplateLibraryTagList(item?.tags || []);
-    var tagsHtml = tags.length > 0
-        ? tags.map(function(tag) {
-            return '<span class="template-library-selection-tag">' + escapeHtml(tag) + '</span>';
-        }).join('')
-        : '<span class="template-library-selection-tag is-empty">\u672a\u6dfb\u52a0\u6807\u7b7e</span>';
-
-    var thumb = String(item?.thumbnailUrl || '').trim();
-    var thumbHtml = thumb
-        ? '<img class="template-library-dock-thumb" src="' + escapeHtml(thumb) + '" alt="" draggable="false" />'
-        : '<div class="template-library-dock-thumb is-glyph">' + escapeHtml(getTemplateLibraryAssetGlyph(item)) + '</div>';
 
     return [
-        '<div class="template-library-dock">',
-        thumbHtml,
+        '<div class="template-library-dock is-multi">',
         '<div class="template-library-dock-main">',
-        '<div class="template-library-dock-title" title="' + assetName + '">' + assetName + '</div>',
-        '<div class="template-library-dock-sub">' + escapeHtml(metaParts.join(' \u00b7 ')) + '</div>',
-        '<div class="template-library-selection-tags">' + tagsHtml + '</div>',
+        '<div class="template-library-dock-title">\u5df2\u9009 ' + escapeHtml(String(selectedPaths.length)) + ' \u4e2a\u7d20\u6750</div>',
+        '<div class="template-library-dock-sub">\u6279\u91cf\u6dfb\u52a0\u6807\u7b7e\u4f1a\u4f9d\u6b21\u5199\u5165\u6bcf\u4e2a\u7d20\u6750</div>',
         '</div>',
         '<div class="template-library-dock-actions">',
-        '<button type="button" class="template-library-selection-action" id="btnTemplateLibraryPlaceSelected">\u7f6e\u5165</button>',
-        '<button type="button" class="template-library-selection-action" id="btnTemplateLibraryEditSelectedTags">\u6807\u7b7e</button>',
-        '<button type="button" class="template-library-selection-action is-quiet" id="btnTemplateLibraryRenameSelected">\u91cd\u547d\u540d</button>',
+        '<button type="button" class="template-library-selection-action" id="btnTemplateLibraryEditSelectedTags">\u6279\u91cf\u6807\u7b7e</button>',
+        '<button type="button" class="template-library-selection-action is-quiet" id="btnTemplateLibraryClearSelection">\u53d6\u6d88\u9009\u62e9</button>',
         '</div>',
         '</div>'
     ].join('');
@@ -793,7 +757,6 @@ function renderTemplateLibraryAssetItem(item, index) {
         isWide ? 'is-wide' : ''
     ].filter(Boolean).join(' ');
     var assetName = escapeHtml(item?.name || '未命名素材');
-    var formatLabel = escapeHtml(String(item?.fileFormat || '').toUpperCase() || 'FILE');
     var tagList = normalizeTemplateLibraryTagList(item?.tags || []);
     var tags = tagList.join(', ');
     // 卡片正文第二行固定给"这张图有多大"；更细的信息（体积 / 时间）留给底部已选素材条，
@@ -821,10 +784,11 @@ function renderTemplateLibraryAssetItem(item, index) {
         ' data-ratio="' + getTemplateLibraryPreviewRatio(item).toFixed(4) + '"',
         ' data-tags="' + escapeHtml(tags) + '">',
         '<div class="' + previewClasses + '">',
-        '<div class="template-item-preview-meta">',
-        '<div class="template-file-chip template-file-chip-overlay">' + formatLabel + '</div>',
-        isLong ? '<div class="template-file-chip template-file-chip-overlay is-long-flag">长图</div>' : '',
-        '</div>',
+        // 缩略图上不叠文件格式角标（2026-08-25 用户要求简化）；格式等细节信息
+        // 的家在底部已选素材条。只保留"长图"这类影响浏览行为的功能性标记。
+        isLong
+            ? '<div class="template-item-preview-meta"><div class="template-file-chip template-file-chip-overlay is-long-flag">长图</div></div>'
+            : '',
         previewHtml,
         '</div>',
         '<div class="template-item-body">',
@@ -950,154 +914,155 @@ function clampTemplateLibraryCardSize(value) {
 }
 
 /**
- * 缩放值 → 卡片宽度区间
+ * 缩放值 → 目标行高区间
  *
- * 0% 落在"最小可读卡片"，同时不允许突破最多列数；100% 是单列铺满。
- * 窄面板（340px）里 MAX_COLUMNS 那一路算出来会小于可读下限，取两者较大值即可，
- * 因此窄面板的 0% 就是 92px（约 3 列），宽面板的 0% 才真的顶到 6 列。
+ * 0% 是最小可读行高；100% 的行高保证任何展示比例的素材单独成行也放不下，
+ * 触发整行缩放铺满——也就是"单张全宽大图"。区间随面板宽度自适应。
  */
-function getTemplateLibraryCardWidthRange(availableWidth) {
-    var gap = TEMPLATE_LIBRARY_GRID_GAP;
+function getTemplateLibraryRowHeightRange(availableWidth) {
     var safeWidth = Math.max(120, Number(availableWidth) || 0);
-    var maxWidth = safeWidth;
-    var minWidth = Math.max(
-        TEMPLATE_LIBRARY_MIN_CARD_WIDTH,
-        (safeWidth - gap * (TEMPLATE_LIBRARY_MAX_COLUMNS - 1)) / TEMPLATE_LIBRARY_MAX_COLUMNS
-    );
-    return { min: Math.min(minWidth, maxWidth), max: maxWidth };
+    var min = TEMPLATE_LIBRARY_MIN_ROW_HEIGHT;
+    var max = Math.max(min + 1, safeWidth * TEMPLATE_LIBRARY_MAX_PREVIEW_RATIO);
+    return { min: min, max: max };
 }
 
 /**
- * 缩放值 → 卡片宽度（无级）
+ * 缩放值 → 目标行高（无级）
  *
- * 旧实现把缩放值映射成整数列数：340px 面板里全程只有 3/2/1 列三个状态，
- * 拖动时卡片宽度一次跳 60px 以上，看着就是"一格一格蹦"。
- * 现在缩放值直接决定像素宽度，列数退化成推导结果，滑块每一像素都有效。
- * 用指数插值而非线性：尺寸感知接近对数，线性会让小端过钝、大端过冲。
+ * 等比插值：尺寸感知接近对数，线性插值会让小端过钝、大端过冲。
+ * 滑块每一像素都对应一个新行高，布局实时跟手——这就是"连续缩放"本身。
  */
-function getTemplateLibraryCardWidth(percent, availableWidth) {
-    var range = getTemplateLibraryCardWidthRange(availableWidth);
-    if (!(range.max > range.min)) {
-        return range.min;
-    }
+function getTemplateLibraryRowHeight(percent, availableWidth) {
+    var range = getTemplateLibraryRowHeightRange(availableWidth);
     var normalized = clampTemplateLibraryCardSize(percent) / 100;
-    var eased = Math.pow(normalized, TEMPLATE_LIBRARY_CARD_SIZE_CURVE);
-    return range.min * Math.pow(range.max / range.min, eased);
+    return range.min * Math.pow(range.max / range.min, normalized);
 }
 
 /**
- * 卡片宽度 → 整行几何
- *
- * 卡片宽度连续，行宽几乎永远凑不满整数列，余量必须有去处，而去处只有两个：
- * 摊进列间距，或者整体居中留白。这里选后者——列间距恒定 8px。
- *
- * 摊进间距看着更"铺满"，但缩放时间距会跟着一起呼吸（8px 到 30px+），
- * 而间距是眼睛判断"这是一整面墙"的基准线：基准线一动，观感就变成
- * 每张图各缩各的、缝隙乱变。宁可两侧留白，也要让缝隙钉死。
+ * 目标行高 → 缩放值（getTemplateLibraryRowHeight 的反函数）
  */
-function getTemplateLibraryGridMetrics(percent, availableWidth) {
-    var baseGap = TEMPLATE_LIBRARY_GRID_GAP;
-    var safeWidth = Math.max(120, Number(availableWidth) || 0);
-    var targetWidth = getTemplateLibraryCardWidth(percent, safeWidth);
-    // 亚像素容差：正好铺满的宽度经过指数换算会带出 1e-7 的误差，没有它就会在
-    // "3 列刚好铺满"这种临界点上掉成 2 列（差 0.0000001px 判成放不下）
-    var columns = Math.max(1, Math.min(
-        TEMPLATE_LIBRARY_MAX_COLUMNS,
-        Math.floor((safeWidth + baseGap + 0.05) / (targetWidth + baseGap))
-    ));
-
-    // 列数取整后卡片不允许再超出该列数的铺满宽度，否则最后一列会被挤出可视区
-    var columnWidth = Math.min(targetWidth, (safeWidth - baseGap * (columns - 1)) / columns);
-    var offsetX = Math.max(0, (safeWidth - (columns * columnWidth + baseGap * (columns - 1))) / 2);
-
-    return {
-        gap: baseGap,
-        columns: columns,
-        columnWidth: columnWidth,
-        offsetX: offsetX,
-        availableWidth: safeWidth
-    };
-}
-
-function getTemplateLibraryColumnCount(percent, availableWidth) {
-    return getTemplateLibraryGridMetrics(percent, availableWidth).columns;
+function getTemplateLibraryCardSizeForRowHeight(rowHeight, availableWidth) {
+    var range = getTemplateLibraryRowHeightRange(availableWidth);
+    var bounded = Math.max(range.min, Math.min(range.max, Number(rowHeight) || range.min));
+    return clampTemplateLibraryCardSize(100 * Math.log(bounded / range.min) / Math.log(range.max / range.min));
 }
 
 /**
- * 卡片宽度 → 缩放值（getTemplateLibraryCardWidth 的反函数）
- */
-function getTemplateLibraryCardSizeForWidth(cardWidth, availableWidth) {
-    var range = getTemplateLibraryCardWidthRange(availableWidth);
-    if (!(range.max > range.min)) {
-        return 0;
-    }
-    var boundedWidth = Math.max(range.min, Math.min(range.max, Number(cardWidth) || 0));
-    var eased = Math.log(boundedWidth / range.min) / Math.log(range.max / range.min);
-    return clampTemplateLibraryCardSize(100 * Math.pow(Math.max(0, eased), 1 / TEMPLATE_LIBRARY_CARD_SIZE_CURVE));
-}
-
-/**
- * 目标列数 → 缩放值
+ * 目标列数 → 缩放值（"一行约 N 张"的等效行高）
  *
- * 取"该列数正好铺满"的卡片宽度再反解缩放值，落点是视觉上最整齐的位置。
- * 用在两处：没有历史偏好时的初始视图，以及旧偏好的一次性换算。
+ * 用平均展示比例把 N 张一行的卡宽换算成行高。只用于两处：
+ * 没有历史偏好时的初始视图，以及旧偏好的一次性换算。
  */
 function getTemplateLibraryCardSizeForColumns(columns, availableWidth) {
     var safeWidth = Math.max(120, Number(availableWidth) || 0);
     var safeColumns = Math.max(1, Math.min(TEMPLATE_LIBRARY_MAX_COLUMNS, Math.round(columns) || 1));
-    var fitWidth = (safeWidth - TEMPLATE_LIBRARY_GRID_GAP * (safeColumns - 1)) / safeColumns;
-    return getTemplateLibraryCardSizeForWidth(fitWidth, safeWidth);
+    var cardWidth = (safeWidth - TEMPLATE_LIBRARY_GRID_GAP * (safeColumns - 1)) / safeColumns;
+    return getTemplateLibraryCardSizeForRowHeight(cardWidth * TEMPLATE_LIBRARY_DEFAULT_RATIO, safeWidth);
 }
 
 /**
- * 拖动取值 → 吸附到最近的"整数列铺满"
+ * 当前缩放值走一步：搜索下一个"布局真的会变"的缩放值
  *
- * 卡片宽度连续意味着大多数位置都会剩下一条留白，而留白为 0 的位置只有那么几个。
- * 经过它们时吸住几像素，手不用瞄准也能停在整齐的地方；半径很小，不影响无级手感。
- * 只用于拖动：加减按钮和方向键要的是可预测的等比步进，不吸附。
- */
-function snapTemplateLibraryCardSizeToFit(percent, availableWidth) {
-    var safeWidth = Math.max(120, Number(availableWidth) || 0);
-    var width = getTemplateLibraryCardWidth(percent, safeWidth);
-
-    for (var columns = 1; columns <= TEMPLATE_LIBRARY_MAX_COLUMNS; columns += 1) {
-        var fitWidth = (safeWidth - TEMPLATE_LIBRARY_GRID_GAP * (columns - 1)) / columns;
-        if (fitWidth > 0 && Math.abs(width - fitWidth) <= TEMPLATE_LIBRARY_CARD_SIZE_SNAP_PX) {
-            return getTemplateLibraryCardSizeForWidth(fitWidth, safeWidth);
-        }
-    }
-
-    return clampTemplateLibraryCardSize(percent);
-}
-
-/**
- * 当前缩放值按倍率走一步
- *
- * 步进定义在"卡片宽度"上而不是滑块百分比上：缩放曲线两端疏密不同，
- * 按百分比走会出现小卡片点半天不动、大卡片一点就跳一大截。
+ * 铺满约束下卡片尺寸是分段恒定的（行高由行成员决定），固定倍率步进大概率
+ * 落在同一段里——按了没反应。这里沿方向按 1% 扫描布局签名，返回第一个
+ * 签名变化的位置；到端点仍无变化则返回原值（加减按钮据此停住连击）。
+ * ratio 只取方向：>1 放大（少排一些），<1 缩小。
  */
 function getTemplateLibrarySteppedCardSize(percent, ratio, availableWidth) {
     var safeRatio = Number(ratio);
-    if (!Number.isFinite(safeRatio) || safeRatio <= 0) {
+    if (!Number.isFinite(safeRatio) || safeRatio <= 0 || safeRatio === 1) {
         return clampTemplateLibraryCardSize(percent);
     }
-    var currentWidth = getTemplateLibraryCardWidth(percent, availableWidth);
-    return getTemplateLibraryCardSizeForWidth(currentWidth * safeRatio, availableWidth);
+    var direction = safeRatio > 1 ? 1 : -1;
+    var current = clampTemplateLibraryCardSize(percent);
+    var aspects = readTemplateLibraryCardAspects();
+    if (aspects.length === 0) {
+        return current;
+    }
+    var baseline = getTemplateLibraryLayoutSignature(current, availableWidth, aspects);
+    for (var step = 1; step <= 100; step += 1) {
+        var candidate = current + direction * step;
+        if (candidate < 0 || candidate > 100) {
+            return current;
+        }
+        if (getTemplateLibraryLayoutSignature(candidate, availableWidth, aspects) !== baseline) {
+            return clampTemplateLibraryCardSize(candidate);
+        }
+    }
+    return current;
 }
 
 /**
- * 旧档位偏好 → 当时显示的列数
+ * 贪心装行（布局与步进共用的唯一装行规则）
  *
- * 只为把历史 localStorage 值换算成等效卡片宽度而保留；换算成功后偏好里会写上
- * cardSizeModel，之后不再走这条路。
+ * 在目标行高下累计自然宽度，达到可用宽度就连同当前卡片收口为一个满行。
+ * 返回每行张数与"末行是否为满行"；行高等几何由调用方按满/未满分别推导。
  */
-function getLegacyTemplateLibraryColumnCount(percent, availableWidth) {
+function packTemplateLibraryRowCounts(aspects, targetHeight, availableWidth) {
+    var gap = TEMPLATE_LIBRARY_GRID_GAP;
+    var safeWidth = Math.max(120, Number(availableWidth) || 0);
+    var counts = [];
+    var count = 0;
+    var naturalWidth = 0;
+    var lastRowFull = false;
+    for (var i = 0; i < aspects.length; i += 1) {
+        naturalWidth += (count > 0 ? gap : 0) + aspects[i] * targetHeight;
+        count += 1;
+        if (naturalWidth >= safeWidth - 0.5) {
+            counts.push(count);
+            count = 0;
+            naturalWidth = 0;
+            lastRowFull = true;
+        }
+    }
+    if (count > 0) {
+        counts.push(count);
+        lastRowFull = false;
+    }
+    return { counts: counts, lastRowFull: lastRowFull };
+}
+
+/**
+ * 读当前素材墙每张卡的展示比例（w/h），顺序与 DOM 一致
+ */
+function readTemplateLibraryCardAspects() {
+    var gridEl = getTemplateLibraryGridElement();
+    if (!gridEl) {
+        return [];
+    }
+    return Array.prototype.slice.call(gridEl.querySelectorAll('.template-library-asset-card')).map(function(card) {
+        var ratio = Number(card.getAttribute('data-ratio'));
+        if (!Number.isFinite(ratio) || ratio <= 0) {
+            ratio = TEMPLATE_LIBRARY_DEFAULT_RATIO;
+        }
+        return 1 / ratio;
+    });
+}
+
+/**
+ * 某个缩放值下的布局签名：行张数序列 + 末行满否
+ *
+ * 铺满约束下几何完全由它决定——签名不变，画面就不变。步进靠它找"下一个真变化点"。
+ */
+function getTemplateLibraryLayoutSignature(percent, availableWidth, aspects) {
+    var targetHeight = getTemplateLibraryRowHeight(percent, availableWidth);
+    var packed = packTemplateLibraryRowCounts(aspects, targetHeight, availableWidth);
+    return packed.counts.join(',') + '|' + (packed.lastRowFull ? 'f' : 'u');
+}
+
+/**
+ * 旧"列数档位"偏好 → 当时显示的列数（仅偏好换算用）
+ */
+function getLegacyTemplateLibraryColumns(percent, availableWidth) {
     var gap = TEMPLATE_LIBRARY_GRID_GAP;
     var safeWidth = Math.max(120, Number(availableWidth) || 0);
     var maxColumns = Math.max(1, Math.min(
         TEMPLATE_LIBRARY_MAX_COLUMNS,
         Math.floor((safeWidth + gap) / (TEMPLATE_LIBRARY_MIN_CARD_WIDTH + gap))
     ));
+    if (maxColumns <= 1) {
+        return 1;
+    }
     var normalized = clampTemplateLibraryCardSize(percent) / 100;
     return Math.max(1, Math.min(maxColumns, Math.round(maxColumns - (maxColumns - 1) * normalized)));
 }
@@ -1108,7 +1073,7 @@ function resolveTemplateLibraryPendingCardSize(availableWidth) {
     }
 
     var columns = templateLibraryCardSizePendingModel === 'legacy'
-        ? getLegacyTemplateLibraryColumnCount(templateLibraryCardSize, availableWidth)
+        ? getLegacyTemplateLibraryColumns(templateLibraryCardSize, availableWidth)
         : TEMPLATE_LIBRARY_DEFAULT_COLUMNS;
 
     templateLibraryCardSizePendingModel = '';
@@ -1147,10 +1112,14 @@ function measureTemplateLibraryGridWidth() {
 }
 
 /**
- * 按最短列放置卡片的瀑布流布局
+ * 整齐排列（justified rows）布局
  *
- * 用绝对定位而不是 CSS 多列：多列是"列优先"填充（先填满第一列再换列），
- * 素材的阅读顺序会变成竖向；而且改列数必须重建 DOM，缩略图会重新解码。
+ * 贪心装行：按素材展示比例在目标行高下累计宽度，装满即整行等比缩放到恰好铺满，
+ * 因此左右永远顶边、缝隙恒定，而缩放值的每一次变化都连续反映为卡片大小变化。
+ * 末行装不满时保持目标行高、左对齐（Google 相册/Eagle 整齐排列的通行做法）。
+ *
+ * 用绝对定位而不是 flex/多列：改布局不重建 DOM，缩略图不会重新解码；
+ * 行结构同时写进 templateLibraryGridNavRows，供方向键上下行导航。
  */
 function layoutTemplateLibraryGrid() {
     var gridEl = getTemplateLibraryGridElement();
@@ -1161,53 +1130,33 @@ function layoutTemplateLibraryGrid() {
     var cards = Array.prototype.slice.call(gridEl.querySelectorAll('.template-library-asset-card'));
     if (cards.length === 0) {
         gridEl.style.height = '0px';
+        templateLibraryGridNavRows = [];
         return;
     }
 
     var availableWidth = gridEl.clientWidth || measureTemplateLibraryGridWidth();
 
-    // 初始视图（默认列数 / 旧偏好换算）必须等到素材墙真的量得出宽度才能定，
-    // 早一步用外层容器的宽度算，会因为内边距差十几像素而少排一列。
+    // 初始视图（默认视图 / 旧偏好换算）必须等到素材墙真的量得出宽度才能定，
+    // 早一步用外层容器的宽度算，会因为内边距差十几像素而排错。
     if (resolveTemplateLibraryPendingCardSize(availableWidth) && typeof templateLibraryCardSizeRenderUI === 'function') {
         templateLibraryCardSizeRenderUI(templateLibraryCardSize);
     }
 
-    var metrics = getTemplateLibraryGridMetrics(templateLibraryCardSize, availableWidth);
+    var gap = TEMPLATE_LIBRARY_GRID_GAP;
+    var safeWidth = Math.max(120, Number(availableWidth) || 0);
+    var targetHeight = getTemplateLibraryRowHeight(templateLibraryCardSize, safeWidth);
 
-    // 列数变了意味着卡片要换列，位置是整块跳的：只给这一次重排开位移补间，
-    // 连续缩放的其余帧仍然是即时的（加补间会让拖动整体慢半拍）。
-    var previousColumns = Number(gridEl.getAttribute('data-columns'));
-    if (Number.isFinite(previousColumns) && previousColumns > 0 && previousColumns !== metrics.columns) {
-        markTemplateLibraryColumnShift(gridEl);
-    }
-
-    var columnHeights = [];
-    for (var i = 0; i < metrics.columns; i += 1) {
-        columnHeights.push(0);
-    }
-
-    // 第一遍只写：列宽与预览高度。比例在渲染时已算好写进 data-ratio，
-    // 布局阶段不再回查素材列表（避免每次重排 O(卡片×素材)）。
-    var placements = cards.map(function(card) {
+    // 第一遍只读属性：展示比例在渲染时已算好写进 data-ratio（h/w，已做长图封顶），
+    // 布局阶段不再回查素材列表。aspect 是"每像素行高对应的宽度"（w/h）。
+    var placements = cards.map(function(card, index) {
         var ratio = Number(card.getAttribute('data-ratio'));
         if (!Number.isFinite(ratio) || ratio <= 0) {
             ratio = TEMPLATE_LIBRARY_DEFAULT_RATIO;
         }
-        var previewHeight = Math.round(metrics.columnWidth * ratio);
-
-        card.style.width = metrics.columnWidth.toFixed(2) + 'px';
-        var previewEl = card.querySelector('.template-asset-preview');
-        if (previewEl) {
-            previewEl.style.height = previewHeight + 'px';
-        }
-
-        return { card: card, previewHeight: previewHeight };
+        return { card: card, index: index, aspect: 1 / ratio };
     });
 
-    // 第二遍只读：正文行数不固定（名称 / 尺寸 / 标签），实测比按常量估算可靠，
-    // 读写分离让整轮只触发一次强制重排。
-    // 拖缩放时每帧都要重排，几百张卡片逐个读 offsetHeight 会掉帧：拖动期间复用上一帧
-    // 测到的正文高度（正文只有一到两行文字，跟列宽几乎无关），松手后再精确重测一次。
+    // 第二遍只读：正文高度实测 + 缓存（拖缩放期间复用上一帧的值，避免每帧强制重排掉帧）
     placements.forEach(function(placement) {
         var cachedBodyHeight = Number(placement.card.dataset.bodyHeight);
         var bodyHeight = 0;
@@ -1227,38 +1176,114 @@ function layoutTemplateLibraryGrid() {
                 ? TEMPLATE_LIBRARY_CARD_FOOTER_TAGS_HEIGHT
                 : TEMPLATE_LIBRARY_CARD_FOOTER_HEIGHT;
         }
-        placement.cardHeight = placement.previewHeight + bodyHeight;
+        placement.bodyHeight = bodyHeight;
     });
 
-    // 第三遍只写：按最短列落位
-    placements.forEach(function(placement) {
-        var shortestIndex = 0;
-        for (var col = 1; col < columnHeights.length; col += 1) {
-            if (columnHeights[col] < columnHeights[shortestIndex] - 0.5) {
-                shortestIndex = col;
-            }
+    // 贪心装行：与步进签名共用同一条装行规则（packTemplateLibraryRowCounts）
+    var packed = packTemplateLibraryRowCounts(
+        placements.map(function(placement) { return placement.aspect; }),
+        targetHeight,
+        safeWidth
+    );
+    var rows = [];
+    var sliceStart = 0;
+    packed.counts.forEach(function(count, rowIndex) {
+        rows.push({
+            items: placements.slice(sliceStart, sliceStart + count),
+            full: rowIndex < packed.counts.length - 1 || packed.lastRowFull
+        });
+        sliceStart += count;
+    });
+
+    // 第三遍只写：满行等比缩放到恰好铺满；末列宽度取余数，右边缘严格齐平。
+    // 末行未满时继承上一行行高（没有上一行才用目标行高）——若末行也连续跟随
+    // 目标行高，就会出现"末行在缩放、其余行不动"的不一致（2026-08-25 用户反馈），
+    // 统一为"全墙只在行重组时变化，变化时整体补间"。
+    var y = 0;
+    var navRows = [];
+    var previousRowHeight = 0;
+    rows.forEach(function(row) {
+        var aspectSum = 0;
+        row.items.forEach(function(placement) { aspectSum += placement.aspect; });
+        var rowHeight;
+        if (row.full && aspectSum > 0) {
+            rowHeight = (safeWidth - gap * (row.items.length - 1)) / aspectSum;
+        } else {
+            rowHeight = previousRowHeight > 0 ? previousRowHeight : targetHeight;
         }
+        rowHeight = Math.max(1, rowHeight);
+        previousRowHeight = rowHeight;
 
-        placement.card.style.transform = 'translate3d('
-            + (metrics.offsetX + shortestIndex * (metrics.columnWidth + metrics.gap)).toFixed(2) + 'px, '
-            + columnHeights[shortestIndex].toFixed(2) + 'px, 0)';
+        var x = 0;
+        var rowBodyMax = 0;
+        var navRow = [];
+        row.items.forEach(function(placement, itemIndex) {
+            // 拖动中单张卡的自然宽度可能超过面板宽，封顶防横向溢出
+            var cardWidth = Math.min(placement.aspect * rowHeight, safeWidth);
+            if (row.full && itemIndex === row.items.length - 1) {
+                cardWidth = Math.max(1, safeWidth - x);
+            }
 
-        columnHeights[shortestIndex] += placement.cardHeight + metrics.gap;
+            placement.card.style.width = cardWidth.toFixed(2) + 'px';
+            var previewEl = placement.card.querySelector('.template-asset-preview');
+            if (previewEl) {
+                previewEl.style.height = rowHeight.toFixed(2) + 'px';
+            }
+            placement.card.style.transform = 'translate3d(' + x.toFixed(2) + 'px, ' + y.toFixed(2) + 'px, 0)';
+
+            navRow.push({ index: placement.index, centerX: x + cardWidth / 2 });
+            rowBodyMax = Math.max(rowBodyMax, placement.bodyHeight);
+            x += cardWidth + gap;
+        });
+
+        navRows.push(navRow);
+        y += rowHeight + rowBodyMax + gap;
     });
 
-    gridEl.style.height = Math.max(0, Math.max.apply(null, columnHeights) - metrics.gap) + 'px';
-    gridEl.setAttribute('data-columns', String(metrics.columns));
+    gridEl.style.height = Math.max(0, y - gap) + 'px';
+    templateLibraryGridNavRows = navRows;
+
+    // 首次落位的卡片下一帧才挂 is-placed（开启几何补间）：
+    // 整齐排列的满行几何在两次重组之间是恒定的，所以补间只在重组瞬间生效，
+    // 把"行成员跳变"化成一次连续的变焦形变，又不会拖累拖动跟手性；
+    // 首帧不挂类，避免新渲染的卡片从 (0,0) 飞进来。
+    var unplacedCards = cards.filter(function(card) { return card.dataset.placed !== '1'; });
+    if (unplacedCards.length > 0) {
+        window.requestAnimationFrame(function() {
+            unplacedCards.forEach(function(card) {
+                card.dataset.placed = '1';
+            });
+        });
+    }
 }
 
-function markTemplateLibraryColumnShift(gridEl) {
-    gridEl.classList.add('is-column-shift');
-    if (templateLibraryColumnShiftTimer) {
-        clearTimeout(templateLibraryColumnShiftTimer);
+/**
+ * 方向键上下行导航：找目标行里横向中心最接近的卡片
+ *
+ * 整齐排列每行张数不等，"index ± 列数"不再成立，得按真实行结构走。
+ */
+function getTemplateLibraryVerticalNeighborIndex(currentIndex, direction) {
+    var rows = templateLibraryGridNavRows;
+    for (var rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+        for (var itemIndex = 0; itemIndex < rows[rowIndex].length; itemIndex += 1) {
+            if (rows[rowIndex][itemIndex].index !== currentIndex) {
+                continue;
+            }
+            var targetRow = rows[rowIndex + direction];
+            if (!targetRow || targetRow.length === 0) {
+                return currentIndex;
+            }
+            var centerX = rows[rowIndex][itemIndex].centerX;
+            var best = targetRow[0];
+            for (var t = 1; t < targetRow.length; t += 1) {
+                if (Math.abs(targetRow[t].centerX - centerX) < Math.abs(best.centerX - centerX)) {
+                    best = targetRow[t];
+                }
+            }
+            return best.index;
+        }
     }
-    templateLibraryColumnShiftTimer = setTimeout(function() {
-        templateLibraryColumnShiftTimer = 0;
-        gridEl.classList.remove('is-column-shift');
-    }, 220);
+    return currentIndex;
 }
 
 function scheduleTemplateLibraryGridLayout() {
@@ -1337,13 +1362,6 @@ function bindTemplateLibraryThumbRatioBackfill() {
 }
 
 function applyTemplateLibraryCardSize() {
-    var page = document.getElementById('pageTemplateLibrary');
-    var mainEl = page?.querySelector('.morph-main');
-    if (!mainEl) return;
-
-    var metrics = getTemplateLibraryGridMetrics(templateLibraryCardSize, measureTemplateLibraryGridWidth());
-    mainEl.style.setProperty('--template-library-grid-column-width', metrics.columnWidth.toFixed(2) + 'px');
-    mainEl.style.setProperty('--template-library-grid-gap', metrics.gap.toFixed(2) + 'px');
     scheduleTemplateLibraryGridLayout();
 }
 
@@ -1374,8 +1392,8 @@ function bindTemplateLibraryCardSizeControl() {
         slider.dataset.value = value.toFixed(2);
         slider.setAttribute('aria-valuenow', String(Math.round(value)));
 
-        var metrics = getTemplateLibraryGridMetrics(value, measureTemplateLibraryGridWidth());
-        var hint = '卡片 ' + Math.round(metrics.columnWidth) + 'px · 每行 ' + metrics.columns + ' 列';
+        var rowHeight = getTemplateLibraryRowHeight(value, measureTemplateLibraryGridWidth());
+        var hint = '缩略图高约 ' + Math.round(rowHeight) + 'px';
         slider.title = hint;
         slider.setAttribute('aria-valuetext', hint);
 
@@ -1419,7 +1437,7 @@ function bindTemplateLibraryCardSizeControl() {
         var rect = track.getBoundingClientRect();
         if (!rect.width) return;
         var percent = ((clientX - rect.left) / rect.width) * 100;
-        setValue(snapTemplateLibraryCardSizeToFit(percent, measureTemplateLibraryGridWidth()), { persist: false });
+        setValue(clampTemplateLibraryCardSize(percent), { persist: false });
     };
 
     // 拖动过程挂在 document 上而不是靠 setPointerCapture：指针捕获在 UXP 的 webview 里
@@ -2150,14 +2168,13 @@ function handleTemplateLibraryGridKeydown(event) {
 
     var paths = visibleAssets.map(function(item) { return String(item?.relativePath || '').trim(); });
     var currentIndex = paths.indexOf(String(templateLibrarySelectedAssetPath || '').trim());
-    var columns = getTemplateLibraryColumnCount(templateLibraryCardSize, measureTemplateLibraryGridWidth());
     var nextIndex = currentIndex;
 
     switch (event.key) {
         case 'ArrowLeft': nextIndex = currentIndex < 0 ? 0 : currentIndex - 1; break;
         case 'ArrowRight': nextIndex = currentIndex < 0 ? 0 : currentIndex + 1; break;
-        case 'ArrowUp': nextIndex = currentIndex < 0 ? 0 : currentIndex - columns; break;
-        case 'ArrowDown': nextIndex = currentIndex < 0 ? 0 : currentIndex + columns; break;
+        case 'ArrowUp': nextIndex = currentIndex < 0 ? 0 : getTemplateLibraryVerticalNeighborIndex(currentIndex, -1); break;
+        case 'ArrowDown': nextIndex = currentIndex < 0 ? 0 : getTemplateLibraryVerticalNeighborIndex(currentIndex, 1); break;
         case 'Home': nextIndex = 0; break;
         case 'End': nextIndex = paths.length - 1; break;
         default: break;
@@ -2202,18 +2219,6 @@ function bindTemplateLibraryDelegatedInteractions() {
         var editTagsButton = target?.closest?.('#btnTemplateLibraryEditSelectedTags');
         if (editTagsButton) {
             openTemplateLibraryAssetTagEditor(String(templateLibrarySelectedAssetPath || '').trim());
-            return;
-        }
-
-        var renameButton = target?.closest?.('#btnTemplateLibraryRenameSelected');
-        if (renameButton) {
-            openTemplateLibraryAssetRenameEditor(String(templateLibrarySelectedAssetPath || '').trim());
-            return;
-        }
-
-        var placeSelectedButton = target?.closest?.('#btnTemplateLibraryPlaceSelected');
-        if (placeSelectedButton) {
-            placeTemplateLibraryAsset(findTemplateLibraryAssetByRelativePath(templateLibrarySelectedAssetPath));
             return;
         }
 

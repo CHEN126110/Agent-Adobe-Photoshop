@@ -6,8 +6,14 @@ import {
 } from '../../../shared/model-capability-verdict';
 import {
     classifyModelProviderFailure,
-    ModelProviderCallError
+    ModelProviderCallError,
+    type ModelProviderFailure
 } from '../../../shared/model-provider-failure';
+import { projectModelVisualPresentationReceiptRef } from '../../../shared/model-visual-presentation-receipt';
+import {
+    isHarnessManagedSubscriptionTimeout,
+    shouldRetryAutonomousModelTransport
+} from '../../../shared/model-provider-transport-policy';
 import { buildConversationalUnavailableMessage } from '../../../shared/conversational-unavailable-message';
 import { buildCancelledAutonomousAgentResult } from './autonomous-agent-result-projection';
 import {
@@ -39,10 +45,12 @@ import type {
     AgentCallbacks,
     AgentExecutionSummary,
     AgentToolCallLogEntry,
+    AgenticArtifactCompletionContract,
     CallModelFn,
     CallModelStreamFn,
     ExecuteToolFn,
     ExecuteToolRuntimeContext,
+    ModelTransportAttemptAccounting,
     RuntimeArtifactPublicationInput,
     ToolSchema
 } from '../agent-runtime/types';
@@ -56,7 +64,8 @@ import {
     getModelById,
     isAgentMultimodalModelConfig,
     resolveModelThinkingEnabledForCall,
-    type ModelConfig
+    type ModelConfig,
+    type ModelReasoningEffort
 } from '../../../shared/config/models.config';
 import {
     formatChatWebSearchCompletedStep,
@@ -84,6 +93,10 @@ import {
     findObservedPhotoshopMutationProof,
     readPhotoshopHistoryStateRef
 } from '../../../shared/photoshop-history-state-ref';
+import {
+    extendTaskRunDocumentCreationEvidence,
+    type TaskRunDocumentCreationEvidence
+} from '../../../shared/task-run-document-creation-evidence';
 import { getPhotoshopToolSkillSemantics } from '../../../shared/photoshop-tool-skill';
 import { isSkillRoutingRecommendation } from '../../../shared/skill-routing';
 import {
@@ -158,6 +171,7 @@ import {
     normalizeRuntimeDesignWorkMode,
     resolveSkillRuntimeManifestSelection
 } from '../../../shared/agent-runtime-v5/skill-runtime';
+import { resolveRuntimeStagePlanEffectiveContract } from '../../../shared/agent-runtime-v5/runtime-stage-plan';
 import {
     buildRuntimeContractBundleForAgentTask,
     type AgentTaskRuntimeContractBundle
@@ -183,9 +197,14 @@ import {
 } from '../../../shared/agent-runtime-v5/runtime-session';
 import {
     buildRuntimePlanningContextSeed,
-    type RuntimePlanningContextSeed,
-    type RuntimePlanningDeclarations
+    type RuntimePlanningContextSeed
 } from '../../../shared/agent-runtime-v5/runtime-planning-context-seed';
+import {
+    projectRuntimeInteractiveWorkflowResult,
+    shouldDeferRuntimeArtifactFinalizationForInteraction,
+    validateRuntimeInteractiveReentry,
+    type RuntimeInteractiveReentry
+} from '../../../shared/agent-runtime-v5/runtime-interactive-reentry';
 import type { RuntimePerformanceUsage } from '../../../shared/agent-runtime-v5/runtime-accounting';
 import { readRuntimeTaskSnapshot } from '../../../shared/agent-runtime-v5/runtime-task-snapshot';
 import {
@@ -219,6 +238,7 @@ import { buildAgentContextCapacityPlan } from '../../../shared/agent-context-all
 import { resolveModelContextWindow } from '../../../shared/config/models.config';
 import { buildAgentOperatingProfilePromptSection } from '../../../shared/agent-runtime-v5/agent-operating-profile';
 import type { RuntimeDesignBriefAvailableInputSource } from '../../../shared/agent-runtime-v5/runtime-design-brief-declaration';
+import { projectRuntimeReferencePolicy } from '../../../shared/agent-runtime-v5/runtime-reference-context';
 import {
     OPERATING_CONTEXT_RUNTIME_ITEM_ID,
     buildOperatingContextRuntimeItem,
@@ -228,6 +248,10 @@ import {
     buildDesignMethodKnowledgeRuntimeContext
 } from '../../../shared/agent-runtime-v5/design-method-knowledge';
 import { buildDesignPrinciplesSummary } from '../../../shared/knowledge/design-principles';
+import {
+    readRuntimePlanningDeclarationsFromAgentResult,
+    registerRuntimeInteractiveCheckpointFromAgentResult
+} from '../agent-runtime/runtime-interactive-checkpoint-adapter';
 import { buildDesignArtifactKnowledgeRuntimeItem } from '../../../shared/knowledge/design-artifact-knowledge';
 import { buildPhotoshopCraftRecipeRuntimeItems } from '../../../shared/knowledge/photoshop-craft-recipes';
 import { getTaskContextBuilder, type RuntimeTaskContextApi } from '../design-intelligence/task-context-builder-factory';
@@ -276,6 +300,23 @@ function requiresDesignRunDelivery(
     workMode: ReturnType<typeof normalizeRuntimeDesignWorkMode>
 ): boolean {
     return workMode !== 'edit_existing' && workMode !== 'analyze_only';
+}
+
+function resolveManifestReasoningEffort(manifest?: {
+    required_model_profiles?: readonly string[];
+}): ModelReasoningEffort | undefined {
+    const profiles = new Set(manifest?.required_model_profiles || []);
+    if (profiles.has('reasoning.quality')) return 'high';
+    if (profiles.has('reasoning.balanced')) return 'medium';
+    if (profiles.has('reasoning.fast')) return 'low';
+    return undefined;
+}
+
+function projectManifestReasoningEffort(manifest?: {
+    required_model_profiles?: readonly string[];
+}): { reasoningEffort?: ModelReasoningEffort } {
+    const reasoningEffort = resolveManifestReasoningEffort(manifest);
+    return reasoningEffort ? { reasoningEffort } : {};
 }
 
 function withDesignKnowledgeNativeTools(
@@ -386,21 +427,66 @@ const AUTONOMOUS_MODEL_TRANSPORT_MAX_ATTEMPTS = 2;
 const AUTONOMOUS_MODEL_TRANSPORT_RETRY_DELAY_MS = 400;
 const AGENT_INTERNAL_PROVIDER_TOOL_NAMES = new Set(['smartSave']);
 
-function isRetryableAutonomousModelCallError(error: Error): error is ModelProviderCallError {
-    if (!(error instanceof ModelProviderCallError)) return false;
-    // Codex 订阅桥的 idle / wall-clock 上限已经是一次完整等待结论；立刻把同一份
-    // 大上下文再跑一遍只会把用户等待时间翻倍，且不会改变 Harness 的时限条件。
-    if (isHarnessManagedSubscriptionTimeout(error)) return false;
-    return error.providerFailure.kind === 'service_unavailable'
-        || error.providerFailure.kind === 'network'
-        || error.providerFailure.kind === 'timeout';
+type ModelErrorWithTransportAttempts = Error & {
+    transportAttempts?: ModelTransportAttemptAccounting[];
+};
+
+function buildModelTransportAttempt(
+    startedAtMs: number,
+    succeeded: boolean,
+    usage?: { inputTokens: number; outputTokens: number },
+    failure?: ModelProviderFailure,
+    visualPresentationReceipt?: unknown
+): ModelTransportAttemptAccounting {
+    const providerCode = String(failure?.providerCode || '').trim().slice(0, 120);
+    const numericStatus = Number(failure?.status);
+    const status = Number.isInteger(numericStatus)
+        && numericStatus >= 100
+        && numericStatus <= 599
+        ? numericStatus
+        : undefined;
+    const receiptRef = projectModelVisualPresentationReceiptRef({
+        succeeded,
+        receipt: visualPresentationReceipt
+    });
+    return {
+        durationMs: Math.max(0, Math.floor(Date.now() - startedAtMs)),
+        succeeded,
+        ...(usage ? { usage } : {}),
+        ...(!succeeded && failure ? {
+            failureKind: failure.kind,
+            ...(providerCode ? { providerCode } : {}),
+            ...(status ? { status } : {})
+        } : {}),
+        ...(receiptRef ? { visualPresentationReceiptRef: receiptRef } : {})
+    };
 }
 
-function isHarnessManagedSubscriptionTimeout(error: ModelProviderCallError): boolean {
-    if (error.providerFailure.kind !== 'timeout') return false;
-    return /^codex_subscription_turn_(?:idle|wall_clock)_timeout$/i.test(
-        String(error.providerFailure.providerCode || '')
-    );
+function attachModelTransportAttempts(
+    error: Error,
+    attempts: ModelTransportAttemptAccounting[]
+): Error {
+    (error as ModelErrorWithTransportAttempts).transportAttempts = attempts.slice();
+    return error;
+}
+
+function isRetryableAutonomousModelCallError(input: {
+    error: Error;
+    attempt: number;
+    hasEmittedStreamPayload: boolean;
+}): input is {
+    error: ModelProviderCallError;
+    attempt: number;
+    hasEmittedStreamPayload: boolean;
+} {
+    const { error } = input;
+    if (!(error instanceof ModelProviderCallError)) return false;
+    return shouldRetryAutonomousModelTransport({
+        failure: error.providerFailure,
+        attempt: input.attempt,
+        maxAttempts: AUTONOMOUS_MODEL_TRANSPORT_MAX_ATTEMPTS,
+        hasEmittedStreamPayload: input.hasEmittedStreamPayload
+    });
 }
 
 function waitForAutonomousModelTransportRetry(): Promise<void> {
@@ -457,8 +543,10 @@ function createCallModelViaIPC(
         });
         if (hasWebSearch) emitProviderNativeWebSearchStarted(webSearchVisibility);
         let response: any;
+        const transportAttempts: ModelTransportAttemptAccounting[] = [];
         for (let attempt = 1; attempt <= AUTONOMOUS_MODEL_TRANSPORT_MAX_ATTEMPTS; attempt += 1) {
             if (runtimeActivity) runtimeActivity.modelCallsStarted += 1;
+            const attemptStartedAtMs = Date.now();
             try {
                 // 纯视觉观察/质量判定没有工具 schema，不应强迫视觉模型支持 function calling。
                 // 但已经进入工具 / reasoning 协议的历史必须继续经 provider adapter 合法序列化。
@@ -482,23 +570,45 @@ function createCallModelViaIPC(
                         modelOptions
                     );
                 }
+                transportAttempts.push(buildModelTransportAttempt(
+                    attemptStartedAtMs,
+                    true,
+                    response?.usage,
+                    undefined,
+                    response?.visualPresentationReceipt
+                ));
                 break;
             } catch (error) {
                 const wrappedError = wrapAutonomousAgentModelCallError(modelId, error);
-                const canRetry = attempt < AUTONOMOUS_MODEL_TRANSPORT_MAX_ATTEMPTS
-                    && isRetryableAutonomousModelCallError(wrappedError);
+                const attemptFailure = wrappedError instanceof ModelProviderCallError
+                    ? wrappedError.providerFailure
+                    : classifyModelProviderFailure(wrappedError);
+                transportAttempts.push(buildModelTransportAttempt(
+                    attemptStartedAtMs,
+                    false,
+                    undefined,
+                    attemptFailure
+                ));
+                const canRetry = isRetryableAutonomousModelCallError({
+                    error: wrappedError,
+                    attempt,
+                    hasEmittedStreamPayload: false
+                });
                 if (canRetry) {
                     await waitForAutonomousModelTransportRetry();
                     continue;
                 }
                 if (hasWebSearch) emitProviderNativeWebSearchFailed(webSearchVisibility);
-                throw wrappedError;
+                throw attachModelTransportAttempts(wrappedError, transportAttempts);
             }
         }
         if (runtimeActivity) runtimeActivity.modelResponsesCompleted += 1;
         // UI 可见性回调不属于 Provider 请求边界，不能被重新标记为 Provider 错误。
         if (hasWebSearch) emitProviderNativeWebSearchCompleted(webSearchVisibility, response);
-        return response;
+        return {
+            ...response,
+            transportAttempts
+        };
     };
 }
 
@@ -553,8 +663,10 @@ function createCallModelStreamViaIPC(
         if (hasWebSearch) emitProviderNativeWebSearchStarted(webSearchVisibility);
 
         let response: any;
+        const transportAttempts: ModelTransportAttemptAccounting[] = [];
         for (let attempt = 1; attempt <= AUTONOMOUS_MODEL_TRANSPORT_MAX_ATTEMPTS; attempt += 1) {
             if (runtimeActivity) runtimeActivity.modelCallsStarted += 1;
+            const attemptStartedAtMs = Date.now();
             try {
                 response = await streamChatWithToolsAsync(
                     modelId,
@@ -562,23 +674,44 @@ function createCallModelStreamViaIPC(
                     tools,
                     optionsWithNativeTools
                 );
+                transportAttempts.push(buildModelTransportAttempt(
+                    attemptStartedAtMs,
+                    true,
+                    response?.usage,
+                    undefined,
+                    response?.visualPresentationReceipt
+                ));
                 break;
             } catch (error) {
                 const wrappedError = wrapAutonomousAgentModelCallError(modelId, error);
-                const canRetry = attempt < AUTONOMOUS_MODEL_TRANSPORT_MAX_ATTEMPTS
-                    && !hasEmittedStreamPayload
-                    && isRetryableAutonomousModelCallError(wrappedError);
+                const attemptFailure = wrappedError instanceof ModelProviderCallError
+                    ? wrappedError.providerFailure
+                    : classifyModelProviderFailure(wrappedError);
+                transportAttempts.push(buildModelTransportAttempt(
+                    attemptStartedAtMs,
+                    false,
+                    undefined,
+                    attemptFailure
+                ));
+                const canRetry = isRetryableAutonomousModelCallError({
+                    error: wrappedError,
+                    attempt,
+                    hasEmittedStreamPayload
+                });
                 if (canRetry) {
                     await waitForAutonomousModelTransportRetry();
                     continue;
                 }
                 if (hasWebSearch) emitProviderNativeWebSearchFailed(webSearchVisibility);
-                throw wrappedError;
+                throw attachModelTransportAttempts(wrappedError, transportAttempts);
             }
         }
         if (runtimeActivity) runtimeActivity.modelResponsesCompleted += 1;
         if (hasWebSearch) emitProviderNativeWebSearchCompleted(webSearchVisibility, response);
-        return response;
+        return {
+            ...response,
+            transportAttempts
+        };
     };
 }
 
@@ -616,7 +749,9 @@ function createExecuteToolForTeammate(
                 error: delegatedBlock.message
             };
         }
-        return markExternalContentTrust(toolName, await executeToolCall(toolName, params));
+        return markExternalContentTrust(toolName, await executeToolCall(toolName, params, {
+            visualConsumptionOwner: 'calling_agent'
+        }));
     };
 }
 
@@ -1420,6 +1555,7 @@ function createExecuteToolWrapper(
         declaredTaskTypeId: string,
         declaredWorkMode?: string
     ) => Promise<RuntimeManifestBindingResult>,
+    shouldUseCallingAgentVisualConsumption?: () => boolean,
     reserveDesignTeamChildExecution?: (input: {
         plannedRoles?: readonly DesignTeammateRole[];
         maxRevisions?: number;
@@ -2265,7 +2401,12 @@ function createExecuteToolWrapper(
             : toolParams;
         const result = markExternalContentTrust(
             toolName,
-            await executeAllowedProviderToolCall(toolName, atomicExecutionParams, { signal })
+            await executeAllowedProviderToolCall(toolName, atomicExecutionParams, {
+                signal,
+                ...(shouldUseCallingAgentVisualConsumption?.()
+                    ? { visualConsumptionOwner: 'calling_agent' as const }
+                    : {})
+            })
         );
         if (getPhotoshopToolSkillSemantics(toolName, toolParams)?.requiresPhotoshopConnection === true) {
             capabilitySession?.activateToolsForContinuation(
@@ -2780,6 +2921,30 @@ function toAgentPerformanceBudget(
     };
 }
 
+function buildAgenticArtifactCompletionContract(
+    bundle: AgentTaskRuntimeContractBundle
+): AgenticArtifactCompletionContract | undefined {
+    const effectiveContract = resolveRuntimeStagePlanEffectiveContract(
+        bundle.stagePlan,
+        bundle.stagePlan.expectedWorkMode
+    );
+    if (!effectiveContract) return undefined;
+    return {
+        version: 'agentic-artifact-completion-contract/v0',
+        skillId: bundle.manifest.skill_id,
+        taskType: bundle.manifest.task_type,
+        ...(effectiveContract.workMode ? { workMode: effectiveContract.workMode } : {}),
+        ...(effectiveContract.productionObligation
+            ? { productionObligation: effectiveContract.productionObligation }
+            : {}),
+        deliveryOutputs: [...effectiveContract.deliveryOutputs],
+        exitCriteria: [...effectiveContract.exitCriteria],
+        ...(effectiveContract.reviewRubricRef
+            ? { reviewRubricRef: effectiveContract.reviewRubricRef }
+            : {})
+    };
+}
+
 function buildBaseSystemPrompt(params: Record<string, any>, context?: any): string {
     const lines: string[] = [
         buildAgentOperatingProfilePromptSection(),
@@ -2857,25 +3022,34 @@ function resolveProviderOwnedInteractionSkillIds(
 }
 
 /**
- * 未绑定任何工作流时给模型的「工作流菜单」：所有 staged（规格化生产）清单的名称 / 何时用 / Profile id。
- * 意图理解交给模型：匹配当前可见 Skill 时直接调用；只有系统明确给出 Profile、且当前没有匹配
- * Skill 时，才用 declareDesignIntent 原地绑定。品类词全部来自声明与清单数据，本文件不写死。
+ * 未绑定工作流时给模型完整的 Manifest 菜单，而不是由 Harness 根据关键词替它选。
+ * agentic Manifest 提供专业知识、预算和验收口径，设计判断仍留在自主循环；staged
+ * Manifest 才提供规格化生产阶段。两类都必须先让模型看见，才能由它理解任务后绑定。
  */
-function buildStagedWorkflowMenuLines(): string[] {
+function buildWorkflowMenuLines(): string[] {
     const items = listSkillManifests()
-        .filter((manifest) => manifest.execution_model !== 'agentic')
         .map((manifest) => {
             const entrySkillId = (manifest.workflow_entry_skill_ids || [])[0] || (manifest.legacy_skill_ids || [])[0];
             const entrySkill = entrySkillId ? getSkillById(entrySkillId) : undefined;
             const whenToUse = Array.isArray(entrySkill?.whenToUse) ? String(entrySkill?.whenToUse[0] || '').trim() : '';
+            // Task Profile 是任务语义与交付角色的唯一 crosswalk。模型在首次选择 Profile
+            // 的同一回合就必须先看到该语义，不能等绑定后才由 Method / Evaluation 补课；
+            // legacy whenToUse 仅供尚未登记 Task Profile 的兼容 Manifest 降级使用。
+            const taskProfileGuidance = String(
+                getDesignTaskTypeSpec(manifest.task_type)?.declarationGuidance || ''
+            ).trim();
+            const declarationGuidance = taskProfileGuidance || whenToUse;
             const label = String(manifest.display_name || manifest.skill_id || '').trim();
             if (!label || !manifest.task_type) return '';
-            return `  · ${label}（Profile：${manifest.task_type}）${whenToUse ? `——${whenToUse.slice(0, 120)}` : ''}`;
+            const executionMeaning = manifest.execution_model === 'agentic'
+                ? '开放创意：绑定专业方法后仍由你自主设计'
+                : '规格化生产：绑定后按可验证阶段执行';
+            return `  · ${label}（Profile：${manifest.task_type}；${executionMeaning}）${declarationGuidance ? `——${declarationGuidance.slice(0, 420)}` : ''}`;
         })
         .filter(Boolean);
     if (items.length === 0) return [];
     return [
-        '可选的规格化生产能力：当前工具列表已有匹配 Skill 时直接调用 Skill；只有系统在下方明确给出对应 Profile、且当前工具列表没有匹配 Skill 时，才调用 declareDesignIntent({ taskTypeId: <Profile> }) 原地绑定。它不是开工许可；只是提问、查看或把它当来源素材时不要绑定。',
+        '可选的专业工作方法：先由你判断当前明确委托的交付物是否匹配。当前工具列表已有匹配 Skill 时直接调用 Skill。只有系统在下方明确给出对应 Profile、且当前工具列表没有匹配 Skill 时，才在首次专业写入前调用 declareDesignIntent({ taskTypeId: <Profile> }) 记录并绑定你自己的判断，不要绕过后再以通用流程冒充该交付物已完成。绑定只提供方法、能力范围、预算和验收口径，不替你决定素材、构图、文案或审美；只是提问、查看或把该领域当来源素材时不要绑定。',
         ...items
     ];
 }
@@ -2937,9 +3111,11 @@ function buildBaseRuntimeContext(params: Record<string, any>, context?: any): st
             '- 它受阻或当前稿件需要修正时，使用现在可用的可逆编辑继续处理，再回到原任务。'
         );
     }
-    // 意图理解交给模型：没有 Runtime owner 时，把固定生产流程的菜单给它自己选（关键词白名单只是快路径）。
+    // 意图理解交给模型：没有 Runtime owner 时，把全部 Manifest 菜单给它自己选。
+    // 如果只列 staged，agentic 交付物在 canonical 正则未命中时会被 Harness 隐身，
+    // 模型只能退化成通用工具循环，既拿不到专业方法也拿不到正确交付契约。
     if (!selectedSkillHandoff && !areSkillBridgesForbidden(params) && !params?.declaredTaskType) {
-        lines.push(...buildStagedWorkflowMenuLines());
+        lines.push(...buildWorkflowMenuLines());
     }
     if (
         skillRoutingRecommendation
@@ -3488,7 +3664,7 @@ function resolveUserConfiguredPrimaryModel(_taskType: ConversationTaskType): str
         const model = findConfiguredModelInRendererState(modelId);
         if (!model || !isAgentMultimodalModelConfig(model)) return '';
         // 只有「有依据的否定」才拒绝这个模型；能力未知一律放行，交给真实调用去检验。
-        // 旧写法 `supportsToolUse === false` 把「provider 没声明」也当成确定不支持，
+        // 旧写法把 supportsToolUse 直接与否定布尔值比较，将「provider 没声明」也当成确定不支持，
         // 于是用户在设置里选得到的模型在这里被判空，最终报 no_usable_model
         //（真机 2026-08-01：deepseek-v4-flash）。判据与铁律见 model-capability-verdict。
         const capabilityInput = {
@@ -3569,26 +3745,6 @@ function readRuntimeSessionFromAgentResult(result: unknown): RuntimeSession | un
     return value as RuntimeSession;
 }
 
-function readRuntimePlanningDeclarationsFromAgentResult(
-    result: unknown
-): RuntimePlanningDeclarations {
-    const data = (result as { data?: Record<string, unknown> } | null)?.data;
-    return {
-        ...(data?.runtimeDesignBriefDeclaration && typeof data.runtimeDesignBriefDeclaration === 'object'
-            ? { brief: data.runtimeDesignBriefDeclaration as RuntimePlanningDeclarations['brief'] }
-            : {}),
-        ...(data?.runtimeReferenceBriefDeclaration && typeof data.runtimeReferenceBriefDeclaration === 'object'
-            ? { referenceBrief: data.runtimeReferenceBriefDeclaration as RuntimePlanningDeclarations['referenceBrief'] }
-            : {}),
-        ...(data?.runtimeDesignStrategyDeclaration && typeof data.runtimeDesignStrategyDeclaration === 'object'
-            ? { strategy: data.runtimeDesignStrategyDeclaration as RuntimePlanningDeclarations['strategy'] }
-            : {}),
-        ...(data?.runtimeActionPlanDeclaration && typeof data.runtimeActionPlanDeclaration === 'object'
-            ? { actionPlan: data.runtimeActionPlanDeclaration as RuntimePlanningDeclarations['actionPlan'] }
-            : {})
-    };
-}
-
 async function finalizeRuntimeArtifactsForProject(input: {
     projectPath?: string;
     publication: RuntimeArtifactPublicationInput;
@@ -3600,6 +3756,7 @@ async function finalizeRuntimeArtifactsForProject(input: {
         return undefined;
     }
     const session = input.publication.runtimeSession;
+    if (shouldDeferRuntimeArtifactFinalizationForInteraction(session)) return undefined;
     const authorizationToken = input.authorizationTokens.get(session.identity.runId);
     if (!authorizationToken) return undefined;
     const request: RuntimeArtifactFinalizationRequest = {
@@ -3774,6 +3931,12 @@ function persistAgentRunRecordSafely(input: {
     parentRunId?: string;
     resumeFreshness?: RuntimeActionPlanResumeFreshness;
     runtimeSessionIdentity?: RuntimeSessionIdentity;
+    runtimeContractStatus?: RuntimeContractStatus;
+    modelIdentity?: {
+        modelId: string;
+        provider: string;
+        apiModelId?: string;
+    };
 }): string | undefined {
     try {
         const record = buildAgentRunRecord({
@@ -3785,6 +3948,8 @@ function persistAgentRunRecordSafely(input: {
             parentRunId: input.parentRunId,
             resumeFreshness: input.resumeFreshness,
             runtimeSessionIdentity: input.runtimeSessionIdentity,
+            runtimeContractStatus: input.runtimeContractStatus,
+            modelIdentity: input.modelIdentity,
             controlPlane: input.controlPlane || null,
             result: input.result as any
         });
@@ -3858,7 +4023,15 @@ export const autonomousAgentExecutor: SkillExecutor = {
     skillId: 'autonomous-agent',
 
     async execute(executeParams: SkillExecuteParams): Promise<AgentResult> {
-        const { params, callbacks, signal, context, agentTaskPlan } = executeParams;
+        const {
+            params,
+            callbacks,
+            signal,
+            context,
+            agentTaskPlan,
+            runtimeInteractiveReentry,
+            adoptRuntimeInteractiveReentry
+        } = executeParams;
         const userTask = params.userTask || params.task || params.userInput || '';
         const runRecordProjectPath: string | undefined = context?.projectContext?.projectPath;
         const runRecordConversationId = String(context?.conversationId || '').trim();
@@ -3880,8 +4053,45 @@ export const autonomousAgentExecutor: SkillExecutor = {
             };
         }
 
+        if (runtimeInteractiveReentry) {
+            const validation = validateRuntimeInteractiveReentry(runtimeInteractiveReentry);
+            if (!validation.ok || !adoptRuntimeInteractiveReentry) {
+                return {
+                    success: false,
+                    message: '刚才的确认无法和原任务状态可靠对应，因此没有继续修改。请重新发起当前任务。',
+                    error: validation.ok
+                        ? 'runtime_interactive_reentry_adoption_callback_missing'
+                        : validation.issues.join(','),
+                    data: {
+                        executesModel: false,
+                        executesPhotoshop: false,
+                        grantsToolPermission: false
+                    }
+                };
+            }
+            const declaredTaskType = String(params.declaredTaskType || '').trim();
+            const declaredSkillId = String(params.declaredSkillId || '').trim();
+            if ((declaredTaskType && declaredTaskType !== runtimeInteractiveReentry.plan.taskType)
+                || (declaredSkillId && declaredSkillId !== runtimeInteractiveReentry.plan.skillId)) {
+                return {
+                    success: false,
+                    message: '刚才的确认属于另一项任务，当前没有继续修改。请重新发起当前任务。',
+                    error: 'runtime_interactive_reentry_declaration_conflict',
+                    data: {
+                        executesModel: false,
+                        executesPhotoshop: false,
+                        grantsToolPermission: false
+                    }
+                };
+            }
+        }
+
         const runtimeParams: Record<string, any> = {
             ...(params || {}),
+            ...(runtimeInteractiveReentry ? {
+                declaredTaskType: runtimeInteractiveReentry.plan.taskType,
+                declaredSkillId: runtimeInteractiveReentry.plan.skillId
+            } : {}),
             agentIntentControlPlane: completeAutonomousAgentIntentControlPlane(params || {}, context, String(userTask))
         };
         const providerToolDenyPolicy = buildAgentProviderToolDenyPolicy(runtimeParams);
@@ -3899,6 +4109,29 @@ export const autonomousAgentExecutor: SkillExecutor = {
         );
         const capabilitySession = capabilityRuntime.capabilitySession;
         let runtimeContractStatus = capabilityRuntime.runtimeContractStatus;
+        if (runtimeInteractiveReentry) {
+            const resolvedPlan = runtimeContractBundle?.stagePlan;
+            if (!resolvedPlan
+                || resolvedPlan.version !== runtimeInteractiveReentry.plan.version
+                || resolvedPlan.skillId !== runtimeInteractiveReentry.plan.skillId
+                || resolvedPlan.taskType !== runtimeInteractiveReentry.plan.taskType) {
+                return {
+                    success: false,
+                    message: '原任务的运行方法已经变化，当前没有继续修改。请重新发起当前任务。',
+                    error: 'runtime_interactive_reentry_manifest_mismatch',
+                    data: {
+                        executesModel: false,
+                        executesPhotoshop: false,
+                        grantsToolPermission: false
+                    }
+                };
+            }
+            capabilitySession.activateToolsForContinuation(
+                readAgentReActRecoveryToolNames(
+                    projectRuntimeInteractiveWorkflowResult(runtimeInteractiveReentry)
+                )
+            );
+        }
 
         // R0 已解析 Manifest 时，task_type 直接来自 Manifest 单一真相源，供通用设计纪律
         // 与场景预算消费；不再要求模型额外调用 declareDesignIntent 重复声明。
@@ -3939,11 +4172,20 @@ export const autonomousAgentExecutor: SkillExecutor = {
             };
         }
         const runtimeArtifactAuthorizationTokens = new Map<string, string>();
-        let runtimeSessionIdentity: RuntimeSessionIdentity | undefined;
-        let runtimeSessionSeed: RuntimeSession | undefined;
+        if (runtimeInteractiveReentry?.artifactAuthorizationToken) {
+            runtimeArtifactAuthorizationTokens.set(
+                runtimeInteractiveReentry.session.identity.runId,
+                runtimeInteractiveReentry.artifactAuthorizationToken
+            );
+        }
+        let runtimeSessionIdentity: RuntimeSessionIdentity | undefined =
+            runtimeInteractiveReentry?.session.identity;
+        let runtimeSessionSeed: RuntimeSession | undefined = runtimeInteractiveReentry?.session;
         let runtimePlanningContextSeed: RuntimePlanningContextSeed | undefined;
         let requestPerformanceUsageSeed: RuntimePerformanceUsage | undefined;
         let incomingReflexionHandoff: ReflexionHandoff | undefined;
+        let runtimeInteractiveReentryForAgent = runtimeInteractiveReentry;
+        let adoptRuntimeInteractiveReentryForAgent = adoptRuntimeInteractiveReentry;
 
         const requestWebSearchIntent = runtimeParams.providerNativeWebSearchIntent as ChatWebSearchIntent | undefined;
         // 自主循环、图片观察与视觉质检始终复用用户选择的同一个全模态 Agent 模型。
@@ -3961,8 +4203,18 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 selectedModelId: modelId,
                 candidateModelIds: [modelId]
             };
+        const runtimeModelConfig = findConfiguredModelInRendererState(modelId) || undefined;
+        const runRecordModelIdentity = runtimeModelConfig?.provider
+            ? {
+                modelId,
+                provider: runtimeModelConfig.provider,
+                ...(runtimeModelConfig.apiModelId
+                    ? { apiModelId: runtimeModelConfig.apiModelId }
+                    : {})
+            }
+            : undefined;
         runtimeParams.canObserveAttachedImages = isAgentMultimodalModelConfig(
-            findConfiguredModelInRendererState(modelId) || undefined
+            runtimeModelConfig
         );
         const designDisciplineContext = resolveAutonomousDesignDisciplineContext(runtimeParams, context);
         const designDisciplineActive = designDisciplineContext.active;
@@ -4436,8 +4688,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
         const buildKnowledgeRuntimeContextItems = (input: {
             disciplineActive: boolean;
             methodKnowledge?: ReturnType<typeof buildDesignMethodKnowledgeRuntimeContext>;
+            knowledgeBundle?: AgentTaskRuntimeContractBundle;
         }): RuntimeContextItem[] => {
-            const knowledgeBundle = resolveKnowledgeBundle();
+            const knowledgeBundle = input.knowledgeBundle || resolveKnowledgeBundle();
             if (!knowledgeBundle) {
                 return buildPlanNeutralRuntimeContextItems(input.disciplineActive);
             }
@@ -4457,13 +4710,16 @@ export const autonomousAgentExecutor: SkillExecutor = {
             disciplineActive: designDisciplineActive,
             methodKnowledge: designMethodKnowledge
         });
-        const rebuildGenerationRuntimeContextItems = (): void => {
+        const rebuildGenerationRuntimeContextItems = (
+            knowledgeBundle?: AgentTaskRuntimeContractBundle
+        ): void => {
             const currentDisciplineContext = resolveAutonomousDesignDisciplineContext(
                 runtimeParams,
                 context
             );
             runtimeStageContextItems = buildKnowledgeRuntimeContextItems({
-                disciplineActive: currentDisciplineContext.active
+                disciplineActive: currentDisciplineContext.active,
+                ...(knowledgeBundle ? { knowledgeBundle } : {})
             });
         };
         // 历史预算跟着主模型的真实窗口走：8k 窗口的本地模型给 2.4k 字符保证跑得起来，
@@ -4637,6 +4893,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
         // Photoshop 未就绪或关键上下文拒绝的请求占用授权记录。
         // 先签发不预判业务类型的 plan-neutral TaskRun identity，使 taskRunId 在品类确定前即稳定；
         // 当 Manifest 已解析时，同一身份在 `issue` 上原地绑定（identityRunId），不新建第二身份。
+        if (!runtimeInteractiveReentry) {
         const issuedPlanNeutralIdentity = await issuePlanNeutralSessionIdentityForProject({
             projectPath: runRecordProjectPath,
             requestId: createRuntimeSessionNonce()
@@ -4692,11 +4949,15 @@ export const autonomousAgentExecutor: SkillExecutor = {
             // 直接执行 Skill 或原子工具；若模型可选声明精确 Profile，则在同一身份原地绑定。
             runtimeSessionIdentity = planNeutralRuntimeIdentity;
         }
+        }
 
         const { Agent } = await import('../agent-runtime/agent');
         // 当前正在运行的 Agent 实例。可选的 Profile 声明通过同一闭包把完整 Runtime
         // Contract 原位提交给当前 Agent，并同步刷新 Reflexion 重入所读取的变量。
         let activeAutonomousAgent: InstanceType<typeof Agent> | undefined;
+        // Completion 的跨代创建事实只在当前授权 TaskRun 的内存链中流转。Run Record 的
+        // parentRunId 只做诊断，Project State 只做项目记忆；两者都不能替新请求铸造产物事实。
+        let taskRunDocumentCreationEvidence: TaskRunDocumentCreationEvidence | undefined;
         const taskPlanPresentationScope = {
             conversationId: String(
                 context?.conversationId
@@ -4732,6 +4993,25 @@ export const autonomousAgentExecutor: SkillExecutor = {
             }
             const normalizedTaskTypeId = declarationResolution.canonicalDeclaration.taskType;
             const normalizedDeclaredWorkMode = declarationResolution.canonicalDeclaration.workMode;
+            if (agenticManifestBundle) {
+                const currentWorkMode = agenticManifestBundle.stagePlan.expectedWorkMode;
+                if (agenticManifestBundle.manifest.task_type === normalizedTaskTypeId
+                    && currentWorkMode === normalizedDeclaredWorkMode) {
+                    return { success: true };
+                }
+                if (agenticManifestBundle.manifest.task_type === normalizedTaskTypeId) {
+                    return {
+                        success: false,
+                        code: 'runtime_work_mode_switch_forbidden',
+                        error: '本轮设计任务已经绑定其他工作模式，不能在同一 TaskRun 中切换。'
+                    };
+                }
+                return {
+                    success: false,
+                    code: 'runtime_manifest_switch_forbidden',
+                    error: '本轮设计任务已经绑定其他任务类型，不能在同一 TaskRun 中切换。'
+                };
+            }
             if (runtimeContractBundle) {
                 const currentWorkMode = runtimeContractBundle.stagePlan.expectedWorkMode;
                 if (runtimeContractBundle.manifest.task_type === normalizedTaskTypeId
@@ -4752,21 +5032,77 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 };
             }
             // 设计路径宪法：模型在循环内声明的是 agentic 任务类型时，只登记任务类型并把该清单的
-            // 方法知识加进上下文；不建 Stage 机、不切工具面、不改写入权限——声明是笔记，不是门票。
+            // 方法、评价、预算和交付义务加进当前 Agent；不建 Stage 机、不切 Capability 面、
+            // 不改写入权限——声明是任务语义绑定，不是门票。
             if (isAgenticExecutionModel(declarationResolution.bundle.manifest)) {
                 const agenticCandidate = declarationResolution.bundle;
+                const currentAgent = activeAutonomousAgent;
+                if (!currentAgent) {
+                    return {
+                        success: false,
+                        code: 'runtime_active_agent_unavailable',
+                        error: '本轮 Agent 尚未进入可绑定状态，设计任务声明未生效。'
+                    };
+                }
+                const candidateRuntimeParams: Record<string, any> = {
+                    ...runtimeParams,
+                    declaredTaskType: normalizedTaskTypeId,
+                    ...(agenticCandidate.stagePlan.expectedWorkMode
+                        ? { declaredWorkMode: agenticCandidate.stagePlan.expectedWorkMode }
+                        : {})
+                };
+                const agenticDisciplineContext = resolveAutonomousDesignDisciplineContext(
+                    candidateRuntimeParams,
+                    context
+                );
+                const candidatePerformancePolicy = resolveAutonomousPerformancePolicy(
+                    candidateRuntimeParams,
+                    context,
+                    agenticDisciplineContext,
+                    agenticCandidate
+                );
+                if (!candidatePerformancePolicy) {
+                    return {
+                        success: false,
+                        code: 'runtime_performance_profile_missing',
+                        error: 'Runtime 已识别任务类型，但没有解析到对应执行预算。'
+                    };
+                }
+                const artifactContract = buildAgenticArtifactCompletionContract(agenticCandidate);
+                if (!artifactContract || !agenticCandidate.evaluationProfile) {
+                    return {
+                        success: false,
+                        code: 'runtime_agentic_contract_incomplete',
+                        error: 'Runtime 已识别任务类型，但缺少有效交付契约或评价标准。'
+                    };
+                }
+                const candidateMaxIterations = resolveDeclaredRuntimeMaxIterations({
+                    runtimeBudget,
+                    manifestMaxIterations: candidatePerformancePolicy.budget.maxIterations
+                });
+                const candidatePerformanceBudget = toAgentPerformanceBudget(candidatePerformancePolicy);
+                await refreshGenerationDataContext(agenticDisciplineContext.active);
+                // candidate 还没有提交到闭包 owner；显式交给 Context Compiler，确保方法知识
+                // 与评价/交付契约在同一个 Tool result 边界原子生效，且失败时不留下半绑定。
+                rebuildGenerationRuntimeContextItems(agenticCandidate);
+                currentAgent.activateAgenticRuntimeContractFromDeclaration({
+                    artifactContract,
+                    referencePolicy: projectRuntimeReferencePolicy(
+                        agenticCandidate.manifest.reference_policy
+                    ),
+                    runtimeStageContextItems,
+                    evaluationProfile: agenticCandidate.evaluationProfile,
+                    performanceBudget: candidatePerformanceBudget,
+                    reasoningEffort: resolveManifestReasoningEffort(agenticCandidate.manifest),
+                    maxIterations: candidateMaxIterations
+                });
                 agenticManifestBundle = agenticCandidate;
+                autonomousPerformancePolicy = candidatePerformancePolicy;
+                maxIterations = candidateMaxIterations;
                 runtimeParams.declaredTaskType = normalizedTaskTypeId;
                 if (agenticCandidate.stagePlan.expectedWorkMode) {
                     runtimeParams.declaredWorkMode = agenticCandidate.stagePlan.expectedWorkMode;
                 }
-                const agenticDisciplineContext = resolveAutonomousDesignDisciplineContext(
-                    runtimeParams,
-                    context
-                );
-                await refreshGenerationDataContext(agenticDisciplineContext.active);
-                rebuildGenerationRuntimeContextItems();
-                activeAutonomousAgent?.replaceRuntimeStageContextItems(runtimeStageContextItems);
                 runtimeContractStatus = buildRuntimeContractStatus({
                     selectedTaskType: normalizedTaskTypeId,
                     manifestSkillId: agenticCandidate.manifest.skill_id,
@@ -4872,7 +5208,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
 
             // 所有异步准备与身份校验完成后，在同一个 Tool result 边界同步提交。
             // Agent 与 Capability Session 都复用当前实例；外层变量供 Reflexion 闭包读取。
-            currentAgent.activateRuntimeContractFromDeclaration({
+                currentAgent.activateRuntimeContractFromDeclaration({
                 runtimeSessionIdentity: boundIdentity,
                 runtimeLoopContract: candidateBundle.runtimeLoopContract,
                 runtimeStagePlan: candidateBundle.stagePlan,
@@ -4890,6 +5226,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 ),
                 finalizeRuntimeArtifacts,
                 performanceBudget: candidatePerformanceBudget,
+                reasoningEffort: resolveManifestReasoningEffort(candidateBundle.manifest),
                 maxIterations: candidateMaxIterations,
                 ...(runResumeFreshness ? {
                     runtimeActionPlanResumeFreshness: runResumeFreshness
@@ -4920,16 +5257,8 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     authorization.authorizationToken
                 );
             }
-            agentCallbacks.onStep?.({
-                kind: 'observation',
-                title: '按你的固定流程',
-                detail: `「${candidateBundle.stagePlan.displayName || candidateBundle.stagePlan.skillId}」——中途需要你拍板的地方会弹卡片确认。`,
-                status: 'success',
-                maxIterations: candidateMaxIterations,
-                source: 'skill_executor',
-                audience: 'user',
-                visibility: 'user_process'
-            });
+            // 2026-08-25 过程流 codex 化：开场播报退役——模型开场自然会说明自己要做什么，
+            // 框架代言只会抢在模型前面占屏（对照板刀 B）。绑定事实仍在运行档案与调试日志。
             return { success: true };
         };
         const runtimeWriteToolAllowlist = normalizeRuntimeWriteToolAllowlist(runtimeParams);
@@ -4947,6 +5276,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 // Runtime Context Compiler 注入；带 applicableStages 的知识仍只在真实 Stage 可见。
                 runtimeStageContextItems,
                 modelId,
+                ...projectManifestReasoningEffort(
+                    runtimeContractBundle?.manifest || agenticManifestBundle?.manifest
+                ),
                 ...(modelContextWindow ? { contextWindowTokens: modelContextWindow } : {}),
                 thinkingEnabled: resolveAgentThinkingEnabled(modelId),
                 maxIterations,
@@ -4980,11 +5312,26 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     : {}),
                 // plan-neutral 身份也必须交给当前 Agent；循环内声明会在同一 runId/generation 上绑定。
                 ...(runtimeSessionIdentity ? { runtimeSessionIdentity } : {}),
+                ...(runtimeInteractiveReentryForAgent
+                    ? { runtimeInteractiveReentry: runtimeInteractiveReentryForAgent }
+                    : {}),
+                ...(runtimeInteractiveReentryForAgent && adoptRuntimeInteractiveReentryForAgent
+                    ? { adoptRuntimeInteractiveReentry: adoptRuntimeInteractiveReentryForAgent }
+                    : {}),
                 // 没有 staged Session 的 Reflexion 仍沿用上一 Agent 的同一请求性能账本。
                 // 这是只会收紧剩余额度的内部投影，不携带 Tool 权限、质量结论或完成状态。
                 ...(!runtimeContractBundle && requestPerformanceUsageSeed
                     ? { requestPerformanceUsageSeed }
                     : {}),
+                ...(agenticManifestBundle?.evaluationProfile ? {
+                    agenticArtifactContract: buildAgenticArtifactCompletionContract(
+                        agenticManifestBundle
+                    ),
+                    agenticReferencePolicy: projectRuntimeReferencePolicy(
+                        agenticManifestBundle.manifest.reference_policy
+                    ),
+                    evaluationProfile: agenticManifestBundle.evaluationProfile
+                } : {}),
                 ...(runtimeContractBundle ? {
                     runtimeLoopContract: runtimeContractBundle.runtimeLoopContract,
                     runtimeStagePlan: runtimeContractBundle.stagePlan,
@@ -5018,7 +5365,14 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 taskCompletionContext: {
                     skillId: runtimeParams.skillId,
                     intentMode: runtimeParams.intentMode,
-                    imageCount: Array.isArray(runtimeParams.images) ? runtimeParams.images.length : 0
+                    imageCount: Array.isArray(runtimeParams.images) ? runtimeParams.images.length : 0,
+                    ...(runtimeSessionIdentity && taskRunDocumentCreationEvidence ? {
+                        taskRunDocumentCreation: {
+                            taskRunId: runtimeSessionIdentity.sessionId,
+                            generation: runtimeSessionIdentity.generation,
+                            evidence: taskRunDocumentCreationEvidence
+                        }
+                    } : {})
                 },
                 toolDecisionContext: {
                     intentControlPlane: runtimeParams.agentIntentControlPlane,
@@ -5059,6 +5413,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     }
                 },
                 bindDeclaredRuntimeContract,
+                () => !runtimeContractBundle,
                 (reservationInput) => {
                     const currentAgent = activeAutonomousAgent;
                     if (!currentAgent) {
@@ -5088,26 +5443,13 @@ export const autonomousAgentExecutor: SkillExecutor = {
         let lastRunRecordId: string | undefined;
         let accumulatedSuccessfulMutationCalls = 0;
         // 2026-08-18 用户：不要开场就定死一句「这次怎么做：自己动手排…」——要看的是 Agent 真实的思考。
-        // 模式播报只在「走用户自己的固定流程（staged Skill）」时保留一句（用户要知道是自己的流程在跑），
-        // 其余情况不再播报，让任务卡与模型的判断原话说话。
-        {
-            const stagedName = runtimeContractBundle?.stagePlan.displayName
-                || runtimeContractBundle?.stagePlan.skillId;
-            if (stagedName) {
-                agentCallbacks.onStep?.({
-                    kind: 'observation',
-                    title: '按你的固定流程',
-                    detail: `「${stagedName}」——中途需要你拍板的地方会弹卡片确认。`,
-                    status: 'success',
-                    source: 'skill_executor',
-                    audience: 'user',
-                    visibility: 'user_process'
-                });
-            }
-        }
+        // 2026-08-25 过程流 codex 化：staged 模式播报同样退役（对照板刀 B）——
+        // 模型的开场叙述会说明走哪条流程；需要拍板时交互卡本身就是通知。
         try {
             activeAutonomousAgent = createAutonomousAgent();
             let result = await activeAutonomousAgent.run(userTask, runtimeParams.images);
+            runtimeInteractiveReentryForAgent = undefined;
+            adoptRuntimeInteractiveReentryForAgent = undefined;
             accumulatedSuccessfulMutationCalls = countSuccessfulMutationCalls(result);
             await recordRunFactsToProjectStateSafely(result);
             await refreshGenerationDataContext(
@@ -5294,6 +5636,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                         ...reflexionHandoff,
                         nextRoundConstraints: reentryDecision.injectedConstraints.slice(0, 12)
                     };
+                if (incomingReflexionHandoff) {
+                    transferTrustedVisualReviewArtifact(result, incomingReflexionHandoff);
+                }
                 // 标记本次是失败复盘后的自动重跑，供后续运行记录与策略读取。
                 runtimeParams.reflexionReentryInProgress = true;
                 // V0-4：把上一轮 run-record checkpoint 的确定性旗标（documentCreated/layoutRendered）
@@ -5311,6 +5656,13 @@ export const autonomousAgentExecutor: SkillExecutor = {
                         }
                         : undefined;
                 }
+                if (runtimeSessionIdentity) {
+                    taskRunDocumentCreationEvidence = extendTaskRunDocumentCreationEvidence({
+                        previous: taskRunDocumentCreationEvidence,
+                        identity: runtimeSessionIdentity,
+                        toolCallLog: result.toolCallLog || []
+                    });
+                }
                 // 被复盘取代的这一轮也要留档（失败轨迹是 Eval 的原料），并把 runId 链给下一轮
                 const runRecordRuntimeIdentity = resolveRuntimeRunRecordIdentity(
                     runtimeContractBundle,
@@ -5325,7 +5677,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     projectState: getFreshDesignProjectStateForRecord(),
                     parentRunId: runRecordRuntimeIdentity ? undefined : lastRunRecordId,
                     resumeFreshness: runResumeFreshness,
-                    runtimeSessionIdentity: runRecordRuntimeIdentity
+                    runtimeSessionIdentity: runRecordRuntimeIdentity,
+                    runtimeContractStatus,
+                    modelIdentity: runRecordModelIdentity
                 });
                 if (runtimeContractBundle) {
                     const previousSession = readRuntimeSessionFromAgentResult(result);
@@ -5412,7 +5766,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     projectState: getFreshDesignProjectStateForRecord(),
                     parentRunId: runRecordRuntimeIdentity ? undefined : lastRunRecordId,
                     resumeFreshness: runResumeFreshness,
-                    runtimeSessionIdentity: runRecordRuntimeIdentity
+                    runtimeSessionIdentity: runRecordRuntimeIdentity,
+                    runtimeContractStatus,
+                    modelIdentity: runRecordModelIdentity
                 });
                 return buildCancelledAutonomousAgentResult(result);
             }
@@ -5459,7 +5815,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 projectState: getFreshDesignProjectStateForRecord(),
                 parentRunId: finalRunRecordRuntimeIdentity ? undefined : lastRunRecordId,
                 resumeFreshness: runResumeFreshness,
-                runtimeSessionIdentity: finalRunRecordRuntimeIdentity
+                runtimeSessionIdentity: finalRunRecordRuntimeIdentity,
+                runtimeContractStatus,
+                modelIdentity: runRecordModelIdentity
             });
 
             const designRunRecord = effectiveDesignDisciplineContext.active
@@ -5487,6 +5845,12 @@ export const autonomousAgentExecutor: SkillExecutor = {
             if (qualityHaltNotice) {
                 console.warn('[AutonomousAgent] 自动调整停止:', qualityHaltNotice);
             }
+            registerRuntimeInteractiveCheckpointFromAgentResult({
+                result,
+                sourceTask: runtimeInteractiveReentry?.sourceTask || String(userTask),
+                plan: runtimeContractBundle?.stagePlan,
+                authorizationTokens: runtimeArtifactAuthorizationTokens
+            });
             return {
                 success: result.success,
                 // 运行诊断留在内部日志；用户结果只说明当前版本和下一步，不承担成本、代际或轮次解释。
@@ -5590,7 +5954,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 } else {
                     activityMessage = '设计助手在开始处理文件前停下了。';
                 }
-                const availabilityMessage = isHarnessManagedSubscriptionTimeout(error)
+                const availabilityMessage = isHarnessManagedSubscriptionTimeout(error.providerFailure)
                     ? '这次处理等待时间过长，DesignEcho 已停止继续等待；这不代表模型能力不足。'
                     : buildConversationalUnavailableMessage({
                         audience: 'general',
@@ -5611,6 +5975,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 const acceptanceResults = completedToolCalls
                     .map((entry) => entry.result?.acceptance)
                     .filter(Boolean);
+                const runtimeAccountingDigest = activeAutonomousAgent?.readRuntimeAccountingDigest();
                 const failureExecutionSummary: AgentExecutionSummary = {
                     status: 'failed',
                     stopReason: 'error',
@@ -5671,7 +6036,10 @@ export const autonomousAgentExecutor: SkillExecutor = {
                                     providerCode: error.providerFailure.providerCode
                                 } : {}),
                                 diagnostic: error.providerFailure.diagnostic
-                            }
+                            },
+                            ...(runtimeAccountingDigest
+                                ? { runtimeAccountingDigest }
+                                : {})
                         }
                     },
                     userTask: String(userTask),
@@ -5681,7 +6049,9 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     projectState: getFreshDesignProjectStateForRecord(),
                     parentRunId: failedRunRecordRuntimeIdentity ? undefined : lastRunRecordId,
                     resumeFreshness: runResumeFreshness,
-                    runtimeSessionIdentity: failedRunRecordRuntimeIdentity
+                    runtimeSessionIdentity: failedRunRecordRuntimeIdentity,
+                    runtimeContractStatus,
+                    modelIdentity: runRecordModelIdentity
                 });
                 return {
                     success: false,

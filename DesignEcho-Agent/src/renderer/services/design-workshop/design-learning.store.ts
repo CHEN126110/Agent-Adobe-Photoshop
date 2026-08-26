@@ -7,6 +7,7 @@ import {
     addDesignLearningCandidate,
     applyAutoPromotionRules,
     curateProvisionalExperience,
+    normalizeSkillImprovement,
     candidateFromUserVerdict,
     candidatesFromEvaluation,
     createDesignLearningLedger,
@@ -122,6 +123,44 @@ export async function recordDesignRunDeliveryOutcome(
     }
 }
 
+/**
+ * skill 手册改进提议入候选区（2026-08-24 自我改进闭环）：Agent 从样板 PSD 推理出的
+ * 工艺差异只进候选、绝不直接写手册；用户在学习时间线批准（published）后才由主进程写入。
+ */
+export async function executeProposeSkillImprovement(invoke: Invoke, projectPath: string | undefined, params: any): Promise<any> {
+    if (!projectPath) return { success: false, error: 'proposeSkillImprovement：当前没有打开的项目，提议无处登记。' };
+    const improvement = normalizeSkillImprovement({
+        skillId: params?.skillId,
+        file: params?.file,
+        find: params?.find,
+        replace: params?.replace
+    });
+    if (!improvement) {
+        return { success: false, error: 'proposeSkillImprovement：提议不合格——需要 skillId（小写连字符）、file（SKILL.md 或 references/<名>.md）、find（现有原文片段）、replace（新文字），且 find≠replace。' };
+    }
+    const rationale = String(params?.rationale || '').trim();
+    if (rationale.length < 12) {
+        return { success: false, error: 'proposeSkillImprovement：请用 rationale 说清为什么要改（依据哪个样板文件的什么结构，至少一句完整的话）。' };
+    }
+    let ledger = await readLedger(invoke, projectPath);
+    const outcome = addDesignLearningCandidate(ledger, {
+        kind: 'skill_improvement',
+        text: `【${improvement.skillId}/${improvement.file}】${rationale}`,
+        evidence: Array.isArray(params?.evidence) ? params.evidence.map(String).slice(0, 6) : [],
+        origin: 'reference_study',
+        scope: { kind: 'project' },
+        improvement
+    });
+    const filePath = await writeLedger(invoke, projectPath, outcome.ledger);
+    return {
+        success: true,
+        candidateId: outcome.candidate.id,
+        merged: outcome.merged,
+        filePath,
+        message: `手册改进提议已登记候选区（${improvement.skillId}/${improvement.file}）。它不会自动生效：用户在学习时间线批准后才写入手册。你可以继续当前任务。`
+    };
+}
+
 export async function executeRecordDesignVerdict(invoke: Invoke, projectPath: string | undefined, params: any, runScope?: string): Promise<any> {
     const verdict = String(params?.verdict || '').trim() as 'keep' | 'revise' | 'discard';
     if (!['keep', 'revise', 'discard'].includes(verdict)) {
@@ -163,6 +202,14 @@ export async function executeGetDesignLearningTimeline(invoke: Invoke, projectPa
     if (decisionId && ['published', 'promoted', 'rejected'].includes(decision)) {
         try {
             const normalizedDecision = decision === 'promoted' ? 'published' : decision as 'published' | 'rejected';
+            // skill 改进提议的批准 = 真实写入手册（主进程原子写+备份）；写入失败则不落 published，如实报错。
+            const target = ledger.candidates.find((item) => item.id === decisionId);
+            if (normalizedDecision === 'published' && target?.kind === 'skill_improvement' && target.improvement) {
+                const applied = await invoke('skillPackage:applyImprovement', target.improvement);
+                if (!applied?.success) {
+                    return { success: false, error: `手册改进未生效：${applied?.error || '写入失败'}` };
+                }
+            }
             ledger = decideDesignLearningCandidate(ledger, decisionId, normalizedDecision, params?.note);
             await writeLedger(invoke, projectPath, ledger);
         } catch (error: any) {

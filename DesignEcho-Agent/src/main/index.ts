@@ -61,6 +61,7 @@ import { BinaryMessageType, getBinaryTypeName } from '../shared/binary-protocol'
 import { CODEX_SUBSCRIPTION_PROVIDER } from '../shared/codex-subscription-contract';
 import { getDynamicModels, setDynamicModels } from '../shared/config/dynamic-model-registry';
 import { resolvePersistedModelRuntimeState } from '../shared/config/persisted-model-runtime';
+import { MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS } from '../shared/debug-bridge-chat';
 
 // ============ 全局变量 ============
 
@@ -160,7 +161,10 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
     }
 
     const requestId = `debug_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const timeoutMs = Math.max(1000, Math.min(Number(input.timeoutMs) || 60000, 300000));
+    const timeoutMs = Math.max(
+        1000,
+        Math.min(Number(input.timeoutMs) || 60000, MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS)
+    );
 
     return new Promise((resolve, reject) => {
         const resultChannel = 'debug-bridge:chat-submit-result';

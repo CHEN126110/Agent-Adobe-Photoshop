@@ -17,7 +17,21 @@ export type DesignLearningCandidateKind =
     | 'recipe'
     | 'calibration_sample'
     | 'skill_draft'
+    // Agent 从样板 PSD 推理出的 skill 手册改进提议（2026-08-24）：只进候选，用户批准后才由 Harness 写入。
+    | 'skill_improvement'
     | 'fact';
+
+/** skill 手册改进提议的载荷：精确的查找替换 + 证据；写入由主进程原子执行（备份可回滚）。 */
+export interface SkillImprovementProposal {
+    /** skill 包 id（如 sku-production）。 */
+    skillId: string;
+    /** 目标文件：'SKILL.md' 或 'references/<name>.md'。 */
+    file: string;
+    /** 现有原文片段（精确匹配；找不到写入拒绝，不做模糊替换）。 */
+    find: string;
+    /** 替换后的文字。 */
+    replace: string;
+}
 export type DesignLearningCandidateStatus = 'candidate' | 'provisional' | 'published' | 'rejected';
 
 /** 运行结局（行为事实）：稿件被导出交付 = 正向；被用户否决 = 负向。晋升验证的唯一依据。 */
@@ -80,6 +94,8 @@ export interface DesignLearningCandidate {
     origin: DesignLearningCandidateOrigin;
     scope: DesignExperienceScope;
     calibration?: DesignEvaluationCalibration;
+    /** kind='skill_improvement' 时的结构化提议；批准后由主进程按此执行写入。 */
+    improvement?: SkillImprovementProposal;
     publication?: DesignExperiencePublication;
     /** 关联运行的行为结局（导出交付 / 用户否决）；自动晋升规则的验证依据。 */
     outcomes?: DesignLearningRunOutcome[];
@@ -102,6 +118,8 @@ export interface DesignLearningCandidateInput {
     origin?: DesignLearningCandidateOrigin;
     scope?: DesignExperienceScope;
     calibration?: DesignEvaluationCalibration;
+    /** kind='skill_improvement' 时必带（已经 normalizeSkillImprovement 归一）。 */
+    improvement?: SkillImprovementProposal;
 }
 
 function normalizeText(value: unknown): string {
@@ -141,8 +159,25 @@ function isCandidateKind(value: string): value is DesignLearningCandidateKind {
         'recipe',
         'calibration_sample',
         'skill_draft',
+        'skill_improvement',
         'fact'
     ].includes(value);
+}
+
+const SAFE_SKILL_FILE = /^(?:SKILL\.md|references\/[a-z0-9][a-z0-9-]{0,63}\.md)$/;
+
+/** skill 改进提议载荷归一：字段缺失或文件路径不合法则整体丢弃（该候选不合格）。 */
+export function normalizeSkillImprovement(raw: unknown): SkillImprovementProposal | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const value = raw as Record<string, unknown>;
+    const skillId = String(value.skillId || '').trim().toLowerCase();
+    const file = String(value.file || '').trim();
+    const find = String(value.find || '');
+    const replace = String(value.replace || '');
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(skillId)) return undefined;
+    if (!SAFE_SKILL_FILE.test(file)) return undefined;
+    if (!find.trim() || !replace.trim() || find === replace) return undefined;
+    return { skillId, file, find, replace };
 }
 
 function inferLegacyOrigin(kind: DesignLearningCandidateKind, evidence: string[]): DesignLearningCandidateOrigin {
@@ -250,6 +285,10 @@ export function normalizeDesignLearningLedger(value: unknown, now: number = Date
         const calibration = rawKind === 'calibration_sample'
             ? normalizeCalibration(raw.calibration, text)
             : undefined;
+        const improvement = rawKind === 'skill_improvement'
+            ? normalizeSkillImprovement(raw.improvement)
+            : undefined;
+        if (rawKind === 'skill_improvement' && !improvement) continue;
         const publication = normalizePublication(raw.publication, id);
         const legacyPromoted = raw.status === 'promoted';
         const userCalibrationCanMigrate = legacyPromoted
@@ -297,6 +336,7 @@ export function normalizeDesignLearningLedger(value: unknown, now: number = Date
             origin,
             scope,
             ...(calibration ? { calibration } : {}),
+            ...(improvement ? { improvement } : {}),
             ...(publication || migratedPublication ? { publication: publication || migratedPublication } : {}),
             ...(outcomes.length > 0 ? { outcomes } : {}),
             createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : now,
@@ -362,6 +402,7 @@ export function addDesignLearningCandidate(
         origin,
         scope,
         ...(input.calibration ? { calibration: input.calibration } : {}),
+        ...(input.improvement ? { improvement: input.improvement } : {}),
         createdAt: now,
         updatedAt: now
     };
@@ -381,16 +422,21 @@ function publishUserCalibrationCandidate(
     const candidate = ledger.candidates.find((item) => item.id === id);
     if (!candidate) throw new Error(`找不到学习候选 ${id}`);
     if (candidate.status !== 'candidate') throw new Error(`学习候选 ${id} 当前状态是 ${candidate.status}，不能重复发布`);
-    if (candidate.kind !== 'calibration_sample' || candidate.origin !== 'user_feedback' || !candidate.calibration) {
-        throw new Error('在线运行只允许发布用户明确给出的留 / 改 / 弃校准；原则、配方和模型观察必须经过离线评测与人审发布器');
+    const isUserCalibration = candidate.kind === 'calibration_sample'
+        && candidate.origin === 'user_feedback'
+        && Boolean(candidate.calibration);
+    // skill 改进提议的发布同样是用户人工拍板（时间线批准点击），与校准同级；写入由主进程另行执行。
+    const isSkillImprovement = candidate.kind === 'skill_improvement' && Boolean(candidate.improvement);
+    if (!isUserCalibration && !isSkillImprovement) {
+        throw new Error('在线运行只允许发布用户明确给出的留 / 改 / 弃校准或用户批准的 skill 改进；原则、配方和模型观察必须经过离线评测与人审发布器');
     }
     const published: DesignLearningCandidate = {
         ...candidate,
         status: 'published',
-        decisionNote: normalizeText(note) || '用户明确反馈，发布为当前项目评审校准',
+        decisionNote: normalizeText(note) || (isSkillImprovement ? '用户批准，手册改进已写入' : '用户明确反馈，发布为当前项目评审校准'),
         publication: {
             version: 'design-experience-publication/v1',
-            target: 'evaluation_calibration',
+            target: isSkillImprovement ? 'skill_patch' : 'evaluation_calibration',
             scope: candidate.scope,
             publisher: { kind: 'user' },
             sourceCandidateId: candidate.id,

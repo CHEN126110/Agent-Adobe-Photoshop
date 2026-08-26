@@ -170,7 +170,7 @@ const DETAIL_PAGE_DESIGN_TASK_TYPE: DesignTaskTypeSpec = {
 const MAIN_IMAGE_DESIGN_TASK_TYPE: DesignTaskTypeSpec = {
     id: 'ecommerce.main_image.v1',
     label: '电商主图',
-    declarationGuidance: '主交付物是商品列表或首屏使用的主图系列，需要在缩略图条件下优先建立产品识别、真实主体和一个清晰的点击理由。',
+    declarationGuidance: '主交付物是商品列表或首屏使用的主图。用户只委托一张泛称商品主图，且没有明确指定转化图、颜色/款式总览或比较图时，按搜索或推荐列表的点击入口理解：候选应比较哪种真实视觉关系能在缩略图中形成最清楚、最相关的进入理由。颜色/款式覆盖更全、构图更安全或更容易裁切只能作为证据，不能单独决定素材或方案赢家；用户明确指定其它角色时服从该角色。',
     skillId: 'main-image-design',
     manifestSkillId: 'ecommerce.main_image',
     artifactKnowledgeIds: ['main-image'],

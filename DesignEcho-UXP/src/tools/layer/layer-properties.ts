@@ -95,6 +95,8 @@ export class SetLayerOpacityTool implements Tool {
             
             return JSON.stringify({
                 success: true,
+                documentId: Number(doc.id),
+                layerId: Number(layer.id),
                 layerName: layer.name,
                 opacity: opacity
             });
@@ -160,6 +162,7 @@ export class SetLayerVisibilityTool implements Tool {
 
             return JSON.stringify({
                 success: true,
+                documentId: Number(doc.id),
                 visible: params.visible,
                 changedCount: changed.length,
                 changed: changed.slice(0, 20)

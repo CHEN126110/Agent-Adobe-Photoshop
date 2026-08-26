@@ -120,12 +120,17 @@ export function resolveDirectVisionCandidateCharge(input: {
 export function resolveFinalQualityVisionCandidateReserve(input: {
     reviewSet?: DesignReviewSet;
     fallbackWithoutEvidence?: number;
+    supportingImageReserve?: number;
 }): number {
+    const supportingReserve = Number.isFinite(input.supportingImageReserve)
+        ? Math.max(0, Math.floor(Number(input.supportingImageReserve)))
+        : 0;
     if (input.reviewSet) {
-        return input.reviewSet.items.length;
+        return input.reviewSet.items.length + supportingReserve;
     }
     const fallback = Number(input.fallbackWithoutEvidence ?? 1);
-    return Number.isFinite(fallback) ? Math.max(0, Math.floor(fallback)) : 1;
+    const finalSurfaceReserve = Number.isFinite(fallback) ? Math.max(0, Math.floor(fallback)) : 1;
+    return finalSurfaceReserve + supportingReserve;
 }
 
 export function resolveVisionCandidateLimitForFinalQuality(input: {
@@ -133,6 +138,7 @@ export function resolveVisionCandidateLimitForFinalQuality(input: {
     maxInitialVisionCandidates: number;
     requiresMultiSurface: boolean;
     reviewSet?: DesignReviewSet;
+    supportingImageReserve?: number;
 }): number {
     const hardLimit = Number.isFinite(input.hardLimit)
         ? Math.max(0, Math.floor(input.hardLimit))
@@ -146,7 +152,8 @@ export function resolveVisionCandidateLimitForFinalQuality(input: {
         return Math.min(hardLimit, initialLimit + 1);
     }
     const reserved = resolveFinalQualityVisionCandidateReserve({
-        reviewSet: input.reviewSet
+        reviewSet: input.reviewSet,
+        supportingImageReserve: input.supportingImageReserve
     });
     return Math.max(0, hardLimit - reserved);
 }

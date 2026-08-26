@@ -22,10 +22,13 @@ import {
     type DetailProjectAsset
 } from './skill-executors/detail-page-asset-ranker';
 import {
+    buildProjectContactSheetCandidateCoverage,
     projectVisualCacheEntryMatchesCurrentAsset,
     normalizeProjectVisualInsightCompositionFields,
     pickPreferredProjectVisualInsightCacheEntry,
+    reconcileProjectContactSheetCandidateCoverage,
     selectDiverseProjectVisualCandidates,
+    type ProjectContactSheetCandidateCoverage,
     type ProjectVisualSamplingCacheEntry
 } from '../../shared/project-visual-sampling';
 import {
@@ -55,6 +58,7 @@ import {
     DESIGN_ECHO_TARGET_GUARD_ARGUMENT
 } from '../../shared/agent-tool-execution-preflight';
 import { isTransientPhotoshopBusyFailure } from '../../shared/photoshop-transient-error';
+import { preserveJpegQualityAcrossToolRedirect } from '../../shared/jpeg-export-quality-semantics';
 import {
     PHOTOSHOP_OPERATION_RESULT_VERSION,
     readPhotoshopOperationResult,
@@ -70,6 +74,12 @@ import {
     samePhotoshopHistoryStateRef,
     type PhotoshopHistoryStateRef
 } from '../../shared/photoshop-history-state-ref';
+import {
+    VISUAL_OBSERVATION_BUNDLE_VERSION,
+    type VisualObservationBundle,
+    type VisualObservationImagePayload
+} from '../../shared/visual-observation-bundle';
+import { buildImagePlacementReviewPlan } from '../../shared/layout/image-placement-review-plan';
 import type { ImagePlacementSpec } from '../../shared/layout/layout-engine';
 import {
     buildEditableConfirmationInteractiveCard
@@ -206,7 +216,7 @@ export const AVAILABLE_TOOLS = [
     { name: 'getSkuPlaceholders', description: '获取 SKU 占位符信息', params: '{}' },
     { name: 'smartLayout', description: '智能布局引擎。只在专门布局流程已确认目标图层/目标区域时使用；不要把它作为普通小工具默认猜测调用。', params: '{ action: "calculateScale"|"applyLayout"|"analyzeLayout"|"getRecommendedConfig"|"smartArrange", sourceLayerName?: string, targetBounds?: { left: number, top: number, width: number, height: number }, layerIds?: number[], layerNames?: string[], config?: object }' },
     { name: 'alignToReference', description: '把显式 layerId 的图层按比例缩放并移动，使主体中心对齐到目标点；必须先读回图层与边界，不按名称猜测参考图层', params: '{ layerId: number, scalePercent: number, targetCenterX: number, targetCenterY: number, subjectOffsetX: number, subjectOffsetY: number }' },
-    { name: 'fitLayerSubjectToRegion', description: '【主体感知缩放与定位】按真实主体适配明确目标区域；视觉占比必须来自 Agent 的明确设计判断或已选参考实测，锚点必须显式声明。Harness 只求解几何并返回写后 geometryVerification。', params: '{ layerId: number, targetRegion: {x,y,width,height}, subjectFillRatio?: number, referenceComposition?: { subjectFillRatioForFullCanvas?: number }, anchor: "center"|"top-center"|"bottom-center"|"left-center"|"right-center", maxUpscaleRatio?: number, method?: "auto"|"alpha"|"smart" }' },
+    { name: 'fitLayerSubjectToRegion', description: '【主体感知缩放与定位】按真实主体适配明确目标区域；视觉占比必须来自 Agent 的明确设计判断或已选参考实测，锚点必须显式声明。Harness 只求解几何，并返回写后 geometryVerification 与同版本局部画面。', params: '{ layerId: number, targetRegion: {x,y,width,height}, subjectFillRatio?: number, referenceComposition?: { subjectFillRatioForFullCanvas?: number }, anchor: "center"|"top-center"|"bottom-center"|"left-center"|"right-center", maxUpscaleRatio?: number, method?: "auto"|"alpha"|"smart" }' },
     
     // === 智能对象操作 ===
     { name: 'getSmartObjectInfo', description: '读取指定智能对象图层的真实元数据（类型、原始尺寸、是否链接等）', params: '{ layerId?: number }' },
@@ -225,8 +235,8 @@ export const AVAILABLE_TOOLS = [
     { name: 'searchProjectResources', description: '搜索项目目录中的文件（仅搜索，不打开）。用户提到CSV、表格、模板、图标、素材但没给完整路径时，先用它查项目资源，再决定是否需要追问。', params: '{ query: string, type?: "image"|"design"|"all" }' },
     { name: 'openTemplate', description: '打开指定路径的PSD/PSB文件（需要完整路径）', params: '{ psdPath: string }' },
     { name: 'listProjectResources', description: '列出项目目录中的所有资源；资源型任务缺少路径时先列目录，不要直接向用户要文件位置。', params: '{ directory?: string }' },
-    { name: 'createProjectContactSheetOverview', description: '把项目图片合成一张带编号的缩略图总览，适合先整体观察款式、素材类型和后续要单独复核的图片。', params: '{ directory?: string, maxImages?: number, columns?: number }' },
-    { name: 'analyzeProjectContactSheetOverview', description: '先生成项目图片总览图，再用视觉模型建立带编号依据的有界视觉库存：可见主体群、变体群、拍摄覆盖、仍不确定的覆盖和后续需要单图复核的编号；只提供事实，不替 Agent 选图或决定设计方向。', params: '{ directory?: string, maxImages?: number, focus?: string }' },
+    { name: 'createProjectContactSheetOverview', description: '把项目图片按角色和桶内跨度抽样后合成带编号的缩略图总览；结果分开披露候选全集、选入渲染、成功展示、渲染失败和未展示数，只有真正可见的图片才计入展示。抽样只扩大事实覆盖，不排序，也不替 Agent 选最终素材。', params: '{ directory?: string, maxImages?: number, columns?: number }' },
+    { name: 'analyzeProjectContactSheetOverview', description: '先按角色和桶内跨度抽样生成项目图片总览，再把同一张带编号总览直接交给当前多模态 Agent 建立有界视觉库存；顶层 Agent 路径不让第二个模型重复解释相同像素。结果分开披露选入渲染、成功展示、渲染失败和未展示数，只提供事实，不排序、不替 Agent 选图或决定设计方向。', params: '{ directory?: string, maxImages?: number, focus?: string }' },
     { name: 'prepareSkuRetouchAssets', description: '为一批纯底棚拍 SKU 商品图生成可编辑精修资产：自动选形态基准、受约束形态统一、独立原影、中性灰低频光影修正和预览。sourceMode=auto 会跳过场景图；该工具只生成项目文件，不代表 Photoshop 色卡已完成。', params: '{ sources: [{sourceId?: string, filePath: string, colorName?: string}], projectPath?: string, outputDir?: string, referenceSourcePath?: string, sourceMode?: "auto"|"studio"|"scene", shapeStrength?: number, lightingStrength?: number, maxLongEdge?: number, force?: boolean }' },
     { name: 'generateImage', description: '使用设置中选择的生图渠道生成新素材：ChatGPT/Codex 订阅的 gpt-image-2，或 BFL API 的 FLUX。生成结果不会自动写入 Photoshop，采用前仍需查看。', params: '{ prompt: string, model?: "flux-2-max"|"flux-2-pro"|"flux-2-klein-9b"|"flux-2-klein-4b", width?: number, height?: number, transparentBackground?: boolean }' },
 
@@ -1051,6 +1061,7 @@ const RENDERER_LOCAL_TOOLS = [
     'searchDesignKnowledge',
     'readSkillPlaybook',
     'runSkillScript',
+    'proposeSkillImprovement',
     // 设计知识笔记（用户与 Agent 共写；主进程磁盘存储，Obsidian 兼容）
     'searchDesignNotes',
     'readDesignNote',
@@ -1130,6 +1141,33 @@ function toSubjectRect(value: unknown): SubjectBoundsRect | undefined {
 
 function withSize(rect: SubjectBoundsRect): SubjectBoundsRect & { width: number; height: number } {
     return { ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top };
+}
+
+function readHierarchyNodeChildren(node: any): any[] {
+    if (Array.isArray(node?.children)) return node.children;
+    if (Array.isArray(node?.layers)) return node.layers;
+    return [];
+}
+
+function hierarchyNodeContainsAnyLayerId(
+    node: any,
+    targetLayerIds: ReadonlySet<number>
+): boolean {
+    const layerId = Number(node?.id);
+    if (Number.isInteger(layerId) && targetLayerIds.has(layerId)) return true;
+    const children = readHierarchyNodeChildren(node);
+    return children.some((child: any) => hierarchyNodeContainsAnyLayerId(child, targetLayerIds));
+}
+
+function collectHierarchyNodeLayerIds(
+    node: any,
+    out: Set<number> = new Set<number>()
+): Set<number> {
+    const layerId = Number(node?.id);
+    if (Number.isInteger(layerId) && layerId > 0) out.add(layerId);
+    const children = readHierarchyNodeChildren(node);
+    for (const child of children) collectHierarchyNodeLayerIds(child, out);
+    return out;
 }
 
 /**
@@ -2357,6 +2395,13 @@ export interface ToolCallExecutionOptions {
     signal?: AbortSignal;
     /** 请求级任务卡作用域；由 Agent 运行入口签发，不来自模型参数。 */
     taskCardScope?: string;
+    /** 仅复合执行器内部签发：外层会在全部写入结束后统一采集最终视觉版本。 */
+    deferCompositeVisualObservation?: boolean;
+    /**
+     * 由真实 Agent 调用边界签发：图像结果直接交给当前多模态 Agent 观察，Tool 内部不得
+     * 再调用一次模型解释同一像素。未签发时保持结构化 Skill / 旧调用方的既有分析语义。
+     */
+    visualConsumptionOwner?: 'calling_agent';
 }
 
 function buildCancelledToolResult(toolName: string): Record<string, any> {
@@ -2465,6 +2510,131 @@ async function captureAcceptanceSnapshot(
         console.warn(`[Acceptance] ${stage} snapshot failed for ${toolName}:`, message);
         return { error: message };
     }
+}
+
+interface BoundPostWriteObservation {
+    toolName: 'getCanvasSnapshot';
+    params: Record<string, any>;
+    captured: boolean;
+    historyStateRef?: PhotoshopHistoryStateRef;
+    writeHistoryStateRef?: PhotoshopHistoryStateRef;
+    documentInfo?: Record<string, any>;
+    verifiedSameDocumentVersion: boolean;
+    error?: string;
+}
+
+interface BoundPostWriteObservationResult {
+    observation: BoundPostWriteObservation;
+    snapshot?: any;
+    sourceResult?: Record<string, any>;
+}
+
+/**
+ * 取得绑定到某次 Photoshop 写入版本的局部真实像素。
+ *
+ * 这里只负责采集与身份核对，不评价审美。所有复合视觉写工具复用同一实现，避免某条
+ * 路径只返回“几何成功”却不给 Agent 看当前版本的真实画面。
+ */
+async function captureBoundPostWriteObservation(input: {
+    region: { x: number; y: number; width: number; height: number };
+    maxSize: number;
+    writeHistoryStateRef?: PhotoshopHistoryStateRef;
+    options: ToolCallExecutionOptions;
+    sourceKind?: string;
+    sourceId?: string;
+}): Promise<BoundPostWriteObservationResult> {
+    const params = {
+        region: input.region,
+        maxSize: input.maxSize,
+        ...(input.writeHistoryStateRef?.documentId
+            ? { expectedDocumentId: input.writeHistoryStateRef.documentId }
+            : {})
+    };
+    const observationResult = await sendToPluginWithCancellation(
+        'getCanvasSnapshot',
+        params,
+        getToolTimeout('getCanvasSnapshot', params),
+        input.options,
+        'getCanvasSnapshot'
+    );
+    if (observationResult && typeof observationResult === 'object' && !Array.isArray(observationResult)) {
+        if (input.sourceKind) observationResult.sourceKind = input.sourceKind;
+        if (input.sourceId) observationResult.sourceId = input.sourceId;
+        markExecutedToolResultProvenance('getCanvasSnapshot', observationResult);
+    }
+    const snapshotPayload = observationResult?.snapshot
+        || observationResult?.data?.snapshot;
+    const observationBase64 = typeof snapshotPayload === 'string'
+        ? snapshotPayload
+        : (
+            snapshotPayload?.base64
+            || snapshotPayload?.imageData
+            || observationResult?.base64
+            || observationResult?.imageData
+            || observationResult?.data?.base64
+            || observationResult?.data?.imageData
+        );
+    const captured = observationResult?.success !== false
+        && typeof observationBase64 === 'string'
+        && observationBase64.length > 0;
+    const historyStateRef = readPhotoshopHistoryStateRef(observationResult);
+    const verifiedSameDocumentVersion = captured
+        && Boolean(input.writeHistoryStateRef)
+        && samePhotoshopHistoryStateRef(input.writeHistoryStateRef, historyStateRef);
+    let error: string | undefined;
+    if (!captured) {
+        error = String(observationResult?.error || 'getCanvasSnapshot 未返回可读取的画面');
+    } else if (!verifiedSameDocumentVersion) {
+        if (!input.writeHistoryStateRef) {
+            error = '缺少最终写入后的 Host 文档版本，无法把快照绑定到本次写入';
+        } else if (!historyStateRef) {
+            error = '快照缺少 Host 文档版本，无法证明来自本次写入';
+        } else {
+            error = '写入后 Photoshop 文档或历史版本发生变化，快照不再对应本次最终写入';
+        }
+    }
+    const snapshot = captured
+        ? snapshotPayload || {
+            base64: observationBase64,
+            format: observationResult?.format || observationResult?.data?.format
+        }
+        : undefined;
+    return {
+        observation: {
+            toolName: 'getCanvasSnapshot',
+            params,
+            captured,
+            historyStateRef,
+            writeHistoryStateRef: input.writeHistoryStateRef,
+            documentInfo: observationResult?.documentInfo || observationResult?.data?.documentInfo,
+            verifiedSameDocumentVersion,
+            error
+        },
+        snapshot,
+        sourceResult: observationResult && typeof observationResult === 'object'
+            && !Array.isArray(observationResult)
+            ? observationResult
+            : undefined
+    };
+}
+
+function readVisualObservationImagePayload(snapshot: unknown): VisualObservationImagePayload | undefined {
+    if (typeof snapshot === 'string' && snapshot.length > 0) {
+        return { base64: snapshot };
+    }
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return undefined;
+    const record = snapshot as Record<string, unknown>;
+    const base64 = typeof record.base64 === 'string' ? record.base64 : undefined;
+    const imageData = typeof record.imageData === 'string' ? record.imageData : undefined;
+    const dataUrl = typeof record.dataUrl === 'string' ? record.dataUrl : undefined;
+    if (!base64 && !imageData && !dataUrl) return undefined;
+    return {
+        ...(base64 ? { base64 } : {}),
+        ...(imageData ? { imageData } : {}),
+        ...(dataUrl ? { dataUrl } : {}),
+        ...(typeof record.format === 'string' ? { format: record.format } : {}),
+        ...(typeof record.mediaType === 'string' ? { mediaType: record.mediaType } : {})
+    };
 }
 
 function attachAcceptanceVerification(toolName: string, params: any, result: any, before: AcceptanceCaptureResult, after: AcceptanceCaptureResult): any {
@@ -2719,13 +2889,17 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
 
         // 经验闭环：自动观察只进候选区；用户「留 / 改 / 弃 + 为什么」发布为项目评审校准。
         // 时间线可读、可驳回；原则 / 配方 / 模型观察不能在在线运行里自行发布。
-        if (toolName === 'recordDesignVerdict' || toolName === 'getDesignLearningTimeline') {
+        if (toolName === 'recordDesignVerdict' || toolName === 'getDesignLearningTimeline' || toolName === 'proposeSkillImprovement') {
             const learning = await import('./design-workshop/design-learning.store');
             const invokeMain = (channel: string, ...args: any[]) => (window as any).designEcho.invoke(channel, ...args);
             const projectPath = useAppStore.getState().currentProject?.path;
-            result = toolName === 'recordDesignVerdict'
-                ? await learning.executeRecordDesignVerdict(invokeMain, projectPath, params, options.taskCardScope)
-                : await learning.executeGetDesignLearningTimeline(invokeMain, projectPath, params);
+            if (toolName === 'proposeSkillImprovement') {
+                result = await learning.executeProposeSkillImprovement(invokeMain, projectPath, params);
+            } else {
+                result = toolName === 'recordDesignVerdict'
+                    ? await learning.executeRecordDesignVerdict(invokeMain, projectPath, params, options.taskCardScope)
+                    : await learning.executeGetDesignLearningTimeline(invokeMain, projectPath, params);
+            }
             if (result?.success) executedToolsInSession.push(toolName);
             toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
             return result;
@@ -3005,6 +3179,11 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 ? solveOutcome.blocks.map((block) => ({ ...block, y: block.y + screenRegion.y }))
                 : solveOutcome.blocks;
             const placementPreflightFindings: any[] = [];
+            const placementPrewritePlansByBlockId = new Map<string, any>();
+            const {
+                buildImagePlacementPrewritePlan
+            } = await import('../../shared/layout/image-placement-prewrite-plan');
+            const { verifySubjectFitResult } = await import('../../shared/subject-fit');
             for (const block of resolved) {
                 if (!rendersLayoutBlockAsImage(block)) continue;
                 const placement: Partial<ImagePlacementSpec> = block.imagePlacement
@@ -3012,8 +3191,6 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     ? block.imagePlacement
                     : {};
                 const unsupportedSemantics: string[] = [];
-                const anchor = String(placement.anchor || 'center').toLowerCase();
-                if (anchor !== 'center') unsupportedSemantics.push(`anchor=${anchor}`);
                 const scale = placement.scale === undefined ? 1 : Number(placement.scale);
                 if (!Number.isFinite(scale) || Math.abs(scale - 1) > 0.001) {
                     unsupportedSemantics.push(`scale=${String(placement.scale)}`);
@@ -3022,7 +3199,6 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 if (!Number.isFinite(rotation) || Math.abs(rotation) > 0.001) {
                     unsupportedSemantics.push(`rotation=${String(placement.rotation)}`);
                 }
-                if (placement.focalPoint) unsupportedSemantics.push('focalPoint');
                 if (placement.mask === 'shape') unsupportedSemantics.push('shape mask');
 
                 const fit = placement.fit === 'cover' ? 'cover' : 'contain';
@@ -3044,12 +3220,95 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         message: `图片块「${block.id}」包含当前 renderLayout 尚不能可靠执行的语义：`
                             + `${unsupportedSemantics.join('、')}。本次未写入任何草稿，请先重规划为已支持语义。`,
                         recommendedStrategies: [
-                            '使用 center + scale=1 + rotation=0 且不设置 focalPoint',
+                            '保持 scale=1、rotation=0；图框对齐使用已支持的锚点或归一化 focalPoint',
                             '非整画布 cover 必须声明 mask=clipping 或 overflow=clip',
-                            '需要复杂锚点/焦点/形状蒙版时改用具备该能力的专用执行路径'
+                            '需要形状蒙版或旋转构图时改用具备对应读回收据的专用执行路径'
                         ]
                     });
+                    continue;
                 }
+
+                const sourcePath = String(block.content || '').trim();
+                let assetSubject: any;
+                try {
+                    assetSubject = await (window as any).designEcho?.invoke?.(
+                        'resource:getAssetSubjectBox',
+                        sourcePath
+                    );
+                } catch (error: any) {
+                    assetSubject = {
+                        success: false,
+                        error: error?.message || String(error)
+                    };
+                }
+                const sourceWidth = Number(assetSubject?.imageWidth);
+                const sourceHeight = Number(assetSubject?.imageHeight);
+                const rawSubjectBox = assetSubject?.resolution?.box;
+                const subjectMethod = String(assetSubject?.resolution?.method || '').trim();
+                const subjectConfidence = String(assetSubject?.resolution?.confidence || '').trim();
+                const validSubjectMethods = ['alpha', 'trim', 'matting', 'frame'];
+                const validSubjectConfidence = ['certain', 'high', 'medium', 'low'];
+                const sourceSubject = rawSubjectBox
+                    && [rawSubjectBox.x, rawSubjectBox.y, rawSubjectBox.width, rawSubjectBox.height]
+                        .every((value) => Number.isFinite(Number(value)))
+                    && Number(rawSubjectBox.width) > 0
+                    && Number(rawSubjectBox.height) > 0
+                    && validSubjectMethods.includes(subjectMethod)
+                    && validSubjectConfidence.includes(subjectConfidence)
+                    ? {
+                        box: {
+                            x: Number(rawSubjectBox.x),
+                            y: Number(rawSubjectBox.y),
+                            width: Number(rawSubjectBox.width),
+                            height: Number(rawSubjectBox.height)
+                        },
+                        method: subjectMethod,
+                        confidence: subjectConfidence
+                    }
+                    : undefined;
+                const prewriteResult = buildImagePlacementPrewritePlan({
+                    source: {
+                        width: sourceWidth,
+                        height: sourceHeight,
+                        ...(sourceSubject ? { subject: sourceSubject as any } : {})
+                    },
+                    target: {
+                        x: Number(block.x),
+                        y: Number(block.y),
+                        width: Number(block.width),
+                        height: Number(block.height)
+                    },
+                    placement: {
+                        fit,
+                        anchor: placement.anchor as any,
+                        cropPolicy: placement.cropPolicy as any,
+                        ...(placement.focalPoint ? { focalPoint: placement.focalPoint as any } : {}),
+                        ...(placement.subjectFillRatio !== undefined
+                            ? { subjectFillRatio: Number(placement.subjectFillRatio) }
+                            : {})
+                    },
+                    canvas
+                });
+                if (!prewriteResult.ok) {
+                    placementPreflightFindings.push(...prewriteResult.issues.map((issue) => ({
+                        code: issue.code,
+                        severity: 'repair',
+                        closureKind: issue.stage === 'subject-protection'
+                            && issue.code !== 'protected_subject_crop_detected_prewrite'
+                            ? 'observation'
+                            : 'replan',
+                        blockId: block.id,
+                        role: block.role,
+                        message: `图片块「${block.id}」写入前没有通过落位预演：${issue.message} 本次未修改 Photoshop。`,
+                        ...(issue.facts ? { facts: issue.facts } : {}),
+                        recommendedStrategies: [
+                            '保持 Agent 的设计目标，补齐或修正源图、区域、锚点、关注点与裁切意图后重新预演',
+                            '若裁切是有意设计，由 Agent 看过素材后明确选择 allow-crop；Harness 不会替它放行'
+                        ]
+                    })));
+                    continue;
+                }
+                placementPrewritePlansByBlockId.set(block.id, prewriteResult.plan);
             }
             if (placementPreflightFindings.length > 0) {
                 result = {
@@ -3147,8 +3406,16 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             let layoutFinalWriteHistoryStateRef: PhotoshopHistoryStateRef | undefined;
             // 建组归位需要引用替换前的根级屏组清单（作用域提升：替换块内赋值、建组段消费）
             let layersBeforeSnapshot: any[] = [];
+            const validatedOwnedLayers: Array<{
+                layerId: number;
+                bucket: '文案' | '图标' | '图片';
+                originalParentId: number | null;
+            }> = [];
+            let previousStageGroups: any[] = [];
+            let deferredOwnedAncestorGroups: any[] = [];
+            let previousReusableLayers: any[] = [];
             const reusableDraftLayerNames = buildExpectedTopLevelDraftLayerNames();
-            if (stageGroupName || reusableDraftLayerNames.size > 0) {
+            if (stageGroupName || reusableDraftLayerNames.size > 0 || rawOwnedLayers.length > 0) {
                 const hierarchyBefore = await executeToolCall('getLayerHierarchy', {}, options);
                 if (hierarchyBefore?.success === false) {
                     result = {
@@ -3165,11 +3432,66 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 }
                 const layersBefore = flattenHierarchyLayers(hierarchyBefore?.layers || hierarchyBefore?.hierarchy || []);
                 layersBeforeSnapshot = layersBefore;
+                const ownedLayerPreflightIssues: string[] = [];
+                const seenOwnedLayerIds = new Set<number>();
+                for (const ownedLayer of rawOwnedLayers) {
+                    const layerId = Number(ownedLayer?.layerId);
+                    const bucket = String(ownedLayer?.bucket || '图片');
+                    if (!Number.isInteger(layerId) || layerId <= 0) {
+                        ownedLayerPreflightIssues.push(`ownedLayers 含无效 layerId=${String(ownedLayer?.layerId)}`);
+                        continue;
+                    }
+                    if (!['文案', '图标', '图片'].includes(bucket)) {
+                        ownedLayerPreflightIssues.push(`ownedLayers 图层 ${layerId} 的 bucket「${bucket}」无效`);
+                        continue;
+                    }
+                    if (seenOwnedLayerIds.has(layerId)) {
+                        ownedLayerPreflightIssues.push(`ownedLayers 重复引用图层 ${layerId}`);
+                        continue;
+                    }
+                    const ownedLayerNode = layersBefore.find(
+                        (layer: any) => Number(layer?.id) === layerId
+                    );
+                    if (!ownedLayerNode) {
+                        ownedLayerPreflightIssues.push(`ownedLayers 引用了当前文档中不存在的图层 ${layerId}`);
+                        continue;
+                    }
+                    seenOwnedLayerIds.add(layerId);
+                    validatedOwnedLayers.push({
+                        layerId,
+                        bucket: bucket as '文案' | '图标' | '图片',
+                        originalParentId: Number.isInteger(Number(ownedLayerNode?.parentId))
+                            && Number(ownedLayerNode.parentId) > 0
+                            ? Number(ownedLayerNode.parentId)
+                            : null
+                    });
+                }
+                if (ownedLayerPreflightIssues.length > 0) {
+                    result = {
+                        success: false,
+                        status: 'failed',
+                        qualityState: 'failed',
+                        continuationRequired: true,
+                        requiresVisualReview: false,
+                        noMutation: true,
+                        errors: ownedLayerPreflightIssues.map((error) => ({
+                            block: stageGroupName || 'renderLayout',
+                            role: 'owned-layer',
+                            error
+                        })),
+                        warnings,
+                        message: `renderLayout 在替换旧稿前拒绝了失效的 ownedLayers：${ownedLayerPreflightIssues.join('；')}。本次未删除或创建任何图层。`
+                    };
+                    toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
+                    return result;
+                }
+                const ownedLayerIds = new Set(validatedOwnedLayers.map((item) => item.layerId));
                 // 逐屏保真（2026-07-06 修正）：只替换「当前 stageId」的旧草稿组——换 stageId 是在做新屏，
                 // 其他屏的组必须保留（此前全前缀清除会把已完成屏一并删掉，详情页最终只剩最后一屏）。
                 // 无 stageId（未带 stagePlan 的通用重排）时保持原全清语义，避免旧草稿叠加。
                 const isCurrentStageDraftGroupName = (name: string): boolean => {
                     if (!name) return false;
+                    if (name === `${stageGroupName}·新稿待切换`) return true;
                     if (explicitGroupName) return name === explicitGroupName;
                     if (stageId) {
                         return name === `阶段草稿-${stageId}`
@@ -3178,39 +3500,66 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     }
                     return /^阶段草稿-/.test(name);
                 };
-                const previousStageGroups = layersBefore
+                const matchingPreviousStageGroups = layersBefore
                     .filter((layer: any) => isCurrentStageDraftGroupName(String(layer?.name || '')))
                     .filter((layer: any) => String(layer?.kind || '').toLowerCase().includes('group') || Array.isArray(layer?.children) || Array.isArray(layer?.layers));
-                for (const previousGroup of previousStageGroups) {
-                    const deleteResult = await executeToolCall('deleteLayer', { layerId: previousGroup.id }, options);
-                    stageRefreshActions.push({ action: 'deletePreviousStageGroup', layerId: previousGroup.id, name: previousGroup.name, success: deleteResult?.success !== false });
-                    if (deleteResult?.success === false) {
-                        result = {
-                            success: false,
-                            error: `renderLayout 无法替换旧阶段草稿「${previousGroup.name}」：${deleteResult.error || 'deleteLayer failed'}`
-                        };
-                        toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
-                        return result;
-                    }
-                }
-                const previousReusableLayers = layersBefore
+                // owned layer 可能是旧组的后代。只比较组自身 ID 会让 deleteLayer
+                // 连同已验证要复用的子层一起删除。含 owned 后代的祖先组必须延迟到新组
+                // 收纳并读回这些 owned layer 之后，再用最新 hierarchy 重新判定是否可删。
+                previousStageGroups = matchingPreviousStageGroups
+                    .filter((layer: any) => !hierarchyNodeContainsAnyLayerId(layer, ownedLayerIds));
+                deferredOwnedAncestorGroups = matchingPreviousStageGroups
+                    .filter((layer: any) => hierarchyNodeContainsAnyLayerId(layer, ownedLayerIds));
+                const matchedPreviousStageGroupIds = new Set(
+                    matchingPreviousStageGroups.map((layer: any) => Number(layer?.id))
+                );
+                previousReusableLayers = layersBefore
                     .filter((layer: any) => Number(layer?.depth || 0) === 0 || layer?.parentName == null)
+                    .filter((layer: any) => !ownedLayerIds.has(Number(layer?.id)))
+                    .filter((layer: any) => !matchedPreviousStageGroupIds.has(Number(layer?.id)))
                     .filter((layer: any) => reusableDraftLayerNames.has(String(layer?.name || '')));
-                for (const previousLayer of previousReusableLayers) {
-                    const deleteResult = await executeToolCall('deleteLayer', { layerId: previousLayer.id }, options);
-                    stageRefreshActions.push({ action: 'deleteReusableDraftLayer', layerId: previousLayer.id, name: previousLayer.name, success: deleteResult?.success !== false });
-                    if (deleteResult?.success === false) {
-                        result = {
-                            success: false,
-                            error: `renderLayout 无法替换旧草稿层「${previousLayer.name}」：${deleteResult.error || 'deleteLayer failed'}`
-                        };
-                        toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
-                        return result;
-                    }
-                }
             }
             const created = [];
             const errors = [];
+            const cleanupFailures: Array<{
+                layerId: number;
+                blockId: string;
+                role: string;
+                reason: string;
+                error: string;
+            }> = [];
+            const cleanedCreatedLayerIds = new Set<number>();
+            const cleanupCreatedLayer = async (
+                layerId: number | undefined,
+                blockId: string,
+                role: string,
+                reason: string
+            ): Promise<boolean> => {
+                if (!Number.isInteger(layerId) || Number(layerId) <= 0) return true;
+                const cleanupResult = await executeToolCall(
+                    'deleteLayer',
+                    { layerId: Number(layerId) },
+                    options
+                );
+                if (cleanupResult?.success === true) {
+                    cleanedCreatedLayerIds.add(Number(layerId));
+                    return true;
+                }
+                const cleanupError = String(cleanupResult?.error || 'deleteLayer failed');
+                cleanupFailures.push({
+                    layerId: Number(layerId),
+                    blockId,
+                    role,
+                    reason,
+                    error: cleanupError
+                });
+                errors.push({
+                    block: blockId,
+                    role,
+                    error: `${reason}后清理图层 ${layerId} 失败：${cleanupError}；该图层可能仍留在当前文档，不能把失败当成无副作用。`
+                });
+                return false;
+            };
             const createdLayerIds: number[] = [];
             const imagePlacementReceipts: any[] = [];
             const textFitReceipts: Array<{
@@ -3246,18 +3595,9 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             // 分屏结构化（用户规范/详情页方法论）：屏组内固定 文案/图标/图片 三子组，
             // 每层按角色归桶，建组阶段自动分发——图层树本身就是交付物的一部分。
             const createdLayerBuckets = new Map<number, '文案' | '图标' | '图片'>();
-            const ownedLayers = rawOwnedLayers;
-            for (const ownedLayer of ownedLayers) {
-                const layerId = Number(ownedLayer?.layerId);
-                const bucket = String(ownedLayer?.bucket || '图片');
-                if (!Number.isInteger(layerId) || layerId <= 0) continue;
-                if (!['文案', '图标', '图片'].includes(bucket)) continue;
-                if (!layersBeforeSnapshot.some((layer: any) => Number(layer?.id) === layerId)) {
-                    errors.push({ block: stageGroupName || 'renderLayout', role: 'owned-layer', error: `ownedLayers 引用了当前文档中不存在的图层 ${layerId}` });
-                    continue;
-                }
-                createdLayerIds.push(layerId);
-                createdLayerBuckets.set(layerId, bucket as '文案' | '图标' | '图片');
+            for (const ownedLayer of validatedOwnedLayers) {
+                createdLayerIds.push(ownedLayer.layerId);
+                createdLayerBuckets.set(ownedLayer.layerId, ownedLayer.bucket);
             }
             // 显式主体图层 id：只收 role==='main-image' 的块（来自布局规格声明，不靠几何猜测），
             // 供画面质量评分判定主体占比/对比等（design-surface-snapshot-normalizer 不臆断主体）。
@@ -3287,6 +3627,13 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                             ? b.imagePlacement
                             : {};
                         const targetFit = placement.fit === 'cover' ? 'cover' : 'contain';
+                        let actualPlacementBounds: any;
+                        let actualSubjectBounds: any;
+                        let placementSubjectDetection: any;
+                        let subjectFitVerification: any;
+                        let executionPlacement: any;
+                        const prewritePlan = placementPrewritePlansByBlockId.get(b.id);
+                        const onePassSubjectFit = prewritePlan?.subjectFill?.geometryPlan;
                         const needsRectangularClip = placement.mask === 'clipping'
                             || placement.overflow === 'clip';
 
@@ -3309,23 +3656,55 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                                     role: b.role,
                                     error: clippingBaseResult?.error || 'cover 置入无法创建可靠裁切基底。'
                                 });
+                                if (clippingBaseLayerId) {
+                                    await cleanupCreatedLayer(
+                                        clippingBaseLayerId,
+                                        b.id,
+                                        b.role,
+                                        '裁切基底创建失败但执行结果仍返回图层身份'
+                                    );
+                                    clippingBaseLayerId = undefined;
+                                }
                                 continue;
                             }
                         }
 
-                        // 有真实素材：置入后按引擎算出的区域缩放定位（不让模型猜大小位置）。
-                        // fit 由 Planner/Skill 声明并贯通到 Photoshop，不再在 Render Bridge 丢失后默认为 contain。
+                        const finalTargetBounds = prewritePlan?.finalWrite?.targetBounds
+                            || { x: b.x, y: b.y, width: b.width, height: b.height };
+                        // 有真实素材时，所有可预演语义都在写入前求出最终图框；placeImage 的第一次写入
+                        // 就使用最终 targetBounds。subjectFillRatio 不再走 place → fit 的二次修补路径。
                         r = await executeToolCall('placeImage', {
                             filePath: src,
                             name: b.id,
-                            targetBounds: { x: b.x, y: b.y, width: b.width, height: b.height },
-                            targetFit
+                            targetBounds: finalTargetBounds,
+                            targetFit: prewritePlan?.finalWrite?.fit || targetFit,
+                            targetAnchor: prewritePlan?.finalWrite?.anchor || placement.anchor,
+                            ...(prewritePlan?.finalWrite?.focalPoint
+                                ? { focalPoint: prewritePlan.finalWrite.focalPoint }
+                                : {})
                         }, options);
                         if (b.role === 'main-image') mainImageHasRealSrc = true;
 
                         const placedLayerId = inferFocusLayerId('placeImage', {}, r);
-                        if (r?.success === false && clippingBaseLayerId) {
-                            await executeToolCall('deleteLayer', { layerId: clippingBaseLayerId }, options);
+                        actualPlacementBounds = r?.data?.bounds || r?.bounds;
+                        executionPlacement = r?.data?.placement || r?.placement;
+                        if (r?.success === false) {
+                            if (placedLayerId) {
+                                await cleanupCreatedLayer(
+                                    placedLayerId,
+                                    b.id,
+                                    b.role,
+                                    '图片置入失败且执行结果仍返回图层身份'
+                                );
+                            }
+                            if (clippingBaseLayerId) {
+                                await cleanupCreatedLayer(
+                                    clippingBaseLayerId,
+                                    b.id,
+                                    b.role,
+                                    '图片置入失败'
+                                );
+                            }
                             clippingBaseLayerId = undefined;
                         } else if (needsRectangularClip && !placedLayerId && clippingBaseLayerId) {
                             errors.push({
@@ -3333,10 +3712,55 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                                 role: b.role,
                                 error: 'cover 置入没有返回真实图片 layerId，不能安全创建剪切蒙版。'
                             });
-                            await executeToolCall('deleteLayer', { layerId: clippingBaseLayerId }, options);
+                            await cleanupCreatedLayer(
+                                clippingBaseLayerId,
+                                b.id,
+                                b.role,
+                                '置入结果缺少图片图层身份'
+                            );
                             clippingBaseLayerId = undefined;
                             continue;
-                        } else if (needsRectangularClip && placedLayerId && clippingBaseLayerId) {
+                        }
+
+                        // 写前主体框来自源素材；写后用 UXP 返回的真实图框重新投影并核对主体占比。
+                        // 这里只做几何验证，不因为数值达成就声明审美通过。
+                        if (r?.success !== false
+                            && placedLayerId
+                            && onePassSubjectFit
+                            && prewritePlan?.source?.subject?.box) {
+                            const actualFrame = toSubjectRect(actualPlacementBounds);
+                            if (actualFrame) {
+                                const frameWidth = actualFrame.right - actualFrame.left;
+                                const frameHeight = actualFrame.bottom - actualFrame.top;
+                                const relativeSubject = prewritePlan.source.subject.box;
+                                actualSubjectBounds = {
+                                    left: actualFrame.left + frameWidth * relativeSubject.x,
+                                    top: actualFrame.top + frameHeight * relativeSubject.y,
+                                    right: actualFrame.left + frameWidth * (relativeSubject.x + relativeSubject.width),
+                                    bottom: actualFrame.top + frameHeight * (relativeSubject.y + relativeSubject.height)
+                                };
+                                subjectFitVerification = verifySubjectFitResult({
+                                    actualSubjectBounds,
+                                    targetRegion: { x: b.x, y: b.y, width: b.width, height: b.height },
+                                    requestedFillRatio: Number(placement.subjectFillRatio),
+                                    anchor: placement.anchor as any,
+                                    projectedSubject: onePassSubjectFit.projectedSubject
+                                });
+                                placementSubjectDetection = {
+                                    method: `asset:${prewritePlan.source.subject.method}`,
+                                    confidence: prewritePlan.source.subject.confidence,
+                                    relativeBox: relativeSubject,
+                                    note: '写入前从源素材取得主体框；写后按同一源图相对框投影到 UXP 真实图框'
+                                };
+                            } else {
+                                subjectFitVerification = {
+                                    status: 'failed',
+                                    warnings: ['placeImage 未返回可解析的真实图框，无法验证一次落位后的主体占比。']
+                                };
+                            }
+                        }
+
+                        if (needsRectangularClip && placedLayerId && clippingBaseLayerId) {
                             const clippingResult = await executeToolCall('createClippingMask', {
                                 layerId: placedLayerId,
                                 baseLayerId: clippingBaseLayerId
@@ -3348,22 +3772,82 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                                     role: b.role,
                                     error: clippingResult?.error || 'cover 置入创建剪切蒙版失败。'
                                 });
-                                await executeToolCall('deleteLayer', { layerId: placedLayerId }, options);
-                                await executeToolCall('deleteLayer', { layerId: clippingBaseLayerId }, options);
+                                await cleanupCreatedLayer(
+                                    placedLayerId,
+                                    b.id,
+                                    b.role,
+                                    '剪切蒙版创建失败'
+                                );
+                                await cleanupCreatedLayer(
+                                    clippingBaseLayerId,
+                                    b.id,
+                                    b.role,
+                                    '剪切蒙版创建失败'
+                                );
                                 clippingBaseLayerId = undefined;
                                 continue;
                             }
                         }
 
                         if (r?.success !== false) {
-                            placementReceipt = evaluateImagePlacementQuality({
+                            // 只有 Agent 声明 protect-subject 时才为裁切事实做主体检测；allow-crop 仅返回
+                            // 图框裁切事实并交给视觉模型判断，避免 Harness 把检测器变成审美裁判。
+                            if (placedLayerId
+                                && placement.cropPolicy === 'protect-subject'
+                                && !actualSubjectBounds) {
+                                const placementLayerBoundsResult = await executeToolCall(
+                                    'getLayerBounds',
+                                    { layerId: placedLayerId },
+                                    options
+                                );
+                                const placementFrameRaw = placementLayerBoundsResult?.boundsNoEffects
+                                    || placementLayerBoundsResult?.bounds;
+                                const placementFrameRect = toSubjectRect(placementFrameRaw);
+                                if (placementFrameRect) {
+                                    actualPlacementBounds = placementFrameRaw;
+                                    const placementDocInfo = await executeToolCall('getDocumentInfo', {}, options);
+                                    const resolvedPlacementSubject = await resolveLayerSubjectBounds({
+                                        layerId: placedLayerId,
+                                        frameBounds: placementFrameRect,
+                                        requestedMethod: 'auto',
+                                        documentId: readResultDocumentId(placementDocInfo),
+                                        options
+                                    });
+                                    actualSubjectBounds = resolvedPlacementSubject.bounds;
+                                    placementSubjectDetection = {
+                                        method: resolvedPlacementSubject.method,
+                                        confidence: resolvedPlacementSubject.confidence,
+                                        note: resolvedPlacementSubject.note,
+                                        ...(resolvedPlacementSubject.relativeBox
+                                            ? { relativeBox: resolvedPlacementSubject.relativeBox }
+                                            : {})
+                                    };
+                                }
+                            }
+                            const evaluatedPlacement = evaluateImagePlacementQuality({
                                 block: b,
                                 layerId: placedLayerId,
-                                actualBounds: r?.data?.bounds || r?.bounds,
+                                actualBounds: actualPlacementBounds,
+                                actualSubjectBounds,
+                                subjectDetection: placementSubjectDetection,
+                                subjectFitVerification,
+                                executionPlacement,
                                 clippingApplied,
                                 clippingBaseLayerId,
                                 canvas
                             });
+                            placementReceipt = {
+                                ...evaluatedPlacement,
+                                ...(prewritePlan?.normalPreview
+                                    ? {
+                                        prewritePreview: prewritePlan.normalPreview,
+                                        prewriteFinalWrite: prewritePlan.finalWrite
+                                    }
+                                    : {}),
+                                executionMode: onePassSubjectFit
+                                    ? 'precomputed_subject_fit_single_place'
+                                    : 'precomputed_target_fit_single_place'
+                            };
                             imagePlacementReceipts.push(placementReceipt);
                             qualityFindings.push(...placementReceipt.findings);
                             if (clippingApplied && placedLayerId && clippingBaseLayerId) {
@@ -3559,11 +4043,27 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             let stageGroupResult: any = null;
             let stageGroupId: number | undefined;
             let stageSubgroupIds: Partial<Record<'文案' | '图标' | '图片', number>> = {};
+            let stageSwapReceipt: Record<string, unknown> | undefined;
+            const hasStageReplacementTargets = previousStageGroups.length > 0
+                || deferredOwnedAncestorGroups.length > 0
+                || previousReusableLayers.length > 0;
+            const stageCandidateGroupName = stageGroupName && hasStageReplacementTargets
+                ? `${stageGroupName}·新稿待切换`
+                : stageGroupName;
+            let stageCandidatePromoted = stageCandidateGroupName === stageGroupName;
             if (stageGroupName && errors.length === 0 && createdLayerIds.length > 0) {
-                stageGroupResult = await executeToolCall('createGroup', { groupName: stageGroupName }, options);
+                stageGroupResult = await executeToolCall('createGroup', {
+                    groupName: stageCandidateGroupName
+                }, options);
                 const groupId = inferFocusLayerId('createGroup', {}, stageGroupResult);
                 stageGroupId = groupId;
-                stageRefreshActions.push({ action: 'createStageGroup', groupName: stageGroupName, groupId, success: stageGroupResult?.success !== false });
+                stageRefreshActions.push({
+                    action: 'createStageGroup',
+                    groupName: stageCandidateGroupName,
+                    finalGroupName: stageGroupName,
+                    groupId,
+                    success: stageGroupResult?.success !== false
+                });
                 if (!groupId || stageGroupResult?.success === false) {
                     errors.push({ block: stageGroupName, role: 'stage-group', error: stageGroupResult?.error || 'createGroup failed' });
                 } else {
@@ -3711,6 +4211,364 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     warnings.push(finding.message);
                 }
             }
+
+            // 阶段替换采用组级 swap：旧稿在新稿全部建层、归组、剪切验真之前保持不动。
+            // 新稿先使用临时组名；结构读回通过后先把新组改成最终语义名，再删除旧稿。
+            // 即使旧稿清理中途失败，完整新组仍然存在，结果会以失败和结构化收据如实返回。
+            if (hasStageReplacementTargets) {
+                const expectedCandidateLayerIds = Array.from(new Set(createdLayerIds));
+                const ownedLayerIds = new Set(validatedOwnedLayers.map((entry) => entry.layerId));
+                let candidateHierarchyResult: any;
+                let candidateHierarchy: any[] = [];
+                let candidateStructureVerified = errors.length === 0
+                    && expectedCandidateLayerIds.length > 0;
+                const stageSwapIssues: string[] = [];
+
+                if (candidateStructureVerified) {
+                    candidateHierarchyResult = await executeToolCall(
+                        'getLayerHierarchy',
+                        { includeBounds: false },
+                        options
+                    );
+                    if (candidateHierarchyResult?.success === false) {
+                        candidateStructureVerified = false;
+                        stageSwapIssues.push(
+                            `新阶段结构读回失败：${candidateHierarchyResult?.error || 'getLayerHierarchy failed'}`
+                        );
+                    } else {
+                        candidateHierarchy = Array.isArray(candidateHierarchyResult?.hierarchy)
+                            ? candidateHierarchyResult.hierarchy
+                            : [];
+                        const candidateFlat = flattenHierarchyLayers(candidateHierarchy);
+                        if (stageGroupName) {
+                            const candidateGroup = candidateFlat.find(
+                                (layer: any) => Number(layer?.id) === Number(stageGroupId)
+                            );
+                            const candidateAtRoot = candidateHierarchy.some(
+                                (layer: any) => Number(layer?.id) === Number(stageGroupId)
+                            );
+                            const candidateVisible = candidateGroup?.visible === true;
+                            const candidateDescendantIds = candidateGroup
+                                ? collectHierarchyNodeLayerIds(candidateGroup)
+                                : new Set<number>();
+                            const missingLayerIds = expectedCandidateLayerIds.filter(
+                                (layerId) => !candidateDescendantIds.has(layerId)
+                            );
+                            const clippingVerified = clippingPairs.every(
+                                (pair) => pair.receipt?.clippingVerification?.relationVerified === true
+                            );
+                            if (!candidateGroup || !candidateAtRoot || !candidateVisible
+                                || missingLayerIds.length > 0) {
+                                candidateStructureVerified = false;
+                                stageSwapIssues.push(
+                                    `新阶段组结构不完整：groupId=${String(stageGroupId || 'missing')}，`
+                                    + `root=${String(candidateAtRoot)}，visible=${String(candidateVisible)}，`
+                                    + `缺少图层=[${missingLayerIds.join(', ')}]`
+                                );
+                            }
+                            if (!clippingVerified) {
+                                candidateStructureVerified = false;
+                                stageSwapIssues.push('新阶段仍有未通过读回的剪切关系');
+                            }
+                        } else {
+                            const liveLayerIds = new Set(
+                                candidateFlat
+                                    .map((layer: any) => Number(layer?.id))
+                                    .filter((layerId: number) => Number.isInteger(layerId) && layerId > 0)
+                            );
+                            const missingLayerIds = expectedCandidateLayerIds.filter(
+                                (layerId) => !liveLayerIds.has(layerId)
+                            );
+                            if (missingLayerIds.length > 0) {
+                                candidateStructureVerified = false;
+                                stageSwapIssues.push(`新草稿缺少图层=[${missingLayerIds.join(', ')}]`);
+                            }
+                        }
+
+                        // 初始 hierarchy 中含 owned 后代的旧组没有进入普通删除候选。
+                        // 只有最新读回证明 owned 已经进入新组、旧祖先不再包含它们，才允许加入清理集合。
+                        const currentFlat = flattenHierarchyLayers(candidateHierarchy);
+                        for (const deferredGroup of deferredOwnedAncestorGroups) {
+                            const currentGroup = currentFlat.find(
+                                (layer: any) => Number(layer?.id) === Number(deferredGroup?.id)
+                            );
+                            if (currentGroup && hierarchyNodeContainsAnyLayerId(currentGroup, ownedLayerIds)) {
+                                candidateStructureVerified = false;
+                                stageSwapIssues.push(
+                                    `旧阶段组 ${deferredGroup.id} 仍包含 owned layer，已拒绝删除该祖先组`
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    stageSwapIssues.push('新阶段写入已有错误或没有可验证的新图层');
+                }
+
+                if (candidateStructureVerified && stageGroupName && stageGroupId
+                    && stageCandidateGroupName !== stageGroupName) {
+                    const renameCandidate = await executeToolCall('renameLayer', {
+                        layerId: stageGroupId,
+                        newName: stageGroupName
+                    }, options);
+                    stageRefreshActions.push({
+                        action: 'promoteStageCandidateGroup',
+                        layerId: stageGroupId,
+                        fromName: stageCandidateGroupName,
+                        toName: stageGroupName,
+                        success: renameCandidate?.success === true
+                    });
+                    if (renameCandidate?.success !== true) {
+                        candidateStructureVerified = false;
+                        stageSwapIssues.push(
+                            `新阶段组无法提升为最终语义名：${renameCandidate?.error || 'renameLayer failed'}`
+                        );
+                    } else {
+                        stageCandidatePromoted = true;
+                    }
+                }
+
+                let oldStageCleanupComplete = candidateStructureVerified;
+                if (candidateStructureVerified) {
+                    const safePreviousStageGroups = [
+                        ...previousStageGroups,
+                        ...deferredOwnedAncestorGroups
+                    ];
+                    for (const previousGroup of safePreviousStageGroups) {
+                        const deleteResult = await executeToolCall(
+                            'deleteLayer',
+                            { layerId: previousGroup.id },
+                            options
+                        );
+                        const deleteSucceeded = deleteResult?.success === true;
+                        stageRefreshActions.push({
+                            action: 'deletePreviousStageGroup',
+                            layerId: previousGroup.id,
+                            name: previousGroup.name,
+                            success: deleteSucceeded
+                        });
+                        if (!deleteSucceeded) {
+                            oldStageCleanupComplete = false;
+                            stageSwapIssues.push(
+                                `完整新组已保留，但旧阶段组「${previousGroup.name}」清理失败：`
+                                + `${deleteResult?.error || 'deleteLayer failed'}`
+                            );
+                            break;
+                        }
+                    }
+                    if (oldStageCleanupComplete) {
+                        for (const previousLayer of previousReusableLayers) {
+                            const deleteResult = await executeToolCall(
+                                'deleteLayer',
+                                { layerId: previousLayer.id },
+                                options
+                            );
+                            const deleteSucceeded = deleteResult?.success === true;
+                            stageRefreshActions.push({
+                                action: 'deleteReusableDraftLayer',
+                                layerId: previousLayer.id,
+                                name: previousLayer.name,
+                                success: deleteSucceeded
+                            });
+                            if (!deleteSucceeded) {
+                                oldStageCleanupComplete = false;
+                                stageSwapIssues.push(
+                                    `完整新稿已保留，但旧草稿层「${previousLayer.name}」清理失败：`
+                                    + `${deleteResult?.error || 'deleteLayer failed'}`
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                let failedCandidateRetained = false;
+                let failedCandidateHidden = false;
+                let failedCandidateCleanupComplete = candidateStructureVerified;
+                if (!candidateStructureVerified) {
+                    failedCandidateCleanupComplete = true;
+                    let rollbackHierarchy = candidateHierarchy;
+                    let rollbackHierarchyVerified = rollbackHierarchy.length > 0;
+                    if (rollbackHierarchy.length === 0) {
+                        const rollbackHierarchyResult = await executeToolCall(
+                            'getLayerHierarchy',
+                            { includeBounds: false },
+                            options
+                        );
+                        rollbackHierarchy = Array.isArray(rollbackHierarchyResult?.hierarchy)
+                            ? rollbackHierarchyResult.hierarchy
+                            : [];
+                        if (rollbackHierarchyResult?.success !== true) {
+                            rollbackHierarchyVerified = false;
+                            failedCandidateCleanupComplete = false;
+                            stageSwapIssues.push(
+                                `失败候选清理前无法读取当前层级：`
+                                + `${rollbackHierarchyResult?.error || 'getLayerHierarchy failed'}`
+                            );
+                        } else {
+                            rollbackHierarchyVerified = true;
+                        }
+                    }
+                    const rollbackFlat = flattenHierarchyLayers(rollbackHierarchy);
+                    const candidateGroup = rollbackFlat.find(
+                        (layer: any) => Number(layer?.id) === Number(stageGroupId)
+                    );
+                    const candidateLayerIds = candidateGroup
+                        ? collectHierarchyNodeLayerIds(candidateGroup)
+                        : new Set<number>();
+                    let ownedLayersRestored = true;
+                    for (const ownedLayer of validatedOwnedLayers) {
+                        if (!candidateLayerIds.has(ownedLayer.layerId)) continue;
+                        const restoreOwnedLayer = await executeToolCall('moveLayerToGroup', {
+                            layerId: ownedLayer.layerId,
+                            targetGroupId: ownedLayer.originalParentId || 0,
+                            position: 'inside'
+                        }, options);
+                        const restored = restoreOwnedLayer?.success === true;
+                        stageRefreshActions.push({
+                            action: 'restoreOwnedLayerAfterCandidateFailure',
+                            layerId: ownedLayer.layerId,
+                            targetGroupId: ownedLayer.originalParentId || 0,
+                            success: restored
+                        });
+                        if (!restored) {
+                            ownedLayersRestored = false;
+                            failedCandidateCleanupComplete = false;
+                            stageSwapIssues.push(
+                                `失败候选中的 owned layer ${ownedLayer.layerId} 无法恢复到原父级：`
+                                + `${restoreOwnedLayer?.error || 'moveLayerToGroup failed'}`
+                            );
+                        }
+                    }
+
+                    let candidateGroupRemoved = !candidateGroup && rollbackHierarchyVerified;
+                    if (stageGroupId && !candidateGroup && !rollbackHierarchyVerified) {
+                        failedCandidateRetained = true;
+                    }
+                    if (candidateGroup && ownedLayersRestored) {
+                        const removeCandidateGroup = await executeToolCall(
+                            'deleteLayer',
+                            { layerId: stageGroupId },
+                            options
+                        );
+                        candidateGroupRemoved = removeCandidateGroup?.success === true;
+                        stageRefreshActions.push({
+                            action: 'deleteFailedStageCandidateGroup',
+                            layerId: stageGroupId,
+                            name: stageCandidateGroupName,
+                            success: candidateGroupRemoved
+                        });
+                        if (!candidateGroupRemoved) {
+                            failedCandidateCleanupComplete = false;
+                            failedCandidateRetained = true;
+                            stageSwapIssues.push(
+                                `失败候选组 ${stageGroupId} 清理失败：`
+                                + `${removeCandidateGroup?.error || 'deleteLayer failed'}`
+                            );
+                            const hideCandidateGroup = await executeToolCall(
+                                'setLayerVisibility',
+                                { layerId: stageGroupId, visible: false },
+                                options
+                            );
+                            failedCandidateHidden = hideCandidateGroup?.success === true;
+                            stageRefreshActions.push({
+                                action: 'hideRetainedFailedStageCandidateGroup',
+                                layerId: stageGroupId,
+                                success: failedCandidateHidden
+                            });
+                            if (!failedCandidateHidden) {
+                                stageSwapIssues.push(
+                                    `失败候选组 ${stageGroupId} 也无法隐藏：`
+                                    + `${hideCandidateGroup?.error || 'setLayerVisibility failed'}`
+                                );
+                            }
+                        }
+                    } else if (candidateGroup && !ownedLayersRestored) {
+                        failedCandidateRetained = true;
+                        stageSwapIssues.push(
+                            `失败候选组 ${stageGroupId} 因仍承载 owned layer 而保留，未执行危险删除`
+                        );
+                    }
+
+                    if (ownedLayersRestored) {
+                        const liveHierarchyResult = await executeToolCall(
+                            'getLayerHierarchy',
+                            { includeBounds: false },
+                            options
+                        );
+                        const liveHierarchy = Array.isArray(liveHierarchyResult?.hierarchy)
+                            ? liveHierarchyResult.hierarchy
+                            : [];
+                        if (liveHierarchyResult?.success !== true) {
+                            failedCandidateCleanupComplete = false;
+                            stageSwapIssues.push(
+                                `失败候选清理后无法验证剩余图层：`
+                                + `${liveHierarchyResult?.error || 'getLayerHierarchy failed'}`
+                            );
+                        } else {
+                            const liveLayerIds = new Set(
+                                flattenHierarchyLayers(liveHierarchy)
+                                    .map((layer: any) => Number(layer?.id))
+                                    .filter((layerId: number) => Number.isInteger(layerId) && layerId > 0)
+                            );
+                            const nonOwnedCandidateLayerIds = expectedCandidateLayerIds.filter(
+                                (layerId) => !ownedLayerIds.has(layerId) && liveLayerIds.has(layerId)
+                            );
+                            for (const layerId of nonOwnedCandidateLayerIds) {
+                                const cleaned = await cleanupCreatedLayer(
+                                    layerId,
+                                    stageGroupName || 'renderLayout',
+                                    'stage-swap',
+                                    '失败候选回滚'
+                                );
+                                if (!cleaned) failedCandidateCleanupComplete = false;
+                            }
+                        }
+                    }
+                    if (candidateGroupRemoved && failedCandidateCleanupComplete) {
+                        stageSwapIssues.push('失败候选已清理，旧阶段保持原状');
+                    }
+                }
+
+                if (!candidateStructureVerified || !oldStageCleanupComplete) {
+                    errors.push({
+                        block: stageGroupName || 'renderLayout',
+                        role: 'stage-swap',
+                        error: stageSwapIssues.join('；') || '阶段替换未完成'
+                    });
+                }
+                let stageSwapStatus = 'candidate_not_promoted';
+                if (candidateStructureVerified && oldStageCleanupComplete) {
+                    stageSwapStatus = 'committed';
+                } else if (candidateStructureVerified) {
+                    stageSwapStatus = 'old_stage_cleanup_incomplete';
+                }
+                stageSwapReceipt = {
+                    version: 'render-layout-stage-swap/v1',
+                    status: stageSwapStatus,
+                    oldStagePreservedUntilCandidateVerified: true,
+                    candidateGroupId: stageGroupId,
+                    candidatePromoted: stageCandidatePromoted,
+                    candidateStructureVerified,
+                    oldStageCleanupComplete,
+                    failedCandidateCleanupComplete,
+                    failedCandidateRetained,
+                    failedCandidateHidden,
+                    previousStageGroupIds: [
+                        ...previousStageGroups,
+                        ...deferredOwnedAncestorGroups
+                    ].map((layer: any) => Number(layer?.id)),
+                    previousReusableLayerIds: previousReusableLayers.map(
+                        (layer: any) => Number(layer?.id)
+                    ),
+                    ...(stageSwapIssues.length > 0 ? { issues: stageSwapIssues } : {})
+                };
+            }
+            const retainedCreatedLayerIds = createdLayerIds.filter(
+                (layerId) => !cleanedCreatedLayerIds.has(layerId)
+            );
+            const retainedSubjectLayerIds = subjectLayerIds.filter(
+                (layerId) => !cleanedCreatedLayerIds.has(layerId)
+            );
             // 写后即时自检（2026-07-06）：结构性遮挡是纯几何+层序问题，不需要视觉模型——
             // 排版一结束就确定性判出「内容层被背景/色块完全盖住」（如先 placeImage 的主图
             // 被本次屏组背景压住），连同修复出口回给模型，不等事后截图才发现。检测失败不阻塞。
@@ -3721,7 +4579,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 occluderLayerName?: string;
                 message: string;
             }> = [];
-            if (errors.length === 0 && createdLayerIds.length > 0) {
+            if (errors.length === 0 && retainedCreatedLayerIds.length > 0) {
                 const { detectFullLayerOcclusions } = await import('../../shared/layer-occlusion');
                 const hierarchyAfter = await executeToolCall('getLayerHierarchy', { includeBounds: true }, options);
                 if (hierarchyAfter?.success !== false) {
@@ -3730,8 +4588,8 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     occlusionFindings = detectFullLayerOcclusions(hierarchyAfterTree);
                     for (const finding of occlusionFindings) {
                         warnings.push(finding.message);
-                        const touchesCurrentLayout = createdLayerIds.includes(Number(finding.occludedLayerId))
-                            || createdLayerIds.includes(Number(finding.occluderLayerId));
+                        const touchesCurrentLayout = retainedCreatedLayerIds.includes(Number(finding.occludedLayerId))
+                            || retainedCreatedLayerIds.includes(Number(finding.occluderLayerId));
                         if (!touchesCurrentLayout) continue;
                         qualityFindings.push({
                             code: 'full_layer_occlusion',
@@ -3805,7 +4663,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     });
                 }
             }
-            if (createdLayerIds.length > 0 && !layoutFinalWriteHistoryStateRef) {
+            if (retainedCreatedLayerIds.length > 0 && !layoutFinalWriteHistoryStateRef) {
                 // 超大文档的完整层级读取可能失败；视觉身份不能因此永久卡死。
                 // 仅在缺最终 Host 版本时补一次轻量文档读取。结构复核 finding 保留，
                 // 但局部截图仍可与这个最终版本做同文档、同 historyState 的精确绑定。
@@ -3864,87 +4722,24 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     ? '长文档必须复核本次阶段/内容并集的局部高分辨率画面；全页缩略图只可用于导航，不能判定设计质量。'
                     : '读取本次布局后的完整画面，确认主体、文字层级和可读性。'
             };
-            let postWriteObservation: {
-                toolName: string;
-                params: Record<string, any>;
-                captured: boolean;
-                historyStateRef?: PhotoshopHistoryStateRef;
-                writeHistoryStateRef?: PhotoshopHistoryStateRef;
-                documentInfo?: Record<string, any>;
-                verifiedSameDocumentVersion: boolean;
-                error?: string;
-            } | undefined;
+            let postWriteObservation: BoundPostWriteObservation | undefined;
             let postWriteSnapshot: any;
-            if (createdLayerIds.length > 0) {
+            if (retainedCreatedLayerIds.length > 0
+                && options.deferCompositeVisualObservation !== true) {
                 // renderLayout 是复合写操作。布局完成后由 Harness 主动读取一次本次区域，
                 // 直接复用 Agent 的图像观察通道，避免再花一轮让模型决定“要不要截图”。
                 // 这只负责取得真实像素；审美判断仍由视觉模型完成，抓图成功不等于质量通过。
-                const observationResult = await sendToPluginWithCancellation(
-                    suggestedObservation.toolName,
-                    suggestedObservation.params,
-                    getToolTimeout(suggestedObservation.toolName, suggestedObservation.params),
-                    options,
-                    suggestedObservation.toolName
-                );
-                const snapshotPayload = observationResult?.snapshot
-                    || observationResult?.data?.snapshot;
-                const observationBase64 = typeof snapshotPayload === 'string'
-                    ? snapshotPayload
-                    : (
-                        snapshotPayload?.base64
-                        || snapshotPayload?.imageData
-                        || observationResult?.base64
-                        || observationResult?.imageData
-                        || observationResult?.data?.base64
-                        || observationResult?.data?.imageData
-                    );
-                const observationCaptured = observationResult?.success !== false
-                    && typeof observationBase64 === 'string'
-                    && observationBase64.length > 0;
-                const observationHistoryStateRef = readPhotoshopHistoryStateRef(observationResult);
-                const observationDocumentInfo = observationResult?.documentInfo
-                    || observationResult?.data?.documentInfo;
                 const writeHistoryStateRef = layoutFinalWriteHistoryStateRef
                     || layoutStartHistoryStateRef;
-                // hierarchyAfter 是最后一次布局写入之后、自动截图之前的 Host 观察。
-                // 只有文档 ID 与 historyStateId 都相等，才能证明截图对应本次最终画布；
-                // 缺身份或期间用户切换/编辑文档一律不授予“写后复核”信用。
-                const verifiedSameDocumentVersion = observationCaptured
-                    && Boolean(layoutFinalWriteHistoryStateRef)
-                    && samePhotoshopHistoryStateRef(
-                        layoutFinalWriteHistoryStateRef,
-                        observationHistoryStateRef
-                    );
-                let observationIdentityError: string | undefined;
-                if (observationCaptured && !verifiedSameDocumentVersion) {
-                    if (!layoutFinalWriteHistoryStateRef) {
-                        observationIdentityError = '缺少最终写入后的 Host 文档版本，无法把快照绑定到本次布局';
-                    } else if (!observationHistoryStateRef) {
-                        observationIdentityError = '快照缺少 Host 文档版本，无法证明来自本次布局';
-                    } else {
-                        observationIdentityError = '布局写入后 Photoshop 文档或历史版本发生变化，快照不再对应本次最终写入';
-                    }
-                }
-                postWriteObservation = {
-                    toolName: suggestedObservation.toolName,
-                    params: suggestedObservation.params,
-                    captured: observationCaptured,
-                    historyStateRef: observationHistoryStateRef,
+                const capturedObservation = await captureBoundPostWriteObservation({
+                    region: suggestedObservationRegion,
+                    maxSize: 1600,
                     writeHistoryStateRef,
-                    documentInfo: observationDocumentInfo,
-                    verifiedSameDocumentVersion,
-                    error: observationCaptured
-                        ? observationIdentityError
-                        : String(observationResult?.error || 'getCanvasSnapshot 未返回可读取的画面')
-                };
-                if (observationCaptured) {
-                    postWriteSnapshot = snapshotPayload
-                        || {
-                            base64: observationBase64,
-                            format: observationResult?.format || observationResult?.data?.format
-                        };
-                }
-                if (!observationCaptured) {
+                    options
+                });
+                postWriteObservation = capturedObservation.observation;
+                postWriteSnapshot = capturedObservation.snapshot;
+                if (!postWriteObservation.captured) {
                     qualityFindings.push({
                         code: 'post_layout_visual_observation_missing',
                         severity: 'review',
@@ -3958,19 +4753,84 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                             reason: suggestedObservation.reason
                         }
                     });
-                } else if (!verifiedSameDocumentVersion) {
+                } else if (!postWriteObservation.verifiedSameDocumentVersion) {
                     qualityFindings.push({
                         code: 'post_layout_visual_identity_mismatch',
                         severity: 'repair',
                         closureKind: 'replan',
                         blockId: stageGroupName || 'renderLayout',
                         role: 'layout',
-                        message: `renderLayout 已取得像素，但不能证明它属于本次最终写入：${observationIdentityError}。`,
+                        message: `renderLayout 已取得像素，但不能证明它属于本次最终写入：${postWriteObservation.error}。`,
                         recommendedStrategies: [
                             '重新读取当前 Photoshop 文档与图层结构，确认活动文档',
                             '基于当前文档版本重新执行本阶段布局，再由 Harness 自动复核'
                         ]
                     });
+                }
+            }
+            let visualObservationBundle: VisualObservationBundle | undefined;
+            const visualObservationToolResults: Array<{
+                toolName: 'getCanvasSnapshot';
+                success: boolean;
+                result: Record<string, any>;
+            }> = [];
+            if (retainedCreatedLayerIds.length > 0
+                && isLongCanvas
+                && options.deferCompositeVisualObservation !== true) {
+                // 长页全页图只用于导航。按确定性裁切事实选取风险最高的少量图片区域，
+                // 让同一个 Agent 看清局部；排序不等于审美选择，也不会替模型决定是否保留裁切。
+                const reviewPlan = buildImagePlacementReviewPlan({
+                    receipts: imagePlacementReceipts,
+                    canvas: {
+                        width: Number(canvas.width),
+                        height: Number(canvas.height)
+                    }
+                });
+                if (reviewPlan.selectedTargets.length > 0) {
+                    const items = [];
+                    for (let index = 0; index < reviewPlan.selectedTargets.length; index += 1) {
+                        const reviewTarget = reviewPlan.selectedTargets[index];
+                        const receipt = reviewTarget.receipt;
+                        const capturedLocal = await captureBoundPostWriteObservation({
+                            region: reviewTarget.captureRegion,
+                            maxSize: 1400,
+                            writeHistoryStateRef: layoutFinalWriteHistoryStateRef,
+                            options,
+                            sourceKind: reviewTarget.sourceKind,
+                            sourceId: reviewTarget.sourceId
+                        });
+                        if (capturedLocal.sourceResult) {
+                            visualObservationToolResults.push({
+                                toolName: 'getCanvasSnapshot',
+                                success: capturedLocal.observation.captured,
+                                result: capturedLocal.sourceResult
+                            });
+                        }
+                        const image = readVisualObservationImagePayload(capturedLocal.snapshot);
+                        const captured = capturedLocal.observation.captured
+                            && capturedLocal.observation.verifiedSameDocumentVersion
+                            && Boolean(image);
+                        items.push({
+                            identity: {
+                                outer: 'renderLayout',
+                                resultPath: `$.visualObservationBundle.items[${index}]`,
+                                document: String(capturedLocal.observation.historyStateRef?.documentId || 'unknown'),
+                                history: String(capturedLocal.observation.historyStateRef?.historyStateId || 'unknown'),
+                                sourceKind: reviewTarget.sourceKind,
+                                sourceId: reviewTarget.sourceId
+                            },
+                            label: `图片区域「${String(receipt.blockId)}」裁切复核`,
+                            captured,
+                            ...(image ? { image } : {})
+                        });
+                    }
+                    visualObservationBundle = {
+                        version: VISUAL_OBSERVATION_BUNDLE_VERSION,
+                        expectedObservationCount: reviewPlan.expectedTargets.length,
+                        expectedTargets: reviewPlan.expectedTargets,
+                        items,
+                        ...(reviewPlan.overflow ? { overflow: reviewPlan.overflow } : {})
+                    };
                 }
             }
             const hasRepairFinding = qualityFindings.some((finding: any) => finding?.severity === 'repair');
@@ -3985,12 +4845,15 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 { historyStateRef: layoutStartHistoryStateRef },
                 { historyStateRef: layoutFinalWriteHistoryStateRef }
             );
+            const canReportStageStructure = Boolean(stageGroupId)
+                && (!hasStageReplacementTargets
+                    || stageSwapReceipt?.candidateStructureVerified === true);
             result = {
                 success: errors.length === 0,
                 status: qualityState === 'passed' ? 'completed' : qualityState,
                 qualityState,
                 continuationRequired: qualityState === 'needs_repair' || qualityState === 'needs_review',
-                requiresVisualReview: createdLayerIds.length > 0,
+                requiresVisualReview: retainedCreatedLayerIds.length > 0,
                 suggestedObservation,
                 postWriteObservation,
                 historyStateRef: postWriteObservation?.historyStateRef,
@@ -4000,12 +4863,20 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     : undefined,
                 // 保持 getCanvasSnapshot 的真实 payload 形状，让 Agent 现有视觉通道可直接提取图像。
                 snapshot: postWriteSnapshot,
+                visualObservationBundle,
+                observationDeferredToComposite: options.deferCompositeVisualObservation === true,
+                toolResults: visualObservationToolResults.length > 0
+                    ? visualObservationToolResults
+                    : undefined,
                 created,
-                createdLayerIds,
-                subjectLayerIds: subjectLayerIds.length > 0 ? subjectLayerIds : undefined,
+                createdLayerIds: retainedCreatedLayerIds,
+                subjectLayerIds: retainedSubjectLayerIds.length > 0
+                    ? retainedSubjectLayerIds
+                    : undefined,
                 imagePlacementReceipts: imagePlacementReceipts.length > 0 ? imagePlacementReceipts : undefined,
                 textFitReceipts: textFitReceipts.length > 0 ? textFitReceipts : undefined,
                 qualityFindings: qualityFindings.length > 0 ? qualityFindings : undefined,
+                cleanupFailures: cleanupFailures.length > 0 ? cleanupFailures : undefined,
                 errors,
                 warnings,
                 // 本次生效的栅格与刻度：让模型看见自己实际吃到的版心、列数与可选间距档位，
@@ -4013,15 +4884,15 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 grid: solveOutcome.grid,
                 occlusionFindings: occlusionFindings.length > 0 ? occlusionFindings : undefined,
                 stageGroupName: stageGroupName || undefined,
-                layerStructureReceipt: stageGroupId
+                layerStructureReceipt: canReportStageStructure
                     ? {
                         version: 'render-layout-layer-structure/v1',
-                        groupName: stageGroupName,
+                        groupName: stageCandidatePromoted
+                            ? stageGroupName
+                            : stageCandidateGroupName,
                         groupId: stageGroupId,
                         subgroupIds: stageSubgroupIds,
-                        ownedLayerIds: ownedLayers
-                            .map((entry: any) => Number(entry?.layerId))
-                            .filter((layerId: number) => Number.isInteger(layerId) && layerId > 0),
+                        ownedLayerIds: validatedOwnedLayers.map((entry) => entry.layerId),
                         semanticNamesRequired: true,
                         verifiedBy: 'getLayerHierarchy'
                     }
@@ -4033,6 +4904,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         ? { x: 0, y: screenRegion.y, width: Number(canvas.width), height: screenRegion.height }
                         : undefined
                 },
+                stageSwapReceipt,
                 stageRefreshActions: stageRefreshActions.length > 0 ? stageRefreshActions : undefined,
                 stagePlan: params.stagePlan || undefined,
                 stagePlanValidation: stagePlanValidation || undefined,
@@ -4048,7 +4920,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     + `${qualityFindings.length ? `，${qualityFindings.length} 个质量发现` : ''}`
                     + `${warnings.length ? `；${warnings.join('；')}` : ''}`
             };
-            if (createdLayerIds.length > 0) executedToolsInSession.push('renderLayout');
+            if (retainedCreatedLayerIds.length > 0) executedToolsInSession.push('renderLayout');
             // ToolLogger 只保留结构化收据；真实像素仍随返回值进入 Agent 视觉通道，
             // 避免同一张 base64 同时在内部截图日志和 renderLayout 日志中重复常驻内存。
             const resultForToolLog = postWriteSnapshot
@@ -4267,6 +5139,88 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                     ? geometryVerification.warnings
                     : [])
             ];
+            const fitWriteHistoryStateRef = readPhotoshopHistoryStateRef(postLayerBoundsResult)
+                || alignMutationProof?.after;
+            const targetRegion = params.targetRegion as {
+                x: number;
+                y: number;
+                width: number;
+                height: number;
+            };
+            const documentWidth = Number(docInfo?.width);
+            const documentHeight = Number(docInfo?.height);
+            const observationPadding = Math.max(
+                16,
+                Math.round(Math.min(targetRegion.width, targetRegion.height) * 0.04)
+            );
+            const observationX = Math.max(0, Math.floor(targetRegion.x - observationPadding));
+            const observationY = Math.max(0, Math.floor(targetRegion.y - observationPadding));
+            const observationRight = Number.isFinite(documentWidth) && documentWidth > 0
+                ? Math.min(documentWidth, Math.ceil(targetRegion.x + targetRegion.width + observationPadding))
+                : Math.ceil(targetRegion.x + targetRegion.width + observationPadding);
+            const observationBottom = Number.isFinite(documentHeight) && documentHeight > 0
+                ? Math.min(documentHeight, Math.ceil(targetRegion.y + targetRegion.height + observationPadding))
+                : Math.ceil(targetRegion.y + targetRegion.height + observationPadding);
+            let capturedFitObservation: BoundPostWriteObservationResult | undefined;
+            let fitVisualObservationBundle: VisualObservationBundle | undefined;
+            if (options.deferCompositeVisualObservation !== true) {
+                capturedFitObservation = await captureBoundPostWriteObservation({
+                    region: {
+                        x: observationX,
+                        y: observationY,
+                        width: Math.max(1, observationRight - observationX),
+                        height: Math.max(1, observationBottom - observationY)
+                    },
+                    maxSize: 1400,
+                    writeHistoryStateRef: fitWriteHistoryStateRef,
+                    options,
+                    sourceKind: 'subject-fit-region',
+                    sourceId: `layer:${fitLayerId}`
+                });
+                const fitObservationImage = readVisualObservationImagePayload(
+                    capturedFitObservation.snapshot
+                );
+                const fitObservationCaptured = capturedFitObservation.observation.captured
+                    && capturedFitObservation.observation.verifiedSameDocumentVersion
+                    && Boolean(fitObservationImage);
+                fitVisualObservationBundle = {
+                    version: VISUAL_OBSERVATION_BUNDLE_VERSION,
+                    expectedObservationCount: 1,
+                    expectedTargets: [{
+                        sourceKind: 'subject-fit-region',
+                        sourceId: `layer:${fitLayerId}`
+                    }],
+                    items: [{
+                        identity: {
+                            outer: 'fitLayerSubjectToRegion',
+                            resultPath: '$.visualObservationBundle.items[0]',
+                            document: String(
+                                capturedFitObservation.observation.historyStateRef?.documentId || 'unknown'
+                            ),
+                            history: String(
+                                capturedFitObservation.observation.historyStateRef?.historyStateId || 'unknown'
+                            ),
+                            sourceKind: 'subject-fit-region',
+                            sourceId: `layer:${fitLayerId}`
+                        },
+                        label: `图层 ${fitLayerId} 主体调整后画面`,
+                        captured: fitObservationCaptured,
+                        ...(fitObservationImage ? { image: fitObservationImage } : {})
+                    }]
+                };
+                if (!capturedFitObservation.observation.captured
+                    || !capturedFitObservation.observation.verifiedSameDocumentVersion) {
+                    combinedWarnings.push(
+                        `主体调整后的局部画面未完成同版本绑定：${capturedFitObservation.observation.error || '未知原因'}`
+                    );
+                }
+            }
+            let fitQualityState: 'passed' | 'needs_review' | 'needs_repair' = 'passed';
+            if (geometryVerification.status === 'failed') {
+                fitQualityState = 'needs_repair';
+            } else if (geometryVerification.status === 'needs_review') {
+                fitQualityState = 'needs_review';
+            }
             result = {
                 success: true,
                 methodUsed,
@@ -4289,6 +5243,18 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 subjectAfter: actualSubjectBounds,
                 frameAfter: actualFrameBounds,
                 geometryVerification,
+                qualityState: fitQualityState,
+                continuationRequired: fitQualityState !== 'passed',
+                postWriteObservation: capturedFitObservation?.observation,
+                snapshot: capturedFitObservation?.snapshot,
+                visualObservationBundle: fitVisualObservationBundle,
+                toolResults: capturedFitObservation?.sourceResult
+                    ? [{
+                        toolName: 'getCanvasSnapshot',
+                        success: capturedFitObservation.observation.captured,
+                        result: capturedFitObservation.sourceResult
+                    }]
+                    : undefined,
                 newBounds: alignResult?.newBounds,
                 warnings: combinedWarnings,
                 ...(alignMutationCommit
@@ -4309,7 +5275,7 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                         }
                     }
                     : {}),
-                message: `已按主体感知缩放对齐并完成同 layerId 几何读回：缩放 ${fitPlan.alignParams.scalePercent}%，目标占比 ${fitPlan.resolved.subjectFillRatio}，锚点 ${fitPlan.resolved.anchor}（主体检测 ${methodUsed}；几何状态 ${geometryVerification.status}）${combinedWarnings.length ? `；${combinedWarnings.join('；')}` : ''}。几何通过不等于审美通过；只需再观察一次真实画面，必要时做一次有依据的修订。`
+                message: `已按主体感知缩放对齐并完成同 layerId 几何读回：缩放 ${fitPlan.alignParams.scalePercent}%，目标占比 ${fitPlan.resolved.subjectFillRatio}，锚点 ${fitPlan.resolved.anchor}（主体检测 ${methodUsed}；几何状态 ${geometryVerification.status}）${combinedWarnings.length ? `；${combinedWarnings.join('；')}` : ''}。${capturedFitObservation ? '已随结果返回当前版本的局部真实画面；' : '外层复合布局将在全部写入结束后统一返回最终画面；'}几何通过不等于审美通过，由 Agent 看图决定保留或有依据地修订。`
             };
             executedToolsInSession.push(toolName);
             toolLogger.logToolCall(toolName, params, result, Date.now() - startTime, currentRound);
@@ -4544,13 +5510,15 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
             if (toolName === 'quickExport' && hasValue(params?.outputPath) && isExplicitRasterFilePath(params.outputPath)) {
                 const requestedPath = String(params.outputPath).trim();
                 const requestedFormat = normalizeNoDialogSaveFormat(params?.format || requestedPath);
-                const saveParams: Record<string, any> = {
-                    path: requestedPath,
-                    format: requestedFormat === 'jpeg' ? 'jpg' : requestedFormat
-                };
-                if (hasValue(params?.quality)) {
-                    saveParams.quality = params.quality;
-                }
+                const saveParams = preserveJpegQualityAcrossToolRedirect({
+                    sourceTool: 'quickExport',
+                    targetFormat: requestedFormat,
+                    requestedQuality: params?.quality,
+                    redirectedParams: {
+                        path: requestedPath,
+                        format: requestedFormat === 'jpeg' ? 'jpg' : requestedFormat
+                    }
+                });
                 const saveResult = await sendToPluginWithCancellation(
                     'saveDocument',
                     saveParams,
@@ -4638,13 +5606,15 @@ const executeToolCallImpl = async (toolName: string, params: any, options: ToolC
                 if (toolName === 'saveDocument'
                     && (requestedFormat === 'png' || requestedFormat === 'jpg')
                     && params?.conflictPolicy !== 'fail_if_exists') {
-                    const exportParams: Record<string, any> = {
-                        outputPath: saveRoot.directory,
-                        format: requestedFormat
-                    };
-                    if (hasValue(quality)) {
-                        exportParams.quality = quality;
-                    }
+                    const exportParams = preserveJpegQualityAcrossToolRedirect({
+                        sourceTool: 'saveDocument',
+                        targetFormat: requestedFormat,
+                        requestedQuality: quality,
+                        redirectedParams: {
+                            outputPath: saveRoot.directory,
+                            format: requestedFormat
+                        }
+                    });
                     const exportResult = await sendToPluginWithCancellation(
                         'quickExport',
                         exportParams,
@@ -5149,14 +6119,49 @@ async function recordToolExecution(toolName: string, params: any, result: any) {
     }
 }
 
+type PreparedProjectContactSheetCandidate = {
+    path: string;
+    relativePath?: string;
+    labelHint?: string;
+    role?: string;
+    folderType?: string;
+    imageType?: string;
+};
+
+function buildCandidateSetObservationSourceId(
+    prefix: string,
+    imageData: string,
+    items: Array<{
+        id?: unknown;
+        path?: unknown;
+        relativePath?: unknown;
+        status?: unknown;
+    }> | undefined
+): string {
+    const sourceManifest = (items || []).map((item) => ({
+        id: String(item.id || ''),
+        path: String(item.path || ''),
+        relativePath: String(item.relativePath || ''),
+        status: String(item.status || '')
+    }));
+    const observationIdentity = JSON.stringify({
+        imageHash: sha256Hex(imageData),
+        sourceManifest
+    });
+    return `${prefix}:${sha256Hex(observationIdentity).slice(0, 24)}`;
+}
+
+function normalizeProjectContactSheetMaxImages(value: unknown): number {
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numeric)) return 40;
+    return Math.max(1, Math.min(80, Math.round(numeric)));
+}
+
 async function prepareProjectContactSheetInput(params: any, designEcho: any): Promise<{
     projectDir?: string;
-    images: Array<{
-        path: string;
-        relativePath?: string;
-        labelHint?: string;
-        role?: string;
-    }>;
+    images: PreparedProjectContactSheetCandidate[];
+    maxImages: number;
+    candidateCoverage: ProjectContactSheetCandidateCoverage;
 }> {
     let projectDir = params.projectPath || params.directory;
     const currentProject = useAppStore.getState().currentProject;
@@ -5169,8 +6174,23 @@ async function prepareProjectContactSheetInput(params: any, designEcho: any): Pr
         await designEcho.setProjectRoot?.(currentProject.path);
     }
 
-    let images = Array.isArray(params.images) ? params.images : [];
-    if (images.length === 0) {
+    const providedImages = Array.isArray(params.images) ? params.images : [];
+    const universeScope: ProjectContactSheetCandidateCoverage['universeScope'] = providedImages.length > 0
+        ? 'provided_candidates'
+        : 'project_scan';
+    let candidateUniverse: PreparedProjectContactSheetCandidate[];
+    if (providedImages.length > 0) {
+        candidateUniverse = providedImages
+            .map((image: any) => ({
+                path: String(image?.path || '').trim(),
+                relativePath: String(image?.relativePath || '').trim() || undefined,
+                labelHint: String(image?.labelHint || image?.name || '').trim() || undefined,
+                role: String(image?.role || '').trim() || undefined,
+                folderType: String(image?.folderType || image?.role || '').trim() || undefined,
+                imageType: String(image?.imageType || '').trim() || undefined
+            }))
+            .filter((image: PreparedProjectContactSheetCandidate) => Boolean(image.path));
+    } else {
         const scan = await designEcho.scanDirectory(projectDir || currentProject?.path, {
             recursive: true,
             includeDesignFiles: false,
@@ -5179,29 +6199,128 @@ async function prepareProjectContactSheetInput(params: any, designEcho: any): Pr
         });
         const scannedImages = (scan?.files || [])
             .filter((file: any) => file?.type === 'image' && file?.path);
-        images = selectDiverseProjectVisualCandidates(
-            scannedImages.map((file: any) => {
-                const relativePath = String(file.relativePath || file.name || '').replace(/\\/g, '/');
-                const segments = relativePath.split('/').filter(Boolean);
-                return {
-                    file,
-                    path: file.path,
-                    relativePath,
-                    folderType: segments.length > 1 ? segments[segments.length - 2] : undefined,
-                    imageType: file.imageType
-                };
-            }),
-            params.maxImages || 40
-        )
-            .map((file: any) => ({
-                path: file.file.path,
-                relativePath: file.relativePath || file.file.relativePath || file.file.name,
-                labelHint: file.file.name,
-                role: file.folderType
-            }));
+        candidateUniverse = scannedImages.map((file: any) => {
+            const relativePath = String(file.relativePath || file.name || '').replace(/\\/g, '/');
+            const segments = relativePath.split('/').filter(Boolean);
+            return {
+                path: file.path,
+                relativePath,
+                labelHint: file.name,
+                role: segments.length > 1 ? segments[segments.length - 2] : undefined,
+                folderType: segments.length > 1 ? segments[segments.length - 2] : undefined,
+                imageType: file.imageType
+            };
+        });
     }
 
-    return { projectDir, images };
+    const uniqueCandidates = selectDiverseProjectVisualCandidates(
+        candidateUniverse,
+        candidateUniverse.length
+    );
+    const maxImages = normalizeProjectContactSheetMaxImages(params.maxImages);
+    const images = selectDiverseProjectVisualCandidates(uniqueCandidates, maxImages);
+    const candidateCoverage = buildProjectContactSheetCandidateCoverage({
+        candidateUniverseCount: uniqueCandidates.length,
+        attemptedCandidateCount: images.length,
+        displayedCandidateCount: images.length,
+        universeScope
+    });
+
+    return { projectDir, images, maxImages, candidateCoverage };
+}
+
+function formatProjectContactSheetCandidateCoverage(
+    coverage: ProjectContactSheetCandidateCoverage
+): string {
+    const scope = coverage.universeScope === 'project_scan' ? '项目扫描候选' : '调用方提供候选';
+    let status = '跨度抽样';
+    if (coverage.failedRenderCount > 0) {
+        status = '渲染不完整';
+    } else if (coverage.status === 'complete') {
+        status = '完整展示';
+    }
+    return `${scope}共 ${coverage.candidateUniverseCount} 张，选入渲染 ${coverage.attemptedCandidateCount} 张、成功展示 ${coverage.displayedCandidateCount} 张、渲染失败 ${coverage.failedRenderCount} 张、未展示 ${coverage.omittedCandidateCount} 张（${status}）；抽样不排序，也不指定最终素材。`;
+}
+
+async function loadEagleReferencePixelsForCallingAgent(
+    designEcho: any,
+    itemId: string
+): Promise<Record<string, any>> {
+    const eaglePreview = await Promise.resolve().then(() => designEcho.invoke(
+        'designKnowledge:getEagleReferenceImageForEvaluation',
+        { itemId }
+    )).catch((error: unknown) => ({
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+    }));
+    const previewImageData = String(eaglePreview?.imageData || '')
+        .replace(/^data:image\/[a-z0-9.+-]+;base64,/iu, '')
+        .replace(/\s+/gu, '');
+    if (eaglePreview?.success !== true || previewImageData.length === 0) {
+        return {
+            success: false,
+            status: 'unavailable',
+            item: { id: itemId },
+            error: sanitizeUserVisibleDiagnosticText(
+                eaglePreview?.error || 'Eagle 参考预览没有返回可用像素。'
+            ),
+            referencePixelObservation: {
+                status: 'unavailable',
+                localPathRedacted: true
+            },
+            visualObservationHandoff: {
+                owner: 'calling_agent',
+                status: 'pixels_unavailable',
+                sourceKind: 'reference'
+            },
+            boundaries: {
+                readonly: true,
+                localPathRedacted: true,
+                rawImageRedacted: true,
+                doesNotWriteEagle: true,
+                doesNotRunPhotoshop: true
+            }
+        };
+    }
+
+    const sourceName = String(eaglePreview?.item?.title || itemId);
+    return {
+        success: true,
+        status: 'ok',
+        item: {
+            id: String(eaglePreview?.item?.id || itemId),
+            title: sourceName
+        },
+        image: {
+            imageData: previewImageData,
+            mediaType: 'image/jpeg',
+            sourceId: `eagle:${itemId}`,
+            sourceKind: 'reference',
+            sourceName
+        },
+        referencePixelObservation: {
+            status: 'attached_to_primary_agent',
+            sourceId: `eagle:${itemId}`,
+            localPathRedacted: true,
+            originalFileBytesRedacted: true
+        },
+        visualObservationHandoff: {
+            owner: 'calling_agent',
+            status: 'pixels_attached',
+            sourceKind: 'reference'
+        },
+        boundaries: {
+            readonly: true,
+            localPathRedacted: true,
+            rawImageRedacted: true,
+            doesNotWriteEagle: true,
+            doesNotRunPhotoshop: true,
+            agentPreviewAttached: true,
+            agentPreviewIsDerivedJpeg: true,
+            agentPreviewDoesNotPersist: true
+        },
+        summary: '已将这条 Eagle 参考的去路径预览交给当前多模态 Agent 直接观察；Tool 内未重复调用视觉模型。'
+    };
 }
 
 /**
@@ -5321,28 +6440,89 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
                     columns: params.columns,
                     tileWidth: params.tileWidth,
                     tileHeight: params.tileHeight,
-                    maxImages: params.maxImages
+                    maxImages: prepared.maxImages
                 });
+                const candidateCoverage = reconcileProjectContactSheetCandidateCoverage({
+                    plannedCoverage: prepared.candidateCoverage,
+                    renderedItems: result?.items,
+                    sheetAvailable: result?.success === true && Boolean(result?.sheet?.imageData)
+                });
+                const coverageSummary = formatProjectContactSheetCandidateCoverage(
+                    candidateCoverage
+                );
 
                 return {
                     ...(result || { success: false, items: [], warnings: [], limitations: [] }),
+                    candidateCoverage,
                     summary: result?.success
-                        ? `已生成项目素材总览：${result.items?.length || 0} 张图片，编号 ${result.items?.[0]?.id || 'A01'} 起。`
-                        : (result?.error || '项目素材总览生成失败。')
+                        ? `已生成项目素材总览：${candidateCoverage.displayedCandidateCount} 张图片成功渲染，编号 ${result.items?.find((item: any) => item?.status === 'rendered')?.id || 'A01'} 起；${coverageSummary}`
+                        : `${result?.error || '项目素材总览生成失败。'}；${coverageSummary}`
                 };
             }
 
             case 'analyzeProjectContactSheetOverview': {
                 const prepared = await prepareProjectContactSheetInput(params, designEcho);
+                if (options.visualConsumptionOwner === 'calling_agent') {
+                    const contactSheet = await designEcho.createProjectContactSheetOverview?.({
+                        projectPath: prepared.projectDir,
+                        images: prepared.images,
+                        columns: params.columns,
+                        tileWidth: params.tileWidth,
+                        tileHeight: params.tileHeight,
+                        maxImages: prepared.maxImages
+                    });
+                    const candidateCoverage = reconcileProjectContactSheetCandidateCoverage({
+                        plannedCoverage: prepared.candidateCoverage,
+                        renderedItems: contactSheet?.items,
+                        sheetAvailable: contactSheet?.success === true
+                            && Boolean(contactSheet?.sheet?.imageData)
+                    });
+                    const sheet = contactSheet?.sheet;
+                    const presentationSheet = sheet?.imageData
+                        ? {
+                            ...sheet,
+                            sourceKind: 'candidate_set',
+                            sourceId: buildCandidateSetObservationSourceId(
+                                'project-contact-sheet',
+                                sheet.imageData,
+                                contactSheet?.items
+                            ),
+                            sourceName: '项目素材候选联系表'
+                        }
+                        : undefined;
+                    const contactSheetMetadata = contactSheet && typeof contactSheet === 'object'
+                        ? { ...contactSheet, sheet: undefined }
+                        : { success: false, items: [], warnings: [], limitations: [] };
+                    return {
+                        success: contactSheet?.success === true && Boolean(presentationSheet?.imageData),
+                        contactSheet: contactSheetMetadata,
+                        ...(presentationSheet ? { sheet: presentationSheet } : {}),
+                        candidateCoverage,
+                        visualObservationHandoff: {
+                            owner: 'calling_agent',
+                            status: presentationSheet?.imageData ? 'pixels_attached' : 'pixels_unavailable',
+                            sourceKind: 'candidate_set'
+                        },
+                        summary: presentationSheet?.imageData
+                            ? `已将项目素材总览交给当前多模态 Agent 直接观察：${candidateCoverage.displayedCandidateCount} 张图片成功渲染；Tool 内未重复调用视觉模型。${formatProjectContactSheetCandidateCoverage(candidateCoverage)}`
+                            : `${contactSheet?.error || '项目素材总览生成失败。'}；${formatProjectContactSheetCandidateCoverage(candidateCoverage)}`
+                    };
+                }
                 const result = await designEcho.analyzeProjectContactSheetOverview?.({
                     projectPath: prepared.projectDir,
                     images: prepared.images,
                     columns: params.columns,
                     tileWidth: params.tileWidth,
                     tileHeight: params.tileHeight,
-                    maxImages: params.maxImages,
+                    maxImages: prepared.maxImages,
                     focus: params.focus,
                     userIntent: params.userIntent || params.requirement || params.query
+                });
+                const candidateCoverage = reconcileProjectContactSheetCandidateCoverage({
+                    plannedCoverage: prepared.candidateCoverage,
+                    renderedItems: result?.contactSheet?.items,
+                    sheetAvailable: result?.contactSheet?.success === true
+                        && Boolean(result?.contactSheet?.sheet?.imageData)
                 });
                 const inventory = result?.observation?.visualInventory;
                 const inventorySummary = inventory
@@ -5351,12 +6531,10 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
 
                 return {
                     ...(result || { success: false, warnings: [], limitations: [] }),
-                    // 主进程的真实结果把像素放在 contactSheet.sheet。提升到受控顶层容器，
-                    // 让同一个主 Agent 直接看到编号总览，而不是只收到内部视觉调用的文字转述。
-                    ...(result?.contactSheet?.sheet ? { sheet: result.contactSheet.sheet } : {}),
+                    candidateCoverage,
                     summary: result?.success
-                        ? `已完成项目素材总览观察：${result.contactSheet?.items?.length || 0} 张图片；${inventorySummary}`
-                        : (result?.error || '项目素材总览观察失败。')
+                        ? `已完成项目素材总览观察：${candidateCoverage.displayedCandidateCount} 张图片成功渲染；${inventorySummary}${formatProjectContactSheetCandidateCoverage(candidateCoverage)}`
+                        : `${result?.error || '项目素材总览观察失败。'}；${formatProjectContactSheetCandidateCoverage(candidateCoverage)}`
                 };
             }
 
@@ -5533,15 +6711,46 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
                 // describeImage 与 analyzeAssetContent 功能一致，参数名不同
                 return await window.designEcho.invoke('resource:analyzeAsset', params.filePath || params.imagePath || params.path || '');
 
-            case 'recommendAssets':
-                return await window.designEcho.invoke('resource:recommendAssets', {
+            case 'recommendAssets': {
+                const result = await window.designEcho.invoke('resource:recommendAssets', {
                     requirement: params.requirement || params.query || '',
                     maxResults: params.maxResults || 5,
                     category: params.category,
                     designRole: params.designRole,
                     placementIntent: params.placementIntent,
-                    deterministic: params.deterministic === true
+                    deterministic: params.deterministic === true,
+                    ...(options.visualConsumptionOwner === 'calling_agent'
+                        ? { visualConsumptionOwner: 'calling_agent' as const }
+                        : {})
                 });
+                if (options.visualConsumptionOwner !== 'calling_agent') return result;
+
+                const sheet = result?.sheet;
+                const presentationSheet = sheet?.imageData
+                    ? {
+                        ...sheet,
+                        sourceKind: 'candidate_set',
+                        sourceId: buildCandidateSetObservationSourceId(
+                            'asset-shortlist',
+                            sheet.imageData,
+                            result?.comparisonItems
+                        ),
+                        sourceName: '素材候选联系表'
+                    }
+                    : undefined;
+                return {
+                    ...result,
+                    ...(presentationSheet ? { sheet: presentationSheet } : {}),
+                    visualObservationHandoff: {
+                        owner: 'calling_agent',
+                        status: presentationSheet?.imageData ? 'pixels_attached' : 'pixels_unavailable',
+                        sourceKind: 'candidate_set'
+                    },
+                    summary: presentationSheet?.imageData
+                        ? `候选联系表已交给当前多模态 Agent 直接比较；内部模型调用为 0。请按 A 编号与 comparisonItems 的路径绑定你自己的选图判断，不要把 metadata 排序当成视觉结论。`
+                        : '候选联系表生成失败或没有可用像素；当前只返回 metadata-only 候选，不能据此自动置入。'
+                };
+            }
 
             case 'measureReferenceComposition':
                 return await window.designEcho.invoke('resource:measureComposition', params.imagePath || params.path || '');
@@ -5876,7 +7085,29 @@ async function executeResourceTool(toolName: string, params: any, options: ToolC
                             .catch(() => undefined);
                     }
                 }
-                return eagleAnalysis;
+                if (eagleAnalysis?.success !== true
+                    || options.visualConsumptionOwner !== 'calling_agent') {
+                    return eagleAnalysis;
+                }
+                // R2 目前仍以结构化 observation 作为 Reference Brief 的可验证来源；在
+                // primary semantic sidecar 落地前，顶层 Agent 同时取得真实像素以维持终审
+                // 对照证据。这里只保留既有质量语义，不把该路径计入本轮单消费者提速收益。
+                const primaryPixelResult = await loadEagleReferencePixelsForCallingAgent(
+                    designEcho,
+                    itemId
+                );
+                const previewAttached = primaryPixelResult.success === true
+                    && Boolean(primaryPixelResult.image?.imageData);
+                return {
+                    ...eagleAnalysis,
+                    ...(previewAttached ? { image: primaryPixelResult.image } : {}),
+                    referencePixelObservation: primaryPixelResult.referencePixelObservation,
+                    boundaries: {
+                        ...(eagleAnalysis?.boundaries || {}),
+                        ...(primaryPixelResult.boundaries || {}),
+                        agentPreviewAttached: previewAttached
+                    }
+                };
             }
 
             case 'getDesignKnowledge': {

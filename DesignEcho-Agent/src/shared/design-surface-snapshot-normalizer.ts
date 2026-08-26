@@ -30,6 +30,7 @@
  *   （理解优于硬编码：主体身份应由素材角色判断，而非几何猜测）。
  */
 
+import type { AcceptanceSnapshot } from './acceptance/photoshop-acceptance';
 import type {
     DesignSurfaceSnapshot,
     SurfaceLayer,
@@ -64,6 +65,22 @@ interface DesignSurfaceToolResultEntry {
     name?: string;
     arguments?: unknown;
     result?: any;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Agent 的直接工具调用返回裸 AcceptanceSnapshot；通用工具执行器的验收包装则返回
+ * `{ success, snapshot }`。两者来自同一个 Host 事实 owner，消费侧必须在这里统一解包，
+ * 不能让 Final Judge 因 transport 包装差异把同一份结构证据判成缺失。
+ */
+function readAcceptanceSnapshotResult(value: unknown): AcceptanceSnapshot | undefined {
+    if (!isRecord(value)) return undefined;
+    const candidate = isRecord(value.snapshot) ? value.snapshot : value;
+    if (candidate.success === false) return undefined;
+    return candidate as unknown as AcceptanceSnapshot;
 }
 
 function hasExplicitRootLayerScope(value: unknown): boolean {
@@ -261,9 +278,42 @@ export function extractDesignSurfaceSnapshotFromToolResults(
         return undefined;
     };
 
-    const documentInfo = latestSuccess('getDocumentInfo');
-    const layerHierarchy = latestSuccess('getLayerHierarchy');
-    const textLayers = latestSuccess('getAllTextLayers');
+    const acceptanceSnapshot = readAcceptanceSnapshotResult(
+        latestSuccess('getAcceptanceSnapshot')
+    );
+    const acceptanceLayers = Array.isArray(acceptanceSnapshot?.layers)
+        ? acceptanceSnapshot.layers
+        : [];
+    const documentInfo = acceptanceSnapshot
+        ? {
+            success: acceptanceSnapshot.success,
+            document: acceptanceSnapshot.document
+        }
+        : latestSuccess('getDocumentInfo');
+    const layerHierarchy = acceptanceSnapshot
+        ? {
+            success: acceptanceSnapshot.success,
+            flatList: acceptanceLayers.map((layer) => ({
+                id: layer.id,
+                name: layer.name,
+                kind: layer.kind,
+                visible: layer.visible,
+                bounds: layer.boundsNoEffects || layer.bounds
+            }))
+        }
+        : latestSuccess('getLayerHierarchy');
+    const textLayers = acceptanceSnapshot
+        ? {
+            success: acceptanceSnapshot.success,
+            layers: acceptanceLayers
+                .filter((layer) => String(layer.kind || '').toLowerCase() === 'text')
+                .map((layer) => ({
+                    id: layer.id,
+                    bounds: layer.boundsNoEffects || layer.bounds,
+                    style: { fontSize: layer.text?.style?.fontSize }
+                }))
+        }
+        : latestSuccess('getAllTextLayers');
 
     if (!documentInfo && !layerHierarchy) return null;
 
@@ -297,8 +347,13 @@ export function extractDesignSurfaceSnapshotFromToolResults(
     });
 }
 
-/** 参与测量快照的结构读工具（getDocumentInfo / getLayerHierarchy / getAllTextLayers）。 */
-const STRUCTURAL_READ_TOOL_NAMES = new Set(['getDocumentInfo', 'getLayerHierarchy', 'getAllTextLayers']);
+/** 参与测量快照的结构读工具；AcceptanceSnapshot 是完整终审事实包。 */
+const STRUCTURAL_READ_TOOL_NAMES = new Set([
+    'getDocumentInfo',
+    'getLayerHierarchy',
+    'getAllTextLayers',
+    'getAcceptanceSnapshot'
+]);
 
 /**
  * 测量新鲜度门禁：结构读结果必须出现在最后一次成功写操作之后才可用于测量。
@@ -373,16 +428,24 @@ export function extractFreshDesignSurfaceSnapshotFromToolResults(
         ? fullDocumentScoped.filter((entry) => {
             const name = String(entry?.name || '').trim();
             if (!STRUCTURAL_READ_TOOL_NAMES.has(name)) return true;
+            const structuralResult = name === 'getAcceptanceSnapshot'
+                ? readAcceptanceSnapshotResult(entry?.result)
+                : entry?.result;
             return samePhotoshopHistoryStateRef(
-                readPhotoshopHistoryStateRef(entry?.result),
+                readPhotoshopHistoryStateRef(structuralResult),
                 requiredHistoryStateRef
             );
         })
         : fullDocumentScoped;
-    const hasFreshLayerStructure = gated.some((entry) =>
-        String(entry?.name || '').trim() === 'getLayerHierarchy'
-        && entry?.result
-        && entry.result.success !== false);
+    const hasFreshLayerStructure = gated.some((entry) => {
+        const name = String(entry?.name || '').trim();
+        if (name === 'getAcceptanceSnapshot') {
+            return Boolean(readAcceptanceSnapshotResult(entry?.result));
+        }
+        return name === 'getLayerHierarchy'
+            && entry?.result
+            && entry.result.success !== false;
+    });
     if (!hasFreshLayerStructure) return null;
     return extractDesignSurfaceSnapshotFromToolResults(gated, options);
 }

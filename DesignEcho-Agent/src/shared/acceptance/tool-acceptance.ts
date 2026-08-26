@@ -1195,6 +1195,7 @@ function buildPlaceImageAssertion(
             idPrefix: 'placeImage',
             label: '置入图片',
             params,
+            result,
             layerId: layer.id,
             bounds,
             scope: target.scope
@@ -1302,6 +1303,7 @@ function buildTransformLayerAssertion(
         idPrefix: 'transformLayer',
         label: '变换图层',
         params,
+        result,
         layerId,
         bounds: getLayerBoundsForAssertion(afterLayer),
         scope: `layer id: ${layerId}`
@@ -3040,19 +3042,22 @@ function resolveTargetFitParam(params: any): 'contain' | 'cover' | 'fill' {
  * targetBounds 尺寸/落位确定性断言（placeImage 与 transformLayer 共用）。
  * 与执行端 fitLayerToTargetBounds 的几何契约一一对应：
  * - fill：结果 bounds 与目标框位置、尺寸都一致；
- * - contain：等比缩放后完整位于目标框内、至少一边贴齐目标框、中心与目标框中心一致；
- * - cover：等比缩放后铺满目标框、至少一边贴齐目标框、中心与目标框中心一致。
+ * - contain：等比缩放后完整位于目标框内、至少一边贴齐目标框；
+ * - cover：等比缩放后铺满目标框、至少一边贴齐目标框；
+ * - 无 focalPoint 时按 targetAnchor 验证图框对齐；有 focalPoint 时验证关注点仍落在目标框内，
+ *   精确夹紧事实由 UXP placement receipt 给出。
  * 容差统一为 max(2px, 1%)。
  */
 function buildTargetBoundsFitAssertion(input: {
     idPrefix: string;
     label: string;
     params: any;
+    result?: any;
     layerId: number;
     bounds: AcceptanceBounds | undefined;
     scope: string;
 }): ToolAcceptanceAssertion | null {
-    const { idPrefix, label, params, layerId, bounds, scope } = input;
+    const { idPrefix, label, params, result, layerId, bounds, scope } = input;
     if (!params || params.targetBounds == null) return null;
 
     const assertionId = `${idPrefix}.targetBounds`;
@@ -3085,6 +3090,59 @@ function buildTargetBoundsFitAssertion(input: {
             scope,
             affectedLayerIds: [layerId],
             warnings: ['layer bounds unavailable in acceptance snapshot; targetBounds size cannot be verified']
+        };
+    }
+
+    const placementReceipt = result?.placement || result?.data?.placement;
+    const geometryVerification = placementReceipt?.geometryVerification;
+    if (geometryVerification?.verified === false) {
+        const issues = Array.isArray(geometryVerification.issues)
+            ? geometryVerification.issues.map((item: unknown) => String(item)).filter(Boolean)
+            : [];
+        return {
+            id: assertionId,
+            label: assertionLabel,
+            status: 'failed',
+            summary: `${label}目标区域验收失败：UXP 写后几何收据未通过${issues.length ? `，${issues.join('；')}` : ''}。`,
+            expected: `placement.geometryVerification.verified=true（fit=${fit}）`,
+            actual: `verified=false${issues.length ? `；${issues.join('；')}` : ''}`,
+            scope,
+            affectedLayerIds: [layerId],
+            warnings: ['UXP placement receipt reported a geometry mismatch']
+        };
+    }
+    const usesAdvancedAlignment = Boolean(params?.focalPoint)
+        || ['top-center', 'bottom-center', 'left-center', 'right-center'].includes(
+            String(params?.targetAnchor || '')
+        );
+    if (usesAdvancedAlignment && geometryVerification?.verified !== true) {
+        return {
+            id: assertionId,
+            label: assertionLabel,
+            status: 'needs_review',
+            summary: `${label}目标区域验收需复核：请求使用了锚点或关注点，但结果缺少 UXP 写后 geometryVerification，不能证明该语义已执行。`,
+            expected: '带 verified=true 的 UXP placement 几何收据',
+            actual: 'placement geometry receipt unavailable',
+            scope,
+            affectedLayerIds: [layerId],
+            warnings: ['advanced target alignment requires a verified UXP placement receipt']
+        };
+    }
+    if (params?.focalPoint && placementReceipt?.focalPointClamped === true) {
+        const focalDeviationPx = Number(placementReceipt?.focalDeviationPx);
+        const deviationSummary = Number.isFinite(focalDeviationPx)
+            ? `${roundForSummary(focalDeviationPx)}px`
+            : '未返回';
+        return {
+            id: assertionId,
+            label: assertionLabel,
+            status: 'needs_review',
+            summary: `${label}目标区域验收需复核：UXP 已正确执行几何，但关注点受到边界约束，未能完全落到目标焦点（偏差 ${deviationSummary}）。`,
+            expected: '关注点未被夹紧，且焦点偏差在视觉可接受范围内',
+            actual: `focalPointClamped=true，focalDeviationPx=${deviationSummary}`,
+            scope,
+            affectedLayerIds: [layerId],
+            warnings: ['geometry verification does not prove that a clamped focal intent was visually satisfied']
         };
     }
 
@@ -3130,11 +3188,53 @@ function buildTargetBoundsFitAssertion(input: {
         const actualCenterY = bounds.top + bounds.height / 2;
         const targetCenterX = target.left + target.width / 2;
         const targetCenterY = target.top + target.height / 2;
-        if (!numberWithinTolerance(actualCenterX, targetCenterX, widthTolerance)) {
-            failures.push(`中心 X 期望 ${roundForSummary(targetCenterX)}，实际 ${roundForSummary(actualCenterX)}`);
-        }
-        if (!numberWithinTolerance(actualCenterY, targetCenterY, heightTolerance)) {
-            failures.push(`中心 Y 期望 ${roundForSummary(targetCenterY)}，实际 ${roundForSummary(actualCenterY)}`);
+        const focalX = Number(params?.focalPoint?.x);
+        const focalY = Number(params?.focalPoint?.y);
+        const hasFocalPoint = Number.isFinite(focalX) && Number.isFinite(focalY)
+            && focalX >= 0 && focalX <= 1 && focalY >= 0 && focalY <= 1;
+        if (hasFocalPoint) {
+            const actualFocalX = bounds.left + bounds.width * focalX;
+            const actualFocalY = bounds.top + bounds.height * focalY;
+            if (actualFocalX < target.left - widthTolerance
+                || actualFocalX > target.right + widthTolerance) {
+                failures.push(`关注点 X ${roundForSummary(actualFocalX)} 落在目标区域之外`);
+            }
+            if (actualFocalY < target.top - heightTolerance
+                || actualFocalY > target.bottom + heightTolerance) {
+                failures.push(`关注点 Y ${roundForSummary(actualFocalY)} 落在目标区域之外`);
+            }
+        } else {
+            const targetAnchor = ['top-center', 'bottom-center', 'left-center', 'right-center'].includes(
+                String(params?.targetAnchor || '')
+            )
+                ? String(params.targetAnchor)
+                : 'center';
+            if (targetAnchor === 'top-center' || targetAnchor === 'bottom-center' || targetAnchor === 'center') {
+                if (!numberWithinTolerance(actualCenterX, targetCenterX, widthTolerance)) {
+                    failures.push(`锚点中心 X 期望 ${roundForSummary(targetCenterX)}，实际 ${roundForSummary(actualCenterX)}`);
+                }
+            }
+            if (targetAnchor === 'left-center' || targetAnchor === 'right-center' || targetAnchor === 'center') {
+                if (!numberWithinTolerance(actualCenterY, targetCenterY, heightTolerance)) {
+                    failures.push(`锚点中心 Y 期望 ${roundForSummary(targetCenterY)}，实际 ${roundForSummary(actualCenterY)}`);
+                }
+            }
+            if (targetAnchor === 'top-center'
+                && !numberWithinTolerance(bounds.top, target.top, heightTolerance)) {
+                failures.push(`顶部锚点期望 ${roundForSummary(target.top)}，实际 ${roundForSummary(bounds.top)}`);
+            }
+            if (targetAnchor === 'bottom-center'
+                && !numberWithinTolerance(bounds.bottom, target.bottom, heightTolerance)) {
+                failures.push(`底部锚点期望 ${roundForSummary(target.bottom)}，实际 ${roundForSummary(bounds.bottom)}`);
+            }
+            if (targetAnchor === 'left-center'
+                && !numberWithinTolerance(bounds.left, target.left, widthTolerance)) {
+                failures.push(`左侧锚点期望 ${roundForSummary(target.left)}，实际 ${roundForSummary(bounds.left)}`);
+            }
+            if (targetAnchor === 'right-center'
+                && !numberWithinTolerance(bounds.right, target.right, widthTolerance)) {
+                failures.push(`右侧锚点期望 ${roundForSummary(target.right)}，实际 ${roundForSummary(bounds.right)}`);
+            }
         }
     }
 
@@ -3164,7 +3264,7 @@ function buildTargetBoundsFitAssertion(input: {
         actual,
         scope,
         affectedLayerIds: [layerId],
-        warnings: ['this assertion verifies bounds size/position against targetBounds only; it does not verify image content or aesthetic placement']
+        warnings: ['this assertion verifies frame geometry against targetBounds only; UXP placement receipts describe crop facts, while image content and aesthetic placement still require visual review']
     };
 }
 

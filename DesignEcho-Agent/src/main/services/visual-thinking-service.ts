@@ -522,7 +522,13 @@ ${promptHint}
         const response = await this.modelService.chat(
             modelId,
             [{ role: 'user', content: content as any }],
-            { maxTokens: Math.max(3000, options?.maxTokens || 0), thinkingEnabled: false }
+            {
+                maxTokens: Math.max(3000, options?.maxTokens || 0),
+                thinkingEnabled: false,
+                // 设计评审需要区分目标、方向与局部工艺；质量优先于返回速度。
+                // 仍使用当前唯一多模态模型，Provider 不支持时由能力映射诚实降级。
+                reasoningEffort: 'high'
+            }
         );
         return { text: String(response.text || ''), modelId };
     }

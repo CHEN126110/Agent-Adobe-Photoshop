@@ -41,8 +41,8 @@ const RENDER_LAYOUT_IMAGE_PLACEMENT_SCHEMA = {
         },
         anchor: {
             type: 'string',
-            enum: ['center'],
-            description: '当前 renderLayout 只稳定执行 center；其他锚点会在写入前拒绝，不能生成半成品。'
+            enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
+            description: '图片图框在目标区域中的对齐锚点，由 Agent 根据构图选择；执行层只换算坐标。'
         },
         scale: {
             type: 'number',
@@ -64,16 +64,32 @@ const RENDER_LAYOUT_IMAGE_PLACEMENT_SCHEMA = {
             enum: ['clip', 'visible'],
             description: '区域外内容是否裁切。主视觉与邻近文案共存时通常用 clip。'
         },
+        focalPoint: {
+            type: 'object',
+            properties: {
+                x: { type: 'number', minimum: 0, maximum: 1 },
+                y: { type: 'number', minimum: 0, maximum: 1 }
+            },
+            required: ['x', 'y'],
+            description: '可选的源图归一化关注点；存在时优先把该点对准目标区域中心。它描述 Agent 的构图意图，不由 Harness 猜测。'
+        },
+        cropPolicy: {
+            type: 'string',
+            enum: ['avoid-crop', 'protect-subject', 'allow-crop'],
+            description: 'Agent 显式声明的裁切意图。avoid-crop=不允许裁图框；protect-subject=可裁背景但需保护主体；allow-crop=允许有意裁切，最终仍需看真实画面。cover 不能与 avoid-crop 同用。'
+        },
         subjectFillRatio: {
             type: 'number',
-            description: '主体感知修订目标 0..1；只有真实 subjectBounds 已证明是图片内部主体过小时才使用。纵横比冲突必须改区域、cover+clip 或换素材。'
+            exclusiveMinimum: 0,
+            maximum: 1,
+            description: 'Agent 显式选择的主体 contain 占比；仅与 contain 同用。缺失时 Harness 不补固定比例。'
         },
         allowUnderfill: {
             type: 'boolean',
             description: '只有明确、有依据的留白构图才设 true；默认 false，主视觉严重欠填会进入 needs_repair。'
         }
     },
-    required: ['fit', 'anchor', 'scale', 'rotation', 'mask', 'overflow']
+    required: ['fit', 'anchor', 'scale', 'rotation', 'mask', 'overflow', 'cropPolicy']
 };
 
 const RENDER_LAYOUT_TYPOGRAPHY_SCHEMA = {
@@ -217,15 +233,85 @@ const COMPOSE_DESIGN_IMAGE_PLACEMENT_SCHEMA = {
     type: 'object',
     properties: {
         fit: { type: 'string', enum: ['contain', 'cover'] },
-        anchor: { type: 'string', enum: ['center'] },
+        anchor: { type: 'string', enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'] },
         scale: { type: 'number', enum: [1] },
         rotation: { type: 'number', enum: [0] },
         mask: { type: 'string', enum: ['none', 'clipping'] },
         overflow: { type: 'string', enum: ['clip', 'visible'] },
-        subjectFillRatio: { type: 'number', minimum: 0.3, maximum: 0.98, description: '主体在「该图片区域内」的 contain 占比（相对区域不是画布）；0.9 = 主体撑满区域 90%。' },
+        focalPoint: {
+            type: 'object',
+            properties: {
+                x: { type: 'number', minimum: 0, maximum: 1 },
+                y: { type: 'number', minimum: 0, maximum: 1 }
+            },
+            required: ['x', 'y']
+        },
+        cropPolicy: { type: 'string', enum: ['avoid-crop', 'protect-subject', 'allow-crop'] },
+        subjectFillRatio: {
+            type: 'number',
+            exclusiveMinimum: 0,
+            maximum: 1,
+            description: '仅当 fit=contain 且确实需要控制主体占比时可选。fit=cover 不得填写；摄影 subject 别名使用顶层 subject.fillRatio，不在 region 重复填写。'
+        },
         allowUnderfill: { type: 'boolean' }
     },
-    required: ['fit', 'anchor', 'scale', 'rotation', 'mask', 'overflow']
+    required: ['fit', 'anchor', 'scale', 'rotation', 'mask', 'overflow', 'cropPolicy'],
+    allOf: [
+        {
+            if: {
+                required: ['fit'],
+                properties: { fit: { enum: ['cover'] } }
+            },
+            then: {
+                not: { required: ['subjectFillRatio'] }
+            }
+        },
+        {
+            if: {
+                required: ['fit'],
+                properties: { fit: { enum: ['cover'] } }
+            },
+            then: {
+                properties: {
+                    cropPolicy: { enum: ['protect-subject', 'allow-crop'] }
+                }
+            }
+        },
+        {
+            not: { required: ['focalPoint', 'subjectFillRatio'] }
+        }
+    ]
+};
+
+// 背景图片没有可验证的“商品主体框”，不能承诺 protect-subject 或主体占比。
+// Provider 可见 schema 必须与 normalizeBackground 的运行时防御完全一致：
+// 不让模型先看到一个合法 enum，再在执行点用隐藏规则拒绝同一个值。
+const COMPOSE_DESIGN_BACKGROUND_IMAGE_PLACEMENT_SCHEMA = {
+    type: 'object',
+    properties: {
+        fit: { type: 'string', enum: ['contain', 'cover'] },
+        anchor: { type: 'string', enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'] },
+        scale: { type: 'number', enum: [1] },
+        rotation: { type: 'number', enum: [0] },
+        mask: { type: 'string', enum: ['none', 'clipping'] },
+        overflow: { type: 'string', enum: ['clip', 'visible'] },
+        focalPoint: {
+            type: 'object',
+            properties: {
+                x: { type: 'number', minimum: 0, maximum: 1 },
+                y: { type: 'number', minimum: 0, maximum: 1 }
+            },
+            required: ['x', 'y'],
+            description: '可选。仅当背景中有必须保留的具体关注位置时声明；普通居中或边缘对齐只需 anchor。'
+        },
+        cropPolicy: {
+            type: 'string',
+            enum: ['avoid-crop', 'allow-crop'],
+            description: '由 Agent 决定完整保留背景还是允许裁切。背景不提供 protect-subject，因为没有主体框可供验证。'
+        },
+        allowUnderfill: { type: 'boolean' }
+    },
+    required: ['fit', 'anchor', 'scale', 'rotation', 'mask', 'overflow', 'cropPolicy']
 };
 
 // 参照系教学（真机 2026-08-23 run587）：模型曾按「画布高度比例」直觉给 fontSizeRatio 0.04-0.05，
@@ -589,7 +675,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'fitLayerSubjectToRegion',
-        description: '主体感知缩放与定位：按真实主体而不是图片外框，把明确 layerId 适配到明确 targetRegion。主体视觉占比必须由 Agent 显式声明，或来自已选参考的实测；anchor 必须由 Agent 根据本稿构图声明。Harness 不按品类、角色或意图套预设，只求解几何并返回写后 geometryVerification。几何通过不等于审美通过。',
+        description: '主体感知缩放与定位：按真实主体而不是图片外框，把明确 layerId 适配到明确 targetRegion。主体视觉占比必须由 Agent 显式声明，或来自已选参考的实测；anchor 必须由 Agent 根据本稿构图声明。Harness 不按品类、角色或意图套预设，只求解几何，并返回写后 geometryVerification 与同版本局部真实画面。几何通过不等于审美通过。',
         inputSchema: objectSchema({
             layerId: { type: 'number', description: '目标图层 ID（placeImage 结果或 getLayerHierarchy 读回）。' },
             targetRegion: {
@@ -631,7 +717,8 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     {
         name: 'transformLayer',
         description: 'Transform a layer: scale, rotate, flip, fit to canvas, or fit into a target region. Always pass layerId explicitly when you know the target layer — without layerId it transforms the currently selected layer, which silently hits the wrong layer if selection has drifted. To scale a layer into a specific area, pass targetBounds + targetFit instead of reading bounds and computing percentages yourself.',
-        inputSchema: objectSchema({
+        inputSchema: {
+            ...objectSchema({
             layerId: { type: 'number', description: '目标图层 ID（来自 getLayerHierarchy/getLayerBounds）。强烈建议显式传入；缺省时作用于当前选中图层，选区漂移会导致变换错层。' },
             scaleUniform: { type: 'number', description: '统一缩放百分比，相对当前尺寸：80 表示缩到 80%，150 表示放大到 150%。' },
             scaleX: { type: 'number', description: '水平缩放百分比（可与 scaleY 不同，用于非等比缩放）。' },
@@ -655,8 +742,36 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                 },
                 description: '目标区域（画布像素），支持 {x,y,width,height} 或 {left,top,right,bottom}。提供后工具按 targetFit 一次完成缩放+落位，不要自己读 bounds 再算百分比。与 scaleUniform/scaleX/scaleY/fitToCanvas 互斥。'
             },
-            targetFit: { type: 'string', enum: ['contain', 'cover', 'fill'], description: 'targetBounds 适配方式：contain 完整放入区域（默认）、cover 铺满区域（可能超出）、fill 拉伸填充（会改变宽高比）。' }
-        })
+            targetFit: { type: 'string', enum: ['contain', 'cover', 'fill'], description: 'targetBounds 适配方式：contain 完整放入区域、cover 铺满区域（可能超出）、fill 拉伸填充（会改变宽高比）。使用 targetBounds 时必须显式给出。' },
+            targetAnchor: {
+                type: 'string',
+                enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
+                description: '图框相对 targetBounds 的显式对齐锚点；Harness 不替 Agent 选择视觉重心。'
+            },
+            focalPoint: {
+                type: 'object',
+                properties: {
+                    x: { type: 'number', minimum: 0, maximum: 1 },
+                    y: { type: 'number', minimum: 0, maximum: 1 }
+                },
+                required: ['x', 'y'],
+                description: '源图中的归一化关注点；存在时优先把它对准目标区域中心。'
+            }
+        }),
+            allOf: [
+                {
+                    if: { required: ['targetBounds'] },
+                    then: { required: ['targetFit', 'targetAnchor'] }
+                },
+                {
+                    if: { required: ['targetFit'], properties: { targetFit: { enum: ['fill'] } } },
+                    then: {
+                        properties: { targetAnchor: { enum: ['center'] } },
+                        not: { required: ['focalPoint'] }
+                    }
+                }
+            ]
+        }
     },
     {
         name: 'quickScale',
@@ -1215,13 +1330,13 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             referenceNote: { type: 'string', description: '可选：一句话说明参考是什么、为什么选它对照。' },
             deliverable: { type: 'string', description: '交付物名（点击图 / 详情页首屏 / SKU 组合图…）。' },
             rationale: { type: 'object', properties: { purpose: { type: 'string' }, claim: { type: 'string' }, materials: { type: 'string' }, structure: { type: 'string' }, scale: { type: 'string' }, visual: { type: 'string' }, copySource: { type: 'string' } }, description: '你的设计说明（与 composeDesign 同结构），评审据此判断说的和做的是否一致。' },
-            hardFindings: { type: 'array', items: { type: 'string' }, description: '已知硬伤（文案与产品不符 / 字压主体 / 主体太小 / 越界…），评审必须计入。' },
+            hardFindings: { type: 'array', items: { type: 'string' }, description: '可选：你希望隔离评审重点核对的画面观察或疑点。这是模型自报的待验证假设，不是规则硬伤或已证事实；评审只能在像素确实支持时采纳。' },
             calibration: { type: 'array', items: { type: 'object', properties: { kind: { type: 'string', enum: ['good', 'bad'] }, why: { type: 'string' }, ref: { type: 'string' } } }, description: '可选：用户的品味校准样本（好 / 差各一句为什么）。' }
         })
     },
     {
         name: 'composeDesign',
-        description: '按 Agent 声明执行可编辑候选稿；regions 可含多个图片或文字，Harness 不补设计答案。另建文档产生独立候选，不代表质量升级。使用项目素材时在 rationale.materials 留下自己的选图依据；缺失只记入收据，不阻断写入。',
+        description: '按 Agent 声明执行可编辑候选稿；regions 可含多个图片或文字，Harness 不补设计答案。另建文档产生独立候选，不代表质量升级。使用项目素材时在 rationale.materials 留下自己的选图依据；缺失只记入收据，不阻断写入。该工具写后返回真实画面但不保存；Agent 看过当前版本后再单独保存或导出。',
         inputSchema: objectSchema({
             rationale: {
                 type: 'object',
@@ -1272,10 +1387,18 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                     },
                     filePath: { type: 'string' },
                     prompt: { type: 'string', description: 'generated 背景的场景、光线与留白。' },
-                    referenceFilePath: { type: 'string' }
+                    referenceFilePath: { type: 'string' },
+                    imagePlacement: COMPOSE_DESIGN_BACKGROUND_IMAGE_PLACEMENT_SCHEMA
                 },
                 required: ['kind'],
-                description: '背景处理；摄影满幅用 none。'
+                description: '背景处理；摄影满幅用 none。asset/generated 图片背景必须显式声明 imagePlacement，Harness 不再固定 center + cover。',
+                allOf: [{
+                    if: {
+                        required: ['kind'],
+                        properties: { kind: { enum: ['asset', 'generated'] } }
+                    },
+                    then: { required: ['imagePlacement'] }
+                }]
             },
             subject: {
                 type: 'object',
@@ -1285,9 +1408,9 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                     existingLayerId: { type: 'number' },
                     treatment: {
                         type: 'string', enum: ['photo', 'cutout'],
-                        description: 'photo 必须给 fillRatio 且背景 kind=none；cutout 必须给 cutout，背景不能为 none。'
+                        description: 'photo 表示保留完整摄影关系且背景 kind=none：普通图框构图由对应 region.imagePlacement 决定；只有需要精确控制商品主体占比时才填写 fillRatio。cutout 必须给 cutout，背景不能为 none。'
                     },
-                    fillRatio: { type: 'number', minimum: 0.3, maximum: 0.98, description: '主体在「其所属模块区域内」的占比（相对该模块不是画布）；0.9 = 主体撑满模块 90%。' },
+                    fillRatio: { type: 'number', exclusiveMinimum: 0, maximum: 1, description: '可选。仅在 Agent 需要按可验证商品主体框精确控制其所属模块内占比时声明（相对模块，不是画布）；声明后执行前必须取得可靠主体框。普通完整摄影构图不要填写，改由 region.imagePlacement 的 fit / anchor / focalPoint / cropPolicy 表达。' },
                     shadow: {
                         type: 'object',
                         properties: {
@@ -1307,7 +1430,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                 oneOf: [
                     {
                         properties: { treatment: { enum: ['photo'] } },
-                        required: ['treatment', 'shadow', 'fillRatio']
+                        required: ['treatment', 'shadow']
                     },
                     {
                         properties: { treatment: { enum: ['cutout'] } },
@@ -1370,14 +1493,6 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                 },
                 required: ['backgroundHex', 'textHex'],
                 description: '画面基础配色。'
-            },
-            save: {
-                type: 'object',
-                properties: {
-                    projectSubdir: { type: 'string', description: '项目内交付子目录。' },
-                    format: { type: 'string', enum: ['psd', 'psb', 'png', 'jpg'] }
-                },
-                required: ['projectSubdir', 'format']
             }
         }, ['canvas', 'document', 'background', 'layout', 'palette'])
     },
@@ -1654,7 +1769,8 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     {
         name: 'placeImage',
         description: 'Place an image already selected by the Agent into the current document as an editable layer. This execution tool never scans, ranks, or chooses project assets. If the source is unresolved, call recommendAssets, inspect its candidate evidence, then call placeImage again with an explicit filePath/fileToken/imageData. targetBounds contain/cover is geometric placement, not an aesthetic verdict; use fitLayerSubjectToRegion and structure readback for subject/container completion.',
-        inputSchema: objectSchema({
+        inputSchema: {
+            ...objectSchema({
             filePath: { type: 'string', description: '项目内素材绝对路径（来源：searchProjectResources / recommendAssets 返回的真实路径）' },
             fileToken: { type: 'string', description: '素材引用 token（替代路径，防路径伪造）' },
             imageData: { type: 'string', description: '直接以 base64/数据 URL 置入（如生成的图片结果）' },
@@ -1675,7 +1791,21 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                 },
                 description: '目标区域。做详情页或多图排版时优先提供 {x,y,width,height}，工具会按区域缩放并移动，避免多张图默认居中重叠。'
             },
-            targetFit: { type: 'string', enum: ['contain', 'cover', 'fill'], description: '目标区域适配方式：contain 完整放入（默认）、cover 铺满区域、fill 拉伸填充。' },
+            targetFit: { type: 'string', enum: ['contain', 'cover', 'fill'], description: '目标区域适配方式：contain 完整放入、cover 铺满区域、fill 拉伸填充；使用 targetBounds 时必须显式给出。' },
+            targetAnchor: {
+                type: 'string',
+                enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
+                description: '图框相对 targetBounds 的显式对齐锚点。'
+            },
+            focalPoint: {
+                type: 'object',
+                properties: {
+                    x: { type: 'number', minimum: 0, maximum: 1 },
+                    y: { type: 'number', minimum: 0, maximum: 1 }
+                },
+                required: ['x', 'y'],
+                description: '源图中的归一化关注点；存在时优先把它对准目标区域中心。'
+            },
             layerOrder: {
                 type: 'string',
                 enum: ['front', 'belowText', 'back'],
@@ -1685,7 +1815,21 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             scale: { type: 'number', description: '缩放百分比，相对置入原始尺寸：50 表示缩到 50%，可大于 100 表示放大（如 150）。默认 100。' },
             fitToCanvas: { type: 'boolean', description: '等比缩放以适应画布。默认只缩小不放大（封顶 100%）；小图要铺满画布需同时传 allowUpscale:true。' },
             allowUpscale: { type: 'boolean', description: '配合 fitToCanvas：true 时允许放大超过原始尺寸铺满画布，默认 false 保持只缩不放。' }
-        })
+        }),
+            allOf: [
+                {
+                    if: { required: ['targetBounds'] },
+                    then: { required: ['targetFit', 'targetAnchor'] }
+                },
+                {
+                    if: { required: ['targetFit'], properties: { targetFit: { enum: ['fill'] } } },
+                    then: {
+                        properties: { targetAnchor: { enum: ['center'] } },
+                        not: { required: ['focalPoint'] }
+                    }
+                }
+            ]
+        }
     },
     {
         name: 'replaceLayerContent',
@@ -1717,7 +1861,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             path: { type: 'string' },
             projectSubdir: { type: 'string', description: '保存到当前项目下的子目录，例如 详情页、主图、SKU。用户要求导出到项目目录时优先使用这个字段，避免猜绝对路径。' },
             saveAs: { type: 'boolean' },
-            quality: { type: 'number' },
+            quality: { type: 'number', description: 'JPEG 质量：1–12 按 Photoshop 原生等级；13–100 按百分制兼容换算。正式交付建议省略（默认原生最高 12）或明确传 12/100。' },
             conflictPolicy: { type: 'string', enum: ['overwrite', 'fail_if_exists'], description: '输出冲突策略。默认 overwrite 保持原有保存行为；fail_if_exists 必须配合明确 path，目标已存在时不写入、不回退覆盖。' }
         })
     },
@@ -1740,7 +1884,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
         description: '无弹窗快速导出当前文档为 PNG 或 JPEG 成品。outputPath 可以是明确的输出目录或完整文件路径；用户给出扩展名时不要删除。',
         inputSchema: objectSchema({
             format: { type: 'string', enum: ['png', 'jpg'] },
-            quality: { type: 'number' },
+            quality: { type: 'number', description: 'JPEG 质量：1–12 按 Photoshop 原生等级；13–100 按百分制兼容换算；省略默认百分制 80。' },
             outputPath: { type: 'string', description: 'Absolute output directory or complete PNG/JPEG file path. Do not remove the file extension when the user provides one.' },
             suffix: { type: 'string' }
         }, ['outputPath'])
@@ -1821,7 +1965,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'analyzeProjectContactSheetOverview',
-        description: 'Create one numbered project sheet and use vision to return a bounded visual inventory: visible subject/content groups, variant groups, shooting coverage, unresolved coverage, asset roles and close-review IDs. Positive facts cite rendered IDs; scope lists rendered/failed IDs. It describes only the supplied sheet and does not prove the project is complete, choose a hero, prescribe a design direction or require reference search. Use only when missing project/content/role facts materially affect the Agent\'s decision. It is not a mandatory first step; skip when a named asset or existing observation resolves the decision. COST: one vision call; inspect only materially relevant uncertain images afterward. 看完 sheet 的正确收尾：先明确本次交付物需要哪些素材角色（如可组合的主体单品、成组合影、场景 / 模特、细节特写），把 sheet 里的候选按角色归类并锁定编号；角色候选已够支撑设计时就停止翻查、带着结论直接开工——不要在角色已明确后继续逐个打开文件或换着方式重复检索。',
+        description: 'Create one numbered project sheet. In the autonomous multimodal Agent path, attach it directly to the current Agent to form a bounded visual inventory without a second model reading the same pixels; structured Skill callers may instead request one preanalysis without reattaching the sheet. Candidate coverage is deterministic across role buckets and each full bucket span; the result separately reports candidateUniverseCount, attemptedCandidateCount, displayedCandidateCount, failedRenderCount, samplingOmittedCandidateCount, omittedCandidateCount and complete/sampled status. Only successfully rendered tiles count as displayed, and complete requires that every candidate was actually visible. doesNotRank and doesNotSelectWinner remain true: this evidence sampling never ranks aesthetics or chooses the final asset. Positive facts cite rendered IDs; scope lists rendered/failed IDs. It describes only the supplied sheet and does not prove the project is complete, choose a hero, prescribe a design direction or require reference search. Use only when missing project/content/role facts materially affect the Agent\'s decision. It is not a mandatory first step; skip when a named asset or existing observation resolves the decision. 看完 sheet 后按交付所需角色归类并锁定编号；候选足够时停止翻查并开工，不要重复检索。',
         inputSchema: objectSchema({
             directory: { type: 'string' },
             maxImages: { type: 'number' },
@@ -1873,7 +2017,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'recommendAssets',
-        description: 'Visually compare a bounded, source-diverse shortlist for a stated requirement and designRole. It returns the numbered candidate sheet to the main Agent plus role, background, direct-use and treatment evidence. A01/A02 are identity labels only, never rank or priority. Scores are advisory; the Agent chooses after comparing the actual images. It does not establish the project\'s complete inventory, product identity, use context, intended audience, variant system or shooting coverage, and one selected image is not evidence of project-wide understanding. When missing project-wide facts could change the direction, inspect broader or targeted evidence by expected information gain. Optional guidance, not a required sequence.',
+        description: 'Return a bounded, source-diverse numbered candidate sheet to the main Agent for a stated requirement and designRole. In an autonomous multimodal run, this Agent compares the pixels directly; no second model interprets the same sheet. A01/A02 are identity labels only, never rank or priority. Metadata scores are advisory; the Agent chooses after viewing the images. It does not establish the project\'s complete inventory, product identity, use context, intended audience, variant system or shooting coverage, and one selected image is not evidence of project-wide understanding. If missing facts could change direction, inspect broader evidence by expected information gain. Optional guidance, not a required sequence.',
         inputSchema: objectSchema({
             requirement: { type: 'string' },
             maxResults: { type: 'number' },
@@ -2037,7 +2181,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'searchEagleReferences',
-        description: 'Search the user\'s Eagle asset library for creative reference CANDIDATES (read-only metadata only: titles/tags/folders/annotations; never raw images or local paths). Standard timing: BEFORE settling the design direction — when the project itself has no usable reference or confirmed style benchmark, take a routine reference glance here first (search, then REALLY LOOK at one or two candidates via analyzeEagleReference), and only then decide the direction. This is a normal pre-direction step every professional takes, not an admission of weakness; skip it only when an explicit reference, governed brand material or relevant project work already anchors the direction. Bind the query and availableFacets to a specific unresolved composition, color, typography, narrative or photography-role question. Search results do not mean the Agent has visually understood a design: call analyzeEagleReference for a candidate before declaring visual observations — 检索到标题不等于看过，参考的价值在画面里。Extract transferable relationships and label them as「来自 Eagle 素材库」; never copy a finished work. Eagle offline or no match does not block ordinary design, and no opening announcement or fixed research ritual is required.',
+        description: 'Search the user\'s Eagle library for read-only reference candidates (metadata only; no raw image or local path). Use it when a specific unresolved composition, color, typography, narrative or photography-role question could materially change the design direction and no explicit reference, governed brand material or relevant project work already answers it. Bind the query and availableFacets to that question. A search hit is not visual understanding: inspect one or two relevant candidates with analyzeEagleReference before making image-based claims. Extract transferable relationships, label the source as「来自 Eagle 素材库」, and never copy a finished work. Offline/no match does not block ordinary design; this is optional evidence, not a fixed opening ritual.',
         inputSchema: objectSchema({
             query: { type: 'string', description: '搜索关键词，多个词用空格分隔（如「袜子 详情页」）。支持 AI 语义检索；语义检索超时会降级为逐词关键词匹配。注意：库内条目的标题多为电商商品名，「详情页」「设计参考」这类意图词在标题里没有对应物，只靠品类关键词会一直返回同品类竞品图' },
             limit: { type: 'number', description: '返回条数，默认 8，最大 20' },
@@ -2058,7 +2202,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'analyzeEagleReference',
-        description: 'Visually analyze one Eagle reference candidate by Eagle item id. The main process resolves and reads the local preview internally, calls the configured vision model, then returns structured design observations (composition/placement/color/typography/lighting/retouching) with paths and raw pixels redacted. This is read-only reference context; it does not write Eagle or Photoshop and does not verify final design quality.',
+        description: 'Analyze one Eagle item into structured reference observations. In the current top-level Agent path the same redacted preview is also attached for direct visual comparison, so use this selectively: it currently costs one nested analysis plus one primary-model image presentation. This read-only context exposes no local path, writes neither Eagle nor Photoshop, and does not verify final quality.',
         inputSchema: objectSchema({
             itemId: { type: 'string', description: 'Eagle item id returned by searchEagleReferences, without the eagle: prefix' },
             topics: {
@@ -2145,13 +2289,13 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'declareDesignIntent',
-        description: `Optional Runtime profile annotation for a design run whose exact Task Profile is already known. Current published profiles: ${DECLARABLE_RUNTIME_PROFILE_SUMMARY}.
+        description: `Runtime profile annotation for a design run whose exact Task Profile is already known. Current published profiles: ${DECLARABLE_RUNTIME_PROFILE_SUMMARY}.
 
-If a matching Skill tool is already visible, call that Skill directly and do not call this tool first. Call declareDesignIntent only when the system prompt explicitly names the exact Profile id and no matching Skill tool is currently visible; pass that id as taskTypeId. Do not infer or choose a Profile from this catalog by yourself. This annotation may expose the bound workflow entry, but it is not permission to analyze, write Photoshop, or complete a task and grants none of those. Without a system-provided Profile, use a matching Skill or plan with the available atomic Tools normally.
+If a matching Skill tool is already visible, call that Skill directly and do not call this tool first. Call declareDesignIntent only when the system prompt explicitly names the exact Profile id and no matching Skill tool is currently visible; pass that id as taskTypeId. When you have already judged that the user clearly commissioned that Profile's deliverable, record the decision before the first specialized write. Do not infer or choose a Profile from this catalog by yourself. This annotation may expose the bound workflow entry, but it is not permission to analyze, write Photoshop, or complete a task and grants none of those. Without a system-provided Profile, use a matching Skill or plan with the available atomic Tools normally.
 
 Use this only when binding a specific Profile's method knowledge, stage context, budget or evaluation contract materially helps the current run. Pure questions, read-only inspection and fully bounded mechanical edits normally do not need it. Profiles ending in #default MUST omit workMode; a Profile with a mode suffix must use that exact workMode.
 
-这是可选的 Runtime Profile 标注，不是开工许可。当前已有匹配 Skill 时直接调用 Skill，不要先声明；只有系统明确给出了精确 Profile 且当前没有匹配 Skill 时，才把该值作为 taskTypeId 调用。系统未给 Profile 时不要自行从目录猜选，继续使用匹配 Skill 或原子工具自主完成。`,
+这是 Runtime Profile 标注，不是开工许可。当前已有匹配 Skill 时直接调用 Skill，不要先声明；只有系统明确给出了精确 Profile、当前没有匹配 Skill，且你已经判断用户明确委托该交付物时，才在首次专业写入前把该值作为 taskTypeId 调用。系统未给 Profile 时不要自行从目录猜选，继续使用匹配 Skill 或原子工具自主完成。`,
         inputSchema: objectSchema({
             taskTypeId: {
                 type: 'string',
@@ -2182,6 +2326,18 @@ Use this only when binding a specific Profile's method knowledge, stage context,
                 description: '（可选）细则文件名（形如 color-card-spec.md），来自手册正文或列表里的 references。'
             }
         }, [])
+    },
+    {
+        name: 'proposeSkillImprovement',
+        description: '把你从样板 PSD（analyzePsdDesignSource 深解析含智能对象内部）推理出的工艺差异，提议为业务 Skill 工作法手册的一处修改。提议只进学习候选区，绝不直接生效——用户在学习时间线批准后由系统写入（原子写+备份）。find 必须是手册现有原文的精确片段（先 readSkillPlaybook 读到原文再引用），replace 是新文字，rationale 说清依据哪个样板文件的什么结构。一次提议只改一处；同一手册多处要改就多次提议。',
+        inputSchema: objectSchema({
+            skillId: { type: 'string', description: '手册 id（如 sku-production）。' },
+            file: { type: 'string', description: '目标文件：SKILL.md 或 references/<名>.md。' },
+            find: { type: 'string', description: '手册现有原文片段（精确匹配且全文唯一；从 readSkillPlaybook 结果里复制）。' },
+            replace: { type: 'string', description: '替换后的新文字。' },
+            rationale: { type: 'string', description: '为什么要改：依据哪个样板文件的什么结构（完整一句话）。' },
+            evidence: { type: 'array', items: { type: 'string' }, description: '（可选）证据引用，如样板文件路径、组名。' }
+        }, ['skillId', 'file', 'find', 'replace', 'rationale'])
     },
     {
         name: 'runSkillScript',
@@ -2608,7 +2764,7 @@ Use this only when binding a specific Profile's method knowledge, stage context,
     // 由重写后的 audit-tool-registry.cjs 首次发现。见项目记忆 design-agent-governance-audit-20260701。
     {
         name: 'getSubjectBounds',
-        description: 'Read a layer\'s subject bounding box. 默认（省略 method）按可靠性逐级求：素材文件属性（透明边界 / 纯色底裁边 / 本地分割模型，一次计算重复使用）→ 图层透明边界 → 图层像素本地分割 → 整个图层外框，结果带 method 与 confidence（certain/high/medium/low）；不依赖 Photoshop 选择主体。method="alpha" 只按透明边界；method="smart" 显式使用 Photoshop 选择主体（复杂场景也未必可靠）。放文字 / 标签 / 装饰前先调它：不花看图额度，直接返回主体（产品、模特身体）在画布上的范围——文字框必须放在这个范围之外的留白区，不能压主体（排版像俄罗斯方块：一格一元素、不叠压）。confidence 为 low 时主体尺度请看画面确认。',
+        description: 'Read a layer\'s subject bounding box when exact subject geometry materially affects placement or verification. 默认按素材属性 → 图层透明边界 → 本地分割 → 整图外框逐级求解，返回 method 与 confidence；不依赖 Photoshop 选择主体。method="alpha" 只读透明边界，method="smart" 才显式使用 Photoshop 选择主体。结果只是几何证据，不决定文字能否叠压、构图是否好看或下一步必须做什么；confidence=low 时不能据此声称主体判断已确认。',
         inputSchema: objectSchema({
             layerId: { type: 'number' },
             method: { type: 'string', enum: ['auto', 'alpha', 'smart'], description: '省略或 auto = 逐级本地求解（默认）；alpha = 只按透明边界；smart = 显式用 Photoshop 选择主体。' }
@@ -2728,7 +2884,7 @@ Use this only when binding a specific Profile's method knowledge, stage context,
         inputSchema: objectSchema({
             presets: { type: 'array', items: { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' }, suffix: { type: 'string' } } } },
             format: { type: 'string', enum: ['png', 'jpeg', 'jpg'] },
-            quality: { type: 'number' },
+            quality: { type: 'number', description: 'JPEG 质量：1–12 按 Photoshop 原生等级；13–100 按百分制兼容换算；省略默认百分制 85。' },
             outputDirectory: { type: 'string' }
         }, ['outputDirectory'])
     },
@@ -2933,6 +3089,7 @@ const DEFAULT_AGENT_TOOL_NAMES = [
     'searchDesignKnowledge',
     'readSkillPlaybook',
     'runSkillScript',
+    'proposeSkillImprovement',
     // 设计知识笔记：用户与 Agent 共写的 Markdown 笔记库（Obsidian 兼容）
     'searchDesignNotes',
     'readDesignNote',

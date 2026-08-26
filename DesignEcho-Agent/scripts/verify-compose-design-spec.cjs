@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const Ajv = require('ajv');
 
 const root = path.resolve(__dirname, '..');
 require('ts-node').register({ transpileOnly: true, project: path.join(root, 'tsconfig.main.json') });
@@ -30,11 +31,41 @@ const {
     resolveRenderLayoutVisualStyle
 } = require(path.join(root, 'src/shared/layout/render-layout-style.ts'));
 const {
+    evaluateImagePlacementQuality
+} = require(path.join(root, 'src/shared/layout/image-placement-quality.ts'));
+const {
+    IMAGE_PLACEMENT_REVIEW_CAPTURE_LIMIT,
+    buildImagePlacementReviewPlan
+} = require(path.join(root, 'src/shared/layout/image-placement-review-plan.ts'));
+const {
+    buildImagePlacementPrewritePlan
+} = require(path.join(root, 'src/shared/layout/image-placement-prewrite-plan.ts'));
+const {
+    buildToolAcceptanceVerification
+} = require(path.join(root, 'src/shared/acceptance/tool-acceptance.ts'));
+const {
     generateToolSchemas
 } = require(path.join(root, 'src/renderer/services/agent-runtime/tool-schemas.ts'));
+const {
+    sanitizeUserVisibleDiagnosticText
+} = require(path.join(root, 'src/shared/chat-response-cleaner.ts'));
+const {
+    buildCodexStrictOutputSchema,
+    restoreCodexStrictOutputValue
+} = require(path.join(root, 'src/main/services/codex-strict-output-schema.ts'));
+const {
+    buildCodexHostEnvelopeOutputSchema,
+    buildCodexStructuredToolOutputSchema,
+    parseCodexDirectToolArgumentsOutput,
+    parseCodexStructuredAssistantOutput
+} = require(path.join(root, 'src/main/services/codex-subscription-service.ts'));
 
 const toolExecutorSource = fs.readFileSync(
     path.join(root, 'src/renderer/services/tool-executor.service.ts'),
+    'utf8'
+);
+const composeExecutorSource = fs.readFileSync(
+    path.join(root, 'src/renderer/services/design-workshop/compose-design.executor.ts'),
     'utf8'
 );
 const toolSchemasSource = fs.readFileSync(
@@ -57,6 +88,99 @@ function check(name, condition, detail = '') {
     console.error(`❌ ${name}${detail ? `: ${detail}` : ''}`);
 }
 
+function collectStrictOutputSchemaIssues(schema, currentPath = '$') {
+    if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return [];
+    const issues = [];
+    for (const unsupported of ['allOf', 'oneOf', 'not', 'if', 'then', 'else']) {
+        if (Object.prototype.hasOwnProperty.call(schema, unsupported)) {
+            issues.push(`${currentPath}.${unsupported}`);
+        }
+    }
+    if (schema.type === 'object') {
+        const properties = schema.properties && typeof schema.properties === 'object'
+            ? schema.properties
+            : {};
+        const propertyNames = Object.keys(properties).sort();
+        const requiredNames = Array.isArray(schema.required)
+            ? [...schema.required].sort()
+            : [];
+        if (schema.additionalProperties !== false) issues.push(`${currentPath}.additionalProperties`);
+        if (JSON.stringify(propertyNames) !== JSON.stringify(requiredNames)) {
+            issues.push(`${currentPath}.required`);
+        }
+        for (const [key, nested] of Object.entries(properties)) {
+            issues.push(...collectStrictOutputSchemaIssues(nested, `${currentPath}.properties.${key}`));
+        }
+    }
+    if (schema.items) {
+        issues.push(...collectStrictOutputSchemaIssues(schema.items, `${currentPath}.items`));
+    }
+    if (Array.isArray(schema.anyOf)) {
+        schema.anyOf.forEach((branch, index) => {
+            issues.push(...collectStrictOutputSchemaIssues(branch, `${currentPath}.anyOf[${index}]`));
+        });
+    }
+    if (schema.$defs && typeof schema.$defs === 'object') {
+        for (const [key, nested] of Object.entries(schema.$defs)) {
+            issues.push(...collectStrictOutputSchemaIssues(nested, `${currentPath}.$defs.${key}`));
+        }
+    }
+    return issues;
+}
+
+function measureStructuredOutputLimits(schema) {
+    const metrics = {
+        objectPropertyCount: 0,
+        maxObjectDepth: 0,
+        restrictedStringChars: 0,
+        enumValueCount: 0
+    };
+
+    function visit(node, objectDepth) {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) {
+            node.forEach((item) => visit(item, objectDepth));
+            return;
+        }
+
+        const nextObjectDepth = node.type === 'object'
+            ? objectDepth + 1
+            : objectDepth;
+        metrics.maxObjectDepth = Math.max(metrics.maxObjectDepth, nextObjectDepth);
+
+        if (node.properties && typeof node.properties === 'object') {
+            const entries = Object.entries(node.properties);
+            metrics.objectPropertyCount += entries.length;
+            metrics.restrictedStringChars += entries.reduce((total, [key]) => total + key.length, 0);
+            entries.forEach(([, nested]) => visit(nested, nextObjectDepth));
+        }
+        for (const definitionsKey of ['$defs', 'definitions']) {
+            if (!node[definitionsKey] || typeof node[definitionsKey] !== 'object') continue;
+            const entries = Object.entries(node[definitionsKey]);
+            metrics.restrictedStringChars += entries.reduce((total, [key]) => total + key.length, 0);
+            entries.forEach(([, nested]) => visit(nested, nextObjectDepth));
+        }
+        if (Array.isArray(node.enum)) {
+            metrics.enumValueCount += node.enum.length;
+            metrics.restrictedStringChars += node.enum.reduce((total, value) => (
+                total + (typeof value === 'string' ? value.length : 0)
+            ), 0);
+        }
+        if (typeof node.const === 'string') {
+            metrics.restrictedStringChars += node.const.length;
+        }
+        for (const nestedKey of ['items', 'additionalProperties', 'not', 'if', 'then', 'else']) {
+            visit(node[nestedKey], nextObjectDepth);
+        }
+        for (const branchesKey of ['anyOf', 'oneOf', 'allOf']) {
+            visit(node[branchesKey], nextObjectDepth);
+        }
+    }
+
+    visit(schema, 0);
+    return metrics;
+}
+
 check(
     'renderLayout 遵守 createTextLayer 的可见边界坐标契约，不按段落对齐改写 x',
     toolExecutorSource.includes('x: b.x + paddingX,')
@@ -72,6 +196,132 @@ check(
         && uxpCreateTextSource.includes('nearlyEqual(layer.bounds.top, before.expectedY)')
         && uxpCreateTextSource.includes('不随段落对齐方式改变语义')
 );
+
+function buildPlacementAcceptanceSnapshot(historyStateId, layers) {
+    return {
+        success: true,
+        hasDocument: true,
+        documentState: 'present',
+        historyStateRef: { documentId: 901, historyStateId },
+        document: { id: 901, name: '图片落位验收.psd', width: 800, height: 800, resolution: 72 },
+        selectedLayerIds: layers.length ? [layers[layers.length - 1].id] : [],
+        summary: {
+            totalLayers: layers.length,
+            selectedLayers: layers.length ? 1 : 0,
+            visibleLayers: layers.length,
+            hiddenLayers: 0,
+            textLayers: 0,
+            groupLayers: 0,
+            pixelLayers: layers.length,
+            adjustmentLayers: 0,
+            smartObjectLayers: layers.length,
+            otherLayers: 0
+        },
+        layers,
+        warnings: []
+    };
+}
+
+const focalClampedAcceptance = buildToolAcceptanceVerification({
+    toolName: 'placeImage',
+    params: {
+        filePath: 'C:\\素材\\商品图.jpg',
+        name: '商品图',
+        targetBounds: { x: 0, y: 0, width: 100, height: 100 },
+        targetFit: 'cover',
+        targetAnchor: 'center',
+        focalPoint: { x: 0, y: 0 }
+    },
+    result: {
+        success: true,
+        layerId: 77,
+        placement: {
+            focalPointClamped: true,
+            focalDeviationPx: 50,
+            geometryVerification: { verified: true, issues: [] }
+        }
+    },
+    before: { snapshot: buildPlacementAcceptanceSnapshot(10, []) },
+    after: {
+        snapshot: buildPlacementAcceptanceSnapshot(11, [{
+            id: 77,
+            name: '商品图',
+            kind: 'smartObject',
+            visible: true,
+            locked: false,
+            depth: 0,
+            index: 0,
+            parentId: null,
+            parentName: null,
+            path: '商品图',
+            selected: true,
+            bounds: { left: 0, top: 0, right: 100, bottom: 200, width: 100, height: 200 }
+        }])
+    }
+});
+check(
+    '几何执行正确但焦点被夹紧时仍需视觉复核，不能假通过',
+    focalClampedAcceptance.verified === false
+        && focalClampedAcceptance.assertionStatus === 'needs_review'
+        && focalClampedAcceptance.assertions?.some((assertion) => (
+            assertion.id === 'placeImage.targetBounds'
+                && assertion.status === 'needs_review'
+                && assertion.summary.includes('关注点受到边界约束')
+        )),
+    JSON.stringify(focalClampedAcceptance)
+);
+check(
+    'composeDesign 的摄影图和图片背景直接按最终图框一次置入，不再先错放后叠加 transform',
+    composeExecutorSource.includes("run('一次置入摄影图最终位置', 'placeImage'")
+        && composeExecutorSource.includes("placementIntent: 'planned_full_frame'")
+        && !composeExecutorSource.includes("'摄影图定大小定位置', 'transformLayer'")
+        && !composeExecutorSource.includes("'背景落位', 'transformLayer'")
+        && !composeExecutorSource.includes("'transformLayer',\n    'renameLayer'"),
+    'composeDesign 仍保留 place→transform 的两次写入路径'
+);
+const renderLayoutExecutionSource = toolExecutorSource.slice(
+    toolExecutorSource.indexOf("if (toolName === 'renderLayout')"),
+    toolExecutorSource.indexOf("if (toolName === 'fitLayerSubjectToRegion')")
+);
+check(
+    'renderLayout 在图片写入前预演主体与图框，subjectFillRatio 由单次 placeImage 兑现',
+    renderLayoutExecutionSource.includes('buildImagePlacementPrewritePlan({')
+        && renderLayoutExecutionSource.includes('placementPrewritePlansByBlockId.set(')
+        && renderLayoutExecutionSource.includes('const finalTargetBounds = prewritePlan?.finalWrite?.targetBounds')
+        && renderLayoutExecutionSource.includes("'precomputed_subject_fit_single_place'")
+        && !renderLayoutExecutionSource.includes("executeToolCall('fitLayerSubjectToRegion'"),
+    'renderLayout 仍存在首写后再调用 subject-fit 的二次变换路径'
+);
+check(
+    'renderLayout 用组级 swap 延迟删除旧稿，保护 owned 后代并如实记录失败清理',
+    renderLayoutExecutionSource.indexOf('ownedLayerPreflightIssues')
+        < renderLayoutExecutionSource.indexOf("action: 'deletePreviousStageGroup'")
+        && renderLayoutExecutionSource.indexOf('candidateStructureVerified')
+            < renderLayoutExecutionSource.indexOf("action: 'deletePreviousStageGroup'")
+        && renderLayoutExecutionSource.includes('oldStagePreservedUntilCandidateVerified: true')
+        && renderLayoutExecutionSource.includes('hierarchyNodeContainsAnyLayerId(layer, ownedLayerIds)')
+        && renderLayoutExecutionSource.includes("action: 'promoteStageCandidateGroup'")
+        && renderLayoutExecutionSource.includes('name === `${stageGroupName}·新稿待切换`')
+        && renderLayoutExecutionSource.includes("action: 'restoreOwnedLayerAfterCandidateFailure'")
+        && renderLayoutExecutionSource.includes("action: 'hideRetainedFailedStageCandidateGroup'")
+        && renderLayoutExecutionSource.includes('failedCandidateRetained,')
+        && renderLayoutExecutionSource.includes('failedCandidateHidden,')
+        && renderLayoutExecutionSource.includes('cleanupCreatedLayer')
+        && renderLayoutExecutionSource.includes("'裁切基底创建失败但执行结果仍返回图层身份'")
+        && renderLayoutExecutionSource.includes('cleanupFailures: cleanupFailures.length > 0')
+        && renderLayoutExecutionSource.includes('stageSwapReceipt,'),
+    '旧稿仍可能在新组验真前删除，owned 后代或失败清理没有进入结构化 swap 收据'
+);
+check(
+    'composeDesign 的主体占比与普通摄影图框预演都早于新建文档，图片语义名进入首次 placeImage',
+    composeExecutorSource.indexOf('photoPrewritePlan = planPhotoFullBleedPlacement({')
+        < composeExecutorSource.indexOf("run('建画布', 'createDocument'")
+        && composeExecutorSource.indexOf('const framePrewrite = buildImagePlacementPrewritePlan({')
+            < composeExecutorSource.indexOf("run('建画布', 'createDocument'")
+        && composeExecutorSource.includes('name: backgroundSemanticName')
+        && !composeExecutorSource.includes("run('语义命名素材层', 'renameLayer'"),
+    '摄影预演仍晚于 createDocument，或图片仍需第二次 rename'
+);
 check(
     '文字色穿过 Photoshop 参数归一化后保持 Agent 声明，不回落默认黑色',
     normalizePhotoshopToolArguments('createTextLayer', {
@@ -84,16 +334,476 @@ check(
             colorHex: '#6A3E2E'
         }).colorHex === undefined
 );
-const composeDesignToolSchema = generateToolSchemas()
-    .find((tool) => tool.name === 'composeDesign')?.inputSchema;
+const allAgentTools = generateToolSchemas();
+const composeDesignTool = allAgentTools.find((tool) => tool.name === 'composeDesign');
+const composeDesignToolSchema = composeDesignTool?.inputSchema;
 const composeTypographySchema = composeDesignToolSchema
     ?.properties?.layout?.properties?.visualStyle?.properties?.typography;
+const composeSubjectSchema = composeDesignToolSchema?.properties?.subject;
+const composeBackgroundPlacementSchema = composeDesignToolSchema
+    ?.properties?.background?.properties?.imagePlacement;
+const composeRegionPlacementSchema = composeDesignToolSchema
+    ?.properties?.layout?.properties?.regions?.items?.properties?.imagePlacement;
+const composeToolSchemaBeforeStrictProjection = JSON.stringify(composeDesignToolSchema);
+const composeStrictOutputSchema = buildCodexStrictOutputSchema({
+    ...composeDesignToolSchema,
+    additionalProperties: false
+});
+const composeStrictOutputSchemaIssues = collectStrictOutputSchemaIssues(composeStrictOutputSchema);
+const allToolStrictProjectionFailures = allAgentTools.flatMap((tool) => {
+    try {
+        const projected = buildCodexStrictOutputSchema({
+            ...tool.inputSchema,
+            additionalProperties: false
+        });
+        const issues = collectStrictOutputSchemaIssues(projected);
+        return issues.length > 0 ? [{ tool: tool.name, issues }] : [];
+    } catch (error) {
+        return [{ tool: tool.name, issues: [String(error?.message || error)] }];
+    }
+});
+check(
+    'Codex strict wire projection 覆盖当前全部 Agent Tool schema',
+    allToolStrictProjectionFailures.length === 0,
+    JSON.stringify(allToolStrictProjectionFailures.slice(0, 8))
+);
+const productionNativeOutputSchema = buildCodexStructuredToolOutputSchema(allAgentTools);
+const productionNativeWireSchema = buildCodexStrictOutputSchema(productionNativeOutputSchema);
+const productionNativeSchemaIssues = collectStrictOutputSchemaIssues(productionNativeWireSchema);
+const productionNativeSchemaMetrics = measureStructuredOutputLimits(productionNativeWireSchema);
+const productionHostEnvelopeValidator = new Ajv({ allErrors: true, strict: false }).compile(
+    buildCodexHostEnvelopeOutputSchema(allAgentTools)
+);
+const validProductionEnvelope = {
+    content: '',
+    toolCalls: [{ id: 'call-1', name: 'getDocumentInfo', arguments: {} }],
+    stopReason: 'tool_use'
+};
+const invalidProductionEnvelope = {
+    content: '',
+    toolCalls: [{ id: 'call-2', name: 'unknownTool', arguments: {} }],
+    stopReason: 'tool_use'
+};
+const validProductionEnvelopeAccepted = productionHostEnvelopeValidator(validProductionEnvelope);
+const invalidProductionEnvelopeRejected = !productionHostEnvelopeValidator(invalidProductionEnvelope);
+const getDocumentInfoTool = allAgentTools.find((tool) => tool.name === 'getDocumentInfo');
+const productionParserTools = [composeDesignTool, getDocumentInfoTool].filter(Boolean);
+const productionParserOutputSchema = buildCodexStructuredToolOutputSchema(productionParserTools);
+const productionParserEnvelopeValidator = new Ajv({ allErrors: true, strict: false }).compile(
+    buildCodexHostEnvelopeOutputSchema(productionParserTools)
+);
+const parsedProductionEnvelope = parseCodexStructuredAssistantOutput(JSON.stringify({
+    content: '',
+    toolCalls: [
+        {
+            id: 'call-compose',
+            name: 'composeDesign',
+            arguments: { rationale: null }
+        },
+        {
+            id: 'call-read',
+            name: 'getDocumentInfo',
+            arguments: {}
+        }
+    ],
+    stopReason: 'tool_use'
+}), productionParserOutputSchema, productionParserEnvelopeValidator);
+const parsedDirectComposeArguments = parseCodexDirectToolArgumentsOutput(
+    JSON.stringify({ rationale: null }),
+    composeDesignTool
+);
+let unknownProductionDiscriminatorRejected = false;
+try {
+    parseCodexStructuredAssistantOutput(JSON.stringify({
+        content: '',
+        toolCalls: [{ id: 'call-unknown', name: 'unknownTool', arguments: {} }],
+        stopReason: 'tool_use'
+    }), productionParserOutputSchema, productionParserEnvelopeValidator);
+} catch {
+    unknownProductionDiscriminatorRejected = true;
+}
+let duplicateProductionToolRejected = false;
+try {
+    buildCodexStructuredToolOutputSchema([allAgentTools[0], allAgentTools[0]]);
+} catch {
+    duplicateProductionToolRejected = true;
+}
+let embeddedReferenceProductionToolRejected = false;
+try {
+    buildCodexStructuredToolOutputSchema([{
+        name: 'embeddedReferenceFixture',
+        description: 'test fixture',
+        inputSchema: {
+            type: 'object',
+            properties: { value: { $ref: '#/$defs/value' } },
+            required: ['value'],
+            $defs: { value: { type: 'string' } }
+        }
+    }]);
+} catch {
+    embeddedReferenceProductionToolRejected = true;
+}
+check(
+    'Codex 生产输出 schema 直接覆盖全部 Tool、保留轻量 Host 校验且不重复工具描述',
+    productionNativeSchemaIssues.length === 0
+        && productionNativeOutputSchema.properties?.toolCalls?.items?.anyOf?.length === allAgentTools.length
+        && productionNativeOutputSchema.properties.toolCalls.items.anyOf.every((branch) => (
+            !Object.prototype.hasOwnProperty.call(branch, 'description')
+        ))
+        && validProductionEnvelopeAccepted
+        && invalidProductionEnvelopeRejected
+        && parsedProductionEnvelope.toolCalls.length === 2
+        && parsedProductionEnvelope.toolCalls[0].name === 'composeDesign'
+        && !Object.prototype.hasOwnProperty.call(
+            parsedProductionEnvelope.toolCalls[0].arguments,
+            'rationale'
+        )
+        && parsedProductionEnvelope.toolCalls[1].name === 'getDocumentInfo'
+        && !Object.prototype.hasOwnProperty.call(parsedDirectComposeArguments, 'rationale')
+        && unknownProductionDiscriminatorRejected
+        && duplicateProductionToolRejected
+        && embeddedReferenceProductionToolRejected,
+    JSON.stringify({
+        productionNativeSchemaIssues: productionNativeSchemaIssues.slice(0, 8),
+        hostErrors: productionHostEnvelopeValidator.errors,
+        parsedProductionEnvelope,
+        parsedDirectComposeArguments,
+        unknownProductionDiscriminatorRejected,
+        duplicateProductionToolRejected,
+        embeddedReferenceProductionToolRejected
+    })
+);
+check(
+    'Codex 全量原生 Tool 联合低于 Structured Outputs 官方结构上限',
+    productionNativeSchemaMetrics.objectPropertyCount <= 5000
+        && productionNativeSchemaMetrics.maxObjectDepth <= 10
+        && productionNativeSchemaMetrics.restrictedStringChars <= 120000
+        && productionNativeSchemaMetrics.enumValueCount <= 1000,
+    JSON.stringify({
+        ...productionNativeSchemaMetrics,
+        serializedBytes: Buffer.byteLength(JSON.stringify(productionNativeWireSchema), 'utf8')
+    })
+);
+check(
+    'Codex 直修 schema 递归封闭 composeDesign 全部对象且不携带 strict 不支持的条件关键字',
+    composeStrictOutputSchemaIssues.length === 0
+        && composeStrictOutputSchema.properties?.rationale?.anyOf?.[0]?.additionalProperties === false
+        && ['angle', 'purpose', 'claim', 'materials', 'structure'].every((key) => (
+            composeStrictOutputSchema.properties?.rationale?.anyOf?.[0]?.required?.includes(key)
+        )),
+    JSON.stringify(composeStrictOutputSchemaIssues)
+);
+check(
+    'Codex strict wire projection 不改写 composeDesign 原 Tool schema 的 optional/required 业务语义',
+    JSON.stringify(composeDesignToolSchema) === composeToolSchemaBeforeStrictProjection
+        && !composeDesignToolSchema?.required?.includes('rationale')
+        && !composeDesignToolSchema?.properties?.rationale?.required,
+    JSON.stringify(composeDesignToolSchema?.properties?.rationale)
+);
+
+const strictProjectionFixture = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+        requiredText: { type: 'string' },
+        optionalText: { type: 'string' },
+        nullableText: { type: ['string', 'null'] },
+        optionalNullableText: { type: ['string', 'null'] },
+        nested: {
+            type: 'object',
+            properties: {
+                requiredNumber: { type: 'number' },
+                optionalNumber: { type: 'number' }
+            },
+            required: ['requiredNumber']
+        },
+        rows: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    note: { type: 'string' }
+                },
+                required: ['id']
+            }
+        },
+        freeObject: { type: 'object', additionalProperties: true },
+        typedFreeObject: { type: 'object', additionalProperties: { type: 'string' } },
+        requiredNullableFreeObject: {
+            type: ['object', 'null'],
+            additionalProperties: true
+        },
+        referenced: { $ref: '#/$defs/referenceItem' }
+    },
+    required: [
+        'requiredText',
+        'nullableText',
+        'nested',
+        'rows',
+        'requiredNullableFreeObject',
+        'referenced'
+    ],
+    $defs: {
+        referenceItem: {
+            type: 'object',
+            properties: {
+                id: { type: 'string' },
+                note: { type: 'string' }
+            },
+            required: ['id']
+        }
+    }
+};
+const strictProjectionFixtureBefore = JSON.stringify(strictProjectionFixture);
+const strictProjectionWireSchema = buildCodexStrictOutputSchema(strictProjectionFixture);
+const strictProjectionRestored = restoreCodexStrictOutputValue({
+    requiredText: 'required',
+    optionalText: null,
+    nullableText: null,
+    optionalNullableText: null,
+    nested: { requiredNumber: 1, optionalNumber: null },
+    rows: [{ id: 'row-1', note: null }],
+    freeObject: JSON.stringify({ arbitrary: { depth: 2 } }),
+    typedFreeObject: JSON.stringify({ label: 'kept' }),
+    requiredNullableFreeObject: null,
+    referenced: { id: 'ref-1', note: null }
+}, strictProjectionFixture);
+check(
+    'Codex strict wire 只清理原可选 null，保留显式 nullable 并恢复数组、$ref/$defs 与动态对象',
+    JSON.stringify(strictProjectionFixture) === strictProjectionFixtureBefore
+        && collectStrictOutputSchemaIssues(strictProjectionWireSchema).length === 0
+        && !Object.prototype.hasOwnProperty.call(strictProjectionRestored, 'optionalText')
+        && strictProjectionRestored.nullableText === null
+        && Object.prototype.hasOwnProperty.call(strictProjectionRestored, 'optionalNullableText')
+        && strictProjectionRestored.optionalNullableText === null
+        && !Object.prototype.hasOwnProperty.call(strictProjectionRestored.nested, 'optionalNumber')
+        && !Object.prototype.hasOwnProperty.call(strictProjectionRestored.rows[0], 'note')
+        && strictProjectionRestored.freeObject?.arbitrary?.depth === 2
+        && strictProjectionRestored.typedFreeObject?.label === 'kept'
+        && strictProjectionRestored.requiredNullableFreeObject === null
+        && !Object.prototype.hasOwnProperty.call(strictProjectionRestored.referenced, 'note')
+        && strictProjectionWireSchema.properties?.freeObject?.type?.includes('string')
+        && strictProjectionWireSchema.properties?.typedFreeObject?.type?.includes('string')
+        && strictProjectionWireSchema.properties?.requiredNullableFreeObject?.anyOf?.some((branch) => (
+            branch.type === 'null'
+        )),
+    JSON.stringify({ strictProjectionWireSchema, strictProjectionRestored })
+);
+let standaloneOpenUnionRejected = false;
+try {
+    buildCodexStrictOutputSchema({
+        anyOf: [
+            { type: 'string' },
+            { type: 'object', additionalProperties: true }
+        ]
+    });
+} catch {
+    standaloneOpenUnionRejected = true;
+}
+check(
+    'Codex strict wire 对无法无损恢复的 standalone open-object union fail closed',
+    standaloneOpenUnionRejected
+);
+const getDocumentInfoToolSchema = getDocumentInfoTool?.inputSchema;
+const nativeToolEnvelopeFixture = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+        content: { type: 'string' },
+        toolCalls: {
+            type: 'array',
+            items: {
+                anyOf: [
+                    {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            id: { type: 'string' },
+                            name: { type: 'string', const: 'composeDesign' },
+                            arguments: { ...composeDesignToolSchema, additionalProperties: false }
+                        },
+                        required: ['id', 'name', 'arguments']
+                    },
+                    {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            id: { type: 'string' },
+                            name: { type: 'string', const: 'getDocumentInfo' },
+                            arguments: { ...getDocumentInfoToolSchema, additionalProperties: false }
+                        },
+                        required: ['id', 'name', 'arguments']
+                    }
+                ]
+            }
+        },
+        stopReason: { type: 'string', enum: ['end_turn', 'tool_use'] }
+    },
+    required: ['content', 'toolCalls', 'stopReason']
+};
+const nativeToolEnvelopeWireSchema = buildCodexStrictOutputSchema(nativeToolEnvelopeFixture);
+check(
+    'Codex 原生 Tool arguments 使用 name.const 可恢复联合，并覆盖完整 composeDesign schema',
+    collectStrictOutputSchemaIssues(nativeToolEnvelopeWireSchema).length === 0
+        && nativeToolEnvelopeWireSchema.properties?.toolCalls?.items?.anyOf?.[0]
+            ?.properties?.name?.const === 'composeDesign'
+        && nativeToolEnvelopeWireSchema.properties?.toolCalls?.items?.anyOf?.[1]
+            ?.properties?.name?.const === 'getDocumentInfo',
+    JSON.stringify(collectStrictOutputSchemaIssues(nativeToolEnvelopeWireSchema).slice(0, 8))
+);
+const discriminatedRestoreFixture = {
+    anyOf: [
+        {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                name: { type: 'string', const: 'composeDesign' },
+                arguments: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        requiredText: { type: 'string' },
+                        optionalText: { type: 'string' }
+                    },
+                    required: ['requiredText']
+                }
+            },
+            required: ['name', 'arguments']
+        },
+        {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                name: { type: 'string', const: 'getDocumentInfo' },
+                arguments: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {},
+                    required: []
+                }
+            },
+            required: ['name', 'arguments']
+        }
+    ]
+};
+const restoredDiscriminatedCall = restoreCodexStrictOutputValue({
+    name: 'composeDesign',
+    arguments: { requiredText: '中文与 C:\\项目\\素材.jpg', optionalText: null }
+}, discriminatedRestoreFixture);
+const unknownDiscriminatorCall = restoreCodexStrictOutputValue({
+    name: 'unknownTool',
+    arguments: { requiredText: 'keep', optionalText: null }
+}, discriminatedRestoreFixture);
+let duplicateDiscriminatorRejected = false;
+try {
+    buildCodexStrictOutputSchema({
+        anyOf: discriminatedRestoreFixture.anyOf.map((branch) => ({
+            ...branch,
+            properties: {
+                ...branch.properties,
+                name: { type: 'string', const: 'duplicate' }
+            }
+        }))
+    });
+} catch {
+    duplicateDiscriminatorRejected = true;
+}
+const schemasWithEmbeddedRefs = allAgentTools.filter((tool) => (
+    /"(?:\$ref|\$defs|definitions)"\s*:/.test(JSON.stringify(tool.inputSchema))
+));
+check(
+    'Codex name.const 恢复只清理命中分支的 optional null，未知或重复 discriminator fail closed',
+    restoredDiscriminatedCall.name === 'composeDesign'
+        && restoredDiscriminatedCall.arguments.requiredText === '中文与 C:\\项目\\素材.jpg'
+        && !Object.prototype.hasOwnProperty.call(restoredDiscriminatedCall.arguments, 'optionalText')
+        && unknownDiscriminatorCall.arguments.optionalText === null
+        && duplicateDiscriminatorRejected
+        && schemasWithEmbeddedRefs.length === 0,
+    JSON.stringify({ restoredDiscriminatedCall, unknownDiscriminatorCall, schemasWithEmbeddedRefs })
+);
 check(
     'composeDesign 模型 schema 与执行校验同时要求背景决定和明确字体',
     composeDesignToolSchema?.required?.includes('background')
         && ['title', 'subtitle', 'body', 'sellingPoint'].every((role) => (
             composeTypographySchema?.properties?.[role]?.required?.includes('fontName')
         ))
+);
+const composePhotoSubjectBranch = composeSubjectSchema?.oneOf?.find((branch) => (
+    branch?.properties?.treatment?.enum?.includes('photo')
+));
+check(
+    'composeDesign Provider 允许完整摄影关系只声明 region.imagePlacement，不强迫伪造主体占比',
+    composePhotoSubjectBranch?.required?.includes('treatment')
+        && composePhotoSubjectBranch.required.includes('shadow')
+        && !composePhotoSubjectBranch.required.includes('fillRatio'),
+    JSON.stringify(composePhotoSubjectBranch)
+);
+check(
+    'composeDesign 的 Provider 可见背景落位契约与运行时一致',
+    Array.isArray(composeBackgroundPlacementSchema?.properties?.cropPolicy?.enum)
+        && composeBackgroundPlacementSchema.properties.cropPolicy.enum.join(',') === 'avoid-crop,allow-crop'
+        && !Object.prototype.hasOwnProperty.call(composeBackgroundPlacementSchema?.properties || {}, 'subjectFillRatio')
+        && !composeBackgroundPlacementSchema?.required?.includes('focalPoint'),
+    JSON.stringify(composeBackgroundPlacementSchema)
+);
+const validateComposeRegionPlacement = new Ajv({ allErrors: true, strict: false })
+    .compile(composeRegionPlacementSchema);
+const placementBase = {
+    anchor: 'center',
+    scale: 1,
+    rotation: 0,
+    mask: 'none',
+    overflow: 'clip'
+};
+check(
+    'composeDesign Provider 可见 region 落位契约拒绝 cover 与 subjectFillRatio 同时出现',
+    validateComposeRegionPlacement({
+        ...placementBase,
+        fit: 'cover',
+        cropPolicy: 'protect-subject',
+        subjectFillRatio: 0.82
+    }) === false,
+    JSON.stringify(validateComposeRegionPlacement.errors)
+);
+check(
+    'composeDesign Provider 可见 region 落位契约允许 contain 与 subjectFillRatio',
+    validateComposeRegionPlacement({
+        ...placementBase,
+        fit: 'contain',
+        cropPolicy: 'avoid-crop',
+        subjectFillRatio: 0.82
+    }) === true,
+    JSON.stringify(validateComposeRegionPlacement.errors)
+);
+check(
+    'composeDesign Provider 可见 region 落位契约允许不带 subjectFillRatio 的 cover',
+    validateComposeRegionPlacement({
+        ...placementBase,
+        fit: 'cover',
+        cropPolicy: 'allow-crop'
+    }) === true,
+    JSON.stringify(validateComposeRegionPlacement.errors)
+);
+check(
+    'composeDesign Provider 可见 region 落位契约拒绝 cover 与 avoid-crop',
+    validateComposeRegionPlacement({
+        ...placementBase,
+        fit: 'cover',
+        cropPolicy: 'avoid-crop'
+    }) === false,
+    JSON.stringify(validateComposeRegionPlacement.errors)
+);
+check(
+    'composeDesign Provider 可见 region 落位契约拒绝 focalPoint 与 subjectFillRatio 同时出现',
+    validateComposeRegionPlacement({
+        ...placementBase,
+        fit: 'contain',
+        cropPolicy: 'protect-subject',
+        focalPoint: { x: 0.5, y: 0.5 },
+        subjectFillRatio: 0.82
+    }) === false,
+    JSON.stringify(validateComposeRegionPlacement.errors)
 );
 
 const visualStyle = {
@@ -158,7 +868,7 @@ const good = {
                 role: 'main-image',
                 content: 'subject',
                 bounds: { x: 0.5, y: 0.08, width: 0.44, height: 0.84 },
-                imagePlacement: { fit: 'contain', anchor: 'center', scale: 1, rotation: 0, mask: 'none', overflow: 'visible' }
+                imagePlacement: { fit: 'contain', anchor: 'center', scale: 1, rotation: 0, mask: 'none', overflow: 'visible', cropPolicy: 'avoid-crop' }
             },
             {
                 id: '标题·春日薄款',
@@ -181,6 +891,237 @@ check('rationale 是可选工作笔记，不是写入门票', ok.ok && ok.spec.r
 check('颜色只做格式归一，没有派生字色', ok.spec.palette.textHex === '#231F20');
 check('主体处理、抠图与投影保持显式选择', ok.spec.subject.treatment === 'cutout' && ok.spec.subject.cutout === false && ok.spec.subject.shadow.kind === 'drop-shadow' && ok.spec.subject.shadow.angle === 104);
 check('中文设计名与语义图层名保持模型原文', ok.spec.document.name === '春日薄款主图' && ok.spec.layout.regions[0].id === '主体·产品摄影');
+
+const backgroundPlacementBase = {
+    fit: 'contain',
+    anchor: 'center',
+    scale: 1,
+    rotation: 0,
+    mask: 'none',
+    overflow: 'visible'
+};
+const protectedBackground = normalizeComposeDesignSpec({
+    ...good,
+    background: {
+        kind: 'asset',
+        filePath: 'E:/project/background.jpg',
+        imagePlacement: { ...backgroundPlacementBase, cropPolicy: 'protect-subject' }
+    }
+});
+check(
+    '绕过 Provider schema 的背景 protect-subject 仍被运行时防御拒绝',
+    protectedBackground.ok === false
+        && protectedBackground.issues.some((issue) => (
+            issue.startsWith('background.imagePlacement.cropPolicy：')
+            && issue.includes('不能使用 protect-subject')
+        )),
+    JSON.stringify(protectedBackground.issues)
+);
+const uncroppedBackground = normalizeComposeDesignSpec({
+    ...good,
+    background: {
+        kind: 'asset',
+        filePath: 'E:/project/background.jpg',
+        imagePlacement: { ...backgroundPlacementBase, cropPolicy: 'avoid-crop' }
+    }
+});
+check(
+    '背景使用 avoid-crop 时 focalPoint 保持可选，不制造隐藏必填项',
+    uncroppedBackground.ok === true
+        && !uncroppedBackground.issues.some((issue) => issue.includes('focalPoint')),
+    JSON.stringify(uncroppedBackground.issues)
+);
+
+const extremeCoverBlock = {
+    id: '收尾·模特穿搭',
+    role: 'main-image',
+    x: 0,
+    y: 4649,
+    width: 750,
+    height: 426,
+    imagePlacement: {
+        fit: 'cover',
+        anchor: 'center',
+        scale: 1,
+        rotation: 0,
+        mask: 'clipping',
+        overflow: 'clip',
+        cropPolicy: 'protect-subject'
+    }
+};
+const extremeProtectedCover = evaluateImagePlacementQuality({
+    block: extremeCoverBlock,
+    layerId: 901,
+    actualBounds: { x: 0, y: 4344, width: 750, height: 1036 },
+    actualSubjectBounds: { x: 0, y: 4344, width: 750, height: 1036 },
+    subjectDetection: {
+        method: 'asset:matting',
+        confidence: 'high',
+        relativeBox: { x: 0, y: 0, width: 1, height: 1 }
+    },
+    clippingApplied: true,
+    clippingBaseLayerId: 900,
+    canvas: { width: 750, height: 5195 }
+});
+check(
+    '竖图 cover 进入短横框会报告真实裁切比例，并在保护主体意图下拒绝假通过',
+    extremeProtectedCover.qualityState === 'needs_repair'
+        && Math.abs(extremeProtectedCover.cropFacts.frameVisibleRatio - 0.411) < 0.002
+        && extremeProtectedCover.cropFacts.subjectVisibleRatio === extremeProtectedCover.cropFacts.frameVisibleRatio
+        && extremeProtectedCover.cropFacts.clippedSubjectEdges.includes('top')
+        && extremeProtectedCover.cropFacts.clippedSubjectEdges.includes('bottom')
+        && extremeProtectedCover.findings.some((finding) => finding.code === 'protected_subject_cropped'),
+    JSON.stringify(extremeProtectedCover)
+);
+const intentionalCover = evaluateImagePlacementQuality({
+    block: {
+        ...extremeCoverBlock,
+        imagePlacement: { ...extremeCoverBlock.imagePlacement, cropPolicy: 'allow-crop' }
+    },
+    layerId: 901,
+    actualBounds: { x: 0, y: 4344, width: 750, height: 1036 },
+    clippingApplied: true,
+    clippingBaseLayerId: 900,
+    canvas: { width: 750, height: 5195 }
+});
+check(
+    'Agent 明确允许裁切时 Harness 只要求看真实画面，不替模型否决构图',
+    intentionalCover.qualityState === 'needs_review'
+        && intentionalCover.cropFacts.cropPolicySatisfied === true
+        && intentionalCover.findings.some((finding) => finding.code === 'intentional_crop_requires_visual_review')
+        && !intentionalCover.findings.some((finding) => finding.severity === 'repair'),
+    JSON.stringify(intentionalCover)
+);
+const avoidCropViolation = evaluateImagePlacementQuality({
+    block: {
+        ...extremeCoverBlock,
+        imagePlacement: {
+            ...extremeCoverBlock.imagePlacement,
+            fit: 'contain',
+            cropPolicy: 'avoid-crop'
+        }
+    },
+    layerId: 901,
+    actualBounds: { x: 0, y: 4344, width: 750, height: 1036 },
+    clippingApplied: true,
+    clippingBaseLayerId: 900
+});
+check(
+    'avoid-crop 与真实裁切冲突时产生确定性修复，不再 cropPolicySatisfied=false 却假通过',
+    avoidCropViolation.qualityState === 'needs_repair'
+        && avoidCropViolation.cropFacts.cropPolicySatisfied === false
+        && avoidCropViolation.findings.some((finding) => finding.code === 'frame_crop_violates_policy'),
+    JSON.stringify(avoidCropViolation)
+);
+const lowConfidenceProtectedCover = evaluateImagePlacementQuality({
+    block: extremeCoverBlock,
+    layerId: 901,
+    actualBounds: { x: 0, y: 4344, width: 750, height: 1036 },
+    actualSubjectBounds: { x: 0, y: 4344, width: 750, height: 1036 },
+    subjectDetection: { method: 'frame', confidence: 'low' },
+    clippingApplied: true,
+    clippingBaseLayerId: 900
+});
+check(
+    '低置信主体框不能把保护主体裁切判成确定性通过或确定性失败',
+    lowConfidenceProtectedCover.qualityState === 'needs_review'
+        && lowConfidenceProtectedCover.cropFacts.cropPolicySatisfied === 'unknown'
+        && lowConfidenceProtectedCover.findings.some((finding) => finding.code === 'crop_intent_unverified'),
+    JSON.stringify(lowConfidenceProtectedCover)
+);
+const noHiddenSubjectRatio = evaluateImagePlacementQuality({
+    block: {
+        id: '主体·留白实验',
+        role: 'main-image',
+        x: 0,
+        y: 0,
+        width: 1000,
+        height: 1000,
+        imagePlacement: {
+            fit: 'contain', anchor: 'top-center', scale: 1, rotation: 0,
+            mask: 'none', overflow: 'visible', cropPolicy: 'avoid-crop'
+        }
+    },
+    layerId: 902,
+    actualBounds: { x: 350, y: 0, width: 300, height: 300 },
+    clippingApplied: false
+});
+const underfillFinding = noHiddenSubjectRatio.findings.find((finding) => finding.code === 'main_image_underfilled');
+check(
+    '缺少 Agent 主体占比时 Harness 不再偷偷补 0.82 或生成伪可执行修订动作',
+    underfillFinding && underfillFinding.recommendedAction === undefined
+        && !JSON.stringify(noHiddenSubjectRatio).includes('0.82'),
+    JSON.stringify(noHiddenSubjectRatio)
+);
+
+const placementReviewReceipts = [
+    {
+        blockId: '完全裁出画框',
+        qualityState: 'needs_review',
+        targetBounds: { x: 0, y: 4649, width: 750, height: 426 },
+        cropFacts: {
+            requiresVisualReview: true,
+            frameVisibleRatio: 0,
+            cropPolicySatisfied: true
+        }
+    },
+    ...Array.from({ length: 9 }, (_unused, index) => ({
+        blockId: `普通复核-${index + 2}`,
+        qualityState: 'needs_review',
+        targetBounds: { x: 20, y: 200 + index * 430, width: 710, height: 400 },
+        cropFacts: {
+            requiresVisualReview: true,
+            frameVisibleRatio: 1,
+            cropPolicySatisfied: true
+        }
+    })),
+    {
+        blockId: '无需复核',
+        qualityState: 'passed',
+        targetBounds: { x: 0, y: 0, width: 750, height: 400 },
+        cropFacts: {
+            requiresVisualReview: false,
+            frameVisibleRatio: 0,
+            cropPolicySatisfied: true
+        }
+    }
+];
+const placementReviewPlan = buildImagePlacementReviewPlan({
+    receipts: placementReviewReceipts,
+    canvas: { width: 750, height: 5195 }
+});
+check(
+    '长页图片复核计划保留 frameVisibleRatio=0 的最高机械风险，不被默认值吞掉',
+    placementReviewPlan.allTargets[0]?.sourceId === '完全裁出画框'
+        && placementReviewPlan.allTargets[0]?.riskScore === 1,
+    JSON.stringify(placementReviewPlan.allTargets[0])
+);
+check(
+    '长页图片复核统一使用 3.5% 最少 12px 的画布内 padding',
+    placementReviewPlan.allTargets[0]?.captureRegion?.x === 0
+        && placementReviewPlan.allTargets[0]?.captureRegion?.y === 4634
+        && placementReviewPlan.allTargets[0]?.captureRegion?.width === 750
+        && placementReviewPlan.allTargets[0]?.captureRegion?.height === 456,
+    JSON.stringify(placementReviewPlan.allTargets[0]?.captureRegion)
+);
+check(
+    '长页图片复核 cap=8 但 expectedTargets 保留全部义务，并显式记录 overflow',
+    IMAGE_PLACEMENT_REVIEW_CAPTURE_LIMIT === 8
+        && placementReviewPlan.allTargets.length === 10
+        && placementReviewPlan.selectedTargets.length === 8
+        && placementReviewPlan.expectedTargets.length === 10
+        && placementReviewPlan.overflow?.omittedCount === 2
+        && placementReviewPlan.overflow?.reason === 'producer_limit'
+        && placementReviewPlan.overflow?.sourceIds?.join(',') === '普通复核-9,普通复核-10',
+    JSON.stringify(placementReviewPlan)
+);
+check(
+    'renderLayout 与 composeDesign 共用纯机械图片复核计划，不再各自漂移风险公式',
+    toolExecutorSource.includes('buildImagePlacementReviewPlan({')
+        && composeExecutorSource.includes('buildImagePlacementReviewPlan({')
+        && !toolExecutorSource.includes('frameVisibleRatio || 1')
+        && !composeExecutorSource.includes('frameVisibleRatio || 1')
+);
 
 const selectionReason = '四双完整同框，花色辨识清楚，并且右侧留白能承接标题。';
 const rationaleProjection = buildComposeDesignRationaleResultProjection({
@@ -248,9 +1189,93 @@ check('cutout 是否抠图必须显式声明', !implicitCutout.ok && implicitCut
 const photoWithoutFill = normalizeComposeDesignSpec({
     ...good,
     background: { kind: 'none' },
-    subject: { filePath: 'E:/project/photo.jpg', treatment: 'photo', shadow: { kind: 'none' } }
+    subject: { filePath: 'E:/project/photo.jpg', treatment: 'photo', shadow: { kind: 'none' } },
+    layout: {
+        ...good.layout,
+        groupName: '完整摄影关系',
+        regions: [{
+            id: '主视觉·完整摄影',
+            role: 'main-image',
+            content: 'subject',
+            bounds: { x: 0, y: 0, width: 1, height: 1 },
+            imagePlacement: {
+                fit: 'cover', anchor: 'right-center', scale: 1, rotation: 0,
+                mask: 'none', overflow: 'clip', cropPolicy: 'allow-crop'
+            }
+        }]
+    }
 });
-check('摄影主体占比必须由 Agent 声明', !photoWithoutFill.ok && photoWithoutFill.issues.some((issue) => /subject\.fillRatio/.test(issue)));
+check(
+    '完整摄影关系可只用 Agent 声明的 region.imagePlacement，不强迫 subject.fillRatio',
+    photoWithoutFill.ok
+        && photoWithoutFill.spec?.subject?.fillRatio === undefined
+        && photoWithoutFill.spec?.layout?.regions?.[0]?.imagePlacement?.anchor === 'right-center',
+    JSON.stringify(photoWithoutFill.issues)
+);
+const photoWithInvalidFill = normalizeComposeDesignSpec({
+    ...photoWithoutFill.spec,
+    subject: { ...photoWithoutFill.spec.subject, fillRatio: 0 }
+});
+check(
+    'Agent 一旦显式声明摄影主体占比，运行时仍严格校验该约束',
+    photoWithInvalidFill.ok === false
+        && photoWithInvalidFill.issues.some((issue) => /subject\.fillRatio/.test(issue)),
+    JSON.stringify(photoWithInvalidFill.issues)
+);
+
+const lowConfidenceFullFramePrewrite = buildImagePlacementPrewritePlan({
+    source: {
+        width: 3000,
+        height: 4000,
+        subject: {
+            box: { x: 0.12, y: 0.08, width: 0.76, height: 0.84 },
+            method: 'matting',
+            confidence: 'low'
+        }
+    },
+    target: { x: 0, y: 0, width: 800, height: 800 },
+    placement: {
+        fit: 'cover',
+        anchor: 'right-center',
+        cropPolicy: 'allow-crop'
+    },
+    canvas: { width: 800, height: 800 }
+});
+check(
+    '普通摄影图框预演只消费源图尺寸和 Agent 构图声明，低置信主体框不阻断可逆首写',
+    lowConfidenceFullFramePrewrite.ok === true
+        && lowConfidenceFullFramePrewrite.plan.mode === 'normal'
+        && lowConfidenceFullFramePrewrite.plan.finalWrite.fit === 'cover'
+        && lowConfidenceFullFramePrewrite.plan.finalWrite.anchor === 'right-center',
+    JSON.stringify(lowConfidenceFullFramePrewrite)
+);
+const lowConfidenceSubjectFillPrewrite = buildImagePlacementPrewritePlan({
+    source: {
+        width: 3000,
+        height: 4000,
+        subject: {
+            box: { x: 0.12, y: 0.08, width: 0.76, height: 0.84 },
+            method: 'matting',
+            confidence: 'low'
+        }
+    },
+    target: { x: 0, y: 0, width: 800, height: 800 },
+    placement: {
+        fit: 'contain',
+        anchor: 'right-center',
+        cropPolicy: 'avoid-crop',
+        subjectFillRatio: 0.82
+    },
+    canvas: { width: 800, height: 800 }
+});
+check(
+    '显式 subjectFillRatio 仍必须有可用主体框，低置信检测不能被当成主体事实',
+    lowConfidenceSubjectFillPrewrite.ok === false
+        && lowConfidenceSubjectFillPrewrite.issues.some((issue) => (
+            issue.code === 'subject_evidence_unusable_for_subject_fill'
+        )),
+    JSON.stringify(lowConfidenceSubjectFillPrewrite)
+);
 
 const photoWithoutBackgroundDecision = normalizeComposeDesignSpec({
     ...good,
@@ -286,7 +1311,7 @@ const photoOnly = normalizeComposeDesignSpec({
             role: 'main-image',
             content: 'subject',
             bounds: { x: 0.08, y: 0.08, width: 0.84, height: 0.84 },
-            imagePlacement: { fit: 'contain', anchor: 'center', scale: 1, rotation: 0, mask: 'none', overflow: 'visible' }
+            imagePlacement: { fit: 'cover', anchor: 'center', scale: 1, rotation: 0, mask: 'none', overflow: 'clip', cropPolicy: 'protect-subject' }
         }]
     }
 });
@@ -294,6 +1319,96 @@ check(
     'Agent 可明确选择只有商品图、不编造文字的有效设计',
     photoOnly.ok,
     photoOnly.issues.join(' | ')
+);
+
+const coverSubjectFillConflictInput = {
+    ...good,
+    layout: {
+        ...good.layout,
+        regions: [{
+            ...good.layout.regions[0],
+            imagePlacement: {
+                ...good.layout.regions[0].imagePlacement,
+                fit: 'cover',
+                cropPolicy: 'protect-subject',
+                subjectFillRatio: 0.82
+            }
+        }]
+    }
+};
+const coverSubjectFillConflict = normalizeComposeDesignSpec(coverSubjectFillConflictInput);
+check(
+    '绕过 Provider schema 的 cover 与 subjectFillRatio 冲突仍被 runtime 拒绝',
+    coverSubjectFillConflict.ok === false
+        && coverSubjectFillConflict.issues.includes('layout.regions[0].imagePlacement:cover_and_subject_fill_ratio_are_ambiguous'),
+    JSON.stringify(coverSubjectFillConflict.issues)
+);
+const coverAvoidCropConflict = normalizeComposeDesignSpec({
+    ...good,
+    layout: {
+        ...good.layout,
+        regions: [{
+            ...good.layout.regions[0],
+            imagePlacement: {
+                ...good.layout.regions[0].imagePlacement,
+                fit: 'cover',
+                cropPolicy: 'avoid-crop'
+            }
+        }]
+    }
+});
+check(
+    '绕过 Provider schema 的 cover 与 avoid-crop 冲突仍被 runtime 拒绝',
+    coverAvoidCropConflict.ok === false
+        && coverAvoidCropConflict.issues.includes('layout.regions[0].imagePlacement:cover_conflicts_with_avoid_crop'),
+    JSON.stringify(coverAvoidCropConflict.issues)
+);
+const focalSubjectFillConflict = normalizeComposeDesignSpec({
+    ...good,
+    layout: {
+        ...good.layout,
+        regions: [{
+            ...good.layout.regions[0],
+            imagePlacement: {
+                ...good.layout.regions[0].imagePlacement,
+                fit: 'contain',
+                cropPolicy: 'protect-subject',
+                focalPoint: { x: 0.5, y: 0.5 },
+                subjectFillRatio: 0.82
+            }
+        }]
+    }
+});
+check(
+    '绕过 Provider schema 的 focalPoint 与 subjectFillRatio 冲突仍被 runtime 拒绝',
+    focalSubjectFillConflict.ok === false
+        && focalSubjectFillConflict.issues.includes('layout.regions[0].imagePlacement:focal_point_and_subject_fill_ratio_conflict'),
+    JSON.stringify(focalSubjectFillConflict.issues)
+);
+const publicPlacementConflict = sanitizeUserVisibleDiagnosticText(
+    'composeDesign 设计稿不完整：layout.regions[0].imagePlacement:cover_and_subject_fill_ratio_are_ambiguous'
+);
+const additionalPublicPlacementConflicts = [
+    sanitizeUserVisibleDiagnosticText(
+        'composeDesign 设计稿不完整：layout.regions[1].imagePlacement:cover_conflicts_with_avoid_crop'
+    ),
+    sanitizeUserVisibleDiagnosticText(
+        'composeDesign 设计稿不完整：layout.regions[2].imagePlacement:focal_point_and_subject_fill_ratio_conflict'
+    )
+];
+check(
+    '图片落位冲突的用户文案不泄漏字段路径或英文 code',
+    publicPlacementConflict.includes('第 1 张图片')
+        && publicPlacementConflict.includes('保留其中一种意图')
+        && !publicPlacementConflict.includes('layout.regions')
+        && !publicPlacementConflict.includes('cover_and_subject_fill_ratio_are_ambiguous')
+        && additionalPublicPlacementConflicts.every((message) => (
+            message.includes('保留其中一种')
+                && !message.includes('layout.regions')
+                && !message.includes('cover_conflicts_with_avoid_crop')
+                && !message.includes('focal_point_and_subject_fill_ratio_conflict')
+        )),
+    JSON.stringify([publicPlacementConflict, ...additionalPublicPlacementConflicts])
 );
 
 const multiVisual = normalizeComposeDesignSpec({
@@ -309,14 +1424,14 @@ const multiVisual = normalizeComposeDesignSpec({
                 role: 'main-image',
                 content: 'E:/project/yoga-scene.jpg',
                 bounds: { x: 0.03, y: 0.04, width: 0.7, height: 0.92 },
-                imagePlacement: { fit: 'cover', anchor: 'center', scale: 1, rotation: -4, mask: 'none', overflow: 'clip' }
+                imagePlacement: { fit: 'cover', anchor: 'top-center', scale: 1, rotation: 0, mask: 'none', overflow: 'clip', cropPolicy: 'allow-crop' }
             },
             {
                 id: '细节·防滑纹理',
                 role: 'decoration',
                 content: 'E:/project/grip-detail.png',
                 bounds: { x: 0.63, y: 0.56, width: 0.32, height: 0.34 },
-                imagePlacement: { fit: 'cover', anchor: 'center', scale: 1.08, rotation: 3, mask: 'clipping', overflow: 'clip' }
+                imagePlacement: { fit: 'cover', anchor: 'center', scale: 1, rotation: 0, mask: 'clipping', overflow: 'clip', cropPolicy: 'allow-crop', focalPoint: { x: 0.48, y: 0.42 } }
             },
             {
                 id: '标题·稳住每一步',
@@ -339,7 +1454,38 @@ check(
     '多个视觉元素的语义名称和各自定位声明保持原样',
     multiVisual.ok
         && multiVisual.spec.layout.regions[0].id === '场景·瑜伽动作'
-        && multiVisual.spec.layout.regions[1].imagePlacement.rotation === 3
+        && multiVisual.spec.layout.regions[0].imagePlacement.anchor === 'top-center'
+        && multiVisual.spec.layout.regions[1].imagePlacement.focalPoint.y === 0.42
+);
+const unsupportedImagePlacement = normalizeComposeDesignSpec({
+    ...good,
+    layout: {
+        ...good.layout,
+        regions: [{
+            ...good.layout.regions[0],
+            imagePlacement: {
+                ...good.layout.regions[0].imagePlacement,
+                rotation: 3,
+                scale: 1.08
+            }
+        }]
+    }
+});
+check(
+    'composeDesign 在 Photoshop 写入前拒绝执行层不能兑现的图片旋转与额外缩放',
+    !unsupportedImagePlacement.ok
+        && unsupportedImagePlacement.issues.some((issue) => /rotation/.test(issue))
+        && unsupportedImagePlacement.issues.some((issue) => /scale/.test(issue)),
+    unsupportedImagePlacement.issues.join(' | ')
+);
+const prematureSave = normalizeComposeDesignSpec({
+    ...good,
+    save: { projectSubdir: '交付', format: 'psd' }
+});
+check(
+    'composeDesign 拒绝在 Agent 看过当前版本前内部保存',
+    !prematureSave.ok && prematureSave.issues.some((issue) => /composeDesign 不在 Agent 看见写后真实画面前保存/.test(issue)),
+    prematureSave.issues.join(' | ')
 );
 check(
     '图片型视觉元素不冒充文字区域影响构图事实',
@@ -386,14 +1532,32 @@ const photoPlan = planPhotoFullBleedPlacement({
     photo: { width: 3000, height: 4000 },
     subjectBox: { x: 0.3, y: 0.4, width: 0.4, height: 0.5 },
     targetRegion: { x: 0.5, y: 0.06, width: 0.45, height: 0.84 },
-    fillRatio: 0.9
+    fillRatio: 0.9,
+    anchor: 'center'
 });
 check('显式摄影构图可转换为确定性几何', photoPlan && photoPlan.width >= 800 && photoPlan.height >= 800, JSON.stringify(photoPlan));
+const conflictingPhotoPlan = planPhotoFullBleedPlacement({
+    canvas: { width: 800, height: 800 },
+    photo: { width: 3000, height: 4000 },
+    subjectBox: { x: 0.3, y: 0.25, width: 0.4, height: 0.5 },
+    targetRegion: { x: 0.5, y: 0.06, width: 0.45, height: 0.84 },
+    fillRatio: 0.3,
+    anchor: 'center'
+});
+check(
+    '摄影满幅与主体占比冲突时只返回冲突事实，不替 Agent 选择牺牲主体占比',
+    conflictingPhotoPlan?.designIntentSatisfied === false
+        && conflictingPhotoPlan.fillIntentSatisfied === false
+        && conflictingPhotoPlan.actualFillRatio > conflictingPhotoPlan.requestedFillRatio
+        && conflictingPhotoPlan.constraintIssues.includes('full_canvas_cover_conflicts_with_subject_fill'),
+    JSON.stringify(conflictingPhotoPlan)
+);
 check('摄影构图缺占比时不套默认值', planPhotoFullBleedPlacement({
     canvas: { width: 800, height: 800 },
     photo: { width: 3000, height: 4000 },
     subjectBox: { x: 0.3, y: 0.4, width: 0.4, height: 0.5 },
-    targetRegion: { x: 0.5, y: 0.06, width: 0.45, height: 0.84 }
+    targetRegion: { x: 0.5, y: 0.06, width: 0.45, height: 0.84 },
+    anchor: 'center'
 }) === null);
 
 check('投影 none 不执行', planSubjectShadow({ kind: 'none' }) === null);
@@ -405,7 +1569,11 @@ const generated = normalizeComposeDesignSpec({
     background: {
         kind: 'generated',
         prompt: '低饱和亚麻与柔和侧光，左侧留白',
-        referenceFilePath: 'E:/project/reference.jpg'
+        referenceFilePath: 'E:/project/reference.jpg',
+        imagePlacement: {
+            fit: 'cover', anchor: 'left-center', scale: 1, rotation: 0,
+            mask: 'none', overflow: 'clip', cropPolicy: 'allow-crop'
+        }
     }
 });
 check('显式 generated 背景通过', generated.ok, generated.issues.join(' | '));
@@ -484,6 +1652,89 @@ check(
 );
 
 async function verifyComposeDesignResultProjection() {
+    const invalidPlacementResult = await executeComposeDesign(coverSubjectFillConflictInput, {
+        executeToolCall: async () => {
+            throw new Error('设计稿校验失败时不应调用 Photoshop 工具');
+        },
+        inferLayerId: () => undefined,
+        invokeMain: async () => {
+            throw new Error('设计稿校验失败时不应调用主进程');
+        }
+    });
+    const invalidPlacementIssue = invalidPlacementResult.issueDetails?.[0];
+    check(
+        'composeDesign 落位冲突返回不替 Agent 选择的机器可读恢复选项',
+        invalidPlacementResult.success === false
+            && invalidPlacementIssue?.code === 'image_placement_cover_subject_fill_conflict'
+            && invalidPlacementIssue?.path === 'layout.regions[0].imagePlacement'
+            && invalidPlacementIssue?.conflictingFields?.join(',') === 'fit,subjectFillRatio'
+            && invalidPlacementIssue?.recoveryOptions?.length === 2
+            && invalidPlacementIssue.recoveryOptions.every((option) => option.recommended === undefined)
+            && invalidPlacementIssue.recoveryOptions.some((option) => option.id === 'preserve_cover')
+            && invalidPlacementIssue.recoveryOptions.some((option) => option.id === 'preserve_subject_fill'),
+        JSON.stringify(invalidPlacementResult)
+    );
+    const additionalInvalidPlacementInputs = [
+        {
+            input: {
+                ...good,
+                layout: {
+                    ...good.layout,
+                    regions: [{
+                        ...good.layout.regions[0],
+                        imagePlacement: {
+                            ...good.layout.regions[0].imagePlacement,
+                            fit: 'cover',
+                            cropPolicy: 'avoid-crop'
+                        }
+                    }]
+                }
+            },
+            expectedCode: 'image_placement_cover_avoid_crop_conflict',
+            expectedFields: 'fit,cropPolicy'
+        },
+        {
+            input: {
+                ...good,
+                layout: {
+                    ...good.layout,
+                    regions: [{
+                        ...good.layout.regions[0],
+                        imagePlacement: {
+                            ...good.layout.regions[0].imagePlacement,
+                            fit: 'contain',
+                            cropPolicy: 'protect-subject',
+                            focalPoint: { x: 0.5, y: 0.5 },
+                            subjectFillRatio: 0.82
+                        }
+                    }]
+                }
+            },
+            expectedCode: 'image_placement_focal_subject_fill_conflict',
+            expectedFields: 'focalPoint,subjectFillRatio'
+        }
+    ];
+    for (const issueCase of additionalInvalidPlacementInputs) {
+        const issueResult = await executeComposeDesign(issueCase.input, {
+            executeToolCall: async () => {
+                throw new Error('设计稿校验失败时不应调用 Photoshop 工具');
+            },
+            inferLayerId: () => undefined,
+            invokeMain: async () => {
+                throw new Error('设计稿校验失败时不应调用主进程');
+            }
+        });
+        const issueDetail = issueResult.issueDetails?.[0];
+        check(
+            `composeDesign ${issueCase.expectedCode} 返回对称恢复选项`,
+            issueDetail?.code === issueCase.expectedCode
+                && issueDetail?.conflictingFields?.join(',') === issueCase.expectedFields
+                && issueDetail?.recoveryOptions?.length === 2
+                && issueDetail.recoveryOptions.every((option) => option.recommended === undefined),
+            JSON.stringify(issueResult)
+        );
+    }
+
     const toolLayerIds = {
         createRectangle: 11,
         renderLayout: 12
@@ -512,7 +1763,47 @@ async function verifyComposeDesignResultProjection() {
                     createdLayerIds: [toolLayerIds.renderLayout],
                     subjectLayerIds: [toolLayerIds.renderLayout],
                     stageGroupName: '点击图·春日薄款',
-                    snapshot: { data: 'fixture', mediaType: 'image/jpeg' }
+                    snapshot: { data: 'fixture', mediaType: 'image/jpeg' },
+                    historyStateRef: { documentId: 701, historyStateId: 3 },
+                    postWriteObservation: {
+                        captured: true,
+                        verifiedSameDocumentVersion: true,
+                        historyStateRef: { documentId: 701, historyStateId: 3 }
+                    },
+                    visualObservationBundle: {
+                        version: 'visual-observation-bundle/v1',
+                        expectedObservationCount: 1,
+                        items: [{
+                            identity: {
+                                outer: 'renderLayout', resultPath: '$.items[0]', document: '701', history: '3',
+                                sourceKind: 'layout-region', sourceId: '主体·产品摄影'
+                            },
+                            captured: true,
+                            image: { base64: 'fixture-local' }
+                        }]
+                    },
+                    imagePlacementReceipts: [{
+                        blockId: '主体·产品摄影',
+                        qualityState: 'needs_review',
+                        targetBounds: { x: 400, y: 64, width: 352, height: 672 },
+                        cropFacts: { requiresVisualReview: true, frameVisibleRatio: 0.7, cropPolicySatisfied: true }
+                    }],
+                    ownerReceipt: { version: 'render-layout-owner/v1' }
+                };
+            }
+            if (toolName === 'getLayerHierarchy') {
+                return {
+                    success: true,
+                    historyStateRef: { documentId: 701, historyStateId: 4 },
+                    hierarchy: []
+                };
+            }
+            if (toolName === 'getCanvasSnapshot') {
+                return {
+                    success: true,
+                    historyStateRef: { documentId: 701, historyStateId: 4 },
+                    documentInfo: { id: 701, name: '春日薄款主图' },
+                    snapshot: { base64: `final-${params?.region?.y || 0}`, format: 'png' }
                 };
             }
             return { success: true };
@@ -540,6 +1831,261 @@ async function verifyComposeDesignResultProjection() {
         'composeDesign 新文档使用透明机械底，不在显式背景步骤前注入白色视觉答案',
         executedCalls.find((call) => call.toolName === 'createDocument')?.params?.backgroundColor === 'transparent',
         JSON.stringify(executedCalls.find((call) => call.toolName === 'createDocument'))
+    );
+    check(
+        'composeDesign 保留图片落位与 owner 收据，并在后续投影写入后重建最终视觉版本',
+        result.postWriteObservation?.verifiedSameDocumentVersion === true
+            && result.historyStateRef?.historyStateId === 4
+            && result.snapshot?.base64 === 'final-0'
+            && result.visualObservationBundle?.items?.[0]?.identity?.outer === 'composeDesign'
+            && result.visualObservationBundle?.items?.[0]?.identity?.history === '4'
+            && result.visualObservationBundle?.items?.[0]?.identity?.sourceId === 'final-canvas'
+            && result.imagePlacementReceipts?.[0]?.blockId === '主体·产品摄影'
+            && result.ownerReceipt?.version === 'render-layout-owner/v1',
+        JSON.stringify({
+            visualObservationBundle: result.visualObservationBundle,
+            postWriteObservation: result.postWriteObservation,
+            imagePlacementReceipts: result.imagePlacementReceipts,
+            ownerReceipt: result.ownerReceipt
+        })
+    );
+
+    const fullFramePhotoInput = {
+        ...good,
+        document: { mode: 'new', name: '完整摄影构图首稿' },
+        background: { kind: 'none' },
+        subject: {
+            filePath: 'E:/project/DSC08134.jpg',
+            treatment: 'photo',
+            shadow: { kind: 'none' }
+        },
+        layout: {
+            ...good.layout,
+            groupName: '完整摄影·右侧重心',
+            regions: [{
+                id: '主视觉·模特穿搭摄影',
+                role: 'main-image',
+                content: 'subject',
+                bounds: { x: 0, y: 0, width: 1, height: 1 },
+                imagePlacement: {
+                    fit: 'cover', anchor: 'right-center', scale: 1, rotation: 0,
+                    mask: 'none', overflow: 'clip', cropPolicy: 'allow-crop'
+                }
+            }]
+        }
+    };
+    const fullFramePhotoCalls = [];
+    const fullFramePhotoResult = await executeComposeDesign(fullFramePhotoInput, {
+        executeToolCall: async (toolName, params) => {
+            fullFramePhotoCalls.push({ toolName, params });
+            if (toolName === 'createDocument') {
+                return { success: true, documentId: 880 };
+            }
+            if (toolName === 'placeImage') {
+                return {
+                    success: true,
+                    layerId: 881,
+                    bounds: { left: 0, top: -133, right: 800, bottom: 934 },
+                    placement: {
+                        targetBounds: params.targetBounds,
+                        targetFit: params.targetFit,
+                        targetAnchor: params.targetAnchor,
+                        geometryVerification: { verified: true, issues: [] }
+                    }
+                };
+            }
+            if (toolName === 'renderLayout') {
+                return {
+                    success: true,
+                    qualityState: 'passed',
+                    created: [],
+                    createdLayerIds: [],
+                    subjectLayerIds: [],
+                    imagePlacementReceipts: [],
+                    ownerReceipt: { version: 'render-layout-owner/v1' }
+                };
+            }
+            if (toolName === 'getLayerHierarchy') {
+                return {
+                    success: true,
+                    historyStateRef: { documentId: 880, historyStateId: 3 },
+                    hierarchy: []
+                };
+            }
+            if (toolName === 'getCanvasSnapshot') {
+                return {
+                    success: true,
+                    historyStateRef: { documentId: 880, historyStateId: 3 },
+                    documentInfo: { id: 880, name: '完整摄影构图首稿' },
+                    snapshot: { base64: 'full-frame-final', format: 'png' }
+                };
+            }
+            return { success: true };
+        },
+        inferLayerId: (_toolName, _params, toolResult) => toolResult?.layerId,
+        invokeMain: async (channel) => {
+            if (channel === 'resource:getAssetSubjectBox') {
+                return {
+                    success: false,
+                    imageWidth: 3000,
+                    imageHeight: 4000,
+                    error: 'fixture only exposes source dimensions'
+                };
+            }
+            if (channel === 'designWorkshop:readRecentDesigns') return { success: false };
+            return { success: false };
+        }
+    });
+    const fullFramePlaceCall = fullFramePhotoCalls.find((call) => call.toolName === 'placeImage');
+    const fullFrameLayoutCall = fullFramePhotoCalls.find((call) => call.toolName === 'renderLayout');
+    check(
+        'composeDesign 在只有源图尺寸、没有主体框时仍按 Agent 图框声明一次置入，再返回同版本真实画面',
+        fullFramePhotoResult.success === true
+            && fullFramePlaceCall?.params?.targetFit === 'cover'
+            && fullFramePlaceCall?.params?.targetAnchor === 'right-center'
+            && fullFramePlaceCall?.params?.targetBounds?.width === 800
+            && fullFramePlaceCall?.params?.targetBounds?.height === 800
+            && fullFrameLayoutCall?.params?.regions?.length === 0
+            && fullFramePhotoResult.photoPlacement?.subjectEvidence?.available === false
+            && fullFramePhotoResult.photoPlacement?.subjectEvidence?.confidence === 'unknown'
+            && fullFramePhotoResult.photoPlacement?.subjectEvidence?.usedForPlacement === false
+            && fullFramePhotoResult.postWriteObservation?.verifiedSameDocumentVersion === true,
+        JSON.stringify({ fullFramePhotoResult, fullFramePhotoCalls })
+    );
+
+    const noBoxProtectedCalls = [];
+    const noBoxProtectedResult = await executeComposeDesign({
+        ...fullFramePhotoInput,
+        layout: {
+            ...fullFramePhotoInput.layout,
+            regions: [{
+                ...fullFramePhotoInput.layout.regions[0],
+                imagePlacement: {
+                    ...fullFramePhotoInput.layout.regions[0].imagePlacement,
+                    cropPolicy: 'protect-subject'
+                }
+            }]
+        }
+    }, {
+        executeToolCall: async (toolName) => {
+            noBoxProtectedCalls.push(toolName);
+            return { success: true, documentId: 883 };
+        },
+        inferLayerId: () => undefined,
+        invokeMain: async (channel) => {
+            if (channel === 'resource:getAssetSubjectBox') {
+                return {
+                    success: false,
+                    imageWidth: 3000,
+                    imageHeight: 4000,
+                    error: 'fixture only exposes source dimensions'
+                };
+            }
+            return { success: false };
+        }
+    });
+    check(
+        'composeDesign 的 protect-subject 在只有尺寸、没有主体框时仍于写前失败',
+        noBoxProtectedResult.success === false
+            && noBoxProtectedResult.failedStep === '摄影图写前预演'
+            && noBoxProtectedResult.data?.partialMutation === false
+            && noBoxProtectedResult.placementIssues?.some((issue) => (
+                issue.code === 'subject_facts_required_for_protection'
+            ))
+            && noBoxProtectedCalls.length === 0,
+        JSON.stringify({ noBoxProtectedResult, noBoxProtectedCalls })
+    );
+
+    const lowConfidenceFillCalls = [];
+    const lowConfidenceFillResult = await executeComposeDesign({
+        ...fullFramePhotoInput,
+        subject: { ...fullFramePhotoInput.subject, fillRatio: 0.82 }
+    }, {
+        executeToolCall: async (toolName) => {
+            lowConfidenceFillCalls.push(toolName);
+            return { success: true, documentId: 882 };
+        },
+        inferLayerId: () => undefined,
+        invokeMain: async (channel) => {
+            if (channel === 'resource:getAssetSubjectBox') {
+                return {
+                    success: true,
+                    imageWidth: 3000,
+                    imageHeight: 4000,
+                    resolution: {
+                        box: { x: 0.12, y: 0.08, width: 0.76, height: 0.84 },
+                        method: 'matting',
+                        confidence: 'low'
+                    }
+                };
+            }
+            return { success: false };
+        }
+    });
+    check(
+        'composeDesign 在 Agent 显式声明 fillRatio 时仍拒绝低置信主体框，且写前失败没有 Photoshop 副作用',
+        lowConfidenceFillResult.success === false
+            && lowConfidenceFillResult.failedStep === '摄影图写前预演'
+            && lowConfidenceFillResult.data?.partialMutation === false
+            && lowConfidenceFillResult.prewritePlacement === 'subject_evidence_unusable'
+            && lowConfidenceFillCalls.length === 0,
+        JSON.stringify({ lowConfidenceFillResult, lowConfidenceFillCalls })
+    );
+
+    const photoConflictCalls = [];
+    const photoConflictResult = await executeComposeDesign({
+        ...good,
+        background: { kind: 'none' },
+        subject: {
+            filePath: 'E:/project/photo-conflict.jpg',
+            treatment: 'photo',
+            shadow: { kind: 'none' },
+            fillRatio: 0.3
+        },
+        layout: {
+            ...good.layout,
+            groupName: '摄影冲突预演',
+            regions: [{
+                id: '主体·摄影冲突',
+                role: 'main-image',
+                content: 'subject',
+                bounds: { x: 0.5, y: 0.06, width: 0.45, height: 0.84 },
+                imagePlacement: {
+                    fit: 'cover', anchor: 'center', scale: 1, rotation: 0,
+                    mask: 'none', overflow: 'clip', cropPolicy: 'allow-crop'
+                }
+            }]
+        }
+    }, {
+        executeToolCall: async (toolName) => {
+            photoConflictCalls.push(toolName);
+            return { success: true, documentId: 990 };
+        },
+        inferLayerId: () => undefined,
+        invokeMain: async (channel) => {
+            if (channel === 'resource:getAssetSubjectBox') {
+                return {
+                    success: true,
+                    imageWidth: 3000,
+                    imageHeight: 4000,
+                    resolution: {
+                        box: { x: 0.3, y: 0.25, width: 0.4, height: 0.5 },
+                        method: 'trim',
+                        confidence: 'high'
+                    }
+                };
+            }
+            return { success: false };
+        }
+    });
+    check(
+        'composeDesign 在摄影约束冲突时先返回无写入事实，不创建空文档或错误图层',
+        photoConflictResult.success === false
+            && photoConflictResult.failedStep === '摄影图写前预演'
+            && photoConflictResult.data?.partialMutation === false
+            && !photoConflictCalls.includes('createDocument')
+            && !photoConflictCalls.includes('placeImage'),
+        JSON.stringify({ photoConflictResult, photoConflictCalls })
     );
 
     const chatPanelSource = fs.readFileSync(

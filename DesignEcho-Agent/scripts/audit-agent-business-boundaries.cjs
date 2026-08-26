@@ -43,6 +43,7 @@ const manifestSchemaPath = path.join(root, 'schemas', 'skill-runtime-manifest.sc
 const runtimeBundlePath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'runtime-contract-bundle.ts');
 const runtimeStagePlanPath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'runtime-stage-plan.ts');
 const runtimeDesignBriefPath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'runtime-design-brief-declaration.ts');
+const runtimeReferenceContextPath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'runtime-reference-context.ts');
 const runtimeScopedChangeRecordsPath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'runtime-scoped-change-records.ts');
 const scopedEditRuntimePolicyPath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'scoped-edit-runtime-policy.ts');
 const runtimeMethodKnowledgePath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'design-method-knowledge.ts');
@@ -85,7 +86,16 @@ const subjectFitPath = path.join(root, 'src', 'shared', 'subject-fit.ts');
 const layoutEnginePath = path.join(root, 'src', 'shared', 'layout', 'layout-engine.ts');
 const renderLayoutStylePath = path.join(root, 'src', 'shared', 'layout', 'render-layout-style.ts');
 const composeDesignSpecPath = path.join(root, 'src', 'shared', 'design-workshop', 'compose-design-spec.ts');
+const jpegExportQualitySemanticsPath = path.join(root, 'src', 'shared', 'jpeg-export-quality-semantics.ts');
 const toolExecutorPath = path.join(root, 'src', 'renderer', 'services', 'tool-executor.service.ts');
+const publicPlanPhotoshopAdapterPath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-orchestration',
+  'public-plan-photoshop-adapter.ts'
+);
 const composeDesignExecutorPath = path.join(root, 'src', 'renderer', 'services', 'design-workshop', 'compose-design.executor.ts');
 const screenshotHandlersPath = path.join(root, 'src', 'main', 'ipc-handlers', 'screenshot-handlers.ts');
 const uxpCreateTextLayerPath = path.resolve(
@@ -116,6 +126,80 @@ const projectImageAnalysisExecutorPath = path.join(
   'project-image-analysis.executor.ts'
 );
 const agentRuntimePath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'agent.ts');
+const mutationBoundDesignIntentPath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'mutation-bound-design-intent.ts'
+);
+const designFinalReviewEvidencePath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'design-final-review-evidence.ts'
+);
+const designFinalComparisonEvidencePath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'design-final-comparison-evidence.ts'
+);
+const trustedFinalComparisonEvidencePath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'trusted-final-comparison-evidence.ts'
+);
+const agentModelTransportPolicyPath = path.join(
+  root,
+  'src',
+  'shared',
+  'agent-model-transport-policy.ts'
+);
+const finalQualityModelProtocolPath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'final-quality-model-protocol.ts'
+);
+const finalQualityReviewRuntimePath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'final-quality-review-runtime.ts'
+);
+const modelVisualPresentationReceiptPath = path.join(
+  root,
+  'src',
+  'shared',
+  'model-visual-presentation-receipt.ts'
+);
+const designSurfaceSnapshotNormalizerPath = path.join(
+  root,
+  'src',
+  'shared',
+  'design-surface-snapshot-normalizer.ts'
+);
+const runtimeReferenceAdapterPath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'runtime-reference-adapter.ts'
+);
 const capabilitySessionPath = path.join(
   root,
   'src',
@@ -228,6 +312,16 @@ const skillDeclarationsPath = path.join(root, 'src', 'shared', 'skills', 'skill-
 const skuIntentParamsPath = path.join(root, 'src', 'shared', 'sku-intent-params.ts');
 const toolSchemasPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'tool-schemas.ts');
 const performanceLedgerPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'performance-ledger.ts');
+const performanceVisionPolicyPath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'performance-vision-policy.ts'
+);
+const activeRuntimeAccountingPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'active-runtime-accounting.ts');
+const runtimeAccountingPath = path.join(root, 'src', 'shared', 'agent-runtime-v5', 'runtime-accounting.ts');
 const enginePath = path.join(root, 'src', 'renderer', 'services', 'design-agent', 'engine.ts');
 const agentToolExecutionPreflightPath = path.join(root, 'src', 'shared', 'agent-tool-execution-preflight.ts');
 const agentSkillAtomicToolExecutionPath = path.join(root, 'src', 'shared', 'agent-skill-atomic-tool-execution.ts');
@@ -237,6 +331,13 @@ const agentToolDecisionContractPath = path.join(root, 'src', 'shared', 'agent-to
 const documentOptionalToolsPath = path.join(root, 'src', 'shared', 'document-optional-tools.ts');
 const routingPath = path.join(root, 'src', 'renderer', 'services', 'agent-orchestration', 'routing.ts');
 const modelProviderFailurePath = path.join(root, 'src', 'shared', 'model-provider-failure.ts');
+const modelProviderTransportPolicyPath = path.join(
+  root,
+  'src',
+  'shared',
+  'model-provider-transport-policy.ts'
+);
+const codexTurnProgressPath = path.join(root, 'src', 'shared', 'codex-turn-progress.ts');
 const designDocumentRolePath = path.join(root, 'src', 'shared', 'design-document-role.ts');
 const toolAcceptancePath = path.join(root, 'src', 'shared', 'acceptance', 'tool-acceptance.ts');
 const policyGateRepeatGuardPath = path.join(root, 'src', 'shared', 'policy-gate-repeat-guard.ts');
@@ -250,6 +351,13 @@ const agentRunRecordPath = path.join(root, 'src', 'shared', 'agent-run-record.ts
 const agentRunResumePath = path.join(root, 'src', 'shared', 'agent-run-resume.ts');
 const chatComposerContentPath = path.join(root, 'src', 'shared', 'chat-composer-content.ts');
 const eagleComposerTransferPath = path.join(root, 'src', 'shared', 'eagle-composer-transfer.ts');
+const eagleReadonlyKnowledgeServicePath = path.join(
+  root,
+  'src',
+  'main',
+  'services',
+  'eagle-readonly-knowledge-service.ts'
+);
 const agentMessageContextPath = path.join(
   root,
   'src',
@@ -283,6 +391,20 @@ const messageRendererPath = path.join(root, 'src', 'renderer', 'components', 'me
 const messageRendererCssPath = path.join(root, 'src', 'renderer', 'components', 'message', 'MessageRenderer.css');
 const settingsModalPath = path.join(root, 'src', 'renderer', 'components', 'SettingsModal.tsx');
 const modelServicePath = path.join(root, 'src', 'main', 'services', 'model-service.ts');
+const codexSubscriptionServicePath = path.join(
+  root,
+  'src',
+  'main',
+  'services',
+  'codex-subscription-service.ts'
+);
+const agentToolStreamServicePath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-tool-stream.service.ts'
+);
 const resourceManagerServicePath = path.join(root, 'src', 'main', 'services', 'resource-manager-service.ts');
 const templateKnowledgeServicePath = path.join(root, 'src', 'main', 'services', 'template-knowledge.service.ts');
 const interactiveContinuationOperationStorePath = path.join(
@@ -1040,6 +1162,18 @@ function countBusinessReferences(filePath) {
 async function run() {
   const performanceText = read(performancePolicyPath);
   const performanceLedgerText = read(performanceLedgerPath);
+  const performanceVisionPolicyText = read(performanceVisionPolicyPath);
+  const {
+    canQueueRunLevelVisualPresentation,
+    consumePerformanceModelCallUsage,
+    createPerformanceLedgerState,
+    projectPerformanceLedgerUsage,
+    readRunLevelVisualBudgetConsumed,
+    restorePerformanceLedgerUsage,
+    shouldIssuePerformanceBudgetDisciplineDirective
+  } = require(performanceLedgerPath);
+  const activeRuntimeAccountingText = read(activeRuntimeAccountingPath);
+  const runtimeAccountingText = read(runtimeAccountingPath);
   const performanceSource = parse(performancePolicyPath);
   const decisionFunctionNames = [
     'inferTaskClass',
@@ -1068,6 +1202,14 @@ async function run() {
   const executorSource = parse(executorPath);
   const performanceResolverText = findFunction(executorSource, 'resolveAutonomousPerformancePolicy')?.getText(executorSource) || '';
   const agentRuntimeText = read(agentRuntimePath);
+  const designFinalReviewEvidenceText = read(designFinalReviewEvidencePath);
+  const designFinalComparisonEvidenceText = read(designFinalComparisonEvidencePath);
+  const trustedFinalComparisonEvidenceText = read(trustedFinalComparisonEvidencePath);
+  const agentModelTransportPolicyText = read(agentModelTransportPolicyPath);
+  const finalQualityModelProtocolText = read(finalQualityModelProtocolPath);
+  const finalQualityReviewRuntimeText = read(finalQualityReviewRuntimePath);
+  const modelVisualPresentationReceiptText = read(modelVisualPresentationReceiptPath);
+  const runtimeReferenceAdapterText = read(runtimeReferenceAdapterPath);
   const capabilitySessionText = read(capabilitySessionPath);
   const designEvaluationProfilesText = read(designEvaluationProfilesPath);
   const agentRuntimeSource = parse(agentRuntimePath);
@@ -1075,6 +1217,7 @@ async function run() {
   const runtimeBundleText = read(runtimeBundlePath);
   const runtimeStagePlanText = read(runtimeStagePlanPath);
   const runtimeDesignBriefText = read(runtimeDesignBriefPath);
+  const runtimeReferenceContextText = read(runtimeReferenceContextPath);
   const runtimeSessionText = read(runtimeSessionPath);
   const runtimeStageStateText = read(runtimeStageStatePath);
   const agentRuntimeLivenessPolicyText = read(agentRuntimeLivenessPolicyPath);
@@ -1092,6 +1235,7 @@ async function run() {
     'buildDesignMemoryKnowledgeResultsForSkill'
   )?.getText(designPlannerContextSource) || '';
   const toolExecutorText = read(toolExecutorPath);
+  const publicPlanPhotoshopAdapterText = read(publicPlanPhotoshopAdapterPath);
   const composeDesignSpecText = read(composeDesignSpecPath);
   const composeDesignExecutorText = read(composeDesignExecutorPath);
   const photoshopTransientErrorText = read(path.join(root, 'src', 'shared', 'photoshop-transient-error.ts'));
@@ -1238,14 +1382,129 @@ async function run() {
   const routingText = read(routingPath);
   const visualSamplingText = read(visualSamplingPath);
   const modelProviderFailureText = read(modelProviderFailurePath);
+  const modelProviderTransportPolicyText = read(modelProviderTransportPolicyPath);
+  const codexTurnProgressText = read(codexTurnProgressPath);
   const reflexionReentryPolicyText = read(reflexionReentryPolicyPath);
   const reflexionWriteFreshnessText = read(reflexionWriteFreshnessPath);
   const runtimeReflexionContractText = read(runtimeReflexionContractPath);
   const { classifyModelProviderFailure } = require(modelProviderFailurePath);
+  const {
+    isHarnessManagedSubscriptionTimeout,
+    shouldRetryAutonomousModelTransport
+  } = require(modelProviderTransportPolicyPath);
+  const {
+    codexNotificationMatchesActiveTurn,
+    evaluateCodexTurnIdleProgress,
+    ownsCodexTurnSlot
+  } = require(codexTurnProgressPath);
+  const { restoreAgentToolStreamError } = require(agentToolStreamServicePath);
+  const { ActiveRuntimeAccounting } = require(activeRuntimeAccountingPath);
+  const { validateRuntimeAccountingDigest } = require(runtimeAccountingPath);
   const subscriptionUsageLimitFailure = classifyModelProviderFailure(Object.assign(
     new Error("GPT 订阅模型运行错误：You've hit your usage limit. Purchase more credits or try again at Aug 28th, 2026 9:01 AM."),
     { code: 'codex_subscription_turn_not_completed' }
   ));
+  const subscriptionInvalidToolJsonFailure = classifyModelProviderFailure(Object.assign(
+    new Error('GPT 订阅模型为工具返回了无效 JSON 参数。'),
+    { code: 'codex_subscription_tool_arguments_invalid_json' }
+  ));
+  const restoredSubscriptionIdleTimeout = restoreAgentToolStreamError({
+    type: 'error',
+    error: 'DesignEcho 订阅桥连续 180 秒未收到新的模型进度，已中断本轮。',
+    errorCode: 'codex_subscription_turn_idle_timeout',
+    errorName: 'Error'
+  });
+  const restoredSubscriptionWallTimeout = restoreAgentToolStreamError({
+    type: 'error',
+    error: 'DesignEcho 订阅桥等待本轮完成已达到总时限，已中断。',
+    errorCode: 'codex_subscription_turn_wall_clock_timeout',
+    errorName: 'Error'
+  });
+  const classifiedSubscriptionIdleTimeout = classifyModelProviderFailure(
+    restoredSubscriptionIdleTimeout
+  );
+  const classifiedSubscriptionWallTimeout = classifyModelProviderFailure(
+    restoredSubscriptionWallTimeout
+  );
+  const retrySubscriptionIdleTimeout = shouldRetryAutonomousModelTransport({
+    failure: classifiedSubscriptionIdleTimeout,
+    attempt: 1,
+    maxAttempts: 2,
+    hasEmittedStreamPayload: false
+  });
+  const retrySubscriptionWallTimeout = shouldRetryAutonomousModelTransport({
+    failure: classifiedSubscriptionWallTimeout,
+    attempt: 1,
+    maxAttempts: 2,
+    hasEmittedStreamPayload: false
+  });
+  const retryAfterVisiblePayload = shouldRetryAutonomousModelTransport({
+    failure: classifiedSubscriptionIdleTimeout,
+    attempt: 1,
+    maxAttempts: 2,
+    hasEmittedStreamPayload: true
+  });
+  const freshCodexProgress = evaluateCodexTurnIdleProgress({
+    lastProgressAtMs: 1_000,
+    nowMs: 180_999,
+    idleTimeoutMs: 180_000
+  });
+  const expiredCodexProgress = evaluateCodexTurnIdleProgress({
+    lastProgressAtMs: 1_000,
+    nowMs: 181_000,
+    idleTimeoutMs: 180_000
+  });
+  const oldTurnSlot = { threadId: 'thread-reused', turnId: 'turn-old' };
+  const newTurnSlot = { threadId: 'thread-reused', turnId: 'turn-new' };
+  const activeTurnSlots = new Map([[oldTurnSlot.threadId, oldTurnSlot]]);
+  const oldTurnOwnedBeforeReplacement = ownsCodexTurnSlot(activeTurnSlots, oldTurnSlot);
+  activeTurnSlots.set(newTurnSlot.threadId, newTurnSlot);
+  if (ownsCodexTurnSlot(activeTurnSlots, oldTurnSlot)) {
+    activeTurnSlots.delete(oldTurnSlot.threadId);
+  }
+  const lateOldTurnCallbackPreservedNewTurn = activeTurnSlots.get(newTurnSlot.threadId) === newTurnSlot;
+  const matchingTurnNotificationAccepted = codexNotificationMatchesActiveTurn({
+    activeTurnId: newTurnSlot.turnId,
+    notificationTurnId: newTurnSlot.turnId
+  });
+  const staleTurnNotificationRejected = codexNotificationMatchesActiveTurn({
+    activeTurnId: newTurnSlot.turnId,
+    notificationTurnId: oldTurnSlot.turnId
+  });
+  const transportAttemptAccounting = new ActiveRuntimeAccounting();
+  transportAttemptAccounting.beginRun(1_000, undefined);
+  transportAttemptAccounting.recordModelCall(undefined, {
+    durationMs: 999,
+    succeeded: true,
+    outcome: {
+      transportAttempts: [
+        {
+          durationMs: 180_000,
+          succeeded: false,
+          failureKind: 'timeout',
+          providerCode: 'codex_subscription_turn_idle_timeout',
+          status: 504,
+          diagnostic: '不得进入账本的错误正文',
+          stack: '不得进入账本的堆栈'
+        },
+        {
+          durationMs: 12_000,
+          succeeded: true,
+          usage: { inputTokens: 40_000, outputTokens: 600 }
+        }
+      ]
+    }
+  });
+  const transportAttemptAccountingDigest = transportAttemptAccounting.readDigest();
+  const transportAttemptAccountingJson = JSON.stringify(transportAttemptAccountingDigest);
+  const transportAttemptAccountingValidation = validateRuntimeAccountingDigest(
+    transportAttemptAccountingDigest
+  );
+  const pollutedTransportAttemptAccountingDigest = JSON.parse(transportAttemptAccountingJson);
+  pollutedTransportAttemptAccountingDigest.modelFailureSamples[0].diagnostic = '不允许持久化';
+  const pollutedTransportAttemptAccountingValidation = validateRuntimeAccountingDigest(
+    pollutedTransportAttemptAccountingDigest
+  );
   const designDocumentRoleText = read(designDocumentRolePath);
   const toolAcceptanceText = read(toolAcceptancePath);
   const policyGateRepeatGuardText = read(policyGateRepeatGuardPath);
@@ -2370,6 +2629,8 @@ async function run() {
   const messageRendererCssText = read(messageRendererCssPath);
   const settingsModalText = read(settingsModalPath);
   const modelServiceText = read(modelServicePath);
+  const codexSubscriptionServiceText = read(codexSubscriptionServicePath);
+  const agentToolStreamServiceText = read(agentToolStreamServicePath);
   const resourceManagerServiceText = read(resourceManagerServicePath);
   const templateKnowledgeServiceText = read(templateKnowledgeServicePath);
   const preloadText = read(preloadPath);
@@ -2593,31 +2854,55 @@ async function run() {
     parseEagleComposerDragPayload,
     serializeEagleComposerDragPayload
   } = require(eagleComposerTransferPath);
+  const { EagleReadonlyKnowledgeService } = require(eagleReadonlyKnowledgeServicePath);
+  const {
+    preserveJpegQualityAcrossToolRedirect
+  } = require(jpegExportQualitySemanticsPath);
+  const {
+    createPublicPlanPhotoshopAdapter
+  } = require(publicPlanPhotoshopAdapterPath);
   const { resolveDetailAssetUsageDecision } = require(detailPageAssetRankerPath);
   const { buildDetailPageAgentIntake } = require(detailPageAgentIntakePath);
   const { buildProjectAssetIndex } = require(projectAssetIndexPath);
   const {
+    buildProjectContactSheetCandidateCoverage,
     buildProjectImageAnalysisCloseupPlan,
     buildProjectVisualSamplingPlan,
     buildProjectVisualSamplingCacheKey,
     cacheStatusForEntry,
     projectVisualCacheEntryMatchesCurrentAsset,
+    reconcileProjectContactSheetCandidateCoverage,
     selectDiverseProjectVisualCandidates
   } = require(visualSamplingPath);
   const {
     DESIGN_ASSERTIONS,
+    buildVlmJudgeDiagnosisRepairPrompt,
     buildVlmJudgeContextMessage,
     buildVlmJudgeSystemPrompt,
+    evaluateVlmJudgeDiagnosisCoverage,
     getVlmJudgeAssertions,
     isReliableVlmJudgeBatchComplete,
+    mergeVlmJudgeDiagnosisRepairs,
+    parseVlmJudgeDiagnosisRepairResponse,
     parseVlmJudgeResponse,
     scoreDesignAssertions
   } = require(designQualityAssertionPath);
   const {
+    extractFreshDesignSurfaceSnapshotFromToolResults
+  } = require(designSurfaceSnapshotNormalizerPath);
+  const {
+    appendMutationBoundDesignIntent,
+    formatMutationBoundDesignIntentForReview
+  } = require(mutationBoundDesignIntentPath);
+  const {
+    projectDesignFinalReviewStructureVerification
+  } = require(designFinalReviewEvidencePath);
+  const {
     decideQualityAwareReflexionReentry,
     evaluateCompletedReflexionWriteFreshness,
     evaluateReflexionReviewProvenance,
-    isCompletedAestheticImprovementHandoff
+    isCompletedAestheticImprovementHandoff,
+    shouldStopWarningOnlyNeedsReviewReflexion
   } = require(reflexionReentryPolicyPath);
   const { buildReflexionHandoffFromReviewReport } = require(runtimeReflexionContractPath);
   const { buildRuntimeStagePlan } = require(runtimeStagePlanPath);
@@ -2670,6 +2955,7 @@ async function run() {
     SKU_BATCH_EVALUATION_PROFILE_ID,
     evaluateDesignEvaluationProfile,
     getDesignEvaluationProfileById,
+    getDesignEvaluationProfileScoringAssertions,
     getDesignEvaluationProfileVlmAssertions
   } = require(designEvaluationProfilesPath);
   const directPlacementCandidate = {
@@ -2861,6 +3147,41 @@ async function run() {
     projectImageAnalysisCandidates,
     2
   );
+  const fullBucketSpanCandidates = Array.from({ length: 9 }, (_, index) => ({
+    path: `C:/project/6049/平铺/${String(index + 1).padStart(3, '0')}.jpg`,
+    relativePath: `6049/平铺/${String(index + 1).padStart(3, '0')}.jpg`,
+    folderType: '平铺',
+    imageType: 'product'
+  }));
+  const fullBucketSpanSelection = selectDiverseProjectVisualCandidates(
+    fullBucketSpanCandidates,
+    4
+  );
+  const reversedBucketSpanSelection = selectDiverseProjectVisualCandidates(
+    [...fullBucketSpanCandidates].reverse(),
+    4
+  );
+  const sampledContactSheetCoverage = buildProjectContactSheetCandidateCoverage({
+    candidateUniverseCount: fullBucketSpanCandidates.length,
+    displayedCandidateCount: fullBucketSpanSelection.length,
+    universeScope: 'project_scan'
+  });
+  const completeContactSheetCoverage = buildProjectContactSheetCandidateCoverage({
+    candidateUniverseCount: 4,
+    attemptedCandidateCount: 4,
+    displayedCandidateCount: 4,
+    universeScope: 'provided_candidates'
+  });
+  const failedTileContactSheetCoverage = reconcileProjectContactSheetCandidateCoverage({
+    plannedCoverage: completeContactSheetCoverage,
+    renderedItems: [
+      { status: 'rendered' },
+      { status: 'failed' },
+      { status: 'rendered' },
+      { status: 'rendered' }
+    ],
+    sheetAvailable: true
+  });
   const realSkuSamplingFiles = [
     ...Array.from({ length: 20 }, (_, index) => ({
       path: `C:/project/6049/模特场景/${String(index + 1).padStart(3, '0')}.jpg`,
@@ -2990,8 +3311,11 @@ async function run() {
   });
   const typeCharacterAssertion = DESIGN_ASSERTIONS.find((item) => item.id === 'type.character');
   const alignmentAssertion = DESIGN_ASSERTIONS.find((item) => item.id === 'comp.alignment');
+  const structureIntentAssertion = DESIGN_ASSERTIONS.find((item) => (
+    item.id === 'craft.structure-intent-coherence'
+  ));
   const aestheticProtocolViolations = [];
-  if (!typeCharacterAssertion || !alignmentAssertion) {
+  if (!typeCharacterAssertion || !alignmentAssertion || !structureIntentAssertion) {
     aestheticProtocolViolations.push('assertion-catalog:required-fixtures-missing');
   } else {
     const legacyPassResults = parseVlmJudgeResponse(JSON.stringify([
@@ -3070,17 +3394,182 @@ async function run() {
 
     const judgePrompt = buildVlmJudgeSystemPrompt([typeCharacterAssertion, alignmentAssertion]);
     if (!judgePrompt.includes('最多只给 3 个')
+      || !judgePrompt.includes('若存在 score<0.85 的适用项')
+      || !judgePrompt.includes('只有全部适用项 score>=0.85 时才可以不返回 diagnosis')
       || !judgePrompt.includes('不要另返 pass 字段')
+      || !judgePrompt.includes('商品可识别、照片清晰或没有破图只是基础条件')
+      || !judgePrompt.includes('evidenceRefs 原样列出已消费的 concern evidenceId')
+      || !judgePrompt.includes('final_bound_supporting_source')
+      || judgePrompt.includes('selected_source')
       || !judgePrompt.includes('真实使用尺寸与观看情境')
       || !judgePrompt.includes('不要因为小字、边缘或间距更容易描述')) {
       aestheticProtocolViolations.push('judge-prompt-lost-single-score-or-top-three-diagnosis-contract');
     }
     const taskNeutralJudgeAssertionIds = getVlmJudgeAssertions().map((item) => item.id);
     if (!taskNeutralJudgeAssertionIds.includes('impact.squint')
-      || taskNeutralJudgeAssertionIds.includes('comp.subject-ratio')
+      || !taskNeutralJudgeAssertionIds.includes('comp.subject-ratio')
+      || !taskNeutralJudgeAssertionIds.includes('craft.asset-integration')
+      || !taskNeutralJudgeAssertionIds.includes('craft.structure-intent-coherence')
       || taskNeutralJudgeAssertionIds.includes('sell.visualized')
       || taskNeutralJudgeAssertionIds.includes('overall.above-baseline')) {
       aestheticProtocolViolations.push('task-neutral-judge-lost-delivery-size-effectiveness-boundary');
+    }
+    const structureConcernRef = 'structure:abandoned-visible-content-after-failed-clear:document-90:layer-4';
+    const missingStructureEvidence = parseVlmJudgeResponse(JSON.stringify([{
+      id: structureIntentAssertion.id,
+      applicable: true,
+      score: 0.96,
+      confidence: 0.96,
+      reason: '结构与画面一致'
+    }]), [structureIntentAssertion], {
+      requiredEvidenceRefsByAssertion: {
+        [structureIntentAssertion.id]: [structureConcernRef]
+      }
+    });
+    const consumedStructureEvidence = parseVlmJudgeResponse(JSON.stringify([{
+      id: structureIntentAssertion.id,
+      applicable: true,
+      score: 0.72,
+      confidence: 0.95,
+      reason: '残留文字不承担明确画面作用',
+      evidenceRefs: [structureConcernRef]
+    }]), [structureIntentAssertion], {
+      requiredEvidenceRefsByAssertion: {
+        [structureIntentAssertion.id]: [structureConcernRef]
+      }
+    });
+    if (missingStructureEvidence[0]?.status !== 'needs_review'
+      || missingStructureEvidence[0]?.score !== undefined
+      || consumedStructureEvidence[0]?.status !== 'needs_review'
+      || consumedStructureEvidence[0]?.score !== 0.72
+      || !consumedStructureEvidence[0]?.evidenceRefs?.includes(structureConcernRef)) {
+      aestheticProtocolViolations.push('structure-concern-could-be-ignored-by-canonical-judge');
+    }
+    const acceptanceSurface = extractFreshDesignSurfaceSnapshotFromToolResults([{
+      name: 'createDocument',
+      arguments: { width: 1440, height: 1440 },
+      result: { success: true, historyStateRef: { documentId: 90, historyStateId: 96 } }
+    }, {
+      name: 'getAcceptanceSnapshot',
+      arguments: { includeHidden: true, includeBounds: true, includeText: true },
+      result: {
+        success: true,
+        hasDocument: true,
+        historyStateRef: { documentId: 90, historyStateId: 97 },
+        document: { id: 90, width: 1440, height: 1440 },
+        summary: { totalLayers: 1, truncated: false },
+        layers: [{
+          id: 4,
+          name: '说明',
+          kind: 'text',
+          visible: true,
+          locked: false,
+          depth: 0,
+          index: 0,
+          parentId: null,
+          parentName: null,
+          path: '说明',
+          selected: false,
+          bounds: { left: 10, top: 10, right: 20, bottom: 12, width: 10, height: 2 },
+          text: { content: '保留真实结构事实', length: 8, style: { fontSize: 1 } }
+        }]
+      }
+    }], {
+      requiredHistoryStateRef: { documentId: 90, historyStateId: 97 }
+    });
+    if (acceptanceSurface?.canvas.width !== 1440
+      || acceptanceSurface?.layers[0]?.kind !== 'text'
+      || acceptanceSurface?.layers[0]?.fontSize !== 1) {
+      aestheticProtocolViolations.push('acceptance-snapshot-did-not-feed-final-structure-measurement');
+    }
+    const wrappedAcceptanceSurface = extractFreshDesignSurfaceSnapshotFromToolResults([{
+      name: 'createDocument',
+      arguments: { width: 1440, height: 1440 },
+      result: { success: true, historyStateRef: { documentId: 91, historyStateId: 96 } }
+    }, {
+      name: 'getAcceptanceSnapshot',
+      arguments: { includeHidden: true, includeBounds: true, includeText: true },
+      result: {
+        success: true,
+        historyStateRef: { documentId: 91, historyStateId: 97 },
+        snapshot: {
+          success: true,
+          hasDocument: true,
+          historyStateRef: { documentId: 91, historyStateId: 97 },
+          document: { id: 91, width: 1440, height: 1440 },
+          summary: { totalLayers: 1, truncated: false },
+          layers: [{
+            id: 5,
+            name: '包装层中的说明',
+            kind: 'text',
+            visible: true,
+            locked: false,
+            depth: 0,
+            index: 0,
+            parentId: null,
+            parentName: null,
+            path: '包装层中的说明',
+            selected: false,
+            bounds: { left: 12, top: 12, right: 32, bottom: 16, width: 20, height: 4 },
+            text: { content: '包装结果也应进入测量', length: 10, style: { fontSize: 2 } }
+          }]
+        }
+      }
+    }], {
+      requiredHistoryStateRef: { documentId: 91, historyStateId: 97 }
+    });
+    if (wrappedAcceptanceSurface?.canvas.width !== 1440
+      || wrappedAcceptanceSurface?.layers[0]?.kind !== 'text'
+      || wrappedAcceptanceSurface?.layers[0]?.fontSize !== 2) {
+      aestheticProtocolViolations.push('wrapped-acceptance-snapshot-did-not-feed-final-structure-measurement');
+    }
+    const boundIntents = appendMutationBoundDesignIntent({
+      current: [],
+      modelTurn: 3,
+      publicText: '我保留摄影关系，只调整裁切与标题层级。',
+      toolCalls: [
+        { id: 'read-1', name: 'getDocumentInfo', arguments: {} },
+        { id: 'write-1', name: 'setTextStyle', arguments: { layerId: 4, fontSize: 96 } }
+      ],
+      toolResults: [
+        { callId: 'read-1', success: true, output: { success: true } },
+        {
+          callId: 'write-1',
+          success: true,
+          output: {
+            success: true,
+            photoshopHistoryTransition: {
+              version: 'photoshop-history-transition/v1',
+              basis: 'acceptance_snapshot_pair',
+              before: { documentId: 90, historyStateId: 97 },
+              after: { documentId: 90, historyStateId: 98 },
+              mutationObserved: true,
+              documentChanged: false
+            }
+          }
+        }
+      ]
+    });
+    if (boundIntents.length !== 1
+      || boundIntents[0]?.committedCalls.map((call) => call.callId).join(',') !== 'write-1'
+      || boundIntents[0]?.committedCalls[0]?.target.documentId !== 90
+      || boundIntents[0]?.committedCalls[0]?.target.historyStateId !== 98
+      || !formatMutationBoundDesignIntentForReview(boundIntents, 90).includes('保留摄影关系')) {
+      aestheticProtocolViolations.push('public-design-intent-was-not-bound-to-real-mutation');
+    }
+    const uncommittedIntent = appendMutationBoundDesignIntent({
+      current: [],
+      modelTurn: 4,
+      publicText: '这一轮只分析方向，没有真实写入。',
+      toolCalls: [
+        { id: 'delegate-1', name: 'delegateToAgent', arguments: { role: 'design-strategist' } }
+      ],
+      toolResults: [
+        { callId: 'delegate-1', success: true, output: { success: true, report: '完成分析' } }
+      ]
+    });
+    if (uncommittedIntent.length !== 0) {
+      aestheticProtocolViolations.push('public-design-intent-accepted-without-host-mutation-proof');
     }
     const diagnosisAssertions = DESIGN_ASSERTIONS
       .filter((item) => item.method === 'vlm_judge')
@@ -3119,6 +3608,183 @@ async function run() {
     if (diagnosedResults.length !== 3
       || diagnosedResults.some((item) => item.id === highestScoreId)) {
       aestheticProtocolViolations.push('parser-did-not-enforce-top-three-diagnosis-boundary');
+    }
+    const repairMissingResults = parseVlmJudgeResponse(JSON.stringify(
+      diagnosisAssertions.map((assertion, index) => ({
+        id: assertion.id,
+        applicable: true,
+        score: diagnosisScores[index],
+        confidence: 0.95,
+        reason: `冻结问题 ${index + 1}`
+      }))
+    ), diagnosisAssertions);
+    const missingDiagnosisCoverage = evaluateVlmJudgeDiagnosisCoverage(
+      repairMissingResults,
+      diagnosisAssertions
+    );
+    const expectedRepairTargetIds = [
+      diagnosisAssertions[1]?.id,
+      diagnosisAssertions[3]?.id,
+      diagnosisAssertions[2]?.id
+    ].filter(Boolean);
+    const repairPrompt = buildVlmJudgeDiagnosisRepairPrompt(
+      missingDiagnosisCoverage.missingTargets
+    );
+    const repairResponseItems = missingDiagnosisCoverage.missingTargets.map((target, index) => ({
+      id: target.id,
+      diagnosis: {
+        visualFinding: {
+          scope: 'region',
+          target: `待修区域 ${index + 1}`,
+          description: '主体与周边留白关系削弱首要信息',
+          relationship: '当前尺度关系使首要对象在使用尺寸下偏弱',
+          normalizedBounds: { x: 0.1, y: 0.1, width: 0.7, height: 0.7 },
+          affectedRoles: ['subject']
+        },
+        causalExplanation: {
+          goalRelation: 'conflicts',
+          mechanism: '首要对象的识别入口弱于任务目标'
+        },
+        revision: {
+          action: '重新平衡主体与留白的视觉关系',
+          expectedEffect: '真实使用尺寸下首要对象更明确',
+          preserve: ['保留已成立的商品信息'],
+          verify: ['在缩略使用尺寸复核首要对象']
+        }
+      }
+    }));
+    const validDiagnosisRepair = parseVlmJudgeDiagnosisRepairResponse(
+      JSON.stringify(repairResponseItems),
+      missingDiagnosisCoverage.missingTargets
+    );
+    const mergedDiagnosisResults = mergeVlmJudgeDiagnosisRepairs(
+      repairMissingResults,
+      validDiagnosisRepair
+    );
+    const satisfiedDiagnosisCoverage = evaluateVlmJudgeDiagnosisCoverage(
+      mergedDiagnosisResults,
+      diagnosisAssertions
+    );
+    const originalRepairResultById = new Map(repairMissingResults.map((result) => [result.id, result]));
+    const repairPreservedFrozenFields = mergedDiagnosisResults.every((result) => {
+      const original = originalRepairResultById.get(result.id);
+      return original
+        && result.score === original.score
+        && result.confidence === original.confidence
+        && result.status === original.status
+        && result.rationale === original.rationale
+        && result.expectedFix === original.expectedFix
+        && JSON.stringify(result.evidenceRefs) === JSON.stringify(original.evidenceRefs);
+    });
+    const extraFieldRepairItems = repairResponseItems.map((item, index) => (
+      index === 0
+        ? {
+          ...item,
+          score: 0.99
+        }
+        : item
+    ));
+    const extraFieldDiagnosisRepair = parseVlmJudgeDiagnosisRepairResponse(
+      JSON.stringify(extraFieldRepairItems),
+      missingDiagnosisCoverage.missingTargets
+    );
+    const outOfBoundsRepairItems = repairResponseItems.map((item, index) => (
+      index === 0
+        ? {
+          ...item,
+          diagnosis: {
+            ...item.diagnosis,
+            visualFinding: {
+              ...item.diagnosis.visualFinding,
+              normalizedBounds: { x: 0.9, y: 0.1, width: 0.2, height: 0.7 }
+            }
+          }
+        }
+        : item
+    ));
+    const outOfBoundsDiagnosisRepair = parseVlmJudgeDiagnosisRepairResponse(
+      JSON.stringify(outOfBoundsRepairItems),
+      missingDiagnosisCoverage.missingTargets
+    );
+    const implementationDetailRepairItems = repairResponseItems.map((item, index) => (
+      index === 0
+        ? {
+          ...item,
+          diagnosis: {
+            ...item.diagnosis,
+            revision: {
+              ...item.diagnosis.revision,
+              action: '调用 setTextStyle 修改该区域'
+            }
+          }
+        }
+        : item
+    ));
+    const implementationDetailDiagnosisRepair = parseVlmJudgeDiagnosisRepairResponse(
+      JSON.stringify(implementationDetailRepairItems),
+      missingDiagnosisCoverage.missingTargets
+    );
+    const unknownTargetDiagnosisRepair = parseVlmJudgeDiagnosisRepairResponse(
+      JSON.stringify(repairResponseItems.map((item, index) => (
+        index === 0 ? { ...item, id: 'unknown.assertion' } : item
+      ))),
+      missingDiagnosisCoverage.missingTargets
+    );
+    const invalidRepairMerge = mergeVlmJudgeDiagnosisRepairs(
+      repairMissingResults,
+      outOfBoundsDiagnosisRepair
+    );
+    const passOnlyDiagnosisCoverage = evaluateVlmJudgeDiagnosisCoverage(
+      parseVlmJudgeResponse(JSON.stringify(diagnosisAssertions.map((assertion) => ({
+        id: assertion.id,
+        applicable: true,
+        score: 0.91,
+        confidence: 0.95,
+        reason: '冻结结果已通过'
+      }))), diagnosisAssertions),
+      diagnosisAssertions
+    );
+    if (missingDiagnosisCoverage.status !== 'missing'
+      || missingDiagnosisCoverage.reliableNonPassCount !== 4
+      || missingDiagnosisCoverage.selectedTargets.length !== 3
+      || missingDiagnosisCoverage.missingTargets.length !== 3
+      || missingDiagnosisCoverage.selectedTargets.map((target) => target.id).join(',')
+        !== expectedRepairTargetIds.join(',')) {
+      aestheticProtocolViolations.push('diagnosis-repair-coverage-was-not-bounded-and-deterministic');
+    }
+    if (!repairPrompt.includes('每个数组项顶层只能有 id 与 diagnosis 两个字段')
+      || !repairPrompt.includes('不得改变、重算或返回原 score')
+      || !repairPrompt.includes('不得指定固定 Tool')
+      || !repairPrompt.includes('具体执行动作仍由 Agent')
+      || repairPrompt.includes('setTextStyle')
+      || repairPrompt.includes('transformLayer')) {
+      aestheticProtocolViolations.push('diagnosis-repair-prompt-crossed-design-or-tool-ownership');
+    }
+    if (validDiagnosisRepair.status !== 'valid'
+      || validDiagnosisRepair.repairs.length !== 3
+      || satisfiedDiagnosisCoverage.status !== 'satisfied'
+      || satisfiedDiagnosisCoverage.missingTargets.length !== 0
+      || !repairPreservedFrozenFields) {
+      aestheticProtocolViolations.push('diagnosis-repair-did-not-only-fill-validated-diagnosis');
+    }
+    if (extraFieldDiagnosisRepair.status !== 'invalid'
+      || extraFieldDiagnosisRepair.repairs.length !== 0
+      || outOfBoundsDiagnosisRepair.status !== 'invalid'
+      || outOfBoundsDiagnosisRepair.repairs.length !== 0
+      || implementationDetailDiagnosisRepair.status !== 'invalid'
+      || implementationDetailDiagnosisRepair.repairs.length !== 0
+      || unknownTargetDiagnosisRepair.status !== 'invalid'
+      || unknownTargetDiagnosisRepair.repairs.length !== 0
+      || invalidRepairMerge.some((result) => Boolean(result.diagnosis))
+      || invalidRepairMerge.some((result) => (
+        result.expectedFix !== originalRepairResultById.get(result.id)?.expectedFix
+      ))) {
+      aestheticProtocolViolations.push('invalid-diagnosis-repair-created-partial-fix-or-handoff-input');
+    }
+    if (passOnlyDiagnosisCoverage.status !== 'not_required'
+      || passOnlyDiagnosisCoverage.selectedTargets.length !== 0
+      || buildVlmJudgeDiagnosisRepairPrompt([]) !== '') {
+      aestheticProtocolViolations.push('diagnosis-repair-ran-without-reliable-non-pass-target');
     }
     const diagnosedScorecard = scoreDesignAssertions(overDiagnosedResults, {
       assertions: diagnosisAssertions,
@@ -3414,6 +4080,12 @@ async function run() {
       stageState: ordinaryFailureState,
       reflexionHandoff: ordinaryFailureHandoff
     });
+    const unknownSideEffectProjection = projectRuntimeSessionCompletion({
+      executionStatus: 'completed',
+      stageState: projectedImprovementState,
+      sideEffectState: 'unknown',
+      reflexionHandoff: completedImprovementHandoff
+    });
     const markerSurvivesRuntimeProjection = isCompletedAestheticImprovementHandoff({
       handoff: completedImprovementHandoff,
       stopReason: 'final_response',
@@ -3435,6 +4107,8 @@ async function run() {
       || ordinaryFailureR5?.status !== 'failed'
       || ordinaryFailureProjection.status !== 'needs_review'
       || !ordinaryFailureProjection.blocker
+      || unknownSideEffectProjection.status !== 'needs_review'
+      || !unknownSideEffectProjection.blocker
       || !markerSurvivesRuntimeProjection
       || !secondImprovementIsStopped) {
       aestheticProtocolViolations.push('completed-aesthetic-marker-did-not-preserve-completion-or-bound-reentry');
@@ -3471,6 +4145,150 @@ async function run() {
   }
   if (!scopedEditProfile || getDesignEvaluationProfileVlmAssertions(scopedEditProfile).length !== 0) {
     aestheticProtocolViolations.push('scoped-edit-without-region-provenance-still-scores-full-canvas');
+  }
+  const scoringIsolationProfile = getDesignEvaluationProfileById(MAIN_IMAGE_EVALUATION_PROFILE_ID);
+  if (scoringIsolationProfile) {
+    const mainImageSellingPointAssertion = getDesignEvaluationProfileVlmAssertions(
+      scoringIsolationProfile
+    ).find((assertion) => assertion.id === 'sell.visualized');
+    if (!scoringIsolationProfile.capabilityGoal.includes('点击理由')
+      || !scoringIsolationProfile.capabilityGoal.includes('纯摄影可以成立')
+      || !mainImageSellingPointAssertion?.judgeCriterion.includes('用户没有逐字写出卖点不等于本项自动不适用')
+      || !mainImageSellingPointAssertion?.judgeCriterion.includes('不要求补文案、场景、装饰或固定风格')) {
+      aestheticProtocolViolations.push('main-image-profile-lost-commercial-goal-without-prescriptive-design');
+    }
+    const scoringAssertions = getDesignEvaluationProfileScoringAssertions(scoringIsolationProfile);
+    const stableVlmResults = scoringAssertions.map((assertion) => ({
+      id: assertion.id,
+      dimension: assertion.dimension,
+      status: 'pass',
+      score: 0.86,
+      confidence: 1,
+      method: assertion.method,
+      severity: assertion.severity,
+      owner: assertion.owner,
+      rationale: '同一组 VLM 评价结果。',
+      expectedFix: assertion.expectedFix
+    }));
+    const missingVerificationResult = evaluateDesignEvaluationProfile({
+      profile: scoringIsolationProfile,
+      assertionResults: stableVlmResults,
+      verificationRecords: []
+    });
+    const passedVerificationRecords = scoringIsolationProfile.checks
+      .filter((check) => check.required && check.completionScope === 'artifact_completion')
+      .map((check) => ({
+        key: check.key,
+        status: 'passed',
+        source: check.allowedSources[0],
+        verificationRef: `audit:${check.key}:passed`
+      }));
+    const passedVerificationResult = evaluateDesignEvaluationProfile({
+      profile: scoringIsolationProfile,
+      assertionResults: stableVlmResults,
+      verificationRecords: passedVerificationRecords
+    });
+    const incompleteStructureVerification = projectDesignFinalReviewStructureVerification({
+      version: 'design-artifact-structure-concerns/v1',
+      coverage: {
+        status: 'incomplete',
+        observedLayerCount: 1000,
+        reportedLayerCount: 1000,
+        truncated: true,
+        reasonCodes: ['layer_list_truncated']
+      },
+      concerns: [],
+      boundaries: {
+        observationOnly: true,
+        doesNotMutateDocument: true,
+        doesNotChooseDesignOutcome: true,
+        requiresJudgeInterpretation: true,
+        rawToolPayloadExcluded: true,
+        filesystemPathsExcluded: true
+      }
+    });
+    const unavailableStructureVerification = projectDesignFinalReviewStructureVerification({
+      version: 'design-artifact-structure-concerns/v1',
+      coverage: {
+        status: 'unavailable',
+        observedLayerCount: 0,
+        truncated: false,
+        reasonCodes: ['snapshot_unavailable']
+      },
+      concerns: [],
+      boundaries: {
+        observationOnly: true,
+        doesNotMutateDocument: true,
+        doesNotChooseDesignOutcome: true,
+        requiresJudgeInterpretation: true,
+        rawToolPayloadExcluded: true,
+        filesystemPathsExcluded: true
+      }
+    });
+    const incompleteStructureResult = evaluateDesignEvaluationProfile({
+      profile: scoringIsolationProfile,
+      assertionResults: stableVlmResults.map((result) => ({ ...result, score: 0.95 })),
+      verificationRecords: passedVerificationRecords.map((record) => (
+        record.key === 'fresh_structure_snapshot'
+          ? {
+              ...record,
+              status: incompleteStructureVerification.status,
+              verificationRef: incompleteStructureVerification.verificationRef
+            }
+          : record
+      ))
+    });
+    const needsReviewVerificationResult = evaluateDesignEvaluationProfile({
+      profile: scoringIsolationProfile,
+      assertionResults: stableVlmResults,
+      verificationRecords: passedVerificationRecords.map((record, index) => (
+        index === 0
+          ? { ...record, status: 'needs_review', verificationRef: `${record.verificationRef}:review` }
+          : record
+      ))
+    });
+    const failedVerificationResult = evaluateDesignEvaluationProfile({
+      profile: scoringIsolationProfile,
+      assertionResults: stableVlmResults,
+      verificationRecords: passedVerificationRecords.map((record, index) => (
+        index === 0
+          ? { ...record, status: 'failed', verificationRef: `${record.verificationRef}:failed` }
+          : record
+      ))
+    });
+    const verificationCheckIds = new Set(scoringIsolationProfile.checks.map((check) => check.id));
+    const verificationScoreLeak = passedVerificationResult.scorecard.results.some((result) => (
+      verificationCheckIds.has(result.id)
+      && Object.prototype.hasOwnProperty.call(result, 'score')
+    ));
+    if (scoringAssertions.map((assertion) => assertion.id).join('|')
+        !== scoringIsolationProfile.assertionRefs.join('|')
+      || missingVerificationResult.scorecard.overallScore !== 86
+      || passedVerificationResult.scorecard.overallScore !== 86
+      || needsReviewVerificationResult.scorecard.overallScore !== 86
+      || failedVerificationResult.scorecard.overallScore !== 86
+      || JSON.stringify(missingVerificationResult.scorecard.dimensionScores)
+        !== JSON.stringify(passedVerificationResult.scorecard.dimensionScores)
+      || JSON.stringify(missingVerificationResult.scorecard.coverage)
+        !== JSON.stringify(passedVerificationResult.scorecard.coverage)
+      || passedVerificationResult.scorecard.coverage.total !== scoringAssertions.length
+      || passedVerificationResult.scorecard.coverage.deterministicEvaluated !== 0
+      || missingVerificationResult.status !== 'incomplete_verification'
+      || passedVerificationResult.status !== 'passed'
+      || needsReviewVerificationResult.status !== 'needs_review'
+      || failedVerificationResult.status !== 'failed'
+      || incompleteStructureVerification.status !== 'needs_review'
+      || unavailableStructureVerification.status !== 'needs_review'
+      || incompleteStructureResult.status !== 'needs_review'
+      || incompleteStructureResult.completion.artifactStatus !== 'artifact_incomplete'
+      || incompleteStructureResult.scorecard.overallScore !== 95
+      || missingVerificationResult.coverage.ratio !== 0
+      || passedVerificationResult.coverage.ratio !== 1
+      || verificationScoreLeak) {
+      aestheticProtocolViolations.push('profile-verification-checks-still-pollute-aesthetic-scoring');
+    }
+  } else {
+    aestheticProtocolViolations.push('profile-verification-scoring-isolation-profile-missing');
   }
   if (skuBatchProfile) {
     const artifactChecks = skuBatchProfile.checks.filter((check) => (
@@ -4481,7 +5299,10 @@ async function run() {
       ? []
       : ['compound-budget:direct-delegate-production-wiring-incomplete'])
   ];
-  const { listDesignTaskProfileCrosswalks } = require(taskProfilePath);
+  const {
+    getDesignTaskTypeSpec,
+    listDesignTaskProfileCrosswalks
+  } = require(taskProfilePath);
   const {
     buildDesignArtifactKnowledgeRuntimeItem,
     getDesignArtifactKnowledge,
@@ -4707,7 +5528,8 @@ async function run() {
     scale: 1,
     rotation: 0,
     mask: 'none',
-    overflow: 'visible'
+    overflow: 'visible',
+    cropPolicy: 'avoid-crop'
   };
   const missingFormalBlockFields = validateModelAuthoredLayout({
     mode: 'blocks',
@@ -5165,6 +5987,433 @@ async function run() {
     buildDesignerAgentTeamConsultationContract,
     buildDesignerAgentTeamConsultationProgress
   } = require(designerAgentTeamConsultationPath);
+  const {
+    classifyRuntimeReferenceFailure,
+    projectRuntimeReferencePolicy,
+    resolveRuntimeReferenceFailureDisposition
+  } = require(runtimeReferenceContextPath);
+  const runtimeReferenceFailurePolicyViolations = [];
+  const optionalReferencePolicy = projectRuntimeReferencePolicy({
+    version: 'skill-reference-policy/v0',
+    work_mode_requirements: {
+      create_new: 'reuse_or_optional',
+      redesign: 'reuse_or_optional',
+      template_fill: 'reuse_or_optional',
+      edit_existing: 'not_required',
+      analyze_only: 'not_required',
+      export_only: 'not_required'
+    },
+    allowed_sources: ['user_reference', 'brand_template', 'project_case', 'eagle', 'web'],
+    max_search_rounds: 2,
+    unavailable_behavior: 'continue_degraded'
+  });
+  const requiredContinueReferencePolicy = projectRuntimeReferencePolicy({
+    ...optionalReferencePolicy,
+    work_mode_requirements: {
+      ...optionalReferencePolicy.work_mode_requirements,
+      create_new: 'required'
+    },
+    allowed_sources: [...optionalReferencePolicy.allowed_sources]
+  });
+  const requiredBlockReferencePolicy = projectRuntimeReferencePolicy({
+    ...requiredContinueReferencePolicy,
+    work_mode_requirements: { ...requiredContinueReferencePolicy.work_mode_requirements },
+    allowed_sources: [...requiredContinueReferencePolicy.allowed_sources],
+    unavailable_behavior: 'block'
+  });
+  function expectReferenceFailureDisposition(label, input, expected) {
+    const actual = resolveRuntimeReferenceFailureDisposition(input);
+    if (actual !== expected) {
+      runtimeReferenceFailurePolicyViolations.push(`${label}:${String(actual)}!=${String(expected)}`);
+    }
+  }
+  const unavailableReferenceFailure = {
+    success: false,
+    status: 'unavailable',
+    code: 'tool_execution_failed',
+    elapsedMs: 321
+  };
+  const unavailableReferenceFailureSnapshot = JSON.stringify(unavailableReferenceFailure);
+  expectReferenceFailureDisposition('optional-search-unavailable', {
+    policy: optionalReferencePolicy,
+    workMode: 'create_new',
+    toolName: 'searchEagleReferences',
+    result: unavailableReferenceFailure
+  }, 'non_blocking_observation');
+  expectReferenceFailureDisposition('all-modes-optional-before-work-mode-declaration', {
+    policy: optionalReferencePolicy,
+    toolName: 'searchEagleReferences',
+    result: unavailableReferenceFailure
+  }, 'non_blocking_observation');
+  expectReferenceFailureDisposition('mixed-required-modes-await-work-mode-declaration', {
+    policy: requiredContinueReferencePolicy,
+    toolName: 'searchEagleReferences',
+    result: unavailableReferenceFailure
+  }, undefined);
+  expectReferenceFailureDisposition('not-required-visual-not-found', {
+    policy: optionalReferencePolicy,
+    workMode: 'edit_existing',
+    toolName: 'analyzeEagleReference',
+    result: { success: false, status: 'not_found' }
+  }, 'non_blocking_observation');
+  expectReferenceFailureDisposition('required-awaits-degraded-declaration', {
+    policy: requiredContinueReferencePolicy,
+    workMode: 'create_new',
+    toolName: 'searchEagleReferences',
+    result: { success: false, status: 'unavailable' }
+  }, undefined);
+  expectReferenceFailureDisposition('required-validated-degraded', {
+    policy: requiredContinueReferencePolicy,
+    workMode: 'create_new',
+    toolName: 'searchEagleReferences',
+    result: { success: false, status: 'unavailable' },
+    referenceReadiness: 'degraded'
+  }, 'non_blocking_observation');
+  expectReferenceFailureDisposition('required-block-never-degrades', {
+    policy: requiredBlockReferencePolicy,
+    workMode: 'create_new',
+    toolName: 'searchEagleReferences',
+    result: { success: false, status: 'unavailable' },
+    referenceReadiness: 'degraded'
+  }, undefined);
+  [
+    ['invalid-input', 'invalid_argument'],
+    ['permission', 'permission_denied'],
+    ['safety', 'safety_blocked'],
+    ['protocol', 'provider_protocol_error']
+  ].forEach(([label, code]) => {
+    expectReferenceFailureDisposition(label, {
+      policy: optionalReferencePolicy,
+      workMode: 'create_new',
+      toolName: 'searchEagleReferences',
+      result: { success: false, status: 'unavailable', code }
+    }, undefined);
+  });
+  expectReferenceFailureDisposition('unregistered-reference-provider', {
+    policy: optionalReferencePolicy,
+    workMode: 'create_new',
+    toolName: 'someOtherSearchTool',
+    result: { success: false, status: 'unavailable' }
+  }, undefined);
+  expectReferenceFailureDisposition('unclassified-failure', {
+    policy: optionalReferencePolicy,
+    workMode: 'create_new',
+    toolName: 'searchEagleReferences',
+    result: { success: false, code: 'tool_execution_failed' }
+  }, undefined);
+  if (classifyRuntimeReferenceFailure({
+    success: false,
+    status: 'unavailable',
+    code: 'provider_protocol_error'
+  }) !== 'protocol_error') {
+    runtimeReferenceFailurePolicyViolations.push('structured-protocol-category-not-fail-closed');
+  }
+  if (!optionalReferencePolicy
+    || !Object.isFrozen(optionalReferencePolicy)
+    || !Object.isFrozen(optionalReferencePolicy.work_mode_requirements)
+    || !Object.isFrozen(optionalReferencePolicy.allowed_sources)) {
+    runtimeReferenceFailurePolicyViolations.push('manifest-reference-policy-projection-not-deep-frozen');
+  }
+  if (JSON.stringify(unavailableReferenceFailure) !== unavailableReferenceFailureSnapshot
+    || unavailableReferenceFailure.success !== false
+    || unavailableReferenceFailure.elapsedMs !== 321) {
+    runtimeReferenceFailurePolicyViolations.push('reference-disposition-mutated-real-failure-facts');
+  }
+  const eagleFallbackCalls = [];
+  const eagleFallbackResponse = await EagleReadonlyKnowledgeService.search({
+    query: '电商 主图',
+    limit: 4,
+    preferAiSearch: true
+  }, {
+    settings: {
+      enabled: true,
+      endpoint: 'http://eagle-audit.invalid',
+      timeoutMs: 5000
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const tool = body.name || body.tool;
+      const args = body.arguments || body.params || {};
+      eagleFallbackCalls.push({ tool, query: args.query, limit: args.limit });
+      let result = [];
+      if (tool === 'ai_search_status') result = { status: 'starting' };
+      if (tool === 'item_query' && args.query === '电商') {
+        result = [1, 2, 3, 4].map((index) => ({
+          id: `eagle-commerce-${index}`,
+          name: `电商候选 ${index}`,
+          ext: 'jpg',
+          tags: ['分类:电商'],
+          folders: [],
+          width: 1000,
+          height: 1000,
+          filePath: `C:\\private\\commerce-${index}.jpg`
+        }));
+      }
+      if (tool === 'item_query' && args.query === '主图') {
+        result = [1, 2, 3, 4].map((index) => ({
+          id: index === 1 ? 'eagle-commerce-1' : `eagle-main-image-${index}`,
+          name: `主图候选 ${index}`,
+          ext: 'jpg',
+          tags: ['分类:主图参考'],
+          folders: [],
+          width: 1000,
+          height: 1000,
+          thumbnailPath: `D:\\private\\main-image-${index}.jpg`
+        }));
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ result })
+      };
+    }
+  });
+  const eagleAiReadyCalls = [];
+  const eagleAiReadyResponse = await EagleReadonlyKnowledgeService.search({
+    query: '专业袜子主图',
+    limit: 3,
+    preferAiSearch: true
+  }, {
+    settings: {
+      enabled: true,
+      endpoint: 'http://eagle-audit.invalid',
+      timeoutMs: 5000
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const tool = body.name || body.tool;
+      const args = body.arguments || body.params || {};
+      eagleAiReadyCalls.push({ tool, query: args.query, limit: args.limit });
+      const result = tool === 'ai_search_status'
+        ? { status: 'ready' }
+        : [{
+          id: 'eagle-ai-ready-reference',
+          name: 'AI 语义参考',
+          ext: 'jpg',
+          tags: ['分类:主图参考'],
+          folders: [],
+          width: 1200,
+          height: 1200,
+          filePath: 'C:\\private\\ai-ready-reference.jpg'
+        }];
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ result })
+      };
+    }
+  });
+  const eagleAiStatusTimeoutCalls = [];
+  let eagleAiStatusAttempted = false;
+  const eagleAiStatusTimeoutResponse = await EagleReadonlyKnowledgeService.search({
+    query: '主图',
+    limit: 2,
+    preferAiSearch: true
+  }, {
+    settings: {
+      enabled: true,
+      endpoint: 'http://eagle-audit.invalid',
+      timeoutMs: 5000
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const tool = body.name || body.tool;
+      const args = body.arguments || body.params || {};
+      eagleAiStatusTimeoutCalls.push({ tool, query: args.query });
+      if (tool === 'ai_search_status') {
+        eagleAiStatusAttempted = true;
+        throw new Error('simulated AI status timeout');
+      }
+      if (tool === 'item_query') {
+        if (eagleAiStatusAttempted) {
+          throw new Error('item_query was incorrectly deferred until after AI status');
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: [{
+              id: 'eagle-keyword-before-status',
+              name: '关键词主图参考',
+              ext: 'jpg',
+              tags: ['分类:主图参考'],
+              folders: [],
+              width: 1000,
+              height: 1000,
+              filePath: 'C:\\private\\keyword-before-status.jpg'
+            }]
+          })
+        };
+      }
+      throw new Error(`unexpected Eagle tool: ${tool}`);
+    }
+  });
+  const eagleAiSemanticTimeoutCalls = [];
+  let eagleAiSemanticAttempted = false;
+  const eagleAiSemanticTimeoutResponse = await EagleReadonlyKnowledgeService.search({
+    query: '主图',
+    limit: 2,
+    preferAiSearch: true
+  }, {
+    settings: {
+      enabled: true,
+      endpoint: 'http://eagle-audit.invalid',
+      timeoutMs: 5000
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      const tool = body.name || body.tool;
+      const args = body.arguments || body.params || {};
+      eagleAiSemanticTimeoutCalls.push({ tool, query: args.query });
+      if (tool === 'item_query') {
+        if (eagleAiSemanticAttempted) {
+          throw new Error('item_query was incorrectly deferred until after AI semantic search');
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: [{
+              id: 'eagle-keyword-before-semantic',
+              name: '关键词语义降级参考',
+              ext: 'jpg',
+              tags: ['分类:主图参考'],
+              folders: [],
+              width: 1000,
+              height: 1000,
+              thumbnailPath: 'D:\\private\\keyword-before-semantic.jpg'
+            }]
+          })
+        };
+      }
+      if (tool === 'ai_search_status') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ result: { status: 'ready' } })
+        };
+      }
+      if (tool === 'ai_search_by_text') {
+        eagleAiSemanticAttempted = true;
+        throw new Error('simulated AI semantic timeout');
+      }
+      throw new Error(`unexpected Eagle tool: ${tool}`);
+    }
+  });
+
+  const jpegRedirectSemanticsViolations = [];
+  const saveDocumentDefaultRedirect = preserveJpegQualityAcrossToolRedirect({
+    sourceTool: 'saveDocument',
+    targetFormat: 'jpg',
+    requestedQuality: undefined,
+    redirectedParams: { format: 'jpg', outputPath: 'C:\\project\\主图' }
+  });
+  const quickExportDefaultRedirect = preserveJpegQualityAcrossToolRedirect({
+    sourceTool: 'quickExport',
+    targetFormat: 'jpg',
+    requestedQuality: undefined,
+    redirectedParams: { format: 'jpg', path: 'C:\\project\\主图\\成品.jpg' }
+  });
+  const explicitNativeRedirect = preserveJpegQualityAcrossToolRedirect({
+    sourceTool: 'saveDocument',
+    targetFormat: 'jpg',
+    requestedQuality: 6,
+    redirectedParams: { format: 'jpg', outputPath: 'C:\\project\\主图' }
+  });
+  const pngRedirect = preserveJpegQualityAcrossToolRedirect({
+    sourceTool: 'quickExport',
+    targetFormat: 'png',
+    requestedQuality: undefined,
+    redirectedParams: { format: 'png', path: 'C:\\project\\主图\\成品.png' }
+  });
+  if (saveDocumentDefaultRedirect.quality !== 12) {
+    jpegRedirectSemanticsViolations.push('saveDocument-default-was-replaced-by-quickExport-default');
+  }
+  if (quickExportDefaultRedirect.quality !== 80) {
+    jpegRedirectSemanticsViolations.push('quickExport-default-was-replaced-by-saveDocument-default');
+  }
+  if (explicitNativeRedirect.quality !== 6) {
+    jpegRedirectSemanticsViolations.push('explicit-native-quality-was-reinterpreted-during-redirect');
+  }
+  if (Object.prototype.hasOwnProperty.call(pngRedirect, 'quality')) {
+    jpegRedirectSemanticsViolations.push('jpeg-default-leaked-into-png-redirect');
+  }
+  const publicPlanCalls = [];
+  const publicPlanAdapter = createPublicPlanPhotoshopAdapter({
+    approvedLiveAdapterRun: true,
+    executionScope: 'disposable-document',
+    projectPath: 'C:\\project',
+    executeTool: async (toolName, params) => {
+      publicPlanCalls.push({ toolName, params });
+      return { success: true };
+    }
+  }).adapter;
+  if (!publicPlanAdapter) {
+    jpegRedirectSemanticsViolations.push('public-plan-adapter-not-created-for-quality-regression');
+  } else {
+    await publicPlanAdapter.runWriteOperation({
+      toolName: 'saveDocument',
+      params: {
+        format: 'jpg',
+        projectSubdir: '主图',
+        fileName: '成品'
+      }
+    });
+    const redirectedCall = publicPlanCalls[0];
+    if (redirectedCall?.toolName !== 'quickExport'
+      || redirectedCall?.params?.quality !== 12) {
+      jpegRedirectSemanticsViolations.push('public-plan-saveDocument-redirect-lost-native12-default');
+    }
+  }
+  if (!toolExecutorText.includes("sourceTool: 'quickExport'")
+    || !toolExecutorText.includes("sourceTool: 'saveDocument'")
+    || !publicPlanPhotoshopAdapterText.includes("sourceTool: 'saveDocument'")) {
+    jpegRedirectSemanticsViolations.push('renderer-redirect-path-not-wired-to-originating-quality-semantics');
+  }
+  if (eagleFallbackResponse.status !== 'ok'
+    || eagleFallbackResponse.results.length !== 4
+    || new Set(eagleFallbackResponse.results.map((result) => result.id)).size !== 4
+    || !eagleFallbackResponse.results.some((result) => result.id.includes('eagle-commerce-'))
+    || !eagleFallbackResponse.results.some((result) => result.id.includes('eagle-main-image-'))
+    || !eagleFallbackResponse.warnings.some((warning) => warning.includes('宽松只读召回'))
+    || eagleFallbackCalls.map((call) => `${call.tool}:${call.query || ''}`).join('|')
+      !== 'item_query:电商 主图|item_query:电商|item_query:主图|ai_search_status:'
+    || eagleFallbackCalls
+      .filter((call) => call.tool === 'item_query' && call.query !== '电商 主图')
+      .some((call) => call.limit !== 4)) {
+    runtimeReferenceFailurePolicyViolations.push('eagle-not-ready-fallback-did-not-round-robin-bounded-token-candidates');
+  }
+  if (JSON.stringify(eagleFallbackResponse).includes('commerce-1.jpg')
+    || JSON.stringify(eagleFallbackResponse).includes('main-image-2.jpg')
+    || eagleAiReadyResponse.status !== 'ok'
+    || eagleAiReadyResponse.results.length !== 1
+    || eagleAiReadyCalls.map((call) => `${call.tool}:${call.query || ''}:${call.limit || ''}`).join('|')
+      !== 'item_query:专业袜子主图:3|ai_search_status::|ai_search_by_text:专业袜子主图:3'
+    || JSON.stringify(eagleAiReadyResponse).includes('ai-ready-reference.jpg')) {
+    runtimeReferenceFailurePolicyViolations.push('eagle-fallback-changed-ai-ready-path-or-leaked-local-path');
+  }
+  if (eagleAiStatusTimeoutResponse.status !== 'ok'
+    || eagleAiStatusTimeoutResponse.results.length !== 1
+    || eagleAiStatusTimeoutCalls.map((call) => `${call.tool}:${call.query || ''}`).join('|')
+      !== 'item_query:主图|ai_search_status:'
+    || !eagleAiStatusTimeoutResponse.warnings.some((warning) => (
+      warning.includes('AI Search 状态检查失败')
+      && warning.includes('使用只读关键词结果')
+    ))
+    || JSON.stringify(eagleAiStatusTimeoutResponse).includes('keyword-before-status.jpg')) {
+    runtimeReferenceFailurePolicyViolations.push('eagle-ai-status-timeout-swallowed-independent-keyword-baseline');
+  }
+  if (eagleAiSemanticTimeoutResponse.status !== 'ok'
+    || eagleAiSemanticTimeoutResponse.results.length !== 1
+    || eagleAiSemanticTimeoutCalls.map((call) => `${call.tool}:${call.query || ''}`).join('|')
+      !== 'item_query:主图|ai_search_status:|ai_search_by_text:主图'
+    || !eagleAiSemanticTimeoutResponse.warnings.some((warning) => (
+      warning.includes('AI 语义检索超时或不可用')
+      && warning.includes('使用只读关键词结果')
+    ))
+    || JSON.stringify(eagleAiSemanticTimeoutResponse).includes('keyword-before-semantic.jpg')) {
+    runtimeReferenceFailurePolicyViolations.push('eagle-ai-semantic-timeout-swallowed-independent-keyword-baseline');
+  }
   const manifests = listSkillManifests();
   const skillModelProjectionFixture = {
     success: false,
@@ -5297,8 +6546,167 @@ async function run() {
   );
   const detailManifest = manifests.find((manifest) => manifest.skill_id === 'ecommerce.detail_page');
   const mainImageManifest = manifests.find((manifest) => manifest.skill_id === 'ecommerce.main_image');
+  const mainImageDeclarationGuidance = String(
+    getDesignTaskTypeSpec('ecommerce.main_image.v1')?.declarationGuidance || ''
+  );
   const observationLivenessViolations = [];
   const autonomousDesignLoopViolations = [];
+  if (!shouldStopWarningOnlyNeedsReviewReflexion({
+    status: 'needs_review',
+    blockers: [],
+    hasActionableRequiredProfileIssue: false
+  })
+    || !shouldStopWarningOnlyNeedsReviewReflexion({
+      status: 'needs_review',
+      blockers: [],
+      // r17 具备可靠审美 diagnosis；该事实不应改变 warning-only 终态边界。
+      hasActionableVlmDiagnosis: true,
+      hasActionableRequiredProfileIssue: false
+    })
+    || shouldStopWarningOnlyNeedsReviewReflexion({
+      status: 'needs_review',
+      blockers: [],
+      hasActionableRequiredProfileIssue: true
+    })
+    || shouldStopWarningOnlyNeedsReviewReflexion({
+      status: 'needs_review',
+      blockers: ['缺少必需交付物'],
+      hasActionableRequiredProfileIssue: false
+    })
+    || !agentRuntimeText.includes('shouldStopWarningOnlyNeedsReviewReflexion({')) {
+    autonomousDesignLoopViolations.push('reflexion:warning-only-needs-review-replayed-original-task');
+  }
+  const mainImagePerformanceBudgetFixture = {
+    maxModelCalls: 36,
+    maxToolCalls: 120,
+    maxIterations: 60,
+    maxVisionCandidates: 16,
+    maxVisualAnalyses: 6,
+    maxFullResolutionImageReads: 0,
+    softTimeBudgetMs: 900000
+  };
+  if (canQueueRunLevelVisualPresentation({
+    limit: 22,
+    consumed: 21,
+    visualAnalysisAlreadyPending: false
+  }) !== false
+    || canQueueRunLevelVisualPresentation({
+      limit: 22,
+      consumed: 20,
+      visualAnalysisAlreadyPending: false
+  }) !== true
+    || canQueueRunLevelVisualPresentation({
+      limit: 22,
+      consumed: 21,
+      visualAnalysisAlreadyPending: true
+    }) !== false
+    || canQueueRunLevelVisualPresentation({
+      limit: 22,
+      consumed: 20,
+      visualAnalysisAlreadyPending: true
+    }) !== true
+    || !agentRuntimeText.includes('!this.canQueuePrimaryVisualPresentation()')
+    || agentRuntimeText.indexOf('!this.canQueuePrimaryVisualPresentation()')
+      > agentRuntimeText.indexOf('const visionCandidateLimit = this.getPerformanceVisionCandidateLimit();')) {
+    autonomousDesignLoopViolations.push('visual-budget:presentation-and-next-analysis-not-reserved-atomically');
+  }
+  const finalQualityAccountingLedger = createPerformanceLedgerState();
+  const ordinaryObservationKeys = Array.from(
+    { length: 7 },
+    (_, index) => `ordinary-review:${index + 1}`
+  );
+  const finalQualityObservationKeys = Array.from(
+    { length: 7 },
+    (_, index) => `final-review:${index + 1}`
+  );
+  [3, 1, 1, 1, 1].forEach((candidateCount, index) => {
+    consumePerformanceModelCallUsage(finalQualityAccountingLedger, 'task', {
+      visualAnalysis: true,
+      billedVisionCandidateCount: candidateCount,
+      visionCandidateKeys: ordinaryObservationKeys.slice(
+        index === 0 ? 0 : index + 2,
+        index === 0 ? 3 : index + 3
+      )
+    });
+  });
+  consumePerformanceModelCallUsage(finalQualityAccountingLedger, 'final_quality_judge', {
+    visualAnalysis: true,
+    billedVisionCandidateCount: 7,
+    visionCandidateKeys: finalQualityObservationKeys
+  });
+  consumePerformanceModelCallUsage(
+    finalQualityAccountingLedger,
+    'final_quality_diagnosis_repair',
+    {
+      visualAnalysis: true,
+      billedVisionCandidateCount: 7,
+      visionCandidateKeys: finalQualityObservationKeys
+    }
+  );
+  const projectedOrdinaryVisualUsage = projectPerformanceLedgerUsage(
+    finalQualityAccountingLedger,
+    5,
+    1
+  );
+  const restoredOrdinaryVisualLedger = restorePerformanceLedgerUsage(
+    createPerformanceLedgerState(),
+    0,
+    projectedOrdinaryVisualUsage
+  );
+  if (projectedOrdinaryVisualUsage.modelCalls !== 5
+    || projectedOrdinaryVisualUsage.visionCandidates !== 7
+    || projectedOrdinaryVisualUsage.visualAnalyses !== 5
+    || projectedOrdinaryVisualUsage.observationKeys.length !== 7
+    || finalQualityAccountingLedger.finalQualityJudgeCallCount !== 1
+    || finalQualityAccountingLedger.finalQualityDiagnosisRepairCallCount !== 1
+    || readRunLevelVisualBudgetConsumed(finalQualityAccountingLedger) !== 12
+    || restoredOrdinaryVisualLedger.ledger.visionCandidateCount !== 7
+    || restoredOrdinaryVisualLedger.ledger.visualAnalysisCount !== 5
+    || restoredOrdinaryVisualLedger.ledger.finalQualityJudgeCallCount !== 0
+    || restoredOrdinaryVisualLedger.ledger.finalQualityDiagnosisRepairCallCount !== 0
+    || !agentRuntimeText.includes('consumePerformanceModelCallUsage(this.performanceLedger')) {
+    autonomousDesignLoopViolations.push('visual-budget:final-quality-event-contaminated-restored-ordinary-pool');
+  }
+  const imminentBudgetDirectiveDue = shouldIssuePerformanceBudgetDisciplineDirective({
+    budget: mainImagePerformanceBudgetFixture,
+    ledger: { modelCallCount: 26, budgetDisciplineDirectiveIssued: false },
+    activeElapsedMs: 743000,
+    imminentModelCalls: 1,
+    requestTimeoutMs: 180000
+  });
+  const distantBudgetDirectiveNotDue = shouldIssuePerformanceBudgetDisciplineDirective({
+    budget: mainImagePerformanceBudgetFixture,
+    ledger: { modelCallCount: 8, budgetDisciplineDirectiveIssued: false },
+    activeElapsedMs: 240000,
+    imminentModelCalls: 1,
+    requestTimeoutMs: 180000
+  });
+  const duplicateBudgetDirectiveNotDue = shouldIssuePerformanceBudgetDisciplineDirective({
+    budget: mainImagePerformanceBudgetFixture,
+    ledger: { modelCallCount: 26, budgetDisciplineDirectiveIssued: true },
+    activeElapsedMs: 743000,
+    imminentModelCalls: 1,
+    requestTimeoutMs: 180000
+  });
+  const primaryRequestMethodStart = agentRuntimeText.indexOf(
+    'private async requestModelWithOptionalStream('
+  );
+  const primaryRequestDirectiveIndex = agentRuntimeText.indexOf(
+    'this.maybePushBudgetDisciplineDirective(1);',
+    primaryRequestMethodStart
+  );
+  const primaryRequestSnapshotIndex = agentRuntimeText.indexOf(
+    'const governedMessages = prepareAgentMessagesForModel(messages);',
+    primaryRequestMethodStart
+  );
+  if (!imminentBudgetDirectiveDue
+    || distantBudgetDirectiveNotDue
+    || duplicateBudgetDirectiveNotDue
+    || primaryRequestMethodStart < 0
+    || primaryRequestDirectiveIndex < primaryRequestMethodStart
+    || primaryRequestSnapshotIndex < primaryRequestDirectiveIndex) {
+    autonomousDesignLoopViolations.push('performance-budget:closure-directive-arrives-after-request-snapshot');
+  }
   const requestScaledCostViolations = [];
   const userActivityProjectionViolations = [];
   const visibleStepActivityFunction = findFunction(
@@ -5589,6 +6997,26 @@ async function run() {
       || performanceText.includes('parentRunStartedAtMs')
       || !agentRuntimeText.includes("throw new Error('runtime_session_generation_seed_required')")
       || !agentRuntimeText.includes('readRequestPerformanceUsageSnapshot(): RuntimePerformanceUsage')
+      || !agentRuntimeText.includes('private readonly runtimeAccounting = new ActiveRuntimeAccounting();')
+      || !agentRuntimeText.includes('readRuntimeAccountingDigest(): RuntimeAccountingDigest | undefined')
+      || !agentRuntimeText.includes('accountingSeed: this.runtimeAccounting.readUnboundLedgerForTransfer()')
+      || !agentRuntimeText.includes('this.runtimeAccounting.releaseUnboundLedgerAfterBinding();')
+      || !agentRuntimeText.includes('this.runtimeAccounting.recordToolCall(this.runtimeSession')
+      || !activeRuntimeAccountingText.includes('private unboundLedger: RuntimeAccountingLedger | undefined;')
+      || !activeRuntimeAccountingText.includes('recordRuntimeModelCall({ ledger: this.unboundLedger, ...accountingInput })')
+      || !activeRuntimeAccountingText.includes('recordRuntimeToolCall({ ledger: this.unboundLedger, ...input })')
+      || !runtimeAccountingText.includes('export function cloneRuntimeAccountingLedger(')
+      || !runtimeAccountingText.includes('export function validateRuntimeAccountingDigest(')
+      || !runtimeAccountingText.includes('projectPerformanceUsageForDigest(input.ledger.performanceUsage)')
+      || !agentRunRecordText.includes('validateRuntimeAccountingDigest(r.runtimeAccounting)')
+      || !agentRunRecordText.includes('runtimeAccountingDigestOnly?: true;')
+      || !agentRunRecordText.includes('const standaloneAccountingCandidate = !runtimeSessionDigest')
+      || !agentRunRecordText.includes('staged Runtime Session 不得重复持有顶层 runtimeAccounting')
+      || !executorText.includes('const runtimeAccountingDigest = activeAutonomousAgent?.readRuntimeAccountingDigest();')
+      || executorText.includes('const standaloneRuntimeAccountingDigest = !runtimeContractBundle')
+      || performanceLedgerText.includes('modelDurationMs')
+      || performanceLedgerText.includes('toolDurationMs')
+      || performanceLedgerText.includes('promptShapeSamples')
       || !agentRuntimeText.includes('restorePerformanceLedgerUsage(this.performanceLedger, this.iteration, this.config.requestPerformanceUsageSeed)')
       || !executorText.includes('.readRequestPerformanceUsageSnapshot();')
       || !executorText.includes('? { requestPerformanceUsageSeed }')
@@ -5783,7 +7211,25 @@ async function run() {
       observationKeys: longReviewSet.reviewSet.items.map((item) => item.observationKey),
       reviewedObservationKeys: [firstReviewedKey],
       // producer 不能自行把部分复核抬成完整复核；reader 必须重新派生。
-      fullyReviewed: true
+      fullyReviewed: true,
+      supportingSourcePlacements: [{
+        version: 'design-run-supporting-source-placement/v0',
+        path: 'E:\\review-assets\\parent-source.jpg',
+        sourceTool: 'placeImage',
+        sourceSlot: 'direct_placement',
+        layerId: 701,
+        documentId: 7,
+        callId: 'raw-tool-call-must-not-cross-generation',
+        modelTurn: 9,
+        usage: 'supporting_source',
+        boundaries: {
+          extractedFromSuccessfulToolCall: true,
+          ranksCandidates: false,
+          selectsWinner: false,
+          countsAsFinalSurface: false,
+          countsAsDeliveryEvidence: false
+        }
+      }]
     });
     const trustedArtifact = readTrustedVisualReviewArtifact(trustedOwner);
     const forwardedOwner = {};
@@ -5792,6 +7238,10 @@ async function run() {
     const clonedOwner = { ...trustedOwner };
     const parentFinalReviewReserve = resolveFinalQualityVisionCandidateReserve({
       reviewSet: longReviewSet.reviewSet
+    });
+    const finalReviewWithSupportingSourceReserve = resolveFinalQualityVisionCandidateReserve({
+      reviewSet: longReviewSet.reviewSet,
+      supportingImageReserve: 1
     });
     const preEvidenceVisionLimit = resolveVisionCandidateLimitForFinalQuality({
       hardLimit: 37,
@@ -5816,7 +7266,12 @@ async function run() {
       || trustedArtifact?.fullyReviewed !== false
       || !transferred
       || forwardedArtifact?.reviewSet.items.length !== 30
+      || forwardedArtifact?.supportingSourcePlacements?.length !== 1
+      || forwardedArtifact?.supportingSourcePlacements?.[0]?.path !== 'E:\\review-assets\\parent-source.jpg'
+      || forwardedArtifact?.supportingSourcePlacements?.[0]?.callId !== undefined
+      || forwardedArtifact?.supportingSourcePlacements?.[0]?.modelTurn !== undefined
       || parentFinalReviewReserve !== 30
+      || finalReviewWithSupportingSourceReserve !== 31
       || preEvidenceVisionLimit !== 6
       || zeroReviewedVisionLimit !== 7
       || oneReviewedVisionLimit !== 7
@@ -6315,9 +7770,8 @@ async function run() {
   }
   if (!runtimeMethodKnowledgeText.includes('是否检索 Eagle 或其他参考资源由 Agent 按信息增益判断')
     || !artifactKnowledgeText.includes('是否调用 Eagle 等参考工具、查什么以及何时停止由 Agent 决定')
-    // 2026-08-23 用户裁决「看参考挂到定方向前」：正向流程位替代纯信息增益触发，锚点改守豁免出口（非强制仪式）。
-    || !toolSchemasText.includes('skip it only when an explicit reference')
-    || !toolSchemasText.includes('no opening announcement or fixed research ritual is required')
+    || !toolSchemasText.includes('no explicit reference, governed brand material or relevant project work already answers it')
+    || !toolSchemasText.includes('optional evidence, not a fixed opening ritual')
     || toolSchemasText.includes('先说明要解决的构图、色彩、字体或表达问题')
     || toolSchemasText.includes('每次设计必须查 Eagle')) {
     autonomousDesignLoopViolations.push('design-knowledge:reference-research-not-agent-owned-or-information-gain-driven');
@@ -6359,19 +7813,73 @@ async function run() {
   if (!agentRuntimeText.includes('this.captureLatestDesignVisualJudgeReviewSet(toolResults);')
     || !agentRuntimeText.includes('selectDesignReviewSetForFinalJudge(')
     || !agentRuntimeText.includes('buildToolResultImageFromVisualObservationItem({')
-    || !agentRuntimeText.includes('directVisionCandidateCount: reviewImagePlan.totalImages')
-    || !agentRuntimeText.includes('directVisionCandidateKeys: reviewVisionCandidateKeys')
+    || !agentRuntimeText.includes('directVisionCandidateCount: presentation.candidateCount')
+    || !agentRuntimeText.includes('directVisionCandidateKeys: presentation.candidateKeys')
+    || !finalQualityReviewRuntimeText.includes('loadDesignFinalReviewSupportingImages({')
+    || !finalQualityReviewRuntimeText.includes('priorVerifiedPlacements: priorTrustedVisualArtifact?.supportingSourcePlacements')
+    || !finalQualityReviewRuntimeText.includes('supportingSourceCoverage: supportingImageResult.coverage')
+    || !designFinalReviewEvidenceText.includes('SUPPORTING_SOURCE_EVIDENCE_COVERAGE')
+    || !designFinalReviewEvidenceText.includes('type=final_bound_supporting_source')
+    || designFinalReviewEvidenceText.includes('type=selected_source')
+    || !finalQualityReviewRuntimeText.includes('buildDesignFinalReviewStructureEvidence(input.toolCallLog)')
+    || !finalQualityReviewRuntimeText.includes('structureConcernReport.concerns.map((concern) => concern.evidenceId)')
+    || !agentRuntimeText.includes('reconcileDesignFinalReviewStructureVerificationRecords(')
+    || !designFinalReviewEvidenceText.includes('projectDesignFinalReviewStructureVerification(')
+    || !finalQualityReviewRuntimeText.includes("requiredEvidenceRefsByAssertion: requiredStructureEvidenceRefs.length > 0")
     || !agentRuntimeText.includes('billDirectVisionCandidatesByPresentation: true')
     || agentRuntimeText.includes('remainingVisionCandidates + reusedVisionCandidateCount')
     || agentRuntimeText.includes('this.performanceLedger.visionCandidateKeys.has(normalizedKey)) return true;')
     || (agentRuntimeText.match(/retireDeliveredAgentMessageImages\(/g) || []).length < 3
-    || !agentRuntimeText.includes('resolveVisionCandidateLimitForFinalQuality({')
+    || !performanceVisionPolicyText.includes('resolveVisionCandidateLimitForFinalQuality({')
+    || !agentRuntimeText.includes('resolvePerformanceVisionBudgetSnapshot({')
     || !agentRuntimeText.includes('if (findObservedPhotoshopMutationProof(item.output))')
     || !agentRuntimeText.includes('this.latestDesignVisualJudgeBundleReviewSet')
     || !agentRuntimeText.includes('this.latestDesignVisualJudgeSingleReviewSet')
     || !agentRuntimeText.includes('resolveDesignReviewSetItemForDiagnosis(')
     || !designEvaluationProfilesText.includes("requiredSourceKind: 'detail-screen'")) {
     autonomousDesignLoopViolations.push('review-set:production-final-judge-wiring-incomplete');
+  }
+  if (!executorText.includes('transferTrustedVisualReviewArtifact(result, incomingReflexionHandoff);')) {
+    autonomousDesignLoopViolations.push('review-set:reflexion-child-did-not-inherit-parent-trusted-supporting-source-provenance');
+  }
+  const runtimeImageObservationIndex = agentRuntimeText.indexOf(
+    'await this.attachToolImageObservations(toolResults);'
+  );
+  const runtimeImageCompactionIndex = agentRuntimeText.indexOf(
+    'compactPostWriteImagePayloadForRuntimeLog(item.output);',
+    runtimeImageObservationIndex
+  );
+  if (!finalQualityReviewRuntimeText.includes('collectDesignFinalCandidateSetReplays(input.toolCallLog)')
+    || !finalQualityReviewRuntimeText.includes('collectDesignFinalDeclaredReferenceReplays({')
+    || !finalQualityReviewRuntimeText.includes('trustedParentEvidence: trustedParentComparisonEvidence')
+    || !finalQualityReviewRuntimeText.includes('...comparisonEvidencePlan.contentBlocks')
+    || !finalQualityReviewRuntimeText.includes('comparisonEvidencePlan.evidenceScope')
+    || !agentRuntimeText.includes('writeTrustedFinalComparisonEvidenceAfterJudge({')
+    || !agentRuntimeText.includes('writeDesignFinalComparisonPresentationReplay({')
+    || runtimeImageObservationIndex < 0
+    || runtimeImageCompactionIndex < 0
+    || runtimeImageObservationIndex >= runtimeImageCompactionIndex
+    || !designFinalComparisonEvidenceText.includes('RUNTIME_COMPARISON_PRESENTATION_REPLAYS')
+    || !designFinalComparisonEvidenceText.includes('candidateCoverage: cloneCandidateSetCoverage(candidateCoverage)')
+    || !designFinalComparisonEvidenceText.includes('buildVisualObservationKey(identity) === observation.observationKey')
+    || !designFinalComparisonEvidenceText.includes("origin: 'trusted_parent'")
+    || designFinalComparisonEvidenceText.includes("import { collectImagesFromToolResult }")
+    || !trustedFinalComparisonEvidenceText.includes('mergeTrustedFinalComparisonEvidenceAfterJudge')
+    || !trustedFinalComparisonEvidenceText.includes("candidateSet?: TrustedFinalComparisonEvidenceOrigin")
+    || !agentModelTransportPolicyText.includes('const hasVisualContent =')
+    || !agentModelTransportPolicyText.includes("block?.type === 'image'")
+    || !agentModelTransportPolicyText.includes("return 'provider_adapter';")
+    || !finalQualityReviewRuntimeText.includes('visualPresentationCandidateKeys: judgeVisionCandidateKeys')
+    || !finalQualityReviewRuntimeText.includes('candidateKeys: judgeVisionCandidateKeys')
+    || !finalQualityReviewRuntimeText.includes('contentBlocks: judgeContentBlocks')
+    || !finalQualityModelProtocolText.includes('finalQualityJudgeVisualPresentationMatches({')
+    || !finalQualityModelProtocolText.includes('projectFinalQualityJudgeVisualTransportFacts(')
+    || !finalQualityModelProtocolText.includes('attempt?.succeeded === true')
+    || !finalQualityModelProtocolText.includes('successfulTransportReceiptRef?.attemptId !== receipt.attemptId')
+    || !finalQualityModelProtocolText.includes('visualPresentationCandidateKeys: [...input.visualPresentationCandidateKeys]')
+    || !modelVisualPresentationReceiptText.includes("binding: 'successful_provider_turn'")
+    || !modelVisualPresentationReceiptText.includes('decodedByteSha256: sha256BytesHex(bytes)')) {
+    autonomousDesignLoopViolations.push('final-comparison-evidence:runtime-presentation-or-reflexion-wiring-incomplete');
   }
   if (!performanceText.includes('const plannedVisualStageCeiling =')
     || !agentRuntimeText.includes('this.performanceLedger.visionCandidateCount = Math.max(')
@@ -6652,6 +8160,8 @@ async function run() {
     ?.getText(agentRuntimeSource) || '';
   const cacheScopeMethodText = findMethod(agentRuntimeSource, 'resolveReadResultCacheParams')
     ?.getText(agentRuntimeSource) || '';
+  const activateRuntimeContractMethodText = findMethod(agentRuntimeSource, 'activateRuntimeContractFromDeclaration')
+    ?.getText(agentRuntimeSource) || '';
   const successfulObservationMethodText = findMethod(agentRuntimeSource, 'isSuccessfulRuntimeToolObservation')
     ?.getText(agentRuntimeSource) || '';
   const carryForwardObservationMethodText = findMethod(agentRuntimeSource, 'findLatestSuccessfulRuntimeR2Observation')
@@ -6676,6 +8186,9 @@ async function run() {
     || !cacheScopeMethodText.includes('isAgentPhotoshopDocumentObservation(toolName, args)')) {
     observationLivenessViolations.push('read-cache:document-observations-not-bound-to-trusted-revision');
   }
+  if (!activateRuntimeContractMethodText.includes('this.readResultCache.clear()')) {
+    observationLivenessViolations.push('read-cache:visual-consumer-mode-transition-reuses-incompatible-result');
+  }
   if (!agentRuntimeText.includes("options?.budgetClass !== 'harness_quality_verification'")
     || !agentRuntimeText.includes("resultKind === 'photoshop_write'")
     || !agentRuntimeText.includes("resultKind === 'save_export'")
@@ -6683,7 +8196,8 @@ async function run() {
     || !agentRuntimeText.includes('this.readResultCache.clear()')) {
     observationLivenessViolations.push('read-cache:fresh-readback-or-write-invalidation-missing');
   }
-  if (!successfulObservationMethodText.includes('isAgentReadResultCacheHit(result)')
+  if (!successfulObservationMethodText.includes('isSuccessfulAgentRuntimeToolObservation(call, result)')
+    || !runtimeReferenceAdapterText.includes('isAgentReadResultCacheHit(result)')
     || !carryForwardObservationMethodText.includes('isAgentReadResultCacheHit(entry.result)')
     || !stageTraceMethodText.includes('if (isAgentReadResultCacheHit(result)) return;')) {
     observationLivenessViolations.push('read-cache:cache-hit-can-satisfy-runtime-observation');
@@ -6707,6 +8221,9 @@ async function run() {
     || !noToolReplanMethodText.includes('return this.finishAgentTextResponse(finalMessage);')
     || (agentRuntimeText.match(/return this\.finishAgentTextResponse\(finalMessage\);/g) || []).length < 2) {
     observationLivenessViolations.push('final-response:bare-completion-guard-not-shared-by-text-exits');
+  }
+  if (finishAgentTextResponseMethodText.includes('callbacks.onMessage')) {
+    observationLivenessViolations.push('final-response:candidate-final-exposed-before-run-settlement');
   }
   if (!updateLoopGuardsMethodText.includes('options.stageProgressChanged || madeDurableExecutionProgress')
     || !updateLoopGuardsMethodText.includes('result.output?.countsAsTaskProgress === false')
@@ -6925,6 +8442,14 @@ async function run() {
         photoshopDocumentId: 457,
         photoshopHistoryStateRef: undefined
       });
+      const runtimeOwnedDrift = resolveInteractiveContinuationOperationRequest({
+        continuation: persistedStaleBindingContinuation,
+        submission: pauseSubmission,
+        request: pauseRequest,
+        photoshopDocumentId: 999,
+        photoshopHistoryStateRef: { documentId: 999, historyStateId: 1 },
+        photoshopStateOwner: 'runtime_session'
+      });
       const missingPauseRevisionContinuation = {
         ...persistedStaleBindingContinuation,
         id: 'continuation-missing-pause-revision-audit',
@@ -7027,8 +8552,9 @@ async function run() {
         || resumedPersistedBinding.taskRunBinding?.expectedRevision?.historyStateId !== 495
         || rejectedRealDrift.status !== 'rejected'
         || rejectedRealDrift.code !== 'interactive_continuation_photoshop_revision_mismatch'
-        || rejectedMissingLiveRevision.status !== 'rejected'
-        || rejectedMissingLiveRevision.code !== 'interactive_continuation_photoshop_revision_mismatch'
+         || rejectedMissingLiveRevision.status !== 'rejected'
+         || rejectedMissingLiveRevision.code !== 'interactive_continuation_photoshop_revision_mismatch'
+         || runtimeOwnedDrift.status !== 'accepted'
         || rejectedMissingPauseRevision.status !== 'rejected'
         || rejectedMissingPauseRevision.code !== 'interactive_continuation_photoshop_revision_unavailable'
         || rejectedUnknownPauseObservation.status !== 'rejected'
@@ -7048,7 +8574,8 @@ async function run() {
         observationLivenessViolations.push('interactive-continuation:agent-still-suspends-with-stale-opening-revision');
       }
       if (!pendingInteractiveContinuationText.includes('...(pauseRevision ? { expectedRevision: pauseRevision } : {})')
-        || !pendingInteractiveContinuationText.includes('const taskRunBinding = resolution.taskRunBinding;')) {
+        || !pendingInteractiveContinuationText.includes('const taskRunBinding = resolution.taskRunBinding;')
+        || !pendingInteractiveContinuationText.includes("photoshopStateOwner?: 'continuation_envelope' | 'runtime_session'")) {
         observationLivenessViolations.push('interactive-continuation:persisted-stale-binding-not-normalized-on-resume');
       }
       let reobserveSession = createRuntimeSession({ identity: runtimeIdentity, plan: reobservePlan });
@@ -7182,7 +8709,11 @@ async function run() {
           `reobserve:new-revision-write-not-reenabled:${newRevisionStart.decision.code || 'unknown'}`
         );
       }
-      releaseRuntimeTaskRunWriterBinding({ taskRunId: reboundSession.taskRun.taskRunId });
+      releaseRuntimeTaskRunWriterBinding({
+        taskRunId: reboundSession.taskRun.taskRunId,
+        runId: reboundSession.identity.runId,
+        generation: reboundSession.identity.generation
+      });
     } catch (error) {
       observationLivenessViolations.push(`reobserve:fixture-failed:${compact(error?.message || error)}`);
     }
@@ -7350,7 +8881,11 @@ async function run() {
           `reobserve:${manifest.skill_id}:workflow-revision-not-reenabled`
         );
       }
-      releaseRuntimeTaskRunWriterBinding({ taskRunId: workflowSession.taskRun.taskRunId });
+      releaseRuntimeTaskRunWriterBinding({
+        taskRunId: workflowSession.taskRun.taskRunId,
+        runId: workflowSession.identity.runId,
+        generation: workflowSession.identity.generation
+      });
     } catch (error) {
       observationLivenessViolations.push(
         `reobserve:sku-workflow-fixture-failed:${manifest.skill_id}:${compact(error?.message || error)}`
@@ -8112,6 +9647,71 @@ async function run() {
     }))
   }));
   const profileCompletionIsCategoryInvariant = new Set(profileCategorySignatures).size === 1;
+  const agenticMainImageArtifactContract = {
+    version: 'agentic-artifact-completion-contract/v0',
+    skillId: 'ecommerce.main_image',
+    taskType: 'ecommerce.main_image.v1',
+    workMode: 'create_new',
+    productionObligation: 'photoshop_mutation_with_readback',
+    deliveryOutputs: ['main_image_psd', 'main_image_preview', 'delivery_manifest'],
+    exitCriteria: ['advisory-only'],
+    reviewRubricRef: evaluationProfile.profileId
+  };
+  const agenticMainImageProductionLog = [
+    currentDocumentRead,
+    successfulOperation('createDocument', {
+      documentId: 41,
+      name: '审计主图'
+    }),
+    successfulOperation('createRectangle', {
+      documentId: 41,
+      x: 0,
+      y: 0,
+      width: 1440,
+      height: 1440
+    }),
+    currentLayerReadback
+  ];
+  const buildAgenticMainImageProfileContract = (task, deliveryOperations = []) => (
+    buildTaskCompletionContract({
+      task,
+      context: { agenticArtifactContract: agenticMainImageArtifactContract },
+      toolCallLog: [...agenticMainImageProductionLog, ...deliveryOperations],
+      evaluationProfile,
+      evaluationProfileResult
+    })
+  );
+  const agenticMainImageUnsavedContract = buildAgenticMainImageProfileContract(
+    '请完成当前设计。'
+  );
+  const agenticMainImageRasterOnlyContract = buildAgenticMainImageProfileContract(
+    '做主图。',
+    [successfulOperation('quickExport', { documentId: 41, format: 'png' }, {
+      outputPath: 'main-image.png'
+    })]
+  );
+  const agenticMainImageCompleteContract = buildAgenticMainImageProfileContract(
+    '生成一个单画布视觉。',
+    [
+      successfulOperation('quickExport', { documentId: 41, format: 'png' }, {
+        outputPath: 'main-image.png'
+      }),
+      successfulOperation('saveDocument', { documentId: 41, format: 'psd' }, {
+        filePath: 'main-image.psd'
+      })
+    ]
+  );
+  const agenticMainImageCategoryInvariantContract = buildAgenticMainImageProfileContract(
+    '把它说成详情页或 SKU 也不能改变当前已经绑定的主图交付事实。',
+    [
+      successfulOperation('quickExport', { documentId: 41, format: 'png' }, {
+        outputPath: 'main-image.png'
+      }),
+      successfulOperation('saveDocument', { documentId: 41, format: 'psd' }, {
+        filePath: 'main-image.psd'
+      })
+    ]
+  );
   const scopedOptionalCompletionContract = scopedEditProfile && scopedOptionalEvaluationResult
     ? buildTaskCompletionContract({
       task: '只读投影局部修改评价结果，不执行新的写入。',
@@ -8572,6 +10172,23 @@ async function run() {
     ...(profileCompletionIsCategoryInvariant
       ? []
       : ['evaluation-profile:bound-completion-still-depends-on-category-task-text']),
+    ...(agenticMainImageUnsavedContract?.status === 'failed'
+      && requirementById(agenticMainImageUnsavedContract, 'production-delivery')?.status === 'failed'
+      ? []
+      : ['agentic-delivery:photoshop-write-and-readback-bypassed-file-obligations']),
+    ...(agenticMainImageRasterOnlyContract?.status === 'failed'
+      && requirementById(agenticMainImageRasterOnlyContract, 'production-delivery')?.status === 'failed'
+      ? []
+      : ['agentic-delivery:raster-only-bypassed-editable-document-obligation']),
+    ...(agenticMainImageCompleteContract?.status === 'completed'
+      && requirementById(agenticMainImageCompleteContract, 'production-delivery')?.status === 'passed'
+      ? []
+      : ['agentic-delivery:psd-and-preview-receipts-did-not-complete-profile-task']),
+    ...(JSON.stringify(agenticMainImageCompleteContract) === JSON.stringify(
+      agenticMainImageCategoryInvariantContract
+    )
+      ? []
+      : ['agentic-delivery:structured-contract-still-depends-on-category-task-text']),
     ...(scopedOptionalCompletionContract?.status === 'completed'
       && scopedOptionalCompletionContract.warnings.some((warning) => (
         warning.includes('局部修改视觉复核') && warning.includes('可选复核项')
@@ -8825,6 +10442,8 @@ async function run() {
   }
   const runtimeSkillHandoffPositiveCases = [
     ['帮我做 SKU', 'sku-batch', 'ecommerce.sku_batch'],
+    ['帮我做SKU编排', 'sku-batch', 'ecommerce.sku_batch'],
+    ['帮我完成SKU编排', 'sku-batch', 'ecommerce.sku_batch'],
     ['帮我做详情页', 'detail-page-design', 'ecommerce.detail_page'],
     ['帮我做主图', 'main-image-design', 'ecommerce.main_image']
   ];
@@ -11089,8 +12708,9 @@ async function run() {
       && realSkuEngineDecision.toolScope === 'write_photoshop'
       && realSkuEngineDecision.executionAuthorization === 'confirmed_tool_required'
       && !planNeutralSkuResolution.selectedCapabilityIds.includes('skill.sku-batch')
-      && !planNeutralSkuResolution.selectedToolNames.includes('declareDesignIntent')
-      && planNeutralSkuResolution.onDemandCapabilityIds.includes('agent.intent.declareDesignTask')
+      && planNeutralSkuResolution.selectedCapabilityIds.includes('agent.intent.declareDesignTask')
+      && planNeutralSkuResolution.selectedToolNames.includes('declareDesignIntent')
+      && !planNeutralSkuResolution.onDemandCapabilityIds.includes('agent.intent.declareDesignTask')
       && !planNeutralSkuResolution.selectedToolNames.includes('sku-batch')
       && !planNeutralSkuResolution.onDemandCapabilityIds.includes('skill.sku-batch')
       && planNeutralSkuResolution.deniedCapabilityIds.includes('skill.sku-batch')
@@ -11878,7 +13498,7 @@ async function run() {
     },
     {
       id: 'aesthetic-judge-protocol-is-brief-relative-and-non-blocking-by-default',
-      description: '审美 Judge 以 score 为唯一裁决值；无分结果不污染覆盖率，N/A 受断言白名单约束，结构启发信号不冒充像素事实，诊断强制 top-3；completed 的可靠诊断只在同一请求内唤醒 Agent 一次，Harness 不选择或直接执行修改；零视觉/局部编辑 Profile 不强跑全局 VLM。',
+      description: '审美 Judge 以 score 为唯一裁决值；无分结果不污染覆盖率，N/A 受断言白名单约束，结构启发信号不冒充像素事实，诊断强制 top-3，缺诊断只接受 diagnosis-only 原子协议修复；completed 的可靠诊断只在同一请求内唤醒 Agent 一次，Harness 不选择或直接执行修改；零视觉/局部编辑 Profile 不强跑全局 VLM。',
       violations: aestheticProtocolViolations
     },
     {
@@ -12025,6 +13645,52 @@ async function run() {
           && diverseNumericFilenameSelection.some((candidate) => candidate.folderType === '平铺')
           ? []
           : ['project-image-analysis:numeric-filenames-collapsed-folder-diversity']),
+        ...(fullBucketSpanSelection.map((candidate) => (
+          candidate.relativePath.split('/').pop()
+        )).join(',') === '001.jpg,004.jpg,006.jpg,009.jpg'
+          ? []
+          : ['project-contact-sheet:role-bucket-still-samples-filesystem-head']),
+        ...(reversedBucketSpanSelection.map((candidate) => candidate.relativePath).join(',')
+          === fullBucketSpanSelection.map((candidate) => candidate.relativePath).join(',')
+          ? []
+          : ['project-contact-sheet:span-sampling-depends-on-filesystem-order']),
+        ...(sampledContactSheetCoverage.candidateUniverseCount === 9
+          && sampledContactSheetCoverage.attemptedCandidateCount === 4
+          && sampledContactSheetCoverage.displayedCandidateCount === 4
+          && sampledContactSheetCoverage.failedRenderCount === 0
+          && sampledContactSheetCoverage.samplingOmittedCandidateCount === 5
+          && sampledContactSheetCoverage.omittedCandidateCount === 5
+          && sampledContactSheetCoverage.status === 'sampled'
+          && sampledContactSheetCoverage.universeScope === 'project_scan'
+          && sampledContactSheetCoverage.doesNotRank === true
+          && sampledContactSheetCoverage.doesNotSelectWinner === true
+          ? []
+          : ['project-contact-sheet:sampled-coverage-facts-or-authorship-boundary-invalid']),
+        ...(completeContactSheetCoverage.candidateUniverseCount === 4
+          && completeContactSheetCoverage.attemptedCandidateCount === 4
+          && completeContactSheetCoverage.displayedCandidateCount === 4
+          && completeContactSheetCoverage.failedRenderCount === 0
+          && completeContactSheetCoverage.samplingOmittedCandidateCount === 0
+          && completeContactSheetCoverage.omittedCandidateCount === 0
+          && completeContactSheetCoverage.status === 'complete'
+          && completeContactSheetCoverage.universeScope === 'provided_candidates'
+          ? []
+          : ['project-contact-sheet:complete-coverage-facts-invalid']),
+        ...(failedTileContactSheetCoverage.candidateUniverseCount === 4
+          && failedTileContactSheetCoverage.attemptedCandidateCount === 4
+          && failedTileContactSheetCoverage.displayedCandidateCount === 3
+          && failedTileContactSheetCoverage.failedRenderCount === 1
+          && failedTileContactSheetCoverage.samplingOmittedCandidateCount === 0
+          && failedTileContactSheetCoverage.omittedCandidateCount === 1
+          && failedTileContactSheetCoverage.status === 'sampled'
+          ? []
+          : ['project-contact-sheet:failed-tile-still-counted-as-displayed']),
+        ...((toolExecutorText.match(/reconcileProjectContactSheetCandidateCoverage\(\{/g) || []).length >= 2
+          && (toolExecutorText.match(/maxImages: prepared\.maxImages/g) || []).length >= 2
+          && toolExecutorText.includes('candidateUniverseCount: uniqueCandidates.length')
+          && toolExecutorText.includes("item?.status === 'rendered'")
+          ? []
+          : ['project-contact-sheet:coverage-disclosure-not-exposed-by-both-tools']),
         ...(realSkuAssetIndex.visionCandidates.length === 12
           && realSkuAssetIndex.visionCandidates.some((candidate) => candidate.role === 'raw-model-wear')
           && realSkuAssetIndex.visionCandidates.some((candidate) => candidate.role === 'raw-product-still')
@@ -12316,6 +13982,23 @@ async function run() {
           && agentRuntimeText.includes('if (entry.failureDisposition) continue;')
           ? []
           : ['agent-runtime:non-blocking-observation-failure-accounting-missing']),
+        ...runtimeReferenceFailurePolicyViolations.map((item) => (
+          `agent-runtime:reference-failure-policy:${item}`
+        )),
+        ...(agentRuntimeTypesText.includes('agenticReferencePolicy?: RuntimeReferencePolicyProjection')
+          && executorText.includes('agenticReferencePolicy: projectRuntimeReferencePolicy(')
+          && executorText.includes('referencePolicy: projectRuntimeReferencePolicy(')
+          && agentRuntimeText.includes('return resolveAgentActiveReferencePolicy(this.config);')
+          && runtimeReferenceAdapterText.includes('config.runtimeStagePlan?.referencePolicy || config.agenticReferencePolicy')
+          && runtimeReferenceAdapterText.includes('resolveRuntimeReferenceFailureDisposition({')
+          && agentRuntimeText.includes('resolveAgentReferenceFailureDisposition({')
+          && agentRuntimeText.includes('this.reconcileReferenceFailureDispositions();')
+          && runtimeReferenceContextText.includes('只读取 Tool 返回的结构化 code/status/category')
+          && runtimeReferenceContextText.includes("requirement === 'reuse_or_optional' || requirement === 'not_required'")
+          && runtimeReferenceContextText.includes("input.referenceReadiness === 'degraded'")
+          && !agentRuntimeText.includes("toolName === 'searchEagleReferences'")
+          ? []
+          : ['agent-runtime:manifest-reference-policy-not-atomically-projected']),
         ...(agentRuntimeText.includes("runtimeBriefRequiresDelivery")
           && agentRuntimeText.includes("productionObligation === 'photoshop_mutation_with_readback'")
           && agentRuntimeText.includes('!requiresAgentTaskProgress(plan)')
@@ -12546,7 +14229,7 @@ async function run() {
     },
     {
       id: 'design-intent-schema-follows-runtime-profile-catalog',
-      description: 'declareDesignIntent 的合法 taskTypeId/workMode 必须动态来自已通过发布校验的 Runtime Profile 目录；匹配 Skill 时直接调用，只有系统给出精确 Profile 且无匹配 Skill 时才声明。',
+      description: 'declareDesignIntent 的合法 taskTypeId/workMode 与首轮任务角色语义必须动态来自已通过发布校验的 Runtime Profile / Task Profile 目录；匹配 Skill 时直接调用，只有系统给出精确 Profile 且无匹配 Skill 时才声明。',
       violations: [
         ...(toolSchemasText.includes('buildRuntimeDeclarationProfileCatalog')
           ? []
@@ -12564,7 +14247,21 @@ async function run() {
           && !executorText.includes('declareDesignIntent({ taskType:')
           && !toolSchemasText.includes('with that taskType to bind it')
           ? []
-          : ['tool-schema:declare-design-intent-skill-or-profile-rule-drifted'])
+          : ['tool-schema:declare-design-intent-skill-or-profile-rule-drifted']),
+        ...(executorText.includes('getDesignTaskTypeSpec(manifest.task_type)?.declarationGuidance')
+          && executorText.includes('const declarationGuidance = taskProfileGuidance || whenToUse;')
+          && executorText.includes('declarationGuidance.slice(0, 420)')
+          ? []
+          : ['runtime-profile-menu:task-profile-guidance-not-consumed-before-binding']),
+        ...(mainImageDeclarationGuidance.includes('只委托一张泛称商品主图')
+          && mainImageDeclarationGuidance.includes('按搜索或推荐列表的点击入口理解')
+          && mainImageDeclarationGuidance.includes('不能单独决定素材或方案赢家')
+          && mainImageDeclarationGuidance.length <= 420
+          ? []
+          : ['main-image-task-profile:generic-single-image-role-not-disambiguated']),
+        ...(/(?:模特|平铺|真人|场景图|白底图|静物)|(?:固定|指定)(?:风格|版式|模板|工具|步骤)|(?:composeDesign|renderLayout|Tool)|工具顺序|(?:必须|只能|优先)(?:使用|选择|调用|采用)/iu.test(mainImageDeclarationGuidance)
+          ? ['main-image-task-profile:role-guidance-prescribes-design-answer']
+          : [])
       ]
     },
     {
@@ -12891,6 +14588,10 @@ async function run() {
           && conversationalUnavailableMessageText.includes('订阅用量或重置时间')
           ? []
           : ['provider-failure:subscription-usage-limit-not-classified-or-explained']),
+        ...(subscriptionInvalidToolJsonFailure.kind === 'protocol'
+          && subscriptionInvalidToolJsonFailure.basis === 'code'
+          ? []
+          : ['provider-failure:subscription-invalid-tool-json-not-classified-as-protocol']),
         ...(conversationalUnavailableMessageText.includes("kind === 'model_access'")
           && conversationalUnavailableMessageText.includes('API Key 不一定有问题')
           ? []
@@ -12922,13 +14623,89 @@ async function run() {
           && executorText.includes('modelProviderFailureDigest: {')
           ? []
           : ['provider-failure:run-record-provenance-missing']),
-        ...(executorText.includes('AUTONOMOUS_MODEL_TRANSPORT_MAX_ATTEMPTS = 2')
-          && executorText.includes('!hasEmittedStreamPayload')
-          && executorText.includes("error.providerFailure.kind === 'service_unavailable'")
-          && executorText.includes("error.providerFailure.kind === 'network'")
-          && executorText.includes("error.providerFailure.kind === 'timeout'")
+        ...(classifiedSubscriptionIdleTimeout.kind === 'timeout'
+          && classifiedSubscriptionIdleTimeout.basis === 'code'
+          && classifiedSubscriptionIdleTimeout.providerCode === 'codex_subscription_turn_idle_timeout'
+          && classifiedSubscriptionWallTimeout.kind === 'timeout'
+          && classifiedSubscriptionWallTimeout.basis === 'code'
+          && isHarnessManagedSubscriptionTimeout(classifiedSubscriptionIdleTimeout) === true
+          && isHarnessManagedSubscriptionTimeout(classifiedSubscriptionWallTimeout) === true
+          && retrySubscriptionIdleTimeout === true
+          && retrySubscriptionWallTimeout === false
+          && retryAfterVisiblePayload === false
+          && modelServiceText.includes('buildAgentToolStreamErrorChunk(error)')
+          && modelServiceText.includes('errorCode: failure.providerCode')
+          && agentToolStreamServiceText.includes('restoreAgentToolStreamError(data.chunk)')
+          && executorText.includes('shouldRetryAutonomousModelTransport({')
           ? []
-          : ['provider-failure:bounded-pre-output-retry-missing']),
+          : ['provider-failure:structured-stream-identity-or-bounded-retry-invalid']),
+        ...(freshCodexProgress.expired === false
+          && freshCodexProgress.remainingMs === 1
+          && expiredCodexProgress.expired === true
+          && expiredCodexProgress.elapsedMs === 180_000
+          && codexTurnProgressText.includes('调用方必须在接受一个新进展事件之前先评价旧空窗')
+          && codexSubscriptionServiceText.includes(
+            'const accepted = this.refreshActiveTurnIdleDeadline(active, notification.method);'
+          )
+          && codexSubscriptionServiceText.includes('if (!accepted) return;')
+          && codexSubscriptionServiceText.includes('this.scheduleActiveTurnIdleCheck(active);')
+          ? []
+          : ['provider-failure:idle-watchdog-can-be-erased-by-late-progress']),
+        ...(oldTurnOwnedBeforeReplacement === true
+          && lateOldTurnCallbackPreservedNewTurn === true
+          && matchingTurnNotificationAccepted === true
+          && staleTurnNotificationRejected === false
+          && codexSubscriptionServiceText.includes(
+            'if (!ownsCodexTurnSlot(this.activeTurns, active)) return;'
+          )
+          && codexSubscriptionServiceText.includes(
+            'if (!ownsCodexTurnSlot(this.activeImageTurns, active)) return;'
+          )
+          && !codexSubscriptionServiceText.includes(
+            'if (!this.activeTurns.has(active.threadId)) return;'
+          )
+          && codexSubscriptionServiceText.includes(
+            'codexNotificationMatchesActiveTurn({'
+          )
+          ? []
+          : ['provider-failure:late-old-turn-callback-can-affect-reused-thread-slot']),
+        ...(codexSubscriptionServiceText.includes(
+          "if (!this.settleActiveTurnIdleDeadline(active)) return;"
+        )
+          && codexSubscriptionServiceText.includes(
+            "'codex_subscription_turn_idle_timeout'"
+          )
+          && codexSubscriptionServiceText.includes(
+            'notification.method === \'turn/completed\''
+          )
+          ? []
+          : ['provider-failure:terminal-event-bypasses-strict-idle-deadline']),
+        ...(agentRuntimeText.includes('outcome: response')
+          && activeRuntimeAccountingText.includes('const candidateAttempts = (input.outcome as {')
+          && activeRuntimeAccountingText.includes('currentSession = this.recordRecoveryAttempt(currentSession);')
+          && executorText.includes('transportAttempts.push(buildModelTransportAttempt(')
+          && executorText.includes('throw attachModelTransportAttempts(wrappedError, transportAttempts)')
+          && transportAttemptAccountingDigest?.modelCallCount === 2
+          && transportAttemptAccountingDigest?.modelFailureCount === 1
+          && transportAttemptAccountingDigest?.modelDurationMs === 192_000
+          && transportAttemptAccountingDigest?.inputTokens === 40_000
+          && transportAttemptAccountingDigest?.outputTokens === 600
+          && transportAttemptAccountingDigest?.unreportedUsageCallCount === 1
+          && transportAttemptAccountingDigest?.recoveryAttemptCount === 1
+          && transportAttemptAccountingDigest?.modelFailureSamples?.length === 1
+          && transportAttemptAccountingDigest?.modelFailureSamples?.[0]?.failureKind === 'timeout'
+          && transportAttemptAccountingDigest?.modelFailureSamples?.[0]?.providerCode
+            === 'codex_subscription_turn_idle_timeout'
+          && transportAttemptAccountingDigest?.modelFailureSamples?.[0]?.status === 504
+          && !transportAttemptAccountingJson.includes('不得进入账本')
+          && !transportAttemptAccountingJson.includes('diagnostic')
+          && !transportAttemptAccountingJson.includes('stack')
+          && transportAttemptAccountingValidation.ok === true
+          && pollutedTransportAttemptAccountingValidation.ok === false
+          && runtimeAccountingText.includes('MAX_MODEL_FAILURE_SAMPLES = 32')
+          && executorText.includes('failureKind: failure.kind')
+          ? []
+          : ['provider-failure:transport-retry-not-accounted']),
         ...(executorText.includes('executionSummary: failureExecutionSummary')
           && conversationalUnavailableMessageText.includes('服务当前繁忙或暂时不可用')
           ? []
@@ -13141,6 +14918,11 @@ async function run() {
       id: 'photoshop-modal-recovery-is-observable-and-agent-owned',
       description: 'Harness 结构化报告 Photoshop 原生弹窗嫌疑并提供整窗观察；Agent 看真实窗口后决定恢复，写状态未知时不得盲目重试。',
       violations: environmentRecoveryViolations
+    },
+    {
+      id: 'jpeg-export-redirect-preserves-public-tool-defaults',
+      description: 'Renderer 跨 saveDocument / quickExport 重定向时，JPEG 默认值仍由用户调用的公开工具拥有；内部传输工具不得改写默认质量。',
+      violations: jpegRedirectSemanticsViolations
     },
     {
       id: 'autonomous-design-loop-refreshes-governed-context-and-reviews-complete-visual-sets',

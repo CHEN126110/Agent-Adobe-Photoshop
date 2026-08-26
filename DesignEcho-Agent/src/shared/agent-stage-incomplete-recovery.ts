@@ -15,6 +15,7 @@
  *
  * 边界（与 runtime-action-provider-recovery 的 provider 失败恢复是不同场景）：
  * - 只产出决策与文案，不执行 Tool、不推进 Stage、不授予权限、不改变完成判定；
+ * - 交互等待、单写者冲突、revision 重观察和 Agent handoff 有各自 owner，通用补做必须让路；
  * - 不臆造缺口：拿不到 missingOutcomes 时如实说「阶段未标记完成」，不编造步骤名；
  * - 重试有界且不因中途有动作而重置——否则模型可以在「做一点事 → 想收尾」之间反复横跳。
  */
@@ -39,6 +40,24 @@ export interface StageIncompleteStageStateInput {
     stages?: readonly StageIncompleteStageSnapshot[];
 }
 
+export type StageIncompleteStructuralBlockerCode =
+    | 'waiting_user'
+    | 'pending_interaction'
+    | 'writer_conflict'
+    | 'needs_reobserve'
+    | 'agent_handoff';
+
+/**
+ * Runtime 已经确认的结构性状态。这里只消费投影，不读取 Skill、品类或用户文本。
+ */
+export interface StageIncompleteRuntimeStateInput {
+    taskRunStatus?: string;
+    documentBindingStatus?: string;
+    documentConflictKind?: string;
+    hasPendingInteraction?: boolean;
+    hasAgentHandoff?: boolean;
+}
+
 export interface StageIncompleteGap {
     stage?: string;
     missingOutcomes: string[];
@@ -46,16 +65,24 @@ export interface StageIncompleteGap {
 }
 
 export interface StageIncompleteRecoveryDecision {
-    /** true = 把缺口推回模型继续做；false = 已耗尽，交回用户。 */
+    disposition: 'retry_model' | 'defer_to_structural_owner' | 'escalate';
+    /** true = 把缺口推回模型继续做；false = 交给结构 owner 或普通补做已耗尽。 */
     shouldRetry: boolean;
+    /** 仅普通补做耗尽时为 true；结构性等待不是失败升级。 */
+    shouldEscalate: boolean;
+    /** 结构性状态不占用通用补做次数，调用方不得递增恢复账本。 */
+    countsAsRecoveryAttempt: boolean;
     attempt: number;
     maxAttempts: number;
     /** 推回给模型的指令；shouldRetry 为 false 时为空字符串。 */
     modelDirective: string;
     /** 交回用户时的说明；shouldRetry 为 true 时为空字符串。 */
     escalationMessage: string;
+    /** 结构状态已有专属 owner 时的人类可读说明；不包含 Runtime/TaskRun/Provider 等术语。 */
+    deferredMessage: string;
     /** 结构化缺口，用于 run record 审计（不含模型原文与工具载荷）。 */
     gap: StageIncompleteGap;
+    structuralBlockerCode?: StageIncompleteStructuralBlockerCode;
     boundaries: {
         decisionOnly: true;
         doesNotAdvanceStage: true;
@@ -105,6 +132,41 @@ function describeGap(gap: StageIncompleteGap): string {
     return parts.join('；');
 }
 
+function resolveStructuralBlocker(
+    state: StageIncompleteRuntimeStateInput | undefined
+): StageIncompleteStructuralBlockerCode | undefined {
+    if (!state) return undefined;
+    if (state.hasPendingInteraction === true) return 'pending_interaction';
+    if (state.taskRunStatus === 'waiting_user') return 'waiting_user';
+    if (state.taskRunStatus === 'writer_conflict'
+        || state.documentConflictKind === 'writer_conflict') {
+        return 'writer_conflict';
+    }
+    if (state.taskRunStatus === 'needs_reobserve'
+        || state.documentBindingStatus === 'needs_reobserve'
+        || state.documentConflictKind === 'document_changed'
+        || state.documentConflictKind === 'external_revision_changed'
+        || state.documentConflictKind === 'operation_state_unknown') {
+        return 'needs_reobserve';
+    }
+    if (state.hasAgentHandoff === true) return 'agent_handoff';
+    return undefined;
+}
+
+function buildStructuralDeferMessage(code: StageIncompleteStructuralBlockerCode): string {
+    switch (code) {
+        case 'waiting_user':
+        case 'pending_interaction':
+            return '我正在等待你的确认；收到后会从原来的位置继续，不会重新做一遍。';
+        case 'writer_conflict':
+            return '当前画面仍由另一项正在进行的任务处理；我没有启动第二次写入，避免重复修改。';
+        case 'needs_reobserve':
+            return '当前画面已经变化；继续前会先以最新画面为准，不会沿用旧版本修改。';
+        case 'agent_handoff':
+            return '前一步已经把后续处理交回当前任务；这轮没有重复执行旧动作，当前进度已保留。';
+    }
+}
+
 /**
  * 决定「阶段未完成」这次该推回还是升级。
  *
@@ -113,6 +175,7 @@ function describeGap(gap: StageIncompleteGap): string {
 export function decideStageIncompleteRecovery(input: {
     obligation: StageIncompleteObligation;
     stageState?: StageIncompleteStageStateInput;
+    runtimeState?: StageIncompleteRuntimeStateInput;
     attempt: number;
     maxAttempts?: number;
 }): StageIncompleteRecoveryDecision {
@@ -123,6 +186,7 @@ export function decideStageIncompleteRecovery(input: {
     const gap = readStageIncompleteGap(input.stageState);
     const gapText = describeGap(gap);
     const obligationText = OBLIGATION_LABELS[input.obligation] || OBLIGATION_LABELS.runtime_stage_incomplete;
+    const structuralBlockerCode = resolveStructuralBlocker(input.runtimeState);
     const shouldRetry = attempt <= maxAttempts;
     const boundaries = {
         decisionOnly: true,
@@ -130,9 +194,29 @@ export function decideStageIncompleteRecovery(input: {
         doesNotGrantPermission: true
     } as const;
 
+    if (structuralBlockerCode) {
+        return {
+            disposition: 'defer_to_structural_owner',
+            shouldRetry: false,
+            shouldEscalate: false,
+            countsAsRecoveryAttempt: false,
+            attempt,
+            maxAttempts,
+            modelDirective: '',
+            escalationMessage: '',
+            deferredMessage: buildStructuralDeferMessage(structuralBlockerCode),
+            gap,
+            structuralBlockerCode,
+            boundaries
+        };
+    }
+
     if (shouldRetry) {
         return {
+            disposition: 'retry_model',
             shouldRetry: true,
+            shouldEscalate: false,
+            countsAsRecoveryAttempt: true,
             attempt,
             maxAttempts,
             modelDirective: [
@@ -142,13 +226,17 @@ export function decideStageIncompleteRecovery(input: {
                 '如果确实缺少只有用户能提供的信息，就把问题一次问清楚，不要重复同样的动作。'
             ].filter(Boolean).join(''),
             escalationMessage: '',
+            deferredMessage: '',
             gap,
             boundaries
         };
     }
 
     return {
+        disposition: 'escalate',
         shouldRetry: false,
+        shouldEscalate: true,
+        countsAsRecoveryAttempt: false,
         attempt,
         maxAttempts,
         modelDirective: '',
@@ -158,6 +246,7 @@ export function decideStageIncompleteRecovery(input: {
             `我已经尝试补做 ${maxAttempts} 次仍未通过，继续重试只会空转。`,
             '你可以补充缺少的信息、调整要求，或让我从这里接着做。'
         ].join(''),
+        deferredMessage: '',
         gap,
         boundaries
     };

@@ -453,7 +453,13 @@ export interface DesignEchoAPI {
         modelId: string;
         messages: any[];
         tools: any[];
-        options?: { maxTokens?: number; temperature?: number; nativeTools?: any[] };
+        options?: {
+            maxTokens?: number;
+            temperature?: number;
+            nativeTools?: any[];
+            reasoningEffort?: string;
+            visualPresentationCandidateKeys?: string[];
+        };
     }) => Promise<{ success: boolean; error?: string; requestId?: string }>;
     abortStream?: (requestId: string) => Promise<{ success: boolean; error?: string }>;
     onStreamChunk?: (callback: (data: { requestId: string; chunk: any }) => void) => () => void;
@@ -554,6 +560,9 @@ export interface DesignEchoAPI {
             rows: number;
             tileWidth: number;
             tileHeight: number;
+            sourceId?: string;
+            sourceKind?: 'candidate_set';
+            sourceName?: string;
         };
         items: Array<{
             id: string;
@@ -768,10 +777,33 @@ export interface DesignEchoAPI {
             visualEvidenceId?: string;
         }>;
         warnings?: string[];
+        sheet?: {
+            imageData: string;
+            mediaType: 'image/jpeg';
+            width: number;
+            height: number;
+            columns: number;
+            rows: number;
+            tileWidth: number;
+            tileHeight: number;
+        };
+        comparisonItems?: Array<{
+            id: string;
+            path: string;
+            relativePath?: string;
+            status: 'rendered' | 'failed';
+        }>;
         visualComparison?: {
             status: 'observed' | 'metadata_only';
             comparedCount: number;
             modelCallCount: 0 | 1;
+            rankingIsAdvisory: true;
+            agentSelectsFinalAsset: true;
+        };
+        visualObservationHandoff?: {
+            owner: 'calling_agent';
+            status: 'pixels_attached' | 'pixels_unavailable';
+            sourceKind: 'candidate_set';
         };
         error?: string;
     }>;
@@ -877,6 +909,7 @@ export interface DesignEchoAPI {
         timeoutMs?: number;
         resetConversation?: boolean;
         disableSkillBridges?: boolean;
+        expectedProjectPath?: string;
         publicPlanConfirmationSourceMessageId?: string;
         publicPlanConfirmationRequestId?: string;
         publicPlanDisposableLiveAdapter?: boolean;

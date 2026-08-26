@@ -1675,7 +1675,6 @@ function buildPlacementMetadata(
             anchor: 'center',
             cropPolicy: fillMode === 'cover' ? 'allow-crop' : 'protect-subject',
             visualBiasY: 0,
-            preserveSubject: true,
             minScale: 0.01,
             maxScale: 100
         }

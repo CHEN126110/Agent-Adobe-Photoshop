@@ -105,6 +105,39 @@ export interface RuntimeReferenceContextObservation {
     }>;
 }
 
+/**
+ * Manifest reference_policy 的运行时只读投影。它保留原契约语义，但不会成为第二个
+ * Policy owner；Agent 只能消费，不能在运行中改写要求、来源或降级行为。
+ */
+export type RuntimeReferencePolicyProjection = Readonly<Omit<
+    SkillRuntimeReferencePolicy,
+    'work_mode_requirements' | 'allowed_sources'
+>> & {
+    readonly work_mode_requirements: Readonly<SkillRuntimeReferencePolicy['work_mode_requirements']>;
+    readonly allowed_sources: readonly RuntimeReferenceSourceKind[];
+};
+
+export type RuntimeReferenceFailureCategory =
+    | 'source_unavailable'
+    | 'no_results'
+    | 'reference_not_found'
+    | 'search_budget_exhausted'
+    | 'invalid_input'
+    | 'permission_denied'
+    | 'safety_blocked'
+    | 'protocol_error'
+    | 'cancelled'
+    | 'unknown';
+
+export interface RuntimeReferenceFailureDispositionInput {
+    policy?: RuntimeReferencePolicyProjection;
+    workMode?: RuntimeDesignWorkMode;
+    toolName: unknown;
+    result: unknown;
+    /** required + continue_degraded 只有在既有 R2 声明确实校验为 degraded 后才可降级记账。 */
+    referenceReadiness?: RuntimeReferenceReadiness;
+}
+
 const WORK_MODES: readonly RuntimeDesignWorkMode[] = [
     'create_new',
     'redesign',
@@ -128,6 +161,57 @@ const INSIGHT_ASPECTS: readonly RuntimeReferenceInsightAspect[] = [
 ];
 const MAX_TEXT = 360;
 const MAX_ISSUES = 32;
+
+const NON_DEGRADABLE_INVALID_INPUT_PATTERN = /(?:^|_)(?:invalid_(?:argument|arguments|input|param|params|parameter|parameters|request|schema|json)|schema_(?:invalid|mismatch|validation_failed)|validation_(?:failed|error)|missing_(?:required_)?(?:argument|field|param|parameter)|bad_request|malformed_(?:argument|arguments|request|json))(?:_|$)/;
+const NON_DEGRADABLE_PERMISSION_PATTERN = /(?:^|_)(?:permission(?:_denied)?|forbidden|unauthorized|not_authorized|access_denied)(?:_|$)/;
+const NON_DEGRADABLE_SAFETY_PATTERN = /(?:^|_)(?:safety|security|unsafe|policy_blocked|blocked_by_policy)(?:_|$)/;
+const NON_DEGRADABLE_PROTOCOL_PATTERN = /(?:^|_)(?:protocol|invalid_json|parse_error|response_schema|malformed_response)(?:_|$)/;
+const CANCELLED_FAILURE_PATTERN = /(?:^|_)(?:cancelled|canceled|aborted)(?:_|$)/;
+const DEGRADABLE_SOURCE_UNAVAILABLE_TOKENS = new Set([
+    'unavailable',
+    'disabled',
+    'offline',
+    'timeout',
+    'timed_out',
+    'service_unavailable',
+    'source_unavailable',
+    'provider_unavailable',
+    'connection_failed',
+    'rate_limited'
+]);
+const DEGRADABLE_NO_RESULT_TOKENS = new Set(['no_results', 'empty_results']);
+const DEGRADABLE_NOT_FOUND_TOKENS = new Set(['not_found', 'reference_not_found', 'resource_not_found']);
+const DEGRADABLE_SEARCH_BUDGET_TOKENS = new Set([
+    'runtime_reference_search_budget_exhausted',
+    'reference_search_budget_exhausted'
+]);
+
+function normalizeStructuredFailureToken(value: unknown): string {
+    return String(value || '')
+        .trim()
+        .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .toLowerCase();
+}
+
+function collectStructuredReferenceFailureTokens(value: unknown): string[] {
+    if (!isObject(value)) return [];
+    const records = [
+        value,
+        isObject(value.data) ? value.data : undefined,
+        isObject(value.result) ? value.result : undefined,
+        isObject(value.errorDetails) ? value.errorDetails : undefined
+    ].filter((item): item is Record<string, unknown> => Boolean(item));
+    return Array.from(new Set(records.flatMap((record) => [
+        record.code,
+        record.errorCode,
+        record.status,
+        record.failureCategory,
+        record.errorCategory,
+        record.category
+    ].map(normalizeStructuredFailureToken).filter(Boolean))));
+}
 const LOCAL_PATH_PATTERN = /(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/]|\/(?:Users|home|tmp|var|private)\/)/;
 const DATA_URL_PATTERN = /data:[^;,]{1,80}(?:;base64)?,/i;
 
@@ -211,14 +295,111 @@ export function normalizeRuntimeReferenceContextObservation(
     };
 }
 
+/**
+ * 参考视觉 Tool 与后续模型声明共用的稳定 context ref。它只编码 Eagle/item 身份，
+ * 不包含本地路径、像素或设计结论；fallback 仅用于旧结果确实没有 item id 的诊断兼容。
+ */
+export function buildRuntimeReferenceVisualContextRef(
+    value: unknown,
+    fallback: string | number
+): string {
+    const itemId = String(value || fallback)
+        .trim()
+        .replace(/[^A-Za-z0-9_.:-]/gu, '_')
+        .slice(0, 96);
+    return `context:reference_visual:${itemId || String(fallback)}`;
+}
+
+export function projectRuntimeReferencePolicy(
+    policy: SkillRuntimeReferencePolicy | undefined
+): RuntimeReferencePolicyProjection | undefined {
+    if (!policy) return undefined;
+    return Object.freeze({
+        version: policy.version,
+        work_mode_requirements: Object.freeze({ ...policy.work_mode_requirements }),
+        allowed_sources: Object.freeze([...policy.allowed_sources]),
+        max_search_rounds: policy.max_search_rounds,
+        unavailable_behavior: policy.unavailable_behavior
+    });
+}
+
+/**
+ * 只读取 Tool 返回的结构化 code/status/category，不从错误文案猜失败性质。
+ * 未分类失败保持 unknown，避免把参数、权限或协议错误误当成“参考源暂时不可用”。
+ */
+export function classifyRuntimeReferenceFailure(
+    result: unknown
+): RuntimeReferenceFailureCategory {
+    if (!isObject(result) || result.success !== false) return 'unknown';
+    if (result.cancelled === true) return 'cancelled';
+    const tokens = collectStructuredReferenceFailureTokens(result);
+    if (tokens.some((token) => CANCELLED_FAILURE_PATTERN.test(token))) return 'cancelled';
+    if (tokens.some((token) => NON_DEGRADABLE_INVALID_INPUT_PATTERN.test(token))) return 'invalid_input';
+    if (tokens.some((token) => NON_DEGRADABLE_PERMISSION_PATTERN.test(token))) return 'permission_denied';
+    if (tokens.some((token) => NON_DEGRADABLE_SAFETY_PATTERN.test(token))) return 'safety_blocked';
+    if (tokens.some((token) => NON_DEGRADABLE_PROTOCOL_PATTERN.test(token))) return 'protocol_error';
+    if (tokens.some((token) => DEGRADABLE_SEARCH_BUDGET_TOKENS.has(token))) {
+        return 'search_budget_exhausted';
+    }
+    if (tokens.some((token) => DEGRADABLE_NO_RESULT_TOKENS.has(token))) return 'no_results';
+    if (tokens.some((token) => DEGRADABLE_NOT_FOUND_TOKENS.has(token))) return 'reference_not_found';
+    if (tokens.some((token) => DEGRADABLE_SOURCE_UNAVAILABLE_TOKENS.has(token))) {
+        return 'source_unavailable';
+    }
+    return 'unknown';
+}
+
+/**
+ * 决定参考失败是否只作为“未取得可选观察”保留，而不进入交付失败计数。
+ * Tool 结果本身不被改写：success=false、耗时与原始诊断继续留在运行日志中。
+ */
+export function resolveRuntimeReferenceFailureDisposition(
+    input: RuntimeReferenceFailureDispositionInput
+): 'non_blocking_observation' | undefined {
+    if (!input.policy) return undefined;
+    if (!isRuntimeReferenceSearchTool(input.toolName)
+        && !isRuntimeReferenceVisualTool(input.toolName)) {
+        return undefined;
+    }
+    const category = classifyRuntimeReferenceFailure(input.result);
+    const degradable = category === 'source_unavailable'
+        || category === 'no_results'
+        || category === 'reference_not_found'
+        || category === 'search_budget_exhausted';
+    if (!degradable) return undefined;
+
+    // Agentic tasks may not have declared workMode yet. If every mode in the selected Skill
+    // explicitly says references are optional/not required, that missing mode cannot turn a
+    // degradable read-only lookup failure into a delivery failure. If any mode requires a
+    // reference, remain fail-closed until the model declares the mode.
+    const requirements = Object.values(input.policy.work_mode_requirements);
+    const requirement = input.workMode
+        ? getReferenceRequirement(input.policy, input.workMode)
+        : (requirements.every((item) => item === 'reuse_or_optional' || item === 'not_required')
+            ? 'reuse_or_optional'
+            : undefined);
+    if (!requirement) return undefined;
+    if (requirement === 'reuse_or_optional' || requirement === 'not_required') {
+        return 'non_blocking_observation';
+    }
+    if (requirement === 'required'
+        && input.policy.unavailable_behavior === 'continue_degraded'
+        && input.referenceReadiness === 'degraded') {
+        return 'non_blocking_observation';
+    }
+    return undefined;
+}
+
 export function getReferenceRequirement(
-    policy: SkillRuntimeReferencePolicy,
+    policy: RuntimeReferencePolicyProjection,
     workMode: RuntimeDesignWorkMode
 ): RuntimeReferenceRequirement {
     return policy.work_mode_requirements[workMode];
 }
 
-export function validateSkillRuntimeReferencePolicy(policy: SkillRuntimeReferencePolicy | undefined): string[] {
+export function validateSkillRuntimeReferencePolicy(
+    policy: RuntimeReferencePolicyProjection | undefined
+): string[] {
     if (!policy) return [];
     const issues: string[] = [];
     if (policy.version !== 'skill-reference-policy/v0') issues.push('reference_policy_version_invalid');
@@ -245,7 +426,7 @@ export function validateSkillRuntimeReferencePolicy(policy: SkillRuntimeReferenc
 
 export function validateRuntimeReferenceBriefDeclaration(input: {
     value: unknown;
-    policy: SkillRuntimeReferencePolicy;
+    policy: RuntimeReferencePolicyProjection;
     workMode: RuntimeDesignWorkMode;
     context: RuntimeReferenceContextState;
 }): RuntimeReferenceBriefValidationResult {
@@ -408,8 +589,44 @@ export function buildRuntimeReferenceBriefDigest(input: {
     };
 }
 
+function normalizeReferenceEvaluationText(value: unknown, maxLength: number): string {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    if (LOCAL_PATH_PATTERN.test(text) || DATA_URL_PATTERN.test(text)) {
+        return '[reference_context_redacted]';
+    }
+    return text.slice(0, maxLength);
+}
+
+/**
+ * 把已经通过 RuntimeReferenceBrief 校验的视觉参考结论投影给终局 Judge。
+ * ready 才携带观察与迁移关系；degraded 只说明失败边界；waived 不伪装成参考依据。
+ * 该投影只是有界 user data，不执行 Tool、不授权写入，也不拥有质量裁决。
+ */
+export function buildRuntimeReferenceEvaluationContext(
+    declaration: RuntimeReferenceBriefDeclaration | undefined
+): string {
+    if (!declaration || declaration.readiness === 'waived') return '';
+    const parts = [`参考决策：${declaration.decision}/${declaration.readiness}`];
+    if (declaration.readiness === 'ready') {
+        declaration.insights.slice(0, 8).forEach((insight, index) => {
+            const observation = normalizeReferenceEvaluationText(insight.observation, 320);
+            const application = normalizeReferenceEvaluationText(insight.application, 320);
+            parts.push(
+                `参考洞察${index + 1}·${insight.aspect}：观察=${observation}；迁移=${application}`
+            );
+        });
+    }
+    const limitations = declaration.limitations
+        .slice(0, 8)
+        .map((item) => normalizeReferenceEvaluationText(item, 120))
+        .filter(Boolean);
+    if (limitations.length > 0) parts.push(`参考限制：${limitations.join('、')}`);
+    return parts.join('；').slice(0, 9000);
+}
+
 export function buildDeclareReferenceBriefToolSchema(input: {
-    policy: SkillRuntimeReferencePolicy;
+    policy: RuntimeReferencePolicyProjection;
     workMode: RuntimeDesignWorkMode;
     context: RuntimeReferenceContextState;
 }): {
@@ -427,6 +644,7 @@ export function buildDeclareReferenceBriefToolSchema(input: {
             'Prefer an explicit user reference, governed brand template, or relevant project case before searching Eagle or the web. Apply a reference to a named design aspect; never copy its surface style wholesale.',
             'Searching candidates is not visual understanding. readiness=ready requires at least one insight backed by structured output from a visual-reference tool.',
             'Choose an aspect and explain its application; the observation text is supplied by the Harness from that tool output and cannot be authored here.',
+            'For an agentic task this declaration is optional and non-blocking. When an observed reference materially influenced the design or should be compared during final review, bind that exact visual observation with readiness=ready; otherwise do not invent a reference or add a declaration merely to satisfy a workflow.',
             `At most ${input.policy.max_search_rounds} reference search rounds are allowed.`,
             requirement === 'reuse_or_optional'
                 ? 'References are optional for this mode. Search only when it materially reduces a design uncertainty; otherwise choose skip_not_needed with readiness=waived and continue from governed knowledge, project facts, and later visual review.'

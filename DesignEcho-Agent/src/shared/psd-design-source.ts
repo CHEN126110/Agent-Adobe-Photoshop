@@ -53,6 +53,14 @@ export interface RawDesignSourceNode {
     hasEffects?: boolean;
     /** 非 normal 的混合模式（multiply/screen/…）；normal 不记，节省体积。技法逆向的第一手数据。 */
     blendMode?: string;
+    /**
+     * 嵌入式智能对象的内部结构（2026-08-24：设计封装语义藏在 SO 边界里——哪些东西被封成
+     * 一个可替换单元就是设计师对复用粒度的判断）。深度受限递归；内容为位图（JPEG 等）时
+     * 用 smartObjectMedia 标注终点；单个 SO 解析失败记 smartObjectContentsError，不影响整树。
+     */
+    smartObjectContents?: { canvas: { width: number; height: number }; tree: RawDesignSourceNode[] };
+    smartObjectMedia?: 'image';
+    smartObjectContentsError?: string;
     /** 启用的图层样式原始参数（dropShadow/stroke/gradientOverlay…，已去 disabled）。
      * 2026-08-23 之前这里被压成 hasEffects 布尔——参数才是可复用的技法配方，别再折叠。 */
     effects?: Record<string, unknown>;
@@ -65,6 +73,8 @@ export interface ProfileGroupNode {
     childGroupCount: number;
     leafCounts: { text: number; image: number; shape: number };
     children?: ProfileGroupNode[];
+    /** true = 该节点是嵌入式智能对象，children 展开的是它的内部结构（封装边界即复用粒度）。 */
+    smartObject?: true;
 }
 
 export interface PsdDesignSourceProfile {
@@ -270,13 +280,19 @@ function buildGroupTree(
 ): ProfileGroupNode[] {
     const out: ProfileGroupNode[] = [];
     for (const node of Array.isArray(nodes) ? nodes : []) {
-        if (!node || node.kind !== 'group') continue;
+        // 2026-08-24：带内部结构的嵌入式智能对象按组展开进摘要（设计封装语义在 SO 边界里）。
+        const deepSmartObject = node?.kind === 'smartObject' && node.smartObjectContents
+            ? node.smartObjectContents
+            : undefined;
+        if (!node || (node.kind !== 'group' && !deepSmartObject)) continue;
         if (budget.remaining <= 0) {
             budget.truncated = true;
             break;
         }
         budget.remaining -= 1;
-        const children = Array.isArray(node.children) ? node.children : [];
+        const children = deepSmartObject
+            ? deepSmartObject.tree
+            : (Array.isArray(node.children) ? node.children : []);
         const leafCounts = { text: 0, image: 0, shape: 0 };
         let childGroupCount = 0;
         for (const child of children) {
@@ -290,7 +306,8 @@ function buildGroupTree(
             name: String(node.name || '').trim() || '(未命名组)',
             depth,
             childGroupCount,
-            leafCounts
+            leafCounts,
+            ...(deepSmartObject ? { smartObject: true as const } : {})
         };
         if (depth < GROUP_TREE_MAX_DEPTH) {
             const subGroups = buildGroupTree(children, depth + 1, budget);

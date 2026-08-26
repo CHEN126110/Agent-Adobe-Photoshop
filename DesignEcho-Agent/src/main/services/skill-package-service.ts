@@ -128,6 +128,52 @@ function listScriptFiles(packageDir: string): string[] {
  * 脚本收到一个 JSON 参数（argv[2]），以 stdout 输出结果；没有 Photoshop 通道，
  * 只适合文件级确定性工作（校验、解析、核对）。
  */
+/**
+ * 应用一条已获用户批准的 skill 手册改进（2026-08-24 自我改进闭环的唯一写入口）：
+ * find 必须在目标文件中恰好出现一次（0 次或多次都拒绝，不做模糊替换）；
+ * 写入前备份 .bak-<时间戳>，UTF-8 原子写。Agent 不直接持有此能力——只有
+ * 用户在候选区批准 skill_improvement 提议后由渲染进程代为调用。
+ */
+export function applySkillImprovement(input: {
+    skillId: string;
+    file: string;
+    find: string;
+    replace: string;
+}): { success: boolean; error?: string; backupPath?: string } {
+    const skillId = String(input.skillId || '').trim().toLowerCase();
+    const file = String(input.file || '').trim();
+    if (!SAFE_SEGMENT.test(skillId)) {
+        return { success: false, error: `改进写入失败：包名「${skillId}」不合法。` };
+    }
+    if (!/^(?:SKILL\.md|references\/[a-z0-9][a-z0-9-]{0,63}\.md)$/.test(file)) {
+        return { success: false, error: `改进写入失败：目标文件「${file}」不合法（仅允许 SKILL.md 或 references/<名>.md）。` };
+    }
+    const target = path.join(resolveSkillsRoot(), skillId, ...file.split('/'));
+    if (!fs.existsSync(target)) {
+        return { success: false, error: `改进写入失败：文件不存在（${skillId}/${file}）。` };
+    }
+    const find = String(input.find || '');
+    const replace = String(input.replace || '');
+    if (!find.trim() || !replace.trim()) {
+        return { success: false, error: '改进写入失败：find/replace 不能为空。' };
+    }
+    const content = fs.readFileSync(target, 'utf8');
+    const first = content.indexOf(find);
+    if (first < 0) {
+        return { success: false, error: '改进写入失败：目标文件里找不到 find 原文（手册可能已被编辑，提议过期）。' };
+    }
+    if (content.indexOf(find, first + 1) >= 0) {
+        return { success: false, error: '改进写入失败：find 原文在文件中出现多次，无法唯一定位；请给更长的上下文片段。' };
+    }
+    const backupPath = `${target}.bak-${Date.now()}`;
+    fs.copyFileSync(target, backupPath);
+    const next = content.slice(0, first) + replace + content.slice(first + find.length);
+    const tempPath = `${target}.tmp-${process.pid}`;
+    fs.writeFileSync(tempPath, next, 'utf8');
+    fs.renameSync(tempPath, target);
+    return { success: true, backupPath };
+}
+
 export function runSkillScript(
     skillId: string,
     scriptName: string,

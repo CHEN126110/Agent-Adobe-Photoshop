@@ -103,18 +103,18 @@ export function buildDesignEvaluationPrompt(input: {
         '1. 整体感（coherence）：像一件完整作品，还是零件堆在一起？色彩、字体、版式、图片是否形成一种明确的气质。',
         '2. 原创性（originality）：看得出人的判断，还是模板 / 默认 / AI 味（如无来由的紫色渐变、居中大字堆砌、和产品无关的装饰）？',
         '3. 工艺（craft）：层级、间距、对齐、字距、对比度、抠图边缘、阴影自然度。基本功错误要点名。',
-        '4. 功能（function）：一眼看懂卖什么、主张是什么、下一步该干什么；文字可读；主体够大。',
+        '4. 功能（function）：一眼看懂卖什么、主张是什么、下一步该干什么；文字可读；主体在实际使用尺寸下可辨，尺度、留白与裁切服务当前任务。',
         '',
-        '整体感与原创性权重更高。给出 advisory verdict：pass（当前画面暂无明确修改建议，不代表正式质量通过或可交付）/ revise（沿着现在改 1–2 处）/ pivot（方向不对，换配方或换背景方向）。',
-        'critiques 最多 5 条，每条必须指向画面上的具体位置与改法（如「标题压在袜口，下移到左上留白」），不要抽象词。',
-        'nextMoves 1–3 条：保留什么、先改哪一处。'
+        '整体感与原创性权重更高。给出 advisory verdict：pass（当前画面暂无明确修改建议，不代表正式质量通过或可交付）/ revise（方向可用，但需要解决仍在损害目标的视觉关系）/ pivot（核心素材、构图机制或方向本身没有解决任务）。',
+        'critiques 最多 5 条，必须按对用户目标的影响从高到低排列，不得因为字号、间距或边缘更容易描述就把它们放在方向、素材角色或主焦点失效之前。每条都要指向可见关系和预期效果，不要抽象词。',
+        'nextMoves 1–3 条：先说必须保留的有效关系，再给出能解决最高影响根因的语义级修订。如果根因是素材或方向，应明确说替换关系或换方向，不要用局部移动、缩放或叠加掩盖。'
     );
     if (input.deliverable) lines.push('', `交付物：${input.deliverable}`);
     if (input.rationale) {
         lines.push('', '设计师自述的设计说明（评审要对照：说的和做的对不对得上）：', input.rationale);
     }
     if (input.hardFindings && input.hardFindings.length > 0) {
-        lines.push('', '已由规则核对发现的硬伤（必须计入 craft/function 扣分并在 critiques 里点名）：', ...input.hardFindings.map((item) => `- ${item}`));
+        lines.push('', '设计师希望你重点核对的画面疑点（这些是待验证假设，不是规则事实；只有当像素真实显示问题时才可计入分数，不得因其被提及就优先扣分）：', ...input.hardFindings.map((item) => `- ${item}`));
     }
     if (input.sameness && input.sameness.length > 0) {
         lines.push('', '与这位设计师同一项目近期几稿对照发现的雷同（计入 originality 扣分；如果这稿说不出自己的角度、和上一稿差在哪，就在 critiques 里点名「又是这套」并建议换角度）：', ...input.sameness.map((item) => `- ${item}`));

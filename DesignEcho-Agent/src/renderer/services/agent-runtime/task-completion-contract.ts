@@ -65,6 +65,7 @@ import {
     resolveRuntimeExecutionTarget,
     sameRuntimeExecutionDocument
 } from '../../../shared/agent-runtime-v5/runtime-execution-target';
+import { countTaskRunCreatedDocumentsForTarget } from '../../../shared/task-run-document-creation-evidence';
 
 const INSPECTION_TOOLS = new Set([
     'getDocumentInfo',
@@ -517,37 +518,10 @@ function buildSkillEvaluationProfileContract(
                 status: 'passed'
             };
         });
-    const hasVisualObservationBundle = input.toolCallLog.some((entry) => (
-        (() => {
-            const scan = inspectVisualObservationBundles(entry.result, entry.name);
-            return scan.bundles.length > 0 || scan.truncated || scan.invalidBundleCount > 0;
-        })()
-    ));
-    let bundledVisualReview: ReturnType<typeof collectVisualReviewCounts> | undefined;
-    if (hasVisualObservationBundle) {
-        bundledVisualReview = collectVisualReviewCounts(
-            input.toolCallLog,
-            DESIGN_REVIEW_TOOLS,
-            findLatestVerifiedPhotoshopMutationIndex(input.toolCallLog)
-        );
-        required.push({
-            id: 'visual-observation-bundle-review',
-            label: '逐张复核视觉观察记录',
-            status: bundledVisualReview.allPassed ? 'passed' : 'needs_review',
-            actual: {
-                expectedCount: bundledVisualReview.expectedCount,
-                capturedCount: bundledVisualReview.capturedCount,
-                reviewedCount: bundledVisualReview.reviewedCount,
-                passedCount: bundledVisualReview.passedCount,
-                needsFixCount: bundledVisualReview.needsFixCount,
-                unreadableCount: bundledVisualReview.unreadableCount,
-                overflowCount: bundledVisualReview.overflowCount
-            },
-            reason: bundledVisualReview.allPassed
-                ? undefined
-                : '复合设计结果仍有未读取、无法读取、明确需要修订或因视觉预算溢出而未复核的画面。'
-        });
-    }
+    // Evaluation Profile 是当前任务视觉完成判定的唯一 owner。中间 composeDesign 可能
+    // 携带用于当轮设计判断的 Bundle；它不是最终交付 ReviewSet，不能因为其中一张没有
+    // 单独写回 reviewed=true，就在 canonical Final Judge 之外再造第二个完成门禁。
+    // 旧 creative_design 路径仍在其各自契约中使用 collectVisualReviewCounts。
     const blockers = artifactChecks
         .filter((check) => check.required && qualifiedHardFailureIds.has(check.id))
         .map((check) => `${check.label}未通过：${check.expectedFix}`);
@@ -598,26 +572,7 @@ function buildSkillEvaluationProfileContract(
         status,
         required,
         verification: {
-            toolAcceptance: acceptance,
-            ...(bundledVisualReview ? {
-                visual: {
-                    mode: resolveVisualReviewMode(bundledVisualReview),
-                    snapshotCount: bundledVisualReview.capturedCount,
-                    reviewedCount: bundledVisualReview.reviewedCount,
-                    unreviewedCount: bundledVisualReview.unreviewedCount,
-                    blockers: [
-                        ...(bundledVisualReview.needsFixCount > 0
-                            ? [`${bundledVisualReview.needsFixCount} 张画面需要修订。`]
-                            : []),
-                        ...(bundledVisualReview.unreviewedCount > 0
-                            ? [`${bundledVisualReview.unreviewedCount} 张画面没有有效的结构化复核决定。`]
-                            : []),
-                        ...(bundledVisualReview.overflowCount > 0
-                            ? [`${bundledVisualReview.overflowCount} 张画面未进入视觉复核。`]
-                            : [])
-                    ]
-                }
-            } : {})
+            toolAcceptance: acceptance
         },
         blockers,
         warnings,
@@ -720,9 +675,10 @@ function inferTaskKind(input: ContractInput): TaskCompletionKind | null {
     // 任务仍由下方各自的确定性契约识别，不能因为没有高层生产身份就撤掉防假完成检查。
     // 真实失败的写入尝试同样算生产事实，因此这里看调用分类而不是 success；Harness
     // 控制调用、只读观察和知识检索都不能铸造高层创意完成契约。
+    const agenticArtifactContract = input.context?.agenticArtifactContract;
     const hasStructuredProductionObligation = requiresAgentTaskDeliveryProgress(
         input.context?.agentTaskPlan
-    );
+    ) || agenticArtifactContract?.productionObligation === 'photoshop_mutation_with_readback';
     const hasAttemptedProductionOperation = input.toolCallLog.some((item) => {
         if (isAgentHarnessControlTool(item.name)) return false;
         const kind = classifyAgentToolExecution(item.name, item.arguments);
@@ -782,6 +738,9 @@ function inferTaskKind(input: ContractInput): TaskCompletionKind | null {
     const hasUserDeclaredDeliverables = (
         input.context?.agentTaskPlan?.designBrief.userDeclaredDeliverables?.length || 0
     ) > 0;
+    if (hasProductionAuthority && agenticArtifactContract && !isDocumentManagementTask) {
+        return 'creative_design';
+    }
     if (hasProductionAuthority && hasUserDeclaredDeliverables && !isDocumentManagementTask) {
         return 'creative_design';
     }
@@ -946,6 +905,19 @@ function countCreatedDocuments(toolCallLog: AgentToolCallLogEntry[]): number {
             && timeline.entries[index]?.photoshopMutationObserved === true;
     }).length;
     return directCreateCount + composeCreateCount;
+}
+
+function countPriorTaskRunCreatedDocumentsForMutation(
+    context: TaskCompletionContext | undefined,
+    mutationProof: ReturnType<typeof readCompletionMutationProof>
+): number {
+    const chain = context?.taskRunDocumentCreation;
+    return countTaskRunCreatedDocumentsForTarget({
+        evidence: chain?.evidence,
+        taskRunId: chain?.taskRunId,
+        generation: chain?.generation,
+        targetDocumentId: mutationProof?.after.documentId
+    });
 }
 
 function countFailed(toolCallLog: AgentToolCallLogEntry[], names: Set<string>): number {
@@ -1777,11 +1749,13 @@ function taskRequestsDelivery(input: ContractInput): boolean {
     const { task, skillId, intentMode } = resolveStableTaskIdentity(input);
     const text = `${task} ${skillId} ${intentMode}`;
     const plannedDeliverables = input.context?.agentTaskPlan?.designBrief.deliverables || [];
+    const runtimeDeliveryOutputs = input.context?.agenticArtifactContract?.deliveryOutputs || [];
     const hasPlannedFileDelivery = plannedDeliverables.some((value) => (
         /(?:^|_)(?:exports?|export_file|delivery_file|saved_document|main_image_psd|editable_source_file)(?:$|_)/i
             .test(String(value || ''))
     ));
-    return hasPlannedFileDelivery
+    return runtimeDeliveryOutputs.some(isRuntimeFileDeliveryOutput)
+        || hasPlannedFileDelivery
         || /导出|保存|交付.{0,8}(?:文件|图片|源文件)|输出.*文件|生成.*文件|存到|保存到|导出到|export|save/i
             .test(text);
 }
@@ -1790,6 +1764,8 @@ function taskRequestsRasterDelivery(input: ContractInput): boolean {
     const { task, skillId, intentMode } = resolveStableTaskIdentity(input);
     const text = `${task} ${skillId} ${intentMode}`.toLowerCase();
     const plannedDeliverables = input.context?.agentTaskPlan?.designBrief.deliverables || [];
+    const runtimeDeliveryOutputs = input.context?.agenticArtifactContract?.deliveryOutputs || [];
+    if (runtimeDeliveryOutputs.some(isRuntimeRasterDeliveryOutput)) return true;
     if (plannedDeliverables.some((value) => (
         /(?:^|_)(?:exports?|raster|png|jpe?g|webp)(?:$|_)/i.test(String(value || ''))
     ))) {
@@ -1803,6 +1779,8 @@ function taskRequestsEditableDelivery(input: ContractInput): boolean {
     const { task, skillId, intentMode } = resolveStableTaskIdentity(input);
     const text = `${task} ${skillId} ${intentMode}`.toLowerCase();
     const plannedDeliverables = input.context?.agentTaskPlan?.designBrief.deliverables || [];
+    const runtimeDeliveryOutputs = input.context?.agenticArtifactContract?.deliveryOutputs || [];
+    if (runtimeDeliveryOutputs.some(isRuntimeEditableDeliveryOutput)) return true;
     if (plannedDeliverables.some((value) => (
         /(?:^|_)(?:psd|psb|saved_document|editable_source_file)(?:$|_)/i.test(String(value || ''))
     ))) {
@@ -1810,6 +1788,70 @@ function taskRequestsEditableDelivery(input: ContractInput): boolean {
     }
     return /\b(?:psd|psb)\b|源文件|可编辑文件|工程文件|保存(?:当前)?文档|save\s+(?:document|psd|psb|source|editable)/
         .test(text);
+}
+
+function isRuntimeEditableDeliveryOutput(value: unknown): boolean {
+    const outputRef = String(value || '').trim().toLowerCase();
+    if (!outputRef) return false;
+    return /(?:^|_)(?:psd|psb)(?:$|_)/.test(outputRef)
+        || /(?:^|_)editable(?:$|_)/.test(outputRef)
+        || /(?:^|_)(?:saved|source)_document(?:$|_)/.test(outputRef);
+}
+
+function isRuntimeRasterDeliveryOutput(value: unknown): boolean {
+    const outputRef = String(value || '').trim().toLowerCase();
+    if (!outputRef) return false;
+    return /(?:^|_)(?:preview|raster|png|jpe?g|webp|slices?|images?)(?:$|_)/.test(outputRef);
+}
+
+function isRuntimeFileDeliveryOutput(value: unknown): boolean {
+    return isRuntimeEditableDeliveryOutput(value) || isRuntimeRasterDeliveryOutput(value);
+}
+
+function buildDeclaredDeliveryRequirement(
+    input: ContractInput,
+    log: AgentToolCallLogEntry[],
+    id: string
+): TaskCompletionRequirement | undefined {
+    if (!taskRequestsDelivery(input)) return undefined;
+    const rasterRequired = taskRequestsRasterDelivery(input);
+    const editableRequired = taskRequestsEditableDelivery(input);
+    const rasterDeliveryCount = countRasterDelivery(log);
+    const editableDeliveryCount = countEditableDelivery(log);
+    const deliveryPassed = (!rasterRequired || rasterDeliveryCount > 0)
+        && (!editableRequired || editableDeliveryCount > 0)
+        && (rasterRequired || editableRequired
+            ? true
+            : rasterDeliveryCount + editableDeliveryCount > 0);
+    const status: TaskCompletionRequirement['status'] = deliveryPassed ? 'passed' : 'failed';
+    let reason: string | undefined;
+    if (!deliveryPassed && rasterRequired && editableRequired) {
+        reason = '交付要求包含可编辑文档和预览图片，但当前没有同时取得成功的文档保存与图片导出收据。';
+    } else if (!deliveryPassed && rasterRequired) {
+        reason = '交付要求包含预览图片，但没有检测到成功的 JPG、PNG 或 WebP 导出收据。';
+    } else if (!deliveryPassed && editableRequired) {
+        reason = '交付要求包含可编辑文档，但没有检测到成功的 PSD 或 PSB 保存收据。';
+    } else if (!deliveryPassed) {
+        reason = '当前任务要求交付文件，但没有检测到成功的保存或导出收据。';
+    }
+    return {
+        id,
+        label: rasterRequired && editableRequired
+            ? '保存可编辑文档与预览图片'
+            : (rasterRequired ? '导出预览图片' : '保存可编辑文档'),
+        status,
+        expected: {
+            rasterRequired,
+            editableRequired,
+            deliveryOutputs: input.context?.agenticArtifactContract?.deliveryOutputs || []
+        },
+        actual: {
+            rasterDeliveryCount,
+            editableDeliveryCount
+        },
+        reason,
+        ...qualifiedCompletionFailure(status, 'required_artifact_missing', id)
+    };
 }
 
 function collectDeliveryFormats(entry: AgentToolCallLogEntry): string[] {
@@ -2721,7 +2763,8 @@ interface CreativeTaskObligations {
 
 function resolveCreativeTaskObligations(input: ContractInput): CreativeTaskObligations {
     const { task } = resolveStableTaskIdentity(input);
-    const workMode = input.context?.agentTaskPlan?.designBrief.workMode;
+    const workMode = input.context?.agenticArtifactContract?.workMode
+        || input.context?.agentTaskPlan?.designBrief.workMode;
     const normalizedTask = task.toLowerCase();
     const plan = input.context?.agentTaskPlan;
     const forbidsMutation = plan?.requestKind === 'read_only_inspect'
@@ -2926,12 +2969,19 @@ function buildForbiddenCopyReason(
 function buildCreativeDesignContract(input: ContractInput, acceptance: AcceptanceCounts): TaskCompletionContract {
     const log = input.toolCallLog;
     const compositeResult = collectLayoutReplicationCompositeResult(log);
-    const createdDocumentCount = countCreatedDocuments(log)
-        + compositeResult.createdDocumentCount;
-    const createdDocument = createdDocumentCount > 0;
     const obligations = resolveCreativeTaskObligations(input);
     const timeline = buildAgentOperationDocumentTimeline(log);
     const latestMutation = findLatestVerifiedPhotoshopMutationIndex(log);
+    const latestMutationProof = readCompletionMutationProof(log[latestMutation]);
+    const currentTaskRunCreatedDocumentCount = countCreatedDocuments(log)
+        + compositeResult.createdDocumentCount;
+    const taskChainCreatedDocumentCount = countPriorTaskRunCreatedDocumentsForMutation(
+        input.context,
+        latestMutationProof
+    );
+    const createdDocumentCount = currentTaskRunCreatedDocumentCount
+        + taskChainCreatedDocumentCount;
+    const createdDocument = createdDocumentCount > 0;
     const mutationCopyEvidence = countSuccessfulCreativeCopyMutationEvidence(log);
     const copyEvidence = resolveCreativeCopyEvidence(log, latestMutation, {
         copyCount: mutationCopyEvidence.copyCount + compositeResult.copyCount,
@@ -2962,17 +3012,11 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
         && coverage.failed === 0
         && (!referenceGuidance.strictReplication || coverage.applied >= coverage.expected)
     );
-    const deliveryRequired = taskRequestsDelivery(input);
-    const rasterDeliveryRequired = taskRequestsRasterDelivery(input);
-    const editableDeliveryRequired = taskRequestsEditableDelivery(input);
-    const rasterDeliveryCount = countRasterDelivery(log);
-    const editableDeliveryCount = countEditableDelivery(log);
-    const deliveryPassed = deliveryRequired
-        && (!rasterDeliveryRequired || rasterDeliveryCount > 0)
-        && (!editableDeliveryRequired || editableDeliveryCount > 0)
-        && (rasterDeliveryRequired || editableDeliveryRequired
-            ? true
-            : rasterDeliveryCount + editableDeliveryCount > 0);
+    const deliveryRequirement = buildDeclaredDeliveryRequirement(
+        input,
+        log,
+        'creative-delivery'
+    );
     const renderLayoutQuality = collectLatestRenderLayoutQualityState(log);
     const unresolvedComparisonFinding = Boolean(
         renderLayoutQuality?.unresolved
@@ -3035,7 +3079,11 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
             label: '创建用户要求的新文档',
             status: documentStatus,
             expected: { workMode: obligations.workMode || 'explicit_create_new' },
-            actual: { createdDocumentCount },
+            actual: {
+                createdDocumentCount,
+                currentTaskRunCreatedDocumentCount,
+                taskChainCreatedDocumentCount
+            },
             reason: createdDocument
                 ? undefined
                 : 'TaskPlan 或用户明确要求新建设计文档，但当前 TaskRun 没有成功的 createDocument 事实。',
@@ -3055,6 +3103,8 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
             actual: {
                 mutationTargetKnown,
                 createdDocumentCount,
+                currentTaskRunCreatedDocumentCount,
+                taskChainCreatedDocumentCount,
                 target: mutationEntry?.target
             },
             reason: !mutationApplied
@@ -3186,26 +3236,7 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
         });
     }
 
-    if (deliveryRequired) {
-        const deliveryStatus: TaskCompletionRequirement['status'] = deliveryPassed ? 'passed' : 'failed';
-        requirements.push({
-            id: 'creative-delivery',
-            label: '导出交付文件',
-            status: deliveryStatus,
-            actual: {
-                rasterDeliveryCount,
-                editableDeliveryCount,
-                rasterRequired: rasterDeliveryRequired,
-                editableRequired: editableDeliveryRequired
-            },
-            reason: deliveryPassed
-                ? undefined
-                : (rasterDeliveryRequired
-                    ? '用户要求交付详情页长图/图片，但只保存 PSD/PSB 或没有检测到 JPG、PNG、WebP 等图片导出文件。'
-                    : 'TaskPlan 或用户明确要求保存/导出交付文件，但没有检测到对应的成功 saveDocument 或导出工具调用。'),
-            ...qualifiedCompletionFailure(deliveryStatus, 'required_artifact_missing', 'creative-delivery')
-        });
-    }
+    if (deliveryRequirement) requirements.push(deliveryRequirement);
 
     const blockers: string[] = [];
     const warnings: string[] = [];
@@ -3266,7 +3297,11 @@ type ProfileProductionEvidenceMode = 'read_only' | 'delivery_only' | 'mutation_w
 
 function resolveProfileProductionEvidenceMode(input: ContractInput): ProfileProductionEvidenceMode {
     const plan = input.context?.agentTaskPlan;
-    const workMode = String(plan?.designBrief.workMode || '').trim();
+    const workMode = String(
+        input.context?.agenticArtifactContract?.workMode
+        || plan?.designBrief.workMode
+        || ''
+    ).trim();
     if (plan?.requestKind === 'read_only_inspect'
         || plan?.allowedToolScope === 'read_only'
         || plan?.executionPlan.mode === 'read_only'
@@ -3309,19 +3344,30 @@ function buildProfileProductionEvidenceContract(
 ): TaskCompletionContract {
     const log = input.toolCallLog;
     const plan = input.context?.agentTaskPlan;
-    const workMode = String(plan?.designBrief.workMode || '').trim();
+    const workMode = String(
+        input.context?.agenticArtifactContract?.workMode
+        || plan?.designBrief.workMode
+        || ''
+    ).trim();
     const evidenceMode = resolveProfileProductionEvidenceMode(input);
     const timeline = buildAgentOperationDocumentTimeline(log);
     const latestMutation = findLatestVerifiedPhotoshopMutationIndex(log);
     const mutationEntry = latestMutation >= 0 ? timeline.entries[latestMutation] : undefined;
+    const latestMutationProof = readCompletionMutationProof(log[latestMutation]);
     const mutationApplied = Boolean(mutationEntry?.photoshopMutationObserved);
     const mutationTargetKnown = Boolean(mutationEntry?.target);
     const sameTargetReadback = mutationApplied
         && mutationTargetKnown
         && (hasSameTargetPhotoshopObservationAfter(log, latestMutation)
             || hasVerifiedAcceptanceAtOrAfter(log, latestMutation));
-    const createdDocumentCount = countCreatedDocuments(log)
+    const currentTaskRunCreatedDocumentCount = countCreatedDocuments(log)
         + collectLayoutReplicationCompositeResult(log).createdDocumentCount;
+    const taskChainCreatedDocumentCount = countPriorTaskRunCreatedDocumentsForMutation(
+        input.context,
+        latestMutationProof
+    );
+    const createdDocumentCount = currentTaskRunCreatedDocumentCount
+        + taskChainCreatedDocumentCount;
     const currentDocumentOnly = ['edit_existing', 'redesign', 'template_fill'].includes(workMode);
     const currentDocumentViolation = currentDocumentOnly && createdDocumentCount > 0;
     const requirements: TaskCompletionRequirement[] = [];
@@ -3374,6 +3420,8 @@ function buildProfileProductionEvidenceContract(
                 actual: {
                     mutationTargetKnown,
                     createdDocumentCount,
+                    currentTaskRunCreatedDocumentCount,
+                    taskChainCreatedDocumentCount,
                     target: mutationEntry?.target
                 },
                 reason: !mutationApplied
@@ -3416,7 +3464,11 @@ function buildProfileProductionEvidenceContract(
                 label: '创建结构化计划要求的新文档',
                 status: documentStatus,
                 expected: { workMode },
-                actual: { createdDocumentCount },
+                actual: {
+                    createdDocumentCount,
+                    currentTaskRunCreatedDocumentCount,
+                    taskChainCreatedDocumentCount
+                },
                 reason: createdDocumentCount > 0
                     ? undefined
                     : '结构化 workMode=create_new，但当前 TaskRun 没有成功的新建文档事实。',
@@ -3424,6 +3476,13 @@ function buildProfileProductionEvidenceContract(
             });
         }
     }
+
+    // staged Runtime 的文件交付继续由 E2 receipt owner 校验；这里只补 agentic
+    // Manifest 原先丢失的产物义务，避免 Profile 评价通过后绕过 PSD / 预览交付。
+    const deliveryRequirement = input.context?.agenticArtifactContract
+        ? buildDeclaredDeliveryRequirement(input, log, 'production-delivery')
+        : undefined;
+    if (deliveryRequirement) requirements.push(deliveryRequirement);
 
     const blockers = requirements
         .filter((requirement) => requirement.status === 'failed')
@@ -3443,7 +3502,7 @@ function buildProfileProductionEvidenceContract(
         blockers,
         warnings,
         summary: evidenceMode === 'delivery_only'
-            ? '结构化模式不要求 Photoshop 内容写入；交付事实由 Runtime E2 收据验证。'
+            ? '结构化模式不要求 Photoshop 内容写入；交付事实由真实保存或导出收据验证。'
             : `通用生产证据 ${requirements.filter((item) => item.status === 'passed').length}/${requirements.length} 项通过。`
     };
 }

@@ -3,6 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 require('ts-node').register({
   transpileOnly: true,
@@ -30,6 +31,20 @@ const {
   validateDesignEvaluationProfile
 } = require(path.join(runtimeRoot, 'design-evaluation-profiles.ts'));
 const {
+  buildDesignMethodKnowledgeRuntimeContext,
+  SKU_TEMPLATE_METHOD_KNOWLEDGE_ID
+} = require(path.join(runtimeRoot, 'design-method-knowledge.ts'));
+const {
+  buildDesignTaskTypePromptSection,
+  getDesignTaskTypeSpec
+} = require(path.resolve(__dirname, '..', 'src', 'shared', 'design-task-types.ts'));
+const {
+  getSkillById
+} = require(path.resolve(__dirname, '..', 'src', 'shared', 'skills', 'skill-declarations.ts'));
+const {
+  buildRuntimeReferenceEvaluationContext
+} = require(path.join(runtimeRoot, 'runtime-reference-context.ts'));
+const {
   projectManifestBoundRuntimeDeliveryReceipt,
   readRuntimeDeliveryProofKinds,
   verifyRuntimeDelivery
@@ -37,6 +52,9 @@ const {
 const {
   resolveRuntimeExecutionTarget
 } = require(path.join(runtimeRoot, 'runtime-execution-target.ts'));
+const {
+  resolveRuntimeStagePlanEffectiveContract
+} = require(path.join(runtimeRoot, 'runtime-stage-plan.ts'));
 const {
   buildDeclareDesignStrategyToolSchema,
   buildRuntimeDesignStrategyDigest,
@@ -106,6 +124,49 @@ const {
   'agent.ts'
 ));
 const {
+  runFinalQualityModelProtocol
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'final-quality-model-protocol.ts'
+));
+const {
+  buildModelVisualPresentationReceipt,
+  projectSerializedVisualImageDataUrl
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'model-visual-presentation-receipt.ts'
+));
+const {
+  clearDynamicModels,
+  getDynamicModels,
+  setDynamicModels
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'config',
+  'dynamic-model-registry.ts'
+));
+const {
+  DESIGN_ASSERTIONS,
+  TASK_NEUTRAL_DESIGN_ASSERTIONS
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'design-quality-assertion.ts'
+));
+const {
   buildAgentIntentControlPlaneDecision,
   buildAutonomousExecutionDecisionForEngine
 } = require(path.resolve(
@@ -144,8 +205,144 @@ const {
 ));
 const {
   bindRuntimeSessionIdentity,
-  createRuntimeSessionIdentity
+  acknowledgeRuntimeSessionWorkflowDocumentReobservation,
+  advanceRuntimeSessionGeneration,
+  canReleaseRuntimeSessionDocumentWriter,
+  claimRuntimeTaskRunWriterBinding,
+  claimRuntimeSessionDocumentWriter,
+  createRuntimeSession,
+  createRuntimeSessionIdentity,
+  evaluateRuntimeSessionToolExecutionGate,
+  finalizeRuntimeSession,
+  markRuntimeSessionSkillEffectUnknown,
+  observeRuntimeSessionDocumentRevision,
+  recordRuntimeSessionSkillRevisionTransition,
+  releaseRuntimeTaskRunWriterBinding,
+  suspendRuntimeSessionForInteraction
 } = require(path.join(runtimeRoot, 'runtime-session.ts'));
+const {
+  RUNTIME_INTERACTIVE_CHECKPOINT_VERSION,
+  RUNTIME_INTERACTIVE_HANDOFF_IDENTITY_VERSION,
+  createRuntimeInteractiveBoundaries,
+  shouldDeferRuntimeArtifactFinalizationForInteraction
+} = require(path.join(runtimeRoot, 'runtime-interactive-reentry.ts'));
+const {
+  refreshActiveRuntimeInteractivePendingReentry,
+  registerActiveRuntimeInteractiveCheckpoint
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'active-runtime-interactive-continuation.ts'
+));
+const {
+  abortRuntimeInteractiveResumeToPersistentRecovery,
+  adoptRuntimeInteractiveResume,
+  buildRuntimeInteractivePostSkillRecovery,
+  buildRuntimeInteractiveSkillExecutionLineage,
+  cancelRuntimeInteractiveResume,
+  commitRuntimeInteractiveResume,
+  prepareRuntimeInteractiveResume,
+  resolveRuntimeInteractiveHandoff,
+  stageRuntimeInteractiveReentry
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'design-agent',
+  'interactive-continuation-reentry-controller.ts'
+));
+const {
+  reconcileRuntimeSkillEffectBeforeAgentAction,
+  resolveRuntimeInteractiveAgentReentryState
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'runtime-interactive-reentry-adapter.ts'
+));
+const {
+  markPrimaryVisualObservationsConsumed,
+  writeAgentVisualObservation,
+  writeAgentVisualObservationReceipt
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'visual-observation-strategy.ts'
+));
+const {
+  compactPostWriteImagePayloadForRuntimeLog,
+  extractImageFromToolResult
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'tool-result-sanitizer.ts'
+));
+const {
+  VISUAL_OBSERVATION_RECEIPT_VERSION
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'visual-observation-bundle.ts'
+));
+const {
+  resolveRuntimeInteractiveAgentContinuationStatus,
+  runRuntimeInteractiveContinuation
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'design-agent',
+  'interactive-continuation-reentry-runner.ts'
+));
+const {
+  appendRuntimeActionPlanExecutionObservation,
+  createRuntimeActionPlanExecutionJournal
+} = require(path.join(runtimeRoot, 'runtime-action-plan-observation.ts'));
+const {
+  attachSkillExecutionEffectReceipt,
+  readSkillExecutionEffectReceipt
+} = require(path.resolve(__dirname, '..', 'src', 'shared', 'skill-execution-effect.ts'));
+const {
+  beginRuntimeOwnedSkillToolLedgerScope,
+  completeRuntimeOwnedSkillToolLedgerScope,
+  createGuardedAtomicToolExecutor
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'agent-skill-atomic-tool-execution.ts'
+));
+const {
+  decideStageIncompleteRecovery
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'agent-stage-incomplete-recovery.ts'
+));
 const {
   buildDesignReviewSetFromSingleSurface
 } = require(path.resolve(
@@ -354,6 +551,54 @@ const executorSource = fs.readFileSync(path.resolve(
   'skill-executors',
   'autonomous-agent.executor.ts'
 ), 'utf8');
+
+function extractNamedFunctionSource(source, functionName) {
+  const marker = `function ${functionName}(`;
+  const start = source.indexOf(marker);
+  assert(start >= 0, `production function ${functionName} is missing`);
+  const bodyStart = source.indexOf('{', start + marker.length);
+  assert(bodyStart >= 0, `production function ${functionName} has no body`);
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '{') depth += 1;
+    if (character !== '}') continue;
+    depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+  assert.fail(`production function ${functionName} has an unterminated body`);
+}
+
+const mainImageTaskProfile = getDesignTaskTypeSpec('ecommerce.main_image.v1');
+assert(mainImageTaskProfile, 'main-image Task Profile is missing');
+const mainImageRoleGuidance = String(mainImageTaskProfile.declarationGuidance || '');
+assert(mainImageRoleGuidance.length > 0 && mainImageRoleGuidance.length <= 420,
+  'main-image role guidance is missing or would be truncated in the pre-binding menu');
+assert(mainImageRoleGuidance.includes('只委托一张泛称商品主图'));
+assert(mainImageRoleGuidance.includes('按搜索或推荐列表的点击入口理解'));
+assert(mainImageRoleGuidance.includes('不能单独决定素材或方案赢家'));
+assert(
+  !/(?:模特|平铺|真人|场景图|白底图|静物)|(?:固定|指定)(?:风格|版式|模板|工具|步骤)|(?:composeDesign|renderLayout|Tool)|工具顺序|(?:必须|只能|优先)(?:使用|选择|调用|采用)/iu.test(mainImageRoleGuidance),
+  'main-image role guidance prescribed an asset winner, style, layout or Tool order'
+);
+
+// Execute the actual production menu function in a dependency-bounded VM. This avoids a
+// source-token-only false green: the first model turn must receive the Task Profile guidance
+// before declareDesignIntent can bind the full agentic contract.
+const buildWorkflowMenuLinesForAudit = vm.runInNewContext(
+  `(${extractNamedFunctionSource(executorSource, 'buildWorkflowMenuLines')
+    .replace('function buildWorkflowMenuLines(): string[]', 'function buildWorkflowMenuLines()')})`,
+  { listSkillManifests, getSkillById, getDesignTaskTypeSpec }
+);
+const preBindingWorkflowMenuLines = buildWorkflowMenuLinesForAudit();
+const preBindingMainImageLine = preBindingWorkflowMenuLines.find((line) => (
+  String(line).includes('Profile：ecommerce.main_image.v1')
+));
+assert(preBindingMainImageLine, 'pre-binding workflow menu omitted the main-image Profile');
+assert(
+  preBindingMainImageLine.includes(mainImageRoleGuidance),
+  'pre-binding workflow menu did not expose the complete main-image Task Profile guidance'
+);
 const toolExecutorSource = fs.readFileSync(path.resolve(
   __dirname,
   '..',
@@ -382,9 +627,26 @@ const agentTypesSource = fs.readFileSync(path.resolve(
 ), 'utf8');
 assert(executorSource.includes('resolveRuntimeDeclarationForAgentTask({'));
 assert(executorSource.includes("Object.prototype.hasOwnProperty.call(data, 'declaredDesignTaskTypeId')"));
+assert(
+  executorSource.includes('runtimeContractStatus: input.runtimeContractStatus,'),
+  'RunRecord builder input dropped the resolved Runtime Contract status'
+);
+assert.strictEqual(
+  (executorSource.match(/runtimeSessionIdentity: [^,\n]+,\r?\n\s+runtimeContractStatus,/g) || []).length,
+  4,
+  'not every normal, cancelled, reflexion or provider-failure RunRecord path preserves Runtime Contract status'
+);
 assert(executorSource.includes("code: 'runtime_design_intent_declaration_invalid'"));
 assert(executorSource.includes("code: 'runtime_design_intent_configuration_error'"));
 assert(!executorSource.includes("code: 'runtime_declared_manifest_missing'"));
+assert(
+  executorSource.includes('rebuildGenerationRuntimeContextItems(agenticCandidate);'),
+  'agentic late binding did not compile method knowledge from the candidate Manifest atomically'
+);
+assert(
+  executorSource.includes('const knowledgeBundle = input.knowledgeBundle || resolveKnowledgeBundle();'),
+  'runtime context compiler cannot consume an uncommitted agentic Manifest candidate'
+);
 assert(toolExecutorSource.includes('validatedByRuntimeResolver: false'));
 assert(!toolExecutorSource.includes('声明设计意图失败：workMode'));
 assert(!toolExecutorSource.includes('声明设计意图失败：taskTypeId'));
@@ -438,6 +700,2247 @@ assert.strictEqual(
   0,
   'SKU batch must not reserve a generic final VLM Judge that its Evaluation Profile does not require'
 );
+
+function createRuntimeStatusAuditSession(nonce, revision) {
+  const identity = createRuntimeSessionIdentity({
+    now: '2026-08-24T06:00:00.000Z',
+    nonce,
+    skillId: skuDefault.bundle.stagePlan.skillId,
+    taskType: skuDefault.bundle.stagePlan.taskType
+  });
+  const observedSession = observeRuntimeSessionDocumentRevision({
+    session: createRuntimeSession({
+      identity,
+      plan: skuDefault.bundle.stagePlan
+    }),
+    revision,
+    now: '2026-08-24T06:00:01.000Z'
+  });
+  return {
+    ...observedSession,
+    stageState: {
+      ...observedSession.stageState,
+      status: 'active',
+      currentStage: 'E1'
+    }
+  };
+}
+
+const runtimeStatusRevision = { documentId: 701, historyStateId: 9001 };
+const runtimeStatusNextRevision = { documentId: 701, historyStateId: 9002 };
+let runtimeStatusOwner = createRuntimeStatusAuditSession(
+  'runtime-status-owner',
+  runtimeStatusRevision
+);
+const runtimeStatusOwnerClaim = claimRuntimeSessionDocumentWriter({
+  session: runtimeStatusOwner,
+  expectedRevision: runtimeStatusRevision,
+  now: '2026-08-24T06:00:02.000Z'
+});
+assert.strictEqual(runtimeStatusOwnerClaim.decision.status, 'acquired');
+runtimeStatusOwner = runtimeStatusOwnerClaim.session;
+
+const runtimeRevisionConflict = claimRuntimeSessionDocumentWriter({
+  session: runtimeStatusOwner,
+  expectedRevision: runtimeStatusNextRevision,
+  now: '2026-08-24T06:00:03.000Z'
+});
+assert.strictEqual(runtimeRevisionConflict.decision.code, 'runtime_task_run_revision_conflict');
+assert.strictEqual(runtimeRevisionConflict.session.taskRun.status, 'needs_reobserve');
+assert.strictEqual(
+  runtimeRevisionConflict.session.taskRun.documentBinding?.conflict?.kind,
+  'external_revision_changed'
+);
+assert.strictEqual(evaluateRuntimeSessionToolExecutionGate({
+  session: runtimeRevisionConflict.session,
+  toolName: 'sku-batch',
+  toolKind: 'photoshop_write'
+}).code, 'runtime_task_run_revision_reobserve_required');
+const finalizedRevisionConflict = finalizeRuntimeSession({
+  session: runtimeRevisionConflict.session,
+  plan: skuDefault.bundle.stagePlan,
+  executionSummary: { status: 'failed' }
+});
+assert.strictEqual(finalizedRevisionConflict.taskRun.status, 'needs_reobserve');
+assert.strictEqual(finalizedRevisionConflict.finalized, false);
+
+let runtimeStatusContender = createRuntimeStatusAuditSession(
+  'runtime-status-contender',
+  runtimeStatusRevision
+);
+assert.strictEqual(evaluateRuntimeSessionToolExecutionGate({
+  session: runtimeStatusContender,
+  toolName: 'sku-batch',
+  toolKind: 'photoshop_write'
+}).allowed, true, 'normal E1 gate must reach the atomic writer claim');
+const runtimeStatusContenderClaim = claimRuntimeSessionDocumentWriter({
+  session: runtimeStatusContender,
+  expectedRevision: runtimeStatusRevision,
+  now: '2026-08-24T06:00:04.000Z'
+});
+assert.strictEqual(runtimeStatusContenderClaim.decision.code, 'runtime_task_run_writer_conflict');
+assert.strictEqual(runtimeStatusContenderClaim.session.taskRun.status, 'writer_conflict');
+assert.strictEqual(
+  runtimeStatusContenderClaim.session.taskRun.documentBinding?.conflict?.kind,
+  'writer_conflict'
+);
+assert.strictEqual(
+  runtimeStatusContenderClaim.session.taskRun.documentBinding?.conflict?.observedRevision,
+  undefined,
+  'writer conflict must not masquerade as a Photoshop history change'
+);
+const runtimeWriterConflictGate = evaluateRuntimeSessionToolExecutionGate({
+  session: runtimeStatusContenderClaim.session,
+  toolName: 'sku-batch',
+  toolKind: 'photoshop_write'
+});
+assert.strictEqual(runtimeWriterConflictGate.code, 'runtime_task_run_writer_conflict');
+
+const observedWriterConflict = observeRuntimeSessionDocumentRevision({
+  session: runtimeStatusContenderClaim.session,
+  revision: runtimeStatusNextRevision,
+  now: '2026-08-24T06:00:05.000Z'
+});
+assert.strictEqual(observedWriterConflict.taskRun.status, 'writer_conflict');
+assert.strictEqual(
+  observedWriterConflict.taskRun.documentBinding?.conflict?.kind,
+  'writer_conflict'
+);
+const writerConflictAtR2 = {
+  ...observedWriterConflict,
+  stageState: {
+    ...observedWriterConflict.stageState,
+    status: 'active',
+    currentStage: 'R2'
+  }
+};
+const falselyAcknowledgedWriterConflict = acknowledgeRuntimeSessionWorkflowDocumentReobservation({
+  session: writerConflictAtR2,
+  plan: skuDefault.bundle.stagePlan,
+  observedRevision: runtimeStatusNextRevision
+});
+assert.strictEqual(falselyAcknowledgedWriterConflict.taskRun.status, 'writer_conflict');
+assert.strictEqual(
+  falselyAcknowledgedWriterConflict.taskRun.documentBinding?.conflict?.kind,
+  'writer_conflict'
+);
+const finalizedWriterConflict = finalizeRuntimeSession({
+  session: runtimeStatusContenderClaim.session,
+  plan: skuDefault.bundle.stagePlan,
+  executionSummary: { status: 'failed' }
+});
+assert.strictEqual(finalizedWriterConflict.taskRun.status, 'writer_conflict');
+assert.strictEqual(finalizedWriterConflict.finalized, false);
+releaseRuntimeTaskRunWriterBinding({
+  taskRunId: runtimeStatusOwner.taskRun.taskRunId,
+  runId: runtimeStatusOwner.identity.runId,
+  generation: runtimeStatusOwner.identity.generation
+});
+const releasedOwnerGate = evaluateRuntimeSessionToolExecutionGate({
+  session: finalizedWriterConflict,
+  toolName: 'sku-batch',
+  toolKind: 'photoshop_write'
+});
+assert.strictEqual(
+  releasedOwnerGate.allowed,
+  true,
+  'released writer owner must let the contender reach the atomic claim'
+);
+const recoveredWriterClaim = claimRuntimeSessionDocumentWriter({
+  session: finalizedWriterConflict,
+  expectedRevision: runtimeStatusRevision,
+  now: '2026-08-24T06:00:06.000Z'
+});
+assert.strictEqual(recoveredWriterClaim.decision.status, 'acquired');
+assert.strictEqual(recoveredWriterClaim.session.taskRun.status, 'active');
+assert.strictEqual(recoveredWriterClaim.session.taskRun.documentBinding?.status, 'owned');
+assert.strictEqual(recoveredWriterClaim.session.taskRun.documentBinding?.conflict, undefined);
+const sameTaskStaleConflictProjection = {
+  ...recoveredWriterClaim.session,
+  taskRun: {
+    ...recoveredWriterClaim.session.taskRun,
+    status: 'writer_conflict',
+    documentBinding: {
+      ...recoveredWriterClaim.session.taskRun.documentBinding,
+      status: 'conflict',
+      conflict: {
+        kind: 'writer_conflict',
+        expectedRevision: runtimeStatusRevision,
+        observedTaskRunId: recoveredWriterClaim.session.taskRun.taskRunId,
+        recordedAt: '2026-08-24T06:00:06.500Z'
+      }
+    }
+  }
+};
+assert.strictEqual(evaluateRuntimeSessionToolExecutionGate({
+  session: sameTaskStaleConflictProjection,
+  toolName: 'sku-batch',
+  toolKind: 'photoshop_write'
+}).allowed, true, 'same TaskRun writer projection must reach the retaining claim');
+releaseRuntimeTaskRunWriterBinding({
+  taskRunId: recoveredWriterClaim.session.taskRun.taskRunId,
+  runId: recoveredWriterClaim.session.identity.runId,
+  generation: recoveredWriterClaim.session.identity.generation
+});
+
+const runtimeGenerationRevision = { documentId: 703, historyStateId: 31 };
+const runtimeGenerationOne = createRuntimeStatusAuditSession(
+  'runtime-writer-generation-one',
+  runtimeGenerationRevision
+);
+const runtimeGenerationOneClaim = claimRuntimeSessionDocumentWriter({
+  session: runtimeGenerationOne,
+  expectedRevision: runtimeGenerationRevision,
+  now: '2026-08-24T06:01:00.000Z'
+});
+assert.strictEqual(runtimeGenerationOneClaim.decision.status, 'acquired');
+const finalizedRuntimeGenerationOne = finalizeRuntimeSession({
+  session: runtimeGenerationOneClaim.session,
+  plan: skuDefault.bundle.stagePlan,
+  executionSummary: { status: 'failed', stopReason: 'bounded_generation_reentry' },
+  reflexionHandoff: {
+    version: 'quality-gate-reflexion-handoff/v0',
+    status: 'reflexion_required',
+    sourceOwner: 'Runtime',
+    targetStage: 'E1',
+    reenterLoop: 'react',
+    failureAnalysis: ['当前 generation 的有界运行结束。'],
+    strategyAdjustments: ['由下一 generation 继续同一 TaskRun。'],
+    nextRoundConstraints: ['沿用已验证的文档 writer 身份。']
+  }
+});
+assert.strictEqual(finalizedRuntimeGenerationOne.finalized, true);
+const runtimeGenerationTwoIdentity = createRuntimeSessionIdentity({
+  now: '2026-08-24T06:01:01.000Z',
+  nonce: 'runtime-writer-generation-two',
+  generation: 2,
+  sessionId: finalizedRuntimeGenerationOne.identity.sessionId,
+  parentRunId: finalizedRuntimeGenerationOne.identity.runId,
+  skillId: skuDefault.bundle.stagePlan.skillId,
+  taskType: skuDefault.bundle.stagePlan.taskType
+});
+const runtimeGenerationTwo = advanceRuntimeSessionGeneration({
+  previous: finalizedRuntimeGenerationOne,
+  identity: runtimeGenerationTwoIdentity,
+  plan: skuDefault.bundle.stagePlan
+});
+assert.strictEqual(
+  runtimeGenerationTwo.taskRun.documentBinding?.writer?.runId,
+  runtimeGenerationTwoIdentity.runId,
+  'advanceRuntimeSessionGeneration must be the explicit writer owner transfer'
+);
+assert.strictEqual(
+  runtimeGenerationTwo.taskRun.documentBinding?.writer?.generation,
+  2
+);
+
+const staleGenerationCardClaim = claimRuntimeTaskRunWriterBinding({
+  taskRunId: finalizedRuntimeGenerationOne.taskRun.taskRunId,
+  runId: finalizedRuntimeGenerationOne.identity.runId,
+  generation: finalizedRuntimeGenerationOne.identity.generation,
+  expectedRevision: runtimeGenerationRevision,
+  now: '2026-08-24T06:01:02.000Z'
+});
+assert.strictEqual(
+  staleGenerationCardClaim.status,
+  'conflict',
+  'an old card must not retain or overwrite the same TaskRun writer after generation transfer'
+);
+assert.strictEqual(staleGenerationCardClaim.claim?.runId, runtimeGenerationTwoIdentity.runId);
+assert.strictEqual(staleGenerationCardClaim.claim?.generation, 2);
+const staleGenerationSessionClaim = claimRuntimeSessionDocumentWriter({
+  session: finalizedRuntimeGenerationOne,
+  expectedRevision: runtimeGenerationRevision,
+  now: '2026-08-24T06:01:02.500Z'
+});
+assert.strictEqual(staleGenerationSessionClaim.session.taskRun.status, 'writer_conflict');
+assert.strictEqual(evaluateRuntimeSessionToolExecutionGate({
+  session: staleGenerationSessionClaim.session,
+  toolName: 'sku-batch',
+  toolKind: 'photoshop_write'
+}).code, 'runtime_task_run_writer_conflict',
+  'the gate must treat another generation of the same TaskRun as a live competing writer');
+assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+  taskRunId: finalizedRuntimeGenerationOne.taskRun.taskRunId,
+  runId: finalizedRuntimeGenerationOne.identity.runId,
+  generation: finalizedRuntimeGenerationOne.identity.generation,
+  documentId: runtimeGenerationRevision.documentId
+}), false, 'an old card must not release the new generation writer');
+
+const retainedRuntimeGenerationTwo = claimRuntimeTaskRunWriterBinding({
+  taskRunId: runtimeGenerationTwo.taskRun.taskRunId,
+  runId: runtimeGenerationTwo.identity.runId,
+  generation: runtimeGenerationTwo.identity.generation,
+  expectedRevision: runtimeGenerationRevision,
+  now: '2026-08-24T06:01:03.000Z'
+});
+assert.strictEqual(retainedRuntimeGenerationTwo.status, 'retained');
+const staleGenerationProjection = recordRuntimeSessionSkillRevisionTransition({
+  session: finalizedRuntimeGenerationOne,
+  projectionId: 'stale-generation-history-projection',
+  workflowToolName: 'sku-batch',
+  transition: {
+    source: 'history_transition',
+    before: runtimeGenerationRevision,
+    after: {
+      documentId: runtimeGenerationRevision.documentId,
+      historyStateId: runtimeGenerationRevision.historyStateId + 1
+    },
+    toolActionCompleted: true
+  },
+  now: '2026-08-24T06:01:03.500Z'
+});
+assert.strictEqual(
+  staleGenerationProjection.taskRun.status,
+  'writer_conflict',
+  'an old generation Skill receipt must not revive or move a writer owned by the new generation'
+);
+assert.strictEqual(
+  shouldDeferRuntimeArtifactFinalizationForInteraction(staleGenerationProjection),
+  true,
+  'writer_conflict must retain Artifact finalization authorization'
+);
+assert.strictEqual(
+  staleGenerationProjection.taskRun.skillRevisionProjections[0].source,
+  'history_transition'
+);
+assert.strictEqual(claimRuntimeTaskRunWriterBinding({
+  taskRunId: runtimeGenerationTwo.taskRun.taskRunId,
+  runId: runtimeGenerationTwo.identity.runId,
+  generation: runtimeGenerationTwo.identity.generation,
+  expectedRevision: runtimeGenerationRevision,
+  now: '2026-08-24T06:01:03.700Z'
+}).status, 'retained', 'stale projection must leave the new generation writer untouched');
+assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+  taskRunId: runtimeGenerationTwo.taskRun.taskRunId,
+  runId: runtimeGenerationTwo.identity.runId,
+  generation: runtimeGenerationTwo.identity.generation,
+  documentId: runtimeGenerationRevision.documentId
+}), true, 'only the exact new generation owner may release its writer');
+
+const runtimeWaitingSession = suspendRuntimeSessionForInteraction({
+  session: createRuntimeStatusAuditSession(
+    'runtime-status-waiting',
+    { documentId: 702, historyStateId: 1 }
+  ),
+  interactionId: 'runtime-status-waiting-interaction'
+}).session;
+assert.strictEqual(evaluateRuntimeSessionToolExecutionGate({
+  session: runtimeWaitingSession,
+  toolName: 'sku-batch',
+  toolKind: 'photoshop_write'
+}).code, 'runtime_task_run_waiting_user');
+assert.strictEqual(finalizeRuntimeSession({
+  session: runtimeWaitingSession,
+  plan: skuDefault.bundle.stagePlan,
+  executionSummary: { status: 'failed' }
+}).taskRun.status, 'waiting_user');
+
+const noBindingUnknownSession = markRuntimeSessionSkillEffectUnknown({
+  session: createRuntimeSession({
+    identity: createRuntimeSessionIdentity({
+      now: '2026-08-24T06:09:00.000Z',
+      nonce: 'runtime-no-binding-unknown',
+      skillId: skuDefault.bundle.stagePlan.skillId,
+      taskType: skuDefault.bundle.stagePlan.taskType
+    }),
+    plan: skuDefault.bundle.stagePlan
+  }),
+  workflowToolName: 'sku-batch',
+  observedRevision: { documentId: 0, historyStateId: -1 }
+});
+assert.strictEqual(
+  noBindingUnknownSession.taskRun.status,
+  'active',
+  'an unknown environment fact without any bound document must not create an unacknowledgeable reobserve lock'
+);
+assert.strictEqual(noBindingUnknownSession.taskRun.documentBinding, undefined);
+assert.strictEqual(noBindingUnknownSession.taskRun.sideEffectState?.status, 'unknown');
+assert.strictEqual(evaluateRuntimeSessionToolExecutionGate({
+  session: noBindingUnknownSession,
+  toolName: 'createDocument',
+  toolKind: 'photoshop_write',
+  hasOpenDocument: false,
+  taskRequiresOpenDocument: false
+}).code, 'runtime_task_run_side_effect_unknown',
+  'unknown Skill side effects must block later writes even when there is no Photoshop document binding');
+assert.strictEqual(evaluateRuntimeSessionToolExecutionGate({
+  session: noBindingUnknownSession,
+  toolName: 'updateDesignProjectState',
+  toolKind: 'stateful_context'
+}).code, 'runtime_task_run_side_effect_unknown',
+  'unknown Skill side effects must block other stateful writes until reconciliation');
+assert.strictEqual(evaluateRuntimeSessionToolExecutionGate({
+  session: noBindingUnknownSession,
+  toolName: 'getDocumentInfo',
+  toolKind: 'read_only_observation'
+}).allowed, true,
+  'unknown Skill side effects must still allow observation-only reconciliation');
+assert.strictEqual(
+  shouldDeferRuntimeArtifactFinalizationForInteraction(noBindingUnknownSession),
+  true,
+  'unknown Skill side effects without a document binding must retain Artifact authorization'
+);
+assert.strictEqual(finalizeRuntimeSession({
+  session: noBindingUnknownSession,
+  plan: skuDefault.bundle.stagePlan,
+  executionSummary: { status: 'failed' }
+}).finalized, false,
+  'unknown Skill side effects without a document binding must not finalize or release the TaskRun');
+assert(noBindingUnknownSession.issues.includes('runtime_skill_effect_unknown_observation_invalid'));
+assert.strictEqual(canReleaseRuntimeSessionDocumentWriter({
+  session: noBindingUnknownSession,
+  ownerHasExecutionControl: true,
+  outcome: 'executed',
+  mutationState: 'none'
+}), false, 'side-effect unknown must retain writer even when a caller reports a nominal terminal result');
+assert.strictEqual(canReleaseRuntimeSessionDocumentWriter({
+  session: createRuntimeStatusAuditSession(
+    'runtime-safe-writer-release',
+    { documentId: 704, historyStateId: 1 }
+  ),
+  ownerHasExecutionControl: true,
+  outcome: 'failed',
+  mutationState: 'none'
+}), true, 'a non-structural terminal zero-write failure may release its exact writer identity');
+
+function buildInteractiveAuditCase(suffix, revision) {
+  const continuationId = `runtime-interactive-${suffix}`;
+  const session = revision
+    ? createRuntimeStatusAuditSession(`runtime-interactive-${suffix}`, revision)
+    : createRuntimeSession({
+      identity: createRuntimeSessionIdentity({
+        now: '2026-08-24T06:10:00.000Z',
+        nonce: `runtime-interactive-${suffix}`,
+        skillId: skuDefault.bundle.stagePlan.skillId,
+        taskType: skuDefault.bundle.stagePlan.taskType
+      }),
+      plan: skuDefault.bundle.stagePlan
+    });
+  const suspension = suspendRuntimeSessionForInteraction({
+    session,
+    interactionId: continuationId,
+    continuationId,
+    cardId: `card-${suffix}`,
+    ...(revision ? { expectedRevision: revision } : {}),
+    now: '2026-08-24T06:10:00.000Z'
+  });
+  registerActiveRuntimeInteractiveCheckpoint({
+    version: RUNTIME_INTERACTIVE_CHECKPOINT_VERSION,
+    continuationId,
+    workflowToolName: 'sku-batch',
+    sourceTask: '帮我做 SKU 编排',
+    taskRunBinding: suspension.binding,
+    session: suspension.session,
+    plan: skuDefault.bundle.stagePlan,
+    declarations: {},
+    workflowHandoff: {
+      version: RUNTIME_INTERACTIVE_HANDOFF_IDENTITY_VERSION,
+      workflowToolName: 'sku-batch',
+      workflowCallId: `workflow-call-${suffix}`,
+      binding: {
+        sessionId: suspension.session.identity.sessionId,
+        runId: suspension.session.identity.runId,
+        generation: suspension.session.identity.generation,
+        stage: suspension.session.stageState.currentStage
+      }
+    },
+    registeredAt: new Date().toISOString(),
+    boundaries: createRuntimeInteractiveBoundaries()
+  });
+  const submission = {
+    version: 'interactive-card-submission/v0',
+    cardId: `card-${suffix}`,
+    kind: 'sku-combo-confirmation',
+    submittedAt: '2026-08-24T06:10:02.000Z',
+    value: { colors: ['米白', '浅粉', '浅灰', '深灰'], sizes: [2, 3, 4] },
+    validation: {
+      valid: true,
+      canSubmit: true,
+      normalizedValue: { colors: ['米白', '浅粉', '浅灰', '深灰'], sizes: [2, 3, 4] },
+      issues: [],
+      blockers: [],
+      warnings: []
+    }
+  };
+  return {
+    continuationId,
+    suspension,
+    resolution: {
+      status: 'accepted',
+      continuation: { id: continuationId },
+      submission,
+      sourceMessageId: `message-${suffix}`,
+      card: { id: submission.cardId },
+      skillId: 'sku-batch',
+      params: {},
+      taskRunBinding: suspension.binding
+    }
+  };
+}
+
+function buildInteractiveHandoffResult(
+  preparation,
+  resolution,
+  toolResults,
+  readTrustedToolName,
+  receiptOptions = {}
+) {
+  const base = {
+    success: false,
+    nonFatal: true,
+    message: '模板仍需由 Agent 继续设计。',
+    toolResults: toolResults || [],
+    data: {
+      agentReActContinuation: {
+        status: 'needs_repair',
+        summary: '确认已完成，继续制作模板。',
+        details: ['保留四个已确认颜色并继续模板设计。'],
+        nextAction: 'repair',
+        recovery: {
+          mode: 'allowlist',
+          purpose: 'repair',
+          allowedToolNames: ['createDocument', 'createTextLayer', 'getDocumentInfo'],
+          reason: '只继续模板设计与复核，不重复确认旧卡片。'
+        }
+      }
+    }
+  };
+  return attachSkillExecutionEffectReceipt(base, {
+    skillId: 'sku-batch',
+    executionStarted: true,
+    outcomeStatus: 'partial',
+    readTrustedToolName,
+    runtimeLineage: buildRuntimeInteractiveSkillExecutionLineage({ preparation, resolution }),
+    ...receiptOptions
+  });
+}
+
+function buildTrustedReadOnlyInteractiveHandoffResult(preparation, resolution, revision) {
+  const toolResult = { success: true, historyStateRef: revision };
+  return buildInteractiveHandoffResult(
+    preparation,
+    resolution,
+    [{ name: 'getDocumentInfo', result: toolResult }],
+    (candidate) => candidate === toolResult ? 'getDocumentInfo' : undefined,
+    { declaredProviderToolNames: ['getDocumentInfo'] }
+  );
+}
+
+const noneEffectCase = buildInteractiveAuditCase(
+  'none',
+  { documentId: 711, historyStateId: 1 }
+);
+const nonePreparation = prepareRuntimeInteractiveResume({
+  continuationId: noneEffectCase.continuationId,
+  taskRunBinding: noneEffectCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 711, historyStateId: 1 } }
+});
+assert.strictEqual(nonePreparation.status, 'ready');
+const noneHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: nonePreparation,
+  resolution: noneEffectCase.resolution,
+  result: buildTrustedReadOnlyInteractiveHandoffResult(
+    nonePreparation,
+    noneEffectCase.resolution,
+    { documentId: 711, historyStateId: 1 }
+  ),
+  photoshopObservationAfterSkill: { status: 'revision', revision: { documentId: 711, historyStateId: 1 } }
+});
+assert.strictEqual(noneHandoff.effect, 'none');
+assert(noneHandoff.reentry, 'none effect handoff must re-enter the active Runtime');
+assert.strictEqual(noneHandoff.reentry.session.identity.runId, noneEffectCase.suspension.session.identity.runId);
+assert.strictEqual(noneHandoff.reentry.session.identity.generation, noneEffectCase.suspension.session.identity.generation);
+assert.strictEqual(noneHandoff.reentry.session.taskRun.taskRunId, noneEffectCase.suspension.session.taskRun.taskRunId);
+assert.strictEqual(noneHandoff.reentry.session.taskRun.status, 'active');
+assert(noneHandoff.reentryTask.includes('米白'));
+assert(noneHandoff.reentryTask.includes('冻结事实'));
+assert(noneHandoff.reentryTask.includes('不要重新询问'));
+assert.strictEqual(shouldDeferRuntimeArtifactFinalizationForInteraction(
+  noneEffectCase.suspension.session
+), true);
+assert.strictEqual(shouldDeferRuntimeArtifactFinalizationForInteraction(
+  noneHandoff.reentry.session
+), false);
+const noDocumentCase = buildInteractiveAuditCase('no-document', undefined);
+const noDocumentPreparation = prepareRuntimeInteractiveResume({
+  continuationId: noDocumentCase.continuationId,
+  taskRunBinding: noDocumentCase.suspension.binding,
+  photoshopObservation: { status: 'no_document' }
+});
+assert.strictEqual(noDocumentPreparation.status, 'ready');
+assert.strictEqual(noDocumentPreparation.mode, 'execute_skill');
+const noDocumentReadResult = { success: true, hasDocument: false };
+const noDocumentHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: noDocumentPreparation,
+  resolution: noDocumentCase.resolution,
+  result: buildInteractiveHandoffResult(
+    noDocumentPreparation,
+    noDocumentCase.resolution,
+    [{ name: 'getDocumentInfo', result: noDocumentReadResult }],
+    (candidate) => candidate === noDocumentReadResult ? 'getDocumentInfo' : undefined,
+    { declaredProviderToolNames: ['getDocumentInfo'] }
+  ),
+  photoshopObservationAfterSkill: { status: 'no_document' }
+});
+assert.strictEqual(noDocumentHandoff.effect, 'none');
+assert.strictEqual(noDocumentHandoff.reentry.session.taskRun.status, 'active');
+assert.strictEqual(
+  noDocumentHandoff.reentry.session.taskRun.documentBinding,
+  undefined,
+  'a proven zero-write no-document handoff must remain able to create its first Photoshop document'
+);
+const noDocumentReservation = stageRuntimeInteractiveReentry({
+  reservation: noDocumentPreparation.reservation,
+  reentry: noDocumentHandoff.reentry,
+  reentryTask: noDocumentHandoff.reentryTask
+});
+assert(noDocumentReservation);
+assert.strictEqual(adoptRuntimeInteractiveResume(noDocumentReservation), true);
+const unknownNoDocumentCase = buildInteractiveAuditCase('unknown-no-document', undefined);
+const unknownNoDocumentPreparation = prepareRuntimeInteractiveResume({
+  continuationId: unknownNoDocumentCase.continuationId,
+  taskRunBinding: unknownNoDocumentCase.suspension.binding,
+  photoshopObservation: { status: 'no_document' }
+});
+const unknownNoDocumentHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: unknownNoDocumentPreparation,
+  resolution: unknownNoDocumentCase.resolution,
+  result: buildInteractiveHandoffResult(
+    unknownNoDocumentPreparation,
+    unknownNoDocumentCase.resolution,
+    [],
+    undefined
+  ),
+  photoshopObservationAfterSkill: { status: 'no_document' }
+});
+assert.strictEqual(unknownNoDocumentHandoff.reentry.session.taskRun.sideEffectState?.status, 'unknown');
+const noDocumentReconciledSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: unknownNoDocumentHandoff.reentry.session,
+  reentry: unknownNoDocumentHandoff.reentry,
+  toolCallLog: [
+    {
+      name: 'getDocumentInfo',
+      arguments: {},
+      result: { success: true, hasDocument: false },
+      origin: 'model_tool_call',
+      modelTurn: 0
+    },
+    {
+      name: 'listDocuments',
+      arguments: {},
+      result: { success: true, documents: [] },
+      origin: 'model_tool_call',
+      modelTurn: 0
+    }
+  ],
+  nextToolName: 'createDocument',
+  nextToolKind: 'photoshop_write',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(noDocumentReconciledSession.taskRun.sideEffectState, undefined);
+assert.strictEqual(noDocumentReconciledSession.taskRun.status, 'active');
+assert.strictEqual(commitRuntimeInteractiveResume(unknownNoDocumentPreparation.reservation), true);
+const mismatchPreparation = prepareRuntimeInteractiveResume({
+  continuationId: noneEffectCase.continuationId,
+  taskRunBinding: {
+    ...noneEffectCase.suspension.binding,
+    taskRunId: 'runtime-task-run-other'
+  },
+  photoshopObservation: { status: 'revision', revision: { documentId: 711, historyStateId: 1 } }
+});
+assert.strictEqual(mismatchPreparation.status, 'checkpoint_missing');
+assert.throws(
+  () => resolveRuntimeInteractiveHandoff({
+    preparation: nonePreparation,
+    resolution: {
+      ...noneEffectCase.resolution,
+      submission: {
+        ...noneEffectCase.resolution.submission,
+        cardId: 'card-from-another-interaction'
+      }
+    },
+    result: buildTrustedReadOnlyInteractiveHandoffResult(
+      nonePreparation,
+      noneEffectCase.resolution,
+      { documentId: 711, historyStateId: 1 }
+    ),
+    photoshopObservationAfterSkill: { status: 'revision', revision: { documentId: 711, historyStateId: 1 } }
+  }),
+  /runtime_interactive_reentry_card_binding_mismatch/,
+  'Runtime reentry must close over the exact pending card binding'
+);
+
+const noneExternalChangeCase = buildInteractiveAuditCase(
+  'none-external-change',
+  { documentId: 714, historyStateId: 10 }
+);
+const noneExternalChangePreparation = prepareRuntimeInteractiveResume({
+  continuationId: noneExternalChangeCase.continuationId,
+  taskRunBinding: noneExternalChangeCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 714, historyStateId: 10 } }
+});
+const noneExternalChangeHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: noneExternalChangePreparation,
+  resolution: noneExternalChangeCase.resolution,
+  result: buildTrustedReadOnlyInteractiveHandoffResult(
+    noneExternalChangePreparation,
+    noneExternalChangeCase.resolution,
+    { documentId: 714, historyStateId: 10 }
+  ),
+  photoshopObservationAfterSkill: { status: 'revision', revision: { documentId: 714, historyStateId: 11 } }
+});
+assert.strictEqual(noneExternalChangeHandoff.effect, 'none');
+assert.strictEqual(noneExternalChangeHandoff.reentry.session.taskRun.status, 'needs_reobserve');
+assert.strictEqual(
+  noneExternalChangeHandoff.reentry.session.taskRun.documentBinding.expectedRevision.historyStateId,
+  10,
+  'zero-write Skill must not rebind the old plan to an external Photoshop revision'
+);
+assert.strictEqual(
+  noneExternalChangeHandoff.reentry.session.taskRun.documentBinding.conflict.kind,
+  'external_revision_changed'
+);
+assert.strictEqual(
+  shouldDeferRuntimeArtifactFinalizationForInteraction(noneExternalChangeHandoff.reentry.session),
+  true,
+  'needs_reobserve must retain the one-time Artifact finalization authorization'
+);
+const externalChangeReentryState = resolveRuntimeInteractiveAgentReentryState({
+  config: {
+    runtimeInteractiveReentry: noneExternalChangeHandoff.reentry,
+    runtimeSessionSeed: noneExternalChangeHandoff.reentry.session,
+    runtimeStagePlan: noneExternalChangeHandoff.reentry.plan,
+    tools: [
+      { name: 'sku-batch' },
+      { name: 'createDocument' },
+      { name: 'createTextLayer' },
+      { name: 'getDocumentInfo' }
+    ],
+    toolCapabilityBridge: { workflowEntryTools: ['sku-batch'] }
+  },
+  session: noneExternalChangeHandoff.reentry.session
+});
+assert.strictEqual(
+  externalChangeReentryState.runtime.workflowContinuationScope.binding.stage,
+  noneExternalChangeHandoff.reentry.session.stageState.currentStage,
+  'restored scope must bind the current reobserve stage, not impersonate its original E1 source stage'
+);
+assert.strictEqual(
+  externalChangeReentryState.runtime.pendingDirectWorkflowHandoff,
+  undefined,
+  'an R2 reobserve session must not restore an executable E1 direct repair handoff'
+);
+
+const terminalDecision = resolveRuntimeInteractiveHandoff({
+  preparation: nonePreparation,
+  resolution: noneEffectCase.resolution,
+  result: { success: true, message: '已完成', skillOutcome: { status: 'completed' } }
+});
+assert.strictEqual(terminalDecision.reentry, undefined, 'terminal Skill result must not re-enter Agent');
+
+const twoPhaseCase = buildInteractiveAuditCase(
+  'two-phase',
+  { documentId: 716, historyStateId: 10 }
+);
+const twoPhasePreparation = prepareRuntimeInteractiveResume({
+  continuationId: twoPhaseCase.continuationId,
+  taskRunBinding: twoPhaseCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 716, historyStateId: 10 } }
+});
+assert.strictEqual(twoPhasePreparation.status, 'ready');
+assert.strictEqual(twoPhasePreparation.mode, 'execute_skill');
+assert.strictEqual(claimRuntimeTaskRunWriterBinding({
+  taskRunId: twoPhaseCase.suspension.binding.taskRunId,
+  runId: twoPhaseCase.suspension.binding.runId,
+  generation: twoPhaseCase.suspension.binding.generation,
+  expectedRevision: { documentId: 716, historyStateId: 10 }
+}).status, 'acquired');
+const duplicatePreparation = prepareRuntimeInteractiveResume({
+  continuationId: twoPhaseCase.continuationId,
+  taskRunBinding: twoPhaseCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 716, historyStateId: 10 } }
+});
+assert.strictEqual(duplicatePreparation.status, 'resume_rejected');
+assert.strictEqual(duplicatePreparation.code, 'runtime_interactive_checkpoint_busy');
+assert.strictEqual(resolveRuntimeInteractiveAgentContinuationStatus({
+  result: {
+    success: true,
+    message: '兼容路径提前返回',
+    data: { executionSummary: { status: 'completed', successfulMutationCalls: 0 } }
+  },
+  adopted: false
+}).continuationStatus, 'failed', 'an unadopted compatibility return must never consume the pending reentry as completed');
+assert.strictEqual(claimRuntimeTaskRunWriterBinding({
+  taskRunId: twoPhaseCase.suspension.binding.taskRunId,
+  runId: twoPhaseCase.suspension.binding.runId,
+  generation: twoPhaseCase.suspension.binding.generation,
+  expectedRevision: { documentId: 716, historyStateId: 10 }
+}).status, 'retained', 'a rejected duplicate must not release the active same-generation writer');
+const twoPhaseHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: twoPhasePreparation,
+  resolution: twoPhaseCase.resolution,
+  result: buildTrustedReadOnlyInteractiveHandoffResult(
+    twoPhasePreparation,
+    twoPhaseCase.resolution,
+    { documentId: 716, historyStateId: 10 }
+  ),
+  photoshopObservationAfterSkill: { status: 'revision', revision: { documentId: 716, historyStateId: 10 } }
+});
+const twoPhaseReservation = stageRuntimeInteractiveReentry({
+  reservation: twoPhasePreparation.reservation,
+  reentry: twoPhaseHandoff.reentry,
+  reentryTask: twoPhaseHandoff.reentryTask
+});
+assert(twoPhaseReservation, 'post-Skill handoff must atomically stage a non-replayable reentry');
+assert.strictEqual(twoPhaseReservation.mode, 'resume_agent');
+assert.throws(() => refreshActiveRuntimeInteractivePendingReentry({
+  reservation: twoPhaseReservation,
+  pendingReentry: {
+    reentry: {
+      ...twoPhaseHandoff.reentry,
+      continuationId: 'runtime-interactive-another-owner'
+    },
+    reentryTask: twoPhaseHandoff.reentryTask
+  }
+}), /runtime_interactive_/, 'a reserved checkpoint must reject a pending reentry from another binding');
+assert.strictEqual(cancelRuntimeInteractiveResume(twoPhaseReservation), true);
+const retryAfterAgentInitFailure = prepareRuntimeInteractiveResume({
+  continuationId: twoPhaseCase.continuationId,
+  taskRunBinding: twoPhaseCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 716, historyStateId: 11 } }
+});
+assert.strictEqual(retryAfterAgentInitFailure.status, 'ready');
+assert.strictEqual(
+  retryAfterAgentInitFailure.mode,
+  'resume_agent',
+  'a failed first Agent request must retry the staged Agent handoff, never the consumed Skill'
+);
+assert.strictEqual(retryAfterAgentInitFailure.reentry.session.taskRun.status, 'needs_reobserve');
+assert.strictEqual(
+  retryAfterAgentInitFailure.reentry.session.taskRun.documentBinding.conflict.observedRevision.historyStateId,
+  11,
+  'pending reentry must reconcile the latest Photoshop revision on every retry'
+);
+assert.strictEqual(cancelRuntimeInteractiveResume(retryAfterAgentInitFailure.reservation), true);
+const retryWithoutEnvironmentObservation = prepareRuntimeInteractiveResume({
+  continuationId: twoPhaseCase.continuationId,
+  taskRunBinding: twoPhaseCase.suspension.binding,
+  photoshopObservation: { status: 'unavailable' }
+});
+assert.strictEqual(retryWithoutEnvironmentObservation.status, 'ready');
+assert.strictEqual(retryWithoutEnvironmentObservation.mode, 'resume_agent');
+assert.strictEqual(
+  retryWithoutEnvironmentObservation.reentry.session.taskRun.documentBinding.conflict.kind,
+  'operation_state_unknown'
+);
+assert.strictEqual(cancelRuntimeInteractiveResume(retryWithoutEnvironmentObservation.reservation), true);
+const adoptableRetry = prepareRuntimeInteractiveResume({
+  continuationId: twoPhaseCase.continuationId,
+  taskRunBinding: twoPhaseCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 716, historyStateId: 10 } }
+});
+assert.strictEqual(adoptableRetry.mode, 'resume_agent');
+assert.strictEqual(
+  adoptableRetry.reentry.session.taskRun.status,
+  'needs_reobserve',
+  'later Undo to the old expected revision must not revive a reentry already tightened by conflict'
+);
+assert.strictEqual(
+  adoptableRetry.reentry.session.taskRun.documentBinding.conflict.kind,
+  'operation_state_unknown'
+);
+assert.strictEqual(adoptRuntimeInteractiveResume(adoptableRetry.reservation), true);
+assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+  taskRunId: twoPhaseCase.suspension.binding.taskRunId,
+  runId: twoPhaseCase.suspension.binding.runId,
+  generation: twoPhaseCase.suspension.binding.generation,
+  documentId: 716
+}), true);
+assert.strictEqual(prepareRuntimeInteractiveResume({
+  continuationId: twoPhaseCase.continuationId,
+  taskRunBinding: twoPhaseCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 716, historyStateId: 10 } }
+}).status, 'checkpoint_missing');
+
+const appliedEffectCase = buildInteractiveAuditCase(
+  'applied',
+  { documentId: 712, historyStateId: 10 }
+);
+const appliedPreparation = prepareRuntimeInteractiveResume({
+  continuationId: appliedEffectCase.continuationId,
+  taskRunBinding: appliedEffectCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 712, historyStateId: 10 } }
+});
+const appliedProof = {
+  version: 'photoshop-mutation-commit/v1',
+  basis: 'same_execute_as_modal',
+  bindingStrength: 'document_revision',
+  before: { documentId: 712, historyStateId: 10, activeLayerId: null },
+  after: { documentId: 712, historyStateId: 11, activeLayerId: 99 },
+  toolActionCompleted: true,
+  mutationObserved: true,
+  documentChanged: false
+};
+const appliedToolResult = { success: true, photoshopMutationCommit: appliedProof };
+const appliedHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: appliedPreparation,
+  resolution: appliedEffectCase.resolution,
+  result: buildInteractiveHandoffResult(
+    appliedPreparation,
+    appliedEffectCase.resolution,
+    [{ name: 'placeImage', result: appliedToolResult }],
+    (candidate) => candidate === appliedToolResult ? 'placeImage' : undefined
+  ),
+  photoshopObservationAfterSkill: { status: 'revision', revision: { documentId: 712, historyStateId: 11 } }
+});
+assert.strictEqual(appliedHandoff.effect, 'partial');
+assert.strictEqual(
+  appliedHandoff.reentry.session.taskRun.documentBinding.expectedRevision.historyStateId,
+  11,
+  'trusted applied/partial receipt must advance the same TaskRun revision before reentry'
+);
+assert.strictEqual(
+  appliedHandoff.reentry.session.taskRun.operationResults.length,
+  0,
+  'Skill revision proof must not be forged into a same-modal PhotoshopOperationResult'
+);
+assert.strictEqual(
+  appliedHandoff.reentry.session.taskRun.skillRevisionProjections[0].source,
+  'mutation_commit',
+  'the Runtime projection must preserve the original Host proof source'
+);
+const currentAppliedLineage = buildRuntimeInteractiveSkillExecutionLineage({
+  preparation: appliedPreparation,
+  resolution: appliedEffectCase.resolution
+});
+const staleGenerationHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: appliedPreparation,
+  resolution: appliedEffectCase.resolution,
+  result: buildInteractiveHandoffResult(
+    appliedPreparation,
+    appliedEffectCase.resolution,
+    [{ name: 'placeImage', result: appliedToolResult }],
+    (candidate) => candidate === appliedToolResult ? 'placeImage' : undefined,
+    {
+      runtimeLineage: {
+        ...currentAppliedLineage,
+        runId: 'run-stale-generation',
+        generation: currentAppliedLineage.generation + 1
+      }
+    }
+  ),
+  photoshopObservationAfterSkill: {
+    status: 'revision',
+    revision: { documentId: 712, historyStateId: 11 }
+  }
+});
+assert.strictEqual(staleGenerationHandoff.effect, 'missing');
+assert.strictEqual(
+  staleGenerationHandoff.reentry.session.taskRun.skillRevisionProjections?.length || 0,
+  0,
+  'a signed receipt from another generation must not project revisions into this TaskRun'
+);
+assert.strictEqual(
+  staleGenerationHandoff.reentry.session.taskRun.sideEffectState?.status,
+  'unknown'
+);
+
+const mixedRevisionCase = buildInteractiveAuditCase(
+  'mixed-revision-unknown',
+  { documentId: 718, historyStateId: 20 }
+);
+const mixedRevisionPreparation = prepareRuntimeInteractiveResume({
+  continuationId: mixedRevisionCase.continuationId,
+  taskRunBinding: mixedRevisionCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 718, historyStateId: 20 } }
+});
+const incompleteMutationResult = {
+  success: false,
+  photoshopMutationCommit: {
+    ...appliedProof,
+    before: { documentId: 718, historyStateId: 20, activeLayerId: null },
+    after: { documentId: 718, historyStateId: 21, activeLayerId: 81 },
+    toolActionCompleted: false
+  }
+};
+const laterCompletedMutationResult = {
+  success: true,
+  photoshopMutationCommit: {
+    ...appliedProof,
+    before: { documentId: 718, historyStateId: 21, activeLayerId: 81 },
+    after: { documentId: 718, historyStateId: 22, activeLayerId: 82 },
+    toolActionCompleted: true
+  }
+};
+const mixedRevisionHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: mixedRevisionPreparation,
+  resolution: mixedRevisionCase.resolution,
+  result: buildInteractiveHandoffResult(
+    mixedRevisionPreparation,
+    mixedRevisionCase.resolution,
+    [
+      { name: 'placeImage', result: incompleteMutationResult },
+      { name: 'createTextLayer', result: laterCompletedMutationResult }
+    ],
+    (candidate) => {
+      if (candidate === incompleteMutationResult) return 'placeImage';
+      if (candidate === laterCompletedMutationResult) return 'createTextLayer';
+      return undefined;
+    }
+  ),
+  photoshopObservationAfterSkill: {
+    status: 'revision',
+    revision: { documentId: 718, historyStateId: 22 }
+  }
+});
+assert.strictEqual(mixedRevisionHandoff.effect, 'partial');
+assert.strictEqual(
+  mixedRevisionHandoff.reentry.session.taskRun.documentBinding.conflict.kind,
+  'operation_state_unknown',
+  'a later completed revision in the same receipt must not clear an earlier unknown transition'
+);
+assert.strictEqual(
+  mixedRevisionHandoff.reentry.session.taskRun.sideEffectState?.status,
+  'unknown'
+);
+const metadataOnlyUnknownSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: mixedRevisionHandoff.reentry.session,
+  reentry: mixedRevisionHandoff.reentry,
+  toolCallLog: [{
+    name: 'getDocumentInfo',
+    arguments: {},
+    result: {
+      success: true,
+      historyStateRef: { documentId: 718, historyStateId: 22 }
+    },
+    origin: 'model_tool_call',
+    modelTurn: 0
+  }],
+  nextToolName: 'createTextLayer',
+  nextToolKind: 'photoshop_write',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(
+  metadataOnlyUnknownSession.taskRun.sideEffectState?.status,
+  'unknown',
+  'ordinary document metadata must not clear an unknown Skill effect'
+);
+const visualUnknownObservation = {
+  name: 'getCanvasSnapshot',
+  arguments: {},
+  result: {
+    success: true,
+    historyStateRef: { documentId: 718, historyStateId: 22 },
+    snapshot: {
+      base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcR0AAAAASUVORK5CYII=' + 'A'.repeat(600),
+      format: 'png'
+    }
+  },
+  origin: 'model_tool_call'
+};
+const sameTurnVisualSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: mixedRevisionHandoff.reentry.session,
+  reentry: mixedRevisionHandoff.reentry,
+  toolCallLog: [{ ...visualUnknownObservation, modelTurn: 1 }],
+  nextToolName: 'createTextLayer',
+  nextToolKind: 'photoshop_write',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(
+  sameTurnVisualSession.taskRun.sideEffectState?.status,
+  'unknown',
+  'a snapshot executed earlier in the same provider response was not yet seen by the model'
+);
+const rawPixelOnlyVisualSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: mixedRevisionHandoff.reentry.session,
+  reentry: mixedRevisionHandoff.reentry,
+  toolCallLog: [{ ...visualUnknownObservation, modelTurn: 0 }],
+  nextToolName: 'createTextLayer',
+  nextToolKind: 'photoshop_write',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(
+  rawPixelOnlyVisualSession.taskRun.sideEffectState?.status,
+  'unknown',
+  'raw pixels alone cannot impersonate a Runtime-owned primary-model observation receipt'
+);
+const visualObservationIdentity = {
+  outer: 'getCanvasSnapshot',
+  resultPath: '$.snapshot',
+  document: '718',
+  history: '22',
+  sourceKind: 'canvas',
+  sourceId: 'active-canvas'
+};
+writeAgentVisualObservationReceipt(visualUnknownObservation.result, {
+  version: VISUAL_OBSERVATION_RECEIPT_VERSION,
+  document: '718',
+  history: '22',
+  sourceTool: 'getCanvasSnapshot'
+});
+const presentedUnknownObservation = writeAgentVisualObservation(visualUnknownObservation.result, {
+  status: 'presented_to_primary',
+  reviewed: false,
+  observer: 'primary_model',
+  strategy: 'primary-self',
+  toolName: 'getCanvasSnapshot',
+  observationIdentity: visualObservationIdentity,
+  presentedModelTurn: 1
+});
+assert(presentedUnknownObservation);
+const presentedOnlyVisualSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: mixedRevisionHandoff.reentry.session,
+  reentry: mixedRevisionHandoff.reentry,
+  toolCallLog: [{ ...visualUnknownObservation, modelTurn: 0 }],
+  nextToolName: 'createTextLayer',
+  nextToolKind: 'photoshop_write',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(
+  presentedOnlyVisualSession.taskRun.sideEffectState?.status,
+  'unknown',
+  'adding pixels to a pending provider message is not enough until that model turn completes'
+);
+markPrimaryVisualObservationsConsumed({
+  observations: [presentedUnknownObservation],
+  modelTurn: 1,
+  consumed: true
+});
+compactPostWriteImagePayloadForRuntimeLog(visualUnknownObservation.result);
+assert.strictEqual(
+  extractImageFromToolResult(visualUnknownObservation.result),
+  null,
+  'runtime log compaction must remove pixels while preserving the signed observation annotation'
+);
+const visuallyReconciledSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: mixedRevisionHandoff.reentry.session,
+  reentry: mixedRevisionHandoff.reentry,
+  toolCallLog: [{ ...visualUnknownObservation, modelTurn: 0 }],
+  nextToolName: 'createTextLayer',
+  nextToolKind: 'photoshop_write',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(visuallyReconciledSession.taskRun.sideEffectState, undefined);
+assert.strictEqual(visuallyReconciledSession.taskRun.status, 'active');
+assert.strictEqual(
+  evaluateRuntimeSessionToolExecutionGate({
+    session: visuallyReconciledSession,
+    toolName: 'createTextLayer',
+    toolKind: 'photoshop_write'
+  }).code,
+  undefined,
+  'a visually reconciled current revision may continue through the ordinary Runtime gate'
+);
+const budgetSkippedVisualResult = {
+  success: true,
+  historyStateRef: { documentId: 718, historyStateId: 22 }
+};
+writeAgentVisualObservationReceipt(budgetSkippedVisualResult, {
+  version: VISUAL_OBSERVATION_RECEIPT_VERSION,
+  document: '718',
+  history: '22',
+  sourceTool: 'getCanvasSnapshot'
+});
+writeAgentVisualObservation(budgetSkippedVisualResult, {
+  status: 'not_observed',
+  reviewed: false,
+  observer: 'none',
+  strategy: 'primary-self',
+  toolName: 'getCanvasSnapshot',
+  observationIdentity: visualObservationIdentity,
+  reason: 'vision_candidate_budget_exhausted'
+});
+const budgetSkippedVisualSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: mixedRevisionHandoff.reentry.session,
+  reentry: mixedRevisionHandoff.reentry,
+  toolCallLog: [{
+    name: 'getCanvasSnapshot',
+    arguments: {},
+    result: budgetSkippedVisualResult,
+    origin: 'model_tool_call',
+    modelTurn: 0
+  }],
+  nextToolName: 'createTextLayer',
+  nextToolKind: 'photoshop_write',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(
+  budgetSkippedVisualSession.taskRun.sideEffectState?.status,
+  'unknown',
+  'a budget-skipped image must not unlock an unknown Photoshop side effect'
+);
+const mixedRevisionReservation = stageRuntimeInteractiveReentry({
+  reservation: mixedRevisionPreparation.reservation,
+  reentry: mixedRevisionHandoff.reentry,
+  reentryTask: mixedRevisionHandoff.reentryTask
+});
+assert(mixedRevisionReservation);
+assert.strictEqual(adoptRuntimeInteractiveResume(mixedRevisionReservation), true);
+
+const preservedExecutionJournal = appendRuntimeActionPlanExecutionObservation({
+  journal: createRuntimeActionPlanExecutionJournal(),
+  observation: {
+    capabilityRefs: ['photoshop.read.document'],
+    toolKind: 'read_only_observation',
+    outcome: 'succeeded',
+    iteration: 3
+  }
+});
+const journalBoundReentry = {
+  ...appliedHandoff.reentry,
+  declarations: {
+    ...appliedHandoff.reentry.declarations,
+    actionPlan: {
+      version: 'runtime-action-plan-declaration/v0',
+      source: 'model_tool_call',
+      readiness: 'ready'
+    }
+  },
+  actionPlanExecutionJournal: {
+    planRevision: appliedHandoff.reentry.session.taskRun.planRevision,
+    journal: preservedExecutionJournal
+  }
+};
+const journalReentryState = resolveRuntimeInteractiveAgentReentryState({
+  config: {
+    runtimeInteractiveReentry: journalBoundReentry,
+    runtimeSessionSeed: journalBoundReentry.session,
+    runtimeStagePlan: journalBoundReentry.plan,
+    tools: [
+      { name: 'sku-batch' },
+      { name: 'createDocument' },
+      { name: 'createTextLayer' },
+      { name: 'getDocumentInfo' }
+    ],
+    toolCapabilityBridge: { workflowEntryTools: ['sku-batch'] }
+  },
+  session: journalBoundReentry.session
+});
+assert.strictEqual(
+  journalReentryState.planning.runtimeActionPlanExecutionJournal,
+  preservedExecutionJournal,
+  'same-planRevision reentry must restore the real execution journal instead of creating an empty one'
+);
+const planlessReentryState = resolveRuntimeInteractiveAgentReentryState({
+  config: {
+    runtimeInteractiveReentry: noneHandoff.reentry,
+    runtimeSessionSeed: noneHandoff.reentry.session,
+    runtimeStagePlan: noneHandoff.reentry.plan,
+    tools: [
+      { name: 'sku-batch' },
+      { name: 'createDocument' },
+      { name: 'createTextLayer' },
+      { name: 'getDocumentInfo' }
+    ],
+    toolCapabilityBridge: { workflowEntryTools: ['sku-batch'] }
+  },
+  session: noneHandoff.reentry.session
+});
+assert.strictEqual(
+  planlessReentryState.planning.runtimeActionPlanExecutionJournal,
+  undefined,
+  'reentry without a carried Action Plan must not synthesize an empty journal'
+);
+assert.strictEqual(
+  planlessReentryState.runtime.workflowContinuationScope.workflowCallId,
+  noneHandoff.reentry.workflowHandoff.workflowCallId,
+  'the first reentry turn must retain the original workflow handoff identity'
+);
+assert.strictEqual(
+  planlessReentryState.runtime.pendingDirectWorkflowHandoff.workflowCallId,
+  noneHandoff.reentry.workflowHandoff.workflowCallId,
+  'compact Runtime must expose the restored handoff to structural recovery on the first zero-Tool turn'
+);
+
+const appliedStagedReservation = stageRuntimeInteractiveReentry({
+  reservation: appliedPreparation.reservation,
+  reentry: appliedHandoff.reentry,
+  reentryTask: appliedHandoff.reentryTask
+});
+assert(appliedStagedReservation);
+assert.strictEqual(cancelRuntimeInteractiveResume(appliedStagedReservation), true);
+const appliedAgentInitRetry = prepareRuntimeInteractiveResume({
+  continuationId: appliedEffectCase.continuationId,
+  taskRunBinding: appliedEffectCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 712, historyStateId: 11 } }
+});
+assert.strictEqual(appliedAgentInitRetry.mode, 'resume_agent');
+assert.strictEqual(
+  appliedAgentInitRetry.reentry.session.taskRun.documentBinding.expectedRevision.historyStateId,
+  11,
+  'an applied Skill must resume from the post-Skill Session without executing the Skill again'
+);
+assert.strictEqual(adoptRuntimeInteractiveResume(appliedAgentInitRetry.reservation), true);
+
+const appliedExternalChangeCase = buildInteractiveAuditCase(
+  'applied-external-change',
+  { documentId: 715, historyStateId: 10 }
+);
+const appliedExternalChangePreparation = prepareRuntimeInteractiveResume({
+  continuationId: appliedExternalChangeCase.continuationId,
+  taskRunBinding: appliedExternalChangeCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 715, historyStateId: 10 } }
+});
+const appliedExternalProof = {
+  ...appliedProof,
+  before: { documentId: 715, historyStateId: 10, activeLayerId: null },
+  after: { documentId: 715, historyStateId: 11, activeLayerId: 99 }
+};
+const appliedExternalToolResult = {
+  success: true,
+  photoshopMutationCommit: appliedExternalProof
+};
+const appliedExternalChangeHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: appliedExternalChangePreparation,
+  resolution: appliedExternalChangeCase.resolution,
+  result: buildInteractiveHandoffResult(
+    appliedExternalChangePreparation,
+    appliedExternalChangeCase.resolution,
+    [{ name: 'placeImage', result: appliedExternalToolResult }],
+    (candidate) => candidate === appliedExternalToolResult ? 'placeImage' : undefined
+  ),
+  photoshopObservationAfterSkill: { status: 'revision', revision: { documentId: 715, historyStateId: 12 } }
+});
+assert.strictEqual(appliedExternalChangeHandoff.effect, 'partial');
+assert.strictEqual(appliedExternalChangeHandoff.reentry.session.taskRun.status, 'needs_reobserve');
+assert.strictEqual(
+  appliedExternalChangeHandoff.reentry.session.taskRun.documentBinding.expectedRevision.historyStateId,
+  11,
+  'trusted Skill revision must be projected before checking for a later external change'
+);
+assert.strictEqual(
+  appliedExternalChangeHandoff.reentry.session.taskRun.documentBinding.conflict.observedRevision.historyStateId,
+  12
+);
+assert.strictEqual(
+  appliedExternalChangeHandoff.reentry.session.taskRun.documentBinding.conflict.kind,
+  'external_revision_changed'
+);
+
+const unknownEffectCase = buildInteractiveAuditCase(
+  'unknown',
+  { documentId: 713, historyStateId: 20 }
+);
+const unknownPreparation = prepareRuntimeInteractiveResume({
+  continuationId: unknownEffectCase.continuationId,
+  taskRunBinding: unknownEffectCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 713, historyStateId: 20 } }
+});
+const unknownHandoff = resolveRuntimeInteractiveHandoff({
+  preparation: unknownPreparation,
+  resolution: unknownEffectCase.resolution,
+  result: buildInteractiveHandoffResult(
+    unknownPreparation,
+    unknownEffectCase.resolution,
+    [{ name: 'placeImage', result: { success: false } }],
+    () => undefined
+  ),
+  photoshopObservationAfterSkill: { status: 'revision', revision: { documentId: 713, historyStateId: 21 } }
+});
+assert.strictEqual(unknownHandoff.effect, 'unknown');
+assert.strictEqual(unknownHandoff.reentry.session.taskRun.status, 'needs_reobserve');
+assert.strictEqual(
+  unknownHandoff.reentry.session.taskRun.documentBinding.conflict.kind,
+  'operation_state_unknown',
+  'unknown effect must never continue with the stale pre-confirmation revision'
+);
+assert.strictEqual(
+  shouldDeferRuntimeArtifactFinalizationForInteraction(unknownHandoff.reentry.session),
+  true,
+  'operation_state_unknown must not consume Artifact finalization authorization'
+);
+const unknownStagedReservation = stageRuntimeInteractiveReentry({
+  reservation: unknownPreparation.reservation,
+  reentry: unknownHandoff.reentry,
+  reentryTask: unknownHandoff.reentryTask
+});
+assert(unknownStagedReservation);
+assert.strictEqual(cancelRuntimeInteractiveResume(unknownStagedReservation), true);
+const unknownAgentInitRetry = prepareRuntimeInteractiveResume({
+  continuationId: unknownEffectCase.continuationId,
+  taskRunBinding: unknownEffectCase.suspension.binding,
+  photoshopObservation: { status: 'revision', revision: { documentId: 713, historyStateId: 21 } }
+});
+assert.strictEqual(unknownAgentInitRetry.mode, 'resume_agent');
+assert.strictEqual(
+  unknownAgentInitRetry.reentry.session.taskRun.documentBinding.conflict.kind,
+  'operation_state_unknown',
+  'an unknown Skill effect must preserve its reconciliation requirement across Agent init failure'
+);
+assert.strictEqual(adoptRuntimeInteractiveResume(unknownAgentInitRetry.reservation), true);
+
+async function assertPostSkillExceptionRetainsRecoverableAgentOwner() {
+  const recoveryCase = buildInteractiveAuditCase(
+    'post-skill-exception-recovery',
+    { documentId: 719, historyStateId: 30 }
+  );
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: recoveryCase.continuationId,
+    taskRunBinding: recoveryCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 719, historyStateId: 30 }
+    }
+  });
+  assert.strictEqual(preparation.status, 'ready');
+  assert.strictEqual(preparation.mode, 'execute_skill');
+  const previousWindow = global.window;
+  let skillExecutionCount = 0;
+  global.window = {
+    designEcho: {
+      invoke: async (channel) => {
+        if (channel === 'interactiveContinuation:begin') {
+          return {
+            success: true,
+            code: 'interactive_continuation_operation_started',
+            message: 'started',
+            record: { status: 'running' }
+          };
+        }
+        if (channel === 'interactiveContinuation:settle') {
+          return {
+            success: true,
+            code: 'interactive_continuation_operation_unknown_after_execution_failure',
+            message: 'unknown',
+            record: { status: 'unknown', mutationState: 'unknown' }
+          };
+        }
+        throw new Error(`unexpected interactive ledger channel: ${channel}`);
+      }
+    }
+  };
+  try {
+    const runResult = await runRuntimeInteractiveContinuation({
+      requestId: 'request-post-skill-exception-recovery',
+      operationIdentity: {
+        continuationId: recoveryCase.continuationId,
+        sourceMessageId: recoveryCase.resolution.sourceMessageId,
+        cardId: recoveryCase.resolution.submission.cardId,
+        submissionFingerprint: 'post-skill-exception-recovery-fingerprint'
+      },
+      resolution: recoveryCase.resolution,
+      preparation,
+      executeSkill: async () => {
+        skillExecutionCount += 1;
+        throw new Error('simulated post-skill exception');
+      },
+      readPhotoshopObservation: async () => ({
+        status: 'revision',
+        revision: { documentId: 719, historyStateId: 31 }
+      }),
+      executeAgentReentry: async ({ reentry }) => {
+        assert.strictEqual(
+          reentry.session.taskRun.documentBinding.conflict.kind,
+          'operation_state_unknown'
+        );
+        return {
+          success: false,
+          message: 'Agent 初始化失败，稍后沿 pending reentry 重试。',
+          data: {
+            executionSummary: {
+              status: 'failed',
+              successfulMutationCalls: 0
+            }
+          }
+        };
+      }
+    });
+    assert.strictEqual(runResult.kind, 'agent_result');
+    assert.strictEqual(runResult.adopted, false);
+    assert.strictEqual(skillExecutionCount, 1);
+    const retry = prepareRuntimeInteractiveResume({
+      continuationId: recoveryCase.continuationId,
+      taskRunBinding: recoveryCase.suspension.binding,
+      photoshopObservation: {
+        status: 'revision',
+        revision: { documentId: 719, historyStateId: 31 }
+      }
+    });
+    assert.strictEqual(retry.status, 'ready');
+    assert.strictEqual(
+      retry.mode,
+      'resume_agent',
+      'post-Skill exception retry must resume reconciliation and never replay the Skill'
+    );
+    assert.strictEqual(retry.reentry.session.taskRun.documentBinding.conflict.kind, 'operation_state_unknown');
+    assert.strictEqual(adoptRuntimeInteractiveResume(retry.reservation), true);
+    assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+      taskRunId: recoveryCase.suspension.binding.taskRunId,
+      runId: recoveryCase.suspension.binding.runId,
+      generation: recoveryCase.suspension.binding.generation,
+      documentId: 719
+    }), true);
+  } finally {
+    if (previousWindow === undefined) {
+      delete global.window;
+    } else {
+      global.window = previousWindow;
+    }
+  }
+}
+
+async function assertChainedConfirmationKeepsSameRuntimeOwner() {
+  const chainedCase = buildInteractiveAuditCase(
+    'chained-confirmation',
+    { documentId: 720, historyStateId: 40 }
+  );
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: chainedCase.continuationId,
+    taskRunBinding: chainedCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 720, historyStateId: 40 }
+    }
+  });
+  assert.strictEqual(preparation.status, 'ready');
+  assert.strictEqual(preparation.mode, 'execute_skill');
+  const nextCard = {
+    version: 'interactive-card/v0',
+    id: 'card-chained-confirmation-second',
+    kind: 'sku-second-confirmation',
+    title: '继续确认下一项',
+    payload: { step: 2 },
+    status: 'draft'
+  };
+  const nextContinuation = {
+    version: 'pending-interactive-continuation/v0',
+    id: 'runtime-interactive-chained-confirmation-second',
+    createdAt: '2026-08-24T06:20:00.000Z',
+    sourceTask: '帮我做 SKU 编排',
+    scope: { photoshopDocumentId: 720 },
+    operation: {
+      kind: 'skill_execution',
+      skillId: 'sku-batch',
+      params: { step: 2 }
+    },
+    card: nextCard,
+    oneTime: true
+  };
+  const previousWindow = global.window;
+  global.window = {
+    designEcho: {
+      invoke: async (channel) => {
+        if (channel === 'interactiveContinuation:begin') {
+          return {
+            success: true,
+            code: 'interactive_continuation_operation_started',
+            message: 'started',
+            record: { status: 'running' }
+          };
+        }
+        if (channel === 'interactiveContinuation:settle') {
+          return {
+            success: true,
+            code: 'interactive_continuation_operation_succeeded',
+            message: 'succeeded',
+            record: { status: 'succeeded', mutationState: 'none' }
+          };
+        }
+        throw new Error(`unexpected interactive ledger channel: ${channel}`);
+      }
+    }
+  };
+  try {
+    const runResult = await runRuntimeInteractiveContinuation({
+      requestId: 'request-chained-confirmation',
+      operationIdentity: {
+        continuationId: chainedCase.continuationId,
+        sourceMessageId: chainedCase.resolution.sourceMessageId,
+        cardId: chainedCase.resolution.submission.cardId,
+        submissionFingerprint: 'chained-confirmation-fingerprint'
+      },
+      resolution: chainedCase.resolution,
+      preparation,
+      executeSkill: async (runtimeLineage) => attachSkillExecutionEffectReceipt({
+        success: true,
+        message: '第一项已确认，等待下一项确认。',
+        skillOutcome: {
+          version: 'skill-execution-outcome/v0',
+          status: 'awaiting_confirmation',
+          summary: '等待下一项确认。',
+          outputs: [],
+          blockers: [],
+          warnings: []
+        },
+        data: {
+          interactiveCards: [nextCard],
+          awaitingUserConfirmation: true,
+          pendingInteractiveContinuation: nextContinuation
+        }
+      }, {
+        skillId: 'sku-batch',
+        executionStarted: false,
+        outcomeStatus: 'awaiting_confirmation',
+        runtimeLineage
+      }),
+      readPhotoshopObservation: async () => ({
+        status: 'revision',
+        revision: { documentId: 720, historyStateId: 40 }
+      }),
+      executeAgentReentry: async () => {
+        throw new Error('awaiting_confirmation must not enter Agent reentry');
+      }
+    });
+    assert.strictEqual(runResult.kind, 'direct_result');
+    assert.strictEqual(runResult.settlementStatus, 'awaiting_confirmation');
+    const boundContinuation = runResult.result.data.pendingInteractiveContinuation;
+    assert.strictEqual(boundContinuation.id, nextContinuation.id);
+    assert.strictEqual(
+      boundContinuation.taskRunBinding.taskRunId,
+      chainedCase.suspension.binding.taskRunId,
+      'a chained card must remain in the same TaskRun instead of becoming an unbound historical card'
+    );
+    assert.strictEqual(prepareRuntimeInteractiveResume({
+      continuationId: chainedCase.continuationId,
+      taskRunBinding: chainedCase.suspension.binding,
+      photoshopObservation: {
+        status: 'revision',
+        revision: { documentId: 720, historyStateId: 40 }
+      }
+    }).status, 'checkpoint_missing',
+      'atomic chained swap must consume the old checkpoint in the same store transition');
+    const nextPreparation = prepareRuntimeInteractiveResume({
+      continuationId: boundContinuation.id,
+      taskRunBinding: boundContinuation.taskRunBinding,
+      photoshopObservation: {
+        status: 'revision',
+        revision: { documentId: 720, historyStateId: 40 }
+      }
+    });
+    assert.strictEqual(nextPreparation.status, 'ready');
+    assert.strictEqual(nextPreparation.mode, 'execute_skill');
+    assert.strictEqual(commitRuntimeInteractiveResume(nextPreparation.reservation), true);
+    assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+      taskRunId: chainedCase.suspension.binding.taskRunId,
+      runId: chainedCase.suspension.binding.runId,
+      generation: chainedCase.suspension.binding.generation,
+      documentId: 720
+    }), true);
+  } finally {
+    if (previousWindow === undefined) {
+      delete global.window;
+    } else {
+      global.window = previousWindow;
+    }
+  }
+}
+
+async function assertSucceededUnknownStillStagesRecovery() {
+  const unknownSuccessCase = buildInteractiveAuditCase(
+    'succeeded-unknown-recovery',
+    { documentId: 721, historyStateId: 50 }
+  );
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: unknownSuccessCase.continuationId,
+    taskRunBinding: unknownSuccessCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 721, historyStateId: 50 }
+    }
+  });
+  const previousWindow = global.window;
+  let skillExecutionCount = 0;
+  global.window = {
+    designEcho: {
+      invoke: async (channel) => {
+        if (channel === 'interactiveContinuation:begin') {
+          return { success: true, code: 'started', message: 'started', record: { status: 'running' } };
+        }
+        if (channel === 'interactiveContinuation:settle') {
+          return {
+            success: true,
+            code: 'succeeded',
+            message: 'ledger accepted a succeeded result with unknown mutation state',
+            record: { status: 'succeeded', mutationState: 'unknown' }
+          };
+        }
+        throw new Error(`unexpected interactive ledger channel: ${channel}`);
+      }
+    }
+  };
+  try {
+    const runResult = await runRuntimeInteractiveContinuation({
+      requestId: 'request-succeeded-unknown-recovery',
+      operationIdentity: {
+        continuationId: unknownSuccessCase.continuationId,
+        sourceMessageId: unknownSuccessCase.resolution.sourceMessageId,
+        cardId: unknownSuccessCase.resolution.submission.cardId,
+        submissionFingerprint: 'succeeded-unknown-recovery-fingerprint'
+      },
+      resolution: unknownSuccessCase.resolution,
+      preparation,
+      executeSkill: async () => {
+        skillExecutionCount += 1;
+        return { success: true, message: 'Skill 返回成功，但没有可信 mutation receipt。' };
+      },
+      readPhotoshopObservation: async () => ({
+        status: 'revision',
+        revision: { documentId: 721, historyStateId: 51 }
+      }),
+      executeAgentReentry: async ({ reentry }) => {
+        assert.strictEqual(reentry.session.taskRun.sideEffectState?.status, 'unknown');
+        return {
+          success: false,
+          message: 'Agent 初始化失败，保留 recovery。',
+          data: { executionSummary: { status: 'failed', successfulMutationCalls: 0 } }
+        };
+      }
+    });
+    assert.strictEqual(runResult.kind, 'agent_result');
+    assert.strictEqual(runResult.adopted, false);
+    assert.strictEqual(skillExecutionCount, 1);
+    const retry = prepareRuntimeInteractiveResume({
+      continuationId: unknownSuccessCase.continuationId,
+      taskRunBinding: unknownSuccessCase.suspension.binding,
+      photoshopObservation: {
+        status: 'revision',
+        revision: { documentId: 721, historyStateId: 51 }
+      }
+    });
+    assert.strictEqual(retry.status, 'ready');
+    assert.strictEqual(retry.mode, 'resume_agent',
+      'mutationState=unknown must never direct-commit even when ledger status is succeeded');
+    assert.strictEqual(adoptRuntimeInteractiveResume(retry.reservation), true);
+    assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+      taskRunId: unknownSuccessCase.suspension.binding.taskRunId,
+      runId: unknownSuccessCase.suspension.binding.runId,
+      generation: unknownSuccessCase.suspension.binding.generation,
+      documentId: 721
+    }), true);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+  }
+}
+
+async function assertBeginFailureDoesNotReleaseRetainedWriter() {
+  const retainedCase = buildInteractiveAuditCase(
+    'begin-failure-retained-writer',
+    { documentId: 722, historyStateId: 60 }
+  );
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: retainedCase.continuationId,
+    taskRunBinding: retainedCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 722, historyStateId: 60 }
+    }
+  });
+  assert.strictEqual(claimRuntimeTaskRunWriterBinding({
+    taskRunId: retainedCase.suspension.binding.taskRunId,
+    runId: retainedCase.suspension.binding.runId,
+    generation: retainedCase.suspension.binding.generation,
+    expectedRevision: { documentId: 722, historyStateId: 60 }
+  }).status, 'acquired');
+  const previousWindow = global.window;
+  global.window = {
+    designEcho: {
+      invoke: async (channel) => {
+        if (channel === 'interactiveContinuation:begin') {
+          return { success: false, code: 'begin_rejected', message: 'begin rejected' };
+        }
+        throw new Error(`unexpected interactive ledger channel: ${channel}`);
+      }
+    }
+  };
+  try {
+    const runResult = await runRuntimeInteractiveContinuation({
+      operationIdentity: {
+        continuationId: retainedCase.continuationId,
+        sourceMessageId: retainedCase.resolution.sourceMessageId,
+        cardId: retainedCase.resolution.submission.cardId,
+        submissionFingerprint: 'begin-failure-retained-writer-fingerprint'
+      },
+      resolution: retainedCase.resolution,
+      preparation,
+      executeSkill: async () => {
+        throw new Error('begin failure must not execute Skill');
+      },
+      readPhotoshopObservation: async () => ({ status: 'unavailable' }),
+      executeAgentReentry: async () => {
+        throw new Error('begin failure must not enter Agent');
+      }
+    });
+    assert.strictEqual(runResult.kind, 'blocked');
+    assert.strictEqual(runResult.phase, 'ledger_begin');
+    assert.strictEqual(claimRuntimeTaskRunWriterBinding({
+      taskRunId: retainedCase.suspension.binding.taskRunId,
+      runId: retainedCase.suspension.binding.runId,
+      generation: retainedCase.suspension.binding.generation,
+      expectedRevision: { documentId: 722, historyStateId: 60 }
+    }).status, 'retained', 'begin failure must not release a writer retained from the waiting TaskRun');
+    const cleanup = prepareRuntimeInteractiveResume({
+      continuationId: retainedCase.continuationId,
+      taskRunBinding: retainedCase.suspension.binding,
+      photoshopObservation: {
+        status: 'revision',
+        revision: { documentId: 722, historyStateId: 60 }
+      }
+    });
+    assert.strictEqual(cleanup.status, 'ready');
+    assert.strictEqual(commitRuntimeInteractiveResume(cleanup.reservation), true);
+    assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+      taskRunId: retainedCase.suspension.binding.taskRunId,
+      runId: retainedCase.suspension.binding.runId,
+      generation: retainedCase.suspension.binding.generation,
+      documentId: 722
+    }), true);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+  }
+}
+
+async function assertFailedChainedSwapFallsBackToOldRecoveryOwner() {
+  const swapFailureCase = buildInteractiveAuditCase(
+    'chained-swap-failure',
+    { documentId: 723, historyStateId: 70 }
+  );
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: swapFailureCase.continuationId,
+    taskRunBinding: swapFailureCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 723, historyStateId: 70 }
+    }
+  });
+  const invalidNextCard = {
+    version: 'interactive-card/v0',
+    id: 'card-chained-swap-failure-next',
+    kind: 'sku-next-confirmation',
+    title: '下一确认项',
+    payload: {},
+    status: 'draft'
+  };
+  const invalidNextContinuation = {
+    version: 'pending-interactive-continuation/v0',
+    id: swapFailureCase.continuationId,
+    createdAt: '2026-08-24T06:30:00.000Z',
+    sourceTask: '帮我做 SKU 编排',
+    scope: { photoshopDocumentId: 723 },
+    operation: { kind: 'skill_execution', skillId: 'sku-batch', params: {} },
+    card: invalidNextCard,
+    oneTime: true
+  };
+  const previousWindow = global.window;
+  global.window = {
+    designEcho: {
+      invoke: async (channel) => {
+        if (channel === 'interactiveContinuation:begin') {
+          return { success: true, code: 'started', message: 'started', record: { status: 'running' } };
+        }
+        if (channel === 'interactiveContinuation:settle') {
+          return {
+            success: true,
+            code: 'succeeded',
+            message: 'succeeded',
+            record: { status: 'succeeded', mutationState: 'none' }
+          };
+        }
+        throw new Error(`unexpected interactive ledger channel: ${channel}`);
+      }
+    }
+  };
+  try {
+    const runResult = await runRuntimeInteractiveContinuation({
+      operationIdentity: {
+        continuationId: swapFailureCase.continuationId,
+        sourceMessageId: swapFailureCase.resolution.sourceMessageId,
+        cardId: swapFailureCase.resolution.submission.cardId,
+        submissionFingerprint: 'chained-swap-failure-fingerprint'
+      },
+      resolution: swapFailureCase.resolution,
+      preparation,
+      executeSkill: async (runtimeLineage) => attachSkillExecutionEffectReceipt({
+        success: true,
+        skillOutcome: {
+          version: 'skill-execution-outcome/v0',
+          status: 'awaiting_confirmation',
+          summary: '等待下一项确认。',
+          outputs: [], blockers: [], warnings: []
+        },
+        data: {
+          interactiveCards: [invalidNextCard],
+          awaitingUserConfirmation: true,
+          pendingInteractiveContinuation: invalidNextContinuation
+        }
+      }, {
+        skillId: 'sku-batch',
+        executionStarted: false,
+        outcomeStatus: 'awaiting_confirmation',
+        runtimeLineage
+      }),
+      readPhotoshopObservation: async () => ({
+        status: 'revision',
+        revision: { documentId: 723, historyStateId: 70 }
+      }),
+      executeAgentReentry: async ({ reentry }) => {
+        assert.strictEqual(reentry.session.taskRun.sideEffectState?.status, 'unknown');
+        return {
+          success: false,
+          message: '保留旧 interaction 的 recovery owner。',
+          data: { executionSummary: { status: 'failed', successfulMutationCalls: 0 } }
+        };
+      }
+    });
+    assert.strictEqual(runResult.kind, 'agent_result');
+    assert.strictEqual(runResult.adopted, false);
+    const retry = prepareRuntimeInteractiveResume({
+      continuationId: swapFailureCase.continuationId,
+      taskRunBinding: swapFailureCase.suspension.binding,
+      photoshopObservation: {
+        status: 'revision',
+        revision: { documentId: 723, historyStateId: 70 }
+      }
+    });
+    assert.strictEqual(retry.status, 'ready');
+    assert.strictEqual(retry.mode, 'resume_agent',
+      'failed chained swap must preserve the old reservation as a non-replayable recovery owner');
+    assert.strictEqual(adoptRuntimeInteractiveResume(retry.reservation), true);
+    assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+      taskRunId: swapFailureCase.suspension.binding.taskRunId,
+      runId: swapFailureCase.suspension.binding.runId,
+      generation: swapFailureCase.suspension.binding.generation,
+      documentId: 723
+    }), true);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+  }
+}
+
+function assertAbortToPersistentRecoveryPreservesCheckpointOwner() {
+  const recoveryCase = buildInteractiveAuditCase(
+    'abort-to-persistent-recovery',
+    { documentId: 724, historyStateId: 80 }
+  );
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: recoveryCase.continuationId,
+    taskRunBinding: recoveryCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 724, historyStateId: 80 }
+    }
+  });
+  const recovery = buildRuntimeInteractivePostSkillRecovery({
+    preparation,
+    resolution: recoveryCase.resolution,
+    message: 'simulated staging failure',
+    photoshopObservationAfterSkill: {
+      status: 'revision',
+      revision: { documentId: 724, historyStateId: 81 }
+    }
+  });
+  assert.strictEqual(abortRuntimeInteractiveResumeToPersistentRecovery({
+    reservation: preparation.reservation,
+    reentry: recovery.reentry,
+    reentryTask: recovery.reentryTask
+  }), true);
+  const retry = prepareRuntimeInteractiveResume({
+    continuationId: recoveryCase.continuationId,
+    taskRunBinding: recoveryCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 724, historyStateId: 81 }
+    }
+  });
+  assert.strictEqual(retry.status, 'ready');
+  assert.strictEqual(retry.mode, 'resume_agent',
+    'abort-to-recovery must preserve the old checkpoint as a non-replayable Agent owner');
+  assert.strictEqual(adoptRuntimeInteractiveResume(retry.reservation), true);
+}
+
+async function assertLostCheckpointPersistsOperationUnknown() {
+  const lostCheckpointCase = buildInteractiveAuditCase(
+    'lost-checkpoint-persistent-unknown',
+    { documentId: 725, historyStateId: 90 }
+  );
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: lostCheckpointCase.continuationId,
+    taskRunBinding: lostCheckpointCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 725, historyStateId: 90 }
+    }
+  });
+  const previousWindow = global.window;
+  let markUnknownCount = 0;
+  global.window = {
+    designEcho: {
+      invoke: async (channel) => {
+        if (channel === 'interactiveContinuation:begin') {
+          return { success: true, code: 'started', message: 'started', record: { status: 'running' } };
+        }
+        if (channel === 'interactiveContinuation:settle') {
+          return {
+            success: true,
+            code: 'succeeded',
+            message: 'succeeded',
+            record: { status: 'succeeded', mutationState: 'unknown' }
+          };
+        }
+        if (channel === 'interactiveContinuation:markUnknown') {
+          markUnknownCount += 1;
+          return {
+            success: true,
+            code: 'interactive_continuation_operation_marked_unknown',
+            message: 'persisted unknown',
+            record: { status: 'unknown', mutationState: 'unknown' }
+          };
+        }
+        throw new Error(`unexpected interactive ledger channel: ${channel}`);
+      }
+    }
+  };
+  try {
+    const runResult = await runRuntimeInteractiveContinuation({
+      operationIdentity: {
+        continuationId: lostCheckpointCase.continuationId,
+        sourceMessageId: lostCheckpointCase.resolution.sourceMessageId,
+        cardId: lostCheckpointCase.resolution.submission.cardId,
+        submissionFingerprint: 'lost-checkpoint-persistent-unknown-fingerprint'
+      },
+      resolution: lostCheckpointCase.resolution,
+      preparation,
+      executeSkill: async () => {
+        assert.strictEqual(commitRuntimeInteractiveResume(preparation.reservation), true,
+          'fixture must simulate checkpoint loss after Skill execution begins');
+        return buildInteractiveHandoffResult([], () => undefined);
+      },
+      readPhotoshopObservation: async () => ({
+        status: 'revision',
+        revision: { documentId: 725, historyStateId: 91 }
+      }),
+      executeAgentReentry: async () => {
+        throw new Error('lost checkpoint must stop before Agent reentry');
+      }
+    });
+    assert.strictEqual(runResult.kind, 'blocked');
+    assert.strictEqual(runResult.recoveryStatus, 'operation_unknown_persisted');
+    assert.strictEqual(markUnknownCount, 1);
+    assert.strictEqual(claimRuntimeTaskRunWriterBinding({
+      taskRunId: lostCheckpointCase.suspension.binding.taskRunId,
+      runId: lostCheckpointCase.suspension.binding.runId,
+      generation: lostCheckpointCase.suspension.binding.generation,
+      expectedRevision: { documentId: 725, historyStateId: 90 }
+    }).status, 'retained',
+      'post-Skill persistent-unknown fallback must not release even a writer acquired by this run');
+    assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+      taskRunId: lostCheckpointCase.suspension.binding.taskRunId,
+      runId: lostCheckpointCase.suspension.binding.runId,
+      generation: lostCheckpointCase.suspension.binding.generation,
+      documentId: 725
+    }), true);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+  }
+}
+
+async function assertPersistencePendingRetriesBeforeAgentResume() {
+  const persistenceCase = buildInteractiveAuditCase(
+    'persistence-pending-retry',
+    { documentId: 726, historyStateId: 100 }
+  );
+  const firstPreparation = prepareRuntimeInteractiveResume({
+    continuationId: persistenceCase.continuationId,
+    taskRunBinding: persistenceCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 726, historyStateId: 100 }
+    }
+  });
+  const previousWindow = global.window;
+  let markUnknownCount = 0;
+  let skillExecutionCount = 0;
+  let agentExecutionCount = 0;
+  global.window = {
+    designEcho: {
+      invoke: async (channel) => {
+        if (channel === 'interactiveContinuation:begin') {
+          return { success: true, code: 'started', message: 'started', record: { status: 'running' } };
+        }
+        if (channel === 'interactiveContinuation:settle') {
+          return {
+            success: false,
+            code: 'ledger_temporarily_unavailable',
+            message: 'settlement unavailable'
+          };
+        }
+        if (channel === 'interactiveContinuation:markUnknown') {
+          markUnknownCount += 1;
+          if (markUnknownCount < 3) {
+            return {
+              success: false,
+              code: 'unknown_persistence_temporarily_unavailable',
+              message: 'retry later'
+            };
+          }
+          return {
+            success: true,
+            code: 'interactive_continuation_operation_marked_unknown',
+            message: 'persisted unknown',
+            record: { status: 'unknown', mutationState: 'unknown' }
+          };
+        }
+        throw new Error(`unexpected interactive ledger channel: ${channel}`);
+      }
+    }
+  };
+  const operationIdentity = {
+    continuationId: persistenceCase.continuationId,
+    sourceMessageId: persistenceCase.resolution.sourceMessageId,
+    cardId: persistenceCase.resolution.submission.cardId,
+    submissionFingerprint: 'persistence-pending-retry-fingerprint'
+  };
+  try {
+    const firstRun = await runRuntimeInteractiveContinuation({
+      operationIdentity,
+      resolution: persistenceCase.resolution,
+      preparation: firstPreparation,
+      executeSkill: async () => {
+        skillExecutionCount += 1;
+        throw new Error('simulated post-Skill exception');
+      },
+      readPhotoshopObservation: async () => ({
+        status: 'revision',
+        revision: { documentId: 726, historyStateId: 101 }
+      }),
+      executeAgentReentry: async () => {
+        agentExecutionCount += 1;
+        throw new Error('persistence pending must block Agent');
+      }
+    });
+    assert.strictEqual(firstRun.kind, 'blocked');
+    assert.strictEqual(firstRun.recoveryStatus, 'persistence_pending');
+    assert.strictEqual(agentExecutionCount, 0);
+
+    const secondPreparation = prepareRuntimeInteractiveResume({
+      continuationId: persistenceCase.continuationId,
+      taskRunBinding: persistenceCase.suspension.binding,
+      photoshopObservation: {
+        status: 'revision',
+        revision: { documentId: 726, historyStateId: 101 }
+      }
+    });
+    assert.strictEqual(secondPreparation.status, 'ready');
+    assert.strictEqual(secondPreparation.mode, 'resume_agent');
+    const secondRun = await runRuntimeInteractiveContinuation({
+      operationIdentity,
+      resolution: persistenceCase.resolution,
+      preparation: secondPreparation,
+      executeSkill: async () => {
+        skillExecutionCount += 1;
+        throw new Error('resume_agent must never replay Skill');
+      },
+      readPhotoshopObservation: async () => ({ status: 'unavailable' }),
+      executeAgentReentry: async () => {
+        agentExecutionCount += 1;
+        throw new Error('failed unknown persistence must still block Agent');
+      }
+    });
+    assert.strictEqual(secondRun.kind, 'blocked');
+    assert.strictEqual(secondRun.recoveryStatus, 'persistence_pending');
+    assert.strictEqual(agentExecutionCount, 0);
+
+    const thirdPreparation = prepareRuntimeInteractiveResume({
+      continuationId: persistenceCase.continuationId,
+      taskRunBinding: persistenceCase.suspension.binding,
+      photoshopObservation: {
+        status: 'revision',
+        revision: { documentId: 726, historyStateId: 101 }
+      }
+    });
+    assert.strictEqual(thirdPreparation.status, 'ready');
+    assert.strictEqual(thirdPreparation.mode, 'resume_agent');
+    const thirdRun = await runRuntimeInteractiveContinuation({
+      operationIdentity,
+      resolution: persistenceCase.resolution,
+      preparation: thirdPreparation,
+      executeSkill: async () => {
+        skillExecutionCount += 1;
+        throw new Error('resume_agent must never replay Skill');
+      },
+      readPhotoshopObservation: async () => ({ status: 'unavailable' }),
+      executeAgentReentry: async ({ adopt }) => {
+        agentExecutionCount += 1;
+        assert.strictEqual(adopt(), true);
+        return {
+          success: false,
+          message: 'Agent 已在持久化 unknown 后接管恢复。',
+          data: { executionSummary: { status: 'failed', successfulMutationCalls: 0 } }
+        };
+      }
+    });
+    assert.strictEqual(thirdRun.kind, 'agent_result');
+    assert.strictEqual(thirdRun.adopted, true);
+    assert.strictEqual(skillExecutionCount, 1);
+    assert.strictEqual(agentExecutionCount, 1);
+    assert.strictEqual(markUnknownCount, 3);
+    assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+      taskRunId: persistenceCase.suspension.binding.taskRunId,
+      runId: persistenceCase.suspension.binding.runId,
+      generation: persistenceCase.suspension.binding.generation,
+      documentId: 726
+    }), true);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+  }
+}
+
+const stageRecoveryInput = {
+  obligation: 'runtime_stage_incomplete',
+  stageState: {
+    currentStage: 'E1',
+    stages: [{
+      stage: 'E1',
+      status: 'awaiting_outcomes',
+      missingOutcomes: ['photoshop_mutation']
+    }]
+  },
+  attempt: 1
+};
+const structuralRecoveryCases = [
+  [{ taskRunStatus: 'waiting_user' }, 'waiting_user'],
+  [{ hasPendingInteraction: true }, 'pending_interaction'],
+  [{ taskRunStatus: 'writer_conflict' }, 'writer_conflict'],
+  [{ documentConflictKind: 'writer_conflict' }, 'writer_conflict'],
+  [{ taskRunStatus: 'needs_reobserve' }, 'needs_reobserve'],
+  [{ documentBindingStatus: 'needs_reobserve' }, 'needs_reobserve'],
+  [{ hasAgentHandoff: true }, 'agent_handoff']
+];
+for (const [runtimeState, expectedCode] of structuralRecoveryCases) {
+  const decision = decideStageIncompleteRecovery({
+    ...stageRecoveryInput,
+    runtimeState
+  });
+  assert.strictEqual(decision.disposition, 'defer_to_structural_owner');
+  assert.strictEqual(decision.structuralBlockerCode, expectedCode);
+  assert.strictEqual(decision.shouldRetry, false);
+  assert.strictEqual(decision.shouldEscalate, false);
+  assert.strictEqual(decision.countsAsRecoveryAttempt, false);
+  assert.strictEqual(decision.modelDirective, '');
+  assert.strictEqual(decision.escalationMessage, '');
+}
+const ordinaryStageRecovery = decideStageIncompleteRecovery(stageRecoveryInput);
+assert.strictEqual(ordinaryStageRecovery.disposition, 'retry_model');
+assert.strictEqual(ordinaryStageRecovery.shouldRetry, true);
+assert.strictEqual(ordinaryStageRecovery.countsAsRecoveryAttempt, true);
+const exhaustedStageRecovery = decideStageIncompleteRecovery({
+  ...stageRecoveryInput,
+  attempt: 3
+});
+assert.strictEqual(exhaustedStageRecovery.disposition, 'escalate');
+assert.strictEqual(exhaustedStageRecovery.shouldEscalate, true);
 
 const missingTaskType = resolveRuntimeDeclarationForAgentTask({
   executableToolNames
@@ -529,6 +3032,10 @@ const skuTemplate = resolveRuntimeDeclarationForAgentTask({
 assert.strictEqual(skuTemplate.status, 'resolved');
 assert.strictEqual(skuTemplate.bundle.evaluationProfile?.profileId, GENERAL_DESIGN_EVALUATION_PROFILE_ID);
 assert.strictEqual(validateDesignEvaluationProfile(skuTemplate.bundle.evaluationProfile).valid, true);
+assert(
+  skuTemplate.bundle.manifest.knowledge_refs.includes(SKU_TEMPLATE_METHOD_KNOWLEDGE_ID),
+  'SKU template must load its task-specific comparison and template-system design method'
+);
 assert.deepStrictEqual(
   skuTemplate.bundle.toolCapabilityBridge.workflowEntryTools,
   ['sku-batch'],
@@ -576,6 +3083,71 @@ const skuTemplateR5 = evaluateDesignEvaluationProfile({
 });
 assert.strictEqual(skuTemplateR5.status, 'passed', JSON.stringify(skuTemplateR5, null, 2));
 assert.strictEqual(skuTemplateR5.scorecard.gate, 'passed');
+
+const referenceDeclarationBase = {
+  version: 'runtime-reference-brief/v0',
+  source: 'model_tool_call',
+  workMode: 'create_new',
+  requirement: 'reuse_or_optional',
+  sources: [],
+  boundaries: {
+    modelAuthored: true,
+    harnessValidatedOnly: true,
+    skillPolicyIsSourceOfTruth: true,
+    categoryNeutral: true,
+    executesTools: false
+  }
+};
+const readyReferenceEvaluationContext = buildRuntimeReferenceEvaluationContext({
+  ...referenceDeclarationBase,
+  decision: 'reuse_existing',
+  readiness: 'ready',
+  insights: [{
+    aspect: 'composition',
+    observation: '主商品与文字共享一条明确的负空间边界',
+    application: '保留商品完整轮廓，并把标题放入右侧负空间',
+    observationRefs: ['reference:1']
+  }],
+  limitations: []
+});
+assert(readyReferenceEvaluationContext.includes('参考洞察1·composition'));
+assert(readyReferenceEvaluationContext.includes('主商品与文字共享一条明确的负空间边界'));
+assert(readyReferenceEvaluationContext.includes('把标题放入右侧负空间'));
+const degradedReferenceEvaluationContext = buildRuntimeReferenceEvaluationContext({
+  ...referenceDeclarationBase,
+  decision: 'search_new',
+  readiness: 'degraded',
+  insights: [{
+    aspect: 'color',
+    observation: '不应进入 degraded 投影',
+    application: '不应进入 degraded 投影',
+    observationRefs: ['reference:2']
+  }],
+  limitations: ['Eagle 视觉观察不可用']
+});
+assert(degradedReferenceEvaluationContext.includes('Eagle 视觉观察不可用'));
+assert(!degradedReferenceEvaluationContext.includes('不应进入 degraded 投影'));
+assert.strictEqual(buildRuntimeReferenceEvaluationContext({
+  ...referenceDeclarationBase,
+  decision: 'skip_not_needed',
+  readiness: 'waived',
+  insights: [],
+  limitations: []
+}), '');
+const unsafeReferenceEvaluationContext = buildRuntimeReferenceEvaluationContext({
+  ...referenceDeclarationBase,
+  decision: 'reuse_existing',
+  readiness: 'ready',
+  insights: [{
+    aspect: 'layout',
+    observation: 'C:\\private\\reference.png',
+    application: 'data:image/png;base64,unsafe',
+    observationRefs: ['reference:3']
+  }],
+  limitations: []
+});
+assert(!unsafeReferenceEvaluationContext.includes('C:\\private'));
+assert(!unsafeReferenceEvaluationContext.includes('data:image'));
 
 const templateHistoryStateRef = { documentId: 71, historyStateId: 12 };
 const templateTarget = resolveRuntimeExecutionTarget({
@@ -667,11 +3239,14 @@ function createPlanNeutralIdentity(label) {
 
 function buildAgentTestConfig(input) {
   return {
-    systemPrompt: 'Runtime declaration behavior audit.',
+    systemPrompt: input.systemPrompt || 'Runtime declaration behavior audit.',
     tools: input.tools,
     modelId: 'runtime-declaration-audit-model',
     maxIterations: input.maxIterations,
     openingCanvasObservationMode: input.openingCanvasObservationMode || 'document_identity',
+    ...(input.getDynamicOperatingContext
+      ? { getDynamicOperatingContext: input.getDynamicOperatingContext }
+      : {}),
     ...(input.runtimeSessionIdentity
       ? { runtimeSessionIdentity: input.runtimeSessionIdentity }
       : {}),
@@ -833,6 +3408,160 @@ async function assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2() {
     'declareDesignIntent',
   ]);
   assert.strictEqual(result.executionSummary?.runtimeStageState?.currentStage, 'E1');
+}
+
+async function assertAgenticDeclarationActivatesArtifactContractWithoutStageRuntime() {
+  const resolution = resolveRuntimeDeclarationForAgentTask({
+    taskType: 'ecommerce.main_image.v1',
+    workMode: 'create_new',
+    executableToolNames
+  });
+  assert.strictEqual(resolution.status, 'resolved');
+  assert(
+    resolution.bundle.manifest.required_model_profiles.includes('reasoning.quality'),
+    'quality-first main-image Manifest must request the same model at a quality reasoning profile'
+  );
+  assert.deepStrictEqual(
+    resolution.bundle.evaluationProfile.finalReview?.requiredViews,
+    ['native_surface', 'list_thumbnail'],
+    'main-image Final Judge must receive both native and real list-thumbnail views'
+  );
+  const effectiveContract = resolveRuntimeStagePlanEffectiveContract(
+    resolution.bundle.stagePlan,
+    'create_new'
+  );
+  assert(effectiveContract, 'main-image agentic effective contract is missing');
+  const artifactContract = {
+    version: 'agentic-artifact-completion-contract/v0',
+    skillId: resolution.bundle.manifest.skill_id,
+    taskType: resolution.bundle.manifest.task_type,
+    workMode: effectiveContract.workMode,
+    productionObligation: effectiveContract.productionObligation,
+    deliveryOutputs: [...effectiveContract.deliveryOutputs],
+    exitCriteria: [...effectiveContract.exitCriteria],
+    reviewRubricRef: effectiveContract.reviewRubricRef
+  };
+  const methodKnowledge = buildDesignMethodKnowledgeRuntimeContext({
+    knowledgeRefs: resolution.bundle.manifest.knowledge_refs || [],
+    manifestSkillId: resolution.bundle.manifest.skill_id
+  });
+  assert.deepStrictEqual(methodKnowledge.issues, []);
+  const agenticRuntimeContextItems = methodKnowledge.items.map((item) => {
+    const { applicableStages: _applicableStages, ...stageAgnosticItem } = item;
+    return stageAgnosticItem;
+  });
+  assert(agenticRuntimeContextItems.length > 0, 'main-image agentic method context is empty');
+  assert(agenticRuntimeContextItems.every((item) => item.applicableStages === undefined));
+  const taskProfilePrompt = buildDesignTaskTypePromptSection(mainImageTaskProfile, {
+    hasPhotoshopDocument: true,
+    hasProjectAssets: true,
+    hasEagle: true
+  });
+  const tools = [
+    requireAgentTool('declareDesignIntent'),
+    requireAgentTool('getDocumentInfo'),
+    requireAgentTool('analyzeEagleReference'),
+    requireAgentTool('createRectangle')
+  ];
+  const agent = new Agent(
+    buildAgentTestConfig({
+      tools,
+      maxIterations: 4,
+      openingCanvasObservationMode: 'none',
+      getDynamicOperatingContext: () => taskProfilePrompt
+    }),
+    async () => ({ content: 'unused' }),
+    async () => ({ success: true })
+  );
+  const beforeTools = await agent.buildModelVisibleToolsForIteration();
+  assert(beforeTools.some((tool) => tool.name === 'declareDesignIntent'));
+  agent.activateAgenticRuntimeContractFromDeclaration({
+    artifactContract,
+    referencePolicy: resolution.bundle.stagePlan.referencePolicy,
+    runtimeStageContextItems: agenticRuntimeContextItems,
+    evaluationProfile: resolution.bundle.evaluationProfile,
+    performanceBudget: {
+      maxModelCalls: 36,
+      maxToolCalls: 120,
+      maxVisionCandidates: 16,
+      maxInitialVisionCandidates: 8,
+      maxVisualAnalyses: 6,
+      maxFullResolutionImageReads: 0,
+      softTimeBudgetMs: 900_000
+    },
+    reasoningEffort: 'high',
+    maxIterations: 60
+  });
+  const afterTools = await agent.buildModelVisibleToolsForIteration();
+  assert.strictEqual(agent.runtimeSession, undefined, 'agentic declaration created a Runtime Session');
+  assert.strictEqual(agent.config.runtimeStagePlan, undefined, 'agentic declaration activated Stage gating');
+  assert.strictEqual(agent.config.agenticArtifactContract?.skillId, 'ecommerce.main_image');
+  assert.strictEqual(
+    agent.config.evaluationProfile?.profileId,
+    resolution.bundle.evaluationProfile.profileId
+  );
+  assert.strictEqual(agent.config.maxIterations, 60);
+  assert.strictEqual(agent.config.reasoningEffort, 'high');
+  const postBindingSystemPrompt = agent.buildSystemPromptWithRuntimeContract();
+  assert(
+    postBindingSystemPrompt.includes(mainImageRoleGuidance),
+    'agentic binding lost the Task Profile role guidance from the live operating context'
+  );
+  assert(
+    postBindingSystemPrompt.includes('先区分点击图与转化图'),
+    'agentic binding did not inject the Manifest-owned main-image method knowledge'
+  );
+  assert(
+    !postBindingSystemPrompt.includes('当前设计进度：'),
+    'agentic binding exposed a staged Runtime progress prompt'
+  );
+  assert(!afterTools.some((tool) => tool.name === 'declareDesignIntent'));
+  assert(afterTools.some((tool) => tool.name === 'getDocumentInfo'));
+  assert(afterTools.some((tool) => tool.name === 'createRectangle'));
+  assert(!afterTools.some((tool) => tool.name === 'declareReferenceBrief'), 'agentic reference declaration became a mandatory opening ritual');
+  agent.toolCallLog = [{
+    callId: 'agentic-reference-observation',
+    modelTurn: 1,
+    name: 'analyzeEagleReference',
+    arguments: { itemId: 'agent-selected-reference' },
+    result: {
+      success: true,
+      item: { id: 'agent-selected-reference' },
+      observation: {
+        summary: '参考通过更明确的主体关系建立第一眼焦点。',
+        strengths: [{ aspect: 'composition', observation: '主体关系在缩略图中仍然清楚。' }]
+      }
+    },
+    origin: 'model_tool_call'
+  }];
+  const afterObservationTools = await agent.buildModelVisibleToolsForIteration();
+  const referenceDeclarationTool = afterObservationTools.find((tool) => (
+    tool.name === 'declareReferenceBrief'
+  ));
+  assert(referenceDeclarationTool, 'agentic task cannot bind a reference it already chose and observed');
+  assert.strictEqual(agent.runtimeSession, undefined, 'optional agentic reference binding created a Runtime Session');
+  const referenceDeclaration = agent.executeReferenceBriefDeclaration({
+    decision: 'reuse_existing',
+    readiness: 'ready',
+    sources: [{
+      kind: 'eagle',
+      sourceRefs: ['context:reference_visual:agent-selected-reference']
+    }],
+    insights: [{
+      aspect: 'composition',
+      application: '只迁移主体关系和焦点层级，不复制参考表面内容。',
+      observationRefs: ['context:reference_visual:agent-selected-reference']
+    }],
+    limitations: []
+  });
+  assert.strictEqual(referenceDeclaration.success, true);
+  assert.strictEqual(referenceDeclaration.executesPhotoshop, false);
+  assert.strictEqual(referenceDeclaration.grantsPermission, false);
+  const afterReferenceDeclarationTools = await agent.buildModelVisibleToolsForIteration();
+  assert(
+    !afterReferenceDeclarationTools.some((tool) => tool.name === 'declareReferenceBrief'),
+    'resolved agentic reference declaration remained visible and encouraged repeated control calls'
+  );
 }
 
 async function assertSkuModeGetsOneStructuredRepair() {
@@ -2591,7 +5320,11 @@ async function assertBareCompletionClaimsCannotBypassTextExits() {
   assert.strictEqual(directResult.stopReason, 'plan_execution_mismatch');
   assert.strictEqual(directResult.error, 'unsupported_bare_completion_claim');
   assert.strictEqual(directResult.message, expectedMessage);
-  assert.deepStrictEqual(directMessages, [expectedMessage]);
+  assert.deepStrictEqual(
+    directMessages,
+    [],
+    'candidate final text must stay internal until run settlement returns result.message'
+  );
   assert.strictEqual(directResult.messages.at(-1)?.content, expectedMessage);
 
   const noToolConfig = buildAgentTestConfig({
@@ -3044,12 +5777,14 @@ async function assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates() {
   };
 
   let chatRemediationCount = 0;
+  const chatProgressMessages = [];
   const chatAgent = new Agent(
     buildAgentTestConfig({
       tools: [],
       maxIterations: 3,
       openingCanvasObservationMode: 'none',
-      intentControlPlane: chatOnlyIntent
+      intentControlPlane: chatOnlyIntent,
+      callbacks: { onMessage: (message) => chatProgressMessages.push(message) }
     }),
     async (_modelId, messages) => {
       for (const message of messages) {
@@ -3066,6 +5801,12 @@ async function assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates() {
   const chatResult = await chatAgent.run('你好');
   assert.strictEqual(chatResult.success, true, 'chat reply must succeed untouched');
   assert.strictEqual(chatResult.stopReason, 'final_response', 'chat must end as a plain final response');
+  assert.strictEqual(chatResult.message, '可以了。', 'chat final text must still be delivered through result.message');
+  assert.deepStrictEqual(
+    chatProgressMessages,
+    [],
+    'plain chat final text must not be duplicated through the pre-settlement progress callback'
+  );
   assert.strictEqual(chatRemediationCount, 0, 'chat must never receive completion remediation');
 
   let readOnlyRemediationCount = 0;
@@ -3524,8 +6265,8 @@ async function assertLinkReviewRequestsStayReadOnly() {
 }
 
 /**
- * 治理切片 3（GATE-SIMPLIFY-003）：终局质量 Judge 预留取消事前扣减，硬上限保留。
- * 普通任务预算不再被扣 1 次模型调用/90 秒/1 个视觉候选；Judge 仍只允许一次。
+ * 终局质量 Judge 不进入可跨代恢复的普通任务预算；真正到终审时拥有独立的一次调用机会，
+ * 避免普通额度刚好用满后无法验收修订稿。物理软时限仍共享，Judge 仍只允许一次。
  */
 function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
   const budget = {
@@ -3551,30 +6292,420 @@ function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
     'task-class model budget must no longer be pre-deducted for the final quality judge'
   );
 
-  // 硬上限保留：同一运行内第二次 final_quality_judge 预算类调用必须被拒绝。
+  // 普通池已用 5 个候选时仍可发终审图片；终审只记 generation-local hard cap，
+  // 不得污染下一 generation 恢复的普通模型、候选、分析或 evidence keys。
   const config = buildAgentTestConfig({
     tools: [requireAgentTool('getDocumentInfo')],
     maxIterations: 2,
     openingCanvasObservationMode: 'none'
   });
+  config.performanceBudget = budget;
   const agent = new Agent(
     config,
     async () => ({ content: 'x', stopReason: 'end_turn' }),
     async () => buildDocumentObservation()
   );
-  agent.beginPerformanceModelCall(false, 'final_quality_judge');
+  agent.performanceLedger.modelCallCount = config.performanceBudget.maxModelCalls;
+  agent.performanceLedger.visionCandidateCount = 5;
+  agent.beginPerformanceModelCall(
+    true,
+    'final_quality_judge',
+    1,
+    ['judge-critical-image'],
+    true
+  );
+  assert.strictEqual(
+    agent.performanceLedger.modelCallCount,
+    config.performanceBudget.maxModelCalls,
+    'the dedicated final judge must remain callable after ordinary model-call budget exhaustion'
+  );
+  assert.deepStrictEqual({
+    candidates: agent.performanceLedger.visionCandidateCount,
+    analyses: agent.performanceLedger.visualAnalysisCount,
+    judges: agent.performanceLedger.finalQualityJudgeCallCount
+  }, { candidates: 5, analyses: 0, judges: 1 },
+  'the image-bearing Judge must not contaminate the cross-generation ordinary vision pool');
   let secondJudgeRejected = false;
   try {
-    agent.beginPerformanceModelCall(false, 'final_quality_judge');
+    agent.beginPerformanceModelCall(true, 'final_quality_judge', 1, ['judge-second-image'], true);
   } catch (error) {
     secondJudgeRejected = error && error.code === 'agent_final_quality_judge_budget_exhausted';
   }
   assert(secondJudgeRejected, 'the one-call hard cap on the final quality judge must remain');
+  agent.beginPerformanceModelCall(
+    true,
+    'final_quality_diagnosis_repair',
+    1,
+    ['judge-critical-image'],
+    true
+  );
+  assert.deepStrictEqual({
+    candidates: agent.performanceLedger.visionCandidateCount,
+    analyses: agent.performanceLedger.visualAnalysisCount,
+    judges: agent.performanceLedger.finalQualityJudgeCallCount,
+    repairs: agent.performanceLedger.finalQualityDiagnosisRepairCallCount
+  }, { candidates: 5, analyses: 0, judges: 1, repairs: 1 },
+  'the one-shot repair allowance must remain reachable without charging the ordinary vision pool');
+
+  const overflowAgent = new Agent(
+    config,
+    async () => ({ content: 'x', stopReason: 'end_turn' }),
+    async () => buildDocumentObservation()
+  );
+  overflowAgent.performanceLedger.visionCandidateCount = 5;
+  const oversizedFinalJudgeKeys = Array.from(
+    { length: budget.maxVisionCandidates + 1 },
+    (_, index) => `judge-overflow-${index + 1}`
+  );
+  assert.throws(
+    () => overflowAgent.beginPerformanceModelCall(
+      true,
+      'final_quality_judge',
+      oversizedFinalJudgeKeys.length,
+      oversizedFinalJudgeKeys,
+      true
+    ),
+    (error) => error && error.code === 'agent_vision_candidate_budget_exhausted',
+    'a Judge presentation must not exceed its own per-event candidate hard limit'
+  );
+  assert.deepStrictEqual({
+    candidates: overflowAgent.performanceLedger.visionCandidateCount,
+    analyses: overflowAgent.performanceLedger.visualAnalysisCount,
+    judges: overflowAgent.performanceLedger.finalQualityJudgeCallCount
+  }, { candidates: 5, analyses: 0, judges: 0 }, 'a rejected Judge must not partially charge the ledger');
+
+  const repairBudget = {
+    ...budget,
+    maxVisionCandidates: 8,
+    maxVisualAnalyses: 4
+  };
+  const repairConfig = buildAgentTestConfig({
+    tools: [requireAgentTool('getDocumentInfo')],
+    maxIterations: 2,
+    openingCanvasObservationMode: 'none'
+  });
+  repairConfig.performanceBudget = repairBudget;
+  const orphanRepairAgent = new Agent(
+    repairConfig,
+    async () => ({ content: 'x', stopReason: 'end_turn' }),
+    async () => buildDocumentObservation()
+  );
+  assert.throws(
+    () => orphanRepairAgent.beginPerformanceModelCall(
+      true,
+      'final_quality_diagnosis_repair',
+      1,
+      ['orphan-repair-fixture'],
+      true
+    ),
+    (error) => error && error.code === 'agent_final_quality_diagnosis_repair_without_judge',
+    'diagnosis repair must be unavailable until a full final Judge result exists'
+  );
+  const repairAgent = new Agent(
+    repairConfig,
+    async () => ({ content: 'x', stopReason: 'end_turn' }),
+    async () => buildDocumentObservation()
+  );
+  repairAgent.performanceLedger.modelCallCount = repairBudget.maxModelCalls;
+  repairAgent.beginPerformanceModelCall(
+    true,
+    'final_quality_judge',
+    1,
+    ['repair-fixture'],
+    true
+  );
+  repairAgent.beginPerformanceModelCall(
+    true,
+    'final_quality_diagnosis_repair',
+    1,
+    ['repair-fixture'],
+    true
+  );
+  assert.deepStrictEqual({
+    modelCalls: repairAgent.performanceLedger.modelCallCount,
+    candidates: repairAgent.performanceLedger.visionCandidateCount,
+    analyses: repairAgent.performanceLedger.visualAnalysisCount,
+    judges: repairAgent.performanceLedger.finalQualityJudgeCallCount,
+    repairs: repairAgent.performanceLedger.finalQualityDiagnosisRepairCallCount
+  }, {
+    modelCalls: repairBudget.maxModelCalls,
+    candidates: 0,
+    analyses: 0,
+    judges: 1,
+    repairs: 1
+  }, 'diagnosis repair must keep its generation-local cap without consuming ordinary task budget');
+  assert.throws(
+    () => repairAgent.beginPerformanceModelCall(
+      true,
+      'final_quality_diagnosis_repair',
+      1,
+      ['repair-fixture'],
+      true
+    ),
+    (error) => error && error.code === 'agent_final_quality_diagnosis_repair_budget_exhausted',
+    'diagnosis protocol repair must remain single-use per Agent generation'
+  );
+
+  const mismatchedEvidenceAgent = new Agent(
+    repairConfig,
+    async () => ({ content: 'x', stopReason: 'end_turn' }),
+    async () => buildDocumentObservation()
+  );
+  mismatchedEvidenceAgent.beginPerformanceModelCall(
+    true,
+    'final_quality_judge',
+    1,
+    ['judge-bound-evidence'],
+    true
+  );
+  assert.throws(
+    () => mismatchedEvidenceAgent.beginPerformanceModelCall(
+      true,
+      'final_quality_diagnosis_repair',
+      1,
+      ['different-evidence'],
+      true
+    ),
+    (error) => error && error.code === 'agent_final_quality_diagnosis_repair_evidence_mismatch',
+    'the repair allowance must not be reused for a different image set'
+  );
+  assert.strictEqual(
+    mismatchedEvidenceAgent.performanceLedger.finalQualityDiagnosisRepairCallCount,
+    0,
+    'evidence-mismatched repair must not partially charge the dedicated slot'
+  );
+
+  const expiredRepairAgent = new Agent(
+    repairConfig,
+    async () => ({ content: 'x', stopReason: 'end_turn' }),
+    async () => buildDocumentObservation()
+  );
+  expiredRepairAgent.performanceLedger.runStartedAtMs = Date.now() - repairBudget.softTimeBudgetMs - 10;
+  expiredRepairAgent.performanceLedger.finalQualityJudgeCallCount = 1;
+  expiredRepairAgent.performanceLedger.finalQualityJudgeVisionCandidateCount = 1;
+  expiredRepairAgent.performanceLedger.finalQualityJudgeVisionCandidateKeys = ['expired-repair-fixture'];
+  assert.throws(
+    () => expiredRepairAgent.beginPerformanceModelCall(
+      true,
+      'final_quality_diagnosis_repair',
+      1,
+      ['expired-repair-fixture'],
+      true
+    ),
+    (error) => error && error.code === 'agent_soft_time_budget_exhausted',
+    'diagnosis repair must not bypass the physical soft-time deadline'
+  );
+}
+
+function buildDiagnosisRepairFixture() {
+  return {
+    visualFinding: {
+      scope: 'global',
+      target: '当前画布',
+      description: '主体与外围留白的比例偏弱',
+      relationship: '主体识别力度低于商品主图目标',
+      affectedRoles: ['subject']
+    },
+    causalExplanation: {
+      goalRelation: 'conflicts',
+      mechanism: '过多外围留白削弱了缩略图中的商品识别'
+    },
+    revision: {
+      action: '重新判断主体与留白的视觉关系',
+      expectedEffect: '商品在缩略图中更快被识别',
+      preserve: ['完整商品轮廓'],
+      verify: ['按真实展示尺寸复核主体识别']
+    }
+  };
+}
+
+async function assertFinalQualityDiagnosisRepairModelProtocol() {
+  const pending = DESIGN_ASSERTIONS.filter((assertion) => assertion.method === 'vlm_judge').slice(0, 2);
+  assert.strictEqual(pending.length, 2, 'diagnosis repair fixture requires two VLM assertions');
+  const firstJudgeResponse = JSON.stringify([
+    { id: pending[0].id, applicable: true, score: 0.7, confidence: 0.92, reason: '主体力度不足' },
+    { id: pending[1].id, applicable: true, score: 0.9, confidence: 0.9, reason: '当前关系稳定' }
+  ]);
+  const repairResponse = JSON.stringify([
+    { id: pending[0].id, diagnosis: buildDiagnosisRepairFixture() }
+  ]);
+  const historyStateRef = { documentId: 42, historyStateId: 77 };
+  const calls = [];
+  let historyReads = 0;
+  const successful = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    targetBindingInstruction: 'single-surface-target',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 100_000,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async (request) => {
+      calls.push({ kind: 'judge', request });
+      return { content: firstJudgeResponse };
+    },
+    callDiagnosisRepair: async (request) => {
+      calls.push({ kind: 'repair', request });
+      return { content: repairResponse };
+    },
+    readPostModelHistoryStateRef: async () => {
+      historyReads += 1;
+      return historyStateRef;
+    }
+  });
+  assert.strictEqual(successful.status, 'completed');
+  assert.strictEqual(successful.diagnosisRepairStatus, 'repaired');
+  assert.strictEqual(calls.map((call) => call.kind).join(','), 'judge,repair');
+  assert.strictEqual(historyReads, 2, 'the same Photoshop revision must be checked after Judge and repair');
+  assert.deepStrictEqual(
+    Object.keys(calls[1].request).sort(),
+    ['maxTokens', 'messages', 'temperature', 'timeoutMs'],
+    'diagnosis repair request must not expose a Tool or execution channel'
+  );
+  assert(calls[1].request.messages[0].content.includes('不是在重新评价画面'));
+  assert(calls[1].request.messages[1].contentBlocks.some((block) => block.data === 'same-review-image'));
+  assert.strictEqual(successful.results[0].score, 0.7, 'repair must preserve the first Judge score');
+  assert.strictEqual(successful.results[0].confidence, 0.92, 'repair must preserve confidence');
+  assert.strictEqual(successful.results[0].status, 'needs_review', 'repair must preserve status');
+  assert(successful.results[0].diagnosis, 'valid diagnosis-only response must be merged');
+
+  let failedHistoryReads = 0;
+  const failed = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 100_000,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async () => ({ content: firstJudgeResponse }),
+    callDiagnosisRepair: async () => { throw new Error('repair unavailable'); },
+    readPostModelHistoryStateRef: async () => {
+      failedHistoryReads += 1;
+      return historyStateRef;
+    }
+  });
+  assert.strictEqual(failed.status, 'completed');
+  assert.strictEqual(failed.diagnosisRepairStatus, 'call_failed');
+  assert.strictEqual(failed.results[0].score, 0.7, 'failed repair must retain the first reliable score');
+  assert.strictEqual(failed.results[0].diagnosis, undefined, 'failed repair must not fabricate a diagnosis');
+  assert.strictEqual(failedHistoryReads, 2, 'failed repair may retain scores only after a second history reconciliation');
+
+  let staleHistoryReads = 0;
+  const stale = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 100_000,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async () => ({ content: firstJudgeResponse }),
+    callDiagnosisRepair: async () => ({ content: repairResponse }),
+    readPostModelHistoryStateRef: async () => {
+      staleHistoryReads += 1;
+      return staleHistoryReads === 1
+        ? historyStateRef
+        : { documentId: historyStateRef.documentId, historyStateId: historyStateRef.historyStateId + 1 };
+    }
+  });
+  assert.strictEqual(stale.status, 'judge_stale');
+  assert.strictEqual(stale.results, null, 'a stale repair interval must invalidate the whole visual score batch');
+
+  const invalidMultiTarget = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    targetBindingInstruction: 'target must be screen-a or screen-b',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    allowedDiagnosisTargets: ['screen-a', 'screen-b'],
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 100_000,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async () => ({ content: firstJudgeResponse }),
+    callDiagnosisRepair: async () => ({ content: repairResponse }),
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(invalidMultiTarget.status, 'completed');
+  assert.strictEqual(invalidMultiTarget.diagnosisRepairStatus, 'invalid');
+  assert.strictEqual(
+    invalidMultiTarget.results[0].diagnosis,
+    undefined,
+    'a diagnosis outside the current multi-surface target set must not be marked repaired'
+  );
+
+  let unverifiedRepairCalled = false;
+  const requiredReceiptMissing = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'aGVsbG8=', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    visualPresentationReceiptPolicy: 'required',
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async () => ({ content: firstJudgeResponse }),
+    callDiagnosisRepair: async () => {
+      unverifiedRepairCalled = true;
+      return { content: repairResponse };
+    },
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(requiredReceiptMissing.status, 'judge_unavailable');
+  assert.strictEqual(requiredReceiptMissing.results, null, 'required receipt missing must discard text-only visual scores');
+  assert.strictEqual(unverifiedRepairCalled, false, 'unverified Judge scores must not trigger diagnosis repair');
+
+  const serializedFixtureImage = projectSerializedVisualImageDataUrl('data:image/png;base64,aGVsbG8=');
+  assert(serializedFixtureImage);
+  const wrongPresentationReceipt = buildModelVisualPresentationReceipt({
+    provider: 'openai-codex',
+    attemptId: 'c'.repeat(64),
+    candidateKeys: ['wrong-image'],
+    serializedImages: [serializedFixtureImage]
+  });
+  assert(wrongPresentationReceipt);
+  const requiredReceiptMismatch = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'aGVsbG8=', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    visualPresentationReceiptPolicy: 'required',
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async () => ({
+      content: firstJudgeResponse,
+      visualPresentationReceipt: wrongPresentationReceipt,
+      transportAttempts: [{
+        durationMs: 1,
+        succeeded: true,
+        visualPresentationReceiptRef: {
+          attemptId: wrongPresentationReceipt.attemptId,
+          manifestSha256: wrongPresentationReceipt.manifestSha256
+        }
+      }]
+    }),
+    callDiagnosisRepair: async () => ({ content: repairResponse }),
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(requiredReceiptMismatch.status, 'judge_unavailable');
+  assert.strictEqual(requiredReceiptMismatch.results, null, 'wrong image key/order/digest must not earn visual evidence credit');
 }
 
 /**
  * 终局质量事实闭环回归：最后一次写入后只有同 revision 的全画布像素时，pre_judge
- * 必须补齐同 revision 的画布尺寸和完整层级，再构造 surface 并调用一次 advisory VLM。
+ * 必须用一份同 revision 的完整 AcceptanceSnapshot 补齐画布与层级，再调用一次 advisory VLM。
  * Agent 没有主动调用 evaluateDesign 不得使终局 Judge 永久不可达；Harness 只补事实，不产审美答案。
  */
 async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
@@ -3631,36 +6762,127 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   });
   assert.strictEqual(builtReviewSet.status, 'ready');
 
+  const judgePending = TASK_NEUTRAL_DESIGN_ASSERTIONS.filter((assertion) => assertion.method === 'vlm_judge');
+  const judgeResponse = JSON.stringify(judgePending.map((assertion, index) => ({
+    id: assertion.id,
+    applicable: true,
+    score: index === 0 ? 0.7 : 0.9,
+    confidence: 0.9,
+    reason: index === 0 ? '主体力度不足' : '当前关系稳定'
+  })));
+  const diagnosisResponse = JSON.stringify([{
+    id: judgePending[0].id,
+    diagnosis: buildDiagnosisRepairFixture()
+  }]);
   let judgeCallCount = 0;
+  let judgeMessages;
+  let repairMessages;
+  const modelRequestOptions = [];
   const hostToolNames = [];
+  const codexJudgeModelId = 'test-codex-vision';
+  const previousDynamicModels = getDynamicModels();
+  clearDynamicModels();
+  setDynamicModels([{
+    id: codexJudgeModelId,
+    name: 'Test Codex Vision',
+    source: 'cloud',
+    provider: 'openai-codex',
+    apiModelId: 'gpt-test',
+    usageKind: 'conversation',
+    usageConfidence: 'declared',
+    roles: ['general', 'vision'],
+    capabilities: ['text-generation', 'vision'],
+    supportsVision: true,
+    supportsToolUse: true,
+    supportsStreaming: false,
+    maxTokens: 8192
+  }]);
   const config = buildAgentTestConfig({
-    tools: [requireAgentTool('getDocumentInfo')],
+    tools: [requireAgentTool('getDocumentInfo'), requireAgentTool('getAcceptanceSnapshot')],
     maxIterations: 2,
     openingCanvasObservationMode: 'none',
     performanceBudget: {
       maxModelCalls: 10,
       maxToolCalls: 20,
-      maxVisionCandidates: 10,
-      maxVisualAnalyses: 10,
+      maxVisionCandidates: 6,
+      maxVisualAnalyses: 2,
       maxFullResolutionImageReads: 0,
       softTimeBudgetMs: 300_000
     }
   });
-  config.modelId = 'openrouter-gpt-4o';
+  config.modelId = codexJudgeModelId;
   const agent = new Agent(
     config,
-    async () => {
+    async (_modelId, messages, tools, options) => {
       judgeCallCount += 1;
-      return { content: '{}' };
+      modelRequestOptions.push({ tools, options });
+      if (judgeCallCount === 1) {
+        judgeMessages = messages;
+        const serializedImages = messages
+          .flatMap((message) => Array.isArray(message.contentBlocks) ? message.contentBlocks : [])
+          .filter((block) => block.type === 'image')
+          .map((block) => projectSerializedVisualImageDataUrl(
+            `data:${block.mediaType};base64,${block.data}`
+          ));
+        assert(serializedImages.every(Boolean), 'the fixture images must serialize into exact outgoing projections');
+        const visualPresentationReceipt = buildModelVisualPresentationReceipt({
+          provider: 'openai-codex',
+          attemptId: 'b'.repeat(64),
+          candidateKeys: options?.visualPresentationCandidateKeys,
+          serializedImages
+        });
+        assert(visualPresentationReceipt, 'the first Judge call must return a matching Provider presentation receipt');
+        return {
+          content: judgeResponse,
+          visualPresentationReceipt,
+          transportAttempts: [{
+            durationMs: 1,
+            succeeded: true,
+            visualPresentationReceiptRef: {
+              attemptId: visualPresentationReceipt.attemptId,
+              manifestSha256: visualPresentationReceipt.manifestSha256
+            }
+          }]
+        };
+      }
+      repairMessages = messages;
+      const serializedImages = messages
+        .flatMap((message) => Array.isArray(message.contentBlocks) ? message.contentBlocks : [])
+        .filter((block) => block.type === 'image')
+        .map((block) => projectSerializedVisualImageDataUrl(
+          `data:${block.mediaType};base64,${block.data}`
+        ));
+      assert(serializedImages.every(Boolean));
+      const visualPresentationReceipt = buildModelVisualPresentationReceipt({
+        provider: 'openai-codex',
+        attemptId: 'd'.repeat(64),
+        candidateKeys: options?.visualPresentationCandidateKeys,
+        serializedImages
+      });
+      assert(visualPresentationReceipt, 'diagnosis repair must sign its own matching presentation receipt');
+      return {
+        content: diagnosisResponse,
+        visualPresentationReceipt,
+        transportAttempts: [{
+          durationMs: 1,
+          succeeded: true,
+          visualPresentationReceiptRef: {
+            attemptId: visualPresentationReceipt.attemptId,
+            manifestSha256: visualPresentationReceipt.manifestSha256
+          }
+        }]
+      };
     },
     async (toolName) => {
       hostToolNames.push(toolName);
-      if (toolName === 'getLayerHierarchy') {
+      if (toolName === 'getAcceptanceSnapshot') {
         return {
           success: true,
-          documentId,
+          hasDocument: true,
+          document: { id: documentId, width: 800, height: 800 },
           historyStateRef,
-          hierarchy: layerHierarchy
+          summary: { totalLayers: layerHierarchy.length, truncated: false },
+          layers: layerHierarchy
         };
       }
       return {
@@ -3673,6 +6895,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   );
   agent.currentTask = '帮我做一张商品主图';
   agent.toolCallLog = baseLog;
+  agent.performanceLedger.visionCandidateCount = 5;
   agent.latestDesignVisualJudgeSingleReviewSet = {
     reviewSet: builtReviewSet.reviewSet,
     images: [{ data: 'aGVsbG8=', mediaType: 'image/png' }],
@@ -3687,35 +6910,135 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   };
 
   const assertions = await agent.evaluateDesignQualityVlmAssertions('final_response');
-  assert.strictEqual(judgeCallCount, 1, 'fresh terminal structure must make the advisory VLM Judge reachable');
+  assert.strictEqual(judgeCallCount, 2, 'a missing diagnosis must remain repairable after the independent Judge event');
+  assert(
+    judgeMessages?.[1]?.contentBlocks?.some((block) => block.type === 'image' && block.data === 'aGVsbG8='),
+    'the critical-budget regression must reach the provider with the actual ReviewSet image'
+  );
+  assert(
+    judgeMessages?.[0]?.content?.includes('final_bound_supporting_source')
+      && !judgeMessages?.[0]?.content?.includes('selected_source'),
+    'the Judge protocol must describe the source label that the final payload actually emits'
+  );
+  assert(
+    repairMessages?.[0]?.content?.includes('不是在重新评价画面')
+      && repairMessages?.[1]?.contentBlocks?.some((block) => block.type === 'image' && block.data === 'aGVsbG8='),
+    'diagnosis repair must reuse the same ReviewSet while forbidding rescoring'
+  );
+  assert(modelRequestOptions.every((request) => (
+    Array.isArray(request.tools)
+      && request.tools.length === 0
+      && !Object.prototype.hasOwnProperty.call(request.options || {}, 'messages')
+  )), 'Judge / repair messages must be passed once, never duplicated inside provider options');
+  assert.strictEqual(
+    modelRequestOptions[0]?.options?.visualPresentationCandidateKeys?.length,
+    1,
+    'the first Judge must bind the outgoing image receipt to its exact presentation keys'
+  );
+  assert.strictEqual(
+    modelRequestOptions[1]?.options?.visualPresentationCandidateKeys?.length,
+    1,
+    'diagnosis repair must independently prove that it replayed the same visual presentation'
+  );
+  assert.deepStrictEqual({
+    candidates: agent.performanceLedger.visionCandidateCount,
+    analyses: agent.performanceLedger.visualAnalysisCount,
+    judges: agent.performanceLedger.finalQualityJudgeCallCount,
+    repairs: agent.performanceLedger.finalQualityDiagnosisRepairCallCount
+  }, { candidates: 5, analyses: 0, judges: 1, repairs: 1 },
+  'Judge and repair hard caps must not contaminate the cross-generation ordinary vision pool');
   assert.deepStrictEqual(
     hostToolNames,
-    ['getDocumentInfo', 'getLayerHierarchy', 'getDocumentInfo'],
-    'pre_judge must complete dimensions plus hierarchy before the post-Judge version check'
+    ['getAcceptanceSnapshot', 'getDocumentInfo', 'getDocumentInfo'],
+    'pre-Judge, post-Judge and post-repair Host revisions must all be reconciled'
   );
   assert(Array.isArray(assertions) && assertions.length > 0, 'the final Judge result must enter the existing scorecard path');
+  assert(assertions.some((assertion) => assertion.id === judgePending[0].id && assertion.diagnosis));
   assert.deepStrictEqual(
     agent.toolCallLog.slice(-3).map((entry) => entry.qualityVerificationPhase),
-    ['pre_judge', 'pre_judge', 'post_judge'],
+    ['pre_judge', 'post_judge', 'post_judge'],
     'the terminal version checks must remain distinguishable in the run ledger'
+  );
+  assert.deepStrictEqual(agent.finalQualityModelProtocolDigest, {
+    judgeStatus: 'completed',
+    diagnosisRepairStatus: 'repaired',
+    diagnosisRepairTargetCount: 1,
+    actionableDiagnosisCount: 1,
+    evidenceScope: {
+      finalArtifactObserved: true,
+      selectedSourceCompared: false,
+      declaredReferenceCompared: false,
+      candidateSetCompared: false
+    }
+  }, 'final quality diagnostics must retain only the bounded protocol and input-scope facts');
+  const summaryWithFinalQualityDigest = agent.buildExecutionSummary(
+    'final_response',
+    1,
+    assertions
+  );
+  assert.deepStrictEqual(
+    summaryWithFinalQualityDigest.finalQualityModelProtocolDigest,
+    agent.finalQualityModelProtocolDigest,
+    'executionSummary must project the diagnostic digest without changing the quality result'
+  );
+
+  const noReceiptConfig = buildAgentTestConfig({
+    tools: [requireAgentTool('getDocumentInfo'), requireAgentTool('getAcceptanceSnapshot')],
+    maxIterations: 2,
+    openingCanvasObservationMode: 'none',
+    performanceBudget: config.performanceBudget
+  });
+  noReceiptConfig.modelId = codexJudgeModelId;
+  const noReceiptAgent = new Agent(
+    noReceiptConfig,
+    async () => ({ content: judgeResponse }),
+    async (toolName) => toolName === 'getAcceptanceSnapshot'
+      ? {
+          success: true,
+          hasDocument: true,
+          document: { id: documentId, width: 800, height: 800 },
+          historyStateRef,
+          summary: { totalLayers: layerHierarchy.length, truncated: false },
+          layers: layerHierarchy
+        }
+      : {
+          success: true,
+          documentId,
+          document: { id: documentId, width: 800, height: 800 },
+          historyStateRef
+        }
+  );
+  noReceiptAgent.currentTask = '帮我做一张商品主图';
+  noReceiptAgent.toolCallLog = baseLog;
+  noReceiptAgent.performanceLedger.visionCandidateCount = 5;
+  noReceiptAgent.latestDesignVisualJudgeSingleReviewSet = agent.latestDesignVisualJudgeSingleReviewSet;
+  const noReceiptAssertions = await noReceiptAgent.evaluateDesignQualityVlmAssertions('final_response');
+  assert.strictEqual(noReceiptAssertions, null, 'Codex 未签逐图回执时不得让文字评分进入 fresh_visual');
+  assert.strictEqual(noReceiptAgent.finalQualityModelProtocolDigest?.judgeStatus, 'unavailable');
+  assert.strictEqual(
+    noReceiptAgent.finalQualityModelProtocolDigest?.evidenceScope.finalArtifactObserved,
+    false,
+    '缺失逐图回执不得取得最终成品观察信用'
   );
 
   const summaryHostToolNames = [];
   const summaryAgent = new Agent(
     buildAgentTestConfig({
-      tools: [requireAgentTool('getDocumentInfo'), requireAgentTool('getLayerHierarchy')],
+      tools: [requireAgentTool('getDocumentInfo'), requireAgentTool('getAcceptanceSnapshot')],
       maxIterations: 2,
       openingCanvasObservationMode: 'none'
     }),
     async () => ({ content: 'x', stopReason: 'end_turn' }),
     async (toolName) => {
       summaryHostToolNames.push(toolName);
-      if (toolName === 'getDocumentInfo') {
+      if (toolName === 'getAcceptanceSnapshot') {
         return {
           success: true,
-          documentId,
+          hasDocument: true,
           document: { id: documentId, width: 800, height: 800 },
-          historyStateRef
+          historyStateRef,
+          summary: { totalLayers: layerHierarchy.length, truncated: false },
+          layers: layerHierarchy
         };
       }
       return {
@@ -3735,11 +7058,12 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   });
   assert.deepStrictEqual(
     summaryHostToolNames,
-    ['getDocumentInfo', 'getLayerHierarchy'],
-    'final_summary must collect the complete same-revision structure bundle'
+    ['getAcceptanceSnapshot'],
+    'final_summary must collect one complete same-revision AcceptanceSnapshot'
   );
   assert.deepStrictEqual(closedHistoryStateRef, historyStateRef);
   assert(finalSurface, 'final_summary must not report missing structure when same-revision dimensions and hierarchy both exist');
+  setDynamicModels(previousDynamicModels);
 }
 
 /**
@@ -3860,8 +7184,8 @@ async function assertPlanNeutralReflexionCarriesRequestPerformanceUsage() {
 }
 
 /**
- * 治理切片 4（GATE-SIMPLIFY-004）：视觉候选/分析/Judge 合并为单一运行级视觉池。
- * 池上限 = 候选硬上限 + 分析上限（总量不变、跨类互通）；(0,0) 零视觉语义不变。
+ * 治理切片 4（GATE-SIMPLIFY-004）：普通视觉候选/分析共用运行级视觉池；独立 Final Judge
+ * 继续使用单次事件硬上限。池上限 = 候选硬上限 + 分析上限；(0,0) 零视觉语义不变。
  */
 function assertRunLevelVisionPoolMergesKindBudgets() {
   const poolBudget = {
@@ -3883,12 +7207,29 @@ function assertRunLevelVisionPoolMergesKindBudgets() {
     async () => ({ content: 'x', stopReason: 'end_turn' }),
     async () => buildDocumentObservation()
   );
+  const mixedAgent = new Agent(
+    config,
+    async () => ({ content: 'x', stopReason: 'end_turn' }),
+    async () => buildDocumentObservation()
+  );
+  mixedAgent.performanceLedger.visionCandidateCount = 3;
+  mixedAgent.performanceLedger.visualAnalysisCount = 2;
+  assert.strictEqual(
+    mixedAgent.getPerformanceVisionCandidateLimit(),
+    4,
+    'pool remaining is incremental capacity and must be converted back to an absolute candidate limit'
+  );
+  assert.strictEqual(
+    mixedAgent.consumePerformanceVisionCandidate('mixed-pool-fourth-candidate'),
+    true,
+    'one remaining ordinary candidate must not be rejected by comparing cumulative count to pool remaining'
+  );
   // 池 = 6 + 2 = 8：连续 8 次视觉分析放行（旧契约第 3 次即拒绝），第 9 次拒绝。
   for (let index = 0; index < 8; index += 1) {
     agent.beginPerformanceModelCall(true, 'task');
   }
   assert.strictEqual(
-    agent.getRunLevelVisionBudgetLimit(),
+    agent.resolvePerformanceVisionBudget().runLevelLimit,
     8,
     'merged pool limit must equal candidate hard limit plus configured analysis limit'
   );
@@ -4074,11 +7415,44 @@ function assertExecutionAuthorizationBlockerCarriesUnlockOptions() {
   );
 }
 
+async function assertRuntimeOwnedSkillLedgerIsRequiredForVisibleReadNone() {
+  const executor = createGuardedAtomicToolExecutor({
+    executeTool: async () => ({ success: true, hasDocument: false })
+  });
+  const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+  await executor('getDocumentInfo', {});
+  const ledger = await completeRuntimeOwnedSkillToolLedgerScope(scope);
+  assert(ledger?.complete === true);
+  assert.strictEqual(ledger.entries.length, 1);
+  const result = attachSkillExecutionEffectReceipt({ success: true }, {
+    skillId: 'fixture.runtime-ledger-read',
+    executionStarted: true,
+    runtimeOwnedCompleteToolLedger: ledger
+  });
+  assert.strictEqual(readSkillExecutionEffectReceipt(result)?.effect, 'none');
+  const clonedLedgerResult = attachSkillExecutionEffectReceipt({ success: true }, {
+    skillId: 'fixture.cloned-ledger-read',
+    executionStarted: true,
+    runtimeOwnedCompleteToolLedger: JSON.parse(JSON.stringify(ledger))
+  });
+  assert.strictEqual(readSkillExecutionEffectReceipt(clonedLedgerResult)?.effect, 'unknown');
+}
+
 async function runBehaviorAssertions() {
+  await assertRuntimeOwnedSkillLedgerIsRequiredForVisibleReadNone();
+  await assertPostSkillExceptionRetainsRecoverableAgentOwner();
+  await assertChainedConfirmationKeepsSameRuntimeOwner();
+  await assertSucceededUnknownStillStagesRecovery();
+  await assertBeginFailureDoesNotReleaseRetainedWriter();
+  await assertFailedChainedSwapFallsBackToOldRecoveryOwner();
+  assertAbortToPersistentRecoveryPreservesCheckpointOwner();
+  await assertLostCheckpointPersistsOperationUnknown();
+  await assertPersistencePendingRetriesBeforeAgentResume();
   await assertToolResultRecoveryOptionsDoNotConstrainAgentToolChoice();
   assertDesignDirectionExplorationIsOptionalAndNonAuthoritative();
   assertExecutionSupplyReservePureAccounting();
   assertFinalQualityJudgeReservationRemovedButHardCapStays();
+  await assertFinalQualityDiagnosisRepairModelProtocol();
   await assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation();
   await assertPlanNeutralReflexionCarriesRequestPerformanceUsage();
   assertRunLevelVisionPoolMergesKindBudgets();
@@ -4089,6 +7463,7 @@ async function runBehaviorAssertions() {
   await assertExecutionSupplyReserveGatesObservationInLiveLoop();
   await assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates();
   await assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2();
+  await assertAgenticDeclarationActivatesArtifactContractWithoutStageRuntime();
   await assertSkuModeGetsOneStructuredRepair();
   await assertPureFirstToolResponseDoesNotCallAuxiliaryModel();
   await assertCorrectRecommendationCanCallSkillOnFirstTurn();

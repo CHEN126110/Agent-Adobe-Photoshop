@@ -1,6 +1,7 @@
 import { Tool, ToolSchema } from '../types';
 import { saveDocumentViaJsx } from '../../core/jsx-bridge';
 import { getEntryFromPath } from '../../core/file-url';
+import { normalizePhotoshopJpegQuality } from '../../core/jpeg-quality';
 import { createToolFailureResult } from '../../core/tool-error-normalizer';
 import {
     readActiveHistoryStateRef,
@@ -81,11 +82,11 @@ async function ensureDirectoryEntry(uxpFs: any, directoryPath: string): Promise<
     }
 }
 
-async function createSaveToken(
+async function createSaveTargetEntry(
     filePath: string,
     conflictPolicy: SaveConflictPolicy = 'overwrite',
     onCreated?: (entry: any) => void
-): Promise<string> {
+): Promise<any> {
     const normalizedPath = String(filePath || '').trim();
     if (!normalizedPath) {
         throw new Error('Missing save path');
@@ -100,7 +101,7 @@ async function createSaveToken(
             if (conflictPolicy === 'fail_if_exists') {
                 throw new Error(`save_target_exists: ${normalizedPath}`);
             }
-            return await uxpFs.createSessionToken(existingEntry);
+            return existingEntry;
         }
     } catch (error: any) {
         if (/folder, not a file|save_target_exists:/i.test(String(error?.message || error))) {
@@ -140,6 +141,15 @@ async function createSaveToken(
         throw error;
     }
     onCreated?.(fileEntry);
+    return fileEntry;
+}
+
+async function createSaveToken(
+    filePath: string,
+    conflictPolicy: SaveConflictPolicy = 'overwrite',
+    onCreated?: (entry: any) => void
+): Promise<string> {
+    const fileEntry = await createSaveTargetEntry(filePath, conflictPolicy, onCreated);
     return await uxpFs.createSessionToken(fileEntry);
 }
 
@@ -170,7 +180,11 @@ function buildSaveConflictFailure(
     };
 }
 
-function getSaveDescriptor(format: string, quality?: number): any {
+function getSaveDescriptor(
+    format: string,
+    quality?: number,
+    jpegFallbackQuality: number = 12
+): any {
     const normalized = detectFormat(format);
     switch (normalized) {
         case 'psd':
@@ -193,7 +207,7 @@ function getSaveDescriptor(format: string, quality?: number): any {
         case 'jpg':
             return {
                 _obj: 'JPEG',
-                quality: quality || 80
+                quality: normalizePhotoshopJpegQuality(quality, jpegFallbackQuality)
             };
         case 'tif':
         case 'tiff':
@@ -282,12 +296,6 @@ async function readEditableDocumentArtifactProof(
     };
 }
 
-function toJsxJpegQuality(quality: unknown, fallback = 80): number {
-    const raw = Number(quality);
-    const normalized = Number.isFinite(raw) ? Math.max(1, Math.min(100, Math.round(raw))) : fallback;
-    return Math.max(1, Math.min(12, Math.round(normalized / 100 * 12)));
-}
-
 function getRasterExportExtension(filePath: string): string {
     const ext = ((String(filePath || '').match(/\.([a-z0-9]+)$/i) || [])[1] || '').toLowerCase();
     if (ext === 'png') return 'png';
@@ -322,6 +330,36 @@ async function batchPlaySave(descriptor: any, options: { token?: string; dialog?
     await action.batchPlay([command], { synchronousExecution: true });
 }
 
+/**
+ * 以「存储副本」（asCopy=true）静默导出 JPEG/PNG。
+ *
+ * PS v22+ 不允许对带图层文档「存储为 JPEG」（只能「存储副本」）。batchPlay
+ * {_obj:'save', as:{_obj:'JPEG'}} 不带 copy 标志时 PS 无法静默执行，即使
+ * dialogOptions:'dontDisplay' 也会弹出「存储为」对话框，且对话框里没有 JPEG
+ * 选项、默认落在 PSD（2026-08-25 真机确证；已验证修法见
+ * core/design-asset-export.ts 的预览保存段）。DOM saveAs 的 asCopy=true 是
+ * 带图层文档静默出 JPEG 的唯一合法通道；PNG 的「存储为」在部分版本虽被允许，
+ * 一并走副本通道以消除版本差异。
+ */
+async function saveRasterCopyViaDom(
+    modalDocument: any,
+    fileEntry: any,
+    format: 'png' | 'jpg',
+    jpegQuality: number
+): Promise<void> {
+    if (format === 'jpg') {
+        if (typeof modalDocument?.saveAs?.jpg !== 'function') {
+            throw new Error('导出 JPEG 失败：当前 Photoshop 运行时缺少 Document.saveAs.jpg 接口，无法以「存储副本」方式静默导出。请确认 Photoshop 版本满足插件最低要求。');
+        }
+        await modalDocument.saveAs.jpg(fileEntry, { quality: jpegQuality }, true);
+        return;
+    }
+    if (typeof modalDocument?.saveAs?.png !== 'function') {
+        throw new Error('导出 PNG 失败：当前 Photoshop 运行时缺少 Document.saveAs.png 接口，无法以「存储副本」方式静默导出。请确认 Photoshop 版本满足插件最低要求。');
+    }
+    await modalDocument.saveAs.png(fileEntry, {}, true);
+}
+
 export class SaveDocumentTool implements Tool {
     name = 'saveDocument';
 
@@ -342,7 +380,7 @@ export class SaveDocumentTool implements Tool {
                 },
                 quality: {
                     type: 'number',
-                    description: 'JPEG quality (1-100).'
+                    description: 'JPEG quality: 1-12 uses Photoshop\'s native scale; 13-100 is percentage-style and maps to 1-12. Omit for native quality 12 (maximum).'
                 },
                 saveAs: {
                     type: 'boolean',
@@ -400,7 +438,7 @@ export class SaveDocumentTool implements Tool {
             if (requestedPath && (format === 'png' || format === 'jpg' || format === 'jpeg')) {
                 const jsxFormat = format === 'png' ? 'png' : 'jpg';
                 const jsxResult = await saveDocumentViaJsx(requestedPath, jsxFormat, doc.name, {
-                    jpegQuality: toJsxJpegQuality(params.quality),
+                    jpegQuality: normalizePhotoshopJpegQuality(params.quality, 12),
                     conflictPolicy
                 });
                 return {
@@ -523,7 +561,7 @@ export class QuickExportTool implements Tool {
                 },
                 quality: {
                     type: 'number',
-                    description: 'JPEG quality (1-100).'
+                    description: 'JPEG quality: 1-12 uses Photoshop\'s native scale; 13-100 is percentage-style and maps to 1-12. Omit for the existing percentage-style default 80 (native quality 10).'
                 },
                 exportLayers: {
                     type: 'boolean',
@@ -569,7 +607,7 @@ export class QuickExportTool implements Tool {
                 });
             }
 
-            const quality = params.quality || 80;
+            const quality = params.quality ?? 80;
             const suffix = params.suffix || '';
             const outputPath = String(params.outputPath || '').trim();
             const format = normalizeRasterExportFormat(params.format, outputPath);
@@ -630,7 +668,7 @@ export class QuickExportTool implements Tool {
         if (explicitFileFormat) {
             const filePath = appendSuffixBeforeExtension(outputPath, suffix);
             const jsxResult = await saveDocumentViaJsx(filePath, explicitFileFormat === 'png' ? 'png' : 'jpg', doc.name, {
-                jpegQuality: this.toJsxJpegQuality(quality)
+                jpegQuality: normalizePhotoshopJpegQuality(quality, 80)
             });
             return {
                 filePath,
@@ -643,7 +681,7 @@ export class QuickExportTool implements Tool {
         const fileName = `${docName}${suffix}${ext}`;
         const filePath = `${outputPath.replace(/[\\/]+$/, '')}\\${fileName}`;
         const jsxResult = await saveDocumentViaJsx(filePath, format === 'png' ? 'png' : 'jpg', doc.name, {
-            jpegQuality: this.toJsxJpegQuality(quality)
+            jpegQuality: normalizePhotoshopJpegQuality(quality, 80)
         });
         return {
             filePath,
@@ -651,10 +689,6 @@ export class QuickExportTool implements Tool {
         };
     }
 
-    private toJsxJpegQuality(quality: number): number {
-        const normalized = Number.isFinite(quality) ? Math.max(1, Math.min(100, Math.round(quality))) : 80;
-        return Math.max(1, Math.min(12, Math.round(normalized / 100 * 12)));
-    }
 }
 
 export class BatchExportTool implements Tool {
@@ -677,7 +711,7 @@ export class BatchExportTool implements Tool {
                 },
                 quality: {
                     type: 'number',
-                    description: 'JPEG quality (1-100).'
+                    description: 'JPEG quality: 1-12 uses Photoshop\'s native scale; 13-100 is percentage-style and maps to 1-12. Omit for the existing percentage-style default 85 (native quality 10).'
                 },
                 outputDirectory: {
                     type: 'string',
@@ -719,7 +753,7 @@ export class BatchExportTool implements Tool {
                 { width: 750, height: 0, suffix: '_detail' }
             ];
             const format = String(params.format || 'jpeg').toLowerCase();
-            const quality = params.quality || 85;
+            const quality = params.quality ?? 85;
             if (!Array.isArray(presets) || presets.length === 0) {
                 return { success: false, error: 'batchExport requires at least one preset' };
             }
@@ -757,7 +791,7 @@ export class BatchExportTool implements Tool {
                 const jsxResult = await saveDocumentViaJsx(filePath, ext === 'png' ? 'png' : 'jpg', doc.name, {
                     width: resolved.width,
                     height: resolved.height,
-                    jpegQuality: this.toJsxJpegQuality(quality)
+                    jpegQuality: normalizePhotoshopJpegQuality(quality, 85)
                 });
                 const candidateRef = jsxResult.sourceHistoryStateRef;
                 if (!candidateRef
@@ -816,10 +850,6 @@ export class BatchExportTool implements Tool {
         return { width: targetWidth, height: targetHeight };
     }
 
-    private toJsxJpegQuality(quality: number): number {
-        const normalized = Number.isFinite(quality) ? Math.max(1, Math.min(100, Math.round(quality))) : 85;
-        return Math.max(1, Math.min(12, Math.round(normalized / 100 * 12)));
-    }
 }
 
 export class SmartSaveTool implements Tool {
@@ -838,7 +868,7 @@ export class SmartSaveTool implements Tool {
                 },
                 exportQuality: {
                     type: 'number',
-                    description: 'JPEG export quality (1-100).'
+                    description: 'JPEG quality: 1-12 uses Photoshop\'s native scale; 13-100 is percentage-style and maps to 1-12.'
                 },
                 path: {
                     type: 'string',
@@ -881,8 +911,20 @@ export class SmartSaveTool implements Tool {
                 }
                 sourceHistoryStateRef = readActiveHistoryStateRef(modalDocument);
                 if (params.path) {
+                    if (saveFormat === 'jpg' || saveFormat === 'jpeg' || saveFormat === 'png') {
+                        // 带图层文档不能走 batchPlay save（会弹「存储为」对话框），见 saveRasterCopyViaDom
+                        const targetEntry = await createSaveTargetEntry(params.path);
+                        await saveRasterCopyViaDom(
+                            modalDocument,
+                            targetEntry,
+                            saveFormat === 'png' ? 'png' : 'jpg',
+                            normalizePhotoshopJpegQuality(params.exportQuality, 80)
+                        );
+                        savedPath = params.path;
+                        return;
+                    }
                     const token = await createSaveToken(params.path);
-                    await batchPlaySave(getSaveDescriptor(saveFormat, params.exportQuality), {
+                    await batchPlaySave(getSaveDescriptor(saveFormat, params.exportQuality, 80), {
                         token,
                         dialog: 'dontDisplay'
                     });
@@ -923,28 +965,21 @@ export class SmartSaveTool implements Tool {
                 const baseName = slashIndex >= 0 ? params.path.slice(slashIndex + 1) : params.path;
                 const exportBaseName = baseName.replace(/\.[^.]+$/, '') || doc.name.replace(/\.(psd|psb)$/i, '');
                 const exportPath = `${directoryPath}\\${exportBaseName}.${exportFormat}`;
-                const exportToken = await createSaveToken(exportPath);
+                const exportEntry = await createSaveTargetEntry(exportPath);
 
                 await core.executeAsModal(async () => {
-                    const exportSourceRef = readActiveHistoryStateRef(app.activeDocument);
+                    const exportModalDocument = app.activeDocument;
+                    const exportSourceRef = readActiveHistoryStateRef(exportModalDocument);
                     if (!sameHistoryStateRef(sourceHistoryStateRef, exportSourceRef)) {
                         throw new Error('Document version changed between smart save and export');
                     }
-                    await action.batchPlay([
-                        {
-                            _obj: 'save',
-                            as: exportFormat === 'png'
-                                ? { _obj: 'PNGFormat', method: { _enum: 'PNGMethod', _value: 'quick' } }
-                                : {
-                                    _obj: 'JPEG',
-                                    extendedQuality: params.exportQuality || 85,
-                                    matteColor: { _enum: 'matteColor', _value: 'white' }
-                                },
-                            in: { _kind: 'local', _path: exportToken },
-                            lowerCase: true,
-                            _options: { dialogOptions: 'dontDisplay' }
-                        }
-                    ], { synchronousExecution: true });
+                    // 带图层文档不能走 batchPlay save（会弹「存储为」对话框），见 saveRasterCopyViaDom
+                    await saveRasterCopyViaDom(
+                        exportModalDocument,
+                        exportEntry,
+                        exportFormat,
+                        normalizePhotoshopJpegQuality(params.exportQuality, 85)
+                    );
                     exportedPath = exportPath;
                 }, { commandName: `DesignEcho: Export ${String(params.exportFormat).toUpperCase()}` });
             }

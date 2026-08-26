@@ -56,7 +56,6 @@ export interface SmartScalingPreset {
     anchor: SmartScalingAnchor;
     cropPolicy: SmartScalingCropPolicy;
     visualBiasY: number;
-    preserveSubject: boolean;
     minScale: number;
     maxScale: number;
 }
@@ -132,13 +131,13 @@ function resolveAnchorPoint(box: SmartScalingBox, anchor: SmartScalingAnchor, vi
     const centerY = box.y + box.height / 2 + box.height * visualBiasY;
     switch (anchor) {
         case 'top-center':
-            return { x: centerX, y: box.y + box.height * 0.08 + box.height * visualBiasY };
+            return { x: centerX, y: box.y + box.height * visualBiasY };
         case 'bottom-center':
-            return { x: centerX, y: box.y + box.height * 0.92 + box.height * visualBiasY };
+            return { x: centerX, y: box.y + box.height + box.height * visualBiasY };
         case 'left-center':
-            return { x: box.x + box.width * 0.08, y: centerY };
+            return { x: box.x, y: centerY };
         case 'right-center':
-            return { x: box.x + box.width * 0.92, y: centerY };
+            return { x: box.x + box.width, y: centerY };
         case 'center':
         default:
             return { x: centerX, y: centerY };

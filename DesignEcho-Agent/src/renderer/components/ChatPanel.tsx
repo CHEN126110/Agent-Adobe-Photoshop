@@ -145,6 +145,7 @@ import {
     resolveAgentResponseInterruption
 } from '../../shared/agent-response-interruption';
 import { decideAgentRunResultDisposition } from '../../shared/agent-run-result-disposition';
+import { resolveAgentExecutionPresentationDisposition } from '../../shared/agent-completion-message-consistency';
 import type { BusinessSkillVisualObservationFeedback } from '../../shared/business-skill-visual-observation-feedback';
 import type { SkuDeliverySummary } from '../../shared/sku-delivery-summary';
 import {
@@ -280,6 +281,7 @@ import {
 import { buildConversationHistoryBudget } from '../../shared/agent-context-allocation';
 import { selectAgentConversationContext } from '../../shared/agent-conversation-context';
 import { buildAgentContextWindowBudget } from '../../shared/agent-performance-policy';
+import { MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS } from '../../shared/debug-bridge-chat';
 import { getDefaultAgentTools } from '../services/agent-runtime/tool-schemas';
 
 type PhotoshopMcpToolsListPayload = {
@@ -4954,15 +4956,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             if (chatSubmissionInFlightRef.current || useAppStore.getState().isLoading) {
                 throw new Error('当前已有设计任务正在执行，请等待完成或先停止当前任务。');
             }
-            const timeoutMs = Math.max(1000, Math.min(Number(request.timeoutMs) || 60000, 300000));
+            const expectedProjectPath = String(request?.expectedProjectPath || '')
+                .trim()
+                .replace(/\\/g, '/')
+                .replace(/\/+$/, '')
+                .toLowerCase();
+            const currentProjectPath = String(useAppStore.getState().currentProject?.path || '')
+                .trim()
+                .replace(/\\/g, '/')
+                .replace(/\/+$/, '')
+                .toLowerCase();
+            if (expectedProjectPath) {
+                if (!currentProjectPath || currentProjectPath !== expectedProjectPath) {
+                    throw new Error('当前项目与设计可靠性测试 fixture 不一致，已在提交模型和 Photoshop 写入前停止。');
+                }
+            }
+            const timeoutMs = Math.max(
+                1000,
+                Math.min(Number(request.timeoutMs) || 60000, MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS)
+            );
             if (request.resetConversation) {
                 resetChatTestConversation();
             }
             const submitAndWait = async () => {
                 const before = buildChatTestSnapshot();
+                const submittedState = useAppStore.getState();
+                const submittedModelId = String(submittedState.modelPreferences?.primaryModel || '').trim();
+                const submittedModel = getModelById(submittedModelId);
                 const sendPromise = handleSend({
                     text,
                     image: null,
+                    expectedProjectPath: request.expectedProjectPath,
                     publicPlanConfirmationSourceMessageId: request.publicPlanConfirmationSourceMessageId,
                     publicPlanConfirmationRequestId: request.publicPlanConfirmationRequestId,
                     publicPlanDisposableLiveAdapter: request.publicPlanDisposableLiveAdapter
@@ -4971,7 +4995,39 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     console.warn('[DebugBridgeChatSubmit] submit send failed:', error);
                 });
                 await waitForChatRunStartOrAssistant(before.messageCount, Math.min(timeoutMs, 5000));
-                return waitForChatIdle(timeoutMs);
+                const snapshot = await waitForChatIdle(timeoutMs);
+                const completedState = useAppStore.getState();
+                const completedProjectPath = String(completedState.currentProject?.path || '')
+                    .trim()
+                    .replace(/\\/g, '/')
+                    .replace(/\/+$/, '')
+                    .toLowerCase();
+                const completedModelId = String(completedState.modelPreferences?.primaryModel || '').trim();
+                const completedModel = getModelById(completedModelId);
+                return {
+                    snapshot,
+                    receipt: {
+                        version: 'debug-bridge-chat-submit-receipt/v1',
+                        submittedProjectPath: currentProjectPath,
+                        completedProjectPath,
+                        expectedProjectMatchedAtSubmission: Boolean(
+                            expectedProjectPath && currentProjectPath === expectedProjectPath
+                        ),
+                        projectUnchangedThroughCompletion: Boolean(
+                            currentProjectPath && completedProjectPath === currentProjectPath
+                        ),
+                        submittedModelId,
+                        submittedApiModelId: String(submittedModel?.apiModelId || '').trim(),
+                        completedModelId,
+                        completedApiModelId: String(completedModel?.apiModelId || '').trim(),
+                        provider: String(submittedModel?.provider || '').trim(),
+                        modelUnchangedThroughCompletion: Boolean(
+                            submittedModelId && completedModelId === submittedModelId
+                        ),
+                        conversationId: String(completedState.currentConversationId || '').trim(),
+                        completedAt: new Date().toISOString()
+                    }
+                };
             };
             if (request.disableSkillBridges === true) {
                 const { runWithSkillBridgesSuppressed } = await import('../services/skill-executors/skill-tools');
@@ -6394,6 +6450,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             const pendingInteractiveContinuation = (result as any).data
                 ?.pendingInteractiveContinuation as PendingInteractiveContinuation | undefined;
             const conversationalModelFailure = (result as any).data?.conversationalModelFailure;
+            const executionPresentationDisposition = resolveAgentExecutionPresentationDisposition({
+                resultSuccess: result.success === true,
+                executionStatus: executionSummary?.status
+            });
+            const presentsResult = executionPresentationDisposition === 'result';
 
             if (!resultWasCancelled && runOptions?.publicPlanConfirmationSourceMessageId && agentTaskPublicPlanApprovalRecord) {
                 if (runConversationId) {
@@ -6411,7 +6472,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             // 否则 UI 会先显示“全部成功”，随后又给出未完成卡片。
             const finalizedCollectedSteps = collectedSteps.map((step) => {
                 if (step.status !== 'running' || resultWasCancelled) return step;
-                const status = result.success ? 'success' as const : 'error' as const;
+                const status = presentsResult ? 'success' as const : 'error' as const;
                 updateStep(step.id, { status });
                 return { ...step, status };
             });
@@ -6427,7 +6488,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     executionSummary,
                     agentTaskPlanPresentation
                 });
-            } else if (result.success) {
+            } else if (presentsResult) {
                 let responseContent = resultVisibleMessage;
                 let generatedImage: { data: string; type: string } | undefined;
                 const businessVisualFeedbackContent = formatAssistantBusinessVisualFeedbackContent({

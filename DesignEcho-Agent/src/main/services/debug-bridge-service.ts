@@ -83,6 +83,8 @@ export interface DebugBridgeChatSubmitInput {
     timeoutMs?: number;
     resetConversation?: boolean;
     disableSkillBridges?: boolean;
+    /** 开发评测写前绑定；Renderer 必须与当前项目精确匹配，否则不提交消息。 */
+    expectedProjectPath?: string;
     publicPlanConfirmationSourceMessageId?: string;
     publicPlanConfirmationRequestId?: string;
     publicPlanDisposableLiveAdapter?: boolean;
@@ -387,6 +389,9 @@ export class DebugBridgeService {
                 timeoutMs: Number(body.timeoutMs) || undefined,
                 resetConversation: body.resetConversation === true,
                 disableSkillBridges: body.disableSkillBridges === true,
+                expectedProjectPath: typeof body.expectedProjectPath === 'string'
+                    ? body.expectedProjectPath.trim().slice(0, 1024)
+                    : undefined,
                 publicPlanConfirmationSourceMessageId: typeof body.publicPlanConfirmationSourceMessageId === 'string'
                     ? body.publicPlanConfirmationSourceMessageId
                     : undefined,

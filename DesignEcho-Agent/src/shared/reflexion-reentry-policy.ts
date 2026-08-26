@@ -323,6 +323,14 @@ export interface WarningOnlyNeedsReviewInput {
     blockers?: readonly unknown[];
 }
 
+export interface WarningOnlyNeedsReviewReflexionBoundaryInput
+    extends WarningOnlyNeedsReviewInput {
+    /** 审美诊断只供人工复核或显式的局部优化使用，不能签发失败恢复。 */
+    hasActionableVlmDiagnosis?: boolean;
+    /** 仅指 Manifest 已声明且可确定性补齐的必需检查，不包含审美诊断。 */
+    hasActionableRequiredProfileIssue?: boolean;
+}
+
 /**
  * `needs_review` 表示现有产物需要人工或画面复核，并不等同于质量失败。
  * 当没有 blocker 时，把原始任务从头重放会重复 mutation，还可能用第二轮失败覆盖首轮成果；
@@ -331,6 +339,17 @@ export interface WarningOnlyNeedsReviewInput {
 export function isWarningOnlyNeedsReviewTerminal(input: WarningOnlyNeedsReviewInput): boolean {
     if (String(input.status || '').trim() !== 'needs_review') return false;
     return !(input.blockers || []).some((item) => String(item || '').trim().length > 0);
+}
+
+/**
+ * warning-only `needs_review` 不授权重放原任务。只有缺少 Manifest 必需检查时，
+ * Runtime 才可生成限定在补证阶段的 handoff；审美诊断本身不构成失败恢复授权。
+ */
+export function shouldStopWarningOnlyNeedsReviewReflexion(
+    input: WarningOnlyNeedsReviewReflexionBoundaryInput
+): boolean {
+    return isWarningOnlyNeedsReviewTerminal(input)
+        && input.hasActionableRequiredProfileIssue !== true;
 }
 
 function compact(value: unknown): string {

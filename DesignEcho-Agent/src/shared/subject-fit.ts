@@ -35,12 +35,12 @@ export interface SubjectFitInput {
     layerBounds: SubjectFitRect;
     /** 期望主体呈现的目标区域（文档坐标） */
     targetRegion: SubjectFitRegion;
-    /** 主体占目标区域的比例（contain 语义），默认 0.9；有效范围 (0,1] */
-    subjectFillRatio?: number;
+    /** Agent 显式选择的主体 contain 占比；有效范围 (0,1]，不得由执行层补审美默认。 */
+    subjectFillRatio: number;
     /** 相对当前大小的放大上限（防画质崩），默认 3 */
     maxUpscaleRatio?: number;
-    /** 主体在目标区域中的语义锚点；默认 center */
-    anchor?: SmartScalingAnchor;
+    /** Agent 显式选择的主体语义锚点。 */
+    anchor: SmartScalingAnchor;
     /** 目标区域内的视觉重心纵向偏移（相对区域高度，建议范围 -0.35~0.35） */
     visualBiasY?: number;
     /** 画布尺寸（可选）：给出时对图框投影越出画布做提示 */
@@ -129,13 +129,13 @@ function resolveAnchorPoint(
     const centerY = rect.top + height / 2 + height * visualBiasY;
     switch (anchor) {
         case 'top-center':
-            return { x: centerX, y: rect.top + height * 0.08 + height * visualBiasY };
+            return { x: centerX, y: rect.top + height * visualBiasY };
         case 'bottom-center':
-            return { x: centerX, y: rect.top + height * 0.92 + height * visualBiasY };
+            return { x: centerX, y: rect.bottom + height * visualBiasY };
         case 'left-center':
-            return { x: rect.left + width * 0.08, y: centerY };
+            return { x: rect.left, y: centerY };
         case 'right-center':
-            return { x: rect.left + width * 0.92, y: centerY };
+            return { x: rect.right, y: centerY };
         case 'center':
         default:
             return { x: centerX, y: centerY };
@@ -193,12 +193,30 @@ export function computeSubjectFitToRegion(input: SubjectFitInput): SubjectFitPla
         warnings.push('主体面积不足图框的 0.2%，主体检测结果可能不可靠——建议先用快照人工确认主体框再执行。');
     }
 
-    const fillRatioRaw = Number(input.subjectFillRatio);
-    const fillRatio = Number.isFinite(fillRatioRaw) && fillRatioRaw > 0 && fillRatioRaw <= 1 ? fillRatioRaw : 0.9;
+    const fillRatio = Number(input.subjectFillRatio);
+    if (!Number.isFinite(fillRatio) || fillRatio <= 0 || fillRatio > 1) {
+        return {
+            ok: false,
+            reason: 'subjectFillRatio 无效：需要由 Agent 显式声明 (0,1] 的主体 contain 占比，执行层不会补固定审美比例。'
+        };
+    }
     const maxUpscale = Number.isFinite(Number(input.maxUpscaleRatio)) && Number(input.maxUpscaleRatio) > 0
         ? Number(input.maxUpscaleRatio)
         : 3;
-    const anchor = input.anchor || 'center';
+    const anchors: readonly SmartScalingAnchor[] = [
+        'center',
+        'top-center',
+        'bottom-center',
+        'left-center',
+        'right-center'
+    ];
+    if (!anchors.includes(input.anchor)) {
+        return {
+            ok: false,
+            reason: 'anchor 无效：需要由 Agent 显式声明 center / top-center / bottom-center / left-center / right-center。'
+        };
+    }
+    const anchor = input.anchor;
     const visualBiasY = Number.isFinite(Number(input.visualBiasY))
         ? clamp(Number(input.visualBiasY), -0.35, 0.35)
         : 0;
@@ -289,14 +307,14 @@ export function verifySubjectFitResult(input: {
     actualSubjectBounds: SubjectFitRect;
     targetRegion: SubjectFitRegion;
     requestedFillRatio: number;
-    anchor?: SmartScalingAnchor;
+    anchor: SmartScalingAnchor;
     visualBiasY?: number;
     projectedSubject: SubjectFitRect;
 }): SubjectFitVerification {
     const warnings: string[] = [];
     const targetRect = regionAsRect(input.targetRegion);
     const actualSubject = input.actualSubjectBounds;
-    const anchor = input.anchor || 'center';
+    const anchor = input.anchor;
     const visualBiasY = Number.isFinite(Number(input.visualBiasY))
         ? clamp(Number(input.visualBiasY), -0.35, 0.35)
         : 0;
@@ -326,7 +344,29 @@ export function verifySubjectFitResult(input: {
         rectWidth(actualSubject) / input.targetRegion.width,
         rectHeight(actualSubject) / input.targetRegion.height
     );
-    const requestedFillRatio = clamp(Number(input.requestedFillRatio) || 0.9, 0.01, 1);
+    const requestedFillRatioRaw = Number(input.requestedFillRatio);
+    const requestedFillRatio = Number.isFinite(requestedFillRatioRaw)
+        ? clamp(requestedFillRatioRaw, 0.01, 1)
+        : Number.NaN;
+    if (!Number.isFinite(requestedFillRatioRaw)
+        || requestedFillRatioRaw <= 0
+        || requestedFillRatioRaw > 1) {
+        return {
+            status: 'failed',
+            actualFillRatio: round3(actualFillRatio),
+            fillDeviation: 1,
+            subjectVisibleRatio: 0,
+            anchorDeviationPx: Number.POSITIVE_INFINITY,
+            projectedBoundsDeviationPx: Number.POSITIVE_INFINITY,
+            tolerances: {
+                fill: fillTolerance,
+                anchorPx: round1(anchorTolerancePx),
+                projectedBoundsPx: round1(projectedBoundsTolerancePx)
+            },
+            warnings: ['requestedFillRatio 无效，无法验证是否达到 Agent 声明的主体占比。'],
+            limitation: '缺少有效的设计意图，几何验收不能冒充设计质量通过。'
+        };
+    }
     const fillDeviation = Math.abs(actualFillRatio - requestedFillRatio);
     const subjectArea = rectWidth(actualSubject) * rectHeight(actualSubject);
     const subjectVisibleRatio = subjectArea > 0

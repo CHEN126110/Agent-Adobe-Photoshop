@@ -3,6 +3,7 @@ export interface AgentProtocolMessageLike {
     toolCalls?: unknown[];
     toolResults?: unknown[];
     reasoningContent?: unknown;
+    contentBlocks?: Array<{ type?: string }>;
 }
 
 export type AgentModelTransport = 'plain_chat' | 'provider_adapter';
@@ -35,7 +36,14 @@ export function requiresAgentProtocolTransport(
 }
 
 export function resolveAgentModelTransport(input: AgentModelTransportInput): AgentModelTransport {
-    if (input.toolCount > 0 || input.hasProviderNativeTools) {
+    const hasVisualContent = input.messages.some((message) => (
+        Array.isArray(message.contentBlocks)
+        && message.contentBlocks.some((block) => block?.type === 'image')
+    ));
+    // 多模态必须经过 provider adapter：plain chat 的 provider 私有实现对 system role 与
+    // image parts 处理并不一致，曾出现 DeepSeek 静默删图、Anthropic 把 system 塞进
+    // messages 后拒绝。tools=[] 只表示本轮不需要函数调用，不表示可以降级成文本通道。
+    if (hasVisualContent || input.toolCount > 0 || input.hasProviderNativeTools) {
         return 'provider_adapter';
     }
     return requiresAgentProtocolTransport(input.messages)

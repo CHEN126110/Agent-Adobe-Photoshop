@@ -5,6 +5,11 @@ import {
     type InteractiveCardSubmission
 } from './interactive-card-contract';
 import type { PendingInteractiveContinuation } from './pending-interactive-continuation';
+import {
+    isSkillExecutionReceiptBoundToLineage,
+    readSkillExecutionEffectReceipt,
+    type SkillExecutionRuntimeLineage
+} from './skill-execution-effect';
 import { getSkillById } from './skills/skill-declarations';
 
 export const INTERACTIVE_CONTINUATION_OPERATION_VERSION = 'interactive-continuation-operation/v0' as const;
@@ -114,8 +119,19 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * 抛异常、旧 Skill 没有摘要或计数无效时一律保持 unknown，避免误放行重复执行。
  */
 export function resolveInteractiveContinuationMutationState(
-    result: unknown
+    result: unknown,
+    expectedLineage?: SkillExecutionRuntimeLineage
 ): InteractiveContinuationMutationState {
+    const receipt = readSkillExecutionEffectReceipt(result);
+    if (expectedLineage && !isSkillExecutionReceiptBoundToLineage(receipt, expectedLineage)) {
+        return 'unknown';
+    }
+    if (receipt?.effect === 'none') return 'none';
+    if (receipt?.effect === 'applied' || receipt?.effect === 'partial') return 'observed';
+    if (receipt?.effect === 'unknown') return 'unknown';
+
+    // 兼容尚未经过统一 Skill 出口的旧 autonomous-agent 结果。新旧结果都只消费
+    // 结构化计数，不从 message / error / assistant 文案猜测是否写入。
     const root = asRecord(result);
     const data = asRecord(root?.data);
     const summary = asRecord(root?.executionSummary) || asRecord(data?.executionSummary);
@@ -290,7 +306,10 @@ export function buildClaimedInteractiveContinuationOperationRecord(input: {
         continuation: input.claim.continuation,
         continuationFingerprint: buildInteractiveContinuationEnvelopeFingerprint(input.claim.continuation),
         claimedAt: input.now,
-        updatedAt: input.now
+        updatedAt: input.now,
+        // 提交卡片和登记账本本身不会修改 Photoshop。真正叶子执行开始后会清除此
+        // 暂态事实，再由统一 SkillExecutionEffect 收据结算最终 mutationState。
+        mutationState: 'none'
     };
 }
 
@@ -309,6 +328,7 @@ export function markInteractiveContinuationOperationRunning(input: {
         runningExecutionRunId: cleanIdentity(input.executionRunId),
         startedAt: input.now,
         updatedAt: input.now,
+        mutationState: undefined,
         uncertaintyReason: undefined
     };
 }

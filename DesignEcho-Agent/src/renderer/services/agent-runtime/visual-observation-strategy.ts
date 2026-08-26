@@ -46,6 +46,15 @@ export interface AgentVisualObservation {
     sourceKind?: string;
     observationIdentity?: VisualObservationIdentity;
     observationKey?: string;
+    /**
+     * Runtime 对实际加入主模型请求的 presentation bytes 计算的 SHA-256。预算降级缩图时
+     * 必须摘要缩图而不是 Tool 原图；只用于同一 run 内重放核对，不保存原始像素。
+     */
+    presentedPixelSha256?: string;
+    /** 像素被加入哪一个主模型请求；不是“已看懂”的声明。 */
+    presentedModelTurn?: number;
+    /** 主模型完成了包含该像素的请求；用于区分已投递与预算跳过/请求失败。 */
+    consumedModelTurn?: number;
     reviewDecision?: VisualObservationReviewDecision;
     reason?:
         | 'no_visual_capability'
@@ -351,6 +360,9 @@ export function writeAgentVisualObservation(
         ...(reviewDecision ? { reviewDecision, reviewed: true } : {}),
         ...(observationKey && !reviewDecision ? { reviewed: false } : {})
     };
+    // Tool/Skill 或 JavaScript 调用方不能随 observation 参数自报实际 presentation 摘要；
+    // 只有下方窄签发函数在模型请求组装点拿到真实 bytes 后可以写入。
+    delete record.presentedPixelSha256;
     const output = toolResult as Record<string, unknown>;
     const previous = Array.isArray(output.agentVisualObservations)
         ? (output.agentVisualObservations as unknown[])
@@ -380,6 +392,46 @@ export function writeAgentVisualObservation(
     return record;
 }
 
+function normalizePresentedVisualBytes(value: unknown): string {
+    const data = String(value || '')
+        .replace(/^data:image\/(?:png|jpeg|webp);base64,/iu, '')
+        .replace(/\s+/gu, '');
+    if (data.length < 128 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(data)) return '';
+    return data;
+}
+
+/**
+ * 在主模型请求组装点，对真正加入 contentBlocks 的图像 bytes 签发摘要。
+ *
+ * 该函数刻意不从 Tool result 重新提取原图：预算降级时主模型看到的是缩图，原图摘要
+ * 会产生虚假的 exact replay 结论。调用方必须传入最终 presentation bytes；Runtime owner、
+ * observationKey 和主模型策略任一不匹配时失败关闭。
+ */
+export function writeAgentVisualObservationPresentationDigest(input: {
+    toolResult: unknown;
+    observationKey: string;
+    presentedImageData: string;
+}): string | undefined {
+    if (!input.toolResult
+        || typeof input.toolResult !== 'object'
+        || !RUNTIME_VISUAL_ANNOTATION_OWNERS.has(input.toolResult)) return undefined;
+    const observationKey = String(input.observationKey || '').trim();
+    const observations = readAgentVisualObservations(input.toolResult).filter((observation) => (
+        observation.observationKey === observationKey
+        && observation.observer === 'primary_model'
+        && observation.strategy === 'primary-self'
+        && observation.status === 'presented_to_primary'
+    ));
+    const presentedImageData = normalizePresentedVisualBytes(input.presentedImageData);
+    if (!observationKey || observations.length !== 1 || !presentedImageData) return undefined;
+    const digest = sha256Hex(presentedImageData);
+    if (observations[0].presentedPixelSha256) {
+        return observations[0].presentedPixelSha256 === digest ? digest : undefined;
+    }
+    observations[0].presentedPixelSha256 = digest;
+    return digest;
+}
+
 export function readAgentVisualObservations(toolResult: unknown): AgentVisualObservation[] {
     if (!toolResult
         || typeof toolResult !== 'object'
@@ -394,6 +446,28 @@ export function readAgentVisualObservations(toolResult: unknown): AgentVisualObs
     return legacy?.version === 'agent-visual-observation/v1'
         ? [legacy as AgentVisualObservation]
         : [];
+}
+
+/**
+ * Provider 完整返回后，为本次确实投递给主模型的 Runtime-owned 观察记录写入消费回合。
+ * 这只证明模型请求包含该像素，不代表审美通过，也不替代结构化 review decision。
+ */
+export function markPrimaryVisualObservationsConsumed(input: {
+    observations: readonly AgentVisualObservation[];
+    modelTurn: number;
+    consumed: boolean;
+}): void {
+    if (!input.consumed || !Number.isSafeInteger(input.modelTurn) || input.modelTurn < 0) return;
+    for (const observation of input.observations) {
+        if (observation.status !== 'presented_to_primary'
+            || observation.observer !== 'primary_model'
+            || observation.strategy !== 'primary-self'
+            || !Number.isSafeInteger(observation.presentedModelTurn)
+            || (observation.presentedModelTurn as number) > input.modelTurn) {
+            continue;
+        }
+        observation.consumedModelTurn = input.modelTurn;
+    }
 }
 
 export function readAgentVisualObservation(toolResult: unknown): AgentVisualObservation | undefined {

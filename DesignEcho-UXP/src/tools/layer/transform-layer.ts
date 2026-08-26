@@ -5,10 +5,21 @@
  */
 
 import {
+    buildPhotoshopTransactionMutationOutcome,
     photoshopTransactionRunner,
     type PhotoshopTransactionPreparation
 } from '../../core/photoshop-transaction-runner';
 import { createToolFailureResult } from '../../core/tool-error-normalizer';
+import {
+    measureImageTargetFitOutcome,
+    normalizeImageTargetBounds,
+    resolveImageTargetAlignmentBounds,
+    resolveImageTargetFitPlan,
+    type ImageTargetAnchor,
+    type ImageTargetFitOutcome,
+    type ImageTargetFocalPoint,
+    type ImageTargetRect
+} from '../../core/image-target-fit';
 import { Tool, ToolExecutionContext, ToolSchema } from '../types';
 
 const { app, core, action } = require('photoshop');
@@ -25,58 +36,131 @@ export interface TransformTargetBoundsParam {
     height?: number | null;
 }
 
-// ---------------------------------------------------------------------------
-// targetBounds 适配算法
-// 注意：以下 toFiniteNumber / normalizeTargetBounds / getLayerPixelSize /
-// transformLayerPercent / fitLayerToTargetBounds 与
-// src/tools/image/place-image.ts 中的同名实现保持一致（UXP 端暂无共享几何 util 惯例）。
-// 修改任意一处算法时，必须同步另一处，并同步 Agent 侧验收断言
-// （DesignEcho-Agent/src/shared/acceptance/tool-acceptance.ts 的 targetBounds 尺寸断言）。
-// ---------------------------------------------------------------------------
-
-function toFiniteNumber(value: any): number | undefined {
-    // null/undefined 绝不映射为 0：模型高频把没用的字段填 null（如 {x:100, left:null}），
-    // Number(null)=0 会抢在 ?? 回退链之前生效，把图层错落到 (0,0)。
-    if (value === null || value === undefined) return undefined;
-    if (typeof value === 'number') {
-        return Number.isFinite(value) ? value : undefined;
-    }
-    if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (trimmed === '') return undefined;
-        const parsed = Number(trimmed);
-        return Number.isFinite(parsed) ? parsed : undefined;
-    }
-    // 布尔/数组等其他类型不做隐式强转（Number(false)=0、Number([80])=80 都是意外语义）。
-    return undefined;
+interface TransformLayerParams {
+    layerId?: number;
+    scale?: { x: number; y: number };
+    scaleUniform?: number;
+    rotate?: number;
+    flipHorizontal?: boolean;
+    flipVertical?: boolean;
+    fitToCanvas?: boolean;
+    fitPercentage?: number;
+    targetBounds?: TransformTargetBoundsParam;
+    targetFit?: 'contain' | 'cover' | 'fill';
+    targetAnchor?: ImageTargetAnchor;
+    focalPoint?: ImageTargetFocalPoint;
 }
 
-function normalizeTargetBounds(value: TransformTargetBoundsParam | undefined): { left: number; top: number; width: number; height: number } | null {
-    if (!value || typeof value !== 'object') return null;
-    const left = toFiniteNumber(value.left) ?? toFiniteNumber(value.x);
-    const top = toFiniteNumber(value.top) ?? toFiniteNumber(value.y);
-    const width = toFiniteNumber(value.width);
-    const height = toFiniteNumber(value.height);
-    const right = toFiniteNumber(value.right);
-    const bottom = toFiniteNumber(value.bottom);
-    const resolvedWidth = width ?? (right !== undefined && left !== undefined ? right - left : undefined);
-    const resolvedHeight = height ?? (bottom !== undefined && top !== undefined ? bottom - top : undefined);
-    if (left === undefined || top === undefined || resolvedWidth === undefined || resolvedHeight === undefined) return null;
-    if (resolvedWidth <= 0 || resolvedHeight <= 0) return null;
-    return { left, top, width: resolvedWidth, height: resolvedHeight };
+interface TransformLayerState {
+    documentId: number;
+    layerId: number;
+    parentId: number | null;
+    layerName: string;
+    bounds: ImageTargetRect;
 }
 
-function getLayerPixelSize(layer: any): { left: number; top: number; width: number; height: number } {
+interface TransformTargetReceipt {
+    placement: ImageTargetFitOutcome;
+}
+
+interface TransformLayerResult extends Record<string, unknown> {
+    success: boolean;
+    code?: string;
+    message?: string;
+    layerId?: number;
+    layerName?: string;
+    originalSize?: { width: number; height: number };
+    newSize?: { width: number; height: number };
+    newBounds?: { left: number; top: number; width: number; height: number };
+    placement?: ImageTargetFitOutcome;
+    error?: string;
+    errorDetails?: unknown;
+}
+
+interface TransformLayerLocation {
+    layer: any;
+    parentId: number | null;
+}
+
+function getLayerPixelSize(layer: any): ImageTargetRect {
     const bounds = layer?.boundsNoEffects || layer?.bounds;
-    const left = Number(bounds.left || 0);
-    const top = Number(bounds.top || 0);
-    const right = Number(bounds.right || left);
-    const bottom = Number(bounds.bottom || top);
+    const left = Number(bounds?.left);
+    const top = Number(bounds?.top);
+    const right = Number(bounds?.right);
+    const bottom = Number(bounds?.bottom);
+    if (![left, top, right, bottom].every(Number.isFinite)
+        || right <= left || bottom <= top) {
+        throw new Error('变换图层适配失败：无法读取有效的图层 bounds。');
+    }
     return {
         left,
         top,
-        width: Math.max(1, right - left),
-        height: Math.max(1, bottom - top)
+        width: right - left,
+        height: bottom - top
+    };
+}
+
+function findTransformLayerLocation(
+    container: any,
+    layerId: number,
+    parentId: number | null = null
+): TransformLayerLocation | undefined {
+    for (const layer of Array.from(container?.layers || []) as any[]) {
+        if (Number(layer?.id) === layerId) return { layer, parentId };
+        if (layer?.layers) {
+            const nested = findTransformLayerLocation(layer, layerId, Number(layer.id));
+            if (nested) return nested;
+        }
+    }
+    return undefined;
+}
+
+function readTransformLayerState(document: any, layerId: number): TransformLayerState {
+    const location = findTransformLayerLocation(document, layerId);
+    if (!location) {
+        throw new Error(`变换图层读回失败：未找到图层 ID ${layerId}。`);
+    }
+    return {
+        documentId: Number(document.id),
+        layerId,
+        parentId: location.parentId,
+        layerName: String(location.layer?.name || ''),
+        bounds: getLayerPixelSize(location.layer)
+    };
+}
+
+function closeTransformValue(left: number, right: number, tolerance = 0.05): boolean {
+    return Math.abs(left - right) <= tolerance;
+}
+
+function sameTransformLayerTarget(
+    left: TransformLayerState,
+    right: TransformLayerState
+): boolean {
+    return left.documentId === right.documentId
+        && left.layerId === right.layerId
+        && left.parentId === right.parentId
+        && left.layerName === right.layerName;
+}
+
+function sameTransformLayerBounds(left: ImageTargetRect, right: ImageTargetRect): boolean {
+    return closeTransformValue(left.left, right.left)
+        && closeTransformValue(left.top, right.top)
+        && closeTransformValue(left.width, right.width)
+        && closeTransformValue(left.height, right.height);
+}
+
+function buildTransformLayerFailure(
+    params: TransformLayerParams,
+    code: string,
+    error: string
+): TransformLayerResult {
+    const failure = createToolFailureResult({ toolName: 'transformLayer', error, params });
+    return {
+        ...failure,
+        success: false,
+        code,
+        error
     };
 }
 
@@ -115,32 +199,94 @@ async function transformLayerPercent(widthPercent: number, heightPercent: number
 
 /**
  * 把图层缩放并移动到目标区域（必须在 executeAsModal 内调用，且目标图层已被选中）。
- * 与 place-image.ts 的 fitLayerToTargetBounds 保持一致实现，见文件头注释。
+ * 几何由 core/image-target-fit 统一求解；本函数只负责执行 Photoshop 变换并读回事实。
  */
 async function fitLayerToTargetBounds(
     layer: any,
     target: { left: number; top: number; width: number; height: number },
-    fit: 'contain' | 'cover' | 'fill' = 'contain'
-): Promise<void> {
+    fit: 'contain' | 'cover' | 'fill' | undefined,
+    targetAnchor: ImageTargetAnchor | undefined,
+    focalPoint: ImageTargetFocalPoint | undefined
+): Promise<ImageTargetFitOutcome> {
     const before = getLayerPixelSize(layer);
-    const scaleX = (target.width / before.width) * 100;
-    const scaleY = (target.height / before.height) * 100;
-    const normalizedFit = fit === 'cover' || fit === 'fill' ? fit : 'contain';
-    const widthPercent = normalizedFit === 'fill'
-        ? scaleX
-        : normalizedFit === 'cover'
-            ? Math.max(scaleX, scaleY)
-            : Math.min(scaleX, scaleY);
-    const heightPercent = normalizedFit === 'fill' ? scaleY : widthPercent;
+    const scalePlan = resolveImageTargetFitPlan({
+        sourceBounds: before,
+        targetBounds: target,
+        fit,
+        targetAnchor,
+        focalPoint
+    });
 
-    if (Math.abs(widthPercent - 100) > 0.05 || Math.abs(heightPercent - 100) > 0.05) {
-        await transformLayerPercent(widthPercent, heightPercent);
+    if (Math.abs(scalePlan.widthPercent - 100) > 0.05
+        || Math.abs(scalePlan.heightPercent - 100) > 0.05) {
+        await transformLayerPercent(scalePlan.widthPercent, scalePlan.heightPercent);
     }
 
-    const after = getLayerPixelSize(layer);
-    const targetX = normalizedFit === 'fill' ? target.left : target.left + (target.width - after.width) / 2;
-    const targetY = normalizedFit === 'fill' ? target.top : target.top + (target.height - after.height) / 2;
-    await translateLayerWithoutNativeMove(layer, targetX - after.left, targetY - after.top);
+    const scaledBounds = getLayerPixelSize(layer);
+    const alignedBounds = resolveImageTargetAlignmentBounds({
+        sourceBounds: scaledBounds,
+        targetBounds: target,
+        fit,
+        targetAnchor,
+        focalPoint
+    });
+    await translateLayerWithoutNativeMove(
+        layer,
+        alignedBounds.left - scaledBounds.left,
+        alignedBounds.top - scaledBounds.top
+    );
+    const actualBounds = getLayerPixelSize(layer);
+    return measureImageTargetFitOutcome(
+        {
+            ...scalePlan,
+            expectedBounds: alignedBounds
+        },
+        actualBounds
+    );
+}
+
+async function selectTransformTargetLayer(layerId: number): Promise<void> {
+    await action.batchPlay([{
+        _obj: 'select',
+        _target: [{ _ref: 'layer', _id: layerId }],
+        makeVisible: false,
+        _options: { dialogOptions: 'dontDisplay' }
+    }], { synchronousExecution: true });
+}
+
+async function applyTargetBoundsPrelude(
+    params: TransformLayerParams
+): Promise<void> {
+    const rotateAngle = Number(params.rotate || 0);
+    if (rotateAngle !== 0) {
+        await action.batchPlay([{
+            _obj: 'transform',
+            freeTransformCenterState: {
+                _enum: 'quadCenterState',
+                _value: 'QCSAverage'
+            },
+            width: { _unit: 'percentUnit', _value: 100 },
+            height: { _unit: 'percentUnit', _value: 100 },
+            angle: { _unit: 'angleUnit', _value: rotateAngle },
+            _options: { dialogOptions: 'dontDisplay' }
+        }], { synchronousExecution: true });
+    }
+
+    if (params.flipHorizontal === true) {
+        await action.batchPlay([{
+            _obj: 'flip',
+            axis: { _enum: 'orientation', _value: 'horizontal' },
+            _options: { dialogOptions: 'dontDisplay' }
+        }], { synchronousExecution: true });
+    }
+
+    if (params.flipVertical === true) {
+        await action.batchPlay([{
+            _obj: 'flip',
+            axis: { _enum: 'orientation', _value: 'vertical' },
+            _options: { dialogOptions: 'dontDisplay' }
+        }], { synchronousExecution: true });
+    }
 }
 
 /**
@@ -199,46 +345,67 @@ export class TransformLayerTool implements Tool {
                     type: 'string',
                     enum: ['contain', 'cover', 'fill'],
                     description: 'targetBounds 适配方式：contain 完整放入（默认）、cover 铺满区域、fill 拉伸填充'
+                },
+                targetAnchor: {
+                    type: 'string',
+                    enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
+                    description: '目标区域内的图框对齐方式，默认 center；focalPoint 存在时由 focalPoint 优先控制落位。fill 只接受 center'
+                },
+                focalPoint: {
+                    type: 'object',
+                    properties: {
+                        x: { type: 'number', description: '0 到 1 的归一化横向位置' },
+                        y: { type: 'number', description: '0 到 1 的归一化纵向位置' }
+                    },
+                    required: ['x', 'y'],
+                    description: '源图中的归一化关注点；存在时优先将该点对准目标区域中心，并在无空洞范围内夹紧。不能与 fill 或同一次 rotate/flip 混用'
                 }
             }
         }
     };
 
-    async execute(params: {
-        layerId?: number;
-        scale?: { x: number; y: number };
-        scaleUniform?: number;
-        rotate?: number;
-        flipHorizontal?: boolean;
-        flipVertical?: boolean;
-        fitToCanvas?: boolean;
-        fitPercentage?: number;
-        targetBounds?: TransformTargetBoundsParam;
-        targetFit?: 'contain' | 'cover' | 'fill';
-    }): Promise<{
-        success: boolean;
-        message?: string;
-        layerId?: number;
-        layerName?: string;
-        originalSize?: { width: number; height: number };
-        newSize?: { width: number; height: number };
-        newBounds?: { left: number; top: number; width: number; height: number };
-        error?: string;
-    }> {
+    async execute(
+        params: TransformLayerParams,
+        context?: ToolExecutionContext
+    ): Promise<TransformLayerResult> {
         try {
             const doc = app.activeDocument;
             if (!doc) {
                 return createToolFailureResult({ toolName: this.name, error: '没有打开的文档', params });
             }
+            if (params.rotate !== undefined && !Number.isFinite(Number(params.rotate))) {
+                return buildTransformLayerFailure(
+                    params,
+                    'transform_layer_rotate_invalid',
+                    `rotate 必须是有限数值，收到 ${String(params.rotate)}。`
+                );
+            }
 
             // targetBounds：目标区域表达。先校验，再检查与相对缩放参数的互斥。
             let normalizedTargetBounds: { left: number; top: number; width: number; height: number } | null = null;
             if (params.targetBounds !== undefined) {
-                normalizedTargetBounds = normalizeTargetBounds(params.targetBounds);
+                normalizedTargetBounds = normalizeImageTargetBounds(params.targetBounds);
                 if (!normalizedTargetBounds) {
                     return createToolFailureResult({
                         toolName: this.name,
                         error: 'targetBounds 无效：需要 {x,y,width,height} 或 {left,top,right,bottom}，且 width/height 必须为正数',
+                        params
+                    });
+                }
+                resolveImageTargetFitPlan({
+                    sourceBounds: { left: 0, top: 0, width: 1, height: 1 },
+                    targetBounds: normalizedTargetBounds,
+                    fit: params.targetFit,
+                    targetAnchor: params.targetAnchor,
+                    focalPoint: params.focalPoint
+                });
+                if (params.focalPoint
+                    && (Number(params.rotate || 0) !== 0
+                        || params.flipHorizontal === true
+                        || params.flipVertical === true)) {
+                    return createToolFailureResult({
+                        toolName: this.name,
+                        error: 'focalPoint 不能与同一次 rotate/flip 混用：旋转或翻转会改变源图关注点坐标。请先完成旋转/翻转并读回，再按最终画面声明 focalPoint。',
                         params
                     });
                 }
@@ -255,6 +422,14 @@ export class TransformLayerTool implements Tool {
                         params
                     });
                 }
+            } else if (params.targetFit !== undefined
+                || params.targetAnchor !== undefined
+                || params.focalPoint !== undefined) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: 'targetFit、targetAnchor 与 focalPoint 只在提供有效 targetBounds 时生效；已拒绝忽略这些参数。',
+                    params
+                });
             }
 
             // 获取目标图层
@@ -276,6 +451,15 @@ export class TransformLayerTool implements Tool {
             }
 
             console.log(`[TransformLayer] 变换图层: ${layer.name} (ID: ${layer.id})`);
+
+            if (normalizedTargetBounds) {
+                return await this.executeTargetBoundsTransaction(
+                    params,
+                    context,
+                    Number(layer.id),
+                    normalizedTargetBounds
+                );
+            }
 
             // 获取原始尺寸：走与结果 newBounds/newSize、targetBounds 适配算法相同的
             // boundsNoEffects 优先读取（getLayerPixelSize）。直接读 layer.bounds 会把投影等
@@ -403,12 +587,6 @@ export class TransformLayerTool implements Tool {
                     ], { synchronousExecution: true });
                 }
 
-                // 目标区域适配：放在旋转/翻转之后执行，保证最终 bounds 精确落在 targetBounds 内。
-                if (normalizedTargetBounds) {
-                    await fitLayerToTargetBounds(layer, normalizedTargetBounds, params.targetFit || 'contain');
-                    console.log(`[TransformLayer] ✓ 适配目标区域(${params.targetFit || 'contain'}): left=${normalizedTargetBounds.left}, top=${normalizedTargetBounds.top}, ${normalizedTargetBounds.width}x${normalizedTargetBounds.height}`);
-                }
-
             }, { commandName: '变换图层' });
 
             // 获取新尺寸（boundsNoEffects 优先，与 targetBounds 适配算法的读数一致）
@@ -437,6 +615,205 @@ export class TransformLayerTool implements Tool {
             console.error('[TransformLayer] 错误:', error);
             return createToolFailureResult({ toolName: this.name, error, params });
         }
+    }
+
+    private async executeTargetBoundsTransaction(
+        params: TransformLayerParams,
+        context: ToolExecutionContext | undefined,
+        layerId: number,
+        targetBounds: ImageTargetRect
+    ): Promise<TransformLayerResult> {
+        const rotateAngle = Number(params.rotate || 0);
+        const operationId = `transformLayer:targetBounds:${String(context?.requestId || Date.now())}`;
+
+        return await photoshopTransactionRunner.run<
+            TransformLayerState,
+            TransformLayerState,
+            TransformLayerResult,
+            TransformTargetReceipt
+        >({
+            operationId,
+            toolName: this.name,
+            commandName: 'DesignEcho: 变换图层到目标区域',
+            params,
+            context,
+            historyMode: 'suspend',
+            expectedEffect: 'mutation_required',
+            rollbackTargetPolicy: 'document_revision',
+            prepare: (scope): PhotoshopTransactionPreparation<
+                TransformLayerState,
+                TransformLayerResult
+            > => {
+                const location = findTransformLayerLocation(scope.document, layerId);
+                if (!location) {
+                    return {
+                        kind: 'complete',
+                        effect: 'none',
+                        result: buildTransformLayerFailure(
+                            params,
+                            'transform_layer_target_not_found',
+                            `变换图层失败：未找到图层 ID ${layerId}。请重新读取图层结构后重试。`
+                        )
+                    };
+                }
+                if (location.layer.locked || location.layer.isBackgroundLayer) {
+                    return {
+                        kind: 'complete',
+                        effect: 'none',
+                        result: buildTransformLayerFailure(
+                            params,
+                            'transform_layer_target_not_transformable',
+                            `变换图层失败：图层“${String(location.layer.name || layerId)}”已锁定或是背景层。请先解锁或转换为普通图层。`
+                        )
+                    };
+                }
+
+                const before = readTransformLayerState(scope.document, layerId);
+                const currentPlan = resolveImageTargetFitPlan({
+                    sourceBounds: before.bounds,
+                    targetBounds,
+                    fit: params.targetFit,
+                    targetAnchor: params.targetAnchor,
+                    focalPoint: params.focalPoint
+                });
+                const currentPlacement = measureImageTargetFitOutcome(
+                    currentPlan,
+                    before.bounds
+                );
+                const hasPreludeMutation = rotateAngle !== 0
+                    || params.flipHorizontal === true
+                    || params.flipVertical === true;
+                if (!hasPreludeMutation
+                    && currentPlacement.geometryVerification.verified) {
+                    return {
+                        kind: 'complete',
+                        effect: 'already_satisfied',
+                        result: this.buildTargetBoundsSuccessResult(
+                            params,
+                            before,
+                            before,
+                            currentPlacement
+                        )
+                    };
+                }
+                return { kind: 'ready', before };
+            },
+            mutate: async (scope, before) => {
+                const current = readTransformLayerState(scope.document, before.layerId);
+                if (!sameTransformLayerTarget(before, current)
+                    || !sameTransformLayerBounds(before.bounds, current.bounds)) {
+                    return buildTransformLayerFailure(
+                        params,
+                        'transform_layer_target_changed',
+                        '变换图层失败：写入前目标图层、父级或 bounds 已变化。请重新读取图层结构后重试。'
+                    );
+                }
+                const location = findTransformLayerLocation(
+                    scope.document,
+                    before.layerId
+                );
+                if (!location) {
+                    return buildTransformLayerFailure(
+                        params,
+                        'transform_layer_target_not_found',
+                        `变换图层失败：写入前未找到图层 ID ${before.layerId}。请重新读取图层结构后重试。`
+                    );
+                }
+
+                await selectTransformTargetLayer(before.layerId);
+                await applyTargetBoundsPrelude(params);
+                const placement = await fitLayerToTargetBounds(
+                    location.layer,
+                    targetBounds,
+                    params.targetFit,
+                    params.targetAnchor,
+                    params.focalPoint
+                );
+                const afterMutation = readTransformLayerState(
+                    scope.document,
+                    before.layerId
+                );
+                return buildPhotoshopTransactionMutationOutcome(
+                    this.buildTargetBoundsSuccessResult(
+                        params,
+                        before,
+                        afterMutation,
+                        placement
+                    ),
+                    { placement }
+                );
+            },
+            readState({ scope, before }): TransformLayerState {
+                return readTransformLayerState(scope.document, before.layerId);
+            },
+            verifyApplied({ before, after, receipt }) {
+                const placement = receipt?.placement
+                    ? measureImageTargetFitOutcome(receipt.placement, after.bounds)
+                    : undefined;
+                return {
+                    verified: sameTransformLayerTarget(before, after)
+                        && placement?.geometryVerification.verified === true,
+                    message: `变换图层写后读回与目标框不一致：图层 ID=${after.layerId}，bounds=${after.bounds.left.toFixed(2)},${after.bounds.top.toFixed(2)},${after.bounds.width.toFixed(2)}×${after.bounds.height.toFixed(2)}，几何问题=[${placement?.geometryVerification.issues.join(', ') || 'missing_placement_receipt'}]。本次写入将回滚。`
+                };
+            },
+            verifyRolledBack({ before, after }) {
+                return {
+                    verified: sameTransformLayerTarget(before, after)
+                        && sameTransformLayerBounds(before.bounds, after.bounds),
+                    message: `变换图层失败后的 bounds 未恢复：写前=${before.bounds.left.toFixed(2)},${before.bounds.top.toFixed(2)},${before.bounds.width.toFixed(2)}×${before.bounds.height.toFixed(2)}，回滚后=${after.bounds.left.toFixed(2)},${after.bounds.top.toFixed(2)},${after.bounds.width.toFixed(2)}×${after.bounds.height.toFixed(2)}。`
+                };
+            },
+            buildVerifiedResult: ({ before, after, receipt }): TransformLayerResult => {
+                const placement = measureImageTargetFitOutcome(
+                    receipt?.placement as ImageTargetFitOutcome,
+                    after.bounds
+                );
+                return this.buildTargetBoundsSuccessResult(
+                    params,
+                    before,
+                    after,
+                    placement
+                );
+            }
+        });
+    }
+
+    private buildTargetBoundsSuccessResult(
+        params: TransformLayerParams,
+        before: TransformLayerState,
+        after: TransformLayerState,
+        placement: ImageTargetFitOutcome
+    ): TransformLayerResult {
+        return {
+            success: true,
+            message: this.buildMessage(
+                params,
+                100,
+                100,
+                Number(params.rotate || 0),
+                before.bounds.width,
+                before.bounds.height,
+                after.bounds.width,
+                after.bounds.height
+            ),
+            layerId: after.layerId,
+            layerName: after.layerName,
+            originalSize: {
+                width: before.bounds.width,
+                height: before.bounds.height
+            },
+            newSize: {
+                width: Math.round(after.bounds.width),
+                height: Math.round(after.bounds.height)
+            },
+            newBounds: {
+                left: Math.round(after.bounds.left),
+                top: Math.round(after.bounds.top),
+                width: Math.round(after.bounds.width),
+                height: Math.round(after.bounds.height)
+            },
+            placement
+        };
     }
 
     /**

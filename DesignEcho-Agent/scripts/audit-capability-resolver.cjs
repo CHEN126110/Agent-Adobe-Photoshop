@@ -54,6 +54,9 @@ const files = {
   executor: 'src/renderer/services/skill-executors/autonomous-agent.executor.ts',
   engine: 'src/renderer/services/design-agent/engine.ts',
   agent: 'src/renderer/services/agent-runtime/agent.ts',
+  runtimeReferenceAdapter: 'src/renderer/services/agent-runtime/runtime-reference-adapter.ts',
+  designFinalReviewEvidence: 'src/renderer/services/agent-runtime/design-final-review-evidence.ts',
+  finalQualityReviewRuntime: 'src/renderer/services/agent-runtime/final-quality-review-runtime.ts',
   taskPlanning: 'src/shared/agent-task-planning-contract.ts',
   performanceLedger: 'src/renderer/services/agent-runtime/performance-ledger.ts',
   agentTypes: 'src/renderer/services/agent-runtime/types.ts',
@@ -79,6 +82,12 @@ const files = {
   runtimeSession: 'src/shared/agent-runtime-v5/runtime-session.ts',
   pendingContinuation: 'src/shared/pending-interactive-continuation.ts',
   planningContext: 'src/shared/agent-runtime-v5/runtime-planning-context-seed.ts',
+  planningContextAdapter: 'src/renderer/services/agent-runtime/runtime-planning-context-adapter.ts',
+  interactiveCheckpoint: 'src/renderer/services/agent-runtime/active-runtime-interactive-continuation.ts',
+  interactiveCheckpointAdapter: 'src/renderer/services/agent-runtime/runtime-interactive-checkpoint-adapter.ts',
+  interactiveReentryAdapter: 'src/renderer/services/agent-runtime/runtime-interactive-reentry-adapter.ts',
+  interactiveReentryController: 'src/renderer/services/design-agent/interactive-continuation-reentry-controller.ts',
+  interactiveReentryRunner: 'src/renderer/services/design-agent/interactive-continuation-reentry-runner.ts',
   noRedoProviderProbe: 'src/shared/agent-no-redo-provider-probe.ts',
   realProviderRunner: 'scripts/acceptance-run-agent-real-provider-case.cjs',
   runRecord: 'src/shared/agent-run-record.ts',
@@ -253,8 +262,10 @@ requireToken('designDiscipline', 'DESIGN_DISCIPLINE_POLICY_CAPABILITY_ID', 'Desi
 requireToken('toolSafety', 'TOOL_SAFETY_POLICY_CAPABILITY_ID', 'Tool safety implementation must share the registered Policy identity.');
 requireToken('evaluationProfiles', "version: 'design-evaluation-profile/v0'", 'Evaluation providers must expose a versioned Profile contract.');
 requireToken('evaluationProfiles', 'scoreDesignAssertions(scoringResults, {', 'Profiles must reuse the shared DesignScorecard implementation.');
-requireToken('evaluationProfiles', 'nonScoringOptionalCheckIds', 'Optional Profile checks must stay advisory instead of entering the shared DesignScorecard gate.');
+requireToken('evaluationProfiles', 'getDesignEvaluationProfileScoringAssertions', 'Profile assertionRefs must be the sole aesthetic scoring catalog.');
 requireToken('evaluationProfiles', 'assertions: scoringAssertions', 'Profile scorecards must use the assertion set filtered by scoring authority.');
+requireToken('evaluationProfiles', 'failedRequiredCheckKeys', 'Required verification failures must retain their independent Profile gate semantics.');
+forbidPattern('evaluationProfiles', /score:\s*1\b/, 'Passing verification checks must not mint perfect aesthetic scores.');
 requireToken('evaluationProfiles', 'finalVerdictOwnedByProfile: false', 'Profiles must not create a parallel final verdict owner.');
 requireToken('evaluationProfiles', "gate: 'insufficient_observations'", 'Insufficient Profile observations must not default to pass.');
 requireToken('evaluationProfiles', 'verification_explicitly_failed', 'Explicit Profile verification failures must remain machine-readable.');
@@ -388,12 +399,17 @@ if (!skuBatchProfileBlock || !skuBatchProfileBlock.includes('assertionRefs: []')
   violations.push('SKU batch with disabled vision policy must not require generic VLM assertions.');
 }
 requireToken('qualityAssertions', '不要另返 pass 字段', 'The final Judge must use score as its single decision value.');
+requireToken('qualityAssertions', 'reference: normalizeVlmJudgeContextValue', 'Validated reference insights must remain a bounded input to the final visual Judge.');
+requireToken('agent', 'referenceBrief: this.runtimeReferenceBriefDeclaration', 'Agent must pass the current Runtime reference brief into final review evidence assembly.');
+requireToken('designFinalReviewEvidence', 'buildRuntimeReferenceEvaluationContext(input.referenceBrief)', 'The final visual Judge must consume the current Runtime reference brief instead of discarding observed reference insights.');
 requireToken('qualityAssertions', "status === 'not_applicable'", 'The final Judge protocol must preserve reliable N/A as an explicit status.');
 requireToken('qualityAssertions', '最多只给 3 个', 'The single visual Judge batch must bound rich diagnoses to the most important findings.');
 requireToken('qualityAssertions', 'MAX_VLM_JUDGE_DIAGNOSES = 3', 'The parser must enforce the same top-three diagnosis boundary even when the model ignores the prompt.');
 requireToken('qualityAssertions', 'typeof result.score === \'number\'', 'Only results with finite scores may enter numeric score coverage.');
-requireToken('agent', "budgetClass: 'final_quality_judge'", 'The final visual Judge must consume its dedicated reserved budget class.');
+requireToken('finalQualityReviewRuntime', "'final_quality_judge'", 'The final visual Judge must consume its dedicated reserved budget class.');
 requireToken('performanceLedger', 'MAX_FINAL_QUALITY_JUDGE_CALLS = 1', 'The dedicated final Judge budget must be single-use per generation.');
+requireToken('finalQualityReviewRuntime', "'final_quality_diagnosis_repair'", 'Missing Judge diagnoses may use only the separately metered repair class.');
+requireToken('performanceLedger', 'MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS = 1', 'Diagnosis protocol repair must remain single-use per generation.');
 // GATE-SIMPLIFY-003（2026-08-16 治理切片 3，经用户批准立项）：普通任务预算不再为终局 Judge
 // 事前扣减共享 finalization 时间窗（无事故证据的预防性税，曾饿死身份声明）；Judge 的一次性
 // 硬上限由上方两条断言保留。本行为契约迁移有 CurrentTask 立项与审计账本依据，非改断言保绿。
@@ -447,7 +463,8 @@ requireToken('agent', 'adaptDesignEvaluationRecordsFromToolResults({', 'The Agen
 requireToken('agent', '...adaptedBusinessResults.records', 'Adapted business verification records must enter the existing Profile check list.');
 requireToken('agent', 'profile?.finalReview', 'The Agent must consume final-review surface requirements from Profile metadata.');
 requireToken('agent', 'check.runtime?.repair?.trigger', 'The Agent must consume repair triggers from Check metadata.');
-requireToken('agent', "check.runtime?.evidence === 'fresh_structure'", 'The Agent must produce generic runtime evidence from Check metadata.');
+requireToken('agent', 'reconcileDesignFinalReviewStructureVerificationRecords(', 'The Agent must route generic final structure evidence through its dedicated adapter.');
+requireToken('designFinalReviewEvidence', "check.runtime?.evidence === 'fresh_structure'", 'The final structure adapter must produce generic runtime evidence from Check metadata.');
 forbidPattern('agent', /DETAIL_PAGE_(?:CREATE_NEW_|SCOPED_EDIT_)?EVALUATION_PROFILE_ID/, 'The generic Agent must not branch on a business Evaluation Profile id.');
 forbidPattern('agent', /whole_task_execution_closure|fresh_structure_snapshot|fresh_visual_evaluation|requested_change_applied|outside_scope_preserved|detail_page_screen_coverage|batch_coverage|required_profile_check/, 'The generic Agent must not branch on business Evaluation check keys.');
 forbidPattern('agent', /requiredSourceKind\s*:\s*['"]detail-screen['"]/, 'The generic Agent must not hard-code a business final-review source kind.');
@@ -503,6 +520,7 @@ requireToken('runtimeSession', '普通交互卡片不能推进到 E2', 'Ordinary
 requireToken('runtimeSession', 'taskRun: createRuntimeTaskRunState(input.identity)', 'TaskRun state must be created inside the single Runtime Session owner.');
 requireToken('runtimeSession', 'schedulerAuthority: false', 'X1 TaskRun state must not grant scheduler authority to R4.');
 requireToken('runtimeSession', 'runtime_task_run_waiting_user', 'A suspended TaskRun must block state-changing Tools until its bound interaction resumes.');
+requireToken('runtimeSession', 'runtime_task_run_writer_conflict', 'A competing TaskRun writer must remain distinct from Photoshop revision re-observation.');
 requireToken('runtimeSession', 'runtime_task_run_revision_reobserve_required', 'Unknown or stale document revisions must require re-observation instead of replay.');
 requireToken('runtimeSession', 'recordRuntimeSessionOperationResult', 'TaskRun progress must reference Host-owned Photoshop OperationResults.');
 requireToken('runtimeSession', 'activeDocumentWriterClaims', 'The Runtime Session owner must enforce one active TaskRun writer per Photoshop document.');
@@ -511,7 +529,8 @@ requireToken('agent', 'suspendRuntimeSessionForInteraction({', 'The production A
 requireToken('agent', 'attachRuntimeTaskRunBindingToPendingContinuation({', 'The pending continuation must carry the exact suspended TaskRun identity.');
 requireToken('executor', 'expectedHistoryStateRef', 'The autonomous Tool adapter must preserve the private Photoshop revision guard.');
 requireToken('engine', 'photoshopHistoryStateRef: freshPhotoshopContext?.historyStateRef', 'Interactive resume must validate the live Photoshop revision before execution.');
-requireToken('engine', 'claimRuntimeTaskRunWriterBinding({', 'Interactive resume must retain the same TaskRun writer identity.');
+requireToken('interactiveReentryRunner', 'claimRuntimeTaskRunWriterBinding({', 'Interactive resume must retain the same TaskRun writer identity inside the extracted lifecycle owner.');
+requireToken('engine', 'runRuntimeInteractiveContinuation({', 'Engine must delegate interactive continuation execution to the extracted lifecycle owner.');
 requireToken('pendingContinuation', 'interactive_continuation_photoshop_revision_mismatch', 'Interactive continuation must reject stale Photoshop revisions without replay.');
 forbidPattern('runtimeSession', /详情页|主图|SKU|sku-batch|detail-page-design|main-image-design/i, 'Runtime Session contract must remain category-neutral.');
 forbidPattern('runtimeSession', /executeTool\(/, 'Runtime Session must not become a Tool dispatcher.');
@@ -687,7 +706,8 @@ forbidPattern('runResume', /Runtime Session|Harness 控制|影子步骤|阶段�
 requireToken('agent', 'isAgentHarnessControlTool', 'Agent completion logic must distinguish all Harness control tools from task progress.');
 requireToken('agent', 'buildModelVisibleToolsForIteration', 'Agent must expose the R3 control schema explicitly at the runtime boundary.');
 requireToken('agent', 'executeDesignBriefDeclaration', 'Agent must handle R1 Design Brief inside Harness without external Tool dispatch.');
-requireToken('agent', 'blockedByRuntimeDesignBrief', 'State-changing design actions must remain blocked until the manifest-bound Brief is ready.');
+requireToken('agent', 'buildAgentDesignBriefRequiredBlocker', 'Agent must delegate the manifest-bound Brief blocker to the shared runtime adapter.');
+requireToken('runtimeReferenceAdapter', 'blockedByRuntimeDesignBrief', 'State-changing design actions must remain blocked until the manifest-bound Brief is ready.');
 requireToken('agent', 'executeDesignStrategyDeclaration', 'Agent must handle R3 strategy declaration inside Harness without external Tool dispatch.');
 requireToken('agent', 'executeRuntimeActionPlanDeclaration', 'Agent must handle R4 action-plan declaration inside Harness without external Tool dispatch.');
 requireToken('agent', "source: 'action_plan_declaration'", 'Only a validated R4 declaration may create an R4 plan record.');
@@ -737,7 +757,25 @@ requireToken('agent', 'beginRuntimeSessionNodeExecution', 'The production Agent 
 requireToken('agent', 'runtimeActionExecutionEnvelopeByCallId', 'The production Agent must retain a bounded call-to-node binding until the real Tool result returns.');
 requireToken('agent', 'executionEnvelope?.nodeId', 'Real PhotoshopOperationResult must prefer the compiled R4 node binding.');
 requireToken('agent', 'recordRuntimeSessionNodeResultUnbound', 'Missing or mismatched OperationResult after a compiled dispatch must not be silently treated as success.');
-requireToken('agent', 'validateRuntimePlanningContextSeed', 'Agent must validate Reflexion planning context before exposing it to the model.');
+requireToken('planningContextAdapter', 'validateRuntimePlanningContextSeed({', 'The planning context adapter must validate Reflexion context before exposing it to the model.');
+requireToken('agent', 'resolveRuntimePlanningContextSeedState({', 'Agent must consume the validated planning context adapter at the active Session boundary.');
+requireToken('executor', 'sourceTask: runtimeInteractiveReentry?.sourceTask || String(userTask)', 'Repeated interactive pauses must retain the original user goal instead of nesting generated reentry prompts.');
+requireToken('executor', 'runtimeInteractiveReentryForAgent = undefined;', 'Only the first same-generation Agent may consume an interactive reentry; later Reflexion generations must use their normal planning seed.');
+requireToken('interactiveCheckpoint', "pendingReentry?: RuntimeInteractivePendingReentry", 'The active checkpoint must retain a post-Skill Agent reentry instead of making the Skill replayable.');
+requireToken('interactiveCheckpoint', 'reserveActiveRuntimeInteractiveCheckpoint', 'Interactive continuation must reserve its checkpoint before claiming the document writer.');
+requireToken('interactiveCheckpoint', 'refreshActiveRuntimeInteractivePendingReentry', 'Fresh revision reconciliation must persist monotonically in the pending reentry.');
+requireToken('interactiveCheckpoint', 'adoptActiveRuntimeInteractiveCheckpointReservation', 'Only successful Agent adoption may permanently consume a staged reentry.');
+forbidPattern('interactiveCheckpoint', /CHECKPOINT_TTL|MAX_ACTIVE_INTERACTIVE_CHECKPOINTS/, 'Active Runtime checkpoints must not be silently evicted by wall-clock TTL or capacity.');
+requireToken('interactiveReentryAdapter', 'reentry.actionPlanExecutionJournal?.journal', 'Interactive reentry must restore the planRevision-bound Action Plan journal without creating an empty one.');
+forbidPattern('interactiveReentryAdapter', /createRuntimeActionPlanExecutionJournal/, 'Interactive reentry must not synthesize an empty Action Plan execution journal.');
+requireToken('interactiveReentryRunner', 'resolveRuntimeInteractiveHandoff({', 'Post-Skill handoff projection must be owned by the extracted interactive runner.');
+requireToken('interactiveReentryRunner', 'settleInteractiveContinuationOperation({', 'Every post-Skill runner branch must retain explicit ledger settlement ownership.');
+requireToken('interactiveReentryRunner', 'canReleaseRuntimeSessionDocumentWriter({', 'Pre-adoption direct results must use the shared structured writer release decision.');
+requireToken('interactiveReentryAdapter', 'canReleaseRuntimeSessionDocumentWriter({', 'After adoption, Agent finalization must use the same structured writer release decision.');
+requireToken('interactiveReentryRunner', 'buildRuntimeInteractivePostSkillRecovery({', 'Post-Skill failures must become a non-replayable reconciliation handoff.');
+requireToken('interactiveReentryRunner', 'status: handoff.operationSucceeded ? \'succeeded\' : \'failed\'', 'Post-Skill handoff and recovery must converge through the common ledger settlement path.');
+forbidPattern('interactiveReentryRunner', /abortRuntimeInteractiveResumeAfterSkill/, 'Post-Skill failure must not delete the checkpoint while retaining an orphan writer.');
+forbidPattern('engine', /releaseRuntimeTaskRunWriterBinding/, 'An unreserved or rejected interactive request must never release another active writer from Engine routing.');
 requireToken('agent', 'runtime_planning_context_seed_required', 'Generation >1 must fail closed when semantic planning context is missing.');
 requireToken('agent', 'runtimeDesignStrategyDeclaration: this.runtimeDesignStrategyDeclaration', 'Validated R3 Strategy must cross the Skill runtime boundary.');
 requireToken('agent', 'runtimeActionPlanDeclaration: this.runtimeActionPlanDeclaration', 'Validated R4 shadow Plan must cross the Skill runtime boundary.');

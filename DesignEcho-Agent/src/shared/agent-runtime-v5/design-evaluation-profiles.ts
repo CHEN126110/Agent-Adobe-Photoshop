@@ -10,6 +10,7 @@ import {
     DESIGN_ASSERTIONS,
     getVlmJudgeAssertions,
     isDesignQualityBlockerKind,
+    isQualifiedDesignQualityHardBlocker,
     isValidDesignQualityProofRef,
     scoreDesignAssertions,
     type AssertionSeverity,
@@ -129,6 +130,12 @@ export interface DesignEvaluationFinalReviewPolicy {
     surfaceMode: 'single_surface' | 'declared_multi_surface';
     /** 多画面 Profile 可声明 ReviewSet 中每个画面的来源种类。 */
     requiredSourceKind?: string;
+    /**
+     * 由 Profile 声明的真实观看情境。native_surface 对应 ReviewSet 原画面；
+     * list_thumbnail 是由同一版本原画面派生的列表缩略视图。它只扩展评价证据，
+     * 不声明固定构图、字号或主体比例。
+     */
+    requiredViews?: Array<'native_surface' | 'list_thumbnail'>;
 }
 
 export interface DesignEvaluationCheck {
@@ -369,13 +376,22 @@ const DECLARED_MULTI_SURFACE_REVIEW: DesignEvaluationFinalReviewPolicy = Object.
     requiredSourceKind: 'detail-screen'
 });
 
+const MAIN_IMAGE_FINAL_REVIEW: DesignEvaluationFinalReviewPolicy = Object.freeze({
+    surfaceMode: 'single_surface',
+    requiredViews: [
+        'native_surface' as const,
+        'list_thumbnail' as const
+    ]
+});
+
 const MAIN_IMAGE_PROFILE: DesignEvaluationProfile = Object.freeze({
     version: 'design-evaluation-profile/v0',
     profileId: MAIN_IMAGE_EVALUATION_PROFILE_ID,
     skillId: 'ecommerce.main_image',
     taskType: 'ecommerce.main_image.v1',
-    capabilityGoal: '评价主图的主体识别、卖点视觉化、信息层级、画面精度与真实操作结果。',
+    capabilityGoal: '评价电商主图在典型列表缩略图中是否建立商品识别与点击理由，以及主体、产品吸引力或卖点表达、信息层级、画面精度与真实操作结果。纯摄影可以成立，但商品完整陈列本身不自动等于完成点击目标，也不要求补文案、场景、装饰或固定风格。',
     methodKnowledgeRefs: [...COMMON_METHOD_KNOWLEDGE_REFS, MAIN_IMAGE_METHOD_KNOWLEDGE_ID],
+    finalReview: MAIN_IMAGE_FINAL_REVIEW,
     assertionRefs: [
         'req.brief-coverage',
         'comp.subject-ratio',
@@ -383,6 +399,7 @@ const MAIN_IMAGE_PROFILE: DesignEvaluationProfile = Object.freeze({
         'color.contrast',
         'hier.type-scale',
         'craft.precision',
+        'craft.structure-intent-coherence',
         'overall.above-baseline',
         'impact.squint',
         'sell.visualized',
@@ -447,16 +464,19 @@ const SINGLE_CANVAS_VISUAL_PROFILE: DesignEvaluationProfile = Object.freeze({
     methodKnowledgeRefs: [...COMMON_METHOD_KNOWLEDGE_REFS, SINGLE_CANVAS_VISUAL_METHOD_KNOWLEDGE_ID],
     assertionRefs: [
         'req.brief-coverage',
+        'comp.subject-ratio',
         'comp.alignment',
         'color.contrast',
         'hier.type-scale',
         'craft.precision',
+        'craft.structure-intent-coherence',
         'impact.squint',
         'comp.focal-balance',
         'color.scheme',
         'hier.three-level',
         'type.character',
-        'craft.depth'
+        'craft.depth',
+        'craft.asset-integration'
     ],
     checks: [
         verificationCheck({
@@ -500,16 +520,19 @@ const GENERAL_DESIGN_PROFILE: DesignEvaluationProfile = Object.freeze({
     methodKnowledgeRefs: [...COMMON_METHOD_KNOWLEDGE_REFS],
     assertionRefs: [
         'req.brief-coverage',
+        'comp.subject-ratio',
         'comp.alignment',
         'color.contrast',
         'hier.type-scale',
         'craft.precision',
+        'craft.structure-intent-coherence',
         'impact.squint',
         'comp.focal-balance',
         'color.scheme',
         'hier.three-level',
         'type.character',
-        'craft.depth'
+        'craft.depth',
+        'craft.asset-integration'
     ],
     checks: [
         verificationCheck({
@@ -557,6 +580,7 @@ const DETAIL_PAGE_PROFILE: DesignEvaluationProfile = Object.freeze({
         'color.background-designed',
         'hier.type-scale',
         'craft.precision',
+        'craft.structure-intent-coherence',
         'overall.above-baseline',
         'sell.visualized',
         'comp.focal-balance',
@@ -648,6 +672,7 @@ const DETAIL_PAGE_CREATE_NEW_PROFILE: DesignEvaluationProfile = Object.freeze({
         'color.background-designed',
         'hier.type-scale',
         'craft.precision',
+        'craft.structure-intent-coherence',
         'overall.above-baseline',
         'sell.visualized',
         'comp.focal-balance',
@@ -978,6 +1003,7 @@ const SKU_COLOR_CARD_PROFILE: DesignEvaluationProfile = Object.freeze({
     assertionRefs: [
         'comp.alignment',
         'craft.precision',
+        'craft.structure-intent-coherence',
         'color.scheme',
         'hier.three-level',
         'type.character'
@@ -1134,9 +1160,18 @@ export function validateDesignEvaluationProfile(
         const multiSurface = profile.finalReview.surfaceMode === 'declared_multi_surface';
         const singleSurface = profile.finalReview.surfaceMode === 'single_surface';
         const sourceKind = profile.finalReview.requiredSourceKind;
+        const requiredViews = profile.finalReview.requiredViews || ['native_surface'];
+        const viewsValid = requiredViews.length > 0
+            && unique(requiredViews).length === requiredViews.length
+            && requiredViews.every((view) => (
+                view === 'native_surface' || view === 'list_thumbnail'
+            ))
+            && requiredViews.includes('native_surface')
+            && (!requiredViews.includes('list_thumbnail') || singleSurface);
         if ((!multiSurface && !singleSurface)
             || (multiSurface && !isSafeToken(sourceKind))
-            || (singleSurface && sourceKind !== undefined)) {
+            || (singleSurface && sourceKind !== undefined)
+            || !viewsValid) {
             add('profile_final_review_policy_invalid', 'finalReview');
         }
     }
@@ -1309,6 +1344,10 @@ function buildVerificationAssertion(check: DesignEvaluationCheck): DesignAsserti
     };
 }
 
+/**
+ * Profile 的完整诊断目录，供检查展示与兼容读取使用。数值评分不得消费此联合目录；
+ * 评分调用方必须使用 getDesignEvaluationProfileScoringAssertions。
+ */
 export function getDesignEvaluationProfileAssertions(
     profile: DesignEvaluationProfile
 ): DesignAssertion[] {
@@ -1318,6 +1357,16 @@ export function getDesignEvaluationProfileAssertions(
             .filter((check) => check.completionScope === 'artifact_completion')
             .map(buildVerificationAssertion)
     ];
+}
+
+/**
+ * Profile 的唯一审美评分目录。结构、读回和发布检查只负责验证覆盖与完成门禁，
+ * 不得通过确定性 pass 分数抬高 overallScore、dimensionScores 或审美覆盖率。
+ */
+export function getDesignEvaluationProfileScoringAssertions(
+    profile: DesignEvaluationProfile
+): DesignAssertion[] {
+    return getDesignEvaluationProfileSharedAssertions(profile);
 }
 
 export function getDesignEvaluationProfileSharedAssertions(
@@ -1331,7 +1380,7 @@ export function getDesignEvaluationProfileSharedAssertions(
 export function getDesignEvaluationProfileVlmAssertions(
     profile: DesignEvaluationProfile
 ): DesignAssertion[] {
-    return getVlmJudgeAssertions(getDesignEvaluationProfileAssertions(profile));
+    return getVlmJudgeAssertions(getDesignEvaluationProfileScoringAssertions(profile));
 }
 
 function buildUnevaluatedResult(assertion: DesignAssertion, rationale: string): DesignAssertionResult {
@@ -1358,9 +1407,7 @@ function buildVerificationResult(
     if (verification.status === 'passed') {
         return {
             ...buildUnevaluatedResult(assertion, `验证记录 ${verification.verificationRef} 已通过。`),
-            status: 'pass',
-            score: 1,
-            confidence: 1
+            status: 'pass'
         };
     }
     if (verification.status === 'failed') {
@@ -1376,17 +1423,76 @@ function buildVerificationResult(
         return {
             ...buildUnevaluatedResult(assertion, `验证记录 ${verification.verificationRef} 明确失败。`),
             status: 'fail',
-            score: 0,
-            confidence: 1,
             ...blockerEvidence
         };
     }
     return {
         ...buildUnevaluatedResult(assertion, `验证记录 ${verification.verificationRef} 需要复核。`),
-        status: 'needs_review',
-        score: 0.5,
-        confidence: 1
+        status: 'needs_review'
     };
+}
+
+function mergeRequiredVerificationFindings(
+    scorecard: DesignEvaluationScorecard,
+    results: readonly DesignAssertionResult[]
+): DesignEvaluationScorecard {
+    const uniqueById = (items: readonly DesignAssertionResult[]): DesignAssertionResult[] => (
+        Array.from(new Map(items.map((item) => [item.id, item])).values())
+    );
+    const failed = results.filter((result) => result.status === 'fail');
+    const needsReview = results.filter((result) => result.status === 'needs_review');
+    const blockers = failed.filter(isQualifiedDesignQualityHardBlocker);
+    return {
+        ...scorecard,
+        blockers: uniqueById([...scorecard.blockers, ...blockers]),
+        failedAssertions: uniqueById([...scorecard.failedAssertions, ...failed]),
+        needsReview: uniqueById([...scorecard.needsReview, ...needsReview]),
+        results: uniqueById([...scorecard.results, ...results])
+    };
+}
+
+function applyVerificationGate(input: {
+    scorecard: DesignEvaluationScorecard;
+    scoringAssertionCount: number;
+    missingRequiredCheckKeys: readonly string[];
+    failedRequiredCheckKeys: readonly string[];
+    requiredNeedsReviewCheckKeys: readonly string[];
+}): DesignEvaluationScorecard {
+    if (input.failedRequiredCheckKeys.length > 0) {
+        return {
+            ...input.scorecard,
+            gate: 'failed',
+            passed: false,
+            summary: `Evaluation Profile 有 ${input.failedRequiredCheckKeys.length} 项必需验证检查明确失败。`
+        };
+    }
+    if (input.scorecard.gate === 'failed') return input.scorecard;
+    if (input.missingRequiredCheckKeys.length > 0) {
+        return {
+            ...input.scorecard,
+            gate: 'incomplete_verification',
+            passed: false,
+            summary: `Evaluation Profile 缺少 ${input.missingRequiredCheckKeys.length} 项必需验证检查，不能声明通过。`
+        };
+    }
+    if (input.requiredNeedsReviewCheckKeys.length > 0
+        && (input.scorecard.gate === 'passed' || input.scoringAssertionCount === 0)) {
+        return {
+            ...input.scorecard,
+            gate: 'needs_review',
+            passed: false,
+            summary: 'Evaluation Profile 的必需验证检查仍需复核，不能声明通过。'
+        };
+    }
+    if (input.scoringAssertionCount === 0) {
+        return {
+            ...input.scorecard,
+            gate: 'passed',
+            passed: true,
+            summary: 'Evaluation Profile 未声明审美评分断言；必需验证检查均已通过。'
+        };
+    }
+    return input.scorecard;
 }
 
 function normalizeVerificationRecords(
@@ -1455,36 +1561,20 @@ export function evaluateDesignEvaluationProfile(input: {
     assertionResults: readonly DesignAssertionResult[];
     verificationRecords?: readonly DesignEvaluationVerificationRecord[];
 }): DesignEvaluationProfileResult {
-    const profileAssertions = getDesignEvaluationProfileAssertions(input.profile);
+    const scoringAssertions = getDesignEvaluationProfileScoringAssertions(input.profile);
     const baseResultById = new Map(input.assertionResults.map((result) => [result.id, result]));
     const verificationState = normalizeVerificationRecords(
         input.verificationRecords || [],
         input.profile.checks
     );
-    const results: DesignAssertionResult[] = [];
+    const scoringResults: DesignAssertionResult[] = [];
 
     input.profile.assertionRefs.forEach((assertionId) => {
         const assertion = SHARED_ASSERTION_BY_ID.get(assertionId);
         if (!assertion) return;
-        results.push(baseResultById.get(assertionId)
+        scoringResults.push(baseResultById.get(assertionId)
             || buildUnevaluatedResult(assertion, `Profile 未取得断言 ${assertionId} 的评价结果。`));
     });
-    input.profile.checks.forEach((check) => {
-        results.push(buildVerificationResult(check, verificationState.byKey.get(check.key)));
-    });
-
-    // Optional checks and publication review checks are advisory to artifact completion.
-    // Both remain visible in the structured verification/completion projection, but only
-    // shared assertionRefs + required artifact checks can own the R5 artifact verdict.
-    const nonScoringOptionalCheckIds = new Set(input.profile.checks
-        .filter((check) => !check.required || check.completionScope === 'publication_review')
-        .map((check) => check.id));
-    const scoringAssertions = profileAssertions.filter((assertion) => (
-        !nonScoringOptionalCheckIds.has(assertion.id)
-    ));
-    const scoringResults = results.filter((result) => (
-        !nonScoringOptionalCheckIds.has(result.id)
-    ));
     let scorecard = normalizeScorecard(scoreDesignAssertions(scoringResults, {
         passThreshold: input.profile.scoring.passThreshold,
         minCoverage: input.profile.scoring.minCoverage,
@@ -1493,6 +1583,10 @@ export function evaluateDesignEvaluationProfile(input: {
     const requiredChecks = input.profile.checks.filter((check) => (
         check.required && check.completionScope === 'artifact_completion'
     ));
+    const requiredVerificationResults = requiredChecks.map((check) => (
+        buildVerificationResult(check, verificationState.byKey.get(check.key))
+    ));
+    scorecard = mergeRequiredVerificationFindings(scorecard, requiredVerificationResults);
     const publicationReviewChecks = input.profile.checks.filter((check) => (
         check.completionScope === 'publication_review'
     ));
@@ -1502,14 +1596,15 @@ export function evaluateDesignEvaluationProfile(input: {
     const failedCheckKeys = input.profile.checks
         .filter((check) => verificationState.byKey.get(check.key)?.status === 'failed')
         .map((check) => check.key);
+    const failedRequiredCheckKeys = requiredChecks
+        .filter((check) => verificationState.byKey.get(check.key)?.status === 'failed')
+        .map((check) => check.key);
     const needsReviewCheckKeys = input.profile.checks
         .filter((check) => verificationState.byKey.get(check.key)?.status === 'needs_review')
         .map((check) => check.key);
     const requiredNeedsReviewCheckKeys = requiredChecks
         .filter((check) => verificationState.byKey.get(check.key)?.status === 'needs_review')
         .map((check) => check.key);
-    const requiredNeedsReview = requiredNeedsReviewCheckKeys.length > 0;
-
     const approvedPublicationReviewCheckCount = publicationReviewChecks.filter((check) => (
         verificationState.byKey.get(check.key)?.status === 'passed'
     )).length;
@@ -1523,25 +1618,17 @@ export function evaluateDesignEvaluationProfile(input: {
         })
         .map((check) => check.key);
 
-    if (scorecard.gate !== 'failed' && missingRequiredCheckKeys.length > 0) {
-        scorecard = {
-            ...scorecard,
-            gate: 'incomplete_verification',
-            passed: false,
-            summary: `Evaluation Profile 缺少 ${missingRequiredCheckKeys.length} 项必需验证检查，不能声明通过。`
-        };
-    } else if (scorecard.gate === 'passed' && requiredNeedsReview) {
-        scorecard = {
-            ...scorecard,
-            gate: 'needs_review',
-            passed: false,
-            summary: 'Evaluation Profile 的必需验证检查仍需复核，不能声明通过。'
-        };
-    }
+    scorecard = applyVerificationGate({
+        scorecard,
+        scoringAssertionCount: scoringAssertions.length,
+        missingRequiredCheckKeys,
+        failedRequiredCheckKeys,
+        requiredNeedsReviewCheckKeys
+    });
 
     const issueCodes: DesignEvaluationProfileIssueCode[] = [];
     if (missingRequiredCheckKeys.length > 0) issueCodes.push('critical_check_missing');
-    if (requiredNeedsReview) issueCodes.push('critical_check_needs_review');
+    if (requiredNeedsReviewCheckKeys.length > 0) issueCodes.push('critical_check_needs_review');
     if (failedCheckKeys.length > 0) issueCodes.push('verification_explicitly_failed');
     if (verificationState.unsafeCount > 0) issueCodes.push('unsafe_verification_record_ignored');
     if (verificationState.sourceViolationCount > 0) issueCodes.push('verification_source_not_allowed');

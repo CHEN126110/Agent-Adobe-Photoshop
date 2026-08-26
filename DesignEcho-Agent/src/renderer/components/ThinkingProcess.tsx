@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ChevronDown, FileSearch, Images } from 'lucide-react';
 import './ThinkingProcess.css';
 import { ImageZoomOverlay } from './ImageZoomOverlay';
 import {
@@ -62,6 +63,29 @@ interface MergedThinkingStep {
     key: string;
     step: ThinkingStep;
     repeat: number;
+    /** 跨工具的类别聚合组（codex 化 P1.75）：members 为组内全部步骤，展开时逐条显示。 */
+    members?: ThinkingStep[];
+    aggregateLabel?: string;
+}
+
+/**
+ * 工具的语义类别（品类无关，只按动作性质分）：连续同类的成功小动作聚合成一句人话，
+ * 展开才看明细——这是 codex 过程流"清爽"的来源（对照板 P1.75）。
+ * 失败步、带画面快照的步、有关键结果摘要的步一律不聚合（防吞纪律沿用）。
+ */
+type ToolAggregateCategory = 'look' | 'read' | 'none';
+
+function resolveToolAggregateCategory(toolName: string | undefined): ToolAggregateCategory {
+    const name = String(toolName || '');
+    if (!name) return 'none';
+    if (/Snapshot|snapshot|observe|describeImage|analyzeAsset|Preview/.test(name)) return 'look';
+    if (/^(get|list|search|read|find)/.test(name)) return 'read';
+    return 'none';
+}
+
+function buildAggregateLabel(category: ToolAggregateCategory, count: number): string {
+    if (category === 'look') return `查看了 ${count} 张画面`;
+    return `读取了 ${count} 项信息`;
 }
 
 /**
@@ -96,7 +120,56 @@ function mergeRepeatedSteps(steps: ThinkingStep[]): MergedThinkingStep[] {
         }
         merged.push({ key: step.id, step, repeat: 1 });
     }
-    return merged;
+    return applyCategoryAggregation(merged);
+}
+
+/**
+ * 第二级聚合（codex 化）：相邻的不同工具、但同一语义类别的成功小动作，
+ * 收成一条「查看了 N 张画面 / 读取了 N 项信息」，展开显示逐条明细。
+ * 只聚 2 条以上；带快照 / 失败 / 运行中的步骤保持独立不吞。
+ */
+function applyCategoryAggregation(merged: MergedThinkingStep[]): MergedThinkingStep[] {
+    const out: MergedThinkingStep[] = [];
+    let bucket: MergedThinkingStep[] = [];
+    let bucketCategory: ToolAggregateCategory = 'none';
+
+    const flush = (): void => {
+        if (bucket.length >= 2) {
+            const count = bucket.reduce((sum, item) => sum + item.repeat, 0);
+            out.push({
+                key: `agg-${bucket[0].key}`,
+                step: bucket[bucket.length - 1].step,
+                repeat: count,
+                members: bucket.map((item) => item.step),
+                aggregateLabel: buildAggregateLabel(bucketCategory, count)
+            });
+        } else if (bucket.length === 1) {
+            out.push(bucket[0]);
+        }
+        bucket = [];
+        bucketCategory = 'none';
+    };
+
+    for (const item of merged) {
+        const { step } = item;
+        const category = isActionStep(step) && step.status === 'success' && !step.imageData
+            ? resolveToolAggregateCategory(step.toolName)
+            : 'none';
+        if (category !== 'none' && (bucket.length === 0 || category === bucketCategory)) {
+            bucketCategory = category;
+            bucket.push(item);
+            continue;
+        }
+        flush();
+        if (category !== 'none') {
+            bucketCategory = category;
+            bucket.push(item);
+        } else {
+            out.push(item);
+        }
+    }
+    flush();
+    return out;
 }
 
 function getDisplayRole(step: ThinkingStep): ThinkingStepDisplayRole {
@@ -182,6 +255,14 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
 }) => {
     // 已展开步骤（看"已查看/已读取"的具体内容）；默认收起，保持过程面板清爽。
     const [expandedStepIds, setExpandedStepIds] = useState<Record<string, boolean>>({});
+    // codex 式耗时头：进行中每秒跳动，跳动的时间本身就是活性信号（替代「正在设计」标题与状态点）。
+    const [nowTick, setNowTick] = useState(() => Date.now());
+    const anyActive = hasActiveThinkingStep(steps);
+    React.useEffect(() => {
+        if (!anyActive) return undefined;
+        const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
+        return () => window.clearInterval(timer);
+    }, [anyActive]);
     // 正在看大图的那张画面快照；null 表示没打开预览
     const [zoomedSnapshot, setZoomedSnapshot] = useState<{ src: string; alt: string } | null>(null);
     // 各步骤快照的真实宽高比（宽/高），由图片 onLoad 后的 naturalWidth/Height 得到。
@@ -219,22 +300,74 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
         setZoomedSnapshot({ src, alt });
     };
 
-    const renderStepPanel = (title: string, panelSteps: ThinkingStep[]) => panelSteps.length > 0 ? (
+    const formatElapsed = (panelSteps: ThinkingStep[]): string => {
+        const first = panelSteps[0]?.timestamp;
+        if (!first) return '';
+        const last = hasActiveThinkingStep(panelSteps)
+            ? nowTick
+            : Math.max(...panelSteps.map((step) => step.timestamp));
+        const totalSeconds = Math.max(0, Math.round((last - first) / 1000));
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return minutes > 0 ? `已处理 ${minutes}分${String(seconds).padStart(2, '0')}秒` : `已处理 ${seconds}秒`;
+    };
+
+    // 2026-08-25 codex 化：面板不再有「正在设计」标题与状态点——codex 的顶部只是一行
+    // 耗时（进行中每秒跳动即活性信号），内容本身（模型叙事与动作行）就是过程。
+    const renderStepPanel = (_title: string, panelSteps: ThinkingStep[]) => panelSteps.length > 0 ? (
         <div className={`${embedded ? 'thinking-embedded' : 'thinking-simple'} ${className}`}>
             {!embedded && (
-                <div className="pondering-header">
-                    {/* 状态点进行中才亮蓝呼吸（样式钩子 is-active），与对话标签页的执行指示点同一套观感 */}
-                    <span className={`pondering-dot ${hasActiveThinkingStep(panelSteps) ? 'is-active' : ''}`}></span>
-                    {/* 标题在进行中才带扫光（样式钩子 is-active）：强调留给整体状态这一行，
-                        下面的明细列表保持静态，否则满屏都在动反而没有重点。 */}
-                    <span className={`pondering-title ${hasActiveThinkingStep(panelSteps) ? 'is-active' : ''}`}>
-                        {title}
-                    </span>
-                </div>
+                <div className="pondering-elapsed">{formatElapsed(panelSteps)}</div>
             )}
 
             <div className="pondering-steps">
-                {mergeRepeatedSteps(panelSteps).map(({ key: stepKey, step, repeat }) => {
+                {(() => {
+                    const mergedSteps = mergeRepeatedSteps(panelSteps);
+                    // 单一活性点原则（codex 铁律）：任意时刻至多一处扫光/旋转——只有最末一条
+                    // 进行中的行是「当前活动」；其余进行中的行静态染色即可，满屏多处动效没有重点。
+                    let liveKey = '';
+                    for (const item of mergedSteps) {
+                        if (item.step.status === 'running' || item.step.status === 'pending') liveKey = item.key;
+                    }
+                    return mergedSteps.map(({ key: stepKey, step, repeat, members, aggregateLabel }) => {
+                        const liveClass = stepKey === liveKey ? 'is-live' : '';
+                    // 类别聚合组：一行人话 + lucide 图标 + 可展开明细（codex 化 P1.75）
+                    if (aggregateLabel && members) {
+                        const expanded = Boolean(expandedStepIds[stepKey]);
+                        const AggIcon = aggregateLabel.startsWith('查看') ? Images : FileSearch;
+                        return (
+                            <div key={stepKey} className="pondering-step success is-action pondering-aggregate">
+                                <span className="step-node" aria-hidden="true" />
+                                <div className="step-body">
+                                    <div className="step-line step-line--expandable">
+                                        <AggIcon size={13} strokeWidth={1.9} className="agg-icon" aria-hidden="true" />
+                                        <span className="step-text">{aggregateLabel}</span>
+                                        <button
+                                            type="button"
+                                            className={`step-expand-toggle ${expanded ? 'is-expanded' : ''}`}
+                                            aria-expanded={expanded}
+                                            aria-label={expanded ? '收起明细' : '展开逐条明细'}
+                                            onClick={() => toggleStepExpanded(stepKey)}
+                                        >
+                                            <ChevronDown size={11} strokeWidth={2.4} aria-hidden="true" />
+                                        </button>
+                                    </div>
+                                    {expanded && (
+                                        <ul className="agg-members">
+                                            {members.map((member) => (
+                                                <li key={member.id}>
+                                                    <span>{member.toolName ? getToolDisplayInfo(member.toolName).name : cleanInlineProcessText(member.content)}</span>
+                                                    {typeof member.duration === 'number' && member.duration > 0 && (
+                                                        <span className="agg-duration">{(member.duration / 1000).toFixed(1)}s</span>
+                                                    )}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    }
                     const displayRole = getDisplayRole(step);
                     const isTool = isActionStep(step) || displayRole === 'action';
                     // 语义标签不再以文字 pill 占据版面，转为可访问性属性（hover/读屏可见）；
@@ -256,7 +389,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                     return (
                         <div
                             key={stepKey}
-                            className={`pondering-step ${step.status} ${isTool ? 'is-action' : 'is-thought'} pondering-step--${displayRole}`}
+                            className={`pondering-step ${step.status} ${liveClass} ${isTool ? 'is-action' : 'is-thought'} pondering-step--${displayRole}`}
                             title={semanticLabel}
                             aria-label={semanticLabel}
                         >
@@ -344,7 +477,8 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                             )}
                         </div>
                     );
-                })}
+                    });
+                })()}
             </div>
         </div>
     ) : null;

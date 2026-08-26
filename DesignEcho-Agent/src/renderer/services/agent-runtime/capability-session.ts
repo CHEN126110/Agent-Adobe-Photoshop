@@ -134,6 +134,10 @@ function unique(values: readonly string[]): string[] {
  * 非设计对话继续只拿 Harness baseline，不暴露写入起手式。
  */
 export const DESIGN_EXECUTION_FOUNDATION_CAPABILITY_IDS: readonly string[] = Object.freeze([
+    // 设计执行已经由结构化委托确认时，让模型首轮即可声明自己理解到的 Runtime Profile。
+    // 该 schema 的可见性不替模型选择 Profile、不自行绑定 Manifest、不授予 Photoshop 权限；
+    // 只有模型调用后现有 Resolver 才处理声明，绑定成功即将它从能力面退役，避免重复声明。
+    'agent.intent.declareDesignTask',
     // 项目级观察与候选比较都在首轮可见，只降低能力发现成本，不规定设计步骤：
     // 总览用于会改变开放设计方向的库存/商品身份/素材角色未知；推荐只比较具体需求的候选。
     'project.observeAssets',
@@ -158,6 +162,9 @@ export const DESIGN_EXECUTION_FOUNDATION_CAPABILITY_IDS: readonly string[] = Obj
     // 或审美答案，只让模型能增补素材、调整几何、建立图形关系与修改文字样式。
     'photoshop.write.placeImage',
     'photoshop.write.transformLayer',
+    // 主体大小/裁切是跨品类的通用视觉修订能力。直接可见只减少能力发现回合；
+    // 比例与锚点仍必须由 Agent 显式声明，工具只求解几何并返回同版本局部画面。
+    'photoshop.write.fitLayerSubjectToRegion',
     'photoshop.sandbox.createShape',
     'photoshop.write.setTextStyle'
 ]);

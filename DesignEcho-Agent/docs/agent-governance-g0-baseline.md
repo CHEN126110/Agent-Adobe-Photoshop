@@ -19,7 +19,7 @@
 | `npm run audit:tools` | 通过，151 个 Tool schema | 当前正则口径下 display、scope、UXP→schema 无缺项 | 不能证明分类正确、执行可达、参数一致或 UXP ToolRegistry 真注册 |
 | `npm run audit:capability-resolver` | 通过，0 violation | 当前 Resolver 没有第二张 Capability Registry 或任务文本 fallback | 不能证明生产 R0 一定把选中 Skill 交给 Resolver |
 | `node scripts/report-agent-architecture.cjs --json` | `architectureStatus=blocked` | 当前架构仍未成熟完成 | 报告中的文档/Smoke 存在不等于运行时 owner 已统一 |
-| `npm run maintenance:business-skills-live-e2e:preflight` | `ready=false`，三 Skill 均 `partial_runner` | 现有 runner 源码标记和本机端口状态 | 源码字符串不是执行证据；TCP 可达不等于 UXP connected 或 E2E 通过 |
+| `npm run maintenance:business-skills-live-e2e:preflight` | 当时 `ready=false`，三 Skill 均 `partial_runner` | 当时的 runner 源码标记和本机端口状态 | 这是历史 G0 基线；当前入口已由 Design Reliability 固定 Case / TaskRun 证据 / 人工评审体系取代，源码字符串与 TCP 可达不再作为实机通过证据 |
 
 本轮端口 8765-8768 和 Ollama 均可达，但没有执行 Photoshop 写入。该事实只表示基础设施端口当前可连接。
 

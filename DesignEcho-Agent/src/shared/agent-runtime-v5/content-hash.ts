@@ -104,6 +104,16 @@ export function computeFastFingerprint(value: unknown): string {
 
 /** SHA-256（纯 JS 同步实现）。输入按 UTF-8 编码，返回 64 位小写 hex。 */
 export function sha256Hex(message: string): string {
+    return sha256BytesHex(new TextEncoder().encode(message));
+}
+
+/**
+ * SHA-256 原始字节入口。
+ *
+ * 与 `sha256Hex` 的 UTF-8 文本语义刻意分开：图像 presentation receipt 必须对
+ * Base64 解码后的真实字节取摘要，不能把 Base64 文本本身冒充像素载荷摘要。
+ */
+export function sha256BytesHex(data: Uint8Array): string {
     const K = new Uint32Array([
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
         0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -124,7 +134,6 @@ export function sha256Hex(message: string): string {
     let h6 = 0x1f83d9ab;
     let h7 = 0x5be0cd19;
 
-    const data = new TextEncoder().encode(message);
     const bitLen = data.length * 8;
     const paddedLen = (Math.floor((data.length + 8) / 64) + 1) * 64;
     const buf = new Uint8Array(paddedLen);

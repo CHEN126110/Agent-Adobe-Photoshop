@@ -115,7 +115,6 @@ import {
     type ConversationalProviderFailureKind
 } from '../../../shared/conversational-unavailable-message';
 import {
-    resolveInteractiveContinuationMutationState,
     type InteractiveContinuationMutationState
 } from '../../../shared/interactive-continuation-operation';
 import {
@@ -126,7 +125,6 @@ import {
     resolveAgentInternalResumeRequest
 } from '../../../shared/interactive-review-resume';
 import {
-    beginInteractiveContinuationOperation,
     getInteractiveContinuationOperation,
     settleInteractiveContinuationOperation
 } from '../interactive-continuation-operation-client';
@@ -195,10 +193,7 @@ import {
     classifyAgentToolExecution,
     resolveAuthorizedExactPropertyReplacementExecutionScope
 } from '../../../shared/agent-tool-execution-preflight';
-import {
-    claimRuntimeTaskRunWriterBinding,
-    releaseRuntimeTaskRunWriterBinding
-} from '../../../shared/agent-runtime-v5/runtime-session';
+import type { RuntimeInteractiveReentry } from '../../../shared/agent-runtime-v5/runtime-interactive-reentry';
 import { extractModelJsonObject } from '../../../shared/model-json-extract';
 import {
     collectAgentTaskPublicPlanOperationParamBlockers,
@@ -211,24 +206,18 @@ import {
     type AgentReActObservation
 } from '../../../shared/agent-react-observation-contract';
 import {
+    buildRuntimeInteractivePhotoshopObservation,
+    prepareRuntimeInteractiveResume
+} from './interactive-continuation-reentry-controller';
+import { runRuntimeInteractiveContinuation } from './interactive-continuation-reentry-runner';
+import {
     buildDesignIntelligenceProjectContextSummary,
     type DesignIntelligenceAgentDecision,
     type DesignIntelligenceWorkflowPhase,
     type DesignIntelligenceWorkflowStep
 } from '../../../shared/design-intelligence-plan';
 import { buildProjectDesignUnderstandingSummary } from '../../../shared/project-design-understanding-summary';
-function buildInteractiveContinuationExecutionRunId(
-    requestId: string | undefined,
-    continuationId: string
-): string {
-    const normalizedRequestId = String(requestId || '').trim();
-    if (normalizedRequestId) return normalizedRequestId;
-    if (typeof globalThis.crypto?.randomUUID === 'function') {
-        return `interactive-continuation-${globalThis.crypto.randomUUID()}`;
-    }
-    const fallbackNonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    return `interactive-continuation-${String(continuationId || 'unknown').trim()}-${fallbackNonce}`;
-}
+
 
 function isClearlyBrokenThinking(text?: string): boolean {
     const value = String(text || '').trim();
@@ -2751,6 +2740,9 @@ async function executeSkillWithLifecycle(
         callModel?: ProcessOptions['callModel'];
         warnings?: string[];
         observations?: Array<{ source: string; summary: string }>;
+        agentTaskPlanOverride?: AgentTaskPlanningContract;
+        runtimeInteractiveReentry?: RuntimeInteractiveReentry;
+        adoptRuntimeInteractiveReentry?: () => boolean;
         /** 仅由已确认制作语义、结构化 continuation 或受控 owner 显式签发。 */
         requiresTaskProgress?: boolean;
         /** 检查只要求观察；明确制作才要求交付动作。 */
@@ -2791,13 +2783,23 @@ async function executeSkillWithLifecycle(
     const taskProgressObligation = requiresTaskProgress
         ? options.taskProgressObligation || 'delivery'
         : 'none';
-    const planning = buildAgentTaskPlanForLifecycle(
-        lifecycle,
-        options.intentControlPlane,
-        shouldRunGeneratedPublicPlan,
-        requiresTaskProgress,
-        taskProgressObligation
-    );
+    const planning = options.agentTaskPlanOverride
+        ? {
+            intentControlPlane: options.intentControlPlane || buildAgentIntentControlPlaneDecision({
+                userInput: context.userInput,
+                hasImageInput: hasContextImageInput(context),
+                hasDocument: context.photoshopContext?.hasDocument,
+                photoshopConnected: context.isPluginConnected
+            }),
+            agentTaskPlan: options.agentTaskPlanOverride
+        }
+        : buildAgentTaskPlanForLifecycle(
+            lifecycle,
+            options.intentControlPlane,
+            shouldRunGeneratedPublicPlan,
+            requiresTaskProgress,
+            taskProgressObligation
+        );
     // Photoshop 未连接时对「需要 Photoshop 的任务」一律诚实前置失败：不进循环、不生成
     // 「让我检查一下文档状态」这类承诺动作却什么都做不了的漂亮话（真机：PS 断连时详情页任务
     // 连答两轮"我先检查一下"、零执行）。做不到就直说做不到，并指出用户该做什么。
@@ -2966,7 +2968,9 @@ async function executeSkillWithLifecycle(
                     callbacks: options.callbacks,
                     signal: options.signal,
                     context,
-                    agentTaskPlan: planning.agentTaskPlan
+                    agentTaskPlan: planning.agentTaskPlan,
+                    runtimeInteractiveReentry: options.runtimeInteractiveReentry,
+                    adoptRuntimeInteractiveReentry: options.adoptRuntimeInteractiveReentry
                 });
                 const fallbackResultWithOrigin = await mediateSkillResultUserReplyWithModel({
                     result: fallbackResult,
@@ -3004,7 +3008,9 @@ async function executeSkillWithLifecycle(
         callbacks: options.callbacks,
         signal: options.signal,
         context,
-        agentTaskPlan: planning.agentTaskPlan
+        agentTaskPlan: planning.agentTaskPlan,
+        runtimeInteractiveReentry: options.runtimeInteractiveReentry,
+        adoptRuntimeInteractiveReentry: options.adoptRuntimeInteractiveReentry
     });
     const resultWithOrigin = await mediateSkillResultUserReplyWithModel({
         result,
@@ -3150,7 +3156,12 @@ export class DesignAgentEngine {
                 || ledgerResult.record.continuation.taskRunBinding?.expectedRevision?.documentId
                 || 0
             );
-            const freshPhotoshopContext = expectedPhotoshopDocumentId > 0
+            const runtimeOwnsPhotoshopState = Boolean(
+                ledgerResult.record.continuation.taskRunBinding
+            );
+            const shouldReadFreshPhotoshopContext = runtimeOwnsPhotoshopState
+                || expectedPhotoshopDocumentId > 0;
+            const freshPhotoshopContext = shouldReadFreshPhotoshopContext
                 ? await getPhotoshopContext({ signal })
                 : undefined;
             const currentPhotoshopDocumentId = freshPhotoshopContext?.hasDocument
@@ -3165,13 +3176,12 @@ export class DesignAgentEngine {
                 projectId: context.projectContext?.projectId,
                 projectPath: context.projectContext?.projectPath,
                 photoshopDocumentId: currentPhotoshopDocumentId,
-                photoshopHistoryStateRef: freshPhotoshopContext?.historyStateRef
+                photoshopHistoryStateRef: freshPhotoshopContext?.historyStateRef,
+                photoshopStateOwner: runtimeOwnsPhotoshopState
+                    ? 'runtime_session'
+                    : 'continuation_envelope'
             });
             if (resolution.status === 'rejected') {
-                if (resolution.code === 'interactive_continuation_photoshop_revision_mismatch') {
-                    const taskRunId = ledgerResult.record.continuation.taskRunBinding?.taskRunId;
-                    if (taskRunId) releaseRuntimeTaskRunWriterBinding({ taskRunId });
-                }
                 const message = [
                     resolution.message,
                     '确认操作尚未取得执行权，卡片会保留；恢复原对话、项目和 Photoshop 文档后可以再次确认。'
@@ -3196,183 +3206,214 @@ export class DesignAgentEngine {
                 );
             }
 
-            if (resolution.taskRunBinding?.expectedRevision) {
-                const writerDecision = claimRuntimeTaskRunWriterBinding({
-                    taskRunId: resolution.taskRunBinding.taskRunId,
-                    runId: resolution.taskRunBinding.runId,
-                    generation: resolution.taskRunBinding.generation,
-                    expectedRevision: resolution.taskRunBinding.expectedRevision
-                });
-                if (!writerDecision.allowed) {
-                    const message = writerDecision.status === 'conflict'
-                        ? '另一个 TaskRun 已持有当前 Photoshop 文档的写入身份；这张确认卡本轮不会执行。'
-                        : '这张确认卡绑定的 Photoshop 历史版本已经失效；重新观察前不会自动重放旧写入。';
-                    return attachLifecycle(
-                        withAssistantReplyOrigin(
-                            {
-                                success: false,
-                                message,
-                                error: writerDecision.code
-                            },
-                            deterministicBlockerReplyOrigin('interactive-continuation:task-run-writer-rejected')
-                        ),
-                        buildLifecycle(context, {
-                            routeSource: 'intent_control_plane',
-                            route: 'direct_response',
-                            intentSummary: '交互确认操作未取得 TaskRun 单写者身份。',
-                            reason: '当前文档已有其他写者，或确认卡绑定的历史版本已失效。',
-                            executionKind: 'none',
-                            blockers: [message]
-                        })
-                    );
+            const runtimeResume = prepareRuntimeInteractiveResume({
+                continuationId: resolution.continuation.id,
+                taskRunBinding: resolution.taskRunBinding,
+                photoshopObservation: buildRuntimeInteractivePhotoshopObservation(
+                    freshPhotoshopContext
+                )
+            });
+            if (runtimeResume.status === 'not_applicable') {
+                const message = '这张历史确认卡缺少可恢复的 TaskRun 身份，本轮没有执行。请重新发起当前任务。';
+                return attachLifecycle(
+                    withAssistantReplyOrigin(
+                        {
+                            success: false,
+                            message,
+                            error: 'runtime_interactive_task_run_binding_missing'
+                        },
+                        deterministicBlockerReplyOrigin('interactive-continuation:runtime-binding-missing')
+                    ),
+                    buildLifecycle(context, {
+                        routeSource: 'intent_control_plane',
+                        route: 'direct_response',
+                        intentSummary: '交互确认缺少可恢复的 TaskRun 身份。',
+                        reason: '未绑定的历史卡片不能伪造新 Runtime 或直接重放 Skill。',
+                        executionKind: 'none',
+                        blockers: [message]
+                    })
+                );
+            }
+            if (runtimeResume.status === 'checkpoint_missing'
+                || runtimeResume.status === 'resume_rejected') {
+                const checkpointMissing = runtimeResume.status === 'checkpoint_missing';
+                if (checkpointMissing
+                    && ledgerResult.record.status === 'claimed'
+                    && resolution.taskRunBinding) {
+                    await settleInteractiveContinuationOperation({
+                        ...continuationOperationIdentity,
+                        status: 'failed',
+                        mutationState: 'none',
+                        summary: '原 Runtime checkpoint 已失效；确认操作未进入 Skill 执行。'
+                    });
                 }
+                let message = '当前 Photoshop 画面已经和确认前不同，我没有重放旧操作。请重新查看当前画面后再发起任务。';
+                if (checkpointMissing) {
+                    message = '这次确认对应的原任务运行状态已经失效，我没有继续修改 Photoshop。请重新发起当前任务；已有画面会保留。';
+                } else if (runtimeResume.code === 'runtime_interactive_checkpoint_busy') {
+                    message = '这张确认卡正在由原任务继续处理，本轮没有重复执行。';
+                }
+                return attachLifecycle(
+                    withAssistantReplyOrigin(
+                        { success: false, message, error: runtimeResume.code },
+                        deterministicBlockerReplyOrigin(`interactive-continuation:${checkpointMissing ? 'runtime-checkpoint-missing' : 'runtime-resume-rejected'}`)
+                    ),
+                    buildLifecycle(context, {
+                        routeSource: 'intent_control_plane',
+                        route: 'direct_response',
+                        intentSummary: checkpointMissing
+                            ? '交互确认缺少可恢复的原 Runtime 状态。'
+                            : '原 TaskRun 没有通过同代恢复校验。',
+                        reason: runtimeResume.code,
+                        executionKind: 'none',
+                        blockers: [message]
+                    })
+                );
             }
 
             callbacks?.onStep?.({
                 kind: 'observation',
                 title: '已承接确认内容',
-                detail: '正在继续原挂起操作，不会重新理解或重新生成方案。',
+                detail: '已核对本次确认与原任务，正在继续后续处理。',
                 status: 'success',
                 percent: 8,
                 source: 'agent_runtime',
                 audience: 'user',
                 visibility: 'user_process'
             });
-            const continuationExecutionRunId = buildInteractiveContinuationExecutionRunId(
-                context.requestId,
-                request.continuationId
-            );
-            const beginResult = await beginInteractiveContinuationOperation({
-                ...continuationOperationIdentity,
-                executionRunId: continuationExecutionRunId
-            });
-            if (!beginResult.success) {
-                const message = beginResult.message || '确认操作没有取得唯一执行权，本轮不会写入 Photoshop。';
-                return attachLifecycle(
-                    withAssistantReplyOrigin(
-                        {
-                            success: false,
-                            message,
-                            error: beginResult.code || 'interactive_continuation_operation_begin_failed'
+            const continuationRun = await runRuntimeInteractiveContinuation({
+                requestId: context.requestId,
+                operationIdentity: continuationOperationIdentity,
+                resolution,
+                preparation: runtimeResume,
+                executeSkill: async (runtimeSkillExecutionLineage) => await executeSkillTool(
+                    resolution.skillId,
+                    resolution.params,
+                    {
+                        callbacks,
+                        signal,
+                        context,
+                        trustedInteractiveContinuation: resolution,
+                        runtimeSkillExecutionLineage,
+                        agentTaskPlan: resolution.agentTaskPlan as AgentTaskPlanningContract | undefined
+                    }
+                ),
+                readPhotoshopObservation: async () => (
+                    buildRuntimeInteractivePhotoshopObservation(
+                        await getPhotoshopContext({ signal })
+                    )
+                ),
+                executeAgentReentry: async ({ reentry, reentryTask, adopt }) => {
+                    const resumedContext: AgentContext = {
+                        ...context,
+                        userInput: reentryTask,
+                        interactiveContinuationRequest: undefined
+                    };
+                    const autonomousDecision = buildAutonomousExecutionDecisionForEngine(
+                        '用户确认已由原 Workflow 消费；以同一 RuntimeSession 和 TaskRun 身份把非终态 handoff 交还 Agent。'
+                    );
+                    callbacks?.onStep?.({
+                        kind: 'observation',
+                        title: '确认完成，继续制作',
+                        detail: '已沿用刚才的任务进度和确认内容，继续完成后续画面。',
+                        status: 'running',
+                        percent: 12,
+                        source: 'agent_runtime',
+                        audience: 'user',
+                        visibility: 'user_process'
+                    });
+                    return await executeSkillWithLifecycle(resumedContext, {
+                        skillId: 'autonomous-agent',
+                        params: {
+                            ...buildAutonomousSkillParams(resumedContext, autonomousDecision),
+                            userTask: reentryTask
                         },
-                        deterministicBlockerReplyOrigin('interactive-continuation:ledger-begin-rejected')
-                    ),
-                    buildLifecycle(context, {
+                        callbacks,
+                        signal,
                         routeSource: 'intent_control_plane',
-                        route: 'direct_response',
-                        intentSummary: '交互确认操作未取得唯一执行权。',
-                        reason: '持久化操作账本拒绝了重复、冲突或不确定状态。',
-                        executionKind: 'none',
-                        blockers: [message]
-                    })
-                );
-            }
-            let result: any;
-            try {
-                result = await executeSkillTool(resolution.skillId, resolution.params, {
-                    callbacks,
-                    signal,
-                    context,
-                    trustedInteractiveContinuation: resolution,
-                    agentTaskPlan: resolution.agentTaskPlan as AgentTaskPlanningContract | undefined
-                });
-            } catch (error) {
-                const errorMessage = error instanceof Error ? error.message : String(error || '执行异常');
-                const settlement = await settleInteractiveContinuationOperation({
-                    ...continuationOperationIdentity,
-                    status: 'failed',
-                    mutationState: 'unknown',
-                    executionRunId: continuationExecutionRunId,
-                    summary: errorMessage
-                });
-                if (!settlement.success) {
-                    throw new Error(`${errorMessage}；${settlement.message}`);
-                }
-                if (settlement.record?.status === 'unknown') {
-                    throw new Error(`${errorMessage}；${settlement.message}`);
-                }
-                throw error;
-            }
-            const continuationMutationState = resolveInteractiveContinuationMutationState(result);
-            const settlement = await settleInteractiveContinuationOperation({
-                ...continuationOperationIdentity,
-                status: result.success === true ? 'succeeded' : 'failed',
-                mutationState: continuationMutationState,
-                executionRunId: continuationExecutionRunId,
-                summary: result.success === true
-                    ? String(result.message || result.skillOutcome?.status || '执行完成')
-                    : String(result.error || result.message || '执行失败')
-            });
-            if (!settlement.success) {
-                const message = buildInteractiveContinuationSettlementFailureMessage(
-                    continuationMutationState,
-                    settlement.message,
-                    result.success === true
-                );
-                const settlementFailureStatus = continuationMutationState === 'none'
-                    ? 'failed'
-                    : 'unknown';
-                if (continuationMutationState === 'none' && resolution.taskRunBinding) {
-                    releaseRuntimeTaskRunWriterBinding({
-                        taskRunId: resolution.taskRunBinding.taskRunId
+                        route: 'autonomous_agent',
+                        executionKind: 'autonomous_agent',
+                        intentSummary: '交互确认后继续同一 Agent TaskRun。',
+                        reason: '结构化 handoff 已通过 operation ledger、卡片、项目、文档和 RuntimeSession 同代校验。',
+                        callModel,
+                        intentControlPlane: autonomousDecision,
+                        agentTaskPlanOverride: resolution.agentTaskPlan as AgentTaskPlanningContract | undefined,
+                        runtimeInteractiveReentry: reentry,
+                        adoptRuntimeInteractiveReentry: adopt,
+                        requiresTaskProgress: true,
+                        taskProgressObligation: 'delivery'
                     });
                 }
+            });
+            if (continuationRun.kind === 'agent_result') {
+                const autonomousData = continuationRun.result.data
+                    && typeof continuationRun.result.data === 'object'
+                    ? continuationRun.result.data as Record<string, unknown>
+                    : {};
+                return {
+                    ...continuationRun.result,
+                    data: {
+                        ...autonomousData,
+                        interactiveContinuationResolution: {
+                            version: 'interactive-continuation-resolution/v0',
+                            continuationId: resolution.continuation.id,
+                            sourceMessageId: resolution.sourceMessageId,
+                            cardId: resolution.submission.cardId,
+                            status: continuationRun.continuationStatus,
+                            resumedExistingTaskRun: continuationRun.adopted,
+                            taskRunId: resolution.taskRunBinding?.taskRunId
+                        }
+                    }
+                };
+            }
+            if (continuationRun.kind === 'blocked') {
+                let message = continuationRun.message;
+                let replyOrigin = 'interactive-continuation:task-run-writer-rejected';
+                let intentSummary = '交互确认操作未取得 TaskRun 单写者身份。';
+                let reason = '当前文档已有其他写者，或确认卡绑定的历史版本已失效。';
+                if (continuationRun.phase === 'ledger_begin') {
+                    replyOrigin = 'interactive-continuation:ledger-begin-rejected';
+                    intentSummary = '交互确认操作未取得唯一执行权。';
+                    reason = '持久化操作账本拒绝了重复、冲突或不确定状态。';
+                } else if (continuationRun.phase === 'ledger_settlement') {
+                    const mutationState = continuationRun.mutationState || 'unknown';
+                    message = buildInteractiveContinuationSettlementFailureMessage(
+                        mutationState,
+                        continuationRun.message,
+                        continuationRun.operationSucceeded === true
+                    );
+                    replyOrigin = mutationState === 'none'
+                        ? 'interactive-continuation:ledger-settlement-failed-without-mutation'
+                        : 'interactive-continuation:ledger-settlement-unknown';
+                    intentSummary = mutationState === 'none'
+                        ? '交互确认操作失败且没有产生 Photoshop 修改，但账本未完成结算。'
+                        : '交互确认操作结算状态不确定。';
+                    reason = mutationState === 'none'
+                        ? '运行结果已明确报告零修改；仅持久化结算失败。'
+                        : '执行结果与持久化账本未能原子收敛，禁止自动重放。';
+                }
                 return attachLifecycle(
                     withAssistantReplyOrigin(
-                        {
-                            success: false,
-                            message,
-                            error: settlement.code,
-                            data: {
-                                interactiveContinuationResolution: {
-                                    version: 'interactive-continuation-resolution/v0',
-                                    continuationId: resolution.continuation.id,
-                                    sourceMessageId: resolution.sourceMessageId,
-                                    cardId: resolution.submission.cardId,
-                                    status: settlementFailureStatus
-                                }
-                            }
-                        },
-                        deterministicBlockerReplyOrigin(
-                            continuationMutationState === 'none'
-                                ? 'interactive-continuation:ledger-settlement-failed-without-mutation'
-                                : 'interactive-continuation:ledger-settlement-unknown'
-                        )
+                        { success: false, message, error: continuationRun.code },
+                        deterministicBlockerReplyOrigin(replyOrigin)
                     ),
                     buildLifecycle(context, {
                         routeSource: 'intent_control_plane',
                         route: 'direct_response',
-                        intentSummary: continuationMutationState === 'none'
-                            ? '交互确认操作失败且没有产生 Photoshop 修改，但账本未完成结算。'
-                            : '交互确认操作结算状态不确定。',
-                        reason: continuationMutationState === 'none'
-                            ? '运行结果已明确报告零修改；仅持久化结算失败，不得描述为 Photoshop 已开始后异常。'
-                            : '执行结果与持久化账本未能原子收敛，禁止自动重放。',
+                        intentSummary,
+                        reason,
                         executionKind: 'none',
                         blockers: [message]
                     })
                 );
             }
-            const resultData = result.data && typeof result.data === 'object'
-                ? result.data
+            const resultData = continuationRun.result.data
+                && typeof continuationRun.result.data === 'object'
+                ? continuationRun.result.data
                 : {};
-            let continuationExecutionStatus: 'awaiting_confirmation' | 'executed' | 'failed' | 'unknown' = 'failed';
-            if (settlement.record?.status === 'unknown') {
-                continuationExecutionStatus = 'unknown';
-            } else if (result.skillOutcome?.status === 'awaiting_confirmation') {
-                continuationExecutionStatus = 'awaiting_confirmation';
-            } else if (result.success === true) {
-                continuationExecutionStatus = 'executed';
-            }
-            if ((continuationExecutionStatus === 'executed' || continuationExecutionStatus === 'failed')
-                && resolution.taskRunBinding) {
-                releaseRuntimeTaskRunWriterBinding({
-                    taskRunId: resolution.taskRunBinding.taskRunId
-                });
-            }
             return attachLifecycle(
                 {
-                    ...result,
+                    ...continuationRun.result,
                     data: {
                         ...resultData,
                         interactiveContinuationResolution: {
@@ -3380,7 +3421,7 @@ export class DesignAgentEngine {
                             continuationId: resolution.continuation.id,
                             sourceMessageId: resolution.sourceMessageId,
                             cardId: resolution.submission.cardId,
-                            status: continuationExecutionStatus
+                            status: continuationRun.settlementStatus || 'failed'
                         }
                     }
                 },

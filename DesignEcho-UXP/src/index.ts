@@ -14,7 +14,8 @@ import { ToolRegistry } from './tools/registry';
 import { disableLogging } from './core/logger';
 import { BinaryMessageType, BinaryHeader } from './core/binary-protocol';
 import { getEntryFromPath } from './core/file-url';
-import { exportActiveSelectionAsDesignAssetWithJsx, openDocumentWithJsx, saveNamedDocumentWithJsx } from './core/jsx-bridge';
+import { openDocumentWithJsx, saveNamedDocumentWithJsx } from './core/jsx-bridge';
+import { exportSelectedLayersAsDesignAsset } from './core/design-asset-export';
 import { createTemplateLibraryStateCoordinator } from './core/template-library-state-coordinator';
 import { base64ToUint8Array } from './core/base64';
 import { forceRefreshCanvas } from './core/canvas-refresh';
@@ -43,6 +44,7 @@ import {
     TEMPLATE_LIBRARY_PREVIEW_JPEG_QUALITY,
     TEMPLATE_LIBRARY_MAX_BINARY_BASE64_LENGTH,
     buildOptimisticTemplateLibraryImportOverrides,
+    collectTemplateLibraryLayerIdsInStackOrder,
     getTemplateLibraryErrorMessage,
     getTemplateLibraryLayerBounds,
     getTemplateLibraryParentRelativePath,
@@ -1909,7 +1911,8 @@ async function loadTemplateLibraryForWebView(): Promise<void> {
 
 async function exportTemplateLibrarySelectionToTempFile(
     doc: any,
-    selectedLayers: any[],
+    orderedLayers: any[],
+    unionBounds: { left: number; top: number; right: number; bottom: number },
     exportBaseName: string
 ): Promise<{
     extension: 'psd' | 'psb';
@@ -1924,19 +1927,24 @@ async function exportTemplateLibrarySelectionToTempFile(
         throw new Error('Failed to resolve the temporary folder for design asset export.');
     }
 
-    // Design-library assets export through a single Photoshop-native route:
-    // duplicate document -> convert selection to smart object -> save smart object contents.
+    // 设计库导出走 UXP 原生链路（design-asset-export.ts）：按图层对象逐层复制进
+    // 并集尺寸的临时小文档再保存。不做整文档 duplicate、不依赖选中状态、
+    // 不经 ExtendScript——拖拽落下的瞬间跑 ExtendScript 会"JavaScript 代码丢失"空返回。
     const tempFileBaseName = sanitizeTemplateLibraryAssetFileName(exportBaseName || doc?.name || 'design-asset');
-    const exportPathBase = `${tempFolderPath}/${tempFileBaseName}-${Date.now()}`;
-    const previewFilePath = `${tempFolderPath}/designecho-design-asset-preview-${Date.now()}.jpg`;
+    const fileBaseName = `${tempFileBaseName}-${Date.now()}`;
+    const previewFileName = `designecho-design-asset-preview-${Date.now()}.jpg`;
+    const previewFilePath = `${tempFolderPath}/${previewFileName}`;
     let exportedFilePath = '';
     let keepExportedFile = false;
 
     try {
-        const exportResult = await exportActiveSelectionAsDesignAssetWithJsx({
-            fileBasePath: exportPathBase,
-            previewFilePath,
-            expectedSelectionCount: selectedLayers.length,
+        const exportResult = await exportSelectedLayersAsDesignAsset({
+            sourceDocument: doc,
+            orderedLayers,
+            unionBounds,
+            targetFolder: tempFolderEntry,
+            fileBaseName,
+            previewFileName,
             assetName: exportBaseName || doc?.name || 'design-asset',
             previewMaxDimension: TEMPLATE_LIBRARY_PREVIEW_MAX_DIMENSION,
             jpegQuality: TEMPLATE_LIBRARY_PREVIEW_JPEG_QUALITY
@@ -2017,11 +2025,27 @@ async function exportActiveSelectionToTemplateLibraryAsset(): Promise<{
         throw new Error('\u5f53\u524d\u9009\u4e2d\u5185\u5bb9\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684\u53ef\u89c1\u533a\u57df\u3002');
     }
 
+    const orderedLayerIds = collectTemplateLibraryLayerIdsInStackOrder(doc, selectedLayers);
+    if (orderedLayerIds.length === 0) {
+        throw new Error('\u5bfc\u51fa\u9009\u4e2d\u56fe\u5c42\u5931\u8d25\uff1a\u5728\u5f53\u524d\u6587\u6863\u7684\u56fe\u5c42\u6811\u91cc\u6ca1\u6709\u627e\u5230\u9009\u4e2d\u7684\u56fe\u5c42\u3002\u8bf7\u91cd\u65b0\u9009\u62e9\u56fe\u5c42\u540e\u518d\u8bd5\u3002');
+    }
+    const selectedLayerById = new Map<number, any>();
+    for (const layer of selectedLayers) {
+        const layerId = Math.floor(Number((layer as any)?.id));
+        if (Number.isSafeInteger(layerId) && layerId > 0) {
+            selectedLayerById.set(layerId, layer);
+        }
+    }
+    const orderedLayers = orderedLayerIds
+        .map(layerId => selectedLayerById.get(layerId))
+        .filter(Boolean);
+
     const exportBaseName = getTemplateLibrarySelectionBaseName(doc, selectedLayers);
 
     const exportedSelection = await exportTemplateLibrarySelectionToTempFile(
         doc,
-        selectedLayers,
+        orderedLayers,
+        unionBounds,
         exportBaseName
     );
 

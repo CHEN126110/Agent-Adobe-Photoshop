@@ -718,14 +718,19 @@ export interface AssetRecommendationOptions {
     designRole?: string;
     /** 预期落位方式，例如 full-bleed / product-cutout / supporting-detail。 */
     placementIntent?: string;
+    /**
+     * 仅由 Agent 调用边界签发：候选联系表交给当前多模态 Agent 观察，资源服务不再
+     * 为同一像素启动嵌套视觉模型。模型 Tool 参数不得暴露或覆盖该字段。
+     */
+    visualConsumptionOwner?: 'calling_agent';
 }
 
 export interface AssetRecommendationResult {
     success: boolean;
     recommendations?: AssetRecommendation[];
     /**
-     * 与 recommendations 使用同一编号的候选联系表。Runtime 会把这张图作为视觉观察
-     * 回传给主 Agent；排序文字不能代替主 Agent 亲眼比较候选。
+     * 与 recommendations 使用同一编号的候选联系表。只有 Host 签发 calling_agent owner
+     * 时才跨 IPC 返回像素；默认结构化分析路径已由 Tool 内模型消费，不再重复上返。
      */
     sheet?: ProjectContactSheetOverviewResult['sheet'];
     comparisonItems?: Array<{
@@ -3060,7 +3065,8 @@ Return JSON only.`;
             category,
             deterministic = false,
             designRole,
-            placementIntent
+            placementIntent,
+            visualConsumptionOwner
         } = options;
         const resultLimit = Math.max(1, Math.min(12, Math.round(Number(maxResults) || 5)));
         const warnings: string[] = [];
@@ -3184,24 +3190,26 @@ Return JSON only.`;
                         const renderedIds = new Set(comparisonItems
                             .filter((item) => item.status === 'rendered')
                             .map((item) => item.id.toUpperCase()));
-                        const prompt = buildAssetRecommendationComparisonPrompt({
-                            requirement: normalizedRequirement,
-                            designRole,
-                            placementIntent,
-                            items: comparisonItems.map((item, index) => ({
-                                id: item.id,
-                                file: visionCandidates[index].file,
-                                status: item.status
-                            }))
-                        });
-                        modelCallCount = 1;
-                        const response = await this.runWithVisionCallGate(() => visionModelCall(
-                            `data:${contactSheet.sheet!.mediaType};base64,${contactSheet.sheet!.imageData}`,
-                            prompt
-                        ));
-                        visionById = normalizeAssetRecommendationVisionCandidates(response, renderedIds);
-                        if (visionById.size === 0) {
-                            warnings.push('候选总览已完成视觉调用，但没有解析出可绑定到编号的视觉结论；本轮仅返回 metadata-only 候选。');
+                        if (visualConsumptionOwner !== 'calling_agent') {
+                            const prompt = buildAssetRecommendationComparisonPrompt({
+                                requirement: normalizedRequirement,
+                                designRole,
+                                placementIntent,
+                                items: comparisonItems.map((item, index) => ({
+                                    id: item.id,
+                                    file: visionCandidates[index].file,
+                                    status: item.status
+                                }))
+                            });
+                            modelCallCount = 1;
+                            const response = await this.runWithVisionCallGate(() => visionModelCall(
+                                `data:${contactSheet.sheet!.mediaType};base64,${contactSheet.sheet!.imageData}`,
+                                prompt
+                            ));
+                            visionById = normalizeAssetRecommendationVisionCandidates(response, renderedIds);
+                            if (visionById.size === 0) {
+                                warnings.push('候选总览已完成视觉调用，但没有解析出可绑定到编号的视觉结论；本轮仅返回 metadata-only 候选。');
+                            }
                         }
                     } else {
                         warnings.push(contactSheet.error || '候选总览生成失败；本轮仅返回 metadata-only 候选。');
@@ -3281,7 +3289,9 @@ Return JSON only.`;
             return {
                 success: true,
                 recommendations: modelVisibleRecommendations,
-                ...(comparisonSheet ? { sheet: comparisonSheet } : {}),
+                ...(visualConsumptionOwner === 'calling_agent' && comparisonSheet
+                    ? { sheet: comparisonSheet }
+                    : {}),
                 ...(comparisonItems && comparisonItems.length > 0 ? { comparisonItems } : {}),
                 warnings,
                 visualComparison: {

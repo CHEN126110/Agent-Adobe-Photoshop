@@ -284,12 +284,18 @@
     border-color: color-mix(in srgb, var(--de-text-secondary) 42%, transparent);
 }
 
-/* 工具进行中：主题色旋转环 */
+/* 工具进行中（单一活性点原则）：只有当前活动行（is-live）转旋转环，
+   其余进行中的行静态主题色描边——满屏多处动效没有重点。 */
 .is-action.running .step-node::after,
 .is-action.pending .step-node::after {
     border-color: var(--de-primary);
-    border-top-color: transparent;
+    border-top-color: var(--de-primary);
     background: var(--de-bg);
+    animation: none;
+}
+.is-action.running.is-live .step-node::after,
+.is-action.pending.is-live .step-node::after {
+    border-top-color: transparent;
     animation: node-spin 0.7s linear infinite;
 }
 
@@ -580,4 +586,80 @@
     .is-action.pending .step-node::after {
         animation: none;
     }
+}
+
+/* ===== 2026-08-25 过程流 codex 化（对照板 P1.75 / P2.5）===== */
+
+/* 类别聚合行：lucide 图标 + 人话 + 展开明细 */
+.pondering-aggregate .agg-icon {
+    flex: 0 0 auto;
+    align-self: center;
+    color: var(--de-text-muted);
+}
+.pondering-aggregate .step-text {
+    color: var(--de-process-action-color);
+}
+.agg-members {
+    list-style: none;
+    margin: 4px 0 2px;
+    padding: 0 0 0 10px;
+    border-left: 2px solid var(--de-border-subtle, rgba(128,136,152,.25));
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.agg-members li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--de-text-muted);
+    line-height: 1.5;
+}
+.agg-duration {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--de-text-muted);
+    opacity: .75;
+}
+
+/* 失败步骤哑色化（P2.5 单一事实源）：灰调原文 + 细左线，不再整块红底——
+   codex 连 stream disconnected 都是灰字；醒目留给需要用户行动的交互卡。 */
+.is-action.error .step-text {
+    display: inline-block;
+    padding: 0 0 0 8px;
+    border-radius: 0;
+    background: transparent;
+    border-left: 2px solid color-mix(in srgb, var(--de-error) 55%, transparent);
+    color: color-mix(in srgb, var(--de-error) 62%, var(--de-text-muted));
+}
+
+/* 当前活动行的文本扫光（单一活性点：渲染层只把 is-live 授予最末一条进行中的行，
+   任意时刻至多一处扫光——codex 同款铁律；其余 running 行保持静态灰字） */
+.pondering-step.is-live .step-text {
+    background: linear-gradient(100deg,
+        var(--de-text-muted) 46%,
+        var(--de-process-thought-strong, #d7dae0) 50%,
+        var(--de-text-muted) 54%);
+    background-size: 220% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: de-action-shimmer 2.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+    .pondering-step.is-live .step-text {
+        animation: none;
+        background: none;
+        color: var(--de-text-muted);
+    }
+}
+
+/* codex 式耗时头：替代「正在设计」标题——灰小字，进行中每秒跳动即活性信号 */
+.pondering-elapsed {
+    color: var(--de-text-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    padding: 2px 0 8px;
+    user-select: none;
 }

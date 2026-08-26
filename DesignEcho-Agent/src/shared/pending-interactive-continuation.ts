@@ -401,6 +401,65 @@ export function attachRuntimeTaskRunBindingToPendingContinuation(input: {
     };
 }
 
+function matchesPendingContinuationProjection(
+    value: unknown,
+    continuation: PendingInteractiveContinuation
+): boolean {
+    const candidate = readRecord(value) as Partial<PendingInteractiveContinuation>;
+    return candidate.version === 'pending-interactive-continuation/v0'
+        && cleanIdentity(candidate.id) === cleanIdentity(continuation.id)
+        && cleanIdentity(candidate.operation?.skillId) === cleanIdentity(continuation.operation.skillId)
+        && cleanIdentity(candidate.card?.id) === cleanIdentity(continuation.card.id);
+}
+
+function projectBoundContinuationIntoResultRecord(
+    value: unknown,
+    continuation: PendingInteractiveContinuation
+): Record<string, unknown> {
+    const record = { ...readRecord(value) };
+    if (matchesPendingContinuationProjection(record.pendingInteractiveContinuation, continuation)) {
+        record.pendingInteractiveContinuation = continuation;
+    }
+    const data = { ...readRecord(record.data) };
+    if (matchesPendingContinuationProjection(data.pendingInteractiveContinuation, continuation)) {
+        data.pendingInteractiveContinuation = continuation;
+    }
+    if (Object.keys(data).length > 0) record.data = data;
+    if (Array.isArray(record.toolResults)) {
+        record.toolResults = record.toolResults.map((rawEntry) => {
+            const entry = { ...readRecord(rawEntry) };
+            const nestedResult = projectBoundContinuationIntoResultRecord(entry.result, continuation);
+            if (Object.keys(nestedResult).length > 0) entry.result = nestedResult;
+            return entry;
+        });
+    }
+    return record;
+}
+
+/**
+ * 把 Runtime 签发的 interaction binding 写回 Skill 结果中的全部同 owner 投影。
+ * 这只补同一 continuation 的恢复身份，不创建卡片、不选择 Skill，也不覆盖不同 owner。
+ */
+export function attachRuntimeTaskRunBindingToPendingContinuationResult(input: {
+    result: unknown;
+    binding: RuntimeTaskRunInteractionBinding;
+}): unknown {
+    const continuation = resolvePendingInteractiveContinuationLeaf(input.result);
+    if (!continuation) throw new Error('pending_interactive_continuation_missing');
+    const bound = attachRuntimeTaskRunBindingToPendingContinuation({
+        continuation,
+        binding: input.binding
+    });
+    const projected = projectBoundContinuationIntoResultRecord(input.result, bound);
+    const projectedLeaf = resolvePendingInteractiveContinuationLeaf(projected);
+    if (!projectedLeaf?.taskRunBinding
+        || stableInteractiveCardHash(projectedLeaf.taskRunBinding)
+            !== stableInteractiveCardHash(input.binding)) {
+        throw new Error('runtime_task_run_interaction_binding_projection_failed');
+    }
+    return projected;
+}
+
 function collectPendingInteractiveContinuationCandidates(value: unknown): PendingInteractiveContinuation[] {
     const record = readRecord(value);
     const candidates: unknown[] = [
@@ -607,32 +666,17 @@ function resolveInteractiveContinuation(input: {
     projectPath?: string;
     photoshopDocumentId?: number;
     photoshopHistoryStateRef?: PhotoshopHistoryStateRef;
+    /**
+     * 带 TaskRun checkpoint 的恢复由 RuntimeSession 对账当前 Photoshop 状态。
+     * continuation envelope 仍校验会话、项目、卡片与提交身份，但不能拿暂停前旧版本
+     * 否决 Skill 已执行后的同一 TaskRun reentry。
+     */
+    photoshopStateOwner?: 'continuation_envelope' | 'runtime_session';
 }): InteractiveContinuationResolution {
     const resolution = resolveInteractiveContinuationBinding(input);
     if (resolution.status === 'rejected') return resolution;
 
-    const expectedPhotoshopDocumentId = Number(resolution.continuation.scope.photoshopDocumentId || 0);
-    const actualPhotoshopDocumentId = Number(input.photoshopDocumentId || 0);
-    if (expectedPhotoshopDocumentId > 0 && expectedPhotoshopDocumentId !== actualPhotoshopDocumentId) {
-        return {
-            status: 'rejected',
-            code: 'interactive_continuation_photoshop_document_mismatch',
-            message: 'Photoshop 当前文档已经变化，这张确认卡不会应用到新的文档。请重新发起任务。'
-        };
-    }
     const taskRunBinding = resolution.taskRunBinding;
-    const pauseRevision = resolvePendingInteractiveContinuationPauseRevision(
-        resolution.continuation
-    );
-    const pauseObservation = resolution.continuation.scopeObservation;
-    if (pauseObservation && !pauseRevision) {
-        return {
-            status: 'rejected',
-            code: 'interactive_continuation_photoshop_revision_unavailable',
-            message: '确认卡暂停时的 Photoshop 文档版本无法验证；本轮不会猜测旧版本或继续写入。请重新发起任务。'
-        };
-    }
-    const expectedRevision = pauseRevision || taskRunBinding?.expectedRevision;
     if (taskRunBinding && !validateRuntimeTaskRunInteractionBinding(taskRunBinding)) {
         return {
             status: 'rejected',
@@ -640,7 +684,38 @@ function resolveInteractiveContinuation(input: {
             message: '确认卡的 TaskRun 恢复身份无效，本轮不会执行。请重新发起任务。'
         };
     }
-    if (expectedRevision) {
+    const runtimeOwnsPhotoshopState = input.photoshopStateOwner === 'runtime_session';
+    if (runtimeOwnsPhotoshopState && !taskRunBinding) {
+        return {
+            status: 'rejected',
+            code: 'interactive_continuation_task_run_binding_invalid',
+            message: '确认卡缺少可恢复的 TaskRun 身份，本轮不会执行。'
+        };
+    }
+    const expectedPhotoshopDocumentId = Number(resolution.continuation.scope.photoshopDocumentId || 0);
+    const actualPhotoshopDocumentId = Number(input.photoshopDocumentId || 0);
+    if (!runtimeOwnsPhotoshopState
+        && expectedPhotoshopDocumentId > 0
+        && expectedPhotoshopDocumentId !== actualPhotoshopDocumentId) {
+        return {
+            status: 'rejected',
+            code: 'interactive_continuation_photoshop_document_mismatch',
+            message: 'Photoshop 当前文档已经变化，这张确认卡不会应用到新的文档。请重新发起任务。'
+        };
+    }
+    const pauseRevision = resolvePendingInteractiveContinuationPauseRevision(
+        resolution.continuation
+    );
+    const pauseObservation = resolution.continuation.scopeObservation;
+    if (!runtimeOwnsPhotoshopState && pauseObservation && !pauseRevision) {
+        return {
+            status: 'rejected',
+            code: 'interactive_continuation_photoshop_revision_unavailable',
+            message: '确认卡暂停时的 Photoshop 文档版本无法验证；本轮不会猜测旧版本或继续写入。请重新发起任务。'
+        };
+    }
+    const expectedRevision = pauseRevision || taskRunBinding?.expectedRevision;
+    if (!runtimeOwnsPhotoshopState && expectedRevision) {
         const actualRevision = input.photoshopHistoryStateRef;
         if (!actualRevision
             || actualRevision.documentId !== expectedRevision.documentId
@@ -744,6 +819,7 @@ export function resolveInteractiveContinuationOperationRequest(input: {
     projectPath?: string;
     photoshopDocumentId?: number;
     photoshopHistoryStateRef?: PhotoshopHistoryStateRef;
+    photoshopStateOwner?: 'continuation_envelope' | 'runtime_session';
 }): InteractiveContinuationResolution {
     const continuation = input.continuation;
     const request = input.request;
@@ -792,7 +868,8 @@ export function resolveInteractiveContinuationOperationRequest(input: {
         projectId: input.projectId,
         projectPath: input.projectPath,
         photoshopDocumentId: input.photoshopDocumentId,
-        photoshopHistoryStateRef: input.photoshopHistoryStateRef
+        photoshopHistoryStateRef: input.photoshopHistoryStateRef,
+        photoshopStateOwner: input.photoshopStateOwner
     });
 }
 

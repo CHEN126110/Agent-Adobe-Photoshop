@@ -7,6 +7,7 @@ import {
     formatDesignDocumentRole,
     inferDesignDocumentRoleFromName
 } from '../../../shared/design-document-role';
+import { preserveJpegQualityAcrossToolRedirect } from '../../../shared/jpeg-export-quality-semantics';
 
 export type PublicPlanPhotoshopAdapterStatus =
     | 'blocked_requires_explicit_live_approval'
@@ -168,13 +169,6 @@ function normalizeSaveDocumentParams(
     };
 }
 
-function normalizeExportQuality(value: unknown): number {
-    const quality = Number(value);
-    if (!Number.isFinite(quality) || quality <= 0) return 85;
-    if (quality <= 12) return Math.max(1, Math.min(100, Math.round(quality / 12 * 100)));
-    return Math.max(1, Math.min(100, Math.round(quality)));
-}
-
 function normalizeSaveDocumentInvocation(
     params: Record<string, unknown>,
     projectPath?: string
@@ -191,14 +185,19 @@ function normalizeSaveDocumentInvocation(
             params.fileName || params.outputFileName || params.name,
             resolveDefaultSaveFileName(params)
         ).replace(/\.[^.]+$/u, '');
-        return {
-            toolName: 'quickExport',
-            params: {
+        const redirectedParams = preserveJpegQualityAcrossToolRedirect({
+            sourceTool: 'saveDocument',
+            targetFormat: format,
+            requestedQuality: params.quality,
+            redirectedParams: {
                 format,
                 outputPath: joinWindowsPath(root, projectSubdir),
-                quality: normalizeExportQuality(params.quality),
                 suffix: `-${fileNameBase}`
             }
+        });
+        return {
+            toolName: 'quickExport',
+            params: redirectedParams
         };
     }
 

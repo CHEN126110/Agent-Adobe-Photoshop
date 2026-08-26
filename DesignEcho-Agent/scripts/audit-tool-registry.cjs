@@ -189,8 +189,8 @@ if (childUsagePostDeductionPattern.test(agentRuntime)
 }
 
 // 素材推荐是 recommendAssets → IPC/preload → renderer 的跨进程只读契约。
-// 审计守住三件事：候选同屏只调用一次视觉模型、metadata-only 不冒充自动置入证据、
-// shot/background 事实能够进入项目视觉缓存。
+// 审计守住三件事：结构化调用最多一次视觉模型、当前 Agent 消费时不重复调用、
+// metadata-only 不冒充自动置入证据，且 shot/background 事实能够进入项目视觉缓存。
 const resourceManager = read('src/main/services/resource-manager-service.ts');
 const resourceHandlers = read('src/main/ipc-handlers/resource-handlers.ts');
 const preload = read('src/main/preload.ts');
@@ -277,8 +277,33 @@ const recommendAssetsToolCaseEnd = toolExecutor.indexOf("case 'measureReferenceC
 const recommendAssetsToolCase = recommendAssetsToolCaseStart >= 0 && recommendAssetsToolCaseEnd > recommendAssetsToolCaseStart
     ? toolExecutor.slice(recommendAssetsToolCaseStart, recommendAssetsToolCaseEnd)
     : '';
+const candidateSetSourceIdHelperStart = toolExecutor.indexOf('function buildCandidateSetObservationSourceId');
+const candidateSetSourceIdHelperEnd = toolExecutor.indexOf(
+    'function normalizeProjectContactSheetMaxImages',
+    candidateSetSourceIdHelperStart
+);
+const candidateSetSourceIdHelper = candidateSetSourceIdHelperStart >= 0
+    && candidateSetSourceIdHelperEnd > candidateSetSourceIdHelperStart
+    ? toolExecutor.slice(candidateSetSourceIdHelperStart, candidateSetSourceIdHelperEnd)
+    : '';
 if (recommendAssetsToolCase.includes('candidateFiles')) {
     assetRecommendationContractViolations.push('模型 recommendAssets 工具分支可伪造 Harness-only 候选库存');
+}
+if (!resourceManager.includes("visualConsumptionOwner?: 'calling_agent'")
+    || !resourceManager.includes("if (visualConsumptionOwner !== 'calling_agent')")
+    || !resourceManager.includes("...(visualConsumptionOwner === 'calling_agent' && comparisonSheet")
+    || resourceManager.includes('...(comparisonSheet ? { sheet: comparisonSheet } : {})')
+    || !resourceHandlers.includes("params.visualConsumptionOwner === 'calling_agent'")
+    || !recommendAssetsToolCase.includes("options.visualConsumptionOwner === 'calling_agent'")
+    || recommendAssetsSchemaBlock.includes('visualConsumptionOwner')
+    || preload.includes('visualConsumptionOwner')
+    || rendererTypes.includes('visualConsumptionOwner')) {
+    assetRecommendationContractViolations.push('recommendAssets 未保持 Host 签发的主 Agent 单消费者边界');
+}
+if (!candidateSetSourceIdHelper.includes('imageHash: sha256Hex(imageData)')
+    || !candidateSetSourceIdHelper.includes("path: String(item.path || '')")
+    || !candidateSetSourceIdHelper.includes("relativePath: String(item.relativePath || '')")) {
+    assetRecommendationContractViolations.push('候选联系表观察身份未同时绑定像素与完整 slot→path manifest');
 }
 for (const field of ['shotType', 'backgroundType']) {
     if (!projectVisualSampling.includes(`${field}?:`)

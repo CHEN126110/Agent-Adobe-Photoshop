@@ -3,6 +3,7 @@ import type {
     ProviderNativeToolRequest,
     ProviderNativeToolUsage
 } from '../../../shared/provider-native-tools';
+import type { ModelVisualPresentationReceipt } from '../../../shared/model-visual-presentation-receipt';
 
 /**
  * Provider Adapter 类型定义
@@ -55,6 +56,11 @@ export interface ProviderResponse {
     nativeToolUsage?: ProviderNativeToolUsage[];
     /** 模型停止原因 */
     stopReason?: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
+    /**
+     * 仅由实际 Provider serializer 在成功返回边界签发；普通 adapter 未实现时必须缺席。
+     * 不能从入站 messages、预算记账或调用成功布尔值补造。
+     */
+    visualPresentationReceipt?: ModelVisualPresentationReceipt;
 }
 
 /** Provider Adapter 接口 */

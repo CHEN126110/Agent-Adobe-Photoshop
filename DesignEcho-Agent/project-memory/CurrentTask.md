@@ -1,5 +1,326 @@
 # Current Task
 
+## 2026-08-26 MAIN-IMAGE-RELIABILITY-R18：固定样本下的 Agent + Harness 质量成功率与运行效率
+
+### 切换原因
+
+用户指定一套本地“粉咖微压直板（加厚款木耳边）”摄影素材作为固定样本，要求用自然的一句话测试 Agent 能否在 Photoshop 中做到接近用户人工成稿与 Eagle 参考的专业设计效果，并要求治理无效时如实复盘，不能用机器分数或文件生成掩盖审美失败。真实绝对路径只由本地 Fixture 配置持有，不进入公开仓库。
+
+### 目标
+
+1. 以固定自然请求、不可变摄影输入、同一 Provider/模型、零人工介入和隔离输出目录建立可重复的真机成功率基线，不再按单个截图逐项打补丁。
+2. 分开记录技术交付、证据完整性、Agent 决策质量、机器评价和人工成对商业评审；只有人工质量达到与用户作品 / Eagle 锚点大致可比，才算最低产品目标达成。
+3. Harness 只承接任务身份、版本、来源、像素送达、预算、权限和验证事实；素材赢家、设计方向、审美取舍与 Photoshop 修订方法仍由同一多模态 Agent 决定。
+4. 当前先达到“做得好”，再优化首写与总耗时；不用低思考、裁掉证据或减少复核换取表面提速。
+
+### 当前事实
+
+- r14 使用与 r13 完全相同的 68 个锁定输入，固定请求仍是“用这些摄影图帮我做一张商品主图。”，Provider/模型为 `openai-codex / gpt-5.6-sol`，0 次人工介入。技术交付通过，但运行状态为 `needs_review`。
+- r14 用时 522269 ms，首次真实写入 277572 ms；20 iterations、21 次模型调用、29 次 Tool 调用、3 次已提交变更、14 次观察。固定 Case 技术交付 1/1，人工可用仍为 0/1；不能由单 Case 宣称总体成功率。
+- Agent 真实看过项目联系表和 Eagle `LAKLHIYBNKNWN`，也正确声明 Reference Brief；它仍选择 `原图\DSC05303.JPG`，以“四色完整并排、色彩真实”作为点击理由，没有解释为什么使用摄影原图而非同名处理图，也没有挑战更强的上脚/场景候选。
+- `evaluateDesign` 真实看了成稿、Eagle 参考与 240px 缩略图，给出 6.2 / revise，指出机械等距平排、光影/质感弱、纸带干扰、缩略标题不可读等 5 个具体问题。Agent 却明确选择“只放大标题并下移，不动摄影构图”，证明修订优先级判断失败。
+- canonical Final Judge 面对同一成稿却给出 16/16 pass、89 分、零 diagnosis、零 Reflexion；人工成对评审为 `needs_fix / weaker / high confidence`，九维加权约 0.572（选材 0.35、商业效力 0.38）。这证实当前 90/89 机器分数与人工质量变化几乎无分辨力。
+- Provider 原始出站证据已锁定 Harness 根因：候选联系表和 Eagle 像素都已真实发给主 Agent 并由成功模型回合消费，但终审额外要求模型输出精确 XML 自评块；因未命中该格式，两组证据均以 `runtime_visual_observation_missing` 被丢弃。Final Judge 实际只收到成稿与已置入源图。
+- r14 所有订阅模型调用（主 Agent、素材分析、隔离评审和 Final Judge）的真实 Provider 日志均为 `reasoning_effort=low`，与“质量优先、允许更慢”的当前产品目标冲突。
+- r15 / r16 分别用时 741968 / 757013 ms，Tool 参数 repair 均为 4 次；r16 还因视觉 presentation 先入队、下一模型分析槽未原子预留而在终局触发视觉预算错误。两轮都没有证明总体运行更快。
+- r17 的原生对象 Tool 参数协议把 36 次完整链 Provider submission 的结构 /参数 repair 降为 0，但首代 `needs_review` 被普通 Reflexion 当成失败，自动重放原任务 393972 ms；完整链累计 903692 ms 并最终耗尽 900000 ms 软时限。首代 Final Judge + diagnosis repair 的 14 次图片 presentation 还被混入普通视觉累计，导致第二代主模型 15 轮全部无图。
+- r18 使用同一 68 个锁定输入、同一自然请求与 `openai-codex / gpt-5.6-sol`，0 人工介入，只运行一个 TaskRun。墙钟 536130 ms，首次已提交 mutation 212003 ms，首次真正成功 mutation 249964 ms；16 iterations、18 次 Runtime 模型调用、29 次 Runtime Tool 调用。PSD/JPG、写后结构/视觉读回、目标 revision 和保存收据全部通过，终态为无 blocker 的诚实 `needs_review`，技术交付通过且没有自动第二代。
+- r18 共 20 次 Provider submission /20 个独立 thread，envelope repair、Tool arguments repair、`argumentsJson` 与相关 invalid code全为 0。r17+r18 合计 56 次 submission、0 repair，已证明原生 `name.const + arguments object` 消除了 r14-r16 的确定性二次 JSON 修复开销。
+- r18 普通 PerformanceLedger 为 model 17、vision candidates 5、visual analyses 5；Final Judge 的 6 张图只进入独立终审事件和 RuntimeAccounting，总视觉池保持 10/22。Final Judge 为 88 分、1 项可行动诊断，仍是 `artifact_incomplete / needs_review`，机器分数不能替代人工商业质量评审。
+- 按一次用户任务真实终点，r18 比 r17 完整链缩短 367562 ms（40.67%）；首次真正成功写入 249964 ms 是 r14-r18 最快，比 r14 / r17 分别快 9.95% /18.20%。但 r18 总墙钟仍比 r14 慢 2.65%，单样本不能证明稳定分布全面优于旧基线。
+
+### 实施边界
+
+- 终审比较证据资格已改为“Runtime-owned exact presentation + 合法 identity/digest + 成功模型回合 consumedModelTurn + 候选/参考语义绑定”。未输出 XML 不再丢图，但原观察仍保持 `reviewed=false`，不伪造 Agent 已审美通过。
+- 主图 Evaluation Profile 声明 `native_surface + list_thumbnail`；Final Judge 必须收到同版本 240px 列表缩略像素，生成失败时保持 not-ready，不用原图推测缩略效果。视图只校准真实使用情境，不规定版式或字号。
+- `evaluateDesign.hardFindings` 保留兼容字段名，语义已降为“设计师自报待核查假设”；只有像素真实支持时才可计分，不再以“规则已核对硬伤”锚定评审。
+- 隔离评审不再要求“只改 1–2 处”；问题必须按目标影响排序，“最小修订”指副作用最少地解决根因，不是改动数量最少；素材/方向不成立时局部移动不算解决。
+- 主图 Manifest 声明 `reasoning.quality`；对当前同一多模态模型请求 `high`，并只映射到 Provider 目录真实支持的最近档位。不新建第二模型路由。
+- Final Judge 的评价权威顺序明确为用户任务/Evaluation Goal → 真实像素与对照 → 作者自述；忠实实现 Agent 自选方向不能证明该方向解决用户任务。
+
+### 验证与未知
+
+- 已通过 Agent production build、Main/Renderer 类型检查、Runtime declaration、设计作者权、Agent 业务边界、Tool 注册、Design Reliability 聚合回归和 `git diff --check`。r18 真实 Provider → Photoshop 运行的 15 项 benchmark 机器检查全部通过。
+- 完整 `maintenance:validate` 已通过 41 个核心检查，包含 Agent/UXP 类型检查、UXP production build、Final Judge 比较证据、Provider 逐图出站回执、跨代可信证据和可靠性发布门禁。视觉预算策略已迁出主循环，`agent.ts` 从 12941 行降至 12878 行并下调棘轮基线，没有通过抬高阈值换绿灯。
+- Codex Final Judge 现在只有在成功 transport 的逐图回执与实际像素、顺序、candidate key 和字节摘要完全匹配时才采信评分；diagnosis repair 也必须独立证明重放同一组图。Design Reliability 的 `status` 与 `--require-live` 共用 Suite Manifest 门禁，单次满分或只评审少量样本不能再伪装成正式成功率。
+- r18 最终画面已真实输出并由 Final Judge 看过，但尚未完成与用户店铺成稿 / Eagle 锚点的人工盲化成对评审；不能把 88 分或技术交付通过写成商业审美通过。
+- 当前主要延迟仍是模型：18 次 Runtime 模型调用耗时 406299 ms、输入 990519 tokens；主循环单次平均约 60421 input tokens。两次内部视觉模型（Eagle / `evaluateDesign`）分别约 33.6 /41.2 秒。总墙钟尚未稳定优于 r14。
+- r18 仍暴露两个效率 /正确性问题：Runtime 声明同轮的 `recommendAssets` 与 `searchEagleReferences` 被延后到下一轮；失败 `composeDesign` 声称“未修改 Photoshop”但真实 history 已从 8049 变到 8053。后者必须在写前完成可确定预检，或由事务 owner 回滚，不能用错误摘要掩盖 partial commit。
+
+### 下一步
+
+1. 先修 `composeDesign` partial commit：把能确定的主体框 /落位预演移到首次 Photoshop mutation 前；已经发生部分写入时，结果和用户提示必须报告真实 mutation，必要时由现有事务 owner 回滚，不能继续声称“本次未修改”。
+2. 收敛 Runtime declaration 同轮工具延后：只在新能力边界下重新预检模型已经请求的兼容只读调用，不重放、不扩权、不替 Agent 选 Tool；以减少一个无信息增益模型回合为验收。
+3. 继续按 Performance / final-quality / Runtime reference owner 收缩 `agent.ts`，但本轮视觉预算策略拆分和 12878 行新棘轮已经完成；不得把后续功能重新堆回主循环。
+4. 用同一 `main-image-commercial-v1` 对 r18、r14、用户店铺成稿和 Eagle 锚点做人工盲化成对评审；只有质量不退化后才扩大到至少 3 个固定重复样本，验证 wall time /首次成功写入的分布，而不是继续用单次轨迹下结论。
+
+### 状态
+
+`in_progress / live_r18_complete / single_generation_technical_delivery_passed / warning_only_auto_reentry_fixed / native_tool_args_56_submissions_zero_repair / final_quality_budget_isolated / final_quality_visual_receipt_fail_closed / reliability_release_gates_manifest_owned / first_successful_mutation_best_so_far / wall_time_not_yet_better_than_r14 / human_pairwise_review_pending / full_core_validation_41_passed / production_build_green`
+
+---
+
+## 2026-08-24 DESIGN-AESTHETIC-GROUNDING-001：详情页、主图与 SKU 的参考扎根和任务相对审美
+
+### 切换原因
+
+用户要求 Agent 不靠“高级、好看”等空泛提示词，而是先理解详情页、主图、SKU 三类真实交付物，并只读查看 Eagle 收藏参考与本地用户作品，再把可迁移的设计关系接入现有 Agent / Design Kernel / Skill / Evaluation 边界。
+
+### 目标
+
+1. 详情页是多屏连续说服：每屏承担一个消费者问题，感受、机理与证明形成事实有来源的叙事；终审要看完整屏幕集合和跨屏视觉系统。
+2. 主图是点击图 + 转化图体系：点击图服务缩略图识别与风格钩子，允许纯摄影成立；转化图用一个主卖点和证明画面解释购买理由，不把两者混成固定模板。
+3. SKU 是色卡、可复用组合模板与批量成品组成的交易信息系统：视觉美感服从件数、颜色、款式、自选/固定/随机规则无歧义；2/3/4 件变体共享 token 但按数量重新平衡。
+
+### 当前事实
+
+- 当前 Eagle 4.0.0 库可只读访问，共 2524 项；正式标签命中详情页 93、主图 100（点击图 21、转化图 85）、SKU 53，另有 352 项待人工复核。AI Search 当前为 `starting`、0 项同步、Python 服务不健康，因此本轮只使用目录、标签、关键词与实际看图证据，不伪装成向量语义检索。
+- 已对本地用户作品中的 C-1248/C-1183/C-1137/C-1163 等项目详情页切片、主图和 2/3/4 双 SKU 成品做只读联系表与放大观察。用户作品存在多套成立的视觉语言，也存在 `C-1183\images\详情页_05.jpg` 的 `AAAAAAAAAA` 占位错误；收藏或历史作品都不能无条件晋升为正样本。
+- 现有 Runtime 已有 `RuntimeReferenceBriefDeclaration`、多模态终局 Judge 和任务 Profile，但终局 Judge 原来只消费 Brief / Strategy，没有消费已经校验的参考洞察；SKU Template Manifest 原来只有通用方法知识，没有任务专属模板方法 overlay。
+
+### 实施边界
+
+- `design-method-knowledge.ts`：主图方法升级为点击/转化双目标；详情页补齐逐屏问题、感受/机理/证明、跨屏节奏与占位清零；新增 `knowledge:ecommerce.sku-template/v1`，覆盖交易无歧义、场景卡/纯底语法、跨 2/3/4 件 token、浅色轮廓、自选备注和可编辑结构。
+- `sku-template.manifest.ts`：显式装载 SKU Template 方法知识；仍复用现有 General Design Evaluation，避免在没有完整多变体 ReviewSet 时伪造“整个 SKU 模板系统已视觉通过”。
+- `design-quality-assertion.ts` + `agent.ts`：终局视觉评价的 user-data envelope 新增有界 reference 槽；`ready` 才传观察与迁移洞察，`degraded` 只传决策与限制，`waived` 不把“未使用参考”伪装成参考依据。该槽不授权 Tool、不推进阶段、不改变完成权。
+- 当前审计产物位于 `tmp/product-design-audit-2026-08-24/`，仅作开发取证，不进入 Runtime、模型长期记忆或正式 Knowledge。
+
+### 验证与未知
+
+- 已通过完整 36 阶段 `maintenance:validate`，包含规划/仓库卫生/编码、工具与 Skill 审计、执行器和简化棘轮、设计作者权/业务边界、现行功能测试、Main/Renderer 类型检查与 UXP production build；定向的 Runtime、Capability、Prompt、Skill Package 审计也均为绿色。
+- 本轮没有调用真实 Provider 在 Photoshop 中重新生产详情页、主图或 SKU，不能把静态审计、类型检查或参考分析描述为商业质量已通过。
+- Eagle 收藏不等于用户认可；参考洞察保持本次运行范围。正式偏好或 Skill 改进仍须走现有人工复核 /候选发布边界，不能把整库或整目录直接写入生产 Prompt。
+- SKU Template 专属 Evaluation Profile 后置到运行时能稳定提交 2/3/4 件与备注图完整多画面 ReviewSet 之后；此前不以单张最终画面冒充跨变体一致性。
+
+### 下一步
+
+1. 完成现行 `maintenance:validate`，确认本轮方法知识与参考评价槽未破坏相邻运行链。
+2. 在隔离项目 /测试文档上分别跑一例主图、详情页和 SKU 模板，保存同版本 ReviewSet，做用户作品与 Eagle 多参考的成对视觉复核。
+3. 只有多样本真实任务和人工成对比较稳定后，才发布用户偏好校准或新增 SKU Template 专属多画面 Evaluation Profile。
+
+### 状态
+
+`validated / code_complete / source_audit_complete / targeted_validation_green / full_core_validation_36_passed / live_photoshop_multi_task_quality_unverified`
+
+---
+
+# 2026-08-24 同 TaskRun 交互续跑与 Skill 效果真相治理
+
+> 状态：`code_complete / full_core_validation_36_passed / live_photoshop_confirmation_pending`
+
+## 根因与裁决
+
+- 交互卡确认不是新用户任务。卡片 envelope 只证明用户提交、会话、分支与项目归属；带活动 checkpoint 时，Photoshop 当前 document /history 的唯一对账 owner 是同一 `RuntimeSession / TaskRun`，不能再用暂停前旧 revision 提前否决 post-Skill Agent reentry。
+- Skill 返回的 `toolResults / operationResults` 只能证明公开出来的调用，不能证明内部没有遗漏写调用。`effect=none` 只能来自执行前、严格只读声明、同 lineage 子收据，或 Runtime-owned 完整原子 Tool ledger。
+- Skill effect receipt 必须绑定 `sessionId / runId / generation / taskRunId / planRevision / continuationId / workflowCallId / skillId`；旧 generation、旧 continuation、旧 workflow call 或其他 Skill 的已签收结果不得投影到当前 TaskRun。
+- Skill 已开始后出现异常、结算 unknown 或 Agent 初始化失败时，不删除 checkpoint、不重放 Skill；原 TaskRun 保留 writer，并把 reconciliation 保存为 `pendingReentry`。未知副作用即使没有文档绑定，也以独立 `sideEffectState=unknown` 阻止后续外部写入、完成声明与 Artifact 发布。
+- 有文档的 unknown 只能由 Runtime-owned 视觉回执解除：回执绑定 observationKey、Host document /history、观察 Tool、像素呈现回合和 Provider 完整消费回合。残留 base64、普通元数据、同一模型响应里的“先截图后写”、预算跳过和失败请求都不能冒充 Agent 已看过现场。
+- post-Skill staging /commit /ledger settlement 的极端失败统一进入 abort-to-persistent-unknown：优先原子保留 checkpoint + pendingReentry，并把持久化 operation ledger 标为 unknown；Skill 已开始后绝不释放 writer 或自动重放。
+- 同一 Workflow 连续返回下一张确认卡时，复用当前 Session /run /generation /TaskRun，暂停新的 interaction 并注册新 checkpoint；不创建第二 Runtime，也不加入 SKU 专属 Harness 分支。
+
+## 已实现与验证边界
+
+- 已完成 checkpoint reserve /stage /adopt /commit 生命周期、完整 writer 三元身份、单调 unknown、Action Plan journal 与 Workflow handoff 恢复、连续确认卡绑定、Runtime-owned Tool ledger、direct Host proof 与 receipt lineage 校验。
+- 现有回归覆盖并发重复确认、旧 generation、post-Skill 异常、Agent 初始化失败、incomplete+completed 混合 revision、无文档 unknown、真实视觉投递→Provider 消费→像素压缩→下一动作、视觉预算跳过、Artifact hold、链式确认卡、staging 丢失恢复和 Skill 只执行一次。
+- 自动审计与构建不能替代真实桌面验收。完整 checkpoint 仍是 Renderer 内存 owner；Renderer 重载后会安全拒绝旧卡，尚不能跨重载自动恢复 post-Skill Agent handoff。后续只能把它并入正式持久化 RuntimeSession owner，不能新建 SKU Store。
+
+---
+
+## 2026-08-24 IMAGE-PLACEMENT-FIRST-WRITE-001：图片落位首写准确性治理
+
+### 切换原因
+
+用户把当前优先级明确收敛为：图片不应先错误置入、再在错误结果上连续叠加缩放和位移；Agent 应在第一次 Photoshop 图片写入前理解源图、主体、目标区域、裁切意图和关注点，Harness 只提供事实、机械求解与验证，不替 Agent 选择素材或审美答案。原 `AGENT-PREACTION-EFFICIENCY-AND-PHOTOSHOP-CRAFT-001` 完整保留在本卡之后，但不再占据当前第一任务。
+
+### 目标
+
+1. `renderLayout` / `composeDesign` 在图片写入前读取源尺寸与可用主体框，预测 contain / cover / anchor / focalPoint 的最终图框和主体可见事实。
+2. Agent 显式声明的 `subjectFillRatio` 在写入前求出最终图框；正常路径只执行一次 `placeImage`，不再 `placeImage → fit/transform`。
+3. `protect-subject` 与可证明的主体裁切冲突时在任何图片写入前返回结构化事实；`allow-crop` 只进入真实画面复核，不由 Harness 否决。
+4. UXP 对 place / transform 共用同一 target-fit 几何内核、事务 owner、写后读回和回滚；焦点被边界夹紧与几何执行成功分开记录。
+5. 长页图片复核按全部目标保留覆盖义务，局部截图上限只限制生产数量，不能把未截图目标从分母中删除。
+6. 写前预演、长页复核和 UXP 几何都进入现有核心验证；不新增一次性 smoke，不把规则继续堆进 7000 行执行器。
+
+### 当前事实
+
+- 真实失败素材 `4672×6453 → 750×426 cover` 的计划图框约有 `58.88%` 位于目标区域外；此前 UXP 正确执行了 Agent 的 center-cover，错误来自 Agent 构图选择与 Harness 假通过/观察覆盖不足，不是 Photoshop 随机裁坏。
+- 写前预览只返回 planned bounds、内外面积、越界边、主体可见比例和焦点偏差；不输出审美分数、素材赢家或自动修复方案。
+- `cropPolicy`、主体视觉占比、锚点、关注点与是否接受裁切仍归 Agent；Harness 只执行显式语义并保证事实一致。
+- post-write 仍然必须存在，但职责是验证第一次写入是否与计划一致并让模型看真实像素，不能成为正常的试错式排版循环。
+- “一次准确”是工程目标，不是伪造的绝对保证：主体检测置信不足或真实像素审美仍未知时，应在写前停止或在写后标记复核，不能把几何通过冒充设计通过。
+
+### 实施边界
+
+- Agent 决定素材、构图、主体视觉占比、锚点、关注点与是否接受裁切；Harness 只取得源/目标事实、求解显式几何、绑定版本、执行事务与返回读回。
+- 不为 SKU、主图、详情页维护第二套缩放算法或执行器分支；这些任务共用同一写前计划、UXP target-fit 和视觉复核机制。
+- 不以“最多修几次”替代首写质量，也不承诺绝对一次成功；可确定冲突必须写前失败，不确定审美必须由同一多模态 Agent 看真实像素。
+
+### 下一步
+
+1. 已完成完整 `maintenance:validate`，本轮真实回归按当前实现语义修复，没有降低作者权边界。
+2. 已完成 compose/renderLayout 的失败清理、ownedLayers 祖先保护、组级 stage swap 与一次 placeImage 接线复查。
+3. 待 DesignEcho 与最新版 UXP 运行窗口可用后，用独立 Photoshop 测试文档复现原竖图横框病例；不得修改用户现有成稿。
+
+### 验证与未知
+
+- 已通过纯几何预演、UXP 几何对照、compose 契约、作者权、类型检查、事务 owner 审计和完整 36 阶段 `maintenance:validate`；UXP production build 成功。
+- 当前会话没有可用的 DesignEcho 运行窗口，Photoshop 正打开用户的 `SKU.psb`；为避免污染用户文档，本轮没有执行最新版 Agent→UXP→Photoshop 真机写入。静态、纯逻辑和构建结果不能冒充真机视觉通过。
+- 最终审美仍取决于模型是否理解商品与设计目标；本轮只保证 Harness 不再把明显冲突写进 Photoshop，也不把几何成功伪装成审美成功。
+
+### 状态
+
+`validated / code_complete / prewrite_geometry_integrated / subject_fill_single_place_integrated / stage_group_swap_integrated / failed_candidate_isolation_integrated / shared_review_plan_integrated / uxp_geometry_tests_green / full_core_validation_36_passed / live_photoshop_recheck_pending`
+
+## 2026-08-24 AGENT-PREACTION-EFFICIENCY-AND-PHOTOSHOP-CRAFT-001：假设驱动的首写效率与 Photoshop 工艺治理
+
+### 切换原因
+
+用户已明确把当前优先级切换为两项相互关联的治理目标：缩短 Agent 在真正操作 Photoshop 前的等待，同时提高 Agent 选择专业 Photoshop 工艺的能力。原 `DESIGN-QUALITY-REFLEXION-LIVE-001` 受共享订阅额度阻断，完整保留在本卡之后；本轮不把旧任务写成已完成，也不让旧任务继续占据当前第一任务卡。
+
+本轮禁止按单个慢步骤或单次失败逐项打补丁。正式运行时改动前先固定因果假设、替代解释、证伪条件、预期区间、回滚门和单变量实验顺序；历史 Run Record 只用于发现重复模式，不直接充当当前 HEAD 的 A/B 基线。
+
+### 目标
+
+1. 把“提交请求到首个已验证有效 mutation”建立为独立产品指标，区分主模型等待、内部视觉调用、项目扫描、Capability 控制轮、Tool 执行、mutation commit 与 verification。
+2. 消除重复事实取得和重复视觉消费，不删除真实看图、目标 /revision、安全执行、unknown reconciliation、关键写后读回或 R5 /Release 核查。
+3. 让普通开放设计首轮可取得紧凑、品类中立的 Photoshop Craft 选择线索；Recipe 仍是 Knowledge，不是 Tool、权限、固定 Workflow、Stage 门票或完成证明。
+4. 把稳定 Photoshop 技法逐步编译成目标绑定、可回滚、可读回的事务；Agent 保留素材、构图、占比、锚点、裁切和审美决定，Harness 只做机械编译与执行治理。
+5. 每次只验证一个因果变量；目标指标改善、安全不退化、质量不退化且没有新增重复 owner 后，才进入下一切片。
+
+### 已核实事实与未知边界
+
+- 596 份历史 Run Record 跨多个代码版本，只有 51 份带首写计时；首个成功写入 P50 约 115.4 秒、P90 约 267 秒。它们能证明长期问题规模，不能代表当前未固定工作树的严格基线。
+- 12 个带完整 Runtime accounting 的历史样本中，主模型约占总耗时 85.8%，Tool 约占 14.1%；样本偏小，只支持“先测模型回合”的优先级，不支持直接承诺固定提速秒数。
+- 本地 `getDocumentInfo / getCanvasSnapshot / getLayerHierarchy` 通常是毫秒级；内部调用模型的联系表分析通常是几十秒级。相邻 Tool 的 `elapsedMs` 差值包含模型决策和 Tool 执行，不能当作纯 Tool 耗时。
+- 当前 openai-codex 代码每轮创建 ephemeral thread，并重新注入完整历史和本轮 Tool catalog；服务端前缀缓存、thread start、inject 与推理的实际占比仍未知。
+- 调查时普通开放设计首轮约 24 个 Tool、约 35k JSON 字符，全量约 176 个、约 164k 字符。渐进披露方向继续保留，不恢复全量首轮暴露。
+- 当前正式 Craft Recipe 只有 3 条。架构裁决 D-070 /历史 Status 声称 plan-neutral 可取得 generic Recipe 索引，但当前源码和两个正式审计仍禁止这条接线；这是 owner /文档漂移，必须单独验证和修复，不能假设已经完成。
+- 当前工作树存在持续变化的并行纵切；`composeDesign / subject-fit / tool-executor / preflight / UXP place-transform` 是热区。G0 /G1 不在这些文件上叠加行为改动，也不把并行改动计入本轮成果。
+
+### 因果假设账本
+
+#### H-PERF-01：主要延迟单位是模型回合，而不是本地 Photoshop Tool
+
+- 假设：减少一个不必要的主模型回合，收益显著大于把一个本地读取再优化几十毫秒。
+- 替代解释：当前 Provider、网络、项目扫描或 UXP modal 阻塞可能已经改变历史耗时结构。
+- 预期：普通文本回合减少时，适用场景可能下降约 7–25 秒；重复视觉回合减少时可能下降约 20–50 秒。该区间只是假设，不是承诺。
+- 证伪：当前固定 HEAD 中模型等待占首写时间低于 50%；或减少一轮后 TTFE 中位改善低于 5% 且落在波动内。
+- 第一动作：只补 request / model / Tool /视觉 /commit /verification 分段遥测，不先改模型、线程、上下文或预算。
+
+#### H-PERF-02：同一视觉证据被内部 analyzer 与主 Agent 重复消费
+
+- 假设：`agentic` 联系表只生成确定性像素并由主 Agent 看一次，可以减少一次视觉模型成本且不降低素材选择质量；`staged` 可保留 typed analyzer，但不得自动把同一像素再投给主 Agent。
+- 替代解释：两次视觉调用可能存在不同且不可替代的消费者，或当前并行代码已经改变了链路。
+- 预期：`VisualCallAmplification` 从约 2 降到 1；素材总览任务 TTFE 中位至少改善 20%。
+- 证伪：相同 image hash 当前没有重复投递；去重后结构化输出、选材正确率或设计质量明显下降；或第二轮扩展观察使总耗时不降反升。
+- 回滚点：保留现有 typed analyzer；视觉交付增加明确 `pixels_for_primary / structured_preanalyzed` 语义，不用字段缺失猜测。
+
+#### H-PERF-03：请求冻结时的 Host Photoshop baseline 可以安全复用
+
+- 假设：Host 签发的 `documentId / historyStateId / activeLayerId` 可以满足同 revision 的 prior-read，避免模型再次读取基础文档身份。
+- 替代解释：模型重复读取可能为了取得 baseline 未包含的结构信息；模型思考期间 revision 可能变化。
+- 预期：eligible run 中重复 `getDocumentInfo / listDocuments` 比例低于 5%，首写前减少一个约 5–12 秒的模型回合。
+- 证伪：模型仍普遍重复读取；首写回合数不降；stale revision、切档或切层时最终 UXP guard 未能 100% 阻断错误写入。
+- 不变量：Host receipt 不授予 Tool、不算模型 Tool Call、不算 progress、不证明 mutation，最终 UXP target guard 继续读取真实状态。
+
+#### H-PERF-04：项目重复扫描是确定浪费，但不是首要根因
+
+- 假设：统一 `ProjectAssetSnapshot` 能减少同项目重复扫描并让 context /list /search /recommend /contact-sheet 共用候选事实，但单独不足以把分钟级首写降到几十秒。
+- 替代解释：网络盘、超大目录、损坏文件或全量 metadata 读取可能使部分项目以 IO 为主。
+- 预期：普通冷路径减少约 0.5–3 秒；同根热路径真实扫描次数降为每个唯一 snapshot key 一次；更重要的收益是一致候选集。
+- 证伪：扫描在多数目标场景占 TTFE 超过 20%；或统一 snapshot 无法可靠感知文件新增、替换和删除。
+- 回滚点：snapshot 只做只读 provider，保留显式 revision 失效和强制刷新；Photoshop history 变化不清空项目文件域。
+
+#### H-PERF-05：Capability 两段控制轮在 owner 已知时是可消除税
+
+- 假设：manifest owner 已知、唯一查询结果或高频小 schema 能力可受控 seed，减少 `search → request → invoke` 的 1–2 个模型回合。
+- 替代解释：需要 discovery 的任务本身更复杂；扩大 schema 可能抵消收益。
+- 预期：适用请求减少约 7–20 秒，非目标任务 baseline 不膨胀。
+- 证伪：固定 A/B 后主模型回合不降、错选能力增加、Tool 权限扩大或 Tool catalog 成本抵消收益。
+- 不变量：Capability 可见性不等于执行授权；不得根据关键词或文件名静默激活能力。
+
+#### H-CRAFT-01：Photoshop 熟练度的首要缺口是技法选择上下文，不是继续增加 Tool
+
+- 假设：普通设计首轮注入约 2.4k 字符的 generic Recipe 紧凑索引，会提高适用场景的正确技法选择率。
+- 替代解释：低使用率可能来自 Tool 未暴露、schema 难用、UXP 不稳定或任务不适用，而不是知识缺失。
+- 预期：固定适用案例的正确技法选择率达到至少 80%，Tool 调用数下降或持平；subject-fit、Smart Object、Mask、Adjustment + Clipping 和安全分组只按“适用率”统计。
+- 证伪：模型确实看到 Recipe 后正确选择率提升不足 10 个百分点，或上下文成本上升但结构 /质量不改善。
+- 第一动作：先修 D-070 与当前源码 /审计漂移，只接现有 3 条索引；不同时扩 Recipe、不扩 Tool baseline、不修改 compose schema。
+
+#### H-CRAFT-02：`composeDesign` 大量失败来自模型承担了机械 schema 编译
+
+- 假设：模型拥有设计语义，Harness 只做不改变意图的格式编译，可将近期约 41% 的 contract 失败降到低水平。
+- 替代解释：失败可能主要来自 schema 漂移、执行实现或模型策略，而非机械格式。
+- 预期：首次 schema /contract 通过率达到 95% 以上，失败后无需重提整份设计对象。
+- 证伪：错误分类显示机械格式不是主要部分；编译器上线后通过率没有明显改善；或编译器通过 default /clamp 偷偷改变设计结果。
+- 允许的机械处理：trim、Hex 标准化、稳定枚举别名、空可选字段删除、单位转换。
+- 禁止：自动补色、改构图、换素材、决定字号、比例 clamp 或隐藏失败。
+
+#### H-CRAFT-03：稳定高频技法适合编译为唯一 Runner 下的复合事务
+
+- 假设：`place + subject-fit`、`adjustment + clipping`、Smart Object 批量替换等稳定机械组合，使用带 target /revision /rollback /readback 的 compound Tool 可减少模型回合、revision 漂移和中间失败。
+- 替代解释：复合 Tool 可能放大副作用、隐藏部分失败或限制真实设计修订。
+- 预期：适用技法减少 1–4 次 Tool /模型往返，失败只留下一个明确 operation receipt，相互抵消 transform 接近 0。
+- 证伪：成功率或可诊断性不高于原子路径；rollback 不完整；模型频繁绕过组合；或复合 Tool 开始替 Agent 决定素材、构图、比例和审美。
+- 前置：当前 subject-fit / compose / UXP 热纵切稳定并完成可归属验证；复合能力继续使用唯一 `PhotoshopTransactionRunner`，不能建立第二事务 owner。
+
+#### H-PERF-06：Codex thread 复用可能有价值，但证据不足以立即实施
+
+- 假设：同一 TaskRun 复用 thread、增量注入消息，可以减少重复 thread start、完整 history 与 Tool catalog 提交。
+- 替代解释：服务端前缀缓存可能已吸收大部分成本，真实时间主要在推理；动态 Tool surface 与 ContextManager 裁剪可能要求旋转 thread。
+- 预期：暂不设秒数。只有 `threadStart + historyInject` 占比和 provider usage 证实后才建立收益目标。
+- 证伪：这两段低于模型回合总时长 5%，复用收益落在波动内，或出现跨 Run 串线、取消污染、schema 版本混用。
+- 当前动作：只记录 `threadStartMs / historyInjectMs / firstEventMs / turnDurationMs / unsubscribeMs / schemaChars / historyChars / cachedUsage / structuredRepairCount`。
+
+### 实验顺序
+
+1. `G0`：任务卡、假设、基线口径、不变量和回滚门；不改运行行为。
+2. `G1`：只观察的 Runtime Accounting / Run Record / Codex phase timing；不得改变预算、Tool 面、模型参数或用户呈现。
+3. `G2-A`：Host initial Photoshop receipt；单独 A/B。
+4. `G2-B`：同根缓存幂等与 `ProjectAssetSnapshot`；与 Host receipt 分开验证。
+5. `G2-C`：视觉证据只消费一次；不同时改候选数、分辨率、model effort 或 Recipe。
+6. `G3`：只修 D-070 generic Recipe 首轮接线与正式审计漂移。
+7. `G4`：先分类 `composeDesign` 失败，再做机械编译边界；之后才逐个验证最小 Recipe /compound transaction。
+8. `G5`：Capability 控制轮治理。
+9. `G6`：只有 G1 证明收益后，才考虑 Codex thread 复用、object arguments 与 reasoning 透传。
+
+每个实验固定 commit /build、Provider /model /reasoning、用户文本、项目素材 fingerprint、起始 PSD /history、Tool surface 和缓存状态；真实模型采用配对 ABBA /BAAB，不能拿不同日期、项目和模型的运行直接比较。每个核心 cell 先做 8 对 pilot，正式结论至少 20 对；本地确定性 cache 微基准至少 30 次。
+
+### 核心指标与预期
+
+- 用户主指标：`UI send accepted → first successful UXP mutation commit`，另记 `mutation verified`，不得把 post-readback 时间混成 commit。
+- 往返：首写前主模型轮、Tool 调用、内部 VLM、Capability 控制轮、重复 document read、同 image hash presentation 次数。
+- 放大率：`VisualCallAmplification`、`ScanAmplification`、`DuplicateObservationRate`。
+- 上下文：system /history /Tool schema 字符数、图片数、Provider 真实 input /output /cached token；Provider 未上报时记 `unknown`，不能填 0 或自行估算。
+- Craft：适用场景正确技法选择率、相互抵消 mutation、重复完整 compose、首次 schema 通过率、非破坏性结构合规率。
+- 安全与质量：正确 document /layer /revision、unknown reconciliation、同目标读回、staged 输出完整性、DesignVerdict、成稿盲评和用户明确接受。
+
+阶段目标值不是当前事实：已知目标的单步修改 TTFE P50 ≤30 秒 / P90 ≤60 秒；冷启动且需要一次素材总览的设计 P50 ≤60–70 秒；项目和视觉缓存命中 P50 ≤40 秒。单切片发布要求目标 cell 中位改善、P90 不明显恶化、完成且有真实写入率不下降超过 5 个百分点、Design evaluator 中位不下降超过 3 分、盲评 B 胜或平至少 80%，且安全边界 100% 通过。
+
+### 立即停止与回滚门
+
+出现任一项立即停止当前切片，不得继续叠加兜底：
+
+1. 错 document、layer 或 revision 写入；stale revision 未被最终 guard 捕获。
+2. mutation 失败却记录成功，或 unknown mutation 被自动重放。
+3. Host 普通对象可以伪造可信 receipt，或 Capability seed 扩大执行权限。
+4. 素材变化后仍返回旧候选 /联系表；agentic 优化破坏 staged typed analyzer。
+5. 同一视觉证据仍被隐藏投递两次，或像素没有进入主模型却被标为“已看图”。
+6. 模型轮数下降但返工、重复 compose、反向 transform 或失败率上升。
+7. Recipe /compiler /compound Tool 开始替 Agent 选择素材、构图、颜色、字号、占比或审美。
+8. 性能改善但同目标读回、可编辑结构、DesignVerdict 或专业盲评质量下降。
+9. 当前固定 HEAD 基线无法复现，却继续用跨版本历史均值宣布成功。
+
+### 当前实施边界与状态
+
+- `G0` 已完成；`G1-A` 已通过完整 36 项核心验证：普通 plan-neutral / agentic 使用同类型 unscoped `RuntimeAccountingLedger`，晚绑定 staged 时把真实模型 /Tool /usage /prompt shape 转移到 Session 并释放旧 owner，不再补造 `0ms` 模型调用；staged /晚绑定后的 Provider 失败在缺少 Session digest 时仍保留顶层会计 fallback。
+- 持久化摘要只保存视觉 observation key 的稳定 SHA-256 投影，活动 Performance Ledger 继续保留原键；生命周期、owner 互斥、超长键、staged failure fallback 与严格持久化边界已有现有 `test:run-fact-ledger` 回归覆盖。
+- `G1-A` 尚待重载当前 build 后用一条普通请求确认真实 Run Record 顶层 `runtimeAccounting`；`G1-B` 的 Codex provider phase timing 保持独立切片，不与 thread 复用或性能行为修改混做。
+- 开发遥测不得进入生产 Prompt、Tool 权限、完成判定或普通用户 UI。
+- 当前并行热区稳定前，不修改 `composeDesign / subject-fit / tool-executor / agent-tool-execution-preflight / Photoshop place-transform`；不覆盖、不暂存、不回退现有未提交改动。
+- 不先做持久 Codex thread、不换模型、不扩大 reasoning、不一次新增大量 Recipe、不恢复 176 Tool 首轮、不新增 smoke、不微调模型。
+- 状态：`in_progress / g0_hypothesis_ledger_established / g1a_unscoped_accounting_core_validated / staged_failure_fallback_validated / observation_key_digest_boundary_validated / full_36_check_maintenance_passed / live_run_record_pending / g1b_provider_phase_timing_pending / runtime_behavior_unchanged`。
+
 ## 2026-08-22 DESIGN-QUALITY-REFLEXION-LIVE-001：无 Skill 设计质量反馈与 Agent 自主修订闭环
 
 ### 目标

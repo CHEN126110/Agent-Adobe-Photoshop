@@ -1,5 +1,33 @@
 # Current Implementation Plan
 
+## 2026-08-24 当前主线：`IMAGE-PLACEMENT-FIRST-WRITE-001`
+
+1. `[已完成] 真实事故归因`：用 UXP 日志复算 `4672×6453 → 750×426 cover`，确认约 58.88% 图框位于裁切目标外；区分 Agent 构图错误、Harness 假通过/观察不足与 UXP 正确机械执行。
+2. `[已完成] 语义契约`：图片块显式声明 fit、anchor、cropPolicy，按需声明 focalPoint / subjectFillRatio；移除隐藏 0.82、无效 preserveSubject 和首写后才生效的半失效字段。
+3. `[已完成] UXP 统一几何`：placeImage / transformLayer 共用 target-fit 内核和唯一 Photoshop 事务 runner，支持五种锚点与归一化关注点，返回 frame/focal 几何收据并在验证失败时回滚。
+4. `[进行中] 写前一次落位`：纯 shared 预览与 UXP 几何做逐项对照；`renderLayout` 主体占比、`composeDesign` 摄影图和图片背景改为写前求最终图框、单次 placeImage；下一步完成纯 shared prewrite planner 抽取，避免规则滞留在通用执行器。
+5. `[已完成] 写后观察覆盖`：长页风险目标、局部截图区域、cap=8 与 overflow 规划收进同一 shared 模块；`expectedTargets` 保留全部复核义务，frameVisibleRatio=0 不再被默认值吞掉。
+6. `[进行中] 回归与卫生`：写前预览、compose 契约、作者权、Tool 注册、Skill package、UXP target-fit/事务审计已分别验证；待运行 `maintenance:validate`、入口文档同步、仓库卫生和最终 diff 审查。
+7. `[待验证] 真机复查`：用独立 Photoshop 测试文档复现原竖图横框病例，确认 protect-subject 在写前不产生错误图片层、allow-crop 一次落位后返回局部同版本画面、subjectFillRatio 不再出现第二次 transform；不能用静态测试冒充真机通过。
+
+## 2026-08-24 当前主线：`AGENT-PREACTION-EFFICIENCY-AND-PHOTOSHOP-CRAFT-001`
+
+1. `[已完成] G0 假设与预期冻结`：第一任务卡已经记录已知事实、未知项、H-PERF / H-CRAFT 因果假设、替代解释、证伪条件、预期区间、不变量、单变量实验顺序和立即回滚门；历史 596 份 Run Record 只作问题发现依据，不作为当前 HEAD 的正式前后对照。
+2. `[已完成·核心验证] G1-A 普通 Agent 会计覆盖`：plan-neutral / agentic 使用与 staged 相同的 `RuntimeAccountingLedger`；模型、Tool、usage 与 prompt shape 进入 unscoped bucket，中途绑定 staged 时转移同一 ledger 并释放旧 owner，不再补造 `durationMs=0`。顶层 `runtimeAccounting` 只在没有可持久化 `runtimeSessionDigest` 时作为 fallback，覆盖 staged /晚绑定后的 Provider 失败；实际 nested accounting 存在时仍严格互斥。
+3. `[已验证] G1-A 自动检查`：活动账本保留原始视觉去重键，持久化摘要只保存稳定 SHA-256 投影；owner 生命周期、staged failure fallback、nested /top-level 互斥、超长键与失败关闭已有现有运行事实测试覆盖。完整 `maintenance:validate` 36 项通过，包含业务边界审计、Main /Renderer 类型检查、Agent /UXP production build、Capability /Tool /入口文档审计和简化棘轮；`agent.ts` 基线从 12972 下调到 12964。
+4. `[真机待验证] G1-A 运行记录`：重载当前 build 后跑一条普通 plan-neutral 请求，确认顶层 `runtimeAccounting.modelCallCount / modelDurationMs / promptShapeSamples` 有真实值；staged 仍只使用 `runtimeSession.accounting`，遥测不改变消息、Tool、预算、Stage、权限或完成结果。
+5. `[待做] G1-B Provider phase timing`：独立补 Codex thread start /history inject /first progress /turn /repair /unsubscribe，只透传到现有每轮 accounting sample；不与 thread 复用、reasoning、object arguments 或请求级 Context span 同时修改。
+6. `[待验证] 当前 HEAD 基线`：固定 commit /构建、Provider /模型 /reasoning、用户文本、项目素材 fingerprint、起始 PSD /history、Tool surface 与缓存状态；T1 文档内单步、T2 素材驱动 agentic、T3 尾部 Capability、T4 staged 生产、T5 本地项目检索分别建立冷 /热基线。
+7. `[待做] G2-A Host Photoshop receipt`：只复用请求冻结时已取得的 document /history /layer 事实；不授予 Tool、不算 progress、不替代最终 UXP target guard。与其它性能优化分开 A/B。
+8. `[待做] G2-B ProjectAssetSnapshot`：同 root 设置幂等、项目文件 revision 定向失效、context /list /search /recommend /contact-sheet 复用同一基础 snapshot；不把项目扫描宣传为分钟级延迟的唯一根因。
+9. `[待做] G2-C 单次视觉消费`：`agentic` 使用 pixels-only 主 Agent 直看一次；`staged` 保留有明确结构消费者的 typed analyzer 并抑制同像素重复投递。不得同时修改候选数、分辨率、model effort 或 Recipe。
+10. `[待做] G3 Craft 入口漂移`：先单独修复 D-070、当前 plan-neutral 代码与正式审计的漂移，只接现有 generic Recipe 紧凑索引；不同时扩 Recipe、Tool baseline 或 compose schema。
+11. `[待做] G4 Craft 与执行编译`：先按错误类型量化 `composeDesign`，再验证只做机械格式规范化的 compiler；当前 subject-fit / compose / UXP 热纵切稳定并通过真实 Photoshop 验证后，才逐个增加最小 Recipe 或唯一 Runner 下的 compound transaction。
+12. `[待做] G5 Capability 往返治理`：只对 owner 已知、唯一匹配或经数据证明高收益的小能力做受控 seed /续轮窄化；Capability 可见性不等于执行权限，不恢复全量 Tool 首轮。
+13. `[条件后置] G6 Codex 订阅桥优化`：只有 G1-B 证明 thread start /inject、双重参数编码或 reasoning 漂移具有实际占比后，才分别 A/B thread 复用、object arguments 与 effort 透传；任何跨 Run 串线、取消污染或 schema 版本混用立即回滚。
+14. `[发布门]` 每个切片必须同时满足：目标指标改善、核心 P90 不明显恶化、完成且有真实写入率和设计质量不退化、正确 document /layer /revision 与同目标读回 100% 通过、没有新增 Runtime /Context /事务 /权限 owner。真实性能结论使用配对实验，不使用跨版本总平均。
+15. `[工作树边界]` 当前未提交热区仍在并行变化；G0 /G1 不修改 `composeDesign / subject-fit / tool-executor / agent-tool-execution-preflight / UXP place-transform`，不暂存、不回退、不覆盖、不把其结果计入本轮治理。
+
 ## 2026-08-21 当前主线：`MODEL-HARNESS-EFFECTIVENESS-001`
 
 1. `[已完成]` 用 522 份真实 Run Record 建立有效表现基线；重点复盘 GPT-5.6 run 522 与非 Photoshop run 519 /520，不把模型、Provider、Harness 和 Skill 失败混为一类。
@@ -426,6 +454,20 @@ V1 直接成为唯一 Release owner 的首个消费者，不建立临时 Gate。
 5. `[待人工评价]` 将 `D:\A1 neveralone旗舰店` 仅作为只读验证集，分别按 INS /生活方式感与纯色 SKU 卡检查商品数量真实性、主体处理、裁切、尺度、间距、标签、留白和商业完成度；不复制其素材、模板、配置或文案。
 6. `[判定规则]` 自动构建与审计通过不等于设计完成；只有真实 Photoshop 写入、完整导出、同版本证据和人工视觉对照同时成立，才能把该 canary 记为 `photoshop_e2e_verified / design_quality_reviewed`。
 # 2026-08-08 受控纵切：SKU-COLOR-CARD-RETOUCH-LOOP-001
+
+## 2026-08-24 `RUNTIME-INTERACTIVE-REENTRY-001`
+
+目标：确认卡消费后继续同一 TaskRun，让 Agent 在 Photoshop 中基于当前真实 document /revision 接管后续判断；Harness 只维护身份、单写者、效果收据、未知状态和交付安全，不替 Agent 选择设计方案。
+
+1. `[已完成]` 交互 checkpoint 两阶段 reserve /adopt；重复请求不得抢占或释放现有 writer。
+2. `[已完成]` post-Skill 异常、settlement unknown 与 Agent 初始化失败统一保存 `pendingReentry`；重试只恢复 Agent，不重放 Skill。
+3. `[已完成]` Runtime-owned 完整原子 Tool ledger 与全 lineage Skill effect receipt；Executor 自报可见数组不再证明零写入，旧 generation 收据不可复用。
+4. `[已完成]` 文档绑定外的 `sideEffectState=unknown` 同时进入 Tool gate、Completion 与 Artifact hold；有文档对账只消费绑定 observationKey、Host revision、呈现回合和 Provider 消费回合的 Runtime-owned 视觉回执，像素残留、普通元数据、同回合预读与预算跳过均不能解锁。
+5. `[已完成]` 连续确认卡复用同一 Session /run /generation /TaskRun 并原子换代 interaction checkpoint；post-Skill staging /commit /settlement 异常统一转为 checkpoint recovery + 持久化 operation unknown，不新增业务专属 Runtime 分支，也不释放未知副作用的 writer。
+6. `[待真实运行]` 在加载最新 Renderer 的 DesignEcho 中完成普通一句话设计任务与至少一次连续卡片确认：记录同一 taskRunId、Skill 只执行一次、post-Skill Photoshop revision、Agent 后续真实写入与同目标读回。
+7. `[待持久化纵切]` 将 active checkpoint /pending reentry 纳入正式 RuntimeSession 持久化 owner，覆盖 Renderer 重载；在此之前只允许安全失败，不伪造跨重载恢复。
+
+自动验收入口：`npm run maintenance:validate`。退出条件仍要求真实 Provider → Photoshop 写入、同目标读回与人工视觉复核；自动审计只证明代码和治理边界。
 
 ## 目标
 

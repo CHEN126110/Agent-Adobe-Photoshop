@@ -136,6 +136,9 @@ export interface ModelConfig {
     description?: string;          // 描述
 }
 
+/** Provider 目录可能暴露的通用推理强度；请求侧只能作为偏好，最终由 Provider 能力集裁剪。 */
+export type ModelReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+
 // ========== 本地模型：Ollama ==========
 
 export const LOCAL_MODELS: ModelConfig[] = [

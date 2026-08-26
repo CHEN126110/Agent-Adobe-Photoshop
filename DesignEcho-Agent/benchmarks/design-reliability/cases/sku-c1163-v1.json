@@ -1,0 +1,98 @@
+{
+  "version": "design-reliability-case/v1",
+  "suiteId": "business-skills-quality-v1",
+  "caseId": "sku-c1163-v1",
+  "revision": 1,
+  "caseDigest": "sha256:a822ce14595de7702a8334027069dcf8158cc8982e38287c6ed340d2f880a118",
+  "status": "active",
+  "taskFamily": "sku",
+  "executionModel": "staged",
+  "skillContract": {
+    "userFacingSkillId": "sku-batch",
+    "runtimeSkillIds": [
+      "ecommerce.sku_batch"
+    ]
+  },
+  "task": {
+    "instruction": "用这个项目里的颜色素材帮我完成 SKU 编排。",
+    "instructionStyle": "natural_user_request",
+    "fixtureId": "neveralone-c1163-input-v1",
+    "agentVisibleInputs": [
+      { "ref": "配置文件/6色 2-3-4.csv", "role": "combination_spec" },
+      { "ref": "S82646/新建文件夹/白色.jpg", "role": "completed_color_source_card" },
+      { "ref": "S82646/新建文件夹/浅肤.jpg", "role": "completed_color_source_card" },
+      { "ref": "S82646/新建文件夹/身肤.jpg", "role": "completed_color_source_card" },
+      { "ref": "S82646/新建文件夹/浅蓝.jpg", "role": "completed_color_source_card" },
+      { "ref": "S82646/新建文件夹/浅紫.jpg", "role": "completed_color_source_card" },
+      { "ref": "S82646/新建文件夹/黑色.jpg", "role": "completed_color_source_card" }
+    ],
+    "reviewOnlyReferences": [
+      { "kind": "user_design", "ref": "SKU/2双装/1白色+白色.jpg" },
+      { "kind": "user_design", "ref": "SKU/2双装/4浅肤+浅蓝.jpg" },
+      { "kind": "user_design", "ref": "SKU/3双装/1白色+白色+白色.jpg" },
+      { "kind": "user_design", "ref": "SKU/3双装/4白色+浅肤+深肤.jpg" },
+      { "kind": "user_design", "ref": "SKU/4双装/1白色+白色+白色+白色.jpg" },
+      { "kind": "user_design", "ref": "SKU/4双装/4白色+浅肤+深肤+黑色.jpg" }
+    ]
+  },
+  "source": {
+    "kind": "user_project_completed_color_cards",
+    "qualityClaimEligible": true,
+    "boundary": "六张输入图是已完成的颜色源卡，不是待设计模板；组合成稿只供评审，不进入 Agent 项目。"
+  },
+  "oracle": {
+    "rubricId": "sku-production-v1",
+    "requiredEvidence": [
+      "agent_run_record_task_run_chain",
+      "expected_project_binding",
+      "source_input_integrity",
+      "photoshop_history_or_commit",
+      "post_write_structure_readback",
+      "post_write_visual_readback",
+      "editable_psd",
+      "raster_export_set",
+      "sku_output_inventory",
+      "human_review"
+    ],
+    "invariants": [
+      "源卡被识别为已完成素材且保持不变",
+      "2/3/4 双组合数量、颜色和命名符合 CSV",
+      "确认卡续跑属于同一 TaskRun，不重复执行 Skill",
+      "保存到一次性 fixture 项目，不覆盖源项目"
+    ],
+    "forbiddenBehaviors": [
+      "不得把完成的颜色源卡当成未完成模板重新设计",
+      "不得覆盖或改写任何源卡",
+      "不得在等待确认时声明完整 SKU 已完成",
+      "不得用新增一套 SKU 专属 Harness 状态修补失败"
+    ],
+    "outputInventory": {
+      "exactRasterExports": 19,
+      "basis": "配置文件/6色 2-3-4.csv 的 19 条组合规格"
+    },
+    "machineChecks": [
+      { "id": "correct_skill_binding", "required": true },
+      { "id": "fixture_instance_evidence", "required": true },
+      { "id": "runtime_model_identity_evidence", "required": true },
+      { "id": "expected_project_binding_evidence", "required": true },
+      { "id": "source_input_integrity_evidence", "required": true },
+      { "id": "observed_photoshop_mutation", "required": true },
+      { "id": "committed_photoshop_mutation", "required": true },
+      { "id": "post_write_structure_readback", "required": true },
+      { "id": "post_write_visual_readback", "required": true },
+      { "id": "post_write_readback_target_verified", "required": true },
+      { "id": "save_tool_receipt", "required": true },
+      { "id": "editable_psd_evidence", "required": true },
+      { "id": "raster_export_evidence", "required": true },
+      { "id": "sku_output_inventory_evidence", "required": true },
+      { "id": "no_unresolved_blockers", "required": true },
+      { "id": "terminal_task_run", "required": true }
+    ]
+  },
+  "boundaries": {
+    "devBenchmarkOnly": true,
+    "neverAffectsRuntime": true,
+    "reviewOnlyReferencesExcludedFromAgentContext": true,
+    "harnessDoesNotChooseDesign": true
+  }
+}

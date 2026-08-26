@@ -5,8 +5,16 @@
  * 支持从 Base64 数据或文件路径置入
  */
 
-import { Tool, ToolExecutionContext, ToolSchema } from '../types';
 import { getEntryFromPath } from '../../core/file-url';
+import {
+    measureImageTargetFitOutcome,
+    normalizeImageTargetBounds,
+    resolveImageTargetAlignmentBounds,
+    resolveImageTargetFitPlan,
+    type ImageTargetAnchor,
+    type ImageTargetFitOutcome,
+    type ImageTargetFocalPoint
+} from '../../core/image-target-fit';
 import {
     buildPhotoshopTransactionMutationOutcome,
     photoshopTransactionRunner,
@@ -20,6 +28,7 @@ import {
     readFileEntryBytes
 } from '../../core/image-safety';
 import { getPhotoshopElementPlacement } from '../layout/photoshop-runtime-adapters';
+import { Tool, ToolExecutionContext, ToolSchema } from '../types';
 
 const { app, action, constants } = require('photoshop');
 const uxp = require('uxp');
@@ -85,6 +94,10 @@ export interface PlaceImageParams {
     };
     /** 目标区域适配方式 */
     targetFit?: 'contain' | 'cover' | 'fill';
+    /** 图框在目标区域中的对齐方式；focalPoint 存在时只保留为请求事实，不参与落位 */
+    targetAnchor?: ImageTargetAnchor;
+    /** 源图中的归一化关注点；存在时优先将该点对准目标区域中心 */
+    focalPoint?: ImageTargetFocalPoint;
     /** 图层层级：belowText 用于让置入图位于可编辑文字下方 */
     layerOrder?: 'front' | 'belowText' | 'back';
     /** 来源资产ID（Agent 侧传入，用于追踪） */
@@ -121,6 +134,7 @@ interface PlaceImageBefore {
 
 interface PlaceImageReceipt {
     placedLayerId: number;
+    placement?: ImageTargetFitOutcome;
 }
 
 interface PlaceImageReadback {
@@ -141,49 +155,21 @@ function getLayerBoundsNoEffects(layer: any): any {
     return layer?.boundsNoEffects || layer?.bounds;
 }
 
-function toFiniteNumber(value: any): number | undefined {
-    // null/undefined 绝不映射为 0：模型高频把没用的字段填 null（如 {x:100, left:null}），
-    // Number(null)=0 会抢在 ?? 回退链之前生效，把图层错落到 (0,0)。
-    if (value === null || value === undefined) return undefined;
-    if (typeof value === 'number') {
-        return Number.isFinite(value) ? value : undefined;
-    }
-    if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (trimmed === '') return undefined;
-        const parsed = Number(trimmed);
-        return Number.isFinite(parsed) ? parsed : undefined;
-    }
-    // 布尔/数组等其他类型不做隐式强转（Number(false)=0、Number([80])=80 都是意外语义）。
-    return undefined;
-}
-
-function normalizeTargetBounds(value: PlaceImageParams['targetBounds']): { left: number; top: number; width: number; height: number } | null {
-    if (!value || typeof value !== 'object') return null;
-    const left = toFiniteNumber(value.left) ?? toFiniteNumber(value.x);
-    const top = toFiniteNumber(value.top) ?? toFiniteNumber(value.y);
-    const width = toFiniteNumber(value.width);
-    const height = toFiniteNumber(value.height);
-    const right = toFiniteNumber(value.right);
-    const bottom = toFiniteNumber(value.bottom);
-    const resolvedWidth = width ?? (right !== undefined && left !== undefined ? right - left : undefined);
-    const resolvedHeight = height ?? (bottom !== undefined && top !== undefined ? bottom - top : undefined);
-    if (left === undefined || top === undefined || resolvedWidth === undefined || resolvedHeight === undefined) return null;
-    if (resolvedWidth <= 0 || resolvedHeight <= 0) return null;
-    return { left, top, width: resolvedWidth, height: resolvedHeight };
-}
-
 function getLayerPixelSize(layer: any): { left: number; top: number; width: number; height: number } {
     const bounds = getLayerBoundsNoEffects(layer);
-    const left = Number(bounds.left || 0);
-    const top = Number(bounds.top || 0);
-    const right = Number(bounds.right || left);
-    const bottom = Number(bounds.bottom || top);
+    const left = Number(bounds?.left);
+    const top = Number(bounds?.top);
+    const right = Number(bounds?.right);
+    const bottom = Number(bounds?.bottom);
+    if (![left, top, right, bottom].every(Number.isFinite)
+        || right <= left || bottom <= top) {
+        throw new Error('置入图片适配失败：无法读取有效的图层 bounds。');
+    }
     return {
         left,
         top,
-        width: Math.max(1, right - left),
-        height: Math.max(1, bottom - top)
+        width: right - left,
+        height: bottom - top
     };
 }
 
@@ -222,35 +208,50 @@ async function transformLayerPercent(widthPercent: number, heightPercent: number
 
 /**
  * 把图层缩放并移动到目标区域（必须在 executeAsModal 内调用，且目标图层已被选中）。
- * 注意：本函数与 src/tools/layer/transform-layer.ts 中的 fitLayerToTargetBounds
- * （含 normalizeTargetBounds / getLayerPixelSize / transformLayerPercent）保持一致实现，
- * UXP 端暂无共享几何 util 惯例；修改任意一处算法时必须同步另一处，并同步 Agent 侧验收断言
- * （DesignEcho-Agent/src/shared/acceptance/tool-acceptance.ts 的 targetBounds 尺寸断言）。
+ * 几何由 core/image-target-fit 统一求解；本函数只负责执行 Photoshop 变换并读回事实。
  */
 async function fitLayerToTargetBounds(
     layer: any,
     target: { left: number; top: number; width: number; height: number },
-    fit: PlaceImageParams['targetFit'] = 'contain'
-): Promise<void> {
+    fit: PlaceImageParams['targetFit'],
+    targetAnchor: PlaceImageParams['targetAnchor'],
+    focalPoint: PlaceImageParams['focalPoint']
+): Promise<ImageTargetFitOutcome> {
     const before = getLayerPixelSize(layer);
-    const scaleX = (target.width / before.width) * 100;
-    const scaleY = (target.height / before.height) * 100;
-    const normalizedFit = fit === 'cover' || fit === 'fill' ? fit : 'contain';
-    const widthPercent = normalizedFit === 'fill'
-        ? scaleX
-        : normalizedFit === 'cover'
-            ? Math.max(scaleX, scaleY)
-            : Math.min(scaleX, scaleY);
-    const heightPercent = normalizedFit === 'fill' ? scaleY : widthPercent;
+    const scalePlan = resolveImageTargetFitPlan({
+        sourceBounds: before,
+        targetBounds: target,
+        fit,
+        targetAnchor,
+        focalPoint
+    });
 
-    if (Math.abs(widthPercent - 100) > 0.05 || Math.abs(heightPercent - 100) > 0.05) {
-        await transformLayerPercent(widthPercent, heightPercent);
+    if (Math.abs(scalePlan.widthPercent - 100) > 0.05
+        || Math.abs(scalePlan.heightPercent - 100) > 0.05) {
+        await transformLayerPercent(scalePlan.widthPercent, scalePlan.heightPercent);
     }
 
-    const after = getLayerPixelSize(layer);
-    const targetX = normalizedFit === 'fill' ? target.left : target.left + (target.width - after.width) / 2;
-    const targetY = normalizedFit === 'fill' ? target.top : target.top + (target.height - after.height) / 2;
-    await translateLayerWithoutNativeMove(layer, targetX - after.left, targetY - after.top);
+    const scaledBounds = getLayerPixelSize(layer);
+    const alignedBounds = resolveImageTargetAlignmentBounds({
+        sourceBounds: scaledBounds,
+        targetBounds: target,
+        fit,
+        targetAnchor,
+        focalPoint
+    });
+    await translateLayerWithoutNativeMove(
+        layer,
+        alignedBounds.left - scaledBounds.left,
+        alignedBounds.top - scaledBounds.top
+    );
+    const actualBounds = getLayerPixelSize(layer);
+    return measureImageTargetFitOutcome(
+        {
+            ...scalePlan,
+            expectedBounds: alignedBounds
+        },
+        actualBounds
+    );
 }
 
 function findLayerLocation(container: any, id: number): { layer: any; parent: any; index: number } | null {
@@ -469,7 +470,22 @@ export class PlaceImageTool implements Tool {
                     },
                     targetFit: {
                         type: 'string',
+                        enum: ['contain', 'cover', 'fill'],
                         description: '目标区域适配方式：contain、cover 或 fill，默认 contain'
+                    },
+                    targetAnchor: {
+                        type: 'string',
+                        enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
+                        description: '目标区域内的图框对齐方式，默认 center；focalPoint 存在时由 focalPoint 优先控制落位。fill 只接受 center'
+                    },
+                    focalPoint: {
+                        type: 'object',
+                        properties: {
+                            x: { type: 'number', description: '0 到 1 的归一化横向位置' },
+                            y: { type: 'number', description: '0 到 1 的归一化纵向位置' }
+                        },
+                        required: ['x', 'y'],
+                        description: '源图中的归一化关注点；存在时优先将该点对准目标区域中心，并在无空洞范围内夹紧。不能与 fill 同用'
                     },
                     layerOrder: {
                         type: 'string',
@@ -505,11 +521,13 @@ export class PlaceImageTool implements Tool {
             sourceByteLength,
             sourcePath,
             targetBounds,
-            targetFit = 'contain',
+            targetFit,
+            targetAnchor,
+            focalPoint,
             layerOrder = 'front'
         } = params;
         const imageData = rawImageData || (params as any).base64;
-        const normalizedTargetBounds = normalizeTargetBounds(targetBounds);
+        const normalizedTargetBounds = normalizeImageTargetBounds(targetBounds);
 
         // 调用方显式给了 targetBounds 就必须按该区域执行；字段缺失/非数/宽高无效时
         // fail closed。静默退回“整画布居中”会把多图叠在一起，也会把布局错误伪装成成功。
@@ -519,6 +537,35 @@ export class PlaceImageTool implements Tool {
                 error: 'targetBounds 无效：需要 {x,y,width,height} 或 {left,top,right,bottom}，且宽高必须大于 0；已拒绝默认居中回退。',
                 params
             });
+        }
+
+        if (!normalizedTargetBounds
+            && (params.targetFit !== undefined
+                || params.targetAnchor !== undefined
+                || params.focalPoint !== undefined)) {
+            return createToolFailureResult({
+                toolName: this.name,
+                error: 'targetFit、targetAnchor 与 focalPoint 只在提供有效 targetBounds 时生效；已拒绝忽略这些参数。',
+                params
+            });
+        }
+
+        if (normalizedTargetBounds) {
+            try {
+                resolveImageTargetFitPlan({
+                    sourceBounds: { left: 0, top: 0, width: 1, height: 1 },
+                    targetBounds: normalizedTargetBounds,
+                    fit: targetFit,
+                    targetAnchor,
+                    focalPoint
+                });
+            } catch (error) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: error instanceof Error ? error.message : String(error),
+                    params
+                });
+            }
         }
 
         if (!imageData && !filePath && !params.fileToken) {
@@ -554,6 +601,7 @@ export class PlaceImageTool implements Tool {
                 const doc = scope.document;
                 let placedLayerId: number | null = null;
                 let tokenPath: string | undefined;
+                let placement: ImageTargetFitOutcome | undefined;
 
                 throwIfRequestCancelled(context);
                 // 使用 batchPlay 置入图片
@@ -680,7 +728,13 @@ export class PlaceImageTool implements Tool {
                 // 处理目标区域；它优先于普通居中/缩放，用于详情页多图排版。
                 if (normalizedTargetBounds) {
                     throwIfRequestCancelled(context);
-                    await fitLayerToTargetBounds(newLayer, normalizedTargetBounds, targetFit);
+                    placement = await fitLayerToTargetBounds(
+                        newLayer,
+                        normalizedTargetBounds,
+                        targetFit,
+                        targetAnchor,
+                        focalPoint
+                    );
                 } else if (fitToCanvas || scale !== 100) {
                     const layerBounds = getLayerBoundsNoEffects(newLayer);
                     const layerWidth = layerBounds.right - layerBounds.left;
@@ -753,10 +807,14 @@ export class PlaceImageTool implements Tool {
                                 checksum: sourceChecksum,
                                 byteLength: sourceByteLength
                             },
+                            ...(placement ? { placement } : {}),
                             message: `已执行图片置入“${name}”，等待 Photoshop 状态读回。`
                         }
                     },
-                    { placedLayerId }
+                    {
+                        placedLayerId,
+                        ...(placement ? { placement } : {})
+                    }
                 );
             },
             readState({ phase, scope, before, receipt }): PlaceImageReadback {
@@ -786,14 +844,19 @@ export class PlaceImageTool implements Tool {
                     layerId => !before.beforeLayerIds.includes(layerId)
                 );
                 const placedLayer = after.placedLayer;
+                const placement = receipt?.placement && placedLayer?.bounds
+                    ? measureImageTargetFitOutcome(receipt.placement, placedLayer.bounds)
+                    : undefined;
                 return {
                     verified: after.documentId === before.documentId
                         && addedLayerIds.length === 1
                         && placedLayer !== undefined
                         && placedLayer.layerId === receipt?.placedLayerId
                         && placedLayer.layerName === before.expectedName
-                        && Boolean(placedLayer.bounds),
-                    message: `置入图片写后读回不一致：新增图层 ID=[${addedLayerIds.join(', ')}]，预期名称=“${before.expectedName}”，实际名称=“${placedLayer?.layerName || ''}”，bounds=${placedLayer?.bounds ? `${placedLayer.bounds.width}×${placedLayer.bounds.height}` : '空'}。`
+                        && Boolean(placedLayer.bounds)
+                        && (!normalizedTargetBounds
+                            || placement?.geometryVerification.verified === true),
+                    message: `置入图片写后读回不一致：新增图层 ID=[${addedLayerIds.join(', ')}]，预期名称=“${before.expectedName}”，实际名称=“${placedLayer?.layerName || ''}”，bounds=${placedLayer?.bounds ? `${placedLayer.bounds.width}×${placedLayer.bounds.height}` : '空'}，目标框几何问题=[${placement?.geometryVerification.issues.join(', ') || ''}]。`
                 };
             },
             verifyRolledBack({ before, after }) {
@@ -807,9 +870,12 @@ export class PlaceImageTool implements Tool {
                     message: `置入图片回滚后图层集合不一致：原 ID=[${before.beforeLayerIds.join(', ')}]，当前 ID=[${after.currentLayerIds.join(', ')}]。`
                 };
             },
-            buildVerifiedResult({ after }): PlaceImageResult {
+            buildVerifiedResult({ after, receipt }): PlaceImageResult {
                 const placedLayer = after.placedLayer as PlaceImageLayerState;
                 const bounds = placedLayer.bounds as PlaceImageBounds;
+                const placement = receipt?.placement
+                    ? measureImageTargetFitOutcome(receipt.placement, bounds)
+                    : undefined;
                 return {
                     success: true,
                     data: {
@@ -821,6 +887,7 @@ export class PlaceImageTool implements Tool {
                             checksum: sourceChecksum,
                             byteLength: sourceByteLength
                         },
+                        ...(placement ? { placement } : {}),
                         message: `成功置入图片“${placedLayer.layerName}”，并读回确认非空 bounds。`
                     }
                 };

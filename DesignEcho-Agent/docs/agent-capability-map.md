@@ -290,7 +290,7 @@ DesignEcho 的目标是 Photoshop 设计 Agent。主图、SKU、详情页、参�
 
 ## 6. 主图 /详情页 / SKU 实机 E2E 覆盖度（2026-07-12）
 
-统一机器契约：`business-skill-live-e2e-readiness/v1`。只读入口：`npm run maintenance:business-skills-live-e2e:preflight`。
+三类 Skill 的统一开发评测入口已经收口到 `benchmarks/design-reliability/`：固定 Case、TaskRun 级运行观测、人工评审、失败归因与 cohort 对比各自独立保存。只读入口仍兼容 `npm run maintenance:business-skills-live-e2e:preflight`，其实现为 `node scripts/design-reliability.cjs preflight`；未执行、缺少人工评审或缺少真实 Photoshop 收据都不会被算作通过。
 
 | Skill | 现有真实覆盖 | 尚缺验证 | 当前判定 |
 | --- | --- | --- | --- |

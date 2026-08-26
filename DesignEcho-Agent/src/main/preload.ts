@@ -321,7 +321,13 @@ const api = {
         modelId: string;
         messages: any[];
         tools: any[];
-        options?: { maxTokens?: number; temperature?: number; nativeTools?: any[] };
+        options?: {
+            maxTokens?: number;
+            temperature?: number;
+            nativeTools?: any[];
+            reasoningEffort?: string;
+            visualPresentationCandidateKeys?: string[];
+        };
     }) => ipcRenderer.invoke('stream:chatWithTools', params),
     
     // 取消流式请求
@@ -839,6 +845,7 @@ const api = {
         timeoutMs?: number;
         resetConversation?: boolean;
         disableSkillBridges?: boolean;
+        expectedProjectPath?: string;
         publicPlanConfirmationSourceMessageId?: string;
         publicPlanConfirmationRequestId?: string;
         publicPlanDisposableLiveAdapter?: boolean;

@@ -332,6 +332,7 @@ export function registerResourceHandlers(context: IPCContext): void {
         designRole?: string;
         placementIntent?: string;
         candidateFiles?: Array<Record<string, unknown>>;
+        visualConsumptionOwner?: 'calling_agent';
     }) => {
         if (!resourceManagerService || !modelService) {
             throw new Error('服务未初始化');
@@ -348,7 +349,10 @@ export function registerResourceHandlers(context: IPCContext): void {
                 deterministic: params.deterministic,
                 designRole: params.designRole,
                 placementIntent: params.placementIntent,
-                candidateFiles: params.candidateFiles as any
+                candidateFiles: params.candidateFiles as any,
+                ...(params.visualConsumptionOwner === 'calling_agent'
+                    ? { visualConsumptionOwner: 'calling_agent' as const }
+                    : {})
             }
         );
     });

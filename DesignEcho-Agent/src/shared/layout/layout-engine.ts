@@ -29,6 +29,10 @@ import {
     SPACING_SCALE_STEPS,
     type DesignGridSpec
 } from '../design-grid-dsl';
+import type {
+    SmartScalingAnchor,
+    SmartScalingCropPolicy
+} from '../design-smart-scaling-policy';
 
 export type BlockRole =
     | 'background'
@@ -49,13 +53,17 @@ export type HAlign = 'left' | 'center' | 'right';
  */
 export interface ImagePlacementSpec {
     fit: 'contain' | 'cover';
-    anchor: string;
+    /** Agent 明确选择的图框对齐；执行层只换算像素。 */
+    anchor: SmartScalingAnchor;
     scale: number;
     rotation: number;
+    /** 源图中的归一化关注点；存在时优先把它对准目标区域中心。 */
     focalPoint?: { x: number; y: number };
+    /** cover 只描述图框铺满方式；是否允许裁主体必须独立声明。 */
+    cropPolicy: SmartScalingCropPolicy;
     mask: 'none' | 'clipping' | 'shape';
     overflow: 'clip' | 'visible';
-    /** 主体感知修订时的目标占比；不填时由 Evaluation/Profile 或通用保守值决定。 */
+    /** Agent 显式选择的主体 contain 占比；缺失时任何层都不得补审美默认值。 */
     subjectFillRatio?: number;
     /** 只有明确的留白构图意图才能放宽严重欠填检查，默认 false。 */
     allowUnderfill?: boolean;
@@ -199,14 +207,64 @@ function validateModelAuthoredImagePlacement(
     if (!['contain', 'cover'].includes(String(placement.fit || ''))) {
         issues.push(`${path}.imagePlacement.fit:explicit_contain_or_cover_required`);
     }
-    if (placement.anchor !== 'center') {
-        issues.push(`${path}.imagePlacement.anchor:explicit_center_required`);
+    const anchors: readonly SmartScalingAnchor[] = [
+        'center',
+        'top-center',
+        'bottom-center',
+        'left-center',
+        'right-center'
+    ];
+    if (!anchors.includes(String(placement.anchor || '') as SmartScalingAnchor)) {
+        issues.push(`${path}.imagePlacement.anchor:explicit_supported_anchor_required`);
     }
     if (placement.scale !== 1) {
         issues.push(`${path}.imagePlacement.scale:explicit_1_required`);
     }
     if (placement.rotation !== 0) {
         issues.push(`${path}.imagePlacement.rotation:explicit_0_required`);
+    }
+    const cropPolicies: readonly SmartScalingCropPolicy[] = [
+        'avoid-crop',
+        'protect-subject',
+        'allow-crop'
+    ];
+    const cropPolicy = String(placement.cropPolicy || '') as SmartScalingCropPolicy;
+    if (!cropPolicies.includes(cropPolicy)) {
+        issues.push(`${path}.imagePlacement.cropPolicy:explicit_crop_intent_required`);
+    }
+    if (placement.fit === 'cover' && cropPolicy === 'avoid-crop') {
+        issues.push(`${path}.imagePlacement:cover_conflicts_with_avoid_crop`);
+    }
+    if (placement.subjectFillRatio !== undefined) {
+        const subjectFillRatio = placement.subjectFillRatio;
+        if (typeof subjectFillRatio !== 'number'
+            || !Number.isFinite(subjectFillRatio)
+            || subjectFillRatio <= 0
+            || subjectFillRatio > 1) {
+            issues.push(`${path}.imagePlacement.subjectFillRatio:number_above_0_to_1_required`);
+        }
+        if (placement.fit === 'cover') {
+            issues.push(`${path}.imagePlacement:cover_and_subject_fill_ratio_are_ambiguous`);
+        }
+    }
+    if (placement.focalPoint !== undefined) {
+        const focalPoint = placement.focalPoint && typeof placement.focalPoint === 'object'
+            && !Array.isArray(placement.focalPoint)
+            ? placement.focalPoint as Record<string, unknown>
+            : undefined;
+        const x = focalPoint?.x;
+        const y = focalPoint?.y;
+        if (!focalPoint
+            || typeof x !== 'number'
+            || typeof y !== 'number'
+            || !Number.isFinite(x)
+            || !Number.isFinite(y)
+            || x < 0 || x > 1 || y < 0 || y > 1) {
+            issues.push(`${path}.imagePlacement.focalPoint:normalized_x_y_required`);
+        }
+        if (placement.subjectFillRatio !== undefined) {
+            issues.push(`${path}.imagePlacement:focal_point_and_subject_fill_ratio_conflict`);
+        }
     }
     if (!['none', 'clipping'].includes(String(placement.mask || ''))) {
         issues.push(`${path}.imagePlacement.mask:explicit_none_or_clipping_required`);
@@ -269,6 +327,26 @@ function validateModelAuthoredRegionBounds(
     }
 }
 
+function validateUniqueModelAuthoredIds(
+    items: unknown[],
+    path: 'regions' | 'blocks',
+    issues: string[]
+): void {
+    const firstIndexById = new Map<string, number>();
+    items.forEach((candidate, index) => {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+        const id = String((candidate as Record<string, unknown>).id || '').replace(/\s+/g, ' ').trim();
+        if (!id) return;
+        const key = id.toLocaleLowerCase();
+        const firstIndex = firstIndexById.get(key);
+        if (firstIndex !== undefined) {
+            issues.push(`${path}[${index}].id:duplicate_of_${path}[${firstIndex}]`);
+            return;
+        }
+        firstIndexById.set(key, index);
+    });
+}
+
 /**
  * 正式版式的模型主权边界。
  *
@@ -296,6 +374,7 @@ export function validateModelAuthoredLayout(input: {
     if (input.mode === 'regions') {
         const regions = Array.isArray(input.regions) ? input.regions : [];
         if (regions.length === 0) issues.push('regions:non_empty_array_required');
+        validateUniqueModelAuthoredIds(regions, 'regions', issues);
         regions.forEach((candidate, index) => {
             const region = candidate && typeof candidate === 'object'
                 ? candidate as Record<string, unknown>
@@ -324,6 +403,7 @@ export function validateModelAuthoredLayout(input: {
 
     const blocks = Array.isArray(input.blocks) ? input.blocks : [];
     if (blocks.length === 0) issues.push('blocks:non_empty_array_required');
+    validateUniqueModelAuthoredIds(blocks, 'blocks', issues);
     let flowHeightRatioSum = 0;
     blocks.forEach((candidate, index) => {
         const block = candidate && typeof candidate === 'object'

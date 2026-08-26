@@ -40,10 +40,12 @@ const detailPageManifest = source('src/shared/agent-runtime-v5/manifests/detail-
 const observationCard = source('src/shared/agent-runtime-v5/visual-observation-card.ts');
 const taskCompletion = source('src/renderer/services/agent-runtime/task-completion-contract.ts');
 const codexSubscription = source('src/main/services/codex-subscription-service.ts');
+const codexStrictOutputSchema = source('src/main/services/codex-strict-output-schema.ts');
 const capabilitySession = source('src/renderer/services/agent-runtime/capability-session.ts');
 const autonomousExecutor = source('src/renderer/services/skill-executors/autonomous-agent.executor.ts');
 const agentRuntime = source('src/renderer/services/agent-runtime/agent.ts');
 const modelProviderFailureBoundary = source('src/renderer/services/agent-runtime/model-provider-failure-boundary.ts');
+const modelProviderTransportPolicy = source('src/shared/model-provider-transport-policy.ts');
 const failureBreaker = source('src/renderer/services/agent-runtime/tool-failure-breaker.ts');
 const messageRendererCss = source('src/renderer/components/message/MessageRenderer.css');
 const designerAutonomyPrinciples = source('src/shared/designer-agent-autonomy-principles.ts');
@@ -51,6 +53,7 @@ const designerDecisionContractSource = source('src/shared/designer-agent-decisio
 const designMethodKnowledgeSource = source('src/shared/agent-runtime-v5/design-method-knowledge.ts');
 const designArtifactKnowledgeSource = source('src/shared/knowledge/design-artifact-knowledge.ts');
 const designPrinciplesSource = source('src/shared/knowledge/design-principles.ts');
+const projectVisualSamplingSource = source('src/shared/project-visual-sampling.ts');
 const resourceManagerSource = source('src/main/services/resource-manager-service.ts');
 const toolResultSanitizerSource = source('src/renderer/services/agent-runtime/tool-result-sanitizer.ts');
 const uxpTemplateTool = source('../DesignEcho-UXP/src/tools/layout/template-tool.ts');
@@ -151,9 +154,11 @@ check(
         && !capabilitySession.includes("'delivery.export.quickExport'")
 );
 check(
-    '未通过结构质量的首稿不会污染近期成稿记忆',
-    composeExecutor.includes("const completedDesign = qualityState === 'passed'")
-        && composeExecutor.includes('if (deps.projectPath && completedDesign)')
+    'composeDesign 不用结构/几何通过冒充视觉终审并污染近期成稿记忆',
+    composeExecutor.includes("reviewStatus: 'candidate_unreviewed'")
+        && composeExecutor.includes('candidateFingerprint: fingerprint')
+        && composeExecutor.includes('composeDesign 只生产候选，不拥有视觉终审')
+        && !composeExecutor.includes("invokeMain('designWorkshop:writeRecentDesigns'")
 );
 check(
     '内部恢复点不能满足正式交付完成条件',
@@ -161,16 +166,31 @@ check(
         && !/const DOCUMENT_SAVE_TOOLS = new Set\(\[[\s\S]{0,180}'smartSave'/m.test(taskCompletion)
 );
 check(
-    '订阅模型结构化编码错误只允许一次同线程修复并累计真实用量',
+    '订阅模型用 name.const 原生参数对象消除二次 JSON 编码，Tool 级修复仍同线程并累计真实用量',
     codexSubscription.includes('REPAIRABLE_STRUCTURED_OUTPUT_ERROR_CODES')
         && codexSubscription.includes('buildCodexStructuredOutputRepairInput(error)')
-        && codexSubscription.includes('combineTokenUsage(firstUsage, repaired.usage)')
+        && codexSubscription.includes('buildCodexDirectToolArgumentsRepairInput(')
+        && codexSubscription.includes('outputSchema: buildDirectToolArgumentsOutputSchema(tool)')
+        && codexSubscription.includes('buildCodexStrictOutputSchema(input.outputSchema)')
+        && codexSubscription.includes('restoreCodexStrictOutputValue(wireValue, outputSchema)')
+        && codexSubscription.includes('anyOf: tools.map(buildStructuredToolCallOutputSchema)')
+        && codexSubscription.includes('buildCodexHostEnvelopeOutputSchema(tools)')
+        && codexSubscription.includes('arguments: Record<string, unknown>')
+        && codexStrictOutputSchema.includes('readRecoverableDiscriminatedObjectUnion(')
+        && codexSubscription.includes('combineTokenUsage(firstUsage, repairedUsage)')
+        && !codexSubscription.includes('argumentsJson')
+        && !codexSubscription.includes('codex-tool-arguments-local-repair')
+        && !codexSubscription.includes('JSON5.parse')
         && codexSubscription.includes('if (!isRepairableCodexStructuredOutputError(error) || signal?.aborted) throw error;')
 );
 check(
     '订阅桥按持续进度刷新空闲超时并保留独立总上限',
     codexSubscription.includes("notification.method.endsWith('/delta')")
-        && codexSubscription.includes('this.refreshActiveTurnIdleDeadline(active)')
+        && codexSubscription.includes(
+            'const accepted = this.refreshActiveTurnIdleDeadline(active, notification.method);'
+        )
+        && codexSubscription.includes('if (!accepted) return;')
+        && codexSubscription.includes('this.scheduleActiveTurnIdleCheck(active);')
         && codexSubscription.includes('MAX_TURN_WALL_CLOCK_TIMEOUT_MS')
         && codexSubscription.includes('codex_subscription_turn_idle_timeout')
         && codexSubscription.includes('codex_subscription_turn_wall_clock_timeout')
@@ -184,7 +204,9 @@ check(
     'Provider 失败保持结构化归因，不再被循环压成普通质量返工',
     agentRuntime.includes('rethrowKnownModelProviderFailure(this.config.modelId, error)')
         && modelProviderFailureBoundary.includes("if (providerFailure.kind !== 'unknown')")
-        && autonomousExecutor.includes('if (isHarnessManagedSubscriptionTimeout(error)) return false;')
+        && autonomousExecutor.includes('shouldRetryAutonomousModelTransport({')
+        && modelProviderTransportPolicy.includes("code === CODEX_SUBSCRIPTION_WALL_CLOCK_TIMEOUT) return false")
+        && modelProviderTransportPolicy.includes('code === CODEX_SUBSCRIPTION_IDLE_TIMEOUT')
         && autonomousExecutor.includes("if (result.stopReason === 'error') break;")
 );
 check(
@@ -224,8 +246,8 @@ check(
     designMethodKnowledgeSource.includes('是否检索 Eagle 或其他参考资源由 Agent 按信息增益判断')
         && designArtifactKnowledgeSource.includes('是否调用 Eagle 等参考工具、查什么以及何时停止由 Agent 决定')
         && designPrinciplesSource.includes('参考研究由 Agent 按信息增益决定')
-        && toolSchemas.includes('skip it only when an explicit reference')
-        && toolSchemas.includes('no opening announcement or fixed research ritual is required')
+        && toolSchemas.includes('no explicit reference, governed brand material or relevant project work already answers it')
+        && toolSchemas.includes('optional evidence, not a fixed opening ritual')
         && !toolSchemas.includes('七步思考脚手架')
         && !toolSchemas.includes('先说明要解决的构图、色彩、字体或表达问题')
 );
@@ -249,8 +271,9 @@ check(
     '摄影优先的纯图片设计可只整理既有图层，不逼 Agent 虚构文字区域',
     toolExecutor.includes('const ownedLayerOnlyMode = specBlocks.length === 0')
         && toolExecutor.includes('if (specBlocks.length === 0 && !ownedLayerOnlyMode)')
-        && toolExecutor.includes('if (errors.length === 0 && createdLayerIds.length > 0)')
-        && toolExecutor.includes('requiresVisualReview: createdLayerIds.length > 0')
+        && toolExecutor.includes('if (ownedLayerOnlyMode)')
+        && toolExecutor.includes('createdLayerIds.push(ownedLayer.layerId)')
+        && toolExecutor.includes('requiresVisualReview: retainedCreatedLayerIds.length > 0')
         && composeExecutor.includes('layoutRendered: steps.some((item) => item.ok && item.tool === \'renderLayout\')')
 );
 check(
@@ -334,16 +357,21 @@ check(
     recommendAssetsDescription.includes('one selected image is not evidence of project-wide understanding')
         && recommendAssetsDescription.includes('numbered candidate sheet to the main Agent')
         && recommendAssetsDescription.includes('by expected information gain')
-        && searchEagleReferencesDescription.includes('检索到标题不等于看过')
-        && searchEagleReferencesDescription.includes('no opening announcement or fixed research ritual is required'),
+        && searchEagleReferencesDescription.includes('A search hit is not visual understanding')
+        && searchEagleReferencesDescription.includes('optional evidence, not a fixed opening ritual'),
     JSON.stringify({ recommendAssetsDescription, searchEagleReferencesDescription })
 );
 check(
     'recommendAssets 把同一候选联系表交给主 Agent，最终短名单保持来源覆盖但不替模型选赢家',
     resourceManagerSource.includes('sheet?: ProjectContactSheetOverviewResult[\'sheet\']')
         && resourceManagerSource.includes('agentSelectsFinalAsset: true')
+        && resourceManagerSource.includes("visualConsumptionOwner?: 'calling_agent'")
+        && resourceManagerSource.includes("if (visualConsumptionOwner !== 'calling_agent')")
+        && resourceManagerSource.includes("...(visualConsumptionOwner === 'calling_agent' && comparisonSheet")
         && resourceManagerSource.includes('recommendations: modelVisibleRecommendations')
         && resourceManagerSource.includes('diversifyAssetRecommendationShortlist(')
+        && toolExecutor.includes("visualConsumptionOwner: 'calling_agent' as const")
+        && toolExecutor.includes('内部模型调用为 0')
         && toolResultSanitizerSource.includes("'sheet'")
         && !resourceManagerSource.includes('selectedAsset: modelVisibleRecommendations[0]')
 );
@@ -363,8 +391,11 @@ const liftedContactSheetImages = extractImagesFromToolResult({
     }
 }, 3);
 check(
-    '项目总览观察把 contactSheet.sheet 提升给主 Agent 的受控视觉通道',
-    toolExecutor.includes("...(result?.contactSheet?.sheet ? { sheet: result.contactSheet.sheet } : {})")
+    '项目总览观察只在 Agent 调用边界把 sheet 交给当前多模态模型，避免 Tool 内重复看图',
+    toolExecutor.includes("options.visualConsumptionOwner === 'calling_agent'")
+        && toolExecutor.includes('const contactSheet = await designEcho.createProjectContactSheetOverview?.({')
+        && toolExecutor.includes('...(presentationSheet ? { sheet: presentationSheet } : {})')
+        && toolExecutor.includes("owner: 'calling_agent'")
         && liftedContactSheetImages.length === 1
         && liftedContactSheetImages[0].mediaType === 'image/jpeg',
     JSON.stringify(liftedContactSheetImages.map((item) => ({ mediaType: item.mediaType, resultPath: item.resultPath })))
@@ -380,8 +411,12 @@ check(
         && !toolExecutor.includes('filePath: topCandidate.path')
 );
 check(
-    '项目总览在截断前按素材来源稳定轮转，不再把目录 first-N 当成重要性排序',
-    /images = selectDiverseProjectVisualCandidates\([\s\S]{0,900}params\.maxImages \|\| 40/.test(toolExecutor)
+    '项目总览在截断前按角色和桶内跨度稳定抽样，不再把目录 first-N 当成重要性排序',
+    toolExecutor.includes('const uniqueCandidates = selectDiverseProjectVisualCandidates(')
+        && toolExecutor.includes('const images = selectDiverseProjectVisualCandidates(uniqueCandidates, maxImages)')
+        && toolExecutor.includes('candidateUniverseCount: uniqueCandidates.length')
+        && projectVisualSamplingSource.includes('doesNotRank: true')
+        && projectVisualSamplingSource.includes('doesNotSelectWinner: true')
         && !/filter\(\(file: any\) => file\?\.type === 'image'[\s\S]{0,160}\.slice\(0, params\.maxImages \|\| 40\)/.test(toolExecutor)
 );
 const heuristicMainImageSelection = selectMainImageAssetCandidate({
@@ -455,7 +490,11 @@ check(
 check(
     'composeDesign 模型说明书覆盖执行器真实嵌套必填项',
     ['width', 'height'].every((key) => composeDesignProperties.canvas?.required?.includes(key))
-        && composeDesignProperties.subject?.oneOf?.some((branch) => ['treatment', 'shadow', 'fillRatio'].every((key) => branch.required?.includes(key)))
+        && composeDesignProperties.subject?.oneOf?.some((branch) => (
+            ['treatment', 'shadow'].every((key) => branch.required?.includes(key))
+                && branch.properties?.treatment?.enum?.includes('photo')
+                && !branch.required?.includes('fillRatio')
+        ))
         && composeDesignProperties.subject?.oneOf?.some((branch) => ['treatment', 'shadow', 'cutout'].every((key) => branch.required?.includes(key)))
         && ['mode', 'regions', 'groupName', 'visualStyle'].every((key) => composeDesignProperties.layout?.required?.includes(key))
         && ['id', 'role', 'content', 'bounds'].every((key) => composeRegionSchema?.required?.includes(key))
@@ -463,7 +502,8 @@ check(
         && ['backgroundHex', 'textHex'].every((key) => composeDesignProperties.palette?.required?.includes(key))
         && ['angle', 'purpose', 'claim', 'materials', 'structure']
             .every((key) => composeDesignProperties.rationale?.properties?.[key]?.type === 'string')
-        && /photo 必须给 fillRatio 且背景 kind=none/.test(composeDesignProperties.subject?.properties?.treatment?.description || ''),
+        && /只有需要精确控制商品主体占比时才填写 fillRatio/.test(composeDesignProperties.subject?.properties?.treatment?.description || '')
+        && /声明后执行前必须取得可靠主体框/.test(composeDesignProperties.subject?.properties?.fillRatio?.description || ''),
     JSON.stringify(composeDesignSchema)
 );
 check(
@@ -493,7 +533,8 @@ check(
         && /headline/.test(composeRegionSchema?.properties?.id?.description || '')
         && /Harness 不会代为改名/.test(composeRegionSchema?.properties?.id?.description || '')
         && /IMPLEMENTATION_REGION_ID/.test(composeSpec)
-        && composeExecutor.includes("String(spec.layout.regions[primarySubjectRegionIndex]?.id || '').trim()")
+        && composeExecutor.includes('const photoLayerName = String(spec.layout.regions[primarySubjectRegionIndex]!.id).trim()')
+        && composeExecutor.includes('name: photoLayerName')
         && !composeExecutor.includes("`主视觉·${sourceStem || '摄影素材'}`"),
     composeRegionSchema?.properties?.id?.description || ''
 );

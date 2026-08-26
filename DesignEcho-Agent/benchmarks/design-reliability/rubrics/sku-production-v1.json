@@ -1,0 +1,24 @@
+{
+  "version": "design-reliability-rubric/v1",
+  "rubricId": "sku-production-v1",
+  "taskFamily": "sku",
+  "scale": "0..1",
+  "dimensions": [
+    { "id": "sourceCardPreservation", "weight": 0.18 },
+    { "id": "combinationCorrectness", "weight": 0.22 },
+    { "id": "layoutConsistency", "weight": 0.14 },
+    { "id": "subjectScaleCrop", "weight": 0.12 },
+    { "id": "namingAndInventory", "weight": 0.14 },
+    { "id": "visualPolish", "weight": 0.1 },
+    { "id": "editability", "weight": 0.1 }
+  ],
+  "decisionRule": {
+    "passRequiresNoBlocker": true,
+    "passMinimumOverall": 0.8,
+    "pairwiseTarget": "matches_user_production_standard"
+  },
+  "boundaries": {
+    "humanVerdictRequired": true,
+    "machineMetricsCannotJudgeAesthetics": true
+  }
+}

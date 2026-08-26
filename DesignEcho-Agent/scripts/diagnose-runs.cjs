@@ -509,15 +509,36 @@ function mapRunRecordToRun(record) {
         record?.checkpoint?.activityCounts?.mutation?.successful
         ?? toolCalls.filter((call) => call?.success !== false && call?.activityClass === 'mutation').length
     );
+    const observedMutationCalls = toolCalls.filter((call) => (
+        call?.success === true
+        && call?.activityClass === 'mutation'
+        && (
+            call?.photoshopMutationCommit?.mutationObserved === true
+            || call?.photoshopHistoryTransition?.mutationObserved === true
+        )
+    )).length;
+    const committedMutationCalls = toolCalls.filter((call) => (
+        call?.success === true
+        && call?.activityClass === 'mutation'
+        && call?.photoshopMutationCommit?.mutationObserved === true
+        && call?.photoshopMutationCommit?.toolActionCompleted === true
+    )).length;
     const successfulObservationCalls = Number(
         record?.checkpoint?.activityCounts?.observation?.successful
         ?? toolCalls.filter((call) => call?.success !== false && call?.activityClass === 'observation').length
     );
     const lastFailedCall = [...toolCalls].reverse().find((call) => call?.success === false);
     const harnessActionCount = toolCalls.filter((call) => /^harness_/i.test(String(call?.origin || ''))).length;
-    const firstSuccessfulMutationCall = toolCalls.find(
-        (call) => call?.success !== false && call?.activityClass === 'mutation'
+    const firstObservedMutationCall = toolCalls.find(
+        (call) => call?.success === true
+            && call?.activityClass === 'mutation'
+            && (
+                call?.photoshopMutationCommit?.mutationObserved === true
+                || call?.photoshopHistoryTransition?.mutationObserved === true
+            )
     );
+    const writeExpected = Boolean(String(record?.runtimeSession?.taskType || '').trim())
+        || toolCalls.some((call) => call?.activityClass === 'mutation');
     const warnings = normalizeRecordTextList(record.warnings);
     const blockers = normalizeRecordTextList(record.blockers);
     return {
@@ -539,15 +560,18 @@ function mapRunRecordToRun(record) {
             successfulToolCalls,
             failedToolCalls,
             successfulMutationCalls,
+            observedMutationCalls,
+            committedMutationCalls,
+            writeExpected,
             successfulObservationCalls,
             businessActionCount: Math.max(0, toolCalls.length - harnessActionCount),
             harnessActionCount,
             lastToolName: String(record?.checkpoint?.lastToolName || toolCalls.at(-1)?.name || ''),
             lastError: String(lastFailedCall?.summary || lastFailedCall?.code || ''),
-            firstMutationSeq: Number(firstSuccessfulMutationCall?.seq || 0),
-            firstMutationToolName: String(firstSuccessfulMutationCall?.name || ''),
-            firstMutationElapsedMs: typeof firstSuccessfulMutationCall?.elapsedMs === 'number'
-                ? firstSuccessfulMutationCall.elapsedMs
+            firstMutationSeq: Number(firstObservedMutationCall?.seq || 0),
+            firstMutationToolName: String(firstObservedMutationCall?.name || ''),
+            firstMutationElapsedMs: typeof firstObservedMutationCall?.elapsedMs === 'number'
+                ? firstObservedMutationCall.elapsedMs
                 : undefined,
             blockers,
             warnings
@@ -576,17 +600,17 @@ function diagnoseRun(run) {
         push('severe', `${blockers.length} 条阻塞：${oneLine(blockers[0], 70)}`, 'blockers[]');
     }
 
-    const mutations = Number(s.successfulMutationCalls || 0);
+    const mutations = Number(s.observedMutationCalls || 0);
     const iterations = Number(s.iterations || 0);
     const toolCalls = Number(s.toolCallCount || 0);
     const failedCalls = Number(s.failedToolCalls || 0);
 
-    if (s.status === 'completed' && mutations === 0) {
-        push('warn', '判定为完成，但本轮没有任何成功的写入调用（若是纯咨询/分析请求则属正常，需人工确认）',
-            'status=completed, successfulMutationCalls=0');
+    if (s.writeExpected === true && s.status === 'completed' && mutations === 0) {
+        push('warn', '需要写入的运行判定为完成，但没有 Photoshop history/commit 证明真实写入',
+            'status=completed, observedMutationCalls=0');
     }
-    if (mutations === 0 && iterations >= 8) {
-        push('warn', `迭代 ${iterations} 轮但零写入产出`, `iterations=${iterations}, successfulMutationCalls=0`);
+    if (s.writeExpected === true && mutations === 0 && iterations >= 8) {
+        push('warn', `迭代 ${iterations} 轮但没有真实写入`, `iterations=${iterations}, observedMutationCalls=0`);
     }
     if (failedCalls > 0) {
         push('warn', `${failedCalls} 次工具调用失败${s.lastError ? `，末次错误：${oneLine(s.lastError, 60)}` : ''}`,
@@ -644,7 +668,7 @@ function detectCapabilityDenialSuspects(runs) {
     const suspects = [];
     for (const run of runs) {
         const s = run.summary || {};
-        if (Number(s.successfulMutationCalls || 0) > 0) continue;
+        if (Number(s.observedMutationCalls || 0) > 0) continue;
         const blockers = Array.isArray(s.blockers) ? s.blockers : [];
         if (blockers.length > 0) continue;
         const stop = STOP_REASON_MEANING[s.stopReason];
@@ -683,7 +707,8 @@ function buildAggregate(runs) {
     const total = runs.length;
     const statusTally = tally(runs, (r) => r.summary.status);
     const stopTally = tally(runs, (r) => r.summary.stopReason);
-    const zeroMutation = runs.filter((r) => Number(r.summary.successfulMutationCalls || 0) === 0);
+    const writeExpectedRuns = runs.filter((r) => r.summary.writeExpected === true);
+    const zeroMutation = writeExpectedRuns.filter((r) => Number(r.summary.observedMutationCalls || 0) === 0);
     const completed = runs.filter((r) => r.summary.status === 'completed');
     const successful = runs.filter((r) => (
         r.summary.success === true
@@ -694,12 +719,15 @@ function buildAggregate(runs) {
         const meaning = STOP_REASON_MEANING[r.summary.stopReason];
         return meaning && meaning.level === 'severe';
     });
-    // 收敛指标（治理切片 3）：完成且有真实写入是唯一有价值的收敛口径；
-    // 观察/业务动作占比用于追踪「观察吞噬预算」是否缓解。
+    // 历史大盘只用于找病例，不是固定 Case 成功率。这里仍坚持 history/commit
+    // mutationObserved 才算真实 Photoshop 写入，写类 Tool success 单独保留作兼容诊断。
     const completedWithWrites = completed.filter(
-        (r) => Number(r.summary.successfulMutationCalls || 0) > 0
+        (r) => Number(r.summary.observedMutationCalls || 0) > 0
     );
     const totalSuccessfulMutations = runs.reduce(
+        (sum, run) => sum + Number(run.summary.observedMutationCalls || 0), 0
+    );
+    const totalWriteToolSuccesses = runs.reduce(
         (sum, run) => sum + Number(run.summary.successfulMutationCalls || 0), 0
     );
     const totalObservationCalls = runs.reduce(
@@ -710,7 +738,7 @@ function buildAggregate(runs) {
     );
     // 收敛指标（治理切片 9）：首次成功写入延迟——只统计带时序的新档案，覆盖率如实上报。
     const firstWriteLatencyValues = runs
-        .filter((run) => Number(run.summary.successfulMutationCalls || 0) > 0)
+        .filter((run) => Number(run.summary.observedMutationCalls || 0) > 0)
         .map((run) => run.summary.firstMutationElapsedMs)
         .filter((value) => typeof value === 'number' && Number.isFinite(value))
         .sort((a, b) => a - b);
@@ -724,16 +752,20 @@ function buildAggregate(runs) {
         totalToolCalls: runs.reduce((sum, run) => sum + Number(run.summary.toolCallCount || 0), 0),
         failedToolCalls: runs.reduce((sum, run) => sum + Number(run.summary.failedToolCalls || 0), 0),
         zeroMutationCount: zeroMutation.length,
-        zeroMutationCompletedCount: completed.filter((r) => Number(r.summary.successfulMutationCalls || 0) === 0).length,
+        writeExpectedCount: writeExpectedRuns.length,
+        zeroMutationCompletedCount: completed.filter((r) => (
+            r.summary.writeExpected === true && Number(r.summary.observedMutationCalls || 0) === 0
+        )).length,
         completedWithWritesCount: completedWithWrites.length,
         totalSuccessfulMutations,
+        totalWriteToolSuccesses,
         totalObservationCalls,
         totalBusinessActions,
         withBlockersCount: withBlockers.length,
         budgetExhaustedCount: budgetExhausted.length,
         firstWriteLatencyValues,
         firstWriteLatencyCoverage: {
-            withWrites: completedWithWrites.length,
+            withWrites: runs.filter((run) => Number(run.summary.observedMutationCalls || 0) > 0).length,
             withTiming: firstWriteLatencyValues.length
         },
         capabilityDenialSuspects,
@@ -767,7 +799,8 @@ function printRun(run) {
     console.log(`\n${mark} [${run.index}] ${formatTime(run.at)}  ${s.status || '(无状态)'} / ${s.stopReason || '(无停机原因)'}`);
     console.log(`   目标  ${oneLine(run.goal, 84) || '(未记录用户消息)'}`);
     console.log(`   计数  迭代 ${s.iterations || 0} · 工具 ${s.toolCallCount || 0}（成功 ${s.successfulToolCalls || 0} / 失败 ${s.failedToolCalls || 0}）`
-        + ` · 写入 ${s.successfulMutationCalls || 0} · 观察 ${s.successfulObservationCalls || 0}`
+        + ` · 写类成功 ${s.successfulMutationCalls || 0} / 真实写入 ${s.observedMutationCalls || 0}`
+        + ` · 观察 ${s.successfulObservationCalls || 0}`
         + ` · 业务 ${s.businessActionCount || 0} / Harness ${s.harnessActionCount || 0}`);
     if (s.lastToolName) console.log(`   末工具 ${s.lastToolName}${s.lastError ? ` · 错误：${oneLine(s.lastError, 56)}` : ''}`);
     if (s.summaryText) console.log(`   回复  ${oneLine(s.summaryText, 84)}`);
@@ -784,10 +817,10 @@ function printAggregate(agg, runs) {
     console.log(`  成功运行        ${agg.successfulCount} / ${agg.total}  (${pct(agg.successfulCount)})   依据 agent-run-record.success`);
     console.log(`  完成状态        ${agg.completedCount} / ${agg.total}  (${pct(agg.completedCount)})   等待确认可 success=true，但不冒充 completed`);
     console.log(`  工具调用        ${agg.totalToolCalls}，失败 ${agg.failedToolCalls}`);
-    console.log(`  零写入运行      ${agg.zeroMutationCount} / ${agg.total}  (${pct(agg.zeroMutationCount)})   依据 successfulMutationCalls=0`);
-    console.log(`  声称完成但零写入 ${agg.zeroMutationCompletedCount}                依据 status=completed 且 successfulMutationCalls=0`);
-    console.log(`  完成且有写入    ${agg.completedWithWritesCount} / ${agg.total}  (${pct(agg.completedWithWritesCount)})   依据 status=completed 且 successfulMutationCalls>0【收敛指标】`);
-    console.log(`  真实写入合计    ${agg.totalSuccessfulMutations} 次 · 观察调用 ${agg.totalObservationCalls} 次 / 业务动作 ${agg.totalBusinessActions} 次【收敛指标】`);
+    console.log(`  需写入且零实写  ${agg.zeroMutationCount} / ${agg.writeExpectedCount}   依据 taskType/写调用存在且 observedMutationCalls=0`);
+    console.log(`  声称完成但零实写 ${agg.zeroMutationCompletedCount}                依据 status=completed 且 observedMutationCalls=0`);
+    console.log(`  完成且有真实写入 ${agg.completedWithWritesCount} / ${agg.total}  (${pct(agg.completedWithWritesCount)})   依据 Photoshop history/commit mutationObserved=true【历史大盘，非固定 Case 成功率】`);
+    console.log(`  真实写入合计    ${agg.totalSuccessfulMutations} 次 · 写类 Tool success ${agg.totalWriteToolSuccesses} 次 · 观察调用 ${agg.totalObservationCalls} 次 / 业务动作 ${agg.totalBusinessActions} 次`);
     const firstWriteMedian = median(agg.firstWriteLatencyValues);
     const firstWriteP90 = percentile(agg.firstWriteLatencyValues, 0.9);
     console.log(`  首次写入延迟    中位 ${formatDuration(firstWriteMedian)} / P90 ${formatDuration(firstWriteP90)}   时序覆盖 ${agg.firstWriteLatencyCoverage.withTiming}/${agg.firstWriteLatencyCoverage.withWrites}（有写入运行中带时序档案的比例）【收敛指标】`);
@@ -915,6 +948,7 @@ function printRunRecordTrace(record) {
     const toolCalls = Array.isArray(record.toolCalls) ? record.toolCalls : [];
     if (!toolCalls.length) {
         console.log('\n本档案没有工具调用。');
+        printPromptShapeSamples(record);
         return;
     }
     console.log(`\n共 ${toolCalls.length} 次工具调用：\n`);
@@ -936,13 +970,23 @@ function printRunRecordTrace(record) {
     printPromptShapeSamples(record);
 }
 
+function readRuntimeAccounting(record) {
+    const nested = record?.runtimeSession?.accounting;
+    const standalone = record?.runtimeAccounting;
+    if (nested && standalone) return null;
+    return nested || standalone || null;
+}
+
 /**
  * 提示体量：回答「模型是不是被淹了」。每次模型调用的系统提示 / 历史 / 工具 schema 字符数与 token 数，
- * 只在新档案（accounting.promptShapeSamples）里有；旧档案只能看 stageBuckets 平均值。
+ * staged 从 runtimeSession.accounting 读取，普通 agentic 从顶层 runtimeAccounting 读取；
+ * 两者同时存在属于非法档案，不在诊断脚本里猜测或合并。
  */
 function printPromptShapeSamples(record) {
-    const samples = record?.runtimeSession?.accounting?.promptShapeSamples;
+    const accounting = readRuntimeAccounting(record);
+    const samples = accounting?.promptShapeSamples;
     if (!Array.isArray(samples) || samples.length === 0) return;
+    console.log(`\n运行会计：模型 ${accounting.modelCallCount} 次 / ${accounting.modelDurationMs}ms；工具 ${accounting.toolCallCount} 次 / ${accounting.toolDurationMs}ms；usage 未上报 ${accounting.unreportedUsageCallCount} 次。`);
     console.log('\n提示体量（每次模型调用；字符数 / token）：');
     console.log('  #    阶段  系统提示   历史     工具schema  工具数  图  消息数   输入token  输出token   耗时');
     for (const sample of samples) {
@@ -1040,7 +1084,7 @@ function printConvergenceComparison(agg, baseline) {
     console.log('收敛指标对照（治理口径：完成且有真实写入 / 观察占比 / 首次写入延迟 / 疑似能力误判）');
     console.log('━'.repeat(72));
     console.log(`  当前窗口：${agg.total} 次运行`);
-    console.log(`  完成且有写入   ${agg.completedWithWritesCount} / ${agg.total}  (${pct(currentRate)})   依据 status=completed 且 successfulMutationCalls>0`);
+    console.log(`  完成且有真实写入 ${agg.completedWithWritesCount} / ${agg.total}  (${pct(currentRate)})   依据 Photoshop history/commit mutationObserved=true（历史大盘，非固定 Case 成功率）`);
     console.log(`  观察占比       ${agg.totalObservationCalls} / ${agg.totalBusinessActions} 次业务动作`
         + (observationShare === null ? '' : `  (${pct(observationShare)})`));
     console.log(`  首次写入延迟   中位 ${formatDuration(currentFirstWriteMedian)}   时序覆盖 ${agg.firstWriteLatencyCoverage.withTiming}/${agg.firstWriteLatencyCoverage.withWrites}（旧档案无时序，覆盖随新运行增长）`);
@@ -1053,7 +1097,7 @@ function printConvergenceComparison(agg, baseline) {
             console.log(`     …还有 ${agg.capabilityDenialSuspects.length - 5} 条候选`);
         }
     }
-    if (baseline) {
+    if (baseline && baseline.metricSemantics === 'observed_photoshop_mutation/v1') {
         const deltaRate = currentRate - baseline.completedWithWritesRate;
         const deltaShare = observationShare === null ? null : observationShare - baseline.observationShare;
         console.log(`  ── 治理前基线（${baseline.window}，${baseline.totalRuns} 次运行，记录于 ${baseline.capturedAt}）──`);
@@ -1074,8 +1118,10 @@ function printConvergenceComparison(agg, baseline) {
                 + `  (Δ ${deltaDenial >= 0 ? '+' : ''}${deltaDenial})`);
         }
         console.log('  收敛判据：完成且有写入率上升、首次写入延迟下降、观察占比下降、疑似能力误判减少为收敛方向；反之为回退，需回到治理切片排查。');
+    } else if (baseline) {
+        console.log('  （历史 convergenceBaseline 使用“写类 Tool success”旧口径，与当前 Photoshop history/commit 真写入口径不可直接比较；已停止输出伪 delta。）');
     } else {
-        console.log('  （project-state.json 未记录 convergenceBaseline，仅输出当前值。）');
+        console.log('  （project-state.json 未记录可比 convergenceBaseline，仅输出当前值。）');
     }
 }
 

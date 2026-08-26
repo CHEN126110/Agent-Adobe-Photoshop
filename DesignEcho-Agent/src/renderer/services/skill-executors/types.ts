@@ -4,6 +4,7 @@
 
 import type { AgentTaskPlanningContract } from '../../../shared/agent-task-planning-contract';
 import type { GuardedAtomicToolExecutor } from '../../../shared/agent-skill-atomic-tool-execution';
+import type { SkillExecutionRuntimeLineage } from '../../../shared/skill-execution-effect';
 import type { InteractiveContinuationResolution } from '../../../shared/pending-interactive-continuation';
 import type { AgentResult, AgentContext, ExecutionCallbacks } from '../unified-agent.service';
 import type {
@@ -22,6 +23,7 @@ import type {
     RuntimeActionPlanDeclaration,
     RuntimeActionPlanDigest
 } from '../../../shared/agent-runtime-v5/runtime-action-plan-declaration';
+import type { RuntimeInteractiveReentry } from '../../../shared/agent-runtime-v5/runtime-interactive-reentry';
 
 /**
  * 技能执行参数
@@ -40,11 +42,20 @@ export interface SkillExecuteParams {
      * Skill 只能传业务参数；文档、历史版本和图层目标绑定由该 owner 私下维护。
      */
     guardedAtomicToolExecutor?: GuardedAtomicToolExecutor;
+    /** Harness 签发的当前 Runtime/TaskRun/continuation/Workflow call 身份。 */
+    runtimeSkillExecutionLineage?: SkillExecutionRuntimeLineage;
     /**
      * 仅由 Engine 在操作账本、owner、卡片指纹和作用域全部校验后注入。
      * 模型 Tool 参数永远不能创建这一通道，子 Skill 也不自动继承。
      */
     trustedInteractiveContinuation?: Extract<InteractiveContinuationResolution, { status: 'accepted' }>;
+    /**
+     * 仅由 Engine 从活动 RuntimeSession checkpoint 构造的同代重入状态。
+     * 它不是模型参数，不创建新 TaskRun，也不授予 Tool 权限。
+     */
+    runtimeInteractiveReentry?: RuntimeInteractiveReentry;
+    /** 同代 Agent 完成可信上下文恢复后提交 Engine 持有的 checkpoint lease。 */
+    adoptRuntimeInteractiveReentry?: () => boolean;
     /** Engine 已形成的请求级规划契约；子 Skill 继承，不能自行重判执行义务。 */
     agentTaskPlan?: AgentTaskPlanningContract;
     /** 当前 v5 R1 Brief，仅在自主 Agent 已通过 manifest 校验后由 Harness 注入。 */

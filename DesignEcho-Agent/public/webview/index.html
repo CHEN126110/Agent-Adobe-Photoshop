@@ -3046,9 +3046,18 @@
             outline: none;
         }
 
-        /* 跨列数那一帧才开补间：卡片整块换列时滑过去，而不是瞬移 */
-        .template-asset-grid.is-column-shift .template-item-card.template-item-card-waterfall {
-            transition: transform .18s cubic-bezier(.22, .61, .36, 1);
+        /* 整齐排列的自然过渡：满行几何在两次行重组之间恒定，补间只在重组瞬间生效，
+           位置、卡宽、图高、墙高同拍滑到新状态（首次落位由 JS 延一帧挂 data-placed，避免飞入） */
+        .template-asset-grid {
+            transition: height .22s cubic-bezier(.22, .61, .36, 1);
+        }
+
+        .template-item-card.template-item-card-waterfall[data-placed="1"] {
+            transition: transform .22s cubic-bezier(.22, .61, .36, 1), width .22s cubic-bezier(.22, .61, .36, 1);
+        }
+
+        .template-item-card.template-item-card-waterfall[data-placed="1"] .template-asset-preview {
+            transition: height .22s cubic-bezier(.22, .61, .36, 1), border-color .16s ease, box-shadow .16s ease;
         }
 
         .template-asset-grid:focus-visible {
@@ -4089,8 +4098,6 @@
         }
 
         #pageTemplateLibrary .morph-main {
-            --template-library-grid-column-width: 132px;
-            --template-library-grid-gap: 8px;
             /* 左右内边距是整页唯一的一条基准线，见下方 .morph-section 的说明 */
             padding: 8px 12px 18px;
         }

@@ -1,0 +1,99 @@
+{
+  "version": "design-reliability-case/v1",
+  "suiteId": "business-skills-quality-v1",
+  "caseId": "detail-page-c1163-v1",
+  "revision": 1,
+  "caseDigest": "sha256:5bc72abe3abf0864e2b8485fa70979919686dddf004944c5ef81b1e0c04de2b9",
+  "status": "active",
+  "taskFamily": "detail_page",
+  "executionModel": "agentic",
+  "skillContract": {
+    "userFacingSkillId": "detail-page-design",
+    "runtimeSkillIds": [
+      "ecommerce.detail_page"
+    ]
+  },
+  "task": {
+    "instruction": "用这个项目里的素材帮我重新做一套商品详情页。",
+    "instructionStyle": "natural_user_request",
+    "fixtureId": "neveralone-c1163-input-v1",
+    "agentVisibleInputs": [
+      { "ref": "S82646/YYC_8814.jpg", "role": "wearing_scene_candidate" },
+      { "ref": "S82646/YYC_8824.jpg", "role": "wearing_scene_candidate" },
+      { "ref": "S82646/YYC_8811.jpg", "role": "wearing_scene_candidate" },
+      { "ref": "S82646/ZZY_9886.jpg", "role": "product_structure_candidate" },
+      { "ref": "S82646/ZZY_9892.jpg", "role": "material_detail_candidate" },
+      { "ref": "S82646/ZZY_9905.jpg", "role": "product_structure_candidate" },
+      { "ref": "S82646/ZZY_9907.jpg", "role": "material_detail_candidate" },
+      { "ref": "S82646/ZZY_9884.jpg", "role": "product_structure_candidate" }
+    ],
+    "reviewOnlyReferences": [
+      { "kind": "user_design", "ref": "images/详情页_01.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_02.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_03.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_04.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_05.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_06.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_07.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_08.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_09.jpg" },
+      { "kind": "user_design", "ref": "images/详情页_10.jpg" },
+      { "kind": "eagle_item", "ref": "eagle:item:MR8IM75QKQ1K9" },
+      { "kind": "eagle_item", "ref": "eagle:item:MQRO3L9OZTT7A" }
+    ]
+  },
+  "source": {
+    "kind": "user_project_with_eagle_quality_anchors",
+    "qualityClaimEligible": true,
+    "boundary": "用户详情页成稿与 Eagle 条目只供多屏人工盲评，不进入 Agent 项目。"
+  },
+  "oracle": {
+    "rubricId": "detail-page-commercial-v1",
+    "requiredEvidence": [
+      "agent_run_record_chain",
+      "expected_project_binding",
+      "source_input_integrity",
+      "photoshop_history_or_commit",
+      "post_write_structure_readback",
+      "post_write_visual_readback",
+      "editable_psd",
+      "raster_export_set",
+      "human_blind_review"
+    ],
+    "invariants": [
+      "详情页形成完整的信息叙事而不是单屏堆图",
+      "商品卖点有真实素材或项目事实依据",
+      "跨屏风格与商品身份一致",
+      "保存到一次性 fixture 项目，不覆盖源项目"
+    ],
+    "forbiddenBehaviors": [
+      "不得把用户已完成详情页当作待修改模板",
+      "不得使用不存在的商品功效或参数",
+      "不得只完成首屏却声明整套详情页完成",
+      "不得用截图像素探针替代人工商业质量评审"
+    ],
+    "machineChecks": [
+      { "id": "correct_skill_binding", "required": true },
+      { "id": "fixture_instance_evidence", "required": true },
+      { "id": "runtime_model_identity_evidence", "required": true },
+      { "id": "expected_project_binding_evidence", "required": true },
+      { "id": "source_input_integrity_evidence", "required": true },
+      { "id": "observed_photoshop_mutation", "required": true },
+      { "id": "committed_photoshop_mutation", "required": true },
+      { "id": "post_write_structure_readback", "required": true },
+      { "id": "post_write_visual_readback", "required": true },
+      { "id": "post_write_readback_target_verified", "required": true },
+      { "id": "save_tool_receipt", "required": true },
+      { "id": "editable_psd_evidence", "required": true },
+      { "id": "raster_export_evidence", "required": true },
+      { "id": "no_unresolved_blockers", "required": true },
+      { "id": "terminal_task_run", "required": true }
+    ]
+  },
+  "boundaries": {
+    "devBenchmarkOnly": true,
+    "neverAffectsRuntime": true,
+    "reviewOnlyReferencesExcludedFromAgentContext": true,
+    "harnessDoesNotChooseDesign": true
+  }
+}

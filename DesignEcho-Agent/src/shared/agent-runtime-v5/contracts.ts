@@ -113,6 +113,10 @@ export interface SkillRuntimePerformanceProfile {
         max_model_calls: number;
         max_tool_calls: number;
         max_iterations: number;
+        /**
+         * 普通运行中可送入模型的视觉候选总额，同时作为唯一一次 Final Judge 的单次
+         * presentation 上限；普通观察不得把终局验收本身挤掉。
+         */
         max_vision_candidates: number;
         /** 用户附件在开工阶段可占用的候选上限；其余候选保留给写后观察。 */
         max_initial_vision_candidates?: number;

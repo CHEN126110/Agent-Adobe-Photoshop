@@ -12,7 +12,7 @@ interface AgentToolStreamCallbacks {
     onToolCallDelta?: (chunk: Extract<AgentToolStreamChunk, { type: 'tool_call_delta' }>) => void;
     onToolCallReady?: (toolCall: AgentToolStreamToolCall) => void;
     onDone?: (response: AgentToolStreamResponse) => void;
-    onError?: (error: string) => void;
+    onError?: (error: Error) => void;
 }
 
 interface AgentToolStreamHandle {
@@ -23,6 +23,19 @@ interface AgentToolStreamHandle {
 
 const activeCallbacks = new Map<string, AgentToolStreamCallbacks>();
 let listenerRegistered = false;
+
+type AgentToolStreamErrorChunk = Extract<AgentToolStreamChunk, { type: 'error' }>;
+
+export function restoreAgentToolStreamError(chunk: AgentToolStreamErrorChunk): Error {
+    const error = new Error(String(chunk.error || 'Agent 工具流式请求失败')) as Error & {
+        code?: string;
+        status?: number;
+    };
+    if (chunk.errorName) error.name = chunk.errorName;
+    if (chunk.errorCode) error.code = chunk.errorCode;
+    if (Number.isInteger(chunk.errorStatus)) error.status = chunk.errorStatus;
+    return error;
+}
 
 function generateRequestId(): string {
     return `tool-stream-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -59,7 +72,7 @@ function ensureListenerRegistered(): void {
                 activeCallbacks.delete(data.requestId);
                 break;
             case 'error':
-                callbacks.onError?.(data.chunk.error);
+                callbacks.onError?.(restoreAgentToolStreamError(data.chunk));
                 activeCallbacks.delete(data.requestId);
                 break;
         }
@@ -83,12 +96,12 @@ export function streamChatWithTools(
     let fullThinking = '';
 
     if (!designEcho?.chatWithToolsStream) {
-        const error = 'designEcho.chatWithToolsStream 不可用';
+        const error = new Error('designEcho.chatWithToolsStream 不可用');
         callbacks.onError?.(error);
         return {
             requestId,
             abort: async () => {},
-            promise: Promise.reject(new Error(error))
+            promise: Promise.reject(error)
         };
     }
 
@@ -118,7 +131,7 @@ export function streamChatWithTools(
         };
         wrappedCallbacks.onError = (error) => {
             callbacks.onError?.(error);
-            reject(new Error(error));
+            reject(error);
         };
     });
 
@@ -133,11 +146,11 @@ export function streamChatWithTools(
     }).then((result: { success: boolean; error?: string }) => {
         if (!result.success) {
             activeCallbacks.delete(requestId);
-            wrappedCallbacks.onError?.(result.error || 'Agent 工具流式请求失败');
+            wrappedCallbacks.onError?.(new Error(result.error || 'Agent 工具流式请求失败'));
         }
     }).catch((error: Error) => {
         activeCallbacks.delete(requestId);
-        wrappedCallbacks.onError?.(error.message);
+        wrappedCallbacks.onError?.(error);
     });
 
     return {

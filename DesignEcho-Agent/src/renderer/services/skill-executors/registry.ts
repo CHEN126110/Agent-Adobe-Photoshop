@@ -4,6 +4,14 @@ import type { SkillExecutionOutcomeStatus } from '../../../shared/agent-react-ob
 import { getSkillById } from '../../../shared/skills/skill-declarations';
 import { resolveSkillExecutionOutcome } from '../../../shared/agent-react-observation-contract';
 import { getInternalAgentStatusPublicMessage } from '../../../shared/agent-user-visible-state';
+import { attachSkillExecutionEffectReceipt } from '../../../shared/skill-execution-effect';
+import {
+    beginRuntimeOwnedSkillToolLedgerScope,
+    completeRuntimeOwnedSkillToolLedgerScope,
+    type RuntimeOwnedSkillToolLedger,
+    type RuntimeOwnedSkillToolLedgerScope
+} from '../../../shared/agent-skill-atomic-tool-execution';
+import { readExecutedToolResultProvenance } from '../agent-runtime/tool-result-provenance';
 import {
     attachPendingInteractiveContinuation,
     buildPendingInteractiveContinuation,
@@ -74,6 +82,37 @@ function attachResolvedSkillOutcome(result: AgentResult): AgentResult {
         ...result,
         skillOutcome: resolveSkillExecutionOutcome(result)
     };
+}
+
+function readTrustedSkillToolResultName(result: unknown): string | undefined {
+    return readExecutedToolResultProvenance(result)?.toolName;
+}
+
+/**
+ * Skill 的唯一结果出口：Outcome 说明任务走到哪里，Effect receipt 只说明本次是否
+ * 真实改过 Photoshop。两者必须同时存在，但互不推导完成或质量结论。
+ */
+function finalizeSkillExecutionResult(
+    skillId: string,
+    result: AgentResult,
+    executionStarted: boolean,
+    executeParams?: SkillExecuteParams,
+    runtimeOwnedCompleteToolLedger?: RuntimeOwnedSkillToolLedger
+): AgentResult {
+    const normalized = attachResolvedSkillOutcome(result);
+    const declaration = getSkillById(skillId);
+    return attachSkillExecutionEffectReceipt(normalized, {
+        skillId,
+        executionStarted,
+        outcomeStatus: normalized.skillOutcome?.status,
+        declaredProviderToolNames: [
+            ...(declaration?.requiredTools || []),
+            ...(declaration?.internalTools || [])
+        ],
+        readTrustedToolName: readTrustedSkillToolResultName,
+        runtimeLineage: executeParams?.runtimeSkillExecutionLineage,
+        runtimeOwnedCompleteToolLedger
+    });
 }
 
 function getSkillOutcomeTitle(status: SkillExecutionOutcomeStatus): string {
@@ -151,22 +190,40 @@ async function capturePendingContinuationScopeObservation(
     };
 }
 
-function buildCancelledSkillResult(skillLabel: string = '当前能力'): AgentResult {
-    return attachResolvedSkillOutcome({
+function buildCancelledSkillResult(
+    skillId: string,
+    skillLabel: string = '当前能力',
+    sourceResult?: AgentResult,
+    executionStarted = false,
+    executeParams?: SkillExecuteParams,
+    runtimeOwnedCompleteToolLedger?: RuntimeOwnedSkillToolLedger
+): AgentResult {
+    return finalizeSkillExecutionResult(skillId, {
+        ...(sourceResult || {}),
         success: false,
         cancelled: true,
         message: `${skillLabel}已停止。`,
         error: 'cancelled'
-    });
+    }, executionStarted, executeParams, runtimeOwnedCompleteToolLedger);
 }
 
 function emitSkillExecutionCancelled(
     executeParams: SkillExecuteParams,
     skillId: string,
     skillStepId: string,
-    skillLabel: string
+    skillLabel: string,
+    sourceResult?: AgentResult,
+    executionStarted = false,
+    runtimeOwnedCompleteToolLedger?: RuntimeOwnedSkillToolLedger
 ): AgentResult {
-    const result = buildCancelledSkillResult(skillLabel);
+    const result = buildCancelledSkillResult(
+        skillId,
+        skillLabel,
+        sourceResult,
+        executionStarted,
+        executeParams,
+        runtimeOwnedCompleteToolLedger
+    );
     executeParams.callbacks?.onStep?.({
         kind: 'stopped',
         title: `能力已停止：${skillLabel}`,
@@ -196,6 +253,12 @@ function withUnifiedSkillRunner(executeParams: SkillExecuteParams): SkillExecute
             ...childExecuteParams,
             guardedAtomicToolExecutor: childExecuteParams.guardedAtomicToolExecutor
                 || executeParams.guardedAtomicToolExecutor,
+            runtimeSkillExecutionLineage: executeParams.runtimeSkillExecutionLineage
+                ? {
+                    ...executeParams.runtimeSkillExecutionLineage,
+                    skillId: childSkillId
+                }
+                : childExecuteParams.runtimeSkillExecutionLineage,
             runtimeDesignBriefDeclaration: childExecuteParams.runtimeDesignBriefDeclaration
                 || executeParams.runtimeDesignBriefDeclaration,
             runtimeDesignBriefDigest: childExecuteParams.runtimeDesignBriefDigest
@@ -238,11 +301,11 @@ export async function executeSkillWithExecutor(
             issue: 'skill_not_found'
         });
         endTiming(`技能:${skillId}`, { error: 'not found' });
-        return attachResolvedSkillOutcome({
+        return finalizeSkillExecutionResult(skillId, {
             success: false,
             message: buildSkillUnavailableStatusMessage(),
             error: 'Skill not found'
-        });
+        }, false, executeParams);
     }
 
     const userVisibleSkill = skill.visibility === 'user-facing';
@@ -282,17 +345,25 @@ export async function executeSkillWithExecutor(
             issue: 'skill_executor_not_found'
         });
         endTiming(`技能:${skillId}`, { error: 'no executor' });
-        return attachResolvedSkillOutcome({
+        return finalizeSkillExecutionResult(skillId, {
             success: false,
             message: buildSkillUnavailableStatusMessage(),
             error: 'Skill executor not implemented'
-        });
+        }, false, executeParams);
     }
 
+    let executionStarted = false;
+    let runtimeOwnedLedgerScope: RuntimeOwnedSkillToolLedgerScope | undefined;
+    let runtimeOwnedCompleteToolLedger: RuntimeOwnedSkillToolLedger | undefined;
     try {
         const preExecutionResult = executor.resolvePreExecutionResult?.(executeParams);
         if (preExecutionResult) {
-            const normalizedPreExecutionResult = attachResolvedSkillOutcome(preExecutionResult);
+            const normalizedPreExecutionResult = finalizeSkillExecutionResult(
+                skillId,
+                preExecutionResult,
+                false,
+                executeParams
+            );
             const outcomeStatus = normalizedPreExecutionResult.skillOutcome!.status;
             const outcomeFailed = isSkillOutcomeFailure(outcomeStatus);
             executeParams.callbacks?.onStep?.({
@@ -337,9 +408,24 @@ export async function executeSkillWithExecutor(
         }
 
         const executeParamsForBusiness = withUnifiedSkillRunner(preExecutionVisualObservation.executeParams);
+        runtimeOwnedLedgerScope = beginRuntimeOwnedSkillToolLedgerScope(
+            executeParamsForBusiness.guardedAtomicToolExecutor
+        );
+        executionStarted = true;
         const executorResult = await executor.execute(executeParamsForBusiness);
+        runtimeOwnedCompleteToolLedger = await completeRuntimeOwnedSkillToolLedgerScope(
+            runtimeOwnedLedgerScope
+        );
         if (isSkillExecutionCancelled(executeParamsForBusiness)) {
-            return emitSkillExecutionCancelled(executeParamsForBusiness, skillId, skillStepId, skillLabel);
+            return emitSkillExecutionCancelled(
+                executeParamsForBusiness,
+                skillId,
+                skillStepId,
+                skillLabel,
+                executorResult,
+                true,
+                runtimeOwnedCompleteToolLedger
+            );
         }
         const businessSkillExecutionPreflightGate = buildBusinessSkillExecutionPreflightGateForSkill(
             skillId,
@@ -364,7 +450,15 @@ export async function executeSkillWithExecutor(
             executeParamsForBusiness
         );
         if (isSkillExecutionCancelled(executeParamsForBusiness)) {
-            return emitSkillExecutionCancelled(executeParamsForBusiness, skillId, skillStepId, skillLabel);
+            return emitSkillExecutionCancelled(
+                executeParamsForBusiness,
+                skillId,
+                skillStepId,
+                skillLabel,
+                resultWithRefreshObservation,
+                true,
+                runtimeOwnedCompleteToolLedger
+            );
         }
         const resultWithPlacementIntake = attachBusinessSkillImagePlacementVerificationIntakeToResult(
             resultWithRefreshObservation,
@@ -416,10 +510,17 @@ export async function executeSkillWithExecutor(
                 agentTaskPlan: executeParamsForBusiness.agentTaskPlan
             }) || undefined;
         }
-        const result = attachPendingInteractiveContinuation(
+        const resultWithContinuation = attachPendingInteractiveContinuation(
             resultWithoutContinuation,
             pendingInteractiveContinuation || null
         ) as AgentResult;
+        const result = finalizeSkillExecutionResult(
+            skillId,
+            resultWithContinuation,
+            true,
+            executeParamsForBusiness,
+            runtimeOwnedCompleteToolLedger
+        );
         const outcomeStatus = result.skillOutcome!.status;
         const outcomeFailed = isSkillOutcomeFailure(outcomeStatus);
         executeParams.callbacks?.onStep?.({
@@ -435,6 +536,8 @@ export async function executeSkillWithExecutor(
         endTiming(`技能:${skillId}`, { success: result.success, outcome: outcomeStatus });
         return result;
     } catch (e: any) {
+        runtimeOwnedCompleteToolLedger = runtimeOwnedCompleteToolLedger
+            || await completeRuntimeOwnedSkillToolLedgerScope(runtimeOwnedLedgerScope);
         executeParams.callbacks?.onStep?.({
             kind: 'tool_completed',
             title: `能力异常：${skillLabel}`,
@@ -446,10 +549,10 @@ export async function executeSkillWithExecutor(
             issue: compactSkillResultText(e.message) || 'skill_exception'
         });
         endTiming(`技能:${skillId}`, { error: e.message });
-        return attachResolvedSkillOutcome({
+        return finalizeSkillExecutionResult(skillId, {
             success: false,
             message: compactSkillResultText(e.message) || buildSkillUnavailableStatusMessage(),
             error: e.message
-        });
+        }, executionStarted, executeParams, runtimeOwnedCompleteToolLedger);
     }
 }

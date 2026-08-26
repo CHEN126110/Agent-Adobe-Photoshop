@@ -29,6 +29,10 @@ import type {
 import type { AgentTaskPlanningContract } from '../../../shared/agent-task-planning-contract';
 import type { GuardedAtomicToolExecutor } from '../../../shared/agent-skill-atomic-tool-execution';
 import type { InteractiveContinuationResolution } from '../../../shared/pending-interactive-continuation';
+import {
+    attachSkillExecutionEffectReceipt,
+    type SkillExecutionRuntimeLineage
+} from '../../../shared/skill-execution-effect';
 import type {
     SkillDeclaration,
     SkillParameterSchema
@@ -194,6 +198,8 @@ export interface SkillToolExecuteOptions {
     context?: any;
     /** 仅由 Harness 创建；不会从模型 Skill 参数中读取。 */
     guardedAtomicToolExecutor?: GuardedAtomicToolExecutor;
+    /** 仅由 Runtime continuation owner 注入；模型参数不能创建或覆盖。 */
+    runtimeSkillExecutionLineage?: SkillExecutionRuntimeLineage;
     runtimeDesignBriefDeclaration?: RuntimeDesignBriefDeclaration;
     runtimeDesignBriefDigest?: RuntimeDesignBriefDigest;
     runtimeDesignBriefRequiredInputKeys?: string[];
@@ -243,6 +249,21 @@ function resolveSkillToolMode(params: Record<string, any>): 'execute' | 'inspect
     return mode === 'execute' || mode === 'inspect' ? mode : undefined;
 }
 
+function buildRejectedSkillToolResult(
+    skillId: string,
+    error: string,
+    runtimeLineage?: SkillExecutionRuntimeLineage
+): any {
+    return attachSkillExecutionEffectReceipt({
+        success: false,
+        error
+    }, {
+        skillId,
+        executionStarted: false,
+        runtimeLineage
+    });
+}
+
 /** 在自主循环内执行技能。 */
 export async function executeSkillTool(
     toolName: string,
@@ -254,17 +275,33 @@ export async function executeSkillTool(
     // （UXP 面板用户工具），保持单一来源不在此复写。
     const skill = getSkillById(toolName);
     if (!skill) {
-        return { success: false, error: `未注册的技能: ${toolName}。请改用本轮可用工具列表中的原子工具完成同一目标。` };
+        return buildRejectedSkillToolResult(
+            toolName,
+            `未注册的技能: ${toolName}。请改用本轮可用工具列表中的原子工具完成同一目标。`,
+            options.runtimeSkillExecutionLineage
+        );
     }
     if (toolName === 'matte-product' && isAgentMattingPaused()) {
-        return { success: false, error: getAgentMattingPausedMessage() };
+        return buildRejectedSkillToolResult(
+            toolName,
+            getAgentMattingPausedMessage(),
+            options.runtimeSkillExecutionLineage
+        );
     }
     if (!isSkillEnabledInSettings(toolName)) {
-        return { success: false, error: `技能 ${skill.name} 当前已在设置中关闭。请改用基础原子工具完成同一目标，或提示用户在设置中启用该技能。` };
+        return buildRejectedSkillToolResult(
+            toolName,
+            `技能 ${skill.name} 当前已在设置中关闭。请改用基础原子工具完成同一目标，或提示用户在设置中启用该技能。`,
+            options.runtimeSkillExecutionLineage
+        );
     }
 
     if (!getSkillExecutor(toolName)) {
-        return { success: false, error: `技能 ${toolName} 还没有接好，请改用基础处理动作完成该任务。` };
+        return buildRejectedSkillToolResult(
+            toolName,
+            `技能 ${toolName} 还没有接好，请改用基础处理动作完成该任务。`,
+            options.runtimeSkillExecutionLineage
+        );
     }
 
     const modelOrFrozenParams = stripRuntimeOwnedSkillParams(params || {});
@@ -284,6 +321,7 @@ export async function executeSkillTool(
         signal: options.signal,
         context: options.context,
         guardedAtomicToolExecutor: options.guardedAtomicToolExecutor,
+        runtimeSkillExecutionLineage: options.runtimeSkillExecutionLineage,
         runtimeDesignBriefDeclaration: options.runtimeDesignBriefDeclaration,
         runtimeDesignBriefDigest: options.runtimeDesignBriefDigest,
         runtimeDesignBriefRequiredInputKeys: options.runtimeDesignBriefRequiredInputKeys,

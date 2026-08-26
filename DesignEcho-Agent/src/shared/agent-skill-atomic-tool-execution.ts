@@ -11,6 +11,123 @@ export type GuardedAtomicToolExecutor = (
     params: Record<string, any>
 ) => Promise<any>;
 
+export const RUNTIME_OWNED_SKILL_TOOL_LEDGER_VERSION =
+    'runtime-owned-skill-tool-ledger/v0' as const;
+
+export interface RuntimeOwnedSkillToolLedgerEntry {
+    toolName: string;
+    params: Readonly<Record<string, any>>;
+    dispatchState: 'not_dispatched' | 'returned' | 'threw';
+    result?: unknown;
+}
+
+/** 由 guarded executor 自己记录并在 Skill 返回后封口；executor 返回值不能伪造。 */
+export interface RuntimeOwnedSkillToolLedger {
+    version: typeof RUNTIME_OWNED_SKILL_TOOL_LEDGER_VERSION;
+    complete: true;
+    entries: readonly RuntimeOwnedSkillToolLedgerEntry[];
+    boundaries: {
+        runtimeOwned: true;
+        exhaustiveForScope: true;
+        executorReportedResultsIgnored: true;
+    };
+}
+
+export interface RuntimeOwnedSkillToolLedgerScope {
+    version: 'runtime-owned-skill-tool-ledger-scope/v0';
+    scopeId: string;
+}
+
+interface RuntimeOwnedSkillToolLedgerInternalEntry extends RuntimeOwnedSkillToolLedgerEntry {
+    scopeIds: readonly string[];
+}
+
+interface GuardedAtomicToolLedgerState {
+    activeScopeIds: Set<string>;
+    entries: RuntimeOwnedSkillToolLedgerInternalEntry[];
+    drain: () => Promise<void>;
+}
+
+interface RuntimeOwnedSkillToolLedgerScopeState {
+    owner: GuardedAtomicToolLedgerState;
+    scopeId: string;
+    completed?: RuntimeOwnedSkillToolLedger;
+}
+
+const GUARDED_ATOMIC_TOOL_LEDGER_STATES =
+    new WeakMap<GuardedAtomicToolExecutor, GuardedAtomicToolLedgerState>();
+const RUNTIME_OWNED_SKILL_TOOL_LEDGER_SCOPES =
+    new WeakMap<object, RuntimeOwnedSkillToolLedgerScopeState>();
+const RUNTIME_OWNED_SKILL_TOOL_LEDGERS = new WeakSet<object>();
+let runtimeOwnedSkillToolLedgerScopeSequence = 0;
+
+export function beginRuntimeOwnedSkillToolLedgerScope(
+    executor: GuardedAtomicToolExecutor | undefined
+): RuntimeOwnedSkillToolLedgerScope | undefined {
+    if (!executor) return undefined;
+    const owner = GUARDED_ATOMIC_TOOL_LEDGER_STATES.get(executor);
+    if (!owner) return undefined;
+    runtimeOwnedSkillToolLedgerScopeSequence += 1;
+    const scope: RuntimeOwnedSkillToolLedgerScope = Object.freeze({
+        version: 'runtime-owned-skill-tool-ledger-scope/v0',
+        scopeId: `skill-tool-ledger-${runtimeOwnedSkillToolLedgerScopeSequence}`
+    });
+    owner.activeScopeIds.add(scope.scopeId);
+    RUNTIME_OWNED_SKILL_TOOL_LEDGER_SCOPES.set(scope, {
+        owner,
+        scopeId: scope.scopeId
+    });
+    return scope;
+}
+
+export async function completeRuntimeOwnedSkillToolLedgerScope(
+    scope: RuntimeOwnedSkillToolLedgerScope | undefined
+): Promise<RuntimeOwnedSkillToolLedger | undefined> {
+    if (!scope) return undefined;
+    const state = RUNTIME_OWNED_SKILL_TOOL_LEDGER_SCOPES.get(scope);
+    if (!state) return undefined;
+    if (state.completed) return state.completed;
+    await state.owner.drain();
+    state.owner.activeScopeIds.delete(state.scopeId);
+    const entries = state.owner.entries
+        .filter((entry) => entry.scopeIds.includes(state.scopeId))
+        .map((entry): RuntimeOwnedSkillToolLedgerEntry => Object.freeze({
+            toolName: entry.toolName,
+            params: Object.freeze({ ...entry.params }),
+            dispatchState: entry.dispatchState,
+            ...(Object.prototype.hasOwnProperty.call(entry, 'result')
+                ? { result: entry.result }
+                : {})
+        }));
+    const ledger: RuntimeOwnedSkillToolLedger = Object.freeze({
+        version: RUNTIME_OWNED_SKILL_TOOL_LEDGER_VERSION,
+        complete: true,
+        entries: Object.freeze(entries),
+        boundaries: Object.freeze({
+            runtimeOwned: true,
+            exhaustiveForScope: true,
+            executorReportedResultsIgnored: true
+        })
+    });
+    RUNTIME_OWNED_SKILL_TOOL_LEDGERS.add(ledger);
+    state.completed = ledger;
+    return ledger;
+}
+
+export function isRuntimeOwnedCompleteSkillToolLedger(
+    value: unknown
+): value is RuntimeOwnedSkillToolLedger {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const ledger = value as RuntimeOwnedSkillToolLedger;
+    return RUNTIME_OWNED_SKILL_TOOL_LEDGERS.has(value as object)
+        && ledger.version === RUNTIME_OWNED_SKILL_TOOL_LEDGER_VERSION
+        && ledger.complete === true
+        && Array.isArray(ledger.entries)
+        && ledger.boundaries?.runtimeOwned === true
+        && ledger.boundaries.exhaustiveForScope === true
+        && ledger.boundaries.executorReportedResultsIgnored === true;
+}
+
 /** 技能启动时，模型上下文里的期望执行目标。 */
 export interface SkillWorkflowTargetIdentity {
     documentId?: number;
@@ -201,11 +318,17 @@ export function createGuardedAtomicToolExecutor(
 ): GuardedAtomicToolExecutor {
     const completedToolCalls = [...(input.initialCompletedToolCalls || [])];
     let executionQueue: Promise<void> = Promise.resolve();
+    const ledgerState: GuardedAtomicToolLedgerState = {
+        activeScopeIds: new Set<string>(),
+        entries: [],
+        drain: async (): Promise<void> => await executionQueue
+    };
 
-    return function executeGuardedAtomicTool(
+    const executor: GuardedAtomicToolExecutor = function executeGuardedAtomicTool(
         toolName: string,
         params: Record<string, any>
     ): Promise<any> {
+        const scopeIds = Array.from(ledgerState.activeScopeIds);
         const execution = executionQueue.then(async (): Promise<any> => {
             const decision = buildGuardedAtomicToolExecutionDecision({
                 toolName,
@@ -224,16 +347,40 @@ export function createGuardedAtomicToolExecutor(
                     arguments: decision.businessArguments,
                     result: blockedResult
                 });
+                ledgerState.entries.push({
+                    scopeIds,
+                    toolName,
+                    params: decision.businessArguments,
+                    dispatchState: 'not_dispatched',
+                    result: blockedResult
+                });
                 return blockedResult;
             }
 
-            const result = await input.executeTool(toolName, decision.executionArguments);
-            completedToolCalls.push({
-                name: toolName,
-                arguments: decision.businessArguments,
-                result
-            });
-            return result;
+            try {
+                const result = await input.executeTool(toolName, decision.executionArguments);
+                completedToolCalls.push({
+                    name: toolName,
+                    arguments: decision.businessArguments,
+                    result
+                });
+                ledgerState.entries.push({
+                    scopeIds,
+                    toolName,
+                    params: decision.businessArguments,
+                    dispatchState: 'returned',
+                    result
+                });
+                return result;
+            } catch (error) {
+                ledgerState.entries.push({
+                    scopeIds,
+                    toolName,
+                    params: decision.businessArguments,
+                    dispatchState: 'threw'
+                });
+                throw error;
+            }
         });
         executionQueue = execution.then(
             () => undefined,
@@ -241,4 +388,6 @@ export function createGuardedAtomicToolExecutor(
         );
         return execution;
     };
+    GUARDED_ATOMIC_TOOL_LEDGER_STATES.set(executor, ledgerState);
+    return executor;
 }

@@ -89,7 +89,7 @@ npm run audit:executor-generic    # 通用执行器护栏（债务棘轮：品�
                                    # 本仓库未接入 ESLint/Prettier，build:typecheck:renderer 是唯一静态检查手段
 
 # 核心验证（真实回归闸门）
-npm run maintenance:validate              # = maintenance:preflight:core，35 阶段：规划/卫生/编码 + 静态审计群 + test:* 纯逻辑功能测试群 + npm test + renderer 类型检查 + UXP 构建（阶段清单见 scripts/run-core-validation.cjs）
+npm run maintenance:validate              # = maintenance:preflight:core，38 阶段：规划/卫生/编码 + 静态审计群 + test:* 纯逻辑功能测试群 + Agent/UXP npm test + renderer 类型检查 + UXP 构建（阶段清单见 scripts/run-core-validation.cjs）
 npm run maintenance:repo-hygiene[:check]  # 仓库卫生检查（含清理被 gitignore 的临时文件）
 npm run test:design-authorship-boundary   # 设计作者权边界：60+ 条源码断言钉死「Harness 不替 Agent 做设计判断」
 npm run audit:entry-doc-sync              # 入口文档同步：CLAUDE.md/AGENTS.md 正文逐字节一致 + 文档引用的 npm 命令/文件路径真实存在（已并入 maintenance:validate）
@@ -100,7 +100,8 @@ npm run build                     # build:typecheck（tsc --noEmit）+ webpack p
 npm run dev / npm run watch       # development 构建（不含类型检查）
 npm run generate:icons            # 生成插件图标，依赖 Python 环境
 npm run audit:photoshop-transaction-ownership  # Photoshop 事务唯一 owner 审计
-                                   # npm run test 只是占位符（打印一行提示），不是真测试
+npm test                           # 图片 targetBounds 几何、锚点/焦点、收据与事务回滚契约
+npm run test:image-target-fit      # 同上，显式测试入口
 ```
 
 实机联调：`npm run dev:chat-ui:debug-window*`（带 CDP 9223 调试窗口；`:fake` 用假模型/假 PS，`:default-mcp` 连默认运行时端口）。

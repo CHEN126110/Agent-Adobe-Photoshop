@@ -24,8 +24,10 @@ import {
     type AgentToolExecutionKind
 } from './agent-tool-execution-preflight';
 import {
+    readPhotoshopHistoryStateRef,
     readPhotoshopHistoryTransition,
     readPhotoshopMutationCommit,
+    type PhotoshopHistoryStateRef,
     type PhotoshopMutationCommit,
     type PhotoshopHistoryTransition
 } from './photoshop-history-state-ref';
@@ -41,6 +43,11 @@ import type { RuntimeActionPlanReconciliationDigest } from './agent-runtime-v5/r
 import type { RuntimeActionPlanNoRedoShadowDigest } from './agent-runtime-v5/runtime-action-plan-no-redo-shadow';
 import type { RuntimePlanningContextSeedDigest } from './agent-runtime-v5/runtime-planning-context-seed';
 import {
+    cloneRuntimeAccountingDigest,
+    validateRuntimeAccountingDigest,
+    type RuntimeAccountingDigest
+} from './agent-runtime-v5/runtime-accounting';
+import {
     MAX_ARTIFACT_REFS,
     readArtifactRef,
     readArtifactRepositoryProjection,
@@ -53,6 +60,10 @@ import {
     type RuntimeSessionIdentity
 } from './agent-runtime-v5/runtime-session';
 import {
+    buildRuntimeContractStatus,
+    type RuntimeContractStatus
+} from './agent-runtime-v5/runtime-selected-skill-handoff';
+import {
     buildRuntimeResumeContextAnchor,
     type RuntimeActionPlanResumeFreshness,
     type RuntimeResumeContextAnchor
@@ -62,6 +73,10 @@ import {
     extractDesignRunToolLogFacts
 } from './design-run-tool-log-facts';
 import type { DesignEvaluationProfileDigest } from './agent-runtime-v5/design-evaluation-profiles';
+import {
+    readFinalQualityModelProtocolDigest,
+    type FinalQualityModelProtocolDigest
+} from './design-quality-assertion';
 import type { DesignVerdict } from './design-quality-verdict-bundle';
 import {
     sanitizeModelProviderDiagnostic,
@@ -103,6 +118,8 @@ export interface AgentRunToolCallEntry {
     photoshopHistoryTransition?: PhotoshopHistoryTransition;
     /** UXP 在同一 executeAsModal 内形成的调用级提交；优先于外围快照对账。 */
     photoshopMutationCommit?: PhotoshopMutationCommit;
+    /** 只读调用观察到的文档 / history 版本；用于证明写后读回针对同一真实版本。 */
+    photoshopObservationRef?: PhotoshopHistoryStateRef;
     /** 结果里的错误码（如有），如 blocked_missing_per_size_template */
     code?: string;
     /** 一行摘要（≤160 字符，已剥 base64/data URL），来自 error/message/固定成功语 */
@@ -166,6 +183,14 @@ export interface AgentRunModelProviderFailureDigest {
     diagnostic: string;
 }
 
+export interface AgentRunModelIdentityDigest {
+    version: 'agent-run-model-identity/v0';
+    source: 'runtime-selected-model';
+    modelId: string;
+    provider: string;
+    apiModelId?: string;
+}
+
 /**
  * Run Record 只保存对话与消息树分支的身份，不保存消息正文。
  * 自动恢复必须同时命中两者，避免编辑重发或跨对话时把旧任务带回来。
@@ -187,6 +212,12 @@ export interface AgentRunRecord {
         route?: string;
         skillId?: string;
     };
+    /**
+     * 循环内由唯一 Resolver 已解析的 Manifest 身份摘要。
+     * agentic 路径不创建 staged RuntimeSession，因此不能用 runtimeSession 缺失反推未绑定。
+     * 本字段只记录选择事实，不授予 Tool、Stage、完成或发布权限。
+     */
+    runtimeContractStatus?: RuntimeContractStatus;
     projectPath?: string;
     conversationScope?: AgentRunConversationScope;
     iterations: number;
@@ -200,6 +231,8 @@ export interface AgentRunRecord {
     warnings: string[];
     /** 真实模型请求边界的有界失败摘要；不含 API Key、Authorization 或完整响应载荷。 */
     providerFailure?: AgentRunModelProviderFailureDigest;
+    /** 本轮自主循环真正采用的模型配置身份；不由开发 Runner 手工填写。 */
+    modelIdentity?: AgentRunModelIdentityDigest;
     quality?: {
         executionStatus?: string;
         hardBlocked?: boolean;
@@ -208,9 +241,16 @@ export interface AgentRunRecord {
         overallScore?: number;
         artifactStatus?: DesignEvaluationProfileDigest['completion']['artifactStatus'];
         publicationReviewStatus?: DesignEvaluationProfileDigest['completion']['publicationReviewStatus'];
+        /** 只供开发 / Runtime 诊断；不得参与 completion、权限或 DesignVerdict。 */
+        finalQualityModelProtocol?: FinalQualityModelProtocolDigest;
     };
     /** 当前 generation 的生产 Runtime Session 摘要；runId 必须与记录主键完全一致。 */
     runtimeSession?: RuntimeSessionDigest;
+    /**
+     * 没有可持久化 runtimeSession digest 时的会计摘要，包括普通 Agent 与 staged 失败路径。
+     * 与 runtimeSession.accounting 互斥，只供开发诊断，不影响预算、权限或任务结果。
+     */
+    runtimeAccounting?: RuntimeAccountingDigest;
     /** 仅由主进程 Artifact Repository reader 附加；不保存 payload、路径或调用方 hash。 */
     artifactRefs?: ArtifactRef[];
     /** 同一 Runtime identity 下超过持久化上限、未进入本记录的 Repository ref 数。 */
@@ -344,7 +384,10 @@ export interface AgentRunRecord {
         planningContextCarryDigestOnly?: true;
         artifactRefsFromRepositoryOnly?: true;
         providerFailureDigestOnly?: true;
+        modelIdentityDigestOnly?: true;
         conversationScopeIdentityOnly?: true;
+        runtimeAccountingDigestOnly?: true;
+        runtimeContractStatusDigestOnly?: true;
     };
 }
 
@@ -367,6 +410,13 @@ export interface BuildAgentRunRecordInput {
         route?: unknown;
         skillId?: unknown;
     } | null;
+    /** 循环内 Resolver 的当前结构化状态；仅 resolved 摘要会进入长期档案。 */
+    runtimeContractStatus?: RuntimeContractStatus;
+    modelIdentity?: {
+        modelId?: unknown;
+        provider?: unknown;
+        apiModelId?: unknown;
+    };
     result: {
         success?: unknown;
         cancelled?: unknown;
@@ -388,6 +438,7 @@ export interface BuildAgentRunRecordInput {
             designQualityHardBlocked?: unknown;
             designVerdict?: DesignVerdict;
             designEvaluationProfileDigest?: DesignEvaluationProfileDigest;
+            finalQualityModelProtocolDigest?: FinalQualityModelProtocolDigest;
             runtimeStageState?: RuntimeStageState;
             runtimeStageTraceDigest?: RuntimeStageTraceDigest;
             runtimeDesignBriefDigest?: RuntimeDesignBriefDigest;
@@ -396,6 +447,7 @@ export interface BuildAgentRunRecordInput {
             runtimeActionPlanReconciliationDigest?: RuntimeActionPlanReconciliationDigest;
             runtimeActionPlanNoRedoShadowDigest?: RuntimeActionPlanNoRedoShadowDigest;
             runtimeSessionDigest?: RuntimeSessionDigest;
+            runtimeAccountingDigest?: RuntimeAccountingDigest;
             runtimePlanningContextSeedDigest?: RuntimePlanningContextSeedDigest;
             modelProviderFailureDigest?: {
                 version?: unknown;
@@ -424,6 +476,7 @@ const AGENT_RUN_RECORD_ALLOWED_KEYS = new Set<string>([
     'endedAt',
     'goal',
     'decision',
+    'runtimeContractStatus',
     'projectPath',
     'conversationScope',
     'iterations',
@@ -435,8 +488,10 @@ const AGENT_RUN_RECORD_ALLOWED_KEYS = new Set<string>([
     'blockers',
     'warnings',
     'providerFailure',
+    'modelIdentity',
     'quality',
     'runtimeSession',
+    'runtimeAccounting',
     'artifactRefs',
     'droppedArtifactRefCount',
     'planningContextCarry',
@@ -470,8 +525,35 @@ const AGENT_RUN_RECORD_BOUNDARY_ALLOWED_KEYS = new Set<string>([
     'planningContextCarryDigestOnly',
     'artifactRefsFromRepositoryOnly',
     'providerFailureDigestOnly',
-    'conversationScopeIdentityOnly'
+    'modelIdentityDigestOnly',
+    'conversationScopeIdentityOnly',
+    'runtimeAccountingDigestOnly',
+    'runtimeContractStatusDigestOnly'
 ] as const satisfies readonly (keyof AgentRunRecord['boundaries'])[]);
+
+const RUNTIME_CONTRACT_STATUS_ALLOWED_KEYS = new Set<string>([
+    'version',
+    'status',
+    'selectedSkillId',
+    'selectedTaskType',
+    'manifestSkillId',
+    'selectionSource',
+    'reason',
+    'boundaries'
+] as const satisfies readonly (keyof RuntimeContractStatus)[]);
+
+const RUNTIME_CONTRACT_STATUS_BOUNDARY_ALLOWED_KEYS = new Set<string>([
+    'doesNotExecuteSkill',
+    'doesNotGrantToolPermission'
+] as const satisfies readonly (keyof RuntimeContractStatus['boundaries'])[]);
+
+const RUNTIME_CONTRACT_STATUS_SELECTION_SOURCES = new Set<NonNullable<RuntimeContractStatus['selectionSource']>>([
+    'model_router_react_handoff',
+    'skill_declaration_unique_match',
+    'controlled_route_react_handoff',
+    'user_explicit_selection',
+    'explicit_runtime_declaration'
+]);
 
 const AGENT_RUN_CONVERSATION_SCOPE_ALLOWED_KEYS = new Set<string>([
     'conversationId',
@@ -486,6 +568,14 @@ const MODEL_PROVIDER_FAILURE_DIGEST_ALLOWED_KEYS = new Set<string>([
     'status',
     'providerCode',
     'diagnostic'
+]);
+
+const MODEL_IDENTITY_DIGEST_ALLOWED_KEYS = new Set<string>([
+    'version',
+    'source',
+    'modelId',
+    'provider',
+    'apiModelId'
 ]);
 
 const MODEL_PROVIDER_FAILURE_KINDS = new Set<ModelProviderFailureKind>([
@@ -536,6 +626,22 @@ function buildModelProviderFailureDigest(value: unknown): AgentRunModelProviderF
         ...(Number.isInteger(status) && status >= 100 && status <= 599 ? { status } : {}),
         ...(providerCode ? { providerCode } : {}),
         diagnostic
+    };
+}
+
+function buildModelIdentityDigest(
+    value: BuildAgentRunRecordInput['modelIdentity']
+): AgentRunModelIdentityDigest | undefined {
+    const modelId = cleanText(value?.modelId, 160);
+    const provider = cleanText(value?.provider, 80);
+    const apiModelId = cleanText(value?.apiModelId, 160);
+    if (!modelId || !provider) return undefined;
+    return {
+        version: 'agent-run-model-identity/v0',
+        source: 'runtime-selected-model',
+        modelId,
+        provider,
+        ...(apiModelId ? { apiModelId } : {})
     };
 }
 
@@ -650,6 +756,7 @@ function digestToolCall(
         : undefined;
     const photoshopHistoryTransition = readPhotoshopHistoryTransition(result);
     const photoshopMutationCommit = readPhotoshopMutationCommit(result);
+    const photoshopObservationRef = readPhotoshopHistoryStateRef(result);
     const executionKind = classifyAgentToolExecution(name, args);
     const activityClass = classifyRunToolActivity(name, executionKind, origin);
     const rawElapsedMs = typeof entry.elapsedMs === 'number' && Number.isFinite(entry.elapsedMs)
@@ -669,6 +776,7 @@ function digestToolCall(
         ...(elapsedMs !== undefined ? { elapsedMs } : {}),
         ...(photoshopMutationCommit ? { photoshopMutationCommit } : {}),
         ...(photoshopHistoryTransition ? { photoshopHistoryTransition } : {}),
+        ...(photoshopObservationRef ? { photoshopObservationRef } : {}),
         ...(code ? { code } : {}),
         summary: cleanText(rawSummary, MAX_SUMMARY_CHARS) || (success ? '成功' : '失败'),
         argsKeys: Object.keys(args).slice(0, 12)
@@ -826,6 +934,20 @@ function cleanList(value: unknown, limit = MAX_LIST): string[] {
         .slice(0, limit);
 }
 
+function buildResolvedRuntimeContractStatusDigest(
+    value: RuntimeContractStatus | null | undefined
+): RuntimeContractStatus | undefined {
+    if (!value || value.status !== 'resolved') return undefined;
+    const digest = buildRuntimeContractStatus({
+        selectedSkillId: value.selectedSkillId,
+        selectedTaskType: value.selectedTaskType,
+        manifestSkillId: value.manifestSkillId,
+        selectionSource: value.selectionSource,
+        selectionExpected: true
+    });
+    return digest.status === 'resolved' ? digest : undefined;
+}
+
 export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRecord {
     const goal = cleanText(input.goal, MAX_GOAL_CHARS);
     const rawLog = Array.isArray(input.result.toolCallLog) ? input.result.toolCallLog : [];
@@ -840,6 +962,13 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
     }
 
     const summary = input.result.executionSummary || null;
+    const finalQualityModelProtocolCandidate = summary?.finalQualityModelProtocolDigest;
+    const finalQualityModelProtocolDigest = finalQualityModelProtocolCandidate
+        ? readFinalQualityModelProtocolDigest(finalQualityModelProtocolCandidate)
+        : undefined;
+    if (finalQualityModelProtocolCandidate && !finalQualityModelProtocolDigest) {
+        throw new Error('final_quality_model_protocol_digest_invalid');
+    }
     const runtimeStageState = summary?.runtimeStageState;
     const runtimeStageTraceDigest = summary?.runtimeStageTraceDigest;
     const runtimeDesignBriefDigest = summary?.runtimeDesignBriefDigest;
@@ -848,11 +977,29 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
     const runtimeActionPlanReconciliationDigest = summary?.runtimeActionPlanReconciliationDigest;
     const runtimeActionPlanNoRedoShadowDigest = summary?.runtimeActionPlanNoRedoShadowDigest;
     const runtimeSessionDigest = summary?.runtimeSessionDigest;
+    const runtimeSessionIdentity = input.runtimeSessionIdentity;
+    const standaloneAccountingCandidate = !runtimeSessionDigest
+        ? summary?.runtimeAccountingDigest
+        : undefined;
+    const standaloneAccountingValidation = standaloneAccountingCandidate
+        ? validateRuntimeAccountingDigest(standaloneAccountingCandidate)
+        : { ok: true };
+    if (!standaloneAccountingValidation.ok) {
+        throw new Error(
+            `runtime_accounting_digest_invalid:${standaloneAccountingValidation.reason || 'unknown'}`
+        );
+    }
+    const runtimeAccountingDigest = standaloneAccountingCandidate
+        ? cloneRuntimeAccountingDigest(standaloneAccountingCandidate)
+        : undefined;
     const runtimePlanningContextSeedDigest = summary?.runtimePlanningContextSeedDigest;
     const modelProviderFailureDigest = buildModelProviderFailureDigest(
         summary?.modelProviderFailureDigest
     );
-    const runtimeSessionIdentity = input.runtimeSessionIdentity;
+    const modelIdentity = buildModelIdentityDigest(input.modelIdentity);
+    const runtimeContractStatus = buildResolvedRuntimeContractStatusDigest(
+        input.runtimeContractStatus
+    );
     if (runtimeSessionIdentity) {
         const validation = validateRuntimeSessionIdentity(runtimeSessionIdentity);
         if (!validation.ok) throw new Error(validation.issues.join(','));
@@ -910,6 +1057,7 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
         endedAt: cleanText(input.now, 40),
         goal,
         ...(decision && Object.keys(decision).length > 0 ? { decision } : {}),
+        ...(runtimeContractStatus ? { runtimeContractStatus } : {}),
         ...(projectPath ? { projectPath } : {}),
         ...(conversationScope ? { conversationScope } : {}),
         iterations: Number(input.result.iterations) || 0,
@@ -921,6 +1069,8 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
         blockers: cleanList(summary?.blockers),
         warnings: cleanList(summary?.warnings),
         ...(modelProviderFailureDigest ? { providerFailure: modelProviderFailureDigest } : {}),
+        ...(modelIdentity ? { modelIdentity } : {}),
+        ...(runtimeAccountingDigest ? { runtimeAccounting: runtimeAccountingDigest } : {}),
         ...(summary
             ? {
                 quality: {
@@ -936,6 +1086,9 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
                             artifactStatus: summary.designEvaluationProfileDigest.completion.artifactStatus,
                             publicationReviewStatus: summary.designEvaluationProfileDigest.completion.publicationReviewStatus
                         }
+                        : {}),
+                    ...(finalQualityModelProtocolDigest
+                        ? { finalQualityModelProtocol: finalQualityModelProtocolDigest }
                         : {})
                 }
             }
@@ -1135,7 +1288,10 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
             ...(runtimeSessionDigest ? { runtimeSessionDigestOnly: true as const } : {}),
             ...(runtimePlanningContextSeedDigest ? { planningContextCarryDigestOnly: true as const } : {}),
             ...(modelProviderFailureDigest ? { providerFailureDigestOnly: true as const } : {}),
-            ...(conversationScope ? { conversationScopeIdentityOnly: true as const } : {})
+            ...(modelIdentity ? { modelIdentityDigestOnly: true as const } : {}),
+            ...(conversationScope ? { conversationScopeIdentityOnly: true as const } : {}),
+            ...(runtimeAccountingDigest ? { runtimeAccountingDigestOnly: true as const } : {}),
+            ...(runtimeContractStatus ? { runtimeContractStatusDigestOnly: true as const } : {})
         }
     };
 }
@@ -1242,6 +1398,27 @@ export function validateAgentRunRecordForPersist(record: unknown): { ok: boolean
     if (!r.runId || !/^run-[a-z0-9-]+$/i.test(r.runId)) return { ok: false, reason: 'runId 缺失或格式非法' };
     if (!Array.isArray(r.toolCalls)) return { ok: false, reason: 'toolCalls 缺失' };
     if (!r.boundaries?.argsDigestedOnly) return { ok: false, reason: '缺 argsDigestedOnly 边界声明' };
+    if (r.quality !== undefined && (
+        !r.quality || typeof r.quality !== 'object' || Array.isArray(r.quality)
+    )) {
+        return { ok: false, reason: 'quality 不是对象' };
+    }
+    const finalQualityModelProtocol = r.quality?.finalQualityModelProtocol;
+    if (finalQualityModelProtocol !== undefined) {
+        const normalizedFinalQualityDigest = readFinalQualityModelProtocolDigest(
+            finalQualityModelProtocol
+        );
+        if (!normalizedFinalQualityDigest
+            || normalizedFinalQualityDigest.judgeStatus !== finalQualityModelProtocol.judgeStatus
+            || normalizedFinalQualityDigest.diagnosisRepairStatus
+                !== finalQualityModelProtocol.diagnosisRepairStatus
+            || normalizedFinalQualityDigest.diagnosisRepairTargetCount
+                !== finalQualityModelProtocol.diagnosisRepairTargetCount
+            || normalizedFinalQualityDigest.actionableDiagnosisCount
+                !== finalQualityModelProtocol.actionableDiagnosisCount) {
+            return { ok: false, reason: 'finalQualityModelProtocol 摘要非法或超出边界' };
+        }
+    }
     if (r.conversationScope) {
         if (typeof r.conversationScope !== 'object' || Array.isArray(r.conversationScope)) {
             return { ok: false, reason: 'conversationScope 不是对象' };
@@ -1262,6 +1439,67 @@ export function validateAgentRunRecordForPersist(record: unknown): { ok: boolean
         }
     } else if (r.boundaries.conversationScopeIdentityOnly === true) {
         return { ok: false, reason: '缺少 conversationScope 却声明了 conversationScopeIdentityOnly' };
+    }
+    const hasRuntimeContractStatus = hasOwn(r, 'runtimeContractStatus');
+    const hasRuntimeContractStatusBoundary = hasOwn(
+        r.boundaries as AgentRunRecord['boundaries'],
+        'runtimeContractStatusDigestOnly'
+    );
+    if (hasRuntimeContractStatus || hasRuntimeContractStatusBoundary) {
+        if (r.boundaries.runtimeContractStatusDigestOnly !== true) {
+            return { ok: false, reason: 'Runtime Contract 状态缺 runtimeContractStatusDigestOnly 边界声明' };
+        }
+        if (!r.runtimeContractStatus
+            || typeof r.runtimeContractStatus !== 'object'
+            || Array.isArray(r.runtimeContractStatus)) {
+            return { ok: false, reason: 'runtimeContractStatus 缺失或不是对象' };
+        }
+        const unknownRuntimeContractStatusKey = findUnknownKey(
+            r.runtimeContractStatus as unknown as Record<string, unknown>,
+            RUNTIME_CONTRACT_STATUS_ALLOWED_KEYS
+        );
+        if (unknownRuntimeContractStatusKey) {
+            return {
+                ok: false,
+                reason: `runtimeContractStatus 含未知字段：${unknownRuntimeContractStatusKey}`
+            };
+        }
+        if (!r.runtimeContractStatus.boundaries
+            || typeof r.runtimeContractStatus.boundaries !== 'object'
+            || Array.isArray(r.runtimeContractStatus.boundaries)) {
+            return { ok: false, reason: 'runtimeContractStatus boundaries 缺失或不是对象' };
+        }
+        const unknownRuntimeContractBoundaryKey = findUnknownKey(
+            r.runtimeContractStatus.boundaries as unknown as Record<string, unknown>,
+            RUNTIME_CONTRACT_STATUS_BOUNDARY_ALLOWED_KEYS
+        );
+        if (unknownRuntimeContractBoundaryKey) {
+            return {
+                ok: false,
+                reason: `runtimeContractStatus boundaries 含未知字段：${unknownRuntimeContractBoundaryKey}`
+            };
+        }
+        if (r.runtimeContractStatus.version !== 'runtime-contract-status/v0'
+            || r.runtimeContractStatus.status !== 'resolved'
+            || r.runtimeContractStatus.boundaries.doesNotExecuteSkill !== true
+            || r.runtimeContractStatus.boundaries.doesNotGrantToolPermission !== true) {
+            return { ok: false, reason: 'runtimeContractStatus 版本、状态或权限边界非法' };
+        }
+        if (r.runtimeContractStatus.selectionSource !== undefined
+            && !RUNTIME_CONTRACT_STATUS_SELECTION_SOURCES.has(r.runtimeContractStatus.selectionSource)) {
+            return { ok: false, reason: 'runtimeContractStatus selectionSource 非法' };
+        }
+        const normalizedRuntimeContractStatus = buildResolvedRuntimeContractStatusDigest(
+            r.runtimeContractStatus
+        );
+        if (!normalizedRuntimeContractStatus
+            || normalizedRuntimeContractStatus.selectedSkillId !== r.runtimeContractStatus.selectedSkillId
+            || normalizedRuntimeContractStatus.selectedTaskType !== r.runtimeContractStatus.selectedTaskType
+            || normalizedRuntimeContractStatus.manifestSkillId !== r.runtimeContractStatus.manifestSkillId
+            || normalizedRuntimeContractStatus.selectionSource !== r.runtimeContractStatus.selectionSource
+            || normalizedRuntimeContractStatus.reason !== r.runtimeContractStatus.reason) {
+            return { ok: false, reason: 'runtimeContractStatus 未按共享 Resolver 摘要口径规范化' };
+        }
     }
     if (r.runtimeSession && r.boundaries?.runtimeSessionDigestOnly !== true) {
         return { ok: false, reason: '存在 Runtime Session 但缺 runtimeSessionDigestOnly 边界声明' };
@@ -1285,6 +1523,8 @@ export function validateAgentRunRecordForPersist(record: unknown): { ok: boolean
     if (r.runtimeSession && (!Number.isInteger(r.runtimeSession.generation) || r.runtimeSession.generation < 1)) {
         return { ok: false, reason: 'Runtime Session generation 非法' };
     }
+    // 旧 staged Run Record 保持原兼容校验；G1 只为新顶层 plan-neutral accounting
+    // 增加严格结构校验，不能借机让历史 Runtime Session 档案失效。
     if (r.runtimeSession?.accounting
         && r.runtimeSession.accounting.version !== 'runtime-accounting-digest/v0') {
         return { ok: false, reason: 'Runtime accounting digest 版本非法' };
@@ -1296,6 +1536,21 @@ export function validateAgentRunRecordForPersist(record: unknown): { ok: boolean
         || r.runtimeSession.accounting.costEstimate.status !== 'not_configured'
     )) {
         return { ok: false, reason: 'Runtime accounting 真实性边界非法' };
+    }
+    const hasStandaloneRuntimeAccounting = hasOwn(r, 'runtimeAccounting');
+    const hasStandaloneRuntimeAccountingBoundary = hasOwn(
+        r.boundaries as AgentRunRecord['boundaries'],
+        'runtimeAccountingDigestOnly'
+    );
+    if (hasStandaloneRuntimeAccounting || hasStandaloneRuntimeAccountingBoundary) {
+        if (r.runtimeSession) {
+            return { ok: false, reason: 'staged Runtime Session 不得重复持有顶层 runtimeAccounting' };
+        }
+        if (r.boundaries.runtimeAccountingDigestOnly !== true) {
+            return { ok: false, reason: 'runtimeAccounting 缺 runtimeAccountingDigestOnly 边界声明' };
+        }
+        const accountingValidation = validateRuntimeAccountingDigest(r.runtimeAccounting);
+        if (!accountingValidation.ok) return accountingValidation;
     }
     const hasProviderFailure = hasOwn(r, 'providerFailure');
     const hasProviderFailureBoundary = hasOwn(
@@ -1348,6 +1603,45 @@ export function validateAgentRunRecordForPersist(record: unknown): { ok: boolean
             || r.providerFailure.diagnostic.length > 500
             || sanitizeModelProviderDiagnostic(r.providerFailure.diagnostic) !== r.providerFailure.diagnostic) {
             return { ok: false, reason: 'providerFailure diagnostic 未按共享口径脱敏或超限' };
+        }
+    }
+    const hasModelIdentity = hasOwn(r, 'modelIdentity');
+    const hasModelIdentityBoundary = hasOwn(
+        r.boundaries as AgentRunRecord['boundaries'],
+        'modelIdentityDigestOnly'
+    );
+    if (hasModelIdentity || hasModelIdentityBoundary) {
+        if (r.boundaries.modelIdentityDigestOnly !== true) {
+            return { ok: false, reason: '模型身份缺 modelIdentityDigestOnly 边界声明' };
+        }
+        if (!r.modelIdentity || typeof r.modelIdentity !== 'object' || Array.isArray(r.modelIdentity)) {
+            return { ok: false, reason: 'modelIdentity 缺失或不是对象' };
+        }
+        const unknownModelIdentityKey = findUnknownKey(
+            r.modelIdentity as unknown as Record<string, unknown>,
+            MODEL_IDENTITY_DIGEST_ALLOWED_KEYS
+        );
+        if (unknownModelIdentityKey) {
+            return { ok: false, reason: `modelIdentity 含未知字段：${unknownModelIdentityKey}` };
+        }
+        if (r.modelIdentity.version !== 'agent-run-model-identity/v0'
+            || r.modelIdentity.source !== 'runtime-selected-model') {
+            return { ok: false, reason: 'modelIdentity 版本或来源非法' };
+        }
+        if (!r.modelIdentity.modelId
+            || r.modelIdentity.modelId.trim() !== r.modelIdentity.modelId
+            || r.modelIdentity.modelId.length > 160
+            || !r.modelIdentity.provider
+            || r.modelIdentity.provider.trim() !== r.modelIdentity.provider
+            || r.modelIdentity.provider.length > 80) {
+            return { ok: false, reason: 'modelIdentity 模型或 Provider 非法' };
+        }
+        if (r.modelIdentity.apiModelId !== undefined && (
+            !r.modelIdentity.apiModelId
+            || r.modelIdentity.apiModelId.trim() !== r.modelIdentity.apiModelId
+            || r.modelIdentity.apiModelId.length > 160
+        )) {
+            return { ok: false, reason: 'modelIdentity apiModelId 非法' };
         }
     }
     const hasArtifactRefs = hasOwn(r, 'artifactRefs');

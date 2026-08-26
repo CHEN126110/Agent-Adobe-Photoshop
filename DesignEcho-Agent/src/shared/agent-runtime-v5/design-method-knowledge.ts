@@ -17,6 +17,7 @@ export const MAIN_IMAGE_METHOD_KNOWLEDGE_ID = 'knowledge:ecommerce.main-image/v1
 export const DETAIL_PAGE_METHOD_KNOWLEDGE_ID = 'knowledge:ecommerce.detail-page/v1' as const;
 export const SINGLE_CANVAS_VISUAL_METHOD_KNOWLEDGE_ID = 'knowledge:design.single-canvas-visual/v1' as const;
 export const SKU_COLOR_CARD_METHOD_KNOWLEDGE_ID = 'knowledge:ecommerce.sku-color-card/v1' as const;
+export const SKU_TEMPLATE_METHOD_KNOWLEDGE_ID = 'knowledge:ecommerce.sku-template/v1' as const;
 export const SKU_BATCH_METHOD_KNOWLEDGE_ID = 'knowledge:ecommerce.sku-batch/v1' as const;
 
 export interface DesignMethodKnowledgeDefinition {
@@ -131,16 +132,20 @@ const MAIN_IMAGE_OVERLAY: DesignMethodKnowledgeDefinition = {
     title: '主图方法 overlay',
     applicableSkillIds: ['ecommerce.main_image'],
     applicableStages: ['R3', 'R4'],
-    sourceRevision: 'design-method-main-image-v1',
+    sourceRevision: 'design-method-main-image-v3',
     objective: '在首屏注意力有限的条件下，建立产品主体、核心卖点与渠道约束的单画面决策。',
     method: [
-        '优先保护产品形态、纹理、颜色和比例真实性。',
-        '只保留支撑首要沟通目标的卖点，避免多个同权焦点。',
-        '主体尺度、背景对比和文案区域必须共同服务缩略图识别。',
-        '变体之间保持品牌和构图规则一致，同时让差异真实可辨。'
+        '先区分点击图与转化图：点击图负责在列表缩略图中让商品、穿着结果或风格钩子被一眼识别，可以由一张成立的摄影主视觉独立完成；转化图负责回答“为什么值得买”，只围绕一个主卖点组织证明画面和必要辅助信息。',
+        '优先保护产品形态、纹理、颜色和比例真实性；先判断现有摄影能否直接承担主视觉，再决定使用全出血、容器裁切或去底重组，不把所有素材强制做成同一种合成方式。',
+        '主体姿态、鞋袜或使用关系形成的斜线与纵向动势可以承担注意力；文案应进入真实负空间，不能压住关键识别部位，也不能用描边和投影硬救错误落位。',
+        '只保留支撑首要沟通目标的卖点，避免品牌、促销、材质、功能、颜色和规格同时争夺第一层级；平台活动条应作为可拆卸临时层，不沉淀成长期品牌视觉。',
+        '同时检查正常尺寸和平台缩略图：主体、首要信息和整体气质在缩小后仍可辨；无文字摄影方向与克制留白只要完成点击目标就应保留，不得为了“像电商图”补造文案。',
+        '每个辅助图、角标、装饰或文字都必须在真实观看尺寸下增加产品识别、点击理由或可信证据；没有增加就应删除。发现问题时由 Agent 比较保留微调、删除、替换和换方向，选择副作用最小但能解决根因的方案，不在错误元素上连续叠加局部修补。',
+        '同一套主图的字体、色彩、圆角和图像处理规则保持一致，但第 2–5 张转化图可按证明类型切换场景、材质微距、结构细节、对比或参数，不把五张图做成重复换图。',
+        '变体之间保持品牌和构图规则一致，同时让真实的商品、颜色、主卖点或摄影方向差异可辨；先比较候选关系再选择，不把启发式排序第一名当作视觉定稿。'
     ],
     expectedOutput: '主视觉焦点、主体策略、卖点层级、缩略图可读性与变体一致性要求。',
-    evaluationFocus: ['主体识别', '产品真实性', '核心卖点聚焦', '缩略图可读性'],
+    evaluationFocus: ['点击/转化目标匹配', '主体识别', '产品真实性', '核心卖点聚焦', '元素必要性', '文案与负空间关系', '缩略图可读性', '主图体系一致且不重复'],
     productionNature: 'creative'
 };
 
@@ -149,16 +154,18 @@ const DETAIL_PAGE_OVERLAY: DesignMethodKnowledgeDefinition = {
     title: '详情页方法 overlay',
     applicableSkillIds: ['ecommerce.detail_page'],
     applicableStages: ['R3', 'R4'],
-    sourceRevision: 'design-method-detail-page-v1',
+    sourceRevision: 'design-method-detail-page-v2',
     objective: '把消费者决策问题组织成连续叙事，并让每屏承担明确且不重复的沟通职责。',
     method: [
-        '按认知、兴趣、理解、信任和行动的决策顺序组织信息，而不是套固定屏数。',
-        '每屏只设一个首要目标，屏间通过消费者问题与支持信息自然承接。',
-        '产品事实、场景收益、细节说明和规格信息应与真实视觉观察匹配。',
-        '长页面保持网格、节奏和品牌规则一致，同时允许重点屏形成变化。'
+        '按定位、兴趣、理解、信任和行动的消费者决策顺序组织信息，而不是套固定屏数；每屏先写清要回答的一个问题，再选择能回答它的素材与版式。',
+        '每屏只设一个首要论点，并区分感受、机理和证明三层：场景或情绪让用户感知利益，材质/结构解释原因，参数、对比、细节或检测记录提供可核对支撑；没有来源的证明不得补造。',
+        '首屏、场景、材质微距、结构细节、证据/参数和颜色款式应按当前产品需要交替出现，利用图片密度、留白和文字量的变化建立阅读节奏；连续多屏使用相同构图或重复同一卖点应视为叙事问题。',
+        '产品事实、场景收益、细节说明和规格信息必须与真实视觉观察匹配；参考中的品牌、文案、模特和独特资产不可复制，只迁移构图、层级、色彩、证据类型和节奏关系。',
+        '长页面共享少量稳定 token：版心、安全区、标题层级、正文行长、圆角/边线、色彩职责和图片处理；重点屏可以改变构图与密度，但不能像切换到另一套品牌。',
+        '每屏写后查看实际画面，最终再以整页缩略总览检查首屏钩子、段落承接、重复、视觉断裂与收尾；占位文字、未替换素材、孤立屏和只完成局部画面都不能冒充完整长页。'
     ],
     expectedOutput: '叙事顺序、逐屏目标、支持信息类型、屏间承接和全局视觉一致性规则。',
-    evaluationFocus: ['叙事连贯', '逐屏职责清晰', '内容与来源匹配', '长页节奏一致'],
+    evaluationFocus: ['叙事连贯', '逐屏职责清晰', '感受/机理/证明关系', '内容与来源匹配', '跨屏视觉系统', '长页节奏与密度变化', '占位与重复清零'],
     productionNature: 'creative'
 };
 
@@ -204,6 +211,27 @@ const SKU_BATCH_OVERLAY: DesignMethodKnowledgeDefinition = {
     productionNature: 'structured'
 };
 
+const SKU_TEMPLATE_OVERLAY: DesignMethodKnowledgeDefinition = {
+    capabilityId: SKU_TEMPLATE_METHOD_KNOWLEDGE_ID,
+    title: 'SKU 组合模板方法 overlay',
+    applicableSkillIds: ['ecommerce.sku_template'],
+    applicableStages: ['R1', 'R3', 'R4'],
+    sourceRevision: 'design-method-sku-template-v1',
+    objective: '把已确认的商品来源和交易信息组织成可比较、可复用、跨规格一致且具有项目视觉语言的 SKU 模板系统。',
+    method: [
+        '先确认模板要帮助用户比较什么：件数、颜色、款式、尺寸、袜筒长度、自选/固定组合或随机发货。SKU 的第一目标是消除交易歧义，宣传语不能压过商品身份、色名和数量。',
+        '根据真实素材选择一种主展示语法：场景卡保留穿着结果和环境光影，纯底/透明商品强调统一角度与轮廓；同一模板变体中不要无依据混用两套摄影、背景和阴影语言。',
+        '先定义跨 2/3/4 件变体共用的安全区、卡片比例、商品光学尺度、标签位置、字体、色彩、圆角/边界、间距档位和备注区，再按数量重排；数量增加时优先减少次要文字，不把所有元素等比缩小。',
+        '比较项必须在姿态、尺度、重心、光线、阴影和色彩基准上保持等权。三件装不能无业务依据把中间项做成主推；四件装在单排与 2×2 之间按真实展示尺寸的可辨性与留白平衡选择。',
+        '白色、奶油色或浅色商品在白底上容易丢失轮廓，应通过有依据的浅灰/暖白背景、轻微接触阴影、边缘对比或局部色块分离；不得为了辨识擅自改变商品颜色。',
+        '自选备注图必须同时看清可选颜色、色名、件数和选择/随机发货规则；支持场景或卖点图只能作为从属证据，不能让用户数不清商品。',
+        '参考研究应比较多张同任务样本的共同关系与差异，不从单张参考复制品牌、文案、模特或具体坐标；已有项目模板与用户作品优先用于确定项目视觉语言。',
+        '最终在缩略图下检查件数是否瞬间可数、同级商品是否可比、浅色轮廓是否可见、标签是否可读，再读回占位符、命名、卡片同级关系和可编辑结构。'
+    ],
+    expectedOutput: '交易信息优先级、展示语法、跨规格 token、2/3/4 件重排规则、浅色分离策略、可编辑占位结构与缩略图复核。',
+    evaluationFocus: ['件数与选择无歧义', '商品真实性', '同级光学一致', '跨规格视觉系统', '浅色轮廓可辨', '标签与备注可读', '结构可编辑'],
+};
+
 const SKU_COLOR_CARD_OVERLAY: DesignMethodKnowledgeDefinition = {
     capabilityId: SKU_COLOR_CARD_METHOD_KNOWLEDGE_ID,
     title: 'SKU 色卡方法 overlay',
@@ -232,6 +260,7 @@ const DEFINITIONS: readonly DesignMethodKnowledgeDefinition[] = Object.freeze([
     DETAIL_PAGE_OVERLAY,
     SINGLE_CANVAS_VISUAL_OVERLAY,
     SKU_COLOR_CARD_OVERLAY,
+    SKU_TEMPLATE_OVERLAY,
     SKU_BATCH_OVERLAY
 ]);
 

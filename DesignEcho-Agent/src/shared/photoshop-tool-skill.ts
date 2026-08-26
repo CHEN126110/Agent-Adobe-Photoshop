@@ -303,6 +303,7 @@ const USER_INTENT_BOUNDARY_OVERRIDES: Record<string, string> = {
     fetchWebPageDesignContent: '用无头浏览器抓取公开网页的设计内容（标题/正文/图片元数据），不带登录态、图片不进视觉理解；需要登录态、页面交互或真实看到图片时改用浏览器扩展工具（readBrowserPage/captureBrowserTab 等）。',
     searchDesignKnowledge: '检索设计方法与参考（本地知识库为主，可选联网聚合）；知识只作方法参考，不授予权限、不推进阶段、不冒充完成。',
     readSkillPlaybook: '读取业务 Skill 工作法手册（SKILL.md + references，渐进披露）；只读知识，不授予权限、不执行动作。',
+    proposeSkillImprovement: '把从样板 PSD 推理出的工艺差异提议为手册修改；只进候选区待用户批准，绝不直接生效。',
     searchDesignNotes: '检索用户与 Agent 共写的设计知识笔记（本地 Markdown 笔记库，只读）；涉及用户偏好、既定做法或历史经验时优先查它，空 query 可浏览最近笔记。',
     readDesignNote: '读取一条设计笔记的完整 Markdown 正文与反向链接；id 来自 searchDesignNotes，正文里的 [[链接]] 指向其他笔记。',
     writeDesignNote: '把可跨任务复用的设计结论写进共享笔记库（用户可见可编辑）；更新已有笔记默认追加不覆盖原文，重写须显式 mode=replace；临时任务状态用 updateDesignProjectState，不写进笔记。',

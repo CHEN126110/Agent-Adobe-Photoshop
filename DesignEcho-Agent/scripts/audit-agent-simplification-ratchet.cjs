@@ -142,8 +142,13 @@ const METRICS = [
         // 设计师过程投影移到循环外的 agent-user-visible-state.ts，主循环只消费已转换文案。
         // 13024→13023（2026-08-21）：重复失败提示移除内部轮次统计，改为简洁设计进度说明。
         // 13022→13020：请求级性能投影/恢复算法下沉到 performance-ledger 纯函数。
-        // 13020→12972（2026-08-22）：Reflexion 投影、证据绑定与首写新鲜度判断下沉到纯逻辑模块。
-        baseline: 12972,
+        // 12972→12964（2026-08-24）：未绑定 Runtime Accounting 的 owner 选择下沉到独立薄适配器。
+        // 12964→12941（2026-08-24）：交互恢复与 writer 释放判定下沉，主循环只消费结构化结果。
+        // 12941→12936（2026-08-25）：参考策略、终审上下文与证据装配继续下沉到独立适配器。
+        // 12929→12892（2026-08-25）：终审证据、真实使用视图与 Provider 协议保持在独立 runtime owner，
+        // Agent 核心只承接 Profile 元数据与推理偏好，不回填设计决策分支。
+        // 12892→12878（2026-08-26）：视觉预算策略迁至 performance-vision-policy，主循环只注入运行事实。
+        baseline: 12878,
         reduceHint: '把 Stage / 声明 / 读回 / 恢复等子系统从 agent.ts 迁出到独立模块或数据层；新增能力走注册表，不在主循环里长分支。',
         files: ['src/renderer/services/agent-runtime/agent.ts'],
         count: (text) => text.split('\n').length
@@ -184,7 +189,9 @@ const METRICS = [
         id: 'execution_gate_return_points',
         label: '执行点拦截返回点（blockedTool:）',
         // 19→20（2026-08-19 并行会话）：autonomous executor 技能目标守卫 rebinding 的 block 分支（报错点名可刷新目标的工具）。
-        baseline: 20,
+        // 20→19（2026-08-24）：waiting/writer/reobserve 结构性阻断统一收口，移除重复返回点。
+        // 19→16（2026-08-25）：参考与 Brief 阻断统一委托 runtime-reference-adapter。
+        baseline: 16,
         reduceHint: '拦「说错」的门禁降级为事后 warning 或一次性提示；保留的门禁必须声明可达的出口工具。',
         files: [
             'src/renderer/services/agent-runtime/agent.ts',

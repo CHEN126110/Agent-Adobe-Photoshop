@@ -9,8 +9,13 @@ import { classifyAgentToolExecution } from '../../../shared/agent-tool-execution
 import type { RuntimePerformanceUsage } from '../../../shared/agent-runtime-v5/runtime-accounting';
 import type { AgentConfig } from './types';
 
-/** 终局审美 Judge 只允许一次（硬上限）。GATE-SIMPLIFY-003 起不再从普通预算事前扣减。 */
+/**
+ * 终局审美 Judge 每个 Agent generation 只允许一次（硬上限）。它不从普通任务预算事前
+ * 扣减；若普通调用恰好用满，由 Agent 在调用点给予这一槽独立的一次验收机会。
+ */
 export const MAX_FINAL_QUALITY_JUDGE_CALLS = 1;
+/** 终局 Judge 已给出可靠非通过分数但漏掉诊断时，只允许补一次诊断协议。 */
+export const MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS = 1;
 /** Host 质量版本复核（harness_quality_verification）每轮上限。 */
 export const MAX_HARNESS_QUALITY_VERIFICATION_CALLS = 3;
 // 执行供给预留（切片 2，治理切片 1 合并为单一 owner）：已授权写入的自主制作任务，
@@ -28,15 +33,33 @@ export const PRE_DELIVERY_OBSERVATION_CALL_LIMIT = 6;
 
 export type PerformanceBudget = NonNullable<AgentConfig['performanceBudget']>;
 
+export type PerformanceModelBudgetClass =
+    | 'task'
+    | 'final_quality_judge'
+    | 'final_quality_diagnosis_repair';
+
+export interface PerformanceModelBudgetClassViolation {
+    code: string;
+    message: string;
+}
+
 export interface PerformanceLedgerState {
     runStartedAtMs: number;
     activeElapsedBeforeRunMs: number;
+    /** 普通 Agent 执行模型池调用；独立 Final Judge 成本由 RuntimeAccounting 记录。 */
     modelCallCount: number;
     toolCallCount: number;
+    /** 普通 Agent 执行视觉池的候选 presentation；不含独立 Final Judge / diagnosis repair。 */
     visionCandidateCount: number;
+    /** 普通视觉池已经发送过的证据键；终审精确重放由独立字段保存。 */
     visionCandidateKeys: Set<string>;
+    /** 普通 Agent 执行视觉池的图像模型请求；不含独立终审事件。 */
     visualAnalysisCount: number;
     finalQualityJudgeCallCount: number;
+    finalQualityDiagnosisRepairCallCount: number;
+    /** 首次 Final Judge 实际发送的图片 presentation，用于限定唯一 repair 只能重放同一证据。 */
+    finalQualityJudgeVisionCandidateCount: number;
+    finalQualityJudgeVisionCandidateKeys: string[];
     budgetDisciplineDirectiveIssued: boolean;
     harnessQualityVerificationCallCount: number;
     reserveZoneObservationCalls: number;
@@ -62,6 +85,9 @@ export function createPerformanceLedgerState(): PerformanceLedgerState {
         visionCandidateKeys: new Set(),
         visualAnalysisCount: 0,
         finalQualityJudgeCallCount: 0,
+        finalQualityDiagnosisRepairCallCount: 0,
+        finalQualityJudgeVisionCandidateCount: 0,
+        finalQualityJudgeVisionCandidateKeys: [],
         budgetDisciplineDirectiveIssued: false,
         harnessQualityVerificationCallCount: 0,
         reserveZoneObservationCalls: 0,
@@ -71,7 +97,242 @@ export function createPerformanceLedgerState(): PerformanceLedgerState {
     };
 }
 
-/** 当前唯一 PerformanceLedger 的可序列化只读投影；不包含权限、质量或完成状态。 */
+/**
+ * A queued primary-model image consumes one candidate slot and the next image-bearing
+ * model request consumes one analysis slot. When a batch already has a pending image,
+ * that analysis slot is shared; otherwise it must be reserved atomically with the image.
+ */
+export function resolveRunLevelVisualPresentationCapacity(input: {
+    limit: number;
+    consumed: number;
+    visualAnalysisAlreadyPending: boolean;
+}): number {
+    const limit = Math.max(0, Math.floor(Number(input.limit) || 0));
+    const consumed = Math.max(0, Math.floor(Number(input.consumed) || 0));
+    // A pending image-bearing request has not reached beginPerformanceModelCall yet,
+    // so its analysis slot is not part of `consumed`. Keep that virtual reservation
+    // in the same pool; otherwise a second image in the same batch can oversell it.
+    const pendingAnalysisReservation = input.visualAnalysisAlreadyPending ? 1 : 0;
+    const newAnalysisReservation = input.visualAnalysisAlreadyPending ? 0 : 1;
+    return Math.max(
+        0,
+        limit - consumed - pendingAnalysisReservation - newAnalysisReservation
+    );
+}
+
+export function canQueueRunLevelVisualPresentation(input: {
+    limit: number;
+    consumed: number;
+    visualAnalysisAlreadyPending: boolean;
+    presentationCount?: number;
+}): boolean {
+    const presentationCount = Math.max(1, Math.floor(Number(input.presentationCount) || 1));
+    return resolveRunLevelVisualPresentationCapacity(input) >= presentationCount;
+}
+
+/**
+ * Decide before the next primary-model request whether the remaining run budget has
+ * entered its closure zone. The imminent request is included so the directive is part
+ * of that request instead of arriving one turn late. Time and call-count limits are
+ * alternative signals; neither changes the hard budget or grants an execution right.
+ */
+export function shouldIssuePerformanceBudgetDisciplineDirective(input: {
+    budget: PerformanceBudget | undefined;
+    ledger: Pick<PerformanceLedgerState,
+        'modelCallCount' | 'budgetDisciplineDirectiveIssued'>;
+    activeElapsedMs: number;
+    imminentModelCalls?: number;
+    requestTimeoutMs: number;
+}): boolean {
+    const { budget, ledger } = input;
+    if (!budget || ledger.budgetDisciplineDirectiveIssued) return false;
+
+    const imminentModelCalls = Math.max(
+        0,
+        Math.floor(Number(input.imminentModelCalls) || 0)
+    );
+    const callThreshold = Math.max(2, Math.floor(budget.maxModelCalls / 4));
+    const remainingModelCalls = budget.maxModelCalls
+        - ledger.modelCallCount
+        - imminentModelCalls;
+    const callBudgetDue = budget.maxModelCalls >= 0
+        && remainingModelCalls > 0
+        && remainingModelCalls <= callThreshold;
+
+    const activeElapsedMs = Math.max(0, Math.floor(Number(input.activeElapsedMs) || 0));
+    const requestTimeoutMs = Math.max(1, Math.floor(Number(input.requestTimeoutMs) || 1));
+    const remainingTimeMs = budget.softTimeBudgetMs - activeElapsedMs;
+    const timeBudgetDue = budget.softTimeBudgetMs >= 0
+        && remainingTimeMs > 0
+        && remainingTimeMs <= requestTimeoutMs;
+    return callBudgetDue || timeBudgetDue;
+}
+
+export function resetPerformanceLedgerStateForRun(
+    ledger: PerformanceLedgerState,
+    runStartedAtMs: number
+): void {
+    Object.assign(ledger, createPerformanceLedgerState(), { runStartedAtMs });
+}
+
+export function isFinalQualityModelBudgetClass(
+    budgetClass: PerformanceModelBudgetClass
+): boolean {
+    return budgetClass === 'final_quality_judge'
+        || budgetClass === 'final_quality_diagnosis_repair';
+}
+
+/** Final Judge 是独立的固定验收事件，不占用普通执行视觉池。 */
+export function readRunLevelVisualBudgetConsumed(
+    ledger: Pick<PerformanceLedgerState, 'visionCandidateCount' | 'visualAnalysisCount'>
+): number {
+    return Math.max(0, Math.floor(ledger.visionCandidateCount))
+        + Math.max(0, Math.floor(ledger.visualAnalysisCount));
+}
+
+export function readPerformanceModelBudgetClassViolation(
+    ledger: PerformanceLedgerState,
+    budgetClass: PerformanceModelBudgetClass,
+    visionPresentation?: { candidateCount: number; candidateKeys: readonly string[] }
+): PerformanceModelBudgetClassViolation | undefined {
+    if (budgetClass === 'final_quality_judge'
+        && ledger.finalQualityJudgeCallCount >= MAX_FINAL_QUALITY_JUDGE_CALLS) {
+        return {
+            code: 'agent_final_quality_judge_budget_exhausted',
+            message: '本轮终局视觉质量 Judge 已经调用过一次，不再重复评价。'
+        };
+    }
+    if (budgetClass !== 'final_quality_diagnosis_repair') return undefined;
+    if (ledger.finalQualityJudgeCallCount < 1) {
+        return {
+            code: 'agent_final_quality_diagnosis_repair_without_judge',
+            message: '终局视觉质量 Judge 尚未形成首轮结果，不能单独发起诊断补全。'
+        };
+    }
+    if (ledger.finalQualityDiagnosisRepairCallCount >= MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS) {
+        return {
+            code: 'agent_final_quality_diagnosis_repair_budget_exhausted',
+            message: '本轮终局视觉质量诊断已经补全过一次，不再重复调用。'
+        };
+    }
+    return visionPresentation
+        ? readFinalQualityDiagnosisRepairVisionViolation({ ledger, ...visionPresentation })
+        : undefined;
+}
+
+export function consumePerformanceModelBudgetClass(
+    ledger: PerformanceLedgerState,
+    budgetClass: PerformanceModelBudgetClass,
+    visionPresentation?: { candidateCount: number; candidateKeys: readonly string[] }
+): void {
+    if (budgetClass === 'final_quality_judge') {
+        ledger.finalQualityJudgeCallCount += 1;
+        ledger.finalQualityJudgeVisionCandidateCount = Math.max(
+            0,
+            Math.floor(Number(visionPresentation?.candidateCount) || 0)
+        );
+        ledger.finalQualityJudgeVisionCandidateKeys = Array.from(new Set(
+            (visionPresentation?.candidateKeys || [])
+                .map((key) => String(key || '').trim())
+                .filter(Boolean)
+        )).sort();
+    }
+    if (budgetClass === 'final_quality_diagnosis_repair') {
+        ledger.finalQualityDiagnosisRepairCallCount += 1;
+    }
+}
+
+/**
+ * 统一记录一次受 PerformancePolicy 管理的模型调用。普通任务视觉进入运行级视觉池；
+ * Final Judge / diagnosis repair 只进入各自固定事件账本，避免跨 generation 恢复时
+ * 把独立验收成本误判为普通执行额度已经耗尽。
+ */
+export function consumePerformanceModelCallUsage(
+    ledger: PerformanceLedgerState,
+    budgetClass: PerformanceModelBudgetClass,
+    input: {
+        visualAnalysis: boolean;
+        billedVisionCandidateCount: number;
+        visionCandidateKeys: readonly string[];
+    }
+): void {
+    const billedVisionCandidateCount = Math.max(
+        0,
+        Math.floor(Number(input.billedVisionCandidateCount) || 0)
+    );
+    const normalizedObservationKeys = Array.from(new Set(
+        input.visionCandidateKeys
+            .map((key) => String(key || '').trim())
+            .filter(Boolean)
+    ));
+    if (!isFinalQualityModelBudgetClass(budgetClass)) {
+        ledger.modelCallCount += 1;
+        if (input.visualAnalysis) ledger.visualAnalysisCount += 1;
+        ledger.visionCandidateCount += billedVisionCandidateCount;
+        for (const key of normalizedObservationKeys) {
+            ledger.visionCandidateKeys.add(key);
+        }
+    }
+    consumePerformanceModelBudgetClass(ledger, budgetClass, {
+        candidateCount: billedVisionCandidateCount,
+        candidateKeys: normalizedObservationKeys
+    });
+}
+
+export function resolveFinalQualityDiagnosisRepairVisionAllowance(
+    ledger: PerformanceLedgerState
+): { hasFixedEventCapacity: boolean; remainingCandidateCount: number } {
+    return {
+        hasFixedEventCapacity: ledger.finalQualityJudgeVisionCandidateCount > 0,
+        remainingCandidateCount: ledger.finalQualityJudgeVisionCandidateCount
+    };
+}
+
+/**
+ * 普通观察不能耗尽终局验收本身。Final Judge 每个 generation 只有一次，并继续受
+ * Skill 声明的单次候选上限约束；这里不返还普通观察额度，也不授予第二次 Judge。
+ */
+export function resolveFinalQualityJudgeVisionAllowance(
+    ledger: PerformanceLedgerState,
+    maxVisionCandidates: number
+): { hasFixedEventCapacity: boolean; remainingCandidateCount: number } {
+    const normalizedLimit = Number.isFinite(maxVisionCandidates)
+        ? Math.max(0, Math.floor(maxVisionCandidates))
+        : 0;
+    return {
+        hasFixedEventCapacity: ledger.finalQualityJudgeCallCount < MAX_FINAL_QUALITY_JUDGE_CALLS
+            && normalizedLimit > 0,
+        remainingCandidateCount: normalizedLimit
+    };
+}
+
+export function readFinalQualityDiagnosisRepairVisionViolation(input: {
+    ledger: PerformanceLedgerState;
+    candidateCount: number;
+    candidateKeys: readonly string[];
+}): PerformanceModelBudgetClassViolation | undefined {
+    const expectedKeys = input.ledger.finalQualityJudgeVisionCandidateKeys;
+    const actualKeys = Array.from(new Set(
+        input.candidateKeys.map((key) => String(key || '').trim()).filter(Boolean)
+    )).sort();
+    const sameKeys = actualKeys.length === expectedKeys.length
+        && actualKeys.every((key, index) => key === expectedKeys[index]);
+    if (input.candidateCount === input.ledger.finalQualityJudgeVisionCandidateCount
+        && input.candidateCount > 0
+        && sameKeys) {
+        return undefined;
+    }
+    return {
+        code: 'agent_final_quality_diagnosis_repair_evidence_mismatch',
+        message: '终局诊断补全只能重新查看首次 Judge 使用的同一组画面证据。'
+    };
+}
+
+/**
+ * 当前唯一 PerformanceLedger 的可序列化只读投影；不包含权限、质量或完成状态。
+ * 字段均是可跨 generation 恢复的普通执行池用量；独立终审成本仍由 RuntimeAccounting
+ * 的模型调用、Token、耗时和 prompt-shape imageBlocks 如实记录，不回灌成普通执行额度。
+ */
 export function projectPerformanceLedgerUsage(
     ledger: PerformanceLedgerState,
     iterations: number,
@@ -104,7 +365,13 @@ export function restorePerformanceLedgerUsage(
 ): RestoredPerformanceLedgerUsage {
     if (!usage) {
         return {
-            ledger: { ...ledger, visionCandidateKeys: new Set(ledger.visionCandidateKeys) },
+            ledger: {
+                ...ledger,
+                visionCandidateKeys: new Set(ledger.visionCandidateKeys),
+                finalQualityJudgeVisionCandidateKeys: [
+                    ...ledger.finalQualityJudgeVisionCandidateKeys
+                ]
+            },
             iterations
         };
     }
@@ -134,6 +401,9 @@ export function restorePerformanceLedgerUsage(
                 ledger.activeElapsedBeforeRunMs,
                 nonNegativeInteger(usage.activeElapsedMs)
             ),
+            finalQualityJudgeVisionCandidateKeys: [
+                ...ledger.finalQualityJudgeVisionCandidateKeys
+            ],
             visionCandidateKeys: new Set([
                 ...ledger.visionCandidateKeys,
                 ...observationKeys
@@ -160,6 +430,23 @@ export interface PerformanceBudgetExhaustion {
     message: string;
     limit: number;
     used: number;
+}
+
+export function applyPerformanceModelBudgetClassAllowance(
+    ledger: PerformanceLedgerState,
+    budgetClass: PerformanceModelBudgetClass,
+    exhaustion: PerformanceBudgetExhaustion | undefined
+): PerformanceBudgetExhaustion | undefined {
+    if (exhaustion?.dimension !== 'model_calls') return exhaustion;
+    if (budgetClass === 'final_quality_judge'
+        && ledger.finalQualityJudgeCallCount < MAX_FINAL_QUALITY_JUDGE_CALLS) {
+        return undefined;
+    }
+    if (budgetClass === 'final_quality_diagnosis_repair'
+        && ledger.finalQualityDiagnosisRepairCallCount < MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS) {
+        return undefined;
+    }
+    return exhaustion;
 }
 
 export function buildPerformanceBudgetExhaustionMessage(
@@ -198,8 +485,8 @@ export function readPerformanceBudgetExhaustion(input: {
     if (!budget) return undefined;
     const hasObservedTaskMutation = input.hasObservedTaskMutation === true;
     const scope = input.scope ?? 'all';
-    // GATE-SIMPLIFY-003：不再为终局质量 Judge 事前扣减普通预算（无事故证据的预防性税，
-    // 曾饿死身份声明与普通运行）；Judge 的硬上限由 MAX_FINAL_QUALITY_JUDGE_CALLS 在调用点保留。
+    // 普通任务预算不为终局质量 Judge 事前扣减；Judge 的独立单次验收 allowance 与硬上限
+    // 由 Agent 调用点按 budgetClass 处理，本纯账本函数仍只报告普通预算的真实耗尽状态。
     const effectiveSoftTimeBudgetMs = budget.softTimeBudgetMs;
     if (effectiveSoftTimeBudgetMs >= 0
         && ledger.runStartedAtMs > 0
