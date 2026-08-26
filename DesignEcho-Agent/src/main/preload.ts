@@ -47,7 +47,6 @@ import type {
     ManualSkuColorCardResult
 } from '../shared/manual-sku-color-card';
 import type { ProjectSelectionResolution } from '../shared/project-selection-resolution';
-import { MCP_HOST_PORT, WEBVIEW_BIND_HOST } from './config/network-ports';
 
 const chatTestFakePhotoshopEnabled = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
     && process.env.DESIGNECHO_CHAT_TEST_FAKE_PHOTOSHOP === '1';
@@ -268,7 +267,10 @@ const api = {
     cancelMcpToolRequest: (requestKey: string, awaitFinalResult?: boolean) =>
         ipcRenderer.invoke('mcp:tools:cancel', requestKey, awaitFinalResult),
 
-    getMcpHostEndpoint: () => `http://${WEBVIEW_BIND_HOST}:${MCP_HOST_PORT}/mcp`,
+    // Sandbox preload 不能运行时 require 本地模块。端点由当前 Main Runtime owner
+    // 在服务启动后通过只读 IPC 返回，避免复制端口解析规则或误连另一实例。
+    getMcpHostEndpoint: () =>
+        ipcRenderer.invoke('runtime:getMcpHostEndpoint') as Promise<string>,
     
     getConnectionStatus: () =>
         chatTestFakePhotoshopEnabled
@@ -849,6 +851,13 @@ const api = {
         resetConversation?: boolean;
         disableSkillBridges?: boolean;
         expectedProjectPath?: string;
+        expectedRuntimeGitCommit?: string;
+        expectedRuntimeBuildId?: string;
+        expectedPhotoshopRuntimeBuildId?: string;
+        expectedProvider?: string;
+        expectedModelId?: string;
+        requireCleanRuntimeGitState?: boolean;
+        requireNoOpenPhotoshopDocuments?: boolean;
         publicPlanConfirmationSourceMessageId?: string;
         publicPlanConfirmationRequestId?: string;
         publicPlanDisposableLiveAdapter?: boolean;
@@ -871,6 +880,13 @@ const api = {
         };
         ipcRenderer.on('debug-bridge:chat-submit', handler);
         return () => ipcRenderer.removeListener('debug-bridge:chat-submit', handler);
+    },
+    onDebugBridgeChatCancel: (callback: (request: { requestId: string }) => void) => {
+        const handler = (_event: any, request: any) => callback({
+            requestId: String(request?.requestId || '')
+        });
+        ipcRenderer.on('debug-bridge:chat-cancel', handler);
+        return () => ipcRenderer.removeListener('debug-bridge:chat-cancel', handler);
     },
 
     // ===== 项目设计知识学习 =====

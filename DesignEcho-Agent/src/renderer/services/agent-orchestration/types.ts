@@ -16,6 +16,7 @@ import type { AssistantReplyOrigin } from '../../../shared/assistant-reply-origi
 import type { OperatingContextSnapshot } from '../../../shared/agent-runtime-v5/operating-context-snapshot';
 import type { InteractiveContinuationRequest } from '../../../shared/pending-interactive-continuation';
 import type { AgentInternalResumeRequest } from '../../../shared/interactive-review-resume';
+import type { GuardedPhotoshopExecutionBaseline } from '../../../shared/guarded-photoshop-execution-baseline';
 import { resolveStableProjectMemoryScope } from '../../../shared/project-memory-scope';
 import type {
     AgentTaskPublicPlanControlledAsyncAdapter,
@@ -29,7 +30,12 @@ export interface AgentContext {
     userSelectedSkillId?: string;
     conversationHistory: AgentResumableTaskMessageLike[];
     requestId?: string;
+    /** 仅正式 disposable Debug 请求签发；不持久化、不进入模型参数。 */
+    guardedPhotoshopExecutionBaseline?: GuardedPhotoshopExecutionBaseline;
     conversationId?: string;
+    /** 用户提交瞬间冻结的单一 Agent 模型；运行中 UI 变化不得改写同一 TaskRun 的模型身份。 */
+    selectedModelId?: string;
+    selectedModelThinkingEnabled?: boolean;
     /** 当前对话消息树的分支身份；编辑重发后变化，用于隔离旧 Run Record。 */
     conversationBranchId?: string;
     interactiveContinuationRequest?: InteractiveContinuationRequest;

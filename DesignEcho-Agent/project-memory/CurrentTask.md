@@ -14,6 +14,15 @@
 - 固定 Skill / Prompt 开工顺序、SKU 默认版式、规则 Top-1 自动选图、项目列表首图冒充选定、按 role 写死层序和无条件文字吸附已移除或降为显式可选机械能力。
 - 提交前独立审查发现并修复两处真实成功率根因：详情页多槽选择会被后续排序逐个作废；长历史压缩会丢失第 5 个以后未决选图槽。两者均有行为回归覆盖。
 - 当前运行中的 DesignEcho 可能仍是提交前构建，Photoshop 还保留用户活动文档；本轮没有重启应用、修改该文档或用测试桥冒充端到端 Agent 成功。
+- 本文件所在的在途提交已收口普通文字 Skill 推荐越权：推荐只是模型可忽略候选，只有用户明选或模型 `declareDesignIntent` 能绑定 Runtime Skill，未绑定推荐也不再抢占交互卡 owner。
+- 单次提交会冻结当时的唯一多模态模型、Provider 与思考档，TaskRun 中途不跟随 UI 设置漂移。正式调试写入桥要求 token、精确项目/模型/DesignEcho Build/Photoshop Build、干净真实运行时和单租约；提交前与完成后均重新校验 `dist/main` / `dist/renderer` 实际摘要，不信任启动缓存。
+- Provider 一次输出截断只在 debug trace 记录并静默续接，不再向用户显示“长度上限、正在补全”。连续恢复失败仍返回 `success:false`，并只依据可信 Photoshop mutation 区分“已保留改动”与“尚未修改画面”；普通轮次也不再无条件先压到 4096 输出 token。
+- SKU 正常缺源路径已改为零写入 handoff：候选只有稳定身份，Agent 必须在首次写入前显式选素材、选择 flat/card 结构，并声明画布底色、卡片、网格对齐、标签字体/字距/内边距、序号样式、配色、主体占比和锚点；Runtime 收据精确绑定 `assetId → path → order`，Skill 只验证与求解几何。同名目录素材不再按格式优先级暗选，模型参数也不能把文件名升级为权威色名。
+- 手工 SKU 面板的 legacy Profile 只能通过不可序列化的内部 capability 调用；模型伪造 provenance 或历史隐藏布尔值会在零写入状态下被拒绝。
+- `placeImage` / `transformLayer` 的 Provider schema 与 UXP 执行点同时拒绝 `targetBounds` 冲突参数，并要求 Agent 显式给出 `targetFit` 与 `targetAnchor`；执行端不再偷偷回退到 `contain + center`，`focalPoint` 与旋转/翻转冲突也在写入前 fail closed。
+- 开发可靠性评测已改为 append-only Attempt 事件：所有已提交 Attempt 都进分母，旧 Suite/Case 排除但不丢安全账本，严格状态机、Run/Attempt 身份全量绑定、同一 Run 不可重复计数，自定义 data root 不能绕开 canonical fixture/unknown-write 账本。每个 Case 至少 5 次，技术通过样本必须有严格盲评覆盖。
+- 正式 disposable Debug 请求会签发请求级首次 Photoshop 副作用基线；direct Tool、复合设计、Skill、子 Agent 与 save/export 重定向共用同一守卫，在唯一 MCP 派发前重新核对 Photoshop Build 与零既有文档。普通用户运行不携带该守卫，它不参与任何设计判断。
+- 提交前独立审查继续修复了三条旁路：`agent-panel-bridge` 的任意 MCP 调用必须复用受控原子 executor；Debug 超时在预检期也会登记 requestId 级取消并禁止迟到启动，受控请求不走本地保存/撤销/斜杠快捷路径；正式 Attempt coverage 只消费 canonical append-only 账本，自定义 `--data-root` 不能注入分母。
 
 ### 实施边界
 
@@ -23,20 +32,64 @@
 
 ### 下一步
 
-1. 用户保存并关闭当前 Photoshop 活动文档、重启到 `1203e797` 后，从固定摄影输入复制一份全新隔离 Fixture。
-2. 用自然请求运行真实 Agent → Provider → Photoshop 链路，记录模型身份、实际观察、选图依据、工具调用、文档 / history、PSD/JPG 收据、首次写入和总耗时；不在运行中人工纠偏。
-3. 将候选成稿与用户作品、Eagle 锚点做盲化成对评审；按 Agent 判断、Harness 事实、Skill 能力、Photoshop 执行和模型能力分别归因，不再按单张截图追加局部补丁。
-4. 单次链路安全闭合后，在同一 Git / Case / 模型 / 请求下重复至少 3 次，形成可比较的最低成功率样本。
+1. 完成独立提交前审查、Git 卫生检查与敏感信息扫描后，提交并推送当前治理版本。
+2. 当用户的 Photoshop 活动文档已安全保存并关闭时，重建并重启 DesignEcho 与 UXP，从固定摄影输入复制一份全新隔离 Fixture。
+3. 用自然请求运行真实 Agent → Provider → Photoshop 链路，记录模型身份、实际观察、选图依据、工具调用、文档 / history、PSD/JPG 收据、首次写入和总耗时；不在运行中人工纠偏。
+4. 将候选成稿与用户作品、Eagle 锚点做盲化成对评审；单次链路安全闭合后，在同一 Git / Case / 模型 / 请求下按 Suite 口径重复至少 5 次，并按 owner 归因失败。
 
 ### 验证与未知
 
-- `maintenance:validate` 已重新通过 43 个核心检查，包含 Agent/Main/Renderer 类型检查、UXP 测试与 production build、作者权、上下文、详情页、SKU、composeDesign、图片落位和二进制资源边界；无 smoke 依赖。
-- 独立代码、Git 卫生与敏感信息审查均无提交阻断项；新增 Stack Ledger 行为测试覆盖复合块、owned layer、移动中断和错误层序读回。
-- 尚未在 `1203e797` 上完成真实 Provider → Agent → Photoshop 成稿和人工盲评，因此不能宣称 Agent 已达到专业设计师水平，也不能宣称审美成功率已经提高。
+- `maintenance:validate` 已通过 45 个核心检查，包含 Agent/Main/Renderer 类型检查、Electron preload sandbox、Runtime 构建身份篡改、UXP 测试与 production build、作者权、可靠性分母、上下文、SKU、composeDesign 和图片落位执行点合同；无 smoke 依赖。
+- 首轮通用设计 Tool schema 为 42592 字符，低于现有 43000 渐进披露棘轮；本轮没有为新参数提高上限。
+- 两份独立提交前审查已完成；写入桥、超时取消、收据身份、Attempt 分母、SKU 作者权和 UXP 参数合同的已发现 P0/P1 均已修复，对应定向回归通过。敏感信息扫描未发现 Token、本机用户目录或临时路径进入新增 diff。
+- 尚未在本文件所在提交上完成真实 Provider → Agent → Photoshop 成稿和人工盲评，因此不能宣称 Agent 已达到专业设计师水平，也不能宣称审美成功率已经提高。
+- `composeDesign` / `renderLayout` 的复合图片路径仍将额外 scale 限定为 1、rotation 限定为 0；原子 `transformLayer` 能发送旋转，但尚缺可靠的最终角度读回收据。这是已知 P1 能力缺口，本轮没有靠放宽 schema 假装完成。
+- 可靠性评测仍有已知 P1：超过 512MB 的 PSD 尚无 Photoshop reopen fallback；详情页/SKU 的 artifact 几何与 Save/Export → hash/documentId 绑定仍不完整；strict blind 还是字段自证，未生成匿名 Review Packet。
 
 ### 状态
 
-`in_progress / authorship_governance_committed / remote_sha_verified / core_validation_43_passed / current_user_document_untouched / isolated_live_photoshop_run_pending / blind_pairwise_review_pending`
+`in_progress / authorship_and_truncation_governance_code_complete / sku_fixed_first_draft_removed / reliability_attempt_denominator_closed / runtime_and_first_side_effect_guarded / full_core_validation_45_passed / current_user_document_untouched / independent_review_complete / commit_and_push_pending / isolated_live_photoshop_run_pending / blind_pairwise_review_pending`
+
+---
+
+## 2026-08-26 ELECTRON-PRELOAD-SANDBOX-001：修复桌面桥整体失效导致 Eagle 导入不可用
+
+### 切换原因
+
+用户截图显示 Eagle 素材库页点击“选择 .library 文件夹”后提示桌面运行时未提供导入能力。日志进一步证明不是 Eagle 业务 handler 缺失，而是 Electron sandbox preload 在暴露 `window.designEcho` 之前加载失败。
+
+### 目标
+
+1. 恢复 Eagle 选择、打开、查询、预览及同一 preload 承载的桌面 IPC 能力。
+2. 保持 `contextIsolation:true`、`nodeIntegration:false` 与 `sandbox:true`，不以关闭安全边界换取本地模块加载。
+3. 让 MCP endpoint 继续由当前 Main Runtime owner 提供，不复制端口解析规则或回退到另一实例。
+
+### 当前事实
+
+- 根因是 `src/main/preload.ts` 对 `./config/network-ports` 的运行时值导入被编译为相对 `require()`；Electron sandbox preload 的受限 loader 在 `contextBridge.exposeInMainWorld` 前终止。
+- preload 已移除本地 Runtime import；Main 新增只读 `runtime:getMcpHostEndpoint`，Renderer 异步取得并校验实际 loopback endpoint。
+- 构建门禁要求编译后的 `preload.js` 除 `require('electron')` 外没有其他 require，并 mock 加载产物核对 Eagle 桥与 IPC 通道。
+- 真实 Electron/CDP 已验证 `window.designEcho`、Eagle 选择/打开/查询/预览桥和 MCP endpoint；只读打开既有 Eagle 库后可显示 2557 项与缩略图。
+
+### 实施边界
+
+- 不修改 Eagle `.library` 数据，不自动弹目录选择框或替用户选择库。
+- 不通过 `sandbox:false`、`nodeIntegration:true` 或放宽 context isolation 解决问题。
+- 该任务不重置或覆盖同时存在的 Agent、SKU、UXP 与可靠性治理改动。
+
+### 验证与未知
+
+- `test:preload-sandbox-boundary` 已接入常规 `build` 与核心验证；最新整仓 `maintenance:validate` 45 项通过。
+- 真实窗口与 Eagle 只读链路已验证；尚未主动点击系统目录选择框，因为该操作需要用户在系统弹窗中选择真实目录。
+- 桌面快捷批处理仍只启动既有产物；源码变化后必须先构建并彻底重启。项目 `npm start` 会先构建并执行 preload 门禁。
+
+### 下一步
+
+1. 后续可为 preload/Renderer API 提取共享 capability version，减少两份 optional ambient 类型容忍半桥状态；不与当前设计质量真机验证混做。
+
+### 状态
+
+`validated / preload_root_cause_fixed / sandbox_preserved / main_owned_mcp_endpoint / bridge_contract_test_passed / real_electron_bridge_passed / eagle_library_visual_recovered / full_core_validation_45_passed`
 
 ---
 

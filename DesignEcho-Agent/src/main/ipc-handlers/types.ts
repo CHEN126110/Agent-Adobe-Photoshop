@@ -24,6 +24,8 @@ export interface IPCContext {
     resourceManagerService: ResourceManagerService | null;
     codexSubscriptionService: CodexSubscriptionService | null;
     claudeSubscriptionService: ClaudeSubscriptionService | null;
+    /** 当前 Main Runtime 实际启动的 MCP Host endpoint；Renderer 只读。 */
+    mcpHostEndpoint: string | null;
     mainWindow: Electron.BrowserWindow | null;
 }
 

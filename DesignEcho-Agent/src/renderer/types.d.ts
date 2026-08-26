@@ -432,7 +432,7 @@ export interface DesignEchoAPI {
     cancelPluginRequest?: (requestKey: string, awaitFinalResult?: boolean) => Promise<{ success: boolean; cancelled: boolean; error?: string }>;
     callMcpToolCancellable?: (requestKey: string, name: string, args?: any, timeout?: number) => Promise<any>;
     cancelMcpToolRequest?: (requestKey: string, awaitFinalResult?: boolean) => Promise<{ success: boolean; cancelled: boolean; error?: string }>;
-    getMcpHostEndpoint?: () => string;
+    getMcpHostEndpoint?: () => Promise<string>;
     
     getConnectionStatus: () => Promise<{ connected: boolean }>;
 
@@ -911,10 +911,18 @@ export interface DesignEchoAPI {
         resetConversation?: boolean;
         disableSkillBridges?: boolean;
         expectedProjectPath?: string;
+        expectedRuntimeGitCommit?: string;
+        expectedRuntimeBuildId?: string;
+        expectedPhotoshopRuntimeBuildId?: string;
+        expectedProvider?: string;
+        expectedModelId?: string;
+        requireCleanRuntimeGitState?: boolean;
+        requireNoOpenPhotoshopDocuments?: boolean;
         publicPlanConfirmationSourceMessageId?: string;
         publicPlanConfirmationRequestId?: string;
         publicPlanDisposableLiveAdapter?: boolean;
     }) => Promise<any>) => () => void;
+    onDebugBridgeChatCancel?: (callback: (request: { requestId: string }) => void) => () => void;
 
     // ===== 通用 IPC 调用 =====
     invoke: (channel: string, ...args: any[]) => Promise<any>;

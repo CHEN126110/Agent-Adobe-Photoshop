@@ -324,10 +324,13 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                 {(() => {
                     const mergedSteps = mergeRepeatedSteps(panelSteps);
                     // 单一活性点原则（codex 铁律）：任意时刻至多一处扫光/旋转——只有最末一条
-                    // 进行中的行是「当前活动」；其余进行中的行静态染色即可，满屏多处动效没有重点。
+                    // 进行中的「动作行」是「当前活动」；其余进行中的行静态染色即可，满屏多处动效没有重点。
+                    // 正文/思考行（is-thought）永不参与活性点：codex 里正文段落从不扫光，
+                    // 流式文字的出现本身与顶部计时头就是活性信号，扫光只属于动作行。
                     let liveKey = '';
                     for (const item of mergedSteps) {
-                        if (item.step.status === 'running' || item.step.status === 'pending') liveKey = item.key;
+                        const actsLikeTool = isActionStep(item.step) || getDisplayRole(item.step) === 'action';
+                        if (actsLikeTool && (item.step.status === 'running' || item.step.status === 'pending')) liveKey = item.key;
                     }
                     return mergedSteps.map(({ key: stepKey, step, repeat, members, aggregateLabel }) => {
                         const liveClass = stepKey === liveKey ? 'is-live' : '';

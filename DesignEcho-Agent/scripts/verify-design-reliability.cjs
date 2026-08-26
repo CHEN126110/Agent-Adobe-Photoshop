@@ -3,7 +3,10 @@
 
 const assert = require("assert");
 const fs = require("fs");
+const Module = require("module");
+const os = require("os");
 const path = require("path");
+const ts = require("typescript");
 
 const {
   REVIEW_VERSION,
@@ -18,6 +21,26 @@ const {
   validateDesignReliabilityReview,
   validateDesignReliabilityRun
 } = require("./lib/design-reliability-contract.cjs");
+const {
+  buildCanonicalAttemptSafetyLedger,
+  buildPreflight,
+  buildStatus,
+  buildSuiteCaseSetDigest,
+  buildSuiteRubricSetDigest,
+  buildLiveAttemptCoverage,
+  collectSidecars,
+  evaluateFixtureInventory,
+  evaluateLiveEnvironmentSafety,
+  inspectEditablePsd,
+  isOfficialAttemptCohortReady,
+  loadSuite,
+  retainContextuallyValidAttemptEvents,
+  resolveReliabilityEvidenceRoots,
+  sidecarRoots,
+  validateAttemptEventStateMachine,
+  validateDebugBridgeReceipt,
+  validateMutationBaselineAgainstObservation
+} = require("./design-reliability.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const CASE_PATH = path.join(
@@ -34,6 +57,25 @@ const RUBRIC_PATH = path.join(
   "rubrics",
   "main-image-commercial-v1.json"
 );
+
+function loadSelfContainedTypeScriptModule(filePath) {
+  const source = fs.readFileSync(filePath, "utf8");
+  const transpiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020
+    },
+    fileName: filePath,
+    reportDiagnostics: true
+  });
+  const diagnostics = transpiled.diagnostics || [];
+  assert.strictEqual(diagnostics.length, 0, `TypeScript helper transpile failed: ${diagnostics.length}`);
+  const loaded = new Module(filePath, module);
+  loaded.filename = filePath;
+  loaded.paths = module.paths;
+  loaded._compile(transpiled.outputText, filePath);
+  return loaded.exports;
+}
 const SKU_CASE_PATH = path.join(
   ROOT,
   "benchmarks",
@@ -235,9 +277,518 @@ function buildPassingObservation() {
   });
 }
 
-function main() {
+async function main() {
+  const guardedBaselineModule = loadSelfContainedTypeScriptModule(path.join(
+    ROOT,
+    "src",
+    "shared",
+    "guarded-photoshop-execution-baseline.ts"
+  ));
+  const expectedPhotoshopBuildId = "photoshop-runtime-build-v1";
+  const passingBaseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+    requestId: "debug-request-pass",
+    expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId
+  });
+  let runtimeObservationCount = 0;
+  let documentObservationCount = 0;
+  let fakeMutationDispatchCount = 0;
+  const passingObservers = {
+    observePhotoshopRuntimeBuildId: async () => {
+      runtimeObservationCount += 1;
+      return expectedPhotoshopBuildId;
+    },
+    observeOpenDocumentCount: async () => {
+      documentObservationCount += 1;
+      return 0;
+    },
+    now: () => "2026-08-26T00:00:00.000Z"
+  };
+  const concurrentBaselineDecisions = await Promise.all([
+    guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+      passingBaseline,
+      "createDocument",
+      passingObservers
+    ),
+    guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+      passingBaseline,
+      "createRectangle",
+      passingObservers
+    )
+  ]);
+  for (const decision of concurrentBaselineDecisions) {
+    if (decision.ready) fakeMutationDispatchCount += 1;
+  }
+  assert(concurrentBaselineDecisions.every((decision) => decision.ready === true));
+  assert.strictEqual(runtimeObservationCount, 1, "并发首次写只能读取一次 Runtime Build");
+  assert.strictEqual(documentObservationCount, 1, "并发首次写只能读取一次 no-open baseline");
+  assert.strictEqual(fakeMutationDispatchCount, 2, "通过后同一请求的后续 mutation 可继续执行");
+
+  for (const blockedCase of [
+    { name: "runtime mismatch", runtimeBuildId: "other-build", openDocuments: 0 },
+    { name: "document already open", runtimeBuildId: expectedPhotoshopBuildId, openDocuments: 1 },
+    { name: "document state unavailable", runtimeBuildId: expectedPhotoshopBuildId, openDocuments: undefined }
+  ]) {
+    const baseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+      requestId: `debug-request-${blockedCase.name}`,
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId
+    });
+    const decision = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+      baseline,
+      "createDocument",
+      {
+        observePhotoshopRuntimeBuildId: async () => blockedCase.runtimeBuildId,
+        observeOpenDocumentCount: async () => blockedCase.openDocuments
+      }
+    );
+    assert.strictEqual(decision.ready, false, `${blockedCase.name} must block before mutation dispatch`);
+    assert.strictEqual(decision.receipt.status, "blocked");
+  }
+
+  const toolExecutorSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "tool-executor.service.ts"
+  ), "utf8");
+  const autonomousExecutorSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "skill-executors",
+    "autonomous-agent.executor.ts"
+  ), "utf8");
+  const debugBridgeSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "main",
+    "services",
+    "debug-bridge-service.ts"
+  ), "utf8");
+  const chatPanelSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "components",
+    "ChatPanel.tsx"
+  ), "utf8");
+  const mainProcessSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "main",
+    "index.ts"
+  ), "utf8");
+  const baselineGateIndex = toolExecutorSource.indexOf("enforceGuardedPhotoshopExecutionBaseline(");
+  const lowLevelDispatchIndex = toolExecutorSource.indexOf("return await callPhotoshopMcpTool(method, params");
+  assert(baselineGateIndex > 0 && baselineGateIndex < lowLevelDispatchIndex,
+    "首次受控副作用 baseline 必须位于唯一底层 Photoshop MCP dispatch 之前");
+  assert(toolExecutorSource.includes("isAgentToolExecutionGuarded(publicToolName, params)"),
+    "photoshop_write 与 save_export 必须共用同一个首次副作用 baseline");
+  assert(toolExecutorSource.includes("'quickExport'")
+    && toolExecutorSource.includes("'saveDocument',\n                    saveParams")
+    && toolExecutorSource.includes("options,\n                    'saveDocument'"),
+  "quickExport/saveDocument 重定向必须把 request-scoped options 带到唯一 dispatch gate");
+  assert(toolExecutorSource.includes("'quickExport',\n                        exportParams")
+    && toolExecutorSource.includes("options,\n                        'quickExport'"),
+  "saveDocument/quickExport 反向重定向也必须把 request-scoped options 带到唯一 dispatch gate");
+  assert(toolExecutorSource.includes("executeToolCall('createRectangle'")
+    && toolExecutorSource.includes("}, options)"),
+  "composeDesign 内部原子写必须保留同一个 ToolCallExecutionOptions");
+  assert(autonomousExecutorSource.includes("guardedPhotoshopExecutionBaseline: context.guardedPhotoshopExecutionBaseline"),
+    "direct 与 Skill guarded atomic 必须继承 request-scoped baseline");
+  assert(!autonomousExecutorSource.includes("autonomousParams?.guardedPhotoshopExecutionBaseline"),
+    "模型 Tool 参数不得伪造受控 Debug baseline");
+  assert(autonomousExecutorSource.includes("createExecuteToolForTeammate(denyProviderTool, baseExecutionOptions)"),
+    "teammate Tool 执行必须继承相同的 signed baseline options");
+  assert(debugBridgeSource.includes("typeof body.expectedPhotoshopRuntimeBuildId === 'string'")
+    && debugBridgeSource.includes("Boolean(body.expectedPhotoshopRuntimeBuildId.trim())"),
+  "受控 Debug POST 缺少 expectedPhotoshopRuntimeBuildId 时必须在协议入口拒绝");
+  assert(chatPanelSource.includes("completedPhotoshopRuntimeBuildId !== expectedPhotoshopRuntimeBuildId")
+    && chatPanelSource.includes("任务完成时 Photoshop Runtime Build 已变化或无法读取"),
+  "受控 Debug bridge 必须在完成时 Photoshop Build 漂移处直接 fail closed");
+  assert.strictEqual(
+    chatPanelSource.split("createGuardedPhotoshopExecutionBaseline({").length - 1,
+    1,
+    "baseline 只能由正式 Debug submit owner 按请求签发一次"
+  );
+  assert(chatPanelSource.includes("cancelledDebugBridgeRequestIdsRef.current.add(requestId)")
+    && chatPanelSource.includes("throwIfDebugRequestCancelled();")
+    && chatPanelSource.includes("cancelledDebugBridgeRequestIdsRef.current.has(guardedDebugRequestId)"),
+  "Debug 超时取消必须覆盖 AbortController 建立前的写前预检窗口，不得在超时后晚启动模型或 Photoshop 写入");
+  const guardedDebugRequestIndex = chatPanelSource.indexOf("const guardedDebugRequestId = String(");
+  const slashCommandIndex = chatPanelSource.indexOf("userInput.startsWith('/')", guardedDebugRequestIndex);
+  const quickCommandIndex = chatPanelSource.indexOf("await tryQuickCommand(userInput)", slashCommandIndex);
+  assert(guardedDebugRequestIndex > 0
+    && slashCommandIndex > guardedDebugRequestIndex
+    && quickCommandIndex > slashCommandIndex
+    && chatPanelSource.slice(guardedDebugRequestIndex, slashCommandIndex).includes(
+      "cancelledDebugBridgeRequestIdsRef.current.has(guardedDebugRequestId)"
+    )
+    && chatPanelSource.slice(guardedDebugRequestIndex, quickCommandIndex).includes(
+      "if (!guardedDebugRequestId && !interactiveContinuationRequest"
+    ),
+  "受控 Debug 请求必须在斜杠/单词快捷命令前检查取消，并跳过不携带 baseline 的本地快捷写入");
+  const debugTimeoutStart = mainProcessSource.indexOf("const timer = setTimeout(() => {");
+  const debugCleanupStart = mainProcessSource.indexOf("const cleanup = (): void => {", debugTimeoutStart);
+  const debugTimeoutBody = mainProcessSource.slice(debugTimeoutStart, debugCleanupStart);
+  assert(debugTimeoutStart > 0
+    && debugCleanupStart > debugTimeoutStart
+    && debugTimeoutBody.includes("mainWindow.webContents.send('debug-bridge:chat-cancel', { requestId })")
+    && !debugTimeoutBody.includes("cleanup();")
+    && !debugTimeoutBody.includes("debugChatSubmissionLeaseId = null"),
+  "Main 超时必须向同一 requestId 发送取消，并保留单飞 lease 直到 Renderer 返回闭合结果");
+  assert(mainProcessSource.includes("if (timedOut) {")
+    && mainProcessSource.includes("debugChatSubmissionLeaseId === requestId"),
+  "Renderer 迟到结果必须只闭合超时 lease，不得再将结果当成本轮成功");
+
+  const malformedPsdDir = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-psd-evidence-"));
+  try {
+    const malformedPsdPath = path.join(malformedPsdDir, "header-only.psd");
+    const header = Buffer.alloc(26);
+    header.write("8BPS", 0, "ascii");
+    header.writeUInt16BE(1, 4);
+    header.writeUInt16BE(3, 12);
+    header.writeUInt32BE(800, 14);
+    header.writeUInt32BE(800, 18);
+    header.writeUInt16BE(8, 22);
+    header.writeUInt16BE(3, 24);
+    fs.writeFileSync(malformedPsdPath, header);
+    assert.strictEqual(
+      inspectEditablePsd(malformedPsdPath),
+      null,
+      "只有合法 26 字节文件头、没有完整 PSD 结构的文件不得成为 editable_psd 证据"
+    );
+  } finally {
+    fs.rmSync(malformedPsdDir, { recursive: true, force: true });
+  }
   const caseSpec = readCase();
   assert.strictEqual(validateDesignReliabilityCase(caseSpec).ok, true, "real case must validate");
+
+  const expectedCommit = "a".repeat(40);
+  const safeLiveEnvironmentInput = {
+    currentGitEnvironment: { gitCommit: expectedCommit, dirty: false },
+    expectedProjectPath: "C:/fixture/project",
+    systemStatus: {
+      ok: true,
+      result: {
+        pluginConnected: true,
+        runtimeBuildIdentity: {
+          version: "designecho-runtime-build-identity/v1",
+          buildId: "designecho-test-build",
+          processStartedAt: "2026-08-26T00:00:00.000Z",
+          capturedAt: "2026-08-26T00:00:01.000Z",
+          appVersion: "1.0.0",
+          source: "build_manifest",
+          gitCommit: expectedCommit,
+          gitDirty: false,
+          artifactDigest: `sha256:${"b".repeat(64)}`,
+          manifestDigest: `sha256:${"c".repeat(64)}`,
+          artifactsVerified: true,
+          fakeModelEnabled: false,
+          fakePhotoshopEnabled: false
+        },
+        pluginConnectionDiagnostics: { pendingRequestCount: 0 }
+      }
+    },
+    connectionStatus: { ok: true, result: { connected: true } },
+    photoshopDiagnosisStatus: {
+      ok: true,
+      result: {
+        success: true,
+        state: {
+          runtime: {
+            buildId: "photoshop-tool-stability/v1",
+            loadedAt: "2026-08-26T00:00:00.000Z"
+          }
+        }
+      }
+    },
+    projectRootStatus: {
+      ok: true,
+      result: { success: true, projectRoot: "C:/fixture/project" }
+    },
+    documentListStatus: {
+      ok: true,
+      result: { success: true, documents: [], count: 0 }
+    }
+  };
+  const safeLiveEnvironment = evaluateLiveEnvironmentSafety(safeLiveEnvironmentInput);
+  assert.strictEqual(safeLiveEnvironment.ready, true, "clean matching runtime with zero documents should pass");
+
+  const validDebugReceipt = {
+    version: "debug-bridge-chat-submit-receipt/v1",
+    requestId: "debug-request-1",
+    conversationId: "conversation-1",
+    submittedProjectPath: "C:/fixture/project",
+    completedProjectPath: "C:/fixture/project",
+    expectedProjectMatchedAtSubmission: true,
+    projectUnchangedThroughCompletion: true,
+    submittedModelId: "model-a",
+    completedModelId: "model-a",
+    submittedApiModelId: "model-a",
+    completedApiModelId: "model-a",
+    provider: "provider-a",
+    modelUnchangedThroughCompletion: true,
+    expectedModelMatchedAtSubmission: true,
+    runtimeIdentityMatchedAtSubmission: true,
+    runtimeBuildIdentity: safeLiveEnvironmentInput.systemStatus.result.runtimeBuildIdentity,
+    completedRuntimeBuildIdentity: safeLiveEnvironmentInput.systemStatus.result.runtimeBuildIdentity,
+    runtimeArtifactsUnchangedThroughCompletion: true,
+    photoshopDocumentPolicy: "none_open",
+    photoshopDocumentGuardPassedAtSubmission: true,
+    openPhotoshopDocumentCountAtSubmission: 0,
+    expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+    submittedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+    completedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+    expectedPhotoshopRuntimeMatchedAtSubmission: true,
+    photoshopRuntimeUnchangedThroughCompletion: true,
+    firstPhotoshopMutationBaseline: {
+      version: "guarded-photoshop-execution-baseline-receipt/v0",
+      status: "not_reached",
+      requestId: "debug-request-1",
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId
+    }
+  };
+  const validDebugReceiptInput = {
+    fixtureRoot: "C:/fixture/project",
+    provider: "provider-a",
+    modelId: "model-a",
+    gitCommit: expectedCommit,
+    runtimeBuildId: "designecho-test-build",
+    photoshopRuntimeBuildId: expectedPhotoshopBuildId
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: validDebugReceipt } },
+    validDebugReceiptInput
+  ).ok, true, "提交前、首次写与完成后协议字段完整时 receipt 必须可信");
+  const missingExpectedPhotoshopBuild = JSON.parse(JSON.stringify(validDebugReceipt));
+  delete missingExpectedPhotoshopBuild.expectedPhotoshopRuntimeBuildId;
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: missingExpectedPhotoshopBuild } },
+    validDebugReceiptInput
+  ).ok, false, "缺 expectedPhotoshopRuntimeBuildId 不得静默兼容");
+  const completedPhotoshopBuildDrift = {
+    ...validDebugReceipt,
+    completedPhotoshopRuntimeBuildId: "other-photoshop-build",
+    photoshopRuntimeUnchangedThroughCompletion: false
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: completedPhotoshopBuildDrift } },
+    validDebugReceiptInput
+  ).ok, false, "Photoshop Runtime Build 完成时漂移必须拒绝");
+  const completedRuntimeArtifactDrift = {
+    ...validDebugReceipt,
+    completedRuntimeBuildIdentity: {
+      ...validDebugReceipt.completedRuntimeBuildIdentity,
+      artifactDigest: `sha256:${"f".repeat(64)}`
+    },
+    runtimeArtifactsUnchangedThroughCompletion: false
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: completedRuntimeArtifactDrift } },
+    validDebugReceiptInput
+  ).ok, false, "DesignEcho artifact/manifest 完成时漂移必须被正式收据验证拒绝");
+  const incompleteRuntimeIdentity = JSON.parse(JSON.stringify(validDebugReceipt));
+  delete incompleteRuntimeIdentity.runtimeBuildIdentity.manifestDigest;
+  delete incompleteRuntimeIdentity.runtimeBuildIdentity.capturedAt;
+  delete incompleteRuntimeIdentity.completedRuntimeBuildIdentity.buildId;
+  delete incompleteRuntimeIdentity.completedRuntimeBuildIdentity.fakePhotoshopEnabled;
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: incompleteRuntimeIdentity } },
+    validDebugReceiptInput
+  ).ok, false, "DesignEcho 构建摘要、捕获时间、buildId 或真实运行标志缺失时不得靠两端同时缺字段通过");
+  assert.strictEqual(validateMutationBaselineAgainstObservation(
+    validDebugReceipt,
+    { observed: { observedMutationCalls: 0 } },
+    expectedPhotoshopBuildId
+  ).ok, true, "没有 mutation 时 not_reached 由技术交付判失败，不伪造成协议错误");
+  assert.strictEqual(validateMutationBaselineAgainstObservation(
+    validDebugReceipt,
+    { observed: { observedMutationCalls: 1 } },
+    expectedPhotoshopBuildId
+  ).ok, false, "已有 mutation 时 baseline=not_reached 必须拒绝");
+  const blockedMutationReceipt = {
+    ...validDebugReceipt,
+    firstPhotoshopMutationBaseline: {
+      version: "guarded-photoshop-execution-baseline-receipt/v0",
+      status: "blocked",
+      requestId: "debug-request-1",
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      error: "Photoshop 当前已有既有文档"
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: blockedMutationReceipt } },
+    validDebugReceiptInput
+  ).ok, true, "写前已确定阻断的 baseline receipt 是可信失败，不得升级成 unknown-write");
+  assert.strictEqual(validateMutationBaselineAgainstObservation(
+    blockedMutationReceipt,
+    { observed: { observedMutationCalls: 0 } },
+    expectedPhotoshopBuildId
+  ).ok, true);
+  const passedMutationReceipt = {
+    ...validDebugReceipt,
+    firstPhotoshopMutationBaseline: {
+      version: "guarded-photoshop-execution-baseline-receipt/v0",
+      status: "passed",
+      requestId: "debug-request-1",
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      observedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      openDocumentCount: 0,
+      firstMutationToolName: "createDocument"
+    }
+  };
+  assert.strictEqual(validateMutationBaselineAgainstObservation(
+    passedMutationReceipt,
+    { observed: { observedMutationCalls: 1 } },
+    expectedPhotoshopBuildId
+  ).ok, true, "真实 mutation 与 passed baseline 必须能够闭合");
+
+  const userDocumentOpen = evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    documentListStatus: {
+      ok: true,
+      result: {
+        success: true,
+        documents: [{ id: 132, name: "SKU", pathState: "unsaved" }],
+        count: 1
+      }
+    }
+  });
+  assert.strictEqual(userDocumentOpen.ready, false);
+  assert(userDocumentOpen.blockers.includes("photoshop_documents_open"));
+  assert.strictEqual(userDocumentOpen.photoshop.hasUnsavedDocument, true);
+
+  const staleRuntime = evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    systemStatus: {
+      ...safeLiveEnvironmentInput.systemStatus,
+      result: {
+        ...safeLiveEnvironmentInput.systemStatus.result,
+        runtimeBuildIdentity: {
+          ...safeLiveEnvironmentInput.systemStatus.result.runtimeBuildIdentity,
+          gitCommit: "b".repeat(40)
+        }
+      }
+    }
+  });
+  assert(staleRuntime.blockers.includes("runtime_git_commit_mismatch"));
+
+  const oldRuntimeWithoutIdentity = evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    systemStatus: {
+      ...safeLiveEnvironmentInput.systemStatus,
+      result: {
+        pluginConnected: true,
+        pluginConnectionDiagnostics: { pendingRequestCount: 0 }
+      }
+    }
+  });
+  assert(oldRuntimeWithoutIdentity.blockers.includes("runtime_build_identity_unavailable"));
+
+  const wrongProject = evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    projectRootStatus: {
+      ok: true,
+      result: { success: true, projectRoot: "C:/another/project" }
+    }
+  });
+  assert(wrongProject.blockers.includes("current_project_not_bound_to_fixture"));
+
+  const fakeRuntime = evaluateLiveEnvironmentSafety({
+    ...safeLiveEnvironmentInput,
+    systemStatus: {
+      ...safeLiveEnvironmentInput.systemStatus,
+      result: {
+        ...safeLiveEnvironmentInput.systemStatus.result,
+        runtimeBuildIdentity: {
+          ...safeLiveEnvironmentInput.systemStatus.result.runtimeBuildIdentity,
+          fakeModelEnabled: true
+        }
+      }
+    }
+  });
+  assert(fakeRuntime.blockers.includes("fake_model_runtime_enabled"));
+
+  const cleanFixtureInventory = evaluateFixtureInventory(
+    ["S82646/a.jpg", "S82646/b.jpg"],
+    ["S82646/a.jpg", "S82646/b.jpg"]
+  );
+  assert.strictEqual(cleanFixtureInventory.freshRunReady, true);
+  const leakedFixtureInventory = evaluateFixtureInventory(
+    ["S82646/a.jpg", "S82646/b.jpg"],
+    [
+      "S82646/a.jpg",
+      "S82646/b.jpg",
+      ".designecho/design-state.json",
+      "主图/旧成稿.psd"
+    ]
+  );
+  assert.strictEqual(leakedFixtureInventory.ready, true, "expected inputs may still exist in a polluted fixture");
+  assert.strictEqual(leakedFixtureInventory.freshRunReady, false);
+  assert.deepStrictEqual(leakedFixtureInventory.unexpected, [
+    ".designecho/design-state.json",
+    "主图/旧成稿.psd"
+  ]);
+
+  const attemptEventBase = {
+    version: "design-reliability-attempt-event/v1",
+    attemptId: "attempt-1",
+    caseRef: { caseId: caseSpec.caseId },
+    cohortId: "cohort-attempt-denominator",
+    provider: "provider-a",
+    modelId: "model-a",
+    fixtureRef: { instanceId: "fixture-1", fixtureDigest: `sha256:${"d".repeat(64)}` },
+    suiteCaseSetDigest: `sha256:${"1".repeat(64)}`,
+    suiteRubricSetDigest: `sha256:${"2".repeat(64)}`,
+    cohortFingerprint: `sha256:${"3".repeat(64)}`,
+    attemptFingerprint: `sha256:${"4".repeat(64)}`
+  };
+  const attemptCoverage = buildLiveAttemptCoverage([
+    { ...attemptEventBase, eventId: "attempt-1:1:armed", sequence: 1, eventType: "armed" },
+    { ...attemptEventBase, eventId: "attempt-1:2:submission_started", sequence: 2, eventType: "submission_started" },
+    {
+      ...attemptEventBase,
+      eventId: "attempt-1:3:terminal",
+      sequence: 3,
+      eventType: "terminal",
+      status: "provider_failed"
+    },
+    {
+      ...attemptEventBase,
+      attemptId: "attempt-2",
+      attemptFingerprint: `sha256:${"5".repeat(64)}`,
+      eventId: "attempt-2:1:armed",
+      sequence: 1,
+      eventType: "armed"
+    },
+    {
+      ...attemptEventBase,
+      attemptId: "attempt-2",
+      attemptFingerprint: `sha256:${"5".repeat(64)}`,
+      eventId: "attempt-2:2:submission_started",
+      sequence: 2,
+      eventType: "submission_started"
+    }
+  ], [], { cases: [caseSpec] });
+  assert.strictEqual(attemptCoverage.submittedAttempts, 2);
+  assert.strictEqual(attemptCoverage.terminalAttempts, 1);
+  assert.strictEqual(attemptCoverage.attemptsWithoutTerminal, 1);
+  assert.strictEqual(
+    attemptCoverage.byCohort["cohort-attempt-denominator"].statuses.provider_failed,
+    1
+  );
+  assert.strictEqual(
+    attemptCoverage.byCohort["cohort-attempt-denominator"].technicalDeliveryRate.value,
+    0,
+    "submitted failures without Run Observation must remain in the Attempt denominator as failures"
+  );
+  assert.strictEqual(
+    attemptCoverage.byCohort["cohort-attempt-denominator"].allSubmittedAttemptsTerminal,
+    false,
+    "unclosed submitted attempts must keep the cohort sample incomplete"
+  );
 
   const unsafeCase = JSON.parse(JSON.stringify(caseSpec));
   unsafeCase.task.agentVisibleInputs[0].ref = "C:\\private\\image.jpg";
@@ -389,6 +940,43 @@ function main() {
     terminalNeedsReview.observed.technicalDeliveryPassed,
     true,
     "complete receipts may pass technical delivery while Human Review still owns aesthetics"
+  );
+
+  const waitingUserRecord = runRecord({
+    runId: "run-waiting-user",
+    generation: 1,
+    issuedAt: "2026-08-24T00:06:00.000Z",
+    endedAt: "2026-08-24T00:06:20.000Z",
+    success: true,
+    stopReason: "awaiting_user_confirmation",
+    taskRunStatus: "waiting_user",
+    toolCalls: [
+      historyTransitionMutationCall(1, 2000, 29),
+      observationCall(2, "getAcceptanceSnapshot", 4000, 29),
+      observationCall(3, "getCanvasSnapshot", 5000, 29),
+      saveCall(4, 6000)
+    ]
+  });
+  const waitingUserObservation = deriveDesignReliabilityRunObservation({
+    caseSpec,
+    runRecords: [waitingUserRecord],
+    cohortId: "candidate",
+    userInterventionCount: 0,
+    environment: { provider: "provider-a", modelId: "model-a" },
+    evidenceRefs: evidenceRefs()
+  });
+  assert.strictEqual(waitingUserObservation.observed.runStatus, "waiting_user");
+  assert.strictEqual(
+    waitingUserObservation.observed.machineChecks.find((check) => check.id === "terminal_task_run")?.status,
+    "failed",
+    "waiting_user is not a technical terminal state for zero-intervention fixed cases"
+  );
+  assert.strictEqual(waitingUserObservation.observed.technicalDeliveryPassed, false);
+  assert(
+    waitingUserObservation.observed.symptoms.some((symptom) => (
+      symptom.code === "user_intervention_required_before_completion"
+    )),
+    "waiting_user must remain visible as an interaction failure instead of being renamed needs_review"
   );
 
   const agenticManifestRecord = runRecord({
@@ -694,6 +1282,349 @@ function main() {
     "完整盲评协议、阈值、pairwise 与适用参考齐全时 pass 才合法"
   );
 
+  const formalAttemptRun = JSON.parse(JSON.stringify(passing));
+  formalAttemptRun.cohortId = "cohort-formal-denominator";
+  const formalAttemptReview = {
+    ...JSON.parse(JSON.stringify(review)),
+    reviewId: "review-formal-attempt",
+    runObservationId: formalAttemptRun.runObservationId
+  };
+  const formalCohortFingerprint = `sha256:${"7".repeat(64)}`;
+  const formalSuiteCaseSetDigest = `sha256:${"8".repeat(64)}`;
+  const formalSuiteRubricSetDigest = `sha256:${"9".repeat(64)}`;
+  const formalRuntimeEnvironment = {
+    gitCommit: "formal-git-commit",
+    dirty: false,
+    runtimeGitCommit: "formal-git-commit",
+    runtimeBuildId: "formal-runtime-build",
+    runtimeAppVersion: "1.0.0",
+    photoshopRuntimeBuildId: "formal-photoshop-build"
+  };
+  function formalAttemptEvents(input) {
+    const inputCase = input.caseSpec;
+    const base = {
+      version: "design-reliability-attempt-event/v1",
+      attemptId: input.attemptId,
+      caseRef: {
+        caseId: inputCase.caseId,
+        revision: inputCase.revision,
+        caseDigest: inputCase.caseDigest
+      },
+      cohortId: "cohort-formal-denominator",
+      repeatIndex: input.repeatIndex || 1,
+      provider: "provider-a",
+      modelId: "model-a",
+      fixtureRef: {
+        instanceId: input.fixtureInstanceId,
+        fixtureDigest: input.fixtureDigest
+      },
+      environment: formalRuntimeEnvironment,
+      instructionDigest: input.instructionDigest,
+      rubricDigest: input.rubricDigest,
+      suiteCaseSetDigest: formalSuiteCaseSetDigest,
+      suiteRubricSetDigest: formalSuiteRubricSetDigest,
+      cohortFingerprint: formalCohortFingerprint,
+      attemptFingerprint: input.attemptFingerprint
+    };
+    return [
+      {
+        ...base,
+        eventId: `${input.attemptId}:1:armed`,
+        sequence: 1,
+        eventType: "armed",
+        occurredAt: "2026-08-26T00:00:01.000Z"
+      },
+      {
+        ...base,
+        eventId: `${input.attemptId}:2:submission_started`,
+        sequence: 2,
+        eventType: "submission_started",
+        occurredAt: "2026-08-26T00:00:02.000Z"
+      },
+      {
+        ...base,
+        eventId: `${input.attemptId}:3:terminal`,
+        sequence: 3,
+        eventType: "terminal",
+        occurredAt: "2026-08-26T00:00:03.000Z",
+        status: input.status,
+        ...(input.runObservationId ? { runObservationId: input.runObservationId } : {})
+      }
+    ];
+  }
+  const formalPassInput = {
+    attemptId: "attempt-formal-pass",
+    caseSpec,
+    fixtureInstanceId: "fixture-formal-pass",
+    fixtureDigest: `sha256:${"a".repeat(64)}`,
+    attemptFingerprint: `sha256:${"b".repeat(64)}`,
+    instructionDigest: `sha256:${"e".repeat(64)}`,
+    rubricDigest: `sha256:${"f".repeat(64)}`,
+    status: "technical_delivery_passed",
+    runObservationId: formalAttemptRun.runObservationId
+  };
+  formalAttemptRun.attempt = {
+    attemptId: formalPassInput.attemptId,
+    attemptFingerprint: formalPassInput.attemptFingerprint,
+    repeatIndex: 1
+  };
+  formalAttemptRun.cohortDimensions = {
+    ...formalAttemptRun.cohortDimensions,
+    provider: "provider-a",
+    requestedModelId: "model-a",
+    fixtureInstanceId: formalPassInput.fixtureInstanceId,
+    fixtureDigest: formalPassInput.fixtureDigest,
+    instructionDigest: formalPassInput.instructionDigest,
+    rubricDigest: formalPassInput.rubricDigest,
+    suiteCaseSetDigest: formalSuiteCaseSetDigest,
+    suiteRubricSetDigest: formalSuiteRubricSetDigest,
+    cohortFingerprint: formalCohortFingerprint,
+    ...formalRuntimeEnvironment
+  };
+  const formalAttemptCoverage = buildLiveAttemptCoverage([
+    ...formalAttemptEvents(formalPassInput),
+    ...formalAttemptEvents({
+      attemptId: "attempt-formal-provider-fail",
+      caseSpec: readSkuCase(),
+      fixtureInstanceId: "fixture-formal-fail",
+      fixtureDigest: `sha256:${"c".repeat(64)}`,
+      attemptFingerprint: `sha256:${"d".repeat(64)}`,
+      instructionDigest: `sha256:${"1".repeat(64)}`,
+      rubricDigest: `sha256:${"2".repeat(64)}`,
+      status: "provider_failed"
+    })
+  ], [formalAttemptRun], { cases: [caseSpec, readSkuCase()] }, [formalAttemptReview]);
+  const formalAttemptCohort = formalAttemptCoverage.byCohort["cohort-formal-denominator"];
+  assert.strictEqual(formalAttemptCohort.homogeneous, true,
+    "不同 Case 与一次性 fixture 必须共享 cohort 协议指纹，而不是被误判为环境混杂");
+  assert.deepStrictEqual(formalAttemptCohort.technicalDeliveryRate, {
+    numerator: 1,
+    denominator: 2,
+    value: 0.5
+  }, "Provider 失败必须作为 0 留在所有 submitted Attempt 的正式分母中");
+  assert.deepStrictEqual(formalAttemptCohort.commercialUsableRate, {
+    numerator: 1,
+    denominator: 2,
+    value: 0.5
+  });
+  assert.strictEqual(formalAttemptCohort.protocolValid, true);
+  assert.strictEqual(formalAttemptCohort.allSubmittedAttemptsTerminal, true);
+  assert.strictEqual(isOfficialAttemptCohortReady(formalAttemptCohort), true,
+    "只有同质、协议有效、全终态且无 unknown-write 的 Attempt cohort 才能声明正式成功率");
+
+  const reusedRunCoverage = buildLiveAttemptCoverage([
+    ...formalAttemptEvents(formalPassInput),
+    ...formalAttemptEvents({
+      ...formalPassInput,
+      attemptId: "attempt-formal-pass-duplicate-link",
+      fixtureInstanceId: "fixture-formal-pass-duplicate-link",
+      attemptFingerprint: `sha256:${"6".repeat(64)}`
+    })
+  ], [formalAttemptRun], { cases: [caseSpec] }, [formalAttemptReview]);
+  const reusedRunCohort = reusedRunCoverage.byCohort["cohort-formal-denominator"];
+  assert.strictEqual(reusedRunCohort.protocolValid, false,
+    "同一个 RunObservation 被多个 Attempt 引用时必须让 cohort 失去正式协议资格");
+  assert.strictEqual(reusedRunCohort.technicalDeliveryRate.numerator, 0,
+    "重复引用不能把一次通过放大成多个成功样本");
+  assert.strictEqual(reusedRunCohort.commercialUsableRate.numerator, 0);
+
+  const timeoutDriftEvents = formalAttemptEvents(formalPassInput);
+  timeoutDriftEvents[2].timeoutMs = 123456;
+  const timeoutDriftCoverage = buildLiveAttemptCoverage(
+    timeoutDriftEvents,
+    [formalAttemptRun],
+    { cases: [caseSpec] },
+    [formalAttemptReview]
+  );
+  const timeoutDriftCohort = timeoutDriftCoverage.byCohort["cohort-formal-denominator"];
+  assert.strictEqual(timeoutDriftCohort.protocolValid, false,
+    "Attempt terminal 修改 timeoutMs 时必须被统一身份 key 判为漂移");
+  assert.strictEqual(timeoutDriftCohort.technicalDeliveryRate.numerator, 0,
+    "timeout 不一致的 RunObservation 不能绑定成技术通过");
+  assert.strictEqual(isOfficialAttemptCohortReady(timeoutDriftCohort), false,
+    "协议漂移 cohort 不得被 release gate 绕过后宣称已通过实机可靠性");
+  const buildPreflightSource = buildPreflight.toString();
+  assert(buildPreflightSource.includes("isOfficialAttemptCohortReady(")
+    && buildPreflightSource.includes("attemptSafetyLedger.unresolvedAttemptCount === 0"),
+  "preflight.liveEvidencePassed 必须消费同 cohort 的官方 Attempt 协议与 canonical 未闭合账本，不得只看 Run/Review release gate");
+
+  const validStateMachineEvents = formalAttemptEvents(formalPassInput);
+  assert.deepStrictEqual(
+    validateAttemptEventStateMachine(formalPassInput.attemptId, validStateMachineEvents),
+    [],
+    "Writer 生成的冒号 eventId 与 1→2→3 顺序必须通过严格状态机"
+  );
+  const invalidStateMachineEvents = JSON.parse(JSON.stringify(validStateMachineEvents));
+  invalidStateMachineEvents[1].sequence = 3;
+  invalidStateMachineEvents[1].eventId = `${formalPassInput.attemptId}:3:submission_started`;
+  assert(
+    validateAttemptEventStateMachine(formalPassInput.attemptId, invalidStateMachineEvents)
+      .includes("attempt_sequence_invalid"),
+    "跳号或倒序 Event 必须被严格状态机拒绝"
+  );
+  assert.strictEqual(
+    buildCanonicalAttemptSafetyLedger(invalidStateMachineEvents).unresolvedAttemptCount,
+    0,
+    "已有确定 terminal 的协议坏样本应失去官方资格，但不能造成无法 reconciliation 的写入死锁"
+  );
+  const duplicateTerminalEvents = formalAttemptEvents({
+    ...formalPassInput,
+    status: "provider_failed",
+    runObservationId: undefined
+  });
+  duplicateTerminalEvents.push({
+    ...duplicateTerminalEvents[2],
+    eventId: `${formalPassInput.attemptId}:4:terminal`,
+    sequence: 4,
+    occurredAt: "2026-08-26T00:00:04.000Z",
+    status: "submission_unknown_write_state"
+  });
+  assert.strictEqual(
+    buildCanonicalAttemptSafetyLedger(duplicateTerminalEvents).unresolvedAttemptCount,
+    1,
+    "重复 terminal 中任意一条为 unknown-write 时 canonical safety ledger 必须保持未解决"
+  );
+
+  const fullSuite = loadSuite();
+  assert.strictEqual(fullSuite.ok, true);
+  const currentCase = fullSuite.cases.find((item) => item.caseId === caseSpec.caseId);
+  const currentContextBase = {
+    ...formalAttemptEvents(formalPassInput)[0],
+    caseRef: {
+      caseId: currentCase.caseId,
+      revision: currentCase.revision,
+      caseDigest: currentCase.caseDigest
+    },
+    suiteCaseSetDigest: buildSuiteCaseSetDigest(fullSuite),
+    suiteRubricSetDigest: buildSuiteRubricSetDigest(fullSuite)
+  };
+  const staleAttemptEvents = [
+    { ...currentContextBase, caseRef: { ...currentContextBase.caseRef, caseDigest: "sha256:stale" } },
+    {
+      ...currentContextBase,
+      eventId: "stale-attempt:2:submission_started",
+      attemptId: "stale-attempt",
+      sequence: 2,
+      eventType: "submission_started",
+      caseRef: { ...currentContextBase.caseRef, caseDigest: "sha256:stale" }
+    }
+  ];
+  staleAttemptEvents[0].eventId = "stale-attempt:1:armed";
+  staleAttemptEvents[0].attemptId = "stale-attempt";
+  const staleExcluded = [];
+  assert.deepStrictEqual(
+    retainContextuallyValidAttemptEvents(staleAttemptEvents, fullSuite, staleExcluded),
+    [],
+    "旧 Case revision/digest 的 Attempt 不得进入当前 submitted 分母"
+  );
+  assert.strictEqual(staleExcluded[0]?.id, "stale-attempt");
+  const staleSafetyLedger = buildCanonicalAttemptSafetyLedger(staleAttemptEvents);
+  assert(staleSafetyLedger.usedFixtureInstanceIds.includes(formalPassInput.fixtureInstanceId),
+    "旧 Suite Attempt 虽不进入当前统计，仍必须保留 fixture 一次性使用事实");
+  assert.strictEqual(staleSafetyLedger.unresolvedAttemptCount, 1,
+    "旧 Suite 中未闭合的 submission 仍是 canonical 安全事实，不能被上下文过滤隐藏");
+
+  const currentAttemptWithDrift = [
+    { ...currentContextBase, eventId: "current-drift:1:armed", attemptId: "current-drift" },
+    {
+      ...currentContextBase,
+      eventId: "current-drift:2:submission_started",
+      attemptId: "current-drift",
+      sequence: 2,
+      eventType: "submission_started"
+    },
+    {
+      ...currentContextBase,
+      eventId: "current-drift:3:terminal",
+      attemptId: "current-drift",
+      sequence: 3,
+      eventType: "terminal",
+      status: "provider_failed",
+      caseRef: { ...currentContextBase.caseRef, caseDigest: "sha256:drifted-after-submission" }
+    }
+  ];
+  const driftExcluded = [];
+  assert.strictEqual(
+    retainContextuallyValidAttemptEvents(currentAttemptWithDrift, fullSuite, driftExcluded).length,
+    3,
+    "当前 submission 后发生身份漂移必须留在分母并由协议校验暴露，不能被上下文过滤静默删除"
+  );
+  assert.strictEqual(driftExcluded.length, 0);
+
+  const inactiveSuite = JSON.parse(JSON.stringify(fullSuite));
+  const inactiveCase = inactiveSuite.cases.find((item) => item.caseId === currentCase.caseId);
+  inactiveCase.status = "retired";
+  const inactiveAttemptEvents = currentAttemptWithDrift.slice(0, 2).map((event) => ({
+    ...event,
+    caseRef: {
+      caseId: inactiveCase.caseId,
+      revision: inactiveCase.revision,
+      caseDigest: inactiveCase.caseDigest
+    },
+    suiteCaseSetDigest: buildSuiteCaseSetDigest(inactiveSuite),
+    suiteRubricSetDigest: buildSuiteRubricSetDigest(inactiveSuite)
+  }));
+  const inactiveExcluded = [];
+  assert.deepStrictEqual(
+    retainContextuallyValidAttemptEvents(inactiveAttemptEvents, inactiveSuite, inactiveExcluded),
+    [],
+    "inactive / retired Case Attempt 不能进入当前 family 分母"
+  );
+  assert.strictEqual(inactiveExcluded[0]?.id, "current-drift");
+
+  const customDataRoot = path.join(os.tmpdir(), "designecho-custom-reliability-root");
+  const roots = sidecarRoots({ getAll: () => [customDataRoot] });
+  assert(roots.includes(path.join(ROOT, "tmp", "design-reliability")),
+    "自定义 data-root 不能替换 canonical Attempt 安全账本");
+  assert(roots.includes(customDataRoot), "自定义 data-root 仍可作为附加报告来源");
+  const evidenceRoots = resolveReliabilityEvidenceRoots({ getAll: () => [customDataRoot] });
+  assert(evidenceRoots.reportRoots.includes(customDataRoot));
+  assert.strictEqual(evidenceRoots.canonicalAttemptRoots.length, 1);
+  assert(!evidenceRoots.canonicalAttemptRoots.includes(customDataRoot),
+    "自定义 report root 的 terminal/reconciled Event 不能进入 canonical 写入安全账本");
+  const injectedAttemptRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-injected-attempt-"));
+  try {
+    const injectedAttempt = {
+      ...currentContextBase,
+      eventId: "custom-root-attempt:1:armed",
+      attemptId: "custom-root-attempt",
+      sequence: 1,
+      eventType: "armed"
+    };
+    fs.writeFileSync(
+      path.join(injectedAttemptRoot, "custom-root-attempt.json"),
+      `${JSON.stringify(injectedAttempt, null, 2)}\n`,
+      "utf8"
+    );
+    const emptyStatusArgs = {
+      getAll: () => [],
+      get: (_name, fallback) => fallback
+    };
+    const injectedStatusArgs = {
+      getAll: (name) => name === "--data-root" ? [injectedAttemptRoot] : [],
+      get: (_name, fallback) => fallback
+    };
+    const canonicalAttemptCount = buildStatus(fullSuite, emptyStatusArgs)
+      .evidence.attemptCoverage.totalAttempts;
+    const injectedAttemptCount = buildStatus(fullSuite, injectedStatusArgs)
+      .evidence.attemptCoverage.totalAttempts;
+    assert.strictEqual(injectedAttemptCount, canonicalAttemptCount,
+      "--data-root 中伪造的 Attempt Event 不得进入正式分母；分母只能消费 canonical append-only 账本");
+  } finally {
+    fs.rmSync(injectedAttemptRoot, { recursive: true, force: true });
+  }
+  const invalidLedgerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-invalid-ledger-"));
+  try {
+    const invalidAttemptDir = path.join(invalidLedgerRoot, "attempt-events", "cohort", "attempt");
+    fs.mkdirSync(invalidAttemptDir, { recursive: true });
+    fs.writeFileSync(path.join(invalidAttemptDir, "02-submission_started.json"), "{", "utf8");
+    const invalidLedgerSidecars = collectSidecars([invalidLedgerRoot]);
+    assert.strictEqual(invalidLedgerSidecars.invalid[0]?.kind, "attempt_event",
+      "损坏的 canonical Attempt 文件必须保留安全账本身份，供 preflight fail closed");
+  } finally {
+    fs.rmSync(invalidLedgerRoot, { recursive: true, force: true });
+  }
+
   const lowScorePass = JSON.parse(JSON.stringify(review));
   lowScorePass.scores = Object.fromEntries(rubric.dimensions.map((dimension) => [dimension.id, 0.6]));
   lowScorePass.weightedOverall = calculateWeightedOverall(rubric, lowScorePass.scores);
@@ -877,6 +1808,29 @@ function main() {
   });
   assert.strictEqual(report.overall.reliability.agenticHarnessWriteAttemptRunCount, 0);
 
+  const conflictingReview = {
+    ...JSON.parse(JSON.stringify(review)),
+    reviewId: "review-conflict",
+    decision: "needs_fix",
+    pairwiseOutcome: "weaker"
+  };
+  const conflictReport = buildDesignReliabilityCohortReport({
+    suiteId: caseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [caseSpec],
+    runs: [passing],
+    reviews: [review, conflictingReview],
+    attributions: []
+  });
+  assert.strictEqual(conflictReport.overall.quality.conflictingReviewRunCount, 1);
+  assert.strictEqual(conflictReport.overall.quality.humanUsableRate.numerator, 0,
+    "同一成稿出现 pass / needs_fix 冲突时不能按任一 pass 冒充商业可用");
+  assert.strictEqual(
+    report.cohortIntegrity.homogeneous,
+    false,
+    "同一 cohort 混入不同 Git / dirty / model / fixture 维度时必须显式失去同质性"
+  );
+
   const differentCaseSet = JSON.parse(JSON.stringify(report));
   differentCaseSet.selector.caseSetDigest = `sha256:${"d".repeat(64)}`;
   assert.strictEqual(compareDesignReliabilityCohorts(report, differentCaseSet).comparable, false);
@@ -884,6 +1838,7 @@ function main() {
 
   const releaseGates = {
     minimumRunsPerFamily: 5,
+    minimumRunsPerCase: 5,
     technicalDeliveryRate: 0.8,
     humanUsableRate: 0.7,
     completedPostWriteReadbackRate: 1,
@@ -904,12 +1859,20 @@ function main() {
     },
     quality: {
       humanReviewedRate: { numerator: 5, denominator: 5, value: 1 },
+      strictHumanReviewedRate: { numerator: 5, denominator: 5, value: 1 },
       humanUsableRate: { numerator: 4, denominator: 5, value: 0.8 }
     },
     efficiency: { userInterventions: { count: 5, median: 0, p90: 1 } }
   };
   const releaseReport = {
     coverage: { missingCaseIds: [] },
+    cohortIntegrity: {
+      homogeneous: true,
+      explicitFingerprintCoverage: { numerator: 15, denominator: 15, value: 1 }
+    },
+    byCase: {
+      "case-a": JSON.parse(JSON.stringify(passingFamily))
+    },
     byTaskFamily: Object.fromEntries(["main_image", "detail_page", "sku"].map((family) => [
       family,
       JSON.parse(JSON.stringify(passingFamily))
@@ -919,11 +1882,37 @@ function main() {
   assert.strictEqual(passingGateEvaluation.sampleReady, true, "每类五次且全部完成人工评审后才能形成正式成功率");
   assert.strictEqual(passingGateEvaluation.passed, true, "发布指标恰好达到清单阈值时必须通过");
 
+  const unboundCohort = JSON.parse(JSON.stringify(releaseReport));
+  unboundCohort.cohortIntegrity.explicitFingerprintCoverage = {
+    numerator: 0,
+    denominator: 15,
+    value: 0
+  };
+  const unboundCohortEvaluation = evaluateDesignReliabilityReleaseGates(unboundCohort, releaseGates);
+  assert.strictEqual(unboundCohortEvaluation.sampleReady, false);
+  assert.strictEqual(unboundCohortEvaluation.passed, false, "自由文本 cohortId 不能代替受控维度指纹");
+
+  const underSampledCase = JSON.parse(JSON.stringify(releaseReport));
+  underSampledCase.byCase["case-a"].runs = 1;
+  underSampledCase.byCase["case-a"].quality.strictHumanReviewedRate = {
+    numerator: 1,
+    denominator: 1,
+    value: 1
+  };
+  const underSampledCaseEvaluation = evaluateDesignReliabilityReleaseGates(underSampledCase, releaseGates);
+  assert.strictEqual(underSampledCaseEvaluation.sampleReady, false);
+  assert.strictEqual(
+    underSampledCaseEvaluation.checksByCase["case-a"].minimumRunsPerCase,
+    false,
+    "同一任务族总样本足够也不能掩盖单个 Case 样本不足"
+  );
+
   const onePerfectRun = JSON.parse(JSON.stringify(releaseReport));
   for (const family of Object.keys(onePerfectRun.byTaskFamily)) {
     const familyReport = onePerfectRun.byTaskFamily[family];
     familyReport.runs = 1;
     familyReport.quality.humanReviewedRate = { numerator: 1, denominator: 1, value: 1 };
+    familyReport.quality.strictHumanReviewedRate = { numerator: 1, denominator: 1, value: 1 };
     familyReport.quality.humanUsableRate = { numerator: 1, denominator: 1, value: 1 };
     familyReport.efficiency.userInterventions = { count: 1, median: 0, p90: 0 };
   }
@@ -933,6 +1922,11 @@ function main() {
 
   const partiallyReviewed = JSON.parse(JSON.stringify(releaseReport));
   partiallyReviewed.byTaskFamily.main_image.quality.humanReviewedRate = {
+    numerator: 1,
+    denominator: 5,
+    value: 0.2
+  };
+  partiallyReviewed.byTaskFamily.main_image.quality.strictHumanReviewedRate = {
     numerator: 1,
     denominator: 5,
     value: 0.2
@@ -953,4 +1947,7 @@ function main() {
   console.log("Design Reliability 纯逻辑验证通过：TaskRun 合并、真实 mutation、假完成、人工评审分母、发布门禁与 cohort 可比性均已覆盖。");
 }
 
-main();
+main().catch((error) => {
+  console.error(error instanceof Error ? error.stack || error.message : String(error));
+  process.exit(1);
+});

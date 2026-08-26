@@ -61,8 +61,13 @@ import { enrichPhotoshopDocumentInventory } from '../../shared/photoshop-documen
 import { normalizePhotoshopToolArguments } from '../../shared/photoshop-tool-parameter-normalizer';
 import {
     classifyAgentToolExecution,
-    DESIGN_ECHO_TARGET_GUARD_ARGUMENT
+    DESIGN_ECHO_TARGET_GUARD_ARGUMENT,
+    isAgentToolExecutionGuarded
 } from '../../shared/agent-tool-execution-preflight';
+import {
+    enforceGuardedPhotoshopExecutionBaseline,
+    type GuardedPhotoshopExecutionBaseline
+} from '../../shared/guarded-photoshop-execution-baseline';
 import { isTransientPhotoshopBusyFailure } from '../../shared/photoshop-transient-error';
 import { preserveJpegQualityAcrossToolRedirect } from '../../shared/jpeg-export-quality-semantics';
 import {
@@ -2409,6 +2414,26 @@ export interface ToolCallExecutionOptions {
      * 再调用一次模型解释同一像素。未签发时保持结构化 Skill / 旧调用方的既有分析语义。
      */
     visualConsumptionOwner?: 'calling_agent';
+    /** 仅正式 disposable Debug 请求签发；模型与 Tool 参数不能创建或覆盖。 */
+    guardedPhotoshopExecutionBaseline?: GuardedPhotoshopExecutionBaseline;
+}
+
+function readGuardedPhotoshopRuntimeBuildId(value: unknown): string | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const state = (value as any).state;
+    const runtime = state && typeof state === 'object' && !Array.isArray(state)
+        ? state.runtime
+        : undefined;
+    const buildId = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
+        ? String(runtime.buildId || '').trim()
+        : '';
+    return buildId || undefined;
+}
+
+function readGuardedOpenDocumentCount(value: unknown): number | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    if ((value as any).success === false || !Array.isArray((value as any).documents)) return undefined;
+    return (value as any).documents.length;
 }
 
 function buildCancelledToolResult(toolName: string): Record<string, any> {
@@ -2434,6 +2459,42 @@ async function sendToPluginWithCancellation(
     const signal = options.signal;
     if (signal?.aborted) {
         return buildCancelledToolResult(publicToolName);
+    }
+
+    const guardedBaseline = options.guardedPhotoshopExecutionBaseline;
+    if (guardedBaseline && isAgentToolExecutionGuarded(publicToolName, params)) {
+        const baselineDecision = await enforceGuardedPhotoshopExecutionBaseline(
+            guardedBaseline,
+            publicToolName,
+            {
+                observePhotoshopRuntimeBuildId: async (): Promise<string | undefined> => (
+                    readGuardedPhotoshopRuntimeBuildId(await callPhotoshopMcpTool(
+                        'diagnoseState',
+                        { verbose: false },
+                        { signal, timeoutMs: 5_000 }
+                    ))
+                ),
+                observeOpenDocumentCount: async (): Promise<number | undefined> => (
+                    readGuardedOpenDocumentCount(await callPhotoshopMcpTool(
+                        'listDocuments',
+                        { includeDetails: false },
+                        { signal, timeoutMs: 5_000 }
+                    ))
+                )
+            }
+        );
+        if (!baselineDecision.ready) {
+            return {
+                success: false,
+                code: 'guarded_first_photoshop_mutation_baseline_failed',
+                policyGate: true,
+                blockedTool: publicToolName,
+                error: baselineDecision.error || '首次 Photoshop 写入隔离基线未通过。',
+                firstPhotoshopMutationBaseline: baselineDecision.receipt,
+                executesPhotoshop: false,
+                countsAsTaskProgress: false
+            };
+        }
     }
 
     try {

@@ -716,18 +716,18 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'transformLayer',
-        description: 'Transform a layer: scale, rotate, flip, fit to canvas, or fit into a target region. Always pass layerId explicitly when you know the target layer — without layerId it transforms the currently selected layer, which silently hits the wrong layer if selection has drifted. To scale a layer into a specific area, pass targetBounds + targetFit instead of reading bounds and computing percentages yourself.',
+        description: 'Transform an explicit layer. Prefer layerId. Use targetBounds + targetFit + targetAnchor for one-step regional fitting; conflicting scale/canvas fields are rejected.',
         inputSchema: {
             ...objectSchema({
-            layerId: { type: 'number', description: '目标图层 ID（来自 getLayerHierarchy/getLayerBounds）。强烈建议显式传入；缺省时作用于当前选中图层，选区漂移会导致变换错层。' },
-            scaleUniform: { type: 'number', description: '统一缩放百分比，相对当前尺寸：80 表示缩到 80%，150 表示放大到 150%。' },
-            scaleX: { type: 'number', description: '水平缩放百分比（可与 scaleY 不同，用于非等比缩放）。' },
+            layerId: { type: 'number', description: '目标图层 ID；缺省会使用当前选中层。' },
+            scaleUniform: { type: 'number', description: '等比缩放百分比。' },
+            scaleX: { type: 'number', description: '水平缩放百分比。' },
             scaleY: { type: 'number', description: '垂直缩放百分比。' },
-            rotate: { type: 'number', description: '旋转角度（度，正值顺时针）。' },
+            rotate: { type: 'number', description: '顺时针角度。' },
             flipHorizontal: { type: 'boolean', description: '水平翻转。' },
             flipVertical: { type: 'boolean', description: '垂直翻转。' },
-            fitToCanvas: { type: 'boolean', description: '等比缩放到适应画布，目标占比由 fitPercentage 决定。' },
-            fitPercentage: { type: 'number', description: 'fitToCanvas 时由 Agent 明确选择的图层占画布百分比；不得省略后让工具套用视觉占比。' },
+            fitToCanvas: { type: 'boolean', description: '适应画布。' },
+            fitPercentage: { type: 'number', description: '画布占比百分数。' },
             targetBounds: {
                 type: 'object',
                 properties: {
@@ -740,13 +740,13 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                     width: { type: 'number' },
                     height: { type: 'number' }
                 },
-                description: '目标区域（画布像素），支持 {x,y,width,height} 或 {left,top,right,bottom}。提供后工具按 targetFit 一次完成缩放+落位，不要自己读 bounds 再算百分比。与 scaleUniform/scaleX/scaleY/fitToCanvas 互斥。'
+                description: '画布像素目标区域；与百分比/画布缩放互斥。'
             },
-            targetFit: { type: 'string', enum: ['contain', 'cover', 'fill'], description: 'targetBounds 适配方式：contain 完整放入区域、cover 铺满区域（可能超出）、fill 拉伸填充（会改变宽高比）。使用 targetBounds 时必须显式给出。' },
+            targetFit: { type: 'string', enum: ['contain', 'cover', 'fill'], description: '区域适配：fill 会改变宽高比。' },
             targetAnchor: {
                 type: 'string',
                 enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
-                description: '图框相对 targetBounds 的显式对齐锚点；Harness 不替 Agent 选择视觉重心。'
+                description: '区域对齐锚点。'
             },
             focalPoint: {
                 type: 'object',
@@ -761,13 +761,65 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             allOf: [
                 {
                     if: { required: ['targetBounds'] },
-                    then: { required: ['targetFit', 'targetAnchor'] }
+                    then: {
+                        required: ['targetFit', 'targetAnchor'],
+                        not: {
+                            anyOf: [
+                                { required: ['scaleUniform'] },
+                                { required: ['scaleX'] },
+                                { required: ['scaleY'] },
+                                { required: ['fitPercentage'] },
+                                {
+                                    required: ['fitToCanvas'],
+                                    properties: { fitToCanvas: { enum: [true] } }
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    if: {
+                        anyOf: [
+                            { required: ['targetFit'] },
+                            { required: ['targetAnchor'] },
+                            { required: ['focalPoint'] }
+                        ]
+                    },
+                    then: { required: ['targetBounds'] }
+                },
+                {
+                    if: {
+                        required: ['fitToCanvas'],
+                        properties: { fitToCanvas: { enum: [true] } }
+                    },
+                    then: { required: ['fitPercentage'] }
                 },
                 {
                     if: { required: ['targetFit'], properties: { targetFit: { enum: ['fill'] } } },
                     then: {
                         properties: { targetAnchor: { enum: ['center'] } },
                         not: { required: ['focalPoint'] }
+                    }
+                },
+                {
+                    if: { required: ['focalPoint'] },
+                    then: {
+                        not: {
+                            anyOf: [
+                                {
+                                    required: ['rotate'],
+                                    properties: { rotate: { not: { enum: [0] } } }
+                                },
+                                {
+                                    required: ['flipHorizontal'],
+                                    properties: { flipHorizontal: { enum: [true] } }
+                                },
+                                {
+                                    required: ['flipVertical'],
+                                    properties: { flipVertical: { enum: [true] } }
+                                }
+                            ]
+                        }
                     }
                 }
             ]
@@ -1787,12 +1839,12 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'placeImage',
-        description: 'Place an image already selected by the Agent into the current document as an editable layer. This execution tool never scans, ranks, or chooses project assets. If the source is unresolved, call recommendAssets, inspect its candidate evidence, then call placeImage again with an explicit filePath/fileToken/imageData. targetBounds contain/cover is geometric placement, not an aesthetic verdict; use fitLayerSubjectToRegion and structure readback for subject/container completion.',
+        description: 'Place an Agent-selected image as an editable layer. This execution tool never scans, ranks, or chooses project assets. targetBounds is geometric placement, not aesthetic approval.',
         inputSchema: {
             ...objectSchema({
-            filePath: { type: 'string', description: '项目内素材绝对路径（来源：searchProjectResources / recommendAssets 返回的真实路径）' },
-            fileToken: { type: 'string', description: '素材引用 token（替代路径，防路径伪造）' },
-            imageData: { type: 'string', description: '直接以 base64/数据 URL 置入（如生成的图片结果）' },
+            filePath: { type: 'string', description: '已选项目素材路径。' },
+            fileToken: { type: 'string', description: '已选素材 token。' },
+            imageData: { type: 'string', description: 'base64/数据 URL。' },
             name: { type: 'string', description: '置入后图层名（可选）' },
             x: { type: 'number', description: '置入左上角 x（文档像素；未给 targetBounds 时用）' },
             y: { type: 'number', description: '置入左上角 y（文档像素；未给 targetBounds 时用）' },
@@ -1808,13 +1860,13 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                     width: { type: 'number' },
                     height: { type: 'number' }
                 },
-                description: '目标区域。做详情页或多图排版时优先提供 {x,y,width,height}，工具会按区域缩放并移动，避免多张图默认居中重叠。'
+                description: '画布像素目标区域。'
             },
-            targetFit: { type: 'string', enum: ['contain', 'cover', 'fill'], description: '目标区域适配方式：contain 完整放入、cover 铺满区域、fill 拉伸填充；使用 targetBounds 时必须显式给出。' },
+            targetFit: { type: 'string', enum: ['contain', 'cover', 'fill'], description: 'contain 完整保留；cover 铺满并可能超出；fill 拉伸。' },
             targetAnchor: {
                 type: 'string',
                 enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
-                description: '图框相对 targetBounds 的显式对齐锚点。'
+                description: '区域对齐锚点。'
             },
             focalPoint: {
                 type: 'object',
@@ -1828,17 +1880,39 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             layerOrder: {
                 type: 'string',
                 enum: ['front', 'belowText', 'back'],
-                description: '置入后的图层层级。与 renderLayout 可编辑文字同用时使用 belowText，避免图片盖住标题、卖点或说明文案。注意时序：先 placeImage 后 renderLayout 会让图片落在新建背景之下被完全盖住——屏内主体图优先在 renderLayout 的 main-image 块直接给素材路径，由引擎统一置层。'
+                description: '图层层级；与文字同用时可选 belowText。'
             },
             center: { type: 'boolean', description: '是否居中置入（未给 x/y/targetBounds 时）' },
-            scale: { type: 'number', description: '缩放百分比，相对置入原始尺寸：50 表示缩到 50%，可大于 100 表示放大（如 150）。默认 100。' },
-            fitToCanvas: { type: 'boolean', description: '等比缩放以适应画布。默认只缩小不放大（封顶 100%）；小图要铺满画布需同时传 allowUpscale:true。' },
-            allowUpscale: { type: 'boolean', description: '配合 fitToCanvas：true 时允许放大超过原始尺寸铺满画布，默认 false 保持只缩不放。' }
+            scale: { type: 'number', description: '置入尺寸百分比。' },
+            fitToCanvas: { type: 'boolean', description: '等比适应画布。' },
+            allowUpscale: { type: 'boolean', description: '允许 fitToCanvas 放大。' }
         }),
             allOf: [
                 {
                     if: { required: ['targetBounds'] },
-                    then: { required: ['targetFit', 'targetAnchor'] }
+                    then: {
+                        required: ['targetFit', 'targetAnchor'],
+                        not: {
+                            anyOf: [
+                                { required: ['scale'] },
+                                { required: ['fitToCanvas'] },
+                                { required: ['x'] },
+                                { required: ['y'] },
+                                { required: ['center'] },
+                                { required: ['allowUpscale'] }
+                            ]
+                        }
+                    }
+                },
+                {
+                    if: {
+                        anyOf: [
+                            { required: ['targetFit'] },
+                            { required: ['targetAnchor'] },
+                            { required: ['focalPoint'] }
+                        ]
+                    },
+                    then: { required: ['targetBounds'] }
                 },
                 {
                     if: { required: ['targetFit'], properties: { targetFit: { enum: ['fill'] } } },

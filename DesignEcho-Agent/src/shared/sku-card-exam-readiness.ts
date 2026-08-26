@@ -159,7 +159,7 @@ export function buildSkuCardExamReadiness(input: BuildSkuCardExamReadinessInput)
         .map((item) => Number(item))
         .filter((item) => Number.isInteger(item) && item > 0);
     const report = input.skuCardAssetCandidateReport || null;
-    const sourcePreparationReady = input.skuCardSourcePreparationPlan?.status === 'ready_for_preparation';
+    const sourceDesignDecisionReady = input.skuCardSourcePreparationPlan?.status === 'ready_for_design_decision';
     const projectSkuSourceReady = input.requirePreparedSourceDocument === true
         ? false
         : hasSkuSourceDocument(input.assetIndex);
@@ -169,10 +169,9 @@ export function buildSkuCardExamReadiness(input: BuildSkuCardExamReadinessInput)
             candidate.recommendedUse === 'primary_sku_card'
             && candidate.needsVisualConfirmation === false
         ));
-    const visualSelectionReady = projectSkuSourceReady || confirmedPrimaryCandidateReady || sourcePreparationReady;
-    const skuSourceReady = input.requirePreparedSourceDocument === true
-        ? sourcePreparationReady
-        : projectSkuSourceReady || sourcePreparationReady;
+    const visualSelectionReady = projectSkuSourceReady || confirmedPrimaryCandidateReady || sourceDesignDecisionReady;
+    // 计划、候选与 design spec 都不能冒充源文档产物；这里只认可项目中真实存在的源文档。
+    const skuSourceReady = projectSkuSourceReady;
     const missingProjectTemplates = missingSkuTemplates(input.assetIndex, requiredSizes);
     const projectTemplatesReady = missingProjectTemplates.length === 0;
     const missingRuntimeTemplates = missingRuntimeTemplateLabels(input.runtimeTemplateReadiness, requiredSizes);
@@ -199,8 +198,8 @@ export function buildSkuCardExamReadiness(input: BuildSkuCardExamReadinessInput)
             visualSelectionReady,
             projectSkuSourceReady
                 ? '已有 SKU 源文档，本轮不需要把项目图片候选作为执行源。'
-                : sourcePreparationReady
-                ? 'SKU 卡片已具备足够的已确认源素材，额外候选可后续复核。'
+                : sourceDesignDecisionReady
+                ? 'SKU 卡片已具备足够的已确认源素材，下一步由 Agent 声明首次色卡设计。'
                 : visualSelectionReady
                 ? 'SKU 卡片候选已有可执行的视觉确认。'
                 : 'SKU 卡片候选仍停留在路径/尺寸候选阶段，不能直接执行。',
@@ -208,14 +207,12 @@ export function buildSkuCardExamReadiness(input: BuildSkuCardExamReadinessInput)
         buildCheck(
             'sku-source-document',
             skuSourceReady,
-            input.requirePreparedSourceDocument === true && sourcePreparationReady
-                ? '本轮要求从项目图片准备卡片式 SKU 源文档，Agent 已有可执行源素材准备计划。'
-                : input.requirePreparedSourceDocument === true
-                    ? '本轮要求从项目图片准备卡片式 SKU 源文档，不能直接复用旧 SKU.psb。'
-                    : projectSkuSourceReady
+            input.requirePreparedSourceDocument === true
+                ? '本轮要求从项目图片重新生成 SKU 源文档；候选和设计声明不能替代真实写入与读回。'
+                : projectSkuSourceReady
                 ? '当前项目已有 PSD/SKU.psb 或等价 SKU 源文档。'
-                : sourcePreparationReady
-                    ? '当前项目缺少 PSD/SKU.psb，但 Agent 可根据已确认素材准备 SKU 源文档。'
+                : sourceDesignDecisionReady
+                    ? '候选已经准备好，但 Agent 尚未完成设计声明、Photoshop 写入与读回。'
                     : '当前项目缺少 PSD/SKU.psb SKU 源文档。'
         ),
         buildCheck(
@@ -290,11 +287,11 @@ export function buildSkuCardExamReadiness(input: BuildSkuCardExamReadinessInput)
         blockers,
         warnings: [
             !referenceReady ? '没有参考 SKU 成品样例，卡片风格只能依赖当前项目或用户说明。' : '',
-            report?.status === 'needs_visual_confirmation' && !sourcePreparationReady
+            report?.status === 'needs_visual_confirmation' && !sourceDesignDecisionReady
                 ? '候选图需要视觉模型或人工确认主体完整度、颜色清晰度和裁切风险。'
                 : '',
-            report?.status === 'needs_visual_confirmation' && sourcePreparationReady
-                ? '已有足够 SKU 色卡源可进入执行；额外候选仍可作为后续补充复核。'
+            report?.status === 'needs_visual_confirmation' && sourceDesignDecisionReady
+                ? '已有足够候选进入 Agent 设计决策；在真实源文档生成前仍不能进入正式执行。'
                 : '',
             ...(input.runtimeTemplateReadiness?.warnings || [])
         ].filter(Boolean)

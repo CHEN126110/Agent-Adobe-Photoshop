@@ -737,7 +737,8 @@ const callModelStreamViaIPC: CallModelStreamFn = createCallModelStreamViaIPC();
 type ProviderToolDenyEvaluator = (toolName: string, params: any) => Record<string, any> | null;
 
 function createExecuteToolForTeammate(
-    denyProviderTool?: ProviderToolDenyEvaluator
+    denyProviderTool?: ProviderToolDenyEvaluator,
+    baseExecutionOptions: ToolCallExecutionOptions = {}
 ): (toolName: string, params: any) => Promise<any> {
     return async function executeToolForTeammate(toolName: string, params: any): Promise<any> {
         const capabilityBlock = denyProviderTool?.(toolName, params);
@@ -753,17 +754,19 @@ function createExecuteToolForTeammate(
             };
         }
         return markExternalContentTrust(toolName, await executeToolCall(toolName, params, {
+            ...baseExecutionOptions,
             visualConsumptionOwner: 'calling_agent'
         }));
     };
 }
 
 function createDesignTeamCoordinator(
-    denyProviderTool?: ProviderToolDenyEvaluator
+    denyProviderTool?: ProviderToolDenyEvaluator,
+    baseExecutionOptions: ToolCallExecutionOptions = {}
 ): DesignTeamCoordinator {
     return new DesignTeamCoordinator({
         callModel: callModelViaIPC,
-        executeTool: createExecuteToolForTeammate(denyProviderTool),
+        executeTool: createExecuteToolForTeammate(denyProviderTool, baseExecutionOptions),
         resolveDefaultModelId: () => getModelId('logic')
     });
 }
@@ -1574,7 +1577,16 @@ function createExecuteToolWrapper(
     const denyProviderTool: ProviderToolDenyEvaluator = (toolName, toolParams) => (
         buildAgentProviderToolDenyBlock(effectiveProviderToolDenyPolicy, toolName, toolParams)
     );
-    const runDesignTeamCoordinator = createDesignTeamCoordinator(denyProviderTool);
+    const signedBaselineOptions: ToolCallExecutionOptions = {
+        ...(taskCardScope ? { taskCardScope } : {}),
+        ...(context?.guardedPhotoshopExecutionBaseline
+            ? { guardedPhotoshopExecutionBaseline: context.guardedPhotoshopExecutionBaseline }
+            : {})
+    };
+    const runDesignTeamCoordinator = createDesignTeamCoordinator(
+        denyProviderTool,
+        signedBaselineOptions
+    );
     const executeAllowedProviderToolCall = async (
         toolName: string,
         toolParams: any,
@@ -1584,7 +1596,7 @@ function createExecuteToolWrapper(
         if (capabilityBlock) return capabilityBlock;
         return executeToolCall(toolName, toolParams, {
             ...options,
-            ...(taskCardScope ? { taskCardScope } : {})
+            ...signedBaselineOptions
         });
     };
     const completedDesignTeamRoles = new Set<DesignTeammateRole>();
@@ -1886,11 +1898,10 @@ function createExecuteToolWrapper(
 
         if (toolName === 'createInteractiveCard' && !areSkillBridgesForbidden(autonomousParams)) {
             const interactionOwnerSkillIds = resolveProviderOwnedInteractionSkillIds(
-                autonomousParams,
                 capabilitySession
             );
             if (interactionOwnerSkillIds.length > 0) {
-                const message = '当前业务交互由已匹配的 Skill Provider 管理，通用卡片不能复制它的字段、默认值或确认状态。请先完成当前工作流身份绑定，再由对应 Skill 在真实前置条件准备完成后生成领域卡片。';
+                const message = '当前业务交互已由绑定的 Skill Provider 管理，通用卡片不能复制它的字段、默认值或确认状态。请由对应 Skill 在真实前置条件准备完成后生成领域卡片。';
                 return {
                     success: false,
                     policyGate: true,
@@ -2996,17 +3007,9 @@ function isManifestOwnedSkill(skillId: string): boolean {
 }
 
 function resolveProviderOwnedInteractionSkillIds(
-    params?: Record<string, any>,
     capabilitySession?: AgentCapabilitySession
 ): string[] {
     const ownerIds = new Set<string>();
-    const recommendation = isSkillRoutingRecommendation(params?.skillRoutingRecommendation)
-        ? params?.skillRoutingRecommendation
-        : undefined;
-    if (recommendation && isSkillProviderInteractionOwner(recommendation.skillId)) {
-        ownerIds.add(recommendation.skillId);
-    }
-
     const manifestRef = capabilitySession?.getResolution().manifestRef;
     if (manifestRef) {
         const manifest = listSkillManifests().find((item) => (
@@ -4194,20 +4197,31 @@ export const autonomousAgentExecutor: SkillExecutor = {
         // 自主循环、图片观察与视觉质检始终复用用户选择的同一个全模态 Agent 模型。
         const primaryTaskType: ConversationTaskType = 'logic';
         const primaryDispatchPlan = buildPrimaryAgentDispatchPlan(primaryTaskType);
-        const modelId = resolvePrimaryAgentModelId(primaryDispatchPlan, primaryTaskType);
+        const requestBoundModelId = String(runtimeParams.primaryModelId || '').trim();
+        const requestBoundModel = requestBoundModelId
+            ? findConfiguredModelInRendererState(requestBoundModelId)
+            : null;
+        let modelId = '';
+        if (requestBoundModelId) {
+            if (requestBoundModel && isAgentMultimodalModelConfig(requestBoundModel)) {
+                modelId = requestBoundModelId;
+            }
+        } else {
+            modelId = resolvePrimaryAgentModelId(primaryDispatchPlan, primaryTaskType);
+        }
         if (!modelId) {
             // 保留内部错误码便于调试；用户只看到唯一 Agent 模型的可行动说明。
             return buildNoUsableModelResult(primaryTaskType);
         }
-        const effectivePrimaryDispatchPlan = primaryDispatchPlan.selectedModelId
-            ? primaryDispatchPlan
-            : {
-                ...primaryDispatchPlan,
-                selectedModelId: modelId,
-                candidateModelIds: [modelId]
-            };
+        const effectivePrimaryDispatchPlan = {
+            ...primaryDispatchPlan,
+            selectedModelId: modelId,
+            candidateModelIds: [modelId]
+        };
         const runtimeModelConfig = findConfiguredModelInRendererState(modelId) || undefined;
-        const primaryThinkingEnabled = resolveAgentThinkingEnabled(modelId);
+        const primaryThinkingEnabled = typeof runtimeParams.primaryModelThinkingEnabled === 'boolean'
+            ? runtimeParams.primaryModelThinkingEnabled
+            : resolveAgentThinkingEnabled(modelId);
         const runRecordModelIdentity = runtimeModelConfig?.provider
             ? {
                 modelId,

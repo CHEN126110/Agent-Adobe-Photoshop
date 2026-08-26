@@ -2025,7 +2025,7 @@ export class Agent {
             this.config.performanceBudget?.maxPrimaryOutputTokens || 0
         );
         const requestedMaxTokens = resolveProviderTruncationMaxTokens({
-            baseMaxTokens: 4096,
+            baseMaxTokens: performanceMaxTokens > 0 ? performanceMaxTokens : 4096,
             configuredMaxTokens,
             performanceMaxTokens,
             recoveryAttempt: this.providerTruncationRecoveryAttempts
@@ -6140,14 +6140,14 @@ export class Agent {
                     ) {
                         this.emitStep({
                             kind: 'warning',
-                            title: '回复未完整，继续整理',
-                            detail: '模型输出到达长度上限，正在基于已有结果补全，不会把半句话当成最终结论。',
+                            title: 'Provider 输出截断，后台续接',
+                            detail: '保留已完成内容并请求有界续接；残缺 Tool 调用不会执行。',
                             status: 'running',
                             iteration: this.iteration + 1,
                             maxIterations: this.config.maxIterations,
                             issue: 'provider_output_truncated',
-                            audience: 'user',
-                            visibility: 'user_process'
+                            source: 'agent_runtime',
+                            audience: 'debug'
                         });
                         this.providerTruncationRecoveryAttempts += 1;
                         // Provider 截断时 tool_calls 可能只有工具名或半截参数。只保留可见文本与
@@ -6163,7 +6163,7 @@ export class Agent {
                         const truncatedToolNames = Array.from(new Set((response.toolCalls || []).map((call) => String(call?.name || '')).filter(Boolean)));
                         this.messages.push(createHarnessControlMessage([
                                 truncatedToolNames.length
-                                    ? `上一次输出因长度上限中断，中断发生在工具调用 ${truncatedToolNames.join(' / ')} 的参数上：参数太长了。这次要缩短——路径只写文件名或项目内相对路径，不写盘符绝对路径；有目录级参数（如 sourceDirectory）就用它代替逐条清单；实在长就分两批调。不要原样再发一遍。`
+                                    ? `上一次输出因长度上限中断，中断发生在工具调用 ${truncatedToolNames.join(' / ')} 的参数上。请只保留必要字段；项目内资源优先使用相对路径或稳定引用；当前 schema 提供目录、批量或集合参数时优先使用；仍然过长就拆成有界的多次调用，不要原样重发。`
                                     : '上一次输出因长度上限中断。不要重复已经说过的内容，请继续完成当前判断。',
                                 this.hasUnfinishedExecutionObligation() || requireInitialToolCall
                                     ? '当前任务仍要求真实动作；请停止扩展分析，直接从本轮仍可用的工具中选择下一项必要动作。'
@@ -8571,13 +8571,13 @@ export class Agent {
             recoveryAttempts: number;
         }
     ): Promise<AgentRunResult> {
-        const hasTaskProgress = this.hasTaskProgressToolCalls();
-        const message = hasTaskProgress
-            ? '设计助手连续达到输出长度上限，没能形成完整的下一步判断；已保留此前真实处理结果，并停止继续操作，避免使用截断内容修改 Photoshop。请重试以继续。'
-            : '设计助手连续达到输出长度上限，没能形成完整的可执行判断；这次没有改动 Photoshop。请重试，或暂时关闭当前模型的思考模式后再试。';
+        const hasPhotoshopMutation = this.hasObservedTaskMutation();
+        const message = hasPhotoshopMutation
+            ? '这次没有拿到完整结果。前面的 Photoshop 改动已保留，但任务还没有完成。为避免用残缺内容继续修改画面，我已停止本轮。'
+            : '这次没有拿到完整结果，尚未修改 Photoshop 画面。为避免根据残缺内容误操作，我已停止本轮。';
         this.emitStep({
             kind: 'stopped',
-            title: '回复连续被截断，已安全停止',
+            title: '回复不完整，已停止',
             detail: message,
             status: 'error',
             iteration: iterations,
@@ -8586,7 +8586,7 @@ export class Agent {
             audience: 'user',
             visibility: 'user_process'
         });
-        this.config.callbacks.onProgress?.('回复连续被截断，本次已安全停止', 100);
+        this.config.callbacks.onProgress?.('回复不完整，本次已停止', 100);
         return this.buildRunResult({
             success: false,
             message,
@@ -8597,7 +8597,7 @@ export class Agent {
                 providerOutputTruncated: {
                     phase: input.phase,
                     recoveryAttempts: input.recoveryAttempts,
-                    taskProgressPreserved: hasTaskProgress
+                    taskProgressPreserved: this.hasTaskProgressToolCalls(), photoshopMutationPreserved: hasPhotoshopMutation
                 }
             }
         });
@@ -12359,8 +12359,8 @@ export class Agent {
             blockers.push('这稿这次没做完，可以让我接着做。');
         } else if (stopReason === 'provider_output_truncated') {
             blockers.push(completionObservationGate.mutationCount > 0
-                ? '设计助手的判断连续被截断；已保留前面的真实改动，但还没完成。'
-                : '设计助手的判断连续被截断，这次还没开始动手。');
+                ? '这次没有拿到完整结果；前面的真实改动已保留，但还没完成。'
+                : '这次没有拿到完整结果，这次还没开始动手。');
         } else if (stopReason === 'performance_budget') {
             blockers.push(completionObservationGate.mutationCount > 0
                 ? '这稿先做到这里、还没做完，你可以先看看现在的效果，或让我接着做。'

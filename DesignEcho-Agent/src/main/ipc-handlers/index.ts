@@ -42,6 +42,7 @@ import { registerWebSearchHandlers } from './web-search-handlers';
 import { registerModelListingHandlers } from './model-listing-handlers';
 import { registerClaudeSubscriptionHandlers } from './claude-subscription-handlers';
 import { registerCodexSubscriptionHandlers } from './codex-subscription-handlers';
+import { registerRuntimeHandlers } from './runtime-handlers';
 import type { IPCContext } from './types';
 
 export { IPCContext } from './types';
@@ -51,6 +52,9 @@ export { getMorphingSettingsCache, getUserMattingConfig };
  * 注册所有 IPC handlers
  */
 export function setupIPCHandlers(context: IPCContext): void {
+    // 当前 Main Runtime 身份与本地端点；必须先于任何 Renderer MCP 调用注册。
+    registerRuntimeHandlers(context);
+
     // 配置管理
     registerConfigHandlers(context);
     

@@ -649,6 +649,19 @@ function resolveTaskRunIterations(sortedRecords) {
   }, 0);
 }
 
+function resolveTaskRunModelCalls(sortedRecords) {
+  const finalAccounting = sortedRecords.at(-1)?.runtimeSession?.accounting;
+  if (finalAccounting?.version === "runtime-accounting-digest/v0"
+    && Number.isSafeInteger(finalAccounting.modelCallCount)
+    && finalAccounting.modelCallCount >= 0) {
+    return finalAccounting.modelCallCount;
+  }
+  return sortedRecords.reduce((count, record) => {
+    const accounting = record?.runtimeSession?.accounting || record?.runtimeAccounting;
+    return count + (Number.isSafeInteger(accounting?.modelCallCount) ? accounting.modelCallCount : 0);
+  }, 0);
+}
+
 function readActualSkillIds(records, calls, expectedSkillIds) {
   const values = new Set();
   for (const record of records) {
@@ -761,17 +774,17 @@ function resolveRunStatus(record) {
   if (!record) return "unknown";
   if (record.cancelled === true || record.stopReason === "cancelled") return "cancelled";
   if (record.stopReason === "awaiting_user_confirmation" || record.stopReason === "awaiting_user_input") {
-    return "needs_review";
+    return "waiting_user";
   }
   const runtimeStatus = cleanString(record?.runtimeSession?.taskRun?.status);
   if (runtimeStatus === "completed") return "completed";
-  if (runtimeStatus === "waiting_user" || runtimeStatus === "needs_review") return "needs_review";
+  if (runtimeStatus === "waiting_user") return "waiting_user";
+  if (runtimeStatus === "needs_review") return "needs_review";
   if (runtimeStatus === "failed") return "failed";
   const executionStatus = cleanString(record?.quality?.executionStatus);
   if (executionStatus === "completed") return "completed";
-  if (executionStatus === "needs_review" || executionStatus === "awaiting_confirmation") {
-    return "needs_review";
-  }
+  if (executionStatus === "needs_review") return "needs_review";
+  if (executionStatus === "awaiting_confirmation") return "waiting_user";
   if (executionStatus === "failed" || executionStatus === "cancelled") return executionStatus;
   if (record.success === true && record.stopReason === "final_response") return "completed";
   if (record.success === false) return "failed";
@@ -786,6 +799,14 @@ function isClaimedCompletion(record, runStatus) {
 
 function buildObservedSymptoms(input) {
   const symptoms = [];
+  if (input.runStatus === "waiting_user") {
+    symptoms.push({
+      code: "user_intervention_required_before_completion",
+      phase: "interaction",
+      failureMode: "interaction",
+      evidence: "agent_run_record.stopReason / runtimeSession.taskRun.status"
+    });
+  }
   if (input.providerFailure) {
     symptoms.push({
       code: "model_provider_failure",
@@ -912,8 +933,8 @@ function deriveDesignReliabilityRunObservation(input) {
     : undefined;
   const evidenceRefs = Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [];
   const runStatus = resolveRunStatus(finalRecord);
-  // 技术交付与人工审美是两条分母：needs_review 已经是稳定终态，不等于仍在后台执行。
-  // 只要写入、读回与文件证据完整，技术交付可以通过；作品是否可用仍由 Human Review 决定。
+  // 技术交付与人工审美是两条分母：needs_review 表示完整成稿只等待开发侧人工审美评审；
+  // waiting_user 表示产品任务仍在等用户输入 / 确认，不是技术终态，不能以完整收据掩盖自主完成失败。
   const terminalTaskRun = runStatus === "completed" || runStatus === "needs_review";
   const unresolvedBlockerCount = Array.isArray(finalRecord?.blockers)
     ? finalRecord.blockers.length
@@ -953,10 +974,7 @@ function deriveDesignReliabilityRunObservation(input) {
     : undefined;
   const userInterventionKnown = Number.isInteger(input.userInterventionCount)
     && input.userInterventionCount >= 0;
-  const modelCallCount = flattened.sortedRecords.reduce((count, record) => {
-    const accounting = record?.runtimeSession?.accounting || record?.runtimeAccounting;
-    return count + (Number.isInteger(accounting?.modelCallCount) ? accounting.modelCallCount : 0);
-  }, 0);
+  const modelCallCount = resolveTaskRunModelCalls(flattened.sortedRecords);
   const missingEvidence = [];
   if (!userInterventionKnown) missingEvidence.push("user_intervention_count");
   if (!facts.editablePsdEvidence) missingEvidence.push("editable_psd");
@@ -970,6 +988,7 @@ function deriveDesignReliabilityRunObservation(input) {
   if (!facts.sourceInputIntegrityEvidence) missingEvidence.push("source_input_integrity");
   const symptoms = buildObservedSymptoms({
     ...facts,
+    runStatus,
     providerFailure: flattened.sortedRecords.some((record) => Boolean(record.providerFailure))
   });
   const environment = isRecord(input.environment) ? input.environment : {};
@@ -987,6 +1006,10 @@ function deriveDesignReliabilityRunObservation(input) {
     },
     sourceRunRefs: flattened.sortedRecords.map(buildSourceRunRef),
     attempt: {
+      ...(cleanString(environment.attemptId) ? { attemptId: cleanString(environment.attemptId) } : {}),
+      ...(cleanString(environment.attemptFingerprint)
+        ? { attemptFingerprint: cleanString(environment.attemptFingerprint) }
+        : {}),
       repeatIndex: Number.isInteger(input.repeatIndex) && input.repeatIndex > 0 ? input.repeatIndex : 1,
       ...(attemptStart !== null ? { startedAt: new Date(attemptStart).toISOString() } : {}),
       ...(attemptEnd !== null ? { endedAt: new Date(attemptEnd).toISOString() } : {})
@@ -999,10 +1022,44 @@ function deriveDesignReliabilityRunObservation(input) {
         : {}),
       provider: cleanString(environment.provider) || "unknown",
       modelId: cleanString(environment.modelId) || "unknown",
+      ...(cleanString(environment.requestedModelId)
+        ? { requestedModelId: cleanString(environment.requestedModelId) }
+        : {}),
       executionModel: caseSpec.executionModel,
       skillIds: actualSkillIds,
       taskTypes: [...new Set(flattened.sortedRecords.map((record) => cleanString(record?.runtimeSession?.taskType)).filter(Boolean))],
-      ...(cleanString(input.fixtureDigest) ? { fixtureDigest: cleanString(input.fixtureDigest) } : {})
+      ...(cleanString(input.fixtureDigest) ? { fixtureDigest: cleanString(input.fixtureDigest) } : {}),
+      ...(cleanString(environment.runtimeGitCommit)
+        ? { runtimeGitCommit: cleanString(environment.runtimeGitCommit) }
+        : {}),
+      ...(cleanString(environment.runtimeBuildId)
+        ? { runtimeBuildId: cleanString(environment.runtimeBuildId) }
+        : {}),
+      ...(cleanString(environment.runtimeAppVersion)
+        ? { runtimeAppVersion: cleanString(environment.runtimeAppVersion) }
+        : {}),
+      ...(cleanString(environment.photoshopRuntimeBuildId)
+        ? { photoshopRuntimeBuildId: cleanString(environment.photoshopRuntimeBuildId) }
+        : {}),
+      ...(Number.isFinite(environment.timeoutMs) ? { timeoutMs: Math.round(environment.timeoutMs) } : {}),
+      ...(cleanString(environment.instructionDigest)
+        ? { instructionDigest: cleanString(environment.instructionDigest) }
+        : {}),
+      ...(cleanString(environment.rubricDigest)
+        ? { rubricDigest: cleanString(environment.rubricDigest) }
+        : {}),
+      ...(cleanString(environment.fixtureInstanceId)
+        ? { fixtureInstanceId: cleanString(environment.fixtureInstanceId) }
+        : {}),
+      ...(cleanString(environment.suiteCaseSetDigest)
+        ? { suiteCaseSetDigest: cleanString(environment.suiteCaseSetDigest) }
+        : {}),
+      ...(cleanString(environment.suiteRubricSetDigest)
+        ? { suiteRubricSetDigest: cleanString(environment.suiteRubricSetDigest) }
+        : {}),
+      ...(cleanString(environment.cohortFingerprint)
+        ? { cohortFingerprint: cleanString(environment.cohortFingerprint) }
+        : {})
     },
     observed: {
       runStatus,
@@ -1459,7 +1516,31 @@ function hasPassedRequiredMachineChecks(run, checkIds) {
 
 function aggregateFamily(runs, reviews) {
   const reviewedRunIds = new Set(reviews.map((review) => review.runObservationId));
-  const passRunIds = new Set(reviews.filter((review) => review.decision === "pass").map((review) => review.runObservationId));
+  const strictBlindReviews = reviews.filter((review) => (
+    review.blindedToCohort === true
+    && review.blindedToCandidateOrigin === true
+    && isFiniteNumber(review.weightedOverall)
+    && Array.isArray(review.comparisonEvidenceRefs)
+    && review.comparisonEvidenceRefs.length > 0
+    && Array.isArray(review.blockers)
+  ));
+  const strictReviewsByRun = new Map();
+  for (const review of strictBlindReviews) {
+    const current = strictReviewsByRun.get(review.runObservationId) || [];
+    current.push(review);
+    strictReviewsByRun.set(review.runObservationId, current);
+  }
+  const strictReviewedRunIds = new Set(strictReviewsByRun.keys());
+  const passRunIds = new Set();
+  let conflictingReviewRunCount = 0;
+  for (const [runObservationId, runReviews] of strictReviewsByRun.entries()) {
+    const decisions = new Set(runReviews.map((review) => review.decision));
+    if (decisions.size !== 1) {
+      conflictingReviewRunCount += 1;
+      continue;
+    }
+    if (runReviews[0]?.decision === "pass") passRunIds.add(runObservationId);
+  }
   const completedRuns = runs.filter((run) => run?.observed?.runStatus === "completed");
   const agenticRuns = runs.filter((run) => run?.cohortDimensions?.executionModel === "agentic");
   const decisionPreservationScorableRuns = agenticRuns.filter((run) => (
@@ -1509,8 +1590,13 @@ function aggregateFamily(runs, reviews) {
     },
     quality: {
       humanReviewedRate: rate(runs.filter((run) => reviewedRunIds.has(run.runObservationId)).length, runs.length),
-      humanPassRate: rate(passRunIds.size, reviewedRunIds.size),
-      humanUsableRate: rate(passRunIds.size, runs.length)
+      strictHumanReviewedRate: rate(
+        runs.filter((run) => strictReviewedRunIds.has(run.runObservationId)).length,
+        runs.length
+      ),
+      humanPassRate: rate(passRunIds.size, strictReviewedRunIds.size),
+      humanUsableRate: rate(passRunIds.size, runs.length),
+      conflictingReviewRunCount
     },
     efficiency: {
       firstMutationMs: distribution(runs.map((run) => run.observed.firstMutationElapsedMs)),
@@ -1525,17 +1611,37 @@ function aggregateFamily(runs, reviews) {
 
 function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FAMILIES) {
   const minimumRunsPerFamily = Math.max(1, Math.floor(Number(gates?.minimumRunsPerFamily) || 0));
+  const minimumRunsPerCase = Math.max(1, Math.floor(Number(gates?.minimumRunsPerCase) || 0));
+  const attemptCohort = isRecord(report?.attempts) && Number(report.attempts.submitted) > 0
+    ? report.attempts
+    : undefined;
   const checksByFamily = {};
   for (const family of families) {
     const familyReport = report?.byTaskFamily?.[family];
-    const runs = Number(familyReport?.runs) || 0;
-    const reviewedRuns = Number(familyReport?.quality?.humanReviewedRate?.numerator) || 0;
+    const attemptFamily = attemptCohort?.byTaskFamily?.[family];
+    const runs = attemptFamily
+      ? Number(attemptFamily.submitted) || 0
+      : Number(familyReport?.runs) || 0;
+    const technicalPassed = attemptFamily
+      ? Number(attemptFamily.technicalDeliveryPassed) || 0
+      : Number(familyReport?.reliability?.technicalDeliveryRate?.numerator) || 0;
+    const reviewedRuns = attemptFamily
+      ? Number(attemptFamily.strictReviewedTechnicalPasses) || 0
+      : Number(familyReport?.quality?.strictHumanReviewedRate?.numerator) || 0;
+    const strictReviewCoverageComplete = attemptFamily
+      ? technicalPassed === reviewedRuns
+      : reviewedRuns >= minimumRunsPerFamily;
+    const technicalDeliveryRate = attemptFamily?.technicalDeliveryRate
+      || familyReport?.reliability?.technicalDeliveryRate;
+    const humanUsableRate = attemptFamily?.commercialUsableRate
+      || familyReport?.quality?.humanUsableRate;
+    const requiredInterventionRecords = attemptFamily ? technicalPassed : minimumRunsPerFamily;
     const checks = {
       minimumRunsPerFamily: runs >= minimumRunsPerFamily,
-      minimumHumanReviewedRunsPerFamily: reviewedRuns >= minimumRunsPerFamily,
-      technicalDeliveryRate: Number(familyReport?.reliability?.technicalDeliveryRate?.value)
+      minimumHumanReviewedRunsPerFamily: strictReviewCoverageComplete,
+      technicalDeliveryRate: Number(technicalDeliveryRate?.value)
         >= Number(gates?.technicalDeliveryRate),
-      humanUsableRate: Number(familyReport?.quality?.humanUsableRate?.value)
+      humanUsableRate: Number(humanUsableRate?.value)
         >= Number(gates?.humanUsableRate),
       completedPostWriteReadbackRate: Number(familyReport?.reliability?.completedPostWriteReadbackRate?.value)
         >= Number(gates?.completedPostWriteReadbackRate),
@@ -1546,7 +1652,7 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
       wrongDocumentOrOverwriteCount: Number(familyReport?.reliability?.wrongDocumentOrOverwriteCount)
         <= Number(gates?.wrongDocumentOrOverwriteCount),
       userInterventionCoverage: Number(familyReport?.efficiency?.userInterventions?.count)
-        >= minimumRunsPerFamily,
+        >= requiredInterventionRecords,
       userInterventionMedian: Number(familyReport?.efficiency?.userInterventions?.median)
         <= Number(gates?.userInterventionMedian),
       userInterventionP90: Number(familyReport?.efficiency?.userInterventions?.p90)
@@ -1559,6 +1665,7 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
       passed: Object.values(checks).every(Boolean),
       sampleReady,
       runs,
+      technicalPassed,
       reviewedRuns,
       checks,
       failedChecks: Object.entries(checks)
@@ -1566,16 +1673,100 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
         .map(([name]) => name)
     };
   }
-  const coverageComplete = Array.isArray(report?.coverage?.missingCaseIds)
-    && report.coverage.missingCaseIds.length === 0;
+  const attemptCaseIds = attemptCohort
+    ? Object.entries(attemptCohort.byCase || {})
+      .filter(([, value]) => Number(value?.submitted) > 0)
+      .map(([caseId]) => caseId)
+    : [];
+  const coverageComplete = attemptCohort
+    ? Object.keys(report?.byCase || {}).every((caseId) => attemptCaseIds.includes(caseId))
+    : Array.isArray(report?.coverage?.missingCaseIds)
+      && report.coverage.missingCaseIds.length === 0;
+  const checksByCase = {};
+  for (const [caseId, caseReport] of Object.entries(report?.byCase || {})) {
+    const attemptCase = attemptCohort?.byCase?.[caseId];
+    const runs = attemptCase
+      ? Number(attemptCase.submitted) || 0
+      : Number(caseReport?.runs) || 0;
+    const technicalPassed = attemptCase
+      ? Number(attemptCase.technicalDeliveryPassed) || 0
+      : Number(caseReport?.reliability?.technicalDeliveryRate?.numerator) || 0;
+    const reviewedRuns = attemptCase
+      ? Number(attemptCase.strictReviewedTechnicalPasses) || 0
+      : Number(caseReport?.quality?.strictHumanReviewedRate?.numerator) || 0;
+    const strictReviewCoverageComplete = attemptCase
+      ? technicalPassed === reviewedRuns
+      : reviewedRuns >= minimumRunsPerCase;
+    const terminalCoverageComplete = attemptCase
+      ? Number(attemptCase.terminal) === runs
+      : true;
+    checksByCase[caseId] = {
+      passed: runs >= minimumRunsPerCase
+        && terminalCoverageComplete
+        && strictReviewCoverageComplete,
+      runs,
+      technicalPassed,
+      reviewedRuns,
+      minimumRunsPerCase: runs >= minimumRunsPerCase,
+      minimumStrictHumanReviewsPerCase: strictReviewCoverageComplete,
+      terminalCoverageComplete
+    };
+  }
+  const caseResults = Object.values(checksByCase);
+  const caseSamplesReady = caseResults.length > 0 && caseResults.every((result) => result.passed);
+  const cohortHomogeneous = attemptCohort
+    ? attemptCohort.homogeneous === true
+    : report?.cohortIntegrity?.homogeneous === true;
+  const explicitCohortFingerprintCoverage = attemptCohort
+    ? attemptCohort.homogeneous === true
+    : Number(report?.cohortIntegrity?.explicitFingerprintCoverage?.value) === 1;
+  const attemptProtocolReady = attemptCohort
+    ? attemptCohort.protocolValid === true
+      && attemptCohort.allSubmittedAttemptsTerminal === true
+      && Number(attemptCohort.unknownWriteStateCount) === 0
+      && Number(attemptCohort.strictReviewConflictCount) === 0
+    : true;
   const familyResults = Object.values(checksByFamily);
   return {
-    passed: coverageComplete && familyResults.every((result) => result.passed),
-    sampleReady: coverageComplete && familyResults.every((result) => result.sampleReady),
+    passed: coverageComplete
+      && cohortHomogeneous
+      && explicitCohortFingerprintCoverage
+      && attemptProtocolReady
+      && caseSamplesReady
+      && familyResults.every((result) => result.passed),
+    sampleReady: coverageComplete
+      && cohortHomogeneous
+      && explicitCohortFingerprintCoverage
+      && attemptProtocolReady
+      && caseSamplesReady
+      && familyResults.every((result) => result.sampleReady),
     coverageComplete,
+    cohortHomogeneous,
+    explicitCohortFingerprintCoverage,
+    attemptProtocolReady,
     minimumRunsPerFamily,
-    checksByFamily
+    minimumRunsPerCase,
+    checksByFamily,
+    checksByCase
   };
+}
+
+function buildRunControlledDimensionFingerprint(run) {
+  const dimensions = isRecord(run?.cohortDimensions) ? run.cohortDimensions : {};
+  return sha256Text(stableStringify({
+    gitCommit: cleanString(dimensions.gitCommit) || "unknown",
+    dirty: dimensions.dirty === true,
+    dirtyFingerprint: cleanString(dimensions.dirtyFingerprint) || "unknown",
+    provider: cleanString(dimensions.provider) || "unknown",
+    modelId: cleanString(dimensions.modelId) || "unknown",
+    runtimeGitCommit: cleanString(dimensions.runtimeGitCommit) || "unknown",
+    runtimeBuildId: cleanString(dimensions.runtimeBuildId) || "unknown",
+    runtimeAppVersion: cleanString(dimensions.runtimeAppVersion) || "unknown",
+    photoshopRuntimeBuildId: cleanString(dimensions.photoshopRuntimeBuildId) || "unknown",
+    timeoutMs: Number.isFinite(dimensions.timeoutMs) ? dimensions.timeoutMs : null,
+    suiteCaseSetDigest: cleanString(dimensions.suiteCaseSetDigest) || "unknown",
+    suiteRubricSetDigest: cleanString(dimensions.suiteRubricSetDigest) || "unknown"
+  }));
 }
 
 function buildDesignReliabilityCohortReport(input) {
@@ -1600,6 +1791,11 @@ function buildDesignReliabilityCohortReport(input) {
     caseDigest: item.caseDigest
   })).sort((left, right) => left.caseId.localeCompare(right.caseId))));
   const confirmedAttributions = attributions.filter((item) => item.status === "confirmed");
+  const controlledDimensionFingerprints = runs.map(buildRunControlledDimensionFingerprint);
+  const explicitFingerprintRuns = runs.filter((run) => cleanString(run?.cohortDimensions?.cohortFingerprint));
+  const explicitFingerprints = explicitFingerprintRuns.map((run) => (
+    cleanString(run.cohortDimensions.cohortFingerprint)
+  ));
   const confirmedByOwner = {};
   for (const item of confirmedAttributions) {
     confirmedByOwner[item.owner] = (confirmedByOwner[item.owner] || 0) + 1;
@@ -1610,6 +1806,14 @@ function buildDesignReliabilityCohortReport(input) {
     const familyRuns = runs.filter((run) => familyCaseIds.has(run.caseRef.caseId));
     const familyReviews = reviews.filter((review) => familyRuns.some((run) => run.runObservationId === review.runObservationId));
     byTaskFamily[family] = aggregateFamily(familyRuns, familyReviews);
+  }
+  const byCase = {};
+  for (const caseSpec of cases) {
+    const caseRuns = runs.filter((run) => run.caseRef.caseId === caseSpec.caseId);
+    const caseReviews = reviews.filter((review) => caseRuns.some((run) => (
+      run.runObservationId === review.runObservationId
+    )));
+    byCase[caseSpec.caseId] = aggregateFamily(caseRuns, caseReviews);
   }
   return {
     version: COHORT_VERSION,
@@ -1629,8 +1833,16 @@ function buildDesignReliabilityCohortReport(input) {
       coveredCaseIds,
       missingCaseIds
     },
+    cohortIntegrity: {
+      homogeneous: new Set(controlledDimensionFingerprints).size <= 1
+        && new Set(explicitFingerprints).size <= 1,
+      controlledDimensionFingerprintCount: new Set(controlledDimensionFingerprints).size,
+      explicitFingerprintCoverage: rate(explicitFingerprintRuns.length, runs.length),
+      explicitFingerprintCount: new Set(explicitFingerprints).size
+    },
     overall: aggregateFamily(runs, reviews),
     byTaskFamily,
+    byCase,
     attribution: {
       confirmedByOwner,
       confirmedCount: confirmedAttributions.length,

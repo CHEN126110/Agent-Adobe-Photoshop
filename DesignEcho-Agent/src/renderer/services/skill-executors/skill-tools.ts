@@ -217,7 +217,10 @@ export interface SkillToolExecuteOptions {
 const RUNTIME_OWNED_SKILL_PARAM_NAMES = new Set([
     'interactiveContinuationId',
     'interactiveCardDefinition',
-    'interactiveCardSubmission'
+    'interactiveCardSubmission',
+    // 已退役的手工面板授权字段：旧模型消息、文本 Tool parser 或外部调用即使携带，
+    // 也必须在进入业务执行器前剥离。真实授权只存在于不可序列化的函数 capability。
+    '__manualPanelLegacyProfileAuthorized'
 ]);
 
 function stripRuntimeOwnedSkillParams(params: Record<string, any>): Record<string, any> {

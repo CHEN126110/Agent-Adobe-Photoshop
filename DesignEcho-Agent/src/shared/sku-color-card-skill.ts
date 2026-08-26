@@ -7,6 +7,16 @@
 
 import type { ProjectAssetIndex } from './project-asset-index';
 import type { SkuRetouchReport } from './sku-retouch-contract';
+import {
+    resolveSkuColorCardDesignSpec,
+    type SkuColorCardCanvasBackground,
+    type SkuColorCardDesignSpec,
+    type SkuColorCardGridAlignment,
+    type SkuColorCardIndexStyle,
+    type SkuColorCardLabelTypography,
+    type SkuColorCardPresentationMode,
+    type SkuColorCardSubjectAnchor
+} from './sku-color-card-design-spec';
 
 export const SKU_COLOR_CARD_SKILL_VERSION = 'sku-color-card-skill/v1' as const;
 export const SKU_COLOR_CARD_EXECUTION_REPORT_VERSION = 'sku-color-card-execution-report/v1' as const;
@@ -16,6 +26,8 @@ export type SkuColorCardPlanStatus =
     | 'blocked_missing_sources'
     | 'blocked_invalid_sources'
     | 'blocked_missing_output_path'
+    | 'blocked_missing_design_spec'
+    | 'blocked_invalid_design_spec'
     | 'blocked_layout_overflow';
 
 export interface SkuColorCardSourceInput {
@@ -44,6 +56,7 @@ export type SkuColorCardSourceResolutionMethod =
     | 'provided_exact_name'
     | 'project_exact_name'
     | 'provided_candidate'
+    | 'runtime_asset_selection'
     | 'unresolved';
 
 export interface SkuColorCardSourceResolutionItem {
@@ -67,18 +80,6 @@ export interface ResolveSkuColorCardSourcesInput {
     sources?: SkuColorCardSourceInput[];
     assetIndex?: ProjectAssetIndex;
     userInput?: string;
-}
-
-export interface SkuColorCardLayoutInput {
-    canvasWidth?: number;
-    canvasHeight?: number;
-    cardWidth?: number;
-    cardHeight?: number;
-    cardCornerRadius?: number;
-    columnGap?: number;
-    rowGap?: number;
-    columns?: number;
-    showIndexNumbers?: boolean;
 }
 
 export interface SkuColorCardSlot {
@@ -107,19 +108,27 @@ export interface SkuColorCardPlan {
     canExecute: boolean;
     documentName: 'SKU';
     outputPath: string;
-    canvas: { width: number; height: number; backgroundColor: 'white' };
+    designProvenance: SkuColorCardDesignSpec['provenance'] | null;
+    presentationMode: SkuColorCardPresentationMode | null;
+    canvas: { width: number; height: number; backgroundColor: SkuColorCardCanvasBackground } | null;
     cardStyle: {
-        fillColorHex: '#000000';
+        fillColorHex: string;
         cornerRadius: number;
-        labelFillColorHex: '#FFFFFF';
-        labelTextColorHex: '#111111';
+        labelFillColorHex: string;
+        labelTextColorHex: string;
         internalLabel: SkuColorCardInternalLabelRecipe;
-    };
+        labelTypography: SkuColorCardLabelTypography;
+    } | null;
+    imagePlacement: {
+        subjectFillRatio: number;
+        anchor: SkuColorCardSubjectAnchor;
+    } | null;
     indexReference: {
         enabled: boolean;
         groupName: '参考组';
         purpose: 'display_only';
         excludeFromColorGroups: true;
+        style: SkuColorCardIndexStyle | null;
     };
     slots: SkuColorCardSlot[];
     blockers: string[];
@@ -133,18 +142,10 @@ export interface BuildSkuColorCardPlanInput {
     projectPath?: string;
     outputPath?: string;
     outputRelativePath?: string;
-    layout?: SkuColorCardLayoutInput;
+    designSpec?: unknown;
+    allowExplicitLegacyProfile?: boolean;
     sourceResolution?: Pick<SkuColorCardSourceResolution, 'blockers' | 'warnings'>;
 }
-
-/**
- * 色卡的主体填充档位：主体占卡片区域的比例。
- *
- * 色卡是巴掌大的格子、要看清花色纹理，主体必须顶到 0.9；
- * 这是色卡自己的构图标准，不适用主图「主体占 40%~60% 留白呼吸」的档位。
- * 真机 2026-08-01：原图 contain 置入后袜子只占卡片约四成，四周全是拍摄环境。
- */
-export const SKU_COLOR_CARD_SUBJECT_FILL_RATIO = 0.9;
 
 /** 站①引擎主体缩放的结果记录；method === 'frame' 表示主体检测退化成整框，缩放形同未做。 */
 export interface SkuColorCardSubjectFit {
@@ -163,19 +164,19 @@ export interface SkuColorCardPreparedCard {
     sourcePath: string;
     groupId: number;
     smartObjectLayerId: number;
-    /** 卡片式结构（场景卡）才有：色卡封装 SO 的内部文档；纯底平铺结构不进 SO，不提供。 */
+    /** Agent 选择 card 时才有色卡封装 SO 的内部文档；flat 结构不进 SO，不提供。 */
     internalDocumentId?: number;
     internalCanvas?: { width: number; height: number };
     imageLayerId: number;
-    /** 卡片式结构才有白色标签底；纯底平铺结构（ground truth C-1183）组内只有色名文字。 */
+    /** Agent 选择 card 时才有标签底；flat 结构组内只有 Agent 声明区域中的色名文字。 */
     labelBackgroundLayerId?: number;
     labelTextLayerId: number;
     clippingVerified: boolean;
     smartObjectVerified: boolean;
     labelTextFitVerified: boolean;
-    /** 站①引擎对原图卡片执行的主体缩放；精修卡片（形态统一主体已归位）不适用。 */
+    /** 对原图卡片执行主体检测缩放时的结果；使用已准备精修资产时不提供。 */
     subjectFit?: SkuColorCardSubjectFit;
-    /** 纯底素材精修启用时的可编辑图层；未启用或场景图时不提供。 */
+    /** Skill 准备并使用精修资产时的可编辑图层；未启用或未使用时不提供。 */
     sourceBackupLayerId?: number;
     shadowLayerId?: number;
     neutralGrayLayerId?: number;
@@ -207,24 +208,7 @@ export interface SkuColorCardExecutionReport {
 }
 
 const DEFAULT_OUTPUT_RELATIVE_PATH = 'PSD/SKU.psb';
-const DEFAULT_CANVAS_WIDTH = 1500;
-const DEFAULT_CANVAS_HEIGHT = 1500;
-const DEFAULT_CARD_WIDTH = 250;
-const DEFAULT_CARD_HEIGHT = 380;
-const DEFAULT_CARD_CORNER_RADIUS = 10;
-const DEFAULT_COLUMN_GAP = 40;
-const DEFAULT_ROW_GAP = 170;
-const DEFAULT_MAX_COLUMNS = 5;
 const MAX_CARD_COUNT = 10;
-
-const INTERNAL_LABEL_RECIPE: SkuColorCardInternalLabelRecipe = Object.freeze({
-    xRatio: 448 / 800,
-    yRatio: 32 / 1216,
-    widthRatio: 320 / 800,
-    heightRatio: 115.2 / 1216,
-    cornerRadiusToWidthRatio: 32 / 800,
-    fontSizeToHeightRatio: 0.56
-});
 
 function clean(value: unknown): string {
     return String(value || '').trim();
@@ -380,12 +364,6 @@ export function resolveSkuColorCardSources(
     };
 }
 
-function positiveInteger(value: unknown, fallback: number): number {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
-    return Math.round(numeric);
-}
-
 function normalizeSources(inputs: SkuColorCardSourceInput[] | undefined): {
     sources: SkuColorCardSource[];
     blockers: string[];
@@ -443,17 +421,34 @@ function buildSlots(input: {
     rowGap: number;
     columns: number;
     showIndexNumbers: boolean;
+    gridAlignment: {
+        horizontal: SkuColorCardGridAlignment;
+        vertical: SkuColorCardGridAlignment;
+        lastRow: SkuColorCardGridAlignment;
+    };
+    indexStyle?: SkuColorCardIndexStyle;
 }): SkuColorCardSlot[] {
     const rows = Math.ceil(input.sources.length / input.columns);
     const totalWidth = input.columns * input.cardWidth + (input.columns - 1) * input.columnGap;
     const totalHeight = rows * input.cardHeight + (rows - 1) * input.rowGap;
-    const startX = Math.round((input.canvasWidth - totalWidth) / 2);
-    const startY = Math.round((input.canvasHeight - totalHeight) / 2);
+    const resolveOffset = (remaining: number, alignment: SkuColorCardGridAlignment): number => {
+        if (alignment === 'start') return 0;
+        if (alignment === 'end') return remaining;
+        return Math.round(remaining / 2);
+    };
+    const startX = resolveOffset(input.canvasWidth - totalWidth, input.gridAlignment.horizontal);
+    const startY = resolveOffset(input.canvasHeight - totalHeight, input.gridAlignment.vertical);
 
     return input.sources.map((source, index) => {
         const row = Math.floor(index / input.columns);
         const column = index % input.columns;
-        const x = startX + column * (input.cardWidth + input.columnGap);
+        const isIncompleteLastRow = row === rows - 1 && input.sources.length % input.columns !== 0;
+        const cardsInRow = isIncompleteLastRow ? input.sources.length % input.columns : input.columns;
+        const rowWidth = cardsInRow * input.cardWidth + Math.max(0, cardsInRow - 1) * input.columnGap;
+        const rowOffset = isIncompleteLastRow
+            ? resolveOffset(totalWidth - rowWidth, input.gridAlignment.lastRow)
+            : 0;
+        const x = startX + rowOffset + column * (input.cardWidth + input.columnGap);
         const y = startY + row * (input.cardHeight + input.rowGap);
         return {
             index: index + 1,
@@ -462,12 +457,12 @@ function buildSlots(input: {
             smartObjectName: `${source.colorName}-色卡智能对象`,
             indexLayerName: `${source.colorName}-序号`,
             cardBounds: { x, y, width: input.cardWidth, height: input.cardHeight },
-            indexText: input.showIndexNumbers
+            indexText: input.showIndexNumbers && input.indexStyle
                 ? {
                     content: String(index + 1),
-                    x: x + Math.round(input.cardWidth / 2),
-                    y: Math.max(24, y - 126),
-                    fontSize: Math.max(72, Math.round(input.cardWidth * 0.38))
+                    x: x + Math.round(input.cardWidth * input.indexStyle.xRatio),
+                    y: y + Math.round(input.cardHeight * input.indexStyle.yRatio),
+                    fontSize: Math.max(1, Math.round(input.cardWidth * input.indexStyle.fontSizeToCardWidthRatio))
                 }
                 : null
         };
@@ -477,27 +472,26 @@ function buildSlots(input: {
 export function buildSkuColorCardPlan(input: BuildSkuColorCardPlanInput): SkuColorCardPlan {
     const normalized = normalizeSources(input.sources);
     const sources = normalized.sources.slice(0, MAX_CARD_COUNT);
-    const canvasWidth = positiveInteger(input.layout?.canvasWidth, DEFAULT_CANVAS_WIDTH);
-    const canvasHeight = positiveInteger(input.layout?.canvasHeight, DEFAULT_CANVAS_HEIGHT);
-    const cardWidth = positiveInteger(input.layout?.cardWidth, DEFAULT_CARD_WIDTH);
-    const cardHeight = positiveInteger(input.layout?.cardHeight, DEFAULT_CARD_HEIGHT);
-    const columnGap = positiveInteger(input.layout?.columnGap, DEFAULT_COLUMN_GAP);
-    const rowGap = positiveInteger(input.layout?.rowGap, DEFAULT_ROW_GAP);
-    const requestedColumns = positiveInteger(
-        input.layout?.columns,
-        Math.min(DEFAULT_MAX_COLUMNS, Math.max(1, sources.length))
-    );
-    const columns = Math.min(requestedColumns, Math.max(1, sources.length));
+    const designResolution = resolveSkuColorCardDesignSpec(input.designSpec, {
+        allowExplicitLegacyProfile: input.allowExplicitLegacyProfile === true
+    });
+    const designSpec = designResolution.spec;
     const outputPath = normalizePath(input.outputPath)
         || (normalizePath(input.projectPath)
             ? joinProjectPath(input.projectPath as string, clean(input.outputRelativePath) || DEFAULT_OUTPUT_RELATIVE_PATH)
             : '');
-    const rows = sources.length > 0 ? Math.ceil(sources.length / columns) : 0;
-    const layoutWidth = columns * cardWidth + Math.max(0, columns - 1) * columnGap;
-    const layoutHeight = rows * cardHeight + Math.max(0, rows - 1) * rowGap;
+    const columns = designSpec?.columns || 0;
+    const rows = designSpec && sources.length > 0 ? Math.ceil(sources.length / columns) : 0;
+    const layoutWidth = designSpec
+        ? columns * designSpec.cardWidth + Math.max(0, columns - 1) * designSpec.columnGap
+        : 0;
+    const layoutHeight = designSpec
+        ? rows * designSpec.cardHeight + Math.max(0, rows - 1) * designSpec.rowGap
+        : 0;
     const blockers = [
         ...normalized.blockers,
-        ...(input.sourceResolution?.blockers || [])
+        ...(input.sourceResolution?.blockers || []),
+        ...designResolution.blockers
     ];
 
     if (sources.length === 0 && blockers.length === 0) {
@@ -515,10 +509,10 @@ export function buildSkuColorCardPlan(input: BuildSkuColorCardPlanInput): SkuCol
         blockers.push('缺少项目路径或显式输出路径，无法确定 SKU 文档保存位置。');
     }
     if (input.sources && input.sources.length > MAX_CARD_COUNT) {
-        blockers.push(`单个 1500×1500 色卡文档最多支持 ${MAX_CARD_COUNT} 张图片；当前为 ${input.sources.length} 张。`);
+        blockers.push(`单个色卡源文档最多支持 ${MAX_CARD_COUNT} 张图片；当前为 ${input.sources.length} 张。`);
     }
-    if (layoutWidth > canvasWidth || layoutHeight > canvasHeight) {
-        blockers.push(`当前卡片布局 ${layoutWidth}×${layoutHeight} 超出画布 ${canvasWidth}×${canvasHeight}。`);
+    if (designSpec && (layoutWidth > designSpec.canvasWidth || layoutHeight > designSpec.canvasHeight)) {
+        blockers.push(`当前卡片布局 ${layoutWidth}×${layoutHeight} 超出画布 ${designSpec.canvasWidth}×${designSpec.canvasHeight}。`);
     }
 
     let status: SkuColorCardPlanStatus = 'ready';
@@ -527,7 +521,21 @@ export function buildSkuColorCardPlan(input: BuildSkuColorCardPlanInput): SkuCol
         status = 'blocked_invalid_sources';
     }
     else if (!outputPath) status = 'blocked_missing_output_path';
+    else if (designResolution.status !== 'resolved') status = designResolution.status;
     else if (blockers.length > 0) status = 'blocked_layout_overflow';
+
+    const presentationQualityCriteria: string[] = [];
+    if (designSpec?.presentationMode === 'flat') {
+        presentationQualityCriteria.push(
+            'Agent 选择 flat 时，每色组保留主体、原影、中性灰和色名的可编辑平铺结构，不生成 card 外壳或标签底。',
+            'flat 色名文字必须依据 Photoshop 真实 bounds 缩放，并在 Agent 声明的标签区域内满足水平对齐与垂直居中。'
+        );
+    } else if (designSpec?.presentationMode === 'card') {
+        presentationQualityCriteria.push(
+            'Agent 选择 card 时，每色保留可编辑卡片智能对象、声明配色、标签底与图片剪切关系；可用精修资产不能改写 card 外壳。',
+            'card 色名文字必须依据 Photoshop 真实 bounds 缩放，在标签底内满足 Agent 声明的水平对齐与垂直居中。'
+        );
+    }
 
     return {
         version: SKU_COLOR_CARD_SKILL_VERSION,
@@ -535,35 +543,44 @@ export function buildSkuColorCardPlan(input: BuildSkuColorCardPlanInput): SkuCol
         canExecute: status === 'ready',
         documentName: 'SKU',
         outputPath,
-        canvas: {
-            width: canvasWidth,
-            height: canvasHeight,
-            backgroundColor: 'white'
-        },
-        cardStyle: {
-            fillColorHex: '#000000',
-            cornerRadius: positiveInteger(input.layout?.cardCornerRadius, DEFAULT_CARD_CORNER_RADIUS),
-            labelFillColorHex: '#FFFFFF',
-            labelTextColorHex: '#111111',
-            internalLabel: { ...INTERNAL_LABEL_RECIPE }
-        },
+        designProvenance: designSpec?.provenance || null,
+        presentationMode: designSpec?.presentationMode || null,
+        canvas: designSpec ? {
+            width: designSpec.canvasWidth,
+            height: designSpec.canvasHeight,
+            backgroundColor: designSpec.canvasBackground
+        } : null,
+        cardStyle: designSpec ? {
+            fillColorHex: designSpec.cardFillColorHex,
+            cornerRadius: designSpec.cardCornerRadius,
+            labelFillColorHex: designSpec.labelFillColorHex,
+            labelTextColorHex: designSpec.labelTextColorHex,
+            internalLabel: { ...designSpec.internalLabel },
+            labelTypography: { ...designSpec.labelTypography }
+        } : null,
+        imagePlacement: designSpec ? { ...designSpec.imagePlacement } : null,
         indexReference: {
-            enabled: input.layout?.showIndexNumbers !== false,
+            enabled: designSpec?.showIndexNumbers === true,
             groupName: '参考组',
             purpose: 'display_only',
-            excludeFromColorGroups: true
+            excludeFromColorGroups: true,
+            style: designSpec?.showIndexNumbers === true && designSpec.indexStyle
+                ? { ...designSpec.indexStyle }
+                : null
         },
-        slots: buildSlots({
+        slots: designSpec ? buildSlots({
             sources,
-            canvasWidth,
-            canvasHeight,
-            cardWidth,
-            cardHeight,
-            columnGap,
-            rowGap,
+            canvasWidth: designSpec.canvasWidth,
+            canvasHeight: designSpec.canvasHeight,
+            cardWidth: designSpec.cardWidth,
+            cardHeight: designSpec.cardHeight,
+            columnGap: designSpec.columnGap,
+            rowGap: designSpec.rowGap,
             columns,
-            showIndexNumbers: input.layout?.showIndexNumbers !== false
-        }),
+            showIndexNumbers: designSpec.showIndexNumbers,
+            gridAlignment: { ...designSpec.gridAlignment },
+            indexStyle: designSpec.indexStyle
+        }) : [],
         blockers,
         warnings: [
             ...(input.sourceResolution?.warnings || []),
@@ -571,17 +588,17 @@ export function buildSkuColorCardPlan(input: BuildSkuColorCardPlanInput): SkuCol
                 ? ['部分标签仅来自图片文件名或未经证实的上游候选，属于 provisional 资产标签；确认真实颜色名之前不能通过最终色名准确性验收。']
                 : []),
             '显式 colorName 优先；缺少权威色名时文件名只用于建立可编辑草稿。',
-            '标签比例来自用户提供的 800×1216 智能对象样例，执行时按真实内部文档尺寸等比换算。',
+            '画布底色、卡片、间距、网格对齐、标签比例、字体排版、配色、主体占比与锚点均来自本轮 Agent 设计声明；Skill 不补视觉默认值。',
             '序号只用于查看输入顺序，统一放入文档根层级“参考组”，不得进入任何颜色组。',
-            '商品图只做安全的 contain 草稿置入；主体缩放、重心和裁切必须由 Agent 看过写后快照后再决定。',
+            '商品图按 Agent 首次写入前声明的主体占比与锚点进行几何落位；写后快照仍用于审美复核，不把几何通过冒充好看。',
             '色卡结构生成成功不等于设计完成，最终视觉质量仍需写后快照评价与调整。'
         ],
         qualityCriteria: [
             '每个输入图片对应且只对应一个同名颜色组。',
-            '纯底精修卡：每色一组内主体件与原影件并列平铺（各为智能对象，无卡片壳、无剪切），中性灰剪切主体，组内色名文字——与店铺纯底样板（C-1183）同构。场景/无精修卡：每色一个可编辑色卡智能对象，商品图在内部以剪切蒙版受圆角底约束。',
+            ...presentationQualityCriteria,
             '启用序号时，所有序号只存在于根层级“参考组”，不属于颜色组或可复用卡片资产。',
-            '智能对象内部包含白色标签底和标签文字；标签来自权威颜色名，或被明确标记为待确认的 provisional 文件名。',
-            '色名文字必须依据 Photoshop 真实 bounds 缩放并在白底内水平、垂直居中。',
+            '色名标签来自权威颜色名，或被明确标记为待确认的 provisional 文件名。',
+            '底色、网格对齐、色名字体、字距、行距和可选序号样式与 Agent 声明一致，不依赖 Photoshop 当前默认状态。',
             '商品主体大小、重心和裁切经过视觉模型观察、调整和再次观察，不能沿用固定脚本缩放。',
             '最终文档尺寸、颜色组数量、智能对象状态和保存路径均通过写后检查。'
         ],
@@ -615,16 +632,17 @@ export function buildSkuColorCardPlan(input: BuildSkuColorCardPlanInput): SkuCol
 export function buildInternalSkuColorCardGeometry(input: {
     width: number;
     height: number;
-    recipe?: SkuColorCardInternalLabelRecipe;
+    recipe: SkuColorCardInternalLabelRecipe;
+    typography: SkuColorCardLabelTypography;
     labelText?: string;
 }): {
     image: { x: number; y: number; width: number; height: number };
     label: { x: number; y: number; width: number; height: number; cornerRadius: number };
     text: { x: number; y: number; fontSize: number };
 } {
-    const width = positiveInteger(input.width, DEFAULT_CARD_WIDTH);
-    const height = positiveInteger(input.height, DEFAULT_CARD_HEIGHT);
-    const recipe = input.recipe || INTERNAL_LABEL_RECIPE;
+    const width = Math.max(1, Math.round(input.width));
+    const height = Math.max(1, Math.round(input.height));
+    const recipe = input.recipe;
     const label = {
         x: Math.round(width * recipe.xRatio),
         y: Math.round(height * recipe.yRatio),
@@ -632,22 +650,30 @@ export function buildInternalSkuColorCardGeometry(input: {
         height: Math.max(1, Math.round(height * recipe.heightRatio)),
         cornerRadius: Math.max(1, Math.round(width * recipe.cornerRadiusToWidthRatio))
     };
-    const defaultFontSize = Math.max(12, Math.round(label.height * recipe.fontSizeToHeightRatio));
-    const horizontalTextPadding = Math.max(4, Math.round(label.width * 0.08));
+    const defaultFontSize = Math.max(1, Math.round(label.height * recipe.fontSizeToHeightRatio));
+    const horizontalTextPadding = Math.round(label.width * input.typography.horizontalPaddingRatio);
     const availableTextWidth = Math.max(1, label.width - horizontalTextPadding * 2);
     const textUnits = Array.from(clean(input.labelText)).reduce((total, character) => (
         total + (/^[\x00-\x7F]$/u.test(character) ? 0.56 : 1)
     ), 0);
     const widthFittedFontSize = textUnits > 0
-        ? Math.max(12, Math.floor(availableTextWidth / textUnits))
+        ? Math.max(1, Math.floor(availableTextWidth / textUnits))
         : defaultFontSize;
+    const fontSize = Math.min(defaultFontSize, widthFittedFontSize);
+    const estimatedTextWidth = Math.min(availableTextWidth, Math.max(1, Math.round(textUnits * fontSize)));
+    let textX = label.x + horizontalTextPadding;
+    if (input.typography.alignment === 'center') {
+        textX = Math.round(label.x + (label.width - estimatedTextWidth) / 2);
+    } else if (input.typography.alignment === 'right') {
+        textX = label.x + label.width - horizontalTextPadding - estimatedTextWidth;
+    }
     return {
         image: { x: 0, y: 0, width, height },
         label,
         text: {
-            x: label.x + horizontalTextPadding,
-            y: label.y + Math.round(label.height * 0.17),
-            fontSize: Math.min(defaultFontSize, widthFittedFontSize)
+            x: textX,
+            y: Math.round(label.y + (label.height - fontSize) / 2),
+            fontSize
         }
     };
 }

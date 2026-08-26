@@ -344,12 +344,12 @@ export class TransformLayerTool implements Tool {
                 targetFit: {
                     type: 'string',
                     enum: ['contain', 'cover', 'fill'],
-                    description: 'targetBounds 适配方式：contain 完整放入（默认）、cover 铺满区域、fill 拉伸填充'
+                    description: '提供 targetBounds 时必填：contain 完整放入、cover 铺满区域、fill 拉伸填充'
                 },
                 targetAnchor: {
                     type: 'string',
                     enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
-                    description: '目标区域内的图框对齐方式，默认 center；focalPoint 存在时由 focalPoint 优先控制落位。fill 只接受 center'
+                    description: '提供 targetBounds 时必填：目标区域内的图框对齐方式；focalPoint 存在时由 focalPoint 优先控制落位。fill 只接受 center'
                 },
                 focalPoint: {
                     type: 'object',
@@ -389,6 +389,17 @@ export class TransformLayerTool implements Tool {
                     return createToolFailureResult({
                         toolName: this.name,
                         error: 'targetBounds 无效：需要 {x,y,width,height} 或 {left,top,right,bottom}，且 width/height 必须为正数',
+                        params
+                    });
+                }
+                const missingTargetParameters = [
+                    params.targetFit === undefined ? 'targetFit' : '',
+                    params.targetAnchor === undefined ? 'targetAnchor' : ''
+                ].filter(Boolean);
+                if (missingTargetParameters.length > 0) {
+                    return createToolFailureResult({
+                        toolName: this.name,
+                        error: `targetBounds 需要同时显式提供 targetFit 与 targetAnchor；缺少 ${missingTargetParameters.join('/')}，已拒绝由执行器默认决定适配或锚点。`,
                         params
                     });
                 }

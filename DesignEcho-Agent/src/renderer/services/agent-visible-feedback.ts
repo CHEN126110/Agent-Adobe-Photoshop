@@ -72,6 +72,10 @@ const VISIBLE_AGENT_RUN_PHASE_DETAIL: Record<VisibleAgentRunPhase, string> = {
     agent_processing: '设计助手正在根据需求决定下一步。'
 };
 
+function looksLikeEngineeringRuntimeProcessText(value: string): boolean {
+    return /(?:\b(?:Provider|Harness|Runtime|system prompt|tool call|debug|route|gate|token)\b|后台续接|输出截断|第\s*\d+\s*轮|成功\s*\d+\s*项|失败\s*\d+\s*项|\b(?:request|declare|update|get)[A-Z][A-Za-z0-9]+\b)/iu.test(value);
+}
+
 function canRenderStepAsUserFacing(event: AgentStepEvent): boolean {
     // 事件来源不等于展示授权。模型提出 Tool、执行器记录 Tool 或运行时记录失败，
     // 都先进入真实运行记录；只有事件生产者显式声明用户过程投影时才进入普通界面。
@@ -136,6 +140,7 @@ export function buildVisibleAgentActivityFromProgress(
     // onProgress 同时承担运行日志与普通界面的活动摘要。循环计数、代际、成本账本等
     // 仍按原值进入日志，但不能因为经过这个兼容回调就旁路成为用户进度。
     if (/^处理进度\s*\d+\s*\/\s*\d+$/u.test(rawDetail)) return null;
+    if (looksLikeEngineeringRuntimeProcessText(rawDetail)) return null;
 
     const skillProgress = rawDetail.match(/^执行能力：(.+)$/u)
         || rawDetail.match(/^正在执行「(.+)」[。.]?$/u);
@@ -319,10 +324,6 @@ export const getVisibleAgentProcessStepType = (
     // observation 等观察类作为 'analyzing'（观察角色）展示。
     return 'analyzing';
 };
-
-function looksLikeEngineeringRuntimeProcessText(value: string): boolean {
-    return /(?:\b(?:Harness|Runtime|system prompt|tool call|debug|route|gate)\b|第\s*\d+\s*轮|成功\s*\d+\s*项|失败\s*\d+\s*项|\b(?:request|declare|update|get)[A-Z][A-Za-z0-9]+\b)/iu.test(value);
-}
 
 function buildDesignerFacingProcessFallback(event: AgentStepEvent): string {
     if (event.status === 'error') {

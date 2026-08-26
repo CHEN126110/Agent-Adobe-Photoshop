@@ -634,9 +634,10 @@
     color: color-mix(in srgb, var(--de-error) 62%, var(--de-text-muted));
 }
 
-/* 当前活动行的文本扫光（单一活性点：渲染层只把 is-live 授予最末一条进行中的行，
-   任意时刻至多一处扫光——codex 同款铁律；其余 running 行保持静态灰字） */
-.pondering-step.is-live .step-text {
+/* 当前活动行的文本扫光（单一活性点：渲染层只把 is-live 授予最末一条进行中的动作行，
+   任意时刻至多一处扫光——codex 同款铁律；正文/思考行（is-thought）永不扫光，
+   codex 里正文段落是静态的，流式出现+顶部计时头即活性信号。选择器限定 is-action 双保险） */
+.pondering-step.is-action.is-live .step-text {
     background: linear-gradient(100deg,
         var(--de-text-muted) 46%,
         var(--de-process-thought-strong, #d7dae0) 50%,
@@ -648,7 +649,7 @@
     animation: de-action-shimmer 2.4s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-    .pondering-step.is-live .step-text {
+    .pondering-step.is-action.is-live .step-text {
         animation: none;
         background: none;
         color: var(--de-text-muted);

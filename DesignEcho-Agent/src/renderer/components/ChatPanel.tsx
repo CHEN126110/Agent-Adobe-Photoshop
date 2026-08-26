@@ -87,6 +87,11 @@ import {
     type OperatingWorkflowContext
 } from '../../shared/agent-runtime-v5/operating-context-snapshot';
 import { resolveMaterialSelectionReasonProjection } from '../../shared/design-workshop/compose-design-rationale-visibility';
+import {
+    createGuardedPhotoshopExecutionBaseline,
+    readGuardedPhotoshopExecutionBaselineReceipt,
+    type GuardedPhotoshopExecutionBaseline
+} from '../../shared/guarded-photoshop-execution-baseline';
 // 保留 useChatActions Hook 的模型选择功能
 import { useChatActions } from '../hooks/useChatActions';
 import {
@@ -281,7 +286,6 @@ import {
 import { buildConversationHistoryBudget } from '../../shared/agent-context-allocation';
 import { selectAgentConversationContext } from '../../shared/agent-conversation-context';
 import { buildAgentContextWindowBudget } from '../../shared/agent-performance-policy';
-import { MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS } from '../../shared/debug-bridge-chat';
 import { getDefaultAgentTools } from '../services/agent-runtime/tool-schemas';
 
 type PhotoshopMcpToolsListPayload = {
@@ -299,11 +303,24 @@ type ChatSendOverride = {
     expectedConversationId?: string;
     expectedProjectId?: string;
     expectedProjectPath?: string;
+    /** 仅受控 disposable Debug 请求内部传递，不进入模型参数。 */
+    guardedPhotoshopExecutionBaseline?: GuardedPhotoshopExecutionBaseline;
     /** 确定性确认完成后的结构化承接；不伪装成用户重复发送原需求。 */
     internalResumeRequest?: AgentInternalResumeRequest;
     /** 已发送用户消息的气泡内编辑提交；它拥有独立草稿，不读取底部 Composer 实时状态。 */
     inlineMessageEdit?: InlineMessageEditSubmission;
 };
+
+function readDebugPhotoshopRuntimeBuildId(value: unknown): string {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+    const state = (value as any).state;
+    const runtime = state && typeof state === 'object' && !Array.isArray(state)
+        ? state.runtime
+        : undefined;
+    return runtime && typeof runtime === 'object' && !Array.isArray(runtime)
+        ? String(runtime.buildId || '').trim()
+        : '';
+}
 
 type ComposerRuntimeReference =
     | {
@@ -1749,6 +1766,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     // 只能反复点发送。改成令牌后停止可以立即释放它，而旧链收尾时按令牌比对，不会误清
     // 用户停止后新发起的那一轮（与 activeAgentRunIdRef 的 runId 守卫同一套思路）。
     const chatSubmissionInFlightRef = useRef<string | null>(null);
+    const activeDebugBridgeRequestIdRef = useRef<string | null>(null);
+    const cancelledDebugBridgeRequestIdsRef = useRef<Set<string>>(new Set());
     const publicPlanPrivateOperationRequestsRef = useRef<Record<string, AgentTaskPublicPlanControlledOperationRequest[]>>({});
     const activeAgentRunIdRef = useRef<string | null>(null);
     const cancelledAgentRunIdsRef = useRef<Set<string>>(new Set());
@@ -4660,14 +4679,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             }
         }
 
+        const guardedDebugRequestId = String(
+            override?.guardedPhotoshopExecutionBaseline?.requestId || ''
+        ).trim();
+        if (guardedDebugRequestId
+            && cancelledDebugBridgeRequestIdsRef.current.has(guardedDebugRequestId)) {
+            throw new Error('受控调试请求已取消，本轮不会继续提交模型或 Photoshop 写入。');
+        }
+
+        // 受控 Debug 请求不走本地快捷路径：该路径无法携带请求级 Photoshop
+        // baseline，也无法由 Agent AbortController 在超时后中断。
         // 只有斜杠命令特殊处理
-        if (!interactiveContinuationRequest && !internalResumeRequest && userInput.startsWith('/')) {
+        if (!guardedDebugRequestId
+            && !interactiveContinuationRequest
+            && !internalResumeRequest
+            && userInput.startsWith('/')) {
             handleCommand(userInput);
             return;
         }
 
         // ======== 快捷命令模式：对于常见操作直接执行，不调用 AI ========
-        if (!interactiveContinuationRequest && !internalResumeRequest) {
+        if (!guardedDebugRequestId && !interactiveContinuationRequest && !internalResumeRequest) {
             const quickResult = await tryQuickCommand(userInput);
             if (quickResult.handled) {
                 // 快捷命令已处理
@@ -4683,6 +4715,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         const runId = `agent-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         setLoading(true);
         try {
+            if (guardedDebugRequestId
+                && cancelledDebugBridgeRequestIdsRef.current.has(guardedDebugRequestId)) {
+                throw new Error('受控调试请求已取消，本轮不会继续提交模型或 Photoshop 写入。');
+            }
             await handleUnifiedAgent(userInput, frozenSubmission.images, {
                 runId,
                 conversationId: runConversationId,
@@ -4695,6 +4731,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     : undefined,
                 publicPlanDisposableLiveAdapter: hasOverride
                     ? override?.publicPlanDisposableLiveAdapter
+                    : undefined,
+                guardedPhotoshopExecutionBaseline: hasOverride
+                    ? override?.guardedPhotoshopExecutionBaseline
                     : undefined,
                 interactiveContinuationRequest,
                 internalResumeRequest,
@@ -4948,97 +4987,234 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }, [buildChatTestSnapshot, handleSend, resetChatTestConversation, waitForChatIdle, waitForChatRunStartOrAssistant]);
 
     useEffect(() => {
-        const unsubscribe = window.designEcho?.onDebugBridgeChatSubmit?.(async (request) => {
-            const text = String(request?.text || '').trim();
-            if (!text) {
-                throw new Error('Debug Bridge chat submit requires text.');
-            }
-            if (chatSubmissionInFlightRef.current || useAppStore.getState().isLoading) {
-                throw new Error('当前已有设计任务正在执行，请等待完成或先停止当前任务。');
-            }
-            const expectedProjectPath = String(request?.expectedProjectPath || '')
-                .trim()
-                .replace(/\\/g, '/')
-                .replace(/\/+$/, '')
-                .toLowerCase();
-            const currentProjectPath = String(useAppStore.getState().currentProject?.path || '')
-                .trim()
-                .replace(/\\/g, '/')
-                .replace(/\/+$/, '')
-                .toLowerCase();
-            if (expectedProjectPath) {
-                if (!currentProjectPath || currentProjectPath !== expectedProjectPath) {
-                    throw new Error('当前项目与设计可靠性测试 fixture 不一致，已在提交模型和 Photoshop 写入前停止。');
-                }
-            }
-            const timeoutMs = Math.max(
-                1000,
-                Math.min(Number(request.timeoutMs) || 60000, MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS)
-            );
-            if (request.resetConversation) {
-                resetChatTestConversation();
-            }
-            const submitAndWait = async () => {
-                const before = buildChatTestSnapshot();
-                const submittedState = useAppStore.getState();
-                const submittedModelId = String(submittedState.modelPreferences?.primaryModel || '').trim();
-                const submittedModel = getModelById(submittedModelId);
-                const sendPromise = handleSend({
-                    text,
-                    image: null,
-                    expectedProjectPath: request.expectedProjectPath,
-                    publicPlanConfirmationSourceMessageId: request.publicPlanConfirmationSourceMessageId,
-                    publicPlanConfirmationRequestId: request.publicPlanConfirmationRequestId,
-                    publicPlanDisposableLiveAdapter: request.publicPlanDisposableLiveAdapter
-                });
-                void sendPromise.catch(error => {
-                    console.warn('[DebugBridgeChatSubmit] submit send failed:', error);
-                });
-                await waitForChatRunStartOrAssistant(before.messageCount, Math.min(timeoutMs, 5000));
-                const snapshot = await waitForChatIdle(timeoutMs);
-                const completedState = useAppStore.getState();
-                const completedProjectPath = String(completedState.currentProject?.path || '')
-                    .trim()
-                    .replace(/\\/g, '/')
-                    .replace(/\/+$/, '')
-                    .toLowerCase();
-                const completedModelId = String(completedState.modelPreferences?.primaryModel || '').trim();
-                const completedModel = getModelById(completedModelId);
-                return {
-                    snapshot,
-                    receipt: {
-                        version: 'debug-bridge-chat-submit-receipt/v1',
-                        submittedProjectPath: currentProjectPath,
-                        completedProjectPath,
-                        expectedProjectMatchedAtSubmission: Boolean(
-                            expectedProjectPath && currentProjectPath === expectedProjectPath
-                        ),
-                        projectUnchangedThroughCompletion: Boolean(
-                            currentProjectPath && completedProjectPath === currentProjectPath
-                        ),
-                        submittedModelId,
-                        submittedApiModelId: String(submittedModel?.apiModelId || '').trim(),
-                        completedModelId,
-                        completedApiModelId: String(completedModel?.apiModelId || '').trim(),
-                        provider: String(submittedModel?.provider || '').trim(),
-                        modelUnchangedThroughCompletion: Boolean(
-                            submittedModelId && completedModelId === submittedModelId
-                        ),
-                        conversationId: String(completedState.currentConversationId || '').trim(),
-                        completedAt: new Date().toISOString()
-                    }
-                };
-            };
-            if (request.disableSkillBridges === true) {
-                const { runWithSkillBridgesSuppressed } = await import('../services/skill-executors/skill-tools');
-                return runWithSkillBridgesSuppressed(submitAndWait);
-            }
-            return submitAndWait();
+        const unsubscribe = window.designEcho?.onDebugBridgeChatCancel?.((request) => {
+            const requestId = String(request?.requestId || '').trim();
+            if (!requestId || activeDebugBridgeRequestIdRef.current !== requestId) return;
+            // Cancel 可能早于 handleSend/AbortController 到达（例如仍在 diagnoseState/listDocuments
+            // 写前预检）。请求级账本保证预检返回后也不能晚启动模型或 Photoshop 写入。
+            cancelledDebugBridgeRequestIdsRef.current.add(requestId);
+            stopGeneration();
+            markActiveAgentRunStopped();
         });
         return () => {
             unsubscribe?.();
         };
-    }, [buildChatTestSnapshot, handleSend, resetChatTestConversation, waitForChatIdle, waitForChatRunStartOrAssistant]);
+    }, [stopGeneration]);
+
+    useEffect(() => {
+        const unsubscribe = window.designEcho?.onDebugBridgeChatSubmit?.(async (request) => {
+            const text = String(request?.text || '').trim();
+            const debugRequestId = String(request?.requestId || '').trim();
+            if (!text) {
+                throw new Error('Debug Bridge chat submit requires text.');
+            }
+            if (!debugRequestId) {
+                throw new Error('Debug Bridge chat submit requires request identity.');
+            }
+            if (chatSubmissionInFlightRef.current || useAppStore.getState().isLoading) {
+                throw new Error('当前已有设计任务正在执行，请等待完成或先停止当前任务。');
+            }
+            if (activeDebugBridgeRequestIdRef.current) {
+                throw new Error('已有受控调试请求尚未闭合，本轮不会启动。');
+            }
+            activeDebugBridgeRequestIdRef.current = debugRequestId;
+            cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
+            try {
+                const throwIfDebugRequestCancelled = (): void => {
+                    if (cancelledDebugBridgeRequestIdsRef.current.has(debugRequestId)) {
+                        throw new Error('受控调试请求已取消，本轮不会继续提交模型或 Photoshop 写入。');
+                    }
+                };
+                const expectedProjectPath = String(request?.expectedProjectPath || '')
+                    .trim()
+                    .replace(/\\/g, '/')
+                    .replace(/\/+$/, '')
+                    .toLowerCase();
+                const currentProjectPath = String(useAppStore.getState().currentProject?.path || '')
+                    .trim()
+                    .replace(/\\/g, '/')
+                    .replace(/\/+$/, '')
+                    .toLowerCase();
+                if (expectedProjectPath) {
+                    if (!currentProjectPath || currentProjectPath !== expectedProjectPath) {
+                        throw new Error('当前项目与受控调试指定目录不一致，已在提交模型和 Photoshop 写入前停止。');
+                    }
+                }
+                const expectedProvider = String(request?.expectedProvider || '').trim();
+                const expectedModelId = String(request?.expectedModelId || '').trim();
+                const expectedPhotoshopRuntimeBuildId = String(
+                    request?.expectedPhotoshopRuntimeBuildId || ''
+                ).trim();
+                if (!expectedPhotoshopRuntimeBuildId) {
+                    throw new Error('受控调试缺少 Photoshop Runtime Build 身份，本轮不会提交。');
+                }
+                const selectedState = useAppStore.getState();
+                const selectedModelId = String(selectedState.modelPreferences?.primaryModel || '').trim();
+                const selectedModel = getModelById(selectedModelId);
+                const selectedApiModelId = String(selectedModel?.apiModelId || '').trim();
+                const selectedProvider = String(selectedModel?.provider || '').trim();
+                if (expectedModelId && expectedModelId !== selectedModelId && expectedModelId !== selectedApiModelId) {
+                    throw new Error(`当前选择的模型不是受控调试指定模型 ${expectedModelId}，本轮不会提交。`);
+                }
+                if (expectedProvider && expectedProvider !== selectedProvider) {
+                    throw new Error(`当前选择的 Provider 不是受控调试指定 Provider ${expectedProvider}，本轮不会提交。`);
+                }
+                const submittedPhotoshopRuntimeResult = await executeToolCall('diagnoseState', {
+                    verbose: false
+                });
+                throwIfDebugRequestCancelled();
+                const submittedPhotoshopRuntimeBuildId = readDebugPhotoshopRuntimeBuildId(
+                    submittedPhotoshopRuntimeResult
+                );
+                if (!submittedPhotoshopRuntimeBuildId
+                    || submittedPhotoshopRuntimeBuildId !== expectedPhotoshopRuntimeBuildId) {
+                    throw new Error(
+                        `当前 Photoshop Runtime Build 与受控调试指定版本不一致（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${submittedPhotoshopRuntimeBuildId || 'unknown'}）。`
+                    );
+                }
+                let openPhotoshopDocumentCountAtSubmission: number | null = null;
+                if (request.requireNoOpenPhotoshopDocuments === true) {
+                    const documentListResult = await executeToolCall('listDocuments', {
+                        includeDetails: false
+                    });
+                    throwIfDebugRequestCancelled();
+                    if (documentListResult?.success !== true
+                        || !Array.isArray(documentListResult?.documents)) {
+                        throw new Error('无法可靠读取 Photoshop 文档列表，本轮受控调试不会提交模型或执行写入。');
+                    }
+                    const openDocumentCount = documentListResult.documents.length;
+                    openPhotoshopDocumentCountAtSubmission = openDocumentCount;
+                    if (openDocumentCount > 0) {
+                        throw new Error(`Photoshop 当前仍打开 ${openDocumentCount} 个既有文档；请先安全处理这些文档，再运行隔离测试。`);
+                    }
+                }
+                const guardedPhotoshopExecutionBaseline = createGuardedPhotoshopExecutionBaseline({
+                    requestId: debugRequestId,
+                    expectedPhotoshopRuntimeBuildId
+                });
+                if (request.resetConversation) {
+                    resetChatTestConversation();
+                }
+                const submitAndWait = async () => {
+                    throwIfDebugRequestCancelled();
+                    const submittedState = useAppStore.getState();
+                    const submittedModelId = String(submittedState.modelPreferences?.primaryModel || '').trim();
+                    const submittedModel = getModelById(submittedModelId);
+                    const submittedApiModelId = String(submittedModel?.apiModelId || '').trim();
+                    const submittedProvider = String(submittedModel?.provider || '').trim();
+                    if (expectedModelId
+                        && expectedModelId !== submittedModelId
+                        && expectedModelId !== submittedApiModelId) {
+                        throw new Error(`提交前模型已变化，不再启动本轮受控调试（期望 ${expectedModelId}）。`);
+                    }
+                    if (expectedProvider && expectedProvider !== submittedProvider) {
+                        throw new Error(`提交前 Provider 已变化，不再启动本轮受控调试（期望 ${expectedProvider}）。`);
+                    }
+                    // 这是进入 handleSend 前最后一个同步检查。检查与函数调用之间没有 await，
+                    // 后续一旦让出事件循环，handleSend 已建立本轮 AbortController，取消会正常中断。
+                    throwIfDebugRequestCancelled();
+                    await handleSend({
+                        text,
+                        image: null,
+                        expectedProjectPath: request.expectedProjectPath,
+                        guardedPhotoshopExecutionBaseline,
+                        publicPlanConfirmationSourceMessageId: request.publicPlanConfirmationSourceMessageId,
+                        publicPlanConfirmationRequestId: request.publicPlanConfirmationRequestId,
+                        publicPlanDisposableLiveAdapter: request.publicPlanDisposableLiveAdapter
+                    });
+                    const snapshot = buildChatTestSnapshot();
+                    const completedState = useAppStore.getState();
+                    const completedProjectPath = String(completedState.currentProject?.path || '')
+                        .trim()
+                        .replace(/\\/g, '/')
+                        .replace(/\/+$/, '')
+                        .toLowerCase();
+                    const completedModelId = String(completedState.modelPreferences?.primaryModel || '').trim();
+                    const completedModel = getModelById(completedModelId);
+                    const completedPhotoshopRuntimeResult = await executeToolCall('diagnoseState', {
+                        verbose: false
+                    });
+                    const completedPhotoshopRuntimeBuildId = readDebugPhotoshopRuntimeBuildId(
+                        completedPhotoshopRuntimeResult
+                    );
+                    if (!completedPhotoshopRuntimeBuildId
+                        || completedPhotoshopRuntimeBuildId !== expectedPhotoshopRuntimeBuildId) {
+                        throw new Error(
+                            `任务完成时 Photoshop Runtime Build 已变化或无法读取（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${completedPhotoshopRuntimeBuildId || 'unknown'}）。`
+                        );
+                    }
+                    const firstPhotoshopMutationBaseline = readGuardedPhotoshopExecutionBaselineReceipt(
+                        guardedPhotoshopExecutionBaseline
+                    );
+                    return {
+                        snapshot,
+                        receipt: {
+                            version: 'debug-bridge-chat-submit-receipt/v1',
+                            requestId: debugRequestId,
+                            submittedProjectPath: currentProjectPath,
+                            completedProjectPath,
+                            expectedProjectMatchedAtSubmission: Boolean(
+                                expectedProjectPath && currentProjectPath === expectedProjectPath
+                            ),
+                            projectUnchangedThroughCompletion: Boolean(
+                                currentProjectPath && completedProjectPath === currentProjectPath
+                            ),
+                            photoshopDocumentPolicy: request.requireNoOpenPhotoshopDocuments === true
+                                ? 'none_open'
+                                : 'not_required',
+                            openPhotoshopDocumentCountAtSubmission,
+                            photoshopDocumentGuardPassedAtSubmission: Boolean(
+                                request.requireNoOpenPhotoshopDocuments === true
+                                && openPhotoshopDocumentCountAtSubmission === 0
+                            ),
+                            expectedPhotoshopRuntimeBuildId,
+                            submittedPhotoshopRuntimeBuildId,
+                            completedPhotoshopRuntimeBuildId,
+                            expectedPhotoshopRuntimeMatchedAtSubmission: Boolean(
+                                submittedPhotoshopRuntimeBuildId
+                                && submittedPhotoshopRuntimeBuildId === expectedPhotoshopRuntimeBuildId
+                            ),
+                            photoshopRuntimeUnchangedThroughCompletion: Boolean(
+                                submittedPhotoshopRuntimeBuildId
+                                && completedPhotoshopRuntimeBuildId === submittedPhotoshopRuntimeBuildId
+                            ),
+                            firstPhotoshopMutationBaseline,
+                            submittedModelId,
+                            submittedApiModelId: String(submittedModel?.apiModelId || '').trim(),
+                            completedModelId,
+                            completedApiModelId: String(completedModel?.apiModelId || '').trim(),
+                            provider: String(submittedModel?.provider || '').trim(),
+                            modelUnchangedThroughCompletion: Boolean(
+                                submittedModelId && completedModelId === submittedModelId
+                            ),
+                            expectedModelMatchedAtSubmission: Boolean(
+                                expectedModelId
+                                && (expectedModelId === submittedModelId
+                                    || expectedModelId === String(submittedModel?.apiModelId || '').trim())
+                                && (!expectedProvider
+                                    || expectedProvider === String(submittedModel?.provider || '').trim())
+                            ),
+                            conversationId: String(completedState.currentConversationId || '').trim(),
+                            completedAt: new Date().toISOString()
+                        }
+                    };
+                };
+                if (request.disableSkillBridges === true) {
+                    const { runWithSkillBridgesSuppressed } = await import('../services/skill-executors/skill-tools');
+                    return runWithSkillBridgesSuppressed(submitAndWait);
+                }
+                return submitAndWait();
+            } finally {
+                if (activeDebugBridgeRequestIdRef.current === debugRequestId) {
+                    activeDebugBridgeRequestIdRef.current = null;
+                }
+                cancelledDebugBridgeRequestIdsRef.current.delete(debugRequestId);
+            }
+        });
+        return () => {
+            unsubscribe?.();
+        };
+    }, [buildChatTestSnapshot, handleSend, resetChatTestConversation]);
 
     /**
      * 快捷命令处理器
@@ -5114,6 +5290,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             interactiveContinuationRequest?: InteractiveContinuationRequest;
             internalResumeRequest?: AgentInternalResumeRequest;
             providerNativeWebSearchIntent?: ChatWebSearchIntent;
+            guardedPhotoshopExecutionBaseline?: GuardedPhotoshopExecutionBaseline;
             submission?: FrozenComposerSubmission;
         }
     ) => {
@@ -5123,6 +5300,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         const runId = runOptions?.runId || `agent-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const runConversationId = runOptions?.conversationId || useAppStore.getState().currentConversationId;
         const submissionState = useAppStore.getState() as any;
+        const currentModelPreferences = submissionState?.modelPreferences || modelPreferences;
+        const submissionModelPreferences = currentModelPreferences
+            ? {
+                ...currentModelPreferences,
+                ...(currentModelPreferences.thinking
+                    ? { thinking: { ...currentModelPreferences.thinking } }
+                    : {})
+            }
+            : undefined;
+        const submissionPrimaryModelId = String(submissionModelPreferences?.primaryModel || '').trim();
+        const submissionModelThinkingEnabled = submissionPrimaryModelId
+            ? resolveModelThinkingEnabledForCall(submissionPrimaryModelId, submissionModelPreferences)
+            : false;
         const runConversationBranchId = String(
             (Array.isArray(submissionState?.conversations)
                 ? submissionState.conversations.find((conversation: any) => (
@@ -5211,7 +5401,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 return id;
             }
             // 一字不差的连续重复只留一条（真机 2026-08-19：「结果需要复核：…没有全部成功」同一句连发 5 次、
-            // 「回复未完整，继续整理」×5——Harness 每轮失败各发一步，模型也会逐字重述）。
+            // Provider 截断恢复曾连续投影同义状态——Harness 每轮失败各发一步，模型也会逐字重述）。
             // 只去逐字重复：措辞不同的相邻思考各有信息量，不做模糊合并。
             const lastStep = collectedSteps[collectedSteps.length - 1];
             const normalizeStepText = (text: unknown) => String(text || '').replace(/\s+/g, '');
@@ -5853,7 +6043,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 userInput,
                 userSelectedSkillId: selectedComposerSkillId || undefined,
                 requestId: runId,
+                guardedPhotoshopExecutionBaseline: runOptions?.guardedPhotoshopExecutionBaseline,
                 conversationId: runConversationId || undefined,
+                selectedModelId: submissionPrimaryModelId || undefined,
+                selectedModelThinkingEnabled: submissionModelThinkingEnabled,
                 conversationBranchId: runConversationBranchId || undefined,
                 interactiveContinuationRequest: runOptions?.interactiveContinuationRequest,
                 internalResumeRequest: runOptions?.internalResumeRequest,
@@ -5948,9 +6141,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     purpose: options?.purpose,
                     silent: options?.silent === true
                 });
-                const latestModelState = useAppStore.getState();
-                const latestModelPreferences = latestModelState.modelPreferences || modelPreferences;
-                const userPrimaryModelId = String(latestModelPreferences?.primaryModel || '').trim();
+                const userPrimaryModelId = submissionPrimaryModelId;
                 // 单模型运行边界：普通回复、路由、工具循环与图像输入都只用用户选择的同一个
                 // 已验证全模态模型。原生 web_search 不再成为偷偷换模型的理由；当前模型不支持时
                 // 应走显式搜索工具或如实失败。
@@ -6007,7 +6198,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         temperature: options?.temperature,
                         thinkingEnabled: options?.thinkingEnabled === false
                             ? false
-                            : resolveModelThinkingEnabledForCall(modelId, latestModelPreferences),
+                            : resolveModelThinkingEnabledForCall(modelId, submissionModelPreferences),
                         ...(nativeTools.length > 0 ? { nativeTools } : {})
                     };
                     if (nativeTools.length > 0) {
@@ -6025,7 +6216,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 temperature: options?.temperature,
                                 thinkingEnabled: options?.thinkingEnabled === false
                                     ? false
-                                    : resolveModelThinkingEnabledForCall(modelId, latestModelPreferences),
+                                    : resolveModelThinkingEnabledForCall(modelId, submissionModelPreferences),
                                 timeoutMs: modelTimeoutMs
                             };
                             let streamedContentFromCall = '';
@@ -6664,8 +6855,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             clearThinkingSteps();
             
             // 构建脱敏错误摘要。保留 quota / 429 / 鉴权等真实原因，不回退成笼统失败。
-            const prefs = useAppStore.getState().modelPreferences;
-            const isCloud = prefs?.mode === 'cloud';
+            const isCloud = submissionModelPreferences?.mode === 'cloud';
             const errorMsg = summarizeChatError(error, { isCloud });
             
             const errorStepsToSave = normalizePersistedVisibleProcessSteps(collectedSteps.filter(isVisiblePonderingStep));

@@ -181,7 +181,12 @@ export function recommendMcpTools(goal: string, tools: McpToolItem[]): McpToolIt
 export const agentPanelBridgeExecutor: SkillExecutor = {
     skillId: 'agent-panel-bridge',
 
-    async execute({ params, callbacks, signal }: SkillExecuteParams): Promise<AgentResult> {
+    async execute({
+        params,
+        callbacks,
+        signal,
+        guardedAtomicToolExecutor
+    }: SkillExecuteParams): Promise<AgentResult> {
         const p = (params || {}) as BridgeParams;
         const goal = String(p.goal || '').trim();
         if (!goal) {
@@ -234,7 +239,10 @@ export const agentPanelBridgeExecutor: SkillExecutor = {
         const mcpToolName = String(p.mcpToolName || '').trim();
         if (mcpToolName && pluginConnected) {
             callbacks?.onMessage?.(`🛠️ 正在调用 MCP 工具: ${mcpToolName}`);
-            mcpCall = await callPhotoshopMcpTool(mcpToolName, p.mcpArguments || {}, { signal }).catch((error: any) => ({
+            mcpCall = await (guardedAtomicToolExecutor
+                ? guardedAtomicToolExecutor(mcpToolName, p.mcpArguments || {})
+                : callPhotoshopMcpTool(mcpToolName, p.mcpArguments || {}, { signal })
+            ).catch((error: any) => ({
                 error: error?.message || String(error || 'unknown error')
             }));
         }

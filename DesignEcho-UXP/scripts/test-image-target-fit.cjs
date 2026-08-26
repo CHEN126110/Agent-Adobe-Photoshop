@@ -142,6 +142,130 @@ function assertTransformTargetBoundsTransactionContract() {
     );
 }
 
+function sliceAgentToolSchema(source, toolName, nextToolName) {
+    const start = source.indexOf(`name: '${toolName}'`);
+    const end = source.indexOf(`name: '${nextToolName}'`, start + 1);
+    assert.ok(start >= 0 && end > start, `${toolName} Agent schema must exist`);
+    return source.slice(start, end);
+}
+
+function assertImagePlacementParameterConflictContracts() {
+    const placeImagePath = path.resolve(
+        __dirname,
+        '../src/tools/image/place-image.ts'
+    );
+    const transformLayerPath = path.resolve(
+        __dirname,
+        '../src/tools/layer/transform-layer.ts'
+    );
+    const agentToolSchemasPath = path.resolve(
+        __dirname,
+        '../../DesignEcho-Agent/src/renderer/services/agent-runtime/tool-schemas.ts'
+    );
+    const skuColorCardExecutorPath = path.resolve(
+        __dirname,
+        '../../DesignEcho-Agent/src/renderer/services/skill-executors/sku-color-card.executor.ts'
+    );
+    const placeImageSource = fs.readFileSync(placeImagePath, 'utf8');
+    const transformLayerSource = fs.readFileSync(transformLayerPath, 'utf8');
+    const agentToolSchemasSource = fs.readFileSync(agentToolSchemasPath, 'utf8');
+    const skuColorCardExecutorSource = fs.readFileSync(skuColorCardExecutorPath, 'utf8');
+    const transformSchema = sliceAgentToolSchema(
+        agentToolSchemasSource,
+        'transformLayer',
+        'quickScale'
+    );
+    const placeImageSchema = sliceAgentToolSchema(
+        agentToolSchemasSource,
+        'placeImage',
+        'replaceLayerContent'
+    );
+
+    assert.ok(
+        placeImageSource.includes('collectTargetBoundsConflictingParameters(params)')
+            && placeImageSource.includes("'scale',")
+            && placeImageSource.includes("'fitToCanvas',")
+            && placeImageSource.includes("'x',")
+            && placeImageSource.includes("'y',")
+            && placeImageSource.includes("'center',")
+            && placeImageSource.includes("'allowUpscale'")
+            && placeImageSource.includes('已拒绝静默忽略冲突参数'),
+        'placeImage execution must fail closed instead of ignoring targetBounds conflicts'
+    );
+    for (const [toolName, source] of [
+        ['placeImage', placeImageSource],
+        ['transformLayer', transformLayerSource]
+    ]) {
+        assert.ok(
+            source.includes("=== undefined ? 'targetFit' : ''")
+                && source.includes("=== undefined ? 'targetAnchor' : ''")
+                && source.includes('targetBounds 需要同时显式提供 targetFit 与 targetAnchor')
+                && source.includes('已拒绝由执行器默认决定适配或锚点'),
+            `${toolName} UXP execution must require explicit targetFit and targetAnchor with targetBounds`
+        );
+        assert.ok(
+            source.includes('targetFit、targetAnchor 与 focalPoint 只在提供有效 targetBounds 时生效'),
+            `${toolName} UXP execution must reject target fit controls without targetBounds`
+        );
+    }
+    assert.ok(
+        transformLayerSource.includes('fitToCanvas 需要显式 fitPercentage')
+            && transformLayerSource.includes('focalPoint 不能与同一次 rotate/flip 混用'),
+        'transformLayer UXP execution must preserve fitPercentage and focal-point conflict checks'
+    );
+    assert.ok(
+        skuColorCardExecutorSource.includes('targetAnchor: plan.imagePlacement.anchor')
+            && !/targetFit:\s*'contain',\s*layerOrder:/.test(skuColorCardExecutorSource),
+        'SKU internal placeImage calls must forward the Agent-authored anchor instead of relying on UXP center'
+    );
+    assert.ok(
+        !placeImageSource.includes('focalPoint 存在时只保留为请求事实，不参与落位')
+            && placeImageSource.includes('focalPoint 存在时优先由 focalPoint 控制落位'),
+        'placeImage source comments must describe the real focal-point geometry'
+    );
+    for (const field of ['scale', 'fitToCanvas', 'x', 'y', 'center', 'allowUpscale']) {
+        assert.ok(
+            placeImageSchema.includes(`{ required: ['${field}'] }`),
+            `placeImage Agent schema must reject targetBounds with ${field}`
+        );
+    }
+    for (const field of ['scaleUniform', 'scaleX', 'scaleY', 'fitPercentage']) {
+        assert.ok(
+            transformSchema.includes(`{ required: ['${field}'] }`),
+            `transformLayer Agent schema must reject targetBounds with ${field}`
+        );
+    }
+    assert.ok(
+        transformSchema.includes("required: ['fitToCanvas']")
+            && transformSchema.includes('properties: { fitToCanvas: { enum: [true] } }')
+            && transformSchema.includes("then: { required: ['fitPercentage'] }")
+            && transformSchema.includes("if: { required: ['focalPoint'] }")
+            && transformSchema.includes("required: ['rotate']")
+            && transformSchema.includes('properties: { rotate: { not: { enum: [0] } } }')
+            && transformSchema.includes("required: ['flipHorizontal']")
+            && transformSchema.includes("required: ['flipVertical']"),
+        'transformLayer Agent schema must mirror UXP targetBounds and focal-point conflicts'
+    );
+    for (const [toolName, schema] of [
+        ['placeImage', placeImageSchema],
+        ['transformLayer', transformSchema]
+    ]) {
+        const reverseDependency = schema.indexOf("{ required: ['targetFit'] }");
+        const requiredTargetBounds = schema.indexOf("then: { required: ['targetBounds'] }", reverseDependency);
+        assert.ok(
+            reverseDependency >= 0
+                && schema.includes("{ required: ['targetAnchor'] }")
+                && schema.includes("{ required: ['focalPoint'] }")
+                && requiredTargetBounds > reverseDependency,
+            `${toolName} Agent schema must require targetBounds for fit, anchor, or focalPoint`
+        );
+    }
+    assert.ok(
+        placeImageSchema.includes('contain 完整保留；cover 铺满并可能超出；fill 拉伸。'),
+        'placeImage must retain the minimal semantic difference between fit modes'
+    );
+}
+
 const geometry = loadImageTargetFitModule();
 const target = { left: 0, top: 0, width: 750, height: 426 };
 const portrait = { left: 100, top: 50, width: 4672, height: 6453 };
@@ -360,6 +484,7 @@ assert.throws(
 );
 
 assertTransformTargetBoundsTransactionContract();
+assertImagePlacementParameterConflictContracts();
 assertJpegQualityNormalizationContract();
 
-console.log('image-target-fit: 17 geometry cases, JPEG quality contract, and targetBounds transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, parameter conflicts, JPEG quality contract, and targetBounds transaction audit passed');

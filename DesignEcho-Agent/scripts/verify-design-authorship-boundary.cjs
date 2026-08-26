@@ -24,6 +24,19 @@ const {
 const {
     buildRenderLayoutStackPlan
 } = require(path.join(root, 'src/shared/layout/render-layout-stack-plan.ts'));
+const {
+    buildSkuColorCardPlan
+} = require(path.join(root, 'src/shared/sku-color-card-skill.ts'));
+const {
+    bindSkuColorCardRuntimeSelection,
+    createSkuColorCardRuntimeSelectionReceipt
+} = require(path.join(root, 'src/shared/sku-color-card-runtime-selection.ts'));
+const {
+    buildVisibleAgentActivityFromProgress,
+    buildVisibleAgentActivityFromStepEvent,
+    formatAgentProcessEventContent,
+    isVisibleAgentProcessEvent
+} = require(path.join(root, 'src/renderer/services/agent-visible-feedback.ts'));
 
 async function main() {
 const failures = [];
@@ -59,6 +72,8 @@ const codexSubscription = source('src/main/services/codex-subscription-service.t
 const codexStrictOutputSchema = source('src/main/services/codex-strict-output-schema.ts');
 const capabilitySession = source('src/renderer/services/agent-runtime/capability-session.ts');
 const autonomousExecutor = source('src/renderer/services/skill-executors/autonomous-agent.executor.ts');
+const designAgentEngineSource = source('src/renderer/services/design-agent/engine.ts');
+const skillRoutingSource = source('src/shared/skill-routing.ts');
 const agentRuntime = source('src/renderer/services/agent-runtime/agent.ts');
 const agentMessageContext = source('src/renderer/services/agent-runtime/message-context.ts');
 const mcpHostClient = source('src/renderer/services/mcp-host.client.ts');
@@ -84,6 +99,309 @@ const resourceManagerSource = source('src/main/services/resource-manager-service
 const toolResultSanitizerSource = source('src/renderer/services/agent-runtime/tool-result-sanitizer.ts');
 const uxpTemplateTool = source('../DesignEcho-UXP/src/tools/layout/template-tool.ts');
 const layoutEngineSource = source('src/shared/layout/layout-engine.ts');
+const skuBatchExecutorSource = source('src/renderer/services/skill-executors/sku-batch.executor.ts');
+const skuColorCardExecutorSource = source('src/renderer/services/skill-executors/sku-color-card.executor.ts');
+const skuColorCardContractSource = source('src/shared/sku-color-card-skill.ts');
+const skuCardSourcePreparationSource = source('src/shared/sku-card-source-preparation-plan.ts');
+const manualSkuColorCardBridgeSource = source('src/renderer/services/manual-sku-color-card-bridge.ts');
+const skillToolsSource = source('src/renderer/services/skill-executors/skill-tools.ts');
+const chatPanelSource = source('src/renderer/components/ChatPanel.tsx');
+
+const skuSourcePreparationSlice = skuBatchExecutorSource.slice(
+    skuBatchExecutorSource.indexOf('const executeSkuCardSourcePreparationPlan = async'),
+    skuBatchExecutorSource.indexOf('const executeSkuCardTemplatePreparationPlan = async')
+);
+
+const interactionOwnerResolverSource = autonomousExecutor.slice(
+    autonomousExecutor.indexOf('function resolveProviderOwnedInteractionSkillIds('),
+    autonomousExecutor.indexOf('function buildWorkflowMenuLines(')
+);
+check(
+    '普通文字推荐不能在模型理解前绑定 Runtime Skill 身份',
+    designAgentEngineSource.includes('buildRuntimeSelectedSkillHandoffFromUserSelection({')
+        && !designAgentEngineSource.includes('buildRuntimeSelectedSkillHandoffFromRecommendation')
+        && !skillRoutingSource.includes('function buildRuntimeSelectedSkillHandoffFromRecommendation')
+        && skillRoutingSource.includes('bindsRuntimeIdentity: false')
+);
+check(
+    '未绑定的 Skill 推荐不能抢占通用交互卡所有权',
+    interactionOwnerResolverSource.includes('capabilitySession?.getResolution().manifestRef')
+        && !interactionOwnerResolverSource.includes('skillRoutingRecommendation')
+        && !interactionOwnerResolverSource.includes('recommendation.skillId')
+);
+check(
+    'Provider 截断恢复保留真实故障但不冒充用户可见设计回复',
+    !agentRuntime.includes('回复未完整，继续整理')
+        && agentRuntime.includes("title: 'Provider 输出截断，后台续接'")
+        && agentRuntime.includes("audience: 'debug'")
+        && !agentRuntime.includes('如 sourceDirectory')
+        && agentRuntime.includes('这次没有拿到完整结果')
+);
+const providerTruncationDebugEvent = {
+    kind: 'warning',
+    title: 'Provider 输出截断，后台续接',
+    detail: '保留已完成内容并请求有界续接；残缺 Tool 调用不会执行。',
+    status: 'running',
+    audience: 'debug',
+    issue: 'provider_output_truncated'
+};
+const providerTruncationResultSlice = agentRuntime.slice(
+    agentRuntime.indexOf('private async buildProviderOutputTruncatedResult('),
+    agentRuntime.indexOf('private async requestForcedFinalResponse(')
+);
+const guardedProviderProcessText = formatAgentProcessEventContent({
+    ...providerTruncationDebugEvent,
+    audience: 'user',
+    visibility: 'user_process',
+    status: 'error'
+});
+check(
+    '成功的 Provider 截断续接不会进入普通 UI，连续失败仍以写入事实区分最终结果',
+    buildVisibleAgentActivityFromStepEvent(providerTruncationDebugEvent) === null
+        && isVisibleAgentProcessEvent(providerTruncationDebugEvent) === false
+        && buildVisibleAgentActivityFromProgress('Provider 输出截断，后台续接') === null
+        && buildVisibleAgentActivityFromProgress('本轮消耗 4096 token，后台续接') === null
+        && guardedProviderProcessText === '当前处理条件还不完整，暂时不能确认画面结果。'
+        && !/token|轮次|Provider|Harness|后台续接/u.test(guardedProviderProcessText)
+        && providerTruncationResultSlice.includes('const hasPhotoshopMutation = this.hasObservedTaskMutation()')
+        && providerTruncationResultSlice.includes('photoshopMutationPreserved: hasPhotoshopMutation')
+        && providerTruncationResultSlice.includes('前面的 Photoshop 改动已保留')
+        && providerTruncationResultSlice.includes('尚未修改 Photoshop 画面')
+        && providerTruncationResultSlice.includes('success: false')
+        && providerTruncationResultSlice.includes("stopReason: 'provider_output_truncated'")
+        && !/token|轮次|Provider|Harness|后台续接/u.test(
+            '这次没有拿到完整结果。前面的 Photoshop 改动已保留，但任务还没有完成。为避免用残缺内容继续修改画面，我已停止本轮。'
+        )
+        && chatPanelSource.includes('const activity = buildVisibleAgentActivityFromStepEvent(event)')
+        && chatPanelSource.includes('if (event?.title && isVisibleAgentProcessEvent(event))')
+        && chatPanelSource.includes('buildVisibleAgentActivityFromProgress(message, current) || current')
+        && chatPanelSource.includes('const resultVisibleMessage = resolvedVisibleResult.content')
+        && chatPanelSource.includes('const formattedFailureContent = formatFailureContent(')
+);
+
+const skuColorCardSources = [{
+    filePath: 'C:\\fixture\\粉色.jpg',
+    colorName: '粉色',
+    colorNameSource: 'provided'
+}, {
+    filePath: 'C:\\fixture\\咖色.jpg',
+    colorName: '咖色',
+    colorNameSource: 'provided'
+}];
+const missingSkuColorCardDesign = buildSkuColorCardPlan({
+    sources: skuColorCardSources,
+    outputPath: 'C:\\fixture\\PSD\\SKU.psb'
+});
+check(
+    '正常 SKU 色卡缺少 Agent 设计声明时保持零写入计划',
+    missingSkuColorCardDesign.canExecute === false
+        && missingSkuColorCardDesign.status === 'blocked_missing_design_spec'
+        && missingSkuColorCardDesign.canvas === null
+        && missingSkuColorCardDesign.cardStyle === null
+        && missingSkuColorCardDesign.imagePlacement === null
+        && missingSkuColorCardDesign.slots.length === 0
+);
+const forgedLegacySkuColorCardDesign = buildSkuColorCardPlan({
+    sources: skuColorCardSources,
+    outputPath: 'C:\\fixture\\PSD\\SKU.psb',
+    designSpec: {
+        provenance: 'explicit_legacy_profile'
+    }
+});
+check(
+    '模型参数不能伪造手工面板 legacy Profile 授权',
+    forgedLegacySkuColorCardDesign.canExecute === false
+        && forgedLegacySkuColorCardDesign.status === 'blocked_invalid_design_spec'
+        && skuColorCardExecutorSource.includes('MANUAL_SKU_COLOR_CARD_LEGACY_PROFILE_CAPABILITY')
+        && skuColorCardExecutorSource.includes('trustedCapabilities.manualLegacyProfile === MANUAL_SKU_COLOR_CARD_LEGACY_PROFILE_CAPABILITY')
+        && !skuColorCardExecutorSource.includes('params.__manualPanelLegacyProfileAuthorized')
+        && manualSkuColorCardBridgeSource.includes('MANUAL_SKU_COLOR_CARD_LEGACY_PROFILE_CAPABILITY')
+        && !manualSkuColorCardBridgeSource.includes('__manualPanelLegacyProfileAuthorized: true')
+        && skillToolsSource.includes("'__manualPanelLegacyProfileAuthorized'")
+);
+
+const authoredSkuColorCardDesignSpec = {
+        provenance: 'agent_authored',
+        presentationMode: 'card',
+        canvasWidth: 1200,
+        canvasHeight: 900,
+        canvasBackground: 'transparent',
+        cardWidth: 220,
+        cardHeight: 320,
+        cardCornerRadius: 18,
+        columns: 2,
+        columnGap: 56,
+        rowGap: 44,
+        gridAlignment: {
+            horizontal: 'end',
+            vertical: 'start',
+            lastRow: 'center'
+        },
+        showIndexNumbers: false,
+        cardFillColorHex: '#F4EFE8',
+        labelFillColorHex: '#FFFFFF',
+        labelTextColorHex: '#3A302B',
+        internalLabel: {
+            xRatio: 0.1,
+            yRatio: 0.78,
+            widthRatio: 0.8,
+            heightRatio: 0.14,
+            cornerRadiusToWidthRatio: 0.04,
+            fontSizeToHeightRatio: 0.52
+        },
+        labelTypography: {
+            fontName: 'Noto Sans CJK SC',
+            tracking: 24,
+            leadingToFontSizeRatio: 1.15,
+            alignment: 'right',
+            horizontalPaddingRatio: 0.1,
+            verticalPaddingRatio: 0.08
+        },
+        imagePlacement: {
+            subjectFillRatio: 0.74,
+            anchor: 'bottom-center'
+        }
+};
+const authoredSkuColorCardDesign = buildSkuColorCardPlan({
+    sources: skuColorCardSources,
+    outputPath: 'C:\\fixture\\PSD\\SKU.psb',
+    designSpec: authoredSkuColorCardDesignSpec
+});
+check(
+    'Agent 声明的 SKU 画布、对齐、排版、配色、主体占比与锚点原样进入计划',
+    authoredSkuColorCardDesign.canExecute === true
+        && authoredSkuColorCardDesign.designProvenance === 'agent_authored'
+        && authoredSkuColorCardDesign.presentationMode === 'card'
+        && authoredSkuColorCardDesign.canvas?.width === 1200
+        && authoredSkuColorCardDesign.canvas?.backgroundColor === 'transparent'
+        && authoredSkuColorCardDesign.slots[0]?.cardBounds.x === 704
+        && authoredSkuColorCardDesign.slots[0]?.cardBounds.y === 0
+        && authoredSkuColorCardDesign.slots[0]?.cardBounds.width === 220
+        && authoredSkuColorCardDesign.cardStyle?.cornerRadius === 18
+        && authoredSkuColorCardDesign.cardStyle?.fillColorHex === '#F4EFE8'
+        && authoredSkuColorCardDesign.cardStyle?.labelTextColorHex === '#3A302B'
+        && authoredSkuColorCardDesign.cardStyle?.labelTypography.fontName === 'Noto Sans CJK SC'
+        && authoredSkuColorCardDesign.cardStyle?.labelTypography.alignment === 'right'
+        && authoredSkuColorCardDesign.imagePlacement?.subjectFillRatio === 0.74
+        && authoredSkuColorCardDesign.imagePlacement?.anchor === 'bottom-center'
+        && authoredSkuColorCardDesign.indexReference.enabled === false
+);
+const runtimeSelectionReceipt = createSkuColorCardRuntimeSelectionReceipt([{
+    assetId: 'asset-selected-by-agent',
+    filePath: 'C:\\fixture\\DSC0001.jpg',
+    relativePath: '摄影图/DSC0001.jpg'
+}]);
+const runtimeSelectionBinding = bindSkuColorCardRuntimeSelection([{
+    assetId: 'asset-selected-by-agent',
+    filePath: 'C:\\fixture\\DSC0001.jpg',
+    colorName: '浅灰',
+    colorNameSource: 'inferred_candidate'
+}], runtimeSelectionReceipt);
+check(
+    'Runtime assetId 选择收据精确绑定路径，色名不能再次替 Agent 换图',
+    runtimeSelectionBinding.applied === true
+        && runtimeSelectionBinding.blockers.length === 0
+        && runtimeSelectionBinding.sources[0]?.filePath === 'C:\\fixture\\DSC0001.jpg'
+        && skuBatchExecutorSource.includes('createSkuColorCardRuntimeSelectionReceipt(')
+        && skuColorCardExecutorSource.includes('runtimeSelectionBinding.applied')
+        && skuColorCardExecutorSource.includes("method: 'runtime_asset_selection'")
+);
+const forgedRuntimeSelectionBinding = bindSkuColorCardRuntimeSelection([{
+    assetId: 'asset-forged-by-model',
+    filePath: 'C:\\fixture\\浅灰.jpg',
+    colorName: '浅灰'
+}], runtimeSelectionReceipt);
+check(
+    '模型参数不能伪造或改写 Runtime SKU 素材选择收据',
+    forgedRuntimeSelectionBinding.applied === true
+        && forgedRuntimeSelectionBinding.sources.length === 0
+        && forgedRuntimeSelectionBinding.blockers.length > 0
+);
+const flatSkuColorCardDesign = buildSkuColorCardPlan({
+    sources: skuColorCardSources,
+    outputPath: 'C:\\fixture\\PSD\\SKU-flat.psb',
+    designSpec: {
+        ...authoredSkuColorCardDesignSpec,
+        presentationMode: 'flat'
+    }
+});
+check(
+    'SKU flat/card 视觉结构由 Agent 显式声明，retouch 结果不再暗中选版式',
+    flatSkuColorCardDesign.canExecute === true
+        && flatSkuColorCardDesign.presentationMode === 'flat'
+        && skuColorCardExecutorSource.includes("if (plan.presentationMode === 'flat')")
+        && skuColorCardExecutorSource.includes("'blocked_flat_assets_not_ready'")
+        && !skuColorCardExecutorSource.includes('if (isPreparedSkuRetouchSource(earlyRetouchSource))')
+        && skuColorCardExecutorSource.includes('retouchedCardImageBounds')
+        && !skuColorCardExecutorSource.includes('本子分支实际不可达')
+        && !skuColorCardContractSource.includes('C-1183')
+        && !skuColorCardContractSource.includes('C-1248')
+        && skuColorCardContractSource.includes('presentationQualityCriteria')
+        && skillDeclarations.includes("strParam('presentationMode'")
+);
+check(
+    'SKU 文件名与保存边界不再绕过事实和版本安全',
+    skuColorCardExecutorSource.includes("name.normalize('NFKC').toLocaleLowerCase('zh-Hans-CN')")
+        && skuColorCardExecutorSource.includes("conflictPolicy: 'fail_if_exists'")
+        && skuColorCardExecutorSource.includes('afterColorName')
+        && skuColorCardExecutorSource.includes("'verify-flat-label-text-fit'")
+        && !skuColorCardExecutorSource.includes('labelTextFitVerified: true')
+);
+const indexedSkuColorCardDesign = buildSkuColorCardPlan({
+    sources: skuColorCardSources,
+    outputPath: 'C:\\fixture\\PSD\\SKU-indexed.psb',
+    designSpec: {
+        ...authoredSkuColorCardDesignSpec,
+        columns: 3,
+        showIndexNumbers: true,
+        indexStyle: {
+            colorHex: '#6A5147',
+            fontName: 'Noto Sans CJK SC',
+            tracking: 40,
+            leadingToFontSizeRatio: 1.1,
+            fontSizeToCardWidthRatio: 0.18,
+            xRatio: 0.5,
+            yRatio: -0.2,
+            alignment: 'center'
+        }
+    }
+});
+check(
+    'Agent 声明的 SKU 序号样式与位置进入计划，Harness 不再写死大小与颜色',
+    indexedSkuColorCardDesign.canExecute === true
+        && indexedSkuColorCardDesign.indexReference.style?.colorHex === '#6A5147'
+        && indexedSkuColorCardDesign.indexReference.style?.fontSizeToCardWidthRatio === 0.18
+        && indexedSkuColorCardDesign.slots[0]?.cardBounds.x === 566
+        && indexedSkuColorCardDesign.slots[0]?.indexText?.fontSize === 40
+        && indexedSkuColorCardDesign.slots[0]?.indexText?.y === -64
+);
+check(
+    '普通 SKU source preparation 不再写死视觉首稿',
+    skuSourcePreparationSlice.includes('colorCardDesignSpec,')
+        && skuSourcePreparationSlice.includes('requestedSourceAssetIds')
+        && !/canvasWidth:\s*1500|canvasHeight:\s*1500|cardWidth:\s*250|cardHeight:\s*380|cardCornerRadius:\s*10/.test(skuSourcePreparationSlice)
+        && skuBatchExecutorSource.includes("status: 'needs_agent_design_spec'")
+        && skuBatchExecutorSource.includes('toolResults: []')
+        && skuColorCardExecutorSource.includes('subjectFillRatio: plan.imagePlacement.subjectFillRatio')
+        && skuColorCardExecutorSource.includes('anchor: plan.imagePlacement.anchor')
+        && skuColorCardExecutorSource.includes('targetAnchor: plan.imagePlacement.anchor')
+        && !/targetFit:\s*'contain',\s*layerOrder:/.test(skuColorCardExecutorSource)
+        && !skuColorCardContractSource.includes('const DEFAULT_CANVAS_WIDTH')
+        && skuColorCardContractSource.includes('backgroundColor: designSpec.canvasBackground')
+        && skuColorCardContractSource.includes('gridAlignment: { ...designSpec.gridAlignment }')
+        && skuColorCardExecutorSource.includes('fontName: plan.cardStyle.labelTypography.fontName')
+        && skuColorCardExecutorSource.includes('colorHex: plan.indexReference.style.colorHex')
+        && !skuColorCardExecutorSource.includes('colorCardFormatPriority')
+        && !skuColorCardExecutorSource.includes('dedupedImages.push(sorted[0])')
+        && skuColorCardExecutorSource.includes("status: 'needs_agent_source_selection'")
+        && !skillDeclarations.includes("boolParam('colorNamesFromFilename'")
+        && !skillDeclarations.includes("numParam('canvasWidth', 'stage=color-card only")
+        && skuCardSourcePreparationSource.includes("status: 'ready_for_design_decision'")
+        && skuCardSourcePreparationSource.includes('canRunPhotoshopWrites: false')
+        && !skuCardSourcePreparationSource.includes('toolRequests')
+        && !skuCardSourcePreparationSource.includes("toolName: 'createRectangle'")
+        && !skuCardSourcePreparationSource.includes('right.score - left.score')
+);
 
 check(
     '内置版式配方实现已删除',
@@ -498,8 +816,9 @@ check(
 );
 check(
     '隔离 Runtime 的连接事实与实际 Photoshop 调用绑定同一个 owner',
-    preloadSource.includes('getMcpHostEndpoint: () => `http://${WEBVIEW_BIND_HOST}:${MCP_HOST_PORT}/mcp`')
-        && mcpHostClient.includes('fetch(resolveMcpHostEndpoint()')
+    preloadSource.includes("ipcRenderer.invoke('runtime:getMcpHostEndpoint') as Promise<string>")
+        && !preloadSource.includes("from './config/network-ports'")
+        && mcpHostClient.includes('fetch(await resolveMcpHostEndpoint()')
         && mcpHostClient.includes('Electron 内必须对当前 Runtime owner fail closed')
         && !mcpHostClient.includes("const MCP_HOST_ENDPOINT = 'http://127.0.0.1:8768/mcp'")
 );

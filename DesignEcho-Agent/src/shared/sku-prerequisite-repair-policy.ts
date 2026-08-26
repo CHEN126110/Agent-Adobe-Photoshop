@@ -28,7 +28,7 @@ export interface SkuPrerequisiteRepairPolicy {
     stage: SkuPrerequisiteRepairStage;
     /** 无论是否允许修复，执行器都必须先搜索并复用项目中的现有 PSD/PSB。 */
     searchExistingSourceFirst: true;
-    /** 找不到现有源文档后，是否可以运行既有 source preparation。 */
+    /** 找不到现有源文档后，是否可以建立候选与 Agent 设计 handoff；不直接授权视觉写入。 */
     allowSourcePreparationWhenMissing: boolean;
     /** 找不到所需模板后，是否可以进入既有模板自主设计/准备路径。 */
     allowTemplatePreparationWhenMissing: boolean;
@@ -41,7 +41,7 @@ export interface SkuPrerequisiteRepairPolicy {
 /**
  * 解析 SKU 前置缺件修复权限。
  *
- * - 只有结构化 stage=full 默认具备自治补齐权限；
+ * - 只有结构化 stage=full 默认可建立缺源候选与续跑；首次视觉写入仍需 Agent design spec；
  * - inspect 永远不能被覆盖项升级为写入；
  * - preferExisting=true 表示调用方要求只复用既有源，源缺失时保持 fail-closed；
  * - 显式 false 是收窄权限，永远优先于 full 的默认修复能力。
@@ -97,7 +97,7 @@ export function resolveSkuPrerequisiteRepairPolicy(
             : 'blocked_missing_sku_source_file',
         missingTemplateDisposition: allowTemplatePreparationWhenMissing ? 'prepare' : 'block',
         reason: allowSourcePreparationWhenMissing || allowTemplatePreparationWhenMissing
-            ? '完整 SKU 生产先复用真实项目库存，仅在确认缺件后运行对应准备路径。'
+            ? '完整 SKU 生产先复用真实项目库存；确认缺件后只建立候选与设计续跑，视觉写入仍需 Agent 明确声明。'
             : '完整 SKU 生产的前置修复已被显式限制，缺件时保持 fail-closed。'
     };
 }

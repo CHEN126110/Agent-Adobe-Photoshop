@@ -39,6 +39,10 @@ import { ContourService } from './services/contour-service';
 import { getSAMService, SAMService } from './services/sam-service';
 import { DebugBridgeService, type DebugBridgeChatSubmitInput } from './services/debug-bridge-service';
 import { MCPHostService } from './services/mcp-host-service';
+import {
+    captureRuntimeBuildIdentity,
+    type DesignEchoRuntimeBuildIdentity
+} from './services/runtime-build-identity';
 import { BrowserBridgeService, initBrowserBridgeService } from './services/browser-bridge-service';
 import { handleBrowserCollectionRequest } from './services/browser-collection-service';
 import { ClaudeSubscriptionService } from './services/claude-subscription-service';
@@ -113,6 +117,7 @@ let samService: SAMService | null = null;
 let webviewServer: http.Server | null = null;
 let debugBridgeService: DebugBridgeService | null = null;
 let mcpHostService: MCPHostService | null = null;
+let debugChatSubmissionLeaseId: string | null = null;
 let browserBridgeService: BrowserBridgeService | null = null;
 let codexSubscriptionService: CodexSubscriptionService | null = null;
 let claudeSubscriptionService: ClaudeSubscriptionService | null = null;
@@ -154,12 +159,56 @@ function openExternalFromMainWindow(rawUrl: string): void {
     });
 }
 
+function captureCurrentRuntimeBuildIdentity(): DesignEchoRuntimeBuildIdentity {
+    return captureRuntimeBuildIdentity({
+        appRoot: app.getAppPath(),
+        appVersion: app.getVersion()
+    });
+}
+
 function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<unknown> {
     if (!mainWindow || mainWindow.isDestroyed()) {
         return Promise.reject(new Error('DesignEcho 主窗口不可用，不能提交运行窗口消息。'));
     }
+    const expectedRuntimeGitCommit = String(input.expectedRuntimeGitCommit || '').trim().toLowerCase();
+    const expectedRuntimeBuildId = String(input.expectedRuntimeBuildId || '').trim();
+    const expectedPhotoshopRuntimeBuildId = String(
+        input.expectedPhotoshopRuntimeBuildId || ''
+    ).trim();
+    const completeGuard = Boolean(
+        expectedRuntimeGitCommit
+        && expectedRuntimeBuildId
+        && expectedPhotoshopRuntimeBuildId
+        && String(input.expectedProjectPath || '').trim()
+        && String(input.expectedProvider || '').trim()
+        && String(input.expectedModelId || '').trim()
+        && input.requireCleanRuntimeGitState === true
+        && input.requireNoOpenPhotoshopDocuments === true
+    );
+    if (!completeGuard) {
+        return Promise.reject(new Error('受控调试提交缺少完整的项目、构建、模型或 Photoshop 写前约束。'));
+    }
+    // 启动时身份只用于日志与诊断。正式受控提交必须重新读取 manifest 并逐文件验摘要，
+    // 防止 watch/rebuild/Renderer reload 后继续沿用旧的 artifactsVerified 缓存。
+    const submissionRuntimeBuildIdentity = captureCurrentRuntimeBuildIdentity();
+    if (submissionRuntimeBuildIdentity.version !== 'designecho-runtime-build-identity/v1'
+        || submissionRuntimeBuildIdentity.gitCommit !== expectedRuntimeGitCommit
+        || submissionRuntimeBuildIdentity.buildId !== expectedRuntimeBuildId
+        || submissionRuntimeBuildIdentity.artifactsVerified !== true) {
+        return Promise.reject(new Error('当前 DesignEcho 实际构建与受控调试指定版本不一致，请重新构建并重启。'));
+    }
+    if (submissionRuntimeBuildIdentity.gitDirty !== false) {
+        return Promise.reject(new Error('当前 DesignEcho 构建来自未提交工作树，不能进入受控质量样本。'));
+    }
+    if (submissionRuntimeBuildIdentity.fakeModelEnabled || submissionRuntimeBuildIdentity.fakePhotoshopEnabled) {
+        return Promise.reject(new Error('当前 DesignEcho 启用了测试替身，不能执行真实模型与 Photoshop 质量采集。'));
+    }
+    if (debugChatSubmissionLeaseId) {
+        return Promise.reject(new Error('已有受控调试请求尚未闭合；在它完成或应用重启前不会启动第二轮。'));
+    }
 
     const requestId = `debug_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    debugChatSubmissionLeaseId = requestId;
     const timeoutMs = Math.max(
         1000,
         Math.min(Number(input.timeoutMs) || 60000, MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS)
@@ -167,32 +216,104 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
 
     return new Promise((resolve, reject) => {
         const resultChannel = 'debug-bridge:chat-submit-result';
+        let timedOut = false;
         const timer = setTimeout(() => {
-            cleanup();
+            timedOut = true;
+            try {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('debug-bridge:chat-cancel', { requestId });
+                }
+            } catch (error) {
+                logService?.logAgent(
+                    'warn',
+                    `[DebugBridge] Failed to dispatch timeout cancellation (${error instanceof Error ? error.name : 'Error'})`
+                );
+            }
             reject(new Error(`运行窗口消息提交超时：${timeoutMs}ms`));
         }, timeoutMs + 5000);
 
         const cleanup = (): void => {
             clearTimeout(timer);
             ipcMain.removeListener(resultChannel, handleResult);
+            if (debugChatSubmissionLeaseId === requestId) {
+                debugChatSubmissionLeaseId = null;
+            }
         };
 
-        const handleResult = (_event: IpcMainEvent, payload: any): void => {
+        const handleResult = (event: IpcMainEvent, payload: any): void => {
+            if (!mainWindow
+                || mainWindow.isDestroyed()
+                || event.sender.id !== mainWindow.webContents.id) return;
             if (!payload || payload.requestId !== requestId) return;
-            cleanup();
+            if (timedOut) {
+                cleanup();
+                return;
+            }
             if (payload.success) {
-                resolve(payload.result);
+                let completedRuntimeBuildIdentity: DesignEchoRuntimeBuildIdentity;
+                try {
+                    completedRuntimeBuildIdentity = captureCurrentRuntimeBuildIdentity();
+                } catch (error) {
+                    cleanup();
+                    reject(error);
+                    return;
+                }
+                const runtimeArtifactsUnchangedThroughCompletion = Boolean(
+                    completedRuntimeBuildIdentity.artifactsVerified === true
+                    && completedRuntimeBuildIdentity.gitCommit === submissionRuntimeBuildIdentity.gitCommit
+                    && completedRuntimeBuildIdentity.buildId === submissionRuntimeBuildIdentity.buildId
+                    && completedRuntimeBuildIdentity.artifactDigest === submissionRuntimeBuildIdentity.artifactDigest
+                    && completedRuntimeBuildIdentity.manifestDigest === submissionRuntimeBuildIdentity.manifestDigest
+                );
+                if (!runtimeArtifactsUnchangedThroughCompletion) {
+                    cleanup();
+                    reject(new Error('DesignEcho 构建产物在受控任务期间发生变化，本轮不能计入正式质量样本。'));
+                    return;
+                }
+                const result: Record<string, unknown> = payload.result && typeof payload.result === 'object' && !Array.isArray(payload.result)
+                    ? payload.result as Record<string, unknown>
+                    : { snapshot: payload.result };
+                const resultReceipt = result['receipt'];
+                const receipt = resultReceipt && typeof resultReceipt === 'object' && !Array.isArray(resultReceipt)
+                    ? resultReceipt as Record<string, unknown>
+                    : {};
+                cleanup();
+                resolve({
+                    ...result,
+                    receipt: {
+                        ...receipt,
+                        runtimeBuildIdentity: submissionRuntimeBuildIdentity,
+                        completedRuntimeBuildIdentity,
+                        runtimeArtifactsUnchangedThroughCompletion,
+                        expectedRuntimeGitCommit: expectedRuntimeGitCommit || null,
+                        expectedRuntimeBuildId: expectedRuntimeBuildId || null,
+                        expectedPhotoshopRuntimeBuildId: expectedPhotoshopRuntimeBuildId || null,
+                        runtimeIdentityMatchedAtSubmission: Boolean(
+                            expectedRuntimeGitCommit
+                            && submissionRuntimeBuildIdentity.gitCommit === expectedRuntimeGitCommit
+                            && submissionRuntimeBuildIdentity.buildId === expectedRuntimeBuildId
+                            && submissionRuntimeBuildIdentity.gitDirty === false
+                            && submissionRuntimeBuildIdentity.artifactsVerified === true
+                        )
+                    }
+                });
             } else {
+                cleanup();
                 reject(new Error(String(payload.error || '运行窗口消息提交失败')));
             }
         };
 
         ipcMain.on(resultChannel, handleResult);
-        mainWindow!.webContents.send('debug-bridge:chat-submit', {
-            ...input,
-            requestId,
-            timeoutMs
-        });
+        try {
+            mainWindow!.webContents.send('debug-bridge:chat-submit', {
+                ...input,
+                requestId,
+                timeoutMs
+            });
+        } catch (error) {
+            cleanup();
+            reject(error);
+        }
     });
 }
 
@@ -274,7 +395,8 @@ function createWindow(): void {
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
-            nodeIntegration: false
+            nodeIntegration: false,
+            sandbox: true
         }
     });
     
@@ -582,6 +704,11 @@ async function initializeServices(): Promise<void> {
     await logService.initialize();
     logService.interceptConsole();
     logService.logAgent('info', 'DesignEcho Agent service initialization started');
+    const currentRuntimeBuildIdentity = captureCurrentRuntimeBuildIdentity();
+    logService.logAgent(
+        'info',
+        `[RuntimeIdentity] source=${currentRuntimeBuildIdentity.source} commit=${currentRuntimeBuildIdentity.gitCommit || 'unavailable'} dirty=${String(currentRuntimeBuildIdentity.gitDirty)}`
+    );
 
     const persistedStateEntries = readPersistedStateEntries();
     const persistedApiKeys = readPersistedApiKeys(persistedStateEntries);
@@ -796,6 +923,7 @@ async function initializeServices(): Promise<void> {
         resourceManagerService,
         modelService,
         taskOrchestrator,
+        runtimeBuildIdentity: currentRuntimeBuildIdentity,
         onLog: (level, message) => logService?.logAgent(level, message)
     });
     mcpHostService.start();
@@ -830,6 +958,7 @@ function setupIPC(): void {
         resourceManagerService,
         codexSubscriptionService,
         claudeSubscriptionService,
+        mcpHostEndpoint: mcpHostService ? `${mcpHostService.getBaseUrl()}/mcp` : null,
         mainWindow
     };
     

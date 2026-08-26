@@ -49,6 +49,7 @@ import {
     buildSkuCardSourcePreparationPlan,
     type SkuCardSourcePreparationPlan
 } from '../../../shared/sku-card-source-preparation-plan';
+import { createSkuColorCardRuntimeSelectionReceipt } from '../../../shared/sku-color-card-runtime-selection';
 import {
     buildSkuCardTemplatePreparationPlan,
     type SkuCardTemplatePreparationPlan
@@ -174,33 +175,21 @@ function summarizeSkuCardSourceSelectionJudgment(
     const visualPendingCount = candidates.filter((candidate) =>
         candidate.needsVisualConfirmation && candidate.recommendedUse !== 'reference_only'
     ).length;
-    const selectedNames = selectedSources
+    const candidateNames = selectedSources
         .map((source) => `${source.colorName}号${source.displayName}`)
         .join(' / ');
     const parts = [
-        `从 ${candidates.length} 张候选中选择 ${selectedSources.length} 张作为色卡素材`,
-        selectedNames ? `顺序为 ${selectedNames}` : '',
-        `优先依据是单只或单双、主体完整、适合统一裁切`,
+        `从 ${candidates.length} 张素材中筛出 ${selectedSources.length} 张可比较的色卡候选`,
+        candidateNames ? `候选为 ${candidateNames}` : '',
+        '筛选依据是已观察到单只或单双、主体完整、适合卡片置入；这还不是最终选定',
         directCandidateCount > selectedSources.length
             ? `另有 ${directCandidateCount - selectedSources.length} 张可用候选未进入本轮`
             : '',
         referenceOnlyCount > 0 ? `${referenceOnlyCount} 张更适合作为参考图` : '',
-        visualPendingCount > 0 ? `${visualPendingCount} 张仍需要继续看图确认` : ''
+        visualPendingCount > 0 ? `${visualPendingCount} 张仍需要继续看图确认` : '',
+        '最终使用哪些素材及其顺序由 Agent 结合画面与设计方向声明'
     ].filter(Boolean);
     return parts.join('；');
-}
-
-function summarizeSkuCardSourceDocumentStructure(plan: SkuCardSourcePreparationPlan): string {
-    const selectedSources = Array.isArray(plan.selectedSources) ? plan.selectedSources : [];
-    const colorNames = selectedSources
-        .map((source) => `${source.colorName}号${source.displayName}`)
-        .join(' / ');
-    return [
-        `将创建 ${selectedSources.length} 张独立色卡`,
-        colorNames ? `颜色顺序：${colorNames}` : '',
-        '每张卡片保留编号、色名、商品图和色卡底',
-        '商品图会先置入卡片区域，再剪切到色卡底，避免溢出'
-    ].filter(Boolean).join('；');
 }
 
 async function getProjectContext(): Promise<{ projectPath?: string } | null> {
@@ -2590,13 +2579,105 @@ export const skuBatchExecutor: SkillExecutor = {
             emitStep(
                 'tool_planned',
                 '运行 SKU 色卡阶段',
-                `将 ${plan.selectedSources.length} 张已确认素材交给当前 SKU Skill 的色卡策略处理。`,
+                `将 ${plan.selectedSources.length} 张候选交给同一个 Agent 完成选图与色卡设计声明。`,
                 'running',
                 0.16
             );
+            const designSpecRequirements = {
+                provenance: 'agent_authored',
+                sources: plan.selectedSources.map((source) => ({
+                    assetId: source.assetId,
+                    relativePath: source.relativePath,
+                    displayName: source.displayName || source.colorName
+                })),
+                requiredFields: [
+                    'sourceAssetIds（从候选中选择，顺序即色卡顺序）',
+                    'presentationMode（flat 或 card，由 Agent 决定视觉结构）',
+                    'canvasWidth / canvasHeight / canvasBackground',
+                    'cardWidth / cardHeight / cardCornerRadius',
+                    'columns / columnGap / rowGap / gridAlignment / showIndexNumbers',
+                    'cardFillColorHex / labelFillColorHex / labelTextColorHex',
+                    'internalLabel.xRatio / yRatio / widthRatio / heightRatio / cornerRadiusToWidthRatio / fontSizeToHeightRatio',
+                    'labelTypography.fontName / tracking / leadingToFontSizeRatio / alignment / horizontalPaddingRatio / verticalPaddingRatio',
+                    'showIndexNumbers=true 时声明 indexStyle',
+                    'imagePlacement.subjectFillRatio / anchor'
+                ],
+                boundary: '候选顺序只表示稳定身份，不代表排名或选定；素材赢家与这些视觉参数均由 Agent 决定，Skill 只校验来源和可执行几何。'
+            };
+            const candidateIdentityLines: string[] = [];
+            for (let index = 0; index < plan.selectedSources.length; index += 2) {
+                candidateIdentityLines.push(plan.selectedSources
+                    .slice(index, index + 2)
+                    .map((source) => `${source.assetId}=${formatSkuCardSourceLocation(source)}`)
+                    .join('；'));
+            }
+            const designSpecContinuation = {
+                status: 'needs_decision',
+                summary: 'SKU 源素材候选已准备，但首次色卡写入还缺少 Agent 的选图与视觉设计声明。',
+                details: [
+                    `候选素材共 ${plan.selectedSources.length} 张，尚未写入 Photoshop。`,
+                    ...candidateIdentityLines,
+                    '如果当前上下文还没有这些候选的真实像素，请先复用项目总览或按需观察候选；不要按文件名、路径顺序或候选分数选图。',
+                    '请先比较候选内容，选择 sourceAssetIds；再根据所选素材比例、产品辨识和项目方向决定画布底色、卡片节奏、网格对齐、标签排版、配色、主体占比与锚点。',
+                    '形成 colorCardDesignSpec 后重新调用当前 SKU Skill；不需要让用户填写工程参数。'
+                ],
+                warnings: [
+                    '不要把候选分数第一名或目录顺序当成 Agent 已选素材。',
+                    '不要复用隐藏的 1500×1500、黑卡白标签或 90% 居中方案。',
+                    '声明不完整时保持零写入，不要先生成固定草稿再修。'
+                ],
+                nextAction: 'decide_next',
+                sourceStatus: 'design_spec_required'
+            };
+            const colorCardDesignSpec = params.colorCardDesignSpec
+                && typeof params.colorCardDesignSpec === 'object'
+                && !Array.isArray(params.colorCardDesignSpec)
+                ? params.colorCardDesignSpec as Record<string, any>
+                : null;
+            const requestedSourceAssetIds = Array.isArray(colorCardDesignSpec?.sourceAssetIds)
+                ? colorCardDesignSpec.sourceAssetIds.map((item: unknown) => String(item || '').trim()).filter(Boolean)
+                : [];
+            const candidateById = new Map(plan.selectedSources.map((source) => [source.assetId, source]));
+            const unknownSourceAssetIds = requestedSourceAssetIds.filter((assetId: string) => !candidateById.has(assetId));
+            const selectedSources = requestedSourceAssetIds
+                .map((assetId: string) => candidateById.get(assetId))
+                .filter((source): source is SkuCardSourcePreparationPlan['selectedSources'][number] => Boolean(source));
+            const selectionReady = requestedSourceAssetIds.length >= plan.minimumSourceCount
+                && requestedSourceAssetIds.length === new Set(requestedSourceAssetIds).size
+                && unknownSourceAssetIds.length === 0;
+            if (!colorCardDesignSpec || !selectionReady) {
+                return {
+                    success: true,
+                    status: 'needs_agent_design_spec',
+                    requiresAgentDesignDecision: true,
+                    outputDocumentPath: plan.outputDocumentPath,
+                    sourceDocumentId: undefined,
+                    requiresVisualAdjustment: false,
+                    visualAdjustmentHandoff: undefined,
+                    agentReActContinuation: {
+                        ...designSpecContinuation,
+                        ...(colorCardDesignSpec && !selectionReady ? {
+                            warnings: [
+                                ...designSpecContinuation.warnings,
+                                unknownSourceAssetIds.length > 0
+                                    ? `sourceAssetIds 含候选集外 ID：${unknownSourceAssetIds.join('、')}`
+                                    : `至少需要选择 ${plan.minimumSourceCount} 个不重复候选。`
+                            ]
+                        } : {})
+                    },
+                    snapshot: undefined,
+                    preparedGroups: [],
+                    snapshotResult: undefined,
+                    saveResult: undefined,
+                    toolResults: [],
+                    report: undefined,
+                    designSpecRequirements,
+                    error: undefined
+                };
+            }
             const childResult = await executeSkuColorCardStrategy({
                 params: {
-                    sources: plan.selectedSources.map((source) => ({
+                    sources: selectedSources.map((source) => ({
                         filePath: source.path,
                         relativePath: source.relativePath,
                         assetId: source.assetId,
@@ -2606,32 +2687,44 @@ export const skuBatchExecutor: SkillExecutor = {
                         colorNameSource: 'filename_fallback'
                     })),
                     outputPath: plan.outputDocumentPath,
-                    canvasWidth: 1500,
-                    canvasHeight: 1500,
-                    cardWidth: 250,
-                    cardHeight: 380,
-                    cardCornerRadius: 10,
-                    showIndexNumbers: true,
+                    colorCardDesignSpec,
                     userIntent: trustedUserInput
                 },
                 callbacks,
                 signal,
                 context: _context,
                 guardedAtomicToolExecutor
+            }, {
+                sourceSelectionReceipt: createSkuColorCardRuntimeSelectionReceipt(
+                    selectedSources.map((source) => ({
+                        assetId: source.assetId,
+                        filePath: source.path,
+                        relativePath: source.relativePath
+                    }))
+                )
             });
             const report = childResult?.data?.report;
             const preparedCards = Array.isArray(report?.preparedCards) ? report.preparedCards : [];
+            const requiresAgentDesignDecision = report?.failureStage === 'blocked_missing_design_spec'
+                || report?.failureStage === 'blocked_invalid_design_spec';
+            let sourcePreparationStatus = report?.failureStage || 'failed_sku_color_card_skill';
+            if (requiresAgentDesignDecision) {
+                sourcePreparationStatus = 'needs_agent_design_spec';
+            } else if (childResult.success) {
+                sourcePreparationStatus = report?.status || 'structure_ready';
+            }
 
             return {
-                success: childResult.success === true,
-                status: childResult.success
-                    ? (report?.status || 'structure_ready')
-                    : (report?.failureStage || 'failed_sku_color_card_skill'),
+                success: childResult.success === true || requiresAgentDesignDecision,
+                status: sourcePreparationStatus,
+                requiresAgentDesignDecision,
                 outputDocumentPath: report?.outputPath || plan.outputDocumentPath,
                 sourceDocumentId: report?.documentId,
                 requiresVisualAdjustment: report?.checks?.visualComposition !== 'passed',
                 visualAdjustmentHandoff: childResult?.data?.visualAdjustmentHandoff,
-                agentReActContinuation: childResult?.data?.agentReActContinuation,
+                agentReActContinuation: requiresAgentDesignDecision
+                    ? designSpecContinuation
+                    : childResult?.data?.agentReActContinuation,
                 snapshot: childResult?.data?.snapshot,
                 preparedGroups: preparedCards.map((card: any, index: number) => ({
                     colorName: String(index + 1),
@@ -2644,6 +2737,9 @@ export const skuBatchExecutor: SkillExecutor = {
                 saveResult: childResult?.data?.saveResult,
                 toolResults: childResult.toolResults || [],
                 report,
+                ...(requiresAgentDesignDecision ? {
+                    designSpecRequirements
+                } : {}),
                 error: childResult.error
             };
         };
@@ -3063,7 +3159,7 @@ export const skuBatchExecutor: SkillExecutor = {
             skuCardSourcePreparationPlan = buildSkuCardSourcePreparationPlan({
                 projectPath: projectContext?.projectPath,
                 skuCardAssetCandidateReport,
-                maxSources: params.skuSourceCandidateLimit || (sourceOnly ? 8 : earlySkuRequiredColorSlots),
+                maxSources: params.skuSourceCandidateLimit || 8,
                 minimumSourceCount: sourceOnly ? 1 : earlySkuRequiredColorSlots,
                 outputRelativePath: params.skuSourceOutputRelativePath
             });
@@ -3112,7 +3208,7 @@ export const skuBatchExecutor: SkillExecutor = {
                             skuCardSourcePreparationPlan = buildSkuCardSourcePreparationPlan({
                                 projectPath: projectContext?.projectPath,
                                 skuCardAssetCandidateReport,
-                                maxSources: params.skuSourceCandidateLimit || (sourceOnly ? 8 : earlySkuRequiredColorSlots),
+                                maxSources: params.skuSourceCandidateLimit || 8,
                                 minimumSourceCount: sourceOnly ? 1 : earlySkuRequiredColorSlots,
                                 outputRelativePath: params.skuSourceOutputRelativePath
                             });
@@ -3148,7 +3244,7 @@ export const skuBatchExecutor: SkillExecutor = {
                 }
             }
 
-            if (shouldAllowSkuCardSourcePreparation && skuCardSourcePreparationPlan.status === 'ready_for_preparation') {
+            if (shouldAllowSkuCardSourcePreparation && skuCardSourcePreparationPlan.status === 'ready_for_design_decision') {
                 emitStep(
                     'verification',
                     'SKU 色卡候选判断完成',
@@ -3161,6 +3257,33 @@ export const skuBatchExecutor: SkillExecutor = {
                 );
                 emitStatus('正在整理 SKU 卡片源素材。', 16);
                 skuCardSourcePreparationRun = await executeSkuCardSourcePreparationPlan(skuCardSourcePreparationPlan);
+                if (skuCardSourcePreparationRun?.requiresAgentDesignDecision === true) {
+                    emitStep(
+                        'observation',
+                        '等待 Agent 确定色卡设计方向',
+                        '已确认候选素材，尚未写入 Photoshop；同一个 Agent 需要先声明画布、卡片节奏、配色、标签与主体落位。',
+                        'running',
+                        0.16
+                    );
+                    return {
+                        success: true,
+                        message: 'SKU 素材已经确认，但色卡第一稿尚未开始。需要先由 Agent 完成视觉设计声明，再继续写入和生产。',
+                        toolResults: [],
+                        data: {
+                            status: 'needs_agent_design_spec',
+                            sourceOnly,
+                            exportCount: 0,
+                            ...skuPlanningContext,
+                            skuCardAssetCandidateReport,
+                            skuCardVisualConfirmationPlan,
+                            skuCardVisualConfirmationRun,
+                            skuCardSourcePreparationPlan,
+                            skuCardSourcePreparationRun,
+                            designSpecRequirements: skuCardSourcePreparationRun.designSpecRequirements,
+                            agentReActContinuation: skuCardSourcePreparationRun.agentReActContinuation
+                        }
+                    };
+                }
                 if (skuCardSourcePreparationRun?.success) {
                     await refreshDocuments();
                     const preparedDoc = findOpenedSkuDocument({

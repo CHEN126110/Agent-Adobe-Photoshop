@@ -76,14 +76,19 @@ function getDesignEchoBridge(): Record<string, any> | null {
     return bridge && typeof bridge === 'object' ? bridge as Record<string, any> : null;
 }
 
-function resolveMcpHostEndpoint(): string {
+async function resolveMcpHostEndpoint(): Promise<string> {
     const bridge = getDesignEchoBridge();
-    const endpoint = typeof bridge?.getMcpHostEndpoint === 'function'
-        ? String(bridge.getMcpHostEndpoint() || '').trim()
-        : '';
-    return /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\/mcp$/i.test(endpoint)
-        ? endpoint
-        : DEFAULT_MCP_HOST_ENDPOINT;
+    if (bridge) {
+        const endpoint = typeof bridge.getMcpHostEndpoint === 'function'
+            ? String(await bridge.getMcpHostEndpoint() || '').trim()
+            : '';
+        if (/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\/mcp$/i.test(endpoint)) {
+            return endpoint;
+        }
+        // Electron 内必须对当前 Runtime owner fail closed，不能改读另一实例的默认端口。
+        throw new Error('当前 DesignEcho Runtime 没有提供有效的 MCP Host endpoint。');
+    }
+    return DEFAULT_MCP_HOST_ENDPOINT;
 }
 
 function createMcpRequestKey(toolName: string): string {
@@ -174,7 +179,7 @@ async function postMcpRequest(
     const timeoutId = setTimeout(() => controller.abort(), normalizeMcpHostTimeoutMs(timeoutMs));
 
     try {
-        const response = await fetch(resolveMcpHostEndpoint(), {
+        const response = await fetch(await resolveMcpHostEndpoint(), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'

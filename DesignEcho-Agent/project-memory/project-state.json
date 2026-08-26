@@ -290,7 +290,7 @@
   "activeRequest": {
     "id": "AGENT-DESIGN-AUTHORSHIP-LIVE-001",
     "summary": "Verify on an isolated fixed case that the multimodal Agent owns task understanding, reference and asset choice, visual direction and Photoshop revision while Harness only preserves facts, permissions, transactions and readback evidence.",
-    "status": "authorship_and_runtime_governance_committed_remote_sha_verified_core_43_passed_isolated_live_photoshop_run_and_blind_pairwise_review_pending",
+    "status": "authorship_truncation_sku_runtime_guard_and_reliability_governance_validated_core_45_commit_and_push_pending_live_run_pending",
     "mustDo": [
       "Run the latest committed build only after the user's current Photoshop document is safely closed, using a fresh isolated fixture and a natural one-sentence request with zero in-run human correction.",
       "Keep Agent ownership of task interpretation, information-gain decisions, reference and asset choice, visual strategy, layout, copy, tool composition and revision action.",
@@ -312,14 +312,18 @@
     "id": "AGENT-DESIGN-AUTHORSHIP-LIVE-001",
     "source": "project-memory/CurrentTask.md",
     "steps": [
-      "完成：移除或降级通用 Prompt、SKU handoff、详情页候选、主图素材和布局引擎中的隐性设计代决策。",
-      "完成：修复多占位候选集选择漂移、未决素材上下文丢失、model-authored 层序账本和二进制资源 owner 边界。",
-      "完成：重新通过 43 项核心验证、独立代码审查、Git 卫生和敏感信息审查。",
-      "完成：提交并推送 1203e797；本地与 legacy/codex/agent-uxp 远端 SHA 读回一致。",
-      "待环境：用户保存并关闭当前 Photoshop 活动文档，DesignEcho 重启到 1203e797。",
+      "完成：普通文字 Skill 推荐只保留 advisory，用户或模型结构化选择才绑定 Runtime owner；TaskRun 冻结唯一多模态模型身份。",
+      "完成：Provider 截断成功时静默续接，最终失败按可信 Photoshop mutation 区分已写/未写且不泄漏工程术语。",
+      "完成：SKU 色卡移除固定首稿与暗选，Agent 显式选择素材、flat/card、画布、排版、配色、主体占比和锚点，Runtime 收据绑定素材身份。",
+      "完成：placeImage/transformLayer 的 Provider 与 UXP 执行点拒绝冲突和隐式 contain/center，内部 SKU 调用传递 Agent 锚点。",
+      "完成：正式调试桥绑定 DesignEcho/Photoshop Build、首次副作用空文档基线、超时取消与单租约；写、保存、复合、Skill、子 Agent 和面板桥无旁路。",
+      "完成：可靠性评测使用 canonical append-only Attempt 分母、严格 cohort/Case/盲评门禁；附加 data root 不能注入正式 Attempt。",
+      "完成：两份独立提交前审查、敏感信息扫描和 45 项 maintenance:validate；Agent 行数与 Tool schema 棘轮未提高。",
+      "待提交：审查全部 staged diff 后提交并推送 legacy/codex/agent-uxp，读回本地与远端 SHA。",
+      "待环境：用户保存并关闭当前 Photoshop 活动文档，DesignEcho 与 UXP 重启到最新提交。",
       "待真机：从固定摄影素材创建全新隔离 Fixture，用自然一句需求运行真实 Agent → Provider → Photoshop 链路，0 人工纠偏。",
       "待验收：核对真实观察、选图依据、Tool / document / history / PSD / JPG 收据、耗时，并与用户作品和 Eagle 锚点做盲化成对评审。",
-      "待重复：首轮安全闭合后在相同 cohort 至少运行 3 次，形成最低成功率分母并按 owner 归因失败。"
+      "待重复：首轮安全闭合后按 Suite 口径在相同 cohort 每个 Case 至少运行 5 次，并按 owner 归因失败。"
     ]
   },
   "convergenceBaseline": {

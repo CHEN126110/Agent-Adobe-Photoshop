@@ -1,5 +1,6 @@
-import http from 'http';
+import crypto from 'crypto';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 
 export interface DebugBridgeMessage {
@@ -85,6 +86,18 @@ export interface DebugBridgeChatSubmitInput {
     disableSkillBridges?: boolean;
     /** 开发评测写前绑定；Renderer 必须与当前项目精确匹配，否则不提交消息。 */
     expectedProjectPath?: string;
+    /** 开发评测写前绑定；Main 进程必须是此 Git 提交启动的 Runtime。 */
+    expectedRuntimeGitCommit?: string;
+    expectedRuntimeBuildId?: string;
+    /** 受控样本必须绑定当前 Photoshop UXP Runtime build。 */
+    expectedPhotoshopRuntimeBuildId?: string;
+    /** 开发评测写前绑定；Renderer 必须在调用模型前核对当前选择。 */
+    expectedProvider?: string;
+    expectedModelId?: string;
+    /** 正式成功率样本不接受从 dirty worktree 启动的 Runtime。 */
+    requireCleanRuntimeGitState?: boolean;
+    /** 从零创作的隔离 Case 要求提交时 Photoshop 没有任何既有文档。 */
+    requireNoOpenPhotoshopDocuments?: boolean;
     publicPlanConfirmationSourceMessageId?: string;
     publicPlanConfirmationRequestId?: string;
     publicPlanDisposableLiveAdapter?: boolean;
@@ -366,9 +379,25 @@ export class DebugBridgeService {
             return;
         }
 
+        if (method === 'GET' && pathname === '/chat/submit/preflight') {
+            if (!this.canUseWriteBridge(String(req.headers['x-designecho-debug-token'] || ''))) {
+                sendJson(res, 403, { success: false, error: 'Debug write token is missing or invalid' }, req, this.port);
+                return;
+            }
+            sendJson(res, 200, {
+                success: true,
+                guardedWriteProtocol: 'debug-bridge-chat-submit/v1'
+            }, req, this.port);
+            return;
+        }
+
         if (method === 'POST' && pathname === '/chat/submit') {
             if (!this.onChatSubmit) {
                 sendJson(res, 503, { success: false, error: 'Chat submit bridge is unavailable' }, req, this.port);
+                return;
+            }
+            if (!this.canUseWriteBridge(String(req.headers['x-designecho-debug-token'] || ''))) {
+                sendJson(res, 403, { success: false, error: 'Debug write token is missing or invalid' }, req, this.port);
                 return;
             }
 
@@ -383,6 +412,27 @@ export class DebugBridgeService {
                 sendJson(res, 400, { success: false, error: 'text is required' }, req, this.port);
                 return;
             }
+            const hasFormalWriteGuard = typeof body.expectedProjectPath === 'string'
+                && Boolean(body.expectedProjectPath.trim())
+                && typeof body.expectedRuntimeGitCommit === 'string'
+                && /^[0-9a-f]{40}$/i.test(body.expectedRuntimeGitCommit.trim())
+                && typeof body.expectedRuntimeBuildId === 'string'
+                && Boolean(body.expectedRuntimeBuildId.trim())
+                && typeof body.expectedPhotoshopRuntimeBuildId === 'string'
+                && Boolean(body.expectedPhotoshopRuntimeBuildId.trim())
+                && typeof body.expectedProvider === 'string'
+                && Boolean(body.expectedProvider.trim())
+                && typeof body.expectedModelId === 'string'
+                && Boolean(body.expectedModelId.trim())
+                && body.requireCleanRuntimeGitState === true
+                && body.requireNoOpenPhotoshopDocuments === true;
+            if (!hasFormalWriteGuard) {
+                sendJson(res, 400, {
+                    success: false,
+                    error: 'Debug chat submit requires the complete guarded-write protocol'
+                }, req, this.port);
+                return;
+            }
 
             const result = await this.onChatSubmit({
                 text,
@@ -392,6 +442,23 @@ export class DebugBridgeService {
                 expectedProjectPath: typeof body.expectedProjectPath === 'string'
                     ? body.expectedProjectPath.trim().slice(0, 1024)
                     : undefined,
+                expectedRuntimeGitCommit: typeof body.expectedRuntimeGitCommit === 'string'
+                    ? body.expectedRuntimeGitCommit.trim().slice(0, 64)
+                    : undefined,
+                expectedRuntimeBuildId: typeof body.expectedRuntimeBuildId === 'string'
+                    ? body.expectedRuntimeBuildId.trim().slice(0, 256)
+                    : undefined,
+                expectedPhotoshopRuntimeBuildId: typeof body.expectedPhotoshopRuntimeBuildId === 'string'
+                    ? body.expectedPhotoshopRuntimeBuildId.trim().slice(0, 256)
+                    : undefined,
+                expectedProvider: typeof body.expectedProvider === 'string'
+                    ? body.expectedProvider.trim().slice(0, 128)
+                    : undefined,
+                expectedModelId: typeof body.expectedModelId === 'string'
+                    ? body.expectedModelId.trim().slice(0, 256)
+                    : undefined,
+                requireCleanRuntimeGitState: body.requireCleanRuntimeGitState === true,
+                requireNoOpenPhotoshopDocuments: body.requireNoOpenPhotoshopDocuments === true,
                 publicPlanConfirmationSourceMessageId: typeof body.publicPlanConfirmationSourceMessageId === 'string'
                     ? body.publicPlanConfirmationSourceMessageId
                     : undefined,
@@ -478,7 +545,16 @@ export class DebugBridgeService {
 
     public canReadFullDebugData(debugToken?: string): boolean {
         const expected = String(process.env.DESIGNECHO_DEBUG_TOKEN || '').trim();
-        return !!expected && String(debugToken || '') === expected;
+        const supplied = String(debugToken || '');
+        if (!expected) return false;
+        const expectedBuffer = Buffer.from(expected, 'utf8');
+        const suppliedBuffer = Buffer.from(supplied, 'utf8');
+        if (expectedBuffer.length !== suppliedBuffer.length) return false;
+        return crypto.timingSafeEqual(expectedBuffer, suppliedBuffer);
+    }
+
+    public canUseWriteBridge(debugToken?: string): boolean {
+        return this.canReadFullDebugData(debugToken);
     }
 
     public readSessionForDebugOutput(sessionId: string, options: DebugBridgeReadOptions = {}): DebugBridgeSession | DebugBridgeSessionSummary | null {

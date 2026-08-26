@@ -483,23 +483,18 @@ forbidPattern('executor', /buildRuntimeContractBundleForAgentTask\([\s\S]{0,220}
 forbidPattern('executor', /const structuredTaskType\s*=\s*[^;]*(disciplineContext|spec\?\.id|resolveDesignTaskTypeSpec)/, 'Production Capability selection must not reuse text-derived design-discipline categories.');
 requireToken('engine', 'const declaredSkillId = runtimeSelectedSkillHandoff?.skillId;', 'Only a provenance-bearing structured handoff may declare Runtime Skill identity.');
 forbidPattern('engine', /const declaredSkillId\s*=\s*[^;]*decision\?\.skillId/, 'Router Skill hints must not become declared Runtime Skill identity.');
-requireToken('skillRouting', 'buildRuntimeSelectedSkillHandoffFromRecommendation', 'Confirmed unique declaration routing must use one shared handoff promotion contract.');
-requireToken('skillRouting', '!isProductionSkillRoutingMode(recommendation.mode)', 'Only declaration-owned production modes may be promoted into a Runtime Skill owner.');
-requireToken('skillRouting', 'isCanonicalSkillProductionEntry(recommendation.skillId, input.requestText)', 'Runtime owner promotion must use a Skill-declared canonical production entry instead of a generic language parser.');
-requireToken('skillRouting', "intentControlPlane?.requestKind !== 'autonomous_execution'", 'Only autonomous execution semantics may promote a declaration recommendation.');
-requireToken('skillRouting', "intentControlPlane.toolScope !== 'write_photoshop'", 'Runtime Skill promotion must require a structured Photoshop write scope.');
-requireToken('skillRouting', "intentControlPlane.executionAuthorization !== 'confirmed_tool_required'", 'Candidate or non-authorizing requests must not promote a Runtime Skill owner.');
-requireToken('skillRouting', "source: 'skill_declaration_unique_match'", 'Promoted declaration ownership must preserve truthful selection provenance.');
-requireToken('engine', 'buildRuntimeSelectedSkillHandoffFromRecommendation({', 'Ordinary natural language must consume the shared confirmed unique-declaration promotion contract.');
+requireToken('skillRouting', 'advisoryOnly: true', 'Text-derived Skill routing must remain advisory-only.');
+requireToken('skillRouting', 'bindsRuntimeIdentity: false', 'Text-derived Skill routing must never bind Runtime identity.');
+requireToken('engine', 'buildRuntimeSelectedSkillHandoffFromUserSelection({', 'Only the explicit user Skill selector may create a pre-model Runtime handoff.');
+forbidPattern('engine', /buildRuntimeSelectedSkillHandoffFromRecommendation/, 'Ordinary natural language must not be promoted into a Runtime Skill owner.');
+forbidPattern('skillRouting', /function buildRuntimeSelectedSkillHandoffFromRecommendation/, 'The shared routing module must not expose a text-to-Runtime-owner promotion helper.');
 forbidPattern('engine', /runtimeSelectedSkillHandoff\s*:\s*(?:decision|recommendation)\.skillId/, 'Engine must not pass a Router id or recommendation directly as a Runtime Skill handoff.');
 requireToken('engine', "'agent_first_natural_language'", 'Ordinary natural language must enter the generic Agent-owned capability path.');
 requireToken('executor', "runtimeContractStatus.status === 'selected_manifest_missing'", 'Explicit Skill selection without a Manifest must fail closed before model or Photoshop execution.');
 requireToken('selectedSkillHandoff', 'selectionRecordOnly: true', 'Selected-Skill handoff must remain an R0 selection record only.');
 requireToken('selectedSkillHandoff', 'executesSkill: false', 'Selected-Skill handoff must not execute the selected Skill.');
 requireToken('selectedSkillHandoff', 'grantsToolPermission: false', 'Selected-Skill handoff must not grant Tool permission.');
-requireToken('selectedSkillHandoff', "'skill_declaration_unique_match'", 'Selected-Skill handoff must identify declaration-owned unique routing separately from model routing.');
 requireToken('selectedSkillHandoff', "'controlled_route_react_handoff'", 'Selected-Skill handoff must preserve a protected controlled route with truthful provenance when it enters ReAct.');
-requireToken('selectedSkillHandoff', "input.source === 'skill_declaration_unique_match'", 'Selected-Skill handoff must truthfully mark declaration routing as a task-text-derived selection record.');
 forbidPattern('selectedSkillHandoff', /详情页|主图|SKU|sku-batch|detail-page-design|main-image-design/i, 'Selected-Skill handoff contract must remain category-neutral.');
 requireToken('executor', 'tools: capabilitySession.activeTools', 'AgentConfig.tools must consume the Capability Session.');
 requireToken('executor', 'runtimeLoopContract: runtimeContractBundle.runtimeLoopContract', 'Production Agent must receive the manifest loop contract.');
@@ -866,7 +861,7 @@ const report = {
     'forbidden capability closes over shared legacy provider Tools',
     'work-mode Capability ceiling separately constrains startup seeds, on-demand discovery and late-bound Session state without alias deny closure',
     'on-demand batch size is bounded without reducing eventual reachability',
-    'production Capability selection has no executor-inferred category fallback; unique text routing remains a declaration-owned selection record'
+    'production Capability selection has no executor-inferred category fallback; text routing remains advisory until explicit user or model selection'
   ]
 };
 

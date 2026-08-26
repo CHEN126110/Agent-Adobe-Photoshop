@@ -1888,6 +1888,10 @@ async function run() {
   }
 
   const skillAtomicTargetBindingViolations = [];
+  const agentPanelBridgeExecutorText = read(path.join(
+    root,
+    'src/renderer/services/skill-executors/agent-panel-bridge.executor.ts'
+  ));
   const guardedMoveDecision = buildGuardedAtomicToolExecutionDecision({
     toolName: 'moveLayer',
     params: {
@@ -2079,6 +2083,10 @@ async function run() {
     || !skuBatchExecutorText.includes('guardedAtomicToolExecutor')
     || !skillDeclarationsText.includes("'getDocumentInfo', 'getLayerHierarchy', 'createDocument'")) {
     skillAtomicTargetBindingViolations.push('skill-atomic-owner:harness-wiring-or-sku-migration-missing');
+  }
+  if (!agentPanelBridgeExecutorText.includes('guardedAtomicToolExecutor(mcpToolName, p.mcpArguments || {})')
+    || !agentPanelBridgeExecutorText.includes(': callPhotoshopMcpTool(mcpToolName, p.mcpArguments || {}, { signal })')) {
+    skillAtomicTargetBindingViolations.push('skill-atomic-owner:agent-panel-bridge-bypassed-guarded-executor');
   }
 
   const providerRecoveryDiagnosticViolations = [];
@@ -2815,10 +2823,7 @@ async function run() {
     isSkuDeliveryPresentationSummary
   } = require(skuDeliverySummaryPath);
   const { convertLegacyMessage } = require(messageParserPath);
-  const {
-    buildRuntimeSelectedSkillHandoffFromRecommendation,
-    buildSkillRoutingRecommendation
-  } = require(skillRoutingPath);
+  const { buildSkillRoutingRecommendation } = require(skillRoutingPath);
   const {
     buildAgentIntentControlPlaneDecision,
     buildAutonomousExecutionDecisionForEngine,
@@ -10451,55 +10456,37 @@ async function run() {
     includeRouteClasses: ['business-workflow'],
     modelDirectExecution: 'forbidden'
   };
-  function promoteDeclaredBusinessOwner(requestText, decision, constraintText = requestText) {
-    const recommendation = buildSkillRoutingRecommendation(requestText, skuRoutingOptions);
-    const constraint = extractExplicitUserCapabilityConstraint(constraintText);
-    return {
-      recommendation,
-      handoff: buildRuntimeSelectedSkillHandoffFromRecommendation({
-        requestText,
-        recommendation,
-        intentControlPlane: decision,
-        skillBridgePolicy: constraint.skillBridgePolicy,
-        deniedToolDomains: constraint.deniedToolDomains,
-        toolScopeCeiling: constraint.toolScopeCeiling
-      })
-    };
-  }
-  const runtimeSkillHandoffPositiveCases = [
-    ['帮我做 SKU', 'sku-batch', 'ecommerce.sku_batch'],
-    ['帮我做SKU编排', 'sku-batch', 'ecommerce.sku_batch'],
-    ['帮我完成SKU编排', 'sku-batch', 'ecommerce.sku_batch'],
-    ['帮我做详情页', 'detail-page-design', 'ecommerce.detail_page'],
-    ['帮我做主图', 'main-image-design', 'ecommerce.main_image']
+  const runtimeSkillRecommendationCases = [
+    ['帮我做 SKU', 'sku-batch'],
+    ['帮我做SKU编排', 'sku-batch'],
+    ['帮我完成SKU编排', 'sku-batch'],
+    ['帮我做详情页', 'detail-page-design'],
+    ['帮我做主图', 'main-image-design']
   ];
-  for (const [text, expectedSkillId, expectedManifestId] of runtimeSkillHandoffPositiveCases) {
+  for (const [text, expectedSkillId] of runtimeSkillRecommendationCases) {
     const decision = buildAutonomousExecutionDecisionForEngine(
-      '审计：规范 production 入口已委托工具执行。'
+      '审计：自然语言生产请求仍由模型选择工作方法。'
     );
-    const { recommendation, handoff } = promoteDeclaredBusinessOwner(text, decision);
-    if (handoff?.skillId !== expectedSkillId
-      || handoff.source !== 'skill_declaration_unique_match'
-      || handoff.boundaries.selectionRecordOnly !== true
-      || handoff.boundaries.executesSkill !== false
-      || handoff.boundaries.grantsToolPermission !== false) {
+    const recommendation = buildSkillRoutingRecommendation(text, skuRoutingOptions);
+    if (recommendation?.skillId !== expectedSkillId
+      || recommendation.advisoryOnly !== true
+      || recommendation.bindsRuntimeIdentity !== false
+      || recommendation.grantsPermission !== false) {
       runtimeSkillHandoffViolations.push(
-        `runtime-skill-handoff:confirmed-unique-owner-not-selected:${text}:${handoff?.skillId || 'none'}`
+        `runtime-skill-handoff:text-recommendation-not-advisory:${text}:${recommendation?.skillId || 'none'}`
       );
       continue;
     }
     const runtime = resolveAutonomousCapabilityRuntime({
       agentIntentControlPlane: decision,
-      skillRoutingRecommendation: recommendation,
-      runtimeSelectedSkillHandoff: handoff,
-      declaredSkillId: handoff.skillId
+      skillRoutingRecommendation: recommendation
     }, {});
     const status = runtime.runtimeContractStatus;
-    if (status.status !== 'resolved'
-      || status.manifestSkillId !== expectedManifestId
-      || status.selectionSource !== 'skill_declaration_unique_match') {
+    if (status.status !== 'no_skill_selected'
+      || status.manifestSkillId
+      || runtime.capabilitySession.getResolution().manifestRef) {
       runtimeSkillHandoffViolations.push(
-        `runtime-skill-handoff:selected-owner-not-resolved:${text}:${JSON.stringify(status)}`
+        `runtime-skill-handoff:text-recommendation-bound-runtime-owner:${text}:${JSON.stringify(status)}`
       );
     }
   }
@@ -10554,29 +10541,29 @@ async function run() {
     '帮我做长图'
   ];
   for (const text of runtimeSkillHandoffNegativeCases) {
+    const recommendation = buildSkillRoutingRecommendation(text, skuRoutingOptions);
     const decision = buildAgentIntentControlPlaneDecision({
       userInput: text,
       hasImageInput: false,
       hasDocument: true,
       photoshopConnected: true
     });
-    const { handoff } = promoteDeclaredBusinessOwner(text, decision);
-    if (handoff) {
+    const runtime = resolveAutonomousCapabilityRuntime({
+      userTask: text,
+      agentIntentControlPlane: decision,
+      ...(recommendation ? { skillRoutingRecommendation: recommendation } : {})
+    }, {});
+    if (runtime.runtimeContractStatus.status !== 'no_skill_selected'
+      || runtime.capabilitySession.getResolution().manifestRef) {
       runtimeSkillHandoffViolations.push(
-        `runtime-skill-handoff:non-production-or-ambiguous-owner-selected:${text}:${handoff.skillId}`
+        `runtime-skill-handoff:non-production-or-ambiguous-request-bound-owner:${text}:${recommendation?.skillId || 'none'}`
       );
     }
   }
-  const canonicalDetailRequest = '帮我做详情页';
   const explicitSkillDeny = extractExplicitUserCapabilityConstraint('不要用 Skill');
-  const { handoff: deniedHandoff } = promoteDeclaredBusinessOwner(
-    canonicalDetailRequest,
-    buildAutonomousExecutionDecisionForEngine('审计：显式 deny 不能生成 handoff。'),
-    '不要用 Skill'
-  );
-  if (explicitSkillDeny.skillBridgePolicy !== 'forbid' || deniedHandoff) {
+  if (explicitSkillDeny.skillBridgePolicy !== 'forbid') {
     runtimeSkillHandoffViolations.push(
-      'runtime-skill-handoff:explicit-skill-deny-created-handoff'
+      'runtime-skill-handoff:explicit-skill-deny-not-preserved'
     );
   }
   const deferredExecutionConstraint = extractExplicitUserCapabilityConstraint(
@@ -10592,11 +10579,15 @@ async function run() {
     );
   }
   for (const text of ['检查详情页，有问题直接改']) {
-    const { handoff } = promoteDeclaredBusinessOwner(
-      text,
-      buildAutonomousExecutionDecisionForEngine('审计：条件修复不等于无条件交付。')
-    );
-    if (handoff) {
+    const recommendation = buildSkillRoutingRecommendation(text, skuRoutingOptions);
+    const runtime = resolveAutonomousCapabilityRuntime({
+      userTask: text,
+      agentIntentControlPlane: buildAutonomousExecutionDecisionForEngine(
+        '审计：条件修复不等于文本推荐获得 Runtime owner。'
+      ),
+      ...(recommendation ? { skillRoutingRecommendation: recommendation } : {})
+    }, {});
+    if (runtime.runtimeContractStatus.status !== 'no_skill_selected') {
       runtimeSkillHandoffViolations.push(
         `runtime-skill-handoff:conditional-inspection-gained-unconditional-production-obligation:${text}`
       );
@@ -13787,8 +13778,8 @@ async function run() {
       violations: providerRecoveryDiagnosticViolations
     },
     {
-      id: 'confirmed-unique-skill-owner-handoff-is-selection-only',
-      description: '明确制作请求的唯一 business-workflow 声明可绑定 Runtime owner；查看、问句和跨交付物歧义保持无绑定，handoff 不执行 Skill 也不授予 Tool 权限。',
+      id: 'text-skill-recommendation-remains-advisory-until-agent-or-user-selection',
+      description: '自然语言命中的 business-workflow 只能作为模型可忽略的候选；只有用户显式选择或模型声明 Profile 才能绑定 Runtime owner，推荐不执行 Skill、不授予权限也不抢占交互 owner。',
       violations: runtimeSkillHandoffViolations
     },
     {

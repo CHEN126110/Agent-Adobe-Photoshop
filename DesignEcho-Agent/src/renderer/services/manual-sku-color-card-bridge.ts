@@ -8,7 +8,10 @@ import {
 } from '../../shared/manual-sku-color-card';
 import { createGuardedAtomicToolExecutor } from '../../shared/agent-skill-atomic-tool-execution';
 import type { SkuColorCardExecutionReport } from '../../shared/sku-color-card-skill';
-import { executeSkuColorCardStrategy } from './skill-executors/sku-color-card.executor';
+import {
+    MANUAL_SKU_COLOR_CARD_LEGACY_PROFILE_CAPABILITY,
+    executeSkuColorCardStrategy
+} from './skill-executors/sku-color-card.executor';
 import { executeToolCall } from './tool-executor.service';
 
 let rendererExecutionInFlight = false;
@@ -108,8 +111,12 @@ async function executeManualSkuColorCard(request: ManualSkuColorCardRendererRequ
                 sources: request.sources,
                 projectPath: request.outputFolder,
                 outputPath: request.outputPath,
-                showIndexNumbers: request.showIndexNumbers,
-                columns: request.columns,
+                colorCardDesignSpec: {
+                    provenance: 'explicit_legacy_profile',
+                    presentationMode: request.mode === 'studio' ? 'flat' : 'card',
+                    showIndexNumbers: request.showIndexNumbers,
+                    columns: request.columns
+                },
                 retouchMode: request.mode === 'studio' ? 'studio_retouch_required' : 'layout_only',
                 sourceMode: request.mode === 'studio' ? 'studio' : 'scene',
                 shapeStrength: 0.72,
@@ -151,6 +158,8 @@ async function executeManualSkuColorCard(request: ManualSkuColorCardRendererRequ
                     });
                 }
             }
+        }, {
+            manualLegacyProfile: MANUAL_SKU_COLOR_CARD_LEGACY_PROFILE_CAPABILITY
         });
         const compact = compactResult(request, result);
         sendProgress({

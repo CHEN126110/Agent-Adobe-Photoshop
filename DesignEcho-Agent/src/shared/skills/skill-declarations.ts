@@ -300,22 +300,123 @@ export const SKUSkill: SkillDeclaration = {
         strParam('skuFileKeyword', 'Keyword for SKU source files', false, { default: 'SKU' }),
         arrParam('specifiedColors', 'Optional explicit color combinations, as an array of color-name arrays: [["双层边","木耳边"],["水晶丝","花苞"]] (each inner array is one combo). NOT objects like {size,colors}. Usually leave this unset: when resuming after the user confirmed combos on the card, combos are parsed automatically from the task text.'),
         arrParam('sources', 'stage=color-card only: 色卡源清单 [{filePath,colorName}]，顺序 = 色卡顺序。filePath 可以只写文件名或项目内相对路径（项目里唯一同名图会自动解析成完整路径）——别写 20 条盘符绝对路径，会把调用撑到输出上限被截断。'),
-        strParam('sourceDirectory', 'stage=color-card only: 目录级捷径——项目内子目录名或绝对目录（不递归）；目录里全部图片按文件名当色名、按名字排序进色卡。20 张源图时用它一句话代替 20 条 sources。'),
-        boolParam('colorNamesFromFilename', 'stage=color-card only: 明确授权「文件名就是色名」（sources 只给 filePath 时用）。', false),
+        strParam('sourceDirectory', 'stage=color-card：不递归扫描目录；文件名只作待确认色名，同名素材要求 Agent 改用 sources 选定。'),
         arrParam('sourcePaths', 'stage=color-card only: ordered local image paths when sources is not provided.'),
         arrParam('colorNames', 'stage=color-card only: ordered authoritative color names aligned with sourcePaths.'),
         strParam('projectPath', 'stage=color-card only: active project root; defaults to current project context.'),
         strParam('outputPath', 'stage=color-card only: explicit absolute PSB output path.'),
         strParam('outputRelativePath', 'stage=color-card only: project-relative output path.', false, { default: 'PSD/SKU.psb' }),
-        numParam('canvasWidth', 'stage=color-card only: SKU document width in pixels.', false, { default: 1500 }),
-        numParam('canvasHeight', 'stage=color-card only: SKU document height in pixels.', false, { default: 1500 }),
-        numParam('cardWidth', 'stage=color-card only: color-card width in pixels.', false, { default: 250 }),
-        numParam('cardHeight', 'stage=color-card only: color-card height in pixels.', false, { default: 380 }),
-        numParam('cardCornerRadius', 'stage=color-card only: outer color-card corner radius in pixels.', false, { default: 10 }),
-        numParam('columns', 'stage=color-card only: optional fixed column count.'),
-        numParam('columnGap', 'stage=color-card only: horizontal gap between cards.', false, { default: 40 }),
-        numParam('rowGap', 'stage=color-card only: vertical gap between rows.', false, { default: 170 }),
-        boolParam('showIndexNumbers', 'stage=color-card only: display ordered reference numbers in a separate root group.', true),
+        {
+            name: 'colorCardDesignSpec',
+            type: 'object',
+            description: 'Agent 首次写入前的色卡设计声明；缺少时零写入并返回完整字段清单。',
+            required: false,
+            additionalProperties: false,
+            properties: [
+                strParam('provenance', '必须为 agent_authored，表示这些视觉参数是本轮 Agent 的设计判断。', true, { enum: ['agent_authored'] }),
+                strParam('presentationMode', '视觉结构：flat 为无卡片壳平铺，card 为卡片式结构。必须由 Agent 根据任务和素材明确选择，素材精修结果不会替 Agent 改写。', true, {
+                    enum: ['flat', 'card']
+                }),
+                arrParam('sourceAssetIds', '完整 SKU 缺少源文档时，从本次 handoff 候选中由 Agent 选定的 assetId，数组顺序就是色卡顺序；直接 stage=color-card 并显式传 sources 时可省略。', false, {
+                    items: { type: 'string' },
+                    minItems: 1,
+                    maxItems: 10,
+                    uniqueItems: true
+                }),
+                numParam('canvasWidth', '色卡源文档画布宽度（px）。', true),
+                numParam('canvasHeight', '色卡源文档画布高度（px）。', true),
+                strParam('canvasBackground', '画布底色。', true, {
+                    enum: ['white', 'black', 'transparent']
+                }),
+                numParam('cardWidth', '单个色卡区域宽度（px）。', true),
+                numParam('cardHeight', '单个色卡区域高度（px）。', true),
+                numParam('cardCornerRadius', '卡片圆角（px，可为 0）。', true),
+                numParam('columns', '列数，由当前素材数量和构图方向决定。', true),
+                numParam('columnGap', '列间距（px，可为 0）。', true),
+                numParam('rowGap', '行间距（px，可为 0）。', true),
+                {
+                    name: 'gridAlignment',
+                    type: 'object',
+                    description: '网格对齐。',
+                    required: true,
+                    additionalProperties: false,
+                    properties: [
+                        strParam('horizontal', '水平。', true, { enum: ['start', 'center', 'end'] }),
+                        strParam('vertical', '垂直。', true, { enum: ['start', 'center', 'end'] }),
+                        strParam('lastRow', '末行。', true, { enum: ['start', 'center', 'end'] })
+                    ]
+                },
+                {
+                    name: 'showIndexNumbers',
+                    type: 'boolean',
+                    description: '是否显示仅供输入顺序核对的参考序号。',
+                    required: true
+                },
+                strParam('cardFillColorHex', '卡片底色，6 位十六进制，例如 #F4EFE8。', true),
+                strParam('labelFillColorHex', '色名标签底色，6 位十六进制。', true),
+                strParam('labelTextColorHex', '色名文字颜色，6 位十六进制。', true),
+                {
+                    name: 'internalLabel',
+                    type: 'object',
+                    description: '色名标签在单个卡片内部的归一化位置与字号关系。',
+                    required: true,
+                    additionalProperties: false,
+                    properties: [
+                        numParam('xRatio', '标签左边相对卡片宽度的比例 0-1。', true),
+                        numParam('yRatio', '标签上边相对卡片高度的比例 0-1。', true),
+                        numParam('widthRatio', '标签宽度相对卡片宽度的比例。', true),
+                        numParam('heightRatio', '标签高度相对卡片高度的比例。', true),
+                        numParam('cornerRadiusToWidthRatio', '标签圆角相对卡片宽度的比例。', true),
+                        numParam('fontSizeToHeightRatio', '文字字号相对标签高度的比例。', true)
+                    ]
+                },
+                {
+                    name: 'labelTypography',
+                    type: 'object',
+                    description: '可复现的色名排版。',
+                    required: true,
+                    additionalProperties: false,
+                    properties: [
+                        strParam('fontName', '字体名。', true),
+                        numParam('tracking', '字距。', true),
+                        numParam('leadingToFontSizeRatio', '行距/字号。', true),
+                        strParam('alignment', '水平对齐。', true, { enum: ['left', 'center', 'right'] }),
+                        numParam('horizontalPaddingRatio', '水平内边距/标签宽。', true),
+                        numParam('verticalPaddingRatio', '垂直内边距/标签高。', true)
+                    ]
+                },
+                {
+                    name: 'indexStyle',
+                    type: 'object',
+                    description: '启用序号时必填的样式与位置。',
+                    required: false,
+                    additionalProperties: false,
+                    properties: [
+                        strParam('colorHex', '颜色。', true),
+                        strParam('fontName', '字体。', true),
+                        numParam('tracking', '字距。', true),
+                        numParam('leadingToFontSizeRatio', '行距/字号。', true),
+                        numParam('fontSizeToCardWidthRatio', '字号/卡宽。', true),
+                        numParam('xRatio', 'x/卡宽。', true),
+                        numParam('yRatio', 'y/卡高，可为负。', true),
+                        strParam('alignment', '对齐。', true, { enum: ['left', 'center', 'right'] })
+                    ]
+                },
+                {
+                    name: 'imagePlacement',
+                    type: 'object',
+                    description: '商品主体在卡片区域中的首次落位意图；Skill 只求解几何。',
+                    required: true,
+                    additionalProperties: false,
+                    properties: [
+                        numParam('subjectFillRatio', '主体 contain 占比 0.1-1，由 Agent 根据素材和构图选择。', true),
+                        strParam('anchor', '主体视觉锚点。', true, {
+                            enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center']
+                        })
+                    ]
+                }
+            ]
+        },
         strParam('retouchMode', 'stage=color-card only: auto classifies studio vs scene and prepares editable retouch layers; layout_only preserves legacy layout-only behavior; studio_retouch_required fails when the sources are not suitable studio images.', false, {
             enum: ['auto', 'layout_only', 'studio_retouch_required'],
             default: 'auto'

@@ -42,7 +42,6 @@ import { getPhotoshopContext } from '../agent-orchestration/context';
 import { toAgentImageAttachments } from '../../../shared/design-image-input';
 import { applySharedSkillParamDefaults } from '../../../shared/skill-param-defaults';
 import {
-    buildRuntimeSelectedSkillHandoffFromRecommendation,
     buildRuntimeSelectedSkillHandoffFromUserSelection,
     buildSkillRoutingRecommendation,
     type FindSkillRoutingIntentOptions
@@ -627,6 +626,10 @@ export function buildAutonomousSkillParams(
         ...(intentControlPlane ? { agentIntentControlPlane: intentControlPlane } : {}),
         ...(skillRoutingRecommendation ? { skillRoutingRecommendation } : {}),
         ...(context.providerNativeWebSearchIntent ? { providerNativeWebSearchIntent: context.providerNativeWebSearchIntent } : {}),
+        ...(context.selectedModelId ? { primaryModelId: context.selectedModelId } : {}),
+        ...(typeof context.selectedModelThinkingEnabled === 'boolean'
+            ? { primaryModelThinkingEnabled: context.selectedModelThinkingEnabled }
+            : {}),
         ...(exactPropertyExecutionScope ? {
             runtimeAllowedWriteTools: exactPropertyExecutionScope.allowedWriteTools,
             runtimeExactPropertyScope: exactPropertyExecutionScope
@@ -3790,23 +3793,16 @@ export class DesignAgentEngine {
             semanticDecision: semanticIntentDecision,
             capabilityConstraint
         });
-        // 用户在输入框显式选定的技能优先于文本正则推荐（codex 式：选择即权威提示）；
-        // 两者同为 selection-only，安全 gate（生产语境/bridge 策略/写授权）一致。
+        // 只有用户在输入框显式选择，才能在模型运行前形成 Skill 身份。文本匹配仅保留
+        // advisory recommendation；模型理解任务后可通过 declareDesignIntent 自己绑定 Profile。
         const runtimeSelectedSkillHandoff = taskProgressIdentity.progressObligation === 'delivery'
-            ? (buildRuntimeSelectedSkillHandoffFromUserSelection({
+            ? buildRuntimeSelectedSkillHandoffFromUserSelection({
                 userSelectedSkillId: context.userSelectedSkillId,
                 intentControlPlane,
                 skillBridgePolicy: capabilityConstraint.skillBridgePolicy,
                 deniedToolDomains: capabilityConstraint.deniedToolDomains,
                 toolScopeCeiling: capabilityConstraint.toolScopeCeiling
-            }) ?? buildRuntimeSelectedSkillHandoffFromRecommendation({
-                requestText: context.userInput,
-                recommendation: skillRoutingRecommendation,
-                intentControlPlane,
-                skillBridgePolicy: capabilityConstraint.skillBridgePolicy,
-                deniedToolDomains: capabilityConstraint.deniedToolDomains,
-                toolScopeCeiling: capabilityConstraint.toolScopeCeiling
-            }))
+            })
             : undefined;
         const requiresProductionProgress = taskProgressIdentity.requiresTaskProgress;
 

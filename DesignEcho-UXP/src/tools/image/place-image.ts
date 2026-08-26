@@ -94,7 +94,7 @@ export interface PlaceImageParams {
     };
     /** 目标区域适配方式 */
     targetFit?: 'contain' | 'cover' | 'fill';
-    /** 图框在目标区域中的对齐方式；focalPoint 存在时只保留为请求事实，不参与落位 */
+    /** 图框在目标区域中的对齐方式；focalPoint 存在时优先由 focalPoint 控制落位 */
     targetAnchor?: ImageTargetAnchor;
     /** 源图中的归一化关注点；存在时优先将该点对准目标区域中心 */
     focalPoint?: ImageTargetFocalPoint;
@@ -108,6 +108,26 @@ export interface PlaceImageParams {
     sourceByteLength?: number;
     /** 来源路径（仅日志） */
     sourcePath?: string;
+}
+
+function hasOwnParameter(params: PlaceImageParams, key: keyof PlaceImageParams): boolean {
+    return Object.prototype.hasOwnProperty.call(params, key);
+}
+
+/**
+ * targetBounds 已完整表达缩放与落位。其它定位/缩放字段若同时出现会被执行点拒绝，
+ * 避免调用方误以为这些参数已经生效。
+ */
+function collectTargetBoundsConflictingParameters(params: PlaceImageParams): string[] {
+    const keys: Array<keyof PlaceImageParams> = [
+        'scale',
+        'fitToCanvas',
+        'x',
+        'y',
+        'center',
+        'allowUpscale'
+    ];
+    return keys.filter((key) => hasOwnParameter(params, key));
 }
 
 interface PlaceImageBounds {
@@ -471,12 +491,12 @@ export class PlaceImageTool implements Tool {
                     targetFit: {
                         type: 'string',
                         enum: ['contain', 'cover', 'fill'],
-                        description: '目标区域适配方式：contain、cover 或 fill，默认 contain'
+                        description: '提供 targetBounds 时必填：contain 完整放入、cover 铺满区域、fill 拉伸填充'
                     },
                     targetAnchor: {
                         type: 'string',
                         enum: ['center', 'top-center', 'bottom-center', 'left-center', 'right-center'],
-                        description: '目标区域内的图框对齐方式，默认 center；focalPoint 存在时由 focalPoint 优先控制落位。fill 只接受 center'
+                        description: '提供 targetBounds 时必填：目标区域内的图框对齐方式；focalPoint 存在时由 focalPoint 优先控制落位。fill 只接受 center'
                     },
                     focalPoint: {
                         type: 'object',
@@ -537,6 +557,28 @@ export class PlaceImageTool implements Tool {
                 error: 'targetBounds 无效：需要 {x,y,width,height} 或 {left,top,right,bottom}，且宽高必须大于 0；已拒绝默认居中回退。',
                 params
             });
+        }
+
+        if (normalizedTargetBounds) {
+            const conflictingParameters = collectTargetBoundsConflictingParameters(params);
+            if (conflictingParameters.length > 0) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: `targetBounds 与 ${conflictingParameters.join('/')} 互斥：targetBounds 已完整表达缩放与落位；已拒绝静默忽略冲突参数。`,
+                    params
+                });
+            }
+            const missingTargetParameters = [
+                targetFit === undefined ? 'targetFit' : '',
+                targetAnchor === undefined ? 'targetAnchor' : ''
+            ].filter(Boolean);
+            if (missingTargetParameters.length > 0) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: `targetBounds 需要同时显式提供 targetFit 与 targetAnchor；缺少 ${missingTargetParameters.join('/')}，已拒绝由执行器默认决定适配或锚点。`,
+                    params
+                });
+            }
         }
 
         if (!normalizedTargetBounds

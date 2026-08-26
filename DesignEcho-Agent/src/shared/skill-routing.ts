@@ -34,26 +34,6 @@ export interface SkillRoutingRecommendation {
     grantsPermission: false;
 }
 
-export interface RuntimeSelectedSkillHandoffPromotionInput {
-    requestText: string;
-    recommendation?: SkillRoutingRecommendation;
-    intentControlPlane?: Pick<
-        AgentIntentControlPlaneDecision,
-        'requestKind' | 'toolScope' | 'executionAuthorization'
-    >;
-    skillBridgePolicy?: 'allow' | 'forbid';
-    deniedToolDomains?: readonly string[];
-    toolScopeCeiling?: 'none' | 'knowledge_search' | 'read_only' | 'write_photoshop';
-}
-
-function isProductionSkillRoutingMode(mode?: string): boolean {
-    return mode === 'execute'
-        || mode === 'full'
-        || mode === 'create'
-        || mode === 'edit'
-        || mode === 'produce';
-}
-
 export function isCanonicalSkillProductionEntry(skillId: string, requestText: string): boolean {
     const entries = getSkillById(skillId)?.routing?.canonicalProductionEntries;
     return buildCanonicalProductionEntryCandidates(requestText)
@@ -593,46 +573,9 @@ export function isSkillRoutingRecommendation(
 }
 
 /**
- * 将唯一声明候选提升为 R0 Runtime Skill 选择交接。
- *
- * recommendation 本身仍是 advisory-only；只有当前语义决策已明确授权
- * Photoshop 写入、本轮不是轻对话/查看模式，且用户没有禁用 Skill bridge 时，
- * 才产生独立的 selection-only handoff。该交接不执行 Skill，也不授予 Tool 权限。
- */
-export function buildRuntimeSelectedSkillHandoffFromRecommendation(
-    input: RuntimeSelectedSkillHandoffPromotionInput
-): RuntimeSelectedSkillHandoff | undefined {
-    const recommendation = input.recommendation;
-    if (!isSkillRoutingRecommendation(recommendation)) return undefined;
-    // Runtime owner 只接受声明明确标注的生产 mode。未声明 mode 不等同执行，
-    // 因而“查看白底图”、能力陈述或风险讨论不会仅凭领域词获得 Manifest 身份。
-    if (!isProductionSkillRoutingMode(recommendation.mode)) return undefined;
-    if (!isCanonicalSkillProductionEntry(recommendation.skillId, input.requestText)) return undefined;
-    if (input.skillBridgePolicy === 'forbid') return undefined;
-    if (input.toolScopeCeiling === 'none' || input.toolScopeCeiling === 'read_only') return undefined;
-    if (input.deniedToolDomains?.includes('photoshop')) return undefined;
-
-    const intentControlPlane = input.intentControlPlane;
-    if (intentControlPlane?.requestKind !== 'autonomous_execution') return undefined;
-    if (intentControlPlane.toolScope !== 'write_photoshop') return undefined;
-    if (intentControlPlane.executionAuthorization !== 'confirmed_tool_required') return undefined;
-
-    const skill = getSkillById(recommendation.skillId);
-    if (skill?.routeClass !== 'business-workflow') return undefined;
-    if (skill.modelDirectExecution !== 'forbidden') return undefined;
-
-    return buildRuntimeSelectedSkillHandoff({
-        skillId: recommendation.skillId,
-        source: 'skill_declaration_unique_match',
-        routeClass: skill.routeClass,
-        directExecution: skill.modelDirectExecution
-    });
-}
-
-/**
  * 用户在输入框 Skill 选择器里显式指定技能时的 selection-only handoff（codex 式）。
- * 与唯一声明命中版的差别：用户点击本身就是权威，跳过文本正则与 mode 推断
- * （derivedFromTaskText: false）；安全 gate 全部保留——非生产语境（问句/寒暄）、
+ * 用户点击本身就是权威，跳过文本正则与 mode 推断（derivedFromTaskText: false）；
+ * 安全 gate 全部保留——非生产语境（问句/寒暄）、
  * 禁用 Skill bridge、只读上限时不产生 handoff，选择静默不生效。
  * 该交接不执行 Skill，也不授予 Tool 权限。
  */

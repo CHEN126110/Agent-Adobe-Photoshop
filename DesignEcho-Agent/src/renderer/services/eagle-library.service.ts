@@ -28,7 +28,7 @@ export async function selectEagleLibrary(
         return {
             success: false,
             status: 'unavailable',
-            error: '当前桌面运行时还没有提供 Eagle 素材库导入能力。'
+            error: 'DesignEcho 桌面桥没有完整加载，请彻底退出并重启应用后再选择 Eagle 素材库。'
         };
     }
     const response = await select(defaultPath ? { defaultPath } : undefined);

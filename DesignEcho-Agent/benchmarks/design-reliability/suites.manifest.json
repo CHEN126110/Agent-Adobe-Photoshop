@@ -17,6 +17,7 @@
   "releaseGates": {
     "qualityBeforeSpeed": true,
     "minimumRunsPerFamily": 5,
+    "minimumRunsPerCase": 5,
     "technicalDeliveryRate": 0.8,
     "humanUsableRate": 0.7,
     "completedPostWriteReadbackRate": 1,

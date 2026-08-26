@@ -12,6 +12,7 @@ import {
     DebugBridgeCreateSessionInput,
     DebugBridgeService
 } from './debug-bridge-service';
+import type { DesignEchoRuntimeBuildIdentity } from './runtime-build-identity';
 import { WebSocketServer } from '../websocket/server';
 import {
     analyzeDetailPlaceholderAnchors,
@@ -158,6 +159,7 @@ interface MCPHostServiceOptions {
     resourceManagerService?: ResourceManagerService | null;
     modelService?: ModelService | null;
     taskOrchestrator?: TaskOrchestrator | null;
+    runtimeBuildIdentity: DesignEchoRuntimeBuildIdentity;
     onLog?: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
 
@@ -417,6 +419,7 @@ export class MCPHostService {
     private readonly resourceManagerService: ResourceManagerService | null;
     private readonly modelService: ModelService | null;
     private readonly taskOrchestrator: TaskOrchestrator | null;
+    private readonly runtimeBuildIdentity: DesignEchoRuntimeBuildIdentity;
     private readonly onLog?: MCPHostServiceOptions['onLog'];
     private server: http.Server | null = null;
 
@@ -428,6 +431,7 @@ export class MCPHostService {
         this.resourceManagerService = options.resourceManagerService || null;
         this.modelService = options.modelService || null;
         this.taskOrchestrator = options.taskOrchestrator || null;
+        this.runtimeBuildIdentity = options.runtimeBuildIdentity;
         this.onLog = options.onLog;
     }
 
@@ -3940,6 +3944,7 @@ export class MCPHostService {
         service: string;
         mcpEndpoint: string;
         debugBridgeEndpoint: string;
+        runtimeBuildIdentity: DesignEchoRuntimeBuildIdentity;
         pluginConnected: boolean;
         pluginConnectionDiagnostics: ReturnType<WebSocketServer['getConnectionDiagnostics']>;
         ports: { ws: number; webview: number; debugBridge: number; mcp: number };
@@ -3948,6 +3953,7 @@ export class MCPHostService {
             service: 'designecho-agent-host',
             mcpEndpoint: `${this.getBaseUrl()}/mcp`,
             debugBridgeEndpoint: this.debugBridge.getBaseUrl(),
+            runtimeBuildIdentity: this.runtimeBuildIdentity,
             pluginConnected: this.wsServer.isPluginConnected(),
             pluginConnectionDiagnostics: this.wsServer.getConnectionDiagnostics(),
             ports: {
