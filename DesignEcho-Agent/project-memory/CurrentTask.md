@@ -28,6 +28,11 @@
 - r18 共 20 次 Provider submission /20 个独立 thread，envelope repair、Tool arguments repair、`argumentsJson` 与相关 invalid code全为 0。r17+r18 合计 56 次 submission、0 repair，已证明原生 `name.const + arguments object` 消除了 r14-r16 的确定性二次 JSON 修复开销。
 - r18 普通 PerformanceLedger 为 model 17、vision candidates 5、visual analyses 5；Final Judge 的 6 张图只进入独立终审事件和 RuntimeAccounting，总视觉池保持 10/22。Final Judge 为 88 分、1 项可行动诊断，仍是 `artifact_incomplete / needs_review`，机器分数不能替代人工商业质量评审。
 - 按一次用户任务真实终点，r18 比 r17 完整链缩短 367562 ms（40.67%）；首次真正成功写入 249964 ms 是 r14-r18 最快，比 r14 / r17 分别快 9.95% /18.20%。但 r18 总墙钟仍比 r14 慢 2.65%，单样本不能证明稳定分布全面优于旧基线。
+- 现有 18 条 Run 分散在不同 cohort 且多数每组只有 1 次，4 条人工评审均未形成同一固定 cohort 的完整分母；它们只能用于定位病因，不能计算正式成功率。下一轮必须在同一 Git 版本、同一 Case、同一模型和同一自然请求下重复运行。
+- Runtime 声明同轮承接已修为：声明先提交，随后只执行模型原本请求、绑定后仍可见、重新通过 Tool Decision 与 execution preflight 的只读观察/知识检索；写入和控制调用继续 defer。r18 型回归从 3 个模型回合降为 2 个，没有替模型新增 Tool 或扩权。
+- `composeDesign` 已把可确定的全部图片落位预演移到首次 Photoshop 写入前；子调用失败、抛异常或新建文档半成功时，使用真实子收据和最终 Host revision 结算 `applied / unknown / not_observed`，不再把 8049→8053 的部分写入说成“未修改”。standalone `renderLayout` 异常也返回 Runtime 可识别的正式 operation envelope。
+- 复合设计不再因“Photoshop 忙碌”自动重放整单；原生弹窗嫌疑会保留写入状态并把 `capturePhotoshopWindow` 的整窗观察出口投影给 Agent，由模型看真实环境后判断恢复，Harness 不直接下恢复命令。
+- 开发评测新增 Agentic 一级决策归属证据：写入尝试与 Host 已提交写入分开，`passed / failed` 只消费真实 commit；Harness 未提交写入只作为越界尝试诊断。人工盲评的候选成稿、用户作品和 Eagle 锚点使用 typed refs 与证据引用逐项绑定，不能再靠字符串自报“参考齐全”。两者都只存在开发 sidecar，不进入 Runtime gate 或审美决策。
 
 ### 实施边界
 
@@ -40,23 +45,24 @@
 
 ### 验证与未知
 
-- 已通过 Agent production build、Main/Renderer 类型检查、Runtime declaration、设计作者权、Agent 业务边界、Tool 注册、Design Reliability 聚合回归和 `git diff --check`。r18 真实 Provider → Photoshop 运行的 15 项 benchmark 机器检查全部通过。
-- 完整 `maintenance:validate` 已通过 41 个核心检查，包含 Agent/UXP 类型检查、UXP production build、Final Judge 比较证据、Provider 逐图出站回执、跨代可信证据和可靠性发布门禁。视觉预算策略已迁出主循环，`agent.ts` 从 12941 行降至 12878 行并下调棘轮基线，没有通过抬高阈值换绿灯。
+- 当前工作树已通过 Main/Renderer 类型检查、Runtime declaration、设计作者权、Agent 业务边界、Tool 注册、composeDesign 行为回归、Run fact ledger、Design Reliability 反例回归和 `git diff --check`。r18 真实 Provider → Photoshop 运行的 15 项 benchmark 机器检查仍保持历史事实，不代表当前工作树已做新一轮真机验证。
+- 最新完整 `maintenance:validate` 已通过 41 个核心检查，包含 Agent/UXP 类型检查、UXP production build、Final Judge 比较证据、Provider 逐图出站回执、跨代可信证据、可靠性评测与弹窗恢复边界。视觉预算策略已迁出主循环，`agent.ts` 仍保持 12878 行棘轮，没有通过抬高阈值、改断言或恢复整单自动重试换绿灯。
 - Codex Final Judge 现在只有在成功 transport 的逐图回执与实际像素、顺序、candidate key 和字节摘要完全匹配时才采信评分；diagnosis repair 也必须独立证明重放同一组图。Design Reliability 的 `status` 与 `--require-live` 共用 Suite Manifest 门禁，单次满分或只评审少量样本不能再伪装成正式成功率。
 - r18 最终画面已真实输出并由 Final Judge 看过，但尚未完成与用户店铺成稿 / Eagle 锚点的人工盲化成对评审；不能把 88 分或技术交付通过写成商业审美通过。
 - 当前主要延迟仍是模型：18 次 Runtime 模型调用耗时 406299 ms、输入 990519 tokens；主循环单次平均约 60421 input tokens。两次内部视觉模型（Eagle / `evaluateDesign`）分别约 33.6 /41.2 秒。总墙钟尚未稳定优于 r14。
-- r18 仍暴露两个效率 /正确性问题：Runtime 声明同轮的 `recommendAssets` 与 `searchEagleReferences` 被延后到下一轮；失败 `composeDesign` 声称“未修改 Photoshop”但真实 history 已从 8049 变到 8053。后者必须在写前完成可确定预检，或由事务 owner 回滚，不能用错误摘要掩盖 partial commit。
+- 当前工作树尚未用最新版 Renderer 重新跑固定 Case；本轮代码、契约和完整验证全绿不能替代真实 Provider → Agent → Photoshop 成稿，更不能证明审美已接近用户作品 / Eagle。
+- 当前运行中的 DesignEcho 窗口可能仍是旧构建，Photoshop 又打开着用户的 `SKU.psb`。真机回归必须先建立隔离 Fixture 和测试目标，不能把用户现有文档当试验画布，也不能用测试桥直接调用原子工具冒充 Agent 端到端成功。
 
 ### 下一步
 
-1. 先修 `composeDesign` partial commit：把能确定的主体框 /落位预演移到首次 Photoshop mutation 前；已经发生部分写入时，结果和用户提示必须报告真实 mutation，必要时由现有事务 owner 回滚，不能继续声称“本次未修改”。
-2. 收敛 Runtime declaration 同轮工具延后：只在新能力边界下重新预检模型已经请求的兼容只读调用，不重放、不扩权、不替 Agent 选 Tool；以减少一个无信息增益模型回合为验收。
-3. 继续按 Performance / final-quality / Runtime reference owner 收缩 `agent.ts`，但本轮视觉预算策略拆分和 12878 行新棘轮已经完成；不得把后续功能重新堆回主循环。
-4. 用同一 `main-image-commercial-v1` 对 r18、r14、用户店铺成稿和 Eagle 锚点做人工盲化成对评审；只有质量不退化后才扩大到至少 3 个固定重复样本，验证 wall time /首次成功写入的分布，而不是继续用单次轨迹下结论。
+1. 冻结当前代码为可回滚 Git checkpoint；准备新的 `main-image-c1163-v1` 隔离 Fixture，保持自然请求“用这个项目里的素材帮我做一张 800×800 的商品主图。”，不向 Agent 泄漏人工成稿或 Eagle 评审锚点。
+2. 在最新版真实 Agent → Provider → Photoshop 路径上，同一 cohort 连续运行 C-1163 至少 3 次；每次使用全新 Fixture、0 人工介入，记录模型身份、工具来源、真实 mutation、读回、PSD/JPG、首次写入和总耗时。任何一次写错用户文档都按安全失败处理。
+3. 每次成稿都用 typed refs 绑定候选、用户作品和 Eagle 锚点，执行盲化成对评审；只有技术交付通过且人工判为 comparable / better、无 blocker，才进入人工成功率分子。机器 Judge 只作诊断。
+4. 主图单案例重复链稳定后，按 Suite Manifest 扩到详情页与 SKU，每类至少 5 次固定重复，先证明低预期成功率；再根据失败归因只修重复出现的 owner 根因。审美与速度分开优化，质量没有达标前不以减少观察或思考换速度。
 
 ### 状态
 
-`in_progress / live_r18_complete / single_generation_technical_delivery_passed / warning_only_auto_reentry_fixed / native_tool_args_56_submissions_zero_repair / final_quality_budget_isolated / final_quality_visual_receipt_fail_closed / reliability_release_gates_manifest_owned / first_successful_mutation_best_so_far / wall_time_not_yet_better_than_r14 / human_pairwise_review_pending / full_core_validation_41_passed / production_build_green`
+`in_progress / live_r18_historical_baseline_only / runtime_declaration_sibling_fixed / compose_partial_commit_truthful / standalone_render_layout_unknown_lock_fixed / modal_recovery_agent_visible / blind_pairwise_evidence_bound / agentic_decision_origin_observable / full_core_validation_41_passed / new_fixed_cohort_live_run_pending / human_pairwise_review_pending / official_success_rate_unavailable`
 
 ---
 
