@@ -290,7 +290,7 @@
   "activeRequest": {
     "id": "AGENT-DESIGN-AUTHORSHIP-LIVE-001",
     "summary": "Verify on an isolated fixed case that the multimodal Agent owns task understanding, reference and asset choice, visual direction and Photoshop revision while Harness only preserves facts, permissions, transactions and readback evidence.",
-    "status": "authorship_truncation_sku_runtime_guard_and_reliability_governance_validated_core_45_commit_and_push_pending_live_run_pending",
+    "status": "authorship_truncation_sku_runtime_guard_and_reliability_governance_cd8f22ac_remote_verified_core_45_live_run_pending",
     "mustDo": [
       "Run the latest committed build only after the user's current Photoshop document is safely closed, using a fresh isolated fixture and a natural one-sentence request with zero in-run human correction.",
       "Keep Agent ownership of task interpretation, information-gain decisions, reference and asset choice, visual strategy, layout, copy, tool composition and revision action.",
@@ -319,8 +319,8 @@
       "完成：正式调试桥绑定 DesignEcho/Photoshop Build、首次副作用空文档基线、超时取消与单租约；写、保存、复合、Skill、子 Agent 和面板桥无旁路。",
       "完成：可靠性评测使用 canonical append-only Attempt 分母、严格 cohort/Case/盲评门禁；附加 data root 不能注入正式 Attempt。",
       "完成：两份独立提交前审查、敏感信息扫描和 45 项 maintenance:validate；Agent 行数与 Tool schema 棘轮未提高。",
-      "待提交：审查全部 staged diff 后提交并推送 legacy/codex/agent-uxp，读回本地与远端 SHA。",
-      "待环境：用户保存并关闭当前 Photoshop 活动文档，DesignEcho 与 UXP 重启到最新提交。",
+      "完成：代码检查点 cd8f22ac 已推送到 legacy/codex/agent-uxp；本地与远端完整 SHA 已读回一致。",
+      "待环境：用户保存并关闭当前 Photoshop 活动文档，DesignEcho 与 UXP 重启到 cd8f22ac。",
       "待真机：从固定摄影素材创建全新隔离 Fixture，用自然一句需求运行真实 Agent → Provider → Photoshop 链路，0 人工纠偏。",
       "待验收：核对真实观察、选图依据、Tool / document / history / PSD / JPG 收据、耗时，并与用户作品和 Eagle 锚点做盲化成对评审。",
       "待重复：首轮安全闭合后按 Suite 口径在相同 cohort 每个 Case 至少运行 5 次，并按 owner 归因失败。"

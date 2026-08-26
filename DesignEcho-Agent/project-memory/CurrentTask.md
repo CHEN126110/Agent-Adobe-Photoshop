@@ -10,11 +10,11 @@
 
 ### 当前事实
 
-- 设计作者权与运行稳定性治理已提交为 `1203e797` 并推送到 `legacy/codex/agent-uxp`；本地与远端 SHA 已读回一致，工作树干净。
+- 前一阶段设计作者权与运行稳定性治理为 `1203e797`；本轮作者权、截断、SKU、图片落位、Runtime 身份和可靠性治理已提交为 `cd8f22ac` 并推送到 `legacy/codex/agent-uxp`，本地与远端完整 SHA `cd8f22acdfe8bcf2637b6d9accef2b9d7defe0d5` 已读回一致。
 - 固定 Skill / Prompt 开工顺序、SKU 默认版式、规则 Top-1 自动选图、项目列表首图冒充选定、按 role 写死层序和无条件文字吸附已移除或降为显式可选机械能力。
 - 提交前独立审查发现并修复两处真实成功率根因：详情页多槽选择会被后续排序逐个作废；长历史压缩会丢失第 5 个以后未决选图槽。两者均有行为回归覆盖。
 - 当前运行中的 DesignEcho 可能仍是提交前构建，Photoshop 还保留用户活动文档；本轮没有重启应用、修改该文档或用测试桥冒充端到端 Agent 成功。
-- 本文件所在的在途提交已收口普通文字 Skill 推荐越权：推荐只是模型可忽略候选，只有用户明选或模型 `declareDesignIntent` 能绑定 Runtime Skill，未绑定推荐也不再抢占交互卡 owner。
+- `cd8f22ac` 已收口普通文字 Skill 推荐越权：推荐只是模型可忽略候选，只有用户明选或模型 `declareDesignIntent` 能绑定 Runtime Skill，未绑定推荐也不再抢占交互卡 owner。
 - 单次提交会冻结当时的唯一多模态模型、Provider 与思考档，TaskRun 中途不跟随 UI 设置漂移。正式调试写入桥要求 token、精确项目/模型/DesignEcho Build/Photoshop Build、干净真实运行时和单租约；提交前与完成后均重新校验 `dist/main` / `dist/renderer` 实际摘要，不信任启动缓存。
 - Provider 一次输出截断只在 debug trace 记录并静默续接，不再向用户显示“长度上限、正在补全”。连续恢复失败仍返回 `success:false`，并只依据可信 Photoshop mutation 区分“已保留改动”与“尚未修改画面”；普通轮次也不再无条件先压到 4096 输出 token。
 - SKU 正常缺源路径已改为零写入 handoff：候选只有稳定身份，Agent 必须在首次写入前显式选素材、选择 flat/card 结构，并声明画布底色、卡片、网格对齐、标签字体/字距/内边距、序号样式、配色、主体占比和锚点；Runtime 收据精确绑定 `assetId → path → order`，Skill 只验证与求解几何。同名目录素材不再按格式优先级暗选，模型参数也不能把文件名升级为权威色名。
@@ -32,10 +32,9 @@
 
 ### 下一步
 
-1. 完成独立提交前审查、Git 卫生检查与敏感信息扫描后，提交并推送当前治理版本。
-2. 当用户的 Photoshop 活动文档已安全保存并关闭时，重建并重启 DesignEcho 与 UXP，从固定摄影输入复制一份全新隔离 Fixture。
-3. 用自然请求运行真实 Agent → Provider → Photoshop 链路，记录模型身份、实际观察、选图依据、工具调用、文档 / history、PSD/JPG 收据、首次写入和总耗时；不在运行中人工纠偏。
-4. 将候选成稿与用户作品、Eagle 锚点做盲化成对评审；单次链路安全闭合后，在同一 Git / Case / 模型 / 请求下按 Suite 口径重复至少 5 次，并按 owner 归因失败。
+1. 当用户的 Photoshop 活动文档已安全保存并关闭时，重建并重启 DesignEcho 与 UXP 到 `cd8f22ac`，从固定摄影输入复制一份全新隔离 Fixture。
+2. 用自然请求运行真实 Agent → Provider → Photoshop 链路，记录模型身份、实际观察、选图依据、工具调用、文档 / history、PSD/JPG 收据、首次写入和总耗时；不在运行中人工纠偏。
+3. 将候选成稿与用户作品、Eagle 锚点做盲化成对评审；单次链路安全闭合后，在同一 Git / Case / 模型 / 请求下按 Suite 口径重复至少 5 次，并按 owner 归因失败。
 
 ### 验证与未知
 
@@ -48,7 +47,7 @@
 
 ### 状态
 
-`in_progress / authorship_and_truncation_governance_code_complete / sku_fixed_first_draft_removed / reliability_attempt_denominator_closed / runtime_and_first_side_effect_guarded / full_core_validation_45_passed / current_user_document_untouched / independent_review_complete / commit_and_push_pending / isolated_live_photoshop_run_pending / blind_pairwise_review_pending`
+`in_progress / authorship_and_truncation_governance_code_complete / sku_fixed_first_draft_removed / reliability_attempt_denominator_closed / runtime_and_first_side_effect_guarded / full_core_validation_45_passed / current_user_document_untouched / independent_review_complete / code_checkpoint_cd8f22ac_remote_verified / isolated_live_photoshop_run_pending / blind_pairwise_review_pending`
 
 ---
 
