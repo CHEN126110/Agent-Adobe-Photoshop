@@ -1,6 +1,6 @@
 import { MAX_RUNTIME_DELIVERY_RESULT_REFS } from './agent-runtime-v5/runtime-delivery-receipt';
 import {
-    buildSkillDeliveryPlanDigest,
+    buildSkillDeliveryPlan,
     normalizeSkillDeliveryArtifactPath,
     renderSkillDeliveryPattern,
     resolveSkillDeliveryConvention,
@@ -8,6 +8,8 @@ import {
     SKILL_DELIVERY_CONVENTION_VERSION,
     type SkillDeliveryConvention,
     type SkillDeliveryConventionResolution,
+    type SkillDeliveryPlan,
+    type SkillDeliveryPlanArtifact,
     type SkillDeliveryPatternValues
 } from './skills/skill-delivery-convention';
 
@@ -192,6 +194,7 @@ export type SkuExpectedExportInventory = {
     outputDir: string;
     editableOutputDir: string;
     deliveryConvention: SkillDeliveryConvention;
+    deliveryPlan?: SkillDeliveryPlan;
     deliveryPlanDigest?: string;
     items: SkuExpectedExportInventoryItem[];
     blockers: string[];
@@ -358,8 +361,18 @@ function fallbackSkuDeliveryConvention(): SkillDeliveryConvention {
             format: 'jpg'
         },
         pairing: 'one_editable_per_raster',
-        versionPolicy: 'replace_exact_set'
+        versionPolicy: 'fail_if_exists'
     };
+}
+
+function resolveFallbackProjectPath(outputDir: string): string {
+    const normalized = normalizeInventoryPath(outputDir);
+    const segments = normalized.split(/[\\/]+/);
+    if (segments.length < 2 || String(segments.at(-1) || '').toLowerCase() !== 'sku') return '';
+    const separator = normalized.includes('\\') ? '\\' : '/';
+    const parent = segments.slice(0, -1).join(separator);
+    if (/^[a-z]:$/i.test(parent)) return `${parent}${separator}`;
+    return normalized.startsWith('/') ? `/${parent.replace(/^\/+/, '')}` : parent;
 }
 
 function renderInventoryName(
@@ -446,8 +459,15 @@ export function buildSkuExpectedExportInventory(input: {
     if (!outputDir || !looksLikeAbsoluteLocalPath(outputDir)) {
         blockers.push('SKU 精确交付清单缺少绝对输出目录。');
     }
-    if (!editableOutputDir || !isPathInsideDirectory(editableOutputDir, outputDir)) {
-        blockers.push('SKU editable 项目相对根目录必须位于 raster 事务目录内。');
+    if (!editableOutputDir) {
+        blockers.push('SKU 精确交付清单缺少可编辑源稿目录。');
+    } else if (hasExplicitConvention && projectPath) {
+        if (!isPathInsideDirectory(outputDir, projectPath)
+            || !isPathInsideDirectory(editableOutputDir, projectPath)) {
+            blockers.push('SKU raster 与 editable 目录都必须位于当前项目内。');
+        }
+    } else if (!hasExplicitConvention && !isPathInsideDirectory(editableOutputDir, outputDir)) {
+        blockers.push('SKU 兼容交付的可编辑源稿目录必须位于当前输出目录内。');
     }
 
     for (const rawSpec of input.specs || []) {
@@ -611,19 +631,47 @@ export function buildSkuExpectedExportInventory(input: {
             `SKU 精确交付清单最多支持 ${MAX_RUNTIME_DELIVERY_RESULT_REFS} 行，本次为 ${items.length} 行。`
         );
     }
-    const uniqueBlockers = uniqueStrings(blockers);
-    const deliveryPlanDigest = uniqueBlockers.length === 0 && items.length > 0
-        ? buildSkillDeliveryPlanDigest({
+    const planProjectPath = projectPath || resolveFallbackProjectPath(outputDir);
+    const plannedArtifacts: SkillDeliveryPlanArtifact[] = items.flatMap((item, index) => ([{
+        artifactId: `sku:${item.id}:raster`,
+        kind: 'raster_export' as const,
+        pairId: item.id,
+        order: index * 2,
+        path: item.path,
+        format: 'jpg' as const,
+        sourceHistoryRole: 'per_artifact_revision' as const
+    }, {
+        artifactId: `sku:${item.id}:editable`,
+        kind: 'editable_document' as const,
+        pairId: item.id,
+        order: index * 2 + 1,
+        path: item.editablePath,
+        format: 'psb' as const,
+        sourceHistoryRole: 'per_artifact_revision' as const
+    }]));
+    const preliminaryBlockers = uniqueStrings(blockers);
+    const deliveryPlanResolution = preliminaryBlockers.length === 0
+        ? buildSkillDeliveryPlan({
+            projectPath: planProjectPath,
             convention: deliveryConvention,
-            artifactPaths: items.flatMap((item) => [item.path, item.editablePath])
+            artifacts: plannedArtifacts
         })
+        : { status: 'blocked' as const, blockers: [] };
+    const uniqueBlockers = uniqueStrings([
+        ...preliminaryBlockers,
+        ...deliveryPlanResolution.blockers
+    ]);
+    const deliveryPlan = deliveryPlanResolution.status === 'ready'
+        ? deliveryPlanResolution.plan
         : undefined;
+    const deliveryPlanDigest = deliveryPlan?.digest;
     return {
         version: 'sku-expected-export-inventory/v1',
         status: uniqueBlockers.length > 0 || !deliveryPlanDigest ? 'blocked' : 'ready',
         outputDir,
         editableOutputDir,
         deliveryConvention,
+        ...(deliveryPlan ? { deliveryPlan } : {}),
         ...(deliveryPlanDigest ? { deliveryPlanDigest } : {}),
         items,
         blockers: uniqueBlockers,

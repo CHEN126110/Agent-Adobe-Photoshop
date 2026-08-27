@@ -57,8 +57,10 @@ import {
 } from '../../../shared/detail-page-content-verification';
 import {
     buildDetailPageLiveReadback,
+    readDetailPageHistoryStateRef,
     verifyDetailPageLiveObservationVersion
 } from '../../../shared/detail-page-live-readback';
+import { consumeRuntimeWorkflowDeliveryReentry } from '../../../shared/agent-workflow-continuation-scope';
 import { buildDetailPageVisualObservationBundle } from '../../../shared/detail-page-visual-observation';
 import { buildDetailPagePlannerContext } from './design-planner-context';
 import {
@@ -83,16 +85,21 @@ import {
     verifyDetailPageOutOfScopeSnapshotsUnchanged
 } from './detail-page-design.skill';
 import { emitSkillStep, executeObservedSkillTool } from './skill-step-events';
+import {
+    buildDetailPageDeliveryPlan,
+    validateDetailPageDeliveryRequest,
+    type DetailPageDeliveryPlan
+} from './detail-page-delivery-plan';
+import { buildDetailPageDeliveryRuntimeEvidence } from './detail-page-delivery-runtime';
+import {
+    finalizeDetailPageStaging,
+    prepareDetailPageStagedDelivery,
+    promoteDetailPageStagedDelivery
+} from './detail-page-delivery-transaction.service';
 
 function clamp01(value: number, fallback: number): number {
     if (!Number.isFinite(value)) return fallback;
     return Math.max(0, Math.min(1, value));
-}
-
-function shouldExportFromRequest(params: Record<string, any>, context?: SkillExecuteParams['context']): boolean {
-    if (params.exportSlices === true || params.autoExport === true) return true;
-    const intent = String(params.userIntent || context?.userInput || '').toLowerCase();
-    return ['导出', '输出', '切片', 'export'].some((keyword) => intent.includes(keyword));
 }
 
 function shouldCaptureScreenSnapshots(params: Record<string, any>): boolean {
@@ -854,6 +861,9 @@ export const detailPageExecutor: SkillExecutor = {
         callbacks,
         signal,
         context,
+        guardedAtomicToolExecutor,
+        runtimeDeliveryPlanAuthority,
+        runtimeWorkflowDeliveryReentry,
         runtimeDesignBriefDeclaration,
         runtimeDesignStrategyDeclaration
     }: SkillExecuteParams): Promise<AgentResult> {
@@ -893,6 +903,316 @@ export const detailPageExecutor: SkillExecutor = {
             ...(params || {}),
             ...detailPageAgentIntake.params
         };
+        const deliveryAction = String(params.deliveryAction || 'prepare').trim().toLowerCase();
+        if (deliveryAction === 'commit') {
+            const trustedDeliveryReentry = consumeRuntimeWorkflowDeliveryReentry(
+                runtimeWorkflowDeliveryReentry,
+                'detail-page-design'
+            );
+            if (!trustedDeliveryReentry) {
+                const message = '当前调用没有通过本次详情页的画面复核续跑校验，因此没有保存或导出任何文件。';
+                return buildFailureResult(
+                    message,
+                    'detail_page_delivery_reentry_required',
+                    results,
+                    { status: 'blocked_untrusted_delivery_reentry' }
+                );
+            }
+            if (!guardedAtomicToolExecutor || !runtimeDeliveryPlanAuthority) {
+                const message = '当前运行没有取得受保护的交付执行通道，因此没有保存或导出任何文件。';
+                return buildFailureResult(
+                    message,
+                    'detail_page_delivery_runtime_unavailable',
+                    results,
+                    { status: 'blocked_delivery_runtime_unavailable' }
+                );
+            }
+
+            emitStep(
+                'observation',
+                '确认详情页交付版本',
+                '正在确认画面仍是刚才复核通过的版本。',
+                'running',
+                0.12
+            );
+            const currentDocumentResult = await guardedAtomicToolExecutor(
+                'parseDetailPageTemplate',
+                { includeStructure: true }
+            );
+            results.push({
+                toolName: 'parseDetailPageTemplate[deliveryCommit]',
+                result: currentDocumentResult
+            });
+            const currentHistoryStateRef = readDetailPageHistoryStateRef(currentDocumentResult);
+            const candidateIdentityMatches = Boolean(
+                currentDocumentResult?.success === true
+                && currentHistoryStateRef
+                && String(currentHistoryStateRef.documentId)
+                    === trustedDeliveryReentry.candidateDocumentId
+                && String(currentHistoryStateRef.historyStateId)
+                    === trustedDeliveryReentry.candidateHistoryStateId
+            );
+            if (!candidateIdentityMatches) {
+                const message = '当前详情页画面在复核后发生了变化，已停止交付；请重新查看当前画面后再继续。';
+                return buildFailureResult(
+                    message,
+                    'detail_page_delivery_candidate_version_changed',
+                    results,
+                    {
+                        status: 'blocked_stale_delivery_candidate',
+                        currentHistoryStateRef
+                    }
+                );
+            }
+
+            const currentScreens = Array.isArray(currentDocumentResult.screens)
+                ? currentDocumentResult.screens as ParsedScreen[]
+                : [];
+            const deliveryPlanResolution = buildDetailPageDeliveryPlan({
+                projectPath: String(params.projectPath || context?.projectContext?.projectPath || '').trim(),
+                outputDir: params.outputDir,
+                screens: currentScreens,
+                documentName: String(currentDocumentResult.documentName || '').trim(),
+                workMode: detailPageAgentIntake.workMode || params.workMode,
+                exportSlices: detailPageAgentIntake.params.exportSlices,
+                deliveryConvention: params.deliveryConvention,
+                deliveryVersion: params.deliveryVersion,
+                exportQuality: params.exportQuality
+            });
+            if (deliveryPlanResolution.status !== 'ready' || !deliveryPlanResolution.plan) {
+                const message = '详情页交付目录或文件名没有形成安全的完整计划，已保留当前画面且没有写出文件。';
+                return buildFailureResult(
+                    message,
+                    'detail_page_delivery_plan_rebuild_failed',
+                    results,
+                    {
+                        status: 'blocked_delivery_plan_rebuild',
+                        blockers: deliveryPlanResolution.blockers
+                    }
+                );
+            }
+            const exactDeliveryPlan = deliveryPlanResolution.plan;
+            const freezeDecision = runtimeDeliveryPlanAuthority.freeze({
+                projectPath: exactDeliveryPlan.projectRoot,
+                convention: exactDeliveryPlan.convention,
+                artifacts: exactDeliveryPlan.artifacts
+            });
+            if (freezeDecision.status !== 'frozen' && freezeDecision.status !== 'retained') {
+                const message = '详情页的输出目录和文件名在开始前没有完成唯一确认，本轮没有写出文件。';
+                return buildFailureResult(
+                    message,
+                    'detail_page_delivery_plan_freeze_rejected',
+                    results,
+                    {
+                        status: 'blocked_delivery_plan_freeze',
+                        blockers: freezeDecision.blockers
+                    }
+                );
+            }
+
+            const stagedPreparation = await prepareDetailPageStagedDelivery({
+                plan: exactDeliveryPlan,
+                runtimeDeliveryPlanBinding: freezeDecision.binding
+            });
+            if (stagedPreparation.status !== 'ready') {
+                const message = '输出目录或文件名当前无法安全提交，设计画面已保留且没有写入正式目录。';
+                return buildFailureResult(
+                    message,
+                    'detail_page_staging_preparation_failed',
+                    results,
+                    {
+                        status: 'blocked_staging_preparation',
+                        blockers: stagedPreparation.blockers,
+                        ...(stagedPreparation.recoveryPath
+                            ? { recoveryPath: stagedPreparation.recoveryPath }
+                            : {})
+                    }
+                );
+            }
+            const stagedContext = stagedPreparation.context;
+            let saveResult: any;
+            if (exactDeliveryPlan.editable && stagedContext.saveDocumentParams) {
+                emitStep(
+                    'tool_started',
+                    '准备详情页可编辑源稿',
+                    '先写入本次任务的临时交付区，完整核对后再一起提交。',
+                    'running',
+                    0.42
+                );
+                saveResult = await runtimeDeliveryPlanAuthority.executeStagedArtifacts({
+                    lease: stagedContext.dispatch.lease,
+                    artifactIds: [exactDeliveryPlan.editable.artifactId],
+                    toolName: 'saveDocument',
+                    params: stagedContext.saveDocumentParams
+                });
+                results.push({ toolName: 'saveDocument[deliveryStaging]', result: saveResult });
+                if (saveResult?.success !== true) {
+                    const cleanup = await finalizeDetailPageStaging({
+                        context: stagedContext,
+                        preserveStagingRoot: false
+                    });
+                    const message = '可编辑源稿没有准备完成，正式目录未写入任何文件。';
+                    return buildFailureResult(
+                        message,
+                        'detail_page_master_staging_failed',
+                        results,
+                        {
+                            status: 'failed_editable_staging',
+                            detailPageDeliveryPlan: exactDeliveryPlan,
+                            stagingCleanup: cleanup
+                        }
+                    );
+                }
+            }
+
+            let sliceResult: any;
+            if (exactDeliveryPlan.slices.length > 0 && stagedContext.exportSlicesParams) {
+                emitStep(
+                    'tool_started',
+                    '准备详情页切片',
+                    `正在核对并准备 ${exactDeliveryPlan.slices.length} 个完整屏。`,
+                    'running',
+                    0.68
+                );
+                const sliceArtifactIds = exactDeliveryPlan.slices.map((slice) => slice.artifactId);
+                sliceResult = await runtimeDeliveryPlanAuthority.executeStagedArtifacts({
+                    lease: stagedContext.dispatch.lease,
+                    artifactIds: sliceArtifactIds,
+                    toolName: 'exportDetailPageSlices',
+                    params: stagedContext.exportSlicesParams
+                });
+                results.push({ toolName: 'exportDetailPageSlices[deliveryStaging]', result: sliceResult });
+                if (sliceResult?.success !== true) {
+                    const cleanup = await finalizeDetailPageStaging({
+                        context: stagedContext,
+                        preserveStagingRoot: false
+                    });
+                    const message = '整组切片没有准备完整，正式目录未写入任何文件。';
+                    return buildFailureResult(
+                        message,
+                        'detail_page_slice_staging_failed',
+                        results,
+                        {
+                            status: 'failed_slice_staging',
+                            detailPageDeliveryPlan: exactDeliveryPlan,
+                            stagingCleanup: cleanup
+                        }
+                    );
+                }
+            }
+
+            const promoted = await promoteDetailPageStagedDelivery({
+                context: stagedContext,
+                runtimeDeliveryPlanBinding: freezeDecision.binding
+            });
+            if (!promoted.success
+                || !promoted.runtimeDeliveryCommitReceipt
+                || !promoted.committedFiles) {
+                const cleanup = await finalizeDetailPageStaging({
+                    context: stagedContext,
+                    preserveStagingRoot: promoted.preserveStagingRoot === true,
+                    recoveryPath: promoted.recoveryPath
+                });
+                const message = promoted.preserveStagingRoot
+                    ? '正式文件提交没有完整结束，已保留恢复现场且不会标记为完成。'
+                    : '正式文件没有整组提交成功，正式目录已恢复到任务开始前。';
+                return buildFailureResult(
+                    message,
+                    'detail_page_delivery_promotion_failed',
+                    results,
+                    {
+                        status: 'failed_delivery_promotion',
+                        detailPageDeliveryPlan: exactDeliveryPlan,
+                        promotion: promoted,
+                        stagingCleanup: cleanup
+                    }
+                );
+            }
+            const acceptedCommit = runtimeDeliveryPlanAuthority.acceptExternalCommit({
+                artifactIds: exactDeliveryPlan.artifacts.map((artifact) => artifact.artifactId),
+                receipt: promoted.runtimeDeliveryCommitReceipt
+            });
+            if (acceptedCommit.status !== 'accepted') {
+                const cleanup = await finalizeDetailPageStaging({
+                    context: stagedContext,
+                    preserveStagingRoot: false
+                });
+                return buildFailureResult(
+                    '文件已经整组提交，但本次交付身份核对没有闭合；结果已保留且不会重复写入。',
+                    'detail_page_runtime_commit_binding_failed',
+                    results,
+                    {
+                        status: 'incomplete_runtime_commit_binding',
+                        blockers: acceptedCommit.blockers,
+                        detailPageDeliveryPlan: exactDeliveryPlan,
+                        promotion: promoted,
+                        stagingCleanup: cleanup
+                    }
+                );
+            }
+            const cleanup = await finalizeDetailPageStaging({
+                context: stagedContext,
+                preserveStagingRoot: false
+            });
+            const deliveryEvidence = buildDetailPageDeliveryRuntimeEvidence({
+                plan: exactDeliveryPlan,
+                workMode: detailPageAgentIntake.workMode || params.workMode,
+                expectedSourceHistoryStateRef: currentHistoryStateRef!,
+                saveResult,
+                sliceResult,
+                stagedPathsByArtifactId: stagedContext.dispatch.stagedPathsByArtifactId,
+                committedFiles: promoted.committedFiles
+            });
+            if (deliveryEvidence.receipt.status !== 'ready') {
+                const message = '源稿和切片已经执行，但文件集合或 Photoshop 版本没有完成一致性核对；本次不会标记为交付完成。';
+                return buildFailureResult(
+                    message,
+                    'detail_page_delivery_receipt_incomplete',
+                    results,
+                    {
+                        status: 'incomplete_delivery_receipt',
+                        runtimeDeliveryReceipt: deliveryEvidence.receipt,
+                        detailPageDeliveryPlan: exactDeliveryPlan,
+                        deliveryIssues: deliveryEvidence.issues,
+                        sourceHistoryStateRef: deliveryEvidence.sourceHistoryStateRef,
+                        documentId: deliveryEvidence.documentId,
+                        stagingCleanup: cleanup
+                    }
+                );
+            }
+
+            const deliveredParts: string[] = [];
+            if (exactDeliveryPlan.editable) deliveredParts.push('1 份可编辑源稿');
+            if (exactDeliveryPlan.slices.length > 0) {
+                deliveredParts.push(`${exactDeliveryPlan.slices.length} 个切片`);
+            }
+            const deliveredSummary = deliveredParts.join('，');
+            emitStep(
+                'finalizing',
+                '详情页交付完成',
+                `已完成整组提交：${deliveredSummary}。`,
+                'success',
+                1
+            );
+            return {
+                success: true,
+                message: `详情页已完成交付：${deliveredSummary}。`,
+                toolResults: results,
+                data: {
+                    status: 'completed',
+                    deliveryAction: 'commit',
+                    detailPageDeliveryPlan: exactDeliveryPlan,
+                    runtimeDeliveryReceipt: deliveryEvidence.receipt,
+                    sourceHistoryStateRef: deliveryEvidence.sourceHistoryStateRef,
+                    documentId: deliveryEvidence.documentId,
+                    editable: saveResult,
+                    export: sliceResult,
+                    exportedFileCount: exactDeliveryPlan.slices.length,
+                    committedFiles: promoted.committedFiles,
+                    stagingCleanup: cleanup
+                }
+            };
+        }
         const detailPageAgentProjectReadiness = buildDetailPageAgentProjectContext({
             params,
             context,
@@ -933,6 +1253,36 @@ export const detailPageExecutor: SkillExecutor = {
         const projectPath = String(params.projectPath || context?.projectContext?.projectPath || '').trim();
         const userInputForOs = String(params.userIntent || context?.userInput || '').trim();
         const workMode = String(detailPageAgentIntake.workMode || params.workMode || '').trim().toLowerCase();
+        // exportSlices 已由 detail-page intake 根据 Runtime-owned workMode 统一解析。
+        // Executor 不再二次读取用户措辞或 autoExport，避免两个交付意图 owner 漂移。
+        const exportRequested = params.exportSlices === true;
+        const deliveryRequestResolution = exportRequested
+            ? validateDetailPageDeliveryRequest({
+                projectPath,
+                outputDir: params.outputDir,
+                deliveryConvention: params.deliveryConvention,
+                deliveryVersion: params.deliveryVersion
+            })
+            : undefined;
+        if (deliveryRequestResolution?.status === 'blocked') {
+            const message = '本次详情页的交付目录、命名或版本约定还不能安全执行；尚未读取或修改 Photoshop 文档。';
+            emitStep(
+                'warning',
+                '详情页交付约定不可执行',
+                message,
+                'error',
+                0.04
+            );
+            return buildFailureResult(
+                message,
+                'detail_page_delivery_convention_blocked',
+                results,
+                {
+                    status: 'blocked_invalid_skill_delivery_convention',
+                    blockers: deliveryRequestResolution.blockers
+                }
+            );
+        }
         const editContentMode = detailPageAgentIntake.editContentMode as DetailPageEditContentMode | '';
         const attachedContentImages = String(params.contentSource || '').trim().toLowerCase() === 'attached_image'
             && Array.isArray(context?.attachedImages)
@@ -1813,6 +2163,7 @@ export const detailPageExecutor: SkillExecutor = {
                 fillPlans = fillPlans.map((plan) => ({
                     ...plan,
                     workMode,
+                    exportSlices: exportRequested,
                     targetScope: params.targetScope,
                     requestedChange: String(params.requestedChange || '').trim(),
                     editContentMode: editContentMode as DetailPageEditContentMode
@@ -2439,7 +2790,31 @@ export const detailPageExecutor: SkillExecutor = {
             });
             const contentVerificationMessages = buildContentVerificationMessages(detailPageContentVerification);
 
-            const exportRequested = shouldExportFromRequest(params, context);
+            let detailPageDeliveryPlan: DetailPageDeliveryPlan | undefined;
+            let deliveryPlanBlockers: string[] = [];
+            const deliveryRequested = exportRequested || workMode === 'edit_existing';
+            if (deliveryRequested) {
+                const deliveryPlanResolution = buildDetailPageDeliveryPlan({
+                    projectPath,
+                    outputDir: params.outputDir,
+                    screens: liveScreens,
+                    documentName: String(
+                        liveParseResult?.documentName
+                        || parseResult?.documentName
+                        || context?.photoshopContext?.documentName
+                        || ''
+                    ),
+                    workMode,
+                    deliveryConvention: params.deliveryConvention,
+                    deliveryVersion: params.deliveryVersion,
+                    exportQuality: params.exportQuality
+                });
+                if (deliveryPlanResolution.status === 'ready' && deliveryPlanResolution.plan) {
+                    detailPageDeliveryPlan = deliveryPlanResolution.plan;
+                } else {
+                    deliveryPlanBlockers = deliveryPlanResolution.blockers;
+                }
+            }
             const repairAllowedToolNames = buildDetailPageVisualRepairToolAllowlist({
                 workMode,
                 editContentMode
@@ -2461,12 +2836,17 @@ export const detailPageExecutor: SkillExecutor = {
                 ? String(readAgentVisualObservation(snapshotResult)?.reason || '').trim()
                 : '';
             const deliveryCandidate = buildDetailPageDeliveryCandidate({
-                exportRequested,
+                exportRequested: deliveryRequested,
                 workMode,
                 targetScreenIds: targetScreens.map((screen) => Number(screen.id || 0)),
                 targetLayerIds: currentEditTargetLayerIds,
                 repairAllowedToolNames,
                 reviewAllowedToolNames: ['getScreenSnapshots'],
+                deliveryToolNames: detailPageDeliveryPlan
+                    ? [detailPageDeliveryPlan.workflowCommit.toolName]
+                    : [],
+                deliveryPlanDigest: detailPageDeliveryPlan?.deliveryPlanDigest,
+                expectedArtifactCount: detailPageDeliveryPlan?.artifacts.length || 0,
                 checks: {
                     fill_execution: failCount === 0,
                     deferred_screens: deferredScreenNames.length === 0,
@@ -2477,6 +2857,7 @@ export const detailPageExecutor: SkillExecutor = {
                     snapshot_identity: screenSnapshotIdentityComplete,
                     observation_version: liveObservationVersionVerification.status === 'passed',
                     visual_bundle: visualBundleComplete,
+                    delivery_plan: !deliveryRequested || Boolean(detailPageDeliveryPlan),
                     copy_planning_gaps: missingFactScreenNames.length === 0
                         && copyProviderIssueScreenNames.length === 0
                         && copyCandidateIssueScreenNames.length === 0
@@ -2571,6 +2952,9 @@ export const detailPageExecutor: SkillExecutor = {
                 ...(exportRequested && !exportResult
                     ? ['用户要求导出，但当前结果尚未通过真实画面复核；导出动作已留给 Agent 下一步处理。']
                     : []),
+                ...(deliveryPlanBlockers.length > 0
+                    ? ['本次交付目录或命名没有形成可执行的项目内精确文件计划。']
+                    : []),
                 ...anchorDiagnostics.warnings.map((warning) => String(warning)),
                 ...((placementAuditResult?.warnings || []) as any[]).map((warning) => String(warning)),
                 ...contentVerificationMessages.warnings
@@ -2580,7 +2964,9 @@ export const detailPageExecutor: SkillExecutor = {
             let continuationSummary = exportRequested
                 ? '屏级截图已附给 Agent；请查看真实画面，必要时修复，通过后再调用导出工具。'
                 : '屏级截图已附给 Agent；请查看真实画面并判断是否需要继续修复。';
-            if (missingFactScreenNames.length > 0) {
+            if (deliveryPlanBlockers.length > 0) {
+                continuationSummary = '画面修改已经保留，但交付文件名或目录没有形成安全的精确计划；请调整交付约定后继续，不要重做设计。';
+            } else if (missingFactScreenNames.length > 0) {
                 continuationNextAction = 'ask_user';
                 continuationSummary = '部分屏缺少已确认商品事实，未写入模板旧文案；请先取得或确认事实后继续。';
             } else if (copyProviderIssueScreenNames.length > 0) {
@@ -2605,7 +2991,14 @@ export const detailPageExecutor: SkillExecutor = {
                 continuationSummary = '设计写入结果已保留，但屏级截图未取得；请重试视觉观察，不要从头重做。';
             }
             let continuationRecovery: Record<string, unknown>;
-            if (missingFactScreenNames.length > 0) {
+            if (deliveryPlanBlockers.length > 0) {
+                continuationRecovery = {
+                    mode: 'allowlist' as const,
+                    purpose: 'replan' as const,
+                    allowedToolNames: [],
+                    reason: '交付计划不可执行；保持当前设计，只重规划项目内文件名和目录。'
+                };
+            } else if (missingFactScreenNames.length > 0) {
                 continuationRecovery = {
                     mode: 'allowlist' as const,
                     purpose: 'collect_input' as const,
@@ -2615,15 +3008,25 @@ export const detailPageExecutor: SkillExecutor = {
             } else if (deliveryCandidate.status === 'awaiting_visual_review') {
                 continuationSummary = visualReviewRuntimeBlocked
                     ? `全部确定性检查已通过，但视觉复核在当前运行中不可用（${visualReviewBlockedReason || '运行时限制'}）：不会自动保存或导出。请用户在 Photoshop 中人工查看画面；明确指示保存或导出后再继续。`
-                    : (exportRequested
+                    : (deliveryRequested
                         ? '全部确定性检查已通过；等待 Agent 逐屏查看真实像素，通过后仅开放保存与导出。'
                         : '全部确定性检查已通过；等待 Agent 逐屏查看真实像素，通过后即可完成当前设计任务。');
                 continuationRecovery = {
                     mode: 'allowlist' as const,
                     purpose: 'deliver' as const,
-                    allowedToolNames: exportRequested
-                        ? ['saveDocument', 'exportDetailPageSlices']
+                    allowedToolNames: deliveryRequested
+                        ? deliveryCandidate.deliveryToolNames
                         : [],
+                    ...(detailPageDeliveryPlan
+                        ? {
+                            toolArgumentConstraints: {
+                                [detailPageDeliveryPlan.workflowCommit.toolName]:
+                                    detailPageDeliveryPlan.toolArgumentConstraints[
+                                        detailPageDeliveryPlan.workflowCommit.toolName
+                                    ]
+                            }
+                        }
+                        : {}),
                     repairAllowedToolNames,
                     reviewAllowedToolNames: deliveryCandidate.reviewAllowedToolNames,
                     requiresVisualPass: true,
@@ -2633,7 +3036,7 @@ export const detailPageExecutor: SkillExecutor = {
                     requireExplicitLayerTarget: workMode === 'edit_existing',
                     reason: visualReviewRuntimeBlocked
                         ? '视觉复核运行时不可用：保存与导出必须由用户明确指示，且不冒充视觉通过。'
-                        : (exportRequested
+                        : (deliveryRequested
                             ? '只有全部目标屏真实视觉复核通过后，才允许保存并导出详情页切片。'
                             : '全部目标屏真实视觉复核通过后即可完成；若发现问题，只开放定向修复。')
                 };
@@ -2781,6 +3184,10 @@ export const detailPageExecutor: SkillExecutor = {
                     screenSnapshotVerification,
                     visualObservationBundle,
                     deliveryCandidate,
+                    ...(detailPageDeliveryPlan ? { detailPageDeliveryPlan } : {}),
+                    ...(deliveryPlanBlockers.length > 0
+                        ? { detailPageDeliveryPlanBlockers: deliveryPlanBlockers }
+                        : {}),
                     visualReviewRequest: {
                         toolName: 'getScreenSnapshots',
                         params: {

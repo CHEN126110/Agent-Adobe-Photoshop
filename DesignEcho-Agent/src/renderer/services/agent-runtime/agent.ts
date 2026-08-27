@@ -16,11 +16,9 @@ import type {
     AgentExecutionSummary, AgentStopReason, AgentToolCallLogEntry, AgentStepEvent,
     AgentThinkingEventMeta, ToolSchema, TaskCompletionContract, TaskCompletionContext, TaskCompletionReferenceObservation
 } from './types';
-import {
-    markExecutedToolResultProvenance,
-    readExecutedToolResultProvenance
-} from './tool-result-provenance';
 import { bindCanvasSnapshotExpectedDocumentId } from './canvas-snapshot-target-binding';
+import { guardRuntimeInteractiveReentryResult } from './runtime-interactive-reentry-result-guard';
+import { normalizeAgentToolFailureResult } from './tool-failure-result-normalizer';
 import type { ProviderNativeToolRequest } from '../../../shared/provider-native-tools';
 import {
     buildPrimaryVisualObservationReviewInstruction,
@@ -103,9 +101,9 @@ import {
     requiresUserVisiblePreActionRationaleForToolCalls,
     type AgentToolExecutionPreflight
 } from '../../../shared/agent-tool-execution-preflight';
+import { readRuntimeOwnedSkillDeliveryPlanDigest } from '../../../shared/agent-skill-atomic-tool-execution';
 import { createRuntimeDeclarationSiblingTurn } from '../../../shared/runtime-declaration-sibling-policy';
 import { classifyRunToolActivity } from '../../../shared/agent-run-record';
-import { ensureAgentToolFailureDiagnostics } from '../../../shared/agent-tool-failure-diagnostic';
 import { areEquivalentToolFailureReasons, buildRepeatedToolFailureBlocker, CONSECUTIVE_SAME_TOOL_FAILURE_LIMIT, firstToolFailureReason, hasRepeatedToolFailureExhausted } from './tool-failure-breaker';
 import { decideStageIncompleteRecovery } from '../../../shared/agent-stage-incomplete-recovery';
 import { buildAgentPreActionDisclosure } from '../../../shared/agent-pre-action-disclosure';
@@ -131,6 +129,8 @@ import {
     resolveCompactWorkflowOwnerFirst,
     evaluateAgentWorkflowExecuteHandoffFulfillment,
     evaluateAgentWorkflowContinuationToolAccess,
+    buildAgentWorkflowContinuationBinding,
+    buildRuntimeWorkflowDeliveryReentryOption,
     isDeclaredNonFatalAgentWorkflowHandoff,
     refreshAgentWorkflowContinuationVisualDelivery,
     resolveAgentWorkflowContinuationScopeUpdate,
@@ -1333,22 +1333,8 @@ export class Agent {
         });
     }
 
-    /**
-     * 带止损护栏的工具执行：同名工具连续失败达到上限后不再真正执行，
-     * 直接返回阻断说明（作为 tool_result 回传模型，逼它换路或收尾）。
-     * 实测教训：analyzeAssetContent 失败后被模型连续重试 6 次，烧掉 218 秒。
-     */
     private normalizeToolFailureResult(name: string, result: unknown): unknown {
-        const normalized = ensureAgentToolFailureDiagnostics({
-            toolName: name,
-            toolKind: getSkillById(name) ? 'skill' : 'tool',
-            result
-        });
-        if (normalized !== result) {
-            const provenance = readExecutedToolResultProvenance(result);
-            if (provenance) markExecutedToolResultProvenance(provenance.toolName, normalized);
-        }
-        return normalized;
+        return normalizeAgentToolFailureResult(name, result);
     }
 
     private async executeToolWithDiagnostics(
@@ -1653,6 +1639,7 @@ export class Agent {
                 runtimeDesignStrategyDigest,
                 runtimeActionPlanDeclaration: this.runtimeActionPlanDeclaration,
                 runtimeActionPlanDigest,
+                ...buildRuntimeWorkflowDeliveryReentryOption(this.readActiveWorkflowContinuationScope(), name, args),
                 runtimeEvaluationProfile: this.resolveRuntimeEvaluationProfile()
             });
         } catch (e: any) {
@@ -1670,6 +1657,12 @@ export class Agent {
                 error: result?.error || '任务已取消'
             };
         }
+        result = guardRuntimeInteractiveReentryResult({
+            workflowToolName: name,
+            result,
+            reentry: this.config.runtimeInteractiveReentry,
+            session: this.runtimeSession
+        });
         result = this.normalizeToolFailureResult(name, result);
         // 策略否决/安全拦截是控制信号，不是工具执行失败：不计入连续失败熔断，
         // 否则纯策略重定向会把工具熔断（治理审计 2026-07-08，切断"策略否决→熔断"放大链）。
@@ -2890,20 +2883,11 @@ export class Agent {
             .slice(0, 3);
     }
 
-    private readWorkflowContinuationBinding(): AgentWorkflowContinuationBinding {
-        return {
-            sessionId: this.runtimeSession?.identity.sessionId,
-            runId: this.runtimeSession?.identity.runId,
-            generation: this.runtimeSession?.identity.generation,
-            stage: this.runtimeSession?.stageState.currentStage
-        };
-    }
-
     private readActiveWorkflowContinuationScope(): AgentWorkflowContinuationScope | undefined {
         const previousScope = this.workflowContinuationScope;
         this.workflowContinuationScope = retainAgentWorkflowContinuationScope({
             scope: this.workflowContinuationScope,
-            binding: this.readWorkflowContinuationBinding()
+            binding: buildAgentWorkflowContinuationBinding(this.runtimeSession)
         });
         if (previousScope && !this.workflowContinuationScope) {
             if (this.pendingDirectWorkflowHandoff?.workflowCallId === previousScope.workflowCallId) {
@@ -5259,7 +5243,8 @@ export class Agent {
                 reviewedPreviewTarget: reviewedPreview?.target,
                 reviewedPreviewHistoryStateRef: reviewedPreview?.historyStateRef,
                 multiDocumentTaskBound,
-                expectedDeliveryPlanDigest: typeof receiptEntry.result?.data?.expectedDeliveryPlanDigest === 'string' ? receiptEntry.result.data.expectedDeliveryPlanDigest : undefined
+                deliveryPlanBindingRequired: effectiveContract?.deliveryPlanBindingRequired === true,
+                expectedDeliveryPlanDigest: readRuntimeOwnedSkillDeliveryPlanDigest(receiptEntry.result)
             });
             if (!latestDeliveryVerification) latestDeliveryVerification = deliveryVerification;
             if (deliveryVerification.status !== 'passed') continue;
@@ -9952,7 +9937,7 @@ export class Agent {
             availableToolNames: this.selectWorkflowContinuationCapabilityVisibleToolNames(
                 iterationTools
             ),
-            binding: this.readWorkflowContinuationBinding(),
+            binding: buildAgentWorkflowContinuationBinding(this.runtimeSession),
             visualDeliveryStatusByCallId,
             visualDeliveryIdentityByCallId
         });

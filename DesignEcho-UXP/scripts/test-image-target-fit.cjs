@@ -35,6 +35,142 @@ function loadImageTargetFitModule() {
     return loadTypeScriptModule('../src/core/image-target-fit.ts', 'image-target-fit.ts');
 }
 
+function assertDetailPageSliceDeliveryContract() {
+    const contract = loadTypeScriptModule(
+        '../src/tools/layout/slice-export-contract.ts',
+        'slice-export-contract.ts'
+    );
+    const screens = [
+        { id: 101, name: '首屏', type: 'screen_hero', index: 0 },
+        { id: 102, name: '卖点', type: 'screen_benefit', index: 1 }
+    ];
+    const digest = `skill-delivery-plan/v0:${'a'.repeat(64)}`;
+    const valid = contract.buildSliceExportPlan(screens, {
+        projectRoot: 'C:\\project',
+        outputDir: 'C:\\project\\交付\\详情页切片',
+        format: 'jpeg',
+        quality: 12,
+        conflictPolicy: 'fail_if_exists',
+        deliveryPlanDigest: digest,
+        expectedFiles: [
+            { screenId: '101', path: 'C:\\project\\交付\\详情页切片\\01-首屏.jpg' },
+            { screenId: '102', path: 'C:\\project\\交付\\详情页切片\\02-卖点.jpg' }
+        ]
+    });
+    assert.equal(valid.status, 'ready');
+    assert.equal(valid.config.conflictPolicy, 'fail_if_exists');
+    assert.deepEqual(valid.files.map((file) => file.screenId), ['101', '102']);
+    assert.deepEqual(valid.files.map((file) => file.path), [
+        'C:\\project\\交付\\详情页切片\\01-首屏.jpg',
+        'C:\\project\\交付\\详情页切片\\02-卖点.jpg'
+    ]);
+
+    const posixVersion = contract.buildSliceExportPlan(screens, {
+        projectRoot: '/Volumes/Design Disk/Project',
+        outputDir: '/Volumes/Design Disk/Project/Delivery/detail',
+        format: 'png',
+        conflictPolicy: 'new_version',
+        deliveryPlanDigest: digest,
+        expectedFiles: [
+            { screenId: '101', path: '/Volumes/Design Disk/Project/Delivery/detail/v2-01.png' },
+            { screenId: '102', path: '/Volumes/Design Disk/Project/Delivery/detail/v2-02.png' }
+        ]
+    });
+    assert.equal(posixVersion.status, 'ready');
+    assert.equal(posixVersion.config.conflictPolicy, 'new_version');
+
+    const outsideProject = contract.buildSliceExportPlan(screens, {
+        projectRoot: 'C:\\project',
+        outputDir: 'D:\\outside',
+        format: 'jpeg',
+        conflictPolicy: 'fail_if_exists',
+        deliveryPlanDigest: digest,
+        expectedFiles: [
+            { screenId: '101', path: 'D:\\outside\\01.jpg' },
+            { screenId: '102', path: 'D:\\outside\\02.jpg' }
+        ]
+    });
+    assert.equal(outsideProject.status, 'blocked');
+    assert.ok(outsideProject.blockers.some((message) => message.includes('当前项目目录内')));
+
+    for (const invalidConfig of [
+        { namingPattern: '../{index}' },
+        { namingPattern: '{screen}' },
+        { createSubfolder: true, subfolder: '../切片' },
+        { conflictPolicy: 'overwrite' }
+    ]) {
+        const invalid = contract.buildSliceExportPlan(screens, {
+            projectRoot: 'C:\\project',
+            outputDir: 'C:\\project\\详情页',
+            format: 'jpeg',
+            conflictPolicy: 'fail_if_exists',
+            deliveryPlanDigest: digest,
+            expectedFiles: [
+                { screenId: '101', path: 'C:\\project\\详情页\\01.jpg' },
+                { screenId: '102', path: 'C:\\project\\详情页\\02.jpg' }
+            ],
+            ...invalidConfig
+        });
+        assert.equal(invalid.status, 'blocked');
+    }
+
+    const duplicate = contract.buildSliceExportPlan(screens, {
+        projectRoot: 'C:\\project',
+        outputDir: 'C:\\project\\详情页',
+        format: 'jpeg',
+        conflictPolicy: 'fail_if_exists',
+        deliveryPlanDigest: digest,
+        expectedFiles: [
+            { screenId: '101', path: 'C:\\project\\详情页\\same.jpg' },
+            { screenId: '102', path: 'C:\\PROJECT\\详情页\\SAME.jpg' }
+        ]
+    });
+    assert.equal(duplicate.status, 'blocked');
+    assert.ok(duplicate.blockers.some((message) => message.includes('重复目标路径')));
+
+    const wrongExtension = contract.buildSliceExportPlan(screens, {
+        projectRoot: 'C:\\project',
+        outputDir: 'C:\\project\\详情页',
+        format: 'png',
+        conflictPolicy: 'fail_if_exists',
+        deliveryPlanDigest: digest,
+        expectedFiles: [
+            { screenId: '101', path: 'C:\\project\\详情页\\01.jpg' },
+            { screenId: '102', path: 'C:\\project\\详情页\\02.png' }
+        ]
+    });
+    assert.equal(wrongExtension.status, 'blocked');
+    assert.ok(wrongExtension.blockers.some((message) => message.includes('扩展名')));
+
+    const completeRollbackPlan = contract.buildSliceExportRollbackPlan({
+        createdPaths: ['C:\\project\\详情页\\01.jpg', 'C:\\project\\详情页\\02.jpg'],
+        preexistingPaths: [],
+        deliverySucceeded: true,
+        sourceStateRestored: true
+    });
+    assert.deepEqual(completeRollbackPlan, { rollbackPaths: [], blockers: [] });
+    const partialRollbackPlan = contract.buildSliceExportRollbackPlan({
+        createdPaths: [
+            'C:\\project\\详情页\\01.jpg',
+            'C:\\project\\详情页\\02.jpg',
+            'C:\\project\\详情页\\old-sentinel.jpg'
+        ],
+        preexistingPaths: ['C:\\PROJECT\\详情页\\OLD-SENTINEL.jpg'],
+        deliverySucceeded: false,
+        sourceStateRestored: true
+    });
+    assert.deepEqual(partialRollbackPlan.rollbackPaths, [
+        'C:\\project\\详情页\\01.jpg',
+        'C:\\project\\详情页\\02.jpg'
+    ]);
+    assert.equal(
+        partialRollbackPlan.rollbackPaths.includes('C:\\project\\详情页\\old-sentinel.jpg'),
+        false,
+        'pre-existing sentinel must never become a rollback deletion target'
+    );
+    assert.ok(partialRollbackPlan.blockers.some((message) => message.includes('运行前已存在')));
+}
+
 function assertRuntimeBuildIdentityContract() {
     const runtimeBuild = require('./runtime-build-identity.cjs');
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'designecho-uxp-build-'));
@@ -172,6 +308,19 @@ function assertJpegQualityNormalizationContract() {
     assert.equal(normalize(Number.NaN, 80), 10, 'invalid input must use the caller default semantics');
 }
 
+function assertExportGroupDeliveryContract() {
+    const sourcePath = path.resolve(__dirname, '../src/tools/image/export-group.ts');
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    assert.match(source, /type ExportGroupFormat = 'png' \| 'jpg'/);
+    assert.match(source, /enum: \['png', 'jpg'\]/);
+    assert.match(source, /conflictPolicy\?: ExportGroupConflictPolicy/);
+    assert.match(source, /CONFLICT_POLICY === 'fail_if_exists' && targetFile\.exists/);
+    assert.match(source, /var jpgOptions = new JPEGSaveOptions\(\)/);
+    assert.match(source, /sourceHistoryStateRef = readActiveHistoryStateRef\(doc\)/);
+    assert.match(source, /sameHistoryStateRef\(sourceHistoryStateRef, afterExportHistoryStateRef\)/);
+    assert.doesNotMatch(source, /exportGroup 当前仅支持 png 格式/);
+}
+
 function assertImageSourceIdentityContract() {
     const identity = loadTypeScriptModule(
         '../src/core/image-source-identity.ts',
@@ -254,6 +403,13 @@ function assertSkuPairedEditableDeliveryContract() {
         && saveDocumentSource.includes('await batchPlaySave(getSaveDescriptor(format)')
         && saveDocumentSource.includes('readEditableDocumentArtifactProof('),
     'editable snapshot must bind pre-save Photoshop history and post-save file metadata');
+    assert.ok(saveDocumentSource.includes('params.asCopy === true')
+        && saveDocumentSource.includes('const saveAsCapability = (modalDocument as any)?.saveAs')
+        && saveDocumentSource.includes("typeof saveAsCapability?.psd !== 'function'")
+        && saveDocumentSource.includes("typeof saveAsCapability?.psb !== 'function'")
+        && saveDocumentSource.includes('await saveAsCapability.psd(targetEntry, saveOptions, true)')
+        && saveDocumentSource.includes('await saveAsCapability.psb(targetEntry, saveOptions, true)'),
+    'runtime staging must save PSD/PSB as a copy without rebinding the active document path');
 }
 
 function closeTo(actual, expected, tolerance = 0.001) {
@@ -687,8 +843,10 @@ assert.throws(
 assertTransformTargetBoundsTransactionContract();
 assertImagePlacementParameterConflictContracts();
 assertJpegQualityNormalizationContract();
+assertExportGroupDeliveryContract();
+assertDetailPageSliceDeliveryContract();
 assertImageSourceIdentityContract();
 assertSkuPairedEditableDeliveryContract();
 assertRuntimeBuildIdentityContract();
 
-console.log('image-target-fit: 17 geometry cases, runtime build identity, source identity, paired SKU editable delivery, parameter conflicts, JPEG quality, and transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, runtime build identity, source identity, paired SKU editable delivery, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');

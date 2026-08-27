@@ -12,6 +12,14 @@ import {
     sameHistoryStateRef,
     type PhotoshopHistoryStateRef
 } from '../../core/photoshop-history-state-ref';
+import {
+    buildSliceExportRollbackPlan,
+    buildSliceExportPlan,
+    readSliceExportParentDirectory,
+    type NormalizedSliceExportConfig,
+    type SliceExportConfigInput,
+    type SliceExportPlannedFile
+} from './slice-export-contract';
 
 const uxpStorage = require('uxp').storage;
 
@@ -37,15 +45,6 @@ interface ParsedScreen {
     visible: boolean;
 }
 
-interface SliceExportConfig {
-    outputDir: string;
-    format: 'jpeg' | 'png';
-    quality: number;
-    namingPattern: string;
-    createSubfolder: boolean;
-    subfolder: string;
-}
-
 interface ScreenExportResult {
     screenId: string;
     index: number;
@@ -57,6 +56,8 @@ interface ScreenExportResult {
 }
 
 const SCREEN_SET_ARTIFACT_VERSION = 'runtime-screen-set-artifact/v1' as const;
+const SLICE_DELIVERY_ARTIFACT_VERSION =
+    'runtime-detail-page-slice-delivery-artifact/v1' as const;
 
 interface ScreenSetArtifactProof {
     version: typeof SCREEN_SET_ARTIFACT_VERSION;
@@ -64,6 +65,18 @@ interface ScreenSetArtifactProof {
     documentId: number;
     expectedScreenIds: string[];
     exportedScreenIds: string[];
+}
+
+interface SliceDeliveryArtifactProof {
+    version: typeof SLICE_DELIVERY_ARTIFACT_VERSION;
+    basis: 'uxp_exact_no_replace_slice_export';
+    documentId: number;
+    sourceHistoryStateRef: PhotoshopHistoryStateRef;
+    deliveryPlanDigest: string;
+    conflictPolicy: 'fail_if_exists' | 'new_version';
+    expectedPaths: string[];
+    exportedPaths: string[];
+    exactArtifactSet: boolean;
 }
 
 interface SliceExportResult {
@@ -77,25 +90,11 @@ interface SliceExportResult {
     sourceHistoryStateRef?: PhotoshopHistoryStateRef;
     sourceStateRestored?: boolean;
     screenSetArtifact?: ScreenSetArtifactProof;
+    sliceDeliveryArtifact?: SliceDeliveryArtifactProof;
+    rolledBackPaths?: string[];
+    rollbackFailedPaths?: string[];
+    code?: string;
     errors?: string[];
-}
-
-function normalizeSliceExportConfig(
-    input: Partial<SliceExportConfig> | undefined
-): SliceExportConfig {
-    const quality = Number(input?.quality);
-    const namingPattern = String(input?.namingPattern || '').trim();
-    const subfolder = String(input?.subfolder || '').trim();
-    return {
-        outputDir: String(input?.outputDir || '').trim(),
-        format: input?.format === 'png' ? 'png' : 'jpeg',
-        quality: Number.isFinite(quality)
-            ? Math.max(1, Math.min(12, Math.round(quality)))
-            : 10,
-        namingPattern: namingPattern || '{index}_{name}',
-        createSubfolder: input?.createSubfolder === true,
-        subfolder: subfolder || 'detail-page-slices'
-    };
 }
 
 // ==================== 导出器类 ====================
@@ -107,33 +106,40 @@ export class SliceExporter {
      */
     async exportAll(
         screens: ParsedScreen[],
-        rawConfig: Partial<SliceExportConfig> | undefined
+        rawConfig: SliceExportConfigInput | undefined
     ): Promise<SliceExportResult> {
-        const config = normalizeSliceExportConfig(rawConfig);
         const startTime = Date.now();
         const results: ScreenExportResult[] = [];
         const errors: string[] = [];
         const fallbackReasons: string[] = [];
-
-        if (!config.outputDir) {
+        const deliveryPlan = buildSliceExportPlan(screens, rawConfig);
+        if (deliveryPlan.status !== 'ready'
+            || !deliveryPlan.config
+            || !deliveryPlan.outputRoot) {
             return {
                 success: false,
                 screens: [],
-                outputDir: '',
+                outputDir: String(rawConfig?.outputDir || '').trim(),
                 totalScreens: Array.isArray(screens) ? screens.length : 0,
                 successCount: 0,
                 failedCount: Array.isArray(screens) ? screens.length : 0,
                 totalTime: 0,
-                errors: ['缺少切片输出目录']
+                code: 'slice_delivery_plan_invalid',
+                errors: deliveryPlan.blockers
             };
         }
+        const config = deliveryPlan.config;
+        const outputDir = deliveryPlan.outputRoot;
+        const plannedFileByScreenId = new Map(
+            deliveryPlan.files.map((file) => [file.screenId, file] as const)
+        );
         
         const doc = app.activeDocument;
         if (!doc) {
             return {
                 success: false,
                 screens: [],
-                outputDir: config.outputDir,
+                outputDir,
                 totalScreens: 0,
                 successCount: 0,
                 failedCount: 0,
@@ -151,7 +157,7 @@ export class SliceExporter {
             return {
                 success: false,
                 screens: [],
-                outputDir: config.outputDir,
+                outputDir,
                 totalScreens: Array.isArray(screens) ? screens.length : 0,
                 successCount: 0,
                 failedCount: Array.isArray(screens) ? screens.length : 0,
@@ -172,15 +178,13 @@ export class SliceExporter {
         // 保存原始可见性状态
         const originalState = await this.captureVisibilityState(doc);
         
-        // 确保输出目录存在（统一正斜杠拼接，防反斜杠在 JSX 层被吞）
-        const outputDir = config.createSubfolder
-            ? `${config.outputDir}/${config.subfolder}`
-            : config.outputDir;
-        
         console.log(`[SliceExporter] 输出目录: ${outputDir}`);
-        
-        const dirReady = await ensureDirectoryViaJSX(outputDir);
-        if (!dirReady) {
+
+        const existingTargets = await this.findExistingExportTargets(deliveryPlan.files);
+        if (existingTargets.length > 0) {
+            const policyMessage = config.conflictPolicy === 'new_version'
+                ? '本次要求生成新版本，但冻结的版本目标已经存在。'
+                : '本次禁止覆盖同名文件，但冻结的切片目标已经存在。';
             return {
                 success: false,
                 screens: [],
@@ -189,8 +193,30 @@ export class SliceExporter {
                 successCount: 0,
                 failedCount: screens.length,
                 totalTime: Date.now() - startTime,
-                errors: [`无法创建输出目录: ${outputDir}`]
+                ...(sourceHistoryStateRef ? { sourceHistoryStateRef } : {}),
+                sourceStateRestored: true,
+                code: 'slice_target_exists',
+                errors: [policyMessage, ...existingTargets.map((path) => `已存在：${path}`)]
             };
+        }
+
+        const outputDirectories = Array.from(new Set(deliveryPlan.files
+            .map((file) => readSliceExportParentDirectory(file.path))
+            .filter(Boolean)));
+        for (const directory of outputDirectories) {
+            const dirReady = await ensureDirectoryViaJSX(directory);
+            if (!dirReady) {
+                return {
+                    success: false,
+                    screens: [],
+                    outputDir,
+                    totalScreens: screens.length,
+                    successCount: 0,
+                    failedCount: screens.length,
+                    totalTime: Date.now() - startTime,
+                    errors: [`无法创建输出目录: ${directory}`]
+                };
+            }
         }
         
         console.log(`[SliceExporter] 开始导出 ${screens.length} 屏`);
@@ -199,23 +225,30 @@ export class SliceExporter {
         try {
             for (let i = 0; i < screens.length; i++) {
                 const screen = screens[i];
+                const plannedFile = plannedFileByScreenId.get(String(screen.id));
                 
                 try {
+                    if (!plannedFile) {
+                        throw new Error(`冻结切片计划缺少屏 ${screen.id}`);
+                    }
                     console.log(`[SliceExporter] 导出屏 ${i + 1}/${screens.length}: ${screen.name}`);
                     // 快路径：imaging.getPixels 区域取像素直接落盘，不裁切文档、不动历史
                     // （旧 crop→saveAs→历史回退 路径在 1.6GB PSB 上每屏 ~11s，且中断会留下半裁切状态）。
                     // 失败时回退旧路径，保持导出能力不丢失。
                     let result: ScreenExportResult;
                     try {
-                        result = await this.exportScreenViaImaging(screen, i, outputDir, config, doc);
+                        result = await this.exportScreenViaImaging(screen, i, plannedFile, config, doc);
                     } catch (imagingError: any) {
                         if (imagingError?.sourceRestoreFailure === true) {
+                            throw imagingError;
+                        }
+                        if (/slice_target_exists:/i.test(String(imagingError?.message || imagingError))) {
                             throw imagingError;
                         }
                         const reason = `imaging 快路径失败（屏 ${screen.name}）：${imagingError?.message || imagingError}`;
                         console.warn(`[SliceExporter] ${reason}，回退裁切导出`);
                         fallbackReasons.push(reason);
-                        result = await this.exportScreen(screen, i, outputDir, config, doc);
+                        result = await this.exportScreen(screen, i, plannedFile, config, doc);
                     }
                     results.push(result);
                     console.log(`[SliceExporter] ✅ 导出成功: ${result.path}`);
@@ -260,6 +293,23 @@ export class SliceExporter {
         if (!sourceStateRestored) {
             errors.push('导出后未能证明源文档与原始可见性状态已恢复');
         }
+
+        const rollbackPlan = buildSliceExportRollbackPlan({
+            createdPaths: results.map((screen) => screen.path),
+            preexistingPaths: existingTargets,
+            deliverySucceeded: errors.length === 0 && results.length === deliveryPlan.files.length,
+            sourceStateRestored
+        });
+        errors.push(...rollbackPlan.blockers);
+        const rollback = rollbackPlan.rollbackPaths.length > 0
+            ? await this.rollbackCreatedExportFiles(rollbackPlan.rollbackPaths)
+            : { removedPaths: [] as string[], failedPaths: [] as string[], errors: [] as string[] };
+        errors.push(...rollback.errors);
+        if (rollback.removedPaths.length > 0) {
+            const removed = new Set(rollback.removedPaths);
+            const retained = results.filter((screen) => !removed.has(screen.path));
+            results.splice(0, results.length, ...retained);
+        }
         
         const allMessages = [...errors, ...fallbackReasons];
         const result: SliceExportResult = {
@@ -268,7 +318,7 @@ export class SliceExporter {
             outputDir,
             totalScreens: screens.length,
             successCount: results.length,
-            failedCount: errors.length,
+            failedCount: Math.max(errors.length, screens.length - results.length),
             totalTime: Date.now() - startTime,
             ...(sourceHistoryStateRef ? { sourceHistoryStateRef } : {}),
             sourceStateRestored,
@@ -276,6 +326,30 @@ export class SliceExporter {
                 ...screenSetArtifact,
                 exportedScreenIds: results.map((screen) => screen.screenId)
             },
+            ...(sourceHistoryStateRef ? {
+                sliceDeliveryArtifact: {
+                    version: SLICE_DELIVERY_ARTIFACT_VERSION,
+                    basis: 'uxp_exact_no_replace_slice_export',
+                    documentId: sourceHistoryStateRef.documentId,
+                    sourceHistoryStateRef,
+                    deliveryPlanDigest: config.deliveryPlanDigest,
+                    conflictPolicy: config.conflictPolicy,
+                    expectedPaths: deliveryPlan.files.map((file) => file.path),
+                    exportedPaths: results.map((screen) => screen.path),
+                    exactArtifactSet: errors.length === 0
+                        && sourceStateRestored
+                        && results.length === deliveryPlan.files.length
+                        && results.every((screen, index) => (
+                            screen.path === deliveryPlan.files[index]?.path
+                        ))
+                }
+            } : {}),
+            ...(rollback.removedPaths.length > 0
+                ? { rolledBackPaths: rollback.removedPaths }
+                : {}),
+            ...(rollback.failedPaths.length > 0
+                ? { rollbackFailedPaths: rollback.failedPaths }
+                : {}),
             errors: allMessages.length > 0 ? allMessages : undefined
         };
         
@@ -368,8 +442,8 @@ export class SliceExporter {
     private async exportScreenViaImaging(
         screen: ParsedScreen,
         index: number,
-        outputDir: string,
-        config: SliceExportConfig,
+        plannedFile: SliceExportPlannedFile,
+        config: NormalizedSliceExportConfig,
         doc: any
     ): Promise<ScreenExportResult> {
         if (config.format !== 'jpeg') {
@@ -412,8 +486,7 @@ export class SliceExporter {
                 }
             }, { commandName: `导出屏 ${index + 1}（imaging）` });
 
-            const fileName = this.generateFileName(screen, index, config.namingPattern);
-            const filePath = `${outputDir}/${fileName}.jpg`;
+            const filePath = plannedFile.path;
             const fileSize = await this.writeBase64File(filePath, base64);
 
             return {
@@ -470,14 +543,33 @@ export class SliceExporter {
         }
 
         const directoryEntry = await getEntryFromPath(fs, directoryPath) as any;
-        const entry = await directoryEntry.createFile(fileName, { overwrite: true }) as any;
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
+        let entry: any;
+        let committed = false;
+        try {
+            entry = await directoryEntry.createFile(fileName, { overwrite: false }) as any;
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            await entry.write(bytes.buffer, { format: uxpStorage.formats.binary });
+            const fileSize = await this.assertExportFile(filePath);
+            committed = true;
+            return fileSize;
+        } catch (error: any) {
+            if (/exist|already|duplicate/i.test(String(error?.message || error))) {
+                throw new Error(`slice_target_exists: ${filePath}`);
+            }
+            throw error;
+        } finally {
+            if (entry && !committed && typeof entry.delete === 'function') {
+                try {
+                    await entry.delete();
+                } catch {
+                    // 保留原始写入错误；未提交的空文件由后续冲突检查显式暴露。
+                }
+            }
         }
-        await entry.write(bytes.buffer, { format: uxpStorage.formats.binary });
-        return await this.assertExportFile(filePath);
     }
 
     /**
@@ -486,8 +578,8 @@ export class SliceExporter {
     private async exportScreen(
         screen: ParsedScreen,
         index: number,
-        outputDir: string,
-        config: SliceExportConfig,
+        plannedFile: SliceExportPlannedFile,
+        config: NormalizedSliceExportConfig,
         doc: any
     ): Promise<ScreenExportResult> {
         const screenHistoryState = (doc as any).activeHistoryState;
@@ -538,16 +630,18 @@ export class SliceExporter {
                 throw new Error(`屏 ${screen.name} 裁切未生效：期望 ${expectedWidth}x${expectedHeight}，实际 ${croppedWidth}x${croppedHeight}。`);
             }
 
-            const fileName = this.generateFileName(screen, index, config.namingPattern);
-            const extension = config.format === 'jpeg' ? 'jpg' : 'png';
-            const filePath = `${outputDir}/${fileName}.${extension}`;
+            const filePath = plannedFile.path;
+            const temporaryPath = this.buildTemporaryExportPath(filePath);
             const saveStartedAt = Date.now();
-            await this.removeExistingExportFile(filePath);
             const saved = config.format === 'jpeg'
-                ? await saveAsJPEGViaJSX(filePath, config.quality, Number(doc.id))
-                : await this.saveAsPNG(filePath, doc);
+                ? await saveAsJPEGViaJSX(temporaryPath, config.quality, Number(doc.id))
+                : await this.saveAsPNG(temporaryPath, doc);
             if (!saved) throw new Error('导出失败');
-            const fileSize = await this.assertExportFile(filePath, saveStartedAt);
+            await this.assertExportFile(temporaryPath, saveStartedAt);
+            const fileSize = await this.promoteTemporaryExportNoReplace(
+                temporaryPath,
+                filePath
+            );
 
             return {
                 screenId: String(screen.id),
@@ -657,24 +751,6 @@ try {
     }
     
     /**
-     * 生成文件名
-     */
-    private generateFileName(
-        screen: ParsedScreen, 
-        index: number, 
-        pattern: string
-    ): string {
-        const paddedIndex = String(index + 1).padStart(2, '0');
-        const safeName = screen.name.replace(/[\\/:*?"<>|]/g, '_');
-        const typeShort = screen.type.split('_')[1] || screen.type;
-        
-        return pattern
-            .replace('{index}', paddedIndex)
-            .replace('{name}', safeName)
-            .replace('{type}', typeShort);
-    }
-    
-    /**
      * 捕获所有图层的可见性状态
      */
     private async captureVisibilityState(doc: any): Promise<Map<number, boolean>> {
@@ -744,17 +820,112 @@ try {
         return size;
     }
 
-    private async removeExistingExportFile(filePath: string): Promise<void> {
-        let entry: any;
+    private async findExistingExportTargets(
+        files: readonly SliceExportPlannedFile[]
+    ): Promise<string[]> {
+        const existing: string[] = [];
+        for (const file of files) {
+            try {
+                const entry = await getEntryFromPath(
+                    uxpStorage.localFileSystem,
+                    file.path
+                ) as any;
+                if (entry) existing.push(file.path);
+            } catch {
+                // 目标不存在是预期状态。
+            }
+        }
+        return existing;
+    }
+
+    private async rollbackCreatedExportFiles(paths: readonly string[]): Promise<{
+        removedPaths: string[];
+        failedPaths: string[];
+        errors: string[];
+    }> {
+        const removedPaths: string[] = [];
+        const failedPaths: string[] = [];
+        const errors: string[] = [];
+        for (const path of paths) {
+            let entry: any;
+            try {
+                entry = await getEntryFromPath(uxpStorage.localFileSystem, path) as any;
+            } catch {
+                // 已不存在等价于回滚完成；不会转而查找或删除其他文件。
+                removedPaths.push(path);
+                continue;
+            }
+            if (!entry || entry.isFolder === true || typeof entry.delete !== 'function') {
+                failedPaths.push(path);
+                errors.push(`切片组回滚失败，目标不是本轮可删除文件：${path}`);
+                continue;
+            }
+            try {
+                await entry.delete();
+                removedPaths.push(path);
+            } catch (error: any) {
+                failedPaths.push(path);
+                errors.push(`切片组回滚失败：${path}（${error?.message || error}）`);
+            }
+        }
+        return { removedPaths, failedPaths, errors };
+    }
+
+    private buildTemporaryExportPath(filePath: string): string {
+        const extensionMatch = filePath.match(/(\.[a-z0-9]+)$/i);
+        const extension = extensionMatch?.[1] || '';
+        const base = extension ? filePath.slice(0, -extension.length) : filePath;
+        const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        return `${base}.designecho-${nonce}.tmp${extension}`;
+    }
+
+    private async promoteTemporaryExportNoReplace(
+        temporaryPath: string,
+        finalPath: string
+    ): Promise<number> {
+        const fs = uxpStorage.localFileSystem;
+        const temporaryEntry = await getEntryFromPath(fs, temporaryPath) as any;
+        const directoryPath = readSliceExportParentDirectory(finalPath);
+        const slashIndex = Math.max(finalPath.lastIndexOf('\\'), finalPath.lastIndexOf('/'));
+        const fileName = slashIndex >= 0 ? finalPath.slice(slashIndex + 1) : finalPath;
+        if (!directoryPath || !fileName) {
+            throw new Error(`Invalid final slice path: ${finalPath}`);
+        }
+        const directoryEntry = await getEntryFromPath(fs, directoryPath) as any;
+        let finalEntry: any;
+        let committed = false;
         try {
-            entry = await getEntryFromPath(uxpStorage.localFileSystem, filePath) as any;
-        } catch {
-            return;
+            const bytes = await temporaryEntry.read({
+                format: uxpStorage.formats.binary
+            });
+            finalEntry = await directoryEntry.createFile(fileName, {
+                overwrite: false
+            }) as any;
+            await finalEntry.write(bytes, { format: uxpStorage.formats.binary });
+            const size = await this.assertExportFile(finalPath);
+            committed = true;
+            return size;
+        } catch (error: any) {
+            if (/exist|already|duplicate/i.test(String(error?.message || error))) {
+                throw new Error(`slice_target_exists: ${finalPath}`);
+            }
+            throw error;
+        } finally {
+            if (finalEntry && !committed && typeof finalEntry.delete === 'function') {
+                try {
+                    await finalEntry.delete();
+                } catch {
+                    // 未提交的目标会在下次全量冲突预检中暴露，不能转为假成功。
+                }
+            }
+            if (temporaryEntry && typeof temporaryEntry.delete === 'function') {
+                try {
+                    await temporaryEntry.delete();
+                } catch {
+                    // 临时文件清理失败不改变正式目标真实性；调用方仍会看到明确错误日志。
+                }
+            }
         }
-        if (entry?.isFile === false || typeof entry?.delete !== 'function') {
-            throw new Error(`无法清理已有导出目标：${filePath}`);
-        }
-        await entry.delete();
     }
 
     private async restoreVisibilityState(
@@ -824,22 +995,52 @@ export class SliceExporterTool {
                 },
                 config: {
                     type: 'object',
-                    description: '导出配置',
+                    description: 'Skill 在执行前冻结的项目内精确导出计划',
                     properties: {
+                        projectRoot: { type: 'string', description: '当前项目绝对根目录' },
                         outputDir: { type: 'string', description: '输出目录' },
                         format: { type: 'string', description: 'jpeg 或 png' },
                         quality: { type: 'number', description: 'JPEG 质量 1-12' },
                         namingPattern: { type: 'string', description: '命名模式' },
                         createSubfolder: { type: 'boolean', description: '是否创建子目录' },
-                        subfolder: { type: 'string', description: '子目录名称' }
-                    }
+                        subfolder: { type: 'string', description: '子目录名称' },
+                        conflictPolicy: {
+                            type: 'string',
+                            enum: ['fail_if_exists', 'new_version'],
+                            description: '公开交付只允许拒绝覆盖；new_version 的精确版本名必须已由 Skill 编译。'
+                        },
+                        deliveryPlanDigest: { type: 'string', description: 'Skill 冻结交付计划摘要' },
+                        expectedFiles: {
+                            type: 'array',
+                            description: '逐屏精确目标文件，必须覆盖全部屏且位于项目目录内',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    screenId: { type: 'string', description: '冻结的屏 id' },
+                                    path: { type: 'string', description: '项目内绝对目标文件路径' }
+                                },
+                                required: ['screenId', 'path']
+                            }
+                        }
+                    },
+                    required: [
+                        'projectRoot',
+                        'outputDir',
+                        'format',
+                        'conflictPolicy',
+                        'deliveryPlanDigest',
+                        'expectedFiles'
+                    ]
                 }
             },
             required: ['screens', 'config'] as string[]
         }
     };
     
-    async execute(params: { screens: ParsedScreen[]; config: SliceExportConfig }): Promise<SliceExportResult> {
+    async execute(params: {
+        screens: ParsedScreen[];
+        config: SliceExportConfigInput;
+    }): Promise<SliceExportResult> {
         const exporter = new SliceExporter();
         return await exporter.exportAll(params.screens, params.config);
     }

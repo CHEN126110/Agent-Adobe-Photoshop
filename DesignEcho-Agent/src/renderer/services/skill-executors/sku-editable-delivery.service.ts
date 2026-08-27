@@ -20,6 +20,7 @@ import {
     type SkuExportTransactionHost
 } from './sku-export-transaction.service';
 import type { StagedCommittedFileIdentity } from '../../../shared/sku-staging-transaction-contract';
+import type { SkillDeliveryPlan } from '../../../shared/skills/skill-delivery-convention';
 
 export interface SkuEditableDeliveryReceipt {
     itemId: string;
@@ -119,10 +120,15 @@ function readNonEmptyStringArray(value: unknown): string[] | undefined {
 
 export function buildSkuRuntimeDeliveryArtifacts(input: {
     expectedItems: readonly SkuExpectedExportInventoryItem[];
+    deliveryPlan?: SkillDeliveryPlan;
     rasterFileProbes: readonly SkuExportFileProbeInput[];
     editableReceipts: ReadonlyMap<string, SkuEditableDeliveryReceipt>;
     committedFiles: ReadonlyMap<string, StagedCommittedFileIdentity>;
 }): RuntimeDeliveryArtifactEntry[] {
+    const planArtifactsByPath = new Map((input.deliveryPlan?.artifacts || []).map((artifact) => ([
+        `${artifact.kind}:${normalizeSkuExportPathForCompare(artifact.path)}`,
+        artifact
+    ] as const)));
     const verifiedRasterProbes = new Map(input.rasterFileProbes.flatMap((probe) => {
         const pathKey = normalizeSkuExportPathForCompare(String(probe.path || ''));
         const committed = input.committedFiles.get(pathKey);
@@ -146,24 +152,48 @@ export function buildSkuRuntimeDeliveryArtifacts(input: {
         const editableReceipt = input.editableReceipts.get(item.id);
         const rasterIdentity = verifiedRasterProbes.get(normalizeSkuExportPathForCompare(item.path));
         if (rasterIdentity && editableReceipt?.sourceHistoryStateRef) {
+            const planArtifact = planArtifactsByPath.get(
+                `raster_export:${normalizeSkuExportPathForCompare(item.path)}`
+            );
             artifacts.push({
                 path: item.path,
                 kind: 'raster_export',
                 proof: 'file_probe',
                 fileIdentity: rasterIdentity,
-                sourceHistoryStateRef: editableReceipt.sourceHistoryStateRef
+                sourceHistoryStateRef: editableReceipt.sourceHistoryStateRef,
+                ...(planArtifact ? {
+                    planBinding: {
+                        artifactId: planArtifact.artifactId,
+                        pairId: planArtifact.pairId,
+                        order: planArtifact.order,
+                        format: planArtifact.format,
+                        sourceHistoryRole: planArtifact.sourceHistoryRole
+                    }
+                } : {})
             });
         }
         if (editableReceipt?.promotionVerified === true
             && editableReceipt.fileIdentity
             && normalizeSkuExportPathForCompare(editableReceipt.path)
                 === normalizeSkuExportPathForCompare(item.editablePath)) {
+            const planArtifact = planArtifactsByPath.get(
+                `editable_document:${normalizeSkuExportPathForCompare(editableReceipt.path)}`
+            );
             artifacts.push({
                 path: editableReceipt.path,
                 kind: 'editable_document',
                 proof: 'staged_editable_document_promotion',
                 fileIdentity: editableReceipt.fileIdentity,
-                sourceHistoryStateRef: editableReceipt.sourceHistoryStateRef
+                sourceHistoryStateRef: editableReceipt.sourceHistoryStateRef,
+                ...(planArtifact ? {
+                    planBinding: {
+                        artifactId: planArtifact.artifactId,
+                        pairId: planArtifact.pairId,
+                        order: planArtifact.order,
+                        format: planArtifact.format,
+                        sourceHistoryRole: planArtifact.sourceHistoryRole
+                    }
+                } : {})
             });
         }
         return artifacts;

@@ -86,6 +86,8 @@ export interface MainImageControlledProductQaGate {
 
 export interface MainImageControlledProductQaGateInput {
     runner?: MainImageLiveExecutorRunResult | null;
+    /** Runtime 已完成整组提交后确认的正式结果路径；存在时不得再用 runner 的暂存路径。 */
+    resultImagePaths?: readonly string[];
     resultFileProbes?: MainImageResultFileProbe[] | null;
     referenceImagePath?: string | null;
     pixelProbe?: MainImageScreenshotProbeObservation | null;
@@ -101,7 +103,7 @@ const FORBIDDEN_PAYLOAD_PATTERNS = [
 
 const PATH_FIELD_PATTERN = /^(outputPath|path|filePath|resultPath|exportedPath|exportPath|targetPath|destinationPath)$/i;
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /[A-Za-z]:[\\/][^\s"'<>|]+/g;
-const IMAGE_RESULT_EXTENSION_PATTERN = /\.(png|jpe?g|webp|tiff?|psd)$/i;
+const IMAGE_RESULT_EXTENSION_PATTERN = /\.(png|jpe?g|webp|tiff?)$/i;
 
 function containsForbiddenPayload(value: string): boolean {
     return FORBIDDEN_PAYLOAD_PATTERNS.some((pattern) => {
@@ -275,10 +277,6 @@ function extractPathEntries(
         }
     }
 
-    if (runner?.finalAcceptanceSnapshot?.success === true) {
-        collectPathValues(runner.finalAcceptanceSnapshot.data, 'finalAcceptanceSnapshot.data', pathEntries);
-    }
-
     return pathEntries;
 }
 
@@ -289,16 +287,22 @@ export function extractMainImageControlledProductResultPaths(
 }
 
 function buildResultImageSummary(
-    runner: MainImageLiveExecutorRunResult | null | undefined
+    runner: MainImageLiveExecutorRunResult | null | undefined,
+    runtimeConfirmedResultPaths?: readonly string[]
 ): MainImageControlledProductResultImageSummary {
     const operationResults = runner?.operationResults || [];
     const exportOperations = operationResults.filter((operation) => operationToolName(operation) === 'exportgroup');
     const successfulExportOperations = exportOperations.filter((operation) => operation.success === true);
-    const pathEntries = extractPathEntries(runner);
+    const pathEntries = runtimeConfirmedResultPaths
+        ? uniqueStrings(runtimeConfirmedResultPaths.map((filePath) => String(filePath || '').trim()))
+            .map((path) => ({ path, source: 'runtimeCommittedResultPaths' }))
+        : extractPathEntries(runner);
 
     const resultImageNames = uniqueStrings(pathEntries.map((entry) => basename(entry.path))).slice(0, 16);
     const sources = uniqueStrings(pathEntries.map((entry) => entry.source)).slice(0, 16);
-    const successfulExportWithoutPathCount = successfulExportOperations.filter((operation) => {
+    const successfulExportWithoutPathCount = runtimeConfirmedResultPaths
+        ? Math.max(0, successfulExportOperations.length - pathEntries.length)
+        : successfulExportOperations.filter((operation) => {
         const paths: Array<{ path: string; source: string }> = [];
         collectPathValues(operation.actualResult, `${operation.tool}.actualResult`, paths);
         for (const readback of operation.readbackResults || []) {
@@ -307,7 +311,7 @@ function buildResultImageSummary(
             }
         }
         return paths.length === 0;
-    }).length;
+        }).length;
 
     return {
         plannedExportCount: exportOperations.length,
@@ -537,7 +541,7 @@ export function buildMainImageControlledProductQaGate(
     const runner = input.runner || null;
     const pixelProbe = sanitizePixelProbe(input.pixelProbe);
     const manualReview = sanitizeManualReview(input.manualReview);
-    const resultImageSummary = buildResultImageSummary(runner);
+    const resultImageSummary = buildResultImageSummary(runner, input.resultImagePaths);
     const resultFileProbeSummary = buildResultFileProbeSummary({
         resultImageSummary,
         resultFileProbes: input.resultFileProbes,

@@ -10,7 +10,7 @@
 
 ### 当前事实
 
-- 当前功能提交与远端 `codex/agent-uxp` 已同步到 `cf0fce5a8e563dff65784f5e527572c01c9acc60`；本节新增的可验证盲评、完整 Runtime 身份、Debug 写前预检、Skill 交付约定和 SKU 事务收口均已进入该提交，提交前整仓 46 项核心检查通过。
+- `codex/agent-uxp` 的当前交付基线以 Git HEAD、远端跟踪状态和 Runtime build identity 为准，不在本文件复制易漂移的提交号；本节新增的可验证盲评、完整 Runtime 身份、Debug 写前预检、Skill 交付约定、SKU 事务与交互 owner 收口在提交前均已通过整仓 49 项核心检查。
 - 固定 Skill / Prompt 开工顺序、SKU 默认版式、规则 Top-1 自动选图、项目列表首图冒充选定、按 role 写死层序和无条件文字吸附已移除或降为显式可选机械能力。
 - 提交前独立审查发现并修复两处真实成功率根因：详情页多槽选择会被后续排序逐个作废；长历史压缩会丢失第 5 个以后未决选图槽。两者均有行为回归覆盖。
 - 最新只读实机审计确认当前 DesignEcho 仍是旧运行时，Renderer 选择的是 `claude-subscription-opus` 而不是本轮目标 GPT 5.6；当前项目为 `E:\WERKE\C-1257`，活动详情页文档来自 `E:\WERKE\C-1256`，Photoshop 共打开 8 个文档且至少 1 个未保存。本轮没有关闭、保存或修改这些文档，也没有用测试桥冒充端到端 Agent 成功。
@@ -42,6 +42,7 @@
 - Agent 拥有目标解释、信息增益判断、参考与素材选择、构图、文案、审美取舍、工具组合和修订策略；Skill 只提供可调用的专业能力，不成为隐藏指挥链。
 - Harness 可以因目标文档身份、权限、未知写状态、事务或收据不可靠而阻断危险写入，但只能返回事实与恢复出口，不能把某个截图、参考、版式或修改方法指定为设计答案。
 - 真机测试只使用隔离 Fixture 和全新输出，不读取人工成稿作为模型提示，不触碰用户当前 Photoshop 文档，也不把单次成功外推成总体成功率。
+- 本轮交互与外部能力继续服从 `Prompt.md` 四层边界和 `Decisions.md` D-084：`routing recommendation` 只是可忽略候选；开放任务中的可选澄清归 Agent，规格化生产必需的领域确认点、候选语义、卡片 schema、校验、提交消费、专属 Renderer 与 decision /candidate /answer 三类稳定身份归已选 Skill Package；Harness 只核对 owner /指纹 /TaskRun /plan /revision、编排跨调用 reconciliation 并在未知卡上失败关闭。Photoshop、项目文件、Eagle、浏览器和桌面观察由内置或 plugin-backed 的 Tool / Capability Provider + Host 提供原子结果，Photoshop mutation 只经唯一 `PhotoshopTransactionRunner`；受控命令仍是条件性扩展目标。若同一 TaskRun 在零计划推进、零 mutation、零 Photoshop revision 后又把已确认答案作为同一决定的候选，应把 `interaction_no_progress` 交回 Agent 重规划；重复只读、换标题或换 card id 不算进展，也不由 Harness 指定下一 Skill 或 Tool。
 
 ### 下一步
 
@@ -51,7 +52,7 @@
 
 ### 验证与未知
 
-- `maintenance:validate` 已通过 46 个核心检查，包含 Agent/Main/Renderer 类型检查、Electron preload sandbox、Runtime 构建身份与篡改、UXP 测试与 production build、作者权、可靠性分母与磁盘重验盲评、上下文、SKU、composeDesign 和图片落位执行点合同；无 smoke 依赖。
+- `maintenance:validate` 已通过 49 个核心检查，包含变更边界分类、语义目标框与候选、Agent/Main/Renderer 类型检查、Electron preload sandbox、Runtime 构建身份与篡改、UXP 测试与 production build、作者权、可靠性分母与磁盘重验盲评、上下文、SKU、composeDesign 和图片落位执行点合同；无 smoke 依赖。
 - Provider 输出事务回归覆盖缺失/冲突终态、长度截断、内容拦截、SSE 跨 Buffer 中文、取消、工具参数残缺、成功静默恢复与最终失败；SKU 回归覆盖旧 UXP capability 拒绝、冻结 JPG/PSB 身份、同 history、结构读回、文件新鲜度、事务回滚保留和 exactArtifactSet 不过度声明。
 - 辅助 Provider 终态回归覆盖明确 `stop`、空 `end_turn` 正例，以及 `max_tokens`、`content_blocked`、缺少终态、意外 Tool、残缺 Tool 名、终态冲突和传输未完成负例；截断视觉判断不能再把图片记为已观察。
 - SKU 文件事务故障注入覆盖 Main 冻结基线防伪、同令牌并发 owner、旧文件等长同 mtime 篡改、安装前/回滚前外部占位、38 文件完整提交与全组回滚、正确终态残留验证清理和不确定残留保留阻断；公开回复不再口播主进程、SHA、基线或事务细节，底层错误仍保留在私有诊断中。
@@ -66,7 +67,7 @@
 
 ### 状态
 
-`in_progress / provider_output_two_phase_commit_complete / provider_auxiliary_complete_terminal_guarded / partial_content_reasoning_and_tools_discarded / debug_artifact_sidecar_isolated / runtime_delivery_receipt_plan_bound / skill_delivery_conventions_agent_selected / sku_batch_inventory_frozen_before_batch_write / sku_paired_jpg_psb_contract_code_complete / sku_main_owned_directory_creation / sku_staging_transaction_fail_closed / reliability_attempt_denominator_closed / anonymous_review_bundle_disk_reverified / agent_and_photoshop_runtime_identity_verified / debug_seed_credential_free / full_core_validation_46_passed / current_eight_photoshop_documents_untouched / fresh_revision3_fixture_ready / latest_live_photoshop_run_pending / blind_pairwise_review_pending`
+`in_progress / provider_output_two_phase_commit_complete / provider_auxiliary_complete_terminal_guarded / partial_content_reasoning_and_tools_discarded / debug_artifact_sidecar_isolated / runtime_delivery_receipt_plan_bound / skill_delivery_conventions_agent_selected / sku_batch_inventory_frozen_before_batch_write / sku_paired_jpg_psb_contract_code_complete / sku_main_owned_directory_creation / sku_staging_transaction_fail_closed / reliability_attempt_denominator_closed / anonymous_review_bundle_disk_reverified / agent_and_photoshop_runtime_identity_verified / debug_seed_credential_free / full_core_validation_49_passed / current_eight_photoshop_documents_untouched / fresh_revision3_fixture_ready / latest_live_photoshop_run_pending / blind_pairwise_review_pending`
 
 ---
 

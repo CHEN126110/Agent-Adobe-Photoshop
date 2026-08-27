@@ -3,9 +3,13 @@
  */
 
 import type { AgentTaskPlanningContract } from '../../../shared/agent-task-planning-contract';
-import type { GuardedAtomicToolExecutor } from '../../../shared/agent-skill-atomic-tool-execution';
+import type {
+    GuardedAtomicToolExecutor,
+    RuntimeOwnedSkillDeliveryPlanAuthority
+} from '../../../shared/agent-skill-atomic-tool-execution';
 import type { SkillExecutionRuntimeLineage } from '../../../shared/skill-execution-effect';
 import type { InteractiveContinuationResolution } from '../../../shared/pending-interactive-continuation';
+import type { RuntimeWorkflowDeliveryReentry } from '../../../shared/agent-workflow-continuation-scope';
 import type { AgentResult, AgentContext, ExecutionCallbacks } from '../unified-agent.service';
 import type {
     RuntimeDesignBriefDeclaration,
@@ -42,6 +46,14 @@ export interface SkillExecuteParams {
      * Skill 只能传业务参数；文档、历史版本和图层目标绑定由该 owner 私下维护。
      */
     guardedAtomicToolExecutor?: GuardedAtomicToolExecutor;
+    /**
+     * 现有 Runtime Tool ledger 签发的交付计划 authority。
+     * Skill 只提交 Agent/用户已经选定的候选，并在最终 save/export 时绑定 artifact；
+     * 它不能从模型参数或父 Skill 继承，也不替 Agent 选择目录、命名或设计内容。
+     */
+    runtimeDeliveryPlanAuthority?: RuntimeOwnedSkillDeliveryPlanAuthority;
+    /** 同一 Agent continuation owner 签发的 delivery-only Skill 复入收据。 */
+    runtimeWorkflowDeliveryReentry?: RuntimeWorkflowDeliveryReentry;
     /** Harness 签发的当前 Runtime/TaskRun/continuation/Workflow call 身份。 */
     runtimeSkillExecutionLineage?: SkillExecutionRuntimeLineage;
     /**

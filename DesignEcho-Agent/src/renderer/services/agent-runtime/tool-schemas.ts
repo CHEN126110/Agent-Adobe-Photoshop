@@ -387,7 +387,7 @@ const COMPOSE_DESIGN_VISUAL_STYLE_SCHEMA = {
 const RAW_TOOL_CATALOG: ToolSchema[] = [
     {
         name: 'createInteractiveCard',
-        description: 'Create an editable structured-draft card only when several user-editable fields are materially clearer than a short choice or normal reply. For 1–3 bounded choices use askUserToChoose; for domain data use the selected Skill, which owns its card Provider. If the user explicitly forbids Skills, this generic card may collect only genuinely user-owned facts after observable facts have been read; it must not claim that an existing artifact is a source, template, draft, or output without readback evidence. Do not create a card for facts you can observe, low-impact reversible decisions, progress reporting, or decorative UI. The card does not write Photoshop or grant workflow authority; after submission the same Agent task resumes with the edited values.',
+        description: 'Create an editable structured-draft card only when several user-editable fields are materially clearer than a short choice or normal reply. In a Photoshop design execution, the Agent must first bind the Task Profile it selected; an unbound generic card cannot become a blocking business checkpoint. For 1–3 bounded choices use askUserToChoose; for domain data use the selected Skill, which owns its card Provider. If the user explicitly forbids Skills, this generic card may collect only genuinely user-owned facts after observable facts have been read; it must not claim that an existing artifact is a source, template, draft, or output without readback evidence. Do not create a card for facts you can observe, low-impact reversible decisions, progress reporting, or decorative UI. The card does not write Photoshop or grant workflow authority; after submission the same Agent task resumes with the edited values.',
         inputSchema: objectSchema({
             cardKind: { type: 'string', enum: ['editable_confirmation'] },
             title: { type: 'string' },
@@ -1279,7 +1279,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'askUserToChoose',
-        description: '仅当答案无法从当前素材、文档或环境取得，并且不同答案会实质改变结果时，请用户一次选择 1–3 件事。每题声明 decisionKind：preference=专业偏好（必须给 recommendedId，自动模式可采用推荐继续）；required_fact=只有用户掌握的事实；approval=授权或不可代替的批准。required_fact / approval 禁止预选推荐，自动模式也必须等待用户。能观察到的内容要先读，不要问；可逆且不影响结果的专业判断由你直接做；不要为了展示卡片而增加确认轮次。',
+        description: '仅当答案无法从当前素材、文档或环境取得，并且不同答案会实质改变结果时，请用户一次选择 1–3 件事。Photoshop 设计执行必须先绑定 Agent 自己选择的 Task Profile；若该 Profile 声明了领域交互 Provider，就由对应 Skill 产卡，通用选择卡不能复制领域选项或确认状态。每题声明 decisionKind：preference=专业偏好（必须给 recommendedId，自动模式可采用推荐继续）；required_fact=只有用户掌握的事实；approval=授权或不可代替的批准。required_fact / approval 禁止预选推荐，自动模式也必须等待用户。能观察到的内容要先读，不要问；可逆且不影响结果的专业判断由你直接做；不要为了展示卡片而增加确认轮次。',
         inputSchema: objectSchema({
             intro: { type: 'string', description: '一句开场：为什么现在要问这几件事（可省）。' },
             questions: {
@@ -1954,6 +1954,7 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
             path: { type: 'string' },
             projectSubdir: { type: 'string', description: '保存到当前项目下的子目录，例如 详情页、主图、SKU。用户要求导出到项目目录时优先使用这个字段，避免猜绝对路径。' },
             saveAs: { type: 'boolean' },
+            asCopy: { type: 'boolean', description: '仅供受控暂存事务使用：PSD/PSB 保存为副本，不改变当前文档原文件关联。普通设计保存不要使用。' },
             quality: { type: 'number', description: 'JPEG 质量：1–12 按 Photoshop 原生等级；13–100 按百分制兼容换算。正式交付建议省略（默认原生最高 12）或明确传 12/100。' },
             conflictPolicy: { type: 'string', enum: ['overwrite', 'fail_if_exists'], description: '输出冲突策略。默认 overwrite 保持原有保存行为；fail_if_exists 必须配合明确 path，目标已存在时不写入、不回退覆盖。' }
         })
@@ -1984,12 +1985,17 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'exportGroup',
-        description: 'Export a specific Photoshop group or layer to a PNG output path without changing the source document visibility.',
+        description: 'Export a specific Photoshop group or layer to an exact PNG/JPEG output path without changing the source document visibility.',
         inputSchema: objectSchema({
             groupPath: { type: 'array', items: { type: 'string' } },
             layerId: { type: 'number' },
             outputPath: { type: 'string' },
-            format: { type: 'string', enum: ['png'] },
+            format: { type: 'string', enum: ['png', 'jpg'] },
+            conflictPolicy: {
+                type: 'string',
+                enum: ['overwrite', 'fail_if_exists'],
+                description: 'Use fail_if_exists for governed production so an existing delivery is never replaced silently.'
+            },
             maxSize: { type: 'number' },
             targetWidth: { type: 'number' },
             targetHeight: { type: 'number' }
@@ -2193,12 +2199,13 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
     },
     {
         name: 'exportDetailPageSlices',
-        description: 'Export each detail-page screen as an image slice. Final delivery step of the detail-page workflow; call only after fills are verified, or when the user explicitly asks for exported output.',
+        description: 'Export the complete verified detail-page screen set to the exact project-bound files compiled by the detail-page Skill. Final delivery only: every screen/path must match expectedFiles and deliveryPlanDigest; fail_if_exists/new_version never overwrite an existing file.',
         inputSchema: objectSchema({
             screens: { type: 'array', items: { type: 'object' } },
             config: {
                 type: 'object',
                 properties: {
+                    projectRoot: { type: 'string', description: 'Current absolute project root; outputDir and every expected file must remain inside it.' },
                     outputDir: { type: 'string' },
                     format: { type: 'string', enum: ['jpeg', 'png'] },
                     quality: { type: 'number' },
@@ -2207,8 +2214,36 @@ const RAW_TOOL_CATALOG: ToolSchema[] = [
                         description: '文件命名模板；支持 {index}、{name}、{type}，默认 {index}_{name}'
                     },
                     createSubfolder: { type: 'boolean' },
-                    subfolder: { type: 'string' }
-                }
+                    subfolder: { type: 'string' },
+                    conflictPolicy: {
+                        type: 'string',
+                        enum: ['fail_if_exists', 'new_version'],
+                        description: 'Both policies refuse existing exact targets; new_version requires the Skill to have already compiled a distinct version name.'
+                    },
+                    deliveryPlanDigest: { type: 'string', description: 'Typed Skill delivery-plan digest.' },
+                    expectedFiles: {
+                        type: 'array',
+                        description: 'Exact one-to-one screen/path inventory compiled before delivery.',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                screenId: { type: 'string' },
+                                path: { type: 'string' }
+                            },
+                            required: ['screenId', 'path'],
+                            additionalProperties: false
+                        }
+                    }
+                },
+                required: [
+                    'projectRoot',
+                    'outputDir',
+                    'format',
+                    'conflictPolicy',
+                    'deliveryPlanDigest',
+                    'expectedFiles'
+                ],
+                additionalProperties: false
             }
         }, ['screens', 'config'])
     },

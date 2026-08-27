@@ -1,4 +1,5 @@
 import type {
+    InteractiveCardDecisionContext,
     InteractiveCardDefinition,
     InteractiveCardSubmission
 } from '../../../../shared/interactive-card-contract';
@@ -46,6 +47,11 @@ export interface SkillInteractiveCardProvider {
     ownerSkillId: string;
     kind: string;
     payloadVersion: string;
+    /** 领域 schema 对卡片候选 / 用户答案的规范身份投影；Harness 只做精确比较。 */
+    deriveDecisionContext(
+        card: InteractiveCardDefinition,
+        value?: unknown
+    ): InteractiveCardDecisionContext | undefined;
     submitAction?: string;
     legacySubmitActions?: readonly string[];
     prepareSubmission?(

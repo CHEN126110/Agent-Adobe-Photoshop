@@ -2,6 +2,18 @@ import type {
     AgentTaskPublicPlanControlledRun,
     AgentTaskPublicPlanObservationDiff
 } from './agent-task-public-plan-controlled-runner';
+import { canonicalize, sha256Hex } from './agent-runtime-v5/content-hash';
+
+export const AGENT_REACT_TOOL_ARGUMENTS_DIGEST_VERSION =
+    'agent-react-tool-arguments/v0' as const;
+
+export function buildAgentReActToolArgumentsDigest(value: unknown): string {
+    return `${AGENT_REACT_TOOL_ARGUMENTS_DIGEST_VERSION}:${sha256Hex(canonicalize(value ?? {}))}`;
+}
+
+export function isAgentReActToolArgumentsDigest(value: unknown): value is string {
+    return /^agent-react-tool-arguments\/v0:[a-f0-9]{64}$/.test(String(value || '').trim());
+}
 
 export type AgentReActActionKind =
     | 'atomic_tool'
@@ -51,6 +63,8 @@ export interface AgentReActRecoveryDirective {
     toolArgumentConstraints?: Record<string, {
         argumentEquals?: Record<string, string | number | boolean>;
         requiredArgumentKeys?: string[];
+        /** Skill 冻结完整嵌套参数后，Harness 只校验摘要，不生成业务内容。 */
+        argumentsDigest?: string;
     }>;
     /** 单一 owner 重入场景的兼容字段；与 toolArgumentConstraints 使用同一校验语义。 */
     requiredToolName?: string;
@@ -240,10 +254,14 @@ function normalizeToolArgumentConstraints(
             constraint.requiredArgumentKeys,
             12
         );
-        if (!argumentEquals && requiredArgumentKeys.length === 0) continue;
+        const argumentsDigest = isAgentReActToolArgumentsDigest(constraint.argumentsDigest)
+            ? String(constraint.argumentsDigest).trim()
+            : undefined;
+        if (!argumentEquals && requiredArgumentKeys.length === 0 && !argumentsDigest) continue;
         constraints[toolName] = {
             ...(argumentEquals ? { argumentEquals } : {}),
-            ...(requiredArgumentKeys.length > 0 ? { requiredArgumentKeys } : {})
+            ...(requiredArgumentKeys.length > 0 ? { requiredArgumentKeys } : {}),
+            ...(argumentsDigest ? { argumentsDigest } : {})
         };
     }
     return Object.keys(constraints).length > 0 ? constraints : undefined;

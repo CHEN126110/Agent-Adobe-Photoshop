@@ -168,6 +168,37 @@ function containsRegionSelection(value: unknown): boolean {
     return isRecord(value.data) && value.data.region != null;
 }
 
+function isCompleteScreenReviewSet(entry: DesignVisualJudgeOperationLogEntry): boolean {
+    if (String(entry.name || '').trim() !== 'getScreenSnapshots'
+        || !isRecord(entry.arguments)
+        || !isRecord(entry.result)) return false;
+    const requestedScreens = Array.isArray(entry.arguments.screens)
+        ? entry.arguments.screens.filter(isRecord)
+        : [];
+    const snapshots = Array.isArray(entry.result.snapshots)
+        ? entry.result.snapshots.filter(isRecord)
+        : [];
+    const errors = Array.isArray(entry.result.errors) ? entry.result.errors : [];
+    if (requestedScreens.length === 0
+        || snapshots.length !== requestedScreens.length
+        || errors.length > 0) return false;
+    const requestedIds = requestedScreens.map((screen) => String(screen.id || '').trim());
+    const snapshotIds = snapshots.map((snapshot) => String(snapshot.screenId || '').trim());
+    const documentId = Number(entry.result.documentId);
+    const historyStateId = Number(entry.result.historyStateId);
+    return requestedIds.every(Boolean)
+        && new Set(requestedIds).size === requestedIds.length
+        && requestedIds.every((screenId, index) => screenId === snapshotIds[index])
+        && Number.isSafeInteger(documentId)
+        && documentId > 0
+        && Number.isSafeInteger(historyStateId)
+        && historyStateId >= 0
+        && snapshots.every((snapshot) => (
+            Number(snapshot.documentId) === documentId
+            && Number(snapshot.historyStateId) === historyStateId
+        ));
+}
+
 /**
  * 判断单条操作结果是否代表干净的完整画布观察。
  * getAcceptanceSnapshot 只有结构数据，不是像素图；annotated / generated / asset preview
@@ -177,9 +208,11 @@ export function isFullSurfaceVisualJudgeObservationEntry(
     entry: DesignVisualJudgeOperationLogEntry
 ): boolean {
     const name = String(entry.name || '').trim();
-    if (!isSuccessfulAgentOperation(entry) || !FULL_SURFACE_VISUAL_OBSERVATION_TOOLS.has(name)) {
+    if (!isSuccessfulAgentOperation(entry)) {
         return false;
     }
+    if (name === 'getScreenSnapshots') return isCompleteScreenReviewSet(entry);
+    if (!FULL_SURFACE_VISUAL_OBSERVATION_TOOLS.has(name)) return false;
     if (name !== 'getCanvasSnapshot') return true;
     return !containsRegionSelection(entry.arguments) && !containsRegionSelection(entry.result);
 }

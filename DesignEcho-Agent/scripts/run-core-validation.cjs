@@ -13,6 +13,7 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const COMMANDS = [
   { label: "规划一致性", cwd: agentRoot, args: ["run", "maintenance:planning-check"] },
   { label: "仓库卫生", cwd: agentRoot, args: ["run", "maintenance:repo-hygiene:check"] },
+  { label: "变更边界分类", cwd: agentRoot, args: ["run", "maintenance:change-boundaries:check"] },
   { label: "中文编码", cwd: agentRoot, args: ["run", "check:repository-encoding"] },
   { label: "入口文档同步", cwd: agentRoot, args: ["run", "audit:entry-doc-sync"] },
   { label: "工具注册表", cwd: agentRoot, args: ["run", "audit:tools"] },
@@ -50,6 +51,8 @@ const COMMANDS = [
   { label: "隔离调试窗口与模型冻结", cwd: agentRoot, args: ["run", "test:debug-window-launcher"] },
   { label: "Runtime 构建身份", cwd: agentRoot, args: ["run", "test:runtime-build-identity"] },
   { label: "主体框纯逻辑", cwd: agentRoot, args: ["run", "test:subject-box"] },
+  { label: "语义目标框纯逻辑", cwd: agentRoot, args: ["run", "test:semantic-target-boxes"] },
+  { label: "语义目标候选纯逻辑", cwd: agentRoot, args: ["run", "test:semantic-target-candidates"] },
   { label: "图片落位写前预览", cwd: agentRoot, args: ["run", "test:image-placement-preview"] },
   { label: "SKU 模板 handoff", cwd: agentRoot, args: ["run", "test:sku-template-handoff"] },
   { label: "Agent 核心测试", cwd: agentRoot, args: ["test"] },

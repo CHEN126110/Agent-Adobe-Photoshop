@@ -60,6 +60,8 @@ export class SAMService {
     
     // SAM 模型 Sessions
     private encoderSession: any = null;
+    /** 批量撒点时静音逐点日志：十几个点的完整推理日志会淹没有用信息 */
+    private quiet: boolean = false;
     private decoderSession: any = null;
     
     // 图像嵌入缓存（同一图像多次选区可复用）
@@ -67,6 +69,8 @@ export class SAMService {
         embedding: any;
         originalWidth: number;
         originalHeight: number;
+        /** 原图坐标 → encoder 输入坐标的缩放系数，prompt 坐标必须用同一个值 */
+        promptScale: number;
         timestamp: number;
     }> = new Map();
     
@@ -199,28 +203,33 @@ export class SAMService {
             
             // 3. 获取或计算图像嵌入（encoderOutputs 包含 image_embeddings 和 image_positional_embeddings）
             let encoderOutputs: Record<string, any>;
+            let promptScale: number;
             const cached = this.imageEmbeddingCache.get(imageHash);
-            
+
             if (cached && Date.now() - cached.timestamp < this.CACHE_EXPIRY_MS) {
                 console.log('[SAMService] 使用缓存的图像嵌入');
                 encoderOutputs = cached.embedding;
+                promptScale = cached.promptScale;
             } else {
                 console.log('[SAMService] 计算图像嵌入...');
                 const encodeStart = Date.now();
-                encoderOutputs = await this.encodeImage(imageBuffer, originalWidth, originalHeight);
+                const encoded = await this.encodeImage(imageBuffer, originalWidth, originalHeight);
+                encoderOutputs = encoded.outputs;
+                promptScale = encoded.promptScale;
                 console.log(`[SAMService] 图像嵌入完成 (${Date.now() - encodeStart}ms)`);
-                
+
                 // 缓存嵌入
                 this.imageEmbeddingCache.set(imageHash, {
                     embedding: encoderOutputs,
                     originalWidth,
                     originalHeight,
+                    promptScale,
                     timestamp: Date.now()
                 });
             }
-            
+
             // 4. 准备 Prompt 输入
-            const prompts = this.preparePrompts(box, centerPoint, originalWidth, originalHeight);
+            const prompts = this.preparePrompts(box, centerPoint, originalWidth, originalHeight, promptScale);
             
             // 5. 运行 Decoder
             console.log('[SAMService] 运行 Mask Decoder...');
@@ -252,6 +261,83 @@ export class SAMService {
         }
     }
     
+    /** 受 quiet 控制的日志：批量撒点时不逐点刷屏 */
+    private log(...args: unknown[]): void {
+        if (this.quiet) return;
+        console.log(...(args as []));
+    }
+
+    /**
+     * 批量点分割：同一张图上多个前景点，各自分割出所在物体。
+     *
+     * 用途：连通域拆不开相互接触的物体（模特腿部特写里腿、袜、鞋连成一块），
+     * 撒点让 SAM 在块内部把它们切开。图像嵌入只算一次，之后每个点约 100ms。
+     *
+     * 逐点日志会刷屏，这里整体静音，只在结束时汇报一次。
+     */
+    async segmentWithPoints(
+        imageBuffer: Buffer,
+        points: Array<{ x: number; y: number }>
+    ): Promise<Array<{ point: { x: number; y: number }; mask: Buffer } | null>> {
+        if (!this.isReady() || points.length === 0) return [];
+
+        const startTime = Date.now();
+        const metadata = await this.sharp(imageBuffer).metadata();
+        const originalWidth = metadata.width as number;
+        const originalHeight = metadata.height as number;
+
+        const imageHash = this.hashBuffer(imageBuffer);
+        let encoderOutputs: Record<string, any>;
+        let promptScale: number;
+        const cached = this.imageEmbeddingCache.get(imageHash);
+
+        if (cached && Date.now() - cached.timestamp < this.CACHE_EXPIRY_MS) {
+            encoderOutputs = cached.embedding;
+            promptScale = cached.promptScale;
+        } else {
+            const encoded = await this.encodeImage(imageBuffer, originalWidth, originalHeight);
+            encoderOutputs = encoded.outputs;
+            promptScale = encoded.promptScale;
+            this.imageEmbeddingCache.set(imageHash, {
+                embedding: encoderOutputs,
+                originalWidth,
+                originalHeight,
+                promptScale,
+                timestamp: Date.now()
+            });
+        }
+
+        const wasQuiet = this.quiet;
+        this.quiet = true;
+        const results: Array<{ point: { x: number; y: number }; mask: Buffer } | null> = [];
+
+        try {
+            for (const point of points) {
+                const prompts = {
+                    pointCoords: new Float32Array([point.x * promptScale, point.y * promptScale]),
+                    pointLabels: new Float32Array([1]),
+                    origImSize: new Float32Array([originalHeight, originalWidth])
+                };
+
+                const decoded = await this.decodeMask(encoderOutputs, prompts, originalWidth, originalHeight)
+                    .catch((e: any) => {
+                        console.error(`[SAMService] 点 (${point.x},${point.y}) 分割失败: ${e.message}`);
+                        return null;
+                    });
+
+                results.push(decoded ? { point, mask: decoded.mask } : null);
+            }
+        } finally {
+            this.quiet = wasQuiet;
+        }
+
+        const succeeded = results.filter(Boolean).length;
+        console.log(
+            `[SAMService] 撒点分割完成: ${succeeded}/${points.length} 个点 (${Date.now() - startTime}ms)`
+        );
+        return results;
+    }
+
     /**
      * 编码图像为特征向量
      * SlimSAM encoder 输出: image_embeddings, image_positional_embeddings
@@ -260,53 +346,87 @@ export class SAMService {
         imageBuffer: Buffer,
         originalWidth: number,
         originalHeight: number
-    ): Promise<Record<string, any>> {
-        // 1. 预处理：调整到 1024x1024
+    ): Promise<{ outputs: Record<string, any>; promptScale: number }> {
+        const inputNames = this.encoderSession.inputNames;
+        this.log('[SAMService] Encoder 输入名称:', inputNames);
+
+        // SAM 官方约定：按长边缩放到 1024（保持比例），右/下补零到 1024x1024。
+        // decoder 的输出裁剪正是按这个约定反推有效区域的，换成拉伸填充会让蒙版映射错位。
+        const promptScale = SAM_INPUT_SIZE / Math.max(originalWidth, originalHeight);
+        const scaledWidth = Math.round(originalWidth * promptScale);
+        const scaledHeight = Math.round(originalHeight * promptScale);
+
         const resizedBuffer = await this.sharp(imageBuffer)
-            .resize(SAM_INPUT_SIZE, SAM_INPUT_SIZE, {
-                fit: 'fill',
-                kernel: 'lanczos3'
-            })
+            .resize(scaledWidth, scaledHeight, { fit: 'fill', kernel: 'lanczos3' })
             .removeAlpha()
             .raw()
             .toBuffer();
-        
-        // 2. 转换为 Float32 张量 [1, 3, 1024, 1024]
-        // SAM 使用 ImageNet 归一化
-        const mean = [0.485, 0.456, 0.406];
-        const std = [0.229, 0.224, 0.225];
-        
-        const inputTensor = new Float32Array(3 * SAM_INPUT_SIZE * SAM_INPUT_SIZE);
-        
-        for (let i = 0; i < SAM_INPUT_SIZE * SAM_INPUT_SIZE; i++) {
-            const r = resizedBuffer[i * 3] / 255;
-            const g = resizedBuffer[i * 3 + 1] / 255;
-            const b = resizedBuffer[i * 3 + 2] / 255;
-            
-            inputTensor[i] = (r - mean[0]) / std[0];
-            inputTensor[SAM_INPUT_SIZE * SAM_INPUT_SIZE + i] = (g - mean[1]) / std[1];
-            inputTensor[2 * SAM_INPUT_SIZE * SAM_INPUT_SIZE + i] = (b - mean[2]) / std[2];
-        }
-        
-        // 3. 运行 Encoder
+
         const feeds: Record<string, any> = {};
-        const inputNames = this.encoderSession.inputNames;
-        
-        console.log('[SAMService] Encoder 输入名称:', inputNames);
-        
-        feeds[inputNames[0]] = new this.ort.Tensor(
-            'float32',
-            inputTensor,
-            [1, 3, SAM_INPUT_SIZE, SAM_INPUT_SIZE]
-        );
-        
+
+        if (this.encoderExpectsHwcRawPixels()) {
+            // mobile_sam_encoder.onnx：输入 [1024, 1024, 3]，接收 0-255 原始像素
+            // （归一化烘焙在计算图内部）。实测：喂 ImageNet 0-1 归一化会让蒙版溢出目标框。
+            const inputTensor = new Float32Array(SAM_INPUT_SIZE * SAM_INPUT_SIZE * 3);
+            for (let y = 0; y < scaledHeight; y++) {
+                const srcRow = y * scaledWidth * 3;
+                const dstRow = y * SAM_INPUT_SIZE * 3;
+                for (let x = 0; x < scaledWidth; x++) {
+                    const src = srcRow + x * 3;
+                    const dst = dstRow + x * 3;
+                    inputTensor[dst] = resizedBuffer[src];
+                    inputTensor[dst + 1] = resizedBuffer[src + 1];
+                    inputTensor[dst + 2] = resizedBuffer[src + 2];
+                }
+            }
+            feeds[inputNames[0]] = new this.ort.Tensor(
+                'float32',
+                inputTensor,
+                [SAM_INPUT_SIZE, SAM_INPUT_SIZE, 3]
+            );
+        } else {
+            // 其它导出（SAM2 / ViT-B）：[1, 3, 1024, 1024] + ImageNet 归一化。
+            // 本机没有这些模型文件，此分支保持原有实现，未经实测。
+            const mean = [0.485, 0.456, 0.406];
+            const std = [0.229, 0.224, 0.225];
+            const plane = SAM_INPUT_SIZE * SAM_INPUT_SIZE;
+            const inputTensor = new Float32Array(3 * plane);
+
+            for (let y = 0; y < scaledHeight; y++) {
+                for (let x = 0; x < scaledWidth; x++) {
+                    const src = (y * scaledWidth + x) * 3;
+                    const dst = y * SAM_INPUT_SIZE + x;
+                    inputTensor[dst] = (resizedBuffer[src] / 255 - mean[0]) / std[0];
+                    inputTensor[plane + dst] = (resizedBuffer[src + 1] / 255 - mean[1]) / std[1];
+                    inputTensor[2 * plane + dst] = (resizedBuffer[src + 2] / 255 - mean[2]) / std[2];
+                }
+            }
+            feeds[inputNames[0]] = new this.ort.Tensor(
+                'float32',
+                inputTensor,
+                [1, 3, SAM_INPUT_SIZE, SAM_INPUT_SIZE]
+            );
+        }
+
         const results = await this.encoderSession.run(feeds);
-        
+
         const outputNames = this.encoderSession.outputNames;
-        console.log('[SAMService] Encoder 输出名称:', outputNames);
-        
+        this.log('[SAMService] Encoder 输出名称:', outputNames);
+
         // 返回所有 encoder 输出（SlimSAM 有 image_embeddings 和 image_positional_embeddings）
-        return results;
+        return { outputs: results, promptScale };
+    }
+
+    /**
+     * encoder 是否是 [1024, 1024, 3] 原始像素输入的导出。
+     *
+     * 依据实测：本机 mobile_sam_encoder.onnx 的 input_image 是 rank 3 的 HWC，
+     * 喂 rank 4 会被 ONNX Runtime 以 "Invalid rank for input" 直接拒绝。
+     * SAM2 / ViT-B 导出是 rank 4，但本机没有模型文件，未经实测。
+     * 形状判断错了会在推理时立即报错，不会静默产出错误蒙版。
+     */
+    private encoderExpectsHwcRawPixels(): boolean {
+        return this.modelType === 'mobile_sam';
     }
     
     /**
@@ -316,16 +436,18 @@ export class SAMService {
         box: BoxPrompt,
         centerPoint: PointPrompt | undefined,
         originalWidth: number,
-        originalHeight: number
+        originalHeight: number,
+        promptScale: number
     ): {
         pointCoords: Float32Array;
         pointLabels: Float32Array;
         origImSize: Float32Array;
     } {
-        // 缩放因子：原始图像 → 1024x1024
-        const scaleX = SAM_INPUT_SIZE / originalWidth;
-        const scaleY = SAM_INPUT_SIZE / originalHeight;
-        
+        // 与 encodeImage 同一个缩放系数：图像按长边等比缩放后补零，x/y 不能各缩各的，
+        // 否则 prompt 点会落在与图像内容错位的位置上。
+        const scaleX = promptScale;
+        const scaleY = promptScale;
+
         // Box Prompt: 转换为两个点（左上角和右下角）
         const boxPoints = [
             box.x1 * scaleX,
@@ -377,14 +499,14 @@ export class SAMService {
         const feeds: Record<string, any> = {};
         const inputNames = this.decoderSession.inputNames;
         
-        console.log('[SAMService] Decoder 输入名称:', inputNames);
+        this.log('[SAMService] Decoder 输入名称:', inputNames);
         
         // 根据模型类型构建不同的输入:
         // SAM2.1: input_boxes (边界框直接输入)
         // MobileSAM/SlimSAM: input_points + input_labels
         const isSAM2 = this.modelType === 'sam2_large';
         
-        console.log('[SAMService] 使用模型类型:', this.modelType, 'isSAM2:', isSAM2);
+        this.log('[SAMService] 使用模型类型:', this.modelType, 'isSAM2:', isSAM2);
         
         for (const name of inputNames) {
             // SAM2.1 边界框输入: input_boxes [1, num_boxes, 4]
@@ -402,7 +524,7 @@ export class SAMService {
                     boxData,
                     [1, 1, 4]  // [batch, num_boxes, 4]
                 );
-                console.log('[SAMService] input_boxes:', Array.from(boxData));
+                this.log('[SAMService] input_boxes:', Array.from(boxData));
             }
             // 点坐标输入 (SlimSAM: input_points 需要4维)
             else if (name === 'input_points') {
@@ -491,29 +613,37 @@ export class SAMService {
         // 检查是否有未提供的必需输入
         const missingInputs = inputNames.filter(n => !feeds[n]);
         if (missingInputs.length > 0) {
-            console.log('[SAMService] 警告: 未匹配的输入:', missingInputs);
-            console.log('[SAMService] Encoder 输出键:', Object.keys(encoderOutputs));
+            this.log('[SAMService] 警告: 未匹配的输入:', missingInputs);
+            this.log('[SAMService] Encoder 输出键:', Object.keys(encoderOutputs));
         }
         
-        console.log('[SAMService] Decoder feeds 包含的输入:', Object.keys(feeds));
+        this.log('[SAMService] Decoder feeds 包含的输入:', Object.keys(feeds));
         
         // 运行 Decoder
         const results = await this.decoderSession.run(feeds);
         
         const outputNames = this.decoderSession.outputNames;
-        console.log('[SAMService] Decoder 输出名称:', outputNames);
+        this.log('[SAMService] Decoder 输出名称:', outputNames);
         
         // 获取蒙版输出和 IoU 分数
         let maskOutput: any = null;
         let iouScores: any = null;
         
-        for (const name of outputNames) {
-            if (name.includes('mask') || name === 'masks' || name === 'pred_masks') {
-                maskOutput = results[name];
-            }
-            if (name.includes('iou') || name === 'iou_scores') {
-                iouScores = results[name];
-            }
+        // 输出名优先级：masks / pred_masks 是原图尺寸的成品蒙版，low_res_masks 是 256x256 中间量。
+        // 不能用 includes('mask') 一路覆盖——遍历到最后会被 low_res_masks 顶掉，
+        // 拿到低分辨率蒙版再放大，边缘精度白白损失。
+        const preferredMaskName = outputNames.find((name: string) => name === 'masks' || name === 'pred_masks')
+            || outputNames.find((name: string) => name.includes('mask') && !name.includes('low_res'))
+            || outputNames.find((name: string) => name.includes('mask'));
+
+        if (preferredMaskName) {
+            maskOutput = results[preferredMaskName];
+            this.log(`[SAMService] 选用蒙版输出: ${preferredMaskName}`);
+        }
+
+        const iouName = outputNames.find((name: string) => name.includes('iou') || name === 'iou_scores');
+        if (iouName) {
+            iouScores = results[iouName];
         }
         
         if (!maskOutput) {
@@ -523,7 +653,7 @@ export class SAMService {
         const maskData = maskOutput.data as Float32Array;
         const maskDims = maskOutput.dims;
         
-        console.log('[SAMService] 蒙版输出形状:', maskDims);
+        this.log('[SAMService] 蒙版输出形状:', maskDims);
         
         // SlimSAM 输出形状: [1, 1, 3, 256, 256] (batch, query, num_masks, H, W)
         const maskH = maskDims[maskDims.length - 2];
@@ -536,7 +666,7 @@ export class SAMService {
         
         if (iouScores) {
             const scores = iouScores.data as Float32Array;
-            console.log('[SAMService] IoU 分数:', Array.from(scores));
+            this.log('[SAMService] IoU 分数:', Array.from(scores));
             
             // 找到最高分的蒙版
             let maxScore = -Infinity;
@@ -546,13 +676,13 @@ export class SAMService {
                     bestMaskIndex = i;
                 }
             }
-            console.log(`[SAMService] 选择蒙版 ${bestMaskIndex}，IoU=${maxScore.toFixed(4)}`);
+            this.log(`[SAMService] 选择蒙版 ${bestMaskIndex}，IoU=${maxScore.toFixed(4)}`);
         }
         
         // 计算最佳蒙版的偏移量
         const maskOffset = bestMaskIndex * singleMaskSize;
         
-        console.log(`[SAMService] 提取蒙版: 尺寸=${maskW}x${maskH}, 索引=${bestMaskIndex}, 偏移=${maskOffset}`);
+        this.log(`[SAMService] 提取蒙版: 尺寸=${maskW}x${maskH}, 索引=${bestMaskIndex}, 偏移=${maskOffset}`);
         
         // ========== 核心改进：在 Logits 空间放大，然后应用 Sigmoid ==========
         // 这样边缘在 logit 空间中有更好的过渡，sigmoid 后边缘更自然
@@ -564,10 +694,10 @@ export class SAMService {
             minLogit = Math.min(minLogit, logit);
             maxLogit = Math.max(maxLogit, logit);
         }
-        console.log(`[SAMService] 原始蒙版 logits 范围: min=${minLogit.toFixed(2)}, max=${maxLogit.toFixed(2)}`);
+        this.log(`[SAMService] 原始蒙版 logits 范围: min=${minLogit.toFixed(2)}, max=${maxLogit.toFixed(2)}`);
         
         // Step 1: 在 logits 空间进行双三次插值放大（Bicubic，比双线性更平滑）
-        console.log(`[SAMService] 在 Logits 空间放大蒙版（双三次插值）: ${maskW}x${maskH} -> ${originalWidth}x${originalHeight}`);
+        this.log(`[SAMService] 在 Logits 空间放大蒙版（双三次插值）: ${maskW}x${maskH} -> ${originalWidth}x${originalHeight}`);
         
         const upscaledLogits = new Float32Array(originalWidth * originalHeight);
         const scaleX = maskW / originalWidth;
@@ -619,7 +749,7 @@ export class SAMService {
         }
         
         // Step 2: 在高分辨率上应用 Sigmoid
-        console.log('[SAMService] 应用 Sigmoid 转换...');
+        this.log('[SAMService] 应用 Sigmoid 转换...');
         
         const probMask = new Float32Array(originalWidth * originalHeight);
         
@@ -633,7 +763,7 @@ export class SAMService {
         // Step 3: 直接使用概率值生成蒙版，保持自然的边缘过渡
         // 问题分析：之前的窄阈值 (0.45-0.55) 导致边缘出现块状伪影
         // 解决方案：使用更宽的阈值范围，让 sigmoid 自然产生平滑边缘
-        console.log('[SAMService] 生成蒙版（自然边缘过渡）...');
+        this.log('[SAMService] 生成蒙版（自然边缘过渡）...');
         
         const finalMask = Buffer.alloc(originalWidth * originalHeight);
         let whiteCount = 0, blackCount = 0, gradientCount = 0;
@@ -665,7 +795,7 @@ export class SAMService {
             }
         }
         
-        console.log(`[SAMService] 蒙版生成: 前景=${whiteCount}, 背景=${blackCount}, 渐变边缘=${gradientCount}`);
+        this.log(`[SAMService] 蒙版生成: 前景=${whiteCount}, 背景=${blackCount}, 渐变边缘=${gradientCount}`);
         
         return { mask: finalMask };
     }
@@ -744,7 +874,7 @@ export class SAMService {
                 }
             }
             
-            console.log('[SAMService] 边缘引导锐化完成');
+            this.log('[SAMService] 边缘引导锐化完成');
             return refinedMask;
             
         } catch (error: any) {

@@ -47,6 +47,7 @@ import {
     swapActiveRuntimeInteractiveCheckpointForChainedConfirmation,
     type RuntimeInteractiveCheckpointReservation
 } from '../agent-runtime/active-runtime-interactive-continuation';
+import { evaluateRepeatedInteractionDecision } from '../../../shared/agent-interaction-owner-policy';
 
 type AcceptedContinuation = Extract<InteractiveContinuationResolution, { status: 'accepted' }>;
 
@@ -222,7 +223,10 @@ function buildReentry(input: {
             kind: submission.kind,
             submittedAt: submission.submittedAt,
             value: submission.value,
-            validation: submission.validation
+            validation: submission.validation,
+            ...(submission.decisionContext
+                ? { decisionContext: { ...submission.decisionContext } }
+                : {})
         },
         ...(input.checkpoint.artifactAuthorizationToken
             ? { artifactAuthorizationToken: input.checkpoint.artifactAuthorizationToken }
@@ -292,9 +296,52 @@ export function buildRuntimeInteractivePostSkillRecovery(input: {
 }
 
 export interface RuntimeInteractiveChainedConfirmation {
+    status: 'registered';
     result: AgentResult;
     continuation: PendingInteractiveContinuation;
     session: RuntimeSession;
+}
+
+export interface RuntimeInteractiveChainedConfirmationNoProgress {
+    status: 'no_progress';
+    handoff: RuntimeInteractiveHandoffDecision;
+}
+
+export type RuntimeInteractiveChainedConfirmationRegistration =
+    | RuntimeInteractiveChainedConfirmation
+    | RuntimeInteractiveChainedConfirmationNoProgress;
+
+function buildRuntimeInteractiveNoProgressHandoff(input: {
+    preparation: Extract<RuntimeInteractiveResumePreparation, { status: 'ready'; mode: 'execute_skill' }>;
+    resolution: AcceptedContinuation;
+    nextContinuation: PendingInteractiveContinuation;
+}): RuntimeInteractiveHandoffDecision {
+    const observation: AgentReActObservation = {
+        version: 'agent-react-observation/v0',
+        actionId: `skill:${input.resolution.skillId}`,
+        kind: 'skill',
+        label: '确认内容没有带来执行进展',
+        status: 'needs_repair',
+        summary: '用户刚确认的决定没有被工作流消费，工作流又提出了同一个决定；已停止重复询问并交回 Agent 重新规划。',
+        details: ['刚才确认的内容已经保留，但后续步骤没有产生可验证的修改或计划推进。'],
+        blockers: ['不能再次向用户询问同一个已经回答的问题。'],
+        warnings: [],
+        nextAction: 'repair',
+        sourceStatus: 'runtime_interactive_no_progress'
+    };
+    const reentry = buildReentry({
+        checkpoint: input.preparation.checkpoint,
+        session: input.preparation.session,
+        resolution: input.resolution,
+        observation
+    });
+    return {
+        observation,
+        operationSucceeded: true,
+        reentry,
+        reentryTask: buildRuntimeInteractiveReentryTask(reentry),
+        effect: 'none'
+    };
 }
 
 /**
@@ -308,7 +355,7 @@ export function registerRuntimeInteractiveChainedConfirmation(input: {
     resolution: AcceptedContinuation;
     result: AgentResult;
     photoshopObservationAfterSkill: RuntimeInteractivePhotoshopObservation;
-}): RuntimeInteractiveChainedConfirmation | undefined {
+}): RuntimeInteractiveChainedConfirmationRegistration | undefined {
     if (input.preparation.status !== 'ready'
         || input.preparation.mode !== 'execute_skill') {
         return undefined;
@@ -331,6 +378,28 @@ export function registerRuntimeInteractiveChainedConfirmation(input: {
     const receipt = isSkillExecutionReceiptBoundToLineage(receiptCandidate, expectedLineage)
         ? receiptCandidate
         : undefined;
+    if (!receipt || receipt.effect === 'unknown') {
+        throw new Error('runtime_interactive_chained_confirmation_effect_unverified');
+    }
+    const repeatedDecision = evaluateRepeatedInteractionDecision({
+        previousDecisionFingerprint: input.resolution.card.decisionFingerprint,
+        previousAnswerFingerprint: input.resolution.submission.decisionContext?.answerFingerprint,
+        nextDecisionFingerprint: continuation.card.decisionFingerprint,
+        nextCandidateFingerprint: continuation.card.candidateFingerprint,
+        skillEffect: receipt?.effect || 'missing',
+        mutationCount: receipt?.mutationCount,
+        revisionCount: receipt?.revisions.length
+    });
+    if (repeatedDecision.status === 'blocked') {
+        return {
+            status: 'no_progress',
+            handoff: buildRuntimeInteractiveNoProgressHandoff({
+                preparation: input.preparation,
+                resolution: input.resolution,
+                nextContinuation: continuation
+            })
+        };
+    }
     const reconciledSession = reconcileSkillEffect({
         session: input.preparation.session,
         plan: checkpoint.plan,
@@ -411,6 +480,7 @@ export function registerRuntimeInteractiveChainedConfirmation(input: {
         throw new Error('runtime_interactive_chained_checkpoint_swap_failed');
     }
     return {
+        status: 'registered',
         result,
         continuation: boundContinuation,
         session: suspension.session

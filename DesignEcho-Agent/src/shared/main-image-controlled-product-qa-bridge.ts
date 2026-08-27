@@ -77,6 +77,8 @@ export interface MainImageControlledProductQaBundle {
 export interface MainImageControlledProductQaBridgeInput {
     runner?: MainImageLiveExecutorRunResult | null;
     sizePlans?: MainImageSizePlan[];
+    /** Runtime 整组提交后确认的正式结果图路径。 */
+    resultImagePaths?: readonly string[];
     resultFileProbes?: MainImageResultFileProbe[] | null;
     referenceImagePath?: string | null;
     pixelProbe?: MainImageScreenshotProbeObservation | null;
@@ -308,7 +310,9 @@ export function buildMainImageControlledProductQaBundle(
     input: MainImageControlledProductQaBridgeInput
 ): MainImageControlledProductQaBundle {
     const gate = buildMainImageControlledProductQaGate(input);
-    const resultPaths = extractMainImageControlledProductResultPaths(input.runner);
+    const resultPaths = input.resultImagePaths
+        ? [...input.resultImagePaths]
+        : extractMainImageControlledProductResultPaths(input.runner);
     const screenshotQa = buildMainImageScreenshotQa({
         sizePlans: input.sizePlans,
         resultImageRecord: {

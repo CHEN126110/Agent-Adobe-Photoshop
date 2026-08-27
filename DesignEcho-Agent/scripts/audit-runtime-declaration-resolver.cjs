@@ -144,6 +144,40 @@ const {
   'agent.ts'
 ));
 const {
+  guardRuntimeInteractiveReentryResult
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'runtime-interactive-reentry-result-guard.ts'
+));
+const {
+  normalizeAgentToolFailureResult
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'tool-failure-result-normalizer.ts'
+));
+const {
+  markExecutedToolResultProvenance,
+  readExecutedToolResultProvenance
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'tool-result-provenance.ts'
+));
+const {
   runFinalQualityModelProtocol
 } = require(path.resolve(
   __dirname,
@@ -236,6 +270,7 @@ const {
   finalizeRuntimeSession,
   markRuntimeSessionSkillEffectUnknown,
   observeRuntimeSessionDocumentRevision,
+  recordRuntimeSessionOperationResult,
   recordRuntimeSessionSkillRevisionTransition,
   releaseRuntimeTaskRunWriterBinding,
   suspendRuntimeSessionForInteraction
@@ -244,6 +279,7 @@ const {
   RUNTIME_INTERACTIVE_CHECKPOINT_VERSION,
   RUNTIME_INTERACTIVE_HANDOFF_IDENTITY_VERSION,
   createRuntimeInteractiveBoundaries,
+  hasRuntimeInteractiveReentryProgress,
   shouldDeferRuntimeArtifactFinalizationForInteraction
 } = require(path.join(runtimeRoot, 'runtime-interactive-reentry.ts'));
 const {
@@ -344,9 +380,23 @@ const {
   readSkillExecutionEffectReceipt
 } = require(path.resolve(__dirname, '..', 'src', 'shared', 'skill-execution-effect.ts'));
 const {
+  buildAgentReActToolArgumentsDigest
+} = require(path.resolve(__dirname, '..', 'src', 'shared', 'agent-react-observation-contract.ts'));
+const {
+  consumeRuntimeWorkflowDeliveryReentry,
+  issueRuntimeWorkflowDeliveryReentry,
+  peekRuntimeWorkflowDeliveryReentry
+} = require(path.resolve(__dirname, '..', 'src', 'shared', 'agent-workflow-continuation-scope.ts'));
+const {
+  attachRuntimeOwnedSkillDeliveryPlanBinding,
   beginRuntimeOwnedSkillToolLedgerScope,
   completeRuntimeOwnedSkillToolLedgerScope,
-  createGuardedAtomicToolExecutor
+  createGuardedAtomicToolExecutor,
+  createRuntimeOwnedSkillDeliveryPlanAuthority,
+  forwardRuntimeOwnedSkillDeliveryPlanBinding,
+  issueRuntimeOwnedSkillExternalDeliveryCommitReceipt,
+  issueRuntimeOwnedSkillStagingLease,
+  readRuntimeOwnedSkillDeliveryPlanBinding
 } = require(path.resolve(
   __dirname,
   '..',
@@ -1159,6 +1209,8 @@ assert.strictEqual(canReleaseRuntimeSessionDocumentWriter({
 
 function buildInteractiveAuditCase(suffix, revision) {
   const continuationId = `runtime-interactive-${suffix}`;
+  const decisionFingerprint = `sku-audit-decision-${suffix}`;
+  const candidateFingerprint = `sku-audit-candidate-${suffix}`;
   const session = revision
     ? createRuntimeStatusAuditSession(`runtime-interactive-${suffix}`, revision)
     : createRuntimeSession({
@@ -1214,6 +1266,11 @@ function buildInteractiveAuditCase(suffix, revision) {
       issues: [],
       blockers: [],
       warnings: []
+    },
+    decisionContext: {
+      decisionFingerprint,
+      candidateFingerprint,
+      answerFingerprint: candidateFingerprint
     }
   };
   return {
@@ -1224,7 +1281,12 @@ function buildInteractiveAuditCase(suffix, revision) {
       continuation: { id: continuationId },
       submission,
       sourceMessageId: `message-${suffix}`,
-      card: { id: submission.cardId },
+      card: {
+        id: submission.cardId,
+        interactionOwner: { type: 'skill-provider', skillId: 'sku-batch' },
+        decisionFingerprint,
+        candidateFingerprint
+      },
       skillId: 'sku-batch',
       params: {},
       taskRunBinding: suspension.binding
@@ -2261,6 +2323,9 @@ async function assertChainedConfirmationKeepsSameRuntimeOwner() {
     kind: 'sku-second-confirmation',
     title: '继续确认下一项',
     payload: { step: 2 },
+    interactionOwner: { type: 'skill-provider', skillId: 'sku-batch' },
+    decisionFingerprint: 'sku-second-confirmation-step-2',
+    candidateFingerprint: 'sku-second-confirmation-candidate-step-2',
     status: 'draft'
   };
   const nextContinuation = {
@@ -2383,6 +2448,554 @@ async function assertChainedConfirmationKeepsSameRuntimeOwner() {
     } else {
       global.window = previousWindow;
     }
+  }
+}
+
+async function assertRepeatedChainedConfirmationReturnsToAgent() {
+  const repeatedCase = buildInteractiveAuditCase(
+    'repeated-confirmation-no-progress',
+    { documentId: 722, historyStateId: 60 }
+  );
+  repeatedCase.resolution.card.decisionFingerprint = 'sku-combo-decision-audit-stable';
+  repeatedCase.resolution.submission.decisionContext.decisionFingerprint = repeatedCase.resolution.card.decisionFingerprint;
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: repeatedCase.continuationId,
+    taskRunBinding: repeatedCase.suspension.binding,
+    photoshopObservation: {
+      status: 'revision',
+      revision: { documentId: 722, historyStateId: 60 }
+    }
+  });
+  assert.strictEqual(preparation.status, 'ready');
+  assert.strictEqual(preparation.mode, 'execute_skill');
+  const repeatedCard = {
+    version: 'interactive-card/v0',
+    id: 'card-repeated-confirmation-second-render',
+    kind: 'sku-combo-confirmation',
+    title: '换了标题但仍是同一项确认',
+    payload: { step: 1 },
+    interactionOwner: { type: 'skill-provider', skillId: 'sku-batch' },
+    decisionFingerprint: repeatedCase.resolution.card.decisionFingerprint,
+    candidateFingerprint: repeatedCase.resolution.submission.decisionContext.answerFingerprint,
+    status: 'draft'
+  };
+  const repeatedContinuation = {
+    version: 'pending-interactive-continuation/v0',
+    id: 'runtime-interactive-repeated-confirmation-second',
+    createdAt: '2026-08-24T06:30:00.000Z',
+    sourceTask: '帮我做 SKU 编排',
+    scope: { photoshopDocumentId: 722 },
+    operation: {
+      kind: 'skill_execution',
+      skillId: 'sku-batch',
+      params: { step: 1 }
+    },
+    card: repeatedCard,
+    oneTime: true
+  };
+  const previousWindow = global.window;
+  global.window = {
+    designEcho: {
+      invoke: async (channel) => {
+        if (channel === 'interactiveContinuation:begin') {
+          return {
+            success: true,
+            code: 'interactive_continuation_operation_started',
+            message: 'started',
+            record: { status: 'running' }
+          };
+        }
+        if (channel === 'interactiveContinuation:settle') {
+          return {
+            success: true,
+            code: 'interactive_continuation_operation_succeeded',
+            message: 'succeeded',
+            record: { status: 'succeeded', mutationState: 'none' }
+          };
+        }
+        throw new Error(`unexpected interactive ledger channel: ${channel}`);
+      }
+    }
+  };
+  let reentryObservation;
+  try {
+    const runResult = await runRuntimeInteractiveContinuation({
+      requestId: 'request-repeated-confirmation-no-progress',
+      operationIdentity: {
+        continuationId: repeatedCase.continuationId,
+        sourceMessageId: repeatedCase.resolution.sourceMessageId,
+        cardId: repeatedCase.resolution.submission.cardId,
+        submissionFingerprint: 'repeated-confirmation-fingerprint'
+      },
+      resolution: repeatedCase.resolution,
+      preparation,
+      executeSkill: async (runtimeLineage) => attachSkillExecutionEffectReceipt({
+        success: true,
+        message: '仍在等待相同确认。',
+        skillOutcome: {
+          version: 'skill-execution-outcome/v0',
+          status: 'awaiting_confirmation',
+          summary: '仍在等待相同确认。',
+          outputs: [],
+          blockers: [],
+          warnings: []
+        },
+        data: {
+          interactiveCards: [repeatedCard],
+          awaitingUserConfirmation: true,
+          pendingInteractiveContinuation: repeatedContinuation
+        }
+      }, {
+        skillId: 'sku-batch',
+        executionStarted: false,
+        outcomeStatus: 'awaiting_confirmation',
+        runtimeLineage
+      }),
+      readPhotoshopObservation: async () => ({
+        status: 'revision',
+        revision: { documentId: 722, historyStateId: 60 }
+      }),
+      executeAgentReentry: async ({ reentry, adopt }) => {
+        reentryObservation = reentry.observation;
+        assert.strictEqual(adopt(), true);
+        return {
+          success: false,
+          message: '已识别重复确认并重新规划。',
+          data: {
+            executionSummary: { status: 'failed' }
+          }
+        };
+      }
+    });
+    assert.strictEqual(runResult.kind, 'agent_result');
+    assert.strictEqual(runResult.adopted, true);
+    assert.strictEqual(
+      reentryObservation.sourceStatus,
+      'runtime_interactive_no_progress',
+      JSON.stringify(reentryObservation)
+    );
+    assert.strictEqual(
+      prepareRuntimeInteractiveResume({
+        continuationId: repeatedContinuation.id,
+        taskRunBinding: repeatedCase.suspension.binding,
+        photoshopObservation: {
+          status: 'revision',
+          revision: { documentId: 722, historyStateId: 60 }
+        }
+      }).status,
+      'checkpoint_missing',
+      '无进展重复决定不能注册成新的可提交 checkpoint'
+    );
+    assert.strictEqual(releaseRuntimeTaskRunWriterBinding({
+      taskRunId: repeatedCase.suspension.binding.taskRunId,
+      runId: repeatedCase.suspension.binding.runId,
+      generation: repeatedCase.suspension.binding.generation,
+      documentId: 722
+    }), true);
+  } finally {
+    if (previousWindow === undefined) {
+      delete global.window;
+    } else {
+      global.window = previousWindow;
+    }
+  }
+}
+
+function buildReadyInteractiveAuditBrief() {
+  return {
+    version: 'runtime-design-brief-declaration/v0',
+    source: 'model_tool_call',
+    readiness: 'ready',
+    payload: {
+      taskGoal: '继续完成已确认组合的 SKU 编排。',
+      deliverables: ['可编辑 SKU 组合与导出结果'],
+      outputRequirements: [],
+      constraints: ['不得重复询问已经确认的组合'],
+      inputCoverage: [],
+      contextRefs: ['user_goal']
+    },
+    boundaries: {
+      modelAuthored: true,
+      harnessValidatedOnly: true,
+      harnessResolvesInputBindings: true,
+      harnessNormalizesInputCoverage: true,
+      manifestInputsAreSourceOfTruth: true,
+      categoryNeutral: true,
+      executesTools: false,
+      grantsPermission: false,
+      autoActivatesCapabilities: false,
+      countsAsTaskProgress: false,
+      countsAsQualityPass: false
+    }
+  };
+}
+
+function buildAgentReentryAuditFixture(suffix, revision) {
+  const auditCase = buildInteractiveAuditCase(suffix, revision);
+  const preparation = prepareRuntimeInteractiveResume({
+    continuationId: auditCase.continuationId,
+    taskRunBinding: auditCase.suspension.binding,
+    photoshopObservation: { status: 'revision', revision }
+  });
+  assert.strictEqual(preparation.status, 'ready');
+  assert.strictEqual(preparation.mode, 'execute_skill');
+  const handoff = resolveRuntimeInteractiveHandoff({
+    preparation,
+    resolution: auditCase.resolution,
+    result: buildTrustedReadOnlyInteractiveHandoffResult(
+      preparation,
+      auditCase.resolution,
+      revision
+    ),
+    photoshopObservationAfterSkill: { status: 'revision', revision }
+  });
+  assert(handoff.reentry, 'Agent reentry audit fixture did not produce a reentry');
+  return {
+    auditCase,
+    preparation,
+    reentry: {
+      ...handoff.reentry,
+      declarations: {
+        ...handoff.reentry.declarations,
+        brief: buildReadyInteractiveAuditBrief()
+      }
+    },
+    reentryTask: handoff.reentryTask
+  };
+}
+
+function buildAgentReentryPendingDecisionResult(input) {
+  const card = {
+    version: 'interactive-card/v0',
+    id: `card-${input.suffix}`,
+    kind: 'sku-combo-confirmation',
+    title: '确认 SKU 组合',
+    payload: { step: 1 },
+    interactionOwner: { type: 'skill-provider', skillId: 'sku-batch' },
+    decisionFingerprint: input.reentry.confirmedSubmission.decisionContext.decisionFingerprint,
+    candidateFingerprint: input.candidateFingerprint,
+    status: 'draft'
+  };
+  const continuation = {
+    version: 'pending-interactive-continuation/v0',
+    id: `runtime-interactive-${input.suffix}`,
+    createdAt: '2026-08-24T06:35:00.000Z',
+    sourceTask: '帮我做 SKU 编排',
+    scope: {
+      photoshopDocumentId:
+        input.reentry.session.taskRun.documentBinding?.expectedRevision.documentId
+    },
+    operation: {
+      kind: 'skill_execution',
+      skillId: 'sku-batch',
+      params: { step: 1 }
+    },
+    card,
+    oneTime: true
+  };
+  return attachSkillExecutionEffectReceipt({
+    success: true,
+    message: '仍在等待组合确认。',
+    skillOutcome: {
+      version: 'skill-execution-outcome/v0',
+      status: 'awaiting_confirmation',
+      summary: '仍在等待组合确认。',
+      outputs: [],
+      blockers: [],
+      warnings: []
+    },
+    data: {
+      interactiveCards: [card],
+      awaitingUserConfirmation: true,
+      pendingInteractiveContinuation: continuation
+    }
+  }, {
+    skillId: 'sku-batch',
+    executionStarted: false,
+    outcomeStatus: 'awaiting_confirmation'
+  });
+}
+
+async function assertAgentReentryBlocksRepeatedDecisionWithoutProgress() {
+  const revision = { documentId: 727, historyStateId: 80 };
+  const fixture = buildAgentReentryAuditFixture(
+    'agent-reentry-repeated-decision',
+    revision
+  );
+  const stagedReservation = stageRuntimeInteractiveReentry({
+    reservation: fixture.preparation.reservation,
+    reentry: fixture.reentry,
+    reentryTask: fixture.reentryTask
+  });
+  assert(stagedReservation, 'Agent reentry audit could not stage the checkpoint');
+  const workflowTool = buildSkillToolSchemas().find((tool) => tool.name === 'sku-batch');
+  assert(workflowTool, 'SKU workflow Tool schema is missing for Agent reentry audit');
+  const repeatedResult = buildAgentReentryPendingDecisionResult({
+    suffix: 'agent-reentry-repeated-decision-next',
+    reentry: fixture.reentry,
+    candidateFingerprint:
+      fixture.reentry.confirmedSubmission.decisionContext.answerFingerprint
+  });
+  let adopted = false;
+  let modelCallCount = 0;
+  const agent = new Agent(
+    {
+      ...buildAgentTestConfig({
+        tools: [workflowTool],
+        maxIterations: 2,
+        openingCanvasObservationMode: 'none'
+      }),
+      runtimeStagePlan: fixture.reentry.plan,
+      runtimeSessionIdentity: fixture.reentry.session.identity,
+      runtimeSessionSeed: fixture.reentry.session,
+      runtimeInteractiveReentry: fixture.reentry,
+      adoptRuntimeInteractiveReentry: () => {
+        adopted = adoptRuntimeInteractiveResume(stagedReservation);
+        return adopted;
+      },
+      toolCapabilityBridge: skuDefault.bundle.toolCapabilityBridge
+    },
+    async () => {
+      modelCallCount += 1;
+      if (modelCallCount === 1) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'agent-reentry-same-decision',
+            name: 'sku-batch',
+            arguments: { stage: 'full' }
+          }]
+        };
+      }
+      return { content: '已改用其它可执行路线。', stopReason: 'end_turn' };
+    },
+    async (toolName) => {
+      assert.strictEqual(toolName, 'sku-batch');
+      return repeatedResult;
+    }
+  );
+  let result;
+  try {
+    result = await agent.run(fixture.reentryTask);
+  } finally {
+    if (!adopted) cancelRuntimeInteractiveResume(stagedReservation);
+    releaseRuntimeTaskRunWriterBinding({
+      taskRunId: fixture.reentry.session.taskRun.taskRunId,
+      runId: fixture.reentry.session.identity.runId,
+      generation: fixture.reentry.session.identity.generation,
+      documentId: revision.documentId
+    });
+  }
+  assert.strictEqual(adopted, true, 'Agent did not adopt the staged interactive reentry');
+  const workflowLog = result.toolCallLog?.find((entry) => (
+    entry.callId === 'agent-reentry-same-decision'
+  ));
+  assert(workflowLog, 'Agent did not record the reentered Workflow call');
+  assert.strictEqual(
+    workflowLog.result?.code,
+    'interaction_no_progress',
+    JSON.stringify(workflowLog.result)
+  );
+  assert.notStrictEqual(
+    result.stopReason,
+    'awaiting_user_confirmation',
+    'a repeated decision escaped the Agent guard and reopened user confirmation'
+  );
+  assert.strictEqual(
+    result.data?.pendingInteractiveContinuation,
+    undefined,
+    'a blocked repeated decision leaked a new pending continuation'
+  );
+}
+
+function assertAgentReentryProgressAndCandidateSemantics() {
+  const revision = { documentId: 728, historyStateId: 90 };
+  const fixture = buildAgentReentryAuditFixture(
+    'agent-reentry-progress-semantics',
+    revision
+  );
+  try {
+    const answerFingerprint =
+      fixture.reentry.confirmedSubmission.decisionContext.answerFingerprint;
+    const readOnlySession = recordRuntimeSessionOperationResult({
+      session: fixture.reentry.session,
+      result: {
+        photoshopOperationResult: {
+          version: 'photoshop-operation-result/v1',
+          operationId: 'agent-reentry-read-only-operation',
+          toolName: 'getDocumentInfo',
+          status: 'verified',
+          applicationStatus: 'not_applied',
+          transactionState: 'not_started',
+          effect: 'none',
+          rollback: { attempted: false, verified: false },
+          before: revision,
+          after: revision
+        }
+      },
+      now: '2026-08-24T06:36:00.000Z'
+    });
+    assert.strictEqual(
+      readOnlySession.taskRun.operationResults.length,
+      fixture.reentry.session.taskRun.operationResults.length + 1,
+      'read-only operation audit did not add an operation result'
+    );
+    assert.strictEqual(hasRuntimeInteractiveReentryProgress({
+      reentry: fixture.reentry,
+      session: readOnlySession
+    }), false, 'read-only observation/operation result was misclassified as Runtime progress');
+    const sameDecisionAfterRead = buildAgentReentryPendingDecisionResult({
+      suffix: 'agent-reentry-same-after-read',
+      reentry: fixture.reentry,
+      candidateFingerprint: answerFingerprint
+    });
+    assert.strictEqual(
+      guardRuntimeInteractiveReentryResult({
+        workflowToolName: 'sku-batch',
+        result: sameDecisionAfterRead,
+        reentry: fixture.reentry,
+        session: readOnlySession
+      }).code,
+      'interaction_no_progress',
+      'a redundant read-only observation bypassed the repeated-decision guard'
+    );
+
+    const appliedSession = recordRuntimeSessionOperationResult({
+      session: fixture.reentry.session,
+      result: {
+        photoshopOperationResult: {
+          version: 'photoshop-operation-result/v1',
+          operationId: 'agent-reentry-applied-operation',
+          toolName: 'createRectangle',
+          status: 'verified',
+          applicationStatus: 'applied',
+          transactionState: 'committed',
+          effect: 'applied',
+          rollback: { attempted: false, verified: false },
+          before: revision,
+          after: { documentId: revision.documentId, historyStateId: revision.historyStateId + 1 }
+        }
+      },
+      now: '2026-08-24T06:36:01.000Z'
+    });
+    assert.strictEqual(hasRuntimeInteractiveReentryProgress({
+      reentry: fixture.reentry,
+      session: appliedSession
+    }), true, 'a real Photoshop expectedRevision advance was not recognized as progress');
+    const sameDecisionAfterWrite = buildAgentReentryPendingDecisionResult({
+      suffix: 'agent-reentry-same-after-write',
+      reentry: fixture.reentry,
+      candidateFingerprint: answerFingerprint
+    });
+    assert.strictEqual(
+      guardRuntimeInteractiveReentryResult({
+        workflowToolName: 'sku-batch',
+        result: sameDecisionAfterWrite,
+        reentry: fixture.reentry,
+        session: appliedSession
+      }),
+      sameDecisionAfterWrite,
+      'real Photoshop progress was incorrectly blocked as repeated interaction'
+    );
+    releaseRuntimeTaskRunWriterBinding({
+      taskRunId: appliedSession.taskRun.taskRunId,
+      runId: appliedSession.identity.runId,
+      generation: appliedSession.identity.generation,
+      documentId: revision.documentId
+    });
+
+    const newCandidateResult = buildAgentReentryPendingDecisionResult({
+      suffix: 'agent-reentry-new-candidate',
+      reentry: fixture.reentry,
+      candidateFingerprint: `${answerFingerprint}-new-fact`
+    });
+    assert.strictEqual(
+      guardRuntimeInteractiveReentryResult({
+        workflowToolName: 'sku-batch',
+        result: newCandidateResult,
+        reentry: fixture.reentry,
+        session: fixture.reentry.session
+      }),
+      newCandidateResult,
+      'a Provider-defined new candidate was incorrectly blocked as the old answer'
+    );
+  } finally {
+    assert.strictEqual(
+      commitRuntimeInteractiveResume(fixture.preparation.reservation),
+      true,
+      'progress-semantics fixture did not release its checkpoint reservation'
+    );
+  }
+}
+
+function assertExtractedRuntimeResultGuardsFailClosed() {
+  const fixture = buildAgentReentryAuditFixture(
+    'agent-reentry-fail-closed-semantics',
+    { documentId: 729, historyStateId: 100 }
+  );
+  try {
+    const pendingResult = buildAgentReentryPendingDecisionResult({
+      suffix: 'agent-reentry-fail-closed-next',
+      reentry: fixture.reentry,
+      candidateFingerprint:
+        fixture.reentry.confirmedSubmission.decisionContext.answerFingerprint
+    });
+    const [card] = pendingResult.data.interactiveCards;
+    const invalidContinuationResult = {
+      ...pendingResult,
+      data: {
+        ...pendingResult.data,
+        interactiveCards: [card, { ...card, id: `${card.id}-conflict` }]
+      }
+    };
+    assert.strictEqual(
+      guardRuntimeInteractiveReentryResult({
+        workflowToolName: 'sku-batch',
+        result: invalidContinuationResult,
+        reentry: fixture.reentry,
+        session: fixture.reentry.session
+      }).code,
+      'interactive_reentry_continuation_invalid',
+      'a damaged or multiply-bound continuation did not fail closed'
+    );
+
+    const { skillExecutionReceipt: _removedReceipt, ...unverifiedEffectResult } = pendingResult;
+    assert.strictEqual(
+      guardRuntimeInteractiveReentryResult({
+        workflowToolName: 'sku-batch',
+        result: unverifiedEffectResult,
+        reentry: fixture.reentry,
+        session: fixture.reentry.session
+      }).code,
+      'interactive_reentry_effect_unverified',
+      'a repeated confirmation without a trusted effect receipt did not fail closed'
+    );
+
+    const frozenFailure = Object.freeze({
+      success: false,
+      error: 'fixture write failed'
+    });
+    markExecutedToolResultProvenance('createRectangle', frozenFailure);
+    const normalizedFailure = normalizeAgentToolFailureResult(
+      'createRectangle',
+      frozenFailure
+    );
+    assert.notStrictEqual(
+      normalizedFailure,
+      frozenFailure,
+      'a frozen failure result was not copied before diagnostic normalization'
+    );
+    assert.strictEqual(
+      readExecutedToolResultProvenance(normalizedFailure)?.toolName,
+      'createRectangle',
+      'trusted Tool provenance was lost while normalizing a frozen result copy'
+    );
+  } finally {
+    assert.strictEqual(
+      commitRuntimeInteractiveResume(fixture.preparation.reservation),
+      true,
+      'fail-closed guard fixture did not release its checkpoint reservation'
+    );
   }
 }
 
@@ -3468,8 +4081,11 @@ skuBatchE2Agent.toolCallLog = [{
   origin: 'model_tool_call'
 }];
 const skuBatchE2Evidence = skuBatchE2Agent.appendDeliveryStageTraceIfEligible(passedSkuSummary);
-assert.strictEqual(skuBatchE2Evidence.deliveryEvidencePassed, true);
-assert.deepStrictEqual(skuBatchE2Evidence.finalDeliveryResultRefs, skuBatchDeliveryResultRefs);
+assert.strictEqual(
+  skuBatchE2Evidence.deliveryEvidencePassed,
+  false,
+  'multi-document producer receipt without a Runtime-owned typed plan binding must fail closed'
+);
 
 skuBatchE2Agent.toolCallLog.push({
   callId: 'unbound-editable-save',
@@ -3494,9 +4110,7 @@ skuBatchE2Agent.toolCallLog.push({
   origin: 'model_tool_call'
 });
 const skuBatchE2AfterUnboundSave = skuBatchE2Agent.appendDeliveryStageTraceIfEligible(passedSkuSummary);
-assert.strictEqual(skuBatchE2AfterUnboundSave.deliveryEvidencePassed, true);
-assert(!skuBatchE2AfterUnboundSave.finalDeliveryResultRefs.includes('unbound-editable-save'),
-  'an unrelated editable save must not become part of the SKU final artifact set');
+assert.strictEqual(skuBatchE2AfterUnboundSave.deliveryEvidencePassed, false);
 
 skuBatchE2Agent.toolCallLog.push({
   callId: 'sku-batch-later-write',
@@ -8180,10 +8794,790 @@ async function assertRuntimeOwnedSkillLedgerIsRequiredForVisibleReadNone() {
   assert.strictEqual(readSkillExecutionEffectReceipt(clonedLedgerResult)?.effect, 'unknown');
 }
 
+function buildRuntimeDeliveryPlanFixture(version = 'v1') {
+  const projectPath = 'C:\\DesignEchoFixture';
+  const convention = {
+    version: 'skill-delivery-convention/v0',
+    provenance: 'agent_selected',
+    supportRefs: ['user-instruction:runtime-delivery-plan-fixture'],
+    editable: {
+      projectRelativeRoot: 'PSD',
+      fileNamePattern: '{defaultName}',
+      format: 'psd'
+    },
+    raster: {
+      projectRelativeRoot: 'JPG',
+      fileNamePattern: '{defaultName}',
+      format: 'jpg'
+    },
+    pairing: 'one_editable_per_raster',
+    versionPolicy: 'fail_if_exists'
+  };
+  const artifacts = [{
+    artifactId: 'fixture-editable',
+    kind: 'editable_document',
+    pairId: 'fixture-pair',
+    order: 0,
+    path: `${projectPath}\\PSD\\fixture-${version}.psd`,
+    format: 'psd',
+    sourceHistoryRole: 'same_document_revision'
+  }, {
+    artifactId: 'fixture-raster',
+    kind: 'raster_export',
+    pairId: 'fixture-pair',
+    order: 1,
+    path: `${projectPath}\\JPG\\fixture-${version}.jpg`,
+    format: 'jpg',
+    sourceHistoryRole: 'same_document_revision'
+  }];
+  return { projectPath, convention, artifacts };
+}
+
+function createRuntimeDeliveryPlanFixtureExecutor() {
+  return createGuardedAtomicToolExecutor({
+    userRequest: '把当前设计保存为可编辑稿并导出预览图',
+    initialCompletedToolCalls: [{
+      name: 'getDocumentInfo',
+      arguments: {},
+      result: {
+        success: true,
+        hasDocument: true,
+        documentId: 77,
+        activeLayerId: 701,
+        historyStateId: 900,
+        historyStateRef: { documentId: 77, historyStateId: 900 }
+      }
+    }],
+    executeTool: async (toolName, params) => ({
+      success: true,
+      toolName,
+      outputPath: params.outputPath || params.path,
+      documentId: 77,
+      historyStateRef: { documentId: 77, historyStateId: 900 },
+      sourceHistoryStateRef: { documentId: 77, historyStateId: 900 }
+    })
+  });
+}
+
+async function assertRuntimeDeliveryPlanCannotBeFrozenPostHoc() {
+  const candidate = buildRuntimeDeliveryPlanFixture('post-hoc');
+  const executor = createRuntimeDeliveryPlanFixtureExecutor();
+  const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+  const authority = createRuntimeOwnedSkillDeliveryPlanAuthority({ scope, executor });
+  assert(authority, 'runtime delivery authority must be created from the existing ledger scope');
+
+  await executor('saveDocument', {
+    path: candidate.artifacts[0].path,
+    format: 'psd',
+    conflictPolicy: 'fail_if_exists'
+  });
+  const freeze = authority.freeze(candidate);
+  assert.strictEqual(freeze.status, 'rejected');
+  assert.strictEqual(freeze.code, 'runtime_delivery_plan_frozen_too_late');
+
+  const ledger = await completeRuntimeOwnedSkillToolLedgerScope(scope);
+  const producerClaim = attachRuntimeOwnedSkillDeliveryPlanBinding({
+    success: true,
+    data: { expectedDeliveryPlanDigest: 'skill-delivery-plan/v1:' + 'a'.repeat(64) }
+  }, ledger);
+  assert.strictEqual(
+    readRuntimeOwnedSkillDeliveryPlanBinding(producerClaim),
+    undefined,
+    'producer data must not create a trusted delivery-plan binding after save/export'
+  );
+
+  const unrelatedExecutor = createRuntimeDeliveryPlanFixtureExecutor();
+  const unrelatedScope = beginRuntimeOwnedSkillToolLedgerScope(unrelatedExecutor);
+  const unrelatedAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+    scope: unrelatedScope,
+    executor: unrelatedExecutor
+  });
+  await unrelatedExecutor('saveDocument', {
+    path: 'C:\\DesignEchoFixture\\unexpected\\extra.psd',
+    format: 'psd',
+    conflictPolicy: 'fail_if_exists'
+  });
+  const unrelatedFreeze = unrelatedAuthority.freeze(candidate);
+  assert.strictEqual(
+    unrelatedFreeze.status,
+    'rejected',
+    'any earlier save/export in the Skill scope must block post-hoc delivery-plan freeze'
+  );
+  await completeRuntimeOwnedSkillToolLedgerScope(unrelatedScope);
+}
+
+async function assertRuntimeDeliveryPlanIsImmutableAndExact() {
+  const candidate = buildRuntimeDeliveryPlanFixture('frozen');
+  const executor = createRuntimeDeliveryPlanFixtureExecutor();
+  const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+  const authority = createRuntimeOwnedSkillDeliveryPlanAuthority({ scope, executor });
+  assert(authority);
+  const frozen = authority.freeze(candidate);
+  assert.strictEqual(frozen.status, 'frozen');
+
+  const changed = buildRuntimeDeliveryPlanFixture('changed-after-freeze');
+  const replacement = authority.freeze(changed);
+  assert.strictEqual(replacement.status, 'rejected');
+  assert.strictEqual(replacement.code, 'runtime_delivery_plan_already_frozen');
+
+  const wrongTool = await authority.executeArtifacts({
+    artifactIds: ['fixture-editable'],
+    toolName: 'exportGroup',
+    params: {
+      outputPath: candidate.artifacts[0].path,
+      format: 'psd',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  assert.strictEqual(wrongTool.success, false);
+  assert.strictEqual(wrongTool.code, 'runtime_delivery_artifact_tool_mismatch');
+
+  const editableResult = await authority.executeArtifacts({
+    artifactIds: ['fixture-editable'],
+    toolName: 'saveDocument',
+    params: {
+      path: candidate.artifacts[0].path,
+      format: 'psd',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  assert.strictEqual(editableResult.success, true);
+  const rasterResult = await authority.executeArtifacts({
+    artifactIds: ['fixture-raster'],
+    toolName: 'exportGroup',
+    params: {
+      groupPath: ['主图', '点击图'],
+      outputPath: candidate.artifacts[1].path,
+      format: 'jpg',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  assert.strictEqual(rasterResult.success, true);
+
+  const ledger = await completeRuntimeOwnedSkillToolLedgerScope(scope);
+  assert.strictEqual(ledger.deliveryPlanBinding?.status, 'ready');
+  const result = attachRuntimeOwnedSkillDeliveryPlanBinding({ success: true }, ledger);
+  const trusted = readRuntimeOwnedSkillDeliveryPlanBinding(result);
+  assert(trusted, 'complete exact artifact calls must yield a Runtime-owned binding');
+  assert.strictEqual(trusted.plan.digest, frozen.binding.plan.digest);
+  assert.strictEqual(
+    readRuntimeOwnedSkillDeliveryPlanBinding(JSON.parse(JSON.stringify(result))),
+    undefined,
+    'serialized producer output must not preserve the trusted WeakMap binding'
+  );
+  const wrapped = forwardRuntimeOwnedSkillDeliveryPlanBinding(result, { ...result });
+  assert.strictEqual(readRuntimeOwnedSkillDeliveryPlanBinding(wrapped)?.plan.digest, trusted.plan.digest);
+}
+
+async function assertRuntimeDeliveryDispatchSnapshotsNestedArguments() {
+  const candidate = buildRuntimeDeliveryPlanFixture('nested-snapshot');
+  let releaseSlowRead;
+  const slowRead = new Promise((resolve) => {
+    releaseSlowRead = resolve;
+  });
+  const dispatched = [];
+  const executor = createGuardedAtomicToolExecutor({
+    userRequest: '导出当前设计',
+    initialCompletedToolCalls: [{
+      name: 'getDocumentInfo',
+      arguments: {},
+      result: {
+        success: true,
+        hasDocument: true,
+        documentId: 77,
+        historyStateRef: { documentId: 77, historyStateId: 900 }
+      }
+    }],
+    executeTool: async (toolName, params) => {
+      if (toolName === 'getDocumentInfo') await slowRead;
+      dispatched.push({ toolName, params });
+      return {
+        success: true,
+        documentId: 77,
+        sourceHistoryStateRef: { documentId: 77, historyStateId: 900 }
+      };
+    }
+  });
+  const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+  const authority = createRuntimeOwnedSkillDeliveryPlanAuthority({ scope, executor });
+  const frozen = authority.freeze(candidate);
+  assert.strictEqual(frozen.status, 'frozen');
+  const slowPromise = executor('getDocumentInfo', {});
+  const sliceParams = {
+    screens: [{ id: 1, name: '首屏', index: 0 }],
+    config: {
+      projectRoot: candidate.projectPath,
+      outputDir: 'C:\\DesignEchoFixture\\JPG',
+      format: 'jpeg',
+      quality: 10,
+      namingPattern: '{index}_{name}',
+      createSubfolder: false,
+      subfolder: 'detail-page-slices',
+      conflictPolicy: 'fail_if_exists',
+      deliveryPlanDigest: frozen.binding.plan.digest,
+      expectedFiles: [{
+        screenId: '1',
+        path: candidate.artifacts[1].path
+      }]
+    }
+  };
+  const exportPromise = authority.executeArtifacts({
+    artifactIds: ['fixture-raster'],
+    toolName: 'exportDetailPageSlices',
+    params: sliceParams
+  });
+  sliceParams.config.expectedFiles[0].path = 'C:\\DesignEchoFixture\\JPG\\tampered.jpg';
+  releaseSlowRead();
+  await slowPromise;
+  const exportResult = await exportPromise;
+  assert.strictEqual(exportResult.success, true);
+  const dispatchedExport = dispatched.find((entry) => entry.toolName === 'exportDetailPageSlices');
+  assert.strictEqual(
+    dispatchedExport.params.config.expectedFiles[0].path,
+    candidate.artifacts[1].path,
+    'queued nested arguments must use the pre-validation immutable snapshot'
+  );
+  await completeRuntimeOwnedSkillToolLedgerScope(scope);
+}
+
+async function assertUnboundSaveExportInvalidatesDeliveryBinding() {
+  const candidate = buildRuntimeDeliveryPlanFixture('unbound-extra');
+  const executor = createRuntimeDeliveryPlanFixtureExecutor();
+  const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+  const authority = createRuntimeOwnedSkillDeliveryPlanAuthority({ scope, executor });
+  const frozen = authority.freeze(candidate);
+  assert.strictEqual(frozen.status, 'frozen');
+  await executor('quickExport', {
+    outputPath: 'C:\\DesignEchoFixture\\unexpected\\extra.jpg',
+    format: 'jpg',
+    conflictPolicy: 'fail_if_exists'
+  });
+  await authority.executeArtifacts({
+    artifactIds: ['fixture-editable'],
+    toolName: 'saveDocument',
+    params: {
+      path: candidate.artifacts[0].path,
+      format: 'psd',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  await authority.executeArtifacts({
+    artifactIds: ['fixture-raster'],
+    toolName: 'exportGroup',
+    params: {
+      groupPath: ['主图'],
+      outputPath: candidate.artifacts[1].path,
+      format: 'jpg',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  const ledger = await completeRuntimeOwnedSkillToolLedgerScope(scope);
+  assert.strictEqual(ledger.deliveryPlanBinding?.status, 'incomplete');
+  assert(
+    ledger.deliveryPlanBinding?.issues.some((issue) => issue.includes('未绑定')),
+    'an extra save/export path must invalidate the exact artifact binding'
+  );
+}
+
+function buildReviewedDetailScreenSetResult(historyStateRef, complete = true) {
+  const result = {
+    success: true,
+    documentId: historyStateRef.documentId,
+    historyStateId: historyStateRef.historyStateId,
+    historyStateRef,
+    snapshots: [{
+      screenId: 1,
+      documentId: historyStateRef.documentId,
+      historyStateId: historyStateRef.historyStateId,
+      width: 800,
+      height: 1200
+    }, {
+      screenId: 2,
+      documentId: historyStateRef.documentId,
+      historyStateId: historyStateRef.historyStateId,
+      width: 800,
+      height: 1200
+    }],
+    ...(complete ? {} : { errors: [{ screenId: 2, error: 'injected missing screen' }] })
+  };
+  if (!complete) result.snapshots = result.snapshots.slice(0, 1);
+  for (const snapshot of result.snapshots) {
+    const observationKey = `detail-screen-${snapshot.screenId}-${historyStateRef.historyStateId}`;
+    writeAgentVisualObservation(result, {
+      status: 'observed_by_primary',
+      reviewed: false,
+      observer: 'primary_model',
+      strategy: 'primary-self',
+      toolName: 'getScreenSnapshots',
+      sourceId: String(snapshot.screenId),
+      observationKey,
+      reviewDecision: {
+        version: 'visual-observation-review-decision/v1',
+        observationKey,
+        status: 'passed',
+        reviewer: 'primary_model',
+        summary: `第 ${snapshot.screenId} 屏已完成视觉复核。`
+      }
+    });
+  }
+  return result;
+}
+
+async function assertDetailCompoundReceiptClosesAgentE2OnlyWithRuntimeBinding() {
+  const candidate = buildRuntimeDeliveryPlanFixture('detail-e2');
+  const executor = createRuntimeDeliveryPlanFixtureExecutor();
+  const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+  const authority = createRuntimeOwnedSkillDeliveryPlanAuthority({ scope, executor });
+  const frozen = authority.freeze(candidate);
+  assert.strictEqual(frozen.status, 'frozen');
+  await authority.executeArtifacts({
+    artifactIds: ['fixture-editable'],
+    toolName: 'saveDocument',
+    params: {
+      path: candidate.artifacts[0].path,
+      format: 'psd',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  await authority.executeArtifacts({
+    artifactIds: ['fixture-raster'],
+    toolName: 'exportGroup',
+    params: {
+      groupPath: ['详情页'],
+      outputPath: candidate.artifacts[1].path,
+      format: 'jpg',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  const ledger = await completeRuntimeOwnedSkillToolLedgerScope(scope);
+  assert.strictEqual(ledger.deliveryPlanBinding?.status, 'ready');
+  const historyStateRef = { documentId: 77, historyStateId: 900 };
+  const plan = ledger.deliveryPlanBinding.plan;
+  const artifacts = plan.artifacts.map((artifact, index) => ({
+    path: artifact.path,
+    kind: artifact.kind,
+    proof: artifact.kind === 'editable_document'
+      ? 'editable_document_artifact'
+      : 'uxp_export_readback',
+    sourceHistoryStateRef: historyStateRef,
+    planBinding: {
+      artifactId: artifact.artifactId,
+      pairId: artifact.pairId,
+      order: artifact.order,
+      format: artifact.format,
+      sourceHistoryRole: artifact.sourceHistoryRole
+    },
+    fileIdentity: {
+      sha256: String(index + 31).padStart(64, '0'),
+      byteLength: 3000 + index
+    }
+  }));
+  const receipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'single_document_revision',
+    outputs: ['detail_page_psd', 'detail_page_slices', 'delivery_record'],
+    resultRefs: ['detail-master-commit', 'detail-slices-commit'],
+    artifacts,
+    expectedDeliveryPlan: {
+      digest: plan.digest,
+      convention: plan.convention,
+      artifacts: plan.artifacts
+    },
+    sourceHistoryStateRef: historyStateRef
+  });
+  assert.strictEqual(receipt.status, 'ready');
+  const detailDeclaration = resolveRuntimeDeclarationForAgentTask({
+    taskType: 'ecommerce.detail_page.v1',
+    workMode: 'create_new',
+    executableToolNames
+  });
+  assert.strictEqual(detailDeclaration.status, 'resolved');
+  const buildAgent = () => new Agent(
+    {
+      ...buildAgentTestConfig({ maxIterations: 2 }),
+      runtimeStagePlan: detailDeclaration.bundle.stagePlan
+    },
+    async () => ({ content: '', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+  const reviewArguments = {
+    screens: [{ id: 1, name: '首屏', index: 0 }, { id: 2, name: '卖点屏', index: 1 }]
+  };
+  const reviewResult = buildReviewedDetailScreenSetResult(historyStateRef, true);
+  const rawSkillResult = {
+    success: true,
+    documentId: 77,
+    data: {
+      documentId: 77,
+      sourceHistoryStateRef: historyStateRef,
+      runtimeDeliveryReceipt: receipt
+    }
+  };
+  const trustedSkillResult = attachRuntimeOwnedSkillDeliveryPlanBinding(rawSkillResult, ledger);
+  const detailAgent = buildAgent();
+  detailAgent.toolCallLog = [{
+    callId: 'detail-review-set',
+    name: 'getScreenSnapshots',
+    arguments: reviewArguments,
+    result: reviewResult,
+    origin: 'model_tool_call'
+  }, {
+    callId: 'detail-compound-delivery',
+    name: 'detail-page-design',
+    arguments: { deliveryAction: 'commit' },
+    result: trustedSkillResult,
+    origin: 'model_tool_call'
+  }];
+  const passed = detailAgent.appendDeliveryStageTraceIfEligible({
+    status: 'completed',
+    blockers: [],
+    designVerdict: { status: 'passed', blockers: [], warnings: [] }
+  });
+  assert.strictEqual(
+    passed.deliveryEvidencePassed,
+    true,
+    JSON.stringify(passed.verification, null, 2)
+  );
+
+  const unboundAgent = buildAgent();
+  unboundAgent.toolCallLog = [{
+    callId: 'detail-review-set-unbound',
+    name: 'getScreenSnapshots',
+    arguments: reviewArguments,
+    result: buildReviewedDetailScreenSetResult(historyStateRef, true),
+    origin: 'model_tool_call'
+  }, {
+    callId: 'detail-compound-delivery-unbound',
+    name: 'detail-page-design',
+    arguments: { deliveryAction: 'commit' },
+    result: JSON.parse(JSON.stringify(rawSkillResult)),
+    origin: 'model_tool_call'
+  }];
+  assert.strictEqual(unboundAgent.appendDeliveryStageTraceIfEligible({
+    status: 'completed', blockers: [], designVerdict: { status: 'passed', blockers: [], warnings: [] }
+  }).deliveryEvidencePassed, false, 'serialized or producer-only detail receipt must not close E2');
+
+  const incompleteReviewAgent = buildAgent();
+  incompleteReviewAgent.toolCallLog = [{
+    callId: 'detail-incomplete-review-set',
+    name: 'getScreenSnapshots',
+    arguments: reviewArguments,
+    result: buildReviewedDetailScreenSetResult(historyStateRef, false),
+    origin: 'model_tool_call'
+  }, {
+    callId: 'detail-compound-delivery-after-incomplete-review',
+    name: 'detail-page-design',
+    arguments: { deliveryAction: 'commit' },
+    result: trustedSkillResult,
+    origin: 'model_tool_call'
+  }];
+  assert.strictEqual(incompleteReviewAgent.appendDeliveryStageTraceIfEligible({
+    status: 'completed', blockers: [], designVerdict: { status: 'passed', blockers: [], warnings: [] }
+  }).deliveryEvidencePassed, false, 'partial multi-surface review must not close detail E2');
+}
+
+async function assertExternalDeliveryCommitRequiresTrustedTransactionReceipt() {
+  const candidate = buildRuntimeDeliveryPlanFixture('external-commit');
+  const executor = createRuntimeDeliveryPlanFixtureExecutor();
+  const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+  const authority = createRuntimeOwnedSkillDeliveryPlanAuthority({ scope, executor });
+  assert(authority);
+  const frozen = authority.freeze(candidate);
+  assert.strictEqual(frozen.status, 'frozen');
+  const fakeReceipt = {
+    version: 'runtime-owned-skill-external-delivery-commit/v0',
+    status: 'committed',
+    deliveryPlanDigest: frozen.binding.plan.digest,
+    committedFiles: candidate.artifacts.map((artifact, index) => ({
+      artifactId: artifact.artifactId,
+      path: artifact.path,
+      byteLength: 1000 + index,
+      sha256: String(index + 1).padStart(64, '0')
+    })),
+    boundaries: {
+      issuedByTransactionOwner: true,
+      exactArtifactSetCommitted: true,
+      producerCannotSelfIssue: true,
+      grantsPermission: false
+    }
+  };
+  const fakeDecision = authority.acceptExternalCommit({
+    artifactIds: candidate.artifacts.map((artifact) => artifact.artifactId),
+    receipt: fakeReceipt
+  });
+  assert.strictEqual(fakeDecision.status, 'rejected');
+  assert.strictEqual(fakeDecision.code, 'runtime_delivery_external_commit_untrusted');
+
+  const swappedTrustedReceipt = issueRuntimeOwnedSkillExternalDeliveryCommitReceipt({
+    deliveryPlanDigest: frozen.binding.plan.digest,
+    committedFiles: [...candidate.artifacts].reverse().map((artifact, index) => ({
+      artifactId: artifact.artifactId,
+      path: artifact.path,
+      byteLength: 1500 + index,
+      sha256: String(index + 21).padStart(64, '0')
+    }))
+  });
+  const swappedDecision = authority.acceptExternalCommit({
+    artifactIds: candidate.artifacts.map((artifact) => artifact.artifactId),
+    receipt: swappedTrustedReceipt
+  });
+  assert.strictEqual(
+    swappedDecision.status,
+    'rejected',
+    'trusted transaction receipt must still preserve artifact-to-path order and identity'
+  );
+
+  const trustedReceipt = issueRuntimeOwnedSkillExternalDeliveryCommitReceipt({
+    deliveryPlanDigest: frozen.binding.plan.digest,
+    committedFiles: candidate.artifacts.map((artifact, index) => ({
+      artifactId: artifact.artifactId,
+      path: artifact.path,
+      byteLength: 2000 + index,
+      sha256: String(index + 11).padStart(64, '0')
+    }))
+  });
+  const accepted = authority.acceptExternalCommit({
+    artifactIds: candidate.artifacts.map((artifact) => artifact.artifactId),
+    receipt: trustedReceipt
+  });
+  assert.strictEqual(accepted.status, 'accepted');
+  const ledger = await completeRuntimeOwnedSkillToolLedgerScope(scope);
+  assert.strictEqual(ledger.deliveryPlanBinding?.status, 'ready');
+}
+
+async function assertStagedDeliveryNeedsTrustedLeaseAndExternalCommit() {
+  const candidate = buildRuntimeDeliveryPlanFixture('staged-transaction');
+  const executor = createRuntimeDeliveryPlanFixtureExecutor();
+  const scope = beginRuntimeOwnedSkillToolLedgerScope(executor);
+  const authority = createRuntimeOwnedSkillDeliveryPlanAuthority({ scope, executor });
+  assert(authority);
+  const frozen = authority.freeze(candidate);
+  assert.strictEqual(frozen.status, 'frozen');
+  const stagingRoot = `${candidate.projectPath}\\.designecho-staging\\fixture`;
+  const stagedPaths = candidate.artifacts.map((artifact) => (
+    `${stagingRoot}\\${artifact.path.slice(candidate.projectPath.length + 1)}`
+  ));
+  const leaseInput = {
+    deliveryPlanDigest: frozen.binding.plan.digest,
+    stagingRoot,
+    destinationRoot: candidate.projectPath,
+    artifactMappings: candidate.artifacts.map((artifact, index) => ({
+      artifactId: artifact.artifactId,
+      stagedPath: stagedPaths[index],
+      finalPath: artifact.path
+    }))
+  };
+  const forgedLeaseResult = await authority.executeStagedArtifacts({
+    lease: {
+      version: 'runtime-owned-skill-staging-lease/v0',
+      ...leaseInput,
+      boundaries: {
+        issuedAfterMainTransaction: true,
+        exactArtifactMapping: true,
+        producerCannotSelfIssue: true,
+        grantsPermission: false
+      }
+    },
+    artifactIds: ['fixture-editable'],
+    toolName: 'saveDocument',
+    params: {
+      path: stagedPaths[0],
+      format: 'psd',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  assert.strictEqual(forgedLeaseResult.code, 'runtime_delivery_staging_lease_untrusted');
+  const lease = issueRuntimeOwnedSkillStagingLease(leaseInput);
+  const clonedLeaseResult = await authority.executeStagedArtifacts({
+    lease: JSON.parse(JSON.stringify(lease)),
+    artifactIds: ['fixture-editable'],
+    toolName: 'saveDocument',
+    params: {
+      path: stagedPaths[0],
+      format: 'psd',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  assert.strictEqual(clonedLeaseResult.code, 'runtime_delivery_staging_lease_untrusted');
+  const finalPathInsteadOfStage = await authority.executeStagedArtifacts({
+    lease,
+    artifactIds: ['fixture-editable'],
+    toolName: 'saveDocument',
+    params: {
+      path: candidate.artifacts[0].path,
+      format: 'psd',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  assert.strictEqual(finalPathInsteadOfStage.code, 'runtime_delivery_artifact_path_mismatch');
+  const stagedEditable = await authority.executeStagedArtifacts({
+    lease,
+    artifactIds: ['fixture-editable'],
+    toolName: 'saveDocument',
+    params: {
+      path: stagedPaths[0],
+      format: 'psd',
+      asCopy: true,
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  const stagedRaster = await authority.executeStagedArtifacts({
+    lease,
+    artifactIds: ['fixture-raster'],
+    toolName: 'exportGroup',
+    params: {
+      groupPath: ['主图'],
+      outputPath: stagedPaths[1],
+      format: 'jpg',
+      conflictPolicy: 'fail_if_exists'
+    }
+  });
+  assert.strictEqual(stagedEditable.success, true);
+  assert.strictEqual(stagedRaster.success, true);
+  const retained = authority.freeze(candidate);
+  assert.strictEqual(retained.status, 'retained');
+  assert.strictEqual(
+    retained.binding.status,
+    'incomplete',
+    'staged save/export must not receive final delivery credit'
+  );
+  const receipt = issueRuntimeOwnedSkillExternalDeliveryCommitReceipt({
+    deliveryPlanDigest: frozen.binding.plan.digest,
+    committedFiles: candidate.artifacts.map((artifact, index) => ({
+      artifactId: artifact.artifactId,
+      path: artifact.path,
+      byteLength: 5000 + index,
+      sha256: String(index + 51).padStart(64, '0')
+    }))
+  });
+  const accepted = authority.acceptExternalCommit({
+    artifactIds: candidate.artifacts.map((artifact) => artifact.artifactId),
+    receipt
+  });
+  assert.strictEqual(accepted.status, 'accepted');
+  const ledger = await completeRuntimeOwnedSkillToolLedgerScope(scope);
+  assert.strictEqual(ledger.deliveryPlanBinding?.status, 'ready');
+}
+
+function assertWorkflowDeliveryReentryIsExactAndOutOfBand() {
+  const args = {
+    mode: 'execute',
+    deliveryAction: 'commit',
+    deliveryPlan: {
+      projectPath: 'C:\\DesignEchoFixture',
+      artifactIds: ['fixture-editable', 'fixture-raster']
+    }
+  };
+  const argumentsDigest = buildAgentReActToolArgumentsDigest(args);
+  const scope = {
+    version: 'agent-workflow-continuation-scope/v0',
+    workflowToolName: 'fixture-delivery-skill',
+    workflowCallId: 'workflow-call-fixture-1',
+    purpose: 'deliver',
+    allowedToolNames: ['fixture-delivery-skill'],
+    reason: '视觉复核通过，继续交付。',
+    source: 'declared',
+    binding: {
+      sessionId: 'session-fixture',
+      runId: 'run-fixture',
+      generation: 1,
+      taskRunId: 'task-run-fixture',
+      stage: 'E1'
+    },
+    toolArgumentConstraints: {
+      'fixture-delivery-skill': { argumentsDigest }
+    },
+    workflowDeliveryOwner: {
+      toolName: 'fixture-delivery-skill',
+      argumentsDigest
+    },
+    visualDelivery: {
+      requiresVisualPass: true,
+      completeOnVisualPass: false,
+      allowedToolNames: ['fixture-delivery-skill'],
+      repairAllowedToolNames: [],
+      reviewAllowedToolNames: ['getScreenSnapshots'],
+      targetObservationIds: ['screen-fixture'],
+      reviewRequest: {
+        toolName: 'getScreenSnapshots',
+        argumentsSignature: 'fixture-review'
+      },
+      candidateDocumentId: '77',
+      candidateHistoryStateId: '900'
+    }
+  };
+  const reentry = issueRuntimeWorkflowDeliveryReentry({
+    scope,
+    toolName: 'fixture-delivery-skill',
+    args
+  });
+  assert(reentry, 'exact visual-delivery continuation must receive an out-of-band reentry');
+  assert.strictEqual(reentry.taskRunId, 'task-run-fixture');
+  assert.strictEqual(
+    peekRuntimeWorkflowDeliveryReentry(reentry, 'fixture-delivery-skill'),
+    reentry
+  );
+  assert.strictEqual(
+    consumeRuntimeWorkflowDeliveryReentry(reentry, 'wrong-delivery-skill'),
+    undefined,
+    'wrong owner must not consume the one-time reentry'
+  );
+  assert.strictEqual(
+    peekRuntimeWorkflowDeliveryReentry(reentry, 'fixture-delivery-skill'),
+    reentry,
+    'peek and wrong-owner consume must leave the reentry available'
+  );
+  assert.strictEqual(
+    consumeRuntimeWorkflowDeliveryReentry(reentry, 'fixture-delivery-skill'),
+    reentry,
+    'the workflow owner must consume the reentry exactly once'
+  );
+  assert.strictEqual(
+    peekRuntimeWorkflowDeliveryReentry(reentry, 'fixture-delivery-skill'),
+    undefined,
+    'consumed reentry must no longer be visible'
+  );
+  assert.strictEqual(
+    consumeRuntimeWorkflowDeliveryReentry(reentry, 'fixture-delivery-skill'),
+    undefined,
+    'a second consume must fail closed'
+  );
+  assert.strictEqual(
+    peekRuntimeWorkflowDeliveryReentry(JSON.parse(JSON.stringify(reentry)), 'fixture-delivery-skill'),
+    undefined,
+    'serialized/model-authored reentry must not retain Runtime authority'
+  );
+  assert.strictEqual(issueRuntimeWorkflowDeliveryReentry({
+    scope,
+    toolName: 'fixture-delivery-skill',
+    args: { ...args, deliveryAction: 'rewrite-plan' }
+  }), undefined, 'full arguments digest mismatch must fail closed');
+  assert.strictEqual(issueRuntimeWorkflowDeliveryReentry({
+    scope: {
+      ...scope,
+      binding: { ...scope.binding, taskRunId: undefined }
+    },
+    toolName: 'fixture-delivery-skill',
+    args
+  }), undefined, 'partial staged Runtime identity must not issue a delivery reentry');
+}
+
 async function runBehaviorAssertions() {
+  assertWorkflowDeliveryReentryIsExactAndOutOfBand();
+  await assertRuntimeDeliveryPlanCannotBeFrozenPostHoc();
+  await assertRuntimeDeliveryPlanIsImmutableAndExact();
+  await assertRuntimeDeliveryDispatchSnapshotsNestedArguments();
+  await assertUnboundSaveExportInvalidatesDeliveryBinding();
+  await assertDetailCompoundReceiptClosesAgentE2OnlyWithRuntimeBinding();
+  await assertExternalDeliveryCommitRequiresTrustedTransactionReceipt();
+  await assertStagedDeliveryNeedsTrustedLeaseAndExternalCommit();
   await assertRuntimeOwnedSkillLedgerIsRequiredForVisibleReadNone();
   await assertPostSkillExceptionRetainsRecoverableAgentOwner();
   await assertChainedConfirmationKeepsSameRuntimeOwner();
+  await assertRepeatedChainedConfirmationReturnsToAgent();
+  await assertAgentReentryBlocksRepeatedDecisionWithoutProgress();
+  assertAgentReentryProgressAndCandidateSemantics();
+  assertExtractedRuntimeResultGuardsFailClosed();
   await assertSucceededUnknownStillStagesRecovery();
   await assertBeginFailureDoesNotReleaseRetainedWriter();
   await assertFailedChainedSwapFallsBackToOldRecoveryOwner();

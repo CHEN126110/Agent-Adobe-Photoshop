@@ -383,18 +383,22 @@ export async function runRuntimeInteractiveContinuation(input: {
             } else if (skillResult?.success === true) {
                 outcomeStatus = 'executed';
             }
-            let chainedConfirmation: ReturnType<
+            let chainedConfirmationRegistration: ReturnType<
                 typeof registerRuntimeInteractiveChainedConfirmation
             >;
             if (outcomeStatus === 'awaiting_confirmation' && skillResult) {
                 try {
-                    chainedConfirmation = registerRuntimeInteractiveChainedConfirmation({
+                    chainedConfirmationRegistration = registerRuntimeInteractiveChainedConfirmation({
                         preparation: input.preparation,
                         reservation,
                         resolution: input.resolution,
                         result: skillResult,
                         photoshopObservationAfterSkill
                     });
+                    if (chainedConfirmationRegistration?.status === 'no_progress') {
+                        handoff = chainedConfirmationRegistration.handoff;
+                        mutationState = 'none';
+                    }
                 } catch (error) {
                     handoff = buildRuntimeInteractivePostSkillRecovery({
                         preparation: input.preparation,
@@ -408,6 +412,9 @@ export async function runRuntimeInteractiveContinuation(input: {
                 }
             }
             if (!handoff.reentry || !handoff.reentryTask) {
+                const chainedConfirmation = chainedConfirmationRegistration?.status === 'registered'
+                    ? chainedConfirmationRegistration
+                    : undefined;
                 if (!chainedConfirmation && !commitRuntimeInteractiveResume(reservation)) {
                     return await abortPostSkillToPersistentUnknown({
                         reservation,

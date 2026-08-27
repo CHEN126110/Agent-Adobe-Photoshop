@@ -4,24 +4,16 @@ import {
 } from '../../../../shared/interactive-card-contract';
 import {
     buildSkuComboApprovedRecipeMemory,
+    deriveSkuComboDecisionContext,
+    isSkuComboEditorCard,
     stringifySkuCombo,
     validateSkuComboEditorValue,
-    type SkuComboEditorCard,
     type SkuComboEditorValue
 } from '../../../../shared/sku-combo-interactive-card';
 import type {
     SkillInteractiveCardProvider,
     SkillInteractiveCardSubmissionPreparation
 } from './types';
-
-function isSkuComboEditorCard(value: unknown): value is SkuComboEditorCard {
-    const card = value && typeof value === 'object'
-        ? value as Partial<SkuComboEditorCard>
-        : {};
-    return card.version === 'interactive-card/v0'
-        && card.kind === 'sku_combo_editor'
-        && card.payload?.version === 'sku-combo-editor/v0';
-}
 
 function formatSkuComboConfirmationText(value: SkuComboEditorValue): string {
     return value.groups
@@ -49,13 +41,15 @@ function prepareSkuComboSubmission(
             confirmedBy: 'user'
         })
         : undefined;
+    const decisionContext = deriveSkuComboDecisionContext(card, validation.normalizedValue);
     return {
         status: 'ready',
         submission: buildInteractiveCardSubmission({
             card,
             value: validation.normalizedValue,
             validation,
-            memoryCandidate
+            memoryCandidate,
+            answerFingerprint: decisionContext.answerFingerprint
         }),
         confirmationText: `已确认 SKU 组合：${formatSkuComboConfirmationText(validation.normalizedValue)}`,
         memorySavedText: '已保存为可复用配方。',
@@ -68,5 +62,9 @@ export const skuComboInteractiveCardProvider: SkillInteractiveCardProvider = {
     ownerSkillId: 'sku-batch',
     kind: 'sku_combo_editor',
     payloadVersion: 'sku-combo-editor/v0',
+    deriveDecisionContext(card, value) {
+        if (!isSkuComboEditorCard(card)) return undefined;
+        return deriveSkuComboDecisionContext(card, value);
+    },
     prepareSubmission: prepareSkuComboSubmission
 };

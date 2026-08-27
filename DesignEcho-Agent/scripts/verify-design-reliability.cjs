@@ -775,6 +775,14 @@ async function main() {
     "skill-executors",
     "main-image.executor.ts"
   ), "utf8");
+  const mainImageDeliveryRuntimeSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "skill-executors",
+    "main-image-delivery-runtime.ts"
+  ), "utf8");
   const skuBatchExecutorSource = fs.readFileSync(path.join(
     ROOT,
     "src",
@@ -790,6 +798,36 @@ async function main() {
     "services",
     "skill-executors",
     "sku-editable-delivery.service.ts"
+  ), "utf8");
+  const skuExportTransactionSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "skill-executors",
+    "sku-export-transaction.service.ts"
+  ), "utf8");
+  const runtimeStagedDeliverySource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "skill-executors",
+    "runtime-staged-delivery.service.ts"
+  ), "utf8");
+  const stagedDeliveryPromotionSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "skill-executors",
+    "staged-delivery-promotion.service.ts"
+  ), "utf8");
+  const agentSkillAtomicToolExecutionSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "shared",
+    "agent-skill-atomic-tool-execution.ts"
   ), "utf8");
   const finalArtifactPathsSource = fs.readFileSync(path.join(
     ROOT,
@@ -939,23 +977,63 @@ async function main() {
     && !chatPanelSource.includes("runtimeResultData?.finalDeliveryArtifactRequestId")
     && !chatPanelSource.includes("runtimeResultData?.finalDeliveryArtifactPaths"),
   "最终交付路径与 SKU producer 证据只能由 E2 调用谱系投影到受控 Debug sidecar，并经 fail-closed 规范化后进入可靠性证据；AgentConfig 与普通 result.data 不得承载调试路径");
-  assert(mainImageExecutorSource.includes("buildRuntimeDeliveryReceipt({")
-    && mainImageExecutorSource.includes("settlementScope: 'single_document_revision'")
+  assert(mainImageExecutorSource.includes("runtimeDeliveryPlanAuthority?.freeze({")
+    && mainImageExecutorSource.includes("runtimeDeliveryPlanAuthority.executeStagedArtifacts({")
+    && mainImageExecutorSource.includes("inspectMainImageStagedDeliveryBeforePromotion({")
+    && mainImageExecutorSource.includes("promoteRuntimeStagedDelivery({")
+    && mainImageExecutorSource.includes("runtimeDeliveryPlanAuthority.acceptExternalCommit({")
+    && mainImageExecutorSource.includes("buildMainImageDeliveryRuntimeEvidence({")
+    && !mainImageExecutorSource.includes("runtimeDeliveryPlanAuthority.executeArtifacts({")
+    && mainImageDeliveryRuntimeSource.includes("buildRuntimeDeliveryReceipt({")
+    && mainImageDeliveryRuntimeSource.includes(
+      "const settlementScope: RuntimeDeliverySettlementScope = input.plan.documents.length === 1"
+    )
+    && mainImageDeliveryRuntimeSource.includes("? 'single_document_revision'")
+    && mainImageDeliveryRuntimeSource.includes(": 'multi_document_task';")
+    && mainImageDeliveryRuntimeSource.includes("runtimeArtifacts.length === plannedArtifacts.length")
+    && mainImageDeliveryRuntimeSource.includes("resultRefs.length === plannedArtifacts.length")
+    && mainImageDeliveryRuntimeSource.includes("sourceHistoryRolesSatisfied")
+    && mainImageDeliveryRuntimeSource.includes("input.externalCommitAccepted === true")
+    && mainImageDeliveryRuntimeSource.includes("committedFilesMatchPlan")
+    && mainImageDeliveryRuntimeSource.includes("expectedDeliveryPlan: input.plan.typedPlan")
+    && mainImageDeliveryRuntimeSource.includes("effect: 'save_export' as const")
+    && !mainImageExecutorSource.includes("runtimeFinalArtifactReceipt")
+    && !mainImageDeliveryRuntimeSource.includes("runtimeFinalArtifactReceipt")
+    && runtimeStagedDeliverySource.includes("return promoteRuntimeBoundStagedDeliverySet({")
+    && runtimeStagedDeliverySource.includes("runtimeDeliveryPlanBinding: binding")
+    && runtimeStagedDeliverySource.includes("artifactId: artifact.artifactId")
+    && runtimeStagedDeliverySource.includes("destinationPath: artifact.path")
+    && stagedDeliveryPromotionSource.includes("validateCommittedFiles({")
+    && stagedDeliveryPromotionSource.includes(
+      "runtimeDeliveryCommitReceipt: issueRuntimeOwnedSkillExternalDeliveryCommitReceipt({"
+    )
+    && agentSkillAtomicToolExecutionSource.includes(
+      "RUNTIME_OWNED_SKILL_EXTERNAL_DELIVERY_COMMIT_RECEIPTS.has(commitInput.receipt)"
+    )
     && skuBatchExecutorSource.includes("settlementScope: 'multi_document_task'")
     && skuBatchExecutorSource.includes("buildRuntimeDeliveryReceipt({")
-    && !mainImageExecutorSource.includes("runtimeFinalArtifactReceipt")
     && !skuBatchExecutorSource.includes("runtimeFinalArtifactReceipt")
+    && skuBatchExecutorSource.includes("runtimeDeliveryPlanAuthority.freeze({")
+    && skuBatchExecutorSource.includes("promoteSkuStagedDeliverySet({")
+    && skuBatchExecutorSource.includes("runtimeDeliveryPlanAuthority.acceptExternalCommit({")
+    && skuBatchExecutorSource.includes("const runtimeArtifactSetExact = runtimeDeliveryArtifacts.length")
+    && skuBatchExecutorSource.includes("&& runtimeDeliveryPlanCommitBound;")
     && skuBatchExecutorSource.includes("'editable_sku_batch_documents',")
     && skuBatchExecutorSource.includes('buildSkuRuntimeDeliveryArtifacts({')
     && skuBatchExecutorSource.includes("skuEditableDeliveryReadback.status === 'ready'")
+    && skuBatchExecutorSource.includes("expectedDeliveryPlan: expectedExportInventory.deliveryPlanDigest")
     && skuEditableDeliverySource.includes("hasVerifiedEditableDocumentArtifact(record)")
     && skuEditableDeliverySource.includes("proof: 'staged_editable_document_promotion'")
     && skuEditableDeliverySource.includes('editableReceipt?.promotionVerified === true')
     && skuEditableDeliverySource.includes("structure.autoLayoutQaStatus !== 'ready'")
     && skuEditableDeliverySource.includes("verifySkuExportFreshness({")
+    && skuExportTransactionSource.includes("const promoted = await promoteRuntimeBoundStagedDeliverySet({")
+    && skuExportTransactionSource.includes(
+      "runtimeDeliveryPlanBinding: input.runtimeDeliveryPlanBinding"
+    )
     && skuBatchExecutorSource.includes("effect: 'save_export' as const")
     && skuBatchExecutorSource.includes("skuExportReadback.status === 'ready_for_review'"),
-  "主图和 SKU 复合 Skill 必须用精确、文件读回后的 typed receipt 声明最终集合");
+  "主图和 SKU 复合 Skill 必须把写前冻结计划、事务提交和文件读回绑定到精确 typed receipt");
   assert.strictEqual(
     chatPanelSource.split("createGuardedPhotoshopExecutionBaseline({").length - 1,
     1,

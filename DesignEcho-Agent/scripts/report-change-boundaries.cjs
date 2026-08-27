@@ -79,9 +79,10 @@ const BOUNDARIES = [
       'DesignEcho-Agent/scripts/report-change-boundaries.cjs',
       'DesignEcho-Agent/scripts/report-project-cockpit.cjs',
       'DesignEcho-Agent/scripts/report-project-cleanup-candidates.cjs',
-      'DesignEcho-Agent/scripts/report-agent-architecture.cjs',
-      'DesignEcho-Agent/scripts/audit-agent-history-risks.cjs',
-      'DesignEcho-Agent/scripts/check-planning-alignment.cjs',
+       'DesignEcho-Agent/scripts/report-agent-architecture.cjs',
+       'DesignEcho-Agent/scripts/audit-agent-history-risks.cjs',
+       'DesignEcho-Agent/scripts/audit-agent-simplification-ratchet.cjs',
+       'DesignEcho-Agent/scripts/check-planning-alignment.cjs',
       'DesignEcho-Agent/scripts/run-core-validation.cjs',
       'DesignEcho-Agent/scripts/launch-chat-ui-debug-window.cjs',
       'DesignEcho-Agent/scripts/check-build-warning-boundary.cjs'
@@ -102,6 +103,51 @@ const BOUNDARIES = [
       'npm run maintenance:design-reliability:status'
     ],
     match: (entry) => /design-reliability/.test(entry.filePath)
+  },
+  {
+    id: 'semantic-targeting',
+    title: '语义目标定位、候选分割与抠图接线',
+    validation: [
+      'npm run test:semantic-target-boxes',
+      'npm run test:semantic-target-candidates',
+      'npm run build:main',
+      'npm run build:typecheck:renderer'
+    ],
+    match: (entry) => /semantic-target|src\/main\/services\/sam-service\.ts|src\/main\/uxp-handlers\/visual-handlers\.ts/.test(entry.filePath)
+  },
+  {
+    id: 'interactive-card-runtime',
+    title: '交互卡 Skill owner、Provider、渲染与同 TaskRun 恢复',
+    validation: [
+      'npm run test:user-choice-request',
+      'npm run audit:runtime-declaration',
+      'npm run audit:agent-business-boundaries',
+      'npm run build:typecheck:renderer'
+    ],
+    match: (entry) => /interactive-card|interaction-cards|InteractiveCard|EditableConfirmation|agent-interaction-owner-policy|pending-interactive-continuation|runtime-interactive-reentry|interactive-continuation-reentry|sku-combo-confirmation-request|sku-human-review|sku-template-direction|verify-user-choice-request/.test(entry.filePath)
+      || /src\/renderer\/services\/skill-executors\/(registry|skill-tools)\.ts$/.test(entry.filePath)
+  },
+  {
+    id: 'design-delivery-integrity',
+    title: '设计交付计划、文件事务、读回与切片导出',
+    validation: [
+      'npm run test:design-reliability',
+      'npm run audit:runtime-declaration',
+      'npm run build:typecheck:renderer',
+      'DesignEcho-UXP npm run test:image-target-fit',
+      'DesignEcho-UXP npm run build'
+    ],
+    match: (entry) => /delivery|staged-file|staging-transaction|file-promotion|export-transaction|agent-skill-atomic-tool-execution|agent-workflow-continuation-scope|slice-export|export-group|tools\/canvas\/save-document|test-image-target-fit/.test(entry.filePath)
+  },
+  {
+    id: 'design-authorship-governance',
+    title: '设计作者权、视觉判断与业务 intake 边界',
+    validation: [
+      'npm run test:design-authorship-boundary',
+      'npm run audit:agent-business-boundaries',
+      'npm run build:typecheck:renderer'
+    ],
+    match: (entry) => /verify-design-authorship-boundary|design-visual-judge-observation|detail-page-agent-intake/.test(entry.filePath)
   },
   {
     id: 'reference-replication',

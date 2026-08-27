@@ -46,9 +46,9 @@ import {
 } from '../../../shared/main-image-screenshot-probe-readiness';
 import { buildMainImageQaReport } from '../../../shared/main-image-qa-report';
 import {
-    buildRuntimeDeliveryReceipt,
-    findRuntimeDeliverySourceHistoryStateRef
-} from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
+    normalizeSkillDeliveryArtifactPath,
+    resolveSkillDeliveryConvention
+} from '../../../shared/skills/skill-delivery-convention';
 import {
     hasConcreteProjectVisualInsight,
     normalizeProjectVisualInsightCompositionFields,
@@ -76,14 +76,30 @@ import {
 import { buildMainImageLiveExecutorCheckpoint } from '../../../shared/main-image-live-executor-checkpoint';
 import { buildMainImageLivePhotoshopAdapterContract } from '../../../shared/main-image-live-photoshop-adapter-contract';
 import { buildMainImageLiveAdapterHandoff } from '../../../shared/main-image-live-adapter-handoff';
-import { runMainImageLiveExecutor } from '../../../shared/main-image-live-executor-runner';
+import {
+    runMainImageLiveExecutor,
+    type MainImageLiveExecutorRunResult
+} from '../../../shared/main-image-live-executor-runner';
 import {
     buildMainImageControlledProductQaGate,
     extractMainImageControlledProductResultPaths
 } from '../../../shared/main-image-controlled-product-qa-gate';
 import { buildMainImageControlledProductQaBundle } from '../../../shared/main-image-controlled-product-qa-bridge';
 import { buildMainImageAcceptanceRecord } from '../../../shared/main-image-acceptance-record';
+import {
+    buildMainImageDeliveryRuntimeEvidence,
+    inspectMainImageStagedDeliveryBeforePromotion,
+    probeMainImageResultFiles
+} from './main-image-delivery-runtime';
 import { createMainImageLivePhotoshopToolAdapter } from './main-image-live-photoshop-tool-adapter';
+import {
+    finalizeRuntimeStagedDelivery,
+    prepareRuntimeStagedDelivery,
+    promoteRuntimeStagedDelivery,
+    readRuntimeStagedDeliveryDispatchContext,
+    type RuntimeStagedDeliveryContext,
+    type RuntimeStagedDeliveryDispatchContext
+} from './runtime-staged-delivery.service';
 
 type EmitMainImageStep = (
     kind: Parameters<typeof emitSkillStep>[1]['kind'],
@@ -110,6 +126,7 @@ const MAIN_IMAGE_PRODUCT_PATH_TOOL_NAMES = [
     'transformLayer',
     'moveLayer',
     'exportGroup',
+    'saveDocument',
     'exportWhiteBgFromSkuMaterial',
     'getDocumentInfo',
     'getLayerHierarchy',
@@ -263,7 +280,6 @@ function buildMainImageSizePlan(input: {
         ? providedTargetY
         : Math.max(0, Math.round((targetSize.height - subjectSize.height * scale) / 2));
     const deliveryDocument = input.targetSizeOverride ? null : getMainImageDeliveryDocument(input.key);
-    const exportFolder = (deliveryDocument?.exportFolder || `主图/${input.key}`).replace(/\//g, '\\');
     const exportAllowed = !deliveryDocument || deliveryDocument.includedImageTypes.includes(input.imageType as any);
     const quickExportPlanned = Boolean(input.outputDir)
         && exportAllowed
@@ -287,28 +303,9 @@ function buildMainImageSizePlan(input: {
         layoutCandidateReason: cleanString(provided.layoutCandidateReason) || undefined,
         smartLayoutPlanned: provided.smartLayoutPlanned !== false,
         quickExportPlanned,
-        ...(input.outputDir && quickExportPlanned
-            ? { quickExportOutputPath: buildMainImageQuickExportOutputPath(input.outputDir, exportFolder, input.key, input.imageType) }
-            : {})
+        // 精确输出路径由 MainImage Skill delivery plan 在生产结构确定后统一编译。
+        // 这里不能再生成与真实 exportGroup 格式不一致的伪 quickExport 路径。
     };
-}
-
-function buildMainImageQuickExportOutputPath(
-    outputDir: string,
-    exportFolder: string,
-    sizeKey: string,
-    imageType: string
-): string {
-    const normalizedOutputDir = cleanString(outputDir).replace(/[\\/]+$/g, '');
-    const normalizedExportFolder = cleanString(exportFolder).replace(/[\\/]+/g, '\\').replace(/^\\+|\\+$/g, '');
-    const outputDirEndsWithMainImageFolder = /(?:^|[\\/])主图$/i.test(normalizedOutputDir);
-    const relativeExportFolder = outputDirEndsWithMainImageFolder
-        ? normalizedExportFolder.replace(/^主图(?:\\|$)/, '')
-        : normalizedExportFolder;
-    const fileName = `main-image_${sizeKey}_${imageType}.jpg`;
-    return relativeExportFolder
-        ? `${normalizedOutputDir}\\${relativeExportFolder}\\${fileName}`
-        : `${normalizedOutputDir}\\${fileName}`;
 }
 
 function normalizeMainImageSizePlans(
@@ -414,41 +411,6 @@ function formatMainImageUserVisibleResultFile(probe: MainImageResultFileProbe | 
         ? `（${probe.dimensions.width}x${probe.dimensions.height}）`
         : '';
     return `可验收文件：${fileName}${dimensions}`;
-}
-
-async function probeMainImageResultFiles(paths: string[]): Promise<MainImageResultFileProbe[]> {
-    const api = window.designEcho?.probeImageFile;
-    const unique = uniquePaths(paths);
-    if (!api || unique.length === 0) return [];
-
-    const probes: MainImageResultFileProbe[] = [];
-    for (const resultPath of unique) {
-        try {
-            const result = await api(resultPath);
-            probes.push({
-                path: cleanString(result?.path) || resultPath,
-                status: result?.status || (result?.success ? 'ok' : 'unavailable'),
-                exists: result?.exists,
-                isFile: result?.isFile,
-                byteLength: result?.byteLength,
-                format: result?.format,
-                dimensions: result?.dimensions,
-                sha256: result?.sha256,
-                error: result?.error,
-                rawImagesRedacted: result?.rawImagesRedacted === true
-            });
-        } catch (error: any) {
-            probes.push({
-                path: resultPath,
-                status: 'unavailable',
-                exists: undefined,
-                isFile: undefined,
-                error: error?.message || String(error),
-                rawImagesRedacted: true
-            });
-        }
-    }
-    return probes;
 }
 
 function findMainImageProbeTargetSize(
@@ -1030,11 +992,52 @@ function normalizeControlledManualReview(value: unknown): MainImageManualReviewR
     return value as unknown as MainImageManualReviewRecord;
 }
 
+function buildPublicMainImageRunnerSummary(
+    runner: MainImageLiveExecutorRunResult
+): Record<string, unknown> {
+    return {
+        version: runner.version,
+        skillId: runner.skillId,
+        status: runner.status,
+        executionScope: runner.executionScope,
+        executedWithAdapter: runner.executedWithAdapter,
+        mayWritePhotoshop: runner.mayWritePhotoshop,
+        operationCount: runner.operationCount,
+        executedOperationCount: runner.executedOperationCount,
+        successfulOperationCount: runner.successfulOperationCount,
+        failedOperationCount: runner.failedOperationCount,
+        failedReadbackCount: runner.failedReadbackCount,
+        finalAcceptanceSnapshotCaptured: runner.finalAcceptanceSnapshot?.success === true,
+        blockers: [...runner.blockers],
+        warnings: [...runner.warnings],
+        limitations: [...runner.limitations]
+    };
+}
+
+function buildPublicMainImageOperationResults(
+    runner: MainImageLiveExecutorRunResult
+): Array<Record<string, unknown>> {
+    return runner.operationResults.map((operation) => ({
+        toolName: operation.tool,
+        requestId: operation.requestId,
+        result: {
+            success: operation.success,
+            phase: operation.phase,
+            summary: operation.success
+                ? '主图生产步骤已完成并读回。'
+                : '主图生产步骤未完成。',
+            readbackCount: operation.readbackResults.length,
+            failedReadbackCount: operation.readbackResults.filter((readback) => !readback.success).length
+        }
+    }));
+}
+
 async function runControlledMainImageProductPath(input: {
     params: Record<string, any>;
     context?: SkillExecuteParams['context'];
     callbacks?: SkillExecuteParams['callbacks'];
     signal?: AbortSignal;
+    runtimeDeliveryPlanAuthority?: SkillExecuteParams['runtimeDeliveryPlanAuthority'];
     emitStep: EmitMainImageStep;
 }): Promise<AgentResult> {
     const mode = normalizeMainImageExecutionMode(input.params.mainImageExecutionMode);
@@ -1053,6 +1056,22 @@ async function runControlledMainImageProductPath(input: {
     const userText = cleanString(input.params.userIntent || input.context?.userInput);
     const imageType = cleanString(input.params.imageType) || 'click';
     const executionScope = normalizeMainImageExecutionScope(input.params.executionScope);
+    const projectPath = getMainImageProjectPath(input.context);
+    if (input.params.deliveryConvention !== undefined && input.params.deliveryConvention !== null) {
+        const deliveryConventionResolution = resolveSkillDeliveryConvention(input.params.deliveryConvention);
+        if (deliveryConventionResolution.status === 'blocked') {
+            return {
+                success: false,
+                message: '本次主图的目录、命名或版本约定不安全，尚未读取或修改 Photoshop 文档。',
+                error: deliveryConventionResolution.blockers[0] || 'invalid_main_image_delivery_convention',
+                toolResults,
+                data: {
+                    status: 'blocked_invalid_main_image_delivery_convention',
+                    blockers: deliveryConventionResolution.blockers
+                }
+            };
+        }
+    }
     const explicitSelectedAsset = buildControlledSelectedAsset(input.params, input.context);
     const projectAssetCandidates = buildMainImageProjectAssetCandidates(input.context);
     const assetSelection = selectMainImageAssetCandidate({
@@ -1112,7 +1131,6 @@ async function runControlledMainImageProductPath(input: {
     const parentHandoffStrategyInputs = ecommerceSocksChildStrategyInput.canUseAsChildStrategyInput
         ? ecommerceSocksChildStrategyInput.strategyInputsPatch
         : {};
-    const projectPath = getMainImageProjectPath(input.context);
     const designProjectState = await readDesignProjectStateForMainImage(projectPath, toolResults);
     const mainImageStateContext = buildMainImageStateContext({
         state: designProjectState,
@@ -1171,6 +1189,9 @@ async function runControlledMainImageProductPath(input: {
         mainImageMemoryContext,
         designPlacementIntelligencePlan: mainImageDesignPlacementIntelligence,
         outputDir,
+        projectPath,
+        deliveryConvention: input.params.deliveryConvention,
+        deliveryVersion: input.params.deliveryVersion,
         toolNames: MAIN_IMAGE_PRODUCT_PATH_TOOL_NAMES,
         visionSignal,
         mainImagePlatformProfile: explicitCustomSize ? buildExplicitMainImagePlatformProfile(explicitCustomSize) : undefined,
@@ -1230,21 +1251,74 @@ async function runControlledMainImageProductPath(input: {
         checkpoint,
         availableToolNames: MAIN_IMAGE_PRODUCT_PATH_TOOL_NAMES
     });
+    let mainImageStagedDeliveryContext: RuntimeStagedDeliveryContext | undefined;
+    let mainImageStagedDispatchContext: RuntimeStagedDeliveryDispatchContext | undefined;
+    const executeMainImageTool = async (
+        toolName: string,
+        toolParams: Record<string, unknown>
+    ): Promise<unknown> => {
+        if (toolName !== 'exportGroup' && toolName !== 'saveDocument') {
+            return executeToolCall(toolName, toolParams, { signal: input.signal });
+        }
+        const expectedKind = toolName === 'saveDocument' ? 'editable_document' : 'raster_export';
+        const targetPath = toolName === 'saveDocument'
+            ? cleanString(toolParams.path)
+            : cleanString(toolParams.outputPath);
+        const artifact = strategy.deliveryPlan.typedPlan?.artifacts.find((candidate) => (
+            candidate.kind === expectedKind
+            && normalizeSkillDeliveryArtifactPath(candidate.path)
+                === normalizeSkillDeliveryArtifactPath(targetPath)
+        ));
+        if (!artifact || !input.runtimeDeliveryPlanAuthority || !mainImageStagedDispatchContext) {
+            return {
+                success: false,
+                code: !artifact
+                    ? 'runtime_delivery_artifact_not_in_skill_plan'
+                    : 'runtime_delivery_staging_context_required',
+                error: !artifact
+                    ? '主图保存或导出目标不在本次文件计划中。'
+                    : '主图整组文件暂存还没有准备完成。'
+            };
+        }
+        const stagedPath = mainImageStagedDispatchContext
+            .stagedPathsByArtifactId[artifact.artifactId];
+        const stagedParams = toolName === 'saveDocument'
+            ? {
+                ...toolParams,
+                path: stagedPath,
+                asCopy: true
+            }
+            : {
+                ...toolParams,
+                outputPath: stagedPath
+            };
+        return input.runtimeDeliveryPlanAuthority.executeStagedArtifacts({
+            lease: mainImageStagedDispatchContext.lease,
+            artifactIds: [artifact.artifactId],
+            toolName,
+            params: stagedParams
+        });
+    };
     const adapterBuild = createMainImageLivePhotoshopToolAdapter({
         adapterContract,
         approvedLiveAdapterRun: input.params.approvedLiveAdapterRun === true,
         executionScope,
-        executeTool: async (toolName, toolParams) => executeToolCall(
-            toolName,
-            toolParams,
-            { signal: input.signal }
-        )
+        executeTool: executeMainImageTool
     });
     const adapterHandoff = buildMainImageLiveAdapterHandoff({
         adapterContract,
         toolchainCheck: buildControlledToolchainCheck(adapterContract, photoshopConnection.source)
     });
 
+    const {
+        deliveryPlan: _runtimeDeliveryPlanCandidate,
+        productionExecutionPlan: _deliveryExecutionPlan,
+        productionExecutorHandoff: _deliveryExecutorHandoff,
+        productionExecutorDispatchPlan: _deliveryDispatchPlan,
+        productionExecutorDryRunPreview: _deliveryDryRunPreview,
+        liveExecutorRequestPackage: _deliveryLiveRequestPackage,
+        ...strategyResultProjection
+    } = strategy;
     const data: Record<string, unknown> = {
         mainImageExecutionMode: mode,
         mainImageExecutionScope: executionScope,
@@ -1253,7 +1327,7 @@ async function runControlledMainImageProductPath(input: {
         mainImageAgentDraft: controlledAgentDraft,
         ecommerceSocksChildStrategyInput,
         mainImageDesignPlacementIntelligence,
-        mainImageStrategyInputBundle: strategy,
+        mainImageStrategyInputBundle: strategyResultProjection,
         mainImageDesignCorePlan: strategy.designCorePlan,
         mainImageCopyStrategy: strategy.copyStrategy,
         mainImageDesignConceptPlan: strategy.designConceptPlan,
@@ -1323,9 +1397,11 @@ async function runControlledMainImageProductPath(input: {
             message: [
                 '**主图产品方案已准备** 当前只是规划，没有改动 Photoshop，也不算完成。',
                 `交付规格：${deliverySummary}`,
-                '白底图素材和导出位置已确认。',
+                strategy.deliveryPlan.status === 'ready'
+                    ? '结果图和可编辑稿的目录与命名计划已生成。'
+                    : '交付目录或命名计划还不完整，实际生产会在写入前停止。',
                 imageTypeBoundary,
-                '如需真正做出主图，请继续用当前画布工具实际制作（建画布、置图、排版、文案），或明确要求白底图导出确认。'
+                '本轮是明确的方案请求，因此没有改动 Photoshop；实际生产请求应由主图能力在写入条件满足后直接制作和保存。'
             ].join('\n'),
             toolResults,
             data
@@ -1433,6 +1509,84 @@ async function runControlledMainImageProductPath(input: {
         };
     }
 
+    const exactDeliveryPlan = strategy.deliveryPlan;
+    if (exactDeliveryPlan.status !== 'ready'
+        || !exactDeliveryPlan.typedPlan
+        || !exactDeliveryPlan.deliveryPlanDigest
+        || exactDeliveryPlan.artifacts.length === 0) {
+        return {
+            success: false,
+            message: '主图的输出目录和文件名还不能唯一确认，本轮没有写入 Photoshop。',
+            error: exactDeliveryPlan.blockers[0] || 'main_image_delivery_plan_not_ready',
+            toolResults,
+            data: {
+                ...data,
+                status: 'blocked_main_image_delivery_plan'
+            }
+        };
+    }
+    const runtimeDeliveryPlanAuthority = input.runtimeDeliveryPlanAuthority;
+    const deliveryPlanFreeze = runtimeDeliveryPlanAuthority?.freeze({
+        projectPath,
+        convention: exactDeliveryPlan.typedPlan.convention,
+        artifacts: exactDeliveryPlan.typedPlan.artifacts
+    });
+    if (!runtimeDeliveryPlanAuthority
+        || !deliveryPlanFreeze
+        || (deliveryPlanFreeze.status !== 'frozen' && deliveryPlanFreeze.status !== 'retained')) {
+        return {
+            success: false,
+            message: '主图的输出目录和文件名在开始前没有完成唯一确认，本轮没有写入 Photoshop。',
+            error: 'main_image_delivery_plan_freeze_blocked',
+            toolResults,
+            data: {
+                ...data,
+                status: 'blocked_main_image_delivery_plan_freeze'
+            }
+        };
+    }
+    const stagedDeliveryPreparation = await prepareRuntimeStagedDelivery({
+        projectRoot: projectPath,
+        runtimeDeliveryPlanBinding: deliveryPlanFreeze.binding
+    });
+    if (stagedDeliveryPreparation.status !== 'ready') {
+        return {
+            success: false,
+            message: '主图文件的临时交付位置没有准备完成，本轮没有写入 Photoshop，也没有覆盖项目文件。',
+            error: stagedDeliveryPreparation.blockers[0]
+                || 'main_image_staged_delivery_preparation_blocked',
+            toolResults,
+            data: {
+                ...data,
+                status: 'blocked_main_image_staged_delivery_preparation',
+                blockers: stagedDeliveryPreparation.blockers,
+                ...(stagedDeliveryPreparation.recoveryPath
+                    ? { recoveryPath: stagedDeliveryPreparation.recoveryPath }
+                    : {})
+            }
+        };
+    }
+    mainImageStagedDeliveryContext = stagedDeliveryPreparation.context;
+    mainImageStagedDispatchContext = readRuntimeStagedDeliveryDispatchContext(
+        mainImageStagedDeliveryContext
+    );
+    if (!mainImageStagedDispatchContext) {
+        await finalizeRuntimeStagedDelivery({
+            context: mainImageStagedDeliveryContext,
+            preserveStagingRoot: false
+        });
+        return {
+            success: false,
+            message: '主图临时文件映射无法读取，本轮没有写入 Photoshop。',
+            error: 'main_image_staging_mapping_unavailable',
+            toolResults,
+            data: {
+                ...data,
+                status: 'blocked_main_image_staging_mapping'
+            }
+        };
+    }
+
     input.emitStep(
         'tool_started',
         '开始执行主图 Photoshop 生产',
@@ -1444,8 +1598,106 @@ async function runControlledMainImageProductPath(input: {
         checkpoint,
         adapter: adapterBuild.adapter
     });
-    const controlledResultPaths = extractMainImageControlledProductResultPaths(runner);
-    const controlledResultFileProbes = await probeMainImageResultFiles(controlledResultPaths);
+    const publicRunnerSummary = buildPublicMainImageRunnerSummary(runner);
+    const publicRunnerOperationResults = buildPublicMainImageOperationResults(runner);
+    const actualControlledResultPaths = extractMainImageControlledProductResultPaths(runner);
+    const stagedDeliveryReadiness = await inspectMainImageStagedDeliveryBeforePromotion({
+        plan: exactDeliveryPlan,
+        runner,
+        actualRasterPaths: actualControlledResultPaths,
+        stagedPathsByArtifactId: mainImageStagedDispatchContext.stagedPathsByArtifactId
+    });
+    if (!stagedDeliveryReadiness.ready) {
+        const cleanup = await finalizeRuntimeStagedDelivery({
+            context: mainImageStagedDeliveryContext,
+            preserveStagingRoot: false
+        });
+        return {
+            success: false,
+            message: cleanup.success
+                ? '主图没有完整生成，临时文件已清理，项目交付目录没有留下半成品。'
+                : '主图没有完整生成，临时文件清理也没有完成；已保留恢复位置，项目交付目录没有被当作成功结果。',
+            error: stagedDeliveryReadiness.issues[0] || cleanup.error
+                || 'main_image_staged_delivery_incomplete',
+            toolResults: [...toolResults, ...publicRunnerOperationResults],
+            data: {
+                ...data,
+                status: 'failed_main_image_staged_delivery',
+                mainImageControlledProductRunner: publicRunnerSummary,
+                blockers: [...runner.blockers, ...stagedDeliveryReadiness.issues],
+                ...(cleanup.recoveryPath ? { recoveryPath: cleanup.recoveryPath } : {})
+            }
+        };
+    }
+    const promotedDelivery = await promoteRuntimeStagedDelivery({
+        context: mainImageStagedDeliveryContext,
+        runtimeDeliveryPlanBinding: deliveryPlanFreeze.binding,
+        label: '主图整组交付'
+    });
+    if (!promotedDelivery.success
+        || !promotedDelivery.runtimeDeliveryCommitReceipt
+        || !promotedDelivery.committedFiles) {
+        const cleanup = await finalizeRuntimeStagedDelivery({
+            context: mainImageStagedDeliveryContext,
+            preserveStagingRoot: promotedDelivery.preserveStagingRoot === true,
+            recoveryPath: promotedDelivery.recoveryPath
+        });
+        return {
+            success: false,
+            message: promotedDelivery.preserveStagingRoot === true
+                ? '主图文件提交时状态无法完全确认，已保留恢复位置，没有把本轮当作成功交付。'
+                : '主图整组文件没有提交成功，已撤回本轮文件变化，没有留下正式半成品。',
+            error: promotedDelivery.error || cleanup.error || 'main_image_delivery_promotion_failed',
+            toolResults: [...toolResults, ...publicRunnerOperationResults],
+            data: {
+                ...data,
+                status: 'failed_main_image_delivery_promotion',
+                mainImageControlledProductRunner: publicRunnerSummary,
+                blockers: [promotedDelivery.error].filter(Boolean),
+                ...(promotedDelivery.recoveryPath
+                    ? { recoveryPath: promotedDelivery.recoveryPath }
+                    : {})
+            }
+        };
+    }
+    const externalCommitDecision = runtimeDeliveryPlanAuthority.acceptExternalCommit({
+        artifactIds: exactDeliveryPlan.typedPlan.artifacts.map((artifact) => artifact.artifactId),
+        receipt: promotedDelivery.runtimeDeliveryCommitReceipt
+    });
+    if (externalCommitDecision.status !== 'accepted') {
+        await finalizeRuntimeStagedDelivery({
+            context: mainImageStagedDeliveryContext,
+            preserveStagingRoot: false,
+            recoveryPath: promotedDelivery.recoveryPath
+        });
+        return {
+            success: false,
+            message: '主图文件已经写入，但与本次完整交付清单的绑定没有闭合；已保留恢复信息，不能声明交付完成。',
+            error: externalCommitDecision.blockers[0] || 'main_image_external_commit_rejected',
+            toolResults: [...toolResults, ...publicRunnerOperationResults],
+            data: {
+                ...data,
+                status: 'failed_main_image_external_commit_binding',
+                mainImageControlledProductRunner: publicRunnerSummary,
+                blockers: externalCommitDecision.blockers
+            }
+        };
+    }
+    const stagingCleanup = await finalizeRuntimeStagedDelivery({
+        context: mainImageStagedDeliveryContext,
+        preserveStagingRoot: false
+    });
+    const deliveryEvidence = await buildMainImageDeliveryRuntimeEvidence({
+        plan: exactDeliveryPlan,
+        runner,
+        actualRasterPaths: actualControlledResultPaths,
+        stagedPathsByArtifactId: mainImageStagedDispatchContext.stagedPathsByArtifactId,
+        stagedFileProbes: stagedDeliveryReadiness.allFileProbes,
+        committedFiles: promotedDelivery.committedFiles,
+        externalCommitAccepted: true
+    });
+    const controlledResultPaths = deliveryEvidence.rasterPaths;
+    const controlledResultFileProbes = deliveryEvidence.rasterFileProbes;
     const controlledReferenceImagePath = getMainImageReferenceImagePath(input.params);
     const suppliedPixelProbe = normalizeControlledPixelProbe(input.params.pixelProbe);
     const controlledPixelProbe = suppliedPixelProbe || await compareMainImageResultToReference({
@@ -1456,6 +1708,7 @@ async function runControlledMainImageProductPath(input: {
     const controlledManualReview = normalizeControlledManualReview(input.params.manualReview);
     const controlledProductQaGate = buildMainImageControlledProductQaGate({
         runner,
+        resultImagePaths: controlledResultPaths,
         resultFileProbes: controlledResultFileProbes,
         referenceImagePath: controlledReferenceImagePath,
         pixelProbe: controlledPixelProbe,
@@ -1464,6 +1717,7 @@ async function runControlledMainImageProductPath(input: {
     const controlledProductQaBundle = buildMainImageControlledProductQaBundle({
         runner,
         sizePlans,
+        resultImagePaths: controlledResultPaths,
         resultFileProbes: controlledResultFileProbes,
         referenceImagePath: controlledReferenceImagePath,
         pixelProbe: controlledPixelProbe,
@@ -1484,119 +1738,87 @@ async function runControlledMainImageProductPath(input: {
         referenceImagePath: controlledReferenceImagePath,
         manualReview: controlledManualReview
     });
-    data.mainImageControlledProductRunner = runner;
+    data.mainImageControlledProductRunner = publicRunnerSummary;
     data.mainImageControlledProductQaGate = controlledProductQaGate;
     data.mainImageScreenshotQa = controlledProductQaBundle.screenshotQa;
     data.mainImageScreenshotProbeReadiness = controlledProductQaBundle.screenshotProbeReadiness;
     data.mainImageControlledProductQaBridge = controlledProductQaBundle.bridge;
     data.mainImageQaReport = mainImageQaReport;
     data.mainImageAcceptanceRecord = mainImageAcceptanceRecord;
-    if (runner.status === 'completed_requires_review') {
+    const okResultFileCount = controlledResultFileProbes
+        .filter((probe) => probe.status === 'ok' && probe.exists === true && probe.isFile === true)
+        .length;
+    const reviewableResultCount = okResultFileCount;
+    const hasReviewableMainImageOutput = reviewableResultCount > 0;
+    const runtimeDeliveryReceipt = deliveryEvidence.receipt;
+    data.runtimeDeliveryReceipt = runtimeDeliveryReceipt;
+    const deliveryComplete = runtimeDeliveryReceipt.status === 'ready';
+    if (deliveryComplete) {
         await appendMainImageVersionRecord({
             projectPath,
             action: 'execute',
             stateContext: mainImageStateContext,
-            reason: `受控主图执行完成，结果图片 ${controlledProductQaGate.resultImageSummary.resultImageCount} 个`,
+            reason: `受控主图整组交付完成，结果图片 ${controlledProductQaGate.resultImageSummary.resultImageCount} 个`,
             results: toolResults
         });
     }
-    const okResultFileCount = controlledResultFileProbes
-        .filter((probe) => probe.status === 'ok' && probe.exists !== false)
-        .length;
-    const reviewableResultCount = Math.max(
-        okResultFileCount,
-        controlledResultPaths.length,
-        controlledProductQaGate.resultImageSummary.resultImageCount
-    );
-    const runnerCompleted = runner.status === 'completed_requires_review';
-    const hasReviewableMainImageOutput = runnerCompleted || reviewableResultCount > 0;
-    const verifiedResultPathKeys = new Set(
-        controlledResultFileProbes
-            .filter((probe) => probe.status === 'ok' && probe.exists !== false && probe.isFile !== false)
-            .map((probe) => cleanString(probe.path).replace(/\\/g, '/').toLowerCase())
-            .filter(Boolean)
-    );
-    const exactResultPaths = uniquePaths(controlledResultPaths);
-    const verifiedResultPaths = exactResultPaths.filter((resultPath) => (
-        verifiedResultPathKeys.has(cleanString(resultPath).replace(/\\/g, '/').toLowerCase())
-    ));
-    const runtimeDeliverySourceHistoryStateRef = findRuntimeDeliverySourceHistoryStateRef([
-        ...runner.operationResults
-            .filter((operation) => operation.phase === 'export')
-            .flatMap((operation) => [
-                operation.actualResult,
-                ...operation.readbackResults.map((readback) => readback.data)
-            ])
-    ], runner.finalAcceptanceSnapshot?.data);
-    const runtimeDeliveryResultRefs = runner.operationResults
-        .filter((operation) => operation.phase === 'export' && operation.success)
-        .map((operation) => operation.requestId);
-    data.runtimeDeliveryReceipt = buildRuntimeDeliveryReceipt({
-        settlementScope: 'single_document_revision',
-        status: runnerCompleted
-            && exactResultPaths.length > 0
-            && verifiedResultPaths.length === exactResultPaths.length
-            && runtimeDeliveryResultRefs.length > 0
-            ? 'ready'
-            : 'incomplete',
-        outputs: ['main_image_preview', 'delivery_manifest'],
-        resultRefs: runtimeDeliveryResultRefs,
-        artifacts: verifiedResultPaths.map((resultPath) => ({
-            path: resultPath,
-            kind: 'raster_export' as const,
-            proof: 'file_probe' as const
-        })),
-        sourceHistoryStateRef: runtimeDeliverySourceHistoryStateRef,
-        issues: [
-            ...(!runnerCompleted ? [`主图执行状态为 ${runner.status}。`] : []),
-            ...(exactResultPaths.length === 0 ? ['主图没有返回精确导出路径。'] : []),
-            ...(runtimeDeliveryResultRefs.length === 0 ? ['主图没有返回精确导出操作引用。'] : []),
-            ...(verifiedResultPaths.length !== exactResultPaths.length
-                ? ['部分主图导出文件没有通过文件读回。']
-                : [])
-        ]
-    });
-    data.status = hasReviewableMainImageOutput ? 'needs_review' : 'failed';
+    data.mainImageDeliveryTransaction = {
+        status: deliveryComplete ? 'committed' : 'verification_incomplete',
+        committedFileCount: promotedDelivery.committedFiles.length,
+        exactArtifactSet: true,
+        stagingCleanupComplete: stagingCleanup.success === true
+    };
+    data.status = deliveryComplete ? 'needs_review' : 'failed';
     data.outputCount = reviewableResultCount;
     data.exportCount = reviewableResultCount;
     data.canClaimOutputQuality = false;
-    data.blockers = hasReviewableMainImageOutput ? [] : runner.blockers;
+    data.blockers = deliveryComplete ? [] : [
+        ...runner.blockers,
+        ...runtimeDeliveryReceipt.issues
+    ];
     data.warnings = [
         ...runner.warnings,
+        ...(promotedDelivery.warnings || []),
+        ...(!stagingCleanup.success && stagingCleanup.error
+            ? [stagingCleanup.error]
+            : []),
         ...(
-            hasReviewableMainImageOutput && !runnerCompleted
-                ? [`主图已导出 ${reviewableResultCount} 个结果文件，但自动验收快照未完整完成。`]
+            hasReviewableMainImageOutput && !deliveryComplete
+                ? [`已读回 ${reviewableResultCount} 张结果图，但可编辑稿、冻结路径或完整文件收据尚未闭合。`]
                 : []
         )
     ];
     input.emitStep(
-        hasReviewableMainImageOutput ? 'verification' : 'warning',
+        deliveryComplete ? 'verification' : 'warning',
         '主图执行与验收结果已汇总',
-        hasReviewableMainImageOutput
-            ? `已发现 ${reviewableResultCount} 个可复核结果，视觉质量仍需人工确认。`
-            : '没有发现可验收的主图结果，已停止交付。',
-        hasReviewableMainImageOutput ? 'success' : 'error',
+        deliveryComplete
+            ? `已验证 ${reviewableResultCount} 张结果图和对应可编辑稿，视觉质量仍需看真实画面确认。`
+            : '主图交付文件没有全部通过路径、文件和 Photoshop 版本对账，已按未完成处理。',
+        deliveryComplete ? 'success' : 'error',
         1
     );
     const userVisibleResultFile = selectMainImageUserVisibleResultFile(controlledResultFileProbes);
+    let userVisibleHeading = '**主图执行未完成** 本轮已停止。';
+    let userVisibleSummary = '本轮没有得到可验收的主图文件。';
+    if (deliveryComplete) {
+        userVisibleHeading = '**主图文件已生成**';
+        userVisibleSummary = '结果图和可编辑源稿已按本次约定放入项目目录，下面的结果图可以先验收。';
+    } else if (hasReviewableMainImageOutput) {
+        userVisibleHeading = '**主图文件已整组写入，但交付验证还没有闭合**';
+        userVisibleSummary = '全部文件已按同一组提交，但其中一项版本或文件身份复核没有通过，不能声明交付完成。';
+    }
     return {
-        success: hasReviewableMainImageOutput,
+        success: deliveryComplete,
         message: [
-            runnerCompleted
-                ? '**主图已导出**'
-                : hasReviewableMainImageOutput
-                    ? '**主图已导出，自动验收还没完整完成**'
-                    : '**主图执行未完成** 本轮已停止。',
-            runnerCompleted
-                ? '已放在项目的主图目录，下面这个文件可以先验收。'
-                : hasReviewableMainImageOutput
-                    ? '已确认有结果图片文件；请以打开后的实际画面复核为准。'
-                    : '本轮没有得到可验收的主图文件。',
+            userVisibleHeading,
+            userVisibleSummary,
             formatMainImageUserVisibleResultFile(userVisibleResultFile),
             '我已经做过文件检查；视觉好坏仍以你看到的实际图片为准。'
-        ].join('\n'),
-        error: hasReviewableMainImageOutput ? undefined : runner.blockers[0] || runner.status,
-        toolResults: [...toolResults, ...runner.operationResults],
+        ].filter(Boolean).join('\n'),
+        error: deliveryComplete
+            ? undefined
+            : '主图结果图和可编辑源稿没有全部生成并通过文件检查。',
+        toolResults: [...toolResults, ...publicRunnerOperationResults],
         data
     };
 }
@@ -1606,7 +1828,13 @@ async function runControlledMainImageProductPath(input: {
 export const mainImageExecutor: SkillExecutor = {
     skillId: 'main-image-design',
 
-    async execute({ params, callbacks, context, signal }: SkillExecuteParams): Promise<AgentResult> {
+    async execute({
+        params,
+        callbacks,
+        context,
+        signal,
+        runtimeDeliveryPlanAuthority
+    }: SkillExecuteParams): Promise<AgentResult> {
         const emitStep: EmitMainImageStep = (
             kind,
             title,
@@ -1620,6 +1848,7 @@ export const mainImageExecutor: SkillExecutor = {
             context,
             callbacks,
             signal,
+            runtimeDeliveryPlanAuthority,
             emitStep
         });
     },

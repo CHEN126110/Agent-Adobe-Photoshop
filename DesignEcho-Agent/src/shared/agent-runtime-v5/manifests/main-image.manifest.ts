@@ -89,6 +89,7 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
             required_inputs: ['product', 'asset_source'],
             optional_inputs: ['platform_size', 'image_type', 'brand_style', 'target_user', 'selling_points'],
             delivery_outputs: ['main_image_psd', 'main_image_preview', 'delivery_manifest'],
+            delivery_plan_binding_required: true,
             production_obligation: 'photoshop_mutation_with_readback',
             review_rubric_ref: MAIN_IMAGE_EVALUATION_PROFILE_ID,
             exit_criteria: [
@@ -101,6 +102,7 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
             required_inputs: ['existing_document', 'redesign_goal'],
             optional_inputs: ['asset_source', 'brand_style', 'target_user', 'selling_points'],
             delivery_outputs: ['updated_main_image_document', 'main_image_preview', 'redesign_report'],
+            delivery_plan_binding_required: true,
             production_obligation: 'photoshop_mutation_with_readback',
             review_rubric_ref: MAIN_IMAGE_EVALUATION_PROFILE_ID,
             exit_criteria: [
@@ -113,6 +115,7 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
             required_inputs: ['existing_document', 'target_scope', 'requested_change'],
             optional_inputs: ['brand_style'],
             delivery_outputs: ['updated_main_image_document', 'change_verification_report'],
+            delivery_plan_binding_required: true,
             production_obligation: 'photoshop_mutation_with_readback',
             review_rubric_ref: MAIN_IMAGE_SCOPED_EDIT_EVALUATION_PROFILE_ID,
             runtime_stages: ['R0', 'R1', 'R2', 'E1', 'R5'],
@@ -198,6 +201,7 @@ export const MAIN_IMAGE_MANIFEST: SkillRuntimeManifest = {
     template_families: [],
     review_rubric_ref: MAIN_IMAGE_EVALUATION_PROFILE_ID,
     delivery_outputs: ['main_image_psd', 'main_image_preview', 'delivery_manifest'],
+    delivery_plan_binding_required: true,
     exit_criteria: [
         '主图阶段草稿已生成并经过工具观察',
         'R5 review 通过或产生下一轮 Reflexion 约束',

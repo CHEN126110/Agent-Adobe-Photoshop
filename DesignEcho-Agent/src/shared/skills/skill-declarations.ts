@@ -91,15 +91,15 @@ function deliveryConventionParam(
     return {
         name: 'deliveryConvention',
         type: 'object',
-        description: '由用户或 Agent 在查看项目同类成品后选定的交付组织约定。只控制目录、命名、可编辑稿/导出图配对与版本策略；Harness 不扫描目录替你选择，也不得在此声明选图、版式、颜色、字号或其他视觉决定。未提供时才使用对应 Skill 的兼容基线。',
+        description: '由 Agent 根据当前用户要求或已经查看的项目同类成品选定的交付组织约定。只控制目录、命名、可编辑稿/导出图配对与版本策略；Harness 不扫描目录替你选择，也不得在此声明选图、版式、颜色、字号或其他视觉决定。未提供时使用对应 Skill 的 fail-if-exists 兼容基线。',
         required: false,
         additionalProperties: false,
         properties: [
             strParam('version', '固定契约版本。', true, { enum: ['skill-delivery-convention/v0'] }),
-            strParam('provenance', '本次约定的选择来源。agent_examples 必须由 Agent 真正查看过同类项目样本。', true, {
-                enum: ['user', 'confirmed_project', 'agent_examples', 'skill_fallback']
+            strParam('provenance', '本次模型选择的来源。当前模型入口只能使用 agent_selected；查看过样本也可以作为选择依据，但在没有 Runtime 观察收据前不得自报为已验证的 agent_examples。', true, {
+                enum: ['agent_selected']
             }),
-            arrParam('supportRefs', '稳定来源引用；禁止本机绝对路径。confirmed_project/agent_examples 至少一项。', true, {
+            arrParam('supportRefs', '稳定来源引用；禁止本机绝对路径。agent_selected/agent_examples 均需至少一项。', true, {
                 items: { type: 'string' },
                 maxItems: 12,
                 uniqueItems: true
@@ -107,11 +107,16 @@ function deliveryConventionParam(
             deliveryTargetConventionParam('editable', ['psd', 'psb', 'tif']),
             deliveryTargetConventionParam('raster', rasterFormats),
             strParam('pairing', '可编辑稿与导出图的配对关系。', true, {
-                enum: ['one_editable_per_raster', 'one_master_many_rasters']
+                enum: [
+                    'editable_only',
+                    'raster_only',
+                    'one_editable_per_raster',
+                    'one_master_many_rasters'
+                ]
             }),
             strParam(
                 'versionPolicy',
-                '同名目标的版本/冲突策略。公开参数不能授权覆盖；未提供 deliveryConvention 时，Skill 内部兼容事务才保留既有精确替换行为。',
+                '同名目标的版本/冲突策略。公开参数和缺省值都不能授权覆盖；new_version 需要明确版本化名称，目标仍存在时会停止而不是替换。',
                 true,
                 { enum: ['new_version', 'fail_if_exists'] }
             )
@@ -1656,7 +1661,7 @@ export const MainImageSkill: SkillDeclaration = {
         canonicalProductionEntries: [
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:设计|做|制作|出|生成|完成|导出|修复|改|修改|调整|优化|处理)\\s*(?:一张|一个|一版|这个|当前)?\\s*(?:(?:新的?|创意|电商|商品)\\s*){0,3}(?:白底图|点击图|转化图|主图|首图|封面)$'
         ],
-        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir；未显式指定 size/sizes 时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 显式选择规格；只有没有更可靠项目证据时，才可选择 Skill 的 800/750/1200 三规格基线。普通主图交付包含点击图和转化图规则，1200 只出点击图不出转化图；白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
+        parameterExtractionHints: ['抽取 size、sizes、imageType、sourceAssetKind、outputDirPolicy、backgroundPrompt、outputDir，以及 Agent/用户已选定的 deliveryConvention；versionPolicy=new_version 时还必须抽取明确 deliveryVersion，且文件夹或文件名实际使用 {version}。未显式指定 size/sizes 时先查看当前项目已确认或重复出现的同类交付习惯，再由 Agent 显式选择规格；只有没有更可靠项目证据时，才可选择 Skill 的 800/750/1200 三规格基线。普通主图交付包含点击图和转化图规则，1200 只出点击图不出转化图；白底图能力定义为 main-image.white-bg-from-sku-material：sourceAssetKind=project-sku-material、outputDirPolicy=project-main-image-dir、PSD/SKU.psb -> 主图/白底.jpg；用户只是讨论、询问或规划时保持 strategy-only；用户明确要求用 SKU 素材生成/导出/保存白底图到主图目录时，可进入 product-disposable-live 并使用白底图专用工具；不要从 outputDir、selectedAsset、enableVisionPreflight 单独推断真实 Photoshop 写入；用户明确要求理解/分析所选项目图时可设置 enableVisionPreflight=true；不要默认批量分析项目图片，maxVisionCandidates 默认 1'],
         retryPolicy: 'inherit_previous',
         clarificationHints: ['如果用户同时提到模板和现有主图优化，先问是新建模板还是处理当前画面'],
         decisionGuidance: [
@@ -1673,6 +1678,7 @@ export const MainImageSkill: SkillDeclaration = {
     },
     parameters: [
         deliveryConventionParam(),
+        strParam('deliveryVersion', 'Agent- or user-selected safe version label required when deliveryConvention.versionPolicy=new_version; it must be rendered through {version} in both editable and raster targets.'),
         strParam('size', 'Output size preset', false, {
             enum: ['800', '750', '1200', 'custom']
         }),
@@ -1711,7 +1717,7 @@ export const MainImageSkill: SkillDeclaration = {
         type: 'files',
         description: 'Main-image production plan and, after explicit live approval, exported main-image files.'
     },
-    requiredTools: ['getSubjectBounds', 'smartLayout', 'transformLayer', 'moveLayer', 'quickExport'],
+    requiredTools: ['getSubjectBounds', 'smartLayout', 'transformLayer', 'moveLayer', 'exportGroup', 'saveDocument'],
     examples: [
         {
             userSays: '帮我做主图',
@@ -1790,7 +1796,7 @@ export const DetailPageDesignSkill: SkillDeclaration = {
             'regex:^(?:请|麻烦)?\\s*(?:帮我|给我|替我|为我)?\\s*(?:继续\\s*)?(?:做|制作|设计|生成|完成|套版|套用|修复|改|修改|调整|优化|处理|排版|出)\\s*(?:这个|当前|一个|个|一套|一版)?\\s*(?:详情页|详情长图|商品详情长图)(?:\\s*套版)?$'
         ],
         parameterExtractionHints: [
-            '抽取 workMode、inspectOnly、autoFix、structureMode、visualValidation、projectPath、outputDir。',
+            '抽取 workMode、inspectOnly、autoFix、structureMode、visualValidation、projectPath、outputDir、deliveryVersion。',
             'template_fill 必须传 contentSource；有用户附件时 contentSource=attached_image，不要再强求 projectPath。',
             'edit_existing 必须传 targetScope、requestedChange 与结构化 editContentMode；editContentMode 只能是 image_only、copy_only 或 both，禁止 Harness 根据关键词猜测。',
             'targetScope 使用明确屏名/第N屏/图层名；同名屏或同名图层有歧义时必须补充第N屏或 ID，禁止省略或多目标兜底。'
@@ -1814,6 +1820,10 @@ export const DetailPageDesignSkill: SkillDeclaration = {
     },
     parameters: [
         deliveryConventionParam(),
+        strParam('deliveryAction', 'Internal delivery phase. Use commit only when the active Runtime continuation explicitly reopens this same Skill after visual review; the parameter alone never grants delivery permission.', false, {
+            enum: ['prepare', 'commit'],
+            default: 'prepare'
+        }),
         strParam('workMode', 'Detail-page work mode selected from the manifest contract', false, {
             enum: ['create_new', 'redesign', 'template_fill', 'edit_existing', 'analyze_only', 'export_only']
         }),
@@ -1834,6 +1844,8 @@ export const DetailPageDesignSkill: SkillDeclaration = {
         }),
         strParam('projectPath', 'Project path for assets and export'),
         strParam('outputDir', 'Export directory'),
+        strParam('deliveryVersion', 'Explicit version label when deliveryConvention uses the {version} token'),
+        boolParam('exportSlices', 'Whether this work mode owes a complete slice set. The intake derives the default from Runtime workMode; edit_existing enables it only for an explicit slice request.'),
         boolParam('inspectOnly', 'Only inspect current detail-page structure without filling', false),
         boolParam('autoFix', 'Auto-fix detected layer issues', true),
         strParam('structureMode', 'Structure constraint mode', false, {

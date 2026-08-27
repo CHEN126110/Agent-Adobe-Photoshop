@@ -198,6 +198,29 @@ function validateInteractiveContinuationOwnerSkill(
             message: '原挂起操作属于系统编排能力，不能作为确认卡的执行 owner。请重新发起任务。'
         };
     }
+    const cardOwner = continuation.card?.interactionOwner;
+    if ((skill.interactionOwner === 'skill-provider' && !cardOwner)
+        || (cardOwner && (
+            cardOwner.type !== 'skill-provider'
+            || cleanIdentity(cardOwner.skillId) !== skillId
+        ))) {
+        return {
+            status: 'rejected',
+            code: 'interactive_continuation_card_owner_mismatch',
+            message: '确认卡的业务 owner 与原挂起能力不一致，本轮不会执行。请重新生成确认卡。'
+        };
+    }
+    if (cardOwner
+        && (
+            !cleanIdentity(continuation.card.decisionFingerprint)
+            || !cleanIdentity(continuation.card.candidateFingerprint)
+        )) {
+        return {
+            status: 'rejected',
+            code: 'interactive_continuation_decision_context_missing',
+            message: '确认卡缺少稳定的决定或候选身份，本轮不会执行。请重新生成确认卡。'
+        };
+    }
     return undefined;
 }
 
@@ -319,6 +342,24 @@ export function buildPendingInteractiveContinuation(input: {
     const createdAt = normalizeCreatedAt(input.createdAt);
     const params = sanitizeContinuationParams(input.params);
     const card = cards[0];
+    const cardOwner = card.interactionOwner;
+    const requiresSkillProviderOwner = getSkillById(skillId)?.interactionOwner === 'skill-provider';
+    if ((requiresSkillProviderOwner && !cardOwner)
+        || (cardOwner && (
+            cardOwner.type !== 'skill-provider'
+            || cleanIdentity(cardOwner.skillId) !== skillId
+        ))) {
+        throw new Error(
+            `确认卡业务 owner 与挂起 Skill 不一致：${cleanIdentity(cardOwner?.skillId) || 'missing'} != ${skillId}。`
+        );
+    }
+    if (cardOwner
+        && (
+            !cleanIdentity(card.decisionFingerprint)
+            || !cleanIdentity(card.candidateFingerprint)
+        )) {
+        throw new Error('业务确认卡缺少稳定的 decisionFingerprint / candidateFingerprint，不能创建可恢复等待点。');
+    }
     const fingerprint = stableInteractiveCardHash({
         skillId,
         params,
@@ -592,6 +633,22 @@ function resolveInteractiveContinuationBinding(input: {
             code: 'interactive_continuation_card_mismatch',
             message: '这次提交不属于原挂起操作，本轮不会执行。'
         };
+    }
+    if (card.interactionOwner) {
+        const decisionContext = submission.decisionContext;
+        const decisionMatches = cleanIdentity(decisionContext?.decisionFingerprint)
+            === cleanIdentity(card.decisionFingerprint);
+        const candidateMatches = cleanIdentity(decisionContext?.candidateFingerprint)
+            === cleanIdentity(card.candidateFingerprint);
+        if (!decisionMatches
+            || !candidateMatches
+            || !cleanIdentity(decisionContext?.answerFingerprint)) {
+            return {
+                status: 'rejected',
+                code: 'interactive_continuation_submission_decision_context_mismatch',
+                message: '确认答案与原业务决定的身份不一致，本轮不会执行。请重新提交确认卡。'
+            };
+        }
     }
     const expectedConversationId = cleanIdentity(continuation.scope.conversationId);
     const actualConversationId = cleanIdentity(input.conversationId);

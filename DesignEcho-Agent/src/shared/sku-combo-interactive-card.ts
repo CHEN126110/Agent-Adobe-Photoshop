@@ -4,6 +4,7 @@ import {
     cleanInteractiveCardText,
     stableInteractiveCardHash,
     type InteractiveCardDefinition,
+    type InteractiveCardDecisionContext,
     type InteractiveCardValidationIssue,
     type InteractiveCardValidationResult
 } from './interactive-card-contract';
@@ -32,11 +33,8 @@ export type SkuComboEditorMutationReason =
     | 'removed'
     | 'reordered'
     | 'unchanged'
-    | 'updated_color'
     | 'duplicate'
     | 'invalid_combo'
-    | 'invalid_color_label'
-    | 'missing_color_slot'
     | 'missing_group'
     | 'invalid_index';
 
@@ -60,12 +58,27 @@ export interface SkuComboEditorPayload {
 
 export type SkuComboEditorCard = InteractiveCardDefinition<SkuComboEditorPayload>;
 
+export function isSkuComboEditorCard(value: unknown): value is SkuComboEditorCard {
+    const card = value && typeof value === 'object'
+        ? value as Partial<SkuComboEditorCard>
+        : {};
+    return card.version === 'interactive-card/v0'
+        && card.kind === 'sku_combo_editor'
+        && card.payload?.version === 'sku-combo-editor/v0'
+        && card.interactionOwner?.type === 'skill-provider'
+        && card.interactionOwner.skillId === 'sku-batch';
+}
+
 export interface BuildSkuComboEditorInteractiveCardInput {
     id?: string;
     title?: string;
     description?: string;
     colorSlots: SkuComboColorSlot[];
     requiredSizes: number[];
+    /**
+     * 候选由 SKU Skill / Agent 明确提供；缺省只生成空草稿，卡片 Builder
+     * 不用“前 N 个颜色”等规则替它选择组合。
+     */
     initialValue?: SkuComboEditorValue;
     memoryScope?: DesignMemoryScope;
     /** @deprecated 仅兼容旧调用；原始路径或脱敏占位符不会被接受为项目身份。 */
@@ -244,39 +257,7 @@ export function moveSkuComboInEditorValue(
     };
 }
 
-export function updateSkuComboColorSlotLabel(
-    value: SkuComboEditorValue,
-    slot: number,
-    label: string
-): SkuComboEditorMutationResult {
-    const normalizedSlot = normalizePositiveInt(slot);
-    const normalizedLabel = cleanInteractiveCardText(label);
-    if (!normalizedSlot || !normalizedLabel) {
-        return { value, changed: false, reason: 'invalid_color_label' };
-    }
-
-    const colorSlots = Array.isArray(value.colorSlots) ? value.colorSlots : [];
-    const colorIndex = colorSlots.findIndex((item) => item.slot === normalizedSlot);
-    if (colorIndex < 0) {
-        return { value, changed: false, reason: 'missing_color_slot' };
-    }
-    if (colorSlots[colorIndex].label === normalizedLabel) {
-        return { value, changed: false, reason: 'updated_color' };
-    }
-
-    return {
-        value: {
-            ...value,
-            colorSlots: colorSlots.map((item, index) => index === colorIndex
-                ? { ...item, label: normalizedLabel }
-                : item)
-        },
-        changed: true,
-        reason: 'updated_color'
-    };
-}
-
-export function parseSkuComboText(text: string, size: number): number[][] {
+function parseSkuComboText(text: string, size: number): number[][] {
     return String(text || '')
         .split(/[\n\r;；]+/g)
         .map((line) => parseComboTextLine(line))
@@ -363,13 +344,11 @@ function normalizeSkuComboEditorValue(
     };
 }
 
-function buildDefaultValue(requiredSizes: number[], colorSlots: SkuComboColorSlot[]): SkuComboEditorValue {
+function buildEmptyValue(requiredSizes: number[], colorSlots: SkuComboColorSlot[]): SkuComboEditorValue {
     return {
         groups: requiredSizes.map((size) => ({
             size,
-            combos: colorSlots.slice(0, Math.max(1, size)).length >= size
-                ? [colorSlots.slice(0, size).map((slot) => slot.slot)]
-                : []
+            combos: []
         })),
         colorSlots: colorSlots.map((slot) => ({ ...slot })),
         generateSelfSelectNotes: true
@@ -518,6 +497,40 @@ export function validateSkuComboEditorValue(
     });
 }
 
+export function buildSkuComboDecisionFingerprint(): string {
+    return 'sku-combo-specification/v0';
+}
+
+export function buildSkuComboCandidateFingerprint(
+    payload: SkuComboEditorPayload,
+    value: unknown = payload.initialValue
+): string {
+    const colorSlots = normalizeColorSlots(payload.colorSlots);
+    const requiredSizes = normalizeRequiredSizes(payload.requiredSizes);
+    const normalizedValue = normalizeSkuComboEditorValue(
+        value,
+        requiredSizes,
+        colorSlots
+    );
+    return `sku-combo-candidate-${stableInteractiveCardHash({
+        version: payload.version,
+        colorSlots,
+        requiredSizes,
+        value: normalizedValue
+    })}`;
+}
+
+export function deriveSkuComboDecisionContext(
+    card: SkuComboEditorCard,
+    value: unknown = card.payload.initialValue
+): InteractiveCardDecisionContext {
+    return {
+        decisionFingerprint: buildSkuComboDecisionFingerprint(),
+        candidateFingerprint: buildSkuComboCandidateFingerprint(card.payload),
+        answerFingerprint: buildSkuComboCandidateFingerprint(card.payload, value)
+    };
+}
+
 export function buildSkuComboEditorInteractiveCard(
     input: BuildSkuComboEditorInteractiveCardInput
 ): SkuComboEditorCard {
@@ -525,7 +538,7 @@ export function buildSkuComboEditorInteractiveCard(
     const requiredSizes = normalizeRequiredSizes(input.requiredSizes);
     const initialValue = input.initialValue
         ? normalizeSkuComboEditorValue(input.initialValue, requiredSizes, colorSlots)
-        : buildDefaultValue(requiredSizes, colorSlots);
+        : buildEmptyValue(requiredSizes, colorSlots);
     const memoryScope = normalizeResolvedProjectMemoryScope(
         input.memoryScope || (input.projectId ? { type: 'project', id: input.projectId } : undefined)
     );
@@ -551,6 +564,12 @@ export function buildSkuComboEditorInteractiveCard(
         title: cleanInteractiveCardText(input.title) || '确认 SKU 组合',
         description: cleanInteractiveCardText(input.description) || '确认或修改组合后继续生成 SKU。',
         payload,
+        interactionOwner: {
+            type: 'skill-provider',
+            skillId: 'sku-batch'
+        },
+        decisionFingerprint: buildSkuComboDecisionFingerprint(),
+        candidateFingerprint: buildSkuComboCandidateFingerprint(payload),
         status: 'draft',
         submitAction: 'submitInteractiveCard',
         memoryPolicy: {

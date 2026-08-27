@@ -28,10 +28,31 @@
 | 运行生命期、能力面、上下文预算、真实执行 | Harness | Harness 负责 Session、Capability 搜索与按需装载、模型窗口预算、Tool 调度、目标 / revision、安全和停止条件；可见能力不等于执行授权。 |
 | 跨品类设计能力 | Design Kernel | 构图、层级、排版、色彩、空间、工艺和多尺度复核属于通用内核；七步法只是按需调用的思考脚手架，不是固定 Workflow。 |
 | 品类 / 渠道 / 交付物特有能力 | Skill overlay | Skill 声明特有输入、方法、生产契约与评价引用；只有存在唯一可校验答案的规格化生产才使用 staged 工作流。 |
-| 结构化人机交互 | Interaction Card Runtime + 产卡 Skill | Agent 判断是否需要询问与询问内容；Skill 拥有领域卡片 schema、语义校验和提交消费；Harness 只负责安全渲染、身份、幂等、作用域、挂起 /恢复。通用 UI 不认识 SKU /主图 /详情页字段。 |
+| 结构化人机交互 | Interaction Card Runtime + 产卡 Skill | Agent 判断开放任务中的可选澄清及其内容；已选 Skill 拥有规格化生产契约必需的领域确认点、卡片 schema、语义校验和提交消费。Harness 只负责安全渲染、身份、幂等、作用域、挂起 /恢复。通用 UI 不认识 SKU /主图 /详情页字段。 |
 | 经验内容与作用域 | Memory / Knowledge | 保存项目事实、用户偏好、经审核案例、方法和来源；不能授予 Tool 权限或覆盖当前指令。 |
 | 候选晋升 | Experience Publisher | 候选必须经过与目标相称的人工复核或离线评测，再形成带来源、版本、作用域和回滚点的发布记录；在线模型不能自我转正。 |
 | 质量判断 | Evaluation | Evaluation 产出 finding、校准和交付判断，不拥有设计品味、Skill、Policy 或经验发布权；开放创意按风险与交付需要调用，不作首稿写入门票。 |
+
+### 四层实现边界与交互不变量
+
+下列四层描述“一个判断或能力应落在哪一层”，不替代上表中的 Memory、Knowledge、Evaluation、Policy、TaskRun 与 Transaction owner：
+
+| 层 | 唯一职责 | 不允许越界 |
+|---|---|---|
+| Agent / Model | 解释用户目标和完整上下文，声明 Task Profile / Skill 选择，作出设计与可逆专业判断，决定开放任务中的可选澄清、如何修订和下一步做什么；遵守已选 staged Skill 明确声明的必要生产确认点，但仍拥有候选内容与设计判断。 | 不伪造环境事实、权限、用户确认或 Tool 结果；失败后不能把同一问题换个说法反复交给用户，也不能绕过已选 Skill 的确定性生产契约。 |
+| Harness Kernel | 管理同一 TaskRun、Context、Capability Resolution、跨调用调度、target / revision 绑定、授权 / preflight、reconciliation、验真、完成判定、幂等、预算与停机；只校验模型 / Skill 已声明的结构和稳定身份。 | 不拥有第二套 Host mutation 事务或原始读写实现；不用场景关键词、文件名、routing recommendation、默认值或恢复模板替 Agent 选择 Task Profile、Skill、素材、组合、版式、下一 Tool 或补救路线。 |
+| Skill Package | 拥有品类 /渠道 /交付物特有的 Manifest、方法、输入输出、确定性规格、领域卡片 schema、语义校验、提交消费、评价引用，以及该领域决定的稳定 `decisionFingerprint`。专属 Provider 与 Renderer 必须在同一 package 单点注册。 | 不拥有 Agent 循环、TaskRun、Capability Registry、通用权限、跨 Skill Tool 实现、Photoshop 事务或 Release；不得把领域方法反写进通用 Agent / Harness。 |
+| Tool / Capability Provider + Host（内置或插件承载） | 实现跨 Skill 的原子外部能力与 Host 集成，例如 Photoshop、项目文件、Eagle、浏览器和桌面观察；声明版本化 schema、连接状态、Provider-local 取消 /超时、原始读取结果与原始 mutation receipt。Photoshop 写入只经唯一 `PhotoshopTransactionRunner` 事务边界。受控命令是条件性扩展目标，未接入时不得写成现有能力。 | 不理解业务目标、不选择 Task Profile / Skill、不生成领域卡、不决定审美、质量或完成；不得另建跨调用事务、revision 或完成判断。Provider 已安装 /已登记 /Host 可达不等于模型可见、已授权或可执行。 |
+
+交互与 owner 必须满足以下不变量：
+
+1. **结构化选择优于场景补丁**：场景关键词、文件名、品类正则和 `routing recommendation` 只能提供可忽略候选，不能绑定 owner、激活 Skill、裁剪能力面、创建等待点或取得执行权。owner 只能来自用户明确选择或 Agent / Model 的结构化 Task Profile / Skill 选择，并由 Harness 校验。
+2. **候选内容必须有作者**：卡片 Builder、Harness validator 和通用 UI 不得用“前 N 个颜色”、排序第一项、默认版式、默认确认状态或其它机械默认替 Agent /用户产生业务决定。确定性排序可以提供候选，但被确认的内容必须由 Agent、用户或拥有该语义的 Skill 显式给出。
+3. **领域指纹由 Skill 定义**：`decisionFingerprint` 稳定描述“正在向用户确认哪一个领域决定”，`candidateFingerprint` 描述本次候选 /草稿内容，提交后的 `answerFingerprint` 描述 Provider 规范化的用户答案；三者都由产卡 Skill Package 根据自己的 schema 派生并精确绑定。Harness 只能比较这些身份，不能解析字段、按语义相似度补造指纹，或据此选择业务答案；候选变化不能伪装成另一项决定。
+4. **通用卡不可旁路 Skill Provider**：通用选择卡和多字段草稿卡只承载品类中立交互；一旦当前 Task Profile 对应领域交互 owner，领域卡的 schema、默认候选、校验、提交、恢复消费和专属 Renderer 必须全部经过该 Skill Package。通用卡不得复制领域字段或借相同 `kind / payloadVersion` 恢复另一个 Skill。
+5. **单包注册与失败关闭**：同一领域卡的 Provider、Renderer、type guard、owner 与版本从同一 package registration 派生，不能维护两张会漂移的注册表。未知 kind /版本、缺 owner、owner 不匹配或未注册卡片只能显示不可操作说明，不得渲染通用“确认”按钮或执行卡片自带 action。
+6. **无进展重问回到 Agent 重规划**：同一 TaskRun 已收到某个 `decisionFingerprint` 的答案后，冻结的 decision /candidate /answer 身份必须跨直接续跑与 Agent reentry 保留；如果 Skill 没有产生 plan、mutation 或 Photoshop revision 等真实进展，却再次提出同一决定且候选等于已确认答案，Harness 只报告 `interaction_no_progress` 事实并保留同一任务身份。重复只读次数、换标题、换卡片 id 或把答案重新塞进 initialValue 都不算进展；Agent 必须基于失败事实重新规划，不得再次打断用户、创建新 TaskRun、用 routing recommendation 抢 owner，或由 Harness 指定下一 Tool / Skill。
+7. **Tool / Capability 能力仍受 Harness 治理**：Skill 只声明依赖并消费结构化结果，不复制 Photoshop、文件、浏览器、桌面或未来命令实现。Harness 依据当前任务范围、Capability Session、preflight、批准、目标 /工作目录和原始收据做跨调用 reconciliation；Provider / Host 只执行已授权的原子调用并诚实返回原始结果，Photoshop mutation 只由唯一 `PhotoshopTransactionRunner` 提交。
 
 经验进入生产只有两条已批准路径：用户对本项目的明确“留 / 改 / 弃 + 原因”可发布为项目级 Evaluation 校准；模型评审和参考图解读只能先进入候选，其中参考学习进入现有 Memory 人工审核队列，审核通过后才可被知识检索。原始候选、模型自评、使用次数和 Tool success 均不得直接进入生产 Prompt、正式 Knowledge、Skill、Policy 或通用原则。
 

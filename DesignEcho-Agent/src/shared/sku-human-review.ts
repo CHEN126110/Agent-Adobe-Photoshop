@@ -14,6 +14,7 @@ import {
 import {
     buildInteractiveCardValidationResult,
     cleanInteractiveCardText,
+    type InteractiveCardDecisionContext,
     type InteractiveCardDefinition,
     type InteractiveCardValidationIssue,
     type InteractiveCardValidationResult
@@ -262,6 +263,12 @@ export function buildSkuHumanReviewCard(input: {
         kind: 'sku_human_review',
         title: '复核当前 SKU 导出结果',
         description: `本次复核只绑定当前 ${target.expectedExportCount} 个导出文件；文件内容变化后，旧结论会自动失效。`,
+        interactionOwner: {
+            type: 'skill-provider',
+            skillId: 'sku-batch'
+        },
+        decisionFingerprint: `sku-human-review-decision-${target.subject.fingerprint}`,
+        candidateFingerprint: `sku-human-review-candidate-${target.subject.fingerprint}`,
         payload: {
             version: 'sku-human-review-card/v0',
             target: {
@@ -347,7 +354,19 @@ export function isSkuHumanReviewCard(value: unknown): value is SkuHumanReviewCar
     const payload = readRecord(card?.payload);
     return card?.version === 'interactive-card/v0'
         && card.kind === 'sku_human_review'
-        && payload?.version === 'sku-human-review-card/v0';
+        && payload?.version === 'sku-human-review-card/v0'
+        && readRecord(card.interactionOwner)?.type === 'skill-provider'
+        && readRecord(card.interactionOwner)?.skillId === 'sku-batch';
+}
+
+export function deriveSkuHumanReviewDecisionContext(
+    card: SkuHumanReviewCard
+): InteractiveCardDecisionContext {
+    const subjectFingerprint = String(card.payload?.target?.subject?.fingerprint || '').trim();
+    return {
+        decisionFingerprint: `sku-human-review-decision-${subjectFingerprint}`,
+        candidateFingerprint: `sku-human-review-candidate-${subjectFingerprint}`
+    };
 }
 
 function normalizeOutputDigests(value: unknown): NormalizedOutputDigest[] {

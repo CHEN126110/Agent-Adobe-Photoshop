@@ -63,7 +63,7 @@ function uniqueSortedSizes(value: unknown): number[] {
         .sort((a, b) => a - b);
 }
 
-export function buildSkuComboColorSlots(availableColors: string[]): SkuComboColorSlot[] {
+function buildSkuComboColorSlots(availableColors: string[]): SkuComboColorSlot[] {
     const labels = (Array.isArray(availableColors) ? availableColors : [])
         .map(cleanInteractiveCardText)
         .filter(Boolean);
@@ -186,10 +186,21 @@ export function buildSkuComboConfirmationRequest(
         blockers: validation.blockers,
         warnings
     };
+    const visibleCard = validation.canSubmit
+        ? {
+            ...card,
+            description: [
+                card.description,
+                warnings.length > 0
+                    ? `请注意：${warnings.slice(0, 3).join('；')}`
+                    : ''
+            ].filter(Boolean).join('\n')
+        }
+        : undefined;
 
     return {
         status,
-        card: validation.canSubmit ? card : undefined,
+        card: visibleCard,
         review
     };
 }

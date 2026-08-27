@@ -4,9 +4,14 @@ import {
     isAgentHarnessControlTool,
     isAgentInputCollectionTool
 } from './agent-tool-execution-preflight';
-import { resolveSkillExecutionOutcome } from './agent-react-observation-contract';
+import {
+    buildAgentReActToolArgumentsDigest,
+    isAgentReActToolArgumentsDigest,
+    resolveSkillExecutionOutcome
+} from './agent-react-observation-contract';
 import { stableStringifyForReadCache } from './agent-read-result-cache';
 import { evaluateCompletionObservationGate } from './completion-observation-gate';
+import type { RuntimeSession } from './agent-runtime-v5/runtime-session';
 
 export interface AgentWorkflowContinuationToolCall {
     id: string;
@@ -24,7 +29,153 @@ export interface AgentWorkflowContinuationBinding {
     sessionId?: string;
     runId?: string;
     generation?: number;
+    taskRunId?: string;
     stage?: string;
+}
+
+export function buildAgentWorkflowContinuationBinding(
+    session: RuntimeSession | undefined
+): AgentWorkflowContinuationBinding {
+    return {
+        sessionId: session?.identity.sessionId,
+        runId: session?.identity.runId,
+        generation: session?.identity.generation,
+        taskRunId: session?.taskRun.taskRunId,
+        stage: session?.stageState.currentStage
+    };
+}
+
+export interface RuntimeWorkflowDeliveryReentry {
+    version: 'runtime-workflow-delivery-reentry/v0';
+    workflowToolName: string;
+    workflowCallId: string;
+    argumentsDigest: string;
+    sessionId?: string;
+    runId?: string;
+    generation?: number;
+    taskRunId?: string;
+    candidateDocumentId: string;
+    candidateHistoryStateId: string;
+    boundaries: {
+        issuedFromActiveContinuationScope: true;
+        exactArgumentsDigestBound: true;
+        sameTaskRunWhenStaged: true;
+        modelCannotSelfAuthorize: true;
+        singleUse: true;
+        grantsPermission: false;
+        executesTools: false;
+    };
+}
+
+const RUNTIME_WORKFLOW_DELIVERY_REENTRIES = new WeakSet<object>();
+
+/**
+ * Agent 在已通过视觉复核的 continuation 执行边界即时签发；不是模型参数或持久状态。
+ * agentic 没有 staged RuntimeSession 时，当前 Agent 实例持有的 workflowCallId 就是续跑身份。
+ */
+export function issueRuntimeWorkflowDeliveryReentry(input: {
+    scope: AgentWorkflowContinuationScope | undefined;
+    toolName: string;
+    args: unknown;
+}): RuntimeWorkflowDeliveryReentry | undefined {
+    const scope = input.scope;
+    const toolName = String(input.toolName || '').trim();
+    const owner = scope?.workflowDeliveryOwner;
+    const constraint = scope?.toolArgumentConstraints?.[toolName];
+    const currentDigest = buildAgentReActToolArgumentsDigest(input.args);
+    const hasStagedRuntimeIdentity = Boolean(
+        scope?.binding.sessionId
+        || scope?.binding.runId
+        || scope?.binding.generation !== undefined
+        || scope?.binding.taskRunId
+    );
+    const hasCompleteStagedRuntimeIdentity = Boolean(
+        scope?.binding.sessionId
+        && scope?.binding.runId
+        && scope?.binding.generation !== undefined
+        && scope?.binding.taskRunId
+    );
+    if (!scope
+        || scope.source !== 'declared'
+        || scope.purpose !== 'deliver'
+        || !scope.visualDelivery
+        || !owner
+        || owner.toolName !== toolName
+        || constraint?.argumentsDigest !== owner.argumentsDigest
+        || currentDigest !== owner.argumentsDigest
+        || (hasStagedRuntimeIdentity && !hasCompleteStagedRuntimeIdentity)
+        || !scope.workflowCallId
+        || !scope.visualDelivery.candidateDocumentId
+        || !scope.visualDelivery.candidateHistoryStateId) {
+        return undefined;
+    }
+    const reentry: RuntimeWorkflowDeliveryReentry = Object.freeze({
+        version: 'runtime-workflow-delivery-reentry/v0',
+        workflowToolName: toolName,
+        workflowCallId: scope.workflowCallId,
+        argumentsDigest: owner.argumentsDigest,
+        ...(scope.binding.sessionId ? { sessionId: scope.binding.sessionId } : {}),
+        ...(scope.binding.runId ? { runId: scope.binding.runId } : {}),
+        ...(scope.binding.generation !== undefined
+            ? { generation: scope.binding.generation }
+            : {}),
+        ...(scope.binding.taskRunId ? { taskRunId: scope.binding.taskRunId } : {}),
+        candidateDocumentId: scope.visualDelivery.candidateDocumentId,
+        candidateHistoryStateId: scope.visualDelivery.candidateHistoryStateId,
+        boundaries: Object.freeze({
+            issuedFromActiveContinuationScope: true,
+            exactArgumentsDigestBound: true,
+            sameTaskRunWhenStaged: true,
+            modelCannotSelfAuthorize: true,
+            singleUse: true,
+            grantsPermission: false,
+            executesTools: false
+        })
+    });
+    RUNTIME_WORKFLOW_DELIVERY_REENTRIES.add(reentry);
+    return reentry;
+}
+
+export function buildRuntimeWorkflowDeliveryReentryOption(
+    scope: AgentWorkflowContinuationScope | undefined,
+    toolName: string,
+    args: unknown
+): { runtimeWorkflowDeliveryReentry?: RuntimeWorkflowDeliveryReentry } {
+    const reentry = issueRuntimeWorkflowDeliveryReentry({ scope, toolName, args });
+    return reentry ? { runtimeWorkflowDeliveryReentry: reentry } : {};
+}
+
+function resolveRuntimeWorkflowDeliveryReentry(
+    value: unknown,
+    expectedToolName?: string
+): RuntimeWorkflowDeliveryReentry | undefined {
+    if (!value || typeof value !== 'object' || !RUNTIME_WORKFLOW_DELIVERY_REENTRIES.has(value as object)) {
+        return undefined;
+    }
+    const reentry = value as RuntimeWorkflowDeliveryReentry;
+    if (reentry.version !== 'runtime-workflow-delivery-reentry/v0'
+        || (expectedToolName && reentry.workflowToolName !== expectedToolName)) {
+        return undefined;
+    }
+    return reentry;
+}
+
+export function peekRuntimeWorkflowDeliveryReentry(
+    value: unknown,
+    expectedToolName?: string
+): RuntimeWorkflowDeliveryReentry | undefined {
+    return resolveRuntimeWorkflowDeliveryReentry(value, expectedToolName);
+}
+
+export function consumeRuntimeWorkflowDeliveryReentry(
+    value: unknown,
+    expectedToolName?: string
+): RuntimeWorkflowDeliveryReentry | undefined {
+    const reentry = resolveRuntimeWorkflowDeliveryReentry(value, expectedToolName);
+    if (!reentry) return undefined;
+    return RUNTIME_WORKFLOW_DELIVERY_REENTRIES.delete(reentry)
+        ? reentry
+        : undefined;
 }
 
 export interface AgentWorkflowVisualObservationIdentity {
@@ -48,10 +199,16 @@ export interface AgentWorkflowContinuationScope {
     toolArgumentConstraints?: Record<string, {
         argumentEquals?: Record<string, string | number | boolean>;
         requiredArgumentKeys?: string[];
+        argumentsDigest?: string;
     }>;
     repairTarget?: {
         allowedLayerIds: number[];
         requireExplicitLayerTarget: true;
+    };
+    /** 视觉通过后以完整参数复入同一个 Workflow owner；owner 内仍须重新冻结 Runtime 计划。 */
+    workflowDeliveryOwner?: {
+        toolName: string;
+        argumentsDigest: string;
     };
     visualDelivery?: {
         requiresVisualPass: true;
@@ -190,10 +347,14 @@ function normalizeToolArgumentConstraints(
         const requiredArgumentKeys = normalizeToolNames(constraint.requiredArgumentKeys)
             .filter((key) => key.length <= 80)
             .slice(0, 12);
-        if (!argumentEquals && requiredArgumentKeys.length === 0) continue;
+        const argumentsDigest = isAgentReActToolArgumentsDigest(constraint.argumentsDigest)
+            ? String(constraint.argumentsDigest).trim()
+            : undefined;
+        if (!argumentEquals && requiredArgumentKeys.length === 0 && !argumentsDigest) continue;
         constraints[toolName] = {
             ...(argumentEquals ? { argumentEquals } : {}),
-            ...(requiredArgumentKeys.length > 0 ? { requiredArgumentKeys } : {})
+            ...(requiredArgumentKeys.length > 0 ? { requiredArgumentKeys } : {}),
+            ...(argumentsDigest ? { argumentsDigest } : {})
         };
     }
     return Object.keys(constraints).length > 0 ? constraints : undefined;
@@ -533,6 +694,7 @@ function sameBinding(
     return left.sessionId === right.sessionId
         && left.runId === right.runId
         && left.generation === right.generation
+        && left.taskRunId === right.taskRunId
         && left.stage === right.stage;
 }
 
@@ -596,11 +758,39 @@ export function resolveAgentWorkflowContinuationScopeUpdate(input: {
         if (declaredPurpose === 'deliver') {
             const data = asRecord(output.data);
             const deliveryCandidate = asRecord(data?.deliveryCandidate);
-            const deliveryToolNames = selectPurposeCompatibleTools({
-                toolNames: recovery?.allowedToolNames || [],
+            const requestedDeliveryToolNames = normalizeToolNames(
+                recovery?.allowedToolNames || []
+            );
+            const atomicDeliveryToolNames = selectPurposeCompatibleTools({
+                toolNames: requestedDeliveryToolNames,
                 availableToolNames,
                 purpose: 'deliver'
             });
+            const requestedDeliveryToolArgumentConstraints = normalizeToolArgumentConstraints(
+                recovery?.toolArgumentConstraints,
+                requestedDeliveryToolNames
+            );
+            const workflowDeliveryOwnerConstraint =
+                requestedDeliveryToolArgumentConstraints?.[call.name];
+            const workflowDeliveryOwner = requestedDeliveryToolNames.includes(call.name)
+                && availableToolNames.has(call.name)
+                && workflowEntryTools.has(call.name)
+                && isAgentReActToolArgumentsDigest(
+                    workflowDeliveryOwnerConstraint?.argumentsDigest
+                )
+                ? {
+                    toolName: call.name,
+                    argumentsDigest: workflowDeliveryOwnerConstraint!.argumentsDigest!
+                }
+                : undefined;
+            const deliveryToolNames = Array.from(new Set([
+                ...atomicDeliveryToolNames,
+                ...(workflowDeliveryOwner ? [workflowDeliveryOwner.toolName] : [])
+            ]));
+            const deliveryToolArgumentConstraints = normalizeToolArgumentConstraints(
+                recovery?.toolArgumentConstraints,
+                deliveryToolNames
+            );
             const candidateRepairToolNames = normalizeToolNames(
                 deliveryCandidate?.repairAllowedToolNames
             );
@@ -692,6 +882,10 @@ export function resolveAgentWorkflowContinuationScopeUpdate(input: {
                         ...deliveryState,
                         source: 'declared',
                         binding: input.binding || {},
+                        ...(deliveryToolArgumentConstraints
+                            ? { toolArgumentConstraints: deliveryToolArgumentConstraints }
+                            : {}),
+                        ...(workflowDeliveryOwner ? { workflowDeliveryOwner } : {}),
                         visualDelivery: {
                             requiresVisualPass: true as const,
                             completeOnVisualPass,
@@ -809,7 +1003,14 @@ export function refreshAgentWorkflowContinuationVisualDelivery(input: {
     const availableToolNames = new Set(input.availableToolNames);
     const deliveryToolNames = scope.visualDelivery.allowedToolNames.filter((toolName) => (
         availableToolNames.has(toolName)
-        && isToolAllowedForContinuationPurpose(toolName, 'deliver')
+        && (
+            isToolAllowedForContinuationPurpose(toolName, 'deliver')
+            || (
+                scope.workflowDeliveryOwner?.toolName === toolName
+                && scope.toolArgumentConstraints?.[toolName]?.argumentsDigest
+                    === scope.workflowDeliveryOwner.argumentsDigest
+            )
+        )
     ));
     const repairToolNames = selectVisualDeliveryRepairTools({
         declaredToolNames: scope.visualDelivery.repairAllowedToolNames,
@@ -1044,10 +1245,18 @@ export function evaluateAgentWorkflowContinuationToolAccess(input: {
             .filter((key) => args?.[key] === undefined || args?.[key] === null || args?.[key] === '');
         const mismatchedArguments = Object.entries(toolArgumentConstraint.argumentEquals || {})
             .filter(([key, expected]) => args?.[key] !== expected);
-        if (missingArgumentKeys.length > 0 || mismatchedArguments.length > 0) {
+        const argumentsDigestMismatch = Boolean(
+            toolArgumentConstraint.argumentsDigest
+            && buildAgentReActToolArgumentsDigest(input.args)
+                !== toolArgumentConstraint.argumentsDigest
+        );
+        if (missingArgumentKeys.length > 0
+            || mismatchedArguments.length > 0
+            || argumentsDigestMismatch) {
             const invalidKeys = Array.from(new Set([
                 ...missingArgumentKeys,
-                ...mismatchedArguments.map(([key]) => key)
+                ...mismatchedArguments.map(([key]) => key),
+                ...(argumentsDigestMismatch ? ['完整调用参数'] : [])
             ]));
             return {
                 allowed: false,

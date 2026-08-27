@@ -243,6 +243,7 @@ import {
     buildInteractiveCardSubmission,
     buildInteractiveCardSubmissionInstanceKey,
     cleanInteractiveCardText,
+    stableInteractiveCardHash,
     type InteractiveCardDefinition,
     type InteractiveCardSubmission
 } from '../../shared/interactive-card-contract';
@@ -2465,7 +2466,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         return { mode: 'record_only' };
                     }
                     if (!handleSendRef.current) {
-                        return { error: 'Agent 承接入口暂不可用，确认卡尚未消费。' };
+                        return { error: '当前暂时无法继续原任务，确认内容尚未消费；请稍后在原卡片重试。' };
                     }
                     const continuation = sourceMessage?.pendingInteractiveContinuation;
                     if (!continuation) {
@@ -2602,7 +2603,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 status: 'retryable'
                             });
                             addLocalBlockerMessage(
-                                '确认结果已经保存，但 Agent 承接入口暂不可用。请再次点击原确认按钮重试续跑。',
+                                '确认结果已经保存，但当前暂时无法继续原任务；请稍后在原卡片重试。',
                                 'interactive-resume:unavailable'
                             );
                             return false;
@@ -2673,7 +2674,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             const send = handleSendRef.current;
                             if (!send) {
                                 addLocalBlockerMessage(
-                                    '复核结论已经写入，但 Agent 承接入口暂不可用。请再次点击原确认按钮重试续跑。',
+                                    '复核结论已经写入，但当前暂时无法继续原任务；请稍后在原卡片重试。',
                                     'interactive-review:owned-resume-unavailable'
                                 );
                                 return false;
@@ -2998,8 +2999,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         return;
                     }
                     case 'submitSkillInteractiveReview': {
-                        const card = params?.card as InteractiveCardDefinition | undefined;
-                        if (!card || card.version !== 'interactive-card/v0') {
+                        const actionCard = params?.card as InteractiveCardDefinition | undefined;
+                        const sourceMessageId = String(params?.sourceMessageId || '').trim();
+                        const sourceMessage = useAppStore.getState().messages.find(
+                            (message) => message.id === sourceMessageId
+                        );
+                        const card = sourceMessage?.interactiveCards?.find((candidate) => (
+                            candidate.id === actionCard?.id
+                            && candidate.kind === actionCard?.kind
+                        ));
+                        if (!actionCard
+                            || !card
+                            || card.version !== 'interactive-card/v0'
+                            || stableInteractiveCardHash(card) !== stableInteractiveCardHash(actionCard)) {
                             emitActionResult('skipped', '业务复核卡片数据已失效，请重新生成。', 'invalid skill review card', 'ui.submitSkillInteractiveReview');
                             return;
                         }
@@ -3322,7 +3334,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             if (decision.mode === 'resume_operation') {
                                 const send = handleSendRef.current;
                                 if (!send) {
-                                    throw new Error('Agent 承接入口暂不可用，确认操作仍保留在执行账本中。');
+                                    throw new Error('确认结果已经保留，但当前暂时无法继续原任务；稍后可在原卡片重试。');
                                 }
                                 await send({
                                     text: decision.sourceTask,
@@ -3351,9 +3363,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             }
                             return;
                         }
+                        const sourceMessageId = String(params?.sourceMessageId || '').trim();
+                        const sourceMessage = useAppStore.getState().messages.find(
+                            (message) => message.id === sourceMessageId
+                        );
+                        const expectedOwnerSkillId = String(
+                            sourceMessage?.pendingInteractiveContinuation?.operation?.skillId || ''
+                        ).trim();
                         const skillCardPreparation = prepareSkillInteractiveCardSubmission(
                             card as InteractiveCardDefinition,
-                            params?.value
+                            params?.value,
+                            {
+                                expectedOwnerSkillId,
+                                requireExpectedOwner: true
+                            }
                         );
                         if (skillCardPreparation.status === 'unsupported') {
                             emitActionResult('skipped', '这张确认卡片暂时不能提交，请重新生成。', 'unsupported interactive card', 'ui.submitInteractiveCard');
@@ -3377,7 +3400,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         if (decision.mode !== 'resume_operation') {
                             emitActionResult(
                                 'skipped',
-                                '业务确认卡没有绑定可恢复的 Skill 操作，本轮不会执行。请重新发起原任务。',
+                                '这张确认卡与原任务的继续信息已丢失，尚未执行；请重新发起原任务。',
                                 'skill interactive continuation missing',
                                 'ui.submitInteractiveCard'
                             );
@@ -3402,7 +3425,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         );
                         const send = handleSendRef.current;
                         if (!send) {
-                            throw new Error('Agent 承接入口暂不可用，确认操作仍保留在执行账本中。');
+                            throw new Error('确认结果已经保留，但当前暂时无法继续原任务；稍后可在原卡片重试。');
                         }
                         await send({
                             text: decision.sourceTask,

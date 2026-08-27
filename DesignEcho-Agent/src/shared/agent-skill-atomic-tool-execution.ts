@@ -1,10 +1,18 @@
 import {
     buildAgentToolExecutionPreflight,
+    classifyAgentToolExecution,
     DESIGN_ECHO_TARGET_GUARD_ARGUMENT,
     isAgentToolExecutionGuarded,
     type AgentToolExecutionPreflight,
     type AgentToolExecutionPreflightLogEntry
 } from './agent-tool-execution-preflight';
+import {
+    buildSkillDeliveryPlan,
+    normalizeSkillDeliveryArtifactPath,
+    type SkillDeliveryConvention,
+    type SkillDeliveryPlan,
+    type SkillDeliveryPlanArtifact
+} from './skills/skill-delivery-convention';
 
 export type GuardedAtomicToolExecutor = (
     toolName: string,
@@ -13,6 +21,142 @@ export type GuardedAtomicToolExecutor = (
 
 export const RUNTIME_OWNED_SKILL_TOOL_LEDGER_VERSION =
     'runtime-owned-skill-tool-ledger/v0' as const;
+export const RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDING_VERSION =
+    'runtime-owned-skill-delivery-plan-binding/v0' as const;
+
+export interface RuntimeOwnedSkillDeliveryPlanFreezeCandidate {
+    projectPath: string;
+    convention: SkillDeliveryConvention;
+    artifacts: readonly unknown[];
+}
+
+export interface RuntimeOwnedSkillDeliveryArtifactExecution {
+    artifactIds: readonly string[];
+    toolName: string;
+    targetPaths: readonly string[];
+    dispatchState: 'returned' | 'threw';
+    succeeded: boolean;
+}
+
+/**
+ * Skill 只能提交候选；这份 binding 由现有 guarded Tool ledger 重建、冻结和封口。
+ * 它不选择目录或命名，也不执行 Tool，只证明计划先于对应交付副作用存在。
+ */
+export interface RuntimeOwnedSkillDeliveryPlanBinding {
+    version: typeof RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDING_VERSION;
+    status: 'ready' | 'incomplete';
+    plan: SkillDeliveryPlan;
+    artifactExecutions: readonly RuntimeOwnedSkillDeliveryArtifactExecution[];
+    issues: readonly string[];
+    boundaries: {
+        runtimeOwned: true;
+        frozenBeforeFinalDeliveryDispatch: true;
+        immutableWithinScope: true;
+        exactArtifactCallsRequired: true;
+        producerResultIgnored: true;
+        selectsConvention: false;
+        executesTools: false;
+        grantsPermission: false;
+    };
+}
+
+export type RuntimeOwnedSkillDeliveryPlanFreezeDecision =
+    | {
+        status: 'frozen' | 'retained';
+        binding: RuntimeOwnedSkillDeliveryPlanBinding;
+        blockers: [];
+    }
+    | {
+        status: 'rejected';
+        code:
+            | 'runtime_delivery_plan_scope_unavailable'
+            | 'runtime_delivery_plan_scope_completed'
+            | 'runtime_delivery_plan_invalid'
+            | 'runtime_delivery_plan_already_frozen'
+            | 'runtime_delivery_plan_frozen_too_late';
+        blockers: string[];
+    };
+
+export interface RuntimeOwnedSkillDeliveryPlanAuthority {
+    version: 'runtime-owned-skill-delivery-plan-authority/v0';
+    freeze(candidate: RuntimeOwnedSkillDeliveryPlanFreezeCandidate):
+        RuntimeOwnedSkillDeliveryPlanFreezeDecision;
+    executeArtifacts(input: {
+        artifactIds: readonly string[];
+        toolName: string;
+        params: Record<string, any>;
+    }): Promise<any>;
+    executeStagedArtifacts(input: {
+        lease: RuntimeOwnedSkillStagingLease;
+        artifactIds: readonly string[];
+        toolName: string;
+        params: Record<string, any>;
+    }): Promise<any>;
+    acceptExternalCommit(input: {
+        artifactIds: readonly string[];
+        receipt: RuntimeOwnedSkillExternalDeliveryCommitReceipt;
+    }): RuntimeOwnedSkillDeliveryExternalCommitDecision;
+    boundaries: {
+        runtimeOwned: true;
+        acceptsProducerCandidateOnly: true;
+        freezesBeforeFinalDeliveryDispatch: true;
+        immutableWithinScope: true;
+        selectsConvention: false;
+        creditsOnlyGuardedOrTrustedTransactionCommits: true;
+        grantsPermission: false;
+    };
+}
+
+export interface RuntimeOwnedSkillExternalDeliveryCommitReceipt {
+    version: 'runtime-owned-skill-external-delivery-commit/v0';
+    status: 'committed';
+    deliveryPlanDigest: string;
+    committedFiles: ReadonlyArray<{
+        artifactId: string;
+        path: string;
+        byteLength: number;
+        sha256: string;
+    }>;
+    boundaries: {
+        issuedByTransactionOwner: true;
+        exactArtifactSetCommitted: true;
+        producerCannotSelfIssue: true;
+        grantsPermission: false;
+    };
+}
+
+export interface RuntimeOwnedSkillStagingLease {
+    version: 'runtime-owned-skill-staging-lease/v0';
+    deliveryPlanDigest: string;
+    stagingRoot: string;
+    destinationRoot: string;
+    artifactMappings: ReadonlyArray<{
+        artifactId: string;
+        stagedPath: string;
+        finalPath: string;
+    }>;
+    boundaries: {
+        issuedAfterMainTransaction: true;
+        exactArtifactMapping: true;
+        producerCannotSelfIssue: true;
+        grantsPermission: false;
+    };
+}
+
+export type RuntimeOwnedSkillDeliveryExternalCommitDecision =
+    | {
+        status: 'accepted';
+        binding: RuntimeOwnedSkillDeliveryPlanBinding;
+    }
+    | {
+        status: 'rejected';
+        code:
+            | 'runtime_delivery_plan_not_frozen'
+            | 'runtime_delivery_external_commit_untrusted'
+            | 'runtime_delivery_external_commit_mismatch'
+            | 'runtime_delivery_artifact_already_dispatched';
+        blockers: string[];
+    };
 
 export interface RuntimeOwnedSkillToolLedgerEntry {
     toolName: string;
@@ -26,6 +170,7 @@ export interface RuntimeOwnedSkillToolLedger {
     version: typeof RUNTIME_OWNED_SKILL_TOOL_LEDGER_VERSION;
     complete: true;
     entries: readonly RuntimeOwnedSkillToolLedgerEntry[];
+    deliveryPlanBinding?: RuntimeOwnedSkillDeliveryPlanBinding;
     boundaries: {
         runtimeOwned: true;
         exhaustiveForScope: true;
@@ -40,26 +185,821 @@ export interface RuntimeOwnedSkillToolLedgerScope {
 
 interface RuntimeOwnedSkillToolLedgerInternalEntry extends RuntimeOwnedSkillToolLedgerEntry {
     scopeIds: readonly string[];
+    dispatchSequence: number;
+    deliveryScopeBindings: ReadonlyArray<{
+        scopeId: string;
+        artifactIds: readonly string[];
+        phase: 'staging' | 'delivery';
+    }>;
 }
 
 interface GuardedAtomicToolLedgerState {
     activeScopeIds: Set<string>;
     entries: RuntimeOwnedSkillToolLedgerInternalEntry[];
+    queuedCalls: Array<{
+        scopeIds: readonly string[];
+        dispatchSequence: number;
+        toolName: string;
+        executionClass: ReturnType<typeof classifyAgentToolExecution>;
+        targetPaths: readonly string[];
+        deliveryScopeBindings: ReadonlyArray<{
+            scopeId: string;
+            artifactIds: readonly string[];
+            phase: 'staging' | 'delivery';
+        }>;
+    }>;
+    dispatchSequence: number;
+    pendingDeliveryDispatch?: {
+        scopeId: string;
+        toolName: string;
+        params: Record<string, any>;
+        artifactIds: readonly string[];
+        phase: 'staging' | 'delivery';
+    };
     drain: () => Promise<void>;
 }
 
 interface RuntimeOwnedSkillToolLedgerScopeState {
     owner: GuardedAtomicToolLedgerState;
     scopeId: string;
+    deliveryPlan?: {
+        plan: SkillDeliveryPlan;
+        artifactExecutions: Array<{
+            artifactIds: readonly string[];
+            toolName: string;
+            targetPaths: readonly string[];
+            dispatchState: 'pending' | 'returned' | 'threw';
+            result?: unknown;
+        }>;
+    };
     completed?: RuntimeOwnedSkillToolLedger;
 }
+
+type RuntimeOwnedSkillDeliveryPlanInternalExecution = NonNullable<
+    RuntimeOwnedSkillToolLedgerScopeState['deliveryPlan']
+>['artifactExecutions'][number];
 
 const GUARDED_ATOMIC_TOOL_LEDGER_STATES =
     new WeakMap<GuardedAtomicToolExecutor, GuardedAtomicToolLedgerState>();
 const RUNTIME_OWNED_SKILL_TOOL_LEDGER_SCOPES =
     new WeakMap<object, RuntimeOwnedSkillToolLedgerScopeState>();
 const RUNTIME_OWNED_SKILL_TOOL_LEDGERS = new WeakSet<object>();
+const RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDINGS = new WeakSet<object>();
+const RUNTIME_OWNED_SKILL_EXTERNAL_DELIVERY_COMMIT_RECEIPTS = new WeakSet<object>();
+const RUNTIME_OWNED_SKILL_STAGING_LEASES = new WeakSet<object>();
+const RUNTIME_OWNED_SKILL_DELIVERY_PLAN_RESULT_BINDINGS =
+    new WeakMap<object, RuntimeOwnedSkillDeliveryPlanBinding>();
 let runtimeOwnedSkillToolLedgerScopeSequence = 0;
+
+function isRecord(value: unknown): value is Record<string, any> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneAtomicToolValue(
+    value: unknown,
+    seen: WeakSet<object>,
+    depth: number
+): unknown {
+    if (depth > 24) throw new Error('原子工具参数嵌套过深。');
+    if (value === null
+        || value === undefined
+        || typeof value === 'string'
+        || typeof value === 'number'
+        || typeof value === 'boolean') {
+        return value;
+    }
+    if (typeof value !== 'object') {
+        throw new Error('原子工具参数只能包含可序列化数据。');
+    }
+    if (seen.has(value)) throw new Error('原子工具参数不能包含循环引用。');
+    seen.add(value);
+    if (Array.isArray(value)) {
+        const cloned = value.map((item) => cloneAtomicToolValue(item, seen, depth + 1));
+        seen.delete(value);
+        return Object.freeze(cloned);
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+        throw new Error('原子工具参数包含不受支持的对象类型。');
+    }
+    const cloned: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+        cloned[key] = cloneAtomicToolValue(item, seen, depth + 1);
+    }
+    seen.delete(value);
+    return Object.freeze(cloned);
+}
+
+function snapshotAtomicToolParams(params: Record<string, any>): Readonly<Record<string, any>> {
+    const businessArguments = stripUntrustedTargetGuard(params || {});
+    return cloneAtomicToolValue(businessArguments, new WeakSet<object>(), 0) as Readonly<
+        Record<string, any>
+    >;
+}
+
+function normalizedDeliveryPathsInOrder(values: readonly unknown[]): string[] {
+    return values.map(normalizeSkillDeliveryArtifactPath).filter(Boolean);
+}
+
+function sameOrderedStrings(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length
+        && left.every((value, index) => value === right[index]);
+}
+
+function isDeliveryPathInside(root: string, candidate: string): boolean {
+    const normalizedRoot = normalizeSkillDeliveryArtifactPath(root).replace(/\/+$/g, '');
+    const normalizedCandidate = normalizeSkillDeliveryArtifactPath(candidate).replace(/\/+$/g, '');
+    return Boolean(normalizedRoot
+        && normalizedCandidate
+        && normalizedCandidate !== normalizedRoot
+        && normalizedCandidate.startsWith(`${normalizedRoot}/`));
+}
+
+function relativeDeliveryPath(root: string, candidate: string): string {
+    const normalizedRoot = normalizeSkillDeliveryArtifactPath(root).replace(/\/+$/g, '');
+    const normalizedCandidate = normalizeSkillDeliveryArtifactPath(candidate).replace(/\/+$/g, '');
+    if (!normalizedRoot
+        || !normalizedCandidate.startsWith(`${normalizedRoot}/`)) return '';
+    return normalizedCandidate.slice(normalizedRoot.length + 1);
+}
+
+function freezeSkillDeliveryPlan(plan: SkillDeliveryPlan): SkillDeliveryPlan {
+    const convention: SkillDeliveryConvention = {
+        ...plan.convention,
+        supportRefs: [...plan.convention.supportRefs],
+        ...(plan.convention.editable
+            ? { editable: { ...plan.convention.editable } }
+            : {}),
+        ...(plan.convention.raster
+            ? { raster: { ...plan.convention.raster } }
+            : {})
+    };
+    Object.freeze(convention.supportRefs);
+    if (convention.editable) Object.freeze(convention.editable);
+    if (convention.raster) Object.freeze(convention.raster);
+    Object.freeze(convention);
+    const artifacts = plan.artifacts.map((artifact) => Object.freeze({ ...artifact }));
+    Object.freeze(artifacts);
+    const boundaries = Object.freeze({ ...plan.boundaries });
+    return Object.freeze({
+        ...plan,
+        convention,
+        artifacts,
+        boundaries
+    });
+}
+
+function readAtomicDeliveryTargetPaths(
+    toolName: string,
+    params: Readonly<Record<string, any>>
+): string[] {
+    switch (toolName) {
+        case 'saveDocument':
+            return normalizedDeliveryPathsInOrder([params.path]);
+        case 'exportGroup':
+        case 'quickExport':
+            return normalizedDeliveryPathsInOrder([params.outputPath]);
+        case 'exportDetailPageSlices': {
+            const config = isRecord(params.config) ? params.config : {};
+            const expectedFiles = Array.isArray(config.expectedFiles)
+                ? config.expectedFiles
+                : [];
+            return normalizedDeliveryPathsInOrder(expectedFiles.map((entry) => (
+                isRecord(entry) ? entry.path : undefined
+            )));
+        }
+        default:
+            return [];
+    }
+}
+
+function usesNonOverwritingDeliveryPolicy(
+    toolName: string,
+    params: Readonly<Record<string, any>>
+): boolean {
+    if (toolName === 'exportDetailPageSlices') {
+        const config = isRecord(params.config) ? params.config : {};
+        return config.conflictPolicy === 'fail_if_exists'
+            || config.conflictPolicy === 'new_version';
+    }
+    return params.conflictPolicy === 'fail_if_exists';
+}
+
+function normalizeDeliveryFormat(value: unknown): string {
+    const format = String(value || '').trim().toLowerCase();
+    if (format === 'jpeg') return 'jpg';
+    if (format === 'tiff') return 'tif';
+    return format;
+}
+
+function readAtomicDeliveryFormat(
+    toolName: string,
+    params: Readonly<Record<string, any>>
+): string {
+    if (toolName === 'exportDetailPageSlices') {
+        const config = isRecord(params.config) ? params.config : {};
+        return normalizeDeliveryFormat(config.format);
+    }
+    return normalizeDeliveryFormat(params.format);
+}
+
+function toolMatchesDeliveryArtifacts(input: {
+    toolName: string;
+    params: Readonly<Record<string, any>>;
+    artifacts: readonly SkillDeliveryPlanArtifact[];
+}): boolean {
+    const artifactFormats = new Set(input.artifacts.map((artifact) => (
+        normalizeDeliveryFormat(artifact.format)
+    )));
+    if (artifactFormats.size !== 1
+        || !artifactFormats.has(readAtomicDeliveryFormat(input.toolName, input.params))) {
+        return false;
+    }
+    if (input.toolName === 'saveDocument') {
+        return input.artifacts.length === 1
+            && input.artifacts[0].kind === 'editable_document';
+    }
+    if (input.toolName === 'exportGroup' || input.toolName === 'quickExport') {
+        return input.artifacts.length === 1
+            && input.artifacts[0].kind === 'raster_export';
+    }
+    if (input.toolName === 'exportDetailPageSlices') {
+        return input.artifacts.length > 0
+            && input.artifacts.every((artifact) => artifact.kind === 'raster_export');
+    }
+    return false;
+}
+
+function buildRuntimeOwnedSkillDeliveryPlanBinding(
+    state: RuntimeOwnedSkillToolLedgerScopeState
+): RuntimeOwnedSkillDeliveryPlanBinding | undefined {
+    const deliveryPlan = state.deliveryPlan;
+    if (!deliveryPlan) return undefined;
+    const plannedArtifactIds = new Set(deliveryPlan.plan.artifacts.map((artifact) => artifact.artifactId));
+    const issues: string[] = [];
+    const coveredArtifactIds = new Set<string>();
+    const artifactExecutions = deliveryPlan.artifactExecutions.map((execution) => {
+        const succeeded = execution.dispatchState === 'returned'
+            && isRecord(execution.result)
+            && execution.result.success === true;
+        if (succeeded) {
+            execution.artifactIds.forEach((artifactId) => coveredArtifactIds.add(artifactId));
+        }
+        return Object.freeze({
+            artifactIds: Object.freeze([...execution.artifactIds]),
+            toolName: execution.toolName,
+            targetPaths: Object.freeze([...execution.targetPaths]),
+            dispatchState: execution.dispatchState === 'threw' ? 'threw' as const : 'returned' as const,
+            succeeded
+        });
+    });
+    for (const artifactId of plannedArtifactIds) {
+        if (!coveredArtifactIds.has(artifactId)) {
+            issues.push(`交付文件 ${artifactId} 没有 Runtime 绑定的成功保存或导出调用。`);
+        }
+    }
+    const unboundSaveExportCalls = state.owner.queuedCalls.filter((call) => (
+        call.scopeIds.includes(state.scopeId)
+        && call.executionClass === 'save_export'
+        && !call.deliveryScopeBindings.some((binding) => binding.scopeId === state.scopeId)
+    ));
+    if (unboundSaveExportCalls.length > 0) {
+        issues.push('当前 Skill 存在未绑定到正式交付或可信暂存事务的保存/导出调用。');
+    }
+    const status = issues.length === 0 && coveredArtifactIds.size === plannedArtifactIds.size
+        ? 'ready' as const
+        : 'incomplete' as const;
+    const binding: RuntimeOwnedSkillDeliveryPlanBinding = Object.freeze({
+        version: RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDING_VERSION,
+        status,
+        plan: deliveryPlan.plan,
+        artifactExecutions: Object.freeze(artifactExecutions),
+        issues: Object.freeze(Array.from(new Set(issues))),
+        boundaries: Object.freeze({
+            runtimeOwned: true,
+            frozenBeforeFinalDeliveryDispatch: true,
+            immutableWithinScope: true,
+            exactArtifactCallsRequired: true,
+            producerResultIgnored: true,
+            selectsConvention: false,
+            executesTools: false,
+            grantsPermission: false
+        })
+    });
+    RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDINGS.add(binding);
+    return binding;
+}
+
+function buildDeliveryAuthorityBlockedResult(input: {
+    code: string;
+    error: string;
+    toolName?: string;
+}): Record<string, any> {
+    return {
+        success: false,
+        code: input.code,
+        policyGate: true,
+        ...(input.toolName ? { blockedTool: input.toolName } : {}),
+        error: input.error,
+        executesPhotoshop: false,
+        grantsPermission: false,
+        countsAsObservation: false,
+        countsAsTaskProgress: false
+    };
+}
+
+/**
+ * 由独立的文件/事务 owner 在完成精确 readback 后签发。
+ * 调用位置必须由源码边界审计限制；Skill executor 不能直接导入这个 issuer。
+ */
+export function issueRuntimeOwnedSkillExternalDeliveryCommitReceipt(input: {
+    deliveryPlanDigest: string;
+    committedFiles: ReadonlyArray<{
+        artifactId: string;
+        path: string;
+        byteLength: number;
+        sha256: string;
+    }>;
+}): RuntimeOwnedSkillExternalDeliveryCommitReceipt {
+    const committedFiles = input.committedFiles.map((file) => Object.freeze({
+        artifactId: String(file.artifactId || '').trim(),
+        path: String(file.path || '').trim(),
+        byteLength: Number(file.byteLength),
+        sha256: String(file.sha256 || '').trim().toLowerCase()
+    }));
+    if (!String(input.deliveryPlanDigest || '').trim()
+        || committedFiles.length === 0
+        || committedFiles.some((file) => (
+            !file.artifactId
+            || !normalizeSkillDeliveryArtifactPath(file.path)
+            || !Number.isSafeInteger(file.byteLength)
+            || file.byteLength <= 0
+            || !/^[a-f0-9]{64}$/.test(file.sha256)
+        ))) {
+        throw new Error('外部交付提交回执缺少完整 artifact 文件身份。');
+    }
+    const receipt: RuntimeOwnedSkillExternalDeliveryCommitReceipt = Object.freeze({
+        version: 'runtime-owned-skill-external-delivery-commit/v0',
+        status: 'committed',
+        deliveryPlanDigest: String(input.deliveryPlanDigest || '').trim(),
+        committedFiles: Object.freeze(committedFiles),
+        boundaries: Object.freeze({
+            issuedByTransactionOwner: true,
+            exactArtifactSetCommitted: true,
+            producerCannotSelfIssue: true,
+            grantsPermission: false
+        })
+    });
+    RUNTIME_OWNED_SKILL_EXTERNAL_DELIVERY_COMMIT_RECEIPTS.add(receipt);
+    return receipt;
+}
+
+/**
+ * Main-backed transaction owner compiles the exact staging-to-final mapping and
+ * signs it out of band. The authority still revalidates it against the frozen
+ * delivery plan before any staged save/export is dispatched.
+ */
+export function issueRuntimeOwnedSkillStagingLease(input: {
+    deliveryPlanDigest: string;
+    stagingRoot: string;
+    destinationRoot: string;
+    artifactMappings: ReadonlyArray<{
+        artifactId: string;
+        stagedPath: string;
+        finalPath: string;
+    }>;
+}): RuntimeOwnedSkillStagingLease {
+    const stagingRoot = String(input.stagingRoot || '').trim();
+    const destinationRoot = String(input.destinationRoot || '').trim();
+    const artifactMappings = input.artifactMappings.map((mapping) => Object.freeze({
+        artifactId: String(mapping.artifactId || '').trim(),
+        stagedPath: String(mapping.stagedPath || '').trim(),
+        finalPath: String(mapping.finalPath || '').trim()
+    }));
+    if (!String(input.deliveryPlanDigest || '').trim()
+        || !stagingRoot
+        || !destinationRoot
+        || artifactMappings.length === 0
+        || artifactMappings.some((mapping) => (
+            !mapping.artifactId
+            || !isDeliveryPathInside(stagingRoot, mapping.stagedPath)
+            || !isDeliveryPathInside(destinationRoot, mapping.finalPath)
+        ))) {
+        throw new Error('暂存事务租约缺少完整 artifact 路径映射。');
+    }
+    const lease: RuntimeOwnedSkillStagingLease = Object.freeze({
+        version: 'runtime-owned-skill-staging-lease/v0',
+        deliveryPlanDigest: String(input.deliveryPlanDigest || '').trim(),
+        stagingRoot,
+        destinationRoot,
+        artifactMappings: Object.freeze(artifactMappings),
+        boundaries: Object.freeze({
+            issuedAfterMainTransaction: true,
+            exactArtifactMapping: true,
+            producerCannotSelfIssue: true,
+            grantsPermission: false
+        })
+    });
+    RUNTIME_OWNED_SKILL_STAGING_LEASES.add(lease);
+    return lease;
+}
+
+/**
+ * 在现有 Skill Tool ledger scope 上创建一次性交付 authority。
+ * Agent/Skill 仍决定候选计划内容；Runtime 只重建、冻结并把精确 artifact 调用绑定到账本。
+ */
+export function createRuntimeOwnedSkillDeliveryPlanAuthority(input: {
+    scope: RuntimeOwnedSkillToolLedgerScope | undefined;
+    executor: GuardedAtomicToolExecutor | undefined;
+}): RuntimeOwnedSkillDeliveryPlanAuthority | undefined {
+    if (!input.scope || !input.executor) return undefined;
+    const state = RUNTIME_OWNED_SKILL_TOOL_LEDGER_SCOPES.get(input.scope);
+    const owner = GUARDED_ATOMIC_TOOL_LEDGER_STATES.get(input.executor);
+    if (!state || !owner || state.owner !== owner) return undefined;
+
+    const dispatchArtifacts = async (dispatchInput: {
+        phase: 'staging' | 'delivery';
+        lease?: RuntimeOwnedSkillStagingLease;
+        artifactIds: readonly string[];
+        toolName: string;
+        params: Record<string, any>;
+    }): Promise<any> => {
+        const toolName = String(dispatchInput.toolName || '').trim();
+        let params: Readonly<Record<string, any>>;
+        try {
+            params = snapshotAtomicToolParams(isRecord(dispatchInput.params) ? dispatchInput.params : {});
+        } catch (error) {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_arguments_invalid',
+                error: error instanceof Error ? error.message : String(error),
+                toolName
+            });
+        }
+        if (state.completed) {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_plan_scope_completed',
+                error: '当前 Skill 运行已经封口，不能继续保存或导出。',
+                toolName
+            });
+        }
+        if (!state.deliveryPlan) {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_plan_not_frozen',
+                error: '最终保存、导出或暂存前必须先冻结精确交付计划。',
+                toolName
+            });
+        }
+        const artifactIds = dispatchInput.artifactIds.map((artifactId) => (
+            String(artifactId || '').trim()
+        ));
+        if (artifactIds.length === 0
+            || artifactIds.some((artifactId) => !artifactId)
+            || new Set(artifactIds).size !== artifactIds.length) {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_artifact_identity_invalid',
+                error: '交付调用必须逐项绑定唯一 artifactId。',
+                toolName
+            });
+        }
+        const requestedArtifactIds = new Set(artifactIds);
+        const typedArtifacts = state.deliveryPlan.plan.artifacts.filter((artifact) => (
+            requestedArtifactIds.has(artifact.artifactId)
+        ));
+        if (typedArtifacts.length !== artifactIds.length
+            || !sameOrderedStrings(
+                artifactIds,
+                typedArtifacts.map((artifact) => artifact.artifactId)
+            )) {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_artifact_order_mismatch',
+                error: '交付 artifactId 必须按冻结计划的逐项顺序提交。',
+                toolName
+            });
+        }
+        if (dispatchInput.phase === 'delivery') {
+            const alreadyReserved = state.deliveryPlan.artifactExecutions.some((execution) => (
+                execution.artifactIds.some((artifactId) => requestedArtifactIds.has(artifactId))
+            ));
+            if (alreadyReserved) {
+                return buildDeliveryAuthorityBlockedResult({
+                    code: 'runtime_delivery_artifact_already_dispatched',
+                    error: '同一冻结文件已经进入保存或导出流程，不能重复派发。',
+                    toolName
+                });
+            }
+        }
+        if (classifyAgentToolExecution(toolName, params) !== 'save_export') {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_tool_not_save_export',
+                error: '交付 artifact 只能绑定正式保存、导出或受控暂存工具。',
+                toolName
+            });
+        }
+        if (!usesNonOverwritingDeliveryPolicy(toolName, params)) {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_overwrite_policy_forbidden',
+                error: '交付与暂存调用都必须使用不覆盖策略。',
+                toolName
+            });
+        }
+        if (!toolMatchesDeliveryArtifacts({ toolName, params, artifacts: typedArtifacts })) {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_artifact_tool_mismatch',
+                error: '保存或导出工具的文件类型、数量或格式与冻结 artifact 不一致。',
+                toolName
+            });
+        }
+        let expectedPaths = typedArtifacts.map((artifact) => (
+            normalizeSkillDeliveryArtifactPath(artifact.path)
+        ));
+        if (dispatchInput.phase === 'staging') {
+            const lease = dispatchInput.lease;
+            if (!lease
+                || !RUNTIME_OWNED_SKILL_STAGING_LEASES.has(lease)
+                || lease.deliveryPlanDigest !== state.deliveryPlan.plan.digest) {
+                return buildDeliveryAuthorityBlockedResult({
+                    code: 'runtime_delivery_staging_lease_untrusted',
+                    error: '暂存调用没有绑定本次 Main 文件事务。',
+                    toolName
+                });
+            }
+            const planArtifacts = state.deliveryPlan.plan.artifacts;
+            if (lease.artifactMappings.length !== planArtifacts.length
+                || lease.artifactMappings.some((mapping, index) => {
+                    const artifact = planArtifacts[index];
+                    return mapping.artifactId !== artifact.artifactId
+                        || normalizeSkillDeliveryArtifactPath(mapping.finalPath)
+                            !== normalizeSkillDeliveryArtifactPath(artifact.path)
+                        || relativeDeliveryPath(lease.stagingRoot, mapping.stagedPath)
+                            !== relativeDeliveryPath(lease.destinationRoot, mapping.finalPath);
+                })) {
+                return buildDeliveryAuthorityBlockedResult({
+                    code: 'runtime_delivery_staging_mapping_mismatch',
+                    error: '暂存路径映射与冻结交付计划不一致。',
+                    toolName
+                });
+            }
+            const mappingsById = new Map(lease.artifactMappings.map((mapping) => (
+                [mapping.artifactId, mapping] as const
+            )));
+            expectedPaths = typedArtifacts.map((artifact) => (
+                normalizeSkillDeliveryArtifactPath(mappingsById.get(artifact.artifactId)?.stagedPath)
+            ));
+        }
+        const actualPaths = readAtomicDeliveryTargetPaths(toolName, params);
+        if (new Set(actualPaths).size !== actualPaths.length
+            || !sameOrderedStrings(expectedPaths, actualPaths)) {
+            return buildDeliveryAuthorityBlockedResult({
+                code: 'runtime_delivery_artifact_path_mismatch',
+                error: '保存或导出的逐项目标与冻结 artifact 映射不一致。',
+                toolName
+            });
+        }
+        const execution: RuntimeOwnedSkillDeliveryPlanInternalExecution | undefined =
+            dispatchInput.phase === 'delivery'
+                ? {
+                    artifactIds: Object.freeze([...artifactIds]),
+                    toolName,
+                    targetPaths: Object.freeze([...actualPaths]),
+                    dispatchState: 'pending'
+                }
+                : undefined;
+        if (execution) state.deliveryPlan.artifactExecutions.push(execution);
+        owner.pendingDeliveryDispatch = {
+            scopeId: state.scopeId,
+            toolName,
+            params: params as Record<string, any>,
+            artifactIds: Object.freeze([...artifactIds]),
+            phase: dispatchInput.phase
+        };
+        let dispatched: Promise<any>;
+        try {
+            dispatched = input.executor!(toolName, params as Record<string, any>);
+        } finally {
+            owner.pendingDeliveryDispatch = undefined;
+        }
+        try {
+            const result = await dispatched;
+            if (execution) {
+                execution.dispatchState = 'returned';
+                execution.result = result;
+            }
+            return result;
+        } catch (error) {
+            if (execution) execution.dispatchState = 'threw';
+            throw error;
+        }
+    };
+
+    const authority: RuntimeOwnedSkillDeliveryPlanAuthority = Object.freeze({
+        version: 'runtime-owned-skill-delivery-plan-authority/v0' as const,
+        freeze(candidate: RuntimeOwnedSkillDeliveryPlanFreezeCandidate):
+            RuntimeOwnedSkillDeliveryPlanFreezeDecision {
+            if (state.completed) {
+                return {
+                    status: 'rejected',
+                    code: 'runtime_delivery_plan_scope_completed',
+                    blockers: ['当前 Skill 运行已经封口，不能再补写交付计划。']
+                };
+            }
+            const resolution = buildSkillDeliveryPlan(candidate);
+            if (resolution.status !== 'ready' || !resolution.plan) {
+                return {
+                    status: 'rejected',
+                    code: 'runtime_delivery_plan_invalid',
+                    blockers: resolution.blockers.length > 0
+                        ? [...resolution.blockers]
+                        : ['交付计划无效。']
+                };
+            }
+            const plan = freezeSkillDeliveryPlan(resolution.plan);
+            if (state.deliveryPlan) {
+                if (state.deliveryPlan.plan.digest !== plan.digest) {
+                    return {
+                        status: 'rejected',
+                        code: 'runtime_delivery_plan_already_frozen',
+                        blockers: ['当前 Skill 运行已经冻结另一份交付计划；必须开始新的计划版本，不能原地覆盖。']
+                    };
+                }
+                return {
+                    status: 'retained',
+                    binding: buildRuntimeOwnedSkillDeliveryPlanBinding(state)!,
+                    blockers: []
+                };
+            }
+            const postHocSaveExportCall = owner.queuedCalls.some((call) => (
+                call.scopeIds.includes(state.scopeId)
+                && call.executionClass === 'save_export'
+            ));
+            if (postHocSaveExportCall) {
+                return {
+                    status: 'rejected',
+                    code: 'runtime_delivery_plan_frozen_too_late',
+                    blockers: ['当前 Skill 已进入保存或导出队列；Runtime 不接受事后补写的交付计划。']
+                };
+            }
+            state.deliveryPlan = {
+                plan,
+                artifactExecutions: []
+            };
+            return {
+                status: 'frozen',
+                binding: buildRuntimeOwnedSkillDeliveryPlanBinding(state)!,
+                blockers: []
+            };
+        },
+        async executeArtifacts(executionInput: {
+            artifactIds: readonly string[];
+            toolName: string;
+            params: Record<string, any>;
+        }): Promise<any> {
+            return dispatchArtifacts({ ...executionInput, phase: 'delivery' });
+        },
+        async executeStagedArtifacts(stagingInput: {
+            lease: RuntimeOwnedSkillStagingLease;
+            artifactIds: readonly string[];
+            toolName: string;
+            params: Record<string, any>;
+        }): Promise<any> {
+            return dispatchArtifacts({ ...stagingInput, phase: 'staging' });
+        },
+        acceptExternalCommit(commitInput: {
+            artifactIds: readonly string[];
+            receipt: RuntimeOwnedSkillExternalDeliveryCommitReceipt;
+        }): RuntimeOwnedSkillDeliveryExternalCommitDecision {
+            if (!state.deliveryPlan) {
+                return {
+                    status: 'rejected',
+                    code: 'runtime_delivery_plan_not_frozen',
+                    blockers: ['外部事务提交前没有冻结交付计划。']
+                };
+            }
+            if (!commitInput.receipt
+                || !RUNTIME_OWNED_SKILL_EXTERNAL_DELIVERY_COMMIT_RECEIPTS.has(commitInput.receipt)) {
+                return {
+                    status: 'rejected',
+                    code: 'runtime_delivery_external_commit_untrusted',
+                    blockers: ['外部文件提交回执不是由可信事务 owner 签发。']
+                };
+            }
+            const artifactIds = commitInput.artifactIds.map((artifactId) => (
+                String(artifactId || '').trim()
+            ));
+            const planArtifacts = state.deliveryPlan.plan.artifacts;
+            const plannedArtifactIds = planArtifacts.map((artifact) => artifact.artifactId);
+            const committedFiles = commitInput.receipt.committedFiles;
+            const committedFilesMatch = committedFiles.length === planArtifacts.length
+                && committedFiles.every((file, index) => {
+                    const artifact = planArtifacts[index];
+                    return file.artifactId === artifact.artifactId
+                        && normalizeSkillDeliveryArtifactPath(file.path)
+                            === normalizeSkillDeliveryArtifactPath(artifact.path)
+                        && Number.isSafeInteger(file.byteLength)
+                        && file.byteLength > 0
+                        && /^[a-f0-9]{64}$/.test(file.sha256);
+                });
+            if (commitInput.receipt.deliveryPlanDigest !== state.deliveryPlan.plan.digest
+                || !sameOrderedStrings(artifactIds, plannedArtifactIds)
+                || !committedFilesMatch) {
+                return {
+                    status: 'rejected',
+                    code: 'runtime_delivery_external_commit_mismatch',
+                    blockers: ['外部事务提交回执与 Runtime 冻结的完整 artifact 集合不一致。']
+                };
+            }
+            if (state.deliveryPlan.artifactExecutions.length > 0) {
+                return {
+                    status: 'rejected',
+                    code: 'runtime_delivery_artifact_already_dispatched',
+                    blockers: ['当前冻结 artifact 已经通过另一条交付调用派发，不能重复接受外部提交。']
+                };
+            }
+            state.deliveryPlan.artifactExecutions.push({
+                artifactIds: Object.freeze([...artifactIds]),
+                toolName: 'runtimeExternalFileTransaction',
+                targetPaths: Object.freeze(committedFiles.map((file) => (
+                    normalizeSkillDeliveryArtifactPath(file.path)
+                ))),
+                dispatchState: 'returned',
+                result: Object.freeze({
+                    success: true,
+                    committedFiles: Object.freeze(committedFiles.map((file) => Object.freeze({ ...file })))
+                })
+            });
+            const binding = buildRuntimeOwnedSkillDeliveryPlanBinding(state)!;
+            return binding.status === 'ready'
+                ? { status: 'accepted', binding }
+                : {
+                    status: 'rejected',
+                    code: 'runtime_delivery_external_commit_mismatch',
+                    blockers: [...binding.issues]
+                };
+        },
+        boundaries: Object.freeze({
+            runtimeOwned: true,
+            acceptsProducerCandidateOnly: true,
+            freezesBeforeFinalDeliveryDispatch: true,
+            immutableWithinScope: true,
+            selectsConvention: false,
+            creditsOnlyGuardedOrTrustedTransactionCommits: true,
+            grantsPermission: false
+        })
+    });
+    return authority;
+}
+
+/** 仅可信完整 ledger 可把 binding 绑定到最终 Skill result 对象。 */
+export function attachRuntimeOwnedSkillDeliveryPlanBinding<T>(
+    result: T,
+    ledger: RuntimeOwnedSkillToolLedger | undefined
+): T {
+    if (!result || typeof result !== 'object' || !isRuntimeOwnedCompleteSkillToolLedger(ledger)) {
+        return result;
+    }
+    const binding = ledger.deliveryPlanBinding;
+    if (!binding
+        || binding.status !== 'ready'
+        || !RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDINGS.has(binding)) {
+        return result;
+    }
+    RUNTIME_OWNED_SKILL_DELIVERY_PLAN_RESULT_BINDINGS.set(result as object, binding);
+    return result;
+}
+
+/** 包装 Skill result 时显式转移同一不可序列化 binding；JSON/克隆不会自动继承。 */
+export function forwardRuntimeOwnedSkillDeliveryPlanBinding<T>(source: unknown, target: T): T {
+    if (!target || typeof target !== 'object' || !source || typeof source !== 'object') return target;
+    const binding = RUNTIME_OWNED_SKILL_DELIVERY_PLAN_RESULT_BINDINGS.get(source as object);
+    if (!binding || !RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDINGS.has(binding)) return target;
+    RUNTIME_OWNED_SKILL_DELIVERY_PLAN_RESULT_BINDINGS.set(target as object, binding);
+    return target;
+}
+
+export function readRuntimeOwnedSkillDeliveryPlanBinding(
+    result: unknown
+): RuntimeOwnedSkillDeliveryPlanBinding | undefined {
+    if (!result || typeof result !== 'object') return undefined;
+    const binding = RUNTIME_OWNED_SKILL_DELIVERY_PLAN_RESULT_BINDINGS.get(result as object);
+    return binding?.status === 'ready'
+        && RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDINGS.has(binding)
+        ? binding
+        : undefined;
+}
+
+export function readRuntimeOwnedSkillDeliveryPlanDigest(result: unknown): string | undefined {
+    return readRuntimeOwnedSkillDeliveryPlanBinding(result)?.plan.digest;
+}
+
+/** 事务桥只读取由本 scope owner 签发的冻结对象身份；JSON/手造对象一律失败。 */
+export function isRuntimeOwnedSkillDeliveryPlanBinding(
+    value: unknown
+): value is RuntimeOwnedSkillDeliveryPlanBinding {
+    return Boolean(value)
+        && typeof value === 'object'
+        && RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDINGS.has(value as object)
+        && (value as RuntimeOwnedSkillDeliveryPlanBinding).version
+            === RUNTIME_OWNED_SKILL_DELIVERY_PLAN_BINDING_VERSION;
+}
 
 export function beginRuntimeOwnedSkillToolLedgerScope(
     executor: GuardedAtomicToolExecutor | undefined
@@ -99,10 +1039,12 @@ export async function completeRuntimeOwnedSkillToolLedgerScope(
                 ? { result: entry.result }
                 : {})
         }));
+    const deliveryPlanBinding = buildRuntimeOwnedSkillDeliveryPlanBinding(state);
     const ledger: RuntimeOwnedSkillToolLedger = Object.freeze({
         version: RUNTIME_OWNED_SKILL_TOOL_LEDGER_VERSION,
         complete: true,
         entries: Object.freeze(entries),
+        ...(deliveryPlanBinding ? { deliveryPlanBinding } : {}),
         boundaries: Object.freeze({
             runtimeOwned: true,
             exhaustiveForScope: true,
@@ -321,6 +1263,8 @@ export function createGuardedAtomicToolExecutor(
     const ledgerState: GuardedAtomicToolLedgerState = {
         activeScopeIds: new Set<string>(),
         entries: [],
+        queuedCalls: [],
+        dispatchSequence: 0,
         drain: async (): Promise<void> => await executionQueue
     };
 
@@ -329,10 +1273,41 @@ export function createGuardedAtomicToolExecutor(
         params: Record<string, any>
     ): Promise<any> {
         const scopeIds = Array.from(ledgerState.activeScopeIds);
+        ledgerState.dispatchSequence += 1;
+        const dispatchSequence = ledgerState.dispatchSequence;
+        let queuedParams: Readonly<Record<string, any>>;
+        try {
+            queuedParams = snapshotAtomicToolParams(params || {});
+        } catch (error) {
+            return Promise.resolve(buildDeliveryAuthorityBlockedResult({
+                code: 'skill_atomic_tool_arguments_invalid',
+                error: error instanceof Error ? error.message : String(error),
+                toolName
+            }));
+        }
+        const pendingDeliveryDispatch = ledgerState.pendingDeliveryDispatch;
+        const deliveryScopeBindings = pendingDeliveryDispatch
+            && pendingDeliveryDispatch.params === params
+            && pendingDeliveryDispatch.toolName === toolName
+            && scopeIds.includes(pendingDeliveryDispatch.scopeId)
+            ? [Object.freeze({
+                scopeId: pendingDeliveryDispatch.scopeId,
+                artifactIds: Object.freeze([...pendingDeliveryDispatch.artifactIds]),
+                phase: pendingDeliveryDispatch.phase
+            })]
+            : [];
+        ledgerState.queuedCalls.push({
+            scopeIds: Object.freeze([...scopeIds]),
+            dispatchSequence,
+            toolName,
+            executionClass: classifyAgentToolExecution(toolName, queuedParams),
+            targetPaths: Object.freeze(readAtomicDeliveryTargetPaths(toolName, queuedParams)),
+            deliveryScopeBindings: Object.freeze([...deliveryScopeBindings])
+        });
         const execution = executionQueue.then(async (): Promise<any> => {
             const decision = buildGuardedAtomicToolExecutionDecision({
                 toolName,
-                params,
+                params: queuedParams as Record<string, any>,
                 userRequest: input.userRequest,
                 completedToolCalls
             });
@@ -349,6 +1324,8 @@ export function createGuardedAtomicToolExecutor(
                 });
                 ledgerState.entries.push({
                     scopeIds,
+                    dispatchSequence,
+                    deliveryScopeBindings,
                     toolName,
                     params: decision.businessArguments,
                     dispatchState: 'not_dispatched',
@@ -366,6 +1343,8 @@ export function createGuardedAtomicToolExecutor(
                 });
                 ledgerState.entries.push({
                     scopeIds,
+                    dispatchSequence,
+                    deliveryScopeBindings,
                     toolName,
                     params: decision.businessArguments,
                     dispatchState: 'returned',
@@ -375,6 +1354,8 @@ export function createGuardedAtomicToolExecutor(
             } catch (error) {
                 ledgerState.entries.push({
                     scopeIds,
+                    dispatchSequence,
+                    deliveryScopeBindings,
                     toolName,
                     params: decision.businessArguments,
                     dispatchState: 'threw'

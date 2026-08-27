@@ -1,7 +1,11 @@
 // 「让用户帮我选」纯逻辑测试：单问 / 多问归一、必须给倾向项、回复措辞、全自动口径。
 const path = require('path');
 const root = path.resolve(__dirname, '..');
-require('ts-node').register({ transpileOnly: true, project: path.join(root, 'tsconfig.main.json') });
+require('ts-node').register({
+    transpileOnly: true,
+    project: path.join(root, 'tsconfig.main.json'),
+    compilerOptions: { jsx: 'react-jsx' }
+});
 const {
     canAutoResolveUserChoiceRequest,
     canSubmitUserChoiceAnswers,
@@ -13,9 +17,28 @@ const {
     buildSkuComboEditorInteractiveCard
 } = require(path.join(root, 'src/shared/sku-combo-interactive-card.ts'));
 const {
+    buildSkuComboConfirmationRequest
+} = require(path.join(root, 'src/shared/sku-combo-confirmation-request.ts'));
+const {
+    buildSkuTemplateDirectionCard,
+    isApprovedSkuTemplateDirectionSubmission
+} = require(path.join(root, 'src/shared/sku-template-direction-interactive-card.ts'));
+const {
     listSkillInteractiveCardProviders,
-    prepareSkillInteractiveCardSubmission
+    prepareSkillInteractiveCardSubmission,
+    prepareSkillInteractiveReview
 } = require(path.join(root, 'src/renderer/services/skill-executors/interaction-cards/registry.ts'));
+const {
+    buildPendingInteractiveContinuation
+} = require(path.join(root, 'src/shared/pending-interactive-continuation.ts'));
+const {
+    evaluateGenericBlockingCardOwner,
+    evaluateRepeatedInteractionDecision
+} = require(path.join(root, 'src/shared/agent-interaction-owner-policy.ts'));
+const {
+    canRenderSkillInteractiveCardPackage,
+    skillInteractiveCardPackages
+} = require(path.join(root, 'src/renderer/services/skill-executors/interaction-cards/packages.ts'));
 
 let failed = 0;
 function check(name, condition, detail) { if (condition) { console.log(`✅ ${name}`); return; } failed += 1; console.log(`❌ ${name}${detail ? ' — ' + detail : ''}`); }
@@ -71,11 +94,35 @@ const skuCard = buildSkuComboEditorInteractiveCard({
         { slot: 2, label: '蓝色' },
         { slot: 3, label: '白色' }
     ],
-    requiredSizes: [2]
+    requiredSizes: [2],
+    initialValue: {
+        groups: [{ size: 2, combos: [[1, 2]] }],
+        generateSelfSelectNotes: true
+    }
 });
 const preparedSkuSubmission = prepareSkillInteractiveCardSubmission(
     skuCard,
     skuCard.payload.initialValue
+);
+const skuTemplateDirectionCard = buildSkuTemplateDirectionCard({
+    memoryScope: { type: 'project', id: 'project-sku-template-direction-audit' },
+    comboSizes: [2, 3, 4],
+    colorCount: 5,
+    productLabel: '袜子',
+    styleText: '干净、柔和'
+});
+const preparedSkuTemplateDirection = prepareSkillInteractiveCardSubmission(
+    skuTemplateDirectionCard,
+    skuTemplateDirectionCard.payload.initialValue,
+    { expectedOwnerSkillId: 'sku-batch', requireExpectedOwner: true }
+);
+check(
+    'SKU 模板方向卡经 Provider 提交后会被原 Skill 识别为已确认',
+    preparedSkuTemplateDirection.status === 'ready'
+        && isApprovedSkuTemplateDirectionSubmission({
+            card: skuTemplateDirectionCard,
+            submission: preparedSkuTemplateDirection.submission
+        })
 );
 check(
     'SKU 组合卡由 Skill Provider 准备提交',
@@ -89,23 +136,303 @@ check(
         version: 'interactive-card/v0', id: 'unknown', kind: 'unknown_business_card', title: '未知', payload: {}
     }, {}).status === 'unsupported'
 );
+check(
+    '业务卡提交必须与 continuation Skill owner 一致',
+    prepareSkillInteractiveCardSubmission(
+        skuCard,
+        skuCard.payload.initialValue,
+        { expectedOwnerSkillId: 'main-image-design', requireExpectedOwner: true }
+    ).status === 'invalid'
+);
+check(
+    '业务卡缺少 continuation owner 时失败关闭',
+    prepareSkillInteractiveCardSubmission(
+        skuCard,
+        skuCard.payload.initialValue,
+        { requireExpectedOwner: true }
+    ).status === 'invalid'
+);
+check(
+    '业务卡自身缺少 Provider owner 时不能只凭 kind/version 提交',
+    prepareSkillInteractiveCardSubmission(
+        { ...skuCard, interactionOwner: undefined },
+        skuCard.payload.initialValue,
+        { expectedOwnerSkillId: 'sku-batch', requireExpectedOwner: true }
+    ).status === 'invalid'
+);
+check(
+    '非空但不是 Provider 规范派生的决定指纹同样不能提交',
+    prepareSkillInteractiveCardSubmission(
+        { ...skuCard, decisionFingerprint: 'forged-non-empty-decision' },
+        skuCard.payload.initialValue,
+        { expectedOwnerSkillId: 'sku-batch', requireExpectedOwner: true }
+    ).status === 'invalid'
+);
+const skuComboCardPackage = skillInteractiveCardPackages.find(
+    (item) => item.provider.kind === 'sku_combo_editor'
+);
+check(
+    '缺 owner 或缺决定指纹的业务卡不会渲染为可执行 UI',
+    Boolean(skuComboCardPackage)
+        && !canRenderSkillInteractiveCardPackage(
+            { ...skuCard, interactionOwner: undefined },
+            skuComboCardPackage.provider
+        )
+        && !canRenderSkillInteractiveCardPackage(
+            { ...skuCard, decisionFingerprint: undefined },
+            skuComboCardPackage.provider
+        )
+);
+check(
+    '产后复核卡自身缺少 Provider owner 时同样失败关闭',
+    prepareSkillInteractiveReview({
+        version: 'interactive-card/v0',
+        id: 'ownerless-sku-review',
+        kind: 'sku_human_review',
+        title: '旧复核卡',
+        payload: { version: 'sku-human-review-card/v0' }
+    }, {}).status === 'invalid'
+);
+const sameSkuDecisionCard = buildSkuComboEditorInteractiveCard({
+    title: '另一个展示标题',
+    colorSlots: skuCard.payload.colorSlots,
+    requiredSizes: [2],
+    initialValue: {
+        groups: [{ size: 2, combos: [[1, 2]] }],
+        generateSelfSelectNotes: true
+    }
+});
+const changedSkuDecisionCard = buildSkuComboEditorInteractiveCard({
+    colorSlots: skuCard.payload.colorSlots,
+    requiredSizes: [2],
+    initialValue: {
+        groups: [{ size: 2, combos: [[1, 3]] }],
+        generateSelfSelectNotes: true
+    }
+});
+const missingCandidateSkuCard = buildSkuComboEditorInteractiveCard({
+    colorSlots: skuCard.payload.colorSlots,
+    requiredSizes: [2]
+});
+check(
+    'SKU 决定指纹不受卡片展示标题影响',
+    sameSkuDecisionCard.decisionFingerprint === skuCard.decisionFingerprint
+);
+check(
+    'SKU 候选变化不会伪装成另一项决定，但会产生新的候选指纹',
+    changedSkuDecisionCard.decisionFingerprint === skuCard.decisionFingerprint
+        && changedSkuDecisionCard.candidateFingerprint !== skuCard.candidateFingerprint
+);
+check(
+    'SKU 卡 Builder 不再用前 N 个颜色生成隐藏候选',
+    missingCandidateSkuCard.payload.initialValue.groups.every((group) => group.combos.length === 0)
+);
+const warningSkuConfirmation = buildSkuComboConfirmationRequest({
+    availableColors: ['红色', '蓝色'],
+    requiredSizes: [2],
+    combosBySize: { 2: [['红色', '红色']] },
+    generateSelfSelectNotes: true
+});
+check(
+    '影响用户判断的 SKU 候选警告会显示在专属卡片上',
+    warningSkuConfirmation.status === 'pending_user_confirmation'
+        && /同色多双/.test(warningSkuConfirmation.card?.description || '')
+);
+let mismatchedContinuationRejected = false;
+try {
+    buildPendingInteractiveContinuation({
+        skillId: 'main-image-design',
+        params: {},
+        result: { data: { interactiveCards: [skuCard] } },
+        outcomeStatus: 'awaiting_confirmation'
+    });
+} catch {
+    mismatchedContinuationRejected = true;
+}
+check('挂起操作拒绝另一 Skill 的 SKU Provider 卡', mismatchedContinuationRejected);
+let ownerCardWithoutDecisionFingerprintRejected = false;
+try {
+    buildPendingInteractiveContinuation({
+        skillId: 'sku-batch',
+        params: {},
+        result: {
+            data: {
+                interactiveCards: [{ ...skuCard, decisionFingerprint: undefined }]
+            }
+        },
+        outcomeStatus: 'awaiting_confirmation'
+    });
+} catch {
+    ownerCardWithoutDecisionFingerprintRejected = true;
+}
+check(
+    'Provider-owned 阻塞卡缺决定指纹时不能创建可恢复等待点',
+    ownerCardWithoutDecisionFingerprintRejected
+);
+const ownedSkuContinuation = buildPendingInteractiveContinuation({
+    skillId: 'sku-batch',
+    params: {},
+    result: { data: { interactiveCards: [skuCard] } },
+    outcomeStatus: 'awaiting_confirmation'
+});
+check(
+    'SKU Provider 卡只绑定到 sku-batch continuation',
+    ownedSkuContinuation?.operation?.skillId === 'sku-batch'
+        && ownedSkuContinuation?.card?.interactionOwner?.skillId === 'sku-batch'
+);
+check(
+    '设计执行未选择 Task Profile 时通用阻塞卡失败关闭',
+    evaluateGenericBlockingCardOwner({
+        skillBridgesForbidden: false,
+        requiresResolvedOwner: true
+    }).code === 'interactive_owner_unresolved'
+);
+check(
+    'Task Profile 的 Skill Provider 拥有交互时通用卡不能旁路',
+    evaluateGenericBlockingCardOwner({
+        skillBridgesForbidden: false,
+        requiresResolvedOwner: true,
+        resolvedTaskType: 'ecommerce.sku_batch.v1',
+        providerOwnerSkillIds: ['sku-batch']
+    }).code === 'skill_provider_interaction_owner_required'
+);
+check(
+    '用户明确禁用 Skill 时保留通用卡验证通道',
+    evaluateGenericBlockingCardOwner({
+        skillBridgesForbidden: true,
+        requiresResolvedOwner: true,
+        providerOwnerSkillIds: ['sku-batch']
+    }).status === 'allowed'
+);
+check(
+    '同一 TaskRun 的同一决定在零副作用下重发会被识别为无进展',
+    evaluateRepeatedInteractionDecision({
+        previousDecisionFingerprint: skuCard.decisionFingerprint,
+        previousAnswerFingerprint: preparedSkuSubmission.submission.decisionContext?.answerFingerprint,
+        nextDecisionFingerprint: sameSkuDecisionCard.decisionFingerprint,
+        nextCandidateFingerprint: sameSkuDecisionCard.candidateFingerprint,
+        skillEffect: 'none',
+        mutationCount: 0,
+        revisionCount: 0
+    }).code === 'interaction_no_progress'
+);
+check(
+    '同一决定出现不同于用户答案的新候选时允许进入新的确认点',
+    evaluateRepeatedInteractionDecision({
+        previousDecisionFingerprint: skuCard.decisionFingerprint,
+        previousAnswerFingerprint: preparedSkuSubmission.submission.decisionContext?.answerFingerprint,
+        nextDecisionFingerprint: changedSkuDecisionCard.decisionFingerprint,
+        nextCandidateFingerprint: changedSkuDecisionCard.candidateFingerprint,
+        skillEffect: 'none',
+        mutationCount: 0,
+        revisionCount: 0
+    }).status === 'allowed'
+);
+const editedSkuSubmission = prepareSkillInteractiveCardSubmission(
+    skuCard,
+    changedSkuDecisionCard.payload.initialValue
+);
+check(
+    'Skill 把用户刚编辑的答案重新当候选时仍会被识别为无进展',
+    editedSkuSubmission.status === 'ready'
+        && evaluateRepeatedInteractionDecision({
+            previousDecisionFingerprint: skuCard.decisionFingerprint,
+            previousAnswerFingerprint: editedSkuSubmission.submission.decisionContext?.answerFingerprint,
+            nextDecisionFingerprint: changedSkuDecisionCard.decisionFingerprint,
+            nextCandidateFingerprint: changedSkuDecisionCard.candidateFingerprint,
+            skillEffect: 'none',
+            mutationCount: 0,
+            revisionCount: 0
+        }).code === 'interaction_no_progress'
+);
+check(
+    '同一决定在已有真实写入时不被误判为停滞',
+    evaluateRepeatedInteractionDecision({
+        previousDecisionFingerprint: skuCard.decisionFingerprint,
+        nextDecisionFingerprint: sameSkuDecisionCard.decisionFingerprint,
+        skillEffect: 'applied',
+        mutationCount: 1,
+        revisionCount: 1
+    }).status === 'allowed'
+);
 
 const chatPanelSource = require('fs').readFileSync(path.join(root, 'src/renderer/components/ChatPanel.tsx'), 'utf8');
 const cardHostSource = require('fs').readFileSync(path.join(root, 'src/renderer/components/message/blocks/InteractiveCardBlock.tsx'), 'utf8');
 const toolExecutorSource = require('fs').readFileSync(path.join(root, 'src/renderer/services/tool-executor.service.ts'), 'utf8');
 const toolSchemaSource = require('fs').readFileSync(path.join(root, 'src/renderer/services/agent-runtime/tool-schemas.ts'), 'utf8');
 const skillCardRegistrySource = require('fs').readFileSync(path.join(root, 'src/renderer/services/skill-executors/interaction-cards/registry.ts'), 'utf8');
+const skillCardPackagesSource = require('fs').readFileSync(path.join(root, 'src/renderer/services/skill-executors/interaction-cards/packages.ts'), 'utf8');
+const skuBatchExecutorSource = require('fs').readFileSync(path.join(root, 'src/renderer/services/skill-executors/sku-batch.executor.ts'), 'utf8');
+const skuTemplateDirectionCardSource = require('fs').readFileSync(path.join(root, 'src/shared/sku-template-direction-interactive-card.ts'), 'utf8');
+const autonomousExecutorSource = require('fs').readFileSync(path.join(root, 'src/renderer/services/skill-executors/autonomous-agent.executor.ts'), 'utf8');
 const capabilityBridgeSource = require('fs').readFileSync(path.join(root, 'src/shared/agent-runtime-v5/tool-capability-bridge.ts'), 'utf8');
 check('ChatPanel 不再导入 SKU 组合卡领域代码', !/sku-combo-interactive-card|SkuComboEditor|validateSkuComboEditorValue/.test(chatPanelSource));
 check('ChatPanel 不再处理 SKU 专属卡片动作', !/submitSkuHumanReviewCard|sku-human-review-card|isSkuHumanReviewCard/.test(chatPanelSource));
 check('通用卡片 Host 不再包含 SKU 业务渲染分支', !/sku_combo_editor|sku_human_review|SkuCombo|SkuHumanReview/.test(cardHostSource));
 check('通用卡片 Tool 不再包含 SKU 类型特判', !/cardKind\s*===\s*['"]sku_combo_editor['"]/.test(toolExecutorSource));
 check('不稳定的空泛确认卡类型已关闭', !/generic_confirmation/.test(toolSchemaSource) && !/generic_confirmation/.test(toolExecutorSource));
-check('SKU 组合与人工复核卡都由 Skill Provider 注册', /skuComboInteractiveCardProvider/.test(skillCardRegistrySource) && /skuHumanReviewInteractiveCardProvider/.test(skillCardRegistrySource));
+check(
+    '短选择卡和多字段通用卡共用同一交互 owner 闸门',
+    /toolName === 'askUserToChoose' \|\| toolName === 'createInteractiveCard'/.test(autonomousExecutorSource)
+        && /isGenericBlockingInteractionTool\(toolName\)/.test(autonomousExecutorSource)
+);
+check(
+    'SKU 组合与人工复核卡从同一个 Interaction Package 清单注册语义和渲染',
+    /skillInteractiveCardPackages/.test(skillCardRegistrySource)
+        && /skuComboInteractiveCardProvider/.test(skillCardPackagesSource)
+        && /skuHumanReviewInteractiveCardProvider/.test(skillCardPackagesSource)
+        && /skuTemplateDirectionInteractiveCardProvider/.test(skillCardPackagesSource)
+        && /SkuComboEditorCardView/.test(skillCardPackagesSource)
+        && /SkuHumanReviewCardView/.test(skillCardPackagesSource)
+        && /EditableConfirmationCardView/.test(skillCardPackagesSource)
+);
+check(
+    '未知卡片只显示失效说明且不执行卡片自带 action',
+    /当前版本无法识别这张确认卡/.test(cardHostSource)
+        && !/onClick=\{\(\) => handleAction\(card\.submitAction/.test(cardHostSource)
+);
+check(
+    '产后业务复核只接受来源消息中完全一致的原卡片',
+    /stableInteractiveCardHash\(card\) !== stableInteractiveCardHash\(actionCard\)/.test(chatPanelSource)
+        && /sourceMessage\?\.interactiveCards\?\.find/.test(chatPanelSource)
+);
+const earlyConfirmationBranchStart = skuBatchExecutorSource.indexOf('if (draftComboConfirmationBeforeTemplateDesign)');
+const templateHandoffBranchStart = skuBatchExecutorSource.indexOf(
+    "if (designGateUnresolvableTargets.length > 0 && skuTemplatePreparationRoute.route === 'agent_design_handoff')",
+    earlyConfirmationBranchStart
+);
+const earlyConfirmationBranch = earlyConfirmationBranchStart >= 0 && templateHandoffBranchStart > earlyConfirmationBranchStart
+    ? skuBatchExecutorSource.slice(earlyConfirmationBranchStart, templateHandoffBranchStart)
+    : '';
+check(
+    '模板前必需的 SKU 组合候选无效时失败关闭而不绕过确认',
+    earlyConfirmationBranch.includes("status: 'blocked_invalid_sku_combo_confirmation_candidate'")
+        && earlyConfirmationBranch.includes('我不会绕过这一步先设计模板')
+        && !earlyConfirmationBranch.includes('先进入模板设计；组合会在模板齐备后再确认')
+);
+const templateDirectionCardBuilderStart = skuBatchExecutorSource.indexOf(
+    'function buildSkuCardTemplateDesignConfirmationCard('
+);
+const templateDirectionCardBuilderEnd = skuBatchExecutorSource.indexOf(
+    '// ==================== SKU 执行器 ====================',
+    templateDirectionCardBuilderStart
+);
+const templateDirectionCardBuilder = templateDirectionCardBuilderStart >= 0
+    && templateDirectionCardBuilderEnd > templateDirectionCardBuilderStart
+    ? skuBatchExecutorSource.slice(templateDirectionCardBuilderStart, templateDirectionCardBuilderEnd)
+    : '';
+check(
+    'SKU Skill 内的模板方向卡同样携带 owner 与领域决定指纹',
+    templateDirectionCardBuilder.includes('return buildSkuTemplateDirectionCard({')
+        && skuTemplateDirectionCardSource.includes("kind: 'sku_template_direction'")
+        && skuTemplateDirectionCardSource.includes("skillId: 'sku-batch'")
+        && skuTemplateDirectionCardSource.includes("decisionFingerprint: 'sku-template-direction/v0'")
+        && skuTemplateDirectionCardSource.includes('candidateFingerprint: buildEditableConfirmationValueFingerprint(')
+);
 const skillCardProviders = listSkillInteractiveCardProviders();
 check(
     '每个 SKU 业务卡 Provider 都声明 Skill owner',
-    skillCardProviders.length === 2
+    skillCardProviders.length === 3
         && skillCardProviders.every((provider) => provider.ownerSkillId === 'sku-batch'),
     JSON.stringify(skillCardProviders)
 );

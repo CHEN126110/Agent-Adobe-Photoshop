@@ -13,6 +13,7 @@ import {
     computeFileSha256,
     markSkuStagingTransactionPromoting,
     readSkuStagingFrozenDestinationBaseline,
+    readSkuStagingFrozenDestinationPaths,
     settleSkuStagingTransaction
 } from './sku-staging-transaction.service';
 
@@ -234,6 +235,19 @@ async function preparePromotionItems(
         || input.items.length > MAX_PROMOTION_ITEMS) {
         throw new Error(`暂存文件提交数量必须在 1-${MAX_PROMOTION_ITEMS} 之间。`);
     }
+    const submittedDestinationPaths = input.items.map((item, index) => (
+        resolveRequiredAbsolutePath(item?.destinationPath, `第 ${index + 1} 个交付目标路径`)
+    ));
+    const submittedDestinationKeys = submittedDestinationPaths.map(normalizePathKey);
+    const frozenDestinationKeys = readSkuStagingFrozenDestinationPaths(input.transactionToken)
+        .map(normalizePathKey);
+    if (submittedDestinationKeys.length !== frozenDestinationKeys.length
+        || new Set(submittedDestinationKeys).size !== submittedDestinationKeys.length
+        || submittedDestinationKeys.some((destinationKey, index) => (
+            destinationKey !== frozenDestinationKeys[index]
+        ))) {
+        throw new Error('暂存文件提交集合与 main 写入前冻结的完整目标集合不一致。');
+    }
     const realStagingRoot = await fsPromises.realpath(transaction.stagingRoot);
     const sourceKeys = new Set<string>();
     const destinationKeys = new Set<string>();
@@ -243,10 +257,7 @@ async function preparePromotionItems(
             input.items[index]?.sourcePath,
             `第 ${index + 1} 个暂存源路径`
         );
-        const destinationPath = resolveRequiredAbsolutePath(
-            input.items[index]?.destinationPath,
-            `第 ${index + 1} 个交付目标路径`
-        );
+        const destinationPath = submittedDestinationPaths[index];
         const rendererBaseline = normalizeExpectedDestinationBaseline(
             input.items[index]?.expectedDestinationBaseline,
             index

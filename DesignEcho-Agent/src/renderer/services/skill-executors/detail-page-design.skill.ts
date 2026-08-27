@@ -195,6 +195,9 @@ export type DetailPageDeliveryCandidate = {
     targetLayerIds: number[];
     repairAllowedToolNames: string[];
     reviewAllowedToolNames: string[];
+    deliveryToolNames: string[];
+    deliveryPlanDigest?: string;
+    expectedArtifactCount: number;
     failedChecks: string[];
 };
 
@@ -1080,6 +1083,9 @@ export function buildDetailPageDeliveryCandidate(input: {
     targetLayerIds?: readonly number[];
     repairAllowedToolNames?: readonly string[];
     reviewAllowedToolNames?: readonly string[];
+    deliveryToolNames?: readonly string[];
+    deliveryPlanDigest?: string;
+    expectedArtifactCount?: number;
     checks: Record<string, boolean>;
 }): DetailPageDeliveryCandidate {
     const failedChecks = Object.entries(input.checks)
@@ -1108,6 +1114,13 @@ export function buildDetailPageDeliveryCandidate(input: {
         reviewAllowedToolNames: Array.from(new Set((input.reviewAllowedToolNames || [])
             .map((toolName) => String(toolName || '').trim())
             .filter(Boolean))),
+        deliveryToolNames: Array.from(new Set((input.deliveryToolNames || [])
+            .map((toolName) => String(toolName || '').trim())
+            .filter(Boolean))),
+        ...(input.deliveryPlanDigest
+            ? { deliveryPlanDigest: String(input.deliveryPlanDigest).trim() }
+            : {}),
+        expectedArtifactCount: Math.max(0, Math.floor(Number(input.expectedArtifactCount) || 0)),
         failedChecks
     };
 }

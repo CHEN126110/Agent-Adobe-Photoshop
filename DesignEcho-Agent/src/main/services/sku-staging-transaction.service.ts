@@ -818,6 +818,24 @@ export function readSkuStagingFrozenDestinationBaseline(
     };
 }
 
+/**
+ * Main-owned complete destination set captured before promotion. The promotion
+ * owner compares the whole ordered set before its first filesystem write, so a
+ * renderer bug cannot commit only a valid-looking subset of the transaction.
+ */
+export function readSkuStagingFrozenDestinationPaths(
+    transactionToken: unknown
+): string[] {
+    const transaction = getActiveTransaction(transactionToken);
+    if (transaction.phase !== 'issued' && transaction.phase !== 'promoting') {
+        throw new Error(`SKU 暂存事务阶段不允许读取完整目标集合：${transaction.phase}。`);
+    }
+    if (transaction.baselineCaptureInProgress || transaction.destinationBaselines.size === 0) {
+        throw new Error('SKU 暂存事务尚未冻结完整目标集合。');
+    }
+    return Array.from(transaction.destinationBaselines.values()).map((baseline) => baseline.path);
+}
+
 export async function settleSkuStagingTransaction(input: {
     transactionToken: unknown;
     phase: 'committed' | 'rolled_back' | 'recovery_required';

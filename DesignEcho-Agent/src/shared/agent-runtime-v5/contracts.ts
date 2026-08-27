@@ -150,6 +150,8 @@ export interface SkillRuntimeWorkModeContract {
      * RuntimeDeliveryReceipt，普通 save/export success 不能自行覆盖 Manifest 输出。
      */
     delivery_output_bindings?: Record<string, SkillRuntimeDeliveryOutputBinding>;
+    /** Compound Skill receipts must carry a Runtime-owned typed delivery-plan binding. */
+    delivery_plan_binding_required?: boolean;
     exit_criteria: string[];
     /** 可选的模式级评价标准；只改变评价 Profile，不改变 Skill / task identity。 */
     review_rubric_ref?: string;
@@ -272,6 +274,7 @@ export interface SkillRuntimeManifest {
     review_rubric_ref?: string;
     delivery_outputs?: string[];
     delivery_output_bindings?: Record<string, SkillRuntimeDeliveryOutputBinding>;
+    delivery_plan_binding_required?: boolean;
     production_obligation?: SkillRuntimeProductionObligation;
     exit_criteria: string[];
 }

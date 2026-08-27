@@ -106,17 +106,11 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
             required_inputs: ['product', 'asset_source'],
             optional_inputs: ['platform_size', 'brand_style', 'target_user'],
             delivery_outputs: ['detail_page_psd', 'detail_page_slices', 'delivery_record'],
+            delivery_plan_binding_required: true,
             production_obligation: 'photoshop_mutation_with_readback',
-            delivery_output_bindings: {
-                detail_page_psd: {
-                    capability_refs: ['delivery.saveDocument'],
-                    proof_kind: 'saved_editable_document'
-                },
-                detail_page_slices: {
-                    capability_refs: ['delivery.exportSlices'],
-                    proof_kind: 'exported_image_slices'
-                }
-            },
+            // 详情页由同一 Workflow owner 在视觉通过后复入，内部连续提交母稿与整组切片。
+            // E2 因此消费该 owner 的 Runtime-bound typed receipt；不能把外层 Skill 调用
+            // 伪装成两个独立的顶层 atomic save/export 记录。
             review_rubric_ref: DETAIL_PAGE_CREATE_NEW_EVALUATION_PROFILE_ID,
             exit_criteria: [
                 'storyboard 已生成并由 Agent 对照 Brief 与视觉观察复核；仅在用户要求逐步确认、品牌方向缺失或不可逆风险存在时暂停请求确认',
@@ -128,6 +122,7 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
             required_inputs: ['existing_document', 'redesign_goal'],
             optional_inputs: ['product', 'asset_source', 'brand_style', 'target_user'],
             delivery_outputs: ['detail_page_psd', 'detail_page_slices', 'redesign_report'],
+            delivery_plan_binding_required: true,
             production_obligation: 'photoshop_mutation_with_readback',
             exit_criteria: [
                 '重设计方向已在写入前形成可审查方案',
@@ -139,6 +134,7 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
             required_inputs: ['template_document', 'content_source'],
             optional_inputs: ['platform_size', 'brand_style', 'target_user'],
             delivery_outputs: ['detail_page_psd', 'detail_page_slices', 'template_fill_report'],
+            delivery_plan_binding_required: true,
             production_obligation: 'photoshop_mutation_with_readback',
             exit_criteria: [
                 '模板结构保持可编辑且内容映射完整',
@@ -150,6 +146,7 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
             required_inputs: ['existing_document', 'target_scope', 'requested_change'],
             optional_inputs: ['edit_content_mode', 'brand_style'],
             delivery_outputs: ['updated_detail_page_psd', 'change_verification_report'],
+            delivery_plan_binding_required: true,
             production_obligation: 'photoshop_mutation_with_readback',
             review_rubric_ref: DETAIL_PAGE_SCOPED_EDIT_EVALUATION_PROFILE_ID,
             runtime_stages: ['R0', 'R1', 'R2', 'E1', 'R5'],
@@ -180,6 +177,7 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
             required_inputs: ['existing_document', 'export_target'],
             optional_inputs: ['export_format', 'platform_size'],
             delivery_outputs: ['detail_page_slices', 'delivery_manifest'],
+            delivery_plan_binding_required: true,
             exit_criteria: [
                 '导出文件真实存在并与目标规格一致',
                 '未改变设计内容或文档结构'
@@ -247,6 +245,7 @@ export const DETAIL_PAGE_MANIFEST: SkillRuntimeManifest = {
     template_families: [],
     review_rubric_ref: DETAIL_PAGE_EVALUATION_PROFILE_ID,
     delivery_outputs: ['detail_page_psd', 'change_or_delivery_record'],
+    delivery_plan_binding_required: true,
     exit_criteria: [
         '任务目标已经明确并使用与 workMode 对应的契约',
         '执行后存在真实读回结果或视觉检查记录',

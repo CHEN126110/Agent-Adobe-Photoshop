@@ -10,6 +10,7 @@ import type { InpaintingService } from '../services/inpainting-service';
 import type { SubjectDetectionService } from '../services/subject-detection-service';
 import type { ContourService } from '../services/contour-service';
 import type { SAMService } from '../services/sam-service';
+import type { SemanticTargetLocatorService } from '../services/semantic-target-locator-service';
 
 /**
  * UXP Handler 上下文 - 包含所有可能需要的服务引用
@@ -23,6 +24,8 @@ export interface UXPContext {
     subjectDetectionService: SubjectDetectionService | null;
     contourService: ContourService | null;
     samService: SAMService | null;
+    /** 语义抠图的文本定位器（"抠取目标"→ 目标框） */
+    semanticTargetLocator: SemanticTargetLocatorService | null;
     mainWindow: Electron.BrowserWindow | null;
 }
 

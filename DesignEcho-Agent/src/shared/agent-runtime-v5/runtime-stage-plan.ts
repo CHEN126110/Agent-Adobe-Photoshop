@@ -59,6 +59,7 @@ export interface RuntimeStagePlan {
     deliveryOutputs: string[];
     /** 原子 save/export 只有命中此 Manifest 绑定并形成可核对结果时，才可参与 E2 收据。 */
     deliveryOutputBindings?: Record<string, SkillRuntimeDeliveryOutputBinding>;
+    deliveryPlanBindingRequired?: boolean;
     productionObligation?: SkillRuntimeProductionObligation;
     /** 默认评价标准；workMode 可通过完整替换契约选择更窄的 Profile。 */
     reviewRubricRef?: string;
@@ -74,6 +75,7 @@ export interface RuntimeStagePlanEffectiveContract {
     optionalInputs: string[];
     deliveryOutputs: string[];
     deliveryOutputBindings?: Record<string, SkillRuntimeDeliveryOutputBinding>;
+    deliveryPlanBindingRequired?: boolean;
     productionObligation?: SkillRuntimeProductionObligation;
     exitCriteria: string[];
     reviewRubricRef?: string;
@@ -303,6 +305,9 @@ function copyWorkModeContracts(
                 ...(contract.production_obligation
                     ? { production_obligation: contract.production_obligation }
                     : {}),
+                ...(contract.delivery_plan_binding_required === true
+                    ? { delivery_plan_binding_required: true }
+                    : {}),
                 exit_criteria: [...contract.exit_criteria],
                 ...(contract.review_rubric_ref ? { review_rubric_ref: contract.review_rubric_ref } : {}),
                 ...(contract.performance_profile
@@ -363,6 +368,9 @@ export function resolveRuntimeStagePlanEffectiveContract(
             ...(modeContract.production_obligation
                 ? { productionObligation: modeContract.production_obligation }
                 : {}),
+            ...(modeContract.delivery_plan_binding_required === true
+                ? { deliveryPlanBindingRequired: true }
+                : {}),
             exitCriteria: [...modeContract.exit_criteria],
             ...(modeContract.review_rubric_ref ? { reviewRubricRef: modeContract.review_rubric_ref } : {}),
             ...(modeContract.execution_scope_kind
@@ -397,6 +405,9 @@ export function resolveRuntimeStagePlanEffectiveContract(
             : {}),
         ...(plan.productionObligation
             ? { productionObligation: plan.productionObligation }
+            : {}),
+        ...(plan.deliveryPlanBindingRequired === true
+            ? { deliveryPlanBindingRequired: true }
             : {}),
         exitCriteria: [...plan.exitCriteria],
         ...(plan.reviewRubricRef ? { reviewRubricRef: plan.reviewRubricRef } : {})
@@ -490,6 +501,9 @@ export function buildRuntimeStagePlan(
             : {}),
         ...(defaultContract.production_obligation
             ? { productionObligation: defaultContract.production_obligation }
+            : {}),
+        ...(defaultContract.delivery_plan_binding_required === true
+            ? { deliveryPlanBindingRequired: true }
             : {}),
         ...(defaultContract.review_rubric_ref ? { reviewRubricRef: defaultContract.review_rubric_ref } : {}),
         ...(manifest.work_mode_contracts

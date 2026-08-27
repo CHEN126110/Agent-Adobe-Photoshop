@@ -133,11 +133,10 @@ import {
 } from '../../../shared/sku-combo-interactive-card';
 import type { InteractiveCardSubmission } from '../../../shared/interactive-card-contract';
 import {
-    buildEditableConfirmationInteractiveCard,
-    validateEditableConfirmationValue,
-    type EditableConfirmationCard,
-    type EditableConfirmationValue
-} from '../../../shared/editable-confirmation-interactive-card';
+    buildSkuTemplateDirectionCard,
+    isApprovedSkuTemplateDirectionSubmission,
+    type SkuTemplateDirectionCard
+} from '../../../shared/sku-template-direction-interactive-card';
 import { buildProjectVisualInsightCacheReadResult } from '../../../shared/project-visual-insight-cache';
 import {
     buildProjectProductUnderstanding,
@@ -177,6 +176,53 @@ const REQUIRED_SKU_COMBO_EXPORT_NAMING_REVISION = 'sku-combo-export-naming/v1';
 const REQUIRED_SKU_REGION_COMPOSITION_REVISION = 'sku-region-composition/v1';
 
 type SkuCardSourceSelection = SkuCardSourcePreparationPlan['selectedSources'][number];
+
+interface SkuCombinationProvenance {
+    source: 'project_config' | 'user_confirmed' | 'user_instruction' | 'agent_delegated_draft' | 'algorithm_candidate';
+    authoritativeBusinessFact: boolean;
+    requiresReviewBeforePublishing: boolean;
+}
+
+function resolveSkuCombinationProvenance(input: {
+    useConfiguredExecutionPlan: boolean;
+    structuredConfirmationProvided: boolean;
+    hasUserDeclaredCombination: boolean;
+    userDelegatedReversibleCombinationChoice: boolean;
+}): SkuCombinationProvenance {
+    if (input.useConfiguredExecutionPlan) {
+        return {
+            source: 'project_config',
+            authoritativeBusinessFact: true,
+            requiresReviewBeforePublishing: false
+        };
+    }
+    if (input.structuredConfirmationProvided) {
+        return {
+            source: 'user_confirmed',
+            authoritativeBusinessFact: true,
+            requiresReviewBeforePublishing: false
+        };
+    }
+    if (input.hasUserDeclaredCombination) {
+        return {
+            source: 'user_instruction',
+            authoritativeBusinessFact: true,
+            requiresReviewBeforePublishing: false
+        };
+    }
+    if (input.userDelegatedReversibleCombinationChoice) {
+        return {
+            source: 'agent_delegated_draft',
+            authoritativeBusinessFact: false,
+            requiresReviewBeforePublishing: true
+        };
+    }
+    return {
+        source: 'algorithm_candidate',
+        authoritativeBusinessFact: false,
+        requiresReviewBeforePublishing: true
+    };
+}
 
 function formatSkuCardSourceLocation(source: SkuCardSourceSelection): string {
     const relativePath = String(source.relativePath || '').trim();
@@ -1384,17 +1430,10 @@ function resolveStructuredSkuComboConfirmation(
 function hasApprovedStructuredSkuTemplateConfirmation(
     trustedContinuation: SkillExecuteParams['trustedInteractiveContinuation']
 ): boolean {
-    const card = trustedContinuation?.card as EditableConfirmationCard | undefined;
-    const submission = trustedContinuation?.submission as InteractiveCardSubmission<EditableConfirmationValue> | undefined;
-    if (card?.kind !== 'editable_confirmation' || submission?.kind !== 'editable_confirmation') {
-        return false;
-    }
-    if (card.id !== submission.cardId || card.payload?.version !== 'editable-confirmation/v0') {
-        return false;
-    }
-    const validation = validateEditableConfirmationValue(card.payload, submission.value);
-    return validation.canSubmit
-        && String(validation.normalizedValue.values.template_confirmation || '').trim() === '确认';
+    return isApprovedSkuTemplateDirectionSubmission({
+        card: trustedContinuation?.card,
+        submission: trustedContinuation?.submission
+    });
 }
 
 function resolveRequestedMonochromeColors(userInput: string, availableColors: string[]): string[] {
@@ -1987,7 +2026,7 @@ function hasConfirmedSkuCardTemplateDesignText(userInput: string): boolean {
 
 // shouldAutoPrepareSkuCardTemplateForProduction 已删除（治理2026-07-02）：
 // 它让"缺模板+生产措辞"静默跳过模板方向确认、直落硬编码占位模板——与
-// 「默认路径必须走 确认模板方向 → 移交 Agent 自主设计」的治理语义相反。
+// 「默认由 Agent 自主设计；只有用户明确要求时才确认方向」的治理语义相反。
 // 缺模板路由的单一真相源见 shared/sku-template-design-loop.ts（resolveSkuTemplatePreparationRoute）。
 
 /**
@@ -2016,77 +2055,14 @@ function buildSkuCardTemplateDesignConfirmationCard(input: {
     comboSizes: number[];
     colorCount: number;
     understanding?: ProjectProductUnderstanding | null;
-}) {
-    const comboSizesText = input.comboSizes.length > 0
-        ? input.comboSizes.map((size) => `${size}双`).join(' / ')
-        : '2双 / 3双 / 4双';
-    const colorCountText = input.colorCount > 0 ? `${input.colorCount} 个颜色` : '当前颜色';
+}): SkuTemplateDirectionCard {
     const { productLabel, styleText } = deriveSkuCardTemplateDesignCardDefaults(input.understanding);
-
-    return buildEditableConfirmationInteractiveCard({
-        id: 'sku-card-template-design-confirmation',
-        title: '确认 SKU 色卡模板方向',
-        description: '先确认模板版式和复核重点，确认后由我参考项目素材与设计参考自主设计可编辑模板，并自动添加与规格数一致的占位符；只有你明确要求时才使用通用占位模板（非设计稿）兜底。',
+    return buildSkuTemplateDirectionCard({
         memoryScope: input.memoryScope,
-        ...(productLabel ? { productType: productLabel } : {}),
-        ...(styleText ? { style: styleText } : {}),
-        memoryEnabled: true,
-        memoryKind: 'project_rule',
-        tags: ['sku', '色卡模板'],
-        fields: [
-            {
-                id: 'template_confirmation',
-                label: '模板方向确认',
-                type: 'choice',
-                value: '确认',
-                options: [
-                    { value: '确认', label: '确认这个方向' },
-                    { value: '需要调整', label: '需要先调整' }
-                ],
-                required: true
-            },
-            {
-                id: 'style_direction',
-                label: '视觉方向',
-                type: 'long_text',
-                value: styleText
-                    ? `延续项目素材已识别的风格（${styleText}），背景干净、商品卡片清晰留白。`
-                    : '按项目产品与素材风格自定，背景干净、商品卡片清晰留白；如需特定风格请在此补充。',
-                required: true,
-                maxLength: 160
-            },
-            {
-                id: 'combo_layout',
-                label: '组合版式',
-                type: 'long_text',
-                value: `${comboSizesText}；每组从 ${colorCountText} 中选择，卡片间距统一，主体不溢出。`,
-                required: true,
-                maxLength: 180
-            },
-            {
-                id: 'note_layout',
-                label: '自选备注',
-                type: 'long_text',
-                value: '保留自选备注标题和留言提示，色卡区整齐排列，后续可直接填写颜色组合。',
-                required: true,
-                maxLength: 180
-            },
-            {
-                id: 'acceptance_focus',
-                label: '复核重点',
-                type: 'long_text',
-                value: `${productLabel || '产品'}图不溢出；卡片圆角和边距统一；标题、颜色名和备注清晰；交付前再看真实画面。`,
-                required: true,
-                maxLength: 220
-            },
-            {
-                id: 'allow_basic_template',
-                label: '允许先生成可编辑基础模板',
-                type: 'boolean',
-                value: true,
-                required: true
-            }
-        ]
+        comboSizes: input.comboSizes,
+        colorCount: input.colorCount,
+        productLabel,
+        styleText
     });
 }
 
@@ -2108,7 +2084,8 @@ export const skuBatchExecutor: SkillExecutor = {
         context: _context,
         runtimeDesignBriefDigest,
         trustedInteractiveContinuation,
-        guardedAtomicToolExecutor
+        guardedAtomicToolExecutor,
+        runtimeDeliveryPlanAuthority
     }: SkillExecuteParams): Promise<AgentResult> {
         const emitStep = (
             kind: Parameters<typeof emitSkillStep>[1]['kind'],
@@ -3999,10 +3976,10 @@ export const skuBatchExecutor: SkillExecutor = {
             }
         }
 
-        // 治理2026-07-02（默认路径闭环）：按规格严格判定缺模板（与执行同源同粒度：
+        // 治理2026-07-02：按规格严格判定缺模板（与执行同源同粒度：
         // hasTemplateCandidate 项目+库候选 + findOpenedTemplateDocument 已打开文档），
         // 缺模板时按 skuTemplatePreparationRoute 路由：
-        //   - confirmation_required → 弹「模板方向」确认卡（默认路径不再死终结，绝不静默落硬编码占位模板）
+        //   - confirmation_required → 仅在用户明确要求先看方向时弹「模板方向」确认卡
         //   - agent_design_handoff → 移交 Agent 自主设计（参考先行→设计→占位→验证→存模板→回批量）
         //   - placeholder_preparation（显式兜底但上方准备未补齐）/ blocked_missing_template（用户拒绝方向）
         //     → 落到后面的确定性失败信息（放模板/打开模板/设计模板三选一），不弹卡、不猜测。
@@ -4102,7 +4079,38 @@ export const skuBatchExecutor: SkillExecutor = {
                         }
                     };
                 }
-                emitStatus('组合候选未通过检查，先进入模板设计；组合会在模板齐备后再确认。', 44);
+                const blockers = earlyConfirmationRequest.review.blockers.join('\n')
+                    || '候选组合没有通过检查。';
+                const warnings = earlyConfirmationRequest.review.warnings.join('\n');
+                emitStep(
+                    'warning',
+                    'SKU 组合候选无法确认',
+                    blockers,
+                    'error',
+                    0.44
+                );
+                return {
+                    success: false,
+                    message: [
+                        '我已经准备了规格和组合候选，但当前内容还不能安全交给你确认。',
+                        blockers,
+                        warnings ? `还需要注意：${warnings}` : '',
+                        '我不会绕过这一步先设计模板，避免按错误规格继续制作。'
+                    ].filter(Boolean).join('\n'),
+                    error: blockers,
+                    data: {
+                        status: 'blocked_invalid_sku_combo_confirmation_candidate',
+                        skuDocName,
+                        comboSizes,
+                        skuSizePlanProvenance,
+                        missingTemplateSizes: designGateUnresolvableSizes,
+                        missingTemplateTargets: designGateUnresolvableTargets,
+                        skuComboConfirmationReview: earlyConfirmationRequest.review,
+                        ...skuPlanningContext,
+                        skuCardAssetCandidateReport,
+                        requiresUserAction: true
+                    }
+                };
             }
             if (designGateUnresolvableTargets.length > 0 && skuTemplatePreparationRoute.route === 'agent_design_handoff') {
                 const handoffContract = buildSkuTemplateDesignHandoffContract({
@@ -4437,35 +4445,12 @@ export const skuBatchExecutor: SkillExecutor = {
                 hasExplicitReversibleDesignDecisionDelegation(trustedUserInput)
                 || isSkuAutonomousProductionDraftRequestText(trustedUserInput)
             );
-        const skuCombinationProvenance = useConfiguredExecutionPlan
-            ? {
-                source: 'project_config' as const,
-                authoritativeBusinessFact: true,
-                requiresReviewBeforePublishing: false
-            }
-            : structuredComboConfirmation.provided
-                ? {
-                    source: 'user_confirmed' as const,
-                    authoritativeBusinessFact: true,
-                    requiresReviewBeforePublishing: false
-                }
-                : hasUserDeclaredCombination
-                    ? {
-                        source: 'user_instruction' as const,
-                        authoritativeBusinessFact: true,
-                        requiresReviewBeforePublishing: false
-                    }
-                    : userDelegatedReversibleCombinationChoice
-                        ? {
-                            source: 'agent_delegated_draft' as const,
-                            authoritativeBusinessFact: false,
-                            requiresReviewBeforePublishing: true
-                        }
-                        : {
-                            source: 'algorithm_candidate' as const,
-                            authoritativeBusinessFact: false,
-                            requiresReviewBeforePublishing: true
-                        };
+        const skuCombinationProvenance = resolveSkuCombinationProvenance({
+            useConfiguredExecutionPlan,
+            structuredConfirmationProvided: structuredComboConfirmation.provided,
+            hasUserDeclaredCombination,
+            userDelegatedReversibleCombinationChoice
+        });
         const requiresSkuComboConfirmation = shouldRequestSkuComboConfirmation({
             onlyNotes,
             lacksAuthoritativeCombinationSpecification,
@@ -6055,6 +6040,46 @@ export const skuBatchExecutor: SkillExecutor = {
                 }
             } as AgentResult;
         }
+        const projectPathForDelivery = String(projectContext?.projectPath || '').trim();
+        const typedDeliveryPlan = expectedExportInventory.deliveryPlan;
+        if (!runtimeDeliveryPlanAuthority || !typedDeliveryPlan || !projectPathForDelivery) {
+            const userMessage = 'SKU 的输出目录和文件名还不能在开始前唯一确认，批量成品阶段尚未开始。';
+            let authorityDiagnostic = 'project path unavailable';
+            if (!runtimeDeliveryPlanAuthority) {
+                authorityDiagnostic = 'runtimeDeliveryPlanAuthority unavailable';
+            } else if (!typedDeliveryPlan) {
+                authorityDiagnostic = 'typed delivery plan unavailable';
+            }
+            return {
+                success: false,
+                message: userMessage,
+                error: userMessage,
+                toolResults: sanitizeSkuToolResultsForPublicResult(allToolResults),
+                data: {
+                    status: 'blocked_runtime_delivery_plan_authority_unavailable',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([authorityDiagnostic])
+                }
+            } as AgentResult;
+        }
+        const frozenDeliveryPlan = runtimeDeliveryPlanAuthority.freeze({
+            projectPath: projectPathForDelivery,
+            convention: typedDeliveryPlan.convention,
+            artifacts: typedDeliveryPlan.artifacts
+        });
+        if (frozenDeliveryPlan.status === 'rejected') {
+            const userMessage = 'SKU 的输出文件清单在开始前没有完成唯一确认，批量成品阶段尚未开始。';
+            return {
+                success: false,
+                message: userMessage,
+                error: userMessage,
+                toolResults: sanitizeSkuToolResultsForPublicResult(allToolResults),
+                data: {
+                    status: 'blocked_runtime_delivery_plan_freeze',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics(frozenDeliveryPlan.blockers)
+                }
+            } as AgentResult;
+        }
+        const runtimeDeliveryPlanBinding = frozenDeliveryPlan.binding;
 
         const expectedExportItemsById = new Map(
             expectedExportInventory.items.map((item) => [item.id, item] as const)
@@ -6984,6 +7009,7 @@ export const skuBatchExecutor: SkillExecutor = {
                 && Boolean(provisionalEditableDeliveryReceipts.get(item.id)?.stagedPath)
             ));
         let pairedPromotionSucceeded = false;
+        let runtimeDeliveryPlanCommitBound = false;
         const committedFileIdentities = new Map<string, StagedCommittedFileIdentity>();
         if (!allStagedPairsReady) {
             const diagnostic = `SKU 成对交付只准备了 JPG ${pendingRasterArtifactsByItemId.size}/${expectedExportInventory.items.length}、PSB ${provisionalEditableDeliveryReceipts.size}/${expectedExportInventory.items.length}，未提交任何正式文件。`;
@@ -7016,22 +7042,41 @@ export const skuBatchExecutor: SkillExecutor = {
                     rasterArtifacts: pendingRasterArtifactsByItemId,
                     editableArtifacts,
                     destinationBaselines,
-                    transaction: skuStagingTransaction
+                    transaction: skuStagingTransaction,
+                    runtimeDeliveryPlanBinding
                 });
                 if (!promotion.success) {
                     preserveSkuStagingRoot = promotion.preserveStagingRoot === true;
                     skuStagingRecoveryPath = String(promotion.recoveryPath || '').trim();
+                    let recoveryDetail = '；正式目录已回滚到事务前状态。';
+                    if (skuStagingRecoveryPath) {
+                        recoveryDetail = `；恢复位置：${skuStagingRecoveryPath}`;
+                    } else if (preserveSkuStagingRoot) {
+                        recoveryDetail = `；暂存目录已保留：${skuStagingRoot}`;
+                    }
                     const diagnostic = `SKU ${expectedExportInventory.items.length * 2} 文件成对事务提交失败：${promotion.error || '未知错误'}`
-                        + (skuStagingRecoveryPath
-                            ? `；恢复位置：${skuStagingRecoveryPath}`
-                            : preserveSkuStagingRoot
-                                ? `；暂存目录已保留：${skuStagingRoot}`
-                                : '；正式目录已回滚到事务前状态。');
+                        + recoveryDetail;
                     exportInventoryViolations.push(diagnostic);
                     skuEditableDeliveryViolations.push(diagnostic);
                     appendUniqueDiagnostics(allCopyErrors, [diagnostic]);
                 } else {
-                    pairedPromotionSucceeded = true;
+                    const externalCommit = promotion.runtimeDeliveryCommitReceipt
+                        ? runtimeDeliveryPlanAuthority.acceptExternalCommit({
+                            artifactIds: typedDeliveryPlan.artifacts.map((artifact) => artifact.artifactId),
+                            receipt: promotion.runtimeDeliveryCommitReceipt
+                        })
+                        : undefined;
+                    runtimeDeliveryPlanCommitBound = externalCommit?.status === 'accepted';
+                    pairedPromotionSucceeded = runtimeDeliveryPlanCommitBound;
+                    if (!runtimeDeliveryPlanCommitBound) {
+                        const diagnostic = 'SKU 正式文件已由 Main 事务提交，但提交回执没有绑定到写入前冻结的 Runtime 交付计划；本次不会标记为完整交付。';
+                        exportInventoryViolations.push(diagnostic);
+                        skuEditableDeliveryViolations.push(diagnostic);
+                        appendUniqueDiagnostics(allCopyErrors, [
+                            diagnostic,
+                            ...(externalCommit?.status === 'rejected' ? externalCommit.blockers : [])
+                        ]);
+                    }
                     for (const identity of promotion.committedFiles || []) {
                         committedFileIdentities.set(normalizePathForCompare(identity.path), identity);
                     }
@@ -7270,28 +7315,41 @@ export const skuBatchExecutor: SkillExecutor = {
         ));
         const runtimeDeliveryArtifacts = buildSkuRuntimeDeliveryArtifacts({
             expectedItems: expectedExportInventory.items,
+            deliveryPlan: expectedExportInventory.deliveryPlan,
             rasterFileProbes: skuExportFileProbes,
             editableReceipts: skuEditableDeliveryReceipts,
             committedFiles: committedFileIdentities
         });
-        const expectedRuntimeDeliveryArtifacts = expectedExportInventory.items.flatMap((item) => ([{
-            path: item.path,
-            kind: 'raster_export' as const,
-            proof: 'file_probe' as const
-        }, {
-            path: item.editablePath,
-            kind: 'editable_document' as const,
-            proof: 'staged_editable_document_promotion' as const
-        }]));
+        const expectedRuntimeDeliveryArtifacts = expectedExportInventory.deliveryPlan?.artifacts.map((artifact) => ({
+            path: artifact.path,
+            kind: artifact.kind,
+            proof: artifact.kind === 'raster_export'
+                ? 'file_probe' as const
+                : 'staged_editable_document_promotion' as const,
+            planBinding: {
+                artifactId: artifact.artifactId,
+                pairId: artifact.pairId,
+                order: artifact.order,
+                format: artifact.format,
+                sourceHistoryRole: artifact.sourceHistoryRole
+            }
+        })) || [];
         const runtimeArtifactSetExact = runtimeDeliveryArtifacts.length
             === expectedRuntimeDeliveryArtifacts.length
             && runtimeDeliveryArtifacts.every((artifact, index) => {
                 const expected = expectedRuntimeDeliveryArtifacts[index];
                 return artifact.kind === expected.kind
                     && artifact.proof === expected.proof
-                    && normalizePathForCompare(artifact.path) === normalizePathForCompare(expected.path);
+                    && normalizePathForCompare(artifact.path) === normalizePathForCompare(expected.path)
+                    && artifact.planBinding?.artifactId === expected.planBinding.artifactId
+                    && artifact.planBinding?.pairId === expected.planBinding.pairId
+                    && artifact.planBinding?.order === expected.planBinding.order
+                    && artifact.planBinding?.format === expected.planBinding.format
+                    && artifact.planBinding?.sourceHistoryRole === expected.planBinding.sourceHistoryRole;
             });
-        const finalDeliverySuccess = deliveryOutcome.success && runtimeArtifactSetExact;
+        const finalDeliverySuccess = deliveryOutcome.success
+            && runtimeArtifactSetExact
+            && runtimeDeliveryPlanCommitBound;
         const stagingCleanup = await finalizeSkuStagingOnce();
         const stagingCleanupNotices = Array.from(new Set([
             ...(!stagingCleanup.success
@@ -7346,6 +7404,7 @@ export const skuBatchExecutor: SkillExecutor = {
                 && skuExportReadback.status === 'ready_for_review'
                 && skuEditableDeliveryReadback.status === 'ready'
                 && runtimeArtifactSetExact
+                && runtimeDeliveryPlanCommitBound
                 && Boolean(expectedExportInventory.deliveryPlanDigest)
                 ? 'ready'
                 : 'incomplete',
@@ -7359,7 +7418,8 @@ export const skuBatchExecutor: SkillExecutor = {
             expectedDeliveryPlan: expectedExportInventory.deliveryPlanDigest
                 ? {
                     digest: expectedExportInventory.deliveryPlanDigest,
-                    convention: expectedExportInventory.deliveryConvention
+                    convention: expectedExportInventory.deliveryConvention,
+                    artifacts: expectedExportInventory.deliveryPlan?.artifacts
                 }
                 : undefined,
             resultRefProofs: runtimeDeliveryResultRefs.map((resultRef) => ({
@@ -7377,6 +7437,9 @@ export const skuBatchExecutor: SkillExecutor = {
                     : []),
                 ...(!runtimeArtifactSetExact
                     ? ['SKU 最终 artifact 集合没有逐项精确匹配冻结的 JPG/PSB 清单。']
+                    : []),
+                ...(!runtimeDeliveryPlanCommitBound
+                    ? ['SKU Main 文件事务没有绑定到写入前冻结的 Runtime 交付计划。']
                     : []),
                 ...(!expectedExportInventory.deliveryPlanDigest
                     ? ['SKU 执行前交付计划缺少稳定摘要。']
@@ -7449,9 +7512,6 @@ export const skuBatchExecutor: SkillExecutor = {
                 skuCardTemplatePreparationRun,
                 skuExportReadback,
                 skuEditableDeliveryReadback,
-                ...(expectedExportInventory.deliveryPlanDigest
-                    ? { expectedDeliveryPlanDigest: expectedExportInventory.deliveryPlanDigest }
-                    : {}),
                 runtimeDeliveryReceipt,
                 skuVisualReviewIntake,
                 skuHumanReviewTarget,

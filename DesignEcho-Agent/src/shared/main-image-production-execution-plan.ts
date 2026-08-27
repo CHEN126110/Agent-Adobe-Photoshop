@@ -13,11 +13,17 @@ import type {
     MainImageVariantPlacementPlan,
     MainImageVariantPlacementStrategy
 } from './main-image-variant-placement-strategy';
+import type {
+    MainImageSkillDeliveryPlan,
+    MainImageSkillEditableArtifact,
+    MainImageSkillRasterArtifact
+} from './main-image-skill-delivery-plan';
 
 export type MainImageProductionExecutionPlanStatus =
     | 'blocked_missing_production_structure'
     | 'blocked_missing_variant_placement_strategy'
     | 'blocked_missing_selected_asset'
+    | 'blocked_missing_delivery_plan'
     | 'blocked_missing_placement_for_child_group'
     | 'ready_execution_plan'
     | 'ready_execution_plan_with_pending_confirmation';
@@ -27,14 +33,16 @@ export type MainImageProductionExecutionTool =
     | 'createGroup'
     | 'placeImage'
     | 'transformLayer'
-    | 'exportGroup';
+    | 'exportGroup'
+    | 'saveDocument';
 
 export type MainImageProductionExecutionPhase =
     | 'document'
     | 'group'
     | 'asset'
     | 'transform'
-    | 'export';
+    | 'export'
+    | 'save';
 
 export interface MainImageProductionExecutionOperation {
     id: string;
@@ -46,6 +54,7 @@ export interface MainImageProductionExecutionOperation {
     variantId?: string;
     placementPlanId?: string;
     exportSpecId?: string;
+    deliveryArtifactId?: string;
     asset?: {
         name?: string;
         path?: string;
@@ -54,6 +63,9 @@ export interface MainImageProductionExecutionOperation {
     };
     canvasSize?: MainImageSize;
     exportSize?: MainImageSize;
+    outputPath?: string;
+    outputFormat?: 'psd' | 'psb' | 'png' | 'jpg' | 'jpeg';
+    conflictPolicy?: 'fail_if_exists';
     destinationBox?: ImagePlacementBox;
     subjectDestinationBox?: ImagePlacementBox;
     scalePercent?: number;
@@ -77,6 +89,7 @@ export interface MainImageProductionExecutionPlanInput {
     productionDocumentStructure?: MainImageProductionDocumentStructure | null;
     variantPlacementStrategy?: MainImageVariantPlacementStrategy | null;
     selectedAsset?: MainImageDraftAsset | null;
+    deliveryPlan?: MainImageSkillDeliveryPlan | null;
     outputDir?: string;
     allowPendingRatioExecution?: boolean;
 }
@@ -162,7 +175,8 @@ function makeBlockedPlan(input: {
                 'document_info_readback',
                 'group_tree_readback',
                 'actual_bounds_readback',
-                'export_file_readback'
+                'export_file_readback',
+                'editable_document_readback'
             ],
             qualityClaimBoundary: 'blocked execution plan cannot support Photoshop writes or quality claims'
         },
@@ -381,6 +395,7 @@ function buildExportOperation(input: {
     childGroupId: string;
     variantId: string;
     exportSpec?: MainImageProductionExportSpec;
+    deliveryArtifact?: MainImageSkillRasterArtifact;
 }): MainImageProductionExecutionOperation {
     return makeOperation({
         id: `${input.document.id}-${input.childGroupId}-export`,
@@ -391,7 +406,11 @@ function buildExportOperation(input: {
         groupPath: input.groupPath,
         variantId: input.variantId,
         exportSpecId: input.exportSpec?.id,
+        deliveryArtifactId: input.deliveryArtifact?.artifactId,
         exportSize: input.exportSpec?.exportSize || input.document.exportSize,
+        outputPath: input.deliveryArtifact?.path,
+        outputFormat: input.deliveryArtifact?.format,
+        conflictPolicy: 'fail_if_exists',
         requiredReadback: ['exportFile'],
         sourceContextIds: [
             input.document.id,
@@ -400,6 +419,47 @@ function buildExportOperation(input: {
             input.exportSpec?.id || `${input.groupPath.join('/')}-export`
         ]
     });
+}
+
+function buildSaveDocumentOperation(input: {
+    document: MainImageProductionDocumentPlan;
+    deliveryArtifact?: MainImageSkillEditableArtifact;
+}): MainImageProductionExecutionOperation {
+    return makeOperation({
+        id: `${input.document.id}-save-editable`,
+        phase: 'save',
+        tool: 'saveDocument',
+        documentId: input.document.id,
+        documentName: input.document.name,
+        deliveryArtifactId: input.deliveryArtifact?.artifactId,
+        outputPath: input.deliveryArtifact?.path,
+        outputFormat: input.deliveryArtifact?.format,
+        conflictPolicy: 'fail_if_exists',
+        requiredReadback: ['documentInfo'],
+        sourceContextIds: [
+            input.document.id,
+            input.deliveryArtifact?.artifactId || `${input.document.id}-editable-delivery`
+        ]
+    });
+}
+
+function findRasterDeliveryArtifact(input: {
+    deliveryPlan: MainImageSkillDeliveryPlan;
+    exportSpecId: string | undefined;
+}): MainImageSkillRasterArtifact | undefined {
+    if (!input.exportSpecId) return undefined;
+    return input.deliveryPlan.artifacts.find((artifact): artifact is MainImageSkillRasterArtifact => (
+        artifact.kind === 'raster_export' && artifact.exportSpecId === input.exportSpecId
+    ));
+}
+
+function findEditableDeliveryArtifact(input: {
+    deliveryPlan: MainImageSkillDeliveryPlan;
+    documentId: string;
+}): MainImageSkillEditableArtifact | undefined {
+    return input.deliveryPlan.artifacts.find((artifact): artifact is MainImageSkillEditableArtifact => (
+        artifact.kind === 'editable_document' && artifact.documentId === input.documentId
+    ));
 }
 
 function findExportSpec(input: {
@@ -419,10 +479,12 @@ function buildDocumentExecutionPlan(input: {
     productionStructure: MainImageProductionDocumentStructure;
     placementLookup: Map<string, MainImageVariantPlacementPlan>;
     asset: MainImageProductionExecutionOperation['asset'];
+    deliveryPlan: MainImageSkillDeliveryPlan;
 }): MainImageProductionExecutionDocumentPlan {
     const operations: MainImageProductionExecutionOperation[] = [
         buildCreateDocumentOperation(input.document)
     ];
+    const exportOperations: MainImageProductionExecutionOperation[] = [];
     for (const parentGroup of input.document.parentGroups) {
         operations.push(buildParentGroupOperation({
             document: input.document,
@@ -457,19 +519,34 @@ function buildDocumentExecutionPlan(input: {
                 variantId: childGroup.variantId,
                 placement
             }));
-            operations.push(buildExportOperation({
+            const exportSpec = findExportSpec({
+                productionStructure: input.productionStructure,
+                document: input.document,
+                groupPath
+            });
+            exportOperations.push(buildExportOperation({
                 document: input.document,
                 groupPath,
                 childGroupId: childGroup.id,
                 variantId: childGroup.variantId,
-                exportSpec: findExportSpec({
-                    productionStructure: input.productionStructure,
-                    document: input.document,
-                    groupPath
+                exportSpec,
+                deliveryArtifact: findRasterDeliveryArtifact({
+                    deliveryPlan: input.deliveryPlan,
+                    exportSpecId: exportSpec?.id
                 })
             }));
         }
     }
+    // 同一可编辑主稿的全部图层完成后再连续导出，使一主稿多 raster
+    // 真正绑定同一 Photoshop revision；不能在后续图层尚未完成时提前导出。
+    operations.push(...exportOperations);
+    operations.push(buildSaveDocumentOperation({
+        document: input.document,
+        deliveryArtifact: findEditableDeliveryArtifact({
+            deliveryPlan: input.deliveryPlan,
+            documentId: input.document.id
+        })
+    }));
 
     return {
         id: input.document.id,
@@ -514,6 +591,14 @@ export function buildMainImageProductionExecutionPlan(
         });
     }
 
+    const deliveryPlan = input.deliveryPlan;
+    if (!deliveryPlan || deliveryPlan.status !== 'ready' || !deliveryPlan.deliveryPlanDigest) {
+        return makeBlockedPlan({
+            status: 'blocked_missing_delivery_plan',
+            blocker: deliveryPlan?.blockers[0] || 'ready_main_image_skill_delivery_plan_required'
+        });
+    }
+
     const asset = cleanAsset(input.selectedAsset);
     if (!hasUsableAsset(asset)) {
         return makeBlockedPlan({
@@ -539,7 +624,8 @@ export function buildMainImageProductionExecutionPlan(
         document,
         productionStructure,
         placementLookup,
-        asset
+        asset,
+        deliveryPlan
     }));
     const plannedOperationCount = documents.reduce((total, document) => total + document.operations.length, 0);
     const pendingConfirmations = getPendingConfirmations(productionStructure);
@@ -571,6 +657,7 @@ export function buildMainImageProductionExecutionPlan(
                 'actual_bounds_readback',
                 'clipping_state_readback',
                 'export_file_readback',
+                'editable_document_readback',
                 'screenshot_or_pixel_probe'
             ],
             qualityClaimBoundary: '执行计划只证明下一步操作顺序合理；只有执行后读回结果才能进入主图质量验收。'

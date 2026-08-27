@@ -99,13 +99,6 @@ function resolveMode(params: Record<string, any>, userIntent: string): DetailPag
     return 'execute';
 }
 
-function wantsExport(params: Record<string, any>, userIntent: string): boolean {
-    return params.exportSlices === true
-        || params.autoExport === true
-        || normalizeText(params.agentMode || params.mode).toLowerCase() === 'export'
-        || EXPORT_PATTERN.test(userIntent);
-}
-
 function normalizeWorkMode(value: unknown): string {
     const normalized = normalizeText(value).toLowerCase();
     return [
@@ -118,6 +111,40 @@ function normalizeWorkMode(value: unknown): string {
     ].includes(normalized)
         ? normalized
         : '';
+}
+
+function resolveDetailPageExportSlices(input: {
+    params: Record<string, any>;
+    userIntent: string;
+    workMode: string;
+    mode: DetailPageAgentMode;
+}): boolean {
+    if (input.mode === 'inspect' || input.workMode === 'analyze_only') return false;
+
+    // Runtime-owned workMode 是交付义务的唯一主事实。完整生产模式不要求用户额外说出
+    // “导出/切片”关键词；否则一句自然的“帮我做详情页”会只改画面却不形成交付物。
+    if (
+        input.workMode === 'create_new'
+        || input.workMode === 'redesign'
+        || input.workMode === 'template_fill'
+        || input.workMode === 'export_only'
+    ) {
+        return true;
+    }
+
+    // edit_existing 的契约只承诺保存当前变更，不默认重做整套切片。只有用户/Agent
+    // 明确把切片加入本轮目标时才扩展为 raster 交付。
+    if (input.workMode === 'edit_existing') {
+        return input.params.exportSlices === true
+            || input.params.autoExport === true
+            || normalizeText(input.params.agentMode || input.params.mode).toLowerCase() === 'export'
+            || EXPORT_PATTERN.test(input.userIntent);
+    }
+
+    // 未取得 Runtime workMode 时不臆造完整生产义务；只保留显式参数兼容。
+    return input.params.exportSlices === true
+        || input.params.autoExport === true
+        || normalizeText(input.params.agentMode || input.params.mode).toLowerCase() === 'export';
 }
 
 function resolveRuntimeOwnedWorkMode(input: {
@@ -223,7 +250,12 @@ function normalizeParams(input: {
     workMode: string;
 }): Record<string, any> {
     const { params, mode, userIntent, projectPath, workMode } = input;
-    const exportSlices = wantsExport(params, userIntent);
+    const exportSlices = resolveDetailPageExportSlices({
+        params,
+        userIntent,
+        workMode,
+        mode
+    });
     const targetScope = params.targetScope ?? params.target_scope;
     const requestedChange = params.requestedChange ?? params.requested_change;
     const editContentMode = normalizeDetailPageEditContentMode(

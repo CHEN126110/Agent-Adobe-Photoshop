@@ -72,7 +72,7 @@ export interface RuntimeInteractiveReentry {
     observation: AgentReActObservation;
     confirmedSubmission: Pick<
         InteractiveCardSubmission,
-        'version' | 'cardId' | 'kind' | 'submittedAt' | 'value' | 'validation'
+        'version' | 'cardId' | 'kind' | 'submittedAt' | 'value' | 'validation' | 'decisionContext'
     >;
     artifactAuthorizationToken?: string;
     boundaries: RuntimeInteractiveBoundaries;
@@ -324,7 +324,37 @@ export function validateRuntimeInteractiveReentry(
     if (!submission.validation?.valid || !submission.validation.canSubmit) {
         issues.push('runtime_interactive_submission_not_validated');
     }
+    if (submission.decisionContext) {
+        if (!cleanToken(submission.decisionContext.decisionFingerprint)
+            || !cleanToken(submission.decisionContext.candidateFingerprint)
+            || !cleanToken(submission.decisionContext.answerFingerprint)) {
+            issues.push('runtime_interactive_submission_decision_context_invalid');
+        }
+    }
     return { ok: issues.length === 0, issues: Array.from(new Set(issues)) };
+}
+
+export function hasRuntimeInteractiveReentryProgress(input: {
+    reentry: RuntimeInteractiveReentry;
+    session?: RuntimeSession;
+}): boolean {
+    const current = input.session;
+    if (!current) return false;
+    const baseline = input.reentry.session;
+    if (current.identity.runId !== baseline.identity.runId
+        || current.identity.generation !== baseline.identity.generation
+        || current.taskRun.taskRunId !== baseline.taskRun.taskRunId) {
+        return false;
+    }
+    if (current.taskRun.planRevision !== baseline.taskRun.planRevision
+        || current.taskRun.cursor !== baseline.taskRun.cursor
+        || current.taskRun.currentNodeId !== baseline.taskRun.currentNodeId) {
+        return true;
+    }
+    const baselineRevision = baseline.taskRun.documentBinding?.expectedRevision;
+    const currentRevision = current.taskRun.documentBinding?.expectedRevision;
+    return Number(currentRevision?.documentId || 0) !== Number(baselineRevision?.documentId || 0)
+        || Number(currentRevision?.historyStateId || 0) !== Number(baselineRevision?.historyStateId || 0);
 }
 
 function summarizeConfirmedValue(value: unknown): string {

@@ -128,6 +128,7 @@ export const SKU_BATCH_MANIFEST: SkillRuntimeManifest = {
         'sku_manifest',
         'review_report'
     ],
+    delivery_plan_binding_required: true,
     production_obligation: 'photoshop_mutation_with_readback',
     exit_criteria: [
         'SKU 组合计划来自项目上下文或用户确认',

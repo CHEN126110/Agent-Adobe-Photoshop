@@ -4,6 +4,7 @@ import {
 } from '../../../../shared/interactive-card-contract';
 import {
     buildSkuHumanReviewIntakeFromCard,
+    deriveSkuHumanReviewDecisionContext,
     isSkuHumanReviewCard,
     validateSkuHumanReviewCardValue
 } from '../../../../shared/sku-human-review';
@@ -58,6 +59,10 @@ export const skuHumanReviewInteractiveCardProvider: SkillInteractiveCardProvider
     ownerSkillId: 'sku-batch',
     kind: 'sku_human_review',
     payloadVersion: 'sku-human-review-card/v0',
+    deriveDecisionContext(card) {
+        if (!isSkuHumanReviewCard(card)) return undefined;
+        return deriveSkuHumanReviewDecisionContext(card);
+    },
     submitAction: 'submitSkillInteractiveReview',
     legacySubmitActions: ['submitSkuHumanReviewCard'],
     prepareRecordedReview: prepareSkuHumanReview

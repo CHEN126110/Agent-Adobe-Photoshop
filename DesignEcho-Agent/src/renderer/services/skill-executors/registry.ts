@@ -6,8 +6,10 @@ import { resolveSkillExecutionOutcome } from '../../../shared/agent-react-observ
 import { getInternalAgentStatusPublicMessage } from '../../../shared/agent-user-visible-state';
 import { attachSkillExecutionEffectReceipt } from '../../../shared/skill-execution-effect';
 import {
+    attachRuntimeOwnedSkillDeliveryPlanBinding,
     beginRuntimeOwnedSkillToolLedgerScope,
     completeRuntimeOwnedSkillToolLedgerScope,
+    createRuntimeOwnedSkillDeliveryPlanAuthority,
     type RuntimeOwnedSkillToolLedger,
     type RuntimeOwnedSkillToolLedgerScope
 } from '../../../shared/agent-skill-atomic-tool-execution';
@@ -101,7 +103,7 @@ function finalizeSkillExecutionResult(
 ): AgentResult {
     const normalized = attachResolvedSkillOutcome(result);
     const declaration = getSkillById(skillId);
-    return attachSkillExecutionEffectReceipt(normalized, {
+    const finalized = attachSkillExecutionEffectReceipt(normalized, {
         skillId,
         executionStarted,
         outcomeStatus: normalized.skillOutcome?.status,
@@ -113,6 +115,10 @@ function finalizeSkillExecutionResult(
         runtimeLineage: executeParams?.runtimeSkillExecutionLineage,
         runtimeOwnedCompleteToolLedger
     });
+    return attachRuntimeOwnedSkillDeliveryPlanBinding(
+        finalized,
+        runtimeOwnedCompleteToolLedger
+    );
 }
 
 function getSkillOutcomeTitle(status: SkillExecutionOutcomeStatus): string {
@@ -251,6 +257,8 @@ function withUnifiedSkillRunner(executeParams: SkillExecuteParams): SkillExecute
         ...executeParams,
         runSkill: (childSkillId, childExecuteParams) => executeSkillWithExecutor(childSkillId, {
             ...childExecuteParams,
+            // delivery-only reentry 只绑定当前 workflow owner；子 Skill 必须取得自己的 continuation。
+            runtimeWorkflowDeliveryReentry: undefined,
             guardedAtomicToolExecutor: childExecuteParams.guardedAtomicToolExecutor
                 || executeParams.guardedAtomicToolExecutor,
             runtimeSkillExecutionLineage: executeParams.runtimeSkillExecutionLineage
@@ -407,10 +415,17 @@ export async function executeSkillWithExecutor(
             return emitSkillExecutionCancelled(preExecutionVisualObservation.executeParams, skillId, skillStepId, skillLabel);
         }
 
-        const executeParamsForBusiness = withUnifiedSkillRunner(preExecutionVisualObservation.executeParams);
+        let executeParamsForBusiness = withUnifiedSkillRunner(preExecutionVisualObservation.executeParams);
         runtimeOwnedLedgerScope = beginRuntimeOwnedSkillToolLedgerScope(
             executeParamsForBusiness.guardedAtomicToolExecutor
         );
+        executeParamsForBusiness = {
+            ...executeParamsForBusiness,
+            runtimeDeliveryPlanAuthority: createRuntimeOwnedSkillDeliveryPlanAuthority({
+                scope: runtimeOwnedLedgerScope,
+                executor: executeParamsForBusiness.guardedAtomicToolExecutor
+            })
+        };
         executionStarted = true;
         const executorResult = await executor.execute(executeParamsForBusiness);
         runtimeOwnedCompleteToolLedger = await completeRuntimeOwnedSkillToolLedgerScope(

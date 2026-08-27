@@ -29,6 +29,15 @@ import {
     isBinaryImageData, 
     binaryImageDataToBase64 
 } from '../../shared/binary-protocol';
+import {
+    DEFAULT_CANDIDATE_EXTRACTION,
+    buildCandidatePointGrid,
+    extractMaskComponents,
+    findUncoveredPoint,
+    maskIoU,
+    type CandidateExtractionOptions,
+    type SemanticCandidate
+} from '../../shared/semantic-target-candidates';
 
 // ==================== 类型定义 ====================
 
@@ -93,6 +102,28 @@ const YOLO_INPUT_SIZE = 640;  // YOLO-World 模型原生分辨率，不可更改
 const YOLO_CONF_THRESHOLD = 0.10;  // detection confidence threshold
 const YOLO_IOU_THRESHOLD = 0.45;   // NMS IoU threshold
 
+// 框内分割配置（语义抠图的分割段）
+/** BiRefNet 降级路径裁剪时的外扩比例：给模型一点上下文才能判断物体边界 */
+const BOX_SEGMENT_PADDING_RATIO = 0.12;
+const BOX_SEGMENT_MIN_PADDING = 8;
+const BOX_SEGMENT_MAX_PADDING = 64;
+/** 最大连通域占前景多少比例时，判定为"粘连成一大块"，需要在块内再切 */
+const REFINE_DOMINANT_RATIO = 0.7;
+/** 块内撒点的目标数量：行列按物体长宽比分配，细长物体自动多行少列 */
+const REFINE_TARGET_POINTS = 16;
+/** 网格之外最多再补几个点（补在还没被覆盖的最大前景块中心） */
+const REFINE_MAX_EXTRA_POINTS = 6;
+/** 有效部件的面积占比区间：过小是毛刺，过大等于没切开 */
+const REFINE_MIN_PART_RATIO = 0.03;
+const REFINE_MAX_PART_RATIO = 0.92;
+/** 两个部件蒙版 IoU 超过此值视为同一物体 */
+const REFINE_DUPLICATE_IOU = 0.75;
+/** 细分最多保留几个部件：给模型太多选项反而难选 */
+const REFINE_MAX_PARTS = 8;
+
+/** 判定"框内确实分割出了东西"的灰度阈值 */
+const BOX_SEGMENT_FOREGROUND_THRESHOLD = 32;
+
 const YOLO_CLASS_NAMES = [
     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
     'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog',
@@ -153,6 +184,32 @@ export interface DetectionBox {
     label: string;
 }
 
+/**
+ * 框内分割器（由 SAMService 实现并在主进程注入）。
+ * MattingService 只依赖这个最小形状，不反向依赖 SAM 实现细节。
+ */
+export interface BoxSegmenter {
+    isReady(): boolean;
+    segmentWithBox(
+        imageBuffer: Buffer,
+        box: { x1: number; y1: number; x2: number; y2: number }
+    ): Promise<{
+        success: boolean;
+        mask?: Buffer;
+        maskWidth?: number;
+        maskHeight?: number;
+        error?: string;
+    }>;
+    /**
+     * 批量点分割：用于把相互接触、连通域拆不开的物体切开
+     * （模特腿部特写里腿、袜、鞋连成一整块前景）。
+     */
+    segmentWithPoints?(
+        imageBuffer: Buffer,
+        points: Array<{ x: number; y: number }>
+    ): Promise<Array<{ point: { x: number; y: number }; mask: Buffer } | null>>;
+}
+
 // ==================== 智能分割服务类 ====================
 
 export class MattingService {
@@ -180,7 +237,10 @@ export class MattingService {
     private birefnetSessionByTier: { full: any | null; lite: any | null } = { full: null, lite: null };
     private birefnetActiveTier: 'full' | 'lite' | null = null;
     private yoloWorldSession: any = null;
-    
+
+    // 框内分割器（SAM）：语义抠图优先用它在目标框内分割，未注入时降级为裁剪 + BiRefNet
+    private boxSegmenter: BoxSegmenter | null = null;
+
     // GPU 加速状态
     private gpuStatus: GPUStatus = { available: false, provider: 'cpu' };
     private activeExecutionProvider: ExecutionProvider = 'cpu';
@@ -1237,7 +1297,18 @@ export class MattingService {
             console.error('[MattingService] YOLO-World 模型或依赖未加载');
             return null;
         }
-        
+
+        // yolov8s-worldv2 的输入是 ['images', 'txt_feats']：txt_feats 是 CLIP 文本嵌入（512 维），
+        // 缺了它 session.run 必然失败。本机没有可用的 CLIP 文本编码器，这条本地开放词汇链路
+        // 尚未打通——明确失败并说明原因，不要再让调用方误以为"语义检测已生效"。
+        if (this.yoloWorldSession.inputNames?.includes('txt_feats')) {
+            console.error(
+                '[MattingService] YOLO-World 需要 txt_feats 文本嵌入输入，当前没有可用的 CLIP 文本编码器，'
+                + '无法用它做开放词汇检测。语义目标定位请走 SemanticTargetLocatorService。'
+            );
+            return null;
+        }
+
         try {
             // 1. 获取原始图像尺寸
             const metadata = await this.sharp(imageBuffer).metadata();
@@ -1451,6 +1522,102 @@ export class MattingService {
         return union > 0 ? intersection / union : 0;
     }
 
+    /**
+     * 把图层图像输入解码成 Buffer 并读出真实像素尺寸。
+     *
+     * 语义定位需要与分割完全同一个坐标系：导出图像可能已被 maxSize 缩放，
+     * 与 PS 图层原始尺寸不同，定位框必须按解码后的实际尺寸换算。
+     */
+    async decodeImageInput(
+        imageInput: string | BinaryImageData
+    ): Promise<{ buffer: Buffer; width: number; height: number } | null> {
+        if (!(await this.ensureInitialized())) return null;
+
+        const decoded = await this.resolveImageBuffer(imageInput);
+        if (!decoded.buffer) {
+            console.error(`[MattingService] 图像解码失败: ${decoded.error}`);
+            return null;
+        }
+
+        const metadata = await this.sharp!(decoded.buffer).metadata().catch((e: any) => {
+            console.error(`[MattingService] 读取图像尺寸失败: ${e.message}`);
+            return null;
+        });
+
+        if (!metadata?.width || !metadata?.height) return null;
+
+        return { buffer: decoded.buffer, width: metadata.width, height: metadata.height };
+    }
+
+    /**
+     * 注入框内分割器（SAM）。未注入时 segmentWithinBoxes 走裁剪 + BiRefNet 降级路径。
+     */
+    setBoxSegmenter(segmenter: BoxSegmenter | null): void {
+        this.boxSegmenter = segmenter;
+        console.log(
+            `[MattingService] 框内分割器${segmenter ? '已注入' : '已清除'}`
+            + (segmenter ? `（就绪=${segmenter.isReady()}）` : '')
+        );
+    }
+
+    /**
+     * 把外部输入（二进制 / Base64 / RAW:）统一解码成图像 Buffer。
+     * removeBackground 与 segmentWithinBoxes 共用，避免两条链路各写一份解码分支。
+     */
+    private async resolveImageBuffer(
+        imageInput: string | BinaryImageData
+    ): Promise<{ buffer: Buffer | null; error?: string }> {
+        try {
+            if (isBinaryImageData(imageInput)) {
+                const binaryData = imageInput;
+
+                if (binaryData.format === 'raw_rgb' || binaryData.format === 'raw_rgba') {
+                    // RAW 格式需要转换为 PNG
+                    const channels = binaryData.channels || (binaryData.format === 'raw_rgba' ? 4 : 3);
+                    const converted = await this.sharp!(binaryData.buffer, {
+                        raw: { width: binaryData.width, height: binaryData.height, channels }
+                    }).png().toBuffer();
+                    this.debugLog(`[MattingService] 二进制输入: ${binaryData.format} ${binaryData.width}x${binaryData.height}`);
+                    return { buffer: converted };
+                }
+
+                this.debugLog(`[MattingService] 二进制输入: ${binaryData.format} ${binaryData.width}x${binaryData.height}`);
+                return { buffer: binaryData.buffer };
+            }
+
+            // Base64 字符串
+            let base64Data = imageInput;
+
+            // 处理 RAW 格式
+            if (base64Data.startsWith('RAW:')) {
+                const parts = base64Data.split(':');
+                const width = parseInt(parts[1]);
+                const height = parseInt(parts[2]);
+                let channels: 3 | 4 = 4;
+                let rawBase64: string;
+
+                if (parts[3] === '3' || parts[3] === '4') {
+                    channels = parseInt(parts[3]) as 3 | 4;
+                    rawBase64 = parts.slice(4).join(':');
+                } else {
+                    rawBase64 = parts.slice(3).join(':');
+                }
+
+                const converted = await this.sharp!(Buffer.from(rawBase64, 'base64'), {
+                    raw: { width, height, channels }
+                }).png().toBuffer();
+                return { buffer: converted };
+            }
+
+            if (base64Data.includes(',')) {
+                base64Data = base64Data.split(',')[1];
+            }
+            return { buffer: Buffer.from(base64Data, 'base64') };
+        } catch (e: any) {
+            return { buffer: null, error: e.message };
+        }
+    }
+
     // ==================== 公共 API ====================
 
     /**
@@ -1472,6 +1639,8 @@ export class MattingService {
             returnMask?: boolean;
             binaryMaskOutput?: boolean;
             targetPrompt?: string;
+            /** 语义定位得到的目标框（图像像素坐标）；给出后蒙版会被限制在这些区域内 */
+            detectedBoxes?: DetectionBox[];
             originalWidth?: number;
             originalHeight?: number;
             edgeRefine?: string;
@@ -1520,87 +1689,29 @@ export class MattingService {
             };
         }
 
-        // 2. 如果有文本提示，加载 YOLO-World 模型
-        let yoloLoaded = false;
-        if (useTextDetection) {
-            yoloLoaded = await this.loadYoloWorldModel();
-            if (!yoloLoaded) {
-                console.warn('[MattingService] YOLO-World 模型未安装，将使用全图分割模式');
-            }
-        }
-
         sendProgress(10, 'preprocess', '预处理图像...');
 
         // 2. 处理输入格式
-        let imageBuffer: Buffer;
-        
-        try {
-            if (isBinaryImageData(imageInput)) {
-                const binaryData = imageInput;
-                
-                if (binaryData.format === 'raw_rgb' || binaryData.format === 'raw_rgba') {
-                    // RAW 格式需要转换为 PNG
-                    const channels = binaryData.channels || (binaryData.format === 'raw_rgba' ? 4 : 3);
-                    imageBuffer = await this.sharp!(binaryData.buffer, {
-                        raw: { width: binaryData.width, height: binaryData.height, channels }
-                    }).png().toBuffer();
-                } else {
-                    imageBuffer = binaryData.buffer;
-                }
-                this.debugLog(`[MattingService] 二进制输入: ${binaryData.format} ${binaryData.width}x${binaryData.height}`);
-            } else {
-                // Base64 字符串
-                let base64Data = imageInput;
-                
-                // 处理 RAW 格式
-                if (base64Data.startsWith('RAW:')) {
-                    const parts = base64Data.split(':');
-                    const width = parseInt(parts[1]);
-                    const height = parseInt(parts[2]);
-                    let channels: 3 | 4 = 4;
-                    let rawBase64: string;
-                    
-                    if (parts[3] === '3' || parts[3] === '4') {
-                        channels = parseInt(parts[3]) as 3 | 4;
-                        rawBase64 = parts.slice(4).join(':');
-                    } else {
-                        rawBase64 = parts.slice(3).join(':');
-                    }
-                    
-                    imageBuffer = await this.sharp!(Buffer.from(rawBase64, 'base64'), {
-                        raw: { width, height, channels }
-                    }).png().toBuffer();
-                } else {
-                    if (base64Data.includes(',')) {
-                        base64Data = base64Data.split(',')[1];
-                    }
-                    imageBuffer = Buffer.from(base64Data, 'base64');
-                }
-            }
-        } catch (e: any) {
-                return {
-                    success: false,
-                error: `图像预处理失败: ${e.message}`,
-                    processingTime: Date.now() - startTime
-                };
-            }
-            
-        // 3. 如果有文本提示且 YOLO-World 可用，先进行目标检测
-        let detectedBoxes: DetectionBox[] = [];
-        let usedModels: string[] = [];
-        
-        if (useTextDetection && yoloLoaded) {
-            sendProgress(25, 'detection', `YOLO-World 定位目标: "${targetPrompt}"...`);
-            
-            const detections = await this.runYoloWorldInference(imageBuffer, targetPrompt!);
-            if (detections && detections.length > 0) {
-                detectedBoxes = detections;
-                usedModels.push('yolo-world');
-                this.debugLog(`[MattingService] 检测到 ${detections.length} 个目标`);
-                sendProgress(40, 'detection', `检测到 ${detections.length} 个目标`);
-            } else {
-                this.debugLog('[MattingService] 未检测到目标，使用全图分割');
-            }
+        const decoded = await this.resolveImageBuffer(imageInput);
+        if (!decoded.buffer) {
+            return {
+                success: false,
+                error: `图像预处理失败: ${decoded.error}`,
+                processingTime: Date.now() - startTime
+            };
+        }
+        const imageBuffer = decoded.buffer;
+
+        // 3. 目标框由调用方给出（语义定位在 SemanticTargetLocatorService 完成）。
+        //    这里不再自行做文本检测：本机 yolov8s-worldv2 需要 txt_feats 文本嵌入输入，
+        //    旧实现只喂了 images，每次推理都失败并被静默吞掉，把"语义抠图"退化成全图分割。
+        const detectedBoxes: DetectionBox[] = Array.isArray(options?.detectedBoxes)
+            ? options!.detectedBoxes!
+            : [];
+        const usedModels: string[] = [];
+
+        if (useTextDetection && detectedBoxes.length === 0) {
+            this.debugLog(`[MattingService] 收到目标描述"${targetPrompt}"但未附带目标框，按全图分割处理`);
         }
 
         sendProgress(50, 'segmentation', 'BiRefNet 精确分割...');
@@ -1737,8 +1848,749 @@ export class MattingService {
     }
 
     /**
+     * 拆出画面里的候选物体（语义抠图的候选段）
+     *
+     * BiRefNet 回答"哪些像素是前景"，连通域回答"前景分成几个物体"——两者都不需要
+     * 知道"袜子"是什么。谁是用户要的目标，交给模型在候选里选，Harness 不替它判断。
+     *
+     * 每个候选自带精确蒙版（见返回的 labels），选中后可直接取像素，不必二次分割。
+     */
+    async extractForegroundCandidates(
+        imageInput: string | BinaryImageData,
+        options?: {
+            quality?: QualityLevel | number;
+            edgeRefine?: string;
+            extraction?: CandidateExtractionOptions;
+            onProgress?: (progress: number, stage: string, message: string) => void;
+        }
+    ): Promise<{
+        success: boolean;
+        candidates: SemanticCandidate[];
+        labels?: Int32Array;
+        /** 由 SAM 块内细分得到的候选，其蒙版不在 labels 里，按 id 单独给出 */
+        candidateMasks?: Map<number, Buffer>;
+        mask?: Buffer;
+        width?: number;
+        height?: number;
+        error?: string;
+    }> {
+        const sendProgress = options?.onProgress || ((_p: number, _s: string, _m: string) => {});
+
+        if (!(await this.ensureInitialized())) {
+            return {
+                success: false,
+                candidates: [],
+                error: `推理依赖加载失败：${this.lastDependencyError || '未知原因'}`
+            };
+        }
+
+        const normalizedQuality = this.normalizeQualityLevel(options?.quality);
+        if (!(await this.loadBiRefNetModel(this.resolveBiRefNetTier(normalizedQuality)))) {
+            return {
+                success: false,
+                candidates: [],
+                error: `分割模型不可用：${this.lastBiRefNetLoadError?.detail || '模型未安装'}`
+            };
+        }
+
+        const decoded = await this.decodeImageInput(imageInput);
+        if (!decoded) {
+            return { success: false, candidates: [], error: '无法解码图层图像' };
+        }
+
+        sendProgress(20, 'segmentation', '正在识别画面中的物体...');
+
+        const inference = await this.runBiRefNetInference(
+            decoded.buffer,
+            this.resolveBiRefNetInputSize(normalizedQuality),
+            decoded.width,
+            decoded.height,
+            options?.edgeRefine
+        );
+
+        if (!inference) {
+            return { success: false, candidates: [], error: '分割模型推理失败，无法得到前景' };
+        }
+
+        const { candidates, labels } = extractMaskComponents(
+            inference.maskBuffer,
+            inference.width,
+            inference.height,
+            options?.extraction || DEFAULT_CANDIDATE_EXTRACTION
+        );
+
+        this.debugLog(`[MattingService] 前景拆出 ${candidates.length} 个连通域候选`);
+
+        if (candidates.length === 0) {
+            return {
+                success: true,
+                candidates,
+                labels,
+                mask: inference.maskBuffer,
+                width: inference.width,
+                height: inference.height
+            };
+        }
+
+        // 判断前景是不是"一大块粘连物"：连通域只有一个，或最大块吃掉了绝大部分前景。
+        // 这种形态下用户想要的往往是块里的某个部件（腿上的鞋、袜），必须再切一刀。
+        const foregroundArea = candidates.reduce((sum, item) => sum + item.area, 0);
+        const largest = candidates[0];
+        const dominated = largest.area / Math.max(1, foregroundArea) >= REFINE_DOMINANT_RATIO;
+        const canRefine = this.boxSegmenter?.isReady() === true
+            && typeof this.boxSegmenter.segmentWithPoints === 'function';
+
+        if (!canRefine || (candidates.length > 1 && !dominated)) {
+            return {
+                success: true,
+                candidates,
+                labels,
+                mask: inference.maskBuffer,
+                width: inference.width,
+                height: inference.height
+            };
+        }
+
+        sendProgress(40, 'segmentation', '画面里的物体连在一起，正在细分...');
+
+        const parts = await this.refineCandidateWithPoints(
+            decoded.buffer,
+            inference.maskBuffer,
+            labels,
+            largest,
+            inference.width,
+            inference.height
+        );
+
+        // 只切出一个部件等于没切开，保持原候选不动，免得凭空多一层不必要的选项
+        if (parts.length < 2) {
+            return {
+                success: true,
+                candidates,
+                labels,
+                mask: inference.maskBuffer,
+                width: inference.width,
+                height: inference.height
+            };
+        }
+
+        // 用部件替换被细分的那个大块，其余连通域候选保持原样，统一重新编号
+        const others = candidates.filter(item => item.id !== largest.id);
+        const merged: SemanticCandidate[] = [];
+        const candidateMasks = new Map<number, Buffer>();
+
+        for (const part of parts) {
+            const id = merged.length + 1;
+            merged.push({ id, area: part.area, x1: part.x1, y1: part.y1, x2: part.x2, y2: part.y2 });
+            candidateMasks.set(id, part.mask);
+        }
+
+        const remapped = new Int32Array(labels.length);
+        for (const other of others) {
+            const id = merged.length + 1;
+            merged.push({ ...other, id });
+            for (let i = 0; i < labels.length; i++) {
+                if (labels[i] === other.id) remapped[i] = id;
+            }
+        }
+
+        this.debugLog(
+            `[MattingService] 细分后候选: ${merged.length} 个（${parts.length} 个部件 + ${others.length} 个独立物体）`
+        );
+
+        return {
+            success: true,
+            candidates: merged,
+            labels: remapped,
+            candidateMasks,
+            mask: inference.maskBuffer,
+            width: inference.width,
+            height: inference.height
+        };
+    }
+
+    /**
+     * 在一个粘连的大前景块内部，用 SAM 撒点把相互接触的物体切开。
+     *
+     * 连通域只能按"像素是否相连"分割，模特腿部特写里腿、袜、鞋是连在一起的，
+     * 拆出来只有一块——用户要"鞋子"就会抠出整条腿。SAM 能在块内部按语义边界切开
+     * （实测：腿/袜/鞋三段各自分出，面积与真值误差 < 2%）。
+     *
+     * @returns 切出的部件蒙版（已与前景取交集，去掉溢出到背景的部分）
+     */
+    private async refineCandidateWithPoints(
+        imageBuffer: Buffer,
+        foregroundMask: Buffer,
+        labels: Int32Array,
+        candidate: SemanticCandidate,
+        width: number,
+        height: number
+    ): Promise<Array<{ mask: Buffer; area: number; x1: number; y1: number; x2: number; y2: number }>> {
+        const segmenter = this.boxSegmenter;
+        if (!segmenter?.segmentWithPoints) return [];
+
+        const points = buildCandidatePointGrid(candidate, labels, width, {
+            targetPoints: REFINE_TARGET_POINTS
+        });
+
+        if (points.length < 2) {
+            this.debugLog('[MattingService] 可用采样点不足，跳过块内细分');
+            return [];
+        }
+
+        const segmented = await segmenter.segmentWithPoints(imageBuffer, points);
+        const parts: Array<{ mask: Buffer; area: number; x1: number; y1: number; x2: number; y2: number }> = [];
+        // 记录哪些前景像素已被切出的部件覆盖，用于给漏掉的区域补点
+        const covered = new Uint8Array(width * height);
+
+        for (const item of segmented) {
+            if (!item?.mask) continue;
+
+            // 与前景取交集：SAM 可能把邻接的背景一起圈进来，
+            // 前景蒙版是这一步唯一可信的边界依据。
+            const clipped = Buffer.alloc(width * height, 0);
+            let area = 0;
+            let minX = width;
+            let minY = height;
+            let maxX = 0;
+            let maxY = 0;
+
+            for (let i = 0; i < clipped.length; i++) {
+                if (labels[i] !== candidate.id) continue;
+                const value = Math.min(item.mask[i] ?? 0, foregroundMask[i]);
+                if (value < BOX_SEGMENT_FOREGROUND_THRESHOLD) continue;
+
+                clipped[i] = value;
+                area++;
+                const x = i % width;
+                const y = (i - x) / width;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+
+            // 太小的是分割毛刺，太大的等于没切开——两者都不构成有效部件
+            const ratio = area / Math.max(1, candidate.area);
+            if (ratio < REFINE_MIN_PART_RATIO || ratio > REFINE_MAX_PART_RATIO) continue;
+
+            parts.push({ mask: clipped, area, x1: minX, y1: minY, x2: maxX + 1, y2: maxY + 1 });
+            for (let i = 0; i < clipped.length; i++) {
+                if (clipped[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) covered[i] = 1;
+            }
+        }
+
+        // 网格总会漏掉细长或偏在一角的部件（真机：竖构图里脚上的鞋一个采样点都没采到）。
+        // 对还没被覆盖的大块前景补点，比继续加密整张网格省得多。
+        for (let round = 0; round < REFINE_MAX_EXTRA_POINTS; round++) {
+            const uncovered = findUncoveredPoint(
+                labels,
+                candidate.id,
+                covered,
+                width,
+                height,
+                REFINE_MIN_PART_RATIO,
+                candidate.area
+            );
+            if (!uncovered) break;
+
+            const extra = await segmenter.segmentWithPoints(imageBuffer, [{ x: uncovered.x, y: uncovered.y }]);
+            const extraMask = extra[0]?.mask;
+            if (!extraMask) break;
+
+            const clipped = Buffer.alloc(width * height, 0);
+            let area = 0;
+            let minX = width;
+            let minY = height;
+            let maxX = 0;
+            let maxY = 0;
+
+            for (let i = 0; i < clipped.length; i++) {
+                if (labels[i] !== candidate.id) continue;
+                const value = Math.min(extraMask[i] ?? 0, foregroundMask[i]);
+                if (value < BOX_SEGMENT_FOREGROUND_THRESHOLD) continue;
+                clipped[i] = value;
+                area++;
+                const x = i % width;
+                const y = (i - x) / width;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+
+            // 补点切出的东西无效时也要把该区域标记为已处理，否则会在同一处死循环
+            for (let i = 0; i < clipped.length; i++) {
+                if (clipped[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) covered[i] = 1;
+            }
+            covered[uncovered.y * width + uncovered.x] = 1;
+
+            const ratio = area / Math.max(1, candidate.area);
+            if (ratio < REFINE_MIN_PART_RATIO || ratio > REFINE_MAX_PART_RATIO) continue;
+
+            this.debugLog(`[MattingService] 补点 (${uncovered.x},${uncovered.y}) 切出部件 面积=${area}`);
+            parts.push({ mask: clipped, area, x1: minX, y1: minY, x2: maxX + 1, y2: maxY + 1 });
+        }
+
+        // 同一物体上的多个采样点会切出几乎相同的蒙版，按 IoU 去重，保留面积更大的那个
+        parts.sort((a, b) => b.area - a.area);
+        const unique: typeof parts = [];
+        for (const part of parts) {
+            const duplicated = unique.some(
+                kept => maskIoU(kept.mask, part.mask, BOX_SEGMENT_FOREGROUND_THRESHOLD) > REFINE_DUPLICATE_IOU
+            );
+            if (!duplicated) unique.push(part);
+        }
+
+        this.debugLog(
+            `[MattingService] 块内细分: ${points.length} 个采样点 → ${parts.length} 个有效部件 → 去重后 ${unique.length} 个`
+        );
+
+        return unique.slice(0, REFINE_MAX_PARTS);
+    }
+
+    /**
+     * 按选中的候选编号取出蒙版。
+     *
+     * 保留原蒙版灰度而不是二值化：分割模型在物体边缘给出的过渡灰度就是抗锯齿信息，
+     * 二值化会让蒙版边缘出现锯齿。
+     */
+    buildMaskFromCandidates(
+        mask: Buffer,
+        labels: Int32Array,
+        width: number,
+        height: number,
+        selectedIds: number[],
+        candidateMasks?: Map<number, Buffer>
+    ): { maskBuffer: Buffer; foregroundPixels: number } {
+        const output = Buffer.alloc(width * height, 0);
+
+        // 连通域候选按 labels 取像素；SAM 细分出来的部件带自己的蒙版
+        const labelIds = new Set<number>();
+        for (const id of selectedIds) {
+            const partMask = candidateMasks?.get(id);
+            if (!partMask) {
+                labelIds.add(id);
+                continue;
+            }
+            for (let i = 0; i < output.length; i++) {
+                if (partMask[i] > output[i]) output[i] = partMask[i];
+            }
+        }
+
+        if (labelIds.size > 0) {
+            for (let i = 0; i < output.length; i++) {
+                if (!labelIds.has(labels[i])) continue;
+                if (mask[i] > output[i]) output[i] = mask[i];
+            }
+        }
+
+        let foregroundPixels = 0;
+        for (let i = 0; i < output.length; i++) {
+            if (output[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) foregroundPixels++;
+        }
+
+        return { maskBuffer: output, foregroundPixels };
+    }
+
+    /**
+     * 把蒙版缩放到 Photoshop 需要的输出尺寸并包装成标准结果。
+     */
+    async finalizeCandidateMask(
+        maskBuffer: Buffer,
+        maskWidth: number,
+        maskHeight: number,
+        options: {
+            originalWidth?: number;
+            originalHeight?: number;
+            binaryMaskOutput?: boolean;
+            usedModel: string;
+            analysis: string;
+            processingTime: number;
+        }
+    ): Promise<MattingResult> {
+        const targetWidth = Number(options.originalWidth) > 0
+            ? Math.round(Number(options.originalWidth))
+            : maskWidth;
+        const targetHeight = Number(options.originalHeight) > 0
+            ? Math.round(Number(options.originalHeight))
+            : maskHeight;
+
+        let finalMaskBuffer: Buffer = maskBuffer;
+        if (targetWidth !== maskWidth || targetHeight !== maskHeight) {
+            finalMaskBuffer = await this.sharp!(maskBuffer, {
+                raw: { width: maskWidth, height: maskHeight, channels: 1 }
+            })
+                .resize(targetWidth, targetHeight, { fit: 'fill', kernel: 'lanczos3' })
+                .raw()
+                .toBuffer();
+        }
+
+        const shouldReturnBinaryMask = options.binaryMaskOutput === true;
+        const maskBase64 = shouldReturnBinaryMask
+            ? undefined
+            : `RAW_MASK:${targetWidth}:${targetHeight}:${finalMaskBuffer.toString('base64')}`;
+
+        return {
+            success: true,
+            maskImage: maskBase64,
+            mask: maskBase64,
+            maskBuffer: shouldReturnBinaryMask ? finalMaskBuffer : undefined,
+            maskWidth: targetWidth,
+            maskHeight: targetHeight,
+            processingTime: options.processingTime,
+            usedModel: options.usedModel,
+            analysis: options.analysis,
+            pipeline: { mode: 'onnx' }
+        };
+    }
+
+    /**
+     * 在指定目标框内分割（语义抠图的分割段）
+     *
+     * 与 removeBackground 的区别是本质性的：BiRefNet 是显著性分割，全图分割只会给出
+     * "画面里最显著的主体"。当图中同时有鞋和袜子时，先全图分割再用袜子的框去裁剪，
+     * 得到的是"袜子框内的鞋子局部"，而不是袜子。所以必须在框内重新做一次分割：
+     * - 首选 SAM box prompt：它本身就是"给框、分割框内物体"的模型；
+     * - 无 SAM 模型时降级为裁剪后 BiRefNet：把框外扩一点送去分割，再把结果限制回框内
+     *   （外扩是为了让模型看见物体边界，限制回框是为了不把邻近物体带进来）。
+     *
+     * @param imageInput - 图层图像
+     * @param boxes - 目标框，坐标必须与 imageInput 的像素尺寸同系
+     */
+    async segmentWithinBoxes(
+        imageInput: string | BinaryImageData,
+        boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>,
+        options?: {
+            quality?: QualityLevel | number;
+            edgeRefine?: string;
+            /** 输出蒙版的目标尺寸（通常是 PS 图层原始像素尺寸） */
+            originalWidth?: number;
+            originalHeight?: number;
+            binaryMaskOutput?: boolean;
+            onProgress?: (progress: number, stage: string, message: string) => void;
+        }
+    ): Promise<MattingResult> {
+        const startTime = Date.now();
+        const sendProgress = options?.onProgress || ((_p: number, _s: string, _m: string) => {});
+
+        if (!boxes || boxes.length === 0) {
+            return {
+                success: false,
+                error: '未提供目标框，无法执行框内分割。',
+                processingTime: Date.now() - startTime
+            };
+        }
+
+        if (!(await this.ensureInitialized())) {
+            return {
+                success: false,
+                error: `推理依赖加载失败：${this.lastDependencyError || '未知原因'}`,
+                processingTime: Date.now() - startTime
+            };
+        }
+
+        const normalizedQuality = this.normalizeQualityLevel(options?.quality);
+        const birefnetInputSize = this.resolveBiRefNetInputSize(normalizedQuality);
+
+        const decoded = await this.resolveImageBuffer(imageInput);
+        if (!decoded.buffer) {
+            return {
+                success: false,
+                error: `图像预处理失败: ${decoded.error}`,
+                processingTime: Date.now() - startTime
+            };
+        }
+        const imageBuffer = decoded.buffer;
+
+        const metadata = await this.sharp!(imageBuffer).metadata();
+        const imageWidth = metadata.width || 0;
+        const imageHeight = metadata.height || 0;
+        if (imageWidth <= 0 || imageHeight <= 0) {
+            return {
+                success: false,
+                error: '无法读取图层图像尺寸，框内分割终止。',
+                processingTime: Date.now() - startTime
+            };
+        }
+
+        const clampedBoxes = boxes
+            .map(box => ({
+                x1: Math.max(0, Math.min(imageWidth - 1, Math.round(box.x1))),
+                y1: Math.max(0, Math.min(imageHeight - 1, Math.round(box.y1))),
+                x2: Math.max(1, Math.min(imageWidth, Math.round(box.x2))),
+                y2: Math.max(1, Math.min(imageHeight, Math.round(box.y2)))
+            }))
+            .filter(box => box.x2 - box.x1 > 1 && box.y2 - box.y1 > 1);
+
+        if (clampedBoxes.length === 0) {
+            return {
+                success: false,
+                error: `目标框换算到图层 ${imageWidth}x${imageHeight} 后没有有效区域。`,
+                processingTime: Date.now() - startTime
+            };
+        }
+
+        const useSam = this.boxSegmenter !== null && this.boxSegmenter.isReady();
+        const fullMask = Buffer.alloc(imageWidth * imageHeight, 0);
+        const usedModels: string[] = [];
+        const failures: string[] = [];
+        let segmentedBoxCount = 0;
+
+        // BiRefNet 降级路径需要模型；SAM 可用时按需加载，避免无谓的 1GB 模型载入
+        let birefnetReady = false;
+
+        for (let i = 0; i < clampedBoxes.length; i++) {
+            const box = clampedBoxes[i];
+            const boxLabel = `目标 ${i + 1}/${clampedBoxes.length}`;
+            const progressBase = 45 + Math.round((i / clampedBoxes.length) * 40);
+            sendProgress(progressBase, 'segmentation', `正在分割${boxLabel}...`);
+
+            let written = 0;
+
+            if (useSam) {
+                const samResult = await this.boxSegmenter!.segmentWithBox(imageBuffer, box);
+                if (samResult.success && samResult.mask) {
+                    written = this.blendMaskRegion(
+                        fullMask,
+                        imageWidth,
+                        imageHeight,
+                        samResult.mask,
+                        samResult.maskWidth || imageWidth,
+                        samResult.maskHeight || imageHeight,
+                        0,
+                        0,
+                        box
+                    );
+                    if (written > 0 && !usedModels.includes('mobile-sam')) {
+                        usedModels.push('mobile-sam');
+                    }
+                } else {
+                    failures.push(`${boxLabel} SAM 分割失败：${samResult.error || '未返回蒙版'}`);
+                }
+            }
+
+            // SAM 不可用或没分割出内容时，用裁剪 + BiRefNet 兜住这一个框
+            if (written === 0) {
+                if (!birefnetReady) {
+                    birefnetReady = await this.loadBiRefNetModel(this.resolveBiRefNetTier(normalizedQuality));
+                    if (!birefnetReady) {
+                        failures.push(
+                            `${boxLabel} BiRefNet 不可用：${this.lastBiRefNetLoadError?.detail || '模型未安装'}`
+                        );
+                        continue;
+                    }
+                }
+
+                const cropped = await this.segmentBoxWithBiRefNet(
+                    imageBuffer,
+                    box,
+                    imageWidth,
+                    imageHeight,
+                    birefnetInputSize,
+                    options?.edgeRefine
+                );
+
+                if (!cropped) {
+                    failures.push(`${boxLabel} BiRefNet 裁剪分割失败`);
+                    continue;
+                }
+
+                written = this.blendMaskRegion(
+                    fullMask,
+                    imageWidth,
+                    imageHeight,
+                    cropped.maskBuffer,
+                    cropped.width,
+                    cropped.height,
+                    cropped.offsetX,
+                    cropped.offsetY,
+                    box
+                );
+
+                const tierLabel = `birefnet-${this.birefnetActiveTier || 'full'}`;
+                if (written > 0 && !usedModels.includes(tierLabel)) {
+                    usedModels.push(tierLabel);
+                }
+            }
+
+            if (written > 0) {
+                segmentedBoxCount++;
+            } else {
+                failures.push(`${boxLabel} 在框内没有分割出任何前景像素`);
+            }
+        }
+
+        if (segmentedBoxCount === 0) {
+            return {
+                success: false,
+                error: `在定位到的 ${clampedBoxes.length} 个目标区域内都没能分割出内容。\n\n`
+                    + failures.map(item => `· ${item}`).join('\n'),
+                processingTime: Date.now() - startTime,
+                usedModel: usedModels.join('+') || undefined
+            };
+        }
+
+        sendProgress(90, 'postprocess', '正在合成分割结果...');
+
+        // 输出到 PS 需要的目标尺寸
+        const targetWidth = Number(options?.originalWidth) > 0 ? Math.round(Number(options!.originalWidth)) : imageWidth;
+        const targetHeight = Number(options?.originalHeight) > 0 ? Math.round(Number(options!.originalHeight)) : imageHeight;
+
+        let finalMaskBuffer: Buffer = fullMask;
+        if (targetWidth !== imageWidth || targetHeight !== imageHeight) {
+            finalMaskBuffer = await this.sharp!(fullMask, {
+                raw: { width: imageWidth, height: imageHeight, channels: 1 }
+            })
+                .resize(targetWidth, targetHeight, { fit: 'fill', kernel: 'lanczos3' })
+                .raw()
+                .toBuffer();
+        }
+
+        const shouldReturnBinaryMask = options?.binaryMaskOutput === true;
+        const maskBase64 = shouldReturnBinaryMask
+            ? undefined
+            : `RAW_MASK:${targetWidth}:${targetHeight}:${finalMaskBuffer.toString('base64')}`;
+
+        sendProgress(95, 'complete', '框内分割完成');
+
+        const analysisParts = [
+            `框内分割：${segmentedBoxCount}/${clampedBoxes.length} 个目标区域成功`,
+            `分割模型：${usedModels.join('+') || '无'}`
+        ];
+        if (failures.length > 0) {
+            analysisParts.push(`未完成：${failures.join('；')}`);
+        }
+
+        return {
+            success: true,
+            maskImage: maskBase64,
+            mask: maskBase64,
+            maskBuffer: shouldReturnBinaryMask ? finalMaskBuffer : undefined,
+            maskWidth: targetWidth,
+            maskHeight: targetHeight,
+            processingTime: Date.now() - startTime,
+            usedModel: usedModels.join('+'),
+            analysis: analysisParts.join(' | '),
+            pipeline: { mode: 'onnx' }
+        };
+    }
+
+    /**
+     * 裁剪目标框区域后用 BiRefNet 分割（SAM 不可用时的降级路径）
+     *
+     * 外扩 padding 让模型看到物体的完整边界；返回的蒙版覆盖外扩后的区域，
+     * 由调用方按原始框裁掉 padding 部分，避免把相邻物体一起抠出来。
+     */
+    private async segmentBoxWithBiRefNet(
+        imageBuffer: Buffer,
+        box: { x1: number; y1: number; x2: number; y2: number },
+        imageWidth: number,
+        imageHeight: number,
+        inputSize: number,
+        edgeRefineMode?: string
+    ): Promise<{ maskBuffer: Buffer; width: number; height: number; offsetX: number; offsetY: number } | null> {
+        const boxWidth = box.x2 - box.x1;
+        const boxHeight = box.y2 - box.y1;
+        const padding = Math.max(
+            BOX_SEGMENT_MIN_PADDING,
+            Math.min(BOX_SEGMENT_MAX_PADDING, Math.round(Math.min(boxWidth, boxHeight) * BOX_SEGMENT_PADDING_RATIO))
+        );
+
+        const left = Math.max(0, box.x1 - padding);
+        const top = Math.max(0, box.y1 - padding);
+        const right = Math.min(imageWidth, box.x2 + padding);
+        const bottom = Math.min(imageHeight, box.y2 + padding);
+        const cropWidth = right - left;
+        const cropHeight = bottom - top;
+
+        if (cropWidth <= 1 || cropHeight <= 1) return null;
+
+        const cropBuffer = await this.sharp!(imageBuffer)
+            .extract({ left, top, width: cropWidth, height: cropHeight })
+            .png()
+            .toBuffer()
+            .catch((e: any) => {
+                console.error(`[MattingService] 裁剪目标区域失败: ${e.message}`);
+                return null;
+            });
+
+        if (!cropBuffer) return null;
+
+        const inference = await this.runBiRefNetInference(
+            cropBuffer,
+            inputSize,
+            cropWidth,
+            cropHeight,
+            edgeRefineMode
+        );
+
+        if (!inference) return null;
+
+        return {
+            maskBuffer: inference.maskBuffer,
+            width: inference.width,
+            height: inference.height,
+            offsetX: left,
+            offsetY: top
+        };
+    }
+
+    /**
+     * 把一块局部蒙版合并进全图蒙版，只写入 clip 框覆盖的像素（逐像素取较大值）。
+     *
+     * source 允许与 target 尺寸不同：按比例采样，用于 BiRefNet 裁剪块贴回，
+     * 也用于 SAM 输出与全图尺寸一致时的直接合并。
+     *
+     * @returns 实际写入的前景像素数（用于判断这个框到底有没有分割出东西）
+     */
+    private blendMaskRegion(
+        target: Buffer,
+        targetWidth: number,
+        targetHeight: number,
+        source: Buffer,
+        sourceWidth: number,
+        sourceHeight: number,
+        offsetX: number,
+        offsetY: number,
+        clip: { x1: number; y1: number; x2: number; y2: number }
+    ): number {
+        const clipX1 = Math.max(0, Math.min(targetWidth, clip.x1));
+        const clipY1 = Math.max(0, Math.min(targetHeight, clip.y1));
+        const clipX2 = Math.max(0, Math.min(targetWidth, clip.x2));
+        const clipY2 = Math.max(0, Math.min(targetHeight, clip.y2));
+
+        let written = 0;
+
+        for (let y = clipY1; y < clipY2; y++) {
+            const sourceY = y - offsetY;
+            if (sourceY < 0 || sourceY >= sourceHeight) continue;
+            const sourceRow = sourceY * sourceWidth;
+            const targetRow = y * targetWidth;
+
+            for (let x = clipX1; x < clipX2; x++) {
+                const sourceX = x - offsetX;
+                if (sourceX < 0 || sourceX >= sourceWidth) continue;
+
+                const value = source[sourceRow + sourceX];
+                if (value === undefined) continue;
+
+                const targetIndex = targetRow + x;
+                if (value > target[targetIndex]) {
+                    target[targetIndex] = value;
+                }
+                if (value >= BOX_SEGMENT_FOREGROUND_THRESHOLD) {
+                    written++;
+                }
+            }
+        }
+
+        return written;
+    }
+
+    /**
      * 智能对象检测 - 检测图像中的对象并返回边界框
-     * 
+     *
      * 核心功能：实现类似 Photoshop 对象选择工具的能力
      * - 当用户只框选了对象的一部分时，自动识别完整对象边界框
      * - 返回与用户选区重叠的所有对象，按重叠比例排序

@@ -37,6 +37,10 @@ import { openRouterGeminiImageService } from './services/openrouter-gemini-image
 import { getSubjectDetectionService, SubjectDetectionService } from './services/subject-detection-service';
 import { ContourService } from './services/contour-service';
 import { getSAMService, SAMService } from './services/sam-service';
+import {
+    createSemanticTargetLocator,
+    SemanticTargetLocatorService
+} from './services/semantic-target-locator-service';
 import { DebugBridgeService, type DebugBridgeChatSubmitInput } from './services/debug-bridge-service';
 import { MCPHostService } from './services/mcp-host-service';
 import {
@@ -127,6 +131,7 @@ let inpaintingService: InpaintingService | null = null;
 let subjectDetectionService: SubjectDetectionService | null = null;
 let contourService: ContourService | null = null;
 let samService: SAMService | null = null;
+let semanticTargetLocator: SemanticTargetLocatorService | null = null;
 let webviewServer: http.Server | null = null;
 let debugBridgeService: DebugBridgeService | null = null;
 let mcpHostService: MCPHostService | null = null;
@@ -1065,12 +1070,27 @@ async function initializeServices(): Promise<void> {
     logService.logAgent('info', 'Contour extraction service initialized');
     
     // SAM 分割服务
-    samService = getSAMService({ modelsDir: path.join(process.cwd(), 'models') });
+    // 模型目录必须与 BiRefNet 一致指向 userData/models：此前用 process.cwd()/models（工程目录），
+    // 已下载到用户目录的 mobile_sam 模型永远找不到，SAM 一直静默不可用。
+    samService = getSAMService({ modelsDir: path.join(app.getPath('userData'), 'models') });
     const samReady = await samService.initialize();
     if (samReady) {
         logService.logAgent('info', 'SAM selection service ready');
+        // 语义抠图的框内分割优先走 SAM（box prompt 天然适合"给框分割框内物体"）
+        mattingService.setBoxSegmenter(samService);
     } else {
-        logService.logAgent('info', 'SAM model unavailable, fallback to BiRefNet');
+        logService.logAgent('info', 'SAM model unavailable, box segmentation falls back to cropped BiRefNet');
+    }
+
+    // 语义目标定位服务（"抠取目标"文本 → 目标框），复用用户已配置的 Agent 模型
+    if (modelService) {
+        semanticTargetLocator = createSemanticTargetLocator(
+            modelService,
+            () => taskOrchestrator?.getAgentModels?.()?.vision || ''
+        );
+        logService.logAgent('info', 'Semantic target locator initialized');
+    } else {
+        logService.logAgent('warn', 'ModelService missing, semantic matting target locating unavailable');
     }
 
     // WebSocket 服务（与 UXP 插件通信）
@@ -1098,6 +1118,7 @@ async function initializeServices(): Promise<void> {
         subjectDetectionService,
         contourService,
         samService,
+        semanticTargetLocator,
         mainWindow
     };
     registerUXPHandlers(uxpContext);

@@ -72,6 +72,10 @@ import {
     buildMainImageMemoryContext,
     type MainImageMemoryContext
 } from './main-image-memory-context';
+import {
+    buildMainImageSkillDeliveryPlan,
+    type MainImageSkillDeliveryPlan
+} from './main-image-skill-delivery-plan';
 
 export type MainImageStrategyInputBuilderStatus =
     | 'blocked_missing_strategy_inputs'
@@ -87,6 +91,9 @@ export interface MainImageStrategyInputBuilderInput {
     sizePlans?: MainImageSizePlan[];
     copyCandidates?: string[];
     outputDir?: string;
+    projectPath?: string;
+    deliveryConvention?: unknown;
+    deliveryVersion?: string;
     toolNames?: string[];
     visionSignal?: MainImageVisionSignal | null;
     agentDesignDecision?: MainImageAgentDesignDecision | null;
@@ -121,6 +128,7 @@ export interface MainImageStrategyInputBundle {
     designStandards: MainImageDesignStandards;
     variantPlacementStrategy: MainImageVariantPlacementStrategy;
     productionDocumentStructure: MainImageProductionDocumentStructure;
+    deliveryPlan: MainImageSkillDeliveryPlan;
     productionExecutionPlan: MainImageProductionExecutionPlan;
     productionExecutorHandoff: MainImageProductionExecutorHandoff;
     productionExecutorDispatchPlan: MainImageProductionExecutorDispatchPlan;
@@ -595,6 +603,12 @@ export function buildMainImageStrategyInputs(
             sizePlans
         })
     });
+    const deliveryPlan = buildMainImageSkillDeliveryPlan({
+        projectPath: input.projectPath,
+        deliveryConvention: input.deliveryConvention,
+        deliveryVersion: input.deliveryVersion,
+        productionDocumentStructure
+    });
     const variantPlacementStrategy = buildMainImageVariantPlacementStrategy({
         userText: input.userText,
         projectStyleStrategy,
@@ -613,6 +627,7 @@ export function buildMainImageStrategyInputs(
         productionDocumentStructure,
         variantPlacementStrategy,
         selectedAsset: input.selectedAsset,
+        deliveryPlan,
         outputDir,
         allowPendingRatioExecution: input.allowPendingRatioExecution
     });
@@ -738,13 +753,17 @@ export function buildMainImageStrategyInputs(
         designStandards,
         variantPlacementStrategy,
         productionDocumentStructure,
+        deliveryPlan,
         productionExecutionPlan,
         productionExecutorHandoff,
         productionExecutorDispatchPlan,
         productionExecutorDryRunPreview,
         designReadinessReport,
         liveExecutorRequestPackage,
-        blockers: missingInputs.length > 0 ? ['main_image_strategy_inputs_missing'] : [],
+        blockers: [
+            ...(missingInputs.length > 0 ? ['main_image_strategy_inputs_missing'] : []),
+            ...(deliveryPlan.status !== 'ready' ? deliveryPlan.blockers : [])
+        ],
         warnings: [
             ...warnings,
             ...assetHeroStrategy.warnings,
@@ -757,6 +776,7 @@ export function buildMainImageStrategyInputs(
             ...designStandards.warnings,
             ...variantPlacementStrategy.warnings,
             ...productionDocumentStructure.warnings,
+            ...deliveryPlan.warnings,
             ...productionExecutionPlan.warnings,
             ...productionExecutorHandoff.warnings,
             ...productionExecutorDispatchPlan.warnings,
@@ -776,6 +796,7 @@ export function buildMainImageStrategyInputs(
             '主图本地记忆只提供用户偏好候选，不替代视觉观察、商品事实、平台规范或 Photoshop 验收。',
             'DesignPlacementIntelligence 只提供选图和落位候选解释，不替代主体 bounds、actualBounds、截图 QA 或人工验收。',
             '生产文档结构只描述文档/分组/导出计划，不创建 PSD/PSB。',
+            'Skill 交付计划只把 Agent/用户选定的目录、命名和配对约定编译为精确项目路径，不作视觉决定，也不读取或写入文件。',
             '生产执行计划只描述 Photoshop 操作顺序，不执行 Photoshop。',
             '生产执行交接只描述 dry-run/tool handoff 请求，不执行 Photoshop。',
             '生产 executor dispatch plan 只描述真实执行前门禁和队列预览，不执行 Photoshop。',

@@ -148,8 +148,10 @@ const METRICS = [
         // 12929→12892（2026-08-25）：终审证据、真实使用视图与 Provider 协议保持在独立 runtime owner，
         // Agent 核心只承接 Profile 元数据与推理偏好，不回填设计决策分支。
         // 12892→12878：视觉预算策略迁出；12878→12876（2026-08-26）：最终文件收集迁至独立运行时模块；
-        // 12876→12874（2026-08-27）：辅助 Provider 完整终态消费收口且调用点保持精简。
-        baseline: 12874,
+        // 12874→12870（2026-08-27）：Runtime Session 到 workflow continuation 的身份投影下沉到通用契约。
+        // 12870→12859（2026-08-27）：交互复入停滞判断与工具失败结果归一迁出主循环，
+        // Agent 只在统一执行边界消费两者结果。
+        baseline: 12859,
         reduceHint: '把 Stage / 声明 / 读回 / 恢复等子系统从 agent.ts 迁出到独立模块或数据层；新增能力走注册表，不在主循环里长分支。',
         files: ['src/renderer/services/agent-runtime/agent.ts'],
         count: (text) => text.split('\n').length

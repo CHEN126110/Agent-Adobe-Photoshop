@@ -7,6 +7,20 @@ export type InteractiveCardStatus = 'draft' | 'submitted' | 'cancelled';
 export type InteractiveCardValidationSeverity = 'error' | 'warning';
 export type InteractiveCardRunDisposition = 'blocks_execution' | 'post_execution_review';
 
+export interface InteractiveCardSkillProviderOwner {
+    type: 'skill-provider';
+    skillId: string;
+}
+
+export interface InteractiveCardDecisionContext {
+    /** 同一 TaskRun 中“正在向用户确认哪一类业务决定”的稳定身份。 */
+    decisionFingerprint: string;
+    /** 产卡时展示给用户的候选 / 草稿内容摘要。 */
+    candidateFingerprint?: string;
+    /** 用户提交后由领域 Provider 对规范化答案签发的摘要。 */
+    answerFingerprint?: string;
+}
+
 export interface InteractiveCardValidationIssue {
     severity: InteractiveCardValidationSeverity;
     code: string;
@@ -37,6 +51,18 @@ export interface InteractiveCardDefinition<TPayload = unknown> {
     title: string;
     description?: string;
     payload: TPayload;
+    /**
+     * 业务卡片的领域 owner。通用卡不设置；Skill Provider 生成的卡必须设置，
+     * continuation 会在暂停与恢复两端核对它，防止另一 Skill 借用相同 kind/payload。
+     */
+    interactionOwner?: InteractiveCardSkillProviderOwner;
+    /**
+     * Provider 对“正在向用户确认哪一个业务决定”的稳定指纹。
+     * Harness 只比较相等性来识别同一 TaskRun 的无进展重问，不解释领域内容。
+     */
+    decisionFingerprint?: string;
+    /** Provider 对当前候选内容的摘要；它与稳定的决定身份分离。 */
+    candidateFingerprint?: string;
     /** 缺省为 blocks_execution；仅可信生产者可把产后发布复核声明为非阻塞。 */
     runDisposition?: InteractiveCardRunDisposition;
     status?: InteractiveCardStatus;
@@ -51,6 +77,7 @@ export interface InteractiveCardSubmission<TValue = unknown> {
     submittedAt: string;
     value: TValue;
     validation: InteractiveCardValidationResult<TValue>;
+    decisionContext?: InteractiveCardDecisionContext;
     memoryCandidate?: DesignMemoryItem;
     execution?: {
         status: 'succeeded' | 'failed' | 'unknown';
@@ -117,8 +144,15 @@ export function buildInteractiveCardSubmissionFingerprint(
         validation: {
             valid: submission.validation?.valid === true,
             canSubmit: submission.validation?.canSubmit === true
-        }
+        },
+        decisionContext: submission.decisionContext
     });
+}
+
+function normalizeInteractiveCardSubmittedAt(value: string | number | Date | undefined): string {
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'number') return new Date(value).toISOString();
+    return cleanInteractiveCardText(value) || new Date().toISOString();
 }
 
 export function buildInteractiveCardSubmission<TValue>(input: {
@@ -126,13 +160,20 @@ export function buildInteractiveCardSubmission<TValue>(input: {
     value: TValue;
     validation: InteractiveCardValidationResult<TValue>;
     memoryCandidate?: DesignMemoryItem;
+    answerFingerprint?: string;
     submittedAt?: string | number | Date;
 }): InteractiveCardSubmission<TValue> {
-    const submittedAt = input.submittedAt instanceof Date
-        ? input.submittedAt.toISOString()
-        : typeof input.submittedAt === 'number'
-            ? new Date(input.submittedAt).toISOString()
-            : cleanInteractiveCardText(input.submittedAt) || new Date().toISOString();
+    const submittedAt = normalizeInteractiveCardSubmittedAt(input.submittedAt);
+    const decisionFingerprint = cleanInteractiveCardText(input.card.decisionFingerprint);
+    const candidateFingerprint = cleanInteractiveCardText(input.card.candidateFingerprint);
+    const answerFingerprint = cleanInteractiveCardText(input.answerFingerprint);
+    const decisionContext = decisionFingerprint
+        ? {
+            decisionFingerprint,
+            ...(candidateFingerprint ? { candidateFingerprint } : {}),
+            ...(answerFingerprint ? { answerFingerprint } : {})
+        }
+        : undefined;
     return {
         version: 'interactive-card-submission/v0',
         cardId: input.card.id,
@@ -140,6 +181,7 @@ export function buildInteractiveCardSubmission<TValue>(input: {
         submittedAt,
         value: input.value,
         validation: input.validation,
+        ...(decisionContext ? { decisionContext } : {}),
         memoryCandidate: input.memoryCandidate
     };
 }

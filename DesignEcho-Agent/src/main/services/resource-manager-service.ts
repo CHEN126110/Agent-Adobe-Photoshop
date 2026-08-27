@@ -28,6 +28,16 @@ import { getSubjectDetectionService } from './subject-detection-service';
 // 由于 Electron 主进程没有 DOM Canvas，使用 Sharp 模拟基础功能
 let psdCanvasInitialized = false;
 
+function calculateFileSha256(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('error', reject);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+    });
+}
+
 /**
  * 初始化 ag-psd Canvas 支持
  * 使用模拟的 Canvas 实现（仅用于读取缩略图）
@@ -2268,6 +2278,7 @@ export class ResourceManagerService {
 
             const ext = path.extname(normalizedPath).toLowerCase();
             if (!IMAGE_EXTENSIONS.includes(ext)) {
+                const sha256 = await calculateFileSha256(normalizedPath);
                 return {
                     ...base,
                     success: false,
@@ -2276,14 +2287,14 @@ export class ResourceManagerService {
                     isFile: true,
                     byteLength: stats.size,
                     format: ext.replace(/^\./, ''),
+                    sha256,
                     error: '不支持的图片格式'
                 };
             }
 
             const metadata = await sharp(normalizedPath).metadata();
             const visualMetrics = await buildImageVisualMetricsProbe(normalizedPath);
-            const buffer = fs.readFileSync(normalizedPath);
-            const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+            const sha256 = await calculateFileSha256(normalizedPath);
             const mimeTypes: Record<string, string> = {
                 '.jpg': 'image/jpeg',
                 '.jpeg': 'image/jpeg',

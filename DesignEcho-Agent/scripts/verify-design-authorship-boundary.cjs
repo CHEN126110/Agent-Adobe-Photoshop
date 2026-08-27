@@ -39,13 +39,28 @@ const {
     buildSkuExpectedExportInventory
 } = require(path.join(root, 'src/shared/sku-export-readback.ts'));
 const {
+    buildSkillDeliveryPlan,
     buildSkillDeliveryPlanDigest,
+    isCurrentSkillDeliveryPlanDigest,
     isSkillDeliveryPlanDigest,
     resolveSkillDeliveryConvention
 } = require(path.join(root, 'src/shared/skills/skill-delivery-convention.ts'));
 const {
     normalizeStableSourceReference
 } = require(path.join(root, 'src/shared/stable-source-reference.ts'));
+const {
+    buildMainImageSkillDeliveryPlan
+} = require(path.join(root, 'src/shared/main-image-skill-delivery-plan.ts'));
+const {
+    buildMainImageStrategyInputs
+} = require(path.join(root, 'src/shared/main-image-strategy-input-builder.ts'));
+const {
+    buildMainImageDeliveryRuntimeEvidence,
+    inspectMainImageStagedDeliveryBeforePromotion
+} = require(path.join(
+    root,
+    'src/renderer/services/skill-executors/main-image-delivery-runtime.ts'
+));
 const {
     collectRuntimeFinalArtifactPaths
 } = require(path.join(root, 'src/shared/runtime-final-artifact-paths.ts'));
@@ -65,6 +80,28 @@ const {
     root,
     'src/renderer/services/skill-executors/sku-export-transaction.service.ts'
 ));
+const {
+    buildDetailPageDeliveryPlan,
+    validateDetailPageDeliveryRequest
+} = require(path.join(
+    root,
+    'src/renderer/services/skill-executors/detail-page-delivery-plan.ts'
+));
+const {
+    buildDetailPageDeliveryRuntimeEvidence
+} = require(path.join(
+    root,
+    'src/renderer/services/skill-executors/detail-page-delivery-runtime.ts'
+));
+const {
+    buildDetailPageAgentIntake
+} = require(path.join(root, 'src/shared/detail-page-agent-intake.ts'));
+const {
+    evaluateAgentWorkflowContinuationToolAccess,
+    issueRuntimeWorkflowDeliveryReentry,
+    peekRuntimeWorkflowDeliveryReentry,
+    resolveAgentWorkflowContinuationScopeUpdate
+} = require(path.join(root, 'src/shared/agent-workflow-continuation-scope.ts'));
 const {
     bindSkuColorCardRuntimeSelection,
     createSkuColorCardRuntimeSelectionReceipt
@@ -135,6 +172,11 @@ const toolSchemas = source('src/renderer/services/agent-runtime/tool-schemas.ts'
 const composeExecutor = source('src/renderer/services/design-workshop/compose-design.executor.ts');
 const scalingPolicy = source('src/shared/design-smart-scaling-policy.ts');
 const mainImagePlacement = source('src/shared/main-image-variant-placement-strategy.ts');
+const mainImageExecutorSource = source('src/renderer/services/skill-executors/main-image.executor.ts');
+const mainImageDeliveryRuntimeSource = source('src/renderer/services/skill-executors/main-image-delivery-runtime.ts');
+const mainImageExecutionPlanSource = source('src/shared/main-image-production-execution-plan.ts');
+const mainImageAdapterContractSource = source('src/shared/main-image-live-photoshop-adapter-contract.ts');
+const uxpExportGroupSource = source('../DesignEcho-UXP/src/tools/image/export-group.ts');
 const skillDeclarations = source('src/shared/skills/skill-declarations.ts');
 const skillParamDefaults = source('src/shared/skill-param-defaults.ts');
 const mainImageSkillPlaybook = source('skills/main-image-design/SKILL.md');
@@ -161,8 +203,11 @@ const mcpHostClient = source('src/renderer/services/mcp-host.client.ts');
 const preloadSource = source('src/main/preload.ts');
 const detailPageAssetRanker = source('src/renderer/services/skill-executors/detail-page-asset-ranker.ts');
 const detailPageExecutor = source('src/renderer/services/skill-executors/detail-page.executor.ts');
+const detailPageDeliveryPlanSource = source('src/renderer/services/skill-executors/detail-page-delivery-plan.ts');
 const detailPagePlanUtils = source('src/renderer/services/skill-executors/detail-page-plan-utils.ts');
 const uxpDetailPageFiller = source('../DesignEcho-UXP/src/tools/layout/detail-page-filler.ts');
+const uxpDetailPageSliceExporter = source('../DesignEcho-UXP/src/tools/layout/slice-exporter.ts');
+const uxpDetailPageSliceContract = source('../DesignEcho-UXP/src/tools/layout/slice-export-contract.ts');
 const mainImageProjectStyleStrategy = source('src/shared/main-image-project-style-strategy.ts');
 const skuTemplateManifest = source('src/shared/agent-runtime-v5/manifests/sku-template.manifest.ts');
 const skuColorCardManifestSource = source('src/shared/agent-runtime-v5/manifests/sku-color-card.manifest.ts');
@@ -469,14 +514,14 @@ check(
         && skuProductionSkillPlaybook.includes('不自行从目录多数票决定名称')
         && skillDeclarations.includes('不能由早期参数默认器抢先冻结')
         && !skillParamDefaults.includes('fallback.sizes = [...MAIN_IMAGE_DEFAULT_SIZE_KEYS]')
-        && agentRuntime.includes('expectedDeliveryPlanDigest: typeof receiptEntry.result?.data?.expectedDeliveryPlanDigest')
-        && skuBatchExecutorSource.includes('expectedDeliveryPlanDigest: expectedExportInventory.deliveryPlanDigest')
+        && agentRuntime.includes('expectedDeliveryPlanDigest: readRuntimeOwnedSkillDeliveryPlanDigest(')
+        && !skuBatchExecutorSource.includes('expectedDeliveryPlanDigest: expectedExportInventory.deliveryPlanDigest')
         && !agentRuntime.includes('交付惯例候选')
         && !autonomousExecutor.includes('交付惯例候选')
 );
 const agentSelectedDeliveryConvention = {
     version: 'skill-delivery-convention/v0',
-    provenance: 'agent_examples',
+    provenance: 'agent_selected',
     supportRefs: [
         'document:sku-example-01',
         'project-file:SKU/参考成品/2双组合.psb'
@@ -496,6 +541,446 @@ const agentSelectedDeliveryConvention = {
     pairing: 'one_editable_per_raster',
     versionPolicy: 'fail_if_exists'
 };
+const mainImageDeliveryConvention = {
+    version: 'skill-delivery-convention/v0',
+    provenance: 'agent_selected',
+    supportRefs: ['user-instruction:current-turn'],
+    raster: {
+        projectRelativeRoot: '交付/主图',
+        folderPattern: '{size}-{version}',
+        fileNamePattern: '{kind}-{index}',
+        format: 'jpg'
+    },
+    editable: {
+        projectRelativeRoot: '交付/主图源稿',
+        folderPattern: '{size}-{version}',
+        fileNamePattern: '主图-{size}-{version}',
+        format: 'psb'
+    },
+    pairing: 'one_master_many_rasters',
+    versionPolicy: 'new_version'
+};
+const mainImageProductionStructure = {
+    status: 'ready_production_document_structure',
+    documents: [{
+        id: 'main-image-document-800',
+        name: '主图-800',
+        ratio: '1:1',
+        canvasSize: { width: 1440, height: 1440 },
+        exportSize: { width: 800, height: 800 },
+        sizeProfileId: 'tmall-800-main-image',
+        parentGroups: []
+    }, {
+        id: 'main-image-document-750',
+        name: '主图-750',
+        ratio: '3:4',
+        canvasSize: { width: 1440, height: 1920 },
+        exportSize: { width: 750, height: 1000 },
+        sizeProfileId: 'tmall-750-main-image',
+        parentGroups: []
+    }],
+    exportSpecs: [{
+        id: 'main-image-document-800-click-1-export',
+        documentId: 'main-image-document-800',
+        documentName: '主图-800',
+        groupPath: ['点击图', '点击图-1'],
+        exportSize: { width: 800, height: 800 },
+        fileName: '点击图-1.jpg',
+        imageType: 'click'
+    }, {
+        id: 'main-image-document-800-conversion-1-export',
+        documentId: 'main-image-document-800',
+        documentName: '主图-800',
+        groupPath: ['转化图', '转化图-1'],
+        exportSize: { width: 800, height: 800 },
+        fileName: '转化图-1.jpg',
+        imageType: 'conversion'
+    }, {
+        id: 'main-image-document-750-click-1-export',
+        documentId: 'main-image-document-750',
+        documentName: '主图-750',
+        groupPath: ['点击图', '点击图-1'],
+        exportSize: { width: 750, height: 1000 },
+        fileName: '点击图-1.jpg',
+        imageType: 'click'
+    }]
+};
+const mainImageDeliveryPlan = buildMainImageSkillDeliveryPlan({
+    projectPath: 'C:\\shop',
+    deliveryConvention: mainImageDeliveryConvention,
+    deliveryVersion: 'v2',
+    productionDocumentStructure: mainImageProductionStructure
+});
+const mainImageMissingVersionPlan = buildMainImageSkillDeliveryPlan({
+    projectPath: 'C:\\shop',
+    deliveryConvention: mainImageDeliveryConvention,
+    productionDocumentStructure: mainImageProductionStructure
+});
+const mainImageUnsupportedPairingPlan = buildMainImageSkillDeliveryPlan({
+    projectPath: 'C:\\shop',
+    deliveryConvention: {
+        ...mainImageDeliveryConvention,
+        pairing: 'one_editable_per_raster'
+    },
+    deliveryVersion: 'v2',
+    productionDocumentStructure: mainImageProductionStructure
+});
+const sameWidthCustomMainImagePlan = buildMainImageSkillDeliveryPlan({
+    projectPath: 'C:\\shop',
+    deliveryConvention: mainImageDeliveryConvention,
+    deliveryVersion: 'v3',
+    productionDocumentStructure: {
+        status: 'ready_production_document_structure',
+        documents: [{
+            id: 'custom-800x1000', name: 'custom-800x1000', ratio: 'custom-a',
+            canvasSize: { width: 800, height: 1000 }, exportSize: { width: 800, height: 1000 },
+            sizeProfileId: 'custom-a', parentGroups: []
+        }, {
+            id: 'custom-800x1200', name: 'custom-800x1200', ratio: 'custom-b',
+            canvasSize: { width: 800, height: 1200 }, exportSize: { width: 800, height: 1200 },
+            sizeProfileId: 'custom-b', parentGroups: []
+        }],
+        exportSpecs: [{
+            id: 'custom-800x1000-click-1-export', documentId: 'custom-800x1000',
+            documentName: 'custom-800x1000', groupPath: ['点击图', '点击图-1'],
+            exportSize: { width: 800, height: 1000 }, fileName: '点击图-1.jpg', imageType: 'click'
+        }, {
+            id: 'custom-800x1200-click-1-export', documentId: 'custom-800x1200',
+            documentName: 'custom-800x1200', groupPath: ['点击图', '点击图-1'],
+            exportSize: { width: 800, height: 1200 }, fileName: '点击图-1.jpg', imageType: 'click'
+        }]
+    }
+});
+const posixMainImageDeliveryPlan = buildMainImageSkillDeliveryPlan({
+    projectPath: '/Volumes/Design Disk/shop',
+    deliveryConvention: mainImageDeliveryConvention,
+    deliveryVersion: 'v2',
+    productionDocumentStructure: mainImageProductionStructure
+});
+const naturalMainImageStrategy = buildMainImageStrategyInputs({
+    userText: '用这个项目里的素材帮我做一张 800×800 的商品主图。',
+    imageType: 'click',
+    projectPath: 'C:\\shop',
+    deliveryConvention: mainImageDeliveryConvention,
+    deliveryVersion: 'v2',
+    selectedAsset: {
+        id: 'asset-01',
+        path: 'C:\\shop\\摄影图\\01.jpg',
+        name: '01.jpg',
+        width: 1200,
+        height: 1600
+    },
+    projectAssets: [{
+        id: 'asset-01',
+        path: 'C:\\shop\\摄影图\\01.jpg',
+        name: '01.jpg',
+        width: 1200,
+        height: 1600
+    }],
+    subjectBounds: { left: 100, top: 100, right: 1100, bottom: 1500, width: 1000, height: 1400 },
+    sizePlans: [{
+        sizeKey: '800',
+        targetSize: { width: 800, height: 800 },
+        subjectSize: { width: 1000, height: 1400 },
+        scale: 0.5,
+        targetX: 150,
+        targetY: 50,
+        decisionReason: 'Agent 根据用户明确 800×800 交付要求选定。',
+        smartLayoutPlanned: true,
+        quickExportPlanned: true
+    }],
+    copyCandidates: ['秋冬日常穿搭'],
+    outputDir: 'C:\\shop\\交付\\主图',
+    visionSignal: {
+        source: 'vision-model',
+        assetRef: { id: 'asset-01', path: 'C:\\shop\\摄影图\\01.jpg' },
+        productType: 'socks',
+        subjectSummary: '一组袜子穿着展示',
+        backgroundSummary: '纯色棚拍背景',
+        styleHints: ['清爽', '日常']
+    },
+    agentDesignDecision: {
+        styleKeywords: ['清爽', '商品主体突出'],
+        recommendedTone: '暖中性',
+        clickVisualHooks: ['完整穿着效果'],
+        clickLayoutFocus: '主体清晰与留白平衡'
+    },
+    toolNames: ['createDocument', 'createGroup', 'moveLayerToGroup', 'placeImage', 'transformLayer', 'moveLayer', 'exportGroup', 'saveDocument', 'getDocumentInfo', 'getLayerHierarchy', 'getLayerProperties', 'getAcceptanceSnapshot'],
+    allowPendingRatioExecution: true,
+    userCheckpointApproved: true
+});
+const naturalMainImageOperations = naturalMainImageStrategy.productionExecutionPlan.documents
+    .flatMap((document) => document.operations);
+const firstNaturalMainImageExportIndex = naturalMainImageOperations
+    .findIndex((operation) => operation.tool === 'exportGroup');
+const lastNaturalMainImageTransformIndex = naturalMainImageOperations
+    .map((operation) => operation.tool)
+    .lastIndexOf('transformLayer');
+const naturalMainImageSaveIndex = naturalMainImageOperations
+    .findIndex((operation) => operation.tool === 'saveDocument');
+check(
+    '主图 Skill 把用户/Agent 选定约定编译为跨平台 exact raster/editable 计划，Harness 不作视觉决策',
+    mainImageDeliveryPlan.status === 'ready'
+        && mainImageDeliveryPlan.typedPlan?.artifacts.length === 5
+        && isCurrentSkillDeliveryPlanDigest(mainImageDeliveryPlan.deliveryPlanDigest)
+        && mainImageDeliveryPlan.typedPlan.artifacts.filter((artifact) => artifact.kind === 'editable_document').length === 2
+        && mainImageDeliveryPlan.typedPlan.artifacts.filter((artifact) => artifact.kind === 'raster_export').length === 3
+        && new Set(mainImageDeliveryPlan.typedPlan.artifacts.map((artifact) => artifact.pairId)).size === 2
+        && mainImageDeliveryPlan.typedPlan.artifacts.every((artifact) => (
+            artifact.path.startsWith('C:\\shop\\')
+            && artifact.sourceHistoryRole === 'same_document_revision'
+        ))
+        && mainImageMissingVersionPlan.status === 'blocked_invalid_convention'
+        && mainImageMissingVersionPlan.blockers.some((message) => message.includes('deliveryVersion'))
+        && mainImageUnsupportedPairingPlan.status === 'blocked_unsupported_pairing'
+        && mainImageUnsupportedPairingPlan.blockers.some((message) => message.includes('逐图可编辑稿'))
+        && sameWidthCustomMainImagePlan.status === 'ready'
+        && new Set(sameWidthCustomMainImagePlan.artifacts.map((artifact) => artifact.path)).size === 4
+        && sameWidthCustomMainImagePlan.artifacts.some((artifact) => artifact.path.includes('800x1000-v3'))
+        && sameWidthCustomMainImagePlan.artifacts.some((artifact) => artifact.path.includes('800x1200-v3'))
+        && posixMainImageDeliveryPlan.status === 'ready'
+        && posixMainImageDeliveryPlan.artifacts.every((artifact) => (
+            artifact.path.startsWith('/Volumes/Design Disk/shop/')
+        ))
+        && naturalMainImageStrategy.deliveryPlan.status === 'ready'
+        && naturalMainImageStrategy.deliveryPlan.projectPath === 'C:\\shop'
+        && naturalMainImageStrategy.deliveryPlan.convention?.provenance === 'agent_selected'
+        && naturalMainImageStrategy.productionExecutionPlan.documents.flatMap((document) => document.operations)
+            .some((operation) => operation.tool === 'saveDocument' && operation.outputPath?.endsWith('.psb'))
+        && naturalMainImageStrategy.productionExecutionPlan.documents.flatMap((document) => document.operations)
+            .filter((operation) => operation.tool === 'exportGroup')
+            .every((operation) => operation.outputPath?.endsWith('.jpg') && operation.conflictPolicy === 'fail_if_exists')
+        && firstNaturalMainImageExportIndex > lastNaturalMainImageTransformIndex
+        && naturalMainImageSaveIndex > firstNaturalMainImageExportIndex
+        && mainImageExecutionPlanSource.includes("tool: 'saveDocument'")
+        && mainImageExecutionPlanSource.includes("conflictPolicy: 'fail_if_exists'")
+        && mainImageAdapterContractSource.includes('const outputPath = cleanString(payload.outputPath)')
+        && !mainImageAdapterContractSource.includes('function buildOutputPath(')
+        && mainImageDeliveryRuntimeSource.includes('expectedDeliveryPlan: input.plan.typedPlan')
+        && mainImageDeliveryRuntimeSource.includes('mainImageSourceHistoryRolesSatisfied')
+        && mainImageExecutorSource.includes('runtimeDeliveryPlanAuthority?.freeze({')
+        && mainImageExecutorSource.includes('runtimeDeliveryPlanAuthority.executeStagedArtifacts({')
+        && mainImageExecutorSource.includes('prepareRuntimeStagedDelivery({')
+        && mainImageExecutorSource.includes('promoteRuntimeStagedDelivery({')
+        && mainImageExecutorSource.includes('runtimeDeliveryPlanAuthority.acceptExternalCommit({')
+        && mainImageExecutorSource.includes('resultImagePaths: controlledResultPaths')
+        && mainImageExecutorSource.includes('buildPublicMainImageRunnerSummary(runner)')
+        && !mainImageExecutorSource.includes('runtimeDeliveryPlanAuthority.executeArtifacts({')
+        && !mainImageExecutorSource.includes('mainImageDeliveryPlan: strategy.deliveryPlan')
+        && !mainImageExecutorSource.includes('function buildMainImageQuickExportOutputPath(')
+        && uxpExportGroupSource.includes("type ExportGroupFormat = 'png' | 'jpg'")
+        && uxpExportGroupSource.includes("CONFLICT_POLICY === 'fail_if_exists' && targetFile.exists")
+        && uxpExportGroupSource.includes('sourceHistoryStateRef = readActiveHistoryStateRef(doc)')
+        && skillDeclarations.includes("strParam('deliveryVersion'"),
+    JSON.stringify({
+        planStatus: mainImageDeliveryPlan.status,
+        planBlockers: mainImageDeliveryPlan.blockers,
+        artifactCount: mainImageDeliveryPlan.typedPlan?.artifacts.length,
+        missingVersionStatus: mainImageMissingVersionPlan.status,
+        unsupportedPairingStatus: mainImageUnsupportedPairingPlan.status,
+        naturalDeliveryStatus: naturalMainImageStrategy.deliveryPlan.status,
+        naturalDeliveryBlockers: naturalMainImageStrategy.deliveryPlan.blockers,
+        naturalExecutionStatus: naturalMainImageStrategy.productionExecutionPlan.status,
+        naturalOperations: naturalMainImageStrategy.productionExecutionPlan.documents
+            .flatMap((document) => document.operations)
+            .map((operation) => ({ tool: operation.tool, path: operation.outputPath }))
+    })
+);
+const mainImageStagedPathsByArtifactId = Object.fromEntries(
+    mainImageDeliveryPlan.artifacts.map((artifact) => [
+        artifact.artifactId,
+        artifact.path.replace(
+            'C:\\shop\\',
+            'C:\\shop\\.designecho-staging\\main-image-fixture\\'
+        )
+    ])
+);
+const mainImageDocumentHistoryRefs = new Map(
+    mainImageDeliveryPlan.documents.map((document, index) => [
+        document.documentId,
+        { documentId: 501 + index, historyStateId: 701 + index }
+    ])
+);
+const mainImageFixtureProbes = new Map();
+const mainImageFixtureOperationResults = mainImageDeliveryPlan.artifacts.map((artifact, index) => {
+    const stagedPath = mainImageStagedPathsByArtifactId[artifact.artifactId];
+    const sourceHistoryStateRef = mainImageDocumentHistoryRefs.get(artifact.documentId);
+    const sha256 = String(index + 1).padStart(64, 'a');
+    const byteLength = 12000 + index;
+    mainImageFixtureProbes.set(stagedPath.toLowerCase(), {
+        success: true,
+        path: stagedPath,
+        status: artifact.kind === 'raster_export' ? 'ok' : 'unsupported',
+        exists: true,
+        isFile: true,
+        byteLength,
+        sha256,
+        format: artifact.format,
+        dimensions: artifact.kind === 'raster_export'
+            ? { width: 800, height: 800 }
+            : undefined,
+        rawImagesRedacted: true
+    });
+    const actualResult = artifact.kind === 'raster_export'
+        ? {
+            success: true,
+            outputPath: stagedPath,
+            sourceHistoryStateRef
+        }
+        : {
+            success: true,
+            format: artifact.format,
+            savedPath: stagedPath,
+            sourceHistoryStateRef,
+            editableDocumentArtifact: {
+                version: 'runtime-editable-document-artifact/v1',
+                basis: 'uxp_post_save_file_metadata',
+                path: stagedPath,
+                format: artifact.format,
+                byteLength,
+                modifiedAt: 9000 + index,
+                documentId: sourceHistoryStateRef.documentId,
+                canvas: { width: 800, height: 800 }
+            }
+        };
+    return {
+        requestId: `main-image-result-${index + 1}`,
+        sourceRequestId: artifact.kind === 'raster_export'
+            ? `fixture-${artifact.exportSpecId}`
+            : `fixture-${artifact.documentId}-save-editable`,
+        tool: artifact.kind === 'raster_export' ? 'exportGroup' : 'saveDocument',
+        phase: artifact.kind === 'raster_export' ? 'export' : 'save',
+        success: true,
+        summary: 'fixture operation complete',
+        actualResult,
+        readbackResults: []
+    };
+});
+const mainImageFixtureRunner = {
+    version: 'main-image-live-executor-runner/v0',
+    skillId: 'main-image-design',
+    scene: 'ecommerce-socks',
+    status: 'completed_requires_review',
+    executionScope: 'disposable-document',
+    executedWithAdapter: true,
+    mayWritePhotoshop: true,
+    operationCount: mainImageFixtureOperationResults.length,
+    executedOperationCount: mainImageFixtureOperationResults.length,
+    successfulOperationCount: mainImageFixtureOperationResults.length,
+    failedOperationCount: 0,
+    failedReadbackCount: 0,
+    operationResults: mainImageFixtureOperationResults,
+    finalAcceptanceSnapshot: {
+        toolName: 'getAcceptanceSnapshot',
+        success: true,
+        summary: 'fixture final snapshot',
+        data: {}
+    },
+    canClaimOutputQuality: false,
+    canClaimDesignComplete: false,
+    requiresManualReviewBeforeQualityClaim: true,
+    blockers: [],
+    warnings: [],
+    limitations: [],
+    verificationReport: {
+        reportId: 'fixture',
+        scenario: 'main-image',
+        status: 'needs_review',
+        scope: 'task',
+        summary: 'fixture',
+        checks: [],
+        blockers: [],
+        warnings: [],
+        limitations: []
+    }
+};
+const mainImageStagedRasterPaths = mainImageDeliveryPlan.artifacts
+    .filter((artifact) => artifact.kind === 'raster_export')
+    .map((artifact) => mainImageStagedPathsByArtifactId[artifact.artifactId]);
+const previousMainImageWindow = global.window;
+global.window = {
+    ...(previousMainImageWindow || {}),
+    designEcho: {
+        ...(previousMainImageWindow?.designEcho || {}),
+        probeImageFile: async (filePath) => mainImageFixtureProbes.get(String(filePath).toLowerCase())
+            || {
+                success: false,
+                path: filePath,
+                status: 'missing',
+                exists: false,
+                isFile: false,
+                rawImagesRedacted: true
+            }
+    }
+};
+let mainImageStagedReadiness;
+let mainImageSwappedStagedReadiness;
+let mainImageCommittedEvidence;
+let mainImageSwappedCommitEvidence;
+try {
+    mainImageStagedReadiness = await inspectMainImageStagedDeliveryBeforePromotion({
+        plan: mainImageDeliveryPlan,
+        runner: mainImageFixtureRunner,
+        actualRasterPaths: mainImageStagedRasterPaths,
+        stagedPathsByArtifactId: mainImageStagedPathsByArtifactId
+    });
+    mainImageSwappedStagedReadiness = await inspectMainImageStagedDeliveryBeforePromotion({
+        plan: mainImageDeliveryPlan,
+        runner: mainImageFixtureRunner,
+        actualRasterPaths: [
+            mainImageStagedRasterPaths[1],
+            mainImageStagedRasterPaths[0],
+            ...mainImageStagedRasterPaths.slice(2)
+        ],
+        stagedPathsByArtifactId: mainImageStagedPathsByArtifactId
+    });
+    const committedFiles = mainImageDeliveryPlan.artifacts.map((artifact, index) => ({
+        path: artifact.path,
+        byteLength: 12000 + index,
+        sha256: String(index + 1).padStart(64, 'a')
+    }));
+    mainImageCommittedEvidence = await buildMainImageDeliveryRuntimeEvidence({
+        plan: mainImageDeliveryPlan,
+        runner: mainImageFixtureRunner,
+        actualRasterPaths: mainImageStagedRasterPaths,
+        stagedPathsByArtifactId: mainImageStagedPathsByArtifactId,
+        stagedFileProbes: mainImageStagedReadiness.allFileProbes,
+        committedFiles,
+        externalCommitAccepted: true
+    });
+    mainImageSwappedCommitEvidence = await buildMainImageDeliveryRuntimeEvidence({
+        plan: mainImageDeliveryPlan,
+        runner: mainImageFixtureRunner,
+        actualRasterPaths: mainImageStagedRasterPaths,
+        stagedPathsByArtifactId: mainImageStagedPathsByArtifactId,
+        stagedFileProbes: mainImageStagedReadiness.allFileProbes,
+        committedFiles: [committedFiles[1], committedFiles[0], ...committedFiles.slice(2)],
+        externalCommitAccepted: true
+    });
+} finally {
+    global.window = previousMainImageWindow;
+}
+check(
+    '主图 PSD 与导出图只能在完整暂存集合、同版本与 Main 整组提交后形成交付收据',
+    mainImageStagedReadiness.ready === true
+        && mainImageStagedReadiness.runtimeArtifacts.length === mainImageDeliveryPlan.artifacts.length
+        && mainImageSwappedStagedReadiness.ready === false
+        && mainImageSwappedStagedReadiness.actualRasterPathsMatchPlan === false
+        && mainImageCommittedEvidence.receipt.status === 'ready'
+        && mainImageCommittedEvidence.receipt.artifacts.length === mainImageDeliveryPlan.artifacts.length
+        && mainImageCommittedEvidence.receipt.artifacts.every((artifact) => (
+            !artifact.path.includes('.designecho-staging')
+        ))
+        && mainImageSwappedCommitEvidence.receipt.status === 'incomplete'
+        && mainImageSwappedCommitEvidence.receipt.issues.some((issue) => issue.includes('主进程提交')),
+    JSON.stringify({
+        stagedReady: mainImageStagedReadiness.ready,
+        stagedIssues: mainImageStagedReadiness.issues,
+        swappedStageIssues: mainImageSwappedStagedReadiness.issues,
+        committedStatus: mainImageCommittedEvidence.receipt.status,
+        swappedCommitIssues: mainImageSwappedCommitEvidence.receipt.issues
+    })
+);
 const selectedDeliveryResolution = resolveSkillDeliveryConvention(agentSelectedDeliveryConvention);
 const visualDecisionDeliveryResolution = resolveSkillDeliveryConvention({
     ...agentSelectedDeliveryConvention,
@@ -542,6 +1027,16 @@ const unauthorizedReplaceDeliveryResolution = resolveSkillDeliveryConvention({
     supportRefs: ['user-instruction:current-turn'],
     versionPolicy: 'replace_exact_set'
 });
+const forgedUserDeliveryResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    provenance: 'user',
+    supportRefs: ['user-instruction:current-turn'],
+    versionPolicy: 'fail_if_exists'
+});
+const unboundAgentExamplesDeliveryResolution = resolveSkillDeliveryConvention({
+    ...agentSelectedDeliveryConvention,
+    provenance: 'agent_examples'
+});
 const customDeliveryInventory = buildSkuExpectedExportInventory({
     outputDir: 'C:\\project\\SKU',
     projectPath: 'C:\\project',
@@ -577,6 +1072,25 @@ const posixVolumeFallbackInventory = buildSkuExpectedExportInventory({
         comboTemplateName: '2双组合.psd'
     }]
 });
+const siblingRootDeliveryInventory = buildSkuExpectedExportInventory({
+    projectPath: 'C:\\project',
+    deliveryConvention: {
+        ...agentSelectedDeliveryConvention,
+        raster: {
+            ...agentSelectedDeliveryConvention.raster,
+            projectRelativeRoot: '交付/JPG'
+        },
+        editable: {
+            ...agentSelectedDeliveryConvention.editable,
+            projectRelativeRoot: '交付/PSD'
+        }
+    },
+    specs: [{
+        size: 2,
+        combos: [['奶白', '黑色']],
+        comboTemplateName: '2双组合.psd'
+    }]
+});
 const jpegSkuDeliveryInventory = buildSkuExpectedExportInventory({
     projectPath: 'C:\\project',
     deliveryConvention: {
@@ -605,16 +1119,70 @@ const posixDigestLower = buildSkillDeliveryPlanDigest({
     convention: agentSelectedDeliveryConvention,
     artifactPaths: ['/Users/Designer/Project/SKU/a.jpg']
 });
+const multiMasterConvention = {
+    ...agentSelectedDeliveryConvention,
+    pairing: 'one_master_many_rasters'
+};
+const multiMasterPlanResolution = buildSkillDeliveryPlan({
+    projectPath: 'C:\\project',
+    convention: multiMasterConvention,
+    artifacts: [
+        {
+            artifactId: 'master:a', kind: 'editable_document', pairId: 'pair:a', order: 0,
+            path: 'C:\\project\\客户交付\\色卡成品\\源稿\\规格2双\\A.psb',
+            format: 'psb', sourceHistoryRole: 'same_document_revision'
+        },
+        {
+            artifactId: 'raster:a', kind: 'raster_export', pairId: 'pair:a', order: 1,
+            path: 'C:\\project\\客户交付\\色卡成品\\规格2双\\A.jpg',
+            format: 'jpg', sourceHistoryRole: 'same_document_revision'
+        },
+        {
+            artifactId: 'master:b', kind: 'editable_document', pairId: 'pair:b', order: 2,
+            path: 'C:\\project\\客户交付\\色卡成品\\源稿\\规格2双\\B.psb',
+            format: 'psb', sourceHistoryRole: 'same_document_revision'
+        },
+        {
+            artifactId: 'raster:b', kind: 'raster_export', pairId: 'pair:b', order: 3,
+            path: 'C:\\project\\客户交付\\色卡成品\\规格2双\\B.jpg',
+            format: 'jpg', sourceHistoryRole: 'same_document_revision'
+        }
+    ]
+});
+const missingRasterPlanResolution = buildSkillDeliveryPlan({
+    projectPath: 'C:\\project',
+    convention: multiMasterConvention,
+    artifacts: [{
+        artifactId: 'master:orphan', kind: 'editable_document', pairId: 'pair:orphan', order: 0,
+        path: 'C:\\project\\客户交付\\色卡成品\\源稿\\规格2双\\orphan.psb',
+        format: 'psb', sourceHistoryRole: 'same_document_revision'
+    }]
+});
+function findPlanBinding(inventory, artifactPath, kind) {
+    const artifact = inventory.deliveryPlan?.artifacts.find((candidate) => (
+        candidate.path === artifactPath && candidate.kind === kind
+    ));
+    if (!artifact) return undefined;
+    return {
+        artifactId: artifact.artifactId,
+        pairId: artifact.pairId,
+        order: artifact.order,
+        format: artifact.format,
+        sourceHistoryRole: artifact.sourceHistoryRole
+    };
+}
 const customDeliveryArtifacts = customDeliveryInventory.items.flatMap((item, index) => ([{
     path: item.path,
     kind: 'raster_export',
     proof: 'file_probe',
+    planBinding: findPlanBinding(customDeliveryInventory, item.path, 'raster_export'),
     fileIdentity: { sha256: (index + 1).toString(16).padStart(64, '0'), byteLength: 10_001 + index },
     sourceHistoryStateRef: { documentId: index + 1, historyStateId: 101 + index }
 }, {
     path: item.editablePath,
     kind: 'editable_document',
     proof: 'staged_editable_document_promotion',
+    planBinding: findPlanBinding(customDeliveryInventory, item.editablePath, 'editable_document'),
     fileIdentity: { sha256: (index + 101).toString(16).padStart(64, '0'), byteLength: 20_001 + index },
     sourceHistoryStateRef: { documentId: index + 1, historyStateId: 101 + index }
 }]));
@@ -627,7 +1195,31 @@ const customDeliveryReceipt = buildRuntimeDeliveryReceipt({
     artifacts: customDeliveryArtifacts,
     expectedDeliveryPlan: {
         digest: customDeliveryInventory.deliveryPlanDigest,
-        convention: customDeliveryInventory.deliveryConvention
+        convention: customDeliveryInventory.deliveryConvention,
+        artifacts: customDeliveryInventory.deliveryPlan?.artifacts || []
+    }
+});
+const pairTamperedDeliveryReceipt = buildRuntimeDeliveryReceipt({
+    status: 'ready',
+    settlementScope: 'multi_document_task',
+    outputs: ['sku_images', 'editable_sku_batch_documents'],
+    resultRefs: ['sku-pair-tamper'],
+    resultRefProofs: [{ resultRef: 'sku-pair-tamper', effect: 'save_export' }],
+    artifacts: customDeliveryArtifacts.map((artifact, index) => (
+        index === 0
+            ? {
+                ...artifact,
+                planBinding: {
+                    ...artifact.planBinding,
+                    pairId: 'forged-pair'
+                }
+            }
+            : artifact
+    )),
+    expectedDeliveryPlan: {
+        digest: customDeliveryInventory.deliveryPlanDigest,
+        convention: customDeliveryInventory.deliveryConvention,
+        artifacts: customDeliveryInventory.deliveryPlan?.artifacts || []
     }
 });
 const mismatchedDeliveryReceipt = buildRuntimeDeliveryReceipt({
@@ -645,7 +1237,8 @@ const mismatchedDeliveryReceipt = buildRuntimeDeliveryReceipt({
     }],
     expectedDeliveryPlan: {
         digest: customDeliveryInventory.deliveryPlanDigest,
-        convention: customDeliveryInventory.deliveryConvention
+        convention: customDeliveryInventory.deliveryConvention,
+        artifacts: customDeliveryInventory.deliveryPlan?.artifacts || []
     }
 });
 const roundTrippedCustomDeliveryReceipt = readRuntimeDeliveryReceipt({
@@ -686,6 +1279,10 @@ check(
         && genericStableSourceRefAccepted
         && unauthorizedReplaceDeliveryResolution.status === 'blocked'
         && unauthorizedReplaceDeliveryResolution.blockers.some((message) => message.includes('不能授权覆盖同名文件'))
+        && forgedUserDeliveryResolution.status === 'blocked'
+        && forgedUserDeliveryResolution.blockers.some((message) => message.includes('只能声明 agent_selected'))
+        && unboundAgentExamplesDeliveryResolution.status === 'blocked'
+        && unboundAgentExamplesDeliveryResolution.blockers.some((message) => message.includes('Runtime 观察收据'))
         && customDeliveryInventory.status === 'ready'
         && customDeliveryInventory.outputDir === 'C:\\project\\客户交付\\色卡成品'
         && customDeliveryInventory.items[0]?.path === 'C:\\project\\客户交付\\色卡成品\\规格2双\\第 1 组 - 奶白+黑色.jpg'
@@ -700,14 +1297,22 @@ check(
         && posixVolumeFallbackInventory.status === 'ready'
         && posixVolumeFallbackInventory.outputDir === '/Volumes/Design Disk/Project/SKU'
         && posixVolumeFallbackInventory.items[0]?.path === '/Volumes/Design Disk/Project/SKU/2双组合/1奶白+黑色.jpg'
+        && siblingRootDeliveryInventory.status === 'ready'
+        && siblingRootDeliveryInventory.outputDir === 'C:\\project\\交付\\JPG'
+        && siblingRootDeliveryInventory.editableOutputDir === 'C:\\project\\交付\\PSD'
         && skuBatchExecutorSource.includes("joinSkuExportPath(projectContext.projectPath, '模板文件')")
         && skuBatchExecutorSource.includes("joinSkuExportPath(projectContext.projectPath, 'SKU')")
         && !skuBatchExecutorSource.includes('`${projectContext.projectPath}\\\\SKU`')
         && jpegSkuDeliveryInventory.status === 'blocked'
         && windowsDigestUpper === windowsDigestLower
         && posixDigestUpper !== posixDigestLower
+        && multiMasterPlanResolution.status === 'ready'
+        && multiMasterPlanResolution.plan?.artifacts.length === 4
+        && missingRasterPlanResolution.status === 'blocked'
+        && missingRasterPlanResolution.blockers.some((message) => message.includes('至少一份导出图'))
         && isSkillDeliveryPlanDigest(customDeliveryInventory.deliveryPlanDigest)
-        && /^skill-delivery-plan\/v0:[a-f0-9]{64}$/.test(customDeliveryInventory.deliveryPlanDigest || '')
+        && isCurrentSkillDeliveryPlanDigest(customDeliveryInventory.deliveryPlanDigest)
+        && /^skill-delivery-plan\/v1:[a-f0-9]{64}$/.test(customDeliveryInventory.deliveryPlanDigest || '')
         && customDeliveryReceipt.status === 'ready'
         && customDeliveryReceipt.deliveryPlanDigest === customDeliveryInventory.deliveryPlanDigest
         && customDeliveryReceipt.deliveryPlanConvention?.version === 'skill-delivery-convention/v0'
@@ -721,7 +1326,395 @@ check(
         && mismatchedDeliveryReceipt.status === 'incomplete'
         && mismatchedDeliveryReceipt.deliveryPlanDigest === undefined
         && mismatchedDeliveryReceipt.issues.some((message) => message.includes('artifact 集合不一致'))
+        && pairTamperedDeliveryReceipt.status === 'incomplete'
+        && pairTamperedDeliveryReceipt.deliveryPlanDigest === undefined
+        && pairTamperedDeliveryReceipt.issues.some((message) => message.includes('artifact 集合不一致'))
         && !skillDeclarations.includes('colorPalette: deliveryConvention')
+);
+const detailDeliveryConvention = {
+    version: 'skill-delivery-convention/v0',
+    provenance: 'agent_selected',
+    supportRefs: ['user-instruction:current-turn'],
+    editable: {
+        projectRelativeRoot: '交付/详情页源稿',
+        folderPattern: '{version}',
+        fileNamePattern: '{defaultName}-{version}',
+        format: 'psb'
+    },
+    raster: {
+        projectRelativeRoot: '交付/详情页切片',
+        folderPattern: '{version}',
+        fileNamePattern: '{index}-{screen}',
+        format: 'jpg'
+    },
+    pairing: 'one_master_many_rasters',
+    versionPolicy: 'new_version'
+};
+const detailDeliveryScreens = [
+    { id: 101, name: '首屏', type: 'hero', index: 0, bounds: { left: 0, top: 0, right: 750, bottom: 1000, width: 750, height: 1000 }, visible: true },
+    { id: 102, name: '卖点屏', type: 'benefit', index: 1, bounds: { left: 0, top: 1000, right: 750, bottom: 2000, width: 750, height: 1000 }, visible: true }
+];
+const detailDeliveryPlanResolution = buildDetailPageDeliveryPlan({
+    projectPath: 'C:\\project',
+    screens: detailDeliveryScreens,
+    documentName: '详情页.psb',
+    deliveryConvention: detailDeliveryConvention,
+    deliveryVersion: 'v2',
+    exportQuality: 12
+});
+const detailDeliveryPlan = detailDeliveryPlanResolution.plan;
+const missingDetailVersion = validateDetailPageDeliveryRequest({
+    projectPath: 'C:\\project',
+    deliveryConvention: detailDeliveryConvention
+});
+const outsideDetailOutput = validateDetailPageDeliveryRequest({
+    projectPath: 'C:\\project',
+    outputDir: 'D:\\outside'
+});
+const inferredDetailOutputPlan = buildDetailPageDeliveryPlan({
+    projectPath: 'C:\\project',
+    outputDir: 'C:\\project\\客户交付\\详情页',
+    screens: detailDeliveryScreens,
+    documentName: '详情页.psb'
+});
+const editOnlyDetailPlan = buildDetailPageDeliveryPlan({
+    projectPath: 'C:\\project',
+    screens: detailDeliveryScreens,
+    documentName: '详情页.psb',
+    workMode: 'edit_existing',
+    exportSlices: false
+});
+const editAndSliceDetailPlan = buildDetailPageDeliveryPlan({
+    projectPath: 'C:\\project',
+    screens: detailDeliveryScreens,
+    documentName: '详情页.psb',
+    workMode: 'edit_existing',
+    exportSlices: true
+});
+const exportOnlyDetailPlan = buildDetailPageDeliveryPlan({
+    projectPath: 'C:\\project',
+    screens: detailDeliveryScreens,
+    documentName: '详情页.psb',
+    workMode: 'export_only',
+    exportSlices: true
+});
+const duplicateDetailSlicePlan = buildDetailPageDeliveryPlan({
+    projectPath: 'C:\\project',
+    screens: detailDeliveryScreens,
+    documentName: '详情页.psb',
+    deliveryConvention: {
+        ...detailDeliveryConvention,
+        raster: {
+            ...detailDeliveryConvention.raster,
+            folderPattern: undefined,
+            fileNamePattern: '同名切片'
+        },
+        editable: {
+            ...detailDeliveryConvention.editable,
+            folderPattern: undefined,
+            fileNamePattern: '详情页母稿'
+        }
+    },
+    deliveryVersion: 'v2'
+});
+const tifDetailDeliveryRequest = validateDetailPageDeliveryRequest({
+    projectPath: 'C:\\project',
+    deliveryConvention: {
+        ...detailDeliveryConvention,
+        editable: { ...detailDeliveryConvention.editable, format: 'tif' }
+    },
+    deliveryVersion: 'v2'
+});
+function buildDetailDeliveryIntake(workMode, userIntent, params = {}) {
+    return buildDetailPageAgentIntake({
+        params: {
+            agentMode: 'execute',
+            projectPath: 'C:\\project',
+            userIntent,
+            ...params
+        },
+        context: {
+            userInput: userIntent,
+            projectContext: { projectPath: 'C:\\project' },
+            photoshopContext: { hasDocument: true, documentName: '详情页.psb' }
+        },
+        runtimeDesignBriefDeclaration: {
+            readiness: 'ready',
+            payload: {
+                workMode,
+                taskGoal: userIntent,
+                inputCoverage: [],
+                contextRefs: []
+            }
+        }
+    });
+}
+const naturalCreateDeliveryIntake = buildDetailDeliveryIntake('create_new', '帮我做一套详情页');
+const naturalRedesignDeliveryIntake = buildDetailDeliveryIntake('redesign', '把这套详情页重新设计一下');
+const naturalTemplateFillDeliveryIntake = buildDetailDeliveryIntake('template_fill', '用当前模板完成详情页');
+const exportOnlyDeliveryIntake = buildDetailDeliveryIntake('export_only', '把当前成品交付给我');
+const analyzeOnlyDeliveryIntake = buildDetailDeliveryIntake('analyze_only', '分析一下当前详情页', {
+    exportSlices: true
+});
+const editOnlyDeliveryIntake = buildDetailDeliveryIntake('edit_existing', '把第 2 屏标题改短一些');
+const editAndSliceDeliveryIntake = buildDetailDeliveryIntake('edit_existing', '把第 2 屏标题改短并重新切片');
+const detailContinuationResult = detailDeliveryPlan ? {
+    success: true,
+    data: {
+        status: 'needs_review',
+        deliveryCandidate: {
+            version: 'detail-page-delivery-candidate/v1',
+            status: 'awaiting_visual_review',
+            deterministicChecksPassed: true,
+            requiresVisualPass: true,
+            completeOnVisualPass: false,
+            exportRequested: true,
+            workMode: 'template_fill',
+            targetScreenIds: [101, 102],
+            targetLayerIds: [],
+            repairAllowedToolNames: [],
+            reviewAllowedToolNames: ['getScreenSnapshots'],
+            deliveryToolNames: ['detail-page-design'],
+            deliveryPlanDigest: detailDeliveryPlan.deliveryPlanDigest,
+            expectedArtifactCount: detailDeliveryPlan.artifacts.length,
+            failedChecks: []
+        },
+        visualReviewRequest: {
+            toolName: 'getScreenSnapshots',
+            params: { screens: detailDeliveryScreens, maxWidth: 1200 }
+        },
+        agentReActContinuation: {
+            status: 'needs_decision',
+            summary: '画面通过后按冻结计划交付。',
+            details: [],
+            blockers: [],
+            warnings: [],
+            nextAction: 'decide_next',
+            sourceStatus: 'needs_review',
+            recovery: {
+                mode: 'allowlist',
+                purpose: 'deliver',
+                allowedToolNames: ['detail-page-design'],
+                reviewAllowedToolNames: ['getScreenSnapshots'],
+                repairAllowedToolNames: [],
+                requiresVisualPass: true,
+                completeOnVisualPass: false,
+                toolArgumentConstraints: {
+                    'detail-page-design': detailDeliveryPlan.toolArgumentConstraints['detail-page-design']
+                },
+                reason: '只执行 Skill 已编译并冻结的项目内交付计划。'
+            }
+        }
+    }
+} : undefined;
+const detailContinuationUpdate = detailContinuationResult
+    ? resolveAgentWorkflowContinuationScopeUpdate({
+        workflowEntryTools: ['detail-page-design'],
+        toolCalls: [{ id: 'detail-owner-call', name: 'detail-page-design', arguments: {} }],
+        toolResults: [{ callId: 'detail-owner-call', success: true, output: detailContinuationResult }],
+        availableToolNames: [
+            'detail-page-design',
+            'getScreenSnapshots',
+            'saveDocument',
+            'exportDetailPageSlices'
+        ],
+        visualDeliveryStatusByCallId: { 'detail-owner-call': 'passed' },
+        visualDeliveryIdentityByCallId: {
+            'detail-owner-call': { documentId: '77', historyStateId: '88' }
+        }
+    })
+    : { kind: 'none' };
+const detailDeliveryScope = detailContinuationUpdate.kind === 'activate'
+    ? detailContinuationUpdate.scope
+    : undefined;
+const exactDetailWorkflowAccess = evaluateAgentWorkflowContinuationToolAccess({
+    scope: detailDeliveryScope,
+    toolName: 'detail-page-design',
+    args: detailDeliveryPlan?.workflowCommit.params
+});
+const changedDetailWorkflowAccess = evaluateAgentWorkflowContinuationToolAccess({
+    scope: detailDeliveryScope,
+    toolName: 'detail-page-design',
+    args: detailDeliveryPlan ? {
+        ...detailDeliveryPlan.workflowCommit.params,
+        exportQuality: 9
+    } : undefined
+});
+const directDetailSaveAccess = evaluateAgentWorkflowContinuationToolAccess({
+    scope: detailDeliveryScope,
+    toolName: 'saveDocument',
+    args: detailDeliveryPlan?.toolCalls.saveDocument
+});
+const trustedDetailWorkflowReentry = issueRuntimeWorkflowDeliveryReentry({
+    scope: detailDeliveryScope,
+    toolName: 'detail-page-design',
+    args: detailDeliveryPlan?.workflowCommit.params
+});
+const forgedDetailWorkflowReentry = peekRuntimeWorkflowDeliveryReentry({
+    version: 'runtime-workflow-delivery-reentry/v0',
+    workflowToolName: 'detail-page-design',
+    argumentsDigest: detailDeliveryPlan?.toolArgumentConstraints['detail-page-design']?.argumentsDigest
+}, 'detail-page-design');
+const detailDeliveryHistoryStateRef = { documentId: 77, historyStateId: 88 };
+const detailStagedPathsByArtifactId = detailDeliveryPlan
+    ? Object.fromEntries(detailDeliveryPlan.artifacts.map((artifact) => [
+        artifact.artifactId,
+        artifact.path.replace('C:\\project\\', 'C:\\project\\.designecho-staging\\fixture\\')
+    ]))
+    : {};
+const detailCommittedFiles = detailDeliveryPlan
+    ? detailDeliveryPlan.artifacts.map((artifact, index) => ({
+        path: artifact.path,
+        byteLength: 8000 + index,
+        sha256: String(index + 41).padStart(64, '0')
+    }))
+    : [];
+const detailEditableResult = detailDeliveryPlan ? {
+    success: true,
+    format: 'psb',
+    savedPath: detailStagedPathsByArtifactId[detailDeliveryPlan.editable.artifactId],
+    sourceHistoryStateRef: detailDeliveryHistoryStateRef,
+    editableDocumentArtifact: {
+        version: 'runtime-editable-document-artifact/v1',
+        basis: 'uxp_post_save_file_metadata',
+        path: detailStagedPathsByArtifactId[detailDeliveryPlan.editable.artifactId],
+        format: 'psb',
+        byteLength: 8192,
+        modifiedAt: 100,
+        documentId: 77,
+        canvas: { width: 750, height: 2000 }
+    }
+} : undefined;
+const detailSliceResult = detailDeliveryPlan ? {
+    success: true,
+    sourceHistoryStateRef: detailDeliveryHistoryStateRef,
+    screens: detailDeliveryPlan.slices.map((slice) => ({
+        screenId: slice.screenId,
+        path: detailStagedPathsByArtifactId[slice.artifactId],
+        success: true,
+        fileSize: 2048
+    })),
+    screenSetArtifact: {
+        version: 'runtime-screen-set-artifact/v1',
+        basis: 'uxp_full_document_screen_parse',
+        documentId: 77,
+        expectedScreenIds: detailDeliveryPlan.slices.map((slice) => slice.screenId),
+        exportedScreenIds: detailDeliveryPlan.slices.map((slice) => slice.screenId)
+    },
+    sliceDeliveryArtifact: {
+        version: 'runtime-detail-page-slice-delivery-artifact/v1',
+        basis: 'uxp_exact_no_replace_slice_export',
+        documentId: 77,
+        sourceHistoryStateRef: detailDeliveryHistoryStateRef,
+        deliveryPlanDigest: detailDeliveryPlan.deliveryPlanDigest,
+        conflictPolicy: 'new_version',
+        expectedPaths: detailDeliveryPlan.slices.map((slice) => detailStagedPathsByArtifactId[slice.artifactId]),
+        exportedPaths: detailDeliveryPlan.slices.map((slice) => detailStagedPathsByArtifactId[slice.artifactId]),
+        exactArtifactSet: true
+    }
+} : undefined;
+const detailDeliveryRuntimeEvidence = detailDeliveryPlan
+    ? buildDetailPageDeliveryRuntimeEvidence({
+        plan: detailDeliveryPlan,
+        workMode: 'template_fill',
+        expectedSourceHistoryStateRef: detailDeliveryHistoryStateRef,
+        saveResult: detailEditableResult,
+        sliceResult: detailSliceResult,
+        stagedPathsByArtifactId: detailStagedPathsByArtifactId,
+        committedFiles: detailCommittedFiles
+    })
+    : undefined;
+const tamperedDetailDeliveryRuntimeEvidence = detailDeliveryPlan && detailSliceResult
+    ? buildDetailPageDeliveryRuntimeEvidence({
+        plan: detailDeliveryPlan,
+        workMode: 'template_fill',
+        expectedSourceHistoryStateRef: detailDeliveryHistoryStateRef,
+        saveResult: detailEditableResult,
+        sliceResult: {
+            ...detailSliceResult,
+            sliceDeliveryArtifact: {
+                ...detailSliceResult.sliceDeliveryArtifact,
+                exportedPaths: [...detailSliceResult.sliceDeliveryArtifact.exportedPaths].reverse()
+            }
+        },
+        stagedPathsByArtifactId: detailStagedPathsByArtifactId,
+        committedFiles: detailCommittedFiles
+    })
+    : undefined;
+check(
+    '详情页 Skill 将用户交付习惯编译为 project-bound master+slices，并由通用 continuation 锁定完整参数',
+    detailDeliveryPlanResolution.status === 'ready'
+        && detailDeliveryPlan?.artifacts.length === 3
+        && detailDeliveryPlan?.editable.kind === 'editable_document'
+        && detailDeliveryPlan?.editable.path === 'C:\\project\\交付\\详情页源稿\\v2\\详情页-v2.psb'
+        && detailDeliveryPlan?.slices[0]?.path === 'C:\\project\\交付\\详情页切片\\v2\\1-首屏.jpg'
+        && detailDeliveryPlan?.slices[1]?.path === 'C:\\project\\交付\\详情页切片\\v2\\2-卖点屏.jpg'
+        && detailDeliveryPlan?.artifacts.every((artifact) => artifact.pairId === 'detail-page-set')
+        && detailDeliveryPlan?.artifacts.every((artifact) => artifact.sourceHistoryRole === 'same_document_revision')
+        && /^skill-delivery-plan\/v1:[a-f0-9]{64}$/.test(detailDeliveryPlan?.deliveryPlanDigest || '')
+        && detailDeliveryPlan?.toolCalls.saveDocument.conflictPolicy === 'fail_if_exists'
+        && detailDeliveryPlan?.toolCalls.exportDetailPageSlices.config.conflictPolicy === 'new_version'
+        && detailDeliveryPlan?.toolCalls.exportDetailPageSlices.config.expectedFiles.length === 2
+        && missingDetailVersion.status === 'blocked'
+        && outsideDetailOutput.status === 'blocked'
+        && inferredDetailOutputPlan.status === 'ready'
+        && inferredDetailOutputPlan.plan?.editable.path === 'C:\\project\\客户交付\\详情页\\详情页.psb'
+        && inferredDetailOutputPlan.plan?.slices[0]?.path === 'C:\\project\\客户交付\\详情页\\1_首屏.jpg'
+        && editOnlyDetailPlan.status === 'ready'
+        && editOnlyDetailPlan.plan?.artifacts.length === 1
+        && editOnlyDetailPlan.plan?.convention.pairing === 'editable_only'
+        && editOnlyDetailPlan.plan?.toolCalls.saveDocument !== undefined
+        && editOnlyDetailPlan.plan?.toolCalls.exportDetailPageSlices === undefined
+        && editAndSliceDetailPlan.plan?.artifacts.length === 3
+        && editAndSliceDetailPlan.plan?.convention.pairing === 'one_master_many_rasters'
+        && exportOnlyDetailPlan.status === 'ready'
+        && exportOnlyDetailPlan.plan?.artifacts.length === 2
+        && exportOnlyDetailPlan.plan?.convention.pairing === 'raster_only'
+        && exportOnlyDetailPlan.plan?.editable === undefined
+        && exportOnlyDetailPlan.plan?.toolCalls.saveDocument === undefined
+        && duplicateDetailSlicePlan.status === 'blocked'
+        && tifDetailDeliveryRequest.status === 'blocked'
+        && naturalCreateDeliveryIntake.params.exportSlices === true
+        && naturalRedesignDeliveryIntake.params.exportSlices === true
+        && naturalTemplateFillDeliveryIntake.params.exportSlices === true
+        && exportOnlyDeliveryIntake.params.exportSlices === true
+        && analyzeOnlyDeliveryIntake.params.exportSlices === false
+        && editOnlyDeliveryIntake.params.exportSlices === false
+        && editAndSliceDeliveryIntake.params.exportSlices === true
+        && detailContinuationUpdate.kind === 'activate'
+        && detailDeliveryScope?.purpose === 'deliver'
+        && detailDeliveryScope?.workflowDeliveryOwner?.toolName === 'detail-page-design'
+        && exactDetailWorkflowAccess.allowed === true
+        && changedDetailWorkflowAccess.allowed === false
+        && directDetailSaveAccess.allowed === false
+        && peekRuntimeWorkflowDeliveryReentry(
+            trustedDetailWorkflowReentry,
+            'detail-page-design'
+        ) === trustedDetailWorkflowReentry
+        && forgedDetailWorkflowReentry === undefined
+        && detailDeliveryRuntimeEvidence?.receipt.status === 'ready'
+        && detailDeliveryRuntimeEvidence?.receipt.deliveryPlanDigest === detailDeliveryPlan?.deliveryPlanDigest
+        && detailDeliveryRuntimeEvidence?.receipt.artifacts.length === 3
+        && detailDeliveryRuntimeEvidence?.receipt.outputs.includes('template_fill_report')
+        && detailDeliveryRuntimeEvidence?.sourceHistoryStateRef?.documentId === 77
+        && tamperedDetailDeliveryRuntimeEvidence?.receipt.status === 'incomplete'
+        && tamperedDetailDeliveryRuntimeEvidence?.issues.some((message) => message.includes('切片缺少'))
+        && detailPageExecutor.includes('runtimeWorkflowDeliveryReentry')
+        && detailPageExecutor.includes('runtimeDeliveryPlanAuthority.freeze({')
+        && detailPageExecutor.includes("toolName: 'saveDocument'")
+        && detailPageExecutor.includes("toolName: 'exportDetailPageSlices'")
+        && detailPageExecutor.includes('const exportRequested = params.exportSlices === true')
+        && !detailPageExecutor.includes('shouldExportFromRequest')
+        && !detailPageExecutor.includes('expectedDeliveryPlanDigest: detailPageDeliveryPlan.deliveryPlanDigest')
+        && detailPageExecutor.includes('buildDetailPageDeliveryRuntimeEvidence({')
+        && detailPageExecutor.includes('runtimeDeliveryReceipt: deliveryEvidence.receipt')
+        && detailPageDeliveryPlanSource.includes('buildSkillDeliveryPlan({')
+        && toolSchemas.includes("enum: ['fail_if_exists', 'new_version']")
+        && !uxpDetailPageSliceExporter.includes('removeExistingExportFile')
+        && uxpDetailPageSliceExporter.includes('createFile(fileName, { overwrite: false })')
+        && uxpDetailPageSliceExporter.includes('rollbackCreatedExportFiles')
+        && uxpDetailPageSliceContract.includes('pre-existing sentinel must never') === false
+        && uxpDetailPageSliceContract.includes('拒绝把运行前已存在的文件加入回滚')
 );
 const openAiUnknownTerminal = new OpenAIAdapter('deepseek').parseResponse({
     choices: [{

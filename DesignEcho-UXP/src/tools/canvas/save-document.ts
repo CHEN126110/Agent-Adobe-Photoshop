@@ -18,6 +18,8 @@ type SaveParams = {
     path?: string;
     quality?: number;
     saveAs?: boolean;
+    /** Runtime staging only: preserve the active document's current file association. */
+    asCopy?: boolean;
     conflictPolicy?: 'overwrite' | 'fail_if_exists';
 };
 
@@ -30,7 +32,7 @@ interface EditableDocumentArtifactProof {
     version: typeof EDITABLE_DOCUMENT_ARTIFACT_VERSION;
     basis: 'uxp_post_save_file_metadata';
     path: string;
-    format: 'psd' | 'psb';
+    format: 'psd' | 'psb' | 'tiff';
     byteLength: number;
     modifiedAt: number;
     documentId: number;
@@ -257,7 +259,7 @@ function toDocumentPixels(value: any): number {
 
 async function readEditableDocumentArtifactProof(
     filePath: string,
-    format: 'psd' | 'psb',
+    format: 'psd' | 'psb' | 'tiff',
     doc: any,
     saveStartedAt: number
 ): Promise<EditableDocumentArtifactProof> {
@@ -436,6 +438,10 @@ export class SaveDocumentTool implements Tool {
                     type: 'boolean',
                     description: 'Deprecated for Agent execution. Provide path for deterministic Save As; no-path dialog save is refused.'
                 },
+                asCopy: {
+                    type: 'boolean',
+                    description: 'Runtime staging option for PSD/PSB only. Saves an editable copy without changing the active document file association.'
+                },
                 conflictPolicy: {
                     type: 'string',
                     enum: ['overwrite', 'fail_if_exists'],
@@ -484,6 +490,14 @@ export class SaveDocumentTool implements Tool {
             }
 
             const format = detectFormat(params.format, requestedPath);
+            if (params.asCopy === true
+                && (!requestedPath || (format !== 'psd' && format !== 'psb'))) {
+                return createToolFailureResult({
+                    toolName: this.name,
+                    error: new Error('saveDocument asCopy=true requires an explicit PSD/PSB path.'),
+                    params
+                });
+            }
 
             if (requestedPath && (format === 'png' || format === 'jpg' || format === 'jpeg')) {
                 const jsxFormat = format === 'png' ? 'png' : 'jpg';
@@ -510,6 +524,39 @@ export class SaveDocumentTool implements Tool {
                 }
                 sourceHistoryStateRef = readActiveHistoryStateRef(modalDocument);
                 if (requestedPath) {
+                    if (params.asCopy === true) {
+                        const targetEntry = await createSaveTargetEntry(
+                            requestedPath,
+                            conflictPolicy,
+                            (entry) => {
+                                if (conflictPolicy === 'fail_if_exists') {
+                                    newlyCreatedTargetEntry = entry;
+                                }
+                            }
+                        );
+                        const saveOptions = {
+                            embedColorProfile: true,
+                            layers: true,
+                            maximizeCompatibility: true
+                        };
+                        const saveAsCapability = (modalDocument as any)?.saveAs as {
+                            psd?: (entry: any, options: typeof saveOptions, asCopy: boolean) => Promise<void>;
+                            psb?: (entry: any, options: typeof saveOptions, asCopy: boolean) => Promise<void>;
+                        } | undefined;
+                        if (format === 'psb') {
+                            if (typeof saveAsCapability?.psb !== 'function') {
+                                throw new Error('当前 Photoshop 运行时不支持 PSB 存储副本。');
+                            }
+                            await saveAsCapability.psb(targetEntry, saveOptions, true);
+                        } else {
+                            if (typeof saveAsCapability?.psd !== 'function') {
+                                throw new Error('当前 Photoshop 运行时不支持 PSD 存储副本。');
+                            }
+                            await saveAsCapability.psd(targetEntry, saveOptions, true);
+                        }
+                        batchSaveCommitted = true;
+                        return;
+                    }
                     const token = await createSaveToken(
                         requestedPath,
                         conflictPolicy,
@@ -539,7 +586,7 @@ export class SaveDocumentTool implements Tool {
             }, { commandName: `DesignEcho: Save Document (${format.toUpperCase()})` });
 
             const editableDocumentArtifact = requestedPath
-                && (format === 'psd' || format === 'psb')
+                && (format === 'psd' || format === 'psb' || format === 'tiff')
                 ? await readEditableDocumentArtifactProof(
                     requestedPath,
                     format,

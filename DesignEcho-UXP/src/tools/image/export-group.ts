@@ -1,15 +1,22 @@
 import { app } from 'photoshop';
 import { runJsxCode } from '../../core/jsx-bridge';
 import { createToolFailureResult } from '../../core/tool-error-normalizer';
+import {
+    readActiveHistoryStateRef,
+    sameHistoryStateRef,
+    type PhotoshopHistoryStateRef
+} from '../../core/photoshop-history-state-ref';
 import { Tool, ToolResult, ToolSchema } from '../types';
 
-type ExportGroupFormat = 'png';
+type ExportGroupFormat = 'png' | 'jpg';
+type ExportGroupConflictPolicy = 'overwrite' | 'fail_if_exists';
 
 interface ExportGroupParams {
     groupPath?: string | string[];
     layerId?: number;
     outputPath: string;
     format?: ExportGroupFormat;
+    conflictPolicy?: ExportGroupConflictPolicy;
     maxSize?: number;
     targetWidth?: number;
     targetHeight?: number;
@@ -24,6 +31,7 @@ interface ExportGroupResult {
     targetName: string;
     targetLayerId?: number;
     groupPath?: string[];
+    sourceHistoryStateRef?: PhotoshopHistoryStateRef;
     contentBounds?: {
         left: number;
         top: number;
@@ -70,12 +78,31 @@ function parseJsxNumber(value: unknown): number {
     return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function normalizeExportFormat(value: unknown): ExportGroupFormat | undefined {
+    const normalized = cleanString(value).toLowerCase();
+    if (!normalized || normalized === 'png') return 'png';
+    if (normalized === 'jpg' || normalized === 'jpeg') return 'jpg';
+    return undefined;
+}
+
+function normalizeConflictPolicy(value: unknown): ExportGroupConflictPolicy | undefined {
+    const normalized = cleanString(value).toLowerCase();
+    if (!normalized || normalized === 'overwrite') return 'overwrite';
+    if (normalized === 'fail_if_exists') return 'fail_if_exists';
+    return undefined;
+}
+
+function outputPathMatchesFormat(outputPath: string, format: ExportGroupFormat): boolean {
+    if (format === 'png') return /\.png$/i.test(outputPath);
+    return /\.jpe?g$/i.test(outputPath);
+}
+
 export class ExportGroupTool implements Tool {
     name = 'exportGroup';
 
     schema: ToolSchema = {
         name: 'exportGroup',
-        description: '将指定图层组或图层导出为 PNG 文件。通过临时文档隔离导出，不修改原文档可见性。适合一个 PSD 内多个主图/转化图组分别导出。',
+        description: '将指定图层组或图层导出为 PNG/JPEG 文件。通过临时文档隔离导出，不修改原文档可见性。适合一个 PSD 内多个主图/转化图组分别导出。',
         parameters: {
             type: 'object',
             properties: {
@@ -90,12 +117,17 @@ export class ExportGroupTool implements Tool {
                 },
                 outputPath: {
                     type: 'string',
-                    description: '完整 PNG 输出路径，例如 C:/Exports/click-1x1.png。'
+                    description: '完整 PNG/JPEG 输出路径，扩展名必须与 format 一致。'
                 },
                 format: {
                     type: 'string',
-                    enum: ['png'],
-                    description: '导出格式，当前仅支持 png。'
+                    enum: ['png', 'jpg'],
+                    description: '导出格式。'
+                },
+                conflictPolicy: {
+                    type: 'string',
+                    enum: ['overwrite', 'fail_if_exists'],
+                    description: '目标冲突策略。受治理生产应显式使用 fail_if_exists。'
                 },
                 maxSize: {
                     type: 'number',
@@ -124,10 +156,14 @@ export class ExportGroupTool implements Tool {
             const groupPath = normalizeGroupPath(params.groupPath);
             const layerId = normalizeLayerId(params.layerId);
             const outputPath = cleanString(params.outputPath);
-            const format = params.format || 'png';
+            const format = normalizeExportFormat(params.format);
+            const conflictPolicy = normalizeConflictPolicy(params.conflictPolicy);
 
-            if (format !== 'png') {
-                return { success: false, data: null, error: 'exportGroup 当前仅支持 png 格式' };
+            if (!format) {
+                return { success: false, data: null, error: 'exportGroup format 必须是 png 或 jpg' };
+            }
+            if (!conflictPolicy) {
+                return { success: false, data: null, error: 'exportGroup conflictPolicy 无效' };
             }
             if (!outputPath) {
                 return { success: false, data: null, error: 'exportGroup requires outputPath' };
@@ -135,27 +171,42 @@ export class ExportGroupTool implements Tool {
             if (!layerId && groupPath.length === 0) {
                 return { success: false, data: null, error: 'exportGroup requires groupPath or layerId' };
             }
+            if (!outputPathMatchesFormat(outputPath, format)) {
+                return { success: false, data: null, error: 'exportGroup outputPath 扩展名必须与 format 一致' };
+            }
+
+            const sourceHistoryStateRef = readActiveHistoryStateRef(doc);
+            if (!sourceHistoryStateRef) {
+                return { success: false, data: null, error: 'exportGroup 无法读取源文档版本' };
+            }
 
             const jsxData = await this.exportWithJsx({
                 groupPath,
                 layerId,
                 outputPath,
+                format,
+                conflictPolicy,
                 maxSize: normalizeMaxSize(params.maxSize),
                 targetWidth: normalizeDimension(params.targetWidth),
                 targetHeight: normalizeDimension(params.targetHeight)
             });
+            const afterExportHistoryStateRef = readActiveHistoryStateRef(app.activeDocument);
+            if (!sameHistoryStateRef(sourceHistoryStateRef, afterExportHistoryStateRef)) {
+                return { success: false, data: null, error: 'exportGroup 导出后源文档版本发生变化' };
+            }
 
             return {
                 success: true,
                 data: {
                     success: true,
                     outputPath: cleanString(jsxData.path) || outputPath,
-                    format: 'png',
+                    format,
                     width: parseJsxNumber(jsxData.width),
                     height: parseJsxNumber(jsxData.height),
                     targetName: cleanString(jsxData.targetName),
                     targetLayerId: parseJsxNumber(jsxData.targetLayerId) || layerId,
                     groupPath,
+                    sourceHistoryStateRef,
                     contentBounds: {
                         left: parseJsxNumber(jsxData.contentLeft),
                         top: parseJsxNumber(jsxData.contentTop),
@@ -176,6 +227,8 @@ export class ExportGroupTool implements Tool {
         groupPath: string[];
         layerId?: number;
         outputPath: string;
+        format: ExportGroupFormat;
+        conflictPolicy: ExportGroupConflictPolicy;
         maxSize: number;
         targetWidth: number;
         targetHeight: number;
@@ -183,6 +236,8 @@ export class ExportGroupTool implements Tool {
         const groupPathJson = JSON.stringify(input.groupPath);
         const layerIdJson = JSON.stringify(input.layerId || 0);
         const outputPathJson = JSON.stringify(input.outputPath.replace(/\\/g, '/'));
+        const formatJson = JSON.stringify(input.format);
+        const conflictPolicyJson = JSON.stringify(input.conflictPolicy);
         const maxSizeJson = JSON.stringify(input.maxSize);
         const targetWidthJson = JSON.stringify(input.targetWidth);
         const targetHeightJson = JSON.stringify(input.targetHeight);
@@ -214,6 +269,8 @@ try {
     var GROUP_PATH = ${groupPathJson};
     var LAYER_ID = ${layerIdJson};
     var OUTPUT_PATH = ${outputPathJson};
+    var FORMAT = ${formatJson};
+    var CONFLICT_POLICY = ${conflictPolicyJson};
     var MAX_SIZE = ${maxSizeJson};
     var TARGET_WIDTH = ${targetWidthJson};
     var TARGET_HEIGHT = ${targetHeightJson};
@@ -353,11 +410,23 @@ try {
     }
 
     var targetFile = new File(OUTPUT_PATH);
+    if (CONFLICT_POLICY === 'fail_if_exists' && targetFile.exists) {
+        throw new Error('Target already exists: ' + targetFile.fsName);
+    }
     if (!targetFile.parent.exists) targetFile.parent.create();
-    var pngOptions = new PNGSaveOptions();
-    pngOptions.compression = 6;
-    pngOptions.interlaced = false;
-    tempDoc.saveAs(targetFile, pngOptions, true, Extension.LOWERCASE);
+    if (FORMAT === 'jpg') {
+        var jpgOptions = new JPEGSaveOptions();
+        jpgOptions.quality = 12;
+        jpgOptions.embedColorProfile = true;
+        jpgOptions.formatOptions = FormatOptions.STANDARDBASELINE;
+        jpgOptions.matte = MatteType.WHITE;
+        tempDoc.saveAs(targetFile, jpgOptions, true, Extension.LOWERCASE);
+    } else {
+        var pngOptions = new PNGSaveOptions();
+        pngOptions.compression = 6;
+        pngOptions.interlaced = false;
+        tempDoc.saveAs(targetFile, pngOptions, true, Extension.LOWERCASE);
+    }
 
     __deResult({
         success: 1,
@@ -392,7 +461,7 @@ try {
 __deOutput;
 `;
 
-        const result = await runJsxCode(jsx, 'Export Group as PNG');
+        const result = await runJsxCode(jsx, `Export Group as ${input.format.toUpperCase()}`);
         const data = result.data;
         if (!data?.success) {
             throw new Error(data?.error || result.message || 'Export group failed');

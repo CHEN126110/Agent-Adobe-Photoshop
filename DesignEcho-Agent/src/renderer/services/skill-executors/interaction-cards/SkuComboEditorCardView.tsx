@@ -446,12 +446,3 @@ export const SkuComboEditorCardView: React.FC<InteractiveCardBlockProps & { card
         </div>
     );
 };
-
-export function isSkuComboEditorInteractionCard(value: unknown): value is SkuComboEditorCard {
-    const card = value && typeof value === 'object'
-        ? value as Partial<SkuComboEditorCard>
-        : {};
-    return card.version === 'interactive-card/v0'
-        && card.kind === 'sku_combo_editor'
-        && card.payload?.version === 'sku-combo-editor/v0';
-}

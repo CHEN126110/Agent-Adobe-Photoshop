@@ -137,10 +137,16 @@ function buildPayloadPreview(input: {
         variantId: cleanString(operation.variantId),
         placementPlanId: cleanString(operation.placementPlanId),
         exportSpecId: cleanString(operation.exportSpecId),
+        deliveryArtifactId: cleanString(operation.deliveryArtifactId),
         asset: cleanAsset(operation.asset),
         canvasSize: operation.canvasSize,
         exportSize: operation.exportSize,
         outputDir: operation.tool === 'exportGroup' ? cleanString(input.outputDir) : undefined,
+        outputPath: cleanString(operation.outputPath),
+        format: operation.tool === 'exportGroup' && operation.outputFormat === 'jpeg'
+            ? 'jpg'
+            : operation.outputFormat,
+        conflictPolicy: operation.conflictPolicy,
         destinationBox: operation.destinationBox,
         subjectDestinationBox: operation.subjectDestinationBox,
         scalePercent: operation.scalePercent

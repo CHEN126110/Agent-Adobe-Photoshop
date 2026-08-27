@@ -2,6 +2,7 @@ import type { AgentThinkingEventMeta } from '../../../shared/agent-observation-c
 import type { AgentIntentControlPlaneDecision } from '../../../shared/agent-intent-control-plane';
 import type { AgentTaskPlanningContract } from '../../../shared/agent-task-planning-contract';
 import type { ExactPropertyExecutionScope } from '../../../shared/agent-tool-execution-preflight';
+import type { RuntimeWorkflowDeliveryReentry } from '../../../shared/agent-workflow-continuation-scope';
 import type { AgentTaskPlanPresentation } from '../../../shared/agent-task-plan-presentation';
 import type { ChatComposerContentPart } from '../../../shared/chat-composer-content';
 import type { CurrentDocumentUseMode } from '../../../shared/design-document-role';
@@ -722,6 +723,8 @@ export interface ExecuteToolRuntimeContext {
     runtimeDesignStrategyDigest?: RuntimeDesignStrategyDigest;
     runtimeActionPlanDeclaration?: RuntimeActionPlanDeclaration;
     runtimeActionPlanDigest?: RuntimeActionPlanDigest;
+    /** 当前 Agent continuation owner 即时签发；模型参数与历史结果不能创建。 */
+    runtimeWorkflowDeliveryReentry?: RuntimeWorkflowDeliveryReentry;
     /** 当前 Manifest 选择的只读评价标准；不执行 Tool、不授予权限、不拥有最终 Verdict。 */
     runtimeEvaluationProfile?: DesignEvaluationProfile;
 }

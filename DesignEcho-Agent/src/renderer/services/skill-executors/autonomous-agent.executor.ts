@@ -108,6 +108,7 @@ import {
 } from '../../../shared/task-run-document-creation-evidence';
 import { getPhotoshopToolSkillSemantics } from '../../../shared/photoshop-tool-skill';
 import { isSkillRoutingRecommendation } from '../../../shared/skill-routing';
+import { evaluateGenericBlockingCardOwner } from '../../../shared/agent-interaction-owner-policy';
 import {
     getSkillById,
     getSkillInternalToolNames,
@@ -1917,19 +1918,43 @@ function createExecuteToolWrapper(
             }
         }
 
-        if (toolName === 'createInteractiveCard' && !areSkillBridgesForbidden(autonomousParams)) {
-            const interactionOwnerSkillIds = resolveProviderOwnedInteractionSkillIds(
-                capabilitySession
+        if (isGenericBlockingInteractionTool(toolName)
+            && !areSkillBridgesForbidden(autonomousParams)) {
+            const taskType = resolveRuntimeInteractionTaskType(
+                capabilitySession,
+                autonomousParams
             );
-            if (interactionOwnerSkillIds.length > 0) {
-                const message = '当前业务交互已由绑定的 Skill Provider 管理，通用卡片不能复制它的字段、默认值或确认状态。请由对应 Skill 在真实前置条件准备完成后生成领域卡片。';
+            const interactionOwnerSkillIds = resolveProviderOwnedInteractionSkillIds(
+                capabilitySession,
+                autonomousParams
+            );
+            const ownerDecision = evaluateGenericBlockingCardOwner({
+                skillBridgesForbidden: false,
+                requiresResolvedOwner: requiresResolvedInteractionOwner(autonomousParams),
+                resolvedTaskType: taskType,
+                providerOwnerSkillIds: interactionOwnerSkillIds
+            });
+            if (ownerDecision.status === 'blocked'
+                && ownerDecision.code === 'interactive_owner_unresolved') {
+                const message = buildUnresolvedInteractionOwnerMessage(autonomousParams);
+                return {
+                    success: false,
+                    policyGate: true,
+                    code: 'interactive_owner_unresolved',
+                    message,
+                    error: message,
+                    countsAsTaskProgress: false
+                };
+            }
+            if (ownerDecision.status === 'blocked') {
+                const message = '当前业务交互已由绑定的 Skill Provider 管理，通用选择或草稿卡不能复制它的字段、默认值或确认状态。请由对应 Skill 在真实前置条件准备完成后生成领域卡片。';
                 return {
                     success: false,
                     policyGate: true,
                     code: 'skill_provider_interaction_owner_required',
                     message,
                     error: message,
-                    ownerSkillIds: interactionOwnerSkillIds,
+                    ownerSkillIds: ownerDecision.ownerSkillIds,
                     countsAsTaskProgress: false
                 };
             }
@@ -2378,7 +2403,8 @@ function createExecuteToolWrapper(
                 runtimeDesignStrategyDeclaration: runtimeContext?.runtimeDesignStrategyDeclaration,
                 runtimeDesignStrategyDigest: runtimeContext?.runtimeDesignStrategyDigest,
                 runtimeActionPlanDeclaration: runtimeContext?.runtimeActionPlanDeclaration,
-                runtimeActionPlanDigest: runtimeContext?.runtimeActionPlanDigest
+                runtimeActionPlanDigest: runtimeContext?.runtimeActionPlanDigest,
+                runtimeWorkflowDeliveryReentry: runtimeContext?.runtimeWorkflowDeliveryReentry
             });
             capabilitySession?.activateToolsForContinuation(
                 readAgentReActRecoveryToolNames(result)
@@ -3027,20 +3053,65 @@ function isManifestOwnedSkill(skillId: string): boolean {
     return listManifestOwnedSkillCapabilityIds().includes(`skill.${skillId}`);
 }
 
+function isGenericBlockingInteractionTool(toolName: string): boolean {
+    return toolName === 'askUserToChoose' || toolName === 'createInteractiveCard';
+}
+
+function requiresResolvedInteractionOwner(params?: Record<string, any>): boolean {
+    const controlPlane = params?.agentIntentControlPlane as Partial<AgentIntentControlPlaneDecision> | undefined;
+    return controlPlane?.toolScope === 'write_photoshop'
+        && controlPlane.executionAuthorization === 'confirmed_tool_required';
+}
+
+function buildUnresolvedInteractionOwnerMessage(params?: Record<string, any>): string {
+    const recommendation = isSkillRoutingRecommendation(params?.skillRoutingRecommendation)
+        ? params?.skillRoutingRecommendation
+        : undefined;
+    const candidateTaskType = recommendation
+        ? findManifestTaskTypeForSkill(recommendation.skillId)
+        : undefined;
+    if (candidateTaskType && recommendation) {
+        const skill = getSkillById(recommendation.skillId);
+        return [
+            '这项设计需要由明确的专业工作方式负责，通用表单不能代替它。',
+            `系统已提供候选能力「${skill?.displayName || recommendation.skillId}」。请先判断它是否与用户委托相符：相符就使用该能力继续；不相符就用当前原子工具自主推进。`,
+            '只有确实需要用户决定、并且无法从素材或现场观察得到的信息，才应暂停询问。'
+        ].join(' ');
+    }
+    return '这项设计尚未选择明确的专业工作方式，通用表单不能代替业务能力。若当前工具中已有匹配能力，请直接使用；否则用现有原子工具自主推进。只有无法观察、且不同答案会实质改变结果的信息，才应暂停询问用户。';
+}
+
+function resolveRuntimeInteractionTaskType(
+    capabilitySession?: AgentCapabilitySession,
+    params?: Record<string, any>
+): string {
+    const manifestTaskType = String(
+        capabilitySession?.getResolution().manifestRef?.taskType || ''
+    ).trim();
+    if (manifestTaskType) return manifestTaskType;
+    return String(params?.declaredTaskType || '').trim();
+}
+
 function resolveProviderOwnedInteractionSkillIds(
-    capabilitySession?: AgentCapabilitySession
+    capabilitySession?: AgentCapabilitySession,
+    params?: Record<string, any>
 ): string[] {
     const ownerIds = new Set<string>();
     const manifestRef = capabilitySession?.getResolution().manifestRef;
-    if (manifestRef) {
-        const manifest = listSkillManifests().find((item) => (
+    const taskType = resolveRuntimeInteractionTaskType(capabilitySession, params);
+    const manifest = listSkillManifests().find((item) => (
+        manifestRef
+            ? (
             item.skill_id === manifestRef.skillId
             && item.task_type === manifestRef.taskType
             && item.version === manifestRef.version
-        ));
+            )
+            : item.task_type === taskType || (item.task_type_variants || []).includes(taskType)
+    ));
+    if (manifest) {
         [
-            ...(manifest?.workflow_entry_skill_ids || []),
-            ...(manifest?.legacy_skill_ids || [])
+            ...(manifest.workflow_entry_skill_ids || []),
+            ...(manifest.legacy_skill_ids || [])
         ].forEach((skillId) => {
             if (isSkillProviderInteractionOwner(skillId)) ownerIds.add(skillId);
         });
@@ -3159,7 +3230,7 @@ function buildBaseRuntimeContext(params: Record<string, any>, context?: any): st
             lines.push(
                 `候选工作流是「${recommendedSkill?.displayName || skillRoutingRecommendation.skillId}」${candidateTaskType ? `（Profile：${candidateTaskType}）` : ''}。`,
                 candidateTaskType
-                    ? `- 如果用户要的就是这类交付物：当前工具列表已有匹配 Skill 就直接调用；只有没有匹配 Skill 时，才使用系统给出的 Profile 调用 declareDesignIntent({ taskTypeId: "${candidateTaskType}" }) 原地绑定。`
+                    ? `- 如果用户要的就是这类交付物：当前工具列表已有匹配 Skill 就直接调用；只有没有匹配 Skill 时，才使用系统给出的 Profile 调用 declareDesignIntent({ taskTypeId: "${candidateTaskType}" }) 原地绑定。任务身份未绑定前，不要创建阻塞式通用卡片或申请该领域的内部原子能力。`
                     : '- 如果它确实拥有当前交付物且当前工具列表已有匹配 Skill，直接调用 Skill；没有系统明确给出的 Profile 时不要自行调用 declareDesignIntent。',
                 '- 如果用户要的只是把它当来源素材或并不匹配，就忽略这项建议，用当前普通设计能力继续完成，不要停在只读调查。'
             );

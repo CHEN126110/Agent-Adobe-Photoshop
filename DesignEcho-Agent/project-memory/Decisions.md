@@ -2,6 +2,38 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-084 交互 owner 与外部能力采用 Agent / Harness Kernel / Skill Package / Tool-Capability Provider + Host 四层边界
+
+- 状态：已采用；本裁决定义当前实现不变量，具体代码接线、构建和真机状态继续以当前代码、`CurrentTask.md` 与 `Status.md` 为准，不能由文档补造成已验证完成。
+- Agent / Model 拥有目标理解、Task Profile / Skill 选择、设计取舍、开放任务中的可选澄清和失败后的重规划；已选 staged Skill 可以按确定性生产契约要求必要的领域确认点，Agent 不能绕过，但候选内容和设计判断仍归 Agent /用户。Harness Kernel 只拥有同一 TaskRun、Context、Capability Resolution、跨调用调度、target /revision 绑定、授权 /preflight、reconciliation、验真、完成判定、幂等、预算与停机，不从品类关键词、文件名、旧 route hint 或 `routing recommendation` 补造 owner。推荐只是模型可以忽略的候选，不能抢占 Skill、交互卡、Capability 或恢复路径。
+- Skill Package 拥有领域方法、确定性生产规格、卡片 schema、候选语义、校验、提交消费、评价引用，以及按领域 schema 派生的 `decisionFingerprint / candidateFingerprint / answerFingerprint`。三者分别表示稳定决定、本次候选和规范化用户答案；Harness 只做精确判等和 TaskRun /owner 绑定，不解释组合、颜色、版式或其它领域内容，也不以相似度猜“这是同一个决定”。
+- Tool / Capability Provider + Host 可以由内置模块、UXP /浏览器扩展桥或插件承载，拥有 Photoshop、项目文件、Eagle、浏览器和桌面观察等跨 Skill 原子能力的协议、schema、Host 连接、Provider-local 取消 /超时、原始读取结果与原始 mutation receipt；受控命令是条件性扩展目标，不是当前已完成事实。Photoshop 写入的唯一 mutation 事务 owner 是 `PhotoshopTransactionRunner`；Provider / Host 不另建跨调用事务、revision 或完成判断。Skill 只声明依赖，Harness 决定能力可见性与一次调用授权并消费原始收据做 reconciliation；Provider 已安装、已登记或 Host 可达均不等于模型可见、已授权、已执行或任务完成。
+- 领域卡的 Provider、Renderer、type guard、owner 与版本必须由同一个 Skill package registration 派生。通用 ChatPanel /卡片 Host 只能提交品类中立的短选择或多字段草稿，不能复制 SKU /主图 /详情页字段、默认候选或确认状态来旁路 Skill Provider。未知 kind /版本、缺 owner、owner 不匹配或未注册卡必须 fail closed，并显示不可操作说明；不得使用通用“确认”按钮执行卡片自带 action。
+- 同一 TaskRun 已消费一个领域决定后，冻结的决定 /候选 /答案身份必须穿过直接 Skill 续跑与 Agent reentry；如果下一张卡仍是同一决定、候选等于刚确认答案，且期间没有 plan、mutation 或 Photoshop revision 等真实进展，这不是“用户还没说清楚”，而是 Skill /Agent 没有推进。Harness 只报告 `interaction_no_progress` 并保留原 TaskRun；重复只读调用、换标题、换 card id 或把答案写回 initialValue 不能冒充进展。Agent 应重新观察、换方法、调用其它已授权能力或诚实停止，不得再次询问同一问题、重发用户文本创建新任务，或让 Harness 根据 routing recommendation 指定下一 Skill /Tool。
+
+### 正面经验
+
+1. 用 `owner + kind + payloadVersion + decision / candidate / answer fingerprints + TaskRun identity` 做精确绑定，可以在 Harness 完全不理解 SKU 字段的情况下阻止跨 Skill 恢复、旧卡重放和无进展重问；通用安全性来自稳定身份，不来自更多品类正则。
+2. 把专属 Provider 与 Renderer 放回同一 Skill package，既能保留 SKU 拖拽、增删、排序和人工复核等高价值体验，又能让通用 UI 保持品类中立。可插拔不等于把业务卡降级成通用字段表，而是让领域体验可安装、可移除、可版本化且不污染 Agent 核心。
+3. Harness 只比较 Skill 签发的决定指纹、检查 owner /scope /revision 和真实副作用；Agent 负责理解失败并重新规划。这个分工同时减少重复人工确认和 Harness 对模型下一步的劫持。
+4. Tool / Capability Provider + Host 作为跨 Skill 原子能力层，可以让 Photoshop、Eagle、浏览器和桌面观察复用同一 Capability /preflight 安全边界，并为未来受控命令保留相同接入方式，避免每个 Skill 各复制一套电脑控制实现；内置与 plugin-backed 只是部署方式，不改变 owner。
+5. 复杂度棘轮应该促成真实拆分，而不是在功能通过后抬高基线。本轮把交互复入停滞判断和工具失败结果归一迁出 `agent.ts`，主循环从 12936 行降到 12859 行，再把新低点锁回棘轮；这比在巨型循环里增加一个“通用 guard”更能保护后续泛化能力。
+
+### 负面教训与禁止反例
+
+1. **场景关键词补丁**：为了修复“帮我做一下 SKU”之类单句漏路由而继续扩充正则，只会形成更多互相竞争的分类器。关键词可以帮助召回候选，不能拥有 Task Profile、Skill、交互或执行选择权。
+2. **推荐抢 owner**：把 `routing recommendation` 当成已选择 Skill，会让 Harness 在模型判断前裁工具面、拦通用交互或恢复错误 workflow。只有结构化用户 /模型选择可以成为 owner；推荐不产生权限或等待点。
+3. **默认首 N 色**：卡片 Builder 缺候选时自动取前 N 个颜色，看似提供“可用默认”，实际替模型 /用户生成 SKU 业务决定，并使不同任务反复得到相同结果。Builder 只能规范化与校验，候选必须由 Agent /用户 /Skill 显式提供；空候选应诚实为空或失败，不得暗选。
+4. **通用卡复制领域语义**：用 `editable_confirmation` 复制 SKU 组合字段，会绕过领域校验、记忆、恢复消费与专属体验，并让 ChatPanel 重新认识 SKU。领域交互必须由已选 Skill Provider 生产；通用卡只解决真正通用的选择和草稿。
+5. **Provider /Renderer 双注册**：语义 Provider 和视觉 Renderer 分别维护 kind /version 列表，会产生“可提交但不可渲染”或“可渲染但由错误 Provider 消费”的漂移。必须从同一 package registration 派生。
+6. **未知卡仍可点击**：未知卡落入通用确认按钮并执行自带 action，把兼容兜底变成未注册执行入口。未知、损坏和版本不支持必须不可操作；兼容只能通过显式迁移或 legacy alias，不得通过任意 action 兜底。
+7. **无进展重复询问**：已经收到同一决定的答案，却因 Skill 没有副作用或 revision 变化而再次弹同一张卡，会提高人工介入率并掩盖真实执行 /规划缺陷。正确恢复是把无进展事实交给 Agent 重规划，而不是继续要求用户确认或由 Harness 代选下一步。
+8. **把候选摘要当决定身份或把读取次数当进展**：候选稍有变化就生成新 `decisionFingerprint`，会让 Skill 通过改 initialValue 绕过停滞检测；把任意 operationResult /只读调用数量增长视为进展，则会形成“读一次同样现场再问一次”的旁路。稳定决定、候选内容和用户答案必须分开签名，进展只接受计划推进、真实 mutation 或 Photoshop revision 等受治理事实。
+9. **审计写死源码形状**：测试只寻找某个文件里的旧字段、旧 helper 或某一行精确调用文本，会在 owner 正确下沉后制造假失败，并诱使维护者恢复重复实现。行为测试应覆盖真实 TaskRun /Provider /事务结果；静态审计只钉 owner、边界、危险旁路与不可缺少的语义链。实现迁移时可以同步更新源码定位，但不得删除或放宽原语义保证。
+10. **半成品先接生产**：函数已经被真实服务调用，却仍保留 TODO、忽略声明的过滤 /去重 /封顶参数，比“功能尚未开发”更危险，因为上层会把它当完成能力。本轮语义目标选择器就是反例；生产接线前必须完成最小闭环，或保持不可达，不能让注释替代实现。
+11. **有测试但不在核心链**：新增测试脚本若没有进入唯一 `maintenance:validate`，会制造“核心全绿但新能力从未执行”的假安全。本轮已把语义目标框、语义候选和变更边界分类并入核心清单；以后任何 production capability 的长期测试必须同步进入该清单，不能留成旁路命令。
+12. **文档把不同粒度写成同一个 owner**：笼统说 Harness 和 Provider 都“拥有事务 /读回”，会让后续实现各建一套真相源。必须分别写清跨调用编排与 reconciliation、原子 Host 调用与原始收据、以及唯一 mutation transaction owner；同样，开放澄清归 Agent，不等于 staged Skill 不能声明必要生产确认点。
+
 ## D-083 性能预算账本抽取与静态审计同步维护（agent.ts 拆分批次 1）
 
 - 状态：已采用；代码完成，完整 22 项核心验证进行中；真实 Photoshop E2E 与收敛指标对照待验证。

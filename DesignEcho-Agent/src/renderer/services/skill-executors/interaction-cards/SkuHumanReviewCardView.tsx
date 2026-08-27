@@ -105,12 +105,3 @@ export const SkuHumanReviewCardView: React.FC<InteractiveCardBlockProps & { card
         </div>
     );
 };
-
-export function isSkuHumanReviewInteractionCard(value: unknown): value is SkuHumanReviewCard {
-    const card = value && typeof value === 'object'
-        ? value as Partial<SkuHumanReviewCard>
-        : {};
-    return card.version === 'interactive-card/v0'
-        && card.kind === 'sku_human_review'
-        && card.payload?.version === 'sku-human-review-card/v0';
-}

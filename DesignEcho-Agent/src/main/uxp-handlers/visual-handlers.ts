@@ -25,7 +25,7 @@ function generateSimpleMapping(layers: any[]): string {
 }
 
 export function registerVisualHandlers(context: UXPContext): void {
-    const { wsServer, logService, mattingService } = context;
+    const { wsServer, logService, mattingService, semanticTargetLocator } = context;
     const MATTING_EXPORT_MAX_SIZE = 1024;
     let nextMattingBinaryResponseId = 1000000000;
 
@@ -143,6 +143,165 @@ export function registerVisualHandlers(context: UXPContext): void {
         }
 
         return targetDimensions;
+    };
+
+    /**
+     * 语义抠图：按"抠取目标"描述定位 → 在目标框内分割。
+     *
+     * 任一步失败都如实返回失败原因，不静默退回全图分割：用户填了"袜子"却拿到
+     * "画面里最显著的主体"，比直接告诉他没定位到更糟——他不会知道结果是错的。
+     */
+    const runSemanticMatting = async (args: {
+        imageInput: string | BinaryImageData;
+        targetPrompt: string;
+        normalizedQuality: 'fast' | 'balanced' | 'quality';
+        edgeRefine: string;
+        targetDimensions: { originalWidth?: number; originalHeight?: number };
+    }): Promise<any> => {
+        if (!semanticTargetLocator) {
+            return {
+                success: false,
+                error: '语义定位服务未初始化，无法按"' + args.targetPrompt + '"抠图。\n\n'
+                    + '请清空"抠取目标"改用整体抠图，或重启应用后重试。'
+            };
+        }
+
+        const decoded = await mattingService!.decodeImageInput(args.imageInput);
+        if (!decoded) {
+            return {
+                success: false,
+                error: '无法解码图层图像用于目标定位：图层可能为空或数据损坏。'
+            };
+        }
+
+        logService?.logAgent(
+            'info',
+            `[UXP Handler] Semantic matting: target="${args.targetPrompt}" image=${decoded.width}x${decoded.height}`
+        );
+
+        // 主路径：先把画面拆成候选物体，再让模型选编号。
+        // 比让模型直接输出坐标可靠得多——框来自真实分割，模型只做选择题。
+        const startTime = Date.now();
+        const extracted = await mattingService!.extractForegroundCandidates(args.imageInput, {
+            quality: args.normalizedQuality,
+            edgeRefine: args.edgeRefine,
+            onProgress: (progress, stage, message) => sendMattingProgress(
+                Math.max(16, Math.min(26, progress)),
+                message,
+                stage
+            )
+        });
+
+        if (extracted.success && extracted.candidates.length > 0 && extracted.labels && extracted.mask) {
+            logService?.logAgent(
+                'info',
+                `[UXP Handler] Candidates: ${extracted.candidates.length} objects — `
+                + extracted.candidates.map(c => `#${c.id}(${c.area}px)`).join(' ')
+            );
+
+            const chosen = await semanticTargetLocator.selectFromCandidates(
+                decoded.buffer,
+                args.targetPrompt,
+                extracted.candidates,
+                decoded.width,
+                decoded.height,
+                { onProgress: (progress, message) => sendMattingProgress(progress, message, 'detection') }
+            );
+
+            if (!chosen.success) {
+                logService?.logAgent('warn', `[UXP Handler] Candidate selection failed: ${chosen.error}`);
+                return { success: false, error: chosen.error };
+            }
+
+            sendMattingProgress(
+                75,
+                `已选定 ${chosen.selectedIds.length} 个「${args.targetPrompt}」，正在生成蒙版...`,
+                'segmentation'
+            );
+
+            const built = mattingService!.buildMaskFromCandidates(
+                extracted.mask,
+                extracted.labels,
+                extracted.width!,
+                extracted.height!,
+                chosen.selectedIds,
+                extracted.candidateMasks
+            );
+
+            if (built.foregroundPixels === 0) {
+                return {
+                    success: false,
+                    error: `选中的候选在蒙版里没有前景像素，无法生成「${args.targetPrompt}」的抠图结果。`
+                };
+            }
+
+            return await mattingService!.finalizeCandidateMask(
+                built.maskBuffer,
+                extracted.width!,
+                extracted.height!,
+                {
+                    originalWidth: args.targetDimensions.originalWidth,
+                    originalHeight: args.targetDimensions.originalHeight,
+                    binaryMaskOutput: true,
+                    usedModel: 'birefnet+candidate-selection',
+                    analysis: `语义抠图：「${args.targetPrompt}」→ 画面拆出 ${extracted.candidates.length} 个物体，`
+                        + `模型 ${chosen.modelId} 选中 ${chosen.selectedIds.join('、')} 号`,
+                    processingTime: Date.now() - startTime
+                }
+            );
+        }
+
+        // 降级：前景拆不出候选（例如目标不显著、与背景同色）时，回到让模型直接给坐标。
+        logService?.logAgent(
+            'info',
+            `[UXP Handler] No candidates (${extracted.error || 'empty'}), falling back to coordinate locating`
+        );
+
+        const located = await semanticTargetLocator.locate(
+            decoded.buffer,
+            args.targetPrompt,
+            decoded.width,
+            decoded.height,
+            {
+                onProgress: (progress, message) => sendMattingProgress(progress, message, 'detection')
+            }
+        );
+
+        if (!located.success) {
+            logService?.logAgent('warn', `[UXP Handler] Semantic locate failed: ${located.error}`);
+            return { success: false, error: located.error };
+        }
+
+        const boxSummary = located.boxes
+            .map(box => `${box.label || args.targetPrompt}(${box.x1},${box.y1})-(${box.x2},${box.y2})`)
+            .join(' ');
+        logService?.logAgent(
+            'info',
+            `[UXP Handler] Semantic locate ok: ${located.boxes.length} target(s) via ${located.modelId} — ${boxSummary}`
+        );
+        sendMattingProgress(
+            42,
+            `已定位 ${located.boxes.length} 个"${args.targetPrompt}"，正在框内分割...`,
+            'detection'
+        );
+
+        const result = await mattingService!.segmentWithinBoxes(args.imageInput, located.boxes, {
+            quality: args.normalizedQuality,
+            edgeRefine: args.edgeRefine,
+            binaryMaskOutput: true,
+            originalWidth: args.targetDimensions.originalWidth,
+            originalHeight: args.targetDimensions.originalHeight,
+            onProgress: (progress, stage, message) => {
+                sendMattingProgress(Math.max(42, Math.min(95, progress)), message, stage);
+            }
+        });
+
+        if (result.success) {
+            result.analysis = `语义抠图："${args.targetPrompt}" → ${located.boxes.length} 个目标`
+                + `（定位模型 ${located.modelId}）| ${result.analysis || ''}`;
+        }
+
+        return result;
     };
 
     const buildMattingApplyPayload = (mattingResult: any, exportResult?: any) => {
@@ -373,22 +532,31 @@ export function registerVisualHandlers(context: UXPContext): void {
             logService?.logAgent('info', `[UXP Handler] Step 1 complete: ${describeMattingInput(imageInput)}, layerId=${layerId}`);
             sendMattingProgress(15, '图层图像就绪', 'export-ready');
 
-            logService?.logAgent('info', '[UXP Handler] Step 2: running BiRefNet');
-            const mattingResult = await mattingService.removeBackground(imageInput, {
-                targetPrompt,
-                quality: normalizedQuality,
-                returnMask: true,
-                binaryMaskOutput: true,
-                edgeRefine: resolveMattingEdgeRefineMode(params, 'product-hard'),
-                ...targetDimensions,
-                onProgress: (progress, stage, message) => {
-                    sendMattingProgress(
-                        mapInferenceProgress(progress),
-                        message || '正在运行分割模型',
-                        stage
-                    );
-                }
-            });
+            // Step 2：填了"抠取目标"就走语义抠图——先按描述定位目标框，再在框内分割。
+            // 不能退回全图分割：BiRefNet 是显著性分割，画面里有鞋有袜时它给的是最显著的那个，
+            // 用户看到的却是"语义抠图已完成"，这正是旧实现掩盖了三年的假象。
+            const mattingResult = targetPrompt
+                ? await runSemanticMatting({
+                    imageInput,
+                    targetPrompt,
+                    normalizedQuality,
+                    edgeRefine: resolveMattingEdgeRefineMode(params, 'product-hard'),
+                    targetDimensions
+                })
+                : await mattingService.removeBackground(imageInput, {
+                    quality: normalizedQuality,
+                    returnMask: true,
+                    binaryMaskOutput: true,
+                    edgeRefine: resolveMattingEdgeRefineMode(params, 'product-hard'),
+                    ...targetDimensions,
+                    onProgress: (progress, stage, message) => {
+                        sendMattingProgress(
+                            mapInferenceProgress(progress),
+                            message || '正在运行分割模型',
+                            stage
+                        );
+                    }
+                });
 
             if (!mattingResult?.success || (!mattingResult?.maskImage && !mattingResult?.maskBuffer)) {
                 return {

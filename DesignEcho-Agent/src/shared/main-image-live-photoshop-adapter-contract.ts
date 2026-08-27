@@ -239,41 +239,32 @@ function buildTransformLayerParams(request: MainImageLiveExecutorOperationReques
     });
 }
 
-function sanitizeFileSegment(value: unknown): string {
-    const text = cleanString(value);
-    return text.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, '_').slice(0, 80) || 'export';
-}
-
-function buildOutputPath(input: {
-    outputDir: unknown;
-    groupPath: string[];
-    exportSpecId: unknown;
-}): string {
-    const outputDir = cleanString(input.outputDir).replace(/[\\/]+$/g, '');
-    if (!outputDir) return '';
-    const baseName = sanitizeFileSegment(input.exportSpecId)
-        || sanitizeFileSegment(input.groupPath.join('_'));
-    return `${outputDir}/${baseName}.png`;
-}
-
 function buildExportGroupParams(request: MainImageLiveExecutorOperationRequest): Record<string, unknown> {
     const payload = readRecord(request.payloadPreview);
     const exportSize = readRecord(payload.exportSize);
     const groupPath = getGroupPath(request);
     const targetWidth = readNumber(exportSize.width);
     const targetHeight = readNumber(exportSize.height);
-    const outputPath = buildOutputPath({
-        outputDir: payload.outputDir,
-        groupPath,
-        exportSpecId: payload.exportSpecId || request.id
-    });
+    const outputPath = cleanString(payload.outputPath);
+    const requestedFormat = cleanString(payload.format).toLowerCase();
+    const format = requestedFormat === 'jpeg' ? 'jpg' : requestedFormat;
 
     return sanitizeRecord({
         groupPath,
         outputPath,
-        format: 'png',
+        format,
+        conflictPolicy: cleanString(payload.conflictPolicy),
         targetWidth,
         targetHeight
+    });
+}
+
+function buildSaveDocumentParams(request: MainImageLiveExecutorOperationRequest): Record<string, unknown> {
+    const payload = readRecord(request.payloadPreview);
+    return sanitizeRecord({
+        path: cleanString(payload.outputPath),
+        format: cleanString(payload.format).toLowerCase(),
+        conflictPolicy: cleanString(payload.conflictPolicy)
     });
 }
 
@@ -360,6 +351,12 @@ function buildMapping(request: MainImageLiveExecutorOperationRequest): MainImage
         if (!paramsPreview.outputPath) {
             blockers.push('exportGroup_requires_full_outputPath');
         }
+        if (paramsPreview.format !== 'png' && paramsPreview.format !== 'jpg') {
+            blockers.push('exportGroup_requires_png_or_jpg_format');
+        }
+        if (paramsPreview.conflictPolicy !== 'fail_if_exists') {
+            blockers.push('exportGroup_requires_fail_if_exists');
+        }
         const groupPath = Array.isArray(paramsPreview.groupPath)
             ? paramsPreview.groupPath
             : [];
@@ -371,6 +368,19 @@ function buildMapping(request: MainImageLiveExecutorOperationRequest): MainImage
         }
         requiredRuntimeState.push('export_group_path_exists_in_layer_hierarchy');
         requiredRuntimeState.push('export_file_exists_after_run');
+    } else if (request.tool === 'saveDocument') {
+        paramsPreview = buildSaveDocumentParams(request);
+        if (!paramsPreview.path) {
+            blockers.push('saveDocument_requires_full_outputPath');
+        }
+        if (paramsPreview.format !== 'psd' && paramsPreview.format !== 'psb') {
+            blockers.push('saveDocument_requires_psd_or_psb_format');
+        }
+        if (paramsPreview.conflictPolicy !== 'fail_if_exists') {
+            blockers.push('saveDocument_requires_fail_if_exists');
+        }
+        requiredRuntimeState.push('active_document_matches_delivery_document');
+        requiredRuntimeState.push('editable_document_artifact_readback');
     } else {
         blockers.push(`unsupported_live_operation=${request.tool}`);
     }

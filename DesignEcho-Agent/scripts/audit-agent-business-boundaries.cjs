@@ -32,6 +32,11 @@ const {
   removeSkuStagingTransactionRoot
 } = require(path.join(root, 'src', 'main', 'services', 'sku-staging-transaction.service.ts'));
 const {
+  beginRuntimeOwnedSkillToolLedgerScope,
+  createGuardedAtomicToolExecutor,
+  createRuntimeOwnedSkillDeliveryPlanAuthority
+} = require(path.join(root, 'src', 'shared', 'agent-skill-atomic-tool-execution.ts'));
+const {
   finalizeSkuStagingCleanup,
   joinSkuExportPath,
   normalizeSkuExportPathForCompare,
@@ -306,6 +311,9 @@ const designEvaluationProfilesPath = path.join(
 const skuConfigExecutorPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'sku-config.executor.ts');
 const skuBatchExecutorPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'sku-batch.executor.ts');
 const skuExportTransactionPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'sku-export-transaction.service.ts');
+const stagedDeliveryPromotionPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'staged-delivery-promotion.service.ts');
+const runtimeStagedDeliveryPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'runtime-staged-delivery.service.ts');
+const rendererStagedFileTransactionPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'staged-file-transaction.service.ts');
 const stagedFilePromotionPath = path.join(root, 'src', 'main', 'services', 'staged-file-promotion.ts');
 const skuStagingTransactionServicePath = path.join(root, 'src', 'main', 'services', 'sku-staging-transaction.service.ts');
 const skillToolsPath = path.join(root, 'src', 'renderer', 'services', 'skill-executors', 'skill-tools.ts');
@@ -1360,6 +1368,21 @@ async function exerciseStagedFilePromotion() {
         && !fs.existsSync(item.sourcePath)
       ));
     const atomicCleanup = await cleanupTransaction(atomicTransaction.transactionToken);
+    const subsetTransaction = await issueTransaction();
+    const subsetItems = await bindMainBaselines(
+      subsetTransaction.transactionToken,
+      makePairedFiles(subsetTransaction.stagingRoot, 2, 'subset')
+    );
+    const subsetPromotion = await promoteStagedFileSet({
+      transactionToken: subsetTransaction.transactionToken,
+      items: subsetItems.slice(0, 1)
+    });
+    const subsetRejectedBeforeWrite = subsetPromotion.success === false
+      && subsetItems.every((item, index) => (
+        fs.existsSync(item.sourcePath)
+        && fs.readFileSync(item.destinationPath, 'utf8') === `old-subset-${index}`
+      ));
+    const subsetCleanup = await cleanupTransaction(subsetTransaction.transactionToken);
     const escapedTransaction = await issueTransaction();
     const escapedSource = path.join(escapedTransaction.stagingRoot, 'escape.jpg');
     fs.mkdirSync(path.dirname(escapedSource), { recursive: true });
@@ -1749,6 +1772,55 @@ async function exerciseStagedFilePromotion() {
         { path: expectedItem.editablePath, exists: false }
       ]
     ]);
+    const guardedDeliveryExecutor = createGuardedAtomicToolExecutor({
+      executeTool: async () => ({ success: true })
+    });
+    const deliveryLedgerScope = beginRuntimeOwnedSkillToolLedgerScope(guardedDeliveryExecutor);
+    const deliveryAuthority = createRuntimeOwnedSkillDeliveryPlanAuthority({
+      scope: deliveryLedgerScope,
+      executor: guardedDeliveryExecutor
+    });
+    const deliveryPlanFreeze = deliveryAuthority?.freeze({
+      projectPath: tempRoot,
+      convention: {
+        version: 'skill-delivery-convention/v0',
+        provenance: 'skill_fallback',
+        supportRefs: [],
+        editable: {
+          projectRelativeRoot: '客户交付/色卡成品/可编辑',
+          fileNamePattern: '{defaultName}',
+          format: 'psb'
+        },
+        raster: {
+          projectRelativeRoot: '客户交付/色卡成品',
+          fileNamePattern: '{defaultName}',
+          format: 'jpg'
+        },
+        pairing: 'one_editable_per_raster',
+        versionPolicy: 'fail_if_exists'
+      },
+      artifacts: [{
+        artifactId: `sku:${expectedItem.id}:raster`,
+        kind: 'raster_export',
+        pairId: expectedItem.id,
+        order: 0,
+        path: expectedItem.path,
+        format: 'jpg',
+        sourceHistoryRole: 'per_artifact_revision'
+      }, {
+        artifactId: `sku:${expectedItem.id}:editable`,
+        kind: 'editable_document',
+        pairId: expectedItem.id,
+        order: 1,
+        path: expectedItem.editablePath,
+        format: 'psb',
+        sourceHistoryRole: 'per_artifact_revision'
+      }]
+    });
+    if (!deliveryPlanFreeze || deliveryPlanFreeze.status === 'rejected') {
+      throw new Error(`SKU Runtime delivery plan fixture failed: ${JSON.stringify(deliveryPlanFreeze)}`);
+    }
+    const runtimeDeliveryPlanBinding = deliveryPlanFreeze.binding;
     const rendererHostCalls = [];
     const rendererHost = {
       promoteStagedFileSet: async () => {
@@ -1773,13 +1845,15 @@ async function exerciseStagedFilePromotion() {
         return { success: true };
       }
     };
+    const previousAuditWindow = global.window;
+    global.window = { designEcho: rendererHost };
     const rendererPromotion = await promoteSkuStagedDeliverySet({
       expectedItems: [expectedItem],
       rasterArtifacts: new Map([[expectedItem.id, rasterArtifact]]),
       editableArtifacts: new Map([[expectedItem.id, editableArtifact]]),
       destinationBaselines,
       transaction: rollbackTransaction,
-      host: rendererHost
+      runtimeDeliveryPlanBinding
     });
     const rendererCleanup = await finalizeSkuStagingCleanup({
       transaction: rollbackTransaction,
@@ -1802,13 +1876,14 @@ async function exerciseStagedFilePromotion() {
         return { success: true };
       }
     };
+    global.window = { designEcho: rejectedHost };
     const rejectedPromotion = await promoteSkuStagedDeliverySet({
       expectedItems: [expectedItem],
       rasterArtifacts: new Map([[expectedItem.id, rasterArtifact]]),
       editableArtifacts: new Map([[expectedItem.id, editableArtifact]]),
       destinationBaselines,
       transaction: rollbackTransaction,
-      host: rejectedHost
+      runtimeDeliveryPlanBinding
     });
     await finalizeSkuStagingCleanup({
       transaction: rollbackTransaction,
@@ -1830,13 +1905,14 @@ async function exerciseStagedFilePromotion() {
         return { success: true };
       }
     };
+    global.window = { designEcho: malformedHost };
     const malformedPromotion = await promoteSkuStagedDeliverySet({
       expectedItems: [expectedItem],
       rasterArtifacts: new Map([[expectedItem.id, rasterArtifact]]),
       editableArtifacts: new Map([[expectedItem.id, editableArtifact]]),
       destinationBaselines,
       transaction: rollbackTransaction,
-      host: malformedHost
+      runtimeDeliveryPlanBinding
     });
     const mismatchedSuccessCalls = [];
     const mismatchedSuccessHost = {
@@ -1860,19 +1936,21 @@ async function exerciseStagedFilePromotion() {
         return { success: true };
       }
     };
+    global.window = { designEcho: mismatchedSuccessHost };
     const mismatchedSuccessPromotion = await promoteSkuStagedDeliverySet({
       expectedItems: [expectedItem],
       rasterArtifacts: new Map([[expectedItem.id, rasterArtifact]]),
       editableArtifacts: new Map([[expectedItem.id, editableArtifact]]),
       destinationBaselines,
       transaction: rollbackTransaction,
-      host: mismatchedSuccessHost
+      runtimeDeliveryPlanBinding
     });
     await finalizeSkuStagingCleanup({
       transaction: rollbackTransaction,
       preserveStagingRoot: mismatchedSuccessPromotion.preserveStagingRoot === true,
       host: mismatchedSuccessHost
     });
+    global.window = previousAuditWindow;
     const cleanupRejectCalls = [];
     const cleanupRejectResult = await finalizeSkuStagingCleanup({
       transaction: rollbackTransaction,
@@ -1954,6 +2032,7 @@ async function exerciseStagedFilePromotion() {
       transactionOwnerCreatedDirectory: fs.existsSync(destinationRoot),
       projectContainmentRejected,
       overwriteCommitted: atomicCommitVerified && atomicCleanup.success === true,
+      subsetRejectedBeforeWrite: subsetRejectedBeforeWrite && subsetCleanup.success === true,
       escapedPathRejected: escaped.success === false
         && escapedSourcePreserved
         && escapedCleanup.success === true
@@ -2128,6 +2207,9 @@ async function run() {
   const skuBatchExecutorSource = parse(skuBatchExecutorPath);
   const skuBatchExecutorText = read(skuBatchExecutorPath);
   const skuExportTransactionText = read(skuExportTransactionPath);
+  const stagedDeliveryPromotionText = read(stagedDeliveryPromotionPath);
+  const runtimeStagedDeliveryText = read(runtimeStagedDeliveryPath);
+  const rendererStagedFileTransactionText = read(rendererStagedFileTransactionPath);
   const stagedFilePromotionText = read(stagedFilePromotionPath);
   const skuStagingTransactionServiceSource = parse(skuStagingTransactionServicePath);
   const skuStagingTransactionServiceText = read(skuStagingTransactionServicePath);
@@ -3501,10 +3583,34 @@ async function run() {
       delegationBoundaryViolations.push(`sku-combo-card:${testCase.label}-decision-invalid`);
     }
   }
-  if (!skuBatchExecutorText.includes("source: 'agent_delegated_draft' as const")
-    || !skuBatchExecutorText.includes('authoritativeBusinessFact: false')
-    || !skuBatchExecutorText.includes('requiresReviewBeforePublishing: true')
+  const skuCombinationProvenanceResolverStart = skuBatchExecutorText.indexOf(
+    'function resolveSkuCombinationProvenance(input:'
+  );
+  const skuCombinationProvenanceResolverEnd = skuBatchExecutorText.indexOf(
+    'function formatSkuCardSourceLocation(',
+    skuCombinationProvenanceResolverStart
+  );
+  const skuCombinationProvenanceResolverSource = skuCombinationProvenanceResolverStart >= 0
+    && skuCombinationProvenanceResolverEnd > skuCombinationProvenanceResolverStart
+    ? skuBatchExecutorText.slice(
+      skuCombinationProvenanceResolverStart,
+      skuCombinationProvenanceResolverEnd
+    )
+    : '';
+  if (!skuCombinationProvenanceResolverSource.includes(
+    'userDelegatedReversibleCombinationChoice: boolean;'
+  )
+    || !skuCombinationProvenanceResolverSource.includes(
+      'if (input.userDelegatedReversibleCombinationChoice)'
+    )
+    || !skuCombinationProvenanceResolverSource.includes("source: 'agent_delegated_draft'")
+    || !skuCombinationProvenanceResolverSource.includes('authoritativeBusinessFact: false')
+    || !skuCombinationProvenanceResolverSource.includes('requiresReviewBeforePublishing: true')
     || !skuBatchExecutorText.includes('hasExplicitReversibleDesignDecisionDelegation(trustedUserInput)')
+    || !skuBatchExecutorText.includes(
+      'const skuCombinationProvenance = resolveSkuCombinationProvenance({'
+    )
+    || !skuBatchExecutorText.includes('userDelegatedReversibleCombinationChoice\n        });')
     || !skuBatchExecutorText.includes('const requiresSkuComboConfirmation = shouldRequestSkuComboConfirmation({')
     || skuBatchExecutorText.includes('(lacksAuthoritativeCombinationSpecification && !userDelegatedReversibleCombinationChoice)')) {
     delegationBoundaryViolations.push('sku-delegation:draft-provenance-or-trusted-user-wiring-missing');
@@ -9312,6 +9418,9 @@ async function run() {
       const pauseCard = {
         id: 'sku-combo-card-persisted-binding-audit',
         kind: 'sku_combo_editor',
+        interactionOwner: { type: 'skill-provider', skillId: 'sku-batch' },
+        decisionFingerprint: 'sku-combo-specification/v0',
+        candidateFingerprint: 'sku-combo-candidate-persisted-binding-audit',
         payload: {}
       };
       const pauseSubmission = {
@@ -9326,6 +9435,11 @@ async function run() {
           issues: [],
           blockers: [],
           warnings: []
+        },
+        decisionContext: {
+          decisionFingerprint: pauseCard.decisionFingerprint,
+          candidateFingerprint: pauseCard.candidateFingerprint,
+          answerFingerprint: pauseCard.candidateFingerprint
         }
       };
       const persistedStaleBindingContinuation = {
@@ -12859,7 +12973,7 @@ async function run() {
   });
   const selectedSkuDeliveryConvention = {
     version: 'skill-delivery-convention/v0',
-    provenance: 'confirmed_project',
+    provenance: 'agent_selected',
     supportRefs: ['project-file:SKU/参考成品/2双组合.psb'],
     raster: {
       projectRelativeRoot: '店铺交付/色卡成品',
@@ -13360,11 +13474,11 @@ async function run() {
     && agentNoteDeliverableStart > agentNoteCleanupFailureStart
     ? skuBatchExecuteMethodText.slice(agentNoteCleanupFailureStart, agentNoteDeliverableStart)
     : '';
-  const skuStagingFileCleanupIndex = skuExportTransactionText.lastIndexOf(
-    'const stagingCleanup = await cleanupSkuStagingPaths('
+  const skuStagingFileCleanupIndex = rendererStagedFileTransactionText.lastIndexOf(
+    'const rootCleanup = await cleanupStagedFileRoot('
   );
-  const skuStagingParentCleanupIndex = skuExportTransactionText.lastIndexOf(
-    'return cleanupSkuStagingParentIfEmpty(input.transaction.transactionToken, input.host)'
+  const skuStagingParentCleanupIndex = rendererStagedFileTransactionText.lastIndexOf(
+    'return cleanupStagedFileParentIfEmpty(input.transaction.transactionToken, host)'
   );
   const skuProductionSafetyRegressionViolations = [
     ...(skuMutationTargetAssertionText.includes("{ _ref: 'document', _id: documentId }")
@@ -13679,15 +13793,15 @@ async function run() {
       && !skuBatchExecutorText.includes("'fs:createDirectory',\n                settledOutputDir")
       && skuBatchExecutorText.includes('skuStagingTransaction.transactionToken')
       && skuBatchExecutorText.includes('const finalizeSkuStagingOnce = async (): Promise<SkuStagedDeliveryResult> =>')
-      && skuExportTransactionText.includes('result = await host.removeSkuStagingParentIfEmpty(')
-      && skuExportTransactionText.includes('result = await host.removeSkuStagingTransactionRoot(token)')
-      && skuExportTransactionText.includes('SKU 空暂存目录清理响应中断')
-      && skuExportTransactionText.includes('SKU 暂存事务根清理响应中断')
-      && skuExportTransactionText.includes("result?.reason === 'not_empty'")
-      && skuExportTransactionText.includes('if (input.preserveStagingRoot)')
-      && skuExportTransactionText.includes('preserveStagingRoot: true')
-      && skuExportTransactionText.includes('result?.rollbackComplete !== true')
-      && skuExportTransactionText.includes('文件写入状态未知，已保留暂存目录')
+      && rendererStagedFileTransactionText.includes('result = await host.removeSkuStagingParentIfEmpty(')
+      && rendererStagedFileTransactionText.includes('result = await host.removeSkuStagingTransactionRoot(')
+      && rendererStagedFileTransactionText.includes('空临时文件目录清理响应中断')
+      && rendererStagedFileTransactionText.includes('临时文件事务根清理响应中断')
+      && rendererStagedFileTransactionText.includes("result?.reason === 'not_empty'")
+      && rendererStagedFileTransactionText.includes('if (input.preserveStagingRoot)')
+      && rendererStagedFileTransactionText.includes('preserveStagingRoot: true')
+      && stagedDeliveryPromotionText.includes('result?.rollbackComplete !== true')
+      && stagedDeliveryPromotionText.includes('文件状态未知，已保留恢复现场')
       && skuBatchExecutorText.includes('preserveSkuStagingRoot = promotion.preserveStagingRoot === true')
       && skuBatchExecutorText.includes('finalizeSkuStagingCleanup({')
       && skuBatchExecutorText.includes('preserveStagingRoot: preserveSkuStagingRoot')
@@ -13928,8 +14042,9 @@ async function run() {
       && selectedConventionSkuInventory.items[0]?.editablePath === 'C:\\project\\店铺交付\\色卡成品\\分层源稿\\2双成品\\1-奶白+黑色-分层.psb'
       && selectedConventionSkuInventory.items[0]?.stagedRasterRelativePath === '2双组合\\1奶白+黑色.jpg'
       && selectedConventionSkuInventory.items[0]?.stagedEditableRelativePath === '可编辑\\2双组合\\1奶白+黑色.psb'
-      && selectedConventionSkuInventory.deliveryPlanDigest?.startsWith('skill-delivery-plan/v0:')
-      && /^skill-delivery-plan\/v0:[a-f0-9]{64}$/.test(selectedConventionSkuInventory.deliveryPlanDigest || '')
+      && selectedConventionSkuInventory.deliveryPlanDigest?.startsWith('skill-delivery-plan/v1:')
+      && /^skill-delivery-plan\/v1:[a-f0-9]{64}$/.test(selectedConventionSkuInventory.deliveryPlanDigest || '')
+      && selectedConventionSkuInventory.deliveryPlan?.artifacts.length === 2
       && selectedConventionSkuInventory.boundaries.conventionContainsNoVisualDecisions === true
       && posixStagingPath === '/tmp/project/SKU/.designecho-staging/run-1/可编辑/2双组合/1白+黑.psb'
       && posixVolumeFallbackSkuInventory.status === 'ready'
@@ -14041,19 +14156,23 @@ async function run() {
         < skuBatchExecutorText.indexOf('promoteSkuStagedDeliverySet({')
       && skuBatchExecutorText.includes('promoteSkuStagedDeliverySet({')
       && skuBatchExecutorText.includes('transaction: skuStagingTransaction')
-      && skuExportTransactionText.includes('result = await host.promoteStagedFileSet({')
+      && stagedDeliveryPromotionText.includes('result = await host.promoteStagedFileSet({')
       && skuExportTransactionText.includes('transactionToken: input.transaction.transactionToken')
       && skuBatchExecutorText.includes('finalizeSkuStagingCleanup({')
       && skuBatchExecutorText.includes('preserveSkuStagingRoot = promotion.preserveStagingRoot === true')
-      && skuExportTransactionText.includes('if (input.preserveStagingRoot)')
-      && skuExportTransactionText.includes('result?.rollbackComplete !== true')
+      && rendererStagedFileTransactionText.includes('if (input.preserveStagingRoot)')
+      && stagedDeliveryPromotionText.includes('result?.rollbackComplete !== true')
       && skuBatchExecutorText.indexOf('const stagingCleanup = await finalizeSkuStagingOnce()')
         < skuBatchExecutorText.indexOf('const skuDeliverySummary = buildSkuDeliverySummary({')
       && skuBatchExecutorText.includes('appendUniqueDiagnostics(skuUserAdvisories, [cleanupNotice])')
       && skuBatchExecutorText.includes('evaluateSkuRequestedOutputCompletion({')
       && skuBatchExecutorText.includes('const allRequestedOutputsComplete = requestedOutputCompletion.allRequestedOutputsComplete')
       && skuBatchExecutorText.includes('const runtimeArtifactSetExact = runtimeDeliveryArtifacts.length')
-      && skuBatchExecutorText.includes('const finalDeliverySuccess = deliveryOutcome.success && runtimeArtifactSetExact')
+      && skuBatchExecutorText.includes('const finalDeliverySuccess = deliveryOutcome.success')
+      && skuBatchExecutorText.includes('&& runtimeDeliveryPlanCommitBound;')
+      && skuBatchExecutorText.includes('runtimeDeliveryPlanAuthority.freeze({')
+      && skuBatchExecutorText.includes('runtimeDeliveryPlanAuthority.acceptExternalCommit({')
+      && stagedDeliveryPromotionText.includes('runtimeDeliveryCommitReceipt: issueRuntimeOwnedSkillExternalDeliveryCommitReceipt({')
       && fileSystemHandlersText.includes("ipcMain.handle('fs:promoteStagedFileSet'")
       && skuStagingTransactionServiceText.includes('destinationBaselines: Map<string, SkuStagingDestinationBaseline>')
       && skuStagingTransactionServiceText.includes('readSkuStagingFrozenDestinationBaseline(')
@@ -14854,8 +14973,107 @@ async function run() {
     runResumeBranchViolations.push('run-resume:conversation-branch-identity-not-wired-end-to-end');
   }
 
+  const skillExecutorDirectory = path.join(root, 'src', 'renderer', 'services', 'skill-executors');
+  const externalDeliveryCommitIssuer = 'issueRuntimeOwnedSkillExternalDeliveryCommitReceipt';
+  const stagingLeaseIssuer = 'issueRuntimeOwnedSkillStagingLease';
+  const workflowDeliveryReentryPeek = 'peekRuntimeWorkflowDeliveryReentry';
+  const workflowDeliveryReentryConsume = 'consumeRuntimeWorkflowDeliveryReentry';
+  const collectProductionTypeScriptFiles = (directoryPath) => fs.readdirSync(
+    directoryPath,
+    { withFileTypes: true }
+  ).flatMap((entry) => {
+    const entryPath = path.join(directoryPath, entry.name);
+    if (entry.isDirectory()) return collectProductionTypeScriptFiles(entryPath);
+    return /\.tsx?$/i.test(entry.name) ? [entryPath] : [];
+  });
+  const allowedExternalCommitIssuerFiles = new Set([
+    path.resolve(agentSkillAtomicToolExecutionPath),
+    path.resolve(stagedDeliveryPromotionPath)
+  ]);
+  const unauthorizedExternalCommitIssuers = collectProductionTypeScriptFiles(path.join(root, 'src'))
+    .filter((filePath) => read(filePath).includes(externalDeliveryCommitIssuer))
+    .filter((filePath) => !allowedExternalCommitIssuerFiles.has(path.resolve(filePath)))
+    .map((filePath) => path.relative(root, filePath));
+  const allowedStagingLeaseIssuerFiles = new Set([
+    path.resolve(agentSkillAtomicToolExecutionPath),
+    path.resolve(runtimeStagedDeliveryPath)
+  ]);
+  const unauthorizedStagingLeaseIssuers = collectProductionTypeScriptFiles(path.join(root, 'src'))
+    .filter((filePath) => read(filePath).includes(stagingLeaseIssuer))
+    .filter((filePath) => !allowedStagingLeaseIssuerFiles.has(path.resolve(filePath)))
+    .map((filePath) => path.relative(root, filePath));
+  const allowedWorkflowReentryPeekFiles = new Set([
+    path.resolve(path.join(root, 'src', 'shared', 'agent-workflow-continuation-scope.ts')),
+    path.resolve(skillToolsPath)
+  ]);
+  const unauthorizedWorkflowReentryPeekFiles = collectProductionTypeScriptFiles(path.join(root, 'src'))
+    .filter((filePath) => read(filePath).includes(workflowDeliveryReentryPeek))
+    .filter((filePath) => !allowedWorkflowReentryPeekFiles.has(path.resolve(filePath)))
+    .map((filePath) => path.relative(root, filePath));
+  const allowedWorkflowReentryConsumeFiles = new Set([
+    path.resolve(path.join(root, 'src', 'shared', 'agent-workflow-continuation-scope.ts')),
+    path.resolve(detailPageExecutorPath)
+  ]);
+  const unauthorizedWorkflowReentryConsumeFiles = collectProductionTypeScriptFiles(path.join(root, 'src'))
+    .filter((filePath) => read(filePath).includes(workflowDeliveryReentryConsume))
+    .filter((filePath) => !allowedWorkflowReentryConsumeFiles.has(path.resolve(filePath)))
+    .map((filePath) => path.relative(root, filePath));
+  const skuExportTransactionServiceText = read(path.join(
+    skillExecutorDirectory,
+    'sku-export-transaction.service.ts'
+  ));
+
   const stagedFilePromotionAudit = await exerciseStagedFilePromotion();
   const checks = [
+    {
+      id: 'runtime-external-delivery-commit-issuer-is-transaction-owned',
+      description: '外部文件提交信用只能由独立 transaction owner 在精确 readback 后签发；业务 executor 不得自签。',
+      violations: [
+        ...(unauthorizedExternalCommitIssuers.length === 0
+          ? []
+          : unauthorizedExternalCommitIssuers.map((fileName) => (
+            `runtime-delivery:executor-can-self-issue-external-commit:${fileName}`
+          ))),
+        ...(stagedDeliveryPromotionText.includes(externalDeliveryCommitIssuer)
+          && stagedDeliveryPromotionText.includes('validateCommittedFiles({')
+          && stagedDeliveryPromotionText.includes('isRuntimeOwnedSkillDeliveryPlanBinding(binding)')
+          && stagedDeliveryPromotionText.includes('typeof host.promoteStagedFileSet')
+          ? []
+          : ['runtime-delivery:trusted-transaction-issuer-not-bound-to-main-commit-readback'])
+      ]
+    },
+    {
+      id: 'runtime-staging-lease-issuer-is-transaction-owned',
+      description: '暂存路径租约只能由通用 Runtime 文件事务在绑定冻结计划和 Main 事务后签发。',
+      violations: [
+        ...unauthorizedStagingLeaseIssuers.map((fileName) => (
+          `runtime-delivery:unauthorized-staging-lease-issuer:${fileName}`
+        )),
+        ...(runtimeStagedDeliveryText.includes(stagingLeaseIssuer)
+          && runtimeStagedDeliveryText.includes('isRuntimeOwnedSkillDeliveryPlanBinding(binding)')
+          && runtimeStagedDeliveryText.includes('opaqueTransactionState: true')
+          ? []
+          : ['runtime-delivery:staging-lease-not-bound-to-opaque-runtime-transaction'])
+      ]
+    },
+    {
+      id: 'workflow-delivery-reentry-is-single-use-and-owner-consumed',
+      description: '视觉复核后的交付复入由路由层只读检查，仅最终 workflow owner 可一次性消费。',
+      violations: [
+        ...unauthorizedWorkflowReentryPeekFiles.map((fileName) => (
+          `workflow-reentry:unauthorized-peek-owner:${fileName}`
+        )),
+        ...unauthorizedWorkflowReentryConsumeFiles.map((fileName) => (
+          `workflow-reentry:unauthorized-consume-owner:${fileName}`
+        )),
+        ...(detailPageExecutorText.includes(workflowDeliveryReentryConsume)
+          && !detailPageExecutorText.includes(workflowDeliveryReentryPeek)
+          && read(skillToolsPath).includes(workflowDeliveryReentryPeek)
+          && !read(skillToolsPath).includes(workflowDeliveryReentryConsume)
+          ? []
+          : ['workflow-reentry:peek-consume-responsibility-drifted'])
+      ]
+    },
     {
       id: 'sku-staged-export-transaction-supports-safe-rerun',
       description: 'SKU 全部 JPG/PSB 以同卷单事务替换旧交付；目标基线漂移零写入，完整回滚恢复全组，失败恢复保留可映射清单。',
@@ -14868,6 +15086,9 @@ async function run() {
           : []),
         ...(!stagedFilePromotionAudit.overwriteCommitted
           ? ['sku-staged-promotion:existing-output-was-not-atomically-replaced']
+          : []),
+        ...(!stagedFilePromotionAudit.subsetRejectedBeforeWrite
+          ? ['sku-staged-promotion:subset-commit-was-not-rejected-before-write']
           : []),
         ...(!stagedFilePromotionAudit.escapedPathRejected
           ? ['sku-staged-promotion:path-escape-was-not-rejected']

@@ -155,6 +155,9 @@ export function resolveSkillRuntimeEffectiveContract(
             ...(modeContract.production_obligation
                 ? { production_obligation: modeContract.production_obligation }
                 : {}),
+            ...(modeContract.delivery_plan_binding_required === true
+                ? { delivery_plan_binding_required: true }
+                : {}),
             exit_criteria: [...modeContract.exit_criteria],
             ...(modeContract.review_rubric_ref
                 ? { review_rubric_ref: modeContract.review_rubric_ref }
@@ -196,6 +199,9 @@ export function resolveSkillRuntimeEffectiveContract(
             : {}),
         ...(manifest.production_obligation
             ? { production_obligation: manifest.production_obligation }
+            : {}),
+        ...(manifest.delivery_plan_binding_required === true
+            ? { delivery_plan_binding_required: true }
             : {}),
         exit_criteria: [...manifest.exit_criteria],
         ...(manifest.review_rubric_ref ? { review_rubric_ref: manifest.review_rubric_ref } : {})

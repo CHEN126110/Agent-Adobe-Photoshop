@@ -18,9 +18,13 @@ import {
 } from './runtime-execution-target';
 import {
     buildSkillDeliveryPlanDigest,
+    isCurrentSkillDeliveryPlanDigest,
     isSkillDeliveryPlanDigest,
+    normalizeSkillDeliveryArtifactPath,
+    normalizeSkillDeliveryPlanArtifact,
     resolveRuntimeSkillDeliveryConvention,
-    type SkillDeliveryConvention
+    type SkillDeliveryConvention,
+    type SkillDeliveryPlanArtifact
 } from '../skills/skill-delivery-convention';
 import type {
     RuntimeDeliveryProofKind,
@@ -41,7 +45,7 @@ export interface RuntimeEditableDocumentArtifactProof {
     version: typeof RUNTIME_EDITABLE_DOCUMENT_ARTIFACT_VERSION;
     basis: 'uxp_post_save_file_metadata';
     path: string;
-    format: 'psd' | 'psb';
+    format: 'psd' | 'psb' | 'tiff';
     byteLength: number;
     modifiedAt: number;
     documentId: number;
@@ -88,6 +92,8 @@ export interface RuntimeDeliveryArtifactEntry {
     fileIdentity?: RuntimeDeliveryArtifactFileIdentity;
     /** 生成该文件内容的 Photoshop document/history；批次内逐文件保存，不伪造单一 revision。 */
     sourceHistoryStateRef?: PhotoshopHistoryStateRef;
+    /** 与执行前 Skill typed DeliveryPlan 的角色、顺序和配对绑定；不包含视觉决定。 */
+    planBinding?: Omit<SkillDeliveryPlanArtifact, 'path' | 'kind'>;
 }
 
 export interface RuntimeDeliveryReceipt {
@@ -224,7 +230,7 @@ function isDeliveryArtifactPathCompatible(
     const hasUriScheme = /^[a-z][a-z0-9+.-]*:/i.test(normalized)
         && !/^[a-z]:\//i.test(normalized);
     if (!normalized || hasUriScheme || normalized.split('/').includes('..')) return false;
-    if (kind === 'editable_document') return /\.(?:psd|psb)$/i.test(path);
+    if (kind === 'editable_document') return /\.(?:psd|psb|tiff?)$/i.test(path);
     return /\.(?:jpe?g|png|webp)$/i.test(path);
 }
 
@@ -259,6 +265,14 @@ function normalizeDeliveryArtifacts(value: unknown): {
         const malformedIdentity = candidate.fileIdentity !== undefined && !fileIdentity;
         const malformedSourceHistory = candidate.sourceHistoryStateRef !== undefined
             && !sourceHistoryStateRef;
+        const planArtifact = candidate.planBinding === undefined
+            ? undefined
+            : normalizeSkillDeliveryPlanArtifact({
+                ...candidate.planBinding as Record<string, unknown>,
+                path,
+                kind
+            });
+        const malformedPlanBinding = candidate.planBinding !== undefined && !planArtifact;
         if ((kind !== 'editable_document' && kind !== 'raster_export')
             || (proof !== 'editable_document_artifact'
                 && proof !== 'file_probe'
@@ -266,17 +280,31 @@ function normalizeDeliveryArtifacts(value: unknown): {
                 && proof !== 'uxp_export_readback')
             || malformedIdentity
             || malformedSourceHistory
+            || malformedPlanBinding
             || !isDeliveryArtifactPathCompatible(path, kind)) {
             invalidCount += 1;
             continue;
         }
-        if (!artifacts.some((artifact) => artifact.kind === kind && artifact.path === path)) {
+        const normalizedPath = normalizeSkillDeliveryArtifactPath(path);
+        if (!artifacts.some((artifact) => (
+            artifact.kind === kind
+            && normalizeSkillDeliveryArtifactPath(artifact.path) === normalizedPath
+        ))) {
             artifacts.push({
                 path,
                 kind,
                 proof,
                 ...(fileIdentity ? { fileIdentity } : {}),
-                ...(sourceHistoryStateRef ? { sourceHistoryStateRef } : {})
+                ...(sourceHistoryStateRef ? { sourceHistoryStateRef } : {}),
+                ...(planArtifact ? {
+                    planBinding: {
+                        artifactId: planArtifact.artifactId,
+                        pairId: planArtifact.pairId,
+                        order: planArtifact.order,
+                        format: planArtifact.format,
+                        sourceHistoryRole: planArtifact.sourceHistoryRole
+                    }
+                } : {})
             });
         }
     }
@@ -288,10 +316,14 @@ function normalizeDeliveryArtifacts(value: unknown): {
 }
 
 function normalizeArtifactPath(value: unknown): string {
-    return readPath(value)
-        .replace(/\\/g, '/')
-        .replace(/\/+/g, '/')
-        .toLowerCase();
+    return normalizeSkillDeliveryArtifactPath(readPath(value));
+}
+
+function normalizeEditableArtifactFormat(value: unknown): 'psd' | 'psb' | 'tiff' | undefined {
+    const format = String(value || '').trim().toLowerCase();
+    if (format === 'psd' || format === 'psb') return format;
+    if (format === 'tif' || format === 'tiff') return 'tiff';
+    return undefined;
 }
 
 function readPositiveSafeInteger(value: unknown): number | undefined {
@@ -343,8 +375,8 @@ export function hasVerifiedEditableDocumentArtifact(
         return false;
     }
     const sourceHistoryStateRef = readPhotoshopSourceHistoryStateRef(record);
-    const recordFormat = String(record.format || '').trim().toLowerCase();
-    const artifactFormat = String(artifact.format || '').trim().toLowerCase();
+    const recordFormat = normalizeEditableArtifactFormat(record.format);
+    const artifactFormat = normalizeEditableArtifactFormat(artifact.format);
     const savedPath = normalizeArtifactPath(record.savedPath)
         || normalizeArtifactPath(record.filePath);
     const artifactPath = normalizeArtifactPath(artifact.path);
@@ -353,12 +385,13 @@ export function hasVerifiedEditableDocumentArtifact(
     const documentId = readPositiveSafeInteger(artifact.documentId);
     const width = readPositiveFiniteNumber(artifact.canvas.width);
     const height = readPositiveFiniteNumber(artifact.canvas.height);
+    const expectedExtensions = recordFormat === 'tiff' ? ['.tif', '.tiff'] : [`.${recordFormat}`];
     return Boolean(sourceHistoryStateRef
-        && (recordFormat === 'psd' || recordFormat === 'psb')
+        && recordFormat
         && artifactFormat === recordFormat
         && savedPath
         && artifactPath === savedPath
-        && savedPath.endsWith(`.${recordFormat}`)
+        && expectedExtensions.some((extension) => savedPath.endsWith(extension))
         && byteLength
         && modifiedAt
         && documentId === sourceHistoryStateRef.documentId
@@ -459,6 +492,7 @@ export function buildRuntimeDeliveryReceipt(input: {
     expectedDeliveryPlan?: {
         digest: string;
         convention: SkillDeliveryConvention;
+        artifacts?: readonly SkillDeliveryPlanArtifact[];
     };
     issues?: readonly string[];
     sourceHistoryStateRef?: PhotoshopHistoryStateRef;
@@ -475,12 +509,38 @@ export function buildRuntimeDeliveryReceipt(input: {
     const deliveryPlanConvention = conventionResolution.status === 'ready'
         ? conventionResolution.convention
         : undefined;
-    const recomputedDeliveryPlanDigest = deliveryPlanConvention
+    const receiptPlanArtifacts = artifactSet.artifacts.flatMap((artifact) => (
+        artifact.planBinding
+            ? [{
+                ...artifact.planBinding,
+                path: artifact.path,
+                kind: artifact.kind
+            }]
+            : []
+    ));
+    const expectedPlanArtifacts = input.expectedDeliveryPlan?.artifacts;
+    const expectedTypedPlanDigest = deliveryPlanConvention && expectedPlanArtifacts
+        ? buildSkillDeliveryPlanDigest({
+            convention: deliveryPlanConvention,
+            artifacts: expectedPlanArtifacts
+        })
+        : undefined;
+    const receiptTypedPlanDigest = deliveryPlanConvention
+        && receiptPlanArtifacts.length === artifactSet.artifacts.length
+        ? buildSkillDeliveryPlanDigest({
+            convention: deliveryPlanConvention,
+            artifacts: receiptPlanArtifacts
+        })
+        : undefined;
+    const legacyPlanDigest = deliveryPlanConvention
         ? buildSkillDeliveryPlanDigest({
             convention: deliveryPlanConvention,
             artifactPaths: artifactSet.artifacts.map((artifact) => artifact.path)
         })
         : undefined;
+    const recomputedDeliveryPlanDigest = isCurrentSkillDeliveryPlanDigest(expectedPlanDigest)
+        ? (expectedTypedPlanDigest === receiptTypedPlanDigest ? expectedTypedPlanDigest : undefined)
+        : legacyPlanDigest;
     const deliveryPlanDigest = isSkillDeliveryPlanDigest(expectedPlanDigest)
         && expectedPlanDigest === recomputedDeliveryPlanDigest
         ? expectedPlanDigest
@@ -772,7 +832,20 @@ export function readRuntimeDeliveryReceipt(toolResult: unknown): RuntimeDelivery
             && candidate.deliveryPlanConvention !== undefined
             ? {
                 digest: candidate.deliveryPlanDigest,
-                convention: candidate.deliveryPlanConvention as SkillDeliveryConvention
+                convention: candidate.deliveryPlanConvention as SkillDeliveryConvention,
+                ...(isCurrentSkillDeliveryPlanDigest(candidate.deliveryPlanDigest)
+                    ? {
+                        artifacts: (candidate.artifacts as RuntimeDeliveryArtifactEntry[]).flatMap((artifact) => (
+                            artifact.planBinding
+                                ? [{
+                                    ...artifact.planBinding,
+                                    path: artifact.path,
+                                    kind: artifact.kind
+                                }]
+                                : []
+                        ))
+                    }
+                    : {})
             }
             : undefined,
         issues: candidate.issues,
@@ -788,6 +861,7 @@ export function verifyRuntimeDelivery(input: {
     reviewedPreviewHistoryStateRef?: PhotoshopHistoryStateRef;
     multiDocumentTaskBound?: boolean;
     expectedDeliveryPlanDigest?: string;
+    deliveryPlanBindingRequired?: boolean;
 }): RuntimeDeliveryVerification {
     const requiredOutputs = uniqueIdentifiers(input.requiredOutputs);
     const settlementScope = input.receipt?.settlementScope || 'single_document_revision';
@@ -807,10 +881,14 @@ export function verifyRuntimeDelivery(input: {
         ? multiDocumentTaskBound
         : targetBound && sourceHistoryStateBound;
     const receiptDeliveryPlanDigest = input.receipt?.deliveryPlanDigest;
-    const deliveryPlanBindingRequired = receiptDeliveryPlanDigest !== undefined
+    const strictTypedDeliveryPlanRequired = input.deliveryPlanBindingRequired === true;
+    const deliveryPlanBindingRequired = strictTypedDeliveryPlanRequired
+        || receiptDeliveryPlanDigest !== undefined
         || input.expectedDeliveryPlanDigest !== undefined;
     const deliveryPlanBound = !deliveryPlanBindingRequired
-        || (isSkillDeliveryPlanDigest(input.expectedDeliveryPlanDigest)
+        || ((strictTypedDeliveryPlanRequired
+            ? isCurrentSkillDeliveryPlanDigest(input.expectedDeliveryPlanDigest)
+            : isSkillDeliveryPlanDigest(input.expectedDeliveryPlanDigest))
             && receiptDeliveryPlanDigest === input.expectedDeliveryPlanDigest);
     const confirmedOutputs = input.receipt?.status === 'ready'
         && settlementBound

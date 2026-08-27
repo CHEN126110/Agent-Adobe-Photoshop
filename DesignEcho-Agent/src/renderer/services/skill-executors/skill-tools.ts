@@ -27,8 +27,15 @@ import type {
     RuntimeActionPlanDigest
 } from '../../../shared/agent-runtime-v5/runtime-action-plan-declaration';
 import type { AgentTaskPlanningContract } from '../../../shared/agent-task-planning-contract';
-import type { GuardedAtomicToolExecutor } from '../../../shared/agent-skill-atomic-tool-execution';
+import {
+    forwardRuntimeOwnedSkillDeliveryPlanBinding,
+    type GuardedAtomicToolExecutor
+} from '../../../shared/agent-skill-atomic-tool-execution';
 import type { InteractiveContinuationResolution } from '../../../shared/pending-interactive-continuation';
+import {
+    peekRuntimeWorkflowDeliveryReentry,
+    type RuntimeWorkflowDeliveryReentry
+} from '../../../shared/agent-workflow-continuation-scope';
 import {
     attachSkillExecutionEffectReceipt,
     type SkillExecutionRuntimeLineage
@@ -212,6 +219,8 @@ export interface SkillToolExecuteOptions {
     runtimeDesignStrategyDigest?: RuntimeDesignStrategyDigest;
     runtimeActionPlanDeclaration?: RuntimeActionPlanDeclaration;
     runtimeActionPlanDigest?: RuntimeActionPlanDigest;
+    /** 仅由当前 Agent continuation owner 注入；模型参数不能创建。 */
+    runtimeWorkflowDeliveryReentry?: RuntimeWorkflowDeliveryReentry;
     agentTaskPlan?: AgentTaskPlanningContract;
     /** Engine-owned、账本验证后的 continuation；自主模型调用不能设置。 */
     trustedInteractiveContinuation?: Extract<InteractiveContinuationResolution, { status: 'accepted' }>;
@@ -223,7 +232,8 @@ const RUNTIME_OWNED_SKILL_PARAM_NAMES = new Set([
     'interactiveCardSubmission',
     // 已退役的手工面板授权字段：旧模型消息、文本 Tool parser 或外部调用即使携带，
     // 也必须在进入业务执行器前剥离。真实授权只存在于不可序列化的函数 capability。
-    '__manualPanelLegacyProfileAuthorized'
+    '__manualPanelLegacyProfileAuthorized',
+    'runtimeWorkflowDeliveryReentry'
 ]);
 
 function stripRuntimeOwnedSkillParams(params: Record<string, any>): Record<string, any> {
@@ -320,6 +330,10 @@ export async function executeSkillTool(
     const trustedInteractiveContinuation = options.trustedInteractiveContinuation?.skillId === toolName
         ? options.trustedInteractiveContinuation
         : undefined;
+    const runtimeWorkflowDeliveryReentry = peekRuntimeWorkflowDeliveryReentry(
+        options.runtimeWorkflowDeliveryReentry,
+        toolName
+    );
 
     const result = await executeSkillWithExecutor(toolName, {
         params: normalizedParams,
@@ -337,17 +351,19 @@ export async function executeSkillTool(
         runtimeDesignStrategyDigest: options.runtimeDesignStrategyDigest,
         runtimeActionPlanDeclaration: options.runtimeActionPlanDeclaration,
         runtimeActionPlanDigest: options.runtimeActionPlanDigest,
+        runtimeWorkflowDeliveryReentry,
         agentTaskPlan: options.agentTaskPlan,
         trustedInteractiveContinuation
     });
     const currentData = result?.data && typeof result.data === 'object'
         ? result.data
         : {};
-    return {
+    const wrappedResult = {
         ...result,
         data: {
             ...currentData,
             agentReActObservation: buildSkillWorkflowBridgeObservation(toolName, result)
         }
     };
+    return forwardRuntimeOwnedSkillDeliveryPlanBinding(result, wrappedResult);
 }

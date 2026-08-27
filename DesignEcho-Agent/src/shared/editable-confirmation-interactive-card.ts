@@ -249,6 +249,18 @@ export function validateEditableConfirmationValue(
     });
 }
 
+export function buildEditableConfirmationValueFingerprint(
+    payload: EditableConfirmationPayload,
+    value: unknown
+): string {
+    const fields = normalizeFields(payload.fields);
+    const normalizedValue = normalizeEditableConfirmationValue(fields, value);
+    return `editable-confirmation-value-${stableInteractiveCardHash({
+        fields,
+        value: normalizedValue
+    })}`;
+}
+
 export function buildEditableConfirmationInteractiveCard(
     input: BuildEditableConfirmationInteractiveCardInput
 ): EditableConfirmationCard {

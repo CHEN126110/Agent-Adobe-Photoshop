@@ -773,10 +773,19 @@ async function handleExecuteMatting(payload: any) {
         sendToWebView('toast', { message: '请先在 Photoshop 中选择要抠图的图层', type: 'warning' });
         return;
     }
-    
+
+    // 没填抠取目标 = 抠画面主体，这正是 Photoshop「选择主体」做的事。
+    // 直接在 PS 内一步完成：不导出图像、不走 WebSocket、不跑本地 ONNX，
+    // 耗时从十几秒降到一秒级，边缘质量由 Adobe 自己的模型保证。
+    if (!String(target || '').trim()) {
+        await executeNativeSelectSubject(activeLayers, sampleAllLayers, outputFormat);
+        return;
+    }
+
+    // 填了目标（语义抠图）才需要 Agent：判断"哪个是袜子"必须由模型来做
     if (!wsClient?.isConnected()) {
         sendToWebView('mattingResult', { success: false, error: '未连接到 Agent' });
-        sendToWebView('toast', { message: '请先连接到 Agent', type: 'error' });
+        sendToWebView('toast', { message: '按目标抠图需要连接 Agent；清空"抠取目标"可直接抠主体', type: 'error' });
         return;
     }
     
@@ -814,23 +823,15 @@ async function handleExecuteMatting(payload: any) {
             }
         }
         
-        // 发送结果
-        sendToWebView('mattingResult', { 
-            success: successCount > 0, 
+        // 只发一条结果消息：面板据此弹一次提示并展示详情。
+        // 这里再单独发 toast 会和面板的提示重复（真机上表现为两条红条叠在一起遮住面板）。
+        sendToWebView('mattingResult', {
+            success: successCount > 0,
             error: successCount > 0 ? undefined : firstFailureMessage || '抠图失败',
-            successCount, 
-            totalLayers 
+            successCount,
+            totalLayers,
+            outputFormat
         });
-        
-        // 显示结果提示
-        const outputName = outputFormat === 'selection' ? '选区' : '蒙版';
-        if (successCount === totalLayers) {
-            sendToWebView('toast', { message: `成功创建${outputName}`, type: 'success' });
-        } else if (successCount > 0) {
-            sendToWebView('toast', { message: `抠图完成：${successCount}/${totalLayers} 个成功`, type: 'warning' });
-        } else {
-            sendToWebView('toast', { message: firstFailureMessage || '抠图失败', type: 'error' });
-        }
         
         // 恢复状态
         
@@ -839,6 +840,117 @@ async function handleExecuteMatting(payload: any) {
         sendToWebView('mattingResult', { success: false, error: error.message });
         sendToWebView('toast', { message: error.message, type: 'error' });
     }
+}
+
+/**
+ * Photoshop 原生「选择主体」抠图
+ *
+ * 全程在 Photoshop 内完成：选中图层 → autoCutout → 选区或图层蒙版。
+ * 不导出像素、不经 WebSocket、不跑本地 ONNX——这三步正是原链路十几秒开销的来源。
+ *
+ * 命令 ID 是 autoCutout 而非 selectSubject：发 selectSubject 时 PS 解析不出命令名，
+ * 会弹出「命令"<未知的>"当前不可用」模态框并阻塞 UXP 消息循环
+ * （真机 2026-08-06，get-subject-bounds.ts 有同一结论的记录）。
+ */
+async function executeNativeSelectSubject(
+    activeLayers: any[],
+    sampleAllLayers: boolean,
+    outputFormat: 'selection' | 'mask'
+) {
+    const { action, core } = require('photoshop');
+    const layerIds = activeLayers.map((l: any) => l.id);
+    const layerNames = activeLayers.map((l: any) => l.name);
+    const totalLayers = layerIds.length;
+
+    console.log('[DesignEcho] 使用 Photoshop 原生「选择主体」:', layerNames.join(', '));
+    sendToWebView('mattingProgress', {
+        progress: 10,
+        message: '正在调用 Photoshop 选择主体...',
+        stage: 'segmentation'
+    });
+
+    let successCount = 0;
+    let firstFailureMessage: string | null = null;
+
+    for (let i = 0; i < layerIds.length; i++) {
+        const layerId = layerIds[i];
+        sendToWebView('mattingProgress', {
+            progress: Math.round(((i + 0.5) / totalLayers) * 90) + 5,
+            message: totalLayers > 1 ? `正在处理 ${i + 1}/${totalLayers}...` : '正在选择主体...',
+            stage: 'segmentation'
+        });
+
+        try {
+            await core.executeAsModal(async () => {
+                await action.batchPlay([{
+                    _obj: 'select',
+                    _target: [{ _ref: 'layer', _id: layerId }],
+                    makeVisible: true,
+                    _options: { dialogOptions: 'dontDisplay' }
+                }], { synchronousExecution: true });
+
+                await action.batchPlay([{
+                    _obj: 'autoCutout',
+                    sampleAllLayers: sampleAllLayers === true,
+                    _options: { dialogOptions: 'dontDisplay' }
+                }], { synchronousExecution: true });
+
+                // 选区为空说明 PS 没找到主体，此时建蒙版会得到全黑蒙版，
+                // 图层整个消失——必须在这里停住并如实报错。
+                const selectionInfo = await action.batchPlay([{
+                    _obj: 'get',
+                    _target: [
+                        { _property: 'selection' },
+                        { _ref: 'document', _enum: 'ordinal', _value: 'targetEnum' }
+                    ],
+                    _options: { dialogOptions: 'dontDisplay' }
+                }], { synchronousExecution: true });
+
+                if (!selectionInfo?.[0]?.selection) {
+                    throw new Error('Photoshop 未能在该图层中找到主体');
+                }
+
+                if (outputFormat === 'mask') {
+                    await action.batchPlay([
+                        {
+                            _obj: 'make',
+                            new: { _class: 'channel' },
+                            at: { _ref: 'channel', _enum: 'channel', _value: 'mask' },
+                            using: { _enum: 'userMaskEnabled', _value: 'revealSelection' },
+                            _options: { dialogOptions: 'dontDisplay' }
+                        },
+                        {
+                            _obj: 'set',
+                            _target: [{ _ref: 'channel', _property: 'selection' }],
+                            to: { _enum: 'ordinal', _value: 'none' },
+                            _options: { dialogOptions: 'dontDisplay' }
+                        }
+                    ], { synchronousExecution: true });
+                }
+            }, { commandName: '选择主体' });
+
+            successCount++;
+        } catch (error: any) {
+            const detail = error?.message || String(error);
+            if (firstFailureMessage == null) {
+                firstFailureMessage = totalLayers > 1
+                    ? `图层「${layerNames[i]}」选择主体失败：${detail}`
+                    : `选择主体失败：${detail}`;
+            }
+            console.error(`[DesignEcho] 图层 ${layerNames[i]} 选择主体失败:`, error);
+        }
+    }
+
+    sendToWebView('mattingResult', {
+        success: successCount > 0,
+        error: successCount > 0
+            ? undefined
+            : (firstFailureMessage || '选择主体失败')
+                + '\n\n可以改用"使用选区"模式手动框选，或在"抠取目标"里指定要抠的物体。',
+        successCount,
+        totalLayers,
+        outputFormat
+    });
 }
 
 /**

@@ -4662,10 +4662,6 @@
                         <div class="action-icon">T</div>
                         <span class="action-label">撰写文案</span>
                     </div>
-                    <div class="action-btn disabled" id="btnAnalyzeLayout">
-                        <div class="action-icon">⊞</div>
-                        <span class="action-label">分析排版</span>
-                    </div>
                     <div class="action-btn disabled" id="btnRemoveBackground">
                         <div class="action-icon">✂</div>
                         <span class="action-label">智能抠图</span>
@@ -4673,10 +4669,6 @@
                     <div class="action-btn disabled" id="btnShapeMorph">
                         <div class="action-icon">◇</div>
                         <span class="action-label">形态统一</span>
-                    </div>
-                    <div class="action-btn disabled" id="btnAutoDesign">
-                        <div class="action-icon">◈</div>
-                        <span class="action-label">自动设计</span>
                     </div>
                     <div class="action-btn disabled" id="btnTemplateLibrary">
                         <div class="action-icon">▣</div>
@@ -5620,6 +5612,9 @@
                         class="glass-input"
                         placeholder="留空自动检测，或输入：袜子、鞋子..."
                     />
+                    <div style="font-size: 11px; color: var(--de-text-secondary); margin-top: 8px; line-height: 1.5;">
+                        填写后由模型在图中定位该目标，再只抠出它；留空则抠画面主体。
+                    </div>
                 </div>
             </section>
 
@@ -5653,6 +5648,16 @@
                             </label>
                         </div>
                     </div>
+                </div>
+            </section>
+
+            <!-- 失败说明：保留完整原因与建议，不随 toast 消失 -->
+            <section class="morph-section" id="mattingFailureSection" style="display: none;">
+                <div class="section-header">
+                    <span class="section-label">未能完成</span>
+                </div>
+                <div class="section-content" style="padding: 12px 14px;">
+                    <div id="mattingFailureText" style="font-size: 12px; color: var(--de-text-secondary); line-height: 1.6; white-space: pre-wrap; word-break: break-word;"></div>
                 </div>
             </section>
         </main>
@@ -6288,6 +6293,29 @@
             }
         }
         
+        // 取失败原因的第一句作为 toast 摘要，超长再截断。
+        function summarizeMattingFailure(message) {
+            const firstLine = String(message || '').split('\n')[0].trim();
+            const firstSentence = firstLine.split(/[。！]/)[0].trim() || firstLine;
+            const MAX = 32;
+            return firstSentence.length > MAX ? firstSentence.slice(0, MAX) + '…' : firstSentence;
+        }
+
+        function setMattingFailure(message) {
+            const section = document.getElementById('mattingFailureSection');
+            const textEl = document.getElementById('mattingFailureText');
+            if (!section || !textEl) return;
+
+            if (!message) {
+                section.style.display = 'none';
+                textEl.textContent = '';
+                return;
+            }
+
+            textEl.textContent = message;
+            section.style.display = 'block';
+        }
+
         function handleMattingResult(data) {
             console.log('[WebView] handleMattingResult:', data);
             
@@ -6296,9 +6324,16 @@
             
             // 显示结果
             if (data.success) {
-                showToast(`成功抠图 ${data.successCount || 1} 个图层`, 'success');
+                setMattingFailure('');
+                const outputName = data.outputFormat === 'selection' ? '选区' : '蒙版';
+                const layerCount = data.successCount || 1;
+                showToast(`已创建${outputName}（${layerCount} 个图层）`, 'success');
             } else {
-                showToast(data.error || '抠图失败', 'error');
+                // toast 只放一句话摘要；完整原因与建议留在面板的「未能完成」区，
+                // 整段模型返回塞进 toast 会遮住半个面板。
+                const reason = data.error || '抠图失败';
+                setMattingFailure(reason);
+                showToast(summarizeMattingFailure(reason), 'error');
             }
         }
         
@@ -10125,13 +10160,6 @@
                 sendToUXP('morphRefresh');
             });
             
-            // 自动设计
-            document.getElementById('btnAutoDesign')?.addEventListener('click', function() {
-                if (this.classList.contains('disabled')) return;
-                showLoadingOverlay('正在执行自动设计...');
-                sendToUXP('autoDesign');
-            });
-            
             // 智能抠图 - 进入抠图页面
             document.getElementById('btnRemoveBackground')?.addEventListener('click', () => {
                 switchPage('pageMatting');
@@ -10675,6 +10703,7 @@
                 }
                 
                 // 根据模式显示不同的进度提示
+                setMattingFailure('');
                 const modeLabel = mattingMode === 'selection' ? '📐 选区分割' : '✂ 智能分割';
                 showMattingProgress(0, modeLabel, '正在初始化...');
                 
