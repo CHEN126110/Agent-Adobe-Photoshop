@@ -1062,7 +1062,7 @@ function emitControlledRunVisibleReview(
     const detail = observationDiff
         ? `${observationDiff} 下一步应先修正这处差异，或确认这是用户主动删改后的新目标。`
         : completed
-            ? '我已经看过真实画面，计划中的主要内容仍然存在，可以继续进入下一步人工审美确认。'
+            ? '我已经看过真实画面，计划中的主要内容仍然存在。'
             : blocker || '真实画面还没有达到计划状态，需要继续补齐条件后再处理。';
 
     callbacks?.onStep?.({
@@ -1090,8 +1090,7 @@ function formatPublicPlanControlledRunMessage(run: AgentTaskPublicPlanControlled
             designDecision ? `我的设计方案判断：${designDecision}` : '已按确认的设计方案创建好临时画面。',
             executionIdea ? `这次先做：${executionIdea}` : '',
             `已完成：${formatReadableList(completedOperations, '临时画面')}。`,
-            `已复核：${formatReadableList(reviewTargets, '画面内容')}。`,
-            '建议再看一下整体留白、对齐和文字大小，确认视觉效果是否符合预期。'
+            `已检查：${formatReadableList(reviewTargets, '画面内容')}。`
         ].filter(Boolean).join('\n');
     }
     if (run.status === 'completed_fake_adapter_verified' || run.status === 'completed_dry_run') {

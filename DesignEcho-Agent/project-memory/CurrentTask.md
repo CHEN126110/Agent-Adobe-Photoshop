@@ -7,6 +7,8 @@
 1. 在固定摄影素材、自然的一句话需求、同一多模态模型和零人工干预条件下，验证 Agent 能否自主理解任务、选择素材与参考、形成设计方向、操作 Photoshop 并正确交付。
 2. Harness 只提供项目 / 文档 / 版本事实、能力、权限、事务与读回验证；不替 Agent 决定是否看 Eagle、选哪张图、采用什么版式、文字层级、审美方向或修订方法。
 3. 以用户作品和 Eagle 参考做盲化成对比较，先证明设计效果达到最低预期，再讨论提速；静态测试、机器分数和“生成了文件”都不能代替真实审美验收。
+4. 主图、详情页、SKU 与参考复刻共用一套固定 Case / Attempt / Review 方法：自然一句话、同模型、同 Git / Runtime / Photoshop Build、零人工纠偏，同一 Case 至少重复 5 次；技术闭环率与盲评审美成功率分开统计。
+5. 低预期先证明 Skill 能稳定生产与用户成稿 / Eagle 参考可比的专业结果；高预期再扩展到无 Skill 的成熟设计师式观察、判断、规划与自我修订。设计质量稳定达标前不以减少思考或观察换速度。
 
 ### 当前事实
 
@@ -20,6 +22,10 @@
 - Provider 一次输出截断只在 debug trace 记录并静默续接，不再向用户显示“长度上限、正在补全”。连续恢复失败仍返回 `success:false`，并只依据可信 Photoshop mutation 区分“已保留改动”与“尚未修改画面”；普通轮次也不再无条件先压到 4096 输出 token。
 - Provider 输出现在按两阶段事务结算：content、reasoning 和 Tool arguments 在取得唯一、无冲突的完整终态前都只是临时缓冲；成功恢复只提交完整最终响应，失败则整轮丢弃半成品并返回自然、诚实的失败说明。恢复次数、终态冲突和底层诊断只进入结构化 Debug 记录，不进入普通对话正文。当前找到的历史实例来自旧 DeepSeek 视觉运行，不足以归因到新接入的 GPT 5.6 订阅通道。
 - “未完成 /结果需要复核”链路已按 D-085 分轴治理：waiting /handoff /可恢复动作不再冒充失败；相同目标的后续成功、更新 revision 的可信验收和同 revision 已闭合质量证据可以结清旧尝试，但原始失败仍留在 Run Record；Artifact Completion 不再被软性审美 finding 覆盖；Task Card、最终正文和总结 Provider 不再拥有完成权；Skill 内嵌原子调用统一进入 canonical operation ledger；缺当前目标读回或文件交付时在同一 Agent 实例内只反馈缺失事实，由模型自行选择收尾能力。
+- canonical Completion 的普通 UI 投影已同步收口：已完成结果不再被 stale Task Card / Action Plan / Skill 前置视觉提示 / legacy public-plan 或模型 generic underclaim 覆盖；真实失败、等待、取消、未知写状态与尚未闭合的 requirement 继续 fail closed。`passed_unverified` 不会被误写成“可选优化”，已交付且只有非阻断 quality finding 时才使用可选改进语义。
+- 自然终稿已接入同实例 terminal closure：必需 `fresh_structure` / `fresh_visual` 与 R5→E2 交付缺口先返回原 Agent 自主补齐，保留 Tool Log、Performance Ledger、Runtime Session 与 writer owner；prepare 不 finalize / release / append E2，只有 commit 路径推进 Stage。同 gap、有界次数、预算、等待用户、writer conflict、unknown write、needs reobserve、stage mismatch 及恢复中 no-progress / preflight / failure 均不得逃到 outer Agent 重建上下文。
+- terminal closure 的用户结果只显示具体缺口与停止事实，不叠加 generic needs-review，不泄漏 manifest token、Tool 名或收据术语。Run Record 只保存脱敏的 gap / reason / evidence kind / count / history anchor digest，旧记录继续可读；后续 `debug:runs` 可以将“缺结构读回”、“缺画面证据”、“缺交付项”、“写状态未知”与“预算停止”分开归因。
+- 业务 Skill 的视觉上下文现在从前置刷新后 executor 真正消费的参数重建；显式 `assetPath` / `sourcePath` / `sources` / `sourcePaths` 以及 SKU 常见 `sources[].filePath` 都作为当前素材来源，不再因缺 `projectContext` 误报“没有素材”；仍需真实视觉理解时保持 `needs_visual_insight`，不伪造 ready。
 - 两条历史失败病历已用当前纯逻辑链只读重放：`run-20260825172817-b6f8c117-4235` 的 7 项 Completion 全部通过、artifact 为 completed，`sell.visualized` 仍保留为非阻断改进建议，最终状态由错误的 needs_review 恢复为 completed；`run-20260824151539-b6f8c117-b761` 在最后一次无副作用质量预算拒绝后仍保留此前同 document /history 的闭合证据。重放不修改历史记录，也不替代新的真机样本。
 - 初始图片观察、视觉批次、工具禁用后的重规划、强制收尾、静默总结、增强总结与最终视觉 Judge 等辅助模型调用也统一消费同一完整终态 reader；`max_tokens`、内容拦截、传输未完成、缺少终态、意外 Tool 或终态冲突都返回空的不可消费结果，不得把半句话写入项目事实、最终回复或“图片已观察”状态。
 - Agent 普通结果不再携带本机最终文件路径或 Debug request id；E2 只把内部 resultRef 投影到请求级 Debug sidecar。主图与 SKU 统一消费 `runtime-delivery-receipt/v2` 这一份收据 owner，后补任意 `saveDocument` 不再解锁或拼接复合 Skill 的交付物。

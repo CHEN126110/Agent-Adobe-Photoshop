@@ -54,6 +54,7 @@ const files = {
   executor: 'src/renderer/services/skill-executors/autonomous-agent.executor.ts',
   engine: 'src/renderer/services/design-agent/engine.ts',
   agent: 'src/renderer/services/agent-runtime/agent.ts',
+  terminalClosure: 'src/renderer/services/agent-runtime/terminal-closure-checkpoint.ts',
   runtimeReferenceAdapter: 'src/renderer/services/agent-runtime/runtime-reference-adapter.ts',
   designFinalReviewEvidence: 'src/renderer/services/agent-runtime/design-final-review-evidence.ts',
   finalQualityReviewRuntime: 'src/renderer/services/agent-runtime/final-quality-review-runtime.ts',
@@ -462,7 +463,8 @@ requireToken('agent', 'evaluateDesignEvaluationProfile({', 'The Agent summary mu
 requireToken('agent', 'adaptDesignEvaluationRecordsFromToolResults({', 'The Agent summary must adapt versioned business results before Profile evaluation.');
 requireToken('agent', '...adaptedBusinessResults.records', 'Adapted business verification records must enter the existing Profile check list.');
 requireToken('agent', 'profile?.finalReview', 'The Agent must consume final-review surface requirements from Profile metadata.');
-requireToken('agent', 'check.runtime?.repair?.trigger', 'The Agent must consume repair triggers from Check metadata.');
+requireToken('terminalClosure', 'check.runtime?.repair?.trigger', 'The Agent must consume repair triggers from Check metadata.');
+requireToken('agent', 'return readActionableRequiredEvaluationCheckKeys({', 'The Agent must wire terminal repair decisions to the metadata-driven resolver.');
 requireToken('agent', 'reconcileDesignFinalReviewStructureVerificationRecords(', 'The Agent must route generic final structure evidence through its dedicated adapter.');
 requireToken('designFinalReviewEvidence', "check.runtime?.evidence === 'fresh_structure'", 'The final structure adapter must produce generic runtime evidence from Check metadata.');
 forbidPattern('agent', /DETAIL_PAGE_(?:CREATE_NEW_|SCOPED_EDIT_)?EVALUATION_PROFILE_ID/, 'The generic Agent must not branch on a business Evaluation Profile id.');
@@ -804,7 +806,8 @@ forbidPattern('agent', /source:\s*'model_tool_plan'/, 'Ordinary Tool calls must 
 requireToken('agent', 'isAgentCapabilityLoadTool', 'Per-iteration capability budget must apply only to schema-changing capability load requests.');
 requireToken('agent', "this.config.openingCanvasObservationMode || 'none'", 'Agent must fail closed to no opening Photoshop observation unless a structured caller explicitly opts in.');
 requireToken('agent', '!this.hasTaskProgressToolCalls()', 'Capability loading alone must not satisfy the first real task action.');
-requireToken('agent', "if (!this.hasTaskProgressToolCalls()) return 'R0';", 'Reflexion routing must treat control-only runs as no real task progress.');
+requireToken('terminalClosure', "if (!input.hasTaskProgress) return 'R0';", 'Reflexion routing must treat control-only runs as no real task progress.');
+requireToken('agent', 'hasTaskProgress: this.hasTaskProgressToolCalls()', 'The Agent must pass real task progress into terminal Reflexion routing.');
 requireToken('session', 'export function isAgentCapabilityLoadTool', 'Capability Session must distinguish schema-changing loads from read-only directory searches.');
 requireToken('agent', 'capabilityLoadCallExecutedThisIteration', 'Agent must enforce one schema-changing capability load per model iteration.');
 forbidPattern('agent', /output === undefined\s*&&\s*isAgentCapabilityControlTool\(call\.name\)[\s\S]{0,420}capability_request_round_budget_exceeded/, 'Read-only Capability search must not consume the schema-load round budget.');

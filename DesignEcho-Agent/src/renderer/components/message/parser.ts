@@ -192,7 +192,7 @@ function safePublicPlanControlledRunStatus(status: unknown): string {
     const value = String(status || '').trim();
     if (value === 'completed_dry_run') return '计划已检查';
     if (value === 'completed_fake_adapter_verified') return '计划已检查';
-    if (value === 'completed_live_adapter_verified') return '画面已创建，待复核';
+    if (value === 'completed_live_adapter_verified') return '画面已创建';
     if (value === 'failed_write_operation') return '处理未完成';
     if (value === 'failed_readback') return '复核未完成';
     if (value.startsWith('blocked_')) return '当前条件不完整';
@@ -601,6 +601,43 @@ function resolveExecutionSummaryDisplayStatus(
     return 'completed';
 }
 
+type HistoricalWorkNoteKind =
+    | 'design_task_card'
+    | 'task_plan_presentation'
+    | 'agent_user_visible_state'
+    | 'public_plan_request'
+    | 'public_plan_controlled_run';
+
+/**
+ * 任务卡、行动计划和旧 public-plan 都只是运行中的工作笔记。canonical Completion 已闭合后，
+ * 其中尚未同步的 todo / running / failed 状态不能反向覆盖最终结果；完整闭合的清单仍可作为
+ * 历史过程展示。等待、失败和取消时不做压制，真实未完成信息继续保留。
+ */
+function shouldSuppressHistoricalWorkNote(
+    message: LegacyMessage,
+    kind: HistoricalWorkNoteKind
+): boolean {
+    const summary = message.executionSummary;
+    if (!summary || resolveExecutionSummaryDisplayStatus(summary) !== 'completed') return false;
+
+    if (kind === 'design_task_card') {
+        const items = message.designTaskCard?.items;
+        return Array.isArray(items)
+            && items.length > 0
+            && items.some((item) => item.status !== 'done' && item.status !== 'skipped');
+    }
+    if (kind === 'task_plan_presentation') {
+        const steps = message.agentTaskPlanPresentation?.steps;
+        return Array.isArray(steps)
+            && steps.length > 0
+            && steps.some((step) => step.status !== 'completed');
+    }
+
+    // public-plan request / controlled-run 是 legacy 过程投影；canonical completed 在场时
+    // 不再展示“准备开始”或旧运行卡，避免同一条消息同时说已完成和仍待执行。
+    return true;
+}
+
 function buildAgentUserVisibleStateCard(
     plan: AgentTaskPlanningContract | undefined,
     messageId: string,
@@ -868,7 +905,7 @@ function buildPublicPlanControlledRunCard(
         : run.status === 'completed_fake_adapter_verified'
             ? '设计方案已检查'
             : run.status === 'completed_live_adapter_verified'
-                ? '画面已创建，待复核'
+                ? '画面已创建'
             : isFailed
                 ? '处理未完成'
             : isLiveBlocked
@@ -894,7 +931,7 @@ function buildPublicPlanControlledRunCard(
         : run.status === 'completed_fake_adapter_verified'
             ? designDecision || '已检查这份设计方案，但没有改动真实画面。'
             : run.status === 'completed_live_adapter_verified'
-                ? designDecision || '已按方案创建画面，需要继续复核整体效果。'
+                ? designDecision || '已按方案创建画面。'
                 : isLiveBlocked
                 ? '当前还缺少必要条件，暂时不能改动画面。'
                 : isFailed
@@ -1305,10 +1342,16 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         : [];
     const hasComposerContent = normalizedComposerParts.length > 0;
     const compactFailureView = shouldUseCompactAssistantFailureView(message);
+    const canonicalExecutionCompleted = Boolean(
+        message.executionSummary
+        && resolveExecutionSummaryDisplayStatus(message.executionSummary) === 'completed'
+    );
     const hasInteractiveUserAction = Array.isArray(message.interactiveCards)
         && message.interactiveCards.length > 0;
     const hasBusinessDeliveryResult = isSkuDeliveryPresentationOwned(message.skuDeliverySummary);
-    const taskPlanPresentationBlock = hasInteractiveUserAction || hasBusinessDeliveryResult
+    const taskPlanPresentationBlock = hasInteractiveUserAction
+        || hasBusinessDeliveryResult
+        || shouldSuppressHistoricalWorkNote(message, 'task_plan_presentation')
         ? null
         : buildAgentTaskPlanPresentationBlock(
             message.agentTaskPlanPresentation,
@@ -1336,10 +1379,12 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         } as ImageBlock);
     }
 
-    // 设计任务卡——有卡就先于其它状态卡展示，它是「做到哪了」的唯一口径。
+    // 设计任务卡是运行过程笔记，不拥有最终完成权。canonical Completion 已闭合时，
+    // 未同步的 todo / doing 卡不再覆盖最终结果；完整卡仍可作为历史过程保留。
     // 运行中（isThinking）不在这里画：实时区域已把卡当过程容器展示，画两份会重复；
     // 跑完后卡连同这次运行的过程一起落到消息里（过程按条目挂在卡内）。
     const designTaskCardBlocks = message.isThinking
+        || shouldSuppressHistoricalWorkNote(message, 'design_task_card')
         ? []
         : buildDesignTaskCardBlocks(message.designTaskCard, message.thinkingSteps, message.id, blockIndex);
     const designTaskCardOwnsProcess = designTaskCardBlocks.length > 0;
@@ -1362,7 +1407,7 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         && resolveExecutionSummaryDisplayStatus(message.executionSummary) !== 'completed'
     );
     const hasRequiredUserVisibleAction = message.agentTaskPlan?.userVisibleState?.userActionRequired === true;
-    const hasPublicPlanConfirmationAction = (
+    const hasPublicPlanConfirmationAction = !canonicalExecutionCompleted && (
         message.agentTaskPublicPlanExecutionRequest?.status === 'blocked_pending_user_confirmation'
     );
     const controlledRunStatus = String(message.agentTaskPublicPlanControlledRun?.status || '');
@@ -1382,7 +1427,8 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         blockIndex++;
     }
 
-    const agentUserVisibleStateCard = compactFailureView
+    const agentUserVisibleStateCard = shouldSuppressHistoricalWorkNote(message, 'agent_user_visible_state')
+        || compactFailureView
         || (!hasRequiredUserVisibleAction && (
             hasTaskChecklistPresentation
             || shouldSuppressAgentUserVisibleStateCard(message)
@@ -1394,17 +1440,21 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         blockIndex++;
     }
 
-    const visualObservationFeedbackCard = compactFailureView ? null : buildBusinessVisualObservationFeedbackCard(
-        message.businessVisualObservationFeedback,
-        message.id,
-        blockIndex
-    );
+    const visualObservationFeedbackCard = compactFailureView || canonicalExecutionCompleted
+        ? null
+        : buildBusinessVisualObservationFeedbackCard(
+            message.businessVisualObservationFeedback,
+            message.id,
+            blockIndex
+        );
     if (visualObservationFeedbackCard) {
         blocks.push(visualObservationFeedbackCard);
         blockIndex++;
     }
 
-    const publicPlanExecutionRequestCard = (compactFailureView && !hasPublicPlanConfirmationAction)
+    const publicPlanExecutionRequestCard = shouldSuppressHistoricalWorkNote(message, 'public_plan_request')
+        || controlledRunStatus.startsWith('completed_')
+        || (compactFailureView && !hasPublicPlanConfirmationAction)
         || (hasTaskChecklistPresentation && !hasPublicPlanConfirmationAction)
         ? null
         : buildPublicPlanExecutionRequestCard(
@@ -1418,7 +1468,8 @@ export function convertLegacyMessage(message: LegacyMessage): MultimodalMessage 
         blockIndex++;
     }
 
-    const publicPlanControlledRunCard = compactFailureView
+    const publicPlanControlledRunCard = shouldSuppressHistoricalWorkNote(message, 'public_plan_controlled_run')
+        || compactFailureView
         || (hasTaskChecklistPresentation && controlledRunIsEquivalentTerminal)
         ? null
         : buildPublicPlanControlledRunCard(

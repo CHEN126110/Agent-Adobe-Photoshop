@@ -192,6 +192,40 @@ export interface AgentRunModelIdentityDigest {
     apiModelId?: string;
 }
 
+export type AgentRunTerminalClosureGapKind = 'post_write_evidence' | 'delivery_evidence';
+
+export type AgentRunTerminalClosureStopReason =
+    | 'same_gap'
+    | 'attempt_limit'
+    | 'cancelled'
+    | 'waiting_user'
+    | 'writer_conflict'
+    | 'unknown_write'
+    | 'needs_reobserve'
+    | 'stage_mismatch'
+    | 'budget_exhausted'
+    | 'recovery_no_progress'
+    | 'recovery_preflight_blocked'
+    | 'recovery_failed';
+
+/**
+ * 同实例终态闭合的长期诊断摘要。
+ *
+ * 完整 outcome 只留在当前运行结果；Run Record 不保存缺失项 token、用户文案、路径或
+ * fingerprint，只保留问题类别、数量和 Photoshop 临时版本锚点。
+ */
+export interface AgentRunTerminalClosureDigest {
+    version: 'agent-terminal-closure-digest/v0';
+    status: 'stopped';
+    gapKind: AgentRunTerminalClosureGapKind;
+    reason: AgentRunTerminalClosureStopReason;
+    missingEvidenceKinds: Array<'fresh_structure' | 'fresh_visual'>;
+    missingCheckCount: number;
+    missingOutputCount: number;
+    currentHistory?: PhotoshopHistoryStateRef;
+    reviewHistory?: PhotoshopHistoryStateRef;
+}
+
 /**
  * Run Record 只保存对话与消息树分支的身份，不保存消息正文。
  * 自动恢复必须同时命中两者，避免编辑重发或跨对话时把旧任务带回来。
@@ -245,6 +279,8 @@ export interface AgentRunRecord {
         /** 只供开发 / Runtime 诊断；不得参与 completion、权限或 DesignVerdict。 */
         finalQualityModelProtocol?: FinalQualityModelProtocolDigest;
     };
+    /** 同实例终态闭合停止原因的有界摘要；不含原始缺失项、路径、文案或 fingerprint。 */
+    terminalClosure?: AgentRunTerminalClosureDigest;
     /** 当前 generation 的生产 Runtime Session 摘要；runId 必须与记录主键完全一致。 */
     runtimeSession?: RuntimeSessionDigest;
     /**
@@ -389,6 +425,7 @@ export interface AgentRunRecord {
         conversationScopeIdentityOnly?: true;
         runtimeAccountingDigestOnly?: true;
         runtimeContractStatusDigestOnly?: true;
+        terminalClosureDigestOnly?: true;
     };
 }
 
@@ -459,6 +496,7 @@ export interface BuildAgentRunRecordInput {
                 providerCode?: unknown;
                 diagnostic?: unknown;
             };
+            terminalClosureOutcome?: unknown;
         } | null;
     };
 }
@@ -491,6 +529,7 @@ const AGENT_RUN_RECORD_ALLOWED_KEYS = new Set<string>([
     'providerFailure',
     'modelIdentity',
     'quality',
+    'terminalClosure',
     'runtimeSession',
     'runtimeAccounting',
     'artifactRefs',
@@ -529,7 +568,8 @@ const AGENT_RUN_RECORD_BOUNDARY_ALLOWED_KEYS = new Set<string>([
     'modelIdentityDigestOnly',
     'conversationScopeIdentityOnly',
     'runtimeAccountingDigestOnly',
-    'runtimeContractStatusDigestOnly'
+    'runtimeContractStatusDigestOnly',
+    'terminalClosureDigestOnly'
 ] as const satisfies readonly (keyof AgentRunRecord['boundaries'])[]);
 
 const RUNTIME_CONTRACT_STATUS_ALLOWED_KEYS = new Set<string>([
@@ -579,6 +619,50 @@ const MODEL_IDENTITY_DIGEST_ALLOWED_KEYS = new Set<string>([
     'apiModelId'
 ]);
 
+const TERMINAL_CLOSURE_DIGEST_ALLOWED_KEYS = new Set<string>([
+    'version',
+    'status',
+    'gapKind',
+    'reason',
+    'missingEvidenceKinds',
+    'missingCheckCount',
+    'missingOutputCount',
+    'currentHistory',
+    'reviewHistory'
+] as const satisfies readonly (keyof AgentRunTerminalClosureDigest)[]);
+
+const PHOTOSHOP_HISTORY_REF_ALLOWED_KEYS = new Set<string>([
+    'documentId',
+    'historyStateId'
+] as const satisfies readonly (keyof PhotoshopHistoryStateRef)[]);
+
+const TERMINAL_CLOSURE_GAP_KINDS = new Set<AgentRunTerminalClosureGapKind>([
+    'post_write_evidence',
+    'delivery_evidence'
+]);
+
+const TERMINAL_CLOSURE_STOP_REASONS = new Set<AgentRunTerminalClosureStopReason>([
+    'same_gap',
+    'attempt_limit',
+    'cancelled',
+    'waiting_user',
+    'writer_conflict',
+    'unknown_write',
+    'needs_reobserve',
+    'stage_mismatch',
+    'budget_exhausted',
+    'recovery_no_progress',
+    'recovery_preflight_blocked',
+    'recovery_failed'
+]);
+
+const TERMINAL_CLOSURE_EVIDENCE_KINDS = new Set<AgentRunTerminalClosureDigest['missingEvidenceKinds'][number]>([
+    'fresh_structure',
+    'fresh_visual'
+]);
+
+const MAX_TERMINAL_CLOSURE_SOURCE_ITEMS = 256;
+
 const MODEL_PROVIDER_FAILURE_KINDS = new Set<ModelProviderFailureKind>([
     'billing',
     'auth',
@@ -602,6 +686,61 @@ function cleanText(value: unknown, maxLen: number): string {
     const text = String(value ?? '').trim();
     if (!text) return '';
     return stripBulkPayloads(text).slice(0, maxLen);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readTerminalClosureSourceItemCount(value: unknown): number | undefined {
+    if (!Array.isArray(value) || value.length > MAX_TERMINAL_CLOSURE_SOURCE_ITEMS) return undefined;
+    if (value.some((item) => typeof item !== 'string')) return undefined;
+    return value.length;
+}
+
+function buildTerminalClosureDigest(value: unknown): AgentRunTerminalClosureDigest | undefined {
+    if (!isPlainRecord(value)
+        || value.version !== 'agent-terminal-closure-outcome/v0'
+        || value.status !== 'stopped') {
+        return undefined;
+    }
+    const gapKind = cleanText(value.gapKind, 60) as AgentRunTerminalClosureGapKind;
+    const reason = cleanText(value.reason, 80) as AgentRunTerminalClosureStopReason;
+    if (!TERMINAL_CLOSURE_GAP_KINDS.has(gapKind)
+        || !TERMINAL_CLOSURE_STOP_REASONS.has(reason)) {
+        return undefined;
+    }
+    const rawMissingEvidenceKinds = value.missingEvidenceKinds;
+    if (!Array.isArray(rawMissingEvidenceKinds)
+        || rawMissingEvidenceKinds.length > TERMINAL_CLOSURE_EVIDENCE_KINDS.size
+        || rawMissingEvidenceKinds.some((item) => (
+            typeof item !== 'string'
+            || !TERMINAL_CLOSURE_EVIDENCE_KINDS.has(
+                item as AgentRunTerminalClosureDigest['missingEvidenceKinds'][number]
+            )
+        ))) {
+        return undefined;
+    }
+    const missingCheckCount = readTerminalClosureSourceItemCount(value.missingCheckKeys);
+    const missingOutputCount = readTerminalClosureSourceItemCount(value.missingOutputs);
+    if (missingCheckCount === undefined || missingOutputCount === undefined) return undefined;
+
+    const missingEvidenceKinds = (['fresh_structure', 'fresh_visual'] as const).filter((kind) => (
+        rawMissingEvidenceKinds.includes(kind)
+    ));
+    const currentHistory = readPhotoshopHistoryStateRef({ historyStateRef: value.currentHistory });
+    const reviewHistory = readPhotoshopHistoryStateRef({ historyStateRef: value.reviewHistory });
+    return {
+        version: 'agent-terminal-closure-digest/v0',
+        status: 'stopped',
+        gapKind,
+        reason,
+        missingEvidenceKinds,
+        missingCheckCount,
+        missingOutputCount,
+        ...(currentHistory ? { currentHistory } : {}),
+        ...(reviewHistory ? { reviewHistory } : {})
+    };
 }
 
 function buildModelProviderFailureDigest(value: unknown): AgentRunModelProviderFailureDigest | undefined {
@@ -997,6 +1136,9 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
     const modelProviderFailureDigest = buildModelProviderFailureDigest(
         summary?.modelProviderFailureDigest
     );
+    const terminalClosureDigest = buildTerminalClosureDigest(
+        summary?.terminalClosureOutcome
+    );
     const modelIdentity = buildModelIdentityDigest(input.modelIdentity);
     const runtimeContractStatus = buildResolvedRuntimeContractStatusDigest(
         input.runtimeContractStatus
@@ -1072,6 +1214,7 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
         ...(modelProviderFailureDigest ? { providerFailure: modelProviderFailureDigest } : {}),
         ...(modelIdentity ? { modelIdentity } : {}),
         ...(runtimeAccountingDigest ? { runtimeAccounting: runtimeAccountingDigest } : {}),
+        ...(terminalClosureDigest ? { terminalClosure: terminalClosureDigest } : {}),
         ...(summary
             ? {
                 quality: {
@@ -1292,7 +1435,8 @@ export function buildAgentRunRecord(input: BuildAgentRunRecordInput): AgentRunRe
             ...(modelIdentity ? { modelIdentityDigestOnly: true as const } : {}),
             ...(conversationScope ? { conversationScopeIdentityOnly: true as const } : {}),
             ...(runtimeAccountingDigest ? { runtimeAccountingDigestOnly: true as const } : {}),
-            ...(runtimeContractStatus ? { runtimeContractStatusDigestOnly: true as const } : {})
+            ...(runtimeContractStatus ? { runtimeContractStatusDigestOnly: true as const } : {}),
+            ...(terminalClosureDigest ? { terminalClosureDigestOnly: true as const } : {})
         }
     };
 }
@@ -1303,6 +1447,76 @@ function hasOwn(value: object, key: string): boolean {
 
 function findUnknownKey(value: Record<string, unknown>, allowedKeys: ReadonlySet<string>): string | undefined {
     return Object.keys(value).find((key) => !allowedKeys.has(key));
+}
+
+function validateTerminalClosureHistoryRef(
+    value: unknown,
+    label: string
+): { ok: boolean; reason?: string } {
+    if (!isPlainRecord(value)) return { ok: false, reason: `${label} 不是对象` };
+    const unknownKey = findUnknownKey(value, PHOTOSHOP_HISTORY_REF_ALLOWED_KEYS);
+    if (unknownKey) return { ok: false, reason: `${label} 含未知字段：${unknownKey}` };
+    if (!Number.isSafeInteger(value.documentId)
+        || Number(value.documentId) <= 0
+        || !Number.isSafeInteger(value.historyStateId)
+        || Number(value.historyStateId) <= 0) {
+        return { ok: false, reason: `${label} 文档或历史版本非法` };
+    }
+    return { ok: true };
+}
+
+function validateTerminalClosureDigest(
+    value: unknown
+): { ok: boolean; reason?: string } {
+    if (!isPlainRecord(value)) return { ok: false, reason: 'terminalClosure 不是对象' };
+    const unknownKey = findUnknownKey(value, TERMINAL_CLOSURE_DIGEST_ALLOWED_KEYS);
+    if (unknownKey) return { ok: false, reason: `terminalClosure 含未知字段：${unknownKey}` };
+    if (value.version !== 'agent-terminal-closure-digest/v0'
+        || value.status !== 'stopped') {
+        return { ok: false, reason: 'terminalClosure 版本或状态非法' };
+    }
+    if (!TERMINAL_CLOSURE_GAP_KINDS.has(value.gapKind as AgentRunTerminalClosureGapKind)) {
+        return { ok: false, reason: 'terminalClosure gapKind 非法' };
+    }
+    if (!TERMINAL_CLOSURE_STOP_REASONS.has(value.reason as AgentRunTerminalClosureStopReason)) {
+        return { ok: false, reason: 'terminalClosure reason 非法' };
+    }
+    if (!Array.isArray(value.missingEvidenceKinds)
+        || value.missingEvidenceKinds.length > TERMINAL_CLOSURE_EVIDENCE_KINDS.size
+        || new Set(value.missingEvidenceKinds).size !== value.missingEvidenceKinds.length
+        || value.missingEvidenceKinds.some((item) => (
+            typeof item !== 'string'
+            || !TERMINAL_CLOSURE_EVIDENCE_KINDS.has(
+                item as AgentRunTerminalClosureDigest['missingEvidenceKinds'][number]
+            )
+        ))) {
+        return { ok: false, reason: 'terminalClosure missingEvidenceKinds 非法' };
+    }
+    for (const [key, count] of [
+        ['missingCheckCount', value.missingCheckCount],
+        ['missingOutputCount', value.missingOutputCount]
+    ] as const) {
+        if (!Number.isSafeInteger(count)
+            || Number(count) < 0
+            || Number(count) > MAX_TERMINAL_CLOSURE_SOURCE_ITEMS) {
+            return { ok: false, reason: `terminalClosure ${key} 非法` };
+        }
+    }
+    if (value.currentHistory !== undefined) {
+        const validation = validateTerminalClosureHistoryRef(
+            value.currentHistory,
+            'terminalClosure currentHistory'
+        );
+        if (!validation.ok) return validation;
+    }
+    if (value.reviewHistory !== undefined) {
+        const validation = validateTerminalClosureHistoryRef(
+            value.reviewHistory,
+            'terminalClosure reviewHistory'
+        );
+        if (!validation.ok) return validation;
+    }
+    return { ok: true };
 }
 
 /**
@@ -1419,6 +1633,18 @@ export function validateAgentRunRecordForPersist(record: unknown): { ok: boolean
                 !== finalQualityModelProtocol.actionableDiagnosisCount) {
             return { ok: false, reason: 'finalQualityModelProtocol 摘要非法或超出边界' };
         }
+    }
+    const hasTerminalClosure = hasOwn(r, 'terminalClosure');
+    const hasTerminalClosureBoundary = hasOwn(
+        r.boundaries as AgentRunRecord['boundaries'],
+        'terminalClosureDigestOnly'
+    );
+    if (hasTerminalClosure || hasTerminalClosureBoundary) {
+        if (r.boundaries.terminalClosureDigestOnly !== true) {
+            return { ok: false, reason: 'terminalClosure 缺 terminalClosureDigestOnly 边界声明' };
+        }
+        const validation = validateTerminalClosureDigest(r.terminalClosure);
+        if (!validation.ok) return validation;
     }
     if (r.conversationScope) {
         if (typeof r.conversationScope !== 'object' || Array.isArray(r.conversationScope)) {

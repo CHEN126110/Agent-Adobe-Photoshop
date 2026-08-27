@@ -156,6 +156,14 @@ const projectImageAnalysisExecutorPath = path.join(
   'project-image-analysis.executor.ts'
 );
 const agentRuntimePath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'agent.ts');
+const terminalClosureCheckpointPath = path.join(
+  root,
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'terminal-closure-checkpoint.ts'
+);
 const mutationBoundDesignIntentPath = path.join(
   root,
   'src',
@@ -2154,6 +2162,7 @@ async function run() {
   const executorSource = parse(executorPath);
   const performanceResolverText = findFunction(executorSource, 'resolveAutonomousPerformancePolicy')?.getText(executorSource) || '';
   const agentRuntimeText = read(agentRuntimePath);
+  const terminalClosureCheckpointText = read(terminalClosureCheckpointPath);
   const designFinalReviewEvidenceText = read(designFinalReviewEvidencePath);
   const designFinalComparisonEvidenceText = read(designFinalComparisonEvidencePath);
   const trustedFinalComparisonEvidenceText = read(trustedFinalComparisonEvidencePath);
@@ -9292,6 +9301,10 @@ async function run() {
     ?.getText(agentRuntimeSource) || '';
   const noToolReplanMethodText = findMethod(agentRuntimeSource, 'requestNoToolReplanAfterToolDecisionBlocked')
     ?.getText(agentRuntimeSource) || '';
+  const prepareTerminalClosureMethodText = findMethod(agentRuntimeSource, 'prepareAgentTerminalClosure')
+    ?.getText(agentRuntimeSource) || '';
+  const buildRunResultMethodText = findMethod(agentRuntimeSource, 'buildRunResult')
+    ?.getText(agentRuntimeSource) || '';
   if (!emitSnapshotMethodText.includes('isAgentReadResultCacheHit(item.output)')
     || !attachImageMethodText.includes('isAgentReadResultCacheHit(item.output)')
     || !attachImageMethodText.includes('this.emitUserVisibleSnapshots(toolResults);')
@@ -9335,11 +9348,36 @@ async function run() {
     || !finishAgentTextResponseMethodText.includes('!this.hasSuccessfulTaskDeliveryAction()')
     || !finishAgentTextResponseMethodText.includes("error: 'unsupported_bare_completion_claim'")
     || !noToolReplanMethodText.includes('return this.finishAgentTextResponse(finalMessage);')
-    || (agentRuntimeText.match(/return this\.finishAgentTextResponse\(finalMessage\);/g) || []).length < 2) {
+    || !agentRuntimeText.includes('await this.prepareNaturalFinalResponseCheckpoint(')
+    || !agentRuntimeText.includes('terminalClosureCheckpoint.preparedClosure')
+    || (agentRuntimeText.match(/return this\.finishAgentTextResponse\(/g) || []).length < 2
+    || !terminalClosureCheckpointText.includes('unsupportedBareCompletionClaim')) {
     observationLivenessViolations.push('final-response:bare-completion-guard-not-shared-by-text-exits');
   }
   if (finishAgentTextResponseMethodText.includes('callbacks.onMessage')) {
     observationLivenessViolations.push('final-response:candidate-final-exposed-before-run-settlement');
+  }
+  if (!terminalClosureCheckpointText.includes("kind: 'post_write_evidence'")
+    || !terminalClosureCheckpointText.includes("kind: 'delivery_evidence'")
+    || !terminalClosureCheckpointText.includes("reason: 'same_gap'")
+    || !terminalClosureCheckpointText.includes("reason: 'attempt_limit'")
+    || (terminalClosureCheckpointText.match(/suppressReflexionHandoff: true/g) || []).length < 4
+    || !terminalClosureCheckpointText.includes("taskRun.status === 'waiting_user'")
+    || !terminalClosureCheckpointText.includes("taskRun.status === 'writer_conflict'")
+    || !terminalClosureCheckpointText.includes("taskRun.sideEffectState?.status === 'unknown'")
+    || !agentRuntimeText.includes('hasUnsettledWriteState: Boolean(this.pendingRuntimeActionMutationReadback || this.runtimeActionProviderRecoveryBlocked)')
+    || !terminalClosureCheckpointText.includes("runtime.evidence === 'fresh_structure'")
+    || !terminalClosureCheckpointText.includes('terminalClosureOutcome: buildTerminalClosureOutcome(')
+    || /getCanvasSnapshot|saveDocument|quickExport/.test(terminalClosureCheckpointText)
+    || !agentRuntimeText.includes('this.messages.push(createHarnessControlMessage(')
+    || !agentRuntimeText.includes('resolveTerminalClosureStagePreparation({')
+    || !prepareTerminalClosureMethodText.includes('this.projectDeliveryStageEvidence(')
+    || prepareTerminalClosureMethodText.includes('appendStageTraceEvent(')
+    || !buildRunResultMethodText.includes('this.appendStageTraceEvent(closure.deliveryStageEvidence.stageTraceEvent)')
+    || !buildRunResultMethodText.includes('guardTerminalRecoveryEarlyExit({')
+    || !terminalClosureCheckpointText.includes("input.stopReason === 'awaiting_user_input'")
+    || !terminalClosureCheckpointText.includes('reflexionHandoff: undefined')) {
+    observationLivenessViolations.push('terminal-closure:recoverable-gap-can-escape-boundary-or-prescribe-tool');
   }
   if (!updateLoopGuardsMethodText.includes('options.stageProgressChanged || madeDurableExecutionProgress')
     || !updateLoopGuardsMethodText.includes('result.output?.countsAsTaskProgress === false')

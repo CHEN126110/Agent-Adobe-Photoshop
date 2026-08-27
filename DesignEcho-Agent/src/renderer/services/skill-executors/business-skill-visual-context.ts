@@ -776,6 +776,7 @@ function readSelectedAssetPaths(projectContext: any): string[] {
 function countBusinessContextualSourceCandidates(skillId: string, executeParams: SkillExecuteParams): number {
     const context = executeParams.context as any;
     const projectContext = context?.projectContext as any;
+    const params = executeParams.params as Record<string, any>;
     const userText = readOptionalString(context?.userInput) || readOptionalString(executeParams.params?.userIntent) || '';
     const sourceKeys = new Set<string>();
 
@@ -784,6 +785,49 @@ function countBusinessContextualSourceCandidates(skillId: string, executeParams:
         if (!text) return;
         sourceKeys.add(normalizeSourceKey(text));
     };
+
+    const addUsableSource = (value: unknown) => {
+        if (isUsableBusinessSource(value)) addSource(value);
+    };
+    const addUsableSourceObject = (value: unknown) => {
+        if (!value || typeof value !== 'object') return;
+        const source = value as Record<string, unknown>;
+        addUsableSource(
+            source.path
+            || source.sourcePath
+            || source.filePath
+            || source.imagePath
+            || source.assetPath
+            || source.selectedAssetPath
+        );
+    };
+
+    // 用户 / Agent 已在本次 Skill 参数中显式绑定的源图，本身就是有来源的当前任务输入。
+    // 它不等于“项目已完整扫描”，也不证明已完成视觉理解；但不能因缺 projectContext
+    // 被重新投影成“没有素材”。
+    [
+        params.assetPath,
+        params.imagePath,
+        params.sourcePath,
+        params.sourceImagePath,
+        params.selectedAssetPath,
+        params.inputImagePath
+    ].forEach(addUsableSource);
+    addUsableSourceObject(params.selectedAsset);
+    addUsableSourceObject(params.sourceAsset);
+    for (const collection of [
+        params.selectedAssets,
+        params.sourceAssets,
+        params.sources,
+        params.sourcePaths,
+        params.images
+    ]) {
+        if (!Array.isArray(collection)) continue;
+        for (const item of collection) {
+            if (typeof item === 'string') addUsableSource(item);
+            else addUsableSourceObject(item);
+        }
+    }
 
     const currentDocument = projectContext?.contextSnapshot?.currentDocument;
     if (isUsableBusinessSource(currentDocument?.path || currentDocument?.name)) {

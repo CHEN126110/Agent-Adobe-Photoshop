@@ -10,6 +10,8 @@
 - `artifactStatus` 只表达必需产物、目标、写后读回和交付收据；DesignVerdict 另行表达专业质量。只有携带合格 blocker kind 与 proofRef 的确定性质量问题可以阻断交付；普通审美 finding 保留为改进建议，不能把 `artifact_completed` 改写成“结果需要复核”。
 - 等待确认和 workflow handoff 是控制流，不是失败；Task Card 是工作笔记，不是第二 Completion owner；模型最终正文和总结 Provider 只是展示层，不得从措辞反推完成，也不得因总结超时、空回复或半句输出推翻已闭合的结构化结果。
 - 模型准备结束但仍缺当前版本读回、正确目标或显式文件交付时，现有同一 Agent 实例在保留完整 Tool Log 的情况下接收缺失事实并继续收尾。Harness 不指定截图、保存 Tool 或设计修法；Agent 自行选能力。只有真正的视觉质量修订才进入 Reflexion，等待用户、预算耗尽、未知副作用或 writer 冲突不得被恢复逻辑升级成写权限。
+- 自然终稿先进入“准备闭合”，再进入不可逆提交：准备阶段只评估 Completion、同版本图层结构 / 画面证据与 Delivery 投影，不 finalize Session / Artifact、不 release writer，也不提前推进 E2。只有确定不需要继续收尾时，commit 路径才附加 E2 trace 并发布结果。
+- 终态闭合已开始后，任何 `no_progress` / preflight / budget / cancel / waiting / writer conflict / unknown write / needs reobserve / stage mismatch 早退都必须在同一 Agent 实例结算并清除 outer Reflexion handoff；不得通过外层新建 Agent 丢掉原 Tool Log、恢复次数与已知失败事实。同一 gap fingerprint 重复或达到有界次数时诚实停止，但对用户只投影具体对象与缺失事实，不再回落到通用“结果需要复核”。
 
 ### 正面经验
 
@@ -20,6 +22,9 @@
 5. 用户展示按精确 `toolCallId` 收束过程行：Debug completion 可以关闭对应“处理中”步骤，但不生成红色失败；真正任务终态只来自结构化 Completion。这样并行同名调用、workflow handoff 和重规划不会留下悬空红条。
 6. 最终正文生成失败时使用结构化中性摘要，比“回复未完整，继续补全”或根据模型措辞猜状态更可靠；失败诊断仍进入 Run Record，不冒充用户结果。
 7. 同实例收尾只反馈“缺什么事实”，不反馈“必须调用哪个 Tool”。这既提高自动闭合率，又保持 Agent 对方法和下一步的作者权。
+8. 最终事实只有一份，但可以有多个过程投影：Task Card、Action Plan、legacy public-plan 与 Skill 前置视觉提示都必须服从 canonical Completion。完成后尚未同步的工作笔记可以被压制，但等待、取消、真实失败和未知写状态必须继续显示。
+9. Skill 前置刷新改变了实际执行参数后，结果只能从 executor 真正消费的最终参数重建上下文。执行前的 stale context 不能附回成功结果；`assetPath` / `sourcePath` / `sources[].filePath` 等当前调用的显式来源必须被识别，但它们只证明“有来源素材”，不伪造“已完成视觉理解”。
+10. 精确 terminal closure outcome 必须同时服务用户与调试：用户只看自然的缺口名称与停止原因；Run Record 只保存 gap kind、reason、证据类别、数量和 document / history 锚点的有界 digest。两边都不保存 public prose、绝对路径、fingerprint、manifest token 或原始缺失项。这样 `debug:runs` 能看到真正 owner，普通对话不会暴露工程术语。
 
 ### 负面教训与禁止反例
 
@@ -33,6 +38,11 @@
 8. **通用“结果需要复核”兜底**：它混淆缺质量结论、软性改进、真实产物缺口与未知写状态，还把系统未闭合的责任转给用户。必须分别给出精确事实；可自动补齐的在同实例内补齐，软建议不阻断，真实危险才停止。
 9. **过程开始公开、Debug 完成被过滤**：只显示 `tool_started`，却丢掉同一 `toolCallId` 的 Debug completion，会留下永久红色“未完成”。过滤内容不能破坏过程生命周期。
 10. **重启应用作为验收前置动作**：`pending=0` 不证明 Agent、Provider 或用户 Photoshop 工作空闲；有未保存文档时重启可能中断用户任务。先只读核对 Runtime 与文档，再决定是否需要重启。
+11. **只在自然 final response 上加同实例守卫**：收尾后的 Tool 若从 no-progress / preflight 等早退，旧 handoff 仍会逃到外层新建 Agent。“同实例”必须是 terminal-recovery mode 的整个生命周期不变量，不是某一个返回点的补丁。
+12. **prepare 阶段提前写 E2 trace**：即使还没 finalize Artifact 或 release writer，提前推进 Stage 也会让后续继续运行面对一个伪终态 Session。审计与提交必须分离，不能只拆出一部分副作用。
+13. **把可恢复证据写死为 `fresh_visual`**：Profile 已用 runtime repair metadata 声明 `fresh_structure` 与 `fresh_visual` 都可回到 R5 补证，核心若再按证据名称分支，会重新产生品类式硬编码。应消费既有声明，不在 Agent 内复制方法。
+14. **先追加 generic needs-review，再追加精确原因**：这会让用户同时看到“质量仍待复核”与真实缺口，表面有更多信息，实际仍有两份终态。Completion consistency 必须直接消费 typed outcome 作为唯一精确说明，不能在事后用字符串删词。
+15. **只修当前传入源字段**：SKU 常用 `sources[].filePath`，其他调用可能用 `sourcePath` / `sourcePaths`。应归一化“明确来源”语义并用真实 Skill 输入形状回归，不要每出现一个字段就在 UI 再补一层压制。
 
 ## D-084 交互 owner 与外部能力采用 Agent / Harness Kernel / Skill Package / Tool-Capability Provider + Host 四层边界
 

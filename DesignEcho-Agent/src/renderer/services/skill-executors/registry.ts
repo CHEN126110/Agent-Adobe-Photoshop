@@ -398,7 +398,6 @@ export async function executeSkillWithExecutor(
         if (isSkillExecutionCancelled(scenarioPreparedExecuteParams)) {
             return emitSkillExecutionCancelled(scenarioPreparedExecuteParams, skillId, skillStepId, skillLabel);
         }
-        const businessVisualContext = buildBusinessVisualContextForSkill(skillId, scenarioPreparedExecuteParams);
         const businessSkillProjectAssetUnderstandingIntake =
             buildBusinessSkillProjectAssetUnderstandingIntakeForSkill(skillId, scenarioPreparedExecuteParams);
         const businessSkillVisualContextPreparation =
@@ -450,7 +449,12 @@ export async function executeSkillWithExecutor(
         const resultWithObservation = attachBusinessSkillExecutionPreflightGateToResult(
             attachBusinessSkillVisualContextPreparationToResult(
                 attachBusinessSkillProjectAssetUnderstandingIntakeToResult(
-                    attachBusinessVisualContextToResult(executorResult, businessVisualContext),
+                    // 前置视觉刷新可能已把新的缓存与素材事实写回 executeParams；结果必须消费
+                    // 执行器实际拿到的最终参数，不能附回刷新前的 stale context。
+                    attachBusinessVisualContextToResult(
+                        executorResult,
+                        buildBusinessVisualContextForSkill(skillId, executeParamsForBusiness)
+                    ),
                     businessSkillProjectAssetUnderstandingIntake
                 ),
                 businessSkillVisualContextPreparation,

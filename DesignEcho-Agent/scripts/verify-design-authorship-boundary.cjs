@@ -250,6 +250,7 @@ const skuRetouchServiceSource = source('src/main/services/sku-retouch-service.ts
 const skuRetouchContractSource = source('src/shared/sku-retouch-contract.ts');
 const claudeSubscriptionSource = source('src/main/services/claude-subscription-service.ts');
 const agentRunRecordSource = source('src/shared/agent-run-record.ts');
+const skillExecutorRegistrySource = source('src/renderer/services/skill-executors/registry.ts');
 
 const skuSourcePreparationSlice = skuBatchExecutorSource.slice(
     skuBatchExecutorSource.indexOf('const executeSkuCardSourcePreparationPlan = async'),
@@ -274,6 +275,26 @@ check(
         && !designAgentEngineSource.includes('buildRuntimeSelectedSkillHandoffFromRecommendation')
         && !skillRoutingSource.includes('function buildRuntimeSelectedSkillHandoffFromRecommendation')
         && skillRoutingSource.includes('bindsRuntimeIdentity: false')
+);
+check(
+    '业务 Skill 结果使用执行器实际消费的刷新后视觉上下文',
+    !skillExecutorRegistrySource.includes(
+        'const businessVisualContext = buildBusinessVisualContextForSkill(skillId, scenarioPreparedExecuteParams);'
+    )
+        && skillExecutorRegistrySource.includes(
+            'buildBusinessVisualContextForSkill(skillId, executeParamsForBusiness)'
+        )
+);
+const controlledRunVisibleReviewSource = designAgentEngineSource.slice(
+    designAgentEngineSource.indexOf('function emitControlledRunVisibleReview('),
+    designAgentEngineSource.indexOf('function shouldRepairAfterControlledRunObservation(')
+);
+check(
+    'legacy public-plan 已创建结果不替 canonical verdict 固定要求审美复核',
+    controlledRunVisibleReviewSource.includes('计划中的主要内容仍然存在。')
+        && !/人工审美确认|建议再看一下整体留白|需要继续复核整体效果/.test(
+            controlledRunVisibleReviewSource
+        )
 );
 check(
     '未绑定的 Skill 推荐不能抢占通用交互卡所有权',

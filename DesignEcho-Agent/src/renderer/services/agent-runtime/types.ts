@@ -540,6 +540,37 @@ export interface TaskCompletionContext {
     };
 }
 
+export interface AgentTerminalClosureOutcome {
+    version: 'agent-terminal-closure-outcome/v0';
+    status: 'stopped';
+    gapKind: 'post_write_evidence' | 'delivery_evidence';
+    reason:
+        | 'same_gap'
+        | 'attempt_limit'
+        | 'cancelled'
+        | 'waiting_user'
+        | 'writer_conflict'
+        | 'unknown_write'
+        | 'needs_reobserve'
+        | 'stage_mismatch'
+        | 'budget_exhausted'
+        | 'recovery_no_progress'
+        | 'recovery_preflight_blocked'
+        | 'recovery_failed';
+    fingerprint: string;
+    missingCheckKeys: string[];
+    missingEvidenceKinds: Array<'fresh_structure' | 'fresh_visual'>;
+    missingOutputs: string[];
+    currentHistory?: { documentId: number; historyStateId: number };
+    reviewHistory?: { documentId: number; historyStateId: number };
+    publicSummary: string;
+    boundaries: {
+        selectsTool: false;
+        grantsPermission: false;
+        preservesCanonicalResult: true;
+    };
+}
+
 export interface AgentExecutionSummary {
     status: AgentExecutionStatus;
     stopReason: AgentStopReason;
@@ -609,6 +640,8 @@ export interface AgentExecutionSummary {
     designVerdict?: DesignVerdict;
     /** Final Judge / diagnosis repair 的有界诊断事实；不参与完成、权限或质量裁决。 */
     finalQualityModelProtocolDigest?: FinalQualityModelProtocolDigest;
+    /** 同实例终态闭合诚实停止时的精确缺口；不授权 Tool，也不替模型选择修法。 */
+    terminalClosureOutcome?: AgentTerminalClosureOutcome;
     /** 只读观察阶段状态；不调度 Tool、不改变本轮 success/failure。 */
     runtimeStageState?: RuntimeStageState;
     /** 同一生产 Session 的身份与阶段摘要；绑定 Stage State / Trace / Run Record。 */

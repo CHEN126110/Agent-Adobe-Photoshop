@@ -66,6 +66,18 @@ const {
     appendMutationBoundDesignIntent,
     formatMutationBoundDesignIntentForReview
 } = require(path.join(root, 'src/renderer/services/agent-runtime/mutation-bound-design-intent.ts'));
+const {
+    buildAgentTaskPlanPresentation
+} = require(path.join(root, 'src/shared/agent-task-plan-presentation.ts'));
+const {
+    buildBusinessVisualContextForSkill
+} = require(path.join(root, 'src/renderer/services/skill-executors/business-skill-visual-context.ts'));
+const {
+    buildBusinessSkillVisualObservationFeedback
+} = require(path.join(root, 'src/shared/business-skill-visual-observation-feedback.ts'));
+const {
+    convertLegacyMessage
+} = require(path.join(root, 'src/renderer/components/message/parser.ts'));
 
 let failed = 0;
 function check(condition, label, detail) {
@@ -1624,6 +1636,350 @@ check(
     JSON.stringify(alignedWhitespaceSensitiveMessage)
 );
 
+const completedUnderclaimMessage = alignUserVisibleCompletionMessage({
+    message: '结果需要复核。这次任务还没完成。未完成。主体右置，留白充足。',
+    executionStatus: 'completed',
+    requirements: []
+});
+check(
+    completedUnderclaimMessage.includes('主体右置，留白充足')
+        && completedUnderclaimMessage.includes('本次结果已经完成')
+        && (completedUnderclaimMessage.match(/本次结果已经完成/g) || []).length === 1
+        && !/结果需要复核|任务还没完成|未完成/.test(completedUnderclaimMessage),
+    'canonical completed 只追加一次中性完成事实，并保留模型的具体设计说明',
+    completedUnderclaimMessage
+);
+const concreteFailureUnderclaimMessage = 'Photoshop 连接中断，本轮没有写入画面。';
+check(
+    alignUserVisibleCompletionMessage({
+        message: concreteFailureUnderclaimMessage,
+        executionStatus: 'completed',
+        requirements: []
+    }) === concreteFailureUnderclaimMessage
+        && alignUserVisibleCompletionMessage({
+            message: '结果需要复核。',
+            executionStatus: 'completed',
+            requirements: [{ id: 'delivery', status: 'failed' }]
+        }) === '结果需要复核。'
+        && ['pending', 'unknown', undefined].every((status) => (
+            alignUserVisibleCompletionMessage({
+                message: '结果需要复核。',
+                executionStatus: 'completed',
+                requirements: [{ id: 'delivery', status }]
+            }) === '结果需要复核。'
+        )),
+    'completed 散文校正不删除具体失败事实，也不越过失败、pending 或未知 requirement'
+);
+const mixedConcreteFailureUnderclaimMessages = [
+    '这次任务还没完成。Photoshop 连接中断，本轮没有写入画面。',
+    '这次任务还没完成。\nPhotoshop 连接中断，本轮没有写入画面。'
+].map((message) => alignUserVisibleCompletionMessage({
+    message,
+    executionStatus: 'completed',
+    requirements: []
+}));
+check(
+    mixedConcreteFailureUnderclaimMessages.every((message) => (
+        !message.includes('任务还没完成')
+        && message.includes('Photoshop 连接中断，本轮没有写入画面')
+        && !message.includes('本次结果已经完成')
+    )),
+    '同一正文保留具体 unresolved fact 时只清理笼统少报，不追加与事实冲突的 completed 对齐',
+    JSON.stringify(mixedConcreteFailureUnderclaimMessages)
+);
+const protectedUnderclaimMessage = [
+    '用户原话是“结果需要复核”。',
+    '> 结果需要复核。',
+    '`结果需要复核` 是文件备注。'
+].join('\n');
+check(
+    alignUserVisibleCompletionMessage({
+        message: protectedUnderclaimMessage,
+        executionStatus: 'completed',
+        requirements: []
+    }) === protectedUnderclaimMessage,
+    '引用、blockquote 与行内代码中的未完成措辞不被 completed 对齐误删'
+);
+const completedSoftQualityUnderclaimMessage = alignUserVisibleCompletionMessage({
+    message: 'PSD 已保存，当前设计质量仍待复核。',
+    executionStatus: 'completed',
+    requirements: [],
+    designVerdict: { status: 'needs_review' }
+});
+check(
+    completedSoftQualityUnderclaimMessage.includes('PSD 已保存')
+        && completedSoftQualityUnderclaimMessage.includes('本次结果已经完成')
+        && !completedSoftQualityUnderclaimMessage.includes('质量仍待复核'),
+    'completed + 非阻断质量 finding 不再把已交付结果少报成待复核终态',
+    completedSoftQualityUnderclaimMessage
+);
+const completedUnverifiedGenericReviewMessage = alignUserVisibleCompletionMessage({
+    message: '本次结果需要复核。',
+    executionStatus: 'completed',
+    requirements: [],
+    designVerdict: { status: 'passed_unverified' }
+});
+check(
+    completedUnverifiedGenericReviewMessage.includes('本轮质量检查没有取得完整结论')
+        && completedUnverifiedGenericReviewMessage.includes('本次结果已经完成')
+        && !completedUnverifiedGenericReviewMessage.includes('可选优化'),
+    'passed_unverified 的 generic 结果复核少报不能被包装成可选优化，必须保留质量未知事实',
+    completedUnverifiedGenericReviewMessage
+);
+const preciseTerminalClosureSummary = '当前画面已完成写后检查；导出文件收据仍缺失。';
+const terminalClosureNeedsReviewMessage = alignUserVisibleCompletionMessage({
+    message: 'PSD 已保存，质量通过；结果需要复核。',
+    executionStatus: 'needs_review',
+    requirements: [{ id: 'delivery', status: 'needs_review' }],
+    designVerdict: { status: 'needs_review' },
+    terminalClosureOutcome: { publicSummary: preciseTerminalClosureSummary }
+});
+const deduplicatedTerminalClosureMessage = alignUserVisibleCompletionMessage({
+    message: `质量通过。${preciseTerminalClosureSummary}`,
+    executionStatus: 'needs_review',
+    requirements: [{ id: 'delivery', status: 'needs_review' }],
+    designVerdict: { status: 'needs_review' },
+    terminalClosureOutcome: { publicSummary: preciseTerminalClosureSummary }
+});
+check(
+    terminalClosureNeedsReviewMessage.includes('PSD 已保存')
+        && terminalClosureNeedsReviewMessage.includes(preciseTerminalClosureSummary)
+        && !/质量通过|当前设计质量仍待复核|结果需要复核/.test(terminalClosureNeedsReviewMessage)
+        && (deduplicatedTerminalClosureMessage.match(/当前画面已完成写后检查/g) || []).length === 1,
+    'terminal closure publicSummary 是 needs_review 唯一精确终态事实，仍清理质量误报且不追加 generic notice',
+    JSON.stringify({ terminalClosureNeedsReviewMessage, deduplicatedTerminalClosureMessage })
+);
+
+const completedProjectionSummary = {
+    status: 'completed',
+    stopReason: 'final_response',
+    iterations: 2,
+    toolCallCount: 2,
+    successfulToolCalls: 2,
+    failedToolCalls: 0,
+    acceptanceVerified: 1,
+    acceptanceFailed: 0,
+    acceptanceNeedsReview: 0,
+    noDocumentChangeRisks: 0,
+    blockers: [],
+    warnings: [],
+    summaryText: '完成'
+};
+const staleDesignTaskCard = {
+    version: 'design-task-card/v1',
+    id: 'card-stale',
+    title: '当前设计',
+    role: '完成当前设计交付',
+    judgment: '依据当前素材形成清晰画面',
+    items: [{ id: 'deliver', kind: 'deliverable', text: '完成画面', status: 'todo' }],
+    createdAt: 1,
+    updatedAt: 1
+};
+const completedDesignTaskCard = {
+    ...staleDesignTaskCard,
+    id: 'card-completed',
+    items: [{ id: 'deliver', kind: 'deliverable', text: '完成画面', status: 'done' }]
+};
+const staleTaskPlanPresentation = {
+    version: 'agent-task-plan-presentation/v0',
+    identity: {
+        sessionId: 'session-1',
+        runId: 'run-1',
+        generation: 1,
+        revision: 1,
+        revisionHash: 'r4-stale',
+        conversationId: 'conversation-1',
+        projectId: 'project-1'
+    },
+    goal: '完成当前设计',
+    steps: [{ id: 'step-1', kind: 'mutate', label: '制作画面', status: 'pending' }]
+};
+const completedTaskPlanPresentation = {
+    ...staleTaskPlanPresentation,
+    identity: { ...staleTaskPlanPresentation.identity, revisionHash: 'r4-completed' },
+    steps: [{ id: 'step-1', kind: 'mutate', label: '制作画面', status: 'completed' }]
+};
+const staleCompletedProjection = convertLegacyMessage({
+    id: 'completed-stale-work-note',
+    role: 'assistant',
+    content: '画面与文件已经交付。',
+    timestamp: 1,
+    executionSummary: completedProjectionSummary,
+    designTaskCard: staleDesignTaskCard,
+    agentTaskPlanPresentation: staleTaskPlanPresentation,
+    businessVisualObservationFeedback: {
+        feedbackVersion: 'business-skill-visual-observation-feedback/v0',
+        userVisible: true,
+        severity: 'warning',
+        title: '项目素材上下文不完整',
+        summary: '当前没有完整的项目素材上下文。',
+        actionHint: '刷新项目素材上下文。',
+        recommendedActions: ['refresh_project_context'],
+        missingInputs: ['project_context'],
+        warningItems: [],
+        limitations: []
+    }
+});
+check(
+    !staleCompletedProjection.blocks.some((block) => block.type === 'design_task_card' || block.type === 'task_plan')
+        && !JSON.stringify(staleCompletedProjection.blocks).includes('项目素材上下文不完整'),
+    'canonical completed 压制未同步任务卡、行动计划与前置素材提示，不建立第二终态',
+    JSON.stringify(staleCompletedProjection.blocks)
+);
+const completedCardProjection = convertLegacyMessage({
+    id: 'completed-card-history',
+    role: 'assistant',
+    content: '画面与文件已经交付。',
+    timestamp: 1,
+    executionSummary: completedProjectionSummary,
+    designTaskCard: completedDesignTaskCard
+});
+const completedPlanProjection = convertLegacyMessage({
+    id: 'completed-plan-history',
+    role: 'assistant',
+    content: '画面与文件已经交付。',
+    timestamp: 1,
+    executionSummary: completedProjectionSummary,
+    agentTaskPlanPresentation: completedTaskPlanPresentation
+});
+check(
+    completedCardProjection.blocks.some((block) => block.type === 'design_task_card')
+        && completedPlanProjection.blocks.some((block) => block.type === 'task_plan'),
+    '已闭合的任务卡和行动计划仍可作为历史过程展示'
+);
+const failedWorkNoteProjection = convertLegacyMessage({
+    id: 'failed-work-note',
+    role: 'assistant',
+    content: 'Photoshop 连接中断，本轮没有写入画面。',
+    timestamp: 1,
+    executionSummary: { ...completedProjectionSummary, status: 'failed', stopReason: 'error' },
+    designTaskCard: staleDesignTaskCard
+});
+const waitingWorkNoteProjection = convertLegacyMessage({
+    id: 'waiting-work-note',
+    role: 'assistant',
+    content: '请确认后继续。',
+    timestamp: 1,
+    executionSummary: {
+        ...completedProjectionSummary,
+        status: 'awaiting_confirmation',
+        stopReason: 'awaiting_user_confirmation'
+    },
+    agentTaskPlanPresentation: staleTaskPlanPresentation
+});
+check(
+    failedWorkNoteProjection.blocks.some((block) => block.type === 'design_task_card')
+        && waitingWorkNoteProjection.blocks.some((block) => block.type === 'task_plan'),
+    '真实失败与等待状态继续保留未完成工作笔记'
+);
+
+const completedLegacyControlledRun = {
+    version: 'agent-task-public-plan-controlled-runner/v0',
+    status: 'completed_live_adapter_verified',
+    operationRequests: [],
+    operationResults: [],
+    plannedWriteTools: [],
+    executedWriteTools: [],
+    readbackTargets: [],
+    readbackResults: [],
+    blockers: [],
+    warnings: []
+};
+const completedLegacyControlledProjection = convertLegacyMessage({
+    id: 'legacy-controlled-completed',
+    role: 'assistant',
+    content: '',
+    timestamp: 1,
+    agentTaskPublicPlanExecutionRequest: {
+        version: 'agent-task-public-plan-execution-request/v0',
+        status: 'blocked_pending_user_confirmation',
+        requestId: 'request-1',
+        proposedWriteTools: [],
+        readbackTargets: []
+    },
+    agentTaskPublicPlanControlledRun: completedLegacyControlledRun
+});
+const completedLegacyControlledProjectionText = JSON.stringify(completedLegacyControlledProjection.blocks);
+check(
+    completedLegacyControlledProjectionText.includes('画面已创建')
+        && !completedLegacyControlledProjectionText.includes('准备开始')
+        && !completedLegacyControlledProjectionText.includes('待复核'),
+    'legacy live controlled-run 已完成时压制旧执行请求，并只显示中性已创建事实',
+    completedLegacyControlledProjectionText
+);
+
+const runtimeSnapshotBase = {
+    version: 'runtime-task-snapshot/v0',
+    identity: { sessionId: 'session-1', runId: 'run-1', generation: 1 },
+    goal: { source: 'request_task_plan', text: '完成当前设计' },
+    outcome: { status: 'completed', source: 'execution_summary' },
+    actionPlan: {
+        presentationRevision: 1,
+        presentationRevisionHash: 'r4-snapshot',
+        steps: [{ stepId: 'step-1', kind: 'mutate', status: 'not_observed' }]
+    }
+};
+const staleSnapshotPresentation = buildAgentTaskPlanPresentation({
+    runtimeTaskSnapshot: runtimeSnapshotBase,
+    conversationId: 'conversation-1',
+    projectId: 'project-1'
+});
+const completedSnapshotPresentation = buildAgentTaskPlanPresentation({
+    runtimeTaskSnapshot: {
+        ...runtimeSnapshotBase,
+        actionPlan: {
+            ...runtimeSnapshotBase.actionPlan,
+            steps: [{ stepId: 'step-1', kind: 'mutate', status: 'completed' }]
+        }
+    },
+    conversationId: 'conversation-1',
+    projectId: 'project-1'
+});
+check(
+    staleSnapshotPresentation === undefined
+        && completedSnapshotPresentation?.steps[0]?.status === 'completed',
+    'RuntimeTaskSnapshot completed 不生成矛盾 pending 计划，也不把旧 step 假打勾',
+    JSON.stringify({ staleSnapshotPresentation, completedSnapshotPresentation })
+);
+
+const explicitSourceVisualContext = buildBusinessVisualContextForSkill('main-image-design', {
+    params: { assetPath: 'C:\\project\\product.jpg' },
+    context: {}
+});
+const explicitSourceVisualFeedback = explicitSourceVisualContext
+    ? buildBusinessSkillVisualObservationFeedback(explicitSourceVisualContext)
+    : undefined;
+check(
+    explicitSourceVisualContext?.status === 'needs_visual_insight'
+        && explicitSourceVisualContext.candidateSummary.contextualSourceCandidateCount === 1
+        && explicitSourceVisualFeedback?.userVisible === false,
+    '显式源图是当前 Skill 的真实输入；缺 projectContext 不能再伪报没有素材',
+    JSON.stringify({ explicitSourceVisualContext, explicitSourceVisualFeedback })
+);
+const explicitSourceArrayVisualContext = buildBusinessVisualContextForSkill('sku-batch', {
+    params: {
+        sources: [
+            'C:\\project\\sku-a.jpg',
+            { filePath: 'C:\\project\\sku-b.png', colorName: '浅灰' }
+        ],
+        sourcePaths: [
+            'C:\\project\\sku-c.webp',
+            { sourcePath: 'C:\\project\\sku-d.tif' }
+        ]
+    },
+    context: {}
+});
+const explicitSourceArrayVisualFeedback = explicitSourceArrayVisualContext
+    ? buildBusinessSkillVisualObservationFeedback(explicitSourceArrayVisualContext)
+    : undefined;
+check(
+    explicitSourceArrayVisualContext?.status === 'needs_visual_insight'
+        && explicitSourceArrayVisualContext.candidateSummary.contextualSourceCandidateCount === 4
+        && explicitSourceArrayVisualFeedback?.userVisible === false,
+    'sources / sourcePaths 的字符串与对象两种显式来源都阻止无素材误报',
+    JSON.stringify({ explicitSourceArrayVisualContext, explicitSourceArrayVisualFeedback })
+);
+
 const rawCompletionHistory = [
     { role: 'system', content: '系统提示' },
     { role: 'assistant', content: markdownQualityMessage },
@@ -2721,6 +3077,98 @@ rawEvidenceFinalQualityProtocolRecord.quality.finalQualityModelProtocol.evidence
 check(
     !validateAgentRunRecordForPersist(rawEvidenceFinalQualityProtocolRecord).ok,
     'evidenceScope 拒绝路径或四个布尔范围字段以外的内容'
+);
+
+console.log('[8b] Terminal closure 只进入有界 Run Record 摘要');
+const terminalClosureSensitivePath = 'C:/private/project/final-main-image.psd';
+const terminalClosureSensitiveFingerprint = 'terminal-gap-fingerprint-secret';
+const terminalClosureRecord = buildAgentRunRecord({
+    now: '2026-08-27T07:00:00.000Z',
+    goal: '完成当前设计并闭合最终证据',
+    result: {
+        success: false,
+        stopReason: 'no_progress',
+        iterations: 4,
+        toolCallLog: [],
+        executionSummary: {
+            status: 'needs_review',
+            blockers: [],
+            warnings: [],
+            terminalClosureOutcome: {
+                version: 'agent-terminal-closure-outcome/v0',
+                status: 'stopped',
+                gapKind: 'delivery_evidence',
+                reason: 'same_gap',
+                fingerprint: terminalClosureSensitiveFingerprint,
+                missingCheckKeys: ['internal.delivery.check'],
+                missingEvidenceKinds: ['fresh_visual'],
+                missingOutputs: ['main_image_psd', terminalClosureSensitivePath],
+                currentHistory: {
+                    documentId: 71,
+                    historyStateId: 18,
+                    sourcePath: terminalClosureSensitivePath
+                },
+                reviewHistory: { documentId: 71, historyStateId: 17 },
+                publicSummary: `文件仍缺少：${terminalClosureSensitivePath}`,
+                boundaries: {
+                    selectsTool: false,
+                    grantsPermission: false,
+                    preservesCanonicalResult: true
+                }
+            }
+        }
+    }
+});
+const terminalClosureRecordText = JSON.stringify(terminalClosureRecord);
+check(
+    terminalClosureRecord.terminalClosure?.version === 'agent-terminal-closure-digest/v0'
+        && terminalClosureRecord.terminalClosure?.status === 'stopped'
+        && terminalClosureRecord.terminalClosure?.gapKind === 'delivery_evidence'
+        && terminalClosureRecord.terminalClosure?.reason === 'same_gap'
+        && terminalClosureRecord.terminalClosure?.missingEvidenceKinds.join(',') === 'fresh_visual'
+        && terminalClosureRecord.terminalClosure?.missingCheckCount === 1
+        && terminalClosureRecord.terminalClosure?.missingOutputCount === 2
+        && terminalClosureRecord.terminalClosure?.currentHistory?.documentId === 71
+        && terminalClosureRecord.terminalClosure?.currentHistory?.historyStateId === 18
+        && terminalClosureRecord.terminalClosure?.reviewHistory?.historyStateId === 17
+        && terminalClosureRecord.boundaries.terminalClosureDigestOnly === true
+        && validateAgentRunRecordForPersist(terminalClosureRecord).ok,
+    'Terminal closure 类别、数量与版本锚点进入有界 Run Record 摘要',
+    JSON.stringify(terminalClosureRecord.terminalClosure)
+);
+check(
+    !terminalClosureRecordText.includes(terminalClosureSensitivePath)
+        && !terminalClosureRecordText.includes(terminalClosureSensitiveFingerprint)
+        && !terminalClosureRecordText.includes('internal.delivery.check')
+        && !terminalClosureRecordText.includes('main_image_psd')
+        && !terminalClosureRecordText.includes('publicSummary')
+        && !terminalClosureRecordText.includes('missingOutputs')
+        && !terminalClosureRecordText.includes('missingCheckKeys'),
+    'Terminal closure Run Record 不保存路径、fingerprint、内部 token、用户文案或原始缺失项'
+);
+const terminalClosureWithoutBoundary = JSON.parse(JSON.stringify(terminalClosureRecord));
+delete terminalClosureWithoutBoundary.boundaries.terminalClosureDigestOnly;
+check(
+    !validateAgentRunRecordForPersist(terminalClosureWithoutBoundary).ok,
+    'Terminal closure 摘要缺 digest-only 边界时拒绝持久化'
+);
+const terminalClosureWithRawField = JSON.parse(JSON.stringify(terminalClosureRecord));
+terminalClosureWithRawField.terminalClosure.publicSummary = '不应进入长期档案';
+check(
+    !validateAgentRunRecordForPersist(terminalClosureWithRawField).ok,
+    'Terminal closure 摘要出现用户文案或未声明字段时拒绝持久化'
+);
+const terminalClosureWithInvalidHistory = JSON.parse(JSON.stringify(terminalClosureRecord));
+terminalClosureWithInvalidHistory.terminalClosure.currentHistory.documentId = '71';
+check(
+    !validateAgentRunRecordForPersist(terminalClosureWithInvalidHistory).ok,
+    'Terminal closure 版本锚点必须保持严格正整数且不得宽松转换'
+);
+check(
+    validateAgentRunRecordForPersist(record).ok
+        && record.terminalClosure === undefined
+        && record.boundaries.terminalClosureDigestOnly === undefined,
+    '旧 Run Record 没有 Terminal closure 摘要时继续兼容'
 );
 
 if (failed > 0) {

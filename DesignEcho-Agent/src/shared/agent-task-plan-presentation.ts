@@ -215,6 +215,19 @@ function buildPresentationFromRuntimeTaskSnapshot(
         || !projectId) {
         return undefined;
     }
+    const steps = actionPlan.steps.map((step) => ({
+        id: step.stepId,
+        kind: step.kind,
+        label: projectActionStepLabel(step.kind),
+        status: projectSnapshotStepStatus(step.status)
+    }));
+    // RuntimeTaskSnapshot outcome 是同一 Runtime 的 canonical 结果。任务已经 completed 时，
+    // 旧 reconciliation 留下的 pending / failed step 只是未同步工作笔记；不把它们假打勾，
+    // 也不生成一张与最终结果冲突的“设计进度”卡。
+    if (snapshot.outcome?.status === 'completed'
+        && steps.some((step) => step.status !== 'completed')) {
+        return undefined;
+    }
     return {
         version: 'agent-task-plan-presentation/v0',
         identity: {
@@ -229,12 +242,7 @@ function buildPresentationFromRuntimeTaskSnapshot(
         goal: snapshot.goal.source === 'request_task_plan'
             ? (cleanText(snapshot.goal.text, 360) || '完成当前设计')
             : '完成当前设计',
-        steps: actionPlan.steps.map((step) => ({
-            id: step.stepId,
-            kind: step.kind,
-            label: projectActionStepLabel(step.kind),
-            status: projectSnapshotStepStatus(step.status)
-        }))
+        steps
     };
 }
 

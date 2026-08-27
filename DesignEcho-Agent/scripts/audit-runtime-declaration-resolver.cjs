@@ -27,6 +27,7 @@ const {
 const {
   evaluateDesignEvaluationProfile,
   GENERAL_DESIGN_EVALUATION_PROFILE_ID,
+  getDesignEvaluationProfileById,
   getDesignEvaluationProfileVlmAssertions,
   validateDesignEvaluationProfile
 } = require(path.join(runtimeRoot, 'design-evaluation-profiles.ts'));
@@ -143,6 +144,20 @@ const {
   'services',
   'agent-runtime',
   'agent.ts'
+));
+const {
+  decideTerminalClosureContinuation,
+  evaluateNaturalFinalTerminalClosureCheckpoint,
+  projectRecoverableTerminalClosureGap,
+  projectTerminalClosureRuntimeBoundary
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'terminal-closure-checkpoint.ts'
 ));
 const {
   guardRuntimeInteractiveReentryResult
@@ -4238,7 +4253,7 @@ skuBatchE2Agent.toolCallLog = [{
   result: { success: true, data: { runtimeDeliveryReceipt: skuBatchDeliveryReceipt } },
   origin: 'model_tool_call'
 }];
-const skuBatchE2Evidence = skuBatchE2Agent.appendDeliveryStageTraceIfEligible(passedSkuSummary);
+const skuBatchE2Evidence = skuBatchE2Agent.projectDeliveryStageEvidence(passedSkuSummary);
 assert.strictEqual(
   skuBatchE2Evidence.deliveryEvidencePassed,
   false,
@@ -4267,7 +4282,7 @@ skuBatchE2Agent.toolCallLog.push({
   },
   origin: 'model_tool_call'
 });
-const skuBatchE2AfterUnboundSave = skuBatchE2Agent.appendDeliveryStageTraceIfEligible(passedSkuSummary);
+const skuBatchE2AfterUnboundSave = skuBatchE2Agent.projectDeliveryStageEvidence(passedSkuSummary);
 assert.strictEqual(skuBatchE2AfterUnboundSave.deliveryEvidencePassed, false);
 
 skuBatchE2Agent.toolCallLog.push({
@@ -4277,7 +4292,7 @@ skuBatchE2Agent.toolCallLog.push({
   result: { success: true, activeDocumentId: 88 },
   origin: 'model_tool_call'
 });
-const staleSkuBatchE2Evidence = skuBatchE2Agent.appendDeliveryStageTraceIfEligible(passedSkuSummary);
+const staleSkuBatchE2Evidence = skuBatchE2Agent.projectDeliveryStageEvidence(passedSkuSummary);
 assert.strictEqual(staleSkuBatchE2Evidence.deliveryEvidencePassed, false,
   'a later Photoshop content mutation must invalidate the multi-document SKU receipt');
 
@@ -9386,7 +9401,7 @@ async function assertDetailCompoundReceiptClosesAgentE2OnlyWithRuntimeBinding() 
     result: trustedSkillResult,
     origin: 'model_tool_call'
   }];
-  const passed = detailAgent.appendDeliveryStageTraceIfEligible({
+  const passed = detailAgent.projectDeliveryStageEvidence({
     status: 'completed',
     blockers: [],
     designVerdict: { status: 'passed', blockers: [], warnings: [] }
@@ -9411,7 +9426,7 @@ async function assertDetailCompoundReceiptClosesAgentE2OnlyWithRuntimeBinding() 
     result: JSON.parse(JSON.stringify(rawSkillResult)),
     origin: 'model_tool_call'
   }];
-  assert.strictEqual(unboundAgent.appendDeliveryStageTraceIfEligible({
+  assert.strictEqual(unboundAgent.projectDeliveryStageEvidence({
     status: 'completed', blockers: [], designVerdict: { status: 'passed', blockers: [], warnings: [] }
   }).deliveryEvidencePassed, false, 'serialized or producer-only detail receipt must not close E2');
 
@@ -9429,7 +9444,7 @@ async function assertDetailCompoundReceiptClosesAgentE2OnlyWithRuntimeBinding() 
     result: trustedSkillResult,
     origin: 'model_tool_call'
   }];
-  assert.strictEqual(incompleteReviewAgent.appendDeliveryStageTraceIfEligible({
+  assert.strictEqual(incompleteReviewAgent.projectDeliveryStageEvidence({
     status: 'completed', blockers: [], designVerdict: { status: 'passed', blockers: [], warnings: [] }
   }).deliveryEvidencePassed, false, 'partial multi-surface review must not close detail E2');
 }
@@ -9720,6 +9735,495 @@ function assertWorkflowDeliveryReentryIsExactAndOutOfBand() {
   }), undefined, 'partial staged Runtime identity must not issue a delivery reentry');
 }
 
+function buildTerminalClosureBehaviorSummary(status) {
+  return {
+    status,
+    stopReason: 'final_response',
+    iterations: 2,
+    businessActionCount: 1,
+    harnessActionCount: 0,
+    toolCallCount: 1,
+    successfulToolCalls: 1,
+    failedToolCalls: 0,
+    completionBlockingFailedToolCalls: 0,
+    successfulMutationCalls: 1,
+    successfulObservationCalls: 1,
+    observedToolCallCount: 1,
+    acceptanceVerified: 0,
+    acceptanceFailed: 0,
+    acceptanceNeedsReview: 0,
+    noDocumentChangeRisks: 0,
+    completionBlockingAcceptanceFailed: 0,
+    completionBlockingAcceptanceNeedsReview: 0,
+    completionBlockingNoDocumentChangeRisks: 0,
+    blockers: [],
+    warnings: status === 'completed' ? [] : ['当前版本仍缺少必需视觉证据。'],
+    summaryText: status === 'completed' ? '当前结果已闭合。' : '当前结果仍需复核。'
+  };
+}
+
+function buildPreparedTerminalClosure(status) {
+  return {
+    executionSummary: buildTerminalClosureBehaviorSummary(status),
+    deliveryStageEvidence: { deliveryEvidencePassed: false },
+    vlmAssertions: null
+  };
+}
+
+function buildPlanNeutralTerminalClosureGap(options = {}) {
+  const evaluationProfile = getDesignEvaluationProfileById(
+    GENERAL_DESIGN_EVALUATION_PROFILE_ID
+  );
+  assert(evaluationProfile, 'general design evaluation profile must exist');
+  const summary = {
+    ...buildTerminalClosureBehaviorSummary('needs_review'),
+    designEvaluationProfileDigest: {
+      version: 'design-evaluation-profile-digest/v0',
+      profileId: evaluationProfile.profileId,
+      status: 'needs_review',
+      completion: {
+        artifactStatus: 'artifact_incomplete',
+        publicationReviewStatus: 'publication_review_not_required',
+        publicationReviewCheckCount: 0,
+        approvedPublicationReviewCheckCount: 0,
+        pendingPublicationReviewCheckKeys: [],
+        rejectedPublicationReviewCheckKeys: [],
+        boundaries: {
+          artifactCompletionUsesPublicationReview: false,
+          humanApprovalCanBeInferred: false
+        }
+      },
+      overallScore: 0,
+      coverageRatio: 0,
+      requiredCheckCount: 1,
+      completedRequiredCheckCount: 0,
+      missingRequiredCheckCount: 1,
+      failedCheckCount: 0,
+      needsReviewCheckCount: 0,
+      missingRequiredCheckKeys: [options.missingCheckKey || 'fresh_visual_evaluation'],
+      failedCheckKeys: [],
+      needsReviewCheckKeys: [],
+      requiredNeedsReviewCheckKeys: [],
+      verificationCoverageRatio: 0,
+      issueCodes: ['critical_check_missing'],
+      boundaries: { digestOnly: true, notFinalVerdict: true }
+    }
+  };
+  const gap = projectRecoverableTerminalClosureGap({
+    summary,
+    evaluationProfile,
+    currentHistoryStateRef: { documentId: 71, historyStateId: 11 },
+    reviewHistoryStateRef: options.reviewHistoryStateRef || { documentId: 71, historyStateId: 10 },
+    finalQualityJudgeAvailable: options.finalQualityJudgeAvailable !== false
+  });
+  assert(gap && gap.kind === 'post_write_evidence');
+  return gap;
+}
+
+async function assertNaturalFinalResponseContinuesInSameAgentInstance() {
+  const gap = buildPlanNeutralTerminalClosureGap();
+  const structureGap = buildPlanNeutralTerminalClosureGap({
+    missingCheckKey: 'fresh_structure_snapshot',
+    reviewHistoryStateRef: { documentId: 71, historyStateId: 11 },
+    finalQualityJudgeAvailable: false
+  });
+  assert.deepStrictEqual(structureGap.missingEvidenceKinds, ['fresh_structure'],
+    'required post-write structure evidence must recover without depending on Final Judge availability');
+  const finalJudgeRetryGap = buildPlanNeutralTerminalClosureGap({
+    reviewHistoryStateRef: { documentId: 71, historyStateId: 11 }
+  });
+  assert.deepStrictEqual(finalJudgeRetryGap.missingEvidenceKinds, ['fresh_visual'],
+    'a fresh ReviewSet with a missing required Final Judge verdict must remain recoverable in-instance');
+  assert.strictEqual(projectTerminalClosureRuntimeBoundary({
+    gap,
+    signalAborted: false,
+    hasUnsettledWriteState: true
+  }).reason, 'unknown_write', 'plan-neutral unknown writes must not enter terminal recovery');
+  assert(!/(getDocumentInfo|getCanvasSnapshot|getScreenSnapshots|saveDocument|quickExport)/u.test(
+    gap.message
+  ), 'terminal closure fact message must not prescribe a Tool');
+  assert.strictEqual(decideTerminalClosureContinuation({
+    gap,
+    lastGapFingerprint: '',
+    recoveryAttempts: 0,
+    runtimeBoundary: { allowed: true },
+    budgetBoundaryAllows: true
+  }).shouldContinue, true);
+  const sameGapDecision = decideTerminalClosureContinuation({
+    gap,
+    lastGapFingerprint: gap.fingerprint,
+    recoveryAttempts: 1,
+    runtimeBoundary: { allowed: true },
+    budgetBoundaryAllows: true
+  });
+  assert.strictEqual(sameGapDecision.shouldContinue, false);
+  assert.strictEqual(sameGapDecision.suppressReflexionHandoff, true);
+  assert.strictEqual(sameGapDecision.reason, 'same_gap');
+  for (const boundary of ['runtime', 'budget']) {
+    const boundaryDecision = decideTerminalClosureContinuation({
+      gap,
+      lastGapFingerprint: '',
+      recoveryAttempts: 0,
+      runtimeBoundary: boundary === 'runtime'
+        ? { allowed: false, reason: 'writer_conflict' }
+        : { allowed: true },
+      budgetBoundaryAllows: boundary !== 'budget'
+    });
+    assert.strictEqual(boundaryDecision.shouldContinue, false);
+    assert.strictEqual(boundaryDecision.suppressReflexionHandoff, true,
+      `${boundary} boundary must not escape into outer Agent reentry`);
+    if (boundary === 'runtime') {
+      assert.strictEqual(decideTerminalClosureContinuation({
+        gap,
+        lastGapFingerprint: gap.fingerprint,
+        recoveryAttempts: 1,
+        runtimeBoundary: { allowed: false, reason: 'writer_conflict' },
+        budgetBoundaryAllows: true
+      }).reason, 'writer_conflict', 'a safety boundary must outrank a repeated-gap diagnostic');
+    }
+    const boundaryCheckpoint = await evaluateNaturalFinalTerminalClosureCheckpoint({
+      finalMessage: '候选终稿',
+      unsupportedBareCompletionClaim: false,
+      iteration: 1,
+      lastGapFingerprint: '',
+      recoveryAttempts: 0,
+      prepareClosure: async () => ({
+        ...buildPreparedTerminalClosure('needs_review'),
+        reflexionHandoff: {
+          version: 'quality-gate-reflexion-handoff/v0',
+          status: 'reflexion_required',
+          sourceOwner: 'R5',
+          targetStage: 'R5',
+          reenterLoop: 'react',
+          failureAnalysis: ['缺口仍可恢复。'],
+          strategyAdjustments: [],
+          nextRoundConstraints: []
+        }
+      }),
+      projectGap: () => gap,
+      projectRuntimeBoundary: () => boundary === 'runtime'
+        ? { allowed: false, reason: 'writer_conflict' }
+        : { allowed: true },
+      budgetBoundaryAllows: () => boundary !== 'budget'
+    });
+    assert.strictEqual(boundaryCheckpoint.preparedClosure?.reflexionHandoff, undefined,
+      `${boundary} boundary must strip the recoverable closure handoff before canonical commit`);
+  }
+
+  let agent;
+  let modelCallCount = 0;
+  let terminalPrepareCount = 0;
+  let commitCount = 0;
+  let closureControlMessage = '';
+  const finalText = '我已经根据当前文档完成了本轮检查，并保留了真实读取结果。当前结论与文档状态一致，下面给出可直接查看的说明。';
+  agent = new Agent(
+    buildAgentTestConfig({
+      tools: [requireAgentTool('getDocumentInfo')],
+      maxIterations: 5,
+      openingCanvasObservationMode: 'none'
+    }),
+    async (_modelId, messages) => {
+      modelCallCount += 1;
+      if (modelCallCount === 1) {
+        return {
+          content: '我先确认当前文档状态。',
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'terminal-closure-observation',
+            name: 'getDocumentInfo',
+            arguments: {}
+          }]
+        };
+      }
+      if (modelCallCount === 2) return { content: finalText, stopReason: 'end_turn' };
+      closureControlMessage = messages
+        .map((message) => typeof message.content === 'string' ? message.content : '')
+        .find((content) => content.includes('终态闭合检查发现')) || '';
+      assert.strictEqual(commitCount, 0,
+        'terminal closure continuation must happen before commit/finalize/writer release');
+      assert.strictEqual(agent.toolCallLog[0]?.callId, 'terminal-closure-observation',
+        'the same Agent instance must retain its Tool log');
+      return { content: `${finalText} 当前版本的必需事实也已闭合。`, stopReason: 'end_turn' };
+    },
+    async () => buildDocumentObservation()
+  );
+  agent.shouldRequestRicherFinalSummary = () => false;
+  agent.prepareAgentTerminalClosure = async (input) => {
+    terminalPrepareCount += 1;
+    agent.advancePerformanceIteration(input.iterations);
+    return terminalPrepareCount === 1
+      ? buildPreparedTerminalClosure('needs_review')
+      : buildPreparedTerminalClosure('completed');
+  };
+  agent.buildRecoverableTerminalClosureGap = (prepared) => (
+    prepared.executionSummary.status === 'needs_review' ? gap : undefined
+  );
+  const originalCommit = agent.buildRunResult.bind(agent);
+  agent.buildRunResult = async (...args) => {
+    commitCount += 1;
+    return originalCommit(...args);
+  };
+
+  const result = await agent.run('检查当前文档并给出完整结论');
+  assert.strictEqual(result.executionSummary?.status, 'completed');
+  assert.strictEqual(modelCallCount, 3,
+    'one natural final must return to the same Agent loop exactly once');
+  assert.strictEqual(terminalPrepareCount, 2);
+  assert.strictEqual(commitCount, 1,
+    'only the closed terminal assessment may enter irreversible commit');
+  assert(closureControlMessage.includes('当前版本仍缺少必需且同版本的写后证据'));
+  assert(!/(getDocumentInfo|getCanvasSnapshot|getScreenSnapshots|saveDocument|quickExport)/u.test(
+    closureControlMessage
+  ), 'the injected Harness observation must remain Tool-neutral');
+}
+
+async function assertRepeatedTerminalClosureGapStopsWithoutReentryLoop() {
+  const gap = buildPlanNeutralTerminalClosureGap();
+  let agent;
+  let modelCallCount = 0;
+  let terminalPrepareCount = 0;
+  agent = new Agent(
+    buildAgentTestConfig({
+      tools: [requireAgentTool('getDocumentInfo')],
+      maxIterations: 6,
+      openingCanvasObservationMode: 'none'
+    }),
+    async () => {
+      modelCallCount += 1;
+      if (modelCallCount === 1) {
+        return {
+          content: '我先确认当前文档状态。',
+          stopReason: 'tool_use',
+          toolCalls: [{ id: 'terminal-closure-no-progress', name: 'getDocumentInfo', arguments: {} }]
+        };
+      }
+      return {
+        content: '我已经整理了当前文档的完整说明，并保留了可核对的真实结果。现在给出最终结论。',
+        stopReason: 'end_turn'
+      };
+    },
+    async () => buildDocumentObservation()
+  );
+  agent.shouldRequestRicherFinalSummary = () => false;
+  agent.prepareAgentTerminalClosure = async (input) => {
+    terminalPrepareCount += 1;
+    agent.advancePerformanceIteration(input.iterations);
+    return buildPreparedTerminalClosure('needs_review');
+  };
+  agent.buildRecoverableTerminalClosureGap = () => gap;
+  const result = await agent.run('检查当前文档并给出完整结论');
+  assert.strictEqual(modelCallCount, 3,
+    'the same unchanged terminal gap must stop after one continuation');
+  assert.strictEqual(terminalPrepareCount, 2);
+  assert.strictEqual(result.executionSummary?.status, 'needs_review');
+  assert.strictEqual(result.executionSummary?.reflexionHandoff, undefined,
+    'same-gap exhaustion must not escape into a fresh outer Agent reentry');
+  assert.strictEqual(result.executionSummary?.terminalClosureOutcome?.reason, 'same_gap');
+  assert.deepStrictEqual(result.executionSummary?.terminalClosureOutcome?.missingCheckKeys,
+    gap.missingCheckKeys);
+  assert(result.message.includes(result.executionSummary.terminalClosureOutcome.publicSummary));
+}
+
+async function assertDeliveryTerminalClosureAdvancesWithoutFinalizingWriter() {
+  const revision = { documentId: 1701, historyStateId: 41 };
+  const resolution = resolveRuntimeDeclarationForAgentTask({
+    taskType: 'ecommerce.detail_page.v1',
+    workMode: 'create_new',
+    executableToolNames
+  });
+  assert.strictEqual(resolution.status, 'resolved');
+  const plan = resolution.bundle.stagePlan;
+  let session = observeRuntimeSessionDocumentRevision({
+    session: createRuntimeSession({
+      identity: createRuntimeSessionIdentity({
+        now: '2026-08-27T06:59:00.000Z',
+        nonce: 'terminal-closure-e2',
+        skillId: plan.skillId,
+        taskType: plan.taskType
+      }),
+      plan
+    }),
+    revision,
+    now: '2026-08-27T06:59:01.000Z'
+  });
+  session = {
+    ...session,
+    stageState: { ...session.stageState, status: 'active', currentStage: 'R5' }
+  };
+  const claim = claimRuntimeSessionDocumentWriter({
+    session,
+    expectedRevision: revision,
+    now: '2026-08-27T07:00:00.000Z'
+  });
+  assert.strictEqual(claim.decision.status, 'acquired');
+  const agent = new Agent(
+    {
+      ...buildAgentTestConfig({
+        tools: [requireAgentTool('saveDocument')],
+        maxIterations: 4,
+        openingCanvasObservationMode: 'none'
+      }),
+      runtimeStagePlan: plan
+    },
+    async () => ({ content: '候选终稿', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+  agent.runtimeSession = claim.session;
+  const summary = {
+    ...buildTerminalClosureBehaviorSummary('completed'),
+    designVerdict: {
+      status: 'passed',
+      source: 'contract',
+      designKinds: ['skill_evaluation_profile'],
+      blockers: [],
+      warnings: [],
+      summary: '当前质量裁决已通过。'
+    }
+  };
+  const gap = {
+    kind: 'delivery_evidence',
+    reason: 'delivery_outputs_missing',
+    fingerprint: 'terminal-closure-e2-gap',
+    message: '交付事实未闭合。',
+    missingCheckKeys: [],
+    missingEvidenceKinds: [],
+    missingOutputs: ['delivery_record']
+  };
+  agent.prepareAgentTerminalClosure = async () => ({
+    executionSummary: summary,
+    deliveryStageEvidence: { deliveryEvidencePassed: false },
+    reflexionHandoff: {
+      version: 'quality-gate-reflexion-handoff/v0',
+      status: 'reflexion_required',
+      sourceOwner: 'E2',
+      targetStage: 'E2',
+      reenterLoop: 'react',
+      failureAnalysis: ['交付事实未闭合。'],
+      strategyAdjustments: [],
+      nextRoundConstraints: []
+    },
+    vlmAssertions: null
+  });
+  agent.buildRecoverableTerminalClosureGap = () => gap;
+  const checkpoint = await agent.prepareNaturalFinalResponseCheckpoint(
+    '这是当前文档的候选终稿说明，所有结论都以已记录的真实结果为准。'
+  );
+  assert.strictEqual(checkpoint.continueLoop, true);
+  assert.strictEqual(agent.runtimeSession.stageState.currentStage, 'E2');
+  assert.strictEqual(agent.runtimeSession.finalized, false,
+    'R5 pass -> E2 terminal closure transition must stay inside the live Session');
+  assert.strictEqual(agent.runtimeSession.taskRun.documentBinding?.writer?.runId,
+    claim.session.identity.runId,
+    'terminal closure preparation must not release the existing writer');
+
+  const stalledAgent = new Agent(
+    { ...agent.config, maxIterations: 4 },
+    async () => ({ content: '候选终稿', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+  stalledAgent.runtimeSession = claim.session;
+  stalledAgent.prepareAgentTerminalClosure = agent.prepareAgentTerminalClosure;
+  stalledAgent.buildRecoverableTerminalClosureGap = () => gap;
+  stalledAgent.evaluateRuntimeStage = () => {};
+  const stalledCheckpoint = await stalledAgent.prepareNaturalFinalResponseCheckpoint(
+    '这是当前文档的候选终稿说明，所有结论都以已记录的真实结果为准。'
+  );
+  assert.strictEqual(stalledCheckpoint.continueLoop, false);
+  assert.strictEqual(stalledCheckpoint.preparedClosure?.reflexionHandoff, undefined,
+    'a failed R5 -> E2 transition must not leak a recoverable handoff to an outer Agent');
+  assert.strictEqual(stalledCheckpoint.preparedClosure?.executionSummary.terminalClosureOutcome?.reason,
+    'stage_mismatch');
+  releaseRuntimeTaskRunWriterBinding({
+    taskRunId: claim.session.taskRun.taskRunId,
+    runId: claim.session.identity.runId,
+    generation: claim.session.identity.generation,
+    documentId: revision.documentId
+  });
+}
+
+async function assertTerminalRecoveryEarlyExitCannotEscapeOuterHandoff() {
+  const deliveryGap = {
+    kind: 'delivery_evidence',
+    reason: 'delivery_outputs_missing',
+    fingerprint: 'terminal-recovery-no-progress',
+    message: '当前交付事实未闭合。',
+    missingCheckKeys: [],
+    missingEvidenceKinds: [],
+    missingOutputs: ['main_image_psd', 'delivery_manifest']
+  };
+  const handoff = {
+    version: 'quality-gate-reflexion-handoff/v0',
+    status: 'reflexion_required',
+    sourceOwner: 'E2',
+    targetStage: 'E2',
+    reenterLoop: 'react',
+    failureAnalysis: ['缺口仍可恢复。'],
+    strategyAdjustments: [],
+    nextRoundConstraints: []
+  };
+  const buildRecoveryAgent = () => new Agent(
+    buildAgentTestConfig({ tools: [], maxIterations: 4, openingCanvasObservationMode: 'none' }),
+    async () => ({ content: '', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+  const failedAgent = buildRecoveryAgent();
+  failedAgent.terminalClosureRecoveryAttempts = 1;
+  failedAgent.lastTerminalClosureGap = deliveryGap;
+  const failedResult = await failedAgent.buildRunResult({
+    success: false,
+    message: '当前设计质量已经通过，可以直接使用。',
+    iterations: 3,
+    stopReason: 'no_progress',
+    error: 'No progress'
+  }, {
+    executionSummary: {
+      ...buildTerminalClosureBehaviorSummary('needs_review'),
+      stopReason: 'no_progress',
+      designVerdict: {
+        status: 'needs_review', source: 'contract', designKinds: ['skill_evaluation_profile'],
+        blockers: [], warnings: ['需要复核。'], summary: '需要复核。'
+      }
+    },
+    deliveryStageEvidence: { deliveryEvidencePassed: false },
+    reflexionHandoff: handoff,
+    vlmAssertions: null
+  });
+  assert.strictEqual(failedResult.executionSummary?.reflexionHandoff, undefined,
+    'terminal recovery no-progress must not create an outer Reflexion reentry');
+  assert.strictEqual(failedResult.data?.reflexionHandoff, undefined);
+  assert.strictEqual(failedResult.executionSummary?.terminalClosureOutcome?.reason,
+    'recovery_no_progress');
+  assert(!/main_image_psd|delivery_manifest|写后事实|交付收据/u.test(failedResult.message),
+    'terminal closure public copy must not expose manifest tokens or Runtime jargon');
+  assert(!failedResult.message.includes('当前设计质量仍待复核'),
+    'the exact terminal outcome must replace the generic needs-review notice');
+  assert(failedResult.message.includes('可编辑设计文件')
+    && failedResult.message.includes('交付记录'));
+
+  const waitingAgent = buildRecoveryAgent();
+  waitingAgent.terminalClosureRecoveryAttempts = 1;
+  waitingAgent.lastTerminalClosureGap = deliveryGap;
+  const waitingResult = await waitingAgent.buildRunResult({
+    success: true,
+    message: '我需要你确认一个输入后再继续。',
+    iterations: 3,
+    stopReason: 'awaiting_user_input'
+  }, {
+    executionSummary: {
+      ...buildTerminalClosureBehaviorSummary('awaiting_confirmation'),
+      stopReason: 'awaiting_user_input'
+    },
+    deliveryStageEvidence: { deliveryEvidencePassed: false },
+    reflexionHandoff: handoff,
+    vlmAssertions: null
+  });
+  assert.strictEqual(waitingResult.executionSummary?.status, 'awaiting_confirmation');
+  assert.strictEqual(waitingResult.executionSummary?.reflexionHandoff, undefined,
+    'a terminal recovery user wait must not carry an outer reentry handoff');
+  assert.strictEqual(waitingResult.executionSummary?.terminalClosureOutcome, undefined,
+    'a real user wait must not be relabeled as terminal recovery failure');
+}
+
 async function runBehaviorAssertions() {
   assertWorkflowDeliveryReentryIsExactAndOutOfBand();
   await assertRuntimeDeliveryPlanCannotBeFrozenPostHoc();
@@ -9782,6 +10286,10 @@ async function runBehaviorAssertions() {
   await assertObservationObligationRequiresRealReadButNotMutation();
   await assertProviderTruncationRecoveryDoesNotSpendTaskModelBudget();
   await assertBareCompletionClaimsCannotBypassTextExits();
+  await assertNaturalFinalResponseContinuesInSameAgentInstance();
+  await assertRepeatedTerminalClosureGapStopsWithoutReentryLoop();
+  await assertDeliveryTerminalClosureAdvancesWithoutFinalizingWriter();
+  await assertTerminalRecoveryEarlyExitCannotEscapeOuterHandoff();
   console.log(
     `[runtime-declaration-resolver] ${catalog.declarableProfiles.length} profiles ready, `
     + `${catalog.blockedProfiles.length} profiles blocked; live Agent declaration behavior passed.`

@@ -23,6 +23,29 @@ import {
 } from './agent-user-result-projection';
 import { buildAgentActionEventProjection } from './agent-action-event-projection';
 import { resolveLatestClosedDesignQualityHistoryStateRef } from './quality-history-closure';
+import {
+    buildTerminalClosureQualityCache,
+    buildDeliveryStageReflexionHandoff,
+    describeActionableRequiredEvaluationCheck,
+    evaluateNaturalFinalTerminalClosureCheckpoint,
+    formatAgentExecutionSummaryText,
+    guardTerminalRecoveryEarlyExit,
+    inferTerminalReflexionTargetStage,
+    projectTerminalClosureContinuationStep,
+    projectReflexionHandoffStep,
+    projectTerminalClosureStopStep,
+    readActionableRequiredEvaluationCheckKeys,
+    resolveAgentExecutionStatus,
+    projectRecoverableTerminalClosureGap,
+    reuseTerminalClosureQualityIfCurrent as reuseCachedTerminalClosureQuality,
+    stopPreparedTerminalClosure,
+    projectTerminalClosureRuntimeBoundary,
+    resolveTerminalClosureStagePreparation,
+    type AgentDeliveryStageEvidence, type AgentRunResultInput,
+    type AgentTerminalClosureCheckpoint, type AgentTerminalClosureGap,
+    type AgentTerminalClosureQualityCache,
+    type PreparedAgentTerminalClosure
+} from './terminal-closure-checkpoint';
 import { guardRuntimeInteractiveReentryResult } from './runtime-interactive-reentry-result-guard';
 import { normalizeAgentToolFailureResult } from './tool-failure-result-normalizer';
 import type { ProviderNativeToolRequest } from '../../../shared/provider-native-tools';
@@ -1269,6 +1292,12 @@ export class Agent {
     private userSnapshotEmitCount = 0;
     /** 上一张发给用户的快照签名，用于跳过连续相同的画面，避免刷屏。 */
     private lastUserSnapshotSignature = '';
+    /** 自然终稿后的同实例闭合次数；只覆盖终态审计新发现的可恢复事实缺口。 */
+    private terminalClosureRecoveryAttempts = 0;
+    /** 上一次未闭合事实；同指纹再次出现即视为没有真实进展，异常早退也保留精确事实。 */
+    private lastTerminalClosureGap: AgentTerminalClosureGap | undefined;
+    /** E2 补交付期间复用的同 history 质量结论；任何新 mutation / Host 版本变化都会使其失效。 */
+    private terminalClosureQualityCache: AgentTerminalClosureQualityCache | undefined;
     /** Contract-remediation nudges injected so far (cap = MAX_CONTRACT_REMEDIATION_ATTEMPTS). */
     private contractRemediationAttempts = 0;
     /** Repeated identical tool-batch count (cap = REPEATED_TOOL_BATCH_LIMIT). */
@@ -2496,6 +2525,8 @@ export class Agent {
         outcome: RuntimeStageTraceEventInput['outcome'];
         observedOutcomes: string[];
         reason?: string;
+        verdict?: DesignVerdict;
+        reflexionHandoff?: ReflexionHandoff;
     }): void {
         const plan = this.config.runtimeStagePlan;
         if (!plan || !this.runtimeSession) return;
@@ -5098,13 +5129,9 @@ export class Agent {
         });
     }
 
-    private appendDeliveryStageTraceIfEligible(
+    private projectDeliveryStageEvidence(
         summary: AgentExecutionSummary
-    ): {
-        verification?: RuntimeDeliveryVerification;
-        deliveryEvidencePassed: boolean;
-        finalDeliveryResultRefs?: string[];
-    } {
+    ): AgentDeliveryStageEvidence {
         const verdictAllowsDeliveryEvidence = summary.designVerdict?.status === 'passed'
             || (summary.status === 'completed'
                 && summary.blockers.length === 0
@@ -5174,17 +5201,17 @@ export class Agent {
                 sourceHistoryStateRef
             );
             if (!reviewedSourceVersion) return { deliveryEvidencePassed: false };
-            this.appendStageTraceEvent({
-                stage: 'E2',
-                source: 'delivery_result',
-                outcome: 'passed',
-                observedOutcomes: ['user_confirmation_or_delivery_record'],
-                iteration: this.iteration + 1,
-                toolName: savedDelivery.name,
-                toolKind: 'save_export'
-            });
             return {
                 deliveryEvidencePassed: true,
+                stageTraceEvent: {
+                    stage: 'E2',
+                    source: 'delivery_result',
+                    outcome: 'passed',
+                    observedOutcomes: ['user_confirmation_or_delivery_record'],
+                    iteration: this.iteration + 1,
+                    toolName: savedDelivery.name,
+                    toolKind: 'save_export'
+                },
                 ...(savedDelivery.callId ? { finalDeliveryResultRefs: [savedDelivery.callId] } : {})
             };
         }
@@ -5254,16 +5281,16 @@ export class Agent {
             });
             if (!latestDeliveryVerification) latestDeliveryVerification = deliveryVerification;
             if (deliveryVerification.status !== 'passed') continue;
-            this.appendStageTraceEvent({
-                stage: 'E2',
-                source: 'delivery_result',
-                outcome: 'passed',
-                observedOutcomes: ['user_confirmation_or_delivery_record'],
-                iteration: this.iteration + 1
-            });
             return {
                 verification: deliveryVerification,
                 deliveryEvidencePassed: true,
+                stageTraceEvent: {
+                    stage: 'E2',
+                    source: 'delivery_result',
+                    outcome: 'passed',
+                    observedOutcomes: ['user_confirmation_or_delivery_record'],
+                    iteration: this.iteration + 1
+                },
                 finalDeliveryResultRefs: [...receipt.resultRefs]
             };
         }
@@ -5344,16 +5371,16 @@ export class Agent {
             });
             if (!latestDeliveryVerification) latestDeliveryVerification = deliveryVerification;
             if (deliveryVerification.status === 'passed') {
-                this.appendStageTraceEvent({
-                    stage: 'E2',
-                    source: 'delivery_result',
-                    outcome: 'passed',
-                    observedOutcomes: ['user_confirmation_or_delivery_record'],
-                    iteration: this.iteration + 1
-                });
                 return {
                     verification: deliveryVerification,
                     deliveryEvidencePassed: true,
+                    stageTraceEvent: {
+                        stage: 'E2',
+                        source: 'delivery_result',
+                        outcome: 'passed',
+                        observedOutcomes: ['user_confirmation_or_delivery_record'],
+                        iteration: this.iteration + 1
+                    },
                     finalDeliveryResultRefs: [...manifestProjection.receipt.resultRefs]
                 };
             }
@@ -5567,6 +5594,9 @@ export class Agent {
         this.pendingPrimaryVisualObservations = [];
         this.userSnapshotEmitCount = 0;
         this.lastUserSnapshotSignature = '';
+        this.terminalClosureRecoveryAttempts = 0;
+        this.lastTerminalClosureGap = undefined;
+        this.terminalClosureQualityCache = undefined;
     }
 
     private buildSystemPromptWithRuntimeContract(): string {
@@ -6464,7 +6494,16 @@ export class Agent {
                             finalMessage = richerFinalMessage;
                         }
                     }
-                    return this.finishAgentTextResponse(finalMessage);
+                    const terminalClosureCheckpoint = await this.prepareNaturalFinalResponseCheckpoint(
+                        finalMessage
+                    );
+                    if (terminalClosureCheckpoint.continueLoop) {
+                        continue;
+                    }
+                    return this.finishAgentTextResponse(
+                        finalMessage,
+                        terminalClosureCheckpoint.preparedClosure
+                    );
                 }
 
                 // 4. 有 tool_calls：记录 assistant 消息
@@ -10664,12 +10703,117 @@ export class Agent {
         return null;
     }
 
+    private async prepareNaturalFinalResponseCheckpoint(
+        finalMessage: string
+    ): Promise<AgentTerminalClosureCheckpoint> {
+        const checkpoint = await evaluateNaturalFinalTerminalClosureCheckpoint({
+            finalMessage,
+            unsupportedBareCompletionClaim: isBareAgentCompletionClaim(finalMessage)
+                && !this.hasSuccessfulTaskDeliveryAction(),
+            iteration: this.iteration,
+            lastGapFingerprint: this.lastTerminalClosureGap?.fingerprint || '',
+            recoveryAttempts: this.terminalClosureRecoveryAttempts,
+            prepareClosure: (input) => this.prepareAgentTerminalClosure(input),
+            projectGap: (prepared) => this.buildRecoverableTerminalClosureGap(prepared),
+            projectRuntimeBoundary: (gap) => projectTerminalClosureRuntimeBoundary({
+                gap,
+                signalAborted: this.config.signal?.aborted === true,
+                hasUnsettledWriteState: Boolean(this.pendingRuntimeActionMutationReadback || this.runtimeActionProviderRecoveryBlocked),
+                session: this.runtimeSession
+            }),
+            budgetBoundaryAllows: () => this.iteration < this.config.maxIterations
+                && !this.readPerformanceBudgetExhaustion()
+        });
+        if (checkpoint.stopReason) {
+            this.emitStep(projectTerminalClosureStopStep({
+                reason: checkpoint.stopReason,
+                iteration: this.iteration + 1,
+                maxIterations: this.config.maxIterations
+            }));
+        }
+        if (!checkpoint.continueLoop || !checkpoint.gap || !checkpoint.preparedClosure) {
+            return checkpoint;
+        }
+        const stagePreparation = resolveTerminalClosureStagePreparation({
+            gap: checkpoint.gap,
+            currentStage: this.runtimeSession?.stageState.currentStage,
+            designVerdictStatus: checkpoint.preparedClosure.executionSummary.designVerdict?.status
+        });
+        if (stagePreparation === 'advance_r5') {
+            const verdict = checkpoint.preparedClosure.executionSummary.designVerdict;
+            if (verdict) this.evaluateRuntimeStage({
+                stage: 'R5', outcome: 'passed', observedOutcomes: ['quality_gate_report', 'stage_evaluation'],
+                reason: verdict.summary, verdict
+            });
+        }
+        if (stagePreparation === 'blocked'
+            || (stagePreparation === 'advance_r5' && !this.isCurrentRuntimeStage('E2'))) {
+            this.emitStep(projectTerminalClosureStopStep({
+                reason: 'stage_mismatch',
+                iteration: this.iteration + 1,
+                maxIterations: this.config.maxIterations
+            }));
+            return {
+                continueLoop: false,
+                preparedClosure: stopPreparedTerminalClosure(
+                    checkpoint.preparedClosure,
+                    checkpoint.gap,
+                    'stage_mismatch'
+                )
+            };
+        }
+        this.terminalClosureRecoveryAttempts += 1;
+        this.lastTerminalClosureGap = checkpoint.gap;
+        this.terminalClosureQualityCache = checkpoint.gap.kind === 'delivery_evidence'
+            ? buildTerminalClosureQualityCache({
+                historyStateRef: this.readLatestClosedQualityHistoryStateRef(),
+                latestMutationIndex: findLatestObservedPhotoshopMutationIndex(this.toolCallLog),
+                preparedClosure: checkpoint.preparedClosure
+            })
+            : undefined;
+        this.messages.push({ role: 'assistant', content: finalMessage });
+        this.messages.push(createHarnessControlMessage(
+            checkpoint.gap.message,
+            'terminal-closure-recovery',
+            `terminal-closure:${checkpoint.gap.fingerprint}`
+        ));
+        this.emitStep(projectTerminalClosureContinuationStep({
+            gap: checkpoint.gap,
+            iteration: this.iteration + 1,
+            maxIterations: this.config.maxIterations
+        }));
+        this.synchronizeRuntimePerformanceUsage();
+        return { continueLoop: true };
+    }
+
+    private buildRecoverableTerminalClosureGap(
+        preparedClosure: PreparedAgentTerminalClosure
+    ): AgentTerminalClosureGap | undefined {
+        const summary = preparedClosure.executionSummary;
+        const evaluationProfile = this.resolveRuntimeEvaluationProfile();
+        const reviewCandidate = this.findLatestDesignVisualJudgeReviewSet(
+            this.resolveFinalReviewSetRequirements(evaluationProfile).requireMultiSurface
+        );
+        return projectRecoverableTerminalClosureGap({
+            summary,
+            evaluationProfile,
+            currentHistoryStateRef: this.readLatestClosedQualityHistoryStateRef(),
+            reviewHistoryStateRef: reviewCandidate?.historyStateRef,
+            finalQualityJudgeAvailable: Boolean(resolveFinalQualityJudgeModelId(this.config.modelId)),
+            reflexionHandoff: preparedClosure.reflexionHandoff,
+            deliveryVerification: preparedClosure.runtimeDeliveryVerification
+        });
+    }
+
     /**
      * 两条纯文本出口共用同一结果真实性结算：未知任务仍可直接交付完整正文；
      * 只有完成宣称时才要求真实交付动作。纯读取与失败写入都不能替“已完成”背书，
      * 检查任务应直接给出真实观察结果，而不是只说“检查完成”。
      */
-    private finishAgentTextResponse(finalMessage: string): Promise<AgentRunResult> {
+    private finishAgentTextResponse(
+        finalMessage: string,
+        preparedClosure?: PreparedAgentTerminalClosure
+    ): Promise<AgentRunResult> {
         const unsupportedCompletionClaim = isBareAgentCompletionClaim(finalMessage)
             && !this.hasSuccessfulTaskDeliveryAction();
         const userVisibleFinalMessage = unsupportedCompletionClaim
@@ -10693,7 +10837,7 @@ export class Agent {
             ...(unsupportedCompletionClaim
                 ? { error: 'unsupported_bare_completion_claim' }
                 : {})
-        });
+        }, preparedClosure);
     }
 
     private emitDeterministicPreActionDisclosureBeforeFirstToolResult(
@@ -11208,88 +11352,16 @@ export class Agent {
         });
     }
 
-    private buildDeliveryStageReflexionHandoff(
-        summary: AgentExecutionSummary,
-        verification: RuntimeDeliveryVerification | undefined
-    ): ReflexionHandoff | undefined {
-        if (summary.designVerdict?.status !== 'passed'
-            || verification?.status !== 'incomplete'
-            || !this.config.runtimeStagePlan?.steps.some((step) => step.stage === 'E2')) {
-            return undefined;
-        }
-        const missingOutputs = verification.missingOutputs
-            .map((output) => String(output || '').trim())
-            .filter(Boolean);
-        const missingLabel = missingOutputs.length > 0
-            ? missingOutputs.join('、')
-            : '最终文件';
-        return {
-            version: 'quality-gate-reflexion-handoff/v0',
-            status: 'reflexion_required',
-            sourceOwner: 'E2',
-            targetStage: 'E2',
-            reenterLoop: 'react',
-            failureAnalysis: [
-                `设计质量已经通过，但交付仍缺少：${missingLabel}。`
-            ],
-            strategyAdjustments: [
-                '保留已经完成的画面，只补齐需要保存或导出的最终文件。'
-            ],
-            nextRoundConstraints: [
-                `只补齐 ${missingLabel}，不要重新改动画面。`,
-                '使用当前已经确认的版本保存或导出，并确认文件确实生成。'
-            ]
-        };
-    }
-
     private readActionableRequiredEvaluationCheckKeys(summary: AgentExecutionSummary): string[] {
-        const digest = summary.designEvaluationProfileDigest;
-        if (!digest || digest.status === 'passed') return [];
         const profile = this.resolveRuntimeEvaluationProfile();
-        if (!profile) return [];
-        const reportedKeys = new Set([
-            ...(Array.isArray(digest.missingRequiredCheckKeys)
-                ? digest.missingRequiredCheckKeys
-                : []),
-            ...(Array.isArray(digest.requiredNeedsReviewCheckKeys)
-                ? digest.requiredNeedsReviewCheckKeys
-                : []),
-            ...(Array.isArray(digest.failedCheckKeys)
-                ? digest.failedCheckKeys
-                : [])
-        ].map((key) => String(key || '').trim()).filter(Boolean));
         const reconciliation = this.reconcileRuntimeActionPlanExecution();
         const reconciliationDigest = summary.runtimeActionPlanReconciliationDigest;
-        const reconciliationStatus = reconciliation?.status || reconciliationDigest?.status;
-        const resumeStepIds = reconciliation?.resumeStepIds || reconciliationDigest?.resumeStepIds || [];
-        const hasUnfinishedDeclaredPlan = Boolean(
-            reconciliationStatus
-            && reconciliationStatus !== 'completed'
-            && resumeStepIds.length > 0
-        );
-        const canRecoverMissingPostWriteObservation = Boolean(
-            summary.downgradedByObservationGate
-            && Number(summary.successfulMutationCalls || 0) > 0
-        );
-        return profile.checks.filter((check) => {
-            if (!reportedKeys.has(check.key)) return false;
-            switch (check.runtime?.repair?.trigger) {
-                case 'declared_plan_incomplete':
-                    return hasUnfinishedDeclaredPlan;
-                case 'post_write_observation_missing':
-                    return canRecoverMissingPostWriteObservation;
-                default:
-                    return false;
-            }
-        }).map((check) => check.key);
-    }
-
-    private describeActionableRequiredEvaluationCheck(key: string): string {
-        const check = this.resolveRuntimeEvaluationProfile()?.checks.find((candidate) => candidate.key === key);
-        if (check) {
-            return `必需检查“${check.label}”仍未闭合：${check.expectedFix}`;
-        }
-        return `必需检查 ${key} 仍有明确的运行时补证动作。`;
+        return readActionableRequiredEvaluationCheckKeys({
+            summary,
+            profile,
+            reconciliationStatus: reconciliation?.status || reconciliationDigest?.status,
+            resumeStepIds: reconciliation?.resumeStepIds || reconciliationDigest?.resumeStepIds || []
+        });
     }
 
     private isActionableVlmDiagnosisForLatestReviewSet(result: DesignAssertionResult): boolean {
@@ -11420,9 +11492,14 @@ export class Agent {
             )
             : undefined;
         const actionableProfileIssues = actionableRequiredCheckKeys.map((key) => (
-            this.describeActionableRequiredEvaluationCheck(key)
+            describeActionableRequiredEvaluationCheck(key, evaluationProfile)
         ));
-        const inferredTargetStage = this.inferReflexionTargetStage(summary);
+        const inferredTargetStage = inferTerminalReflexionTargetStage({
+            hasTaskProgress: this.hasTaskProgressToolCalls(),
+            summary,
+            actionableRequiredCheckKeys,
+            profile: evaluationProfile
+        });
         const hasOperationalFailure = inferredTargetStage === 'R0'
             || inferredTargetStage === 'E1';
         const targetStage = hasActionableVlmDiagnosis && !hasOperationalFailure
@@ -11507,36 +11584,6 @@ export class Agent {
             ...boundReflexionHandoff,
             trigger: COMPLETED_AESTHETIC_IMPROVEMENT_TRIGGER
         };
-    }
-
-    private inferReflexionTargetStage(summary: AgentExecutionSummary): 'R0' | 'R4' | 'R5' | 'E1' {
-        if (!this.hasTaskProgressToolCalls()) return 'R0';
-        if (summary.stopReason === 'tool_preflight_blocked') return 'E1';
-        const actionableRequiredCheckKeys = this.readActionableRequiredEvaluationCheckKeys(summary);
-        const evaluationProfile = this.resolveRuntimeEvaluationProfile();
-        const requiresPlanRepair = actionableRequiredCheckKeys.some((key) => (
-            evaluationProfile?.checks.find((check) => check.key === key)?.runtime?.repair?.targetStage === 'R4'
-        ));
-        if (requiresPlanRepair) return 'R4';
-        const completionBlockingAcceptanceFailed = summary.completionBlockingAcceptanceFailed
-            ?? summary.acceptanceFailed;
-        const completionBlockingAcceptanceNeedsReview = summary.completionBlockingAcceptanceNeedsReview
-            ?? summary.acceptanceNeedsReview;
-        const completionBlockingNoDocumentChangeRisks = summary.completionBlockingNoDocumentChangeRisks
-            ?? summary.noDocumentChangeRisks;
-        const completionBlockingFailedToolCalls = summary.completionBlockingFailedToolCalls
-            ?? summary.failedToolCalls;
-        if (completionBlockingAcceptanceFailed > 0
-            || completionBlockingAcceptanceNeedsReview > 0
-            || completionBlockingNoDocumentChangeRisks > 0) {
-            return 'E1';
-        }
-        if (summary.taskCompletion?.status === 'failed' || summary.taskCompletion?.status === 'needs_review') {
-            return 'R4';
-        }
-        if (completionBlockingFailedToolCalls > 0) return 'E1';
-        if (actionableRequiredCheckKeys.length > 0) return 'R5';
-        return 'R5';
     }
 
     private describeReflexionRollbackReason(summary: AgentExecutionSummary): string {
@@ -11654,34 +11701,9 @@ export class Agent {
         }
         return Object.keys(data).length ? data : undefined;
     }
-    private emitReflexionHandoffStep(handoff: ReflexionHandoff): void {
-        if (handoff.status !== 'reflexion_required') return;
-        this.emitStep({
-            kind: 'observation',
-            title: '返工约束已生成',
-            detail: [
-                `回退阶段：${handoff.targetStage}`,
-                ...handoff.failureAnalysis.slice(0, 2),
-                ...handoff.nextRoundConstraints.slice(0, 2)
-            ].filter(Boolean).join('\n'),
-            status: 'running',
-            iteration: this.iteration + 1,
-            maxIterations: this.config.maxIterations,
-            audience: 'agent',
-            issue: 'reflexion_handoff_generated'
-        });
-    }
-
-    private async buildRunResult(input: {
-        success: boolean;
-        message: string;
-        iterations: number;
-        stopReason: AgentStopReason;
-        cancelled?: boolean;
-        error?: string;
-        data?: Record<string, unknown>;
-        reflexionHandoff?: ReflexionHandoff;
-    }): Promise<AgentRunResult> {
+    private async prepareAgentTerminalClosure(
+        input: AgentRunResultInput
+    ): Promise<PreparedAgentTerminalClosure> {
         // 所有提前返回都汇聚到这里；用单调快照补记本轮，避免 no-progress、预检阻断
         // 等终态少算最后一次迭代，下一 generation 又重新获得这笔额度。
         this.advancePerformanceIteration(input.iterations);
@@ -11692,10 +11714,36 @@ export class Agent {
         // 否则视觉判定的异步异常会绕过 run() 迭代级 catch 的错误恢复（兜底 stopReason:'error'）。
         let vlmAssertions: DesignAssertionResult[] | null = null;
         if (!input.cancelled) {
-            try {
-                vlmAssertions = await this.evaluateDesignQualityVlmAssertions(input.stopReason);
-            } catch {
-                vlmAssertions = null;
+            const qualityReuseResult = await reuseCachedTerminalClosureQuality({
+                cache: this.terminalClosureQualityCache,
+                stopReason: input.stopReason,
+                latestMutationIndex: findLatestObservedPhotoshopMutationIndex(this.toolCallLog),
+                readCurrentHistoryStateRef: async () => {
+                    try {
+                        return await this.readCurrentPhotoshopHistoryStateRefForQualityVerification(
+                            'final_summary'
+                        );
+                    } catch {
+                        return undefined;
+                    }
+                },
+                readReviewHistoryStateRef: () => {
+                    const profile = this.resolveRuntimeEvaluationProfile();
+                    return this.findLatestDesignVisualJudgeReviewSet(
+                        this.resolveFinalReviewSetRequirements(profile).requireMultiSurface
+                    )?.historyStateRef;
+                }
+            });
+            this.terminalClosureQualityCache = qualityReuseResult.cache;
+            const qualityReuse = qualityReuseResult.reuse;
+            if (qualityReuse.status === 'not_available') {
+                try {
+                    vlmAssertions = await this.evaluateDesignQualityVlmAssertions(input.stopReason);
+                } catch {
+                    vlmAssertions = null;
+                }
+            } else {
+                vlmAssertions = qualityReuse.vlmAssertions;
             }
             if (this.shouldCloseDesignQualityHistoryState(input.stopReason)
                 && !this.readLatestClosedQualityHistoryStateRef()) {
@@ -11707,7 +11755,7 @@ export class Agent {
             }
         }
         const executionSummary = this.buildExecutionSummary(input.stopReason, input.iterations, vlmAssertions);
-        const deliveryStageEvidence = this.appendDeliveryStageTraceIfEligible(executionSummary);
+        const deliveryStageEvidence = this.projectDeliveryStageEvidence(executionSummary);
         const runtimeDeliveryVerification = deliveryStageEvidence.verification;
         if (deliveryStageEvidence.finalDeliveryResultRefs?.length) {
             executionSummary.runtimeDeliveryResultRefs = Array.from(new Set(
@@ -11721,13 +11769,43 @@ export class Agent {
                 executionSummary,
                 deliveryStageEvidence.deliveryEvidencePassed
             )
-            || this.buildDeliveryStageReflexionHandoff(
-                executionSummary,
-                runtimeDeliveryVerification
-            );
+            || buildDeliveryStageReflexionHandoff({
+                summary: executionSummary,
+                verification: runtimeDeliveryVerification,
+                runtimeDeliveryStageRequired: Boolean(
+                    this.config.runtimeStagePlan?.steps.some((step) => step.stage === 'E2')
+                )
+            });
+        return {
+            executionSummary,
+            deliveryStageEvidence,
+            ...(runtimeDeliveryVerification ? { runtimeDeliveryVerification } : {}),
+            ...(reflexionHandoff ? { reflexionHandoff } : {}),
+            vlmAssertions
+        };
+    }
+
+    private async buildRunResult(
+        input: AgentRunResultInput,
+        preparedClosure?: PreparedAgentTerminalClosure
+    ): Promise<AgentRunResult> {
+        const closure = guardTerminalRecoveryEarlyExit({
+            preparedClosure: preparedClosure || await this.prepareAgentTerminalClosure(input),
+            gap: this.lastTerminalClosureGap,
+            recoveryAttempts: this.terminalClosureRecoveryAttempts,
+            stopReason: input.stopReason,
+            preparedByNaturalCheckpoint: Boolean(preparedClosure)
+        });
+        const executionSummary = closure.executionSummary;
+        const runtimeDeliveryVerification = closure.runtimeDeliveryVerification;
+        const reflexionHandoff = closure.reflexionHandoff;
+        if (closure.deliveryStageEvidence.stageTraceEvent) {
+            this.appendStageTraceEvent(closure.deliveryStageEvidence.stageTraceEvent);
+        }
         if (reflexionHandoff) {
             executionSummary.reflexionHandoff = reflexionHandoff;
-            this.emitReflexionHandoffStep(reflexionHandoff);
+            const handoffStep = projectReflexionHandoffStep({ handoff: reflexionHandoff, iteration: this.iteration + 1, maxIterations: this.config.maxIterations });
+            if (handoffStep) this.emitStep(handoffStep);
         }
         // Judge、最终 history 复核和摘要构建都发生在入口 checkpoint 之后；在收尾前
         // 同步一次累计性能用量。plan-neutral 写入 unbound ledger，staged 写入 Session ledger。
@@ -11983,7 +12061,7 @@ export class Agent {
             executionStatus: executionSummary.status,
             successfulMutationCalls: executionSummary.successfulMutationCalls
         });
-        const alignedVisibleMessage = alignUserVisibleCompletionMessage({ message: replySplit.body, executionStatus: executionSummary.status, requirements: executionSummary.taskCompletion?.required, designVerdict: executionSummary.designVerdict });
+        const alignedVisibleMessage = alignUserVisibleCompletionMessage({ message: replySplit.body, executionStatus: executionSummary.status, requirements: executionSummary.taskCompletion?.required, designVerdict: executionSummary.designVerdict, terminalClosureOutcome: executionSummary.terminalClosureOutcome });
         const publicMessages = synchronizeLastAssistantCompletionMessage({ messages: this.messages, originalMessage: rawVisibleMessage, alignedMessage: alignedVisibleMessage });
         const runResult: AgentRunResult = {
             success,
@@ -12665,7 +12743,7 @@ export class Agent {
         if (completionBlockingNoDocumentChangeRisks > 0) {
             warnings.push(`有 ${completionBlockingNoDocumentChangeRisks} 次处理尚未证明已经落到当前画面。`);
         }
-        const baseStatus = this.resolveExecutionStatus({
+        const baseStatus = resolveAgentExecutionStatus({
             stopReason,
             toolCallCount,
             successfulToolCalls,
@@ -12737,98 +12815,11 @@ export class Agent {
                     : `这稿还没做完：${PUBLIC_TOOL_PRECHECK_BLOCKED_MESSAGE}`)
                 : isAwaitingConfirmationSummary
                     ? '有地方想先跟你确认，确认后我接着做。'
-                    : this.formatExecutionSummaryText(status, {
-                    toolCallCount,
-                    successfulToolCalls,
-                    failedToolCalls,
-                    acceptanceVerified,
-                    acceptanceFailed: completionBlockingAcceptanceFailed,
-                    acceptanceNeedsReview: completionBlockingAcceptanceNeedsReview,
-                    noDocumentChangeRisks: completionBlockingNoDocumentChangeRisks,
+                    : formatAgentExecutionSummaryText(status, {
                     blockers,
                     warnings
                 })
         };
-    }
-
-    private resolveExecutionStatus(input: {
-        stopReason: AgentStopReason;
-        toolCallCount: number;
-        successfulToolCalls: number;
-        failedToolCalls: number;
-        acceptanceFailed: number;
-        acceptanceNeedsReview: number;
-        noDocumentChangeRisks: number;
-        taskCompletionStatus?: AgentExecutionSummary['status'];
-        designQualityHardBlocked?: boolean;
-        taskProgressMissing?: boolean;
-        terminalSkillOutcomeFailed?: boolean;
-        terminalSkillOutcomeUnverified?: boolean;
-    }): AgentExecutionSummary['status'] {
-        // 停在用户确认点是正常暂停，优先于其余判定：此时任务本就未完成（taskCompletion 可能判 failed），
-        // 但这不是失败——不能被下面的 failed 分支吞掉。
-        if (input.stopReason === 'awaiting_user_confirmation') return 'awaiting_confirmation';
-        // 同理：卡在「只有用户能给的信息」上、已把问题说清楚在等回答，也是正常暂停不是失败。
-        // 否则它会被下面 `stopReason !== 'final_response' → failed` 吞成红色报错，
-        // 用户看到的仍是「未完成」，这一刀就白改了。
-        if (input.stopReason === 'awaiting_user_input') return 'awaiting_confirmation';
-        if (input.stopReason === 'cancelled') return 'cancelled';
-        if (input.taskProgressMissing) return 'failed';
-        if (input.terminalSkillOutcomeFailed) return 'failed';
-        if (input.taskCompletionStatus === 'failed') return 'failed';
-        if (input.stopReason === 'tool_budget_final_response'
-            || input.stopReason === 'empty_final_response') {
-            if (input.toolCallCount > 0 && input.successfulToolCalls === 0) return 'failed';
-            if (input.acceptanceFailed > 0) return 'failed';
-            if (input.failedToolCalls === 0
-                && input.acceptanceNeedsReview === 0
-                && input.noDocumentChangeRisks === 0
-                && input.taskCompletionStatus === 'completed'
-                && input.designQualityHardBlocked !== true
-                && input.terminalSkillOutcomeUnverified !== true) {
-                return 'completed';
-            }
-            return 'needs_review';
-        }
-        if (input.stopReason !== 'final_response') return 'failed';
-        if (input.toolCallCount > 0 && input.successfulToolCalls === 0) return 'failed';
-        if (input.acceptanceFailed > 0) return 'failed';
-        if (input.failedToolCalls > 0 || input.acceptanceNeedsReview > 0 || input.noDocumentChangeRisks > 0) {
-            return 'needs_review';
-        }
-        // 设计质量红线（blocker 级）→ 需复核：产物齐全但质量触红线，降级以触发 reflexion 返工（分级·硬）。
-        if (input.designQualityHardBlocked) return 'needs_review';
-        if (input.terminalSkillOutcomeUnverified) return 'needs_review';
-        if (input.taskCompletionStatus === 'needs_review') return 'needs_review';
-        return 'completed';
-    }
-
-    private formatExecutionSummaryText(
-        status: AgentExecutionSummary['status'],
-        input: {
-            toolCallCount: number;
-            successfulToolCalls: number;
-            failedToolCalls: number;
-            acceptanceVerified: number;
-            acceptanceFailed: number;
-            acceptanceNeedsReview: number;
-            noDocumentChangeRisks: number;
-            blockers: string[];
-            warnings: string[];
-        }
-    ): string {
-        // 设计师口吻的结果说明：只说这稿做到哪一步、下一步怎么办；
-        // 不向用户展示内部动作数量或检查计数。真实动作记录只留在开发用运行档案里，
-        // 避免后台记账与设计进度混在一起，产生自相矛盾的体验。
-        const statusText: Record<AgentExecutionSummary['status'], string> = {
-            completed: '这稿做好了',
-            needs_review: '这稿先做到这里',
-            failed: '这稿还没做完',
-            cancelled: '已停下',
-            awaiting_confirmation: '有地方想先跟你确认'
-        };
-        const reason = input.blockers[0] || input.warnings[0] || '';
-        return reason ? `${statusText[status]}：${reason}` : `${statusText[status]}。`;
     }
 
     private hasSuccessfulToolActivity(kind: 'save_export' | 'external_generation'): boolean {

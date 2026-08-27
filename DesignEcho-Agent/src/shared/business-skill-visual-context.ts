@@ -119,12 +119,12 @@ function buildCacheSummary(input: BuildBusinessSkillVisualContextInput): Busines
 
 function determineStatus(input: {
     requiresVisualObservation: boolean;
-    hasProjectContext: boolean;
+    hasSourceContext: boolean;
     candidateSummary: BusinessSkillVisualContextCandidateSummary;
     cacheSummary: BusinessSkillVisualContextCacheSummary;
 }): BusinessSkillVisualContextStatus {
     if (!input.requiresVisualObservation) return 'not_required';
-    if (!input.hasProjectContext) return 'needs_context_snapshot';
+    if (!input.hasSourceContext) return 'needs_context_snapshot';
     if (input.candidateSummary.selectedCandidateCount <= 0) {
         if (input.candidateSummary.contextualSourceCandidateCount > 0) return 'needs_visual_insight';
         return input.cacheSummary.entriesWithInsight > 0 ? 'ready' : 'no_visual_candidates';
@@ -197,15 +197,16 @@ export function buildBusinessSkillVisualContext(
     const requiresVisualObservation = input.requiresVisualObservation !== false;
     const candidateSummary = buildCandidateSummary(input);
     const cacheSummary = buildCacheSummary(input);
-    const hasProjectContext = Boolean(
+    const hasSourceContext = Boolean(
         input.assetIndex
         || input.visualSamplingPlan
         || input.visualInsightCache?.exists
         || cleanString(input.projectPath)
+        || candidateSummary.contextualSourceCandidateCount > 0
     );
     const status = determineStatus({
         requiresVisualObservation,
-        hasProjectContext,
+        hasSourceContext,
         candidateSummary,
         cacheSummary
     });
