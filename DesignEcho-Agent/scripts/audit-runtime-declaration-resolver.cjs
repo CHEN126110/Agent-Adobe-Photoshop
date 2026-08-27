@@ -133,7 +133,8 @@ const {
   'skill-tools.ts'
 ));
 const {
-  Agent
+  Agent,
+  collectPendingInteractiveConfirmationCards
 } = require(path.resolve(
   __dirname,
   '..',
@@ -349,6 +350,17 @@ const {
   'services',
   'agent-runtime',
   'tool-result-sanitizer.ts'
+));
+const {
+  resolveLatestClosedDesignQualityHistoryStateRef
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'quality-history-closure.ts'
 ));
 const {
   VISUAL_OBSERVATION_RECEIPT_VERSION
@@ -695,6 +707,24 @@ const agentTypesSource = fs.readFileSync(path.resolve(
   'agent-runtime',
   'types.ts'
 ), 'utf8');
+const agentUserResultProjectionSource = fs.readFileSync(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'agent-user-result-projection.ts'
+), 'utf8');
+const agentActionEventProjectionSource = fs.readFileSync(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'agent-action-event-projection.ts'
+), 'utf8');
 assert(executorSource.includes('resolveRuntimeDeclarationForAgentTask({'));
 assert(executorSource.includes("Object.prototype.hasOwnProperty.call(data, 'declaredDesignTaskTypeId')"));
 assert(
@@ -723,15 +753,41 @@ assert(!toolExecutorSource.includes('声明设计意图失败：taskTypeId'));
 assert(agentSource.includes("code: 'tool_deferred_after_runtime_declaration'"));
 assert(agentSource.includes('createRuntimeDeclarationSiblingTurn(response.toolCalls'));
 assert(agentSource.includes('runtimeDeclarationTurn.recordResult(call, output)'));
-assert(agentSource.includes('const hasPhotoshopChange = this.hasObservedTaskMutation();'));
-assert(agentSource.includes('const hasViewableVersion = hasPhotoshopChange || hasSavedOrExportedFile;'));
+assert(agentSource.includes('hasPhotoshopChange: this.hasObservedTaskMutation(),'));
+assert(agentUserResultProjectionSource.includes('const hasViewableVersion = input.hasPhotoshopChange || input.hasSavedOrExportedFile;'));
 assert(!agentSource.includes('const hasRecordedMutation = Number(summary.successfulMutationCalls || 0) > 0;'));
-assert(agentSource.includes('当前状态：还没有可看的设计版本'));
-assert(agentSource.includes('不读取 summaryText、blockers'));
+assert(agentUserResultProjectionSource.includes('当前状态：还没有可看的设计版本'));
+assert(agentUserResultProjectionSource.includes('只消费已由 Runtime 验真的事实'));
 assert(!agentSource.includes('这稿先做到这里，你看看现在的效果。本轮执行预算已用完'));
-assert(agentSource.includes("failureDisposition: 'control_turn_deferred' as const"));
+assert(agentActionEventProjectionSource.includes("failureDisposition: 'control_turn_deferred' as const"));
 assert(agentSource.includes("entry.failureDisposition !== 'control_turn_deferred'"));
 assert(agentTypesSource.includes("'control_turn_deferred'"));
+assert.strictEqual(
+  collectPendingInteractiveConfirmationCards([{
+    callId: 'awaiting-card-false-result',
+    success: false,
+    output: {
+      success: false,
+      skillOutcome: {
+        version: 'skill-execution-outcome/v0',
+        status: 'awaiting_confirmation',
+        summary: '等待用户确认',
+        outputs: [],
+        blockers: [],
+        warnings: []
+      },
+      data: {
+        interactiveCards: [{
+          version: 'interactive-card/v0',
+          id: 'awaiting-card-false-result',
+          kind: 'fixture.confirmation'
+        }]
+      }
+    }
+  }]).length,
+  1,
+  'structured awaiting_confirmation must keep its card even when legacy success is false'
+);
 assert(/if \(output === undefined\s+&& !isAgentHarnessControlTool\(call\.name\)\s+&& !isAgentCapabilityControlTool\(call\.name\)/.test(agentSource));
 assert(agentSource.includes('const MAX_RUNTIME_DESIGN_INTENT_REPAIR_ATTEMPTS = 1'));
 assert(agentSource.includes("'runtime_design_intent_declaration_invalid'"));
@@ -1953,6 +2009,103 @@ assert.strictEqual(
   undefined,
   'a visually reconciled current revision may continue through the ordinary Runtime gate'
 );
+const contextTransitionReconciledSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: mixedRevisionHandoff.reentry.session,
+  reentry: mixedRevisionHandoff.reentry,
+  toolCallLog: [{ ...visualUnknownObservation, modelTurn: 0 }],
+  nextToolName: 'switchDocument',
+  nextToolKind: 'stateful_context',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(
+  contextTransitionReconciledSession.taskRun.sideEffectState,
+  undefined,
+  'a model-consumed current revision may reconcile before a safe document context transition'
+);
+assert.strictEqual(
+  evaluateRuntimeSessionToolExecutionGate({
+    session: contextTransitionReconciledSession,
+    toolName: 'switchDocument',
+    toolKind: 'stateful_context'
+  }).code,
+  undefined,
+  'multi-document work must be able to reach its selected target after reconciliation'
+);
+const unrelatedStatefulContextSession = reconcileRuntimeSkillEffectBeforeAgentAction({
+  session: mixedRevisionHandoff.reentry.session,
+  reentry: mixedRevisionHandoff.reentry,
+  toolCallLog: [{ ...visualUnknownObservation, modelTurn: 0 }],
+  nextToolName: 'createInteractiveCard',
+  nextToolKind: 'stateful_context',
+  nextToolIsSkill: false,
+  currentModelTurn: 1
+});
+assert.strictEqual(
+  unrelatedStatefulContextSession.taskRun.sideEffectState?.status,
+  'unknown',
+  'visual reconciliation must not open a generic stateful-context bypass'
+);
+const successfulQualityClosure = {
+  name: 'getDocumentInfo',
+  arguments: {},
+  result: {
+    success: true,
+    historyStateRef: { documentId: 718, historyStateId: 22 }
+  },
+  origin: 'harness_quality_verification',
+  qualityVerificationPhase: 'final_summary'
+};
+const skippedDuplicateQualityRead = {
+  name: 'getDocumentInfo',
+  arguments: {},
+  result: {
+    success: false,
+    policyGate: true,
+    code: 'agent_quality_verification_budget_exhausted'
+  },
+  origin: 'harness_quality_verification',
+  qualityVerificationPhase: 'final_summary'
+};
+assert.deepStrictEqual(
+  resolveLatestClosedDesignQualityHistoryStateRef([
+    { name: 'createTextLayer', arguments: {}, result: laterCompletedMutationResult },
+    successfulQualityClosure,
+    skippedDuplicateQualityRead
+  ]),
+  { documentId: 718, historyStateId: 22 },
+  'a no-side-effect QA budget rejection must not revoke an earlier same-revision closure'
+);
+assert.strictEqual(
+  resolveLatestClosedDesignQualityHistoryStateRef([
+    { name: 'createTextLayer', arguments: {}, result: laterCompletedMutationResult },
+    successfulQualityClosure,
+    { name: 'switchDocument', arguments: { documentId: 719 }, result: { success: true } }
+  ]),
+  undefined,
+  'a later successful document context transition must invalidate the old quality closure'
+);
+assert.strictEqual(
+  resolveLatestClosedDesignQualityHistoryStateRef([
+    { name: 'createTextLayer', arguments: {}, result: laterCompletedMutationResult },
+    successfulQualityClosure,
+    {
+      name: 'setTextContent',
+      arguments: {},
+      result: {
+        success: true,
+        photoshopMutationCommit: {
+          ...appliedProof,
+          before: { documentId: 718, historyStateId: 22, activeLayerId: 82 },
+          after: { documentId: 718, historyStateId: 23, activeLayerId: 82 },
+          toolActionCompleted: true
+        }
+      }
+    }
+  ]),
+  undefined,
+  'a later content mutation must require a new quality closure'
+);
 const budgetSkippedVisualResult = {
   success: true,
   historyStateRef: { documentId: 718, historyStateId: 22 }
@@ -2073,6 +2226,11 @@ assert.strictEqual(
   planlessReentryState.runtime.pendingDirectWorkflowHandoff.workflowCallId,
   noneHandoff.reentry.workflowHandoff.workflowCallId,
   'compact Runtime must expose the restored handoff to structural recovery on the first zero-Tool turn'
+);
+assert.strictEqual(
+  Object.prototype.hasOwnProperty.call(planlessReentryState.runtime, 'toolCallLog'),
+  false,
+  'historical Workflow handoff must not be injected as a failed Tool call in the resumed run'
 );
 
 const appliedStagedReservation = stageRuntimeInteractiveReentry({

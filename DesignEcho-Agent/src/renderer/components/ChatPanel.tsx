@@ -221,6 +221,7 @@ import {
     formatAgentProcessEventContent,
     formatAgentToolEventContent,
     getVisibleAgentProcessStepType,
+    resolveAgentToolCompletionStepDisposition,
     isVisibleAgentStepEvent,
     isVisibleAgentProcessEvent,
     isVisiblePonderingStep,
@@ -1020,12 +1021,11 @@ function normalizeAgentExecutionSummaryStatus(summary: Record<string, unknown>):
     const existingSummaryText = String(summary.summaryText || '').trim();
     return {
         ...summary,
-        status: 'needs_review',
-        summaryText: existingSummaryText || rawStatus,
-        warnings: [
-            ...existingWarnings,
-            `执行状态字段不是结构化状态，已按需复核处理：${rawStatus.slice(0, 120)}`
-        ]
+        // 未知状态是执行协议无效，不是设计质量 needs_review。失败关闭后仍保留原 result
+        // 供 Debug / Run Record 诊断，但普通界面不展示原始枚举或伪造“待复核”结果。
+        status: 'failed',
+        summaryText: existingSummaryText || '这次没有取得可确认的执行结果。',
+        warnings: existingWarnings
     } as unknown as AgentExecutionSummary;
 }
 
@@ -5747,6 +5747,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             }
         };
 
+        const removeStep = (stepId: string): void => {
+            if (!canApplyRunUpdate()) return;
+            const index = collectedSteps.findIndex((step) => step.id === stepId);
+            if (index < 0) return;
+            collectedSteps.splice(index, 1);
+            delete stepStartTimes[stepId];
+            for (const [toolCallId, mappedStepId] of toolStepIdsByCallId.entries()) {
+                if (mappedStepId === stepId) toolStepIdsByCallId.delete(toolCallId);
+            }
+            syncActiveRunVisibleSteps();
+            setThinkingSteps([...collectedSteps]);
+        };
+
         const visibleWebSearchIntent = runOptions?.providerNativeWebSearchIntent;
         let providerNativeWebSearchStepId: string | null = null;
 
@@ -5783,7 +5796,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         const markProviderNativeWebSearchFailed = () => {
             if (!visibleWebSearchIntent || !providerNativeWebSearchStepId) return;
             updateStep(providerNativeWebSearchStepId, {
-                content: `${formatChatWebSearchVisibleStep(visibleWebSearchIntent)}（未完成）`,
+                content: `${formatChatWebSearchVisibleStep(visibleWebSearchIntent)}（没有返回可用结果）`,
                 status: 'error',
                 toolResult: { success: false }
             });
@@ -5821,6 +5834,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         content,
                         status: event.status
                     });
+                }
+                return;
+            }
+            const completionStepDisposition = resolveAgentToolCompletionStepDisposition(event);
+            if (completionStepDisposition === 'settle_started_step') {
+                // 这次动作已经转入 Agent 重规划、Workflow 交接或等待用户；它不是任务终态。
+                // 只按同一 toolCallId 收束先前的进行中行，不使用工具名模糊匹配，也不把
+                // Debug completion 重新包装成红色“未完成”。真实终态由 executionSummary 展示。
+                const startedStepId = event.toolCallId
+                    ? toolStepIdsByCallId.get(event.toolCallId)
+                    : undefined;
+                const startedStep = startedStepId
+                    ? collectedSteps.find((step) => step.id === startedStepId)
+                    : undefined;
+                if (startedStep?.status === 'running' || startedStep?.status === 'pending') {
+                    removeStep(startedStep.id);
+                } else if (event.toolCallId) {
+                    // 并行同名调用可能共享一条已完成的合并行；不能因另一调用转入重规划
+                    // 而删除已经结算成功的事实，只释放当前 call 的映射。
+                    toolStepIdsByCallId.delete(event.toolCallId);
                 }
                 return;
             }
@@ -5871,6 +5904,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         status: event.status === 'success' ? 'success' : 'error'
                     });
                 }
+                if (event.toolCallId) toolStepIdsByCallId.delete(event.toolCallId);
                 return;
             }
         };

@@ -1649,8 +1649,14 @@ export function evaluateDesignEvaluationProfile(input: {
             publicationReviewStatus = 'publication_review_pending';
         }
     }
+    const artifactChecksCompleted = requiredChecks.length > 0
+        && missingRequiredCheckKeys.length === 0
+        && failedRequiredCheckKeys.length === 0
+        && requiredNeedsReviewCheckKeys.length === 0;
     const completion: DesignEvaluationCompletionProjection = {
-        artifactStatus: scorecard.gate === 'passed' ? 'artifact_completed' : 'artifact_incomplete',
+        // 产物完成轴只消费 artifact_completion 的必需结构化检查。审美 Scorecard
+        // 可以保留软 finding 或驱动有界改进，但不能把真实已交付产物改写成 incomplete。
+        artifactStatus: artifactChecksCompleted ? 'artifact_completed' : 'artifact_incomplete',
         publicationReviewStatus,
         publicationReviewCheckCount: publicationReviewChecks.length,
         approvedPublicationReviewCheckCount,

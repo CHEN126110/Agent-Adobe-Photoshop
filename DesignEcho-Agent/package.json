@@ -98,6 +98,7 @@
     "test:model-usage-classification": "node scripts/test-model-usage-classification.cjs",
     "test:binary-message-store": "node scripts/verify-binary-message-store.cjs",
     "test:agent-context-manager": "node scripts/verify-agent-context-manager.cjs",
+    "test:agent-final-outcome-signals": "node scripts/verify-agent-final-outcome-signals.cjs",
     "test:runtime-build-identity": "node scripts/verify-runtime-build-identity.cjs",
     "test:preload-sandbox-boundary": "node scripts/verify-preload-sandbox-boundary.cjs",
     "test:openrouter-image-request": "node scripts/test-openrouter-image-request.cjs",

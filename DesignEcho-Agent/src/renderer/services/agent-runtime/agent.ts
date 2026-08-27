@@ -17,6 +17,12 @@ import type {
     AgentThinkingEventMeta, ToolSchema, TaskCompletionContract, TaskCompletionContext, TaskCompletionReferenceObservation
 } from './types';
 import { bindCanvasSnapshotExpectedDocumentId } from './canvas-snapshot-target-binding';
+import {
+    buildAgentUserResultProjection,
+    type UserResultProjection
+} from './agent-user-result-projection';
+import { buildAgentActionEventProjection } from './agent-action-event-projection';
+import { resolveLatestClosedDesignQualityHistoryStateRef } from './quality-history-closure';
 import { guardRuntimeInteractiveReentryResult } from './runtime-interactive-reentry-result-guard';
 import { normalizeAgentToolFailureResult } from './tool-failure-result-normalizer';
 import type { ProviderNativeToolRequest } from '../../../shared/provider-native-tools';
@@ -62,6 +68,8 @@ import {
     requiresAgentTaskProgress,
     resolveAgentTaskProgressObligation
 } from '../../../shared/agent-task-planning-contract';
+import { projectAgentFinalOutcomeSignals } from '../../../shared/agent-final-outcome-signals';
+import { buildAgentOperationLedger } from '../../../shared/agent-operation-ledger';
 import {
     capabilityBlocksExecution,
     resolveDeclaredCapabilityVerdict
@@ -493,6 +501,7 @@ import type {
 } from '../../../shared/design-quality-assertion';
 import {
     buildDesignVerdict,
+    isDesignVerdictDeliverable,
     type DesignVerdict
 } from '../../../shared/design-quality-verdict-bundle';
 import { getToolDisplayInfo } from '../tool-display-info';
@@ -530,14 +539,6 @@ interface RuntimeStageNeedsInputRecovery {
     observationCapabilityIds: string[];
     photoshopObservationOnly: boolean;
     observationExhausted: boolean;
-}
-
-interface UserResultProjection {
-    title: string;
-    summary: string;
-    nextStep: string;
-    detail: string;
-    message: string;
 }
 
 // ── Guard rails (all counters reset at the start of each run) ──
@@ -1059,11 +1060,16 @@ export function collectPendingInteractiveConfirmationCards(toolResults: ToolResu
     const cards: any[] = [];
     const definitionById = new Map<string, string>();
     for (const result of toolResults) {
+        const output = result?.output as any;
+        const skillOutcome = output && typeof output === 'object'
+            ? resolveSkillExecutionOutcome(output)
+            : undefined;
         // 破坏性动作 HITL 卡（V1-7b）：executor 用 safetyBlock 结果携带待确认卡，且刻意 success:false
         // （破坏性动作尚未执行）。它必须被收集并触发暂停，否则会退回"硬错误 + 模型自补 confirm 重试"旧路。
-        // 其余无卡的普通失败仍跳过（下方 card.version 过滤会让无卡的 safetyBlock 得空集，不会误停机）。
-        if (result?.success === false && (result?.output as any)?.safetyBlock !== true) continue;
-        const output = result?.output as any;
+        // 结构化 awaiting_confirmation 是正常暂停，不能先按兼容 success:false 丢掉卡片。
+        if (result?.success === false
+            && output?.safetyBlock !== true
+            && skillOutcome?.status !== 'awaiting_confirmation') continue;
         // 交互确认卡可能出现在三处，必须全部识别，且与 UI 的读取口径对齐
         // （ChatPanel 读 data.interactiveCards + toolResults[].result.interactiveCards）：
         //   ① 顶层 output.interactiveCards           —— createInteractiveCard 直接产卡；
@@ -6402,8 +6408,8 @@ export class Agent {
                         this.emitStep({
                             kind: 'model_response',
                             title: this.hasTaskProgressToolCalls()
-                                ? '成品未达标，继续补做'
-                                : '还没真正动手，继续完成',
+                                ? '正在完成交付收尾'
+                                : '正在开始实际制作',
                             detail: earlyStopRemediation.shortReason,
                             status: 'running',
                             iteration: this.iteration + 1,
@@ -7036,26 +7042,37 @@ export class Agent {
                     batch.calls.forEach((call, index) => {
                         const result = normalizedBatchOutputs[index];
                         const success = result?.success !== false;
-                        const isNonFatalHandoff = !success && result?.nonFatal === true;
                         const displayName = getToolDisplayInfo(call.name).name;
                         const isHarnessControl = isAgentHarnessControlTool(call.name);
                         const isRuntimeDeclarationDeferred = result?.code
                             === 'tool_deferred_after_runtime_declaration';
                         const isInternalControlResult = isHarnessControl || isRuntimeDeclarationDeferred;
+                        const hasPendingInteractiveConfirmation = collectPendingInteractiveConfirmationCards([{
+                            callId: call.id,
+                            success,
+                            output: result
+                        }]).length > 0;
+                        const actionEvent = buildAgentActionEventProjection({
+                            toolName: call.name,
+                            result,
+                            isInternalControl: isInternalControlResult,
+                            isRuntimeDeclarationDeferred,
+                            hasPendingInteractiveConfirmation
+                        });
                         this.emitStep({
                             kind: 'tool_completed',
-                            title: `${success ? '完成' : (isNonFatalHandoff ? '交接' : '失败')}：${displayName}`,
+                            title: `${actionEvent.titlePrefix}：${displayName}`,
                             detail: summarizeToolResult(result, call.name),
-                            status: success || isNonFatalHandoff ? 'success' : 'error',
+                            status: actionEvent.status,
                             iteration: this.iteration + 1,
                             maxIterations: this.config.maxIterations,
                             toolName: call.name,
                             toolCallId: call.id,
                             // 原始错误完整保留在 toolCallLog；用户过程事件只携带稳定原因码，
                             // 避免 Provider / Runtime 原文再次穿透到普通界面。
-                            issue: success ? undefined : 'tool_failed',
-                            audience: isInternalControlResult ? 'debug' : 'user',
-                            visibility: isInternalControlResult ? undefined : 'user_process'
+                            issue: actionEvent.issue,
+                            audience: actionEvent.userVisible ? 'user' : 'debug',
+                            visibility: actionEvent.userVisible ? 'user_process' : undefined
                         });
                         toolResults.push({
                             callId: call.id,
@@ -7064,11 +7081,11 @@ export class Agent {
                         });
                         const toolCallElapsedMs = this.readRunElapsedMsOrUndefined();
                         let failureDispositionFields: Pick<AgentToolCallLogEntry, 'failureDisposition'> | Record<string, never> = {};
-                        if (isRuntimeDeclarationDeferred) {
+                        if (actionEvent.failureDisposition) {
                             failureDispositionFields = {
-                                failureDisposition: 'control_turn_deferred' as const
+                                failureDisposition: actionEvent.failureDisposition
                             };
-                        } else if (!success) {
+                        } else if (actionEvent.countsAsUnresolvedFailure) {
                             const referenceDisposition = this.resolveReferenceFailureDisposition(call.name, result);
                             if (referenceDisposition) {
                                 failureDispositionFields = { failureDisposition: referenceDisposition };
@@ -7439,16 +7456,20 @@ export class Agent {
                             ].join('\n'), 'read-only-context-read-recovery', 'read-only-context-recovery'));
                     } else {
                         const firstFailureReason = firstToolFailureReason(failedTaskResults).slice(0, 180);
+                        // 单轮 Tool 失败是尝试级事实，不是任务终态。它仍进入 Debug / Tool log，
+                        // 并原样回填模型用于下一轮重规划；只有最终 Outcome Ledger 仍未闭合时，
+                        // 用户才会在终态看到真实阻塞。过去这里每轮投影红色“结果需要复核”，
+                        // 即使下一轮已改走其它 Tool 完成交付也永久留在界面，制造假未完成。
                         this.emitStep({
                             kind: 'observation',
-                            title: '结果需要复核',
-                            detail: `${toolLabel}没有全部成功${firstFailureReason ? `：${firstFailureReason}` : '，暂不能确认画面达到要求。'}`,
+                            title: '工具尝试未闭合',
+                            detail: `${toolLabel}${firstFailureReason ? `：${firstFailureReason}` : '返回了失败结果。'}`,
                             status: 'error',
                             iteration: this.iteration + 1,
                             maxIterations: this.config.maxIterations,
                             issue: 'tool_failures_in_round',
-                            audience: 'user',
-                            visibility: 'user_process'
+                            source: 'agent_runtime',
+                            audience: 'debug'
                         });
                     }
                 }
@@ -8673,13 +8694,15 @@ export class Agent {
         }
         if (!terminalContent.complete) {
             if (isProviderOutputBlocked(response.stopReason)) {
-                return this.buildProviderOutputFailureResult(iterations, 'blocked');
+                return this.buildForcedFinalResponseFallbackResult(
+                    iterations,
+                    new Error('agent_final_summary_provider_blocked')
+                );
             }
-            return this.buildProviderOutputFailureResult(iterations, 'truncated', {
-                phase: 'forced_final_summary',
-                recoveryAttempts: 0,
-                recoveryAttemptsInRun: this.providerOutputRecovery.recoveryAttemptsInRun
-            });
+            return this.buildForcedFinalResponseFallbackResult(
+                iterations,
+                new Error('agent_final_summary_provider_truncated')
+            );
         }
 
         const modelThinking = normalizeThinkingForUi(response.thinking);
@@ -8722,24 +8745,23 @@ export class Agent {
         const detail = sanitizeUserVisibleDiagnosticText(error instanceof Error ? error.message : String(error || ''));
         this.emitStep({
             kind: 'warning',
-            title: '最终说明未完成',
-            detail: '已保留真实处理记录，当前结果需要复核。',
+            title: '最终说明生成异常',
+            detail: detail || '模型未能生成最终说明，已改用结构化结果摘要。',
             status: 'error',
             iteration: iterations,
             maxIterations: this.config.maxIterations,
             issue: 'agent_final_summary_timeout_or_error',
-            audience: 'user',
-            visibility: 'user_process'
+            source: 'agent_runtime',
+            audience: 'debug'
         });
 
-        const finalMessage = [
-            this.buildToolResultFallbackMessage(),
-            detail ? `最终说明未完成：${detail}` : '最终说明未完成。'
-        ].filter(Boolean).join('\n\n');
+        const finalMessage = this.buildToolResultFallbackMessage()
+            || this.buildSummaryFromStatefulWrites()
+            || '已保留本轮真实处理记录。';
 
         return this.buildRunResult({
             success: false,
-            message: finalMessage || '已完成部分处理，但最终说明未完成，当前结果需要复核。',
+            message: finalMessage,
             iterations,
             stopReason: 'tool_budget_final_response',
             error: detail ? `agent_final_summary_timeout_or_error: ${detail}` : 'agent_final_summary_timeout_or_error',
@@ -11177,10 +11199,9 @@ export class Agent {
     private async buildEmptyFinalResponseResult(iterations = this.iteration + 1): Promise<AgentRunResult> {
         return this.buildRunResult({
             success: false,
-            message: [
-                '这次没能给出说明，先停一下。',
-                this.buildLastToolSummary()
-            ].filter(Boolean).join('\n'),
+            message: this.buildToolResultFallbackMessage()
+                || this.buildSummaryFromStatefulWrites()
+                || '已保留本轮真实处理记录。',
             iterations,
             error: 'Empty final response',
             stopReason: 'empty_final_response'
@@ -11497,13 +11518,23 @@ export class Agent {
             evaluationProfile?.checks.find((check) => check.key === key)?.runtime?.repair?.targetStage === 'R4'
         ));
         if (requiresPlanRepair) return 'R4';
-        if (summary.acceptanceFailed > 0 || summary.acceptanceNeedsReview > 0 || summary.noDocumentChangeRisks > 0) {
+        const completionBlockingAcceptanceFailed = summary.completionBlockingAcceptanceFailed
+            ?? summary.acceptanceFailed;
+        const completionBlockingAcceptanceNeedsReview = summary.completionBlockingAcceptanceNeedsReview
+            ?? summary.acceptanceNeedsReview;
+        const completionBlockingNoDocumentChangeRisks = summary.completionBlockingNoDocumentChangeRisks
+            ?? summary.noDocumentChangeRisks;
+        const completionBlockingFailedToolCalls = summary.completionBlockingFailedToolCalls
+            ?? summary.failedToolCalls;
+        if (completionBlockingAcceptanceFailed > 0
+            || completionBlockingAcceptanceNeedsReview > 0
+            || completionBlockingNoDocumentChangeRisks > 0) {
             return 'E1';
         }
         if (summary.taskCompletion?.status === 'failed' || summary.taskCompletion?.status === 'needs_review') {
             return 'R4';
         }
-        if (summary.failedToolCalls > 0) return 'E1';
+        if (completionBlockingFailedToolCalls > 0) return 'E1';
         if (actionableRequiredCheckKeys.length > 0) return 'R5';
         return 'R5';
     }
@@ -11858,8 +11889,7 @@ export class Agent {
         const awaitingInteractiveConfirmation = input.stopReason === 'awaiting_user_confirmation';
         const awaitingUserInput = input.stopReason === 'awaiting_user_input';
         const awaitingUserResponse = awaitingInteractiveConfirmation || awaitingUserInput;
-        // 任务卡 = 完成契约：模型立过卡而清单未达成时，本轮不算 completed（降为 needs_review 并写明还差什么）。
-        // 卡由模型写、Harness 按收据打勾，这里只读结论，不加任何前置门禁。
+        // 任务卡是工作笔记；未同步只进 Debug，不能否决已经闭合的 canonical completion。
         const engagedTaskCardThisRun = this.toolCallLog.some((entry) => /^(planDesignTaskCard|updateDesignTaskCard|getDesignTaskCard)$/.test(String(entry.name || '')));
         if (executionSummary.status === 'completed' && !awaitingUserResponse && engagedTaskCardThisRun) {
             try {
@@ -11868,15 +11898,30 @@ export class Agent {
                 if (activeCard) {
                     const completion = deriveDesignTaskCompletion(activeCard);
                     if (!completion.complete) {
-                        executionSummary.status = 'needs_review';
-                        executionSummary.warnings = [...(executionSummary.warnings || []), completion.summary];
+                        this.emitStep({
+                            kind: 'observation',
+                            title: '任务卡状态未同步',
+                            detail: completion.summary,
+                            status: 'running',
+                            iteration: input.iterations,
+                            maxIterations: this.config.maxIterations,
+                            issue: 'task_card_projection_stale',
+                            source: 'agent_runtime',
+                            audience: 'debug'
+                        });
                     }
                 }
             } catch {
                 // 任务卡账本不可用时不影响收尾
             }
         }
-        const success = input.success
+        // 工具预算只表示不能再请求新 Tool，不代表任务一定没完成。若结构化完成契约、
+        // 最终质量裁决和当前证据已经把任务闭合，最终说明生成失败不能把真实交付降成
+        // false negative；正文可由现有收据生成中性摘要。其它非终态错误仍不得升级。
+        const verifiedForcedFinalCompletion = (input.stopReason === 'tool_budget_final_response'
+            || input.stopReason === 'empty_final_response')
+            && executionSummary.status === 'completed';
+        const success = (input.success || verifiedForcedFinalCompletion)
             && (executionSummary.status === 'completed' || awaitingUserResponse);
         // 停在确认点时不再补一条结果步骤：上一步已经发过"等待你确认"，重复收尾会遮住真正的交互卡。
         //
@@ -11890,7 +11935,14 @@ export class Agent {
 
         // 正文里混着的自我分析在验收结论之前搬到过程区，保证过程区的时间顺序仍然是「先想后收尾」。
         // 只搬不删：切分失败或会掏空正文时原样交付（见 assistant-reply-reasoning-split 的红线）。
-        const userResultProjection = this.buildUserResultProjection(executionSummary);
+        const userResultProjection = buildAgentUserResultProjection({
+            summary: executionSummary,
+            hasPhotoshopChange: this.hasObservedTaskMutation(),
+            hasSavedOrExportedFile: this.hasSuccessfulToolActivity('save_export'),
+            hasGeneratedAsset: this.hasSuccessfulToolActivity('external_generation'),
+            hasViewedLatestVersion: Number(executionSummary.successfulObservationCalls || 0) > 0,
+            hasObservedContext: Number(executionSummary.observedToolCallCount || 0) > 0
+        });
         executionSummary.userVisibleSummary = userResultProjection.summary;
         if (userResultProjection.nextStep) {
             executionSummary.userVisibleNextStep = userResultProjection.nextStep;
@@ -12038,20 +12090,7 @@ export class Agent {
         return verifiedHistoryStateRef;
     }
     private readLatestClosedQualityHistoryStateRef(): PhotoshopHistoryStateRef | undefined {
-        const latestQualityVerification = [...this.toolCallLog]
-            .reverse()
-            .find((entry) => entry.origin === 'harness_quality_verification');
-        if (latestQualityVerification?.qualityVerificationPhase !== 'post_judge'
-            && latestQualityVerification?.qualityVerificationPhase !== 'final_summary') {
-            return undefined;
-        }
-        if (!latestQualityVerification.result
-            || latestQualityVerification.result.success === false
-            || latestQualityVerification.result.policyGate === true
-            || latestQualityVerification.result.cancelled === true) {
-            return undefined;
-        }
-        return readPhotoshopHistoryStateRef(latestQualityVerification.result);
+        return resolveLatestClosedDesignQualityHistoryStateRef(this.toolCallLog);
     }
 
     private canRunDesignQualityVerification(): boolean {
@@ -12294,7 +12333,7 @@ export class Agent {
             }
         }
         const recoveredFailures = this.summarizeRecoveredToolFailures();
-        const failedToolCalls = recoveredFailures.unresolved;
+        const attemptFailedToolCalls = recoveredFailures.unresolved;
         successfulToolCalls += recoveredFailures.recovered;
 
         const lastTaskCall = creditBearingBusinessToolCalls[creditBearingBusinessToolCalls.length - 1];
@@ -12317,18 +12356,22 @@ export class Agent {
                 context: this.buildTaskCompletionContext(),
                 toolCallLog: completionToolCallLog
             });
+        const completionOperationLedger = buildAgentOperationLedger(completionToolCallLog)
+            .filter((entry) => entry.operationLedgerProvenance.role !== 'workflow_envelope');
         const completionObservationGate = evaluateCompletionObservationGate(
-            completionToolCallLog.map((entry) => ({
+            completionOperationLedger.map((entry) => ({
                 name: entry.name,
                 arguments: entry.arguments,
                 result: entry.result,
-                succeeded: entry.result?.success !== false
+                succeeded: typeof entry.succeeded === 'boolean' ? entry.succeeded : (entry.result as any)?.success !== false
             }))
         );
         const taskPlanObligationGap = this.resolveTaskPlanObligationGap();
         const taskProgressMissing = Boolean(taskPlanObligationGap);
         const blockers: string[] = [];
         const warnings: string[] = [];
+        const isAwaitingConfirmationSummary = stopReason === 'awaiting_user_confirmation'
+            || stopReason === 'awaiting_user_input';
 
         // 用户可见文案一律设计师口吻：说设计做到哪一步、下一步怎么办；
         // 不出现「本轮/上限/判断次数/处理动作/验收/Skill 行动」等 harness / 测试话术。
@@ -12352,44 +12395,21 @@ export class Agent {
             blockers.push(completionObservationGate.mutationCount > 0
                 ? '这稿已经改了一部分，但后面暂时做不下去了，你先看看现在的。'
                 : PUBLIC_TOOL_PRECHECK_BLOCKED_MESSAGE);
-        } else if (stopReason === 'empty_final_response') {
-            blockers.push('这次没能给出说明。');
         } else if (stopReason === 'error') {
             blockers.push('这次出了点问题，没能完成。');
-        } else if (stopReason === 'tool_budget_final_response') {
-            warnings.push('这稿先做到这里，你看看。');
         }
 
-        if (acceptanceFailed > 0) {
-            blockers.push('有几处我看着还不到位，想再调一下。');
-        }
-        if (taskPlanObligationGap === 'delivery_action_missing') {
-            blockers.push('我先看了一下现状，但还没开始动手改。');
-        } else if (taskPlanObligationGap === 'task_progress_missing') {
-            blockers.push('这次还没真正开始做。');
-        }
-        if (terminalSkillOutcomeFailed) {
-            blockers.push('最后一步没做成。');
-        }
-        if (toolCallCount > 0 && successfulToolCalls === 0) {
-            blockers.push('这次还没做出有效的东西。');
-        }
-        if (failedToolCalls > 0 && successfulToolCalls > 0) {
-            warnings.push(`有 ${failedToolCalls} 项处理未完成，需要判断是否影响最终结果。`);
-        }
-        if (acceptanceNeedsReview > 0) {
-            warnings.push(`有 ${acceptanceNeedsReview} 项结果检查需要复核。`);
-        }
-        if (noDocumentChangeRisks > 0) {
-            warnings.push(`有 ${noDocumentChangeRisks} 次处理没有检测到画面变化，需要复核。`);
-        }
-        if (lastError) {
-            warnings.push(`当前卡点：${sanitizeUserVisibleDiagnosticText(lastError)}`);
+        if (!isAwaitingConfirmationSummary) {
+            if (taskPlanObligationGap === 'delivery_action_missing') {
+                blockers.push('我先看了一下现状，但还没开始动手改。');
+            } else if (taskPlanObligationGap === 'task_progress_missing') {
+                blockers.push('这次还没真正开始做。');
+            }
+            if (terminalSkillOutcomeFailed) blockers.push('最后一步没做成。');
+            if (toolCallCount > 0 && successfulToolCalls === 0) blockers.push('这次还没做出有效的东西。');
         }
         // 停在用户确认点时，任务本就未完成（taskCompletion 会判 failed/needs_review），但这是正常暂停，
         // 不应把"完成条件未满足"当成阻断/警告展示——否则验收详情会误显示"未完成原因"。
-        const isAwaitingConfirmationSummary = stopReason === 'awaiting_user_confirmation'
-            || stopReason === 'awaiting_user_input';
         // 有 manifest-selected Evaluation Profile 的业务 Skill 由 Profile checks 定义完成条件；
         // 未迁移任务才保留旧 creative_design 契约。两者最终都进入同一个 DesignVerdict，不并行拼裁决。
         let designQualityHardBlocked = false;
@@ -12581,7 +12601,19 @@ export class Agent {
         } else if (executeHandoffFulfillment.status === 'fulfilled') {
             terminalSkillOutcomeUnverified = false;
         }
-        if (!terminalSkillOutcomeFailed && terminalSkillOutcomeUnverified) {
+        const qualityClosureSatisfied = !runtimeRequiresQualityVerdict
+            || Boolean(designVerdict && isDesignVerdictDeliverable(designVerdict));
+        if (!terminalSkillOutcomeFailed
+            && terminalSkillOutcomeUnverified
+            && !isAwaitingConfirmationSummary
+            && taskCompletion?.status === 'completed'
+            && qualityClosureSatisfied) {
+            // 后续完整 Completion + Quality 事实应闭合动作级 Skill 非终态。
+            terminalSkillOutcomeUnverified = false;
+        }
+        if (!terminalSkillOutcomeFailed
+            && terminalSkillOutcomeUnverified
+            && !isAwaitingConfirmationSummary) {
             warnings.push('最后一步做了，但我还没确认效果好不好。');
         }
 
@@ -12601,14 +12633,46 @@ export class Agent {
         // 会被漏算为观察。窄范围豁免（export-only、单个简单机械 mutation）由门禁模块内实现。
         // 先按既有判据算基础状态；仅当它本会判 completed 时才允许门禁降级——绝不把 failed/cancelled
         // 等既有裁决改判，也就不会误抑制真正失败任务的 reflexion 返工。
+        const finalOutcomeSignals = projectAgentFinalOutcomeSignals({
+            stopReason,
+            taskCompletionStatus: taskCompletion?.status,
+            designVerdictDeliverable: designVerdict
+                ? isDesignVerdictDeliverable(designVerdict)
+                : undefined,
+            designQualityHardBlocked,
+            terminalSkillOutcomeFailed,
+            terminalSkillOutcomeUnverified,
+            attempt: {
+                failedToolCalls: attemptFailedToolCalls,
+                acceptanceFailed,
+                acceptanceNeedsReview,
+                noDocumentChangeRisks
+            }
+        });
+        const failedToolCalls = finalOutcomeSignals.completionBlocking.failedToolCalls;
+        const completionBlockingAcceptanceFailed = finalOutcomeSignals.completionBlocking.acceptanceFailed;
+        const completionBlockingAcceptanceNeedsReview = finalOutcomeSignals.completionBlocking.acceptanceNeedsReview;
+        const completionBlockingNoDocumentChangeRisks = finalOutcomeSignals.completionBlocking.noDocumentChangeRisks;
+        if (completionBlockingAcceptanceFailed > 0) {
+            blockers.push('有几处我看着还不到位，想再调一下。');
+        }
+        if (failedToolCalls > 0 && successfulToolCalls > 0) {
+            warnings.push(`有 ${failedToolCalls} 项尝试仍影响当前结果。`);
+        }
+        if (completionBlockingAcceptanceNeedsReview > 0) {
+            warnings.push(`当前结果还有 ${completionBlockingAcceptanceNeedsReview} 项验证没有闭合。`);
+        }
+        if (completionBlockingNoDocumentChangeRisks > 0) {
+            warnings.push(`有 ${completionBlockingNoDocumentChangeRisks} 次处理尚未证明已经落到当前画面。`);
+        }
         const baseStatus = this.resolveExecutionStatus({
             stopReason,
             toolCallCount,
             successfulToolCalls,
             failedToolCalls,
-            acceptanceFailed,
-            acceptanceNeedsReview,
-            noDocumentChangeRisks,
+            acceptanceFailed: completionBlockingAcceptanceFailed,
+            acceptanceNeedsReview: completionBlockingAcceptanceNeedsReview,
+            noDocumentChangeRisks: completionBlockingNoDocumentChangeRisks,
             taskCompletionStatus: taskCompletion?.status,
             designQualityHardBlocked,
             taskProgressMissing,
@@ -12617,6 +12681,19 @@ export class Agent {
         });
         const downgradedByObservationGate = baseStatus === 'completed' && completionObservationGate.downgrade;
         const status: AgentExecutionSummary['status'] = downgradedByObservationGate ? 'needs_review' : baseStatus;
+        if (stopReason === 'tool_budget_final_response' && status !== 'completed') {
+            warnings.push('这稿先做到这里，你看看。');
+        }
+        if (lastError && (
+            failedToolCalls > 0
+            || completionBlockingAcceptanceFailed > 0
+            || completionBlockingAcceptanceNeedsReview > 0
+            || completionBlockingNoDocumentChangeRisks > 0
+            || terminalSkillOutcomeFailed
+            || terminalSkillOutcomeUnverified
+        )) {
+            warnings.push(`当前卡点：${sanitizeUserVisibleDiagnosticText(lastError)}`);
+        }
         if (downgradedByObservationGate) {
             warnings.push('画面已经发生变化，但我还没看到修改后的最终效果；需要先看一下当前画面再收尾。');
         }
@@ -12629,7 +12706,8 @@ export class Agent {
             harnessActionCount,
             toolCallCount,
             successfulToolCalls,
-            failedToolCalls,
+            failedToolCalls: attemptFailedToolCalls,
+            completionBlockingFailedToolCalls: failedToolCalls,
             successfulMutationCalls: completionObservationGate.mutationCount,
             successfulObservationCalls: completionObservationGate.observationCount,
             observedToolCallCount,
@@ -12637,6 +12715,12 @@ export class Agent {
             acceptanceFailed,
             acceptanceNeedsReview,
             noDocumentChangeRisks,
+            completionBlockingAcceptanceFailed,
+            completionBlockingAcceptanceNeedsReview,
+            completionBlockingNoDocumentChangeRisks,
+            ...(finalOutcomeSignals.supersededByVerifiedTerminalEvidence
+                ? { attemptSignalsSupersededByTerminalEvidence: true }
+                : {}),
             lastToolName: last?.name,
             lastError,
             blockers,
@@ -12658,9 +12742,9 @@ export class Agent {
                     successfulToolCalls,
                     failedToolCalls,
                     acceptanceVerified,
-                    acceptanceFailed,
-                    acceptanceNeedsReview,
-                    noDocumentChangeRisks,
+                    acceptanceFailed: completionBlockingAcceptanceFailed,
+                    acceptanceNeedsReview: completionBlockingAcceptanceNeedsReview,
+                    noDocumentChangeRisks: completionBlockingNoDocumentChangeRisks,
                     blockers,
                     warnings
                 })
@@ -12692,9 +12776,18 @@ export class Agent {
         if (input.taskProgressMissing) return 'failed';
         if (input.terminalSkillOutcomeFailed) return 'failed';
         if (input.taskCompletionStatus === 'failed') return 'failed';
-        if (input.stopReason === 'tool_budget_final_response') {
+        if (input.stopReason === 'tool_budget_final_response'
+            || input.stopReason === 'empty_final_response') {
             if (input.toolCallCount > 0 && input.successfulToolCalls === 0) return 'failed';
             if (input.acceptanceFailed > 0) return 'failed';
+            if (input.failedToolCalls === 0
+                && input.acceptanceNeedsReview === 0
+                && input.noDocumentChangeRisks === 0
+                && input.taskCompletionStatus === 'completed'
+                && input.designQualityHardBlocked !== true
+                && input.terminalSkillOutcomeUnverified !== true) {
+                return 'completed';
+            }
             return 'needs_review';
         }
         if (input.stopReason !== 'final_response') return 'failed';
@@ -12748,111 +12841,4 @@ export class Agent {
         ));
     }
 
-    /**
-     * 将内部完成状态投影成设计师对用户说的话。这里故意不读取 summaryText、blockers、
-     * warnings、契约条目或运行记录；这些事实仍完整保留在 executionSummary / result.data，
-     * 但用户只看到实际产出、当前是否有版本可看，以及接下来要做的设计动作。
-     */
-    private buildUserResultProjection(summary: AgentExecutionSummary): UserResultProjection {
-        const hasPhotoshopChange = this.hasObservedTaskMutation();
-        const hasSavedOrExportedFile = this.hasSuccessfulToolActivity('save_export');
-        const hasGeneratedAsset = this.hasSuccessfulToolActivity('external_generation');
-        const hasViewedLatestVersion = Number(summary.successfulObservationCalls || 0) > 0;
-        const hasObservedContext = Number(summary.observedToolCallCount || 0) > 0;
-        // “有可看版本”只能来自 Host 返回的可信 mutation proof，或真实保存/导出结果。
-        // successfulMutationCalls 是完成门禁记账，可能只表示写工具返回 success，不能用于用户声明。
-        const hasViewableVersion = hasPhotoshopChange || hasSavedOrExportedFile;
-        const awaitingInteractiveConfirmation = summary.stopReason === 'awaiting_user_confirmation';
-        const awaitingUserInput = summary.stopReason === 'awaiting_user_input';
-
-        let outcome: string;
-        if (hasPhotoshopChange && hasSavedOrExportedFile) {
-            outcome = '本轮已经完成实际画面或结构调整，并保存或导出了文件。';
-        } else if (hasPhotoshopChange) {
-            outcome = '本轮已经在 Photoshop 中做出实际画面或结构调整。';
-        } else if (hasSavedOrExportedFile) {
-            outcome = '本轮已经保存或导出当前文件。';
-        } else if (hasGeneratedAsset) {
-            outcome = '本轮已经生成可用于后续制作的设计素材。';
-        } else if (hasObservedContext) {
-            outcome = '本轮已经查看项目素材和当前画面，还没有开始实际制作。';
-        } else {
-            outcome = '本轮还没有生成设计结果。';
-        }
-
-        let versionState: string;
-        if (hasPhotoshopChange && hasViewedLatestVersion) {
-            versionState = '当前版本：已经看过修改后的画面，可以直接查看。';
-        } else if (hasPhotoshopChange) {
-            versionState = '当前版本：已经有实际改动，可以先看；我还需要查看修改后的画面。';
-        } else if (hasSavedOrExportedFile) {
-            versionState = '当前文件：已经保存或导出，可以直接查看。';
-        } else if (hasGeneratedAsset) {
-            versionState = '当前状态：已有设计素材，但还没有形成 Photoshop 版本。';
-        } else {
-            versionState = '当前状态：还没有可看的设计版本。';
-        }
-
-        let nextAction = '';
-        if (awaitingInteractiveConfirmation) {
-            nextAction = '需要你选择：请在上方卡片中确认；确认后会从当前状态继续。';
-        } else if (awaitingUserInput) {
-            nextAction = '需要你回答上面的问题；收到后会从当前状态继续。';
-        } else if (summary.status === 'cancelled') {
-            nextAction = '下一步：需要继续时，从当前状态接着制作。';
-        } else if (summary.status !== 'completed') {
-            if (summary.downgradedByObservationGate || (hasPhotoshopChange && !hasViewedLatestVersion)) {
-                nextAction = '下一步：我会先读取修改后的画面，再决定如何继续调整。';
-            } else if (summary.noDocumentChangeRisks > 0) {
-                nextAction = '下一步：我会重新读取目标位置，确认改动是否落在正确位置。';
-            } else if (!hasViewableVersion && hasGeneratedAsset) {
-                nextAction = '下一步：把已有素材编排到 Photoshop 中，完成画面和排版。';
-            } else if (!hasViewableVersion && hasObservedContext) {
-                nextAction = '下一步：根据已经看过的素材和画面开始实际制作。';
-            } else if (!hasViewableVersion && summary.stopReason === 'tool_preflight_blocked') {
-                nextAction = '下一步：目标 Photoshop 文档可用后，我会确认目标并开始实际制作。';
-            } else if (!hasViewableVersion) {
-                nextAction = '下一步：先形成第一版可以看的设计。';
-            } else if (summary.status === 'failed') {
-                nextAction = '下一步：从当前版本继续完成尚未落下的设计内容。';
-            } else {
-                nextAction = '下一步：继续调整当前版本中最影响效果的图片、文字或排版问题。';
-            }
-        }
-
-        let title = '当前结果';
-        if (awaitingUserInput) {
-            title = '等待你补充信息';
-        } else {
-            switch (summary.status) {
-                case 'completed':
-                    if (hasViewableVersion) title = '当前版本已完成';
-                    else if (hasGeneratedAsset) title = '设计素材已生成';
-                    else title = '当前结果已整理';
-                    break;
-                case 'needs_review':
-                    if (hasViewableVersion) title = '当前版本可以先看';
-                    else if (hasGeneratedAsset) title = '设计素材已经生成';
-                    else title = '还没有可看的版本';
-                    break;
-                case 'failed':
-                    title = hasViewableVersion ? '当前改动已保留' : '这次还没做出版本';
-                    break;
-                case 'cancelled':
-                    title = hasViewableVersion ? '已停止，当前改动已保留' : '已停止';
-                    break;
-                case 'awaiting_confirmation':
-                    title = '等待你选择';
-                    break;
-            }
-        }
-        const lines = [outcome, versionState, nextAction].filter(Boolean);
-        return {
-            title,
-            summary: [outcome, versionState].join(' '),
-            nextStep: nextAction,
-            detail: lines.join('\n'),
-            message: lines.join(' ')
-        };
-    }
 }

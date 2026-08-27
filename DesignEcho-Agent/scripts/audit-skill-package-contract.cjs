@@ -910,6 +910,37 @@ assert.strictEqual(appliedSkillReceipt.revisions.length, 1);
 assert(appliedSkillReceipt.evidence.includes('trusted_tool_provenance'));
 assert.strictEqual(resolveInteractiveContinuationMutationState(appliedSkillResult), 'observed');
 
+// Effect 与控制流分轴：完整 Host revision 已证明动作完成时，等待交互或交还 Agent
+// 不能把 applied 降成 partial；Outcome / continuation 仍独立说明任务下一步。
+const appliedPendingInteractionResult = attachFixtureSkillEffect('fixture.applied-pending', {
+  success: true,
+  data: { awaitingUserConfirmation: true },
+  toolResults: [{ toolName: 'transformLayer', result: trustedMutationResult }]
+}, { outcomeStatus: 'awaiting_confirmation' });
+const appliedPendingInteractionReceipt = readSkillExecutionEffectReceipt(
+  appliedPendingInteractionResult
+);
+assert(appliedPendingInteractionReceipt);
+assert.strictEqual(appliedPendingInteractionReceipt.effect, 'applied');
+assert.strictEqual(appliedPendingInteractionReceipt.pendingInteraction, true);
+assert.strictEqual(appliedPendingInteractionReceipt.agentHandoff, false);
+
+const appliedAgentHandoffResult = attachFixtureSkillEffect('fixture.applied-handoff', {
+  success: true,
+  data: {
+    agentReActContinuation: {
+      status: 'needs_decision',
+      nextAction: 'decide_next'
+    }
+  },
+  toolResults: [{ toolName: 'transformLayer', result: trustedMutationResult }]
+}, { outcomeStatus: 'executed' });
+const appliedAgentHandoffReceipt = readSkillExecutionEffectReceipt(appliedAgentHandoffResult);
+assert(appliedAgentHandoffReceipt);
+assert.strictEqual(appliedAgentHandoffReceipt.effect, 'applied');
+assert.strictEqual(appliedAgentHandoffReceipt.pendingInteraction, false);
+assert.strictEqual(appliedAgentHandoffReceipt.agentHandoff, true);
+
 const forgedMutationResult = JSON.parse(JSON.stringify(trustedMutationResult));
 const forgedMutationSkillResult = attachFixtureSkillEffect('fixture.forged-mutation', {
   success: true,

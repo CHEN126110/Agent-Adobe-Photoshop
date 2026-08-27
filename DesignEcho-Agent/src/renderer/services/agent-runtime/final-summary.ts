@@ -76,9 +76,12 @@ export function buildToolResultFallbackMessage(input: {
         .filter(Boolean)))
         .slice(0, 3);
     const hasViewableResult = input.hasObservedTaskMutation || input.hasSuccessfulSaveExport;
+    // 最终自然语言说明只是展示层。模型说明超时或返回空文本时，根据结构化事实给出
+    // 中性摘要；是否完成仍由 TaskCompletion / DesignVerdict 决定，不能由“话没说完”
+    // 反向推翻已经闭合的 Photoshop 交付。
     const resultSummary = hasViewableResult
-        ? '当前画面已经有修改，但这次没有形成完整的设计说明。请先看当前版本，后续可以从这里继续调整。'
-        : '这次还没有做出可以看的设计版本，停在了制作开始前。';
+        ? '当前画面已保留本轮实际修改。'
+        : '已保留本轮真实处理记录。';
 
     return [
         stateSummary,

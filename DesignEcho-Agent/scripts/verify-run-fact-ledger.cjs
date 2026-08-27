@@ -1091,6 +1091,169 @@ check(
         completion: childWithSameTargetEvidence.completion
     })
 );
+
+console.log('[5c] Completion 只消费当前未闭合义务，旧尝试保留但不污染终态');
+const completionDocumentId = 915;
+function completionHistoryState(historyStateId) {
+    return { documentId: completionDocumentId, historyStateId, activeLayerId: 42 };
+}
+function completionTextRead(historyStateId) {
+    return {
+        name: 'getTextContent',
+        arguments: { layerId: 42, expectedDocumentId: completionDocumentId },
+        result: {
+            success: true,
+            documentId: completionDocumentId,
+            historyStateRef: completionHistoryState(historyStateId),
+            text: '新品上市'
+        }
+    };
+}
+function completionTextMutation(input) {
+    const result = input.success
+        ? {
+            success: true,
+            documentId: completionDocumentId,
+            photoshopMutationCommit: {
+                version: 'photoshop-mutation-commit/v1',
+                basis: 'same_execute_as_modal',
+                bindingStrength: 'document_revision',
+                before: completionHistoryState(input.before),
+                after: completionHistoryState(input.after),
+                toolActionCompleted: true
+            },
+            ...(input.acceptance ? { acceptance: input.acceptance } : {})
+        }
+        : {
+            success: false,
+            documentId: completionDocumentId,
+            error: 'fixture write rejected',
+            ...(input.acceptance ? { acceptance: input.acceptance } : {})
+        };
+    return {
+        name: 'setTextContent',
+        arguments: {
+            layerId: input.layerId || 42,
+            expectedDocumentId: completionDocumentId,
+            text: input.text
+        },
+        result
+    };
+}
+function completionAcceptance(input) {
+    return {
+        enabled: true,
+        toolName: 'setTextContent',
+        status: 'collected',
+        verified: input.status === 'passed',
+        noDocumentChangeRisk: input.noDocumentChangeRisk === true,
+        before: { historyStateRef: completionHistoryState(input.before) },
+        after: { historyStateRef: completionHistoryState(input.after) },
+        assertionStatus: input.status,
+        warnings: []
+    };
+}
+function buildTextCompletion(toolCallLog) {
+    return buildTaskCompletionContract({
+        task: '把标题文字改成新品上市',
+        toolCallLog
+    });
+}
+
+const retryArguments = {
+    layerId: 42,
+    expectedDocumentId: completionDocumentId,
+    text: '新品上市'
+};
+const repairedRetryContract = buildTextCompletion([
+    completionTextRead(10),
+    {
+        name: 'setTextContent',
+        arguments: retryArguments,
+        result: {
+            success: false,
+            documentId: completionDocumentId,
+            error: 'first attempt failed',
+            acceptance: completionAcceptance({ before: 10, after: 10, status: 'failed' })
+        }
+    },
+    completionTextMutation({
+        success: true,
+        before: 10,
+        after: 11,
+        text: retryArguments.text
+    }),
+    completionTextRead(11)
+]);
+check(
+    repairedRetryContract.status === 'completed'
+        && repairedRetryContract.required.every((item) => item.status === 'passed')
+        && repairedRetryContract.blockers.length === 0,
+    '同 Tool、同参数、同文档的后续成功取代早期失败，最终读回后完成',
+    JSON.stringify(repairedRetryContract)
+);
+
+const differentTargetFailureContract = buildTextCompletion([
+    completionTextRead(20),
+    completionTextMutation({ success: false, layerId: 41, text: '另一个标题' }),
+    completionTextMutation({ success: true, before: 20, after: 21, layerId: 42, text: '新品上市' }),
+    completionTextRead(21)
+]);
+check(
+    differentTargetFailureContract.status === 'failed'
+        && differentTargetFailureContract.blockers.some((item) => /文字修改工具失败/.test(item)),
+    '不同目标的后续成功不能抹去另一项未解决失败',
+    JSON.stringify(differentTargetFailureContract)
+);
+
+const supersededAcceptanceContract = buildTextCompletion([
+    completionTextRead(30),
+    completionTextMutation({
+        success: true,
+        before: 30,
+        after: 31,
+        text: '草稿标题',
+        acceptance: completionAcceptance({ before: 30, after: 31, status: 'failed' })
+    }),
+    completionTextMutation({
+        success: true,
+        before: 31,
+        after: 32,
+        text: '新品上市',
+        acceptance: completionAcceptance({ before: 31, after: 32, status: 'passed' })
+    }),
+    completionTextRead(32)
+]);
+check(
+    supersededAcceptanceContract.status === 'completed'
+        && supersededAcceptanceContract.verification.toolAcceptance.failed === 0,
+    '旧 Photoshop revision 的 acceptance 仍留在日志，但不阻断最新已验证 revision',
+    JSON.stringify(supersededAcceptanceContract)
+);
+
+const warningOnlyContract = buildTextCompletion([
+    completionTextRead(40),
+    completionTextMutation({
+        success: true,
+        before: 40,
+        after: 41,
+        text: '新品上市',
+        acceptance: completionAcceptance({
+            before: 40,
+            after: 41,
+            status: 'needs_review',
+            noDocumentChangeRisk: true
+        })
+    }),
+    completionTextRead(41)
+]);
+check(
+    warningOnlyContract.status === 'completed'
+        && warningOnlyContract.required.every((item) => item.status === 'passed')
+        && warningOnlyContract.warnings.length > 0,
+    'warning 保留诊断信息，但没有结构化未完成 requirement 时不单独降级终态',
+    JSON.stringify(warningOnlyContract)
+);
 console.log('\n' + describeDesignRunToolLogFacts(facts));
 
 console.log('[6] 用户点名交付物：逐项收据 + 续跑状态');
@@ -1210,10 +1373,25 @@ check(
     /已完成/.test(unverifiedQualityMessage)
         && /主体放在右侧/.test(unverifiedQualityMessage)
         && !/完成并复核|质量通过|可用于商品主图|可直接商用/.test(unverifiedQualityMessage)
-        && /没有完成专业设计质量评价/.test(unverifiedQualityMessage)
-        && /是否用于正式发布仍需复核/.test(unverifiedQualityMessage),
-    '产物完成但质量未评价时保留设计说明，并移除复核/质量通过/直接商用误报',
+        && /质量检查没有取得完整结论/.test(unverifiedQualityMessage)
+        && !/仍需复核|仍待复核|结果需要复核/.test(unverifiedQualityMessage),
+    '产物完成但质量未评价时保留设计说明，移除质量误报，也不把检查缺口伪装成人工复核终态',
     unverifiedQualityMessage
+);
+const deliverableSoftQualityMessage = alignUserVisibleCompletionMessage({
+    message: 'PSD 与 JPEG 已保存，质量通过，这版已经可以直接用了。',
+    executionStatus: 'completed',
+    requirements: [],
+    designVerdict: { status: 'needs_review' }
+});
+check(
+    /PSD 与 JPEG 已保存/.test(deliverableSoftQualityMessage)
+        && !/质量通过|可以直接用/.test(deliverableSoftQualityMessage.split('\n\n')[0])
+        && /可继续优化的建议/.test(deliverableSoftQualityMessage)
+        && /不影响本次交付/.test(deliverableSoftQualityMessage)
+        && !/仍需复核|仍待复核|结果需要复核/.test(deliverableSoftQualityMessage),
+    '已闭合交付上的非阻断质量 finding 只投影为可选改进，不重新制造待复核终态',
+    deliverableSoftQualityMessage
 );
 const needsReviewQualityMessage = alignUserVisibleCompletionMessage({
     message: 'PSD 已保存到“E:/project/主图/候选稿.psd”，已完成最终画面复核，质量通过，这版已经可以直接用了。',
@@ -1243,6 +1421,46 @@ check(
             resultSuccess: false
         }) === 'failure',
     'UI 以结构化执行状态区分待复核结果与真实失败，不用顶层 success 抹平语义'
+);
+const nonResultQualityProjectionCases = [
+    {
+        executionStatus: 'awaiting_confirmation',
+        message: '正在等待你确认规格。'
+    },
+    {
+        executionStatus: 'failed',
+        message: 'Photoshop 连接中断，本轮没有写入画面。'
+    },
+    {
+        executionStatus: 'cancelled',
+        message: '任务已按你的要求停止。'
+    }
+];
+check(
+    nonResultQualityProjectionCases.every((item) => (
+        alignUserVisibleCompletionMessage({
+            message: item.message,
+            executionStatus: item.executionStatus,
+            requirements: [],
+            designVerdict: { status: 'needs_review' }
+        }) === item.message
+    )),
+    '等待确认、真实失败与取消只投影各自结构化终态，不混入旧质量裁决的待复核文案'
+);
+const failedWithMissingDeliverableMessage = alignUserVisibleCompletionMessage({
+    message: 'Photoshop 连接中断，本轮没有写入画面。',
+    executionStatus: 'failed',
+    requirements: [{
+        id: 'user-deliverable:main-image',
+        status: 'failed',
+        expected: { label: '主图' }
+    }],
+    designVerdict: { status: 'passed_unverified' }
+});
+check(
+    failedWithMissingDeliverableMessage.includes('“主图”还没有逐项取得可核对的交付结果')
+        && !/仍需复核|仍待复核|专业设计质量评价/.test(failedWithMissingDeliverableMessage),
+    '真实失败仍保留结构化缺失交付物，但不被历史质量状态改写成待复核'
 );
 const colonNeedsReviewQualityMessage = alignUserVisibleCompletionMessage({
     message: '主图已完成视觉复核：PSD 和 JPG 已保存。',
@@ -1374,7 +1592,7 @@ const alignedMixedQualityMessage = alignUserVisibleCompletionMessage({
 check(
     !alignedMixedQualityMessage.includes('质量通过')
         && alignedMixedQualityMessage.includes('导出文件仍需技术复核')
-        && alignedMixedQualityMessage.includes('没有完成专业设计质量评价'),
+        && alignedMixedQualityMessage.includes('质量检查没有取得完整结论'),
     '限定另一对象不掩盖同句中的无条件质量承诺',
     alignedMixedQualityMessage
 );
@@ -1388,7 +1606,7 @@ const alignedQualifiedThenUnconditionalMessage = alignUserVisibleCompletionMessa
 check(
     alignedQualifiedThenUnconditionalMessage.includes('如果专业评审通过，可用于商品主图')
         && !alignedQualifiedThenUnconditionalMessage.includes('当前质量通过')
-        && alignedQualifiedThenUnconditionalMessage.includes('没有完成专业设计质量评价'),
+        && alignedQualifiedThenUnconditionalMessage.includes('质量检查没有取得完整结论'),
     '限定语只保护紧邻声明，不掩盖后续独立质量承诺',
     alignedQualifiedThenUnconditionalMessage
 );

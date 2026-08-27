@@ -27,6 +27,7 @@ import type {
     DesignEvaluationProfile,
     DesignEvaluationProfileResult
 } from '../../../shared/agent-runtime-v5/design-evaluation-profiles';
+import { canonicalize } from '../../../shared/agent-runtime-v5/content-hash';
 import { hasVerifiedEditableDocumentArtifact } from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
 import { isQualifiedDesignQualityHardBlocker } from '../../../shared/design-quality-assertion';
 import {
@@ -402,13 +403,46 @@ function collectAcceptanceCounts(toolCallLog: AgentToolCallLogEntry[]): Acceptan
         needsReview: 0,
         noDocumentChangeRisk: 0
     };
+    const timeline = buildAgentOperationDocumentTimeline(toolCallLog);
+    const latestMutationByDocument = new Map<number, {
+        index: number;
+        revision: PhotoshopHistoryStateRef;
+    }>();
+    toolCallLog.forEach((item, index) => {
+        const proof = readCompletionMutationProof(item);
+        if (!proof) return;
+        latestMutationByDocument.set(proof.after.documentId, {
+            index,
+            revision: proof.after
+        });
+    });
 
-    for (const item of toolCallLog) {
+    for (let index = 0; index < toolCallLog.length; index += 1) {
+        const item = toolCallLog[index];
         const acceptance = getAcceptance(item.result);
         if (!acceptance?.enabled) continue;
         if (hasVersionBoundVerifiedAcceptance(item, acceptance)) {
             counts.verified += 1;
         }
+        const acceptanceAfter = readAcceptanceHistoryStateRef(acceptance, 'after');
+        const latestMutation = acceptanceAfter
+            ? latestMutationByDocument.get(acceptanceAfter.documentId)
+            : undefined;
+        const supersededRevision = Boolean(
+            acceptanceAfter
+            && latestMutation
+            && latestMutation.index > index
+            && !samePhotoshopHistoryStateRef(acceptanceAfter, latestMutation.revision)
+        );
+        const supersededOperation = hasLaterEquivalentSuccessfulOperation({
+            toolCallLog,
+            timeline,
+            index
+        });
+        // Acceptance 是某一次操作、某一个 Host revision 的诊断。后续同义务已经成功，
+        // 或同一文档已经进入更新的受信 revision 时，旧诊断仍保留在 Tool / Run Record，
+        // 但不能继续冒充当前最终版本的 blocker。
+        if (supersededRevision || supersededOperation) continue;
         if (acceptance.assertionStatus === 'failed') {
             counts.failed += 1;
         }
@@ -436,6 +470,20 @@ function resolveEvaluationCompletionProjection(
         check.completionScope === 'publication_review'
     ));
     const failedCheckKeys = new Set(result.verification.failedCheckKeys);
+    const requiredArtifactCheckKeys = profile.checks
+        .filter((check) => check.required && check.completionScope === 'artifact_completion')
+        .map((check) => check.key);
+    const missingRequiredCheckKeys = new Set(result.verification.missingRequiredCheckKeys);
+    const requiredNeedsReviewCheckKeys = new Set(result.verification.requiredNeedsReviewCheckKeys);
+    const artifactChecksCompleted = requiredArtifactCheckKeys.length > 0
+        ? requiredArtifactCheckKeys.every((key) => (
+            !failedCheckKeys.has(key)
+            && !missingRequiredCheckKeys.has(key)
+            && !requiredNeedsReviewCheckKeys.has(key)
+        ))
+        // 旧内存结果没有 completion 双轴，也可能来自迁移前的无 checks Profile；只在这条
+        // 明确兼容路径保留旧 passed 口径，新 Profile 一律由 artifact checks 决定。
+        : result.status === 'passed';
     const rejectedPublicationReviewCheckKeys = publicationReviewChecks
         .filter((check) => failedCheckKeys.has(check.key))
         .map((check) => check.key);
@@ -447,7 +495,7 @@ function resolveEvaluationCompletionProjection(
             : 'publication_review_pending';
     }
     return {
-        artifactStatus: result.status === 'passed' ? 'artifact_completed' : 'artifact_incomplete',
+        artifactStatus: artifactChecksCompleted ? 'artifact_completed' : 'artifact_incomplete',
         publicationReviewStatus,
         publicationReviewCheckCount: publicationReviewChecks.length,
         approvedPublicationReviewCheckCount: 0,
@@ -561,7 +609,6 @@ function buildSkillEvaluationProfileContract(
     if (required.some((item) => item.status === 'failed')) {
         status = 'failed';
     } else if (requiredWarnings.length > 0
-        || result.status !== 'passed'
         || completion.artifactStatus !== 'artifact_completed') {
         status = 'needs_review';
     }
@@ -920,10 +967,6 @@ function countPriorTaskRunCreatedDocumentsForMutation(
     });
 }
 
-function countFailed(toolCallLog: AgentToolCallLogEntry[], names: Set<string>): number {
-    return toolCallLog.filter((item) => names.has(item.name) && !completionOperationSucceeded(item)).length;
-}
-
 function isSafeRejectedGroupingAttempt(entry: AgentToolCallLogEntry): boolean {
     if (entry.name !== 'groupLayersSafely' || toolSucceeded(entry)) return false;
     const operationResult = readPhotoshopOperationResult(entry.result);
@@ -940,10 +983,64 @@ function countBlockingOperationFailures(
     toolCallLog: AgentToolCallLogEntry[],
     names: Set<string>
 ): number {
-    return toolCallLog.filter((item) => (
+    return countUnresolvedFailedOperations(
+        toolCallLog,
+        names,
+        (item) => !isSafeRejectedGroupingAttempt(item)
+    );
+}
+
+const MAX_OPERATION_OBLIGATION_ARGUMENT_CHARS = 4096;
+
+function buildOperationObligationArgumentsKey(value: unknown): string | undefined {
+    const normalized = canonicalize(value ?? {});
+    return normalized.length <= MAX_OPERATION_OBLIGATION_ARGUMENT_CHARS
+        ? normalized
+        : undefined;
+}
+
+/**
+ * 只承认“同 Tool、同参数、同 Photoshop 文档上下文”的后续成功为同义务修复。
+ * 这是刻意保守的：不同目标或不同参数可能是另一项工作，不能仅因使用了同一种 Tool
+ * 就抹去失败；无法生成有界参数身份时同样不做 supersession。
+ */
+function hasLaterEquivalentSuccessfulOperation(input: {
+    toolCallLog: AgentToolCallLogEntry[];
+    timeline: ReturnType<typeof buildAgentOperationDocumentTimeline>;
+    index: number;
+}): boolean {
+    const failed = input.toolCallLog[input.index];
+    if (!failed || completionOperationSucceeded(failed)) return false;
+    const failedArgumentsKey = buildOperationObligationArgumentsKey(failed.arguments);
+    if (!failedArgumentsKey) return false;
+    const failedContext = input.timeline.entries[input.index];
+    return input.toolCallLog.some((candidate, candidateIndex) => (
+        candidateIndex > input.index
+        && candidate.name === failed.name
+        && completionOperationSucceeded(candidate)
+        && buildOperationObligationArgumentsKey(candidate.arguments) === failedArgumentsKey
+        && sameAgentOperationDocumentContext(
+            failedContext,
+            input.timeline.entries[candidateIndex]
+        )
+    ));
+}
+
+function countUnresolvedFailedOperations(
+    toolCallLog: AgentToolCallLogEntry[],
+    names: Set<string>,
+    includeFailure: (entry: AgentToolCallLogEntry) => boolean = () => true
+): number {
+    const timeline = buildAgentOperationDocumentTimeline(toolCallLog);
+    return toolCallLog.filter((item, index) => (
         names.has(item.name)
         && !completionOperationSucceeded(item)
-        && !isSafeRejectedGroupingAttempt(item)
+        && includeFailure(item)
+        && !hasLaterEquivalentSuccessfulOperation({
+            toolCallLog,
+            timeline,
+            index
+        })
     )).length;
 }
 
@@ -2202,11 +2299,13 @@ function getVisualVerification(toolCallLog: AgentToolCallLogEntry[], latestMutat
     return { mode: 'none', snapshotCount: 0, overlayCount: 0 };
 }
 
-function resolveStatus(requirements: TaskCompletionRequirement[], blockers: string[], warnings: string[]): AgentExecutionStatus {
+function resolveStatus(requirements: TaskCompletionRequirement[], blockers: string[]): AgentExecutionStatus {
     if (blockers.length > 0 || requirements.some((item) => item.status === 'failed')) {
         return 'failed';
     }
-    if (warnings.length > 0 || requirements.some((item) => item.status === 'needs_review')) {
+    // warning 是诊断和改进建议，不是第二套隐藏完成门禁。真正会影响终态的未知项
+    // 必须以结构化 requirement=needs_review 表达，不能只靠自由文本 warning 降级。
+    if (requirements.some((item) => item.status === 'needs_review')) {
         return 'needs_review';
     }
     return 'completed';
@@ -2460,7 +2559,7 @@ function buildOperationContract(
     } else if ((organizationVisualReview?.capturedCount || 0) > 0) {
         organizationVisualMode = 'captured_only';
     }
-    const status = resolveStatus(requirements, blockers, warnings);
+    const status = resolveStatus(requirements, blockers);
     return {
         kind,
         status,
@@ -2506,7 +2605,10 @@ function buildLayerOrderContract(input: ContractInput, acceptance: AcceptanceCou
         findLatestVerifiedPhotoshopMutationIndex(input.toolCallLog)
     );
     const actionCount = countSuccessful(input.toolCallLog, LAYER_ORDER_MUTATION_TOOLS);
-    const failedActions = countFailed(input.toolCallLog, LAYER_ORDER_MUTATION_TOOLS);
+    const failedActions = countUnresolvedFailedOperations(
+        input.toolCallLog,
+        LAYER_ORDER_MUTATION_TOOLS
+    );
     const inspectedBeforeMutation = firstMutation >= 0 && hasSuccessfulBefore(input.toolCallLog, INSPECTION_TOOLS, firstMutation);
     const verifiedAfterMutation = lastMutation >= 0 && (
         hasSuccessfulAfter(input.toolCallLog, LAYER_ORDER_VERIFICATION_TOOLS, lastMutation)
@@ -2553,7 +2655,7 @@ function buildLayerOrderContract(input: ContractInput, acceptance: AcceptanceCou
         warnings.push(`工具验收仍有 ${acceptance.needsReview} 项需要复核，${acceptance.noDocumentChangeRisk} 项存在无变化风险。`);
     }
 
-    const status = resolveStatus(requirements, blockers, warnings);
+    const status = resolveStatus(requirements, blockers);
     return {
         kind: 'layer_order_edit',
         status,
@@ -2578,7 +2680,10 @@ function buildTextContract(
         findLatestVerifiedPhotoshopMutationIndex(input.toolCallLog)
     );
     const actionCount = countSuccessful(input.toolCallLog, TEXT_MUTATION_TOOLS);
-    const failedActions = countFailed(input.toolCallLog, TEXT_MUTATION_TOOLS);
+    const failedActions = countUnresolvedFailedOperations(
+        input.toolCallLog,
+        TEXT_MUTATION_TOOLS
+    );
     const inspectedBeforeMutation = firstMutation >= 0 && hasSuccessfulBefore(input.toolCallLog, INSPECTION_TOOLS, firstMutation);
     const verifiedAfterMutation = lastMutation >= 0 && (
         hasSuccessfulAfter(input.toolCallLog, TEXT_VERIFICATION_TOOLS, lastMutation)
@@ -2625,7 +2730,7 @@ function buildTextContract(
         warnings.push(`工具验收仍有 ${acceptance.needsReview} 项需要复核，${acceptance.noDocumentChangeRisk} 项存在无变化风险。`);
     }
 
-    const status = resolveStatus(requirements, blockers, warnings);
+    const status = resolveStatus(requirements, blockers);
     return {
         kind,
         status,
@@ -2655,7 +2760,10 @@ function buildReferenceContract(input: ContractInput, acceptance: AcceptanceCoun
     );
     const actionCount = countSuccessful(input.toolCallLog, REFERENCE_MUTATION_TOOLS)
         + compositeResult.actionCount;
-    const failedActions = countFailed(input.toolCallLog, REFERENCE_MUTATION_TOOLS)
+    const failedActions = countUnresolvedFailedOperations(
+        input.toolCallLog,
+        REFERENCE_MUTATION_TOOLS
+    )
         + compositeResult.failedActions;
     const referenceObservation = resolveReferenceObservation(input);
     const hasReferenceInput = Boolean(referenceObservation);
@@ -2719,7 +2827,7 @@ function buildReferenceContract(input: ContractInput, acceptance: AcceptanceCoun
         warnings.push(`工具验收仍有 ${acceptance.needsReview} 项需要复核，${acceptance.noDocumentChangeRisk} 项存在无变化风险。`);
     }
 
-    const status = resolveStatus(requirements, blockers, warnings);
+    const status = resolveStatus(requirements, blockers);
     return {
         kind: 'reference_replication',
         status,
@@ -3257,7 +3365,7 @@ function buildCreativeDesignContract(input: ContractInput, acceptance: Acceptanc
         );
     }
 
-    const status = resolveStatus(requirements, blockers, warnings);
+    const status = resolveStatus(requirements, blockers);
     return {
         kind: 'creative_design',
         status,
@@ -3490,9 +3598,7 @@ function buildProfileProductionEvidenceContract(
     const warnings = requirements
         .filter((requirement) => requirement.status === 'needs_review')
         .map((requirement) => requirement.reason || `${requirement.label}需要复核。`);
-    const status: AgentExecutionStatus = blockers.length > 0
-        ? 'failed'
-        : (warnings.length > 0 ? 'needs_review' : 'completed');
+    const status = resolveStatus(requirements, blockers);
 
     return {
         kind: 'skill_evaluation_profile',

@@ -42,7 +42,8 @@ export interface SkillExecutionRevisionTransition {
  * - partial：已经观察到 mutation，但 Skill 随后失败、取消或交回未完成状态；
  * - unknown：执行已经开始，但现有结构化证据无法排除 mutation。
  *
- * pendingInteraction 与 agentHandoff 独立表达控制权去向，不能从助手措辞推断。
+ * pendingInteraction 与 agentHandoff 独立表达控制权去向，不能从助手措辞推断，
+ * 也不能反向把完整的 Host mutation 降级成 partial。
  */
 export interface SkillExecutionEffectReceipt {
     version: typeof SKILL_EXECUTION_EFFECT_RECEIPT_VERSION;
@@ -506,7 +507,10 @@ export function buildSkillExecutionEffectReceipt(
 
     let effect: SkillExecutionEffect;
     if (mutationCount !== undefined && mutationCount > 0) {
-        effect = failureLike || hasIncompleteMutation || pendingInteraction || agentHandoff
+        // Effect 只回答“这次执行对 Photoshop 产生了什么效果”。交互暂停或把下一步
+        // 交还 Agent 是控制流事实，不代表已经由完整 Host revision 证明的动作只完成
+        // 了一半；任务是否完成仍由 Outcome / continuation 独立表达。
+        effect = failureLike || hasIncompleteMutation
             ? 'partial'
             : 'applied';
     } else if (!input.executionStarted) {

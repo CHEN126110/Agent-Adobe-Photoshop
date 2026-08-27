@@ -307,6 +307,31 @@ export const isVisibleAgentStepEvent = (event: AgentStepEvent): boolean => {
         && event.toolName.trim().length > 0;
 };
 
+export type AgentToolCompletionStepDisposition =
+    | 'visible'
+    | 'settle_started_step'
+    | 'ignore';
+
+/**
+ * Tool 开始事件可以在普通过程区显示，但一次动作随后可能进入 Workflow 交接、等待用户
+ * 或可恢复失败。后者已经由动作 disposition 投影为 Debug completion，不是任务终态。
+ * UI 应收束对应的进行中行，不能把它遗留到整轮结束后再按 result.success 猜成红/绿。
+ */
+export function resolveAgentToolCompletionStepDisposition(
+    event: AgentStepEvent
+): AgentToolCompletionStepDisposition {
+    if (event.kind !== 'tool_completed') return 'ignore';
+    if (isVisibleAgentStepEvent(event)) return 'visible';
+    if (event.audience !== 'debug'
+        || typeof event.toolName !== 'string'
+        || !event.toolName.trim()
+        // 取消是整轮真实终态；保留进行中步骤，交给 stopped 结算显示用户停在哪里。
+        || String(event.issue || '').trim() === 'cancelled') {
+        return 'ignore';
+    }
+    return 'settle_started_step';
+}
+
 export const isVisibleAgentProcessEvent = (event: AgentStepEvent): boolean => {
     return canRenderStepAsUserFacing(event)
         && VISIBLE_PROCESS_EVENT_KINDS.has(event.kind)
@@ -366,7 +391,9 @@ export const formatAgentProcessEventContent = (event: AgentStepEvent): string =>
  * 前缀能不能加取决于名字的词性——于是真机截出了「已任务卡打勾」「已学到了什么」。
  * 名字有 200 多个，逐条改名只是把问题推后；让文字不再承担状态，这类错就一次消失。
  *
- * 失败是唯一例外：出错必须把话说完整，所以保留「未完成」。
+ * 显式公开的动作错误是唯一例外：它要说明本次动作遇到的具体问题，但不能越级宣判
+ * 整个任务“未完成”。可恢复失败、Workflow 交接和等待用户已在上游 disposition 中转为
+ * Debug completion，不会经过这个格式化分支。
  */
 export const formatAgentToolEventContent = (event: AgentStepEvent): string => {
     const toolName = String(event.toolName || '').trim();
@@ -377,7 +404,11 @@ export const formatAgentToolEventContent = (event: AgentStepEvent): string => {
     }
 
     if (event.status === 'error') {
-        return `${info.name}未完成`;
+        const detail = sanitizeUserVisibleDiagnosticText(String(event.detail || '').trim());
+        if (detail && !looksLikeEngineeringRuntimeProcessText(detail)) {
+            return `${info.name}：${detail}`;
+        }
+        return `${info.name}遇到问题`;
     }
 
     if (event.status === 'running' || event.status === 'pending') {

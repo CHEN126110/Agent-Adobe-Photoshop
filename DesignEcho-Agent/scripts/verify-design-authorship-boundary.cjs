@@ -109,8 +109,11 @@ const {
 const {
     buildVisibleAgentActivityFromProgress,
     buildVisibleAgentActivityFromStepEvent,
+    formatAgentToolEventContent,
     formatAgentProcessEventContent,
-    isVisibleAgentProcessEvent
+    isVisibleAgentProcessEvent,
+    isVisibleAgentStepEvent,
+    resolveAgentToolCompletionStepDisposition
 } = require(path.join(root, 'src/renderer/services/agent-visible-feedback.ts'));
 const {
     canExecuteProviderStreamToolCalls,
@@ -334,6 +337,54 @@ check(
         && chatPanelSource.includes('buildVisibleAgentActivityFromProgress(message, current) || current')
         && chatPanelSource.includes('const resultVisibleMessage = resolvedVisibleResult.content')
         && chatPanelSource.includes('const formattedFailureContent = formatFailureContent(')
+);
+const recoverableToolCompletion = {
+    kind: 'tool_completed',
+    title: '失败：写入文字',
+    detail: '目标图层已经变化',
+    status: 'error',
+    toolName: 'setTextContent',
+    toolCallId: 'call-recoverable-1',
+    issue: 'tool_attempt_failed',
+    audience: 'debug'
+};
+const visibleToolCompletion = {
+    kind: 'tool_completed',
+    title: '完成：写入文字',
+    status: 'success',
+    toolName: 'setTextContent',
+    toolCallId: 'call-visible-1',
+    audience: 'user',
+    visibility: 'user_process'
+};
+const explicitVisibleActionError = {
+    ...recoverableToolCompletion,
+    title: '写入文字遇到问题',
+    detail: '目标图层不存在',
+    issue: 'terminal_action_error',
+    audience: 'user',
+    visibility: 'user_process'
+};
+const explicitVisibleActionErrorText = formatAgentToolEventContent(explicitVisibleActionError);
+check(
+    '动作 disposition 收束过程行，不能由原始 error 提前宣判整个任务未完成',
+    resolveAgentToolCompletionStepDisposition(recoverableToolCompletion) === 'settle_started_step'
+        && isVisibleAgentStepEvent(recoverableToolCompletion) === false
+        && resolveAgentToolCompletionStepDisposition({
+            ...recoverableToolCompletion,
+            issue: 'cancelled'
+        }) === 'ignore'
+        && resolveAgentToolCompletionStepDisposition(visibleToolCompletion) === 'visible'
+        && isVisibleAgentStepEvent(visibleToolCompletion) === true
+        && explicitVisibleActionErrorText.includes('目标图层不存在')
+        && !explicitVisibleActionErrorText.includes('未完成')
+        && chatPanelSource.includes("completionStepDisposition === 'settle_started_step'")
+        && chatPanelSource.includes('toolStepIdsByCallId.get(event.toolCallId)')
+        && chatPanelSource.includes("startedStep?.status === 'running' || startedStep?.status === 'pending'")
+        && chatPanelSource.includes('removeStep(startedStep.id)')
+        && chatPanelSource.includes("status: 'failed',\n        summaryText: existingSummaryText || '这次没有取得可确认的执行结果。'")
+        && !chatPanelSource.includes('执行状态字段不是结构化状态，已按需复核处理')
+        && !chatPanelSource.includes('（未完成）')
 );
 const plainTextContinuationPrompt = buildProviderOutputContinuationPrompt({
     truncatedToolNames: [],
@@ -785,6 +836,16 @@ check(
             .flatMap((document) => document.operations)
             .map((operation) => ({ tool: operation.tool, path: operation.outputPath }))
     })
+);
+check(
+    '主图生产完成与 Agent 视觉判断分轴，不把内部交接伪装成用户任务 needs_review',
+    mainImageExecutorSource.includes("data.status = deliveryComplete ? 'production_completed' : 'failed'")
+        && mainImageExecutorSource.includes("status: 'executed'")
+        && mainImageExecutorSource.includes('data.agentReActContinuation = {')
+        && mainImageExecutorSource.includes("status: 'needs_decision'")
+        && mainImageExecutorSource.includes("sourceStatus: 'main_image_production_completed'")
+        && !mainImageExecutorSource.includes("data.status = deliveryComplete ? 'needs_review' : 'failed'"),
+    '主图文件生产完成必须通过通用 Skill Outcome + Agent continuation 交还判断，而不是输出任务 needs_review。'
 );
 const mainImageStagedPathsByArtifactId = Object.fromEntries(
     mainImageDeliveryPlan.artifacts.map((artifact) => [

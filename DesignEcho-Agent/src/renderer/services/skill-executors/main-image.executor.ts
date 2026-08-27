@@ -1768,7 +1768,7 @@ async function runControlledMainImageProductPath(input: {
         exactArtifactSet: true,
         stagingCleanupComplete: stagingCleanup.success === true
     };
-    data.status = deliveryComplete ? 'needs_review' : 'failed';
+    data.status = deliveryComplete ? 'production_completed' : 'failed';
     data.outputCount = reviewableResultCount;
     data.exportCount = reviewableResultCount;
     data.canClaimOutputQuality = false;
@@ -1788,11 +1788,28 @@ async function runControlledMainImageProductPath(input: {
                 : []
         )
     ];
+    const productionCompletedSummary = deliveryComplete
+        ? `主图生产和文件交付已经闭合，共生成 ${reviewableResultCount} 张结果图；控制权已交还主 Agent，由它根据真实画面决定完成或继续调整。`
+        : '';
+    if (deliveryComplete) {
+        data.agentReActContinuation = {
+            status: 'needs_decision',
+            summary: productionCompletedSummary,
+            details: [
+                '文件、路径、可编辑稿与结果图收据已经闭合，不需要用户替内部流程做技术复核。',
+                '下一步只判断最终画面是否达到当前设计目标；若需要调整，由主 Agent 根据真实画面选择最小修改。'
+            ],
+            blockers: [],
+            warnings: data.warnings,
+            nextAction: 'decide_next',
+            sourceStatus: 'main_image_production_completed'
+        };
+    }
     input.emitStep(
         deliveryComplete ? 'verification' : 'warning',
         '主图执行与验收结果已汇总',
         deliveryComplete
-            ? `已验证 ${reviewableResultCount} 张结果图和对应可编辑稿，视觉质量仍需看真实画面确认。`
+            ? `已验证 ${reviewableResultCount} 张结果图和对应可编辑稿，并交还主 Agent 继续判断真实画面。`
             : '主图交付文件没有全部通过路径、文件和 Photoshop 版本对账，已按未完成处理。',
         deliveryComplete ? 'success' : 'error',
         1
@@ -1813,8 +1830,23 @@ async function runControlledMainImageProductPath(input: {
             userVisibleHeading,
             userVisibleSummary,
             formatMainImageUserVisibleResultFile(userVisibleResultFile),
-            '我已经做过文件检查；视觉好坏仍以你看到的实际图片为准。'
+            deliveryComplete
+                ? '文件检查已经完成；主 Agent 会继续看真实结果并自行决定是否需要调整。'
+                : '我已经做过文件检查；视觉好坏仍以你看到的实际图片为准。'
         ].filter(Boolean).join('\n'),
+        ...(deliveryComplete ? {
+            skillOutcome: {
+                version: 'skill-execution-outcome/v0',
+                status: 'executed',
+                summary: productionCompletedSummary,
+                outputs: [
+                    `已提交 ${reviewableResultCount} 张结果图及对应可编辑稿。`
+                ],
+                blockers: [],
+                warnings: data.warnings as string[],
+                sourceStatus: 'main_image_production_completed'
+            }
+        } : {}),
         error: deliveryComplete
             ? undefined
             : '主图结果图和可编辑源稿没有全部生成并通过文件检查。',

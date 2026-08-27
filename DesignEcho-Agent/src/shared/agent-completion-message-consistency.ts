@@ -13,7 +13,8 @@ interface DesignVerdictLike {
     status?: unknown;
 }
 
-const UNVERIFIED_DESIGN_QUALITY_NOTICE = '产物已经形成，但本轮没有完成专业设计质量评价；是否用于正式发布仍需复核。';
+const UNVERIFIED_DESIGN_QUALITY_NOTICE = '文件已经交付；本轮质量检查没有取得完整结论，因此没有把它标为“质量已通过”。';
+const DELIVERABLE_SOFT_QUALITY_NOTICE = '文件已经交付；质量检查记录了可继续优化的建议，但不影响本次交付。';
 const NEEDS_REVIEW_DESIGN_QUALITY_NOTICE = '已有执行结果可以保留，但当前设计质量仍待复核，尚不能据此确认画面质量通过或可直接使用。';
 
 const INLINE_PROTECTED_SPAN_PATTERN = /`[^`\n]*`|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|《[^》\n]*》|【[^】\n]*】|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|!?\[[^\]\n]*\](?:\([^\n)]*\))?|https?:\/\/[^\s]+/gu;
@@ -190,9 +191,18 @@ function alignUnprovenDesignQualityClaims(message: string, notice: string): stri
     return [aligned, notice].filter(Boolean).join('\n\n');
 }
 
-function resolveUnprovenDesignQualityNotice(status: unknown): string | undefined {
+function resolveUnprovenDesignQualityNotice(
+    status: unknown,
+    executionStatus: string
+): string | undefined {
     if (status === 'passed_unverified') return UNVERIFIED_DESIGN_QUALITY_NOTICE;
-    if (status === 'needs_review') return NEEDS_REVIEW_DESIGN_QUALITY_NOTICE;
+    if (status === 'needs_review') {
+        // `completed + needs_review` 表示结构化交付已经闭合，质量层只有非阻断 finding。
+        // 旧投影仍统一追加“结果待复核”，会把可选改进重新伪装成任务终态。
+        return executionStatus === 'completed'
+            ? DELIVERABLE_SOFT_QUALITY_NOTICE
+            : NEEDS_REVIEW_DESIGN_QUALITY_NOTICE;
+    }
     return undefined;
 }
 
@@ -247,7 +257,17 @@ export function alignUserVisibleCompletionMessage(input: {
     designVerdict?: DesignVerdictLike;
 }): string {
     const originalMessage = String(input.message || '');
-    const unprovenDesignQualityNotice = resolveUnprovenDesignQualityNotice(input.designVerdict?.status);
+    // DesignVerdict 只描述已经形成的结果质量；等待用户、失败和取消各有自己的结构化终态。
+    // 旧逻辑先看 verdict 再看 executionStatus，会把历史/中间 quality verdict 投影到等待或
+    // 失败正文，制造“正在等确认，但结果仍待复核”这种互相冲突的用户状态。
+    const canProjectDesignQuality = input.executionStatus === 'completed'
+        || input.executionStatus === 'needs_review';
+    const unprovenDesignQualityNotice = canProjectDesignQuality
+        ? resolveUnprovenDesignQualityNotice(
+            input.designVerdict?.status,
+            input.executionStatus
+        )
+        : undefined;
     const message = unprovenDesignQualityNotice
         ? alignUnprovenDesignQualityClaims(originalMessage, unprovenDesignQualityNotice)
         : originalMessage;

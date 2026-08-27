@@ -22,7 +22,9 @@ export function buildDesignTaskContractRemediationDirective(input: {
     if (!contract || contract.status === 'completed') {
         return null;
     }
-    if (contract.kind !== 'layer_management' && contract.kind !== 'creative_design') {
+    if (contract.kind !== 'layer_management'
+        && contract.kind !== 'creative_design'
+        && contract.kind !== 'skill_evaluation_profile') {
         return null;
     }
 
@@ -30,6 +32,12 @@ export function buildDesignTaskContractRemediationDirective(input: {
         (item) => item.status === 'failed' || item.status === 'needs_review'
     );
     if (pendingRequirements.length === 0) return null;
+    if (contract.kind === 'skill_evaluation_profile'
+        && pendingRequirements.some((item) => !item.id.startsWith('production-'))) {
+        // 同实例收尾只补可验证的生产、读回和交付事实。Profile 的审美 finding、
+        // publication review 或其它方法检查仍由质量 owner / Agent Reflexion 处理。
+        return null;
+    }
 
     const pendingFacts = pendingRequirements.slice(0, 12).map((item) => {
         const status = item.status === 'failed' ? '确定未满足' : '尚未验证';

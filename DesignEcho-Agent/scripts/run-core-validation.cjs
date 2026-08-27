@@ -26,6 +26,7 @@ const COMMANDS = [
   { label: "Agent 模型用途与多模态边界", cwd: agentRoot, args: ["run", "test:model-usage-classification"] },
   { label: "二进制图像内存边界", cwd: agentRoot, args: ["run", "test:binary-message-store"] },
   { label: "Agent 上下文事实保持", cwd: agentRoot, args: ["run", "test:agent-context-manager"] },
+  { label: "Agent 最终结果事实归并", cwd: agentRoot, args: ["run", "test:agent-final-outcome-signals"] },
   { label: "Skill 包契约", cwd: agentRoot, args: ["run", "audit:skill-package-contract"] },
   { label: "Runtime 声明解析", cwd: agentRoot, args: ["run", "audit:runtime-declaration"] },
   { label: "Prompt 能力治理", cwd: agentRoot, args: ["run", "audit:prompt-capability-governance"] },

@@ -402,10 +402,14 @@ export interface AgentToolCallLogEntry {
      */
     origin?: AgentToolCallOrigin;
     /**
-     * 失败的只读观察已由循环明确降级为非阻断上下文缺口时，只保留真实失败记录，
-     * 不再把它计为未恢复的交付失败；它不等于成功，也不授予完成资格。
+     * 动作级非终态处置：保留原始结果，但不把只读降级、控制延后、Workflow 交接或
+     * 等待用户计成未恢复交付失败。它们都不等于任务成功，也不授予完成资格。
      */
-    failureDisposition?: 'non_blocking_observation' | 'control_turn_deferred';
+    failureDisposition?:
+        | 'non_blocking_observation'
+        | 'control_turn_deferred'
+        | 'workflow_handoff'
+        | 'awaiting_user';
     /** 质量复核相位；只有成功的 post_judge 或 final_summary 才能证明收尾版本闭合。 */
     qualityVerificationPhase?: 'pre_judge' | 'post_judge' | 'final_summary';
     /**
@@ -547,7 +551,10 @@ export interface AgentExecutionSummary {
     /** 向后兼容字段；新记录与 businessActionCount 保持一致。 */
     toolCallCount: number;
     successfulToolCalls: number;
+    /** 尝试级失败总数；保留真实历史，不直接等同于当前完成阻断。 */
     failedToolCalls: number;
+    /** 经过当前任务契约与最终质量裁决归并后，仍会阻断完成的失败尝试。 */
+    completionBlockingFailedToolCalls?: number;
     /** 成功的 Photoshop 写入或文件交付次数；用户可见层据此判断是否已经改变画面/文件。 */
     successfulMutationCalls?: number;
     /**
@@ -565,6 +572,12 @@ export interface AgentExecutionSummary {
     acceptanceFailed: number;
     acceptanceNeedsReview: number;
     noDocumentChangeRisks: number;
+    /** 最终证据归并后的验收阻断；原始三项计数继续保留作诊断。 */
+    completionBlockingAcceptanceFailed?: number;
+    completionBlockingAcceptanceNeedsReview?: number;
+    completionBlockingNoDocumentChangeRisks?: number;
+    /** true 表示更早的尝试失败已被结构化最终证据闭合，而不是被删除或伪装成功。 */
+    attemptSignalsSupersededByTerminalEvidence?: boolean;
     /**
      * E2 已精确归属的本轮 save/export 调用引用。这里只保留执行谱系，不含文件路径，
      * 不授予权限、不改变完成或质量裁决；调试适配器可在运行结束后据此投影产物事实。

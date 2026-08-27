@@ -2,6 +2,38 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-085 动作事实、交互等待、产物完成、设计质量与任务终态必须分轴结算
+
+- 状态：已采用；代码、定向回归与本提交 50 项整仓核心验证已完成，固定 Fixture 实机验收继续以 `CurrentTask.md` 为准。
+- 单次 Tool / Skill 尝试是不可改写的历史事实，但不是任务终态。`success:false` 必须先按结构化 disposition 区分真实失败、可恢复失败、workflow handoff、等待用户、取消和未知副作用；只有终态投影可以判断整个 TaskRun 是否失败。
+- Task Completion 只消费当前尚未闭合的结构化义务与同目标 operation ledger。相同 Tool、参数和文档上的后续成功可以结清较早失败；不同参数、不同目标、未知写状态和仍缺收据的失败继续保留。旧 revision 的验收不能推翻已经在更新 revision 上完成并读回的结果；后续无副作用的预算拒绝也不能撤销同 revision 已取得的质量闭合证据。
+- `artifactStatus` 只表达必需产物、目标、写后读回和交付收据；DesignVerdict 另行表达专业质量。只有携带合格 blocker kind 与 proofRef 的确定性质量问题可以阻断交付；普通审美 finding 保留为改进建议，不能把 `artifact_completed` 改写成“结果需要复核”。
+- 等待确认和 workflow handoff 是控制流，不是失败；Task Card 是工作笔记，不是第二 Completion owner；模型最终正文和总结 Provider 只是展示层，不得从措辞反推完成，也不得因总结超时、空回复或半句输出推翻已闭合的结构化结果。
+- 模型准备结束但仍缺当前版本读回、正确目标或显式文件交付时，现有同一 Agent 实例在保留完整 Tool Log 的情况下接收缺失事实并继续收尾。Harness 不指定截图、保存 Tool 或设计修法；Agent 自行选能力。只有真正的视觉质量修订才进入 Reflexion，等待用户、预算耗尽、未知副作用或 writer 冲突不得被恢复逻辑升级成写权限。
+
+### 正面经验
+
+1. 把 attempt、action disposition、control flow、artifact completion、quality verdict 和 task outcome 分开后，可以同时做到“不隐藏真实失败”和“不让历史失败污染最终版本”；单一 `success` 布尔无法表达这些语义。
+2. 使用同一个 canonical operation ledger，并以 Tool 参数、Host document /history、mutation 与 delivery receipt 精确关联，可以让 Skill 内嵌原子调用和普通 Agent Tool 共享完成口径，不需要为 SKU、主图或详情页各造一套补丁。
+3. “最新可验证版本”优先于“最后一条日志”。后来的真实写入会使旧观察失效，但同版本的无副作用拒绝、诊断或预算提示不能撤销已经成功的读回。
+4. 产物轴与审美轴拆开后，Agent 可以继续消费具体审美建议做有界改进，同时已保存、已导出、已读回的事实不会被笼统 quality gate 抹掉；软 finding 对用户投影为可选优化，不再变成待复核终态。
+5. 用户展示按精确 `toolCallId` 收束过程行：Debug completion 可以关闭对应“处理中”步骤，但不生成红色失败；真正任务终态只来自结构化 Completion。这样并行同名调用、workflow handoff 和重规划不会留下悬空红条。
+6. 最终正文生成失败时使用结构化中性摘要，比“回复未完整，继续补全”或根据模型措辞猜状态更可靠；失败诊断仍进入 Run Record，不冒充用户结果。
+7. 同实例收尾只反馈“缺什么事实”，不反馈“必须调用哪个 Tool”。这既提高自动闭合率，又保持 Agent 对方法和下一步的作者权。
+
+### 负面教训与禁止反例
+
+1. **把 `success:false` 直接变成任务失败**：等待确认、workflow handoff 和可恢复动作会被 UI 提前终态化，随后 Agent 即使成功也留下“未完成”。必须先解析 disposition，再由 Task Completion 结算。
+2. **最后一次尝试获胜**：最后一条如果只是重复观察的预算拒绝，会抹掉此前同 revision 的成功读回。正确规则是最新有效状态变化获胜，不是数组最后一项获胜。
+3. **历史失败永久计债**：早期失败后同目标已成功，仍按累计失败数阻断最终状态，会诱发重复制作。历史计数保留诊断，完成阻断只看尚未被可信后续证据结清的义务。
+4. **旧 revision 验收污染新版本**：旧画面的待复核或失败不能自动迁移到新 revision；新版本必须有自己的观察，而旧结论只保留为历史。
+5. **质量状态覆盖产物状态**：把 scorecard 的 `needs_review` 直接写成 artifact incomplete，会让一个审美建议否定真实 PSD /导出图和交付收据。两条轴必须独立，只有 qualified blocker 才阻断。
+6. **Task Card、助手正文或 warning 成为第二完成判定器**：卡片没同步、总结没生成、正文写了“还需检查”都不能推翻 operation /receipt；反过来，正文说“已完成”也不能补造收据。
+7. **把历史 handoff 伪装成当前失败 Tool Log**：人工合成 `success:false` 复入记录会制造并不存在的新失败，并污染当前 generation。恢复身份应通过结构化 continuation /session 传递。
+8. **通用“结果需要复核”兜底**：它混淆缺质量结论、软性改进、真实产物缺口与未知写状态，还把系统未闭合的责任转给用户。必须分别给出精确事实；可自动补齐的在同实例内补齐，软建议不阻断，真实危险才停止。
+9. **过程开始公开、Debug 完成被过滤**：只显示 `tool_started`，却丢掉同一 `toolCallId` 的 Debug completion，会留下永久红色“未完成”。过滤内容不能破坏过程生命周期。
+10. **重启应用作为验收前置动作**：`pending=0` 不证明 Agent、Provider 或用户 Photoshop 工作空闲；有未保存文档时重启可能中断用户任务。先只读核对 Runtime 与文档，再决定是否需要重启。
+
 ## D-084 交互 owner 与外部能力采用 Agent / Harness Kernel / Skill Package / Tool-Capability Provider + Host 四层边界
 
 - 状态：已采用；本裁决定义当前实现不变量，具体代码接线、构建和真机状态继续以当前代码、`CurrentTask.md` 与 `Status.md` 为准，不能由文档补造成已验证完成。
@@ -17,7 +49,7 @@
 2. 把专属 Provider 与 Renderer 放回同一 Skill package，既能保留 SKU 拖拽、增删、排序和人工复核等高价值体验，又能让通用 UI 保持品类中立。可插拔不等于把业务卡降级成通用字段表，而是让领域体验可安装、可移除、可版本化且不污染 Agent 核心。
 3. Harness 只比较 Skill 签发的决定指纹、检查 owner /scope /revision 和真实副作用；Agent 负责理解失败并重新规划。这个分工同时减少重复人工确认和 Harness 对模型下一步的劫持。
 4. Tool / Capability Provider + Host 作为跨 Skill 原子能力层，可以让 Photoshop、Eagle、浏览器和桌面观察复用同一 Capability /preflight 安全边界，并为未来受控命令保留相同接入方式，避免每个 Skill 各复制一套电脑控制实现；内置与 plugin-backed 只是部署方式，不改变 owner。
-5. 复杂度棘轮应该促成真实拆分，而不是在功能通过后抬高基线。本轮把交互复入停滞判断和工具失败结果归一迁出 `agent.ts`，主循环从 12936 行降到 12859 行，再把新低点锁回棘轮；这比在巨型循环里增加一个“通用 guard”更能保护后续泛化能力。
+5. 复杂度棘轮应该促成真实拆分，而不是在功能通过后抬高基线。本轮把交互复入停滞、工具 /用户结果投影、质量历史闭合和最终结果信号迁出 `agent.ts`，主循环从 12936 行降到 12845 行，再把新低点锁回棘轮；这比在巨型循环里增加一个“通用 guard”更能保护后续泛化能力。
 
 ### 负面教训与禁止反例
 

@@ -206,6 +206,23 @@ export function isReadOnlyAgentContextTool(toolName: unknown): boolean {
     return READ_ONLY_AGENT_CONTEXT_TOOL_NAMES.includes(normalized);
 }
 
+/**
+ * 未知 Skill 副作用完成同版本视觉对账后，可安全进入的文档上下文迁移。
+ * 这些动作只改变“接下来操作哪个文档”，不改已有文档内容；创建、关闭、保存以及
+ * 任意一般 stateful_context 都不在此列，避免把恢复出口变成新的权限旁路。
+ */
+const AGENT_RECONCILIATION_CONTEXT_TRANSITION_TOOL_NAMES: ReadonlySet<string> = new Set([
+    'switchDocument',
+    'openProjectFile',
+    'openTemplate'
+]);
+
+export function isAgentReconciliationContextTransition(toolName: unknown): boolean {
+    return AGENT_RECONCILIATION_CONTEXT_TRANSITION_TOOL_NAMES.has(
+        String(toolName || '').trim()
+    );
+}
+
 const STATEFUL_CONTEXT_TOOLS = new Set([
     // Skill 包脚本是黑盒子进程（可能读写项目文件），强制串行、写预检可见全部前序结果。
     'runSkillScript',

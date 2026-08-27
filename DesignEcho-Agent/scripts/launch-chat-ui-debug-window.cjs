@@ -20,7 +20,8 @@ function usage() {
     "This command does not close the window automatically; use inspect-chat-ui-running-window.cjs to attach to it.",
     "The debug window uses an isolated runtime port block by default so it does not disturb a normal running Agent window.",
     "Use --use-default-runtime-ports only after the normal runtime has stopped; the debug window becomes the sole owner for live Photoshop validation.",
-    "--model requires --seed-user-state and changes only a minimal credential-free preference seed in OS temp; it never copies API keys or rewrites normal DesignEcho userData."
+    "--model requires --seed-user-state and changes only a minimal credential-free preference seed in OS temp; it never copies API keys or rewrites normal DesignEcho userData.",
+    "With --seed-user-state, --project is written as the only explicit project in that isolated seed; normal current/recent projects are never copied."
   ].join("\n");
 }
 
@@ -221,7 +222,7 @@ function buildEnv(parsed) {
     const userDataDir = resolveIsolatedUserDataDir(parsed);
     resetIsolatedUserDataDir(userDataDir);
     if (parsed.seedUserState) {
-      const seededState = seedUserStateStore(userDataDir);
+      const seededState = seedUserStateStore(userDataDir, projectPath);
       if (parsed.modelId) {
         if (!seededState) {
           throw new Error("Cannot apply --model because the normal DesignEcho state store does not exist.");
@@ -303,12 +304,12 @@ function getCurrentUserStateStorePath() {
   return path.join(configRoot, "designecho-agent", "app-state-store.json");
 }
 
-function seedUserStateStore(userDataDir) {
+function seedUserStateStore(userDataDir, projectPath = "") {
   const source = getCurrentUserStateStorePath();
   if (!fs.existsSync(source)) return null;
   const destination = path.join(userDataDir, "app-state-store.json");
   const parsed = JSON.parse(fs.readFileSync(source, "utf8"));
-  const sanitized = buildSanitizedSeedStateStore(parsed);
+  const sanitized = buildSanitizedSeedStateStore(parsed, projectPath);
   if (!sanitized) return null;
   fs.writeFileSync(destination, `${JSON.stringify(sanitized, null, 2)}\n`, {
     encoding: "utf8",
@@ -366,7 +367,22 @@ function sanitizeModelPreferences(value) {
   return output;
 }
 
-function buildSanitizedSeedStateStore(sourceState) {
+function buildExplicitProjectSeed(projectPath) {
+  const normalizedPath = String(projectPath || "").trim();
+  if (!normalizedPath) return null;
+  const resolvedPath = path.resolve(normalizedPath);
+  const now = Date.now();
+  return {
+    id: "chat-ui-debug-project",
+    name: path.basename(resolvedPath) || "DesignEcho Debug Project",
+    path: resolvedPath,
+    createdAt: now,
+    lastOpenedAt: now,
+    folders: {}
+  };
+}
+
+function buildSanitizedSeedStateStore(sourceState, projectPath = "") {
   const entries = sourceState?.entries && typeof sourceState.entries === "object"
     ? sourceState.entries
     : {};
@@ -380,9 +396,18 @@ function buildSanitizedSeedStateStore(sourceState) {
   const persistedVersion = Number.isInteger(persistedProjection?.version)
     ? persistedProjection.version
     : undefined;
+  const explicitProject = buildExplicitProjectSeed(projectPath);
   const safePersistedProjection = {
     ...(persistedVersion !== undefined ? { version: persistedVersion } : {}),
-    state: { modelPreferences: JSON.parse(JSON.stringify(modelPreferences)) }
+    state: {
+      modelPreferences: JSON.parse(JSON.stringify(modelPreferences)),
+      ...(explicitProject
+        ? {
+          currentProject: explicitProject,
+          recentProjects: [explicitProject]
+        }
+        : {})
+    }
   };
   const safeRendererProjection = {
     modelPreferences: JSON.parse(JSON.stringify(modelPreferences))
@@ -660,6 +685,20 @@ function runSelfTest() {
       || safeSeedText.includes("currentProject")
       || safeSeedText.includes("unrelated")) {
       throw new Error("isolated state seed must retain only credential-free model preferences");
+    }
+    const explicitProjectRoot = path.join(modelStateRoot, "explicit-fixture");
+    fs.mkdirSync(explicitProjectRoot);
+    const explicitProjectSeed = buildSanitizedSeedStateStore(sourceState, explicitProjectRoot);
+    const explicitProjection = parsePersistedProjection(
+      explicitProjectSeed?.entries?.["designecho-storage"]
+    );
+    const explicitSeedText = JSON.stringify(explicitProjectSeed);
+    if (explicitProjection?.state?.currentProject?.path !== path.resolve(explicitProjectRoot)
+      || explicitProjection?.state?.recentProjects?.length !== 1
+      || explicitProjection.state.recentProjects[0]?.path !== path.resolve(explicitProjectRoot)
+      || explicitSeedText.includes("C:/private")
+      || explicitSeedText.includes("secret-must-not-be-copied")) {
+      throw new Error("an explicit debug project must replace private project state only inside the isolated seed");
     }
   } finally {
     fs.rmSync(modelStateRoot, { recursive: true, force: true });

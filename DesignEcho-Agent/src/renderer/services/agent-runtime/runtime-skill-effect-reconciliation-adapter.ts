@@ -1,4 +1,7 @@
-import type { AgentToolExecutionKind } from '../../../shared/agent-tool-execution-preflight';
+import {
+    isAgentReconciliationContextTransition,
+    type AgentToolExecutionKind
+} from '../../../shared/agent-tool-execution-preflight';
 import type { RuntimeInteractiveReentry } from '../../../shared/agent-runtime-v5/runtime-interactive-reentry';
 import {
     RUNTIME_SKILL_EFFECT_RECONCILIATION_VERSION,
@@ -171,8 +174,8 @@ function buildNoDocumentReceipt(input: {
 }
 
 /**
- * 模型先观察真实现场、再主动选择下一项原子写动作时，解除同一 TaskRun 的 unknown。
- * Skill 调用、Harness 开工预取和普通文字都不能触发这个出口。
+ * 模型先观察真实现场、再主动选择下一项原子写动作或安全文档迁移时，解除同一
+ * TaskRun 的 unknown。Skill 调用、Harness 开工预取和普通文字都不能触发这个出口。
  */
 export function reconcileRuntimeSkillEffectBeforeAgentAction(input: {
     session: RuntimeSession;
@@ -183,10 +186,14 @@ export function reconcileRuntimeSkillEffectBeforeAgentAction(input: {
     nextToolIsSkill: boolean;
     currentModelTurn: number;
 }): RuntimeSession {
+    const eligibleNextAction = input.nextToolKind === 'photoshop_write'
+        || input.nextToolKind === 'save_export'
+        || (input.nextToolKind === 'stateful_context'
+            && isAgentReconciliationContextTransition(input.nextToolName));
     if (input.session.taskRun.sideEffectState?.status !== 'unknown'
         || !input.reentry
         || input.nextToolIsSkill
-        || (input.nextToolKind !== 'photoshop_write' && input.nextToolKind !== 'save_export')) {
+        || !eligibleNextAction) {
         return input.session;
     }
     const observations = modelObservationEntries(input.toolCallLog, input.currentModelTurn);

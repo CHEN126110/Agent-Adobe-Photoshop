@@ -16,7 +16,7 @@ import {
     type RuntimeSession
 } from '../../../shared/agent-runtime-v5/runtime-session';
 import type { RuntimeDesignStrategyDeclaration } from '../../../shared/agent-runtime-v5/runtime-design-strategy-declaration';
-import type { AgentConfig, AgentToolCallLogEntry } from './types';
+import type { AgentConfig } from './types';
 
 export { reconcileRuntimeSkillEffectBeforeAgentAction } from './runtime-skill-effect-reconciliation-adapter';
 
@@ -39,7 +39,6 @@ export interface RuntimeInteractiveAgentReentryState {
     };
     runtime: {
         workflowContinuationScope: AgentWorkflowContinuationScope;
-        toolCallLog: AgentToolCallLogEntry[];
         pendingDirectWorkflowHandoff?: RuntimeInteractiveDirectWorkflowHandoffSeed;
     };
     adoptAfterSuccessfulModelResponse: () => void;
@@ -168,14 +167,10 @@ export function resolveRuntimeInteractiveAgentReentryState(input: {
         },
         adoptAfterSuccessfulModelResponse: createRuntimeInteractiveReentryAdoption(input.config),
         runtime: {
+            // Reentry 只恢复控制状态，不执行 Tool。历史 Workflow handoff 属于暂停前的运行；
+            // 若把它注入续跑 Tool 账本，会伪造一条本轮 `success:false` 动作，进而污染失败、
+            // 进展、完成契约和用户过程会计。
             workflowContinuationScope,
-            toolCallLog: [{
-                callId,
-                name: reentry.workflowToolName,
-                arguments: {},
-                result: workflowResult,
-                origin: 'harness_compact_workflow_owner'
-            }],
             ...(restoresCompactRepairHandoff ? {
                 pendingDirectWorkflowHandoff: {
                     workflowToolName: workflowContinuationScope.workflowToolName,

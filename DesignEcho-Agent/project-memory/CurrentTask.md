@@ -13,12 +13,14 @@
 - `codex/agent-uxp` 的当前交付基线以 Git HEAD、远端跟踪状态和 Runtime build identity 为准，不在本文件复制易漂移的提交号；本节新增的可验证盲评、完整 Runtime 身份、Debug 写前预检、Skill 交付约定、SKU 事务与交互 owner 收口在提交前均已通过整仓 49 项核心检查。
 - 固定 Skill / Prompt 开工顺序、SKU 默认版式、规则 Top-1 自动选图、项目列表首图冒充选定、按 role 写死层序和无条件文字吸附已移除或降为显式可选机械能力。
 - 提交前独立审查发现并修复两处真实成功率根因：详情页多槽选择会被后续排序逐个作废；长历史压缩会丢失第 5 个以后未决选图槽。两者均有行为回归覆盖。
-- 最新只读实机审计确认当前 DesignEcho 仍是旧运行时，Renderer 选择的是 `claude-subscription-opus` 而不是本轮目标 GPT 5.6；当前项目为 `E:\WERKE\C-1257`，活动详情页文档来自 `E:\WERKE\C-1256`，Photoshop 共打开 8 个文档且至少 1 个未保存。本轮没有关闭、保存或修改这些文档，也没有用测试桥冒充端到端 Agent 成功。
-- 已基于 `main-image-c1163-v1@revision=3` 创建全新隔离 Fixture：`C:\Users\12611\Desktop\DesignEcho固定测试\main-image-c1163-cf0fce5a-r3`，9 个文件与 fixture/path binding 摘要均通过只读核验，原始 `D:\A1 neveralone旗舰店\C-1163` 未改动。随后预检确认 UXP 已自动加载 `cf0fce5a` 的干净 production build；正式采集仍因桌面 Agent 旧运行时身份不可用、当前项目未绑定 Fixture、8 个 Photoshop 文档未关闭、Renderer preflight/写令牌未就绪而保持零写入阻断。
+- 最新只读实机审计确认正常 DesignEcho Runtime 已运行当前已提交 production build `e476c2cd449a603a8aae19d0661c530e94afeb5e`，Photoshop UXP 连接正常。本轮没有重启应用、没有关闭 /保存 /修改用户文档，也没有用测试桥冒充端到端 Agent 成功；Photoshop 当前共打开 6 个文档，其中 5 个存在未保存改动，正式写测试继续保持阻断。
+- 已基于 `main-image-c1163-v1@revision=3` 创建全新隔离 Fixture：`C:\Users\12611\Desktop\DesignEcho固定测试\main-image-c1163-cf0fce5a-r3`，9 个文件与 fixture/path binding 摘要均通过只读核验，原始 `D:\A1 neveralone旗舰店\C-1163` 未改动。显式 `--project` 调试启动现在会把该目录写入隔离状态库的当前 /最近项目，不复制 API Key、会话或用户私有项目；正式采集仍因 5 个未保存 Photoshop 文档而保持零写入阻断。
 - `cd8f22ac` 已收口普通文字 Skill 推荐越权：推荐只是模型可忽略候选，只有用户明选或模型 `declareDesignIntent` 能绑定 Runtime Skill，未绑定推荐也不再抢占交互卡 owner。
 - 单次提交会冻结当时的唯一多模态模型、Provider 与思考档，TaskRun 中途不跟随 UI 设置漂移。正式调试写入桥要求 token、精确项目/模型/DesignEcho Build/Photoshop Build、干净真实运行时和单租约；提交前与完成后均重新校验 `dist/main` / `dist/renderer` 实际摘要，不信任启动缓存。
 - Provider 一次输出截断只在 debug trace 记录并静默续接，不再向用户显示“长度上限、正在补全”。连续恢复失败仍返回 `success:false`，并只依据可信 Photoshop mutation 区分“已保留改动”与“尚未修改画面”；普通轮次也不再无条件先压到 4096 输出 token。
 - Provider 输出现在按两阶段事务结算：content、reasoning 和 Tool arguments 在取得唯一、无冲突的完整终态前都只是临时缓冲；成功恢复只提交完整最终响应，失败则整轮丢弃半成品并返回自然、诚实的失败说明。恢复次数、终态冲突和底层诊断只进入结构化 Debug 记录，不进入普通对话正文。当前找到的历史实例来自旧 DeepSeek 视觉运行，不足以归因到新接入的 GPT 5.6 订阅通道。
+- “未完成 /结果需要复核”链路已按 D-085 分轴治理：waiting /handoff /可恢复动作不再冒充失败；相同目标的后续成功、更新 revision 的可信验收和同 revision 已闭合质量证据可以结清旧尝试，但原始失败仍留在 Run Record；Artifact Completion 不再被软性审美 finding 覆盖；Task Card、最终正文和总结 Provider 不再拥有完成权；Skill 内嵌原子调用统一进入 canonical operation ledger；缺当前目标读回或文件交付时在同一 Agent 实例内只反馈缺失事实，由模型自行选择收尾能力。
+- 两条历史失败病历已用当前纯逻辑链只读重放：`run-20260825172817-b6f8c117-4235` 的 7 项 Completion 全部通过、artifact 为 completed，`sell.visualized` 仍保留为非阻断改进建议，最终状态由错误的 needs_review 恢复为 completed；`run-20260824151539-b6f8c117-b761` 在最后一次无副作用质量预算拒绝后仍保留此前同 document /history 的闭合证据。重放不修改历史记录，也不替代新的真机样本。
 - 初始图片观察、视觉批次、工具禁用后的重规划、强制收尾、静默总结、增强总结与最终视觉 Judge 等辅助模型调用也统一消费同一完整终态 reader；`max_tokens`、内容拦截、传输未完成、缺少终态、意外 Tool 或终态冲突都返回空的不可消费结果，不得把半句话写入项目事实、最终回复或“图片已观察”状态。
 - Agent 普通结果不再携带本机最终文件路径或 Debug request id；E2 只把内部 resultRef 投影到请求级 Debug sidecar。主图与 SKU 统一消费 `runtime-delivery-receipt/v2` 这一份收据 owner，后补任意 `saveDocument` 不再解锁或拼接复合 Skill 的交付物。
 - SKU 正常缺源路径已改为零写入 handoff：候选只有稳定身份，Agent 必须在首次写入前显式选素材、选择 flat/card 结构，并声明画布底色、卡片、网格对齐、标签字体/字距/内边距、序号样式、配色、主体占比和锚点；Runtime 收据精确绑定 `assetId → path → order`，Skill 只验证与求解几何。同名目录素材不再按格式优先级暗选，模型参数也不能把文件名升级为权威色名。
@@ -46,13 +48,13 @@
 
 ### 下一步
 
-1. 以最终干净 Git 身份重启唯一 DesignEcho Runtime，并把当前项目切换到已创建的 revision 3 Fixture；旧 `main-image-c1163-r2` 绑定的是旧 Case 摘要，不得复用。当前 8 个 Photoshop 文档未由用户安全处理前不得启动写测试。
+1. 保持当前正常 Runtime 不动；用户安全处理 6 个 Photoshop 文档中的 5 个未保存改动后，再把隔离调试窗口绑定到已创建的 revision 3 Fixture。旧 `main-image-c1163-r2` 绑定的是旧 Case 摘要，不得复用；文档未安全处理前不得启动写测试。
 2. 用自然请求运行真实 Agent → Provider → Photoshop 链路，记录模型身份、实际观察、选图依据、工具调用、文档 / history、PSD/JPG 收据、首次写入和总耗时；不在运行中人工纠偏。
 3. 将候选成稿与用户作品、Eagle 锚点做盲化成对评审；单次链路安全闭合后，在同一 Git / Case / 模型 / 请求下按 Suite 口径重复至少 5 次，并按 owner 归因失败。
 
 ### 验证与未知
 
-- `maintenance:validate` 已通过 49 个核心检查，包含变更边界分类、语义目标框与候选、Agent/Main/Renderer 类型检查、Electron preload sandbox、Runtime 构建身份与篡改、UXP 测试与 production build、作者权、可靠性分母与磁盘重验盲评、上下文、SKU、composeDesign 和图片落位执行点合同；无 smoke 依赖。
+- 本轮完成语义提交的 `maintenance:validate` 包含 50 个核心检查，新增最终结果事实归并，并覆盖变更边界、运行事实账本、Agent /Main /Renderer 类型检查、Electron preload sandbox、Runtime 构建身份与篡改、UXP 测试与 production build、作者权、可靠性分母与磁盘重验盲评、上下文、SKU、composeDesign 和图片落位执行点合同；无 smoke 依赖。当前含并行语义定位改动的完整工作区曾以 51 项复跑通过，但后者不混入本提交。
 - Provider 输出事务回归覆盖缺失/冲突终态、长度截断、内容拦截、SSE 跨 Buffer 中文、取消、工具参数残缺、成功静默恢复与最终失败；SKU 回归覆盖旧 UXP capability 拒绝、冻结 JPG/PSB 身份、同 history、结构读回、文件新鲜度、事务回滚保留和 exactArtifactSet 不过度声明。
 - 辅助 Provider 终态回归覆盖明确 `stop`、空 `end_turn` 正例，以及 `max_tokens`、`content_blocked`、缺少终态、意外 Tool、残缺 Tool 名、终态冲突和传输未完成负例；截断视觉判断不能再把图片记为已观察。
 - SKU 文件事务故障注入覆盖 Main 冻结基线防伪、同令牌并发 owner、旧文件等长同 mtime 篡改、安装前/回滚前外部占位、38 文件完整提交与全组回滚、正确终态残留验证清理和不确定残留保留阻断；公开回复不再口播主进程、SHA、基线或事务细节，底层错误仍保留在私有诊断中。

@@ -272,6 +272,8 @@ const toolResultProvenancePath = path.join(
   'tool-result-provenance.ts'
 );
 const agentRuntimeTypesPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'types.ts');
+const agentUserResultProjectionPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'agent-user-result-projection.ts');
+const agentActionEventProjectionPath = path.join(root, 'src', 'renderer', 'services', 'agent-runtime', 'agent-action-event-projection.ts');
 const agentOrchestrationTypesPath = path.join(
   root,
   'src',
@@ -2164,6 +2166,8 @@ async function run() {
   const designEvaluationProfilesText = read(designEvaluationProfilesPath);
   const agentRuntimeSource = parse(agentRuntimePath);
   const agentRuntimeTypesText = read(agentRuntimeTypesPath);
+  const agentUserResultProjectionText = read(agentUserResultProjectionPath);
+  const agentActionEventProjectionText = read(agentActionEventProjectionPath);
   const runtimeBundleText = read(runtimeBundlePath);
   const runtimeStagePlanText = read(runtimeStagePlanPath);
   const runtimeDesignBriefText = read(runtimeDesignBriefPath);
@@ -3821,7 +3825,7 @@ async function run() {
   const { buildTaskCompletionContract } = require(taskCompletionContractPath);
   const { buildAgentOperationLedger } = require(agentOperationLedgerPath);
   const { buildDesignTaskContractRemediationDirective } = require(designTaskPolicyPath);
-  const { buildDesignVerdict } = require(designQualityVerdictPath);
+  const { buildDesignVerdict, isDesignVerdictDeliverable } = require(designQualityVerdictPath);
   const {
     isDeterministicConsistencyReportFresh
   } = require(deterministicConsistencyPath);
@@ -5244,6 +5248,37 @@ async function run() {
       assertionResults: stableVlmResults,
       verificationRecords: passedVerificationRecords
     });
+    const softAestheticFindingResults = stableVlmResults.map((result) => (
+      result.id === 'sell.visualized'
+        ? {
+            ...result,
+            status: 'needs_review',
+            score: 0.78,
+            rationale: '产物事实已闭合，仍有非阻断审美改进空间。'
+          }
+        : result
+    ));
+    const softAestheticFindingResult = evaluateDesignEvaluationProfile({
+      profile: scoringIsolationProfile,
+      assertionResults: softAestheticFindingResults,
+      verificationRecords: passedVerificationRecords
+    });
+    const softAestheticFindingContract = {
+      kind: 'skill_evaluation_profile',
+      status: 'completed',
+      required: scoringIsolationProfile.checks
+        .filter((check) => check.required && check.completionScope === 'artifact_completion')
+        .map((check) => ({ id: check.id, label: check.label, status: 'passed' })),
+      blockers: [],
+      warnings: [],
+      completion: softAestheticFindingResult.completion,
+      summary: '产物必需检查已经闭合。'
+    };
+    const softAestheticFindingVerdict = buildDesignVerdict({
+      contract: softAestheticFindingContract,
+      scorecard: softAestheticFindingResult.scorecard,
+      designKinds: ['skill_evaluation_profile']
+    });
     const incompleteStructureVerification = projectDesignFinalReviewStructureVerification({
       version: 'design-artifact-structure-concerns/v1',
       coverage: {
@@ -5333,6 +5368,11 @@ async function run() {
       || passedVerificationResult.status !== 'passed'
       || needsReviewVerificationResult.status !== 'needs_review'
       || failedVerificationResult.status !== 'failed'
+      || softAestheticFindingResult.status !== 'needs_review'
+      || softAestheticFindingResult.completion.artifactStatus !== 'artifact_completed'
+      || softAestheticFindingContract.status !== 'completed'
+      || softAestheticFindingVerdict.status !== 'needs_review'
+      || !isDesignVerdictDeliverable(softAestheticFindingVerdict)
       || incompleteStructureVerification.status !== 'needs_review'
       || unavailableStructureVerification.status !== 'needs_review'
       || incompleteStructureResult.status !== 'needs_review'
@@ -10679,17 +10719,38 @@ async function run() {
   const evaluationProfile = {
     profileId: 'design.single_canvas_visual.evaluation/v0',
     capabilityGoal: '测试评价 Profile 与事实完成条件合并。',
-    checks: []
+    checks: [{
+      id: 'fixture.fresh-result',
+      key: 'fixture_fresh_result',
+      label: '当前版本结构与画面已读回',
+      required: true,
+      completionScope: 'artifact_completion',
+      expectedFix: '读取当前版本。'
+    }]
   };
   const evaluationProfileResult = {
     profileId: evaluationProfile.profileId,
-    status: 'passed',
+    // 软审美 finding 可保留 needs_review；产物完成轴由下方必需检查独立闭合。
+    status: 'needs_review',
     verification: {
       missingRequiredCheckKeys: [],
       failedCheckKeys: [],
-      needsReviewCheckKeys: []
+      needsReviewCheckKeys: [],
+      requiredNeedsReviewCheckKeys: []
     },
-    scorecard: { blockers: [] }
+    scorecard: { blockers: [] },
+    completion: {
+      artifactStatus: 'artifact_completed',
+      publicationReviewStatus: 'publication_review_not_required',
+      publicationReviewCheckCount: 0,
+      approvedPublicationReviewCheckCount: 0,
+      pendingPublicationReviewCheckKeys: [],
+      rejectedPublicationReviewCheckKeys: [],
+      boundaries: {
+        artifactCompletionUsesPublicationReview: false,
+        humanApprovalCanBeInferred: false
+      }
+    }
   };
   const profileZeroWriteContract = buildTaskCompletionContract({
     task: editExistingTask,
@@ -10796,6 +10857,24 @@ async function run() {
       })
     ]
   );
+  const agenticMainImageUnsavedRemediation = buildDesignTaskContractRemediationDirective({
+    task: '请完成当前设计。',
+    context: { agenticArtifactContract: agenticMainImageArtifactContract },
+    toolCallLog: agenticMainImageProductionLog
+  });
+  const agenticMainImageCompleteRemediation = buildDesignTaskContractRemediationDirective({
+    task: '生成一个单画布视觉。',
+    context: { agenticArtifactContract: agenticMainImageArtifactContract },
+    toolCallLog: [
+      ...agenticMainImageProductionLog,
+      successfulOperation('quickExport', { documentId: 41, format: 'png' }, {
+        outputPath: 'main-image.png'
+      }),
+      successfulOperation('saveDocument', { documentId: 41, format: 'psd' }, {
+        filePath: 'main-image.psd'
+      })
+    ]
+  });
   const scopedOptionalCompletionContract = scopedEditProfile && scopedOptionalEvaluationResult
     ? buildTaskCompletionContract({
       task: '只读投影局部修改评价结果，不执行新的写入。',
@@ -11268,6 +11347,14 @@ async function run() {
       && requirementById(agenticMainImageCompleteContract, 'production-delivery')?.status === 'passed'
       ? []
       : ['agentic-delivery:psd-and-preview-receipts-did-not-complete-profile-task']),
+    ...(agenticMainImageUnsavedRemediation
+      && /保存可编辑文档与预览图片/.test(agenticMainImageUnsavedRemediation.shortReason)
+      && !/(quickExport|saveDocument)/.test(agenticMainImageUnsavedRemediation.directive)
+      && !/保存可编辑文档与预览图片/.test(
+        agenticMainImageCompleteRemediation?.shortReason || ''
+      )
+      ? []
+      : ['agentic-delivery:pre-terminal-same-instance-remediation-missing-or-selected-tool']),
     ...(JSON.stringify(agenticMainImageCompleteContract) === JSON.stringify(
       agenticMainImageCategoryInvariantContract
     )
@@ -15697,24 +15784,26 @@ async function run() {
           && agentRuntimeText.includes('!runtimeBriefRequiresDelivery')
           ? []
           : ['agent-runtime:declared-production-obligation-not-enforced']),
-        ...(agentRuntimeText.includes('const hasViewableVersion = hasPhotoshopChange || hasSavedOrExportedFile;')
+        ...(agentUserResultProjectionText.includes('const hasViewableVersion = input.hasPhotoshopChange || input.hasSavedOrExportedFile;')
           && !agentRuntimeText.includes('const hasRecordedMutation = Number(summary.successfulMutationCalls || 0) > 0;')
-          && agentRuntimeText.includes("versionState = '当前状态：还没有可看的设计版本。';")
-          && agentRuntimeText.includes('title = hasViewableVersion ? \'当前改动已保留\' : \'这次还没做出版本\';')
+          && agentUserResultProjectionText.includes("versionState = '当前状态：还没有可看的设计版本。';")
+          && agentUserResultProjectionText.includes("title = hasViewableVersion ? '当前改动已保留' : '这次还没做出版本';")
           ? []
           : ['agent-runtime:unproven-write-can-claim-viewable-version']),
         ...(agentRuntimeText.includes("const awaitingInteractiveConfirmation = input.stopReason === 'awaiting_user_confirmation';")
           && agentRuntimeText.includes("const awaitingUserInput = input.stopReason === 'awaiting_user_input';")
           // 2026-08-18：用户正文永远是模型自己的话（不再被状态口播替换）；提问态自然也不会被投影吞掉。
           && agentRuntimeText.includes("let rawVisibleMessage = String(input.message || '').trim()")
-          && agentRuntimeText.includes("const awaitingInteractiveConfirmation = summary.stopReason === 'awaiting_user_confirmation';")
-          && agentRuntimeText.includes("const awaitingUserInput = summary.stopReason === 'awaiting_user_input';")
-          && agentRuntimeText.includes('需要你回答上面的问题；收到后会从当前状态继续。')
+          && agentUserResultProjectionText.includes("const awaitingInteractiveConfirmation = summary.stopReason === 'awaiting_user_confirmation';")
+          && agentUserResultProjectionText.includes("const awaitingUserInput = summary.stopReason === 'awaiting_user_input';")
+          && agentUserResultProjectionText.includes('需要你回答上面的问题；收到后会从当前状态继续。')
           ? []
           : ['agent-runtime:plain-user-question-collapsed-into-confirmation-card']),
         ...(!agentRuntimeText.includes('if (error) return `失败原因: ${error}`;')
           && agentRuntimeText.includes('return `${displayName}没有拿到可确认的完成结果。`;')
-          && agentRuntimeText.includes("issue: success ? undefined : 'tool_failed'")
+          && agentActionEventProjectionText.includes("issue: 'tool_attempt_failed'")
+          && agentActionEventProjectionText.includes('userVisible: false')
+          && agentRuntimeText.includes("audience: actionEvent.userVisible ? 'user' : 'debug'")
           ? []
           : ['agent-runtime:raw-tool-error-entered-user-process']),
         ...(agentRuntimeText.includes('private buildVerificationStepDetail(projection: UserResultProjection): string')
