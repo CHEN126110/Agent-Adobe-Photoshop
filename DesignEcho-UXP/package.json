@@ -10,7 +10,8 @@
     "dev": "webpack --mode development",
     "generate:icons": "python scripts/generate_plugin_icons.py",
     "audit:photoshop-transaction-ownership": "node scripts/audit-photoshop-transaction-ownership.cjs",
-    "test": "npm run test:image-target-fit",
+    "test": "npm run test:image-target-fit && npm run test:sku-pose-alignment-provider",
+    "test:sku-pose-alignment-provider": "node scripts/test-sku-pose-alignment-provider.cjs",
     "test:image-target-fit": "node scripts/test-image-target-fit.cjs",
     "watch": "webpack --mode development --watch"
   },

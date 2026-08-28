@@ -363,6 +363,8 @@ const missingScope = schemaTools.filter((t) => !scopeClassified.has(t) && !DYNAM
 // 已评审、故意不开放给模型的工具：新增时必须写明理由，不能只是图省事排除。
 const EXPLICITLY_NOT_EXPOSED_TO_AGENT = new Map([
     ['applyDisplacement', 'Agent 内部专用二进制位移场协议(SPARSE:xxx)，普通模型无法生成合法参数值'],
+    ['captureLayerPixels', 'Provider 内部二进制像素捕获工具；只返回版本化事实收据与私有二进制帧，不能作为模型视觉工具暴露'],
+    ['applySkuPoseAlignment', 'SKU Skill 内部版本化 Provider；只接受离线质量收据与私有 document/revision 守卫，不能作为通用 Agent 原子工具暴露'],
     ['warpExplorer', '研究/调试用探索性工具，commands 参数允许执行任意未受限 batchPlay 命令'],
     ['rasterizeSmartObject', '当前实现无条件返回失败，暴露给模型只会产生误导性的失败调用'],
     ['harmonize_layer', '旧谐调链路从未完成像素导出且依赖不存在的 wsClient.request，Agent、面板与 UXP 实现已整体退役'],

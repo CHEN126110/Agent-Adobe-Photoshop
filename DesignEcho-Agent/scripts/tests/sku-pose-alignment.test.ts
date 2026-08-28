@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 
 import { alignSkuRetouchPose } from '../../src/main/services/sku-retouch/pose-alignment';
 
-interface PoseFixture {
+export interface PoseFixture {
     raster: {
         data: Buffer;
         width: number;
@@ -22,7 +22,7 @@ interface FixtureOptions {
     halfWidthAt?: (progress: number) => number;
 }
 
-function createPoseFixture(options: FixtureOptions): PoseFixture {
+export function createPoseFixture(options: FixtureOptions): PoseFixture {
     const width = options.width ?? 240;
     const height = options.height ?? 360;
     const top = options.top ?? 24;

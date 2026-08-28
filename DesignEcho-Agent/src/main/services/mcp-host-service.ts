@@ -14,6 +14,7 @@ import {
 } from './debug-bridge-service';
 import type { DesignEchoRuntimeBuildIdentity } from './runtime-build-identity';
 import { dispatchPhotoshopRemoveBackgroundWorkflow } from './photoshop-workflow-dispatch';
+import { dispatchSkuPoseAlignmentWorkflow } from './sku-pose-alignment-workflow-dispatch';
 import { WebSocketServer } from '../websocket/server';
 import {
     analyzeDetailPlaceholderAnchors,
@@ -481,7 +482,8 @@ export class MCPHostService {
         const toolName = String(params.name || '').trim();
         if (toolName !== 'photoshop.tools.call'
             && toolName !== 'photoshop.tools.batch_call'
-            && toolName !== 'photoshop.workflows.remove_background') return '';
+            && toolName !== 'photoshop.workflows.remove_background'
+            && toolName !== 'photoshop.workflows.sku_pose_alignment') return '';
 
         const args = asRecord(params.arguments);
         const existing = String(args.requestKey || params.requestKey || '').trim();
@@ -514,7 +516,8 @@ export class MCPHostService {
                 return isMutation(record.name, record.arguments);
             });
         }
-        if (hostToolName === 'photoshop.workflows.remove_background') {
+        if (hostToolName === 'photoshop.workflows.remove_background'
+            || hostToolName === 'photoshop.workflows.sku_pose_alignment') {
             return true;
         }
         return false;
@@ -1012,6 +1015,45 @@ export class MCPHostService {
                 }
             },
             {
+                name: 'photoshop.workflows.sku_pose_alignment',
+                description: 'SKU Skill 内部的版本化姿态统一工作流：绑定当前 Photoshop document/history/layer，取得无损图层快照，在 Main 离线计算并仅用一次受保护 UXP 事务写入；不替调用方选择强度、袜口锁定范围或输出图层名。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        version: {
+                            type: 'string',
+                            enum: ['sku-pose-alignment-workflow/v1']
+                        },
+                        expectedDocumentId: { type: 'number', minimum: 1 },
+                        expectedHistoryStateId: { type: 'number', minimum: 1 },
+                        layerId: { type: 'number', minimum: 1 },
+                        resultLayerName: { type: 'string', minLength: 1, maxLength: 160 },
+                        options: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                strength: { type: 'number', minimum: 0, maximum: 1 },
+                                cuffLockRatio: { type: 'number', minimum: 0, maximum: 0.4 },
+                                maxIterations: { type: 'number', minimum: 1, maximum: 4 }
+                            },
+                            required: ['strength', 'cuffLockRatio']
+                        },
+                        requestKey: {
+                            type: 'string',
+                            description: '可选取消键。'
+                        }
+                    },
+                    required: [
+                        'version',
+                        'expectedDocumentId',
+                        'expectedHistoryStateId',
+                        'layerId',
+                        'resultLayerName',
+                        'options'
+                    ]
+                }
+            },
+            {
                 name: 'photoshop.tools.cancel',
                 description: 'Cancel a pending Photoshop MCP tool call by requestKey.',
                 inputSchema: {
@@ -1457,6 +1499,38 @@ export class MCPHostService {
                         error: error?.message || String(error),
                         noMutation: true,
                         executesPhotoshop: false
+                    };
+                }
+            }
+
+            case 'photoshop.workflows.sku_pose_alignment': {
+                let workflowStarted = false;
+                try {
+                    await this.ensurePhotoshopConnected();
+                    return await dispatchSkuPoseAlignmentWorkflow(args, {
+                        getDocumentInfo: async (): Promise<unknown> => this.unwrapPhotoshopMcpPayload(
+                            await this.wsServer.callMCPTool('getDocumentInfo', {})
+                        ),
+                        invokeRegisteredHandler: async (
+                            method: string,
+                            params: Record<string, unknown>
+                        ): Promise<unknown> => {
+                            workflowStarted = true;
+                            return await this.wsServer.invokeRegisteredHandler(method, params);
+                        }
+                    });
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    return {
+                        success: false,
+                        status: 'failed',
+                        code: workflowStarted
+                            ? 'sku_pose_alignment_outcome_unknown'
+                            : 'sku_pose_alignment_not_started',
+                        error: message,
+                        noMutation: !workflowStarted,
+                        mutationState: workflowStarted ? 'unknown' : 'not_started',
+                        executesPhotoshop: workflowStarted
                     };
                 }
             }

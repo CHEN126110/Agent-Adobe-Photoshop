@@ -1544,6 +1544,11 @@ async function initializeConnection() {
             removeBackgroundTool.setWebSocketClient(wsClient);
             console.log('[DesignEcho] RemoveBackgroundTool 已配置二进制传输');
         }
+        const captureLayerPixelsTool = toolRegistry?.getCaptureLayerPixelsTool();
+        if (captureLayerPixelsTool) {
+            captureLayerPixelsTool.setWebSocketClient(wsClient);
+            console.log('[DesignEcho] CaptureLayerPixelsTool 已配置二进制传输');
+        }
         
         await wsClient.connect();
         console.log('[DesignEcho] Connected successfully!');
