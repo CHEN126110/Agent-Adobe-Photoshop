@@ -20,6 +20,9 @@
 - 完成态容量修复已经以 `f148d512` 推送；提交后 Agent /UXP build identity 已重建并用于 r23。r23 没有再生成空子代，证明 D-088 对应故障形态消失，但正式技术结果仍未通过。
 - r23 唯一 Run `run-20260828194852-b6f8c117-8307` 完成 17 次模型调用、18 次 Tool Call、8 次成功写 /保存 /导出，生成 27,621,377 字节 PSD 与 822,776 字节 JPG。Agent 自主选择上脚图和四色平铺，完成两次有画面依据的局部修正；总耗时约 29 分 29 秒。
 - r23 首个新偏差是证据形状错误：最后内容 revision `4355:4385` 之后只有带 `region` 的局部画布观察，没有单画布完整 ReviewSet；因此 `fresh_visual` 缺失、评价覆盖 0/16、R5 /E2 未闭合，Debug Bridge 不能返回安全 `finalArtifactRefs`。Attempt 已在同构建重启、0 文档、0 pending 和同 fixture 条件下 reconciliation。
+- D-089 已以 `329a650e` 提交并推送，提交后 Agent /UXP build identity 均为同一干净提交。r24 使用全新 fixture、同一句自然需求、GPT-5.6 Sol 与真实 Photoshop，完成 15 次普通 /终审模型调用、15 次 Tool Call、5 次成功 mutation，生成 30,118,573 字节 PSD 与 1,016,313 字节 JPG；成品 history 为 `4389:4424`，文件 SHA-256 已固化。
+- r24 的 Agent 自主选择 `DSC05845.jpg` 作为左侧上脚主视觉、`DSC05304.jpg` 作为右下四色平铺，先说明左右结构与粉咖暖米色方向，并在真实画面中发现平铺袜偏小后只修正该处。最终成品具有完整标题、主体和四色陈列；但终局 Judge 却描述“商品群偏小、大片上下留白、没有设计文字”，与真实成品直接矛盾。
+- r24 根因不是模型没看懂同一张成品，而是 `selectFinalQualityReviewSet` 的实现仍使用 `single || bundle`：同 history 的素材 /局部 Bundle 被错误提升为单画布终局候选，Harness 因而跳过全画布采集。Judge 实际评价了辅助素材，而 E2 只接受 full-surface，最终出现 `finalArtifactObserved=true`、任务交付检查通过、但安全 `finalArtifactRefs` 为空的内部矛盾。Attempt 已在同构建、同 fixture、0 打开文档、0 pending 条件下完成 `reconciled_after_runtime_restart`。
 
 ### 实施边界
 
@@ -42,6 +45,7 @@
 - 终态结构读回与单画布完整像素收集收敛到 `final-quality-host-evidence`：如果 Agent 的最新视觉证据缺失、过期或只是局部 region，Harness 在同 revision 上只读一次无 region 全画布；这不要求 Agent 在设计过程中固定检查画面，也不选择任何审美或修订动作。
 - Final Judge 只有在 Provider 逐图出站收据与精确 ReviewSet 匹配、Judge 完成且 Photoshop revision 未变化时，才建立瞬态“该 Host 结果已被终审”绑定。E2 可用该绑定验证同版本 PSD /JPG，但不能伪造普通主模型 review decision、扫描目录或把文件存在补成成功。
 - `single surface / multi surface` 由 Evaluation Profile 决定证据形状；详情页等多画面任务继续要求完整 Bundle，不允许用一张全图缩略替代。
+- ReviewSet 类型是终局证据身份而不是偏好：单画布只接受 `single_surface`，多画面只接受声明目标完整的 `visual_observation_bundle`；同文档、同 history、数量完整也不能跨类型降级。Judge、E2 和跨代可信视觉 Artifact 必须消费同一个类型选择结果。
 
 ### 正面经验
 
@@ -52,6 +56,7 @@
 5. generation 是有成本的生命周期事务；是否开启下一代必须看真实累计用量和完整闭合下限，不能只看上一代的文本原因或成功标签。
 6. 局部观察与完整终审属于不同事实：Agent 自主决定局部设计检查，Harness 只在终态补自己拥有的完整性证据，能同时保持自主性和成功率。
 7. “Judge 读过哪张图”必须由逐图 Provider 收据和精确 source output 绑定，不能通过给自动快照写 `reviewed=true` 冒充。
+8. 版本相同不等于语义对象相同；document/history 只能证明时间一致性，ReviewSet source /coverage 才能证明“看的是成品还是辅助素材”。
 
 ### 负面教训与禁止反例
 
@@ -64,13 +69,14 @@
 7. 禁止把带 `region` 的局部快照当完整成品终审；局部裁切正确不能证明全局层级、平衡、留白或缩略效果。
 8. 禁止同一缺口只重复要求 Agent“再检查当前画面”；Harness 应补全自己拥有的只读事实，但仍不能指定设计修法。
 9. 禁止扫描已生成目录补造 `finalArtifactRefs`，也禁止给 Harness 自动观察伪造主模型 review decision。
+10. 禁止把 `single || bundle` 之类“有证据就先用”的降级写进终局选择；它会把素材、局部裁切或多屏集合偷换成单画布成品，并在 Judge、E2 与恢复 Artifact 之间制造多套事实。
 
 ### 下一步
 
-1. D-089 的完整 `maintenance:validate` 已从头通过 58/58；继续完成 Agent production build、差异复审、独立提交与 GitHub 推送。
-2. 以新提交重建并重载 Agent /UXP；从锁定源创建全新 r24 fixture，继续使用同一句需求、同一 GPT-5.6 Sol、同一素材和 1440×1440 画布。
-3. r24 必须同时证明：无空子代；完整全画布 ReviewSet 与同一 Judge 出站收据成立；PSD /JPG 与终审 history 一致；Debug Bridge 返回非空安全 `finalArtifactRefs`；Attempt 正式技术成功。
-4. 技术成功后再对可评分结果与用户成稿 /Eagle 做匿名质量比较；r23 当前只证明设计思考改善，仍不能代表专业质量。质量与可靠交付达标后再单独治理约 8 分钟首写和 29 分钟总耗时。
+1. 完成 D-090：让单画布与多画面 ReviewSet 在选择、Judge、E2 和可信跨代 Artifact 中保持类型一致；已有同 history 错误 Bundle 时也必须采集一次无 region 全画布。
+2. Runtime Declaration 攻击型回归、Design Authorship /Agent Business Boundary、Renderer 类型检查、完整 `maintenance:validate` 58/58 与 Agent production build 已通过；继续最终差异审查、独立提交并推送。
+3. 以新提交重建并重载 Agent /UXP，从锁定源创建全新 r25 fixture，继续使用同一句需求、同一 GPT-5.6 Sol、同一素材和 1440×1440 画布。必须同时取得完整全画布 Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
+4. 技术成功后再对 r24 /r25 可评分结果与用户成稿 /Eagle 做匿名质量比较；r24 证明 Agent 的设计过程和成品已明显可评，但错误 Judge 不能代表真实视觉分。质量与可靠交付达标后再单独治理约 9 分钟首写和 34 分钟总耗时。
 
 ### 验证与未知
 
@@ -79,12 +85,13 @@
 - 已验证：新完成态容量实现的 Agent Business Boundary、Design Authorship Boundary、Runtime Declaration、Capability Resolver、Simplification Ratchet、Main /Renderer 类型检查与完整 `maintenance:validate` 58/58 通过；`agent.ts` 仍为 12,826 行。完整闸门第一次因 `reflexion-reentry-policy.ts` 未被现有变更分类器收录而 fail closed，分类归属修正后从头通过，没有跳步或改断言。
 - 已验证：本轮 Agent production build 成功；提交前 build identity 为旧 HEAD `4549a846` 加本轮源码摘要，不能冒充最终提交运行时身份。
 - 已验证：完成态容量提交 `f148d512` 已推送并以提交后 Agent /UXP identity 执行 r23；r23 没有空子代，但因完整画布终审缺口正式失败并完成 reconciliation。
-- 已验证：D-089 定向 Runtime Declaration 行为回归覆盖“局部 region → 自动完整画布 → 同一 Judge 收据 → PSD/JPG refs”；完整 `maintenance:validate` 已从头通过 58/58，Design Authorship Boundary、Agent Business Boundary、终审逐图收据、可靠性契约、Main /Renderer 类型检查、Agent /UXP 核心测试与 UXP production build 均通过；`agent.ts` 仍为 12,826 行。
-- 待验证：Agent production build、提交推送、提交后 Agent /UXP identity 与 r24 Photoshop 正式 Attempt；之后仍需重复样本和匿名视觉评审。
+- 已验证：D-089 提交 `329a650e` 已推送；提交后 Agent build `designecho-329a650e2103-69bc9c69c06c` 与 UXP build `designecho-uxp-production-329a650e2103-cdcad214d92e` 均为干净同提交。r24 真实生成同 history PSD /JPG，Agent 有明确选图、构图和一次定向修订；Attempt 因终局 ReviewSet 类型偷换失败并已安全 reconciliation。
+- 已验证：D-090 定向 Runtime Declaration 回归显式注入同 history、结构完整的误导素材 Bundle，证明单画布不会降级使用它，而会自动采集全画布、把该图作为 Judge 第一张图、排除误导 Bundle，并把运行 Artifact 保持为 `single_surface`。Design Authorship /Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整 `maintenance:validate` 58/58 与 Agent production build 均已通过；`agent.ts` 保持 12,826 行。
+- 待验证：独立提交推送、提交后 Agent /UXP identity 与 r25 Photoshop 正式 Attempt；之后仍需重复样本和匿名视觉评审。
 
 ### 状态
 
-`in_progress / f148_capacity_fix_pushed / r23_no_empty_child_but_full_surface_review_missing / r23_reconciled / d089_generic_host_evidence_core_58_passed / agent_build_commit_push_and_r24_pending`
+`in_progress / d089_329a650e_pushed / r24_real_design_completed_but_wrong_bundle_judged / r24_reconciled / d090_review_set_kind_separation_core_58_and_agent_build_passed / commit_push_and_r25_pending`
 
 ---
 

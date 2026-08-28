@@ -7975,10 +7975,10 @@ export class Agent {
      * 质量通过结论。
      */
     private writeTrustedVisualReviewArtifactForRunResult(owner: AgentRunResult): void {
-        const bundleCandidate = this.latestDesignVisualJudgeBundleReviewSet;
-        const candidate = bundleCandidate?.reviewSet.coverageBasis === 'declared_targets'
-            ? bundleCandidate
-            : this.latestDesignVisualJudgeSingleReviewSet || bundleCandidate;
+        const evaluationProfile = this.resolveRuntimeEvaluationProfile();
+        const candidate = this.findLatestDesignVisualJudgeReviewSet(
+            this.resolveFinalReviewSetRequirements(evaluationProfile).requireMultiSurface
+        );
         if (!candidate) return;
         const observations = readAgentVisualObservations(candidate.sourceOutput);
         const reviewedKeys = new Set(observations

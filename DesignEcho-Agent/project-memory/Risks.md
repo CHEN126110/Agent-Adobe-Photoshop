@@ -6,6 +6,12 @@
 
 ## 当前高风险
 
+### R-052 终局视觉证据类型偷换导致 Judge 看错图、交付无法闭合
+
+- 事实：r24 的真实 Photoshop 成品包含完整主体、标题和四色陈列，但 Final Judge 的文字诊断描述成了平铺素材；Trace 中不存在 Harness 全画布采集，同时 `finalArtifactObserved=true`、生产交付检查通过和安全 `finalArtifactRefs` 为空并存。代码核对确认单画布 selector 仍使用 `single || bundle`，与同文件“单画布选 full-canvas”的注释和 E2 full-surface 要求矛盾。
+- 影响：模型可能准确评价了错误图片，视觉分数、诊断、Reflexion 和跨代恢复 Artifact 全部失真；磁盘文件虽真实存在，技术 Attempt 仍无法形成可信交付。若只改 Prompt 或补文件扫描，会隐藏对象身份错误并扩大多套真相。
+- 处理：按 D-090 把 ReviewSet source 设为终局身份，单画布与多画面互不降级；Judge、E2 和可信 Artifact 共用唯一选择 Owner。攻击型回归、边界审计、Renderer 类型检查、完整核心闸门 58/58 与 Agent production build 已通过。关闭本风险仍需提交后 r25 真实证明自动 full-canvas Tool entry、Judge 精确出站收据、同 revision PSD/JPG 与非空安全 `finalArtifactRefs`；未完成前不得把 r24 的错误 69 分当真实视觉评价。
+
 ### R-051 R3 把 Agent 自有工艺误报为用户输入，导致确定性任务盲搜和零写入
 
 - 事实：真实白底图 Run Record `run-20260803115420027-31eea942.json` 中，用户已经要求从项目选择一张图片、置入、抠图并输出 800×800 白底图；Agent 在 11 轮内反复读取文档、项目资源、Project State、缩略图和图层，0 次 mutation，最终把“透明商品素材”误报为唯一 blocker 并进入 `waiting_user`。根因不是缺少白底图 Skill，而是 R3 runtime 把 blocking missing input 再次开放成 observation / knowledge recovery、普通写入请求首轮未稳定获得通用设计工艺能力，以及基于回复文案猜 Tool 的第二 recovery owner。

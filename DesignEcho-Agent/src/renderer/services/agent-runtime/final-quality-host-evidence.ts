@@ -55,14 +55,25 @@ export function isFinalQualityReviewedVisualSource(input: {
 
 export function selectFinalQualityReviewSet<T extends {
     images: { length: number };
-    reviewSet: { expectedObservationCount: number; items: { length: number } };
+    reviewSet: {
+        source: 'visual_observation_bundle' | 'single_surface';
+        expectedObservationCount: number;
+        items: { length: number };
+    };
 }>(input: {
     bundle?: T;
     single?: T;
     requireMultiSurface: boolean;
 }): T | null {
-    const candidate = input.requireMultiSurface ? input.bundle : input.single || input.bundle;
+    // ReviewSet 类型是终局证据身份，不是可降级的偏好顺序。同版本 Bundle 可能承载
+    // 素材候选、局部画面或多屏目标，不能证明单画布成品已被完整观察。两种终局契约
+    // 必须保持互斥，否则 Judge 会看辅助素材，而 E2 又会正确拒绝它作为全画布预览。
+    const candidate = input.requireMultiSurface ? input.bundle : input.single;
+    const requiredSource = input.requireMultiSurface
+        ? 'visual_observation_bundle'
+        : 'single_surface';
     return candidate
+        && candidate.reviewSet.source === requiredSource
         && candidate.images.length === candidate.reviewSet.expectedObservationCount
         && candidate.reviewSet.items.length === candidate.reviewSet.expectedObservationCount
         ? candidate

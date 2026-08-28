@@ -2,9 +2,20 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-090 ReviewSet 类型是终局证据身份，禁止单画布与 Bundle 相互降级
+
+- 状态：已采用；定向行为验证、Design Authorship /Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整核心闸门 58/58 与 Agent production build 已通过；提交推送、提交后 identity 与 r25 真机仍待完成。
+- 触发事实：r24 最终 Photoshop 画面包含完整主体、标题和四色陈列，但 Final Judge 却描述无文字、大片留白和偏小商品群；同一 Run 又同时记录 `finalArtifactObserved=true`、生产交付检查通过与安全 `finalArtifactRefs` 为空。Tool trace 没有 Harness 全画布调用，证明 D-089 的自动采集被已有候选短路。
+- 根因：`selectFinalQualityReviewSet` 在单画布路径使用 `single || bundle`。document/history 只证明时间一致，不能证明 Bundle 里的像素就是完整成品；素材候选、局部裁切和声明多屏即使同版本、数量完整，也不能替代 `single_surface`。
+- 决定：Evaluation Profile 的 `requireMultiSurface` 同时决定 ReviewSet source。单画布只能选择 `single_surface`，缺失 /陈旧时由 D-089 的 Host evidence 采集一次无 region 全画布；多画面只能选择完整 `visual_observation_bundle`，不得降级成单图。Final Judge、E2 reviewed-source binding 与运行结果中的可信视觉 Artifact 必须调用同一选择 Owner，不能各自偏好不同证据。
+- Owner：`final-quality-host-evidence.selectFinalQualityReviewSet` 是类型选择的唯一纯逻辑 Owner；`Agent.findLatestDesignVisualJudgeReviewSet` 负责注入当前单图 /Bundle 候选；Host evidence 只补缺失事实，模型继续拥有视觉评价与修订决定。
+- 替代项：不采用“Bundle 优先”“同 history 就可用”“让 Prompt 提醒 Judge 哪张是成品”或 E2 扫描文件兜底。这些路线不能消除对象身份歧义，还会制造 Judge、交付与恢复三套真相。
+- 回滚点：代码改动仅涉及 ReviewSet 选择和可信 Artifact 投影；若多画面回归受影响，可独立回滚 D-090，不撤销 D-089 的只读全画布采集、Provider 逐图收据或交付同 revision 约束。
+- 验证边界：现有核心行为回归注入合法、同 document/history、结构完整的误导素材 Bundle；旧实现会直接选择它，新实现必须返回无单画布候选、触发自动 full-canvas、让 Judge 第一张图为该 Host 结果、排除误导图，并把可信运行 Artifact 写成 `single_surface`。代码验证不替代 r25 真实 Debug Bridge `finalArtifactRefs` 和视觉盲评。
+
 ## D-089 局部观察与完整终审分权：Harness 可补只读证据，模型继续拥有审美判断
 
-- 状态：已采用；r23 根因、通用实现、定向行为回归与完整 58 阶段核心闸门已验证，包含 Design Authorship /Agent Business Boundary、Main /Renderer 类型检查、终审逐图收据、可靠性契约、Agent /UXP 核心测试和 UXP production build；`agent.ts` 仍为 12,826 行。Agent production build、提交推送、提交后身份与 r24 Photoshop 真机仍待完成，因此不能宣称正式成功率已提高。
+- 状态：已采用并以 `329a650e` 推送；完整 58 阶段核心闸门、Agent /UXP production build 与提交后身份均已验证。r24 证明 Host 全画布采集能力本身可用，但同时发现 selector 会让同 history Bundle 短路该采集；该后续根因由 D-090 收口，因此仍不能宣称正式成功率已提高。
 - Agent 在设计过程中自主决定看全图还是局部、如何裁切和如何修订；局部 `region` 观察可以支持对应局部判断，但不能冒充完整交付面的终审 ReviewSet。Harness 不应要求 Agent 用固定工具顺序设计，也不能因局部图看起来正常就自签质量通过。
 - 当 Agent 已进入自然终稿、当前任务需要视觉质量结算、结构读回确认了精确 Photoshop revision，而单画布完整 ReviewSet 缺失或过期时，Harness 可以执行一次有界的全画布只读观察。该动作只补事实：优先使用带 `expectedDocumentId` 且不带 `region` 的 `getCanvasSnapshot`，无该能力时才使用完整文档快照；结果必须与结构读回同 revision，否则丢弃。
 - 多画面任务不适用单画布替代：详情页等声明式多画面 Profile 必须继续提供完整 Bundle、目标覆盖和同 history 证明，不能为了提高成功率退化为一张缩略全图。

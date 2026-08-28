@@ -7,11 +7,11 @@
 1. `[已完成 f148 修复、验证与推送]`：完成态可选 generation 的多维容量证明已通过完整核心闸门 58/58，并以 `f148d512` 推送当前分支；提交后 Agent /UXP identity 已重建并在 r23 写前核实为同一干净提交。
 2. `[已完成 r23 / 已对账]`：同一句自然需求在全新 fixture 中完成 17 次模型调用、18 次 Tool Call、8 次成功写 /保存 /导出，生成 27,621,377 字节 PSD 与 822,776 字节 JPG；没有创建 r22 式 0 调用空子代。Attempt 因 `finalArtifactRefs` 为空判为 `submission_unknown_write_state`，随后已在同构建重启、0 文档、0 待处理请求和同 fixture 条件下 reconciliation。
 3. `[已定位 r23 首个偏差]`：Agent 最终只读取了带 `region` 的局部画面；局部截图能支持裁切微调，但不能形成单画布任务要求的完整 ReviewSet。Run Record 因而出现 `fresh_visual` 缺失、质量覆盖 0/16、R5 未闭合，E2 也不能把真实 PSD /JPG 投影为可信最终交付。
-4. `[已完成通用根因实现]`：终态质量链先读取同 revision 结构；若单画布完整 ReviewSet 缺失或过期，Harness 只追加一次 target-bound、无 `region` 的全画布只读观察，再把像素交给同一个多模态 Agent 模型的 Final Judge。Judge 只有返回匹配逐图出站收据时，才能把精确 Host 结果绑定为已复核版本；不伪造普通主模型 review decision，不扫描目录补交付，不决定审美或修法。多画面 Profile 继续要求自己的完整 Bundle，不降级成一张全图。
-5. `[已完成定向验证]`：Runtime Declaration 行为回归真实构造“局部 region → 保存 PSD/JPG → 终态”链，证明自动全画布观察、同版本 Judge、逐图收据与两条 final delivery refs 共同闭合；Design Authorship、Agent Business Boundary、Main /Renderer 类型检查和 Simplification Ratchet 通过，`agent.ts` 保持 12,826 行。
-6. `[完整闸门已通过·提交中]`：完整 `maintenance:validate` 已从头通过 58/58；继续完成 Agent production build、差异复审、独立提交与 GitHub 推送。提交前不再扩张代码。
-7. `[待实机 r24]`：用新提交重新构建并重载 Agent /UXP，从锁定源创建全新 fixture，再跑同一句自然需求。必须同时证明无空子代、完整全画布 Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
-8. `[待盲评与效率治理]`：r23 成稿已可看但仍是较简单的左右硬分栏，标题偏大、辅助商品偏小，总耗时约 29 分 29 秒；技术成功后再与用户成稿 /Eagle 做匿名对比。先达到质量与可靠交付，再单独治理首写约 8 分钟和总耗时，不用减少必要终审换速度。
+4. `[已完成 D-089 / 329a650e]`：终态质量链先读取同 revision 结构；若单画布完整 ReviewSet 缺失或过期，Harness 只追加一次 target-bound、无 `region` 的全画布只读观察，再把像素交给同一个多模态 Agent 模型的 Final Judge。逐图收据与精确 Host 结果可绑定回 E2；完整核心闸门 58/58、Agent /UXP production build、提交和 GitHub 推送均已完成。
+5. `[已完成 r24 / 已对账]`：同一句自然需求在全新 fixture 中完成 15 次模型调用、15 次 Tool Call、5 次成功 mutation，生成 30,118,573 字节 PSD 与 1,016,313 字节 JPG。Agent 自主选图、说明左右构图并针对平铺袜偏小做一次局部修正；但 Final Judge 的描述与真实成品矛盾，Debug Bridge 仍因空 `finalArtifactRefs` 判为未知写状态。PSD/JPG SHA-256 已固化，测试文档已关闭，Attempt 已在同构建、同 fixture、0 文档 /0 pending 下 reconciliation。
+6. `[已定位 r24 首个偏差]`：`selectFinalQualityReviewSet` 的注释要求主图选 full-canvas，代码却仍允许 `single || bundle`。同 history 的素材 /局部 Bundle 让 Harness 跳过自动全画布，Judge 评价了辅助素材；E2 同时正确拒绝非 full-surface，所以产生“Judge 已看成品”与“没有可信交付引用”的内部矛盾。
+7. `[D-090 代码与验证已完成]`：把 ReviewSet source 纳入终局身份：单画布只接受 `single_surface`，多画面只接受完整 Bundle；Judge、E2 与可信运行 Artifact 使用同一选择函数。Runtime Declaration 攻击回归注入合法、同 history 的误导 Bundle，证明仍自动采集全画布、Judge 第一张图正确、误导图不进入终审、持久 Artifact 保持 single-surface。Design Authorship /Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整 `maintenance:validate` 58/58 与 Agent production build 均已通过。
+8. `[提交与 r25]`：完成最终差异审查、独立提交和推送；随后以新提交重建 Agent /UXP 并创建 r25 同条件 Attempt，要求非空安全 `finalArtifactRefs` 与正式技术成功。成功后再盲评 r24 /r25 视觉质量，最后单独治理首写约 9 分钟和总耗时约 34 分钟。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

@@ -2,6 +2,13 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 r24 终局看错对象：ReviewSet 类型身份修复
+
+- D-089 提交 `329a650e` 已推送；提交后 Agent build `designecho-329a650e2103-69bc9c69c06c` 与 UXP build `designecho-uxp-production-329a650e2103-cdcad214d92e` 均为干净同提交。r24 Run `run-20260828211234-b6f8c117-f38e` 在真实 GPT-5.6 Sol /Photoshop、全新 fixture 和 1440×1440 画布下完成 15 次模型调用、15 次 Tool Call、5 次成功 mutation。PSD 为 30,118,573 字节、SHA-256 `cfdb48b106abbb3d40183a96e7a1f9b6c2a1256abd5349d3f93416eebbfbdcfc`；JPG 为 1,016,313 字节、SHA-256 `1f0c3c2f1708d1eebf21e716c1a9d0f17827a89eb3eccb1c7bb293da22515e0f`。
+- Agent 自主选择 `DSC05845.jpg` 上脚图和 `DSC05304.jpg` 四色平铺，说明左图右文结构，并在观察成品后只放大偏小的平铺商品。最终 history `4389:4424` 的真实画面包含左侧主体、右侧“加厚 木耳边 /粉咖微压直板”标题和四色陈列；Final Judge 却报告“大片上下留白、没有设计文字、商品群偏小”，证明确实看错了视觉对象。
+- 根因已落实到通用 Runtime：`selectFinalQualityReviewSet` 对单画布错误使用 `single || bundle`。一个同 history、结构完整的素材 /局部 Bundle 被当成终局候选，自动全画布采集因而未发生；Judge 绑定了错误 source output，E2 又只接受 full-surface，最终 `finalArtifactObserved=true`、生产交付检查通过但安全 `finalArtifactRefs` 为空。该 Attempt 已完成 `reconciled_after_runtime_restart`，测试文档和授权调试 Runtime 均已关闭。
+- D-090 已将 ReviewSet 类型纳入终局身份：单画布只接受 `single_surface`，多画面只接受 Bundle；Judge、E2 和可信跨代 Artifact 共用同一选择。Runtime Declaration 攻击回归覆盖合法同 history 误导 Bundle，并证明自动全画布仍会执行、Judge 第一张图正确、误导图被排除、持久 Artifact 为 `single_surface`。Design Authorship /Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整核心闸门 58/58 与 Agent production build 已通过；提交推送、提交后 identity 和 r25 真机仍待完成。
+
 ## 2026-08-29 r23 完整画布终审缺口与通用证据链修复
 
 - `f148d512` 已提交并推送；提交后 Agent build `designecho-f148d5127d5b-a489bf79025e` 与 UXP build `designecho-uxp-production-f148d5127d5b-cdcad214d92e` 在 r23 写前同时验证为干净、同提交、真实模型 /真实 Photoshop，画布 1440×1440、0 打开文档、0 待处理请求。
@@ -10,7 +17,7 @@
 - 正式技术结果仍失败：最后一次内容 revision 为 `4355:4385`，其后结构读回与局部画布读取成功，但所有 `getCanvasSnapshot` 都带 `region`，没有完整单画布 ReviewSet。Run Record 因而是 `success=false / needs_review / artifact_incomplete`，缺口为 `fresh_visual`，评价覆盖率 0/16；Debug Bridge 收据没有安全 `finalArtifactRefs`，Attempt 终态为 `submission_unknown_write_state`。
 - 文件生成不能覆盖该失败。现场在固定文件哈希后关闭已保存文档；随后停止并以同一 f148 构建重启，确认同 fixture、Photoshop 0 文档、0 pending 后追加 `04-reconciled.json`，状态为 `reconciled_after_runtime_restart`。
 - 已实现 D-089：通用 Host evidence 模块统一结构版本读回与单画布终审快照；缺失 /陈旧完整 ReviewSet 时只读一次无 region 全画布，并要求同一多模态 Judge 的逐图出站收据。E2 可消费该精确 Judge 绑定，但不能伪造普通视觉 review、扫描目录或替 Agent 做审美决定；多画面 Profile 不降级。
-- 定向 Runtime Declaration 回归已覆盖 r23 形态并通过；完整 `maintenance:validate` 已从头通过 58/58，包含 Design Authorship Boundary、Agent Business Boundary、终审逐图收据、可靠性契约、Main /Renderer 类型检查、Agent /UXP 核心测试与 UXP production build；`agent.ts` 保持 12,826 行。Agent production build、提交推送、提交后 fresh build 和 r24 真机仍待完成。
+- 定向 Runtime Declaration 回归已覆盖 r23 形态并通过；完整 `maintenance:validate` 已从头通过 58/58，Agent /UXP production build、提交 `329a650e`、GitHub 推送与提交后 fresh identity 均已完成。r24 已执行并暴露 D-090 的 ReviewSet 类型偷换，不能再沿用本段旧的“r24 待完成”状态。
 - 视觉事实：r23 比早期固定素材 /空白稿更接近真实设计过程，选图与两次调整均有可追溯理由；但成稿仍偏简单左右硬分栏，标题偏大、四色辅助偏小，与用户成稿 /Eagle 专业完成度尚有明显差距。首个 Photoshop 写入约 8 分钟、总运行约 29 分 29 秒，效率不达标；质量与可靠交付闭合前不以删观察换速度。
 
 ## 2026-08-29 r22 完成父代被无预算空子代覆盖：新根因与通用修复

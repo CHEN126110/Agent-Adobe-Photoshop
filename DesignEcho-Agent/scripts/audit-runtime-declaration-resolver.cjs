@@ -469,6 +469,7 @@ const {
   'agent-stage-incomplete-recovery.ts'
 ));
 const {
+  buildDesignReviewSetFromBundle,
   buildDesignReviewSetFromSingleSurface
 } = require(path.resolve(
   __dirname,
@@ -476,6 +477,17 @@ const {
   'src',
   'shared',
   'visual-observation-bundle.ts'
+));
+const {
+  readTrustedVisualReviewArtifact
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'trusted-visual-review-artifact.ts'
 ));
 const {
   extractFreshDesignSurfaceSnapshotFromToolResults
@@ -9052,6 +9064,7 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   let automaticCanvasResult;
   let automaticJudgeCalls = 0;
   const automaticSteps = [];
+  const misleadingBundleImageData = 'B'.repeat(800);
   const automaticConfig = buildAgentTestConfig({
     tools: [
       requireAgentTool('getDocumentInfo'),
@@ -9090,6 +9103,16 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
       automaticJudgeCalls += 1;
       const automaticContentBlocks = messages[1]?.contentBlocks || [];
       assert(automaticContentBlocks.every(Boolean), JSON.stringify(automaticContentBlocks));
+      const automaticReviewImages = automaticContentBlocks.filter((block) => block?.type === 'image');
+      assert.strictEqual(
+        automaticReviewImages[0]?.data,
+        'A'.repeat(800),
+        'single-surface Final Judge must receive the independently captured whole canvas first'
+      );
+      assert(
+        !automaticReviewImages.some((block) => block.data === misleadingBundleImageData),
+        'a same-history supporting Bundle must not replace the single-canvas final artifact'
+      );
       const serializedImages = messages
         .flatMap((message) => Array.isArray(message.contentBlocks) ? message.contentBlocks : [])
         .filter((block) => block?.type === 'image')
@@ -9218,6 +9241,53 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
     },
     origin: 'model_tool_call'
   }];
+  const misleadingBundle = buildDesignReviewSetFromBundle({
+    version: 'visual-observation-bundle/v1',
+    expectedObservationCount: 1,
+    expectedTargets: [{ sourceKind: 'project_asset', sourceId: 'flat-lay-source' }],
+    items: [{
+      identity: {
+        outer: 'recommendAssets',
+        resultPath: '$.visualObservationBundle.items[0]',
+        document: String(documentId),
+        history: String(historyStateId),
+        sourceKind: 'project_asset',
+        sourceId: 'flat-lay-source'
+      },
+      captured: true,
+      image: {
+        base64: misleadingBundleImageData,
+        mediaType: 'image/png',
+        format: 'png'
+      }
+    }]
+  });
+  assert.strictEqual(misleadingBundle.status, 'ready');
+  automaticAgent.latestDesignVisualJudgeBundleReviewSet = {
+    reviewSet: misleadingBundle.reviewSet,
+    images: [{ data: misleadingBundleImageData, mediaType: 'image/png' }],
+    historyStateRef: { ...historyStateRef },
+    receipt: {
+      version: 'visual-observation-receipt/v1',
+      document: String(documentId),
+      history: String(historyStateId),
+      sourceTool: 'recommendAssets'
+    },
+    sourceOutput: {}
+  };
+  assert.strictEqual(
+    automaticAgent.findLatestDesignVisualJudgeReviewSet(false),
+    null,
+    'single-surface terminal evidence must not fall back to a complete same-history Bundle'
+  );
+  automaticAgent.latestDesignVisualJudgeSingleReviewSet =
+    automaticAgent.latestDesignVisualJudgeBundleReviewSet;
+  assert.strictEqual(
+    automaticAgent.findLatestDesignVisualJudgeReviewSet(false),
+    null,
+    'a Bundle placed in the single slot must still fail its terminal source identity check'
+  );
+  automaticAgent.latestDesignVisualJudgeSingleReviewSet = undefined;
   const automaticAssertions = await automaticAgent.evaluateDesignQualityVlmAssertions('final_response');
   assert.strictEqual(automaticJudgeCalls, 1,
     'a local region observation must lead to one independent whole-surface Final Judge call');
@@ -9235,6 +9305,14 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
     'Harness final verification must acquire the full surface instead of repeating the Agent region crop');
   assert.strictEqual(automaticAgent.finalQualityReviewedVisualBinding?.sourceOutput, automaticCanvasResult,
     'the Final Judge binding must identify the exact full-surface Host result it consumed');
+  const automaticRunOwner = {};
+  automaticAgent.writeTrustedVisualReviewArtifactForRunResult(automaticRunOwner);
+  const trustedAutomaticArtifact = readTrustedVisualReviewArtifact(automaticRunOwner);
+  assert.strictEqual(
+    trustedAutomaticArtifact?.reviewSet.source,
+    'single_surface',
+    'the persisted run artifact must use the same single-surface terminal selection as the Judge'
+  );
   const automaticDelivery = automaticAgent.projectDeliveryStageEvidence({
     status: 'completed',
     blockers: [],
