@@ -4993,33 +4993,20 @@
 
         <!-- 主内容区 -->
         <main class="morph-main">
-            <!-- Step 1: 选择参考形状 -->
+            <!-- 当前 Provider 依据每个商品自身骨架做低频拉直，不消费参考形状。 -->
             <section class="morph-section">
                 <div class="section-header">
-                    <span class="section-label">选择参考形状</span>
-                    <span class="section-hint">用钢笔工具绘制的理想轮廓</span>
+                    <span class="section-label">处理方式</span>
                 </div>
-                <div class="shape-selector" id="shapeSelector">
-                    <!-- 自定义下拉菜单 -->
-                    <div class="custom-select" id="refShapeSelect" data-value="">
-                        <div class="custom-select-trigger">
-                            <span class="custom-select-text">-- 加载形状图层 --</span>
-                            <span class="custom-select-arrow">▼</span>
-                        </div>
-                        <div class="custom-select-options" id="refShapeOptions">
-                            <div class="custom-select-option" data-value="">-- 选择形状图层 --</div>
-                        </div>
-                    </div>
-                    <div class="shape-preview" id="refShapePreview">
-                        <div class="shape-placeholder">选择形状后预览</div>
-                    </div>
+                <div class="region-hint" style="margin: 0 14px 12px;">
+                    按每个商品图层自身的主体骨架拉直，不套参考轮廓。原图层会保留并隐藏，结果写入同级新图层，方便随时对比或恢复。
                 </div>
             </section>
 
-            <!-- Step 2: 选择产品图层 -->
+            <!-- 选择商品图层 -->
             <section class="morph-section">
                 <div class="section-header">
-                    <span class="section-label">选择产品图层</span>
+                    <span class="section-label">选择要统一的商品图层</span>
                     <span class="layer-count" id="morphLayerCount">已选 0 个</span>
                 </div>
                 <div class="layer-list" id="morphLayerList">
@@ -5031,93 +5018,14 @@
                 </div>
             </section>
 
-            <!-- Step 3: 款式识别 -->
+            <!-- 只有真正进入 Provider 契约的设置才在面板出现。 -->
             <section class="morph-section">
                 <div class="section-header">
-                    <span class="section-label">款式识别</span>
+                    <span class="section-label">调整方式</span>
                 </div>
-                
                 <div class="config-group">
-                    <!-- 袜子款式 -->
                     <div class="config-row">
-                        <span class="config-label">袜子款式</span>
-                        <div class="config-select" id="sockStyleSelect" data-value="boat">
-                            <div class="config-select-trigger">
-                                <span class="config-select-text">船袜</span>
-                                <span class="config-select-arrow">▼</span>
-                            </div>
-                            <div class="config-select-options" id="sockStyleOptions">
-                                <div class="config-select-option active" data-value="boat">船袜 · 露出脚踝</div>
-                                <div class="config-select-option" data-value="ankle">短袜 · 过脚踝</div>
-                                <div class="config-select-option" data-value="crew">中筒袜 · 小腿中部</div>
-                                <div class="config-select-option" data-value="calf">小腿袜 · 小腿上部</div>
-                                <div class="config-select-option" data-value="knee">长袜 · 到膝盖</div>
-                                <div class="config-select-option" data-value="over-knee">过膝袜 · 超过膝盖</div>
-                                <div class="config-select-option" data-value="leg-warmer">袜套 · 只有袜筒</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- 袜口类型 -->
-                    <div class="config-sublabel" style="margin-top: 14px;">
-                        袜口类型
-                        <span class="label-badge">花型保护</span>
-                    </div>
-                    <div class="cuff-type-grid" id="cuffTypeGrid">
-                        <div class="cuff-type-item active" data-cuff="plain">
-                            <span class="cuff-name">普通平口</span>
-                        </div>
-                        <div class="cuff-type-item" data-cuff="ribbed">
-                            <span class="cuff-name">罗纹口</span>
-                        </div>
-                        <div class="cuff-type-item protected" data-cuff="double-welt">
-                            <span class="cuff-name">双罗口</span>
-                        </div>
-                        <div class="cuff-type-item protected" data-cuff="lace">
-                            <span class="cuff-name">花边口</span>
-                        </div>
-                        <div class="cuff-type-item protected" data-cuff="flare">
-                            <span class="cuff-name">喇叭口</span>
-                        </div>
-                        <div class="cuff-type-item protected" data-cuff="fold">
-                            <span class="cuff-name">翻边口</span>
-                        </div>
-                    </div>
-                    <div class="cuff-hint-inline" id="cuffTypeHint">普通平口：可正常变形</div>
-                </div>
-            </section>
-
-            <!-- Step 4: 变形设置 -->
-            <section class="morph-section">
-                <div class="section-header">
-                    <span class="section-label">变形设置</span>
-                </div>
-                
-                <div class="config-group">
-                    <!-- 位置对齐 -->
-                    <div class="config-row">
-                        <span class="config-label">位置对齐</span>
-                        <div class="custom-toggle active" id="morphPreAlign" data-checked="true">
-                            <div class="custom-toggle-track">
-                                <div class="custom-toggle-thumb"></div>
-                            </div>
-                        </div>
-                        <span class="config-desc">自动移动到参考位置</span>
-                    </div>
-                    
-                    <!-- 形态吻合 -->
-                    <div class="config-row" style="margin-top: 8px;">
-                        <span class="config-label">形态吻合</span>
-                        <div class="custom-toggle active" id="morphShapeMatch" data-checked="true">
-                            <div class="custom-toggle-track">
-                                <div class="custom-toggle-thumb"></div>
-                            </div>
-                        </div>
-                        <span class="config-desc">使形态与参考重合</span>
-                    </div>
-                    
-                    <div class="config-row">
-                        <span class="config-label">边缘变形</span>
+                        <span class="config-label">矫正强度</span>
                         <div class="custom-slider" id="morphEdgeStrength" data-value="70" data-min="0" data-max="100">
                             <div class="custom-slider-track">
                                 <div class="custom-slider-fill" style="width: 70%;"></div>
@@ -5126,91 +5034,23 @@
                         </div>
                         <span class="range-value" id="morphEdgeStrengthValue">70%</span>
                     </div>
-                    
-                    <div class="config-row">
-                        <span class="config-label">内容保护</span>
-                        <div class="custom-slider" id="morphContentProtect" data-value="80" data-min="0" data-max="100">
-                            <div class="custom-slider-track">
-                                <div class="custom-slider-fill" style="width: 80%;"></div>
-                                <div class="custom-slider-thumb" style="left: 80%;"></div>
+                    <div class="config-row" style="margin-top: 10px;">
+                        <span class="config-label">保护袜口</span>
+                        <div class="custom-toggle" id="morphCuffProtect" data-checked="false">
+                            <div class="custom-toggle-track">
+                                <div class="custom-toggle-thumb"></div>
                             </div>
                         </div>
-                        <span class="range-value" id="morphContentProtectValue">80%</span>
-                    </div>
-                    
-                    <div class="config-row">
-                        <span class="config-label">变形平滑</span>
-                        <div class="custom-slider" id="morphSmoothness" data-value="50" data-min="0" data-max="100">
-                            <div class="custom-slider-track">
-                                <div class="custom-slider-fill" style="width: 50%;"></div>
-                                <div class="custom-slider-thumb" style="left: 50%;"></div>
-                            </div>
-                        </div>
-                        <span class="range-value" id="morphSmoothnessValue">50%</span>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Step 5: 分区控制 -->
-            <section class="morph-section" id="morphAdvancedSection">
-                <div class="section-header">
-                    <span class="section-label">分区控制</span>
-                </div>
-                <div class="advanced-content" id="advancedContent">
-                    <div class="region-hint">
-                        根据款式自动调整分区，勾选的区域将参与变形
-                    </div>
-                    <div class="region-list" id="regionList">
-                        <div class="region-item" data-region="cuff" data-checked="true">
-                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
-                            <span>袜口区域</span>
-                            <span class="region-badge protect">保护</span>
-                        </div>
-                        <div class="region-item" data-region="leg" data-checked="true">
-                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
-                            <span>袜筒区域</span>
-                        </div>
-                        <div class="region-item" data-region="heel" data-checked="true">
-                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
-                            <span>袜跟区域</span>
-                        </div>
-                        <div class="region-item" data-region="body" data-checked="true">
-                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
-                            <span>袜身区域</span>
-                        </div>
-                        <div class="region-item" data-region="toe" data-checked="true">
-                            <div class="custom-checkbox checked"><span class="check-icon">✓</span></div>
-                            <span>袜头区域</span>
-                        </div>
+                        <span class="config-desc">开启后保留主体顶部约 15%，适合木耳边、花边等特征</span>
                     </div>
                 </div>
             </section>
         </main>
 
-        <!-- 快捷选项 -->
-        <div style="padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-tertiary); border-top: 1px solid var(--border-color);">
-            <!-- 执行步骤选择 -->
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="font-size: 11px; color: var(--text-secondary);">执行步骤:</span>
-                <select id="morphStepSelect" style="padding: 4px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer;">
-                    <option value="morph" selected>完整变形</option>
-                    <option value="align">仅对齐 + 缩放</option>
-                </select>
-            </div>
-            <!-- 其他选项 -->
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; color: var(--text-secondary);">
-                    <input type="checkbox" id="morphForceRedetect" style="margin: 0;">
-                    <span>重新检测主体</span>
-                </label>
-                <span style="color: var(--text-muted); font-size: 10px;">(批量处理不同产品时勾选)</span>
-            </div>
-        </div>
-
         <!-- 操作按钮 -->
         <footer class="morph-footer">
             <div class="morph-status" id="morphStatus">
-                选择参考形状和产品图层后开始
+                选择商品图层后开始
             </div>
             <button class="btn-execute" id="btnMorphExecute" disabled>
                 <span class="btn-icon">◇</span>
@@ -5772,11 +5612,6 @@
                     handleMattingResult(data);
                     break;
                 case 'morphProgress':
-                    // 收到真实进度时，清除模拟进度定时器
-                    if (morphProgressInterval) {
-                        clearInterval(morphProgressInterval);
-                        morphProgressInterval = null;
-                    }
                     showMorphProgress(data.progress, data.message);
                     break;
                 case 'morphResult':
@@ -6173,7 +6008,7 @@
         }
 
         function updateMorphLayers(data) {
-            console.log('[WebView] updateMorphLayers - shapeLayers:', data.shapeLayers?.length || 0, 'productLayers:', data.productLayers?.length || 0);
+            console.log('[WebView] updateMorphLayers - productLayers:', data.productLayers?.length || 0);
             
             if (data.error) {
                 console.error('[WebView] updateMorphLayers error:', data.error);
@@ -6181,29 +6016,6 @@
                 document.getElementById('morphLayerList').innerHTML = 
                     '<div class="layer-empty">' + data.error + '</div>';
                 return;
-            }
-            
-            // 更新参考形状下拉菜单
-            const selectText = document.querySelector('#refShapeSelect .custom-select-text');
-            const selectOptions = document.getElementById('refShapeOptions');
-            console.log('[WebView] selectText:', !!selectText, 'selectOptions:', !!selectOptions);
-            
-            const refSelectEl = document.getElementById('refShapeSelect');
-            if (data.shapeLayers && data.shapeLayers.length > 0) {
-                // 自动选中第一项：显示与选中状态保持一致
-                // （此前只改显示文本不设 value，执行按钮看似可用实际始终禁用）
-                if (selectText) selectText.textContent = data.shapeLayers[0].name;
-                if (refSelectEl) refSelectEl.dataset.value = String(data.shapeLayers[0].id);
-                if (selectOptions) {
-                    selectOptions.innerHTML = data.shapeLayers.map(l =>
-                        '<div class="custom-select-option" data-value="' + l.id + '">' + l.name + '</div>'
-                    ).join('');
-                    // 绑定选项点击事件
-                    bindSelectOptions();
-                }
-            } else {
-                if (selectText) selectText.textContent = '-- 无可用参考（需形状图层或袜子图层） --';
-                if (refSelectEl) refSelectEl.dataset.value = '';
             }
             
             // 更新产品图层列表
@@ -8156,16 +7968,7 @@
             overlay.querySelector('.morph-progress-bar').style.width = progress + '%';
         }
         
-        // 全局变量：模拟进度定时器
-        let morphProgressInterval = null;
-        
         function hideMorphProgress() {
-            // 清除模拟进度定时器
-            if (morphProgressInterval) {
-                clearInterval(morphProgressInterval);
-                morphProgressInterval = null;
-            }
-            
             const overlay = document.getElementById('morphProgressOverlay');
             if (overlay) {
                 overlay.style.display = 'none';
@@ -9538,8 +9341,6 @@
         }
         
         function updateMorphStatus() {
-            const refShapeSelect = document.getElementById('refShapeSelect');
-            const hasRefShape = refShapeSelect && refShapeSelect.dataset.value;
             const selectedItems = document.querySelectorAll('#morphLayerList .layer-item.selected');
             const hasProducts = selectedItems.length > 0;
             
@@ -9549,56 +9350,16 @@
             
             if (layerCount) layerCount.textContent = '已选 ' + selectedItems.length + ' 个';
             
-            if (!hasRefShape && !hasProducts) {
-                if (statusEl) statusEl.textContent = '选择参考形状和产品图层后开始';
-                if (btnExecute) btnExecute.disabled = true;
-            } else if (!hasRefShape) {
-                if (statusEl) statusEl.textContent = '请选择一个参考形状';
-                if (btnExecute) btnExecute.disabled = true;
-            } else if (!hasProducts) {
+            if (!hasProducts) {
                 if (statusEl) statusEl.textContent = '请选择需要调整的产品图层';
                 if (btnExecute) btnExecute.disabled = true;
             } else {
-                if (statusEl) statusEl.textContent = '将 ' + selectedItems.length + ' 个产品对齐到参考形状';
+                if (statusEl) statusEl.textContent = '将按自身骨架调整 ' + selectedItems.length + ' 个图层';
                 if (btnExecute) btnExecute.disabled = false;
             }
         }
         
         // ========== 事件绑定 ==========
-        
-        function bindSelectOptions() {
-            const select = document.getElementById('refShapeSelect');
-            const trigger = select.querySelector('.custom-select-trigger');
-            const optionsContainer = document.getElementById('refShapeOptions');
-            const textEl = select.querySelector('.custom-select-text');
-            
-            trigger.onclick = (e) => {
-                e.stopPropagation();
-                select.classList.toggle('open');
-            };
-            
-            // 绑定选项点击
-            const options = select.querySelectorAll('.custom-select-option');
-            options.forEach(opt => {
-                opt.onclick = (e) => {
-                    e.stopPropagation();
-                    const value = opt.dataset.value;
-                    const text = opt.textContent;
-                    
-                    options.forEach(o => o.classList.remove('selected'));
-                    opt.classList.add('selected');
-                    
-                    textEl.textContent = text;
-                    select.dataset.value = value;
-                    select.classList.remove('open');
-                    
-                    sendToUXP('morphRefShapeSelect', { value });
-                    updateMorphStatus();
-                };
-            });
-            
-            document.addEventListener('click', () => select.classList.remove('open'));
-        }
         
         function bindLayerItems() {
             const items = document.querySelectorAll('#morphLayerList .layer-item');
@@ -9614,9 +9375,7 @@
         
         function bindSliders() {
             const sliders = [
-                { id: 'morphEdgeStrength', valueId: 'morphEdgeStrengthValue' },
-                { id: 'morphContentProtect', valueId: 'morphContentProtectValue' },
-                { id: 'morphSmoothness', valueId: 'morphSmoothnessValue' }
+                { id: 'morphEdgeStrength', valueId: 'morphEdgeStrengthValue' }
             ];
             
             sliders.forEach(({ id, valueId }) => {
@@ -9717,192 +9476,14 @@
             });
         }
         
-        // 袜子款式选择说明
-        const sockStyleHints = {
-            'boat': '船袜：露出脚踝，无袜筒，最短款',
-            'ankle': '短袜：刚过脚踝，袜筒极短',
-            'crew': '中筒袜：袜筒到小腿中部',
-            'calf': '小腿袜：袜筒到小腿上部',
-            'knee': '长袜：袜筒到膝盖位置',
-            'over-knee': '过膝袜：袜筒超过膝盖',
-            'leg-warmer': '袜套：只有袜筒部分，无袜头袜跟'
-        };
-        
-        // 根据款式更新分区显示
-        const sockStyleRegions = {
-            'boat': ['cuff', 'body', 'toe'],  // 船袜无袜筒
-            'ankle': ['cuff', 'body', 'toe', 'heel'],  // 短袜
-            'crew': ['cuff', 'leg', 'body', 'toe', 'heel'],  // 中筒袜
-            'calf': ['cuff', 'leg', 'body', 'toe', 'heel'],  // 小腿袜
-            'knee': ['cuff', 'leg', 'body', 'toe', 'heel'],  // 长袜
-            'over-knee': ['cuff', 'leg', 'body', 'toe', 'heel'],  // 过膝袜
-            'leg-warmer': ['cuff', 'leg']  // 袜套：只有袜口和袜筒
-        };
-        
-        // 袜口类型选择说明
-        const cuffTypeHints = {
-            'plain': '普通平口：不需要特殊保护',
-            'ribbed': '罗纹口：有弹性纹理，轻度保护',
-            'double-welt': '双罗口：需要保护，避免变形',
-            'lace': '花边口：精细工艺，严格保护',
-            'flare': '喇叭口：特殊造型，严格保护',
-            'fold': '翻边口：有翻折设计，严格保护'
-        };
-        
-        // 需要严格保护的袜口类型
-        const protectedCuffTypes = ['double-welt', 'lace', 'flare', 'fold'];
-        
-        function bindSockStyleSelection() {
-            const selectEl = document.getElementById('sockStyleSelect');
-            const triggerEl = selectEl?.querySelector('.config-select-trigger');
-            const optionsEl = document.getElementById('sockStyleOptions');
-            const textEl = selectEl?.querySelector('.config-select-text');
-            const regionList = document.getElementById('regionList');
-            
-            if (!selectEl || !triggerEl || !optionsEl) return;
-            
-            // 点击触发器打开/关闭下拉
-            triggerEl.onclick = (e) => {
-                e.stopPropagation();
-                selectEl.classList.toggle('open');
-            };
-            
-            // 点击选项
-            const options = optionsEl.querySelectorAll('.config-select-option');
-            options.forEach(opt => {
-                opt.onclick = (e) => {
-                    e.stopPropagation();
-                    const value = opt.dataset.value;
-                    const text = opt.textContent.split('·')[0].trim();
-                    
-                    // 更新选中状态
-                    options.forEach(o => o.classList.remove('active'));
-                    opt.classList.add('active');
-                    
-                    // 更新显示文本和值
-                    textEl.textContent = text;
-                    selectEl.dataset.value = value;
-                    selectEl.classList.remove('open');
-                    
-                    // 根据款式更新分区可见性
-                    if (regionList && sockStyleRegions[value]) {
-                        const regions = sockStyleRegions[value];
-                        const allRegionItems = regionList.querySelectorAll('.region-item');
-                        
-                        allRegionItems.forEach(regionItem => {
-                            const region = regionItem.dataset.region;
-                            if (regions.includes(region)) {
-                                regionItem.style.display = 'flex';
-                            } else {
-                                regionItem.style.display = 'none';
-                                regionItem.dataset.checked = 'false';
-                                const checkbox = regionItem.querySelector('.custom-checkbox');
-                                if (checkbox) checkbox.classList.remove('checked');
-                            }
-                        });
-                    }
-                    
-                    console.log('[WebView] 袜子款式:', value);
-                };
-            });
-            
-            // 点击外部关闭下拉
-            document.addEventListener('click', () => {
-                selectEl.classList.remove('open');
-            });
-        }
-        
-        function bindCuffTypeSelection() {
-            const cuffItems = document.querySelectorAll('.cuff-type-item');
-            const cuffHint = document.getElementById('cuffTypeHint');
-            const cuffRegionItem = document.querySelector('.region-item[data-region="cuff"]');
-            
-            cuffItems.forEach(item => {
-                item.onclick = () => {
-                    // 移除其他选中状态
-                    cuffItems.forEach(i => i.classList.remove('active'));
-                    // 选中当前
-                    item.classList.add('active');
-                    
-                    const cuffType = item.dataset.cuff;
-                    const isProtected = item.classList.contains('protected');
-                    
-                    // 更新提示（简洁版）
-                    if (cuffHint && cuffTypeHints[cuffType]) {
-                        cuffHint.textContent = cuffTypeHints[cuffType];
-                        if (isProtected) {
-                            cuffHint.classList.add('protected');
-                        } else {
-                            cuffHint.classList.remove('protected');
-                        }
-                    }
-                    
-                    // 更新袜口区域的保护标记
-                    if (cuffRegionItem) {
-                        const badge = cuffRegionItem.querySelector('.region-badge');
-                        if (badge) {
-                            if (isProtected) {
-                                badge.textContent = '严格保护';
-                                badge.classList.add('protect');
-                            } else if (cuffType === 'ribbed') {
-                                badge.textContent = '轻度保护';
-                                badge.classList.add('protect');
-                            } else {
-                                badge.textContent = '可变形';
-                                badge.classList.remove('protect');
-                            }
-                        }
-                    }
-                    
-                    console.log('[WebView] 袜口类型:', cuffType, isProtected ? '(需保护)' : '');
-                };
-            });
-        }
-        
-        // 获取当前选择的款式配置
+        // 获取当前面板中真正进入 Provider 契约的设置。
         function getMorphingConfig() {
-            const sockStyleSelect = document.getElementById('sockStyleSelect');
-            const activeCuff = document.querySelector('.cuff-type-item.active');
-            const preAlign = document.getElementById('morphPreAlign');
-            const shapeMatch = document.getElementById('morphShapeMatch');
             const edgeStrength = document.getElementById('morphEdgeStrength');
-            const contentProtect = document.getElementById('morphContentProtect');
-            const smoothness = document.getElementById('morphSmoothness');
-            const rawSockStyle = sockStyleSelect?.dataset?.value || 'boat';
-            const rawCuffType = activeCuff?.dataset?.cuff || 'plain';
-            
-            // 获取选中的分区
-            const selectedRegions = [];
-            document.querySelectorAll('.region-item').forEach(item => {
-                if (item.dataset.checked === 'true' && item.style.display !== 'none') {
-                    selectedRegions.push(item.dataset.region === 'foot' ? 'body' : item.dataset.region);
-                }
-            });
-            
+            const cuffProtect = document.getElementById('morphCuffProtect');
             return {
-                sockStyle: rawSockStyle === 'boat' ? 'no-show' : rawSockStyle,
-                cuffType: rawCuffType === 'double-welt' ? 'double' : (rawCuffType === 'fold' ? 'folded' : rawCuffType),
-                cuffProtected: protectedCuffTypes.includes(rawCuffType),
-                preAlign: preAlign?.dataset?.checked === 'true',
-                shapeMatch: shapeMatch?.dataset?.checked === 'true',
                 edgeStrength: parseInt(edgeStrength?.dataset?.value || '70'),
-                contentProtect: parseInt(contentProtect?.dataset?.value || '80'),
-                smoothness: parseInt(smoothness?.dataset?.value || '50'),
-                selectedRegions: selectedRegions
+                cuffProtected: cuffProtect?.dataset?.checked === 'true'
             };
-        }
-        
-        function bindAdvancedToggle() {
-            const toggleBtn = document.getElementById('btnToggleAdvanced');
-            const section = document.getElementById('morphAdvancedSection');
-            const content = document.getElementById('advancedContent');
-            
-            if (toggleBtn && section && content) {
-                toggleBtn.onclick = () => {
-                    section.classList.toggle('expanded');
-                    content.style.display = section.classList.contains('expanded') ? 'block' : 'none';
-                };
-            }
         }
         
         // ========== 主页面按钮事件 ==========
@@ -10559,29 +10140,15 @@
             document.getElementById('btnMorphDeselectAll')?.addEventListener('click', () => selectAllLayers(false));
             
             document.getElementById('btnMorphExecute')?.addEventListener('click', () => {
-                const refShapeId = document.getElementById('refShapeSelect')?.dataset.value;
                 const selectedItems = document.querySelectorAll('#morphLayerList .layer-item.selected');
                 const layerIds = Array.from(selectedItems).map(item => item.dataset.layerId);
                 
-                // 参数验证
-                if (!refShapeId) {
-                    showToast('请选择参考形状', 'warning');
-                    return;
-                }
                 if (layerIds.length === 0) {
                     showToast('请选择产品图层', 'warning');
                     return;
                 }
                 
-                // 获取完整的变形配置
                 const config = getMorphingConfig();
-                
-                // 检查是否强制重新检测
-                const forceRedetect = document.getElementById('morphForceRedetect')?.checked === true;
-                // 获取执行步骤
-                const morphStep = document.getElementById('morphStepSelect')?.value || 'morph';
-                
-                // 立即显示进度反馈
                 showMorphProgress(5, '正在准备...');
                 
                 // 禁用按钮防止重复点击
@@ -10592,49 +10159,14 @@
                 }
                 
                 const morphParams = {
-                    refShapeId,
                     layerIds,
-                    // 开关控制
-                    preAlign: config.preAlign,
-                    shapeMatch: config.shapeMatch,
-                    // 变形强度参数
                     edgeStrength: config.edgeStrength,
-                    contentProtection: config.contentProtect,
-                    smoothness: config.smoothness,
-                    // 分区控制
-                    selectedRegions: config.selectedRegions,
-                    // 袜子款式
-                    sockStyle: config.sockStyle,
-                    cuffType: config.cuffType,
-                    cuffProtected: config.cuffProtected,
-                    // 其他
-                    forceRedetect: forceRedetect,
-                    step: morphStep
+                    cuffProtected: config.cuffProtected
                 };
                 
                 console.log('[WebView] 发送 morphExecute 请求:', morphParams);
                 
                 sendToUXP('morphExecute', morphParams);
-                
-                // 清除之前的模拟进度定时器（如果有）
-                if (morphProgressInterval) {
-                    clearInterval(morphProgressInterval);
-                }
-                
-                // 模拟进度更新（在等待 Agent 响应期间显示动态进度）
-                // 注意：当收到真实进度或完成消息时，hideMorphProgress 会清除此定时器
-                let progress = 10;
-                morphProgressInterval = setInterval(() => {
-                    progress += 3;  // 减慢进度增长
-                    if (progress < 85) {
-                        showMorphProgress(progress, '正在处理中...');
-                    } else {
-                        // 进度接近上限时停止增长，等待真实结果
-                        clearInterval(morphProgressInterval);
-                        morphProgressInterval = null;
-                        showMorphProgress(85, '请稍候，正在完成...');
-                    }
-                }, 800);  // 减慢更新频率
             });
             
             // ===== 智能抠图页面事件 =====
@@ -10728,9 +10260,6 @@
             bindToggles();
             bindOutputButtons();
             bindCheckboxes();
-            bindSockStyleSelection();
-            bindCuffTypeSelection();
-            bindAdvancedToggle();
             
         });
     </script>

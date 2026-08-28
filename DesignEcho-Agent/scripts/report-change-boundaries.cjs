@@ -284,7 +284,7 @@ const BOUNDARIES = [
       'npm run test:design-authorship-boundary',
       'Confirm SKU Provider boundary; do not expose as a general Agent or Harness decision path'
     ],
-    match: (entry) => /shape-morphing|sock-morphing|sock-shape|morphing|sku-pose-alignment|sku-retouch\/pose-|layer-pixel-capture|capture-layer-pixels/.test(entry.filePath)
+    match: (entry) => /shape-morphing|sock-morphing|sock-shape|morphing|sku-pose-alignment|sku-pose-panel|sku-retouch\/pose-|layer-pixel-capture|capture-layer-pixels/.test(entry.filePath)
   },
   {
     id: 'main-process-infra',

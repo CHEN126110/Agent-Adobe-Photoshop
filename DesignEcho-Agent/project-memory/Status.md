@@ -2,6 +2,14 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-28 SKU 姿态统一面板迁移
+
+- 真实 WebView 不再要求参考形状，也不再展示款式、内容保护、平滑度、分区、重新检测和执行步骤等未进入新版 Provider 的字段；只保留批量图层选择、显式矫正强度与可见说明为“主体顶部约 15%”的袜口保护。模拟进度已删除，面板只显示 Provider 的逐层真实进度。
+- UXP 面板协调器把加载图层时的 documentId 绑定为整批身份，随后逐层读取同一文档的当前 history/layer/name 并调用 `sku-pose-align-v1`；每次成功后下一层重新读取最新 revision。切换文档会在写前停止，重复图层去重，`not_needed` 不重复修改，已证明零写入的拒绝可继续，任何网络异常或 unknown mutation 会停止后续层。
+- 面板主体切片的行为契约、UXP 全测试 /production build、Agent production build、WebView 内联脚本解析及完整核心 59/59 已通过；提交前审查补入 documentId 守卫后，受影响的 UXP 全测试、TypeScript 与 production build 再次通过。浏览器按真实 280×620 面板尺寸检查，说明、列表、强度、袜口保护和底部按钮均完整可读，临时预览默认页修改已恢复。
+- 新版 UXP 已在真实 Photoshop 中加载并显示。隔离文档 `4207 / history 4211 / source layer 3` 建立后，Computer Use 在点击前确认命中的是 `msedgewebview2.exe` 子窗口而非 Photoshop 目标，按自动化边界拒绝输入；没有点击送达，复核 history 仍为 4211。测试文档未保存关闭，主工程和原 UXP 构建已恢复，用户文档保持 `3749 / history 4204 / 13 layers`，原五个文档集合不变。
+- 未核实：本轮尚未从真实面板按钮完成一次 UXP→Main→UXP 嵌套请求。它仍是发布前真机验收，但当前缺口属于测试输入无法到达，不是已观察到的产品失败；不能由 Host 端 Provider E2E 替代，也不应为此新增隐藏旁路。
+
 ## 2026-08-28 SKU 姿态统一版本化 Photoshop Provider
 
 - Provider 生产链已收为一个版本化事务：UXP 用精确 document /history /layer 身份捕获未经裁边的 RAW RGBA 二进制像素，Main 在透明安全工作画布上运行已验证离线算法，并在质量不适用或失败时零写入；通过后只调用一次内部 `applySkuPoseAlignment`，唯一 Photoshop mutation owner 是 `PhotoshopTransactionRunner`。两个内部原子工具均不进入普通 Agent Tool 面。

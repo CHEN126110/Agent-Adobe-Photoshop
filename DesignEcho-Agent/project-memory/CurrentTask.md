@@ -19,6 +19,8 @@
 - 姿态统一第二份 Provider 切片已形成单一可信链：UXP 按精确 document /history /layer 身份捕获原始 RGBA 二进制像素，Main 在透明安全工作画布上运行离线算法并在任何写入前完成 no-op /质量拒绝，随后只调用一次由 `PhotoshopTransactionRunner` 持有的 apply；成功必须同时取得版本化捕获收据、专用 mutation receipt、同目标 history 前进、源层隐藏、输出层可见和几何读回，普通 Agent 看不到两个内部原子工具。
 - 第一次 Provider 真机实验在写前暴露两项根因：旧 `native-png` 会裁掉透明边距，且它通过隐式活动文档执行整文档 duplicate，实际复制了用户文档 `800` 而非隔离测试文档。实验因 `insufficient_canvas_margin` 零写入停止；生成的未保存副本 `3821` 已精确关闭，原文档 `3749 / history 4114 / 13 layers` 经读回未改变。该链已被删除，不以补判断继续保留。
 - 根因修复后，独立 Provider Host + UXP 在三个全新隔离文档 `4180 / 4187 / 4194` 连续完成三次零人工纠偏 E2E：每次均从 source layer 3 生成 output layer 4、取得 `sku-pose-alignment-provider-receipt/v1` 和 verified Photoshop operation，并在验收后不保存关闭测试文档、恢复原文档。固定合成曲袜的中心线弯曲降低约 83.9%，袜口漂移约 0.04%，Jacobian、局部尺度、前景保留和可见内容安全边距均通过；这证明几何与事务闭环，不等于真实商品商业审美通过。
+- 姿态面板此前仍要求参考形状、款式、内容保护、平滑度、分区与执行步骤，但这些字段不进入新版 Provider 契约；继续保留会让用户误以为设置已生效，并可能恢复旧 `enhanced-shape-morph` / `pose-align-layers` 拼接链。当前面板只保留图层批量选择、显式矫正强度和可见的袜口保护选项；不再模拟进度，也不要求参考形状。
+- 面板批处理现在把加载图层时的 documentId 绑定为整批身份，并逐层读取当前 history/layer/name，按同一文档的最新 revision 调用 `sku-pose-align-v1` Provider；切换文档会在写前停止，重复 layerId 去重，已证明零写入的拒绝可继续，任何超时或未知写状态立即停止后续图层。原层保留并隐藏、结果同级新建的行为在界面中明确说明，避免把恢复能力藏起来。
 - 仓库此前没有在 `maintenance:validate` 重型阶段前核对两仓 lock、安装版本、平台 payload 与 CLI launcher 的统一检查。
 
 ### 实施边界
@@ -35,7 +37,8 @@
 4. 进行中：按纯离线算法、版本化单事务 Provider、面板迁移三份切片治理姿态统一；不得恢复存在 P0 的拼接写链。
    - 已完成第一份：离线算法与 `sku-pose-alignment-report/v1` 质量契约，未接入生产调用或 Photoshop 写入。
    - 已完成第二份的代码、三次隔离 Photoshop E2E、最终完整核心 59/59 与独立本地提交：精确二进制捕获、安全工作画布、版本化单文档单事务 Provider 和专用写后收据已闭环。
-   - 下一份只迁移面板协议与调用方，不得把旧 `pose-align-layers` 多调用 handler、隐式活动文档或整个文档 duplicate 带回生产链；真实弯曲商品与商业视觉评测仍是独立质量验收，不由合成几何样本替代。
+   - 第三份面板协议与调用方迁移已完成代码、契约测试、两端构建、完整核心 59/59、内联脚本解析和 280×620 视觉检查；提交前审查补入整批 documentId 身份守卫后，受影响的 UXP 全测试、TypeScript 与 production build 再次通过，未为这一处局部守卫重复运行重型整仓闸门。旧参考形状与未生效参数已退出真实 WebView，面板只调用版本化 Provider。新版 UXP 已在 Photoshop 中真实加载并显示；自动化点击因 WebView 子进程窗口不属于 Photoshop 目标而在写前被 Computer Use 拒绝，不能把这次未注入点击算作产品执行失败。尚需通过可实际触达面板按钮的方式完成一次隔离 E2E。
+   - 真实弯曲商品与商业视觉评测仍是独立质量验收，不由合成几何样本或面板布局替代。
 
 ### 验证与未知
 
@@ -49,11 +52,14 @@
 - 已核实：姿态离线算法的确定性功能测试覆盖中等弯曲改善、逐字节重复、真实袜口锁定、贴边防裁切、复杂 S 形 /非法参数失败关闭和输入像素契约；真实 `浅咖.jpg` + DirectML BiRefNet 只读离线检查得到 `not_needed`（弯曲率 0.46% < 2.5%），没有为了展示能力改动本来已直的商品。只临时替换依赖声明以匹配当前安装树后，完整 `maintenance:validate` 58/58 通过；结束后 package /lock 已恢复到 `5A737002…C8FCF` 与 `297B6AB7…31AC`，依赖迁移未进入本切片。
 - 已核实：版本化 Provider 的专项测试、Main 构建、Agent production build、UXP 类型 /production build、Tool 注册审计均通过；三个隔离 Photoshop 文档连续取得真实 mutation、同目标读回、关闭清理和原文档恢复。第一次失败同时证明旧 native PNG /隐式 active document 链不安全，已从 owner 处删除而非加兜底。
 - 已核实：只临时使用与当前安装树匹配的依赖声明后，最终源码的完整 `maintenance:validate` 59/59 通过；结束后 package /lock 已恢复到 SHA-256 `2F0443A3…225CEB` 与 `297B6AB7…31AC`，依赖迁移没有进入本切片。
-- 待验证：尚无符合当前适用范围的真实弯曲单袜固定案例，合成样本不能证明纹理、图案、木耳边或商业视觉质量；面板调用方也尚未迁移。这些属于后续独立验收，不能由 Provider 事务成功替代。
+- 已核实：面板批处理行为覆盖整批 documentId 绑定、跨文档写前停止、重复图层去重、逐层 revision 冻结、applied /not_needed 汇总、已证明零写入后继续、未知 mutation 停止和非法参数写前拒绝。面板主体切片已通过完整核心 59/59；提交前加入 documentId 守卫后，受影响的 UXP 全部测试、TypeScript 与 production build 再次通过。Agent production build、WebView 内联脚本解析及 280×620 静态视觉检查也已通过，临时预览开关已恢复。
+- 已核实：新版 UXP 已在 Photoshop 真实加载并显示；隔离测试文档 `4207 / history 4211 / source layer 3` 已建立。Computer Use 在点击前识别到命中目标属于 `msedgewebview2.exe` 子窗口而不是 Photoshop，按边界拒绝注入；复核 history 仍为 4211，说明没有发生面板写入。测试文档随后未保存关闭，主工程与原 UXP 构建已恢复；原用户文档仍为 `3749 / history 4204 / 13 layers`，五个原始文档集合不变。
+- 待验证：尚未通过真实面板按钮闭合一次 UXP→Main→UXP 嵌套请求；该项不能由 Provider Host E2E、纯逻辑批处理测试或无法送达目标的自动化点击替代。
+- 待验证：尚无符合当前适用范围的真实弯曲单袜固定案例，合成样本不能证明纹理、图案、木耳边或商业视觉质量。这属于后续独立验收，不能由 Provider 事务成功或面板迁移替代。
 
 ### 状态
 
-`validated / gmr_defined / dependency_preflight_targeted_validated / semantic_photoshop_e2e_passed / pose_offline_algorithm_and_quality_contract_validated / pose_provider_binary_capture_single_transaction_live_e2e_3x_passed / full_core_59_passed / pose_provider_local_commit_complete / pose_panel_migration_pending / real_product_visual_quality_pending / semantic_local_commit_complete / remote_push_network_pending / exact_lock_install_pending`
+`validated / gmr_defined / dependency_preflight_targeted_validated / semantic_photoshop_e2e_passed / pose_offline_algorithm_and_quality_contract_validated / pose_provider_binary_capture_single_transaction_live_e2e_3x_passed / full_core_59_passed / pose_provider_local_commit_complete / pose_panel_code_contract_build_and_280x620_visual_validated / pose_panel_document_identity_guard_uxp_validated / pose_panel_live_shell_loaded_click_automation_blocked / pose_panel_live_uxp_click_pending / user_photoshop_state_restored / real_product_visual_quality_pending / semantic_local_commit_complete / remote_push_network_pending / exact_lock_install_pending`
 
 ---
 

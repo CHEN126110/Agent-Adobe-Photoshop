@@ -88,6 +88,10 @@ function assertCrossRuntimeVersionBinding(contract) {
         'src/shared/sku-pose-alignment-contract.ts'
     );
     const expected = {
+        SKU_POSE_ALIGNMENT_WORKFLOW_VERSION: readExportedConstant(
+            providerContractPath,
+            'SKU_POSE_ALIGNMENT_WORKFLOW_VERSION'
+        ),
         SKU_POSE_ALIGNMENT_APPLY_VERSION: readExportedConstant(
             providerContractPath,
             'SKU_POSE_ALIGNMENT_APPLY_VERSION'
@@ -121,6 +125,194 @@ function assertCrossRuntimeVersionBinding(contract) {
         readExportedConstant(agentCaptureContractPath, 'LAYER_PIXEL_CAPTURE_VERSION'),
         'layer pixel capture contract must match Agent and UXP exactly'
     );
+}
+
+function loadPanelWorkflow(contract) {
+    const panelWorkflowPath = path.join(uxpRoot, 'src/core/sku-pose-panel-workflow.ts');
+    return transpileTypeScriptModule(
+        panelWorkflowPath,
+        'sku-pose-panel-workflow.ts',
+        (moduleName) => {
+            if (moduleName === '../tools/sku/pose-alignment-contract') return contract;
+            return require(moduleName);
+        }
+    );
+}
+
+async function assertPanelBatchWorkflow(contract, panelWorkflow) {
+    const calls = [];
+    const progress = [];
+    const targets = new Map([
+        [9, { documentId: 42, historyStateId: 100, layerId: 9, layerName: '浅咖' }],
+        [10, { documentId: 42, historyStateId: 101, layerId: 10, layerName: '深咖' }]
+    ]);
+    const result = await panelWorkflow.executeSkuPosePanelBatch({
+        expectedDocumentId: 42,
+        layerIds: [9, 9, 10],
+        strength: 0.7,
+        cuffLockRatio: 0.15
+    }, {
+        readCurrentTarget(layerId) {
+            const target = targets.get(layerId);
+            assert.ok(target, `missing target fixture ${layerId}`);
+            return target;
+        },
+        async invokeWorkflow(params, timeoutMs) {
+            calls.push({ params, timeoutMs });
+            if (params.layerId === 9) {
+                return { success: true, status: 'applied', noMutation: false };
+            }
+            return { success: true, status: 'not_needed', noMutation: true };
+        },
+        onProgress(item) {
+            progress.push(item);
+        }
+    });
+    assert.equal(calls.length, 2, 'duplicate layer ids must not repeat mutations');
+    assert.equal(calls[0].params.version, contract.SKU_POSE_ALIGNMENT_WORKFLOW_VERSION);
+    assert.deepEqual(calls[0].params.options, { strength: 0.7, cuffLockRatio: 0.15 });
+    assert.equal(calls[0].params.expectedDocumentId, 42);
+    assert.equal(calls[0].params.expectedHistoryStateId, 100);
+    assert.equal(calls[0].params.resultLayerName, '浅咖 · 姿态统一');
+    assert.equal(calls[1].params.expectedHistoryStateId, 101);
+    assert.ok(calls.every(call => call.timeoutMs === 180000));
+    assert.equal(result.success, true);
+    assert.equal(result.totalLayers, 2);
+    assert.equal(result.appliedCount, 1);
+    assert.equal(result.notNeededCount, 1);
+    assert.equal(result.stoppedOnUnknownMutation, false);
+    assert.equal(progress.length, 4, 'each layer must have real start/finish progress');
+
+    let safeFailureCalls = 0;
+    const safeFailure = await panelWorkflow.executeSkuPosePanelBatch({
+        expectedDocumentId: 42,
+        layerIds: [9, 10],
+        strength: 1,
+        cuffLockRatio: 0
+    }, {
+        readCurrentTarget(layerId) {
+            return targets.get(layerId);
+        },
+        async invokeWorkflow(params) {
+            safeFailureCalls += 1;
+            if (params.layerId === 9) {
+                return {
+                    success: false,
+                    status: 'rejected',
+                    noMutation: true,
+                    error: '候选会裁切主体，已跳过。'
+                };
+            }
+            return { success: true, status: 'applied', noMutation: false };
+        }
+    });
+    assert.equal(safeFailureCalls, 2, 'proven no-mutation rejection may continue safely');
+    assert.equal(safeFailure.rejectedCount, 1);
+    assert.equal(safeFailure.appliedCount, 1);
+    assert.equal(safeFailure.success, false);
+    assert.equal(safeFailure.stoppedOnUnknownMutation, false);
+
+    let unknownCalls = 0;
+    const unknown = await panelWorkflow.executeSkuPosePanelBatch({
+        expectedDocumentId: 42,
+        layerIds: [9, 10, 11],
+        strength: 0.8,
+        cuffLockRatio: 0
+    }, {
+        readCurrentTarget(layerId) {
+            return {
+                documentId: 42,
+                historyStateId: 200 + unknownCalls,
+                layerId,
+                layerName: `图层 ${layerId}`
+            };
+        },
+        async invokeWorkflow() {
+            unknownCalls += 1;
+            if (unknownCalls === 1) {
+                return { success: true, status: 'applied', noMutation: false };
+            }
+            return {
+                success: false,
+                status: 'failed',
+                noMutation: false,
+                mutationState: 'unknown',
+                error: '写入结果无法确认。'
+            };
+        }
+    });
+    assert.equal(unknownCalls, 2, 'unknown mutation must stop later selected layers');
+    assert.equal(unknown.processedCount, 2);
+    assert.equal(unknown.stoppedOnUnknownMutation, true);
+    assert.equal(unknown.failedCount, 1);
+
+    let wrongDocumentCalls = 0;
+    const wrongDocument = await panelWorkflow.executeSkuPosePanelBatch({
+        expectedDocumentId: 42,
+        layerIds: [9, 10],
+        strength: 0.8,
+        cuffLockRatio: 0
+    }, {
+        readCurrentTarget(layerId) {
+            return {
+                documentId: 99,
+                historyStateId: 300,
+                layerId,
+                layerName: `跨文档 ${layerId}`
+            };
+        },
+        async invokeWorkflow() {
+            wrongDocumentCalls += 1;
+            throw new Error('must not invoke');
+        }
+    });
+    assert.equal(wrongDocumentCalls, 0, 'stale panel selection must never write another document');
+    assert.equal(wrongDocument.processedCount, 1);
+    assert.equal(wrongDocument.results[0].noMutation, true);
+    assert.match(wrongDocument.results[0].error, /文档已变化/);
+
+    await assert.rejects(
+        () => panelWorkflow.executeSkuPosePanelBatch({
+            expectedDocumentId: 42,
+            layerIds: [9],
+            strength: 1.2,
+            cuffLockRatio: 0
+        }, {
+            readCurrentTarget() {
+                throw new Error('must not read');
+            },
+            async invokeWorkflow() {
+                throw new Error('must not invoke');
+            }
+        }),
+        /矫正强度必须在 0~1 之间/
+    );
+}
+
+function assertPanelSurfaceMigration() {
+    const htmlPath = path.join(agentRoot, 'public/webview/index.html');
+    const indexPath = path.join(uxpRoot, 'src/index.ts');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+    const indexSource = fs.readFileSync(indexPath, 'utf8');
+    assert.match(html, /id="morphEdgeStrength"/);
+    assert.match(html, /id="morphCuffProtect"/);
+    for (const removedId of [
+        'refShapeSelect',
+        'morphContentProtect',
+        'morphSmoothness',
+        'morphStepSelect',
+        'morphForceRedetect',
+        'sockStyleSelect',
+        'cuffTypeGrid'
+    ]) {
+        assert.ok(!html.includes(`id="${removedId}"`), `${removedId} must leave the live panel`);
+    }
+    assert.doesNotMatch(html, /morphProgressInterval|setInterval\(\(\) => \{[\s\S]{0,300}showMorphProgress/);
+    assert.match(indexSource, /executeSkuPosePanelBatch/);
+    assert.match(indexSource, /expectedDocumentId:\s*morphPanelDocumentId/);
+    assert.match(indexSource, /sendRequest\('sku-pose-align-v1'/);
+    assert.doesNotMatch(indexSource, /sendRequest\('pose-align-layers'/);
+    assert.doesNotMatch(indexSource, /sendRequest\('enhanced-shape-morph'/);
 }
 
 function assertParameterAndPngContracts(contract, validation) {
@@ -326,13 +518,19 @@ function assertUniqueTransactionOwnership() {
     );
 }
 
-function main() {
+async function main() {
     const { contract, validation } = loadContracts();
+    const panelWorkflow = loadPanelWorkflow(contract);
     assertCrossRuntimeVersionBinding(contract);
     assertParameterAndPngContracts(contract, validation);
     assertReadbackVerification(validation);
     assertUniqueTransactionOwnership();
-    console.log('✅ PASS │ UXP 姿态 Provider：跨端版本、参数、几何读回、回滚与唯一事务所有权');
+    await assertPanelBatchWorkflow(contract, panelWorkflow);
+    assertPanelSurfaceMigration();
+    console.log('✅ PASS │ UXP 姿态 Provider 与面板：跨端版本、逐层冻结、未知写停机、几何读回、回滚与唯一事务');
 }
 
-main();
+main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

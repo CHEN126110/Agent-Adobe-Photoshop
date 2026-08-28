@@ -1,3 +1,4 @@
+export const SKU_POSE_ALIGNMENT_WORKFLOW_VERSION = 'sku-pose-alignment-workflow/v1' as const;
 export const SKU_POSE_ALIGNMENT_APPLY_VERSION = 'sku-pose-alignment-apply/v1' as const;
 export const SKU_POSE_ALIGNMENT_REPORT_VERSION = 'sku-pose-alignment-report/v1' as const;
 export const SKU_POSE_ALIGNMENT_QUALITY_PROFILE = 'studio-upright-sock-geometry/v1' as const;
