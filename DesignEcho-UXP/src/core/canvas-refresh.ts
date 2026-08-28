@@ -18,6 +18,14 @@ export async function forceRefreshCanvas(): Promise<void> {
                 const layer = doc.activeLayers[0];
                 const layerId = layer.id;
 
+                // 背景图层不能隐藏：PS 会弹出「命令"隐藏"当前不可用」的原生模态框，
+                // 而 dialogOptions:'dontDisplay' 只抑制命令自身的参数对话框，挡不住它。
+                // 模态框会阻塞 UXP 消息循环，比"画布没刷新"严重得多。
+                if ((layer as any).isBackgroundLayer === true) {
+                    console.log('[DesignEcho] 背景图层跳过可见性刷新');
+                    return;
+                }
+
                 try {
                     await action.batchPlay([
                         {

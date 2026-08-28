@@ -137,6 +137,19 @@
     background: rgba(148, 163, 184, 0.14);
 }
 
+/* 语义抠图链路：文字→框→选区，与"必需"区分开以便一眼看出要装哪几个 */
+.segmentation-tag.is-semantic {
+    color: #6ee7b7;
+    background: rgba(16, 185, 129, 0.16);
+}
+
+/* 已退出链路：装了也不会被调用，标出来避免用户以为还需要它 */
+.segmentation-tag.is-legacy {
+    color: #94a3b8;
+    background: rgba(100, 116, 139, 0.16);
+    text-decoration: line-through;
+}
+
 /* ===== 状态 ===== */
 
 .segmentation-status {

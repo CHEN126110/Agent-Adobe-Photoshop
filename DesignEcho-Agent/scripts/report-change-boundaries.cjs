@@ -108,12 +108,17 @@ const BOUNDARIES = [
     id: 'semantic-targeting',
     title: '语义目标定位、候选分割与抠图接线',
     validation: [
-      'npm run test:semantic-target-boxes',
-      'npm run test:semantic-target-candidates',
+      'npm run test:semantic-target-vocabulary',
+      'npm run test:bert-wordpiece-tokenizer',
+      'npm run test:grounding-candidate-filter',
+      'npm run test:mask-regions',
+      'npm run test:sam-postprocessing',
+      'npm run test:guided-filter',
+      'npm run test:semantic-region-contract',
       'npm run build:main',
       'npm run build:typecheck:renderer'
     ],
-    match: (entry) => /semantic-target|src\/main\/services\/sam-service\.ts|src\/main\/uxp-handlers\/visual-handlers\.ts/.test(entry.filePath)
+    match: (entry) => /semantic-(target|region)|grounding-(dino|candidate-filter)|target-phrase|mask-regions|sam-postprocessing|guided-filter|bert-wordpiece-tokenizer|src\/main\/services\/sam-service\.ts|src\/main\/uxp-handlers\/visual-handlers\.ts/.test(entry.filePath)
   },
   {
     id: 'interactive-card-runtime',
@@ -292,7 +297,7 @@ const BOUNDARIES = [
     id: 'renderer-ui-shell',
     title: 'Renderer UI 与应用状态',
     validation: ['npm run build:typecheck:renderer', 'npm run smoke:settings-modal-tabs-layout', 'npm run smoke:ui:workbench-information-architecture', 'npm run smoke:ui:user-facing-language-boundary', 'npm run smoke:ui:agent-process-inspector', 'npm run smoke:ui:human-review-intake', 'npm run smoke:ui:human-review-record-persistence', 'npm run smoke:ui:asset-gallery-polish', 'npm run smoke:ui:eagle-asset-candidates', 'npm run smoke:ui:design-result-review-panel'],
-    match: (entry) => /src\/renderer\/(App|types)\.(tsx?|d\.ts)$|src\/renderer\/index\.html|src\/renderer\/styles\/index\.css|components\/Header\.tsx|components\/((DesignAgentWorkbench|WorkflowBoard|WorkflowCanvasNodePreview|ProjectManager|WorkspaceTabBar|ThinkingModeControl)\.(tsx|css)|EagleAssetCandidatesPanel\.tsx|AssetGallery\.tsx|asset-gallery-view-model\.ts|workflow-graph-persistence\.ts)|ChatPanel|SettingsModal|ThinkingProcess|ExecutionStatus|hooks\/(index|useChatActions|useExecution)\.ts|app\.store|components\/message\/MessageRenderer\.(tsx|css)|components\/message\/blocks\/(ThinkingBlock|ToolResultBlock)|components\/message\/parser\.ts|services\/tool-display-info\.ts|services\/(agent-visible-feedback|tool-display-info|memory|eagle-asset-candidates)\.service\.ts|src\/shared\/agent-process-inspector\.ts|src\/shared\/design-result-review-panel\.ts|src\/shared\/eagle-asset-candidates-panel\.ts|src\/shared\/eagle-candidate-visual-handoff\.ts|src\/shared\/human-review-(intake|record)\.ts|src\/shared\/ui-action-tool-params\.ts|smoke-settings-modal-tabs-layout|smoke-ui-(workbench-information-architecture|user-facing-language-boundary|agent-process-inspector|human-review-intake|asset-gallery-polish|eagle-asset-candidates|design-result-review-panel|sock-layout-panel-entry)|smoke-chat-ui-(electron-bridge|execution-chain|running-window)|inspect-chat-ui-running-window|smoke-human-review-record-persistence|public\/webview\/design-library\.js/.test(entry.filePath)
+    match: (entry) => /src\/renderer\/(App|types)\.(tsx?|d\.ts)$|src\/renderer\/index\.html|src\/renderer\/styles\/index\.css|components\/Header\.tsx|components\/((DesignAgentWorkbench|WorkflowBoard|WorkflowCanvasNodePreview|ProjectManager|WorkspaceTabBar|ThinkingModeControl)\.(tsx|css)|EagleAssetCandidatesPanel\.tsx|AssetGallery\.tsx|asset-gallery-view-model\.ts|workflow-graph-persistence\.ts)|ChatPanel|SettingsModal|SegmentationModelManager|ThinkingProcess|ExecutionStatus|hooks\/(index|useChatActions|useExecution)\.ts|app\.store|components\/message\/MessageRenderer\.(tsx|css)|components\/message\/blocks\/(ThinkingBlock|ToolResultBlock)|components\/message\/parser\.ts|services\/tool-display-info\.ts|services\/(agent-visible-feedback|tool-display-info|memory|eagle-asset-candidates)\.service\.ts|src\/shared\/agent-process-inspector\.ts|src\/shared\/design-result-review-panel\.ts|src\/shared\/eagle-asset-candidates-panel\.ts|src\/shared\/eagle-candidate-visual-handoff\.ts|src\/shared\/human-review-(intake|record)\.ts|src\/shared\/ui-action-tool-params\.ts|smoke-settings-modal-tabs-layout|smoke-ui-(workbench-information-architecture|user-facing-language-boundary|agent-process-inspector|human-review-intake|asset-gallery-polish|eagle-asset-candidates|design-result-review-panel|sock-layout-panel-entry)|smoke-chat-ui-(electron-bridge|execution-chain|running-window)|inspect-chat-ui-running-window|smoke-human-review-record-persistence|public\/webview\/design-library\.js/.test(entry.filePath)
   },
   {
     id: 'design-skill-execution-core',

@@ -1,7 +1,7 @@
 /**
  * 智能分割服务 - 本地 ONNX 模型
  * 
- * v6.0 - 完整的 文本定位 + 目标检测 + 精确分割 + 边缘细化 流程
+ * 本地分割 Provider：显著性抠图与开放词汇语义抠图共用的模型执行层。
  * 
  * 功能：
  * 1. 语义分割 - 识别画布中所有主体（类似 PS "选择主体"）
@@ -9,13 +9,14 @@
  * 3. 选区分割 - 识别选区范围内的主体
  * 
  * 使用模型：
- * - YOLO-World ONNX (~48MB) - 开放词汇目标检测，支持任意文本描述定位
- * - BiRefNet ONNX (~176MB) - 高精度边缘分割，毛发级别细节
+ * - GroundingDINO - 语义目标词到候选框（由独立 Provider 调用）
+ * - MobileSAM - 按框圈定目标范围
+ * - BiRefNet lite/full/matting - 显著性与高分辨率边缘细化
  * 
  * 处理流程：
- * 1. 文本定位：YOLO-World 根据用户描述检测目标边界框
- * 2. 精确分割：BiRefNet 对检测区域进行高精度分割
- * 3. 边缘细化：BiRefNet 自带的双向信息融合机制优化边缘
+ * 1. 文本定位：GroundingDINO 产生带 phrase 的目标候选框
+ * 2. 范围分割：MobileSAM 按框确定目标归属
+ * 3. 边缘细化：BiRefNet 在局部高分辨率图上恢复真实边缘
  * 
  * 技术栈：
  * - onnxruntime-node - ONNX 推理
@@ -30,14 +31,17 @@ import {
     binaryImageDataToBase64 
 } from '../../shared/binary-protocol';
 import {
-    DEFAULT_CANDIDATE_EXTRACTION,
-    buildCandidatePointGrid,
-    extractMaskComponents,
-    findUncoveredPoint,
-    maskIoU,
-    type CandidateExtractionOptions,
-    type SemanticCandidate
-} from '../../shared/semantic-target-candidates';
+    DEFAULT_MASK_REGION_OPTIONS,
+    extractMaskRegions,
+    extractMaskRegionsWithLabels,
+    measureMaskTargetCoverage,
+    type MaskRegion,
+    type MaskRegionOptions
+} from '../../shared/mask-regions';
+import {
+    planGuidedFilterExecution,
+    refineMaskWithGuidedFilter
+} from '../../shared/guided-filter';
 
 // ==================== 类型定义 ====================
 
@@ -85,12 +89,58 @@ export interface MattingResult {
     pipeline?: {
         mode?: 'local' | 'onnx';
     };
+    /** 语义局部分割的确定性完整性收据；缺任一目标时不得把 union mask 应用到 Photoshop。 */
+    targetCompleteness?: {
+        schema: 'semantic-matting-target-completeness/v1';
+        requestedRegionCount: number;
+        requestedTargetCount: number;
+        segmentedRegionCount: number;
+        segmentedTargetCount: number;
+        scopeVerificationRequired: boolean;
+        scopeVerifiedTargetCount: number;
+        scopeVerificationComplete: boolean;
+        failedRegionIndexes: number[];
+        complete: boolean;
+    };
 }
 
 // ==================== 模型配置 ====================
 
 // BiRefNet 模型配置
 // 注意：当前 ONNX 模型为固定输入尺寸 1024x1024，不支持动态分辨率
+/** 权重超过这个体积就认定是完整档：lite 约 214MB，完整版约 928MB */
+/**
+ * BiRefNet 权重档位。
+ *
+ * full / lite 是**容量**档（按文件大小分），matting 是**能力**档：
+ * 官方 matting 权重用 alpha 回归训练，输出真正的半透明过渡；
+ * general/DIS 权重用二值 GT 训练，天生给不出毛发级边缘。
+ * 两者同架构同输入（[1,3,1024,1024]、logits 输出），只是权重不同。
+ */
+type BiRefNetVariant = 'matting' | 'full' | 'lite';
+
+/** 某档缺失时的降级顺序：能力档退回分割档，容量档在分割档内互退 */
+const BIREFNET_FALLBACK_ORDER: Record<BiRefNetVariant, BiRefNetVariant[]> = {
+    matting: ['full', 'lite'],
+    full: ['lite', 'matting'],
+    lite: ['full', 'matting']
+};
+
+/**
+ * 按文件名与大小判定权重档位。
+ *
+ * matting 只能靠文件名识别——它与 general 权重同架构、体积也接近（972MB vs 928MB），
+ * 大小区分不开。官方发布名是 BiRefNet-matting-epoch_100.onnx，匹配 matting 字样即可。
+ */
+function classifyBiRefNetWeight(fileName: string, size: number): BiRefNetVariant {
+    if (/matting/i.test(fileName)) return 'matting';
+    return size >= BIREFNET_FULL_MIN_BYTES ? 'full' : 'lite';
+}
+
+const BIREFNET_FULL_MIN_BYTES = 500 * 1024 * 1024;
+/** 小于这个体积的多半是下载残留的半截文件 */
+const BIREFNET_MIN_VALID_BYTES = 20 * 1024 * 1024;
+
 const BIREFNET_DEFAULT_INPUT_SIZE = 1024;
 const BIREFNET_BALANCED_INPUT_SIZE = 1024;
 const BIREFNET_FAST_INPUT_SIZE = 1024;
@@ -107,20 +157,74 @@ const YOLO_IOU_THRESHOLD = 0.45;   // NMS IoU threshold
 const BOX_SEGMENT_PADDING_RATIO = 0.12;
 const BOX_SEGMENT_MIN_PADDING = 8;
 const BOX_SEGMENT_MAX_PADDING = 64;
-/** 最大连通域占前景多少比例时，判定为"粘连成一大块"，需要在块内再切 */
-const REFINE_DOMINANT_RATIO = 0.7;
-/** 块内撒点的目标数量：行列按物体长宽比分配，细长物体自动多行少列 */
-const REFINE_TARGET_POINTS = 16;
-/** 网格之外最多再补几个点（补在还没被覆盖的最大前景块中心） */
-const REFINE_MAX_EXTRA_POINTS = 6;
-/** 有效部件的面积占比区间：过小是毛刺，过大等于没切开 */
-const REFINE_MIN_PART_RATIO = 0.03;
-const REFINE_MAX_PART_RATIO = 0.92;
-/** 两个部件蒙版 IoU 超过此值视为同一物体 */
-const REFINE_DUPLICATE_IOU = 0.75;
-/** 细分最多保留几个部件：给模型太多选项反而难选 */
-const REFINE_MAX_PARTS = 8;
+/**
+ * BiRefNet 空闲多久后释放。比 GroundingDINO 长：它是每次抠图的主力，
+ * 反复重载（约 2.2 秒）不划算，但停手几分钟后没理由继续占着显存。
+ */
+const BIREFNET_IDLE_RELEASE_MS = 180 * 1000;
+/**
+ * SAM 范围蒙版外扩多少再与细节蒙版相交，用局部图长边的比例表示。
+ *
+ * 这里的分工是「SAM 定范围、BiRefNet 定边缘」。但相交是逐像素与，
+ * SAM 说背景的地方 BiRefNet 的边缘一律清零——不外扩的话，最终边界
+ * 其实是 SAM 那条 256 网格上采样出来的粗边，BiRefNet 白算。
+ *
+ * 曾经按「边缘复杂度」测量后定为 0，那个指标是错的：它把 BiRefNet 的
+ * 软过渡带算成细节下降，而软过渡恰恰是边缘压在真实轮廓上的证据。
+ * 改用「边缘处原图梯度」（越高说明边界越贴真实轮廓）+「硬边占比」重测
+ * （袜子+鞋，局部图 1536×853，纯 detail 上限 梯度 36.7 / 硬边 0%）：
+ *   0px  → 梯度 31.1，硬边 84.7%   ← 与纯 SAM 的 30.6 几乎一样
+ *   2px  → 梯度 36.4，硬边 43.8%
+ *   4px  → 梯度 36.5，硬边 25.9%，面积 +2.8%
+ *   12px → 梯度 35.9，硬边 17.4%，面积 +4.8%
+ * 4px 时边缘位置已贴住 detail 上限，再放大只换来递减的硬边改善和更多面积。
+ * 剩下那约 26% 硬边来自物体与邻近物的交界（袜子↔腿），detail 在那里本就
+ * 连续，只能由 scope 切开，属于语义边界而非精度损失。
+ *
+ * 用比例而非固定像素：BiRefNet 固定 1024 输入，过渡带宽度随局部图尺寸等比变化。
+ */
+const SCOPE_DILATE_RATIO = 4 / 1536;
+const SCOPE_DILATE_MIN_PIXELS = 2;
+const SCOPE_DILATE_MAX_PIXELS = 8;
 
+/**
+ * matting 档的外扩半径要大得多——它的 alpha 过渡带比二值蒙版宽一个量级
+ * （实测同一张图：纯 matting 有 40977 个半透明像素，按分割档的 4px 相交后只剩
+ * 19922，一半的毛发过渡带被 SAM 的二值边界削掉了）。
+ *
+ * 之所以敢放这么大，是因为 matting 档配合 'transition-only' 模式：外扩带里
+ * 只捞半透明像素，实心前景（邻近物）不捞。实测 R=64 时过渡带 100% 捞回，
+ * 前景相比 R=4 只多 1.0%；若用 'solid' 模式同样放到 32px，前景会多 5.3%，
+ * 多出来的全是腿。
+ */
+const MATTING_SCOPE_DILATE_RATIO = 48 / 1536;
+const MATTING_SCOPE_DILATE_MIN_PIXELS = 16;
+const MATTING_SCOPE_DILATE_MAX_PIXELS = 96;
+
+/** alpha 达到这个值就算实心前景，外扩带里不再捞它（避免把邻近物整片带进来） */
+const SOLID_ALPHA_THRESHOLD = 248;
+
+/** 按局部图尺寸与权重档位换算范围蒙版的外扩半径 */
+function resolveScopeDilatePixels(
+    width: number,
+    height: number,
+    variant: BiRefNetVariant = 'lite'
+): number {
+    const longSide = Math.max(width, height);
+    if (variant === 'matting') {
+        const scaled = Math.round(longSide * MATTING_SCOPE_DILATE_RATIO);
+        return Math.min(MATTING_SCOPE_DILATE_MAX_PIXELS, Math.max(MATTING_SCOPE_DILATE_MIN_PIXELS, scaled));
+    }
+    const scaled = Math.round(longSide * SCOPE_DILATE_RATIO);
+    return Math.min(SCOPE_DILATE_MAX_PIXELS, Math.max(SCOPE_DILATE_MIN_PIXELS, scaled));
+}
+
+/** 多目标范围之间的窄缝用多大半径合上：只需盖住 SAM 边界的量化误差 */
+const SCOPE_GAP_CLOSE_PIXELS = 6;
+/** 蒙版贴边超过这个比例，就判定目标被取像范围切断 */
+const BORDER_CONTACT_WARN_RATIO = 0.25;
+/** 独立部件有多大比例落在目标框内，就认定它属于目标（例如与鞋身断开的鞋带） */
+const TARGET_COMPONENT_KEEP_RATIO = 0.6;
 /** 判定"框内确实分割出了东西"的灰度阈值 */
 const BOX_SEGMENT_FOREGROUND_THRESHOLD = 32;
 
@@ -200,14 +304,6 @@ export interface BoxSegmenter {
         maskHeight?: number;
         error?: string;
     }>;
-    /**
-     * 批量点分割：用于把相互接触、连通域拆不开的物体切开
-     * （模特腿部特写里腿、袜、鞋连成一整块前景）。
-     */
-    segmentWithPoints?(
-        imageBuffer: Buffer,
-        points: Array<{ x: number; y: number }>
-    ): Promise<Array<{ point: { x: number; y: number }; mask: Buffer } | null>>;
 }
 
 // ==================== 智能分割服务类 ====================
@@ -234,12 +330,18 @@ export class MattingService {
     // BiRefNet 双档：full（birefnet.onnx，~970MB，边缘最优但慢）/ lite（birefnet_lite|_old.onnx，~220MB，3-5 倍速）
     // birefnetSession 始终指向当前激活档位的会话（保持既有推理代码不变）
     private birefnetSession: any = null;
-    private birefnetSessionByTier: { full: any | null; lite: any | null } = { full: null, lite: null };
-    private birefnetActiveTier: 'full' | 'lite' | null = null;
+    private birefnetSessionByTier: Record<BiRefNetVariant, any | null> = { matting: null, full: null, lite: null };
+    private birefnetActiveTier: BiRefNetVariant | null = null;
     private yoloWorldSession: any = null;
 
     // 框内分割器（SAM）：语义抠图优先用它在目标框内分割，未注入时降级为裁剪 + BiRefNet
     private boxSegmenter: BoxSegmenter | null = null;
+
+    // 空闲释放：BiRefNet 常驻约占 627MB 显存，停手后应归还
+    private idleTimer: NodeJS.Timeout | null = null;
+    private inFlightInference = 0;
+    /** 防止 CPU 重跑再次失败时无限递归 */
+    private cpuRetryInFlight = false;
 
     // GPU 加速状态
     private gpuStatus: GPUStatus = { available: false, provider: 'cpu' };
@@ -268,7 +370,7 @@ export class MattingService {
         }
         console.log(`[MattingService] 模型目录: ${this.modelsDir}`);
         console.log(`[MattingService] GPU 模式: ${this.config.gpuMode}`);
-        console.log('[MattingService] 初始化完成，使用 YOLO-World + BiRefNet ONNX 模型');
+        console.log('[MattingService] 本地分割服务实例已创建，模型按实际任务与可用文件延迟加载');
     }
 
     private isVerboseLoggingEnabled(): boolean {
@@ -415,7 +517,9 @@ export class MattingService {
             
             // 构建会话选项
             const sessionOptions: any = {
-                graphOptimizationLevel: 'basic',
+                // 这个会话会被留作正式推理复用，优化级别必须与 getSessionOptions 一致，
+                // 否则 provider 探测顺带把正式推理降级到 basic 优化
+                graphOptimizationLevel: 'all',
                 logSeverityLevel: 4  // 只显示错误
             };
             
@@ -434,17 +538,24 @@ export class MattingService {
                 sessionOptions.executionProviders = ['cpu'];
             }
             
-            // 尝试加载一个真实的模型来验证
-            // 使用 BiRefNet 模型作为测试（如果已下载）
-            const testModelPath = path.join(this.modelsDir, 'birefnet', 'birefnet.onnx');
-            if (fs.existsSync(testModelPath)) {
-                const testSession = await this.ort.InferenceSession.create(testModelPath, sessionOptions);
-                // 这次真实模型加载本身已经完成 provider 验证，直接作为 full 会话复用。
-                // 旧实现立即 release 后又加载同一模型，冷启动会重复占用时间和峰值内存。
+            // 用真实模型验证 provider，验证完直接留作正式会话复用——
+            // 旧实现立即 release 后又加载同一模型，冷启动重复占用时间和峰值内存。
+            //
+            // 但加载哪个档位必须由默认质量解析，且按解析出的**实际**档位登记。
+            // 曾经这里硬编码 birefnet.onnx（lite）却写死登记成 full 档，于是
+            // loadBiRefNetModel('full') 一看 full 档已有会话就复用，真正的 full 权重
+            // （BiRefNet-general 928MB）永远被挡在门外，quality 档跑的一直是 lite。
+            const testTier = this.resolveBiRefNetTier(this.config.defaultQuality);
+            const resolved = this.resolveBiRefNetModelPath(testTier);
+            if (resolved) {
+                const testSession = await this.ort.InferenceSession.create(resolved.path, sessionOptions);
                 this.birefnetSession = testSession;
-                this.birefnetSessionByTier.full = testSession;
-                this.birefnetActiveTier = 'full';
-                console.log(`[MattingService] ✅ ${provider} 执行提供程序可用，复用已加载的 BiRefNet full 会话`);
+                this.birefnetSessionByTier[resolved.tier] = testSession;
+                this.birefnetActiveTier = resolved.tier;
+                console.log(
+                    `[MattingService] ✅ ${provider} 执行提供程序可用，`
+                    + `复用已加载的 BiRefNet ${resolved.tier} 会话`
+                );
                 return true;
             }
             
@@ -882,38 +993,68 @@ export class MattingService {
      * 加载 BiRefNet 模型
      */
     /** 解析档位对应的模型文件；lite 档缺文件时回退 full（反之亦然），并如实记录 */
-    private resolveBiRefNetModelPath(tier: 'full' | 'lite'): { path: string; tier: 'full' | 'lite' } | null {
-        const fullPath = path.join(this.modelsDir, 'birefnet', 'birefnet.onnx');
-        const liteCandidates = [
-            path.join(this.modelsDir, 'birefnet', 'birefnet_lite.onnx'),
-            path.join(this.modelsDir, 'birefnet', 'birefnet_old.onnx')
-        ];
-        const litePath = liteCandidates.find(p => fs.existsSync(p)) || null;
-        const fullExists = fs.existsSync(fullPath);
+    /**
+     * 在模型目录里按"文件多大"而不是"文件叫什么"来认档位。
+     *
+     * 起因：用户目录里的 birefnet.onnx 实际是 lite 版（与官方 BiRefNet_lite 哈希一致），
+     * 而真正的完整版叫 BiRefNet-general-epoch_244.onnx 从没被加载过。
+     * 靠文件名认档位时，系统一边打日志说"回退 full 档"一边加载 lite，
+     * 对自己的能力撒了一整套自洽的谎——排查性能和显存问题时全被这个假前提带偏。
+     *
+     * 文件名由下载来源决定（HuggingFace 上都叫 model.onnx），本就不可靠；
+     * 权重规模才是档位的真实标志。
+     */
+    private resolveBiRefNetModelPath(tier: BiRefNetVariant): { path: string; tier: BiRefNetVariant } | null {
+        const dir = path.join(this.modelsDir, 'birefnet');
+        if (!fs.existsSync(dir)) return null;
 
-        if (tier === 'lite') {
-            if (litePath) return { path: litePath, tier: 'lite' };
-            if (fullExists) {
-                console.warn('[MattingService] lite 档模型不存在（birefnet_lite/_old.onnx），回退 full 档');
-                return { path: fullPath, tier: 'full' };
-            }
-            return null;
+        const found: Array<{ path: string; size: number; tier: BiRefNetVariant }> = [];
+        for (const name of fs.readdirSync(dir)) {
+            if (!name.toLowerCase().endsWith('.onnx')) continue;
+            const full = path.join(dir, name);
+            const size = fs.statSync(full).size;
+            if (size < BIREFNET_MIN_VALID_BYTES) continue;
+            found.push({ path: full, size, tier: classifyBiRefNetWeight(name, size) });
         }
-        if (fullExists) return { path: fullPath, tier: 'full' };
-        if (litePath) {
-            console.warn('[MattingService] full 档模型不存在，回退 lite 档');
-            return { path: litePath, tier: 'lite' };
+        if (found.length === 0) return null;
+
+        // 同档位内取最大的那个（更完整的权重）
+        const pick = (want: BiRefNetVariant) => found
+            .filter(item => item.tier === want)
+            .sort((a, b) => b.size - a.size)[0];
+
+        const wanted = pick(tier);
+        if (wanted) {
+            this.debugLog(
+                `[MattingService] ${tier} 档选用 ${path.basename(wanted.path)}`
+                + `（${(wanted.size / 1048576).toFixed(0)}MB）`
+            );
+            return { path: wanted.path, tier };
+        }
+
+        // 有序降级：matting 缺失退 full，full 缺失退 lite，反向亦然。
+        // 不用二选一是因为 matting 属于能力档，缺失时只能退回分割能力，没有第三种选择。
+        const order: BiRefNetVariant[] = BIREFNET_FALLBACK_ORDER[tier];
+        for (const candidate of order) {
+            const other = pick(candidate);
+            if (!other) continue;
+            console.warn(
+                `[MattingService] ${tier} 档模型不存在，改用 ${other.tier} 档 `
+                + `${path.basename(other.path)}（${(other.size / 1048576).toFixed(0)}MB）`
+            );
+            return { path: other.path, tier: other.tier };
         }
         return null;
     }
 
-    /** 按质量档位选择 BiRefNet 档：fast/balanced → lite（速度优先），quality → full（边缘最优） */
-    private resolveBiRefNetTier(quality?: QualityLevel | number): 'full' | 'lite' {
+    private resolveBiRefNetTier(quality?: QualityLevel | number): BiRefNetVariant {
         const level = this.normalizeQualityLevel(quality);
-        return level === 'quality' ? 'full' : 'lite';
+        // quality 档要的是"最好的边缘"，而 matting 权重是唯一能给出真 alpha 的一档；
+        // 权重不在时 resolveBiRefNetModelPath 会按 BIREFNET_FALLBACK_ORDER 退回 full。
+        return level === 'quality' ? 'matting' : 'lite';
     }
 
-    private async loadBiRefNetModel(tier: 'full' | 'lite' = 'full'): Promise<boolean> {
+    private async loadBiRefNetModel(tier: BiRefNetVariant = 'full'): Promise<boolean> {
         // 已有目标档位会话：切换激活指针即可
         if (this.birefnetSessionByTier[tier]) {
             this.birefnetSession = this.birefnetSessionByTier[tier];
@@ -945,17 +1086,26 @@ export class MattingService {
         }
         const modelPath = resolved.path;
         
+        // matting 档固定走 CPU：本机实测（1024 输入、同一权重）DirectML 单次 19084ms /
+        // 显存净增 4017MiB，CPU 16348ms / 净增 158MiB——CPU 既更快又几乎不占显存，
+        // 把 8GB 完整留给 GroundingDINO。注意只改这一个会话的 provider，
+        // 不动 this.activeExecutionProvider，否则 SAM 与检测器会被一起拖到 CPU。
+        const forceCpu = resolved.tier === 'matting';
+
         try {
-            const providerName = this.activeExecutionProvider.toUpperCase();
+            const providerName = forceCpu ? 'CPU(matting 固定)' : this.activeExecutionProvider.toUpperCase();
             console.log(`[MattingService] 正在加载 BiRefNet 模型 (${providerName})...`);
             const startTime = Date.now();
             
             // 使用优化的会话选项（包含 GPU 加速配置）
-            const sessionOptions = this.getSessionOptions();
+            const sessionOptions = forceCpu
+                ? { executionProviders: ['cpu'], graphOptimizationLevel: 'all', logSeverityLevel: 3 }
+                : this.getSessionOptions();
             
             try {
                 this.birefnetSession = await this.ort.InferenceSession.create(modelPath, sessionOptions);
             } catch (gpuError: any) {
+                if (forceCpu) throw gpuError;
                 // GPU 加载失败，回退到 CPU
                 if (this.activeExecutionProvider !== 'cpu') {
                     console.warn(`[MattingService] ${providerName} 加载失败，回退到 CPU: ${gpuError.message}`);
@@ -974,7 +1124,11 @@ export class MattingService {
             
             const loadTime = Date.now() - startTime;
             const sizeMB = Math.round(fs.statSync(modelPath).size / 1024 / 1024);
-            console.log(`[MattingService] ✅ BiRefNet 模型加载完成 [${resolved.tier}/${sizeMB}MB/${this.activeExecutionProvider.toUpperCase()}] (${loadTime}ms)`);
+            // 用这个会话真正的 provider，不要用全局 activeExecutionProvider——
+            // matting 档固定走 CPU 而全局仍是 DML，照抄全局会打出
+            // "[matting/928MB/DML]" 这种自相矛盾的行，误导现场诊断。
+            const sessionProvider = forceCpu ? 'CPU' : this.activeExecutionProvider.toUpperCase();
+            console.log(`[MattingService] ✅ BiRefNet 模型加载完成 [${resolved.tier}/${sizeMB}MB/${sessionProvider}] (${loadTime}ms)`);
             this.birefnetSessionByTier[resolved.tier] = this.birefnetSession;
             this.birefnetActiveTier = resolved.tier;
             this.lastBiRefNetLoadError = null;
@@ -1060,7 +1214,9 @@ export class MattingService {
             console.error('[MattingService] 模型或依赖未加载');
             return null;
         }
-        
+
+        // 记在途推理数：空闲释放要等所有推理跑完，否则会抽掉正在使用的会话
+        this.inFlightInference++;
         try {
             // 1. 获取输入图像尺寸（imageBuffer 的实际尺寸，非 PS 原始尺寸）
             const metadata = await this.sharp(imageBuffer).metadata();
@@ -1152,7 +1308,14 @@ export class MattingService {
             const maskData = this.logitsToMask(outputData, channelOffset, numPixels);
             
             // 8. 边缘优化：自适应细化（硬边去残留，软边保细节）
-            const normalizedEdgeRefineMode = this.normalizeEdgeRefineMode(edgeRefineMode);
+            //
+            // matting 档整条跳过。这个整形是为二值蒙版设计的：它按 lowClip/highClip
+            // 把弱值压 0、强值提 255，再做硬边增强与收缩——作用在 alpha 上等于
+            // 亲手削掉 alpha 最低的发梢，并把半透明过渡带推回两极，
+            // 与换 matting 权重的目的完全相反。
+            const normalizedEdgeRefineMode = this.birefnetActiveTier === 'matting'
+                ? 'none'
+                : this.normalizeEdgeRefineMode(edgeRefineMode);
             const refineStats = this.refineMaskEdgesAdaptive(
                 maskData,
                 inputSize,
@@ -1238,7 +1401,71 @@ export class MattingService {
             
         } catch (e: any) {
             console.error('[MattingService] BiRefNet 推理失败:', e.message);
+
+            // GPU 推理失败通常是显存不够（真机：显存被其它应用占去大半时
+            // DmlFusedNode 直接报错）。加载阶段有 dml→cpu 回退，推理阶段一直没有，
+            // 失败就静默降级成"只用 SAM"，边缘质量掉一档还看不出原因。
+            if (this.activeExecutionProvider !== 'cpu' && !this.cpuRetryInFlight) {
+                console.warn('[MattingService] 尝试用 CPU 重跑这次推理');
+                this.cpuRetryInFlight = true;
+                try {
+                    const cpuResult = await this.runBiRefNetInferenceOnCpu(
+                        imageBuffer, inputSize, targetWidth, targetHeight, edgeRefineMode
+                    );
+                    if (cpuResult) console.log('[MattingService] CPU 重跑成功');
+                    return cpuResult;
+                } finally {
+                    this.cpuRetryInFlight = false;
+                }
+            }
             return null;
+        } finally {
+            this.inFlightInference--;
+            this.scheduleIdleRelease();
+        }
+    }
+
+    /**
+     * 用 CPU 会话重跑一次 BiRefNet。
+     *
+     * 独立会话、用完即弃：这是显存不足时的应急路径，不该长期占着内存；
+     * 也不能改动 GPU 会话的状态，否则下次显存宽裕时又得重新探测。
+     */
+    private async runBiRefNetInferenceOnCpu(
+        imageBuffer: Buffer,
+        inputSize: number,
+        targetWidth?: number,
+        targetHeight?: number,
+        edgeRefineMode?: string
+    ): Promise<{
+        maskBuffer: Buffer;
+        width: number;
+        height: number;
+        sourceWidth: number;
+        sourceHeight: number;
+    } | null> {
+        const resolved = this.resolveBiRefNetModelPath(this.resolveBiRefNetTier(this.config.defaultQuality));
+        if (!resolved || !this.ort) return null;
+
+        const gpuSession = this.birefnetSession;
+        let cpuSession: any = null;
+        try {
+            cpuSession = await this.ort.InferenceSession.create(resolved.path, {
+                executionProviders: ['cpu'],
+                graphOptimizationLevel: 'all',
+                logSeverityLevel: 3
+            });
+            // 临时顶替，让既有推理代码原样复用
+            this.birefnetSession = cpuSession;
+            return await this.runBiRefNetInference(
+                imageBuffer, inputSize, targetWidth, targetHeight, edgeRefineMode
+            );
+        } catch (e: any) {
+            console.error('[MattingService] CPU 重跑也失败:', e?.message);
+            return null;
+        } finally {
+            this.birefnetSession = gpuSession;
+            if (cpuSession) void Promise.resolve(cpuSession.release?.()).catch(() => { /* 应急会话，释放失败无碍 */ });
         }
     }
 
@@ -1304,7 +1531,7 @@ export class MattingService {
         if (this.yoloWorldSession.inputNames?.includes('txt_feats')) {
             console.error(
                 '[MattingService] YOLO-World 需要 txt_feats 文本嵌入输入，当前没有可用的 CLIP 文本编码器，'
-                + '无法用它做开放词汇检测。语义目标定位请走 SemanticTargetLocatorService。'
+                + '无法用它做开放词汇检测。语义抠图的文本定位由 GroundingDinoService 承担。'
             );
             return null;
         }
@@ -1550,6 +1777,49 @@ export class MattingService {
     }
 
     /**
+     * 真正释放 BiRefNet 会话。
+     *
+     * 只把引用置 null 不会归还显存——ONNX 的 GPU 内存要等 GC，而 GC 不保证时机。
+     * 必须显式调用 session.release()。
+     */
+    private releaseBiRefNetSessions(): void {
+        const sessions = [
+            this.birefnetSessionByTier.matting,
+            this.birefnetSessionByTier.full,
+            this.birefnetSessionByTier.lite
+        ].filter(Boolean);
+
+        this.birefnetSession = null;
+        this.birefnetSessionByTier = { matting: null, full: null, lite: null };
+        this.birefnetActiveTier = null;
+
+        for (const session of sessions) {
+            void Promise.resolve(session.release?.()).catch(() => { /* 释放失败不影响重建 */ });
+        }
+    }
+
+    /** 推理结束后开始倒数，超时把显存还给系统 */
+    private scheduleIdleRelease(): void {
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+            this.idleTimer = null;
+        }
+        if (BIREFNET_IDLE_RELEASE_MS <= 0 || this.inFlightInference > 0 || !this.birefnetSession) return;
+
+        this.idleTimer = setTimeout(() => {
+            if (this.inFlightInference > 0) {
+                this.scheduleIdleRelease();
+                return;
+            }
+            console.log(
+                `[MattingService] 空闲 ${Math.round(BIREFNET_IDLE_RELEASE_MS / 1000)}s，释放 BiRefNet 会话以归还显存`
+            );
+            this.releaseBiRefNetSessions();
+        }, BIREFNET_IDLE_RELEASE_MS);
+        this.idleTimer.unref?.();
+    }
+
+    /**
      * 注入框内分割器（SAM）。未注入时 segmentWithinBoxes 走裁剪 + BiRefNet 降级路径。
      */
     setBoxSegmenter(segmenter: BoxSegmenter | null): void {
@@ -1702,7 +1972,7 @@ export class MattingService {
         }
         const imageBuffer = decoded.buffer;
 
-        // 3. 目标框由调用方给出（语义定位在 SemanticTargetLocatorService 完成）。
+        // 3. 目标框由调用方给出（语义定位在 GroundingDinoService 完成）。
         //    这里不再自行做文本检测：本机 yolov8s-worldv2 需要 txt_feats 文本嵌入输入，
         //    旧实现只喂了 images，每次推理都失败并被静默吞掉，把"语义抠图"退化成全图分割。
         const detectedBoxes: DetectionBox[] = Array.isArray(options?.detectedBoxes)
@@ -1848,28 +2118,25 @@ export class MattingService {
     }
 
     /**
-     * 拆出画面里的候选物体（语义抠图的候选段）
+     * 显著性定位：找出画面里的主体，返回各自的边界框。
      *
-     * BiRefNet 回答"哪些像素是前景"，连通域回答"前景分成几个物体"——两者都不需要
-     * 知道"袜子"是什么。谁是用户要的目标，交给模型在候选里选，Harness 不替它判断。
+     * 这是"没填抠取目标"时的定位段，与语义抠图的 GroundingDINO 定位并列——
+     * 两者出的都是框，之后共用同一个高分辨率精分段，所以边缘质量一致。
      *
-     * 每个候选自带精确蒙版（见返回的 labels），选中后可直接取像素，不必二次分割。
+     * 全程本地推理，不依赖 Photoshop 自带的选择主体。
      */
-    async extractForegroundCandidates(
+    async detectSubjectRegions(
         imageInput: string | BinaryImageData,
         options?: {
             quality?: QualityLevel | number;
             edgeRefine?: string;
-            extraction?: CandidateExtractionOptions;
+            regionOptions?: MaskRegionOptions;
             onProgress?: (progress: number, stage: string, message: string) => void;
         }
     ): Promise<{
         success: boolean;
-        candidates: SemanticCandidate[];
-        labels?: Int32Array;
-        /** 由 SAM 块内细分得到的候选，其蒙版不在 labels 里，按 id 单独给出 */
-        candidateMasks?: Map<number, Buffer>;
-        mask?: Buffer;
+        regions: MaskRegion[];
+        /** 定位所用的图像尺寸，调用方据此换算坐标 */
         width?: number;
         height?: number;
         error?: string;
@@ -1879,7 +2146,7 @@ export class MattingService {
         if (!(await this.ensureInitialized())) {
             return {
                 success: false,
-                candidates: [],
+                regions: [],
                 error: `推理依赖加载失败：${this.lastDependencyError || '未知原因'}`
             };
         }
@@ -1888,17 +2155,17 @@ export class MattingService {
         if (!(await this.loadBiRefNetModel(this.resolveBiRefNetTier(normalizedQuality)))) {
             return {
                 success: false,
-                candidates: [],
+                regions: [],
                 error: `分割模型不可用：${this.lastBiRefNetLoadError?.detail || '模型未安装'}`
             };
         }
 
         const decoded = await this.decodeImageInput(imageInput);
         if (!decoded) {
-            return { success: false, candidates: [], error: '无法解码图层图像' };
+            return { success: false, regions: [], error: '无法解码图层图像' };
         }
 
-        sendProgress(20, 'segmentation', '正在识别画面中的物体...');
+        sendProgress(25, 'detection', '正在识别画面主体...');
 
         const inference = await this.runBiRefNetInference(
             decoded.buffer,
@@ -1909,339 +2176,431 @@ export class MattingService {
         );
 
         if (!inference) {
-            return { success: false, candidates: [], error: '分割模型推理失败，无法得到前景' };
+            return { success: false, regions: [], error: '分割模型推理失败，无法定位主体' };
         }
 
-        const { candidates, labels } = extractMaskComponents(
+        const regions = extractMaskRegions(
             inference.maskBuffer,
             inference.width,
             inference.height,
-            options?.extraction || DEFAULT_CANDIDATE_EXTRACTION
+            options?.regionOptions || DEFAULT_MASK_REGION_OPTIONS
         );
-
-        this.debugLog(`[MattingService] 前景拆出 ${candidates.length} 个连通域候选`);
-
-        if (candidates.length === 0) {
-            return {
-                success: true,
-                candidates,
-                labels,
-                mask: inference.maskBuffer,
-                width: inference.width,
-                height: inference.height
-            };
-        }
-
-        // 判断前景是不是"一大块粘连物"：连通域只有一个，或最大块吃掉了绝大部分前景。
-        // 这种形态下用户想要的往往是块里的某个部件（腿上的鞋、袜），必须再切一刀。
-        const foregroundArea = candidates.reduce((sum, item) => sum + item.area, 0);
-        const largest = candidates[0];
-        const dominated = largest.area / Math.max(1, foregroundArea) >= REFINE_DOMINANT_RATIO;
-        const canRefine = this.boxSegmenter?.isReady() === true
-            && typeof this.boxSegmenter.segmentWithPoints === 'function';
-
-        if (!canRefine || (candidates.length > 1 && !dominated)) {
-            return {
-                success: true,
-                candidates,
-                labels,
-                mask: inference.maskBuffer,
-                width: inference.width,
-                height: inference.height
-            };
-        }
-
-        sendProgress(40, 'segmentation', '画面里的物体连在一起，正在细分...');
-
-        const parts = await this.refineCandidateWithPoints(
-            decoded.buffer,
-            inference.maskBuffer,
-            labels,
-            largest,
-            inference.width,
-            inference.height
-        );
-
-        // 只切出一个部件等于没切开，保持原候选不动，免得凭空多一层不必要的选项
-        if (parts.length < 2) {
-            return {
-                success: true,
-                candidates,
-                labels,
-                mask: inference.maskBuffer,
-                width: inference.width,
-                height: inference.height
-            };
-        }
-
-        // 用部件替换被细分的那个大块，其余连通域候选保持原样，统一重新编号
-        const others = candidates.filter(item => item.id !== largest.id);
-        const merged: SemanticCandidate[] = [];
-        const candidateMasks = new Map<number, Buffer>();
-
-        for (const part of parts) {
-            const id = merged.length + 1;
-            merged.push({ id, area: part.area, x1: part.x1, y1: part.y1, x2: part.x2, y2: part.y2 });
-            candidateMasks.set(id, part.mask);
-        }
-
-        const remapped = new Int32Array(labels.length);
-        for (const other of others) {
-            const id = merged.length + 1;
-            merged.push({ ...other, id });
-            for (let i = 0; i < labels.length; i++) {
-                if (labels[i] === other.id) remapped[i] = id;
-            }
-        }
 
         this.debugLog(
-            `[MattingService] 细分后候选: ${merged.length} 个（${parts.length} 个部件 + ${others.length} 个独立物体）`
+            `[MattingService] 显著性定位：${inference.width}x${inference.height} → ${regions.length} 个主体`
         );
 
         return {
             success: true,
-            candidates: merged,
-            labels: remapped,
-            candidateMasks,
-            mask: inference.maskBuffer,
+            regions,
             width: inference.width,
             height: inference.height
         };
     }
 
     /**
-     * 在一个粘连的大前景块内部，用 SAM 撒点把相互接触的物体切开。
+     * 在高分辨率局部图上分割，再贴回全图坐标（语义抠图的精细分割段）
      *
-     * 连通域只能按"像素是否相连"分割，模特腿部特写里腿、袜、鞋是连在一起的，
-     * 拆出来只有一块——用户要"鞋子"就会抠出整条腿。SAM 能在块内部按语义边界切开
-     * （实测：腿/袜/鞋三段各自分出，面积与真值误差 < 2%）。
+     * 为什么必须这样做：整图导出会被压到 1024 长边，5322x7982 的图层压完只剩 683x1024，
+     * 目标（一只袜子）在里面只有 141x236 像素。SAM 内部输出 256x256 网格覆盖整张图，
+     * 落到目标上仅约 53x59 格，蒙版再放大 7.8 倍——边缘精度从源头就没了。
+     * 按目标框单独取像后，同样的 256 网格只覆盖目标本身，有效精度提高数倍。
      *
-     * @returns 切出的部件蒙版（已与前景取交集，去掉溢出到背景的部分）
+     * @param regions 每块含：局部图、该局部在输出坐标系中的位置、目标框在局部图内的坐标
      */
-    private async refineCandidateWithPoints(
-        imageBuffer: Buffer,
-        foregroundMask: Buffer,
-        labels: Int32Array,
-        candidate: SemanticCandidate,
-        width: number,
-        height: number
-    ): Promise<Array<{ mask: Buffer; area: number; x1: number; y1: number; x2: number; y2: number }>> {
-        const segmenter = this.boxSegmenter;
-        if (!segmenter?.segmentWithPoints) return [];
+    async segmentHighResRegions(
+        regions: Array<{
+            imageInput: string | BinaryImageData;
+            /** 这块局部图对应输出蒙版的哪个矩形 */
+            regionInOutput: { x1: number; y1: number; x2: number; y2: number };
+            /**
+             * 落在这张局部图里的目标框（局部图像素坐标）。
+             * 相邻目标要放进同一张局部图：细节蒙版只算一次，交界处才不会出现拼接缝
+             * （真机：鞋与袜各自取像分割再合并，交界带 3.6% 的像素上下是前景、自己是空的）。
+             */
+            boxesInRegion: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+        }>,
+        options: {
+            outputWidth: number;
+            outputHeight: number;
+            quality?: QualityLevel | number;
+            edgeRefine?: string;
+            binaryMaskOutput?: boolean;
+            /** 语义写路径必须要求逐目标范围 Provider 证明，不能用显著性连通域猜归属。 */
+            requireVerifiedSemanticScope?: boolean;
+            onProgress?: (progress: number, stage: string, message: string) => void;
+        }
+    ): Promise<MattingResult & { clippedRegionIndexes?: number[] }> {
+        const startTime = Date.now();
+        const sendProgress = options.onProgress || ((_p: number, _s: string, _m: string) => {});
 
-        const points = buildCandidatePointGrid(candidate, labels, width, {
-            targetPoints: REFINE_TARGET_POINTS
+        if (!regions || regions.length === 0) {
+            return { success: false, error: '未提供高分辨率区域', processingTime: Date.now() - startTime };
+        }
+
+        if (!(await this.ensureInitialized())) {
+            return {
+                success: false,
+                error: `推理依赖加载失败：${this.lastDependencyError || '未知原因'}`,
+                processingTime: Date.now() - startTime
+            };
+        }
+
+        const outputWidth = Math.round(options.outputWidth);
+        const outputHeight = Math.round(options.outputHeight);
+        if (outputWidth <= 0 || outputHeight <= 0) {
+            return {
+                success: false,
+                error: `输出尺寸无效（${outputWidth}x${outputHeight}）`,
+                processingTime: Date.now() - startTime
+            };
+        }
+
+        const normalizedQuality = this.normalizeQualityLevel(options.quality);
+        const fullMask = Buffer.alloc(outputWidth * outputHeight, 0);
+        const usedModels: string[] = [];
+        const failures: string[] = [];
+        const warnings: string[] = [];
+        const requestedTargetCount = regions.reduce(
+            (sum, region) => sum + (Array.isArray(region.boxesInRegion) ? region.boxesInRegion.length : 0),
+            0
+        );
+        let segmentedCount = 0;
+        let segmentedTargetCount = 0;
+        let scopeVerifiedTargetCount = 0;
+        const failedRegionIndexes: number[] = [];
+        const clippedRegionIndexes: number[] = [];
+        let birefnetReady = false;
+
+        const markRegionFailed = (index: number): void => {
+            if (!failedRegionIndexes.includes(index)) failedRegionIndexes.push(index);
+        };
+        const buildTargetCompleteness = () => ({
+            schema: 'semantic-matting-target-completeness/v1' as const,
+            requestedRegionCount: regions.length,
+            requestedTargetCount,
+            segmentedRegionCount: segmentedCount,
+            segmentedTargetCount,
+            scopeVerificationRequired: options.requireVerifiedSemanticScope === true,
+            scopeVerifiedTargetCount,
+            scopeVerificationComplete: options.requireVerifiedSemanticScope !== true
+                || scopeVerifiedTargetCount === requestedTargetCount,
+            failedRegionIndexes: [...failedRegionIndexes],
+            complete: segmentedCount === regions.length
+                && segmentedTargetCount === requestedTargetCount
+                && (options.requireVerifiedSemanticScope !== true
+                    || scopeVerifiedTargetCount === requestedTargetCount)
+                && failedRegionIndexes.length === 0
         });
 
-        if (points.length < 2) {
-            this.debugLog('[MattingService] 可用采样点不足，跳过块内细分');
-            return [];
-        }
-
-        const segmented = await segmenter.segmentWithPoints(imageBuffer, points);
-        const parts: Array<{ mask: Buffer; area: number; x1: number; y1: number; x2: number; y2: number }> = [];
-        // 记录哪些前景像素已被切出的部件覆盖，用于给漏掉的区域补点
-        const covered = new Uint8Array(width * height);
-
-        for (const item of segmented) {
-            if (!item?.mask) continue;
-
-            // 与前景取交集：SAM 可能把邻接的背景一起圈进来，
-            // 前景蒙版是这一步唯一可信的边界依据。
-            const clipped = Buffer.alloc(width * height, 0);
-            let area = 0;
-            let minX = width;
-            let minY = height;
-            let maxX = 0;
-            let maxY = 0;
-
-            for (let i = 0; i < clipped.length; i++) {
-                if (labels[i] !== candidate.id) continue;
-                const value = Math.min(item.mask[i] ?? 0, foregroundMask[i]);
-                if (value < BOX_SEGMENT_FOREGROUND_THRESHOLD) continue;
-
-                clipped[i] = value;
-                area++;
-                const x = i % width;
-                const y = (i - x) / width;
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
-            }
-
-            // 太小的是分割毛刺，太大的等于没切开——两者都不构成有效部件
-            const ratio = area / Math.max(1, candidate.area);
-            if (ratio < REFINE_MIN_PART_RATIO || ratio > REFINE_MAX_PART_RATIO) continue;
-
-            parts.push({ mask: clipped, area, x1: minX, y1: minY, x2: maxX + 1, y2: maxY + 1 });
-            for (let i = 0; i < clipped.length; i++) {
-                if (clipped[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) covered[i] = 1;
-            }
-        }
-
-        // 网格总会漏掉细长或偏在一角的部件（真机：竖构图里脚上的鞋一个采样点都没采到）。
-        // 对还没被覆盖的大块前景补点，比继续加密整张网格省得多。
-        for (let round = 0; round < REFINE_MAX_EXTRA_POINTS; round++) {
-            const uncovered = findUncoveredPoint(
-                labels,
-                candidate.id,
-                covered,
-                width,
-                height,
-                REFINE_MIN_PART_RATIO,
-                candidate.area
+        for (let i = 0; i < regions.length; i++) {
+            const region = regions[i];
+            const label = `目标 ${i + 1}/${regions.length}`;
+            sendProgress(
+                60 + Math.round((i / regions.length) * 30),
+                'segmentation',
+                `正在精细分割${label}...`
             );
-            if (!uncovered) break;
 
-            const extra = await segmenter.segmentWithPoints(imageBuffer, [{ x: uncovered.x, y: uncovered.y }]);
-            const extraMask = extra[0]?.mask;
-            if (!extraMask) break;
-
-            const clipped = Buffer.alloc(width * height, 0);
-            let area = 0;
-            let minX = width;
-            let minY = height;
-            let maxX = 0;
-            let maxY = 0;
-
-            for (let i = 0; i < clipped.length; i++) {
-                if (labels[i] !== candidate.id) continue;
-                const value = Math.min(extraMask[i] ?? 0, foregroundMask[i]);
-                if (value < BOX_SEGMENT_FOREGROUND_THRESHOLD) continue;
-                clipped[i] = value;
-                area++;
-                const x = i % width;
-                const y = (i - x) / width;
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
-            }
-
-            // 补点切出的东西无效时也要把该区域标记为已处理，否则会在同一处死循环
-            for (let i = 0; i < clipped.length; i++) {
-                if (clipped[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) covered[i] = 1;
-            }
-            covered[uncovered.y * width + uncovered.x] = 1;
-
-            const ratio = area / Math.max(1, candidate.area);
-            if (ratio < REFINE_MIN_PART_RATIO || ratio > REFINE_MAX_PART_RATIO) continue;
-
-            this.debugLog(`[MattingService] 补点 (${uncovered.x},${uncovered.y}) 切出部件 面积=${area}`);
-            parts.push({ mask: clipped, area, x1: minX, y1: minY, x2: maxX + 1, y2: maxY + 1 });
-        }
-
-        // 同一物体上的多个采样点会切出几乎相同的蒙版，按 IoU 去重，保留面积更大的那个
-        parts.sort((a, b) => b.area - a.area);
-        const unique: typeof parts = [];
-        for (const part of parts) {
-            const duplicated = unique.some(
-                kept => maskIoU(kept.mask, part.mask, BOX_SEGMENT_FOREGROUND_THRESHOLD) > REFINE_DUPLICATE_IOU
-            );
-            if (!duplicated) unique.push(part);
-        }
-
-        this.debugLog(
-            `[MattingService] 块内细分: ${points.length} 个采样点 → ${parts.length} 个有效部件 → 去重后 ${unique.length} 个`
-        );
-
-        return unique.slice(0, REFINE_MAX_PARTS);
-    }
-
-    /**
-     * 按选中的候选编号取出蒙版。
-     *
-     * 保留原蒙版灰度而不是二值化：分割模型在物体边缘给出的过渡灰度就是抗锯齿信息，
-     * 二值化会让蒙版边缘出现锯齿。
-     */
-    buildMaskFromCandidates(
-        mask: Buffer,
-        labels: Int32Array,
-        width: number,
-        height: number,
-        selectedIds: number[],
-        candidateMasks?: Map<number, Buffer>
-    ): { maskBuffer: Buffer; foregroundPixels: number } {
-        const output = Buffer.alloc(width * height, 0);
-
-        // 连通域候选按 labels 取像素；SAM 细分出来的部件带自己的蒙版
-        const labelIds = new Set<number>();
-        for (const id of selectedIds) {
-            const partMask = candidateMasks?.get(id);
-            if (!partMask) {
-                labelIds.add(id);
+            const decoded = await this.decodeImageInput(region.imageInput);
+            if (!decoded) {
+                failures.push(`${label} 局部图解码失败`);
+                markRegionFailed(i);
                 continue;
             }
-            for (let i = 0; i < output.length; i++) {
-                if (partMask[i] > output[i]) output[i] = partMask[i];
+
+            const boxes = (region.boxesInRegion || [])
+                .map(raw => ({
+                    x1: Math.max(0, Math.min(decoded.width - 1, Math.round(raw.x1))),
+                    y1: Math.max(0, Math.min(decoded.height - 1, Math.round(raw.y1))),
+                    x2: Math.max(1, Math.min(decoded.width, Math.round(raw.x2))),
+                    y2: Math.max(1, Math.min(decoded.height, Math.round(raw.y2)))
+                }))
+                .filter(b => b.x2 - b.x1 >= 2 && b.y2 - b.y1 >= 2);
+
+            if (boxes.length === 0) {
+                failures.push(`${label} 目标框在局部图中无有效面积`);
+                markRegionFailed(i);
+                continue;
+            }
+            if (boxes.length !== (region.boxesInRegion || []).length) {
+                failures.push(`${label} 有目标框在局部图中无有效面积`);
+                markRegionFailed(i);
+                continue;
+            }
+            // 贴边检测与连通性挑选用所有目标的外接框
+            const box = {
+                x1: Math.min(...boxes.map(b => b.x1)),
+                y1: Math.min(...boxes.map(b => b.y1)),
+                x2: Math.max(...boxes.map(b => b.x2)),
+                y2: Math.max(...boxes.map(b => b.y2))
+            };
+
+            // 局部蒙版：SAM 定范围 + BiRefNet 定边缘，两者结合。
+            //
+            // 单用任一个都不行，真机 2026-08-27 两头都撞过：
+            // · 只用 BiRefNet：它是显著性分割，局部图里有腿有鞋时会把整个主体一起分出来，
+            //   而腿/袜/鞋在蒙版上是一个连通域，按连通性也挑不开；
+            // · 只用 SAM：能按框选对物体，但 mask decoder 固定 256x256 网格，
+            //   放大后边缘圆润，细节（荷叶边、织物纹理）丢失。
+            //
+            // 所以让它们各做各擅长的：SAM 圈定"哪一块是目标"，BiRefNet 提供该块的精细边缘。
+            let regionMask: Buffer | null = null;
+
+            if (!birefnetReady) {
+                birefnetReady = await this.loadBiRefNetModel(this.resolveBiRefNetTier(normalizedQuality));
+            }
+
+            let detailMask: Buffer | null = null;
+            if (birefnetReady) {
+                const cropped = await this.segmentBoxWithBiRefNet(
+                    decoded.buffer,
+                    { x1: 0, y1: 0, x2: decoded.width, y2: decoded.height },
+                    decoded.width,
+                    decoded.height,
+                    this.resolveBiRefNetInputSize(normalizedQuality),
+                    options.edgeRefine
+                );
+                if (cropped) {
+                    const placed = Buffer.alloc(decoded.width * decoded.height, 0);
+                    this.blendMaskRegion(
+                        placed, decoded.width, decoded.height,
+                        cropped.maskBuffer, cropped.width, cropped.height,
+                        cropped.offsetX, cropped.offsetY,
+                        { x1: 0, y1: 0, x2: decoded.width, y2: decoded.height }
+                    );
+                    detailMask = placed;
+                    const tier = `birefnet-${this.birefnetActiveTier || 'full'}`;
+                    if (!usedModels.includes(tier)) usedModels.push(tier);
+
+                    // 引导精修：蒙版是在 1024 上算完再插值放大的，比放大倍数更细的
+                    // 结构（绒毛、织物凸起）在这一步之前根本不存在。用局部图当引导
+                    // 把边缘吸附回真实位置，才能把这些结构找回来。
+                    // 只对 matting 档开启——分割档的边界本就是二值的，精修收益有限，
+                    // 而改动已验证过的路径有回归风险。
+                    if (this.birefnetActiveTier === 'matting') {
+                        const refined = await this.refineDetailWithGuide(
+                            detailMask, decoded.buffer, decoded.width, decoded.height, label
+                        );
+                        if (refined.mask) {
+                            detailMask = refined.mask;
+                            if (!usedModels.includes('guided-filter')) usedModels.push('guided-filter');
+                        } else {
+                            warnings.push(`${label} 引导精修未执行：${refined.reason || '原因未知'}`);
+                        }
+                    }
+                }
+            }
+
+            // 每个目标各求一次范围再并起来：同一张局部图上的多个目标共用 detail，
+            // 但各自的归属由各自的框决定
+            let scopeMask: Buffer | null = null;
+            const scopeProvider = this.boxSegmenter?.isReady() === true
+                ? this.boxSegmenter
+                : null;
+            const scopeProviderReady = scopeProvider !== null;
+            let scopedTargetCount = 0;
+            if (scopeProvider) {
+                for (const target of boxes) {
+                    const samResult = await scopeProvider.segmentWithBox(decoded.buffer, target);
+                    if (!samResult.success || !samResult.mask) {
+                        failures.push(`${label} SAM 圈定范围失败：${samResult.error || '未返回蒙版'}`);
+                        continue;
+                    }
+                    if (samResult.mask.length !== decoded.width * decoded.height) {
+                        failures.push(
+                            `${label} SAM 蒙版尺寸不符：期望 ${decoded.width * decoded.height}，实际 ${samResult.mask.length}`
+                        );
+                        continue;
+                    }
+                    const targetScopeCoverage = measureMaskTargetCoverage(
+                        samResult.mask,
+                        decoded.width,
+                        decoded.height,
+                        [target],
+                        BOX_SEGMENT_FOREGROUND_THRESHOLD
+                    );
+                    if (targetScopeCoverage.coveredCount !== 1) {
+                        failures.push(`${label} SAM 没有在当前目标框内产生前景`);
+                        continue;
+                    }
+                    if (!scopeMask) {
+                        scopeMask = Buffer.from(samResult.mask);
+                    } else {
+                        for (let p = 0; p < scopeMask.length; p++) {
+                            if (samResult.mask[p] > scopeMask[p]) scopeMask[p] = samResult.mask[p];
+                        }
+                    }
+                    scopedTargetCount++;
+                    scopeVerifiedTargetCount++;
+                    if (!usedModels.includes('mobile-sam')) usedModels.push('mobile-sam');
+                }
+            }
+
+            // 每个 SAM 调用只能证明自己对应的目标。不能先把成功蒙版 union，随后再用
+            // “每个框里碰巧有一点前景”把另一个失败目标补算成成功；相邻目标时该漏洞
+            // 会把一份不完整蒙版写进 Photoshop。Provider 已就绪却少任一目标时整区域失败。
+            if (scopeProviderReady && scopedTargetCount !== boxes.length) {
+                markRegionFailed(i);
+                continue;
+            }
+
+            // 无 SAM 时，单目标还可用 BiRefNet 连通域作可见降级；多个语义目标共用一张
+            // 显著性蒙版则无法证明逐目标归属，必须由上层拆成单框区域或显式失败。
+            if (!scopeProviderReady && (options.requireVerifiedSemanticScope === true || boxes.length > 1)) {
+                failures.push(
+                    `${label} 缺少逐目标范围分割能力，无法验证 ${boxes.length} 个语义目标都已处理`
+                );
+                markRegionFailed(i);
+                continue;
+            }
+
+            // 多个目标并起来的范围之间会留窄缝，先合上再与细节相交
+            if (scopeMask && boxes.length > 1) {
+                scopeMask = this.closeScopeGaps(scopeMask, decoded.width, decoded.height, SCOPE_GAP_CLOSE_PIXELS);
+            }
+
+            if (detailMask && scopeMask) {
+                // SAM 范围外扩几像素再取交集：它的边界本身就糙，不外扩会削掉
+                // BiRefNet 好不容易保住的边缘细节
+                const activeVariant = this.birefnetActiveTier || 'lite';
+                regionMask = this.intersectWithScope(
+                    detailMask, scopeMask, decoded.width, decoded.height,
+                    resolveScopeDilatePixels(decoded.width, decoded.height, activeVariant),
+                    activeVariant === 'matting' ? 'transition-only' : 'solid'
+                );
+            } else if (detailMask) {
+                // 没有 SAM 时退回连通性挑选：局部图里只有目标时够用，
+                // 目标与别的物体相连时会带出邻近物，属已知代价
+                const picked = this.keepTargetComponent(detailMask, decoded.width, decoded.height, box);
+                regionMask = picked.foreground > 0 ? picked.mask : null;
+            } else if (scopeMask) {
+                const picked = this.keepTargetComponent(scopeMask, decoded.width, decoded.height, box);
+                regionMask = picked.foreground > 0 ? picked.mask : null;
+            }
+
+            if (!regionMask) {
+                failures.push(`${label} 两种分割方式都没能产出蒙版`);
+                markRegionFailed(i);
+                continue;
+            }
+
+            const targetCoverage = measureMaskTargetCoverage(
+                regionMask,
+                decoded.width,
+                decoded.height,
+                boxes,
+                BOX_SEGMENT_FOREGROUND_THRESHOLD
+            );
+            const coveredTargetCount = targetCoverage.coveredCount;
+            if (coveredTargetCount !== boxes.length) {
+                failures.push(
+                    `${label} 只有 ${coveredTargetCount}/${boxes.length} 个目标框内存在前景`
+                    + `${targetCoverage.invalidIndexes.length > 0 ? `（无效框 ${targetCoverage.invalidIndexes.join('、')}）` : ''}`
+                );
+                markRegionFailed(i);
+                continue;
+            }
+
+            // 局部蒙版缩放到它在输出坐标系中的实际尺寸，再贴回
+            const target = {
+                x1: Math.max(0, Math.round(region.regionInOutput.x1)),
+                y1: Math.max(0, Math.round(region.regionInOutput.y1)),
+                x2: Math.min(outputWidth, Math.round(region.regionInOutput.x2)),
+                y2: Math.min(outputHeight, Math.round(region.regionInOutput.y2))
+            };
+            const targetW = target.x2 - target.x1;
+            const targetH = target.y2 - target.y1;
+            if (targetW <= 0 || targetH <= 0) {
+                failures.push(`${label} 贴回区域超出输出范围`);
+                markRegionFailed(i);
+                continue;
+            }
+
+            const resized = targetW === decoded.width && targetH === decoded.height
+                ? regionMask
+                : await this.sharp!(regionMask, {
+                    raw: { width: decoded.width, height: decoded.height, channels: 1 }
+                })
+                    .resize(targetW, targetH, { fit: 'fill', kernel: 'lanczos3' })
+                    // 单通道必须显式声明，否则 sharp 按 sRGB 输出 3 通道
+                    .toColourspace('b-w')
+                    .raw()
+                    .toBuffer();
+
+            let written = 0;
+            for (let y = 0; y < targetH; y++) {
+                const srcRow = y * targetW;
+                const dstRow = (target.y1 + y) * outputWidth + target.x1;
+                for (let x = 0; x < targetW; x++) {
+                    const value = resized[srcRow + x];
+                    if (value > fullMask[dstRow + x]) fullMask[dstRow + x] = value;
+                    if (value >= BOX_SEGMENT_FOREGROUND_THRESHOLD) written++;
+                }
+            }
+
+            if (written > 0) {
+                segmentedCount++;
+                segmentedTargetCount += coveredTargetCount;
+                const contact = this.measureBorderContact(regionMask, decoded.width, decoded.height);
+                this.debugLog(
+                    `[MattingService] ${label} 高分辨率分割：局部 ${decoded.width}x${decoded.height} → 输出 ${targetW}x${targetH}，前景 ${written}px`
+                );
+                // 贴边说明目标伸出了取像范围，这一侧会出现直线切口——必须让它可见
+                if (contact.max >= BORDER_CONTACT_WARN_RATIO) {
+                    clippedRegionIndexes.push(i);
+                    console.warn(
+                        `[MattingService] ${label} 目标伸出取像范围（${contact.sides}边连续贴边 `
+                        + `${(contact.max * 100).toFixed(0)}%），该侧选区会是直线，需要更大的取像外扩`
+                    );
+                }
+            } else {
+                failures.push(`${label} 分割结果没有前景像素`);
+                markRegionFailed(i);
             }
         }
 
-        if (labelIds.size > 0) {
-            for (let i = 0; i < output.length; i++) {
-                if (!labelIds.has(labels[i])) continue;
-                if (mask[i] > output[i]) output[i] = mask[i];
-            }
+        const targetCompleteness = buildTargetCompleteness();
+        if (!targetCompleteness.complete) {
+            return {
+                success: false,
+                error: `目标分割没有完整覆盖：区域 ${segmentedCount}/${regions.length}，目标 ${segmentedTargetCount}/${requestedTargetCount}。\n\n`
+                    + failures.map(item => `· ${item}`).join('\n'),
+                processingTime: Date.now() - startTime,
+                usedModel: usedModels.join('+') || undefined,
+                targetCompleteness
+            };
         }
 
-        let foregroundPixels = 0;
-        for (let i = 0; i < output.length; i++) {
-            if (output[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) foregroundPixels++;
-        }
-
-        return { maskBuffer: output, foregroundPixels };
-    }
-
-    /**
-     * 把蒙版缩放到 Photoshop 需要的输出尺寸并包装成标准结果。
-     */
-    async finalizeCandidateMask(
-        maskBuffer: Buffer,
-        maskWidth: number,
-        maskHeight: number,
-        options: {
-            originalWidth?: number;
-            originalHeight?: number;
-            binaryMaskOutput?: boolean;
-            usedModel: string;
-            analysis: string;
-            processingTime: number;
-        }
-    ): Promise<MattingResult> {
-        const targetWidth = Number(options.originalWidth) > 0
-            ? Math.round(Number(options.originalWidth))
-            : maskWidth;
-        const targetHeight = Number(options.originalHeight) > 0
-            ? Math.round(Number(options.originalHeight))
-            : maskHeight;
-
-        let finalMaskBuffer: Buffer = maskBuffer;
-        if (targetWidth !== maskWidth || targetHeight !== maskHeight) {
-            finalMaskBuffer = await this.sharp!(maskBuffer, {
-                raw: { width: maskWidth, height: maskHeight, channels: 1 }
-            })
-                .resize(targetWidth, targetHeight, { fit: 'fill', kernel: 'lanczos3' })
-                .raw()
-                .toBuffer();
-        }
+        sendProgress(95, 'complete', '精细分割完成');
 
         const shouldReturnBinaryMask = options.binaryMaskOutput === true;
         const maskBase64 = shouldReturnBinaryMask
             ? undefined
-            : `RAW_MASK:${targetWidth}:${targetHeight}:${finalMaskBuffer.toString('base64')}`;
+            : `RAW_MASK:${outputWidth}:${outputHeight}:${fullMask.toString('base64')}`;
+
+        const analysisParts = [
+            `高分辨率分割：${segmentedCount}/${regions.length} 个目标`,
+            `模型：${usedModels.join('+') || '无'}`
+        ];
+        if (clippedRegionIndexes.length > 0) {
+            analysisParts.push(`⚠ ${clippedRegionIndexes.length} 个目标伸出取像范围，边缘存在直线切口`);
+        }
+        if (warnings.length > 0) analysisParts.push(`质量提示：${warnings.join('；')}`);
 
         return {
             success: true,
             maskImage: maskBase64,
             mask: maskBase64,
-            maskBuffer: shouldReturnBinaryMask ? finalMaskBuffer : undefined,
-            maskWidth: targetWidth,
-            maskHeight: targetHeight,
-            processingTime: options.processingTime,
-            usedModel: options.usedModel,
-            analysis: options.analysis,
-            pipeline: { mode: 'onnx' }
+            maskBuffer: shouldReturnBinaryMask ? fullMask : undefined,
+            maskWidth: outputWidth,
+            maskHeight: outputHeight,
+            processingTime: Date.now() - startTime,
+            usedModel: usedModels.join('+'),
+            analysis: analysisParts.join(' | '),
+            pipeline: { mode: 'onnx' },
+            targetCompleteness,
+            clippedRegionIndexes
         };
     }
 
@@ -2421,10 +2780,10 @@ export class MattingService {
             }
         }
 
-        if (segmentedBoxCount === 0) {
+        if (segmentedBoxCount !== clampedBoxes.length) {
             return {
                 success: false,
-                error: `在定位到的 ${clampedBoxes.length} 个目标区域内都没能分割出内容。\n\n`
+                error: `框内分割没有完整覆盖全部目标：${segmentedBoxCount}/${clampedBoxes.length}。\n\n`
                     + failures.map(item => `· ${item}`).join('\n'),
                 processingTime: Date.now() - startTime,
                 usedModel: usedModels.join('+') || undefined
@@ -2443,6 +2802,10 @@ export class MattingService {
                 raw: { width: imageWidth, height: imageHeight, channels: 1 }
             })
                 .resize(targetWidth, targetHeight, { fit: 'fill', kernel: 'lanczos3' })
+                // 必须显式声明单通道：sharp 从 raw 灰度输入 resize 后默认按 sRGB 输出，
+                // .raw() 会吐出 3 通道，字节数刚好是期望的 3 倍
+                // （真机 2026-08-27：5322x7982 图层收到 127440612 bytes，期望 42480204）。
+                .toColourspace('b-w')
                 .raw()
                 .toBuffer();
         }
@@ -2458,10 +2821,6 @@ export class MattingService {
             `框内分割：${segmentedBoxCount}/${clampedBoxes.length} 个目标区域成功`,
             `分割模型：${usedModels.join('+') || '无'}`
         ];
-        if (failures.length > 0) {
-            analysisParts.push(`未完成：${failures.join('；')}`);
-        }
-
         return {
             success: true,
             maskImage: maskBase64,
@@ -2534,6 +2893,318 @@ export class MattingService {
             offsetX: left,
             offsetY: top
         };
+    }
+
+    /**
+     * 检查蒙版是否贴着局部图的四条边。
+     *
+     * 贴边意味着目标延伸到了取像范围之外——那部分像素根本没被取到，
+     * 分割结果必然在此处形成直线切口。这是"选区出现矩形直边"的真正来源，
+     * 比"分割结果被硬裁回框"更早一步，连通域分析救不回来。
+     */
+    private measureBorderContact(
+        mask: Buffer,
+        width: number,
+        height: number
+    ): { max: number; sides: string } {
+        // 用"最长连续贴边段"而不是"贴边像素总数"：
+        // 目标恰好挨着取像边缘时会零星贴边，那不是被切；
+        // 真被切断时，切口是一条连续的长直线。
+        const longestRun = (length: number, at: (i: number) => number): number => {
+            let best = 0;
+            let run = 0;
+            for (let i = 0; i < length; i++) {
+                if (mask[at(i)] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) {
+                    run++;
+                    if (run > best) best = run;
+                } else {
+                    run = 0;
+                }
+            }
+            return best;
+        };
+
+        const top = longestRun(width, i => i) / Math.max(1, width);
+        const bottom = longestRun(width, i => (height - 1) * width + i) / Math.max(1, width);
+        const left = longestRun(height, i => i * width) / Math.max(1, height);
+        const right = longestRun(height, i => i * width + width - 1) / Math.max(1, height);
+
+        const sides = [
+            top >= BORDER_CONTACT_WARN_RATIO ? '上' : '',
+            bottom >= BORDER_CONTACT_WARN_RATIO ? '下' : '',
+            left >= BORDER_CONTACT_WARN_RATIO ? '左' : '',
+            right >= BORDER_CONTACT_WARN_RATIO ? '右' : ''
+        ].filter(Boolean).join('');
+
+        return { max: Math.max(top, bottom, left, right), sides };
+    }
+
+    /**
+     * 用局部图作引导，把蒙版边缘吸附回原图的真实边缘。
+     *
+     * 尺寸不符或内存预算不足时返回明确原因，不抛出难以归因的通用异常，也不把
+     * 未经引导精修的蒙版伪装成已经精修。调用方会把这次质量降级写入结果分析。
+     */
+    private async refineDetailWithGuide(
+        detail: Buffer,
+        imageBuffer: Buffer,
+        width: number,
+        height: number,
+        label: string
+    ): Promise<{ mask: Buffer | null; reason?: string }> {
+        if (!this.sharp) return { mask: null, reason: '图像解码依赖未就绪' };
+
+        const plan = planGuidedFilterExecution(width, height);
+        if (plan.status !== 'ready') {
+            console.warn(
+                `[MattingService] ${label} 引导精修内存预算不足：`
+                + `至少 ${plan.estimatedPeakBytes} bytes，预算 ${plan.memoryBudgetBytes} bytes`
+            );
+            return { mask: null, reason: '当前图像尺寸超过引导精修内存预算' };
+        }
+
+        const guide = await this.sharp(imageBuffer)
+            .toColourspace('b-w')
+            .raw()
+            .toBuffer();
+        if (guide.length !== width * height) {
+            console.warn(
+                `[MattingService] ${label} 引导图尺寸不符：期望 ${width * height}，实际 ${guide.length}`
+            );
+            return { mask: null, reason: '引导图灰度数据尺寸不符' };
+        }
+
+        const started = Date.now();
+        const refined = refineMaskWithGuidedFilter(guide, detail, width, height);
+        this.debugLog(
+            `[MattingService] ${label} 引导精修完成（${width}x${height}，${Date.now() - started}ms）`
+        );
+        return { mask: Buffer.from(refined) };
+    }
+
+    /**
+     * 合上范围蒙版里的窄缝（形态学闭运算：先膨胀后腐蚀）。
+     *
+     * 多个目标各求一次 SAM 范围再并起来时，两块之间常留一条几像素宽的缝——
+     * SAM 的边界只有 256 网格精度，两个物体的范围不会严丝合缝地接上。
+     * 细节蒙版在交界处本是连续的，却被这条缝挡掉，表现为选区里的残留空隙
+     * （真机：共用局部图后仍有 1.2% 的交界像素上下是前景、自己是空的）。
+     *
+     * 只作用于 scope（范围指示），不碰 detail，所以不会牺牲边缘精度。
+     */
+    private closeScopeGaps(scope: Buffer, width: number, height: number, radius: number): Buffer {
+        if (radius <= 0) return scope;
+        const total = width * height;
+
+        // 到最近前景的曼哈顿距离（两趟扫描）
+        const distance = new Int32Array(total);
+        const FAR = 1 << 20;
+        for (let i = 0; i < total; i++) {
+            distance[i] = scope[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD ? 0 : FAR;
+        }
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const i = y * width + x;
+                if (distance[i] === 0) continue;
+                if (x > 0) distance[i] = Math.min(distance[i], distance[i - 1] + 1);
+                if (y > 0) distance[i] = Math.min(distance[i], distance[i - width] + 1);
+            }
+        }
+        for (let y = height - 1; y >= 0; y--) {
+            for (let x = width - 1; x >= 0; x--) {
+                const i = y * width + x;
+                if (distance[i] === 0) continue;
+                if (x < width - 1) distance[i] = Math.min(distance[i], distance[i + 1] + 1);
+                if (y < height - 1) distance[i] = Math.min(distance[i], distance[i + width] + 1);
+            }
+        }
+
+        // 膨胀：距离 <= radius 的背景并入前景
+        const dilated = new Uint8Array(total);
+        for (let i = 0; i < total; i++) dilated[i] = distance[i] <= radius ? 1 : 0;
+
+        // 腐蚀：再算一次到"膨胀后背景"的距离，距离 <= radius 的退回背景
+        const back = new Int32Array(total);
+        for (let i = 0; i < total; i++) back[i] = dilated[i] === 0 ? 0 : FAR;
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const i = y * width + x;
+                if (back[i] === 0) continue;
+                if (x > 0) back[i] = Math.min(back[i], back[i - 1] + 1);
+                if (y > 0) back[i] = Math.min(back[i], back[i - width] + 1);
+                // 图像边界当作背景，避免整块前景贴边时被误腐蚀
+                if (x === 0 || y === 0) back[i] = Math.min(back[i], 1);
+            }
+        }
+        for (let y = height - 1; y >= 0; y--) {
+            for (let x = width - 1; x >= 0; x--) {
+                const i = y * width + x;
+                if (back[i] === 0) continue;
+                if (x < width - 1) back[i] = Math.min(back[i], back[i + 1] + 1);
+                if (y < height - 1) back[i] = Math.min(back[i], back[i + width] + 1);
+                if (x === width - 1 || y === height - 1) back[i] = Math.min(back[i], 1);
+            }
+        }
+
+        const output = Buffer.alloc(total, 0);
+        for (let i = 0; i < total; i++) {
+            if (dilated[i] === 1 && back[i] > radius) {
+                // 原本就是前景的保留原灰度，填缝补上的给满值
+                output[i] = scope[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD ? scope[i] : 255;
+            }
+        }
+        return output;
+    }
+
+    /**
+     * 用范围蒙版裁定细节蒙版：保留 detail 的灰度（边缘细节），只在 scope 覆盖处生效。
+     *
+     * scope 先做膨胀：它来自 SAM，边界只有 256 网格精度，直接相交会把 detail 的
+     * 精细边缘削掉一圈——那正是我们要保住的东西。
+     */
+    private intersectWithScope(
+        detail: Buffer,
+        scope: Buffer,
+        width: number,
+        height: number,
+        dilatePixels: number,
+        dilateMode: 'solid' | 'transition-only' = 'solid'
+    ): Buffer {
+        const total = width * height;
+        const radiusPixels = Math.max(0, Math.round(dilatePixels));
+
+        // 不外扩时直接按范围取交集，省掉两趟距离扫描
+        if (radiusPixels === 0) {
+            const direct = Buffer.alloc(total, 0);
+            for (let i = 0; i < total; i++) {
+                if (scope[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) direct[i] = detail[i];
+            }
+            return direct;
+        }
+
+        // 先二值化 scope，再按曼哈顿距离做一次廉价膨胀（两趟扫描）
+        const near = new Uint8Array(total);
+        for (let i = 0; i < total; i++) {
+            near[i] = scope[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD ? 0 : 255;
+        }
+        const radius = radiusPixels;
+        if (radius > 0) {
+            // 正向扫描
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const i = y * width + x;
+                    if (near[i] === 0) continue;
+                    let best = near[i];
+                    if (x > 0) best = Math.min(best, near[i - 1] + 1);
+                    if (y > 0) best = Math.min(best, near[i - width] + 1);
+                    near[i] = Math.min(255, best);
+                }
+            }
+            // 反向扫描
+            for (let y = height - 1; y >= 0; y--) {
+                for (let x = width - 1; x >= 0; x--) {
+                    const i = y * width + x;
+                    if (near[i] === 0) continue;
+                    let best = near[i];
+                    if (x < width - 1) best = Math.min(best, near[i + 1] + 1);
+                    if (y < height - 1) best = Math.min(best, near[i + width] + 1);
+                    near[i] = Math.min(255, best);
+                }
+            }
+        }
+
+        const output = Buffer.alloc(total, 0);
+        const transitionOnly = dilateMode === 'transition-only';
+        for (let i = 0; i < total; i++) {
+            // 范围内：原样保留，边缘完全由细节蒙版决定
+            if (near[i] === 0) {
+                output[i] = detail[i];
+                continue;
+            }
+            if (near[i] > radius) continue;
+            // 外扩带：transition-only 时只捞半透明过渡像素。
+            // 判据是"范围外的实心前景必定属于邻近物（腿、裤脚），
+            // 范围外的半透明必定是目标自己的边缘过渡带"。
+            if (transitionOnly && detail[i] >= SOLID_ALPHA_THRESHOLD) continue;
+            output[i] = detail[i];
+        }
+        return output;
+    }
+
+    /**
+     * 从分割结果里保留"目标本身"，允许它超出目标框。
+     *
+     * 为什么不能按框硬裁：框外扩 padding 正是为了容纳检测框的误差，裁回原框等于白扩。
+     * 真机 2026-08-27：抠鞋子时鞋面比检测框高出一截，硬裁后选区在那里出现一条水平直角，
+     * 看起来像把图片剪了一刀。
+     *
+     * 改按连通性判断：与目标框重叠最多的那个连通域整体保留（哪怕伸出框外），
+     * 与框无重叠的独立物体（邻近的袜子、道具）排除。
+     */
+    private keepTargetComponent(
+        mask: Buffer,
+        width: number,
+        height: number,
+        box: { x1: number; y1: number; x2: number; y2: number }
+    ): { mask: Buffer; foreground: number } {
+        const { regions, labels } = extractMaskRegionsWithLabels(mask, width, height, {
+            foregroundThreshold: BOX_SEGMENT_FOREGROUND_THRESHOLD,
+            // 这里的候选是"目标的组成部分"，阈值要比整图定位宽松，
+            // 否则鞋带、装饰这类小部件会被当碎片丢掉
+            minAreaRatio: 0.0005,
+            maxRegions: 24
+        });
+
+        if (regions.length === 0) {
+            return { mask: Buffer.alloc(width * height, 0), foreground: 0 };
+        }
+
+        // 统计每个连通域落在目标框内的像素数
+        const overlap = new Array(regions.length).fill(0);
+        const clipX1 = Math.max(0, Math.floor(box.x1));
+        const clipY1 = Math.max(0, Math.floor(box.y1));
+        const clipX2 = Math.min(width, Math.ceil(box.x2));
+        const clipY2 = Math.min(height, Math.ceil(box.y2));
+
+        for (let y = clipY1; y < clipY2; y++) {
+            const row = y * width;
+            for (let x = clipX1; x < clipX2; x++) {
+                const label = labels[row + x];
+                if (label > 0) overlap[label - 1]++;
+            }
+        }
+
+        let bestIndex = -1;
+        let bestOverlap = 0;
+        for (let i = 0; i < regions.length; i++) {
+            if (overlap[i] > bestOverlap) {
+                bestOverlap = overlap[i];
+                bestIndex = i;
+            }
+        }
+
+        if (bestIndex < 0) {
+            return { mask: Buffer.alloc(width * height, 0), foreground: 0 };
+        }
+
+        // 主体之外，把同样与框高度重叠的部件一并保留（例如鞋带与鞋身在蒙版上断开）
+        const bestLabel = bestIndex + 1;
+        const keep = new Set<number>([bestLabel]);
+        for (let i = 0; i < regions.length; i++) {
+            if (i === bestIndex) continue;
+            const ratio = regions[i].area > 0 ? overlap[i] / regions[i].area : 0;
+            if (ratio >= TARGET_COMPONENT_KEEP_RATIO) keep.add(i + 1);
+        }
+
+        const output = Buffer.alloc(width * height, 0);
+        let foreground = 0;
+        for (let i = 0; i < output.length; i++) {
+            if (!keep.has(labels[i])) continue;
+            output[i] = mask[i];
+            if (mask[i] >= BOX_SEGMENT_FOREGROUND_THRESHOLD) foreground++;
+        }
+
+        return { mask: output, foreground };
     }
 
     /**
@@ -2748,10 +3419,14 @@ export class MattingService {
         birefnet: { exists: boolean; loaded: boolean; path: string; size: string };
         yoloWorld: { exists: boolean; loaded: boolean; path: string; size: string };
     } {
-        const birefnetPath = path.join(this.modelsDir, 'birefnet', 'birefnet.onnx');
+        const resolvedBiRefNet = this.resolveBiRefNetModelPath(
+            this.resolveBiRefNetTier(this.config.defaultQuality)
+        );
+        const birefnetPath = resolvedBiRefNet?.path
+            || path.join(this.modelsDir, 'birefnet', 'birefnet.onnx');
         const yoloWorldPath = path.join(this.modelsDir, 'yolo-world', 'yolov8s-worldv2.onnx');
         
-        const birefnetExists = fs.existsSync(birefnetPath);
+        const birefnetExists = Boolean(resolvedBiRefNet);
         const yoloWorldExists = fs.existsSync(yoloWorldPath);
         
         // 获取文件大小
@@ -2795,8 +3470,13 @@ export class MattingService {
     async reinitializePythonBackend(): Promise<boolean> {
         console.log('[MattingService] 初始化本地 ONNX 模型...');
         
-        // 加载 BiRefNet（必需）
-        const birefnetLoaded = await this.loadBiRefNetModel();
+        // 加载 BiRefNet（必需）。按默认质量档加载，不要用 loadBiRefNetModel 的
+        // 'full' 默认值——那会在启动时把 928MB 的 general 权重灌进 DML 占约 5GB 显存，
+        // 而默认档位是 balanced，这个会话整轮都用不上（真机日志实测：探测已加载 lite，
+        // 这里又加载一次 full，两个会话同时占着显存）。
+        const birefnetLoaded = await this.loadBiRefNetModel(
+            this.resolveBiRefNetTier(this.config.defaultQuality)
+        );
         
         // 尝试加载 YOLO-World（可选）
         const yoloLoaded = await this.loadYoloWorldModel();
@@ -2822,9 +3502,7 @@ export class MattingService {
         
         // 重置状态
         this.initialized = false;
-        this.birefnetSession = null;
-        this.birefnetSessionByTier = { full: null, lite: null };
-        this.birefnetActiveTier = null;
+        this.releaseBiRefNetSessions();
         this.yoloWorldSession = null;
 
         // 重新初始化
@@ -2865,9 +3543,11 @@ export class MattingService {
      */
     async shutdown(): Promise<void> {
         console.log('[MattingService] 关闭智能分割服务');
-        this.birefnetSession = null;
-        this.birefnetSessionByTier = { full: null, lite: null };
-        this.birefnetActiveTier = null;
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+            this.idleTimer = null;
+        }
+        this.releaseBiRefNetSessions();
         this.yoloWorldSession = null;
         this.initialized = false;
     }

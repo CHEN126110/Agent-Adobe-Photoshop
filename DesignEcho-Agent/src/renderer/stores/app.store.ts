@@ -73,7 +73,7 @@ import {
 import { SKILL_REGISTRY } from '../../shared/skills/skill-declarations';
 import type { DesignDimensionSpec } from '../../shared/design-dimension-spec';
 
-// 抠图使用本地 ONNX 模型（BiRefNet + YOLO-World）
+// 历史分割偏好 Store；当前语义执行链由 Runtime 的 GroundingDINO + MobileSAM 契约决定。
 
 // 思维步骤类型（与 ThinkingProcess 组件同步）
 interface ThinkingStepData {

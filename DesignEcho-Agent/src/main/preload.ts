@@ -811,7 +811,7 @@ const api = {
         ipcRenderer.invoke('python:status'),
 
     // ===== 智能分割模型管理 =====
-    // 获取分割模型状态（BiRefNet + YOLO-World）
+    // 获取本地图像分割模型状态（实际语义链由 GroundingDINO + MobileSAM + 可选 BiRefNet 组成）
     getSegmentModelsStatus: () =>
         ipcRenderer.invoke('matting:getModelsStatus'),
     

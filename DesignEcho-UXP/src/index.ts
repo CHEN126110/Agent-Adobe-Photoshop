@@ -774,18 +774,16 @@ async function handleExecuteMatting(payload: any) {
         return;
     }
 
-    // 没填抠取目标 = 抠画面主体，这正是 Photoshop「选择主体」做的事。
-    // 直接在 PS 内一步完成：不导出图像、不走 WebSocket、不跑本地 ONNX，
-    // 耗时从十几秒降到一秒级，边缘质量由 Adobe 自己的模型保证。
+    // 没填目标词就是「选择画面主体」：复用 Photoshop 已有原子能力，避免不必要的
+    // 导出、WebSocket 传输和本地模型推理。填了目标词才进入开放词汇语义抠图。
     if (!String(target || '').trim()) {
         await executeNativeSelectSubject(activeLayers, sampleAllLayers, outputFormat);
         return;
     }
 
-    // 填了目标（语义抠图）才需要 Agent：判断"哪个是袜子"必须由模型来做
     if (!wsClient?.isConnected()) {
         sendToWebView('mattingResult', { success: false, error: '未连接到 Agent' });
-        sendToWebView('toast', { message: '按目标抠图需要连接 Agent；清空"抠取目标"可直接抠主体', type: 'error' });
+        sendToWebView('toast', { message: '按目标抠图需要连接 Agent；清空“抠取目标”可直接选择画面主体', type: 'error' });
         return;
     }
     
@@ -813,7 +811,17 @@ async function handleExecuteMatting(payload: any) {
             
             try {
                 // 调用单图层抠图逻辑（固定使用 Python 后端）
-                await handleRemoveBackgroundForLayer(layerId, target, sampleAllLayers, outputFormat);
+                // 默认走 balanced（分割权重，锐利边缘）。
+                //
+                // 不默认用 quality/matting：matting 权重建模的是真实半透明，
+                // 在光滑边缘的商品图（袜子、鞋、包）上并不存在这种半透明，
+                // 多出来的只是被展宽的过渡带——实测边界 3~8px 内的半透明像素
+                // 从 8 个涨到 444 个，落到 PS 选区里就是羽化感，正是要避免的。
+                // matting 只对毛绒、针织、发丝这类真有半透明边缘的素材有收益，
+                // 应由用户按素材显式选择，不能一刀切。
+                await handleRemoveBackgroundForLayer(
+                    layerId, target, sampleAllLayers, outputFormat, 'balanced'
+                );
                 successCount++;
             } catch (error: any) {
                 if (firstFailureMessage == null && error?.message) {
@@ -825,9 +833,17 @@ async function handleExecuteMatting(payload: any) {
         
         // 只发一条结果消息：面板据此弹一次提示并展示详情。
         // 这里再单独发 toast 会和面板的提示重复（真机上表现为两条红条叠在一起遮住面板）。
+        const complete = successCount === totalLayers;
+        let resultError: string | undefined;
+        if (!complete && successCount > 0) {
+            resultError = `只完成 ${successCount}/${totalLayers} 个图层，其余图层没有修改。${firstFailureMessage ? ` ${firstFailureMessage}` : ''}`;
+        } else if (!complete) {
+            resultError = firstFailureMessage || '抠图失败';
+        }
         sendToWebView('mattingResult', {
-            success: successCount > 0,
-            error: successCount > 0 ? undefined : firstFailureMessage || '抠图失败',
+            success: complete,
+            partial: successCount > 0 && !complete,
+            error: resultError,
             successCount,
             totalLayers,
             outputFormat
@@ -843,14 +859,10 @@ async function handleExecuteMatting(payload: any) {
 }
 
 /**
- * Photoshop 原生「选择主体」抠图
+ * Photoshop 原生「选择主体」抠图。
  *
- * 全程在 Photoshop 内完成：选中图层 → autoCutout → 选区或图层蒙版。
- * 不导出像素、不经 WebSocket、不跑本地 ONNX——这三步正是原链路十几秒开销的来源。
- *
- * 命令 ID 是 autoCutout 而非 selectSubject：发 selectSubject 时 PS 解析不出命令名，
- * 会弹出「命令"<未知的>"当前不可用」模态框并阻塞 UXP 消息循环
- * （真机 2026-08-06，get-subject-bounds.ts 有同一结论的记录）。
+ * 这是无目标词时的高效 Host Provider：不导出像素、不经 WebSocket、不加载本地 ONNX。
+ * 命令必须使用 autoCutout；selectSubject 会触发不可用命令弹窗并阻塞 UXP 消息循环。
  */
 async function executeNativeSelectSubject(
     activeLayers: any[],
@@ -858,8 +870,8 @@ async function executeNativeSelectSubject(
     outputFormat: 'selection' | 'mask'
 ) {
     const { action, core } = require('photoshop');
-    const layerIds = activeLayers.map((l: any) => l.id);
-    const layerNames = activeLayers.map((l: any) => l.name);
+    const layerIds = activeLayers.map((layer: any) => layer.id);
+    const layerNames = activeLayers.map((layer: any) => layer.name);
     const totalLayers = layerIds.length;
 
     console.log('[DesignEcho] 使用 Photoshop 原生「选择主体」:', layerNames.join(', '));
@@ -941,15 +953,22 @@ async function executeNativeSelectSubject(
         }
     }
 
+    const complete = successCount === totalLayers;
+    let resultError: string | undefined;
+    if (!complete && successCount > 0) {
+        resultError = `只完成 ${successCount}/${totalLayers} 个图层，其余图层没有修改。${firstFailureMessage ? ` ${firstFailureMessage}` : ''}`;
+    } else if (!complete) {
+        resultError = (firstFailureMessage || '选择主体失败')
+            + '\n\n可以改用“使用选区”模式手动框选，或在“抠取目标”里指定要抠的物体。';
+    }
     sendToWebView('mattingResult', {
-        success: successCount > 0,
-        error: successCount > 0
-            ? undefined
-            : (firstFailureMessage || '选择主体失败')
-                + '\n\n可以改用"使用选区"模式手动框选，或在"抠取目标"里指定要抠的物体。',
+        success: complete,
+        partial: successCount > 0 && !complete,
+        error: resultError,
         successCount,
         totalLayers,
-        outputFormat
+        outputFormat,
+        provider: 'photoshop-native-auto-cutout'
     });
 }
 
@@ -964,7 +983,8 @@ async function handleRemoveBackgroundForLayer(
     layerId: number, 
     target: string, 
     sampleAllLayers: boolean = false,
-    outputFormat: 'selection' | 'mask' = 'mask'
+    outputFormat: 'selection' | 'mask' = 'mask',
+    quality: 'fast' | 'balanced' | 'quality' = 'balanced'
 ) {
     console.log(`[DesignEcho] ✂ 智能分割图层 ${layerId}, 取样全部=${sampleAllLayers}, 输出=${outputFormat}`);
     
@@ -996,7 +1016,7 @@ async function handleRemoveBackgroundForLayer(
         layerId,  // 显式传目标图层，批量循环中不依赖 PS 选中状态
         useMask: true,
         outputFormat: outputFormat,  // 'selection' 或 'mask'
-        quality: 'balanced',
+        quality,
         targetPrompt: target || '',
         sampleAllLayers: sampleAllLayers  // 是否对所有图层取样
     }, MATTING_TIMEOUT);

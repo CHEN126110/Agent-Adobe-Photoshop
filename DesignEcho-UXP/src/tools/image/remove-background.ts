@@ -12,6 +12,8 @@ import { Tool, ToolSchema } from '../types';
 import { BinaryMessageType } from '../../core/binary-protocol';
 import { BinaryMaskStore } from '../../core/binary-mask-store';
 import { arrayBufferFromBytes, assertImageBytesSafeForPhotoshop } from '../../core/image-safety';
+import { readActiveHistoryStateRef } from '../../core/photoshop-history-state-ref';
+import { checkPhotoshopTargetGuard } from '../../core/photoshop-target-guard';
 import {
     resizeGrayscaleMaskBilinear,
     resolveMattingMaskApplyPlan
@@ -20,6 +22,7 @@ import {
 const { app, core, action, imaging } = require('photoshop');
 
 function findLayerById(container: any, id: number): any {
+    if (!container) return null;
     for (const layer of container.layers || []) {
         if (layer.id === id) return layer;
         if (layer.layers) {
@@ -49,8 +52,273 @@ interface RemoveBackgroundParams {
     edgeRefine?: 'refine-none' | 'refine-light' | 'refine-standard' | 'refine-hair';
     /** 导出到模型前的最长边像素，默认动态选择 */
     maxSize?: number;
+    /**
+     * 只导出图层的这一块区域（文档坐标）。
+     * 语义抠图用它做二次高分辨率取像：整图压到 1024 时目标可能只剩一百多像素，
+     * 边缘精度无从谈起；按目标框单独取像能把有效分辨率提高数倍。
+     */
+    sourceRegion?: { left: number; top: number; right: number; bottom: number };
+    /** 首次导出签发的目标身份；区域重取必须原样带回并在读取前复核。 */
+    expectedTargetIdentity?: MattingTargetIdentity;
     /** 对所有图层取样：导出目标图层边界内的文档复合图像（含背景上下文），蒙版仍应用到目标图层 */
     sampleAllLayers?: boolean;
+}
+
+export interface MattingSourceBounds {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+}
+
+export interface MattingTargetIdentity {
+    schema: 'matting-target-identity/v1';
+    documentId: number;
+    historyStateId: number;
+    layerId: number;
+    layerName: string;
+    layerKind: string;
+    layerBounds: MattingSourceBounds;
+    isBackgroundLayer: boolean;
+}
+
+export interface MattingTargetIdentityValidation {
+    valid: boolean;
+    code?: string;
+    actual?: MattingTargetIdentity;
+}
+
+export type MattingSourceExportMode =
+    | 'layer-full'
+    | 'layer-copy'
+    | 'composite-layer-bounds'
+    | 'layer-region'
+    | 'composite-region';
+
+export type MattingOutputFormat = 'mask' | 'selection' | 'channel' | 'layer';
+
+export function isMattingOutputFormat(value: unknown): value is MattingOutputFormat {
+    return value === 'mask' || value === 'selection' || value === 'channel' || value === 'layer';
+}
+
+export interface SemanticMattingApplyContract {
+    schema: 'semantic-matting-target-lifecycle/v2';
+    requestedTargetCount: number;
+    unresolvedTargetCount: number;
+    omittedTargetCount: number;
+    detectedTargetCount: number;
+    detectedRegionCount: number;
+    segmentationRequestedRegionCount: number;
+    segmentationCompletedRegionCount: number;
+    segmentationRequestedTargetCount: number;
+    segmentationCompletedTargetCount: number;
+    segmentationComplete: boolean;
+    appliedRegionCount: number;
+}
+
+export interface MattingMutationReceipt {
+    schema: 'matting-mutation-receipt/v1';
+    documentId: number;
+    requestedLayerId: number;
+    actualLayerId: number | null;
+    beforeHistoryStateId: number;
+    afterHistoryStateId: number | null;
+    historyChanged: boolean | null;
+    historyChangeRequired: boolean;
+    outputFormat: MattingOutputFormat;
+    maskWidth: number;
+    maskHeight: number;
+    outputReadback: 'verified' | 'missing' | 'unknown';
+    outputReadbackKind: 'user-mask-enabled' | 'selection-bounds' | 'layer-exists' | 'alpha-channel-name';
+    outputExists: boolean | null;
+    selectionBounds?: MattingSourceBounds;
+    channelName?: string;
+    channelId?: number;
+    complete: boolean;
+}
+
+function toFiniteCoordinate(value: unknown): number {
+    const candidate = value && typeof value === 'object' && '_value' in value
+        ? (value as { _value?: unknown })._value
+        : value;
+    return Number(candidate);
+}
+
+function normalizeSourceBounds(value: any): MattingSourceBounds | null {
+    if (!value) return null;
+    const left = toFiniteCoordinate(value.left);
+    const top = toFiniteCoordinate(value.top);
+    const width = toFiniteCoordinate(value.width);
+    const height = toFiniteCoordinate(value.height);
+    const right = value.right !== undefined
+        ? toFiniteCoordinate(value.right)
+        : left + width;
+    const bottom = value.bottom !== undefined
+        ? toFiniteCoordinate(value.bottom)
+        : top + height;
+    if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) {
+        return null;
+    }
+    return { left, top, right, bottom };
+}
+
+function readPositivePhotoshopId(value: unknown): number | null {
+    const numeric = Number(value);
+    return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+export function readMattingTargetIdentity(document: any, layer: any): MattingTargetIdentity | null {
+    const historyStateRef = readActiveHistoryStateRef(document);
+    const layerId = readPositivePhotoshopId(layer?.id);
+    const layerName = typeof layer?.name === 'string' ? layer.name : '';
+    const rawLayerKind = layer?.kind;
+    let layerKind = '';
+    if (typeof rawLayerKind === 'string') {
+        layerKind = rawLayerKind;
+    } else if (Number.isFinite(Number(rawLayerKind))) {
+        layerKind = String(rawLayerKind);
+    }
+    const layerBounds = normalizeSourceBounds(layer?.bounds);
+    if (!historyStateRef || layerId === null || !layerName || !layerKind || !layerBounds) {
+        return null;
+    }
+    return {
+        schema: 'matting-target-identity/v1',
+        documentId: historyStateRef.documentId,
+        historyStateId: historyStateRef.historyStateId,
+        layerId,
+        layerName,
+        layerKind,
+        layerBounds,
+        isBackgroundLayer: layer?.isBackgroundLayer === true
+    };
+}
+
+export function validateMattingTargetIdentity(
+    expected: unknown,
+    document: any
+): MattingTargetIdentityValidation {
+    if (!expected || typeof expected !== 'object') {
+        return { valid: false, code: 'target_identity_missing' };
+    }
+    const record = expected as Partial<MattingTargetIdentity>;
+    if (record.schema !== 'matting-target-identity/v1') {
+        return { valid: false, code: 'target_identity_schema_invalid' };
+    }
+    const expectedLayerId = readPositivePhotoshopId(record.layerId);
+    if (expectedLayerId === null) {
+        return { valid: false, code: 'target_layer_id_invalid' };
+    }
+    const layer = findLayerById(document, expectedLayerId);
+    const actual = readMattingTargetIdentity(document, layer);
+    if (!actual) {
+        return { valid: false, code: 'target_identity_unavailable' };
+    }
+    const expectedBounds = normalizeSourceBounds(record.layerBounds);
+    if (!expectedBounds) {
+        return { valid: false, code: 'target_layer_bounds_invalid', actual };
+    }
+    const sameBounds = Math.abs(actual.layerBounds.left - expectedBounds.left) <= 0.5
+        && Math.abs(actual.layerBounds.top - expectedBounds.top) <= 0.5
+        && Math.abs(actual.layerBounds.right - expectedBounds.right) <= 0.5
+        && Math.abs(actual.layerBounds.bottom - expectedBounds.bottom) <= 0.5;
+    if (actual.documentId !== Number(record.documentId)) {
+        return { valid: false, code: 'target_document_changed', actual };
+    }
+    if (actual.historyStateId !== Number(record.historyStateId)) {
+        return { valid: false, code: 'target_history_changed', actual };
+    }
+    if (actual.layerId !== expectedLayerId
+        || actual.layerName !== record.layerName
+        || actual.layerKind !== record.layerKind
+        || actual.isBackgroundLayer !== (record.isBackgroundLayer === true)
+        || !sameBounds) {
+        return { valid: false, code: 'target_layer_identity_changed', actual };
+    }
+    return { valid: true, actual };
+}
+
+export function validateSemanticMattingApplyContract(
+    value: unknown
+): value is SemanticMattingApplyContract {
+    if (!value || typeof value !== 'object') return false;
+    const contract = value as Partial<SemanticMattingApplyContract>;
+    if (contract.schema !== 'semantic-matting-target-lifecycle/v2') return false;
+    const counts = [
+        contract.requestedTargetCount,
+        contract.unresolvedTargetCount,
+        contract.omittedTargetCount,
+        contract.detectedTargetCount,
+        contract.detectedRegionCount,
+        contract.segmentationRequestedRegionCount,
+        contract.segmentationCompletedRegionCount,
+        contract.segmentationRequestedTargetCount,
+        contract.segmentationCompletedTargetCount,
+        contract.appliedRegionCount
+    ];
+    if (!counts.every(count => Number.isInteger(count) && Number(count) >= 0)) return false;
+    return Number(contract.requestedTargetCount) > 0
+        && contract.unresolvedTargetCount === 0
+        && contract.omittedTargetCount === 0
+        && contract.detectedTargetCount === contract.requestedTargetCount
+        && Number(contract.detectedRegionCount) > 0
+        && contract.segmentationRequestedRegionCount === contract.detectedRegionCount
+        && contract.segmentationCompletedRegionCount === contract.segmentationRequestedRegionCount
+        && contract.segmentationRequestedTargetCount === contract.detectedRegionCount
+        && contract.segmentationCompletedTargetCount === contract.segmentationRequestedTargetCount
+        && contract.segmentationComplete === true
+        && contract.appliedRegionCount === 0;
+}
+
+async function readMattingUserMaskEnabled(layerId: number): Promise<boolean | undefined> {
+    const result = await action.batchPlay([
+        {
+            _obj: 'get',
+            _target: [{ _ref: 'layer', _id: layerId }],
+            _options: { dialogOptions: 'dontDisplay' }
+        }
+    ], { synchronousExecution: true }).catch(() => null);
+    const value = result?.[0]?.userMaskEnabled;
+    return typeof value === 'boolean' ? value : undefined;
+}
+
+async function readMattingSelectionBounds(): Promise<MattingSourceBounds | null | undefined> {
+    const result = await action.batchPlay([
+        {
+            _obj: 'get',
+            _target: [
+                { _property: 'selection' },
+                { _ref: 'document', _enum: 'ordinal', _value: 'targetEnum' }
+            ],
+            _options: { dialogOptions: 'dontDisplay' }
+        }
+    ], { synchronousExecution: true }).catch(() => undefined);
+    if (result === undefined) return undefined;
+    const selection = result?.[0]?.selection;
+    if (!selection) return null;
+    return normalizeSourceBounds(selection);
+}
+
+async function readMattingChannelName(
+    expectedName: string,
+    expectedId?: number
+): Promise<string | null | undefined> {
+    const channelTarget = Number.isSafeInteger(expectedId) && Number(expectedId) > 0
+        ? { _ref: 'channel', _id: expectedId }
+        : { _ref: 'channel', _name: expectedName };
+    const result = await action.batchPlay([
+        {
+            _obj: 'get',
+            _target: [
+                { _property: 'name' },
+                channelTarget
+            ],
+            _options: { dialogOptions: 'dontDisplay' }
+        }
+    ], { synchronousExecution: true }).catch(() => undefined);
+    if (result === undefined) return undefined;
+    const returnedName = result?.[0]?.name;
+    return typeof returnedName === 'string' ? returnedName : null;
 }
 
 export class RemoveBackgroundTool implements Tool {
@@ -165,6 +433,10 @@ export class RemoveBackgroundTool implements Tool {
                 maxSize: {
                     type: 'number',
                     description: '导出到模型前的最长边像素（512-4096；未指定时按质量档动态选择）'
+                },
+                sourceRegion: {
+                    type: 'object',
+                    description: '只导出图层的这一块区域（文档坐标 left/top/right/bottom），用于对目标区域二次高分辨率取像'
                 }
             }
         }
@@ -192,6 +464,14 @@ export class RemoveBackgroundTool implements Tool {
         binaryRequestId?: number;
         binaryImageWidth?: number;
         binaryImageHeight?: number;
+        /** 区域取像几何收据；Main 只有核验通过后才能按局部坐标分割。 */
+        sourceExportReceiptSchema?: 'matting-source-export/v1';
+        sourceRegionApplied?: boolean;
+        requestedSourceBounds?: MattingSourceBounds;
+        actualSourceBounds?: MattingSourceBounds;
+        sourceExportMode?: MattingSourceExportMode;
+        targetIdentity?: MattingTargetIdentity;
+        sourceHistoryStateRef?: { documentId: number; historyStateId: number };
     }> {
         const startTime = Date.now();
         const {
@@ -203,7 +483,9 @@ export class RemoveBackgroundTool implements Tool {
             quality: requestedQuality = 90,
             targetPrompt = '',
             maxSize,
-            sampleAllLayers = false
+            sampleAllLayers = false,
+            sourceRegion,
+            expectedTargetIdentity
         } = params;
 
         const exportMaxSize = this.resolveExportMaxSize(maxSize, requestedQuality);
@@ -242,6 +524,33 @@ export class RemoveBackgroundTool implements Tool {
                 };
             }
 
+            const sourceTargetIdentity = readMattingTargetIdentity(doc, targetLayer);
+            if (!sourceTargetIdentity) {
+                return {
+                    success: false,
+                    message: '无法读取目标文档、历史版本或图层身份，本轮没有开始抠图。',
+                    error: 'TARGET_IDENTITY_UNAVAILABLE'
+                };
+            }
+            if (sourceRegion && !expectedTargetIdentity) {
+                return {
+                    success: false,
+                    message: '区域取像缺少首次导出的目标身份，本轮没有继续处理。',
+                    error: 'SOURCE_REGION_TARGET_IDENTITY_MISSING'
+                };
+            }
+            if (expectedTargetIdentity) {
+                const identityValidation = validateMattingTargetIdentity(expectedTargetIdentity, doc);
+                if (!identityValidation.valid) {
+                    return {
+                        success: false,
+                        message: 'Photoshop 文档、版本或目标图层已变化，本轮没有继续处理。请重新发起抠图。',
+                        error: 'SOURCE_TARGET_CHANGED',
+                        fallbackReason: identityValidation.code
+                    };
+                }
+            }
+
             console.log(`[RemoveBackground] 开始处理图层: ${targetLayer.name} (ID: ${targetLayerId}), 模式: AI`);
 
             // 使用 AI 模型 - 获取图层图像数据发送给 Agent
@@ -251,7 +560,16 @@ export class RemoveBackgroundTool implements Tool {
                 // 优先使用二进制传输（节省 ~33% 数据量）
                 // 参考 Adobe 官方 imaging API: https://developer.adobe.com/photoshop/uxp/2022/ps_reference/media/imaging/
                 
-                let binaryImageData: { type: BinaryMessageType; data: Uint8Array; width: number; height: number } | null = null;
+                let binaryImageData: {
+                    type: BinaryMessageType;
+                    data: Uint8Array;
+                    width: number;
+                    height: number;
+                    sourceRegionApplied?: boolean;
+                    requestedSourceBounds?: MattingSourceBounds;
+                    actualSourceBounds?: MattingSourceBounds;
+                    sourceExportMode?: MattingSourceExportMode;
+                } | null = null;
                 let imageData = '';
                 let exportError: Error | null = null;
                 let useBinaryTransfer = false;
@@ -264,40 +582,63 @@ export class RemoveBackgroundTool implements Tool {
                 if (this.wsClient) {
                     try {
                         // 复合取样优先：导出图层边界内的文档复合（模型可见完整背景上下文）
-                        binaryImageData = sampleAllLayers
-                            ? await this.getLayerImageDataBinary(targetLayerId, exportMaxSize, { composite: true })
-                            : exportLayerGroup
-                                ? await this.copyLayerAndExportBinary(targetLayerId)
-                                : await this.getLayerImageDataBinary(targetLayerId, exportMaxSize);
+                        // 给了 sourceRegion 就走区域取像：语义抠图第二阶段用它对目标框
+                        // 单独高分辨率取像，图层组的复制导出路径不支持区域，故一并走这条
+                        binaryImageData = sourceRegion
+                            ? await this.getLayerImageDataBinary(targetLayerId, exportMaxSize, {
+                                composite: sampleAllLayers,
+                                sourceRegion,
+                                expectedTargetIdentity: expectedTargetIdentity || sourceTargetIdentity
+                            })
+                            : sampleAllLayers
+                                ? await this.getLayerImageDataBinary(targetLayerId, exportMaxSize, {
+                                    composite: true,
+                                    expectedTargetIdentity: sourceTargetIdentity
+                                })
+                                : exportLayerGroup
+                                    ? await this.copyLayerAndExportBinary(targetLayerId)
+                                    : await this.getLayerImageDataBinary(targetLayerId, exportMaxSize, {
+                                        expectedTargetIdentity: sourceTargetIdentity
+                                    });
                         if (binaryImageData && binaryImageData.data.length > 0) {
                             useBinaryTransfer = true;
                             console.log(`[RemoveBackground] Binary image ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB${sampleAllLayers ? ' (composite)' : ''}`);
                         }
                     } catch (binErr: any) {
                         exportError = binErr;
-                        if (sampleAllLayers) {
+                        if (sourceRegion) {
+                            // 区域请求的坐标会参与 Main 侧蒙版回贴。这里若回退整层，返回的图像
+                            // 与请求坐标不再同系，继续处理会把蒙版贴错位置，因此必须失败关闭。
+                            console.error('[RemoveBackground] 区域取像失败，禁止回退整层:', binErr.message);
+                        } else if (sampleAllLayers) {
                             console.warn('[RemoveBackground] 复合取样导出失败，回退为仅目标图层取样:', binErr.message);
                         } else {
                             console.log('[RemoveBackground] Binary export failed, trying binary copy-export fallback:', binErr.message);
                         }
-                        try {
-                            binaryImageData = sampleAllLayers
-                                ? await this.getLayerImageDataBinary(targetLayerId, exportMaxSize)
-                                : !exportLayerGroup
-                                    ? await this.copyLayerAndExportBinary(targetLayerId)
-                                    : null;
-                            if (binaryImageData && binaryImageData.data.length > 0) {
-                                useBinaryTransfer = true;
-                                console.log(`[RemoveBackground] Binary fallback export ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB`);
+                        if (!sourceRegion) {
+                            try {
+                                binaryImageData = sampleAllLayers
+                                    ? await this.getLayerImageDataBinary(targetLayerId, exportMaxSize, {
+                                        expectedTargetIdentity: sourceTargetIdentity
+                                    })
+                                    : !exportLayerGroup
+                                        ? await this.copyLayerAndExportBinary(targetLayerId)
+                                        : null;
+                                if (binaryImageData && binaryImageData.data.length > 0) {
+                                    useBinaryTransfer = true;
+                                    console.log(`[RemoveBackground] Binary fallback export ${binaryImageData.width}x${binaryImageData.height}, ${(binaryImageData.data.length / 1024).toFixed(0)}KB`);
+                                }
+                            } catch (copyBinErr: any) {
+                                exportError = copyBinErr;
+                                console.log('[RemoveBackground] Binary copy-export failed, fallback to Base64:', copyBinErr.message);
                             }
-                        } catch (copyBinErr: any) {
-                            exportError = copyBinErr;
-                            console.log('[RemoveBackground] Binary copy-export failed, fallback to Base64:', copyBinErr.message);
                         }
                     }
+                } else if (sourceRegion) {
+                    exportError = new Error('区域取像需要可用的二进制 WebSocket 传输通道。');
                 }
                 
-                if (!useBinaryTransfer) {
+                if (!useBinaryTransfer && !sourceRegion) {
                     try {
                         imageData = exportLayerGroup
                             ? await this.copyLayerAndExport(targetLayerId)
@@ -306,6 +647,21 @@ export class RemoveBackgroundTool implements Tool {
                         console.error('[RemoveBackground] Export failed:', err.message);
                         exportError = err;
                     }
+                }
+
+                if (sourceRegion && !useBinaryTransfer) {
+                    const errorReason = exportError?.message || '区域导出没有返回可验证的二进制图像';
+                    return {
+                        success: false,
+                        message: `目标区域取像失败：${errorReason}`,
+                        error: 'SOURCE_REGION_EXPORT_FAILED',
+                        processingTime: Date.now() - startTime,
+                        usedMode: 'ai',
+                        layerId: targetLayerId,
+                        fallbackReason: errorReason,
+                        sourceExportReceiptSchema: 'matting-source-export/v1',
+                        sourceRegionApplied: false
+                    };
                 }
                 
                 if (!useBinaryTransfer && (exportError || !imageData || imageData.length < 100)) {
@@ -339,6 +695,23 @@ export class RemoveBackgroundTool implements Tool {
                 const originalTop = boundTop;
                 
                 console.log(`[RemoveBackground] 图层: ${originalWidth}x${originalHeight}, 位置: (${originalLeft}, ${originalTop}), 文档: ${docWidth}x${docHeight}`);
+
+                const finalTargetValidation = validateMattingTargetIdentity(
+                    expectedTargetIdentity || sourceTargetIdentity,
+                    app.activeDocument
+                );
+                if (!finalTargetValidation.valid || !finalTargetValidation.actual) {
+                    return {
+                        success: false,
+                        message: '导出图像期间 Photoshop 文档、版本或目标图层发生变化，本轮没有继续处理。',
+                        error: 'SOURCE_TARGET_CHANGED_DURING_EXPORT',
+                        processingTime: Date.now() - startTime,
+                        usedMode: 'ai',
+                        layerId: targetLayerId,
+                        fallbackReason: finalTargetValidation.code
+                    };
+                }
+                const targetIdentity = finalTargetValidation.actual;
                 
                 // 二进制传输：先发送二进制数据，再返回 JSON
                 if (useBinaryTransfer && binaryImageData && this.wsClient) {
@@ -375,7 +748,18 @@ export class RemoveBackgroundTool implements Tool {
                         originalLeft: originalLeft,
                         originalTop: originalTop,
                         docWidth: docWidth,
-                        docHeight: docHeight
+                        docHeight: docHeight,
+                        sourceExportReceiptSchema: 'matting-source-export/v1',
+                        sourceRegionApplied: binaryImageData.sourceRegionApplied === true,
+                        requestedSourceBounds: binaryImageData.requestedSourceBounds,
+                        actualSourceBounds: binaryImageData.actualSourceBounds,
+                        sourceExportMode: binaryImageData.sourceExportMode
+                            || (exportLayerGroup ? 'layer-copy' : 'layer-full'),
+                        targetIdentity,
+                        sourceHistoryStateRef: {
+                            documentId: targetIdentity.documentId,
+                            historyStateId: targetIdentity.historyStateId
+                        }
                     };
                 }
                 
@@ -397,7 +781,15 @@ export class RemoveBackgroundTool implements Tool {
                     originalLeft: originalLeft,
                     originalTop: originalTop,
                     docWidth: docWidth,
-                    docHeight: docHeight
+                    docHeight: docHeight,
+                    sourceExportReceiptSchema: 'matting-source-export/v1',
+                    sourceRegionApplied: false,
+                    sourceExportMode: exportLayerGroup ? 'layer-copy' : 'layer-full',
+                    targetIdentity,
+                    sourceHistoryStateRef: {
+                        documentId: targetIdentity.documentId,
+                        historyStateId: targetIdentity.historyStateId
+                    }
                 };
             }
         } catch (error: any) {
@@ -503,26 +895,76 @@ export class RemoveBackgroundTool implements Tool {
         return result;
     }
 
-    async getLayerImageDataBinary(layerId: number, maxSize: number = 1024, options?: { composite?: boolean }): Promise<{
+    async getLayerImageDataBinary(
+        layerId: number,
+        maxSize: number = 1024,
+        options?: {
+            composite?: boolean;
+            /** 只取这一块区域（文档坐标）：目标区域单独取像能大幅提高有效分辨率 */
+            sourceRegion?: { left: number; top: number; right: number; bottom: number };
+            /** 把实际 getPixels modal 绑定到首次观察到的文档、history 与图层身份。 */
+            expectedTargetIdentity?: MattingTargetIdentity;
+        }
+    ): Promise<{
         type: BinaryMessageType;
         data: Uint8Array;
         width: number;
         height: number;
+        sourceRegionApplied: boolean;
+        requestedSourceBounds?: MattingSourceBounds;
+        actualSourceBounds?: MattingSourceBounds;
+        sourceExportMode: MattingSourceExportMode;
     }> {
         const doc = app.activeDocument;
         if (!doc) throw new Error('没有打开的文档');
 
         const targetLayer = findLayerById(doc, layerId);
         const composite = options?.composite === true;
+        const region = options?.sourceRegion;
+        const expectedTargetIdentity = options?.expectedTargetIdentity;
+        const requestedRegion = region ? normalizeSourceBounds(region) : null;
+        if (region && !requestedRegion) {
+            throw new Error('区域取像失败：sourceRegion 必须是有限且具有正面积的文档坐标。');
+        }
+
+        const docWidth = Math.max(1, Math.round(toFiniteCoordinate(doc.width)));
+        const docHeight = Math.max(1, Math.round(toFiniteCoordinate(doc.height)));
+        const appliedRegion = requestedRegion
+            ? normalizeSourceBounds({
+                left: Math.max(0, Math.round(requestedRegion.left)),
+                top: Math.max(0, Math.round(requestedRegion.top)),
+                right: Math.min(docWidth, Math.round(requestedRegion.right)),
+                bottom: Math.min(docHeight, Math.round(requestedRegion.bottom))
+            })
+            : null;
+        if (requestedRegion && !appliedRegion) {
+            throw new Error('区域取像失败：请求的区域与画布没有重叠。');
+        }
 
         let result: { type: BinaryMessageType; data: Uint8Array; width: number; height: number } | null = null;
+        let actualSourceBounds: MattingSourceBounds | undefined;
 
         await core.executeAsModal(async () => {
+            if (expectedTargetIdentity) {
+                const beforeRead = validateMattingTargetIdentity(expectedTargetIdentity, app.activeDocument);
+                if (!beforeRead.valid) {
+                    throw new Error(`目标身份在像素读取前已变化：${beforeRead.code || 'unknown'}`);
+                }
+            }
             // 官方文档：targetSize 只传一个维度时 PS 按比例缩放保持纵横比
             // 传两个维度会强制缩放到精确尺寸（破坏纵横比）
-            // 策略：取图层长边对应的维度，让 PS 自动计算短边
+            // 策略：取长边对应的维度，让 PS 自动计算短边
             let targetSize: Record<string, number> = { height: maxSize };
-            if (targetLayer) {
+
+            // 取像范围：给了 sourceRegion 就按区域算比例，否则按整个图层
+            const rangeW = appliedRegion ? appliedRegion.right - appliedRegion.left : 0;
+            const rangeH = appliedRegion ? appliedRegion.bottom - appliedRegion.top : 0;
+            if (appliedRegion && rangeW > 0 && rangeH > 0) {
+                targetSize = rangeW >= rangeH
+                    ? { width: Math.min(maxSize, rangeW) }
+                    : { height: Math.min(maxSize, rangeH) };
+                console.log(`[RemoveBackground] 区域取像 ${rangeW}x${rangeH}, targetSize=${JSON.stringify(targetSize)}`);
+            } else if (targetLayer) {
                 const bounds = targetLayer.bounds;
                 const layerW = bounds.right - bounds.left;
                 const layerH = bounds.bottom - bounds.top;
@@ -538,7 +980,12 @@ export class RemoveBackgroundTool implements Tool {
                 documentID: doc.id,
                 targetSize: targetSize as any  // PS API 支持只传一个维度，TS 类型定义过严
             };
-            if (composite && targetLayer) {
+
+            if (appliedRegion && rangeW > 0 && rangeH > 0) {
+                // 区域取像使用预先夹取并验证过的文档坐标。
+                pixelOptions.sourceBounds = { ...appliedRegion };
+                if (!composite) pixelOptions.layerID = targetLayer?.id;
+            } else if (composite && targetLayer) {
                 // 复合取样：不传 layerID 即取文档复合像素；sourceBounds 裁剪到目标图层边界（夹取画布范围）
                 const b = targetLayer.bounds;
                 pixelOptions.sourceBounds = {
@@ -560,8 +1007,34 @@ export class RemoveBackgroundTool implements Tool {
             if (!pixelResult?.imageData) {
                 throw new Error('无法获取像素数据');
             }
-            
             const imgData = pixelResult.imageData;
+            try {
+
+            if (expectedTargetIdentity) {
+                const afterRead = validateMattingTargetIdentity(expectedTargetIdentity, app.activeDocument);
+                if (!afterRead.valid) {
+                    throw new Error(`目标身份在像素读取期间已变化：${afterRead.code || 'unknown'}`);
+                }
+            }
+
+            if (appliedRegion) {
+                // sourceBounds 是 Photoshop 对本次 getPixels 实际使用范围的收据。
+                // 缺失时不能把请求值冒充实际值，否则 Main 会在错误坐标系里回贴蒙版。
+                actualSourceBounds = normalizeSourceBounds(pixelResult.sourceBounds) || undefined;
+                if (!actualSourceBounds) {
+                    throw new Error('区域取像失败：Photoshop 未返回实际 sourceBounds，无法验证几何。');
+                }
+                const tolerance = 1;
+                if (actualSourceBounds.left < requestedRegion!.left - tolerance
+                    || actualSourceBounds.top < requestedRegion!.top - tolerance
+                    || actualSourceBounds.right > requestedRegion!.right + tolerance
+                    || actualSourceBounds.bottom > requestedRegion!.bottom + tolerance) {
+                    throw new Error('区域取像失败：Photoshop 返回的实际范围超出请求范围。');
+                }
+            } else {
+                actualSourceBounds = normalizeSourceBounds(pixelResult.sourceBounds) || undefined;
+            }
+
             const actualWidth = imgData.width;
             const actualHeight = imgData.height;
             const components = imgData.components;
@@ -610,15 +1083,40 @@ export class RemoveBackgroundTool implements Tool {
                 console.log(`[RemoveBackground] RAW RGB 二进制: ${(result.data.length / 1024).toFixed(0)}KB`);
             }
             
-            imgData.dispose();
+            } finally {
+                try {
+                    imgData.dispose();
+                } catch (disposeError: any) {
+                    console.warn('[RemoveBackground] 释放区域 ImageData 失败:', disposeError?.message || disposeError);
+                }
+            }
             
         }, { commandName: 'DesignEcho: 二进制获取抠图图像' });
 
-        if (!result) {
+        const completedResult = result as {
+            type: BinaryMessageType;
+            data: Uint8Array;
+            width: number;
+            height: number;
+        } | null;
+        if (!completedResult) {
             throw new Error('二进制图像获取失败');
         }
-        
-        return result;
+
+        let sourceExportMode: MattingSourceExportMode;
+        if (appliedRegion) {
+            sourceExportMode = composite ? 'composite-region' : 'layer-region';
+        } else {
+            sourceExportMode = composite ? 'composite-layer-bounds' : 'layer-full';
+        }
+
+        return {
+            ...completedResult,
+            sourceRegionApplied: Boolean(appliedRegion),
+            requestedSourceBounds: requestedRegion || undefined,
+            actualSourceBounds,
+            sourceExportMode
+        };
     }
 
     /**
@@ -1191,6 +1689,14 @@ export class ApplyMattingResultTool implements Tool {
                 createNewLayer: {
                     type: 'boolean',
                     description: '是否创建新图层'
+                },
+                semanticTargetContract: {
+                    type: 'object',
+                    description: '语义抠图目标完整性契约；存在时必须在 Photoshop 写入前通过严格校验'
+                },
+                expectedTargetIdentity: {
+                    type: 'object',
+                    description: '首次图像导出签发的文档、history 与图层身份；写入前必须保持完全一致'
                 }
             },
             required: ['originalLayerId']
@@ -1236,11 +1742,16 @@ export class ApplyMattingResultTool implements Tool {
         binaryRequestId?: number;     // 关联的二进制请求 ID
         maskWidth?: number;           // 蒙版宽度（二进制传输时使用）
         maskHeight?: number;          // 蒙版高度（二进制传输时使用）
+        semanticTargetContract?: SemanticMattingApplyContract;
+        expectedTargetIdentity?: MattingTargetIdentity;
     }): Promise<{
         success: boolean;
         message: string;
         newLayerId?: number;
         error?: string;
+        errorCode?: string;
+        semanticTargetReceipt?: SemanticMattingApplyContract;
+        mutationReceipt?: MattingMutationReceipt;
     }> {
         const { 
             originalLayerId, 
@@ -1258,13 +1769,76 @@ export class ApplyMattingResultTool implements Tool {
             useBinaryMask = false,
             binaryRequestId,
             maskWidth: paramMaskWidth,
-            maskHeight: paramMaskHeight
+            maskHeight: paramMaskHeight,
+            semanticTargetContract,
+            expectedTargetIdentity
         } = params;
 
         try {
+            if (!isMattingOutputFormat(outputFormat)) {
+                return {
+                    success: false,
+                    message: '输出格式无效，只能使用 mask、selection、channel 或 layer。',
+                    error: '输出格式无效，只能使用 mask、selection、channel 或 layer。',
+                    errorCode: 'MATTING_OUTPUT_FORMAT_INVALID'
+                };
+            }
+            if (deleteBackground) {
+                return {
+                    success: false,
+                    message: '直接删除背景暂未建立像素级写后读回，本轮没有修改文档。请改用非破坏性图层蒙版。',
+                    error: '直接删除背景缺少可靠读回，本轮没有修改文档。',
+                    errorCode: 'MATTING_DELETE_BACKGROUND_UNSUPPORTED'
+                };
+            }
+            if (semanticTargetContract !== undefined
+                && !validateSemanticMattingApplyContract(semanticTargetContract)) {
+                return {
+                    success: false,
+                    message: '目标清单或分割结果不完整，本轮没有修改图层。',
+                    error: '目标清单或分割结果不完整，本轮没有修改图层。',
+                    errorCode: 'SEMANTIC_TARGET_CONTRACT_INCOMPLETE'
+                };
+            }
+
+            if (semanticTargetContract && !expectedTargetIdentity) {
+                return {
+                    success: false,
+                    message: '语义抠图缺少首次导出的 Photoshop 目标身份，本轮没有修改图层。',
+                    error: '语义抠图缺少首次导出的 Photoshop 目标身份，本轮没有修改图层。',
+                    errorCode: 'MATTING_TARGET_IDENTITY_MISSING'
+                };
+            }
+            if (expectedTargetIdentity && Number(originalLayerId) !== Number(expectedTargetIdentity.layerId)) {
+                return {
+                    success: false,
+                    message: '蒙版目标图层与首次导出的图层不一致，本轮没有修改图层。',
+                    error: '蒙版目标图层与首次导出的图层不一致，本轮没有修改图层。',
+                    errorCode: 'MATTING_TARGET_LAYER_MISMATCH'
+                };
+            }
+
             const doc = app.activeDocument;
             if (!doc) {
                 return { success: false, message: '没有打开的文档', error: 'NO_DOCUMENT' };
+            }
+            if (expectedTargetIdentity) {
+                const targetGuardFailure = checkPhotoshopTargetGuard({
+                    expectedDocumentId: expectedTargetIdentity.documentId,
+                    expectedHistoryStateRef: {
+                        documentId: expectedTargetIdentity.documentId,
+                        historyStateId: expectedTargetIdentity.historyStateId
+                    }
+                });
+                const targetIdentityValidation = validateMattingTargetIdentity(expectedTargetIdentity, doc);
+                if (targetGuardFailure || !targetIdentityValidation.valid) {
+                    return {
+                        success: false,
+                        message: 'Photoshop 文档、版本或目标图层已变化，本轮没有修改图层。请重新发起抠图。',
+                        error: 'Photoshop 文档、版本或目标图层已变化，本轮没有修改图层。',
+                        errorCode: 'MATTING_TARGET_CHANGED_BEFORE_APPLY'
+                    };
+                }
             }
 
             console.log(`[ApplyMattingResult] 输出格式: ${outputFormat}, 图层: ${originalLayerId}, 二进制模式: ${useBinaryMask}`);
@@ -1352,10 +1926,37 @@ export class ApplyMattingResultTool implements Tool {
             }
 
             let newLayerId: number | undefined;
+            let appliedLayerId: number | null = originalLayerId;
+            let mutationReceipt: MattingMutationReceipt | undefined;
+            let createdChannelIdentity: { name: string; id?: number } | undefined;
             const uxp = require('uxp');
             const fs = uxp.storage.localFileSystem;
 
             await core.executeAsModal(async () => {
+                // 最终 TOCTOU 守卫必须位于同一个 mutation modal 内，并在选择图层、
+                // 转背景层、创建蒙版等任何 Photoshop 写操作之前执行。
+                if (expectedTargetIdentity) {
+                    const activeDocument = app.activeDocument;
+                    const targetGuardFailure = checkPhotoshopTargetGuard({
+                        expectedDocumentId: expectedTargetIdentity.documentId,
+                        expectedHistoryStateRef: {
+                            documentId: expectedTargetIdentity.documentId,
+                            historyStateId: expectedTargetIdentity.historyStateId
+                        }
+                    });
+                    const targetIdentityValidation = validateMattingTargetIdentity(
+                        expectedTargetIdentity,
+                        activeDocument
+                    );
+                    if (targetGuardFailure || !targetIdentityValidation.valid) {
+                        throw new Error('Photoshop 文档、版本或目标图层在应用前已变化');
+                    }
+                }
+                const beforeHistoryStateRef = readActiveHistoryStateRef(app.activeDocument);
+                if (!beforeHistoryStateRef || beforeHistoryStateRef.documentId !== Number(doc.id)) {
+                    throw new Error('无法读取写入前的 Photoshop 文档历史版本');
+                }
+
                 // 找到原始图层
                 const originalLayer = findLayerById(doc, originalLayerId);
                 if (!originalLayer) {
@@ -1392,9 +1993,16 @@ export class ApplyMattingResultTool implements Tool {
                         // PNG 蒙版需要先通过 PS 打开来获取像素数据
                         if (isPngMask) {
                             await this.applyPngMaskAsLayerMask(originalLayerId, maskBytes);
+                            appliedLayerId = originalLayerId;
                         } else {
                             // Raw 格式可以直接使用 Imaging API
-                            await this.applyRawMaskAsLayerMask(doc.id, originalLayerId, maskBytes, maskWidth, maskHeight);
+                            appliedLayerId = await this.applyRawMaskAsLayerMask(
+                                doc.id,
+                                originalLayerId,
+                                maskBytes,
+                                maskWidth,
+                                maskHeight
+                            );
                         }
                         console.log('[ApplyMattingResult] 图层蒙版已应用');
                         break;
@@ -1443,49 +2051,25 @@ export class ApplyMattingResultTool implements Tool {
                             throw new Error('无法创建选区：需要有效的蒙版数据');
                         }
                         
-                        // 如果需要删除背景，反选并删除
-                        if (deleteBackground) {
-                            console.log('[ApplyMattingResult] 正在删除背景...');
-                            // 反选
-                            await action.batchPlay([
-                                {
-                                    _obj: 'inverse',
-                                    _options: { dialogOptions: 'dontDisplay' }
-                                }
-                            ], {});
-                            // 删除选区内容
-                            await action.batchPlay([
-                                {
-                                    _obj: 'delete',
-                                    _options: { dialogOptions: 'dontDisplay' }
-                                }
-                            ], {});
-                            // 取消选区
-                            await action.batchPlay([
-                                {
-                                    _obj: 'set',
-                                    _target: [{ _ref: 'channel', _property: 'selection' }],
-                                    to: { _enum: 'ordinal', _value: 'none' },
-                                    _options: { dialogOptions: 'dontDisplay' }
-                                }
-                            ], {});
-                            console.log('[ApplyMattingResult] 背景已删除');
-                        } else {
-                            console.log('[ApplyMattingResult] 选区已创建');
-                        }
+                        console.log('[ApplyMattingResult] 选区已创建');
                         break;
                         
                     case 'channel':
                         // 创建 Alpha 通道
                         if (isRawMask) {
-                            await this.createAlphaChannelFromRawMask(doc.id, maskBytes, maskWidth, maskHeight);
+                            createdChannelIdentity = await this.createAlphaChannelFromRawMask(
+                                doc.id,
+                                maskBytes,
+                                maskWidth,
+                                maskHeight
+                            );
                         } else {
                             // PNG 格式使用临时文件方式
                             const tempFolder = await fs.getTemporaryFolder();
                             const tempFile = await tempFolder.createFile(`de_mask_${Date.now()}.png`, { overwrite: true });
                             const channelBuffer = maskBytes.buffer.slice(maskBytes.byteOffset, maskBytes.byteOffset + maskBytes.byteLength);
                             await tempFile.write(channelBuffer as ArrayBuffer, { format: uxp.storage.formats.binary });
-                            await this.createAlphaChannel(tempFile.nativePath);
+                            createdChannelIdentity = await this.createAlphaChannel(tempFile.nativePath);
                             await tempFile.delete().catch(() => {});
                         }
                         console.log('[ApplyMattingResult] Alpha 通道已创建');
@@ -1506,14 +2090,107 @@ export class ApplyMattingResultTool implements Tool {
                                 doc.id, originalLayerId, maskBytes, maskWidth, maskHeight
                             );
                         }
+                        appliedLayerId = newLayerId || null;
                         console.log('[ApplyMattingResult] 新图层已创建');
                         break;
+
+                    default:
+                        throw new Error(`不支持的抠图输出格式: ${String(outputFormat)}`);
                 }
 
                 // 使用 Imaging API 无需额外清理
                 
                 // 强制刷新文档显示
                 await this.forceRefreshDocument(doc.id);
+
+                const activeDocumentAfter = app.activeDocument;
+                const afterHistoryStateRef = readActiveHistoryStateRef(activeDocumentAfter);
+                const sameDocument = Boolean(afterHistoryStateRef
+                    && afterHistoryStateRef.documentId === beforeHistoryStateRef.documentId);
+                const historyChanged = sameDocument
+                    ? afterHistoryStateRef!.historyStateId !== beforeHistoryStateRef.historyStateId
+                    : null;
+                const historyChangeRequired = outputFormat !== 'selection';
+
+                let outputExists: boolean | null = null;
+                let outputReadback: MattingMutationReceipt['outputReadback'] = 'unknown';
+                let outputReadbackKind: MattingMutationReceipt['outputReadbackKind'] = 'alpha-channel-name';
+                let selectionBounds: MattingSourceBounds | undefined;
+                let channelName: string | undefined;
+                let channelId: number | undefined;
+
+                if (outputFormat === 'mask' && appliedLayerId !== null) {
+                    const maskEnabled = await readMattingUserMaskEnabled(appliedLayerId);
+                    outputExists = typeof maskEnabled === 'boolean' ? maskEnabled : null;
+                    if (maskEnabled === true) {
+                        outputReadback = 'verified';
+                    } else if (maskEnabled === false) {
+                        outputReadback = 'missing';
+                    } else {
+                        outputReadback = 'unknown';
+                    }
+                    outputReadbackKind = 'user-mask-enabled';
+                } else if (outputFormat === 'selection' && !deleteBackground) {
+                    const bounds = await readMattingSelectionBounds();
+                    outputExists = bounds === undefined ? null : bounds !== null;
+                    if (bounds) {
+                        outputReadback = 'verified';
+                    } else if (bounds === null) {
+                        outputReadback = 'missing';
+                    } else {
+                        outputReadback = 'unknown';
+                    }
+                    outputReadbackKind = 'selection-bounds';
+                    selectionBounds = bounds || undefined;
+                } else if (outputFormat === 'layer') {
+                    outputExists = appliedLayerId !== null
+                        && Boolean(findLayerById(activeDocumentAfter, appliedLayerId));
+                    outputReadback = outputExists ? 'verified' : 'missing';
+                    outputReadbackKind = 'layer-exists';
+                } else if (outputFormat === 'channel') {
+                    const returnedChannelName = createdChannelIdentity
+                        ? await readMattingChannelName(
+                            createdChannelIdentity.name,
+                            createdChannelIdentity.id
+                        )
+                        : undefined;
+                    outputExists = returnedChannelName === undefined
+                        ? null
+                        : returnedChannelName === createdChannelIdentity?.name;
+                    if (returnedChannelName && returnedChannelName === createdChannelIdentity?.name) {
+                        outputReadback = 'verified';
+                        channelName = returnedChannelName;
+                        channelId = createdChannelIdentity?.id;
+                    } else if (returnedChannelName === null) {
+                        outputReadback = 'missing';
+                    } else {
+                        outputReadback = 'unknown';
+                    }
+                    outputReadbackKind = 'alpha-channel-name';
+                }
+
+                const historyVerified = sameDocument
+                    && (historyChangeRequired ? historyChanged === true : true);
+                mutationReceipt = {
+                    schema: 'matting-mutation-receipt/v1',
+                    documentId: beforeHistoryStateRef.documentId,
+                    requestedLayerId: originalLayerId,
+                    actualLayerId: appliedLayerId,
+                    beforeHistoryStateId: beforeHistoryStateRef.historyStateId,
+                    afterHistoryStateId: afterHistoryStateRef?.historyStateId ?? null,
+                    historyChanged,
+                    historyChangeRequired,
+                    outputFormat,
+                    maskWidth,
+                    maskHeight,
+                    outputReadback,
+                    outputReadbackKind,
+                    outputExists,
+                    ...(selectionBounds ? { selectionBounds } : {}),
+                    ...(channelName ? { channelName } : {}),
+                    ...(channelId ? { channelId } : {}),
+                    complete: historyVerified && outputReadback === 'verified' && outputExists === true
+                };
 
             }, { commandName: 'DesignEcho: 应用抠图结果' });
 
@@ -1524,15 +2201,30 @@ export class ApplyMattingResultTool implements Tool {
                 'layer': '新图层'
             };
 
-            // 如果是删除背景模式，返回特殊消息
-            const resultMessage = deleteBackground 
-                ? '背景已删除' 
-                : `${formatNames[outputFormat]}已应用`;
+            const resultMessage = `${formatNames[outputFormat]}已应用`;
+
+            if (!mutationReceipt?.complete) {
+                return {
+                    success: false,
+                    message: 'Photoshop 操作已返回，但写入后的文档版本或输出结果无法完整读回，当前状态未知。请先检查图层，不要重复执行。',
+                    error: 'Photoshop 写入后的版本或输出结果无法完整读回。',
+                    errorCode: 'MATTING_MUTATION_RECEIPT_INCOMPLETE',
+                    newLayerId,
+                    mutationReceipt
+                };
+            }
 
             return {
                 success: true,
                 message: resultMessage,
-                newLayerId
+                newLayerId,
+                mutationReceipt,
+                semanticTargetReceipt: semanticTargetContract
+                    ? {
+                        ...semanticTargetContract,
+                        appliedRegionCount: semanticTargetContract.segmentationCompletedRegionCount
+                    }
+                    : undefined
             };
 
         } catch (error: any) {
@@ -1557,7 +2249,14 @@ export class ApplyMattingResultTool implements Tool {
             // 方法: 切换图层可见性强制刷新（最安全有效）
             if (doc.activeLayers.length > 0) {
                 const layer = doc.activeLayers[0] as any;
-                
+
+                // 背景图层不能隐藏：PS 弹「命令"隐藏"当前不可用」的原生模态框并阻塞
+                // UXP 消息循环，dialogOptions 挡不住。真机 2026-08-27 抠背景图层时复现。
+                if (layer.isBackgroundLayer === true) {
+                    console.log('[DesignEcho] 背景图层跳过可见性刷新');
+                    return;
+                }
+
                 // 快速隐藏再显示
                 await action.batchPlay([
                     {
@@ -1655,7 +2354,7 @@ export class ApplyMattingResultTool implements Tool {
         maskBytes: Uint8Array,
         width: number,
         height: number
-    ): Promise<void> {
+    ): Promise<number> {
         console.log(`[ApplyMattingResult] 使用 Imaging API 应用 Raw 蒙版: ${width}x${height}, 数据大小: ${maskBytes.length}`);
         
         // 调试：检查蒙版数据分布
@@ -1686,15 +2385,7 @@ export class ApplyMattingResultTool implements Tool {
             // 重新获取图层以确保它存在
             let layer = findLayerById(doc, layerId);
             if (!layer) {
-                console.warn(`[ApplyMattingResult] 未找到图层 ${layerId}，尝试使用当前激活图层`);
-                if (doc.activeLayers.length > 0) {
-                    layer = doc.activeLayers[0];
-                    layerId = layer.id;
-                    docId = doc.id;
-                    console.log(`[ApplyMattingResult] 使用激活图层: ${layerId}`);
-                } else {
-                    throw new Error('没有可用的图层');
-                }
+                throw new Error(`未找到首次导出绑定的图层 ID: ${layerId}`);
             }
             
             // 检查图层边界
@@ -1787,6 +2478,7 @@ export class ApplyMattingResultTool implements Tool {
             });
 
             console.log('[ApplyMattingResult] Imaging API 蒙版应用成功');
+            return layerId;
         } catch (e: any) {
             console.error('[ApplyMattingResult] Imaging API 失败:', e.message);
             throw e;  // 直接抛出错误，不回退到 PS 内置功能
@@ -2126,26 +2818,16 @@ export class ApplyMattingResultTool implements Tool {
         maskBytes: Uint8Array,
         width: number,
         height: number
-    ): Promise<void> {
+    ): Promise<{ name: string; id?: number }> {
         const safeWidth = this.normalizePixelDimension(width, 1);
         const safeHeight = this.normalizePixelDimension(height, 1);
         console.log(`[ApplyMattingResult] 从 Raw 蒙版创建 Alpha 通道: ${safeWidth}x${safeHeight}`);
-        
+        let selectionImageData: any = null;
         try {
-            // 先创建一个新的 Alpha 通道
-            await action.batchPlay([
-                {
-                    _obj: 'make',
-                    new: { _class: 'channel' },
-                    name: 'DesignEcho Mask',
-                    _options: { dialogOptions: 'dontDisplay' }
-                }
-            ], {});
-
             // 尝试使用 Imaging API 填充通道
             // 注意：putSelection 可以用于设置选区，但对于 Alpha 通道需要不同的方法
             // 我们先创建选区，然后从选区创建通道
-            const selectionImageData = await imaging.createImageDataFromBuffer(
+            selectionImageData = await imaging.createImageDataFromBuffer(
                 maskBytes,
                 {
                     width: safeWidth,
@@ -2164,13 +2846,37 @@ export class ApplyMattingResultTool implements Tool {
                 commandName: 'DesignEcho: AI 选区'
             });
 
-            selectionImageData.dispose();
+            // 只有蒙版已成功写成选区后才创建通道，避免前置步骤失败留下空通道。
+            const requestedChannelName = 'DesignEcho Mask';
+            const makeResult = await action.batchPlay([
+                {
+                    _obj: 'make',
+                    new: { _class: 'channel' },
+                    name: requestedChannelName,
+                    _options: { dialogOptions: 'dontDisplay' }
+                }
+            ], {});
+            const makeDescriptor = makeResult?.[0] || {};
+            const createdChannelName = typeof makeDescriptor.name === 'string'
+                ? makeDescriptor.name
+                : requestedChannelName;
+            const rawChannelId = Number(
+                makeDescriptor.channelID
+                ?? makeDescriptor.ID
+                ?? makeDescriptor._id
+            );
+            const createdChannelId = Number.isSafeInteger(rawChannelId) && rawChannelId > 0
+                ? rawChannelId
+                : undefined;
+            const channelTarget = createdChannelId
+                ? { _ref: 'channel', _id: createdChannelId }
+                : { _ref: 'channel', _name: createdChannelName };
 
             // 将选区存储到通道
             await action.batchPlay([
                 {
                     _obj: 'set',
-                    _target: [{ _ref: 'channel', _name: 'DesignEcho Mask' }],
+                    _target: [channelTarget],
                     to: { _ref: 'channel', _property: 'selection' },
                     _options: { dialogOptions: 'dontDisplay' }
                 },
@@ -2183,23 +2889,20 @@ export class ApplyMattingResultTool implements Tool {
             ], {});
             
             console.log('[ApplyMattingResult] Raw 蒙版 Alpha 通道创建成功');
-            
+            return {
+                name: createdChannelName,
+                ...(createdChannelId ? { id: createdChannelId } : {})
+            };
         } catch (error: any) {
             console.error('[ApplyMattingResult] Raw 蒙版 Alpha 通道失败:', error.message);
-            
-            // 回退：只创建空通道
-            try {
-                await action.batchPlay([
-                    {
-                        _obj: 'make',
-                        new: { _class: 'channel' },
-                        name: 'DesignEcho Mask (空)',
-                        _options: { dialogOptions: 'dontDisplay' }
-                    }
-                ], {});
-                console.log('[ApplyMattingResult] 创建了空 Alpha 通道作为回退');
-            } catch (fallbackError) {
-                console.error('[ApplyMattingResult] 创建空通道也失败:', fallbackError);
+            throw new Error(`创建 Alpha 通道失败: ${error.message || error}`);
+        } finally {
+            if (selectionImageData) {
+                try {
+                    selectionImageData.dispose();
+                } catch (disposeError: any) {
+                    console.warn(`[ApplyMattingResult] 释放 Alpha 通道 ImageData 失败: ${disposeError.message}`);
+                }
             }
         }
     }
@@ -2207,7 +2910,7 @@ export class ApplyMattingResultTool implements Tool {
     /**
      * 创建 Alpha 通道（从文件）
      */
-    private async createAlphaChannel(maskFilePath: string): Promise<void> {
+    private async createAlphaChannel(maskFilePath: string): Promise<{ name: string; id?: number }> {
         // 打开蒙版图像
         await action.batchPlay([
             {
@@ -2233,20 +2936,37 @@ export class ApplyMattingResultTool implements Tool {
         ], {});
 
         // 创建新的 Alpha 通道
-        await action.batchPlay([
+        const requestedChannelName = 'DesignEcho Mask';
+        const makeResult = await action.batchPlay([
             {
                 _obj: 'make',
                 new: { _class: 'channel' },
-                name: 'DesignEcho Mask',
+                name: requestedChannelName,
                 _options: { dialogOptions: 'dontDisplay' }
             }
         ], {});
+        const makeDescriptor = makeResult?.[0] || {};
+        const createdChannelName = typeof makeDescriptor.name === 'string'
+            ? makeDescriptor.name
+            : requestedChannelName;
+        const rawChannelId = Number(
+            makeDescriptor.channelID
+            ?? makeDescriptor.ID
+            ?? makeDescriptor._id
+        );
+        const createdChannelId = Number.isSafeInteger(rawChannelId) && rawChannelId > 0
+            ? rawChannelId
+            : undefined;
 
         // 粘贴到新通道
         await action.batchPlay([
             { _obj: 'paste', _options: { dialogOptions: 'dontDisplay' } },
             { _obj: 'deselect', _options: { dialogOptions: 'dontDisplay' } }
         ], {});
+        return {
+            name: createdChannelName,
+            ...(createdChannelId ? { id: createdChannelId } : {})
+        };
     }
 
     /**

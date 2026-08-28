@@ -1,5 +1,49 @@
 # Current Task
 
+## 2026-08-28 SEMANTIC-MATTING-INVARIANT-001：语义抠图目标、几何与 Photoshop 写入事实闭环
+
+### 目标
+
+1. 修复按文字抠图中“目标部分丢失、区域坐标错位、长推理后写错文档、部分蒙版冒充完整、写后只回显输入计数”的系统性风险。
+2. 保留 Agent / 用户的语义选定权：本地能力只做无歧义规范化、候选检测、范围分割与原子写入；歧义词不由 Harness 猜，已知截断不冒充完整。
+3. 以可复用源码级功能测试取代临时 smoke，并把语义链纳入现有核心验证与变更边界。
+
+### 当前事实
+
+- 旧云端模型看图定位器及其框/候选启发式已由本地 `GroundingDINO + WordPiece + MobileSAM + BiRefNet` 链替代；中文目标先走本地无歧义词表，未知、歧义、超出 4 项上限均在检测前零写入失败。`笔记本`、`单鞋` 等不再被强行解释成单一物体。
+- GroundingDINO 首次初始化共享同一 Promise；预处理到候选整理持有 session lease；空闲释放不会抽走在途会话。高显存预处理/推理改为单并发队列，dispose 会取消尚未开始的等待项。分数/NMS/无效尺寸/结果预算分别记账；12 项预算按 phrase 轮转，但任何已知截断都会返回 `complete=false`，不得进入 Photoshop 写入。
+- 语义目标生命周期升级为 v2，分别保存 requested/completed Region 与 requested/completed Target；任一 phrase 未检出、任一 SAM scope 未验证、任一目标分割失败或扩大取像后仍贴边，均不得生成可应用蒙版。SAM 不可用时不再用 BiRefNet 连通域猜语义归属；无目标的显著性/Photoshop 原生路径不受此限制。
+- 首次整图与每次 high-res 区域导出均消费 Photoshop 返回的真实 `actualSourceBounds`；区域失败禁止回退整层、复制导出或 Base64。首次导出冻结 `documentId + historyStateId + layerId/name/kind/bounds/background`，区域读取在同一 modal 前后核对，检测图与局部图 revision 不一致即丢弃。
+- Apply 在读取蒙版前和 mutation modal 内、任何写操作前再次核对同一目标身份；RAW mask 找不到绑定图层时不再回退当前活动图层。非法 output format 与缺读回的 `deleteBackground` 在写前拒绝。
+- Photoshop 成功不再由 `appliedRegionCount` 自签：UXP 返回 `matting-mutation-receipt/v1`，Main 核对实际文档/图层、写前后 history、蒙版几何、输出格式和输出读回。mask 读 `userMaskEnabled`，selection 读 bounds，channel 读实际 `DesignEcho Mask` 通道，layer 读新层存在；无法读回则如实返回未知写状态，不报告完成。
+- Alpha 通道失败后创建空通道并报成功的兜底已删除；Photoshop ImageData 在 JPEG 与 RAW 均失败时仍由唯一 finally 释放。guided filter 改为全分辨率精确分块，3072 路径不再同时分配十余张全帧 Float64 数组；MobileSAM 后处理不再把三像素缝隙平滑填死，嵌入缓存封顶 6 条且 dispose 释放 ONNX session。
+- UXP 面板不填目标词时继续走 Photoshop 原生 `autoCutout`；目标词存在时才进入开放词汇链。模型设置页按真实用途标注 GroundingDINO / MobileSAM / 可选 BiRefNet，并把已退出语义链的 YOLO-World 标为 legacy。
+
+### 实施边界
+
+- Harness 只负责目标身份、几何、revision、能力范围与写入收据一致性，不替 Agent 或用户猜歧义目标，也不把规则排序结果冒充选定对象。
+- 本轮只治理语义抠图链及其可复用验证，不混入 Smile 图像 Provider、依赖升级、SKU 修图或姿态统一；共享工作树中的这些改动保持原样。
+- 没有真实 Photoshop 读回的结果不能升级为已完成；未知写状态、已知截断与部分分割均保持失败关闭，但错误必须说明具体事实和可达恢复出口。
+
+### 下一步
+
+1. 提交并推送已经通过隔离核心验证的语义抠图切片，不夹带共享工作树中的其他改动。
+2. 在 DesignEcho 与 Photoshop 可用后，用固定图片和固定目标做真机 E2E，核对实际 source bounds、history、输出读回与视觉边缘；该步骤不得由源码断言替代。
+3. 语义链闭合后，再分别审计姿态统一 / SKU 修图与依赖迁移，保持独立提交和独立回滚边界。
+
+### 验证与未知
+
+- 精确 staged snapshot 已通过完整 `npm run maintenance:validate`：55 个核心检查全部通过，覆盖词表、WordPiece、GroundingDINO 候选/并发/生命周期、mask region、MobileSAM 后处理、guided filter、语义区域/目标/revision/mutation receipt、设计作者权边界、Agent 类型检查、UXP 核心测试与 UXP webpack production build。
+- 首次隔离验证还暴露本机 `node_modules` 曾被一次 EBUSY 中断的安装留下 48 个非 optional 缺包与命令启动器缺口；已严格按当前 lockfile 恢复到缺失数 0，未修改 tracked 依赖声明。这是开发环境修复，不进入本提交。
+- 尚未在真实 Photoshop 中验证 `imaging.getPixels().sourceBounds`、真实 history 变化、mask/selection/channel 读回和完整视觉结果；因此当前状态仍是代码级闭环，不能宣称真机成功率或抠图质量已达标。
+- 旧 UXP、Base64 与无法给出真实 source bounds 的 group copy 路径会按设计失败关闭；这是已知兼容性代价，后续若恢复必须提供等价几何与 revision 收据，不能恢复静默 fallback。
+
+### 状态
+
+`validated / code_complete / full_core_validation_55_passed / real_photoshop_e2e_pending`
+
+---
+
 ## 2026-08-27 SKU-STAGE-DEADLOCK-702：SKU 缺源站点死锁归因与契约修复
 
 ### 目标

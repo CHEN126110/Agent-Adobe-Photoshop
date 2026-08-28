@@ -38,10 +38,7 @@ import { openRouterGeminiImageService } from './services/openrouter-gemini-image
 import { getSubjectDetectionService, SubjectDetectionService } from './services/subject-detection-service';
 import { ContourService } from './services/contour-service';
 import { getSAMService, SAMService } from './services/sam-service';
-import {
-    createSemanticTargetLocator,
-    SemanticTargetLocatorService
-} from './services/semantic-target-locator-service';
+import { getGroundingDinoService, GroundingDinoService } from './services/grounding-dino-service';
 import { DebugBridgeService, type DebugBridgeChatSubmitInput } from './services/debug-bridge-service';
 import {
     armDebugProjectReferenceProviderReceipt,
@@ -137,7 +134,7 @@ let inpaintingService: InpaintingService | null = null;
 let subjectDetectionService: SubjectDetectionService | null = null;
 let contourService: ContourService | null = null;
 let samService: SAMService | null = null;
-let semanticTargetLocator: SemanticTargetLocatorService | null = null;
+let groundingDinoService: GroundingDinoService | null = null;
 let webviewServer: http.Server | null = null;
 let debugBridgeService: DebugBridgeService | null = null;
 let mcpHostService: MCPHostService | null = null;
@@ -1160,15 +1157,20 @@ async function initializeServices(): Promise<void> {
         logService.logAgent('info', 'SAM model unavailable, box segmentation falls back to cropped BiRefNet');
     }
 
-    // 语义目标定位服务（"抠取目标"文本 → 目标框），复用用户已配置的 Agent 模型
-    if (modelService) {
-        semanticTargetLocator = createSemanticTargetLocator(
-            modelService,
-            () => taskOrchestrator?.getAgentModels?.()?.vision || ''
-        );
-        logService.logAgent('info', 'Semantic target locator initialized');
+    // 开放词汇检测服务：文字 → 目标框。语义抠图的第一段，本地推理不依赖云端模型。
+    groundingDinoService = getGroundingDinoService({
+        modelsDir: path.join(app.getPath('userData'), 'models')
+    });
+    // 只查文件、不预加载：模型 719MB，启动时 await 会让应用多等 2.7 秒。
+    // 真正的加载推迟到第一次语义抠图时（detect 内部自行 initialize）。
+    const groundingFiles = groundingDinoService.checkModelsExist();
+    if (groundingFiles.model && groundingFiles.tokenizer) {
+        logService.logAgent('info', 'Open-vocabulary detector available (lazy load on first use)');
     } else {
-        logService.logAgent('warn', 'ModelService missing, semantic matting target locating unavailable');
+        logService.logAgent(
+            'warn',
+            `Open-vocabulary detector model missing (model=${groundingFiles.model}, tokenizer=${groundingFiles.tokenizer}); semantic matting will report it`
+        );
     }
 
     // WebSocket 服务（与 UXP 插件通信）
@@ -1196,7 +1198,7 @@ async function initializeServices(): Promise<void> {
         subjectDetectionService,
         contourService,
         samService,
-        semanticTargetLocator,
+        groundingDinoService,
         mainWindow
     };
     registerUXPHandlers(uxpContext);

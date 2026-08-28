@@ -6,7 +6,8 @@
  *    - 本地：Ollama LLM
  *    - 云端：OpenRouter / 直连 API
  * 2. 图像处理模型 - 用于抠图等图像处理
- *    - 本地 ONNX：BiRefNet + YOLO-World
+ *    - 语义抠图：GroundingDINO + MobileSAM，可选 BiRefNet 边缘增强
+ *    - 无目标词：Photoshop 原生选择主体
  */
 
 import React, { useCallback, useState, useEffect, useRef } from 'react';
@@ -511,59 +512,108 @@ interface SegmentationModel {
     folder: string;
     required: boolean;
     feature: string;  // 功能说明
+    /** 这个模型服务于哪条链路，决定标签文案 */
+    purpose: 'matting' | 'semantic' | 'legacy';
 }
 
 // 推荐的模型配置（最佳实践：文本定位 + 精确分割）
+/**
+ * 模型标签按"服务于哪条链路"来标，而不是笼统的必需/可选。
+ * 用户真正要判断的是"我要用语义抠图，得装哪几个"。
+ */
+function resolvePurposeTagText(model: SegmentationModel): string {
+    if (model.purpose === 'legacy') return '已停用';
+    if (model.purpose === 'semantic') return '语义抠图';
+    return model.required ? '必需' : '可选';
+}
+
+function resolvePurposeTagClass(model: SegmentationModel): string {
+    if (model.purpose === 'legacy') return 'is-legacy';
+    if (model.purpose === 'semantic') return 'is-semantic';
+    return model.required ? 'is-required' : 'is-optional';
+}
+
 const SEGMENTATION_MODELS: SegmentationModel[] = [
     {
         id: 'birefnet',
         name: 'BiRefNet',
         description: '高精度边缘分割',
-        feature: '精确分割 + 边缘细化',
+        feature: '本地模型抠图 + 语义边缘增强',
         size: '~928MB',
         downloadUrl: 'https://huggingface.co/onnx-community/BiRefNet-ONNX/resolve/main/onnx/model.onnx',
         mirrorUrl: 'https://hf-mirror.com/onnx-community/BiRefNet-ONNX/resolve/main/onnx/model.onnx',
         fileName: 'birefnet.onnx',
         folder: 'birefnet',
-        required: true
+        required: false,
+        purpose: 'matting'
     },
     {
-        id: 'yolo-world',
-        name: 'YOLO-World',
-        description: '开放词汇目标检测',
-        feature: '文本定位 + 目标检测',
-        size: '~49MB',
-        downloadUrl: 'https://huggingface.co/Instemic/yolo-world-onnx/resolve/main/yolov8s-worldv2.onnx',
-        mirrorUrl: 'https://hf-mirror.com/Instemic/yolo-world-onnx/resolve/main/yolov8s-worldv2.onnx',
-        fileName: 'yolov8s-worldv2.onnx',
-        folder: 'yolo-world',
-        required: false
+        id: 'grounding-dino',
+        name: 'GroundingDINO',
+        description: '开放词汇目标检测（语义抠图核心）',
+        feature: '文字 → 目标框',
+        size: '~686MB',
+        downloadUrl: 'https://huggingface.co/onnx-community/grounding-dino-tiny-ONNX/resolve/main/onnx/model.onnx',
+        mirrorUrl: 'https://hf-mirror.com/onnx-community/grounding-dino-tiny-ONNX/resolve/main/onnx/model.onnx',
+        fileName: 'model.onnx',
+        folder: 'grounding-dino',
+        required: false,
+        purpose: 'semantic'
+    },
+    {
+        id: 'grounding-dino-tokenizer',
+        name: 'GroundingDINO 词表',
+        description: '英文 BERT 分词表，与检测模型配套',
+        feature: '文字 → 目标框',
+        size: '~1MB',
+        downloadUrl: 'https://huggingface.co/onnx-community/grounding-dino-tiny-ONNX/resolve/main/tokenizer.json',
+        mirrorUrl: 'https://hf-mirror.com/onnx-community/grounding-dino-tiny-ONNX/resolve/main/tokenizer.json',
+        fileName: 'tokenizer.json',
+        folder: 'grounding-dino',
+        required: false,
+        purpose: 'semantic'
     },
     {
         id: 'sam-encoder',
         name: 'MobileSAM Encoder',
-        description: '交互式分割编码器',
-        feature: '选区分割 - 图像特征提取',
+        description: '按框精确分割 - 图像编码',
+        feature: '目标框 → 精确选区',
         size: '~27MB',
         downloadUrl: 'https://huggingface.co/PulpCut/mobilesam-onnx/resolve/main/mobilesam.encoder.onnx',
         mirrorUrl: 'https://hf-mirror.com/PulpCut/mobilesam-onnx/resolve/main/mobilesam.encoder.onnx',
         fileName: 'mobile_sam_encoder.onnx',
         folder: 'sam',
-        required: false
+        required: false,
+        purpose: 'semantic'
     },
     {
         id: 'sam-decoder',
         name: 'MobileSAM Decoder',
-        description: '交互式分割解码器',
-        feature: '选区分割 - Box Prompt 分割',
+        description: '按框精确分割 - 蒙版解码',
+        feature: '目标框 → 精确选区',
         size: '~16MB',
         downloadUrl: 'https://huggingface.co/PulpCut/mobilesam-onnx/resolve/main/mobilesam.decoder.onnx',
         mirrorUrl: 'https://hf-mirror.com/PulpCut/mobilesam-onnx/resolve/main/mobilesam.decoder.onnx',
         fileName: 'mobile_sam_decoder.onnx',
         folder: 'sam',
-        required: false
+        required: false,
+        purpose: 'semantic'
+    },
+    {
+        id: 'yolo-world',
+        name: 'YOLO-World',
+        description: '已不在链路中：需要配套的 CLIP 文本编码器，且实测对袜子等细粒度目标零检出',
+        feature: '未使用，可删除',
+        size: '~49MB',
+        downloadUrl: 'https://huggingface.co/Instemic/yolo-world-onnx/resolve/main/yolov8s-worldv2.onnx',
+        mirrorUrl: 'https://hf-mirror.com/Instemic/yolo-world-onnx/resolve/main/yolov8s-worldv2.onnx',
+        fileName: 'yolov8s-worldv2.onnx',
+        folder: 'yolo-world',
+        required: false,
+        purpose: 'legacy'
     }
 ];
+
 
 // 模型管理组件
 const SegmentationModelManager: React.FC = () => {
@@ -661,6 +711,8 @@ const SegmentationModelManager: React.FC = () => {
 
     const totalSizeText = (() => {
         const totalMb = SEGMENTATION_MODELS.reduce((sum, model) => {
+            // 已退出链路的模型不计入"需要装多少"，否则会让用户以为还得下载它
+            if (model.purpose === 'legacy') return sum;
             const value = Number(String(model.size).replace(/[^\d.]/g, '')) || 0;
             return sum + value;
         }, 0);
@@ -670,21 +722,25 @@ const SegmentationModelManager: React.FC = () => {
     return (
         <div className="segmentation-models">
             <div className="segmentation-flow">
-                <p className="segmentation-flow-title">智能分割流程</p>
+                <p className="segmentation-flow-title">语义抠图：输入文字 → 抠出该物体</p>
                 <div className="segmentation-flow-steps">
-                    <span className="segmentation-flow-step">文本定位</span>
+                    <span className="segmentation-flow-step">目标词</span>
                     <span className="segmentation-flow-arrow">→</span>
-                    <span className="segmentation-flow-step">目标检测</span>
+                    <span className="segmentation-flow-step">GroundingDINO 定位</span>
                     <span className="segmentation-flow-arrow">→</span>
-                    <span className="segmentation-flow-step">精确分割</span>
+                    <span className="segmentation-flow-step">MobileSAM 出选区</span>
+                </div>
+                <p className="segmentation-flow-title" style={{ marginTop: 10 }}>整体抠图：不填目标词</p>
+                <div className="segmentation-flow-steps">
+                    <span className="segmentation-flow-step">Photoshop 选择主体</span>
                     <span className="segmentation-flow-arrow">→</span>
-                    <span className="segmentation-flow-step">边缘细化</span>
+                    <span className="segmentation-flow-step">选区或蒙版</span>
                 </div>
             </div>
 
             <div className="segmentation-summary">
                 <span className="segmentation-summary-text">
-                    全部装齐约 {totalSizeText}，其中仅 BiRefNet 必需
+                    共 {totalSizeText}；语义抠图需要 GroundingDINO + MobileSAM，BiRefNet 用于可选边缘增强；整体选择主体走 Photoshop 原生能力
                 </span>
                 <button type="button" className="segmentation-ghost-button" onClick={openModelsFolder}>
                     打开模型目录
@@ -698,8 +754,8 @@ const SegmentationModelManager: React.FC = () => {
                         <div className="segmentation-card-head">
                             <div className="segmentation-card-title">
                                 <span className="segmentation-card-name">{model.name}</span>
-                                <span className={`segmentation-tag ${model.required ? 'is-required' : 'is-optional'}`}>
-                                    {model.required ? '必需' : '可选'}
+                                <span className={`segmentation-tag ${resolvePurposeTagClass(model)}`}>
+                                    {resolvePurposeTagText(model)}
                                 </span>
                             </div>
                             {getStatusBadge(model.id)}
@@ -753,7 +809,7 @@ const SegmentationModelManager: React.FC = () => {
                             {SEGMENTATION_MODELS.map(model => (
                                 <li key={model.id}>
                                     <code>{model.folder}/{model.fileName}</code>
-                                    {model.required ? '（必需）' : '（可选）'}
+                                    {`（${resolvePurposeTagText(model)}）`}
                                 </li>
                             ))}
                         </ul>

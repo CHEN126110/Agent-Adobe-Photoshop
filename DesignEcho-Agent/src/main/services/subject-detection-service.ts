@@ -259,10 +259,8 @@ export class SubjectDetectionService {
                 imageBuffer = Buffer.from(imageBase64, 'base64');
             }
             
-            // 检测策略：
-            // 1. 首先尝试抠图模型（像素级精度）
-            // 2. 如果抠图覆盖 > 90%（含背景），使用 YOLO-World 作为备选
-            // 3. 如果有 YOLO 结果，在 YOLO 区域内重新抠图
+            // 主体边界策略：用显著性蒙版取得像素级范围，再按阈值收紧外接框。
+            // 这里不承担文字语义定位；按目标词定位统一由 GroundingDINO 链负责。
             
             const modelToUse = options?.model || 'u2netp';
             

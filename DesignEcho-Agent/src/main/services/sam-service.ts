@@ -60,8 +60,12 @@ export class SAMService {
     
     // SAM 模型 Sessions
     private encoderSession: any = null;
-    /** 批量撒点时静音逐点日志：十几个点的完整推理日志会淹没有用信息 */
-    private quiet: boolean = false;
+    /**
+     * 静音深度：批量撒点时抑制逐点日志。
+     * 用计数而不是布尔——两个批量调用交叠时，先结束的那个会把布尔提前置回，
+     * 让后一个的日志重新刷屏。
+     */
+    private quietDepth: number = 0;
     private decoderSession: any = null;
     
     // 图像嵌入缓存（同一图像多次选区可复用）
@@ -76,6 +80,12 @@ export class SAMService {
     
     // 缓存过期时间（5分钟）
     private readonly CACHE_EXPIRY_MS = 5 * 60 * 1000;
+    /**
+     * 缓存条数上限。语义抠图会为每个目标区域各算一份嵌入，
+     * MobileSAM 单份约 4MB，只靠 5 分钟过期回收，连续抠图时会堆到几百 MB。
+     */
+    private readonly MAX_CACHE_ENTRIES = 6;
+    private cacheCleanupTimer: NodeJS.Timeout | null = null;
     
     constructor(config: SAMConfig = {}) {
         this.modelsDir = config.modelsDir || path.join(process.cwd(), 'models');
@@ -219,13 +229,7 @@ export class SAMService {
                 console.log(`[SAMService] 图像嵌入完成 (${Date.now() - encodeStart}ms)`);
 
                 // 缓存嵌入
-                this.imageEmbeddingCache.set(imageHash, {
-                    embedding: encoderOutputs,
-                    originalWidth,
-                    originalHeight,
-                    promptScale,
-                    timestamp: Date.now()
-                });
+                this.rememberEmbedding(imageHash, encoderOutputs, originalWidth, originalHeight, promptScale);
             }
 
             // 4. 准备 Prompt 输入
@@ -263,7 +267,7 @@ export class SAMService {
     
     /** 受 quiet 控制的日志：批量撒点时不逐点刷屏 */
     private log(...args: unknown[]): void {
-        if (this.quiet) return;
+        if (this.quietDepth > 0) return;
         console.log(...(args as []));
     }
 
@@ -298,17 +302,10 @@ export class SAMService {
             const encoded = await this.encodeImage(imageBuffer, originalWidth, originalHeight);
             encoderOutputs = encoded.outputs;
             promptScale = encoded.promptScale;
-            this.imageEmbeddingCache.set(imageHash, {
-                embedding: encoderOutputs,
-                originalWidth,
-                originalHeight,
-                promptScale,
-                timestamp: Date.now()
-            });
+            this.rememberEmbedding(imageHash, encoderOutputs, originalWidth, originalHeight, promptScale);
         }
 
-        const wasQuiet = this.quiet;
-        this.quiet = true;
+        this.quietDepth++;
         const results: Array<{ point: { x: number; y: number }; mask: Buffer } | null> = [];
 
         try {
@@ -328,7 +325,7 @@ export class SAMService {
                 results.push(decoded ? { point, mask: decoded.mask } : null);
             }
         } finally {
-            this.quiet = wasQuiet;
+            this.quietDepth = Math.max(0, this.quietDepth - 1);
         }
 
         const succeeded = results.filter(Boolean).length;
@@ -1030,7 +1027,11 @@ export class SAMService {
     private refineMaskWithProbabilityThreshold(mask: Buffer, width: number, height: number): Buffer {
         const result = Buffer.from(mask);
         
-        // Pass 1: 清除孤立噪点（5x5 窗口内少于 40% 为前景的像素视为噪点）
+        // Pass 1: 清除孤立噪点。
+        // 阈值必须很低：5x5 窗口跨在直边上时前景约占 48%，而边缘凸出的细节
+        // （荷叶边的尖角、织物纹理）只有 24-32%——用 40% 去筛，等于把所有边缘细节
+        // 当噪点抹掉，表现就是"选区小一圈 + 边缘被磨圆"。
+        // 12% 意味着 25 个邻居里少于 3 个是前景才算孤立点，只清真正的散点。
         for (let y = 2; y < height - 2; y++) {
             for (let x = 2; x < width - 2; x++) {
                 const idx = y * width + x;
@@ -1049,15 +1050,17 @@ export class SAMService {
                         }
                     }
                     
-                    // 如果周围少于 40% 是前景，则视为噪点
-                    if (foregroundCount / totalCount < 0.4) {
+                    // 只有几乎完全孤立的点才是噪点
+                    if (foregroundCount / totalCount < 0.12) {
                         result[idx] = 0;
                     }
                 }
             }
         }
         
-        // Pass 2: 填充前景内部的小孔洞（5x5 窗口内超过 60% 为前景的背景像素）
+        // Pass 2: 填充前景内部的小孔洞。
+        // 同样要保守：60% 会把荷叶边的镂空、织物之间的缝隙一起填平。
+        // 88% 意味着 25 个邻居里至少 22 个是前景才填，只补真正被前景包围的针孔。
         for (let y = 2; y < height - 2; y++) {
             for (let x = 2; x < width - 2; x++) {
                 const idx = y * width + x;
@@ -1076,8 +1079,8 @@ export class SAMService {
                         }
                     }
                     
-                    // 如果周围超过 60% 是前景，则填充为前景
-                    if (foregroundCount / totalCount > 0.6) {
+                    // 只有超过 88%（25 格中至少 23 格）是前景才填充
+                    if (foregroundCount / totalCount > 0.88) {
                         result[idx] = 255;
                     }
                 }
@@ -1103,7 +1106,9 @@ export class SAMService {
                     }
                 }
                 
-                if (hasFg && hasBg) {
+                // 只软化已有前景边缘，不向背景侧扩张。否则三像素镂空在 Pass 2 明明
+                // 被保留，仍会被高斯平均抬到 128 以上，等价于又把缝隙填死。
+                if (result[idx] > 0 && hasFg && hasBg) {
                     let sum = 0, ki = 0;
                     for (let dy = -1; dy <= 1; dy++) {
                         for (let dx = -1; dx <= 1; dx++) {
@@ -1231,8 +1236,39 @@ export class SAMService {
     /**
      * 启动缓存清理定时器
      */
+    /** 写入嵌入缓存，超出条数上限时淘汰最旧的一条 */
+    private rememberEmbedding(
+        imageHash: string,
+        embedding: any,
+        originalWidth: number,
+        originalHeight: number,
+        promptScale: number
+    ): void {
+        this.imageEmbeddingCache.set(imageHash, {
+            embedding,
+            originalWidth,
+            originalHeight,
+            promptScale,
+            timestamp: Date.now()
+        });
+
+        while (this.imageEmbeddingCache.size > this.MAX_CACHE_ENTRIES) {
+            let oldestKey: string | null = null;
+            let oldestAt = Infinity;
+            for (const [key, value] of this.imageEmbeddingCache) {
+                if (value.timestamp < oldestAt) {
+                    oldestAt = value.timestamp;
+                    oldestKey = key;
+                }
+            }
+            if (!oldestKey) break;
+            this.imageEmbeddingCache.delete(oldestKey);
+        }
+    }
+
     private startCacheCleanup(): void {
-        setInterval(() => {
+        if (this.cacheCleanupTimer) clearInterval(this.cacheCleanupTimer);
+        this.cacheCleanupTimer = setInterval(() => {
             const now = Date.now();
             for (const [key, value] of this.imageEmbeddingCache) {
                 if (now - value.timestamp > this.CACHE_EXPIRY_MS) {
@@ -1241,6 +1277,7 @@ export class SAMService {
                 }
             }
         }, 60 * 1000);
+        this.cacheCleanupTimer.unref?.();
     }
     
     /**
@@ -1280,9 +1317,20 @@ export class SAMService {
      * 清理资源
      */
     async dispose(): Promise<void> {
+        if (this.cacheCleanupTimer) {
+            clearInterval(this.cacheCleanupTimer);
+            this.cacheCleanupTimer = null;
+        }
         this.imageEmbeddingCache.clear();
+        const sessions = Array.from(new Set([
+            this.encoderSession,
+            this.decoderSession
+        ].filter(Boolean)));
         this.encoderSession = null;
         this.decoderSession = null;
+        await Promise.all(sessions.map(async (session) => {
+            if (typeof session.release === 'function') await session.release();
+        }));
         console.log('[SAMService] 资源已清理');
     }
 }
