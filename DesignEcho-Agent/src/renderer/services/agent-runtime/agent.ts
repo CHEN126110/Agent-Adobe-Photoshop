@@ -99,6 +99,7 @@ import {
     resolveDeclaredCapabilityVerdict
 } from '../../../shared/model-capability-verdict';
 import {
+    AGENT_MODEL_REQUEST_TIMEOUT_MS,
     AGENT_GLOBAL_SKILL_BUDGET_LIMITS,
     buildDesignTeamChildExecutionReservation,
     buildDesignTeamSingleRoleExecutionReservation,
@@ -704,7 +705,6 @@ function buildRuntimeNovelFactFingerprint(result: unknown): string | undefined {
 }
 
 type RuntimeActionPlanModule = typeof import('../../../shared/agent-runtime-v5/runtime-action-plan-declaration');
-const AGENT_MODEL_REQUEST_TIMEOUT_MS = 180_000; // Inactivity window; the run budget remains the hard boundary.
 const AGENT_AUXILIARY_MODEL_TIMEOUT_MS = 90_000;
 const AGENT_FINAL_SUMMARY_TIMEOUT_MS = 90_000;
 // Six related screens per visual call keeps a 30-screen detail page to five review calls

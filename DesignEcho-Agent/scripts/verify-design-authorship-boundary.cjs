@@ -4029,6 +4029,27 @@ const completedAestheticScorecard = scoreDesignAssertions(
         minCoverage: 0.8
     }
 );
+const completedAestheticPerformanceCapacity = {
+    usage: {
+        modelCalls: 2,
+        toolCalls: 3,
+        iterations: 2,
+        visionCandidates: 0,
+        visualAnalyses: 0,
+        activeElapsedMs: 1_000,
+        observationKeys: []
+    },
+    budget: {
+        maxModelCalls: 10,
+        maxToolCalls: 12,
+        maxIterations: 10,
+        maxVisionCandidates: 4,
+        maxInitialVisionCandidates: 0,
+        maxVisualAnalyses: 3,
+        maxFullResolutionImageReads: 0,
+        softTimeBudgetMs: 1_000_000
+    }
+};
 const completedAestheticDecision = decideQualityAwareReflexionReentry({
     handoff: {
         status: 'reflexion_required',
@@ -4053,7 +4074,8 @@ const completedAestheticDecision = decideQualityAwareReflexionReentry({
     priorReentryCount: 0,
     scorecardHistory: [completedAestheticScorecard],
     stopReason: 'final_response',
-    constraintMode: 'handoff_only'
+    constraintMode: 'handoff_only',
+    performanceCapacity: completedAestheticPerformanceCapacity
 });
 check(
     '已完成版本的可靠审美观察只唤醒 Agent 一次，不由 Harness 选择或扩大修改内容',

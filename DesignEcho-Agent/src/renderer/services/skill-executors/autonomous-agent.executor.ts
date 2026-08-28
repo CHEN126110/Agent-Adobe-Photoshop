@@ -5688,6 +5688,8 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     break;
                 }
                 if (completedAestheticImprovementReentryUsed) break;
+                const currentPerformanceUsage = activeAutonomousAgent
+                    ?.readRequestPerformanceUsageSnapshot();
                 const reentryDecision = decideQualityAwareReflexionReentry({
                     handoff: reflexionHandoff,
                     priorReentryCount: reflexionReentryCount,
@@ -5696,7 +5698,16 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     scorecardHistory: designScorecardHistory,
                     stopReason: result.stopReason,
                     ...(isCompletedAestheticImprovement ? {
-                        constraintMode: 'handoff_only' as const
+                        constraintMode: 'handoff_only' as const,
+                        ...(currentPerformanceUsage && autonomousPerformancePolicy ? {
+                            performanceCapacity: {
+                                usage: currentPerformanceUsage,
+                                budget: {
+                                    ...autonomousPerformancePolicy.budget,
+                                    maxIterations
+                                }
+                            }
+                        } : {})
                     } : {})
                 });
                 if (!reentryDecision.shouldReenter || !reflexionHandoff) {
@@ -5731,7 +5742,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                 // Agent 的 canonical PerformanceLedger 取得只读累计投影。缺身份才停止，不能为
                 // 了返工新建第二 Runtime 或把模型的 VLM 建议变成新的写入授权。
                 if (!runtimeContractBundle) {
-                    if (!runtimeSessionIdentity || !activeAutonomousAgent) {
+                    if (!runtimeSessionIdentity || !activeAutonomousAgent || !currentPerformanceUsage) {
                         qualityHaltNotice = '当前版本已保留，但本次运行缺少可承接同一请求预算的 TaskRun 身份。为避免自动返工重复计费，已停止继续修改。';
                         qualityHaltUserNotice = '这次处理已经有画面改动，但现在无法安全承接后续调整。我保留了当前版本。';
                         agentCallbacks.onStep?.({
@@ -5745,8 +5756,7 @@ export const autonomousAgentExecutor: SkillExecutor = {
                         });
                         break;
                     }
-                    requestPerformanceUsageSeed = activeAutonomousAgent
-                        .readRequestPerformanceUsageSnapshot();
+                    requestPerformanceUsageSeed = currentPerformanceUsage;
                 }
 
                 reflexionReentryCount = reentryDecision.reentryCount;

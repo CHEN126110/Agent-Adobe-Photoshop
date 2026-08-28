@@ -2,13 +2,15 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
-## 2026-08-29 r21 终局交付生命周期归因与通用修复
+## 2026-08-29 r22 完成父代被无预算空子代覆盖：新根因与通用修复
 
-- r21 正式主图 Attempt 使用 GPT-5.6 Sol、真实 Photoshop、一次性 fixture 与自然需求完成了选图、建档、构图、主体比例修正、文字修正和画面观察；生成的文档包含 8 图层、1 组、智能对象与可编辑文字。它是可看的未完成设计，不是专业质量通过结论。
-- 运行在约 31 分钟后以 `performance_budget` 结束，技术交付为 `submission_unknown_write_state`，没有 `finalArtifactRefs`；正式分母仍为失败。未完成现场已保存到临时 recovery PSB，Photoshop 文档安全关闭，运行重启后 Attempt 已 reconciliation，全局 unknown-write 安全账本为 0。
-- 已确认根因不是 Photoshop 崩溃或 GPT 模型失败：14 次模型调用均成功。主要故障是软时间预算在模型回合准入与 Tool Call 返回之间发生 TOCTOU；交付能力开放过晚、终局预算无预留、agentic 交付只取最后回执以及预算停止原因覆盖完成真相共同放大了失败。
-- 通用修复已经落地：模型回合结算租约、产物出现后的交付能力开放、三个慢回合终局预留、共享 Final Judge 窗口、结构化 terminal closure，以及同最终 revision 的完整交付集合绑定。
-- Capability Resolver、Runtime Declaration、Main /Renderer 类型、Design Authorship Boundary、Generic Executor、Agent Business Boundary、Agent production build 与完整 `maintenance:validate` 58 个核心检查已通过。代码卫生闸门发现的主循环增长已通过模块抽取消除，`agent.ts` 保持 12,826 行基线；提交推送和 r22 真机尚未完成，因此当前不能宣称技术成功率或设计质量已经改善。
+- r21 通用终局生命周期修复已以 `4549a846` 推送，Agent /UXP production build 与完整 `maintenance:validate` 58/58 通过；`agent.ts` 保持 12,826 行基线。
+- r22 正式主图 Attempt 使用全新 fixture、GPT-5.6 Sol、真实 Photoshop、1440×1440 画布和同一句自然需求。父 Run 完成 14 次成功模型调用、15 次 Tool Call、5 次 mutation /保存 /导出，产生 58,284,496 字节 PSD 与 835,805 字节 JPG；结构化终态是 `success=true / executionStatus=completed / artifactStatus=artifact_completed`。
+- Agent 使用一张模特图和四张不同平铺图形成粉咖色左右分栏设计，视觉结果明显好于 r21；终审为 `needs_review / 83`。这只证明出现可评分改善，不等于用户成稿 /Eagle 盲评通过。
+- 外层随后错误启动完成态审美子 Run。它继承约 2,065 秒活动时长，已超过 1,800 秒软预算，因此 0 模型 /0 Tool 即以 `performance_budget` 停止，并覆盖父代交付投影；Attempt 已 reconciliation，正式技术结果仍为 0/2。
+- 新根因不是模型或 Photoshop：`final_response` 只能说明父代如何结束，不能证明下一 generation 仍有完整执行容量。现有策略只识别显式 `performance_budget` stopReason，缺少对累计模型、Tool、迭代、视觉与活动时间的启动前证明。
+- 通用修复已落代码：共享性能策略定义完成态重入最小容量，Reflexion 唯一 owner 比较同一 TaskRun 累计用量和当前有效预算，Executor 复用同一快照作为容量证明与下一代 seed。任一维度不足或证明缺失时，在 run /sidecar 切换前停止重入并保留父代；不选择设计内容、不执行 Tool、不增加权限。
+- 已通过 Agent Business Boundary、Design Authorship Boundary、Runtime Declaration、Capability Resolver、Simplification Ratchet、Main /Renderer 类型检查、完整 `maintenance:validate` 58/58 与 Agent production build。第一次完整闸门因 `reflexion-reentry-policy.ts` 缺少现有变更边界分类而 fail closed；将该唯一重入 owner 归入既有 Agent 生命周期边界后从头通过，未跳过检查或改断言。提交推送、提交后 Agent /UXP identity 重建和 r23 真机仍待完成，因此当前不能宣称正式成功率已经改善。
 
 ## 2026-08-21 设计作者权与内置预设清理
 

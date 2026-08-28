@@ -1,6 +1,6 @@
 # Current Task
 
-## 2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：终局交付生命周期闭合
+## 2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：完成态代际与终局交付闭合
 
 ### 目标
 
@@ -8,20 +8,22 @@
 2. 在真实设计内容出现后，把当前任务已声明的通用交付能力加入同一个 Capability Session；只开放 schema 可见性，不替 Agent 决定保存、导出、路径或格式，也不授予执行权限。
 3. 将 `performance_budget` 从“必然失败原因”改为“停止继续思考的原因”：终态必须根据结构化完成事实结算，已完成交付不能因预算到点被改写为失败。
 4. 让 agentic 交付证据绑定同一最终内容 revision 上的全部必需产物，而不是只保留最后一次 save/export Tool Call。
+5. 完成态的可选审美改进只能在同一 TaskRun 真实剩余容量足以独立完成“修订、读回 /交付、终态结算”时启动；不得用上一代 `stopReason=final_response` 猜测仍有预算。
 
 ### 当前事实
 
-- 正式 Attempt 2 使用 GPT-5.6 Sol、真实 Photoshop、一次性 r21 fixture 与自然需求“用这些摄影图帮我做一张商品主图。”；14 次模型调用全部成功，15 次 Tool Call 中已完成选图、设计声明、建档、排版、主体放大、文字修正和真实画面观察。
-- Agent 选择了四双袜子的 `DSC05303`，形成 1440×1440、8 图层、1 组、含智能对象与可编辑文字的可看设计；它识别了主体留白过多与标签换行问题并修正。该进步不等于达到 Eagle /用户成稿的专业质量标准。
-- 运行在约 31 分钟后以 `performance_budget` 终止，技术交付为 `submission_unknown_write_state`，没有形成 `finalArtifactRefs`。未完成现场已保存为只读取证 PSB，并在重启后完成 Attempt reconciliation；正式成功率仍为 0/1。
-- 首个终局根因是模型调用在软截止前获准开始，但约两分钟后返回的 Tool Call 被 `consumePerformanceToolCallBudget` 再次按已经逾期的软时钟拒绝。系统允许模型思考，却禁止执行该思考的结果。
-- 其余根因是：通用交付能力仍为 on-demand，成稿后模型还要重新搜索；终局质量预算触发太晚；agentic 交付证据只投影最后一次保存/导出，无法同时绑定 PSD 与预览图；`performance_budget` 无条件投影失败。
+- r21 已完成首个终局根因修复并形成提交 `4549a846`，完整核心闸门 58/58 通过，分支已推送 GitHub。它解决了模型回合准入 /Tool 结算 TOCTOU、交付能力晚到、终局预留、预算停止覆盖完成事实和交付集合只取最后一张回执的问题。
+- 正式 Attempt 3 使用全新 r22 fixture、GPT-5.6 Sol、真实 Photoshop、1440×1440 画布与同一句自然需求。父 Run `run-20260828183829-b6f8c117-f39c` 的 14 次模型调用全部成功，15 次 Tool Call 中完成 5 次真实 mutation /保存 /导出；同一项目产生 58,284,496 字节 PSD 与 835,805 字节 JPG。
+- r22 Agent 不再固定选择同一张素材：它选择 `DSC08143.jpg` 作为左侧模特图，并使用 `DSC05316 / 05320 / 05323 / 05325` 四张平铺图形成右侧商品矩阵；构图、标题、色调与商品展示明显好于 r21。终审为 `needs_review / 83`，只说明存在可评审的改善，不等于达到 Eagle 或用户成稿的专业质量。
+- 父 Run 的结构化事实已经是 `success=true / final_response / executionStatus=completed / artifactStatus=artifact_completed`，PSD、JPG、最终画面观察和文档读回均已成立；但外层在父代结束后又启动了完成态审美子 Run `run-20260828183829-b6f8c117-6bb6`。该子代继承约 2,065 秒活动时长，已经超过 1,800 秒软预算，因此 0 次模型调用、0 次 Tool Call，立即以 `performance_budget` 失败，并清空父代 Debug 交付引用。
+- Attempt 因空子代覆盖父代而结算为 `submission_unknown_write_state`，随后已完成 reconciliation；正式技术结果仍为 0/2。这里不是 GPT 模型失败，也不是 Photoshop 未生成文件，而是 Harness 把“上一代为什么停止”和“下一代是否还有完整执行容量”混为一谈。
 
 ### 实施边界
 
 - 本切片只治理通用 TaskRun 生命周期，不增加主图、详情页、SKU 或单一提示词分支。
 - Capability 激活只改变已声明 Tool schema 的可见性，不执行 Tool、不选择保存路径或格式、不授予 Photoshop 写权限。
 - 预算租约不绕过硬 Tool 数、权限、目标 /revision、事务、preflight 或 unknown-write reconciliation。
+- 完成态审美建议仍只是 revision-bound 观察；剩余容量检查只决定是否启动新 Agent generation，不决定如何修改、不执行 Tool，也不把 `needs_review` 变成写入授权。
 - 技术成功继续以真实 Photoshop 写入、同目标读回、同 revision 可编辑稿与预览图交付为准；视觉质量继续单独盲评。
 
 ### 已实施的通用不变量
@@ -31,6 +33,9 @@
 - 主图 30 分钟质量预算预留三个慢模型回合用于交付闭合，并为 Final Judge / diagnosis 共享一个独立、有限的终局质量窗口；这不是无限延时。
 - agentic 最终交付只接受最后内容 mutation 之后、同一目标、同一 history、通过 `production-delivery` 验证的保存/导出回执，并按交付契约机械检查可编辑稿与光栅预览是否齐全。
 - `performance_budget` 先执行统一 Terminal Closure，再根据结构化产物、读回、质量和交付事实决定 completed / unfinished；停止原因不得覆盖已经成立的任务真相。
+- 模型 inactivity timeout、收尾回合数和完成态重入最小容量由共享性能策略单点定义；完成态可选重入至少需要 3 次模型调用、4 次 Tool Call、3 次迭代、1 个视觉候选、1 次视觉分析和 540 秒活动时间。
+- `reflexion-reentry-policy` 只读比较同一请求的累计 `RuntimePerformanceUsage` 与当前实际有效预算；任一维度不足或调用方没有提供容量证明都返回 `resource_budget_exhausted`。普通失败恢复、E2 补交付和非完成态质量循环不被这条完成态规则改写。
+- `autonomous-agent.executor` 在作出重入决定前只读取一次当前 Agent 账本，并同时用于容量证明和下一 generation seed；迭代上限使用本次请求实际生效的 `maxIterations`，不能拿较宽的 Manifest 上限冒充余量。容量不足时不持久化父代为中间代、不清空交付 sidecar、不创建空子代，父代继续作为终局结果。
 
 ### 正面经验
 
@@ -38,6 +43,7 @@
 2. 产物已经出现是开放交付 schema 的通用生命周期信号；它比关键词、任务品类或固定工作流更能复用于主图、详情页、SKU 和无 Skill 设计。
 3. “为什么停止”与“任务是否完成”是两条轴；终态只能由结构化收据和同版本事实决定。
 4. 最终产物是同一 revision 的集合，不是最后一次 Tool Call；可编辑稿和预览图必须共同绑定。
+5. generation 是有成本的生命周期事务；是否开启下一代必须看真实累计用量和完整闭合下限，不能只看上一代的文本原因或成功标签。
 
 ### 负面教训与禁止反例
 
@@ -46,25 +52,27 @@
 3. 禁止用“再加几分钟”替代终局阶段预留、生命周期准入和完成事实结算。
 4. 禁止用最后一次保存/导出回执代表整个交付集合，也禁止用停止原因覆盖同 revision 已取得的完成证据。
 5. 禁止把本次根因写成主图 Skill 专属提示、固定步骤或救援 Tool；修复必须对所有 agentic 设计任务成立。
+6. 禁止先启动一个注定没有执行余量的可选子代，再用“无进展”或“结果需复核”解释空转；容量证明必须发生在新 generation、运行记录和交付 sidecar 切换之前。
 
 ### 下一步
 
-1. 完成最终差异审查，确认没有临时补丁、业务分支或测试断言降级。
-2. 形成独立可回滚提交并推送 GitHub 当前分支。
-3. 以全新 r22 fixture、同一句自然需求、同一模型和同一素材执行正式 Attempt 3。
-4. 技术成功后再进入盲化视觉比较；文件生成不能替代设计质量结论。
+1. 完成新容量修复的最终差异审查、独立提交与 GitHub 推送；Agent production build 与完整核心闸门 58/58 已通过。
+2. 重建并重载与新提交身份一致的 Agent /UXP；以全新 r23 fixture、同一句自然需求、同一模型、同一素材和 1440×1440 画布执行正式 Attempt 4。
+3. r23 必须证明父代完成后不会创建无预算空子代，Debug Bridge 能取得同 revision PSD /JPG 引用，Attempt 能以真实结构化事实完成。
+4. 技术成功后再对 r22 /r23 可评分结果做盲化视觉比较；单张 83 分模型自评和文件生成都不能替代用户成稿 /Eagle 质量结论。
 
 ### 验证与未知
 
-- 已验证：Capability Resolver、Runtime Declaration 行为测试、Main /Renderer 类型检查、Design Authorship Boundary、Generic Executor、Agent Business Boundary、Agent production build 与完整核心闸门 58/58。
-- 已验证：r21 未完成现场已保存、文档安全关闭、Attempt 已 reconciliation、全局 unknown-write 安全账本为 0。
-- 已验证：规划、仓库卫生、编码、边界审计、功能测试、Main /Renderer 类型、UXP 测试和 production build 均执行到真实退出码 0；`agent.ts` 的新增复杂度已迁到独立模块，主循环保持 12,826 行基线。
-- 待验证：新提交加载后的 Debug Bridge /Renderer /UXP 构建身份是否一致。
-- 待验证：r22 是否完成真实 Photoshop 写入、同目标读回、PSD 与预览图同 revision 交付；单次成功仍不足以证明稳定成功率或专业视觉质量。
+- 已验证：`4549a846` 已推送；r21 通用终局修复的 Agent /UXP production build 与完整核心闸门 58/58 通过。
+- 已验证：r22 父代完成真实 Photoshop 写入、同目标读回、PSD 与 JPG 交付；空子代 0 模型 /0 Tool，并以继承活动时长超过软预算停止。Attempt 已 reconciliation，现场无未关闭写状态。
+- 已验证：新完成态容量实现的 Agent Business Boundary、Design Authorship Boundary、Runtime Declaration、Capability Resolver、Simplification Ratchet、Main /Renderer 类型检查与完整 `maintenance:validate` 58/58 通过；`agent.ts` 仍为 12,826 行。完整闸门第一次因 `reflexion-reentry-policy.ts` 未被现有变更分类器收录而 fail closed，分类归属修正后从头通过，没有跳步或改断言。
+- 已验证：本轮 Agent production build 成功；提交前 build identity 为旧 HEAD `4549a846` 加本轮源码摘要，不能冒充最终提交运行时身份。
+- 待验证：本轮提交和推送；提交后必须用新 commit identity 重建 Agent /UXP。
+- 待验证：r23 是否不再生成空子代并取得正式技术成功；之后仍需重复样本和盲化视觉评审，不能由单次结果外推稳定性或专业水平。
 
 ### 状态
 
-`in_progress / r21_reconciled / generic_terminal_lifecycle_implemented / core_58_passed / commit_and_r22_pending`
+`in_progress / r21_fix_pushed / r22_parent_completed_but_masked_by_unbudgeted_child / reentry_capacity_root_fix_core_58_and_agent_build_validated / commit_push_rebuild_and_r23_pending`
 
 ---
 

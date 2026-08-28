@@ -7,6 +7,7 @@
 
 import { classifyAgentToolExecution } from '../../../shared/agent-tool-execution-preflight';
 import type { RuntimePerformanceUsage } from '../../../shared/agent-runtime-v5/runtime-accounting';
+import { PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE } from '../../../shared/agent-performance-policy';
 import type { AgentConfig } from './types';
 
 /**
@@ -18,8 +19,6 @@ export const MAX_FINAL_QUALITY_JUDGE_CALLS = 1;
 export const MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS = 1;
 /** Host 质量版本复核（harness_quality_verification）每轮上限。 */
 export const MAX_HARNESS_QUALITY_VERIFICATION_CALLS = 3;
-/** 收尾提醒至少覆盖三次最慢模型窗口：定向修订、同版本读回/交付、终局结算。 */
-export const PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE = 3;
 // 执行供给预留（切片 2，治理切片 1 合并为单一 owner）：已授权写入的自主制作任务，
 // 尾部工具预算为「至少一次写入 + 同目标读回 + 评价」保留的调用数；探索观察不得耗尽它。
 export const EXECUTION_VERIFICATION_TOOL_RESERVE = 6;

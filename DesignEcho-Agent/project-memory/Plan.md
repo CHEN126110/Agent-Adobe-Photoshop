@@ -4,14 +4,14 @@
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
 
-1. `[已完成 r21 / 已归因]`：同一自然需求已形成可看设计，但在交付前以 `performance_budget` 终止；现场 PSB 已取证，Attempt 已在重启后 reconciliation，技术交付仍为 0/1。
-2. `[已完成根因实现]`：模型回合准入与 Tool 结算使用一次性生命周期租约；可看内容出现后幂等开放通用交付 schema；终局预留三个慢回合和共享质量窗口；`performance_budget` 不再覆盖结构化完成事实；agentic 同 revision 全产物共同绑定。
-3. `[已完成定向验证]`：Capability Resolver、Runtime Declaration 行为矩阵、Main /Renderer 类型、Design Authorship Boundary、Generic Executor 与 Agent Business Boundary 均通过。
-4. `[已完成完整闸门]`：Agent production build 与 `maintenance:validate` 58 个核心检查通过；任务卡结构和主循环复杂度两次真实失败均已修正，未修改断言或追加一次性 smoke 制造假绿。
-5. `[进行中·提交推送]`：项目状态已更新；审查 diff，形成独立可回滚提交并推送当前 GitHub 分支。
-6. `[待实机 r22]`：从锁定源创建全新 fixture，重建并重载与新提交身份一致的 Agent /UXP，以同一句需求、同一 GPT-5.6 Sol 和同一素材运行正式 Attempt 3。
-7. `[待技术与视觉验收]`：先检查真实 Photoshop 写入、同目标读回、PSD 与预览图同 revision 交付；技术成功后再与用户成稿和 Eagle 锚点盲评。单次成功不宣称稳定，更不宣称专业质量达标。
-8. `[条件后置]`：r22 暴露新偏差时只修首个可复现根因；主图固定案例稳定后才依次推进详情页、SKU、参考复刻与无 Skill 设计，质量稳定后再优化速度。
+1. `[已完成 r21 修复与推送]`：模型回合结算租约、产物后交付能力开放、终局预算、完成真相和同 revision 全产物绑定已通过完整核心闸门 58/58，并以 `4549a846` 推送当前分支。
+2. `[已完成 r22 / 已归因]`：同一句自然需求在全新 fixture 中产生完成父代、真实 PSD /JPG、同目标读回与 83 分 `needs_review` 设计；外层随后错误启动继承 2,065 秒活动时长的空子代，0 模型 /0 Tool 即触发预算并覆盖父代，Attempt reconciliation 后正式技术结果仍为 0/2。
+3. `[已完成新根因实现]`：完成态可选审美 generation 必须取得同一 TaskRun 真实剩余容量证明；至少保留 3 模型回合、4 Tool、3 迭代、1 视觉候选、1 视觉分析与 540 秒，否则在切换 run /sidecar 前停止重入并保留父代。
+4. `[已完成核心验证]`：Agent Business Boundary、Design Authorship Boundary、Runtime Declaration、Capability Resolver、Simplification Ratchet、Main /Renderer 类型检查与完整 `maintenance:validate` 58/58 通过；没有新增品类分支、权限或 Agent 主循环复杂度。
+5. `[进行中·提交]`：Agent production build 已通过；完成最终差异审查、独立提交与 GitHub 推送，随后以新 commit identity 重建 Agent /UXP。
+6. `[待实机 r23]`：从同一锁定源创建全新 fixture，重建并重载与新提交身份一致的 Agent /UXP，以同一句需求、同一 GPT-5.6 Sol、同一素材和 1440×1440 画布运行正式 Attempt 4。
+7. `[待技术与视觉验收]`：先证明不再产生无预算空子代，并取得真实 Photoshop 写入、同目标读回、PSD 与预览图同 revision 交付；技术成功后再与用户成稿和 Eagle 锚点盲评。单次成功不宣称稳定，更不宣称专业质量达标。
+8. `[条件后置]`：r23 暴露新偏差时只修首个可复现根因；主图固定案例稳定后才依次推进详情页、SKU、参考复刻与无 Skill 设计，质量稳定后再优化速度。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

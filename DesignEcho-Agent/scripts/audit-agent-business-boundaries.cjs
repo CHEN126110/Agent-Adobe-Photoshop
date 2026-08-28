@@ -4921,6 +4921,27 @@ async function run() {
       strategyAdjustments: ['泛化策略不得进入 completed handoff-only'],
       nextRoundConstraints: [diagnosedOnlyConstraint]
     };
+    const completedImprovementPerformanceCapacity = {
+      usage: {
+        modelCalls: 2,
+        toolCalls: 3,
+        iterations: 2,
+        visionCandidates: 0,
+        visualAnalyses: 0,
+        activeElapsedMs: 1_000,
+        observationKeys: []
+      },
+      budget: {
+        maxModelCalls: 10,
+        maxToolCalls: 12,
+        maxIterations: 10,
+        maxVisionCandidates: 4,
+        maxInitialVisionCandidates: 0,
+        maxVisualAnalyses: 3,
+        maxFullResolutionImageReads: 0,
+        softTimeBudgetMs: 1_000_000
+      }
+    };
     const pairedCompletedConstraint = '问题 current-revision-focus；当前画面的首要对象不够清楚；对应修法：由 Agent 根据当前像素判断一个最小调整并复核';
     const passedImprovementScorecard = scoreDesignAssertions(
       diagnosisAssertions.map((assertion) => ({
@@ -4941,21 +4962,24 @@ async function run() {
       priorReentryCount: 0,
       scorecardHistory: [passedImprovementScorecard],
       stopReason: 'final_response',
-      constraintMode: 'handoff_only'
+      constraintMode: 'handoff_only',
+      performanceCapacity: completedImprovementPerformanceCapacity
     });
     const needsReviewImprovementReentry = decideQualityAwareReflexionReentry({
       handoff: completedImprovementHandoff,
       priorReentryCount: 0,
       scorecardHistory: [diagnosedScorecard],
       stopReason: 'final_response',
-      constraintMode: 'handoff_only'
+      constraintMode: 'handoff_only',
+      performanceCapacity: completedImprovementPerformanceCapacity
     });
     const secondPassedImprovementReentry = decideQualityAwareReflexionReentry({
       handoff: completedImprovementHandoff,
       priorReentryCount: 1,
       scorecardHistory: [passedImprovementScorecard],
       stopReason: 'final_response',
-      constraintMode: 'handoff_only'
+      constraintMode: 'handoff_only',
+      performanceCapacity: completedImprovementPerformanceCapacity
     });
     if (!firstPassedImprovementReentry.shouldReenter
       || firstPassedImprovementReentry.reason !== 'reentry'
@@ -5064,7 +5088,8 @@ async function run() {
       priorReentryCount: 0,
       scorecardHistory: [passedImprovementScorecard],
       stopReason: 'final_response',
-      constraintMode: 'handoff_only'
+      constraintMode: 'handoff_only',
+      performanceCapacity: completedImprovementPerformanceCapacity
     });
     if (completedNoiseOnlyReentry.shouldReenter
       || completedNoiseOnlyReentry.reason !== 'no_actionable_constraints') {
@@ -5084,8 +5109,71 @@ async function run() {
       || !runtimeReflexionContractText.includes('observationKey?: string')
       || !executorText.includes('failureAnalysis: []')
       || !executorText.includes('strategyAdjustments: []')
-      || !executorText.includes('nextRoundConstraints: []')) {
+      || !executorText.includes('nextRoundConstraints: []')
+      || !executorText.includes('performanceCapacity: {')
+      || !executorText.includes('usage: currentPerformanceUsage')
+      || !reflexionReentryPolicyText.includes('AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM')) {
       aestheticProtocolViolations.push('completed-aesthetic-handoff-expanded-beyond-paired-advisory-observations');
+    }
+    const capacityExhaustionCases = [
+      {
+        dimension: 'model_calls',
+        usage: { ...completedImprovementPerformanceCapacity.usage, modelCalls: 8 }
+      },
+      {
+        dimension: 'tool_calls',
+        usage: { ...completedImprovementPerformanceCapacity.usage, toolCalls: 9 }
+      },
+      {
+        dimension: 'iterations',
+        usage: { ...completedImprovementPerformanceCapacity.usage, iterations: 8 }
+      },
+      {
+        dimension: 'vision_candidates',
+        usage: { ...completedImprovementPerformanceCapacity.usage, visionCandidates: 4 }
+      },
+      {
+        dimension: 'visual_analyses',
+        usage: { ...completedImprovementPerformanceCapacity.usage, visualAnalyses: 3 }
+      },
+      {
+        dimension: 'active_time_ms',
+        usage: { ...completedImprovementPerformanceCapacity.usage, activeElapsedMs: 500_000 }
+      },
+      {
+        dimension: 'invalid_usage',
+        usage: { ...completedImprovementPerformanceCapacity.usage, activeElapsedMs: Number.NaN }
+      }
+    ];
+    for (const capacityCase of capacityExhaustionCases) {
+      const capacityDecision = decideQualityAwareReflexionReentry({
+        handoff: completedImprovementHandoff,
+        priorReentryCount: 0,
+        scorecardHistory: [passedImprovementScorecard],
+        stopReason: 'final_response',
+        constraintMode: 'handoff_only',
+        performanceCapacity: {
+          usage: capacityCase.usage,
+          budget: completedImprovementPerformanceCapacity.budget
+        }
+      });
+      if (capacityDecision.shouldReenter
+        || capacityDecision.reason !== 'resource_budget_exhausted') {
+        aestheticProtocolViolations.push(
+          `completed-aesthetic-insufficient-${capacityCase.dimension}-reentered`
+        );
+      }
+    }
+    const missingCapacityDecision = decideQualityAwareReflexionReentry({
+      handoff: completedImprovementHandoff,
+      priorReentryCount: 0,
+      scorecardHistory: [passedImprovementScorecard],
+      stopReason: 'final_response',
+      constraintMode: 'handoff_only'
+    });
+    if (missingCapacityDecision.shouldReenter
+      || missingCapacityDecision.reason !== 'resource_budget_exhausted') {
+      aestheticProtocolViolations.push('completed-aesthetic-missing-capacity-proof-reentered');
     }
     const exhaustedBudgetReentry = decideQualityAwareReflexionReentry({
       handoff: completedImprovementHandoff,

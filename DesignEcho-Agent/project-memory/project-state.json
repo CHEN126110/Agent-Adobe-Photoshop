@@ -279,43 +279,48 @@
   },
   "activeSlice": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-    "summary": "Close the generic agentic delivery lifecycle exposed by r21 before rerunning the identical natural main-image request on a fresh Photoshop fixture.",
-    "status": "r21_reconciled_implementation_and_core_58_complete_commit_and_r22_pending",
+    "summary": "Close the generic terminal lifecycle exposed by r21 and prevent a completed parent generation from being masked by an optional child that lacks enough remaining execution capacity, as proven by r22.",
+    "status": "r21_fix_pushed_r22_parent_completed_but_masked_reentry_capacity_fix_core_58_and_agent_build_validated_commit_push_rebuild_and_r23_pending",
     "scope": [
       "Settle a Tool Call produced by an admitted model turn without bypassing hard limits or execution guards.",
       "Activate declared delivery capability schemas only after verified viewable content emerges and without executing them.",
       "Reserve bounded terminal turns and preserve structured completion truth at performance-budget exhaustion.",
       "Bind all required editable and raster outputs from the same final reviewed document history.",
+      "Require exact remaining model, tool, iteration, vision and active-time capacity before starting an optional completed-artifact improvement generation.",
       "Use only disposable fixture projects and preserve the dirty shared worktree.",
-      "Do not claim improved technical reliability or commercial quality before r22 and blind review."
+      "Do not claim improved technical reliability or commercial quality before r23 technical success and blind review."
     ]
   },
   "activeRequest": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-    "summary": "Fix the generic terminal delivery lifecycle revealed by r21 without adding a main-image workflow, then rerun the same natural request on a fresh r22 fixture.",
-    "status": "implementation_and_core_58_complete_commit_and_r22_pending",
+    "summary": "Preserve a completed parent result by proving that any optional next Agent generation has enough cumulative request capacity to close before switching Run and delivery projections, then rerun the same natural request on r23.",
+    "status": "reentry_capacity_root_fix_core_58_and_agent_build_validated_commit_push_rebuild_and_r23_pending",
     "mustDo": [
       "Treat model-turn admission and its returned Tool settlement as one lifecycle unit while retaining hard execution safety.",
       "Expose existing delivery schemas after a real viewable artifact exists without selecting the delivery action for the Agent.",
       "Settle completion from same-revision structured evidence rather than the performance stop reason.",
-      "Run the existing targeted contracts, production build and complete core gate before a fresh r22 Photoshop attempt."
+      "Use the same cumulative performance snapshot for completed-artifact reentry admission and the next generation seed.",
+      "Run the existing targeted contracts, production build and complete core gate before a fresh r23 Photoshop attempt."
     ],
     "mustNotDo": [
       "Do not encode the r21 failure as a main-image Skill prompt, keyword gate or forced save Tool call.",
       "Do not make capability visibility grant execution authority or bypass target/revision/preflight checks.",
       "Do not treat a longer timeout, a file path or a stop reason as design success.",
-      "Do not reuse consumed r20/r21 fixtures or modify the user's original photography project."
+      "Do not infer remaining generation capacity from final_response or a quality score.",
+      "Do not reuse consumed r20/r21/r22 fixtures or modify the user's original photography project."
     ]
   },
   "activePlan": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：r21 正式 Attempt、未完成现场取证、重启 reconciliation 与首个终局偏差归因。",
-      "已完成代码：模型回合结算租约、产物后交付能力开放、终局预算、完成真相与同 revision 全产物绑定。",
-      "已完成：定向回归、Main/Renderer 类型检查、Agent production build 与完整核心闸门 58/58。",
-      "进行中：差异审查、独立提交与推送。",
-      "待完成：创建全新 r22 fixture，重载同提交 Agent/UXP 并执行同条件 Attempt。",
+      "已完成：r21 首轮终局修复、完整核心闸门、提交推送与 r22 同条件正式 Attempt。",
+      "已完成归因：r22 父代真实完成，但外层启动继承超时账本的 0 调用空子代并覆盖父代；Attempt reconciliation 后正式技术结果仍为 0/2。",
+      "已完成代码：共享剩余容量证明、完成态 Reflexion fail-closed 与 Executor 同快照接线。",
+      "已完成：Agent Business Boundary、Design Authorship Boundary、Runtime Declaration、Capability Resolver、Simplification Ratchet、Main/Renderer 类型检查与完整核心闸门 58/58。",
+      "已完成：Agent production build。",
+      "进行中：最终差异审查、独立提交与推送；提交后以新 commit identity 重建 Agent/UXP。",
+      "待完成：创建全新 r23 fixture，重载同提交 Agent/UXP 并执行同条件 Attempt。",
       "条件后置：技术成功后做重复运行与盲化视觉质量比较。"
     ]
   },

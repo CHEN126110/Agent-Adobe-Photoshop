@@ -11,6 +11,7 @@ import {
 import type {
     SkillRuntimePerformanceProfile
 } from './agent-runtime-v5/contracts';
+import type { RuntimePerformanceUsage } from './agent-runtime-v5/runtime-accounting';
 import type {
     DesignTeamChildExecutionAllowance,
     DesignTeammateRole
@@ -50,6 +51,106 @@ export interface AgentPerformanceBudget {
     maxPrimaryOutputTokens?: number;
     /** false 时即使用户全局开启思考，也不为本次轻量任务购买 provider thinking。 */
     allowProviderThinking?: boolean;
+}
+
+/** 单次主 Agent 模型请求的 inactivity window；请求级运行预算仍是总边界。 */
+export const AGENT_MODEL_REQUEST_TIMEOUT_MS = 180_000;
+/** 收尾提醒与可选完成态返工共同使用的最小模型回合数。 */
+export const PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE = 3;
+
+export interface AgentExecutionCapacityMinimum {
+    modelCalls: number;
+    toolCalls: number;
+    iterations: number;
+    visionCandidates: number;
+    visualAnalyses: number;
+    timeMs: number;
+}
+
+/**
+ * 已完成产物的可选改进不是“再试一次”，而是一段必须能够独立闭合的下一代执行：
+ * 一轮定向修订、一轮同版本读回与交付、一轮终态结算；工具侧至少容纳 mutation、
+ * 结构/画面读回、保存和导出。该下限只治理是否启动新 generation，不选择设计动作。
+ */
+export const AGENT_COMPLETED_ARTIFACT_REENTRY_MINIMUM: Readonly<AgentExecutionCapacityMinimum>
+    = Object.freeze({
+        modelCalls: PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE,
+        toolCalls: 4,
+        iterations: PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE,
+        visionCandidates: 1,
+        visualAnalyses: 1,
+        timeMs: AGENT_MODEL_REQUEST_TIMEOUT_MS * PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE
+    });
+
+export type AgentExecutionCapacityDimension =
+    | 'model_calls'
+    | 'tool_calls'
+    | 'iterations'
+    | 'vision_candidates'
+    | 'visual_analyses'
+    | 'active_time_ms';
+
+export interface AgentExecutionCapacityRemaining {
+    modelCalls: number;
+    toolCalls: number;
+    iterations: number;
+    visionCandidates: number;
+    visualAnalyses: number;
+    timeMs: number;
+}
+
+export interface AgentExecutionCapacityAssessment {
+    sufficient: boolean;
+    remaining: AgentExecutionCapacityRemaining;
+    deficits: AgentExecutionCapacityDimension[];
+}
+
+function readRemainingExecutionCapacity(limit: number, consumed: number): number {
+    if (!Number.isFinite(limit) || !Number.isFinite(consumed) || consumed < 0) return 0;
+    if (limit < 0) return Number.POSITIVE_INFINITY;
+    const normalizedLimit = Math.max(0, Math.floor(limit));
+    const normalizedConsumed = Math.floor(consumed);
+    return Math.max(0, normalizedLimit - normalizedConsumed);
+}
+
+/**
+ * 对同一请求账本做只读剩余容量证明。它不消费额度、不延长 deadline、不授予 Tool，
+ * 也不根据任务品类或审美内容改变 minimum。
+ */
+export function evaluateAgentExecutionCapacity(input: {
+    usage: Readonly<RuntimePerformanceUsage>;
+    budget: Readonly<AgentPerformanceBudget>;
+    minimum: Readonly<AgentExecutionCapacityMinimum>;
+}): AgentExecutionCapacityAssessment {
+    const remaining: AgentExecutionCapacityRemaining = {
+        modelCalls: readRemainingExecutionCapacity(input.budget.maxModelCalls, input.usage.modelCalls),
+        toolCalls: readRemainingExecutionCapacity(input.budget.maxToolCalls, input.usage.toolCalls),
+        iterations: readRemainingExecutionCapacity(input.budget.maxIterations, input.usage.iterations),
+        visionCandidates: readRemainingExecutionCapacity(
+            input.budget.maxVisionCandidates,
+            input.usage.visionCandidates
+        ),
+        visualAnalyses: readRemainingExecutionCapacity(
+            input.budget.maxVisualAnalyses,
+            input.usage.visualAnalyses
+        ),
+        timeMs: readRemainingExecutionCapacity(
+            input.budget.softTimeBudgetMs,
+            input.usage.activeElapsedMs
+        )
+    };
+    const deficits: AgentExecutionCapacityDimension[] = [];
+    if (remaining.modelCalls < input.minimum.modelCalls) deficits.push('model_calls');
+    if (remaining.toolCalls < input.minimum.toolCalls) deficits.push('tool_calls');
+    if (remaining.iterations < input.minimum.iterations) deficits.push('iterations');
+    if (remaining.visionCandidates < input.minimum.visionCandidates) deficits.push('vision_candidates');
+    if (remaining.visualAnalyses < input.minimum.visualAnalyses) deficits.push('visual_analyses');
+    if (remaining.timeMs < input.minimum.timeMs) deficits.push('active_time_ms');
+    return {
+        sufficient: deficits.length === 0,
+        remaining,
+        deficits
+    };
 }
 
 /** Agent 核心只拥有跨 Skill 的资源安全上限，不拥有任何业务品类预算。 */
