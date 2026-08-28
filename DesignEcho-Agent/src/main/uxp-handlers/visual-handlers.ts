@@ -326,6 +326,27 @@ export function validateSemanticBaseExportReceipt(args: {
         || !(outputWidth > 0) || !(outputHeight > 0)) {
         return fail('semantic_base_output_geometry_invalid', 'output_geometry_invalid');
     }
+    const documentWidth = Number(result?.docWidth);
+    const documentHeight = Number(result?.docHeight);
+    if (!Number.isFinite(documentWidth) || !(documentWidth > 0)
+        || !Number.isFinite(documentHeight) || !(documentHeight > 0)) {
+        return fail('semantic_base_document_geometry_missing', 'document_geometry_invalid');
+    }
+    const expectedDocumentBounds = normalizeSemanticBounds({
+        left: Math.max(0, outputLeft),
+        top: Math.max(0, outputTop),
+        right: Math.min(documentWidth, outputLeft + outputWidth),
+        bottom: Math.min(documentHeight, outputTop + outputHeight)
+    });
+    if (!expectedDocumentBounds) {
+        return fail('semantic_base_layer_outside_document', 'layer_has_no_document_intersection');
+    }
+    if (!boundsApproximatelyEqual(actual, expectedDocumentBounds, 1)) {
+        return fail(
+            'semantic_base_coordinate_space_mismatch',
+            'actual_bounds_do_not_match_layer_document_intersection'
+        );
+    }
     const tolerance = 1;
     const x1 = actual.left - outputLeft;
     const y1 = actual.top - outputTop;

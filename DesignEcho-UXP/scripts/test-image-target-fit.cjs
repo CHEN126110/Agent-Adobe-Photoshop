@@ -61,6 +61,37 @@ function assertPhotoshopDocumentEditStateContract() {
     assert.match(inaccessibleState.editStateReason, /saved unavailable/);
 }
 
+function assertMattingSourceExportGeometryContract() {
+    const geometry = loadTypeScriptModule(
+        '../src/core/matting-source-export-geometry.ts',
+        'matting-source-export-geometry.ts'
+    );
+    assert.deepEqual(
+        geometry.resolveLayerFullDocumentSourceBounds({
+            layerBounds: { left: -100, top: 0, right: 900, bottom: 800 },
+            documentWidth: 1000,
+            documentHeight: 800
+        }),
+        { left: 0, top: 0, right: 900, bottom: 800 }
+    );
+    assert.deepEqual(
+        geometry.resolveLayerFullDocumentSourceBounds({
+            layerBounds: { left: 1, top: 1, right: 4672, bottom: 7007 },
+            documentWidth: 4672,
+            documentHeight: 7008
+        }),
+        { left: 1, top: 1, right: 4672, bottom: 7007 }
+    );
+    assert.throws(
+        () => geometry.resolveLayerFullDocumentSourceBounds({
+            layerBounds: { left: 2000, top: 0, right: 3000, bottom: 800 },
+            documentWidth: 1000,
+            documentHeight: 800
+        }),
+        /没有可见交集/
+    );
+}
+
 function assertDetailPageSliceDeliveryContract() {
     const contract = loadTypeScriptModule(
         '../src/tools/layout/slice-export-contract.ts',
@@ -899,6 +930,7 @@ assert.throws(
 
 assertTransformTargetBoundsTransactionContract();
 assertImagePlacementParameterConflictContracts();
+assertMattingSourceExportGeometryContract();
 assertJpegQualityNormalizationContract();
 assertExportGroupDeliveryContract();
 assertRasterExportRevisionContract();
@@ -908,4 +940,4 @@ assertSkuPairedEditableDeliveryContract();
 assertRuntimeBuildIdentityContract();
 assertPhotoshopDocumentEditStateContract();
 
-console.log('image-target-fit: 17 geometry cases, Photoshop document edit state, runtime build identity, source identity, paired SKU editable delivery, revision-bound raster export, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, matting source geometry, Photoshop document edit state, runtime build identity, source identity, paired SKU editable delivery, revision-bound raster export, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');
