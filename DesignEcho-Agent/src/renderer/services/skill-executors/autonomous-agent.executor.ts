@@ -5403,6 +5403,12 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     capabilitySession.buildPromptSection(),
                     buildDynamicDesignTaskOperatingContext(runtimeParams, context)
                 ].filter(Boolean).join('\n\n'),
+                // 通用交付能力在真实设计版本形成后才进入下一轮 Tool schema。它不绑定
+                // Manifest、不替模型选择保存/导出动作，也不授予文件写入权限；只避免
+                // Agent 到收尾阶段再额外消耗两轮搜索与装载能力。
+                activateTaskClosureCapabilities: () => (
+                    capabilitySession.activateTaskClosureCapabilities()
+                ),
                 // 无论 Manifest 是否已经绑定，Project State / reviewed memory 都由同一个
                 // Runtime Context Compiler 注入；带 applicableStages 的知识仍只在真实 Stage 可见。
                 runtimeStageContextItems,

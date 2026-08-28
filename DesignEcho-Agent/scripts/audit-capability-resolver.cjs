@@ -54,6 +54,8 @@ const files = {
   executor: 'src/renderer/services/skill-executors/autonomous-agent.executor.ts',
   engine: 'src/renderer/services/design-agent/engine.ts',
   agent: 'src/renderer/services/agent-runtime/agent.ts',
+  agenticFinalDelivery: 'src/renderer/services/agent-runtime/agentic-final-delivery-evidence.ts',
+  taskClosureCapabilityRuntime: 'src/renderer/services/agent-runtime/task-closure-capability-runtime.ts',
   terminalClosure: 'src/renderer/services/agent-runtime/terminal-closure-checkpoint.ts',
   runtimeReferenceAdapter: 'src/renderer/services/agent-runtime/runtime-reference-adapter.ts',
   designFinalReviewEvidence: 'src/renderer/services/agent-runtime/design-final-review-evidence.ts',
@@ -432,6 +434,12 @@ requireToken('skillRuntimeRegistry', 'manifestByLegacySkillId', 'Manifest-owned 
 
 requireToken('session', 'activeTools.splice', 'Capability Session must update the existing Agent tool array in place.');
 requireToken('session', 'REQUEST_AGENT_CAPABILITIES_TOOL_NAME', 'Capability Session must expose compact on-demand discovery.');
+requireToken('session', 'activateTaskClosureCapabilities(): string[];', 'Capability Session must own generic delivery-schema activation after an artifact exists.');
+requireToken('session', "capabilityId.startsWith('delivery.')", 'Task closure activation must derive delivery capabilities from the existing inventory family.');
+requireToken('executor', 'capabilitySession.activateTaskClosureCapabilities()', 'Production Agent must reuse the same Capability Session for task closure tools.');
+requireToken('agent', 'taskClosureCapabilityRuntime.ensureVisible(this.toolCallLog)', 'Production Agent must project current Tool facts through the task-closure capability lifecycle.');
+requireToken('taskClosureCapabilityRuntime', 'deriveAgentUserResultFacts(toolCallLog).hasViewableDesignChange', 'Closure capabilities must not activate for an empty document or prose-only run.');
+requireToken('taskClosureCapabilityRuntime', '不要再搜索或申请交付能力', 'The closure directive must name already-active delivery actions instead of buying another directory round.');
 requireToken('session', 'searchCapabilities(query: string', 'Capability Session must expose searchable just-in-time capability discovery.');
 requireToken('session', 'maxItems: MAX_ON_DEMAND_CAPABILITY_REQUESTS', 'Capability request schema must expose the same batch budget.');
 requireToken('session', 'getActiveCapabilityIdsForTool', 'Plan execution reconciliation must reuse the live Capability Session inventory.');
@@ -779,6 +787,12 @@ requireToken('agent', 'runtimeActionPlanDeclaration: this.runtimeActionPlanDecla
 requireToken('agent', 'buildRuntimeActionPlanReconciliationDigest', 'Agent execution summary must expose digest-only R4 execution reconciliation.');
 requireToken('agent', 'buildRuntimeActionPlanNoRedoShadowDecision', 'Agent must derive the no-redo shadow decision from the current declaration and reconciliation.');
 requireToken('agent', 'if (requiredOutputs.length === 0)', 'A raw save may satisfy E2 only when the effective contract declares no delivery outputs.');
+requireToken('agent', 'projectAgenticFinalDeliveryStageEvidence({', 'Agentic delivery must delegate its completion-contract branch to one focused mechanism.');
+requireToken('agenticFinalDelivery', 'if (!input.contract) return undefined;', 'Agentic artifact delivery must have an explicit completion-contract branch without staged gates.');
+requireToken('agenticFinalDelivery', 'projectAgenticFinalDeliveryEvidence({', 'Agentic delivery must delegate same-revision file binding to one focused mechanism.');
+requireToken('agenticFinalDelivery', 'collectRuntimeFinalArtifactPaths({', 'Agentic final delivery must bind exact saved artifact paths from result refs.');
+requireToken('agenticFinalDelivery', 'resultRefs: Array.from(new Set(resultRefs))', 'Agentic final delivery must retain every same-revision editable and raster result ref.');
+forbidPattern('agenticFinalDelivery', /callModel|executeTool|saveDocument\(|quickExport\(/, 'Agentic delivery evidence must not execute or select a delivery action.');
 requireToken('agent', 'const laterEntries = this.toolCallLog.slice(receiptIndex + 1);', 'Delivery receipts must inspect every later Tool result.');
 requireToken('agent', 'const laterSaveExportExists = laterEntries.some', 'Single-document delivery must detect a later save/export boundary.');
 requireToken('agent', 'const laterContentMutationExists = findLatestObservedPhotoshopMutationIndex(laterEntries)', 'Every delivery scope must detect later Photoshop content mutations.');
@@ -840,6 +854,7 @@ const report = {
     'critical inputs missing, needs-review and explicit failure remain distinct without default pass',
     'versioned Skill-scoped business result adapters reject Tool-success shortcuts and stale post-mutation checks',
     'declared E2 outputs require a fresh structured receipt; raw saves and post-receipt writes cannot shortcut delivery',
+    'agentic artifacts reveal generic delivery capabilities only after a viewable version and bind every same-revision final file without staged plan authority',
     'scoped-edit evaluation proves the requested change and preservation outside the target scope',
     'detail-page content verification carries stable fact refs through execution and refuses ungrounded or unsafe claims',
     'Project facts retain source and confirmation levels while Agent proposals and legacy strings remain unverified',

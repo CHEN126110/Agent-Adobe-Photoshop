@@ -2,6 +2,14 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 r21 终局交付生命周期归因与通用修复
+
+- r21 正式主图 Attempt 使用 GPT-5.6 Sol、真实 Photoshop、一次性 fixture 与自然需求完成了选图、建档、构图、主体比例修正、文字修正和画面观察；生成的文档包含 8 图层、1 组、智能对象与可编辑文字。它是可看的未完成设计，不是专业质量通过结论。
+- 运行在约 31 分钟后以 `performance_budget` 结束，技术交付为 `submission_unknown_write_state`，没有 `finalArtifactRefs`；正式分母仍为失败。未完成现场已保存到临时 recovery PSB，Photoshop 文档安全关闭，运行重启后 Attempt 已 reconciliation，全局 unknown-write 安全账本为 0。
+- 已确认根因不是 Photoshop 崩溃或 GPT 模型失败：14 次模型调用均成功。主要故障是软时间预算在模型回合准入与 Tool Call 返回之间发生 TOCTOU；交付能力开放过晚、终局预算无预留、agentic 交付只取最后回执以及预算停止原因覆盖完成真相共同放大了失败。
+- 通用修复已经落地：模型回合结算租约、产物出现后的交付能力开放、三个慢回合终局预留、共享 Final Judge 窗口、结构化 terminal closure，以及同最终 revision 的完整交付集合绑定。
+- Capability Resolver、Runtime Declaration、Main /Renderer 类型、Design Authorship Boundary、Generic Executor、Agent Business Boundary、Agent production build 与完整 `maintenance:validate` 58 个核心检查已通过。代码卫生闸门发现的主循环增长已通过模块抽取消除，`agent.ts` 保持 12,826 行基线；提交推送和 r22 真机尚未完成，因此当前不能宣称技术成功率或设计质量已经改善。
+
 ## 2026-08-21 设计作者权与内置预设清理
 
 - agentic 主图、详情页和通用单画布设计不再绑定内置版式或标准模板；`layout-recipes.ts`、详情页固定结构草案、旧主图设计配方与旧视觉分析 Prompt 已删除。平台尺寸、文件格式、SKU 数量和模板真实结构等可校验生产规格继续保留，并与审美决定分文件治理。

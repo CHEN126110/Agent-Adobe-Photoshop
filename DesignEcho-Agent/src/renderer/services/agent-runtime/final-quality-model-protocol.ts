@@ -28,6 +28,12 @@ import {
 } from '../../../shared/model-visual-presentation-receipt';
 import type { AgentMessage, ModelTransportAttemptAccounting } from './types';
 
+/**
+ * 普通执行软时限之后的终局质量结算窗口。它小于正式采集为终态保留的 5 分钟，
+ * 让一次最慢 Judge 仍可完成，同时为 Host 读回、收据发布与外层终态留出余量。
+ */
+export const FINAL_QUALITY_TERMINAL_RESERVE_MS = 240_000;
+
 export type FinalQualityDiagnosisRepairStatus =
     | 'not_run'
     | 'not_required'
@@ -169,6 +175,8 @@ export interface RunFinalQualityModelProtocolInput {
     requiredEvidenceRefsByAssertion?: Record<string, readonly string[]>;
     expectedHistoryStateRef: PhotoshopHistoryStateRef;
     configuredSoftTimeBudgetMs?: number;
+    /** 普通执行软时限之外，仅供一次终局 Judge/必要诊断共享的物理时间窗口。 */
+    terminalQualityReserveMs?: number;
     maxRequestTimeoutMs: number;
     readActiveElapsedMs: () => number;
     callJudge: (request: FinalQualityModelRequest) => Promise<FinalQualityModelResponse>;
@@ -258,9 +266,15 @@ export function projectFinalQualityDiagnosisRepairStep(
 }
 
 function resolveRequestTimeoutMs(input: RunFinalQualityModelProtocolInput): number | undefined {
+    const terminalQualityReserveMs = Math.max(
+        0,
+        Math.floor(Number(input.terminalQualityReserveMs) || 0)
+    );
     const remainingMs = typeof input.configuredSoftTimeBudgetMs === 'number'
         && Number.isFinite(input.configuredSoftTimeBudgetMs)
-        ? input.configuredSoftTimeBudgetMs - input.readActiveElapsedMs()
+        ? input.configuredSoftTimeBudgetMs
+            + terminalQualityReserveMs
+            - input.readActiveElapsedMs()
         : input.maxRequestTimeoutMs;
     if (remainingMs <= 0) return undefined;
     return Math.max(1, Math.min(input.maxRequestTimeoutMs, Math.floor(remainingMs)));

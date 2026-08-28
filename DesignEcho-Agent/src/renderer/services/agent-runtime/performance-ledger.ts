@@ -18,6 +18,8 @@ export const MAX_FINAL_QUALITY_JUDGE_CALLS = 1;
 export const MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS = 1;
 /** Host 质量版本复核（harness_quality_verification）每轮上限。 */
 export const MAX_HARNESS_QUALITY_VERIFICATION_CALLS = 3;
+/** 收尾提醒至少覆盖三次最慢模型窗口：定向修订、同版本读回/交付、终局结算。 */
+export const PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE = 3;
 // 执行供给预留（切片 2，治理切片 1 合并为单一 owner）：已授权写入的自主制作任务，
 // 尾部工具预算为「至少一次写入 + 同目标读回 + 评价」保留的调用数；探索观察不得耗尽它。
 export const EXECUTION_VERIFICATION_TOOL_RESERVE = 6;
@@ -162,9 +164,13 @@ export function shouldIssuePerformanceBudgetDisciplineDirective(input: {
     const activeElapsedMs = Math.max(0, Math.floor(Number(input.activeElapsedMs) || 0));
     const requestTimeoutMs = Math.max(1, Math.floor(Number(input.requestTimeoutMs) || 1));
     const remainingTimeMs = budget.softTimeBudgetMs - activeElapsedMs;
+    const closureTimeReserveMs = Math.min(
+        requestTimeoutMs * PERFORMANCE_CLOSURE_MODEL_TURN_RESERVE,
+        Math.max(1, Math.floor(budget.softTimeBudgetMs * 0.5))
+    );
     const timeBudgetDue = budget.softTimeBudgetMs >= 0
         && remainingTimeMs > 0
-        && remainingTimeMs <= requestTimeoutMs;
+        && remainingTimeMs <= closureTimeReserveMs;
     return callBudgetDue || timeBudgetDue;
 }
 
@@ -437,13 +443,20 @@ export function applyPerformanceModelBudgetClassAllowance(
     budgetClass: PerformanceModelBudgetClass,
     exhaustion: PerformanceBudgetExhaustion | undefined
 ): PerformanceBudgetExhaustion | undefined {
-    if (exhaustion?.dimension !== 'model_calls') return exhaustion;
-    if (budgetClass === 'final_quality_judge'
-        && ledger.finalQualityJudgeCallCount < MAX_FINAL_QUALITY_JUDGE_CALLS) {
+    if (!exhaustion) return undefined;
+    const finalQualityJudgeAllowed = budgetClass === 'final_quality_judge'
+        && ledger.finalQualityJudgeCallCount < MAX_FINAL_QUALITY_JUDGE_CALLS;
+    const diagnosisRepairAllowed = budgetClass === 'final_quality_diagnosis_repair'
+        && ledger.finalQualityDiagnosisRepairCallCount < MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS;
+    // 普通执行软时限结束后，终局 Judge 仍使用自己的固定事件槽；物理截止时间由
+    // final-quality-model-protocol 的独立 terminal reserve 负责，不能在这里再用任务软时限
+    // 把已经预留的质量结算机会抹掉。
+    if ((exhaustion.dimension === 'model_calls' || exhaustion.dimension === 'soft_time')
+        && finalQualityJudgeAllowed) {
         return undefined;
     }
-    if (budgetClass === 'final_quality_diagnosis_repair'
-        && ledger.finalQualityDiagnosisRepairCallCount < MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS) {
+    if ((exhaustion.dimension === 'model_calls' || exhaustion.dimension === 'soft_time')
+        && diagnosisRepairAllowed) {
         return undefined;
     }
     return exhaustion;
@@ -480,6 +493,8 @@ export function readPerformanceBudgetExhaustion(input: {
     elapsedMs: number;
     scope?: 'all' | 'model' | 'tool';
     hasViewableDesignChange?: boolean;
+    /** 模型请求已在软时限内获准；只允许结算该响应已经产生的 Tool Call。 */
+    settlingAdmittedModelToolCall?: boolean;
 }): PerformanceBudgetExhaustion | undefined {
     const { ledger, budget } = input;
     if (!budget) return undefined;
@@ -488,7 +503,8 @@ export function readPerformanceBudgetExhaustion(input: {
     // 普通任务预算不为终局质量 Judge 事前扣减；Judge 的独立单次验收 allowance 与硬上限
     // 由 Agent 调用点按 budgetClass 处理，本纯账本函数仍只报告普通预算的真实耗尽状态。
     const effectiveSoftTimeBudgetMs = budget.softTimeBudgetMs;
-    if (effectiveSoftTimeBudgetMs >= 0
+    if (!input.settlingAdmittedModelToolCall
+        && effectiveSoftTimeBudgetMs >= 0
         && ledger.runStartedAtMs > 0
         && input.elapsedMs >= effectiveSoftTimeBudgetMs) {
         return {
@@ -587,7 +603,10 @@ export function consumePerformanceToolCallBudget(input: {
         budget,
         elapsedMs: readPerformanceActiveElapsedMs(ledger),
         scope: 'tool',
-        hasViewableDesignChange: input.reserveContext.hasViewableDesignChange
+        hasViewableDesignChange: input.reserveContext.hasViewableDesignChange,
+        // Tool 调用来自本轮已经获准并成功返回的模型响应。软时限只阻止下一轮模型请求，
+        // 不能让本轮思考产生的动作在执行点失效；工具调用数硬上限仍照常检查。
+        settlingAdmittedModelToolCall: true
     });
     if (exhaustion) {
         return {

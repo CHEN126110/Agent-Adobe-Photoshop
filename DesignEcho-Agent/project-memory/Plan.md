@@ -1,8 +1,21 @@
 # Current Implementation Plan
 
-## 2026-08-28 唯一当前顺序：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
+## 2026-08-29 唯一当前顺序：`DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002`
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
+
+1. `[已完成 r21 / 已归因]`：同一自然需求已形成可看设计，但在交付前以 `performance_budget` 终止；现场 PSB 已取证，Attempt 已在重启后 reconciliation，技术交付仍为 0/1。
+2. `[已完成根因实现]`：模型回合准入与 Tool 结算使用一次性生命周期租约；可看内容出现后幂等开放通用交付 schema；终局预留三个慢回合和共享质量窗口；`performance_budget` 不再覆盖结构化完成事实；agentic 同 revision 全产物共同绑定。
+3. `[已完成定向验证]`：Capability Resolver、Runtime Declaration 行为矩阵、Main /Renderer 类型、Design Authorship Boundary、Generic Executor 与 Agent Business Boundary 均通过。
+4. `[已完成完整闸门]`：Agent production build 与 `maintenance:validate` 58 个核心检查通过；任务卡结构和主循环复杂度两次真实失败均已修正，未修改断言或追加一次性 smoke 制造假绿。
+5. `[进行中·提交推送]`：项目状态已更新；审查 diff，形成独立可回滚提交并推送当前 GitHub 分支。
+6. `[待实机 r22]`：从锁定源创建全新 fixture，重建并重载与新提交身份一致的 Agent /UXP，以同一句需求、同一 GPT-5.6 Sol 和同一素材运行正式 Attempt 3。
+7. `[待技术与视觉验收]`：先检查真实 Photoshop 写入、同目标读回、PSD 与预览图同 revision 交付；技术成功后再与用户成稿和 Eagle 锚点盲评。单次成功不宣称稳定，更不宣称专业质量达标。
+8. `[条件后置]`：r22 暴露新偏差时只修首个可复现根因；主图固定案例稳定后才依次推进详情页、SKU、参考复刻与无 Skill 设计，质量稳定后再优化速度。
+
+## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
+
+本节保留 r20 → r21 的历史上下文，不再拥有当前实施优先级。
 
 1. `[已完成 Attempt 1 / 已定位首个偏差]`：GPT-5.6 Sol 在 r20 真机样本中只建立空白 1440×1440 文档；已确认终态取消身份、结果投影、Case 尺寸与预算边界三类 Harness / benchmark 根因。
 2. `[已验证]`：分离用户停止与外部请求取消；结构化 Agent 终态优先；空白建档不取得设计版本信用；主图尺寸 authority 进入 preflight 与 cohort；30 分钟 Agent 预算外保留 5 分钟结算窗口；完整核心闸门 58 个阶段通过。

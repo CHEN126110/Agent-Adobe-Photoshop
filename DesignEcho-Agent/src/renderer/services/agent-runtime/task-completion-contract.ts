@@ -1887,7 +1887,7 @@ function taskRequestsEditableDelivery(input: ContractInput): boolean {
         .test(text);
 }
 
-function isRuntimeEditableDeliveryOutput(value: unknown): boolean {
+export function isRuntimeEditableDeliveryOutput(value: unknown): boolean {
     const outputRef = String(value || '').trim().toLowerCase();
     if (!outputRef) return false;
     return /(?:^|_)(?:psd|psb)(?:$|_)/.test(outputRef)
@@ -1895,7 +1895,7 @@ function isRuntimeEditableDeliveryOutput(value: unknown): boolean {
         || /(?:^|_)(?:saved|source)_document(?:$|_)/.test(outputRef);
 }
 
-function isRuntimeRasterDeliveryOutput(value: unknown): boolean {
+export function isRuntimeRasterDeliveryOutput(value: unknown): boolean {
     const outputRef = String(value || '').trim().toLowerCase();
     if (!outputRef) return false;
     return /(?:^|_)(?:preview|raster|png|jpe?g|webp|slices?|images?)(?:$|_)/.test(outputRef);

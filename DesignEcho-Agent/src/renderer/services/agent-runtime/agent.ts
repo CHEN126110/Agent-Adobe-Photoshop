@@ -389,6 +389,7 @@ import {
     runFinalQualityReviewRuntime,
     type PendingTrustedFinalComparisonWrite
 } from './final-quality-review-runtime';
+import { FINAL_QUALITY_TERMINAL_RESERVE_MS } from './final-quality-model-protocol';
 import {
     AGENT_REPLY_OUTPUT_DISCIPLINE_PROMPT,
     AGENT_RUNTIME_MESSAGE_BOUNDARY_PROMPT,
@@ -400,6 +401,7 @@ import {
     retireDeliveredAgentMessageImages
 } from './message-context';
 import { buildTaskCompletionContract } from './task-completion-contract';
+import { projectAgenticFinalDeliveryStageEvidence } from './agentic-final-delivery-evidence';
 import {
     buildSummaryFromStatefulWrites as buildSummaryFromStatefulWritesFromModule,
     buildToolResultFallbackMessage as buildToolResultFallbackMessageFromModule,
@@ -429,6 +431,7 @@ import {
     type PerformanceLedgerState,
     type PerformanceModelBudgetClass
 } from './performance-ledger';
+import { describeIncompletePerformanceBudgetStop, settlePerformanceBudgetTerminal } from './performance-budget-terminal-settlement';
 import {
     resolvePerformanceVisionBudgetSnapshot,
     resolvePerformanceVisionCallCapacity as resolvePerformanceVisionCallCapacityFromPolicy,
@@ -463,6 +466,7 @@ import {
     resolveRuntimePlanningContextSeedState
 } from './runtime-planning-context-adapter';
 import { partitionToolCallsForParallelExecution } from '../../../shared/agent-parallel-execution-policy';
+import { buildTaskClosureCapabilityDirective, TaskClosureCapabilityRuntime } from './task-closure-capability-runtime';
 import {
     attachRuntimeTaskRunBindingToPendingContinuation,
     findPendingInteractiveContinuation,
@@ -1295,6 +1299,7 @@ export class Agent {
     private lastUserSnapshotSignature = '';
     /** 自然终稿后的同实例闭合次数；只覆盖终态审计新发现的可恢复事实缺口。 */
     private terminalClosureRecoveryAttempts = 0;
+    private readonly taskClosureCapabilityRuntime: TaskClosureCapabilityRuntime;
     /** 上一次未闭合事实；同指纹再次出现即视为没有真实进展，异常早退也保留精确事实。 */
     private lastTerminalClosureGap: AgentTerminalClosureGap | undefined;
     /** E2 补交付期间复用的同 history 质量结论；任何新 mutation / Host 版本变化都会使其失效。 */
@@ -1803,6 +1808,7 @@ export class Agent {
         this.config = config;
         this.callModel = callModel;
         this.executeTool = executeTool;
+        this.taskClosureCapabilityRuntime = new TaskClosureCapabilityRuntime(config);
         const contextCapacity = buildAgentContextCapacityPlan({
             windowTokens: config.contextWindowTokens,
             requestedOutputTokens: config.performanceBudget?.maxPrimaryOutputTokens
@@ -2087,9 +2093,11 @@ export class Agent {
             requestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS
         })) return;
         this.performanceLedger.budgetDisciplineDirectiveIssued = true;
+        const activeTaskClosureTools = this.taskClosureCapabilityRuntime.ensureVisible(this.toolCallLog);
         this.messages.push(createHarnessControlMessage([
             '这次制作已经进入收尾区。不要再启动新的独立评审、广泛检索或多版本探索；使用已经确认的信息完成当前版本。',
             '如仍需改动，只做现有画面证据支持的最小可逆调整，然后完成最后一次写后读回，并保存当前版本。',
+            ...buildTaskClosureCapabilityDirective(activeTaskClosureTools),
             '如果无法做出版本，就如实说明还缺什么，不要向用户解释内部限制。'
         ].join('\n'), 'budget-discipline', 'performance-budget'));
     }
@@ -2128,33 +2136,17 @@ export class Agent {
         exhaustion: NonNullable<ReturnType<Agent['readPerformanceBudgetExhaustion']>>,
         iterations: number
     ): Promise<AgentRunResult> {
-        this.emitStep({
-            kind: 'stopped',
-            title: '任务尚未完成',
-            detail: exhaustion.message,
-            status: 'error',
-            iteration: iterations,
-            maxIterations: this.config.maxIterations,
-            issue: exhaustion.code,
-            audience: 'user',
-            visibility: 'user_process'
-        });
-        this.config.callbacks.onProgress?.('当前制作暂时停下，已保留现有进度', 100);
-        return this.buildRunResult({
-            success: false,
-            message: exhaustion.message,
+        return settlePerformanceBudgetTerminal({
+            exhaustion,
             iterations,
-            error: exhaustion.code,
-            // 预算耗尽（模型调用/工具调用/时间）用独立停机原因，别再冒充「迭代耗尽」。
-            stopReason: 'performance_budget',
-            data: {
-                performanceBudget: {
-                    ...exhaustion,
-                    modelCalls: this.performanceLedger.modelCallCount,
-                    toolCalls: this.performanceLedger.toolCallCount,
-                    elapsedMs: this.readPerformanceActiveElapsedMs()
-                }
-            }
+            maxIterations: this.config.maxIterations,
+            modelCalls: this.performanceLedger.modelCallCount,
+            toolCalls: this.performanceLedger.toolCallCount,
+            elapsedMs: this.readPerformanceActiveElapsedMs(),
+            prepareClosure: (resultInput) => this.prepareAgentTerminalClosure(resultInput),
+            buildRunResult: (resultInput, closure) => this.buildRunResult(resultInput, closure),
+            emitStep: (step) => this.emitStep(step),
+            onProgress: this.config.callbacks.onProgress
         });
     }
 
@@ -5183,6 +5175,10 @@ export class Agent {
             }
             return undefined;
         };
+        const agenticEvidence = projectAgenticFinalDeliveryStageEvidence({ contract: this.config.agenticArtifactContract, summary,
+            toolCallLog: this.toolCallLog, reviewedPreview: findReviewedPreview(), iteration: this.iteration + 1
+        });
+        if (agenticEvidence) return agenticEvidence;
         if (requiredOutputs.length === 0) {
             const savedDelivery = [...this.toolCallLog].reverse().find((entry) => (
                 entry.result?.success !== false
@@ -6053,6 +6049,7 @@ export class Agent {
         this.resetGuardState();
         if (interactiveReentryState) Object.assign(this, interactiveReentryState.runtime);
         this.finalizationNudgeSent = false;
+        this.taskClosureCapabilityRuntime.reset();
         this.visibleReasoningSent = false;
         this.latestVisiblePreActionRationale = '';
         this.emitStep({
@@ -6090,6 +6087,7 @@ export class Agent {
                     stopReason: 'cancelled'
                 });
             }
+            this.taskClosureCapabilityRuntime.ensureVisible(this.toolCallLog);
             const providerTruncationRecoveryRequest = this.providerOutputRecovery.hasPendingRequest;
             let performanceBudgetExhaustion = this.readPerformanceBudgetExhaustion();
             // Provider 截断恢复是同一个模型回合的传输补偿，不再占用任务模型调用配额；
@@ -11997,6 +11995,7 @@ export class Agent {
         // 最终质量裁决和当前证据已经把任务闭合，最终说明生成失败不能把真实交付降成
         // false negative；正文可由现有收据生成中性摘要。其它非终态错误仍不得升级。
         const verifiedForcedFinalCompletion = (input.stopReason === 'tool_budget_final_response'
+            || input.stopReason === 'performance_budget'
             || input.stopReason === 'empty_final_response')
             && executionSummary.status === 'completed';
         const success = (input.success || verifiedForcedFinalCompletion)
@@ -12291,6 +12290,7 @@ export class Agent {
             taskRunId: String(this.config.runtimeSessionIdentity?.sessionId || '').trim(),
             reflexionHandoff: this.config.reflexionHandoff,
             configuredSoftTimeBudgetMs: this.config.performanceBudget?.softTimeBudgetMs,
+            terminalQualityReserveMs: FINAL_QUALITY_TERMINAL_RESERVE_MS,
             maxRequestTimeoutMs: AGENT_MODEL_REQUEST_TIMEOUT_MS,
             readActiveElapsedMs: () => this.readPerformanceActiveElapsedMs(),
             callModel: async (budgetClass, { messages, ...requestOptions }, presentation) => {
@@ -12442,6 +12442,7 @@ export class Agent {
             }))
         );
         const hasViewableDesignChange = deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange;
+        const performanceBudgetIncompleteMessage = describeIncompletePerformanceBudgetStop(hasViewableDesignChange);
         const taskPlanObligationGap = this.resolveTaskPlanObligationGap();
         const taskProgressMissing = Boolean(taskPlanObligationGap);
         const blockers: string[] = [];
@@ -12461,10 +12462,6 @@ export class Agent {
             blockers.push(hasViewableDesignChange
                 ? '模型服务没有返回可用结果；前面的真实改动已保留，但还没完成。'
                 : '模型服务没有返回可用结果，这次还没开始动手。');
-        } else if (stopReason === 'performance_budget') {
-            blockers.push(hasViewableDesignChange
-                ? '这稿先做到这里、还没做完，你可以先看看现在的效果，或让我接着做。'
-                : '这次我还没真正开始动手做设计就停下了，你可以让我继续。');
         } else if (stopReason === 'no_progress') {
             blockers.push('这次卡住了、没能往前推进，先停下来。');
         } else if (stopReason === 'tool_preflight_blocked') {
@@ -12759,6 +12756,9 @@ export class Agent {
         });
         const downgradedByObservationGate = baseStatus === 'completed' && completionObservationGate.downgrade;
         const status: AgentExecutionSummary['status'] = downgradedByObservationGate ? 'needs_review' : baseStatus;
+        if (stopReason === 'performance_budget' && status !== 'completed') {
+            blockers.push(performanceBudgetIncompleteMessage);
+        }
         if (stopReason === 'tool_budget_final_response' && status !== 'completed') {
             warnings.push('这稿先做到这里，你看看。');
         }

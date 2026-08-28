@@ -98,6 +98,7 @@ const {
   isInMutationExecutionReserveZone,
   readPerformanceBudgetExhaustion,
   resolveExecutionSupplyReserve,
+  shouldIssuePerformanceBudgetDisciplineDirective,
   takeObservationReserveAdvice
 } = require(path.resolve(
   __dirname,
@@ -133,6 +134,7 @@ const {
   'agent-response-interruption.ts'
 ));
 const {
+  buildAgentCapabilityBaseline,
   buildRecommendedSkillFastPathBaseline,
   createAgentCapabilitySession,
   REQUEST_AGENT_CAPABILITIES_TOOL_NAME
@@ -173,7 +175,8 @@ const {
   decideTerminalClosureContinuation,
   evaluateNaturalFinalTerminalClosureCheckpoint,
   projectRecoverableTerminalClosureGap,
-  projectTerminalClosureRuntimeBoundary
+  projectTerminalClosureRuntimeBoundary,
+  resolveAgentExecutionStatus
 } = require(path.resolve(
   __dirname,
   '..',
@@ -4417,6 +4420,165 @@ function requireAgentTool(toolName) {
   return tool;
 }
 
+function buildReviewedCanvasResult(historyStateRef) {
+  const result = {
+    success: true,
+    documentId: historyStateRef.documentId,
+    historyStateId: historyStateRef.historyStateId,
+    historyStateRef,
+    snapshot: {
+      base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcR0AAAAASUVORK5CYII=' + 'A'.repeat(600),
+      format: 'png',
+      width: 1440,
+      height: 1440
+    }
+  };
+  const observationKey = `agentic-final-${historyStateRef.documentId}-${historyStateRef.historyStateId}`;
+  writeAgentVisualObservation(result, {
+    status: 'observed_by_primary',
+    reviewed: true,
+    observer: 'primary_model',
+    strategy: 'primary-self',
+    toolName: 'getCanvasSnapshot',
+    sourceId: 'active-canvas',
+    observationKey,
+    reviewDecision: {
+      version: 'visual-observation-review-decision/v1',
+      observationKey,
+      status: 'passed',
+      reviewer: 'primary_model',
+      summary: '当前完整画面已由主模型复核。'
+    }
+  });
+  return result;
+}
+
+function assertAgenticDeliveryBindsAllSameRevisionFinalArtifacts() {
+  const historyStateRef = { documentId: 541, historyStateId: 28 };
+  const config = buildAgentTestConfig({ maxIterations: 2 });
+  config.agenticArtifactContract = {
+    version: 'agentic-artifact-completion-contract/v0',
+    skillId: 'design.single_canvas_visual',
+    taskType: 'design.single_canvas_visual.v1',
+    workMode: 'create_new',
+    productionObligation: 'photoshop_mutation_with_readback',
+    deliveryOutputs: [
+      'editable_single_canvas_document',
+      'design_preview',
+      'delivery_record'
+    ],
+    exitCriteria: ['保存同一最终版本的可编辑文档与预览图。']
+  };
+  const agent = new Agent(
+    config,
+    async () => ({ content: '', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+  agent.toolCallLog = [{
+    callId: 'agentic-compose',
+    name: 'composeDesign',
+    arguments: {},
+    result: {
+      success: true,
+      activeDocumentId: historyStateRef.documentId,
+      documentId: historyStateRef.documentId,
+      historyStateRef,
+      photoshopMutationCommit: {
+        version: 'photoshop-mutation-commit/v1',
+        basis: 'same_execute_as_modal',
+        bindingStrength: 'document_revision',
+        before: { documentId: historyStateRef.documentId, historyStateId: 27, activeLayerId: null },
+        after: { documentId: historyStateRef.documentId, historyStateId: 28, activeLayerId: null },
+        toolActionCompleted: true,
+        mutationObserved: true,
+        documentChanged: false
+      }
+    },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'agentic-final-review',
+    name: 'getCanvasSnapshot',
+    arguments: {},
+    result: buildReviewedCanvasResult(historyStateRef),
+    origin: 'model_tool_call'
+  }, {
+    callId: 'agentic-save-editable',
+    name: 'saveDocument',
+    arguments: { format: 'psd', projectSubdir: '主图' },
+    result: {
+      success: true,
+      documentId: historyStateRef.documentId,
+      sourceHistoryStateRef: historyStateRef,
+      savedPath: 'C:/fixture/主图/商品主图.psd',
+      editableDocumentArtifact: {
+        version: 'runtime-editable-document-artifact/v1',
+        basis: 'uxp_post_save_file_metadata',
+        path: 'C:/fixture/主图/商品主图.psd',
+        format: 'psd',
+        byteLength: 4096,
+        modifiedAt: 1,
+        documentId: historyStateRef.documentId,
+        canvas: { width: 1440, height: 1440 }
+      }
+    },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'agentic-export-preview',
+    name: 'quickExport',
+    arguments: { format: 'jpg', outputPath: 'C:/fixture/主图/商品主图.jpg' },
+    result: {
+      success: true,
+      documentId: historyStateRef.documentId,
+      sourceHistoryStateRef: historyStateRef,
+      outputPath: 'C:/fixture/主图/商品主图.jpg',
+      format: 'jpg'
+    },
+    origin: 'model_tool_call'
+  }];
+  const summary = {
+    status: 'completed',
+    blockers: [],
+    taskCompletion: {
+      required: [{ id: 'production-delivery', status: 'passed' }]
+    },
+    designVerdict: { status: 'passed', blockers: [], warnings: [] }
+  };
+  const evidence = agent.projectDeliveryStageEvidence(summary);
+  assert.strictEqual(evidence.deliveryEvidencePassed, true);
+  assert.deepStrictEqual(evidence.finalDeliveryResultRefs, [
+    'agentic-save-editable',
+    'agentic-export-preview'
+  ], 'agentic final delivery must bind every same-revision editable and raster artifact');
+
+  agent.toolCallLog.push({
+    callId: 'agentic-later-mutation',
+    name: 'setTextContent',
+    arguments: { layerId: 9, content: 'changed after delivery' },
+    result: {
+      success: true,
+      activeDocumentId: historyStateRef.documentId,
+      documentId: historyStateRef.documentId,
+      historyStateRef: { documentId: historyStateRef.documentId, historyStateId: 29 },
+      photoshopMutationCommit: {
+        version: 'photoshop-mutation-commit/v1',
+        basis: 'same_execute_as_modal',
+        bindingStrength: 'document_revision',
+        before: { documentId: historyStateRef.documentId, historyStateId: 28, activeLayerId: null },
+        after: { documentId: historyStateRef.documentId, historyStateId: 29, activeLayerId: null },
+        toolActionCompleted: true,
+        mutationObserved: true,
+        documentChanged: false
+      }
+    },
+    origin: 'model_tool_call'
+  });
+  assert.strictEqual(
+    agent.projectDeliveryStageEvidence(summary).deliveryEvidencePassed,
+    false,
+    'a later content mutation must invalidate the earlier agentic final artifact set'
+  );
+}
+
 function createPlanNeutralIdentity(label) {
   return createRuntimeSessionIdentity({
     now: new Date().toISOString(),
@@ -7167,6 +7329,14 @@ function assertExecutionSupplyReservePureAccounting() {
     'reserve must be min(fixed cap, 20% of tool budget)'
   );
   assert.strictEqual(resolveExecutionSupplyReserve(undefined), 0);
+  const closureBudget = { ...budget, softTimeBudgetMs: 1_800_000 };
+  assert.strictEqual(shouldIssuePerformanceBudgetDisciplineDirective({
+    budget: closureBudget,
+    ledger: createPerformanceLedgerState(),
+    activeElapsedMs: 1_800_000 - (180_000 * 3),
+    imminentModelCalls: 0,
+    requestTimeoutMs: 180_000
+  }), true, 'closure discipline must reserve three slow model windows, not wait for the final turn');
   assert.strictEqual(
     isInMutationExecutionReserveZone({
       ledger: createPerformanceLedgerState(),
@@ -7315,6 +7485,39 @@ function assertExecutionSupplyReservePureAccounting() {
   });
   assert(exhaustion, 'hard tool budget must still stop all calls');
   assert.strictEqual(exhaustion.code, 'agent_tool_call_budget_exhausted');
+
+  const expiredSoftTimeLedger = createPerformanceLedgerState();
+  expiredSoftTimeLedger.runStartedAtMs = Date.now() - budget.softTimeBudgetMs - 10;
+  assert.strictEqual(
+    readPerformanceBudgetExhaustion({
+      ledger: expiredSoftTimeLedger,
+      budget,
+      elapsedMs: budget.softTimeBudgetMs + 10
+    })?.code,
+    'agent_soft_time_budget_exhausted',
+    'soft time must still stop the next model turn'
+  );
+  assert.strictEqual(consumePerformanceToolCallBudget({
+    ledger: expiredSoftTimeLedger,
+    budget,
+    reserveContext,
+    toolName: 'saveDocument',
+    toolArguments: { format: 'psd', projectSubdir: '主图' }
+  }), undefined, 'an admitted model turn must be allowed to settle its returned Tool call');
+  assert.strictEqual(resolveAgentExecutionStatus({
+    stopReason: 'performance_budget',
+    toolCallCount: 4,
+    successfulToolCalls: 4,
+    failedToolCalls: 0,
+    acceptanceFailed: 0,
+    acceptanceNeedsReview: 0,
+    noDocumentChangeRisks: 0,
+    taskCompletionStatus: 'completed',
+    designQualityHardBlocked: false,
+    taskProgressMissing: false,
+    terminalSkillOutcomeFailed: false,
+    terminalSkillOutcomeUnverified: false
+  }), 'completed', 'soft budget must not downgrade already verified completion');
 }
 
 /**
@@ -8227,7 +8430,7 @@ function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
   expiredRepairAgent.performanceLedger.finalQualityJudgeCallCount = 1;
   expiredRepairAgent.performanceLedger.finalQualityJudgeVisionCandidateCount = 1;
   expiredRepairAgent.performanceLedger.finalQualityJudgeVisionCandidateKeys = ['expired-repair-fixture'];
-  assert.throws(
+  assert.doesNotThrow(
     () => expiredRepairAgent.beginPerformanceModelCall(
       true,
       'final_quality_diagnosis_repair',
@@ -8235,9 +8438,9 @@ function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
       ['expired-repair-fixture'],
       true
     ),
-    (error) => error && error.code === 'agent_soft_time_budget_exhausted',
-    'diagnosis repair must not bypass the physical soft-time deadline'
+    'the fixed final-quality event must not be erased by the ordinary task soft-time boundary'
   );
+  assert.strictEqual(expiredRepairAgent.performanceLedger.finalQualityDiagnosisRepairCallCount, 1);
 }
 
 function buildDiagnosisRepairFixture() {
@@ -8314,6 +8517,41 @@ async function assertFinalQualityDiagnosisRepairModelProtocol() {
   assert.strictEqual(successful.results[0].confidence, 0.92, 'repair must preserve confidence');
   assert.strictEqual(successful.results[0].status, 'needs_review', 'repair must preserve status');
   assert(successful.results[0].diagnosis, 'valid diagnosis-only response must be merged');
+
+  let terminalReserveTimeoutMs = 0;
+  const terminalReserveJudge = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 100_000,
+    terminalQualityReserveMs: 20_000,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 105_000,
+    callJudge: async (request) => {
+      terminalReserveTimeoutMs = request.timeoutMs;
+      return {
+        content: JSON.stringify([
+          {
+            id: pending[0].id,
+            applicable: true,
+            score: 0.7,
+            confidence: 0.92,
+            reason: '主体力度不足',
+            diagnosis: buildDiagnosisRepairFixture()
+          },
+          { id: pending[1].id, applicable: true, score: 0.9, confidence: 0.9, reason: '当前关系稳定' }
+        ])
+      };
+    },
+    callDiagnosisRepair: async () => { throw new Error('terminal reserve fixture must not repair'); },
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(terminalReserveJudge.status, 'completed');
+  assert.strictEqual(terminalReserveTimeoutMs, 15_000,
+    'terminal quality reserve must use one shared absolute deadline beyond task soft time');
 
   let failedHistoryReads = 0;
   const failed = await runFinalQualityModelProtocol({
@@ -9044,6 +9282,27 @@ function assertOnDemandCatalogShowsEveryCapabilityFamilyWithDetailRepresentative
   assert(
     !Array.from(families).some((family) => prompt.includes(`- ${family}.`)),
     'the compact prompt must not duplicate the complete capability directory'
+  );
+}
+
+function assertTaskClosureCapabilitiesOpenOnlyAfterArtifactLifecycleSignal() {
+  const session = createAgentCapabilitySession({
+    candidateTools: getDefaultAgentTools(),
+    baselineCapabilityIds: buildAgentCapabilityBaseline(true)
+  });
+  const before = session.activeTools.map((tool) => tool.name);
+  assert(!before.includes('saveDocument'));
+  assert(!before.includes('quickExport'));
+  const activated = session.activateTaskClosureCapabilities();
+  const after = session.activeTools.map((tool) => tool.name);
+  assert(activated.includes('delivery.saveDocument'));
+  assert(activated.includes('delivery.exportAsset'));
+  assert(after.includes('saveDocument'));
+  assert(after.includes('quickExport'));
+  assert.strictEqual(
+    session.activateTaskClosureCapabilities().length,
+    0,
+    'task closure activation must be idempotent within one Capability Session'
   );
 }
 
@@ -10471,6 +10730,8 @@ async function runBehaviorAssertions() {
   await assertPlanNeutralReflexionCarriesRequestPerformanceUsage();
   assertRunLevelVisionPoolMergesKindBudgets();
   assertOnDemandCatalogShowsEveryCapabilityFamilyWithDetailRepresentatives();
+  assertTaskClosureCapabilitiesOpenOnlyAfterArtifactLifecycleSignal();
+  assertAgenticDeliveryBindsAllSameRevisionFinalArtifacts();
   assertBareContinuationResumeDecision();
   assertExecutionAuthorizationBlockerCarriesUnlockOptions();
   await assertZeroProgressWriteAuthorizedStopIsPushedBackAndEndsHonestly();

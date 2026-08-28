@@ -1,5 +1,73 @@
 # Current Task
 
+## 2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：终局交付生命周期闭合
+
+### 目标
+
+1. 修复已获准模型回合在返回 Tool Call 后又被同一软时间预算拒绝的 TOCTOU 竞态；一个回合一旦获准开始，其 Tool Call 必须获得结算机会，但仍受硬 Tool 数和执行权限约束。
+2. 在真实设计内容出现后，把当前任务已声明的通用交付能力加入同一个 Capability Session；只开放 schema 可见性，不替 Agent 决定保存、导出、路径或格式，也不授予执行权限。
+3. 将 `performance_budget` 从“必然失败原因”改为“停止继续思考的原因”：终态必须根据结构化完成事实结算，已完成交付不能因预算到点被改写为失败。
+4. 让 agentic 交付证据绑定同一最终内容 revision 上的全部必需产物，而不是只保留最后一次 save/export Tool Call。
+
+### 当前事实
+
+- 正式 Attempt 2 使用 GPT-5.6 Sol、真实 Photoshop、一次性 r21 fixture 与自然需求“用这些摄影图帮我做一张商品主图。”；14 次模型调用全部成功，15 次 Tool Call 中已完成选图、设计声明、建档、排版、主体放大、文字修正和真实画面观察。
+- Agent 选择了四双袜子的 `DSC05303`，形成 1440×1440、8 图层、1 组、含智能对象与可编辑文字的可看设计；它识别了主体留白过多与标签换行问题并修正。该进步不等于达到 Eagle /用户成稿的专业质量标准。
+- 运行在约 31 分钟后以 `performance_budget` 终止，技术交付为 `submission_unknown_write_state`，没有形成 `finalArtifactRefs`。未完成现场已保存为只读取证 PSB，并在重启后完成 Attempt reconciliation；正式成功率仍为 0/1。
+- 首个终局根因是模型调用在软截止前获准开始，但约两分钟后返回的 Tool Call 被 `consumePerformanceToolCallBudget` 再次按已经逾期的软时钟拒绝。系统允许模型思考，却禁止执行该思考的结果。
+- 其余根因是：通用交付能力仍为 on-demand，成稿后模型还要重新搜索；终局质量预算触发太晚；agentic 交付证据只投影最后一次保存/导出，无法同时绑定 PSD 与预览图；`performance_budget` 无条件投影失败。
+
+### 实施边界
+
+- 本切片只治理通用 TaskRun 生命周期，不增加主图、详情页、SKU 或单一提示词分支。
+- Capability 激活只改变已声明 Tool schema 的可见性，不执行 Tool、不选择保存路径或格式、不授予 Photoshop 写权限。
+- 预算租约不绕过硬 Tool 数、权限、目标 /revision、事务、preflight 或 unknown-write reconciliation。
+- 技术成功继续以真实 Photoshop 写入、同目标读回、同 revision 可编辑稿与预览图交付为准；视觉质量继续单独盲评。
+
+### 已实施的通用不变量
+
+- 模型回合在准入时取得一次性结算租约；返回 Tool Call 时只跳过普通软时钟复查，硬 Tool 上限、权限、目标、revision、事务与 preflight 全部继续生效。
+- 只有结构化运行事实证明已经出现可看设计内容后，才幂等激活当前任务已有的 `delivery.*` 能力；空白建档不触发，且激活不等于执行授权。
+- 主图 30 分钟质量预算预留三个慢模型回合用于交付闭合，并为 Final Judge / diagnosis 共享一个独立、有限的终局质量窗口；这不是无限延时。
+- agentic 最终交付只接受最后内容 mutation 之后、同一目标、同一 history、通过 `production-delivery` 验证的保存/导出回执，并按交付契约机械检查可编辑稿与光栅预览是否齐全。
+- `performance_budget` 先执行统一 Terminal Closure，再根据结构化产物、读回、质量和交付事实决定 completed / unfinished；停止原因不得覆盖已经成立的任务真相。
+
+### 正面经验
+
+1. 预算边界必须是生命周期租约，而不是在模型思考前后各做一次相互矛盾的瞬时判断。
+2. 产物已经出现是开放交付 schema 的通用生命周期信号；它比关键词、任务品类或固定工作流更能复用于主图、详情页、SKU 和无 Skill 设计。
+3. “为什么停止”与“任务是否完成”是两条轴；终态只能由结构化收据和同版本事实决定。
+4. 最终产物是同一 revision 的集合，不是最后一次 Tool Call；可编辑稿和预览图必须共同绑定。
+
+### 负面教训与禁止反例
+
+1. 禁止在模型回合获准开始后，再用已经流逝的软时钟否决它刚返回的动作。
+2. 禁止让模型在成稿后搜索 Harness 已知且已声明的通用交付能力；Capability 可见性仍不得偷换成自动执行。
+3. 禁止用“再加几分钟”替代终局阶段预留、生命周期准入和完成事实结算。
+4. 禁止用最后一次保存/导出回执代表整个交付集合，也禁止用停止原因覆盖同 revision 已取得的完成证据。
+5. 禁止把本次根因写成主图 Skill 专属提示、固定步骤或救援 Tool；修复必须对所有 agentic 设计任务成立。
+
+### 下一步
+
+1. 完成最终差异审查，确认没有临时补丁、业务分支或测试断言降级。
+2. 形成独立可回滚提交并推送 GitHub 当前分支。
+3. 以全新 r22 fixture、同一句自然需求、同一模型和同一素材执行正式 Attempt 3。
+4. 技术成功后再进入盲化视觉比较；文件生成不能替代设计质量结论。
+
+### 验证与未知
+
+- 已验证：Capability Resolver、Runtime Declaration 行为测试、Main /Renderer 类型检查、Design Authorship Boundary、Generic Executor、Agent Business Boundary、Agent production build 与完整核心闸门 58/58。
+- 已验证：r21 未完成现场已保存、文档安全关闭、Attempt 已 reconciliation、全局 unknown-write 安全账本为 0。
+- 已验证：规划、仓库卫生、编码、边界审计、功能测试、Main /Renderer 类型、UXP 测试和 production build 均执行到真实退出码 0；`agent.ts` 的新增复杂度已迁到独立模块，主循环保持 12,826 行基线。
+- 待验证：新提交加载后的 Debug Bridge /Renderer /UXP 构建身份是否一致。
+- 待验证：r22 是否完成真实 Photoshop 写入、同目标读回、PSD 与预览图同 revision 交付；单次成功仍不足以证明稳定成功率或专业视觉质量。
+
+### 状态
+
+`in_progress / r21_reconciled / generic_terminal_lifecycle_implemented / core_58_passed / commit_and_r22_pending`
+
+---
+
 ## 2026-08-28 DESIGN-RELIABILITY-TERMINAL-TRUTH-001：正式主图首个偏差根因修复
 
 ### 目标

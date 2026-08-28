@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-28 DESIGN-RELIABILITY-TERMINAL-TRUTH-001：根据正式主图 Attempt 1 修复三类已确认根因——调试取消误报用户停止、空白建档误报已有设计版本、Case 800×800 与当前 1440×1440 主图规格漂移；同时为 30 分钟 Agent 质量预算保留独立终态结算窗口。",
-  "currentMilestone": "DESIGN-RELIABILITY-TERMINAL-TRUTH-001",
-  "milestoneStatus": "attempt_1_failed_first_divergence_attributed_terminal_truth_and_dimension_binding_implemented_core_58_passed_attempt_2_pending",
+  "currentFocus": "2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：根据 r21 正式主图失败闭合模型回合结算、产物出现后的交付能力开放、终局预算预留、结构化完成事实与同 revision 全产物交付证据；完成核心闸门后以全新 r22 同条件实机复验。",
+  "currentMilestone": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
+  "milestoneStatus": "r21_reconciled_generic_terminal_lifecycle_implemented_core_58_passed_commit_and_r22_pending",
   "verified": {
     "code": [
+      "Design Reliability terminal lifecycle slice (2026-08-29): an admitted model turn receives a one-shot Tool settlement lease while hard Tool limits and all execution guards remain enforced; viewable artifact emergence idempotently activates existing delivery capability schemas without choosing or executing them; performance-budget terminal closure preserves structured completion truth; final quality has one bounded shared terminal deadline; agentic final delivery binds every required save/export receipt after the last content mutation on the same reviewed document/history.",
       "Design Reliability terminal truth slice (2026-08-29): user stop and external request cancellation now have separate identities; a structured non-cancel Agent terminal settles after an external Abort; user-visible design-result facts derive from the canonical atomic operation ledger and Host mutation proof, with createDocument-only state treated as workspace preparation; main-image output contracts declare runtime_setting or user_instruction canvas authority and the live preflight/cohort bind the current main-image canvas digest.",
       "Harness completion ownership slice 4 batch 2 (2026-08-14): the final-summary pure logic (buildSummaryFromStatefulWrites, readOutputPathFromToolResult, buildToolResultFallbackMessage, shouldRequestRicherFinalSummary; 107 lines) now lives in agent-runtime/final-summary.ts with thin Agent wrappers injecting runtime facts (tool log, observed mutation, save/export success, budget and intent scope); agent.ts shrank 13473 to 13418 lines with zero behavior change and no audit matcher was affected (pre-scanned).",
       "Harness completion ownership negative guard behavior tests (2026-08-14): the same reusable behavior suite now also proves the anti-07-31 boundary — chat_only, read_only_inspect and plan_only requests are never pushed back by the completion gate and always end as plain final responses, and a read-only analysis run with the same budget shape (maxToolCalls=15) executes all 14 of its observations with zero execution directives, so the execution-supply reserve can never starve read-only work.",
@@ -69,6 +70,7 @@
       "Live concurrency/resume validation, real Provider-to-Photoshop V0, live validation of the first Photoshop Craft Recipe, Release Gate, reviewed multi-sample design quality and business live E2E are not complete."
     ],
     "build": [
+      "The 2026-08-29 terminal-lifecycle slice passed the complete ordered 58-stage maintenance core after its planning-card schema and agent.ts complexity failures were fixed at their owners; Agent production build, Main/Renderer typecheck, capability/runtime/authorship/business/simplification audits, UXP tests and UXP production build all exited 0. agent.ts returned to the existing 12,826-line ratchet baseline instead of raising it. This is not an r22 live Photoshop or visual-quality claim.",
       "The 2026-08-29 terminal-truth slice reached the final UXP build in the ordered 58-stage maintenance core and the final UXP typecheck plus webpack production build was independently re-run with exit code 0; Main/Renderer typecheck, runtime declaration, Design Reliability, simplification ratchet and Agent business-boundary audits passed.",
       "The 2026-08-13 Harness recovery slice passed the full 22-check maintenance validation after real Run Record discovery, guarded Skill-internal atomic execution, bounded unknown-write reconciliation, truncation backoff, strict readback for the ten requested UXP write tools and normalized failure diagnostics. This is not a live Photoshop Host or design-quality claim.",
       "The full 22-check maintenance:validate, Main/Renderer typecheck, isolated Renderer production build, UXP production build, Runtime declaration behavior matrix, Agent business boundaries, Capability Resolver, generic Executor and Skill Package audits passed after the 2026-08-12 Runtime declaration simplification. This is not a live SKU Photoshop E2E or design-quality claim.",
@@ -276,44 +278,44 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "DESIGN-RELIABILITY-TERMINAL-TRUTH-001",
-    "summary": "Repair the first official main-image reliability divergence at the terminal, result-projection and measurement-contract owners before rerunning a fresh Photoshop fixture.",
-    "status": "implementation_complete_core_58_passed_attempt_2_pending",
+    "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
+    "summary": "Close the generic agentic delivery lifecycle exposed by r21 before rerunning the identical natural main-image request on a fresh Photoshop fixture.",
+    "status": "r21_reconciled_implementation_and_core_58_complete_commit_and_r22_pending",
     "scope": [
-      "Keep user cancellation, external request cancellation and structured Agent terminal reasons distinct.",
-      "Treat document creation alone as workspace preparation, not a viewable design result.",
-      "Bind the current main-image canvas to the official Case preflight and cohort identity.",
-      "Keep the benchmark out of production design decisions, capability visibility and Tool authorization.",
+      "Settle a Tool Call produced by an admitted model turn without bypassing hard limits or execution guards.",
+      "Activate declared delivery capability schemas only after verified viewable content emerges and without executing them.",
+      "Reserve bounded terminal turns and preserve structured completion truth at performance-budget exhaustion.",
+      "Bind all required editable and raster outputs from the same final reviewed document history.",
       "Use only disposable fixture projects and preserve the dirty shared worktree.",
-      "Do not claim Photoshop E2E or commercial quality before Attempt 2 and blind review."
+      "Do not claim improved technical reliability or commercial quality before r22 and blind review."
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-RELIABILITY-TERMINAL-TRUTH-001",
-    "summary": "Fix the first official main-image reliability divergence without adding scenario patches, then rerun the same natural request on a fresh Photoshop fixture.",
-    "status": "implementation_complete_core_58_passed_attempt_2_pending",
+    "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
+    "summary": "Fix the generic terminal delivery lifecycle revealed by r21 without adding a main-image workflow, then rerun the same natural request on a fresh r22 fixture.",
+    "status": "implementation_and_core_58_complete_commit_and_r22_pending",
     "mustDo": [
-      "Keep user stop, external request cancellation and Agent structured terminal reasons distinct.",
-      "Count only verified content mutations as a viewable design version; document creation alone is workspace preparation.",
-      "Bind the current main-image canvas contract into live preflight and cohort identity before any official write.",
-      "Run the existing targeted contracts, type/build and one full core gate before a fresh r21 Photoshop attempt."
+      "Treat model-turn admission and its returned Tool settlement as one lifecycle unit while retaining hard execution safety.",
+      "Expose existing delivery schemas after a real viewable artifact exists without selecting the delivery action for the Agent.",
+      "Settle completion from same-revision structured evidence rather than the performance stop reason.",
+      "Run the existing targeted contracts, production build and complete core gate before a fresh r22 Photoshop attempt."
     ],
     "mustNotDo": [
-      "Do not route the main-image request through a forced legacy Skill or keyword gate.",
-      "Do not encode the one-run composeDesign parameter conflict into a generic recovery prompt.",
-      "Do not treat a longer timeout as design success or hide an incomplete result.",
-      "Do not reuse the consumed r20 fixture or modify the user's original photography project."
+      "Do not encode the r21 failure as a main-image Skill prompt, keyword gate or forced save Tool call.",
+      "Do not make capability visibility grant execution authority or bypass target/revision/preflight checks.",
+      "Do not treat a longer timeout, a file path or a stop reason as design success.",
+      "Do not reuse consumed r20/r21 fixtures or modify the user's original photography project."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-RELIABILITY-TERMINAL-TRUTH-001",
+    "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：正式主图 Attempt 1 与首个偏差归因。",
-      "已完成代码：终态取消身份、空白建档投影、尺寸预检与 cohort、预算结算间隔。",
-      "待完成：完整核心闸门、差异审查、独立提交与推送。",
-      "待完成：重启新提交并 reconciliation r20。",
-      "待完成：创建全新 r21 fixture，执行同条件 Attempt 2。",
+      "已完成：r21 正式 Attempt、未完成现场取证、重启 reconciliation 与首个终局偏差归因。",
+      "已完成代码：模型回合结算租约、产物后交付能力开放、终局预算、完成真相与同 revision 全产物绑定。",
+      "已完成：定向回归、Main/Renderer 类型检查、Agent production build 与完整核心闸门 58/58。",
+      "进行中：差异审查、独立提交与推送。",
+      "待完成：创建全新 r22 fixture，重载同提交 Agent/UXP 并执行同条件 Attempt。",
       "条件后置：技术成功后做重复运行与盲化视觉质量比较。"
     ]
   },
@@ -333,5 +335,5 @@
     "capabilityDenialSuspectCount": null,
     "note": "治理切片 1/2 代码完成前的历史基线；治理后窗口由真实运行回填并用 debug:runs --convergence 对照。2026-08-16 治理切片 9 补齐两项收敛机制：首次写入延迟（run record toolCalls 增 elapsedMs 时序）与疑似能力误判启发式计数；这两项的基线值为 null（旧档案无时序、无计数口径），待新版本真机运行数据回填后补录再对照。"
   },
-  "lastUpdated": "2026-08-28"
+  "lastUpdated": "2026-08-29"
 }

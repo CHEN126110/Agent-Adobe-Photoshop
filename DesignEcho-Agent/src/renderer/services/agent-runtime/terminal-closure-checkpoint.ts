@@ -413,6 +413,7 @@ export function resolveAgentExecutionStatus(input: {
         || input.terminalSkillOutcomeFailed
         || input.taskCompletionStatus === 'failed') return 'failed';
     if (input.stopReason === 'tool_budget_final_response'
+        || input.stopReason === 'performance_budget'
         || input.stopReason === 'empty_final_response') {
         if (input.toolCallCount > 0 && input.successfulToolCalls === 0) return 'failed';
         if (input.acceptanceFailed > 0) return 'failed';

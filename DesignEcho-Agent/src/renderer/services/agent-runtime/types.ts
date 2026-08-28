@@ -287,6 +287,12 @@ export interface AgentConfig {
     /** 当前 Session 内由模型显式按需激活的 Capability；只扩展 Stage 的模型可见 provider 面。 */
     getOnDemandActivatedCapabilityIds?: () => string[];
     /**
+     * 已形成可看设计版本后，要求现有 Capability Session 原地开放通用交付能力。
+     * 回调只改变下一轮 Tool schema 可见性，不执行 Tool、不选择文件或路径、不授予权限，
+     * 也不把 agentic 任务改造成 staged 工作流。
+     */
+    activateTaskClosureCapabilities?: () => string[];
+    /**
      * 由既有 Task Profile / Capability Session 生成的实时只读作业上下文。
      * Agent 每个模型轮次重新读取；它不授予权限、不执行 Tool，也不创建第二 Context owner。
      */
