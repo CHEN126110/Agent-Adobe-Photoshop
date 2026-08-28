@@ -63,6 +63,8 @@ const BOUNDARIES = [
       'node --check scripts/report-repo-hygiene.cjs',
       'node --check scripts/report-change-boundaries.cjs',
       'node --check scripts/check-planning-alignment.cjs',
+      'node --check scripts/check-workspace-dependency-integrity.cjs',
+      'node scripts/verify-workspace-dependency-integrity.cjs',
       'node --check scripts/run-core-validation.cjs',
       'npm run maintenance:planning-check',
       'npm run maintenance:repo-hygiene:check',
@@ -83,6 +85,8 @@ const BOUNDARIES = [
        'DesignEcho-Agent/scripts/audit-agent-history-risks.cjs',
        'DesignEcho-Agent/scripts/audit-agent-simplification-ratchet.cjs',
        'DesignEcho-Agent/scripts/check-planning-alignment.cjs',
+      'DesignEcho-Agent/scripts/check-workspace-dependency-integrity.cjs',
+      'DesignEcho-Agent/scripts/verify-workspace-dependency-integrity.cjs',
       'DesignEcho-Agent/scripts/run-core-validation.cjs',
       'DesignEcho-Agent/scripts/launch-chat-ui-debug-window.cjs',
       'DesignEcho-Agent/scripts/check-build-warning-boundary.cjs'

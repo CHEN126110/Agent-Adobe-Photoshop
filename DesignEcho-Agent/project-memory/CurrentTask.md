@@ -1,5 +1,47 @@
 # Current Task
 
+## 2026-08-28 DEVELOPMENT-LOOP-RESET-001：复盘并重置高价值开发循环
+
+### 目标
+
+1. 复盘最近一次从用户问题、运行证据、根因定位、代码实现、验证到交付的完整链路，把“反复未达成时停下来反思”整理为可执行但不侵入产品 Runtime 的 GMR 方法。
+2. 恢复 `Prompt / CurrentTask / Plan / project-state` 的单一指挥链，避免多个“当前主线”同时驱动开发。
+3. 首次应用新 Development Loop：在 55 项重型验证之前，用无网络、只读 preflight 一次报告 Agent 与 UXP 的全部必需依赖、当前平台二进制和直接 CLI 启动器缺口。
+
+### 当前事实
+
+- 语义抠图切片已以 `0ef562a8` 提交并推送，精确快照通过 55 个核心检查；真实 Photoshop source bounds、history、mask /selection /channel 读回与视觉边缘仍未 E2E 验证。
+- 上一轮完整验证在业务测试前后分别暴露规划卡结构缺口、`@cspotcode/source-map-support`、`@img/colour`、48 个非 optional 包和 `.bin` 启动器残缺；根因是一次被 Electron 文件锁以 EBUSY 中断的安装。环境未预检时重复从头运行完整闸门没有新增产品证据。
+- 共享工作树仍混有依赖迁移、Smile Provider、SKU 修图和姿态统一改动；语义提交通过精确暂存与隔离工作树避免夹带，但事后拆分成本较高。
+- 姿态链只读审计已发现 Alpha 导出、document /revision /transaction、显隐参数和旧 UI 协议等 P0，证明静态可编译不能替代运行链与事务审查；当前姿态改动不得整体提交。
+- 仓库此前没有在 `maintenance:validate` 重型阶段前核对两仓 lock、安装版本、平台 payload 与 CLI launcher 的统一检查。
+
+### 实施边界
+
+- GMR 与依赖 preflight 只属于开发治理，不创建 Runtime 状态、Gate、Registry、Evidence 阶段或用户可见流程，也不改变 Agent / Harness / Skill / Provider 设计作者权。
+- preflight 只读取 `package.json`、权威 `package-lock.json` 与 `node_modules`；不读取隐藏 lock 作为成功依据，不联网、不自动安装、不改写依赖，并一次汇总后统一失败。
+- 本切片不继续开发语义、姿态、SKU、Smile 或依赖迁移；不同支线保持独立提交、验证和回滚。
+
+### 下一步
+
+1. 已完成：GMR、北极星与单一当前顺序已进入各自权威 owner，规划检查不再报告 activeRequest /activePlan 漂移。
+2. 已完成：依赖完整性 preflight 及攻击型 fixture 已接入核心验证第一个阶段，并在重型命令前 fail-fast。
+3. 推送独立检查点；随后以固定语义抠图 Photoshop E2E 作为第一项恢复实验。
+
+### 验证与未知
+
+- 已核实：17 组 fixture 覆盖多缺口聚合、optional /当前平台 payload、版本与根声明漂移、平台冲突、路径逃逸、缺 target、缺失 /陈旧 launcher、损坏 JSON 和两仓汇总；当前共享工作树的权威 lock 与本机依赖汇总为 Agent 636/636、UXP 148/148，27 个直接 CLI 身份完整。
+- 已核实：规划、入口文档、UTF-8、变更边界、仓库卫生、Node 语法和 diff 检查通过；核心 runner 在隔离分支故意接入不匹配的现有安装树时，第一阶段一次报告旧 lock 与当前安装的 3 个差异并停止，未启动后续重型命令。
+- 已核实：Development Loop 代码检查点叠加当前待独立提交的依赖迁移 manifest /lock 后，完整 `maintenance:validate` 57 项通过，新增 preflight 与 17 项契约位于最前，Agent 类型检查、UXP 核心测试和 production build 均完成；依赖文件仅作为匹配本机安装树的验证 overlay，没有进入本提交。
+- 待验证：独立提交自身旧 lock 的全量维护入口仍需要与该 lock 匹配的安装树；当前 upgraded `node_modules` 会被 preflight 一次报告 3 个版本 /嵌套依赖差异并在重型命令前停止，不能把这项正确拒绝改成假绿。
+- 待后续真机：语义抠图固定案例；本任务卡完成只证明研发循环与环境 preflight 可执行，不证明设计质量或 Photoshop E2E。
+
+### 状态
+
+`validated / gmr_defined / dependency_preflight_targeted_validated / core_57_with_dependency_overlay_passed / exact_lock_install_pending / photoshop_e2e_pending`
+
+---
+
 ## 2026-08-28 SEMANTIC-MATTING-INVARIANT-001：语义抠图目标、几何与 Photoshop 写入事实闭环
 
 ### 目标
@@ -27,7 +69,7 @@
 
 ### 下一步
 
-1. 提交并推送已经通过隔离核心验证的语义抠图切片，不夹带共享工作树中的其他改动。
+1. 已完成：语义抠图切片以 `0ef562a8` 提交并推送，未夹带共享工作树中的其他改动。
 2. 在 DesignEcho 与 Photoshop 可用后，用固定图片和固定目标做真机 E2E，核对实际 source bounds、history、输出读回与视觉边缘；该步骤不得由源码断言替代。
 3. 语义链闭合后，再分别审计姿态统一 / SKU 修图与依赖迁移，保持独立提交和独立回滚边界。
 

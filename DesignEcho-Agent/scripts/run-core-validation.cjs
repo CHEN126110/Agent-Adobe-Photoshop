@@ -11,6 +11,18 @@ const uxpRoot = path.join(repoRoot, "DesignEcho-UXP");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 const COMMANDS = [
+  {
+    label: "依赖环境完整性",
+    cwd: agentRoot,
+    executable: process.execPath,
+    args: [path.join(agentRoot, "scripts", "check-workspace-dependency-integrity.cjs")]
+  },
+  {
+    label: "依赖环境完整性契约",
+    cwd: agentRoot,
+    executable: process.execPath,
+    args: [path.join(agentRoot, "scripts", "verify-workspace-dependency-integrity.cjs")]
+  },
   { label: "规划一致性", cwd: agentRoot, args: ["run", "maintenance:planning-check"] },
   { label: "仓库卫生", cwd: agentRoot, args: ["run", "maintenance:repo-hygiene:check"] },
   { label: "变更边界分类", cwd: agentRoot, args: ["run", "maintenance:change-boundaries:check"] },
@@ -70,11 +82,12 @@ const COMMANDS = [
 
 function runCommand(command) {
   console.log(`[core-validation] ${command.label}`);
-  const result = spawnSync(npmCommand, command.args, {
+  const executable = command.executable || npmCommand;
+  const result = spawnSync(executable, command.args, {
     cwd: command.cwd,
     stdio: "inherit",
     windowsHide: true,
-    shell: process.platform === "win32"
+    shell: process.platform === "win32" && executable === npmCommand
   });
 
   if (result.error) {
