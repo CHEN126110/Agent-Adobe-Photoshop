@@ -54,6 +54,11 @@ import {
 } from '../../shared/provider-stream-completion';
 import { ClaudeSubscriptionService } from './claude-subscription-service';
 import { CodexSubscriptionService } from './codex-subscription-service';
+import {
+    commitDebugProjectReferenceProviderReceipt,
+    prepareDebugProjectReferenceProviderCandidate,
+    readDebugProjectReferenceProviderCandidateKeys
+} from './debug-project-reference-provider-receipt';
 import { ProviderSseDecoder } from './provider-sse-decoder';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
@@ -189,6 +194,7 @@ interface ModelChatOptions {
     timeoutMs?: number;
     thinkingEnabled?: boolean;
     reasoningEffort?: ModelReasoningEffort;
+    visualPresentationCandidateKeys?: string[];
 }
 
 function resolveOpenAICompatibleTimeoutMs(options?: ModelChatOptions): number {
@@ -207,6 +213,20 @@ function createModelStreamAbortError(): Error & { code: string } {
     error.name = 'AbortError';
     error.code = 'stream_aborted';
     return error;
+}
+
+function requireDebugProjectReferenceProviderReceipt(
+    candidate: Parameters<typeof commitDebugProjectReferenceProviderReceipt>[0],
+    options: Parameters<typeof commitDebugProjectReferenceProviderReceipt>[1]
+): void {
+    if (!candidate) return;
+    const receipt = commitDebugProjectReferenceProviderReceipt(candidate, options);
+    if (receipt) return;
+    const error = new Error(
+        '受控调试无法证明目标参考进入真实 Provider 请求，已在 Photoshop 写入前中止本轮。'
+    ) as Error & { code?: string };
+    error.code = 'debug_project_reference_provider_receipt_unverified';
+    throw error;
 }
 
 function awaitModelCallWithCancellation<T>(
@@ -295,6 +315,7 @@ export interface ModelResponse {
         inputTokens: number;
         outputTokens: number;
     };
+    visualPresentationReceipt?: unknown;
 }
 
 export interface AgentToolStreamHandle extends EventEmitter {
@@ -528,7 +549,8 @@ export class ModelService {
     async chat(
         modelId: string,
         messages: ModelMessage[],
-        options?: ModelChatOptions
+        options?: ModelChatOptions,
+        debugTransportMetadata?: unknown
     ): Promise<ModelResponse> {
         console.log(`[ModelService] ========== chat() 被调用 ==========`);
         console.log(`[ModelService] modelId: ${modelId}`);
@@ -570,8 +592,27 @@ export class ModelService {
         // 「chat() 被调用」，真实原因（HTTP 状态、provider 报文、apiModelId 对不对）全部丢失。
         // 真机 2026-08-01 因此无法定位：用户看到「当前模型没有通过认证」，而日志里没有任何错误行，
         // 只能靠猜。诊断信息按用户可诊断性要求给全：内部 id、真实 API 模型名、provider、原始错误。
+        const debugProjectReferenceCandidate = prepareDebugProjectReferenceProviderCandidate(
+            messages,
+            'chat',
+            debugTransportMetadata
+        );
         try {
-            return await this.dispatchChatByProvider(model, messages, options);
+            const response = await this.dispatchChatByProvider(model, messages, {
+                ...options,
+                ...(debugProjectReferenceCandidate ? {
+                    visualPresentationCandidateKeys:
+                        readDebugProjectReferenceProviderCandidateKeys(
+                            debugProjectReferenceCandidate
+                        )
+                } : {})
+            });
+            requireDebugProjectReferenceProviderReceipt(debugProjectReferenceCandidate, {
+                provider: model.provider,
+                modelId: model.apiModelId || model.id,
+                visualPresentationReceipt: response.visualPresentationReceipt
+            });
+            return response;
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             const status = (error as any)?.status ?? (error as any)?.statusCode ?? '';
@@ -614,14 +655,18 @@ export class ModelService {
                     this.toAdapterMessages(messages),
                     [],
                     {
-                        timeoutMs: options?.timeoutMs,
-                        reasoningEffort: options?.reasoningEffort
-                    }
-                );
-                return {
-                    text: response.content || '',
-                    usage: response.usage
-                };
+                    timeoutMs: options?.timeoutMs,
+                    reasoningEffort: options?.reasoningEffort,
+                    visualPresentationCandidateKeys: options?.visualPresentationCandidateKeys
+                }
+            );
+            return {
+                text: response.content || '',
+                usage: response.usage,
+                ...(response.visualPresentationReceipt ? {
+                    visualPresentationReceipt: response.visualPresentationReceipt
+                } : {})
+            };
             }
             case 'claude-subscription': {
                 if (!this.claudeSubscriptionService) {
@@ -1984,7 +2029,8 @@ export class ModelService {
         modelId: string,
         messages: AdapterMessage[],
         tools: ToolSchema[],
-        options?: ModelToolCallOptions
+        options?: ModelToolCallOptions,
+        debugTransportMetadata?: unknown
     ): Promise<ProviderResponse> {
         console.log(`[ModelService] chatWithTools() modelId=${modelId}, tools=${tools.length}, messages=${messages.length}`);
 
@@ -2002,13 +2048,19 @@ export class ModelService {
             }
         }
 
+        const debugProjectReferenceCandidate = prepareDebugProjectReferenceProviderCandidate(
+            messages,
+            'chat_with_tools',
+            debugTransportMetadata
+        );
+
         // Resolve provider
         const { provider, apiModelName } = this.resolveProvider(modelId);
         if (provider === 'openai-codex') {
             if (!this.codexSubscriptionService) {
                 throw new Error('ChatGPT 订阅服务尚未初始化。');
             }
-            return this.codexSubscriptionService.chatWithTools(
+            const response = await this.codexSubscriptionService.chatWithTools(
                 apiModelName,
                 messages,
                 tools,
@@ -2016,20 +2068,34 @@ export class ModelService {
                     timeoutMs: options?.timeoutMs,
                     nativeTools: options?.nativeTools,
                     reasoningEffort: options?.reasoningEffort,
-                    visualPresentationCandidateKeys: options?.visualPresentationCandidateKeys
+                    visualPresentationCandidateKeys:
+                        readDebugProjectReferenceProviderCandidateKeys(
+                            debugProjectReferenceCandidate
+                        ) || options?.visualPresentationCandidateKeys
                 }
             );
+            requireDebugProjectReferenceProviderReceipt(debugProjectReferenceCandidate, {
+                provider,
+                modelId: apiModelName,
+                visualPresentationReceipt: response.visualPresentationReceipt
+            });
+            return response;
         }
         if (provider === 'claude-subscription') {
             if (!this.claudeSubscriptionService) {
                 throw new Error('Claude 订阅服务尚未初始化。');
             }
-            return this.claudeSubscriptionService.chatWithTools(
+            const response = await this.claudeSubscriptionService.chatWithTools(
                 apiModelName,
                 messages,
                 tools,
                 { maxTokens: options?.maxTokens, temperature: options?.temperature }
             );
+            requireDebugProjectReferenceProviderReceipt(debugProjectReferenceCandidate, {
+                provider,
+                modelId: apiModelName
+            });
+            return response;
         }
         const adapter = getProviderAdapter(provider, apiModelName);
         const thinkingRequestParams = configuredModel
@@ -2121,6 +2187,11 @@ export class ModelService {
 
         // Parse response using adapter
         const parsed = adapter.parseResponse(rawResponse);
+        requireDebugProjectReferenceProviderReceipt(debugProjectReferenceCandidate, {
+            provider,
+            modelId: apiModelName,
+            formattedRequest: formatted
+        });
         console.log(`[ModelService] chatWithTools result: provider=${provider}, model=${apiModelName}, content=${(parsed.content || '').length}chars, toolCalls=${parsed.toolCalls?.length || 0}, stop=${parsed.stopReason}`);
         if (!parsed.toolCalls?.length && parsed.content) {
             console.log(`[ModelService] chatWithTools: model returned text only (no tool calls). First 200 chars: ${parsed.content.substring(0, 200)}`);
@@ -2219,7 +2290,8 @@ export class ModelService {
         modelId: string,
         messages: AdapterMessage[],
         tools: ToolSchema[],
-        options?: ModelToolCallOptions
+        options?: ModelToolCallOptions,
+        debugTransportMetadata?: unknown
     ): AgentToolStreamHandle {
         const emitter = new EventEmitter() as AgentToolStreamHandle;
         const abortController = new AbortController();
@@ -2249,6 +2321,7 @@ export class ModelService {
                 messages,
                 tools,
                 options,
+                debugTransportMetadata,
                 abortController.signal,
                 emitChunk
             ).catch((error: any) => {
@@ -2266,9 +2339,38 @@ export class ModelService {
         messages: AdapterMessage[],
         tools: ToolSchema[],
         options: ModelToolCallOptions | undefined,
+        debugTransportMetadata: unknown,
         signal: AbortSignal,
         emitChunk: (chunk: AgentToolStreamChunk) => void
     ): Promise<void> {
+        const debugProjectReferenceCandidate = prepareDebugProjectReferenceProviderCandidate(
+            messages,
+            'chat_with_tools_stream',
+            debugTransportMetadata
+        );
+        // 受控参考图评测优先保证“Provider 收据先于任何可执行 Tool call”。
+        // 直流 Provider helper 会边收边发布 tool_call_ready / done，若随后发现图片在
+        // adapter 序列化时丢失，Renderer 已经可能开始 Photoshop 写入。Debug 范围内
+        // 因此统一退回同一 chatWithTools 完成链：先验证并提交 Main 收据，再发唯一 done。
+        if (debugProjectReferenceCandidate) {
+            const parsed = await awaitModelCallWithCancellation(
+                () => this.chatWithTools(
+                    modelId,
+                    messages,
+                    tools,
+                    options,
+                    debugTransportMetadata
+                ),
+                signal,
+                options?.timeoutMs
+            );
+            if (signal.aborted) throw createModelStreamAbortError();
+            emitChunk({
+                type: 'done',
+                response: this.toAgentToolStreamResponse(parsed, 'fallback')
+            });
+            return;
+        }
         const configuredModel = getModelById(modelId);
         if (configuredModel) {
             // 只拒绝「有依据的否定」：provider 没声明能力时按未知放行，让真实调用去检验。
@@ -2296,10 +2398,19 @@ export class ModelService {
                     timeoutMs: options?.timeoutMs,
                     nativeTools: options?.nativeTools,
                     reasoningEffort: options?.reasoningEffort,
-                    visualPresentationCandidateKeys: options?.visualPresentationCandidateKeys
+                    visualPresentationCandidateKeys:
+                        readDebugProjectReferenceProviderCandidateKeys(
+                            debugProjectReferenceCandidate
+                        ) || options?.visualPresentationCandidateKeys
                 },
                 signal
             );
+            if (signal.aborted) throw createModelStreamAbortError();
+            requireDebugProjectReferenceProviderReceipt(debugProjectReferenceCandidate, {
+                provider,
+                modelId: apiModelName,
+                visualPresentationReceipt: parsed.visualPresentationReceipt
+            });
             emitChunk({
                 type: 'done',
                 response: this.toAgentToolStreamResponse(parsed, 'fallback')
@@ -2344,7 +2455,13 @@ export class ModelService {
         }
 
         const parsed = await awaitModelCallWithCancellation(
-            () => this.chatWithTools(modelId, messages, tools, options),
+            () => this.chatWithTools(
+                modelId,
+                messages,
+                tools,
+                options,
+                debugTransportMetadata
+            ),
             signal,
             options?.timeoutMs
         );

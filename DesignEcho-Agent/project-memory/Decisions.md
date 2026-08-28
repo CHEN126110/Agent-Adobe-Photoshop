@@ -2,6 +2,45 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-086 设计可靠性只保留一条 Attempt → Run → Review → Attribution 证据链
+
+- 状态：已采用；统一契约、固定 Fixture / workspace 语义身份、质量优先 timeout、Attempt 归因、可信参考像素提交与 cohort 比较已完成代码和纯逻辑验证；首条真实跨商品参考复刻 Case 与隔离 Fixture已建立，但 SKU 私有交互 actor、Photoshop 重复样本和严格盲评仍待后续里程碑，不能由本裁决补造成已完成。
+- 正式分母由 canonical `submission_started` Attempt 拥有。Run Observation 只在能够从同一 TaskRun 取得完整运行证据时生成；提交后在 Provider、Harness 或环境层提前失败的 Attempt 仍必须保留终态并可使用同一个 Attribution schema 归因，不能因为没有 Run 而从成功率和根因统计中消失。
+- Attribution 使用严格 subject union：新记录只允许 `{ runObservationId }` 或 `{ attemptId }` 二选一；旧顶层 `runObservationId` 只作兼容读取。归因仍是开发 sidecar，不建立 Failure Store，不进入 Runtime、Prompt、权限或完成判定。
+- Fixture Input Snapshot 与 Workspace Runtime Metadata 分轴。只有精确 `.designecho/project.json`、现行完整 schema、合法枚举 /时间以及和 fixture realpath 完全一致的项目身份可以存在，且不进入输入摘要；整个 `.designecho` 不得被忽略，历史 Run、Project State、旧 PSD、旧导出和其它 metadata 仍是污染。
+- Workspace metadata 中会影响 Agent 判断的 `folderMappings / imageClassifications / designPlan` 形成独立语义摘要，并绑定 Attempt、Run、fixture identity、cohort 和 Agent 实际消费的 `ProjectContext` 快照。`lastOpenedAt` 等易变字段不制造假漂移；上下文构建前后或最终消费摘要不一致则在模型与 Photoshop 写入前停止，不能用 `handleSend` 前的一次旁路读取冒充上下文已经冻结。
+- 正式 live timeout 是 Suite 控制维度，不是隐藏 CLI 默认值。当前质量优先预算固定为 900000ms，显式覆盖只有完全相同时才接受，并进入 cohort fingerprint；不同预算不能混入同质 cohort。质量稳定前不以缩短超时换取表面成功率。
+- 参考复刻进入同一 Design Reliability 契约。用户明确给 Agent 的目标参考属于 `agentVisibleReferences`，复制进 fixture 前后必须核对冻结内容摘要；Main 随后真解码并规范化为不可变视觉载荷。Debug-only 租约只存在于 `handleSend` 与实际模型 IPC 的临时作用域，不进入 Agent Context /Prompt /TaskRun；Main 重新核对租约、binding、消息像素与 Provider 出站事实，成功返回后才签发收据，Renderer 不能自签或覆盖。收据必须早于首次 Photoshop mutation，避免设计后补看参考。只供盲评的用户成稿 / Eagle 锚点属于 `reviewOnlyReferences`；目标参考在评审包中作为显式 context，不与匿名商业质量锚点混组。两者 ref 或内容相同即拒绝，旧 synthetic reference benchmark 只保留几何诊断价值，不再拥有 live 或商业质量结论。
+- SKU 自主质量与 SKU 必要业务确认是两种不同实验协议。带权威规格的 Case 测 `autonomous_zero_correction`；需要专属卡的 draft Case 公开部分不保存规格、答案、输出数量、语义文件名或盲评锚点，只绑定一个同时拥有答案、输出期望与评审来源的不可变私有 manifest。未来 actor 必须经真实 Skill Provider 和同一 TaskRun continuation 回放；capability 只能用一个实际执行并验证完整协议的 `dispatchProtocol` 注册，不能用 metadata 或分散的占位 hook 拼成已具备能力。必要业务确认计协议交互，不计设计纠错；Harness 不自动选第一项、不按标题猜卡、不把 waiting_user 改写成成功。
+- SKU 专属卡的颜色槽位必须携带由 Provider 从同一次稳定 Photoshop 观察派生的 `colorIdentity`，至少绑定 `documentId / historyStateId / layerId / layerPath`。展示标签允许修正，身份不随“身肤 /深肤”等文案变化；`candidateFingerprint` 覆盖来源身份，卡片与 actor 不再把槽位序号当素材真相。该运行态身份不冒充跨关闭 /重开的源 PSD 内容 SHA-256 血缘，因此私有 actor 在完整 source lineage 前保持未激活。
+- 所有会恢复或执行操作的交互完整性身份必须使用版本化 canonical SHA-256：来源卡、提交、continuation、TaskRun binding 与持久 operation record 使用同一强指纹家族；32 位 `stableInteractiveCardHash` 只允许 UI dirty-check /渲染去抖 /非权威缓存。旧弱指纹记录不得静默兼容为新记录，必须给出明确拒绝原因并要求重新提交或重新发起。
+- Cohort Compare 必须重算 Attempt 身份并校验所有计数范围、rate 算术、逐 Case /逐任务族求和、fixture 与控制维度。全部失败或每 Case 仅有一个幸存成稿时仍可输出技术诊断，但在每个 Case 达到最低严格盲评成稿数前不得形成正式设计质量结论；同一 reviewer 重复评同一 Run 视为冲突，不得加权中位数。
+
+### 正面经验
+
+1. 先冻结 Attempt 身份，再按是否取得完整 TaskRun 证据生成 Run，可以让 Provider 失败、超时和提交后中断进入真实分母，同时继续保持 Photoshop unknown-write 的安全对账边界。
+2. 把应用正常产生的 Workspace metadata 作为受控第二轴校验，比把所有额外文件一概判脏或忽略整个目录都更准确；前者会自我阻塞，后者会吞掉真实污染。
+3. timeout、Case 集、Rubric、模型、构建、fixture 与交互协议都属于实验身份。把它们写进 fingerprint 后，同 Case 前后对比才有因果意义，不能用不同条件的总体平均值制造改善。
+4. Agent 可见参考和评审隐藏锚点分开后，既能测试“模型是否读懂参考”，又不会把目标商品最终答案直接送进项目；内容摘要校验比仅检查相对路径更能防止静默替换。
+5. 必要业务确认与设计纠错分开计数，才能同时保留 SKU 专属卡的高价值体验和“尽量减少人工介入”的真实指标。
+6. “请求里带过路径”与“模型真的在首次写入前收到像素”是三件不同的事。由 Main 冻结图像字节、以不进入 Runtime 的临时 IPC 租约绑定实际 Provider turn，并把成功时间与首次 mutation 比较，才能把参考复刻失败归因给 Agent 判断而不是附件链路或晚到 QA。
+7. 聚合报告本身也是不可信输入。只有重新校验范围、分母、逐 Case /逐任务族求和和最低审美样本量，才能防止一个幸存结果或手工改过的 JSON 制造质量提升。
+
+### 负面教训与禁止反例
+
+1. **把 `.designecho/project.json` 当普通额外文件**：评测器会在应用成功绑定 fixture 后立刻判定 fixture 被污染，导致合法测试永远无法启动。必须校验精确 schema 与根身份，而不是按目录名猜。
+2. **用五分钟隐藏默认值测试质量优先设计**：历史正常深度运行已经超过该时间；过早中断会把评测器预算错误伪装成模型能力失败。预算必须显式、冻结、可比较。
+3. **Attribution 只允许绑定 Run**：提交后尚未形成 Run 的失败已经进入分母，却没有 owner，最终只剩“成功率低”而无法指导根因治理。Attempt 与 Run 必须共享同一归因对象，不另造库。
+4. **把参考复刻留在第二套 live /质量脚本**：双 Case、双状态、双评分与过期命令会产生互不一致的结论。合成像素探针只能做组件诊断，真实设计质量统一进入 Design Reliability。
+5. **同一 SKU Case 同时要求零人工和确认卡**：协议自相矛盾，任何结果都可被解释成失败。自主完成和必要确认必须拆 Case、拆指标，但继续复用同一 Runtime /TaskRun /Provider。
+6. **硬编码 `userInterventionCount=0` 或自动点击首个候选**：前者把未知伪造成零，后者让 Harness 替用户做业务决定。计数只能来自真实 Provider /operation 收据；无法证明时保持 unknown。
+7. **Renderer 原样回显参考数组或在 UI 调用前自签“已看图”证明**：这只能证明字符串 /内存块经过 UI，不能证明源文件可解码、内容未漂移或像素经过适配器进入 Provider。必须由 Main 生成有界视觉载荷，并在真实模型传输成功后以实际请求块签发收据；Main 完成端忽略 Renderer 同名字段。
+8. **公开交互 Case 留下规格、数量或语义文件名**：删除 `answer` 字段仍可从 `requiredSizes`、输出数量、评审路径或另一公开 CSV 恢复答案。公开 Case 只能保存高熵私有 manifest 身份，且未来命令工具必须对 fixture 做能力沙箱。
+9. **Actor capability 只登记名字或分散占位 hook**：验证通过后仍走固定自然请求，会把“有能力记录”误当成“实际执行了交互 actor”。Registry 项必须拥有一个端到端 `dispatchProtocol`，由它实际完成执行、私有解析与收据验证；`run-live` 只消费这个闭合结果。
+10. **用一个幸存成稿代表五次设计质量**：商业可用率可以诚实记为 1/5，但这不足以形成审美分布。必须另设每 Case 最低可评分成稿数，未达到时只报告 survivor diagnostic。
+11. **用 32 位快速哈希绑定确认与恢复**：UI hash 的碰撞可以让不同来源、提交或 continuation 看起来相同。所有可执行交互必须使用版本化 canonical SHA-256；旧记录明确失效，不能以兼容名义继续获得执行权。
+12. **Provider 收据在流式 Tool call 之后才校验**：即使最终判样本无效，Renderer 也可能已经承接 Tool 写入。带参考租约的 Debug 流必须先完成非流式 Provider 收据闭环，再发布唯一 terminal /可执行 Tool 结果；取消、丢图或 adapter 丢字段绝不签收。
+
 ## D-085 动作事实、交互等待、产物完成、设计质量与任务终态必须分轴结算
 
 - 状态：已采用；代码、定向回归与本提交 50 项整仓核心验证已完成，固定 Fixture 实机验收继续以 `CurrentTask.md` 为准。

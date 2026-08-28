@@ -2,14 +2,23 @@ import crypto from 'crypto';
 import fs from 'fs';
 import http from 'http';
 import path from 'path';
+import sharp from 'sharp';
 import {
     buildDebugBridgeChatExecutionFailure,
+    buildDebugBridgeWorkspaceSemanticSnapshot,
     createDebugBridgeChatExecutionError,
+    debugBridgeProjectAssetProviderReceiptMatches,
     readDebugBridgeChatExecutionFailure,
     readDebugBridgeChatPreflightSnapshot,
+    readDebugBridgeProjectAssetProviderReceipt,
+    readDebugBridgeProjectAssetReferences,
     readDebugBridgePhotoshopRuntimeBinding,
+    stableDebugBridgeJson,
     type DebugBridgeChatExecutionFailure,
     type DebugBridgeChatPreflightSnapshot,
+    type DebugBridgeProjectAssetAttachment,
+    type DebugBridgeProjectAssetPayloadBinding,
+    type DebugBridgeProjectAssetReference,
     type DebugBridgePhotoshopRuntimeBinding
 } from '../../shared/debug-bridge-chat';
 
@@ -94,6 +103,14 @@ export interface DebugBridgeChatSubmitInput {
     timeoutMs?: number;
     resetConversation?: boolean;
     disableSkillBridges?: boolean;
+    /** 用户在本轮消息中明确附带的项目参考；Main 已按项目根与 SHA-256 验真。 */
+    projectAssetReferences?: DebugBridgeProjectAssetReference[];
+    /** Main 从已验真的源字节生成的规范化视觉载荷；HTTP 调用方不能直接提供。 */
+    projectAssetAttachments?: DebugBridgeProjectAssetAttachment[];
+    /** 对规范化视觉载荷顺序、源摘要与实际像素摘要的 Main 侧绑定。 */
+    projectAssetPayloadBinding?: DebugBridgeProjectAssetPayloadBinding;
+    /** CLI 在 Attempt armed 前冻结的项目语义摘要；Renderer 在 handleSend 紧邻点复核。 */
+    expectedWorkspaceSemanticDigest?: string;
     /** 开发评测写前绑定；Renderer 必须与当前项目精确匹配，否则不提交消息。 */
     expectedProjectPath?: string;
     /** 开发评测写前绑定；Main 进程必须是此 Git 提交启动的 Runtime。 */
@@ -113,6 +130,206 @@ export interface DebugBridgeChatSubmitInput {
     publicPlanConfirmationSourceMessageId?: string;
     publicPlanConfirmationRequestId?: string;
     publicPlanDisposableLiveAdapter?: boolean;
+}
+
+function sha256Buffer(value: Buffer): string {
+    return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
+}
+
+function readStableBoundedFile(filePath: string, maxBytes: number, label: string): Buffer {
+    const descriptor = fs.openSync(filePath, 'r');
+    try {
+        const before = fs.fstatSync(descriptor);
+        if (!before.isFile() || before.size < 1 || before.size > maxBytes) {
+            throw new Error(`${label}超出大小边界。`);
+        }
+        const bytes = Buffer.allocUnsafe(before.size);
+        let offset = 0;
+        while (offset < bytes.length) {
+            const read = fs.readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+            if (read <= 0) throw new Error(`${label}在读取期间发生变化。`);
+            offset += read;
+        }
+        const extra = Buffer.allocUnsafe(1);
+        if (fs.readSync(descriptor, extra, 0, 1, offset) !== 0) {
+            throw new Error(`${label}在读取期间超过大小边界。`);
+        }
+        const after = fs.fstatSync(descriptor);
+        if (after.size !== before.size
+            || after.mtimeMs !== before.mtimeMs
+            || after.ctimeMs !== before.ctimeMs) {
+            throw new Error(`${label}在读取期间发生变化。`);
+        }
+        return bytes;
+    } finally {
+        fs.closeSync(descriptor);
+    }
+}
+
+function readDebugWorkspaceSemanticDigest(projectPath: string): string {
+    const projectRoot = path.resolve(projectPath);
+    const metadataPath = path.join(projectRoot, '.designecho', 'project.json');
+    let metadata: unknown;
+    if (!fs.existsSync(metadataPath)) {
+        metadata = undefined;
+    } else {
+        const stat = fs.lstatSync(metadataPath);
+        if (stat.isSymbolicLink() || !stat.isFile()) {
+            throw new Error('受控调试项目语义配置不是普通文件。');
+        }
+        const realProjectRoot = fs.realpathSync.native(projectRoot);
+        const realMetadataPath = fs.realpathSync.native(metadataPath);
+        const realRelative = path.relative(realProjectRoot, realMetadataPath);
+        if (!realRelative || realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
+            throw new Error('受控调试项目语义配置通过 junction 越出项目。');
+        }
+        const metadataText = readStableBoundedFile(
+            realMetadataPath,
+            1024 * 1024,
+            '受控调试项目语义配置'
+        ).toString('utf8');
+        try {
+            metadata = JSON.parse(metadataText);
+        } catch {
+            throw new Error('受控调试项目语义配置不是有效 JSON。');
+        }
+    }
+    return sha256Buffer(Buffer.from(stableDebugBridgeJson(
+        buildDebugBridgeWorkspaceSemanticSnapshot(metadata)
+    ), 'utf8'));
+}
+
+const MAX_DEBUG_REFERENCE_SOURCE_BYTES = 20 * 1024 * 1024;
+const MAX_DEBUG_REFERENCE_PAYLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_DEBUG_REFERENCE_TOTAL_PAYLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_DEBUG_REFERENCE_PIXELS = 40_000_000;
+
+interface VerifiedDebugProjectAssetPayload {
+    references: DebugBridgeProjectAssetReference[];
+    attachments: DebugBridgeProjectAssetAttachment[];
+    binding: DebugBridgeProjectAssetPayloadBinding;
+}
+
+async function verifyDebugProjectAssetReferences(
+    projectPath: string,
+    references: DebugBridgeProjectAssetReference[]
+): Promise<VerifiedDebugProjectAssetPayload> {
+    if (references.length === 0) {
+        return {
+            references: [],
+            attachments: [],
+            binding: {
+                version: 'debug-bridge-project-asset-payload-binding/v1',
+                bindingDigest: sha256Buffer(Buffer.from('[]', 'utf8')),
+                referenceCount: 0
+            }
+        };
+    }
+    const projectRoot = path.resolve(projectPath);
+    if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
+        throw new Error('受控调试项目目录不存在，无法验证用户参考。');
+    }
+    const realProjectRoot = fs.realpathSync.native(projectRoot);
+    const verifiedReferences: DebugBridgeProjectAssetReference[] = [];
+    const attachments: DebugBridgeProjectAssetAttachment[] = [];
+    const realPaths = new Set<string>();
+    let totalPayloadBytes = 0;
+    for (const reference of references) {
+        const absolutePath = path.resolve(projectRoot, ...reference.relativePath.split('/'));
+        const relative = path.relative(projectRoot, absolutePath);
+        if (!relative || relative.startsWith('..') || path.isAbsolute(relative)
+            || !fs.existsSync(absolutePath)
+            || fs.lstatSync(absolutePath).isSymbolicLink()
+            || !fs.statSync(absolutePath).isFile()) {
+            throw new Error(`受控调试参考不是项目内普通文件：${reference.relativePath}`);
+        }
+        const realFilePath = fs.realpathSync.native(absolutePath);
+        const realRelative = path.relative(realProjectRoot, realFilePath);
+        if (!realRelative || realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
+            throw new Error(`受控调试参考通过 junction 越出项目：${reference.relativePath}`);
+        }
+        const realPathIdentity = realFilePath.toLowerCase();
+        if (realPaths.has(realPathIdentity)) {
+            throw new Error(`受控调试参考重复指向同一文件：${reference.relativePath}`);
+        }
+        realPaths.add(realPathIdentity);
+        const sourceBytes = readStableBoundedFile(
+            realFilePath,
+            MAX_DEBUG_REFERENCE_SOURCE_BYTES,
+            `受控调试参考 ${reference.relativePath}`
+        );
+        const sourceDigest = sha256Buffer(sourceBytes);
+        if (sourceDigest !== reference.digest) {
+            throw new Error(`受控调试参考内容与冻结摘要不一致：${reference.relativePath}`);
+        }
+        let normalized;
+        try {
+            normalized = await sharp(sourceBytes, {
+                failOn: 'error',
+                limitInputPixels: MAX_DEBUG_REFERENCE_PIXELS
+            })
+                .rotate()
+                .resize({
+                    width: 3072,
+                    height: 3072,
+                    fit: 'inside',
+                    withoutEnlargement: true
+                })
+                .toColorspace('srgb')
+                .flatten({ background: '#ffffff' })
+                .jpeg({ quality: 92, chromaSubsampling: '4:4:4' })
+                .toBuffer({ resolveWithObject: true });
+        } catch (error) {
+            throw new Error(
+                `受控调试参考不是可解码的真实图片：${reference.relativePath}（${error instanceof Error ? error.message : String(error)}）`
+            );
+        }
+        if (!Number.isInteger(normalized.info.width)
+            || !Number.isInteger(normalized.info.height)
+            || normalized.data.length < 1
+            || normalized.data.length > MAX_DEBUG_REFERENCE_PAYLOAD_BYTES) {
+            throw new Error(`受控调试参考规范化后超出视觉载荷边界：${reference.relativePath}`);
+        }
+        totalPayloadBytes += normalized.data.length;
+        if (totalPayloadBytes > MAX_DEBUG_REFERENCE_TOTAL_PAYLOAD_BYTES) {
+            throw new Error('受控调试参考规范化后的总视觉载荷超过 20 MB。');
+        }
+        const canonicalRelativePath = realRelative.replace(/\\/g, '/');
+        const verifiedReference = {
+            ...reference,
+            relativePath: canonicalRelativePath,
+            digest: sourceDigest
+        };
+        verifiedReferences.push(verifiedReference);
+        attachments.push({
+            version: 'debug-bridge-project-asset-attachment/v1',
+            relativePath: canonicalRelativePath,
+            label: reference.label,
+            sourceDigest,
+            payloadDigest: sha256Buffer(normalized.data),
+            mediaType: 'image/jpeg',
+            width: normalized.info.width,
+            height: normalized.info.height,
+            data: normalized.data.toString('base64')
+        });
+    }
+    const bindingEvidence = attachments.map((attachment) => ({
+        relativePath: attachment.relativePath,
+        sourceDigest: attachment.sourceDigest,
+        payloadDigest: attachment.payloadDigest,
+        mediaType: attachment.mediaType,
+        width: attachment.width,
+        height: attachment.height
+    }));
+    return {
+        references: verifiedReferences,
+        attachments,
+        binding: {
+            version: 'debug-bridge-project-asset-payload-binding/v1',
+            bindingDigest: sha256Buffer(Buffer.from(JSON.stringify(bindingEvidence), 'utf8')),
+            referenceCount: attachments.length
+        }
+    };
 }
 
 export interface DebugBridgeMessageSummary {
@@ -509,6 +726,8 @@ export class DebugBridgeService {
                 && Boolean(body.expectedProvider.trim())
                 && typeof body.expectedModelId === 'string'
                 && Boolean(body.expectedModelId.trim())
+                && typeof body.expectedWorkspaceSemanticDigest === 'string'
+                && /^sha256:[0-9a-f]{64}$/.test(body.expectedWorkspaceSemanticDigest.trim())
                 && body.requireCleanRuntimeGitState === true
                 && body.requireNoOpenPhotoshopDocuments === true;
             if (!hasFormalWriteGuard) {
@@ -520,12 +739,69 @@ export class DebugBridgeService {
                 }), req, this.port);
                 return;
             }
+            const expectedWorkspaceSemanticDigest = String(
+                body.expectedWorkspaceSemanticDigest || ''
+            ).trim().toLowerCase();
+            let currentWorkspaceSemanticDigest: string;
+            try {
+                currentWorkspaceSemanticDigest = readDebugWorkspaceSemanticDigest(
+                    String(body.expectedProjectPath || '').trim()
+                );
+            } catch (error) {
+                sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: error instanceof Error ? error.message : String(error),
+                    code: 'chat_submit_workspace_semantic_read_failed'
+                }), req, this.port);
+                return;
+            }
+            if (currentWorkspaceSemanticDigest !== expectedWorkspaceSemanticDigest) {
+                sendExecutionFailure(res, 409, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: '项目素材分类或设计计划已变化，本轮受控样本没有启动。',
+                    code: 'chat_submit_workspace_semantic_mismatch'
+                }), req, this.port);
+                return;
+            }
+            const projectAssetReferences = readDebugBridgeProjectAssetReferences(
+                body.projectAssetReferences
+            );
+            if (!projectAssetReferences) {
+                sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: 'Debug chat project asset references are invalid',
+                    code: 'chat_submit_project_references_invalid'
+                }), req, this.port);
+                return;
+            }
+            let verifiedProjectAssetPayload: VerifiedDebugProjectAssetPayload;
+            try {
+                verifiedProjectAssetPayload = await verifyDebugProjectAssetReferences(
+                    String(body.expectedProjectPath || '').trim(),
+                    projectAssetReferences
+                );
+            } catch (error) {
+                sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
+                    stage: 'bridge_preflight',
+                    writePossible: false,
+                    message: error instanceof Error ? error.message : String(error),
+                    code: 'chat_submit_project_reference_verification_failed'
+                }), req, this.port);
+                return;
+            }
 
             const result = await this.onChatSubmit({
                 text,
                 timeoutMs: Number(body.timeoutMs) || undefined,
                 resetConversation: body.resetConversation === true,
                 disableSkillBridges: body.disableSkillBridges === true,
+                projectAssetReferences: verifiedProjectAssetPayload.references,
+                projectAssetAttachments: verifiedProjectAssetPayload.attachments,
+                projectAssetPayloadBinding: verifiedProjectAssetPayload.binding,
+                expectedWorkspaceSemanticDigest,
                 expectedProjectPath: typeof body.expectedProjectPath === 'string'
                     ? body.expectedProjectPath.trim().slice(0, 1024)
                     : undefined,
@@ -555,7 +831,40 @@ export class DebugBridgeService {
                     : undefined,
                 publicPlanDisposableLiveAdapter: body.publicPlanDisposableLiveAdapter === true
             });
-            sendJson(res, 200, { success: true, result }, req, this.port);
+            const resultRecord = result && typeof result === 'object' && !Array.isArray(result)
+                ? result as Record<string, unknown>
+                : {};
+            const resultReceipt = resultRecord['receipt'];
+            const receiptRecord = resultReceipt && typeof resultReceipt === 'object' && !Array.isArray(resultReceipt)
+                ? resultReceipt as Record<string, unknown>
+                : {};
+            if (verifiedProjectAssetPayload.binding.referenceCount > 0) {
+                const providerReceipt = readDebugBridgeProjectAssetProviderReceipt(
+                    receiptRecord['projectAssetProviderBindingReceipt']
+                );
+                if (!providerReceipt || !debugBridgeProjectAssetProviderReceiptMatches(
+                    providerReceipt,
+                    verifiedProjectAssetPayload.binding
+                )) {
+                    sendExecutionFailure(res, 500, buildDebugBridgeChatExecutionFailure({
+                        stage: 'completion',
+                        writePossible: true,
+                        message: '用户目标参考没有被证明进入本次 Provider 视觉请求。',
+                        code: 'chat_submit_project_reference_provider_binding_missing'
+                    }), req, this.port);
+                    return;
+                }
+            }
+            sendJson(res, 200, {
+                success: true,
+                result: {
+                    ...resultRecord,
+                    receipt: {
+                        ...receiptRecord,
+                        projectAssetPayloadBinding: verifiedProjectAssetPayload.binding
+                    }
+                }
+            }, req, this.port);
             return;
         }
 

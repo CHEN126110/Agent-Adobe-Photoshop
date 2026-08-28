@@ -1,8 +1,8 @@
+import { canonicalize, sha256Hex } from './agent-runtime-v5/content-hash';
 import type { DesignMemoryItem, DesignMemoryScope } from './design-memory-knowledge';
 import {
     buildInteractiveCardValidationResult,
     cleanInteractiveCardText,
-    stableInteractiveCardHash,
     type InteractiveCardDefinition,
     type InteractiveCardDecisionContext,
     type InteractiveCardValidationIssue,
@@ -13,6 +13,8 @@ import { buildSkuComboMultisetIdentity } from './sku-combo-identity';
 
 export interface SkuComboColorSlot {
     slot: number;
+    /** Provider 从真实来源对象派生的稳定身份；展示名称可以改，但身份不能随卡片编辑漂移。 */
+    colorIdentity: string;
     label: string;
     colorHex?: string;
 }
@@ -95,6 +97,35 @@ export interface BuildSkuComboApprovedRecipeMemoryInput {
     confirmedAt?: string | number | Date;
 }
 
+type SkuComboSha256Domain =
+    | 'sku-color-source'
+    | 'sku-combo-decision'
+    | 'sku-combo-candidate'
+    | 'sku-combo-card'
+    | 'sku-combo-recipe';
+
+const SKU_COMBO_SHA256_SCHEME = 'sha256-jcs-v1';
+
+function buildSkuComboSha256Fingerprint(
+    domain: SkuComboSha256Domain,
+    value: unknown
+): string {
+    const version = `${domain}-${SKU_COMBO_SHA256_SCHEME}`;
+    return `${version}:${sha256Hex(canonicalize({ version, value }))}`;
+}
+
+/**
+ * 把 Provider 给出的真实来源身份收敛成 SKU Skill 自己的颜色身份。
+ * 来源身份本身仍必须由 Provider 从真实对象读回；本函数不补造素材血缘。
+ */
+export function buildSkuComboColorIdentity(stableSourceIdentity: string): string {
+    const normalizedSourceIdentity = cleanInteractiveCardText(stableSourceIdentity);
+    if (!normalizedSourceIdentity) return '';
+    return buildSkuComboSha256Fingerprint('sku-color-source', {
+        stableSourceIdentity: normalizedSourceIdentity
+    });
+}
+
 function normalizePositiveInt(value: unknown): number | null {
     const numeric = Number(value);
     if (!Number.isInteger(numeric) || numeric <= 0) return null;
@@ -107,22 +138,21 @@ function normalizeColorSlots(value: unknown): SkuComboColorSlot[] {
         .map((item): SkuComboColorSlot | null => {
             const record = item && typeof item === 'object' ? item as Partial<SkuComboColorSlot> : {};
             const slot = normalizePositiveInt(record.slot);
+            const colorIdentity = cleanInteractiveCardText(record.colorIdentity);
             const label = cleanInteractiveCardText(record.label || slot);
-            if (!slot || !label) return null;
+            if (!slot || !colorIdentity || !label) return null;
             const colorHex = cleanInteractiveCardText(record.colorHex);
             return {
                 slot,
+                colorIdentity,
                 label,
                 ...(colorHex ? { colorHex } : {})
             };
         })
         .filter((item): item is SkuComboColorSlot => Boolean(item));
-    const seen = new Set<number>();
-    return slots.filter((slot) => {
-        if (seen.has(slot.slot)) return false;
-        seen.add(slot.slot);
-        return true;
-    }).sort((a, b) => a.slot - b.slot);
+    // 重复 slot / colorIdentity 是来源身份冲突，不能在规范化时静默删除。
+    // 保留原始冲突交给 validator 明确失败，避免错误卡片看起来合法。
+    return slots.sort((a, b) => a.slot - b.slot);
 }
 
 function normalizeRequiredSizes(value: unknown): number[] {
@@ -318,6 +348,7 @@ function normalizeEditorColorSlots(
             : fallback.colorHex;
         return {
             slot: fallback.slot,
+            colorIdentity: fallback.colorIdentity,
             label,
             ...(colorHex ? { colorHex } : {})
         };
@@ -365,6 +396,40 @@ export function validateSkuComboEditorValue(
     const colorSlots = normalizedValue.colorSlots || payloadColorSlots;
     const validSlotSet = new Set(payloadColorSlots.map((slot) => slot.slot));
     const issues: InteractiveCardValidationIssue[] = [];
+
+    const rawPayloadColorSlots = Array.isArray(payload.colorSlots) ? payload.colorSlots : [];
+    const seenPayloadSlots = new Set<number>();
+    const seenPayloadColorIdentities = new Set<string>();
+    for (const rawSlot of rawPayloadColorSlots) {
+        const slot = normalizePositiveInt(rawSlot?.slot);
+        const colorIdentity = cleanInteractiveCardText(rawSlot?.colorIdentity);
+        if (!slot || !colorIdentity) {
+            issues.push({
+                severity: 'error',
+                code: 'invalid_color_source_identity',
+                message: '颜色来源缺少可验证的槽位或来源身份，不能确认 SKU 组合。'
+            });
+            continue;
+        }
+        if (seenPayloadSlots.has(slot)) {
+            issues.push({
+                severity: 'error',
+                code: 'duplicate_payload_color_slot',
+                message: `颜色编号 ${slot} 对应了多个来源对象，不能确认 SKU 组合。`,
+                path: `colorSlots.${slot}`
+            });
+        }
+        if (seenPayloadColorIdentities.has(colorIdentity)) {
+            issues.push({
+                severity: 'error',
+                code: 'duplicate_color_identity',
+                message: `颜色编号 ${slot} 与另一颜色指向同一来源对象，不能确认 SKU 组合。`,
+                path: `colorSlots.${slot}.colorIdentity`
+            });
+        }
+        seenPayloadSlots.add(slot);
+        seenPayloadColorIdentities.add(colorIdentity);
+    }
 
     if (payloadColorSlots.length === 0) {
         issues.push({
@@ -498,7 +563,12 @@ export function validateSkuComboEditorValue(
 }
 
 export function buildSkuComboDecisionFingerprint(): string {
-    return 'sku-combo-specification/v0';
+    return buildSkuComboSha256Fingerprint('sku-combo-decision', {
+        ownerSkillId: 'sku-batch',
+        cardKind: 'sku_combo_editor',
+        payloadVersion: 'sku-combo-editor/v0',
+        decision: 'confirm-sku-combination-specification'
+    });
 }
 
 export function buildSkuComboCandidateFingerprint(
@@ -512,12 +582,12 @@ export function buildSkuComboCandidateFingerprint(
         requiredSizes,
         colorSlots
     );
-    return `sku-combo-candidate-${stableInteractiveCardHash({
+    return buildSkuComboSha256Fingerprint('sku-combo-candidate', {
         version: payload.version,
         colorSlots,
         requiredSizes,
         value: normalizedValue
-    })}`;
+    });
 }
 
 export function deriveSkuComboDecisionContext(
@@ -555,7 +625,11 @@ export function buildSkuComboEditorInteractiveCard(
         }
     };
     const id = cleanInteractiveCardText(input.id)
-        || `sku-combo-editor-${stableInteractiveCardHash({ colorSlots, requiredSizes, projectId })}`;
+        || buildSkuComboSha256Fingerprint('sku-combo-card', {
+            colorSlots,
+            requiredSizes,
+            projectId
+        });
 
     return {
         version: 'interactive-card/v0',
@@ -607,12 +681,16 @@ export function buildSkuComboApprovedRecipeMemory(
         .map((slot) => `${slot.slot}:${slot.label}`)
         .join('，');
     const comboSummary = formatSkuComboGroups(value.groups);
-    const id = `sku-combo-recipe-${stableInteractiveCardHash({
+    const id = buildSkuComboSha256Fingerprint('sku-combo-recipe', {
         scope,
-        colors: colorSlots.map((slot) => ({ slot: slot.slot, label: slot.label })),
+        colors: colorSlots.map((slot) => ({
+            slot: slot.slot,
+            colorIdentity: slot.colorIdentity,
+            label: slot.label
+        })),
         sizes: input.card.payload.requiredSizes,
         combos: value.groups
-    })}`;
+    });
 
     return {
         id,

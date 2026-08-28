@@ -14,6 +14,7 @@ import { Tool, ToolExecutionContext, ToolResult, ToolSchema } from '../types';
 import { saveEditableDocumentSnapshotInModal } from '../canvas/save-document';
 import { getDirectExportTarget, saveAsJPEGViaJSX } from './export-folder-service';
 import { normalizePhotoshopToolError } from '../../core/tool-error-normalizer';
+import { observeActiveDocumentAtHistoryState } from '../../core/photoshop-document-observation';
 import {
     readActiveHistoryStateRef,
     sameHistoryStateRef,
@@ -2754,35 +2755,48 @@ export class SKULayoutTool implements Tool {
      */
     private async listLayerSets(): Promise<ToolResult<any>> {
         try {
-            const doc = app.activeDocument;
-            if (!doc) {
-                return { success: false, error: '没有打开的文档', data: null };
-            }
-
-            const layers = Array.from(doc.layers || []);
-            const layerSets = collectSkuLayerGroups(layers).map((entry, index) => ({
-                name: entry.name,
-                index,
-                layerCount: entry.layerCount,
-                visible: entry.visible,
-                path: entry.path,
-                depth: entry.depth,
-                topLevelName: entry.topLevelName,
-                bounds: getLayerBoundsRect(entry.layer)
-            }));
-            console.log(`[listLayerSets] 文档: ${doc.name}, 顶层图层数: ${layers.length}, 递归图层组数: ${layerSets.length}`);
+            const observation = await observeActiveDocumentAtHistoryState({
+                commandName: 'DesignEcho: 读取 SKU 颜色图层组',
+                unavailableMessage: '无法读取 SKU 源文档的 Photoshop 历史版本，未返回可能过期的颜色图层。',
+                changedMessage: '读取 SKU 颜色图层期间文档发生变化，已丢弃这次不一致的结果。'
+            }, (doc, historyStateRef) => {
+                const layers = Array.from(doc.layers || []);
+                const layerSets = collectSkuLayerGroups(layers).map((entry, index) => {
+                    const layerId = Number(entry.layer?.id);
+                    if (!Number.isSafeInteger(layerId) || layerId <= 0) {
+                        throw new Error(`SKU 图层组“${entry.path || entry.name}”缺少可验证的 Photoshop layerId。`);
+                    }
+                    return {
+                        name: entry.name,
+                        index,
+                        layerId,
+                        layerCount: entry.layerCount,
+                        visible: entry.visible,
+                        path: entry.path,
+                        depth: entry.depth,
+                        topLevelName: entry.topLevelName,
+                        bounds: getLayerBoundsRect(entry.layer)
+                    };
+                });
+                return {
+                    documentId: historyStateRef.documentId,
+                    documentName: String(doc.name || ''),
+                    historyStateRef,
+                    layerSetCount: layerSets.length,
+                    recursive: true,
+                    layerSets,
+                    topLevelLayerCount: layers.length
+                };
+            });
+            const { layerSets, documentName, topLevelLayerCount } = observation.value;
+            console.log(`[listLayerSets] 文档: ${documentName}, 顶层图层数: ${topLevelLayerCount}, 递归图层组数: ${layerSets.length}`);
             for (const layerSet of layerSets) {
                 console.log(`[listLayerSets]   [${layerSet.index}] "${layerSet.path}" (${layerSet.layerCount} 子图层)`);
             }
 
             return {
                 success: true,
-                data: {
-                    documentName: doc.name,
-                    layerSetCount: layerSets.length,
-                    recursive: true,
-                    layerSets
-                }
+                data: observation.value
             };
 
         } catch (error: any) {

@@ -16,6 +16,7 @@ import {
     type ProjectVisualInsightCacheReadResult
 } from '../../../shared/project-visual-insight-cache';
 import { readPhotoshopHistoryStateRef } from '../../../shared/photoshop-history-state-ref';
+import { buildDebugBridgeWorkspaceSemanticDigest } from '../../../shared/debug-bridge-chat';
 import type { PhotoshopDocumentInventoryEntry } from '../../../shared/photoshop-document-inventory';
 import { useAppStore } from '../../stores/app.store';
 import { executeToolCall } from '../tool-executor.service';
@@ -235,20 +236,40 @@ function buildContextSnapshotFromStructure(
 function buildRuntimeCacheKey(
     projectPath: string,
     selectedProjectImagePath?: string,
-    visualSamplingScenario?: ProjectVisualSamplingScenario
+    visualSamplingScenario?: ProjectVisualSamplingScenario,
+    expectedWorkspaceSemanticDigest?: string
 ): string {
-    return `${projectPath}::${selectedProjectImagePath || ''}::${visualSamplingScenario || 'general-design'}`;
+    return `${projectPath}::${selectedProjectImagePath || ''}::${visualSamplingScenario || 'general-design'}::${expectedWorkspaceSemanticDigest || 'workspace:any'}`;
+}
+
+async function verifyExpectedWorkspaceSemanticDigest(
+    projectPath: string,
+    expectedDigest?: string
+): Promise<string | undefined> {
+    const expected = String(expectedDigest || '').trim().toLowerCase();
+    if (!expected) return undefined;
+    const config = await window.designEcho.invoke('ecommerce:loadConfig', projectPath);
+    const actual = await buildDebugBridgeWorkspaceSemanticDigest(config);
+    if (actual !== expected) throw new Error('project_context_workspace_semantic_mismatch');
+    return actual;
 }
 
 async function buildContextSnapshotFromRuntimeService(
     project: any,
     selectedProjectImagePath?: string,
-    visualSamplingScenario?: ProjectVisualSamplingScenario
+    visualSamplingScenario?: ProjectVisualSamplingScenario,
+    expectedWorkspaceSemanticDigest?: string
 ): Promise<RuntimeSnapshotResult | null> {
     const projectPath = String(project?.path || '').trim();
     if (!projectPath || !window.designEcho?.buildProjectContextSnapshot) return null;
 
-    const cacheKey = buildRuntimeCacheKey(projectPath, selectedProjectImagePath, visualSamplingScenario);
+    await verifyExpectedWorkspaceSemanticDigest(projectPath, expectedWorkspaceSemanticDigest);
+    const cacheKey = buildRuntimeCacheKey(
+        projectPath,
+        selectedProjectImagePath,
+        visualSamplingScenario,
+        expectedWorkspaceSemanticDigest
+    );
     if (
         cachedRuntimeSnapshot
         && cachedRuntimeSnapshot.key === cacheKey
@@ -267,6 +288,7 @@ async function buildContextSnapshotFromRuntimeService(
         if (!result?.success || !result.assetIndex || !result.contextSnapshot) {
             return null;
         }
+        await verifyExpectedWorkspaceSemanticDigest(projectPath, expectedWorkspaceSemanticDigest);
 
         const visualSamplingPlan = result.visualSamplingPlan || buildProjectVisualSamplingPlan({
             assetIndex: result.assetIndex,
@@ -291,7 +313,8 @@ async function buildContextSnapshotFromRuntimeService(
             createdAt: Date.now()
         };
         return snapshot;
-    } catch {
+    } catch (error) {
+        if (error instanceof Error && error.message.startsWith('project_context_')) throw error;
         return null;
     }
 }
@@ -481,6 +504,7 @@ export async function getProjectContext(options: {
     expectedProjectId?: string;
     expectedProjectPath?: string;
     selectedProjectImagePath?: string;
+    expectedWorkspaceSemanticDigest?: string;
 } = {}): Promise<ProjectContext | undefined> {
     try {
         const state = useAppStore.getState() as any;
@@ -509,7 +533,12 @@ export async function getProjectContext(options: {
         const projectImages = collectProjectImages(structure);
         const selectedProjectImagePath = String(options.selectedProjectImagePath || '').trim() || undefined;
         const visualSamplingScenario = options.visualSamplingScenario || 'general-design';
-        const runtimeSnapshot = await buildContextSnapshotFromRuntimeService(project, selectedProjectImagePath, visualSamplingScenario);
+        const runtimeSnapshot = await buildContextSnapshotFromRuntimeService(
+            project,
+            selectedProjectImagePath,
+            visualSamplingScenario,
+            options.expectedWorkspaceSemanticDigest
+        );
         const structureSnapshot = runtimeSnapshot ? null : buildContextSnapshotFromStructure(project, structure, selectedProjectImagePath, visualSamplingScenario);
         const snapshot = runtimeSnapshot || structureSnapshot;
         const latestProject = (useAppStore.getState() as any)?.currentProject;
@@ -518,6 +547,10 @@ export async function getProjectContext(options: {
         if (latestProjectId !== initialProjectId || latestProjectPath !== initialProjectPath) {
             throw new Error('project_context_changed_during_capture');
         }
+        const consumedWorkspaceSemanticDigest = await verifyExpectedWorkspaceSemanticDigest(
+            initialProjectPath,
+            options.expectedWorkspaceSemanticDigest
+        );
         const indexedSamplePaths = (
             snapshot?.visualSamplingPlan.selectedCandidates
             || snapshot?.assetIndex.visionCandidates
@@ -539,6 +572,7 @@ export async function getProjectContext(options: {
                 || ''
             ).trim() || undefined,
             projectPath: project.path,
+            ...(consumedWorkspaceSemanticDigest ? { workspaceSemanticDigest: consumedWorkspaceSemanticDigest } : {}),
             hasSkuFiles: Array.isArray(structure?.skuFolder?.files) ? structure.skuFolder.files.length > 0 : undefined,
             hasTemplates: Array.isArray(structure?.templateFolder?.files) ? structure.templateFolder.files.length > 0 : undefined,
             availableColors: Array.isArray(structure?.colors) ? structure.colors : undefined,

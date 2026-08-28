@@ -124,7 +124,7 @@ const BOUNDARIES = [
       'npm run audit:agent-business-boundaries',
       'npm run build:typecheck:renderer'
     ],
-    match: (entry) => /interactive-card|interaction-cards|InteractiveCard|EditableConfirmation|agent-interaction-owner-policy|pending-interactive-continuation|runtime-interactive-reentry|interactive-continuation-reentry|sku-combo-confirmation-request|sku-human-review|sku-template-direction|verify-user-choice-request/.test(entry.filePath)
+    match: (entry) => /interactive-card|interaction-cards|InteractiveCard|EditableConfirmation|agent-interaction-owner-policy|pending-interactive-continuation|interactive-continuation-operation|pending-destructive-action-card|runtime-interactive-reentry|interactive-continuation-reentry|sku-combo-confirmation-request|sku-human-review|sku-template-direction|verify-user-choice-request/.test(entry.filePath)
       || /src\/renderer\/services\/skill-executors\/(registry|skill-tools)\.ts$/.test(entry.filePath)
   },
   {
@@ -203,7 +203,7 @@ const BOUNDARIES = [
       'npm run smoke:electron:startup-window',
       'DesignEcho-UXP npm run build'
     ],
-    match: (entry) => /acceptance|photoshop-tool-semantics|smoke-acceptance|smoke-photoshop-acceptance|smoke-photoshop-simple-operations-live|smoke-photoshop-layer-write-failures-live|smoke-photoshop-save-export-live|smoke-photoshop-document-save-close-live|smoke-photoshop-tool-semantics|smoke-photoshop-text-tool-benchmarks|smoke-photoshop-text-tools-live|smoke-photoshop-text-font-replace-live|smoke-debug-bridge-redaction|smoke-tool-result-redaction|smoke-chat-ui-execution-chain|smoke-chat-ui-electron-bridge|smoke-electron-startup-window|src\/renderer\/testing|chat-panel-test-bridge|debug-bridge-service|ToolResultBlock|components\/message\/parser|tool-logger/.test(entry.filePath) ||
+    match: (entry) => /acceptance|photoshop-tool-semantics|smoke-acceptance|smoke-photoshop-acceptance|smoke-photoshop-simple-operations-live|smoke-photoshop-layer-write-failures-live|smoke-photoshop-save-export-live|smoke-photoshop-document-save-close-live|smoke-photoshop-tool-semantics|smoke-photoshop-text-tool-benchmarks|smoke-photoshop-text-tools-live|smoke-photoshop-text-font-replace-live|smoke-debug-bridge-redaction|smoke-tool-result-redaction|smoke-chat-ui-execution-chain|smoke-chat-ui-electron-bridge|smoke-electron-startup-window|src\/renderer\/testing|chat-panel-test-bridge|debug-bridge-service|debug-bridge-chat|debug-bridge-project-reference|debug-project-reference|ToolResultBlock|components\/message\/parser|tool-logger/.test(entry.filePath) ||
       entry.filePath === 'DesignEcho-Agent/benchmarks/'
   },
   {

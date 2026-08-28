@@ -14,11 +14,20 @@ const {
     describeAutoDecision
 } = require(path.join(root, 'src/shared/user-choice-request.ts'));
 const {
-    buildSkuComboEditorInteractiveCard
+    buildSkuComboEditorInteractiveCard,
+    deriveSkuComboDecisionContext,
+    validateSkuComboEditorValue
 } = require(path.join(root, 'src/shared/sku-combo-interactive-card.ts'));
 const {
     buildSkuComboConfirmationRequest
 } = require(path.join(root, 'src/shared/sku-combo-confirmation-request.ts'));
+const {
+    buildInteractiveCardSubmissionFingerprint,
+    buildInteractiveIntegrityFingerprint,
+    isInteractiveCardSubmissionFingerprint,
+    isInteractiveIntegrityFingerprint,
+    stableInteractiveCardHash
+} = require(path.join(root, 'src/shared/interactive-card-contract.ts'));
 const {
     buildSkuTemplateDirectionCard,
     isApprovedSkuTemplateDirectionSubmission
@@ -29,8 +38,14 @@ const {
     prepareSkillInteractiveReview
 } = require(path.join(root, 'src/renderer/services/skill-executors/interaction-cards/registry.ts'));
 const {
-    buildPendingInteractiveContinuation
+    buildInteractiveContinuationClaim,
+    buildPendingInteractiveContinuation,
+    resolveInteractiveContinuationOperationRequest
 } = require(path.join(root, 'src/shared/pending-interactive-continuation.ts'));
+const {
+    buildClaimedInteractiveContinuationOperationRecord,
+    validateInteractiveContinuationOperationRecord
+} = require(path.join(root, 'src/shared/interactive-continuation-operation.ts'));
 const {
     evaluateGenericBlockingCardOwner,
     evaluateRepeatedInteractionDecision
@@ -90,9 +105,9 @@ check('全自动口径只按可自动处理的偏好倾向项', /「平铺」/.t
 
 const skuCard = buildSkuComboEditorInteractiveCard({
     colorSlots: [
-        { slot: 1, label: '红色' },
-        { slot: 2, label: '蓝色' },
-        { slot: 3, label: '白色' }
+        { slot: 1, colorIdentity: 'test-red', label: '红色' },
+        { slot: 2, colorIdentity: 'test-blue', label: '蓝色' },
+        { slot: 3, colorIdentity: 'test-white', label: '白色' }
     ],
     requiredSizes: [2],
     initialValue: {
@@ -103,6 +118,14 @@ const skuCard = buildSkuComboEditorInteractiveCard({
 const preparedSkuSubmission = prepareSkillInteractiveCardSubmission(
     skuCard,
     skuCard.payload.initialValue
+);
+const skuDecisionContext = deriveSkuComboDecisionContext(skuCard, skuCard.payload.initialValue);
+check(
+    'SKU 决定、候选和答案身份均为版本化 canonical SHA-256',
+    /^sku-combo-decision-sha256-jcs-v1:[a-f0-9]{64}$/.test(skuDecisionContext.decisionFingerprint)
+        && /^sku-combo-candidate-sha256-jcs-v1:[a-f0-9]{64}$/.test(skuDecisionContext.candidateFingerprint)
+        && /^sku-combo-candidate-sha256-jcs-v1:[a-f0-9]{64}$/.test(skuDecisionContext.answerFingerprint)
+        && /^sku-combo-card-sha256-jcs-v1:[a-f0-9]{64}$/.test(skuCard.id)
 );
 const skuTemplateDirectionCard = buildSkuTemplateDirectionCard({
     memoryScope: { type: 'project', id: 'project-sku-template-direction-audit' },
@@ -210,6 +233,16 @@ const changedSkuDecisionCard = buildSkuComboEditorInteractiveCard({
         generateSelfSelectNotes: true
     }
 });
+const changedSkuSourceIdentityCard = buildSkuComboEditorInteractiveCard({
+    colorSlots: skuCard.payload.colorSlots.map((slot, index) => (
+        index === 0 ? { ...slot, colorIdentity: 'test-red-other-source' } : slot
+    )),
+    requiredSizes: [2],
+    initialValue: {
+        groups: [{ size: 2, combos: [[1, 2]] }],
+        generateSelfSelectNotes: true
+    }
+});
 const missingCandidateSkuCard = buildSkuComboEditorInteractiveCard({
     colorSlots: skuCard.payload.colorSlots,
     requiredSizes: [2]
@@ -224,11 +257,18 @@ check(
         && changedSkuDecisionCard.candidateFingerprint !== skuCard.candidateFingerprint
 );
 check(
+    '同名颜色换成另一个真实来源时必须产生新的候选指纹',
+    changedSkuSourceIdentityCard.candidateFingerprint !== skuCard.candidateFingerprint
+);
+check(
     'SKU 卡 Builder 不再用前 N 个颜色生成隐藏候选',
     missingCandidateSkuCard.payload.initialValue.groups.every((group) => group.combos.length === 0)
 );
 const warningSkuConfirmation = buildSkuComboConfirmationRequest({
-    availableColors: ['红色', '蓝色'],
+    availableColorSources: [
+        { label: '红色', stableSourceIdentity: 'test-source:red' },
+        { label: '蓝色', stableSourceIdentity: 'test-source:blue' }
+    ],
     requiredSizes: [2],
     combosBySize: { 2: [['红色', '红色']] },
     generateSelfSelectNotes: true
@@ -237,6 +277,100 @@ check(
     '影响用户判断的 SKU 候选警告会显示在专属卡片上',
     warningSkuConfirmation.status === 'pending_user_confirmation'
         && /同色多双/.test(warningSkuConfirmation.card?.description || '')
+);
+const previousHashCollisionSkuConfirmation = buildSkuComboConfirmationRequest({
+    availableColorSources: [
+        { label: '颜色 A', stableSourceIdentity: 'qu88uye07t7o3dvuclh6v' },
+        { label: '颜色 B', stableSourceIdentity: 'oxts63ez4pa6q54arvq1jm' }
+    ],
+    requiredSizes: [2],
+    combosBySize: { 2: [['颜色 A', '颜色 B']] },
+    generateSelfSelectNotes: true
+});
+const previousCollisionHashLeft = stableInteractiveCardHash({
+    version: 'sku-color-source/v1',
+    stableSourceIdentity: 'qu88uye07t7o3dvuclh6v'
+});
+const previousCollisionHashRight = stableInteractiveCardHash({
+    version: 'sku-color-source/v1',
+    stableSourceIdentity: 'oxts63ez4pa6q54arvq1jm'
+});
+check(
+    '旧 32 位哈希碰撞样例在 canonical SHA-256 下得到不同颜色身份',
+    previousCollisionHashLeft === previousCollisionHashRight
+        && buildInteractiveIntegrityFingerprint({
+            version: 'sku-color-source/v1',
+            stableSourceIdentity: 'qu88uye07t7o3dvuclh6v'
+        }) !== buildInteractiveIntegrityFingerprint({
+            version: 'sku-color-source/v1',
+            stableSourceIdentity: 'oxts63ez4pa6q54arvq1jm'
+        })
+        && previousHashCollisionSkuConfirmation.status === 'pending_user_confirmation'
+        && previousHashCollisionSkuConfirmation.card?.payload.colorSlots.length === 2
+        && previousHashCollisionSkuConfirmation.card.payload.colorSlots[0].colorIdentity
+            !== previousHashCollisionSkuConfirmation.card.payload.colorSlots[1].colorIdentity
+        && previousHashCollisionSkuConfirmation.card.payload.colorSlots.every((slot) => (
+            /^sku-color-source-sha256-jcs-v1:[a-f0-9]{64}$/.test(slot.colorIdentity)
+        ))
+);
+const duplicateSlotSkuCard = buildSkuComboEditorInteractiveCard({
+    colorSlots: [
+        { slot: 1, colorIdentity: 'source-a', label: '颜色 A' },
+        { slot: 1, colorIdentity: 'source-b', label: '颜色 B' }
+    ],
+    requiredSizes: [2],
+    initialValue: { groups: [{ size: 2, combos: [[1, 1]] }] }
+});
+const duplicateSlotValidation = validateSkuComboEditorValue(
+    duplicateSlotSkuCard.payload,
+    duplicateSlotSkuCard.payload.initialValue
+);
+check(
+    '重复颜色槽位不会被规范化静默删除，而是明确阻止提交',
+    duplicateSlotSkuCard.payload.colorSlots.length === 2
+        && !duplicateSlotValidation.canSubmit
+        && duplicateSlotValidation.issues.some((issue) => issue.code === 'duplicate_payload_color_slot')
+        && prepareSkillInteractiveCardSubmission(
+            duplicateSlotSkuCard,
+            duplicateSlotSkuCard.payload.initialValue
+        ).status === 'invalid'
+);
+const duplicateIdentitySkuCard = buildSkuComboEditorInteractiveCard({
+    colorSlots: [
+        { slot: 1, colorIdentity: 'same-source', label: '颜色 A' },
+        { slot: 2, colorIdentity: 'same-source', label: '颜色 B' }
+    ],
+    requiredSizes: [2],
+    initialValue: { groups: [{ size: 2, combos: [[1, 2]] }] }
+});
+const duplicateIdentityValidation = validateSkuComboEditorValue(
+    duplicateIdentitySkuCard.payload,
+    duplicateIdentitySkuCard.payload.initialValue
+);
+check(
+    '重复颜色来源身份不会被规范化静默删除，而是明确阻止提交',
+    duplicateIdentitySkuCard.payload.colorSlots.length === 2
+        && !duplicateIdentityValidation.canSubmit
+        && duplicateIdentityValidation.issues.some((issue) => issue.code === 'duplicate_color_identity')
+        && prepareSkillInteractiveCardSubmission(
+            duplicateIdentitySkuCard,
+            duplicateIdentitySkuCard.payload.initialValue
+        ).status === 'invalid'
+);
+const duplicateSourceConfirmation = buildSkuComboConfirmationRequest({
+    availableColorSources: [
+        { label: '颜色 A', stableSourceIdentity: 'same-provider-source' },
+        { label: '颜色 B', stableSourceIdentity: 'same-provider-source' }
+    ],
+    requiredSizes: [2],
+    combosBySize: { 2: [['颜色 A', '颜色 B']] },
+    generateSelfSelectNotes: true
+});
+check(
+    '同一 Provider 来源不能生成可操作的 SKU 确认卡',
+    duplicateSourceConfirmation.status === 'blocked_invalid_candidate'
+        && !duplicateSourceConfirmation.card
+        && duplicateSourceConfirmation.review.blockers.some((message) => /来源身份/.test(message))
 );
 let mismatchedContinuationRejected = false;
 try {
@@ -279,6 +413,78 @@ check(
     'SKU Provider 卡只绑定到 sku-batch continuation',
     ownedSkuContinuation?.operation?.skillId === 'sku-batch'
         && ownedSkuContinuation?.card?.interactionOwner?.skillId === 'sku-batch'
+);
+const integrityClaim = buildInteractiveContinuationClaim({
+    ownerMessage: {
+        id: 'sku-integrity-owner-message',
+        interactiveCards: [skuCard],
+        pendingInteractiveContinuation: ownedSkuContinuation,
+        interactiveCardSubmissions: []
+    },
+    submission: preparedSkuSubmission.submission
+});
+check(
+    '可执行 continuation 只签发版本化 SHA-256 卡片与提交完整性指纹',
+    integrityClaim.status === 'accepted'
+        && isInteractiveIntegrityFingerprint(
+            String(ownedSkuContinuation?.id || '').replace(/^continuation-/, '')
+        )
+        && isInteractiveIntegrityFingerprint(integrityClaim.request.sourceCardFingerprint)
+        && isInteractiveCardSubmissionFingerprint(integrityClaim.request.submissionFingerprint)
+        && integrityClaim.request.submissionFingerprint
+            === buildInteractiveCardSubmissionFingerprint(preparedSkuSubmission.submission)
+);
+const legacyCardFingerprintResolution = integrityClaim.status === 'accepted'
+    ? resolveInteractiveContinuationOperationRequest({
+        continuation: ownedSkuContinuation,
+        submission: preparedSkuSubmission.submission,
+        request: {
+            ...integrityClaim.request,
+            sourceCardFingerprint: stableInteractiveCardHash(skuCard)
+        }
+    })
+    : undefined;
+check(
+    '旧 32 位来源卡指纹不能恢复一次性 continuation',
+    legacyCardFingerprintResolution?.status === 'rejected'
+        && legacyCardFingerprintResolution.code
+            === 'interactive_continuation_source_card_fingerprint_version_unsupported'
+);
+const legacySubmissionFingerprintResolution = integrityClaim.status === 'accepted'
+    ? resolveInteractiveContinuationOperationRequest({
+        continuation: ownedSkuContinuation,
+        submission: preparedSkuSubmission.submission,
+        request: {
+            ...integrityClaim.request,
+            submissionFingerprint: stableInteractiveCardHash(preparedSkuSubmission.submission)
+        }
+    })
+    : undefined;
+check(
+    '旧 32 位提交指纹不能恢复一次性 continuation',
+    legacySubmissionFingerprintResolution?.status === 'rejected'
+        && legacySubmissionFingerprintResolution.code
+            === 'interactive_continuation_submission_fingerprint_version_unsupported'
+);
+const strongOperationRecord = integrityClaim.status === 'accepted'
+    ? buildClaimedInteractiveContinuationOperationRecord({
+        claim: {
+            ...integrityClaim.request,
+            submission: preparedSkuSubmission.submission,
+            continuation: ownedSkuContinuation,
+            sourceCard: skuCard
+        },
+        now: '2026-08-27T00:00:00.000Z'
+    })
+    : undefined;
+check(
+    '新持久操作记录通过版本化完整性校验，旧 v0 弱指纹记录得到明确拒绝原因',
+    Boolean(strongOperationRecord)
+        && validateInteractiveContinuationOperationRecord(strongOperationRecord) === undefined
+        && /旧版或未知算法/.test(validateInteractiveContinuationOperationRecord({
+            ...strongOperationRecord,
+            submissionFingerprint: stableInteractiveCardHash(preparedSkuSubmission.submission)
+        }) || '')
 );
 check(
     '设计执行未选择 Task Profile 时通用阻塞卡失败关闭',
@@ -363,10 +569,26 @@ const toolSchemaSource = require('fs').readFileSync(path.join(root, 'src/rendere
 const skillCardRegistrySource = require('fs').readFileSync(path.join(root, 'src/renderer/services/skill-executors/interaction-cards/registry.ts'), 'utf8');
 const skillCardPackagesSource = require('fs').readFileSync(path.join(root, 'src/renderer/services/skill-executors/interaction-cards/packages.ts'), 'utf8');
 const skuBatchExecutorSource = require('fs').readFileSync(path.join(root, 'src/renderer/services/skill-executors/sku-batch.executor.ts'), 'utf8');
+const uxpSkuLayoutSource = require('fs').readFileSync(path.resolve(root, '../DesignEcho-UXP/src/tools/layout/sku-layout-tool.ts'), 'utf8');
 const skuTemplateDirectionCardSource = require('fs').readFileSync(path.join(root, 'src/shared/sku-template-direction-interactive-card.ts'), 'utf8');
 const autonomousExecutorSource = require('fs').readFileSync(path.join(root, 'src/renderer/services/skill-executors/autonomous-agent.executor.ts'), 'utf8');
 const capabilityBridgeSource = require('fs').readFileSync(path.join(root, 'src/shared/agent-runtime-v5/tool-capability-bridge.ts'), 'utf8');
 check('ChatPanel 不再导入 SKU 组合卡领域代码', !/sku-combo-interactive-card|SkuComboEditor|validateSkuComboEditorValue/.test(chatPanelSource));
+check(
+    'SKU 图层清单在同一次稳定观察里返回 documentId、historyStateRef 与真实 layerId',
+    /observeActiveDocumentAtHistoryState\(\{/.test(uxpSkuLayoutSource)
+        && /documentId:\s*historyStateRef\.documentId/.test(uxpSkuLayoutSource)
+        && /historyStateRef,/.test(uxpSkuLayoutSource)
+        && /layerId,/.test(uxpSkuLayoutSource)
+);
+check(
+    'SKU 执行器核验真实切换收据与唯一图层身份后才构建颜色来源',
+    /callbacks\?\.onToolComplete\?\.\('switchDocument', switchResult\)/.test(skuBatchExecutorSource)
+        && /switchedDocumentId !== expectedSkuDocumentId/.test(skuBatchExecutorSource)
+        && /matches\.length !== 1/.test(skuBatchExecutorSource)
+        && /historyDocumentId !== observedDocumentId/.test(skuBatchExecutorSource)
+        && /blocked_sku_color_source_identity_unavailable/.test(skuBatchExecutorSource)
+);
 check('ChatPanel 不再处理 SKU 专属卡片动作', !/submitSkuHumanReviewCard|sku-human-review-card|isSkuHumanReviewCard/.test(chatPanelSource));
 check('通用卡片 Host 不再包含 SKU 业务渲染分支', !/sku_combo_editor|sku_human_review|SkuCombo|SkuHumanReview/.test(cardHostSource));
 check('通用卡片 Tool 不再包含 SKU 类型特判', !/cardKind\s*===\s*['"]sku_combo_editor['"]/.test(toolExecutorSource));
@@ -393,8 +615,8 @@ check(
 );
 check(
     '产后业务复核只接受来源消息中完全一致的原卡片',
-    /stableInteractiveCardHash\(card\) !== stableInteractiveCardHash\(actionCard\)/.test(chatPanelSource)
-        && /sourceMessage\?\.interactiveCards\?\.find/.test(chatPanelSource)
+    /buildInteractiveIntegrityFingerprint\(sourceCard\)[\s\S]*=== buildInteractiveIntegrityFingerprint\(actionCard\)/.test(chatPanelSource)
+        && /sourceMessage\?\.interactiveCards\?\.filter/.test(chatPanelSource)
 );
 const earlyConfirmationBranchStart = skuBatchExecutorSource.indexOf('if (draftComboConfirmationBeforeTemplateDesign)');
 const templateHandoffBranchStart = skuBatchExecutorSource.indexOf(

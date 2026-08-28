@@ -4,6 +4,7 @@ import type {
     ProviderNativeToolUsage
 } from './provider-native-tools';
 import type { ModelReasoningEffort } from './config/models.config';
+import type { DebugBridgeModelTransportMetadata } from './debug-bridge-chat';
 import type { ModelVisualPresentationReceipt } from './model-visual-presentation-receipt';
 
 export interface AgentToolStreamToolCall {
@@ -76,6 +77,8 @@ export interface AgentToolStreamRequest {
     modelId: string;
     messages: any[];
     tools: any[];
+    /** 仅 Debug Bridge IPC 消费；与 Provider options 分离。 */
+    debugTransportMetadata?: DebugBridgeModelTransportMetadata;
     options?: {
         maxTokens?: number;
         temperature?: number;

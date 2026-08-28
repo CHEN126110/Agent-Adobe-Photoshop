@@ -87,6 +87,8 @@ export interface ProjectContext {
     projectId?: string;
     projectName?: string;
     projectPath?: string;
+    /** 受控 Debug 样本实际构建项目上下文时消费的语义摘要。 */
+    workspaceSemanticDigest?: string;
     hasSkuFiles?: boolean;
     hasTemplates?: boolean;
     availableColors?: string[];

@@ -32,6 +32,10 @@ import type {
     DebugBridgeChatFailureEnvelope,
     DebugBridgeChatPreflightRequest,
     DebugBridgeChatPreflightSnapshot,
+    DebugBridgeModelTransportMetadata,
+    DebugBridgeProjectAssetAttachment,
+    DebugBridgeProjectAssetPayloadBinding,
+    DebugBridgeProjectAssetReference,
     DebugBridgePhotoshopRuntimeBinding
 } from '../shared/debug-bridge-chat';
 import type {
@@ -391,12 +395,28 @@ const api = {
         ipcRenderer.invoke('task:execute', taskType, input),
 
     // ===== 模型 =====
-    chat: (modelId: string, messages: any[], options?: any) =>
-        ipcRenderer.invoke('model:chat', modelId, messages, options),
+    chat: (
+        modelId: string,
+        messages: any[],
+        options?: any,
+        debugTransportMetadata?: DebugBridgeModelTransportMetadata
+    ) => ipcRenderer.invoke('model:chat', modelId, messages, options, debugTransportMetadata),
 
     // 带工具调用的聊天（Agent Runtime 使用）
-    chatWithTools: (modelId: string, messages: any[], tools: any[], options?: any) =>
-        ipcRenderer.invoke('model:chatWithTools', modelId, messages, tools, options),
+    chatWithTools: (
+        modelId: string,
+        messages: any[],
+        tools: any[],
+        options?: any,
+        debugTransportMetadata?: DebugBridgeModelTransportMetadata
+    ) => ipcRenderer.invoke(
+        'model:chatWithTools',
+        modelId,
+        messages,
+        tools,
+        options,
+        debugTransportMetadata
+    ),
     
     // 流式聊天
     chatStream: (params: {
@@ -412,6 +432,7 @@ const api = {
         modelId: string;
         messages: any[];
         tools: any[];
+        debugTransportMetadata?: DebugBridgeModelTransportMetadata;
         options?: {
             maxTokens?: number;
             temperature?: number;
@@ -991,6 +1012,12 @@ const api = {
         timeoutMs?: number;
         resetConversation?: boolean;
         disableSkillBridges?: boolean;
+        projectAssetReferences?: DebugBridgeProjectAssetReference[];
+        projectAssetAttachments?: DebugBridgeProjectAssetAttachment[];
+        projectAssetPayloadBinding?: DebugBridgeProjectAssetPayloadBinding;
+        /** Main 为本次受控参考图请求签发的不可猜租约；只走模型 IPC options。 */
+        debugProjectReferenceLeaseToken?: string;
+        expectedWorkspaceSemanticDigest?: string;
         expectedProjectPath?: string;
         expectedRuntimeGitCommit?: string;
         expectedRuntimeBuildId?: string;

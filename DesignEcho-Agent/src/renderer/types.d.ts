@@ -4,6 +4,10 @@ import type { DesignAgentOsRecord } from '../shared/design-agent-os-contracts';
 import type {
     DebugBridgeChatPreflightRequest,
     DebugBridgeChatPreflightSnapshot,
+    DebugBridgeModelTransportMetadata,
+    DebugBridgeProjectAssetAttachment,
+    DebugBridgeProjectAssetPayloadBinding,
+    DebugBridgeProjectAssetReference,
     DebugBridgePhotoshopRuntimeBinding
 } from '../shared/debug-bridge-chat';
 import type {
@@ -438,8 +442,19 @@ export interface DesignEchoAPI {
     onPluginMessage: (callback: (message: any) => void) => () => void;
 
     executeTask: (taskType: string, input: any) => Promise<any>;
-    chat: (modelId: string, messages: any[], options?: any) => Promise<any>;
-    chatWithTools?: (modelId: string, messages: any[], tools: any[], options?: any) => Promise<any>;
+    chat: (
+        modelId: string,
+        messages: any[],
+        options?: any,
+        debugTransportMetadata?: DebugBridgeModelTransportMetadata
+    ) => Promise<any>;
+    chatWithTools?: (
+        modelId: string,
+        messages: any[],
+        tools: any[],
+        options?: any,
+        debugTransportMetadata?: DebugBridgeModelTransportMetadata
+    ) => Promise<any>;
     chatStream?: (params: {
         requestId: string;
         modelId: string;
@@ -451,6 +466,7 @@ export interface DesignEchoAPI {
         modelId: string;
         messages: any[];
         tools: any[];
+        debugTransportMetadata?: DebugBridgeModelTransportMetadata;
         options?: {
             maxTokens?: number;
             temperature?: number;
@@ -919,6 +935,12 @@ export interface DesignEchoAPI {
         timeoutMs?: number;
         resetConversation?: boolean;
         disableSkillBridges?: boolean;
+        projectAssetReferences?: DebugBridgeProjectAssetReference[];
+        projectAssetAttachments?: DebugBridgeProjectAssetAttachment[];
+        projectAssetPayloadBinding?: DebugBridgeProjectAssetPayloadBinding;
+        /** Main 为本次受控参考图请求签发的不可猜租约；只走模型 IPC options。 */
+        debugProjectReferenceLeaseToken?: string;
+        expectedWorkspaceSemanticDigest?: string;
         expectedProjectPath?: string;
         expectedRuntimeGitCommit?: string;
         expectedRuntimeBuildId?: string;

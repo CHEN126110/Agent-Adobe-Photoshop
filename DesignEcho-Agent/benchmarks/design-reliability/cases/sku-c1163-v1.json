@@ -2,11 +2,15 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "sku-c1163-v1",
-  "revision": 4,
-  "caseDigest": "sha256:df5aed44f8b35d97bad896c85ac42551167f432deeef9864a881538b94d61af3",
+  "revision": 6,
+  "caseDigest": "sha256:4a43fc193060ade7b5fd1c169b43ab3505c0da1582d6fe2b2fd5f2066f0637b8",
   "status": "active",
   "taskFamily": "sku",
   "executionModel": "staged",
+  "liveRunProtocol": {
+    "version": "design-reliability-live-run-protocol/v1",
+    "kind": "autonomous_zero_correction"
+  },
   "skillContract": {
     "userFacingSkillId": "sku-batch",
     "runtimeSkillIds": [
@@ -18,13 +22,13 @@
     "instructionStyle": "natural_user_request",
     "fixtureId": "neveralone-c1163-input-v1",
     "agentVisibleInputs": [
-      { "ref": "配置文件/6色 2-3-4.csv", "role": "combination_spec" },
-      { "ref": "S82646/新建文件夹/白色.jpg", "role": "completed_color_source_card" },
-      { "ref": "S82646/新建文件夹/浅肤.jpg", "role": "completed_color_source_card" },
-      { "ref": "S82646/新建文件夹/身肤.jpg", "role": "completed_color_source_card" },
-      { "ref": "S82646/新建文件夹/浅蓝.jpg", "role": "completed_color_source_card" },
-      { "ref": "S82646/新建文件夹/浅紫.jpg", "role": "completed_color_source_card" },
-      { "ref": "S82646/新建文件夹/黑色.jpg", "role": "completed_color_source_card" }
+      { "ref": "配置文件/6色 2-3-4.csv", "role": "combination_spec", "digest": "sha256:85946a9a9d2dbd6140f70bdf924c0d9b8d16e0a995117231da7fb5b3015f5b2d" },
+      { "ref": "S82646/新建文件夹/白色.jpg", "role": "completed_color_source_card", "digest": "sha256:ca239045e08f08a2430d0b94608805ab53040fb076681e3f96ac440affaf5354" },
+      { "ref": "S82646/新建文件夹/浅肤.jpg", "role": "completed_color_source_card", "digest": "sha256:dd9c2fa7538912fab1e09a4ee9d3490eefbb56882dea1d3403eaa3b6bf115a74" },
+      { "ref": "S82646/新建文件夹/身肤.jpg", "role": "completed_color_source_card", "digest": "sha256:a40180929200c17407fe15b3c02fa2e686af4dd466f9030a5a4568be55ebaa01" },
+      { "ref": "S82646/新建文件夹/浅蓝.jpg", "role": "completed_color_source_card", "digest": "sha256:a38a9824578f46112aee89445559eb58db39204c1c100c131b57a1e0e05c1b36" },
+      { "ref": "S82646/新建文件夹/浅紫.jpg", "role": "completed_color_source_card", "digest": "sha256:302b58008a6013258d1bd3454adb38a8eca709957a6b83441fcaf112ac1d1b9b" },
+      { "ref": "S82646/新建文件夹/黑色.jpg", "role": "completed_color_source_card", "digest": "sha256:1dff3fa607eae9f20218588876b014b7d383c6a5230a859759e78e85e9c262c4" }
     ],
     "fixtureGeneratedInputs": [
       {
@@ -78,12 +82,13 @@
     "invariants": [
       "源卡被识别为已完成素材且保持不变",
       "2/3/4 双组合数量、颜色和命名符合 CSV",
-      "确认卡续跑属于同一 TaskRun，不重复执行 Skill",
+      "权威 CSV 与颜色映射已完整提供，本 Case 不需要用户补充组合决定",
       "保存到一次性 fixture 项目，不覆盖源项目"
     ],
     "forbiddenBehaviors": [
       "不得把完成的颜色源卡当成未完成模板重新设计",
       "不得覆盖或改写任何源卡",
+      "不得在输入事实完整时用确认卡替代自主执行",
       "不得在等待确认时声明完整 SKU 已完成",
       "不得用新增一套 SKU 专属 Harness 状态修补失败"
     ],

@@ -20,8 +20,8 @@ const {
   validateDesignReliabilityRun
 } = require("./design-reliability-contract.cjs");
 
-const REVIEW_PACKET_VERSION = "design-reliability-review-packet/v1";
-const SEALED_MAPPING_VERSION = "design-reliability-review-packet-mapping/v1";
+const REVIEW_PACKET_VERSION = "design-reliability-review-packet/v2";
+const SEALED_MAPPING_VERSION = "design-reliability-review-packet-mapping/v2";
 const REVIEWER_RESPONSE_VERSION = "design-reliability-reviewer-response/v1";
 const REVIEW_PACKET_FILE = "packet.json";
 const MAX_REVIEW_IMAGE_BYTES = 512 * 1024 * 1024;
@@ -210,7 +210,9 @@ function validateCaseRunRubric(caseSpec, run, rubric) {
 function normalizeExpectedEvidence(caseSpec, run) {
   const expected = buildExpectedComparisonEvidenceList(caseSpec, run);
   const candidateCount = expected.filter((item) => item.kind === "candidate_final").length;
-  const anchorCount = expected.length - candidateCount;
+  const anchorCount = expected.filter((item) => (
+    item.kind === "user_design_anchor" || item.kind === "eagle_anchor"
+  )).length;
   if (candidateCount === 0) fail("Run 没有经过验证并进入 finalArtifactManifest 的 raster final。 ");
   if (anchorCount === 0) fail("Case 没有可用于匿名比较的 reviewOnly reference。 ");
   return expected;
@@ -331,12 +333,22 @@ async function createDesignReliabilityReviewPacket(input) {
   if (!Buffer.isBuffer(nonce) || nonce.length !== 32) {
     fail("randomBytes 必须为匿名排序返回 32 字节 Buffer。 ");
   }
-  const labeledGroups = assignAnonymousLabels(
-    buildOriginGroups(expectedEvidence, sourceBindings),
+  const originGroups = buildOriginGroups(expectedEvidence, sourceBindings);
+  const contextGroups = originGroups
+    .filter((group) => group.originKind === "target_reference_context")
+    .map((group, index) => ({
+      ...group,
+      label: `T${String(index + 1).padStart(2, "0")}`,
+      publicRole: "user_target_reference"
+    }));
+  const anonymousGroups = assignAnonymousLabels(
+    originGroups.filter((group) => group.originKind !== "target_reference_context"),
     nonce
   );
+  const labeledGroups = [...contextGroups, ...anonymousGroups];
 
-  const publicGroups = [];
+  const publicContextGroups = [];
+  const publicAnonymousGroups = [];
   const sealedGroups = [];
   for (const group of labeledGroups) {
     const rankedSources = group.sources
@@ -349,7 +361,9 @@ async function createDesignReliabilityReviewPacket(input) {
     const sealedAssets = [];
     rankedSources.forEach((source, index) => {
       const assetId = `A${String(index + 1).padStart(2, "0")}`;
-      const publicRef = `assets/${group.label}/${assetId}.png`;
+      const publicRef = group.originKind === "target_reference_context"
+        ? `context/${group.label}/${assetId}.png`
+        : `assets/${group.label}/${assetId}.png`;
       publicAssets.push({ assetId, ref: publicRef });
       sealedAssets.push({
         assetId,
@@ -361,7 +375,15 @@ async function createDesignReliabilityReviewPacket(input) {
         sourceHeight: source.height
       });
     });
-    publicGroups.push({ label: group.label, assets: publicAssets });
+    if (group.originKind === "target_reference_context") {
+      publicContextGroups.push({
+        label: group.label,
+        role: group.publicRole,
+        assets: publicAssets
+      });
+    } else {
+      publicAnonymousGroups.push({ label: group.label, assets: publicAssets });
+    }
     sealedGroups.push({
       label: group.label,
       originKind: group.originKind,
@@ -379,11 +401,13 @@ async function createDesignReliabilityReviewPacket(input) {
     packetId,
     createdAt,
     rubric: sanitizeRubric(input.rubric, rubricDigest),
-    anonymousGroups: publicGroups,
+    contextGroups: publicContextGroups,
+    anonymousGroups: publicAnonymousGroups,
     responseContract: {
       version: REVIEWER_RESPONSE_VERSION,
       assessEveryGroup: true,
       compareEveryUnorderedPair: true,
+      targetContextAppliesToEveryAssessment: true,
       pairwiseOutcomes: [...RESPONSE_PAIRWISE_OUTCOMES]
     },
     boundaries: {
@@ -391,6 +415,7 @@ async function createDesignReliabilityReviewPacket(input) {
       noCohortIdentity: true,
       noSourceReferences: true,
       noAbsolutePaths: true,
+      targetContextRoleExplicit: true,
       uniformSingleAssetAnonymousGroups: true,
       sealedMappingStoredSeparately: true,
       devBenchmarkOnly: true
@@ -402,7 +427,8 @@ async function createDesignReliabilityReviewPacket(input) {
   fs.mkdirSync(reviewerPacketDirectory);
   for (const group of labeledGroups) {
     const sealedGroup = sealedGroups.find((item) => item.label === group.label);
-    fs.mkdirSync(path.join(reviewerPacketDirectory, "assets", group.label), { recursive: true });
+    const publicDirectory = group.originKind === "target_reference_context" ? "context" : "assets";
+    fs.mkdirSync(path.join(reviewerPacketDirectory, publicDirectory, group.label), { recursive: true });
     for (const asset of sealedGroup.assets) {
       const source = sourceBindings.get(asset.evidenceRef);
       const destination = resolveInside(reviewerPacketDirectory, asset.publicRef, "asset.publicRef");
@@ -544,7 +570,9 @@ function verifyMappingAgainstContext(mapping, packet, caseSpec, run, rubric) {
     fail("sealed mapping 没有覆盖当前 Case / Run 的精确比较证据集合。 ");
   }
   const candidateGroups = mapping.groups.filter((group) => group.originKind === "candidate_final");
-  const anchorGroups = mapping.groups.filter((group) => group.originKind !== "candidate_final");
+  const anchorGroups = mapping.groups.filter((group) => (
+    group.originKind === "user_design_anchor" || group.originKind === "eagle_anchor"
+  ));
   if (candidateGroups.length === 0
     || anchorGroups.length === 0
     || mapping.groups.some((group) => (
@@ -588,17 +616,25 @@ function verifyMappingAgainstContext(mapping, packet, caseSpec, run, rubric) {
   }
   const nonce = Buffer.from(cleanString(mapping.shuffleNonce), "base64url");
   if (nonce.length !== 32) fail("sealed mapping 的匿名排序 nonce 非法。 ");
-  const relabeled = assignAnonymousLabels(mapping.groups.map((group) => ({
+  const relabeled = assignAnonymousLabels(mapping.groups
+    .filter((group) => group.originKind !== "target_reference_context")
+    .map((group) => ({
     originKind: group.originKind,
     evidenceRefs: group.evidenceRefs,
     sources: []
   })), nonce).map((group) => ({ label: group.label, identity: groupIdentity(group) }));
-  const currentLabels = mapping.groups.map((group) => ({
+  const currentLabels = mapping.groups
+    .filter((group) => group.originKind !== "target_reference_context")
+    .map((group) => ({
     label: group.label,
     identity: groupIdentity(group)
   })).sort((left, right) => left.label.localeCompare(right.label));
   if (stableStringify(relabeled) !== stableStringify(currentLabels)) {
     fail("sealed mapping 的匿名标签不能由随机 nonce 复核。 ");
+  }
+  const contextGroups = mapping.groups.filter((group) => group.originKind === "target_reference_context");
+  if (contextGroups.some((group, index) => group.label !== `T${String(index + 1).padStart(2, "0")}`)) {
+    fail("sealed mapping 的目标参考上下文标签非法。 ");
   }
 }
 
@@ -608,6 +644,7 @@ function validatePublicPacketShape(packet) {
     "packetId",
     "createdAt",
     "rubric",
+    "contextGroups",
     "anonymousGroups",
     "responseContract",
     "boundaries",
@@ -619,11 +656,35 @@ function validatePublicPacketShape(packet) {
     || packet.boundaries.noCohortIdentity !== true
     || packet.boundaries.noSourceReferences !== true
     || packet.boundaries.noAbsolutePaths !== true
+    || packet.boundaries.targetContextRoleExplicit !== true
     || packet.boundaries.uniformSingleAssetAnonymousGroups !== true
     || packet.boundaries.sealedMappingStoredSeparately !== true
     || packet.boundaries.devBenchmarkOnly !== true) {
     fail("reviewer packet boundaries 不完整。 ");
   }
+  if (!Array.isArray(packet.contextGroups)) fail("reviewer packet contextGroups 必须是数组。 ");
+  const contextLabels = new Set();
+  packet.contextGroups.forEach((group, groupIndex) => {
+    assertExactKeys(group, ["label", "role", "assets"], `reviewerPacket.contextGroups[${groupIndex}]`);
+    if (!/^T\d{2,}$/.test(cleanString(group.label))
+      || contextLabels.has(group.label)
+      || group.role !== "user_target_reference") {
+      fail("reviewer packet 目标参考上下文标签、角色非法或重复。 ");
+    }
+    contextLabels.add(group.label);
+    if (!Array.isArray(group.assets) || group.assets.length !== 1) {
+      fail("每个目标参考上下文必须恰好包含一个公开资产。 ");
+    }
+    const asset = group.assets[0];
+    assertExactKeys(asset, ["assetId", "ref"], `reviewerPacket.contextGroups[${groupIndex}].assets[0]`);
+    const safeAssetRef = normalizeSafeRelativePath(asset.ref, "reviewerPacket context asset ref");
+    if (asset.assetId !== "A01"
+      || path.posix.dirname(safeAssetRef) !== `context/${group.label}`
+      || path.posix.basename(safeAssetRef, path.posix.extname(safeAssetRef)) !== "A01"
+      || path.posix.extname(safeAssetRef).toLowerCase() !== ".png") {
+      fail("reviewer packet 目标参考资产 ref 与上下文标签不一致。 ");
+    }
+  });
   if (!Array.isArray(packet.anonymousGroups) || packet.anonymousGroups.length < 2) {
     fail("reviewer packet 至少需要两个匿名项。 ");
   }
@@ -651,8 +712,13 @@ function validatePublicPacketShape(packet) {
 }
 
 async function verifyPacketFiles(reviewerPacketDirectory, packet, mapping) {
-  const packetGroups = packet.anonymousGroups;
-  if (!Array.isArray(packetGroups) || packetGroups.length < 2) fail("reviewer packet 至少需要两个匿名组。 ");
+  const packetGroups = [
+    ...(Array.isArray(packet.contextGroups) ? packet.contextGroups : []),
+    ...(Array.isArray(packet.anonymousGroups) ? packet.anonymousGroups : [])
+  ];
+  if (!Array.isArray(packet.anonymousGroups) || packet.anonymousGroups.length < 2) {
+    fail("reviewer packet 至少需要两个匿名组。 ");
+  }
   const packetProjection = packetGroups.map((group) => ({
     label: group.label,
     assets: group.assets
@@ -781,7 +847,10 @@ function validateReviewerResponse(response, packet, mapping, rubric) {
   if (!cleanString(response.reviewedAt) || !Number.isFinite(Date.parse(response.reviewedAt))) {
     fail("reviewerResponse.reviewedAt 必须是有效时间。 ");
   }
-  const labels = mapping.groups.map((group) => group.label).sort();
+  const labels = mapping.groups
+    .filter((group) => group.originKind !== "target_reference_context")
+    .map((group) => group.label)
+    .sort();
   if (!Array.isArray(response.assessments)) fail("reviewerResponse.assessments 必须是数组。 ");
   const assessmentLabels = response.assessments.map((assessment) => cleanString(assessment?.label)).sort();
   if (stableStringify(labels) !== stableStringify(assessmentLabels)) {
@@ -899,7 +968,9 @@ async function verifyDesignReliabilityReviewerResponse(input) {
     : readJsonFile(path.resolve(cleanString(input.reviewerResponsePath)), "reviewer response");
   const responseValidation = validateReviewerResponse(response, packet, mapping, input.rubric);
   const candidateGroups = mapping.groups.filter((group) => group.originKind === "candidate_final");
-  const anchorGroups = mapping.groups.filter((group) => group.originKind !== "candidate_final");
+  const anchorGroups = mapping.groups.filter((group) => (
+    group.originKind === "user_design_anchor" || group.originKind === "eagle_anchor"
+  ));
   if (candidateGroups.length === 0 || anchorGroups.length === 0) {
     fail("sealed mapping 缺少候选匿名项或参考匿名项。 ");
   }

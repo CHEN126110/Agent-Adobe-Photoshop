@@ -13,6 +13,7 @@
  * 4. 窗口管理、生命周期管理、端口清理等辅助逻辑保留在本文件
  */
 
+import crypto from 'crypto';
 import { app, BrowserWindow, ipcMain, shell, type IpcMainEvent } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -42,6 +43,11 @@ import {
     SemanticTargetLocatorService
 } from './services/semantic-target-locator-service';
 import { DebugBridgeService, type DebugBridgeChatSubmitInput } from './services/debug-bridge-service';
+import {
+    armDebugProjectReferenceProviderReceipt,
+    clearDebugProjectReferenceProviderReceipt,
+    readDebugProjectReferenceProviderReceipt
+} from './services/debug-project-reference-provider-receipt';
 import { MCPHostService } from './services/mcp-host-service';
 import {
     captureRuntimeBuildIdentity,
@@ -357,6 +363,23 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
     }
 
     const requestId = `debug_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const debugProjectReferenceLeaseToken = crypto.randomBytes(32).toString('hex');
+    try {
+        armDebugProjectReferenceProviderReceipt({
+            requestId,
+            leaseToken: debugProjectReferenceLeaseToken,
+            attachments: input.projectAssetAttachments,
+            binding: input.projectAssetPayloadBinding
+        });
+    } catch (error) {
+        return Promise.reject(buildDebugChatError({
+            stage: 'main_preflight',
+            writePossible: false,
+            message: error instanceof Error ? error.message : String(error),
+            code: 'main_project_reference_provider_lease_invalid',
+            requestId
+        }));
+    }
     debugChatSubmissionLeaseId = requestId;
     const timeoutMs = Math.max(
         1000,
@@ -390,6 +413,7 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
         const cleanup = (): void => {
             clearTimeout(timer);
             ipcMain.removeListener(resultChannel, handleResult);
+            clearDebugProjectReferenceProviderReceipt(requestId);
             if (debugChatSubmissionLeaseId === requestId) {
                 debugChatSubmissionLeaseId = null;
             }
@@ -484,11 +508,61 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
                     }));
                     return;
                 }
+                const expectedProjectReferenceCount = Number(
+                    input.projectAssetPayloadBinding?.referenceCount || 0
+                );
+                const mainProviderReceipt = readDebugProjectReferenceProviderReceipt(requestId);
+                if (expectedProjectReferenceCount > 0 && !mainProviderReceipt) {
+                    cleanup();
+                    reject(buildDebugChatError({
+                        stage: 'completion',
+                        writePossible: true,
+                        message: 'Main 模型服务没有证明用户目标参考进入真实 Provider 请求。',
+                        code: 'main_project_reference_provider_receipt_missing',
+                        requestId
+                    }));
+                    return;
+                }
+                const firstMutationBaselineValue = receipt['firstPhotoshopMutationBaseline'];
+                const firstMutationBaseline = firstMutationBaselineValue
+                    && typeof firstMutationBaselineValue === 'object'
+                    && !Array.isArray(firstMutationBaselineValue)
+                    ? firstMutationBaselineValue as Record<string, unknown>
+                    : undefined;
+                if (expectedProjectReferenceCount > 0
+                    && mainProviderReceipt
+                    && firstMutationBaseline?.['status'] === 'passed') {
+                    const checkedAt = Date.parse(String(firstMutationBaseline['checkedAt'] || ''));
+                    const matchedAt = Date.parse(mainProviderReceipt.matchedAt);
+                    const committedAt = Date.parse(mainProviderReceipt.committedAt);
+                    if (!Number.isFinite(checkedAt)
+                        || !Number.isFinite(matchedAt)
+                        || !Number.isFinite(committedAt)
+                        || matchedAt > checkedAt
+                        || committedAt > checkedAt) {
+                        cleanup();
+                        reject(buildDebugChatError({
+                            stage: 'completion',
+                            writePossible: true,
+                            message: '目标参考只在首次 Photoshop 写入之后才被 Provider 验证，本轮不能计入正式质量样本。',
+                            code: 'project_reference_provider_receipt_after_first_mutation',
+                            requestId
+                        }));
+                        return;
+                    }
+                }
+                const {
+                    projectAssetProviderBindingReceipt: _rendererProjectAssetProviderBindingReceipt,
+                    ...rendererReceipt
+                } = receipt;
                 cleanup();
                 resolve({
                     ...result,
                     receipt: {
-                        ...receipt,
+                        ...rendererReceipt,
+                        ...(mainProviderReceipt ? {
+                            projectAssetProviderBindingReceipt: mainProviderReceipt
+                        } : {}),
                         runtimeBuildIdentity: submissionRuntimeBuildIdentity,
                         completedRuntimeBuildIdentity,
                         runtimeArtifactsUnchangedThroughCompletion,
@@ -525,7 +599,8 @@ function submitChatToCurrentWindow(input: DebugBridgeChatSubmitInput): Promise<u
             mainWindow!.webContents.send('debug-bridge:chat-submit', {
                 ...input,
                 requestId,
-                timeoutMs
+                timeoutMs,
+                debugProjectReferenceLeaseToken
             });
         } catch (error) {
             cleanup();

@@ -468,7 +468,7 @@ import {
     resolvePendingInteractiveContinuationPauseRevision,
     type PendingInteractiveContinuation
 } from '../../../shared/pending-interactive-continuation';
-import { stableInteractiveCardHash } from '../../../shared/interactive-card-contract';
+import { buildInteractiveIntegrityFingerprint } from '../../../shared/interactive-card-contract';
 import { isPolicyGateResult } from '../../../shared/tool-safety-policy';
 import {
     createPolicyGateRepeatState,
@@ -1118,7 +1118,7 @@ export function collectPendingInteractiveConfirmationCards(toolResults: ToolResu
                 && card.runDisposition !== 'post_execution_review') {
                 const id = typeof card.id === 'string' ? card.id : '';
                 if (id) {
-                    const definitionHash = stableInteractiveCardHash(card);
+                    const definitionHash = buildInteractiveIntegrityFingerprint(card);
                     const previousHash = definitionById.get(id);
                     if (definitionById.has(id)) {
                         if (previousHash !== definitionHash) {
@@ -1177,7 +1177,7 @@ export function collectPendingInteractiveContinuations(
     for (const result of toolResults) {
         const continuation = findPendingInteractiveContinuation(result?.output);
         if (!continuation) continue;
-        const definitionHash = stableInteractiveCardHash(continuation);
+        const definitionHash = buildInteractiveIntegrityFingerprint(continuation);
         const previousHash = definitionById.get(continuation.id);
         if (definitionById.has(continuation.id)) {
             if (previousHash !== definitionHash) {

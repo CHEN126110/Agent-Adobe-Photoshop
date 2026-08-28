@@ -2,8 +2,8 @@
   "version": "design-reliability-case/v1",
   "suiteId": "business-skills-quality-v1",
   "caseId": "detail-page-c1163-v1",
-  "revision": 3,
-  "caseDigest": "sha256:1121cf7dae337be642c7a7ce8eb2a57fc4d6242943263fefe71a661f4eff3a27",
+  "revision": 4,
+  "caseDigest": "sha256:d74a6296e9a2af57987c1d421059a03e6574298f8815b3edc6a0da1467c5b6b7",
   "status": "active",
   "taskFamily": "detail_page",
   "executionModel": "agentic",
@@ -18,14 +18,14 @@
     "instructionStyle": "natural_user_request",
     "fixtureId": "neveralone-c1163-input-v1",
     "agentVisibleInputs": [
-      { "ref": "S82646/YYC_8814.jpg", "role": "wearing_scene_candidate" },
-      { "ref": "S82646/YYC_8824.jpg", "role": "wearing_scene_candidate" },
-      { "ref": "S82646/YYC_8811.jpg", "role": "wearing_scene_candidate" },
-      { "ref": "S82646/ZZY_9886.jpg", "role": "product_structure_candidate" },
-      { "ref": "S82646/ZZY_9892.jpg", "role": "material_detail_candidate" },
-      { "ref": "S82646/ZZY_9905.jpg", "role": "product_structure_candidate" },
-      { "ref": "S82646/ZZY_9907.jpg", "role": "material_detail_candidate" },
-      { "ref": "S82646/ZZY_9884.jpg", "role": "product_structure_candidate" }
+      { "ref": "S82646/YYC_8814.jpg", "role": "wearing_scene_candidate", "digest": "sha256:8104b2187ed0fdcf6ef19476e6bb91e3c299a74f404ede9e8df57b2cd2e9820b" },
+      { "ref": "S82646/YYC_8824.jpg", "role": "wearing_scene_candidate", "digest": "sha256:00745bd12fbed61d11a9a7236633960fd72ede0aead2ed6f30592acb1702ffaf" },
+      { "ref": "S82646/YYC_8811.jpg", "role": "wearing_scene_candidate", "digest": "sha256:1151110ba2cad488b57183df3cc9496c1ae1fe12f96e16a2e80d75dc74a17d93" },
+      { "ref": "S82646/ZZY_9886.jpg", "role": "product_structure_candidate", "digest": "sha256:f316b1c673807edaecba3c0990b88c2711c6910bb4da3acb737d7cc9c1ae4bee" },
+      { "ref": "S82646/ZZY_9892.jpg", "role": "material_detail_candidate", "digest": "sha256:785ee41a09cb064d8f2feec834fe2dd968fa56fe993910acba4b75c393dbe8f6" },
+      { "ref": "S82646/ZZY_9905.jpg", "role": "product_structure_candidate", "digest": "sha256:d2bdd5d0a21d8e0c2d620ab928e39f7195441745c2f62adc93aaf1df2f1f07d7" },
+      { "ref": "S82646/ZZY_9907.jpg", "role": "material_detail_candidate", "digest": "sha256:35e13140d75a77ca7ce12a7c86ef4a874f4d160bd6e05be529110d1f8cb9b516" },
+      { "ref": "S82646/ZZY_9884.jpg", "role": "product_structure_candidate", "digest": "sha256:6d8d8db0fe9422ea1487ff419fb3edeffe75f6d183b2f6d71e22cc2e7b573bc8" }
     ],
     "fixtureGeneratedInputs": [
       {

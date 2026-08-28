@@ -93,7 +93,8 @@ export function streamChatWithTools(
     messages: any[],
     tools: any[],
     callbacks: AgentToolStreamCallbacks,
-    options?: AgentToolStreamRequest['options']
+    options?: AgentToolStreamRequest['options'],
+    debugTransportMetadata?: AgentToolStreamRequest['debugTransportMetadata']
 ): AgentToolStreamHandle {
     ensureListenerRegistered();
 
@@ -161,6 +162,7 @@ export function streamChatWithTools(
         modelId,
         messages,
         tools,
+        debugTransportMetadata,
         options
     }).then((result: { success: boolean; error?: string }) => {
         if (!result.success) {
@@ -191,7 +193,8 @@ export async function streamChatWithToolsAsync(
     tools: any[],
     options?: AgentToolStreamRequest['options'] & AgentToolStreamCallbacks & {
         signal?: AbortSignal;
-    }
+    },
+    debugTransportMetadata?: AgentToolStreamRequest['debugTransportMetadata']
 ): Promise<AgentToolStreamResponse> {
     const {
         onContentDelta,
@@ -218,7 +221,8 @@ export async function streamChatWithToolsAsync(
             onDone,
             onError
         },
-        streamOptions
+        streamOptions,
+        debugTransportMetadata
     );
 
     const handleAbort = (): void => {

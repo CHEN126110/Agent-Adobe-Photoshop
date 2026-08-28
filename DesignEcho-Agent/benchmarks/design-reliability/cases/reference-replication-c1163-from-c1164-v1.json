@@ -1,0 +1,132 @@
+{
+  "version": "design-reliability-case/v1",
+  "suiteId": "business-skills-quality-v1",
+  "caseId": "reference-replication-c1163-from-c1164-v1",
+  "revision": 2,
+  "caseDigest": "sha256:50b87a175a5a87e193d2e2b6250ca9fc8c1918f86080e798017b284c82524ff5",
+  "status": "active",
+  "taskFamily": "reference_replication",
+  "executionModel": "agentic",
+  "skillContract": {
+    "userFacingSkillId": "main-image-design",
+    "runtimeSkillIds": [
+      "ecommerce.main_image"
+    ]
+  },
+  "task": {
+    "instruction": "参考这张主图的视觉方向，用这个商品的摄影图重新做一张 800×800 商品主图，文案和商品信息按当前素材来，不要照搬参考图。",
+    "instructionStyle": "natural_user_request",
+    "fixtureId": "neveralone-c1163-reference-c1164-v1",
+    "agentVisibleInputs": [
+      { "ref": "C-1163/S82646/YYC_8814.jpg", "role": "model_product_candidate", "digest": "sha256:8104b2187ed0fdcf6ef19476e6bb91e3c299a74f404ede9e8df57b2cd2e9820b" },
+      { "ref": "C-1163/S82646/YYC_8824.jpg", "role": "model_product_candidate", "digest": "sha256:00745bd12fbed61d11a9a7236633960fd72ede0aead2ed6f30592acb1702ffaf" },
+      { "ref": "C-1163/S82646/YYC_8811.jpg", "role": "model_product_candidate", "digest": "sha256:1151110ba2cad488b57183df3cc9496c1ae1fe12f96e16a2e80d75dc74a17d93" },
+      { "ref": "C-1163/S82646/ZZY_9886.jpg", "role": "still_life_candidate", "digest": "sha256:f316b1c673807edaecba3c0990b88c2711c6910bb4da3acb737d7cc9c1ae4bee" },
+      { "ref": "C-1163/S82646/ZZY_9892.jpg", "role": "detail_candidate", "digest": "sha256:785ee41a09cb064d8f2feec834fe2dd968fa56fe993910acba4b75c393dbe8f6" },
+      { "ref": "C-1163/S82646/ZZY_9905.jpg", "role": "still_life_candidate", "digest": "sha256:d2bdd5d0a21d8e0c2d620ab928e39f7195441745c2f62adc93aaf1df2f1f07d7" },
+      { "ref": "C-1163/S82646/ZZY_9907.jpg", "role": "detail_candidate", "digest": "sha256:35e13140d75a77ca7ce12a7c86ef4a874f4d160bd6e05be529110d1f8cb9b516" },
+      { "ref": "C-1163/S82646/ZZY_9884.jpg", "role": "still_life_candidate", "digest": "sha256:6d8d8db0fe9422ea1487ff419fb3edeffe75f6d183b2f6d71e22cc2e7b573bc8" }
+    ],
+    "agentVisibleReferences": [
+      {
+        "kind": "user_design",
+        "ref": "C-1164/主图/800/800-1.jpg",
+        "digest": "sha256:452126be298ae98f6541e2bbfd8ddd20879d2f28ef8f2f28658b846f03ae8b8c",
+        "role": "user_provided_target_reference"
+      }
+    ],
+    "fixtureGeneratedInputs": [
+      {
+        "ref": "测试输入/C-1163商品事实.json",
+        "role": "verified_product_brief",
+        "encoding": "utf8",
+        "facts": {
+          "product_type": "女士浅口隐形袜",
+          "available_colors": ["白色", "浅肤", "深肤", "浅蓝", "浅紫", "黑色"],
+          "product_claims": [
+            { "category": "wearing_cut", "value": "浅口", "provenance": { "kind": "source_observable", "ref": "C-1163/S82646/YYC_8814.jpg" } },
+            { "category": "wearing_scenario", "value": "隐形穿着场景", "provenance": { "kind": "source_observable", "ref": "C-1163/S82646/YYC_8824.jpg" } },
+            { "category": "color_availability", "value": "多色可选", "provenance": { "kind": "source_observable", "ref": "C-1163/S82646/ZZY_9886.jpg" } }
+          ],
+          "prohibited_claim_categories": ["material_composition", "performance", "certification"]
+        }
+      }
+    ],
+    "reviewOnlyReferences": [
+      {
+        "kind": "user_design",
+        "ref": "C-1163/主图/800/800-1.jpg",
+        "digest": "sha256:12eee43f4656d60514dbd255be09ba4d91d2e4206e6ae7cd8d105b81fcc90598",
+        "qualityRole": "same_product_user_design_anchor"
+      },
+      {
+        "kind": "eagle_item",
+        "ref": "eagle:item:MQKCMKNG86GJI",
+        "digest": "sha256:5d9a5e4d1e2f810fd9fbf3700d5a13c0640e16f4a6ed9062c6889db7a81664ad",
+        "qualityRole": "category_commercial_anchor"
+      }
+    ]
+  },
+  "source": {
+    "kind": "cross_product_user_reference_with_hidden_same_product_and_eagle_anchors",
+    "qualityClaimEligible": true,
+    "boundary": "Agent 只看 C-1164 跨商品目标参考、C-1163 摄影输入和事实说明；同商品用户成稿与 Eagle 条目只供成稿后的匿名盲评。"
+  },
+  "oracle": {
+    "rubricId": "reference-replication-main-image-v1",
+    "outputContract": {
+      "version": "design-reliability-output-contract/v1",
+      "canvas": { "width": 800, "height": 800 },
+      "exactRasterExports": 1,
+      "exactEditableDocuments": 1
+    },
+    "requiredEvidence": [
+      "agent_run_record_chain",
+      "expected_project_binding",
+      "source_input_integrity",
+      "photoshop_history_or_commit",
+      "post_write_structure_readback",
+      "post_write_visual_readback",
+      "editable_psd",
+      "raster_export",
+      "human_blind_review"
+    ],
+    "invariants": [
+      "输出为 800×800 可编辑商品主图",
+      "视觉方向可追溯到用户提供的跨商品参考，但商品主体只能来自 C-1163 摄影输入",
+      "参考图中的商品、颜色、文案、品牌与未经证实的材质或功效不得迁移",
+      "最后一次写入后复核同一成稿并保存到一次性 fixture 项目"
+    ],
+    "forbiddenBehaviors": [
+      "不得访问或复用 C-1163 用户成稿与 Eagle 盲评锚点",
+      "不得照抄 C-1164 参考图的商品、颜色条、冰丝、凉感或不掉跟文案",
+      "不得用参考图像素级复制或整图贴入冒充可编辑设计",
+      "不得只描述设计方向而不完成 Photoshop 成稿"
+    ],
+    "machineChecks": [
+      { "id": "correct_skill_binding", "required": true },
+      { "id": "fixture_instance_evidence", "required": true },
+      { "id": "runtime_model_identity_evidence", "required": true },
+      { "id": "expected_project_binding_evidence", "required": true },
+      { "id": "source_input_integrity_evidence", "required": true },
+      { "id": "observed_photoshop_mutation", "required": true },
+      { "id": "committed_photoshop_mutation", "required": true },
+      { "id": "post_write_structure_readback", "required": true },
+      { "id": "post_write_visual_readback", "required": true },
+      { "id": "post_write_readback_target_verified", "required": true },
+      { "id": "save_tool_receipt", "required": true },
+      { "id": "editable_psd_evidence", "required": true },
+      { "id": "raster_export_evidence", "required": true },
+      { "id": "final_artifact_manifest_evidence", "required": true },
+      { "id": "no_unresolved_blockers", "required": true },
+      { "id": "terminal_task_run", "required": true }
+    ]
+  },
+  "boundaries": {
+    "devBenchmarkOnly": true,
+    "neverAffectsRuntime": true,
+    "reviewOnlyReferencesExcludedFromAgentContext": true,
+    "fixtureGeneratedInputsContainFactsOnly": true,
+    "harnessDoesNotChooseDesign": true
+  }
+}

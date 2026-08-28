@@ -24,8 +24,8 @@
 import { TOOL_SAFETY_POLICY, evaluateToolSafety } from './tool-safety-policy';
 import type { ToolSafetyClass, ToolSafetyVerdict } from './tool-safety-policy';
 import {
+    buildInteractiveIntegrityFingerprint,
     cleanInteractiveCardText,
-    stableInteractiveCardHash,
     type InteractiveCardDefinition
 } from './interactive-card-contract';
 
@@ -138,7 +138,11 @@ export function buildPendingDestructiveActionCard(input: {
     const sourceTask = cleanInteractiveCardText(input.sourceTask).slice(0, 500);
     return {
         version: 'interactive-card/v0',
-        id: `destructive-action:${toolName}:${stableInteractiveCardHash({ toolName, params })}`,
+        id: `destructive-action:${toolName}:${buildInteractiveIntegrityFingerprint({
+            purpose: 'pending-destructive-action-card/v1',
+            toolName,
+            params
+        })}`,
         kind: 'destructive-action.confirmation',
         title: '需要你确认这个不可逆操作',
         description: targetSummary,

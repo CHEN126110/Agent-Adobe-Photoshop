@@ -10,6 +10,68 @@ export const DEBUG_BRIDGE_CHAT_FAILURE_VERSION = 'debug-bridge-chat-execution-fa
 export const DEBUG_BRIDGE_CHAT_FAILURE_ENVELOPE_VERSION = 'debug-bridge-chat-failure-envelope/v1' as const;
 export const DEBUG_BRIDGE_PHOTOSHOP_RUNTIME_BINDING_VERSION =
     'debug-bridge-photoshop-runtime-binding/v1' as const;
+export const DEBUG_BRIDGE_PROJECT_ASSET_REFERENCE_VERSION =
+    'debug-bridge-project-asset-reference/v1' as const;
+export const DEBUG_BRIDGE_PROJECT_ASSET_ATTACHMENT_VERSION =
+    'debug-bridge-project-asset-attachment/v1' as const;
+export const DEBUG_BRIDGE_PROJECT_ASSET_PAYLOAD_BINDING_VERSION =
+    'debug-bridge-project-asset-payload-binding/v1' as const;
+export const DEBUG_BRIDGE_PROJECT_ASSET_PROVIDER_RECEIPT_VERSION =
+    'debug-bridge-project-asset-provider-receipt/v1' as const;
+export const DEBUG_BRIDGE_MODEL_TRANSPORT_METADATA_VERSION =
+    'debug-bridge-model-transport-metadata/v1' as const;
+
+export interface DebugBridgeProjectAssetReference {
+    version: typeof DEBUG_BRIDGE_PROJECT_ASSET_REFERENCE_VERSION;
+    relativePath: string;
+    label: string;
+    digest: string;
+}
+
+export interface DebugBridgeProjectAssetAttachment {
+    version: typeof DEBUG_BRIDGE_PROJECT_ASSET_ATTACHMENT_VERSION;
+    relativePath: string;
+    label: string;
+    sourceDigest: string;
+    payloadDigest: string;
+    mediaType: 'image/jpeg';
+    width: number;
+    height: number;
+    data: string;
+}
+
+export interface DebugBridgeProjectAssetPayloadBinding {
+    version: typeof DEBUG_BRIDGE_PROJECT_ASSET_PAYLOAD_BINDING_VERSION;
+    bindingDigest: string;
+    referenceCount: number;
+}
+
+export interface DebugBridgeProjectAssetProviderReceipt {
+    version: typeof DEBUG_BRIDGE_PROJECT_ASSET_PROVIDER_RECEIPT_VERSION;
+    bindingDigest: string;
+    referenceCount: number;
+    visualBlockCount: number;
+    matchedAtProviderBoundary: true;
+    provider: string;
+    modelId: string;
+    transport: 'chat' | 'chat_with_tools' | 'chat_with_tools_stream';
+    providerAttemptRef: string;
+    matchedAt: string;
+    committedAt: string;
+}
+
+/** 只在 Debug Bridge 单次请求范围内流经 IPC；不得进入 Agent/Prompt/业务状态。 */
+export interface DebugBridgeModelTransportMetadata {
+    version: typeof DEBUG_BRIDGE_MODEL_TRANSPORT_METADATA_VERSION;
+    projectReferenceLeaseToken: string;
+    projectReferenceBindingDigest: string;
+}
+
+export interface DebugBridgeWorkspaceSemanticSnapshot {
+    folderMappings: Record<string, unknown>;
+    imageClassifications: Record<string, unknown>;
+    designPlan: Record<string, unknown>;
+}
 
 export interface DebugBridgePhotoshopRuntimeLiveIdentity {
     version: 'designecho-uxp-runtime-build/v1';
@@ -93,6 +155,244 @@ function isCanonicalIsoTimestamp(value: unknown): value is string {
 
 function isSha256Digest(value: unknown): value is string {
     return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
+function isSafeProjectRelativePath(value: unknown): value is string {
+    if (typeof value !== 'string') return false;
+    const normalized = value.trim().replace(/\\/g, '/');
+    return Boolean(normalized)
+        && !normalized.startsWith('/')
+        && !normalized.startsWith('//')
+        && !/^[a-z]:\//i.test(normalized)
+        && !normalized.split('/').includes('..');
+}
+
+function normalizeDebugBridgeSemanticRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function sortDebugBridgeJson(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sortDebugBridgeJson);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>)
+        .sort()
+        .map((key) => [
+            key,
+            sortDebugBridgeJson((value as Record<string, unknown>)[key])
+        ]));
+}
+
+export function buildDebugBridgeWorkspaceSemanticSnapshot(
+    value: unknown
+): DebugBridgeWorkspaceSemanticSnapshot {
+    const record = value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+    return {
+        folderMappings: normalizeDebugBridgeSemanticRecord(record['folderMappings']),
+        imageClassifications: normalizeDebugBridgeSemanticRecord(record['imageClassifications']),
+        designPlan: normalizeDebugBridgeSemanticRecord(record['designPlan'])
+    };
+}
+
+export function stableDebugBridgeJson(value: unknown): string {
+    return JSON.stringify(sortDebugBridgeJson(value));
+}
+
+export async function buildDebugBridgeWorkspaceSemanticDigest(value: unknown): Promise<string> {
+    const bytes = new TextEncoder().encode(stableDebugBridgeJson(
+        buildDebugBridgeWorkspaceSemanticSnapshot(value)
+    ));
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+    return `sha256:${Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('')}`;
+}
+
+export function readDebugBridgeProjectAssetReferences(
+    value: unknown
+): DebugBridgeProjectAssetReference[] | undefined {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > 4) return undefined;
+    const references: DebugBridgeProjectAssetReference[] = [];
+    const identities = new Set<string>();
+    for (const item of value) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return undefined;
+        const record = item as Record<string, unknown>;
+        if (!hasExactKeys(record, ['version', 'relativePath', 'label', 'digest'])
+            || record['version'] !== DEBUG_BRIDGE_PROJECT_ASSET_REFERENCE_VERSION
+            || !isSafeProjectRelativePath(record['relativePath'])
+            || typeof record['label'] !== 'string'
+            || !record['label'].trim()
+            || !isSha256Digest(record['digest'])) return undefined;
+        const relativePath = record['relativePath'].trim().replace(/\\/g, '/');
+        const digest = record['digest'].toLowerCase();
+        const identity = `${relativePath}\u0000${digest}`;
+        if (identities.has(identity)) return undefined;
+        identities.add(identity);
+        references.push({
+            version: DEBUG_BRIDGE_PROJECT_ASSET_REFERENCE_VERSION,
+            relativePath,
+            label: cleanDebugBridgeText(record['label'], 120),
+            digest
+        });
+    }
+    return references;
+}
+
+export function readDebugBridgeProjectAssetAttachments(
+    value: unknown
+): DebugBridgeProjectAssetAttachment[] | undefined {
+    if (!Array.isArray(value) || value.length > 4) return undefined;
+    const attachments: DebugBridgeProjectAssetAttachment[] = [];
+    const paths = new Set<string>();
+    for (const item of value) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return undefined;
+        const record = item as Record<string, unknown>;
+        if (!hasExactKeys(record, [
+            'version',
+            'relativePath',
+            'label',
+            'sourceDigest',
+            'payloadDigest',
+            'mediaType',
+            'width',
+            'height',
+            'data'
+        ])
+            || record['version'] !== DEBUG_BRIDGE_PROJECT_ASSET_ATTACHMENT_VERSION
+            || !isSafeProjectRelativePath(record['relativePath'])
+            || typeof record['label'] !== 'string'
+            || !record['label'].trim()
+            || !isSha256Digest(record['sourceDigest'])
+            || !isSha256Digest(record['payloadDigest'])
+            || record['mediaType'] !== 'image/jpeg'
+            || !Number.isInteger(record['width'])
+            || Number(record['width']) < 1
+            || !Number.isInteger(record['height'])
+            || Number(record['height']) < 1
+            || typeof record['data'] !== 'string'
+            || !/^[a-z0-9+/]+={0,2}$/i.test(record['data'])) return undefined;
+        const relativePath = record['relativePath'].trim().replace(/\\/g, '/');
+        if (paths.has(relativePath)) return undefined;
+        paths.add(relativePath);
+        attachments.push({
+            version: DEBUG_BRIDGE_PROJECT_ASSET_ATTACHMENT_VERSION,
+            relativePath,
+            label: cleanDebugBridgeText(record['label'], 120),
+            sourceDigest: record['sourceDigest'].toLowerCase(),
+            payloadDigest: record['payloadDigest'].toLowerCase(),
+            mediaType: 'image/jpeg',
+            width: Number(record['width']),
+            height: Number(record['height']),
+            data: record['data']
+        });
+    }
+    return attachments;
+}
+
+export function readDebugBridgeProjectAssetPayloadBinding(
+    value: unknown
+): DebugBridgeProjectAssetPayloadBinding | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    if (!hasExactKeys(record, ['version', 'bindingDigest', 'referenceCount'])
+        || record['version'] !== DEBUG_BRIDGE_PROJECT_ASSET_PAYLOAD_BINDING_VERSION
+        || !isSha256Digest(record['bindingDigest'])
+        || !Number.isInteger(record['referenceCount'])
+        || Number(record['referenceCount']) < 0
+        || Number(record['referenceCount']) > 4) return undefined;
+    return {
+        version: DEBUG_BRIDGE_PROJECT_ASSET_PAYLOAD_BINDING_VERSION,
+        bindingDigest: record['bindingDigest'].toLowerCase(),
+        referenceCount: Number(record['referenceCount'])
+    };
+}
+
+export function readDebugBridgeModelTransportMetadata(
+    value: unknown
+): DebugBridgeModelTransportMetadata | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    if (!hasExactKeys(record, [
+        'version',
+        'projectReferenceLeaseToken',
+        'projectReferenceBindingDigest'
+    ])
+        || record['version'] !== DEBUG_BRIDGE_MODEL_TRANSPORT_METADATA_VERSION
+        || typeof record['projectReferenceLeaseToken'] !== 'string'
+        || !/^[a-f0-9]{64}$/u.test(record['projectReferenceLeaseToken'])
+        || !isSha256Digest(record['projectReferenceBindingDigest'])) return undefined;
+    return {
+        version: DEBUG_BRIDGE_MODEL_TRANSPORT_METADATA_VERSION,
+        projectReferenceLeaseToken: record['projectReferenceLeaseToken'],
+        projectReferenceBindingDigest: record['projectReferenceBindingDigest'].toLowerCase()
+    };
+}
+
+export function readDebugBridgeProjectAssetProviderReceipt(
+    value: unknown
+): DebugBridgeProjectAssetProviderReceipt | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    if (!hasExactKeys(record, [
+        'version',
+        'bindingDigest',
+        'referenceCount',
+        'visualBlockCount',
+        'matchedAtProviderBoundary',
+        'provider',
+        'modelId',
+        'transport',
+        'providerAttemptRef',
+        'matchedAt',
+        'committedAt'
+    ])
+        || record['version'] !== DEBUG_BRIDGE_PROJECT_ASSET_PROVIDER_RECEIPT_VERSION
+        || !isSha256Digest(record['bindingDigest'])
+        || !Number.isInteger(record['referenceCount'])
+        || Number(record['referenceCount']) < 1
+        || Number(record['referenceCount']) > 4
+        || record['visualBlockCount'] !== record['referenceCount']
+        || record['matchedAtProviderBoundary'] !== true
+        || typeof record['provider'] !== 'string'
+        || !record['provider'].trim()
+        || record['provider'].length > 120
+        || typeof record['modelId'] !== 'string'
+        || !record['modelId'].trim()
+        || record['modelId'].length > 240
+        || !['chat', 'chat_with_tools', 'chat_with_tools_stream'].includes(
+            String(record['transport'] || '')
+        )
+        || !isSha256Digest(record['providerAttemptRef'])
+        || !isCanonicalIsoTimestamp(record['matchedAt'])
+        || !isCanonicalIsoTimestamp(record['committedAt'])
+        || Date.parse(record['matchedAt']) > Date.parse(record['committedAt'])) return undefined;
+    return {
+        version: DEBUG_BRIDGE_PROJECT_ASSET_PROVIDER_RECEIPT_VERSION,
+        bindingDigest: record['bindingDigest'].toLowerCase(),
+        referenceCount: Number(record['referenceCount']),
+        visualBlockCount: Number(record['visualBlockCount']),
+        matchedAtProviderBoundary: true,
+        provider: record['provider'].trim(),
+        modelId: record['modelId'].trim(),
+        transport: record['transport'] as DebugBridgeProjectAssetProviderReceipt['transport'],
+        providerAttemptRef: record['providerAttemptRef'].toLowerCase(),
+        matchedAt: record['matchedAt'],
+        committedAt: record['committedAt']
+    };
+}
+
+export function debugBridgeProjectAssetProviderReceiptMatches(
+    receipt: DebugBridgeProjectAssetProviderReceipt,
+    binding: DebugBridgeProjectAssetPayloadBinding
+): boolean {
+    return receipt.bindingDigest === binding.bindingDigest
+        && receipt.referenceCount === binding.referenceCount
+        && receipt.visualBlockCount === binding.referenceCount
+        && receipt.matchedAtProviderBoundary === true;
 }
 
 export function readDebugBridgePhotoshopRuntimeLiveIdentity(

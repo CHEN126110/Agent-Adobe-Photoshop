@@ -30,6 +30,7 @@ import {
     publishDebugFinalArtifactPaths,
     publishDebugFinalDeliveryProjection
 } from '../debug-final-artifact-sidecar';
+import { resolveDebugProjectReferenceTransportMetadata } from '../debug-bridge-project-reference';
 import {
     readAgentEnvironmentRecoveryToolNames,
     readAgentReActRecoveryToolNames
@@ -543,6 +544,7 @@ function createCallModelViaIPC(
 ): CallModelFn {
     return async (modelId, messages, tools, options) => {
         const modelOptions = withDesignKnowledgeNativeTools(modelId, options, requestWebSearchIntent);
+        const debugTransportMetadata = resolveDebugProjectReferenceTransportMetadata(messages);
         const hasWebSearch = hasProviderNativeWebSearch(modelOptions);
         const hasProviderNativeTools = Array.isArray(modelOptions?.nativeTools)
             && modelOptions.nativeTools.length > 0;
@@ -564,20 +566,23 @@ function createCallModelViaIPC(
                     const plainResponse = await (window as any).designEcho.chat(
                         modelId,
                         toPlainModelMessages(messages),
-                        modelOptions
+                        modelOptions,
+                        debugTransportMetadata
                     );
                     response = {
                         content: String(plainResponse?.text || ''),
                         thinking: plainResponse?.thinking,
                         usage: plainResponse?.usage,
-                        stopReason: 'end_turn'
+                        stopReason: 'end_turn',
+                        visualPresentationReceipt: plainResponse?.visualPresentationReceipt
                     };
                 } else {
                     response = await (window as any).designEcho.chatWithTools(
                         modelId,
                         messages,
                         tools,
-                        modelOptions
+                        modelOptions,
+                        debugTransportMetadata
                     );
                 }
                 transportAttempts.push(buildModelTransportAttempt(
@@ -677,6 +682,7 @@ function createCallModelStreamViaIPC(
             onToolCallDelta: trackedOnToolCallDelta,
             onToolCallReady: trackedOnToolCallReady
         }, requestWebSearchIntent);
+        const debugTransportMetadata = resolveDebugProjectReferenceTransportMetadata(messages);
         const hasWebSearch = hasProviderNativeWebSearch(optionsWithNativeTools);
         if (hasWebSearch) emitProviderNativeWebSearchStarted(webSearchVisibility);
 
@@ -693,7 +699,8 @@ function createCallModelStreamViaIPC(
                     {
                         ...optionsWithNativeTools,
                         signal: runSignal
-                    }
+                    },
+                    debugTransportMetadata
                 );
                 if (runSignal?.aborted) throw createAutonomousModelStreamAbortError();
                 transportAttempts.push(buildModelTransportAttempt(

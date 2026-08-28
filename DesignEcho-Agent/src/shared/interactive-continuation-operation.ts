@@ -1,6 +1,8 @@
 import {
     buildInteractiveCardSubmissionFingerprint,
-    stableInteractiveCardHash,
+    buildInteractiveIntegrityFingerprint,
+    isInteractiveCardSubmissionFingerprint,
+    isInteractiveIntegrityFingerprint,
     type InteractiveCardDefinition,
     type InteractiveCardSubmission
 } from './interactive-card-contract';
@@ -193,6 +195,9 @@ export function validateInteractiveContinuationOperationIdentity(
     if (!normalized.sourceMessageId) return '缺少来源消息 ID。';
     if (!normalized.cardId) return '缺少卡片 ID。';
     if (!normalized.submissionFingerprint) return '缺少提交指纹。';
+    if (!isInteractiveCardSubmissionFingerprint(normalized.submissionFingerprint)) {
+        return '提交指纹使用旧版或未知算法，不能恢复一次性执行；请重新提交或重新发起任务。';
+    }
     return undefined;
 }
 
@@ -241,7 +246,8 @@ export function validateInteractiveContinuationOperationClaim(
     if (sourceCard.id !== continuation.card.id || sourceCard.kind !== continuation.card.kind) {
         return '来源消息卡片与 continuation envelope 不一致。';
     }
-    if (stableInteractiveCardHash(sourceCard) !== stableInteractiveCardHash(continuation.card)) {
+    if (buildInteractiveIntegrityFingerprint(sourceCard)
+        !== buildInteractiveIntegrityFingerprint(continuation.card)) {
         return '来源消息卡片定义与 continuation envelope 不一致。';
     }
     const identity = normalizeInteractiveContinuationOperationIdentity(input);
@@ -268,11 +274,16 @@ export function validateInteractiveContinuationOperationClaim(
 export function buildInteractiveContinuationEnvelopeFingerprint(
     continuation: PendingInteractiveContinuation
 ): string {
-    return stableInteractiveCardHash({
+    return buildInteractiveIntegrityFingerprint({
+        purpose: 'interactive-continuation-envelope/v1',
         version: continuation.version,
         id: continuation.id,
+        createdAt: continuation.createdAt,
+        sourceTask: continuation.sourceTask,
         scope: continuation.scope,
+        scopeObservation: continuation.scopeObservation,
         operation: continuation.operation,
+        taskRunBinding: continuation.taskRunBinding,
         card: continuation.card,
         oneTime: continuation.oneTime
     });
@@ -369,31 +380,47 @@ export function markInteractiveContinuationOperationUnknown(input: {
     };
 }
 
-export function isInteractiveContinuationOperationRecord(
-    value: unknown
-): value is InteractiveContinuationOperationRecord {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+export function validateInteractiveContinuationOperationRecord(value: unknown): string | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return '交互操作记录不是对象。';
+    }
     const record = value as Record<string, unknown>;
-    if (record.version !== INTERACTIVE_CONTINUATION_OPERATION_VERSION) return false;
+    if (record.version !== INTERACTIVE_CONTINUATION_OPERATION_VERSION) {
+        return `不支持交互操作记录版本：${cleanIdentity(record.version) || 'missing'}。`;
+    }
     if (!['claimed', 'running', 'succeeded', 'failed', 'unknown'].includes(String(record.status || ''))) {
-        return false;
+        return '交互操作记录状态无效。';
     }
     if (record.mutationState !== undefined
         && !['none', 'observed', 'unknown'].includes(String(record.mutationState))) {
-        return false;
+        return '交互操作记录 mutationState 无效。';
     }
-    if (validateInteractiveContinuationOperationIdentity(record as unknown as InteractiveContinuationOperationIdentity)) {
-        return false;
-    }
+    const identityIssue = validateInteractiveContinuationOperationIdentity(
+        record as unknown as InteractiveContinuationOperationIdentity
+    );
+    if (identityIssue) return identityIssue;
     const submission = record.submission as InteractiveCardSubmission | undefined;
-    if (!submission || submission.version !== 'interactive-card-submission/v0') return false;
-    const continuation = record.continuation as PendingInteractiveContinuation | undefined;
-    if (!continuation || continuation.version !== 'pending-interactive-continuation/v0') return false;
-    if (record.continuationFingerprint !== buildInteractiveContinuationEnvelopeFingerprint(continuation)) {
-        return false;
+    if (!submission || submission.version !== 'interactive-card-submission/v0') {
+        return '交互操作记录缺少受支持的卡片提交。';
     }
-    return !validateInteractiveContinuationOperationClaim({
+    const continuation = record.continuation as PendingInteractiveContinuation | undefined;
+    if (!continuation || continuation.version !== 'pending-interactive-continuation/v0') {
+        return '交互操作记录缺少受支持的 continuation envelope。';
+    }
+    if (!isInteractiveIntegrityFingerprint(record.continuationFingerprint)) {
+        return 'continuation 完整性指纹使用旧版或未知算法，旧操作不会被恢复；请重新发起任务。';
+    }
+    if (record.continuationFingerprint !== buildInteractiveContinuationEnvelopeFingerprint(continuation)) {
+        return 'continuation envelope 与完整性指纹不一致。';
+    }
+    return validateInteractiveContinuationOperationClaim({
         ...(record as unknown as InteractiveContinuationOperationClaimInput),
         sourceCard: continuation.card
     });
+}
+
+export function isInteractiveContinuationOperationRecord(
+    value: unknown
+): value is InteractiveContinuationOperationRecord {
+    return validateInteractiveContinuationOperationRecord(value) === undefined;
 }

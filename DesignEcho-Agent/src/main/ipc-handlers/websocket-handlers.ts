@@ -116,7 +116,13 @@ export function registerWebSocketHandlers(context: IPCContext): void {
     });
 
     // 直接调用模型
-    ipcMain.handle('model:chat', async (_event: IpcMainInvokeEvent, modelId: string, messages: unknown[], options?: unknown) => {
+    ipcMain.handle('model:chat', async (
+        _event: IpcMainInvokeEvent,
+        modelId: string,
+        messages: unknown[],
+        options?: unknown,
+        debugTransportMetadata?: unknown
+    ) => {
         if (!modelService) {
             throw new Error('模型服务未初始化');
         }
@@ -129,7 +135,12 @@ export function registerWebSocketHandlers(context: IPCContext): void {
                 }
             };
         }
-        return await modelService.chat(modelId, messages as Parameters<typeof modelService.chat>[1], options as Parameters<typeof modelService.chat>[2]);
+        return await modelService.chat(
+            modelId,
+            messages as Parameters<typeof modelService.chat>[1],
+            options as Parameters<typeof modelService.chat>[2],
+            debugTransportMetadata
+        );
     });
 
     // DeepSeek 官方连通性测试：只验证 OpenAI 兼容文本聊天链路，不声明视觉或工具调用能力。
@@ -158,7 +169,8 @@ export function registerWebSocketHandlers(context: IPCContext): void {
         modelId: string,
         messages: unknown[],
         tools: unknown[],
-        options?: unknown
+        options?: unknown,
+        debugTransportMetadata?: unknown
     ) => {
         if (!modelService) {
             throw new Error('模型服务未初始化');
@@ -170,7 +182,8 @@ export function registerWebSocketHandlers(context: IPCContext): void {
             modelId,
             messages as any[],
             tools as any[],
-            options as any
+            options as any,
+            debugTransportMetadata
         );
     });
 }

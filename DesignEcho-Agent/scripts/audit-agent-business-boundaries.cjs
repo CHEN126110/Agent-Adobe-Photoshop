@@ -86,6 +86,12 @@ const pendingInteractiveContinuationPath = path.join(
   'shared',
   'pending-interactive-continuation.ts'
 );
+const interactiveContinuationOperationPath = path.join(
+  root,
+  'src',
+  'shared',
+  'interactive-continuation-operation.ts'
+);
 const interactiveCardContractPath = path.join(root, 'src', 'shared', 'interactive-card-contract.ts');
 const agentRuntimeLivenessPolicyPath = path.join(root, 'src', 'shared', 'agent-runtime-liveness-policy.ts');
 const agentReadResultCachePath = path.join(root, 'src', 'shared', 'agent-read-result-cache.ts');
@@ -2558,24 +2564,24 @@ async function run() {
 
   const skuScopeCard = buildSkuComboEditorInteractiveCard({
     colorSlots: [
-      { slot: 1, label: '白色' },
-      { slot: 2, label: '灰色' }
+      { slot: 1, colorIdentity: 'test-white', label: '白色' },
+      { slot: 2, colorIdentity: 'test-gray', label: '灰色' }
     ],
     requiredSizes: [2],
     memoryScope: fingerprintProjectScope
   });
   const skuRawPathCard = buildSkuComboEditorInteractiveCard({
     colorSlots: [
-      { slot: 1, label: '白色' },
-      { slot: 2, label: '灰色' }
+      { slot: 1, colorIdentity: 'test-white', label: '白色' },
+      { slot: 2, colorIdentity: 'test-gray', label: '灰色' }
     ],
     requiredSizes: [2],
     projectId: 'C:\\Workspace\\Catalog-A'
   });
   const skuLegacyRedactedCard = buildSkuComboEditorInteractiveCard({
     colorSlots: [
-      { slot: 1, label: '白色' },
-      { slot: 2, label: '灰色' }
+      { slot: 1, colorIdentity: 'test-white', label: '白色' },
+      { slot: 2, colorIdentity: 'test-gray', label: '灰色' }
     ],
     requiredSizes: [2],
     projectId: '[redacted-local-path]'
@@ -3663,10 +3669,18 @@ async function run() {
     );
   }
   const handleSendStageIndex = chatPanelText.indexOf("executionStage = 'handle_send_started'");
-  const handleSendCallIndex = chatPanelText.indexOf('await handleSend({', handleSendStageIndex);
+  const debugReferenceScopeCallIndex = chatPanelText.indexOf(
+    'await runWithDebugProjectReferenceTransportScope({',
+    handleSendStageIndex
+  );
+  const handleSendCallIndex = chatPanelText.indexOf(
+    'operation: () => handleSend({',
+    debugReferenceScopeCallIndex
+  );
   if (handleSendStageIndex < 0
-    || handleSendCallIndex <= handleSendStageIndex
-    || !chatPanelText.slice(handleSendStageIndex, handleSendCallIndex).includes('writePossible = true')
+    || debugReferenceScopeCallIndex <= handleSendStageIndex
+    || handleSendCallIndex <= debugReferenceScopeCallIndex
+    || !chatPanelText.slice(handleSendStageIndex, debugReferenceScopeCallIndex).includes('writePossible = true')
     || !chatPanelText.includes('return await submitAndWait();')
     || !chatPanelText.includes('return await runWithSkillBridgesSuppressed(submitAndWait);')
     || !debugBridgeChatContractText.includes("| 'before_handle_send'")
@@ -4002,8 +4016,10 @@ async function run() {
     resolvePendingInteractiveContinuationPauseRevision
   } = require(pendingInteractiveContinuationPath);
   const pendingInteractiveContinuationText = read(pendingInteractiveContinuationPath);
+  const interactiveContinuationOperationText = read(interactiveContinuationOperationPath);
   const {
     buildInteractiveCardSubmissionFingerprint,
+    buildInteractiveIntegrityFingerprint,
     stableInteractiveCardHash
   } = require(interactiveCardContractPath);
   const {
@@ -9557,10 +9573,34 @@ async function run() {
       const pauseRequest = {
         continuationId: persistedStaleBindingContinuation.id,
         cardId: pauseCard.id,
-        sourceCardFingerprint: stableInteractiveCardHash(pauseCard),
+        sourceCardFingerprint: buildInteractiveIntegrityFingerprint(pauseCard),
         submissionFingerprint: buildInteractiveCardSubmissionFingerprint(pauseSubmission),
         sourceMessageId: 'message-persisted-binding-audit'
       };
+      const legacyCollisionLeft = {
+        version: 'sku-color-source/v1',
+        stableSourceIdentity: 'qu88uye07t7o3dvuclh6v'
+      };
+      const legacyCollisionRight = {
+        version: 'sku-color-source/v1',
+        stableSourceIdentity: 'oxts63ez4pa6q54arvq1jm'
+      };
+      const rejectedLegacySourceFingerprint = resolveInteractiveContinuationOperationRequest({
+        continuation: persistedStaleBindingContinuation,
+        submission: pauseSubmission,
+        request: {
+          ...pauseRequest,
+          sourceCardFingerprint: stableInteractiveCardHash(pauseCard)
+        }
+      });
+      const rejectedLegacySubmissionFingerprint = resolveInteractiveContinuationOperationRequest({
+        continuation: persistedStaleBindingContinuation,
+        submission: pauseSubmission,
+        request: {
+          ...pauseRequest,
+          submissionFingerprint: stableInteractiveCardHash(pauseSubmission)
+        }
+      });
       const oldBranchContinuation = {
         ...persistedStaleBindingContinuation,
         id: 'continuation-old-conversation-branch-audit',
@@ -9728,6 +9768,27 @@ async function run() {
         || rejectedOldConversationBranch.status !== 'rejected'
         || rejectedOldConversationBranch.code !== 'interactive_continuation_conversation_branch_mismatch') {
         observationLivenessViolations.push('interactive-continuation:pause-boundary-revision-not-authoritative');
+      }
+      if (stableInteractiveCardHash(legacyCollisionLeft) !== stableInteractiveCardHash(legacyCollisionRight)
+        || buildInteractiveIntegrityFingerprint(legacyCollisionLeft)
+          === buildInteractiveIntegrityFingerprint(legacyCollisionRight)
+        || rejectedLegacySourceFingerprint.status !== 'rejected'
+        || rejectedLegacySourceFingerprint.code
+          !== 'interactive_continuation_source_card_fingerprint_version_unsupported'
+        || rejectedLegacySubmissionFingerprint.status !== 'rejected'
+        || rejectedLegacySubmissionFingerprint.code
+          !== 'interactive_continuation_submission_fingerprint_version_unsupported') {
+        observationLivenessViolations.push(
+          'interactive-continuation:legacy-32-bit-integrity-still-authoritative'
+        );
+      }
+      if (/stableInteractiveCardHash/.test(pendingInteractiveContinuationText)
+        || /stableInteractiveCardHash/.test(interactiveContinuationOperationText)
+        || /stableInteractiveCardHash/.test(agentRuntimeText)
+        || /stableInteractiveCardHash/.test(chatPanelText)) {
+        observationLivenessViolations.push(
+          'interactive-continuation:execution-binding-still-uses-fast-ui-hash'
+        );
       }
       if (!agentRuntimeText.includes('resolvePendingInteractiveContinuationPauseRevision(')
         || !agentRuntimeText.includes('pendingInteractiveContinuation.scopeObservation')

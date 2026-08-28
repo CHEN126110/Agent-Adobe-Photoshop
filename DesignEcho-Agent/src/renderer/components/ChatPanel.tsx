@@ -118,6 +118,10 @@ import {
     type DebugBridgePhotoshopRuntimeLiveIdentity
 } from '../../shared/debug-bridge-chat';
 import { getEagleLibraryPreview } from '../services/eagle-library.service';
+import {
+    prepareDebugProjectReferenceSubmission,
+    runWithDebugProjectReferenceTransportScope
+} from '../services/debug-bridge-project-reference';
 
 // 导入统一 AI Agent 服务
 import { 
@@ -243,8 +247,8 @@ import type { InteractiveContinuationOperationIdentity } from '../../shared/inte
 import {
     buildInteractiveCardSubmission,
     buildInteractiveCardSubmissionInstanceKey,
+    buildInteractiveIntegrityFingerprint,
     cleanInteractiveCardText,
-    stableInteractiveCardHash,
     type InteractiveCardDefinition,
     type InteractiveCardSubmission
 } from '../../shared/interactive-card-contract';
@@ -318,6 +322,9 @@ type PhotoshopMcpToolsListPayload = {
 type ChatSendOverride = {
     text?: string;
     image?: { data: string; type: string } | null;
+    images?: DesignImageInput[];
+    /** 受控内部提交复用真实 Composer 结构；不会读取底部输入框的瞬时选择。 */
+    contentParts?: ChatComposerContentPart[];
     publicPlanConfirmationSourceMessageId?: string;
     publicPlanConfirmationRequestId?: string;
     publicPlanDisposableLiveAdapter?: boolean;
@@ -327,6 +334,10 @@ type ChatSendOverride = {
     expectedProjectPath?: string;
     /** 仅受控 disposable Debug 请求内部传递，不进入模型参数。 */
     guardedPhotoshopExecutionBaseline?: GuardedPhotoshopExecutionBaseline;
+    debugWorkspaceSemanticBinding?: {
+        expectedDigest: string;
+        onConsumed: (digest: string) => void;
+    };
     /** 确定性确认完成后的结构化承接；不伪装成用户重复发送原需求。 */
     internalResumeRequest?: AgentInternalResumeRequest;
     /** 已发送用户消息的气泡内编辑提交；它拥有独立草稿，不读取底部 Composer 实时状态。 */
@@ -2412,6 +2423,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
         void (async () => {
             try {
+                const resolveMessageBoundInteractiveCard = (
+                    candidate: unknown
+                ): InteractiveCardDefinition | undefined => {
+                    const actionCard = candidate && typeof candidate === 'object'
+                        ? candidate as InteractiveCardDefinition
+                        : undefined;
+                    const sourceMessageId = String(params?.sourceMessageId || '').trim();
+                    if (!actionCard || !sourceMessageId) return undefined;
+                    const sourceMessage = useAppStore.getState().messages.find(
+                        (message) => message.id === sourceMessageId
+                    );
+                    const matchingCards = sourceMessage?.interactiveCards?.filter((card) => (
+                        card.id === actionCard.id && card.kind === actionCard.kind
+                    )) || [];
+                    if (matchingCards.length !== 1) return undefined;
+                    const [sourceCard] = matchingCards;
+                    return buildInteractiveIntegrityFingerprint(sourceCard)
+                        === buildInteractiveIntegrityFingerprint(actionCard)
+                        ? sourceCard
+                        : undefined;
+                };
+
                 const prepareInteractiveCardSubmission = async (
                     submission: InteractiveCardSubmission,
                     mode: 'record_or_resume' | 'resume_required'
@@ -3000,18 +3033,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     }
                     case 'submitSkillInteractiveReview': {
                         const actionCard = params?.card as InteractiveCardDefinition | undefined;
-                        const sourceMessageId = String(params?.sourceMessageId || '').trim();
-                        const sourceMessage = useAppStore.getState().messages.find(
-                            (message) => message.id === sourceMessageId
-                        );
-                        const card = sourceMessage?.interactiveCards?.find((candidate) => (
-                            candidate.id === actionCard?.id
-                            && candidate.kind === actionCard?.kind
-                        ));
+                        const card = resolveMessageBoundInteractiveCard(actionCard);
                         if (!actionCard
                             || !card
-                            || card.version !== 'interactive-card/v0'
-                            || stableInteractiveCardHash(card) !== stableInteractiveCardHash(actionCard)) {
+                            || card.version !== 'interactive-card/v0') {
                             emitActionResult('skipped', '业务复核卡片数据已失效，请重新生成。', 'invalid skill review card', 'ui.submitSkillInteractiveReview');
                             return;
                         }
@@ -3083,7 +3108,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         return;
                     }
                     case 'submitDesignProjectRuleReviewCard': {
-                        const card = params?.card;
+                        const card = resolveMessageBoundInteractiveCard(params?.card);
                         if (!isDesignProjectRuleReviewCard(card)) {
                             emitActionResult('skipped', '项目规则复核卡片已失效，请重新读取项目状态。', 'invalid design project rule review card', 'ui.submitDesignProjectRuleReviewCard');
                             return;
@@ -3162,7 +3187,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         return;
                     }
                     case 'submitDesignProjectFactReviewCard': {
-                        const card = params?.card;
+                        const card = resolveMessageBoundInteractiveCard(params?.card);
                         if (!isDesignProjectFactReviewCard(card)) {
                             emitActionResult('skipped', '项目事实复核卡片已失效，请重新读取项目状态。', 'invalid design project fact review card', 'ui.submitDesignProjectFactReviewCard');
                             return;
@@ -3265,7 +3290,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         return;
                     }
                     case 'submitInteractiveCard': {
-                        const card = params?.card;
+                        const actionCard = params?.card as InteractiveCardDefinition | undefined;
+                        const card = resolveMessageBoundInteractiveCard(actionCard);
+                        if (!actionCard || !card) {
+                            emitActionResult(
+                                'skipped',
+                                '确认卡片数据已失效，请重新生成。',
+                                'interactive-card-source-mismatch',
+                                'ui.submitInteractiveCard'
+                            );
+                            return;
+                        }
                         if (isEditableConfirmationCard(card)) {
                             const validation = validateEditableConfirmationValue(card.payload, params?.value);
                             if (!validation.canSubmit) {
@@ -3446,7 +3481,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     case 'submitDestructiveActionCard': {
                         // V1-7b 正版 HITL 确定性重放：点卡后由确定性控制器直接得结果，绝不重入模型轮生成调用
                         // ——重放的必是卡片暂存的原始调用（红线 B）。
-                        const card = params?.card as PendingDestructiveActionCard | undefined;
+                        const actionCard = params?.card as PendingDestructiveActionCard | undefined;
+                        const card = resolveMessageBoundInteractiveCard(actionCard) as PendingDestructiveActionCard | undefined;
+                        if (!actionCard || !card) {
+                            emitActionResult(
+                                'skipped',
+                                '不可逆操作确认卡已失效，请重新触发该操作。',
+                                'destructive-card-source-mismatch',
+                                'ui.submitDestructiveActionCard'
+                            );
+                            return;
+                        }
                         const actionId = String((params?.value as { actionId?: string } | undefined)?.actionId || '');
                         const submission = resolvePendingDestructiveActionSubmission(card, actionId);
                         if (submission.type === 'rejected') {
@@ -4575,6 +4620,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 source: 'unknown'
             })
             : null;
+        const overrideImages = hasOverride && !inlineMessageEdit && Array.isArray(override?.images)
+            ? override.images.map((image) => ({ ...image }))
+            : [];
         const overrideParts: ChatComposerContentPart[] = inlineMessageEdit
             ? normalizeChatComposerContentParts(inlineMessageEdit.parts).map((part) => (
                 part.type === 'text'
@@ -4584,7 +4632,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         reference: cloneChatComposerReference(part.reference)
                     }
             ))
-            : [];
+            : (hasOverride && Array.isArray(override?.contentParts)
+                ? normalizeChatComposerContentParts(override.contentParts).map((part) => (
+                    part.type === 'text'
+                        ? { type: 'text' as const, text: part.text }
+                        : {
+                            type: 'reference' as const,
+                            reference: cloneChatComposerReference(part.reference)
+                        }
+                ))
+                : []);
         if (overrideImage) {
             overrideParts.push({
                 type: 'reference',
@@ -4603,7 +4660,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 }
             });
         }
-        if (!inlineMessageEdit && override?.text) {
+        if (!inlineMessageEdit && !override?.contentParts && override?.text) {
             overrideParts.push({ type: 'text', text: override.text });
         }
         const composerState = hasOverride
@@ -4620,7 +4677,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             if (inlineMessageEdit) {
                 submissionImages = inlineMessageEdit.images.map((image) => ({ ...image }));
             } else {
-                submissionImages = overrideImage ? [overrideImage] : [];
+                submissionImages = [
+                    ...overrideImages,
+                    ...(overrideImage ? [overrideImage] : [])
+                ];
             }
         }
         let runtimeReferences: ReadonlyMap<string, ComposerRuntimeReference> =
@@ -4777,6 +4837,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     : undefined,
                 guardedPhotoshopExecutionBaseline: hasOverride
                     ? override?.guardedPhotoshopExecutionBaseline
+                    : undefined,
+                debugWorkspaceSemanticBinding: hasOverride
+                    ? override?.debugWorkspaceSemanticBinding
                     : undefined,
                 interactiveContinuationRequest,
                 internalResumeRequest,
@@ -5107,6 +5170,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         throw new Error('当前项目与受控调试指定目录不一致，已在提交模型和 Photoshop 写入前停止。');
                     }
                 }
+                const expectedWorkspaceSemanticDigest = String(
+                    request?.expectedWorkspaceSemanticDigest || ''
+                ).trim().toLowerCase();
+                if (!/^sha256:[0-9a-f]{64}$/.test(expectedWorkspaceSemanticDigest)) {
+                    throw new Error('受控调试缺少项目语义摘要，本轮不会提交。');
+                }
                 const expectedProvider = String(request?.expectedProvider || '').trim();
                 const expectedModelId = String(request?.expectedModelId || '').trim();
                 const expectedPhotoshopRuntimeBuildId = String(
@@ -5130,6 +5199,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 }
                 if (expectedProvider && expectedProvider !== selectedProvider) {
                     throw new Error(`当前选择的 Provider 不是受控调试指定 Provider ${expectedProvider}，本轮不会提交。`);
+                }
+                const projectAssetReferences = Array.isArray(request.projectAssetReferences)
+                    ? request.projectAssetReferences
+                    : [];
+                const preparedProjectReferences = prepareDebugProjectReferenceSubmission({
+                    text,
+                    references: projectAssetReferences,
+                    attachments: request.projectAssetAttachments,
+                    binding: request.projectAssetPayloadBinding
+                });
+                const debugProjectReferenceLeaseToken = String(
+                    request.debugProjectReferenceLeaseToken || ''
+                ).trim().toLowerCase();
+                if (preparedProjectReferences.binding.referenceCount > 0
+                    && !/^[0-9a-f]{64}$/.test(debugProjectReferenceLeaseToken)) {
+                    throw new Error('受控调试缺少 Main 签发的参考图模型请求租约，本轮不会提交。');
                 }
                 const submittedPhotoshopRuntimeResult = await executeToolCall('diagnoseState', {
                     verbose: false
@@ -5187,21 +5272,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     if (expectedProvider && expectedProvider !== submittedProvider) {
                         throw new Error(`提交前 Provider 已变化，不再启动本轮受控调试（期望 ${expectedProvider}）。`);
                     }
-                    // 这是进入 handleSend 前最后一个同步检查。检查与函数调用之间没有 await，
-                    // 后续一旦让出事件循环，handleSend 已建立本轮 AbortController，取消会正常中断。
+                    // 后续由 getProjectContext 在构建并冻结 Agent 实际消费的上下文时核对摘要。
+                    // 不能用这里的旁路读取冒充模型上下文已经绑定。
                     throwIfDebugRequestCancelled();
                     beginDebugFinalArtifactCapture(debugRequestId);
+                    let consumedWorkspaceSemanticDigest: string | null = null;
                     executionStage = 'handle_send_started';
                     writePossible = true;
-                    await handleSend({
-                        text,
-                        image: null,
-                        expectedProjectPath: request.expectedProjectPath,
-                        guardedPhotoshopExecutionBaseline,
-                        publicPlanConfirmationSourceMessageId: request.publicPlanConfirmationSourceMessageId,
-                        publicPlanConfirmationRequestId: request.publicPlanConfirmationRequestId,
-                        publicPlanDisposableLiveAdapter: request.publicPlanDisposableLiveAdapter
+                    await runWithDebugProjectReferenceTransportScope({
+                        leaseToken: debugProjectReferenceLeaseToken,
+                        submission: preparedProjectReferences,
+                        operation: () => handleSend({
+                            contentParts: preparedProjectReferences.contentParts,
+                            images: preparedProjectReferences.images,
+                            expectedProjectPath: request.expectedProjectPath,
+                            guardedPhotoshopExecutionBaseline,
+                            debugWorkspaceSemanticBinding: {
+                                expectedDigest: expectedWorkspaceSemanticDigest,
+                                onConsumed: (digest: string): void => {
+                                    consumedWorkspaceSemanticDigest = digest;
+                                }
+                            },
+                            publicPlanConfirmationSourceMessageId:
+                                request.publicPlanConfirmationSourceMessageId,
+                            publicPlanConfirmationRequestId:
+                                request.publicPlanConfirmationRequestId,
+                            publicPlanDisposableLiveAdapter:
+                                request.publicPlanDisposableLiveAdapter
+                        })
                     });
+                    if (consumedWorkspaceSemanticDigest !== expectedWorkspaceSemanticDigest) {
+                        throw new Error('Agent 实际消费的项目语义快照未与评测冻结摘要绑定，本轮不能形成可信完成收据。');
+                    }
                     executionStage = 'completion';
                     const finalArtifactRefs = normalizeDebugFinalArtifactRefs(
                         readDebugFinalArtifactPaths(debugRequestId),
@@ -5290,6 +5392,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             completedModelId,
                             completedApiModelId: String(completedModel?.apiModelId || '').trim(),
                             provider: String(submittedModel?.provider || '').trim(),
+                            expectedWorkspaceSemanticDigest,
+                            consumedWorkspaceSemanticDigest,
+                            projectAssetReferences: (request.projectAssetReferences || []).map((reference) => ({
+                                ...reference
+                            })),
                             modelUnchangedThroughCompletion: Boolean(
                                 submittedModelId && completedModelId === submittedModelId
                             ),
@@ -5410,6 +5517,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             internalResumeRequest?: AgentInternalResumeRequest;
             providerNativeWebSearchIntent?: ChatWebSearchIntent;
             guardedPhotoshopExecutionBaseline?: GuardedPhotoshopExecutionBaseline;
+            debugWorkspaceSemanticBinding?: ChatSendOverride['debugWorkspaceSemanticBinding'];
             submission?: FrozenComposerSubmission;
         }
     ) => {
@@ -6062,8 +6170,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 expectedProjectPresent: Boolean(submissionProject),
                 expectedProjectId: submissionProjectId || undefined,
                 expectedProjectPath: submissionProjectPath || undefined,
-                selectedProjectImagePath: submissionSelectedAssetContext?.path
+                selectedProjectImagePath: submissionSelectedAssetContext?.path,
+                expectedWorkspaceSemanticDigest:
+                    runOptions?.debugWorkspaceSemanticBinding?.expectedDigest
             });
+            const debugWorkspaceSemanticBinding = runOptions?.debugWorkspaceSemanticBinding;
+            if (debugWorkspaceSemanticBinding) {
+                if (projectContext?.workspaceSemanticDigest
+                    !== debugWorkspaceSemanticBinding.expectedDigest) {
+                    throw new Error(
+                        'Agent 项目上下文没有消费受控调试指定的项目语义快照，本轮已停止。'
+                    );
+                }
+                debugWorkspaceSemanticBinding.onConsumed(projectContext.workspaceSemanticDigest);
+            }
             throwIfRunStopped();
 
             // Photoshop 环境事实必须在项目读取后、快照冻结前最后采集。

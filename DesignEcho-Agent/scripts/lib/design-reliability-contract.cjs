@@ -10,19 +10,22 @@ const LEGACY_REVIEW_VERSION = "design-reliability-human-review/v1";
 const VERIFIED_REVIEW_PACKET_PROOF_VERSION = "design-reliability-verified-review-packet-proof/v1";
 const ATTRIBUTION_VERSION = "design-reliability-attribution/v1";
 const COHORT_VERSION = "design-reliability-cohort/v1";
+const LIVE_RUN_PROTOCOL_VERSION = "design-reliability-live-run-protocol/v1";
 const OFFICIAL_REVIEW_DISK_TRUST = Symbol.for("designecho.designReliability.officialReviewDiskVerified");
 
-const TASK_FAMILIES = Object.freeze(["main_image", "detail_page", "sku"]);
+const TASK_FAMILIES = Object.freeze(["main_image", "detail_page", "sku", "reference_replication"]);
 const EXECUTION_MODELS = Object.freeze(["agentic", "staged"]);
 const REVIEW_DECISIONS = Object.freeze(["pass", "needs_fix", "unscorable"]);
 const PAIRWISE_OUTCOMES = Object.freeze(["better", "comparable", "weaker", "unscorable"]);
 const COMPARISON_EVIDENCE_KINDS = Object.freeze([
   "candidate_final",
+  "target_reference_context",
   "user_design_anchor",
   "eagle_anchor"
 ]);
 const COMPARISON_EVIDENCE_REF_PREFIXES = Object.freeze({
   candidate_final: ["candidate:"],
+  target_reference_context: ["target-reference:"],
   user_design_anchor: ["user-design:"],
   eagle_anchor: ["eagle:item:"]
 });
@@ -67,6 +70,14 @@ const FAILURE_MODES = Object.freeze([
   "provider",
   "measurement",
   "unknown"
+]);
+const LIVE_RUN_PROTOCOL_KINDS = Object.freeze([
+  "autonomous_zero_correction",
+  "predeclared_user_interaction"
+]);
+const INTERACTION_CLASSES = Object.freeze([
+  "required_business_decision",
+  "design_correction"
 ]);
 const FIXTURE_FACT_KEYS = new Set([
   "product_type",
@@ -162,6 +173,109 @@ function uniqueCleanStrings(values) {
   return [...new Set((Array.isArray(values) ? values : []).map(cleanString).filter(Boolean))];
 }
 
+function resolveDesignReliabilityLiveRunProtocol(caseSpec) {
+  if (isRecord(caseSpec?.liveRunProtocol)) return caseSpec.liveRunProtocol;
+  return {
+    version: LIVE_RUN_PROTOCOL_VERSION,
+    kind: "autonomous_zero_correction"
+  };
+}
+
+function buildDesignReliabilityLiveRunProtocolDigest(caseSpec) {
+  return sha256Text(stableStringify(resolveDesignReliabilityLiveRunProtocol(caseSpec)));
+}
+
+function validateLiveRunProtocol(caseSpec, errors) {
+  const protocol = caseSpec?.liveRunProtocol;
+  if (protocol === undefined) return;
+  if (!isRecord(protocol)
+    || protocol.version !== LIVE_RUN_PROTOCOL_VERSION
+    || !LIVE_RUN_PROTOCOL_KINDS.includes(protocol.kind)) {
+    errors.push(`liveRunProtocol 必须使用 ${LIVE_RUN_PROTOCOL_VERSION} 与受控 kind。`);
+    return;
+  }
+  const steps = Array.isArray(protocol.steps) ? protocol.steps : [];
+  if (protocol.kind === "autonomous_zero_correction") {
+    if (Object.keys(protocol).some((key) => !["version", "kind"].includes(key))) {
+      errors.push("autonomous_zero_correction 只能包含 version 与 kind。 ");
+    }
+    if (steps.length > 0 || protocol.steps !== undefined) {
+      errors.push("autonomous_zero_correction 不能预置交互步骤或答案。 ");
+    }
+    return;
+  }
+  if (Object.keys(protocol).some((key) => ![
+    "version",
+    "kind",
+    "actorCapabilityId",
+    "privateEvaluationBinding",
+    "steps"
+  ].includes(key))) {
+    errors.push("predeclared_user_interaction 含未声明字段；公开协议不能夹带私有答案。 ");
+  }
+  if (!cleanString(protocol.actorCapabilityId)) {
+    errors.push("predeclared_user_interaction 必须声明 evaluator actor capability。 ");
+  }
+  const privateEvaluationBinding = protocol.privateEvaluationBinding;
+  if (!isRecord(privateEvaluationBinding)
+    || Object.keys(privateEvaluationBinding).some((key) => ![
+      "version",
+      "manifestId",
+      "immutableRevision"
+    ].includes(key))
+    || privateEvaluationBinding.version !== "design-reliability-private-evaluation-binding/v1"
+    || !/^private-eval-[0-9a-f]{32}$/i.test(cleanString(privateEvaluationBinding.manifestId))
+    || !Number.isInteger(privateEvaluationBinding.immutableRevision)
+    || privateEvaluationBinding.immutableRevision < 1) {
+    errors.push("predeclared_user_interaction 必须绑定一个不泄露答案的不可变私有评测 manifest 身份。 ");
+  }
+  if (steps.length === 0) {
+    errors.push("predeclared_user_interaction 至少需要一个预声明用户步骤。 ");
+    return;
+  }
+  if (caseSpec.boundaries?.predeclaredInteractionAnswersExcludedFromInitialAgentContext !== true) {
+    errors.push("预声明交互答案必须声明不进入初始 Agent Context。 ");
+  }
+  const stepIds = new Set();
+  for (const [index, step] of steps.entries()) {
+    const fieldName = `liveRunProtocol.steps[${index}]`;
+    if (!isRecord(step)) {
+      errors.push(`${fieldName} 必须是对象。`);
+      continue;
+    }
+    const allowedKeys = new Set([
+      "stepId",
+      "interactionClass",
+      "answerOwner",
+      "ownerSkillId",
+      "cardKind",
+      "payloadVersion",
+      "decisionFingerprint",
+      "candidatePolicy",
+      "slotIdentityPolicy"
+    ]);
+    if (Object.keys(step).some((key) => !allowedKeys.has(key))) {
+      errors.push(`${fieldName} 含未声明字段。`);
+    }
+    const stepId = cleanString(step.stepId);
+    if (!stepId || stepIds.has(stepId)) errors.push(`${fieldName}.stepId 不能为空或重复。`);
+    stepIds.add(stepId);
+    if (!INTERACTION_CLASSES.includes(step.interactionClass)) {
+      errors.push(`${fieldName}.interactionClass 非法。`);
+    }
+    if (step.answerOwner !== "case_user") errors.push(`${fieldName}.answerOwner 必须是 case_user。`);
+    for (const key of ["ownerSkillId", "cardKind", "payloadVersion", "decisionFingerprint"]) {
+      if (!cleanString(step[key])) errors.push(`${fieldName}.${key} 不能为空。`);
+    }
+    if (step.candidatePolicy !== "bind_runtime_presented_candidate") {
+      errors.push(`${fieldName}.candidatePolicy 必须绑定 Runtime 实际呈现候选。`);
+    }
+    if (step.slotIdentityPolicy !== "provider_presented_stable_color_identity") {
+      errors.push(`${fieldName}.slotIdentityPolicy 必须要求稳定素材身份，不能只绑定槽位序号。`);
+    }
+  }
+}
+
 function calculateWeightedOverall(rubric, scores) {
   if (!isRecord(rubric) || !Array.isArray(rubric.dimensions) || !isRecord(scores)) return undefined;
   let weightedTotal = 0;
@@ -180,15 +294,28 @@ function calculateWeightedOverall(rubric, scores) {
   return Math.round((weightedTotal / weightTotal) * 10000) / 10000;
 }
 
+function getDesignReliabilityComparisonReferences(caseSpec) {
+  const task = isRecord(caseSpec?.task) ? caseSpec.task : {};
+  return [
+    ...(Array.isArray(task.agentVisibleReferences) ? task.agentVisibleReferences : []),
+    ...(Array.isArray(task.reviewOnlyReferences) ? task.reviewOnlyReferences : [])
+  ];
+}
+
 function requiredComparisonEvidenceKinds(caseSpec) {
   const kinds = new Set(["candidate_final"]);
-  const references = Array.isArray(caseSpec?.task?.reviewOnlyReferences)
-    ? caseSpec.task.reviewOnlyReferences
+  const task = isRecord(caseSpec?.task) ? caseSpec.task : {};
+  if ((Array.isArray(task.agentVisibleReferences) ? task.agentVisibleReferences : [])
+    .some((reference) => cleanString(reference?.kind) === "user_design")) {
+    kinds.add("target_reference_context");
+  }
+  const reviewOnlyReferences = Array.isArray(task.reviewOnlyReferences)
+    ? task.reviewOnlyReferences
     : [];
-  if (references.some((reference) => cleanString(reference?.kind) === "user_design")) {
+  if (reviewOnlyReferences.some((reference) => cleanString(reference?.kind) === "user_design")) {
     kinds.add("user_design_anchor");
   }
-  if (references.some((reference) => cleanString(reference?.kind) === "eagle_item")) {
+  if (reviewOnlyReferences.some((reference) => cleanString(reference?.kind) === "eagle_item")) {
     kinds.add("eagle_anchor");
   }
   return [...kinds];
@@ -212,10 +339,19 @@ function buildExpectedComparisonEvidenceRefs(caseSpec, run) {
     expected.get('candidate_final').add(`candidate:${ref}@${digest}`);
   }
 
-  const references = Array.isArray(caseSpec?.task?.reviewOnlyReferences)
-    ? caseSpec.task.reviewOnlyReferences
-    : [];
-  for (const reference of references) {
+  const task = isRecord(caseSpec?.task) ? caseSpec.task : {};
+  for (const reference of Array.isArray(task.agentVisibleReferences)
+    ? task.agentVisibleReferences
+    : []) {
+    const ref = cleanString(reference?.ref).replace(/\\/g, '/');
+    const digest = cleanString(reference?.digest).toLowerCase();
+    if (cleanString(reference?.kind) === 'user_design' && ref && isSha256Digest(digest)) {
+      expected.get('target_reference_context').add(`target-reference:${ref}@${digest}`);
+    }
+  }
+  for (const reference of Array.isArray(task.reviewOnlyReferences)
+    ? task.reviewOnlyReferences
+    : []) {
     const kind = cleanString(reference?.kind);
     const ref = cleanString(reference?.ref).replace(/\\/g, '/');
     const digest = cleanString(reference?.digest).toLowerCase();
@@ -322,7 +458,7 @@ function validateComparisonEvidenceRefs(value, evidenceRefs, errors) {
 
 function isSafeReviewEvidenceRef(ref) {
   const normalized = cleanString(ref).replace(/\\/g, "/");
-  const typedPrefix = /^(candidate:|user-design:|receipt:|eagle:item:)/i.exec(normalized)?.[0] || "";
+  const typedPrefix = /^(candidate:|target-reference:|user-design:|receipt:|eagle:item:)/i.exec(normalized)?.[0] || "";
   const payload = typedPrefix ? normalized.slice(typedPrefix.length) : normalized;
   return Boolean(
     normalized
@@ -539,7 +675,7 @@ function isAbsoluteOrUnsafeRef(value) {
   if (/^file:/i.test(ref) || /^[a-z]+:\/\//i.test(ref)) return true;
   if (/^[a-z]:[\\/]/i.test(ref) || ref.startsWith("\\\\") || ref.startsWith("/")) return true;
   const normalized = ref.replace(/\\/g, "/");
-  const typedPrefix = /^(candidate:|user-design:|receipt:|eagle:item:)/i.exec(normalized)?.[0] || "";
+  const typedPrefix = /^(candidate:|target-reference:|user-design:|receipt:|eagle:item:)/i.exec(normalized)?.[0] || "";
   const payload = typedPrefix ? normalized.slice(typedPrefix.length) : normalized;
   return normalized.split("/").includes("..")
     || /(?:^|:)[a-z]:\//i.test(normalized)
@@ -562,6 +698,22 @@ function validateInputRef(input, fieldName, errors) {
   if (!cleanString(input.role)) {
     errors.push(`${fieldName}.role 不能为空。`);
   }
+  if (input.digest !== undefined && !isSha256Digest(cleanString(input.digest).toLowerCase())) {
+    errors.push(`${fieldName}.digest 必须是 sha256:<64 hex>。`);
+  }
+}
+
+function buildDesignReliabilityGeneratedFixtureContent(input) {
+  return `${JSON.stringify({
+    version: "design-reliability-fixture-facts/v1",
+    facts: input?.facts,
+    boundaries: {
+      factsOnly: true,
+      noAssetSelection: true,
+      noLayoutPreset: true,
+      designerOwnsVisualDecisions: true
+    }
+  }, null, 2)}\n`;
 }
 
 function validateGeneratedInput(input, fieldName, errors) {
@@ -685,6 +837,25 @@ function validateDesignReliabilityCase(caseSpec) {
   if (!isRecord(caseSpec)) {
     return { ok: false, errors: ["Case 不是对象。"], warnings };
   }
+  const allowedCaseKeys = new Set([
+    "version",
+    "suiteId",
+    "caseId",
+    "revision",
+    "caseDigest",
+    "status",
+    "taskFamily",
+    "executionModel",
+    "liveRunProtocol",
+    "skillContract",
+    "task",
+    "source",
+    "oracle",
+    "boundaries"
+  ]);
+  if (Object.keys(caseSpec).some((key) => !allowedCaseKeys.has(key))) {
+    errors.push("Case 顶层含未声明字段。 ");
+  }
   if (caseSpec.version !== CASE_VERSION) errors.push(`version 必须是 ${CASE_VERSION}。`);
   if (!cleanString(caseSpec.suiteId)) errors.push("suiteId 不能为空。");
   if (!cleanString(caseSpec.caseId)) errors.push("caseId 不能为空。");
@@ -720,10 +891,10 @@ function validateDesignReliabilityCase(caseSpec) {
     } else {
       caseSpec.task.agentVisibleInputs.forEach((item, index) => {
         validateInputRef(item, `task.agentVisibleInputs[${index}]`, errors);
+        if (!isSha256Digest(cleanString(item?.digest).toLowerCase())) {
+          errors.push(`task.agentVisibleInputs[${index}].digest 必须冻结真实输入内容。`);
+        }
       });
-      if (caseSpec.status === "active" && caseSpec.task.agentVisibleInputs.length === 0) {
-        errors.push("active Case 至少需要一个 Agent 可见输入。 ");
-      }
     }
     if (caseSpec.task.fixtureGeneratedInputs !== undefined) {
       if (!Array.isArray(caseSpec.task.fixtureGeneratedInputs)) {
@@ -762,6 +933,29 @@ function validateDesignReliabilityCase(caseSpec) {
         }
       }
     }
+    if (caseSpec.task.agentVisibleReferences !== undefined) {
+      if (!Array.isArray(caseSpec.task.agentVisibleReferences)) {
+        errors.push("task.agentVisibleReferences 必须是数组。 ");
+      } else {
+        caseSpec.task.agentVisibleReferences.forEach((item, index) => {
+          validateReviewRef(item, `task.agentVisibleReferences[${index}]`, errors);
+          if (cleanString(item?.kind) !== "user_design") {
+            errors.push(`task.agentVisibleReferences[${index}] 必须是可物化到 fixture 的 user_design 相对文件；Eagle ID 只能作为 review-only 锚点。`);
+          }
+        });
+      }
+    }
+    const agentVisibleReferences = Array.isArray(caseSpec.task.agentVisibleReferences)
+      ? caseSpec.task.agentVisibleReferences
+      : [];
+    if (caseSpec.taskFamily === "reference_replication" && agentVisibleReferences.length === 0) {
+      errors.push("reference_replication Case 至少需要一个用户明确提供的 task.agentVisibleReferences。 ");
+    }
+    if (caseSpec.status === "active"
+      && (Array.isArray(caseSpec.task.agentVisibleInputs) ? caseSpec.task.agentVisibleInputs.length : 0)
+        + agentVisibleReferences.length === 0) {
+      errors.push("active Case 至少需要一个 Agent 可见输入或用户明确提供的参考。 ");
+    }
     if (!Array.isArray(caseSpec.task.reviewOnlyReferences)) {
       errors.push("task.reviewOnlyReferences 必须是数组。");
     } else {
@@ -773,6 +967,42 @@ function validateDesignReliabilityCase(caseSpec) {
         .filter(Boolean);
       if (new Set(reviewDigests).size !== reviewDigests.length) {
         errors.push("task.reviewOnlyReferences 不能冻结重复内容摘要。 ");
+      }
+    }
+    const reviewOnlyReferences = Array.isArray(caseSpec.task.reviewOnlyReferences)
+      ? caseSpec.task.reviewOnlyReferences
+      : [];
+    const agentReferenceRefs = agentVisibleReferences
+      .map((item) => cleanString(item?.ref).replace(/\\/g, "/"))
+      .filter(Boolean);
+    const agentReferenceDigests = agentVisibleReferences
+      .map((item) => cleanString(item?.digest).toLowerCase())
+      .filter(Boolean);
+    if (new Set(agentReferenceRefs).size !== agentReferenceRefs.length) {
+      errors.push("task.agentVisibleReferences 不能包含重复引用。 ");
+    }
+    if (new Set(agentReferenceDigests).size !== agentReferenceDigests.length) {
+      errors.push("task.agentVisibleReferences 不能冻结重复内容摘要。 ");
+    }
+    const agentContextRefs = new Set([
+      ...(Array.isArray(caseSpec.task.agentVisibleInputs) ? caseSpec.task.agentVisibleInputs : []),
+      ...(Array.isArray(caseSpec.task.fixtureGeneratedInputs) ? caseSpec.task.fixtureGeneratedInputs : []),
+      ...agentVisibleReferences
+    ].map((item) => cleanString(item?.ref).replace(/\\/g, "/")).filter(Boolean));
+    const agentContextDigests = new Set([
+      ...agentReferenceDigests,
+      ...(Array.isArray(caseSpec.task.agentVisibleInputs) ? caseSpec.task.agentVisibleInputs : [])
+        .map((item) => cleanString(item?.digest).toLowerCase())
+        .filter(Boolean),
+      ...(Array.isArray(caseSpec.task.fixtureGeneratedInputs)
+        ? caseSpec.task.fixtureGeneratedInputs
+        : []).map((item) => sha256Text(buildDesignReliabilityGeneratedFixtureContent(item)))
+    ]);
+    for (const reference of reviewOnlyReferences) {
+      const ref = cleanString(reference?.ref).replace(/\\/g, "/");
+      const digest = cleanString(reference?.digest).toLowerCase();
+      if ((ref && agentContextRefs.has(ref)) || (digest && agentContextDigests.has(digest))) {
+        errors.push("task.reviewOnlyReferences 不能同时出现在 Agent 可见输入或参考中。 ");
       }
     }
   }
@@ -792,7 +1022,39 @@ function validateDesignReliabilityCase(caseSpec) {
     if (!Array.isArray(caseSpec.oracle.machineChecks) || caseSpec.oracle.machineChecks.length === 0) {
       errors.push("oracle.machineChecks 至少需要一项。 ");
     }
+    const outputContract = caseSpec.oracle.outputContract;
+    if (["main_image", "reference_replication"].includes(caseSpec.taskFamily)) {
+      if (!isRecord(outputContract)
+        || Object.keys(outputContract).some((key) => ![
+          "version",
+          "canvas",
+          "exactRasterExports",
+          "exactEditableDocuments"
+        ].includes(key))
+        || outputContract.version !== "design-reliability-output-contract/v1"
+        || !isRecord(outputContract.canvas)
+        || Object.keys(outputContract.canvas).some((key) => !["width", "height"].includes(key))
+        || !Number.isInteger(outputContract.canvas.width)
+        || outputContract.canvas.width < 1
+        || !Number.isInteger(outputContract.canvas.height)
+        || outputContract.canvas.height < 1
+        || !Number.isInteger(outputContract.exactRasterExports)
+        || outputContract.exactRasterExports < 1
+        || !Number.isInteger(outputContract.exactEditableDocuments)
+        || outputContract.exactEditableDocuments < 1) {
+        errors.push("主图与参考复刻 Case 必须声明通用、结构化的 oracle.outputContract。 ");
+      }
+    }
     if (caseSpec.taskFamily === "sku") {
+      const liveRunProtocol = resolveDesignReliabilityLiveRunProtocol(caseSpec);
+      if (liveRunProtocol.kind === "predeclared_user_interaction") {
+        if (caseSpec.oracle.privateOutputInventoryBinding !== undefined) {
+          errors.push("交互 SKU 的答案与输出期望必须由 liveRunProtocol 的统一私有 manifest 解析，不能维护第二个公开绑定。 ");
+        }
+        if (caseSpec.oracle.outputInventory !== undefined) {
+          errors.push("交互 SKU 的公开 Case 不能包含答案派生 outputInventory。 ");
+        }
+      } else {
       const expectedRasterRefs = caseSpec.oracle?.outputInventory?.expectedRasterRefs;
       const expectedEditableRefs = caseSpec.oracle?.outputInventory?.expectedEditableRefs;
       const exactRasterExports = Number(caseSpec.oracle?.outputInventory?.exactRasterExports);
@@ -813,8 +1075,10 @@ function validateDesignReliabilityCase(caseSpec) {
         || expectedEditableRefs.some(isAbsoluteOrUnsafeRef)) {
         errors.push("SKU oracle.outputInventory 必须逐项冻结安全、唯一的 expectedEditableRefs。 ");
       }
+      }
     }
   }
+  validateLiveRunProtocol(caseSpec, errors);
   if (!isRecord(caseSpec.boundaries)
     || caseSpec.boundaries.devBenchmarkOnly !== true
     || caseSpec.boundaries.neverAffectsRuntime !== true
@@ -1537,6 +1801,9 @@ function deriveDesignReliabilityRunObservation(input) {
       skillIds: actualSkillIds,
       taskTypes: [...new Set(flattened.sortedRecords.map((record) => cleanString(record?.runtimeSession?.taskType)).filter(Boolean))],
       ...(cleanString(input.fixtureDigest) ? { fixtureDigest: cleanString(input.fixtureDigest) } : {}),
+      ...(cleanString(environment.workspaceSemanticDigest)
+        ? { workspaceSemanticDigest: cleanString(environment.workspaceSemanticDigest) }
+        : {}),
       ...(cleanString(environment.runtimeGitCommit)
         ? { runtimeGitCommit: cleanString(environment.runtimeGitCommit) }
         : {}),
@@ -1570,6 +1837,12 @@ function deriveDesignReliabilityRunObservation(input) {
         : {}),
       ...(cleanString(environment.cohortFingerprint)
         ? { cohortFingerprint: cleanString(environment.cohortFingerprint) }
+        : {}),
+      ...(cleanString(environment.liveRunProtocolKind)
+        ? { liveRunProtocolKind: cleanString(environment.liveRunProtocolKind) }
+        : {}),
+      ...(cleanString(environment.liveRunProtocolDigest)
+        ? { liveRunProtocolDigest: cleanString(environment.liveRunProtocolDigest) }
         : {})
     },
     observed: {
@@ -1691,6 +1964,15 @@ function validateFinalArtifactManifest(manifest, evidenceRefs, caseSpec, errors)
     .sort();
   if (editableCount < 1) errors.push("finalArtifactManifest 至少需要一个可编辑 PSD/PSB 最终交付。");
   if (rasterRefs.length < 1) errors.push("finalArtifactManifest 至少需要一个最终位图交付。");
+  const outputContract = caseSpec?.oracle?.outputContract;
+  if (isRecord(outputContract)) {
+    if (editableCount !== outputContract.exactEditableDocuments) {
+      errors.push("finalArtifactManifest 的可编辑文档数量与 Case outputContract 不一致。 ");
+    }
+    if (rasterRefs.length !== outputContract.exactRasterExports) {
+      errors.push("finalArtifactManifest 的位图导出数量与 Case outputContract 不一致。 ");
+    }
+  }
   if (caseSpec?.taskFamily === "sku") {
     const expectedRefs = [...new Set(
       Array.isArray(caseSpec?.oracle?.outputInventory?.expectedRasterRefs)
@@ -2101,12 +2383,63 @@ function validateDesignReliabilityReview(review, context = {}) {
   return { ok: errors.length === 0, errors };
 }
 
+function resolveDesignReliabilityAttributionSubject(attribution) {
+  if (!isRecord(attribution)) return null;
+  const hasSubject = Object.prototype.hasOwnProperty.call(attribution, "subject");
+  const legacyRunObservationId = cleanString(attribution.runObservationId);
+  const legacyAttemptId = cleanString(attribution.attemptId);
+  if (!hasSubject) {
+    if (!legacyRunObservationId || legacyAttemptId) return null;
+    return {
+      kind: "run_observation",
+      id: legacyRunObservationId,
+      runObservationId: legacyRunObservationId,
+      legacy: true
+    };
+  }
+  if (!isRecord(attribution.subject) || legacyRunObservationId || legacyAttemptId) return null;
+  const keys = Object.keys(attribution.subject);
+  const runObservationId = cleanString(attribution.subject.runObservationId);
+  const attemptId = cleanString(attribution.subject.attemptId);
+  if (keys.length !== 1 || Boolean(runObservationId) === Boolean(attemptId)) return null;
+  if (runObservationId) {
+    return {
+      kind: "run_observation",
+      id: runObservationId,
+      runObservationId,
+      legacy: false
+    };
+  }
+  return {
+    kind: "attempt",
+    id: attemptId,
+    attemptId,
+    legacy: false
+  };
+}
+
+function attributionIdentitySet(values) {
+  if (values instanceof Set) return new Set([...values].map(cleanString).filter(Boolean));
+  return new Set(uniqueCleanStrings(values));
+}
+
+function attributionMatchesDesignReliabilityCohort(attribution, context = {}) {
+  const subject = resolveDesignReliabilityAttributionSubject(attribution);
+  if (!subject) return false;
+  if (subject.kind === "run_observation") {
+    return attributionIdentitySet(context.runObservationIds).has(subject.runObservationId);
+  }
+  return attributionIdentitySet(context.attemptIds).has(subject.attemptId);
+}
+
 function validateDesignReliabilityAttribution(attribution) {
   const errors = [];
   if (!isRecord(attribution)) return { ok: false, errors: ["Attribution 不是对象。"] };
   if (attribution.version !== ATTRIBUTION_VERSION) errors.push(`version 必须是 ${ATTRIBUTION_VERSION}。`);
-  if (!cleanString(attribution.attributionId) || !cleanString(attribution.runObservationId)) {
-    errors.push("attributionId 与 runObservationId 不能为空。");
+  if (!cleanString(attribution.attributionId)) errors.push("attributionId 不能为空。");
+  const subject = resolveDesignReliabilityAttributionSubject(attribution);
+  if (!subject) {
+    errors.push("Attribution subject 必须严格使用 { runObservationId } 或 { attemptId } 二选一；旧记录仅兼容顶层 runObservationId。 ");
   }
   if (!ATTRIBUTION_OWNERS.includes(attribution.owner)) errors.push("owner 非法。");
   if (!FAILURE_MODES.includes(attribution.failureMode)) errors.push("failureMode 非法。");
@@ -2127,7 +2460,7 @@ function validateDesignReliabilityAttribution(attribution) {
     || attribution.boundaries.cannotBecomeRuntimeGate !== true) {
     errors.push("Attribution 边界声明不完整。 ");
   }
-  return { ok: errors.length === 0, errors };
+  return { ok: errors.length === 0, errors, ...(subject ? { subject } : {}) };
 }
 
 function rate(numerator, denominator) {
@@ -2144,7 +2477,12 @@ function percentile(sorted, ratio) {
   return sorted[Math.max(0, Math.min(sorted.length - 1, index))];
 }
 
-function distribution(values) {
+function roundMetric(value, precision) {
+  const scale = 10 ** precision;
+  return Math.round(value * scale) / scale;
+}
+
+function distribution(values, precision = 0) {
   const sorted = values.filter(isFiniteNumber).sort((left, right) => left - right);
   if (sorted.length === 0) return { count: 0, median: null, p90: null };
   const middle = Math.floor(sorted.length / 2);
@@ -2153,8 +2491,8 @@ function distribution(values) {
     : sorted[middle];
   return {
     count: sorted.length,
-    median: Math.round(median),
-    p90: Math.round(percentile(sorted, 0.9))
+    median: roundMetric(median, precision),
+    p90: roundMetric(percentile(sorted, 0.9), precision)
   };
 }
 
@@ -2167,6 +2505,24 @@ function hasPassedRequiredMachineChecks(run, checkIds) {
     ? run.observed.machineChecks.filter((check) => check?.required !== false && checkIds.has(check?.id))
     : [];
   return checks.length > 0 && checks.every((check) => check.status === "passed");
+}
+
+function resolveStrictReviewRunVerdict(runReviews) {
+  const reviews = Array.isArray(runReviews) ? runReviews : [];
+  const reviewerIds = reviews.map((review) => cleanString(review?.reviewerId));
+  const hasDuplicateReviewer = reviewerIds.some((reviewerId, index) => (
+    !reviewerId || reviewerIds.indexOf(reviewerId) !== index
+  ));
+  const decisions = [...new Set(reviews.map((review) => cleanString(review?.decision)).filter(Boolean))];
+  const conflict = hasDuplicateReviewer || decisions.length !== 1;
+  return {
+    reviewed: reviews.length > 0,
+    conflict,
+    decision: conflict ? "needs_adjudication" : decisions[0],
+    reviewCount: reviews.length,
+    distinctReviewerCount: new Set(reviewerIds).size,
+    hasDuplicateReviewer
+  };
 }
 
 function aggregateFamily(runs, reviews) {
@@ -2192,13 +2548,34 @@ function aggregateFamily(runs, reviews) {
   const passRunIds = new Set();
   let conflictingReviewRunCount = 0;
   for (const [runObservationId, runReviews] of strictReviewsByRun.entries()) {
-    const decisions = new Set(runReviews.map((review) => review.decision));
-    if (decisions.size !== 1) {
+    const verdict = resolveStrictReviewRunVerdict(runReviews);
+    if (verdict.conflict) {
       conflictingReviewRunCount += 1;
       continue;
     }
-    if (runReviews[0]?.decision === "pass") passRunIds.add(runObservationId);
+    if (verdict.decision === "pass") passRunIds.add(runObservationId);
   }
+  const strictRunReviewAggregates = [...strictReviewsByRun.values()]
+    .filter((runReviews) => resolveStrictReviewRunVerdict(runReviews).conflict === false)
+    .map((runReviews) => {
+      const dimensionIds = [...new Set(runReviews.flatMap((review) => (
+        Object.keys(isRecord(review.scores) ? review.scores : {})
+      )))];
+      const scores = Object.fromEntries(dimensionIds.map((dimensionId) => [
+        dimensionId,
+        distribution(runReviews.map((review) => review.scores?.[dimensionId]), 4).median
+      ]));
+      const outcomes = runReviews.map((review) => review.pairwiseOutcome);
+      let pairwiseOutcome = "better";
+      if (outcomes.includes("unscorable")) pairwiseOutcome = "unscorable";
+      else if (outcomes.includes("weaker")) pairwiseOutcome = "weaker";
+      else if (outcomes.includes("comparable")) pairwiseOutcome = "comparable";
+      return {
+        weightedOverall: distribution(runReviews.map((review) => review.weightedOverall), 4).median,
+        scores,
+        pairwiseOutcome
+      };
+    });
   const completedRuns = runs.filter((run) => run?.observed?.runStatus === "completed");
   const agenticRuns = runs.filter((run) => run?.cohortDimensions?.executionModel === "agentic");
   const decisionPreservationScorableRuns = agenticRuns.filter((run) => (
@@ -2214,6 +2591,17 @@ function aggregateFamily(runs, reviews) {
     "expected_project_binding_evidence",
     "source_input_integrity_evidence"
   ]);
+  const scoreDimensionIds = [...new Set(strictRunReviewAggregates.flatMap((review) => (
+    Object.keys(isRecord(review.scores) ? review.scores : {})
+  )))].sort();
+  const dimensionScores = Object.fromEntries(scoreDimensionIds.map((dimensionId) => [
+    dimensionId,
+    distribution(strictRunReviewAggregates.map((review) => review.scores?.[dimensionId]), 4)
+  ]));
+  const pairwiseOutcomes = Object.fromEntries(PAIRWISE_OUTCOMES.map((outcome) => [
+    outcome,
+    strictRunReviewAggregates.filter((review) => review.pairwiseOutcome === outcome).length
+  ]));
   return {
     runs: runs.length,
     reliability: {
@@ -2254,7 +2642,19 @@ function aggregateFamily(runs, reviews) {
       ),
       humanPassRate: rate(passRunIds.size, strictReviewedRunIds.size),
       humanUsableRate: rate(passRunIds.size, runs.length),
-      conflictingReviewRunCount
+      conflictingReviewRunCount,
+      weightedOverall: distribution(
+        strictRunReviewAggregates.map((review) => review.weightedOverall),
+        4
+      ),
+      dimensionScores,
+      pairwiseOutcomes,
+      pairwiseComparableOrBetterRate: rate(
+        strictRunReviewAggregates.filter((review) => (
+          review.pairwiseOutcome === "better" || review.pairwiseOutcome === "comparable"
+        )).length,
+        strictRunReviewAggregates.length
+      )
     },
     efficiency: {
       firstMutationMs: distribution(runs.map((run) => run.observed.firstMutationElapsedMs)),
@@ -2267,14 +2667,19 @@ function aggregateFamily(runs, reviews) {
   };
 }
 
-function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FAMILIES) {
+function evaluateDesignReliabilityReleaseGates(report, gates, families) {
+  const requestedFamilies = Array.isArray(families)
+    ? families
+    : Object.keys(isRecord(report?.byTaskFamily) ? report.byTaskFamily : {});
+  const evaluatedFamilies = uniqueCleanStrings(requestedFamilies)
+    .filter((family) => TASK_FAMILIES.includes(family));
   const minimumRunsPerFamily = Math.max(1, Math.floor(Number(gates?.minimumRunsPerFamily) || 0));
   const minimumRunsPerCase = Math.max(1, Math.floor(Number(gates?.minimumRunsPerCase) || 0));
   const attemptCohort = isRecord(report?.attempts) && Number(report.attempts.submitted) > 0
     ? report.attempts
     : undefined;
   const checksByFamily = {};
-  for (const family of families) {
+  for (const family of evaluatedFamilies) {
     const familyReport = report?.byTaskFamily?.[family];
     const attemptFamily = attemptCohort?.byTaskFamily?.[family];
     const runs = attemptFamily
@@ -2287,13 +2692,17 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
       ? Number(attemptFamily.strictReviewedTechnicalPasses) || 0
       : Number(familyReport?.quality?.strictHumanReviewedRate?.numerator) || 0;
     const strictReviewCoverageComplete = attemptFamily
-      ? technicalPassed === reviewedRuns
+      ? technicalPassed > 0 && technicalPassed === reviewedRuns
       : reviewedRuns >= minimumRunsPerFamily;
     const technicalDeliveryRate = attemptFamily?.technicalDeliveryRate
       || familyReport?.reliability?.technicalDeliveryRate;
     const humanUsableRate = attemptFamily?.commercialUsableRate
       || familyReport?.quality?.humanUsableRate;
-    const requiredInterventionRecords = attemptFamily ? technicalPassed : minimumRunsPerFamily;
+    const interactionMetricsKnown = attemptFamily
+      ? Number(attemptFamily.interactionMetricsKnown) || 0
+      : Number(familyReport?.efficiency?.userInterventions?.count) || 0;
+    const userDesignCorrections = attemptFamily?.userDesignCorrections
+      || familyReport?.efficiency?.userInterventions;
     const checks = {
       minimumRunsPerFamily: runs >= minimumRunsPerFamily,
       minimumHumanReviewedRunsPerFamily: strictReviewCoverageComplete,
@@ -2309,11 +2718,10 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
         <= Number(gates?.falseCompletionRate),
       wrongDocumentOrOverwriteCount: Number(familyReport?.reliability?.wrongDocumentOrOverwriteCount)
         <= Number(gates?.wrongDocumentOrOverwriteCount),
-      userInterventionCoverage: Number(familyReport?.efficiency?.userInterventions?.count)
-        >= requiredInterventionRecords,
-      userInterventionMedian: Number(familyReport?.efficiency?.userInterventions?.median)
+      userInterventionCoverage: interactionMetricsKnown >= runs,
+      userInterventionMedian: Number(userDesignCorrections?.median)
         <= Number(gates?.userInterventionMedian),
-      userInterventionP90: Number(familyReport?.efficiency?.userInterventions?.p90)
+      userInterventionP90: Number(userDesignCorrections?.p90)
         <= Number(gates?.userInterventionP90)
     };
     const sampleReady = checks.minimumRunsPerFamily
@@ -2353,7 +2761,7 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
       ? Number(attemptCase.strictReviewedTechnicalPasses) || 0
       : Number(caseReport?.quality?.strictHumanReviewedRate?.numerator) || 0;
     const strictReviewCoverageComplete = attemptCase
-      ? technicalPassed === reviewedRuns
+      ? technicalPassed > 0 && technicalPassed === reviewedRuns
       : reviewedRuns >= minimumRunsPerCase;
     const terminalCoverageComplete = attemptCase
       ? Number(attemptCase.terminal) === runs
@@ -2361,12 +2769,15 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
     checksByCase[caseId] = {
       passed: runs >= minimumRunsPerCase
         && terminalCoverageComplete
-        && strictReviewCoverageComplete,
+        && strictReviewCoverageComplete
+        && (!attemptCase || Number(attemptCase.interactionMetricsKnown) === runs),
       runs,
       technicalPassed,
       reviewedRuns,
       minimumRunsPerCase: runs >= minimumRunsPerCase,
       minimumStrictHumanReviewsPerCase: strictReviewCoverageComplete,
+      interactionMetricsCoverageComplete: !attemptCase
+        || Number(attemptCase.interactionMetricsKnown) === runs,
       terminalCoverageComplete
     };
   }
@@ -2385,18 +2796,21 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
       && Number(attemptCohort.strictReviewConflictCount) === 0
     : true;
   const familyResults = Object.values(checksByFamily);
+  const familyCoverageReady = familyResults.length > 0;
   return {
     passed: coverageComplete
       && cohortHomogeneous
       && explicitCohortFingerprintCoverage
       && attemptProtocolReady
       && caseSamplesReady
+      && familyCoverageReady
       && familyResults.every((result) => result.passed),
     sampleReady: coverageComplete
       && cohortHomogeneous
       && explicitCohortFingerprintCoverage
       && attemptProtocolReady
       && caseSamplesReady
+      && familyCoverageReady
       && familyResults.every((result) => result.sampleReady),
     coverageComplete,
     cohortHomogeneous,
@@ -2404,6 +2818,7 @@ function evaluateDesignReliabilityReleaseGates(report, gates, families = TASK_FA
     attemptProtocolReady,
     minimumRunsPerFamily,
     minimumRunsPerCase,
+    evaluatedFamilies,
     checksByFamily,
     checksByCase
   };
@@ -2422,7 +2837,10 @@ function buildRunControlledDimensionFingerprint(run) {
     runtimeAppVersion: cleanString(dimensions.runtimeAppVersion) || "unknown",
     photoshopRuntimeBuildId: cleanString(dimensions.photoshopRuntimeBuildId) || "unknown",
     timeoutMs: Number.isFinite(dimensions.timeoutMs) ? dimensions.timeoutMs : null,
+    liveRunProtocolKind: cleanString(dimensions.liveRunProtocolKind) || "unknown",
+    liveRunProtocolDigest: cleanString(dimensions.liveRunProtocolDigest) || "unknown",
     fixtureDigest: cleanString(dimensions.fixtureDigest) || "unknown",
+    workspaceSemanticDigest: cleanString(dimensions.workspaceSemanticDigest) || "unknown",
     suiteCaseSetDigest: cleanString(dimensions.suiteCaseSetDigest) || "unknown",
     suiteRubricSetDigest: cleanString(dimensions.suiteRubricSetDigest) || "unknown"
   }));
@@ -2441,9 +2859,43 @@ function buildRunGlobalControlledDimensionFingerprint(run) {
     runtimeAppVersion: cleanString(dimensions.runtimeAppVersion) || "unknown",
     photoshopRuntimeBuildId: cleanString(dimensions.photoshopRuntimeBuildId) || "unknown",
     timeoutMs: Number.isFinite(dimensions.timeoutMs) ? dimensions.timeoutMs : null,
+    liveRunProtocolKind: cleanString(dimensions.liveRunProtocolKind) || "unknown",
+    liveRunProtocolDigest: cleanString(dimensions.liveRunProtocolDigest) || "unknown",
     suiteCaseSetDigest: cleanString(dimensions.suiteCaseSetDigest) || "unknown",
     suiteRubricSetDigest: cleanString(dimensions.suiteRubricSetDigest) || "unknown"
   }));
+}
+
+function normalizeFixtureDigestsByCase(value) {
+  if (!isRecord(value)) return {};
+  const normalized = {};
+  for (const [caseId, digests] of Object.entries(value)) {
+    const normalizedCaseId = cleanString(caseId);
+    const normalizedDigests = uniqueCleanStrings(digests)
+      .map((digest) => digest.toLowerCase())
+      .filter(isSha256Digest)
+      .sort();
+    if (normalizedCaseId && normalizedDigests.length > 0) {
+      normalized[normalizedCaseId] = normalizedDigests;
+    }
+  }
+  return normalized;
+}
+
+function normalizeComparisonControlProfiles(values) {
+  const profiles = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (!isRecord(value)) continue;
+    profiles.push({
+      provider: cleanString(value.provider) || "unknown",
+      modelId: cleanString(value.modelId) || "unknown",
+      timeoutMs: Number.isFinite(value.timeoutMs) ? Math.round(value.timeoutMs) : null
+    });
+  }
+  const byIdentity = new Map(profiles.map((profile) => [stableStringify(profile), profile]));
+  return [...byIdentity.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, profile]) => profile);
 }
 
 function buildDesignReliabilityCohortReport(input) {
@@ -2455,9 +2907,11 @@ function buildDesignReliabilityCohortReport(input) {
     ? input.reviews.filter((review) => review?.version === REVIEW_VERSION
       && runs.some((run) => run.runObservationId === review.runObservationId))
     : [];
+  const runObservationIds = new Set(runs.map((run) => cleanString(run.runObservationId)).filter(Boolean));
+  const attemptIds = attributionIdentitySet(input?.attemptIds);
   const attributions = Array.isArray(input?.attributions)
     ? input.attributions.filter((item) => item?.version === ATTRIBUTION_VERSION
-      && runs.some((run) => run.runObservationId === item.runObservationId))
+      && attributionMatchesDesignReliabilityCohort(item, { runObservationIds, attemptIds }))
     : [];
   const eligibleCaseIds = cases.map((item) => item.caseId).sort();
   const coveredCaseIds = [...new Set(runs.map((run) => run.caseRef.caseId))].sort();
@@ -2477,17 +2931,33 @@ function buildDesignReliabilityCohortReport(input) {
   ));
   const confirmedAttributions = attributions.filter((item) => item.status === "confirmed");
   const controlledFingerprintsByCase = new Map();
-  const fixtureDigestsByCase = {};
+  const runFixtureDigestsByCase = {};
   for (const run of runs) {
     const caseId = cleanString(run?.caseRef?.caseId) || "unknown";
     const fingerprints = controlledFingerprintsByCase.get(caseId) || new Set();
     fingerprints.add(buildRunControlledDimensionFingerprint(run));
     controlledFingerprintsByCase.set(caseId, fingerprints);
-    const fixtureDigests = fixtureDigestsByCase[caseId] || [];
+    const fixtureDigests = runFixtureDigestsByCase[caseId] || [];
     const fixtureDigest = cleanString(run?.cohortDimensions?.fixtureDigest) || "unknown";
     if (!fixtureDigests.includes(fixtureDigest)) fixtureDigests.push(fixtureDigest);
-    fixtureDigestsByCase[caseId] = fixtureDigests.sort();
+    runFixtureDigestsByCase[caseId] = fixtureDigests.sort();
   }
+  const attemptFixtureDigestsByCase = normalizeFixtureDigestsByCase(
+    input?.attemptFixtureDigestsByCase
+  );
+  const fixtureDigestsByCase = Object.keys(attemptFixtureDigestsByCase).length > 0
+    ? attemptFixtureDigestsByCase
+    : runFixtureDigestsByCase;
+  const suppliedComparisonControlProfiles = normalizeComparisonControlProfiles(
+    input?.comparisonControlProfiles
+  );
+  const comparisonControlProfiles = suppliedComparisonControlProfiles.length > 0
+    ? suppliedComparisonControlProfiles
+    : normalizeComparisonControlProfiles(runs.map((run) => ({
+        provider: run?.cohortDimensions?.provider,
+        modelId: run?.cohortDimensions?.modelId,
+        timeoutMs: run?.cohortDimensions?.timeoutMs
+      })));
   const perCaseFingerprintCounts = [...controlledFingerprintsByCase.values()]
     .map((fingerprints) => fingerprints.size);
   const globalControlledFingerprints = new Set(
@@ -2498,11 +2968,22 @@ function buildDesignReliabilityCohortReport(input) {
     cleanString(run.cohortDimensions.cohortFingerprint)
   ));
   const confirmedByOwner = {};
+  const bySubjectKind = {
+    run_observation: 0,
+    attempt: 0
+  };
   for (const item of confirmedAttributions) {
     confirmedByOwner[item.owner] = (confirmedByOwner[item.owner] || 0) + 1;
   }
+  for (const item of attributions) {
+    const subject = resolveDesignReliabilityAttributionSubject(item);
+    if (subject) bySubjectKind[subject.kind] += 1;
+  }
   const byTaskFamily = {};
-  for (const family of TASK_FAMILIES) {
+  const presentTaskFamilies = TASK_FAMILIES.filter((family) => (
+    cases.some((item) => item.taskFamily === family)
+  ));
+  for (const family of presentTaskFamilies) {
     const familyCaseIds = new Set(cases.filter((item) => item.taskFamily === family).map((item) => item.caseId));
     const familyRuns = runs.filter((run) => familyCaseIds.has(run.caseRef.caseId));
     const familyReviews = reviews.filter((review) => familyRuns.some((run) => run.runObservationId === review.runObservationId));
@@ -2524,7 +3005,17 @@ function buildDesignReliabilityCohortReport(input) {
       suiteId: cleanString(input.suiteId),
       caseSetDigest,
       rubricSetDigest,
+      caseTaskFamilies: Object.fromEntries(cases.map((caseSpec) => [
+        caseSpec.caseId,
+        caseSpec.taskFamily
+      ])),
       fixtureDigestsByCase,
+      comparisonControlProfiles,
+      minimumDesignQualityReviewedRunsPerCase: Number.isInteger(
+        input?.minimumDesignQualityReviewedRunsPerCase
+      ) && input.minimumDesignQualityReviewedRunsPerCase > 0
+        ? input.minimumDesignQualityReviewedRunsPerCase
+        : null,
       caseRefs: uniqueCaseRefs(runs),
       filters: isRecord(input.filters) ? input.filters : {}
     },
@@ -2539,12 +3030,14 @@ function buildDesignReliabilityCohortReport(input) {
     cohortIntegrity: {
       homogeneous: globalControlledFingerprints.size <= 1
         && perCaseFingerprintCounts.every((count) => count <= 1)
-        && new Set(explicitFingerprints).size <= 1,
+        && new Set(explicitFingerprints).size <= 1
+        && comparisonControlProfiles.length <= 1,
       controlledDimensionFingerprintCount: perCaseFingerprintCounts.length > 0
         ? Math.max(globalControlledFingerprints.size, ...perCaseFingerprintCounts)
         : globalControlledFingerprints.size,
       explicitFingerprintCoverage: rate(explicitFingerprintRuns.length, runs.length),
-      explicitFingerprintCount: new Set(explicitFingerprints).size
+      explicitFingerprintCount: new Set(explicitFingerprints).size,
+      comparisonControlProfileCount: comparisonControlProfiles.length
     },
     overall: aggregateFamily(runs, reviews),
     byTaskFamily,
@@ -2553,7 +3046,8 @@ function buildDesignReliabilityCohortReport(input) {
       confirmedByOwner,
       confirmedCount: confirmedAttributions.length,
       hypothesisCount: attributions.filter((item) => item.status === "hypothesis").length,
-      unknownCount: confirmedAttributions.filter((item) => item.owner === "unknown").length
+      unknownCount: confirmedAttributions.filter((item) => item.owner === "unknown").length,
+      bySubjectKind
     },
     boundaries: {
       comparableOnlyWithinCaseSetAndRubric: true,
@@ -2564,18 +3058,279 @@ function buildDesignReliabilityCohortReport(input) {
   };
 }
 
+function resolveComparableAttemptShape(report) {
+  const attempts = isRecord(report?.attempts) ? report.attempts : null;
+  function isBoundedCount(value, upperBound) {
+    return Number.isInteger(value) && value >= 0 && value <= upperBound;
+  }
+  function rateIsConsistent(value, numerator, denominator) {
+    if (!Number.isInteger(numerator)
+      || !Number.isInteger(denominator)
+      || numerator < 0
+      || denominator < 0
+      || numerator > denominator
+      || !isRecord(value)
+      || value.numerator !== numerator
+      || value.denominator !== denominator) return false;
+    const expected = denominator > 0
+      ? Math.round((numerator / denominator) * 10000) / 10000
+      : null;
+    return value.value === expected;
+  }
+
+  const submittedCount = Number(attempts?.submitted);
+  const technicalDeliveryPassed = Number(attempts?.technicalDeliveryPassed);
+  const strictReviewedTechnicalPasses = Number(attempts?.strictReviewedTechnicalPasses);
+  const commercialUsable = Number(attempts?.commercialUsable);
+  if (!attempts
+    || !Number.isInteger(submittedCount)
+    || submittedCount < 1
+    || !isBoundedCount(technicalDeliveryPassed, submittedCount)
+    || !isBoundedCount(strictReviewedTechnicalPasses, technicalDeliveryPassed)
+    || !isBoundedCount(commercialUsable, strictReviewedTechnicalPasses)
+    || attempts.homogeneous !== true
+    || attempts.protocolValid !== true
+    || attempts.allSubmittedAttemptsTerminal !== true
+    || attempts.unknownWriteStateCount !== 0
+    || attempts.strictReviewConflictCount !== 0
+    || attempts.fixtureIdentityReady !== true
+    || attempts.controlProfileCount !== 1
+    || attempts.interactionMetricsKnownCount !== submittedCount
+    || !rateIsConsistent(attempts.technicalDeliveryRate, technicalDeliveryPassed, submittedCount)
+    || !rateIsConsistent(attempts.commercialUsableRate, commercialUsable, submittedCount)
+    || !rateIsConsistent(
+      attempts.strictReviewCoverageOfTechnicalPasses,
+      strictReviewedTechnicalPasses,
+      technicalDeliveryPassed
+    )) {
+    return null;
+  }
+  const controlProfiles = Array.isArray(report?.selector?.comparisonControlProfiles)
+    ? report.selector.comparisonControlProfiles
+    : [];
+  if (controlProfiles.length !== 1) return null;
+  const activeCaseIds = Object.keys(isRecord(report?.byCase) ? report.byCase : {}).sort();
+  const caseTaskFamilySource = isRecord(report?.selector?.caseTaskFamilies)
+    ? report.selector.caseTaskFamilies
+    : null;
+  if (!caseTaskFamilySource
+    || Object.keys(caseTaskFamilySource).sort().join("\u0000") !== activeCaseIds.join("\u0000")) {
+    return null;
+  }
+  const caseTaskFamilies = {};
+  for (const caseId of activeCaseIds) {
+    const taskFamily = cleanString(caseTaskFamilySource[caseId]);
+    if (!TASK_FAMILIES.includes(taskFamily)) return null;
+    caseTaskFamilies[caseId] = taskFamily;
+  }
+  const submittedByCase = {};
+  const attemptCountsByCase = {};
+  let submittedTotal = 0;
+  let technicalTotal = 0;
+  let strictReviewedTotal = 0;
+  let commercialTotal = 0;
+  let interactionMetricsKnownTotal = 0;
+  for (const caseId of activeCaseIds) {
+    const caseAttempt = attempts.byCase?.[caseId];
+    const submitted = Number(caseAttempt?.submitted);
+    const caseTechnical = Number(caseAttempt?.technicalDeliveryPassed);
+    const caseStrictReviewed = Number(caseAttempt?.strictReviewedTechnicalPasses);
+    const caseCommercial = Number(caseAttempt?.commercialUsable);
+    const caseInteractionMetricsKnown = Number(caseAttempt?.interactionMetricsKnown);
+    const rawRepeatIndexes = attempts.submittedRepeatIndexesByCase?.[caseId];
+    if (!Number.isInteger(submitted)
+      || submitted < 1
+      || !isBoundedCount(caseTechnical, submitted)
+      || !isBoundedCount(caseStrictReviewed, caseTechnical)
+      || !isBoundedCount(caseCommercial, caseStrictReviewed)
+      || caseInteractionMetricsKnown !== submitted
+      || !Array.isArray(rawRepeatIndexes)
+      || rawRepeatIndexes.length !== submitted
+      || rawRepeatIndexes.some((value) => !Number.isInteger(value) || value <= 0)
+      || new Set(rawRepeatIndexes).size !== rawRepeatIndexes.length) return null;
+    const repeatIndexes = [...rawRepeatIndexes].sort((left, right) => left - right);
+    if (repeatIndexes.some((value, index) => value !== index + 1)) return null;
+    const fixtureDigests = Array.isArray(report?.selector?.fixtureDigestsByCase?.[caseId])
+      ? report.selector.fixtureDigestsByCase[caseId]
+      : [];
+    if (fixtureDigests.length !== 1 || !isSha256Digest(fixtureDigests[0])) return null;
+    submittedTotal += submitted;
+    technicalTotal += caseTechnical;
+    strictReviewedTotal += caseStrictReviewed;
+    commercialTotal += caseCommercial;
+    interactionMetricsKnownTotal += caseInteractionMetricsKnown;
+    attemptCountsByCase[caseId] = {
+      submitted,
+      technicalDeliveryPassed: caseTechnical,
+      strictReviewedTechnicalPasses: caseStrictReviewed,
+      commercialUsable: caseCommercial,
+      interactionMetricsKnown: caseInteractionMetricsKnown
+    };
+    submittedByCase[caseId] = {
+      taskFamily: caseTaskFamilies[caseId],
+      submitted,
+      repeatIndexes,
+      fixtureIdentityDigest: fixtureDigests[0]
+    };
+  }
+  if (Object.keys(attempts.byCase || {}).filter((caseId) => (
+    Number(attempts.byCase?.[caseId]?.submitted) > 0
+  )).sort().join("\u0000") !== activeCaseIds.join("\u0000")) {
+    return null;
+  }
+  if (submittedTotal !== submittedCount
+    || technicalTotal !== technicalDeliveryPassed
+    || strictReviewedTotal !== strictReviewedTechnicalPasses
+    || commercialTotal !== commercialUsable
+    || interactionMetricsKnownTotal !== submittedCount) return null;
+  const activeTaskFamilies = Object.keys(isRecord(report?.byTaskFamily)
+    ? report.byTaskFamily
+    : {}).sort();
+  const mappedTaskFamilies = [...new Set(Object.values(caseTaskFamilies))].sort();
+  if (mappedTaskFamilies.join("\u0000") !== activeTaskFamilies.join("\u0000")) return null;
+  const submittedByTaskFamily = {};
+  let familySubmittedTotal = 0;
+  let familyTechnicalTotal = 0;
+  let familyStrictReviewedTotal = 0;
+  let familyCommercialTotal = 0;
+  let familyInteractionMetricsKnownTotal = 0;
+  for (const taskFamily of activeTaskFamilies) {
+    const familyAttempt = attempts.byTaskFamily?.[taskFamily];
+    const familySubmitted = Number(familyAttempt?.submitted);
+    const familyTechnical = Number(familyAttempt?.technicalDeliveryPassed);
+    const familyStrictReviewed = Number(familyAttempt?.strictReviewedTechnicalPasses);
+    const familyCommercial = Number(familyAttempt?.commercialUsable);
+    const familyInteractionMetricsKnown = Number(familyAttempt?.interactionMetricsKnown);
+    const familyCaseIds = activeCaseIds.filter((caseId) => caseTaskFamilies[caseId] === taskFamily);
+    const expectedFromCases = familyCaseIds.reduce((total, caseId) => {
+      const counts = attemptCountsByCase[caseId];
+      total.submitted += counts.submitted;
+      total.technicalDeliveryPassed += counts.technicalDeliveryPassed;
+      total.strictReviewedTechnicalPasses += counts.strictReviewedTechnicalPasses;
+      total.commercialUsable += counts.commercialUsable;
+      total.interactionMetricsKnown += counts.interactionMetricsKnown;
+      return total;
+    }, {
+      submitted: 0,
+      technicalDeliveryPassed: 0,
+      strictReviewedTechnicalPasses: 0,
+      commercialUsable: 0,
+      interactionMetricsKnown: 0
+    });
+    if (!Number.isInteger(familySubmitted)
+      || familySubmitted < 1
+      || !isBoundedCount(familyTechnical, familySubmitted)
+      || !isBoundedCount(familyStrictReviewed, familyTechnical)
+      || !isBoundedCount(familyCommercial, familyStrictReviewed)
+      || familyInteractionMetricsKnown !== familySubmitted
+      || familySubmitted !== expectedFromCases.submitted
+      || familyTechnical !== expectedFromCases.technicalDeliveryPassed
+      || familyStrictReviewed !== expectedFromCases.strictReviewedTechnicalPasses
+      || familyCommercial !== expectedFromCases.commercialUsable
+      || familyInteractionMetricsKnown !== expectedFromCases.interactionMetricsKnown) return null;
+    familySubmittedTotal += familySubmitted;
+    familyTechnicalTotal += familyTechnical;
+    familyStrictReviewedTotal += familyStrictReviewed;
+    familyCommercialTotal += familyCommercial;
+    familyInteractionMetricsKnownTotal += familyInteractionMetricsKnown;
+    submittedByTaskFamily[taskFamily] = {
+      submitted: familySubmitted,
+      caseIds: familyCaseIds
+    };
+  }
+  if (Object.keys(attempts.byTaskFamily || {}).filter((taskFamily) => (
+    Number(attempts.byTaskFamily?.[taskFamily]?.submitted) > 0
+  )).sort().join("\u0000") !== activeTaskFamilies.join("\u0000")
+    || familySubmittedTotal !== submittedCount
+    || familyTechnicalTotal !== technicalDeliveryPassed
+    || familyStrictReviewedTotal !== strictReviewedTechnicalPasses
+    || familyCommercialTotal !== commercialUsable
+    || familyInteractionMetricsKnownTotal !== submittedCount) return null;
+  return {
+    submitted: submittedCount,
+    submittedByTaskFamily,
+    submittedByCase
+  };
+}
+
+function reportAggregateMatchesAttempts(reportAggregate, attemptAggregate) {
+  if (!isRecord(reportAggregate) || !isRecord(attemptAggregate)) return false;
+  const runs = Number(reportAggregate.runs);
+  const technicalPassed = Number(attemptAggregate.technicalDeliveryPassed);
+  const strictReviewed = Number(attemptAggregate.strictReviewedTechnicalPasses);
+  const commercialUsable = Number(attemptAggregate.commercialUsable);
+  return Number.isInteger(runs)
+    && runs >= technicalPassed
+    && reportAggregate.reliability?.technicalDeliveryRate?.numerator === technicalPassed
+    && reportAggregate.reliability?.technicalDeliveryRate?.denominator === runs
+    && reportAggregate.quality?.weightedOverall?.count === strictReviewed
+    && reportAggregate.quality?.humanPassRate?.numerator === commercialUsable
+    && reportAggregate.quality?.humanUsableRate?.numerator === commercialUsable
+    && reportAggregate.quality?.pairwiseComparableOrBetterRate?.denominator === strictReviewed;
+}
+
+function reportEvidenceMatchesAttempts(report) {
+  const attempts = isRecord(report?.attempts) ? report.attempts : null;
+  if (!attempts || !reportAggregateMatchesAttempts(report?.overall, attempts)) return false;
+  const caseIds = Object.keys(isRecord(report?.byCase) ? report.byCase : {});
+  if (!caseIds.every((caseId) => reportAggregateMatchesAttempts(
+    report.byCase[caseId],
+    attempts.byCase?.[caseId]
+  ))) return false;
+  const taskFamilies = Object.keys(isRecord(report?.byTaskFamily) ? report.byTaskFamily : {});
+  if (!taskFamilies.every((taskFamily) => reportAggregateMatchesAttempts(
+    report.byTaskFamily[taskFamily],
+    attempts.byTaskFamily?.[taskFamily]
+  ))) return false;
+  const caseRunTotal = caseIds.reduce((total, caseId) => (
+    total + Number(report.byCase[caseId]?.runs || 0)
+  ), 0);
+  const familyRunTotal = taskFamilies.reduce((total, taskFamily) => (
+    total + Number(report.byTaskFamily[taskFamily]?.runs || 0)
+  ), 0);
+  return caseRunTotal === Number(report.overall?.runs)
+    && familyRunTotal === Number(report.overall?.runs)
+    && Number(report.coverage?.runs) === Number(report.overall?.runs);
+}
+
+function designQualitySampleIsComparable(report) {
+  const attempts = isRecord(report?.attempts) ? report.attempts : null;
+  const minimum = Number(report?.selector?.minimumDesignQualityReviewedRunsPerCase);
+  if (!attempts
+    || !Number.isInteger(minimum)
+    || minimum < 1
+    || !reportEvidenceMatchesAttempts(report)) return false;
+  const activeCaseIds = Object.keys(isRecord(report?.byCase) ? report.byCase : {});
+  return activeCaseIds.length > 0 && activeCaseIds.every((caseId) => {
+    const caseAttempt = attempts.byCase?.[caseId];
+    return Number.isInteger(caseAttempt?.technicalDeliveryPassed)
+      && Number.isInteger(caseAttempt?.strictReviewedTechnicalPasses)
+      && caseAttempt.strictReviewedTechnicalPasses === caseAttempt.technicalDeliveryPassed
+      && caseAttempt.strictReviewedTechnicalPasses >= minimum;
+  });
+}
+
 function compareDesignReliabilityCohorts(baseline, candidate) {
-  const comparable = baseline?.version === COHORT_VERSION
+  const baselineAttemptShape = resolveComparableAttemptShape(baseline);
+  const candidateAttemptShape = resolveComparableAttemptShape(candidate);
+  const technicalDiagnosticComparable = baseline?.version === COHORT_VERSION
     && candidate?.version === COHORT_VERSION
+    && baselineAttemptShape
+    && candidateAttemptShape
+    && stableStringify(baselineAttemptShape) === stableStringify(candidateAttemptShape)
     && baseline.selector?.caseSetDigest === candidate.selector?.caseSetDigest
     && cleanString(baseline.selector?.rubricSetDigest)
     && baseline.selector?.rubricSetDigest === candidate.selector?.rubricSetDigest
     && stableStringify(baseline.selector?.fixtureDigestsByCase || {})
-      === stableStringify(candidate.selector?.fixtureDigestsByCase || {});
-  if (!comparable) {
+      === stableStringify(candidate.selector?.fixtureDigestsByCase || {})
+    && stableStringify(baseline.selector?.comparisonControlProfiles || [])
+      === stableStringify(candidate.selector?.comparisonControlProfiles || []);
+  if (!technicalDiagnosticComparable) {
     return {
       comparable: false,
-      reason: "两个 cohort 的固定 Case、Rubric 或逐 Case 输入摘要不同，禁止用总体平均值伪装前后效果。"
+      technicalDiagnosticComparable: false,
+      designQualityComparable: false,
+      reason: "两个 cohort 尚未形成协议闭合、同质且逐 Case 重复数一致的 Attempt 样本，或固定 Case、Rubric、输入、Provider、模型、timeout 不一致；禁止用幸存 Run 的平均值伪装前后效果。"
     };
   }
   function delta(pathReader) {
@@ -2584,17 +3339,101 @@ function compareDesignReliabilityCohorts(baseline, candidate) {
     if (!isFiniteNumber(before) || !isFiniteNumber(after)) return null;
     return Math.round((after - before) * 10000) / 10000;
   }
+  const baselineDimensions = baseline?.overall?.quality?.dimensionScores || {};
+  const candidateDimensions = candidate?.overall?.quality?.dimensionScores || {};
+  const commonDimensions = Object.keys(baselineDimensions)
+    .filter((dimensionId) => Object.prototype.hasOwnProperty.call(candidateDimensions, dimensionId))
+    .sort();
+  const baselineDimensionIds = Object.keys(baselineDimensions).sort();
+  const candidateDimensionIds = Object.keys(candidateDimensions).sort();
+  function hasFiniteDesignQualityEvidence(report, dimensionIds) {
+    return Number(report?.overall?.quality?.weightedOverall?.count) > 0
+      && isFiniteNumber(report?.overall?.quality?.weightedOverall?.median)
+      && isFiniteNumber(report?.overall?.quality?.weightedOverall?.p90)
+      && isFiniteNumber(report?.overall?.quality?.humanPassRate?.value)
+      && isFiniteNumber(report?.overall?.quality?.pairwiseComparableOrBetterRate?.value)
+      && dimensionIds.length > 0
+      && dimensionIds.every((dimensionId) => (
+        Number(report?.overall?.quality?.dimensionScores?.[dimensionId]?.count) > 0
+        && isFiniteNumber(report?.overall?.quality?.dimensionScores?.[dimensionId]?.median)
+        && isFiniteNumber(report?.overall?.quality?.dimensionScores?.[dimensionId]?.p90)
+      ));
+  }
+  const designQualityComparable = designQualitySampleIsComparable(baseline)
+    && designQualitySampleIsComparable(candidate)
+    && baseline.selector?.minimumDesignQualityReviewedRunsPerCase
+      === candidate.selector?.minimumDesignQualityReviewedRunsPerCase
+    && stableStringify(baselineDimensionIds) === stableStringify(candidateDimensionIds)
+    && hasFiniteDesignQualityEvidence(baseline, commonDimensions)
+    && hasFiniteDesignQualityEvidence(candidate, commonDimensions);
+  const technicalDeltas = {
+    technicalDeliveryRate: delta((report) => report.attempts.technicalDeliveryRate.value),
+    humanUsableRate: delta((report) => report.attempts.commercialUsableRate.value)
+  };
+  if (!designQualityComparable) {
+    return {
+      comparable: false,
+      technicalDiagnosticComparable: true,
+      designQualityComparable: false,
+      caseSetDigest: baseline.selector.caseSetDigest,
+      rubricSetDigest: baseline.selector.rubricSetDigest,
+      attemptSampleShape: baselineAttemptShape,
+      technicalDeltas,
+      reason: "技术 Attempt 样本可以诊断比较，但 baseline 或 candidate 没有完整严格盲评的技术成功结果，不能形成设计效果结论。"
+    };
+  }
+  const designDeltas = {
+    linkedRunPostWriteVisualReadbackRate: delta((report) => (
+      report.overall.reliability.postWriteVisualReadbackRate.value
+    )),
+    linkedRunFalseCompletionRate: delta((report) => (
+      report.overall.reliability.falseCompletionRate.value
+    )),
+    humanPassRate: delta((report) => report.overall.quality.humanPassRate.value),
+    weightedOverallMedian: delta((report) => report.overall.quality.weightedOverall.median),
+    pairwiseComparableOrBetterRate: delta((report) => (
+      report.overall.quality.pairwiseComparableOrBetterRate.value
+    )),
+    dimensionMedianScores: Object.fromEntries(commonDimensions.map((dimensionId) => [
+      dimensionId,
+      delta((report) => report.overall.quality.dimensionScores[dimensionId].median)
+    ]))
+  };
+  if (Object.values(designDeltas).some((value) => value === null)
+    || Object.values(designDeltas.dimensionMedianScores).some((value) => value === null)) {
+    return {
+      comparable: false,
+      technicalDiagnosticComparable: true,
+      designQualityComparable: false,
+      caseSetDigest: baseline.selector.caseSetDigest,
+      rubricSetDigest: baseline.selector.rubricSetDigest,
+      attemptSampleShape: baselineAttemptShape,
+      technicalDeltas,
+      reason: "严格盲评样本已达到数量门槛，但质量分布或关键 delta 缺少有限数值；不能输出正式设计效果结论。"
+    };
+  }
   return {
     comparable: true,
+    technicalDiagnosticComparable: true,
+    designQualityComparable: true,
     caseSetDigest: baseline.selector.caseSetDigest,
     rubricSetDigest: baseline.selector.rubricSetDigest,
+    attemptSampleShape: baselineAttemptShape,
     deltas: {
-      technicalDeliveryRate: delta((report) => report.overall.reliability.technicalDeliveryRate.value),
-      postWriteVisualReadbackRate: delta((report) => report.overall.reliability.postWriteVisualReadbackRate.value),
-      falseCompletionRate: delta((report) => report.overall.reliability.falseCompletionRate.value),
-      humanPassRate: delta((report) => report.overall.quality.humanPassRate.value)
+      ...technicalDeltas,
+      ...designDeltas
     }
   };
+}
+
+function artifactGeometryMatchesCase(caseSpec, metadata) {
+  if (!metadata || !Number.isFinite(metadata.width) || !Number.isFinite(metadata.height)) return false;
+  if (metadata.width <= 0 || metadata.height <= 0) return false;
+  const canvas = caseSpec?.oracle?.outputContract?.canvas;
+  if (Number.isInteger(canvas?.width) && Number.isInteger(canvas?.height)) {
+    return metadata.width === canvas.width && metadata.height === canvas.height;
+  }
+  return true;
 }
 
 module.exports = {
@@ -2606,6 +3445,9 @@ module.exports = {
   DECISION_PRESERVATION_VERSION,
   EXECUTION_MODELS,
   FAILURE_MODES,
+  INTERACTION_CLASSES,
+  LIVE_RUN_PROTOCOL_KINDS,
+  LIVE_RUN_PROTOCOL_VERSION,
   COMPARISON_EVIDENCE_KINDS,
   PAIRWISE_OUTCOMES,
   LEGACY_REVIEW_VERSION,
@@ -2615,7 +3457,10 @@ module.exports = {
   RUN_VERSION,
   TASK_FAMILIES,
   VERIFIED_REVIEW_PACKET_PROOF_VERSION,
+  artifactGeometryMatchesCase,
   buildCaseDigest,
+  buildDesignReliabilityGeneratedFixtureContent,
+  buildDesignReliabilityLiveRunProtocolDigest,
   buildComparisonEvidenceDigest,
   buildExpectedComparisonEvidenceList,
   buildRubricDigest,
@@ -2625,13 +3470,18 @@ module.exports = {
   compareDesignReliabilityCohorts,
   deriveDesignReliabilityRunObservation,
   evaluateDesignReliabilityReleaseGates,
+  getDesignReliabilityComparisonReferences,
   hasCommittedMutation,
   hasObservedMutation,
   requiredComparisonEvidenceKinds,
+  resolveStrictReviewRunVerdict,
+  resolveDesignReliabilityLiveRunProtocol,
+  resolveDesignReliabilityAttributionSubject,
   sha256Text,
   stableStringify,
   validateAgentRunRecordChain,
   validateDesignReliabilityAttribution,
+  attributionMatchesDesignReliabilityCohort,
   validateDesignReliabilityCase,
   validateDesignReliabilityReview,
   validateDesignReliabilityRun,

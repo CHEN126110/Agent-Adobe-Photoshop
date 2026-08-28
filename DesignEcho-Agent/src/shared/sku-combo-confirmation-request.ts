@@ -1,4 +1,5 @@
 import {
+    buildSkuComboColorIdentity,
     buildSkuComboEditorInteractiveCard,
     validateSkuComboEditorValue,
     type SkuComboEditorCard,
@@ -30,7 +31,11 @@ export interface SkuComboConfirmationRequest {
 }
 
 export interface BuildSkuComboConfirmationRequestInput {
-    availableColors: string[];
+    availableColorSources: Array<{
+        label: string;
+        /** 来自真实 Photoshop 图层组或项目素材的 Provider 身份，不是展示名称。 */
+        stableSourceIdentity: string;
+    }>;
     requiredSizes: number[];
     combosBySize: Record<number, string[][]>;
     generateSelfSelectNotes: boolean;
@@ -63,10 +68,16 @@ function uniqueSortedSizes(value: unknown): number[] {
         .sort((a, b) => a - b);
 }
 
-function buildSkuComboColorSlots(availableColors: string[]): SkuComboColorSlot[] {
-    const labels = (Array.isArray(availableColors) ? availableColors : [])
-        .map(cleanInteractiveCardText)
-        .filter(Boolean);
+function buildSkuComboColorSlots(
+    availableColorSources: BuildSkuComboConfirmationRequestInput['availableColorSources']
+): SkuComboColorSlot[] {
+    const sources = (Array.isArray(availableColorSources) ? availableColorSources : [])
+        .map((source) => ({
+            label: cleanInteractiveCardText(source?.label),
+            stableSourceIdentity: cleanInteractiveCardText(source?.stableSourceIdentity)
+        }))
+        .filter((source) => source.label && source.stableSourceIdentity);
+    const labels = sources.map((source) => source.label);
     const parsedNumericSlots = labels.map((label) => (/^\d+$/.test(label) ? Number(label) : null));
     const numericSlots = parsedNumericSlots.every((slot): slot is number => slot !== null && Number.isInteger(slot) && slot > 0)
         ? parsedNumericSlots
@@ -74,9 +85,10 @@ function buildSkuComboColorSlots(availableColors: string[]): SkuComboColorSlot[]
     const useNumericSlots = numericSlots.length > 0
         && new Set(numericSlots).size === numericSlots.length;
 
-    return labels.map((label, index) => ({
+    return sources.map((source, index) => ({
         slot: useNumericSlots ? Number(numericSlots[index]) : index + 1,
-        label
+        colorIdentity: buildSkuComboColorIdentity(source.stableSourceIdentity),
+        label: source.label
     }));
 }
 
@@ -129,7 +141,20 @@ function formatGroupSummary(value: SkuComboEditorValue): string {
 export function buildSkuComboConfirmationRequest(
     input: BuildSkuComboConfirmationRequestInput
 ): SkuComboConfirmationRequest {
-    const colorSlots = buildSkuComboColorSlots(input.availableColors);
+    const colorSlots = buildSkuComboColorSlots(input.availableColorSources);
+    const declaredColorSourceCount = (Array.isArray(input.availableColorSources)
+        ? input.availableColorSources
+        : []).filter((source) => (
+        cleanInteractiveCardText(source?.label)
+        && cleanInteractiveCardText(source?.stableSourceIdentity)
+    )).length;
+    const uniqueDeclaredSourceIdentityCount = new Set(
+        (Array.isArray(input.availableColorSources) ? input.availableColorSources : [])
+            .map((source) => cleanInteractiveCardText(source?.stableSourceIdentity))
+            .filter(Boolean)
+    ).size;
+    const colorSourceIdentityBound = colorSlots.length === declaredColorSourceCount
+        && uniqueDeclaredSourceIdentityCount === declaredColorSourceCount;
     const lookup = buildColorSlotLookup(colorSlots);
     const requiredSizes = uniqueSortedSizes(input.requiredSizes);
     const droppedColors: string[] = [];
@@ -165,6 +190,9 @@ export function buildSkuComboConfirmationRequest(
         style: input.style
     });
     const validation = validateSkuComboEditorValue(card.payload, initialValue);
+    const identityBlockers = colorSourceIdentityBound
+        ? []
+        : ['颜色来源身份缺失或重复，不能把槽位序号当成素材身份。'];
     const warnings = [
         ...validation.warnings,
         ...Array.from(new Set(droppedColors)).map((color) => `候选组合里有无法匹配的颜色：${color}。`),
@@ -172,7 +200,7 @@ export function buildSkuComboConfirmationRequest(
             ? `候选组合包含同色多双：${Array.from(new Set(repeatedColorCombos)).slice(0, 4).join('，')}，请确认是否符合运营需求。`
             : ''
     ].filter(Boolean);
-    const status: SkuComboConfirmationStatus = validation.canSubmit
+    const status: SkuComboConfirmationStatus = validation.canSubmit && colorSourceIdentityBound
         ? 'pending_user_confirmation'
         : 'blocked_invalid_candidate';
     const review: SkuComboConfirmationReview = {
@@ -183,10 +211,10 @@ export function buildSkuComboConfirmationRequest(
         requiredSizes,
         comboCount: initialValue.groups.reduce((sum, group) => sum + group.combos.length, 0),
         summary: formatGroupSummary(initialValue),
-        blockers: validation.blockers,
+        blockers: [...validation.blockers, ...identityBlockers],
         warnings
     };
-    const visibleCard = validation.canSubmit
+    const visibleCard = status === 'pending_user_confirmation'
         ? {
             ...card,
             description: [

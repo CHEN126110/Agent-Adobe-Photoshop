@@ -1,18 +1,21 @@
 {
   "version": "design-reliability-suite/v1",
   "suiteId": "business-skills-quality-v1",
-  "name": "主图 / 详情页 / SKU 固定可靠性基线",
+  "name": "主图 / 详情页 / SKU / 参考复刻固定可靠性基线",
   "status": "active",
   "cases": [
     "cases/main-image-c1163-v1.json",
     "cases/main-image-pink-coffee-unseen-v1.json",
     "cases/detail-page-c1163-v1.json",
-    "cases/sku-c1163-v1.json"
+    "cases/sku-c1163-v1.json",
+    "cases/sku-c1163-interaction-v1.json",
+    "cases/reference-replication-c1163-from-c1164-v1.json"
   ],
   "rubrics": [
     "rubrics/main-image-commercial-v1.json",
     "rubrics/detail-page-commercial-v1.json",
-    "rubrics/sku-production-v1.json"
+    "rubrics/sku-production-v1.json",
+    "rubrics/reference-replication-main-image-v1.json"
   ],
   "releaseGates": {
     "qualityBeforeSpeed": true,
@@ -26,6 +29,11 @@
     "wrongDocumentOrOverwriteCount": 0,
     "userInterventionMedian": 0,
     "userInterventionP90": 1
+  },
+  "liveRunPolicy": {
+    "qualityBeforeSpeed": true,
+    "timeoutMs": 900000,
+    "timeoutOverridePolicy": "must_match_suite"
   },
   "boundaries": {
     "devBenchmarkOnly": true,

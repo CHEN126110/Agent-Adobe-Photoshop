@@ -46,6 +46,7 @@ import { buildSkuDeliverySummary } from '../../../shared/sku-delivery-summary';
 import {
     buildRuntimeDeliveryReceipt
 } from '../../../shared/agent-runtime-v5/runtime-delivery-receipt';
+import { canonicalize, sha256Hex } from '../../../shared/agent-runtime-v5/content-hash';
 import type { StagedCommittedFileIdentity } from '../../../shared/sku-staging-transaction-contract';
 import {
     buildSkuConfiguredExecutionPlan,
@@ -1035,6 +1036,97 @@ const NON_SKU_COLOR_LAYER_PATTERNS = [
 
 function normalizeSkuLayerName(value: unknown): string {
     return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+type SkuComboColorSourceResolution =
+    | {
+        status: 'ready';
+        colorSources: Array<{ label: string; stableSourceIdentity: string }>;
+    }
+    | {
+        status: 'blocked';
+        error: string;
+    };
+
+function readSkuProviderEntityId(value: unknown): number | undefined {
+    const numeric = Number(value);
+    if (!Number.isSafeInteger(numeric) || numeric <= 0) return undefined;
+    return numeric;
+}
+
+function buildSkuObservedColorSourceIdentity(input: {
+    documentId: number;
+    documentName: string;
+    historyStateId: number;
+    layerId: number;
+    layerPath: string;
+}): string {
+    // 这里只绑定本次打开期间的 Photoshop 文档 / 历史版本 / 图层对象。
+    // 它不是跨重开稳定的源文件血缘；私有评测 actor 在取得源文件摘要前仍不得激活。
+    const version = 'photoshop-sku-color-layer-observation/sha256-jcs-v1';
+    return `${version}:${sha256Hex(canonicalize({ version, ...input }))}`;
+}
+
+function resolveSkuComboColorSources(
+    layersResult: any,
+    validColors: string[],
+    documentIdentity: { id?: number | string; name?: string }
+): SkuComboColorSourceResolution {
+    const expectedDocumentId = readSkuProviderEntityId(documentIdentity.id);
+    const expectedDocumentName = String(documentIdentity.name || '').trim();
+    const observedDocumentId = readSkuProviderEntityId(layersResult?.data?.documentId);
+    const observedDocumentName = String(layersResult?.data?.documentName || '').trim();
+    const historyDocumentId = readSkuProviderEntityId(layersResult?.data?.historyStateRef?.documentId);
+    const historyStateId = readSkuProviderEntityId(layersResult?.data?.historyStateRef?.historyStateId);
+    if (!expectedDocumentId || !expectedDocumentName) {
+        return { status: 'blocked', error: 'SKU 源文档缺少可校验的 Photoshop documentId 或文档名。' };
+    }
+    if (observedDocumentId !== expectedDocumentId || observedDocumentName !== expectedDocumentName) {
+        return {
+            status: 'blocked',
+            error: `SKU 颜色图层读取到了另一份文档（预期 ${expectedDocumentName}#${expectedDocumentId}，实际 ${observedDocumentName || '未知'}#${observedDocumentId || '未知'}）。`
+        };
+    }
+    if (historyDocumentId !== observedDocumentId || !historyStateId) {
+        return { status: 'blocked', error: 'SKU 颜色图层缺少与当前文档一致的 Photoshop 历史版本。' };
+    }
+    const layerSets = Array.isArray(layersResult?.data?.layerSets)
+        ? layersResult.data.layerSets
+        : [];
+    const colorSources: Array<{ label: string; stableSourceIdentity: string }> = [];
+    for (const label of validColors) {
+        const matches = layerSets.filter((candidate: any) => (
+            normalizeColorKey(candidate?.name) === normalizeColorKey(label)
+        ));
+        if (matches.length !== 1) {
+            return {
+                status: 'blocked',
+                error: matches.length === 0
+                    ? `颜色“${label}”没有唯一对应的 Photoshop 图层组。`
+                    : `颜色“${label}”同时对应 ${matches.length} 个 Photoshop 图层组，无法确定来源。`
+            };
+        }
+        const layerSet = matches[0];
+        const layerId = readSkuProviderEntityId(layerSet?.layerId);
+        const layerPath = String(layerSet?.path || '').trim();
+        if (!layerId || !layerPath) {
+            return { status: 'blocked', error: `颜色“${label}”的图层组缺少可验证的 layerId 或图层路径。` };
+        }
+        colorSources.push({
+            label,
+            stableSourceIdentity: buildSkuObservedColorSourceIdentity({
+                documentId: observedDocumentId,
+                documentName: observedDocumentName,
+                historyStateId,
+                layerId,
+                layerPath
+            })
+        });
+    }
+    if (new Set(colorSources.map((source) => source.stableSourceIdentity)).size !== colorSources.length) {
+        return { status: 'blocked', error: '多个颜色指向了同一个 Photoshop 来源图层，不能生成确认卡。' };
+    }
+    return { status: 'ready', colorSources };
 }
 
 function isNumericSkuColorLayerName(name: string): boolean {
@@ -3327,10 +3419,45 @@ export const skuBatchExecutor: SkillExecutor = {
         
         // 3. 切换到 SKU 文件
         if (skuDoc) {
+            const expectedSkuDocumentId = readSkuProviderEntityId(skuDoc.id);
+            const expectedSkuDocumentName = String(skuDoc.name || '').trim();
+            if (!expectedSkuDocumentId || !expectedSkuDocumentName) {
+                const documentIdentityError = '当前 SKU 源文档缺少可校验的 Photoshop 文档身份，本轮不会生成组合确认卡。';
+                return {
+                    success: false,
+                    message: documentIdentityError,
+                    error: documentIdentityError,
+                    data: { status: 'blocked_sku_source_document_identity_unavailable' }
+                } as AgentResult;
+            }
             emitStep('verification', 'SKU 素材文档已定位', `当前素材文档：${skuDoc.name}`, 'success', 0.2);
             callbacks?.onToolStart?.('switchDocument');
-            await executeToolCall('switchDocument', { documentName: skuDoc.name }, { signal });
-            callbacks?.onToolComplete?.('switchDocument', { success: true });
+            const switchResult = await executeToolCall(
+                'switchDocument',
+                { documentId: expectedSkuDocumentId, documentName: expectedSkuDocumentName },
+                { signal }
+            );
+            callbacks?.onToolComplete?.('switchDocument', switchResult);
+            const switchedDocumentId = readSkuProviderEntityId(
+                switchResult?.document?.id ?? switchResult?.documentId
+            );
+            const switchedDocumentName = String(
+                switchResult?.document?.name ?? switchResult?.documentName ?? ''
+            ).trim();
+            if (!switchResult?.success
+                || switchedDocumentId !== expectedSkuDocumentId
+                || switchedDocumentName !== expectedSkuDocumentName) {
+                const switchError = String(
+                    switchResult?.error
+                    || `Photoshop 没有确认切换到 ${expectedSkuDocumentName}#${expectedSkuDocumentId}。`
+                );
+                return {
+                    success: false,
+                    message: '无法确认当前 Photoshop 已切换到正确的 SKU 源文档，本轮已停止，避免读取或使用错误素材。',
+                    error: switchError,
+                    data: { status: 'blocked_sku_source_document_switch_unverified' }
+                } as AgentResult;
+            }
         }
 
         callbacks?.onToolStart?.('skuLayout');
@@ -3381,6 +3508,23 @@ export const skuBatchExecutor: SkillExecutor = {
             return true;
         });
         const { uniqueColors: validColors, duplicateColors } = dedupeColorNames(rawValidColors);
+        let skuComboColorSources: Array<{ label: string; stableSourceIdentity: string }> = [];
+        if (validColors.length > 0) {
+            const colorSourceResolution = resolveSkuComboColorSources(
+                layersResult,
+                validColors,
+                { id: skuDoc?.id, name: skuDoc?.name }
+            );
+            if (colorSourceResolution.status === 'blocked') {
+                return {
+                    success: false,
+                    message: '当前颜色图层无法与同一次 Photoshop 文档观察精确对应，本轮不会生成 SKU 组合确认卡。',
+                    error: colorSourceResolution.error,
+                    data: { status: 'blocked_sku_color_source_identity_unavailable' }
+                } as AgentResult;
+            }
+            skuComboColorSources = colorSourceResolution.colorSources;
+        }
         
         console.log('[SKU-Batch] 颜色图层组分析:', {
             all: allLayerNames,
@@ -4032,7 +4176,7 @@ export const skuBatchExecutor: SkillExecutor = {
                 }
                 const comboCardDefaults = deriveSkuCardTemplateDesignCardDefaults(projectProductUnderstanding);
                 const earlyConfirmationRequest = buildSkuComboConfirmationRequest({
-                    availableColors: validColors,
+                    availableColorSources: skuComboColorSources,
                     requiredSizes: comboSizes,
                     combosBySize: draftCombosBySize,
                     generateSelfSelectNotes: generateNotes,
@@ -4467,7 +4611,7 @@ export const skuBatchExecutor: SkillExecutor = {
             // 评审修复 2026-07-03：产品/风格提示从项目画面观察派生，不硬编码品类（拿不到则省略）。
             const comboCardDefaults = deriveSkuCardTemplateDesignCardDefaults(projectProductUnderstanding);
             const confirmationRequest = buildSkuComboConfirmationRequest({
-                availableColors: validColors,
+                availableColorSources: skuComboColorSources,
                 requiredSizes: comboSizes,
                 combosBySize,
                 generateSelfSelectNotes: effectiveGenerateNotes,

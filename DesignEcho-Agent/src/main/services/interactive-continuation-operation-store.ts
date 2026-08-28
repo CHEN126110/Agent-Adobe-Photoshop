@@ -12,6 +12,7 @@ import {
     settleInteractiveContinuationOperationRecord,
     validateInteractiveContinuationOperationClaim,
     validateInteractiveContinuationOperationIdentity,
+    validateInteractiveContinuationOperationRecord,
     type InteractiveContinuationOperationActionResult,
     type InteractiveContinuationOperationBeginInput,
     type InteractiveContinuationOperationClaimInput,
@@ -508,7 +509,11 @@ export class InteractiveContinuationOperationStore {
         try {
             const parsed = JSON.parse(content);
             if (!isInteractiveContinuationOperationRecord(parsed)) {
-                return { status: 'invalid', error: '记录未通过 interactive-continuation-operation/v0 校验。' };
+                return {
+                    status: 'invalid',
+                    error: validateInteractiveContinuationOperationRecord(parsed)
+                        || '记录未通过 interactive-continuation-operation/v0 校验。'
+                };
             }
             return { status: 'found', record: parsed };
         } catch (error: any) {

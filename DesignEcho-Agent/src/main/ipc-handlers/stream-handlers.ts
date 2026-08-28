@@ -217,7 +217,7 @@ export function registerStreamHandlers(modelService: ModelService): void {
      * 该通道只传 provider 真实流式事件；不支持工具流的模型由 ModelService 标记 fallback。
      */
     ipcMain.handle('stream:chatWithTools', async (event, args: AgentToolStreamRequest) => {
-        const { requestId, modelId, messages, tools, options } = args;
+        const { requestId, modelId, messages, tools, options, debugTransportMetadata } = args;
         const window = BrowserWindow.fromWebContents(event.sender);
 
         if (!window) {
@@ -240,7 +240,8 @@ export function registerStreamHandlers(modelService: ModelService): void {
                 modelId,
                 messages as any[],
                 tools as any[],
-                options
+                options,
+                debugTransportMetadata
             );
 
             owner = {

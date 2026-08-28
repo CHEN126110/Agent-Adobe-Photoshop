@@ -1,3 +1,4 @@
+import { canonicalize, sha256Hex } from './agent-runtime-v5/content-hash';
 import type { DesignMemoryItem, DesignMemoryScope } from './design-memory-knowledge';
 
 export type InteractiveCardVersion = 'interactive-card/v0';
@@ -113,6 +114,10 @@ export function buildInteractiveCardSubmissionInstanceKey(input: {
     return [sourceMessageId || 'message-unknown', sourceBlockId || 'block-unknown', cardId].join('::');
 }
 
+/**
+ * 非安全快速哈希，只能用于 UI dirty-check、渲染去抖或非权威缓存键。
+ * 不得用于提交完整性、continuation、TaskRun binding、审批或一次性执行身份。
+ */
 export function stableInteractiveCardHash(value: unknown): string {
     const text = (() => {
         try {
@@ -128,6 +133,40 @@ export function stableInteractiveCardHash(value: unknown): string {
     return Math.abs(hash).toString(36);
 }
 
+export const INTERACTIVE_INTEGRITY_FINGERPRINT_VERSION =
+    'interactive-integrity-sha256-jcs-v1' as const;
+export const INTERACTIVE_CARD_SUBMISSION_FINGERPRINT_VERSION =
+    'interactive-card-submission-sha256-jcs-v1' as const;
+
+function buildVersionedInteractiveIntegrityFingerprint(
+    version: string,
+    value: unknown
+): string {
+    const canonical = canonicalize({ version, value });
+    if (typeof canonical !== 'string') {
+        throw new Error('interactive_integrity_value_not_serializable');
+    }
+    return `${version}:${sha256Hex(canonical)}`;
+}
+
+/** 通用交互安全边界的 canonical SHA-256 完整性指纹。 */
+export function buildInteractiveIntegrityFingerprint(value: unknown): string {
+    return buildVersionedInteractiveIntegrityFingerprint(
+        INTERACTIVE_INTEGRITY_FINGERPRINT_VERSION,
+        value
+    );
+}
+
+export function isInteractiveIntegrityFingerprint(value: unknown): boolean {
+    return new RegExp(`^${INTERACTIVE_INTEGRITY_FINGERPRINT_VERSION}:[a-f0-9]{64}$`)
+        .test(String(value || ''));
+}
+
+export function isInteractiveCardSubmissionFingerprint(value: unknown): boolean {
+    return new RegExp(`^${INTERACTIVE_CARD_SUBMISSION_FINGERPRINT_VERSION}:[a-f0-9]{64}$`)
+        .test(String(value || ''));
+}
+
 /**
  * 提交指纹只描述会影响业务执行的确认内容。
  * submittedAt / memoryCandidate 属于记录元数据；把它们纳入指纹会让同一确认在崩溃恢复后
@@ -136,17 +175,20 @@ export function stableInteractiveCardHash(value: unknown): string {
 export function buildInteractiveCardSubmissionFingerprint(
     submission: InteractiveCardSubmission
 ): string {
-    return stableInteractiveCardHash({
-        version: submission.version,
-        cardId: submission.cardId,
-        kind: submission.kind,
-        value: submission.validation?.normalizedValue ?? submission.value,
-        validation: {
-            valid: submission.validation?.valid === true,
-            canSubmit: submission.validation?.canSubmit === true
-        },
-        decisionContext: submission.decisionContext
-    });
+    return buildVersionedInteractiveIntegrityFingerprint(
+        INTERACTIVE_CARD_SUBMISSION_FINGERPRINT_VERSION,
+        {
+            version: submission.version,
+            cardId: submission.cardId,
+            kind: submission.kind,
+            value: submission.validation?.normalizedValue ?? submission.value,
+            validation: {
+                valid: submission.validation?.valid === true,
+                canSubmit: submission.validation?.canSubmit === true
+            },
+            decisionContext: submission.decisionContext
+        }
+    );
 }
 
 function normalizeInteractiveCardSubmittedAt(value: string | number | Date | undefined): string {

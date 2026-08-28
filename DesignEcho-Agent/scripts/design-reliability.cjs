@@ -31,11 +31,20 @@ const {
   REVIEW_DECISIONS,
   REVIEW_VERSION,
   RUN_VERSION,
+  TASK_FAMILIES,
+  artifactGeometryMatchesCase,
+  attributionMatchesDesignReliabilityCohort,
   buildDesignReliabilityCohortReport,
+  buildDesignReliabilityGeneratedFixtureContent,
+  buildDesignReliabilityLiveRunProtocolDigest,
   buildRubricDigest,
   calculateWeightedOverall,
+  compareDesignReliabilityCohorts,
   deriveDesignReliabilityRunObservation,
   evaluateDesignReliabilityReleaseGates,
+  resolveStrictReviewRunVerdict,
+  resolveDesignReliabilityLiveRunProtocol,
+  resolveDesignReliabilityAttributionSubject,
   sha256Text,
   stableStringify,
   validateAgentRunRecordChain,
@@ -57,8 +66,44 @@ const REVIEW_VERIFICATION_BUNDLE_VERSION = "design-reliability-review-verificati
 const DEFAULT_DEBUG_BRIDGE = "http://127.0.0.1:8767";
 const DEFAULT_PHOTOSHOP_MCP_HEALTH = "http://127.0.0.1:8768/health";
 const DEFAULT_PHOTOSHOP_MCP_ENDPOINT = "http://127.0.0.1:8768/mcp";
+const CONTROLLED_PROJECT_METADATA_REF = ".designecho/project.json";
+const PROJECT_METADATA_VERSION = "1.0";
+const PROJECT_METADATA_KEYS = new Set([
+  "version",
+  "createdAt",
+  "lastOpenedAt",
+  "projectPath",
+  "projectName",
+  "folderMappings",
+  "imageClassifications",
+  "designPlan"
+]);
+const PROJECT_FOLDER_TYPES = new Set(["source", "psd", "mainImage", "detail", "sku", "unknown"]);
+const PROJECT_IMAGE_TYPES = new Set([
+  "product",
+  "model",
+  "detail",
+  "scene",
+  "package",
+  "material",
+  "psd",
+  "design",
+  "video",
+  "unknown"
+]);
+const PROJECT_DESIGN_PLAN_KEYS = new Set(["mainImage", "sku", "detail"]);
+const PROJECT_DESIGN_STATUSES = new Set(["pending", "in_progress", "done"]);
+const MIN_LIVE_RUN_TIMEOUT_MS = 1000;
 const MAX_LIVE_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const LIVE_ATTEMPT_EVENT_VERSION = "design-reliability-attempt-event/v1";
+const LIVE_RUN_ACTOR_CAPABILITIES = new Map([
+  ["autonomous_zero_correction", Object.freeze({
+    capabilityId: "guarded-natural-chat-submit/v1",
+    protocolKind: "autonomous_zero_correction",
+    receiptVersion: "debug-bridge-chat-submit-receipt/v1",
+    dispatchProtocol: dispatchAutonomousZeroCorrectionProtocol
+  })]
+]);
 const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = "debug-bridge-chat-preflight/v1";
 const DEBUG_BRIDGE_CHAT_FAILURE_VERSION = "debug-bridge-chat-execution-failure/v1";
 const SAFE_PRE_SUBMIT_STAGES = new Set([
@@ -67,6 +112,50 @@ const SAFE_PRE_SUBMIT_STAGES = new Set([
   "renderer_preflight",
   "before_handle_send"
 ]);
+
+function controlledProjectMetadataSchemaSnapshot() {
+  return {
+    version: PROJECT_METADATA_VERSION,
+    keys: [...PROJECT_METADATA_KEYS].sort(),
+    folderTypes: [...PROJECT_FOLDER_TYPES].sort(),
+    imageTypes: [...PROJECT_IMAGE_TYPES].sort(),
+    designPlanKeys: [...PROJECT_DESIGN_PLAN_KEYS].sort(),
+    designStatuses: [...PROJECT_DESIGN_STATUSES].sort()
+  };
+}
+
+function resolveLiveRunActorCapability(caseSpec) {
+  const protocol = resolveDesignReliabilityLiveRunProtocol(caseSpec);
+  const capability = LIVE_RUN_ACTOR_CAPABILITIES.get(protocol.kind);
+  if (!capability) return undefined;
+  if (capability.protocolKind !== protocol.kind
+    || typeof capability.dispatchProtocol !== "function") return undefined;
+  if (protocol.kind === "predeclared_user_interaction"
+    && cleanString(protocol.actorCapabilityId) !== capability.capabilityId) {
+    return undefined;
+  }
+  return capability;
+}
+
+function validateActiveCaseLiveRunActor(caseSpec) {
+  if (caseSpec?.status !== "active") return { ready: false, reason: "case_not_active" };
+  const protocol = resolveDesignReliabilityLiveRunProtocol(caseSpec);
+  const capability = resolveLiveRunActorCapability(caseSpec);
+  if (!capability) {
+    return {
+      ready: false,
+      reason: "live_run_actor_capability_unavailable",
+      protocolKind: protocol.kind,
+      actorCapabilityId: cleanString(protocol.actorCapabilityId) || null
+    };
+  }
+  return {
+    ready: true,
+    protocolKind: protocol.kind,
+    actorCapabilityId: capability.capabilityId,
+    receiptVersion: capability.receiptVersion
+  };
+}
 
 function resolvePersistentDataRoot() {
   if (process.platform === "win32") {
@@ -101,6 +190,23 @@ function rate(numerator, denominator) {
     numerator,
     denominator,
     value: denominator > 0 ? numerator / denominator : null
+  };
+}
+
+function distribution(values) {
+  const sorted = (Array.isArray(values) ? values : [])
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  if (sorted.length === 0) return { count: 0, median: null, p90: null };
+  const middle = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+  const p90Index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.9) - 1));
+  return {
+    count: sorted.length,
+    median,
+    p90: sorted[p90Index]
   };
 }
 
@@ -323,6 +429,27 @@ function classifyUntrustedDebugBridgeFailure(error) {
     : "submission_unknown_write_state";
 }
 
+function resolveLiveRunTimeout(manifest, args) {
+  const suiteTimeoutMs = manifest?.liveRunPolicy?.timeoutMs;
+  if (!Number.isSafeInteger(suiteTimeoutMs)
+    || suiteTimeoutMs < MIN_LIVE_RUN_TIMEOUT_MS
+    || suiteTimeoutMs > MAX_LIVE_RUN_TIMEOUT_MS) {
+    throw new Error("Suite liveRunPolicy.timeoutMs 非法，拒绝启动正式采集。 ");
+  }
+  const overrideRaw = cleanString(args?.get?.("--timeout-ms"));
+  if (!overrideRaw) return suiteTimeoutMs;
+  if (!/^\d+$/.test(overrideRaw)) {
+    throw new Error("--timeout-ms 必须是与 Suite 固定策略一致的整数。 ");
+  }
+  const overrideMs = Number(overrideRaw);
+  if (!Number.isSafeInteger(overrideMs) || overrideMs !== suiteTimeoutMs) {
+    throw new Error(
+      `--timeout-ms=${overrideRaw} 与 Suite 固定质量优先值 ${suiteTimeoutMs}ms 不一致，拒绝形成漂移 cohort。`
+    );
+  }
+  return suiteTimeoutMs;
+}
+
 function writeLiveAttemptEvent(context, sequence, eventType, payload = {}) {
   const event = {
     version: LIVE_ATTEMPT_EVENT_VERSION,
@@ -345,6 +472,7 @@ function writeLiveAttemptEvent(context, sequence, eventType, payload = {}) {
     suiteRubricSetDigest: context.suiteRubricSetDigest,
     cohortFingerprint: context.cohortFingerprint,
     attemptFingerprint: context.attemptFingerprint,
+    liveRunProtocol: context.liveRunProtocol,
     ...payload,
     boundaries: {
       appendOnlyDevelopmentEvidence: true,
@@ -359,8 +487,33 @@ function writeLiveAttemptEvent(context, sequence, eventType, payload = {}) {
     safePathSegment(context.attemptId),
     `${String(sequence).padStart(2, "0")}-${safePathSegment(eventType)}.json`
   );
+  const validation = validateLiveAttemptEvent(event);
+  if (!validation.ok) {
+    throw new Error(`拒绝写入无效 Attempt event：${validation.errors.join("；")}`);
+  }
   writeJsonExclusive(eventPath, event);
   return { event, eventPath };
+}
+
+function buildLiveAttemptContextFromEvent(event) {
+  return {
+    attemptId: event.attemptId,
+    caseRef: event.caseRef,
+    cohortId: event.cohortId,
+    repeatIndex: event.repeatIndex,
+    provider: event.provider,
+    modelId: event.modelId,
+    timeoutMs: event.timeoutMs,
+    fixtureRef: event.fixtureRef,
+    environment: event.environment,
+    instructionDigest: event.instructionDigest,
+    rubricDigest: event.rubricDigest,
+    suiteCaseSetDigest: event.suiteCaseSetDigest,
+    suiteRubricSetDigest: event.suiteRubricSetDigest,
+    cohortFingerprint: event.cohortFingerprint,
+    attemptFingerprint: event.attemptFingerprint,
+    liveRunProtocol: event.liveRunProtocol
+  };
 }
 
 function resolveInside(root, relativePath) {
@@ -449,7 +602,7 @@ function validateRubric(rubric) {
     return { ok: false, errors: ["Rubric version 非法。"] };
   }
   if (!cleanString(rubric.rubricId)) errors.push("rubricId 不能为空。");
-  if (!["main_image", "detail_page", "sku"].includes(rubric.taskFamily)) {
+  if (!TASK_FAMILIES.includes(rubric.taskFamily)) {
     errors.push("Rubric taskFamily 非法。");
   }
   if (rubric.scale !== "0..1") errors.push("Rubric scale 必须严格为 0..1。");
@@ -571,6 +724,23 @@ function loadSuite() {
       errors.push("releaseGates.qualityBeforeSpeed 必须为 true；当前阶段不能用速度换质量。 ");
     }
   }
+  if (!isRecord(manifest.liveRunPolicy)) {
+    errors.push("Suite manifest 缺少 liveRunPolicy。 ");
+  } else {
+    if (manifest.liveRunPolicy.qualityBeforeSpeed !== true) {
+      errors.push("liveRunPolicy.qualityBeforeSpeed 必须为 true。 ");
+    }
+    if (!Number.isSafeInteger(manifest.liveRunPolicy.timeoutMs)
+      || manifest.liveRunPolicy.timeoutMs < MIN_LIVE_RUN_TIMEOUT_MS
+      || manifest.liveRunPolicy.timeoutMs > MAX_LIVE_RUN_TIMEOUT_MS) {
+      errors.push(
+        `liveRunPolicy.timeoutMs 必须是 ${MIN_LIVE_RUN_TIMEOUT_MS}..${MAX_LIVE_RUN_TIMEOUT_MS} 的安全整数。`
+      );
+    }
+    if (manifest.liveRunPolicy.timeoutOverridePolicy !== "must_match_suite") {
+      errors.push("liveRunPolicy.timeoutOverridePolicy 必须为 must_match_suite。 ");
+    }
+  }
   if (!isRecord(manifest.boundaries)
     || manifest.boundaries.devBenchmarkOnly !== true
     || manifest.boundaries.neverAffectsRuntime !== true
@@ -590,6 +760,15 @@ function loadSuite() {
       validation.errors.forEach((error) => errors.push(`${relativePath}: ${error}`));
     }
     if (caseSpec.suiteId !== manifest.suiteId) errors.push(`${relativePath}: suiteId 与 manifest 不一致。`);
+    if (caseSpec.status === "active") {
+      const actorVerdict = validateActiveCaseLiveRunActor(caseSpec);
+      if (!actorVerdict.ready) {
+        errors.push(
+          `${relativePath}: active Case 的 live-run actor 不可用（${actorVerdict.protocolKind || "unknown"}`
+          + `${actorVerdict.actorCapabilityId ? ` / ${actorVerdict.actorCapabilityId}` : ""}）。`
+        );
+      }
+    }
     cases.push({ ...caseSpec, __file: absolutePath });
   }
   const rubrics = [];
@@ -644,6 +823,46 @@ function buildSuiteRubricSetDigest(suite) {
     .sort((left, right) => left.rubricId.localeCompare(right.rubricId))));
 }
 
+function deriveLiveCohortFingerprint(input) {
+  const environment = input?.environment || {};
+  return sha256Text(stableStringify({
+    suiteId: cleanString(input?.suiteId),
+    suiteCaseSetDigest: cleanString(input?.suiteCaseSetDigest),
+    suiteRubricSetDigest: cleanString(input?.suiteRubricSetDigest),
+    gitCommit: cleanString(environment.gitCommit),
+    dirtyFingerprint: cleanString(environment.dirtyFingerprint),
+    runtimeGitCommit: cleanString(environment.runtimeGitCommit),
+    runtimeBuildId: cleanString(environment.runtimeBuildId),
+    runtimeAppVersion: cleanString(environment.runtimeAppVersion),
+    photoshopRuntimeBuildId: cleanString(environment.photoshopRuntimeBuildId),
+    photoshopRuntimeGitCommit: cleanString(environment.photoshopRuntimeGitCommit),
+    photoshopRuntimeSourceDigest: cleanString(environment.photoshopRuntimeSourceDigest),
+    photoshopRuntimeArtifactDigest: cleanString(environment.photoshopRuntimeArtifactDigest),
+    photoshopRuntimeManifestDigest: cleanString(environment.photoshopRuntimeManifestDigest),
+    photoshopRuntimeBindingDigest: cleanString(environment.photoshopRuntimeBindingDigest),
+    provider: cleanString(input?.provider),
+    modelId: cleanString(input?.modelId),
+    timeoutMs: Number(input?.timeoutMs)
+  }));
+}
+
+function deriveLiveAttemptFingerprint(input) {
+  return sha256Text(stableStringify({
+    cohortFingerprint: cleanString(input?.cohortFingerprint),
+    caseId: cleanString(input?.caseRef?.caseId),
+    caseRevision: input?.caseRef?.revision,
+    caseDigest: cleanString(input?.caseRef?.caseDigest),
+    fixtureDigest: cleanString(input?.fixtureRef?.fixtureDigest),
+    workspaceSemanticDigest: cleanString(input?.fixtureRef?.workspaceSemanticDigest),
+    fixtureInstanceId: cleanString(input?.fixtureRef?.instanceId),
+    instructionDigest: cleanString(input?.instructionDigest),
+    rubricDigest: cleanString(input?.rubricDigest),
+    liveRunProtocolKind: cleanString(input?.liveRunProtocol?.kind),
+    liveRunProtocolDigest: cleanString(input?.liveRunProtocol?.digest),
+    repeatIndex: input?.repeatIndex
+  }));
+}
+
 function collectJsonFiles(root) {
   if (!fs.existsSync(root)) return [];
   if (path.basename(path.resolve(root)) === path.basename(CANONICAL_REVIEW_BUNDLES_ROOT)
@@ -684,11 +903,24 @@ function validateLiveAttemptEvent(event) {
   if (!cleanString(event?.caseRef?.caseId) || !cleanString(event?.cohortId)) {
     errors.push("Attempt 缺少 Case 或 cohort 身份。");
   }
+  if (!Number.isInteger(event?.repeatIndex) || event.repeatIndex < 1) {
+    errors.push("Attempt repeatIndex 必须是正整数。 ");
+  }
   if (!cleanString(event?.provider) || !cleanString(event?.modelId)) {
     errors.push("Attempt 缺少 Provider / Model 身份。");
   }
   if (!cleanString(event?.cohortFingerprint) || !cleanString(event?.attemptFingerprint)) {
     errors.push("Attempt 缺少 cohort / attempt 指纹。");
+  }
+  if (!isRecord(event?.liveRunProtocol)
+    || !cleanString(event.liveRunProtocol.kind)
+    || !/^sha256:[a-f0-9]{64}$/.test(cleanString(event.liveRunProtocol.digest).toLowerCase())) {
+    errors.push("Attempt 缺少冻结的 liveRunProtocol 身份。 ");
+  }
+  if (!/^sha256:[a-f0-9]{64}$/.test(
+    cleanString(event?.fixtureRef?.workspaceSemanticDigest).toLowerCase()
+  )) {
+    errors.push("Attempt 缺少 Workspace 语义状态摘要。 ");
   }
   if (!cleanString(event?.suiteCaseSetDigest) || !cleanString(event?.suiteRubricSetDigest)) {
     errors.push("Attempt 缺少当前 Suite Case / Rubric 摘要。");
@@ -707,10 +939,21 @@ function validateLiveAttemptEvent(event) {
   if (["terminal", "reconciled"].includes(event?.eventType) && !cleanString(event?.status)) {
     errors.push("Attempt 终态 / 对账事件缺少 status。");
   }
+  if (event?.eventType === "terminal") {
+    if (event.interactionMetricsKnown === true) {
+      if (!Number.isInteger(event.protocolInteractionCount) || event.protocolInteractionCount < 0
+        || !Number.isInteger(event.userDesignCorrectionCount) || event.userDesignCorrectionCount < 0) {
+        errors.push("已知交互指标必须提供非负整数的协议交互数与用户设计纠错数。 ");
+      }
+    } else if (event.protocolInteractionCount !== undefined
+      || event.userDesignCorrectionCount !== undefined) {
+      errors.push("交互指标未知时不能夹带推测计数。 ");
+    }
+  }
   return { ok: errors.length === 0, errors };
 }
 
-function collectSidecars(dataRoots) {
+function collectSidecars(dataRoots, options = {}) {
   const runs = [];
   const reviews = [];
   const attributions = [];
@@ -758,6 +1001,13 @@ function collectSidecars(dataRoots) {
         identity = payload.eventId;
         if (validation.ok) attemptEvents.push(payload);
       } else {
+        if (options.strictAttemptEvents === true) {
+          invalid.push({
+            file: filePath,
+            kind: "attempt_event",
+            errors: ["canonical Attempt 目录只能包含受支持的 Attempt event。"]
+          });
+        }
         continue;
       }
       const sidecarKind = payload?.version === LIVE_ATTEMPT_EVENT_VERSION
@@ -835,18 +1085,13 @@ function fixtureInputs(cases) {
   for (const caseSpec of cases) {
     const inputs = [
       ...caseSpec.task.agentVisibleInputs,
+      ...(caseSpec.task.agentVisibleReferences || []).map((input) => ({
+        ...input,
+        role: input.role || "user_provided_reference"
+      })),
       ...(caseSpec.task.fixtureGeneratedInputs || []).map((input) => ({
         ...input,
-        generatedContent: `${JSON.stringify({
-          version: "design-reliability-fixture-facts/v1",
-          facts: input.facts,
-          boundaries: {
-            factsOnly: true,
-            noAssetSelection: true,
-            noLayoutPreset: true,
-            designerOwnsVisualDecisions: true
-          }
-        }, null, 2)}\n`
+        generatedContent: buildDesignReliabilityGeneratedFixtureContent(input)
       }))
     ];
     for (const input of inputs) {
@@ -857,6 +1102,7 @@ function fixtureInputs(cases) {
           ref,
           roles: [input.role],
           caseIds: [caseSpec.caseId],
+          ...(cleanString(input.digest) ? { expectedDigest: cleanString(input.digest).toLowerCase() } : {}),
           ...(input.generatedContent !== undefined
             ? { generatedContent: String(input.generatedContent) }
             : {})
@@ -866,6 +1112,11 @@ function fixtureInputs(cases) {
       if (existing.generatedContent !== input.generatedContent) {
         throw new Error(`同一 fixture ref 同时声明为不同来源或内容：${ref}`);
       }
+      const expectedDigest = cleanString(input.digest).toLowerCase();
+      if (expectedDigest && existing.expectedDigest && existing.expectedDigest !== expectedDigest) {
+        throw new Error(`同一 fixture ref 声明了不同冻结摘要：${ref}`);
+      }
+      if (expectedDigest && !existing.expectedDigest) existing.expectedDigest = expectedDigest;
       if (!existing.roles.includes(input.role)) existing.roles.push(input.role);
       if (!existing.caseIds.includes(caseSpec.caseId)) existing.caseIds.push(caseSpec.caseId);
     }
@@ -904,14 +1155,130 @@ function evaluateFixtureInventory(expectedRefsInput, actualRefsInput) {
   const expectedSet = new Set(expectedRefs);
   const actualSet = new Set(actualRefs);
   const missing = expectedRefs.filter((ref) => !actualSet.has(ref));
-  const unexpected = actualRefs.filter((ref) => !expectedSet.has(ref));
+  const workspaceMetadataRefs = actualRefs.filter((ref) => ref === CONTROLLED_PROJECT_METADATA_REF);
+  const unexpected = actualRefs.filter((ref) => (
+    !expectedSet.has(ref) && ref !== CONTROLLED_PROJECT_METADATA_REF
+  ));
   return {
     ready: missing.length === 0,
     freshRunReady: missing.length === 0 && unexpected.length === 0,
     expectedFileCount: expectedRefs.length,
     actualFileCount: actualRefs.length,
+    actualInputFileCount: actualRefs.filter((ref) => expectedSet.has(ref)).length,
     missing,
-    unexpected
+    unexpected,
+    workspaceMetadataRefs
+  };
+}
+
+function isValidIsoTimestamp(value) {
+  if (!cleanString(value)) return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function validateStringEnumRecord(value, allowedValues) {
+  if (!isRecord(value)) return false;
+  return Object.entries(value).every(([key, entryValue]) => (
+    cleanString(key) === key
+    && key.length > 0
+    && !isUnsafeProjectRelativeRef(key)
+    && typeof entryValue === "string"
+    && allowedValues.has(entryValue)
+  ));
+}
+
+function validateProjectDesignPlan(value) {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  if (Object.keys(value).some((key) => !PROJECT_DESIGN_PLAN_KEYS.has(key))) return false;
+  return Object.values(value).every((entry) => (
+    isRecord(entry)
+    && Object.keys(entry).length === 1
+    && PROJECT_DESIGN_STATUSES.has(entry.status)
+  ));
+}
+
+function normalizeProjectSemanticRecord(value) {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function buildProjectSemanticMetadataSnapshot(metadata) {
+  const value = isRecord(metadata) ? metadata : {};
+  return {
+    folderMappings: normalizeProjectSemanticRecord(value.folderMappings),
+    imageClassifications: normalizeProjectSemanticRecord(value.imageClassifications),
+    designPlan: normalizeProjectSemanticRecord(value.designPlan)
+  };
+}
+
+function inspectControlledProjectMetadata(fixtureRoot, actualRefs) {
+  const present = actualRefs.includes(CONTROLLED_PROJECT_METADATA_REF);
+  if (!present) {
+    const semanticSnapshot = buildProjectSemanticMetadataSnapshot(undefined);
+    return {
+      ref: CONTROLLED_PROJECT_METADATA_REF,
+      present: false,
+      ready: true,
+      schemaValid: true,
+      projectRootMatches: true,
+      semanticSnapshot,
+      semanticDigest: sha256Text(stableStringify(semanticSnapshot)),
+      errors: []
+    };
+  }
+  const metadataPath = resolveInside(fixtureRoot, CONTROLLED_PROJECT_METADATA_REF);
+  let metadata;
+  try {
+    metadata = readJson(metadataPath);
+  } catch {
+    const semanticSnapshot = buildProjectSemanticMetadataSnapshot(undefined);
+    return {
+      ref: CONTROLLED_PROJECT_METADATA_REF,
+      present: true,
+      ready: false,
+      schemaValid: false,
+      projectRootMatches: false,
+      semanticSnapshot,
+      semanticDigest: sha256Text(stableStringify(semanticSnapshot)),
+      errors: ["project_metadata_invalid_json"]
+    };
+  }
+  const errors = [];
+  if (!isRecord(metadata)) {
+    errors.push("project_metadata_schema_invalid");
+  } else if (Object.keys(metadata).some((key) => !PROJECT_METADATA_KEYS.has(key))
+    || metadata.version !== PROJECT_METADATA_VERSION
+    || !isValidIsoTimestamp(metadata.createdAt)
+    || !isValidIsoTimestamp(metadata.lastOpenedAt)
+    || !cleanString(metadata.projectPath)
+    || cleanString(metadata.projectName) !== path.basename(path.resolve(fixtureRoot))
+    || !validateStringEnumRecord(metadata.folderMappings, PROJECT_FOLDER_TYPES)
+    || !validateStringEnumRecord(metadata.imageClassifications, PROJECT_IMAGE_TYPES)
+    || !validateProjectDesignPlan(metadata.designPlan)) {
+    errors.push("project_metadata_schema_invalid");
+  }
+  let projectRootMatches = false;
+  if (isRecord(metadata) && cleanString(metadata.projectPath)) {
+    const declaredPath = path.resolve(metadata.projectPath);
+    if (fs.existsSync(declaredPath) && fs.statSync(declaredPath).isDirectory()) {
+      projectRootMatches = normalizePathIdentity(fs.realpathSync.native(declaredPath))
+        === normalizePathIdentity(fs.realpathSync.native(fixtureRoot));
+    }
+  }
+  if (!projectRootMatches) errors.push("project_metadata_root_mismatch");
+  const semanticSnapshot = buildProjectSemanticMetadataSnapshot(metadata);
+  return {
+    ref: CONTROLLED_PROJECT_METADATA_REF,
+    present: true,
+    ready: errors.length === 0,
+    schemaValid: !errors.includes("project_metadata_schema_invalid"),
+    projectRootMatches,
+    semanticSnapshot,
+    semanticDigest: sha256Text(stableStringify(semanticSnapshot)),
+    errors: [...new Set(errors)]
   };
 }
 
@@ -936,8 +1303,10 @@ function inspectFixture(cases, fixtureRoot) {
   const collected = collectFixtureFileRefs(fixtureRoot);
   const actualRefs = collected.files;
   const inventory = evaluateFixtureInventory(expectedRefs, actualRefs);
+  const workspaceMetadata = inspectControlledProjectMetadata(fixtureRoot, actualRefs);
   const files = [];
   const missing = [];
+  const digestMismatches = [];
   for (const input of inputs) {
     const absolutePath = resolveInside(fixtureRoot, input.ref);
     if (!fs.existsSync(absolutePath)
@@ -946,10 +1315,18 @@ function inspectFixture(cases, fixtureRoot) {
       missing.push(input.ref);
       continue;
     }
+    const digest = fileSha256(absolutePath);
+    if (input.expectedDigest && digest !== input.expectedDigest) {
+      digestMismatches.push({
+        ref: input.ref,
+        expectedDigest: input.expectedDigest,
+        actualDigest: digest
+      });
+    }
     files.push({
       ref: input.ref,
       size: fs.statSync(absolutePath).size,
-      digest: fileSha256(absolutePath),
+      digest,
       roles: [...input.roles].sort(),
       caseIds: [...input.caseIds].sort()
     });
@@ -960,21 +1337,31 @@ function inspectFixture(cases, fixtureRoot) {
     digest: file.digest
   }))));
   return {
-    ready: missing.length === 0 && collected.unsafeLinks.length === 0,
+    ready: missing.length === 0
+      && digestMismatches.length === 0
+      && collected.unsafeLinks.length === 0,
     freshRunReady: missing.length === 0
+      && digestMismatches.length === 0
       && inventory.unexpected.length === 0
+      && workspaceMetadata.ready
       && collected.unsafeLinks.length === 0,
     fixtureDigest,
     files,
     missing,
+    digestMismatches,
     unexpected: inventory.unexpected,
+    workspaceMetadata,
     unsafeLinks: collected.unsafeLinks,
     actualFileCount: actualRefs.length,
+    actualInputFileCount: inventory.actualInputFileCount,
     expectedFileCount: expectedRefs.length,
     boundaries: {
       reviewOnlyReferencesExcluded: true,
+      agentVisibleReferenceDigestsVerified: true,
       absolutePathsNotPersisted: true,
       unexpectedFilesFailFreshRun: true,
+      onlyExactProjectMetadataAllowed: true,
+      projectMetadataExcludedFromFixtureDigest: true,
       unsafeLinksFailFixture: true
     }
   };
@@ -1049,6 +1436,8 @@ function prepareFixture(suite, args, dataRoot = DEFAULT_DATA_ROOT) {
   const inspection = inspectFixture(selectedCases, destination);
   if (!inspection.freshRunReady) {
     throw new Error(`新 fixture 不安全或出现未声明文件：${[
+      ...inspection.missing.map((ref) => `missing:${ref}`),
+      ...inspection.digestMismatches.map((item) => `digest-mismatch:${item.ref}`),
       ...inspection.unexpected,
       ...inspection.unsafeLinks.map((ref) => `junction/symlink:${ref}`)
     ].join("、")}`);
@@ -1283,15 +1672,6 @@ function inspectEditablePsd(filePath) {
   } catch {
     return null;
   }
-}
-
-function artifactGeometryMatchesCase(caseSpec, metadata) {
-  if (!metadata || !Number.isFinite(metadata.width) || !Number.isFinite(metadata.height)) return false;
-  if (metadata.width <= 0 || metadata.height <= 0) return false;
-  if (caseSpec.taskFamily === "main_image") {
-    return metadata.width === 800 && metadata.height === 800;
-  }
-  return true;
 }
 
 function exactRefSetMatches(actualInput, expectedInput) {
@@ -1632,6 +2012,9 @@ async function outputEvidenceFromChanges(
 
 function recordRun(suite, args) {
   const caseSpec = findCase(suite, args.get("--case"));
+  if (caseSpec.status !== "active") {
+    throw new Error(`record-run 只接受 active Case；${caseSpec.caseId} 当前为 ${caseSpec.status}。`);
+  }
   const runRecordPaths = args.getAll("--run-record").map((item) => path.resolve(item));
   if (runRecordPaths.length === 0) throw new Error("record-run 至少需要一个 --run-record。 ");
   const runRecords = runRecordPaths.map((filePath) => readJson(filePath));
@@ -2015,11 +2398,60 @@ async function recordAnonymousReview(
   };
 }
 
-function recordAttribution(args) {
-  const runPath = path.resolve(args.get("--run-observation"));
-  const run = readJson(runPath);
-  const runValidation = validateDesignReliabilityRun(run);
-  if (!runValidation.ok) throw new Error(`Run observation 不合法：${runValidation.errors.join("；")}`);
+function evaluateAttributableAttemptEvents(attemptId, events, suite) {
+  return evaluateOfficialAttemptEligibility(attemptId, events, suite);
+}
+
+function resolveAttributionCliSubject(suite, args) {
+  const runObservationPath = cleanString(args.get("--run-observation"));
+  const attemptId = cleanString(args.get("--attempt-id"));
+  if (Boolean(runObservationPath) === Boolean(attemptId)) {
+    throw new Error("record-attribution 必须且只能提供 --run-observation 或 --attempt-id 其中一项。 ");
+  }
+  if (runObservationPath) {
+    const run = readJson(path.resolve(runObservationPath));
+    const runValidation = validateDesignReliabilityRun(run);
+    if (!runValidation.ok) {
+      throw new Error(`Run observation 不合法：${runValidation.errors.join("；")}`);
+    }
+    const caseSpec = findCase(suite, run.caseRef?.caseId);
+    if (run.caseRef?.suiteId !== caseSpec.suiteId
+      || run.caseRef?.revision !== caseSpec.revision
+      || run.caseRef?.caseDigest !== caseSpec.caseDigest) {
+      throw new Error("Run observation 不属于当前固定 Suite / Case revision。 ");
+    }
+    return {
+      subject: { runObservationId: run.runObservationId },
+      subjectId: run.runObservationId,
+      outputSegments: ["attributions", "run-observations", run.runObservationId]
+    };
+  }
+
+  const collected = collectSidecars([CANONICAL_ATTEMPT_EVENTS_ROOT], { strictAttemptEvents: true });
+  const currentEvents = retainContextuallyValidAttemptEvents(
+    collected.attemptEvents,
+    suite,
+    []
+  ).filter((event) => event.attemptId === attemptId);
+  const attemptVerdict = evaluateAttributableAttemptEvents(attemptId, currentEvents, suite);
+  if (!attemptVerdict.valid) {
+    throw new Error(
+      `Attempt 不存在、尚未形成可归因终态，或不属于当前 Suite：${[
+        ...(attemptVerdict.protocolIssues.length > 0
+          ? attemptVerdict.protocolIssues
+          : ["attempt_not_found"])
+      ].join("、")}`
+    );
+  }
+  return {
+    subject: { attemptId },
+    subjectId: attemptId,
+    outputSegments: ["attributions", "attempts", attemptId]
+  };
+}
+
+function recordAttribution(suite, args) {
+  const subjectContext = resolveAttributionCliSubject(suite, args);
   const owner = args.get("--owner", "unknown");
   const failureMode = args.get("--failure-mode", "unknown");
   const status = args.get("--status", "hypothesis");
@@ -2029,11 +2461,11 @@ function recordAttribution(args) {
   const rationale = args.get("--rationale");
   if (!rationale) throw new Error("--rationale 不能为空。 ");
   const timestamp = new Date().toISOString();
-  const attributionId = `${run.runObservationId}-${failureMode}-${timestamp.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+  const attributionId = `${subjectContext.subjectId}-${failureMode}-${timestamp.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
   const attribution = {
     version: ATTRIBUTION_VERSION,
     attributionId,
-    runObservationId: run.runObservationId,
+    subject: subjectContext.subject,
     symptomCode: args.get("--symptom", "unknown"),
     owner,
     failureMode,
@@ -2053,7 +2485,7 @@ function recordAttribution(args) {
   if (!validation.ok) throw new Error(validation.errors.join("；"));
   const outputPath = resolveSidecarOutputPath(
     DEFAULT_DATA_ROOT,
-    ["attributions", run.runObservationId],
+    subjectContext.outputSegments,
     attributionId
   );
   writeJsonExclusive(outputPath, attribution);
@@ -2132,6 +2564,7 @@ function retainContextuallyValidReviews(sidecars, suite) {
     const caseSpec = currentCases.get(run.caseRef?.caseId);
     const current = Boolean(
       caseSpec
+      && caseSpec.status === "active"
       && run.caseRef?.suiteId === caseSpec.suiteId
       && run.caseRef?.revision === caseSpec.revision
       && run.caseRef?.caseDigest === caseSpec.caseDigest
@@ -2147,6 +2580,20 @@ function retainContextuallyValidReviews(sidecars, suite) {
     }
   }
   const validRunIds = new Set(validRuns.map((run) => run.runObservationId));
+  const validAttemptEvents = retainContextuallyValidAttemptEvents(
+    sidecars.attemptEvents,
+    suite,
+    excludedEvidence
+  );
+  const eventsByAttempt = new Map();
+  for (const event of validAttemptEvents) {
+    const current = eventsByAttempt.get(event.attemptId) || [];
+    current.push(event);
+    eventsByAttempt.set(event.attemptId, current);
+  }
+  const validAttemptIds = new Set([...eventsByAttempt.entries()]
+    .filter(([attemptId, events]) => evaluateAttributableAttemptEvents(attemptId, events, suite).valid)
+    .map(([attemptId]) => attemptId));
   const runById = new Map(validRuns.map((run) => [run.runObservationId, run]));
   const validReviews = [];
   for (const review of sidecars.reviews) {
@@ -2183,19 +2630,20 @@ function retainContextuallyValidReviews(sidecars, suite) {
     validReviews.push(review);
   }
   const validAttributions = sidecars.attributions.filter((attribution) => {
-    if (validRunIds.has(attribution.runObservationId)) return true;
+    if (attributionMatchesDesignReliabilityCohort(attribution, {
+      runObservationIds: validRunIds,
+      attemptIds: validAttemptIds
+    })) return true;
+    const subject = resolveDesignReliabilityAttributionSubject(attribution);
     excludedEvidence.push({
       kind: "attribution",
       id: attribution.attributionId,
-      reason: "bound_run_not_current"
+      reason: subject?.kind === "attempt"
+        ? "bound_attempt_not_current"
+        : "bound_run_not_current"
     });
     return false;
   });
-  const validAttemptEvents = retainContextuallyValidAttemptEvents(
-    sidecars.attemptEvents,
-    suite,
-    excludedEvidence
-  );
   return {
     ...sidecars,
     runs: validRuns,
@@ -2316,13 +2764,7 @@ function buildStrictReviewVerdicts(reviews) {
   }
   const verdicts = new Map();
   for (const [runObservationId, runReviews] of byRun.entries()) {
-    const decisions = [...new Set(runReviews.map((review) => review.decision))];
-    verdicts.set(runObservationId, {
-      reviewed: true,
-      conflict: decisions.length !== 1,
-      decision: decisions.length === 1 ? decisions[0] : "needs_adjudication",
-      reviewCount: runReviews.length
-    });
+    verdicts.set(runObservationId, resolveStrictReviewRunVerdict(runReviews));
   }
   return verdicts;
 }
@@ -2373,8 +2815,114 @@ function buildAttemptEventIdentityKey(event) {
     suiteCaseSetDigest: event?.suiteCaseSetDigest,
     suiteRubricSetDigest: event?.suiteRubricSetDigest,
     cohortFingerprint: event?.cohortFingerprint,
-    attemptFingerprint: event?.attemptFingerprint
+    attemptFingerprint: event?.attemptFingerprint,
+    liveRunProtocol: event?.liveRunProtocol
   });
+}
+
+function evaluateOfficialAttemptEligibility(attemptId, events, suite) {
+  const ordered = [...events].sort((left, right) => left.sequence - right.sequence);
+  const eventTypeCounts = ordered.reduce((counts, event) => {
+    counts[event.eventType] = (counts[event.eventType] || 0) + 1;
+    return counts;
+  }, {});
+  const issues = validateAttemptEventStateMachine(attemptId, ordered);
+  if (eventTypeCounts.armed !== 1) issues.push("armed_event_count_invalid");
+  if (eventTypeCounts.submission_started !== 1) issues.push("submission_event_count_invalid");
+  if (eventTypeCounts.terminal !== 1) issues.push("terminal_event_count_invalid");
+  if ((eventTypeCounts.reconciled || 0) > 1) issues.push("reconciliation_event_count_invalid");
+  if (new Set(ordered.map(buildAttemptEventIdentityKey)).size !== 1) {
+    issues.push("attempt_identity_drift");
+  }
+  for (const event of ordered) {
+    const validation = validateLiveAttemptEvent(event);
+    if (!validation.ok) issues.push(...validation.errors.map((error) => `event_invalid:${error}`));
+  }
+  const anchor = ordered.find((event) => event.eventType === "submission_started")
+    || ordered.find((event) => event.eventType === "armed")
+    || ordered[0];
+  const caseSpec = suite?.cases?.find((item) => item.caseId === anchor?.caseRef?.caseId);
+  const rubric = caseSpec
+    ? suite?.rubrics?.find((item) => item.rubricId === caseSpec.oracle?.rubricId)
+    : undefined;
+  if (!caseSpec || caseSpec.status !== "active") {
+    issues.push("case_not_current_active");
+  } else {
+    if (anchor.caseRef?.revision !== caseSpec.revision
+      || anchor.caseRef?.caseDigest !== caseSpec.caseDigest) {
+      issues.push("case_identity_mismatch");
+    }
+    if (anchor.suiteCaseSetDigest !== buildSuiteCaseSetDigest(suite)
+      || anchor.suiteRubricSetDigest !== buildSuiteRubricSetDigest(suite)) {
+      issues.push("suite_protocol_digest_mismatch");
+    }
+    if (anchor.instructionDigest !== sha256Text(caseSpec.task?.instruction || "")) {
+      issues.push("instruction_digest_mismatch");
+    }
+    if (!rubric || anchor.rubricDigest !== buildRubricDigest(rubric)) {
+      issues.push("rubric_digest_mismatch");
+    }
+    const expectedProtocol = resolveDesignReliabilityLiveRunProtocol(caseSpec);
+    const expectedProtocolDigest = buildDesignReliabilityLiveRunProtocolDigest(caseSpec);
+    if (anchor.liveRunProtocol?.kind !== expectedProtocol.kind
+      || anchor.liveRunProtocol?.digest !== expectedProtocolDigest) {
+      issues.push("live_run_protocol_identity_mismatch");
+    }
+    if (!resolveLiveRunActorCapability(caseSpec)) {
+      issues.push("live_run_actor_capability_unavailable");
+    }
+  }
+  if (!Number.isInteger(anchor?.repeatIndex) || anchor.repeatIndex < 1) {
+    issues.push("repeat_index_invalid");
+  }
+  if (anchor?.environment?.dirty !== false) issues.push("runtime_git_state_not_clean");
+  for (const fieldName of [
+    "fixtureDigest",
+    "workspaceSemanticDigest",
+    "pathBindingDigest"
+  ]) {
+    if (!/^sha256:[a-f0-9]{64}$/.test(cleanString(anchor?.fixtureRef?.[fieldName]).toLowerCase())) {
+      issues.push(`fixture_${fieldName}_invalid`);
+    }
+  }
+  if (!cleanString(anchor?.fixtureRef?.instanceId)) issues.push("fixture_instance_id_missing");
+  const derivedCohortFingerprint = anchor && suite
+    ? deriveLiveCohortFingerprint({
+        suiteId: suite.manifest?.suiteId,
+        suiteCaseSetDigest: anchor.suiteCaseSetDigest,
+        suiteRubricSetDigest: anchor.suiteRubricSetDigest,
+        environment: anchor.environment,
+        provider: anchor.provider,
+        modelId: anchor.modelId,
+        timeoutMs: anchor.timeoutMs
+      })
+    : "";
+  if (!derivedCohortFingerprint || anchor?.cohortFingerprint !== derivedCohortFingerprint) {
+    issues.push("cohort_fingerprint_mismatch");
+  }
+  const derivedAttemptFingerprint = anchor
+    ? deriveLiveAttemptFingerprint({
+        cohortFingerprint: derivedCohortFingerprint,
+        caseRef: anchor.caseRef,
+        fixtureRef: anchor.fixtureRef,
+        instructionDigest: anchor.instructionDigest,
+        rubricDigest: anchor.rubricDigest,
+        liveRunProtocol: anchor.liveRunProtocol,
+        repeatIndex: anchor.repeatIndex
+      })
+    : "";
+  if (!derivedAttemptFingerprint || anchor?.attemptFingerprint !== derivedAttemptFingerprint) {
+    issues.push("attempt_fingerprint_mismatch");
+  }
+  return {
+    valid: ordered.length > 0 && issues.length === 0,
+    ordered,
+    anchor,
+    caseSpec,
+    derivedCohortFingerprint,
+    derivedAttemptFingerprint,
+    protocolIssues: [...new Set(issues)]
+  };
 }
 
 function runObservationMatchesAttempt(run, event, caseSpec, attemptId) {
@@ -2392,6 +2940,7 @@ function runObservationMatchesAttempt(run, event, caseSpec, attemptId) {
     && runAttempt.repeatIndex === event.repeatIndex
     && dimensions.fixtureInstanceId === event.fixtureRef?.instanceId
     && dimensions.fixtureDigest === event.fixtureRef?.fixtureDigest
+    && dimensions.workspaceSemanticDigest === event.fixtureRef?.workspaceSemanticDigest
     && dimensions.provider === event.provider
     && dimensions.requestedModelId === event.modelId
     && dimensions.gitCommit === environment.gitCommit
@@ -2407,7 +2956,9 @@ function runObservationMatchesAttempt(run, event, caseSpec, attemptId) {
     && dimensions.rubricDigest === event.rubricDigest
     && dimensions.suiteCaseSetDigest === event.suiteCaseSetDigest
     && dimensions.suiteRubricSetDigest === event.suiteRubricSetDigest
-    && dimensions.cohortFingerprint === event.cohortFingerprint;
+    && dimensions.cohortFingerprint === event.cohortFingerprint
+    && dimensions.liveRunProtocolKind === event.liveRunProtocol?.kind
+    && dimensions.liveRunProtocolDigest === event.liveRunProtocol?.digest;
 }
 
 function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
@@ -2434,29 +2985,11 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
       || submitted?.caseRef?.caseId
       || armed?.caseRef?.caseId;
     const caseSpec = caseById.get(caseId);
-    const identityKeys = ordered.map(buildAttemptEventIdentityKey);
-    const eventTypeCounts = ordered.reduce((counts, event) => {
-      counts[event.eventType] = (counts[event.eventType] || 0) + 1;
-      return counts;
-    }, {});
-    const protocolIssues = validateAttemptEventStateMachine(attemptId, ordered);
-    if (eventTypeCounts.armed !== 1) protocolIssues.push("armed_event_count_invalid");
-    if ((eventTypeCounts.submission_started || 0) > 1) protocolIssues.push("submission_event_count_invalid");
-    if ((terminal || reconciliation) && eventTypeCounts.submission_started !== 1) {
-      protocolIssues.push("submission_event_count_invalid");
-    }
-    if ((eventTypeCounts.terminal || 0) > 1) protocolIssues.push("terminal_event_count_invalid");
-    if ((eventTypeCounts.reconciled || 0) > 1) protocolIssues.push("reconciliation_event_count_invalid");
-    if (reconciliation && !terminal) protocolIssues.push("reconciliation_without_terminal");
-    if (new Set(identityKeys).size !== 1) protocolIssues.push("attempt_identity_drift");
-    if (submitted && !cleanString(submitted.cohortFingerprint)) protocolIssues.push("cohort_fingerprint_missing");
-    if (submitted && !cleanString(submitted.attemptFingerprint)) protocolIssues.push("attempt_fingerprint_missing");
-    if (submitted && (!cleanString(submitted.suiteCaseSetDigest) || !cleanString(submitted.suiteRubricSetDigest))) {
-      protocolIssues.push("suite_protocol_digest_missing");
-    }
+    const eligibility = evaluateOfficialAttemptEligibility(attemptId, ordered, suite);
+    const protocolIssues = [...eligibility.protocolIssues];
     const runObservationId = cleanString(terminal?.runObservationId) || null;
     const linkedRun = runObservationId ? runById.get(runObservationId) : undefined;
-    const identityEvent = terminal || submitted || armed;
+    const identityEvent = eligibility.anchor || terminal || submitted || armed;
     const linkedRunValid = runObservationMatchesAttempt(
       linkedRun,
       identityEvent,
@@ -2467,17 +3000,35 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
     if (terminalClaimsTechnicalPass && !linkedRunValid) {
       protocolIssues.push("technical_pass_run_observation_missing");
     }
+    const fixtureDigest = cleanString(identityEvent?.fixtureRef?.fixtureDigest).toLowerCase();
+    const workspaceSemanticDigest = cleanString(
+      identityEvent?.fixtureRef?.workspaceSemanticDigest
+    ).toLowerCase();
+    const fixtureIdentityDigest = /^sha256:[a-f0-9]{64}$/.test(fixtureDigest)
+      && /^sha256:[a-f0-9]{64}$/.test(workspaceSemanticDigest)
+      ? sha256Text(stableStringify({ fixtureDigest, workspaceSemanticDigest }))
+      : null;
+    const unknownWriteIncident = String(terminal?.status || "").includes("unknown_write_state");
+    const interactionMetricsKnown = terminal?.interactionMetricsKnown === true;
     const reviewVerdict = linkedRunValid
       ? strictReviewVerdicts.get(runObservationId)
       : undefined;
     summaries.push({
       attemptId,
       caseId,
+      repeatIndex: Number.isInteger(identityEvent?.repeatIndex) ? identityEvent.repeatIndex : null,
       taskFamily: caseSpec?.taskFamily || "unknown",
       cohortId: terminal?.cohortId || submitted?.cohortId || armed?.cohortId || "unknown",
       cohortFingerprint: cleanString(
         terminal?.cohortFingerprint || submitted?.cohortFingerprint || armed?.cohortFingerprint
       ) || null,
+      derivedCohortFingerprint: eligibility.derivedCohortFingerprint || null,
+      fixtureIdentityDigest,
+      controlProfile: identityEvent ? {
+        provider: cleanString(identityEvent.provider),
+        modelId: cleanString(identityEvent.modelId),
+        timeoutMs: Number(identityEvent.timeoutMs)
+      } : null,
       fixtureInstanceId: cleanString(
         terminal?.fixtureRef?.instanceId
         || submitted?.fixtureRef?.instanceId
@@ -2488,15 +3039,24 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
       terminal: Boolean(terminal),
       reconciled: Boolean(reconciliation),
       duplicateTerminalCount: Math.max(0, terminals.length - 1),
-      status: reconciliation?.status
-        || terminal?.status
+      status: terminal?.status
         || (submitted ? "submitted_without_terminal" : "armed_not_submitted"),
+      reconciliationStatus: reconciliation?.status || null,
+      unknownWriteIncident,
+      interactionMetricsKnown,
+      protocolInteractionCount: interactionMetricsKnown
+        ? Number(terminal?.protocolInteractionCount) || 0
+        : null,
+      userDesignCorrectionCount: interactionMetricsKnown
+        ? Number(terminal?.userDesignCorrectionCount) || 0
+        : null,
       runObservationId,
       linkedRunValid,
       protocolIssues,
       protocolValid: protocolIssues.length === 0,
       technicalDeliveryPassed: Boolean(
-        terminalClaimsTechnicalPass
+        protocolIssues.length === 0
+        && terminalClaimsTechnicalPass
         && linkedRunValid
         && linkedRun?.observed?.technicalDeliveryPassed === true
       ),
@@ -2529,6 +3089,24 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
       summary.commercialUsable = false;
     }
   }
+  const summariesByCaseRepeat = new Map();
+  for (const summary of summaries.filter((item) => item.submitted)) {
+    const identity = `${summary.cohortId}\u0000${summary.caseId}\u0000${summary.repeatIndex}`;
+    const current = summariesByCaseRepeat.get(identity) || [];
+    current.push(summary);
+    summariesByCaseRepeat.set(identity, current);
+  }
+  for (const duplicateSummaries of summariesByCaseRepeat.values()) {
+    if (duplicateSummaries.length <= 1) continue;
+    for (const summary of duplicateSummaries) {
+      summary.protocolIssues.push("case_repeat_reused_by_multiple_attempts");
+      summary.protocolIssues = [...new Set(summary.protocolIssues)];
+      summary.protocolValid = false;
+      summary.technicalDeliveryPassed = false;
+      summary.strictReviewReady = false;
+      summary.commercialUsable = false;
+    }
+  }
   const byCohort = Object.create(null);
   for (const summary of summaries) {
     const cohort = byCohort[summary.cohortId] || {
@@ -2542,13 +3120,22 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
       submittedProtocolInvalidAttempts: 0,
       statuses: {},
       cohortFingerprints: [],
+      derivedCohortFingerprints: [],
+      fixtureIdentityDigestsByCase: {},
+      comparisonControlProfiles: [],
       linkedRunObservationIds: [],
+      submittedRepeatIndexesByCase: {},
       byTaskFamily: {},
       byCase: {}
     };
     cohort.attempts += 1;
     if (summary.armed) cohort.armed += 1;
     if (summary.submitted) cohort.submitted += 1;
+    if (summary.submitted && summary.caseId && Number.isInteger(summary.repeatIndex)) {
+      const repeatIndexes = cohort.submittedRepeatIndexesByCase[summary.caseId] || [];
+      if (!repeatIndexes.includes(summary.repeatIndex)) repeatIndexes.push(summary.repeatIndex);
+      cohort.submittedRepeatIndexesByCase[summary.caseId] = repeatIndexes.sort((left, right) => left - right);
+    }
     if (summary.terminal) cohort.terminal += 1;
     if (summary.linkedRunValid) {
       cohort.linkedRunObservations += 1;
@@ -2561,12 +3148,32 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
     if (summary.cohortFingerprint && !cohort.cohortFingerprints.includes(summary.cohortFingerprint)) {
       cohort.cohortFingerprints.push(summary.cohortFingerprint);
     }
+    if (summary.derivedCohortFingerprint
+      && !cohort.derivedCohortFingerprints.includes(summary.derivedCohortFingerprint)) {
+      cohort.derivedCohortFingerprints.push(summary.derivedCohortFingerprint);
+    }
+    if (summary.submitted && summary.caseId && summary.fixtureIdentityDigest) {
+      const digests = cohort.fixtureIdentityDigestsByCase[summary.caseId] || [];
+      if (!digests.includes(summary.fixtureIdentityDigest)) digests.push(summary.fixtureIdentityDigest);
+      cohort.fixtureIdentityDigestsByCase[summary.caseId] = digests.sort();
+    }
+    if (summary.submitted && summary.controlProfile) {
+      const identity = stableStringify(summary.controlProfile);
+      if (!cohort.comparisonControlProfiles.some((item) => stableStringify(item) === identity)) {
+        cohort.comparisonControlProfiles.push(summary.controlProfile);
+      }
+    }
     const family = cohort.byTaskFamily[summary.taskFamily] || {
       submitted: 0,
       terminal: 0,
       technicalDeliveryPassed: 0,
       strictReviewedTechnicalPasses: 0,
       commercialUsable: 0,
+      interactionMetricsKnown: 0,
+      protocolInteractionCount: 0,
+      userDesignCorrectionCount: 0,
+      protocolInteractionValues: [],
+      userDesignCorrectionValues: [],
       statuses: {}
     };
     if (summary.submitted) family.submitted += 1;
@@ -2576,6 +3183,13 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
       family.strictReviewedTechnicalPasses += 1;
     }
     if (summary.commercialUsable) family.commercialUsable += 1;
+    if (summary.interactionMetricsKnown) {
+      family.interactionMetricsKnown += 1;
+      family.protocolInteractionCount += summary.protocolInteractionCount;
+      family.userDesignCorrectionCount += summary.userDesignCorrectionCount;
+      family.protocolInteractionValues.push(summary.protocolInteractionCount);
+      family.userDesignCorrectionValues.push(summary.userDesignCorrectionCount);
+    }
     family.statuses[summary.status] = (family.statuses[summary.status] || 0) + 1;
     cohort.byTaskFamily[summary.taskFamily] = family;
     const caseEntry = cohort.byCase[summary.caseId] || {
@@ -2584,6 +3198,11 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
       technicalDeliveryPassed: 0,
       strictReviewedTechnicalPasses: 0,
       commercialUsable: 0,
+      interactionMetricsKnown: 0,
+      protocolInteractionCount: 0,
+      userDesignCorrectionCount: 0,
+      protocolInteractionValues: [],
+      userDesignCorrectionValues: [],
       statuses: {}
     };
     if (summary.submitted) caseEntry.submitted += 1;
@@ -2593,6 +3212,13 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
       caseEntry.strictReviewedTechnicalPasses += 1;
     }
     if (summary.commercialUsable) caseEntry.commercialUsable += 1;
+    if (summary.interactionMetricsKnown) {
+      caseEntry.interactionMetricsKnown += 1;
+      caseEntry.protocolInteractionCount += summary.protocolInteractionCount;
+      caseEntry.userDesignCorrectionCount += summary.userDesignCorrectionCount;
+      caseEntry.protocolInteractionValues.push(summary.protocolInteractionCount);
+      caseEntry.userDesignCorrectionValues.push(summary.userDesignCorrectionCount);
+    }
     caseEntry.statuses[summary.status] = (caseEntry.statuses[summary.status] || 0) + 1;
     cohort.byCase[summary.caseId] = caseEntry;
     byCohort[summary.cohortId] = cohort;
@@ -2609,9 +3235,16 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
     cohort.allSubmittedAttemptsTerminal = cohort.submitted > 0
       && submittedSummaries.every((summary) => summary.terminal && summary.duplicateTerminalCount === 0);
     cohort.protocolValid = cohort.submitted > 0 && cohort.submittedProtocolInvalidAttempts === 0;
+    const fixtureIdentityReady = Object.values(cohort.fixtureIdentityDigestsByCase)
+      .every((digests) => Array.isArray(digests) && digests.length === 1);
+    cohort.fixtureIdentityReady = fixtureIdentityReady;
+    cohort.controlProfileCount = cohort.comparisonControlProfiles.length;
     cohort.homogeneous = cohort.submitted > 0
-      && submittedSummaries.every((summary) => Boolean(summary.cohortFingerprint))
-      && new Set(submittedSummaries.map((summary) => summary.cohortFingerprint)).size === 1;
+      && cohort.protocolValid === true
+      && submittedSummaries.every((summary) => Boolean(summary.derivedCohortFingerprint))
+      && new Set(submittedSummaries.map((summary) => summary.derivedCohortFingerprint)).size === 1
+      && cohort.controlProfileCount === 1
+      && fixtureIdentityReady;
     cohort.runObservationDiagnosticCoverage = rate(linkedRunIds.size, cohort.submitted);
     cohort.unlinkedRunObservationCount = Math.max(0, cohortRunCount - linkedRunIds.size);
     const technicalPassed = submittedSummaries.filter((summary) => summary.technicalDeliveryPassed).length;
@@ -2621,14 +3254,32 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
     const commercialUsable = submittedSummaries.filter((summary) => summary.commercialUsable).length;
     cohort.technicalDeliveryRate = rate(technicalPassed, cohort.submitted);
     cohort.commercialUsableRate = rate(commercialUsable, cohort.submitted);
+    cohort.technicalDeliveryPassed = technicalPassed;
+    cohort.strictReviewedTechnicalPasses = strictReviewedTechnicalPasses;
+    cohort.commercialUsable = commercialUsable;
     cohort.strictReviewCoverageOfTechnicalPasses = rate(
       strictReviewedTechnicalPasses,
       technicalPassed
     );
     cohort.strictReviewConflictCount = submittedSummaries.filter((summary) => summary.strictReviewConflict).length;
     cohort.unknownWriteStateCount = submittedSummaries.filter((summary) => (
-      String(summary.status || "").includes("unknown_write_state")
+      summary.unknownWriteIncident === true
     )).length;
+    cohort.interactionMetricsKnownCount = submittedSummaries.filter((summary) => (
+      summary.interactionMetricsKnown === true
+    )).length;
+    cohort.protocolInteractionCount = submittedSummaries.reduce((total, summary) => (
+      total + (summary.interactionMetricsKnown ? summary.protocolInteractionCount : 0)
+    ), 0);
+    cohort.userDesignCorrectionCount = submittedSummaries.reduce((total, summary) => (
+      total + (summary.interactionMetricsKnown ? summary.userDesignCorrectionCount : 0)
+    ), 0);
+    cohort.protocolInteractions = distribution(submittedSummaries
+      .filter((summary) => summary.interactionMetricsKnown)
+      .map((summary) => summary.protocolInteractionCount));
+    cohort.userDesignCorrections = distribution(submittedSummaries
+      .filter((summary) => summary.interactionMetricsKnown)
+      .map((summary) => summary.userDesignCorrectionCount));
     for (const aggregate of [
       ...Object.values(cohort.byTaskFamily),
       ...Object.values(cohort.byCase)
@@ -2639,6 +3290,10 @@ function buildLiveAttemptCoverage(attemptEvents, runs, suite, reviews = []) {
         aggregate.strictReviewedTechnicalPasses,
         aggregate.technicalDeliveryPassed
       );
+      aggregate.protocolInteractions = distribution(aggregate.protocolInteractionValues);
+      aggregate.userDesignCorrections = distribution(aggregate.userDesignCorrectionValues);
+      delete aggregate.protocolInteractionValues;
+      delete aggregate.userDesignCorrectionValues;
     }
   }
   return {
@@ -2707,12 +3362,54 @@ function isOfficialAttemptCohortReady(attemptCohort) {
     && attemptCohort.protocolValid === true
     && attemptCohort.allSubmittedAttemptsTerminal === true
     && attemptCohort.unknownWriteStateCount === 0
+    && attemptCohort.fixtureIdentityReady === true
+    && attemptCohort.controlProfileCount === 1
+    && attemptCohort.interactionMetricsKnownCount === attemptCohort.submitted
   );
+}
+
+function buildAttemptCohortReportContext(attemptEvents, cohortId) {
+  const submissions = (Array.isArray(attemptEvents) ? attemptEvents : []).filter((event) => (
+    event.eventType === "submission_started" && event.cohortId === cohortId
+  ));
+  const attemptFixtureDigestsByCase = {};
+  for (const event of submissions) {
+    const caseId = cleanString(event.caseRef?.caseId);
+    const fixtureDigest = cleanString(event.fixtureRef?.fixtureDigest).toLowerCase();
+    const workspaceSemanticDigest = cleanString(
+      event.fixtureRef?.workspaceSemanticDigest
+    ).toLowerCase();
+    if (!caseId
+      || !/^sha256:[a-f0-9]{64}$/.test(fixtureDigest)
+      || !/^sha256:[a-f0-9]{64}$/.test(workspaceSemanticDigest)) continue;
+    const fixtureIdentityDigest = sha256Text(stableStringify({
+      fixtureDigest,
+      workspaceSemanticDigest
+    }));
+    const current = attemptFixtureDigestsByCase[caseId] || [];
+    if (!current.includes(fixtureIdentityDigest)) current.push(fixtureIdentityDigest);
+    attemptFixtureDigestsByCase[caseId] = current.sort();
+  }
+  return {
+    attemptIds: [...new Set(submissions.map((event) => event.attemptId).filter(cleanString))],
+    attemptFixtureDigestsByCase,
+    comparisonControlProfiles: [...new Map(submissions.map((event) => {
+      const profile = {
+        provider: event.provider,
+        modelId: event.modelId,
+        timeoutMs: event.timeoutMs
+      };
+      return [stableStringify(profile), profile];
+    })).values()]
+  };
 }
 
 async function buildStatus(suite, args) {
   const evidenceRoots = resolveReliabilityEvidenceRoots(args);
-  const canonicalAttemptSidecars = collectSidecars(evidenceRoots.canonicalAttemptRoots);
+  const canonicalAttemptSidecars = collectSidecars(
+    evidenceRoots.canonicalAttemptRoots,
+    { strictAttemptEvents: true }
+  );
   const collectedSidecars = collectSidecars(evidenceRoots.reportRoots);
   const attemptSafetyLedger = buildCanonicalAttemptSafetyLedger(canonicalAttemptSidecars.attemptEvents);
   // Run / Review / Attribution 可以从附加 report root 读取，但正式 Attempt
@@ -2742,6 +3439,7 @@ async function buildStatus(suite, args) {
     const reportRuns = attemptCohort?.submitted > 0
       ? sidecars.runs.filter((run) => linkedRunIds.has(run.runObservationId))
       : sidecars.runs;
+    const attemptReportContext = buildAttemptCohortReportContext(sidecars.attemptEvents, cohortId);
     const report = buildDesignReliabilityCohortReport({
       suiteId: suite.manifest.suiteId,
       cohortId,
@@ -2749,7 +3447,15 @@ async function buildStatus(suite, args) {
       rubrics: suite.rubrics,
       runs: reportRuns,
       reviews: sidecars.reviews,
-      attributions: sidecars.attributions
+      attributions: sidecars.attributions,
+      minimumDesignQualityReviewedRunsPerCase: Math.max(
+        1,
+        Math.ceil(
+          Number(suite.manifest.releaseGates?.minimumRunsPerCase || 1)
+          * Number(suite.manifest.releaseGates?.technicalDeliveryRate || 1)
+        )
+      ),
+      ...attemptReportContext
     });
     reports[cohortId] = {
       ...report,
@@ -2761,7 +3467,9 @@ async function buildStatus(suite, args) {
     evaluateDesignReliabilityReleaseGates(report, suite.manifest.releaseGates)
   ]));
   return {
-    success: suite.ok && sidecars.invalid.length === 0,
+    success: suite.ok
+      && sidecars.invalid.length === 0
+      && canonicalAttemptSidecars.invalid.length === 0,
     generatedAt: new Date().toISOString(),
     storage: {
       canonicalDataRoot: DEFAULT_DATA_ROOT,
@@ -2804,6 +3512,59 @@ async function buildStatus(suite, args) {
       "anonymous proof 只有在 canonical verification bundle 每次磁盘重验通过后才进入 strict；附加 data root 只能提供诊断记录。",
       "不同 caseSetDigest、rubricSetDigest 或 fixtureDigest 的 cohort 禁止直接比较。"
     ]
+  };
+}
+
+async function buildCohortComparison(suite, args) {
+  const baselineCohortId = cleanString(args.get("--baseline-cohort"));
+  const candidateCohortId = cleanString(args.get("--candidate-cohort"));
+  if (!baselineCohortId || !candidateCohortId) {
+    throw new Error("compare 需要 --baseline-cohort 与 --candidate-cohort。 ");
+  }
+  if (baselineCohortId === candidateCohortId) {
+    throw new Error("baseline 与 candidate 必须是两个不同 cohort。 ");
+  }
+  const status = await buildStatus(suite, args);
+  const baseline = status.reports[baselineCohortId];
+  const candidate = status.reports[candidateCohortId];
+  if (!baseline || !candidate) {
+    const missing = [
+      ...(baseline ? [] : [baselineCohortId]),
+      ...(candidate ? [] : [candidateCohortId])
+    ];
+    throw new Error(`找不到 cohort report：${missing.join("、")}`);
+  }
+  const baselineGate = status.releaseGateEvaluations[baselineCohortId];
+  const candidateGate = status.releaseGateEvaluations[candidateCohortId];
+  let comparison = compareDesignReliabilityCohorts(baseline, candidate);
+  if (status.success !== true) {
+    comparison = {
+      comparable: false,
+      reason: "当前证据目录包含无效 sidecar，必须先修复证据链，不能比较 cohort。"
+    };
+  } else if (comparison.comparable === true
+    && (baselineGate?.sampleReady !== true || candidateGate?.sampleReady !== true)) {
+    comparison = {
+      ...comparison,
+      comparable: false,
+      reason: "baseline 或 candidate 尚未达到固定 Case 重复数、严格盲评覆盖与介入指标完整度，当前只能分别诊断，不能形成正式前后结论。"
+    };
+  }
+  return {
+    success: comparison.comparable === true,
+    generatedAt: new Date().toISOString(),
+    baselineCohortId,
+    candidateCohortId,
+    comparison,
+    releaseGateEvaluations: {
+      baseline: baselineGate,
+      candidate: candidateGate
+    },
+    boundaries: {
+      sameCaseRubricAndFixtureRequired: true,
+      noCrossCaseAverageComparison: true,
+      devBenchmarkOnly: true
+    }
   };
 }
 
@@ -2876,6 +3637,28 @@ function httpPostJson(url, payload, timeoutMs, extraHeaders = {}) {
     request.on("error", reject);
     request.write(body);
     request.end();
+  });
+}
+
+async function executeGuardedNaturalChatActor(input) {
+  return httpPostJson(`${input.debugBridge}/chat/submit`, {
+    text: input.caseSpec.task.instruction,
+    timeoutMs: input.timeoutMs,
+    resetConversation: true,
+    disableSkillBridges: false,
+    projectAssetReferences: input.projectAssetReferences,
+    expectedProjectPath: input.fixtureRoot,
+    expectedRuntimeGitCommit: input.gitCommit,
+    expectedRuntimeBuildId: input.runtimeBuildId,
+    expectedPhotoshopRuntimeBuildId: input.photoshopRuntimeBuildId,
+    expectedPhotoshopRuntimeBinding: input.photoshopRuntimeBinding,
+    expectedProvider: input.provider,
+    expectedModelId: input.modelId,
+    expectedWorkspaceSemanticDigest: input.workspaceSemanticDigest,
+    requireCleanRuntimeGitState: true,
+    requireNoOpenPhotoshopDocuments: true
+  }, input.timeoutMs + 5000, {
+    "x-designecho-debug-token": input.debugToken
   });
 }
 
@@ -3193,6 +3976,69 @@ function validateDebugBridgeReceipt(response, input) {
     || completedProjectPath !== expectedProjectPath) {
     errors.push("任务执行期间项目身份发生变化或无法证明未变化。");
   }
+  const expectedWorkspaceSemanticDigest = cleanString(input.workspaceSemanticDigest).toLowerCase();
+  if (!/^sha256:[a-f0-9]{64}$/.test(expectedWorkspaceSemanticDigest)
+    || cleanString(receipt.expectedWorkspaceSemanticDigest).toLowerCase()
+      !== expectedWorkspaceSemanticDigest
+    || cleanString(receipt.consumedWorkspaceSemanticDigest).toLowerCase()
+      !== expectedWorkspaceSemanticDigest) {
+    errors.push("运行窗口没有证明 Agent 实际消费的项目语义快照匹配 Attempt 身份。 ");
+  }
+  const expectedProjectAssetReferences = Array.isArray(input.projectAssetReferences)
+    ? input.projectAssetReferences
+    : [];
+  const submittedProjectAssetReferences = Array.isArray(receipt.projectAssetReferences)
+    ? receipt.projectAssetReferences
+    : [];
+  if (stableStringify(submittedProjectAssetReferences)
+    !== stableStringify(expectedProjectAssetReferences)) {
+    errors.push("运行窗口没有证明用户目标参考以相同项目相对路径和源内容摘要进入本轮消息。 ");
+  }
+  let providerBinding = null;
+  if (expectedProjectAssetReferences.length > 0) {
+    const payloadBinding = receipt.projectAssetPayloadBinding;
+    providerBinding = receipt.projectAssetProviderBindingReceipt;
+    const expectedProviderReceiptKeys = [
+      "bindingDigest",
+      "committedAt",
+      "matchedAt",
+      "matchedAtProviderBoundary",
+      "modelId",
+      "provider",
+      "providerAttemptRef",
+      "referenceCount",
+      "transport",
+      "version",
+      "visualBlockCount"
+    ];
+    const matchedAt = Date.parse(cleanString(providerBinding?.matchedAt));
+    const committedAt = Date.parse(cleanString(providerBinding?.committedAt));
+    if (!isRecord(payloadBinding)
+      || payloadBinding.version !== "debug-bridge-project-asset-payload-binding/v1"
+      || !/^sha256:[a-f0-9]{64}$/.test(cleanString(payloadBinding.bindingDigest))
+      || payloadBinding.referenceCount !== expectedProjectAssetReferences.length
+      || !isRecord(providerBinding)
+      || stableStringify(Object.keys(providerBinding).sort())
+        !== stableStringify(expectedProviderReceiptKeys)
+      || providerBinding.version !== "debug-bridge-project-asset-provider-receipt/v1"
+      || cleanString(providerBinding.bindingDigest) !== cleanString(payloadBinding.bindingDigest)
+      || providerBinding.referenceCount !== expectedProjectAssetReferences.length
+      || providerBinding.visualBlockCount !== expectedProjectAssetReferences.length
+      || providerBinding.matchedAtProviderBoundary !== true
+      || !cleanString(providerBinding.provider)
+      || !cleanString(providerBinding.modelId)
+      || !["chat", "chat_with_tools", "chat_with_tools_stream"].includes(
+        cleanString(providerBinding.transport)
+      )
+      || !/^sha256:[a-f0-9]{64}$/.test(cleanString(providerBinding.providerAttemptRef))
+      || !Number.isFinite(matchedAt)
+      || !Number.isFinite(committedAt)
+      || new Date(matchedAt).toISOString() !== cleanString(providerBinding.matchedAt)
+      || new Date(committedAt).toISOString() !== cleanString(providerBinding.committedAt)
+      || matchedAt > committedAt) {
+      errors.push("运行窗口没有证明 Main 验真的目标参考像素进入同一次 Provider 视觉请求。 ");
+    }
+  }
   const submittedModelId = cleanString(receipt.submittedModelId);
   const completedModelId = cleanString(receipt.completedModelId);
   const submittedApiModelId = cleanString(receipt.submittedApiModelId);
@@ -3209,6 +4055,16 @@ function validateDebugBridgeReceipt(response, input) {
     errors.push(`运行窗口返回的模型身份与请求记录不一致（期望 ${input.modelId}，实际 ${submittedModelId || "unknown"}${submittedApiModelId ? ` / ${submittedApiModelId}` : ""}）。`);
   }
   if (provider !== input.provider) errors.push("运行窗口返回的 Provider 与请求记录不一致。");
+  if (providerBinding) {
+    const providerBindingModelId = cleanString(providerBinding.modelId);
+    const providerBindingModelMatches = providerBindingModelId === input.modelId
+      || providerBindingModelId === submittedModelId
+      || providerBindingModelId === submittedApiModelId;
+    if (cleanString(providerBinding.provider) !== input.provider
+      || !providerBindingModelMatches) {
+      errors.push("目标参考 Provider 收据没有绑定本次实际模型与 Provider。 ");
+    }
+  }
   const runtimeIdentity = receipt.runtimeBuildIdentity;
   const completedRuntimeIdentity = receipt.completedRuntimeBuildIdentity;
   const submittedRuntimeCapturedAt = Date.parse(cleanString(runtimeIdentity?.capturedAt));
@@ -3316,6 +4172,7 @@ function validateDebugBridgeReceipt(response, input) {
     errors.push("首次 Photoshop 写入隔离基线声明 blocked 但没有失败事实。");
   } else if (firstMutationBaseline.status === "passed"
     && (firstMutationBaseline.openDocumentCount !== 0
+      || !Number.isFinite(Date.parse(cleanString(firstMutationBaseline.checkedAt)))
       || cleanString(firstMutationBaseline.observedPhotoshopRuntimeBuildId)
         !== expectedPhotoshopRuntimeBuildId
       || !photoshopRuntimeBindingsMatch({
@@ -3324,6 +4181,15 @@ function validateDebugBridgeReceipt(response, input) {
       }, expectedPhotoshopRuntimeBinding)
       || !cleanString(firstMutationBaseline.firstMutationToolName))) {
     errors.push("首次 Photoshop 写入隔离基线收据与空文档或 Runtime Build 事实不一致。");
+  }
+  if (providerBinding && firstMutationBaseline?.status === "passed") {
+    const providerCommittedAt = Date.parse(cleanString(providerBinding.committedAt));
+    const firstMutationCheckedAt = Date.parse(cleanString(firstMutationBaseline.checkedAt));
+    if (!Number.isFinite(providerCommittedAt)
+      || !Number.isFinite(firstMutationCheckedAt)
+      || providerCommittedAt > firstMutationCheckedAt) {
+      errors.push("目标参考只在首次 Photoshop 写入之后才被 Provider 确认，不能证明设计决策使用了该参考。 ");
+    }
   }
   if (!cleanString(receipt.requestId)) errors.push("运行窗口没有返回请求身份。");
   if (!cleanString(receipt.conversationId)) errors.push("运行窗口没有返回对话身份。");
@@ -3336,6 +4202,48 @@ function validateDebugBridgeReceipt(response, input) {
     errors.push("运行窗口没有返回 Agent 交付声明绑定的安全 finalArtifactRefs。 ");
   }
   return { ok: errors.length === 0, errors, receipt };
+}
+
+async function dispatchAutonomousZeroCorrectionProtocol(input) {
+  const response = await executeGuardedNaturalChatActor(input);
+  const receiptValidation = validateDebugBridgeReceipt(response, input);
+  if (!receiptValidation.ok) {
+    throw new Error(`Debug Bridge 运行收据不可信：${receiptValidation.errors.join("；")}`);
+  }
+  return {
+    version: "design-reliability-live-actor-dispatch/v1",
+    protocolKind: "autonomous_zero_correction",
+    capabilityId: "guarded-natural-chat-submit/v1",
+    receiptVersion: "debug-bridge-chat-submit-receipt/v1",
+    response,
+    receiptValidation
+  };
+}
+
+function validateLiveActorDispatchResult(result, protocol, capability) {
+  const errors = [];
+  if (!isRecord(result)
+    || result.version !== "design-reliability-live-actor-dispatch/v1") {
+    return { ok: false, errors: ["actor 没有返回统一的 protocol dispatch 收据。"] };
+  }
+  if (result.protocolKind !== protocol.kind
+    || result.protocolKind !== capability.protocolKind) {
+    errors.push("actor dispatch 的协议类型与 Case/Capability 不一致。");
+  }
+  if (result.capabilityId !== capability.capabilityId) {
+    errors.push("actor dispatch 的 capability 身份不一致。");
+  }
+  if (result.receiptVersion !== capability.receiptVersion
+    || result.receiptValidation?.receipt?.version !== capability.receiptVersion) {
+    errors.push("actor dispatch 的完成收据版本不一致。");
+  }
+  if (result.receiptValidation?.ok !== true) {
+    errors.push("actor dispatch 没有返回已验证的完成收据。");
+  }
+  if (protocol.kind === "predeclared_user_interaction") {
+    errors.push("交互协议必须由专用私有评测 dispatcher 完整实现后才能注册，通用 runner 不接受分散的占位 hook。");
+  }
+  return { ok: errors.length === 0, errors };
 }
 
 function validateMutationBaselineAgainstObservation(receipt, observation, expectedBuildId) {
@@ -3483,14 +4391,45 @@ async function runLiveCase(suite, args) {
   const modelId = args.get("--model");
   if (!provider || !modelId) throw new Error("run-live 必须记录 --provider 与 --model，不能把 unknown 混入正式 cohort。 ");
   const caseSpec = findCase(suite, args.get("--case"));
+  if (caseSpec.status !== "active") {
+    throw new Error(`run-live 只允许 active Case；${caseSpec.caseId} 当前为 ${caseSpec.status}。`);
+  }
+  const actorVerdict = validateActiveCaseLiveRunActor(caseSpec);
+  if (!actorVerdict.ready) {
+    throw new Error(
+      `run-live 缺少 ${actorVerdict.protocolKind || "unknown"} 的受控 evaluator actor capability`
+      + `${actorVerdict.actorCapabilityId ? `（${actorVerdict.actorCapabilityId}）` : ""}；`
+      + "不会把交互协议当作普通自然请求提交。"
+    );
+  }
+  const actorCapability = resolveLiveRunActorCapability(caseSpec);
+  if (!actorCapability) {
+    throw new Error("run-live actor capability 在验证后消失，本轮不会继续。 ");
+  }
+  const repeatIndex = Number(args.get("--repeat", "1"));
+  if (!Number.isInteger(repeatIndex) || repeatIndex < 1) {
+    throw new Error("run-live 的 --repeat 必须是正整数；不会检查 fixture、连接 Photoshop 或写入无效 Attempt。 ");
+  }
+  const timeoutMs = resolveLiveRunTimeout(suite.manifest, args);
   const fixtureRoot = path.resolve(args.get("--fixture-root"));
   if (!fs.existsSync(fixtureRoot) || !fs.statSync(fixtureRoot).isDirectory()) {
     throw new Error("run-live 需要有效的 --fixture-root。 ");
   }
   const fixtureBefore = inspectFixture([caseSpec], fixtureRoot);
-  if (!fixtureBefore.ready) throw new Error(`fixture 缺少输入：${fixtureBefore.missing.join("、")}`);
+  if (!fixtureBefore.ready) {
+    throw new Error(`fixture 输入身份不完整：${[
+      ...fixtureBefore.missing.map((ref) => `missing:${ref}`),
+      ...fixtureBefore.digestMismatches.map((item) => `digest-mismatch:${item.ref}`),
+      ...fixtureBefore.unsafeLinks.map((ref) => `junction/symlink:${ref}`)
+    ].join("、")}`);
+  }
   if (!fixtureBefore.freshRunReady) {
-    throw new Error(`fixture 已包含未声明文件，不能复用为独立样本：${fixtureBefore.unexpected.join("、")}`);
+    const freshnessFailures = [
+      ...fixtureBefore.unexpected,
+      ...fixtureBefore.workspaceMetadata.errors.map((code) => `workspace-metadata:${code}`),
+      ...fixtureBefore.unsafeLinks.map((ref) => `junction/symlink:${ref}`)
+    ];
+    throw new Error(`fixture 不是可复用的独立样本：${freshnessFailures.join("、")}`);
   }
   const preflight = await buildPreflight(suite, {
     ...args,
@@ -3508,15 +4447,12 @@ async function runLiveCase(suite, args) {
   }
   const beforeRunFiles = new Set(collectRunRecordFiles(fixtureRoot));
   const beforeProjectFiles = snapshotProjectFiles(fixtureRoot);
-  const timeoutMs = Math.max(
-    1000,
-    Math.min(Number(args.get("--timeout-ms", "300000")) || 300000, MAX_LIVE_RUN_TIMEOUT_MS)
-  );
   const cohortId = args.get("--cohort", "candidate");
-  const repeatIndex = Number(args.get("--repeat", "1"));
   const rubric = suite.rubrics.find((item) => item.rubricId === caseSpec.oracle.rubricId);
   const rubricDigest = buildRubricDigest(rubric);
   const instructionDigest = sha256Text(caseSpec.task.instruction);
+  const liveRunProtocol = resolveDesignReliabilityLiveRunProtocol(caseSpec);
+  const liveRunProtocolDigest = buildDesignReliabilityLiveRunProtocolDigest(caseSpec);
   const runtime = preflight.infrastructure.liveEnvironment.runtime;
   const runtimeBuildId = runtime?.buildId;
   const photoshopRuntime = preflight.infrastructure.liveEnvironment.photoshop;
@@ -3532,12 +4468,8 @@ async function runLiveCase(suite, args) {
   const photoshopRuntimeBindingDigest = sha256Text(stableStringify(photoshopRuntimeBinding));
   const suiteCaseSetDigest = buildSuiteCaseSetDigest(suite);
   const suiteRubricSetDigest = buildSuiteRubricSetDigest(suite);
-  const cohortFingerprint = sha256Text(stableStringify({
-    suiteId: suite.manifest.suiteId,
-    suiteCaseSetDigest,
-    suiteRubricSetDigest,
-    gitCommit: environmentAtSubmission.gitCommit,
-    dirtyFingerprint: environmentAtSubmission.dirtyFingerprint,
+  const attemptEnvironment = {
+    ...environmentAtSubmission,
     runtimeGitCommit: runtime?.gitCommit,
     runtimeBuildId,
     runtimeAppVersion: runtime?.appVersion,
@@ -3546,51 +4478,54 @@ async function runLiveCase(suite, args) {
     photoshopRuntimeSourceDigest,
     photoshopRuntimeArtifactDigest,
     photoshopRuntimeManifestDigest,
-    photoshopRuntimeBindingDigest,
+    photoshopRuntimeBinding,
+    photoshopRuntimeBindingDigest
+  };
+  const cohortFingerprint = deriveLiveCohortFingerprint({
+    suiteId: suite.manifest.suiteId,
+    suiteCaseSetDigest,
+    suiteRubricSetDigest,
+    environment: attemptEnvironment,
     provider,
     modelId,
     timeoutMs
-  }));
-  const attemptFingerprint = sha256Text(stableStringify({
-    cohortFingerprint,
-    caseId: caseSpec.caseId,
-    caseRevision: caseSpec.revision,
-    caseDigest: caseSpec.caseDigest,
+  });
+  const liveRunProtocolIdentity = {
+    kind: liveRunProtocol.kind,
+    digest: liveRunProtocolDigest
+  };
+  const fixtureRef = {
+    instanceId: preflight.fixture.instance.instanceId,
     fixtureDigest: fixtureBefore.fixtureDigest,
-    fixtureInstanceId: preflight.fixture.instance.instanceId,
+    workspaceSemanticDigest: fixtureBefore.workspaceMetadata.semanticDigest,
+    pathBindingDigest: preflight.fixture.instance.pathBindingDigest
+  };
+  const caseRef = {
+    caseId: caseSpec.caseId,
+    revision: caseSpec.revision,
+    caseDigest: caseSpec.caseDigest
+  };
+  const attemptFingerprint = deriveLiveAttemptFingerprint({
+    cohortFingerprint,
+    caseRef,
+    fixtureRef,
     instructionDigest,
     rubricDigest,
+    liveRunProtocol: liveRunProtocolIdentity,
     repeatIndex
-  }));
+  });
   const attemptContext = {
     attemptId: buildLiveAttemptId(caseSpec.caseId),
-    caseRef: {
-      caseId: caseSpec.caseId,
-      revision: caseSpec.revision,
-      caseDigest: caseSpec.caseDigest
-    },
+    caseRef,
     cohortId,
     repeatIndex,
     provider,
     modelId,
     timeoutMs,
-    fixtureRef: {
-      instanceId: preflight.fixture.instance.instanceId,
-      fixtureDigest: fixtureBefore.fixtureDigest,
-      pathBindingDigest: preflight.fixture.instance.pathBindingDigest
-    },
+    liveRunProtocol: liveRunProtocolIdentity,
+    fixtureRef,
     environment: {
-      ...environmentAtSubmission,
-      runtimeGitCommit: runtime?.gitCommit,
-      runtimeBuildId,
-      runtimeAppVersion: runtime?.appVersion,
-      photoshopRuntimeBuildId,
-      photoshopRuntimeGitCommit,
-      photoshopRuntimeSourceDigest,
-      photoshopRuntimeArtifactDigest,
-      photoshopRuntimeManifestDigest,
-      photoshopRuntimeBinding,
-      photoshopRuntimeBindingDigest,
+      ...attemptEnvironment,
       suiteCaseSetDigest,
       suiteRubricSetDigest,
       cohortFingerprint
@@ -3609,43 +4544,47 @@ async function runLiveCase(suite, args) {
   }
   const armedAttempt = writeLiveAttemptEvent(attemptContext, 1, "armed", {
     status: "armed",
-    zeroInRunHumanCorrectionPolicy: true
+    interactionMetricsRequireReceipts: true
   });
   const submissionAttempt = writeLiveAttemptEvent(attemptContext, 2, "submission_started", {
     status: "submitted",
     endpointKind: "debug_bridge_chat_submit"
   });
   let trustedCompletionReceipt = false;
+  const projectAssetReferences = (caseSpec.task.agentVisibleReferences || []).map((reference) => ({
+    version: "debug-bridge-project-asset-reference/v1",
+    relativePath: normalizeRelativePath(reference.ref),
+    label: cleanString(reference.role) === "user_provided_target_reference"
+      ? "用户提供的目标参考"
+      : "用户参考",
+    digest: cleanString(reference.digest).toLowerCase()
+  }));
   try {
-    const response = await httpPostJson(`${debugBridge}/chat/submit`, {
-      text: caseSpec.task.instruction,
+    const actorDispatch = await actorCapability.dispatchProtocol({
+      debugBridge,
+      debugToken,
+      caseSpec,
       timeoutMs,
-      resetConversation: true,
-      disableSkillBridges: false,
-      expectedProjectPath: fixtureRoot,
-      expectedRuntimeGitCommit: environmentAtSubmission.gitCommit,
-      expectedRuntimeBuildId: runtimeBuildId,
-      expectedPhotoshopRuntimeBuildId: photoshopRuntimeBuildId,
-      expectedPhotoshopRuntimeBinding: photoshopRuntimeBinding,
-      expectedProvider: provider,
-      expectedModelId: modelId,
-      requireCleanRuntimeGitState: true,
-      requireNoOpenPhotoshopDocuments: true
-    }, timeoutMs + 5000, {
-      "x-designecho-debug-token": debugToken
-    });
-    const receiptValidation = validateDebugBridgeReceipt(response, {
       fixtureRoot,
       provider,
       modelId,
       gitCommit: environmentAtSubmission.gitCommit,
       runtimeBuildId,
       photoshopRuntimeBuildId,
-      photoshopRuntimeBinding
+      photoshopRuntimeBinding,
+      workspaceSemanticDigest: fixtureBefore.workspaceMetadata.semanticDigest,
+      projectAssetReferences
     });
-    if (!receiptValidation.ok) {
-      throw new Error(`Debug Bridge 运行收据不可信：${receiptValidation.errors.join("；")}`);
+    const actorDispatchValidation = validateLiveActorDispatchResult(
+      actorDispatch,
+      liveRunProtocol,
+      actorCapability
+    );
+    if (!actorDispatchValidation.ok) {
+      throw new Error(`Live actor protocol dispatch 不可信：${actorDispatchValidation.errors.join("；")}`);
     }
+    const response = actorDispatch.response;
+    const receiptValidation = actorDispatch.receiptValidation;
     trustedCompletionReceipt = true;
     const completionPhotoshopRuntime = await inspectPhotoshopRuntimeBinding(args);
     if (!completionPhotoshopRuntime.ready
@@ -3721,8 +4660,9 @@ async function runLiveCase(suite, args) {
       expectedProjectPath: fixtureRoot,
       cohortId,
       repeatIndex,
-      // run-live 只提交一条自然请求，运行中不会注入确认或纠偏消息；waiting_user 仍按自主失败记录。
-      userInterventionCount: 0,
+      // 当前 Debug 协议还没有 Provider / operation 级交互收据。只发送一条自然请求
+      // 不能证明用户没有从 UI 介入；保持 unknown，禁止用伪造的 0 通过发布门禁。
+      userInterventionCount: undefined,
       fixtureDigest: fixtureBefore.fixtureDigest,
       environment: {
         ...environmentAtSubmission,
@@ -3739,6 +4679,9 @@ async function runLiveCase(suite, args) {
         timeoutMs,
         instructionDigest,
         rubricDigest,
+        liveRunProtocolKind: liveRunProtocol.kind,
+        liveRunProtocolDigest,
+        workspaceSemanticDigest: fixtureBefore.workspaceMetadata.semanticDigest,
         fixtureInstanceId: preflight.fixture.instance.instanceId,
         suiteCaseSetDigest,
         suiteRubricSetDigest,
@@ -3794,6 +4737,7 @@ async function runLiveCase(suite, args) {
       runObservationId: observation.runObservationId,
       sourceRunIds: observation.sourceRunRefs.map((item) => item.agentRunId),
       technicalDeliveryPassed: observation.observed.technicalDeliveryPassed === true,
+      interactionMetricsKnown: false,
       firstMutationBaselineProof: buildFirstMutationBaselineProof(receiptValidation.receipt)
     });
     return {
@@ -3815,6 +4759,7 @@ async function runLiveCase(suite, args) {
         ? classifyLiveAttemptFailure(error)
         : classifyUntrustedDebugBridgeFailure(error),
       technicalDeliveryPassed: false,
+      interactionMetricsKnown: false,
       diagnostic: sanitizeAttemptDiagnostic(error instanceof Error ? error.message : String(error)),
       ...(debugBridgeFailure ? {
         debugBridgeFailure: {
@@ -3838,7 +4783,10 @@ async function reconcileLiveAttempt(args) {
   if (!fs.existsSync(fixtureRoot) || !fs.statSync(fixtureRoot).isDirectory()) {
     throw new Error("原 fixture-root 不存在，无法核对超时后的项目与 Photoshop 状态。");
   }
-  const sidecars = collectSidecars([CANONICAL_ATTEMPT_EVENTS_ROOT]);
+  const sidecars = collectSidecars(
+    [CANONICAL_ATTEMPT_EVENTS_ROOT],
+    { strictAttemptEvents: true }
+  );
   const events = sidecars.attemptEvents
     .filter((event) => event.attemptId === attemptId)
     .sort((left, right) => left.sequence - right.sequence);
@@ -3870,27 +4818,12 @@ async function reconcileLiveAttempt(args) {
       "Reconciliation 需要在该异常之后重启最新干净 Runtime，并确认原项目已绑定、Photoshop 无打开文档且无待处理请求。"
     );
   }
-  const context = {
-    attemptId: unresolvedEvent.attemptId,
-    caseRef: unresolvedEvent.caseRef,
-    cohortId: unresolvedEvent.cohortId,
-    repeatIndex: unresolvedEvent.repeatIndex,
-    provider: unresolvedEvent.provider,
-    modelId: unresolvedEvent.modelId,
-    timeoutMs: unresolvedEvent.timeoutMs,
-    fixtureRef: unresolvedEvent.fixtureRef,
-    environment: unresolvedEvent.environment,
-    instructionDigest: unresolvedEvent.instructionDigest,
-    rubricDigest: unresolvedEvent.rubricDigest,
-    suiteCaseSetDigest: unresolvedEvent.suiteCaseSetDigest,
-    suiteRubricSetDigest: unresolvedEvent.suiteRubricSetDigest,
-    cohortFingerprint: unresolvedEvent.cohortFingerprint,
-    attemptFingerprint: unresolvedEvent.attemptFingerprint
-  };
+  const context = buildLiveAttemptContextFromEvent(unresolvedEvent);
   if (!terminal) {
     writeLiveAttemptEvent(context, 3, "terminal", {
       status: "submission_unknown_write_state",
       technicalDeliveryPassed: false,
+      interactionMetricsKnown: false,
       diagnostic: "recorder_interrupted_before_terminal_event"
     });
   }
@@ -4095,7 +5028,7 @@ async function buildPreflight(suite, args) {
     item?.kind === "attempt_event"
   ));
   const activeFamilies = new Set(suite.cases.filter((item) => item.status === "active").map((item) => item.taskFamily));
-  const caseCoverageReady = ["main_image", "detail_page", "sku"].every((family) => activeFamilies.has(family));
+  const caseCoverageReady = TASK_FAMILIES.every((family) => activeFamilies.has(family));
   const liveEvidencePassed = status.success === true
     && status.evidence.attemptSafetyLedger.unresolvedAttemptCount === 0
     && Object.entries(status.releaseGateEvaluations).some(([cohortId, evaluation]) => (
@@ -4106,7 +5039,12 @@ async function buildPreflight(suite, args) {
     ...(suite.ok ? [] : ["suite_invalid"]),
     ...(caseCoverageReady ? [] : ["fixed_case_coverage_missing"]),
     ...(fixture.ready ? [] : ["disposable_fixture_not_ready"]),
-    ...(fixture.freshRunReady ? [] : ["disposable_fixture_contains_unexpected_files"]),
+    ...(Array.isArray(fixture.unexpected) && fixture.unexpected.length > 0
+      ? ["disposable_fixture_contains_unexpected_files"]
+      : []),
+    ...(fixture.workspaceMetadata?.ready === false
+      ? ["disposable_fixture_workspace_metadata_invalid"]
+      : []),
     ...(fixture.instanceReady ? [] : ["disposable_fixture_instance_unverified"]),
     ...(fixtureInstanceAlreadyUsed ? ["disposable_fixture_instance_already_used"] : []),
     ...(debugBridge.reachable ? [] : ["debug_bridge_unreachable"]),
@@ -4142,7 +5080,7 @@ async function buildPreflight(suite, args) {
   const readyForLiveCapture = captureBlockers.length === 0;
   const releaseBlockers = liveEvidencePassed
     ? []
-    : ["three_skill_live_quality_evidence_incomplete"];
+    : ["fixed_design_reliability_evidence_incomplete"];
   return {
     success: true,
     generatedAt: new Date().toISOString(),
@@ -4168,7 +5106,7 @@ async function buildPreflight(suite, args) {
     blockers: captureBlockers,
     boundaries: [
       "此命令只读，不调用模型或 Photoshop 写工具。",
-      "readyForLiveCapture 只在 Runtime 提交版本、当前项目、Photoshop 空文档基线与请求队列均可信时表示可以开始采集，不表示三类 Skill 已通过。",
+      "readyForLiveCapture 只在 Runtime 提交版本、当前项目、Photoshop 空文档基线与请求队列均可信时表示可以开始采集，不表示当前固定任务族已经通过。",
       "liveEvidencePassed 逐项消费 suites.manifest.json 的发布门禁；样本、人工评审或证据不足均不能通过。"
     ]
   };
@@ -4225,14 +5163,16 @@ function printHelp() {
     "      校验固定 Case、Rubric、digest 与开发/生产边界。",
     "  status [--cohort id] [--data-root dir]",
     "      汇总固定 cohort；没有 Case 身份的历史 Run 不进入分母。",
+    "  compare --baseline-cohort id --candidate-cohort id [--data-root dir]",
+    "      仅在 Case、Rubric 与逐 Case fixture 摘要一致时比较前后 cohort。",
     "  preflight [--case id|--fixture-id id] [--fixture-root dir] [--provider id] [--model id] [--require-capture-ready] [--require-live] [--write-report]",
     "      默认零落盘地只读检查 fixture、Renderer 当前模型/项目、Debug Bridge、Photoshop MCP 与已有实机证据；显式 --write-report 才追加保存报告。",
-    "      --require-capture-ready 检查能否安全开始下一次实机 Case；--require-live 检查三类 Skill 的正式发布证据是否已经完整。",
+    "      --require-capture-ready 检查能否安全开始下一次实机 Case；--require-live 检查当前全部 active Case 任务族的正式发布证据是否完整。",
     "  prepare-fixture --case id|--fixture-id id --source-root dir --destination dir --allow-create",
     "      只复制 Agent 可见输入到一次性目录；用户成稿/Eagle 参考不会复制。",
     "  run-live --case id --fixture-root dir --provider id --model id --live --allow-photoshop-write",
     "      --debug-token token（或 DESIGNECHO_DEBUG_TOKEN）",
-    "      通过当前 DesignEcho 窗口提交自然请求；提交前强制当前项目与 fixture 精确匹配。",
+    "      通过当前 DesignEcho 窗口提交自然请求；提交前强制当前项目与 fixture 精确匹配；timeout 由 Suite 固定，显式覆盖必须完全一致。",
     "  reconcile-live-attempt --attempt-id id --fixture-root dir",
     "      超时或断连后，只在 Runtime 已重启、无打开文档/待处理请求且仍绑定原 fixture 时追加对账收据。",
     "  record-run --case id --run-record file [--run-record file...] --fixture-root dir",
@@ -4249,7 +5189,7 @@ function printHelp() {
     "      --source-bindings-json file，或重复 --source-binding evidenceRef=绝对文件路径；密封映射按 packetId 自动私有保存且不打印路径。",
     "  record-anonymous-review --case id --run-observation file --packet-id id --reviewer-packet-dir dir --reviewer-response file",
     "      归档 canonical verification bundle；status 每次从磁盘重算包、映射、响应和资产后才授予 strict 身份。",
-    "  record-attribution --run-observation file --owner owner --failure-mode mode",
+    "  record-attribution (--run-observation file | --attempt-id id) --owner owner --failure-mode mode",
     "      --status hypothesis|confirmed|rejected --rationale text --evidence-ref token",
     "",
     `所有正式 sidecar 默认写入仓库外持久目录 ${DEFAULT_DATA_ROOT}，append-only，不反写 Runtime 或 Case；仓库卫生清理不会重置成功率分母。`
@@ -4273,6 +5213,12 @@ async function main() {
     const status = await buildStatus(suite, args);
     if (args.hasFlag("--json")) console.log(JSON.stringify(status, null, 2));
     else printStatus(status);
+    return;
+  }
+  if (args.command === "compare") {
+    const comparison = await buildCohortComparison(suite, args);
+    console.log(JSON.stringify(comparison, null, 2));
+    if (!comparison.success) process.exitCode = 1;
     return;
   }
   if (args.command === "preflight") {
@@ -4325,7 +5271,7 @@ async function main() {
     return;
   }
   if (args.command === "record-attribution") {
-    const result = recordAttribution(args);
+    const result = recordAttribution(suite, args);
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -4333,18 +5279,26 @@ async function main() {
 }
 
 module.exports = {
+  artifactGeometryMatchesCase,
   buildAttemptEventIdentityKey,
+  buildAttemptCohortReportContext,
   buildCanonicalAttemptSafetyLedger,
   buildFirstMutationBaselineProof,
   classifyUntrustedDebugBridgeFailure,
   buildSuiteCaseSetDigest,
   buildSuiteRubricSetDigest,
   buildPreflight,
+  buildCohortComparison,
   buildLiveAttemptCoverage,
   buildStatus,
   buildSkuLiveDeliveryEvidence,
   collectSidecars,
+  controlledProjectMetadataSchemaSnapshot,
+  deriveLiveAttemptFingerprint,
+  deriveLiveCohortFingerprint,
   evaluateLiveEnvironmentSafety,
+  evaluateAttributableAttemptEvents,
+  evaluateOfficialAttemptEligibility,
   evaluateDebugRendererPreflight,
   evaluateFixtureInventory,
   inspectFixture,
@@ -4364,6 +5318,9 @@ module.exports = {
   recordRun,
   reconcileLiveAttempt,
   resolveReliabilityEvidenceRoots,
+  resolveAttributionCliSubject,
+  resolveLiveRunTimeout,
+  resolveLiveRunActorCapability,
   resolveLoopbackDebugBridge,
   resolveSidecarOutputPath,
   retainContextuallyValidAttemptEvents,

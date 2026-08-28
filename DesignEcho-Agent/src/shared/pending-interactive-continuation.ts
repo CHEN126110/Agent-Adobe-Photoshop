@@ -1,6 +1,8 @@
 import {
     buildInteractiveCardSubmissionFingerprint,
-    stableInteractiveCardHash,
+    buildInteractiveIntegrityFingerprint,
+    isInteractiveCardSubmissionFingerprint,
+    isInteractiveIntegrityFingerprint,
     type InteractiveCardDefinition,
     type InteractiveCardSubmission
 } from './interactive-card-contract';
@@ -179,6 +181,26 @@ function normalizeCreatedAt(value: string | number | Date | undefined): string {
     return cleanIdentity(value) || new Date().toISOString();
 }
 
+function validateInteractiveContinuationRequestIntegrity(
+    request: Partial<InteractiveContinuationRequest> | undefined
+): Extract<InteractiveContinuationResolution, { status: 'rejected' }> | undefined {
+    if (!isInteractiveIntegrityFingerprint(request?.sourceCardFingerprint)) {
+        return {
+            status: 'rejected',
+            code: 'interactive_continuation_source_card_fingerprint_version_unsupported',
+            message: '确认记录使用旧版或未知的卡片完整性指纹，不能安全恢复；请重新发起任务。'
+        };
+    }
+    if (!isInteractiveCardSubmissionFingerprint(request?.submissionFingerprint)) {
+        return {
+            status: 'rejected',
+            code: 'interactive_continuation_submission_fingerprint_version_unsupported',
+            message: '确认记录使用旧版或未知的提交完整性指纹，不能安全恢复；请重新提交或重新发起任务。'
+        };
+    }
+    return undefined;
+}
+
 function validateInteractiveContinuationOwnerSkill(
     continuation: PendingInteractiveContinuation
 ): InteractiveContinuationResolution | undefined {
@@ -247,7 +269,8 @@ function resolveOwnerMessageSourceCard(input: {
     }
     const [sourceCard] = matchingCards;
     const sameDefinition = cleanIdentity(sourceCard.kind) === cleanIdentity(input.continuation.card?.kind)
-        && stableInteractiveCardHash(sourceCard) === stableInteractiveCardHash(input.continuation.card);
+        && buildInteractiveIntegrityFingerprint(sourceCard)
+            === buildInteractiveIntegrityFingerprint(input.continuation.card);
     if (!sameDefinition) {
         return {
             status: 'rejected',
@@ -303,7 +326,7 @@ export function collectPendingInteractiveCards(result: unknown): InteractiveCard
     const seen = new Map<string, string>();
     return cards.filter((card) => {
         const id = cleanIdentity(card.id);
-        const definitionHash = stableInteractiveCardHash(card);
+        const definitionHash = buildInteractiveIntegrityFingerprint(card);
         const previousHash = seen.get(id);
         if (seen.has(id)) {
             if (previousHash !== definitionHash) {
@@ -360,7 +383,8 @@ export function buildPendingInteractiveContinuation(input: {
         )) {
         throw new Error('业务确认卡缺少稳定的 decisionFingerprint / candidateFingerprint，不能创建可恢复等待点。');
     }
-    const fingerprint = stableInteractiveCardHash({
+    const fingerprint = buildInteractiveIntegrityFingerprint({
+        purpose: 'pending-interactive-continuation-id/v1',
         skillId,
         params,
         cardId: card.id,
@@ -432,8 +456,8 @@ export function attachRuntimeTaskRunBindingToPendingContinuation(input: {
         throw new Error('runtime_task_run_interaction_id_mismatch');
     }
     if (input.continuation.taskRunBinding
-        && stableInteractiveCardHash(input.continuation.taskRunBinding)
-            !== stableInteractiveCardHash(input.binding)) {
+        && buildInteractiveIntegrityFingerprint(input.continuation.taskRunBinding)
+            !== buildInteractiveIntegrityFingerprint(input.binding)) {
         throw new Error('runtime_task_run_interaction_binding_conflict');
     }
     return {
@@ -450,7 +474,26 @@ function matchesPendingContinuationProjection(
     return candidate.version === 'pending-interactive-continuation/v0'
         && cleanIdentity(candidate.id) === cleanIdentity(continuation.id)
         && cleanIdentity(candidate.operation?.skillId) === cleanIdentity(continuation.operation.skillId)
-        && cleanIdentity(candidate.card?.id) === cleanIdentity(continuation.card.id);
+        && cleanIdentity(candidate.card?.id) === cleanIdentity(continuation.card.id)
+        && buildPendingInteractiveContinuationCoreFingerprint(candidate)
+            === buildPendingInteractiveContinuationCoreFingerprint(continuation);
+}
+
+function buildPendingInteractiveContinuationCoreFingerprint(
+    continuation: Partial<PendingInteractiveContinuation>
+): string {
+    return buildInteractiveIntegrityFingerprint({
+        purpose: 'pending-interactive-continuation-core/v1',
+        version: continuation.version,
+        id: continuation.id,
+        createdAt: continuation.createdAt,
+        sourceTask: continuation.sourceTask,
+        scope: continuation.scope,
+        scopeObservation: continuation.scopeObservation,
+        operation: continuation.operation,
+        card: continuation.card,
+        oneTime: continuation.oneTime
+    });
 }
 
 function projectBoundContinuationIntoResultRecord(
@@ -494,8 +537,8 @@ export function attachRuntimeTaskRunBindingToPendingContinuationResult(input: {
     const projected = projectBoundContinuationIntoResultRecord(input.result, bound);
     const projectedLeaf = resolvePendingInteractiveContinuationLeaf(projected);
     if (!projectedLeaf?.taskRunBinding
-        || stableInteractiveCardHash(projectedLeaf.taskRunBinding)
-            !== stableInteractiveCardHash(input.binding)) {
+        || buildInteractiveIntegrityFingerprint(projectedLeaf.taskRunBinding)
+            !== buildInteractiveIntegrityFingerprint(input.binding)) {
         throw new Error('runtime_task_run_interaction_binding_projection_failed');
     }
     return projected;
@@ -529,7 +572,7 @@ function hasSamePendingInteractiveContinuationOwner(
         && cleanIdentity(left.operation?.skillId) === cleanIdentity(right.operation?.skillId)
         && cleanIdentity(left.card?.id) === cleanIdentity(right.card?.id)
         && cleanIdentity(left.card?.kind) === cleanIdentity(right.card?.kind)
-        && stableInteractiveCardHash(left) === stableInteractiveCardHash(right);
+        && buildInteractiveIntegrityFingerprint(left) === buildInteractiveIntegrityFingerprint(right);
 }
 
 function assertPendingInteractiveContinuationCardBinding(
@@ -543,8 +586,8 @@ function assertPendingInteractiveContinuationCardBinding(
     const [card] = cards;
     const sameIdentity = cleanIdentity(card.id) === cleanIdentity(continuation.card?.id)
         && cleanIdentity(card.kind) === cleanIdentity(continuation.card?.kind);
-    const sameDefinition = stableInteractiveCardHash(card)
-        === stableInteractiveCardHash(continuation.card);
+    const sameDefinition = buildInteractiveIntegrityFingerprint(card)
+        === buildInteractiveIntegrityFingerprint(continuation.card);
     if (!sameIdentity || !sameDefinition) {
         throw new Error('挂起操作与当前确认卡不一致，已停止以避免把确认内容提交给错误的执行操作。');
     }
@@ -821,6 +864,8 @@ export function resolveOwnedInteractiveContinuationRequest(input: {
             message: '确认记录与原卡片不一致，本轮不会执行。'
         };
     }
+    const requestIntegrityIssue = validateInteractiveContinuationRequestIntegrity(input.request);
+    if (requestIntegrityIssue) return requestIntegrityIssue;
     const sourceCardResolution = resolveOwnerMessageSourceCard({
         ownerMessage: input.ownerMessage,
         continuation
@@ -894,7 +939,10 @@ export function resolveInteractiveContinuationOperationRequest(input: {
             message: '确认记录与原卡片不一致，本轮不会执行。'
         };
     }
-    if (stableInteractiveCardHash(continuation.card) !== cleanIdentity(request?.sourceCardFingerprint)) {
+    const requestIntegrityIssue = validateInteractiveContinuationRequestIntegrity(request);
+    if (requestIntegrityIssue) return requestIntegrityIssue;
+    if (buildInteractiveIntegrityFingerprint(continuation.card)
+        !== cleanIdentity(request?.sourceCardFingerprint)) {
         return {
             status: 'rejected',
             code: 'interactive_continuation_source_card_definition_mismatch',
@@ -977,7 +1025,7 @@ export function buildInteractiveContinuationClaim(input: {
         request: {
             continuationId: continuation.id,
             cardId: continuation.card.id,
-            sourceCardFingerprint: stableInteractiveCardHash(sourceCardResolution.card),
+            sourceCardFingerprint: buildInteractiveIntegrityFingerprint(sourceCardResolution.card),
             submissionFingerprint: buildInteractiveCardSubmissionFingerprint(input.submission),
             sourceMessageId
         },

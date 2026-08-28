@@ -11,10 +11,16 @@ const sharp = require("sharp");
 const ts = require("typescript");
 
 const {
+  artifactGeometryMatchesCase,
+  ATTRIBUTION_VERSION,
   LEGACY_REVIEW_VERSION,
   REVIEW_VERSION,
+  attributionMatchesDesignReliabilityCohort,
   buildCaseDigest,
   buildComparisonEvidenceDigest,
+  buildDesignReliabilityGeneratedFixtureContent,
+  buildDesignReliabilityLiveRunProtocolDigest,
+  buildExpectedComparisonEvidenceList,
   buildRubricDigest,
   buildReviewPacketProjectionDigest,
   buildDesignReliabilityCohortReport,
@@ -22,10 +28,13 @@ const {
   compareDesignReliabilityCohorts,
   deriveDesignReliabilityRunObservation,
   evaluateDesignReliabilityReleaseGates,
+  getDesignReliabilityComparisonReferences,
   requiredComparisonEvidenceKinds,
+  resolveDesignReliabilityAttributionSubject,
   sha256Text,
   stableStringify,
   validateDesignReliabilityCase,
+  validateDesignReliabilityAttribution,
   validateDesignReliabilityReview,
   validateDesignReliabilityRun
 } = require("./lib/design-reliability-contract.cjs");
@@ -40,6 +49,7 @@ const {
 } = require("./lib/photoshop-runtime-build-identity.cjs");
 const {
   buildCanonicalAttemptSafetyLedger,
+  buildAttemptCohortReportContext,
   buildFirstMutationBaselineProof,
   classifyUntrustedDebugBridgeFailure,
   buildPreflight,
@@ -49,7 +59,12 @@ const {
   buildSuiteRubricSetDigest,
   buildLiveAttemptCoverage,
   collectSidecars,
+  controlledProjectMetadataSchemaSnapshot,
+  deriveLiveAttemptFingerprint,
+  deriveLiveCohortFingerprint,
   evaluateFixtureInventory,
+  evaluateAttributableAttemptEvents,
+  evaluateOfficialAttemptEligibility,
   evaluateDebugRendererPreflight,
   evaluateLiveEnvironmentSafety,
   inspectFixture,
@@ -66,9 +81,12 @@ const {
   revalidateOfficialReviewBundles,
   retainContextuallyValidReviews,
   retainContextuallyValidAttemptEvents,
+  resolveLiveRunTimeout,
+  resolveAttributionCliSubject,
   resolveLoopbackDebugBridge,
   resolveReliabilityEvidenceRoots,
   resolveSidecarOutputPath,
+  runLiveCase,
   sanitizeAttemptDiagnostic,
   shouldPersistPreflightReport,
   sidecarRoots,
@@ -84,6 +102,38 @@ require("ts-node").register({
   transpileOnly: true,
   project: path.join(ROOT, "tsconfig.main.json")
 });
+const {
+  armDebugProjectReferenceProviderReceipt,
+  clearDebugProjectReferenceProviderReceipt,
+  commitDebugProjectReferenceProviderReceipt,
+  prepareDebugProjectReferenceProviderCandidate,
+  readDebugProjectReferenceProviderCandidateKeys,
+  readDebugProjectReferenceProviderReceipt
+} = require(path.join(
+  ROOT,
+  "src",
+  "main",
+  "services",
+  "debug-project-reference-provider-receipt.ts"
+));
+const {
+  buildModelVisualPresentationReceipt
+} = require(path.join(
+  ROOT,
+  "src",
+  "shared",
+  "model-visual-presentation-receipt.ts"
+));
+const {
+  resolveDebugProjectReferenceTransportMetadata,
+  runWithDebugProjectReferenceTransportScope
+} = require(path.join(
+  ROOT,
+  "src",
+  "renderer",
+  "services",
+  "debug-bridge-project-reference.ts"
+));
 const CASE_PATH = path.join(
   ROOT,
   "benchmarks",
@@ -156,6 +206,27 @@ const DETAIL_RUBRIC_PATH = path.join(
   "rubrics",
   "detail-page-commercial-v1.json"
 );
+const REFERENCE_CASE_PATH = path.join(
+  ROOT,
+  "benchmarks",
+  "design-reliability",
+  "cases",
+  "reference-replication-c1163-from-c1164-v1.json"
+);
+const REFERENCE_RUBRIC_PATH = path.join(
+  ROOT,
+  "benchmarks",
+  "design-reliability",
+  "rubrics",
+  "reference-replication-main-image-v1.json"
+);
+const SKU_INTERACTION_CASE_PATH = path.join(
+  ROOT,
+  "benchmarks",
+  "design-reliability",
+  "cases",
+  "sku-c1163-interaction-v1.json"
+);
 
 function readCase() {
   return JSON.parse(fs.readFileSync(CASE_PATH, "utf8"));
@@ -181,25 +252,134 @@ function readDetailRubric() {
   return JSON.parse(fs.readFileSync(DETAIL_RUBRIC_PATH, "utf8"));
 }
 
-function buildComparisonRefsForTest(caseSpec, run) {
-  const finalRasterRefs = new Set((run.finalArtifactManifest?.artifacts || [])
-    .filter((item) => item.kind === "raster_export")
-    .map((item) => item.ref));
-  const candidateRefs = (run.evidenceRefs || [])
-    .filter((item) => item.kind === "raster_export"
-      && item.verified === true
-      && finalRasterRefs.has(item.ref))
-    .map((item) => ({
-      kind: "candidate_final",
-      ref: `candidate:${String(item.ref).replace(/\\/g, "/")}@${String(item.digest).toLowerCase()}`
-    }));
-  const referenceRefs = (caseSpec.task?.reviewOnlyReferences || []).map((reference) => ({
-    kind: reference.kind === "user_design" ? "user_design_anchor" : "eagle_anchor",
-    ref: reference.kind === "user_design"
-      ? `user-design:${reference.ref}@${reference.digest}`
-      : `${reference.ref}@${reference.digest}`
+function readReferenceCase() {
+  return JSON.parse(fs.readFileSync(REFERENCE_CASE_PATH, "utf8"));
+}
+
+function readReferenceRubric() {
+  return JSON.parse(fs.readFileSync(REFERENCE_RUBRIC_PATH, "utf8"));
+}
+
+function readSkuInteractionCase() {
+  return JSON.parse(fs.readFileSync(SKU_INTERACTION_CASE_PATH, "utf8"));
+}
+
+function sha256Buffer(value) {
+  return `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
+}
+
+function buildDebugProviderReceiptFixture(options = {}) {
+  const duplicateNormalizedPixels = options.duplicateNormalizedPixels === true;
+  const firstBytes = Buffer.from("debug-reference-normalized-pixels-a", "utf8");
+  const secondBytes = duplicateNormalizedPixels
+    ? firstBytes
+    : Buffer.from("debug-reference-normalized-pixels-b", "utf8");
+  const byteSets = options.referenceCount === 1
+    ? [firstBytes]
+    : [firstBytes, secondBytes];
+  const attachments = byteSets.map((bytes, index) => ({
+    version: "debug-bridge-project-asset-attachment/v1",
+    relativePath: `参考/目标-${index + 1}.jpg`,
+    label: `目标参考 ${index + 1}`,
+    sourceDigest: sha256Text(`source-file-${index + 1}`),
+    payloadDigest: sha256Buffer(bytes),
+    mediaType: "image/jpeg",
+    width: 100 + index,
+    height: 100 + index,
+    data: bytes.toString("base64")
   }));
-  return [...candidateRefs, ...referenceRefs];
+  const bindingEvidence = attachments.map((attachment) => ({
+    relativePath: attachment.relativePath,
+    sourceDigest: attachment.sourceDigest,
+    payloadDigest: attachment.payloadDigest,
+    mediaType: attachment.mediaType,
+    width: attachment.width,
+    height: attachment.height
+  }));
+  const binding = {
+    version: "debug-bridge-project-asset-payload-binding/v1",
+    bindingDigest: sha256Buffer(Buffer.from(JSON.stringify(bindingEvidence), "utf8")),
+    referenceCount: attachments.length
+  };
+  const messages = [{
+    role: "user",
+    contentBlocks: attachments.map((attachment) => ({
+      type: "image",
+      data: attachment.data,
+      mediaType: attachment.mediaType
+    }))
+  }];
+  const token = "a".repeat(64);
+  const metadata = {
+    version: "debug-bridge-model-transport-metadata/v1",
+    projectReferenceLeaseToken: token,
+    projectReferenceBindingDigest: binding.bindingDigest
+  };
+  return { attachments, binding, messages, token, metadata };
+}
+
+function fullSuiteInputDigestsAreFrozen(cases) {
+  return cases.every((caseSpec) => (
+    (caseSpec.task?.agentVisibleInputs || []).every((input) => (
+      /^sha256:[a-f0-9]{64}$/.test(String(input.digest || "").toLowerCase())
+    ))
+  ));
+}
+
+function literalUnionValues(typeNode) {
+  if (!typeNode) return [];
+  const nodes = ts.isUnionTypeNode(typeNode) ? typeNode.types : [typeNode];
+  return nodes.map((node) => (
+    ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal)
+      ? node.literal.text
+      : ""
+  )).filter(Boolean).sort();
+}
+
+function readProductionProjectConfigSchema() {
+  const filePath = path.join(ROOT, "src", "main", "services", "ecommerce-project-service.ts");
+  const source = fs.readFileSync(filePath, "utf8");
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  const folderType = sourceFile.statements.find((node) => (
+    ts.isTypeAliasDeclaration(node) && node.name.text === "FolderType"
+  ));
+  const imageType = sourceFile.statements.find((node) => (
+    ts.isTypeAliasDeclaration(node) && node.name.text === "ImageType"
+  ));
+  const projectConfig = sourceFile.statements.find((node) => (
+    ts.isInterfaceDeclaration(node) && node.name.text === "ProjectConfig"
+  ));
+  assert(folderType && imageType && projectConfig, "生产 ProjectConfig 类型声明必须可解析");
+  const projectMembers = projectConfig.members;
+  const designPlanMember = projectMembers.find((member) => member.name?.getText(sourceFile) === "designPlan");
+  assert(designPlanMember && ts.isTypeLiteralNode(designPlanMember.type), "ProjectConfig.designPlan 必须保持结构化类型");
+  const designPlanKeys = designPlanMember.type.members
+    .map((member) => member.name?.getText(sourceFile) || "")
+    .filter(Boolean)
+    .sort();
+  const designStatuses = [...new Set(designPlanMember.type.members.flatMap((member) => {
+    if (!member.type || !ts.isTypeLiteralNode(member.type)) return [];
+    const statusMember = member.type.members.find((item) => item.name?.getText(sourceFile) === "status");
+    return literalUnionValues(statusMember?.type);
+  }))].sort();
+  return {
+    version: source.includes("version: '1.0'") ? "1.0" : "unknown",
+    keys: projectMembers.map((member) => member.name?.getText(sourceFile) || "").filter(Boolean).sort(),
+    folderTypes: literalUnionValues(folderType.type),
+    imageTypes: literalUnionValues(imageType.type),
+    designPlanKeys,
+    designStatuses
+  };
+}
+
+function buildComparisonRefsForTest(caseSpec, run) {
+  return buildExpectedComparisonEvidenceList(caseSpec, run);
 }
 
 function mutationCall(seq, elapsedMs, historyStateId) {
@@ -744,6 +924,167 @@ async function main() {
     assert.strictEqual(decision.receipt.status, "blocked");
   }
 
+  const duplicatePixelFixture = buildDebugProviderReceiptFixture({
+    duplicateNormalizedPixels: true
+  });
+  const debugTransportSubmission = {
+    attachments: duplicatePixelFixture.attachments,
+    binding: duplicatePixelFixture.binding,
+    images: [],
+    contentParts: []
+  };
+  await assert.rejects(
+    () => runWithDebugProjectReferenceTransportScope({
+      leaseToken: duplicatePixelFixture.token,
+      submission: debugTransportSubmission,
+      operation: async () => resolveDebugProjectReferenceTransportMetadata([
+        { role: "user", contentBlocks: [] }
+      ])
+    }),
+    /首个 Agent 模型请求没有唯一携带/,
+    "Renderer Debug scope 必须在首个自主模型请求丢图时直接停止"
+  );
+  const scopedTransportMetadata = await runWithDebugProjectReferenceTransportScope({
+    leaseToken: duplicatePixelFixture.token,
+    submission: debugTransportSubmission,
+    operation: async () => resolveDebugProjectReferenceTransportMetadata(
+      duplicatePixelFixture.messages
+    )
+  });
+  assert.deepStrictEqual(scopedTransportMetadata, duplicatePixelFixture.metadata,
+    "Renderer 只能为当前 scope 中唯一匹配的有序像素签发 IPC transport metadata");
+  assert.strictEqual(resolveDebugProjectReferenceTransportMetadata(
+    duplicatePixelFixture.messages
+  ), undefined, "handleSend Promise 闭合后 Debug transport scope 必须清空");
+  const providerReceiptRequestId = "debug-provider-receipt-contract";
+  armDebugProjectReferenceProviderReceipt({
+    requestId: providerReceiptRequestId,
+    leaseToken: duplicatePixelFixture.token,
+    attachments: duplicatePixelFixture.attachments,
+    binding: duplicatePixelFixture.binding
+  });
+  try {
+    assert.throws(
+      () => prepareDebugProjectReferenceProviderCandidate(
+        duplicatePixelFixture.messages,
+        "chat_with_tools",
+        undefined
+      ),
+      /模型传输租约/,
+      "活动租约缺少 transport metadata 时必须在 Provider 前失败"
+    );
+    assert.throws(
+      () => prepareDebugProjectReferenceProviderCandidate(
+        duplicatePixelFixture.messages,
+        "chat_with_tools",
+        {
+          ...duplicatePixelFixture.metadata,
+          projectReferenceLeaseToken: "b".repeat(64)
+        }
+      ),
+      /模型传输租约/,
+      "相同像素的普通或旧 token 调用不能消费当前 Debug 租约"
+    );
+    const candidate = prepareDebugProjectReferenceProviderCandidate(
+      duplicatePixelFixture.messages,
+      "chat_with_tools",
+      duplicatePixelFixture.metadata
+    );
+    assert(candidate, "正确 token、binding 与有序像素必须形成 Provider candidate");
+    const candidateKeys = readDebugProjectReferenceProviderCandidateKeys(candidate);
+    assert.strictEqual(new Set(candidateKeys).size, duplicatePixelFixture.attachments.length,
+      "不同来源即使规范化像素相同，也必须以 ordinal/binding 生成唯一 candidate key");
+    assert.strictEqual(readDebugProjectReferenceProviderReceipt(providerReceiptRequestId), undefined,
+      "只准备 candidate 不能冒充 Provider 已成功返回");
+    assert.strictEqual(commitDebugProjectReferenceProviderReceipt(candidate, {
+      provider: "openai-codex",
+      modelId: "gpt-debug-contract"
+    }), undefined, "Codex 缺少真实 outgoing presentation receipt 时不能签收");
+    const visualReceipt = buildModelVisualPresentationReceipt({
+      provider: "openai-codex",
+      attemptId: "c".repeat(64),
+      candidateKeys,
+      serializedImages: duplicatePixelFixture.attachments.map((attachment) => ({
+        mediaType: attachment.mediaType,
+        decodedByteSha256: attachment.payloadDigest.slice(7),
+        decodedByteLength: Buffer.from(attachment.data, "base64").length
+      }))
+    });
+    const committed = commitDebugProjectReferenceProviderReceipt(candidate, {
+      provider: "openai-codex",
+      modelId: "gpt-debug-contract",
+      visualPresentationReceipt: visualReceipt
+    });
+    assert(committed
+      && committed.provider === "openai-codex"
+      && committed.modelId === "gpt-debug-contract"
+      && committed.transport === "chat_with_tools"
+      && /^sha256:[a-f0-9]{64}$/.test(committed.providerAttemptRef)
+      && Date.parse(committed.matchedAt) <= Date.parse(committed.committedAt),
+    "Main 只能在成功 Provider turn 后签发带模型、传输、尝试与时序的收据");
+    assert.deepStrictEqual(
+      readDebugProjectReferenceProviderReceipt(providerReceiptRequestId),
+      committed,
+      "完成端只能按同一 Debug requestId 读取 Main 收据"
+    );
+  } finally {
+    clearDebugProjectReferenceProviderReceipt(providerReceiptRequestId);
+  }
+
+  assert.strictEqual(prepareDebugProjectReferenceProviderCandidate(
+    duplicatePixelFixture.messages,
+    "chat_with_tools",
+    duplicatePixelFixture.metadata
+  ), null, "租约清理后相同像素不能复活旧请求");
+
+  const genericFixture = buildDebugProviderReceiptFixture({ referenceCount: 1 });
+  const genericRequestId = "debug-provider-generic-contract";
+  armDebugProjectReferenceProviderReceipt({
+    requestId: genericRequestId,
+    leaseToken: genericFixture.token,
+    attachments: genericFixture.attachments,
+    binding: genericFixture.binding
+  });
+  try {
+    assert.throws(
+      () => prepareDebugProjectReferenceProviderCandidate(
+        [{ role: "user", contentBlocks: [] }],
+        "chat_with_tools",
+        genericFixture.metadata
+      ),
+      /目标参考像素/,
+      "活动租约的模型消息丢图时不能调用 Provider"
+    );
+    const candidate = prepareDebugProjectReferenceProviderCandidate(
+      genericFixture.messages,
+      "chat_with_tools",
+      genericFixture.metadata
+    );
+    assert.strictEqual(commitDebugProjectReferenceProviderReceipt(candidate, {
+      provider: "openai",
+      modelId: "gpt-generic-contract",
+      formattedRequest: { messages: [{ role: "user", content: [] }] }
+    }), undefined, "非 Codex adapter 丢失图片时不能在成功响应后补签");
+    const formattedRequest = {
+      messages: [{
+        role: "user",
+        content: genericFixture.attachments.map((attachment) => ({
+          type: "image_url",
+          image_url: {
+            url: `data:${attachment.mediaType};base64,${attachment.data}`
+          }
+        }))
+      }]
+    };
+    assert(commitDebugProjectReferenceProviderReceipt(candidate, {
+      provider: "openai",
+      modelId: "gpt-generic-contract",
+      formattedRequest
+    }), "只有 adapter 序列化后的实际请求仍含精确像素时才允许签收");
+  } finally {
+    clearDebugProjectReferenceProviderReceipt(genericRequestId);
+  }
+
   const toolExecutorSource = fs.readFileSync(path.join(
     ROOT,
     "src",
@@ -894,6 +1235,49 @@ async function main() {
     "renderer",
     "components",
     "ChatPanel.tsx"
+  ), "utf8");
+  const debugProjectReferenceSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "debug-bridge-project-reference.ts"
+  ), "utf8");
+  const debugProviderReceiptSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "main",
+    "services",
+    "debug-project-reference-provider-receipt.ts"
+  ), "utf8");
+  const modelServiceSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "main",
+    "services",
+    "model-service.ts"
+  ), "utf8");
+  const streamHandlersSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "main",
+    "ipc-handlers",
+    "stream-handlers.ts"
+  ), "utf8");
+  const websocketHandlersSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "main",
+    "ipc-handlers",
+    "websocket-handlers.ts"
+  ), "utf8");
+  const agentOrchestrationContextSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "services",
+    "agent-orchestration",
+    "context.ts"
   ), "utf8");
   const mainProcessSource = fs.readFileSync(path.join(
     ROOT,
@@ -1082,10 +1466,18 @@ async function main() {
     && !chatPanelSource.includes("apiKeys: state.apiKeys"),
   "Debug preflight 必须只返回脱敏模型/Provider/项目事实，不得暴露凭据");
   const handleSendStageIndex = chatPanelSource.indexOf("executionStage = 'handle_send_started'");
-  const handleSendCallIndex = chatPanelSource.indexOf("await handleSend({", handleSendStageIndex);
+  const debugReferenceScopeCallIndex = chatPanelSource.indexOf(
+    "await runWithDebugProjectReferenceTransportScope({",
+    handleSendStageIndex
+  );
+  const handleSendCallIndex = chatPanelSource.indexOf(
+    "operation: () => handleSend({",
+    debugReferenceScopeCallIndex
+  );
   assert(handleSendStageIndex > 0
-    && handleSendCallIndex > handleSendStageIndex
-    && chatPanelSource.slice(handleSendStageIndex, handleSendCallIndex).includes("writePossible = true")
+    && debugReferenceScopeCallIndex > handleSendStageIndex
+    && handleSendCallIndex > debugReferenceScopeCallIndex
+    && chatPanelSource.slice(handleSendStageIndex, debugReferenceScopeCallIndex).includes("writePossible = true")
     && chatPanelSource.includes("return await submitAndWait();")
     && chatPanelSource.includes("return await runWithSkillBridgesSuppressed(submitAndWait);")
     && debugBridgeChatContractSource.includes("'before_handle_send'")
@@ -1096,6 +1488,61 @@ async function main() {
     && debugBridgeSource.includes("error: failure.message,")
     && debugBridgeSource.includes("sendExecutionFailure("),
   "Renderer/Main/HTTP 必须原样传递结构化执行阶段与副作用可能性");
+  assert(debugBridgeSource.includes(".toBuffer({ resolveWithObject: true })")
+    && debugBridgeSource.includes("projectAssetAttachments: verifiedProjectAssetPayload.attachments")
+    && debugBridgeSource.includes("debugBridgeProjectAssetProviderReceiptMatches(")
+    && debugProjectReferenceSource.includes("kind: 'uploaded_image' as const")
+    && debugProjectReferenceSource.includes("runWithDebugProjectReferenceTransportScope")
+    && debugProjectReferenceSource.includes("resolveDebugProjectReferenceTransportMetadata")
+    && chatPanelSource.includes("images: preparedProjectReferences.images")
+    && chatPanelSource.includes("runWithDebugProjectReferenceTransportScope({")
+    && !chatPanelSource.includes("buildDebugProjectReferenceProviderReceipt({")
+    && autonomousExecutorSource.includes("resolveDebugProjectReferenceTransportMetadata(messages)")
+    && preloadSource.includes("debugTransportMetadata?: DebugBridgeModelTransportMetadata")
+    && websocketHandlersSource.includes("debugTransportMetadata")
+    && streamHandlersSource.includes("debugTransportMetadata")
+    && debugProviderReceiptSource.includes("debug_project_reference_transport_metadata_invalid")
+    && debugProviderReceiptSource.includes("debug_project_reference_provider_pixels_missing")
+    && modelServiceSource.includes("requireDebugProjectReferenceProviderReceipt(")
+    && modelServiceSource.includes("if (debugProjectReferenceCandidate) {")
+    && mainProcessSource.includes("crypto.randomBytes(32).toString('hex')")
+    && mainProcessSource.includes("projectAssetProviderBindingReceipt: _rendererProjectAssetProviderBindingReceipt")
+    && designReliabilityCliSource.includes("projectAssetProviderBindingReceipt"),
+  "用户目标参考必须由 Main 解码、以 Debug-only IPC 租约绑定实际 Provider 请求并在成功返回后签收；Renderer 不能自签或覆盖");
+  const modelStreamRunIndex = modelServiceSource.indexOf(
+    "private async runChatWithToolsStream("
+  );
+  const debugStreamReceiptGateIndex = modelServiceSource.indexOf(
+    "if (debugProjectReferenceCandidate) {",
+    modelStreamRunIndex
+  );
+  const directOpenRouterStreamIndex = modelServiceSource.indexOf(
+    "if (provider === 'openrouter') {",
+    modelStreamRunIndex
+  );
+  assert(modelStreamRunIndex > 0
+    && debugStreamReceiptGateIndex > modelStreamRunIndex
+    && directOpenRouterStreamIndex > debugStreamReceiptGateIndex
+    && modelServiceSource.slice(
+      debugStreamReceiptGateIndex,
+      directOpenRouterStreamIndex
+    ).includes("() => this.chatWithTools(")
+    && modelServiceSource.slice(
+      debugStreamReceiptGateIndex,
+      directOpenRouterStreamIndex
+    ).includes("type: 'done'"),
+  "携带参考租约的流式请求必须先走非流式收据闭环，再发布唯一 terminal/tool 结果");
+  assert(debugBridgeSource.includes("readDebugWorkspaceSemanticDigest(")
+    && agentOrchestrationContextSource.includes("verifyExpectedWorkspaceSemanticDigest(")
+    && agentOrchestrationContextSource.includes("expectedWorkspaceSemanticDigest")
+    && chatPanelSource.includes("debugWorkspaceSemanticBinding.onConsumed(")
+    && chatPanelSource.includes("consumedWorkspaceSemanticDigest !== expectedWorkspaceSemanticDigest")
+    && designReliabilityCliSource.includes("receipt.consumedWorkspaceSemanticDigest")
+    && designReliabilityCliSource.includes("expectedWorkspaceSemanticDigest: input.workspaceSemanticDigest")
+    && designReliabilityCliSource.includes(
+      "workspaceSemanticDigest: fixtureBefore.workspaceMetadata.semanticDigest"
+    ),
+  "workspace semantic identity 必须贯穿 CLI、Main 与 Agent 实际消费的项目上下文，不能用旁路预读冒充绑定");
   const runLivePreflightIndex = designReliabilityCliSource.indexOf("const preflight = await buildPreflight");
   const runLiveArmedIndex = designReliabilityCliSource.indexOf("const armedAttempt = writeLiveAttemptEvent", runLivePreflightIndex);
   assert(runLivePreflightIndex > 0
@@ -1105,6 +1552,36 @@ async function main() {
     && designReliabilityCliSource.includes("renderer_project_not_bound_to_fixture")
     && designReliabilityCliSource.includes("classifyUntrustedDebugBridgeFailure(error)"),
   "run-live 必须在 armed 前核对 Renderer 模型/Provider/项目，并只按结构化副作用事实分流终态");
+  const fingerprintInput = {
+    suiteId: "suite-timeout-proof",
+    suiteCaseSetDigest: sha256Text("case-set"),
+    suiteRubricSetDigest: sha256Text("rubric-set"),
+    environment: {
+      gitCommit: "a".repeat(40),
+      dirtyFingerprint: sha256Text("clean"),
+      runtimeGitCommit: "a".repeat(40),
+      runtimeBuildId: "runtime-build",
+      runtimeAppVersion: "1.0.0",
+      photoshopRuntimeBuildId: "photoshop-build",
+      photoshopRuntimeGitCommit: "a".repeat(40),
+      photoshopRuntimeSourceDigest: sha256Text("photoshop-source"),
+      photoshopRuntimeArtifactDigest: sha256Text("photoshop-artifact"),
+      photoshopRuntimeManifestDigest: sha256Text("photoshop-manifest"),
+      photoshopRuntimeBindingDigest: sha256Text("photoshop-binding")
+    },
+    provider: "provider",
+    modelId: "model",
+    timeoutMs: 900000
+  };
+  assert.notStrictEqual(
+    deriveLiveCohortFingerprint(fingerprintInput),
+    deriveLiveCohortFingerprint({ ...fingerprintInput, timeoutMs: 899999 }),
+    "Suite 固定 timeout 必须进入唯一可重算 cohort fingerprint，不能只影响 HTTP 等待行为"
+  );
+  assert(!designReliabilityCliSource.includes("userInterventionCount: 0,")
+    && designReliabilityCliSource.includes("userInterventionCount: undefined,")
+    && designReliabilityCliSource.includes("interactionMetricsKnown: false"),
+  "没有 Provider / operation 交互收据时必须保持介入指标 unknown，不能因 Debug 只发一条自然请求就伪造为 0");
 
   const malformedPsdDir = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-psd-evidence-"));
   try {
@@ -1128,6 +1605,172 @@ async function main() {
   }
   const caseSpec = readCase();
   assert.strictEqual(validateDesignReliabilityCase(caseSpec).ok, true, "real case must validate");
+  const realReferenceCase = readReferenceCase();
+  const realReferenceRubric = readReferenceRubric();
+  assert.strictEqual(validateDesignReliabilityCase(realReferenceCase).ok, true,
+    "首条跨商品真实参考复刻 Case 必须通过统一契约");
+  assert.strictEqual(validateRubric(realReferenceRubric).ok, true,
+    "参考复刻必须使用同任务族的独立人工 Rubric，不能借主图 family 绕过校验");
+  assert.strictEqual(artifactGeometryMatchesCase(realReferenceCase, { width: 800, height: 800 }), true);
+  assert.strictEqual(artifactGeometryMatchesCase(realReferenceCase, { width: 1500, height: 1500 }), false,
+    "参考复刻必须消费通用 outputContract，不能因 family 名不同而让错误尺寸通过");
+  assert.strictEqual(realReferenceCase.task.agentVisibleReferences.length, 1);
+  assert(realReferenceCase.task.reviewOnlyReferences.every((reference) => (
+    reference.ref !== realReferenceCase.task.agentVisibleReferences[0].ref
+    && reference.digest !== realReferenceCase.task.agentVisibleReferences[0].digest
+  )), "跨商品目标参考不能与同商品隐藏答案或 Eagle 锚点复用身份");
+  const autonomousSkuCase = readSkuCase();
+  const interactiveSkuCase = readSkuInteractionCase();
+  assert.strictEqual(autonomousSkuCase.liveRunProtocol.kind, "autonomous_zero_correction");
+  assert(fullSuiteInputDigestsAreFrozen([
+    caseSpec,
+    realReferenceCase,
+    autonomousSkuCase,
+    interactiveSkuCase
+  ]), "固定质量 Case 的全部非生成输入必须冻结 SHA-256");
+  assert(autonomousSkuCase.oracle.invariants.every((item) => !item.includes("确认卡续跑")),
+    "信息完整的 SKU 质量 Case 不能同时要求确认卡协议");
+  assert.strictEqual(validateDesignReliabilityCase(interactiveSkuCase).ok, true,
+    "SKU 专属卡协议必须作为独立 draft Case 通过同一契约");
+  assert.strictEqual(interactiveSkuCase.status, "draft",
+    "dev user actor 与真实交互收据未落地前，交互 Case 不能进入正式分母");
+  assert.strictEqual(interactiveSkuCase.liveRunProtocol.steps[0].answer, undefined,
+    "公开 Case 不能保存 evaluator 私有交互答案");
+  assert.strictEqual(interactiveSkuCase.oracle.outputInventory, undefined,
+    "公开交互 Case 不能用答案派生文件名泄漏私有组合");
+  assert.strictEqual(interactiveSkuCase.oracle.privateOutputInventoryBinding, undefined,
+    "交互答案与输出期望必须绑定同一个私有 manifest，不能维护第二个可漂移绑定");
+  assert.strictEqual(interactiveSkuCase.liveRunProtocol.steps[0].requiredSizes, undefined,
+    "答案派生的规格不能留在公开交互协议中");
+  const publicInteractiveCaseText = JSON.stringify(interactiveSkuCase);
+  assert(!publicInteractiveCaseText.includes("2/3/4")
+    && !publicInteractiveCaseText.includes("双组合数量")
+    && !publicInteractiveCaseText.includes('\"requiredSizes\"'),
+  "公开交互 Case 的自然语言与字段名都不能泄漏私有规格答案");
+  assert.deepStrictEqual(interactiveSkuCase.task.reviewOnlyReferences, [],
+    "答案派生的语义文件名与锚点只能由私有评测 manifest 解析");
+  const forgedPrivateBinding = JSON.parse(JSON.stringify(interactiveSkuCase));
+  forgedPrivateBinding.liveRunProtocol.privateEvaluationBinding.manifestId = "";
+  forgedPrivateBinding.caseDigest = buildCaseDigest(forgedPrivateBinding);
+  assert.strictEqual(validateDesignReliabilityCase(forgedPrivateBinding).ok, false,
+    "交互协议必须绑定统一、不可变且不泄漏答案的私有评测 manifest 身份");
+  const protocolWithUnknownLeakField = JSON.parse(JSON.stringify(interactiveSkuCase));
+  protocolWithUnknownLeakField.liveRunProtocol.initialPromptLeak = { groups: [[1, 2, 3]] };
+  protocolWithUnknownLeakField.caseDigest = buildCaseDigest(protocolWithUnknownLeakField);
+  assert.strictEqual(validateDesignReliabilityCase(protocolWithUnknownLeakField).ok, false,
+    "liveRunProtocol 顶层必须严格拒绝可能夹带私有答案的未知字段");
+  const autonomousWithHiddenStep = JSON.parse(JSON.stringify(autonomousSkuCase));
+  autonomousWithHiddenStep.liveRunProtocol.steps = interactiveSkuCase.liveRunProtocol.steps;
+  autonomousWithHiddenStep.caseDigest = buildCaseDigest(autonomousWithHiddenStep);
+  assert.strictEqual(validateDesignReliabilityCase(autonomousWithHiddenStep).ok, false,
+    "自主零纠错协议不能夹带预声明答案或隐式用户步骤");
+
+  const referenceReplicationCase = JSON.parse(JSON.stringify(caseSpec));
+  referenceReplicationCase.caseId = "reference-replication-contract-v1";
+  referenceReplicationCase.revision = 1;
+  referenceReplicationCase.taskFamily = "reference_replication";
+  referenceReplicationCase.task = {
+    ...referenceReplicationCase.task,
+    fixtureId: "reference-replication-contract-fixture-v1",
+    agentVisibleInputs: [],
+    fixtureGeneratedInputs: [],
+    agentVisibleReferences: [{
+      kind: "user_design",
+      ref: "参考/用户明确提供的目标图.png",
+      digest: sha256Text("agent-visible-reference")
+    }],
+    reviewOnlyReferences: [{
+      kind: "eagle_item",
+      ref: "eagle:item:hidden-quality-anchor",
+      digest: `sha256:${"2".repeat(64)}`
+    }]
+  };
+  referenceReplicationCase.caseDigest = buildCaseDigest(referenceReplicationCase);
+  assert.strictEqual(validateDesignReliabilityCase(referenceReplicationCase).ok, true,
+    "参考复刻 Case 必须显式区分 Agent 可见目标参考与隐藏评审锚点");
+  assert.deepStrictEqual(
+    getDesignReliabilityComparisonReferences(referenceReplicationCase).map((item) => item.ref),
+    ["参考/用户明确提供的目标图.png", "eagle:item:hidden-quality-anchor"],
+    "评审证据必须同时包含显式目标上下文与隐藏质量锚点，但二者不能使用同一种 pairwise 语义"
+  );
+  const leakedReferenceCase = JSON.parse(JSON.stringify(referenceReplicationCase));
+  leakedReferenceCase.task.reviewOnlyReferences[0] = {
+    ...leakedReferenceCase.task.reviewOnlyReferences[0],
+    ref: leakedReferenceCase.task.agentVisibleReferences[0].ref
+  };
+  leakedReferenceCase.caseDigest = buildCaseDigest(leakedReferenceCase);
+  assert.strictEqual(validateDesignReliabilityCase(leakedReferenceCase).ok, false,
+    "隐藏评审锚点与 Agent 可见参考复用同一 ref 时必须拒绝，不能泄漏答案");
+  const leakedInputDigestCase = JSON.parse(JSON.stringify(referenceReplicationCase));
+  leakedInputDigestCase.task.agentVisibleInputs = [{
+    ref: "摄影输入/伪装成素材.jpg",
+    role: "product_candidate",
+    digest: leakedInputDigestCase.task.reviewOnlyReferences[0].digest
+  }];
+  leakedInputDigestCase.caseDigest = buildCaseDigest(leakedInputDigestCase);
+  assert.strictEqual(validateDesignReliabilityCase(leakedInputDigestCase).ok, false,
+    "隐藏锚点即使换 ref，也不能用相同内容摘要伪装成普通 Agent 输入");
+  const leakedGeneratedDigestCase = JSON.parse(JSON.stringify(referenceReplicationCase));
+  leakedGeneratedDigestCase.task.fixtureGeneratedInputs = [{
+    ref: "测试输入/事实.json",
+    role: "verified_product_brief",
+    encoding: "utf8",
+    facts: { product_type: "女士浅口隐形袜" }
+  }];
+  leakedGeneratedDigestCase.boundaries.fixtureGeneratedInputsContainFactsOnly = true;
+  leakedGeneratedDigestCase.task.reviewOnlyReferences[0].digest = sha256Text(
+    buildDesignReliabilityGeneratedFixtureContent(
+      leakedGeneratedDigestCase.task.fixtureGeneratedInputs[0]
+    )
+  );
+  leakedGeneratedDigestCase.caseDigest = buildCaseDigest(leakedGeneratedDigestCase);
+  assert.strictEqual(validateDesignReliabilityCase(leakedGeneratedDigestCase).ok, false,
+    "fixture 生成内容的真实摘要也必须参与 review-only 防泄漏检查");
+  const visibleEagleCase = JSON.parse(JSON.stringify(referenceReplicationCase));
+  visibleEagleCase.task.agentVisibleReferences = [{
+    kind: "eagle_item",
+    ref: "eagle:item:cannot-materialize-directly",
+    digest: `sha256:${"3".repeat(64)}`
+  }];
+  visibleEagleCase.caseDigest = buildCaseDigest(visibleEagleCase);
+  assert.strictEqual(validateDesignReliabilityCase(visibleEagleCase).ok, false,
+    "没有显式物化协议时，Agent 可见 Eagle ID 不能成为 prepare-fixture 永远无法复制的伪合法 Case");
+
+  const attributionBoundaries = {
+    devBenchmarkSidecarOnly: true,
+    neverAffectsRuntime: true,
+    cannotBecomeRuntimeGate: true
+  };
+  const attemptAttribution = {
+    version: ATTRIBUTION_VERSION,
+    attributionId: "attempt-provider-failure",
+    subject: { attemptId: "attempt-without-run-observation" },
+    symptomCode: "provider_timeout",
+    owner: "model_provider",
+    failureMode: "provider",
+    status: "confirmed",
+    confidence: "high",
+    evidenceRefs: ["attempt:terminal:provider_failed"],
+    rationale: "提交后 Provider 失败，尚未形成 Run Observation。",
+    attributedBy: "engineer",
+    attributedAt: "2026-08-27T00:00:00.000Z",
+    boundaries: attributionBoundaries
+  };
+  assert.strictEqual(validateDesignReliabilityAttribution(attemptAttribution).ok, true,
+    "进入正式分母但没有 Run Observation 的 Attempt 必须仍可被同一 Attribution schema 归因");
+  const resolvedAttemptAttribution = resolveDesignReliabilityAttributionSubject(attemptAttribution);
+  assert.strictEqual(resolvedAttemptAttribution?.kind, "attempt");
+  assert.strictEqual(resolvedAttemptAttribution?.attemptId, "attempt-without-run-observation");
+  assert.strictEqual(attributionMatchesDesignReliabilityCohort(attemptAttribution, {
+    runObservationIds: [],
+    attemptIds: ["attempt-without-run-observation"]
+  }), true);
+  const mixedAttributionSubject = {
+    ...attemptAttribution,
+    runObservationId: "legacy-run-must-not-mix"
+  };
+  assert.strictEqual(validateDesignReliabilityAttribution(mixedAttributionSubject).ok, false,
+    "新 subject union 不能再混入旧顶层身份形成第三种协议");
 
   const expectedCommit = "a".repeat(40);
   const expectedPhotoshopSourceDigest = `sha256:${"d".repeat(64)}`;
@@ -1320,6 +1963,8 @@ async function main() {
     completedProjectPath: "C:/fixture/project",
     expectedProjectMatchedAtSubmission: true,
     projectUnchangedThroughCompletion: true,
+    expectedWorkspaceSemanticDigest: sha256Text("workspace-semantic"),
+    consumedWorkspaceSemanticDigest: sha256Text("workspace-semantic"),
     submittedModelId: "model-a",
     completedModelId: "model-a",
     submittedApiModelId: "model-a",
@@ -1360,12 +2005,95 @@ async function main() {
     gitCommit: expectedCommit,
     runtimeBuildId: "designecho-test-build",
     photoshopRuntimeBuildId: verifiedPhotoshopBuildId,
-    photoshopRuntimeBinding: safePhotoshopRuntimeBinding
+    photoshopRuntimeBinding: safePhotoshopRuntimeBinding,
+    workspaceSemanticDigest: sha256Text("workspace-semantic")
   };
   assert.strictEqual(validateDebugBridgeReceipt(
     { result: { receipt: validDebugReceipt } },
     validDebugReceiptInput
   ).ok, true, "提交前、首次写与完成后协议字段完整时 receipt 必须可信");
+  const workspaceSemanticDriftReceipt = {
+    ...validDebugReceipt,
+    consumedWorkspaceSemanticDigest: sha256Text("workspace-semantic-drift")
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: workspaceSemanticDriftReceipt } },
+    validDebugReceiptInput
+  ).ok, false, "Agent 实际消费的项目语义摘要漂移必须拒绝进入正式 Attempt");
+  const targetReference = {
+    version: "debug-bridge-project-asset-reference/v1",
+    relativePath: "参考/目标.jpg",
+    label: "用户提供的目标参考",
+    digest: sha256Text("target-reference-source")
+  };
+  const targetReferenceBindingDigest = sha256Text("normalized-target-reference-payload");
+  const referenceBoundReceipt = {
+    ...validDebugReceipt,
+    projectAssetReferences: [targetReference],
+    projectAssetPayloadBinding: {
+      version: "debug-bridge-project-asset-payload-binding/v1",
+      bindingDigest: targetReferenceBindingDigest,
+      referenceCount: 1
+    },
+    projectAssetProviderBindingReceipt: {
+      version: "debug-bridge-project-asset-provider-receipt/v1",
+      bindingDigest: targetReferenceBindingDigest,
+      referenceCount: 1,
+      visualBlockCount: 1,
+      matchedAtProviderBoundary: true,
+      provider: "provider-a",
+      modelId: "model-a",
+      transport: "chat_with_tools",
+      providerAttemptRef: sha256Text("provider-attempt-a"),
+      matchedAt: "2026-08-26T00:00:01.000Z",
+      committedAt: "2026-08-26T00:00:02.000Z"
+    }
+  };
+  const referenceBoundInput = {
+    ...validDebugReceiptInput,
+    projectAssetReferences: [targetReference]
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: referenceBoundReceipt } },
+    referenceBoundInput
+  ).ok, true, "目标参考必须以 Main 像素绑定和 Provider 视觉块收据共同证明");
+  const mutationAfterReferenceReceipt = {
+    ...referenceBoundReceipt,
+    firstPhotoshopMutationBaseline: {
+      version: "guarded-photoshop-execution-baseline-receipt/v0",
+      status: "passed",
+      requestId: "debug-request-1",
+      expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
+      firstMutationToolName: "createDocument",
+      checkedAt: "2026-08-26T00:00:03.000Z",
+      openDocumentCount: 0,
+      observedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+      observedPhotoshopRuntimeIdentity: safePhotoshopRuntime
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: mutationAfterReferenceReceipt } },
+    referenceBoundInput
+  ).ok, true, "Provider 参考收据早于首次 Photoshop 写入时才可证明设计前看过参考");
+  const lateProviderReferenceReceipt = {
+    ...mutationAfterReferenceReceipt,
+    projectAssetProviderBindingReceipt: {
+      ...mutationAfterReferenceReceipt.projectAssetProviderBindingReceipt,
+      matchedAt: "2026-08-26T00:00:04.000Z",
+      committedAt: "2026-08-26T00:00:05.000Z"
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: lateProviderReferenceReceipt } },
+    referenceBoundInput
+  ).ok, false, "设计完成后才补看的参考不能冒充首次写入前的设计依据");
+  const pathOnlyReferenceReceipt = JSON.parse(JSON.stringify(referenceBoundReceipt));
+  delete pathOnlyReferenceReceipt.projectAssetProviderBindingReceipt;
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: pathOnlyReferenceReceipt } },
+    referenceBoundInput
+  ).ok, false, "只回显参考路径与源摘要不能冒充模型已经看到像素");
   const firstMutationBaselineProof = buildFirstMutationBaselineProof(validDebugReceipt);
   assert.strictEqual(firstMutationBaselineProof.status, "not_reached");
   assert.match(firstMutationBaselineProof.requestIdDigest, /^sha256:[a-f0-9]{64}$/);
@@ -1561,11 +2289,42 @@ async function main() {
   });
   assert(fakeRuntime.blockers.includes("fake_model_runtime_enabled"));
 
+  assert.deepStrictEqual(
+    controlledProjectMetadataSchemaSnapshot(),
+    readProductionProjectConfigSchema(),
+    "评测器允许的 project.json schema 必须与生产 ProjectConfig 同步，新增字段或枚举不能静默漂移"
+  );
+
   const cleanFixtureInventory = evaluateFixtureInventory(
     ["S82646/a.jpg", "S82646/b.jpg"],
     ["S82646/a.jpg", "S82646/b.jpg"]
   );
   assert.strictEqual(cleanFixtureInventory.freshRunReady, true);
+  const controlledMetadataInventory = evaluateFixtureInventory(
+    ["S82646/a.jpg", "S82646/b.jpg"],
+    ["S82646/a.jpg", "S82646/b.jpg", ".designecho/project.json"]
+  );
+  assert.strictEqual(controlledMetadataInventory.freshRunReady, true,
+    "精确的项目身份 metadata 应与冻结输入分轴，不得把已打开 fixture 误判为污染");
+  assert.deepStrictEqual(controlledMetadataInventory.workspaceMetadataRefs, [
+    ".designecho/project.json"
+  ]);
+  assert.strictEqual(controlledMetadataInventory.actualInputFileCount, 2,
+    "Workspace metadata 不能混入冻结输入数量");
+  const extraMetadataInventory = evaluateFixtureInventory(
+    ["S82646/a.jpg", "S82646/b.jpg"],
+    [
+      "S82646/a.jpg",
+      "S82646/b.jpg",
+      ".designecho/project.json",
+      ".designecho/project-copy.json"
+    ]
+  );
+  assert.strictEqual(extraMetadataInventory.freshRunReady, false,
+    "只有精确 .designecho/project.json 可以进入受控 metadata 轴");
+  assert.deepStrictEqual(extraMetadataInventory.unexpected, [
+    ".designecho/project-copy.json"
+  ]);
   const leakedFixtureInventory = evaluateFixtureInventory(
     ["S82646/a.jpg", "S82646/b.jpg"],
     [
@@ -1589,6 +2348,11 @@ async function main() {
     cohortId: "cohort-attempt-denominator",
     provider: "provider-a",
     modelId: "model-a",
+    repeatIndex: 1,
+    liveRunProtocol: {
+      kind: "autonomous_zero_correction",
+      digest: buildDesignReliabilityLiveRunProtocolDigest(caseSpec)
+    },
     fixtureRef: { instanceId: "fixture-1", fixtureDigest: `sha256:${"d".repeat(64)}` },
     suiteCaseSetDigest: `sha256:${"1".repeat(64)}`,
     suiteRubricSetDigest: `sha256:${"2".repeat(64)}`,
@@ -2414,7 +3178,20 @@ async function main() {
   }).jpeg({ quality: 92 }).toFile(secondCandidateSourcePath);
   const secondCandidateDigest = `sha256:${crypto.createHash("sha256")
     .update(fs.readFileSync(secondCandidateSourcePath)).digest("hex")}`;
+  const targetContextSourcePath = path.join(anonymousSourceRoot, "user-target-reference.jpg");
+  await sharp({
+    create: { width: 48, height: 48, channels: 3, background: { r: 240, g: 210, b: 120 } }
+  }).jpeg({ quality: 92 }).toFile(targetContextSourcePath);
+  const targetContextDigest = `sha256:${crypto.createHash("sha256")
+    .update(fs.readFileSync(targetContextSourcePath)).digest("hex")}`;
   const packetCaseSpec = JSON.parse(JSON.stringify(caseSpec));
+  packetCaseSpec.oracle.outputContract.exactRasterExports = 2;
+  packetCaseSpec.task.agentVisibleReferences = [{
+    kind: "user_design",
+    ref: "参考/用户目标方向.jpg",
+    digest: targetContextDigest,
+    role: "user_provided_target_reference"
+  }];
   const anchorSourceByBaseRef = new Map();
   for (let index = 0; index < packetCaseSpec.task.reviewOnlyReferences.length; index += 1) {
     const reference = packetCaseSpec.task.reviewOnlyReferences[index];
@@ -2453,6 +3230,9 @@ async function main() {
         sourcePath: item.ref.includes("main-alt.jpg") ? secondCandidateSourcePath : candidateSourcePath
       };
     }
+    if (item.kind === "target_reference_context") {
+      return { evidenceRef: item.ref, sourcePath: targetContextSourcePath };
+    }
     const baseRef = item.ref
       .replace(/^user-design:/, "")
       .replace(/^eagle:item:/, "eagle:item:")
@@ -2463,17 +3243,22 @@ async function main() {
   fs.writeFileSync(fakeImagePath, "not an image", "utf8");
   const fakeImageBindings = JSON.parse(JSON.stringify(sourceBindings));
   fakeImageBindings.find((item) => item.evidenceRef.startsWith("user-design:")).sourcePath = fakeImagePath;
-  await assert.rejects(
-    () => createDesignReliabilityReviewPacket({
+  let fakeImageError = null;
+  try {
+    await createDesignReliabilityReviewPacket({
       caseSpec: packetCaseSpec,
       run: anonymousPacketRun,
       rubric,
       sourceBindings: fakeImageBindings,
       reviewerPacketDirectory: path.join(anonymousPacketRoot, "fake-image-packet"),
       sealedMappingPath: path.join(anonymousSealedRoot, "fake-image-mapping.json")
-    }),
-    /可解码的真实图片/,
-    "仅有图片扩展名的文本文件不能进入匿名评审包"
+    });
+  } catch (error) {
+    fakeImageError = error;
+  }
+  assert.match(
+    fakeImageError instanceof Error ? fakeImageError.message : "",
+    /可解码的真实图片/
   );
   const duplicateReferenceCase = JSON.parse(JSON.stringify(packetCaseSpec));
   duplicateReferenceCase.task.reviewOnlyReferences[1].digest =
@@ -2498,6 +3283,9 @@ async function main() {
         evidenceRef: item.ref,
         sourcePath: item.ref.includes("main-alt.jpg") ? secondCandidateSourcePath : candidateSourcePath
       };
+    }
+    if (item.kind === "target_reference_context") {
+      return { evidenceRef: item.ref, sourcePath: targetContextSourcePath };
     }
     const baseRef = item.ref
       .replace(/^user-design:/, "")
@@ -2541,8 +3329,14 @@ async function main() {
     true,
     "公开包必须把候选与锚点统一拆成单文件匿名项，且不能暴露源文件 digest / size"
   );
-  assert.strictEqual(packetCreation.packet.anonymousGroups.length, packetComparisonRefs.length,
-    "多候选输出不能通过匿名组基数暴露其来源集合");
+  assert.strictEqual(packetCreation.packet.contextGroups.length, 1,
+    "用户给 Agent 的目标参考必须作为明确目标上下文展示给评审者");
+  assert.strictEqual(packetCreation.packet.contextGroups[0].role, "user_target_reference");
+  assert.strictEqual(
+    packetCreation.packet.anonymousGroups.length,
+    packetComparisonRefs.filter((item) => item.kind !== "target_reference_context").length,
+    "目标参考不能混进候选与质量锚点的匿名 pairwise 集合"
+  );
   for (const group of packetCreation.packet.anonymousGroups) {
     const publicAssetRef = group.assets[0].ref;
     assert.strictEqual(path.extname(publicAssetRef), ".png", "公开匿名资产必须统一为 PNG");
@@ -2561,6 +3355,7 @@ async function main() {
     anonymousPacketRun.runObservationId,
     caseSpec.caseId,
     "candidate:",
+    "target-reference:",
     "user-design:",
     "eagle:item:"
   ]) {
@@ -2774,6 +3569,60 @@ async function main() {
   });
   assert.strictEqual(officialAnonymousReport.overall.quality.strictHumanReviewedRate.numerator, 1,
     "只有 canonical bundle 磁盘验证后附加进程内信任标记的 Review 才能进入 strict");
+  const firstRubricDimensionId = rubric.dimensions[0].id;
+  assert.deepStrictEqual(officialAnonymousReport.overall.quality.weightedOverall, {
+    count: 1,
+    median: diskVerifiedSidecars.reviews[0].weightedOverall,
+    p90: diskVerifiedSidecars.reviews[0].weightedOverall
+  }, "严格盲评必须保留总体分数中位数与 P90，不能只剩 pass 布尔值");
+  assert.deepStrictEqual(
+    officialAnonymousReport.overall.quality.dimensionScores[firstRubricDimensionId],
+    {
+      count: 1,
+      median: diskVerifiedSidecars.reviews[0].scores[firstRubricDimensionId],
+      p90: diskVerifiedSidecars.reviews[0].scores[firstRubricDimensionId]
+    },
+    "构图、层级等 rubric 维度必须分别聚合，才能定位设计效果变化"
+  );
+  assert.strictEqual(
+    officialAnonymousReport.overall.quality.pairwiseOutcomes[
+      diskVerifiedSidecars.reviews[0].pairwiseOutcome
+    ],
+    1,
+    "相对用户设计 / Eagle 锚点的 pairwise 结论必须保留分布"
+  );
+  const duplicateReviewerReport = buildDesignReliabilityCohortReport({
+    suiteId: packetCaseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [packetCaseSpec],
+    rubrics: [rubric],
+    runs: [anonymousPacketRun],
+    reviews: [diskVerifiedSidecars.reviews[0], diskVerifiedSidecars.reviews[0]],
+    attributions: []
+  });
+  assert.strictEqual(duplicateReviewerReport.overall.quality.conflictingReviewRunCount, 1,
+    "同一 reviewer 对同一 Run 重复提交必须要求裁决，不能用重复分数改变 Run 中位数");
+  assert.strictEqual(duplicateReviewerReport.overall.quality.weightedOverall.count, 0,
+    "重复 reviewer 的同一 Run 不能进入正式审美分布");
+  const improvedAnonymousReport = JSON.parse(JSON.stringify(officialAnonymousReport));
+  improvedAnonymousReport.cohortId = "candidate-improved";
+  improvedAnonymousReport.overall.quality.dimensionScores[firstRubricDimensionId].median = Math.min(
+    1,
+    officialAnonymousReport.overall.quality.dimensionScores[firstRubricDimensionId].median + 0.05
+  );
+  const anonymousComparison = compareDesignReliabilityCohorts(
+    withComparableAttemptShape(officialAnonymousReport, 1, 1),
+    withComparableAttemptShape(improvedAnonymousReport, 1, 1)
+  );
+  assert.strictEqual(anonymousComparison.comparable, true);
+  assert.strictEqual(
+    anonymousComparison.deltas.dimensionMedianScores[firstRubricDimensionId],
+    Math.round((
+      improvedAnonymousReport.overall.quality.dimensionScores[firstRubricDimensionId].median
+      - officialAnonymousReport.overall.quality.dimensionScores[firstRubricDimensionId].median
+    ) * 10000) / 10000,
+    "cohort compare 必须直接显示具体审美维度的中位数变化"
+  );
   const forgedAnonymousReview = JSON.parse(JSON.stringify(verifiedAnonymous.review));
   forgedAnonymousReview.reviewId = "review-forged-without-bundle";
   forgedAnonymousReview.verifiedPacketProof.packetId = "review-packet-forged-without-disk";
@@ -2968,44 +3817,86 @@ async function main() {
     reviewId: "review-formal-attempt",
     runObservationId: formalAttemptRun.runObservationId
   };
-  const formalCohortFingerprint = `sha256:${"7".repeat(64)}`;
-  const formalSuiteCaseSetDigest = `sha256:${"8".repeat(64)}`;
-  const formalSuiteRubricSetDigest = `sha256:${"9".repeat(64)}`;
+  const formalSkuCase = readSkuCase();
+  const formalSuite = {
+    manifest: { suiteId: caseSpec.suiteId },
+    cases: [caseSpec, formalSkuCase],
+    rubrics: [rubric, readSkuRubric()]
+  };
+  const formalSuiteCaseSetDigest = buildSuiteCaseSetDigest(formalSuite);
+  const formalSuiteRubricSetDigest = buildSuiteRubricSetDigest(formalSuite);
   const formalRuntimeEnvironment = {
-    gitCommit: "formal-git-commit",
+    gitCommit: "a".repeat(40),
     dirty: false,
-    runtimeGitCommit: "formal-git-commit",
+    dirtyFingerprint: sha256Text("formal-clean-worktree"),
+    runtimeGitCommit: "a".repeat(40),
     runtimeBuildId: "formal-runtime-build",
     runtimeAppVersion: "1.0.0",
+    timeoutMs: 900000,
     photoshopRuntimeBuildId: safePhotoshopRuntimeBinding.live.buildId,
+    photoshopRuntimeGitCommit: safePhotoshopRuntimeBinding.live.gitCommit,
+    photoshopRuntimeSourceDigest: safePhotoshopRuntimeBinding.live.sourceDigest,
+    photoshopRuntimeArtifactDigest: safePhotoshopRuntimeBinding.runtimeDigest,
+    photoshopRuntimeManifestDigest: safePhotoshopRuntimeBinding.manifestDigest,
     photoshopRuntimeBinding: safePhotoshopRuntimeBinding,
     photoshopRuntimeBindingDigest: sha256Text(stableStringify(safePhotoshopRuntimeBinding))
   };
+  const formalCohortFingerprint = deriveLiveCohortFingerprint({
+    suiteId: formalSuite.manifest.suiteId,
+    suiteCaseSetDigest: formalSuiteCaseSetDigest,
+    suiteRubricSetDigest: formalSuiteRubricSetDigest,
+    environment: formalRuntimeEnvironment,
+    provider: "provider-a",
+    modelId: "model-a",
+    timeoutMs: 900000
+  });
   function formalAttemptEvents(input) {
     const inputCase = input.caseSpec;
+    const inputRubric = formalSuite.rubrics.find((item) => item.rubricId === inputCase.oracle.rubricId);
+    const fixtureRef = {
+      instanceId: input.fixtureInstanceId,
+      fixtureDigest: input.fixtureDigest,
+      workspaceSemanticDigest: input.workspaceSemanticDigest || sha256Text("workspace-default"),
+      pathBindingDigest: input.pathBindingDigest || sha256Text(`path-${input.fixtureInstanceId}`)
+    };
+    const liveRunProtocol = {
+      kind: inputCase.liveRunProtocol?.kind || "autonomous_zero_correction",
+      digest: buildDesignReliabilityLiveRunProtocolDigest(inputCase)
+    };
+    const caseRef = {
+      caseId: inputCase.caseId,
+      revision: inputCase.revision,
+      caseDigest: inputCase.caseDigest
+    };
+    const instructionDigest = sha256Text(inputCase.task.instruction);
+    const rubricDigest = buildRubricDigest(inputRubric);
+    const attemptFingerprint = deriveLiveAttemptFingerprint({
+      cohortFingerprint: formalCohortFingerprint,
+      caseRef,
+      fixtureRef,
+      instructionDigest,
+      rubricDigest,
+      liveRunProtocol,
+      repeatIndex: input.repeatIndex || 1
+    });
     const base = {
       version: "design-reliability-attempt-event/v1",
       attemptId: input.attemptId,
-      caseRef: {
-        caseId: inputCase.caseId,
-        revision: inputCase.revision,
-        caseDigest: inputCase.caseDigest
-      },
+      caseRef,
       cohortId: "cohort-formal-denominator",
       repeatIndex: input.repeatIndex || 1,
       provider: "provider-a",
       modelId: "model-a",
-      fixtureRef: {
-        instanceId: input.fixtureInstanceId,
-        fixtureDigest: input.fixtureDigest
-      },
+      timeoutMs: 900000,
+      liveRunProtocol,
+      fixtureRef,
       environment: formalRuntimeEnvironment,
-      instructionDigest: input.instructionDigest,
-      rubricDigest: input.rubricDigest,
+      instructionDigest,
+      rubricDigest,
       suiteCaseSetDigest: formalSuiteCaseSetDigest,
       suiteRubricSetDigest: formalSuiteRubricSetDigest,
       cohortFingerprint: formalCohortFingerprint,
-      attemptFingerprint: input.attemptFingerprint
+      attemptFingerprint
     };
     return [
       {
@@ -3029,6 +3920,9 @@ async function main() {
         eventType: "terminal",
         occurredAt: "2026-08-26T00:00:03.000Z",
         status: input.status,
+        interactionMetricsKnown: true,
+        protocolInteractionCount: 0,
+        userDesignCorrectionCount: 0,
         ...(input.runObservationId ? { runObservationId: input.runObservationId } : {})
       }
     ];
@@ -3038,15 +3932,14 @@ async function main() {
     caseSpec,
     fixtureInstanceId: "fixture-formal-pass",
     fixtureDigest: `sha256:${"a".repeat(64)}`,
-    attemptFingerprint: `sha256:${"b".repeat(64)}`,
-    instructionDigest: `sha256:${"e".repeat(64)}`,
-    rubricDigest: `sha256:${"f".repeat(64)}`,
     status: "technical_delivery_passed",
     runObservationId: formalAttemptRun.runObservationId
   };
+  const formalPassEvents = formalAttemptEvents(formalPassInput);
+  const formalPassIdentity = formalPassEvents[0];
   formalAttemptRun.attempt = {
     attemptId: formalPassInput.attemptId,
-    attemptFingerprint: formalPassInput.attemptFingerprint,
+    attemptFingerprint: formalPassIdentity.attemptFingerprint,
     repeatIndex: 1
   };
   formalAttemptRun.cohortDimensions = {
@@ -3055,26 +3948,47 @@ async function main() {
     requestedModelId: "model-a",
     fixtureInstanceId: formalPassInput.fixtureInstanceId,
     fixtureDigest: formalPassInput.fixtureDigest,
-    instructionDigest: formalPassInput.instructionDigest,
-    rubricDigest: formalPassInput.rubricDigest,
+    workspaceSemanticDigest: formalPassIdentity.fixtureRef.workspaceSemanticDigest,
+    instructionDigest: formalPassIdentity.instructionDigest,
+    rubricDigest: formalPassIdentity.rubricDigest,
+    liveRunProtocolKind: "autonomous_zero_correction",
+    liveRunProtocolDigest: buildDesignReliabilityLiveRunProtocolDigest(caseSpec),
     suiteCaseSetDigest: formalSuiteCaseSetDigest,
     suiteRubricSetDigest: formalSuiteRubricSetDigest,
     cohortFingerprint: formalCohortFingerprint,
     ...formalRuntimeEnvironment
   };
+  const formalFailInput = {
+    attemptId: "attempt-formal-provider-fail",
+    caseSpec: formalSkuCase,
+    fixtureInstanceId: "fixture-formal-fail",
+    fixtureDigest: `sha256:${"c".repeat(64)}`,
+    status: "provider_failed"
+  };
+  const formalFailEvents = formalAttemptEvents(formalFailInput);
   const formalAttemptCoverage = buildLiveAttemptCoverage([
-    ...formalAttemptEvents(formalPassInput),
-    ...formalAttemptEvents({
-      attemptId: "attempt-formal-provider-fail",
-      caseSpec: readSkuCase(),
-      fixtureInstanceId: "fixture-formal-fail",
-      fixtureDigest: `sha256:${"c".repeat(64)}`,
-      attemptFingerprint: `sha256:${"d".repeat(64)}`,
-      instructionDigest: `sha256:${"1".repeat(64)}`,
-      rubricDigest: `sha256:${"2".repeat(64)}`,
-      status: "provider_failed"
-    })
-  ], [formalAttemptRun], { cases: [caseSpec, readSkuCase()] }, [formalAttemptReview]);
+    ...formalPassEvents,
+    ...formalFailEvents
+  ], [formalAttemptRun], formalSuite, [formalAttemptReview]);
+  const formalAttemptReportContext = buildAttemptCohortReportContext([
+    ...formalPassEvents,
+    ...formalFailEvents
+  ], "cohort-formal-denominator");
+  assert.deepStrictEqual(formalAttemptReportContext.attemptIds.sort(), [
+    "attempt-formal-pass",
+    "attempt-formal-provider-fail"
+  ]);
+  assert.deepStrictEqual(formalAttemptReportContext.attemptFixtureDigestsByCase, {
+    [caseSpec.caseId]: [sha256Text(stableStringify({
+      fixtureDigest: formalPassInput.fixtureDigest,
+      workspaceSemanticDigest: formalPassEvents[0].fixtureRef.workspaceSemanticDigest
+    }))],
+    [formalSkuCase.caseId]: [sha256Text(stableStringify({
+      fixtureDigest: formalFailInput.fixtureDigest,
+      workspaceSemanticDigest: formalFailEvents[0].fixtureRef.workspaceSemanticDigest
+    }))]
+  }, "失败 Attempt 的 fixture 身份也必须进入 cohort 比较条件，不能只看有 Run 的成功样本");
+  assert.strictEqual(formalAttemptReportContext.comparisonControlProfiles.length, 1);
   const formalAttemptCohort = formalAttemptCoverage.byCohort["cohort-formal-denominator"];
   assert.strictEqual(formalAttemptCohort.homogeneous, true,
     "不同 Case 与一次性 fixture 必须共享 cohort 协议指纹，而不是被误判为环境混杂");
@@ -3092,6 +4006,65 @@ async function main() {
   assert.strictEqual(formalAttemptCohort.allSubmittedAttemptsTerminal, true);
   assert.strictEqual(isOfficialAttemptCohortReady(formalAttemptCohort), true,
     "只有同质、协议有效、全终态且无 unknown-write 的 Attempt cohort 才能声明正式成功率");
+  const forgedFingerprintEvents = JSON.parse(JSON.stringify(formalPassEvents));
+  for (const event of forgedFingerprintEvents) {
+    event.cohortFingerprint = sha256Text("forged-opaque-cohort");
+    event.attemptFingerprint = sha256Text("forged-opaque-attempt");
+  }
+  const forgedFingerprintVerdict = evaluateOfficialAttemptEligibility(
+    formalPassInput.attemptId,
+    forgedFingerprintEvents,
+    formalSuite
+  );
+  assert.strictEqual(forgedFingerprintVerdict.valid, false,
+    "读取 canonical Attempt 时必须重算 cohort/attempt fingerprint，不能相信 writer 提供的不透明字符串");
+  assert(forgedFingerprintVerdict.protocolIssues.includes("cohort_fingerprint_mismatch"));
+  const wrongRubricEvents = JSON.parse(JSON.stringify(formalPassEvents));
+  const wrongRubricDigest = sha256Text("wrong-case-rubric");
+  const wrongRubricAttemptFingerprint = deriveLiveAttemptFingerprint({
+    cohortFingerprint: formalCohortFingerprint,
+    caseRef: wrongRubricEvents[0].caseRef,
+    fixtureRef: wrongRubricEvents[0].fixtureRef,
+    instructionDigest: wrongRubricEvents[0].instructionDigest,
+    rubricDigest: wrongRubricDigest,
+    liveRunProtocol: wrongRubricEvents[0].liveRunProtocol,
+    repeatIndex: wrongRubricEvents[0].repeatIndex
+  });
+  for (const event of wrongRubricEvents) {
+    event.rubricDigest = wrongRubricDigest;
+    event.attemptFingerprint = wrongRubricAttemptFingerprint;
+  }
+  assert.strictEqual(
+    evaluateOfficialAttemptEligibility(formalPassInput.attemptId, wrongRubricEvents, formalSuite).valid,
+    false,
+    "Attempt 即使内部自洽，也必须与当前 Case 权威 Rubric 摘要一致"
+  );
+  const unknownWriteEvents = formalAttemptEvents({
+    ...formalPassInput,
+    attemptId: "attempt-unknown-write-reconciled",
+    status: "submission_unknown_write_state",
+    runObservationId: undefined
+  });
+  unknownWriteEvents.push({
+    ...unknownWriteEvents[2],
+    eventId: "attempt-unknown-write-reconciled:4:reconciled",
+    sequence: 4,
+    eventType: "reconciled",
+    occurredAt: "2026-08-26T00:00:04.000Z",
+    status: "reconciled_after_runtime_restart",
+    priorStatus: "submission_unknown_write_state"
+  });
+  const unknownWriteCoverage = buildLiveAttemptCoverage(
+    unknownWriteEvents,
+    [],
+    formalSuite,
+    []
+  ).byCohort["cohort-formal-denominator"];
+  assert.strictEqual(unknownWriteCoverage.protocolValid, true,
+    "身份一致的 reconciliation 应能闭合事件协议");
+  assert.strictEqual(unknownWriteCoverage.unknownWriteStateCount, 1,
+    "reconciliation 只解除未来运行阻塞，不能抹掉本 Attempt 曾发生 unknown-write 的安全事故");
+  assert.strictEqual(isOfficialAttemptCohortReady(unknownWriteCoverage), false);
 
   const reusedRunCoverage = buildLiveAttemptCoverage([
     ...formalAttemptEvents(formalPassInput),
@@ -3126,7 +4099,8 @@ async function main() {
     "协议漂移 cohort 不得被 release gate 绕过后宣称已通过实机可靠性");
   const buildPreflightSource = buildPreflight.toString();
   assert(buildPreflightSource.includes("isOfficialAttemptCohortReady(")
-    && buildPreflightSource.includes("attemptSafetyLedger.unresolvedAttemptCount === 0"),
+    && buildPreflightSource.includes("attemptSafetyLedger.unresolvedAttemptCount === 0")
+    && buildPreflightSource.includes("TASK_FAMILIES.every"),
   "preflight.liveEvidencePassed 必须消费同 cohort 的官方 Attempt 协议与 canonical 未闭合账本，不得只看 Run/Review release gate");
 
   const validStateMachineEvents = formalAttemptEvents(formalPassInput);
@@ -3168,6 +4142,311 @@ async function main() {
 
   const fullSuite = loadSuite();
   assert.strictEqual(fullSuite.ok, true);
+  assert.strictEqual(fullSuite.cases.filter((item) => item.status === "active").length, 5,
+    "正式 Suite 应包含主图、unseen 主图、详情页、自主 SKU 与真实参考复刻五个 active Case");
+  assert.strictEqual(fullSuite.cases.filter((item) => item.status === "draft").length, 1,
+    "SKU 交互协议在 actor/receipt 完成前只能保留一个 draft Case");
+  assert(designReliabilityCliSource.includes(
+    "dispatchProtocol: dispatchAutonomousZeroCorrectionProtocol"
+  )
+    && designReliabilityCliSource.includes("actorCapability.dispatchProtocol({")
+    && designReliabilityCliSource.includes("validateLiveActorDispatchResult(")
+    && designReliabilityCliSource.includes(
+      "交互协议必须由专用私有评测 dispatcher 完整实现后才能注册"
+    )
+    && !designReliabilityCliSource.includes("typeof capability.resolvePrivateEvaluation")
+    && !designReliabilityCliSource.includes("typeof capability.verifyInteractionReceipts")
+    && !designReliabilityCliSource.includes("typeof capability.deriveInteractionMetrics"),
+  "live actor 必须以一个真实执行且验证完整协议的 dispatcher 注册，不能用 metadata 或分散的 no-op hooks 解锁");
+  assert.strictEqual(fullSuiteInputDigestsAreFrozen(fullSuite.cases), true,
+    "Suite 中所有源文件与 Agent 可见参考都必须冻结真实 SHA-256");
+  await assert.rejects(
+    () => runLiveCase(fullSuite, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live",
+      "--case",
+      caseSpec.caseId,
+      "--provider",
+      "provider-a",
+      "--model",
+      "model-a",
+      "--repeat",
+      "0",
+      "--live",
+      "--allow-photoshop-write"
+    ])),
+    /repeat 必须是正整数.*不会检查 fixture/,
+    "无效 repeatIndex 必须在 fixture、网络或 Photoshop 检查之前失败关闭"
+  );
+  await assert.rejects(
+    () => runLiveCase(fullSuite, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live",
+      "--case",
+      interactiveSkuCase.caseId,
+      "--provider",
+      "provider-a",
+      "--model",
+      "model-a",
+      "--live",
+      "--allow-photoshop-write"
+    ])),
+    /只允许 active Case/,
+    "尚无 dev user actor 的交互 Case 必须在任何 fixture 或 Photoshop 检查前拒绝 live"
+  );
+  const accidentallyActivatedInteractionCase = JSON.parse(JSON.stringify(interactiveSkuCase));
+  accidentallyActivatedInteractionCase.status = "active";
+  accidentallyActivatedInteractionCase.revision += 1;
+  accidentallyActivatedInteractionCase.caseDigest = buildCaseDigest(accidentallyActivatedInteractionCase);
+  await assert.rejects(
+    () => runLiveCase({
+      ...fullSuite,
+      cases: fullSuite.cases.map((item) => (
+        item.caseId === accidentallyActivatedInteractionCase.caseId
+          ? accidentallyActivatedInteractionCase
+          : item
+      ))
+    }, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live",
+      "--case",
+      accidentallyActivatedInteractionCase.caseId,
+      "--provider",
+      "provider-a",
+      "--model",
+      "model-a",
+      "--live",
+      "--allow-photoshop-write"
+    ])),
+    /evaluator actor capability/,
+    "交互 Case 即使被误改 active，也必须因 actor capability 未注册在 fixture/Photoshop 前失败关闭"
+  );
+
+  const interactionFixtureTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-interaction-fixture-"));
+  const interactionFixtureSource = path.join(interactionFixtureTempRoot, "source");
+  const interactionFixtureDestination = path.join(interactionFixtureTempRoot, "destination");
+  const interactionFixtureReports = path.join(interactionFixtureTempRoot, "reports");
+  const interactionFixtureCase = JSON.parse(JSON.stringify(interactiveSkuCase));
+  for (const input of interactionFixtureCase.task.agentVisibleInputs) {
+    const sourcePath = path.join(interactionFixtureSource, ...input.ref.split("/"));
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, `color-source:${input.ref}`, "utf8");
+    input.digest = `sha256:${crypto.createHash("sha256")
+      .update(fs.readFileSync(sourcePath)).digest("hex")}`;
+  }
+  interactionFixtureCase.revision += 1;
+  interactionFixtureCase.caseDigest = buildCaseDigest(interactionFixtureCase);
+  try {
+    prepareFixture(
+      { manifest: fullSuite.manifest, cases: [interactionFixtureCase] },
+      parseArgs([
+        "node",
+        "design-reliability.cjs",
+        "prepare-fixture",
+        "--case",
+        interactionFixtureCase.caseId,
+        "--source-root",
+        interactionFixtureSource,
+        "--destination",
+        interactionFixtureDestination,
+        "--allow-create"
+      ]),
+      interactionFixtureReports
+    );
+    const fixtureText = fs.readdirSync(interactionFixtureDestination, { recursive: true })
+      .map(String)
+      .filter((relativeRef) => {
+        const filePath = path.join(interactionFixtureDestination, relativeRef);
+        return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+      })
+      .map((relativeRef) => fs.readFileSync(path.join(interactionFixtureDestination, relativeRef), "utf8"))
+      .join("\n");
+    assert(!fixtureText.includes('"combos"')
+      && !JSON.stringify(interactionFixtureCase).includes('"combos"'),
+    "evaluator 私有用户组合答案不能进入公开 Case 或 fixture");
+  } finally {
+    fs.rmSync(interactionFixtureTempRoot, { recursive: true, force: true });
+  }
+  const runSubjectTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-attribution-subject-"));
+  const runSubjectPath = path.join(runSubjectTempRoot, "run.json");
+  fs.writeFileSync(runSubjectPath, `${JSON.stringify(passing, null, 2)}\n`, "utf8");
+  try {
+    assert.deepStrictEqual(
+      resolveAttributionCliSubject(fullSuite, parseArgs([
+        "node",
+        "design-reliability.cjs",
+        "record-attribution",
+        "--run-observation",
+        runSubjectPath
+      ])).subject,
+      { runObservationId: passing.runObservationId },
+      "CLI 必须把合法当前 Run 规范化为唯一 subject union"
+    );
+    assert.throws(
+      () => resolveAttributionCliSubject(fullSuite, parseArgs([
+        "node",
+        "design-reliability.cjs",
+        "record-attribution",
+        "--run-observation",
+        runSubjectPath,
+        "--attempt-id",
+        "attempt-mixed"
+      ])),
+      /必须且只能提供/,
+      "CLI 不能同时接受 Run 与 Attempt 两个归因身份"
+    );
+  } finally {
+    fs.rmSync(runSubjectTempRoot, { recursive: true, force: true });
+  }
+
+  const currentAttemptId = "attempt-current-without-run";
+  const currentAttemptAttribution = {
+    ...attemptAttribution,
+    attributionId: "current-attempt-provider-failure",
+    subject: { attemptId: currentAttemptId }
+  };
+  const currentAttemptSeedEvents = formalAttemptEvents({
+    attemptId: currentAttemptId,
+    caseSpec,
+    fixtureInstanceId: "fixture-current-without-run",
+    fixtureDigest: `sha256:${"4".repeat(64)}`,
+    status: "provider_failed"
+  });
+  const currentSuiteCaseSetDigest = buildSuiteCaseSetDigest(fullSuite);
+  const currentSuiteRubricSetDigest = buildSuiteRubricSetDigest(fullSuite);
+  const currentCohortFingerprint = deriveLiveCohortFingerprint({
+    suiteId: fullSuite.manifest.suiteId,
+    suiteCaseSetDigest: currentSuiteCaseSetDigest,
+    suiteRubricSetDigest: currentSuiteRubricSetDigest,
+    environment: formalRuntimeEnvironment,
+    provider: "provider-a",
+    modelId: "model-a",
+    timeoutMs: 900000
+  });
+  const currentAttemptFingerprint = deriveLiveAttemptFingerprint({
+    cohortFingerprint: currentCohortFingerprint,
+    caseRef: currentAttemptSeedEvents[0].caseRef,
+    fixtureRef: currentAttemptSeedEvents[0].fixtureRef,
+    instructionDigest: sha256Text(caseSpec.task.instruction),
+    rubricDigest: buildRubricDigest(rubric),
+    liveRunProtocol: currentAttemptSeedEvents[0].liveRunProtocol,
+    repeatIndex: currentAttemptSeedEvents[0].repeatIndex
+  });
+  const currentAttemptEvents = currentAttemptSeedEvents.map((event) => ({
+    ...event,
+    instructionDigest: sha256Text(caseSpec.task.instruction),
+    rubricDigest: buildRubricDigest(rubric),
+    suiteCaseSetDigest: currentSuiteCaseSetDigest,
+    suiteRubricSetDigest: currentSuiteRubricSetDigest,
+    cohortFingerprint: currentCohortFingerprint,
+    attemptFingerprint: currentAttemptFingerprint
+  }));
+  const retainedAttemptAttribution = retainContextuallyValidReviews({
+    runs: [],
+    reviews: [],
+    attributions: [currentAttemptAttribution],
+    attemptEvents: currentAttemptEvents,
+    invalid: [],
+    excludedEvidence: []
+  }, fullSuite);
+  assert.strictEqual(retainedAttemptAttribution.attributions.length, 1,
+    "CLI sidecar 过滤必须保留当前 Suite 中已提交但没有 Run Observation 的 Attempt 归因");
+  assert.strictEqual(retainedAttemptAttribution.excludedEvidence.length, 0);
+  assert.strictEqual(
+    evaluateAttributableAttemptEvents(currentAttemptId, currentAttemptEvents, fullSuite).valid,
+    true
+  );
+  const duplicateTerminalAttemptEvents = [
+    ...currentAttemptEvents,
+    {
+      ...currentAttemptEvents[2],
+      eventId: `${currentAttemptId}:4:terminal`,
+      sequence: 4,
+      occurredAt: "2026-08-26T00:00:04.000Z"
+    }
+  ];
+  const invalidatedAttemptAttribution = retainContextuallyValidReviews({
+    runs: [],
+    reviews: [],
+    attributions: [currentAttemptAttribution],
+    attemptEvents: duplicateTerminalAttemptEvents,
+    invalid: [],
+    excludedEvidence: []
+  }, fullSuite);
+  assert.strictEqual(invalidatedAttemptAttribution.attributions.length, 0,
+    "归因创建后 Attempt 若出现重复 terminal 或协议漂移，汇总必须撤销其当前有效归因资格");
+  assert.strictEqual(invalidatedAttemptAttribution.excludedEvidence.some((item) => (
+    item.id === currentAttemptAttribution.attributionId
+    && item.reason === "bound_attempt_not_current"
+  )), true);
+  assert.strictEqual(fullSuite.manifest.liveRunPolicy.timeoutMs, 900000,
+    "正式实机采集必须由 Suite 固定质量优先 timeout");
+  assert.strictEqual(
+    resolveLiveRunTimeout(fullSuite.manifest, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live"
+    ])),
+    900000,
+    "CLI 未显式覆盖时必须使用 Suite timeout，不能回落到隐藏的五分钟默认值"
+  );
+  assert.strictEqual(
+    resolveLiveRunTimeout(fullSuite.manifest, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live",
+      "--timeout-ms",
+      "900000"
+    ])),
+    900000,
+    "显式 timeout 只有与 Suite policy 完全一致时才可接受"
+  );
+  assert.throws(
+    () => resolveLiveRunTimeout(fullSuite.manifest, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live",
+      "--timeout-ms",
+      "300000"
+    ])),
+    /与 Suite 固定质量优先值 900000ms 不一致/,
+    "旧五分钟覆盖不得静默形成另一个 cohort"
+  );
+  assert.throws(
+    () => resolveLiveRunTimeout(fullSuite.manifest, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live",
+      "--timeout-ms",
+      "not-a-number"
+    ])),
+    /必须是与 Suite 固定策略一致的整数/,
+    "非法 timeout 不能被兜底为 Suite 值并伪装成有效请求"
+  );
+  assert.throws(
+    () => resolveLiveRunTimeout({ ...fullSuite.manifest, liveRunPolicy: undefined }, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live"
+    ])),
+    /liveRunPolicy\.timeoutMs 非法/,
+    "Suite 缺失 timeout policy 时不能启动正式采集"
+  );
+  assert.throws(
+    () => resolveLiveRunTimeout({
+      ...fullSuite.manifest,
+      liveRunPolicy: { ...fullSuite.manifest.liveRunPolicy, timeoutMs: 0 }
+    }, parseArgs([
+      "node",
+      "design-reliability.cjs",
+      "run-live"
+    ])),
+    /liveRunPolicy\.timeoutMs 非法/,
+    "Suite 非法 timeout policy 不能被 CLI 默认值掩盖"
+  );
   const invalidAnchorRubric = JSON.parse(JSON.stringify(readRubric()));
   invalidAnchorRubric.scoreAnchorValues.strong = 0.8;
   assert.strictEqual(validateRubric(invalidAnchorRubric).ok, false,
@@ -3176,6 +4455,61 @@ async function main() {
     const rubric = fullSuite.rubrics.find((item) => item.rubricId === suiteCase.oracle?.rubricId);
     return rubric && rubric.taskFamily === suiteCase.taskFamily;
   }), "Suite 中 Case 与其 Rubric 的 taskFamily 必须逐项一致");
+  const referenceFixtureTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-reference-fixture-"));
+  const referenceFixtureSource = path.join(referenceFixtureTempRoot, "source");
+  const referenceFixtureDestination = path.join(referenceFixtureTempRoot, "destination");
+  const referenceFixtureReports = path.join(referenceFixtureTempRoot, "reports");
+  const visibleReferencePath = path.join(
+    referenceFixtureSource,
+    ...referenceReplicationCase.task.agentVisibleReferences[0].ref.split("/")
+  );
+  fs.mkdirSync(path.dirname(visibleReferencePath), { recursive: true });
+  fs.writeFileSync(visibleReferencePath, "agent-visible-reference", "utf8");
+  const hiddenReferenceDecoyPath = path.join(referenceFixtureSource, "隐藏评审锚点.png");
+  fs.writeFileSync(hiddenReferenceDecoyPath, "review-only", "utf8");
+  try {
+    const preparedReferenceFixture = prepareFixture(
+      { manifest: fullSuite.manifest, cases: [referenceReplicationCase] },
+      parseArgs([
+        "node",
+        "design-reliability.cjs",
+        "prepare-fixture",
+        "--case",
+        referenceReplicationCase.caseId,
+        "--source-root",
+        referenceFixtureSource,
+        "--destination",
+        referenceFixtureDestination,
+        "--allow-create"
+      ]),
+      referenceFixtureReports
+    );
+    assert.strictEqual(preparedReferenceFixture.report.copiedFileCount, 1,
+      "reference_replication fixture 只复制用户明确给 Agent 的参考");
+    assert.strictEqual(fs.existsSync(path.join(
+      referenceFixtureDestination,
+      ...referenceReplicationCase.task.agentVisibleReferences[0].ref.split("/")
+    )), true);
+    assert.strictEqual(fs.existsSync(path.join(referenceFixtureDestination, "隐藏评审锚点.png")), false,
+      "review-only 锚点不能进入 Agent 项目");
+    const copiedVisibleReferencePath = path.join(
+      referenceFixtureDestination,
+      ...referenceReplicationCase.task.agentVisibleReferences[0].ref.split("/")
+    );
+    fs.writeFileSync(copiedVisibleReferencePath, "changed-reference", "utf8");
+    const changedReferenceInspection = inspectFixture(
+      [referenceReplicationCase],
+      referenceFixtureDestination
+    );
+    assert.strictEqual(changedReferenceInspection.ready, false,
+      "Agent 可见目标参考内容变化后不得继续沿用 Case 中冻结的参考身份");
+    assert.deepStrictEqual(
+      changedReferenceInspection.digestMismatches.map((item) => item.ref),
+      [referenceReplicationCase.task.agentVisibleReferences[0].ref]
+    );
+  } finally {
+    fs.rmSync(referenceFixtureTempRoot, { recursive: true, force: true });
+  }
   const unionFixtureTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'designecho-union-fixture-'));
   const unionFixtureSource = path.join(unionFixtureTempRoot, 'source');
   const unionFixtureDestination = path.join(unionFixtureTempRoot, 'destination');
@@ -3254,7 +4588,9 @@ async function main() {
     fs.rmSync(unsafeInventoryRoot, { recursive: true, force: true });
     fs.rmSync(unsafeInventoryTarget, { recursive: true, force: true });
   }
-  const currentCase = fullSuite.cases.find((item) => item.caseId === caseSpec.caseId);
+  const currentCase = JSON.parse(JSON.stringify(
+    fullSuite.cases.find((item) => item.caseId === caseSpec.caseId)
+  ));
   const generatedFixtureTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-generated-fixture-"));
   const generatedFixtureSource = path.join(generatedFixtureTempRoot, "source");
   const generatedFixtureDestination = path.join(generatedFixtureTempRoot, "destination");
@@ -3264,7 +4600,11 @@ async function main() {
     const sourcePath = path.join(generatedFixtureSource, ...input.ref.replace(/\\/g, "/").split("/"));
     fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
     fs.writeFileSync(sourcePath, `fixture:${input.ref}`, "utf8");
+    input.digest = `sha256:${crypto.createHash("sha256")
+      .update(fs.readFileSync(sourcePath)).digest("hex")}`;
   }
+  currentCase.revision += 1;
+  currentCase.caseDigest = buildCaseDigest(currentCase);
   try {
     const preparedGeneratedFixture = prepareFixture(
       { manifest: fullSuite.manifest, cases: [currentCase] },
@@ -3324,15 +4664,120 @@ async function main() {
       preparedInspection,
       generatedFixtureReports
     ), undefined, "Case revision 变化后旧 fixture receipt 必须失效");
+
+    const metadataDir = path.join(generatedFixtureDestination, ".designecho");
+    const metadataPath = path.join(metadataDir, "project.json");
+    fs.mkdirSync(metadataDir, { recursive: true });
+    const validProjectMetadata = {
+      version: "1.0",
+      createdAt: "2026-08-27T00:00:00.000Z",
+      lastOpenedAt: "2026-08-27T00:00:00.000Z",
+      projectPath: generatedFixtureDestination,
+      projectName: path.basename(generatedFixtureDestination),
+      folderMappings: {},
+      imageClassifications: {},
+      designPlan: {
+        mainImage: { status: "pending" },
+        sku: { status: "pending" },
+        detail: { status: "pending" }
+      }
+    };
+    fs.writeFileSync(metadataPath, `${JSON.stringify(validProjectMetadata, null, 2)}\n`, "utf8");
+    const controlledMetadataInspection = inspectFixture(
+      [currentCase],
+      generatedFixtureDestination
+    );
+    assert.strictEqual(controlledMetadataInspection.freshRunReady, true,
+      "合法且绑定当前 fixture 根的 project.json 不得阻断独立样本");
+    assert.strictEqual(controlledMetadataInspection.workspaceMetadata.ready, true);
+    assert.strictEqual(
+      controlledMetadataInspection.fixtureDigest,
+      preparedInspection.fixtureDigest,
+      "Workspace metadata 不能改变冻结输入摘要或 fixture instance 身份"
+    );
+    assert.notStrictEqual(
+      controlledMetadataInspection.workspaceMetadata.semanticDigest,
+      preparedInspection.workspaceMetadata.semanticDigest,
+      "会影响 Agent 判断的项目分类与设计状态必须形成独立语义摘要"
+    );
+    fs.writeFileSync(metadataPath, `${JSON.stringify({
+      ...validProjectMetadata,
+      lastOpenedAt: "2026-08-27T00:01:00.000Z"
+    }, null, 2)}\n`, "utf8");
+    const timestampOnlyInspection = inspectFixture([currentCase], generatedFixtureDestination);
+    assert.strictEqual(
+      timestampOnlyInspection.workspaceMetadata.semanticDigest,
+      controlledMetadataInspection.workspaceMetadata.semanticDigest,
+      "lastOpenedAt 等易变字段不能制造假样本漂移"
+    );
+    fs.writeFileSync(metadataPath, `${JSON.stringify({
+      ...validProjectMetadata,
+      designPlan: {
+        ...validProjectMetadata.designPlan,
+        mainImage: { status: "done" }
+      }
+    }, null, 2)}\n`, "utf8");
+    const changedSemanticInspection = inspectFixture([currentCase], generatedFixtureDestination);
+    assert.notStrictEqual(
+      changedSemanticInspection.workspaceMetadata.semanticDigest,
+      controlledMetadataInspection.workspaceMetadata.semanticDigest,
+      "不同 designPlan 或素材语义状态不能混进同一正式 cohort"
+    );
+
+    fs.writeFileSync(metadataPath, `${JSON.stringify({
+      ...validProjectMetadata,
+      projectPath: generatedFixtureSource
+    }, null, 2)}\n`, "utf8");
+    const forgedRootInspection = inspectFixture([currentCase], generatedFixtureDestination);
+    assert.strictEqual(forgedRootInspection.freshRunReady, false,
+      "project.json 声称属于另一个项目根时必须拒绝");
+    assert(forgedRootInspection.workspaceMetadata.errors.includes("project_metadata_root_mismatch"));
+
+    fs.writeFileSync(metadataPath, `${JSON.stringify({
+      ...validProjectMetadata,
+      ignoreEverythingUnderDesignecho: true
+    }, null, 2)}\n`, "utf8");
+    const forgedSchemaInspection = inspectFixture([currentCase], generatedFixtureDestination);
+    assert.strictEqual(forgedSchemaInspection.freshRunReady, false,
+      "伪造字段不能把 project.json 变成目录级忽略开关");
+    assert(forgedSchemaInspection.workspaceMetadata.errors.includes("project_metadata_schema_invalid"));
+
+    fs.writeFileSync(metadataPath, `${JSON.stringify({
+      ...validProjectMetadata,
+      folderMappings: { S82646: "pretend_fixture_is_clean" }
+    }, null, 2)}\n`, "utf8");
+    const invalidEnumInspection = inspectFixture([currentCase], generatedFixtureDestination);
+    assert.strictEqual(invalidEnumInspection.freshRunReady, false,
+      "project.json 中无效分类枚举必须按 schema 失败");
+    assert(invalidEnumInspection.workspaceMetadata.errors.includes("project_metadata_schema_invalid"));
+
+    fs.writeFileSync(metadataPath, `${JSON.stringify(validProjectMetadata, null, 2)}\n`, "utf8");
+    fs.writeFileSync(path.join(metadataDir, "design-state.json"), "{}\n", "utf8");
+    fs.mkdirSync(path.join(metadataDir, "runs"), { recursive: true });
+    fs.writeFileSync(path.join(metadataDir, "runs", "run-stale.json"), "{}\n", "utf8");
+    const oldOutputDir = path.join(generatedFixtureDestination, "主图");
+    fs.mkdirSync(oldOutputDir, { recursive: true });
+    fs.writeFileSync(path.join(oldOutputDir, "旧成稿.psd"), "stale", "utf8");
+    fs.writeFileSync(path.join(oldOutputDir, "旧导出.jpg"), "stale", "utf8");
+    const pollutedWorkspaceInspection = inspectFixture([currentCase], generatedFixtureDestination);
+    assert.strictEqual(pollutedWorkspaceInspection.freshRunReady, false,
+      "受控 project.json 不能扩张成对 .designecho、旧 PSD 或输出目录的笼统忽略");
+    assert.deepStrictEqual(pollutedWorkspaceInspection.unexpected, [
+      ".designecho/design-state.json",
+      ".designecho/runs/run-stale.json",
+      "主图/旧导出.jpg",
+      "主图/旧成稿.psd"
+    ]);
   } finally {
     fs.rmSync(generatedFixtureTempRoot, { recursive: true, force: true });
   }
+  const currentSuiteCase = fullSuite.cases.find((item) => item.caseId === caseSpec.caseId);
   const currentContextBase = {
     ...formalAttemptEvents(formalPassInput)[0],
     caseRef: {
-      caseId: currentCase.caseId,
-      revision: currentCase.revision,
-      caseDigest: currentCase.caseDigest
+      caseId: currentSuiteCase.caseId,
+      revision: currentSuiteCase.revision,
+      caseDigest: currentSuiteCase.caseDigest
     },
     suiteCaseSetDigest: buildSuiteCaseSetDigest(fullSuite),
     suiteRubricSetDigest: buildSuiteRubricSetDigest(fullSuite)
@@ -3391,7 +4836,7 @@ async function main() {
   assert.strictEqual(driftExcluded.length, 0);
 
   const inactiveSuite = JSON.parse(JSON.stringify(fullSuite));
-  const inactiveCase = inactiveSuite.cases.find((item) => item.caseId === currentCase.caseId);
+  const inactiveCase = inactiveSuite.cases.find((item) => item.caseId === currentSuiteCase.caseId);
   inactiveCase.status = "retired";
   const inactiveAttemptEvents = currentAttemptWithDrift.slice(0, 2).map((event) => ({
     ...event,
@@ -3501,6 +4946,26 @@ async function main() {
       "损坏的 canonical Attempt 文件必须保留安全账本身份，供 preflight fail closed");
   } finally {
     fs.rmSync(invalidLedgerRoot, { recursive: true, force: true });
+  }
+  const unknownAttemptVersionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-unknown-attempt-version-"));
+  try {
+    fs.writeFileSync(
+      path.join(unknownAttemptVersionRoot, "future-event.json"),
+      `${JSON.stringify({ version: "design-reliability-attempt-event/v99" }, null, 2)}\n`,
+      "utf8"
+    );
+    const unknownVersionSidecars = collectSidecars(
+      [unknownAttemptVersionRoot],
+      { strictAttemptEvents: true }
+    );
+    assert.strictEqual(unknownVersionSidecars.invalid[0]?.kind, "attempt_event");
+    assert.match(
+      unknownVersionSidecars.invalid[0]?.errors?.[0] || "",
+      /只能包含受支持的 Attempt event/,
+      "canonical Attempt 目录中的未知版本不能被静默跳过"
+    );
+  } finally {
+    fs.rmSync(unknownAttemptVersionRoot, { recursive: true, force: true });
   }
 
   const lowScorePass = JSON.parse(JSON.stringify(review));
@@ -3935,6 +5400,22 @@ async function main() {
     value: 1
   });
   assert.strictEqual(report.overall.reliability.agenticHarnessWriteAttemptRunCount, 0);
+  const attemptAttributionReport = buildDesignReliabilityCohortReport({
+    suiteId: caseSpec.suiteId,
+    cohortId: "candidate",
+    cases: [caseSpec],
+    rubrics: [rubric],
+    runs: [passing],
+    reviews: [],
+    attributions: [attemptAttribution],
+    attemptIds: ["attempt-without-run-observation"]
+  });
+  assert.strictEqual(attemptAttributionReport.attribution.confirmedCount, 1,
+    "没有 Run Observation 的提交失败归因必须进入所属 cohort，而不是从报告里消失");
+  assert.deepStrictEqual(attemptAttributionReport.attribution.bySubjectKind, {
+    run_observation: 0,
+    attempt: 1
+  });
 
   const conflictingReview = {
     ...JSON.parse(JSON.stringify(review)),
@@ -3975,14 +5456,281 @@ async function main() {
   assert.strictEqual(fixtureIdentityReport.cohortIntegrity.homogeneous, false,
     "同一 Case 但 fixtureDigest 不同的样本不得被视为同质 cohort");
 
-  const differentCaseSet = JSON.parse(JSON.stringify(report));
+  function metricRate(numerator, denominator) {
+    return {
+      numerator,
+      denominator,
+      value: denominator > 0 ? Math.round((numerator / denominator) * 10000) / 10000 : null
+    };
+  }
+
+  function reshapeRunAggregate(aggregate, runs, technical, strictReviewed, usable) {
+    aggregate.runs = runs;
+    aggregate.reliability.technicalDeliveryRate = metricRate(technical, runs);
+    aggregate.quality.strictHumanReviewedRate = metricRate(strictReviewed, runs);
+    aggregate.quality.humanPassRate = metricRate(usable, strictReviewed);
+    aggregate.quality.humanUsableRate = metricRate(usable, runs);
+    aggregate.quality.weightedOverall.count = strictReviewed;
+    aggregate.quality.pairwiseComparableOrBetterRate = metricRate(usable, strictReviewed);
+    for (const distributionValue of Object.values(aggregate.quality.dimensionScores || {})) {
+      distributionValue.count = strictReviewed;
+    }
+  }
+
+  function withComparableAttemptShape(inputReport, technicalValue, commercialValue) {
+    const shaped = JSON.parse(JSON.stringify(inputReport));
+    const caseIds = Object.keys(shaped.byCase);
+    const submittedPerCase = 5;
+    const submitted = caseIds.length * submittedPerCase;
+    const technicalPassedPerCase = Math.round(submittedPerCase * technicalValue);
+    const commercialUsablePerCase = Math.round(submittedPerCase * commercialValue);
+    const technicalPassed = technicalPassedPerCase * caseIds.length;
+    const commercialUsable = commercialUsablePerCase * caseIds.length;
+    shaped.selector.comparisonControlProfiles = [{
+      provider: "provider-a",
+      modelId: "model-a",
+      timeoutMs: 900000
+    }];
+    shaped.selector.minimumDesignQualityReviewedRunsPerCase = 4;
+    shaped.selector.fixtureDigestsByCase = Object.fromEntries(caseIds.map((caseId, index) => [
+      caseId,
+      [sha256Text(`fixture-identity-${index}`)]
+    ]));
+    shaped.attempts = {
+      submitted,
+      homogeneous: true,
+      protocolValid: true,
+      allSubmittedAttemptsTerminal: true,
+      unknownWriteStateCount: 0,
+      strictReviewConflictCount: 0,
+      fixtureIdentityReady: true,
+      controlProfileCount: 1,
+      interactionMetricsKnownCount: submitted,
+      technicalDeliveryPassed: technicalPassed,
+      strictReviewedTechnicalPasses: technicalPassed,
+      commercialUsable,
+      strictReviewCoverageOfTechnicalPasses: {
+        numerator: technicalPassed,
+        denominator: technicalPassed,
+        value: technicalPassed > 0 ? 1 : null
+      },
+      technicalDeliveryRate: {
+        numerator: technicalPassed,
+        denominator: submitted,
+        value: technicalValue
+      },
+      commercialUsableRate: {
+        numerator: commercialUsable,
+        denominator: submitted,
+        value: commercialValue
+      },
+      byCase: Object.fromEntries(caseIds.map((caseId) => [caseId, {
+        submitted: submittedPerCase,
+        technicalDeliveryPassed: technicalPassedPerCase,
+        strictReviewedTechnicalPasses: technicalPassedPerCase,
+        commercialUsable: commercialUsablePerCase,
+        interactionMetricsKnown: submittedPerCase
+      }])),
+      byTaskFamily: {
+        main_image: {
+          submitted,
+          technicalDeliveryPassed: technicalPassed,
+          strictReviewedTechnicalPasses: technicalPassed,
+          commercialUsable,
+          interactionMetricsKnown: submitted
+        }
+      },
+      submittedRepeatIndexesByCase: Object.fromEntries(caseIds.map((caseId) => [
+        caseId,
+        [1, 2, 3, 4, 5]
+      ]))
+    };
+    reshapeRunAggregate(
+      shaped.overall,
+      technicalPassed,
+      technicalPassed,
+      technicalPassed,
+      commercialUsable
+    );
+    for (const caseId of caseIds) {
+      reshapeRunAggregate(
+        shaped.byCase[caseId],
+        technicalPassedPerCase,
+        technicalPassedPerCase,
+        technicalPassedPerCase,
+        commercialUsablePerCase
+      );
+    }
+    for (const familyAggregate of Object.values(shaped.byTaskFamily)) {
+      reshapeRunAggregate(
+        familyAggregate,
+        technicalPassed,
+        technicalPassed,
+        technicalPassed,
+        commercialUsable
+      );
+    }
+    shaped.coverage.runs = technicalPassed;
+    return shaped;
+  }
+  const comparableBaseline = withComparableAttemptShape(officialAnonymousReport, 0.8, 0.6);
+  const comparableCandidate = withComparableAttemptShape(officialAnonymousReport, 0.2, 0.2);
+  comparableCandidate.cohortId = "candidate-regressed";
+  comparableCandidate.overall.reliability.technicalDeliveryRate = {
+    numerator: 1,
+    denominator: 1,
+    value: 1
+  };
+  const attemptDenominatorComparison = compareDesignReliabilityCohorts(
+    comparableBaseline,
+    comparableCandidate
+  );
+  assert.strictEqual(attemptDenominatorComparison.comparable, false,
+    "每 Case 只有一个幸存成稿时不能形成正式设计质量比较");
+  assert.strictEqual(attemptDenominatorComparison.technicalDiagnosticComparable, true);
+  assert.strictEqual(attemptDenominatorComparison.technicalDeltas.technicalDeliveryRate, -0.6,
+    "技术诊断仍必须使用全部 submitted Attempt 分母，不能让唯一幸存 Run 的 100% 掩盖真实回退");
+
+  const allFailedBaseline = withComparableAttemptShape(officialAnonymousReport, 0, 0);
+  const allFailedCandidate = withComparableAttemptShape(officialAnonymousReport, 0, 0);
+  allFailedCandidate.cohortId = "candidate-all-failed";
+  const allFailedComparison = compareDesignReliabilityCohorts(allFailedBaseline, allFailedCandidate);
+  assert.strictEqual(allFailedComparison.comparable, false);
+  assert.strictEqual(allFailedComparison.technicalDiagnosticComparable, true);
+  assert.strictEqual(allFailedComparison.designQualityComparable, false,
+    "全部 Attempt 失败且零盲评时只能比较技术失败率，不能生成设计质量结论");
+
+  const mixedFixtureIdentity = JSON.parse(JSON.stringify(comparableBaseline));
+  mixedFixtureIdentity.selector.fixtureDigestsByCase[caseSpec.caseId].push(sha256Text("second-fixture"));
+  assert.strictEqual(
+    compareDesignReliabilityCohorts(comparableBaseline, mixedFixtureIdentity).technicalDiagnosticComparable,
+    false,
+    "同一 Case 混入两个 fixture 语义身份时不能比较"
+  );
+
+  const impossibleAttemptArithmetic = JSON.parse(JSON.stringify(comparableBaseline));
+  impossibleAttemptArithmetic.attempts.technicalDeliveryPassed = 10;
+  impossibleAttemptArithmetic.attempts.strictReviewedTechnicalPasses = 10;
+  impossibleAttemptArithmetic.attempts.commercialUsable = 10;
+  impossibleAttemptArithmetic.attempts.technicalDeliveryRate = { numerator: 10, denominator: 5, value: 2 };
+  impossibleAttemptArithmetic.attempts.commercialUsableRate = { numerator: 10, denominator: 5, value: 2 };
+  impossibleAttemptArithmetic.attempts.strictReviewCoverageOfTechnicalPasses = {
+    numerator: 10,
+    denominator: 10,
+    value: 1
+  };
+  assert.strictEqual(
+    compareDesignReliabilityCohorts(comparableBaseline, impossibleAttemptArithmetic)
+      .technicalDiagnosticComparable,
+    false,
+    "成功数大于提交数或与逐 Case/逐任务族算术不一致时必须拒绝比较"
+  );
+
+  const differentCaseSet = JSON.parse(JSON.stringify(comparableBaseline));
   differentCaseSet.selector.caseSetDigest = `sha256:${"d".repeat(64)}`;
-  assert.strictEqual(compareDesignReliabilityCohorts(report, differentCaseSet).comparable, false);
-  const differentRubricSet = JSON.parse(JSON.stringify(report));
+  assert.strictEqual(compareDesignReliabilityCohorts(comparableBaseline, differentCaseSet).comparable, false);
+  const differentRubricSet = JSON.parse(JSON.stringify(comparableBaseline));
   differentRubricSet.selector.rubricSetDigest = `sha256:${"e".repeat(64)}`;
-  assert.strictEqual(compareDesignReliabilityCohorts(report, differentRubricSet).comparable, false,
+  assert.strictEqual(compareDesignReliabilityCohorts(comparableBaseline, differentRubricSet).comparable, false,
     "Rubric 内容身份不同的 cohort 禁止直接比较");
-  assert.strictEqual(compareDesignReliabilityCohorts(report, report).comparable, true);
+  const differentModelControl = JSON.parse(JSON.stringify(comparableBaseline));
+  differentModelControl.selector.comparisonControlProfiles = [{
+    provider: "provider-a",
+    modelId: "model-b",
+    timeoutMs: 900000
+  }];
+  assert.strictEqual(compareDesignReliabilityCohorts(comparableBaseline, differentModelControl).comparable, false,
+    "Provider、模型或 timeout 不同的 cohort 不能归因给代码治理效果");
+  const differentRepeatCoverage = JSON.parse(JSON.stringify(comparableCandidate));
+  differentRepeatCoverage.attempts.submitted = 4;
+  differentRepeatCoverage.attempts.byCase[caseSpec.caseId].submitted = 4;
+  differentRepeatCoverage.attempts.submittedRepeatIndexesByCase[caseSpec.caseId] = [1, 2, 3, 4];
+  assert.strictEqual(
+    compareDesignReliabilityCohorts(comparableBaseline, differentRepeatCoverage).comparable,
+    false,
+    "逐 Case 重复次数不同的 cohort 不能比较"
+  );
+  const coercedDuplicateRepeatCoverage = JSON.parse(JSON.stringify(comparableBaseline));
+  coercedDuplicateRepeatCoverage.attempts.submittedRepeatIndexesByCase[caseSpec.caseId] = [
+    1,
+    "01",
+    "+1",
+    "1.0",
+    "1e0"
+  ];
+  assert.strictEqual(
+    compareDesignReliabilityCohorts(comparableBaseline, coercedDuplicateRepeatCoverage)
+      .technicalDiagnosticComparable,
+    false,
+    "repeatIndex 必须是原生正整数；不同字符串写法不能把同一次重复伪装成多个样本"
+  );
+  const gappedRepeatCoverage = JSON.parse(JSON.stringify(comparableBaseline));
+  gappedRepeatCoverage.attempts.submittedRepeatIndexesByCase[caseSpec.caseId] = [1, 2, 3, 4, 6];
+  assert.strictEqual(
+    compareDesignReliabilityCohorts(comparableBaseline, gappedRepeatCoverage)
+      .technicalDiagnosticComparable,
+    false,
+    "逐 Case repeatIndex 必须无缺口覆盖 1..submitted"
+  );
+  const originalTaskFamily = comparableBaseline.selector.caseTaskFamilies[caseSpec.caseId];
+  const changedTaskFamily = originalTaskFamily === "sku" ? "main_image" : "sku";
+  const changedTaskFamilyBinding = JSON.parse(JSON.stringify(comparableBaseline));
+  changedTaskFamilyBinding.selector.caseTaskFamilies[caseSpec.caseId] = changedTaskFamily;
+  changedTaskFamilyBinding.byTaskFamily[changedTaskFamily] =
+    changedTaskFamilyBinding.byTaskFamily[originalTaskFamily];
+  delete changedTaskFamilyBinding.byTaskFamily[originalTaskFamily];
+  changedTaskFamilyBinding.attempts.byTaskFamily[changedTaskFamily] =
+    changedTaskFamilyBinding.attempts.byTaskFamily[originalTaskFamily];
+  delete changedTaskFamilyBinding.attempts.byTaskFamily[originalTaskFamily];
+  assert.strictEqual(
+    compareDesignReliabilityCohorts(comparableBaseline, changedTaskFamilyBinding)
+      .technicalDiagnosticComparable,
+    false,
+    "相同 Case 不能在 baseline 与 candidate 间漂移到不同任务族"
+  );
+  const recurringRateBaseline = JSON.parse(JSON.stringify(comparableBaseline));
+  const recurringRateFamily = recurringRateBaseline.selector.caseTaskFamilies[caseSpec.caseId];
+  recurringRateBaseline.cohortId = "baseline-recurring-rate";
+  recurringRateBaseline.selector.minimumDesignQualityReviewedRunsPerCase = 1;
+  recurringRateBaseline.attempts.submitted = 3;
+  recurringRateBaseline.attempts.interactionMetricsKnownCount = 3;
+  recurringRateBaseline.attempts.technicalDeliveryPassed = 1;
+  recurringRateBaseline.attempts.strictReviewedTechnicalPasses = 1;
+  recurringRateBaseline.attempts.commercialUsable = 1;
+  recurringRateBaseline.attempts.technicalDeliveryRate = metricRate(1, 3);
+  recurringRateBaseline.attempts.commercialUsableRate = metricRate(1, 3);
+  recurringRateBaseline.attempts.strictReviewCoverageOfTechnicalPasses = metricRate(1, 1);
+  recurringRateBaseline.attempts.byCase[caseSpec.caseId] = {
+    submitted: 3,
+    technicalDeliveryPassed: 1,
+    strictReviewedTechnicalPasses: 1,
+    commercialUsable: 1,
+    interactionMetricsKnown: 3
+  };
+  recurringRateBaseline.attempts.byTaskFamily[recurringRateFamily] = {
+    submitted: 3,
+    technicalDeliveryPassed: 1,
+    strictReviewedTechnicalPasses: 1,
+    commercialUsable: 1,
+    interactionMetricsKnown: 3
+  };
+  recurringRateBaseline.attempts.submittedRepeatIndexesByCase[caseSpec.caseId] = [1, 2, 3];
+  reshapeRunAggregate(recurringRateBaseline.overall, 1, 1, 1, 1);
+  reshapeRunAggregate(recurringRateBaseline.byCase[caseSpec.caseId], 1, 1, 1, 1);
+  reshapeRunAggregate(recurringRateBaseline.byTaskFamily[recurringRateFamily], 1, 1, 1, 1);
+  recurringRateBaseline.coverage.runs = 1;
+  const recurringRateCandidate = JSON.parse(JSON.stringify(recurringRateBaseline));
+  recurringRateCandidate.cohortId = "candidate-recurring-rate";
+  assert.strictEqual(
+    compareDesignReliabilityCohorts(recurringRateBaseline, recurringRateCandidate).comparable,
+    true,
+    "报告率按四位小数规范化后，1/3 这类循环小数不能被误判为算术损坏"
+  );
+  const invalidAttemptProtocol = JSON.parse(JSON.stringify(comparableCandidate));
+  invalidAttemptProtocol.attempts.protocolValid = false;
+  assert.strictEqual(compareDesignReliabilityCohorts(comparableBaseline, invalidAttemptProtocol).comparable, false,
+    "Attempt 协议损坏的 cohort 不能进入前后结论");
+  assert.strictEqual(compareDesignReliabilityCohorts(comparableBaseline, comparableBaseline).comparable, true);
 
   const releaseGates = {
     minimumRunsPerFamily: 5,

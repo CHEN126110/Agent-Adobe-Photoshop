@@ -1,0 +1,135 @@
+{
+  "version": "design-reliability-case/v1",
+  "suiteId": "business-skills-quality-v1",
+  "caseId": "sku-c1163-interaction-v1",
+  "revision": 3,
+  "caseDigest": "sha256:4a2feef368be8f8843357cbf959bbcfa9d31fef29453c9756e54c432c952837a",
+  "status": "draft",
+  "taskFamily": "sku",
+  "executionModel": "staged",
+  "liveRunProtocol": {
+    "version": "design-reliability-live-run-protocol/v1",
+    "kind": "predeclared_user_interaction",
+    "actorCapabilityId": "provider-owned-card-user-actor/v1",
+    "privateEvaluationBinding": {
+      "version": "design-reliability-private-evaluation-binding/v1",
+      "manifestId": "private-eval-6f88f960a3d94ea29f09131d6632a19c",
+      "immutableRevision": 1
+    },
+    "steps": [
+      {
+        "stepId": "confirm-sku-combinations",
+        "interactionClass": "required_business_decision",
+        "answerOwner": "case_user",
+        "ownerSkillId": "sku-batch",
+        "cardKind": "sku_combo_editor",
+        "payloadVersion": "sku-combo-editor/v0",
+        "decisionFingerprint": "sku-combo-decision-sha256-jcs-v1:e71846238f680228efa98baa27b1b9ec9e9573106b7f8e0f4535b3669cc8d75f",
+        "candidatePolicy": "bind_runtime_presented_candidate",
+        "slotIdentityPolicy": "provider_presented_stable_color_identity"
+      }
+    ]
+  },
+  "skillContract": {
+    "userFacingSkillId": "sku-batch",
+    "runtimeSkillIds": [
+      "ecommerce.sku_batch"
+    ]
+  },
+  "task": {
+    "instruction": "用这些已经做好的颜色图帮我完成 SKU 编排。",
+    "instructionStyle": "natural_user_request",
+    "fixtureId": "neveralone-c1163-sku-interaction-v1",
+    "agentVisibleInputs": [
+      { "ref": "S82646/新建文件夹/白色.jpg", "role": "completed_color_source_card", "digest": "sha256:ca239045e08f08a2430d0b94608805ab53040fb076681e3f96ac440affaf5354" },
+      { "ref": "S82646/新建文件夹/浅肤.jpg", "role": "completed_color_source_card", "digest": "sha256:dd9c2fa7538912fab1e09a4ee9d3490eefbb56882dea1d3403eaa3b6bf115a74" },
+      { "ref": "S82646/新建文件夹/身肤.jpg", "role": "completed_color_source_card", "digest": "sha256:a40180929200c17407fe15b3c02fa2e686af4dd466f9030a5a4568be55ebaa01" },
+      { "ref": "S82646/新建文件夹/浅蓝.jpg", "role": "completed_color_source_card", "digest": "sha256:a38a9824578f46112aee89445559eb58db39204c1c100c131b57a1e0e05c1b36" },
+      { "ref": "S82646/新建文件夹/浅紫.jpg", "role": "completed_color_source_card", "digest": "sha256:302b58008a6013258d1bd3454adb38a8eca709957a6b83441fcaf112ac1d1b9b" },
+      { "ref": "S82646/新建文件夹/黑色.jpg", "role": "completed_color_source_card", "digest": "sha256:1dff3fa607eae9f20218588876b014b7d383c6a5230a859759e78e85e9c262c4" }
+    ],
+    "fixtureGeneratedInputs": [
+      {
+        "ref": "测试输入/SKU颜色事实.json",
+        "role": "verified_sku_mapping",
+        "encoding": "utf8",
+        "facts": {
+          "source_asset_semantics": "completed_color_cards",
+          "color_mapping": {
+            "1": { "sourceRef": "S82646/新建文件夹/白色.jpg", "displayName": "白色" },
+            "2": { "sourceRef": "S82646/新建文件夹/浅肤.jpg", "displayName": "浅肤" },
+            "3": { "sourceRef": "S82646/新建文件夹/身肤.jpg", "displayName": "深肤" },
+            "4": { "sourceRef": "S82646/新建文件夹/浅蓝.jpg", "displayName": "浅蓝" },
+            "5": { "sourceRef": "S82646/新建文件夹/浅紫.jpg", "displayName": "浅紫" },
+            "6": { "sourceRef": "S82646/新建文件夹/黑色.jpg", "displayName": "黑色" }
+          }
+        }
+      }
+    ],
+    "reviewOnlyReferences": []
+  },
+  "source": {
+    "kind": "user_project_completed_color_cards_with_predeclared_user_decision",
+    "qualityClaimEligible": false,
+    "boundary": "初始 Agent 只能看到六张已完成颜色源卡与颜色编号；规格、组合、输出期望和盲评锚点只由隔离的私有评测 manifest 在真实 SKU 专属卡出现后解析。"
+  },
+  "oracle": {
+    "rubricId": "sku-production-v1",
+    "requiredEvidence": [
+      "agent_run_record_task_run_chain",
+      "expected_project_binding",
+      "source_input_integrity",
+      "provider_owned_interaction_receipt",
+      "same_task_run_resume_receipt",
+      "paired_editable_delivery_receipt",
+      "sku_structure_readback_set",
+      "sku_visual_readback_set",
+      "sku_pair_binding",
+      "editable_psd",
+      "raster_export_set",
+      "sku_output_inventory",
+      "human_review"
+    ],
+    "invariants": [
+      "源卡被识别为已完成素材且保持不变",
+      "SKU 组合决定只能由 sku-batch Provider 校验预声明用户答案",
+      "确认后恢复同一 TaskRun，不能重新发送自然语言或重复执行 Skill",
+      "组合规格、颜色、命名与自选备注必须与私有用户决定收据完全一致",
+      "保存到一次性 fixture 项目，不覆盖源项目"
+    ],
+    "forbiddenBehaviors": [
+      "不得把预声明答案放入 fixture、初始 Prompt、Attempt 或普通 UI",
+      "不得按第一张卡、标题、按钮文字或 SKU 关键词猜交互对象",
+      "不得由 Harness 选择组合、模板或候选",
+      "不得把必要业务确认计为设计纠错",
+      "不得把完成的颜色源卡当成未完成模板重新设计"
+    ],
+    "machineChecks": [
+      { "id": "correct_skill_binding", "required": true },
+      { "id": "fixture_instance_evidence", "required": true },
+      { "id": "runtime_model_identity_evidence", "required": true },
+      { "id": "expected_project_binding_evidence", "required": true },
+      { "id": "source_input_integrity_evidence", "required": true },
+      { "id": "observed_photoshop_mutation", "required": true },
+      { "id": "committed_photoshop_mutation", "required": true },
+      { "id": "paired_editable_delivery_receipt", "required": true },
+      { "id": "sku_structure_readback_set", "required": true },
+      { "id": "sku_visual_readback_set", "required": true },
+      { "id": "sku_pair_binding", "required": true },
+      { "id": "editable_psd_evidence", "required": true },
+      { "id": "raster_export_evidence", "required": true },
+      { "id": "sku_output_inventory_evidence", "required": true },
+      { "id": "final_artifact_manifest_evidence", "required": true },
+      { "id": "no_unresolved_blockers", "required": true },
+      { "id": "terminal_task_run", "required": true }
+    ]
+  },
+  "boundaries": {
+    "devBenchmarkOnly": true,
+    "neverAffectsRuntime": true,
+    "reviewOnlyReferencesExcludedFromAgentContext": true,
+    "fixtureGeneratedInputsContainFactsOnly": true,
+    "predeclaredInteractionAnswersExcludedFromInitialAgentContext": true,
+    "harnessDoesNotChooseDesign": true
+  }
+}
