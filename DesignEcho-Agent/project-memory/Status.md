@@ -2,6 +2,13 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-28 语义抠图固定 Photoshop 真机闭环
+
+- 已在隔离临时文档用 `DSC08187.jpg` 完成真实 Main → UXP → Photoshop E2E：目标词「袜子」检测到两个候选，Agent 明确给出的两组正负点分别绑定两个实例；GroundingDINO、MobileSAM 多蒙版、BiRefNet 边缘融合和二进制 RAW mask 全链执行。最终目标生命周期 requested 1 /detected 1、candidate 2 /selected 2、segmentation region 2/2、target 2/2、applied 2，未选择候选 0。
+- Photoshop mutation receipt 已核实：临时文档 `4087`、图层 `3`、history `4091→4092`，mask `4671×7006`，`user-mask-enabled` 读回 verified，输出存在且 receipt complete。真机截图保留两只可见袜身，排除鞋、腿和孤立碎片；鞋遮挡下不可见像素没有被虚构恢复。临时文档未保存关闭，原文档 `3976 / history 4072` 恢复，原 Host 重启并重新连接插件。
+- E2E 关闭了两个仅靠离线测试未暴露的根因：`imaging.getPixels({layerID})` 的隐式 `sourceBounds` 可能是 Provider 内部坐标，不能冒充文档坐标；synchronous `batchPlay` 可直接返回数组，不能无条件调用 `.catch()`。UXP 现在用同 modal 内已验证的图层 bounds 与画布交集签整层收据，Main 再核对文档交集；蒙版 /选区 /通道读回兼容同步值和 Promise，失败保留具体原因。
+- 当前结论只覆盖这一固定可见双袜案例及 `mask` 输出的真机闭环；不能外推到任意商品、遮挡补全、selection /channel 的独立真机验收或整个设计 Agent 的专业质量。专项契约、Agent Main /Renderer 类型检查、UXP production build 与完整 `maintenance:validate` 58/58 已通过；依赖验证 overlay 结束后原 package /lock 精确恢复。
+
 ## 2026-08-21 设计作者权与内置预设清理
 
 - agentic 主图、详情页和通用单画布设计不再绑定内置版式或标准模板；`layout-recipes.ts`、详情页固定结构草案、旧主图设计配方与旧视觉分析 Prompt 已删除。平台尺寸、文件格式、SKU 数量和模板真实结构等可校验生产规格继续保留，并与审美决定分文件治理。

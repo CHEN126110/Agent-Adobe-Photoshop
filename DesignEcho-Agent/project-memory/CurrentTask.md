@@ -10,7 +10,8 @@
 
 ### 当前事实
 
-- 语义抠图切片已以 `0ef562a8` 提交并推送，精确快照通过 55 个核心检查；真实 Photoshop source bounds、history、mask /selection /channel 读回与视觉边缘仍未 E2E 验证。
+- 语义抠图已在隔离 Photoshop 临时文档完成固定真机案例：最新 Main `063112d2` 与 UXP production build 处理 `DSC08187.jpg` 的两个袜子实例，45.3 秒完成检测、分割、二进制蒙版写入与读回；`semantic-matting-target-lifecycle/v2` 的 requested /detected /segmented /applied 数量守恒，`matting-mutation-receipt/v1` 证明 history `4091→4092`、目标图层 `3→3`、`user-mask-enabled` 读回 verified。临时文档未保存关闭，原文档 `3976 / history 4072` 恢复。
+- 真机第一次复跑发现 `layer-full` 把 `imaging.getPixels` 的 Provider 内部 `sourceBounds` 当作文档坐标（图层 `4671×7006` 被报成 `2336×3503`）；第二个根因是 synchronous `batchPlay` 返回数组却被调用 `.catch()`。两者均修在原 owner：UXP 使用同 modal 中已验证的图层 bounds 与画布交集签整层收据，Main 复核文档交集；写后读回同时接受同步值与 Promise，并保留真实错误信息。
 - 上一轮完整验证在业务测试前后分别暴露规划卡结构缺口、`@cspotcode/source-map-support`、`@img/colour`、48 个非 optional 包和 `.bin` 启动器残缺；根因是一次被 Electron 文件锁以 EBUSY 中断的安装。环境未预检时重复从头运行完整闸门没有新增产品证据。
 - 共享工作树仍混有依赖迁移、Smile Provider、SKU 修图和姿态统一改动；语义提交通过精确暂存与隔离工作树避免夹带，但事后拆分成本较高。
 - 姿态链只读审计已发现 Alpha 导出、document /revision /transaction、显隐参数和旧 UI 协议等 P0，证明静态可编译不能替代运行链与事务审查；当前姿态改动不得整体提交。
@@ -20,25 +21,28 @@
 
 - GMR 与依赖 preflight 只属于开发治理，不创建 Runtime 状态、Gate、Registry、Evidence 阶段或用户可见流程，也不改变 Agent / Harness / Skill / Provider 设计作者权。
 - preflight 只读取 `package.json`、权威 `package-lock.json` 与 `node_modules`；不读取隐藏 lock 作为成功依据，不联网、不自动安装、不改写依赖，并一次汇总后统一失败。
-- 本切片不继续开发语义、姿态、SKU、Smile 或依赖迁移；不同支线保持独立提交、验证和回滚。
+- 本切片只允许修复固定语义 E2E 暴露且阻断同一闭环的 owner 根因；不扩展新抠图功能，也不混入姿态、SKU、Smile 或依赖迁移。不同支线保持独立提交、验证和回滚。
 
 ### 下一步
 
 1. 已完成：GMR、北极星与单一当前顺序已进入各自权威 owner，规划检查不再报告 activeRequest /activePlan 漂移。
 2. 已完成：依赖完整性 preflight 及攻击型 fixture 已接入核心验证第一个阶段，并在重型命令前 fail-fast。
-3. 推送独立检查点；随后以固定语义抠图 Photoshop E2E 作为第一项恢复实验。
+3. 已完成：完整核心闸门、最终代码审查与独立本地提交；远端推送连续两次因 GitHub 443 连接重置 /不可达而未建立 upstream，待网络恢复后只重试同一分支推送。
+4. 下一项：按纯离线算法、版本化单事务 Provider、面板迁移三份切片治理姿态统一；不得提交当前存在 P0 的拼接写链。
 
 ### 验证与未知
 
 - 已核实：17 组 fixture 覆盖多缺口聚合、optional /当前平台 payload、版本与根声明漂移、平台冲突、路径逃逸、缺 target、缺失 /陈旧 launcher、损坏 JSON 和两仓汇总；当前共享工作树的权威 lock 与本机依赖汇总为 Agent 636/636、UXP 148/148，27 个直接 CLI 身份完整。
 - 已核实：规划、入口文档、UTF-8、变更边界、仓库卫生、Node 语法和 diff 检查通过；核心 runner 在隔离分支故意接入不匹配的现有安装树时，第一阶段一次报告旧 lock 与当前安装的 3 个差异并停止，未启动后续重型命令。
 - 已核实：Development Loop 代码检查点叠加当前待独立提交的依赖迁移 manifest /lock 后，完整 `maintenance:validate` 57 项通过，新增 preflight 与 17 项契约位于最前，Agent 类型检查、UXP 核心测试和 production build 均完成；依赖文件仅作为匹配本机安装树的验证 overlay，没有进入本提交。
+- 已核实：语义专项契约、UXP 几何 /同步读回测试、Agent Main 类型构建与 UXP production build 通过；真机截图中两只可见袜身保留，鞋、腿和孤立碎片未进入蒙版。鞋遮挡下不可见的袜子像素没有被虚构恢复，这属于源图可见性边界，不是完整商品重建。
 - 待验证：独立提交自身旧 lock 的全量维护入口仍需要与该 lock 匹配的安装树；当前 upgraded `node_modules` 会被 preflight 一次报告 3 个版本 /嵌套依赖差异并在重型命令前停止，不能把这项正确拒绝改成假绿。
-- 待后续真机：语义抠图固定案例；本任务卡完成只证明研发循环与环境 preflight 可执行，不证明设计质量或 Photoshop E2E。
+- 已核实：在只临时合并依赖声明、保留本分支 scripts 的验证 overlay 下，完整 `maintenance:validate` 58/58 通过；结束后 `package.json` 与 `package-lock.json` 分别恢复到 SHA-256 `5A737002…C8FCF` 与 `297B6AB7…31AC`。固定案例只证明本语义工作流的真实 Photoshop 闭环，不证明任意商品、任意遮挡重建或整个设计 Agent 的专业质量。
+- 已核实：最终 diff /状态 /编码快速检查通过，语义 E2E 根因修复已独立本地提交；远端没有取得成功回执，不能宣称已推送。
 
 ### 状态
 
-`validated / gmr_defined / dependency_preflight_targeted_validated / core_57_with_dependency_overlay_passed / exact_lock_install_pending / photoshop_e2e_pending`
+`validated / gmr_defined / dependency_preflight_targeted_validated / semantic_photoshop_e2e_passed / full_core_58_passed / local_commit_complete / remote_push_network_pending / exact_lock_install_pending`
 
 ---
 

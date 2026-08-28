@@ -123,7 +123,7 @@ const BOUNDARIES = [
       'npm run build:main',
       'npm run build:typecheck:renderer'
     ],
-    match: (entry) => /semantic-(target|region|matting-guidance)|photoshop-(workflow-dispatch|remove-background-workflow)|grounding-(dino|candidate-filter)|target-phrase|mask-regions|sam-postprocessing|guided-filter|bert-wordpiece-tokenizer|src\/main\/services\/sam-service\.ts|src\/main\/uxp-handlers\/visual-handlers\.ts/.test(entry.filePath)
+    match: (entry) => /semantic-(target|region|matting-guidance)|matting-source-export-geometry|photoshop-(workflow-dispatch|remove-background-workflow)|grounding-(dino|candidate-filter)|target-phrase|mask-regions|sam-postprocessing|guided-filter|bert-wordpiece-tokenizer|src\/main\/services\/sam-service\.ts|src\/main\/uxp-handlers\/visual-handlers\.ts/.test(entry.filePath)
   },
   {
     id: 'interactive-card-runtime',

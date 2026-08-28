@@ -343,7 +343,9 @@ async function run() {
             sourceExportReceiptSchema: 'matting-source-export/v1',
             sourceRegionApplied: false,
             sourceExportMode: 'layer-full',
-            actualSourceBounds: { left: 0, top: 0, right: 900, bottom: 800 }
+            actualSourceBounds: { left: 0, top: 0, right: 900, bottom: 800 },
+            docWidth: 1000,
+            docHeight: 800
         }
     });
     check('首次 off-canvas 导出也必须返回实际 bounds', baseReceipt.valid, JSON.stringify(baseReceipt));
@@ -351,6 +353,24 @@ async function run() {
         '首次导出实际范围映射到完整图层输出坐标',
         baseReceipt.regionInOutput?.x1 === 100 && baseReceipt.regionInOutput?.x2 === 1000,
         JSON.stringify(baseReceipt.regionInOutput)
+    );
+    const providerSpaceBaseReceipt = validateSemanticBaseExportReceipt({
+        expectedMode: 'layer-full',
+        outputGeometry: { left: 1, top: 1, width: 4671, height: 7006 },
+        exportResult: {
+            sourceExportReceiptSchema: 'matting-source-export/v1',
+            sourceRegionApplied: false,
+            sourceExportMode: 'layer-full',
+            actualSourceBounds: { left: 0, top: 0, right: 2336, bottom: 3503 },
+            docWidth: 4672,
+            docHeight: 7008
+        }
+    });
+    check(
+        '首次整层收据不能把 Provider 内部 sourceBounds 冒充文档坐标',
+        !providerSpaceBaseReceipt.valid
+            && providerSpaceBaseReceipt.code === 'semantic_base_coordinate_space_mismatch',
+        JSON.stringify(providerSpaceBaseReceipt)
     );
 
     const changedRevisionReceipt = validateSemanticRegionExportReceipt({
@@ -761,7 +781,9 @@ async function run() {
         'UXP 目标身份同时绑定 document/history/layer identity',
         validateMattingTargetIdentity(targetIdentity, photoshopMock.app.activeDocument).valid
     );
-    photoshopMock.action.batchPlay = async (descriptors) => {
+    // Photoshop 在 synchronousExecution=true 时可以同步返回数组；mock 必须覆盖
+    // 真实 Host 形态，不能用 async Promise 把 `.catch()` 误用伪装成兼容。
+    photoshopMock.action.batchPlay = (descriptors) => {
         if (descriptors?.[0]?._obj === 'get' && descriptors?.[0]?._target?.[0]?._ref === 'layer') {
             return [{ userMaskEnabled: true }];
         }
@@ -919,7 +941,7 @@ async function run() {
     );
     check('UXP 区域导出失败没有调用任何整层回退', wholeLayerFallbackCalls === 0, String(wholeLayerFallbackCalls));
 
-    // ========== UXP：Photoshop 返回的 sourceBounds 原样进入收据 ==========
+    // ========== UXP：隐式整层取像使用文档图层 bounds；显式区域保留 Photoshop 实际收据 ==========
     photoshopMock.imaging.getPixels = async () => ({
         sourceBounds: { left: 0, top: 20, right: 150, bottom: 220 },
         imageData: {
@@ -938,10 +960,10 @@ async function run() {
         { expectedTargetIdentity: targetIdentity }
     );
     check(
-        'UXP 首次整层 getPixels 也返回实际 sourceBounds/mode',
+        'UXP 首次整层 getPixels 不把 Provider 内部 sourceBounds 冒充文档坐标',
         binaryFullExport.sourceRegionApplied === false
             && binaryFullExport.sourceExportMode === 'layer-full'
-            && JSON.stringify(binaryFullExport.actualSourceBounds) === JSON.stringify({ left: 0, top: 20, right: 150, bottom: 220 }),
+            && JSON.stringify(binaryFullExport.actualSourceBounds) === JSON.stringify({ left: 0, top: 0, right: 900, bottom: 800 }),
         JSON.stringify(binaryFullExport)
     );
     const binaryRegion = await receiptTool.getLayerImageDataBinary(
