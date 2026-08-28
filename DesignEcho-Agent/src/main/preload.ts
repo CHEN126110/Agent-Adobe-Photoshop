@@ -819,14 +819,15 @@ const api = {
         ipcRenderer.invoke('matting:getModelsStatus'),
     
     // 检查分割模型文件是否存在
-    checkSegmentModelExists: (folder: string, fileName: string) =>
-        ipcRenderer.invoke('model:checkModelFile', folder, fileName),
+    checkSegmentModelExists: (folder: string, fileName: string, expectedSha256?: string) =>
+        ipcRenderer.invoke('model:checkModelFile', folder, fileName, expectedSha256),
     
     // 下载分割模型
     downloadSegmentModel: (params: {
         url: string;
         folder: string;
         fileName: string;
+        expectedSha256?: string;
         onProgress?: (progress: number) => void;
     }) => {
         // 使用 IPC 事件传递下载进度
@@ -836,7 +837,14 @@ const api = {
                 params.onProgress!(progress);
             });
         }
-        return ipcRenderer.invoke('model:downloadToModels', params.url, params.folder, params.fileName, channel)
+        return ipcRenderer.invoke(
+            'model:downloadToModels',
+            params.url,
+            params.folder,
+            params.fileName,
+            channel,
+            params.expectedSha256
+        )
             .finally(() => {
                 ipcRenderer.removeAllListeners(channel);
             });

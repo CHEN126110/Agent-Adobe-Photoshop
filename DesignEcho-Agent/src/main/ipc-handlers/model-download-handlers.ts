@@ -2,8 +2,9 @@
  * 模型下载相关 IPC Handlers
  */
 
-import { ipcMain, app, dialog, shell, IpcMainInvokeEvent, BrowserWindow } from 'electron';
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
+import { ipcMain, app, dialog, shell, IpcMainInvokeEvent, BrowserWindow } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
@@ -35,6 +36,53 @@ const HF_MIRRORS = [
     'modelscope.cn',
     '',
 ];
+
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+
+function normalizeExpectedSha256(value: unknown): string | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    const normalized = String(value).trim().toLowerCase();
+    if (!SHA256_PATTERN.test(normalized)) {
+        throw new Error('模型 SHA-256 必须是 64 位十六进制字符串。');
+    }
+    return normalized;
+}
+
+function resolveModelArtifactPath(modelsDir: string, folder: string, fileName: string): string {
+    const normalizedFolder = String(folder || '').trim();
+    const normalizedFileName = String(fileName || '').trim();
+    if (!normalizedFolder || !normalizedFileName
+        || path.basename(normalizedFileName) !== normalizedFileName
+        || path.isAbsolute(normalizedFolder)
+        || normalizedFolder.split(/[\\/]+/).some(part => !part || part === '.' || part === '..')) {
+        throw new Error('模型目标路径无效。');
+    }
+    const resolvedRoot = path.resolve(modelsDir);
+    const resolvedTarget = path.resolve(resolvedRoot, normalizedFolder, normalizedFileName);
+    const relative = path.relative(resolvedRoot, resolvedTarget);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error('模型目标路径越出模型目录。');
+    }
+    return resolvedTarget;
+}
+
+async function calculateFileSha256(filePath: string): Promise<string> {
+    return await new Promise((resolve, reject) => {
+        const hash = createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('data', (chunk: string | Buffer) => {
+            hash.update(chunk);
+        });
+        stream.on('error', reject);
+        stream.on('end', () => resolve(hash.digest('hex')));
+    });
+}
+
+async function modelFileMatchesSha256(filePath: string, expectedSha256: string | undefined): Promise<boolean> {
+    if (!fs.existsSync(filePath)) return false;
+    if (!expectedSha256) return fs.statSync(filePath).size > 0;
+    return await calculateFileSha256(filePath) === expectedSha256;
+}
 
 /**
  * 获取镜像 URL
@@ -284,14 +332,21 @@ export function registerModelDownloadHandlers(context: IPCContext): void {
     });
 
     // 检查模型文件
-    ipcMain.handle('model:checkModelFile', async (_event: IpcMainInvokeEvent, folder: string, fileName: string) => {
+    ipcMain.handle('model:checkModelFile', async (
+        _event: IpcMainInvokeEvent,
+        folder: string,
+        fileName: string,
+        expectedSha256?: string
+    ) => {
         const projectModelsDir = path.join(__dirname, '../../../models');
         const userModelsDir = path.join(app.getPath('userData'), 'models');
+        const normalizedSha256 = normalizeExpectedSha256(expectedSha256);
         
-        const projectPath = path.join(projectModelsDir, folder, fileName);
-        const userPath = path.join(userModelsDir, folder, fileName);
+        const projectPath = resolveModelArtifactPath(projectModelsDir, folder, fileName);
+        const userPath = resolveModelArtifactPath(userModelsDir, folder, fileName);
         
-        const exists = fs.existsSync(projectPath) || fs.existsSync(userPath);
+        const exists = await modelFileMatchesSha256(projectPath, normalizedSha256)
+            || await modelFileMatchesSha256(userPath, normalizedSha256);
         console.log(`[Model Check] ${folder}/${fileName}: ${exists ? '✅' : '❌'}`);
         return exists;
     });
@@ -319,35 +374,43 @@ export function registerModelDownloadHandlers(context: IPCContext): void {
         url: string, 
         folder: string, 
         fileName: string, 
-        progressChannel: string
+        progressChannel: string,
+        expectedSha256?: string
     ) => {
         // 下到 userData，与本文件其它 handler（导入/删除/扫描）和推理服务的加载路径一致。
         // 这里原先用的是 __dirname/../../../models（安装目录）：打包后往往只读，
         // 即使写成功了推理服务也不去那里找，等于下了个永远用不上的文件。
         const modelsDir = path.join(app.getPath('userData'), 'models');
-        const targetDir = path.join(modelsDir, folder);
-        const targetPath = path.join(targetDir, fileName);
+        const targetPath = resolveModelArtifactPath(modelsDir, folder, fileName);
+        const targetDir = path.dirname(targetPath);
+        const normalizedSha256 = normalizeExpectedSha256(expectedSha256);
+        const stagingPath = `${targetPath}.${process.pid}.${Date.now()}.part`;
         
         if (!fs.existsSync(targetDir)) {
             fs.mkdirSync(targetDir, { recursive: true });
+        }
+
+        if (await modelFileMatchesSha256(targetPath, normalizedSha256)) {
+            event.sender.send(progressChannel, 100);
+            return true;
         }
         
         console.log(`[Model Download] 开始下载: ${url}`);
         
         return new Promise((resolve, reject) => {
-            const httpModule = url.startsWith('https') ? https : http;
-            
             const makeRequest = (requestUrl: string, redirectCount = 0) => {
                 if (redirectCount > 5) {
                     reject(new Error('重定向次数过多'));
                     return;
                 }
                 
-                httpModule.get(requestUrl, (response) => {
+                const requestModule = requestUrl.startsWith('https') ? https : http;
+                requestModule.get(requestUrl, (response) => {
                     if (response.statusCode === 301 || response.statusCode === 302 || response.statusCode === 307) {
                         const redirectUrl = response.headers.location;
                         if (redirectUrl) {
-                            makeRequest(redirectUrl, redirectCount + 1);
+                            response.resume();
+                            makeRequest(new URL(redirectUrl, requestUrl).toString(), redirectCount + 1);
                             return;
                         }
                     }
@@ -362,9 +425,16 @@ export function registerModelDownloadHandlers(context: IPCContext): void {
                     const totalSize = parseInt(response.headers['content-length'] || '0', 10);
                     let downloadedSize = 0;
                     
-                    const file = fs.createWriteStream(targetPath);
+                    const hash = createHash('sha256');
+                    const file = fs.createWriteStream(stagingPath, { flags: 'wx' });
+                    const rejectIncompleteDownload = (error: Error): void => {
+                        file.destroy();
+                        fs.rmSync(stagingPath, { force: true });
+                        reject(error);
+                    };
                     
                     response.on('data', (chunk: Buffer) => {
+                        hash.update(chunk);
                         downloadedSize += chunk.length;
                         if (totalSize > 0) {
                             const progress = Math.round((downloadedSize / totalSize) * 100);
@@ -373,18 +443,46 @@ export function registerModelDownloadHandlers(context: IPCContext): void {
                     });
                     
                     response.pipe(file);
+
+                    response.on('aborted', () => {
+                        rejectIncompleteDownload(new Error(`模型下载中断：${fileName}`));
+                    });
+
+                    response.on('error', (error: Error) => {
+                        rejectIncompleteDownload(error);
+                    });
                     
                     file.on('finish', () => {
-                        file.close();
-                        console.log(`[Model Download] ✅ 下载完成: ${fileName}`);
-                        resolve(true);
+                        file.close(() => {
+                            if (totalSize > 0 && downloadedSize !== totalSize) {
+                                fs.rmSync(stagingPath, { force: true });
+                                reject(new Error(
+                                    `模型下载不完整：${fileName} 预期 ${totalSize} 字节，实际 ${downloadedSize} 字节。`
+                                ));
+                                return;
+                            }
+                            const actualSha256 = hash.digest('hex');
+                            if (normalizedSha256 && actualSha256 !== normalizedSha256) {
+                                fs.rmSync(stagingPath, { force: true });
+                                reject(new Error(
+                                    `模型完整性校验失败：${fileName} 的 SHA-256 与固定清单不一致，旧模型未被覆盖。`
+                                ));
+                                return;
+                            }
+                            if (fs.existsSync(targetPath)) fs.rmSync(targetPath, { force: true });
+                            fs.renameSync(stagingPath, targetPath);
+                            event.sender.send(progressChannel, 100);
+                            console.log(`[Model Download] ✅ 下载并校验完成: ${fileName}`);
+                            resolve(true);
+                        });
                     });
                     
                     file.on('error', (err) => {
-                        fs.unlinkSync(targetPath);
+                        fs.rmSync(stagingPath, { force: true });
                         reject(err);
                     });
                 }).on('error', (err) => {
+                    fs.rmSync(stagingPath, { force: true });
                     reject(err);
                 });
             };
@@ -395,7 +493,8 @@ export function registerModelDownloadHandlers(context: IPCContext): void {
 
     // 打开模型目录
     ipcMain.handle('model:openModelsFolder', async () => {
-        const modelsDir = path.join(__dirname, '../../../models');
+        const modelsDir = path.join(app.getPath('userData'), 'models');
+        if (!fs.existsSync(modelsDir)) fs.mkdirSync(modelsDir, { recursive: true });
         console.log(`[Model] 打开模型目录: ${modelsDir}`);
         await shell.openPath(modelsDir);
     });
