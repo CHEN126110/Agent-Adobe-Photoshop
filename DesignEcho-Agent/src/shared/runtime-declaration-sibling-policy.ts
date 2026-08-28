@@ -1,9 +1,9 @@
 /**
  * Runtime 声明同轮 sibling call 的承接策略。
  *
- * 声明是能力边界屏障，不是让模型重复决定同一批只读动作的理由。Harness 只能承接模型
- * 已经请求、声明成功后仍可见、且分类仍为只读观察或知识检索的原调用；它不能新增调用、
- * 改参数或把写入/有状态/外部生成动作顺带放行。
+ * 声明是运行语义绑定点，不是权限票据。Harness 只能承接模型已经请求、声明成功后仍可见
+ * 且通过正常 Tool Decision / 执行预检的原调用；它不能新增调用、改参数或绕过权限检查。
+ * staged 声明仍形成真实执行边界，仅兼容的只读观察与知识检索可以同轮继续。
  */
 
 import {
@@ -17,11 +17,13 @@ import {
 } from './agent-tool-execution-preflight';
 
 export type RuntimeDeclarationSiblingDisposition = 'execute_after_binding' | 'defer';
+export type RuntimeDeclarationExecutionModel = 'agentic' | 'staged';
 
 export interface RuntimeDeclarationSiblingPolicyInput {
     declarationPresent: boolean;
     isDeclarationCall: boolean;
     declarationSucceeded: boolean;
+    declarationExecutionModel?: RuntimeDeclarationExecutionModel;
     visibleAfterBinding: boolean;
     executionKind: AgentToolExecutionKind;
     isHarnessControlTool: boolean;
@@ -36,6 +38,7 @@ export interface RuntimeDeclarationSiblingPolicyResult {
         | 'runtime_declaration_not_committed'
         | 'control_call_requires_replan'
         | 'tool_not_visible_after_binding'
+        | 'agentic_visible_call'
         | 'compatible_read_only_call'
         | 'side_effect_requires_replan';
 }
@@ -73,6 +76,12 @@ export function resolveRuntimeDeclarationSiblingPolicy(
     if (!input.visibleAfterBinding) {
         return { disposition: 'defer', reason: 'tool_not_visible_after_binding' };
     }
+    // Agentic 声明只绑定任务语义、方法、评价与预算，不切换 Capability 面，也不授予权限。
+    // 模型已经在同一响应里选中、绑定后仍可见的调用继续走正常 Tool Decision /执行预检；
+    // Harness 不因一个不改变权限的声明强制模型丢掉自己的动作再思考一轮。
+    if (input.declarationExecutionModel === 'agentic') {
+        return { disposition: 'execute_after_binding', reason: 'agentic_visible_call' };
+    }
     if (input.executionKind === 'read_only_observation'
         || input.executionKind === 'knowledge_search') {
         return { disposition: 'execute_after_binding', reason: 'compatible_read_only_call' };
@@ -84,6 +93,7 @@ export function createRuntimeDeclarationSiblingTurn<T extends RuntimeDeclaration
     calls: T[],
     options: {
         readVisibleToolsAfterBinding: () => Promise<Array<{ name: string }>>;
+        readExecutionModelAfterBinding?: () => RuntimeDeclarationExecutionModel | undefined;
         isCapabilityControlTool: (toolName: string) => boolean;
         decisionContext: Omit<BuildAgentToolDecisionContractInput, 'toolCalls' | 'runtime'> & {
             runtime: Omit<NonNullable<BuildAgentToolDecisionContractInput['runtime']>, 'availableTools'>;
@@ -98,6 +108,7 @@ export function createRuntimeDeclarationSiblingTurn<T extends RuntimeDeclaration
         ? [declarationCall, ...calls.filter((call) => call.id !== declarationCall.id)]
         : calls;
     let declarationSucceeded = false;
+    let declarationExecutionModel: RuntimeDeclarationExecutionModel | undefined;
     let visibleToolNamesAfterBinding = new Set<string>();
     return {
         declarationCall,
@@ -111,6 +122,7 @@ export function createRuntimeDeclarationSiblingTurn<T extends RuntimeDeclaration
                 declarationPresent: Boolean(declarationCall),
                 isDeclarationCall: call.id === declarationCall?.id,
                 declarationSucceeded,
+                declarationExecutionModel,
                 visibleAfterBinding: visibleToolNamesAfterBinding.has(call.name),
                 executionKind: classifyAgentToolExecution(call.name, call.arguments),
                 isHarnessControlTool: isAgentHarnessControlTool(call.name),
@@ -142,6 +154,7 @@ export function createRuntimeDeclarationSiblingTurn<T extends RuntimeDeclaration
                 return;
             }
             visibleToolNamesAfterBinding = new Set(visibleTools.map((tool) => tool.name));
+            declarationExecutionModel = options.readExecutionModelAfterBinding?.();
             declarationSucceeded = true;
         }
     };

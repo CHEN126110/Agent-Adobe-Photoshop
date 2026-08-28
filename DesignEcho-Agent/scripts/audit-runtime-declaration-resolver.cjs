@@ -4587,6 +4587,43 @@ async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
   assert.strictEqual(visibleSurfaceReads, 1);
   assert.strictEqual(turn.shouldDefer(read), false, 'valid compatible read was not carried after explicit success');
 
+  const write = {
+    id: 'policy-write',
+    name: 'createRectangle',
+    arguments: { x: 0, y: 0, width: 100, height: 100, fillColorHex: '#FFFFFF' }
+  };
+  const agenticTurn = createRuntimeDeclarationSiblingTurn([declaration, write], {
+    readVisibleToolsAfterBinding: async () => [write],
+    readExecutionModelAfterBinding: () => 'agentic',
+    isCapabilityControlTool: () => false,
+    decisionContext: {
+      userInput: '制作主图', intentControlPlane: readyDecision, completedToolCalls: [],
+      runtime: { photoshopConnected: true, hasDocument: true }
+    }
+  });
+  await agenticTurn.recordResult(declaration, { success: true });
+  assert.strictEqual(
+    agenticTurn.shouldDefer(write),
+    false,
+    'agentic declaration incorrectly became a write ticket and discarded a still-visible model action'
+  );
+
+  const stagedTurn = createRuntimeDeclarationSiblingTurn([declaration, write], {
+    readVisibleToolsAfterBinding: async () => [write],
+    readExecutionModelAfterBinding: () => 'staged',
+    isCapabilityControlTool: () => false,
+    decisionContext: {
+      userInput: '执行规格化生产', intentControlPlane: readyDecision, completedToolCalls: [],
+      runtime: { photoshopConnected: true, hasDocument: true }
+    }
+  });
+  await stagedTurn.recordResult(declaration, { success: true });
+  assert.strictEqual(
+    stagedTurn.shouldDefer(write),
+    true,
+    'staged declaration leaked a sibling write across a real capability boundary'
+  );
+
   const hiddenTurn = createRuntimeDeclarationSiblingTurn([declaration, read], {
     readVisibleToolsAfterBinding: async () => [],
     isCapabilityControlTool: () => false,
@@ -4615,8 +4652,9 @@ async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
     toolScope: 'none',
     executionAuthorization: 'none'
   };
-  const decisionBlockedTurn = createRuntimeDeclarationSiblingTurn([declaration, read], {
-    readVisibleToolsAfterBinding: async () => [read],
+  const decisionBlockedTurn = createRuntimeDeclarationSiblingTurn([declaration, write], {
+    readVisibleToolsAfterBinding: async () => [write],
+    readExecutionModelAfterBinding: () => 'agentic',
     isCapabilityControlTool: () => false,
     decisionContext: {
       userInput: '只做方案，不调用工具', intentControlPlane: planOnlyIntent, completedToolCalls: [],
@@ -4624,7 +4662,7 @@ async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
     }
   });
   await decisionBlockedTurn.recordResult(declaration, { success: true });
-  assert.strictEqual(decisionBlockedTurn.shouldDefer(read), true, 'Tool Decision blocker was bypassed after declaration');
+  assert.strictEqual(decisionBlockedTurn.shouldDefer(write), true, 'Tool Decision blocker was bypassed after agentic declaration');
 
   const secondDeclaration = {
     id: 'policy-declaration-2',
@@ -4659,13 +4697,14 @@ async function assertRuntimeDeclarationSiblingPolicyFailsClosed() {
   assert(duplicateIdTurn.orderedCalls.every((call) => duplicateIdTurn.shouldDefer(call)));
 }
 
-async function assertDeclarationCarriesCompatibleReadsWithoutHijackingSiblingCalls() {
+async function assertAgenticDeclarationPreservesModelAuthoredSiblingCalls() {
   const identity = createPlanNeutralIdentity('same-turn-compatible-reads');
   const declarationTool = requireAgentTool('declareDesignIntent');
   const recommendTool = requireAgentTool('recommendAssets');
   const eagleTool = requireAgentTool('searchEagleReferences');
+  const documentTool = requireAgentTool('getDocumentInfo');
   const writeTool = requireAgentTool('createRectangle');
-  const tools = [declarationTool, recommendTool, eagleTool, writeTool];
+  const tools = [declarationTool, recommendTool, eagleTool, documentTool, writeTool];
   const executedToolNames = [];
   let modelCallCount = 0;
   let agent;
@@ -4679,12 +4718,13 @@ async function assertDeclarationCarriesCompatibleReadsWithoutHijackingSiblingCal
     async () => {
       modelCallCount += 1;
       if (modelCallCount === 1) {
-        // 复刻 r18 Provider 顺序：两个读取在声明之前，另带一个不可顺带放行的写调用。
+        // 复刻 r18 Provider 顺序：模型把声明放在最后，但同轮已经自行选择了必要读取与后续写入。
         return {
           stopReason: 'tool_use',
           toolCalls: [
             { id: 'same-turn-recommend', name: 'recommendAssets', arguments: { limit: 6 } },
             { id: 'same-turn-eagle', name: 'searchEagleReferences', arguments: { query: '袜子 主图' } },
+            { id: 'same-turn-document', name: 'getDocumentInfo', arguments: {} },
             {
               id: 'same-turn-write',
               name: 'createRectangle',
@@ -4715,27 +4755,55 @@ async function assertDeclarationCarriesCompatibleReadsWithoutHijackingSiblingCal
       if (toolName === 'searchEagleReferences') {
         return { success: true, items: [{ id: 'eagle-reference-1' }] };
       }
-      throw new Error(`声明同轮不应执行写工具：${toolName}`);
+      if (toolName === 'getDocumentInfo') {
+        return {
+          success: true,
+          document: { id: 71, name: '主图.psd', width: 800, height: 800 },
+          historyStateRef: { documentId: 71, historyStateId: 9 }
+        };
+      }
+      if (toolName === 'getAcceptanceSnapshot') {
+        return {
+          success: true,
+          hasDocument: true,
+          document: { id: 71, name: '主图.psd', width: 800, height: 800 },
+          historyStateRef: { documentId: 71, historyStateId: 9 },
+          summary: { totalLayers: 1, truncated: false },
+          layers: [{ id: 1, name: '背景', type: 'pixel', visible: true }]
+        };
+      }
+      if (toolName === 'createRectangle') {
+        return {
+          success: true,
+          documentId: 71,
+          historyStateRef: { documentId: 71, historyStateId: 10 }
+        };
+      }
+      throw new Error(`unexpected sibling tool: ${toolName}`);
     }
   );
 
-  await agent.run('整理主图设计所需的素材与参考事实');
+  const runResult = await agent.run('整理主图设计所需的素材与参考事实');
   assert.strictEqual(modelCallCount, 2, 'compatible reads still forced an extra model turn');
   assert.deepStrictEqual(
-    executedToolNames.slice(0, 3),
-    ['declareDesignIntent', 'recommendAssets', 'searchEagleReferences'],
-    'Harness did not preserve the model-authored compatible reads or leaked the sibling write'
+    executedToolNames.slice(0, 4),
+    ['declareDesignIntent', 'recommendAssets', 'searchEagleReferences', 'getDocumentInfo'],
+    'Harness did not preserve the model-authored agentic declaration and prerequisite reads'
   );
-  assert(!executedToolNames.includes('createRectangle'), 'runtime declaration leaked a sibling Photoshop write');
   const recommendEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-recommend');
   const eagleEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-eagle');
   const writeEntry = agent.toolCallLog.find((entry) => entry.callId === 'same-turn-write');
+  assert(
+    executedToolNames.includes('createRectangle'),
+    `agentic sibling write passed declaration handling but did not reach its normal executor: ${JSON.stringify({ executedToolNames, writeResult: writeEntry?.result, runResult })}`
+  );
   assert.strictEqual(recommendEntry?.result?.success, true);
   assert.strictEqual(eagleEntry?.result?.success, true);
   assert.notStrictEqual(recommendEntry?.failureDisposition, 'control_turn_deferred');
   assert.notStrictEqual(eagleEntry?.failureDisposition, 'control_turn_deferred');
-  assert.strictEqual(writeEntry?.result?.code, 'tool_deferred_after_runtime_declaration');
-  assert.strictEqual(writeEntry?.failureDisposition, 'control_turn_deferred');
+  assert.notStrictEqual(writeEntry?.result?.code, 'tool_deferred_after_runtime_declaration');
+  assert.notStrictEqual(writeEntry?.failureDisposition, 'control_turn_deferred');
+  assert.strictEqual(writeEntry?.result?.success, true, 'agentic sibling write did not preserve its real execution result');
   const historyAssistant = agent.messages.find((message) => (
     message.role === 'assistant'
     && message.toolCalls?.some((call) => call.id === 'same-turn-declare')
@@ -4748,11 +4816,12 @@ async function assertDeclarationCarriesCompatibleReadsWithoutHijackingSiblingCal
     'same-turn-declare',
     'same-turn-recommend',
     'same-turn-eagle',
+    'same-turn-document',
     'same-turn-write'
   ];
   assert.deepStrictEqual(historyAssistant?.toolCalls?.map((call) => call.id), expectedCallIds);
   assert.deepStrictEqual(historyToolResult?.toolResults?.map((result) => result.callId), expectedCallIds);
-  assert.strictEqual(new Set(historyToolResult?.toolResults?.map((result) => result.callId)).size, 4);
+  assert.strictEqual(new Set(historyToolResult?.toolResults?.map((result) => result.callId)).size, 5);
 }
 
 async function assertAgentRuntimeDeclarationFailureAndAmbiguityStayFailClosed() {
@@ -4893,6 +4962,62 @@ async function assertStagedDeclarationUsesTruePostBindingToolSurface() {
     agent.toolCallLog.find((entry) => entry.callId === 'staged-hidden-recommend')?.failureDisposition,
     'control_turn_deferred'
   );
+}
+
+async function assertStagedDeclarationDefersVisibleSiblingWrite() {
+  const identity = createPlanNeutralIdentity('staged-visible-write');
+  const declarationTool = requireAgentTool('declareDesignIntent');
+  const writeTool = requireAgentTool('createRectangle');
+  const tools = [declarationTool, writeTool];
+  const executed = [];
+  let modelCalls = 0;
+  let agent;
+  agent = new Agent(
+    buildAgentTestConfig({
+      tools,
+      maxIterations: 2,
+      runtimeSessionIdentity: identity,
+      openingCanvasObservationMode: 'none'
+    }),
+    async () => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [
+            {
+              id: 'staged-visible-write',
+              name: 'createRectangle',
+              arguments: { x: 0, y: 0, width: 100, height: 100, fillColorHex: '#FFFFFF' }
+            },
+            {
+              id: 'staged-visible-declaration',
+              name: 'declareDesignIntent',
+              arguments: { taskTypeId: 'ecommerce.sku_batch.v1' }
+            }
+          ]
+        };
+      }
+      return { content: '已按新的规格化生产阶段重新规划。', stopReason: 'end_turn' };
+    },
+    async (toolName, arguments_) => {
+      executed.push(toolName);
+      assert.strictEqual(toolName, 'declareDesignIntent', 'staged sibling write reached the executor');
+      return activateSkuRuntime({
+        agent,
+        identity,
+        tools,
+        arguments: arguments_,
+        maxIterations: 2,
+        nextTools: [writeTool]
+      });
+    }
+  );
+  await agent.run('完成 SKU 规格化生产');
+  assert.deepStrictEqual(executed, ['declareDesignIntent']);
+  const writeEntry = agent.toolCallLog.find((entry) => entry.callId === 'staged-visible-write');
+  assert.strictEqual(writeEntry?.result?.code, 'tool_deferred_after_runtime_declaration');
+  assert.strictEqual(writeEntry?.failureDisposition, 'control_turn_deferred');
 }
 
 async function assertAgenticDeclarationActivatesArtifactContractWithoutStageRuntime() {
@@ -10262,9 +10387,10 @@ async function runBehaviorAssertions() {
   await assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates();
   await assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2();
   await assertRuntimeDeclarationSiblingPolicyFailsClosed();
-  await assertDeclarationCarriesCompatibleReadsWithoutHijackingSiblingCalls();
+  await assertAgenticDeclarationPreservesModelAuthoredSiblingCalls();
   await assertAgentRuntimeDeclarationFailureAndAmbiguityStayFailClosed();
   await assertStagedDeclarationUsesTruePostBindingToolSurface();
+  await assertStagedDeclarationDefersVisibleSiblingWrite();
   await assertAgenticDeclarationActivatesArtifactContractWithoutStageRuntime();
   await assertSkuModeGetsOneStructuredRepair();
   await assertPureFirstToolResponseDoesNotCallAuxiliaryModel();

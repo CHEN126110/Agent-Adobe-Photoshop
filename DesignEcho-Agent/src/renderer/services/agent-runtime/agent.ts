@@ -6505,7 +6505,6 @@ export class Agent {
                         terminalClosureCheckpoint.preparedClosure
                     );
                 }
-
                 // 4. 有 tool_calls：记录 assistant 消息
                 response.toolCalls = response.toolCalls.map((call) => ({
                     ...call,
@@ -6513,6 +6512,7 @@ export class Agent {
                 }));
                 const runtimeDeclarationTurn = createRuntimeDeclarationSiblingTurn(response.toolCalls, {
                     readVisibleToolsAfterBinding: () => this.buildModelVisibleToolsForIteration(),
+                    readExecutionModelAfterBinding: () => { if (this.config.agenticArtifactContract) return 'agentic'; if (this.runtimeSession && this.config.runtimeStagePlan) return 'staged'; return undefined; },
                     isCapabilityControlTool: isAgentCapabilityControlTool,
                     decisionContext: {
                         userInput: this.currentTask, intentControlPlane: this.runIntentControlPlaneDecision,
@@ -6729,7 +6729,7 @@ export class Agent {
                         output = {
                             success: false,
                             code: 'tool_deferred_after_runtime_declaration',
-                            error: `本轮先完成 Runtime Profile 声明；工具「${call.name}」未执行，请在下一轮按新能力边界重新规划。`,
+                            error: '任务执行约束刚刚发生变化，这项操作尚未执行。请根据当前可用能力重新判断下一步，不要把它当成已经完成。',
                             deferredByRuntimeDeclaration: true,
                             policyGate: true,
                             changesModelVisibleSchemasOnly: true,
@@ -6740,10 +6740,10 @@ export class Agent {
                             countsAsRuntimeToolCall: false
                         };
                     }
-                    // Runtime 绑定发生后，同一模型响应里基于旧 Tool schema 生成的剩余调用不再执行：
-                    // 若该工具已不在当前 Capability 的 activeTools 中（bindManifest 已原地收紧），
-                    // 本轮不执行，Agent 在下一模型轮按新的能力边界重新规划，消除「刚声明完任务、
-                    // 又按旧能力面乱跑」的隐形窗口。Harness 控制工具（含 declareDesignIntent）恒可用。
+                    // Runtime 绑定后的第二重能力面检查：staged Profile 可能原地收紧 activeTools，
+                    // 此时旧 schema 里已不可见的 sibling call 必须重新规划；agentic 声明不改变
+                    // Capability 面，绑定后仍可见的原调用继续走正常 Tool Decision 与执行预检。
+                    // Harness 控制工具（含 declareDesignIntent）恒可用。
                     if (output === undefined
                         && !isAgentHarnessControlTool(call.name)
                         && !isAgentCapabilityControlTool(call.name)
