@@ -230,8 +230,8 @@ const BOUNDARIES = [
   {
     id: 'image-generation-providers',
     title: '图片生成 Provider 与网络代理',
-    validation: ['npm run build:main'],
-    match: (entry) => /src\/main\/services\/(openrouter-gemini-image-service|network-proxy)\.ts/.test(entry.filePath)
+    validation: ['npm run test:image-provider-request', 'npm run build:main'],
+    match: (entry) => /src\/main\/services\/(openrouter-gemini-image-service|smile-ai-image-service|image-provider-credential-sync|network-proxy)\.ts|test-(openrouter|smile)-image-(request|provider)/.test(entry.filePath)
   },
   {
     id: 'agent-public-plan-confirmation',

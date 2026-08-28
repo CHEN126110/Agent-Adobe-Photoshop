@@ -274,44 +274,44 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "DEVELOPMENT-LOOP-RESET-001",
-    "summary": "Reset the development loop around outcome evidence, a single current command chain, falsifiable vertical slices and dependency integrity before heavy validation.",
-    "status": "in_progress_gmr_defined_dependency_preflight_implementation_in_progress_semantic_photoshop_e2e_pending",
+    "id": "SMILE-IMAGE-PROVIDER-001",
+    "summary": "Close the Smile image Provider as one verifiable path from model selection and independent credentials through requests, cancellation, errors, output facts and receipts.",
+    "status": "validated_provider_contract_passed_typecheck_passed_uxp_build_passed_core_58_passed_paid_live_provider_pending",
     "scope": [
-      "Define GMR as development governance only; do not create a Runtime state, Gate, Registry or user-visible workflow.",
-      "Align Prompt, CurrentTask, Plan and project-state on one active objective and sequence.",
-      "Check both workspace lockfiles, installed versions, platform payloads and direct CLI launchers before the 55+ stage core validation.",
-      "Keep dependency migration, Smile, SKU retouch and pose alignment in separate commits and rollback boundaries.",
+      "Keep Smile image models separate from Smile conversation models and from the OpenRouter image channel.",
+      "Synchronize OpenRouter and Smile credentials independently at startup and during hot updates.",
+      "Preserve the selected model, structured Provider errors, cancellation, actual output dimensions, ratio mismatch and provider receipt.",
+      "Validate request and registry contracts offline before any paid external call.",
       "Preserve the dirty shared worktree and do not overwrite or commit unrelated changes.",
-      "Do not claim Photoshop E2E or design quality from development-loop validation."
+      "Do not claim paid Provider availability, Photoshop placement quality or design quality from mocked responses."
     ]
   },
   "activeRequest": {
-    "id": "DEVELOPMENT-LOOP-RESET-001",
-    "summary": "Establish a high-value, reproducible and reversible development loop before adding more product capability.",
-    "status": "in_progress_gmr_and_dependency_preflight",
+    "id": "SMILE-IMAGE-PROVIDER-001",
+    "summary": "Finish the Smile image Provider without silent model substitution, credential coupling, lost errors or false receipts.",
+    "status": "validated_core_58_passed_paid_live_pending",
     "mustDo": [
-      "Turn repeated outcome misses into a bounded GMR with explicit facts, owner, falsifiable hypothesis, next experiment and rollback point.",
-      "Run a read-only dependency integrity check before expensive validation and report all detected gaps in one pass.",
-      "Use one small vertical slice per commit and keep unrelated workspace changes outside its index.",
-      "Validate in the order targeted checks, type/build, one frozen-snapshot core gate, then isolated Photoshop E2E."
+      "Keep model identity, API key ownership, request protocol, cancellation, result dimensions and provider receipts consistent across UI, UXP and Main.",
+      "Fail before billing on unknown models, invalid ratios and unreadable input images.",
+      "Preserve the first structured Provider error when a whole batch fails and keep partial failures visible.",
+      "Run targeted Provider contracts, type/build, one frozen-snapshot core gate, then a separately authorized paid live check."
     ],
     "mustNotDo": [
-      "Do not turn GMR into a production Runtime workflow, Harness gate or second state owner.",
-      "Do not repeat an unchanged heavy validation or add a sample-specific patch to create progress appearance.",
-      "Do not auto-install dependencies, modify lockfiles or hide environment failures in the preflight.",
-      "Do not mix dependency migration, Smile, SKU retouch or pose alignment into this slice.",
-      "Do not claim Photoshop E2E, design quality or speed improvement from this development-only change."
+      "Do not silently replace an unsupported Smile model with a default model.",
+      "Do not make Smile credential availability depend on OpenRouter credentials.",
+      "Do not put design decisions, prompt content or workflow gates into the Provider.",
+      "Do not mix model catalog prose, matting, SKU retouch or pose changes into this slice.",
+      "Do not claim paid Provider, Photoshop E2E or commercial quality from offline request mocks."
     ]
   },
   "activePlan": {
-    "id": "DEVELOPMENT-LOOP-RESET-001",
+    "id": "SMILE-IMAGE-PROVIDER-001",
     "source": "project-memory/Plan.md",
     "steps": [
-      "进行中：完成过程价值复盘、GMR、权威文档与机器投影对齐，以及重型验证前依赖完整性 preflight。",
-      "待真机：完成语义抠图固定 Photoshop 案例。",
-      "待拆分：按纯离线算法、版本化事务 Provider、面板迁移三份切片治理姿态统一。",
-      "待独立收口：分别处理依赖迁移与 Smile Provider。",
+      "已完成：Development Loop、GMR 与依赖完整性 preflight。",
+      "已完成：依赖树迁移的独立提交与干净验证。",
+      "已完成代码：姿态统一三层切片；真实商业适用性等待合适样本。",
+      "已验证：Smile 图像 Provider 完整核心闸门 58/58 通过，待独立提交和付费外部验收。",
       "待建立基线：主图、详情页、SKU、参考复刻固定自然语言重复案例与盲化视觉评分。",
       "条件后置：质量稳定后扩展无 Skill 能力，最后优化性能。"
     ]

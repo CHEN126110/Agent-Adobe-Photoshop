@@ -1,44 +1,44 @@
 # Current Task
 
-## 2026-08-28 DEVELOPMENT-LOOP-RESET-001：复盘并重置高价值开发循环
+## 2026-08-28 SMILE-IMAGE-PROVIDER-001：独立收口 Smile 图像 Provider
 
 ### 目标
 
-1. 复盘最近一次从用户问题、运行证据、根因定位、代码实现、验证到交付的完整链路，把“反复未达成时停下来反思”整理为可执行但不侵入产品 Runtime 的 GMR 方法。
-2. 恢复 `Prompt / CurrentTask / Plan / project-state` 的单一指挥链，避免多个“当前主线”同时驱动开发。
-3. 首次应用新 Development Loop：在 55 项重型验证之前，用无网络、只读 preflight 一次报告 Agent 与 UXP 的全部必需依赖、当前平台二进制和直接 CLI 启动器缺口。
+1. 把已有 Smile AI 图像服务收成一条可验证纵向链：面板模型选择 → UXP 档位 → Main 路由 → Provider 请求 → 取消 /错误 → 真实输出尺寸与 Provider 收据。
+2. 修复 Smile Key 被错误绑定到 OpenRouter Key、未知模型静默换默认模型、批量全失败丢失根错误、GPT Image 2 比例未传递和成功收据误报 Seedream 等假成功来源。
+3. 用可复用的离线请求契约覆盖身份、凭据、协议、输入编码、取消、下载、输出复核与跨文件注册一致性；外部付费请求另行验收，不用 mock 结果冒充。
 
 ### 当前事实
 
-- 语义抠图切片已以 `0ef562a8` 提交并推送，精确快照通过 55 个核心检查；真实 Photoshop source bounds、history、mask /selection /channel 读回与视觉边缘仍未 E2E 验证。
-- 上一轮完整验证在业务测试前后分别暴露规划卡结构缺口、`@cspotcode/source-map-support`、`@img/colour`、48 个非 optional 包和 `.bin` 启动器残缺；根因是一次被 Electron 文件锁以 EBUSY 中断的安装。环境未预检时重复从头运行完整闸门没有新增产品证据。
-- 共享工作树仍混有依赖迁移、Smile Provider、SKU 修图和姿态统一改动；语义提交通过精确暂存与隔离工作树避免夹带，但事后拆分成本较高。
-- 姿态链只读审计已发现 Alpha 导出、document /revision /transaction、显隐参数和旧 UI 协议等 P0，证明静态可编译不能替代运行链与事务审查；当前姿态改动不得整体提交。
-- 仓库此前没有在 `maintenance:validate` 重型阶段前核对两仓 lock、安装版本、平台 payload 与 CLI launcher 的统一检查。
+- Development Loop 与 GMR 已进入项目规则；依赖完整性 preflight 已接入核心验证，依赖树迁移以独立提交 `5c1bc06d` 通过干净安装、类型检查、构建和 57 项核心验证。
+- 共享主工作树仍混有 Smile、抠图、SKU 修图与姿态改动；本任务在独立分支 `codex/smile-image-provider-20260828` 实施，不读取、覆盖或提交主工作树其它改动。
+- Smile 对话 Provider 早已存在；本任务只补图像生成 /图生图通道，不把图片模型加入 Agent 对话模型候选。
+- 只读审计已确认原实现存在五类跨层偏差：凭据生命周期耦合、模型静默替换、错误阶段丢失、UI 比例字段无人消费、收据 Provider 误标；这些不是模型审美问题。
+- 离线请求契约、Main /Renderer 类型检查、UXP production build 与完整核心闸门 58/58 已通过；外部 Smile 真实请求尚未在本任务卡下完成。
 
 ### 实施边界
 
-- GMR 与依赖 preflight 只属于开发治理，不创建 Runtime 状态、Gate、Registry、Evidence 阶段或用户可见流程，也不改变 Agent / Harness / Skill / Provider 设计作者权。
-- preflight 只读取 `package.json`、权威 `package-lock.json` 与 `node_modules`；不读取隐藏 lock 作为成功依据，不联网、不自动安装、不改写依赖，并一次汇总后统一失败。
-- 本切片不继续开发语义、姿态、SKU、Smile 或依赖迁移；不同支线保持独立提交、验证和回滚。
+- Smile Service 只负责版本化图像 Provider 协议、凭据、取消 /超时、输入预算、原始响应和输出事实；不选择素材、构图、提示内容或设计答案。
+- 面板与 UXP 只声明模型可选项、档位与比例传递；不把 Provider 能力表升级成 Skill、Harness Gate 或 Agent 工作流。
+- 本切片不改对话模型目录、抠图、SKU 修图、姿态统一、设计 Skill 或 Agent Prompt；未知模型、无效比例与损坏输入在付费请求前明确失败，不用默认模型或空结果掩盖。
 
 ### 下一步
 
-1. 已完成：GMR、北极星与单一当前顺序已进入各自权威 owner，规划检查不再报告 activeRequest /activePlan 漂移。
-2. 已完成：依赖完整性 preflight 及攻击型 fixture 已接入核心验证第一个阶段，并在重型命令前 fail-fast。
-3. 推送独立检查点；随后以固定语义抠图 Photoshop E2E 作为第一项恢复实验。
+1. 已完成：Smile 图像 Provider、独立凭据同步、图生图路由、比例 /档位声明、错误与收据闭环，以及 OpenRouter Flash 重复能力键修正。
+2. 已完成：OpenRouter + Smile 统一图像 Provider 请求契约、Main /Renderer 类型检查、UXP 类型检查与 production build。
+3. 已完成：冻结快照的完整核心闸门 58/58 通过；待完成最终差异审查与独立提交。有明确付费验收条件时再做真实 Smile 请求，不在自动测试中消费额度。
 
 ### 验证与未知
 
-- 已核实：17 组 fixture 覆盖多缺口聚合、optional /当前平台 payload、版本与根声明漂移、平台冲突、路径逃逸、缺 target、缺失 /陈旧 launcher、损坏 JSON 和两仓汇总；当前共享工作树的权威 lock 与本机依赖汇总为 Agent 636/636、UXP 148/148，27 个直接 CLI 身份完整。
-- 已核实：规划、入口文档、UTF-8、变更边界、仓库卫生、Node 语法和 diff 检查通过；核心 runner 在隔离分支故意接入不匹配的现有安装树时，第一阶段一次报告旧 lock 与当前安装的 3 个差异并停止，未启动后续重型命令。
-- 已核实：Development Loop 代码检查点叠加当前待独立提交的依赖迁移 manifest /lock 后，完整 `maintenance:validate` 57 项通过，新增 preflight 与 17 项契约位于最前，Agent 类型检查、UXP 核心测试和 production build 均完成；依赖文件仅作为匹配本机安装树的验证 overlay，没有进入本提交。
-- 待验证：独立提交自身旧 lock 的全量维护入口仍需要与该 lock 匹配的安装树；当前 upgraded `node_modules` 会被 preflight 一次报告 3 个版本 /嵌套依赖差异并在重型命令前停止，不能把这项正确拒绝改成假绿。
-- 待后续真机：语义抠图固定案例；本任务卡完成只证明研发循环与环境 preflight 可执行，不证明设计质量或 Photoshop E2E。
+- 已核实：三个 Smile 图像模型在 Service、面板与 UXP 档位表一致；Gemini 原生端点的模型后缀、双认证头、比例字段和 PNG 输入契约通过离线拦截测试。
+- 已核实：GPT Image 2 generations 路由、比例到 size 的映射、HTTPS 结果下载、取消信号、96MB 响应预算、损坏输入、未知模型 /比例、401 批量全失败的结构化错误均通过。
+- 已核实：Smile Key 可脱离 OpenRouter 单独恢复、热更新和清空；成功收据报告 `smile-ai`，输出像素尺寸与比例不符时产生复核说明。
+- 已核实：`maintenance:validate` 58 个核心检查全部通过，包含依赖完整性、规划 /卫生 /编码、图像 Provider 请求契约、Agent /UXP 测试、Renderer 类型检查与 UXP production build。
+- 待验证：真实 Smile 账户分组、计费渠道、上游模型可用性、实际 1K/2K/4K 输出与 Photoshop 置入效果。本切片不把既有探针注释或 mock 响应当作新的外部验收。
 
 ### 状态
 
-`validated / gmr_defined / dependency_preflight_targeted_validated / core_57_with_dependency_overlay_passed / exact_lock_install_pending / photoshop_e2e_pending`
+`validated / provider_contract_passed / typecheck_passed / uxp_build_passed / core_58_passed / paid_live_provider_pending`
 
 ---
 

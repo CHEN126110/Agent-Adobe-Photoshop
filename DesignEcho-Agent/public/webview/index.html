@@ -5313,6 +5313,9 @@
                                 <div class="custom-dropdown-option" data-value="google/gemini-3.1-flash-image-preview">Nano Banana 2 (OpenRouter) - 支持 4K</div>
                                 <div class="custom-dropdown-option" data-value="openai/gpt-image-2">GPT Image 2 (OpenRouter) - 高质量档</div>
                                 <div class="custom-dropdown-option" data-value="openai/gpt-5.4-image-2">GPT-5.4 Image 2 (OpenRouter)</div>
+                                <div class="custom-dropdown-option" data-value="smile-ai/gemini-3-pro-image-preview">Nano Banana Pro (Smile AI) - 旗舰 4K</div>
+                                <div class="custom-dropdown-option" data-value="smile-ai/gemini-3.1-flash-image-preview">Nano Banana 2 (Smile AI) - 更快</div>
+                                <div class="custom-dropdown-option" data-value="smile-ai/gpt-image-2">GPT Image 2 (Smile AI)</div>
                             </div>
                         </div>
                     </div>
@@ -6398,6 +6401,30 @@
             // 模型 id 用不带日期后缀的写法：带日期的不是 OpenRouter 的模型 id，而是条目创建
             // 日期 / Google 上游快照名。分辨率走图像 API 顶层 resolution，不是 chat 路径的
             // image_config.image_size（那是 Google 原生字段名，档位因此从未生效）。
+            // Smile AI Studio 是独立通道：Gemini 档位由模型名后缀决定，比例走
+            // generateContent.imageConfig.aspectRatio；GPT Image 2 由 OpenAI size 参数映射比例。
+            'smile-ai/gemini-3-pro-image-preview': {
+                label: 'Nano Banana Pro (Smile AI) - 旗舰 4K',
+                defaultSize: '2K',
+                supportedSizes: ['1K', '2K', '4K'],
+                aspectRatioTier: true,
+                sizeHint: '走 Smile AI Studio 网关，需在 Agent 设置中配置 Smile AI API Key'
+            },
+            'smile-ai/gemini-3.1-flash-image-preview': {
+                label: 'Nano Banana 2 (Smile AI) - 更快',
+                defaultSize: '2K',
+                supportedSizes: ['1K', '2K', '4K'],
+                aspectRatioTier: true,
+                sizeHint: '同样支持 1K / 2K / 4K 档位'
+            },
+            'smile-ai/gpt-image-2': {
+                label: 'GPT Image 2 (Smile AI)',
+                defaultSize: '2K',
+                supportedSizes: ['2K'],
+                // 虽然没有分辨率档位，但仍必须把用户比例原样交给 Agent 映射成 OpenAI size。
+                aspectRatioTier: true,
+                sizeHint: '没有 1K / 2K / 4K 档位，比例会映射到模型支持的输出尺寸'
+            },
             'google/gemini-3-pro-image-preview': {
                 label: 'Nano Banana Pro (OpenRouter) - 旗舰 4K',
                 defaultSize: '2K',
@@ -7253,8 +7280,12 @@
             'jimeng-seedream-4-6': { min: 0, max: 0, sequential: false, parallel: false },
             // Gemini 按 aspect_ratio + image_size 档位出图，无像素区间；单图模型，张数锁 1
             'google/gemini-3-pro-image-preview': { min: 0, max: 0, sequential: false, parallel: false },
-            'google/gemini-3-pro-image-preview': { min: 0, max: 0, sequential: false, parallel: false },
-            'google/gemini-3-pro-image': { min: 0, max: 0, sequential: false, parallel: false }
+            'google/gemini-3.1-flash-image-preview': { min: 0, max: 0, sequential: false, parallel: false },
+            'google/gemini-3-pro-image': { min: 0, max: 0, sequential: false, parallel: false },
+            // Smile AI 单次只出一张，选择多张时由 Agent 并发并保留逐张失败事实。
+            'smile-ai/gemini-3-pro-image-preview': { min: 0, max: 0, sequential: false, parallel: true },
+            'smile-ai/gemini-3.1-flash-image-preview': { min: 0, max: 0, sequential: false, parallel: true },
+            'smile-ai/gpt-image-2': { min: 0, max: 0, sequential: false, parallel: true }
         };
 
         function getAiImageModelPixelRange(model) {

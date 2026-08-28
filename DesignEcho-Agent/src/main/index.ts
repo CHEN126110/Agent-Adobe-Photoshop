@@ -30,11 +30,11 @@ import { MattingService } from './services/matting-service';
 import { ResourceManagerService } from './services/resource-manager-service';
 import { InpaintingService } from './services/inpainting-service';
 import { bflService } from './services/bfl-service';
+import { syncImageProviderApiKeys } from './services/image-provider-credential-sync';
 import { volcengineJimengInpaintingService } from './services/volcengine-jimeng-inpainting-service';
 import { volcengineJimengImageService } from './services/volcengine-jimeng-image-service';
 import { volcengineSeedreamService } from './services/volcengine-seedream-service';
 import { volcengineTosUploadService } from './services/volcengine-tos-upload-service';
-import { openRouterGeminiImageService } from './services/openrouter-gemini-image-service';
 import { getSubjectDetectionService, SubjectDetectionService } from './services/subject-detection-service';
 import { ContourService } from './services/contour-service';
 import { getSAMService, SAMService } from './services/sam-service';
@@ -1053,9 +1053,15 @@ async function initializeServices(): Promise<void> {
         volcengineSeedreamService.setApiKey(persistedApiKeys.volcengineSeedreamApiKey);
         logService.logAgent('info', '[Main] Restored Seedream API Key from persisted state');
     }
+    syncImageProviderApiKeys({
+        openrouter: persistedApiKeys.openrouter,
+        smileAi: persistedApiKeys.smileAi
+    });
     if (persistedApiKeys.openrouter) {
-        openRouterGeminiImageService.setApiKey(persistedApiKeys.openrouter);
         logService.logAgent('info', '[Main] Restored OpenRouter API Key for Gemini image edit from persisted state');
+    }
+    if (persistedApiKeys.smileAi) {
+        logService.logAgent('info', '[Main] Restored Smile AI API Key for image generation from persisted state');
     }
     // ChatGPT 订阅模型使用独立 Codex App Server 与隔离凭据目录；它不是 OpenAI API Key。
     codexSubscriptionService = new CodexSubscriptionService({

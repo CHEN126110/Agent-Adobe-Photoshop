@@ -102,6 +102,8 @@
     "test:runtime-build-identity": "node scripts/verify-runtime-build-identity.cjs",
     "test:preload-sandbox-boundary": "node scripts/verify-preload-sandbox-boundary.cjs",
     "test:openrouter-image-request": "node scripts/test-openrouter-image-request.cjs",
+    "test:smile-image-provider": "node scripts/test-smile-image-provider.cjs",
+    "test:image-provider-request": "npm run test:openrouter-image-request && npm run test:smile-image-provider",
     "audit:inpainting-model-registry": "node scripts/audit-inpainting-model-registry.cjs",
     "test:semantic-target-vocabulary": "node scripts/verify-semantic-target-vocabulary.cjs",
     "test:bert-wordpiece-tokenizer": "node scripts/verify-bert-wordpiece-tokenizer.cjs",

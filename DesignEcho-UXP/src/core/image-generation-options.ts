@@ -58,6 +58,20 @@ const IMAGE_TO_IMAGE_MODEL_SIZE_CAPABILITIES: Record<string, { defaultSize: stri
         defaultSize: '2K',
         supportedSizes: ['1K', '2K', '4K']
     },
+    // Smile AI Studio 是独立网关。Gemini 的 1K/2K/4K 由 Agent 侧模型后缀控制；
+    // GPT Image 2 没有档位，只保留一个 UI 占位档，但仍支持比例选择。
+    'smile-ai/gemini-3-pro-image-preview': {
+        defaultSize: '2K',
+        supportedSizes: ['1K', '2K', '4K']
+    },
+    'smile-ai/gemini-3.1-flash-image-preview': {
+        defaultSize: '2K',
+        supportedSizes: ['1K', '2K', '4K']
+    },
+    'smile-ai/gpt-image-2': {
+        defaultSize: '2K',
+        supportedSizes: ['2K']
+    },
     // OpenAI 系没有分辨率档位（images API 不声明 resolution），尺寸由模型自己定。
     // 只给一档，避免面板出现选了也不起作用的选项。
     'openai/gpt-image-2': {
