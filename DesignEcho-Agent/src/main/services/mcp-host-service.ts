@@ -13,6 +13,7 @@ import {
     DebugBridgeService
 } from './debug-bridge-service';
 import type { DesignEchoRuntimeBuildIdentity } from './runtime-build-identity';
+import { dispatchPhotoshopRemoveBackgroundWorkflow } from './photoshop-workflow-dispatch';
 import { WebSocketServer } from '../websocket/server';
 import {
     analyzeDetailPlaceholderAnchors,
@@ -421,6 +422,7 @@ export class MCPHostService {
     private readonly taskOrchestrator: TaskOrchestrator | null;
     private readonly runtimeBuildIdentity: DesignEchoRuntimeBuildIdentity;
     private readonly onLog?: MCPHostServiceOptions['onLog'];
+    private readonly workflowAbortControllers = new Map<string, AbortController>();
     private server: http.Server | null = null;
 
     constructor(options: MCPHostServiceOptions) {
@@ -477,7 +479,9 @@ export class MCPHostService {
         if (request.method !== 'tools/call') return '';
         const params = asRecord(request.params);
         const toolName = String(params.name || '').trim();
-        if (toolName !== 'photoshop.tools.call' && toolName !== 'photoshop.tools.batch_call') return '';
+        if (toolName !== 'photoshop.tools.call'
+            && toolName !== 'photoshop.tools.batch_call'
+            && toolName !== 'photoshop.workflows.remove_background') return '';
 
         const args = asRecord(params.arguments);
         const existing = String(args.requestKey || params.requestKey || '').trim();
@@ -510,6 +514,9 @@ export class MCPHostService {
                 return isMutation(record.name, record.arguments);
             });
         }
+        if (hostToolName === 'photoshop.workflows.remove_background') {
+            return true;
+        }
         return false;
     }
 
@@ -525,6 +532,31 @@ export class MCPHostService {
                 arguments: {
                     ...args,
                     requestKey
+                }
+            }
+        };
+    }
+
+    private isHostWorkflowRequest(request: JsonRpcRequest): boolean {
+        if (request.method !== 'tools/call') return false;
+        const params = asRecord(request.params);
+        return String(params.name || '').trim() === 'photoshop.workflows.remove_background';
+    }
+
+    private attachHostWorkflowAbortSignal(
+        request: JsonRpcRequest,
+        signal: AbortSignal
+    ): JsonRpcRequest {
+        if (!this.isHostWorkflowRequest(request) || request.method !== 'tools/call') return request;
+        const params = asRecord(request.params);
+        const args = asRecord(params.arguments);
+        return {
+            ...request,
+            params: {
+                ...params,
+                arguments: {
+                    ...args,
+                    abortSignal: signal
                 }
             }
         };
@@ -574,24 +606,51 @@ export class MCPHostService {
             const requestForExecution = abortRequestKey
                 ? this.attachHttpAbortRequestKey(request, abortRequestKey)
                 : request;
+            let workflowAbortController: AbortController | null = null;
+            if (abortRequestKey && this.isHostWorkflowRequest(requestForExecution)) {
+                if (this.workflowAbortControllers.has(abortRequestKey)) {
+                    sendJson(res, 409, createErrorResponse(
+                        request.id,
+                        -32001,
+                        `Photoshop 工作流 requestKey 正在使用中：${abortRequestKey}`
+                    ));
+                    return;
+                }
+                workflowAbortController = new AbortController();
+                this.workflowAbortControllers.set(abortRequestKey, workflowAbortController);
+            }
+            const executableRequest = workflowAbortController
+                ? this.attachHostWorkflowAbortSignal(requestForExecution, workflowAbortController.signal)
+                : requestForExecution;
             let responseReady = false;
             const onResponseClosed = () => {
                 if (!responseReady && abortRequestKey) {
-                    const cancelled = this.wsServer.cancelRequestByKey(
+                    let workflowCancelled = false;
+                    if (workflowAbortController && !workflowAbortController.signal.aborted) {
+                        workflowCancelled = true;
+                        workflowAbortController.abort('mcp_http_client_closed');
+                    }
+                    const photoshopRequestCancelled = this.wsServer.cancelRequestByKey(
                         abortRequestKey,
                         'mcp_http_client_closed',
                         { awaitFinalResult: awaitFinalResultAfterAbort }
                     );
-                    if (cancelled) {
-                        this.log('warn', `[MCPHost] Cancelled Photoshop MCP request after HTTP client closed: ${abortRequestKey}`);
+                    if (workflowCancelled || photoshopRequestCancelled) {
+                        this.log(
+                            'warn',
+                            `[MCPHost] 已在 HTTP 客户端断开后取消 Photoshop 工作流：${abortRequestKey}`
+                        );
                     }
                 }
             };
             if (abortRequestKey) {
                 res.once('close', onResponseClosed);
             }
-            const response = await this.handleRpcRequest(requestForExecution);
+            const response = await this.handleRpcRequest(executableRequest);
             responseReady = true;
+            if (abortRequestKey && workflowAbortController) {
+                this.workflowAbortControllers.delete(abortRequestKey);
+            }
             if (abortRequestKey) {
                 res.off('close', onResponseClosed);
             }
@@ -866,6 +925,35 @@ export class MCPHostService {
                         timeoutMs: { type: 'number', minimum: 1 }
                     },
                     required: ['name']
+                }
+            },
+            {
+                name: 'photoshop.workflows.remove_background',
+                description: '运行与 DesignEcho UXP 面板相同的完整语义抠图链：导出、本地检测与分割、受保护的 Photoshop 写入和结构化读回。调用方必须自己选择语义目标，并绑定准确文档与图层；该工作流不会替 Agent 决定抠取对象。',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        expectedDocumentId: { type: 'number', minimum: 1 },
+                        expectedHistoryStateId: { type: 'number', minimum: 1 },
+                        layerId: { type: 'number', minimum: 1 },
+                        targetPrompt: { type: 'string' },
+                        outputFormat: {
+                            type: 'string',
+                            enum: ['mask', 'selection', 'channel', 'layer']
+                        },
+                        quality: {
+                            type: 'string',
+                            enum: ['fast', 'balanced', 'quality']
+                        },
+                        sampleAllLayers: { type: 'boolean' },
+                        enableHairRefine: { type: 'boolean' },
+                        enableFabricRefine: { type: 'boolean' },
+                        requestKey: {
+                            type: 'string',
+                            description: '可选取消键；可交给 photoshop.tools.cancel 终止仍在运行的同一工作流。'
+                        }
+                    },
+                    required: ['expectedDocumentId', 'layerId', 'targetPrompt', 'outputFormat']
                 }
             },
             {
@@ -1281,17 +1369,37 @@ export class MCPHostService {
                 );
             }
 
+            case 'photoshop.workflows.remove_background': {
+                await this.ensurePhotoshopConnected();
+                return await dispatchPhotoshopRemoveBackgroundWorkflow(args, {
+                    getDocumentInfo: async (): Promise<unknown> => this.unwrapPhotoshopMcpPayload(
+                        await this.wsServer.callMCPTool('getDocumentInfo', {})
+                    ),
+                    invokeRegisteredHandler: async (
+                        method: string,
+                        params: Record<string, unknown>
+                    ): Promise<unknown> => this.wsServer.invokeRegisteredHandler(method, params)
+                });
+            }
+
             case 'photoshop.tools.cancel': {
                 const requestKey = String(args.requestKey || '').trim();
                 if (!requestKey) throw new Error('photoshop.tools.cancel requires requestKey');
-                const cancelled = this.wsServer.cancelRequestByKey(
+                const workflowController = this.workflowAbortControllers.get(requestKey);
+                const workflowCancelled = Boolean(workflowController && !workflowController.signal.aborted);
+                if (workflowCancelled) {
+                    workflowController!.abort('mcp_tool_cancel');
+                }
+                const photoshopRequestCancelled = this.wsServer.cancelRequestByKey(
                     requestKey,
                     'mcp_tool_cancel',
-                    { awaitFinalResult: args.awaitFinalResult === true }
+                    { awaitFinalResult: workflowCancelled || args.awaitFinalResult === true }
                 );
                 return {
                     success: true,
-                    cancelled,
+                    cancelled: workflowCancelled || photoshopRequestCancelled,
+                    workflowCancelled,
+                    photoshopRequestCancelled,
                     requestKey
                 };
             }

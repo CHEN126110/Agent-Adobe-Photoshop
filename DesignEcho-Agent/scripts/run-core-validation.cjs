@@ -55,6 +55,7 @@ const COMMANDS = [
   { label: "MobileSAM 后处理", cwd: agentRoot, args: ["run", "test:sam-postprocessing"] },
   { label: "引导滤波边缘精修", cwd: agentRoot, args: ["run", "test:guided-filter"] },
   { label: "语义抠图区域与写入收据", cwd: agentRoot, args: ["run", "test:semantic-region-contract"] },
+  { label: "Photoshop 完整工作流宿主分发", cwd: agentRoot, args: ["run", "test:photoshop-workflow-dispatch"] },
   { label: "设计作者权边界", cwd: agentRoot, args: ["run", "test:design-authorship-boundary"] },
   { label: "一次成稿设计稿契约", cwd: agentRoot, args: ["run", "test:compose-design-spec"] },
   { label: "设计任务卡", cwd: agentRoot, args: ["run", "test:design-task-card"] },

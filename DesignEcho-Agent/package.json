@@ -110,6 +110,7 @@
     "test:sam-postprocessing": "node scripts/verify-sam-postprocessing.cjs",
     "test:guided-filter": "node scripts/verify-guided-filter.cjs",
     "test:semantic-region-contract": "node scripts/verify-semantic-region-contract.cjs",
+    "test:photoshop-workflow-dispatch": "node scripts/verify-photoshop-workflow-dispatch.cjs",
     "test:design-authorship-boundary": "node scripts/verify-design-authorship-boundary.cjs",
     "test:compose-design-spec": "node scripts/verify-compose-design-spec.cjs",
     "test:design-task-card": "node scripts/verify-design-task-card.cjs",

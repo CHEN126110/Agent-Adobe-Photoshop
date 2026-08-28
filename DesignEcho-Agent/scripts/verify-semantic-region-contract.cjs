@@ -13,6 +13,7 @@ const {
     normalizeMattingOutputFormat,
     validateSemanticBaseExportReceipt,
     validateMattingMutationReceipt,
+    validateExpectedMattingTargetIdentity,
     validateMattingTargetIdentityReceipt,
     validateSemanticDetectionCompleteness,
     validateSemanticRegionExportReceipt,
@@ -92,6 +93,37 @@ async function run() {
         targetIdentity,
         sourceHistoryStateRef: { documentId: 11, historyStateId: 101 }
     });
+    check(
+        '外部工作流绑定同一 document/history 时允许继续',
+        validateExpectedMattingTargetIdentity({
+            identity: targetIdentity,
+            expectedDocumentId: 11,
+            expectedHistoryStateId: 101
+        }).valid
+    );
+    check(
+        '外部工作流绑定错误 document 时在推理前拒绝',
+        validateExpectedMattingTargetIdentity({
+            identity: targetIdentity,
+            expectedDocumentId: 12,
+            expectedHistoryStateId: 101
+        }).code === 'expected_document_changed'
+    );
+    check(
+        '外部工作流绑定过期 history 时在推理前拒绝',
+        validateExpectedMattingTargetIdentity({
+            identity: targetIdentity,
+            expectedDocumentId: 11,
+            expectedHistoryStateId: 102
+        }).code === 'expected_history_state_changed'
+    );
+    check(
+        '外部工作流的非法目标身份断言不能被当作未提供',
+        validateExpectedMattingTargetIdentity({
+            identity: targetIdentity,
+            expectedDocumentId: 0
+        }).code === 'expected_document_id_invalid'
+    );
     const offCanvasReceipt = validateSemanticRegionExportReceipt({
         requestedSourceBounds,
         expectedMode: 'layer-region',

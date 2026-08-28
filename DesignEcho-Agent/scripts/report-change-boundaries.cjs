@@ -119,10 +119,11 @@ const BOUNDARIES = [
       'npm run test:sam-postprocessing',
       'npm run test:guided-filter',
       'npm run test:semantic-region-contract',
+      'npm run test:photoshop-workflow-dispatch',
       'npm run build:main',
       'npm run build:typecheck:renderer'
     ],
-    match: (entry) => /semantic-(target|region)|grounding-(dino|candidate-filter)|target-phrase|mask-regions|sam-postprocessing|guided-filter|bert-wordpiece-tokenizer|src\/main\/services\/sam-service\.ts|src\/main\/uxp-handlers\/visual-handlers\.ts/.test(entry.filePath)
+    match: (entry) => /semantic-(target|region)|photoshop-workflow-dispatch|grounding-(dino|candidate-filter)|target-phrase|mask-regions|sam-postprocessing|guided-filter|bert-wordpiece-tokenizer|src\/main\/services\/sam-service\.ts|src\/main\/uxp-handlers\/visual-handlers\.ts/.test(entry.filePath)
   },
   {
     id: 'interactive-card-runtime',

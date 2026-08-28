@@ -999,6 +999,19 @@ export class WebSocketServer {
         console.log(`[WebSocket Server] Handler registered: ${method}`);
     }
 
+    /**
+     * Invoke one already-registered DesignEcho workflow from another local host
+     * surface (for example the loopback MCP server). This deliberately reuses the
+     * same handler as the UXP panel instead of duplicating workflow logic.
+     */
+    async invokeRegisteredHandler(method: string, params?: any): Promise<any> {
+        const handler = this.requestHandlers.get(method);
+        if (!handler) {
+            throw new Error(`DesignEcho 工作流 handler 尚未注册：${method}`);
+        }
+        return await handler(params);
+    }
+
     private summarizeValueForLog(value: any, depth = 0): string {
         if (value === null) return 'null';
         if (value === undefined) return 'undefined';
