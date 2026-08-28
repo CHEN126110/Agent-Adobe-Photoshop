@@ -70,6 +70,29 @@ export type SemanticTargetLifecycleStage =
 
 export type MattingOutputFormat = 'mask' | 'selection' | 'channel' | 'layer';
 
+interface MattingWorkflowExecutionControl {
+    requestKey?: string;
+    abortSignal?: AbortSignal;
+}
+
+function buildMattingCancelledResult(stage: string): {
+    success: false;
+    error: string;
+    errorCode: 'MATTING_WORKFLOW_CANCELLED';
+    diagnostic: { stage: string; reason: 'workflow_cancelled' };
+} {
+    return {
+        success: false,
+        error: '抠图请求已取消，本轮没有启动新的 Photoshop 写入。',
+        errorCode: 'MATTING_WORKFLOW_CANCELLED',
+        diagnostic: { stage, reason: 'workflow_cancelled' }
+    };
+}
+
+function isMattingWorkflowCancelled(control?: MattingWorkflowExecutionControl): boolean {
+    return control?.abortSignal?.aborted === true;
+}
+
 export function normalizeMattingOutputFormat(value: unknown): MattingOutputFormat | null {
     const normalized = String(value === undefined ? 'mask' : value).trim().toLowerCase();
     if (normalized === 'mask'
@@ -178,6 +201,32 @@ export function validateMattingTargetIdentityReceipt(
         if (!matches) return { valid: false, code: 'target_identity_changed', identity };
     }
     return { valid: true, identity };
+}
+
+export function validateExpectedMattingTargetIdentity(args: {
+    identity: MattingTargetIdentityReceipt;
+    expectedDocumentId?: unknown;
+    expectedHistoryStateId?: unknown;
+}): { valid: boolean; code?: string } {
+    if (args.expectedDocumentId !== undefined) {
+        const expectedDocumentId = Number(args.expectedDocumentId);
+        if (!Number.isSafeInteger(expectedDocumentId) || expectedDocumentId <= 0) {
+            return { valid: false, code: 'expected_document_id_invalid' };
+        }
+        if (args.identity.documentId !== expectedDocumentId) {
+            return { valid: false, code: 'expected_document_changed' };
+        }
+    }
+    if (args.expectedHistoryStateId !== undefined) {
+        const expectedHistoryStateId = Number(args.expectedHistoryStateId);
+        if (!Number.isSafeInteger(expectedHistoryStateId) || expectedHistoryStateId <= 0) {
+            return { valid: false, code: 'expected_history_state_id_invalid' };
+        }
+        if (args.identity.historyStateId !== expectedHistoryStateId) {
+            return { valid: false, code: 'expected_history_state_changed' };
+        }
+    }
+    return { valid: true };
 }
 
 export function validateMattingMutationReceipt(args: {
@@ -664,7 +713,8 @@ export function registerVisualHandlers(context: UXPContext): void {
         exportResult: any,
         quality: 'fast' | 'balanced' | 'quality',
         sampleAllLayers: boolean,
-        paddingRatio: number = HIGH_RES_REGION_PADDING
+        paddingRatio: number = HIGH_RES_REGION_PADDING,
+        control: MattingWorkflowExecutionControl = {}
     ): Promise<{
         success: boolean;
         regions: Array<{
@@ -678,6 +728,9 @@ export function registerVisualHandlers(context: UXPContext): void {
         errorCode?: string;
         diagnostic?: Record<string, unknown>;
     }> => {
+        if (isMattingWorkflowCancelled(control)) {
+            return { ...buildMattingCancelledResult('region-export'), regions: [] };
+        }
         const layerId = exportResult?.layerId;
         const originalWidth = Number(exportResult?.originalWidth);
         const originalHeight = Number(exportResult?.originalHeight);
@@ -770,6 +823,9 @@ export function registerVisualHandlers(context: UXPContext): void {
         const groups = groupAdjacentBoxes(boxes, avgSize * ADJACENT_GROUP_TOLERANCE);
 
         for (const group of groups) {
+            if (isMattingWorkflowCancelled(control)) {
+                return { ...buildMattingCancelledResult('region-export'), regions: [] };
+            }
             // 组的外接框决定取像范围
             const groupBox = {
                 x1: Math.min(...group.map(b => b.x1)),
@@ -815,10 +871,14 @@ export function registerVisualHandlers(context: UXPContext): void {
                 sampleAllLayers,
                 sourceRegion: requestedSourceBounds,
                 expectedTargetIdentity: targetIdentity
-            }, 60000).catch((e: any) => {
+            }, 60000, control.requestKey ? { requestKey: control.requestKey } : {}).catch((e: any) => {
                 logService?.logAgent('warn', `[UXP Handler] 区域取像请求失败: ${e?.message}`);
                 return null;
             });
+
+            if (isMattingWorkflowCancelled(control)) {
+                return { ...buildMattingCancelledResult('region-export'), regions: [] };
+            }
 
             if (!exported?.success) {
                 logService?.logAgent(
@@ -955,6 +1015,7 @@ export function registerVisualHandlers(context: UXPContext): void {
         sampleAllLayers: boolean;
         targetDimensions: { originalWidth?: number; originalHeight?: number };
         fallbackImageInput: string | BinaryImageData;
+        control?: MattingWorkflowExecutionControl;
     }): Promise<{ result: any }> => {
         const outputWidth = args.targetDimensions.originalWidth || args.detectWidth;
         const outputHeight = args.targetDimensions.originalHeight || args.detectHeight;
@@ -963,6 +1024,10 @@ export function registerVisualHandlers(context: UXPContext): void {
             paddingRatio: number,
             boxes: typeof args.boxes
         ): Promise<{ built: any; result: any }> => {
+            if (isMattingWorkflowCancelled(args.control)) {
+                const cancelled = buildMattingCancelledResult('segmentation');
+                return { built: { success: false, regions: [] }, result: cancelled };
+            }
             const built = await buildHighResRegions(
                 boxes,
                 args.detectWidth,
@@ -970,7 +1035,8 @@ export function registerVisualHandlers(context: UXPContext): void {
                 args.exportResult,
                 args.normalizedQuality,
                 args.sampleAllLayers,
-                paddingRatio
+                paddingRatio,
+                args.control
             );
             if (!built.success) {
                 return {
@@ -1018,6 +1084,10 @@ export function registerVisualHandlers(context: UXPContext): void {
                 };
             }
 
+            if (isMattingWorkflowCancelled(args.control)) {
+                return { built, result: buildMattingCancelledResult('segmentation') };
+            }
+
             const result = await mattingService!.segmentHighResRegions(regions, {
                 outputWidth,
                 outputHeight,
@@ -1029,6 +1099,9 @@ export function registerVisualHandlers(context: UXPContext): void {
                     sendMattingProgress(Math.max(60, Math.min(95, progress)), message, stage);
                 }
             });
+            if (isMattingWorkflowCancelled(args.control)) {
+                return { built, result: buildMattingCancelledResult('segmentation') };
+            }
             return { built, result };
         };
 
@@ -1037,6 +1110,10 @@ export function registerVisualHandlers(context: UXPContext): void {
         const clipped = first.result.clippedRegionIndexes || [];
         if (clipped.length === 0 || !first.result.success) {
             return { result: first.result };
+        }
+
+        if (isMattingWorkflowCancelled(args.control)) {
+            return { result: buildMattingCancelledResult('segmentation') };
         }
 
         logService?.logAgent(
@@ -1180,8 +1257,12 @@ export function registerVisualHandlers(context: UXPContext): void {
         exportResult: any;
         /** 与第一次导出保持一致，否则两次取像的图像内容不同 */
         sampleAllLayers: boolean;
+        control?: MattingWorkflowExecutionControl;
     }): Promise<any> => {
         const startTime = Date.now();
+        if (isMattingWorkflowCancelled(args.control)) {
+            return buildMattingCancelledResult('pre-detection');
+        }
 
         // 1. 目标词规范化：全程本地词表，不调用任何语言模型。
         //    抠图是本地能力，挂到云端模型上会平白多出网络、额度、答非所问三类失败
@@ -1243,11 +1324,17 @@ export function registerVisualHandlers(context: UXPContext): void {
         sendMattingProgress(30, `正在图中定位「${args.targetPrompt}」...`, 'detection');
 
         const decoded = await mattingService!.decodeImageInput(args.imageInput);
+        if (isMattingWorkflowCancelled(args.control)) {
+            return buildMattingCancelledResult('detection');
+        }
         if (!decoded) {
             return { success: false, error: '无法解码图层图像：图层可能为空或数据损坏。' };
         }
 
         const detection = await groundingDinoService.detect(decoded.buffer, phrases);
+        if (isMattingWorkflowCancelled(args.control)) {
+            return buildMattingCancelledResult('detection');
+        }
         if (!detection.success) {
             return {
                 success: false,
@@ -1357,8 +1444,13 @@ export function registerVisualHandlers(context: UXPContext): void {
             edgeRefine: args.edgeRefine,
             sampleAllLayers: args.sampleAllLayers,
             targetDimensions: args.targetDimensions,
-            fallbackImageInput: args.imageInput
+            fallbackImageInput: args.imageInput,
+            control: args.control
         });
+
+        if (isMattingWorkflowCancelled(args.control)) {
+            return buildMattingCancelledResult('segmentation');
+        }
 
         if (!result?.success) {
             return {
@@ -1612,6 +1704,10 @@ export function registerVisualHandlers(context: UXPContext): void {
         usePythonBackend?: boolean;
         sampleAllLayers?: boolean;
         layerId?: number;
+        expectedDocumentId?: number;
+        expectedHistoryStateId?: number;
+        requestKey?: string;
+        abortSignal?: AbortSignal;
     }) => {
         logService?.logAgent('info', '[UXP Handler] Received panel matting request');
 
@@ -1635,6 +1731,14 @@ export function registerVisualHandlers(context: UXPContext): void {
         const sampleAllLayers = params.sampleAllLayers === true;
         const normalizedQuality = normalizeMattingQuality(params.quality);
         const exportMaxSize = resolveMattingExportMaxSize(params.quality);
+        const control: MattingWorkflowExecutionControl = {
+            requestKey: String(params.requestKey || '').trim() || undefined,
+            abortSignal: params.abortSignal
+        };
+        if (isMattingWorkflowCancelled(control)) {
+            return buildMattingCancelledResult('prepare-export');
+        }
+        let photoshopApplyStarted = false;
 
         try {
             sendMattingProgress(3, '正在导出图层图像', 'prepare-export');
@@ -1647,7 +1751,11 @@ export function registerVisualHandlers(context: UXPContext): void {
                 maxSize: exportMaxSize,
                 // 对所有图层取样：导出图层边界内的复合图像，让模型看到完整上下文
                 sampleAllLayers
-            }, 60000);
+            }, 60000, control.requestKey ? { requestKey: control.requestKey } : {});
+
+            if (isMattingWorkflowCancelled(control)) {
+                return buildMattingCancelledResult('prepare-export');
+            }
 
             if (!exportResult?.success) {
                 return {
@@ -1668,6 +1776,27 @@ export function registerVisualHandlers(context: UXPContext): void {
                     diagnostic: {
                         stage: 'prepare-export',
                         reason: initialTargetIdentity.code || 'history_state_ref_mismatch'
+                    }
+                };
+            }
+            const expectedTargetValidation = validateExpectedMattingTargetIdentity({
+                identity: initialTargetIdentity.identity,
+                expectedDocumentId: params.expectedDocumentId,
+                expectedHistoryStateId: params.expectedHistoryStateId
+            });
+            if (!expectedTargetValidation.valid) {
+                return {
+                    success: false,
+                    error: '当前 Photoshop 文档或版本已不同于调用方确认的目标，本轮没有执行模型推理，也没有修改图层。请重新读取文档与历史版本后再决定是否重试。',
+                    errorCode: 'MATTING_EXPECTED_TARGET_MISMATCH',
+                    diagnostic: {
+                        stage: 'prepare-export',
+                        reason: expectedTargetValidation.code,
+                        expectedDocumentId: params.expectedDocumentId,
+                        expectedHistoryStateId: params.expectedHistoryStateId,
+                        actualDocumentId: initialTargetIdentity.identity.documentId,
+                        actualHistoryStateId: initialTargetIdentity.identity.historyStateId,
+                        actualLayerId: initialTargetIdentity.identity.layerId
                     }
                 };
             }
@@ -1700,6 +1829,10 @@ export function registerVisualHandlers(context: UXPContext): void {
             const imageInput = await resolveMattingImageInput(exportResult);
             const targetDimensions = resolveMattingTargetDimensions(exportResult);
 
+            if (isMattingWorkflowCancelled(control)) {
+                return buildMattingCancelledResult('export-ready');
+            }
+
             if (!imageInput) {
                 return { success: false, error: '未能获取图层图像数据：图层可能为空、被隐藏或边界无效。' };
             }
@@ -1718,7 +1851,8 @@ export function registerVisualHandlers(context: UXPContext): void {
                     edgeRefine: resolveMattingEdgeRefineMode(params, 'product-hard'),
                     targetDimensions,
                     exportResult,
-                    sampleAllLayers
+                    sampleAllLayers,
+                    control
                 })
                 : await runSalientMatting({
                     imageInput,
@@ -1728,6 +1862,10 @@ export function registerVisualHandlers(context: UXPContext): void {
                     exportResult,
                     sampleAllLayers
                 });
+
+            if (isMattingWorkflowCancelled(control)) {
+                return buildMattingCancelledResult('pre-apply');
+            }
 
             if (!mattingResult?.success || (!mattingResult?.maskImage && !mattingResult?.maskBuffer)) {
                 return {
@@ -1768,7 +1906,12 @@ export function registerVisualHandlers(context: UXPContext): void {
             logService?.logAgent('info', `[UXP Handler] Step 2 complete: model=${mattingResult.usedModel}, duration=${mattingResult.processingTime}ms`);
             sendMattingProgress(96, '正在应用抠图结果', 'apply-mask');
 
+            if (isMattingWorkflowCancelled(control)) {
+                return buildMattingCancelledResult('apply-mask');
+            }
+
             const applyPayload = buildMattingApplyPayload(mattingResult, exportResult);
+            photoshopApplyStarted = true;
             const applyResult = await wsServer.sendRequest('applyMattingResult', {
                 originalLayerId: layerId,
                 outputFormat,
@@ -1776,7 +1919,7 @@ export function registerVisualHandlers(context: UXPContext): void {
                 semanticTargetContract,
                 expectedTargetIdentity: initialTargetIdentity.identity,
                 ...applyPayload
-            }, 60000);
+            }, 60000, control.requestKey ? { requestKey: control.requestKey } : {});
 
             if (!applyResult?.success) {
                 return {
@@ -1864,6 +2007,21 @@ export function registerVisualHandlers(context: UXPContext): void {
                 mutationReceipt: mutationReceiptValidation.receipt
             };
         } catch (error: any) {
+            if (isMattingWorkflowCancelled(control)) {
+                if (photoshopApplyStarted) {
+                    return {
+                        success: false,
+                        error: '取消发生在 Photoshop 写入请求发出之后，但没有取得可验证的最终收据。当前写入状态未知，请先检查目标图层，不要重复执行。',
+                        errorCode: 'MATTING_CANCELLED_WRITE_STATE_UNKNOWN',
+                        diagnostic: {
+                            stage: 'apply-mask',
+                            reason: 'cancelled_after_write_dispatch',
+                            underlyingError: error?.message || String(error)
+                        }
+                    };
+                }
+                return buildMattingCancelledResult('workflow');
+            }
             logService?.logAgent('error', `[UXP Handler] Matting failed: ${error.message}`);
             return { success: false, error: error.message || '抠图失败：发生未知错误，请查看日志。' };
         }
