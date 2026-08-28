@@ -27,8 +27,12 @@ require('ts-node').register({
 const { classifyModelUsage } = require(
     path.resolve(__dirname, '..', 'src', 'shared', 'config', 'model-usage-classification.ts')
 );
+const { mergeFetchedProviderModels } = require(
+    path.resolve(__dirname, '..', 'src', 'shared', 'config', 'provider-model-merge.ts')
+);
 const {
     DEFAULT_MODEL_PREFERENCES,
+    SMILE_AI_MODELS,
     applyModelPreferencesPatch,
     normalizeModelPreferences
 } = require(
@@ -57,6 +61,15 @@ const { TaskOrchestrator } = require(
 );
 const { VisualThinkingService } = require(
     path.resolve(__dirname, '..', 'src', 'main', 'services', 'visual-thinking-service.ts')
+);
+const {
+    resolveSmileAiDeclaredKind,
+    resolveSmileAiModelAvailability
+} = require(
+    path.resolve(__dirname, '..', 'src', 'main', 'services', 'provider-model-listing-service.ts')
+);
+const { createStreamAdapter } = require(
+    path.resolve(__dirname, '..', 'src', 'main', 'services', 'stream-adapter.ts')
 );
 
 let failures = 0;
@@ -148,6 +161,139 @@ expectKind(
     'declaredKind=image 覆盖模态',
     { apiModelId: 'vendor/whatever', declaredKind: 'image', outputModalities: ['text'] },
     'image-generation'
+);
+
+console.log('\n=== Smile AI 网关用途声明 ===');
+expectEqual(
+    '明确 image-generation 端点优先于兼容协议与计费类型',
+    resolveSmileAiDeclaredKind(['image-generation', 'gemini', 'openai'], 0),
+    'image-generation'
+);
+expectEqual(
+    '真实按次计费图片形态声明 image-generation',
+    resolveSmileAiDeclaredKind(['image-generation', 'openai'], 1),
+    'image-generation'
+);
+expectEqual(
+    '图片用途不依赖计费字段存在',
+    resolveSmileAiDeclaredKind([' IMAGE-GENERATION ', 'openai', 'openai'], undefined),
+    'image-generation'
+);
+expectEqual(
+    '按量计费且只有对话协议时声明 conversation',
+    resolveSmileAiDeclaredKind(['anthropic', 'openai'], 0),
+    'conversation'
+);
+expectEqual(
+    '按次计费但缺用途端点时不把计费规则冒充模型用途',
+    resolveSmileAiDeclaredKind(['openai'], 1),
+    undefined
+);
+expectEqual(
+    '没有端点元数据时 quota_type 不能单独决定用途',
+    resolveSmileAiDeclaredKind([], 1),
+    undefined
+);
+expectEqual(
+    'null 计费值不能被 Number(null) 伪装成 0',
+    resolveSmileAiDeclaredKind(['openai'], null),
+    undefined
+);
+expectEqual(
+    '空字符串计费值不能被 Number(空串) 伪装成 0',
+    resolveSmileAiDeclaredKind(['gemini'], ''),
+    undefined
+);
+expectEqual(
+    '合法非空数字字符串仍可按目录事实解析',
+    resolveSmileAiDeclaredKind([' GEMINI ', 'openai'], '0'),
+    'conversation'
+);
+expectEqual(
+    '未知端点即使 quota_type=0 也不声明为对话',
+    resolveSmileAiDeclaredKind(['future-protocol'], 0),
+    undefined
+);
+expectEqual(
+    '模型与账号直连分组相交时可用',
+    resolveSmileAiModelAvailability(['group-a'], { 'group-a': 'A' }, []),
+    true
+);
+expectEqual(
+    'auto 分组只承接当前 auto 路由覆盖的模型分组',
+    resolveSmileAiModelAvailability(['group-b'], { auto: '自动' }, ['group-b']),
+    true
+);
+expectEqual(
+    '账号可用分组与模型分组均明确但不相交时排除',
+    resolveSmileAiModelAvailability(['group-c'], { auto: '自动' }, ['group-b']),
+    false
+);
+expectEqual(
+    '账号分组元数据缺失时保持未知而不误删',
+    resolveSmileAiModelAvailability(['group-c'], undefined, undefined),
+    undefined
+);
+
+const smileDynamicModels = mergeFetchedProviderModels('smile-ai', [
+    {
+        apiModelId: 'future-smile-image',
+        declaredKind: resolveSmileAiDeclaredKind(['image-generation', 'openai'], 1)
+    },
+    {
+        apiModelId: 'future-smile-chat',
+        declaredKind: resolveSmileAiDeclaredKind(['anthropic', 'openai'], 0)
+    }
+], []);
+const smileDynamicImage = smileDynamicModels.models.find((model) => model.apiModelId === 'future-smile-image');
+const smileDynamicChat = smileDynamicModels.models.find((model) => model.apiModelId === 'future-smile-chat');
+expectEqual('Smile 动态图片模型只取得图片生成角色', smileDynamicImage?.roles, ['image-generation']);
+expectEqual('Smile 动态图片模型不进入对话候选', smileDynamicModels.newConversationModelIds, ['smile-ai-future-smile-chat']);
+expectEqual('Smile 动态对话模型不自动取得视觉能力', smileDynamicChat?.supportsVision, false);
+expectEqual('Smile 聚合网关不自动授予 Tool Calling', smileDynamicChat?.supportsToolUse, undefined);
+
+const knownSmileModel = SMILE_AI_MODELS.find((model) => model.apiModelId === 'claude-opus-5');
+expectEqual('Smile 已知能力覆盖样本存在', Boolean(knownSmileModel), true);
+const preservedKnownSmile = mergeFetchedProviderModels('smile-ai', [
+    { apiModelId: 'claude-opus-5', declaredKind: 'image-generation', supportsVision: false, supportsToolUse: false }
+], knownSmileModel ? [knownSmileModel] : []);
+expectEqual('目录冲突不能覆盖已知 Smile 主力模型用途', preservedKnownSmile.models[0]?.usageKind, 'conversation');
+expectEqual('目录冲突不能降级已知 Smile 主力模型能力', {
+    supportsVision: preservedKnownSmile.models[0]?.supportsVision,
+    supportsToolUse: preservedKnownSmile.models[0]?.supportsToolUse
+}, { supportsVision: true, supportsToolUse: true });
+
+const smileStreamAdapter = createStreamAdapter('smile-ai', { smileAiApiKey: 'smile-test-key' });
+expectEqual('Smile 普通流式工厂绑定正确 Provider', smileStreamAdapter.constructor.name, 'OpenAICompatibleStreamAdapter');
+expectEqual('Smile 普通流式工厂绑定正确地址', smileStreamAdapter.baseUrl, 'https://api.smile-ai-studio.com/v1');
+expectEqual('Smile 普通流式工厂传递当前 Key', smileStreamAdapter.apiKey, 'smile-test-key');
+let missingSmileKeyError = '';
+try {
+    createStreamAdapter('smile-ai', {});
+} catch (error) {
+    missingSmileKeyError = error instanceof Error ? error.message : String(error);
+}
+expectEqual('Smile 普通流式缺 Key 时明确失败', missingSmileKeyError, 'Smile AI Studio API key required');
+
+const modelServiceSource = fs.readFileSync(
+    path.resolve(__dirname, '..', 'src', 'main', 'services', 'model-service.ts'),
+    'utf8'
+);
+expectEqual(
+    'ModelService chatStream 把 Smile Key 传给统一流式工厂',
+    /createStreamAdapter\(provider,[\s\S]*smileAiApiKey:\s*this\.config\.smileAiApiKey/.test(modelServiceSource),
+    true
+);
+expectEqual(
+    '动态目录暂未恢复时 Smile 模型仍落到正确 Provider',
+    /modelId\.startsWith\('smile-ai-'\)[\s\S]*provider\s*=\s*'smile-ai'/.test(modelServiceSource),
+    true
+);
+const mainIndexSource = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8');
+expectEqual(
+    '主进程冷启动完整恢复并注入 Smile Key',
+    /smileAi:\s*typeof apiKeys\.smileAi[\s\S]*smileAiApiKey:\s*persistedApiKeys\.smileAi/.test(mainIndexSource),
+    true
 );
 
 console.log('\n=== 单一视觉多模态 Agent 模型迁移与路由 ===');

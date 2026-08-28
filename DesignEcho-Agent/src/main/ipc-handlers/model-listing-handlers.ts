@@ -28,6 +28,7 @@ const PROVIDER_TO_API_KEY_FIELD: Partial<Record<ModelProvider, string>> = {
     xiaomi: 'xiaomi',
     openrouter: 'openrouter',
     deepseek: 'deepseek',
+    'smile-ai': 'smileAi',
     'ollama-cloud': 'ollamaApiKey'
     // ollama（本地）不需要 apiKey，用默认地址。
 };
@@ -37,6 +38,7 @@ const SUPPORTED_PROVIDERS = new Set<ModelProvider>([
     'xiaomi',
     'openrouter',
     'deepseek',
+    'smile-ai',
     'ollama-cloud',
     'ollama'
 ]);

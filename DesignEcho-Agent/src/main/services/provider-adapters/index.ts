@@ -23,6 +23,7 @@ export function getProviderAdapter(provider: string, modelName?: string): Provid
         case 'openai':
         case 'xiaomi':
         case 'deepseek':
+        case 'smile-ai':
         case 'openrouter':
             return new OpenAIAdapter(provider);
         case 'google':

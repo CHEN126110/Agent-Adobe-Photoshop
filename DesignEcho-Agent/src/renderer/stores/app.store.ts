@@ -281,6 +281,7 @@ interface ApiKeys {
     openai?: string;
     openrouter?: string;       // OpenRouter 中转平台 API Key
     deepseek?: string;         // DeepSeek 官方 API Key
+    smileAi?: string;          // Smile AI Studio 聚合网关 API Key
     ollamaUrl?: string;
     ollamaApiKey?: string;     // Ollama Cloud API Key
     bfl?: string;              // Black Forest Labs (FLUX) API Key

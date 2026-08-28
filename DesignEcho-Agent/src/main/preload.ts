@@ -166,6 +166,7 @@ const api = {
         openai?: string;
         openrouter?: string;  // OpenRouter 中转平台
         deepseek?: string;    // DeepSeek 官方 API Key
+        smileAi?: string;     // Smile AI Studio 聚合网关 API Key
         ollamaUrl?: string;
         ollamaApiKey?: string;
         bfl?: string;         // Black Forest Labs (FLUX) API Key

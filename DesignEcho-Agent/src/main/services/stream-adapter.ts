@@ -973,6 +973,7 @@ export interface StreamAdapterConfig {
     anthropicApiKey?: string;
     openaiApiKey?: string;
     deepseekApiKey?: string;
+    smileAiApiKey?: string;
 }
 
 /**
@@ -1018,6 +1019,15 @@ export function createStreamAdapter(
                 config.deepseekApiKey,
                 'https://api.deepseek.com',
                 'DeepSeek'
+            );
+        case 'smile-ai':
+            if (!config.smileAiApiKey) {
+                throw new Error('Smile AI Studio API key required');
+            }
+            return new OpenAICompatibleStreamAdapter(
+                config.smileAiApiKey,
+                'https://api.smile-ai-studio.com/v1',
+                'Smile AI Studio'
             );
         default:
             throw new Error(`Unsupported provider for streaming: ${provider}`);

@@ -41,6 +41,7 @@ import {
     OPENROUTER_MODELS as OPENROUTER_MODELS_CONFIG,
     OLLAMA_CLOUD_MODELS as OLLAMA_CLOUD_CONFIG,
     DEEPSEEK_MODELS as DEEPSEEK_MODELS_CONFIG,
+    SMILE_AI_MODELS as SMILE_AI_MODELS_CONFIG,
     DEFAULT_MODEL_PREFERENCES,
     getModelById,
     getModelsByProvider,
@@ -188,7 +189,18 @@ const DEEPSEEK_MODELS = DEEPSEEK_MODELS_CONFIG.map(m => ({
     requiredKey: 'deepseek' as const
 }));
 
-const CLOUD_MODELS = [...DEEPSEEK_MODELS, ...GOOGLE_MODELS, ...XIAOMI_MODELS, ...OPENROUTER_MODELS, ...OLLAMA_CLOUD_MODELS];
+const SMILE_AI_MODELS = SMILE_AI_MODELS_CONFIG.map(m => ({
+    id: m.id,
+    name: m.name,
+    provider: 'smile-ai',
+    channel: 'Smile AI Studio' as const,
+    desc: m.description || '',
+    recommended: m.recommended || false,
+    vision: m.supportsVision,
+    requiredKey: 'smileAi' as const
+}));
+
+const CLOUD_MODELS = [...DEEPSEEK_MODELS, ...GOOGLE_MODELS, ...XIAOMI_MODELS, ...OPENROUTER_MODELS, ...OLLAMA_CLOUD_MODELS, ...SMILE_AI_MODELS];
 
 // ========== 自动拉取最新模型：UI 数据源合并 ==========
 
@@ -208,7 +220,8 @@ const PROVIDER_REFRESH_LABELS: Record<string, string> = {
     google: 'Google',
     xiaomi: 'Xiaomi',
     'ollama-cloud': 'Ollama Cloud',
-    openrouter: 'OpenRouter'
+    openrouter: 'OpenRouter',
+    'smile-ai': 'Smile AI Studio'
 };
 
 /** 唯一 Agent 模型的云端候选分组。 */
@@ -219,7 +232,8 @@ const CLOUD_MODEL_OPTION_GROUPS = [
     { provider: 'google', label: 'Google AI Studio (官方)' },
     { provider: 'xiaomi', label: 'Xiaomi MiMo (官方)' },
     { provider: 'ollama-cloud', label: 'Ollama Cloud (免费额度)' },
-    { provider: 'openrouter', label: 'OpenRouter (中转)' }
+    { provider: 'openrouter', label: 'OpenRouter (中转)' },
+    { provider: 'smile-ai', label: 'Smile AI Studio (聚合网关)' }
 ] as const;
 
 /** 各 cloud provider 的硬编码模型（简化形态），供下拉默认数据源 + 合并去重的「优先层」。 */
@@ -230,7 +244,8 @@ const HARDCODED_OPTIONS_BY_PROVIDER: Record<string, CloudModelOption[]> = {
     google: GOOGLE_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
     xiaomi: XIAOMI_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
     openrouter: OPENROUTER_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
-    'ollama-cloud': OLLAMA_CLOUD_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true }))
+    'ollama-cloud': OLLAMA_CLOUD_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true })),
+    'smile-ai': SMILE_AI_MODELS.map(m => ({ id: m.id, name: m.name, vision: m.vision, conversation: true }))
 };
 
 /**
@@ -835,6 +850,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         openai: apiKeys.openai || '',
         ollamaUrl: apiKeys.ollamaUrl || 'http://localhost:11434',
         deepseek: apiKeys.deepseek || '',
+        smileAi: apiKeys.smileAi || '',
         ollamaApiKey: apiKeys.ollamaApiKey || '',  // Ollama 云服务 API Key
         bfl: apiKeys.bfl || '',
         volcengineJimengAccessKeyId: apiKeys.volcengineJimengAccessKeyId || '',
@@ -1526,6 +1542,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             ...(apiKeys.xiaomi?.trim() ? ['xiaomi' as ModelProvider] : []),
             ...(apiKeys.ollamaApiKey?.trim() ? ['ollama-cloud' as ModelProvider] : []),
             ...(apiKeys.openrouter?.trim() ? ['openrouter' as ModelProvider] : []),
+            ...(apiKeys.smileAi?.trim() ? ['smile-ai' as ModelProvider] : []),
         ];
         // 并发拉取，各自独立降级（失败保留现有列表，不阻塞设置页渲染）
         candidates.forEach(provider => { void handleRefreshProviderModels(provider, { silent: true }); });
@@ -3621,6 +3638,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                         onChange={e => setLocalKeys(k => ({ ...k, bfl: e.target.value }))}
                                     />
                                     <button type="button" className="link-btn" onClick={() => openExternalLink('https://api.bfl.ai/')}>
+                                        获取 API Key →
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="config-section api-section smile-ai">
+                                <div className="section-header">
+                                    <h3 className="section-title">🟣 Smile AI Studio</h3>
+                                    {localKeys.smileAi && <span className="badge success">已配置</span>}
+                                </div>
+                                <p className="section-desc">
+                                    聚合网关（New API），OpenAI 兼容地址为 https://api.smile-ai-studio.com/v1。
+                                    一个 Key 覆盖多家模型；填入后打开设置页会自动拉取最新列表，图片生成型号会被识别出来、不进入对话候选。
+                                    Agent 主模型推荐 Claude Opus 5 / Sonnet 5（读图与工具调用已实测通过）。
+                                    Gemini 系可读图，但该网关的流式工具调用会返回重复且参数为空的调用，不建议作为 Agent 主模型。
+                                    若某型号报「可用渠道不存在」，是网关侧令牌分组问题，需在网关控制台调整该 Key 的分组。
+                                </p>
+
+                                <div className="form-group">
+                                    <label>API Key</label>
+                                    <input
+                                        type="password"
+                                        className="input"
+                                        placeholder="sk-..."
+                                        value={localKeys.smileAi}
+                                        onChange={e => setLocalKeys(k => ({ ...k, smileAi: e.target.value }))}
+                                    />
+                                    <button type="button" className="link-btn" onClick={() => openExternalLink('https://api.smile-ai-studio.com/console/token')}>
                                         获取 API Key →
                                     </button>
                                 </div>

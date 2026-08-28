@@ -71,7 +71,8 @@ const PROVIDER_REQUIRED_KEY: Partial<Record<ModelProvider, ApiKeyType>> = {
     'ollama-cloud': 'ollamaApiKey',
     ollama: 'ollamaUrl',
     openai: 'openai',
-    anthropic: 'anthropic'
+    anthropic: 'anthropic',
+    'smile-ai': 'smileAi'
 };
 
 /**

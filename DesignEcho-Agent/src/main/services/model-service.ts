@@ -62,6 +62,12 @@ import {
 import { ProviderSseDecoder } from './provider-sse-decoder';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+/**
+ * Smile AI Studio（New API 聚合网关）OpenAI 兼容基址。
+ * 与 provider-model-listing-service.ts 的同名常量保持一致；改一侧请同步另一侧，
+ * 避免"列模型用的地址 ≠ 实际调用地址"造成误判。
+ */
+const SMILE_AI_BASE_URL = 'https://api.smile-ai-studio.com/v1';
 const DEEPSEEK_TEST_MODEL = 'deepseek-v4-pro';
 const OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS = 45_000;
 const OPENAI_COMPATIBLE_MIN_TIMEOUT_MS = 5_000;
@@ -424,6 +430,7 @@ interface ModelServiceConfig {
     openaiApiKey?: string;
     openrouterApiKey?: string;
     deepseekApiKey?: string;
+    smileAiApiKey?: string;
     ollamaUrl?: string;
     ollamaApiKey?: string;  // Ollama Cloud API Key
 }
@@ -448,6 +455,7 @@ export class ModelService {
     private xiaomi: OpenAI | null = null;
     private openai: OpenAI | null = null;
     private deepseek: OpenAI | null = null;
+    private smileAi: OpenAI | null = null;
     private ollamaBaseUrl = 'http://127.0.0.1:11434';
     private config: ModelServiceConfig;
     private readonly codexSubscriptionService: CodexSubscriptionService | null;
@@ -480,6 +488,7 @@ export class ModelService {
             openai: this.config.openaiApiKey,
             openrouter: this.config.openrouterApiKey,
             deepseek: this.config.deepseekApiKey,
+            smileAi: this.config.smileAiApiKey,
             ollamaApiKey: this.config.ollamaApiKey,
         };
     }
@@ -496,6 +505,7 @@ export class ModelService {
         this.xiaomi = null;
         this.openai = null;
         this.deepseek = null;
+        this.smileAi = null;
 
         if (this.config.anthropicApiKey) {
             this.anthropic = new Anthropic({ apiKey: this.config.anthropicApiKey });
@@ -533,6 +543,16 @@ export class ModelService {
                 maxRetries: 0
             });
             console.log('[ModelService] DeepSeek official client initialized');
+        }
+        if (this.config.smileAiApiKey) {
+            this.smileAi = new OpenAI({
+                apiKey: this.config.smileAiApiKey,
+                baseURL: SMILE_AI_BASE_URL,
+                httpAgent,
+                timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
+                maxRetries: 0
+            });
+            console.log('[ModelService] Smile AI Studio client initialized');
         }
         if (this.config.ollamaUrl) {
             this.ollamaBaseUrl = this.config.ollamaUrl;
@@ -682,6 +702,8 @@ export class ModelService {
             }
             case 'deepseek':
                 return this.chatDeepSeek(model as any, messages, options);
+            case 'smile-ai':
+                return this.chatSmileAi(model as any, messages, options);
             default:
                 throw new Error(`不支持的提供商: ${model.provider}`);
         }
@@ -1176,6 +1198,21 @@ export class ModelService {
     ): Promise<ModelResponse> {
         const textOnlyMessages = this.toTextOnlyMessages(messages);
         return this.chatOpenAICompatible(this.deepseek, 'DeepSeek', model, textOnlyMessages, options);
+    }
+
+    /**
+     * Smile AI Studio 网关对话。
+     *
+     * 刻意不套 toTextOnlyMessages：网关主力模型（claude / gemini / gpt 系）支持图像输入，
+     * 剥成纯文本会让 Agent 的视觉观察静默失效——那正是"用兜底掩盖能力"的反面教材。
+     * 若某型号实际不支持图像，网关会明确报错，按真实报错处理。
+     */
+    private async chatSmileAi(
+        model: ModelConfig,
+        messages: ModelMessage[],
+        options?: ModelChatOptions
+    ): Promise<ModelResponse> {
+        return this.chatOpenAICompatible(this.smileAi, 'Smile AI Studio', model, messages, options);
     }
 
     async testDeepSeek(apiKey?: string): Promise<DeepSeekTestResult> {
@@ -2156,6 +2193,17 @@ export class ModelService {
                 } as any);
                 break;
             }
+            case 'smile-ai': {
+                if (!this.smileAi) throw new Error('Smile AI Studio API key not configured');
+                rawResponse = await this.smileAi.chat.completions.create(
+                    {
+                        model: apiModelName,
+                        ...formatted
+                    } as any,
+                    options?.timeoutMs ? { timeout: options.timeoutMs } : undefined
+                );
+                break;
+            }
             case 'google': {
                 if (!this.gemini) throw new Error('Google API key not configured');
                 const genModel = this.gemini.getGenerativeModel({
@@ -2479,6 +2527,8 @@ export class ModelService {
                 return this.xiaomi;
             case 'deepseek':
                 return this.deepseek;
+            case 'smile-ai':
+                return this.smileAi;
             default:
                 return null;
         }
@@ -2903,6 +2953,12 @@ export class ModelService {
         if (modelId.startsWith('xiaomi-')) {
             return { provider: 'xiaomi', apiModelName: modelId.replace('xiaomi-', '') };
         }
+        // 动态发现的网关模型：内部 id 是 slug 化的（点被抹成横线），无法反推真实
+        // apiModelId。命中这里说明动态注册表没查到该模型，按 slug 直发网关，
+        // 型号名不存在时由网关报错，不在此处猜测还原。
+        if (modelId.startsWith('smile-ai-')) {
+            return { provider: 'smile-ai', apiModelName: modelId.replace('smile-ai-', '') };
+        }
 
         throw new Error(`Unknown model: ${modelId}`);
     }
@@ -3066,6 +3122,9 @@ export class ModelService {
         } else if (modelId.startsWith('deepseek-')) {
             provider = 'deepseek';
             modelToUse = modelId;
+        } else if (modelId.startsWith('smile-ai-')) {
+            provider = 'smile-ai';
+            modelToUse = modelId.replace('smile-ai-', '');
         }
         
         // 创建适配器
@@ -3077,7 +3136,8 @@ export class ModelService {
             xiaomiApiKey: this.config.xiaomiApiKey,
             anthropicApiKey: this.config.anthropicApiKey,
             openaiApiKey: this.config.openaiApiKey,
-            deepseekApiKey: this.config.deepseekApiKey
+            deepseekApiKey: this.config.deepseekApiKey,
+            smileAiApiKey: this.config.smileAiApiKey
         });
         
         // 开始流式请求

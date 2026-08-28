@@ -17,6 +17,7 @@
  *    - OpenAI (provider: 'openai') → apiKeys.openai
  *    - Ollama Cloud (provider: 'ollama-cloud') → apiKeys.ollamaApiKey
  *    - DeepSeek 官方 (provider: 'deepseek') → apiKeys.deepseek
+ *    - Smile AI Studio (provider: 'smile-ai') → apiKeys.smileAi
  *    - ChatGPT 订阅 (provider: 'openai-codex') → Codex App Server 受管登录
  */
 
@@ -42,7 +43,8 @@ export type ModelProvider =
     | 'openai'        // OpenAI 直连
     | 'openai-codex'  // ChatGPT 订阅（Codex App Server）
     | 'claude-subscription'  // Claude 订阅（Claude Agent SDK 内嵌运行时）
-    | 'deepseek';     // DeepSeek 官方
+    | 'deepseek'      // DeepSeek 官方
+    | 'smile-ai';     // Smile AI Studio（New API 聚合网关，OpenAI 兼容）
 
 /** API Key 类型映射 */
 export type ApiKeyType = 
@@ -53,7 +55,8 @@ export type ApiKeyType =
     | 'openrouter'     // OpenRouter Key
     | 'anthropic'      // Anthropic Key
     | 'openai'         // OpenAI Key
-    | 'deepseek';      // DeepSeek 官方 API Key
+    | 'deepseek'       // DeepSeek 官方 API Key
+    | 'smileAi';       // Smile AI Studio 聚合网关 Key
 
 export type ModelRole = 
     | 'general'           // 通用
@@ -708,6 +711,105 @@ export const DEEPSEEK_MODELS: ModelConfig[] = [
     }
 ];
 
+/**
+ * Smile AI Studio（New API 聚合网关）主力模型 —— 能力覆盖层。
+ *
+ * 为什么需要这一层：网关的列模型接口不返回 vision / tool-calling 能力字段，而聚合网关
+ * 按 provider 一刀切给能力是虚报（见 provider-model-merge.ts 的 PROVIDER_DEFAULT_TOOL_USE
+ * 注释与 openrouter 的处置）。不做覆盖层，动态拉到的对话模型全部 supportsToolUse=false，
+ * 用户在选择器里选得到、选了却进不了 Agent 主循环。
+ *
+ * ⚠️ 能力字段来源：2026-08-28 真机探针（临时 key，auto 分组，api.smile-ai-studio.com）。
+ * 探测方法：resize_canvas(width,height) 必填双参工具，分别以流式与非流式各打一次，
+ * 校验 tool_calls 数量与 arguments 是否完整；图像用 64x64 左红右蓝 PNG 验证真读图。
+ * 结论按"这个网关的实际转发行为"记录，不是上游厂商的公开规格——两者在本网关上并不一致。
+ *
+ * ❌ 刻意不登记 Gemini 系（gemini-3.1-pro / 3.6-flash / 3-pro-preview）：
+ * 该通道的**流式**工具调用在本网关上是坏的。实测同一请求返回 4 个 tool_call，
+ * 其中参数为空的占多数，并混入函数名字面量为 "tool" 的垃圾项（非流式则正常）。
+ * Agent 主循环走的是流式（chatWithToolsStream），拿到这种结果会乱调工具。
+ * gemini-3.1-pro 更进一步：流式与非流式都不返回工具调用。
+ * 图像输入本身是好的（左红右蓝稳定答对两次），但"能读图不能可靠调工具"不满足
+ * isAgentMultimodalModelConfig 的主模型门槛，因此整体不进覆盖层。
+ * 若后续网关修复了 gemini 通道的流式转译，需重跑上述探针再决定是否登记。
+ *
+ * ❌ 刻意不登记 gpt-5.6：其 enable_groups 仅含【GPT】百分百稳定分组，
+ * auto 分组下报 get_channel_failed「可用渠道不存在」，重试 4 次稳定复现。
+ * 这是账号侧分组配置，不是型号能力问题；需要该分组的 token 才能用。
+ *
+ * contextWindow 与 thinking 刻意不声明：网关两个目录接口都不给这两项，
+ * 在此钉数字就是凭空定死（沿用 deepseek-v4-flash-vision-exp 的同一条纪律）。
+ *
+ * ⚠️ maxTokens 不宜调小：实测把预算压到 512 时，Gemini 通道会先被思考消耗掉预算，
+ * 表现为 finish_reason=length 且丢失工具调用/正文截断。这类失败看起来像"模型不支持"，
+ * 实际是预算不足——排查工具调用缺失时先看 finish_reason。
+ */
+export const SMILE_AI_MODELS: ModelConfig[] = [
+    {
+        // 真机实测（2026-08-28）：非流式与流式工具调用均返回单个 resize_canvas
+        // 且 arguments 双参完整；左红右蓝图answered「左红右蓝」。
+        id: 'smile-ai-claude-opus-5',
+        name: '⭐ Claude Opus 5 (Smile AI)',
+        source: 'cloud',
+        provider: 'smile-ai',
+        requiredApiKey: 'smileAi',
+        apiModelId: 'claude-opus-5',
+        roles: ['general', 'vision', 'layout-analysis', 'copywriting', 'code'],
+        capabilities: ['text-generation', 'vision', 'reasoning', 'chinese', 'json-output', 'tool-calling'],
+        usageKind: 'conversation',
+        usageConfidence: 'declared',
+        supportsVision: true,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        // 网关未声明最大输出；8192 是当前 Harness 的保守请求上限，不冒充模型规格。
+        maxTokens: 8192,
+        recommended: true,
+        description: 'Anthropic 旗舰，读图与工具调用均已实测通过'
+    },
+    {
+        // 真机实测（2026-08-28）：同上，流式/非流式工具参数完整，读图正确。
+        id: 'smile-ai-claude-sonnet-5',
+        name: '⭐ Claude Sonnet 5 (Smile AI)',
+        source: 'cloud',
+        provider: 'smile-ai',
+        requiredApiKey: 'smileAi',
+        apiModelId: 'claude-sonnet-5',
+        roles: ['general', 'vision', 'layout-analysis', 'copywriting', 'code'],
+        capabilities: ['text-generation', 'vision', 'reasoning', 'chinese', 'json-output', 'tool-calling'],
+        usageKind: 'conversation',
+        usageConfidence: 'declared',
+        supportsVision: true,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        // 网关未声明最大输出；8192 是当前 Harness 的保守请求上限，不冒充模型规格。
+        maxTokens: 8192,
+        recommended: true,
+        description: '性价比主力，读图与工具调用均已实测通过'
+    },
+    {
+        // 真机实测（2026-08-28）：工具调用流式/非流式均参数完整。
+        // supportsVision 刻意为 false —— 同一张左红右蓝测试图两次作答，一次「左蓝右蓝」
+        // 一次「左红右蓝」，读图不稳定。声明为 true 会让 Agent 把它当视觉模型派去看画面，
+        // 拿到错误观察比拿不到更糟（错误观察会被当成事实写进后续设计判断）。
+        // 需要读图时用上面两个 Claude 型号。
+        id: 'smile-ai-gpt-5-6-sol',
+        name: 'GPT-5.6 Sol (Smile AI)',
+        source: 'cloud',
+        provider: 'smile-ai',
+        requiredApiKey: 'smileAi',
+        apiModelId: 'gpt-5.6-sol',
+        roles: ['general', 'copywriting', 'code'],
+        capabilities: ['text-generation', 'reasoning', 'json-output', 'tool-calling'],
+        usageKind: 'conversation',
+        usageConfidence: 'declared',
+        supportsVision: false,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 32768,
+        description: 'OpenAI 型号，工具调用已实测；读图不稳定故不声明视觉'
+    }
+];
+
 // 图像生成模型不在这里登记：可用的重绘模型由 inpainting-service.ts 的
 // SUPPORTED_MODELS 单独持有，那是调用方唯一读取的来源。这里再维护一份
 // 只会变成对不上的第二份真相。
@@ -721,6 +823,7 @@ export const ALL_MODELS: ModelConfig[] = [
     ...OPENROUTER_MODELS,
     ...OLLAMA_CLOUD_MODELS,
     ...DEEPSEEK_MODELS,
+    ...SMILE_AI_MODELS,
 ];
 
 // ========== 辅助函数 ==========

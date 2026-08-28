@@ -37,6 +37,18 @@ const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 const GOOGLE_MODELS_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const OLLAMA_CLOUD_BASE_URL = 'https://ollama.com';
 const OLLAMA_LOCAL_DEFAULT_URL = 'http://localhost:11434';
+/**
+ * Smile AI Studio（New API）的模型目录接口。
+ *
+ * 为什么用 /api/pricing 而不是 OpenAI 标准的 /v1/models：
+ * 两个端点都返回 supported_endpoint_types（2026-08-28 带 key 实测，各 42 个模型；
+ * 未带 key 时 /v1/models 返回 401，看不到该字段——不要据此以为它没有能力元数据）。
+ * 差别在于 /api/pricing 额外给出 quota_type（0=按量 / 1=按次）、model_ratio / model_price
+ * 与 enable_groups，这些在诊断"模型列得出来却调不通"时是关键线索：实测 gpt-5.6 的
+ * enable_groups 不含 auto 分组，调用直接报 get_channel_failed。
+ * 两者对用途判定的信息量一致，选信息更全的那个。
+ */
+const SMILE_AI_PRICING_URL = 'https://api.smile-ai-studio.com/api/pricing';
 
 /** 列模型请求默认超时（毫秒）。列模型是只读轻请求，给较短超时避免卡 UI。 */
 const LIST_MODELS_TIMEOUT_MS = 15_000;
@@ -92,6 +104,8 @@ export async function listModelsForProvider(
                 return await listOpenAICompatible(DEEPSEEK_BASE_URL, apiKey!, timeoutMs);
             case 'xiaomi':
                 return await listOpenAICompatible(XIAOMI_BASE_URL, apiKey!, timeoutMs);
+            case 'smile-ai':
+                return await listSmileAi(apiKey!, timeoutMs);
             case 'openrouter':
                 return await listOpenRouter(apiKey!, timeoutMs);
             case 'google':
@@ -391,6 +405,128 @@ function extractVisionSupport(item: any, inputModalities: string[]): boolean | u
  * 多数渠道只返回 data[].id；如果接口额外返回 supported_parameters / capabilities 等官方能力字段，
  * 这里会标准化后交给合并层。未返回的能力不猜测。
  */
+/**
+ * 从 New API 网关目录条目判定模型用途。
+ *
+ * 返回值会交给 model-usage-classification.ts 的 normalizeDeclaredKind() 解释，
+ * 它认这些写法：含 image / image-generation / text-to-image → 图片生成；
+ * 含 chat / conversation / text-generation / completion / llm → 对话。
+ * 返回 undefined 表示"无法判定"，下游会退到按模型名推断（可靠性更低）。
+ *
+ * 已实测的网关数据形态（2026-08-28，42 个模型）：
+ *   对话模型   supported_endpoint_types = ["openai"] / ["anthropic","openai"] / ["gemini","openai"]
+ *   图片模型   supported_endpoint_types = ["image-generation","gemini","openai"]
+ *                                        或 ["image-generation","openai"]
+ *   另有 quota_type：0 = 按量计费（33 个，全是对话模型），1 = 按次计费（9 个，全是图片模型）
+ */
+function readSmileAiQuotaType(value: unknown): number | undefined {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+    if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function resolveSmileAiDeclaredKind(endpointTypes: string[], quotaTypeValue: unknown): string | undefined {
+    const normalizedTypes = new Set(
+        endpointTypes.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean)
+    );
+    // image-generation 是用途端点，语义强于 openai / gemini 这类兼容协议标签，
+    // 即使网关返回矛盾的计费类型，也不能把明确的出图模型塞进 Agent 对话候选。
+    if (normalizedTypes.has('image-generation')) return 'image-generation';
+
+    const hasConversationProtocol = ['openai', 'anthropic', 'gemini']
+        .some((type) => normalizedTypes.has(type));
+    const quotaType = readSmileAiQuotaType(quotaTypeValue);
+    // 协议标签本身不能证明用途：出图模型同样声明 openai / gemini。
+    // 只有当前目录中与对话模型一致的按量计费事实同时成立时才作明确声明；
+    // 缺失、未知或冲突数据保持 undefined，交给集中分类层保守处理。
+    if (hasConversationProtocol && quotaType === 0) return 'conversation';
+    return undefined;
+}
+
+function normalizeSmileAiGroupList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+export function resolveSmileAiModelAvailability(
+    enableGroupsValue: unknown,
+    usableGroupValue: unknown,
+    autoGroupsValue: unknown
+): boolean | undefined {
+    const enableGroups = normalizeSmileAiGroupList(enableGroupsValue);
+    const usableGroups = usableGroupValue && typeof usableGroupValue === 'object' && !Array.isArray(usableGroupValue)
+        ? Object.keys(usableGroupValue as Record<string, unknown>).map((group) => group.trim()).filter(Boolean)
+        : normalizeSmileAiGroupList(usableGroupValue);
+    if (enableGroups.length === 0 || usableGroups.length === 0) return undefined;
+
+    const enabled = new Set(enableGroups);
+    if (usableGroups.some((group) => group !== 'auto' && enabled.has(group))) return true;
+    if (!usableGroups.includes('auto')) return false;
+
+    const autoGroups = normalizeSmileAiGroupList(autoGroupsValue);
+    if (autoGroups.length === 0) return undefined;
+    return autoGroups.some((group) => enabled.has(group));
+}
+
+async function listSmileAi(apiKey: string, timeoutMs: number): Promise<ListModelsResult> {
+    try {
+        // 目录接口不带 key 也返回 200，但仍带上 Authorization：带 key 时响应含
+        // usable_group（该账号可用分组），是诊断 get_channel_failed 的依据。
+        const res = await httpGet(SMILE_AI_PRICING_URL, { Authorization: `Bearer ${apiKey}` }, timeoutMs);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+            return {
+                success: false,
+                models: [],
+                baseUrlUsed: SMILE_AI_PRICING_URL,
+                error: `列模型失败（地址：${SMILE_AI_PRICING_URL}，HTTP ${res.statusCode}）${errorBodySnippet(res.body)}`
+            };
+        }
+        const data = safeParseJson(res.body);
+        const list: any[] = Array.isArray(data?.data) ? data.data : [];
+        if (list.length === 0) {
+            return {
+                success: false,
+                models: [],
+                baseUrlUsed: SMILE_AI_PRICING_URL,
+                error: `模型目录返回空列表（地址：${SMILE_AI_PRICING_URL}）。请确认网关状态与账号可用分组。`
+            };
+        }
+
+        const models: FetchedProviderModel[] = [];
+        for (const item of list) {
+            const apiModelId = String(item?.model_name || '').trim();
+            if (!apiModelId) continue;
+            const availability = resolveSmileAiModelAvailability(
+                item?.enable_groups,
+                data?.usable_group,
+                data?.auto_groups
+            );
+            if (availability === false) continue;
+            const endpointTypes: string[] = Array.isArray(item?.supported_endpoint_types)
+                ? item.supported_endpoint_types.map((t: any) => String(t || '').trim().toLowerCase()).filter(Boolean)
+                : [];
+            models.push({
+                apiModelId,
+                declaredKind: resolveSmileAiDeclaredKind(endpointTypes, item?.quota_type),
+                // supportsVision / supportsToolUse 刻意留空：网关目录不含这两项能力字段。
+                // 聚合网关不能按 provider 一刀切补能力（见 provider-model-merge 的护栏），
+                // 主力型号的能力由 models.config.ts 的 SMILE_AI_MODELS 覆盖层提供。
+                // contextWindow 同理缺席——目录里没有，不在此凭空补。
+                capabilityNames: endpointTypes
+            });
+        }
+        return { success: true, models, baseUrlUsed: SMILE_AI_PRICING_URL };
+    } catch (error: any) {
+        return {
+            success: false,
+            models: [],
+            baseUrlUsed: SMILE_AI_PRICING_URL,
+            error: describeRequestError(error, SMILE_AI_PRICING_URL)
+        };
+    }
+}
+
 async function listOpenAICompatible(
     baseURL: string,
     apiKey: string,

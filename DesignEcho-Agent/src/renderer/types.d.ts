@@ -181,6 +181,7 @@ export interface DesignEchoAPI {
         openai?: string;
         openrouter?: string;
         deepseek?: string;
+        smileAi?: string;
         ollamaUrl?: string;
         ollamaApiKey?: string;
         bfl?: string;

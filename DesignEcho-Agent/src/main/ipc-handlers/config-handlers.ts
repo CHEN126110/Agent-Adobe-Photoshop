@@ -101,6 +101,7 @@ export function registerConfigHandlers(context: IPCContext): void {
         openai?: string;
         openrouter?: string;
         deepseek?: string;
+        smileAi?: string;
         ollamaUrl?: string;
         ollamaApiKey?: string;
         bfl?: string;
@@ -121,6 +122,7 @@ export function registerConfigHandlers(context: IPCContext): void {
             if (keys.openai !== undefined) modelConfigPatch.openaiApiKey = keys.openai;
             if (keys.openrouter !== undefined) modelConfigPatch.openrouterApiKey = keys.openrouter;
             if (keys.deepseek !== undefined) modelConfigPatch.deepseekApiKey = keys.deepseek;
+            if (keys.smileAi !== undefined) modelConfigPatch.smileAiApiKey = keys.smileAi;
             if (keys.ollamaUrl !== undefined) modelConfigPatch.ollamaUrl = keys.ollamaUrl;
             if (keys.ollamaApiKey !== undefined) modelConfigPatch.ollamaApiKey = keys.ollamaApiKey;
             modelService.updateConfig(modelConfigPatch);

@@ -622,6 +622,7 @@ type PersistedApiKeys = {
     openai?: string;
     openrouter?: string;
     deepseek?: string;
+    smileAi?: string;
     ollamaUrl?: string;
     ollamaApiKey?: string;
     bfl?: string;
@@ -833,6 +834,7 @@ function readPersistedApiKeys(entries: Record<string, string>): PersistedApiKeys
             openai: typeof apiKeys.openai === 'string' ? apiKeys.openai : '',
             openrouter: typeof apiKeys.openrouter === 'string' ? apiKeys.openrouter : '',
             deepseek: typeof apiKeys.deepseek === 'string' ? apiKeys.deepseek : '',
+            smileAi: typeof apiKeys.smileAi === 'string' ? apiKeys.smileAi : '',
             ollamaUrl: typeof apiKeys.ollamaUrl === 'string' ? apiKeys.ollamaUrl : '',
             ollamaApiKey: typeof apiKeys.ollamaApiKey === 'string' ? apiKeys.ollamaApiKey : '',
             bfl: typeof apiKeys.bfl === 'string' ? apiKeys.bfl : '',
@@ -1097,6 +1099,7 @@ async function initializeServices(): Promise<void> {
         openaiApiKey: persistedApiKeys.openai,
         openrouterApiKey: persistedApiKeys.openrouter,
         deepseekApiKey: persistedApiKeys.deepseek,
+        smileAiApiKey: persistedApiKeys.smileAi,
         ollamaUrl: persistedApiKeys.ollamaUrl,
         ollamaApiKey: persistedApiKeys.ollamaApiKey
     }, codexSubscriptionService, claudeSubscriptionService);

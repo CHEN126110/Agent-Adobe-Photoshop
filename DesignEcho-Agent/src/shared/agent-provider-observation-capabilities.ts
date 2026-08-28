@@ -72,7 +72,8 @@ export interface AgentProviderObservationCapabilities {
 const OPENAI_COMPATIBLE_TOOL_STREAM_PROVIDERS = new Set([
     'openai',
     'xiaomi',
-    'deepseek'
+    'deepseek',
+    'smile-ai'
 ]);
 
 const OPENROUTER_TOOL_STREAM_PROVIDERS = new Set([

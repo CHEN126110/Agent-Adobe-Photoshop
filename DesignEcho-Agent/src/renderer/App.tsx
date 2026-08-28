@@ -385,6 +385,7 @@ function App() {
             openai: apiKeys?.openai || '',
             openrouter: apiKeys?.openrouter || '',
             deepseek: apiKeys?.deepseek || '',
+            smileAi: apiKeys?.smileAi || '',
             ollamaUrl: apiKeys?.ollamaUrl || '',
             ollamaApiKey: apiKeys?.ollamaApiKey || '',
             volcengineJimengAccessKeyId: apiKeys?.volcengineJimengAccessKeyId || '',
