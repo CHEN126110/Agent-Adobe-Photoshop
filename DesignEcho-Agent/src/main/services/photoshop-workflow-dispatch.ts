@@ -1,3 +1,5 @@
+import { normalizeSemanticMattingGuidance } from '../../shared/semantic-matting-guidance';
+
 export type PhotoshopRemoveBackgroundOutputFormat = 'mask' | 'selection' | 'channel' | 'layer';
 export type PhotoshopRemoveBackgroundQuality = 'fast' | 'balanced' | 'quality';
 
@@ -11,6 +13,7 @@ export interface PhotoshopRemoveBackgroundWorkflowInput {
     sampleAllLayers?: unknown;
     enableHairRefine?: unknown;
     enableFabricRefine?: unknown;
+    semanticGuidance?: unknown;
     requestKey?: unknown;
     abortSignal?: unknown;
 }
@@ -65,11 +68,7 @@ function normalizeQuality(value: unknown): PhotoshopRemoveBackgroundQuality {
 }
 
 function normalizeTargetPrompt(value: unknown): string {
-    const targetPrompt = String(value || '').trim();
-    if (!targetPrompt) {
-        throw new Error('photoshop.workflows.remove_background 需要由调用方明确提供 targetPrompt。');
-    }
-    return targetPrompt;
+    return String(value || '').trim();
 }
 
 function readAbortSignal(value: unknown): AbortSignal | undefined {
@@ -99,6 +98,14 @@ export async function dispatchPhotoshopRemoveBackgroundWorkflow(
     const targetPrompt = normalizeTargetPrompt(input.targetPrompt);
     const outputFormat = normalizeOutputFormat(input.outputFormat);
     const quality = normalizeQuality(input.quality);
+    const guidanceValidation = normalizeSemanticMattingGuidance(input.semanticGuidance);
+    if (!guidanceValidation.valid) {
+        throw new Error(`${guidanceValidation.error} ${guidanceValidation.issues.join(' ')}`.trim());
+    }
+    const semanticGuidance = guidanceValidation.guidance;
+    if (semanticGuidance && !targetPrompt) {
+        throw new Error('photoshop.workflows.remove_background 的 semanticGuidance 必须绑定明确的 targetPrompt。');
+    }
     const requestKey = String(input.requestKey || '').trim() || undefined;
 
     const documentInfo = asRecord(await dependencies.getDocumentInfo());
@@ -134,6 +141,9 @@ export async function dispatchPhotoshopRemoveBackgroundWorkflow(
         sampleAllLayers: input.sampleAllLayers === true,
         enableHairRefine: input.enableHairRefine !== false,
         enableFabricRefine: input.enableFabricRefine !== false,
+        ...(semanticGuidance
+            ? { semanticGuidance }
+            : {}),
         layerId,
         expectedDocumentId,
         ...(requestKey ? { requestKey } : {}),

@@ -31,10 +31,15 @@ function summarizeMattingParams(params: Record<string, any>): string {
         parts.push(`模型输入最长边: ${Math.round(maxSize)}px`);
     }
 
-    if (params?.useMask === true) {
+    const outputMode = String(params?.outputMode || params?.outputFormat || '').trim().toLowerCase();
+    if (params?.useMask === true || outputMode === 'mask') {
         parts.push('输出: 蒙版');
-    } else if (params?.createNewLayer === false) {
+    } else if (params?.createNewLayer === false || outputMode === 'replace') {
         parts.push('输出: 覆盖原图层');
+    } else if (outputMode === 'selection') {
+        parts.push('输出: 选区');
+    } else if (outputMode === 'channel') {
+        parts.push('输出: Alpha 通道');
     } else {
         parts.push('输出: 新图层');
     }

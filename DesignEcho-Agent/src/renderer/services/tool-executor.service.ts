@@ -64,6 +64,7 @@ import {
     DESIGN_ECHO_TARGET_GUARD_ARGUMENT,
     isAgentToolExecutionGuarded
 } from '../../shared/agent-tool-execution-preflight';
+import { compileRemoveBackgroundWorkflowRequest } from '../../shared/photoshop-remove-background-workflow';
 import {
     enforceGuardedPhotoshopExecutionBaseline,
     type GuardedPhotoshopExecutionBaseline
@@ -111,7 +112,10 @@ import {
     cleanInteractiveCardText,
     type InteractiveCardDefinition
 } from '../../shared/interactive-card-contract';
-import { callPhotoshopMcpTool } from './mcp-host.client';
+import {
+    callPhotoshopMcpTool,
+    callPhotoshopRemoveBackgroundWorkflow
+} from './mcp-host.client';
 import { markExecutedToolResultProvenance } from './agent-runtime/tool-result-provenance';
 
 // ==================== 工具定义 ====================
@@ -215,7 +219,7 @@ export const AVAILABLE_TOOLS = [
     { name: 'smartSave', description: '建立项目内部可编辑恢复点；路径固定由宿主解析到 .designecho/recovery，不属于最终交付', params: '{ exportFormat?: "psd"|"psb" }' },
     
     // === 图像处理 ===
-    { name: 'removeBackground', description: '智能抠图', params: '{ targetPrompt?: string, outputFormat?: "layer"|"mask" }' },
+    { name: 'removeBackground', description: '完整智能抠图：绑定当前文档/图层，执行本地检测与分割并写回验真；语义目标和可选正负点由 Agent 明确给出', params: '{ layerId?: number, targetPrompt?: string, outputFormat?: "layer"|"mask"|"selection"|"channel", quality?: "fast"|"balanced"|"quality", semanticGuidance?: { version: "semantic-matting-guidance/v1", sets: [{ foregroundPoints: [{x:number,y:number}], backgroundPoints?: [{x:number,y:number}] }] } }' },
     { name: 'placeImage', description: 'Place an image that the Agent has explicitly selected. This execution tool never scans, ranks, or chooses project assets. When no source is supplied, inspect candidates with recommendAssets and call placeImage again with filePath/fileToken/imageData.', params: '{ filePath?: string, fileToken?: string, imageData?: string, name?: string, x?: number, y?: number, targetBounds?: { x?: number, y?: number, left?: number, top?: number, right?: number, bottom?: number, width?: number, height?: number }, targetFit?: "contain"|"cover"|"fill", layerOrder?: "front"|"belowText"|"back", center?: boolean, scale?: number, fitToCanvas?: boolean }' },
     { name: 'replaceLayerContent', description: '目标图层和替换文件都明确后，替换图层内容为新图片', params: '{ filePath: string, layerId?: number }' },
     // === 创建工具 ===
@@ -381,6 +385,7 @@ function getToolTimeout(toolName: string, params: any): number | undefined {
     if (toolName === 'focusLayer') return 15 * 1000;
     if (toolName === 'createTextLayer') return 60 * 1000;
     if (toolName === 'saveDocument' || toolName === 'quickExport' || toolName === 'exportGroup') return 2 * 60 * 1000;
+    if (toolName === 'removeBackground') return LONG_RUNNING_TOOL_TIMEOUT;
     // 批量导出跨多文档多子组、JPEG 自适应降质要反复重存，按长任务给足时间
     if (toolName === 'exportMainImageDocuments') return LONG_RUNNING_TOOL_TIMEOUT;
     if (toolName === 'skuLayout') {
@@ -2452,6 +2457,31 @@ function isCancelledToolError(message: string): boolean {
     return /请求已取消|任务已取消|cancelled|canceled|abort/i.test(message);
 }
 
+async function executeCompleteRemoveBackgroundWorkflow(
+    params: any,
+    timeout: number | undefined,
+    options: ToolCallExecutionOptions
+): Promise<any> {
+    const documentInfo = await callPhotoshopMcpTool('getDocumentInfo', {}, {
+        signal: options.signal,
+        timeoutMs: 15_000
+    });
+    const compiled = compileRemoveBackgroundWorkflowRequest({ params, documentInfo });
+    if (!compiled.valid) {
+        return {
+            success: false,
+            code: compiled.code,
+            error: compiled.error,
+            noMutation: true,
+            executesPhotoshop: false
+        };
+    }
+    return await callPhotoshopRemoveBackgroundWorkflow({ ...compiled.request }, {
+        signal: options.signal,
+        timeoutMs: timeout ?? LONG_RUNNING_TOOL_TIMEOUT
+    });
+}
+
 async function sendToPluginWithCancellation(
     method: string,
     params: any,
@@ -2501,6 +2531,9 @@ async function sendToPluginWithCancellation(
     }
 
     try {
+        if (method === 'removeBackground') {
+            return await executeCompleteRemoveBackgroundWorkflow(params, timeout, options);
+        }
         return await callPhotoshopMcpTool(method, params ?? {}, {
             signal,
             timeoutMs: timeout

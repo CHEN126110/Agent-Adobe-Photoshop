@@ -11,6 +11,9 @@ require('ts-node').register({
 const {
     dispatchPhotoshopRemoveBackgroundWorkflow
 } = require(path.join(agentRoot, 'src/main/services/photoshop-workflow-dispatch.ts'));
+const {
+    compileRemoveBackgroundWorkflowRequest
+} = require(path.join(agentRoot, 'src/shared/photoshop-remove-background-workflow.ts'));
 const { WebSocketServer } = require(path.join(agentRoot, 'src/main/websocket/server.ts'));
 const { MCPHostService } = require(path.join(agentRoot, 'src/main/services/mcp-host-service.ts'));
 const {
@@ -109,11 +112,44 @@ async function run() {
         matchingDocument,
         /layerId/
     );
+    const salientCalls = [];
+    await dispatchPhotoshopRemoveBackgroundWorkflow({
+        ...validInput,
+        targetPrompt: '   '
+    }, {
+        getDocumentInfo: async () => matchingDocument,
+        invokeRegisteredHandler: async (method, params) => {
+            salientCalls.push({ method, params });
+            return { success: true };
+        }
+    });
+    assert.strictEqual(salientCalls.length, 1);
+    assert.strictEqual(salientCalls[0].params.targetPrompt, '');
+    console.log('✅ 空 targetPrompt 明确进入通用前景抠图，不再伪装成语义目标缺失');
     await expectRejectedBeforeDispatch(
-        '空 targetPrompt 时在读取 Photoshop 前拒绝',
-        { ...validInput, targetPrompt: '   ' },
+        '引导点没有 targetPrompt 时在读取 Photoshop 前拒绝',
+        {
+            ...validInput,
+            targetPrompt: '',
+            semanticGuidance: {
+                version: 'semantic-matting-guidance/v1',
+                sets: [{ foregroundPoints: [{ x: 0.5, y: 0.5 }] }]
+            }
+        },
         matchingDocument,
-        /targetPrompt/
+        /semanticGuidance.*targetPrompt/
+    );
+    await expectRejectedBeforeDispatch(
+        '越界引导点在读取 Photoshop 前拒绝',
+        {
+            ...validInput,
+            semanticGuidance: {
+                version: 'semantic-matting-guidance/v1',
+                sets: [{ foregroundPoints: [{ x: 1.5, y: 0.5 }] }]
+            }
+        },
+        matchingDocument,
+        /0 到 1/
     );
     await expectRejectedBeforeDispatch(
         '非法 outputFormat 时在读取 Photoshop 前拒绝',
@@ -163,11 +199,19 @@ async function run() {
     const calls = [];
     const workflowReceipt = { success: true, mutationReceipt: { complete: true } };
     const liveController = new AbortController();
+    const semanticGuidance = {
+        version: 'semantic-matting-guidance/v1',
+        sets: [{
+            foregroundPoints: [{ x: 0.42, y: 0.36 }],
+            backgroundPoints: [{ x: 0.44, y: 0.52 }]
+        }]
+    };
     const result = await dispatchPhotoshopRemoveBackgroundWorkflow({
         ...validInput,
         targetPrompt: '  袜子  ',
         sampleAllLayers: true,
         enableHairRefine: false,
+        semanticGuidance,
         requestKey: 'semantic-e2e-1',
         abortSignal: liveController.signal
     }, {
@@ -189,6 +233,7 @@ async function run() {
             sampleAllLayers: true,
             enableHairRefine: false,
             enableFabricRefine: true,
+            semanticGuidance,
             layerId: 9,
             expectedDocumentId: 42,
             requestKey: 'semantic-e2e-1',
@@ -220,6 +265,47 @@ async function run() {
         false
     );
     console.log('✅ 未声明 history 时不伪造版本事实，layer 输出不伪装为 mask');
+
+    const internalDocumentInfo = {
+        success: true,
+        document: { id: 42, activeLayerId: 9 },
+        historyStateRef: { documentId: 42, historyStateId: 701 }
+    };
+    const compiledInternal = compileRemoveBackgroundWorkflowRequest({
+        params: {
+            sourceType: 'current_layer',
+            targetPrompt: '袜子',
+            outputMode: 'mask',
+            semanticGuidance
+        },
+        documentInfo: internalDocumentInfo
+    });
+    assert.strictEqual(compiledInternal.valid, true);
+    assert.deepStrictEqual(compiledInternal.request, {
+        expectedDocumentId: 42,
+        expectedHistoryStateId: 701,
+        layerId: 9,
+        targetPrompt: '袜子',
+        outputFormat: 'mask',
+        quality: 'balanced',
+        sampleAllLayers: false,
+        enableHairRefine: true,
+        enableFabricRefine: true,
+        semanticGuidance
+    });
+    assert.strictEqual(compileRemoveBackgroundWorkflowRequest({
+        params: { sourceType: 'file_path', filePath: 'D:/input.png' },
+        documentInfo: internalDocumentInfo
+    }).code, 'matting_source_not_prepared');
+    assert.strictEqual(compileRemoveBackgroundWorkflowRequest({
+        params: { sourceType: 'current_layer', outputMode: 'replace' },
+        documentInfo: internalDocumentInfo
+    }).code, 'matting_destructive_replace_unsupported');
+    assert.strictEqual(compileRemoveBackgroundWorkflowRequest({
+        params: { sourceType: 'current_layer', semanticGuidance },
+        documentInfo: internalDocumentInfo
+    }).code, 'matting_guidance_requires_semantic_target');
+    console.log('✅ 内部 Skill 参数只编译为绑定版本、绑定图层、非破坏的完整抠图请求');
 
     const server = new WebSocketServer(0);
     let receivedParams = null;
@@ -271,6 +357,21 @@ async function run() {
     assert.strictEqual(photoshopSendCount, 0);
     console.log('✅ 已取消信号进入真实 remove-background handler 后仍保持零 Photoshop 请求');
 
+    const invalidGuidanceResult = await liveHandler({
+        layerId: 9,
+        targetPrompt: '袜子',
+        outputFormat: 'mask',
+        semanticGuidance: {
+            version: 'semantic-matting-guidance/v1',
+            sets: [{ foregroundPoints: [{ x: -0.1, y: 0.5 }] }]
+        }
+    });
+    assert.strictEqual(invalidGuidanceResult.success, false);
+    assert.strictEqual(invalidGuidanceResult.errorCode, 'SEMANTIC_GUIDANCE_INVALID');
+    assert.strictEqual(invalidGuidanceResult.noMutation, true);
+    assert.strictEqual(photoshopSendCount, 0);
+    console.log('✅ 无效语义引导在首次 Photoshop 导出前失败，不会产生半程请求');
+
     const visualHandlerSource = fs.readFileSync(
         path.join(agentRoot, 'src/main/uxp-handlers/visual-handlers.ts'),
         'utf8'
@@ -292,16 +393,30 @@ async function run() {
     assert(postInferenceCancelIndex > inferenceIndex);
     assert(applyIndex > postInferenceCancelIndex);
     assert(handlerSource.includes('control.requestKey ? { requestKey: control.requestKey } : {}'));
-    assert(handlerSource.includes('sampleAllLayers,\n                    control'));
+    assert(handlerSource.includes('sampleAllLayers,\n                    semanticGuidance,\n                    control'));
     assert(handlerSource.includes("errorCode: 'MATTING_CANCELLED_WRITE_STATE_UNKNOWN'"));
     assert(handlerSource.indexOf('photoshopApplyStarted = true') < applyIndex);
     console.log('✅ 本地推理结束后的取消检查位于 applyMattingResult 之前，请求键贯穿导出与写回');
+
+    const toolExecutorSource = fs.readFileSync(
+        path.join(agentRoot, 'src/renderer/services/tool-executor.service.ts'),
+        'utf8'
+    );
+    const mcpClientSource = fs.readFileSync(
+        path.join(agentRoot, 'src/renderer/services/mcp-host.client.ts'),
+        'utf8'
+    );
+    assert(toolExecutorSource.includes("if (method === 'removeBackground')"));
+    assert(toolExecutorSource.includes('callPhotoshopRemoveBackgroundWorkflow({ ...compiled.request }'));
+    assert(mcpClientSource.includes("const hostToolName = 'photoshop.workflows.remove_background'"));
+    console.log('✅ 公开 removeBackground 已路由到 Main 完整工作流，不再把 UXP 导出原子动作当完成');
 
     const cancellationCalls = [];
     const mcpHost = new MCPHostService({
         host: '127.0.0.1',
         port: 0,
         wsServer: {
+            isPluginConnected: () => false,
             cancelRequestByKey: (requestKey, reason, options) => {
                 cancellationCalls.push({ requestKey, reason, options });
                 return false;
@@ -310,6 +425,41 @@ async function run() {
         debugBridge: {},
         runtimeBuildIdentity: {}
     });
+    const notStartedResult = await mcpHost.callTool('photoshop.workflows.remove_background', validInput);
+    assert.deepStrictEqual(notStartedResult, {
+        success: false,
+        code: 'photoshop_workflow_not_started',
+        error: 'Photoshop UXP plugin is not connected',
+        noMutation: true,
+        executesPhotoshop: false
+    });
+    console.log('✅ 完整工作流尚未启动时返回可区分的零写入事实，不伪造未知完成状态');
+    const uncertainHost = new MCPHostService({
+        host: '127.0.0.1',
+        port: 0,
+        wsServer: {
+            isPluginConnected: () => true,
+            callMCPTool: async () => matchingDocument,
+            invokeRegisteredHandler: async () => {
+                throw new Error('injected post-dispatch transport loss');
+            }
+        },
+        debugBridge: {},
+        runtimeBuildIdentity: {}
+    });
+    const uncertainResult = await uncertainHost.callTool(
+        'photoshop.workflows.remove_background',
+        validInput
+    );
+    assert.deepStrictEqual(uncertainResult, {
+        success: false,
+        code: 'photoshop_workflow_outcome_unknown',
+        error: 'injected post-dispatch transport loss',
+        noMutation: false,
+        mutationState: 'unknown',
+        executesPhotoshop: true
+    });
+    console.log('✅ handler 启动后的异常标记写入状态未知，禁止谎报 noMutation');
     const workflowRequest = {
         jsonrpc: '2.0',
         id: 77,

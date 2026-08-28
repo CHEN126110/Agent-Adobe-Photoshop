@@ -28,7 +28,12 @@ const numParam = (
     name: string,
     description: string,
     required = false,
-    extra: Partial<{ default: number; examples: any[] }> = {}
+    extra: Partial<{
+        default: number;
+        examples: any[];
+        minimum: number;
+        maximum: number;
+    }> = {}
 ) => ({
     name,
     type: 'number' as const,
@@ -63,6 +68,54 @@ const objParam = (name: string, description: string, required = false) => ({
     description,
     required
 });
+
+function semanticMattingGuidanceParam(): SkillParameter {
+    const pointSchema: SkillParameterSchema = {
+        type: 'object',
+        additionalProperties: false,
+        properties: [
+            numParam('x', '相对目标图层宽度的归一化 X 坐标（0 到 1）。', true, {
+                minimum: 0,
+                maximum: 1
+            }),
+            numParam('y', '相对目标图层高度的归一化 Y 坐标（0 到 1）。', true, {
+                minimum: 0,
+                maximum: 1
+            })
+        ]
+    };
+    return {
+        name: 'semanticGuidance',
+        type: 'object',
+        description: '可选的 Agent 视觉引导。只有看过源图并能明确指出目标内部与非目标遮挡物时使用；Harness 不生成这些点。',
+        required: false,
+        additionalProperties: false,
+        properties: [
+            strParam('version', '固定契约版本。', true, {
+                enum: ['semantic-matting-guidance/v1']
+            }),
+            arrParam('sets', '逐目标实例的正负点集合；每组前景点必须落在同一个检测框内。', true, {
+                minItems: 1,
+                maxItems: 8,
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: [
+                        arrParam('foregroundPoints', '确认属于目标的点。', true, {
+                            minItems: 1,
+                            maxItems: 4,
+                            items: pointSchema
+                        }),
+                        arrParam('backgroundPoints', '确认不属于目标的遮挡物或背景点。', false, {
+                            maxItems: 8,
+                            items: pointSchema
+                        })
+                    ]
+                }
+            })
+        ]
+    };
+}
 
 function deliveryTargetConventionParam(
     name: 'editable' | 'raster',
@@ -152,7 +205,7 @@ export const MatteProductSkill: SkillDeclaration = {
         }
     },
     parameters: [
-        strParam('targetPrompt', 'Optional target description for subject extraction'),
+        strParam('targetPrompt', 'Optional Agent-selected semantic target; omit for general foreground matting'),
         strParam('sourceType', 'Image source', true, {
             enum: ['current_layer', 'file_path', 'project_resource'],
             default: 'current_layer'
@@ -162,6 +215,7 @@ export const MatteProductSkill: SkillDeclaration = {
             enum: ['new_layer', 'replace', 'mask'],
             default: 'new_layer'
         }),
+        semanticMattingGuidanceParam(),
         strParam('userIntent', 'Original user request')
     ],
     output: {

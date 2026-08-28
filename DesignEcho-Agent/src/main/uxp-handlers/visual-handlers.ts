@@ -9,6 +9,12 @@ import {
     buildUnresolvedTargetHint,
     resolveTargetPhrases
 } from '../../shared/semantic-target-vocabulary';
+import {
+    bindSemanticMattingGuidanceToDetectionBoxes,
+    normalizeSemanticMattingGuidance,
+    type SemanticMattingGuidance,
+    type SemanticMattingProviderPoint
+} from '../../shared/semantic-matting-guidance';
 import type { UXPContext } from './types';
 
 export interface SemanticSourceBounds {
@@ -708,6 +714,7 @@ export function registerVisualHandlers(context: UXPContext): void {
      */
     const buildHighResRegions = async (
         boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>,
+        guidancePointsByBox: SemanticMattingProviderPoint[][] | undefined,
         exportWidth: number,
         exportHeight: number,
         exportResult: any,
@@ -721,6 +728,7 @@ export function registerVisualHandlers(context: UXPContext): void {
             imageInput: string | BinaryImageData;
             regionInOutput: { x1: number; y1: number; x2: number; y2: number };
             boxesInRegion: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+            guidancePointsByBox?: SemanticMattingProviderPoint[][];
         }>;
         notRequired?: boolean;
         baseRegionInOutput?: { x1: number; y1: number; x2: number; y2: number };
@@ -815,6 +823,7 @@ export function registerVisualHandlers(context: UXPContext): void {
             imageInput: string | BinaryImageData;
             regionInOutput: { x1: number; y1: number; x2: number; y2: number };
             boxesInRegion: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+            guidancePointsByBox?: SemanticMattingProviderPoint[][];
         }> = [];
 
         // 相邻目标并成一组共用局部图；容差按目标尺度走，太小会漏掉刚好挨着的两个目标
@@ -976,11 +985,24 @@ export function registerVisualHandlers(context: UXPContext): void {
             // 相邻目标共用同一张局部源图，避免重复传输；但每个检测框必须形成独立的
             // 分割 region。否则一个 box 的 scope 失败后，邻近 box 的 union mask 可能跨进来，
             // 让“框内有前景”误报为该目标已完成，破坏逐目标完整性收据。
-            for (const mappedBox of mappedBoxes) {
+            for (let mappedIndex = 0; mappedIndex < mappedBoxes.length; mappedIndex++) {
+                const mappedBox = mappedBoxes[mappedIndex];
+                const sourceBoxIndex = boxes.indexOf(group[mappedIndex]);
+                const sourceGuidance = sourceBoxIndex >= 0
+                    ? guidancePointsByBox?.[sourceBoxIndex] || []
+                    : [];
+                const mappedGuidance = sourceGuidance.map(point => ({
+                    x: (sourceBounds.left + point.x * scaleX - actualSourceBounds.left) * regionScaleX,
+                    y: (sourceBounds.top + point.y * scaleY - actualSourceBounds.top) * regionScaleY,
+                    label: point.label
+                }));
                 built.push({
                     imageInput: regionImage,
                     regionInOutput: geometry.regionInOutput,
-                    boxesInRegion: [mappedBox]
+                    boxesInRegion: [mappedBox],
+                    ...(mappedGuidance.length > 0
+                        ? { guidancePointsByBox: [mappedGuidance] }
+                        : {})
                 });
             }
 
@@ -1007,6 +1029,7 @@ export function registerVisualHandlers(context: UXPContext): void {
      */
     const segmentWithAutoExpand = async (args: {
         boxes: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+        guidancePointsByBox?: SemanticMattingProviderPoint[][];
         detectWidth: number;
         detectHeight: number;
         exportResult: any;
@@ -1030,6 +1053,7 @@ export function registerVisualHandlers(context: UXPContext): void {
             }
             const built = await buildHighResRegions(
                 boxes,
+                args.guidancePointsByBox,
                 args.detectWidth,
                 args.detectHeight,
                 args.exportResult,
@@ -1066,11 +1090,17 @@ export function registerVisualHandlers(context: UXPContext): void {
                         }
                     };
                 }
-                regions = boxes.map(box => ({
-                    imageInput: args.fallbackImageInput,
-                    regionInOutput: baseRegionInOutput,
-                    boxesInRegion: [box]
-                }));
+                regions = boxes.map((box, boxIndex) => {
+                    const guidancePoints = args.guidancePointsByBox?.[boxIndex] || [];
+                    return {
+                        imageInput: args.fallbackImageInput,
+                        regionInOutput: baseRegionInOutput,
+                        boxesInRegion: [box],
+                        ...(guidancePoints.length > 0
+                            ? { guidancePointsByBox: [guidancePoints] }
+                            : {})
+                    };
+                });
             }
             if (regions.length === 0) {
                 return {
@@ -1257,6 +1287,8 @@ export function registerVisualHandlers(context: UXPContext): void {
         exportResult: any;
         /** 与第一次导出保持一致，否则两次取像的图像内容不同 */
         sampleAllLayers: boolean;
+        /** 只承载 Agent 已明确给出的视觉判断；Harness 仅验证和换算坐标。 */
+        semanticGuidance?: SemanticMattingGuidance;
         control?: MattingWorkflowExecutionControl;
     }): Promise<any> => {
         const startTime = Date.now();
@@ -1431,12 +1463,69 @@ export function registerVisualHandlers(context: UXPContext): void {
             'segmentation'
         );
 
+        const semanticBoxes = detection.boxes.map(box => ({
+            x1: box.x1,
+            y1: box.y1,
+            x2: box.x2,
+            y2: box.y2
+        }));
+        let guidancePointsByBox: SemanticMattingProviderPoint[][] | undefined;
+        if (args.semanticGuidance) {
+            const baseExportGeometry = validateSemanticBaseExportReceipt({
+                exportResult: args.exportResult,
+                expectedMode: args.sampleAllLayers ? 'composite-layer-bounds' : 'layer-full',
+                outputGeometry: {
+                    left: Number(args.exportResult?.originalLeft),
+                    top: Number(args.exportResult?.originalTop),
+                    width: Number(args.exportResult?.originalWidth),
+                    height: Number(args.exportResult?.originalHeight)
+                }
+            });
+            if (!baseExportGeometry.valid || !baseExportGeometry.regionInOutput) {
+                return {
+                    success: false,
+                    error: '首次图像导出的坐标收据无效，无法绑定语义引导，本轮没有修改图层。',
+                    errorCode: 'SEMANTIC_GUIDANCE_GEOMETRY_INVALID',
+                    diagnostic: {
+                        stage: 'post-detection',
+                        reason: baseExportGeometry.code || 'base_region_missing',
+                        issues: baseExportGeometry.issues
+                    },
+                    semanticTargetLifecycle: lifecycle
+                };
+            }
+            const binding = bindSemanticMattingGuidanceToDetectionBoxes({
+                guidance: args.semanticGuidance,
+                boxes: semanticBoxes,
+                outputWidth: Number(args.exportResult?.originalWidth),
+                outputHeight: Number(args.exportResult?.originalHeight),
+                baseRegionInOutput: baseExportGeometry.regionInOutput,
+                detectWidth: decoded.width,
+                detectHeight: decoded.height
+            });
+            if (!binding.valid) {
+                return {
+                    success: false,
+                    error: binding.error,
+                    errorCode: binding.code,
+                    diagnostic: {
+                        stage: 'post-detection',
+                        reason: 'semantic_guidance_binding_failed',
+                        issues: binding.issues
+                    },
+                    semanticTargetLifecycle: lifecycle
+                };
+            }
+            guidancePointsByBox = binding.pointsByBox;
+        }
+
 
         // 3. 按目标框二次高分辨率取像，再在局部图上精细分割。
         //    第一次导出为了让检测器看全画面，被压到 1024 长边；直接在那张图上分割，
         //    目标只有一百多像素，边缘精度从源头就丢了。
         const { result } = await segmentWithAutoExpand({
-            boxes: detection.boxes.map(b => ({ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 })),
+            boxes: semanticBoxes,
+            guidancePointsByBox,
             detectWidth: decoded.width,
             detectHeight: decoded.height,
             exportResult: args.exportResult,
@@ -1706,6 +1795,7 @@ export function registerVisualHandlers(context: UXPContext): void {
         layerId?: number;
         expectedDocumentId?: number;
         expectedHistoryStateId?: number;
+        semanticGuidance?: unknown;
         requestKey?: string;
         abortSignal?: AbortSignal;
     }) => {
@@ -1719,13 +1809,33 @@ export function registerVisualHandlers(context: UXPContext): void {
             return { success: false, error: 'Photoshop 插件未连接，请先在面板完成连接。' };
         }
 
-        const targetPrompt = params.targetPrompt || '';
+        const targetPrompt = String(params.targetPrompt || '').trim();
         const outputFormat = normalizeMattingOutputFormat(params.outputFormat);
         if (!outputFormat) {
             return {
                 success: false,
                 error: '输出格式无效，只能使用蒙版、选区、Alpha 通道或新图层。',
                 errorCode: 'MATTING_OUTPUT_FORMAT_INVALID'
+            };
+        }
+        const guidanceValidation = normalizeSemanticMattingGuidance(params.semanticGuidance);
+        if (!guidanceValidation.valid) {
+            return {
+                success: false,
+                error: `${guidanceValidation.error} ${guidanceValidation.issues.join(' ')}`.trim(),
+                errorCode: guidanceValidation.code,
+                noMutation: true,
+                executesPhotoshop: false
+            };
+        }
+        const semanticGuidance = guidanceValidation.guidance;
+        if (semanticGuidance && !targetPrompt) {
+            return {
+                success: false,
+                error: '正负点引导必须绑定 Agent 明确选择的语义目标，抠图工作流没有启动。',
+                errorCode: 'SEMANTIC_GUIDANCE_REQUIRES_TARGET',
+                noMutation: true,
+                executesPhotoshop: false
             };
         }
         const sampleAllLayers = params.sampleAllLayers === true;
@@ -1852,6 +1962,7 @@ export function registerVisualHandlers(context: UXPContext): void {
                     targetDimensions,
                     exportResult,
                     sampleAllLayers,
+                    semanticGuidance,
                     control
                 })
                 : await runSalientMatting({

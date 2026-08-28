@@ -296,7 +296,8 @@ export interface BoxSegmenter {
     isReady(): boolean;
     segmentWithBox(
         imageBuffer: Buffer,
-        box: { x1: number; y1: number; x2: number; y2: number }
+        box: { x1: number; y1: number; x2: number; y2: number },
+        guidancePoints?: BoxSegmenterPointPrompt[]
     ): Promise<{
         success: boolean;
         mask?: Buffer;
@@ -304,6 +305,12 @@ export interface BoxSegmenter {
         maskHeight?: number;
         error?: string;
     }>;
+}
+
+export interface BoxSegmenterPointPrompt {
+    x: number;
+    y: number;
+    label: 0 | 1;
 }
 
 // ==================== 智能分割服务类 ====================
@@ -2219,6 +2226,8 @@ export class MattingService {
              * （真机：鞋与袜各自取像分割再合并，交界带 3.6% 的像素上下是前景、自己是空的）。
              */
             boxesInRegion: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+            /** 与 boxesInRegion 一一对应；点坐标属于当前局部图，内容只能由调用方显式提供。 */
+            guidancePointsByBox?: BoxSegmenterPointPrompt[][];
         }>,
         options: {
             outputWidth: number;
@@ -2328,6 +2337,25 @@ export class MattingService {
                 markRegionFailed(i);
                 continue;
             }
+            const guidancePointsByBox = region.guidancePointsByBox || [];
+            if (guidancePointsByBox.length > 0 && guidancePointsByBox.length !== boxes.length) {
+                failures.push(`${label} 的语义引导与目标框数量不一致`);
+                markRegionFailed(i);
+                continue;
+            }
+            const normalizedGuidancePoints = boxes.map((_box, boxIndex) => {
+                const rawPoints = guidancePointsByBox[boxIndex] || [];
+                return rawPoints.filter(point => Number.isFinite(point.x)
+                    && Number.isFinite(point.y)
+                    && (point.label === 0 || point.label === 1));
+            });
+            if (normalizedGuidancePoints.some((points, boxIndex) => (
+                points.length !== (guidancePointsByBox[boxIndex] || []).length
+            ))) {
+                failures.push(`${label} 含有无效的语义引导点`);
+                markRegionFailed(i);
+                continue;
+            }
             // 贴边检测与连通性挑选用所有目标的外接框
             const box = {
                 x1: Math.min(...boxes.map(b => b.x1)),
@@ -2401,8 +2429,14 @@ export class MattingService {
             const scopeProviderReady = scopeProvider !== null;
             let scopedTargetCount = 0;
             if (scopeProvider) {
-                for (const target of boxes) {
-                    const samResult = await scopeProvider.segmentWithBox(decoded.buffer, target);
+                for (let targetIndex = 0; targetIndex < boxes.length; targetIndex++) {
+                    const target = boxes[targetIndex];
+                    const guidancePoints = normalizedGuidancePoints[targetIndex];
+                    const samResult = await scopeProvider.segmentWithBox(
+                        decoded.buffer,
+                        target,
+                        guidancePoints.length > 0 ? guidancePoints : undefined
+                    );
                     if (!samResult.success || !samResult.mask) {
                         failures.push(`${label} SAM 圈定范围失败：${samResult.error || '未返回蒙版'}`);
                         continue;

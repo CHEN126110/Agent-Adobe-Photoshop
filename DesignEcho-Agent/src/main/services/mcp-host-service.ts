@@ -929,7 +929,7 @@ export class MCPHostService {
             },
             {
                 name: 'photoshop.workflows.remove_background',
-                description: '运行与 DesignEcho UXP 面板相同的完整语义抠图链：导出、本地检测与分割、受保护的 Photoshop 写入和结构化读回。调用方必须自己选择语义目标，并绑定准确文档与图层；该工作流不会替 Agent 决定抠取对象。',
+                description: '运行与 DesignEcho UXP 面板相同的完整抠图链：导出、本地检测与分割、受保护的 Photoshop 写入和结构化读回。提供 targetPrompt 时只抠调用方选择的语义目标；省略时执行通用前景抠图。可选 semanticGuidance 只能承载 Agent 明确给出的归一化正负点，工作流不会自行猜目标或遮挡物。',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -948,12 +948,62 @@ export class MCPHostService {
                         sampleAllLayers: { type: 'boolean' },
                         enableHairRefine: { type: 'boolean' },
                         enableFabricRefine: { type: 'boolean' },
+                        semanticGuidance: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                version: {
+                                    type: 'string',
+                                    enum: ['semantic-matting-guidance/v1']
+                                },
+                                sets: {
+                                    type: 'array',
+                                    minItems: 1,
+                                    maxItems: 8,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            foregroundPoints: {
+                                                type: 'array',
+                                                minItems: 1,
+                                                maxItems: 4,
+                                                items: {
+                                                    type: 'object',
+                                                    additionalProperties: false,
+                                                    properties: {
+                                                        x: { type: 'number', minimum: 0, maximum: 1 },
+                                                        y: { type: 'number', minimum: 0, maximum: 1 }
+                                                    },
+                                                    required: ['x', 'y']
+                                                }
+                                            },
+                                            backgroundPoints: {
+                                                type: 'array',
+                                                maxItems: 8,
+                                                items: {
+                                                    type: 'object',
+                                                    additionalProperties: false,
+                                                    properties: {
+                                                        x: { type: 'number', minimum: 0, maximum: 1 },
+                                                        y: { type: 'number', minimum: 0, maximum: 1 }
+                                                    },
+                                                    required: ['x', 'y']
+                                                }
+                                            }
+                                        },
+                                        required: ['foregroundPoints']
+                                    }
+                                }
+                            },
+                            required: ['version', 'sets']
+                        },
                         requestKey: {
                             type: 'string',
                             description: '可选取消键；可交给 photoshop.tools.cancel 终止仍在运行的同一工作流。'
                         }
                     },
-                    required: ['expectedDocumentId', 'layerId', 'targetPrompt', 'outputFormat']
+                    required: ['expectedDocumentId', 'layerId', 'outputFormat']
                 }
             },
             {
@@ -1370,16 +1420,40 @@ export class MCPHostService {
             }
 
             case 'photoshop.workflows.remove_background': {
-                await this.ensurePhotoshopConnected();
-                return await dispatchPhotoshopRemoveBackgroundWorkflow(args, {
-                    getDocumentInfo: async (): Promise<unknown> => this.unwrapPhotoshopMcpPayload(
-                        await this.wsServer.callMCPTool('getDocumentInfo', {})
-                    ),
-                    invokeRegisteredHandler: async (
-                        method: string,
-                        params: Record<string, unknown>
-                    ): Promise<unknown> => this.wsServer.invokeRegisteredHandler(method, params)
-                });
+                let workflowStarted = false;
+                try {
+                    await this.ensurePhotoshopConnected();
+                    return await dispatchPhotoshopRemoveBackgroundWorkflow(args, {
+                        getDocumentInfo: async (): Promise<unknown> => this.unwrapPhotoshopMcpPayload(
+                            await this.wsServer.callMCPTool('getDocumentInfo', {})
+                        ),
+                        invokeRegisteredHandler: async (
+                            method: string,
+                            params: Record<string, unknown>
+                        ): Promise<unknown> => {
+                            workflowStarted = true;
+                            return await this.wsServer.invokeRegisteredHandler(method, params);
+                        }
+                    });
+                } catch (error: any) {
+                    if (workflowStarted) {
+                        return {
+                            success: false,
+                            code: 'photoshop_workflow_outcome_unknown',
+                            error: error?.message || String(error),
+                            noMutation: false,
+                            mutationState: 'unknown',
+                            executesPhotoshop: true
+                        };
+                    }
+                    return {
+                        success: false,
+                        code: 'photoshop_workflow_not_started',
+                        error: error?.message || String(error),
+                        noMutation: true,
+                        executesPhotoshop: false
+                    };
+                }
             }
 
             case 'photoshop.tools.cancel': {

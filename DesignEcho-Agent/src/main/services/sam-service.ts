@@ -186,12 +186,12 @@ export class SAMService {
      * 
      * @param imageBuffer - 输入图像 (PNG/JPEG Buffer)
      * @param box - 边界框提示 [x1, y1, x2, y2]
-     * @param centerPoint - 可选的中心点提示，增强分割精度
+     * @param guidancePoints - 可选的前景/背景点提示；单点形状为历史兼容，多点用于 Agent 视觉引导
      */
     async segmentWithBox(
         imageBuffer: Buffer,
         box: BoxPrompt,
-        centerPoint?: PointPrompt
+        guidancePoints?: PointPrompt | PointPrompt[]
     ): Promise<SAMResult> {
         if (!this.isReady()) {
             return { success: false, error: 'SAM 模型未加载' };
@@ -233,7 +233,7 @@ export class SAMService {
             }
 
             // 4. 准备 Prompt 输入
-            const prompts = this.preparePrompts(box, centerPoint, originalWidth, originalHeight, promptScale);
+            const prompts = this.preparePrompts(box, guidancePoints, originalWidth, originalHeight, promptScale);
             
             // 5. 运行 Decoder
             console.log('[SAMService] 运行 Mask Decoder...');
@@ -431,7 +431,7 @@ export class SAMService {
      */
     private preparePrompts(
         box: BoxPrompt,
-        centerPoint: PointPrompt | undefined,
+        guidancePoints: PointPrompt | PointPrompt[] | undefined,
         originalWidth: number,
         originalHeight: number,
         promptScale: number
@@ -453,21 +453,28 @@ export class SAMService {
             box.y2 * scaleY
         ];
         
-        let numPoints = 2;
-        let pointCoords: number[] = boxPoints;
+        const pointCoords: number[] = [...boxPoints];
         // SAM box prompt 标签: 2=左上角, 3=右下角
         // 这是 SAM 官方的 box prompt 编码
-        let pointLabels: number[] = [2, 3];
+        const pointLabels: number[] = [2, 3];
         
-        console.log(`[SAMService] Box 坐标 (缩放后): [${boxPoints.map(v => v.toFixed(1)).join(', ')}]`);
-        console.log(`[SAMService] 点标签: [${pointLabels.join(', ')}]`);
-        
-        // 如果有中心点，添加到 prompts
-        if (centerPoint) {
-            pointCoords.push(centerPoint.x * scaleX, centerPoint.y * scaleY);
-            pointLabels.push(centerPoint.label);
-            numPoints = 3;
+        let normalizedGuidance: PointPrompt[] = [];
+        if (Array.isArray(guidancePoints)) {
+            normalizedGuidance = guidancePoints;
+        } else if (guidancePoints) {
+            normalizedGuidance = [guidancePoints];
         }
+        for (const point of normalizedGuidance) {
+            if (!Number.isFinite(point.x) || !Number.isFinite(point.y)
+                || (point.label !== 0 && point.label !== 1)) {
+                throw new Error('SAM 正负点引导包含无效坐标或标签。');
+            }
+            pointCoords.push(point.x * scaleX, point.y * scaleY);
+            pointLabels.push(point.label);
+        }
+
+        console.log(`[SAMService] Box 坐标 (缩放后): [${boxPoints.map(v => v.toFixed(1)).join(', ')}]`);
+        console.log(`[SAMService] Prompt 标签: [${pointLabels.join(', ')}]`);
         
         return {
             pointCoords: new Float32Array(pointCoords),

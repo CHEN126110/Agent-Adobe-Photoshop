@@ -2768,15 +2768,63 @@ Use this only when binding a specific Profile's method knowledge, stage context,
     },
     {
         name: 'removeBackground',
-        description: 'Remove the background of a layer using local AI matting (hair-level refinement available). Runs asynchronously via binary transfer; treat the immediate result as request acknowledgment, not guaranteed completion — verify with a follow-up snapshot before claiming the background is removed.',
+        description: 'Run the complete local matting workflow for the current or explicit layer: bind document/history/layer, export source pixels, detect and segment, apply the selected output, and verify the Photoshop mutation receipt. targetPrompt is optional: provide it to isolate a named semantic target, or omit it for general foreground matting. semanticGuidance is optional Agent-authored positive/negative point guidance in normalized layer coordinates; never invent points without observing the image.',
         inputSchema: objectSchema({
             mode: { type: 'string', enum: ['ai', 'local'] },
             layerId: { type: 'number' },
             createNewLayer: { type: 'boolean' },
             useMask: { type: 'boolean' },
             modelId: { type: 'string' },
-            quality: { type: 'number' },
+            quality: { type: 'string', enum: ['fast', 'balanced', 'quality'] },
             targetPrompt: { type: 'string' },
+            outputFormat: { type: 'string', enum: ['mask', 'selection', 'channel', 'layer'] },
+            semanticGuidance: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    version: { type: 'string', enum: ['semantic-matting-guidance/v1'] },
+                    sets: {
+                        type: 'array',
+                        minItems: 1,
+                        maxItems: 8,
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                foregroundPoints: {
+                                    type: 'array',
+                                    minItems: 1,
+                                    maxItems: 4,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            x: { type: 'number', minimum: 0, maximum: 1 },
+                                            y: { type: 'number', minimum: 0, maximum: 1 }
+                                        },
+                                        required: ['x', 'y']
+                                    }
+                                },
+                                backgroundPoints: {
+                                    type: 'array',
+                                    maxItems: 8,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            x: { type: 'number', minimum: 0, maximum: 1 },
+                                            y: { type: 'number', minimum: 0, maximum: 1 }
+                                        },
+                                        required: ['x', 'y']
+                                    }
+                                }
+                            },
+                            required: ['foregroundPoints']
+                        }
+                    }
+                },
+                required: ['version', 'sets']
+            },
             edgeRefine: { type: 'string', enum: ['refine-none', 'refine-light', 'refine-standard', 'refine-hair'] },
             maxSize: { type: 'number' }
         })
