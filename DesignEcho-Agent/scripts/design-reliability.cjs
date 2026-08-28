@@ -94,7 +94,7 @@ const PROJECT_IMAGE_TYPES = new Set([
 const PROJECT_DESIGN_PLAN_KEYS = new Set(["mainImage", "sku", "detail"]);
 const PROJECT_DESIGN_STATUSES = new Set(["pending", "in_progress", "done"]);
 const MIN_LIVE_RUN_TIMEOUT_MS = 1000;
-const MAX_LIVE_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const MAX_LIVE_RUN_TIMEOUT_MS = 40 * 60 * 1000;
 const LIVE_ATTEMPT_EVENT_VERSION = "design-reliability-attempt-event/v1";
 const LIVE_RUN_ACTOR_CAPABILITIES = new Map([
   ["autonomous_zero_correction", Object.freeze({
@@ -104,7 +104,7 @@ const LIVE_RUN_ACTOR_CAPABILITIES = new Map([
     dispatchProtocol: dispatchAutonomousZeroCorrectionProtocol
   })]
 ]);
-const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = "debug-bridge-chat-preflight/v1";
+const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = "debug-bridge-chat-preflight/v2";
 const DEBUG_BRIDGE_CHAT_FAILURE_VERSION = "debug-bridge-chat-execution-failure/v1";
 const SAFE_PRE_SUBMIT_STAGES = new Set([
   "bridge_preflight",
@@ -840,6 +840,7 @@ function deriveLiveCohortFingerprint(input) {
     photoshopRuntimeArtifactDigest: cleanString(environment.photoshopRuntimeArtifactDigest),
     photoshopRuntimeManifestDigest: cleanString(environment.photoshopRuntimeManifestDigest),
     photoshopRuntimeBindingDigest: cleanString(environment.photoshopRuntimeBindingDigest),
+    mainImageCanvasDigest: cleanString(environment.mainImageCanvasDigest),
     provider: cleanString(input?.provider),
     modelId: cleanString(input?.modelId),
     timeoutMs: Number(input?.timeoutMs)
@@ -4466,6 +4467,9 @@ async function runLiveCase(suite, args) {
     throw new Error("正式样本缺少可验证的 Photoshop Runtime 完整身份。 ");
   }
   const photoshopRuntimeBindingDigest = sha256Text(stableStringify(photoshopRuntimeBinding));
+  const mainImageCanvasDigest = sha256Text(stableStringify({
+    mainImage: preflight.infrastructure.rendererPreflight.currentMainImageCanvas
+  }));
   const suiteCaseSetDigest = buildSuiteCaseSetDigest(suite);
   const suiteRubricSetDigest = buildSuiteRubricSetDigest(suite);
   const attemptEnvironment = {
@@ -4479,7 +4483,8 @@ async function runLiveCase(suite, args) {
     photoshopRuntimeArtifactDigest,
     photoshopRuntimeManifestDigest,
     photoshopRuntimeBinding,
-    photoshopRuntimeBindingDigest
+    photoshopRuntimeBindingDigest,
+    mainImageCanvasDigest
   };
   const cohortFingerprint = deriveLiveCohortFingerprint({
     suiteId: suite.manifest.suiteId,
@@ -4676,6 +4681,7 @@ async function runLiveCase(suite, args) {
         runtimeAppVersion: runtime?.appVersion,
         photoshopRuntimeBuildId,
         photoshopRuntimeBindingDigest,
+        mainImageCanvasDigest,
         timeoutMs,
         instructionDigest,
         rubricDigest,
@@ -4859,6 +4865,22 @@ function evaluateDebugRendererPreflight(input) {
   const selectedProvider = cleanString(renderer?.selectedProvider);
   const selectedModelId = cleanString(renderer?.selectedModelId);
   const selectedApiModelId = cleanString(renderer?.selectedApiModelId);
+  const rendererMainImageCanvas = isRecord(renderer?.mainImageCanvas)
+    && Number.isSafeInteger(renderer.mainImageCanvas.width)
+    && Number.isSafeInteger(renderer.mainImageCanvas.height)
+    ? {
+        width: renderer.mainImageCanvas.width,
+        height: renderer.mainImageCanvas.height
+      }
+    : null;
+  const expectedMainImageCanvas = isRecord(input?.expectedMainImageCanvas)
+    && Number.isSafeInteger(input.expectedMainImageCanvas.width)
+    && Number.isSafeInteger(input.expectedMainImageCanvas.height)
+    ? {
+        width: input.expectedMainImageCanvas.width,
+        height: input.expectedMainImageCanvas.height
+      }
+    : null;
   const capturedAt = Date.parse(cleanString(renderer?.capturedAt));
   const available = Boolean(
     input?.probe?.reachable === true
@@ -4868,6 +4890,7 @@ function evaluateDebugRendererPreflight(input) {
     && Number.isFinite(capturedAt)
     && typeof renderer?.selectedModelResolved === "boolean"
     && typeof renderer?.projectPath === "string"
+    && rendererMainImageCanvas !== null
     && typeof renderer?.chatBusy === "boolean"
   );
   const providerMatches = Boolean(
@@ -4885,8 +4908,14 @@ function evaluateDebugRendererPreflight(input) {
     && expectedProjectPath
     && normalizePathIdentity(renderer.projectPath) === expectedProjectPath
   );
+  const designDimensionMatches = Boolean(
+    available
+    && (!expectedMainImageCanvas
+      || (rendererMainImageCanvas?.width === expectedMainImageCanvas.width
+        && rendererMainImageCanvas?.height === expectedMainImageCanvas.height))
+  );
   return {
-    version: "design-reliability-renderer-preflight/v1",
+    version: "design-reliability-renderer-preflight/v2",
     available,
     expectedProviderSupplied: Boolean(expectedProvider),
     expectedModelSupplied: Boolean(expectedModelId),
@@ -4897,6 +4926,10 @@ function evaluateDebugRendererPreflight(input) {
     providerMatches,
     modelMatches,
     projectMatches,
+    expectedMainImageCanvasSupplied: Boolean(expectedMainImageCanvas),
+    expectedMainImageCanvas,
+    currentMainImageCanvas: rendererMainImageCanvas,
+    designDimensionMatches,
     chatBusy: renderer?.chatBusy === true,
     ready: Boolean(
       available
@@ -4904,6 +4937,7 @@ function evaluateDebugRendererPreflight(input) {
       && providerMatches
       && modelMatches
       && projectMatches
+      && designDimensionMatches
       && renderer?.chatBusy === false
     )
   };
@@ -4938,10 +4972,10 @@ async function buildPreflight(suite, args) {
     ready: false,
     reason: "未提供 --fixture-root；不会猜测或直接使用原始项目。"
   };
+  let selectedCases;
   if (fixtureRoot) {
     const absoluteFixtureRoot = path.resolve(fixtureRoot);
     if (fs.existsSync(absoluteFixtureRoot) && fs.statSync(absoluteFixtureRoot).isDirectory()) {
-      let selectedCases;
       try {
         selectedCases = selectFixtureCases(suite, args);
       } catch (error) {
@@ -4984,13 +5018,19 @@ async function buildPreflight(suite, args) {
       : Promise.resolve({ reachable: false, reason: "debug_write_token_missing" }),
     httpProbe(args.get("--photoshop-health", DEFAULT_PHOTOSHOP_MCP_HEALTH))
   ]);
+  const expectedMainImageCanvas = selectedCases?.length === 1
+    && selectedCases[0]?.oracle?.outputContract?.canvasAuthority === "runtime_setting"
+    && isRecord(selectedCases[0]?.oracle?.outputContract?.canvas)
+    ? selectedCases[0].oracle.outputContract.canvas
+    : undefined;
   const rendererPreflight = evaluateDebugRendererPreflight({
     probe: debugWriteAuthorization,
     expectedProvider: args.get("--provider"),
     expectedModelId: args.get("--model"),
     expectedProjectPath: fixture.supplied && fixture.ready === true
       ? path.resolve(fixtureRoot)
-      : ""
+      : "",
+    expectedMainImageCanvas
   });
   const debugWriteAuthorizationSummary = summarizeDebugWriteAuthorization(
     debugWriteAuthorization
@@ -5069,6 +5109,11 @@ async function buildPreflight(suite, args) {
     ...(rendererPreflight.available && !rendererPreflight.projectMatches
       ? ["renderer_project_not_bound_to_fixture"]
       : []),
+    ...(rendererPreflight.available
+      && rendererPreflight.expectedMainImageCanvasSupplied
+      && !rendererPreflight.designDimensionMatches
+      ? ["renderer_design_dimension_mismatch"]
+      : []),
     ...(rendererPreflight.available && rendererPreflight.chatBusy
       ? ["renderer_chat_busy"]
       : []),
@@ -5121,9 +5166,10 @@ function printStatus(status) {
     console.log(`  - ${item.taskFamily}: ${item.caseId} · ${item.instruction}`);
   }
   console.log(`Run Observation: ${status.evidence.runObservations}`);
-  console.log(`Attempt Submission: ${status.evidence.attemptCoverage.submittedAttempts}`);
-  console.log(`Attempt Terminal: ${status.evidence.attemptCoverage.terminalAttempts}`);
-  console.log(`Attempt 未闭合: ${status.evidence.attemptCoverage.attemptsWithoutTerminal}`);
+  console.log(`当前 Case revision Attempt Submission: ${status.evidence.attemptCoverage.submittedAttempts}`);
+  console.log(`当前 Case revision Attempt Terminal: ${status.evidence.attemptCoverage.terminalAttempts}`);
+  console.log(`当前 Case revision Attempt 未闭合: ${status.evidence.attemptCoverage.attemptsWithoutTerminal}`);
+  console.log(`全局写状态安全账本未清账: ${status.evidence.attemptSafetyLedger.unresolvedAttemptCount}`);
   console.log(`Human Review: ${status.evidence.humanReviews}`);
   console.log(`Attribution: ${status.evidence.attributions}`);
   console.log(`正式成功率可用: ${status.officialRateAvailable ? "是" : "否（尚未形成完整固定 cohort + 人工评审）"}`);

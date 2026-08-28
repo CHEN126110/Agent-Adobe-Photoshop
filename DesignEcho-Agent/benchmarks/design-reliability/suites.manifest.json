@@ -32,7 +32,7 @@
   },
   "liveRunPolicy": {
     "qualityBeforeSpeed": true,
-    "timeoutMs": 900000,
+    "timeoutMs": 2100000,
     "timeoutOverridePolicy": "must_match_suite"
   },
   "boundaries": {

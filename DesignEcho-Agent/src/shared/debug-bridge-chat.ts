@@ -3,9 +3,9 @@
  * 区分“仍在认真完成”与“已卡死”。三端共用同一上限，避免请求链路任一段
  * 悄悄把调用方提供的超时截短。
  */
-export const MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS = 30 * 60 * 1000;
+export const MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS = 40 * 60 * 1000;
 
-export const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = 'debug-bridge-chat-preflight/v1' as const;
+export const DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION = 'debug-bridge-chat-preflight/v2' as const;
 export const DEBUG_BRIDGE_CHAT_FAILURE_VERSION = 'debug-bridge-chat-execution-failure/v1' as const;
 export const DEBUG_BRIDGE_CHAT_FAILURE_ENVELOPE_VERSION = 'debug-bridge-chat-failure-envelope/v1' as const;
 export const DEBUG_BRIDGE_PHOTOSHOP_RUNTIME_BINDING_VERSION =
@@ -114,6 +114,10 @@ export interface DebugBridgeChatPreflightSnapshot {
     selectedApiModelId: string;
     selectedModelResolved: boolean;
     projectPath: string;
+    mainImageCanvas: {
+        width: number;
+        height: number;
+    };
     chatBusy: boolean;
 }
 
@@ -515,6 +519,7 @@ export function readDebugBridgeChatPreflightSnapshot(
 ): DebugBridgeChatPreflightSnapshot | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     const snapshot = value as Partial<DebugBridgeChatPreflightSnapshot>;
+    const mainImageCanvas = snapshot.mainImageCanvas;
     if (snapshot.version !== DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION
         || typeof snapshot.capturedAt !== 'string'
         || !Number.isFinite(Date.parse(snapshot.capturedAt))
@@ -523,6 +528,13 @@ export function readDebugBridgeChatPreflightSnapshot(
         || typeof snapshot.selectedApiModelId !== 'string'
         || typeof snapshot.selectedModelResolved !== 'boolean'
         || typeof snapshot.projectPath !== 'string'
+        || !mainImageCanvas
+        || !Number.isSafeInteger(mainImageCanvas.width)
+        || mainImageCanvas.width < 100
+        || mainImageCanvas.width > 8000
+        || !Number.isSafeInteger(mainImageCanvas.height)
+        || mainImageCanvas.height < 100
+        || mainImageCanvas.height > 8000
         || typeof snapshot.chatBusy !== 'boolean') {
         return undefined;
     }
@@ -534,6 +546,10 @@ export function readDebugBridgeChatPreflightSnapshot(
         selectedApiModelId: cleanDebugBridgeText(snapshot.selectedApiModelId, 256),
         selectedModelResolved: snapshot.selectedModelResolved,
         projectPath: String(snapshot.projectPath || '').trim().slice(0, 1024),
+        mainImageCanvas: {
+            width: mainImageCanvas.width,
+            height: mainImageCanvas.height
+        },
         chatBusy: snapshot.chatBusy
     };
 }

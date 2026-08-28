@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-14 治理主线 HARNESS-COMPLETION-OWNERSHIP-001：以 2026-08 共 217 次真实运行基线（final_response 92/42%、零写入 144/66%、completed 且零写入 37、完成且真有写入仅 20/9%、观察调用占业务动作 80%）确认「完成权在模型手里、预算被观察吞噬」。切片 1（完成所有权前移）与切片 2（执行供给预留）与切片 3（收敛指标）均已落地，22 项核心验证通过；真实 Photoshop E2E 待验证，共享脏工作树保持未提交。",
-  "currentMilestone": "HARNESS-COMPLETION-OWNERSHIP-001",
-  "milestoneStatus": "architecture_consolidated_product_boundary_defined_f1_f2_capability_operating_model_f3_core_validated_ordinary_natural_language_recipe_fallback_core_validated_craft_fast_path_phrase_independent_audited_same_taskrun_dynamic_runtime_capability_context_evaluation_artifact_binding_core_validated_taskrun_owner_code_complete_core_validated_autonomous_task_continuity_core_validated_v0_mutation_pack_code_complete_core_validated_x2_execution_envelope_code_complete_core_validated_exact_property_write_scope_core_validated_design_harness_control_consolidation_full_21_check_maintenance_passed_uxp_native_get_modal_root_fixed_live_verified_r3_user_owned_input_and_generic_craft_visibility_core_validated_prose_tool_recovery_retired_assistant_history_untrusted_same_revision_opening_observation_reused_read_only_completion_contract_fixed_same_product_not_replication_read_only_live_probe_passed_delegated_reversible_choice_core_validated_create_document_unknown_role_deadlock_removed_failed_delivery_cannot_complete_empty_to_document_acceptance_core_validated_bounded_pre_output_provider_retry_repeated_policy_gate_guard_wired_five_runner_owners_r4_semantic_shadow_preserved_delegated_create_document_live_rerun_pending_designer_decision_ownership_live_randomized_probe_pending_live_v0_photoshop_e2e_pending_sku_and_white_background_live_reruns_pending_release_gate_not_implemented_live_no_skill_design_e2e_unverified_harness_completion_ownership_governance_started_217_run_evidence_baseline_captured_zero_progress_contract_remediation_code_complete_execution_supply_reserve_code_complete_convergence_metrics_in_debug_runs_full_22_check_maintenance_passed_live_photoshop_e2e_pending",
+  "currentFocus": "2026-08-28 DESIGN-RELIABILITY-TERMINAL-TRUTH-001：根据正式主图 Attempt 1 修复三类已确认根因——调试取消误报用户停止、空白建档误报已有设计版本、Case 800×800 与当前 1440×1440 主图规格漂移；同时为 30 分钟 Agent 质量预算保留独立终态结算窗口。",
+  "currentMilestone": "DESIGN-RELIABILITY-TERMINAL-TRUTH-001",
+  "milestoneStatus": "attempt_1_failed_first_divergence_attributed_terminal_truth_and_dimension_binding_implemented_core_58_passed_attempt_2_pending",
   "verified": {
     "code": [
+      "Design Reliability terminal truth slice (2026-08-29): user stop and external request cancellation now have separate identities; a structured non-cancel Agent terminal settles after an external Abort; user-visible design-result facts derive from the canonical atomic operation ledger and Host mutation proof, with createDocument-only state treated as workspace preparation; main-image output contracts declare runtime_setting or user_instruction canvas authority and the live preflight/cohort bind the current main-image canvas digest.",
       "Harness completion ownership slice 4 batch 2 (2026-08-14): the final-summary pure logic (buildSummaryFromStatefulWrites, readOutputPathFromToolResult, buildToolResultFallbackMessage, shouldRequestRicherFinalSummary; 107 lines) now lives in agent-runtime/final-summary.ts with thin Agent wrappers injecting runtime facts (tool log, observed mutation, save/export success, budget and intent scope); agent.ts shrank 13473 to 13418 lines with zero behavior change and no audit matcher was affected (pre-scanned).",
       "Harness completion ownership negative guard behavior tests (2026-08-14): the same reusable behavior suite now also proves the anti-07-31 boundary — chat_only, read_only_inspect and plan_only requests are never pushed back by the completion gate and always end as plain final responses, and a read-only analysis run with the same budget shape (maxToolCalls=15) executes all 14 of its observations with zero execution directives, so the execution-supply reserve can never starve read-only work.",
       "Harness completion ownership behavior tests (2026-08-14): the reusable audit-runtime-declaration-resolver.cjs behavior suite (part of maintenance:validate) now carries three governance assertions — pure-ledger reserve accounting (zone boundary, observation allowance of 2, excess observation converted to agent_observation_budget_reserved, gate opens after a delivery-action attempt, hard budget still stops everything), the slice-1 real-loop assertion (a write-authorized zero-action stop is pushed back with bounded remediation and finally ends as plan_execution_mismatch with completion_contract_unsatisfied_zero_progress instead of a zero-write final_response), and the slice-2 real-loop assertion (with maxToolCalls=15 exactly 14 observations execute and the 15th turns into the execution directive without invoking the tool). These extend the existing reusable suite rather than adding one-off smoke.",
@@ -68,6 +69,7 @@
       "Live concurrency/resume validation, real Provider-to-Photoshop V0, live validation of the first Photoshop Craft Recipe, Release Gate, reviewed multi-sample design quality and business live E2E are not complete."
     ],
     "build": [
+      "The 2026-08-29 terminal-truth slice reached the final UXP build in the ordered 58-stage maintenance core and the final UXP typecheck plus webpack production build was independently re-run with exit code 0; Main/Renderer typecheck, runtime declaration, Design Reliability, simplification ratchet and Agent business-boundary audits passed.",
       "The 2026-08-13 Harness recovery slice passed the full 22-check maintenance validation after real Run Record discovery, guarded Skill-internal atomic execution, bounded unknown-write reconciliation, truncation backoff, strict readback for the ten requested UXP write tools and normalized failure diagnostics. This is not a live Photoshop Host or design-quality claim.",
       "The full 22-check maintenance:validate, Main/Renderer typecheck, isolated Renderer production build, UXP production build, Runtime declaration behavior matrix, Agent business boundaries, Capability Resolver, generic Executor and Skill Package audits passed after the 2026-08-12 Runtime declaration simplification. This is not a live SKU Photoshop E2E or design-quality claim.",
       "Design Intelligence contract audit passed 42 checks, Proposition Ledger passed 16 state-machine checks, and the persistence Stores passed 8 isolated real-file IO checks; the Store test explicitly states that this does not prove Electron/IPC product-runtime wiring.",
@@ -274,46 +276,45 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "SMILE-IMAGE-PROVIDER-001",
-    "summary": "Close the Smile image Provider as one verifiable path from model selection and independent credentials through requests, cancellation, errors, output facts and receipts.",
-    "status": "validated_provider_contract_passed_typecheck_passed_uxp_build_passed_core_58_passed_paid_live_provider_pending",
+    "id": "DESIGN-RELIABILITY-TERMINAL-TRUTH-001",
+    "summary": "Repair the first official main-image reliability divergence at the terminal, result-projection and measurement-contract owners before rerunning a fresh Photoshop fixture.",
+    "status": "implementation_complete_core_58_passed_attempt_2_pending",
     "scope": [
-      "Keep Smile image models separate from Smile conversation models and from the OpenRouter image channel.",
-      "Synchronize OpenRouter and Smile credentials independently at startup and during hot updates.",
-      "Preserve the selected model, structured Provider errors, cancellation, actual output dimensions, ratio mismatch and provider receipt.",
-      "Validate request and registry contracts offline before any paid external call.",
-      "Preserve the dirty shared worktree and do not overwrite or commit unrelated changes.",
-      "Do not claim paid Provider availability, Photoshop placement quality or design quality from mocked responses."
+      "Keep user cancellation, external request cancellation and structured Agent terminal reasons distinct.",
+      "Treat document creation alone as workspace preparation, not a viewable design result.",
+      "Bind the current main-image canvas to the official Case preflight and cohort identity.",
+      "Keep the benchmark out of production design decisions, capability visibility and Tool authorization.",
+      "Use only disposable fixture projects and preserve the dirty shared worktree.",
+      "Do not claim Photoshop E2E or commercial quality before Attempt 2 and blind review."
     ]
   },
   "activeRequest": {
-    "id": "SMILE-IMAGE-PROVIDER-001",
-    "summary": "Finish the Smile image Provider without silent model substitution, credential coupling, lost errors or false receipts.",
-    "status": "validated_core_58_passed_paid_live_pending",
+    "id": "DESIGN-RELIABILITY-TERMINAL-TRUTH-001",
+    "summary": "Fix the first official main-image reliability divergence without adding scenario patches, then rerun the same natural request on a fresh Photoshop fixture.",
+    "status": "implementation_complete_core_58_passed_attempt_2_pending",
     "mustDo": [
-      "Keep model identity, API key ownership, request protocol, cancellation, result dimensions and provider receipts consistent across UI, UXP and Main.",
-      "Fail before billing on unknown models, invalid ratios and unreadable input images.",
-      "Preserve the first structured Provider error when a whole batch fails and keep partial failures visible.",
-      "Run targeted Provider contracts, type/build, one frozen-snapshot core gate, then a separately authorized paid live check."
+      "Keep user stop, external request cancellation and Agent structured terminal reasons distinct.",
+      "Count only verified content mutations as a viewable design version; document creation alone is workspace preparation.",
+      "Bind the current main-image canvas contract into live preflight and cohort identity before any official write.",
+      "Run the existing targeted contracts, type/build and one full core gate before a fresh r21 Photoshop attempt."
     ],
     "mustNotDo": [
-      "Do not silently replace an unsupported Smile model with a default model.",
-      "Do not make Smile credential availability depend on OpenRouter credentials.",
-      "Do not put design decisions, prompt content or workflow gates into the Provider.",
-      "Do not mix model catalog prose, matting, SKU retouch or pose changes into this slice.",
-      "Do not claim paid Provider, Photoshop E2E or commercial quality from offline request mocks."
+      "Do not route the main-image request through a forced legacy Skill or keyword gate.",
+      "Do not encode the one-run composeDesign parameter conflict into a generic recovery prompt.",
+      "Do not treat a longer timeout as design success or hide an incomplete result.",
+      "Do not reuse the consumed r20 fixture or modify the user's original photography project."
     ]
   },
   "activePlan": {
-    "id": "SMILE-IMAGE-PROVIDER-001",
+    "id": "DESIGN-RELIABILITY-TERMINAL-TRUTH-001",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：Development Loop、GMR 与依赖完整性 preflight。",
-      "已完成：依赖树迁移的独立提交与干净验证。",
-      "已完成代码：姿态统一三层切片；真实商业适用性等待合适样本。",
-      "已验证：Smile 图像 Provider 完整核心闸门 58/58 通过，待独立提交和付费外部验收。",
-      "待建立基线：主图、详情页、SKU、参考复刻固定自然语言重复案例与盲化视觉评分。",
-      "条件后置：质量稳定后扩展无 Skill 能力，最后优化性能。"
+      "已完成：正式主图 Attempt 1 与首个偏差归因。",
+      "已完成代码：终态取消身份、空白建档投影、尺寸预检与 cohort、预算结算间隔。",
+      "待完成：完整核心闸门、差异审查、独立提交与推送。",
+      "待完成：重启新提交并 reconciliation r20。",
+      "待完成：创建全新 r21 fixture，执行同条件 Attempt 2。",
+      "条件后置：技术成功后做重复运行与盲化视觉质量比较。"
     ]
   },
   "convergenceBaseline": {

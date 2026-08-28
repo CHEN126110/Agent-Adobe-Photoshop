@@ -15887,7 +15887,11 @@ async function run() {
           && agentRuntimeText.includes('!runtimeBriefRequiresDelivery')
           ? []
           : ['agent-runtime:declared-production-obligation-not-enforced']),
-        ...(agentUserResultProjectionText.includes('const hasViewableVersion = input.hasPhotoshopChange || input.hasSavedOrExportedFile;')
+        ...(agentUserResultProjectionText.includes('buildAgentOperationLedger(toolCallLog)')
+          && agentUserResultProjectionText.includes('findObservedPhotoshopMutationProof(entry.result)')
+          && agentUserResultProjectionText.includes('isDesignDisciplineMutationTool(entry.name)')
+          && agentUserResultProjectionText.includes("entry.name === 'createDocument'")
+          && agentUserResultProjectionText.includes('const hasViewableVersion = input.hasViewableDesignChange || input.hasSavedOrExportedFile;')
           && !agentRuntimeText.includes('const hasRecordedMutation = Number(summary.successfulMutationCalls || 0) > 0;')
           && agentUserResultProjectionText.includes("versionState = '当前状态：还没有可看的设计版本。';")
           && agentUserResultProjectionText.includes("title = hasViewableVersion ? '当前改动已保留' : '这次还没做出版本';")

@@ -165,10 +165,12 @@ import {
 import { readRuntimeTaskSnapshot } from '../../shared/agent-runtime-v5/runtime-task-snapshot';
 import { readPhotoshopOperationResult } from '../../shared/photoshop-operation-result';
 import {
-    buildUserStoppedResponseInterruption,
+    buildAgentResponseInterruption,
     isAgentResponseInterruptionSentinelContent,
-    resolveAgentResponseInterruption
+    resolveAgentResponseInterruption,
+    type AgentResponseInterruptionKind
 } from '../../shared/agent-response-interruption';
+import { normalizeDesignDimensionSpec } from '../../shared/design-dimension-spec';
 import { decideAgentRunResultDisposition } from '../../shared/agent-run-result-disposition';
 import {
     normalizeDebugFinalArtifactRefs,
@@ -1809,6 +1811,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         streamedAssistantMessageId: string | null;
         visibleSteps: ThinkingStep[];
         stopMessageShown: boolean;
+        interruptionKind: AgentResponseInterruptionKind | null;
     } | null>(null);
 
     const insertComposerReference = useCallback((
@@ -3651,14 +3654,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         resultProjection?: {
             executionSummary?: AgentExecutionSummary;
             agentTaskPlanPresentation?: AgentTaskPlanPresentation;
-        }
+        },
+        interruptionKind: AgentResponseInterruptionKind = 'request_cancelled'
     ): boolean => {
         const ui = activeAgentRunUiRef.current;
         if (!ui || ui.runId !== runId) return false;
 
         cancelledAgentRunIdsRef.current.add(runId);
         const preservedSteps = normalizeStoppedVisibleProcessSteps(ui.visibleSteps);
-        const interruption = buildUserStoppedResponseInterruption();
+        ui.interruptionKind = ui.interruptionKind || interruptionKind;
+        const interruption = buildAgentResponseInterruption(ui.interruptionKind);
         const resultProjectionUpdate: UpdateMessageInput = {
             ...(resultProjection?.executionSummary
                 ? { executionSummary: resultProjection.executionSummary }
@@ -3712,7 +3717,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         }
 
         if (!didPresentTerminalState) {
-            console.warn('[ChatPanel] 用户停止终态未写入：目标会话或流式消息已不存在', {
+            console.warn('[ChatPanel] 响应中断终态未写入：目标会话或流式消息已不存在', {
                 runId,
                 conversationId: targetConversationId,
                 streamedAssistantMessageId: ui.streamedAssistantMessageId
@@ -3731,7 +3736,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     const markActiveAgentRunStopped = () => {
         const runId = activeAgentRunIdRef.current;
         if (!runId) return;
-        finalizeAgentRunStopped(runId, 'agent-run:user-stopped');
+        const ui = activeAgentRunUiRef.current;
+        if (ui?.runId === runId) ui.interruptionKind = 'user_stopped';
+        finalizeAgentRunStopped(
+            runId,
+            'agent-run:user-stopped',
+            undefined,
+            'user_stopped'
+        );
     };
 
     const resetMessageEditSession = useCallback((restoreFocus: boolean = false): void => {
@@ -5097,6 +5109,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             const state = useAppStore.getState();
             const selectedModelId = String(state.modelPreferences?.primaryModel || '').trim();
             const selectedModel = getModelById(selectedModelId);
+            const normalizedDimensionSpec = normalizeDesignDimensionSpec(state.designDimensionSpec);
             return {
                 version: DEBUG_BRIDGE_CHAT_PREFLIGHT_VERSION,
                 capturedAt: new Date().toISOString(),
@@ -5105,6 +5118,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 selectedApiModelId: String(selectedModel?.apiModelId || '').trim(),
                 selectedModelResolved: Boolean(selectedModel),
                 projectPath: String(state.currentProject?.path || '').trim(),
+                mainImageCanvas: { ...normalizedDimensionSpec.mainImage },
                 chatBusy: Boolean(chatSubmissionInFlightRef.current || state.isLoading)
             };
         });
@@ -5120,8 +5134,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             // Cancel 可能早于 handleSend/AbortController 到达（例如仍在 diagnoseState/listDocuments
             // 写前预检）。请求级账本保证预检返回后也不能晚启动模型或 Photoshop 写入。
             cancelledDebugBridgeRequestIdsRef.current.add(requestId);
+            const runId = activeAgentRunIdRef.current;
+            const ui = activeAgentRunUiRef.current;
+            if (runId && ui?.runId === runId) {
+                // 调试调用方超时/撤销不是用户点击停止。这里只记录来源并发出 Abort；
+                // 真实 Agent 终态返回后仍优先消费它，不能提前伪造 user_stopped。
+                ui.interruptionKind = 'request_cancelled';
+            }
             stopGeneration();
-            markActiveAgentRunStopped();
         });
         return () => {
             unsubscribe?.();
@@ -5583,8 +5603,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             conversationId: runConversationId,
             streamedAssistantMessageId: null,
             visibleSteps: [],
-            stopMessageShown: false
+            stopMessageShown: false,
+            interruptionKind: null
         };
+        let allowTerminalResultSettlementAfterExternalCancel = false;
 
         const addRunAssistantMessage = (
             message: AssistantMessageWithOriginInput,
@@ -5599,7 +5621,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
         const isActiveAgentRun = () => activeAgentRunIdRef.current === runId;
         const isRunCancelled = () => Boolean(signal.aborted || cancelledAgentRunIdsRef.current.has(runId));
-        const canApplyRunUpdate = () => isActiveAgentRun() && !isRunCancelled();
+        const canApplyRunUpdate = () => isActiveAgentRun()
+            && (!isRunCancelled() || allowTerminalResultSettlementAfterExternalCancel);
         const throwIfRunStopped = () => {
             if (!isActiveAgentRun() || isRunCancelled()) {
                 throw new Error('任务已取消');
@@ -6833,10 +6856,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 }
             });
             const resultWasCancelled = (result as any).cancelled === true;
+            const executionSummary = readAgentExecutionSummaryFromResult(result);
+            const structuredStopReason = String(
+                executionSummary?.stopReason || (result as any).stopReason || ''
+            ).trim();
+            const activeInterruptionKind = activeAgentRunUiRef.current?.runId === runId
+                ? activeAgentRunUiRef.current.interruptionKind
+                : null;
+            const structuredNonCancellationTerminal = Boolean(
+                executionSummary && structuredStopReason && structuredStopReason !== 'cancelled'
+            );
+            const resultRepresentsCancellation = activeInterruptionKind === 'user_stopped'
+                || (resultWasCancelled && !structuredNonCancellationTerminal);
+            allowTerminalResultSettlementAfterExternalCancel = activeInterruptionKind === 'request_cancelled'
+                && structuredNonCancellationTerminal;
             const resultDisposition = decideAgentRunResultDisposition({
                 isActiveRun: isActiveAgentRun(),
-                runCancelled: isRunCancelled(),
-                resultCancelled: resultWasCancelled
+                runCancelled: isRunCancelled() && !allowTerminalResultSettlementAfterExternalCancel,
+                resultCancelled: resultRepresentsCancellation
             });
             if (resultDisposition === 'ignore_stale_result') return;
             if (resultDisposition === 'reject_result_after_stop') {
@@ -6846,7 +6883,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             // 计算处理时长
             const processingTime = Date.now() - thinkingStartTime;
             const hasToolExecution = result.toolResults && result.toolResults.length > 0;
-            const executionSummary = readAgentExecutionSummaryFromResult(result);
             const resolvedVisibleResult = resolveAgentResultVisibleMessage(result);
             const resultVisibleMessage = resolvedVisibleResult.content;
             const assistantReplyOrigin = resolvedVisibleResult.assistantReplyOrigin;
@@ -6920,7 +6956,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             });
             const presentsResult = executionPresentationDisposition === 'result';
 
-            if (!resultWasCancelled && runOptions?.publicPlanConfirmationSourceMessageId && agentTaskPublicPlanApprovalRecord) {
+            if (!resultRepresentsCancellation && runOptions?.publicPlanConfirmationSourceMessageId && agentTaskPublicPlanApprovalRecord) {
                 if (runConversationId) {
                     updateMessageInConversation(runConversationId, runOptions.publicPlanConfirmationSourceMessageId, {
                         agentTaskPublicPlanApprovalRecord
@@ -6935,7 +6971,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             // 只有成功返回才把剩余步骤收为完成；失败必须把仍在运行的步骤标错，
             // 否则 UI 会先显示“全部成功”，随后又给出未完成卡片。
             const finalizedCollectedSteps = collectedSteps.map((step) => {
-                if (step.status !== 'running' || resultWasCancelled) return step;
+                if (step.status !== 'running' || resultRepresentsCancellation) return step;
                 const status = presentsResult ? 'success' as const : 'error' as const;
                 updateStep(step.id, { status });
                 return { ...step, status };
@@ -6945,13 +6981,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             setShowThinking(false);
             setLiveActivity(null);
             
-            // 检查是否是用户取消（优先处理）
-            if (resultWasCancelled) {
-                console.log('[AI Agent] 用户主动停止');
+            // 中断终态优先处理；用户停止与外部请求取消必须保留不同身份。
+            if (resultRepresentsCancellation) {
+                console.log('[AI Agent] 响应已中断', { interruptionKind: activeInterruptionKind });
                 finalizeAgentRunStopped(runId, 'agent-run:cancelled-result', {
                     executionSummary,
                     agentTaskPlanPresentation
-                });
+                }, activeInterruptionKind || 'request_cancelled');
             } else if (presentsResult) {
                 let responseContent = resultVisibleMessage;
                 let generatedImage: { data: string; type: string } | undefined;
@@ -7104,10 +7140,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             console.error('[AI Agent] 处理失败:', error);
             // 注意：不再调用 removeLastMessage，因为现在没有添加 loading 消息
             
-            // 检查是否是用户取消
+            // Abort 可能来自用户，也可能来自受控调试请求；按已记录来源结算。
             if (error.message === '任务已取消' || signal.aborted || cancelledAgentRunIdsRef.current.has(runId) || !isActiveAgentRun()) {
-                console.log('[AI Agent] 任务已被用户取消');
-                finalizeAgentRunStopped(runId, 'agent-run:cancelled-exception');
+                const interruptionKind = activeAgentRunUiRef.current?.runId === runId
+                    ? activeAgentRunUiRef.current.interruptionKind || 'request_cancelled'
+                    : 'request_cancelled';
+                const source = interruptionKind === 'user_stopped'
+                    ? 'agent-run:user-stopped'
+                    : 'agent-run:debug-bridge-cancelled';
+                console.log('[AI Agent] 响应已中断', { interruptionKind });
+                finalizeAgentRunStopped(runId, source, undefined, interruptionKind);
                 return;
             }
 

@@ -103,6 +103,15 @@ require("ts-node").register({
   project: path.join(ROOT, "tsconfig.main.json")
 });
 const {
+  MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS
+} = require(path.join(ROOT, "src", "shared", "debug-bridge-chat.ts"));
+const {
+  MAIN_IMAGE_MANIFEST
+} = require(path.join(ROOT, "src", "shared", "agent-runtime-v5", "manifests", "main-image.manifest.ts"));
+const {
+  DETAIL_PAGE_MANIFEST
+} = require(path.join(ROOT, "src", "shared", "agent-runtime-v5", "manifests", "detail-page.manifest.ts"));
+const {
   armDebugProjectReferenceProviderReceipt,
   clearDebugProjectReferenceProviderReceipt,
   commitDebugProjectReferenceProviderReceipt,
@@ -1469,8 +1478,17 @@ async function main() {
     && preloadSource.includes("onDebugBridgeChatPreflight")
     && chatPanelSource.includes("selectedApiModelId: String(selectedModel?.apiModelId || '').trim()")
     && chatPanelSource.includes("projectPath: String(state.currentProject?.path || '').trim()")
+    && chatPanelSource.includes("mainImageCanvas: { ...normalizedDimensionSpec.mainImage }")
     && !chatPanelSource.includes("apiKeys: state.apiKeys"),
-  "Debug preflight 必须只返回脱敏模型/Provider/项目事实，不得暴露凭据");
+  "Debug preflight 必须只返回脱敏模型/Provider/项目/尺寸事实，不得暴露凭据");
+  const debugCancelHandlerStart = chatPanelSource.indexOf("onDebugBridgeChatCancel");
+  const debugCancelHandlerEnd = chatPanelSource.indexOf("}, [stopGeneration]);", debugCancelHandlerStart);
+  const debugCancelHandlerSource = chatPanelSource.slice(debugCancelHandlerStart, debugCancelHandlerEnd);
+  assert(debugCancelHandlerStart > 0
+    && debugCancelHandlerEnd > debugCancelHandlerStart
+    && debugCancelHandlerSource.includes("ui.interruptionKind = 'request_cancelled'")
+    && !debugCancelHandlerSource.includes("markActiveAgentRunStopped();"),
+  "Debug Bridge timeout 只能记录外部请求取消，不能提前伪造用户点击停止");
   const handleSendStageIndex = chatPanelSource.indexOf("executionStage = 'handle_send_started'");
   const debugReferenceScopeCallIndex = chatPanelSource.indexOf(
     "await runWithDebugProjectReferenceTransportScope({",
@@ -1579,8 +1597,13 @@ async function main() {
     && designReliabilityCliSource.includes("renderer_model_mismatch")
     && designReliabilityCliSource.includes("renderer_provider_mismatch")
     && designReliabilityCliSource.includes("renderer_project_not_bound_to_fixture")
+    && designReliabilityCliSource.includes("renderer_design_dimension_mismatch")
+    && designReliabilityCliSource.includes('canvasAuthority === "runtime_setting"')
     && designReliabilityCliSource.includes("classifyUntrustedDebugBridgeFailure(error)"),
-  "run-live 必须在 armed 前核对 Renderer 模型/Provider/项目，并只按结构化副作用事实分流终态");
+  "run-live 必须在 armed 前核对 Renderer 模型/Provider/项目/尺寸，并只按结构化副作用事实分流终态");
+  assert(designReliabilityCliSource.includes(
+    '全局写状态安全账本未清账: ${status.evidence.attemptSafetyLedger.unresolvedAttemptCount}'
+  ), "status 必须把当前 Case 覆盖与跨 revision 的全局写状态安全账本分开显示");
   const fingerprintInput = {
     suiteId: "suite-timeout-proof",
     suiteCaseSetDigest: sha256Text("case-set"),
@@ -1596,7 +1619,8 @@ async function main() {
       photoshopRuntimeSourceDigest: sha256Text("photoshop-source"),
       photoshopRuntimeArtifactDigest: sha256Text("photoshop-artifact"),
       photoshopRuntimeManifestDigest: sha256Text("photoshop-manifest"),
-      photoshopRuntimeBindingDigest: sha256Text("photoshop-binding")
+      photoshopRuntimeBindingDigest: sha256Text("photoshop-binding"),
+      mainImageCanvasDigest: sha256Text("main-image-1440")
     },
     provider: "provider",
     modelId: "model",
@@ -1606,6 +1630,17 @@ async function main() {
     deriveLiveCohortFingerprint(fingerprintInput),
     deriveLiveCohortFingerprint({ ...fingerprintInput, timeoutMs: 899999 }),
     "Suite 固定 timeout 必须进入唯一可重算 cohort fingerprint，不能只影响 HTTP 等待行为"
+  );
+  assert.notStrictEqual(
+    deriveLiveCohortFingerprint(fingerprintInput),
+    deriveLiveCohortFingerprint({
+      ...fingerprintInput,
+      environment: {
+        ...fingerprintInput.environment,
+        mainImageCanvasDigest: sha256Text("main-image-800")
+      }
+    }),
+    "用户可见设计尺寸必须进入 cohort fingerprint，不能把 800 与 1440 的结果混为同一环境"
   );
   assert(!designReliabilityCliSource.includes("userInterventionCount: 0,")
     && designReliabilityCliSource.includes("userInterventionCount: undefined,")
@@ -1634,10 +1669,13 @@ async function main() {
   }
   const caseSpec = readCase();
   assert.strictEqual(validateDesignReliabilityCase(caseSpec).ok, true, "real case must validate");
+  assert.strictEqual(caseSpec.oracle.outputContract.canvasAuthority, "user_instruction",
+    "显式写出 800×800 的 Case 必须以用户指令为尺寸 authority，不受当前默认设置阻断");
   const realReferenceCase = readReferenceCase();
   const realReferenceRubric = readReferenceRubric();
   assert.strictEqual(validateDesignReliabilityCase(realReferenceCase).ok, true,
     "首条跨商品真实参考复刻 Case 必须通过统一契约");
+  assert.strictEqual(realReferenceCase.oracle.outputContract.canvasAuthority, "user_instruction");
   assert.strictEqual(validateRubric(realReferenceRubric).ok, true,
     "参考复刻必须使用同任务族的独立人工 Rubric，不能借主图 family 绕过校验");
   assert.strictEqual(artifactGeometryMatchesCase(realReferenceCase, { width: 800, height: 800 }), true);
@@ -1907,28 +1945,31 @@ async function main() {
   }).blockers.includes("photoshop_runtime_build_identity_mismatch"), true,
   "磁盘 runtime.js、清单、checkout 或 live 身份任一不一致时必须阻止正式 Case");
 
-  const matchingRendererPreflight = evaluateDebugRendererPreflight({
-    probe: {
-      reachable: true,
-      status: 200,
-      responseBody: {
-        success: true,
-        guardedWriteProtocol: "debug-bridge-chat-submit/v1",
-        renderer: {
-          version: "debug-bridge-chat-preflight/v1",
-          capturedAt: "2026-08-26T00:00:00.000Z",
-          selectedProvider: "openai-codex",
-          selectedModelId: "codex-subscription-gpt-5-6-sol",
-          selectedApiModelId: "gpt-5.6-sol",
-          selectedModelResolved: true,
-          projectPath: "C:/fixture/project",
-          chatBusy: false
-        }
+  const matchingRendererProbe = {
+    reachable: true,
+    status: 200,
+    responseBody: {
+      success: true,
+      guardedWriteProtocol: "debug-bridge-chat-submit/v1",
+      renderer: {
+        version: "debug-bridge-chat-preflight/v2",
+        capturedAt: "2026-08-26T00:00:00.000Z",
+        selectedProvider: "openai-codex",
+        selectedModelId: "codex-subscription-gpt-5-6-sol",
+        selectedApiModelId: "gpt-5.6-sol",
+        selectedModelResolved: true,
+        projectPath: "C:/fixture/project",
+        mainImageCanvas: { width: 1440, height: 1440 },
+        chatBusy: false
       }
-    },
+    }
+  };
+  const matchingRendererPreflight = evaluateDebugRendererPreflight({
+    probe: matchingRendererProbe,
     expectedProvider: "openai-codex",
     expectedModelId: "gpt-5.6-sol",
-    expectedProjectPath: "C:/fixture/project"
+    expectedProjectPath: "C:/fixture/project",
+    expectedMainImageCanvas: { width: 1440, height: 1440 }
   });
   assert.strictEqual(matchingRendererPreflight.ready, true,
     "Renderer 模型 API ID、Provider 与项目均匹配时应通过写前预检");
@@ -1942,21 +1983,30 @@ async function main() {
         success: true,
         guardedWriteProtocol: "debug-bridge-chat-submit/v1",
         renderer: {
-          version: "debug-bridge-chat-preflight/v1",
+          version: "debug-bridge-chat-preflight/v2",
           capturedAt: "2026-08-26T00:00:00.000Z",
           selectedProvider: "claude-subscription",
           selectedModelId: "claude-subscription-opus",
           selectedApiModelId: "opus",
           selectedModelResolved: true,
           projectPath: "C:/fixture/project",
+          mainImageCanvas: { width: 1440, height: 1440 },
           chatBusy: false
         }
       }
     },
     expectedProvider: "openai-codex",
     expectedModelId: "gpt-5.6-sol",
-    expectedProjectPath: "C:/fixture/project"
+    expectedProjectPath: "C:/fixture/project",
+    expectedMainImageCanvas: { width: 1440, height: 1440 }
   }).ready, false, "错误模型不得等到 submission_started 后才发现");
+  assert.strictEqual(evaluateDebugRendererPreflight({
+    probe: matchingRendererProbe,
+    expectedProvider: "openai-codex",
+    expectedModelId: "gpt-5.6-sol",
+    expectedProjectPath: "C:/fixture/project",
+    expectedMainImageCanvas: { width: 800, height: 800 }
+  }).ready, false, "Case 画布规格与 Renderer 当前尺寸不一致时必须在写前失败");
   const safePreSubmitFailure = {
     version: "debug-bridge-chat-execution-failure/v1",
     stage: "before_handle_send",
@@ -4411,15 +4461,28 @@ async function main() {
     item.id === currentAttemptAttribution.attributionId
     && item.reason === "bound_attempt_not_current"
   )), true);
-  assert.strictEqual(fullSuite.manifest.liveRunPolicy.timeoutMs, 900000,
-    "正式实机采集必须由 Suite 固定质量优先 timeout");
+  assert.strictEqual(fullSuite.manifest.liveRunPolicy.timeoutMs, 2100000,
+    "正式实机采集必须由 Suite 固定质量优先 timeout，并给 30 分钟 Agent 预算保留终态结算窗口");
+  const unseenMainImageCase = fullSuite.cases.find((item) => (
+    item.caseId === "main-image-pink-coffee-unseen-v1"
+  ));
+  assert.strictEqual(unseenMainImageCase?.oracle?.outputContract?.canvasAuthority, "runtime_setting",
+    "未在自然需求中写尺寸的主图 Case 必须绑定当前用户可见主图设置");
+  const longestCreativeSoftTimeBudgetMs = Math.max(
+    MAIN_IMAGE_MANIFEST.performance_profile.budget.soft_time_budget_ms,
+    DETAIL_PAGE_MANIFEST.performance_profile.budget.soft_time_budget_ms
+  );
+  assert(fullSuite.manifest.liveRunPolicy.timeoutMs - longestCreativeSoftTimeBudgetMs >= 300000,
+    "外层正式采集 timeout 必须比最长创意 Agent 软预算至少多 5 分钟，避免终态与取消竞态");
+  assert(fullSuite.manifest.liveRunPolicy.timeoutMs <= MAX_DEBUG_BRIDGE_CHAT_TIMEOUT_MS,
+    "Suite timeout 不得超过三端 Debug Bridge 共同硬上限");
   assert.strictEqual(
     resolveLiveRunTimeout(fullSuite.manifest, parseArgs([
       "node",
       "design-reliability.cjs",
       "run-live"
     ])),
-    900000,
+    2100000,
     "CLI 未显式覆盖时必须使用 Suite timeout，不能回落到隐藏的五分钟默认值"
   );
   assert.strictEqual(
@@ -4428,9 +4491,9 @@ async function main() {
       "design-reliability.cjs",
       "run-live",
       "--timeout-ms",
-      "900000"
+      "2100000"
     ])),
-    900000,
+    2100000,
     "显式 timeout 只有与 Suite policy 完全一致时才可接受"
   );
   assert.throws(
@@ -4441,7 +4504,7 @@ async function main() {
       "--timeout-ms",
       "300000"
     ])),
-    /与 Suite 固定质量优先值 900000ms 不一致/,
+    /与 Suite 固定质量优先值 2100000ms 不一致/,
     "旧五分钟覆盖不得静默形成另一个 cohort"
   );
   assert.throws(

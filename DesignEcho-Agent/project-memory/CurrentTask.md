@@ -1,5 +1,49 @@
 # Current Task
 
+## 2026-08-28 DESIGN-RELIABILITY-TERMINAL-TRUTH-001：正式主图首个偏差根因修复
+
+### 目标
+
+1. 修复正式主图 Attempt 1 暴露的终态身份错误：调试桥取消不得伪装成用户点击停止，Agent 的结构化终态必须优先结算。
+2. 修复空白建档被投影成“已有设计版本”：只有真实内容 mutation 才取得可看版本信用，`createDocument` 单独存在只算工作区准备。
+3. 把当前用户可见主图尺寸纳入正式 Case 写前预检与 cohort 身份，拒绝把 800×800 Oracle 与 1440×1440 Runtime 混成同一测试。
+4. 在质量优先阶段为 30 分钟 Agent 预算保留独立的终态结算窗口，避免内外层同一 timeout 再次竞态。
+
+### 当前事实
+
+- 正式 Attempt 1 使用 GPT-5.6 Sol、真实 Photoshop 与一次性 r20 fixture；运行在约 15 分钟后以 `performance_budget` 停止，只建立了 1440×1440 空白文档，没有形成可看的设计内容。
+- 旧 Suite timeout 与主图 Agent 软预算同为 900000ms；调试桥超时先发 Abort，ChatPanel 又把所有取消统一写成 `user_stopped`。
+- 当前设置向 Agent 明确注入 1440×1440 主图规格，而 Case revision 3 的隐藏 output contract 仍是 800×800；这是测量契约漂移，不是 Agent 建档尺寸错误。
+- `design-intent-signal` 与 `design-discipline-runtime` 已有“空白建档不是设计内容”的通用语义；本切片复用原子 operation ledger，不新增第二套结果状态。
+
+### 实施边界
+
+- 不把主图工作流或一次 `composeDesign` 参数冲突写进通用 Harness Prompt / 路由 /补救分支。
+- 不把 timeout 放宽当成成功；预算只允许 Agent 有机会完成，最终仍必须通过真实 Photoshop 写入、同目标读回、可编辑稿、导出和人工盲评。
+- Debug benchmark 只记录环境、尺寸和终态事实，不进入生产 Agent 上下文、设计判断或 Tool 权限。
+- 不修改共享脏工作树；本切片只在独立分支和一次性 fixture 中验证。
+
+### 下一步
+
+1. 已完成代码：取消来源分离、结构化终态优先、空白建档结果投影、尺寸预检 / cohort 身份、预算与外层 timeout 间隔。
+2. 已通过验证：Main / Renderer 类型检查、Runtime 声明审计、Design Reliability 纯逻辑验证、简化棘轮、业务边界与完整核心闸门 58 个阶段。
+3. 待完成：最终差异审查、独立提交与推送。
+4. 待实机：重启同一提交、reconcile Attempt 1、创建全新 r21 fixture，执行 Attempt 2 并从首个偏差继续归因。
+
+### 验证与未知
+
+- 已核实：r20 Attempt 1 的运行记录、Photoshop 空白文档读回、`performance_budget` 终态、调试取消竞态和 800 /1440 规格漂移。
+- 已核实：canonical Attempt 安全账本跨 Case revision 保留 r20 未清账状态；旧 `status` 仅是人类摘要混淆当前覆盖与全局安全账本。
+- 已核实：完整核心闸门顺序执行到第 58 个 UXP 构建阶段，且该最终阶段独立复验退出码为 0；Main / Renderer 类型、Runtime 声明、Design Reliability、简化棘轮与业务边界均通过。
+- 待验证：重新启动后的 Debug Bridge / Renderer / UXP live 身份，以及 Attempt 2 是否真正完成设计、读回与交付。
+- 待验证假设：Attempt 1 的 `composeDesign` photo / background 冲突是否会在新预算与新终态链下自然重规划；单次样本不足以把它写成通用 Prompt 规则。
+
+### 状态
+
+`in_progress / implementation_complete / core_58_passed / photoshop_attempt_2_pending`
+
+---
+
 ## 2026-08-28 SMILE-IMAGE-PROVIDER-001：独立收口 Smile 图像 Provider
 
 ### 目标

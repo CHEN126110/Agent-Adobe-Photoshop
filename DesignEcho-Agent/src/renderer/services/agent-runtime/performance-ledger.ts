@@ -450,12 +450,12 @@ export function applyPerformanceModelBudgetClassAllowance(
 }
 
 export function buildPerformanceBudgetExhaustionMessage(
-    hasObservedTaskMutation: boolean,
+    hasViewableDesignChange: boolean,
     _dimension: 'model_calls' | 'tool_calls' | 'soft_time',
     _limit: number,
     _used: number
 ): string {
-    const outcome = hasObservedTaskMutation
+    const outcome = hasViewableDesignChange
         ? '当前制作暂时停下，已经做出的画面改动会保留，但这还不是完整成品。'
         : '当前处理停在查看和判断阶段，还没有做出可以看的设计版本。';
     return `${outcome}尚未完成的内容需要从当前状态继续。`;
@@ -479,11 +479,11 @@ export function readPerformanceBudgetExhaustion(input: {
     budget: PerformanceBudget | undefined;
     elapsedMs: number;
     scope?: 'all' | 'model' | 'tool';
-    hasObservedTaskMutation?: boolean;
+    hasViewableDesignChange?: boolean;
 }): PerformanceBudgetExhaustion | undefined {
     const { ledger, budget } = input;
     if (!budget) return undefined;
-    const hasObservedTaskMutation = input.hasObservedTaskMutation === true;
+    const hasViewableDesignChange = input.hasViewableDesignChange === true;
     const scope = input.scope ?? 'all';
     // 普通任务预算不为终局质量 Judge 事前扣减；Judge 的独立单次验收 allowance 与硬上限
     // 由 Agent 调用点按 budgetClass 处理，本纯账本函数仍只报告普通预算的真实耗尽状态。
@@ -495,7 +495,7 @@ export function readPerformanceBudgetExhaustion(input: {
             dimension: 'soft_time',
             code: 'agent_soft_time_budget_exhausted',
             message: buildPerformanceBudgetExhaustionMessage(
-                hasObservedTaskMutation,
+                hasViewableDesignChange,
                 'soft_time',
                 effectiveSoftTimeBudgetMs,
                 input.elapsedMs
@@ -512,7 +512,7 @@ export function readPerformanceBudgetExhaustion(input: {
             dimension: 'model_calls',
             code: 'agent_model_call_budget_exhausted',
             message: buildPerformanceBudgetExhaustionMessage(
-                hasObservedTaskMutation,
+                hasViewableDesignChange,
                 'model_calls',
                 effectiveModelCallLimit,
                 ledger.modelCallCount
@@ -528,7 +528,7 @@ export function readPerformanceBudgetExhaustion(input: {
             dimension: 'tool_calls',
             code: 'agent_tool_call_budget_exhausted',
             message: buildPerformanceBudgetExhaustionMessage(
-                hasObservedTaskMutation,
+                hasViewableDesignChange,
                 'tool_calls',
                 budget.maxToolCalls,
                 ledger.toolCallCount
@@ -568,8 +568,10 @@ export interface PerformanceToolConsumeContext {
     authorizedMutationExpectation: boolean;
     /** 本轮是否已真实尝试过交付类工具（写/保存/导出/外部生成）。 */
     attemptedDeliveryAction: boolean;
-    /** 与 Agent.buildPerformanceBudgetExhaustionMessage 同口径的画面改动事实。 */
+    /** 任意已观测 Photoshop mutation；供执行供给预留判断真实进展。 */
     hasObservedTaskMutation: boolean;
+    /** 排除仅建空白文档后的用户可见设计改动；只用于诚实终态文案。 */
+    hasViewableDesignChange: boolean;
 }
 
 export function consumePerformanceToolCallBudget(input: {
@@ -585,7 +587,7 @@ export function consumePerformanceToolCallBudget(input: {
         budget,
         elapsedMs: readPerformanceActiveElapsedMs(ledger),
         scope: 'tool',
-        hasObservedTaskMutation: input.reserveContext.hasObservedTaskMutation
+        hasViewableDesignChange: input.reserveContext.hasViewableDesignChange
     });
     if (exhaustion) {
         return {

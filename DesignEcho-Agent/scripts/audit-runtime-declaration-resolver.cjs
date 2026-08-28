@@ -109,6 +109,30 @@ const {
   'performance-ledger.ts'
 ));
 const {
+  buildAgentUserResultProjection,
+  deriveAgentUserResultFacts
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'renderer',
+  'services',
+  'agent-runtime',
+  'agent-user-result-projection.ts'
+));
+const {
+  buildRequestCancelledResponseInterruption,
+  buildUserStoppedResponseInterruption,
+  formatAgentResponseInterruption,
+  resolveAgentResponseInterruption
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'shared',
+  'agent-response-interruption.ts'
+));
+const {
   buildRecommendedSkillFastPathBaseline,
   createAgentCapabilitySession,
   REQUEST_AGENT_CAPABILITIES_TOOL_NAME
@@ -768,11 +792,77 @@ assert(!toolExecutorSource.includes('声明设计意图失败：taskTypeId'));
 assert(agentSource.includes("code: 'tool_deferred_after_runtime_declaration'"));
 assert(agentSource.includes('createRuntimeDeclarationSiblingTurn(response.toolCalls'));
 assert(agentSource.includes('runtimeDeclarationTurn.recordResult(call, output)'));
-assert(agentSource.includes('hasPhotoshopChange: this.hasObservedTaskMutation(),'));
-assert(agentUserResultProjectionSource.includes('const hasViewableVersion = input.hasPhotoshopChange || input.hasSavedOrExportedFile;'));
+assert(agentSource.includes('buildAgentUserResultProjectionFromToolLog({'));
+assert(agentUserResultProjectionSource.includes('hasWorkspacePreparation: !hasViewableDesignChange'));
+assert(agentUserResultProjectionSource.includes('const hasViewableVersion = input.hasViewableDesignChange || input.hasSavedOrExportedFile;'));
 assert(!agentSource.includes('const hasRecordedMutation = Number(summary.successfulMutationCalls || 0) > 0;'));
 assert(agentUserResultProjectionSource.includes('当前状态：还没有可看的设计版本'));
 assert(agentUserResultProjectionSource.includes('只消费已由 Runtime 验真的事实'));
+const buildObservedMutationResult = (beforeHistory, afterHistory) => ({
+  success: true,
+  photoshopMutationCommit: {
+    version: 'photoshop-mutation-commit/v1',
+    basis: 'same_execute_as_modal',
+    bindingStrength: 'document_revision',
+    before: { documentId: 901, historyStateId: beforeHistory, activeLayerId: null },
+    after: { documentId: 901, historyStateId: afterHistory, activeLayerId: null },
+    toolActionCompleted: true,
+    mutationObserved: true,
+    documentChanged: false
+  }
+});
+const blankDocumentFacts = deriveAgentUserResultFacts([{
+  name: 'createDocument',
+  arguments: { width: 1440, height: 1440 },
+  result: buildObservedMutationResult(1, 2)
+}]);
+assert.strictEqual(blankDocumentFacts.hasWorkspacePreparation, true);
+assert.strictEqual(blankDocumentFacts.hasViewableDesignChange, false,
+  'createDocument-only must not claim a viewable design version');
+const placedDesignFacts = deriveAgentUserResultFacts([
+  {
+    name: 'createDocument',
+    arguments: { width: 1440, height: 1440 },
+    result: buildObservedMutationResult(1, 2)
+  },
+  {
+    name: 'placeImage',
+    arguments: { path: 'fixture-relative-source.jpg' },
+    result: buildObservedMutationResult(2, 3)
+  }
+]);
+assert.strictEqual(placedDesignFacts.hasViewableDesignChange, true);
+assert.strictEqual(placedDesignFacts.hasWorkspacePreparation, false);
+const blankCanvasProjection = buildAgentUserResultProjection({
+  summary: {
+    status: 'failed',
+    stopReason: 'performance_budget',
+    noDocumentChangeRisks: 0
+  },
+  hasViewableDesignChange: false,
+  hasWorkspacePreparation: true,
+  hasSavedOrExportedFile: false,
+  hasGeneratedAsset: false,
+  hasViewedLatestVersion: false,
+  hasObservedContext: true
+});
+assert.strictEqual(blankCanvasProjection.title, '这次还没做出版本');
+assert(blankCanvasProjection.summary.includes('已经建立目标画布，但还没有形成设计内容'));
+assert(!blankCanvasProjection.summary.includes('做出实际画面或结构调整'));
+assert.strictEqual(
+  formatAgentResponseInterruption(buildUserStoppedResponseInterruption()),
+  '你已停止此响应'
+);
+assert.strictEqual(
+  formatAgentResponseInterruption(buildRequestCancelledResponseInterruption()),
+  '本次响应已中断'
+);
+assert.strictEqual(resolveAgentResponseInterruption({
+  assistantReplyOrigin: {
+    origin: 'ui_status',
+    source: 'agent-run:cancelled-result'
+  }
+}), undefined, 'ambiguous cancelled results must not be inferred as a user stop');
 assert(!agentSource.includes('这稿先做到这里，你看看现在的效果。本轮执行预算已用完'));
 assert(agentActionEventProjectionSource.includes("failureDisposition: 'control_turn_deferred' as const"));
 assert(agentSource.includes("entry.failureDisposition !== 'control_turn_deferred'"));
@@ -7098,7 +7188,8 @@ function assertExecutionSupplyReservePureAccounting() {
     authorizedMutationExpectation: true,
     attemptedDeliveryAction: false,
     reservesFinalQualityJudge: false,
-    hasObservedTaskMutation: false
+    hasObservedTaskMutation: false,
+    hasViewableDesignChange: false
   };
   const firstRead = consumePerformanceToolCallBudget({
     ledger,
@@ -7938,7 +8029,7 @@ function assertFinalQualityJudgeReservationRemovedButHardCapStays() {
       budget,
       elapsedMs: 1000,
       scope: 'model',
-      hasObservedTaskMutation: false
+      hasViewableDesignChange: false
     }),
     undefined,
     'task-class model budget must no longer be pre-deducted for the final quality judge'

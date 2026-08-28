@@ -18,7 +18,8 @@ import type {
 } from './types';
 import { bindCanvasSnapshotExpectedDocumentId } from './canvas-snapshot-target-binding';
 import {
-    buildAgentUserResultProjection,
+    buildAgentUserResultProjectionFromToolLog,
+    deriveAgentUserResultFacts,
     type UserResultProjection
 } from './agent-user-result-projection';
 import { buildAgentActionEventProjection } from './agent-action-event-projection';
@@ -1834,7 +1835,7 @@ export class Agent {
         used: number
     ): string {
         return buildPerformanceBudgetExhaustionMessageFromLedger(
-            this.hasObservedTaskMutation(),
+            deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange,
             dimension,
             limit,
             used
@@ -1852,7 +1853,7 @@ export class Agent {
             budget,
             elapsedMs: this.readPerformanceActiveElapsedMs(),
             scope,
-            hasObservedTaskMutation: this.hasObservedTaskMutation()
+            hasViewableDesignChange: deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange
         });
         return applyPerformanceModelBudgetClassAllowance(
             this.performanceLedger,
@@ -2103,7 +2104,8 @@ export class Agent {
             reserveContext: {
                 authorizedMutationExpectation: this.hasAuthorizedMutationExpectation(),
                 attemptedDeliveryAction: this.hasAttemptedTaskDeliveryAction(),
-                hasObservedTaskMutation: this.hasObservedTaskMutation()
+                hasObservedTaskMutation: this.hasObservedTaskMutation(),
+                hasViewableDesignChange: deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange
             },
             toolName,
             toolArguments
@@ -11330,9 +11332,7 @@ export class Agent {
 
     private buildToolResultFallbackMessage(): string {
         return buildToolResultFallbackMessageFromModule({
-            toolCallLog: this.toolCallLog,
-            hasObservedTaskMutation: this.hasObservedTaskMutation(),
-            hasSuccessfulSaveExport: this.hasSuccessfulToolActivity('save_export')
+            toolCallLog: this.toolCallLog
         });
     }
 
@@ -12013,13 +12013,9 @@ export class Agent {
 
         // 正文里混着的自我分析在验收结论之前搬到过程区，保证过程区的时间顺序仍然是「先想后收尾」。
         // 只搬不删：切分失败或会掏空正文时原样交付（见 assistant-reply-reasoning-split 的红线）。
-        const userResultProjection = buildAgentUserResultProjection({
+        const userResultProjection = buildAgentUserResultProjectionFromToolLog({
             summary: executionSummary,
-            hasPhotoshopChange: this.hasObservedTaskMutation(),
-            hasSavedOrExportedFile: this.hasSuccessfulToolActivity('save_export'),
-            hasGeneratedAsset: this.hasSuccessfulToolActivity('external_generation'),
-            hasViewedLatestVersion: Number(executionSummary.successfulObservationCalls || 0) > 0,
-            hasObservedContext: Number(executionSummary.observedToolCallCount || 0) > 0
+            toolCallLog: this.toolCallLog
         });
         executionSummary.userVisibleSummary = userResultProjection.summary;
         if (userResultProjection.nextStep) {
@@ -12029,7 +12025,8 @@ export class Agent {
         //（「本轮已经在 Photoshop 中做出实际画面…当前版本…下一步…」）替换或垫底。
         // 投影只进 executionSummary（诊断用）；模型没说话时仅补中性短句，避免空回复和状态口播。
         let rawVisibleMessage = String(input.message || '').trim()
-            || (this.hasObservedTaskMutation() ? '这一版做好了，画面在 Photoshop 里，你先看看。' : userResultProjection.summary || '这一轮没有新的画面改动。');
+            || userResultProjection.message
+            || '这一轮没有新的画面改动。';
         const replySplit = splitAssistantReplyReasoningPrefix(rawVisibleMessage);
         if (replySplit.split) {
             this.emitVisibleReasoning(replySplit.reasoning, { source: 'model_reply_reasoning_prefix' });
@@ -12444,6 +12441,7 @@ export class Agent {
                 succeeded: typeof entry.succeeded === 'boolean' ? entry.succeeded : (entry.result as any)?.success !== false
             }))
         );
+        const hasViewableDesignChange = deriveAgentUserResultFacts(this.toolCallLog).hasViewableDesignChange;
         const taskPlanObligationGap = this.resolveTaskPlanObligationGap();
         const taskProgressMissing = Boolean(taskPlanObligationGap);
         const blockers: string[] = [];
@@ -12456,21 +12454,21 @@ export class Agent {
         if (stopReason === 'max_iterations') {
             blockers.push('这稿这次没做完，可以让我接着做。');
         } else if (stopReason === 'provider_output_truncated') {
-            blockers.push(completionObservationGate.mutationCount > 0
+            blockers.push(hasViewableDesignChange
                 ? '这次没有拿到完整结果；前面的真实改动已保留，但还没完成。'
                 : '这次没有拿到完整结果，这次还没开始动手。');
         } else if (stopReason === 'provider_output_blocked') {
-            blockers.push(completionObservationGate.mutationCount > 0
+            blockers.push(hasViewableDesignChange
                 ? '模型服务没有返回可用结果；前面的真实改动已保留，但还没完成。'
                 : '模型服务没有返回可用结果，这次还没开始动手。');
         } else if (stopReason === 'performance_budget') {
-            blockers.push(completionObservationGate.mutationCount > 0
+            blockers.push(hasViewableDesignChange
                 ? '这稿先做到这里、还没做完，你可以先看看现在的效果，或让我接着做。'
                 : '这次我还没真正开始动手做设计就停下了，你可以让我继续。');
         } else if (stopReason === 'no_progress') {
             blockers.push('这次卡住了、没能往前推进，先停下来。');
         } else if (stopReason === 'tool_preflight_blocked') {
-            blockers.push(completionObservationGate.mutationCount > 0
+            blockers.push(hasViewableDesignChange
                 ? '这稿已经改了一部分，但后面暂时做不下去了，你先看看现在的。'
                 : PUBLIC_TOOL_PRECHECK_BLOCKED_MESSAGE);
         } else if (stopReason === 'error') {
@@ -12697,11 +12695,13 @@ export class Agent {
 
         if (stopReason !== 'tool_preflight_blocked' && !isAwaitingConfirmationSummary) {
             if (taskCompletion?.status === 'failed' && blockers.length === 0) {
-                blockers.push(completionObservationGate.mutationCount > 0
+                blockers.push(hasViewableDesignChange
                     ? '当前版本还有内容没完成，我先不把它当成成品交付。'
                     : '这次还没有形成可以看的设计版本。');
             } else if (taskCompletion?.status === 'needs_review' && warnings.length === 0) {
-                warnings.push('当前版本已经形成，整体画面还需要再看一眼。');
+                warnings.push(hasViewableDesignChange
+                    ? '当前版本已经形成，整体画面还需要再看一眼。'
+                    : '这次还没有形成可以看的设计版本。');
             }
         }
 
@@ -12810,7 +12810,7 @@ export class Agent {
             ...(designVerdict ? { designVerdict } : {}),
             ...(this.finalQualityModelProtocolDigest ? { finalQualityModelProtocolDigest: this.finalQualityModelProtocolDigest } : {}),
             summaryText: stopReason === 'tool_preflight_blocked'
-                ? (completionObservationGate.mutationCount > 0
+                ? (hasViewableDesignChange
                     ? '这稿已经改了一部分，但后面暂时做不下去了，你先看看现在的。'
                     : `这稿还没做完：${PUBLIC_TOOL_PRECHECK_BLOCKED_MESSAGE}`)
                 : isAwaitingConfirmationSummary
@@ -12820,16 +12820,6 @@ export class Agent {
                     warnings
                 })
         };
-    }
-
-    private hasSuccessfulToolActivity(kind: 'save_export' | 'external_generation'): boolean {
-        return this.toolCallLog.some((entry) => (
-            !isAgentHarnessControlTool(entry.name)
-            && entry.origin !== 'harness_opening_observation'
-            && entry.origin !== 'harness_quality_verification'
-            && entry.result?.success !== false
-            && classifyAgentToolExecution(entry.name, entry.arguments) === kind
-        ));
     }
 
 }
