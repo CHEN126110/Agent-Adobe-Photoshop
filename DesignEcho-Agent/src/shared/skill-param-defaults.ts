@@ -257,7 +257,7 @@ function buildSkillSpecificFallbacks(input: SkillParamDefaultsInput): Record<str
         const enableSkuCardSourcePreparation = shouldEnableSkuCardSourcePreparation(input.userInput);
         const enableSkuCardTemplatePreparation = shouldEnableSkuCardTemplatePreparation(input.userInput);
         const fallback: Record<string, any> = {
-            stage: resolveSkuSkillStage({ sourceOnly, userInput: input.userInput }),
+            stage: resolveSkuSkillStage({ sourceOnly, userInput: input.userInput }).stage,
             generateNotes: false,
             ...(sourceOnly ? { sourceOnly: true } : {})
         };

@@ -796,31 +796,64 @@ export function inferSkuIntentParamsFromText(input: string): SkuIntentParams {
     };
 }
 
+export interface SkuSkillStageResolution {
+    stage: SkuSkillStage;
+    /** 历史只读入口；不扩张公开 stage 枚举，也不能触发写入准备。 */
+    legacyInspectOnly?: boolean;
+    /**
+     * 显式传入但无法识别的 stage 字面量。存在时 stage 只是文本回落猜测，
+     * 执行器必须拒绝执行并点名合法值，不得按猜测结果静默改道。
+     */
+    invalidDeclaredStage?: string;
+}
+
+function canonicalizeSkuSkillStageLiteral(value: string): SkuSkillStage | 'inspect' | null {
+    const canonical = value.toLowerCase().replace(/[^a-z]/g, '');
+    if (canonical === 'full') return 'full';
+    if (canonical === 'colorcard') return 'color-card';
+    if (canonical === 'template') return 'template';
+    if (canonical === 'config') return 'config';
+    if (canonical === 'inspect') return 'inspect';
+    return null;
+}
+
 /**
- * 解析唯一 SKU Skill 的内部阶段。可信用户原文优先；结构化 stage 用于续跑，旧 sourceOnly 只作兼容输入。
+ * 解析唯一 SKU Skill 的内部阶段。显式结构化 stage 用于续跑且优先；只有未声明 stage 时才从可信用户原文回落，旧 sourceOnly 只作兼容输入。
  * 不从任意模型参数推断用户拥有的组合、颜色或备注事实。
  */
 export function resolveSkuSkillStage(input: {
     stage?: unknown;
     sourceOnly?: unknown;
     userInput?: unknown;
-}): SkuSkillStage {
+}): SkuSkillStageResolution {
     // 模型显式声明的 stage 是第一权威：循环内模型按站③指引调 stage=template 时，
     // 不得被用户原话的正则猜测覆盖（2026-08-23 真机：'帮我做SKU' 命中执行正则，
     // 把模型三次 stage=template 全改道成 full，缺模板预检三连败熔断）。
-    // 文本正则只在没有显式声明时兜底。
+    // 大小写 / 分隔符变体归一化后照常生效；无法识别的显式字面量标记为 invalid，
+    // 由执行器 fail-fast（2026-08-27 真机 run702：非法字面量静默落进正则会把
+    // 色卡意图改道成其他站点，模型对改道毫不知情）。文本正则只在没有显式声明时兜底。
     const declared = String(input.stage || '').trim();
-    if (declared === 'full' || declared === 'color-card' || declared === 'template' || declared === 'config') {
-        return declared;
+    if (declared) {
+        const canonical = canonicalizeSkuSkillStageLiteral(declared);
+        if (canonical === 'inspect') {
+            return { stage: 'full', legacyInspectOnly: true };
+        }
+        if (canonical) {
+            return { stage: canonical };
+        }
     }
     const userInput = String(input.userInput || '');
+    let stage: SkuSkillStage = 'full';
     if (
         input.sourceOnly === true
         || isSkuCardSourceOnlyText(userInput)
         || isSkuColorCardStageRequestText(userInput)
-    ) return 'color-card';
-    if (isSkuTemplateDesignRequestText(userInput)) return 'template';
-    if (isSkuConfigurationRequestText(userInput)) return 'config';
-    if (isSkuExecutionRequestText(userInput)) return 'full';
-    return 'full';
+    ) {
+        stage = 'color-card';
+    } else if (isSkuTemplateDesignRequestText(userInput)) {
+        stage = 'template';
+    } else if (isSkuConfigurationRequestText(userInput)) {
+        stage = 'config';
+    }
+    return declared ? { stage, invalidDeclaredStage: declared } : { stage };
 }

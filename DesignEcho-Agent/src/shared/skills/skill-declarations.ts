@@ -3,8 +3,6 @@ import type {
     SkillParameter,
     SkillParameterSchema
 } from '../types/skill.types';
-import { SKU_FULL_PRODUCTION_DRAFT_COMBO_SIZES } from '../sku-intent-params';
-
 const boolParam = (name: string, description: string, defaultValue?: boolean) => ({
     name,
     type: 'boolean' as const,
@@ -347,10 +345,9 @@ export const SKUSkill: SkillDeclaration = {
         deliveryConventionParam(['jpg']),
         arrParam(
             'comboSizes',
-            'Combination size list. Current full-production draft defaults to [2,3,4] when the user/project has not supplied an authoritative size plan; this default remains non-authoritative and requires publication review.',
+            'Explicit combination size list from the user, a trusted structured continuation, or an Agent proposal. This declaration has no global default: full production may form its own non-authoritative draft after stage resolution, while template production requires concrete sizes before any write.',
             false,
             {
-                default: [...SKU_FULL_PRODUCTION_DRAFT_COMBO_SIZES],
                 items: { type: 'number' }
             }
         ),

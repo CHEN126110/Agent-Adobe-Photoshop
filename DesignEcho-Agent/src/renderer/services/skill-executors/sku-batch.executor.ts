@@ -147,13 +147,15 @@ import { sanitizeUserVisibleDiagnosticText } from '../../../shared/chat-response
 import { inferDesignDocumentRoleFromName } from '../../../shared/design-document-role';
 import { hasExplicitReversibleDesignDecisionDelegation } from '../../../shared/designer-agent-autonomy-principles';
 import {
+    inferSkuIntentParamsFromText,
     isSkuAutonomousProductionDraftRequestText,
     isSkuComboReviewRequestedText,
     isSkuComboReviewSkippedText,
     isSkuTemplateReviewRequestedText,
     resolveSkuSkillStage,
     shouldRequestSkuComboConfirmation,
-    SKU_FULL_PRODUCTION_DRAFT_COMBO_SIZES
+    SKU_FULL_PRODUCTION_DRAFT_COMBO_SIZES,
+    type SkuSkillStage
 } from '../../../shared/sku-intent-params';
 import {
     resolveSkuPrerequisiteRepairPolicy,
@@ -984,7 +986,11 @@ function normalizeSkuSizeList(value: unknown): number[] {
         .sort((a, b) => a - b);
 }
 
-function resolveEarlySkuRequiredColorSlots(params: Record<string, any>): number {
+function resolveEarlySkuRequiredColorSlots(
+    params: Record<string, any>,
+    stage: SkuSkillStage,
+    inspectOnly: boolean
+): number {
     const directCandidates = normalizeSkuSizeList([
         params.skuRequiredColorSlots,
         params.requiredColorSlots,
@@ -995,7 +1001,10 @@ function resolveEarlySkuRequiredColorSlots(params: Record<string, any>): number 
         ...normalizeSkuSizeList(params.comboSizes),
         ...normalizeSkuSizeList(params.comboSize)
     ].filter(isReasonableSkuSize);
-    return Math.max(1, ...directCandidates, ...sizeCandidates);
+    const fullProductionDraftSizes = stage === 'full' && !inspectOnly && sizeCandidates.length === 0
+        ? [...SKU_FULL_PRODUCTION_DRAFT_COMBO_SIZES]
+        : [];
+    return Math.max(1, ...directCandidates, ...sizeCandidates, ...fullProductionDraftSizes);
 }
 
 function normalizeColorKey(input: string): string {
@@ -2205,13 +2214,59 @@ export const skuBatchExecutor: SkillExecutor = {
 
         // SKU 只有一个 Skill 身份；stage 只选择本执行器内部的方法。
         const trustedUserInput = String(_context?.userInput || '');
-        const skuStage = resolveSkuSkillStage({
+        const skuStageResolution = resolveSkuSkillStage({
             stage: params.stage,
             sourceOnly: params.sourceOnly,
             userInput: trustedUserInput
         });
+        const skuStage = skuStageResolution.stage;
+        if (skuStageResolution.invalidDeclaredStage) {
+            const invalidStageMessage = `sku-batch 的 stage 参数「${skuStageResolution.invalidDeclaredStage}」不是有效站点，本次未读取或修改 Photoshop 文档。有效值：full（端到端 SKU 生产）、color-card（从产品照片建立或改进色卡源）、template（设计或修复组合模板）、config（导出配置与占位操作）。请用正确的 stage 字面量重调。`;
+            const userMessage = '当前 SKU 处理方式无法识别，尚未读取或修改 Photoshop 文档。请重新选择整理色卡、设计模板、导出配置或完整制作。';
+            return {
+                success: false,
+                message: userMessage,
+                error: invalidStageMessage,
+                data: {
+                    status: 'blocked_invalid_sku_stage_literal',
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([invalidStageMessage])
+                }
+            } as AgentResult;
+        }
+        const inspectOnly = skuStageResolution.legacyInspectOnly === true
+            || params.inspectOnly === true
+            || params.mode === 'inspect'
+            || params.stage === 'inspect';
+        const inferredSkuIntent = inferSkuIntentParamsFromText(trustedUserInput);
+        const templateStageSizes = normalizeSkuSizeList([
+            ...normalizeSkuSizeList(params.comboSizes),
+            ...normalizeSkuSizeList(params.comboSize),
+            ...normalizeSkuSizeList(inferredSkuIntent.comboSizes)
+        ]);
+        if (!inspectOnly && skuStage === 'template' && templateStageSizes.length === 0) {
+            const missingTemplateSizesDiagnostic = [
+                "SKU template stage requires at least one explicit positive-integer combo size before any Photoshop observation or write.",
+                "Resolve the sizes from the user's explicit request or a trusted structured continuation, then call sku-batch again with stage='template' and comboSizes.",
+                'Do not invent 2/3/4 or reuse an unrelated project majority as an authoritative requirement.'
+            ].join(' ');
+            return {
+                success: false,
+                nonFatal: true,
+                message: '还缺少要设计的 SKU 规格（例如 2 双装或 3 双装）。我没有替你猜规格，也尚未读取或改动画面；请补充具体规格后再继续。',
+                error: missingTemplateSizesDiagnostic,
+                data: {
+                    status: 'needs_sku_template_sizes',
+                    requiredInput: {
+                        kind: 'sku_template_sizes',
+                        valueType: 'positive_integer_list',
+                        authoritativeSources: ['user_instruction', 'trusted_structured_continuation']
+                    },
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([missingTemplateSizesDiagnostic])
+                }
+            } as AgentResult;
+        }
         const deliveryConventionResolution = resolveSkuFullDeliveryConvention(params.deliveryConvention);
-        if (deliveryConventionResolution.status === 'blocked') {
+        if (!inspectOnly && deliveryConventionResolution.status === 'blocked') {
             const userMessage = '本次交付目录、命名或版本约定不安全，尚未读取或修改 Photoshop 文档。';
             return {
                 success: false,
@@ -2225,26 +2280,28 @@ export const skuBatchExecutor: SkillExecutor = {
                 }
             } as AgentResult;
         }
-        if (skuStage === 'color-card') {
-            return executeSkuColorCardStrategy({
-                params,
-                callbacks,
-                signal,
-                context: _context,
-                runtimeDesignBriefDigest,
-                trustedInteractiveContinuation,
-                guardedAtomicToolExecutor
-            });
-        }
-        if (skuStage === 'config') {
-            return executeSkuConfigurationStrategy({
-                params,
-                callbacks,
-                signal,
-                context: _context,
-                runtimeDesignBriefDigest,
-                trustedInteractiveContinuation
-            });
+        if (!inspectOnly) {
+            if (skuStage === 'color-card') {
+                return executeSkuColorCardStrategy({
+                    params,
+                    callbacks,
+                    signal,
+                    context: _context,
+                    runtimeDesignBriefDigest,
+                    trustedInteractiveContinuation,
+                    guardedAtomicToolExecutor
+                });
+            }
+            if (skuStage === 'config') {
+                return executeSkuConfigurationStrategy({
+                    params,
+                    callbacks,
+                    signal,
+                    context: _context,
+                    runtimeDesignBriefDigest,
+                    trustedInteractiveContinuation
+                });
+            }
         }
 
         const sourceOnly = false;
@@ -2296,7 +2353,7 @@ export const skuBatchExecutor: SkillExecutor = {
             skuArtifactRoles,
             ...(runtimeDesignBriefDigest ? { runtimeDesignBriefDigest } : {})
         };
-        const earlySkuRequiredColorSlots = resolveEarlySkuRequiredColorSlots(params);
+        const earlySkuRequiredColorSlots = resolveEarlySkuRequiredColorSlots(params, skuStage, inspectOnly);
         let skuCardAssetCandidateReport = buildSkuCardAssetCandidateReport({
             assetIndex: runtimeProjectContext?.assetIndex,
             visualInsightCache: runtimeProjectContext?.visualInsightCache,
@@ -2476,7 +2533,7 @@ export const skuBatchExecutor: SkillExecutor = {
         ) {
             prerequisiteRepairStage = params.stage;
         }
-        if (params.inspectOnly === true || params.mode === 'inspect' || params.stage === 'inspect') {
+        if (inspectOnly) {
             prerequisiteRepairStage = 'inspect';
         }
         const skuPrerequisiteRepairPolicy = resolveSkuPrerequisiteRepairPolicy(
@@ -2485,7 +2542,7 @@ export const skuBatchExecutor: SkillExecutor = {
             {
                 sourcePreparation: sourcePreparationOverride,
                 templatePreparation: templatePreparationOverride,
-                inspectOnly: params.inspectOnly === true || params.mode === 'inspect'
+                inspectOnly
             }
         );
         const shouldAllowSkuCardSourcePreparation = skuPrerequisiteRepairPolicy
@@ -3043,6 +3100,10 @@ export const skuBatchExecutor: SkillExecutor = {
                         return { skuDoc: openedProjectDoc, projectSkuSourceFile };
                     }
 
+                    if (inspectOnly) {
+                        return { skuDoc: null, projectSkuSourceFile };
+                    }
+
                     const openedDoc = await openProjectSkuSourceFile(projectSkuSourceFile);
                     if (openedDoc) {
                         return { skuDoc: openedDoc, projectSkuSourceFile };
@@ -3074,6 +3135,58 @@ export const skuBatchExecutor: SkillExecutor = {
         // 2. 查找 SKU 文件
         let skuSourceResolution = await resolveProjectSkuSourceDocument();
         let skuDoc = skuSourceResolution.skuDoc;
+
+        if (inspectOnly) {
+            const projectTemplateSpecs = collectSizesFromLibrary(projectSkuTemplates);
+            const availableTemplateSizes = Array.from(new Set([
+                ...projectTemplateSpecs,
+                ...localLibrarySpecs
+            ])).sort((left, right) => left - right);
+            const sourceSummary = skuDoc
+                ? `已打开可识别的 SKU 源文档「${String(skuDoc.name || '未命名文档')}」`
+                : skuSourceResolution.projectSkuSourceFile
+                    ? `项目中有 SKU 源文件「${skuSourceResolution.projectSkuSourceFile.name}」，当前未打开`
+                    : '当前没有找到可识别的 SKU 源文档或项目源文件';
+            const templateSummary = projectSkuTemplates.length + localSkuTemplates.length > 0
+                ? `找到 ${projectSkuTemplates.length} 个项目模板和 ${localSkuTemplates.length} 个备用候选${availableTemplateSizes.length > 0 ? `，覆盖 ${availableTemplateSizes.join('、')} 双装` : ''}`
+                : '当前没有找到 SKU 模板候选';
+            const inspectionMessage = `SKU 只读检查已完成：${sourceSummary}；${templateSummary}。本轮没有打开、切换或修改 Photoshop 文档。`;
+            emitStep(
+                'verification',
+                'SKU 只读检查完成',
+                inspectionMessage,
+                'success',
+                1
+            );
+            return {
+                success: true,
+                message: inspectionMessage,
+                data: {
+                    status: 'sku_inventory_inspected',
+                    readOnly: true,
+                    source: {
+                        openedDocument: skuDoc
+                            ? {
+                                id: skuDoc.id,
+                                name: skuDoc.name,
+                                path: skuDoc.path,
+                                width: skuDoc.width,
+                                height: skuDoc.height
+                            }
+                            : null,
+                        projectFile: skuSourceResolution.projectSkuSourceFile || null
+                    },
+                    inventory: {
+                        openDocumentCount: Array.isArray(docsResult?.documents) ? docsResult.documents.length : 0,
+                        projectTemplateCount: projectSkuTemplates.length,
+                        libraryTemplateCount: localSkuTemplates.length,
+                        availableTemplateSizes
+                    },
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([skuPrerequisiteRepairPolicy.reason]),
+                    ...skuPlanningContext
+                }
+            } as AgentResult;
+        }
 
         if (!skuDoc) {
             skuCardSourcePreparationPlan = buildSkuCardSourcePreparationPlan({
@@ -3376,6 +3489,37 @@ export const skuBatchExecutor: SkillExecutor = {
         }
 
         if (!skuDoc) {
+            // 模板设计不依赖已有色卡源（画布与占位数量由模型声明）：项目里连 SKU 源
+            // 文档都没有时也不拦模板站，直接交回 Agent 自主设计（2026-08-27 真机
+            // run702：template 缺源三连撞墙后 no_progress，模板站被「先有源」死锁堵死；
+            // 与 2026-08-23「有文档但无颜色组不拦模板站」是同一裁决的另一半）。
+            if (skuStage === 'template') {
+                const templateHandoffContract = buildSkuTemplateDesignHandoffContract({
+                    missingSizes: templateStageSizes,
+                    colorCount: 0,
+                    sourceCanvas: { width: undefined, height: undefined }
+                });
+                const templateHandoffMessage = '当前项目还没有 SKU 源文档，但这不会阻塞模板设计。我会先完成可编辑模板，再从项目产品照片建立色卡后继续组合制作。';
+                emitStep(
+                    'observation',
+                    'SKU 模板进入 Agent 自主设计阶段',
+                    '项目缺少 SKU 源文档不阻塞模板站：由 Agent 自主设计模板并建占位结构；色卡随后按 stage=color-card 建立。',
+                    'success',
+                    0.2
+                );
+                return {
+                    success: false,
+                    message: templateHandoffMessage,
+                    error: templateHandoffContract.message,
+                    nonFatal: true,
+                    data: {
+                        ...templateHandoffContract,
+                        skuPrivateDiagnostics: buildSkuPrivateDiagnostics([templateHandoffContract.message]),
+                        comboSizes: templateStageSizes,
+                        ...skuPlanningContext
+                    }
+                } as AgentResult;
+            }
             const planBlockers = skuCardSourcePreparationPlan?.blockers || [];
             // 出口必须可执行：说清视觉确认到底跑没跑、为什么没成、下一步谁来做什么——不然模型只会原样重调这个技能。
             const confirmationRun = skuCardVisualConfirmationRun as Record<string, any> | undefined;
@@ -3386,7 +3530,7 @@ export const skuBatchExecutor: SkillExecutor = {
                     : Number(confirmationRun.successCount || 0) === 0
                         ? `（看了 ${Number(confirmationRun.attemptedCount || confirmationRun.candidateCount || 0) || '若干'} 张候选图，视觉模型没有给出可用结论——多半是视觉模型不可用或超时）`
                         : `（已看 ${confirmationRun.successCount} 张候选图，但没有一张被认定为完整单只 / 平铺的合格色卡素材）`;
-            const missingSkuSourceMessage = shouldAllowSkuCardSourcePreparation
+            const missingSkuSourceDiagnostic = shouldAllowSkuCardSourcePreparation
                 ? [
                     '当前还不能直接生成 SKU：缺少可用的 SKU 源素材文档。',
                     planBlockers.length > 0
@@ -3394,7 +3538,13 @@ export const skuBatchExecutor: SkillExecutor = {
                         : `需要先把已确认的单只/平铺素材整理成 SKU 源文档。${confirmationNote}`,
                     '不要原样重调 sku-batch。可走的路：① 项目里已有按颜色分好的 SKU 源 PSD/PSB 就把它打开再调；② 没有的话先用 createProjectContactSheetOverview 看一遍候选、把合格的单只 / 平铺图整理成 PSD/SKU-card-source.psb（每色一层）再调；③ 视觉模型不可用就如实告诉用户，让他指定图或换模型。'
                 ].join('\n')
-                : `当前还缺少 SKU 源素材：没有找到项目内可用的 SKU PSD/PSB。需要先完成 SKU 源素材准备，再继续生成。不要原样重调 sku-batch：先 listProjectResources 找 PSD/PSB，找到就打开它再调；没有就告诉用户缺什么。`;
+                : [
+                    `当前 stage=${skuStage} 还缺少 SKU 源素材：没有找到项目内可用的 SKU PSD/PSB，此阶段也不会自动建源。不要原样重调 sku-batch，可走的路：`,
+                    `① 项目里已有按颜色分好的 SKU 源 PSD/PSB：打开它再调；`,
+                    `② 没有现成源文档：改调 stage='color-card'，从项目产品照片建立色卡源（每色一个可编辑图组）；可显式传 sources / sourcePaths 指定素材，也可以让它从项目素材候选里解析；`,
+                    `③ 项目里连可用的产品单色照片都没有：如实告诉用户缺什么。`
+                ].join('\n');
+            const missingSkuSourceMessage = '当前还缺少可用于 SKU 制作的源素材文档，尚未改动画面。我会根据项目现有素材重新选择准备方式；如果确实没有可用的单色商品照片，再请你补充。';
             emitStep(
                 'warning',
                 'SKU 素材文档未找到',
@@ -3405,9 +3555,10 @@ export const skuBatchExecutor: SkillExecutor = {
             return {
                 success: false,
                 message: missingSkuSourceMessage,
-                error: missingSkuSourceMessage,
+                error: missingSkuSourceDiagnostic,
                 data: {
                     status: skuPrerequisiteRepairPolicy.missingSourceStatus,
+                    skuPrivateDiagnostics: buildSkuPrivateDiagnostics([missingSkuSourceDiagnostic]),
                     ...skuPlanningContext,
                     skuCardAssetCandidateReport,
                     skuCardVisualConfirmationPlan,
@@ -3576,9 +3727,6 @@ export const skuBatchExecutor: SkillExecutor = {
             // 没有合格色卡时不拦模板站——交回模型自主设计（2026-08-23 真机：v2 假色卡
             // 让 template 连撞四次「无颜色组」墙后 no_progress 停机，模板站被上游站废墟堵死）。
             if (skuStage === 'template') {
-                const templateStageSizes = Array.isArray(params.comboSizes)
-                    ? params.comboSizes.map(Number).filter((size: number) => Number.isInteger(size) && size > 0)
-                    : [];
                 const templateHandoffContract = buildSkuTemplateDesignHandoffContract({
                     missingSizes: templateStageSizes,
                     colorCount: 0,

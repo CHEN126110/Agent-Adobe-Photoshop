@@ -1,5 +1,45 @@
 # Current Task
 
+## 2026-08-27 SKU-STAGE-DEADLOCK-702：SKU 缺源站点死锁归因与契约修复
+
+### 目标
+
+1. 对 2026-08-27 真机 run 702（项目「无骨双针后跟刺绣」，请求「帮我完成SKU色卡的制作并完成色卡模板设计与SKU编排」，no_progress 停机）完成 owner 级失败归因。
+2. 只修能解释这一类重复失败的契约根因（SKU 缺源死墙），不为单次运行加补丁，不动通用 Harness。
+
+### 当前事实
+
+- run 702 病历：模型前 16 步观察 / 声明全部正确；随后 sku-batch 四连败（3 次「没有找到项目内可用的 SKU PSD/PSB」+1 次执行目标未刷新），createInteractiveCard 因 skill_provider_interaction_owner_required 被拒，模型无出口后被判无进展。
+- Owner 归因：Skill 生产契约（sku-batch 主路径），不是模型能力。对照 run 706：同一模型对「具体错误+可达出口」（composeDesign explicit_alignment_required、declareDesignIntent 内部身份被拒）一次自愈；对「指示与用户目标矛盾的墙」只会重试到死。
+- 三个具体缺陷：① `resolveSkuSkillStage` 对非空但非法的 stage 字面量静默落进用户原话正则，该句会被改道成 template，模型对改道不知情；② 非 full 阶段缺源的阻断消息只给「找 PSD/PSB / 告诉用户」，不提系统真实具备的 stage='color-card' 从照片建源能力；③ stage=template 在项目零 PSD 时被 `!skuDoc` 早退拦截，与 2026-08-23「模板站不依赖色卡内容」裁决矛盾（当时只解了「有文档无颜色组」半边）。
+- 已落地修复（全部在 SKU Skill 契约层）：`shared/sku-intent-params.ts` 的 `resolveSkuSkillStage` 改返回 `SkuSkillStageResolution`——变体归一化照常生效、无法识别的显式字面量标记 `invalidDeclaredStage`，执行器 fail-fast，并把合法阶段与内部诊断保留在私有错误字段。历史 `stage='inspect'`、`mode='inspect'` 和 `inspectOnly=true` 现在是执行器级只读硬边界：它们覆盖 color-card/template/config/full 下游分流，只读取项目库存和 `listDocuments`；项目目录命中但尚未打开的 PSD/PSB 也只报告文件事实，不调用 `openPath`，不会打开、切换、创建、排版、保存或导出 Photoshop 文档。`sku-batch.executor.ts` 在 `!skuDoc` 墙上为 stage=template 开显式 handoff 门（复用 `buildSkuTemplateDesignHandoffContract`，无源画布，不穿透 `listLayerSets`）；但只有从显式参数或用户原文取得非空具体规格后才签发模板写能力，规格未知时停在必要业务事实。`skill-declarations.ts` 已移除 `comboSizes=[2,3,4]` 的跨阶段声明默认值，真实 `applySharedSkillParamDefaults → executor` 链不再绕过该门；full 阶段需要临时推进时仍由执行器在规格规划点建立带 `skill_default_draft` 来源和 `requiresReviewBeforePublishing=true` 的可撤回草稿，不把它冒充 template 需求或用户事实。为避免移除全局默认后把 full 缺色卡的最低素材容量错误降成 1，执行器的早期容量规划只在 `stage=full` 且没有显式规格时使用草稿最大值 4；这个机械容量不回填参数，也不会流入 template。完整生产被显式关闭自动建源时，缺源结果向 Agent 返回三个真实出口（打开既有源 / 调用 color-card 阶段建源 / 如实告知用户）；普通用户只看到自然说明，阶段字面量、状态码与诊断留在私有字段。`skill-param-defaults.ts` 调用点同步。
+- 历史档案扫描：该缺源墙消息只出现在 run 702 一次（新墙来自 08-26 收口批次），本次修复是把新契约首个真机暴露的死锁在扩散前关闭。
+
+### 实施边界
+
+- 只动 SKU Skill 契约与其现有回归入口，不改通用执行器、Harness 编排、交互 owner 策略与任何断言语义。
+- 不重建 `dist/`、不重启当前正常 Runtime（用户仍有未保存 Photoshop 文档；且运行中清空 dist 有懒 chunk 404 风险）。
+- createInteractiveCard 的 skill_provider_interaction_owner_required 是否在「Skill 已绑定但尚未发出任何领域卡」时过严，本轮不裁决，留待下一类重复失败证据。
+
+### 下一步
+
+1. 用户方便时重建并重启 DesignEcho（`npm run dev`），使修复进入真机 Runtime。
+2. 在同项目用原句自然请求重跑 SKU 色卡链路，验证模型经 stage='color-card' 或模板 handoff 走通；按固定 Case 口径记录。
+3. run 706 类（真实推进中软预算耗尽，performance_budget 80/706）暂不调预算，以固定 Case 重复样本再评估。
+
+### 验证与未知
+
+- `test:sku-template-handoff` 已覆盖阶段变体、非法字面量、08-23 显式声明不被正则覆盖、无声明回落；执行器回归先经过真实 `applySharedSkillParamDefaults`，证明 template 不再继承 full 的 2/3/4 草稿，再覆盖模板规格未知时零观察/零写入、用户自然原文规格提取、零 PSD/PSB 的具体 template handoff、完整生产关闭自动建源后的三个恢复出口与 `minimumSourceCount=4` 的 full 前置容量，以及 `Inspect` / `mode='inspect'` / `inspectOnly=true` 分别覆盖 full/template/color-card/config 下游分流。已有打开源的三条用例断言唯一 Photoshop Tool 是 `listDocuments`；项目磁盘源未打开用例只允许 `listDocuments + searchProjectResources`，并把 `openPath` 设为必失败哨兵，模板、排版、保存和导出在结构上不可达。业务边界审计和变更边界分类（已补 `sku-template-design-loop|verify-sku-template-handoff` 归组）已通过；本次复审修复后的整仓核心验证结果见状态行。
+- run 705 composeDesign「暂时无法确认 Photoshop 文档状态」发生在 14:57 重建后首次运行，10 分钟后 run 706 同链路正常，判定为重启后 UXP 未就绪的暂态，不动代码；此判定未做故障注入复现，标记为合理推断。
+- 模型当轮实际传入的 stage 字面量已被运行档案脱敏，无法复原；修复覆盖了全部可达入口（非法字面量 / 显式 template / 正则改道），不依赖该未知。
+- 尚未在真机 Photoshop 重跑该请求，不宣称该类失败已在真机消除。
+
+### 状态
+
+`in_progress / attribution_closed / sku_stage_contract_fixed / legacy_inspect_readonly_boundary_fixed / template_sizes_required_before_write / full_draft_source_capacity_preserved / stage_and_executor_regression_passed / full_core_validation_50_passed / real_photoshop_rerun_pending`
+
+---
+
 ## 2026-08-26 AGENT-DESIGN-AUTHORSHIP-LIVE-001：验证 Agent 设计自主权与真实成稿质量
 
 ### 目标

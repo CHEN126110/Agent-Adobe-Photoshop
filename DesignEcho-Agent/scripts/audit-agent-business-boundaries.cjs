@@ -3296,9 +3296,9 @@ async function run() {
     mode: 'execute',
     params: { stage: 'full', userIntent: '帮我做SKU' }
   });
-  if (JSON.stringify(bareSkuSkillParams.comboSizes) !== JSON.stringify([2, 3, 4])
+  if (Object.prototype.hasOwnProperty.call(bareSkuSkillParams, 'comboSizes')
     || Object.prototype.hasOwnProperty.call(bareSkuSkillParams, 'requireSkuComboConfirmation')) {
-    delegationBoundaryViolations.push('sku-delegation:bare-production-did-not-use-autonomous-2-3-4-draft');
+    delegationBoundaryViolations.push('sku-delegation:shared-defaults-injected-a-size-plan-or-user-confirmation');
   }
   const explicitSkuReviewParams = applySharedSkillParamDefaults({
     skillId: 'sku-batch',
@@ -3318,6 +3318,10 @@ async function run() {
     mode: 'execute',
     params: { stage: 'template', userIntent: '先让我确认 SKU 模板方向再开始设计' }
   });
+  if (Object.prototype.hasOwnProperty.call(autonomousTemplateParams, 'comboSizes')
+    || Object.prototype.hasOwnProperty.call(explicitTemplateReviewParams, 'comboSizes')) {
+    delegationBoundaryViolations.push('sku-delegation:template-stage-inherited-full-production-size-draft');
+  }
   const {
     inferSkuIntentParamsFromText,
     isSkuAutonomousProductionDraftRequestText,
