@@ -25,6 +25,50 @@ const service = new SAMService({ modelsDir: 'unused-for-pure-logic-test' });
 const width = 9;
 const height = 9;
 
+const multiPointPrompts = service.preparePrompts(
+    { x1: 1, y1: 2, x2: 3, y2: 4 },
+    [
+        { x: 5, y: 6, label: 1 },
+        { x: 7, y: 8, label: 0 }
+    ],
+    100,
+    50,
+    2
+);
+check(
+    'Box Prompt 后可同时附加 Agent 前景点与背景点',
+    JSON.stringify(Array.from(multiPointPrompts.pointCoords)) === JSON.stringify([2, 4, 6, 8, 10, 12, 14, 16])
+        && JSON.stringify(Array.from(multiPointPrompts.pointLabels)) === JSON.stringify([2, 3, 1, 0]),
+    JSON.stringify({
+        coords: Array.from(multiPointPrompts.pointCoords),
+        labels: Array.from(multiPointPrompts.pointLabels)
+    })
+);
+const legacySinglePointPrompts = service.preparePrompts(
+    { x1: 1, y1: 2, x2: 3, y2: 4 },
+    { x: 5, y: 6, label: 1 },
+    100,
+    50,
+    2
+);
+check(
+    '历史单点调用保持兼容，不改变既有 Box 标签顺序',
+    JSON.stringify(Array.from(legacySinglePointPrompts.pointLabels)) === JSON.stringify([2, 3, 1])
+);
+let invalidGuidanceRejected = false;
+try {
+    service.preparePrompts(
+        { x1: 1, y1: 2, x2: 3, y2: 4 },
+        [{ x: Number.NaN, y: 6, label: 1 }],
+        100,
+        50,
+        2
+    );
+} catch (error) {
+    invalidGuidanceRejected = /无效坐标或标签/.test(String(error?.message || error));
+}
+check('Provider 不会静默丢弃无效引导点', invalidGuidanceRejected);
+
 function refine(points, holes) {
     const mask = holes ? Buffer.alloc(width * height, 255) : Buffer.alloc(width * height, 0);
     for (const [x, y] of points) mask[y * width + x] = holes ? 0 : 255;

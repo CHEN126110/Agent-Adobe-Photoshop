@@ -20,6 +20,10 @@ const {
     validateSemanticTargetLifecycle
 } = require(path.join(agentRoot, 'src/main/uxp-handlers/visual-handlers.ts'));
 const { MattingService } = require(path.join(agentRoot, 'src/main/services/matting-service.ts'));
+const {
+    bindSemanticMattingGuidanceToDetectionBoxes,
+    normalizeSemanticMattingGuidance
+} = require(path.join(agentRoot, 'src/shared/semantic-matting-guidance.ts'));
 
 const photoshopMock = {
     app: { activeDocument: null },
@@ -76,6 +80,65 @@ function makeLifecycle(overrides = {}) {
 }
 
 async function run() {
+    const guidanceValidation = normalizeSemanticMattingGuidance({
+        version: 'semantic-matting-guidance/v1',
+        sets: [{
+            foregroundPoints: [{ x: 0.2, y: 0.3 }],
+            backgroundPoints: [{ x: 0.3, y: 0.5 }]
+        }]
+    });
+    check('语义引导只接受版本化的归一化正负点', guidanceValidation.valid === true);
+    check(
+        '语义引导拒绝越界坐标与静默附加字段',
+        normalizeSemanticMattingGuidance({
+            version: 'semantic-matting-guidance/v1',
+            sets: [{ foregroundPoints: [{ x: 1.2, y: 0.3, role: 'guess' }] }]
+        }).valid === false
+    );
+    check(
+        '语义引导拒绝字符串坐标，不做隐式数值转换',
+        normalizeSemanticMattingGuidance({
+            version: 'semantic-matting-guidance/v1',
+            sets: [{ foregroundPoints: [{ x: '0.2', y: 0.3 }] }]
+        }).valid === false
+    );
+    const guidanceBinding = bindSemanticMattingGuidanceToDetectionBoxes({
+        guidance: guidanceValidation.guidance,
+        boxes: [
+            { x1: 10, y1: 10, x2: 40, y2: 50 },
+            { x1: 60, y1: 10, x2: 90, y2: 50 }
+        ],
+        outputWidth: 1000,
+        outputHeight: 800,
+        baseRegionInOutput: { x1: 0, y1: 0, x2: 1000, y2: 800 },
+        detectWidth: 100,
+        detectHeight: 80
+    });
+    check(
+        'Harness 仅按坐标把 Agent 引导唯一绑定到检测框',
+        guidanceBinding.valid === true
+            && JSON.stringify(guidanceBinding.guidedBoxIndexes) === '[0]'
+            && JSON.stringify(guidanceBinding.pointsByBox[0])
+                === JSON.stringify([{ x: 20, y: 24, label: 1 }, { x: 30, y: 40, label: 0 }]),
+        JSON.stringify(guidanceBinding)
+    );
+    const ambiguousBinding = bindSemanticMattingGuidanceToDetectionBoxes({
+        guidance: {
+            version: 'semantic-matting-guidance/v1',
+            sets: [{ foregroundPoints: [{ x: 0.25, y: 0.25 }], backgroundPoints: [] }]
+        },
+        boxes: [
+            { x1: 10, y1: 10, x2: 35, y2: 35 },
+            { x1: 20, y1: 20, x2: 45, y2: 45 }
+        ],
+        outputWidth: 100,
+        outputHeight: 100,
+        baseRegionInOutput: { x1: 0, y1: 0, x2: 100, y2: 100 },
+        detectWidth: 100,
+        detectHeight: 100
+    });
+    check('前景点归属不唯一时停止，不由 Harness 猜实例', ambiguousBinding.valid === false);
+
     // ========== Main：区域几何必须来自实际收据 ==========
     const requestedSourceBounds = { left: -50, top: 20, right: 150, bottom: 220 };
     const targetIdentity = {
@@ -407,6 +470,67 @@ async function run() {
             && perTargetFailure.targetCompleteness?.segmentedTargetCount === 0
             && JSON.stringify(perTargetFailure.targetCompleteness?.failedRegionIndexes) === '[0]',
         JSON.stringify(perTargetFailure.targetCompleteness)
+    );
+
+    const guidedService = new MattingService({ gpuMode: 'cpu' });
+    guidedService.initialized = true;
+    guidedService.loadBiRefNetModel = async () => false;
+    guidedService.decodeImageInput = async () => ({
+        buffer: Buffer.from('semantic-guidance-fixture'),
+        width: 20,
+        height: 10
+    });
+    const guidedMask = Buffer.alloc(20 * 10, 0);
+    for (let y = 2; y < 8; y++) {
+        for (let x = 4; x < 16; x++) guidedMask[y * 20 + x] = 255;
+    }
+    let capturedGuidance = null;
+    guidedService.setBoxSegmenter({
+        isReady() { return true; },
+        async segmentWithBox(_buffer, _box, guidancePoints) {
+            capturedGuidance = guidancePoints;
+            return { success: true, mask: guidedMask, maskWidth: 20, maskHeight: 10 };
+        }
+    });
+    const guidedResult = await guidedService.segmentHighResRegions([{
+        imageInput: 'fixture',
+        regionInOutput: { x1: 0, y1: 0, x2: 20, y2: 10 },
+        boxesInRegion: [{ x1: 2, y1: 1, x2: 18, y2: 9 }],
+        guidancePointsByBox: [[
+            { x: 8, y: 4, label: 1 },
+            { x: 15, y: 7, label: 0 }
+        ]]
+    }], {
+        outputWidth: 20,
+        outputHeight: 10,
+        binaryMaskOutput: true,
+        requireVerifiedSemanticScope: true
+    });
+    check(
+        'MattingService 将同一目标的正负点原样交给 BoxSegmenter',
+        guidedResult.success === true
+            && JSON.stringify(capturedGuidance) === JSON.stringify([
+                { x: 8, y: 4, label: 1 },
+                { x: 15, y: 7, label: 0 }
+            ]),
+        JSON.stringify({ success: guidedResult.success, capturedGuidance })
+    );
+    const mismatchedGuidance = await guidedService.segmentHighResRegions([{
+        imageInput: 'fixture',
+        regionInOutput: { x1: 0, y1: 0, x2: 20, y2: 10 },
+        boxesInRegion: [{ x1: 2, y1: 1, x2: 18, y2: 9 }],
+        guidancePointsByBox: [[], []]
+    }], {
+        outputWidth: 20,
+        outputHeight: 10,
+        binaryMaskOutput: true,
+        requireVerifiedSemanticScope: true
+    });
+    check(
+        '引导集合与目标框数量不一致时失败，不错绑到相邻实例',
+        mismatchedGuidance.success === false
+            && mismatchedGuidance.targetCompleteness?.complete === false,
+        JSON.stringify(mismatchedGuidance.targetCompleteness)
     );
 
     const legacyBoxService = new MattingService({ gpuMode: 'cpu' });
