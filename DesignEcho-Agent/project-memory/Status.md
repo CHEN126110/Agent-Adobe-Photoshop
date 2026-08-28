@@ -2,6 +2,17 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 r23 完整画布终审缺口与通用证据链修复
+
+- `f148d512` 已提交并推送；提交后 Agent build `designecho-f148d5127d5b-a489bf79025e` 与 UXP build `designecho-uxp-production-f148d5127d5b-cdcad214d92e` 在 r23 写前同时验证为干净、同提交、真实模型 /真实 Photoshop，画布 1440×1440、0 打开文档、0 待处理请求。
+- r23 正式 Attempt `main-image-pink-coffee-unseen-v1-attempt-20260828191922-4584ae55aa1b` 使用同一句“用这些摄影图帮我做一张商品主图。”。唯一 Run `run-20260828194852-b6f8c117-8307` 完成 17 次模型调用、18 次 Tool Call、8 次成功写 /保存 /导出；没有 r22 的 0 调用空子代。
+- Agent 自主选择 `DSC05845.jpg` 为上脚主视觉、`DSC05303.jpg` 为四色辅助，先放大辅助商品，再把主视觉上移集中木耳边与袜筒。最终 PSD 为 27,621,377 字节、SHA-256 `2B321F62BF65BC27A0082D91F6DC53086A90CBCB526058699C5B37F8C661F44D`；JPG 为 822,776 字节、SHA-256 `524B7F1A888E1612EF5D1FC55902051360DB28033500B4264A922A7822BA34E1`。
+- 正式技术结果仍失败：最后一次内容 revision 为 `4355:4385`，其后结构读回与局部画布读取成功，但所有 `getCanvasSnapshot` 都带 `region`，没有完整单画布 ReviewSet。Run Record 因而是 `success=false / needs_review / artifact_incomplete`，缺口为 `fresh_visual`，评价覆盖率 0/16；Debug Bridge 收据没有安全 `finalArtifactRefs`，Attempt 终态为 `submission_unknown_write_state`。
+- 文件生成不能覆盖该失败。现场在固定文件哈希后关闭已保存文档；随后停止并以同一 f148 构建重启，确认同 fixture、Photoshop 0 文档、0 pending 后追加 `04-reconciled.json`，状态为 `reconciled_after_runtime_restart`。
+- 已实现 D-089：通用 Host evidence 模块统一结构版本读回与单画布终审快照；缺失 /陈旧完整 ReviewSet 时只读一次无 region 全画布，并要求同一多模态 Judge 的逐图出站收据。E2 可消费该精确 Judge 绑定，但不能伪造普通视觉 review、扫描目录或替 Agent 做审美决定；多画面 Profile 不降级。
+- 定向 Runtime Declaration 回归已覆盖 r23 形态并通过；完整 `maintenance:validate` 已从头通过 58/58，包含 Design Authorship Boundary、Agent Business Boundary、终审逐图收据、可靠性契约、Main /Renderer 类型检查、Agent /UXP 核心测试与 UXP production build；`agent.ts` 保持 12,826 行。Agent production build、提交推送、提交后 fresh build 和 r24 真机仍待完成。
+- 视觉事实：r23 比早期固定素材 /空白稿更接近真实设计过程，选图与两次调整均有可追溯理由；但成稿仍偏简单左右硬分栏，标题偏大、四色辅助偏小，与用户成稿 /Eagle 专业完成度尚有明显差距。首个 Photoshop 写入约 8 分钟、总运行约 29 分 29 秒，效率不达标；质量与可靠交付闭合前不以删观察换速度。
+
 ## 2026-08-29 r22 完成父代被无预算空子代覆盖：新根因与通用修复
 
 - r21 通用终局生命周期修复已以 `4549a846` 推送，Agent /UXP production build 与完整 `maintenance:validate` 58/58 通过；`agent.ts` 保持 12,826 行基线。

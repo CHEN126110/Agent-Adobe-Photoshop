@@ -4,14 +4,14 @@
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
 
-1. `[已完成 r21 修复与推送]`：模型回合结算租约、产物后交付能力开放、终局预算、完成真相和同 revision 全产物绑定已通过完整核心闸门 58/58，并以 `4549a846` 推送当前分支。
-2. `[已完成 r22 / 已归因]`：同一句自然需求在全新 fixture 中产生完成父代、真实 PSD /JPG、同目标读回与 83 分 `needs_review` 设计；外层随后错误启动继承 2,065 秒活动时长的空子代，0 模型 /0 Tool 即触发预算并覆盖父代，Attempt reconciliation 后正式技术结果仍为 0/2。
-3. `[已完成新根因实现]`：完成态可选审美 generation 必须取得同一 TaskRun 真实剩余容量证明；至少保留 3 模型回合、4 Tool、3 迭代、1 视觉候选、1 视觉分析与 540 秒，否则在切换 run /sidecar 前停止重入并保留父代。
-4. `[已完成核心验证]`：Agent Business Boundary、Design Authorship Boundary、Runtime Declaration、Capability Resolver、Simplification Ratchet、Main /Renderer 类型检查与完整 `maintenance:validate` 58/58 通过；没有新增品类分支、权限或 Agent 主循环复杂度。
-5. `[进行中·提交]`：Agent production build 已通过；完成最终差异审查、独立提交与 GitHub 推送，随后以新 commit identity 重建 Agent /UXP。
-6. `[待实机 r23]`：从同一锁定源创建全新 fixture，重建并重载与新提交身份一致的 Agent /UXP，以同一句需求、同一 GPT-5.6 Sol、同一素材和 1440×1440 画布运行正式 Attempt 4。
-7. `[待技术与视觉验收]`：先证明不再产生无预算空子代，并取得真实 Photoshop 写入、同目标读回、PSD 与预览图同 revision 交付；技术成功后再与用户成稿和 Eagle 锚点盲评。单次成功不宣称稳定，更不宣称专业质量达标。
-8. `[条件后置]`：r23 暴露新偏差时只修首个可复现根因；主图固定案例稳定后才依次推进详情页、SKU、参考复刻与无 Skill 设计，质量稳定后再优化速度。
+1. `[已完成 f148 修复、验证与推送]`：完成态可选 generation 的多维容量证明已通过完整核心闸门 58/58，并以 `f148d512` 推送当前分支；提交后 Agent /UXP identity 已重建并在 r23 写前核实为同一干净提交。
+2. `[已完成 r23 / 已对账]`：同一句自然需求在全新 fixture 中完成 17 次模型调用、18 次 Tool Call、8 次成功写 /保存 /导出，生成 27,621,377 字节 PSD 与 822,776 字节 JPG；没有创建 r22 式 0 调用空子代。Attempt 因 `finalArtifactRefs` 为空判为 `submission_unknown_write_state`，随后已在同构建重启、0 文档、0 待处理请求和同 fixture 条件下 reconciliation。
+3. `[已定位 r23 首个偏差]`：Agent 最终只读取了带 `region` 的局部画面；局部截图能支持裁切微调，但不能形成单画布任务要求的完整 ReviewSet。Run Record 因而出现 `fresh_visual` 缺失、质量覆盖 0/16、R5 未闭合，E2 也不能把真实 PSD /JPG 投影为可信最终交付。
+4. `[已完成通用根因实现]`：终态质量链先读取同 revision 结构；若单画布完整 ReviewSet 缺失或过期，Harness 只追加一次 target-bound、无 `region` 的全画布只读观察，再把像素交给同一个多模态 Agent 模型的 Final Judge。Judge 只有返回匹配逐图出站收据时，才能把精确 Host 结果绑定为已复核版本；不伪造普通主模型 review decision，不扫描目录补交付，不决定审美或修法。多画面 Profile 继续要求自己的完整 Bundle，不降级成一张全图。
+5. `[已完成定向验证]`：Runtime Declaration 行为回归真实构造“局部 region → 保存 PSD/JPG → 终态”链，证明自动全画布观察、同版本 Judge、逐图收据与两条 final delivery refs 共同闭合；Design Authorship、Agent Business Boundary、Main /Renderer 类型检查和 Simplification Ratchet 通过，`agent.ts` 保持 12,826 行。
+6. `[完整闸门已通过·提交中]`：完整 `maintenance:validate` 已从头通过 58/58；继续完成 Agent production build、差异复审、独立提交与 GitHub 推送。提交前不再扩张代码。
+7. `[待实机 r24]`：用新提交重新构建并重载 Agent /UXP，从锁定源创建全新 fixture，再跑同一句自然需求。必须同时证明无空子代、完整全画布 Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
+8. `[待盲评与效率治理]`：r23 成稿已可看但仍是较简单的左右硬分栏，标题偏大、辅助商品偏小，总耗时约 29 分 29 秒；技术成功后再与用户成稿 /Eagle 做匿名对比。先达到质量与可靠交付，再单独治理首写约 8 分钟和总耗时，不用减少必要终审换速度。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

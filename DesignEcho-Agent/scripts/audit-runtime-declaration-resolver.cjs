@@ -221,6 +221,7 @@ const {
   'tool-result-provenance.ts'
 ));
 const {
+  finalQualityJudgeVisualPresentationMatches,
   runFinalQualityModelProtocol
 } = require(path.resolve(
   __dirname,
@@ -9046,6 +9047,206 @@ async function assertFinalQualityJudgeClosesFreshStructureBeforeEvaluation() {
   );
   assert.deepStrictEqual(closedHistoryStateRef, historyStateRef);
   assert(finalSurface, 'final_summary must not report missing structure when same-revision dimensions and hierarchy both exist');
+
+  let automaticCanvasArguments;
+  let automaticCanvasResult;
+  let automaticJudgeCalls = 0;
+  const automaticSteps = [];
+  const automaticConfig = buildAgentTestConfig({
+    tools: [
+      requireAgentTool('getDocumentInfo'),
+      requireAgentTool('getAcceptanceSnapshot'),
+      requireAgentTool('getCanvasSnapshot')
+    ],
+    maxIterations: 4,
+    openingCanvasObservationMode: 'none',
+    performanceBudget: config.performanceBudget,
+    callbacks: { onStep: (step) => automaticSteps.push(step) }
+  });
+  automaticConfig.modelId = codexJudgeModelId;
+  automaticConfig.agenticArtifactContract = {
+    version: 'agentic-artifact-completion-contract/v0',
+    skillId: 'design.single_canvas_visual',
+    taskType: 'design.single_canvas_visual.v1',
+    workMode: 'create_new',
+    productionObligation: 'photoshop_mutation_with_readback',
+    deliveryOutputs: [
+      'editable_single_canvas_document',
+      'design_preview',
+      'delivery_record'
+    ],
+    exitCriteria: ['保存同一最终版本的可编辑文档与预览图。']
+  };
+  const automaticJudgeResponse = JSON.stringify(judgePending.map((assertion) => ({
+    id: assertion.id,
+    applicable: true,
+    score: 0.95,
+    confidence: 0.9,
+    reason: '完整画布中的主体、层级与可读性关系稳定。'
+  })));
+  const automaticAgent = new Agent(
+    automaticConfig,
+    async (_modelId, messages, _tools, options) => {
+      automaticJudgeCalls += 1;
+      const automaticContentBlocks = messages[1]?.contentBlocks || [];
+      assert(automaticContentBlocks.every(Boolean), JSON.stringify(automaticContentBlocks));
+      const serializedImages = messages
+        .flatMap((message) => Array.isArray(message.contentBlocks) ? message.contentBlocks : [])
+        .filter((block) => block?.type === 'image')
+        .map((block) => projectSerializedVisualImageDataUrl(
+          `data:${block.mediaType};base64,${block.data}`
+        ));
+      assert(serializedImages.every(Boolean), JSON.stringify(automaticContentBlocks));
+      const visualPresentationReceipt = buildModelVisualPresentationReceipt({
+        provider: 'openai-codex',
+        attemptId: 'e'.repeat(64),
+        candidateKeys: options?.visualPresentationCandidateKeys,
+        serializedImages
+      });
+      assert(visualPresentationReceipt);
+      assert(finalQualityJudgeVisualPresentationMatches({
+        receipt: visualPresentationReceipt,
+        successfulTransportReceiptRef: {
+          attemptId: visualPresentationReceipt.attemptId,
+          manifestSha256: visualPresentationReceipt.manifestSha256
+        },
+        candidateKeys: options?.visualPresentationCandidateKeys,
+        contentBlocks: automaticContentBlocks
+      }), 'automatic Final Judge fixture must bind the exact outgoing full-surface image');
+      return {
+        content: automaticJudgeResponse,
+        stopReason: 'end_turn',
+        visualPresentationReceipt,
+        transportAttempts: [{
+          durationMs: 1,
+          succeeded: true,
+          visualPresentationReceiptRef: {
+            attemptId: visualPresentationReceipt.attemptId,
+            manifestSha256: visualPresentationReceipt.manifestSha256
+          }
+        }]
+      };
+    },
+    async (toolName, toolArguments) => {
+      if (toolName === 'getAcceptanceSnapshot') {
+        return {
+          success: true,
+          hasDocument: true,
+          document: { id: documentId, width: 800, height: 800 },
+          historyStateRef,
+          summary: { totalLayers: layerHierarchy.length, truncated: false },
+          layers: layerHierarchy
+        };
+      }
+      if (toolName === 'getCanvasSnapshot') {
+        automaticCanvasArguments = toolArguments;
+        automaticCanvasResult = {
+          success: true,
+          activeDocumentId: documentId,
+          documentId,
+          historyStateId,
+          historyStateRef,
+          snapshot: {
+            base64: 'A'.repeat(800),
+            format: 'png',
+            width: 800,
+            height: 800
+          }
+        };
+        markExecutedToolResultProvenance('getCanvasSnapshot', automaticCanvasResult);
+        return automaticCanvasResult;
+      }
+      return {
+        success: true,
+        activeDocumentId: documentId,
+        documentId,
+        document: { id: documentId, width: 800, height: 800 },
+        historyStateRef
+      };
+    }
+  );
+  automaticAgent.currentTask = '帮我做一张商品主图';
+  automaticAgent.toolCallLog = [{
+    callId: 'automatic-compose',
+    name: 'composeDesign',
+    arguments: {},
+    result: {
+      success: true,
+      activeDocumentId: documentId,
+      documentId,
+      historyStateRef,
+      photoshopMutationCommit: mutationCommit
+    },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'automatic-local-region-review',
+    name: 'getCanvasSnapshot',
+    arguments: { expectedDocumentId: documentId, region: { x: 400, y: 0, width: 400, height: 800 } },
+    result: { success: true, activeDocumentId: documentId, documentId, historyStateRef },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'automatic-save-editable',
+    name: 'saveDocument',
+    arguments: { format: 'psd', projectSubdir: '主图' },
+    result: {
+      success: true,
+      documentId,
+      sourceHistoryStateRef: historyStateRef,
+      savedPath: 'C:/fixture/主图/商品主图.psd',
+      editableDocumentArtifact: {
+        version: 'runtime-editable-document-artifact/v1',
+        basis: 'uxp_post_save_file_metadata',
+        path: 'C:/fixture/主图/商品主图.psd',
+        format: 'psd',
+        byteLength: 4096,
+        modifiedAt: 1,
+        documentId,
+        canvas: { width: 800, height: 800 }
+      }
+    },
+    origin: 'model_tool_call'
+  }, {
+    callId: 'automatic-export-preview',
+    name: 'quickExport',
+    arguments: { format: 'jpg', outputPath: 'C:/fixture/主图/商品主图.jpg' },
+    result: {
+      success: true,
+      documentId,
+      sourceHistoryStateRef: historyStateRef,
+      outputPath: 'C:/fixture/主图/商品主图.jpg',
+      format: 'jpg'
+    },
+    origin: 'model_tool_call'
+  }];
+  const automaticAssertions = await automaticAgent.evaluateDesignQualityVlmAssertions('final_response');
+  assert.strictEqual(automaticJudgeCalls, 1,
+    'a local region observation must lead to one independent whole-surface Final Judge call');
+  assert(
+    automaticCanvasResult && Array.isArray(automaticAssertions) && automaticAssertions.length > 0,
+    JSON.stringify({
+      canvasCaptured: Boolean(automaticCanvasResult),
+      assertions: automaticAssertions,
+      protocol: automaticAgent.finalQualityModelProtocolDigest,
+      steps: automaticSteps
+    })
+  );
+  assert.strictEqual(automaticCanvasArguments.expectedDocumentId, documentId);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(automaticCanvasArguments, 'region'), false,
+    'Harness final verification must acquire the full surface instead of repeating the Agent region crop');
+  assert.strictEqual(automaticAgent.finalQualityReviewedVisualBinding?.sourceOutput, automaticCanvasResult,
+    'the Final Judge binding must identify the exact full-surface Host result it consumed');
+  const automaticDelivery = automaticAgent.projectDeliveryStageEvidence({
+    status: 'completed',
+    blockers: [],
+    taskCompletion: { required: [{ id: 'production-delivery', status: 'passed' }] },
+    designVerdict: { status: 'passed', blockers: [], warnings: [] }
+  });
+  assert.strictEqual(automaticDelivery.deliveryEvidencePassed, true,
+    'a receipt-bound Final Judge must close delivery without forging a primary-model review decision');
+  assert.deepStrictEqual(automaticDelivery.finalDeliveryResultRefs, [
+    'automatic-save-editable',
+    'automatic-export-preview'
+  ]);
   setDynamicModels(previousDynamicModels);
 }
 

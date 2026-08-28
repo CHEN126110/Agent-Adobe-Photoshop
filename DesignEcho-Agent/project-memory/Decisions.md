@@ -2,9 +2,33 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-089 局部观察与完整终审分权：Harness 可补只读证据，模型继续拥有审美判断
+
+- 状态：已采用；r23 根因、通用实现、定向行为回归与完整 58 阶段核心闸门已验证，包含 Design Authorship /Agent Business Boundary、Main /Renderer 类型检查、终审逐图收据、可靠性契约、Agent /UXP 核心测试和 UXP production build；`agent.ts` 仍为 12,826 行。Agent production build、提交推送、提交后身份与 r24 Photoshop 真机仍待完成，因此不能宣称正式成功率已提高。
+- Agent 在设计过程中自主决定看全图还是局部、如何裁切和如何修订；局部 `region` 观察可以支持对应局部判断，但不能冒充完整交付面的终审 ReviewSet。Harness 不应要求 Agent 用固定工具顺序设计，也不能因局部图看起来正常就自签质量通过。
+- 当 Agent 已进入自然终稿、当前任务需要视觉质量结算、结构读回确认了精确 Photoshop revision，而单画布完整 ReviewSet 缺失或过期时，Harness 可以执行一次有界的全画布只读观察。该动作只补事实：优先使用带 `expectedDocumentId` 且不带 `region` 的 `getCanvasSnapshot`，无该能力时才使用完整文档快照；结果必须与结构读回同 revision，否则丢弃。
+- 多画面任务不适用单画布替代：详情页等声明式多画面 Profile 必须继续提供完整 Bundle、目标覆盖和同 history 证明，不能为了提高成功率退化为一张缩略全图。
+- 审美断言仍由当前唯一多模态 Agent 模型的 Final Judge 产生。只有 Provider 逐图出站收据与实际 ReviewSet 完全匹配、Judge 完成且 Host revision 未变化时，Runtime 才记录“该精确像素结果已被终审”。这项绑定可以供 E2 验证同版本交付，但不伪造普通主模型的 `reviewDecision`，不执行修订，也不授予写权限。
+- E2 只消费上述终审绑定与真实 save/export 收据；不能扫描目录猜最终文件，也不能因为磁盘上存在 PSD /JPG 就补造 `finalArtifactRefs`。用户可见过程只说明“核对最终画面 /交付文件是否一致”，具体缺口和协议诊断留在 Run Record。
+
+### 正面经验
+
+1. “Agent 是否需要看哪里”与“系统能否证明最终交付被完整看过”是两种所有权。前者属于设计判断，后者属于 Harness 完成验真；把它们混成一句“请再看画面”既降低自主性，也不能保证取得正确证据。
+2. 结构读回、完整像素、Provider 出站收据和保存 /导出源 revision 串成一条链后，Final Judge 可以既不替 Agent 设计，又可靠证明它实际评价了哪一版。
+3. 用 Profile 的 `single surface / multi surface` 语义决定证据形状，比按“主图 /详情页 /SKU”关键词分支更通用，也不会把业务流程写回 Agent 核心。
+4. 先让真实 Attempt 失败，再从首个偏差修 owner，比扫描到文件后补绿更能提高成功率；r23 的文件存在但正式失败是有效证据，不是评测器应隐藏的噪声。
+
+### 负面教训与禁止反例
+
+1. **把局部 `region` 截图当完整成品**：它只能证明局部像素，不能评价全局层级、平衡、留白或列表缩略效果。
+2. **同一缺口只重复提示“检查当前画面”**：模型可以再次选择同一局部区域，形成 `same_gap`；Harness 应补自己拥有的只读终审事实，而不是把协议知识转嫁给模型猜。
+3. **给自动快照伪造 `reviewed=true`**：读取像素不等于模型已看过。必须由真实 Final Judge 请求和逐图出站收据建立精确绑定。
+4. **看到 PSD /JPG 后扫描目录补 `finalArtifactRefs`**：这会绕过同 revision、最终版本与 Agent 交付声明，制造假成功。
+5. **用单画布快照替代详情页完整 Bundle**：这会把多屏覆盖缺失隐藏成通过，属于降低证据要求，不是通用化。
+
 ## D-088 完成态可选 generation 必须在启动前证明能够独立闭合
 
-- 状态：已采用；共享容量策略、生产接线、定向回归、完整核心闸门 58/58 与 Agent production build 已完成，提交推送、提交后 Runtime identity 重建与 r23 Photoshop 真机待完成。该状态不代表正式成功率或商业视觉质量已经改善。
+- 状态：已采用并以 `f148d512` 推送；提交后 Agent /UXP identity 与 r23 写前环境已核实。r23 没有再创建 0 调用空子代，说明该故障形态已消失；但 r23 因 D-089 所述终审证据缺口仍未取得正式技术成功，不能把单一故障消失外推为整体成功率或商业视觉质量改善。
 - `stopReason` 只描述上一 generation 为什么结束，不代表下一 generation 的资源状态。完成态可选审美改进必须读取同一 TaskRun 的真实累计 `RuntimePerformanceUsage`，并与本次请求实际生效的预算比较；不能从 `final_response`、质量分数、文件存在或助手措辞推断还有余量。
 - 可选下一代必须至少容纳三次主模型回合（定向修订、同版本读回 /交付、终态结算）、四次 Tool Call（mutation、结构 /画面读回、保存、导出）、三次迭代、一个视觉候选、一次视觉分析和三个主模型 inactivity window 的活动时间。任一维度不足或调用方无法提供容量证明时 fail closed 为 `resource_budget_exhausted`，保留当前完成结果。
 - 模型请求 timeout、收尾回合数和完成态重入最小容量由共享 `agent-performance-policy` 单点定义；`reflexion-reentry-policy` 是是否重入的唯一决策 owner，Executor 只传同一份只读累计快照和有效预算。容量检查不消费额度、不延长 deadline、不选择修法、不执行 Tool、不授予 Photoshop 权限。

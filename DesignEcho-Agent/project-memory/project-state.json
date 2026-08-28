@@ -1,7 +1,7 @@
 {
-  "currentFocus": "2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：根据 r21 正式主图失败闭合模型回合结算、产物出现后的交付能力开放、终局预算预留、结构化完成事实与同 revision 全产物交付证据；完成核心闸门后以全新 r22 同条件实机复验。",
+  "currentFocus": "2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：在 r23 已消除空子代之后，闭合单画布设计终态的完整全画布视觉证据、同一 Provider Judge 出站收据与同 revision PSD/JPG 交付绑定；完成核心闸门后以全新 r24 同条件实机复验。",
   "currentMilestone": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-  "milestoneStatus": "r21_reconciled_generic_terminal_lifecycle_implemented_core_58_passed_commit_and_r22_pending",
+  "milestoneStatus": "f148_capacity_fix_pushed_r23_reconciled_d089_full_surface_terminal_evidence_core_58_passed_agent_build_commit_push_and_r24_pending",
   "verified": {
     "code": [
       "Design Reliability terminal lifecycle slice (2026-08-29): an admitted model turn receives a one-shot Tool settlement lease while hard Tool limits and all execution guards remain enforced; viewable artifact emergence idempotently activates existing delivery capability schemas without choosing or executing them; performance-budget terminal closure preserves structured completion truth; final quality has one bounded shared terminal deadline; agentic final delivery binds every required save/export receipt after the last content mutation on the same reviewed document/history.",
@@ -279,8 +279,8 @@
   },
   "activeSlice": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-    "summary": "Close the generic terminal lifecycle exposed by r21 and prevent a completed parent generation from being masked by an optional child that lacks enough remaining execution capacity, as proven by r22.",
-    "status": "r21_fix_pushed_r22_parent_completed_but_masked_reentry_capacity_fix_core_58_and_agent_build_validated_commit_push_rebuild_and_r23_pending",
+    "summary": "Close the generic terminal lifecycle exposed by r21-r23: preserve completed generations, then bind a single-surface final deliverable to one complete full-canvas observation, exact Provider Judge receipt and same-revision PSD/JPG evidence without taking design authorship from the Agent.",
+    "status": "f148_capacity_fix_pushed_r23_no_empty_child_but_full_surface_review_missing_r23_reconciled_d089_core_58_passed_agent_build_commit_push_and_r24_pending",
     "scope": [
       "Settle a Tool Call produced by an admitted model turn without bypassing hard limits or execution guards.",
       "Activate declared delivery capability schemas only after verified viewable content emerges and without executing them.",
@@ -288,40 +288,44 @@
       "Bind all required editable and raster outputs from the same final reviewed document history.",
       "Require exact remaining model, tool, iteration, vision and active-time capacity before starting an optional completed-artifact improvement generation.",
       "Use only disposable fixture projects and preserve the dirty shared worktree.",
-      "Do not claim improved technical reliability or commercial quality before r23 technical success and blind review."
+      "For single-surface terminal closure, collect one read-only full-canvas observation only when the current ReviewSet is missing or stale; do not replace multi-surface Bundle requirements.",
+      "Bind final review only from an exact per-image Provider receipt and unchanged Host revision; never forge reviewed flags or infer delivery refs by scanning files.",
+      "Do not claim improved technical reliability or commercial quality before r24 technical success and blind review."
     ]
   },
   "activeRequest": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-    "summary": "Preserve a completed parent result by proving that any optional next Agent generation has enough cumulative request capacity to close before switching Run and delivery projections, then rerun the same natural request on r23.",
-    "status": "reentry_capacity_root_fix_core_58_and_agent_build_validated_commit_push_rebuild_and_r23_pending",
+    "summary": "Preserve completed parent results and close the r23 terminal evidence gap by acquiring one revision-bound full-surface Host observation for single-surface artifacts, evaluating it through the same multimodal model, and binding the exact reviewed source output to PSD/JPG delivery before a fresh r24 attempt.",
+    "status": "reentry_capacity_fix_pushed_r23_reconciled_d089_core_58_passed_agent_build_commit_push_rebuild_and_r24_pending",
     "mustDo": [
       "Treat model-turn admission and its returned Tool settlement as one lifecycle unit while retaining hard execution safety.",
       "Expose existing delivery schemas after a real viewable artifact exists without selecting the delivery action for the Agent.",
       "Settle completion from same-revision structured evidence rather than the performance stop reason.",
       "Use the same cumulative performance snapshot for completed-artifact reentry admission and the next generation seed.",
-      "Run the existing targeted contracts, production build and complete core gate before a fresh r23 Photoshop attempt."
+      "Separate Agent-owned local design inspection from Harness-owned terminal evidence completeness; automatically acquire only the missing read-only full-surface fact.",
+      "Require exact Provider image-presentation receipt, completed Final Judge and unchanged document history before reviewed delivery can close.",
+      "Run the existing targeted contracts, production build and complete core gate before a fresh r24 Photoshop attempt."
     ],
     "mustNotDo": [
       "Do not encode the r21 failure as a main-image Skill prompt, keyword gate or forced save Tool call.",
       "Do not make capability visibility grant execution authority or bypass target/revision/preflight checks.",
       "Do not treat a longer timeout, a file path or a stop reason as design success.",
       "Do not infer remaining generation capacity from final_response or a quality score.",
-      "Do not reuse consumed r20/r21/r22 fixtures or modify the user's original photography project."
+      "Do not treat a region snapshot as complete final review, forge a model review flag, scan output directories for refs or weaken multi-surface evidence requirements.",
+      "Do not reuse consumed r20/r21/r22/r23 fixtures or modify the user's original photography project."
     ]
   },
   "activePlan": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：r21 首轮终局修复、完整核心闸门、提交推送与 r22 同条件正式 Attempt。",
-      "已完成归因：r22 父代真实完成，但外层启动继承超时账本的 0 调用空子代并覆盖父代；Attempt reconciliation 后正式技术结果仍为 0/2。",
-      "已完成代码：共享剩余容量证明、完成态 Reflexion fail-closed 与 Executor 同快照接线。",
-      "已完成：Agent Business Boundary、Design Authorship Boundary、Runtime Declaration、Capability Resolver、Simplification Ratchet、Main/Renderer 类型检查与完整核心闸门 58/58。",
-      "已完成：Agent production build。",
-      "进行中：最终差异审查、独立提交与推送；提交后以新 commit identity 重建 Agent/UXP。",
-      "待完成：创建全新 r23 fixture，重载同提交 Agent/UXP 并执行同条件 Attempt。",
-      "条件后置：技术成功后做重复运行与盲化视觉质量比较。"
+      "已完成：r21 首轮终局修复，以及 f148d512 完成态容量修复的完整核心闸门、提交推送和提交后 Agent/UXP 重建。",
+      "已完成实机：r23 不再出现 0 调用空子代，但只留下 region 局部观察，完整 ReviewSet、R5/E2 与安全 finalArtifactRefs 未闭合；Attempt 已安全 reconciliation。",
+      "已完成代码：通用 final-quality-host-evidence 只在单画布终态缺证据时采集无 region 全画布，并将精确 Provider Judge 收据绑定回同 revision 交付。",
+      "已完成验证：Runtime Declaration 行为回归与完整 maintenance:validate 58/58 通过，包含 Design Authorship Boundary、Agent Business Boundary、终审逐图收据、可靠性契约、Main/Renderer 类型检查、Agent/UXP 核心测试与 UXP production build；agent.ts 保持 12,826 行。",
+      "进行中：Agent production build、最终差异审查、独立提交与 GitHub 推送。",
+      "待完成：提交后以新 commit identity 重建并重载 Agent/UXP，创建全新 r24 fixture 执行同条件 Attempt。",
+      "条件后置：r24 技术成功后做重复运行与盲化视觉质量比较，再单独治理首写和总耗时。"
     ]
   },
   "convergenceBaseline": {

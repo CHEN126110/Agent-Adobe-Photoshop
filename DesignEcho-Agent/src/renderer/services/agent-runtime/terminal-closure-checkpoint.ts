@@ -197,11 +197,11 @@ export function projectTerminalClosureContinuationStep(input: {
     return {
         kind: 'observation',
         title: input.gap.kind === 'delivery_evidence'
-            ? '正在完成交付收尾'
-            : '正在补齐最终复核',
+            ? '正在核对交付文件'
+            : '正在完成终稿检查',
         detail: input.gap.kind === 'delivery_evidence'
-            ? '设计质量已经闭合，正在继续补齐当前版本的交付事实。'
-            : '终稿检查发现当前版本还缺少必需的写后事实，正在继续核对。',
+            ? '正在确认可编辑文件和导出成品是否属于同一个最终版本。'
+            : '正在确认最终画面与当前 Photoshop 版本是否一致。',
         status: 'running',
         iteration: input.iteration,
         maxIterations: input.maxIterations,

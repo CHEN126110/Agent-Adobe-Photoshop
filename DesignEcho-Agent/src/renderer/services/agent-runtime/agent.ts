@@ -23,6 +23,15 @@ import {
     type UserResultProjection
 } from './agent-user-result-projection';
 import { buildAgentActionEventProjection } from './agent-action-event-projection';
+import {
+    ensureFinalQualityCurrentReviewSet,
+    isFinalQualityReviewedVisualSource,
+    readFinalQualityCurrentHistoryStateRef,
+    selectFinalQualityFullSurfaceToolName,
+    selectFinalQualityReviewSet,
+    type FinalQualityHostEvidenceContext,
+    type FinalQualityReviewedVisualBinding
+} from './final-quality-host-evidence';
 import { resolveLatestClosedDesignQualityHistoryStateRef } from './quality-history-closure';
 import {
     buildTerminalClosureQualityCache,
@@ -536,7 +545,6 @@ import {
 import { getToolDisplayInfo } from '../tool-display-info';
 import { isAgentCapabilityControlTool, isAgentCapabilityLoadTool } from './capability-session';
 import {
-    buildDesignQualityVerificationToolRequests,
     projectFinalSupportingSourceCarryover, reconcileDesignFinalReviewStructureVerificationRecords,
 } from './design-final-review-evidence';
 import {
@@ -1289,6 +1297,7 @@ export class Agent {
      */
     private latestDesignVisualJudgeBundleReviewSet: DesignVisualJudgeReviewSet | undefined;
     private latestDesignVisualJudgeSingleReviewSet: DesignVisualJudgeReviewSet | undefined;
+    private finalQualityReviewedVisualBinding?: FinalQualityReviewedVisualBinding;
     /** 只保留与真实 Photoshop mutation 同回合的公开设计判断，供最终同一 Judge 对照。 */
     private mutationBoundDesignIntents: MutationBoundDesignIntent[] = [];
     /** 已送入主模型下一次请求、等待该请求真正读取的视觉观察。 */
@@ -5149,8 +5158,7 @@ export class Agent {
                 const previewEntry = this.toolCallLog[previewIndex];
                 if (!previewEntry
                     || previewEntry.result?.success === false
-                    || !isFullSurfaceVisualJudgeObservationEntry(previewEntry)
-                    || readAgentVisualObservation(previewEntry.result)?.reviewed !== true) {
+                    || !isFullSurfaceVisualJudgeObservationEntry(previewEntry)) {
                     continue;
                 }
                 const candidateTarget = resolveRuntimeExecutionTarget({
@@ -5158,8 +5166,15 @@ export class Agent {
                     result: previewEntry.result
                 });
                 const candidateHistoryStateRef = readPhotoshopHistoryStateRef(previewEntry.result);
+                const finalJudgeReviewed = isFinalQualityReviewedVisualSource({
+                    binding: this.finalQualityReviewedVisualBinding,
+                    sourceOutput: previewEntry.result,
+                    historyStateRef: candidateHistoryStateRef
+                });
                 if (!candidateTarget
                     || !candidateHistoryStateRef
+                    || (readAgentVisualObservation(previewEntry.result)?.reviewed !== true
+                        && !finalJudgeReviewed)
                     || (target && !sameRuntimeExecutionDocument(target, candidateTarget))
                     || (sourceHistoryStateRef
                         && !samePhotoshopHistoryStateRef(
@@ -5588,6 +5603,7 @@ export class Agent {
         this.toolImageObservationCount = 0;
         this.latestDesignVisualJudgeBundleReviewSet = undefined;
         this.latestDesignVisualJudgeSingleReviewSet = undefined;
+        this.finalQualityReviewedVisualBinding = undefined;
         this.mutationBoundDesignIntents = [];
         this.pendingPrimaryVisualObservations = [];
         this.userSnapshotEmitCount = 0;
@@ -12106,67 +12122,40 @@ export class Agent {
         return { recovered, unresolved };
     }
 
-    /**
-     * 读取本次 run 在日志压缩前复制的最新完整视觉证据。它不从已删像素的 Tool log
-     * 重新拼图，也不把 later single-screen observation 覆盖成详情页完整终审集合。
-     */
     private findLatestDesignVisualJudgeReviewSet(
         requireMultiSurface = false
     ): DesignVisualJudgeReviewSet | null {
-        const candidate = requireMultiSurface
-            ? this.latestDesignVisualJudgeBundleReviewSet
-            : this.latestDesignVisualJudgeSingleReviewSet
-                || this.latestDesignVisualJudgeBundleReviewSet;
-        if (!candidate
-            || candidate.images.length !== candidate.reviewSet.expectedObservationCount
-            || candidate.reviewSet.items.length !== candidate.reviewSet.expectedObservationCount) {
-            return null;
-        }
-        return candidate;
+        return selectFinalQualityReviewSet({
+            bundle: this.latestDesignVisualJudgeBundleReviewSet,
+            single: this.latestDesignVisualJudgeSingleReviewSet,
+            requireMultiSurface
+        });
     }
-
-    /**
-     * Judge 的 Host 版本复核属于 Harness 真实只读调用：进入既有 Tool 日志与运行会计，
-     * 但不冒充模型主动工具调用，也不建立新的版本账本。
-     */
+    private buildFinalQualityHostEvidenceContext(): FinalQualityHostEvidenceContext {
+        return {
+            executeTool: (name, args) => this.executeToolWithDiagnostics(name, args, {
+                budgetClass: 'harness_quality_verification'
+            }),
+            recordToolCall: (durationMs, succeeded) => {
+                this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
+                    durationMs, succeeded
+                });
+            },
+            appendToolCall: (entry) => this.toolCallLog.push(entry),
+            readElapsedMs: () => this.readRunElapsedMsOrUndefined()
+        };
+    }
     private async readCurrentPhotoshopHistoryStateRefForQualityVerification(
         phase: 'pre_judge' | 'post_judge' | 'final_summary'
     ): Promise<PhotoshopHistoryStateRef | undefined> {
-        const toolRequests = buildDesignQualityVerificationToolRequests(phase);
-        let verifiedHistoryStateRef: PhotoshopHistoryStateRef | undefined;
-        for (const request of toolRequests) {
-            const startedAtMs = Date.now();
-            const result = await this.executeToolWithDiagnostics(request.name, request.arguments, {
-                budgetClass: 'harness_quality_verification'
-            });
-            this.runtimeSession = this.runtimeAccounting.recordToolCall(this.runtimeSession, {
-                durationMs: Date.now() - startedAtMs,
-                succeeded: result?.success !== false
-            });
-            const qualityCheckElapsedMs = this.readRunElapsedMsOrUndefined();
-            this.toolCallLog.push({
-                name: request.name,
-                arguments: request.arguments,
-                result,
-                origin: 'harness_quality_verification',
-                qualityVerificationPhase: phase,
-                ...(qualityCheckElapsedMs !== undefined ? { elapsedMs: qualityCheckElapsedMs } : {})
-            });
-            if (!result || result.success === false) return undefined;
-            const historyStateRef = readPhotoshopHistoryStateRef(result);
-            if (!historyStateRef) return undefined;
-            if (verifiedHistoryStateRef
-                && !samePhotoshopHistoryStateRef(verifiedHistoryStateRef, historyStateRef)) {
-                return undefined;
-            }
-            verifiedHistoryStateRef = historyStateRef;
-        }
-        return verifiedHistoryStateRef;
+        return readFinalQualityCurrentHistoryStateRef({
+            context: this.buildFinalQualityHostEvidenceContext(),
+            phase
+        });
     }
     private readLatestClosedQualityHistoryStateRef(): PhotoshopHistoryStateRef | undefined {
         return resolveLatestClosedDesignQualityHistoryStateRef(this.toolCallLog);
     }
-
     private canRunDesignQualityVerification(): boolean {
         return this.hasTaskProgressToolCalls()
             && isAgentToolVisibleForIntentDecision(
@@ -12204,17 +12193,9 @@ export class Agent {
         });
     }
 
-    /**
-     * 视觉判官断言评估（A1：让"设计好不好"的真主观维度真被看图判定，而非永远 uneval 空转）。
-     * 仅对创意设计任务、且能拿到真实画面截图 + 有视觉能力（主模型支持读图或配了视觉槽模型）时运行；
-     * 否则返回 null——诚实退回纯确定性裁决，绝不伪造视觉分。批量一次调用省 token；
-     * 解析失败由 parseVlmJudgeResponse 转 needs_review（不阻断、不伪造）。结果并入 buildExecutionSummary
-     * 的同一 scorecard/裁决口径；只有可靠三层诊断可提出一次有界改进，VLM finding 不取得硬门禁权限。
-     */
     private async evaluateDesignQualityVlmAssertions(
         stopReason: AgentStopReason
     ): Promise<DesignAssertionResult[] | null> {
-        // 尊重取消/中止：已中止则不再发起视觉模型调用
         if (this.config.signal?.aborted) return null;
         // 用户明确禁用全部工具，或本轮根本没有真实业务动作时，不得为了“设计质量收尾”
         // 额外读取 Photoshop。任务文本像设计请求不等于已经产生了可评价的设计结果。
@@ -12234,13 +12215,6 @@ export class Agent {
             if (taskCompletion?.kind !== 'creative_design') return null;
         }
 
-        // 没拿到真实成品画面集合 → 没真看过，不打视觉分（接“真看过才打分”纪律）。
-        // 多画面 Profile 必须取得声明的完整 ReviewSet；单张缩略总览或局部画面不能冒充终审集合。
-        const reviewCandidate = this.findLatestDesignVisualJudgeReviewSet(
-            this.resolveFinalReviewSetRequirements(evaluationProfile).requireMultiSurface
-        );
-        if (!reviewCandidate) return null;
-
         // 最终视觉裁决继续使用同一个 Agent 模型；目录未明确 supportsVision=true 时诚实跳过。
         const judgeModelId = resolveFinalQualityJudgeModelId(this.config.modelId);
         if (!judgeModelId) return null;
@@ -12257,10 +12231,29 @@ export class Agent {
         const preJudgeHistoryStateRef = await this.readCurrentPhotoshopHistoryStateRefForQualityVerification(
             'pre_judge'
         );
-        if (!preJudgeHistoryStateRef
-            || !samePhotoshopHistoryStateRef(reviewCandidate.historyStateRef, preJudgeHistoryStateRef)) {
+        if (!preJudgeHistoryStateRef) return null;
+        const finalReviewRequirements = this.resolveFinalReviewSetRequirements(evaluationProfile);
+        const readReviewSet = () => this.findLatestDesignVisualJudgeReviewSet(
+            finalReviewRequirements.requireMultiSurface
+        );
+        const reviewCandidate = await ensureFinalQualityCurrentReviewSet({
+            context: this.buildFinalQualityHostEvidenceContext(),
+            currentReviewSet: readReviewSet(),
+            currentHistoryStateRef: preJudgeHistoryStateRef,
+            requireMultiSurface: finalReviewRequirements.requireMultiSurface,
+            fullSurfaceToolName: selectFinalQualityFullSurfaceToolName({
+                availableToolNames: this.config.tools.map((tool) => tool.name),
+                isVisible: (name) => isAgentToolVisibleForIntentDecision(
+                    name,
+                    this.runIntentControlPlaneDecision
+                )
+            }),
+            captureReviewSet: (results) => this.captureLatestDesignVisualJudgeReviewSet(results),
+            readReviewSet
+        });
+        if (!reviewCandidate) {
             this.emitStaleDesignQualityObservation(
-                '终审画面集合与视觉评审前的 Photoshop 当前版本不一致，已停止本次判定；需要重新观察当前画面。'
+                '终审画面集合不完整或与 Photoshop 当前版本不一致，已停止本次判定。'
             );
             return null;
         }
@@ -12324,6 +12317,13 @@ export class Agent {
         });
         if (reviewOutcome.protocolDigest) {
             this.finalQualityModelProtocolDigest = reviewOutcome.protocolDigest;
+        }
+        if (reviewOutcome.protocolDigest?.judgeStatus === 'completed'
+            && reviewOutcome.protocolDigest.evidenceScope.finalArtifactObserved) {
+            this.finalQualityReviewedVisualBinding = {
+                historyStateRef: { ...reviewCandidate.historyStateRef },
+                sourceOutput: reviewCandidate.sourceOutput
+            };
         }
         if (reviewOutcome.pendingTrustedComparisonWrite) {
             this.pendingTrustedFinalComparisonWrite =
