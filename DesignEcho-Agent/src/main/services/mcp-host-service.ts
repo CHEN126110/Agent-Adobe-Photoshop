@@ -956,6 +956,11 @@ export class MCPHostService {
                                     type: 'string',
                                     enum: ['semantic-matting-guidance/v1']
                                 },
+                                instanceSelectionMode: {
+                                    type: 'string',
+                                    enum: ['refine_detected_candidates', 'exact_guided_instances'],
+                                    description: '默认只精修检测候选；只有调用方已观察并明确选择全部实例时，才使用 exact_guided_instances。'
+                                },
                                 sets: {
                                     type: 'array',
                                     minItems: 1,

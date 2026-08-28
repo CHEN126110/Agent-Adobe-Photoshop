@@ -1,5 +1,13 @@
 export const SEMANTIC_MATTING_GUIDANCE_VERSION = 'semantic-matting-guidance/v1' as const;
 
+export type SemanticMattingGuidanceInstanceSelectionMode =
+    | 'refine_detected_candidates'
+    | 'exact_guided_instances';
+
+export type SemanticMattingLifecycleSelectionMode =
+    | 'all_detected'
+    | 'exact_guided_instances';
+
 export interface SemanticMattingNormalizedPoint {
     x: number;
     y: number;
@@ -12,6 +20,7 @@ export interface SemanticMattingGuidanceSet {
 
 export interface SemanticMattingGuidance {
     version: typeof SEMANTIC_MATTING_GUIDANCE_VERSION;
+    instanceSelectionMode?: SemanticMattingGuidanceInstanceSelectionMode;
     sets: SemanticMattingGuidanceSet[];
 }
 
@@ -41,6 +50,23 @@ export type SemanticMattingGuidanceBindingResult =
     | {
         valid: false;
         code: 'SEMANTIC_GUIDANCE_BINDING_INVALID';
+        error: string;
+        issues: string[];
+    };
+
+export type SemanticMattingInstanceSelectionResult<T extends SemanticMattingDetectionBox> =
+    | {
+        valid: true;
+        boxes: T[];
+        pointsByBox: SemanticMattingProviderPoint[][];
+        mode: SemanticMattingLifecycleSelectionMode;
+        candidateRegionCount: number;
+        selectedRegionCount: number;
+        unselectedCandidateCount: number;
+    }
+    | {
+        valid: false;
+        code: 'SEMANTIC_GUIDANCE_TARGET_COVERAGE_INCOMPLETE';
         error: string;
         issues: string[];
     };
@@ -108,7 +134,7 @@ export function normalizeSemanticMattingGuidance(
 
     const issues: string[] = [];
     const record = asRecord(value);
-    if (!record || !hasOnlyKeys(record, ['version', 'sets'])) {
+    if (!record || !hasOnlyKeys(record, ['version', 'instanceSelectionMode', 'sets'])) {
         return {
             valid: false,
             code: 'SEMANTIC_GUIDANCE_INVALID',
@@ -118,6 +144,12 @@ export function normalizeSemanticMattingGuidance(
     }
     if (record.version !== SEMANTIC_MATTING_GUIDANCE_VERSION) {
         issues.push(`version 必须是 ${SEMANTIC_MATTING_GUIDANCE_VERSION}。`);
+    }
+    const instanceSelectionMode = record.instanceSelectionMode;
+    if (instanceSelectionMode !== undefined
+        && instanceSelectionMode !== 'refine_detected_candidates'
+        && instanceSelectionMode !== 'exact_guided_instances') {
+        issues.push('instanceSelectionMode 只能是 refine_detected_candidates 或 exact_guided_instances。');
     }
     if (!Array.isArray(record.sets) || record.sets.length < 1 || record.sets.length > 8) {
         issues.push('sets 必须包含 1 到 8 组目标引导。');
@@ -164,6 +196,9 @@ export function normalizeSemanticMattingGuidance(
         valid: true,
         guidance: {
             version: SEMANTIC_MATTING_GUIDANCE_VERSION,
+            ...(instanceSelectionMode !== undefined
+                ? { instanceSelectionMode: instanceSelectionMode as SemanticMattingGuidanceInstanceSelectionMode }
+                : {}),
             sets
         }
     };
@@ -260,4 +295,60 @@ export function bindSemanticMattingGuidanceToDetectionBoxes(input: {
     }
 
     return { valid: true, pointsByBox, guidedBoxIndexes };
+}
+
+export function selectSemanticMattingDetectionInstances<
+    T extends SemanticMattingDetectionBox & { phrase?: string }
+>(input: {
+    guidance?: SemanticMattingGuidance;
+    boxes: T[];
+    pointsByBox: SemanticMattingProviderPoint[][];
+    guidedBoxIndexes: number[];
+    requestedPhrases: string[];
+}): SemanticMattingInstanceSelectionResult<T> {
+    const candidateRegionCount = input.boxes.length;
+    if (input.guidance?.instanceSelectionMode !== 'exact_guided_instances') {
+        return {
+            valid: true,
+            boxes: input.boxes,
+            pointsByBox: input.pointsByBox,
+            mode: 'all_detected',
+            candidateRegionCount,
+            selectedRegionCount: candidateRegionCount,
+            unselectedCandidateCount: 0
+        };
+    }
+
+    const selectedIndexes = [...input.guidedBoxIndexes].sort((a, b) => a - b);
+    const selectedBoxes = selectedIndexes.map(index => input.boxes[index]).filter(Boolean);
+    const selectedPoints = selectedIndexes.map(index => input.pointsByBox[index] || []);
+    const selectedPhrases = new Set(
+        selectedBoxes
+            .map(box => String(box.phrase || '').trim().toLowerCase())
+            .filter(Boolean)
+    );
+    const missingPhrases = input.requestedPhrases.filter(
+        phrase => !selectedPhrases.has(String(phrase || '').trim().toLowerCase())
+    );
+    if (selectedBoxes.length === 0 || missingPhrases.length > 0) {
+        return {
+            valid: false,
+            code: 'SEMANTIC_GUIDANCE_TARGET_COVERAGE_INCOMPLETE',
+            error: 'Agent 选择的实例没有覆盖全部点名目标，本轮没有修改图层。',
+            issues: [
+                ...(selectedBoxes.length === 0 ? ['no_selected_instances'] : []),
+                ...missingPhrases.map(phrase => `missing_phrase:${phrase}`)
+            ]
+        };
+    }
+
+    return {
+        valid: true,
+        boxes: selectedBoxes,
+        pointsByBox: selectedPoints,
+        mode: 'exact_guided_instances',
+        candidateRegionCount,
+        selectedRegionCount: selectedBoxes.length,
+        unselectedCandidateCount: candidateRegionCount - selectedBoxes.length
+    };
 }

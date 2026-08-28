@@ -2783,6 +2783,11 @@ Use this only when binding a specific Profile's method knowledge, stage context,
                 additionalProperties: false,
                 properties: {
                     version: { type: 'string', enum: ['semantic-matting-guidance/v1'] },
+                    instanceSelectionMode: {
+                        type: 'string',
+                        enum: ['refine_detected_candidates', 'exact_guided_instances'],
+                        description: 'Default refine_detected_candidates only refines matching detections. Use exact_guided_instances only after visually confirming that the guidance sets name every intended instance; Harness will then ignore unselected detector candidates.'
+                    },
                     sets: {
                         type: 'array',
                         minItems: 1,
