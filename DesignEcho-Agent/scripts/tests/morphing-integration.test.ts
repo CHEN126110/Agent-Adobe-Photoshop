@@ -288,8 +288,8 @@ async function testSparseDisplacement(): Promise<TestResult> {
                 
                 if (distToEdge < 50) {
                     weights[idx] = 1 - distToEdge / 50;
-                    displacement.dx[idx] = (Math.random() - 0.5) * 20;
-                    displacement.dy[idx] = (Math.random() - 0.5) * 20;
+                    displacement.dx[idx] = ((x * 17 + y * 13) % 201 - 100) / 10;
+                    displacement.dy[idx] = ((x * 11 + y * 19) % 201 - 100) / 10;
                 }
             }
         }

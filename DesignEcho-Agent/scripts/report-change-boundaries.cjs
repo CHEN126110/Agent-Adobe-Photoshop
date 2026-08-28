@@ -289,8 +289,13 @@ const BOUNDARIES = [
   {
     id: 'shape-morphing-tools',
     title: '形态工具相关',
-    validation: ['Confirm tool-only boundary; do not expose as current Agent mainline'],
-    match: (entry) => /shape-morphing|sock-morphing|sock-shape|morphing/.test(entry.filePath)
+    validation: [
+      'npm test',
+      'npm run build:typecheck:renderer',
+      'npm run test:design-authorship-boundary',
+      'Confirm SKU Provider boundary; do not expose as a general Agent or Harness decision path'
+    ],
+    match: (entry) => /shape-morphing|sock-morphing|sock-shape|morphing|sku-pose-alignment|sku-retouch\/pose-/.test(entry.filePath)
   },
   {
     id: 'main-process-infra',
