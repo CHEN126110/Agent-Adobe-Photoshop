@@ -2,9 +2,20 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-091 文件交付 revision 只能由拥有该 revision 的 Host 协议闭合
+
+- 状态：已采用；受控前后对照真机探针、定向回归、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58 与 Agent /UXP production build 已通过，提交推送和 r26 正式 Attempt 尚待完成。
+- 触发事实：r25 已完成同 history PSD/JPG、7/7 结构化完成和正确 full-canvas Judge，但 `runtimeDeliveryResultRefs` 仍为空。真实 renderer 探针显示 PSD `saveDocument` 带 UXP `sourceHistoryStateRef`，而 `quickExport` → `saveDocument` 重定向写出的 JPG 只有路径和成功状态，没有源 revision。
+- 根因：JSX 桥在 `saveAs` 后读取 ExtendScript history；该值真机会丢失。把读取提前后又证实 ExtendScript history id 与 UXP history id 不是同一身份空间，不能直接比较或包装成 UXP `PhotoshopHistoryStateRef`。宽松 `production-delivery` 只按格式统计文件，严格 E2 则正确拒绝无同版本来源的 JPG。
+- 决定：JSX 只负责在文件写入前核对自己实际选中的 `sourceDocumentId`，防止同名文档导错；UXP 是 Photoshop revision 的唯一 owner，在派发前冻结 source history，导出后重新读取并要求同文档 /同 history，再把该 UXP ref 写入 `saveDocument`、`quickExport` 与 `batchExport` 收据。任何一环缺失或变化都返回失败，不将文件路径、成功文案或跨协议数字补成可靠交付。
+- Owner：`core/jsx-bridge.saveDocumentViaJsx` 拥有 JSX 文档身份前置核对；`tools/canvas/save-document` 的 revision helper 拥有 UXP 写前 /写后源版本闭合；Agent `agentic-final-delivery-evidence` 继续只消费完整收据，不扫描文件、不推断来源。
+- 替代项：不采用放宽 E2、目录扫描、按扩展名补 ref、相信 `redirectedTo=saveDocument`、把 ExtendScript history id 视为 UXP history，或只给 r25 /主图加兼容分支。这些方案都会重新制造双重真相或错误文件归属。
+- 回滚点：D-091 只改变 JSX 保存返回身份、三个 raster 导出工具的源 revision 收据和既有回归；若旧 Photoshop 兼容性受影响，可独立回滚本切片，但不得保留伪造 UXP history 的旧转换。
+- 验证边界：前置探针已复现 JPG 成功但缺 ref；错误的跨协议 history 比较在写前失败且未生成文件；最终探针返回 `documentId=4492`、`sourceHistoryStateRef=4492:4497`，导出后仍为 `4492:4497`。这证明 Provider 收据链修复，不替代 r26 从 Agent Final Judge 到非空 `finalArtifactRefs` 的正式端到端验证。
+
 ## D-090 ReviewSet 类型是终局证据身份，禁止单画布与 Bundle 相互降级
 
-- 状态：已采用；定向行为验证、Design Authorship /Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整核心闸门 58/58 与 Agent production build 已通过；提交推送、提交后 identity 与 r25 真机仍待完成。
+- 状态：已采用并以 `1521c504` 推送；提交后 Agent /UXP identity 已验证。r25 证明自动 full-canvas 与 Judge 对象正确；后续空 `finalArtifactRefs` 已定位为独立的 D-091 raster revision 收据缺口。
 - 触发事实：r24 最终 Photoshop 画面包含完整主体、标题和四色陈列，但 Final Judge 却描述无文字、大片留白和偏小商品群；同一 Run 又同时记录 `finalArtifactObserved=true`、生产交付检查通过与安全 `finalArtifactRefs` 为空。Tool trace 没有 Harness 全画布调用，证明 D-089 的自动采集被已有候选短路。
 - 根因：`selectFinalQualityReviewSet` 在单画布路径使用 `single || bundle`。document/history 只证明时间一致，不能证明 Bundle 里的像素就是完整成品；素材候选、局部裁切和声明多屏即使同版本、数量完整，也不能替代 `single_surface`。
 - 决定：Evaluation Profile 的 `requireMultiSurface` 同时决定 ReviewSet source。单画布只能选择 `single_surface`，缺失 /陈旧时由 D-089 的 Host evidence 采集一次无 region 全画布；多画面只能选择完整 `visual_observation_bundle`，不得降级成单图。Final Judge、E2 reviewed-source binding 与运行结果中的可信视觉 Artifact 必须调用同一选择 Owner，不能各自偏好不同证据。

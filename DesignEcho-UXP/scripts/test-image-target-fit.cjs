@@ -321,6 +321,37 @@ function assertExportGroupDeliveryContract() {
     assert.doesNotMatch(source, /exportGroup 当前仅支持 png 格式/);
 }
 
+function assertRasterExportRevisionContract() {
+    const jsxBridgePath = path.resolve(__dirname, '../src/core/jsx-bridge.ts');
+    const saveDocumentPath = path.resolve(__dirname, '../src/tools/canvas/save-document.ts');
+    const jsxBridgeSource = fs.readFileSync(jsxBridgePath, 'utf8');
+    const saveDocumentSource = fs.readFileSync(saveDocumentPath, 'utf8');
+    const freezeIndex = saveDocumentSource.indexOf(
+        'const sourceHistoryStateRef = requireRasterExportSourceHistoryStateRef(doc);'
+    );
+    const dispatchIndex = saveDocumentSource.indexOf(
+        'const jsxResult = await saveDocumentViaJsx(requestedPath',
+        freezeIndex
+    );
+    const jsxGuardIndex = jsxBridgeSource.indexOf("throw new Error('JSX 保存前源文档已变化，未写入目标文件。')");
+    const jsxSaveIndex = jsxBridgeSource.indexOf('saveDoc.saveAs(target, options, true, Extension.LOWERCASE)');
+
+    assert.ok(freezeIndex >= 0 && freezeIndex < dispatchIndex,
+        'UXP must freeze the source revision before dispatching the JSX file write');
+    assert.ok(jsxGuardIndex >= 0 && jsxGuardIndex < jsxSaveIndex,
+        'JSX must verify the selected source document before writing the target file');
+    assert.ok(jsxBridgeSource.includes('expectedSourceDocumentId?: number')
+        && jsxBridgeSource.includes("throw new Error('JSX 保存前源文档已变化，未写入目标文件。')")
+        && !jsxBridgeSource.includes('sourceHistoryStateId'),
+    'JSX must guard the source document without projecting its incompatible history identity as UXP evidence');
+    assert.ok(saveDocumentSource.includes('requireRasterExportSourceHistoryStateRef(doc)')
+        && saveDocumentSource.includes('verifyRasterExportSourceHistoryStateRef({')
+        && saveDocumentSource.includes('emittedDocumentId: jsxResult.sourceDocumentId')
+        && saveDocumentSource.includes('sameHistoryStateRef(input.expected, afterExportHistoryStateRef)')
+        && saveDocumentSource.includes('导出完成后无法确认文件仍来自同一 Photoshop 文档版本'),
+    'saveDocument and quickExport must return only a same-document JSX and UXP pre/post same-revision receipt');
+}
+
 function assertImageSourceIdentityContract() {
     const identity = loadTypeScriptModule(
         '../src/core/image-source-identity.ts',
@@ -844,9 +875,10 @@ assertTransformTargetBoundsTransactionContract();
 assertImagePlacementParameterConflictContracts();
 assertJpegQualityNormalizationContract();
 assertExportGroupDeliveryContract();
+assertRasterExportRevisionContract();
 assertDetailPageSliceDeliveryContract();
 assertImageSourceIdentityContract();
 assertSkuPairedEditableDeliveryContract();
 assertRuntimeBuildIdentityContract();
 
-console.log('image-target-fit: 17 geometry cases, runtime build identity, source identity, paired SKU editable delivery, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');
+console.log('image-target-fit: 17 geometry cases, runtime build identity, source identity, paired SKU editable delivery, revision-bound raster export, export-group and detail-page slice delivery, parameter conflicts, JPEG quality, and transaction audit passed');

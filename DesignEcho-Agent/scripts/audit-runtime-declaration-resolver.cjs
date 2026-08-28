@@ -4541,10 +4541,12 @@ function assertAgenticDeliveryBindsAllSameRevisionFinalArtifacts() {
     arguments: { format: 'jpg', outputPath: 'C:/fixture/主图/商品主图.jpg' },
     result: {
       success: true,
-      documentId: historyStateRef.documentId,
-      sourceHistoryStateRef: historyStateRef,
+      savedPath: 'C:/fixture/主图/商品主图.jpg',
       outputPath: 'C:/fixture/主图/商品主图.jpg',
-      format: 'jpg'
+      exportedFiles: ['C:/fixture/主图/商品主图.jpg'],
+      format: 'jpg',
+      redirectedTo: 'saveDocument',
+      redirectedFrom: 'quickExport'
     },
     origin: 'model_tool_call'
   }];
@@ -4556,6 +4558,15 @@ function assertAgenticDeliveryBindsAllSameRevisionFinalArtifacts() {
     },
     designVerdict: { status: 'passed', blockers: [], warnings: [] }
   };
+  assert.strictEqual(
+    agent.projectDeliveryStageEvidence(summary).deliveryEvidencePassed,
+    false,
+    'a written raster path without its Photoshop source revision must not close E2'
+  );
+  const rasterDeliveryEntry = agent.toolCallLog.find((entry) => (
+    entry.callId === 'agentic-export-preview'
+  ));
+  rasterDeliveryEntry.result.sourceHistoryStateRef = historyStateRef;
   const evidence = agent.projectDeliveryStageEvidence(summary);
   assert.strictEqual(evidence.deliveryEvidencePassed, true);
   assert.deepStrictEqual(evidence.finalDeliveryResultRefs, [

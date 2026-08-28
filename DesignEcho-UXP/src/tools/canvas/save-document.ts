@@ -321,6 +321,36 @@ function normalizeRasterExportFormat(format: unknown, outputPath?: string): 'png
     return normalized === 'jpg' || normalized === 'jpeg' ? 'jpg' : 'png';
 }
 
+function requireRasterExportSourceHistoryStateRef(doc: any): PhotoshopHistoryStateRef {
+    const activeDocument = app.activeDocument;
+    if (!activeDocument || Number(activeDocument.id) !== Number(doc?.id)) {
+        throw new Error('导出前活动文档已变化，未写入目标文件。');
+    }
+    const sourceHistoryStateRef = readActiveHistoryStateRef(activeDocument);
+    if (!sourceHistoryStateRef) {
+        throw new Error('导出前无法读取 Photoshop 文档版本，未写入目标文件。');
+    }
+    return sourceHistoryStateRef;
+}
+
+function verifyRasterExportSourceHistoryStateRef(input: {
+    document: any;
+    expected: PhotoshopHistoryStateRef;
+    emittedDocumentId?: number;
+}): PhotoshopHistoryStateRef {
+    const activeDocument = app.activeDocument;
+    const afterExportHistoryStateRef = activeDocument
+        && Number(activeDocument.id) === Number(input.document?.id)
+        ? readActiveHistoryStateRef(activeDocument)
+        : undefined;
+    if (!Number.isSafeInteger(input.emittedDocumentId)
+        || Number(input.emittedDocumentId) !== input.expected.documentId
+        || !sameHistoryStateRef(input.expected, afterExportHistoryStateRef)) {
+        throw new Error('导出完成后无法确认文件仍来自同一 Photoshop 文档版本；文件可能已写出，但不会计为可靠交付。');
+    }
+    return input.expected;
+}
+
 function appendSuffixBeforeExtension(filePath: string, suffix: string): string {
     const cleanSuffix = String(suffix || '').trim();
     if (!cleanSuffix) return filePath;
@@ -501,15 +531,23 @@ export class SaveDocumentTool implements Tool {
 
             if (requestedPath && (format === 'png' || format === 'jpg' || format === 'jpeg')) {
                 const jsxFormat = format === 'png' ? 'png' : 'jpg';
+                const sourceHistoryStateRef = requireRasterExportSourceHistoryStateRef(doc);
                 const jsxResult = await saveDocumentViaJsx(requestedPath, jsxFormat, doc.name, {
                     jpegQuality: normalizePhotoshopJpegQuality(params.quality, 12),
-                    conflictPolicy
+                    conflictPolicy,
+                    expectedSourceDocumentId: sourceHistoryStateRef.documentId
+                });
+                const verifiedSourceHistoryStateRef = verifyRasterExportSourceHistoryStateRef({
+                    document: doc,
+                    expected: sourceHistoryStateRef,
+                    emittedDocumentId: jsxResult.sourceDocumentId
                 });
                 return {
                     success: true,
                     savedPath: jsxResult.filePath,
                     format: jsxFormat,
-                    sourceHistoryStateRef: jsxResult.sourceHistoryStateRef
+                    documentId: Number(doc.id),
+                    sourceHistoryStateRef: verifiedSourceHistoryStateRef
                 };
             }
 
@@ -761,15 +799,21 @@ export class QuickExportTool implements Tool {
         quality: number,
         suffix: string
     ): Promise<{ filePath: string; sourceHistoryStateRef?: PhotoshopHistoryStateRef }> {
+        const sourceHistoryStateRef = requireRasterExportSourceHistoryStateRef(doc);
         const explicitFileFormat = getRasterExportExtension(outputPath);
         if (explicitFileFormat) {
             const filePath = appendSuffixBeforeExtension(outputPath, suffix);
             const jsxResult = await saveDocumentViaJsx(filePath, explicitFileFormat === 'png' ? 'png' : 'jpg', doc.name, {
-                jpegQuality: normalizePhotoshopJpegQuality(quality, 80)
+                jpegQuality: normalizePhotoshopJpegQuality(quality, 80),
+                expectedSourceDocumentId: sourceHistoryStateRef.documentId
             });
             return {
                 filePath,
-                sourceHistoryStateRef: jsxResult.sourceHistoryStateRef
+                sourceHistoryStateRef: verifyRasterExportSourceHistoryStateRef({
+                    document: doc,
+                    expected: sourceHistoryStateRef,
+                    emittedDocumentId: jsxResult.sourceDocumentId
+                })
             };
         }
 
@@ -778,11 +822,16 @@ export class QuickExportTool implements Tool {
         const fileName = `${docName}${suffix}${ext}`;
         const filePath = `${outputPath.replace(/[\\/]+$/, '')}\\${fileName}`;
         const jsxResult = await saveDocumentViaJsx(filePath, format === 'png' ? 'png' : 'jpg', doc.name, {
-            jpegQuality: normalizePhotoshopJpegQuality(quality, 80)
+            jpegQuality: normalizePhotoshopJpegQuality(quality, 80),
+            expectedSourceDocumentId: sourceHistoryStateRef.documentId
         });
         return {
             filePath,
-            sourceHistoryStateRef: jsxResult.sourceHistoryStateRef
+            sourceHistoryStateRef: verifyRasterExportSourceHistoryStateRef({
+                document: doc,
+                expected: sourceHistoryStateRef,
+                emittedDocumentId: jsxResult.sourceDocumentId
+            })
         };
     }
 
@@ -879,8 +928,7 @@ export class BatchExportTool implements Tool {
                 height: number;
                 suffix: string;
             }> = [];
-            let sourceHistoryStateRef: PhotoshopHistoryStateRef | undefined;
-            let sourceHistoryStateConsistent = true;
+            const sourceHistoryStateRef = requireRasterExportSourceHistoryStateRef(doc);
 
             for (const preset of normalizedPresets) {
                 const resolved = this.resolvePresetDimensions(doc, preset);
@@ -888,16 +936,14 @@ export class BatchExportTool implements Tool {
                 const jsxResult = await saveDocumentViaJsx(filePath, ext === 'png' ? 'png' : 'jpg', doc.name, {
                     width: resolved.width,
                     height: resolved.height,
-                    jpegQuality: normalizePhotoshopJpegQuality(quality, 85)
+                    jpegQuality: normalizePhotoshopJpegQuality(quality, 85),
+                    expectedSourceDocumentId: sourceHistoryStateRef.documentId
                 });
-                const candidateRef = jsxResult.sourceHistoryStateRef;
-                if (!candidateRef
-                    || candidateRef.documentId !== Number(doc.id)
-                    || (sourceHistoryStateRef && !sameHistoryStateRef(sourceHistoryStateRef, candidateRef))) {
-                    sourceHistoryStateConsistent = false;
-                } else if (!sourceHistoryStateRef) {
-                    sourceHistoryStateRef = candidateRef;
-                }
+                verifyRasterExportSourceHistoryStateRef({
+                    document: doc,
+                    expected: sourceHistoryStateRef,
+                    emittedDocumentId: jsxResult.sourceDocumentId
+                });
                 exportedFiles.push({
                     filePath,
                     width: resolved.width,
@@ -915,8 +961,8 @@ export class BatchExportTool implements Tool {
                 format: ext,
                 exportedCount: exportedFiles.length,
                 exportedFiles,
-                sourceHistoryStateRef: sourceHistoryStateConsistent ? sourceHistoryStateRef : undefined,
-                sourceHistoryStateVerified: sourceHistoryStateConsistent && Boolean(sourceHistoryStateRef),
+                sourceHistoryStateRef,
+                sourceHistoryStateVerified: true,
                 message: `Exported ${exportedFiles.length} files to ${outputDirectory}`,
                 exported: exportedFiles.length
             };

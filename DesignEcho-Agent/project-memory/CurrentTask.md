@@ -23,6 +23,11 @@
 - D-089 已以 `329a650e` 提交并推送，提交后 Agent /UXP build identity 均为同一干净提交。r24 使用全新 fixture、同一句自然需求、GPT-5.6 Sol 与真实 Photoshop，完成 15 次普通 /终审模型调用、15 次 Tool Call、5 次成功 mutation，生成 30,118,573 字节 PSD 与 1,016,313 字节 JPG；成品 history 为 `4389:4424`，文件 SHA-256 已固化。
 - r24 的 Agent 自主选择 `DSC05845.jpg` 作为左侧上脚主视觉、`DSC05304.jpg` 作为右下四色平铺，先说明左右结构与粉咖暖米色方向，并在真实画面中发现平铺袜偏小后只修正该处。最终成品具有完整标题、主体和四色陈列；但终局 Judge 却描述“商品群偏小、大片上下留白、没有设计文字”，与真实成品直接矛盾。
 - r24 根因不是模型没看懂同一张成品，而是 `selectFinalQualityReviewSet` 的实现仍使用 `single || bundle`：同 history 的素材 /局部 Bundle 被错误提升为单画布终局候选，Harness 因而跳过全画布采集。Judge 实际评价了辅助素材，而 E2 只接受 full-surface，最终出现 `finalArtifactObserved=true`、任务交付检查通过、但安全 `finalArtifactRefs` 为空的内部矛盾。Attempt 已在同构建、同 fixture、0 打开文档、0 pending 条件下完成 `reconciled_after_runtime_restart`。
+- D-090 已以 `1521c504` 提交并推送；提交后 Agent build `designecho-1521c5046227-63de096427d3` 与 UXP build `designecho-uxp-production-1521c5046227-cdcad214d92e` 均为同一干净提交。r25 使用全新 fixture 和同一句自然需求，完成 12 次模型调用、13 次 Tool Call、4 次成功内容 /文件 mutation；自动终审确实追加了无 `region` 全画布读取，Judge 对副文案偏淡偏小、四色辅助图偏小的判断与真实成品一致，证明 D-090 已消除看错对象的故障形态。
+- r25 最终画布为 `4428:4472`，Agent 自主选择 `模特/DSC08134.jpg`、`原图/DSC05337.JPG` 与 `原图/DSC05303.JPG`，形成右侧大幅穿着主视觉、左上纹理、左中文案和左下四色陈列；不是 r24 的重复版式。PSD 为 66,126,102 字节、SHA-256 `4264951178ee1d05f3eb8114edd2b3a4ad96745bea470dffd4d815af4e98bbe3`；JPG 为 1,046,636 字节、SHA-256 `9efe6d895b836e36455529a828ae8e0a131749577152046f2b37c969800591a1`。结构化完成 7/7，Final Judge 86 分 / `needs_review`；这证明设计已可评且明显改善，不等于达到 Eagle /用户成稿的专业质量。
+- r25 仍未取得技术成功：`production-delivery` 能数到真实 PSD /JPG，但 `executionSummary.runtimeDeliveryResultRefs` 为空，Attempt 仍为 `submission_unknown_write_state`。现场固定画面与文件哈希后关闭文档，并在同 `1521c504` Runtime、同 fixture、0 文档 /0 pending 下完成 `reconciled_after_runtime_restart`。
+- 受控真机探针已定位 D-091 根因：PSD `saveDocument` 返回同版本收据，而走 `quickExport` → `saveDocument` 重定向的 JPG 虽真实写出，却丢失 `sourceHistoryStateRef`。E2 正确拒绝无法证明来自终审 revision 的 JPG；较宽松的完成统计只按文件格式计数，因而形成双重口径。进一步探针证明 ExtendScript history id 与 UXP history id 不是同一身份空间；不能把前者包装成后者。
+- D-091 当前代码让 JSX 只在文件写入前核对实际源文档 ID；Photoshop revision 由 UXP 在导出前冻结、导出后读回并要求一致，最终 `sourceHistoryStateRef` 只来自 UXP。修复后同形探针已返回 `documentId=4492`、`sourceHistoryStateRef=4492:4497`，导出后仍为 `4492:4497`。三个成功探针文件已移出 r25 项目到本机 Temp 恢复目录，项目只保留正式 PSD/JPG；定向 UXP 测试 /类型检查、Runtime Declaration 行为审计、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58 与 Agent /UXP production build 均已通过，最终提交和 r26 尚待完成。
 
 ### 实施边界
 
@@ -57,6 +62,7 @@
 6. 局部观察与完整终审属于不同事实：Agent 自主决定局部设计检查，Harness 只在终态补自己拥有的完整性证据，能同时保持自主性和成功率。
 7. “Judge 读过哪张图”必须由逐图 Provider 收据和精确 source output 绑定，不能通过给自动快照写 `reviewed=true` 冒充。
 8. 版本相同不等于语义对象相同；document/history 只能证明时间一致性，ReviewSet source /coverage 才能证明“看的是成品还是辅助素材”。
+9. 跨宿主协议的数字字段不能因同名就假定同一身份空间；文件提交的源 revision 必须由拥有该 revision 的 UXP 在写前 /写后闭合，JSX 只证明自己选中了哪一个文档。
 
 ### 负面教训与禁止反例
 
@@ -70,13 +76,13 @@
 8. 禁止同一缺口只重复要求 Agent“再检查当前画面”；Harness 应补全自己拥有的只读事实，但仍不能指定设计修法。
 9. 禁止扫描已生成目录补造 `finalArtifactRefs`，也禁止给 Harness 自动观察伪造主模型 review decision。
 10. 禁止把 `single || bundle` 之类“有证据就先用”的降级写进终局选择；它会把素材、局部裁切或多屏集合偷换成单画布成品，并在 Judge、E2 与恢复 Artifact 之间制造多套事实。
+11. 禁止用真实存在的文件路径、导出成功文案或 ExtendScript history id 补造 UXP `sourceHistoryStateRef`；缺少同版本收据必须修复 Provider 返回链，不能放宽 E2 或扫描目录。
 
 ### 下一步
 
-1. 完成 D-090：让单画布与多画面 ReviewSet 在选择、Judge、E2 和可信跨代 Artifact 中保持类型一致；已有同 history 错误 Bundle 时也必须采集一次无 region 全画布。
-2. Runtime Declaration 攻击型回归、Design Authorship /Agent Business Boundary、Renderer 类型检查、完整 `maintenance:validate` 58/58 与 Agent production build 已通过；继续最终差异审查、独立提交并推送。
-3. 以新提交重建并重载 Agent /UXP，从锁定源创建全新 r25 fixture，继续使用同一句需求、同一 GPT-5.6 Sol、同一素材和 1440×1440 画布。必须同时取得完整全画布 Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
-4. 技术成功后再对 r24 /r25 可评分结果与用户成稿 /Eagle 做匿名质量比较；r24 证明 Agent 的设计过程和成品已明显可评，但错误 Judge 不能代表真实视觉分。质量与可靠交付达标后再单独治理约 9 分钟首写和 34 分钟总耗时。
+1. 完成 D-091 的最终差异审查、独立提交与 GitHub 推送；提交后重建并重新验证干净双 Runtime identity。
+2. 从锁定源创建全新 r26 fixture，以同一句需求、同一 GPT-5.6 Sol、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；必须同时取得正确 full-canvas Judge、同 revision PSD /JPG、非空安全 `finalArtifactRefs` 和正式技术成功。
+3. r26 技术成功后，对 r24 /r25 /r26 可评分结果与用户成稿 /Eagle 做匿名视觉比较；专业质量达标后再单独治理约 9 分钟首写和约 28 分钟总耗时。
 
 ### 验证与未知
 
@@ -87,11 +93,14 @@
 - 已验证：完成态容量提交 `f148d512` 已推送并以提交后 Agent /UXP identity 执行 r23；r23 没有空子代，但因完整画布终审缺口正式失败并完成 reconciliation。
 - 已验证：D-089 提交 `329a650e` 已推送；提交后 Agent build `designecho-329a650e2103-69bc9c69c06c` 与 UXP build `designecho-uxp-production-329a650e2103-cdcad214d92e` 均为干净同提交。r24 真实生成同 history PSD /JPG，Agent 有明确选图、构图和一次定向修订；Attempt 因终局 ReviewSet 类型偷换失败并已安全 reconciliation。
 - 已验证：D-090 定向 Runtime Declaration 回归显式注入同 history、结构完整的误导素材 Bundle，证明单画布不会降级使用它，而会自动采集全画布、把该图作为 Judge 第一张图、排除误导 Bundle，并把运行 Artifact 保持为 `single_surface`。Design Authorship /Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整 `maintenance:validate` 58/58 与 Agent production build 均已通过；`agent.ts` 保持 12,826 行。
-- 待验证：独立提交推送、提交后 Agent /UXP identity 与 r25 Photoshop 正式 Attempt；之后仍需重复样本和匿名视觉评审。
+- 已验证：D-090 提交 `1521c504` 已推送，r25 自动全画布与 Final Judge 对象正确；r25 真实 PSD /JPG、最终 history、结构化完成和质量结果均已固化，Attempt 已安全 reconciliation。
+- 已验证：D-091 前后对照探针复现“JPG 已写出但缺 UXP revision”，并证明修复后 renderer 收据、导出前 /导出后 UXP revision 均为 `4492:4497`；失败的跨协议 history 比较实验发生在写前，未生成文件。
+- 已验证：D-091 的顺序化 Main /Renderer 类型检查、完整 `maintenance:validate` 58/58、Agent /UXP production build 与 `git diff --check` 均通过。
+- 待验证：D-091 提交推送、提交后 Agent /UXP identity 与 r26 正式 Attempt；之后仍需重复样本和匿名视觉评审。
 
 ### 状态
 
-`in_progress / d089_329a650e_pushed / r24_real_design_completed_but_wrong_bundle_judged / r24_reconciled / d090_review_set_kind_separation_core_58_and_agent_build_passed / commit_push_and_r25_pending`
+`in_progress / d090_1521c504_pushed / r25_full_canvas_judge_correct_and_design_86 / r25_missing_raster_source_revision_reconciled / d091_uxp_revision_receipt_live_probe_core_58_and_builds_passed / commit_push_and_r26_pending`
 
 ---
 

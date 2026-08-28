@@ -280,8 +280,8 @@
   },
   "activeSlice": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-    "summary": "Close the generic terminal lifecycle exposed by r21-r23: preserve completed generations, then bind a single-surface final deliverable to one complete full-canvas observation, exact Provider Judge receipt and same-revision PSD/JPG evidence without taking design authorship from the Agent.",
-    "status": "d089_329a650e_pushed_r24_wrong_bundle_judged_and_reconciled_d090_core_58_and_agent_build_passed_commit_push_and_r25_pending",
+    "summary": "Close the generic terminal lifecycle exposed by r21-r25: preserve completed generations, bind single-surface review to the exact full canvas, and require UXP-owned same-revision receipts for every PSD/JPG without taking design authorship from the Agent.",
+    "status": "d090_1521c504_pushed_r25_correct_full_canvas_judge_design_86_raster_revision_receipt_missing_and_reconciled_d091_live_probe_core_58_and_builds_passed_commit_push_and_r26_pending",
     "scope": [
       "Settle a Tool Call produced by an admitted model turn without bypassing hard limits or execution guards.",
       "Activate declared delivery capability schemas only after verified viewable content emerges and without executing them.",
@@ -292,13 +292,14 @@
       "For single-surface terminal closure, collect one read-only full-canvas observation only when the current ReviewSet is missing or stale; do not replace multi-surface Bundle requirements.",
       "Bind final review only from an exact per-image Provider receipt and unchanged Host revision; never forge reviewed flags or infer delivery refs by scanning files.",
       "Treat ReviewSet source kind as terminal evidence identity; same document/history never permits single-surface and Bundle substitution.",
-      "Do not claim improved technical reliability or commercial quality before r25 technical success and blind review."
+      "Keep JSX document identity and UXP history identity separate; only UXP pre/post revision closure may issue a raster sourceHistoryStateRef.",
+      "Do not claim improved technical reliability or commercial quality before r26 technical success and blind review."
     ]
   },
   "activeRequest": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
-    "summary": "Close the r24 terminal object-identity gap by making single-surface and multi-surface ReviewSets mutually exclusive across Final Judge, E2 and trusted run artifacts, then prove the exact full-canvas source output binds to PSD/JPG delivery in a fresh r25 attempt.",
-    "status": "r24_wrong_bundle_judged_and_reconciled_d090_core_58_and_agent_build_passed_commit_push_rebuild_and_r25_pending",
+    "summary": "Close the r25 terminal delivery gap by preserving the correct full-canvas Judge binding and issuing every raster artifact a UXP pre/post same-revision source receipt, then prove non-empty finalArtifactRefs in a fresh r26 attempt.",
+    "status": "r25_correct_full_canvas_judge_and_design_86_but_raster_source_revision_missing_reconciled_d091_live_probe_core_58_and_builds_passed_commit_push_rebuild_and_r26_pending",
     "mustDo": [
       "Treat model-turn admission and its returned Tool settlement as one lifecycle unit while retaining hard execution safety.",
       "Expose existing delivery schemas after a real viewable artifact exists without selecting the delivery action for the Agent.",
@@ -307,7 +308,8 @@
       "Separate Agent-owned local design inspection from Harness-owned terminal evidence completeness; automatically acquire only the missing read-only full-surface fact.",
       "Reject a same-history Bundle as single-canvas terminal evidence and use one ReviewSet kind selector for Judge, E2 and trusted artifacts.",
       "Require exact Provider image-presentation receipt, completed Final Judge and unchanged document history before reviewed delivery can close.",
-      "Run the existing targeted contracts, production build and complete core gate before a fresh r25 Photoshop attempt."
+      "Freeze raster source revision in UXP, guard the actual JSX source document before file write, and verify the same UXP revision after export.",
+      "Run the existing targeted contracts, production builds and complete core gate before a fresh r26 Photoshop attempt."
     ],
     "mustNotDo": [
       "Do not encode the r21 failure as a main-image Skill prompt, keyword gate or forced save Tool call.",
@@ -316,7 +318,8 @@
       "Do not infer remaining generation capacity from final_response or a quality score.",
       "Do not treat a region snapshot as complete final review, forge a model review flag, scan output directories for refs or weaken multi-surface evidence requirements.",
       "Do not treat document/history equality as permission to substitute an asset Bundle for a complete single-canvas artifact.",
-      "Do not reuse consumed r20/r21/r22/r23/r24 fixtures or modify the user's original photography project."
+      "Do not treat file existence, redirect success or an ExtendScript history id as a UXP sourceHistoryStateRef.",
+      "Do not reuse consumed r20/r21/r22/r23/r24/r25 fixtures or modify the user's original photography project."
     ]
   },
   "activePlan": {
@@ -327,10 +330,12 @@
       "已完成实机：r23 不再出现 0 调用空子代，但只留下 region 局部观察，完整 ReviewSet、R5/E2 与安全 finalArtifactRefs 未闭合；Attempt 已安全 reconciliation。",
       "已完成 D-089：完整核心闸门、Agent/UXP production build、提交 329a650e、GitHub 推送和提交后 identity 均通过。",
       "已完成 r24：真实 PSD/JPG 和可评成品形成，但同 history 素材 Bundle 被错误当成终局画面，Judge 结论与成品矛盾，finalArtifactRefs 为空；文件哈希已固化且 Attempt 已安全 reconciliation。",
-      "已完成 D-090 代码与验证：单画布和多画面 ReviewSet 类型互斥；误导 Bundle 攻击场景仍触发 full-canvas，并把 Judge、E2、可信 Artifact 绑定到同一 single_surface；Design Authorship/Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整 maintenance:validate 58/58 与 Agent production build 均通过。",
+      "已完成 D-090：单画布和多画面 ReviewSet 类型互斥；提交 1521c504、GitHub 推送和提交后 Agent/UXP identity 均通过。",
+      "已完成 r25：full-canvas Judge 对象正确且设计 86 分，但 quickExport JPG 缺 UXP sourceHistoryStateRef，finalArtifactRefs 为空；文件哈希已固化且 Attempt 已安全 reconciliation。",
+      "已完成 D-091 代码、实机探针与提交前验证：JSX 只守文档 ID，UXP 闭合导出前后 revision；修复后 renderer 收据和前后 revision 同为 4492:4497，完整 maintenance:validate 58/58 与 Agent/UXP production build 均通过。",
       "进行中：最终差异审查、独立提交与 GitHub 推送。",
-      "待完成：提交后以新 commit identity 重建并重载 Agent/UXP，创建全新 r25 fixture 执行同条件 Attempt。",
-      "条件后置：r25 技术成功后做重复运行与盲化视觉质量比较，再单独治理首写和总耗时。"
+      "待完成：提交后以新 commit identity 重建并重载 Agent/UXP，创建全新 r26 fixture 执行同条件 Attempt。",
+      "条件后置：r26 技术成功后做重复运行与盲化视觉质量比较，再单独治理首写和总耗时。"
     ]
   },
   "convergenceBaseline": {

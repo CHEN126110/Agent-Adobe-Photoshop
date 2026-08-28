@@ -2,12 +2,21 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 r25 正确终审后的 JPG revision 收据缺口
+
+- D-090 已以 `1521c504` 提交并推送；提交后 Agent build `designecho-1521c5046227-63de096427d3`、UXP build `designecho-uxp-production-1521c5046227-cdcad214d92e` 与运行时身份均为同一干净提交。r25 使用真实 GPT-5.6 Sol /Photoshop、全新 fixture、同一句自然需求和 1440×1440 画布完成 12 次模型调用、13 次 Tool Call、4 次成功内容 /文件 mutation。
+- r25 自动追加的终审 `getCanvasSnapshot` 不带 `region`，Final Judge 实际看到了 `4428:4472` 完整画布；对副文案偏淡偏小、四色辅助图偏小的 finding 与成品一致。Agent 自主选择三张不同职责素材，形成右侧穿着主视觉、左上纹理、左中文案和左下四色陈列；质量为 86 / `needs_review`，说明结果可评且有明显进步，不等于已达到用户成稿 /Eagle 专业质量。
+- 正式 PSD 为 66,126,102 字节、SHA-256 `4264951178ee1d05f3eb8114edd2b3a4ad96745bea470dffd4d815af4e98bbe3`；JPG 为 1,046,636 字节、SHA-256 `9efe6d895b836e36455529a828ae8e0a131749577152046f2b37c969800591a1`。结构化完成 7/7，但 Debug Bridge 仍因 `runtimeDeliveryResultRefs` 为空把 Attempt 结算为 `submission_unknown_write_state`；现场已在同构建、同 fixture、0 文档 /0 pending 下完成 reconciliation。
+- 受控 renderer 探针已证明根因：PSD 保存结果带 UXP 源 revision，`quickExport` 重定向写出的 JPG 却只有路径，没有 `sourceHistoryStateRef`。E2 拒绝该文件是正确行为；不能用文件存在或格式计数替代同版本来源。第二个证伪探针进一步确认 ExtendScript history id 与 UXP history id 不同域，不能交叉包装。
+- D-091 当前实现让 JSX 只核对写前源文档 ID，UXP 在导出前 /后闭合同一 revision，并把 UXP ref 作为唯一 raster 交付来源。修复后同形探针返回 `documentId=4492`、`sourceHistoryStateRef=4492:4497`，导出后仍为 `4492:4497`。定向回归、顺序化 Main /Renderer 类型检查、完整核心闸门 58/58 与 Agent /UXP production build 已通过；提交推送、提交后 identity 与 r26 正式 Attempt 仍待完成。
+- 三个成功探针文件已从 r25 项目移到 `C:\Users\12611\AppData\Local\Temp\designecho-e2-probe-cleanup-1521c504`，可恢复；r25 `主图` 目录只保留正式 PSD/JPG。探针 Photoshop 文档和授权调试 Runtime 均已关闭。
+
 ## 2026-08-29 r24 终局看错对象：ReviewSet 类型身份修复
 
 - D-089 提交 `329a650e` 已推送；提交后 Agent build `designecho-329a650e2103-69bc9c69c06c` 与 UXP build `designecho-uxp-production-329a650e2103-cdcad214d92e` 均为干净同提交。r24 Run `run-20260828211234-b6f8c117-f38e` 在真实 GPT-5.6 Sol /Photoshop、全新 fixture 和 1440×1440 画布下完成 15 次模型调用、15 次 Tool Call、5 次成功 mutation。PSD 为 30,118,573 字节、SHA-256 `cfdb48b106abbb3d40183a96e7a1f9b6c2a1256abd5349d3f93416eebbfbdcfc`；JPG 为 1,016,313 字节、SHA-256 `1f0c3c2f1708d1eebf21e716c1a9d0f17827a89eb3eccb1c7bb293da22515e0f`。
 - Agent 自主选择 `DSC05845.jpg` 上脚图和 `DSC05304.jpg` 四色平铺，说明左图右文结构，并在观察成品后只放大偏小的平铺商品。最终 history `4389:4424` 的真实画面包含左侧主体、右侧“加厚 木耳边 /粉咖微压直板”标题和四色陈列；Final Judge 却报告“大片上下留白、没有设计文字、商品群偏小”，证明确实看错了视觉对象。
 - 根因已落实到通用 Runtime：`selectFinalQualityReviewSet` 对单画布错误使用 `single || bundle`。一个同 history、结构完整的素材 /局部 Bundle 被当成终局候选，自动全画布采集因而未发生；Judge 绑定了错误 source output，E2 又只接受 full-surface，最终 `finalArtifactObserved=true`、生产交付检查通过但安全 `finalArtifactRefs` 为空。该 Attempt 已完成 `reconciled_after_runtime_restart`，测试文档和授权调试 Runtime 均已关闭。
-- D-090 已将 ReviewSet 类型纳入终局身份：单画布只接受 `single_surface`，多画面只接受 Bundle；Judge、E2 和可信跨代 Artifact 共用同一选择。Runtime Declaration 攻击回归覆盖合法同 history 误导 Bundle，并证明自动全画布仍会执行、Judge 第一张图正确、误导图被排除、持久 Artifact 为 `single_surface`。Design Authorship /Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整核心闸门 58/58 与 Agent production build 已通过；提交推送、提交后 identity 和 r25 真机仍待完成。
+- D-090 已将 ReviewSet 类型纳入终局身份：单画布只接受 `single_surface`，多画面只接受 Bundle；Judge、E2 和可信跨代 Artifact 共用同一选择。Runtime Declaration 攻击回归覆盖合法同 history 误导 Bundle，并证明自动全画布仍会执行、Judge 第一张图正确、误导图被排除、持久 Artifact 为 `single_surface`。Design Authorship /Agent Business Boundary、Simplification Ratchet、Renderer 类型检查、完整核心闸门 58/58、Agent /UXP production build、提交 `1521c504` 和 GitHub 推送均已完成；r25 已证明 Judge 对象正确，剩余交付问题由 D-091 处理。
 
 ## 2026-08-29 r23 完整画布终审缺口与通用证据链修复
 
