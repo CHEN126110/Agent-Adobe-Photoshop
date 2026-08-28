@@ -201,6 +201,7 @@ async function run() {
     const liveController = new AbortController();
     const semanticGuidance = {
         version: 'semantic-matting-guidance/v1',
+        instanceSelectionMode: 'exact_guided_instances',
         sets: [{
             foregroundPoints: [{ x: 0.42, y: 0.36 }],
             backgroundPoints: [{ x: 0.44, y: 0.52 }]

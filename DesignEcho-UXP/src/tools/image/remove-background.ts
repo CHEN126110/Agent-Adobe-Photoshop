@@ -107,7 +107,10 @@ export interface SemanticMattingApplyContract {
     unresolvedTargetCount: number;
     omittedTargetCount: number;
     detectedTargetCount: number;
+    candidateRegionCount?: number;
     detectedRegionCount: number;
+    unselectedCandidateCount?: number;
+    instanceSelectionMode?: 'all_detected' | 'exact_guided_instances';
     segmentationRequestedRegionCount: number;
     segmentationCompletedRegionCount: number;
     segmentationRequestedTargetCount: number;
@@ -244,12 +247,17 @@ export function validateSemanticMattingApplyContract(
     if (!value || typeof value !== 'object') return false;
     const contract = value as Partial<SemanticMattingApplyContract>;
     if (contract.schema !== 'semantic-matting-target-lifecycle/v2') return false;
+    const candidateRegionCount = contract.candidateRegionCount ?? contract.detectedRegionCount;
+    const unselectedCandidateCount = contract.unselectedCandidateCount ?? 0;
+    const instanceSelectionMode = contract.instanceSelectionMode ?? 'all_detected';
     const counts = [
         contract.requestedTargetCount,
         contract.unresolvedTargetCount,
         contract.omittedTargetCount,
         contract.detectedTargetCount,
+        candidateRegionCount,
         contract.detectedRegionCount,
+        unselectedCandidateCount,
         contract.segmentationRequestedRegionCount,
         contract.segmentationCompletedRegionCount,
         contract.segmentationRequestedTargetCount,
@@ -257,6 +265,12 @@ export function validateSemanticMattingApplyContract(
         contract.appliedRegionCount
     ];
     if (!counts.every(count => Number.isInteger(count) && Number(count) >= 0)) return false;
+    if (instanceSelectionMode !== 'all_detected'
+        && instanceSelectionMode !== 'exact_guided_instances') return false;
+    if (Number(candidateRegionCount) < Number(contract.detectedRegionCount)) return false;
+    if (Number(unselectedCandidateCount)
+        !== Number(candidateRegionCount) - Number(contract.detectedRegionCount)) return false;
+    if (instanceSelectionMode === 'all_detected' && Number(unselectedCandidateCount) !== 0) return false;
     return Number(contract.requestedTargetCount) > 0
         && contract.unresolvedTargetCount === 0
         && contract.omittedTargetCount === 0

@@ -94,6 +94,12 @@ function semanticMattingGuidanceParam(): SkillParameter {
             strParam('version', '固定契约版本。', true, {
                 enum: ['semantic-matting-guidance/v1']
             }),
+            strParam(
+                'instanceSelectionMode',
+                '实例选择方式。默认 refine_detected_candidates：引导点只精修已检测候选；只有 Agent 已观察画面并确认引导组就是全部目标实例时，才使用 exact_guided_instances。',
+                false,
+                { enum: ['refine_detected_candidates', 'exact_guided_instances'] }
+            ),
             arrParam('sets', '逐目标实例的正负点集合；每组前景点必须落在同一个检测框内。', true, {
                 minItems: 1,
                 maxItems: 8,

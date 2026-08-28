@@ -12,7 +12,9 @@ import {
 import {
     bindSemanticMattingGuidanceToDetectionBoxes,
     normalizeSemanticMattingGuidance,
+    selectSemanticMattingDetectionInstances,
     type SemanticMattingGuidance,
+    type SemanticMattingLifecycleSelectionMode,
     type SemanticMattingProviderPoint
 } from '../../shared/semantic-matting-guidance';
 import type { UXPContext } from './types';
@@ -59,7 +61,10 @@ export interface SemanticTargetLifecycleReceipt {
     unresolvedTargetCount: number;
     omittedTargetCount: number;
     detectedTargetCount: number;
+    candidateRegionCount?: number;
     detectedRegionCount: number;
+    unselectedCandidateCount?: number;
+    instanceSelectionMode?: SemanticMattingLifecycleSelectionMode;
     segmentationRequestedRegionCount: number;
     segmentationCompletedRegionCount: number;
     segmentationRequestedTargetCount: number;
@@ -459,12 +464,18 @@ export function validateSemanticTargetLifecycle(
         return { valid: false, issues: ['invalid_schema'] };
     }
 
+    const candidateRegionCount = receipt.candidateRegionCount ?? receipt.detectedRegionCount;
+    const unselectedCandidateCount = receipt.unselectedCandidateCount ?? 0;
+    const instanceSelectionMode = receipt.instanceSelectionMode ?? 'all_detected';
+
     const counts = [
         receipt.requestedTargetCount,
         receipt.unresolvedTargetCount,
         receipt.omittedTargetCount,
         receipt.detectedTargetCount,
+        candidateRegionCount,
         receipt.detectedRegionCount,
+        unselectedCandidateCount,
         receipt.segmentationRequestedRegionCount,
         receipt.segmentationCompletedRegionCount,
         receipt.segmentationRequestedTargetCount,
@@ -477,6 +488,19 @@ export function validateSemanticTargetLifecycle(
     if (!(receipt.requestedTargetCount > 0)) issues.push('empty_request');
     if (receipt.unresolvedTargetCount > 0) issues.push('unresolved_targets');
     if (receipt.omittedTargetCount > 0) issues.push('omitted_targets');
+    if (instanceSelectionMode !== 'all_detected'
+        && instanceSelectionMode !== 'exact_guided_instances') {
+        issues.push('invalid_instance_selection_mode');
+    }
+    if (candidateRegionCount < receipt.detectedRegionCount) {
+        issues.push('selected_regions_exceed_candidates');
+    }
+    if (unselectedCandidateCount !== candidateRegionCount - receipt.detectedRegionCount) {
+        issues.push('candidate_selection_count_mismatch');
+    }
+    if (instanceSelectionMode === 'all_detected' && unselectedCandidateCount !== 0) {
+        issues.push('unexpected_unselected_candidates');
+    }
 
     if (stage !== 'pre-detection') {
         if (receipt.detectedTargetCount !== receipt.requestedTargetCount) {
@@ -1307,7 +1331,10 @@ export function registerVisualHandlers(context: UXPContext): void {
             unresolvedTargetCount: resolved.unresolved.length,
             omittedTargetCount: resolved.omitted.length,
             detectedTargetCount: 0,
+            candidateRegionCount: 0,
             detectedRegionCount: 0,
+            unselectedCandidateCount: 0,
+            instanceSelectionMode: 'all_detected',
             segmentationRequestedRegionCount: 0,
             segmentationCompletedRegionCount: 0,
             segmentationRequestedTargetCount: 0,
@@ -1412,7 +1439,10 @@ export function registerVisualHandlers(context: UXPContext): void {
         );
         const missingPhrases = phrases.filter(phrase => !detectedPhrases.has(phrase.trim().toLowerCase()));
         lifecycle.detectedTargetCount = phrases.length - missingPhrases.length;
+        lifecycle.candidateRegionCount = detection.boxes.length;
         lifecycle.detectedRegionCount = detection.boxes.length;
+        lifecycle.unselectedCandidateCount = 0;
+        lifecycle.instanceSelectionMode = 'all_detected';
         const postDetection = validateSemanticTargetLifecycle(lifecycle, 'post-detection');
 
         if (!postDetection.valid) {
@@ -1457,18 +1487,14 @@ export function registerVisualHandlers(context: UXPContext): void {
             `[UXP Handler] Detected ${detection.boxes.length} target(s) in ${detection.processingTime}ms — ${boxSummary}`
         );
 
-        sendMattingProgress(
-            60,
-            `已定位 ${detection.boxes.length} 处「${args.targetPrompt}」，正在生成选区...`,
-            'segmentation'
-        );
-
         const semanticBoxes = detection.boxes.map(box => ({
             x1: box.x1,
             y1: box.y1,
             x2: box.x2,
-            y2: box.y2
+            y2: box.y2,
+            phrase: box.phrase
         }));
+        let selectedSemanticBoxes = semanticBoxes;
         let guidancePointsByBox: SemanticMattingProviderPoint[][] | undefined;
         if (args.semanticGuidance) {
             const baseExportGeometry = validateSemanticBaseExportReceipt({
@@ -1516,15 +1542,70 @@ export function registerVisualHandlers(context: UXPContext): void {
                     semanticTargetLifecycle: lifecycle
                 };
             }
-            guidancePointsByBox = binding.pointsByBox;
+            const selection = selectSemanticMattingDetectionInstances({
+                guidance: args.semanticGuidance,
+                boxes: semanticBoxes,
+                pointsByBox: binding.pointsByBox,
+                guidedBoxIndexes: binding.guidedBoxIndexes,
+                requestedPhrases: phrases
+            });
+            if (!selection.valid) {
+                return {
+                    success: false,
+                    error: selection.error,
+                    errorCode: selection.code,
+                    diagnostic: {
+                        stage: 'post-detection',
+                        reason: 'semantic_instance_selection_incomplete',
+                        issues: selection.issues,
+                        candidateRegionCount: semanticBoxes.length
+                    },
+                    semanticTargetLifecycle: lifecycle
+                };
+            }
+            selectedSemanticBoxes = selection.boxes;
+            guidancePointsByBox = selection.pointsByBox;
+            lifecycle.candidateRegionCount = selection.candidateRegionCount;
+            lifecycle.detectedRegionCount = selection.selectedRegionCount;
+            lifecycle.unselectedCandidateCount = selection.unselectedCandidateCount;
+            lifecycle.instanceSelectionMode = selection.mode;
+            if (selection.mode === 'exact_guided_instances') {
+                lifecycle.detectedTargetCount = phrases.length;
+                const postSelection = validateSemanticTargetLifecycle(lifecycle, 'post-detection');
+                if (!postSelection.valid) {
+                    return {
+                        success: false,
+                        error: 'Agent 选择的目标实例收据不完整，本轮没有修改图层。',
+                        errorCode: 'SEMANTIC_INSTANCE_SELECTION_RECEIPT_INVALID',
+                        diagnostic: {
+                            stage: 'post-detection',
+                            reason: 'instance_selection_receipt_invalid',
+                            issues: postSelection.issues,
+                            lifecycle
+                        },
+                        semanticTargetLifecycle: lifecycle
+                    };
+                }
+                logService?.logAgent(
+                    'info',
+                    `[UXP Handler] Agent exact instance selection: `
+                    + `${selection.selectedRegionCount}/${selection.candidateRegionCount}, `
+                    + `unselected=${selection.unselectedCandidateCount}`
+                );
+            }
         }
 
+        sendMattingProgress(
+            60,
+            `已选定 ${selectedSemanticBoxes.length} 处「${args.targetPrompt}」，正在生成选区...`,
+            'segmentation'
+        );
 
         // 3. 按目标框二次高分辨率取像，再在局部图上精细分割。
         //    第一次导出为了让检测器看全画面，被压到 1024 长边；直接在那张图上分割，
         //    目标只有一百多像素，边缘精度从源头就丢了。
         const { result } = await segmentWithAutoExpand({
-            boxes: semanticBoxes,
+            boxes: selectedSemanticBoxes,
             guidancePointsByBox,
             detectWidth: decoded.width,
             detectHeight: decoded.height,
@@ -2069,7 +2150,10 @@ export function registerVisualHandlers(context: UXPContext): void {
                     'unresolvedTargetCount',
                     'omittedTargetCount',
                     'detectedTargetCount',
+                    'candidateRegionCount',
                     'detectedRegionCount',
+                    'unselectedCandidateCount',
+                    'instanceSelectionMode',
                     'segmentationRequestedRegionCount',
                     'segmentationCompletedRegionCount',
                     'segmentationRequestedTargetCount',

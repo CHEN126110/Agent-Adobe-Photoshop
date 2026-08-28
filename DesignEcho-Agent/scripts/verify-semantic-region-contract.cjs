@@ -22,7 +22,8 @@ const {
 const { MattingService } = require(path.join(agentRoot, 'src/main/services/matting-service.ts'));
 const {
     bindSemanticMattingGuidanceToDetectionBoxes,
-    normalizeSemanticMattingGuidance
+    normalizeSemanticMattingGuidance,
+    selectSemanticMattingDetectionInstances
 } = require(path.join(agentRoot, 'src/shared/semantic-matting-guidance.ts'));
 
 const photoshopMock = {
@@ -138,6 +139,82 @@ async function run() {
         detectHeight: 100
     });
     check('前景点归属不唯一时停止，不由 Harness 猜实例', ambiguousBinding.valid === false);
+
+    const exactGuidanceValidation = normalizeSemanticMattingGuidance({
+        version: 'semantic-matting-guidance/v1',
+        instanceSelectionMode: 'exact_guided_instances',
+        sets: [
+            { foregroundPoints: [{ x: 0.75, y: 0.30 }] },
+            { foregroundPoints: [{ x: 0.30, y: 0.30 }, { x: 0.30, y: 0.50 }] }
+        ]
+    });
+    const exactCandidateBoxes = [
+        { phrase: 'sock', x1: 60, y1: 10, x2: 90, y2: 80 },
+        { phrase: 'sock', x1: 10, y1: 10, x2: 50, y2: 80 },
+        { phrase: 'sock', x1: 5, y1: 60, x2: 50, y2: 95 }
+    ];
+    const exactBinding = bindSemanticMattingGuidanceToDetectionBoxes({
+        guidance: exactGuidanceValidation.guidance,
+        boxes: exactCandidateBoxes,
+        outputWidth: 100,
+        outputHeight: 100,
+        baseRegionInOutput: { x1: 0, y1: 0, x2: 100, y2: 100 },
+        detectWidth: 100,
+        detectHeight: 100
+    });
+    const exactSelection = exactBinding.valid
+        ? selectSemanticMattingDetectionInstances({
+            guidance: exactGuidanceValidation.guidance,
+            boxes: exactCandidateBoxes,
+            pointsByBox: exactBinding.pointsByBox,
+            guidedBoxIndexes: exactBinding.guidedBoxIndexes,
+            requestedPhrases: ['sock']
+        })
+        : exactBinding;
+    check(
+        'exact_guided_instances 只消费 Agent 明确绑定的实例并保留候选差额收据',
+        exactSelection.valid === true
+            && exactSelection.mode === 'exact_guided_instances'
+            && exactSelection.candidateRegionCount === 3
+            && exactSelection.selectedRegionCount === 2
+            && exactSelection.unselectedCandidateCount === 1,
+        JSON.stringify(exactSelection)
+    );
+    const defaultSelection = exactBinding.valid
+        ? selectSemanticMattingDetectionInstances({
+            guidance: {
+                ...exactGuidanceValidation.guidance,
+                instanceSelectionMode: 'refine_detected_candidates'
+            },
+            boxes: exactCandidateBoxes,
+            pointsByBox: exactBinding.pointsByBox,
+            guidedBoxIndexes: exactBinding.guidedBoxIndexes,
+            requestedPhrases: ['sock']
+        })
+        : exactBinding;
+    check(
+        '默认 refine 模式不因引导组较少就让 Harness 擅自丢候选',
+        defaultSelection.valid === true
+            && defaultSelection.mode === 'all_detected'
+            && defaultSelection.selectedRegionCount === 3
+            && defaultSelection.unselectedCandidateCount === 0,
+        JSON.stringify(defaultSelection)
+    );
+    const missingPhraseSelection = exactBinding.valid
+        ? selectSemanticMattingDetectionInstances({
+            guidance: exactGuidanceValidation.guidance,
+            boxes: exactCandidateBoxes,
+            pointsByBox: exactBinding.pointsByBox,
+            guidedBoxIndexes: exactBinding.guidedBoxIndexes,
+            requestedPhrases: ['sock', 'shoe']
+        })
+        : exactBinding;
+    check(
+        'exact 模式没有覆盖全部点名短语时整体停止',
+        missingPhraseSelection.valid === false
+            && missingPhraseSelection.code === 'SEMANTIC_GUIDANCE_TARGET_COVERAGE_INCOMPLETE',
+        JSON.stringify(missingPhraseSelection)
+    );
 
     // ========== Main：区域几何必须来自实际收据 ==========
     const requestedSourceBounds = { left: -50, top: 20, right: 150, bottom: 220 };
@@ -327,6 +404,30 @@ async function run() {
         !validateSemanticTargetLifecycle(makeLifecycle({ segmentationCompletedRegionCount: 2 }), 'pre-apply').valid
     );
     check('完整目标收据允许进入 apply', validateSemanticTargetLifecycle(makeLifecycle(), 'pre-apply').valid);
+    const exactLifecycle = makeLifecycle({
+        candidateRegionCount: 4,
+        detectedRegionCount: 3,
+        unselectedCandidateCount: 1,
+        instanceSelectionMode: 'exact_guided_instances'
+    });
+    check(
+        'exact 实例选择允许候选数大于选中数，但差额必须进入收据',
+        validateSemanticTargetLifecycle(exactLifecycle, 'pre-apply').valid
+    );
+    check(
+        'all_detected 模式不能隐藏未选择候选',
+        !validateSemanticTargetLifecycle({
+            ...exactLifecycle,
+            instanceSelectionMode: 'all_detected'
+        }, 'pre-apply').valid
+    );
+    check(
+        'candidate / selected / unselected 数量不守恒时拒绝',
+        !validateSemanticTargetLifecycle({
+            ...exactLifecycle,
+            unselectedCandidateCount: 0
+        }, 'pre-apply').valid
+    );
     check(
         'apply 成功但缺 applied 数量收据时不报成功',
         !validateSemanticTargetLifecycle(makeLifecycle(), 'post-apply').valid
@@ -600,6 +701,10 @@ async function run() {
     );
 
     check('UXP 接受完整的 pre-apply 契约', validateSemanticMattingApplyContract(makeLifecycle()));
+    check(
+        'UXP 接受带候选差额的 exact pre-apply 契约',
+        validateSemanticMattingApplyContract(exactLifecycle)
+    );
     check(
         'UXP 在 Photoshop mutation 前拒绝部分分割契约',
         !validateSemanticMattingApplyContract(makeLifecycle({ segmentationCompletedTargetCount: 2 }))
