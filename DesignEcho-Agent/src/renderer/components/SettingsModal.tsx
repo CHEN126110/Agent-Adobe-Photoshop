@@ -508,6 +508,7 @@ interface SegmentationModel {
     size: string;
     downloadUrl: string;
     mirrorUrl?: string;  // 中国镜像
+    expectedSha256?: string;
     fileName: string;
     folder: string;
     required: boolean;
@@ -579,22 +580,24 @@ const SEGMENTATION_MODELS: SegmentationModel[] = [
         description: '按框精确分割 - 图像编码',
         feature: '目标框 → 精确选区',
         size: '~27MB',
-        downloadUrl: 'https://huggingface.co/PulpCut/mobilesam-onnx/resolve/main/mobilesam.encoder.onnx',
-        mirrorUrl: 'https://hf-mirror.com/PulpCut/mobilesam-onnx/resolve/main/mobilesam.encoder.onnx',
-        fileName: 'mobile_sam_encoder.onnx',
+        downloadUrl: 'https://huggingface.co/Acly/MobileSAM/resolve/0d3b403339b4674a82493d5e97964dd78089ddc8/mobile_sam_image_encoder.onnx',
+        mirrorUrl: 'https://hf-mirror.com/Acly/MobileSAM/resolve/0d3b403339b4674a82493d5e97964dd78089ddc8/mobile_sam_image_encoder.onnx',
+        expectedSha256: '580f5fb648ea1062c0aabc26217aed56921985f03f0cbbd852bba81d760cc749',
+        fileName: 'mobile_sam_image_encoder.onnx',
         folder: 'sam',
         required: false,
         purpose: 'semantic'
     },
     {
         id: 'sam-decoder',
-        name: 'MobileSAM Decoder',
-        description: '按框精确分割 - 蒙版解码',
-        feature: '目标框 → 精确选区',
+        name: 'MobileSAM 多候选 Decoder',
+        description: '按框生成 4 个范围候选并按模型质量分数消歧',
+        feature: '目标框 → 4 个语义范围候选',
         size: '~16MB',
-        downloadUrl: 'https://huggingface.co/PulpCut/mobilesam-onnx/resolve/main/mobilesam.decoder.onnx',
-        mirrorUrl: 'https://hf-mirror.com/PulpCut/mobilesam-onnx/resolve/main/mobilesam.decoder.onnx',
-        fileName: 'mobile_sam_decoder.onnx',
+        downloadUrl: 'https://huggingface.co/Acly/MobileSAM/resolve/0d3b403339b4674a82493d5e97964dd78089ddc8/sam_mask_decoder_multi.onnx',
+        mirrorUrl: 'https://hf-mirror.com/Acly/MobileSAM/resolve/0d3b403339b4674a82493d5e97964dd78089ddc8/sam_mask_decoder_multi.onnx',
+        expectedSha256: '8976b90a87ba50a6a72217a5ff994f7d25ce16f2229fcc1ed259e1294c622ffe',
+        fileName: 'sam_mask_decoder_multi.onnx',
         folder: 'sam',
         required: false,
         purpose: 'semantic'
@@ -628,7 +631,11 @@ const SegmentationModelManager: React.FC = () => {
         const status: Record<string, 'installed' | 'missing'> = {};
         for (const model of SEGMENTATION_MODELS) {
             try {
-                const exists = await api.checkSegmentModelExists(model.folder, model.fileName);
+                const exists = await api.checkSegmentModelExists(
+                    model.folder,
+                    model.fileName,
+                    model.expectedSha256
+                );
                 status[model.id] = exists ? 'installed' : 'missing';
             } catch {
                 status[model.id] = 'missing';
@@ -662,6 +669,7 @@ const SegmentationModelManager: React.FC = () => {
                 url: model.downloadUrl,
                 folder: model.folder,
                 fileName: model.fileName,
+                expectedSha256: model.expectedSha256,
                 onProgress: (progress: number) => {
                     setDownloadProgress(prev => ({ ...prev, [model.id]: progress }));
                 }
