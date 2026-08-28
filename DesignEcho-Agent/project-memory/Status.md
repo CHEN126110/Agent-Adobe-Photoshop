@@ -2,6 +2,13 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-28 SKU 姿态统一版本化 Photoshop Provider
+
+- Provider 生产链已收为一个版本化事务：UXP 用精确 document /history /layer 身份捕获未经裁边的 RAW RGBA 二进制像素，Main 在透明安全工作画布上运行已验证离线算法，并在质量不适用或失败时零写入；通过后只调用一次内部 `applySkuPoseAlignment`，唯一 Photoshop mutation owner 是 `PhotoshopTransactionRunner`。两个内部原子工具均不进入普通 Agent Tool 面。
+- 第一次隔离真机实验在 mutation 前以 `insufficient_canvas_margin` 停止，并暴露旧 native PNG 路径会裁透明边距、依赖全局活动文档并 duplicate 整个用户文档。错误生成的未保存副本 `3821` 已精确关闭；原文档 `3749` 保持 history `4114`、13 层不变。旧 whole-document duplicate 实现已从原 owner 删除，未用额外判断掩盖。
+- 修复后，独立 Provider Host + UXP 在全新隔离文档 `4180 / 4187 / 4194` 连续三次完成真实 E2E，均得到 source layer 3、output layer 4、专用 Provider receipt、verified operation、history 前进、源层隐藏 /输出层可见与清理恢复。固定合成样本弯曲降低约 83.9%，袜口漂移约 0.04%，机械质量全部通过。
+- 当前结论是 `provider_transaction_live_verified`，不是 `commercial_design_quality_verified`：三个样本验证几何、身份、事务、读回与恢复，不证明真实袜子纹理、图案、木耳边或审美效果。专项测试、Agent /UXP 构建、Tool 审计、最终完整核心 59/59 与独立本地提交已完成；面板协议迁移和真实弯曲商品盲评仍待完成。完整核心使用临时依赖声明匹配当前安装树，结束后 package /lock 已按原 SHA-256 精确恢复，依赖迁移没有混入。
+
 ## 2026-08-28 SKU 姿态统一纯离线算法与质量契约
 
 - 已从共享脏工作树的 P0 拼接链中只保留可验证算法思想，重新落成 SKU Provider 内部的三层纯模块：稳健中心线拟合、骨架标架像素 Warp、公开质量裁决；不读取文件、不调用网络 /Photoshop、不隐藏原层、不注册 Tool /Skill /面板入口，也没有把袜子工艺写入通用 Agent 或 Harness。

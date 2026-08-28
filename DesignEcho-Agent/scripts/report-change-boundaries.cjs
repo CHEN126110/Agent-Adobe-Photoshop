@@ -84,6 +84,7 @@ const BOUNDARIES = [
        'DesignEcho-Agent/scripts/report-agent-architecture.cjs',
        'DesignEcho-Agent/scripts/audit-agent-history-risks.cjs',
        'DesignEcho-Agent/scripts/audit-agent-simplification-ratchet.cjs',
+       'DesignEcho-Agent/scripts/audit-tool-registry.cjs',
        'DesignEcho-Agent/scripts/check-planning-alignment.cjs',
       'DesignEcho-Agent/scripts/check-workspace-dependency-integrity.cjs',
       'DesignEcho-Agent/scripts/verify-workspace-dependency-integrity.cjs',
@@ -283,7 +284,7 @@ const BOUNDARIES = [
       'npm run test:design-authorship-boundary',
       'Confirm SKU Provider boundary; do not expose as a general Agent or Harness decision path'
     ],
-    match: (entry) => /shape-morphing|sock-morphing|sock-shape|morphing|sku-pose-alignment|sku-retouch\/pose-/.test(entry.filePath)
+    match: (entry) => /shape-morphing|sock-morphing|sock-shape|morphing|sku-pose-alignment|sku-retouch\/pose-|layer-pixel-capture|capture-layer-pixels/.test(entry.filePath)
   },
   {
     id: 'main-process-infra',

@@ -4,9 +4,8 @@
  * 三种模式：
  *  - imaging (默认)：使用 Photoshop UXP Imaging API 抓取像素并编码为 JPEG（仅 UXP 支持 JPEG 编码）。
  *                   适合快速抓取、缩略图、shape-morphing 等对画质要求不极致的场景。
- *  - native-png   ：通过 JSX 桥调用 Photoshop 原生 `doc.duplicate()` + `trim` + `saveAs PNG`，
- *                   然后把文件读回为 Base64。无损 PNG，画质上限 = Photoshop 渲染的上限。
- *                   适合需要 PS 端文件编码的场景；对原文档无破坏，但会短暂出现一个临时文档标签。
+ *  - native-png   ：通过 JSX 桥把显式 documentId/layerId 对应的单图层复制到临时小文档，
+ *                   再用 Photoshop 原生 saveAs PNG 并读回 Base64。不会复制整份活动文档。
  *  - pixels-rgba  ：直接 `imaging.getPixels({ layerID })` 抓取目标图层的 raw RGBA 像素并返回
  *                   `Uint8Array`，**完全不创建任何临时文档、不动 visibility、PS 端零文档操作**，
  *                   实现真正的"零闪烁、无感"体验。调用方负责把 raw RGBA 通过二进制 ws 帧或
@@ -334,7 +333,7 @@ export async function exportLayerAsBase64(params: ExportLayerParams): Promise<To
         console.log(`[ExportLayer] 图层尺寸: ${layerWidth}x${layerHeight}`);
 
         if (mode === 'native-png') {
-            const nativeResult = await exportUsingNativePNG(layerId, maxSize);
+            const nativeResult = await exportUsingSmallDocPNG(doc.id, layerId, maxSize);
             const processingTime = performance.now() - startTime;
             console.log(
                 `[ExportLayer] ✅ native-png 完成, ${Math.round(nativeResult.base64.length / 1024)}KB, ` +
@@ -736,244 +735,9 @@ interface NativePNGExportResult {
 }
 
 /**
- * native-png 模式：通过 JSX 桥调用 Photoshop 原生 saveAs 导出无损 PNG
- *
- * 「零闪烁」流程（v2）：
- *   1. **完全不修改原文档的图层可见性**（这是 v1 黑屏闪烁的根因）
- *   2. `sourceDoc.duplicate(tempName, false)` 全量复制图层结构 → 临时文档与原文档画面一致
- *      PS 会自动把临时文档设为 activeDocument，此时用户看到的"切换"是无缝的
- *   3. 在临时文档上递归删除所有非目标图层（含空组），破坏只发生在临时文档
- *   4. 在临时文档上 `trim(TrimType.TRANSPARENT)` → 紧贴目标图层
- *   5. 如尺寸超 maxSize 用 `resizeImage` 等比缩放
- *   6. `saveAs` 为 PNG（PNGSaveOptions, compression=6, interlaced=false）到临时文件
- *   7. 关闭临时文档（DONOTSAVECHANGES，原文档自动重新激活）
- *   8. UXP 侧把 PNG 文件读回 Base64，删除临时文件
- *
- * 用户观感：原文档画面全程不变；标签栏短暂出现一个临时标签做事；不再有黑屏。
- */
-async function exportUsingNativePNG(layerId: number, maxSize: number): Promise<NativePNGExportResult> {
-    const tempFolder = await fs.getTemporaryFolder();
-    const tempFileName = `designecho_i2i_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
-    const tempFile = await tempFolder.createFile(tempFileName, { overwrite: true });
-    const tempFilePath: string = (tempFile as any).nativePath;
-    if (!tempFilePath) {
-        throw new Error('无法获取临时文件 nativePath');
-    }
-
-    const escapedPath = tempFilePath.replace(/\\/g, '/').replace(/'/g, "\\'");
-    const normalizedMaxSize = Math.max(0, Math.floor(Number(maxSize) || 0));
-
-    const jsx = `
-var __dePrevDialogs = app.displayDialogs;
-app.displayDialogs = DialogModes.NO;
-var __deOutput = '';
-function __deEncode(value) {
-    return encodeURIComponent(String(value === undefined || value === null ? '' : value));
-}
-function __deResult(fields) {
-    var parts = [];
-    for (var key in fields) {
-        if (!fields.hasOwnProperty(key)) continue;
-        if (fields[key] === undefined || fields[key] === null) continue;
-        parts.push(__deEncode(key) + '=' + __deEncode(fields[key]));
-    }
-    __deOutput = '__DESIGNECHO_RESULT__' + parts.join('&');
-    return __deOutput;
-}
-
-var sourceDoc = null;
-var tempDoc = null;
-try {
-    if (!app.documents.length) throw new Error('No active document');
-    sourceDoc = app.activeDocument;
-
-    var LAYER_ID = ${Number(layerId) || 0};
-    var MAX_SIZE = ${normalizedMaxSize};
-
-    function findLayerById(container, id) {
-        if (!container || !container.layers) return null;
-        for (var i = 0; i < container.layers.length; i++) {
-            var l = container.layers[i];
-            if (l.id === id) return l;
-            if (l.layers && l.layers.length > 0) {
-                var found = findLayerById(l, id);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
-
-    function asPixels(unitValue) {
-        try { return Number(unitValue.as('px')); }
-        catch (e) { return Number(unitValue); }
-    }
-
-    var srcTargetLayer = findLayerById(sourceDoc, LAYER_ID);
-    if (!srcTargetLayer) throw new Error('Target layer not found: ' + LAYER_ID);
-
-    // 在删除前用源文档读取 bounds（保证使用原始坐标，不被 tempDoc 后续 trim/resize 影响）
-    var contentLeft = 0, contentTop = 0, contentRight = 0, contentBottom = 0;
-    try {
-        contentLeft = Math.round(asPixels(srcTargetLayer.bounds[0]));
-        contentTop = Math.round(asPixels(srcTargetLayer.bounds[1]));
-        contentRight = Math.round(asPixels(srcTargetLayer.bounds[2]));
-        contentBottom = Math.round(asPixels(srcTargetLayer.bounds[3]));
-    } catch (boundsError) {}
-
-    // 1. 全量 duplicate（保留所有图层结构 + 当前可见性）
-    //    PS 会把 tempDoc 自动设为 activeDocument；视觉上和原文档一致，无闪烁
-    var tempName = 'designecho_i2i_' + (new Date().getTime());
-    tempDoc = sourceDoc.duplicate(tempName, false);
-    app.activeDocument = tempDoc;
-
-    // 2. 在 tempDoc 上递归删除所有非目标图层（自底向上 + 同步删空组）
-    //    所有破坏操作只影响 tempDoc，原文档 sourceDoc 完全不动
-    function pruneNonTarget(container, keepId) {
-        if (!container || !container.layers) return false;
-        var hasTargetInside = false;
-        for (var i = container.layers.length - 1; i >= 0; i--) {
-            var l = container.layers[i];
-            if (l.id === keepId) {
-                hasTargetInside = true;
-                continue;
-            }
-            if (l.layers && l.layers.length > 0) {
-                var subHasTarget = pruneNonTarget(l, keepId);
-                if (subHasTarget) {
-                    hasTargetInside = true;
-                } else {
-                    try { l.remove(); } catch (rmGroupError) {}
-                }
-            } else {
-                try { l.remove(); } catch (rmLeafError) {}
-            }
-        }
-        return hasTargetInside;
-    }
-    var foundInTemp = pruneNonTarget(tempDoc, LAYER_ID);
-    if (!foundInTemp) {
-        throw new Error('Target layer disappeared after duplication: ' + LAYER_ID);
-    }
-
-    // 3. trim 透明边界
-    try {
-        tempDoc.trim(TrimType.TRANSPARENT, true, true, true, true);
-    } catch (trimError) {}
-
-    var w = Math.max(1, Math.round(asPixels(tempDoc.width) || 1));
-    var h = Math.max(1, Math.round(asPixels(tempDoc.height) || 1));
-    if (MAX_SIZE > 0) {
-        var longest = Math.max(w, h);
-        if (longest > MAX_SIZE) {
-            var scale = MAX_SIZE / longest;
-            var tw = Math.max(1, Math.round(w * scale));
-            var th = Math.max(1, Math.round(h * scale));
-            tempDoc.resizeImage(
-                UnitValue(tw, 'px'),
-                UnitValue(th, 'px'),
-                undefined,
-                ResampleMethod.BICUBICSHARPER
-            );
-            w = tw;
-            h = th;
-        }
-    }
-
-    var target = new File('${escapedPath}');
-    if (!target.parent.exists) target.parent.create();
-    var pngOptions = new PNGSaveOptions();
-    pngOptions.compression = 6;
-    pngOptions.interlaced = false;
-    tempDoc.saveAs(target, pngOptions, true, Extension.LOWERCASE);
-
-    __deResult({
-        success: 1,
-        path: target.fsName,
-        width: w,
-        height: h,
-        contentLeft: contentLeft,
-        contentTop: contentTop,
-        contentRight: contentRight,
-        contentBottom: contentBottom
-    });
-} catch (error) {
-    __deResult({
-        success: 0,
-        error: String(error && error.message ? error.message : error)
-    });
-} finally {
-    try {
-        if (tempDoc && sourceDoc && tempDoc !== sourceDoc) {
-            tempDoc.close(SaveOptions.DONOTSAVECHANGES);
-        }
-    } catch (cleanupError) {}
-    try {
-        if (sourceDoc) app.activeDocument = sourceDoc;
-    } catch (activeRestoreError) {}
-    try {
-        app.displayDialogs = __dePrevDialogs;
-    } catch (dialogsError) {}
-}
-__deOutput;
-`;
-
-    let jsxData: any;
-    try {
-        const result = await runJsxCode(jsx, 'Export Layer as Native PNG');
-        jsxData = result.data;
-        if (!jsxData?.success) {
-            const message = jsxData?.error || result.message || 'Native PNG export failed (JSX)';
-            throw new Error(message);
-        }
-    } catch (jsxError) {
-        try { await tempFile.delete(); } catch { /* noop */ }
-        throw jsxError;
-    }
-
-    let base64 = '';
-    try {
-        const arrayBuffer = await tempFile.read({ format: storage.formats.binary });
-        const bytes = new Uint8Array(arrayBuffer as ArrayBuffer);
-        base64 = uint8ArrayToBase64(bytes);
-    } finally {
-        try { await tempFile.delete(); } catch { /* noop */ }
-    }
-
-    if (!base64) {
-        throw new Error('Native PNG export produced empty file');
-    }
-
-    const width = Number(jsxData.width) || 0;
-    const height = Number(jsxData.height) || 0;
-    const contentLeft = Number(jsxData.contentLeft) || 0;
-    const contentTop = Number(jsxData.contentTop) || 0;
-    const contentRight = Number(jsxData.contentRight) || 0;
-    const contentBottom = Number(jsxData.contentBottom) || 0;
-
-    return {
-        base64,
-        width,
-        height,
-        contentBounds: {
-            left: contentLeft,
-            top: contentTop,
-            right: contentRight,
-            bottom: contentBottom,
-            width: Math.max(0, contentRight - contentLeft),
-            height: Math.max(0, contentBottom - contentTop)
-        }
-    };
-}
-
-/**
- * 超大文档专用 / imaging 兜底：把单个目标图层复制进一个"贴合图层尺寸的临时小文档"，再从该小文档导出 PNG。
- *
- * 为什么不用 native-png（exportUsingNativePNG）？
- *   native-png 先 `sourceDoc.duplicate()` 复制整份文档（在 1440×28640 的详情页上会因内存/耗时触发 PS 弹窗超时），
- *   再逐层删除。而这里 `documents.add` 直接建一个只有图层大小的小画布，`srcLayer.duplicate(newDoc)` 只搬目标图层，
- *   全程不复制巨幅画布——快、稳，且对普通像素层 / 智能对象 / 图层组都适用。
- *
- * 关键点：图层复制到新文档后仍保留原文档坐标（可能为负、超出小画布），需要 translate 到 (0,0) 才不丢内容。
+ * 通用无损 PNG 路径：按显式 sourceDocumentId 找到目标文档，只把目标图层复制到
+ * 贴合 bounds 的临时小文档。不会依赖全局 activeDocument 复制整稿；普通文档、
+ * 超大 PSB 与 imaging 兜底统一走这一个可核对的实现。
  */
 async function exportUsingSmallDocPNG(
     sourceDocId: number,

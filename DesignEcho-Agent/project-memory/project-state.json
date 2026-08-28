@@ -276,7 +276,7 @@
   "activeSlice": {
     "id": "DEVELOPMENT-LOOP-RESET-001",
     "summary": "Reset the development loop around outcome evidence, a single current command chain, falsifiable vertical slices and dependency integrity before heavy validation.",
-    "status": "validated_gmr_dependency_preflight_fixed_semantic_photoshop_e2e_full_core_58_and_local_commit_complete_pose_offline_algorithm_and_quality_contract_validated_pose_provider_not_started_remote_push_network_pending",
+    "status": "validated_gmr_dependency_preflight_fixed_semantic_photoshop_e2e_and_local_commit_complete_pose_offline_algorithm_validated_pose_provider_binary_capture_single_transaction_live_e2e_3x_full_core_59_and_local_commit_complete_panel_migration_pending_remote_push_network_pending",
     "scope": [
       "Define GMR as development governance only; do not create a Runtime state, Gate, Registry or user-visible workflow.",
       "Align Prompt, CurrentTask, Plan and project-state on one active objective and sequence.",
@@ -289,7 +289,7 @@
   "activeRequest": {
     "id": "DEVELOPMENT-LOOP-RESET-001",
     "summary": "Establish and apply a high-value, reproducible and reversible development loop to one isolated product slice at a time.",
-    "status": "validated_gmr_dependency_preflight_first_falsifiable_e2e_and_pose_offline_algorithm_slice",
+    "status": "validated_gmr_dependency_preflight_first_falsifiable_e2e_pose_offline_algorithm_and_versioned_photoshop_provider_slice",
     "mustDo": [
       "Turn repeated outcome misses into a bounded GMR with explicit facts, owner, falsifiable hypothesis, next experiment and rollback point.",
       "Run a read-only dependency integrity check before expensive validation and report all detected gaps in one pass.",
@@ -302,7 +302,7 @@
       "Do not repeat an unchanged heavy validation or add a sample-specific patch to create progress appearance.",
       "Do not auto-install dependencies, modify lockfiles or hide environment failures in the preflight.",
       "Do not mix dependency migration, Smile, Photoshop pose Provider or panel migration into the pure offline pose slice.",
-      "Do not claim Photoshop E2E, design quality or speed improvement from this development-only change."
+      "Do not infer commercial design quality or speed improvement from geometry and transaction E2E evidence."
     ]
   },
   "activePlan": {
@@ -311,7 +311,7 @@
     "steps": [
       "已完成：过程价值复盘、GMR、权威文档与机器投影对齐，以及重型验证前依赖完整性 preflight。",
       "已完成待网络推送：语义抠图固定 Photoshop 案例、Provider 坐标空间修复、同步 batchPlay 写后读回、完整核心 58 项验证与独立本地提交。",
-      "进行中：姿态统一纯离线算法与版本化机械质量契约已完成；下一份只实现版本化单事务 Photoshop Provider，面板迁移后置。",
+      "已完成：姿态统一纯离线算法、精确二进制捕获和版本化单事务 Photoshop Provider 已完成三次隔离真机 E2E、最终完整核心 59/59 与独立本地提交；面板迁移后置。",
       "待独立收口：分别处理依赖迁移与 Smile Provider。",
       "待建立基线：主图、详情页、SKU、参考复刻固定自然语言重复案例与盲化视觉评分。",
       "条件后置：质量稳定后扩展无 Skill 能力，最后优化性能。"

@@ -13,6 +13,7 @@ import { registerWebViewHandlers } from './webview-handlers';
 import { registerTemplateLibraryHandlers } from './template-library-handlers';
 import { registerSmartLayoutUXPHandlers, getSmartLayoutToolSchemas } from './smart-layout-handlers';
 import { registerShapeMorphingUXPHandlers } from './shape-morphing-handlers';
+import { registerSkuPoseAlignmentHandlers } from './sku-pose-alignment-handlers';
 import { registerManualSkuColorCardHandlers } from './manual-sku-color-card-handlers';
 import type { UXPContext } from './types';
 
@@ -53,6 +54,9 @@ export function registerUXPHandlers(context: UXPContext): void {
     
     // 形态统一
     registerShapeMorphingUXPHandlers(context);
+
+    // SKU 姿态统一版本化 Provider（面板迁移后置）
+    registerSkuPoseAlignmentHandlers(context);
 
     // 手动 SKU 色卡（UXP 面板入口，复用 renderer 的统一色卡执行器）
     registerManualSkuColorCardHandlers(context);
