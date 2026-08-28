@@ -72,7 +72,7 @@ function App() {
     const projectScanned = useRef<string | null>(null);  // 记录已扫描的项目路径
     const designLearningEntry = useRef(createDesignLearningRuntimeEntryController());
     const designLearningPreparedFor = useRef<string | null>(null);
-    const testBridgeProjectSeeded = useRef(false);
+    const debugBridgeProjectSeeded = useRef(false);
     const stateFallbackLoaded = useRef(false);
     const stateSaveTimer = useRef<number | null>(null);
     const connectionStatusRevision = useRef(0);
@@ -255,20 +255,17 @@ function App() {
     }, []);
 
     useEffect(() => {
-        if (process.env.NODE_ENV !== 'development') return;
-        const params = new URLSearchParams(window.location.search || '');
-        if (params.get('designechoChatTestBridge') !== '1') return;
-        const projectPath = params.get('designechoChatTestProjectPath');
+        const projectPath = window.designEcho?.getDebugBridgeLaunchProjectPath?.();
         if (!projectPath) return;
 
         const seedTestProject = () => {
-            if (testBridgeProjectSeeded.current) return;
+            if (debugBridgeProjectSeeded.current) return;
             const hydratedProject = useAppStore.getState().currentProject;
-            testBridgeProjectSeeded.current = true;
+            debugBridgeProjectSeeded.current = true;
             if (hydratedProject?.path === projectPath) return;
             commitProjectSession({
-                id: 'chat-ui-electron-bridge-smoke',
-                name: projectPath.split(/[\\/]+/).filter(Boolean).pop() || 'Chat UI Electron Bridge Smoke',
+                id: 'debug-bridge-project-session',
+                name: projectPath.split(/[\\/]+/).filter(Boolean).pop() || 'Debug Bridge Project',
                 path: projectPath,
                 createdAt: Date.now(),
                 lastOpenedAt: Date.now(),
@@ -428,7 +425,7 @@ function App() {
                 if (!result?.success || !result.state) return;
                 const current = useAppStore.getState();
                 const fallbackState = result.state as any;
-                const skipFallbackProjectRestore = testBridgeProjectSeeded.current;
+                const skipFallbackProjectRestore = debugBridgeProjectSeeded.current;
                 const shouldPatch =
                     (!current.recentProjects?.length && Array.isArray(fallbackState.recentProjects) && fallbackState.recentProjects.length > 0) ||
                     (!skipFallbackProjectRestore && !current.currentProject && fallbackState.currentProject) ||

@@ -1223,6 +1223,12 @@ async function main() {
     "main",
     "preload.ts"
   ), "utf8");
+  const appSource = fs.readFileSync(path.join(
+    ROOT,
+    "src",
+    "renderer",
+    "App.tsx"
+  ), "utf8");
   const debugBridgeChatContractSource = fs.readFileSync(path.join(
     ROOT,
     "src",
@@ -1543,6 +1549,29 @@ async function main() {
       "workspaceSemanticDigest: fixtureBefore.workspaceMetadata.semanticDigest"
     ),
   "workspace semantic identity 必须贯穿 CLI、Main 与 Agent 实际消费的项目上下文，不能用旁路预读冒充绑定");
+  const debugBridgeProjectSeedIndex = appSource.indexOf(
+    "const projectPath = window.designEcho?.getDebugBridgeLaunchProjectPath?.();"
+  );
+  const debugBridgeProjectSeedEnd = appSource.indexOf(
+    "}, [commitProjectSession]);",
+    debugBridgeProjectSeedIndex
+  );
+  const debugBridgeProjectSeedSource = appSource.slice(
+    debugBridgeProjectSeedIndex,
+    debugBridgeProjectSeedEnd
+  );
+  assert(preloadSource.includes(
+    "const debugBridgeLaunchProjectPath = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'"
+  )
+    && preloadSource.includes("process.env.DESIGNECHO_CHAT_TEST_PROJECT_PATH")
+    && preloadSource.includes(
+      "getDebugBridgeLaunchProjectPath: (): string | null => debugBridgeLaunchProjectPath || null"
+    )
+    && debugBridgeProjectSeedIndex > 0
+    && debugBridgeProjectSeedEnd > debugBridgeProjectSeedIndex
+    && !debugBridgeProjectSeedSource.includes("designechoChatTestProjectPath")
+    && !debugBridgeProjectSeedSource.includes("process.env.NODE_ENV"),
+  "production benchmark 项目必须来自 Main 授权的启动上下文，不能依赖 development 编译分支或 Renderer URL 自签");
   const runLivePreflightIndex = designReliabilityCliSource.indexOf("const preflight = await buildPreflight");
   const runLiveArmedIndex = designReliabilityCliSource.indexOf("const armedAttempt = writeLiveAttemptEvent", runLivePreflightIndex);
   assert(runLivePreflightIndex > 0

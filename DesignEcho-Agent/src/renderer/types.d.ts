@@ -927,6 +927,8 @@ export interface DesignEchoAPI {
     onProjectIndexProgress?: (callback: (data: { projectId: string; current: number; total: number; phase?: 'project' | 'file'; fileName?: string }) => void) => () => void;
 
     // ===== Debug Bridge 运行窗口调试 =====
+    /** 仅在 Main 以受控 Debug Bridge 环境启动时返回固定项目路径；不读取 Renderer URL。 */
+    getDebugBridgeLaunchProjectPath?: () => string | null;
     onDebugBridgeChatPreflight?: (callback: (
         request: DebugBridgeChatPreflightRequest
     ) => Promise<DebugBridgeChatPreflightSnapshot> | DebugBridgeChatPreflightSnapshot) => () => void;

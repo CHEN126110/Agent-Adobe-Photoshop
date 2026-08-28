@@ -69,6 +69,9 @@ import type { ProjectSelectionResolution } from '../shared/project-selection-res
 
 const chatTestFakePhotoshopEnabled = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
     && process.env.DESIGNECHO_CHAT_TEST_FAKE_PHOTOSHOP === '1';
+const debugBridgeLaunchProjectPath = process.env.DESIGNECHO_CHAT_TEST_BRIDGE === '1'
+    ? String(process.env.DESIGNECHO_CHAT_TEST_PROJECT_PATH || '').trim()
+    : '';
 
 /**
  * Sandbox preload 必须保持单文件运行时边界，不能 import 相对本地模块。
@@ -977,6 +980,7 @@ const api = {
     },
 
     // ===== Debug Bridge 运行窗口调试 =====
+    getDebugBridgeLaunchProjectPath: (): string | null => debugBridgeLaunchProjectPath || null,
     onDebugBridgeChatPreflight: (callback: (
         request: DebugBridgeChatPreflightRequest
     ) => Promise<DebugBridgeChatPreflightSnapshot> | DebugBridgeChatPreflightSnapshot) => {
