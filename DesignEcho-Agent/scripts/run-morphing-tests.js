@@ -21,8 +21,10 @@ try {
 
 const { runIntegrationTests } = require('./tests/morphing-integration.test');
 const { runSkuRetouchIntegrationTests } = require('./tests/sku-retouch-integration.test');
+const { runSkuPoseAlignmentTests } = require('./tests/sku-pose-alignment.test');
 
 runIntegrationTests()
+    .then(() => runSkuPoseAlignmentTests())
     .then(() => runSkuRetouchIntegrationTests())
     .then(() => process.exit(0))
     .catch(err => {

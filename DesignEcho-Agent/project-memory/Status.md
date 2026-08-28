@@ -2,6 +2,14 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-28 SKU 姿态统一纯离线算法与质量契约
+
+- 已从共享脏工作树的 P0 拼接链中只保留可验证算法思想，重新落成 SKU Provider 内部的三层纯模块：稳健中心线拟合、骨架标架像素 Warp、公开质量裁决；不读取文件、不调用网络 /Photoshop、不隐藏原层、不注册 Tool /Skill /面板入口，也没有把袜子工艺写入通用 Agent 或 Harness。
+- `sku-pose-alignment-report/v1` 固定记录源尺寸、规范化调用参数、状态、原因、迭代数、前景保留、弯曲改善、中心线残差 /覆盖、局部旋转、Jacobian、尺度偏差、袜口漂移和输出四边余量。候选只在全部机械检查通过时返回；拒绝或无需处理时返回原始像素，不能被下游误当成可写产物。
+- 可复用功能测试覆盖：中等二次弯曲改善、相同输入逐字节确定性、直袜与零强度 no-op、声明袜口段真实零位移、复杂 S 形 /贴边画布 /非法参数失败关闭、像素尺寸错误显式失败；同时把旧稀疏位移压缩测试中的 `Math.random()` 改为确定性场。临时使用与当前安装树匹配的依赖声明后，完整 `maintenance:validate` 58/58 通过；原 package /lock 随后按 SHA-256 精确恢复，依赖迁移未混入。
+- 真实 `浅咖.jpg` 在 800×1200 工作分辨率经 DirectML BiRefNet 后得到 `not_needed`：中心线弯曲率 0.46%、拟合残差 0.19%、覆盖率 90.26%，四边余量 248/291/254/289px；算法没有修改本来已直的商品。该结果只证明保守 no-op，不证明真实弯曲袜的纹理 /图案 /木耳边质量。
+- 未接入：生产 `SkuRetouchService`、版本化 Photoshop Provider、唯一 `PhotoshopTransactionRunner`、document /revision、mutation receipt、同目标读回和面板协议迁移。当前只能声明 `contract_ready / offline_algorithm_validated`，不能声明 `runtime_integrated`、`photoshop_e2e_verified` 或商业质量通过。
+
 ## 2026-08-28 语义抠图固定 Photoshop 真机闭环
 
 - 已在隔离临时文档用 `DSC08187.jpg` 完成真实 Main → UXP → Photoshop E2E：目标词「袜子」检测到两个候选，Agent 明确给出的两组正负点分别绑定两个实例；GroundingDINO、MobileSAM 多蒙版、BiRefNet 边缘融合和二进制 RAW mask 全链执行。最终目标生命周期 requested 1 /detected 1、candidate 2 /selected 2、segmentation region 2/2、target 2/2、applied 2，未选择候选 0。

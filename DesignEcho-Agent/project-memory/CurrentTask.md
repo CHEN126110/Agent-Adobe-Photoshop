@@ -15,6 +15,7 @@
 - 上一轮完整验证在业务测试前后分别暴露规划卡结构缺口、`@cspotcode/source-map-support`、`@img/colour`、48 个非 optional 包和 `.bin` 启动器残缺；根因是一次被 Electron 文件锁以 EBUSY 中断的安装。环境未预检时重复从头运行完整闸门没有新增产品证据。
 - 共享工作树仍混有依赖迁移、Smile Provider、SKU 修图和姿态统一改动；语义提交通过精确暂存与隔离工作树避免夹带，但事后拆分成本较高。
 - 姿态链只读审计已发现 Alpha 导出、document /revision /transaction、显隐参数和旧 UI 协议等 P0，证明静态可编译不能替代运行链与事务审查；当前姿态改动不得整体提交。
+- 姿态统一第一份切片已在独立分支重建为无文件 /网络 /Photoshop 副作用的纯离线模块：稳健中心线拟合、骨架标架逆映射、单次像素采样与版本化机械质量收据分层实现；任何不适用、可能裁切、折叠、前景流失、改善不足或袜口漂移的候选都返回原像素并拒绝继续写入。
 - 仓库此前没有在 `maintenance:validate` 重型阶段前核对两仓 lock、安装版本、平台 payload 与 CLI launcher 的统一检查。
 
 ### 实施边界
@@ -29,6 +30,8 @@
 2. 已完成：依赖完整性 preflight 及攻击型 fixture 已接入核心验证第一个阶段，并在重型命令前 fail-fast。
 3. 已完成：完整核心闸门、最终代码审查与独立本地提交；远端推送连续两次因 GitHub 443 连接重置 /不可达而未建立 upstream，待网络恢复后只重试同一分支推送。
 4. 下一项：按纯离线算法、版本化单事务 Provider、面板迁移三份切片治理姿态统一；不得提交当前存在 P0 的拼接写链。
+   - 已完成第一份：离线算法与 `sku-pose-alignment-report/v1` 质量契约，未接入生产调用或 Photoshop 写入。
+   - 下一份只允许建立版本化、单文档、单事务 Photoshop Provider；面板协议仍后置，不得把旧 `pose-align-layers` 多调用 handler 带入。
 
 ### 验证与未知
 
@@ -39,10 +42,12 @@
 - 待验证：独立提交自身旧 lock 的全量维护入口仍需要与该 lock 匹配的安装树；当前 upgraded `node_modules` 会被 preflight 一次报告 3 个版本 /嵌套依赖差异并在重型命令前停止，不能把这项正确拒绝改成假绿。
 - 已核实：在只临时合并依赖声明、保留本分支 scripts 的验证 overlay 下，完整 `maintenance:validate` 58/58 通过；结束后 `package.json` 与 `package-lock.json` 分别恢复到 SHA-256 `5A737002…C8FCF` 与 `297B6AB7…31AC`。固定案例只证明本语义工作流的真实 Photoshop 闭环，不证明任意商品、任意遮挡重建或整个设计 Agent 的专业质量。
 - 已核实：最终 diff /状态 /编码快速检查通过，语义 E2E 根因修复已独立本地提交；远端没有取得成功回执，不能宣称已推送。
+- 已核实：姿态离线算法的确定性功能测试覆盖中等弯曲改善、逐字节重复、真实袜口锁定、贴边防裁切、复杂 S 形 /非法参数失败关闭和输入像素契约；真实 `浅咖.jpg` + DirectML BiRefNet 只读离线检查得到 `not_needed`（弯曲率 0.46% < 2.5%），没有为了展示能力改动本来已直的商品。只临时替换依赖声明以匹配当前安装树后，完整 `maintenance:validate` 58/58 通过；结束后 package /lock 已恢复到 `5A737002…C8FCF` 与 `297B6AB7…31AC`，依赖迁移未进入本切片。
+- 待验证：尚无符合当前适用范围的真实弯曲单袜固定案例，因此合成样本不能证明纹理、图案、木耳边或商业视觉质量；也没有 Photoshop mutation、同文档读回或面板迁移证据。这些必须由后续独立 Provider 纵切取得。
 
 ### 状态
 
-`validated / gmr_defined / dependency_preflight_targeted_validated / semantic_photoshop_e2e_passed / full_core_58_passed / local_commit_complete / remote_push_network_pending / exact_lock_install_pending`
+`validated / gmr_defined / dependency_preflight_targeted_validated / semantic_photoshop_e2e_passed / pose_offline_algorithm_and_quality_contract_validated / pose_provider_not_started / full_core_58_passed / semantic_local_commit_complete / remote_push_network_pending / exact_lock_install_pending`
 
 ---
 
