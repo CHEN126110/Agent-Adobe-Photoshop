@@ -276,7 +276,7 @@
   "activeSlice": {
     "id": "DEVELOPMENT-LOOP-RESET-001",
     "summary": "Reset the development loop around outcome evidence, a single current command chain, falsifiable vertical slices and dependency integrity before heavy validation.",
-    "status": "validated_gmr_dependency_preflight_fixed_semantic_photoshop_e2e_and_local_commit_complete_pose_offline_algorithm_validated_pose_provider_binary_capture_single_transaction_live_e2e_3x_full_core_59_and_local_commit_complete_panel_code_contract_build_visual_document_identity_guard_and_live_shell_validated_click_automation_blocked_live_uxp_click_pending_user_photoshop_restored_remote_push_network_pending",
+    "status": "validated_gmr_dependency_preflight_fixed_semantic_photoshop_e2e_and_local_commit_complete_pose_offline_algorithm_validated_pose_provider_binary_capture_single_transaction_live_e2e_3x_full_core_59_and_local_commit_complete_panel_code_contract_build_visual_document_identity_guard_and_live_shell_validated_click_automation_blocked_live_uxp_click_pending_user_photoshop_restored_real_product_applicability_unproven_dependency_and_smile_audit_in_progress_remote_push_network_pending",
     "scope": [
       "Define GMR as development governance only; do not create a Runtime state, Gate, Registry or user-visible workflow.",
       "Align Prompt, CurrentTask, Plan and project-state on one active objective and sequence.",
@@ -311,8 +311,8 @@
     "steps": [
       "已完成：过程价值复盘、GMR、权威文档与机器投影对齐，以及重型验证前依赖完整性 preflight。",
       "已完成待网络推送：语义抠图固定 Photoshop 案例、Provider 坐标空间修复、同步 batchPlay 写后读回、完整核心 58 项验证与独立本地提交。",
-      "进行中：姿态统一离线算法与版本化单事务 Provider 已完成三次隔离真机 E2E、完整核心 59/59 与独立提交；面板迁移的代码、契约、构建、280×620 视觉检查和完整核心 59/59 已完成，提交前补入的整批 documentId 守卫又通过 UXP 全测试与构建，新版 UXP 已在 Photoshop 真实显示。Computer Use 因 WebView 子进程边界未能送达按钮点击，隔离文档零写入且用户状态已恢复，只剩可触达真实 UXP 按钮的隔离 E2E。",
-      "待独立收口：分别处理依赖迁移与 Smile Provider。",
+      "代码切片完成、真实适用性待样本：姿态统一离线算法、版本化单事务 Provider、三次隔离真机 E2E、面板迁移与 documentId 守卫均已取得各自证据。官方 Debug 与 Computer Use 无法触达真实 WebView 按钮且不新增旁路；指定商品及两批跨商品抽样没有发现适用的自然中等弯曲单袜，商业质量待代表样本。",
+      "进行中：独立审计并分别收口依赖迁移与 Smile Provider。",
       "待建立基线：主图、详情页、SKU、参考复刻固定自然语言重复案例与盲化视觉评分。",
       "条件后置：质量稳定后扩展无 Skill 能力，最后优化性能。"
     ]

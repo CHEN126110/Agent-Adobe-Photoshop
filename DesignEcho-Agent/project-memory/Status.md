@@ -9,6 +9,12 @@
 - 面板主体切片的行为契约、UXP 全测试 /production build、Agent production build、WebView 内联脚本解析及完整核心 59/59 已通过；提交前审查补入 documentId 守卫后，受影响的 UXP 全测试、TypeScript 与 production build 再次通过。浏览器按真实 280×620 面板尺寸检查，说明、列表、强度、袜口保护和底部按钮均完整可读，临时预览默认页修改已恢复。
 - 新版 UXP 已在真实 Photoshop 中加载并显示。隔离文档 `4207 / history 4211 / source layer 3` 建立后，Computer Use 在点击前确认命中的是 `msedgewebview2.exe` 子窗口而非 Photoshop 目标，按自动化边界拒绝输入；没有点击送达，复核 history 仍为 4211。测试文档未保存关闭，主工程和原 UXP 构建已恢复，用户文档保持 `3749 / history 4204 / 13 layers`，原五个文档集合不变。
 - 未核实：本轮尚未从真实面板按钮完成一次 UXP→Main→UXP 嵌套请求。它仍是发布前真机验收，但当前缺口属于测试输入无法到达，不是已观察到的产品失败；不能由 Host 端 Provider E2E 替代，也不应为此新增隐藏旁路。
+- 官方 UXP Debug 已确认真实嵌入页为 `webview#designecho-webview` / `http://127.0.0.1:8766/`，但插件壳的 WebView API 只有单向 `postMessage`，没有 `executeScript` 或 `contentWindow`；子窗口也不进入 Computer Use 可选目标。该路线已按 GMR 停止，不通过猜坐标、伪造句柄或隐藏消息绕过。
+
+## 2026-08-28 SKU 姿态统一真实业务适用性审计
+
+- 指定商品 C-1256 已查看 8 张代表平铺图；另以确定性目录抽样查看 36 + 48 张跨商品代表图，并复核 C-1024 六张原始摄影图。样本主要为上脚、多主体、包装、折叠、手持或已经拉直，没有发现“单只完整主体 + 自然中等弯曲 + 袜口 /图案清晰”的固定案例。
+- 这不证明素材库绝无适用图片，但证明当前没有足够证据把合成几何成功外推成真实商业能力。没有人为弯曲直袜，也没有把不适用图送入 Provider；真实适用性和视觉质量保持未证实，待代表样本后恢复。
 
 ## 2026-08-28 SKU 姿态统一版本化 Photoshop Provider
 

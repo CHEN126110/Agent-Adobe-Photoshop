@@ -21,6 +21,7 @@
 - 根因修复后，独立 Provider Host + UXP 在三个全新隔离文档 `4180 / 4187 / 4194` 连续完成三次零人工纠偏 E2E：每次均从 source layer 3 生成 output layer 4、取得 `sku-pose-alignment-provider-receipt/v1` 和 verified Photoshop operation，并在验收后不保存关闭测试文档、恢复原文档。固定合成曲袜的中心线弯曲降低约 83.9%，袜口漂移约 0.04%，Jacobian、局部尺度、前景保留和可见内容安全边距均通过；这证明几何与事务闭环，不等于真实商品商业审美通过。
 - 姿态面板此前仍要求参考形状、款式、内容保护、平滑度、分区与执行步骤，但这些字段不进入新版 Provider 契约；继续保留会让用户误以为设置已生效，并可能恢复旧 `enhanced-shape-morph` / `pose-align-layers` 拼接链。当前面板只保留图层批量选择、显式矫正强度和可见的袜口保护选项；不再模拟进度，也不要求参考形状。
 - 面板批处理现在把加载图层时的 documentId 绑定为整批身份，并逐层读取当前 history/layer/name，按同一文档的最新 revision 调用 `sku-pose-align-v1` Provider；切换文档会在写前停止，重复 layerId 去重，已证明零写入的拒绝可继续，任何超时或未知写状态立即停止后续图层。原层保留并隐藏、结果同级新建的行为在界面中明确说明，避免把恢复能力藏起来。
+- 真实适用性审计没有找到可用于商业质量验收的固定案例：指定商品 C-1256 已查看的 8 张代表平铺图是包装、多只陈列、手持或已拉直；两批跨商品确定性抽样 36 + 48 张仍以模特上脚、多主体、包装、折叠或直板为主，另查 C-1024 六张原图也不满足“单只完整主体 + 自然中等弯曲 + 袜口 /图案清晰”。该证据不证明全库绝不存在案例，但足以拒绝人为制造弯曲样本或把不适用图片当商业验收；姿态能力的真实业务频率与适用性保持未证实。
 - 仓库此前没有在 `maintenance:validate` 重型阶段前核对两仓 lock、安装版本、平台 payload 与 CLI launcher 的统一检查。
 
 ### 实施边界
@@ -34,11 +35,12 @@
 1. 已完成：GMR、北极星与单一当前顺序已进入各自权威 owner，规划检查不再报告 activeRequest /activePlan 漂移。
 2. 已完成：依赖完整性 preflight 及攻击型 fixture 已接入核心验证第一个阶段，并在重型命令前 fail-fast。
 3. 已完成：完整核心闸门、最终代码审查与独立本地提交；远端推送连续两次因 GitHub 443 连接重置 /不可达而未建立 upstream，待网络恢复后只重试同一分支推送。
-4. 进行中：按纯离线算法、版本化单事务 Provider、面板迁移三份切片治理姿态统一；不得恢复存在 P0 的拼接写链。
+4. 已完成代码切片、真实业务适用性待样本：按纯离线算法、版本化单事务 Provider、面板迁移三份切片治理姿态统一；不得恢复存在 P0 的拼接写链。
    - 已完成第一份：离线算法与 `sku-pose-alignment-report/v1` 质量契约，未接入生产调用或 Photoshop 写入。
    - 已完成第二份的代码、三次隔离 Photoshop E2E、最终完整核心 59/59 与独立本地提交：精确二进制捕获、安全工作画布、版本化单文档单事务 Provider 和专用写后收据已闭环。
    - 第三份面板协议与调用方迁移已完成代码、契约测试、两端构建、完整核心 59/59、内联脚本解析和 280×620 视觉检查；提交前审查补入整批 documentId 身份守卫后，受影响的 UXP 全测试、TypeScript 与 production build 再次通过，未为这一处局部守卫重复运行重型整仓闸门。旧参考形状与未生效参数已退出真实 WebView，面板只调用版本化 Provider。新版 UXP 已在 Photoshop 中真实加载并显示；自动化点击因 WebView 子进程窗口不属于 Photoshop 目标而在写前被 Computer Use 拒绝，不能把这次未注入点击算作产品执行失败。尚需通过可实际触达面板按钮的方式完成一次隔离 E2E。
-   - 真实弯曲商品与商业视觉评测仍是独立质量验收，不由合成几何样本或面板布局替代。
+   - 真实弯曲商品与商业视觉评测仍是独立质量验收，不由合成几何样本或面板布局替代；当前指定商品与两批跨商品抽样没有发现符合适用范围的固定案例，因此停止盲搜和合成造例，待取得真实代表样本后再恢复该验收。
+5. 进行中：独立审计并收口依赖迁移与 Smile Provider，不夹带姿态或业务 Skill 改动。
 
 ### 验证与未知
 
@@ -56,10 +58,11 @@
 - 已核实：新版 UXP 已在 Photoshop 真实加载并显示；隔离测试文档 `4207 / history 4211 / source layer 3` 已建立。Computer Use 在点击前识别到命中目标属于 `msedgewebview2.exe` 子窗口而不是 Photoshop，按边界拒绝注入；复核 history 仍为 4211，说明没有发生面板写入。测试文档随后未保存关闭，主工程与原 UXP 构建已恢复；原用户文档仍为 `3749 / history 4204 / 13 layers`，五个原始文档集合不变。
 - 待验证：尚未通过真实面板按钮闭合一次 UXP→Main→UXP 嵌套请求；该项不能由 Provider Host E2E、纯逻辑批处理测试或无法送达目标的自动化点击替代。
 - 待验证：尚无符合当前适用范围的真实弯曲单袜固定案例，合成样本不能证明纹理、图案、木耳边或商业视觉质量。这属于后续独立验收，不能由 Provider 事务成功或面板迁移替代。
+- 已核实：C-1256 指定商品 8 张代表图、跨商品 36 + 48 张确定性抽样和 C-1024 六张原图均未提供适用的中等弯曲单只完整主体；临时联系表只存在系统临时目录，没有写入项目或原素材。当前最小正确结论是 `real_product_applicability_unproven`，不是算法失败，也不是商业质量通过。
 
 ### 状态
 
-`validated / gmr_defined / dependency_preflight_targeted_validated / semantic_photoshop_e2e_passed / pose_offline_algorithm_and_quality_contract_validated / pose_provider_binary_capture_single_transaction_live_e2e_3x_passed / full_core_59_passed / pose_provider_local_commit_complete / pose_panel_code_contract_build_and_280x620_visual_validated / pose_panel_document_identity_guard_uxp_validated / pose_panel_live_shell_loaded_click_automation_blocked / pose_panel_live_uxp_click_pending / user_photoshop_state_restored / real_product_visual_quality_pending / semantic_local_commit_complete / remote_push_network_pending / exact_lock_install_pending`
+`validated / gmr_defined / dependency_preflight_targeted_validated / semantic_photoshop_e2e_passed / pose_offline_algorithm_and_quality_contract_validated / pose_provider_binary_capture_single_transaction_live_e2e_3x_passed / full_core_59_passed / pose_provider_local_commit_complete / pose_panel_code_contract_build_and_280x620_visual_validated / pose_panel_document_identity_guard_uxp_validated / pose_panel_live_shell_loaded_click_automation_blocked / pose_panel_live_uxp_click_pending / user_photoshop_state_restored / pose_real_product_applicability_unproven / real_product_visual_quality_pending_representative_sample / dependency_and_smile_audit_in_progress / semantic_local_commit_complete / remote_push_network_pending / exact_lock_install_pending`
 
 ---
 
