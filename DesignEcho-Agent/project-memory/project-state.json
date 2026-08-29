@@ -1,7 +1,7 @@
 {
-  "currentFocus": "2026-08-29 RECONCILIATION-READ-BATCH-111：把 live preflight 中进入同一 Photoshop modal 队列的 Runtime identity 与文档清单读取收敛为一个只读串行批次，消除 5 秒并发计时假阴性。",
-  "currentMilestone": "RECONCILIATION-READ-BATCH-111",
-  "milestoneStatus": "root_cause_confirmed_two_modal_reads_3075_and_4513_ms_readonly_serial_batch_implemented_per_tool_failure_preserved_design_reliability_contract_passed_live_runtime_identity_recovered_full_core_validation_65_passed_commit_exact_runtime_and_reconciliation_pending_deepseek_selection_unchanged_no_model_call_no_photoshop_write",
+  "currentFocus": "2026-08-29 PAIRED-DELIVERY-FALLBACK-112：让未绑定 Manifest 但由本 TaskRun 新建的开放设计文档，也只能以最后内容 revision 的可编辑源稿与光栅预览完整收据集合完成交付。",
+  "currentMilestone": "PAIRED-DELIVERY-FALLBACK-112",
+  "milestoneStatus": "r33_failure_root_cause_confirmed_paired_completion_and_e2_implemented_live_agent_remediation_agent_build_and_full_core_65_passed_commit_clean_identities_and_r34_pending_manual_recovery_not_counted_deepseek_exact_model_preserved",
   "verified": {
     "code": [
       "Sharp runtime security compatibility D-110 (2026-08-29): Sharp moved from 0.34.5 to 0.35.4 with the Windows x64 native binary and libvips 8.18.6. Thirteen removed failOnError properties preserve their exact tolerant/strict semantics through failOn, and seven services use the 0.35 named-type or SharpConstructor contract rather than any or skipLibCheck. Clean Agent/UXP installs, zero-problem dependency trees, 595/595 and 148/148 integrity, CJS/ESM loading, real PNG/JPEG/WebP and raw/resize/flatten/sharpen/composite operations, adjacent image paths, types, both production builds, dirty and exact clean packaged read-only image probes/startup, the single 65-stage core gate, commit ab85414d and clean identities passed. Production audit fell from 6 to 2 and now contains only the independent ONNX/adm-zip owner. No credential, paid request or Photoshop write was used.",
@@ -322,49 +322,48 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "DESIGN-RELIABILITY-096",
-    "summary": "Give formal Design Reliability capture and the official UXP loader one cooperative repository-external Photoshop Runtime lease so another worktree cannot replace the singleton plugin session during an expensive Attempt; keep full runtime binding as the safety authority.",
-    "status": "d095_committed_second_run_explicit_message_edit_attribution_confirmed_runtime_lease_targeted_two_process_canary_adjacent_audits_typechecks_production_build_full_core_58_commit_and_clean_identities_passed_reconciliation_and_r33_pending",
+    "id": "PAIRED-DELIVERY-FALLBACK-112",
+    "summary": "Require a same-final-revision editable source and raster preview when the current TaskRun creates an unbound creative document, while reusing the existing Completion, remediation and E2 owners.",
+    "status": "implementation_live_agent_loop_targeted_audits_agent_build_and_full_core_65_passed_commit_clean_identities_and_r34_pending",
     "scope": [
-      "Acquire formal_capture after full preflight but before armed/submission events, then immediately revalidate the exact Photoshop Runtime binding.",
-      "Acquire uxp_loader before connecting to UDT or performing validate/load/unload, and reject an active owner without a force bypass.",
-      "Treat a live process as authoritative even after TTL; reclaim only a dead owner, and release only the matching leaseId.",
-      "Keep the lease in the canonical repository-external Design Reliability root shared by all worktrees without storing fixture paths, credentials, prompts or Photoshop content.",
-      "Retain submission, first-write and completion Runtime binding because manual UDT and third-party direct loads remain outside cooperative locking.",
-      "Do not add a generation guard for the r32 second Run: its new branchId proves a separate message-edit resend.",
-      "After clean validation and commit, reconcile r32 legally and use a fresh r33 fixture with DeepSeek V4 Flash Vision."
+      "Derive the obligation only from a trusted current-TaskRun document_creation commit and the final content document/history revision.",
+      "Require both editable and raster receipts from that revision and retain all matching result refs in E2.",
+      "Do not expand explicit raster-only, editable-only, export-only, read-only or existing-document edit requests.",
+      "Do not execute saves, choose paths or infer a business Task Profile from category text.",
+      "Complete the single full core gate, independent commit, clean identities and a fresh r34 exact-DeepSeek Photoshop E2E before closing the slice."
     ]
   },
   "activeRequest": {
-    "id": "RECONCILIATION-READ-BATCH-111",
-    "summary": "Eliminate false missing-Photoshop-runtime verdicts by routing diagnoseState and listDocuments through one existing guarded read-only serial batch with a bounded aggregate timeout, while preserving every live safety and reconciliation condition.",
-    "status": "root_cause_confirmed_two_modal_reads_3075_and_4513_ms_readonly_serial_batch_implemented_per_tool_failure_preserved_design_reliability_contract_passed_live_runtime_identity_recovered_full_core_validation_65_passed_commit_exact_runtime_and_reconciliation_pending_deepseek_selection_unchanged_no_model_call_no_photoshop_write",
+    "id": "PAIRED-DELIVERY-FALLBACK-112",
+    "summary": "Close the r33 technical-delivery gap by projecting a category-neutral paired editable-and-raster obligation for final revisions of creative documents created by the current TaskRun, using the existing Completion and final-delivery owners.",
+    "status": "paired_completion_and_e2_implemented_live_agent_remediation_agent_build_and_full_core_65_passed_commit_clean_identities_and_r34_pending_manual_recovery_not_counted_deepseek_exact_model_preserved",
     "mustDo": [
-      "Measure the real diagnoseState and listDocuments durations on the blocked r32 environment and bind the root cause to the existing Promise.all and 5 second timers.",
-      "Use the existing photoshop.tools.batch_call owner with allowWrites false and an explicit serial order for the two modal reads.",
-      "Give the combined read batch one bounded timeout that covers queueing plus execution rather than independently timing requests before they can run.",
-      "Preserve missing-result and per-tool failure as explicit unavailable evidence; never synthesize a Runtime identity or document inventory.",
-      "Pass focused, build and full validation, then use exact clean Agent/UXP runtimes to append the single legal r32 reconciliation receipt."
+      "Project the paired obligation only from a creative document created by the current TaskRun and bind it to the final content document/history revision.",
+      "Require real PSD/PSB and raster save/export receipts from that same revision and retain every result ref in final delivery evidence.",
+      "Preserve explicit raster-only, editable-only, export-only, read-only and existing-document edit scopes without expansion.",
+      "Reuse TaskCompletion remediation and agentic final-delivery evidence; do not create another Delivery owner or execute a save from Harness.",
+      "Pass reusable attacks, types, production build, one full core gate, an independent commit and a fresh r34 real DeepSeek/Photoshop E2E."
     ],
     "mustNotDo": [
-      "Do not remove or weaken Runtime identity, manifest, Git cleanliness, pending request, fixture binding, restart-time or document-ownership checks.",
-      "Do not add retries, swallow timeouts or default failed reads to an empty document set.",
-      "Do not serialize unrelated application reads or change Photoshop write/execution timeout policy globally.",
-      "Do not copy normal credentials, call a model or change the formal DeepSeek selection.",
-      "Do not save, close, switch or modify any open Photoshop document."
+      "Do not infer main-image, detail-page or SKU identity from task keywords, filenames or Tool names.",
+      "Do not automatically invoke saveDocument, select output paths or synthesize receipts from files on disk.",
+      "Do not accept stale-revision, cross-document, Tool-name-only, input-format-only or success-text evidence.",
+      "Do not mix Task Profile declaration reliability, context compression, semantic matting, design-quality tuning or dependency upgrades into this rollback slice.",
+      "Do not count the r33 manual PSD recovery as a successful autonomous run."
     ]
   },
   "activePlan": {
-    "id": "RECONCILIATION-READ-BATCH-111",
+    "id": "PAIRED-DELIVERY-FALLBACK-112",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：真实 3075ms + 4513ms 读取计时与旧并发超时根因定位。",
-      "已完成：一个 allowWrites=false 的 diagnoseState→listDocuments 串行批次与失败关闭提取器。",
-      "已完成：Design Reliability 专项和当前 live r32 identity 恢复诊断。",
-      "已完成：项目记忆、类型/构建、快速治理与唯一完整核心 65/65。",
-      "进行中：独立提交、clean Agent/UXP identities 与 exact D-111 Runtime 加载。",
-      "待完成：canonical r32 reconciliation、账本 0 未知写与文档 history 不变读回。",
-      "后续：创建 fresh r33，不复用 r32 fixture。"
+      "已完成：D-111 提交、clean identities、r32 reconciliation 与 r33 fresh preflight。",
+      "已完成：r33 真实 DeepSeek Attempt、JPG/PSD/层结构/运行会计与 Completion 缺失链归因。",
+      "已完成：created-document final-revision paired-delivery requirement 与无 Manifest E2 双 refs。",
+      "已完成：raster-only /same-revision pair /stale PSD /explicit single-format 攻击与真实 Agent 推回补交循环。",
+      "已完成：Main /Renderer 类型、Agent production build、治理与唯一完整核心 65/65。",
+      "进行中：最终差异审查、独立提交与 clean identities。",
+      "待完成：fresh r34 真实无 Skill DeepSeek/Photoshop E2E。",
+      "后续：Task Profile 绑定、上下文效率、D-102 /D-103 与商业质量独立治理。"
     ]
   },
   "convergenceBaseline": {

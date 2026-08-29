@@ -6,6 +6,13 @@
 
 ## 当前高风险
 
+### R-057 未绑定 creative Completion 丢失同版本可编辑源稿 /预览交付义务
+
+- 事实：fresh r33 的真实 AgentTaskPlan 为 `scenario=unknown /deliverables=[agent_resolved_result] /skillId=autonomous-agent`，模型未调用 `declareDesignIntent`，因此没有 `agenticArtifactContract`。Agent 创建并完成 9 层主图、两次成功导出 JPG，但活动文档保持 `unsaved + dirty`；`taskCompletion.kind=creative_design` 没有任何 delivery requirement，直到 Debug completion baseline 以 `new_outside_document_opened` 拒绝。显式 PSD 人工恢复成功，证明不是 UXP 保存 Provider 失效。
+- 影响：自然语言开放设计即使真实制作、看图和导出，也可能只留下扁平图、无可编辑源稿；Agent 用户正文会错误声称已交付，外层才把运行改成 unknown-write。正式成功率下降、人工介入增加，且交付缺口被误归因成模型慢或 Photoshop 故障。
+- 处理：D-112 已复用现有 TaskCompletion 与 `agentic-final-delivery-evidence`。对本 TaskRun 受信任 `document_creation` commit 新建的 creative document，按最后内容 mutation 的同一 document/history 要求 editable + raster 收据集合；用户明确单格式 /export-only 不扩张。Harness 只给缺失事实、收集全部 refs，不调用保存、不选路径、不推断品类。纯契约、旧 revision 攻击、双 refs E2、真实 Agent remediation 循环、Main /Renderer 类型、Agent production build、三类边界审计与唯一完整核心 65/65 已通过。Task Profile 未绑定率和上下文膨胀另立切片。
+- 关闭条件：专项攻击、类型 /build、唯一完整核心与独立提交通过；fresh r34 的无 Skill 自然请求由同一个 DeepSeek Agent 实例自主生成同 revision PSD/JPG，`finalArtifactRefs` 同时绑定两者，文档路径 /clean 状态读回成立，6 个外部文档不变且 Attempt 无人工恢复 /unknown-write。单次技术闭环不等于商业质量通过。
+
 ### R-056 live preflight 并发 Photoshop 读取会制造 Runtime identity 假缺失
 
 - 事实：`inspectLiveEnvironment` 原先用同一个 `Promise.all` 并发提交 `diagnoseState` 与 `listDocuments`，每项默认 5 秒超时。当前 Photoshop 27.9.1 /UXP 9.3 真机顺序计时约 3075ms 与 4513ms，总计 7588ms；两个读取最终进入同一 Photoshop modal 队列，第二项可能尚未执行就耗尽从提交时开始的 5 秒计时。r32 reconciliation 与只读 preflight 都因此返回 `photoshop_runtime_identity_unavailable`，而独立读回同一时刻可取得 clean UXP identity。

@@ -21,7 +21,8 @@ import {
 import { collectRuntimeFinalArtifactPaths } from '../../../shared/runtime-final-artifact-paths';
 import {
     isRuntimeEditableDeliveryOutput,
-    isRuntimeRasterDeliveryOutput
+    isRuntimeRasterDeliveryOutput,
+    readTaskCompletionRequiredDeliveryOutputs
 } from './task-completion-contract';
 import type {
     AgenticArtifactCompletionContract,
@@ -32,7 +33,7 @@ import type {
 import type { AgentDeliveryStageEvidence } from './terminal-closure-checkpoint';
 
 export interface AgenticFinalDeliveryEvidenceInput {
-    contract: AgenticArtifactCompletionContract;
+    deliveryOutputs: readonly string[];
     requirements: readonly TaskCompletionRequirement[];
     toolCallLog: readonly AgentToolCallLogEntry[];
     reviewedTarget: RuntimeExecutionTargetAnchor;
@@ -55,10 +56,12 @@ export function projectAgenticFinalDeliveryStageEvidence(input: {
     };
     iteration: number;
 }): AgentDeliveryStageEvidence | undefined {
-    if (!input.contract) return undefined;
+    const deliveryOutputs = input.contract?.deliveryOutputs
+        || readTaskCompletionRequiredDeliveryOutputs(input.summary.taskCompletion);
+    if (deliveryOutputs.length === 0) return undefined;
     if (!input.reviewedPreview) return { deliveryEvidencePassed: false };
     const evidence = projectAgenticFinalDeliveryEvidence({
-        contract: input.contract,
+        deliveryOutputs,
         requirements: input.summary.taskCompletion?.required || [],
         toolCallLog: input.toolCallLog,
         reviewedTarget: input.reviewedPreview.target,
@@ -84,6 +87,7 @@ export function projectAgenticFinalDeliveryEvidence(
 ): AgenticFinalDeliveryEvidence {
     const deliveryRequirement = input.requirements.find((requirement) => (
         requirement.id === 'production-delivery'
+        || readTaskCompletionRequiredDeliveryOutputs({ required: [requirement] }).length > 0
     ));
     if (deliveryRequirement?.status !== 'passed') return incompleteEvidence();
 
@@ -116,10 +120,10 @@ export function projectAgenticFinalDeliveryEvidence(
         resultRefs,
         includeProducerReceipts: false
     });
-    const editableRequired = input.contract.deliveryOutputs.some(
+    const editableRequired = input.deliveryOutputs.some(
         isRuntimeEditableDeliveryOutput
     );
-    const rasterRequired = input.contract.deliveryOutputs.some(
+    const rasterRequired = input.deliveryOutputs.some(
         isRuntimeRasterDeliveryOutput
     );
     const editableDelivered = artifactPaths.some((artifactPath) => (

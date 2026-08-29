@@ -11066,6 +11066,136 @@ async function run() {
       })
     ]
   });
+  const unboundCreatedDocumentId = 541;
+  const unboundCreatedHistory = { documentId: unboundCreatedDocumentId, historyStateId: 201 };
+  const unboundFinalHistory = { documentId: unboundCreatedDocumentId, historyStateId: 202 };
+  const unboundCreatedDocumentOperation = successfulOperation('createDocument', {
+    name: '未绑定 Profile 的开放设计',
+    width: 1440,
+    height: 1440
+  }, {
+    activeDocumentId: unboundCreatedDocumentId,
+    documentId: unboundCreatedDocumentId,
+    historyStateRef: unboundCreatedHistory,
+    photoshopMutationCommit: {
+      version: 'photoshop-mutation-commit/v1',
+      basis: 'same_execute_as_modal',
+      bindingStrength: 'unguarded',
+      changeKind: 'document_creation',
+      beforeOpenDocumentIds: [41],
+      createdDocumentId: unboundCreatedDocumentId,
+      after: {
+        ...unboundCreatedHistory,
+        activeLayerId: 1
+      },
+      toolActionCompleted: true,
+      mutationObserved: true,
+      documentChanged: true
+    }
+  });
+  const unboundFinalDesignMutation = successfulOperation('createRectangle', {
+    documentId: unboundCreatedDocumentId,
+    x: 0,
+    y: 0,
+    width: 1440,
+    height: 1440
+  }, {
+    activeDocumentId: unboundCreatedDocumentId,
+    documentId: unboundCreatedDocumentId,
+    historyStateRef: unboundFinalHistory,
+    photoshopMutationCommit: {
+      version: 'photoshop-mutation-commit/v1',
+      basis: 'same_execute_as_modal',
+      bindingStrength: 'document_revision',
+      before: { ...unboundCreatedHistory, activeLayerId: 1 },
+      after: { ...unboundFinalHistory, activeLayerId: 2 },
+      toolActionCompleted: true,
+      mutationObserved: true,
+      documentChanged: false
+    }
+  });
+  const unboundFinalReadback = successfulOperation('getLayerHierarchy', {
+    documentId: unboundCreatedDocumentId
+  }, {
+    activeDocumentId: unboundCreatedDocumentId,
+    documentId: unboundCreatedDocumentId,
+    historyStateRef: unboundFinalHistory
+  });
+  const unboundRasterDelivery = successfulOperation('saveDocument', {
+    format: 'jpg',
+    path: 'C:/fixture/主图/开放设计.jpg'
+  }, {
+    activeDocumentId: unboundCreatedDocumentId,
+    documentId: unboundCreatedDocumentId,
+    sourceHistoryStateRef: unboundFinalHistory,
+    format: 'jpg',
+    savedPath: 'C:/fixture/主图/开放设计.jpg'
+  });
+  const unboundEditableDelivery = successfulOperation('saveDocument', {
+    format: 'psd',
+    path: 'C:/fixture/主图/开放设计.psd'
+  }, {
+    activeDocumentId: unboundCreatedDocumentId,
+    documentId: unboundCreatedDocumentId,
+    sourceHistoryStateRef: unboundFinalHistory,
+    format: 'psd',
+    savedPath: 'C:/fixture/主图/开放设计.psd',
+    editableDocumentArtifact: {
+      version: 'runtime-editable-document-artifact/v1',
+      basis: 'uxp_post_save_file_metadata',
+      path: 'C:/fixture/主图/开放设计.psd',
+      format: 'psd',
+      byteLength: 4096,
+      modifiedAt: 1,
+      documentId: unboundCreatedDocumentId,
+      canvas: { width: 1440, height: 1440 }
+    }
+  });
+  const unboundStaleEditableDelivery = {
+    ...unboundEditableDelivery,
+    result: {
+      ...unboundEditableDelivery.result,
+      sourceHistoryStateRef: unboundCreatedHistory
+    }
+  };
+  const buildUnboundCreatedDesignContract = (task, deliveries) => buildTaskCompletionContract({
+    task,
+    toolCallLog: [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      ...deliveries
+    ]
+  });
+  const unboundRasterOnlyContract = buildUnboundCreatedDesignContract(
+    '设计一张新的海报。',
+    [unboundRasterDelivery]
+  );
+  const unboundPairedDeliveryContract = buildUnboundCreatedDesignContract(
+    '设计一张新的海报。',
+    [unboundRasterDelivery, unboundEditableDelivery]
+  );
+  const unboundStalePairContract = buildUnboundCreatedDesignContract(
+    '设计一张新的海报。',
+    [unboundRasterDelivery, unboundStaleEditableDelivery]
+  );
+  const explicitRasterOnlyContract = buildUnboundCreatedDesignContract(
+    '设计一张新的海报，只导出 JPG，不需要 PSD 或源文件。',
+    [unboundRasterDelivery]
+  );
+  const explicitEditableOnlyContract = buildUnboundCreatedDesignContract(
+    '设计一张新的海报，只保存 PSD，不需要 JPG 或 PNG。',
+    [unboundEditableDelivery]
+  );
+  const unboundRasterOnlyRemediation = buildDesignTaskContractRemediationDirective({
+    task: '设计一张新的海报。',
+    toolCallLog: [
+      unboundCreatedDocumentOperation,
+      unboundFinalDesignMutation,
+      unboundFinalReadback,
+      unboundRasterDelivery
+    ]
+  });
   const scopedOptionalCompletionContract = scopedEditProfile && scopedOptionalEvaluationResult
     ? buildTaskCompletionContract({
       task: '只读投影局部修改评价结果，不执行新的写入。',
@@ -11551,6 +11681,41 @@ async function run() {
     )
       ? []
       : ['agentic-delivery:structured-contract-still-depends-on-category-task-text']),
+    ...(unboundRasterOnlyContract?.kind === 'creative_design'
+      && unboundRasterOnlyContract.status === 'failed'
+      && requirementById(unboundRasterOnlyContract, 'creative-delivery')?.status === 'failed'
+      && requirementById(unboundRasterOnlyContract, 'creative-delivery')?.actual?.deliveryBasis
+        === 'created_document_final_revision_pair'
+      && requirementById(unboundRasterOnlyContract, 'creative-delivery')?.actual?.rasterDeliveryCount === 1
+      && requirementById(unboundRasterOnlyContract, 'creative-delivery')?.actual?.editableDeliveryCount === 0
+      ? []
+      : ['unbound-created-delivery:raster-only-final-revision-was-accepted']),
+    ...(requirementById(unboundPairedDeliveryContract, 'creative-delivery')?.status === 'passed'
+      && requirementById(unboundPairedDeliveryContract, 'creative-delivery')?.actual?.rasterDeliveryCount === 1
+      && requirementById(unboundPairedDeliveryContract, 'creative-delivery')?.actual?.editableDeliveryCount === 1
+      ? []
+      : ['unbound-created-delivery:same-revision-editable-raster-pair-did-not-pass']),
+    ...(requirementById(unboundStalePairContract, 'creative-delivery')?.status === 'failed'
+      && requirementById(unboundStalePairContract, 'creative-delivery')?.actual?.editableDeliveryCount === 0
+      ? []
+      : ['unbound-created-delivery:stale-editable-revision-was-accepted']),
+    ...(requirementById(explicitRasterOnlyContract, 'creative-delivery')?.status === 'passed'
+      && requirementById(explicitRasterOnlyContract, 'creative-delivery')?.expected?.rasterRequired === true
+      && requirementById(explicitRasterOnlyContract, 'creative-delivery')?.expected?.editableRequired === false
+      && !requirementById(explicitRasterOnlyContract, 'creative-delivery')?.actual?.deliveryBasis
+      ? []
+      : ['unbound-created-delivery:explicit-raster-only-scope-was-expanded']),
+    ...(requirementById(explicitEditableOnlyContract, 'creative-delivery')?.status === 'passed'
+      && requirementById(explicitEditableOnlyContract, 'creative-delivery')?.expected?.rasterRequired === false
+      && requirementById(explicitEditableOnlyContract, 'creative-delivery')?.expected?.editableRequired === true
+      && !requirementById(explicitEditableOnlyContract, 'creative-delivery')?.actual?.deliveryBasis
+      ? []
+      : ['unbound-created-delivery:explicit-editable-only-scope-was-expanded']),
+    ...(unboundRasterOnlyRemediation
+      && /保存新建设计的可编辑源稿与预览图片/.test(unboundRasterOnlyRemediation.shortReason)
+      && !/(quickExport|saveDocument)/.test(unboundRasterOnlyRemediation.directive)
+      ? []
+      : ['unbound-created-delivery:missing-pair-did-not-enter-generic-remediation']),
     ...(scopedOptionalCompletionContract?.status === 'completed'
       && scopedOptionalCompletionContract.warnings.some((warning) => (
         warning.includes('局部修改视觉复核') && warning.includes('可选复核项')

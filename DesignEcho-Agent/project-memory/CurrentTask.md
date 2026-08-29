@@ -1,5 +1,51 @@
 # Current Task
 
+## 2026-08-29 PAIRED-DELIVERY-FALLBACK-112：新建设计文档的同版本源稿 /预览交付
+
+### 目标
+
+1. 修复 fresh r33 真实 DeepSeek Attempt 已生成并导出 JPG、但新建设计文档仍 `unsaved + dirty`，自然 final response 没有在同一 Agent 实例内补齐 PSD 的通用交付缺口。
+2. 复用现有 TaskCompletion 与 `agentic-final-delivery-evidence`，让未绑定 Manifest 的开放创意在本 TaskRun 新建设计文档时，也必须以最后内容 mutation 的同一 document/history 同时取得可编辑源稿与光栅预览；不新增第二 Completion /Delivery owner。
+3. 保持 Agent 作者权：Harness 只报告缺失交付事实并验证收据集合，不自动调用保存、不选择格式 /路径 /文件名、不从“主图”关键词绑定 Task Profile。
+
+### 当前事实
+
+- D-111 提交 `8a888924`、唯一完整核心 65/65、clean Agent /UXP identities 与 r32 reconciliation 均完成；r32 /r33 对账后 Attempt Submission /Terminal 对齐且全局 unknown-write 为 0，6 个用户文档 history 始终保持 `352:4125 /2480:4964 /3729:4013 /4126:5815 /4898:5797 /5816:5852`。
+- r33 fresh fixture 使用正常持久 Key、正式模型 `deepseek-v4-flash-vision-exp`、clean D-111 Agent /UXP 和真实 Photoshop 运行。11.4 分钟内 32 次模型调用、41 次 Tool Call、2,703,565 input tokens、51,449 output tokens；模型 /Tool 实测耗时约 528,514 /158,571ms。
+- Agent 创建文档 5862、完成两版设计与终审前读回，两次 `saveDocument(format=jpg)` 成功生成 `主图/粉咖微压直板加厚款木耳边-主图.jpg`，但文档仍无路径、dirty；完成 baseline 正确拒绝 `new_outside_document_opened`。Run 的 `taskCompletion.kind=creative_design` 只有执行 /目标 /读回 /画面 /布局要求，没有 delivery requirement。
+- 同一自然请求的 `AgentTaskPlan` 为 `scenario=unknown / deliverables=[agent_resolved_result] / skillId=autonomous-agent`，运行也没有 `declareDesignIntent`，因此 `agenticArtifactContract` 缺席。现有 D-087 同版本完整交付集合只在该显式契约存在时生效；回退 `buildDeclaredDeliveryRequirement` 又只从显式保存 /导出措辞或声明输出判断交付。
+- 手工恢复已明确标记为非正式成功：对 Agent 自建文档 5862 显式保存 29,519,705 字节 PSD（SHA-256 `23898b5531d8face186549e942fb0f0f4b2e063a1dc4609eafc9ddef3d2a3fb6`），读回 9 层、history 5935、clean 后只关闭该 fixture 文档；失败 Attempt 随后合法 reconciliation，安全账本归零。该恢复不回填正式 Run /成功率。
+- r33 JPG 视觉只达到基础电商排版：商品与配色清楚，但主 /副标题 /底部标签语义重复、字体与层级模板化、白底摄影仍为矩形拼贴、商业冲击力不足。D-102 语义抠图与设计质量改进仍为后续独立切片。
+
+### 实施边界
+
+- 只在通用 creative Completion 已确认本 TaskRun 新建设计文档时派生 paired-delivery 义务；已有文档局部修改、只读、分析、明确 raster-only /editable-only 或 export-only 请求不能被扩大。
+- paired 通过必须使用最后内容 mutation 之后、同一 document/history 的真实 `sourceHistoryStateRef` 与 PSD/PSB、JPG/PNG/WebP 收据；文件存在、Tool 名、输入 format、成功文案或旧 revision 都不能补造。
+- 最终交付投影必须保留源稿和预览的全部 result refs；不能退回“只取最后一次 save/export”。
+- 不修改 UXP `saveDocument`：显式 PSD 恢复已经证明 Provider 能正确保存可编辑文档。当前根因在交付义务没有进入未绑定 creative Completion，而不是 Photoshop 原子执行失败。
+- 不在本切片修 Task Profile 声明命中率、上下文 270 万 token 膨胀、`placeImage` 参数冲突、`composeDesign` schema 返工、D-102 抠图或依赖安全；分别立项并以同一 r33 证据验证。
+
+### 下一步
+
+1. [已完成] 建立 created-document final-revision paired-delivery 纯投影并接入现有 `creative-delivery` requirement；文档创建事实读取受信任的 `document_creation` mutation commit，不绑定具体 Tool 名。
+2. [已完成] `agentic-final-delivery-evidence` 在无 Manifest、但 Completion 已派生 paired requirement 时，继续绑定同一最终 revision 的全部源稿 /预览 result refs；无交付义务时仍不激活 E2 分支。
+3. [已完成] 业务边界与 Runtime declaration 测试覆盖：raster-only 失败、同版本 pair 通过、旧版本 PSD 失败、用户明确 raster-only /editable-only 不扩张、无 Manifest E2 双 refs，以及真实 Agent 循环中“JPG 后错误收尾 → 通用 remediation → DeepSeek 视觉模型补 PSD → final response”。
+4. [进行中] Main /Renderer 类型、Agent production build、项目治理与提交前唯一完整核心 65/65 已通过；继续最终差异审查、独立提交与 clean identities。
+5. [待完成] fresh r34 真实 DeepSeek E2E：不得复用 r33；验证 Agent 在同一实例补齐 PSD/JPG、既有 6 文档不变、finalArtifactRefs 非空且同 revision。
+6. [后续独立] 处理 Task Profile 绑定可靠性与上下文 /Tool schema 膨胀，再接 D-102 语义抠图和商业设计质量 A/B。
+
+### 验证与未知
+
+- 已验证：正式 r33 Provider /模型 /fixture /双 Runtime、真实工具序列、JPG /PSD 字节与层结构、交付失败状态、TaskPlan /Completion 缺失链、人工恢复与 reconciliation；D-112 纯契约、同 revision E2 双 refs、真实 Agent remediation 循环、业务 /能力 /作者权审计、Main /Renderer 类型、Agent production build 与唯一完整核心 65/65 均通过。
+- 合理推断：新通用要求能在真实 DeepSeek 请求中促使同一 Agent 补齐源稿；当前只由确定性模拟循环证明控制流，尚不能替代 r34 的真实 Provider /Photoshop 行为。
+- 未验证：独立提交与 clean identities；DeepSeek 在 r34 是否一次选择正确保存 /导出路径并形成非空 `finalArtifactRefs`；r34 商业质量是否改善。D-112 只解决技术交付，不把 r33 视觉结果写成专业达标。
+
+### 状态
+
+in_progress / d111_commit_and_r32_reconciliation_complete / r33_real_deepseek_attempt_failed / root_cause_unbound_creative_completion_lost_paired_delivery_obligation / paired_requirement_and_e2_projection_implemented / live_agent_remediation_loop_and_targeted_audits_passed / agent_production_build_and_full_core_65_passed / commit_clean_identities_and_r34_pending / manual_recovery_not_counted_as_success / safety_ledger_reconciled_zero / deepseek_exact_model_preserved
+
+---
+
 ## 2026-08-29 RECONCILIATION-READ-BATCH-111：Photoshop 只读预检串行化
 
 ### 目标

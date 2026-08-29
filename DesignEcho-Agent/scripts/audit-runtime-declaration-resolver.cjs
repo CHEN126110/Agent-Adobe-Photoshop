@@ -4590,6 +4590,38 @@ function assertAgenticDeliveryBindsAllSameRevisionFinalArtifacts() {
     'agentic-export-preview'
   ], 'agentic final delivery must bind every same-revision editable and raster artifact');
 
+  const unboundConfig = buildAgentTestConfig({ maxIterations: 2 });
+  const unboundAgent = new Agent(
+    unboundConfig,
+    async () => ({ content: '', stopReason: 'end_turn' }),
+    async () => ({ success: true })
+  );
+  unboundAgent.toolCallLog = agent.toolCallLog.map((entry) => ({
+    ...entry,
+    arguments: { ...(entry.arguments || {}) },
+    // 视觉复核证据由 Runtime 以对象所有权签发；复制普通字段会故意失去该所有权。
+    // 这里复用同一只读 Tool result，验证的只是“无显式 artifact contract”投影。
+    result: entry.result
+  }));
+  const unboundSummary = {
+    ...summary,
+    taskCompletion: {
+      kind: 'creative_design',
+      status: 'completed',
+      required: [{
+        id: 'creative-delivery',
+        status: 'passed',
+        actual: { deliveryBasis: 'created_document_final_revision_pair' }
+      }]
+    }
+  };
+  const unboundEvidence = unboundAgent.projectDeliveryStageEvidence(unboundSummary);
+  assert.strictEqual(unboundEvidence.deliveryEvidencePassed, true);
+  assert.deepStrictEqual(unboundEvidence.finalDeliveryResultRefs, [
+    'agentic-save-editable',
+    'agentic-export-preview'
+  ], 'an unbound created-document pair requirement must retain both same-revision final artifact refs');
+
   agent.toolCallLog.push({
     callId: 'agentic-later-mutation',
     name: 'setTextContent',
@@ -7643,6 +7675,258 @@ async function assertZeroProgressWriteAuthorizedStopIsPushedBackAndEndsHonestly(
   assert(
     observedContractRemediationCount >= 1,
     'the model must receive the completion-gap directive before the honest stop'
+  );
+}
+
+/**
+ * D112 真实循环断言：未绑定 Task Profile 的开放设计在本轮新建 Photoshop 文档后，
+ * 只有预览图时不得接受模型收尾；Harness 必须把“同一最终 revision 的源稿 + 预览”
+ * 缺口推回同一个 Agent。模型补齐源稿后才能进入自然语言最终回复。
+ */
+async function assertUnboundCreatedDesignRequiresPairedDeliveryInLiveLoop() {
+  const createdHistory = { documentId: 541, historyStateId: 201 };
+  const finalHistory = { documentId: 541, historyStateId: 202 };
+  const tools = [
+    requireAgentTool('createDocument'),
+    requireAgentTool('createRectangle'),
+    requireAgentTool('getLayerHierarchy'),
+    requireAgentTool('getCanvasSnapshot'),
+    requireAgentTool('saveDocument')
+  ];
+  let modelCallCount = 0;
+  let sawPairedDeliveryRemediation = false;
+  let rasterDelivered = false;
+  let editableDelivered = false;
+  const executedTools = [];
+  const agent = new Agent(
+    {
+      ...buildAgentTestConfig({
+        tools,
+        maxIterations: 12,
+        openingCanvasObservationMode: 'none'
+      }),
+      modelId: 'deepseek-v4-flash-vision-exp'
+    },
+    async (_modelId, messages) => {
+      modelCallCount += 1;
+      sawPairedDeliveryRemediation = sawPairedDeliveryRemediation || messages.some((message) => (
+        JSON.stringify(message).includes('task-completion-remediation')
+        && JSON.stringify(message).includes('保存新建设计的可编辑源稿与预览图片')
+      ));
+      if (modelCallCount === 1) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-create-document',
+            name: 'createDocument',
+            arguments: { name: 'D112 开放设计', width: 1440, height: 1440 }
+          }]
+        };
+      }
+      if (modelCallCount === 2) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-create-visual',
+            name: 'createRectangle',
+            arguments: {
+              x: 0,
+              y: 0,
+              width: 1440,
+              height: 1440,
+              name: '主视觉',
+              fillColorHex: '#D7B5A6'
+            }
+          }]
+        };
+      }
+      if (modelCallCount === 3) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-readback',
+            name: 'getLayerHierarchy',
+            arguments: { includeHidden: true }
+          }]
+        };
+      }
+      if (modelCallCount === 4) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-review',
+            name: 'getCanvasSnapshot',
+            arguments: { expectedDocumentId: finalHistory.documentId, maxSize: 800 }
+          }]
+        };
+      }
+      if (modelCallCount === 5) {
+        const messageText = JSON.stringify(messages);
+        const observationKeys = Array.from(
+          messageText.matchAll(/observationKey=([^\\\s\"<]+)/g),
+          (match) => match[1]
+        );
+        const observationKey = observationKeys[observationKeys.length - 1];
+        assert(observationKey, 'review turn did not receive the Runtime observationKey');
+        return {
+          content: '<visual_observation_review>'
+            + JSON.stringify({
+              version: 'visual-observation-review-batch/v1',
+              decisions: [{
+                version: 'visual-observation-review-decision/v1',
+                observationKey,
+                status: 'passed',
+                reviewer: 'primary_model',
+                summary: '粉咖主视觉铺满画布，焦点集中且四周留白关系稳定，符合本轮简化海报目标。',
+                issues: []
+              }]
+            })
+            + '</visual_observation_review>',
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-save-preview',
+            name: 'saveDocument',
+            arguments: { format: 'jpg', path: 'C:/fixture/主图/D112-开放设计.jpg' }
+          }]
+        };
+      }
+      if (!sawPairedDeliveryRemediation) {
+        return {
+          content: '画面和预览图都已经完成，可以直接交付。',
+          stopReason: 'end_turn'
+        };
+      }
+      if (!editableDelivered) {
+        return {
+          stopReason: 'tool_use',
+          toolCalls: [{
+            id: 'd112-save-editable',
+            name: 'saveDocument',
+            arguments: { format: 'psd', path: 'C:/fixture/主图/D112-开放设计.psd' }
+          }]
+        };
+      }
+      return {
+        content: '已完成新建海报设计，并复核最终画面。可编辑源稿和预览图均来自同一最终版本，现已交付。',
+        stopReason: 'end_turn'
+      };
+    },
+    async (toolName, arguments_) => {
+      executedTools.push(toolName);
+      if (toolName === 'createDocument') {
+        return {
+          success: true,
+          activeDocumentId: createdHistory.documentId,
+          documentId: createdHistory.documentId,
+          historyStateRef: createdHistory,
+          photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'unguarded',
+            changeKind: 'document_creation',
+            beforeOpenDocumentIds: [41],
+            createdDocumentId: createdHistory.documentId,
+            after: { ...createdHistory, activeLayerId: 1 },
+            toolActionCompleted: true,
+            mutationObserved: true,
+            documentChanged: true
+          }
+        };
+      }
+      if (toolName === 'createRectangle') {
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          layerId: 2,
+          photoshopMutationCommit: {
+            version: 'photoshop-mutation-commit/v1',
+            basis: 'same_execute_as_modal',
+            bindingStrength: 'document_revision',
+            before: { ...createdHistory, activeLayerId: 1 },
+            after: { ...finalHistory, activeLayerId: 2 },
+            toolActionCompleted: true,
+            mutationObserved: true,
+            documentChanged: false
+          }
+        };
+      }
+      if (toolName === 'getLayerHierarchy') {
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          historyStateRef: finalHistory,
+          layers: [{ id: 2, name: '主视觉', kind: 'shape' }]
+        };
+      }
+      if (toolName === 'getCanvasSnapshot') {
+        return buildReviewedCanvasResult(finalHistory);
+      }
+      assert.strictEqual(toolName, 'saveDocument');
+      if (arguments_.format === 'jpg') {
+        rasterDelivered = true;
+        return {
+          success: true,
+          activeDocumentId: finalHistory.documentId,
+          documentId: finalHistory.documentId,
+          sourceHistoryStateRef: finalHistory,
+          format: 'jpg',
+          savedPath: arguments_.path,
+          outputPath: arguments_.path,
+          exportedFiles: [arguments_.path]
+        };
+      }
+      assert.strictEqual(arguments_.format, 'psd');
+      assert.strictEqual(
+        sawPairedDeliveryRemediation,
+        true,
+        'editable source was requested before the generic paired-delivery gap reached the model'
+      );
+      editableDelivered = true;
+      return {
+        success: true,
+        activeDocumentId: finalHistory.documentId,
+        documentId: finalHistory.documentId,
+        sourceHistoryStateRef: finalHistory,
+        format: 'psd',
+        savedPath: arguments_.path,
+        editableDocumentArtifact: {
+          version: 'runtime-editable-document-artifact/v1',
+          basis: 'uxp_post_save_file_metadata',
+          path: arguments_.path,
+          format: 'psd',
+          byteLength: 4096,
+          modifiedAt: 1,
+          documentId: finalHistory.documentId,
+          canvas: { width: 1440, height: 1440 }
+        }
+      };
+    }
+  );
+  const result = await agent.run('请设计一张海报，并新建画布，完成后交付成品。');
+  assert.strictEqual(rasterDelivered, true, 'live-loop fixture never produced its preview');
+  assert.strictEqual(
+    sawPairedDeliveryRemediation,
+    true,
+    'JPG-only created design escaped the live completion-remediation loop'
+  );
+  assert.strictEqual(editableDelivered, true, 'live loop did not repair the missing editable source');
+  assert.deepStrictEqual(
+    executedTools.filter((toolName) => toolName === 'saveDocument'),
+    ['saveDocument', 'saveDocument'],
+    'paired-delivery repair must add exactly one source save after the preview save'
+  );
+  assert.strictEqual(result.success, true, 'same-revision paired delivery did not close the live Agent run');
+  assert.strictEqual(result.stopReason, 'final_response');
+  const deliveryRequirement = result.executionSummary?.taskCompletion?.required.find((requirement) => (
+    requirement.id === 'creative-delivery'
+  ));
+  assert.strictEqual(deliveryRequirement?.status, 'passed');
+  assert.strictEqual(
+    deliveryRequirement?.actual?.deliveryBasis,
+    'created_document_final_revision_pair'
   );
 }
 
@@ -11142,6 +11426,7 @@ async function runBehaviorAssertions() {
   assertBareContinuationResumeDecision();
   assertExecutionAuthorizationBlockerCarriesUnlockOptions();
   await assertZeroProgressWriteAuthorizedStopIsPushedBackAndEndsHonestly();
+  await assertUnboundCreatedDesignRequiresPairedDeliveryInLiveLoop();
   await assertExecutionSupplyReserveGatesObservationInLiveLoop();
   await assertChatReadOnlyAndPlanRequestsNeverEnterGovernanceGates();
   await assertSuccessfulDeclarationPreservesAutonomyAndCarriesR2();

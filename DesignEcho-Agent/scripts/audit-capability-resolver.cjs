@@ -788,7 +788,9 @@ requireToken('agent', 'buildRuntimeActionPlanReconciliationDigest', 'Agent execu
 requireToken('agent', 'buildRuntimeActionPlanNoRedoShadowDecision', 'Agent must derive the no-redo shadow decision from the current declaration and reconciliation.');
 requireToken('agent', 'if (requiredOutputs.length === 0)', 'A raw save may satisfy E2 only when the effective contract declares no delivery outputs.');
 requireToken('agent', 'projectAgenticFinalDeliveryStageEvidence({', 'Agentic delivery must delegate its completion-contract branch to one focused mechanism.');
-requireToken('agenticFinalDelivery', 'if (!input.contract) return undefined;', 'Agentic artifact delivery must have an explicit completion-contract branch without staged gates.');
+requireToken('agenticFinalDelivery', 'const deliveryOutputs = input.contract?.deliveryOutputs', 'Agentic artifact delivery must continue to consume the explicit completion contract without staged gates.');
+requireToken('agenticFinalDelivery', 'readTaskCompletionRequiredDeliveryOutputs(input.summary.taskCompletion)', 'Unbound created-document delivery must consume the generic completion requirement instead of bypassing E2.');
+requireToken('agenticFinalDelivery', 'if (deliveryOutputs.length === 0) return undefined;', 'Agentic delivery evidence must stay inactive when neither explicit nor generic completion requires files.');
 requireToken('agenticFinalDelivery', 'projectAgenticFinalDeliveryEvidence({', 'Agentic delivery must delegate same-revision file binding to one focused mechanism.');
 requireToken('agenticFinalDelivery', 'collectRuntimeFinalArtifactPaths({', 'Agentic final delivery must bind exact saved artifact paths from result refs.');
 requireToken('agenticFinalDelivery', 'resultRefs: Array.from(new Set(resultRefs))', 'Agentic final delivery must retain every same-revision editable and raster result ref.');

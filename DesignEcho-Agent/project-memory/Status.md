@@ -2,6 +2,17 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-112 /r33 同版本 paired delivery 缺口
+
+- D-111 已提交 `8a888924`，完整核心 65/65、clean Agent /UXP identities、r32 canonical reconciliation 与 r33 fresh preflight 均通过；r32 /r33 对账后安全账本未清账为 0，6 个既有 Photoshop 文档 history 全程未变。
+- r33 正式 `deepseek-v4-flash-vision-exp` Attempt 用时约 11.4 分钟，32 次模型 /41 次 Tool，2,703,565 input /51,449 output tokens，模型 /Tool 实测约 528.5 /158.6 秒。它真实创建 1440×1440 文档、形成 9 层设计、两轮看图修订并导出 706,371 字节 JPG，但没有保存 PSD；完成 baseline 以 `new_outside_document_opened` 正确拒绝，正式技术交付和商业质量均不通过。
+- 根因位于未绑定 creative Completion：AgentTaskPlan 为 unknown /generic，未形成 Task Profile /`agenticArtifactContract`；现有通用 `creative_design` 没有 paired delivery requirement。D-087 的同 revision PSD/预览完整集合只在已声明输出契约上生效，UXP PSD Provider 经人工恢复已证明可用。
+- 人工恢复只为保全失败样本：文档 5862 显式保存为 29,519,705 字节 PSD、9 层 /history 5935 /clean，随后只关闭该 fixture 文档并完成 Attempt reconciliation；恢复不计入 Run、技术成功率或人工介入为 0。
+- D-112 已在现有 `creative-delivery` owner 内派生 `created_document_final_revision_pair`：只信本 TaskRun 的受信任 `document_creation` commit 和最后内容 mutation 的 document/history；同 revision 的 PSD/PSB 与 JPG/PNG/WebP 缺一不可。已有文档编辑、只读、export-only 及用户明确 raster-only /editable-only 不扩张。
+- 既有 E2 投影现在可从通用 Completion requirement 读取双交付义务并保留全部同版本 result refs；Harness 不执行保存、不选择路径 /文件名，也不从品类词绑定 Runtime。真实 Agent 模拟循环已证明 JPG-only 收尾会被推回，同一 `deepseek-v4-flash-vision-exp` Agent 补 PSD 后才进入 final response。
+- 业务边界、Runtime declaration、Capability Resolver、设计作者权、Main /Renderer 类型、Agent production build、项目治理与唯一完整核心 65/65 已通过。独立提交、clean identities 与 fresh r34 仍待完成，当前不能宣称 D-112 或产品技术交付已真机闭合。
+- 当前视觉是干净但模板化的基础电商排版，仍有信息重复、主体融合与商业冲击力不足；D-112 只收口技术交付。Task Profile 绑定、270 万 token 上下文膨胀、D-102 抠图与商业设计质量均独立待治理。
+
 ## 2026-08-29 D-111 reconciliation Photoshop 只读批次
 
 - r32 canonical Attempt 仍有 1 条 `submission_unknown_write_state`。clean D-110 Agent /UXP、原 r32 fixture、0 pending 与 6 个 fixture 外稳定文档都已具备，但第一次 reconciliation 被 `photoshop_runtime_identity_unavailable` 安全拒绝，账本没有新增事件。
