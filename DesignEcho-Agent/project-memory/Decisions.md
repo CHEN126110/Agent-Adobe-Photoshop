@@ -2,6 +2,16 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-097 固定 JSON 的终局视觉 Judge 不消费 Provider 原生思考预算
+
+- 状态：已采用并形成独立可回滚提交；专项 `audit:runtime-declaration`、Main /Renderer 类型检查、Agent production build 与完整核心闸门 58/58 已通过。r33 DeepSeek 真机待完成。
+- 触发事实：r32 普通重发的最后一次 Final Judge 是 3 图、0 Tool，输出恰好 4,320 tokens；代码对 12 项断言也只分配 4,320 tokens。Provider accounting 没有调用失败，但 Final Judge 因非完整终态变成 `judge_unavailable`。RunRecord 未保存原始 `finish_reason`，因此 `max_tokens` 仍是待 r33 证实的最强解释，不写成已验证真机事实。
+- 排除项：DeepSeek 的视觉出站回执在当前运行线是 `optional`，只有 Codex 订阅通道是 `required`；在没有证据时扩展回执协议会改错 owner。简单抬高 token 上限也会把隐藏思考成本永久化，不能解决同类结构化辅助调用的预算竞争。
+- 决定：`FinalQualityModelRequest.thinkingEnabled` 固定为 literal `false`，首次 Judge 与 diagnosis-only repair 都显式关闭 Provider 原生思考。主 Agent 的思考偏好保持不变；没有按 DeepSeek 型号新增 Runtime 分支，未实现关闭语义的 Provider 继续按既有适配能力处理。
+- 不变量：仍只采信 `end_turn`；`max_tokens`、残缺 JSON、部分评分、Tool Call、历史漂移和 Codex 回执缺失 /错位继续失败关闭。4,320 token 上限、一次 Judge、最多一次 diagnosis repair、ReviewSet 与同 Photoshop revision 校验均未放宽。
+- 回滚点：生产改动只在 `final-quality-model-protocol.ts` 的辅助请求契约和两处请求构造；若 r33 证明关闭思考显著降低评审质量或仍不能取得完整终态，可独立回滚 D-097，再依据持久化运行事实调整结构化输出契约，而不是修改主 Agent 或 Photoshop 链。
+- 验证边界：现有审计已证明 r32 形态仍为 12 项 /4,320 token，Judge 与 repair 均传 `thinkingEnabled=false`，DeepSeek adapter 实际生成 `thinking:{type:'disabled'}` 且不残留 `reasoning_effort=high`。这不等于真实 DeepSeek 已返回 `end_turn`，也不等于设计质量通过。
+
 ## D-096 正式 Design Reliability 采集与官方 UXP loader 必须竞争同一开发期 Runtime 租约
 
 - 状态：已采用并在独立 D-096 worktree 形成可回滚提交；专项纯逻辑、loader self-test、真实双进程拒绝 canary、相邻审计、Main /Renderer 类型检查、Agent /UXP production build、完整核心闸门 58/58 与提交后 clean identity 已通过。r32 reconciliation 和 r33 真机待完成。

@@ -1,5 +1,47 @@
 # Current Task
 
+## 2026-08-29 DESIGN-RELIABILITY-097：DeepSeek 终局视觉 Judge 必须取得完整终态
+
+### 目标
+
+修复 DeepSeek V4 Flash Vision 已真实收到终审画面、Provider 请求也成功，却因隐藏思考耗尽结构化输出预算而被 Final Judge 丢弃的问题。D-097 只收口终局视觉评价这一类无 Tool、固定 JSON 契约的辅助模型调用：显式关闭 Provider 原生思考，保留严格 `end_turn`、同 Photoshop revision 和既有视觉证据边界；不改变主 Agent 的思考偏好、设计判断、Tool 权限或 Photoshop 事务。
+
+### 当前事实
+
+- D-095 `d8ce40ef` 与 D-096 `8478e5d2` 已分别完成专项、相邻审计、Main /Renderer 类型检查、Agent /UXP production build、完整 `maintenance:validate` 58/58、独立提交和提交后 clean identity。D-096 双进程 canary 已证明正式采集租约存在时官方 loader 会在连接 UDT 前拒绝。
+- r32 普通重发 Run `run-20260829051822-b6f8c117-e4c2` 使用 `deepseek-v4-flash-vision-exp`，9 次成功 mutation 并生成 PSD /JPG；它不是正式 Attempt 成功样本，成稿质量也明显低于三个冻结 Eagle 锚点。
+- 该 Run 的最后一次模型调用是 3 图、0 Tool 的 Final Judge：输入 3,907 tokens，输出恰好 4,320 tokens，耗时 40,205ms。代码对 12 项断言同样计算 `12 × 360 = 4,320` 的输出上限；`readCompleteProviderTextContent` 只接受 `end_turn`。RunRecord 没有保存原始 `finish_reason`，但“输出与上限精确相等、Provider accounting 无调用失败、随后得到 `judge_unavailable`”共同支持 `max_tokens` 被完整性读取拒绝这一当前最强可证伪解释，尚不能冒充 r33 真机已证实。
+- DeepSeek 回执缺失不是这次首个偏差。当前 Final Judge 仅对 Codex 订阅通道要求视觉出站回执，DeepSeek 策略是 `optional`；在没有证据前扩展回执协议会改错 owner。
+- DeepSeek V4 Flash Vision 的模型配置在调用方未明确关闭时默认下发 `thinking.enabled + reasoning_effort=high`；同类批量视觉复核已经显式使用 `thinkingEnabled=false`。终局 Judge 的 system prompt 也明确要求“不输出思考过程”，但调用契约漏传了这一执行策略。
+
+### 实施边界
+
+- `FinalQualityModelRequest` 明确要求 `thinkingEnabled=false`；首次 Judge 与只补 diagnosis 的 repair 都走同一策略，避免隐藏 reasoning 与严格 JSON 争抢输出预算。
+- 不提高 4,320 token 上限，不接受 `max_tokens`、残缺 JSON 或部分评分，不降低 Photoshop history、ReviewSet、Codex 逐图回执及完成判定要求。
+- 不关闭主 Agent 的模型思考，不按 DeepSeek 型号写业务分支；这是无 Tool、固定结构化视觉评价调用的通用传输策略，Provider 是否支持关闭由既有适配层处理。
+- 使用现有 `audit:runtime-declaration` 补攻击断言，验证 Judge /repair 都显式关闭思考，同时保留一次评分、最多一次 diagnosis repair、同 revision 复核和现有回执失败关闭。
+- 本切片不启动、停止或替换用户当前普通 DesignEcho，不保存、关闭、丢弃或修改任何 Photoshop 文档。
+
+### 下一步
+
+1. `[已完成]` Final Judge 请求契约与现有审计已修改；专项 `audit:runtime-declaration`、Main /Renderer 类型检查和 Agent production build 均通过。
+2. `[已完成]` 完整 `maintenance:validate` 已通过 58/58；最终差异与链式影响复核、独立 D-097 提交均已完成，提交后 clean Agent /UXP identity 继续由 production build 重建。
+3. `[待完成]` 当前 r32 fixture 设计文档已经关闭；待用户启动的普通 DesignEcho 释放默认端口后，启动绑定 r32 的 clean Debug Runtime，保持当前 `800` 与 `详情页.psb` 不动，合法完成 r32 reconciliation。
+4. `[待完成]` 创建 fresh r33，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 与 1440×1440 画布；验收 D-095 首写恢复、D-096 Runtime 稳定、D-097 Final Judge 完整终态和同 revision PSD /JPG。
+5. `[条件后置]` r33 技术闭环后做匿名视觉比较；随后再按证据治理全历史重放、重复 Capability 发现、无效 compose 参数、重复快照和 Tool schema 成本，不能用减少必要观察换速度。
+
+### 验证与未知
+
+- 已验证 r32 的 token /耗时 /图片 /Tool shape、代码预算公式、DeepSeek 默认 thinking 参数和 `max_tokens` 完整性拒绝链能够解释同一个首个偏差；尚未用 D-097 代码或真实 DeepSeek 请求验证关闭思考后会取得 `end_turn`。
+- r32 正式 Attempt 仍是 unreconciled unknown-write；普通重发 Run 与正式 Attempt 必须保持分轴，不能因已存在 PSD /JPG 删除或改写失败账本。
+- 用户当前普通 DesignEcho 占用默认端口且未绑定 r32；没有新授权时不主动停止它。该等待只影响 reconciliation /r33，不阻塞独立 D-097 代码与专项验证。
+
+### 状态
+
+`validated / code_complete / committed`：可证伪根因已从缺少代码依据的“DeepSeek 视觉回执缺失”收敛为“Final Judge 隐藏思考耗尽精确输出预算”；D-097 实现、专项、类型 /production build、完整核心闸门 58/58 与独立提交已完成。r32 reconciliation 与 r33 真机待完成。
+
+---
+
 ## 2026-08-29 DESIGN-RELIABILITY-096：正式采集与 UXP loader 共用单一开发期 Runtime 租约
 
 ### 目标

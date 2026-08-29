@@ -2,6 +2,14 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-097 DeepSeek Final Judge 完整终态代码收口
+
+- r32 普通重发的最后一次模型调用是 3 图、0 Tool 的 Final Judge：输入 3,907、输出恰好 4,320 tokens、耗时 40,205ms；12 项断言的代码预算也恰好是 4,320。Provider accounting 无调用失败，但协议最终为 `judge_unavailable`、质量覆盖 0/12。原始 `finish_reason` 没有进入 RunRecord，因此当前把隐藏思考触发 `max_tokens` 视为最强可证伪解释，不冒充真机已证实。
+- 当前代码只对 Codex 订阅 Final Judge 要求视觉出站回执，DeepSeek 是 optional；D-097 没有扩展回执协议。生产改动只让固定 JSON、无 Tool 的 Final Judge 与 diagnosis-only repair 显式传 `thinkingEnabled=false`，主 Agent 的模型思考设置、设计判断、Tool 权限和 Photoshop 事务均未改变。
+- 回归证明 12 项 Judge 仍使用 4,320 token，DeepSeek adapter 将请求序列化为 `thinking:{type:'disabled'}` 且不残留 `reasoning_effort=high`；`end_turn`、同 history、ReviewSet、Codex 回执和残缺输出失败关闭全部保留。
+- `audit:runtime-declaration`、Main /Renderer 类型检查、Agent production build、规划 /变更边界 /入口文档审计、完整 `maintenance:validate` 58/58 与独立提交已完成。第一次核心命令只在依赖预检发现隔离 UXP 缺 `node_modules` junction，未进入核心阶段；补齐与主工作区 lock 一致的依赖入口并单独通过完整性检查后，唯一一次真实 58 阶段运行完整通过。
+- 本切片没有启动、停止或替换用户普通 DesignEcho，也没有连接、保存、关闭、丢弃或修改 Photoshop 文档。r33 仍需真实 DeepSeek + Photoshop 证明 Judge 取得完整终态，代码绿色不等于真机成功或商业质量达标。
+
 ## 2026-08-29 D-096 正式采集 Runtime 租约与 r32 普通重发归因
 
 - r32 失败 Attempt 后的第二 Run 已按对话存储、RunRecord 和代码入口重新归因：同 conversationId、不同 branchId；branchId 只有编辑已发送用户消息时才更换。正式 Attempt 在 `05:07:17.986Z` 终止，第二 Run 约 25 秒后启动；同期 Codex 仅做页面文本读取。该 Run 是新的显式顶层重发，不是 Reflexion /Debug guard 逃逸，因此没有新增 generation Gate。
@@ -9,7 +17,7 @@
 - 真实 JPG 的基础层级和可读性成立，但商业视觉未达标：原始平铺摄影以大矩形嵌入，四色商品稀释粉咖主焦点，底部三个大胶囊卖点争抢注意力，照片 /背景缺少空间融合。与固定 Eagle 的手持近景、穿着主视觉和场景化搭配锚点相比，主体塑造、卖点证明、质感和缩略图点击力均较弱。
 - r32 的 UXP 漂移根因独立成立：官方 loader 没有跨 worktree 互斥；三处 binding 只能在提交 /首次写 /完成时发现漂移。D-096 新增仓库外单一开发租约，`formal_capture` 与 `uxp_loader` 在 UDT mutation 前竞争；`run-live` 在任何 Attempt Event 前取得租约并复验完整 binding。
 - 专项验证已通过：并发 loader 被结构化拒绝；错误 leaseId 不能释放；存活 owner 即使 TTL 到点也不能被删除；死亡 owner 可回收；旧 owner 不能删除新 owner。loader self-test 和真实双进程拒绝 canary 均通过，canary 在连接 UDT 前结束且 Photoshop 零 mutation。相邻审计、Main /Renderer 类型检查、Agent /UXP production build、完整核心闸门 58/58、独立提交和提交后 clean identity 均已完成。
-- 当前 r32 fixture PSD 仍打开，账本保持 `submission_unknown_write_state`；没有自动保存、关闭、丢弃或移动任何文档 /证据。r33 必须等合法 reconciliation 后开始。
+- 当前 r32 fixture 设计文档已经关闭，账本仍保持 `submission_unknown_write_state`；没有自动保存、关闭、丢弃或移动任何文档 /证据。用户启动的普通 DesignEcho 当前占用默认端口且未绑定 r32，待其自然释放后再以 clean Debug Runtime 做合法 reconciliation，r33 仍必须在对账后开始。
 
 ## 2026-08-29 D-095 无副作用首写拒绝恢复与 r32 失败病历
 

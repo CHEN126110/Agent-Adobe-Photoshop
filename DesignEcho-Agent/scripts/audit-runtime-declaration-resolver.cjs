@@ -248,6 +248,17 @@ const {
   'model-visual-presentation-receipt.ts'
 ));
 const {
+  OpenAIAdapter
+} = require(path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'main',
+  'services',
+  'provider-adapters',
+  'openai-adapter.ts'
+));
+const {
   clearDynamicModels,
   getDynamicModels,
   setDynamicModels
@@ -8578,9 +8589,13 @@ async function assertFinalQualityDiagnosisRepairModelProtocol() {
   assert.strictEqual(successful.diagnosisRepairStatus, 'repaired');
   assert.strictEqual(calls.map((call) => call.kind).join(','), 'judge,repair');
   assert.strictEqual(historyReads, 2, 'the same Photoshop revision must be checked after Judge and repair');
+  assert.strictEqual(calls[0].request.thinkingEnabled, false,
+    'the fixed-JSON Judge must not spend its output budget on Provider-native thinking');
+  assert.strictEqual(calls[1].request.thinkingEnabled, false,
+    'diagnosis-only repair must use the same no-thinking transport policy');
   assert.deepStrictEqual(
     Object.keys(calls[1].request).sort(),
-    ['maxTokens', 'messages', 'temperature', 'timeoutMs'],
+    ['maxTokens', 'messages', 'temperature', 'thinkingEnabled', 'timeoutMs'],
     'diagnosis repair request must not expose a Tool or execution channel'
   );
   assert(calls[1].request.messages[0].content.includes('不是在重新评价画面'));
@@ -8589,6 +8604,59 @@ async function assertFinalQualityDiagnosisRepairModelProtocol() {
   assert.strictEqual(successful.results[0].confidence, 0.92, 'repair must preserve confidence');
   assert.strictEqual(successful.results[0].status, 'needs_review', 'repair must preserve status');
   assert(successful.results[0].diagnosis, 'valid diagnosis-only response must be merged');
+
+  const fullJudgePending = DESIGN_ASSERTIONS
+    .filter((assertion) => assertion.method === 'vlm_judge')
+    .slice(0, 12);
+  assert.strictEqual(fullJudgePending.length, 12, 'the r32-shaped Judge fixture requires twelve VLM assertions');
+  let fullJudgeRequest;
+  const fullJudge = await runFinalQualityModelProtocol({
+    judgeSystemPrompt: 'judge-protocol',
+    contextMessage: 'same-review-context',
+    contentBlocks: [{ type: 'image', data: 'same-review-image', mediaType: 'image/png' }],
+    visualPresentationCandidateKeys: ['fixture-image'],
+    pending: fullJudgePending,
+    expectedHistoryStateRef: historyStateRef,
+    configuredSoftTimeBudgetMs: 100_000,
+    maxRequestTimeoutMs: 90_000,
+    readActiveElapsedMs: () => 1000,
+    callJudge: async (request) => {
+      fullJudgeRequest = request;
+      return {
+        content: JSON.stringify(fullJudgePending.map((assertion) => ({
+          id: assertion.id,
+          applicable: true,
+          score: 0.9,
+          confidence: 0.9,
+          reason: '当前关系稳定'
+        }))),
+        stopReason: 'end_turn'
+      };
+    },
+    callDiagnosisRepair: async () => { throw new Error('complete Judge fixture must not repair'); },
+    readPostModelHistoryStateRef: async () => historyStateRef
+  });
+  assert.strictEqual(fullJudge.status, 'completed');
+  assert.strictEqual(fullJudgeRequest.maxTokens, 4320,
+    'D-097 must remove hidden reasoning rather than inflate the r32 Judge output budget');
+  assert.strictEqual(fullJudgeRequest.thinkingEnabled, false);
+  const deepseekFormattedJudge = new OpenAIAdapter('deepseek').formatMessages(
+    fullJudgeRequest.messages,
+    [],
+    {
+      maxTokens: fullJudgeRequest.maxTokens,
+      temperature: fullJudgeRequest.temperature,
+      thinkingEnabled: fullJudgeRequest.thinkingEnabled,
+      thinkingRequestParams: {
+        thinking: { type: 'enabled' },
+        reasoning_effort: 'high'
+      }
+    }
+  );
+  assert.deepStrictEqual(deepseekFormattedJudge.thinking, { type: 'disabled' },
+    'the actual DeepSeek adapter payload must disable native thinking for the Judge');
+  assert.strictEqual(deepseekFormattedJudge.reasoning_effort, undefined,
+    'the model default high reasoning effort must not leak back into the no-thinking Judge');
 
   let terminalReserveTimeoutMs = 0;
   const terminalReserveJudge = await runFinalQualityModelProtocol({

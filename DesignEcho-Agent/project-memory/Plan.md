@@ -1,6 +1,6 @@
 # Current Implementation Plan
 
-## 2026-08-29 唯一当前顺序：`D-095 → D-096 → r32 reconciliation → r33`
+## 2026-08-29 唯一当前顺序：`D-095 → D-096 → D-097 → r32 reconciliation → r33`
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
 
@@ -23,9 +23,11 @@
 17. `[已完成 D-095 / d8ce40ef]`：只在错误首写工具已被 dispatch 前拒绝且没有 Host 副作用时，把 baseline 恢复到 pending；下一次重新读取 Runtime 与完整文档 revision，只有 `createDocument` 可通过。真实 Runtime /文档漂移仍永久 blocked。专项攻击、相邻审计、Main /Renderer 类型检查、Agent /UXP production build、完整核心闸门 58/58 和独立提交均已完成。
 18. `[已证伪错误 P0]`：r32 后续写入 Run 来自编辑已发送消息后的新 branch 顶层重发，不是 Debug Attempt 的自动 generation 逃逸；不实施代际 Guard、不延长旧 Attempt lease、不阻断正常重发。该 Run 只作为 262 万 input token、32 次模型调用和低专业完成度的运行 /设计诊断，不计入正式 Attempt。
 19. `[D-096 已完成代码阶段]`：正式 `run-live` 与官方 UXP loader 竞争仓库外同一 Photoshop Runtime lease。采集在 armed 前取得并复验 binding；loader 在 UDT mutation 前取得；存活 owner 不被 TTL 误删，死亡 owner 可回收，释放必须匹配 leaseId。纯逻辑、loader self-test、真实双进程拒绝 canary、相邻审计、Main /Renderer 类型检查、Agent /UXP production build、完整核心闸门 58/58、独立提交和提交后 clean identity 均已完成。
-20. `[待完成 r32 reconciliation]`：不保存、关闭或丢弃当前用户 /测试文档。只有 r32 fixture 文档由用户完成查看并关闭、最新 Agent /UXP 均在失败后重启且 0 pending 时，才追加唯一 reconciliation；不得移动账本或跳过 `unreconciled_live_attempt_exists`。
-21. `[待完成 r33]`：对账后创建全新 fixture，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；验证 D-095 正确首写恢复、D-096 loader 互斥、外部 dirty 文档零改动与同 revision PSD/JPG。
-22. `[条件后置]`：r33 技术成功后，对候选、用户成稿和三个固定 Eagle 锚点做匿名质量比较；已知 r32 普通重发暴露原图 /处理图变体身份、主体焦点、照片融合、胶囊卖点过强和 Final Judge 覆盖 0/12 等差距。性能治理优先压缩全历史重放、重复 Capability 发现、无效 compose 参数和重复快照，不通过减少必要观察换速度。
+20. `[D-097 可证伪根因]`：r32 普通重发的最后一次 3 图 Final Judge 恰好输出 4,320 tokens，与 12 项断言的 `12 × 360` 上限完全相同；accounting 没有 Provider 调用失败，而严格完整性读取会拒绝 `max_tokens`。RunRecord 未保留原始 `finish_reason`，因此当前把隐藏思考耗尽预算作为最强解释并由 r33 证伪；DeepSeek 视觉回执当前是 optional，不是本次 `judge_unavailable` 的已证实 owner。
+21. `[D-097 已完成代码与提交]`：只对无 Tool、固定 JSON 契约的 Final Judge 与 diagnosis repair 显式设置 `thinkingEnabled=false`，保留 4,320 token 上限、严格 `end_turn`、同 Photoshop revision、ReviewSet 与 Codex 回执边界；不关闭主 Agent 思考、不按模型名新增 Harness 分支。专项、Main /Renderer 类型检查、Agent production build、完整核心闸门 58/58 与独立提交已完成。
+22. `[待完成 r32 reconciliation]`：r32 fixture 设计文档已经关闭，但用户启动的普通 DesignEcho 当前占用默认端口且未绑定 r32。不保存、关闭或丢弃当前 `800`、`详情页.psb`；待默认端口自然释放后用 clean Debug Runtime 完成唯一 reconciliation，不移动账本或跳过 `unreconciled_live_attempt_exists`。
+23. `[待完成 r33]`：对账后创建全新 fixture，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；验证 D-095 正确首写恢复、D-096 loader 互斥、D-097 Final Judge 完整终态、外部 dirty 文档零改动与同 revision PSD/JPG。
+24. `[条件后置]`：r33 技术成功后，对候选、用户成稿和三个固定 Eagle 锚点做匿名质量比较；已知 r32 普通重发暴露原图 /处理图变体身份、主体焦点、照片融合、胶囊卖点过强和 Final Judge 覆盖 0/12 等差距。性能治理优先压缩全历史重放、重复 Capability 发现、无效 compose 参数和重复快照，不通过减少必要观察换速度。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

@@ -55,6 +55,11 @@ export interface FinalQualityModelRequest {
     maxTokens: number;
     temperature: number;
     timeoutMs: number;
+    /**
+     * 终局 Judge 只返回有界 JSON，不需要把 Provider 隐藏推理与结构化答案放进同一输出预算。
+     * 使用 literal false 防止调用方遗漏后退回模型默认高思考。
+     */
+    thinkingEnabled: false;
     /** 只给首次 Judge；与该请求实际图片顺序一一对应，用于 Provider outgoing receipt。 */
     visualPresentationCandidateKeys?: string[];
 }
@@ -339,6 +344,7 @@ export async function runFinalQualityModelProtocol(
             maxTokens: judgeMaxTokens,
             temperature: 0.2,
             timeoutMs: judgeTimeoutMs,
+            thinkingEnabled: false,
             visualPresentationCandidateKeys: [...input.visualPresentationCandidateKeys]
         });
     } catch (error) {
@@ -426,6 +432,7 @@ export async function runFinalQualityModelProtocol(
             maxTokens: repairMaxTokens,
             temperature: 0.1,
             timeoutMs: repairTimeoutMs,
+            thinkingEnabled: false,
             ...(input.visualPresentationReceiptPolicy === 'required' ? {
                 visualPresentationCandidateKeys: [...input.visualPresentationCandidateKeys]
             } : {})
