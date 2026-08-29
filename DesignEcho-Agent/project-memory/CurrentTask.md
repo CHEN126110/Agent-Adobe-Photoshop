@@ -1,5 +1,54 @@
 # Current Task
 
+## 2026-08-29 DEPENDENCY-CLOSURE-104：独立安装证伪与安全债务分流
+
+### 目标
+
+1. 在不复用 D-103 `node_modules` junction 的独立 worktree 中，验证祖先提交 `5c1bc06d` 的 Anthropic peer 迁移在当前 D-103 代码、lock、Agent 与 UXP 构建上仍然自洽。
+2. 把“可安装 /可构建”“peer 兼容”“动态安全公告”分开：前两项属于本切片的确定性验收；安全漏洞按生产可达性和升级边界进入 `Risks.md`，不得用 `npm audit fix --force` 混改。
+3. 不改变正式运行模型：项目当前主模型与视觉兼容镜像继续使用 `deepseek-v4-flash-vision-exp`；Smile Provider 保持下一个独立切片，本轮不改 Provider、模型目录、Prompt 或 Photoshop 行为。
+
+### 当前事实
+
+- `5c1bc06d` 只修改 Agent `package.json` 与 `package-lock.json`：把 `@anthropic-ai/sdk` 从不满足 Claude Agent SDK peer 的 `^0.30.0` 升到 `^0.122.0`，根 `zod` 为 `^4.4.3`。该提交是 D-094～D-103 的共同祖先，不需要再次复制或合并。
+- D-103 的 junction 安装通过仓库自有依赖检查 636/636 与 148/148，但通用 `npm ls --all` 会沿 junction 解析到共享主工作树，把整个安装树误报成数千条 extraneous /missing；该输出不能证明当前 lock 错误。
+- D-104 从 D-103 `a335ca41` 建立无 `node_modules` 的独立 worktree。Agent `npm ci` 新装 639 个包、UXP `npm ci` 新装 148 个包；Windows 首次清理 macOS-only optional `dmg-license` 时留下一个无 `package.json` 的空残目录，`npm prune --ignore-scripts` 删除该生成残留后，Agent 与 UXP `npm ls --all` 均为 exit 0、0 problems。
+- 当前独立安装的版本为 `@anthropic-ai/sdk 0.122.0`、`@anthropic-ai/claude-agent-sdk 0.3.241`、`zod 4.4.3`。Claude Agent SDK 要求 `@anthropic-ai/sdk >=0.93.0` 与 `zod ^4.0.0`，当前均满足；工作区依赖完整性为 Agent 636/636、UXP 148/148，直接 CLI 分别 23 /4。
+- 当前 `openai 4.104.0` 的可选 peer 仍声明 `zod ^3.23.8`，lock 通过 `openai.zod=$zod` override 与根 Zod 4 共存。项目只使用 OpenAI 基础客户端，不调用 `openai/helpers/zod`，所以 clean install、类型和生产构建通过；但该 override 仍是待退役的兼容 seam，不能称为无债务。
+- npm 官方元数据表明 `openai 6.49.0` 正式支持 `zod ^3.25 || ^4.0`，但 OpenAI 官方 v6 运行要求 Node 20+；当前 Electron 28.3.3 内置 Node 18.18.2 且已经 EOL，因此不能单独升级 OpenAI SDK。正确依赖顺序是先独立迁移 Electron Runtime，再升级 OpenAI SDK并删除 override。
+- 独立 Agent production build、preload sandbox、Renderer build，UXP 全测试、类型检查与 production build 已通过；Vite 既有动态 /静态 import 与大 chunk 警告没有变化。唯一一次 D-104 完整核心闸门 60/60 已通过。
+- 动态 `npm audit` 在 2026-08-29 报告 Agent 40 项（2 low /5 moderate /30 high /3 critical）、UXP 7 项（2 moderate /5 high）。其中 Electron /builder、Volcengine /axios /protobuf、sharp /ws、Vite /PostCSS /构建链具有不同 owner 和风险面，必须分片治理；本轮没有改写版本或制造假绿。
+- 最新只读现场仍由用户普通 PID 16228 占用 8765～8769；Main /UXP 都是 `de628ade` dirty，Photoshop 有 5 个用户文档，活动文档 `1200.psb` 为 `4898:4928`。D-104 没有加载 Runtime 或写入 Photoshop。
+
+### 实施边界
+
+- 不修改依赖声明来掩盖 audit 数量，不使用 `--force`、`--legacy-peer-deps`、`audit fix` 或宽泛 override；本切片只确认现有迁移事实并建立后续升级顺序。
+- `npm audit` 依赖网络和动态公告，不进入确定性的核心构建 Gate；但已确认的直接 /生产可达风险必须进入 `Risks.md`，不能因核心绿色而消失。
+- Electron Runtime 升级、OpenAI SDK major 升级、Volcengine 栈、图像栈、构建栈分别拥有独立兼容与回滚切片；不得在一个 lock 提交中整体抬版本。
+- 不把 Smile 可选 Provider 设为默认或 fallback，不改变 DeepSeek 主模型，不触碰 D-097 r32 /r33 单变量基线。
+- D-104 不执行 Photoshop Tool，不停止普通应用，不保存、关闭或修改任何用户文档。
+
+### 下一步
+
+1. [已完成] 建立无 junction 的 D-104 worktree，Agent /UXP 真实 `npm ci`、optional 残留归因 /清理、双方 `npm ls --all` 与依赖完整性检查通过。
+2. [已完成] Agent production build、preload sandbox、Renderer build、UXP 全测试 /类型 /production build 使用 D-104 本地安装通过。
+3. [已完成] 当前项目记忆与 R-054 依赖安全风险已更新；规划 /JSON /编码 /变更边界快速检查及唯一一次完整 `maintenance:validate` 60/60 通过。
+4. [已完成] 最终确认 package /lock /source 零改动、两仓 `npm ls` 仍为 0 problems、工作树只含五份项目记忆；以本独立状态提交收口，不把安全升级冒充本切片已经完成。
+5. [后续独立] 先收口 Smile Provider 现状；依赖安全按 Electron Runtime → OpenAI override 退役、Volcengine /protobuf /axios、sharp /ws、Agent /UXP 构建链拆分，任何 major 升级都需专项、构建和真实应用启动验证。
+
+### 验证与未知
+
+- 已验证：当前 package /lock 可在新的 Windows 工作树完成真实 clean install；Agent 与 UXP 安装图均为 0 problems，旧 Anthropic peer 冲突已关闭。
+- 已验证：当前代码使用独立安装完成 Agent /UXP 构建和 UXP 核心测试；本切片没有靠共享 junction、旧 dist 或 force 参数制造成功。
+- 未验证：Electron /OpenAI major 迁移、动态安全 finding 的逐项生产可达性与修复回归；它们是新增的明确安全债务，不是 D-104 安装一致性的失败。
+- 未验证：任何新依赖组合的真实 DesignEcho 启动、DeepSeek → Photoshop E2E 或设计质量；D-104 不作这类声明。
+
+### 状态
+
+validated / clean_agent_and_uxp_npm_ci_passed / npm_ls_zero_problems / dependency_integrity_636_and_148_passed / agent_and_uxp_builds_and_full_core_60_passed / package_lock_and_source_unchanged / independent_state_commit_complete / security_debt_split_not_fixed / deepseek_selection_unchanged / no_photoshop_write
+
+---
+
 ## 2026-08-29 SKU-POSE-INTEGRATION-103：姿态统一三片能力进入当前主链
 
 ### 目标

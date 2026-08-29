@@ -6,6 +6,14 @@
 
 ## 当前高风险
 
+### R-054 依赖可安装但 Electron Runtime 与动态安全债务尚未收口
+
+- 事实：D-104 在无 junction 的新工作树完成 Agent /UXP `npm ci`、双方 `npm ls --all` 0 problems、依赖完整性 636/636 与 148/148、两端构建和 UXP 测试；旧 Anthropic peer 冲突已关闭。2026-08-29 的动态 `npm audit` 同时报告 Agent 40 项（3 critical /30 high /5 moderate /2 low）和 UXP 7 项（5 high /2 moderate）。Agent 直接或生产相关链包括 Electron、Volcengine /axios /protobuf、sharp、ws；critical 中 protobuf 经 `@volcengine/openapi` 进入可选生产 Provider，tar /shell-quote 主要位于打包链。UXP finding 主要位于 webpack /PostCSS /terser 构建链。
+- 事实：当前 `openai 4.104.0` 只声明 Zod 3 可选 peer，项目通过 override 让它与 Claude Agent SDK 所需的根 Zod 4 共存；当前代码不使用 OpenAI Zod helper，安装 /类型 /构建通过，但兼容 seam 未被上游正式支持。npm 官方元数据与 OpenAI 官方 Node SDK 表明 v6 正式支持 `zod ^3.25 || ^4.0`，但运行要求 Node 20+；[Electron 28.3.3](https://releases.electronjs.org/release/v28.3.3) 内置 Node 18.18.2 且已结束支持，不能先单独升级 OpenAI SDK。
+- 影响：核心闸门绿色只能证明当前冻结 lock 的工程一致性，不能证明没有已知安全风险。整体执行 `npm audit fix --force` 会同时跨 Electron Runtime、Provider、图像处理与构建系统抬 major，破坏真实应用兼容和回滚边界；继续长期不处理则让用户输入图像、本地 WebSocket、Provider 凭据、打包与 Electron 漏洞暴露面累积。
+- 处理：分成四个 owner 清晰的切片：① Electron Runtime 升级与真实桌面启动 /preload /WebView /Debug /打包验证；② 在满足 Node floor 后升级 OpenAI SDK、删除 Zod override并复验 DeepSeek /Xiaomi /Smile OpenAI-compatible 链；③ Volcengine /protobuf /axios 与 sharp /ws 按生产可达性分别升级或隔离；④ Agent /UXP 构建链升级。每片只改自己的 package /lock 与必要适配，运行专项、构建、唯一核心闸门和相称真机验证，不以 audit 数量归零为唯一目标。
+- 关闭条件：当前直接生产依赖的 high /critical finding 均已被安全版本消除、证明不可达并形成可审计 containment，或由上游无修复事实明确接受；Electron 运行于仍受支持的 Node /Chromium 线；OpenAI /Zod 不再依赖未声明兼容 override；两仓 clean install、构建、桌面启动、DeepSeek 正式模型链和 Photoshop E2E 均无回退。动态公告会变化，关闭必须绑定当时 lock 与 audit 时间戳。
+
 ### R-053 共享 Photoshop 的 UXP plugin session 可被其它开发会话替换
 
 - 事实：r32 提交时 UXP 为 clean D-094 build `designecho-uxp-production-eb40a93c9b17-35053c988e2a`，但运行到 05:04:18 后变成旧工作树 `designecho-uxp-production-de628ade831d-77193162309f-dirty`。同一时段还有其它 Codex 任务在共享 `C:\UXP\2.0` 启动 DesignEcho 调试窗口；当前机器只有一个 Photoshop /UXP Host，插件 ID 也唯一。现有 runtime binding 在完成态正确拒绝漂移，但不能阻止外部 UDT load 替换当前 session。

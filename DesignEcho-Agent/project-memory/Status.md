@@ -2,6 +2,16 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-104 依赖独立安装与安全债务分流
+
+- Anthropic peer 迁移已经以祖先提交 `5c1bc06d` 独立存在，只修改 Agent package /lock；当前主链不再合并旧 `@anthropic-ai/sdk ^0.30.0`，实际安装为 SDK `0.122.0`、Claude Agent SDK `0.3.241` 与 Zod `4.4.3`，满足 `>=0.93.0 / ^4.0.0` peer。
+- D-104 从 `a335ca41` 建立无 `node_modules` junction 的新工作树。Agent /UXP 分别完成真实 `npm ci`；Windows 对 macOS-only optional `dmg-license` 的一次 EPERM 清理留下无 package 的空目录，经 `npm prune --ignore-scripts` 删除后，两仓 `npm ls --all` 均 exit 0、0 problems。
+- 仓库自有依赖预检在独立安装上报告 Agent 636/636、UXP 148/148，直接 CLI 23 /4；Agent production build、preload sandbox、Renderer build、UXP 全测试 /类型检查 /production build 和唯一一次完整 `maintenance:validate` 60/60 通过。package /lock 与源码均未修改。
+- 提交前复核确认两仓 `npm ls --all` 仍为 0 problems，`git diff -- package.json package-lock.json src` 为空，规划、JSON、UTF-8、入口文档、变更边界与 diff 检查通过；D-104 只有五份项目记忆进入独立状态提交。
+- `openai 4.104.0` 的可选 Zod peer 仍是 v3，当前 override 把它绑定到根 Zod 4；项目未使用 OpenAI Zod helper，现有构建通过，但该 seam 不属于理想终态。OpenAI v6 已正式支持 Zod 4，却要求 Node 20+；Electron 28.3.3 内置 Node 18.18.2 且已 EOL，因此必须先独立升级 Electron Runtime，不能只抬 OpenAI 版本。
+- 2026-08-29 动态 `npm audit` 报告 Agent 40 项（2 low /5 moderate /30 high /3 critical）和 UXP 7 项（2 moderate /5 high）。这不推翻当前 lock 可安装事实，但证明依赖安全尚未收口；Electron /builder、Volcengine /axios /protobuf、sharp /ws、Vite /PostCSS /UXP 构建链将分片治理，未执行 `audit fix` 或 `--force`。
+- 项目正式模型选择保持 DeepSeek `deepseek-v4-flash-vision-exp`；D-104 没有改模型目录、Provider、Prompt、工具、权限、预算或 Photoshop 行为。默认端口仍由 PID 16228 的普通 dirty Runtime 占用，活动 `1200.psb` 未被触碰。
+
 ## 2026-08-29 D-103 SKU 姿态统一三片集成
 
 - D-103 从 D-102 `a262a4f8` 建立独立 worktree，保持三份因果与回滚边界：`c8793b1d` 只引入纯离线算法与 `sku-pose-alignment-report/v1`，`5ff69b19` 引入精确 document /history /layer 的版本化单事务 Provider，`2d4924d0` 迁移真实 WebView 与批处理协调器。旧姿态分支的项目记忆和过时依赖声明没有进入当前链。

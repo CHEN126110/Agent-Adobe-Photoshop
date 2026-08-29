@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-29 SKU-POSE-INTEGRATION-103：把姿态统一按纯离线算法、版本化单事务 Provider、面板迁移三个可独立回滚切片移植到 D-102 当前主链；工程验证与真实 Photoshop /商业质量分级收口，D-097 r33 基线保持不变。",
-  "currentMilestone": "SKU-POSE-INTEGRATION-103",
-  "milestoneStatus": "pose_three_slice_code_integrated_on_d102_dependency_targeted_typechecks_adjacent_audits_agent_uxp_builds_and_full_core_60_passed_final_parity_review_passed_independent_three_slice_and_state_commits_complete_exact_d103_provider_and_panel_live_pending_commercial_applicability_unknown_d097_r33_baseline_unchanged_no_photoshop_write",
+  "currentFocus": "2026-08-29 DEPENDENCY-CLOSURE-104：在无 node_modules junction 的独立工作树验证当前 Agent /UXP lock、Anthropic peer、真实 clean install 与构建；把动态安全 finding 分流为 owner 清晰的升级切片，不用 force 或整体 audit fix。",
+  "currentMilestone": "DEPENDENCY-CLOSURE-104",
+  "milestoneStatus": "clean_agent_and_uxp_npm_ci_passed_npm_ls_zero_problems_dependency_integrity_636_and_148_passed_agent_and_uxp_builds_and_full_core_60_passed_package_lock_and_source_unchanged_independent_state_commit_complete_security_debt_split_not_fixed_deepseek_selection_unchanged_no_photoshop_write",
   "verified": {
     "code": [
+      "Dependency closure D-104 (2026-08-29): the existing 5c1bc06d Anthropic peer migration is already an independent ancestor of D-103 and was revalidated in a new worktree without a node_modules junction. Agent and UXP npm ci completed; one Windows cleanup residue for the macOS-only optional dmg-license package was removed by npm prune; both npm ls --all graphs then exited 0 with zero problems. Installed Anthropic SDK 0.122.0, Claude Agent SDK 0.3.241 and Zod 4.4.3 satisfy the declared peers. Agent/UXP builds and the one ordered 60-stage core gate passed. No package, lock, Provider, model, Prompt or Photoshop code changed. Dynamic security findings remain a separate recorded risk rather than being hidden by the install result.",
       "SKU pose integration D-103 (2026-08-29): the isolated capability was ported onto D-102 as three independent rollback commits: a pure deterministic no-side-effect geometry and sku-pose-alignment-report/v1 core, a document/history/layer-bound versioned Provider with one PhotoshopTransactionRunner-owned mutation and readback receipts, and a WebView/panel caller that exposes only Provider-effective parameters. Internal capture/apply tools remain outside the ordinary Agent surface. Dependency integrity, algorithm/Provider/panel tests, all UXP tests, 181-Tool and design-authorship audits, business/executor/semantic-dispatch/change boundaries, Main/Renderer typechecks, Agent/UXP production builds and the one ordered 60-stage core gate passed. Exact D-103 Photoshop runs remain pending; D-097 is unchanged for r33.",
       "Semantic matting integration D-102 (2026-08-29): the five previously isolated semantic workflow commits were ported in order onto D-101 c0b358fb without importing the old project-memory command chain or obsolete dependency declaration. Agent/user target and normalized point authorship remain separate from Harness validation; Main reuses one versioned workflow dispatcher; UXP binds source export and mutation to document/history/layer and returns readback receipts. Dependency integrity, semantic/SAM/dispatch attacks, design-authorship and 181-Tool audits, Main/Renderer typechecks, Agent/UXP production builds, adjacent architecture audits, one full 59-stage core gate and final parity review passed. The exact D-102 Photoshop canary remains pending; D-097 is unchanged for r33.",
       "Provider stream phase accounting D-101 (2026-08-29): successful OpenAI-compatible streams now report only bounded request/timing facts through the existing Main stream response, physical transport attempt, Runtime Accounting digest, RunRecord and debug:runs path. The metrics include serialized JSON request bytes, image data-URL bytes, adapter formatting, measurement overhead, stream-open, first-chunk, first-semantic-delta and Main completion times. Strict normalization rejects unsafe integers, non-monotonic clocks, oversized image contribution, unknown fields and raw payload injection. Focused attacks, Main/Renderer typechecks, simplification/runtime/business/change-boundary audits, compiled fake and minimal live DeepSeek stream probes, Agent/UXP production builds, full core 58/58 and independent commits passed. The live micro-canary returned the expected non-executed Tool call twice with complete metrics; full Agent RunRecord coverage remains pending; no Photoshop state was changed.",
@@ -80,6 +81,7 @@
       "Live concurrency/resume validation, real Provider-to-Photoshop V0, live validation of the first Photoshop Craft Recipe, Release Gate, reviewed multi-sample design quality and business live E2E are not complete."
     ],
     "build": [
+      "D-104 uses local clean Agent/UXP installations rather than D-103 junctions. Workspace dependency integrity reports Agent 636/636 with 23 direct bins and UXP 148/148 with 4 direct bins; both npm ls --all graphs have zero problems. Agent production build and preload sandbox plus UXP full tests, typecheck, production build and the single ordered 60-stage maintenance core passed. The existing Vite import/chunk warnings remain non-blocking. No runtime or Photoshop result is implied.",
       "D-103 dependency preflight reports Agent 636/636 and UXP 148/148. The reusable pose algorithm and Provider suites, UXP full tests, Tool/authorship/business/executor/semantic-dispatch/change-boundary audits, Main build, Renderer typecheck, both production builds and the single ordered 60-stage maintenance core passed on the integrated code. This proves engineering integration only, not an exact D-103 Photoshop runtime, panel-button path or commercial quality.",
       "D-102 Agent and UXP production builds plus the single ordered 59-stage maintenance core passed after the semantic workflow was integrated on D-101. The current lock matches the shared installation at Agent 636/636 and UXP 148/148; the old semantic branch npm ci correctly failed its obsolete Anthropic peer conflict and was not forced. This proves the integrated code and build, not the exact D-102 Photoshop runtime.",
       "D-101 focused Provider/Runtime attacks, compiled fake DeepSeek stream probe, Main/Renderer typechecks, simplification/runtime/business/change-boundary audits, Agent production build, UXP production build and the single ordered 58-stage maintenance core all passed. A separate minimal live DeepSeek double request returned complete cache and timing observations, but this still does not prove a full Agent latency distribution, Photoshop E2E or speed improvement.",
@@ -126,6 +128,7 @@
     ]
   },
   "unverified": [
+    "Dependency security closure after D-104: Electron 28/embedded Node 18 must be migrated and live-started before OpenAI v6+ can replace the current OpenAI 4/Zod override; Volcengine/protobuf/axios, sharp/ws and Agent/UXP build-chain findings require separate reachability, upgrade and rollback slices. The 2026-08-29 audit counts are Agent 40 and UXP 7, but dynamic count reduction alone is not a completion criterion.",
     "D-103 exact-build Photoshop evidence: load clean integrated Agent/UXP artifacts only after r32 reconciliation, D-097 r33 and the ordered D-102 canary; then separately verify the versioned Provider and the real panel-button UXP-to-Main-to-UXP path on isolated documents with target-bound receipts and cleanup. Real commercial quality additionally requires a naturally medium-bent single complete sock with clear cuff/pattern; the audited C-1256, cross-product 36 plus 48 samples and C-1024 set did not provide one, so applicability remains unknown.",
     "D-102 exact-build semantic Photoshop canary: after r32 reconciliation and the D-097 r33 baseline, load clean D-102 Agent/UXP artifacts and repeat the fixed two-sock case with target-count conservation, source bounds, document/history/layer identity, visual output and mutation readback. The prior 0c404cda run cannot substitute for this integration verification.",
     "D-099/D-101 full-run evidence: a production Agent RunRecord with real large history, Tool schemas, image blocks and repeated observations must show cache and Provider phase coverage before any latency optimization or speed claim.",
@@ -161,6 +164,7 @@
     "Live browser-extension 1.1.0 end-to-end: after reloading the extension in Chrome/Edge, a real logged-in Taobao detail page must verify readBrowserPage(includeImages:true) returns product image pixels that enter the model vision channel, and captureBrowserTab(fullPage:true) produces a correctly stitched long screenshot; anti-hotlink/CDN hit rate and image quality remain code-level only."
   ],
   "topRisks": [
+    "The dependency graph is installable and peer-consistent after D-104, but security is not closed: Electron 28.3.3 embeds EOL Node 18.18.2, OpenAI 4 relies on a Zod compatibility override, and the 2026-08-29 dynamic audits report 40 Agent and 7 UXP findings. Electron/OpenAI, Volcengine/network, image runtime and build-chain upgrades must remain separate rollback slices; do not run a global audit fix.",
     "The single Photoshop/UXP Host remains globally shared. D-096 can prevent cooperative official loaders from replacing it during formal capture, but a user-triggered UDT reload or third-party direct UDT call can bypass the lease; submission, first-write and completion runtime bindings remain the safety authority until r33 proves the combined path.",
     "The P0 declaration repair is still a late in-loop binding seam. The next architecture reduction should pre-bind one canonical runtimeProfileId before the full Agent is constructed, then retire the duplicate late-binding migration cluster atomically; deleting only half of that cluster would split TaskRun, Capability, budget and Evaluation ownership.",
     "Bare continuation remains intentionally unable to resurrect unknown historical write permission, but performance-budget stops still lack a signed one-time continuation bound to the original TaskRun, authorization, target revision and remaining obligations. This is a separate recovery gap, not a reason to weaken the completion contract.",
@@ -325,35 +329,35 @@
     ]
   },
   "activeRequest": {
-    "id": "SKU-POSE-INTEGRATION-103",
-    "summary": "Port the isolated pose-alignment capability onto D-102 as three independent rollback slices while preserving one transaction owner, truthful Provider-effective panel controls and separate engineering, Photoshop and commercial-quality evidence levels.",
-    "status": "three_slice_code_integrated_dependency_targeted_typechecks_adjacent_audits_agent_uxp_builds_and_full_core_60_passed_final_parity_review_passed_independent_three_slice_and_state_commits_complete_exact_d103_provider_and_panel_live_pending_commercial_applicability_unknown_no_photoshop_write",
+    "id": "DEPENDENCY-CLOSURE-104",
+    "summary": "Revalidate the existing Anthropic dependency migration on the current D-103 chain with real isolated installs and builds, while separating deterministic lock integrity from dynamic security debt and preserving DeepSeek as the formal model.",
+    "status": "clean_agent_and_uxp_npm_ci_passed_npm_ls_zero_problems_dependency_integrity_636_and_148_passed_agent_and_uxp_builds_and_full_core_60_passed_package_lock_and_source_unchanged_independent_state_commit_complete_security_debt_split_not_fixed_no_photoshop_write",
     "mustDo": [
-      "Keep pure deterministic geometry, the versioned document/history/layer-bound Provider and the WebView/panel migration in three independently reviewable and reversible commits.",
-      "Keep alignment choice and explicit strength owned by Agent or user; the algorithm and Harness may reject unsafe geometry but cannot turn a mechanical score into an aesthetic decision.",
-      "Capture uncropped RAW RGBA, perform every no-op or quality rejection before mutation, execute at most one PhotoshopTransactionRunner-owned apply and require versioned same-target readback receipts.",
-      "Expose only parameters that actually enter the Provider, bind the whole batch to the loaded documentId, refresh revision per layer and stop after unknown mutation or document/transport drift.",
-      "Pass dependency preflight, reusable algorithm/Provider/panel attacks, UXP tests, authorship/tool/architecture audits, Main/Renderer types, both builds, one full maintenance gate and final parity review.",
-      "Keep D-097 unchanged for r32 reconciliation and r33; verify exact D-103 Provider and panel paths only afterward, with commercial quality waiting for a representative natural sample."
+      "Prove the current package and lock from a new worktree with no shared node_modules junction, including real npm ci for Agent and UXP, zero-problem npm ls graphs and the repository dependency integrity checker.",
+      "Verify installed Anthropic SDK, Claude Agent SDK and Zod versions against their declared peers without force, legacy-peer-deps or a hidden old lock.",
+      "Run Agent and UXP builds plus one ordered full maintenance gate using the isolated installations, then confirm package, lock and source remain unchanged.",
+      "Record dynamic npm audit findings as current security risk and divide future upgrades by runtime owner and reachability rather than treating install success as security completion.",
+      "Preserve deepseek-v4-flash-vision-exp as the formal Agent model; keep Smile closure, Electron/OpenAI migration and all Provider upgrades in later independent slices.",
+      "Keep D-097 unchanged for r32 reconciliation and r33, and leave the user's ordinary Runtime and Photoshop documents untouched."
     ],
     "mustNotDo": [
-      "Do not restore native-PNG transparent-edge cropping, implicit active-document capture, whole-document duplicate or the old enhanced-shape-morph and pose-align-layers stitched write chain.",
-      "Do not register internal capture/apply atoms as ordinary model-visible Tools or create a second transaction, runtime, completion or evaluation owner.",
-      "Do not retain reference-shape, style, smoothing, segmentation, step or fake-progress controls that do not affect the versioned Provider call.",
-      "Do not continue a batch after an unknown mutation or hide not-needed, rejection, timeout and transport facts behind a success summary.",
-      "Do not fabricate a curved commercial sample, classify a synthetic geometry canary as design quality, or add a hidden product bypass because automation cannot click the embedded WebView.",
-      "Do not load D-103 into the current user runtime, disturb PID 48836, or save, close, discard or modify any Photoshop document."
+      "Do not use npm audit fix, force, legacy-peer-deps or a blanket override to make the dependency graph or audit count look green.",
+      "Do not mix Electron, OpenAI, Volcengine, image runtime, build tooling and Smile changes into one package-lock rewrite.",
+      "Do not claim dynamic security findings are fixed merely because clean install, typecheck or builds pass.",
+      "Do not upgrade OpenAI to a Node 20+ line while Electron 28 still embeds Node 18, and do not keep the current Zod override as a permanent architecture decision.",
+      "Do not change the selected DeepSeek model, enable Smile or Codex fallback, or send paid Provider requests in this dependency slice.",
+      "Do not stop PID 16228 or save, close, discard or modify any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "SKU-POSE-INTEGRATION-103",
+    "id": "DEPENDENCY-CLOSURE-104",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：离线算法、单事务 Provider 与面板迁移按三个独立提交移植到 D-102，旧项目记忆和旧依赖声明未进入。",
-      "已完成：依赖完整性、算法/Provider/面板专项、UXP 全测试、181 Tool、作者权、相邻架构审计、Main/Renderer 类型和两端 production build 通过。",
-      "已完成：四份当前项目记忆、快速治理检查和唯一一次完整 maintenance:validate 60/60。",
-      "已完成：最终 parity/diff/编码/边界审查和独立状态提交；提交后只重建同一 clean commit 的 Agent/UXP identity。",
-      "后续真机：r32 对账、D-097 r33 与 D-102 canary 后，用 exact D-103 clean build 分别验证 Provider、真实面板按钮和代表性商业样本。"
+      "已完成：无 junction 的 Agent/UXP npm ci、optional 残留归因清理、双方 npm ls 0 problems 与依赖完整性 636/636、148/148。",
+      "已完成：Agent production build、preload sandbox、Renderer build、UXP 全测试/类型/production build 使用独立安装通过。",
+      "已完成：当前项目记忆、R-054、快速治理检查和唯一一次 maintenance:validate 60/60。",
+      "已完成：确认 package/lock/source 零改动并形成独立状态提交；安全升级保持后续 owner 分片。",
+      "后续：默认端口释放立即回到 r32；否则先独立收口 Smile，再按 Electron/OpenAI、Volcengine/network、image runtime、build chain 推进安全升级。"
     ]
   },
   "convergenceBaseline": {
