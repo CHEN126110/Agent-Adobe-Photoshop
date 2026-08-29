@@ -15,6 +15,7 @@ import { volcengineJimengImageService } from '../services/volcengine-jimeng-imag
 import { volcengineSeedreamService } from '../services/volcengine-seedream-service';
 import { volcengineTosUploadService } from '../services/volcengine-tos-upload-service';
 import { openRouterGeminiImageService } from '../services/openrouter-gemini-image-service';
+import { smileAiImageService } from '../services/smile-ai-image-service';
 import { serializedFileOperations } from '../services/serialized-file-operations';
 
 // 形态统一设置缓存
@@ -190,6 +191,15 @@ export function registerConfigHandlers(context: IPCContext): void {
                 keys.openrouter
                     ? '[Config] OpenRouter API Key 已同步到 OpenRouter Gemini Image Service'
                     : '[Config] OpenRouter API Key 已清空'
+            );
+        }
+        if (keys.smileAi !== undefined) {
+            smileAiImageService.setApiKey(keys.smileAi);
+            logService?.logAgent(
+                'info',
+                keys.smileAi
+                    ? '[Config] Smile AI API Key 已同步到 Smile AI Image Service'
+                    : '[Config] Smile AI API Key 已清空'
             );
         }
         return { success: true };

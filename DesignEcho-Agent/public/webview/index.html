@@ -877,8 +877,8 @@
             transition: border-color 0.18s ease, background 0.18s ease;
         }
 
-        .ai-ref-empty:hover,
-        .ai-ref-empty.dragover {
+        /* .dragover 态已随区域级拖拽一起移除：拖拽提示改由全窗覆盖层承担 */
+        .ai-ref-empty:hover {
             border-color: rgba(99, 140, 255, 0.55);
             background: rgba(99, 140, 255, 0.06);
         }
@@ -911,65 +911,164 @@
             opacity: 0.65;
         }
 
-        /* 高度与空态对齐：加删参考图时下方内容不跳动。
-           缩略图同时放大到 56px，能看清参考的是哪张图。 */
-        .ai-ref-filled {
+        /* 全窗拖入提示层：拖着文件进入窗口时整窗提示"松手即添加"，
+           不再要求瞄准投放区小方框。pointer-events:none 让 drop 落在
+           document 级监听上，提示层只负责被看见。 */
+        .ai-ref-drop-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 400;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            background: rgba(10, 10, 18, 0.72);
+            border: 2px dashed rgba(99, 140, 255, 0.75);
+            border-radius: 12px;
+        }
+
+        .ai-ref-drop-overlay-inner {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            color: var(--de-text-primary);
+        }
+
+        .ai-ref-drop-overlay-icon {
+            font-size: 30px;
+            line-height: 1;
+            opacity: 0.9;
+        }
+
+        .ai-ref-drop-overlay-main {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .ai-ref-drop-overlay-sub {
+            font-size: 11px;
+            color: var(--de-text-secondary);
+        }
+
+        /* ---- 有图态：缩略图网格 ----
+           这块原先复用的是「单张横向卡片」样式（56px 缩略图 + 文件名 + 删除键横向排列），
+           改成多张之后 JS 又用内联样式把图撑到 92px，两套布局叠在一起互相打架：
+           卡片声明 92px 却含 11px padding，内容区只剩 68px，92px 的图直接溢出卡片，
+           绝对定位的删除键因此落在图的左上角，末列还会被容器右边界裁掉。
+           现在按多张网格重写，尺寸全部由 CSS 决定，JS 不再写内联样式。 */
+
+        .ai-ref-head {
             display: flex;
             align-items: center;
-            gap: 10px;
-            min-height: 81px;
-            padding: 11px;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.04);
+            justify-content: space-between;
+            margin-bottom: 8px;
         }
 
-        .ai-ref-filled img {
-            flex: 0 0 auto;
-            width: 56px;
-            height: 56px;
-            object-fit: cover;
-            border-radius: 7px;
-            background: rgba(255, 255, 255, 0.04);
-        }
-
-        .ai-ref-info {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .ai-ref-name {
+        .ai-ref-count {
             font-size: 11px;
-            color: var(--de-text-primary);
+            color: var(--de-text-secondary);
+        }
+
+        /* 换模型后额度可能小于已加张数，这时计数要自己喊出来 */
+        .ai-ref-count.is-over {
+            color: #ffb454;
+        }
+
+        .ai-ref-grid {
+            display: grid;
+            /* 下限 64px 是量出来的，不是估的：面板固定 280px 宽时网格容器实宽 224px，
+               三列需要 (224 - 8*2) / 3 = 69.3px，写 70px 会因为差这 0.7px 掉回两列，
+               缩略图被拉到 108px，九张就排五行、比整个面板还高。
+               留 64px 余量后 280px 下稳定三列，窗口更宽时自动加列。 */
+            grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+            gap: 8px;
+        }
+
+        .ai-ref-card {
+            position: relative;
+            border-radius: 8px;
+            /* 关键：图片再大也裁在卡片内，不会溢出到相邻卡片或容器之外 */
             overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            background: rgba(255, 255, 255, 0.04);
         }
 
-        .ai-ref-meta {
-            margin-top: 2px;
-            font-size: 10px;
-            color: var(--de-text-secondary);
-            opacity: 0.75;
+        .ai-ref-card img {
+            display: block;
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            object-fit: cover;
         }
 
-        .ai-ref-filled > button {
-            flex: 0 0 auto;
-            width: 22px;
-            height: 22px;
-            border-radius: 50%;
+        /* 删除键默认收到近乎不可见：加满时十几张图配十几个高对比圆点，
+           整块会被删除键主导，而它是低频操作。指到哪张才亮哪张。 */
+        .ai-ref-card-remove {
+            position: absolute;
+            top: 3px;
+            right: 3px;
+            width: 18px;
+            height: 18px;
+            padding: 0;
             border: none;
-            background: rgba(255, 255, 255, 0.08);
-            color: var(--de-text-secondary);
-            font-size: 13px;
-            line-height: 1;
+            border-radius: 50%;
+            background: rgba(0, 0, 0, 0.5);
+            color: rgba(255, 255, 255, 0.78);
+            font-size: 12px;
+            line-height: 18px;
+            font-family: inherit;
             cursor: pointer;
-            transition: background 0.18s ease, color 0.18s ease;
+            opacity: 0;
+            transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
         }
 
-        .ai-ref-filled > button:hover {
-            background: rgba(255, 90, 90, 0.22);
+        .ai-ref-card:hover .ai-ref-card-remove,
+        .ai-ref-card-remove:focus-visible {
+            opacity: 1;
+        }
+
+        .ai-ref-card-remove:hover {
+            background: rgba(255, 90, 90, 0.85);
             color: #fff;
+        }
+
+        /* 没有悬停的输入环境（触控）里 hover 永不触发，删除键就成了摆设 */
+        @media (hover: none) {
+            .ai-ref-card-remove {
+                opacity: 1;
+            }
+        }
+
+        /* 有图态的「再加一张」入口：与缩略图同尺寸并入网格末尾。
+           空态那个大虚线框不再常驻——面板总高只有 620px，它要占掉 80px，
+           而加过一张之后它的引导作用已经完成。 */
+        .ai-ref-add {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            aspect-ratio: 1 / 1;
+            border: 1px dashed rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.02);
+            color: var(--de-text-secondary);
+            font-size: 18px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+        }
+
+        .ai-ref-add:hover {
+            border-color: rgba(99, 140, 255, 0.55);
+            background: rgba(99, 140, 255, 0.06);
+            color: var(--de-text-primary);
+        }
+
+        .ai-ref-tip {
+            margin-top: 8px;
+            font-size: 10px;
+            line-height: 1.5;
+            color: var(--de-text-secondary);
+            opacity: 0.7;
         }
 
         /* 次要入口：做成文字链接，不与主投放区争抢视觉权重 */
@@ -5252,14 +5351,24 @@
             <section class="morph-section">
                 <div class="section-content" style="padding: 12px 14px;">
                     <div class="ai-ref-zone">
+                        <!-- 空态：整块可点的大投放区，承担首次引导 -->
                         <button type="button" class="ai-ref-empty" id="btnImageToImageReferenceFile">
                             <span class="ai-ref-empty-icon">＋</span>
                             <span class="ai-ref-empty-main">添加参考图<span class="ai-ref-optional">可选</span></span>
                             <span class="ai-ref-empty-sub" id="imageToImageReferenceHint">点击选择图片（可多选），或按 Ctrl+V 粘贴</span>
                         </button>
-                        <!-- 多张参考图：模型侧本来就支持（Gemini 14 张 / GPT 16 张），
+                        <!-- 有图态：计数 + 清空 / 缩略图网格 / 一行补充提示。
+                             多张参考图模型侧本来就支持（输入图含源图 Gemini 共 14 张 / GPT 共 16 张，
+                             各模型确切额度见 IMAGE_TO_IMAGE_MODEL_CAPABILITIES.maxReferenceImages），
                              这里以前只存一张，等于把已有能力关在门外。每张独立可删。 -->
-                        <div id="imageToImageReferencePreview" style="display:none; flex-wrap:wrap; gap:8px;"></div>
+                        <div id="imageToImageReferenceFilled" style="display:none;">
+                            <div class="ai-ref-head">
+                                <span class="ai-ref-count" id="imageToImageReferenceCount"></span>
+                                <button type="button" class="ai-link-btn" id="btnImageToImageReferenceClear">清空</button>
+                            </div>
+                            <div class="ai-ref-grid" id="imageToImageReferencePreview"></div>
+                            <div class="ai-ref-tip" id="imageToImageReferenceTip"></div>
+                        </div>
                         <input type="file" id="imageToImageReferenceInput" accept="image/*" multiple style="display:none;" />
                     </div>
                     <div class="ai-ref-actions">
@@ -5313,6 +5422,9 @@
                                 <div class="custom-dropdown-option" data-value="google/gemini-3.1-flash-image-preview">Nano Banana 2 (OpenRouter) - 支持 4K</div>
                                 <div class="custom-dropdown-option" data-value="openai/gpt-image-2">GPT Image 2 (OpenRouter) - 高质量档</div>
                                 <div class="custom-dropdown-option" data-value="openai/gpt-5.4-image-2">GPT-5.4 Image 2 (OpenRouter)</div>
+                                <div class="custom-dropdown-option" data-value="smile-ai/gemini-3-pro-image-preview">Nano Banana Pro (Smile AI) - 旗舰 4K</div>
+                                <div class="custom-dropdown-option" data-value="smile-ai/gemini-3.1-flash-image-preview">Nano Banana 2 (Smile AI) - 更快</div>
+                                <div class="custom-dropdown-option" data-value="smile-ai/gpt-image-2">GPT Image 2 (Smile AI)</div>
                             </div>
                         </div>
                     </div>
@@ -6355,77 +6467,140 @@
         };
         let imageToImageState = 'idle';
         /**
-         * 参考图列表。模型侧一直支持多张（images API 的 input_references：
-         * Gemini 到 14 张、GPT 到 16 张），面板此前只留了一个单数变量，
+         * 参考图列表。模型侧一直支持多张（输入图含源图：Gemini 系共 14 张、
+         * GPT 系共 16 张，见 IMAGE_TO_IMAGE_MODEL_CAPABILITIES.maxReferenceImages
+         * 上方的口径说明），面板此前只留了一个单数变量，
          * 于是能力被卡在界面这一层。改成数组，上限按当前模型取。
          */
         let imageToImageReferences = [];
         let imageToImageReferenceDirectory = '';
+        // 只有拖拽事件真的进来过，才在文案里承诺「拖入」——UXP webview 放不放行系统拖拽
+        // 无法预判，这个标记由第一次 dragenter 置真（见全窗拖入的初始化处）。
+        let imageToImageDragProven = false;
+        // maxReferenceImages：整图重生时**除源图外**还能带几张参考图。
+        // 关键口径（2026-08-29 逐家核对官方文档）：所有平台的输入图数组都**没有独立的
+        // 源图名额**——被编辑的源图就是数组第一个元素，占掉一个名额。所以这里的值
+        // 一律等于官方输入图总数减一：
+        //  - Gemini 3 系（Pro / 3.1 Flash）：官方 "mix up to 14 reference images"，
+        //    含源图共 14 → 参考图 13（ai.google.dev/gemini-api/docs/image-generation）；
+        //    OpenRouter 通道的 input_references 与 Smile AI 通道的 generateContent
+        //    images 数组走的是同一口径；
+        //  - GPT Image 系：/v1/images/edits 的 image[] 最多 16 张、源图即第一张
+        //    → 参考图 15（OpenAI 官方 spec）；
+        //  - Seedream 系：官方 image 参数上限 pro 10 张 / lite・4.5・4.0 14 张（均含源图）
+        //    → 参考图 9 / 13。另外 Agent 端 volcengine-seedream-service 的
+        //    SEEDREAM_REFERENCE_LIMIT 会先行校验（超了直接抛错），这里的值必须 ≤ 它；
+        //  - 即梦 4.6：官方 image_urls "支持输入 0 至 14 张图"（含源图，官方建议 ≤6 张
+        //    效果最好）→ 参考图 13。
+        // 以前这个数是在 getImageToImageReferenceLimit 里按模型前缀猜的——
+        // smile-ai/ 前缀没被猜到，Smile 通道被硬卡成 1 张，能力白白关掉。
         const IMAGE_TO_IMAGE_MODEL_CAPABILITIES = {
             'doubao-seedream-5-0-260128': {
                 label: 'Seedream 5.0 - 高质量图生图',
                 defaultSize: '3K',
-                supportedSizes: ['2K', '3K']
+                supportedSizes: ['2K', '3K'],
+                // 官方文档把这个 ID 归入 14 张档（含源图，参考图可到 13），
+                // 但 Agent 端 SEEDREAM_REFERENCE_LIMIT 对它先行校验 10 张——
+                // 这里只能取两者较小值，放宽需与 Agent 端同步改
+                maxReferenceImages: 10
             },
             'doubao-seedream-5-0-pro-260628': {
                 label: 'Seedream 5.0 Pro - 旗舰版',
                 defaultSize: '2K',
                 supportedSizes: ['1K', '2K'],
-                sizeHint: 'Pro 旗舰模型支持：1K / 2K；需要 4K 请切换 5.0 lite、4.5 或 4.0'
+                sizeHint: 'Pro 旗舰模型支持：1K / 2K；需要 4K 请切换 5.0 lite、4.5 或 4.0',
+                // 官方 image 参数含源图共 10 张
+                maxReferenceImages: 9
             },
             'doubao-seedream-5-0-lite-260128': {
                 label: 'Seedream 5.0 lite - 更快',
                 defaultSize: '3K',
-                supportedSizes: ['2K', '3K', '4K']
+                supportedSizes: ['2K', '3K', '4K'],
+                maxReferenceImages: 13
             },
             'doubao-seedream-4-5-251128': {
                 label: 'Seedream 4.5 - 支持 4K',
                 defaultSize: '2K',
-                supportedSizes: ['2K', '4K']
+                supportedSizes: ['2K', '4K'],
+                maxReferenceImages: 13
             },
             'doubao-seedream-4-0-250828': {
                 label: 'Seedream 4.0 - 兼容 1K/2K/4K',
                 defaultSize: '2K',
-                supportedSizes: ['1K', '2K', '4K']
+                supportedSizes: ['1K', '2K', '4K'],
+                maxReferenceImages: 13
             },
             'jimeng-seedream-4-6': {
                 label: '即梦AI 图片生成4.6 - 官方图生图',
                 defaultSize: '2K',
                 supportedSizes: ['1K', '2K', '4K'],
-                sizeHint: '官方图生图走 image_urls 输入，建议先在设置中配置 TOS 公网桶'
+                sizeHint: '官方图生图走 image_urls 输入，建议先在设置中配置 TOS 公网桶',
+                // 官方 image_urls 含源图共 14 张（官方另建议 6 张以内参考效果最好）
+                maxReferenceImages: 13
             },
             // 档位取值来自图像 API 的 supported_parameters（/api/v1/images/models）。
             // 模型 id 用不带日期后缀的写法：带日期的不是 OpenRouter 的模型 id，而是条目创建
             // 日期 / Google 上游快照名。分辨率走图像 API 顶层 resolution，不是 chat 路径的
             // image_config.image_size（那是 Google 原生字段名，档位因此从未生效）。
+            // Smile AI Studio 网关：与上面 OpenRouter 的同名模型是两条独立通道。
+            // 档位由模型名后缀（-1k/-2k/-4k）决定而非请求参数，比例走 Google 原生
+            // generateContent 的 imageConfig.aspectRatio 参数级精确控制。
+            // 三档实测均如实生效：1:1 下分别出 1024²、2048²、4096²。
+            'smile-ai/gemini-3-pro-image-preview': {
+                label: 'Nano Banana Pro (Smile AI) - 旗舰 4K',
+                defaultSize: '2K',
+                supportedSizes: ['1K', '2K', '4K'],
+                aspectRatioTier: true,
+                sizeHint: '走 Smile AI Studio 网关，需在 Agent 设置中配置 Smile AI API Key',
+                maxReferenceImages: 13
+            },
+            'smile-ai/gemini-3.1-flash-image-preview': {
+                label: 'Nano Banana 2 (Smile AI) - 更快',
+                defaultSize: '2K',
+                supportedSizes: ['1K', '2K', '4K'],
+                aspectRatioTier: true,
+                sizeHint: '比 Pro 快约四成，同样支持 1K / 2K / 4K 档位',
+                maxReferenceImages: 13
+            },
+            'smile-ai/gpt-image-2': {
+                label: 'GPT Image 2 (Smile AI)',
+                defaultSize: '2K',
+                supportedSizes: ['2K'],
+                sizeHint: 'OpenAI 图像端点没有档位概念，尺寸由模型自定',
+                maxReferenceImages: 15
+            },
             'google/gemini-3-pro-image-preview': {
                 label: 'Nano Banana Pro (OpenRouter) - 旗舰 4K',
                 defaultSize: '2K',
                 supportedSizes: ['1K', '2K', '4K'],
                 // 档位比例模型：比例走图像 API 的顶层 aspect_ratio 直发，本地不做像素换算
                 aspectRatioTier: true,
-                sizeHint: '走 OpenRouter 平台，需在 Agent 设置中配置 OpenRouter API Key'
+                sizeHint: '走 OpenRouter 平台，需在 Agent 设置中配置 OpenRouter API Key',
+                maxReferenceImages: 13
             },
             'google/gemini-3.1-flash-image-preview': {
                 label: 'Nano Banana 2 (OpenRouter) - 支持 4K',
                 defaultSize: '2K',
                 supportedSizes: ['1K', '2K', '4K'],
                 aspectRatioTier: true,
-                sizeHint: 'Gemini 3.1 Flash Image，比 Pro 快，同样支持 4K 档位'
+                sizeHint: 'Gemini 3.1 Flash Image，比 Pro 快，同样支持 4K 档位',
+                maxReferenceImages: 13
             },
             'google/gemini-3-pro-image': {
                 label: 'Gemini 3 Pro Image GA (OpenRouter)',
                 defaultSize: '2K',
                 supportedSizes: ['1K', '2K', '4K'],
                 aspectRatioTier: true,
-                sizeHint: 'GA 条目，图像 API 声明支持 1K/2K/4K'
+                sizeHint: 'GA 条目，图像 API 声明支持 1K/2K/4K',
+                maxReferenceImages: 13
             },
             'google/gemini-3.1-flash-image': {
                 label: 'Nano Banana 2 GA (OpenRouter)',
                 defaultSize: '2K',
                 supportedSizes: ['1K', '2K', '4K'],
                 aspectRatioTier: true,
-                sizeHint: 'GA 条目，图像 API 声明支持 1K/2K/4K'
+                sizeHint: 'GA 条目，图像 API 声明支持 1K/2K/4K',
+                maxReferenceImages: 13
             },
             // OpenAI 系图像模型：能力形态与 Gemini 系差别很大，如实标注不硬凑。
             // 它们**没有 1K/2K/4K 档位**（images API 的 supported_parameters 不声明
@@ -6436,14 +6611,16 @@
                 defaultSize: '2K',
                 supportedSizes: ['2K'],
                 aspectRatioTier: true,
-                sizeHint: '按 high 质量档出图，尺寸由模型决定（没有档位可选）；返回无损 PNG，一次可出多张'
+                sizeHint: '按 high 质量档出图，尺寸由模型决定（没有档位可选）；返回无损 PNG，一次可出多张',
+                maxReferenceImages: 15
             },
             'openai/gpt-5.4-image-2': {
                 label: 'GPT-5.4 Image 2 (OpenRouter)',
                 defaultSize: '2K',
                 supportedSizes: ['2K'],
                 aspectRatioTier: true,
-                sizeHint: '同为 high 质量档，尺寸由模型决定；返回无损 PNG'
+                sizeHint: '同为 high 质量档，尺寸由模型决定；返回无损 PNG',
+                maxReferenceImages: 15
             }
         };
         const IMAGE_TO_IMAGE_SIZE_LABELS = {
@@ -7209,7 +7386,9 @@
                     : '基于选中图层整体重新生成，可指定比例、分辨率与生成数量。';
             }
 
-            // 参考图区两模式共用，但"能不能生效"的说明只在局部重绘下才有意义
+            // 参考图区两模式共用，但额度与"能不能生效"都随模式下的当前模型变，
+            // 投放区（提示文案、入口显隐）和说明一起刷新
+            updateImageToImageReferencePreview();
             refreshAiImageReferenceNote();
 
             // 两种模式的 footer 高度不同，切换后同步一次底部留白。
@@ -7252,13 +7431,45 @@
             'doubao-seedream-4-0-250828': { min: 921600, max: 16777216, sequential: true, parallel: true },
             'jimeng-seedream-4-6': { min: 0, max: 0, sequential: false, parallel: false },
             // Gemini 按 aspect_ratio + image_size 档位出图，无像素区间；单图模型，张数锁 1
+            // 修正：第二行原先是 'google/gemini-3-pro-image-preview' 的重复键，
+            // JS 对象后键覆盖前键，等于 Flash 系从未在此登记、被 fallback 到 Seedream
+            // 的像素区间（min 3686400），面板会对档位模型做无意义的像素校验。
             'google/gemini-3-pro-image-preview': { min: 0, max: 0, sequential: false, parallel: false },
-            'google/gemini-3-pro-image-preview': { min: 0, max: 0, sequential: false, parallel: false },
-            'google/gemini-3-pro-image': { min: 0, max: 0, sequential: false, parallel: false }
+            'google/gemini-3.1-flash-image-preview': { min: 0, max: 0, sequential: false, parallel: false },
+            'google/gemini-3-pro-image': { min: 0, max: 0, sequential: false, parallel: false },
+            // Smile AI 通道同为档位模型，无像素区间；网关单次只出一张，并发由 Agent 侧处理
+            'smile-ai/gemini-3-pro-image-preview': { min: 0, max: 0, sequential: false, parallel: true },
+            'smile-ai/gemini-3.1-flash-image-preview': { min: 0, max: 0, sequential: false, parallel: true },
+            'smile-ai/gpt-image-2': { min: 0, max: 0, sequential: false, parallel: true }
         };
 
         function getAiImageModelPixelRange(model) {
             return AI_IMAGE_MODEL_PIXEL_RANGE[model] || AI_IMAGE_MODEL_PIXEL_RANGE['doubao-seedream-5-0-260128'];
+        }
+
+        /**
+         * Seedream 组图的全局硬约束：输入图（源图 + 参考图）+ 生成图 ≤ 15 张。
+         * 与 Agent 端 volcengine-seedream-service 的 SEEDREAM_SEQUENTIAL_TOTAL_LIMIT 同一口径，
+         * 改这里必须同步改那边。
+         *
+         * 为什么面板非算不可：Agent 端对超出的部分是 Math.min 静默截断——
+         * 用户加了 13 张参考图又选 9 张，最后只会拿到 1 张，且没有任何失败记录。
+         * 那正是本页一直想避免的"以为模型不听话"。参考图额度放宽之后这条路才真的走得到，
+         * 所以必须在点生成之前就说清楚。
+         */
+        const SEEDREAM_SEQUENTIAL_TOTAL_LIMIT = 15;
+
+        /**
+         * 当前参考图数量下，组图模型这次实际最多能出几张。
+         * 只有走 Seedream 组图（sequential）的模型受这条约束：
+         * 并发路径每次请求单图，不占组图额度；Gemini / GPT / 即梦更不走这条路。
+         * 返回 null 表示当前模型不受该约束。
+         */
+        function getSeedreamSequentialCountCap(model) {
+            const range = getAiImageModelPixelRange(model);
+            if (!range.sequential) return null;
+            // 源图占 1 张，参考图各占 1 张
+            return SEEDREAM_SEQUENTIAL_TOTAL_LIMIT - 1 - imageToImageReferences.length;
         }
 
         function getSelectedAiImageRatio() {
@@ -7281,10 +7492,26 @@
         }
 
         /**
+         * 本次实际会向模型请求的张数。
+         *
+         * 与用户所选数量唯一的差别来源是：Seedream 组图的 15 张总额度被参考图挤占。
+         * Agent 端对超出部分是 Math.min 静默截断，面板这边按同一规则主动收敛，
+         * 好让占位槽数、状态文案和最终真正拿到的张数三者一致——
+         * 少了几张、为什么少，由数量区提示（refreshAiImageCountAvailability）说明，
+         * 不靠用户自己从结果里倒推。
+         */
+        function getEffectiveAiImageCount() {
+            const count = getSelectedAiImageCount();
+            const cap = getSeedreamSequentialCountCap(getImageToImageSelectedModel());
+            if (cap === null) return count;
+            return Math.max(1, Math.min(count, cap));
+        }
+
+        /**
          * 候选区占位渲染
          *
          * 候选区常驻显示：没生成时按当前数量摆出空槽，生成时槽位转圈。
-         * 槽数跟着「数量」走，所以调数量就能预见这次会出几张。
+         * 槽数跟着「本次实际请求张数」走，所以调数量、加减参考图都能预见这次会出几张。
          * 占位槽不绑点击，选中逻辑只属于真实候选。
          */
         function renderImageToImageCandidatePlaceholders(mode) {
@@ -7293,7 +7520,7 @@
             const hint = document.getElementById('imageToImageResultHint');
             if (!grid || !section) return;
 
-            const count = getSelectedAiImageCount();
+            const count = getEffectiveAiImageCount();
             const generating = mode === 'generating';
 
             grid.innerHTML = '';
@@ -7514,7 +7741,18 @@
 
             if (notice) {
                 const count = getSelectedAiImageCount();
-                if (count <= 1) {
+                // 组图额度被参考图挤占时优先说这件事：它是确定性的截断，
+                // 比"模型自行判断"更能解释用户即将看到的张数
+                const sequentialCap = getSeedreamSequentialCountCap(model);
+                if (count > 1 && sequentialCap !== null && count > sequentialCap) {
+                    notice.style.display = 'block';
+                    notice.textContent = sequentialCap >= 1
+                        ? '当前 ' + imageToImageReferences.length + ' 张参考图挤占了组图额度（输入图 + 生成图 ≤ '
+                            + SEEDREAM_SEQUENTIAL_TOTAL_LIMIT + ' 张），本次实际最多生成 ' + sequentialCap
+                            + ' 张。想出满 ' + count + ' 张请减少参考图。'
+                        : '参考图已占满组图额度（输入图 + 生成图 ≤ ' + SEEDREAM_SEQUENTIAL_TOTAL_LIMIT
+                            + ' 张），本次无法生成。请先移除部分参考图。';
+                } else if (count <= 1) {
                     notice.style.display = 'none';
                     notice.textContent = '';
                 } else if (range.sequential) {
@@ -7619,14 +7857,44 @@
             imageToImageReferenceDirectory = '';
         }
 
-        /** 当前模型能收几张参考图。发超了会被上游直接拒，所以在加的时候就挡住。 */
+        /**
+         * 局部重绘时各模型还能带几张参考图。
+         * 与整图重生不同，这条链路上 input_references 里除了源图还要塞一张
+         * 「选区描边引导图」（见 openrouter-gemini-image-service.editImage），
+         * 所以 Gemini 系 14-2=12、OpenAI 系 16-2=14。
+         * 即梦走官方蒙版接口，没有多图输入位，为 0——入口会随之隐藏，
+         * 而不是摆一个加了也不生效的按钮。
+         */
+        const INPAINTING_MODEL_REFERENCE_LIMITS = {
+            'google/gemini-3-pro-image-preview': 12,
+            'google/gemini-3-pro-image': 12,
+            'google/gemini-3.1-flash-image-preview': 12,
+            'google/gemini-3.1-flash-image': 12,
+            'openai/gpt-image-2': 14,
+            'openai/gpt-5.4-image-2': 14,
+            'openai/gpt-5-image': 14,
+            'openai/gpt-5-image-mini': 14,
+            'smile-ai/gemini-3-pro-image-preview': 12,
+            'smile-ai/gemini-3.1-flash-image-preview': 12,
+            'smile-ai/gpt-image-2': 14,
+            'jimeng-inpaint': 0
+        };
+
+        /**
+         * 当前模型能收几张参考图。发超了会被上游直接拒，所以在加的时候就挡住。
+         * 数字全部来自按模型的能力表（能力表上写着每个数的出处），
+         * 不再按模型 id 前缀猜——前缀猜法漏掉了 smile-ai/ 通道，
+         * 同一个 Nano Banana Pro 换条通道就被硬卡成 1 张。
+         */
         function getImageToImageReferenceLimit() {
-            const model = aiImageMode === 'inpaint'
-                ? (document.getElementById('inpaintingModelSelect')?.dataset?.value || '')
-                : getImageToImageSelectedModel();
-            if (model.startsWith('openai/')) return 16;
-            if (model.startsWith('google/gemini')) return 14;
-            return 1;
+            if (aiImageMode === 'inpaint') {
+                const model = document.getElementById('inpaintingModelSelect')?.dataset?.value || '';
+                const limit = INPAINTING_MODEL_REFERENCE_LIMITS[model];
+                // 未登记的重绘模型按 0 处理：宁可入口收起，也不引导用户传一堆不生效的图
+                return Number.isFinite(limit) ? limit : 0;
+            }
+            const capabilities = getImageToImageModelCapabilities(getImageToImageSelectedModel());
+            return Number.isFinite(capabilities.maxReferenceImages) ? capabilities.maxReferenceImages : 1;
         }
 
         function updateImageToImageReferencePreview() {
@@ -7634,47 +7902,97 @@
             const empty = document.getElementById('btnImageToImageReferenceFile');
             if (!preview) return;
 
-            // 空态与有图态互斥：共用同一个方框位置，切换时下方内容不会跳动
-            if (imageToImageReferences.length === 0) {
-                preview.style.display = 'none';
+            const limit = getImageToImageReferenceLimit();
+
+            // 上限跟着模型走，提示也要跟着走：用户不该在加到被拒时才知道额度。
+            // 「拖入」只在拖拽事件真的进来过之后才写进文案——UXP webview 是否放行
+            // 系统拖拽无法预判，没验证过的能力不许诺（验证过就如实告知）。
+            const hintEl = document.getElementById('imageToImageReferenceHint');
+            if (hintEl) {
+                const dragPart = imageToImageDragProven ? '、拖入窗口任意位置' : '';
+                hintEl.textContent = limit > 0
+                    ? `点击选择图片（可多选），或按 Ctrl+V 粘贴${dragPart}；当前模型最多 ${limit} 张`
+                    : '点击选择图片（可多选），或按 Ctrl+V 粘贴';
+            }
+
+            // 当前模型收不了参考图（如即梦官方蒙版接口）时收起入口：
+            // 摆一个加了也不生效的按钮，等于对用户撒谎
+            const folderBtn = document.getElementById('btnImageToImageReferenceFolder');
+            if (folderBtn && folderBtn.dataset.envSupported === 'true') {
+                folderBtn.style.display = limit > 0 ? '' : 'none';
+            }
+
+            const filled = document.getElementById('imageToImageReferenceFilled');
+            const used = imageToImageReferences.length;
+
+            // 空态与有图态互斥：空态是整块可点的大投放区（承担首次引导），
+            // 有图态换成缩略图网格，"再加一张"并入网格末尾，不让大框继续占着高度
+            if (used === 0) {
+                if (filled) filled.style.display = 'none';
                 preview.innerHTML = '';
-                if (empty) empty.style.display = 'flex';
+                if (empty) empty.style.display = limit > 0 ? 'flex' : 'none';
                 return;
+            }
+
+            if (empty) empty.style.display = 'none';
+            if (filled) filled.style.display = 'block';
+
+            const countEl = document.getElementById('imageToImageReferenceCount');
+            if (countEl) {
+                countEl.textContent = `参考图 ${used} / ${limit}`;
+                // 换模型后额度可能小于已加张数，这种"待处理"状态要一眼看得出
+                countEl.classList.toggle('is-over', used > limit);
             }
 
             preview.innerHTML = '';
             imageToImageReferences.forEach((ref, index) => {
                 const card = document.createElement('div');
-                card.className = 'ai-ref-filled';
-                card.style.cssText = 'position:relative; width:92px;';
+                card.className = 'ai-ref-card';
+                // 文件名在 70px 宽的格子里截断后几乎没有信息量，缩略图本身才是识别依据。
+                // 完整名与来源收进悬停提示，把垂直空间还给图。
+                card.title = ref.name
+                    ? `${ref.name}（来自${ref.source || '参考图'}）`
+                    : `参考图 ${index + 1}（来自${ref.source || '未知来源'}）`;
 
                 const img = document.createElement('img');
                 img.src = ref.dataUrl;
-                img.style.cssText = 'width:92px; height:92px; object-fit:cover; border-radius:8px; display:block;';
+                img.alt = ref.name || `参考图 ${index + 1}`;
                 card.appendChild(img);
-
-                const name = document.createElement('div');
-                name.className = 'ai-ref-name';
-                name.textContent = ref.name || `参考图 ${index + 1}`;
-                name.style.cssText = 'font-size:10px; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-                card.appendChild(name);
 
                 // 每张单独可删：加错一张不该逼用户把整组清空重来
                 const remove = document.createElement('button');
                 remove.type = 'button';
+                remove.className = 'ai-ref-card-remove';
                 remove.title = '移除这张参考图';
                 remove.textContent = '×';
-                remove.style.cssText = 'position:absolute; top:2px; right:2px; width:18px; height:18px; line-height:16px;'
-                    + 'border-radius:9px; border:none; background:rgba(0,0,0,0.6); color:#fff; cursor:pointer; font-size:12px; padding:0;';
                 remove.addEventListener('click', () => removeImageToImageReference(index));
                 card.appendChild(remove);
 
                 preview.appendChild(card);
             });
 
-            preview.style.display = 'flex';
-            // 还没到上限就把"添加"入口继续留着，不然加完第一张就没法再加
-            if (empty) empty.style.display = imageToImageReferences.length < getImageToImageReferenceLimit() ? 'flex' : 'none';
+            // 还有余量就在网格末尾放一个同尺寸的"+"格，不然加完第一张就没法再加
+            if (used < limit) {
+                const add = document.createElement('button');
+                add.type = 'button';
+                add.className = 'ai-ref-add';
+                add.title = '再添加参考图';
+                add.textContent = '＋';
+                add.addEventListener('click', async () => { await selectImageToImageReferenceFile(); });
+                preview.appendChild(add);
+            }
+
+            const tipEl = document.getElementById('imageToImageReferenceTip');
+            if (tipEl) {
+                const dragPart = imageToImageDragProven ? '、拖入窗口' : '';
+                if (used > limit) {
+                    tipEl.textContent = `超出当前模型上限，请移除 ${used - limit} 张后再生成。`;
+                } else if (used === limit) {
+                    tipEl.textContent = `已达当前模型上限（${limit} 张）。`;
+                } else {
+                    tipEl.textContent = `还可添加 ${limit - used} 张，也可按 Ctrl+V 粘贴${dragPart}。`;
+                }
+            }
         }
 
         /**
@@ -7709,46 +8027,55 @@
             imageToImageReferences.splice(index, 1);
             updateImageToImageReferencePreview();
             refreshAiImageReferenceNote();
+            // 参考图数量直接决定组图还能出几张，数量提示必须跟着动
+            refreshAiImageCountAvailability();
         }
 
-        /** 局部重绘里能吃参考图的重绘模型。其余走的是官方蒙版接口，没有多图输入位 */
-        // 能吃多图输入的重绘模型才用得上参考图；即梦走官方蒙版接口，没有多图输入位
-        // 与 Agent 侧 inpainting-service 的 OPENROUTER_MODELS 对齐。
-        // 原先这里 Nano Banana Pro preview 写了两遍、且漏了 gpt-image-2 与 Flash 系——
-        // 漏一个的后果是：用户选了那个模型传参考图，界面会说"本次不会生效"，
-        // 而实际上它是支持的。
-        const INPAINTING_MODELS_WITH_REFERENCE_SUPPORT = [
-            'google/gemini-3-pro-image-preview',
-            'google/gemini-3-pro-image',
-            'google/gemini-3.1-flash-image-preview',
-            'google/gemini-3.1-flash-image',
-            'openai/gpt-image-2',
-            'openai/gpt-5.4-image-2',
-            'openai/gpt-5-image',
-            'openai/gpt-5-image-mini'
-        ];
-
         /**
-         * 参考图能不能生效取决于当前模型。与其让用户传完发现没用上，
-         * 不如在传的当下就说清楚——生效与否都是明说，不静默忽略。
+         * 参考图能不能生效、还差多少额度，都取决于当前模型。
+         * 与其让用户传完发现没用上（或点了生成才被拒），
+         * 不如在状态变化的当下就说清楚——生效与否、超没超限都是明说，不静默忽略。
+         * 「支持不支持」不再单独维护一份模型清单：上限表里 0 就是不支持，
+         * 两份清单迟早漂移（上一版就是漂移出的 bug：漏了 gpt-image-2 与 Flash 系）。
          */
         function refreshAiImageReferenceNote() {
             const note = document.getElementById('aiImageReferenceModelNote');
             if (!note) return;
 
-            if (aiImageMode !== 'inpaint' || imageToImageReferences.length === 0) {
+            if (imageToImageReferences.length === 0) {
                 note.style.display = 'none';
                 note.textContent = '';
                 return;
             }
 
-            const model = document.getElementById('inpaintingModelSelect')?.dataset?.value || '';
-            const supported = INPAINTING_MODELS_WITH_REFERENCE_SUPPORT.includes(model);
+            const limit = getImageToImageReferenceLimit();
+            const overflow = imageToImageReferences.length - limit;
+
+            if (aiImageMode !== 'inpaint') {
+                // 整图重生：额度够就不打扰；超了（通常是换到了额度更小的模型）必须说明白，
+                // 因为生成按钮会因此拒绝执行
+                if (overflow <= 0) {
+                    note.style.display = 'none';
+                    note.textContent = '';
+                    return;
+                }
+                note.style.display = 'block';
+                note.style.color = '#ffb454';
+                note.textContent = `当前模型最多支持 ${limit} 张参考图，已添加 ${imageToImageReferences.length} 张；请移除 ${overflow} 张后再生成。`;
+                return;
+            }
+
             note.style.display = 'block';
-            note.style.color = supported ? 'var(--de-text-secondary)' : '#ffb454';
-            note.textContent = supported
-                ? `本次重绘会带上这 ${imageToImageReferences.length} 张参考图，模型会按它们来还原主体的款式、材质和配色。`
-                : '当前重绘模型不支持参考图，这些图本次不会生效。换成 Nano Banana Pro 或 GPT Image 系列才会生效。';
+            if (limit === 0) {
+                note.style.color = '#ffb454';
+                note.textContent = '当前重绘模型不支持参考图，这些图本次不会生效。换成 Nano Banana Pro 或 GPT Image 系列才会生效。';
+            } else if (overflow > 0) {
+                note.style.color = '#ffb454';
+                note.textContent = `当前重绘模型最多支持 ${limit} 张参考图，已添加 ${imageToImageReferences.length} 张；请移除 ${overflow} 张后再重绘。`;
+            } else {
+                note.style.color = 'var(--de-text-secondary)';
+                note.textContent = `本次重绘会带上这 ${imageToImageReferences.length} 张参考图，模型会按它们来还原主体的款式、材质和配色。`;
+            }
         }
 
         function clearImageToImageReference(options = {}) {
@@ -7758,6 +8085,7 @@
             }
             updateImageToImageReferencePreview();
             refreshAiImageReferenceNote();
+            refreshAiImageCountAvailability();
         }
 
         /** 追加一张参考图。同一张（同 dataUrl）不重复加，超上限如实拒绝并说清上限是多少。 */
@@ -7769,7 +8097,9 @@
                 return;
             }
             if (imageToImageReferences.length >= limit) {
-                showToast(`当前模型最多支持 ${limit} 张参考图`, 'warning');
+                showToast(limit === 0
+                    ? '当前重绘模型不支持参考图，换成 Nano Banana Pro 或 GPT Image 系列再添加'
+                    : `当前模型最多支持 ${limit} 张参考图`, 'warning');
                 return;
             }
             imageToImageReferences.push({
@@ -7782,6 +8112,7 @@
             }
             updateImageToImageReferencePreview();
             refreshAiImageReferenceNote();
+            refreshAiImageCountAvailability();
         }
 
         async function loadImageToImageReferenceFromPath(filePath, sourceLabel = '本地文件', options = {}) {
@@ -10361,9 +10692,15 @@
 
             document.getElementById('imageToImageModelSelect')?.addEventListener('change', (event) => {
                 renderImageToImageSizePresetOptions(event?.detail?.value || getImageToImageSelectedModel());
+                // 参考图额度按模型走，换模型后提示与说明都要跟上；
+                // 已添加的图**不会**被悄悄裁掉——超限时由说明与生成守卫如实拦下
+                updateImageToImageReferencePreview();
+                refreshAiImageReferenceNote();
             });
-            // 换重绘模型可能让已添加的参考图从"会生效"变成"不生效"，说明要跟着变
+            // 换重绘模型可能让已添加的参考图从"会生效"变成"不生效"、额度也会变，
+            // 说明与投放区状态都要跟着变
             document.getElementById('inpaintingModelSelect')?.addEventListener('change', () => {
+                updateImageToImageReferencePreview();
                 refreshAiImageReferenceNote();
             });
             // 档位变更同样要重算比例像素：同一个比例在 2K 和 4K 下的实际尺寸完全不同
@@ -10377,12 +10714,20 @@
                 await selectImageToImageReferenceFile();
             });
 
+            // 加满十几张后逐个点删太折磨人，给一个整组清空的入口
+            document.getElementById('btnImageToImageReferenceClear')?.addEventListener('click', () => {
+                clearImageToImageReference();
+            });
+
             // 从目录挑图依赖 Electron 的 selectFolder/readDirectory，UXP webview 里没有这两个能力。
             // 以前是照常显示、点了才弹"当前环境不支持"——那等于把一个永远点不动的按钮摆在那儿。
             // 环境不支持就直接不显示：入口存在本身就是一种承诺。
             const folderBtn = document.getElementById('btnImageToImageReferenceFolder');
             const supportsFolderPick = !!(window.electronAPI?.selectFolder && window.electronAPI?.readDirectory);
             if (folderBtn) {
+                // envSupported 供参考图投放区刷新时判断：环境本来就不支持的，
+                // 不参与"按模型额度显隐"，保持永久隐藏
+                folderBtn.dataset.envSupported = supportsFolderPick ? 'true' : 'false';
                 if (supportsFolderPick) {
                     folderBtn.textContent = '从目录挑图';
                     folderBtn.addEventListener('click', async () => {
@@ -10393,24 +10738,89 @@
                 }
             }
 
-            // 拖入图片作为增强能力：UXP webview 是否放行系统拖拽无法在此确认，
-            // 所以界面文案不承诺"拖入"，只在环境支持时白赚一个更顺手的入口。
+            // 拖入图片：不再要求瞄准那个小方框——面板本来就窄，对着方框拖是给用户加负担。
+            // 只要 AI 生图页开着，拖到窗口任何位置都算数：dragenter 时罩一层全窗提示层，
+            // 松手即走与点击/粘贴同一条入库路径。
+            // UXP webview 是否放行系统拖拽仍无法预判，所以静态文案默认不承诺"拖入"；
+            // 第一次拖拽真的进来时置 imageToImageDragProven，文案才升级——能力由行为自证。
             (() => {
-                const zone = document.getElementById('btnImageToImageReferenceFile');
-                if (!zone) return;
-                const setHover = (on) => zone.classList.toggle('dragover', on);
+                const overlay = document.getElementById('aiRefDropOverlay');
+                const isAiImagePageActive = () =>
+                    !!document.getElementById('pageImageToImage')?.classList.contains('active');
+                const dragHasFiles = (e) =>
+                    Array.from(e.dataTransfer?.types || []).includes('Files');
 
-                zone.addEventListener('dragover', (e) => {
-                    e.preventDefault();
-                    setHover(true);
+                /**
+                 * 覆盖层文案按当前额度改写。
+                 *
+                 * 额度为 0（如即梦官方蒙版重绘）或已加满时，松手必然被 setImageToImageReference
+                 * 拒绝——这时还写"松开鼠标，添加为参考图"，等于主动邀请一个失败操作，
+                 * 与本页"不支持就收起入口"的原则自相矛盾。拖拽这条路同样要如实说明。
+                 */
+                const refreshAiRefDropOverlayCopy = () => {
+                    const icon = document.getElementById('aiRefDropOverlayIcon');
+                    const main = document.getElementById('aiRefDropOverlayMain');
+                    const sub = document.getElementById('aiRefDropOverlaySub');
+                    if (!main || !sub) return;
+
+                    const limit = getImageToImageReferenceLimit();
+                    const used = imageToImageReferences.length;
+
+                    if (limit === 0) {
+                        if (icon) icon.textContent = '🚫';
+                        main.textContent = '当前模型不支持参考图';
+                        sub.textContent = '换成 Nano Banana Pro 或 GPT Image 系列后再拖入';
+                        return;
+                    }
+                    if (used >= limit) {
+                        if (icon) icon.textContent = '🚫';
+                        main.textContent = `参考图已达上限（${limit} 张）`;
+                        sub.textContent = '请先移除已有的参考图，再拖入新的';
+                        return;
+                    }
+                    if (icon) icon.textContent = '🖼️';
+                    main.textContent = '松开鼠标，添加为参考图';
+                    sub.textContent = `拖到窗口任意位置即可，还可再添加 ${limit - used} 张`;
+                };
+
+                const showOverlay = (on) => {
+                    if (!overlay) return;
+                    if (on) refreshAiRefDropOverlayCopy();
+                    overlay.style.display = on ? 'flex' : 'none';
+                };
+
+                // dragenter/dragleave 在每个子元素边界都成对触发，
+                // 用深度计数判断"真的离开了窗口"，而不是在元素间移动
+                let dragDepth = 0;
+
+                document.addEventListener('dragenter', (e) => {
+                    if (!dragHasFiles(e)) return;
+                    dragDepth++;
+                    if (!imageToImageDragProven) {
+                        imageToImageDragProven = true;
+                        updateImageToImageReferencePreview();
+                    }
+                    if (isAiImagePageActive()) showOverlay(true);
                 });
-                zone.addEventListener('dragleave', () => setHover(false));
-                zone.addEventListener('drop', (e) => {
+                document.addEventListener('dragleave', () => {
+                    if (dragDepth > 0) dragDepth--;
+                    if (dragDepth === 0) showOverlay(false);
+                });
+                // 不 preventDefault 的话浏览器不派发 drop，webview 还会直接导航到被拖入的文件
+                document.addEventListener('dragover', (e) => {
+                    if (dragHasFiles(e)) e.preventDefault();
+                });
+                document.addEventListener('drop', (e) => {
+                    const hadFiles = dragHasFiles(e);
+                    dragDepth = 0;
+                    showOverlay(false);
+                    if (!hadFiles) return;
+                    // 任何页面都要拦掉默认导航：一次误拖不该把整个面板顶没了
                     e.preventDefault();
-                    setHover(false);
-                    // 一次拖入多张就全部收下，不再只取第一张
+                    if (!isAiImagePageActive()) return;
                     const files = e.dataTransfer?.files;
                     if (!files || files.length === 0) return;
+                    // 一次拖入多张就全部收下；超限的由入库路径如实拒绝并说明上限
                     addImageToImageReferenceFiles(files, '拖入的文件');
                 });
             })();
@@ -10429,6 +10839,14 @@
                 const prompt = document.getElementById('inpaintingPrompt').value;
                 const selectedModel = document.getElementById('inpaintingModelSelect')?.dataset?.value || 'google/gemini-3-pro-image-preview';
                 const variantCount = getSelectedInpaintingCount();
+
+                // 支持参考图的重绘模型才做超限拦截；不支持的（额度 0）本来就会被
+                // Agent 端如实忽略并回报警告，不在这里挡生成
+                const inpaintReferenceLimit = getImageToImageReferenceLimit();
+                if (inpaintReferenceLimit > 0 && imageToImageReferences.length > inpaintReferenceLimit) {
+                    showToast(`当前重绘模型最多支持 ${inpaintReferenceLimit} 张参考图，请先移除 ${imageToImageReferences.length - inpaintReferenceLimit} 张`, 'warning');
+                    return;
+                }
 
                 hideInpaintingFeedback();
                 updateInpaintingProgress(0, prompt ? '正在准备局部重绘...' : '正在准备自然补全...');
@@ -10472,6 +10890,13 @@
                     setImageToImageState('ready', '请先选中一个要编辑的图层');
                     return;
                 }
+                // 换到额度更小的模型后参考图可能超限。超了不悄悄裁剪也不硬发
+                // （Seedream 会被 Agent 端直接拒，白等一轮）——在这里如实拦下
+                const referenceLimit = getImageToImageReferenceLimit();
+                if (imageToImageReferences.length > referenceLimit) {
+                    showToast(`当前模型最多支持 ${referenceLimit} 张参考图，请先移除 ${imageToImageReferences.length - referenceLimit} 张`, 'warning');
+                    return;
+                }
                 const selectedModel = document.getElementById('imageToImageModelSelect')?.dataset?.value || 'doubao-seedream-5-0-260128';
                 const selectedSizePreset = document.getElementById('imageToImageSizePresetSelect')?.dataset?.value || getImageToImageModelCapabilities(selectedModel).defaultSize;
                 // 比例换算成像素后与档位互斥：算得出就发像素，算不出就退回档位交给模型判断；
@@ -10485,7 +10910,9 @@
                         selectedSizePreset,
                         selectedModel
                     );
-                const maxImages = getSelectedAiImageCount();
+                // 按组图额度收敛后的真实张数：发一个 Agent 端必然截断的数字没有意义，
+                // 只会让占位槽和结果对不上
+                const maxImages = getEffectiveAiImageCount();
 
                 hideImageToImageFeedback();
                 showImageToImageProgress(true);
@@ -10738,5 +11165,16 @@
     
     <!-- 全局 Toast 容器（在所有页面外部，确保始终可见） -->
     <div class="toast-container" id="toastContainer"></div>
+
+    <!-- 全窗拖入参考图的提示层：只在拖着文件进入窗口且 AI 生图页开着时出现。
+         文案在 dragenter 时按当前模型额度改写（见 refreshAiRefDropOverlayCopy）：
+         额度为 0 或已加满时不能承诺"松手即添加"，否则是在邀请一个必然被拒的操作。 -->
+    <div class="ai-ref-drop-overlay" id="aiRefDropOverlay">
+        <div class="ai-ref-drop-overlay-inner">
+            <span class="ai-ref-drop-overlay-icon" id="aiRefDropOverlayIcon">🖼️</span>
+            <span class="ai-ref-drop-overlay-main" id="aiRefDropOverlayMain">松开鼠标，添加为参考图</span>
+            <span class="ai-ref-drop-overlay-sub" id="aiRefDropOverlaySub">拖到窗口任意位置即可，可一次拖入多张</span>
+        </div>
+    </div>
 </body>
 </html>

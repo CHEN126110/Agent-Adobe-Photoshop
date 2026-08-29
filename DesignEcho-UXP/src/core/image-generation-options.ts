@@ -58,6 +58,26 @@ const IMAGE_TO_IMAGE_MODEL_SIZE_CAPABILITIES: Record<string, { defaultSize: stri
         defaultSize: '2K',
         supportedSizes: ['1K', '2K', '4K']
     },
+    // Smile AI Studio 网关（New API）。与上面 OpenRouter 的同名模型是**两条独立通道**，
+    // 前缀 smile-ai/ 用于区分，别把两者的档位表混用：
+    // - 档位由**模型名后缀**（-1k/-2k/-4k）决定，不是请求参数，Agent 侧 service 负责拼；
+    //   实测 aspectRatio=1:1 时分别出 1024²、2048²、4096²，三档都真实生效。
+    // - 比例由 imageConfig.aspectRatio 参数级精确控制（实测 16:9→1376x768、4:5→928x1152），
+    //   这点强于走 chat 端点的路线——那条路比例只能靠提示词引导，锁不住。
+    'smile-ai/gemini-3-pro-image-preview': {
+        defaultSize: '2K',
+        supportedSizes: ['1K', '2K', '4K']
+    },
+    'smile-ai/gemini-3.1-flash-image-preview': {
+        defaultSize: '2K',
+        supportedSizes: ['1K', '2K', '4K']
+    },
+    // gpt-image-2 走网关的 OpenAI 图像端点，没有档位概念，尺寸由 size 参数映射。
+    // 只给一档，避免面板出现选了也不起作用的选项（与下方 openai/ 系同一处理）。
+    'smile-ai/gpt-image-2': {
+        defaultSize: '2K',
+        supportedSizes: ['2K']
+    },
     // OpenAI 系没有分辨率档位（images API 不声明 resolution），尺寸由模型自己定。
     // 只给一档，避免面板出现选了也不起作用的选项。
     'openai/gpt-image-2': {

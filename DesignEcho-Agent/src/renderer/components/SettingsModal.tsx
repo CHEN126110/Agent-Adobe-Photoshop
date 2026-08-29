@@ -3770,7 +3770,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                 <p className="section-desc">
                                     聚合网关（New API），OpenAI 兼容地址为 https://api.smile-ai-studio.com/v1。
                                     一个 Key 覆盖多家模型；填入后打开设置页会自动拉取最新列表，图片生成型号会被识别出来、不进入对话候选。
-                                    Agent 主模型推荐 Claude Opus 5 / Sonnet 5（读图与工具调用已实测通过）。
+                                    Agent 主模型推荐 Claude 系（读图与流式工具调用均已实测通过）：
+                                    追求响应快选 Fable 5（首字 3.5s，但计费倍率是 Opus 的两倍），
+                                    追求性价比选 Sonnet 5（吞吐 43.4 tok/s，倍率仅 Opus 六成）。
+                                    GPT-5.6 Sol 工具可靠但吞吐最低，读图不稳定。
                                     Gemini 系可读图，但该网关的流式工具调用会返回重复且参数为空的调用，不建议作为 Agent 主模型。
                                     若某型号报「可用渠道不存在」，是网关侧令牌分组问题，需在网关控制台调整该 Key 的分组。
                                 </p>

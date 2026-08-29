@@ -724,14 +724,27 @@ export const DEEPSEEK_MODELS: ModelConfig[] = [
  * 校验 tool_calls 数量与 arguments 是否完整；图像用 64x64 左红右蓝 PNG 验证真读图。
  * 结论按"这个网关的实际转发行为"记录，不是上游厂商的公开规格——两者在本网关上并不一致。
  *
- * ❌ 刻意不登记 Gemini 系（gemini-3.1-pro / 3.6-flash / 3-pro-preview）：
- * 该通道的**流式**工具调用在本网关上是坏的。实测同一请求返回 4 个 tool_call，
- * 其中参数为空的占多数，并混入函数名字面量为 "tool" 的垃圾项（非流式则正常）。
- * Agent 主循环走的是流式（chatWithToolsStream），拿到这种结果会乱调工具。
- * gemini-3.1-pro 更进一步：流式与非流式都不返回工具调用。
- * 图像输入本身是好的（左红右蓝稳定答对两次），但"能读图不能可靠调工具"不满足
- * isAgentMultimodalModelConfig 的主模型门槛，因此整体不进覆盖层。
- * 若后续网关修复了 gemini 通道的流式转译，需重跑上述探针再决定是否登记。
+ * ❌ 刻意不登记 Gemini 对话系（6 个型号 2026-08-28 全测，无一例外）：
+ * gemini-3.7-flash / 3.6-flash / 3.5-flash / 3.1-pro / 3.1-pro-preview / 3-pro-preview
+ *
+ * 根因是**网关的流式分片**，与端点无关——两条路径都验证过：
+ *   OpenAI 兼容层  /v1/chat/completions          非流式 ❌  流式 ❌
+ *   Gemini 原生端点 /v1beta/models/{m}:generateContent  非流式 ✅  流式 ❌
+ * 即 flash 系走原生非流式时工具参数是完整的，一进流式就丢参数：典型返回
+ *   resize_canvas({}) + 一个**函数名为空**的调用，参数是 {"reason":"..."}，
+ * 也就是网关把 Gemini 的思考/理由误当成了第二个 tool_call；pro 系则退化成
+ * 4 个调用并混入函数名字面量 "tool" 的垃圾项。
+ * 另有两个独立缺陷：gemini-3.1-pro 原生非流式的参数键名被双重转义
+ *（{"\"height\"":800}）且耗时 51.9s；gemini-3.1-pro 在 OpenAI 层完全不返回调用。
+ *
+ * Agent 主循环走流式（chatWithToolsStream），所以整体不达门槛。
+ * 可惜之处在于它们其余指标都好：读图 6/6 全对，flash 系吞吐 42.9/42.2/39.1 tok/s
+ * 接近 Claude 的 43，且 gemini-3.7-flash 计费倍率 0.375 是全站最低（Sonnet 5 的四分之一）。
+ * **不要为此把主循环改成非流式**——那是拿架构去补网关的 bug，代价是丢掉整个流式体验。
+ * 若网关日后修好流式分片，重跑该探针即可登记，无需其它改动。
+ *
+ * 注意：Gemini 的**图像**模型不受此影响（走原生 generateContent，不经工具调用路径），
+ * 已在 smile-ai-image-service.ts 中接入且档位与比例均实测生效。
  *
  * ❌ 刻意不登记 gpt-5.6：其 enable_groups 仅含【GPT】百分百稳定分组，
  * auto 分组下报 get_channel_failed「可用渠道不存在」，重试 4 次稳定复现。
@@ -739,6 +752,18 @@ export const DEEPSEEK_MODELS: ModelConfig[] = [
  *
  * contextWindow 与 thinking 刻意不声明：网关两个目录接口都不给这两项，
  * 在此钉数字就是凭空定死（沿用 deepseek-v4-flash-vision-exp 的同一条纪律）。
+ *
+ * ── 速度实测（2026-08-28，3 轮取中位数，300 字文案任务，单位 tok/s）──
+ * claude-opus-5 43.9（43~45）/ claude-sonnet-5 43.4（41~44）/ claude-opus-4-8 42.3（41~44）
+ * claude-fable-5 41.2（41~43）/ gpt-5.6-sol 18.9（11~21）
+ * TTFT 中位：fable-5 3.5s ≪ opus-4-8 10.5s ≈ opus-5 10.6s ≈ sonnet-5 11.3s < gpt-5.6-sol 15.7s
+ *
+ * 两条容易踩的坑：
+ * 1. **单次测量不可靠**。同一 gpt-5.6-sol 两次实测 TTFT 差了 20 倍（2.6s vs 56s），
+ *    网关负载波动极大。任何"这个模型变慢了"的判断都要多轮取中位再下，别拿一次结果改配置。
+ * 2. **吞吐高 ≠ 适合 Agent**。glm-5.2 吞吐 67.9 全场最高，但读图两次全错
+ *   （"左未知右未知"），且 28 个分片大块推送、TTFT 24s；deepseek-v4-pro 吞吐 41.9
+ *    但流式工具调用直接 500。两者都不满足 Agent 主模型门槛，故不登记。
  *
  * ⚠️ maxTokens 不宜调小：实测把预算压到 512 时，Gemini 通道会先被思考消耗掉预算，
  * 表现为 finish_reason=length 且丢失工具调用/正文截断。这类失败看起来像"模型不支持"，
@@ -764,7 +789,7 @@ export const SMILE_AI_MODELS: ModelConfig[] = [
         // 网关未声明最大输出；8192 是当前 Harness 的保守请求上限，不冒充模型规格。
         maxTokens: 8192,
         recommended: true,
-        description: 'Anthropic 旗舰，读图与工具调用均已实测通过'
+        description: 'Anthropic 旗舰，吞吐最高（43.9 tok/s）'
     },
     {
         // 真机实测（2026-08-28）：同上，流式/非流式工具参数完整，读图正确。
@@ -784,7 +809,50 @@ export const SMILE_AI_MODELS: ModelConfig[] = [
         // 网关未声明最大输出；8192 是当前 Harness 的保守请求上限，不冒充模型规格。
         maxTokens: 8192,
         recommended: true,
-        description: '性价比主力，读图与工具调用均已实测通过'
+        description: '性价比主力，吞吐 43.4 tok/s，计费倍率仅 opus 的六成'
+    },
+    {
+        // 真机实测（2026-08-28）：流式工具参数完整，读图两次全对。
+        // 选它的理由是**首字延迟**：TTFT 中位 3.5s，三轮分别 3.5/3.6/3.3s 极稳定，
+        // 比 opus-5 的 10.6s 快三倍；吞吐 41.2 tok/s 与 opus 系仅差 6%。
+        // Agent 循环里每轮都要等首字，这个差距在多轮对话中会被放大。
+        // ⚠️ 计费倍率 5.0，是 opus-5（2.5）的两倍——快在首字，不快在钱包。
+        id: 'smile-ai-claude-fable-5',
+        name: '⭐ Claude Fable 5 (Smile AI·首字最快)',
+        source: 'cloud',
+        provider: 'smile-ai',
+        requiredApiKey: 'smileAi',
+        apiModelId: 'claude-fable-5',
+        roles: ['general', 'vision', 'layout-analysis', 'copywriting', 'code'],
+        capabilities: ['text-generation', 'vision', 'reasoning', 'chinese', 'json-output', 'tool-calling'],
+        usageKind: 'conversation',
+        usageConfidence: 'declared',
+        supportsVision: true,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 64000,
+        recommended: true,
+        description: '首字延迟最低（3.5s），适合多轮交互；计费倍率较高'
+    },
+    {
+        // 真机实测（2026-08-28）：流式工具参数完整，读图两次全对。
+        // 吞吐 42.3 tok/s、TTFT 10.5s，与 opus-5 基本同档，作为 opus 系的备选通道
+        // ——同一分组下多一个可用旗舰，某个型号渠道波动时不至于无路可走。
+        id: 'smile-ai-claude-opus-4-8',
+        name: 'Claude Opus 4.8 (Smile AI)',
+        source: 'cloud',
+        provider: 'smile-ai',
+        requiredApiKey: 'smileAi',
+        apiModelId: 'claude-opus-4-8',
+        roles: ['general', 'vision', 'layout-analysis', 'copywriting', 'code'],
+        capabilities: ['text-generation', 'vision', 'reasoning', 'chinese', 'json-output', 'tool-calling'],
+        usageKind: 'conversation',
+        usageConfidence: 'declared',
+        supportsVision: true,
+        supportsToolUse: true,
+        supportsStreaming: true,
+        maxTokens: 64000,
+        description: '与 Opus 5 同档速度的备选旗舰'
     },
     {
         // 真机实测（2026-08-28）：工具调用流式/非流式均参数完整。
@@ -806,7 +874,7 @@ export const SMILE_AI_MODELS: ModelConfig[] = [
         supportsToolUse: true,
         supportsStreaming: true,
         maxTokens: 32768,
-        description: 'OpenAI 型号，工具调用已实测；读图不稳定故不声明视觉'
+        description: 'OpenAI 型号，工具可靠但吞吐最低（18.9 tok/s）；读图不稳定故不声明视觉'
     }
 ];
 

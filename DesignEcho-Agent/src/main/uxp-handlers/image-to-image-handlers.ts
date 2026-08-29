@@ -6,6 +6,10 @@ import * as path from 'path';
 import { volcengineSeedreamService, SeedreamInputError } from '../services/volcengine-seedream-service';
 import { volcengineJimengImageService } from '../services/volcengine-jimeng-image-service';
 import {
+    isSmileAiImageModelId,
+    smileAiImageService
+} from '../services/smile-ai-image-service';
+import {
     isOpenRouterImageModelId,
     openRouterGeminiImageService
 } from '../services/openrouter-gemini-image-service';
@@ -160,6 +164,17 @@ function parseImageToImageError(error: any): {
 
     // OpenRouter 图像服务的错误自带分级与中文摘要（provider-validate/submit/ready/download），
     // 原样透传给面板，不套 Seedream 的正则模式匹配——套上去只会落成 provider-unknown。
+    if (error?.provider === 'smile-ai') {
+        // 与 OpenRouter 同理：service 已经把 get_channel_failed / 余额不足 / deadlock
+        // 翻成可行动的中文，套 Seedream 的正则只会落成 provider-unknown。
+        return {
+            code: 'provider_error',
+            stage: String(error?.errorStage || 'provider-submit'),
+            message: rawMessage,
+            detail: error?.errorDetail
+        };
+    }
+
     if (error?.provider === 'openrouter' || /openrouter/i.test(rawMessage)) {
         return {
             message: rawMessage,
@@ -350,6 +365,7 @@ export function registerImageToImageHandlers(context: UXPContext): void {
         const model = params.model || 'doubao-seedream-5-0-260128';
         const isJimengModel = model === 'jimeng-seedream-4-6';
         const isOpenRouterModel = isOpenRouterImageModelId(model);
+        const isSmileAiModel = isSmileAiImageModelId(model);
         logService?.logAgent(
             'info',
             `[ImageToImage] Start request, model=${model}, `
@@ -420,7 +436,7 @@ export function registerImageToImageHandlers(context: UXPContext): void {
 
                 // 火山系 provider 只吃 data URL，只有它们才需要现在就编 PNG；
                 // OpenRouter 走 raw 直通，跳过这一步。
-                if (!isOpenRouterModel) {
+                if (!isOpenRouterModel && !isSmileAiModel) {
                     sendProgress(15, '正在生成无损 PNG', 'encode-source-png');
                     try {
                         resolvedSourceImage = await rawRgbaToPngDataUrl(binaryEntry.buffer, width, height);
@@ -499,6 +515,60 @@ export function registerImageToImageHandlers(context: UXPContext): void {
                     `[ImageToImage] OpenRouter 实际出图 ${openRouterResult.actualWidth}x${openRouterResult.actualHeight}, `
                     + `请求档位=${openRouterResult.imageSize}, 上游模型=${openRouterResult.upstreamModel || '(未回报)'}`
                     + (openRouterResult.upstreamProvider ? `, provider=${openRouterResult.upstreamProvider}` : '')
+                );
+                if (providerNotice) {
+                    logService?.logAgent('warn', `[ImageToImage] 档位未生效：${providerNotice}`);
+                }
+            } else if (isSmileAiModel) {
+                // Smile AI Studio 网关：整图重生，无蒙版。
+                // 香蕉系（Gemini 图像）走 Google 原生 generateContent，比例由 aspectRatio
+                // 参数精确控制、档位由模型名后缀决定——两者都在 service 内处理，这里只管转发。
+                // 网关单次只出一张，多张靠 service 内并发，与 OpenRouter 同一套语义。
+                if (!smileAiImageService.hasApiKey()) {
+                    throw {
+                        message: 'Smile AI Studio API Key 未配置，请先在设置中填写后重试。',
+                        errorStage: 'provider-auth'
+                    };
+                }
+                const smileBatch = await smileAiImageService.generateBatchFromImage(
+                    params.prompt,
+                    rawSourcePixels || dataUrlToBuffer(resolvedSourceImage),
+                    {
+                        model,
+                        count: params.maxImages,
+                        signal: abortController.signal,
+                        aspectRatio: params.aspectRatio,
+                        imageSize: ['1K', '2K', '4K'].includes(String(params.sizePreset || '').toUpperCase())
+                            ? String(params.sizePreset).toUpperCase() as '1K' | '2K' | '4K'
+                            : undefined,
+                        referenceImages: (Array.isArray(params.referenceImages) ? params.referenceImages : [])
+                            .filter((item) => typeof item === 'string' && item.trim().length > 0)
+                            .map(dataUrlToBuffer)
+                    },
+                    (event) => sendProgress(event.progress, event.message, event.stage)
+                );
+                if (smileBatch.results.length === 0) {
+                    // 全部失败时不要静默返回空数组：那会让面板显示"成功但没有图"。
+                    throw {
+                        message: smileBatch.failures[0]?.message || 'Smile AI Studio 未返回任何图像',
+                        errorStage: 'provider-result'
+                    };
+                }
+                const smileResult = smileBatch.results[0];
+                generatedBuffers = smileBatch.results.map((item) => item.image);
+                partialFailures = smileBatch.failures.map((item) => ({
+                    index: item.index,
+                    message: item.message
+                }));
+                resolvedModel = smileResult.model;
+                resolvedSizeSpec = `${smileResult.imageSize} @ ${smileResult.aspectRatio}`;
+                providerNotice = smileResult.sizeDowngradeNotice;
+                logService?.logAgent(
+                    'info',
+                    `[ImageToImage] SmileAI 实际出图 ${smileResult.actualWidth}x${smileResult.actualHeight}, `
+                    + `请求档位=${smileResult.imageSize}, 比例=${smileResult.aspectRatio}`
+                    + (smileBatch.results.length > 1 ? `, 共 ${smileBatch.results.length}/${params.maxImages} 张` : '')
+                    + (smileBatch.failures.length > 0 ? `, ${smileBatch.failures.length} 张失败` : '')
                 );
                 if (providerNotice) {
                     logService?.logAgent('warn', `[ImageToImage] 档位未生效：${providerNotice}`);
