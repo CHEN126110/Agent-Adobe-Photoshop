@@ -2,6 +2,17 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-105 Smile 可选 Provider 证据收口
+
+- Smile 对话 Provider `acd53530`、依赖迁移 `5c1bc06d` 与图像 Provider `0fa91c6f` 已作为三个独立祖先提交进入当前主链；D-105 没有复制 Service、修改模型目录或把它们压成一个混合实现。
+- 当前正常持久化 `primaryModel /visualModel` 均为 `deepseek-v4-flash-vision-exp`；DeepSeek 与 Smile Key 均存在。只读检查只返回存在性，没有打印、复制或修改 Key；Smile 未成为正式 Agent 模型或 fallback。
+- 模型用途与单模型路由专项通过：Smile 图片模型不进入对话候选，对话模型不自动获得视觉 /Tool Calling，目录 /计费元数据不能冒充用途，缺 Key 明确失败，主 Agent、视觉任务与队友继续使用同一 primary model且不跨模型恢复。
+- Smile 图像 Provider 专项通过独立凭据、三模型身份、未知模型 /比例 /损坏输入写前失败、Gemini 原生请求、GPT Image 2 generations /edits、HTTPS 下载、取消、响应预算、批量错误与实际尺寸复核；相邻 OpenRouter 图像请求专项也通过。
+- `smile-ai-image-service.ts`、`image-provider-credential-sync.ts` 与可复用测试相对 `0fa91c6f` 逐字节一致。D-104 已在同一源码上使用独立 Agent /UXP 安装完成两端 builds 和唯一一次完整核心 60/60，D-105 只做 docs-only 状态收口，不重复不变输入的整仓闸门。
+- 规划、project-state JSON、UTF-8、入口文档、变更边界、diff 与非文档零改动检查通过；D-105 只有 CurrentTask /Plan /Status /project-state 进入独立状态提交。
+- 没有执行付费 Smile 请求或 Photoshop Tool。真实账户分组、余额、上游可用性、实际 1K /2K /4K 输出、Photoshop 置入和商业质量仍为未验证；R-054 依赖安全债务保持独立。
+- 默认端口仍由 PID 16228 的普通 dirty Runtime 占用，用户 Photoshop 文档未被保存、关闭、丢弃或修改。
+
 ## 2026-08-29 D-104 依赖独立安装与安全债务分流
 
 - Anthropic peer 迁移已经以祖先提交 `5c1bc06d` 独立存在，只修改 Agent package /lock；当前主链不再合并旧 `@anthropic-ai/sdk ^0.30.0`，实际安装为 SDK `0.122.0`、Claude Agent SDK `0.3.241` 与 Zod `4.4.3`，满足 `>=0.93.0 / ^4.0.0` peer。

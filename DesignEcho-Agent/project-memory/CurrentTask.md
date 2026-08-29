@@ -1,5 +1,56 @@
 # Current Task
 
+## 2026-08-29 SMILE-PROVIDER-CLOSURE-105：可选对话 /图像 Provider 证据收口
+
+### 目标
+
+1. 核对当前 D-104 主链中的 Smile 对话 Provider `acd53530` 与图像 Provider `0fa91c6f` 是否仍保持独立凭据、明确模型身份、失败关闭、真实协议和原始收据，不重新复制实现或建立第二 Provider owner。
+2. 保持用户指定的正式 Agent 模型：`primaryModel` 与旧兼容 `visualModel` 均为 `deepseek-v4-flash-vision-exp`；Smile 只能在显式选择 Smile 模型时调用，不能成为 Codex /Smile 自动 fallback。
+3. 用离线 HTTP 拦截、路由、目录与持久化事实完成当前工程验收；真实 Smile 请求可能计费，本轮不消费额度，也不把旧探针注释或 mock 输出当 D-105 live 证据。
+
+### 当前事实
+
+- Smile 对话接线 `acd53530`、Anthropic 依赖迁移 `5c1bc06d` 和 Smile 图像接线 `0fa91c6f` 是三个独立祖先提交，均已进入 D-094～D-104 当前主链；D-105 不需要 cherry-pick 或把它们重写成一个混合提交。
+- 当前 `smile-ai-image-service.ts`、`image-provider-credential-sync.ts` 与 `test-smile-image-provider.cjs` 相对 `0fa91c6f` 逐字节一致。后续可靠性 /观测改动只在共享 Host、模型服务和设置 owner 上演进，没有复制 Smile 图像 Service。
+- 当前正常用户状态的 `primaryModel` 与 `visualModel` 都是 `deepseek-v4-flash-vision-exp`，DeepSeek Key 与 Smile Key 均为 present；检查只输出存在性，没有打印、复制或修改任何密钥。
+- 模型用途专项证明：Smile 动态图片模型只进入 image-generation，不进入对话候选；动态对话模型不会自动获得视觉或 Tool Calling；缺 Smile Key 明确失败；单一 Agent 路由没有跨模型 fallback，所有队友与视觉任务继续消费同一 primary model。
+- 图像 Provider 专项证明三款模型在 Service、面板和 UXP 档位表一致；Smile Key 可独立于 OpenRouter 恢复 /热更新 /清空；未知模型、比例、分辨率、损坏输入在付费请求前失败，不静默换默认模型。
+- Gemini 图像路径精确发送模型档位后缀、双认证头、比例和真实 PNG 输入；GPT Image 2 区分 generations /edits、比例到像素尺寸、HTTPS 结果下载、取消信号与响应预算。批量全失败保留第一条 Provider stage /code /detail，成功结果报告 `smile-ai` 与实际像素尺寸，不冒充 Seedream 或设计质量。
+- 相邻 OpenRouter 图像请求专项同步通过，证明 Smile 接线没有把 OpenRouter 的模型身份、图片字段、比例 /档位或失败语义改坏。
+- D-104 已在同一源码、独立 Agent /UXP 安装上通过 production builds 与唯一一次完整 `maintenance:validate` 60/60；D-105 只更新项目事实，不重复不变输入的整仓核心闸门。
+- 未执行真实 Smile 对话或图像请求，也未把任何结果置入 Photoshop；真实账户分组、余额、上游可用性、1K /2K /4K 输出与视觉质量仍未验证。
+- 默认端口仍由用户普通 PID 16228 占用，Main /UXP 为 `de628ade` dirty，当前 Photoshop 文档保持用户现场；D-105 不加载 Runtime、不停止应用、不写 Photoshop。
+
+### 实施边界
+
+- Smile 是可选 Provider，不是正式模型选择、Skill、Harness Gate、第二 Runtime 或设计策略 owner；它只拥有本地凭据、Provider-local 请求 /取消 /超时、原始响应和输出事实。
+- 不从 Smile 动态目录推断模型用途、视觉、Tool Calling 或账号权限；已知覆盖与真实目录冲突时保持当前受控能力，不由计费字段冒充用途。
+- 不把空模型参数的 Service 内部默认值升级为 Agent fallback；生产路由必须先由显式 Smile model id 进入 Service，未知显式模型继续失败关闭。
+- 不使用正常用户 Key做付费 canary，不在日志、命令参数、状态文档或测试 fixture 中保存 Key。
+- R-054 的 Electron /OpenAI /axios 等依赖安全升级保持独立，不借 Smile 收口改 package /lock；正式 DeepSeek 选择保持不变。
+- 不触碰 D-097 r32 /r33 基线或用户 Photoshop 文档。
+
+### 下一步
+
+1. [已完成] 当前 Smile 对话用途 /路由专项、图像 Provider 协议专项和相邻 OpenRouter 图像请求专项通过。
+2. [已完成] 正常持久化模型选择与 Key 存在性只读检查通过；正式模型仍是 DeepSeek，Smile 没有被选中或成为 fallback。
+3. [已完成] 三个 Smile 图像核心文件相对独立提交逐字节一致；当前同源码已经由 D-104 的独立安装、两端构建和完整核心 60/60 覆盖。
+4. [已完成] CurrentTask /Plan /Status /project-state 与规划 /JSON /编码 /入口 /变更边界 /diff 快速检查通过，以本独立状态提交收口；package /lock /source /scripts /public /UXP 零改动，没有重复完整核心闸门。
+5. [后续外部验收] 只有取得明确付费额度授权后，使用隔离临时输入各运行一次受控模型 canary，核对实际账户分组、计费、上游模型、输出尺寸 /MIME /摘要；Photoshop 置入和商业质量另行验收。
+
+### 验证与未知
+
+- 已验证：当前源码的模型用途、单一模型路由、独立凭据生命周期、请求协议、取消 /错误、结果下载、输出尺寸复核和跨文件注册一致性。
+- 已验证：当前用户状态仍选择 `deepseek-v4-flash-vision-exp`，没有 Codex 或 Smile fallback；检查没有泄露或修改密钥。
+- 未验证：D-105 exact build 的真实 Smile 账户请求、付费渠道、模型可用性、输出质量、Photoshop 置入与商业设计收益。
+- 当前只能声明 `provider_contract_validated`，不能声明 `paid_live_provider_verified` 或 Smile 提高了设计质量 /速度。
+
+### 状态
+
+validated / conversation_usage_and_single_model_routing_passed / image_provider_contract_passed / openrouter_regression_passed / image_core_files_byte_identical / deepseek_primary_unchanged / keys_presence_verified_without_disclosure / d104_builds_and_full_core_60_reused / docs_only_governance_passed / independent_state_commit_complete / paid_live_provider_pending / no_photoshop_write
+
+---
+
 ## 2026-08-29 DEPENDENCY-CLOSURE-104：独立安装证伪与安全债务分流
 
 ### 目标

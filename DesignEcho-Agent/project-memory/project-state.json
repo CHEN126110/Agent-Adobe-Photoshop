@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-29 DEPENDENCY-CLOSURE-104：在无 node_modules junction 的独立工作树验证当前 Agent /UXP lock、Anthropic peer、真实 clean install 与构建；把动态安全 finding 分流为 owner 清晰的升级切片，不用 force 或整体 audit fix。",
-  "currentMilestone": "DEPENDENCY-CLOSURE-104",
-  "milestoneStatus": "clean_agent_and_uxp_npm_ci_passed_npm_ls_zero_problems_dependency_integrity_636_and_148_passed_agent_and_uxp_builds_and_full_core_60_passed_package_lock_and_source_unchanged_independent_state_commit_complete_security_debt_split_not_fixed_deepseek_selection_unchanged_no_photoshop_write",
+  "currentFocus": "2026-08-29 SMILE-PROVIDER-CLOSURE-105：核对当前主链既有 Smile 对话与图像 Provider 的模型用途、显式路由、独立凭据、请求 /取消 /错误 /收据和跨文件一致性；保持 DeepSeek V4 Flash Vision 为正式 Agent 模型，不执行付费请求。",
+  "currentMilestone": "SMILE-PROVIDER-CLOSURE-105",
+  "milestoneStatus": "conversation_usage_and_single_model_routing_passed_image_provider_contract_passed_openrouter_regression_passed_image_core_files_byte_identical_deepseek_primary_unchanged_keys_presence_verified_without_disclosure_d104_builds_and_full_core_60_reused_docs_only_governance_passed_independent_state_commit_complete_paid_live_provider_pending_no_photoshop_write",
   "verified": {
     "code": [
+      "Smile Provider closure D-105 (2026-08-29): the existing conversation Provider acd53530 and image Provider 0fa91c6f remain independent ancestors of the current chain. Current model-usage and single-model routing tests prove Smile image models stay out of conversation candidates, conversation models do not receive implicit vision or Tool Calling, missing keys fail explicitly and no cross-model fallback is created. The image-provider suite proves independent Smile/OpenRouter credentials, exact supported models, pre-request rejection, Gemini and GPT Image 2 protocol shapes, cancellation, HTTPS/result budgets, batch error provenance and actual output dimensions; the adjacent OpenRouter suite also passed. The three Smile image core/test files are byte-identical to 0fa91c6f. No Provider or production code changed and no paid request ran.",
       "Dependency closure D-104 (2026-08-29): the existing 5c1bc06d Anthropic peer migration is already an independent ancestor of D-103 and was revalidated in a new worktree without a node_modules junction. Agent and UXP npm ci completed; one Windows cleanup residue for the macOS-only optional dmg-license package was removed by npm prune; both npm ls --all graphs then exited 0 with zero problems. Installed Anthropic SDK 0.122.0, Claude Agent SDK 0.3.241 and Zod 4.4.3 satisfy the declared peers. Agent/UXP builds and the one ordered 60-stage core gate passed. No package, lock, Provider, model, Prompt or Photoshop code changed. Dynamic security findings remain a separate recorded risk rather than being hidden by the install result.",
       "SKU pose integration D-103 (2026-08-29): the isolated capability was ported onto D-102 as three independent rollback commits: a pure deterministic no-side-effect geometry and sku-pose-alignment-report/v1 core, a document/history/layer-bound versioned Provider with one PhotoshopTransactionRunner-owned mutation and readback receipts, and a WebView/panel caller that exposes only Provider-effective parameters. Internal capture/apply tools remain outside the ordinary Agent surface. Dependency integrity, algorithm/Provider/panel tests, all UXP tests, 181-Tool and design-authorship audits, business/executor/semantic-dispatch/change boundaries, Main/Renderer typechecks, Agent/UXP production builds and the one ordered 60-stage core gate passed. Exact D-103 Photoshop runs remain pending; D-097 is unchanged for r33.",
       "Semantic matting integration D-102 (2026-08-29): the five previously isolated semantic workflow commits were ported in order onto D-101 c0b358fb without importing the old project-memory command chain or obsolete dependency declaration. Agent/user target and normalized point authorship remain separate from Harness validation; Main reuses one versioned workflow dispatcher; UXP binds source export and mutation to document/history/layer and returns readback receipts. Dependency integrity, semantic/SAM/dispatch attacks, design-authorship and 181-Tool audits, Main/Renderer typechecks, Agent/UXP production builds, adjacent architecture audits, one full 59-stage core gate and final parity review passed. The exact D-102 Photoshop canary remains pending; D-097 is unchanged for r33.",
@@ -81,6 +82,7 @@
       "Live concurrency/resume validation, real Provider-to-Photoshop V0, live validation of the first Photoshop Craft Recipe, Release Gate, reviewed multi-sample design quality and business live E2E are not complete."
     ],
     "build": [
+      "D-105 targeted model-usage/single-model routing, Smile image-provider and adjacent OpenRouter image-provider suites passed on the exact D-104 source. D-104 already used independent Agent/UXP installations for both production builds and the single ordered 60-stage maintenance core; D-105 changes only project-memory facts, so the project docs-only rule reuses that same-source evidence and does not repeat the heavy core gate. Exact post-state build identity is rebuilt after the state commit; paid live Provider and Photoshop results remain unverified.",
       "D-104 uses local clean Agent/UXP installations rather than D-103 junctions. Workspace dependency integrity reports Agent 636/636 with 23 direct bins and UXP 148/148 with 4 direct bins; both npm ls --all graphs have zero problems. Agent production build and preload sandbox plus UXP full tests, typecheck, production build and the single ordered 60-stage maintenance core passed. The existing Vite import/chunk warnings remain non-blocking. No runtime or Photoshop result is implied.",
       "D-103 dependency preflight reports Agent 636/636 and UXP 148/148. The reusable pose algorithm and Provider suites, UXP full tests, Tool/authorship/business/executor/semantic-dispatch/change-boundary audits, Main build, Renderer typecheck, both production builds and the single ordered 60-stage maintenance core passed on the integrated code. This proves engineering integration only, not an exact D-103 Photoshop runtime, panel-button path or commercial quality.",
       "D-102 Agent and UXP production builds plus the single ordered 59-stage maintenance core passed after the semantic workflow was integrated on D-101. The current lock matches the shared installation at Agent 636/636 and UXP 148/148; the old semantic branch npm ci correctly failed its obsolete Anthropic peer conflict and was not forced. This proves the integrated code and build, not the exact D-102 Photoshop runtime.",
@@ -108,6 +110,7 @@
       "The full 22-check maintenance:validate passed after the WEB-SEARCH-AGENT-TOOL-001 webSearch capability addition: 164-Tool registration audit (zero display/scope/set-sync/team-allowlist gaps), Agent business boundaries 0 violations, generic executor 0 violations, simplification ratchet unchanged, Main/Renderer typecheck, git diff --check and UXP production build all green. The DeepSeek-native search path itself has not been exercised with a real API key, so live search latency, source quality and degradation behavior remain unverified."
     ],
     "manual": [
+      "D-105 read-only normal-user-state check (2026-08-29): primaryModel and the legacy visualModel mirror both equal deepseek-v4-flash-vision-exp; DeepSeek and Smile credential fields are present. Only booleans were returned; no key content was printed, copied or changed. This proves persisted selection and key presence, not a paid Smile request or the currently running dirty Renderer UI state.",
       "The original pose branch completed three isolated synthetic curved-sock Provider-to-Photoshop runs in documents 4180, 4187 and 4194: source layer 3 produced output layer 4, centerline bend fell about 83.9%, cuff drift was about 0.04%, the target history advanced and source/output visibility plus cleanup were read back. This proves that original branch's geometry, single-transaction and recovery chain only; it is not an exact D-103 run or real-product commercial-quality evidence. The original panel shell was visible in Photoshop, but no button input reached its msedgewebview2 child window, so the nested panel path remains unverified.",
       "The original semantic branch 0c404cda fixed case used DSC08187.jpg and two Agent-guided visible sock instances. It completed detection, MobileSAM segmentation, BiRefNet edge fusion, binary mask application and user-mask-enabled readback in 45.3 seconds with Photoshop history 4091 to 4092. This proves that original branch and one mask case only; it is not an exact D-102 runtime result.",
       "D-099/D-101 minimal live DeepSeek canary (2026-08-29): two identical 582-byte deepseek-v4-flash-vision-exp tool-stream requests each reported 313 input and 53 output tokens and returned only the expected telemetryProbe Tool call, which was not executed. The cold request reported cache hit/miss 0/313, first semantic delta 544ms and Main completion 872ms; the second reported 256/57, 469ms and 765ms. The key stayed inside the normal rendererState store reader and was not printed, copied to arguments or modified. This is real Provider protocol evidence, not a full Agent, image, RunRecord, Photoshop or stable performance result.",
@@ -128,6 +131,7 @@
     ]
   },
   "unverified": [
+    "D-105 paid live Provider evidence: with explicit budget authorization, use isolated non-user inputs to verify the actual Smile account groups, billing path, each selected upstream model, output MIME/dimensions/digest and cancellation. Photoshop placement and commercial visual quality are separate acceptance layers. Existing mock HTTP tests, historical comments and key presence cannot substitute for this evidence.",
     "Dependency security closure after D-104: Electron 28/embedded Node 18 must be migrated and live-started before OpenAI v6+ can replace the current OpenAI 4/Zod override; Volcengine/protobuf/axios, sharp/ws and Agent/UXP build-chain findings require separate reachability, upgrade and rollback slices. The 2026-08-29 audit counts are Agent 40 and UXP 7, but dynamic count reduction alone is not a completion criterion.",
     "D-103 exact-build Photoshop evidence: load clean integrated Agent/UXP artifacts only after r32 reconciliation, D-097 r33 and the ordered D-102 canary; then separately verify the versioned Provider and the real panel-button UXP-to-Main-to-UXP path on isolated documents with target-bound receipts and cleanup. Real commercial quality additionally requires a naturally medium-bent single complete sock with clear cuff/pattern; the audited C-1256, cross-product 36 plus 48 samples and C-1024 set did not provide one, so applicability remains unknown.",
     "D-102 exact-build semantic Photoshop canary: after r32 reconciliation and the D-097 r33 baseline, load clean D-102 Agent/UXP artifacts and repeat the fixed two-sock case with target-count conservation, source bounds, document/history/layer identity, visual output and mutation readback. The prior 0c404cda run cannot substitute for this integration verification.",
@@ -329,35 +333,35 @@
     ]
   },
   "activeRequest": {
-    "id": "DEPENDENCY-CLOSURE-104",
-    "summary": "Revalidate the existing Anthropic dependency migration on the current D-103 chain with real isolated installs and builds, while separating deterministic lock integrity from dynamic security debt and preserving DeepSeek as the formal model.",
-    "status": "clean_agent_and_uxp_npm_ci_passed_npm_ls_zero_problems_dependency_integrity_636_and_148_passed_agent_and_uxp_builds_and_full_core_60_passed_package_lock_and_source_unchanged_independent_state_commit_complete_security_debt_split_not_fixed_no_photoshop_write",
+    "id": "SMILE-PROVIDER-CLOSURE-105",
+    "summary": "Close the engineering evidence for the existing optional Smile conversation and image Providers without changing production code, the formal DeepSeek model selection, security dependencies or Photoshop state, and without consuming paid Provider credits.",
+    "status": "conversation_usage_and_single_model_routing_passed_image_provider_contract_passed_openrouter_regression_passed_image_core_files_byte_identical_deepseek_primary_unchanged_keys_presence_verified_without_disclosure_d104_builds_and_full_core_60_reused_docs_only_governance_passed_independent_state_commit_complete_paid_live_provider_pending_no_photoshop_write",
     "mustDo": [
-      "Prove the current package and lock from a new worktree with no shared node_modules junction, including real npm ci for Agent and UXP, zero-problem npm ls graphs and the repository dependency integrity checker.",
-      "Verify installed Anthropic SDK, Claude Agent SDK and Zod versions against their declared peers without force, legacy-peer-deps or a hidden old lock.",
-      "Run Agent and UXP builds plus one ordered full maintenance gate using the isolated installations, then confirm package, lock and source remain unchanged.",
-      "Record dynamic npm audit findings as current security risk and divide future upgrades by runtime owner and reachability rather than treating install success as security completion.",
-      "Preserve deepseek-v4-flash-vision-exp as the formal Agent model; keep Smile closure, Electron/OpenAI migration and all Provider upgrades in later independent slices.",
-      "Keep D-097 unchanged for r32 reconciliation and r33, and leave the user's ordinary Runtime and Photoshop documents untouched."
+      "Verify Smile dynamic model purpose, explicit conversation routing, single-model Agent behavior and missing-key failures without granting implicit vision, Tool Calling or fallback.",
+      "Verify independent Smile/OpenRouter credential synchronization, exact image model identities, protocol payloads, cancellation, timeout/error provenance, safe result downloads and actual output dimensions.",
+      "Prove the current Smile image Service, credential owner and reusable test remain byte-identical to their isolated committed slice, while later shared-host changes retain one Provider owner.",
+      "Read only persisted model and credential presence, confirming deepseek-v4-flash-vision-exp remains the primary and visual mirror without exposing key content.",
+      "Reuse the exact same-source D-104 independent-install builds and 60-stage core evidence; run only docs-proportional governance checks for this no-code state slice.",
+      "Keep paid live Provider, Photoshop placement and commercial quality as explicit later evidence layers, and leave D-097 plus the user's current runtime untouched."
     ],
     "mustNotDo": [
-      "Do not use npm audit fix, force, legacy-peer-deps or a blanket override to make the dependency graph or audit count look green.",
-      "Do not mix Electron, OpenAI, Volcengine, image runtime, build tooling and Smile changes into one package-lock rewrite.",
-      "Do not claim dynamic security findings are fixed merely because clean install, typecheck or builds pass.",
-      "Do not upgrade OpenAI to a Node 20+ line while Electron 28 still embeds Node 18, and do not keep the current Zod override as a permanent architecture decision.",
-      "Do not change the selected DeepSeek model, enable Smile or Codex fallback, or send paid Provider requests in this dependency slice.",
+      "Do not change primaryModel or visualModel away from deepseek-v4-flash-vision-exp, and do not add Codex, Smile or cross-provider fallback.",
+      "Do not call Smile with the user's real key, consume paid image credits or print/copy any credential.",
+      "Do not let dynamic catalog metadata, quota type or an omitted model parameter grant a conversation/image role or choose a production model.",
+      "Do not treat mocked HTTP success, key presence or historical probe comments as a D-105 live Provider result or design-quality proof.",
+      "Do not mix R-054 dependency upgrades, Prompt, Skill, Harness, transaction or Photoshop changes into this Provider evidence slice.",
       "Do not stop PID 16228 or save, close, discard or modify any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "DEPENDENCY-CLOSURE-104",
+    "id": "SMILE-PROVIDER-CLOSURE-105",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：无 junction 的 Agent/UXP npm ci、optional 残留归因清理、双方 npm ls 0 problems 与依赖完整性 636/636、148/148。",
-      "已完成：Agent production build、preload sandbox、Renderer build、UXP 全测试/类型/production build 使用独立安装通过。",
-      "已完成：当前项目记忆、R-054、快速治理检查和唯一一次 maintenance:validate 60/60。",
-      "已完成：确认 package/lock/source 零改动并形成独立状态提交；安全升级保持后续 owner 分片。",
-      "后续：默认端口释放立即回到 r32；否则先独立收口 Smile，再按 Electron/OpenAI、Volcengine/network、image runtime、build chain 推进安全升级。"
+      "已完成：Smile 模型用途、单一模型路由、缺 Key 失败与动态目录边界专项。",
+      "已完成：Smile 图像协议、独立凭据、取消/错误/下载/尺寸收据和 OpenRouter 相邻回归专项。",
+      "已完成：核心文件 parity 与正常用户 DeepSeek 选择/Key 存在性只读检查；没有泄露凭据或付费请求。",
+      "已完成：更新四份当前项目记忆、运行 docs-only 快速治理检查并形成独立状态提交；不重复同源码完整核心闸门。",
+      "后续：默认端口释放立即回到 r32；否则进入 R-054 Electron/OpenAI 等依赖安全分片。"
     ]
   },
   "convergenceBaseline": {
