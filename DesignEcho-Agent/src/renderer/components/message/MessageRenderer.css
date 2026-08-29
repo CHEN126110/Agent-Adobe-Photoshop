@@ -2068,9 +2068,16 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0 0 4px;
+    gap: 8px;
+    width: 100%;
+    padding: 0 0 5px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     cursor: pointer;
-    transition: background 0.15s ease;
+    transition: color 0.15s ease;
     min-width: 0;
     min-inline-size: 0;
     max-width: 100%;
@@ -2111,17 +2118,6 @@
     min-inline-size: 0;
     max-width: 100%;
     max-inline-size: 100%;
-}
-
-/* 顶部状态点（思考标记） */
-.thinking-dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--de-text-secondary);
-    opacity: 0.55;
-    flex-shrink: 0;
 }
 
 .thinking-label {
@@ -2174,8 +2170,7 @@
    竖向引导线由时间线的节点列自带，这里不再画第二条左边线。 */
 .thinking-steps {
     padding: 2px 0;
-    margin-left: 4px;
-    /* auto 会把左侧 4px 缩进计入可用宽度；100% 再叠加 margin-left 会固定溢出 4px。 */
+    margin-left: 0;
     width: auto;
     inline-size: auto;
     min-width: 0;
@@ -2197,6 +2192,12 @@
     overscroll-behavior-y: contain;
     scrollbar-gutter: stable;
     scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .thinking-header .expand-toggle svg {
+        transition: none !important;
+    }
 }
 
 /* ============================================

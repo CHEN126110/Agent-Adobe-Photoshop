@@ -15,8 +15,15 @@
     --de-process-action-color: color-mix(in srgb, var(--de-text) 44%, transparent);
 }
 
-/* 过程流不装进卡片：外框 + 底色在对话流里就是多出来的一个矩形，而过程是叙述不是控件。
- * 层次改由左侧时间线和文字主次承担（2026-08-19 用户要求「去掉底部的矩形」）。 */
+/* 浅色底上的小号过程文字需要更高不透明度；不能照搬深色主题的弱化比例。 */
+[data-theme="light"] .thinking-simple,
+[data-theme="light"] .thinking-embedded {
+    --de-process-thought-color: color-mix(in srgb, var(--de-text) 80%, transparent);
+    --de-process-thought-strong: color-mix(in srgb, var(--de-text) 92%, transparent);
+    --de-process-action-color: color-mix(in srgb, var(--de-text) 64%, transparent);
+}
+
+/* 过程流不装进卡片：公开判断是正文，工具状态是可展开的弱化行，层次由文字主次承担。 */
 .thinking-simple {
     display: flex;
     flex-direction: column;
@@ -36,7 +43,7 @@
     overflow-x: hidden;
 }
 
-/* 嵌在任务卡条目下的过程时间线：没有外框、没有标题，只留步骤本身。 */
+/* 嵌在任务卡条目下的过程流：没有外框、没有标题，只留步骤本身。 */
 .thinking-embedded {
     display: flex;
     flex-direction: column;
@@ -93,11 +100,6 @@
     animation: de-running-dot-pulse 1.4s ease-in-out infinite;
 }
 
-@keyframes pulse-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-}
-
 .pondering-title {
     font-weight: 600;
     flex: 1 1 auto;
@@ -146,7 +148,7 @@
     60%, 100% { opacity: 1; }
 }
 
-/* ── 步骤时间线 ── */
+/* ── 公开过程流 ── */
 .pondering-steps {
     display: flex;
     flex-direction: column;
@@ -158,11 +160,8 @@
 }
 
 .pondering-step {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr);
-    column-gap: 10px;
-    align-items: start;
-    padding: 5px 0;
+    display: block;
+    padding: 4px 0;
     min-width: 0;
     min-inline-size: 0;
     max-width: 100%;
@@ -178,11 +177,11 @@
  * 而方形画布铺满整框——同一条「已查看当前画面」在两次运行里长成两种控件，用户读到的
  * 是「UI 没有规范」而不是「文档比例不同」。现在由外框定版位，比例差异交给 object-fit 吸收。 */
 .step-snapshot-frame {
-    grid-column: 2;
     position: relative;
     display: block;
     margin-top: 6px;
     padding: 0;
+    appearance: none;
     width: min(220px, 100%);
     aspect-ratio: 4 / 3;
     border-radius: 6px;
@@ -230,90 +229,8 @@
     pointer-events: none;
 }
 
-/* 节点列：贯穿引导线 + 状态节点圆 */
-.step-node {
-    grid-column: 1;
-    position: relative;
-    align-self: stretch;
-    width: 16px;
-}
-
-.step-node::before {
-    content: '';
-    position: absolute;
-    left: 50%;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    transform: translateX(-50%);
-    background: var(--de-border);
-    opacity: 0.55;
-}
-
-.pondering-step:first-child .step-node::before { top: 10px; }
-.pondering-step:last-child .step-node::before { bottom: calc(100% - 10px); }
-.pondering-step:only-child .step-node::before { display: none; }
-
-.step-node::after {
-    content: '';
-    position: absolute;
-    left: 50%;
-    top: 10px;
-    width: 7px;
-    height: 7px;
-    transform: translate(-50%, -50%);
-    border-radius: 50%;
-    box-sizing: border-box;
-    background: var(--de-bg);
-    border: 1.5px solid color-mix(in srgb, var(--de-text-secondary) 60%, transparent);
-    z-index: 1;
-}
-
-/* 思考 / 观察 / 判断 / 说明：主线，实心节点 */
-.is-thought .step-node::after {
-    background: color-mix(in srgb, var(--de-text-secondary) 62%, transparent);
-    border-color: transparent;
-}
-
-/* 工具完成：配角，缩一圈的空心点（背景仍要盖住连线，否则线会从点里穿过去） */
-.is-action.success .step-node::after {
-    width: 5px;
-    height: 5px;
-    background: var(--de-bg);
-    border-width: 1.5px;
-    border-color: color-mix(in srgb, var(--de-text-secondary) 42%, transparent);
-}
-
-/* 工具进行中（单一活性点原则）：只有当前活动行（is-live）转旋转环，
-   其余进行中的行静态主题色描边——满屏多处动效没有重点。 */
-.is-action.running .step-node::after,
-.is-action.pending .step-node::after {
-    border-color: var(--de-primary);
-    border-top-color: var(--de-primary);
-    background: var(--de-bg);
-    animation: none;
-}
-.is-action.running.is-live .step-node::after,
-.is-action.pending.is-live .step-node::after {
-    border-top-color: transparent;
-    animation: node-spin 0.7s linear infinite;
-}
-
-/* 失败：错误色实心节点 */
-.pondering-step.error .step-node::after {
-    background: var(--de-error);
-    border-color: var(--de-error);
-    animation: none;
-}
-
-@keyframes node-spin {
-    from { transform: translate(-50%, -50%) rotate(0deg); }
-    to { transform: translate(-50%, -50%) rotate(360deg); }
-}
-
 /* 文本列 */
 .step-text {
-    grid-column: 2;
     min-width: 0;
     min-inline-size: 0;
     max-width: 100%;
@@ -329,36 +246,6 @@
  * 真机一次「帮我做白底图」13 步里 11 步是工具动作，旧版把最重的视觉权重（chip 底色 + 正文色）
  * 给了动作、把 Agent 的判断压成次要灰：用户读完只知道它调了哪些工具，不知道它想了什么。
  * 现在反过来——判断是主线，动作退成一行小字，失败是唯一还需要打断阅读的动作。 */
-
-/* 做：弱化成一行小字，不再是一块块底色矩形 */
-.is-action .step-text {
-    display: block;
-    max-width: 100%;
-    box-sizing: border-box;
-    font-size: var(--de-process-action-size);
-    line-height: 1.55;
-    font-weight: 400;
-    color: var(--de-process-action-color);
-}
-
-/* 进行中的动作是此刻的焦点，提到「想」那一档（仍然不加底色，也不越过「说」） */
-.is-action.running .step-text,
-.is-action.pending .step-text {
-    color: var(--de-process-thought-strong);
-}
-
-.is-action.success .step-text {
-    color: var(--de-process-action-color);
-}
-
-/* 失败：唯一保留底色的动作——出错必须跳出来，不能和成功动作一样淡 */
-.is-action.error .step-text {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 6px;
-    color: var(--de-error);
-    background: color-mix(in srgb, var(--de-error) 12%, transparent);
-}
 
 /* 连着重复的同一动作合并后的次数标记（真机常见「变换图层」连做 3 次） */
 .step-repeat {
@@ -388,8 +275,9 @@
     color: var(--de-process-thought-strong);
 }
 
-.pondering-step.error .step-text {
-    color: var(--de-error);
+/* 公开说明即使描述失败也仍是正文；错误语义已经写在文案里，整段染红只会抢走最终结论。 */
+.pondering-step.error.is-thought .step-text {
+    color: var(--de-process-thought-color);
 }
 
 /* ── Light 主题 ──
@@ -398,7 +286,6 @@
 
 /* ── 步骤结果预览（展开查看"已查看/已读取"的内容） ── */
 .step-body {
-    grid-column: 2;
     display: flex;
     min-width: 0;
     min-inline-size: 0;
@@ -414,46 +301,121 @@
     min-width: 0;
 }
 
-/* 动作行：文字 + 次数 + 展开箭头在同一行基线上，不要让弱化后的小字被撑开 */
-.is-action .step-line {
-    align-items: center;
-}
-
 .step-line .step-text {
     flex: 1;
     min-width: 0;
 }
 
-.step-line--expandable .step-text {
-    cursor: default;
-}
-
-.step-expand-toggle {
-    display: inline-flex;
-    width: 18px;
-    height: 18px;
-    padding: 0;
-    flex: none;
+/* 工具动作是 Codex 式「状态行」：一行摘要始终可见，参数、结果与快照默认收起。
+ * 整行使用原生 button，避免只有 18px 小箭头可点；hover / focus 不改变布局尺寸。 */
+.step-action-toggle {
+    display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    min-height: 26px;
+    padding: 3px 4px 3px 2px;
     border: 0;
-    border-radius: 5px;
+    border-radius: 6px;
     background: transparent;
-    color: var(--de-text-secondary);
+    color: var(--de-process-action-color);
+    font: inherit;
+    font-size: var(--de-process-action-size);
+    line-height: 1.5;
+    text-align: left;
     cursor: pointer;
+    transition: background-color 0.16s ease, color 0.16s ease;
 }
 
-.step-expand-toggle:hover {
-    background: var(--de-hover-bg);
-    color: var(--de-text-primary);
+.step-action-toggle:hover {
+    background: color-mix(in srgb, var(--de-text) 5%, transparent);
+    color: color-mix(in srgb, var(--de-text) 62%, transparent);
 }
 
-.step-expand-toggle svg {
-    transition: transform 0.18s ease;
+.step-action-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--de-primary) 78%, transparent);
+    outline-offset: 1px;
 }
 
-.step-expand-toggle.is-expanded svg {
+.step-action-icon {
+    flex: 0 0 auto;
+    color: currentColor;
+}
+
+.step-action-state {
+    flex: 0 0 auto;
+    color: currentColor;
+}
+
+.step-action-name {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: currentColor;
+}
+
+.step-action-chevron {
+    flex: 0 0 auto;
+    opacity: 0.58;
+    transition: transform 0.18s ease, opacity 0.16s ease;
+}
+
+.step-action-toggle:hover .step-action-chevron {
+    opacity: 1;
+}
+
+.step-action-toggle.is-expanded .step-action-chevron {
     transform: rotate(180deg);
+}
+
+.pondering-step.running .step-action-toggle,
+.pondering-step.pending .step-action-toggle {
+    color: var(--de-process-thought-strong);
+}
+
+.pondering-step.error .step-action-toggle {
+    color: color-mix(in srgb, var(--de-error) 62%, var(--de-text-muted));
+}
+
+.step-action-details {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin: 3px 0 3px 19px;
+    padding: 6px 0 4px 10px;
+    border-left: 1px solid color-mix(in srgb, var(--de-border) 82%, transparent);
+    min-width: 0;
+    color: var(--de-text-secondary);
+    animation: de-process-details-enter 0.16s ease-out;
+}
+
+.step-action-description {
+    margin: 0;
+    color: var(--de-text-secondary);
+    font-size: 11px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+.step-action-duration {
+    color: var(--de-text-muted);
+    font-size: 10.5px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+}
+
+@keyframes de-process-details-enter {
+    from {
+        opacity: 0;
+        transform: translateY(-2px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .step-summary {
@@ -553,17 +515,6 @@
     to { background-position: 0% 0; }
 }
 
-/* 进行中的那一条：只让圆点(::after)呼吸。
- * 注意别打在 .step-node 上——它的 ::before 是时间线连接线，连线跟着闪会很怪。
- *
- * 必须限定 .is-thought：工具进行中要的是上面那个 node-spin 旋转环，而两条选择器
- * 特异性都是 (0,3,1)，平手时写在后面的赢——不加限定，这条呼吸会把旋转整个盖掉，
- * 表现就是「本该转圈的工具节点在一呼一吸」。 */
-.pondering-step.running.is-thought .step-node::after,
-.pondering-step.pending.is-thought .step-node::after {
-    animation: pulse-dot 1.9s ease-in-out infinite;
-}
-
 /* 无障碍：用户要求减少动效时一律停掉，并恢复实心文字色 */
 @media (prefers-reduced-motion: reduce) {
     .pondering-title.is-active,
@@ -578,32 +529,16 @@
     .live-activity-placeholder .pondering-dot {
         animation: none;
     }
-
-    /* 呼吸和旋转两种都要停：显式各列一遍，不依赖「写在后面就能盖住」的顺序运气 */
-    .pondering-step.running .step-node::after,
-    .pondering-step.pending .step-node::after,
-    .is-action.running .step-node::after,
-    .is-action.pending .step-node::after {
-        animation: none;
-    }
 }
 
-/* ===== 2026-08-25 过程流 codex 化（对照板 P1.75 / P2.5）===== */
+/* ===== Codex 式动作折叠与运行反馈 ===== */
 
-/* 类别聚合行：lucide 图标 + 人话 + 展开明细 */
-.pondering-aggregate .agg-icon {
-    flex: 0 0 auto;
-    align-self: center;
-    color: var(--de-text-muted);
-}
-.pondering-aggregate .step-text {
-    color: var(--de-process-action-color);
-}
+/* 类别聚合行：摘要始终可见，逐条明细跟普通工具详情一样默认收起。 */
 .agg-members {
     list-style: none;
-    margin: 4px 0 2px;
+    margin: 3px 0 3px 19px;
     padding: 0 0 0 10px;
-    border-left: 2px solid var(--de-border-subtle, rgba(128,136,152,.25));
+    border-left: 1px solid var(--de-border-subtle, rgba(128,136,152,.25));
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -623,36 +558,37 @@
     opacity: .75;
 }
 
-/* 失败步骤哑色化（P2.5 单一事实源）：灰调原文 + 细左线，不再整块红底——
-   codex 连 stream disconnected 都是灰字；醒目留给需要用户行动的交互卡。 */
-.is-action.error .step-text {
-    display: inline-block;
-    padding: 0 0 0 8px;
-    border-radius: 0;
-    background: transparent;
-    border-left: 2px solid color-mix(in srgb, var(--de-error) 55%, transparent);
-    color: color-mix(in srgb, var(--de-error) 62%, var(--de-text-muted));
-}
-
 /* 当前活动行的文本扫光（单一活性点：渲染层只把 is-live 授予最末一条进行中的动作行，
    任意时刻至多一处扫光——codex 同款铁律；正文/思考行（is-thought）永不扫光，
    codex 里正文段落是静态的，流式出现+顶部计时头即活性信号。选择器限定 is-action 双保险） */
-.pondering-step.is-action.is-live .step-text {
-    background: linear-gradient(100deg,
+.pondering-step.is-action.is-live .step-action-state,
+.pondering-step.is-action.is-live .step-action-name {
+    background-image: linear-gradient(100deg,
         var(--de-text-muted) 46%,
         var(--de-process-thought-strong, #d7dae0) 50%,
         var(--de-text-muted) 54%);
     background-size: 220% 100%;
+    background-repeat: no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
-    color: transparent;
+    -webkit-text-fill-color: transparent;
     animation: de-action-shimmer 2.4s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-    .pondering-step.is-action.is-live .step-text {
+    .pondering-step.is-action.is-live .step-action-state,
+    .pondering-step.is-action.is-live .step-action-name {
         animation: none;
-        background: none;
+        background-image: none;
+        -webkit-text-fill-color: currentColor;
         color: var(--de-text-muted);
+    }
+
+    .step-action-details {
+        animation: none;
+    }
+
+    .step-action-chevron {
+        transition: none;
     }
 }
 

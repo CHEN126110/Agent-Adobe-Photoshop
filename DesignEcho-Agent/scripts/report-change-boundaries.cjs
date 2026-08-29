@@ -346,6 +346,10 @@ function classify(entry) {
     return findBoundary('agent-routing-models');
   }
 
+  if (entry.filePath === 'DesignEcho-Agent/design-qa.md') {
+    return findBoundary('renderer-ui-shell');
+  }
+
   return BOUNDARIES.find((boundary) => boundary.match(entry));
 }
 

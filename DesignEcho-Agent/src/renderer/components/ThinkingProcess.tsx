@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, FileSearch, Images } from 'lucide-react';
+import { ChevronDown, FileSearch, Images, SquareTerminal } from 'lucide-react';
 import './ThinkingProcess.css';
 import { ImageZoomOverlay } from './ImageZoomOverlay';
 import {
@@ -180,10 +180,10 @@ function getDisplayRole(step: ThinkingStep): ThinkingStepDisplayRole {
     });
 }
 
-function getActionLabel(step: ThinkingStep): string {
-    if (step.status === 'error') return '未完成';
-    if (step.status === 'running' || step.status === 'pending') return '正在制作';
-    return '已完成';
+function getActionStateLabel(step: ThinkingStep): string {
+    if (step.status === 'error') return '运行失败';
+    if (step.status === 'running' || step.status === 'pending') return '正在运行';
+    return '已运行';
 }
 
 /**
@@ -334,27 +334,25 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                     }
                     return mergedSteps.map(({ key: stepKey, step, repeat, members, aggregateLabel }) => {
                         const liveClass = stepKey === liveKey ? 'is-live' : '';
-                    // 类别聚合组：一行人话 + lucide 图标 + 可展开明细（codex 化 P1.75）
+                    // 类别聚合组：状态行始终可见，逐条明细默认收起。
                     if (aggregateLabel && members) {
                         const expanded = Boolean(expandedStepIds[stepKey]);
                         const AggIcon = aggregateLabel.startsWith('查看') ? Images : FileSearch;
                         return (
                             <div key={stepKey} className="pondering-step success is-action pondering-aggregate">
-                                <span className="step-node" aria-hidden="true" />
                                 <div className="step-body">
-                                    <div className="step-line step-line--expandable">
-                                        <AggIcon size={13} strokeWidth={1.9} className="agg-icon" aria-hidden="true" />
-                                        <span className="step-text">{aggregateLabel}</span>
-                                        <button
-                                            type="button"
-                                            className={`step-expand-toggle ${expanded ? 'is-expanded' : ''}`}
-                                            aria-expanded={expanded}
-                                            aria-label={expanded ? '收起明细' : '展开逐条明细'}
-                                            onClick={() => toggleStepExpanded(stepKey)}
-                                        >
-                                            <ChevronDown size={11} strokeWidth={2.4} aria-hidden="true" />
-                                        </button>
-                                    </div>
+                                    <button
+                                        type="button"
+                                        className={`step-action-toggle ${expanded ? 'is-expanded' : ''}`}
+                                        aria-expanded={expanded}
+                                        aria-label={`${expanded ? '收起' : '展开'}${aggregateLabel}的逐条明细`}
+                                        onClick={() => toggleStepExpanded(stepKey)}
+                                    >
+                                        <AggIcon size={13} strokeWidth={1.9} className="step-action-icon" aria-hidden="true" />
+                                        <span className="step-action-state">已运行</span>
+                                        <span className="step-action-name">{aggregateLabel}</span>
+                                        <ChevronDown size={12} strokeWidth={2.2} className="step-action-chevron" aria-hidden="true" />
+                                    </button>
                                     {expanded && (
                                         <ul className="agg-members">
                                             {members.map((member) => (
@@ -373,15 +371,13 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                     }
                     const displayRole = getDisplayRole(step);
                     const isTool = isActionStep(step) || displayRole === 'action';
-                    // 语义标签不再以文字 pill 占据版面，转为可访问性属性（hover/读屏可见）；
-                    // 步骤的类型与状态由左侧时间线节点的形状/颜色表达，正文按主次分级排版。
                     const semanticLabel = isTool
-                        ? getActionLabel(step)
+                        ? getActionStateLabel(step)
                         : resolveThinkingStepRoleLabel(displayRole, step.type);
                     const preview = isTool && step.toolName
                         ? buildToolResultPreview(step.toolName, step.toolResult)
                         : undefined;
-                    const expanded = Boolean(preview && expandedStepIds[stepKey]);
+                    const expanded = Boolean(expandedStepIds[stepKey]);
                     const snapshotSrc = step.imageData ? resolveSnapshotSrc(step.imageData) : '';
                     // 还没量到比例时按 contain 保守渲染：宁可留白，也不要在不知道画面
                     // 长什么样的时候先裁一刀。
@@ -389,69 +385,117 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                     const snapshotMode = snapshotRatio
                         ? resolveSnapshotDisplayMode(snapshotRatio)
                         : { objectFit: 'contain' as const, objectPosition: 'center', badge: '' };
+                    if (isTool) {
+                        const toolInfo = getToolDisplayInfo(step.toolName || '');
+                        return (
+                            <div
+                                key={stepKey}
+                                className={`pondering-step ${step.status} ${liveClass} is-action pondering-step--${displayRole}`}
+                            >
+                                <div className="step-body">
+                                    <button
+                                        type="button"
+                                        className={`step-action-toggle ${expanded ? 'is-expanded' : ''}`}
+                                        aria-expanded={expanded}
+                                        aria-label={`${expanded ? '收起' : '展开'}${getStepText(step)}的运行详情`}
+                                        onClick={() => toggleStepExpanded(stepKey)}
+                                    >
+                                        <SquareTerminal size={13} strokeWidth={1.8} className="step-action-icon" aria-hidden="true" />
+                                        <span className="step-action-state">{getActionStateLabel(step)}</span>
+                                        <span className="step-action-name">{getStepText(step)}</span>
+                                        {repeat > 1 && (
+                                            <span className="step-repeat" aria-label={`连续 ${repeat} 次`}>×{repeat}</span>
+                                        )}
+                                        <ChevronDown size={12} strokeWidth={2.2} className="step-action-chevron" aria-hidden="true" />
+                                    </button>
+
+                                    {expanded && (
+                                        <div className="step-action-details" data-testid="step-action-details">
+                                            {toolInfo.description && (
+                                                <p className="step-action-description">{toolInfo.description}</p>
+                                            )}
+                                            {preview?.summary && (
+                                                <span className="step-summary">{preview.summary}</span>
+                                            )}
+                                            {preview && preview.sections.length > 0 && (
+                                                <div className="step-preview" data-testid="step-result-preview">
+                                                    {preview.sections.map((section, sectionIndex) => (
+                                                        <div key={sectionIndex} className="step-preview__section">
+                                                            {section.title && <span className="step-preview__title">{section.title}</span>}
+                                                            <ul className="step-preview__list">
+                                                                {section.lines.map((line, lineIndex) => (
+                                                                    <li key={lineIndex}>{line}</li>
+                                                                ))}
+                                                            </ul>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            {typeof step.duration === 'number' && step.duration > 0 && (
+                                                <span className="step-action-duration">用时 {(step.duration / 1000).toFixed(1)} 秒</span>
+                                            )}
+                                            {snapshotSrc && (
+                                                <button
+                                                    type="button"
+                                                    className="step-snapshot-frame"
+                                                    title={snapshotMode.badge
+                                                        ? `${snapshotMode.badge}，点击查看完整画面`
+                                                        : '点击查看大图'}
+                                                    aria-label={`${getStepText(step)}${snapshotMode.badge ? `（${snapshotMode.badge}）` : ''}，点击查看大图`}
+                                                    onClick={() => openSnapshot(snapshotSrc, getStepText(step))}
+                                                >
+                                                    <img
+                                                        className="step-snapshot"
+                                                        src={snapshotSrc}
+                                                        alt={getStepText(step)}
+                                                        loading="lazy"
+                                                        style={{
+                                                            objectFit: snapshotMode.objectFit,
+                                                            objectPosition: snapshotMode.objectPosition
+                                                        }}
+                                                        onLoad={(event) => {
+                                                            const image = event.currentTarget;
+                                                            if (!image.naturalWidth || !image.naturalHeight) return;
+                                                            const ratio = image.naturalWidth / image.naturalHeight;
+                                                            setSnapshotRatios((current) => (
+                                                                current[stepKey] === ratio
+                                                                    ? current
+                                                                    : { ...current, [stepKey]: ratio }
+                                                            ));
+                                                        }}
+                                                    />
+                                                    {snapshotMode.badge && (
+                                                        <span className="step-snapshot-badge">{snapshotMode.badge}</span>
+                                                    )}
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    }
+
                     return (
                         <div
                             key={stepKey}
-                            className={`pondering-step ${step.status} ${liveClass} ${isTool ? 'is-action' : 'is-thought'} pondering-step--${displayRole}`}
+                            className={`pondering-step ${step.status} ${liveClass} is-thought pondering-step--${displayRole}`}
                             title={semanticLabel}
-                            aria-label={semanticLabel}
                         >
-                            <span className="step-node" aria-hidden="true" />
                             <div className="step-body">
-                                <div className={`step-line ${preview ? 'step-line--expandable' : ''}`}>
+                                <div className="step-line">
                                     <span className="step-text">{getStepText(step)}</span>
-                                    {repeat > 1 && (
-                                        <span className="step-repeat" aria-label={"连续 " + repeat + " 次"}>×{repeat}</span>
-                                    )}
-                                    {preview && (
-                                        <button
-                                            type="button"
-                                            className={`step-expand-toggle ${expanded ? 'is-expanded' : ''}`}
-                                            aria-expanded={expanded}
-                                            aria-label={expanded ? '收起结果内容' : '展开查看结果内容'}
-                                            onClick={() => toggleStepExpanded(stepKey)}
-                                        >
-                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
-                                                <polyline points="6 9 12 15 18 9"></polyline>
-                                            </svg>
-                                        </button>
-                                    )}
                                 </div>
-                                {preview?.summary && (
-                                    <span className="step-summary">{preview.summary}</span>
-                                )}
-                                {expanded && preview && preview.sections.length > 0 && (
-                                    <div className="step-preview" data-testid="step-result-preview">
-                                        {preview.sections.map((section, sectionIndex) => (
-                                            <div key={sectionIndex} className="step-preview__section">
-                                                {section.title && <span className="step-preview__title">{section.title}</span>}
-                                                <ul className="step-preview__list">
-                                                    {section.lines.map((line, lineIndex) => (
-                                                        <li key={lineIndex}>{line}</li>
-                                                    ))}
-                                                </ul>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
                             </div>
                             {snapshotSrc && (
-                                /* 缩略图只有 220px 宽，看不清 Agent 到底看到了什么，点开看大图。
-                                   外框定版位，图片按量到的比例决定怎么放进去。 */
-                                <div
+                                <button
+                                    type="button"
                                     className="step-snapshot-frame"
-                                    role="button"
-                                    tabIndex={0}
                                     title={snapshotMode.badge
                                         ? `${snapshotMode.badge}，点击查看完整画面`
                                         : '点击查看大图'}
                                     aria-label={`${getStepText(step)}${snapshotMode.badge ? `（${snapshotMode.badge}）` : ''}，点击查看大图`}
                                     onClick={() => openSnapshot(snapshotSrc, getStepText(step))}
-                                    onKeyDown={(event) => {
-                                        if (event.key !== 'Enter' && event.key !== ' ') return;
-                                        event.preventDefault();
-                                        openSnapshot(snapshotSrc, getStepText(step));
-                                    }}
                                 >
                                     <img
                                         className="step-snapshot"
@@ -476,7 +520,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                                     {snapshotMode.badge && (
                                         <span className="step-snapshot-badge">{snapshotMode.badge}</span>
                                     )}
-                                </div>
+                                </button>
                             )}
                         </div>
                     );

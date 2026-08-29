@@ -372,11 +372,11 @@
     line-height: 1.72;
 }
 
-/* 过程流三档跟着窄面板收一号：只覆盖变量，不在这里重写各处字号 */
+/* 窄面板仍保持正文优先，但公开判断不能小到需要费力阅读；工具状态再弱一档。 */
 .workbench-agent-panel .thinking-simple,
 .workbench-agent-panel .thinking-embedded {
-    --de-process-thought-size: 11.5px;
-    --de-process-action-size: 11px;
+    --de-process-thought-size: 12.25px;
+    --de-process-action-size: 11.25px;
 }
 
 .workbench-agent-panel .multimodal-message.user .text-block {

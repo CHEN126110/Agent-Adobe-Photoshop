@@ -1,5 +1,5 @@
 /**
- * 「设计过程」块：折叠头 + 展开后的过程时间线。
+ * Codex 式公开过程流：判断按正文展示，工具动作以紧凑状态行展示。
  *
  * 展开内容直接复用运行中同一套 ThinkingProcess 时间线（快照缩略图、结果摘要、
  * 可展开的结果预览、重复动作合并全部保留）。此前这里维护过一份平行的简化列表，
@@ -8,6 +8,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import type { ThinkingBlock as ThinkingBlockType } from '../types';
 import { ThinkingProcess } from '../../ThinkingProcess';
 import { cleanInlineProcessText } from '../thinkingStepPresentation';
@@ -32,20 +33,21 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
     collapseForTerminalState = false
 }) => {
     const isRunning = block.isExpanded === true && !collapseForTerminalState;
-    const [isExpanded, setIsExpanded] = useState(
-        collapseForTerminalState ? false : block.isExpanded ?? false
-    );
+    // 过程正文默认展开；每个工具动作的参数 / 结果在 ThinkingProcess 内单独默认收起。
+    // 旧版把终态整块折叠成「设计过程 N 步」，同时把用户真正想读的公开判断也藏掉了。
+    const [isExpanded, setIsExpanded] = useState(true);
     // 运行中要能实时看到它在做什么：block.isExpanded 由 parser 按 isStreaming 传入，
     // 但 useState 只取一次初始值，流式从 false→true 时界面不会跟着展开（用户只能等跑完再手动展开）。
-    // 这里让「开始运行」自动展开、「运行结束」自动收起；中途用户手动收起/展开的选择在本轮内保持不变。
+    // 这里让开始和结束都保持默认展开；中途用户手动收起 / 展开的选择在本轮内保持不变。
     const userToggledRef = useRef(false);
     const wasRunningRef = useRef(isRunning);
     const stepsContainerRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
         if (isRunning === wasRunningRef.current) return;
         wasRunningRef.current = isRunning;
-        userToggledRef.current = false;
-        setIsExpanded(isRunning);
+        if (!userToggledRef.current) {
+            setIsExpanded(true);
+        }
     }, [isRunning]);
     // 运行中把最新一步滚进视野：长流程下用户始终看得到「此刻在做什么」，
     // 而不是停在最早几步、以为卡住了。用户手动收起过就不再自动跟随。
@@ -66,56 +68,43 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
     const decisionSummary = latestDecision
         ? cleanInlineProcessText(latestDecision.content).replace(/\s+/g, ' ').trim().slice(0, 56)
         : '';
-    // 头部右侧元信息：让折叠的一行也能回答「这轮做了多少事、花了多久」。
+    // 头部右侧元信息：让这一行回答「还在处理吗、做了多少事、花了多久」。
     const durationText = formatThinkingDuration(block.totalDuration);
     const metaText = [`${stepCount} 步`, durationText].filter(Boolean).join(' · ');
+    const processLabel = isRunning ? '正在处理' : '已处理';
 
     return (
         <div className={`message-block thinking-block ${hasError ? 'has-error' : ''} ${isRunning ? 'is-running' : 'is-terminal'}`}>
-            {/* 整行是折叠开关：此前是只带 onClick 的 div，里面再套一个无标签 button，
-                键盘用户展不开、读屏也读不出展开状态。语义收到这一行上，箭头退回装饰件。 */}
-            <div
+            {/* 公开判断默认作为正文保留；这行只提供用户主动收起整段过程的出口。 */}
+            <button
+                type="button"
                 className="thinking-header"
-                role="button"
-                tabIndex={0}
                 aria-expanded={isExpanded}
-                aria-label={`${isExpanded ? '收起' : '展开'}${block.title || '设计过程'}，共 ${metaText}`}
+                aria-label={`${isExpanded ? '收起' : '展开'}本轮公开处理过程，共 ${metaText}`}
                 onClick={() => {
                     userToggledRef.current = true;
                     setIsExpanded(!isExpanded);
                 }}
-                onKeyDown={(event) => {
-                    if (event.key !== 'Enter' && event.key !== ' ') return;
-                    event.preventDefault();
-                    userToggledRef.current = true;
-                    setIsExpanded(!isExpanded);
-                }}
             >
-                <div className="thinking-summary">
-                    <span className="thinking-dot"></span>
+                <span className="thinking-summary">
                     <span className="thinking-label">
-                        {block.title || '设计过程'}
+                        {processLabel}
                         {!isExpanded && decisionSummary ? ` · ${decisionSummary}` : ''}
                     </span>
-                </div>
+                </span>
                 <span className="thinking-meta">{metaText}</span>
                 <span className="expand-toggle" aria-hidden="true">
-                    <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
+                    <ChevronDown
+                        size={14}
+                        strokeWidth={2}
                         style={{
                             transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
                             transition: 'transform 0.2s ease'
                         }}
-                    >
-                        <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
+                        aria-hidden="true"
+                    />
                 </span>
-            </div>
+            </button>
 
             {isExpanded && (
                 <div className="thinking-steps" ref={stepsContainerRef}>
