@@ -15,6 +15,7 @@ import {
     shouldRetryAutonomousModelTransport
 } from '../../../shared/model-provider-transport-policy';
 import { buildConversationalUnavailableMessage } from '../../../shared/conversational-unavailable-message';
+import { sanitizeUserVisibleDiagnosticText } from '../../../shared/chat-response-cleaner';
 import { buildCancelledAutonomousAgentResult } from './autonomous-agent-result-projection';
 import {
     buildAgentCapabilityBaseline,
@@ -6250,7 +6251,22 @@ export const autonomousAgentExecutor: SkillExecutor = {
                     }
                 };
             }
-            const safeMessage = '处理过程中出现运行异常，当前结果不能确认完成。为避免继续改动画面，已停止执行；下次继续时会先读取当前文档状态。';
+            // 兜底分支：这里的 rawFailure 是**没能被 classifyModelProviderFailure 归类**的失败。
+            // 原先整条丢弃、只写进 data.runtimeFailureCode，界面上只剩一句「运行异常」——
+            // 真机 2026-08-28：真实原因是「模型 google/gemini-3.7-flash:batch 不存在」，
+            // 用户面对的却是无从下手的笼统提示，只能靠翻日志才知道该换模型。
+            //
+            // 归类失败不等于原因不可读：provider 与 Harness 抛出的多数 message 本身
+            // 就是给人看的中文。这里复用与 buildAgentIterationFailureMessage 相同的清洗
+            // （去工具标记、脱敏本地路径、改写实现向术语），把可读部分接在状态说明后面。
+            // 清洗后为空（纯内部标识符、噪声）时才退回原来的笼统文案。
+            const failureDetail = sanitizeUserVisibleDiagnosticText(rawFailure);
+            const stateNotice = '当前结果不能确认完成。为避免继续改动画面，已停止执行；下次继续时会先读取当前文档状态。';
+            const safeMessage = failureDetail
+                ? `处理中断：${failureDetail}
+
+${stateNotice}`
+                : `处理过程中出现运行异常，${stateNotice}`;
             return {
                 success: false,
                 message: safeMessage,

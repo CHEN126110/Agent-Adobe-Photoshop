@@ -141,7 +141,14 @@ export function classifyModelProviderFailure(error: unknown): ModelProviderFailu
     if (/insufficient[_\s-]*(?:balance|credit|credits|funds|quota)|balance\s+is\s+insufficient|quota[_\s-]*exceeded|(?:you(?:'|’)ve\s+)?hit\s+(?:your\s+)?usage\s+limit|purchase\s+more\s+credits|余额不足|账户余额|额度不足|配额不足|用量(?:已)?(?:达到|用尽|超出)(?:上限|限额)?/i.test(normalized)) {
         return buildFailure('billing', providerCode ? 'code' : 'message', diagnostic, status, providerCode);
     }
-    if (/requires?\s+(?:an?\s+)?subscription|subscription[_\s-]*(?:required|needed)|upgrade(?:\s+your\s+plan)?\s+for\s+access|not\s+(?:allowed|entitled|authorized)\s+to\s+(?:use|access)\s+(?:this\s+)?model|model\s+(?:access|permission)\s+(?:is\s+)?(?:required|denied|not\s+enabled)|no\s+endpoints?\s+found|model\s+(?:not\s+found|does\s+not\s+exist|unavailable)|permission_denied|forbidden|需要.*订阅|订阅.*(?:不足|要求)|升级.*(?:订阅|访问)|模型.*(?:无权|无权限|未开放|不可用)/i.test(normalized)) {
+    // 中文分支必须与 model-service 实际生成的文案逐条对齐，否则可识别的失败会掉成
+    // unknown：上层拿不到 ModelProviderCallError，用户只看到笼统的「运行异常」，
+    // 而真实原因（"模型 X 不存在"）只留在 data.runtimeFailureCode 里，界面上看不见。
+    // 真机 2026-08-28 漏网三例：「❌ 模型 …:batch 不存在」（正则缺"不存在"）、
+    //「🚫 无权访问模型 X」（"无权"在"模型"之前，原正则要求"模型"在前）、
+    //「⚠️ OpenRouter 请求频率过高」（原正则只认"请求过于频繁/限流"）。
+    // 新增或改写 provider 错误文案时，请回到 model-service 把两边对一遍。
+    if (/requires?\s+(?:an?\s+)?subscription|subscription[_\s-]*(?:required|needed)|upgrade(?:\s+your\s+plan)?\s+for\s+access|not\s+(?:allowed|entitled|authorized)\s+to\s+(?:use|access)\s+(?:this\s+)?model|model\s+(?:access|permission)\s+(?:is\s+)?(?:required|denied|not\s+enabled)|no\s+endpoints?\s+found|model\s+(?:not\s+found|does\s+not\s+exist|unavailable)|permission_denied|forbidden|需要.*订阅|订阅.*(?:不足|要求)|升级.*(?:订阅|访问)|模型.*(?:无权|无权限|未开放|不可用|不存在|已下线|已更名)|无权(?:限)?(?:访问|使用).*模型|没有该模型的可用渠道|该模型的可用渠道不存在/i.test(normalized)) {
         return buildFailure('model_access', providerCode ? 'code' : (structuredStatus ? 'status' : 'message'), diagnostic, status, providerCode);
     }
     if (status === 401) {
@@ -155,7 +162,7 @@ export function classifyModelProviderFailure(error: unknown): ModelProviderFailu
     if (status === 403) {
         return buildFailure('model_access', statusBasis, diagnostic, status, providerCode);
     }
-    if (status === 429 || /rate[_\s-]*limit|too\s+many\s+requests|resource_exhausted|请求过于频繁|限流/i.test(normalized)) {
+    if (status === 429 || /rate[_\s-]*limit|too\s+many\s+requests|resource_exhausted|请求过于频繁|请求频率过高|调用频率过高|限流/i.test(normalized)) {
         return buildFailure('rate_limit', structuredStatus ? 'status' : (providerCode ? 'code' : 'message'), diagnostic, status, providerCode);
     }
     if (status === 408 || status === 504 || /timed?\s*out|timeout|etimedout|请求超时/i.test(normalized)) {

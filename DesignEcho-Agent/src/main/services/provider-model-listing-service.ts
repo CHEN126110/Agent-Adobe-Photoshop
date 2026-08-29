@@ -599,6 +599,12 @@ async function listOpenRouter(apiKey: string, timeoutMs: number): Promise<ListMo
         for (const item of list) {
             const apiModelId = String(item?.id || '').trim();
             if (!apiModelId) continue;
+            // OpenRouter 的 `:batch` 变体走的是**异步批处理**接口（提交后按小时级排队），
+            // 实时 chat 调用必然 404。它们与实时型号同名同能力、只差一个后缀，
+            // 在选择器里几乎无法分辨——用户选中后只会拿到「模型不存在」。
+            // 真机 2026-08-28：选中 google/gemini-3.7-flash:batch 即如此。
+            // 源头过滤，不让它进候选；需要批处理时是另一条链路，不复用对话模型选择器。
+            if (/:batch$/i.test(apiModelId)) continue;
             const inputModalities = extractInputModalities(item);
             const outputModalities = extractOutputModalities(item);
             const supportedParams = extractSupportedParameters(item);
