@@ -105,6 +105,7 @@ function applyRemoteDebuggingPortFromEnv(): void {
 applyRemoteDebuggingPortFromEnv();
 
 // ============ 单实例锁（防止多开） ============
+const normalUserDataDir = app.getPath('userData');
 const testUserDataDir = process.env.DESIGNECHO_TEST_USER_DATA_DIR?.trim();
 if (testUserDataDir) {
     const resolvedTestUserDataDir = path.resolve(testUserDataDir);
@@ -112,6 +113,16 @@ if (testUserDataDir) {
     app.setPath('userData', resolvedTestUserDataDir);
     app.setName('DesignEcho Test');
     console.log(`[Main] Using isolated test userData directory: ${resolvedTestUserDataDir}`);
+}
+
+const reuseNormalCodexSubscriptionSession = process.env.DESIGNECHO_TEST_REUSE_CODEX_SUBSCRIPTION_SESSION === '1';
+if (reuseNormalCodexSubscriptionSession
+    && (!testUserDataDir
+        || process.env.DESIGNECHO_CHAT_TEST_BRIDGE !== '1'
+        || process.env.DESIGNECHO_PORT_OFFSET !== '0')) {
+    throw new Error(
+        'DESIGNECHO_TEST_REUSE_CODEX_SUBSCRIPTION_SESSION requires an isolated chat test bridge on the default runtime ports.'
+    );
 }
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -1065,10 +1076,18 @@ async function initializeServices(): Promise<void> {
     }
     // ChatGPT 订阅模型使用独立 Codex App Server 与隔离凭据目录；它不是 OpenAI API Key。
     codexSubscriptionService = new CodexSubscriptionService({
-        userDataDir: app.getPath('userData'),
+        userDataDir: reuseNormalCodexSubscriptionSession
+            ? normalUserDataDir
+            : app.getPath('userData'),
         clientVersion: app.getVersion(),
         onStateChanged: handleCodexSubscriptionStateChanged
     });
+    if (reuseNormalCodexSubscriptionSession) {
+        logService.logAgent(
+            'info',
+            '[Main] Isolated debug runtime is using the normal secure ChatGPT subscription session without copying credentials'
+        );
+    }
     await hydrateCodexSubscriptionModels();
 
     // Claude 订阅：Agent SDK 内嵌运行时，凭据由官方运行时自管（终端 /login），主进程不经手。
