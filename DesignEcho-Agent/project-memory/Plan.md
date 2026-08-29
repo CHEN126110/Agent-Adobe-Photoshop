@@ -6,6 +6,8 @@
 
 当前 D-114 进度：D-113 已提交 `80568030` 并取得 clean Agent /UXP identities。fresh r35 用正式 DeepSeek 和真实 Photoshop 只创建一个文档，完成同 revision PSD/JPG 与全生命周期结算，6 个用户文档零变化；但 Reliability consumer 拒绝了缺少 `preexistingDocumentRevisionsUnchanged` 的首写收据。该事实已由 baseline assessment 计算却未序列化，属于 producer/consumer 通用协议漂移。r35 已按 unknown-write 协议重启 Runtime /重载 UXP并合法 reconciliation；D-114 已补齐 state /receipt 字段并增加 producer 真实收据直达 consumer 的集成攻击测试。专项边界、Main /Renderer 类型、Agent /UXP production build 与提交前唯一完整核心 65/65 已通过；下一步只做独立提交 /clean identities和 fresh r36，不重复核心。视觉上 r35 仍有标题过重及“木耳耳边”错误，自动 90 分不作为专业质量通过。
 
+2026-08-30 追加进度：r36（attempt 20260829162336）预算耗尽、无交付声明，判 unknown-write 并已 reconciliation。d094–d113 隔离分支链已合并进 `codex/agent-uxp`（`65bd2038`，合并树完整核心 65 项通过并推送；重叠子系统全取链侧，主线独有的思考 UI /推理档位 /失败可见性 /跨文档置入四簇保留）。r37（attempt 20260829182958，合并运行时 51cc3d9d 系）在提交前布景 2 个外部 dirty 无路径文档的条件下完成正式尝试：外部文档 history 身份全程未变（对象级保护首次在"外部脏文档在场"条件下真实证明，本地读回证据），PSD/JPG 交付落盘、final_response 自然收尾；但 evaluateDesign 失败一次后 Agent 用第二次 composeDesign 另起画布重做，弃稿画布未结算，收据以 `new_outside_document_opened` 如实拒绝，已按协议 reconciliation。下一治理候选：弃稿文档结算的 owner 裁决（composeDesign 修订语义 vs Agent 弃稿纪律）与评审链路稳定性（r36 /r37 各失败一次）。
+
 1. `[已完成 f148 修复、验证与推送]`：完成态可选 generation 的多维容量证明已通过完整核心闸门 58/58，并以 `f148d512` 推送当前分支；提交后 Agent /UXP identity 已重建并在 r23 写前核实为同一干净提交。
 2. `[已完成 r23 / 已对账]`：同一句自然需求在全新 fixture 中完成 17 次模型调用、18 次 Tool Call、8 次成功写 /保存 /导出，生成 27,621,377 字节 PSD 与 822,776 字节 JPG；没有创建 r22 式 0 调用空子代。Attempt 因 `finalArtifactRefs` 为空判为 `submission_unknown_write_state`，随后已在同构建重启、0 文档、0 待处理请求和同 fixture 条件下 reconciliation。
 3. `[已定位 r23 首个偏差]`：Agent 最终只读取了带 `region` 的局部画面；局部截图能支持裁切微调，但不能形成单画布任务要求的完整 ReviewSet。Run Record 因而出现 `fresh_visual` 缺失、质量覆盖 0/16、R5 未闭合，E2 也不能把真实 PSD /JPG 投影为可信最终交付。

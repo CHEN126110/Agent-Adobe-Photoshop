@@ -46,7 +46,7 @@
 
 ### 状态
 
-`in_progress / merge_65bd2038_pushed_core_65_passed / r37_formal_attempt_executed / external_document_preservation_proven_locally / receipt_rejected_new_outside_document_opened / draft_document_settlement_gap_identified / r37_reconcile_pending`
+`validated / merge_65bd2038_pushed_core_65_passed / r37_formal_attempt_executed_and_reconciled / external_document_preservation_proven_locally / receipt_rejected_new_outside_document_opened / draft_document_settlement_gap_queued_for_owner_adjudication`
 
 ---
 
