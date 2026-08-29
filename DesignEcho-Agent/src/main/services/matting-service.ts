@@ -1086,14 +1086,22 @@ export class MattingService {
         }
         const modelPath = resolved.path;
         
-        // matting 档固定走 CPU：本机实测（1024 输入、同一权重）DirectML 单次 19084ms /
-        // 显存净增 4017MiB，CPU 16348ms / 净增 158MiB——CPU 既更快又几乎不占显存，
-        // 把 8GB 完整留给 GroundingDINO。注意只改这一个会话的 provider，
-        // 不动 this.activeExecutionProvider，否则 SAM 与检测器会被一起拖到 CPU。
-        const forceCpu = resolved.tier === 'matting';
+        // BiRefNet 一律走 CPU。这不是保守选择，是实测结论：
+        //
+        //   lite 权重(214MB)  DML 4.5s / 占 4808MiB   CPU 3.756s / 占 34MiB
+        //   matting(928MB)    DML 19.1s / 占 4017MiB  CPU 16.3s  / 占 158MiB
+        //
+        // 显存空闲时两者速度本就接近，而 DML 要吃掉近 5GB——这些几乎全是
+        // 1024x1024 的中间激活，与权重大小无关（214MB 和 928MB 占用一样多）。
+        // 显存一旦被占满，DML 开始往共享内存换页，lite 单次直接掉到 12.9s，
+        // 比 CPU 慢 3.4 倍。真机 RTX 3060 Ti 8GB 已实测到专用显存打满并溢出。
+        //
+        // 只改这一个会话的 provider，不动 this.activeExecutionProvider——
+        // SAM 与 GroundingDINO 占用小、受益大，继续留在 GPU 上。
+        const forceCpu = true;
 
         try {
-            const providerName = forceCpu ? 'CPU(matting 固定)' : this.activeExecutionProvider.toUpperCase();
+            const providerName = forceCpu ? 'CPU(BiRefNet 固定)' : this.activeExecutionProvider.toUpperCase();
             console.log(`[MattingService] 正在加载 BiRefNet 模型 (${providerName})...`);
             const startTime = Date.now();
             
@@ -3478,14 +3486,15 @@ export class MattingService {
             this.resolveBiRefNetTier(this.config.defaultQuality)
         );
         
-        // 尝试加载 YOLO-World（可选）
-        const yoloLoaded = await this.loadYoloWorldModel();
-        
+        // 不再预加载 YOLO-World。语义定位早已改用 GroundingDINO，YOLO-World
+        // 现在只剩 shape-morphing 一处使用，而 detectWithYoloWorld 自带懒加载
+        // （yoloWorldSession 为空时会自行加载）。预加载只是让它白占一份显存——
+        // 真机日志显示每轮抠图都在加载它，而整条抠图链路根本不调用它。
         if (birefnetLoaded) {
             const gpuInfo = this.gpuStatus.available 
                 ? `[${this.gpuStatus.provider.toUpperCase()}]` 
                 : '[CPU]';
-            console.log(`[MattingService] ✅ 模型初始化完成 ${gpuInfo}: BiRefNet${yoloLoaded ? ' + YOLO-World' : ''}`);
+            console.log(`[MattingService] ✅ 模型初始化完成 ${gpuInfo}: BiRefNet`);
         }
         
         return birefnetLoaded;
