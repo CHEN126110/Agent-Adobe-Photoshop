@@ -68,8 +68,12 @@ import { setupIPCHandlers, IPCContext } from './ipc-handlers';
 import { registerEarlyStateStoreHandlers } from './ipc-handlers/early-state-handlers';
 import { registerUXPHandlers, UXPContext } from './uxp-handlers';
 import { cleanupStreams } from './ipc-handlers/stream-handlers';
-import { CODEX_SUBSCRIPTION_PROVIDER } from '../shared/codex-subscription-contract';
+import {
+    CODEX_SUBSCRIPTION_PROVIDER,
+    isCodexSubscriptionModelId
+} from '../shared/codex-subscription-contract';
 import { getDynamicModels, setDynamicModels } from '../shared/config/dynamic-model-registry';
+import { normalizeModelPreferences } from '../shared/config/models.config';
 import { resolvePersistedModelRuntimeState } from '../shared/config/persisted-model-runtime';
 import {
     buildDebugBridgeChatExecutionFailure,
@@ -1052,6 +1056,9 @@ async function initializeServices(): Promise<void> {
     // renderer Zustand Store 是模型偏好的持久化 owner。主进程在任何资源 IPC 可达前
     // 直接读取同一份快照，并先恢复持久化动态目录；不再等待 App 挂载后的延迟推送。
     setDynamicModels(persistedModelRuntime.dynamicModels);
+    const restoredModelPreferences = normalizeModelPreferences(
+        persistedModelRuntime.modelPreferences
+    );
     logService.logAgent(
         'info',
         `[Main] Restored model runtime from ${persistedModelRuntime.source}: `
@@ -1116,7 +1123,14 @@ async function initializeServices(): Promise<void> {
             '[Main] Isolated debug runtime is using the normal secure ChatGPT subscription session without copying credentials'
         );
     }
-    await hydrateCodexSubscriptionModels();
+    if (isCodexSubscriptionModelId(restoredModelPreferences.primaryModel)) {
+        await hydrateCodexSubscriptionModels();
+    } else {
+        logService.logAgent(
+            'info',
+            '[Main] Skipped Codex subscription bootstrap because the persisted Agent model uses another provider'
+        );
+    }
 
     // Claude 订阅：Agent SDK 内嵌运行时，凭据由官方运行时自管（终端 /login），主进程不经手。
     claudeSubscriptionService = new ClaudeSubscriptionService();
@@ -1158,7 +1172,7 @@ async function initializeServices(): Promise<void> {
     // 任务协调器（管理 Agent 任务的调度与执行）
     taskOrchestrator = new TaskOrchestrator(
         modelService,
-        persistedModelRuntime.modelPreferences || undefined
+        restoredModelPreferences
     );
     logService.logAgent(
         'info',

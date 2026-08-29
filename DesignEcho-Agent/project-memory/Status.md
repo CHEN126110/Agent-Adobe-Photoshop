@@ -2,6 +2,15 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-108 非 Codex 模型启动惰性化
+
+- 普通 DeepSeek Runtime PID 36604 在应用启动后自动出现 model-bridge `codex.exe app-server`；源码定位到 Main 无条件 `hydrateCodexSubscriptionModels()` 与 Renderer 无条件 `scheduleHydration(0)`。目录状态检查会调用 `getStatus()`，从而执行 `ensureStarted()`；这不是 Codex 模型请求，但会让非 Codex 用户承担未使用进程成本。
+- 共享订阅契约现唯一拥有 `codex-subscription-` 模型 ID 前缀与识别；Main 只为持久化 Codex 主模型做启动恢复，Renderer 只为当前 Store 的 Codex 主模型恢复。设置页、登录 /退出、目录、订阅对话与订阅生图 IPC 未删除，仍在显式使用时按需启动。
+- Agent /UXP clean install 与 `npm ls --all` 通过；模型用途、Main /Renderer 类型、设计作者权、业务边界、Runtime declaration、简化棘轮、preload、Main runtime deps 与 Agent production build 通过。
+- 无凭据同构双启动已通过：`primaryModel /visualModel=deepseek-v4-flash-vision-exp` 的隔离窗口六端口齐全、8 秒后 D-108 路径下 Codex 进程 0；显式 `codex-subscription-gpt-5-6-sol` 窗口六端口齐全并启动 1 个受限 model-bridge 进程。两次均为 fake model /fake Photoshop，未发送聊天、未调用模型或 Tool。
+- 当前只证明避免一个未使用进程，未建立启动耗时或内存改善分布。普通 PID 36604 仍加载旧构建并保留旧子进程；D-108 未停止它、改正常 state、读取 Key 内容或触碰 Photoshop。
+- 项目记忆与快速治理通过，提交前唯一完整核心 63/63 通过；独立提交与 exact clean packaged identity 尚待收口。
+
 ## 2026-08-29 D-107 OpenAI 7 /Zod 4 兼容客户端迁移
 
 - OpenAI SDK 已从 lock 4.104.0 升到 7.8.0；根 Zod 保持 4.4.3，旧 OpenAI→Zod override 删除。ws 从 8.18 线升到 8.21.3 满足 SDK peer，新增 undici 7.29.0 作为 OpenAI 7 Fetch proxy dispatcher；正式模型没有改成 OpenAI /Codex。
@@ -9,7 +18,7 @@
 - Agent /UXP clean install、双方 `npm ls --all` 0 problems与依赖完整性 591/591、148/148 通过；本地真实代理隧道覆盖普通 /SSE Tool Call、DeepSeek thinking /reasoning、cache usage 尾块、timeout /abort和 peer /override 边界。
 - 模型用途、Agent Context、设计作者权、Runtime declaration、Main runtime deps、Main /Renderer 类型、preload sandbox 和 Agent production build通过。真实最小 DeepSeek exact-model canary 用 SDK 7.8.0 在 756ms 返回 telemetryProbe，311 input /38 output、Tool 执行 0；normal primary /visual 仍为 `deepseek-v4-flash-vision-exp`，Key 只输出存在性。
 - dirty D-107 app.asar 已在独立 userData /34765～34769 /CDP 49226 启动，Renderer sandbox、preload、MCP 和 artifactsVerified 通过；真实 UXP 未连接。隔离进程、端口和临时验证数据已清理。
-- Agent audit 为 37 项（2 low /5 moderate /27 high /3 critical），生产视图 17 项（1 low /4 moderate /11 high /1 critical）；相对 D-106 各减少 1 个 high，R-054 仍未关闭。提交前唯一完整核心闸门已 63/63 通过；不重复运行，提交后只复验 clean identity。
+- Agent audit 为 37 项（2 low /5 moderate /27 high /3 critical），生产视图 17 项（1 low /4 moderate /11 high /1 critical）；相对 D-106 各减少 1 个 high，R-054 仍未关闭。唯一完整核心 63/63、独立提交 `f3742497`、Agent /UXP clean identity 与 exact clean app.asar 已完成。
 - 默认端口仍由普通 PID 36604 占用。D-107 没有停止应用、改正常 state、调用 Codex /Smile、执行 Tool 或写 Photoshop；Xiaomi /Smile /OpenAI 官方真实上游与 DeepSeek 图像输入仍未验证。
 
 ## 2026-08-29 D-106 Electron 44 Runtime 与打包启动

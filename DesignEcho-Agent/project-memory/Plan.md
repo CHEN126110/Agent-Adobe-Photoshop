@@ -1,6 +1,6 @@
 # Current Implementation Plan
 
-## 2026-08-29 唯一当前顺序：`D-095～D-106（已完成）→ D-107 OpenAI/Zod（63/63 已通过，提交 /clean identity 收口中）→ [默认端口释放则 r32；否则 Volcengine 安全切片] → r33 → D-102 /D-103 真机复验`
+## 2026-08-29 唯一当前顺序：`D-095～D-107（已完成）→ D-108 非 Codex 启动惰性化（63/63 已通过，提交 /clean identity 收口中）→ [默认端口释放则 r32；否则 Volcengine 安全切片] → r33 → D-102 /D-103 真机复验`
 
 本节是当前唯一实施优先级；下方旧日期段只保留历史上下文，不再拥有“当前主线”权力。
 
@@ -34,10 +34,11 @@
 28. `[D-104 工程验证完成 / 独立 worktree]`：祖先提交 `5c1bc06d` 的 Anthropic peer 迁移已在无 junction 的新工作树完成 Agent /UXP `npm ci`、双方 `npm ls --all` 0 problems、依赖完整性 636/636 与 148/148、Agent /UXP production build、UXP 全测试、唯一一次完整核心闸门 60/60 与独立状态提交。首次 Windows 安装只留下 macOS optional `dmg-license` 空残壳，已由 `npm prune` 清理；package /lock /source 零改动，动态安全债务已进入 R-054 并保持未修复状态。
 29. `[D-105 工程证据与独立状态提交完成 / 独立 worktree]`：当前主链祖先 `acd53530 /0fa91c6f` 的 Smile 对话与图像 Provider 已完成用途 /单模型路由、独立 Key、图像协议、取消 /错误 /收据、OpenRouter 相邻回归和核心文件 parity 验证；正常用户状态仍以 DeepSeek `deepseek-v4-flash-vision-exp` 为唯一正式 Agent 模型。D-105 不执行付费请求，不把 Smile 变成 fallback，不夹带 R-054 依赖升级；同源码的 D-104 独立安装、两端构建和核心 60/60 证据继续有效，本 docs-only 切片只运行相称治理检查。
 30. `[D-106 Electron Runtime 已完成 / 6a37acb9]`：Electron 28.3.3 /Node 18 已迁移到 Electron 44.0.0 /Node 24.18.1；ClipboardItem /sRGB、显式官方二进制安装、Main runtime manifest、clean install、62/62、Agent /UXP clean identity 与 exact clean app.asar 启动均闭合。默认用户 Runtime /Photoshop 未触碰。
-31. `[D-107 OpenAI/Zod 代码 /clean install /本地代理 /真实 DeepSeek /dirty app.asar /完整核心 63/63 已通过，提交收口中]`：OpenAI 7.8.0 正式支持 Zod 4，旧 override 已删除；ws 8.21.3 满足 peer并清除自身 finding，undici ProxyAgent 替代已删除的 `httpAgent`。无凭据协议测试与最小真实 DeepSeek exact-model Tool stream 通过；下一步只做独立提交和 clean identity，不重复完整核心。
-32. `[默认端口释放即优先完成 r32 reconciliation]`：r32 fixture 设计文档已经关闭，但用户普通 DesignEcho PID 36604 当前占用默认端口且未绑定 r32；既有用户 Photoshop 现场仍不可抢占。待端口自然释放后用 D-097 clean Debug Runtime 完成唯一 reconciliation，不移动账本或跳过 `unreconciled_live_attempt_exists`。
-33. `[待完成 r33]`：对账后使用已冻结的全新 r33 fixture，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；验证 D-095 正确首写恢复、D-096 loader 互斥、D-097 Final Judge 完整终态、外部 dirty 文档零改动与同 revision PSD/JPG。
-34. `[条件后置]`：r33 技术成功后，先用 D-102 exact clean Agent /UXP build 复跑固定语义抠图案例，再用 D-103 exact clean build 分别验证 Provider 与真实面板按钮链；姿态商业视觉验收等待符合适用范围的自然弯曲单袜。随后对 D-100 候选逐条 A/B，并用 D-099 /D-101 真实证据治理性能，不通过减少必要观察换速度。
+31. `[D-107 OpenAI/Zod 已完成 / f3742497]`：OpenAI 7.8.0 正式支持 Zod 4，旧 override 已删除；ws 8.21.3 满足 peer并清除自身 finding，undici ProxyAgent 替代已删除的 `httpAgent`。无凭据协议、最小真实 DeepSeek exact-model Tool stream、完整核心 63/63、Agent /UXP clean identity 与 exact clean app.asar 均已闭合。
+32. `[D-108 非 Codex 启动惰性化代码 /双向进程 canary /production build /完整核心 63/63 已通过，提交收口中]`：Main /Renderer 只在当前主模型为 `codex-subscription-*` 时启动恢复目录；DeepSeek 无凭据隔离启动为 0 个 Codex 进程，显式订阅模型为 1 个受限 model-bridge 进程。正式模型仍是 DeepSeek；下一步只做独立提交和 clean packaged identity。
+33. `[默认端口释放即优先完成 r32 reconciliation]`：r32 fixture 设计文档已经关闭，但用户普通 DesignEcho PID 36604 当前占用默认端口且未绑定 r32；既有用户 Photoshop 现场仍不可抢占。待端口自然释放后用 D-097 clean Debug Runtime 完成唯一 reconciliation，不移动账本或跳过 `unreconciled_live_attempt_exists`。
+34. `[待完成 r33]`：对账后使用已冻结的全新 r33 fixture，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt；验证 D-095 正确首写恢复、D-096 loader 互斥、D-097 Final Judge 完整终态、外部 dirty 文档零改动与同 revision PSD/JPG。
+35. `[条件后置]`：r33 技术成功后，先用 D-102 exact clean Agent /UXP build 复跑固定语义抠图案例，再用 D-103 exact clean build 分别验证 Provider 与真实面板按钮链；姿态商业视觉验收等待符合适用范围的自然弯曲单袜。随后对 D-100 候选逐条 A/B，并用 D-099 /D-101 真实证据治理性能，不通过减少必要观察换速度。
 
 ## 2026-08-28 已完成前置里程碑：`DESIGN-RELIABILITY-TERMINAL-TRUTH-001`
 

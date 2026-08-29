@@ -1,5 +1,50 @@
 # Current Task
 
+## 2026-08-29 CODEX-RUNTIME-LAZY-START-108：DeepSeek 启动不再预热未使用的 Codex Runtime
+
+### 目标
+
+1. 正式 Agent 模型继续固定为 `deepseek-v4-flash-vision-exp`；当持久化主模型不是 ChatGPT 订阅模型时，DesignEcho 启动不得仅为恢复未使用目录而拉起 bundled `codex.exe app-server`。
+2. 保留 ChatGPT 订阅能力：持久化主模型明确为 `codex-subscription-*`，或用户显式打开订阅设置、登录、列模型、调用订阅对话 /生图时，原有窄 IPC 与 App Server Client 仍按需启动。
+3. 用同一 dirty build 的无凭据 DeepSeek /Codex 双启动证伪，区分“进程启动”与“模型调用”；本切片不删除 Provider、不更改凭据、不调用 Codex 模型或 Photoshop。
+
+### 当前事实
+
+- 普通用户 Runtime PID 36604 持久化正式模型是 DeepSeek，但启动 21 秒后出现 `codex.exe app-server --stdio`；根因是 Main 在恢复任意 Provider 后无条件 `await hydrateCodexSubscriptionModels()`，Renderer `App` 也无条件 `scheduleHydration(0)`。目录恢复最终调用 `getStatus()`，而 `getStatus()` 会 `ensureStarted()`。
+- 普通 Runtime 当前还有第二个 image-generation Codex app-server，但其启动时间晚 4 分 51 秒，属于后续显式能力使用，不是本次启动预热 owner。D-108 只治理 model-bridge 冷启动，不把订阅生图删除或改成 DeepSeek。
+- `codex-subscription-contract.ts` 现拥有唯一 `codex-subscription-` 模型 ID 前缀与识别函数；模型 ID 构造器、Main 和 Renderer 共用该语义，不在两个入口复制字符串正则。
+- Main 只有在持久化 `primaryModel` 为 Codex 订阅模型时启动恢复目录；Renderer 只有在当前 Store `primaryModel` 为 Codex 订阅模型时注册启动恢复。设置页卡片、登录状态事件、`listModels`、订阅对话和订阅生图仍保留原有显式按需入口。
+- clean install 后 Agent /UXP `npm ls --all` 均 exit 0；模型用途 /单模型、Main /Renderer 类型、设计作者权、业务边界、Runtime declaration、简化棘轮、preload 与 production build 已通过。
+- 同一 dirty D-108 build、fake model /fake Photoshop、无真实 Key 的隔离双启动：精确 DeepSeek `primaryModel /visualModel` 启动六端口并稳定 8 秒，D-108 工作树下 `codex.exe` 为 0；显式 `codex-subscription-gpt-5-6-sol` 启动同样六端口并出现 1 个受限 model-bridge app-server。两次都未发送聊天或模型请求。
+
+### 实施边界
+
+- 不改变 `primaryModel /visualModel`，不新增跨 Provider fallback；DeepSeek 仍是唯一正式 Agent 模型。
+- 不删除 ChatGPT 订阅 Provider、设置卡、登录、目录、对话或生图功能；只取消与当前模型无关的启动期预热。
+- 不把“0 个 Codex 进程”外推成启动总耗时或内存已经改善；本轮尚未做稳定性能分布，只证明少启动一个未使用进程。
+- 不停止普通 PID 36604 或它的既有子进程，不占用默认端口，不读取 /复制 /修改正常 Key，不连接真实 Photoshop。
+
+### 下一步
+
+1. [已完成] 共享 Codex 模型身份、Main /Renderer 条件恢复和现有模型路由回归已实现。
+2. [已完成] 两仓 clean install、专项 /类型 /production build与 DeepSeek 0 进程、显式 Codex 1 进程双启动证据已取得。
+3. [已完成] 更新项目记忆、运行快速治理与提交前唯一完整 `maintenance:validate`；63/63 通过。
+4. [进行中] 形成独立 D-108 提交并复验 clean Agent /UXP identity 与 exact clean packaged DeepSeek runtime；不重复完整核心。
+5. [后续] 普通用户下次自然重启加载 D-108 后，再确认 DeepSeek 正常状态没有 Codex model-bridge 子进程；当前旧 PID 不为验证而强停。
+6. [后续独立] 默认端口若仍占用则进入 Volcengine /protobuf /axios 安全切片；端口自然释放则先完成 r32 reconciliation。
+
+### 验证与未知
+
+- 已验证：纯身份判定、冷启动调用点、显式入口保留、无凭据双启动进程树、Renderer /MCP 启动和既有模型 /作者权 /Runtime 边界。
+- 未验证：正常用户窗口重启后的实际进程树、稳定启动耗时 /内存差值、已登录 Codex 目录内容、真实订阅对话 /生图、真实 Photoshop 和设计质量。
+- 普通 PID 36604 仍运行旧构建并保留既有 Codex 子进程；这是未加载新代码，不是 D-108 隔离 canary 失败。
+
+### 状态
+
+in_progress / code_complete / shared_codex_model_identity_passed / main_and_renderer_lazy_bootstrap_passed / deepseek_zero_codex_process_canary_passed / explicit_codex_single_process_canary_passed / clean_installs_and_focused_regressions_passed / production_build_passed / full_core_validation_63_passed / independent_commit_and_clean_packaged_identity_pending / deepseek_selection_unchanged / no_model_request / no_photoshop_write
+
+---
+
 ## 2026-08-29 OPENAI-SDK-ZOD-MIGRATION-107：兼容客户端升级与 override 退役
 
 ### 目标
@@ -33,7 +78,7 @@
 1. [已完成] OpenAI 7 /ws /undici package 与 lock、Zod override 删除、Fetch dispatcher 适配和可复用本地协议测试已实现。
 2. [已完成] clean install /npm ls /依赖完整性、SDK 代理协议、模型用途 /上下文 /作者权 /Runtime 回归、类型 /production build、真实最小 DeepSeek 与 dirty app.asar 启动已通过。
 3. [已完成] 更新 CurrentTask /Plan /Status /Risks /project-state，运行规划 /JSON /编码 /入口 /变更边界快速检查，并执行提交前唯一一次完整 `maintenance:validate`；63/63 通过。
-4. [进行中] 形成独立 D-107 提交，随后只重建并复验 clean Agent /UXP identity 与 exact clean app.asar；不重复完整核心闸门。
+4. [已完成] 独立提交 `f3742497`、Agent `designecho-f3742497d234-594777a23c36`、UXP `designecho-uxp-production-f3742497d234-cb76a9e9c3fe` 与 exact clean app.asar 均已复验；`gitDirty=false / artifactsVerified=true`。
 5. [后续独立] 按生产可达性治理 Volcengine /protobuf /axios；sharp 与其图像链另片；electron-builder 和 Agent /UXP 构建链最后独立升级。
 6. [外部现场] 默认端口自然释放后仍优先完成 r32 reconciliation，再以 D-097 运行 r33；D-107 不抢占 Photoshop 真机顺序。
 
@@ -45,7 +90,7 @@
 
 ### 状态
 
-in_progress / code_complete / openai_7_zod_4_declared_compatibility_passed / override_removed / undici_proxy_transport_passed / clean_installs_and_dependency_graph_passed / focused_model_and_runtime_regressions_passed / minimal_live_deepseek_tool_stream_passed / production_build_and_dirty_packaged_startup_passed / full_core_validation_63_passed / independent_commit_and_clean_identity_pending / deepseek_selection_unchanged / no_photoshop_write
+validated / code_complete / openai_7_zod_4_declared_compatibility_passed / override_removed / undici_proxy_transport_passed / clean_installs_and_dependency_graph_passed / focused_model_and_runtime_regressions_passed / minimal_live_deepseek_tool_stream_passed / production_build_and_exact_clean_packaged_startup_passed / full_core_validation_63_passed / independent_commit_f3742497_complete / deepseek_selection_unchanged / no_photoshop_write
 
 ---
 

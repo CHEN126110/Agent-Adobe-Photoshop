@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-29 OPENAI-SDK-ZOD-MIGRATION-107：在 Electron 44 /Node 24 基线上升级 OpenAI-compatible SDK，删除未声明的 Zod override，迁移代理传输并证明 DeepSeek V4 Flash Vision 仍是唯一正式 Agent 模型。",
-  "currentMilestone": "OPENAI-SDK-ZOD-MIGRATION-107",
-  "milestoneStatus": "code_complete_openai_7_zod_4_declared_compatibility_passed_override_removed_undici_proxy_transport_passed_clean_installs_and_dependency_graph_passed_focused_model_and_runtime_regressions_passed_minimal_live_deepseek_tool_stream_passed_production_build_and_dirty_packaged_startup_passed_full_core_validation_63_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_photoshop_write",
+  "currentFocus": "2026-08-29 CODEX-RUNTIME-LAZY-START-108：当正式 Agent 模型为 DeepSeek 或其它非 Codex Provider 时，不在应用启动期拉起未使用的 Codex model-bridge Runtime；显式订阅能力保持按需可达。",
+  "currentMilestone": "CODEX-RUNTIME-LAZY-START-108",
+  "milestoneStatus": "code_complete_shared_codex_model_identity_passed_main_and_renderer_lazy_bootstrap_passed_deepseek_zero_codex_process_canary_passed_explicit_codex_single_process_canary_passed_clean_installs_and_focused_regressions_passed_production_build_passed_full_core_validation_63_passed_independent_commit_and_clean_packaged_identity_pending_deepseek_selection_unchanged_no_model_request_no_photoshop_write",
   "verified": {
     "code": [
+      "Codex Runtime lazy startup D-108 (2026-08-29): the normal DeepSeek runtime exposed a preexisting unconditional startup cost because Main and Renderer both hydrated the ChatGPT subscription catalog, whose status read starts the bundled app-server. One shared subscription model-id identity now guards both startup consumers while settings, login, catalog, chat and image IPC remain on-demand. Clean installs, model routing, types, authorship/business/runtime/simplification/preload checks, production build and the single 63-stage core gate passed. Credential-free same-build canaries showed exact DeepSeek primary/visual with zero D-108 codex.exe children, while an explicit codex-subscription model started exactly one restricted model-bridge process; neither canary sent a model request or touched Photoshop. Commit and clean packaged identity remain pending.",
       "Smile Provider closure D-105 (2026-08-29): the existing conversation Provider acd53530 and image Provider 0fa91c6f remain independent ancestors of the current chain. Current model-usage and single-model routing tests prove Smile image models stay out of conversation candidates, conversation models do not receive implicit vision or Tool Calling, missing keys fail explicitly and no cross-model fallback is created. The image-provider suite proves independent Smile/OpenRouter credentials, exact supported models, pre-request rejection, Gemini and GPT Image 2 protocol shapes, cancellation, HTTPS/result budgets, batch error provenance and actual output dimensions; the adjacent OpenRouter suite also passed. The three Smile image core/test files are byte-identical to 0fa91c6f. No Provider or production code changed and no paid request ran.",
       "Dependency closure D-104 (2026-08-29): the existing 5c1bc06d Anthropic peer migration is already an independent ancestor of D-103 and was revalidated in a new worktree without a node_modules junction. Agent and UXP npm ci completed; one Windows cleanup residue for the macOS-only optional dmg-license package was removed by npm prune; both npm ls --all graphs then exited 0 with zero problems. Installed Anthropic SDK 0.122.0, Claude Agent SDK 0.3.241 and Zod 4.4.3 satisfy the declared peers. Agent/UXP builds and the one ordered 60-stage core gate passed. No package, lock, Provider, model, Prompt or Photoshop code changed. Dynamic security findings remain a separate recorded risk rather than being hidden by the install result.",
       "SKU pose integration D-103 (2026-08-29): the isolated capability was ported onto D-102 as three independent rollback commits: a pure deterministic no-side-effect geometry and sku-pose-alignment-report/v1 core, a document/history/layer-bound versioned Provider with one PhotoshopTransactionRunner-owned mutation and readback receipts, and a WebView/panel caller that exposes only Provider-effective parameters. Internal capture/apply tools remain outside the ordinary Agent surface. Dependency integrity, algorithm/Provider/panel tests, all UXP tests, 181-Tool and design-authorship audits, business/executor/semantic-dispatch/change boundaries, Main/Renderer typechecks, Agent/UXP production builds and the one ordered 60-stage core gate passed. Exact D-103 Photoshop runs remain pending; D-097 is unchanged for r33.",
@@ -333,36 +334,34 @@
     ]
   },
   "activeRequest": {
-    "id": "OPENAI-SDK-ZOD-MIGRATION-107",
-    "summary": "Upgrade the OpenAI-compatible JavaScript client to supported OpenAI SDK 7 on the Electron 44/Node 24 baseline, remove the undeclared Zod override, migrate proxy transport to an undici dispatcher, and prove the exact DeepSeek model remains the sole formal Agent model.",
-    "status": "code_complete_openai_7_zod_4_declared_compatibility_passed_override_removed_undici_proxy_transport_passed_clean_installs_and_dependency_graph_passed_focused_model_and_runtime_regressions_passed_minimal_live_deepseek_tool_stream_passed_production_build_and_dirty_packaged_startup_passed_full_core_validation_63_passed_independent_commit_and_clean_identity_pending_deepseek_selection_unchanged_no_photoshop_write",
+    "id": "CODEX-RUNTIME-LAZY-START-108",
+    "summary": "Prevent DeepSeek and other non-Codex Agent configurations from starting the bundled Codex model-bridge app-server during application bootstrap, while preserving explicit ChatGPT subscription settings, login, catalog, chat and image-generation entry points.",
+    "status": "code_complete_shared_codex_model_identity_passed_main_and_renderer_lazy_bootstrap_passed_deepseek_zero_codex_process_canary_passed_explicit_codex_single_process_canary_passed_clean_installs_and_focused_regressions_passed_production_build_passed_full_core_validation_63_passed_independent_commit_and_clean_packaged_identity_pending_deepseek_selection_unchanged_no_model_request_no_photoshop_write",
     "mustDo": [
-      "Upgrade OpenAI SDK to the current stable 7.x line on Node 22/24 and remove the OpenAI-to-Zod override now that upstream officially supports Zod 4.",
-      "Satisfy the OpenAI 7 ws and undici peers without changing the formal Agent model or introducing a second transport owner.",
-      "Replace the removed httpAgent option with the existing network-proxy owner's undici dispatcher while preserving Axios and raw HTTP proxy behavior.",
-      "Verify local proxy routing, DeepSeek extensions, Tool Calls, streaming cache usage, timeout and abort with a reusable credential-free test.",
-      "Run the focused model/context/authorship/runtime suites, production build, a minimal exact-model DeepSeek canary and isolated app.asar startup.",
-      "Run one pre-commit full core gate, create an independent D-107 commit and rebuild a clean packaged runtime identity before the next dependency owner."
+      "Keep deepseek-v4-flash-vision-exp as the exact primary and legacy visual mirror without adding a Codex or cross-provider fallback.",
+      "Use one shared Codex subscription model-id identity for Main and Renderer startup decisions.",
+      "Skip startup catalog hydration for non-Codex primary models while retaining explicit settings, login, catalog, chat and image-generation IPC paths.",
+      "Prove the same credential-free build starts zero Codex processes for an exact DeepSeek state and one restricted model-bridge process for an explicit Codex subscription state.",
+      "Run focused model/runtime/ownership checks, production build, one full core gate, an independent commit and exact clean packaged-runtime verification."
     ],
     "mustNotDo": [
-      "Do not change primaryModel or visualModel away from deepseek-v4-flash-vision-exp or add OpenAI, Codex, Smile or cross-provider fallback.",
-      "Do not print, copy or persist a credential in tests; the only live request may read the existing DeepSeek key in process and report presence only.",
-      "Do not upgrade Volcengine, axios, protobuf, sharp, electron-builder, Vite, PostCSS or UXP dependencies in D-107.",
-      "Do not treat local protocol fixtures, one live Tool Call or fake Photoshop as vision, full Agent, Photoshop E2E or design-quality proof.",
-      "Do not occupy default ports, reuse normal userData, stop PID 36604, or save, close, discard or modify any Photoshop document.",
-      "Do not claim R-054 is closed while Provider, image and build-chain high or critical findings remain."
+      "Do not remove or disable the ChatGPT subscription Provider or image-generation capability.",
+      "Do not infer startup time or memory improvement from process count alone.",
+      "Do not send a Codex model request, reuse normal subscription credentials or print any key or token.",
+      "Do not stop PID 36604 or its existing children merely to demonstrate the fix.",
+      "Do not occupy default ports or save, close, discard or modify any Photoshop document."
     ]
   },
   "activePlan": {
-    "id": "OPENAI-SDK-ZOD-MIGRATION-107",
+    "id": "CODEX-RUNTIME-LAZY-START-108",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：OpenAI 7、ws、undici package/lock，删除 Zod override并迁移 Fetch dispatcher。",
-      "已完成：clean install、peer/runtime dependency、无凭据本地代理与现有模型/作者权/Runtime 回归。",
-      "已完成：类型/production build、最小真实 exact-model DeepSeek Tool stream 和 dirty app.asar 隔离启动。",
+      "已完成：共享 Codex 模型身份和 Main /Renderer 条件启动恢复。",
+      "已完成：clean install、模型 /类型 /作者权 /Runtime /简化回归和 production build。",
+      "已完成：无凭据 DeepSeek 0 Codex 进程与显式订阅模型 1 model-bridge 进程双向 canary。",
       "已完成：项目记忆、快速治理与提交前唯一完整核心 63/63。",
-      "进行中：独立提交与 clean Agent /UXP /app.asar identity；不重复完整核心。",
-      "后续：默认端口释放优先完成 r32；否则按 owner 进入 Volcengine/protobuf/axios 安全切片。"
+      "进行中：独立提交与 clean Agent /UXP /packaged identity；不重复完整核心。",
+      "后续：普通用户自然重启后复核进程树；默认端口释放优先 r32，否则进入 Volcengine 安全切片。"
     ]
   },
   "convergenceBaseline": {

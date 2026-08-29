@@ -13,6 +13,7 @@ import { useAppStore, EcommerceProjectStructure, type ProjectInfo } from './stor
 import { createDesignLearningRuntimeEntryController } from './services/design-learning-runtime-entry.service';
 import { installManualSkuColorCardBridge } from './services/manual-sku-color-card-bridge';
 import { canonicalizeProjectSession } from './services/project-session-identity';
+import { isCodexSubscriptionModelId } from '../shared/codex-subscription-contract';
 import { normalizeModelPreferences } from '../shared/config/models.config';
 
 const DesignAgentWorkbench = lazy(() =>
@@ -81,10 +82,12 @@ function App() {
 
     useEffect(() => installManualSkuColorCardBridge(), []);
 
-    // ChatGPT 订阅目录属于当前登录会话，不能持久化成永久模型配置；但也不能要求用户
-    // 每次重启后先打开设置页。应用启动时从主进程重新验证账户并恢复目录，账户变化时
-    // 由同一入口失效并重取。短暂的 IPC 初始化竞态只重试，不把未知状态写成“未登录”。
+    // ChatGPT 订阅目录属于当前登录会话，不能持久化成永久模型配置。只有当前 Agent
+    // 明确选择 Codex 订阅模型时才在启动期恢复目录；其他 Provider 不应为未使用能力
+    // 拉起 Codex app-server。设置页、登录和显式订阅调用仍通过原 IPC 按需启动。
     useEffect(() => {
+        if (!isCodexSubscriptionModelId(modelPreferences.primaryModel)) return undefined;
+
         let disposed = false;
         let retryTimer: number | null = null;
         let revision = 0;
@@ -163,7 +166,7 @@ function App() {
             if (retryTimer !== null) window.clearTimeout(retryTimer);
             unsubscribe?.();
         };
-    }, [upsertDynamicModels]);
+    }, [modelPreferences.primaryModel, upsertDynamicModels]);
 
     // Claude 订阅模型目录：启动拉一次（覆盖持久化旧条目），主进程完成真实型号解析后再拉一次。
     // 不依赖设置页卡片挂载——用户直接聊天也能拿到带具体型号 id 的最新目录。
