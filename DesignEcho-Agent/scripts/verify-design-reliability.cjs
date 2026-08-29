@@ -589,6 +589,31 @@ function buildPassingObservation() {
 }
 
 async function main() {
+  const loadedSuite = loadSuite();
+  for (const caseSpec of loadedSuite.cases) {
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(caseSpec, "__file"),
+      false,
+      "loadSuite 不能把开发侧文件定位信息混入正式 Case 对象"
+    );
+    assert.strictEqual(
+      validateDesignReliabilityCase(caseSpec).ok,
+      true,
+      "loadSuite 返回的 Case 必须仍能通过正式 Case schema"
+    );
+  }
+  for (const rubric of loadedSuite.rubrics) {
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(rubric, "__file"),
+      false,
+      "loadSuite 不能把开发侧文件定位信息混入正式 Rubric 对象"
+    );
+    assert.strictEqual(
+      validateRubric(rubric).ok,
+      true,
+      "loadSuite 返回的 Rubric 必须仍能通过正式 Rubric schema"
+    );
+  }
   assert.strictEqual(resolveLoopbackDebugBridge("http://127.0.0.1:8767"), "http://127.0.0.1:8767");
   assert.strictEqual(resolveLoopbackDebugBridge("http://localhost:8767/"), "http://localhost:8767");
   assert.strictEqual(resolveLoopbackDebugBridge("http://[::1]:8767"), "http://[::1]:8767");

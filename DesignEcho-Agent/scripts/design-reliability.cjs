@@ -769,7 +769,7 @@ function loadSuite() {
         );
       }
     }
-    cases.push({ ...caseSpec, __file: absolutePath });
+    cases.push(caseSpec);
   }
   const rubrics = [];
   for (const relativePath of manifest.rubrics || []) {
@@ -781,7 +781,7 @@ function loadSuite() {
     const rubric = readJson(absolutePath);
     const validation = validateRubric(rubric);
     if (!validation.ok) validation.errors.forEach((error) => errors.push(`${relativePath}: ${error}`));
-    rubrics.push({ ...rubric, __file: absolutePath });
+    rubrics.push(rubric);
   }
   const caseIds = cases.map((item) => item.caseId);
   if (new Set(caseIds).size !== caseIds.length) errors.push("Case id 重复。");

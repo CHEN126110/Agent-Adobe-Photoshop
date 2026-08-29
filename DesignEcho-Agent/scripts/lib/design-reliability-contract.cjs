@@ -655,16 +655,11 @@ function cloneJson(value) {
 function buildCaseDigest(caseSpec) {
   const digestInput = cloneJson(caseSpec);
   delete digestInput.caseDigest;
-  // `loadSuite()` attaches this development-only locator after the persisted
-  // Case has already been validated. It is not part of the Case contract and
-  // must never make the same Case acquire a machine-specific digest.
-  delete digestInput.__file;
   return sha256Text(stableStringify(digestInput));
 }
 
 function buildRubricDigest(rubric) {
   const digestInput = cloneJson(rubric);
-  delete digestInput.__file;
   return sha256Text(stableStringify(digestInput));
 }
 
