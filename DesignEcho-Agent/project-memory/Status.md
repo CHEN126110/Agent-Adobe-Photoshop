@@ -2,6 +2,16 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-107 OpenAI 7 /Zod 4 兼容客户端迁移
+
+- OpenAI SDK 已从 lock 4.104.0 升到 7.8.0；根 Zod 保持 4.4.3，旧 OpenAI→Zod override 删除。ws 从 8.18 线升到 8.21.3 满足 SDK peer，新增 undici 7.29.0 作为 OpenAI 7 Fetch proxy dispatcher；正式模型没有改成 OpenAI /Codex。
+- 原 `httpAgent` 不再传入 OpenAI 7。现有 network-proxy owner 继续提供 Axios Node Agent，同时共享一个 undici ProxyAgent 给 ModelService 的 OpenAI /Xiaomi /DeepSeek /Smile 客户端和 DeepSeek 连通测试；没有新增第二代理配置或 transport Runtime。
+- Agent /UXP clean install、双方 `npm ls --all` 0 problems与依赖完整性 591/591、148/148 通过；本地真实代理隧道覆盖普通 /SSE Tool Call、DeepSeek thinking /reasoning、cache usage 尾块、timeout /abort和 peer /override 边界。
+- 模型用途、Agent Context、设计作者权、Runtime declaration、Main runtime deps、Main /Renderer 类型、preload sandbox 和 Agent production build通过。真实最小 DeepSeek exact-model canary 用 SDK 7.8.0 在 756ms 返回 telemetryProbe，311 input /38 output、Tool 执行 0；normal primary /visual 仍为 `deepseek-v4-flash-vision-exp`，Key 只输出存在性。
+- dirty D-107 app.asar 已在独立 userData /34765～34769 /CDP 49226 启动，Renderer sandbox、preload、MCP 和 artifactsVerified 通过；真实 UXP 未连接。隔离进程、端口和临时验证数据已清理。
+- Agent audit 为 37 项（2 low /5 moderate /27 high /3 critical），生产视图 17 项（1 low /4 moderate /11 high /1 critical）；相对 D-106 各减少 1 个 high，R-054 仍未关闭。提交前唯一完整核心闸门已 63/63 通过；不重复运行，提交后只复验 clean identity。
+- 默认端口仍由普通 PID 36604 占用。D-107 没有停止应用、改正常 state、调用 Codex /Smile、执行 Tool 或写 Photoshop；Xiaomi /Smile /OpenAI 官方真实上游与 DeepSeek 图像输入仍未验证。
+
 ## 2026-08-29 D-106 Electron 44 Runtime 与打包启动
 
 - 已结束支持的 Electron 28.3.3 /Node 18.18.2 已在独立 worktree 单变量迁移为 Electron 44.0.0 /Node 24.18.1；OpenAI、Zod override、electron-builder、Volcengine、sharp /ws、Vite 与 UXP 依赖均未升级。
@@ -9,7 +19,7 @@
 - Electron 42+ npm 包不再自动下载二进制。项目 postinstall 已显式运行官方 checksum 安装器再执行现有 ONNX CRT 修复；无 junction clean install 后 Agent /UXP `npm ls --all` 0 problems，依赖完整性为 605/605 与 148/148。
 - 第一次 app.asar 启动在 Main 日志前停住；模块追踪定位到 3 个直接 Main runtime import 只由 electron-builder dev 子树偶然提供。`http-proxy-agent / https-proxy-agent / iconv-lite` 已按原行为版本声明为生产依赖，并新增 17 包 Main runtime import→manifest 审计，避免 source 成功 /package 缺包回归。
 - 同一 electron-builder 24.13.3 已完成 Electron 44 Windows x64 `--dir` 打包。source 与 packaged app 都用独立 userData、端口和 fake Photoshop 启动；打包版从 app.asar 加载 Renderer，六个监听端口、preload sandbox、offset MCP 与 `system.status.artifactsVerified=true` 均通过，测试进程已清理。
-- Main /Renderer /preload、production build、Electron Runtime、debug launcher、clean install 与 pack 均已通过；提交前唯一完整核心闸门 62/62 通过。当前未提交 build identity 正确显示 D-105 commit + dirty，不能冒充 D-106 clean identity，提交后仍需重建并复核。
+- Main /Renderer /preload、production build、Electron Runtime、debug launcher、clean install、pack 与唯一完整核心 62/62 均通过；独立提交 `6a37acb9` 后 Agent `designecho-6a37acb9d67b-fb74b310bbc2`、UXP `designecho-uxp-production-6a37acb9d67b-cb76a9e9c3fe` 均为 clean，exact clean app.asar 再次启动并返回 artifactsVerified。
 - Agent 动态 audit 为 38 项（2 low /5 moderate /28 high /3 critical），生产视图为 18 项（1 low /4 moderate /12 high /1 critical）；R-054 只是 Electron 片部分缓解，OpenAI /Provider /图像 /构建链债务未关闭。
 - 正式模型仍为 `deepseek-v4-flash-vision-exp`。没有读取或修改正常用户 Key，没有占用 8765～8769，没有连接真实 UXP 或执行 Photoshop Tool；macOS /Linux、真实剪贴板用户路径、正常状态启动、NSIS 和自动更新仍未验证。
 

@@ -3,11 +3,13 @@ import type { AxiosRequestConfig } from 'axios';
 import type { Agent as HttpAgent } from 'http';
 import { HttpProxyAgent } from 'http-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { ProxyAgent, type Dispatcher } from 'undici';
 
 type ProxyAgents = {
     proxyUrl: string;
     httpAgent: HttpAgent;
     httpsAgent: HttpAgent;
+    openAiDispatcher: Dispatcher;
 };
 
 type EnvSnapshot = {
@@ -44,8 +46,9 @@ export function getHttpRequestAgent(url: URL): HttpAgent | undefined {
     return url.protocol === 'http:' ? agents.httpAgent : agents.httpsAgent;
 }
 
-export function getOpenAIHttpAgent(): HttpAgent | undefined {
-    return getProxyAgents()?.httpsAgent;
+export function getOpenAIFetchOptions(): { dispatcher: Dispatcher } | undefined {
+    const agents = getProxyAgents();
+    return agents ? { dispatcher: agents.openAiDispatcher } : undefined;
 }
 
 export function applyVolcProxyEnvironment(): EnvSnapshot {
@@ -103,7 +106,8 @@ function getProxyAgents(): ProxyAgents | null {
     cachedAgents = {
         proxyUrl,
         httpAgent: new HttpProxyAgent(proxyUrl) as unknown as HttpAgent,
-        httpsAgent: new HttpsProxyAgent(proxyUrl) as unknown as HttpAgent
+        httpsAgent: new HttpsProxyAgent(proxyUrl) as unknown as HttpAgent,
+        openAiDispatcher: new ProxyAgent(proxyUrl)
     };
     return cachedAgents;
 }

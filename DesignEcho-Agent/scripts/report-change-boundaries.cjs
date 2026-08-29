@@ -303,7 +303,7 @@ const BOUNDARIES = [
     id: 'main-process-infra',
     title: '主进程基础设施',
     validation: ['npm run build:main', 'npm run smoke:stream-adapter:http-errors', 'npm run smoke:chat-ui:electron-bridge'],
-    match: (entry) => /src\/main\/(index|preload)\.ts|src\/main\/config\/network-ports\.ts|src\/main\/ipc-handlers\/(config-handlers|index|websocket-handlers|stream-handlers)\.ts|src\/main\/testing\/|provider-adapters|stream-adapter|smoke-stream-adapter-http-errors|verify-electron-runtime-compatibility/.test(entry.filePath)
+    match: (entry) => /src\/main\/(index|preload)\.ts|src\/main\/config\/network-ports\.ts|src\/main\/ipc-handlers\/(config-handlers|index|websocket-handlers|stream-handlers)\.ts|src\/main\/testing\/|provider-adapters|stream-adapter|smoke-stream-adapter-http-errors|verify-(electron-runtime-compatibility|openai-compatible-sdk)/.test(entry.filePath)
   },
   {
     id: 'uxp-bridge-core',

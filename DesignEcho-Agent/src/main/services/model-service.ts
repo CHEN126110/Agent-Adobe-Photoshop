@@ -45,7 +45,7 @@ import {
 import { extractThinkingFromModel, getThinkingRequestParams } from './thinking-extractor';
 import { getProviderAdapter, readOpenAICompatibleTokenUsage } from './provider-adapters';
 import type { ToolSchema, AdapterMessage, ProviderResponse } from './provider-adapters';
-import { configureProcessProxyFromSystem, getOpenAIHttpAgent } from './network-proxy';
+import { configureProcessProxyFromSystem, getOpenAIFetchOptions } from './network-proxy';
 import type { ProviderNativeToolRequest, ProviderNativeToolCitation } from '../../shared/provider-native-tools';
 import {
     buildProviderNativeToolPlan,
@@ -553,7 +553,8 @@ export class ModelService {
      */
     private initializeClients(): void {
         configureProcessProxyFromSystem();
-        const httpAgent = getOpenAIHttpAgent();
+        const fetchOptions = getOpenAIFetchOptions();
+        const openAITransport = fetchOptions ? { fetchOptions } : {};
 
         this.anthropic = null;
         this.gemini = null;
@@ -574,7 +575,7 @@ export class ModelService {
             this.xiaomi = new OpenAI({
                 apiKey: this.config.xiaomiApiKey,
                 baseURL: 'https://api.xiaomimimo.com/v1',
-                httpAgent,
+                ...openAITransport,
                 timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
                 maxRetries: 0
             });
@@ -583,7 +584,7 @@ export class ModelService {
         if (this.config.openaiApiKey) {
             this.openai = new OpenAI({
                 apiKey: this.config.openaiApiKey,
-                httpAgent,
+                ...openAITransport,
                 timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
                 maxRetries: 0
             });
@@ -593,7 +594,7 @@ export class ModelService {
             this.deepseek = new OpenAI({
                 apiKey: this.config.deepseekApiKey,
                 baseURL: DEEPSEEK_BASE_URL,
-                httpAgent,
+                ...openAITransport,
                 timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
                 maxRetries: 0
             });
@@ -603,7 +604,7 @@ export class ModelService {
             this.smileAi = new OpenAI({
                 apiKey: this.config.smileAiApiKey,
                 baseURL: SMILE_AI_BASE_URL,
-                httpAgent,
+                ...openAITransport,
                 timeout: OPENAI_COMPATIBLE_DEFAULT_TIMEOUT_MS,
                 maxRetries: 0
             });
@@ -1286,7 +1287,7 @@ export class ModelService {
             apiKey: key,
             baseURL: DEEPSEEK_BASE_URL,
             timeout: 30000,
-            httpAgent: getOpenAIHttpAgent()
+            fetchOptions: getOpenAIFetchOptions()
         });
 
         try {

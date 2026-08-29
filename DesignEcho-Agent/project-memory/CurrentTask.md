@@ -1,5 +1,54 @@
 # Current Task
 
+## 2026-08-29 OPENAI-SDK-ZOD-MIGRATION-107：兼容客户端升级与 override 退役
+
+### 目标
+
+1. 在 D-106 Electron 44 /Node 24 基线上，把 ModelService 使用的 OpenAI JavaScript SDK 从 lock 中的 4.104.0 升到当前 stable 7.8.0，删除未获上游声明支持的 OpenAI→Zod 4 override。
+2. 保持用户指定的正式模型与 Provider 身份不变：`primaryModel /visualModel` 仍为 `deepseek-v4-flash-vision-exp`；SDK 只是 DeepSeek /Xiaomi /Smile /OpenAI-compatible HTTP 客户端，不得把 Agent 切到 OpenAI 或 Codex。
+3. 用无凭据本地代理协议、现有行为回归、真实最小 DeepSeek Tool stream、production build 与 app.asar 启动证明迁移；不把类型通过或一条普通文本响应冒充完整 Agent /Photoshop 质量。
+
+### 当前事实
+
+- [OpenAI 官方 SDK 文档](https://developers.openai.com/api/docs/libraries) 仍将 npm `openai` 包列为服务端 JavaScript /TypeScript 的官方直连客户端。2026-08-29 npm stable 为 7.8.0，要求 Node `>=22`，正式声明 `zod ^3.25 || ^4.0`、`ws ^8.21.0` 与可选 `undici >=5 <9`；D-106 的开发 Node 22.20.0 与 Electron Node 24.18.1 已满足 floor。
+- 当前 lock 为 OpenAI 7.8.0、Zod 4.4.3、ws 8.21.3、undici 7.29.0；旧 `overrides.openai.zod=$zod` 已删除。ws 只在同一 major 内提升到 SDK peer 与安全版本，sharp 未改变。
+- OpenAI 7 已移除 `httpAgent` ClientOption并改用 Fetch `dispatcher`。唯一网络代理 owner `network-proxy.ts` 保留 Axios 的 `http-proxy-agent / https-proxy-agent`，同时为 OpenAI-compatible 客户端提供共享 `undici.ProxyAgent` `fetchOptions`；ModelService 四个 SDK 客户端和 DeepSeek Key 测试入口共用这一 transport，不复制代理解析。
+- D-107 在无 junction 新工作树完成 Agent /UXP `npm ci`；macOS-only `dmg-license` 清理残壳已 prune。双方 `npm ls --all` 为 0 problems，依赖完整性为 Agent 591/591、UXP 148/148，未使用 `--force` 或 legacy peer。
+- 新的可复用本地测试通过真实 HTTP CONNECT 代理运行 OpenAI 7 普通与 SSE Tool stream，证明 DeepSeek `thinking`、`reasoning_content`、Tool Call、`stream_options.include_usage`、cache hit /miss 尾块、per-request timeout 与 AbortSignal 均保持；同时断言 installed peers 与 OpenAI/Zod override 已退役。
+- `test:model-usage-classification`、Agent Context、设计作者权、Runtime declaration 与 Main runtime dependency 审计通过；正式 DeepSeek 单模型、不跨模型恢复、缓存守恒、Tool stream 终态与上下文协议均未回退。Main /Renderer 类型、preload sandbox 和 Agent production build通过。
+- 最小真实 DeepSeek canary 由进程内只读正常 state 取得现有 Key，使用 OpenAI 7.8.0 调用精确 `deepseek-v4-flash-vision-exp`；756ms 返回 `telemetryProbe({ok:true})`，finish=`tool_calls`，311 input /38 output、cache miss 311，普通正文 0，真实 Tool 执行 0。输出只含 `keyPresent=true`，且正常 primary /visual 均仍为精确 DeepSeek id。
+- 同一 dirty D-107 build 已由 electron-builder 24 完成 Electron 44 x64 pack；打包版从 app.asar 启动，34765～34769 与 CDP 49226 齐全，Renderer sandbox /preload /offset MCP 正确，`artifactsVerified=true`、真实插件未连接。隔离 PID、端口和 10.8 MB 临时 tarball /userData /日志已清理。
+- 动态 Agent audit 从 D-106 的 38 降到 37（2 low /5 moderate /27 high /3 critical），生产视图从 18 降到 17（1 low /4 moderate /11 high /1 critical）；这主要是 ws finding 消除，不代表 Volcengine、sharp 或构建链安全债务已关闭。
+
+### 实施边界
+
+- 不改 Prompt、Tool schema、模型目录、TaskRun、权限、事务、预算、Skill、Evaluation 或完成判定；不新增第二 Provider /transport owner。
+- 不调用 OpenAI /Codex /Smile 真实服务，不消费 Smile 图像额度。唯一真实外部请求是最小 DeepSeek Tool canary，且没有执行 Tool 或连接 Photoshop。
+- 不升级 sharp、Volcengine、axios、protobuf、electron-builder、Vite、PostCSS 或 UXP 构建链；undici 是 OpenAI 7 代理 transport 的直接生产依赖，不扩张为第二通用 HTTP 层。
+- 不停止默认 PID 36604，不占用 8765～8769，不读取输出 Key 内容，不保存、关闭、丢弃或修改任何 Photoshop 文档。
+- 本地 HTTP fixture 证明协议和代理；真实 DeepSeek canary只证明 text/tool stream。二者都不能证明视觉输入、完整 Agent E2E 或商业设计质量。
+
+### 下一步
+
+1. [已完成] OpenAI 7 /ws /undici package 与 lock、Zod override 删除、Fetch dispatcher 适配和可复用本地协议测试已实现。
+2. [已完成] clean install /npm ls /依赖完整性、SDK 代理协议、模型用途 /上下文 /作者权 /Runtime 回归、类型 /production build、真实最小 DeepSeek 与 dirty app.asar 启动已通过。
+3. [已完成] 更新 CurrentTask /Plan /Status /Risks /project-state，运行规划 /JSON /编码 /入口 /变更边界快速检查，并执行提交前唯一一次完整 `maintenance:validate`；63/63 通过。
+4. [进行中] 形成独立 D-107 提交，随后只重建并复验 clean Agent /UXP identity 与 exact clean app.asar；不重复完整核心闸门。
+5. [后续独立] 按生产可达性治理 Volcengine /protobuf /axios；sharp 与其图像链另片；electron-builder 和 Agent /UXP 构建链最后独立升级。
+6. [外部现场] 默认端口自然释放后仍优先完成 r32 reconciliation，再以 D-097 运行 r33；D-107 不抢占 Photoshop 真机顺序。
+
+### 验证与未知
+
+- 已验证：Windows x64 /Node 22 /Electron Node 24 的 SDK peer、Zod 4 官方兼容、undici 代理、普通与 SSE Tool stream、DeepSeek 扩展字段、timeout /abort、真实 DeepSeek Key /模型 /Tool Call、production build 和 dirty app.asar 启动。
+- 未验证：Xiaomi /Smile /OpenAI 官方账号的真实上游请求、DeepSeek 图像输入、完整 Agent Runtime Accounting、正常用户窗口加载 D-107、真实 Photoshop UXP 与商业设计质量。
+- `punycode /fs.Stats` 等弃用警告和剩余 37 项 audit 属于后续依赖 owner；D-107 不能宣称整个依赖面已现代化或安全债务归零。
+
+### 状态
+
+in_progress / code_complete / openai_7_zod_4_declared_compatibility_passed / override_removed / undici_proxy_transport_passed / clean_installs_and_dependency_graph_passed / focused_model_and_runtime_regressions_passed / minimal_live_deepseek_tool_stream_passed / production_build_and_dirty_packaged_startup_passed / full_core_validation_63_passed / independent_commit_and_clean_identity_pending / deepseek_selection_unchanged / no_photoshop_write
+
+---
+
 ## 2026-08-29 ELECTRON-RUNTIME-MIGRATION-106：受支持 Runtime 与打包启动闭环
 
 ### 目标
@@ -31,7 +80,7 @@
 
 1. [已完成] Electron 44 package /lock、显式官方二进制安装、ClipboardItem 迁移、sRGB 像素契约和 Main runtime 依赖声明审计已实现。
 2. [已完成] clean install、`npm ls`、依赖完整性、Main /Renderer /preload、真实 Electron Runtime、debug launcher、production build、`--dir` 打包以及 source /app.asar 隔离启动已通过。
-3. [已完成] CurrentTask /Plan /Status /Risks /project-state、规划 /JSON /编码 /入口 /变更边界快速检查与提交前唯一一次完整 `maintenance:validate` 62/62 已通过；当前只剩独立提交与提交后 clean build /pack identity 复核。
+3. [已完成] CurrentTask /Plan /Status /Risks /project-state、规划 /JSON /编码 /入口 /变更边界快速检查与提交前唯一一次完整 `maintenance:validate` 62/62、独立提交 `6a37acb9` 及 clean build /app.asar identity 复核均已完成。
 4. [后续独立] 在 Electron 44 /Node 24 基线上升级 OpenAI SDK、删除 Zod override并复验 DeepSeek /Xiaomi /Smile OpenAI-compatible 链；随后再分别治理 Volcengine、sharp /ws 与构建链。
 5. [外部现场] 默认端口自然释放后仍先完成 r32 reconciliation，再以 D-097 运行 r33；D-106 不抢占真机顺序。
 
@@ -43,7 +92,7 @@
 
 ### 状态
 
-validated / code_complete / clean_installs_and_dependency_graph_passed / electron_44_node_24_runtime_contract_passed / main_runtime_manifest_root_cause_fixed / source_and_packaged_app_isolated_startup_passed / production_build_and_pack_passed / full_core_62_passed / independent_commit_and_clean_identity_pending / deepseek_selection_unchanged / normal_runtime_and_photoshop_untouched
+validated / code_complete / clean_installs_and_dependency_graph_passed / electron_44_node_24_runtime_contract_passed / main_runtime_manifest_root_cause_fixed / source_and_packaged_app_isolated_startup_passed / production_build_and_pack_passed / full_core_62_passed / independent_commit_and_clean_identity_complete / deepseek_selection_unchanged / normal_runtime_and_photoshop_untouched
 
 ---
 

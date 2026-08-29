@@ -6,13 +6,13 @@
 
 ## 当前高风险
 
-### R-054 Electron Runtime 已迁移，OpenAI /Provider /构建链动态安全债务尚未收口
+### R-054 Electron /OpenAI SDK 基线已迁移，Provider /图像 /构建链动态安全债务尚未收口
 
 - 事实：D-106 已把 Electron 28.3.3 /Node 18 单变量迁移到 [Electron 44.0.0](https://releases.electronjs.org/release/v44.0.0) /Node 24.18.1，并通过 clean install、ClipboardItem /sRGB Runtime 契约、preload、production build、旧 builder x64 打包及 source /app.asar 隔离启动。Electron npm 二进制显式安装和 3 个 Main runtime import 漏声明均已按根因修复；新增 import→manifest 审计防止 dev 子树偶然满足生产依赖。
-- 事实：迁移后 Agent 动态 `npm audit` 为 38 项（3 critical /28 high /5 moderate /2 low），生产视图为 18 项（1 critical /12 high /4 moderate /1 low）；相对 D-104 只减少 Electron 旧传递链的 2 项 high。UXP 仍为 7 项（5 high /2 moderate）。Volcengine /axios /protobuf、sharp /ws、electron-builder tar /shell-quote 与 Agent /UXP 构建链 finding 都未在 D-106 修复。
-- 事实：当前 `openai 4.104.0` 只声明 Zod 3 可选 peer，项目通过 override 让它与 Claude Agent SDK 所需的根 Zod 4 共存；当前代码不使用 OpenAI Zod helper，安装 /类型 /构建通过，但兼容 seam 未被上游正式支持。Electron 44 已把 Node floor 提升到 24，因而下一切片可以升级正式支持 Zod 4 的 OpenAI SDK；D-106 没有提前改 SDK、override 或任何 OpenAI-compatible Provider 行为。
+- 事实：D-107 已升级 OpenAI SDK 7.8.0、ws 8.21.3 与 undici 7.29.0，保留 Zod 4.4.3 并删除旧 override；OpenAI 7 的 Fetch dispatcher 迁移通过本地真实代理、DeepSeek 扩展 /Tool /stream cache /timeout /abort、现有模型边界、production build、最小真实 exact-model DeepSeek Tool canary 与 dirty app.asar 启动。OpenAI SDK 不再依赖未声明的 Zod 兼容 seam。
+- 事实：当前 Agent 动态 `npm audit` 为 37 项（3 critical /27 high /5 moderate /2 low），生产视图为 17 项（1 critical /11 high /4 moderate /1 low）。UXP 仍为 7 项（5 high /2 moderate）。Volcengine /axios /protobuf、sharp、electron-builder tar /shell-quote 与 Agent /UXP 构建链 finding 都未在 D-106 /D-107 修复。
 - 影响：核心闸门绿色只能证明当前冻结 lock 的工程一致性，不能证明没有已知安全风险。整体执行 `npm audit fix --force` 会同时跨 Electron Runtime、Provider、图像处理与构建系统抬 major，破坏真实应用兼容和回滚边界；继续长期不处理则让用户输入图像、本地 WebSocket、Provider 凭据、打包与 Electron 漏洞暴露面累积。
-- 处理：① Electron Runtime 片已完成代码 /安装 /打包 /隔离启动与唯一完整核心 62/62，待 clean 提交身份收口；② 下一片升级 OpenAI SDK、删除 Zod override并复验 DeepSeek /Xiaomi /Smile OpenAI-compatible 链；③ Volcengine /protobuf /axios 与 sharp /ws 按生产可达性分别升级或隔离；④ 最后独立升级 Agent /UXP 构建链。每片只改自己的 package /lock 与必要适配，运行专项、构建、唯一核心闸门和相称真机验证，不以 audit 数量归零为唯一目标。
+- 处理：① Electron Runtime 片已以 `6a37acb9`、62/62 和 clean app.asar 收口；② OpenAI /Zod 片已完成代码、clean install、本地协议、真实 DeepSeek、build、dirty app.asar 与唯一完整核心 63/63，待独立提交和 clean identity；③ 下一步分别治理 Volcengine /protobuf /axios 与 sharp；④ 最后独立升级 Agent /UXP 构建链。每片只改自己的 package /lock 与必要适配，运行专项、构建、唯一核心闸门和相称真机验证，不以 audit 数量归零为唯一目标。
 - 关闭条件：当前直接生产依赖的 high /critical finding 均已被安全版本消除、证明不可达并形成可审计 containment，或由上游无修复事实明确接受；Electron 运行于仍受支持的 Node /Chromium 线；OpenAI /Zod 不再依赖未声明兼容 override；两仓 clean install、构建、桌面启动、DeepSeek 正式模型链和 Photoshop E2E 均无回退。动态公告会变化，关闭必须绑定当时 lock 与 audit 时间戳。
 
 ### R-053 共享 Photoshop 的 UXP plugin session 可被其它开发会话替换
