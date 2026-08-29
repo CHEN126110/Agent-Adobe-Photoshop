@@ -25,9 +25,18 @@
 
 ### 下一步
 
-1. 提交 `Document.saved` 类型修复与本卡结构修正；以 pipefail 口径重跑完整 `maintenance:validate` 并直读退出码。
-2. 从干净 HEAD 重建 Agent 与 UXP 生产构建；带 `DESIGNECHO_DEBUG_TOKEN` 重启桌面端；经 UDT 重载插件并核对 diagnoseState 构建身份。
-3. `prepare-fixture` 实例化粉咖 fixture，`run-live --case main-image-pink-coffee-external-dirty-v1` 执行首个外部脏文档正式 Case；盲评包交人工。
+1. [已完成] 提交纠错修复；pipefail 口径完整验证；发现 d094–d113 链并合流（65bd2038）；Electron 44 重装重建重启重载。
+2. [已完成] r37 fixture 实例化 + 外部脏文档 6065/6069 布景 + `run-live`（deepseek-v4-flash-vision-exp，attempt 20260829182958）真实执行。
+3. [进行中] r37 reconcile（终态 `submission_unknown_write_state`）→ 事实写回 → 推送。
+4. [待做] 弃稿文档结算缺口的 owner 裁决与治理切片（见 r37 事实）；下一轮 fresh fixture 重复采样。
+
+### r37 正式运行事实（2026-08-30 02:30–02:43）
+
+- 外部脏文档条件成立：提交前布景 2 个 dirty 无路径文档（6065:6068、6069:6072），运行全程（32 迭代、34 Tool、两次 composeDesign、两次 saveDocument、final_response 自然收尾）后两者 history 身份逐位未变——**目标点名的「外部 dirty 文档仍打开」核心不变量在正式真实运行中得到证明**（本地读回证据；因收据整体被拒，不计正式技术通过）。
+- 交付物真实产出：`主图/粉咖微压直板-主图.psd` + `.jpg` 落盘 fixture；Agent 自认完成。
+- 收据拒绝原因：`new_outside_document_opened`——评审工具 15 号调用失败后，Agent 用第二次 composeDesign 另起画布 6110 重做并交付，弃稿画布 6073 留在未保存状态未结算。D-113 结算门如实拦截；失败 owner 归属待裁决：composeDesign 修订语义（是否应复用/关闭旧画布）vs Agent 弃稿结算纪律（知识/契约层），不归 Harness 门本身。
+- 次生观察：evaluateDesign 工具失败一次（与 r36 评审器 JSON 失败同类，评审链路稳定性另案）；composeDesign 前两次调用失败后第三次成功（失败原因待读病历细节）。
+- 尝试已按协议进入 reconcile 流程；四个文档（两外部布景 + 弃稿 + 已交付）已关闭回零文档基线。
 
 ### 验证与未知
 
@@ -37,7 +46,7 @@
 
 ### 状态
 
-`in_progress / worktree_untangled_and_pushed / d113_chain_discovered_and_pushed / external_dirty_protocol_superseded_by_preserve_preexisting / merge_26f0d6c2_in_progress / dependency_reinstall_electron44_pending / formal_live_run_pending`
+`in_progress / merge_65bd2038_pushed_core_65_passed / r37_formal_attempt_executed / external_document_preservation_proven_locally / receipt_rejected_new_outside_document_opened / draft_document_settlement_gap_identified / r37_reconcile_pending`
 
 ---
 
