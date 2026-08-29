@@ -92,6 +92,29 @@ function normalizeError(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function buildPluginLoadMessage(pluginFolder) {
+  return {
+    command: 'Plugin',
+    action: 'load',
+    params: {
+      provider: {
+        type: 'disk',
+        path: pluginFolder
+      }
+    },
+    breakOnStart: false,
+    isPlaygroundPlugin: false
+  };
+}
+
+function buildPluginUnloadMessage(pluginSessionId) {
+  return {
+    command: 'Plugin',
+    action: 'unload',
+    pluginSessionId
+  };
+}
+
 function parseToolResult(result) {
   const text = result?.content?.[0]?.text || '';
   try {
@@ -333,22 +356,30 @@ async function loadPlugin(options = {}) {
       }
     });
 
-    const load = await client.request({
+    const firstLoad = await client.request({
       command: 'proxy',
       clientId: appClient.id,
-      message: {
-        command: 'Plugin',
-        action: 'load',
-        params: {
-          provider: {
-            type: 'disk',
-            path: pluginFolder
-          }
-        },
-        breakOnStart: false,
-        isPlaygroundPlugin: false
-      }
+      message: buildPluginLoadMessage(pluginFolder)
     });
+    let unload = null;
+    let load = firstLoad;
+    if (options.replaceLoadedPlugin) {
+      const existingPluginSessionId = String(firstLoad.pluginSessionId || '').trim();
+      if (!existingPluginSessionId) {
+        throw new Error('UXP Developer Tools did not return a pluginSessionId for the loaded DesignEcho plugin.');
+      }
+      unload = await client.request({
+        command: 'proxy',
+        clientId: appClient.id,
+        message: buildPluginUnloadMessage(existingPluginSessionId)
+      });
+      await sleep(250);
+      load = await client.request({
+        command: 'proxy',
+        clientId: appClient.id,
+        message: buildPluginLoadMessage(pluginFolder)
+      });
+    }
 
     return {
       success: true,
@@ -361,7 +392,11 @@ async function loadPlugin(options = {}) {
         success: validate.success === true
       },
       load: {
-        pluginSessionId: load.pluginSessionId || null
+        pluginSessionId: load.pluginSessionId || null,
+        replacedLoadedPlugin: options.replaceLoadedPlugin === true,
+        unloadedPluginSessionId: unload
+          ? String(unload.pluginSessionId || firstLoad.pluginSessionId || '') || null
+          : null
       },
       bridge: options.waitForBridge
         ? await waitForBridgeReady({
@@ -392,6 +427,14 @@ function runSelfTest() {
   if (buildRecoveryActions('load_timeout').length < 2) {
     throw new Error('Timeout recovery actions must be actionable.');
   }
+  const loadMessage = buildPluginLoadMessage('C:\\safe-plugin');
+  const unloadMessage = buildPluginUnloadMessage('session-1');
+  if (loadMessage.action !== 'load'
+    || loadMessage.params?.provider?.path !== 'C:\\safe-plugin'
+    || unloadMessage.action !== 'unload'
+    || unloadMessage.pluginSessionId !== 'session-1') {
+    throw new Error('Plugin load/unload protocol messages must match the UXP Developer Tools contract.');
+  }
   console.log(JSON.stringify({
     success: true,
     checks: [
@@ -399,7 +442,8 @@ function runSelfTest() {
       'load timeout is classified',
       'devtools service connection error is classified',
       'bridge wait error is classified',
-      'recovery actions are available'
+      'recovery actions are available',
+      'load/unload protocol messages preserve the UXP Developer Tools session identity'
     ]
   }, null, 2));
 }
@@ -414,6 +458,7 @@ async function main() {
   const port = parsePositiveInteger(getArgValue('--port', DEFAULT_PORT), DEFAULT_PORT);
   const timeoutMs = parsePositiveInteger(getArgValue('--timeout-ms', DEFAULT_TIMEOUT_MS), DEFAULT_TIMEOUT_MS);
   const waitForBridge = process.argv.includes('--wait-for-bridge');
+  const replaceLoadedPlugin = process.argv.includes('--replace-loaded-plugin');
   const bridgeTimeoutMs = parsePositiveInteger(
     getArgValue('--bridge-timeout-ms', DEFAULT_BRIDGE_WAIT_TIMEOUT_MS),
     DEFAULT_BRIDGE_WAIT_TIMEOUT_MS
@@ -428,6 +473,7 @@ async function main() {
       manifestPath,
       port,
       timeoutMs,
+      replaceLoadedPlugin,
       waitForBridge,
       bridgeTimeoutMs,
       bridgePollMs

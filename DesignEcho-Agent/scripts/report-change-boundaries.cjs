@@ -89,6 +89,7 @@ const BOUNDARIES = [
       'DesignEcho-Agent/scripts/verify-workspace-dependency-integrity.cjs',
       'DesignEcho-Agent/scripts/run-core-validation.cjs',
       'DesignEcho-Agent/scripts/launch-chat-ui-debug-window.cjs',
+      'DesignEcho-Agent/scripts/load-photoshop-uxp-plugin.cjs',
       'DesignEcho-Agent/scripts/check-build-warning-boundary.cjs'
     ].includes(entry.filePath)
   },

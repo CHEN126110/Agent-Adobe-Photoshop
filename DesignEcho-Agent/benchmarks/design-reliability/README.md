@@ -125,6 +125,9 @@ Renderer 项目、对话和偏好仍位于 OS Temp，订阅模型则直接使用
 
 `preflight` 会从 Renderer 实时读回脱敏的 provider、内部 model ID、API model ID、项目和 busy 状态；
 不匹配会在 Attempt `armed` 之前阻止 `run-live`，不会先写入 Photoshop 再报告模型用错。
+正式运行前的 `maintenance:photoshop-uxp-plugin:load:check` 会按 UXP Developer Tools 的
+plugin session 身份先卸载当前同 ID 实例、再从当前 checkout 加载并核对 live build identity；
+不能把“load 命令返回成功”误当成 Photoshop 已经换到新代码。
 
 当套件包含多个独立输入源时，准备或检查 fixture 必须显式指定 `--case` 或 `--fixture-id`，避免把两个商品目录混成一个测试项目。
 如果同一个 `fixtureId` 被主图、详情页、SKU 等多个 Case 共用，`prepare-fixture` 必须使用

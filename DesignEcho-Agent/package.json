@@ -70,7 +70,7 @@
     "maintenance:photoshop-bridge-health:check": "node scripts/check-photoshop-bridge-health.cjs --fail-on-not-ready",
     "maintenance:photoshop-bridge-health:check:runtime": "node scripts/check-photoshop-bridge-health.cjs --fail-on-not-ready --required-runtime-feature getSubjectBounds.smartLayerKindGuard --required-runtime-feature selectionRead.noDialogSynchronousBatchPlay --required-runtime-feature createDocument.readbackCandidateValidation --required-runtime-feature toolErrorNormalizer.fontUnavailableCategory --required-runtime-feature saveDocument.rasterExportUsesJsx",
     "maintenance:photoshop-uxp-plugin:load": "node scripts/load-photoshop-uxp-plugin.cjs",
-    "maintenance:photoshop-uxp-plugin:load:check": "node scripts/load-photoshop-uxp-plugin.cjs --wait-for-bridge && node scripts/check-photoshop-bridge-health.cjs --fail-on-not-ready",
+    "maintenance:photoshop-uxp-plugin:load:check": "node scripts/load-photoshop-uxp-plugin.cjs --replace-loaded-plugin --wait-for-bridge && node scripts/check-photoshop-bridge-health.cjs --fail-on-not-ready",
     "maintenance:planning-check": "node scripts/check-planning-alignment.cjs",
     "maintenance:project-cockpit": "node scripts/report-project-cockpit.cjs",
     "maintenance:project-cleanup-candidates": "node scripts/report-project-cleanup-candidates.cjs",
