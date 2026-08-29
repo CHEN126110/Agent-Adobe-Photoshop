@@ -93,9 +93,13 @@ const {
   'tool-schemas.ts'
 ));
 const {
+  consumeHarnessQualityVerificationCallBudget,
   consumePerformanceToolCallBudget,
   createPerformanceLedgerState,
   isInMutationExecutionReserveZone,
+  MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS,
+  MAX_FINAL_QUALITY_JUDGE_CALLS,
+  MAX_HARNESS_QUALITY_VERIFICATION_CALLS,
   readPerformanceBudgetExhaustion,
   resolveExecutionSupplyReserve,
   shouldIssuePerformanceBudgetDisciplineDirective,
@@ -109,6 +113,7 @@ const {
   'agent-runtime',
   'performance-ledger.ts'
 ));
+
 const {
   buildAgentUserResultProjection,
   deriveAgentUserResultFacts
@@ -7335,6 +7340,49 @@ async function assertBareCompletionClaimsCannotBypassTextExits() {
 }
 
 /**
+ * 完整质量闭环的 Host 只读预算必须覆盖：两次 Judge 前事实采集，以及每个允许的
+ * 质量模型事件之后各一次 Photoshop revision 读回。否则 diagnosis repair 一旦发生，
+ * 最后一次历史校验会被确定性拒绝，可靠结果也会被误判为 stale。
+ */
+function assertHarnessQualityVerificationBudgetCoversBoundedProtocol() {
+  const requiredCalls = 2
+    + MAX_FINAL_QUALITY_JUDGE_CALLS
+    + MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS;
+  assert.strictEqual(
+    MAX_HARNESS_QUALITY_VERIFICATION_CALLS,
+    requiredCalls,
+    'Host verification budget must cover the full bounded quality protocol'
+  );
+
+  const ledger = createPerformanceLedgerState();
+  const protocolTools = [
+    'getAcceptanceSnapshot',
+    'getCanvasSnapshot',
+    'getDocumentInfo',
+    'getDocumentInfo'
+  ];
+  assert.strictEqual(protocolTools.length, requiredCalls, 'fixture must model the complete protocol');
+  for (const toolName of protocolTools) {
+    assert.strictEqual(
+      consumeHarnessQualityVerificationCallBudget({ ledger, toolName }),
+      undefined,
+      `${toolName} must fit inside the complete quality protocol budget`
+    );
+  }
+  const exhausted = consumeHarnessQualityVerificationCallBudget({
+    ledger,
+    toolName: 'getAcceptanceSnapshot'
+  });
+  assert(exhausted, 'a fifth quality verification call must remain bounded');
+  assert.strictEqual(exhausted.code, 'agent_quality_verification_budget_exhausted');
+  assert.strictEqual(
+    ledger.harnessQualityVerificationCallCount,
+    requiredCalls,
+    'a rejected call must not advance the quality verification ledger'
+  );
+}
+
+/**
  * 治理切片 2（执行供给预留）纯账本断言：预留区边界、写入前观察 allowance、
  * 超限观察转执行指令、交付动作尝试后开闸、硬预算耗尽兜底。
  */
@@ -11013,6 +11061,7 @@ async function runBehaviorAssertions() {
   await assertPersistencePendingRetriesBeforeAgentResume();
   await assertToolResultRecoveryOptionsDoNotConstrainAgentToolChoice();
   assertDesignDirectionExplorationIsOptionalAndNonAuthoritative();
+  assertHarnessQualityVerificationBudgetCoversBoundedProtocol();
   assertExecutionSupplyReservePureAccounting();
   assertFinalQualityJudgeReservationRemovedButHardCapStays();
   await assertFinalQualityDiagnosisRepairModelProtocol();

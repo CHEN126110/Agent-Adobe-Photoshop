@@ -17,8 +17,14 @@ import type { AgentConfig } from './types';
 export const MAX_FINAL_QUALITY_JUDGE_CALLS = 1;
 /** 终局 Judge 已给出可靠非通过分数但漏掉诊断时，只允许补一次诊断协议。 */
 export const MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS = 1;
-/** Host 质量版本复核（harness_quality_verification）每轮上限。 */
-export const MAX_HARNESS_QUALITY_VERIFICATION_CALLS = 3;
+/**
+ * Host 质量版本复核（harness_quality_verification）必须覆盖完整的有界质量协议：
+ * Judge 前的结构快照与全画布快照各一次，并在每个允许的质量模型事件后读回一次
+ * Photoshop history state。这里约束的是事实一致性，不增加 Harness 的审美决策权。
+ */
+export const MAX_HARNESS_QUALITY_VERIFICATION_CALLS = 2
+    + MAX_FINAL_QUALITY_JUDGE_CALLS
+    + MAX_FINAL_QUALITY_DIAGNOSIS_REPAIR_CALLS;
 // 执行供给预留（切片 2，治理切片 1 合并为单一 owner）：已授权写入的自主制作任务，
 // 尾部工具预算为「至少一次写入 + 同目标读回 + 评价」保留的调用数；探索观察不得耗尽它。
 export const EXECUTION_VERIFICATION_TOOL_RESERVE = 6;
