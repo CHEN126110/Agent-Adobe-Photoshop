@@ -7,7 +7,9 @@
 - 用户指出无关 `SKU.psb` 不应成为全局阻塞。现有产品能力并非完全不知道环境：`listDocuments` 已读取文档路径，Renderer 已计算 `projectAffinity` 与文档性质，Operating Context 也会把完整清单交给模型。真实缺口是没有区分“文档有文件路径”和“文件自上次保存后又被修改”，而开发 reconciliation 又绕过上述事实，只检查打开文档数量。
 - D-092 新增 `editState=clean|dirty|unknown`：UXP 从官方 `Document.saved` 属性读取，`getDocumentInfo` 与 `listDocuments` 都返回；`pathState` 继续只表达本地路径是否存在。Renderer 兼容旧 Provider 结果并默认 unknown，把 editState、路径和项目归属共同放进 Operating Context，同时明确 dirty 不是 TaskRun 所有权、保存授权或关闭授权。
 - Design Reliability 保留正式新 Attempt 的 `none_open` 写前隔离，但 reconciliation 改用 `no_fixture_documents`：路径明确且在原 fixture 外的用户文档不阻塞；路径未知 /未保存文档和原 fixture 内文档仍阻断。对账还新增“Photoshop Runtime 必须在异常后重新加载”，与既有 Agent Runtime 重启、0 pending、原项目绑定共同闭合未知写状态。
-- 专项 `test:design-reliability`、Agent Business Boundary、Tool Registry、Runtime Declaration、Main /Renderer 类型检查、UXP 测试与类型检查、完整 `maintenance:validate` 58/58 和 Agent /UXP production build 均已通过。尚未完成独立提交、推送、提交后 Runtime identity、真机 editState 读回或 r26 reconciliation，因此不能声称本轮闭环完成。
+- 专项回归、完整 `maintenance:validate` 58/58、Agent /UXP production build、提交 `3532985b`、GitHub 推送和提交后 clean Runtime identity 均已通过。真机临时文档依次返回 `unsaved /clean`、`saved /clean`、`saved /dirty`，证明路径和保存后修改是独立事实；文档已按 ID 关闭，Photoshop 回到 0 文档。
+- r26 已在 dirty 外部临时文档仍打开时完成 reconciliation；正式事件记录 Agent /Photoshop Runtime 均在异常后重启、0 pending、原 fixture 文档 0、外部文档 1、所有权已解析。Design Reliability 账本现为 6 次 submission、6 次 terminal、0 次未闭合、0 条写状态未清账。r26 没有 Run /产物，仍不能计为技术成功。
+- 探针 PSD 为 27,302 字节，终端安全策略拒绝直接删除后仍留在系统 Temp 的 `designecho-document-state-probe-3532985b` 目录；它不属于用户项目、运行证据目录或 Git 工作树。
 
 ## 2026-08-29 r26 外部执行环境中断：已提交但无终态
 

@@ -281,7 +281,7 @@
   "activeSlice": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
     "summary": "Close the generic terminal lifecycle exposed by r21-r25: preserve completed generations, bind single-surface review to the exact full canvas, and require UXP-owned same-revision receipts for every PSD/JPG without taking design authorship from the Agent.",
-    "status": "d092_document_path_edit_affinity_and_reconciliation_scope_core_58_and_builds_passed_commit_live_probe_r26_reconciliation_and_r27_pending",
+    "status": "d092_3532985b_pushed_clean_runtime_and_live_document_state_verified_r26_reconciled_with_unrelated_dirty_document_r27_pending",
     "scope": [
       "Settle a Tool Call produced by an admitted model turn without bypassing hard limits or execution guards.",
       "Activate declared delivery capability schemas only after verified viewable content emerges and without executing them.",
@@ -300,7 +300,7 @@
   "activeRequest": {
     "id": "DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002",
     "summary": "Make document state and ownership explicit, reconcile the externally interrupted r26 submission without replay or touching unrelated documents, then prove the raster-revision fix in a fresh r27 attempt.",
-    "status": "d092_core_58_and_builds_passed_commit_live_probe_r26_reconciliation_and_r27_pending",
+    "status": "d092_complete_r26_reconciled_r27_pending",
     "mustDo": [
       "Treat model-turn admission and its returned Tool settlement as one lifecycle unit while retaining hard execution safety.",
       "Expose existing delivery schemas after a real viewable artifact exists without selecting the delivery action for the Agent.",
@@ -340,10 +340,8 @@
       "已完成 r25：full-canvas Judge 对象正确且设计 86 分，但 quickExport JPG 缺 UXP sourceHistoryStateRef，finalArtifactRefs 为空；文件哈希已固化且 Attempt 已安全 reconciliation。",
       "已完成 D-091 / 1a3f95d3：修复、真机探针、完整 maintenance:validate 58/58、Agent/UXP production build、提交推送和提交后双 Runtime identity 均通过。",
       "r26 已提交但未闭合：Agent 完成候选观察和 A01 选择后，外部关闭了原 CLI/Runtime/Photoshop；Attempt 无 terminal、Run Record 或产物。",
-      "D-092 代码与专项验证已完成：pathState、editState、projectAffinity 与 TaskRun ownership 分离；正式 Attempt 保留 none_open，reconciliation 只阻止原 fixture 文档和未知身份文档。",
-      "已完成：D-092 完整 maintenance:validate 58/58 与 Agent/UXP production build。",
-      "进行中：独立提交、GitHub 推送、提交后双 Runtime identity 与临时文档真机状态探针。",
-      "待完成：在不触碰无关用户文件的前提下完成 r26 reconciliation，不恢复或重放。",
+      "已完成 D-092 / 3532985b：pathState、editState、projectAffinity 与 TaskRun ownership 分离；完整 maintenance:validate 58/58、Agent/UXP production build、提交推送和 clean identity 均通过。",
+      "已完成 r26 reconciliation：dirty 外部文档打开不阻塞，事件证明原 fixture 文档 0、外部文档 1、所有权已解析；账本 0 未闭合、0 未清账。",
       "待完成：从锁定源创建全新 r27 fixture，执行同条件正式 Attempt。",
       "条件后置：r27 技术成功后做重复运行与盲化视觉质量比较，再单独治理首写和总耗时。"
     ]
