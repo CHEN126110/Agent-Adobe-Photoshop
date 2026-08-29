@@ -9,6 +9,20 @@
 - 新增“加入规划 / 后续要做 / 不要遗忘”事项时，必须新增一个 `INTAKE-*` 条目。
 - 主图、详情页、SKU 的具体业务策略、用户可见默认值和接受阈值改动前必须先告知用户并完成 checkpoint；共享 Harness、只读契约收敛、静态审计和不改变业务输出的 bugfix 不受此阻塞。
 
+### INTAKE-083 finalArtifactRefs 空引用反复拒收的配对交付根因
+- 来源：正式采样五次同类失败（r23/r24/r25/r36/r38，最新 2026-08-30 r38：quality=artifact_completed、PSD+JPG 真实落盘、外部文档保护成立，但 `runtimeDeliveryResultRefs` 为空导致收据拒绝）。触发目标条款「同一 blocker 重复→根因复盘」。
+- 归属层级：Runtime 交付阶段证据投影（`projectDeliveryStageEvidence` → `collectRuntimeFinalArtifactPaths`）与 UXP 配对交付收据（d112/1a3f95d3 线）。
+- 状态：pending
+- 下一步：判别假设——r35（saveDocument+quickExport）refs 非空、r38（saveDocument×2 出 PSD+JPG）refs 空；核对 saveDocument-as-JPG 的结果是否缺少 raster 交付收据/未进入 producer receipt 选择；修复后用 fresh fixture 复验。
+- 边界：不放宽收据校验、不让 Harness 代 Agent 声明交付；只修"真实交付事实未被投影"的记账链。
+
+### INTAKE-084 evaluateDesign 评审链路三连败稳定性
+- 来源：r36（评审器 JSON 解析失败）、r37、r38 三次真实运行各出现一次 evaluateDesign 失败；r36 因此陷入重试烧穿预算。
+- 归属层级：Evaluation owner（评审器输出协议/解析），不动通用循环。
+- 状态：pending
+- 下一步：聚合三次失败的具体错误文案与模型输出形态，判定是解析器过严、提示词欠约束还是模型输出截断；修复后观察评审开机率。
+- 边界：评审失败不得阻断 agentic 写入（既有裁决）；不引入第二评审通道。
+
 ### INTAKE-081 现有 Design Harness 架构与 Owner 收敛
 - 来源：用户 2026-08-03 明确判断项目内容基本齐全但较杂乱，要求继续理顺整体架构；同时确认“从零创作”是 Agent 本身设计能力，不应增加独立代码定义。
 - 归属层级：Design Agent OS / Task Semantics / Runtime / Execution / Evaluation / Documentation Governance。

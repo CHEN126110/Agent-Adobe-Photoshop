@@ -36,7 +36,14 @@
 - 交付物真实产出：`主图/粉咖微压直板-主图.psd` + `.jpg` 落盘 fixture；Agent 自认完成。
 - 收据拒绝原因：`new_outside_document_opened`——评审工具 15 号调用失败后，Agent 用第二次 composeDesign 另起画布 6110 重做并交付，弃稿画布 6073 留在未保存状态未结算。D-113 结算门如实拦截；失败 owner 归属待裁决：composeDesign 修订语义（是否应复用/关闭旧画布）vs Agent 弃稿结算纪律（知识/契约层），不归 Harness 门本身。
 - 次生观察：evaluateDesign 工具失败一次（与 r36 评审器 JSON 失败同类，评审链路稳定性另案）；composeDesign 前两次调用失败后第三次成功（失败原因待读病历细节）。
-- 尝试已按协议进入 reconcile 流程；四个文档（两外部布景 + 弃稿 + 已交付）已关闭回零文档基线。
+- 尝试已按协议 reconcile；四个文档（两外部布景 + 弃稿 + 已交付）已关闭回零文档基线。
+
+### r38 正式运行事实（2026-08-30 03:01–03:09，含台账修复验证）
+
+- r37 根因已修：composeDesign(mode=new) 的创建 commit 未随最终结果带出，新画布绕过 D-113 结算台账（完成契约与预检都无从点名弃稿）。修复以 `602ca245` 提交推送（成功与失败路径都带出创建 commit；compose 契约测试新增断言；完整核心 65 项通过）。
+- r38（attempt 20260829190103，运行时 602ca245，外部脏文档 6137/6141 在场）：Agent 这次未用 compose，改用原子工具单文档手搭（createDocument→placeImage→文字→四次 transform 微调），单画布、零弃稿、PSD+JPG 落盘、quality 90/passed/artifact_completed、final_response 自然收尾，**外部文档保护第二次成立**（6137:6140、6141:6144 全程未变）。
+- r38 收据仍被拒：`finalArtifactRefs` 为空——r23/r24/r25/r36/r38 五次同类，已按「同一 blocker 重复」条款立案 INTAKE-083（判别假设：r35 的 saveDocument+quickExport refs 非空 vs r38 的 saveDocument×2 refs 空，指向 saveDocument-as-JPG 缺 raster 配对收据/未进 producer receipt 选择）。evaluateDesign 三连败立案 INTAKE-084。r38 已按协议 reconcile，现场回零文档。
+- 今晚正式采样到此为止（三次运行已消耗）；下一次运行应在 INTAKE-083 修复之后，不再用同一堵墙买重复失败。
 
 ### 验证与未知
 
@@ -46,7 +53,7 @@
 
 ### 状态
 
-`validated / merge_65bd2038_pushed_core_65_passed / r37_formal_attempt_executed_and_reconciled / external_document_preservation_proven_locally / receipt_rejected_new_outside_document_opened / draft_document_settlement_gap_queued_for_owner_adjudication`
+`validated / merge_65bd2038_pushed_core_65_passed / r37_and_r38_executed_and_reconciled / external_document_preservation_proven_twice / compose_creation_ledger_gap_fixed_602ca245 / final_artifact_refs_recurrence_filed_intake_083 / evaluate_design_instability_filed_intake_084 / next_formal_run_after_intake_083_fix`
 
 ---
 
