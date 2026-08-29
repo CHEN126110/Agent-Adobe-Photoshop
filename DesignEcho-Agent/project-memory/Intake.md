@@ -13,7 +13,7 @@
 - 来源：正式采样五次同类失败（r23/r24/r25/r36/r38，最新 2026-08-30 r38：quality=artifact_completed、PSD+JPG 真实落盘、外部文档保护成立，但 `runtimeDeliveryResultRefs` 为空导致收据拒绝）。触发目标条款「同一 blocker 重复→根因复盘」。
 - 归属层级：Runtime 交付阶段证据投影（`projectDeliveryStageEvidence` → `collectRuntimeFinalArtifactPaths`）与 UXP 配对交付收据（d112/1a3f95d3 线）。
 - 状态：triaged
-- 下一步：判别假设——r35（saveDocument+quickExport）refs 非空、r38（saveDocument×2 出 PSD+JPG）refs 空。2026-08-30 已排除一项：UXP saveDocument 的 JSX 光栅路径**有**验证过的 sourceHistoryStateRef 收据（save-document.ts:534-550），断点收敛到 Renderer 侧 `projectAgenticFinalDeliveryStageEvidence` 的绑定输入——重点核查 ①`findReviewedPreview` 要求的 full-surface judge 观察是否在 toolCallLog 中且 history 与 save 的 source 一致、②`finalQualityReviewedVisualBinding` 是否在投影调用前已建立（终局时序）、③paired 要求下单一 artifact 路径正则不匹配即整体丢弃 refs 的全有全无语义是否过脆。复现方式：用真实收据形状做纯逻辑插桩测试，不再靠脱敏病历倒推。
+- 下一步：2026-08-30 纯逻辑插桩已完成两级收敛：① UXP saveDocument JSX 光栅路径的 sourceHistoryStateRef 收据存在（save-document.ts:534-550）；② `projectAgenticFinalDeliveryEvidence` 对 r38 形状（双 saveDocument、anchor 匹配、同 history）**能正确产出 refs=[PSD,JPG]**（探针 scratchpad/repro-intake-083.cjs 口径）。活运行断点因此锁死在 `findReviewedPreview`（agent.ts:5150s）的两个输入：(a) 全画布日志条目的 `readAgentVisualObservation().reviewed===true` 未置位；(b) `isFinalQualityReviewedVisualSource` 用 `binding.sourceOutput !== input.sourceOutput` 的**对象同一性**匹配（final-quality-host-evidence.ts:52）——终局 judge 的 reviewCandidate.sourceOutput 若不是 toolCallLog 里同一个对象（清洗复制/终局自动读画未入日志），绑定永假。修复方向候选：把同一性匹配改为 documentId+historyStateId+来源指纹的值匹配，或保证 judge 候选引用日志原对象；先加 dev-only 投影 trace 在一次真机复跑中确证 (a)/(b) 哪个为真，再动匹配语义。
 - 边界：不放宽收据校验、不让 Harness 代 Agent 声明交付；只修"真实交付事实未被投影"的记账链。
 
 ### INTAKE-084 evaluateDesign 评审链路三连败稳定性
