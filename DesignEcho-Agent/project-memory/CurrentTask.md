@@ -1,5 +1,49 @@
 # Current Task
 
+## 2026-08-30 FIRST-MUTATION-RECEIPT-114：首写对象 revision 事实贯穿正式采集
+
+### 目标
+
+1. 修复 fresh r35 已真实完成单文档 PSD/JPG，却因首写基线 owner 已计算的 `preexistingDocumentRevisionsUnchanged` 没有进入 v2 收据而被 Reliability consumer 判为不可信的通用协议缺口。
+2. 让基线 producer 的真实完成收据直接通过正式 Reliability consumer；不再用两套各自绿色、但由手写 fixture 隔开的测试掩盖协议漂移。
+3. 保持安全门槛与设计责任不变：不放宽对象 revision、Runtime binding、外部文档保护、完成对账或人工介入规则；修复后使用 fresh r36 和正式 DeepSeek V4 Flash Vision 重跑。
+
+### 当前事实
+
+- D-113 已以独立提交 `805680302fb577ce0ca24c128f05b0345cbe031d` 收口。Agent `designecho-805680302fb5-45ebecc9acad` 与 UXP `designecho-uxp-production-805680302fb5-cb76a9e9c3fe` 均为 clean，提交前唯一完整核心 65/65、两端 production build 与提交后 identity 已通过。
+- r35 使用 fresh fixture `fixture-20260829153743-deba398b5ddd`、正式 `deepseek-v4-flash-vision-exp`、`autoFallback=false`、正常持久 DeepSeek Key 和真实 Photoshop。Attempt `main-image-pink-coffee-unseen-v1-attempt-20260829154811-0d4d5b6997e7` 用时约 685 秒；Runtime accounting 为 37 次模型请求、41 次 Tool、2,975,105 input /60,013 output tokens，模型失败与 Tool 失败均为 0。
+- Agent 只创建文档 6000，并在该文档上修订到 history 6013；D-113 的生命周期 Completion 证明 `created=1 /settled=1 /delivered=1 /unsettled=0`。PSD 29,771,768 字节与 JPG 907,206 字节均已生成，文档保存后 clean；没有第二个 `new` 或 orphan。
+- 外部 6 个用户文档在提交、运行、关闭测试文档和失败对账后始终保持 `352:4125 /2480:4964 /3729:4013 /4126:5815 /4898:5797 /5816:5852`。人工只关闭了已保存且 clean 的 r35 文档 6000；该清理不计零人工交付成功。
+- Agent 内部 Completion、同 revision paired delivery 和自动 VLM 评价均通过，但正式 runner 以 `submission_unknown_write_state` 拒绝：`validateDebugBridgeReceipt()` 要求首写收据的 `preexistingDocumentRevisionsUnchanged === true`；`assessGuardedPhotoshopDocuments()` 已真实计算该值，`GuardedPhotoshopExecutionBaseline` 与 `readGuardedPhotoshopExecutionBaselineReceipt()` 却没有保存 /序列化它。该条件因此在真实 passed 收据上恒为 `undefined`。
+- 失败后 exact Agent Runtime 已重启、exact UXP 已重新加载，pending request 为 0、fixture 文档为 0、所有打开对象归属明确；官方 04 事件为 `reconciled_after_runtime_restart`。r35 不计技术通过，也没有被手工改账。
+- 独立视觉复核不接受自动 90 分：画面产品清晰、摄影融合和暖色关系成立，但标题过大并压住腿部；更重要的是把真实卖点“木耳边”写成了“木耳耳边”。当前视觉结论为 `needs_fix`，不能因文件齐全或模型自评宣称专业质量达标。
+
+### 实施边界
+
+- 字段只能来自现有对象级 `documentId/historyStateId` 对比结果；请求输入、模型参数、助手正文、文件名或采集器默认值都不能铸造该事实。
+- v2 收据补齐 intended field，不改变状态机、Runtime /文档观察顺序、首次写必须 `createDocument`、完成对账、外部文档保护或 consumer 断言。
+- 可恢复的错误首写选择必须清空该字段并重新观察；真实 revision 漂移必须把字段带出为 `false` 并永久 blocked，不能因后续看似恢复而解锁。
+- producer 与 consumer 用同一真实生成收据做集成测试；手写 receipt fixture 只保留其它协议场景，不能作为本字段唯一成功证据。
+- 本切片不修正文案、Prompt、视觉评分、Task Profile 命中、上下文膨胀、语义抠图、姿态或依赖；r35 视觉问题另由设计知识 /Evaluation owner 用新样本治理。
+
+### 下一步
+
+1. [已完成] 冻结 r35 失败现场，独立查看成品，关闭唯一 clean fixture 文档，重启 Agent /重载 UXP，并追加合法 reconciliation 事件。
+2. [已完成] 在 baseline state /receipt 中保存并序列化首写对象 revision 不变事实；可恢复拒绝时清空，真实漂移时输出 `false`。
+3. [已完成] 增加 producer 直接进入 Reliability consumer 的纯逻辑集成回归，以及通过 /漂移攻击断言；Design Reliability、业务 /Runtime /作者权边界、变更边界和 Main /Renderer 类型检查通过。
+4. [已完成] 项目真相源、Agent production build、卫生与提交前唯一完整 `maintenance:validate` 65/65 通过；没有放宽 consumer 或重复运行核心。
+5. [进行中] 独立提交并生成 clean Agent /UXP identities；随后创建 fresh r36，以 exact D-114、正式 `deepseek-v4-flash-vision-exp` 和真实 Photoshop 重跑，要求正常 terminal、单文档全结算、6 个用户文档不变、零人工设计纠偏，并把技术与视觉结果分开判定。
+
+### 验证与未知
+
+- 已验证：r35 真实 DeepSeek /Photoshop 单文档制作、同 revision PSD/JPG、D-113 lifecycle 全结算、外部文档零变化、runner 失败、官方 reconciliation；源码 producer /consumer 缺字段因果；D-114 专项、相邻边界、类型、Agent /UXP production build 与唯一完整核心 65/65。
+- 合理推断：补齐 intended receipt 字段后，同形 r36 不会再被这一 consumer 条件拒绝；必须由 exact clean r36 证伪，不能把纯逻辑通过当真机通过。
+- 未验证：D-114 独立提交 /clean identities、r36 正常终态；r35 自动视觉 90 的校准偏差和错误文案能否由现有 Agent 自主避免；多次重复与人工盲评仍不足。
+
+### 状态
+
+in_progress / d113_commit_80568030_clean_identities_and_full_core_65_complete / r35_single_document_lifecycle_and_paired_delivery_succeeded_internally / reliability_terminal_rejected_missing_serialized_first_mutation_revision_fact / r35_reconciled_after_runtime_and_uxp_restart / user_documents_unchanged / visual_needs_fix_and_auto_90_overrated / d114_field_and_producer_consumer_contract_implemented / targeted_audits_types_agent_uxp_builds_and_unique_full_core_65_passed / commit_clean_identities_and_r36_pending / deepseek_exact_model_preserved
+
 ## 2026-08-29 CREATED-DOCUMENT-LIFECYCLE-113：本 TaskRun 新建文档逐个结算
 
 ### 目标

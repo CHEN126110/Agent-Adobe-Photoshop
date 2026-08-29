@@ -1005,6 +1005,11 @@ async function main() {
     ],
     "提交收据必须冻结每个前置 Photoshop 对象的 document revision"
   );
+  assert.strictEqual(
+    concurrentBaselineDecisions[0].receipt.preexistingDocumentRevisionsUnchanged,
+    true,
+    "首写收据必须带出由对象 revision 对比得到的不变事实，不能只留在内存 assessment"
+  );
   const completionDecision = await guardedBaselineModule.completeGuardedPhotoshopExecutionBaseline(
     passingBaseline,
     {
@@ -1109,6 +1114,11 @@ async function main() {
   assert.strictEqual(blockedAfterRevisionDrift.ready, false);
   assert.strictEqual(blockedAfterRevisionDrift.receipt.status, "blocked",
     "可恢复拒绝后的真实 revision 漂移必须永久失败关闭");
+  assert.strictEqual(
+    blockedAfterRevisionDrift.receipt.preexistingDocumentRevisionsUnchanged,
+    false,
+    "真实 revision 漂移必须在首写收据中显式带出 false，不能伪造为通过"
+  );
   assert.strictEqual(blockedAfterRevisionDrift.retryableWithinTaskRun, undefined);
   assert.match(blockedAfterRevisionDrift.error, /preexisting_document_revision_changed/);
   const stillBlockedAfterSafeFactsReturn = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
@@ -2680,6 +2690,54 @@ async function main() {
     { result: { receipt: validDebugReceipt } },
     validDebugReceiptInput
   ).ok, true, "提交前、首次写与完成后协议字段完整时 receipt 必须可信");
+  const producerBackedBaseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+    requestId: "debug-request-1",
+    expectedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+    expectedPhotoshopRuntimeBinding: safePhotoshopRuntimeBinding,
+    expectedProjectPath: "C:/fixture/project",
+    initialDocuments: [dirtyOutsideDocument]
+  });
+  const producerBackedFirstMutation = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+    producerBackedBaseline,
+    "createDocument",
+    {
+      observePhotoshopRuntimeIdentity: async () => safePhotoshopRuntime,
+      observeOpenDocuments: async () => [dirtyOutsideDocument],
+      now: () => "2026-08-26T00:00:03.000Z"
+    }
+  );
+  assert.strictEqual(producerBackedFirstMutation.ready, true);
+  const producerBackedCompletion = await guardedBaselineModule.completeGuardedPhotoshopExecutionBaseline(
+    producerBackedBaseline,
+    {
+      observeOpenDocuments: async () => [
+        { ...dirtyOutsideDocument, isActive: false },
+        {
+          id: 80,
+          name: "候选.psd",
+          isActive: true,
+          pathState: "saved",
+          editState: "clean",
+          projectAffinity: "current_project",
+          historyStateRef: { documentId: 80, historyStateId: 808 }
+        }
+      ],
+      now: () => "2026-08-26T00:09:59.000Z"
+    }
+  );
+  assert.strictEqual(producerBackedCompletion.ready, true);
+  assert.strictEqual(validateDebugBridgeReceipt(
+    {
+      result: {
+        receipt: {
+          ...validDebugReceipt,
+          firstPhotoshopMutationBaseline: producerBackedCompletion.receipt
+        }
+      }
+    },
+    validDebugReceiptInput
+  ).ok, true,
+  "Guarded baseline producer 的真实完成收据必须能直接通过 Reliability consumer，禁止手写 fixture 掩盖协议漂移");
   const missingInteractionReceipt = JSON.parse(JSON.stringify(validDebugReceipt));
   delete missingInteractionReceipt.interactionReceipt;
   assert.strictEqual(validateDebugBridgeReceipt(

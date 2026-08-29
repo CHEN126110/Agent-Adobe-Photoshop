@@ -1,9 +1,10 @@
 {
-  "currentFocus": "2026-08-29 PAIRED-DELIVERY-FALLBACK-112：让未绑定 Manifest 但由本 TaskRun 新建的开放设计文档，也只能以最后内容 revision 的可编辑源稿与光栅预览完整收据集合完成交付。",
-  "currentMilestone": "PAIRED-DELIVERY-FALLBACK-112",
-  "milestoneStatus": "r33_failure_root_cause_confirmed_paired_completion_and_e2_implemented_live_agent_remediation_agent_build_and_full_core_65_passed_commit_clean_identities_and_r34_pending_manual_recovery_not_counted_deepseek_exact_model_preserved",
+  "currentFocus": "2026-08-30 FIRST-MUTATION-RECEIPT-114：把 baseline owner 已计算的前置 Photoshop 对象 revision 不变事实贯穿 v2 收据，并用真实 producer 收据直达 Reliability consumer。",
+  "currentMilestone": "FIRST-MUTATION-RECEIPT-114",
+  "milestoneStatus": "d113_commit_80568030_clean_identities_and_full_core_65_complete_r35_single_document_lifecycle_and_paired_delivery_succeeded_internally_reliability_rejected_missing_serialized_revision_fact_r35_reconciled_d114_field_and_producer_consumer_contract_implemented_targeted_audits_types_agent_uxp_builds_and_unique_full_core_65_passed_commit_clean_identities_and_r36_pending",
   "verified": {
     "code": [
+      "First-mutation receipt producer/consumer closure D-114 (2026-08-30): fresh r35 on exact clean D-113 and deepseek-v4-flash-vision-exp created only document 6000, settled its latest history 6013, delivered a 29,771,768-byte PSD and 907,206-byte JPG, and left all six protected user document revisions unchanged. Reliability still rejected the Attempt because assessGuardedPhotoshopDocuments computed preexistingDocumentRevisionsUnchanged but the v2 receipt producer did not serialize it while the consumer requires true for a passed first mutation. The Attempt was honestly marked unknown, the clean fixture document was closed, Agent and UXP were restarted/reloaded, and canonical reconciliation passed. D-114 now stores and projects the computed boolean, clears it on recoverable pre-dispatch rejection, returns false on real revision drift, and directly feeds a producer-generated completion receipt into the Reliability consumer test. Targeted reliability, business/runtime/authorship/change-boundary audits, Main/Renderer typecheck, Agent/UXP production builds and the single 65-stage core gate pass; commit, clean identities and r36 remain pending.",
       "Sharp runtime security compatibility D-110 (2026-08-29): Sharp moved from 0.34.5 to 0.35.4 with the Windows x64 native binary and libvips 8.18.6. Thirteen removed failOnError properties preserve their exact tolerant/strict semantics through failOn, and seven services use the 0.35 named-type or SharpConstructor contract rather than any or skipLibCheck. Clean Agent/UXP installs, zero-problem dependency trees, 595/595 and 148/148 integrity, CJS/ESM loading, real PNG/JPEG/WebP and raw/resize/flatten/sharpen/composite operations, adjacent image paths, types, both production builds, dirty and exact clean packaged read-only image probes/startup, the single 65-stage core gate, commit ab85414d and clean identities passed. Production audit fell from 6 to 2 and now contains only the independent ONNX/adm-zip owner. No credential, paid request or Photoshop write was used.",
       "Volcengine SDK security compatibility D-109 (2026-08-29): live npm metadata showed the latest official OpenAPI and TOS SDKs still declare vulnerable Axios, protobuf, UUID, form-data, lodash and proxy ranges. The root Axios moved to 1.20.0 and explicit SDK-scoped overrides now bind patched descendants without a global major override. A first invalid form-data tree was rejected by npm ls and replaced by a layered parent/Axios override. Agent/UXP clean installs, zero-problem dependency trees, 595/595 and 148/148 integrity, real local OpenAPI JSON/multipart and TOS signed requests, protobuf/UUID behavior, adjacent provider regressions, types, production build, exact clean packaged startup and the single 64-stage core gate passed. Production audit fell from 17 to 6 with zero finding owned by this slice; commit 45e15560 and clean identities passed. No real credential, paid request or Photoshop write was used.",
       "Codex Runtime lazy startup D-108 (2026-08-29): the normal DeepSeek runtime exposed a preexisting unconditional startup cost because Main and Renderer both hydrated the ChatGPT subscription catalog, whose status read starts the bundled app-server. One shared subscription model-id identity now guards both startup consumers while settings, login, catalog, chat and image IPC remain on-demand. Clean installs, model routing, types, authorship/business/runtime/simplification/preload checks, production build, the single 63-stage core gate, commit 16db25ec and exact clean packaged identities passed. Credential-free same-build canaries showed exact DeepSeek primary/visual with zero D-108 codex.exe children, while an explicit codex-subscription model started exactly one restricted model-bridge process; neither canary sent a model request or touched Photoshop. Normal user restart remains pending.",
@@ -134,6 +135,8 @@
     ]
   },
   "unverified": [
+    "D-114 final closure: after the single 65-stage maintenance:validate passed, an independent commit, clean Agent/UXP build identities and a fresh r36 exact-DeepSeek/Photoshop attempt must prove a normal terminal with the first-mutation revision fact present, one settled task document, same-revision editable/raster delivery and all six protected user document histories unchanged. r35 remains a reconciled failed sample and cannot be relabeled.",
+    "r35 visual quality correction: the automatic 90 score overstates a composition with an oversized title and the factual copy error 木耳耳边 instead of 木耳边. A separate Evaluation/knowledge slice needs multi-case blinded calibration and factual-copy verification; D-114 does not alter design prompts or scores.",
     "D-105 paid live Provider evidence: with explicit budget authorization, use isolated non-user inputs to verify the actual Smile account groups, billing path, each selected upstream model, output MIME/dimensions/digest and cancellation. Photoshop placement and commercial visual quality are separate acceptance layers. Existing mock HTTP tests, historical comments and key presence cannot substitute for this evidence.",
     "Dependency security closure after D-110: Electron 44/Node 24, OpenAI 7/Zod 4, Volcengine network descendants and Sharp 0.35/libvips are independently migrated and validated. The 2026-08-29 Agent production audit now contains only ONNX/adm-zip (2 high); Agent all-dependency audit is 23 and UXP remains 7, so ONNX and both build chains still require separate reachability, upgrade and rollback slices. Dynamic count reduction alone is not a completion criterion, and Sharp platform/format coverage beyond Windows x64 PNG/JPEG/WebP remains unverified.",
     "D-103 exact-build Photoshop evidence: load clean integrated Agent/UXP artifacts only after r32 reconciliation, D-097 r33 and the ordered D-102 canary; then separately verify the versioned Provider and the real panel-button UXP-to-Main-to-UXP path on isolated documents with target-bound receipts and cleanup. Real commercial quality additionally requires a naturally medium-bent single complete sock with clear cuff/pattern; the audited C-1256, cross-product 36 plus 48 samples and C-1024 set did not provide one, so applicability remains unknown.",
@@ -171,6 +174,8 @@
     "Live browser-extension 1.1.0 end-to-end: after reloading the extension in Chrome/Edge, a real logged-in Taobao detail page must verify readBrowserPage(includeImages:true) returns product image pixels that enter the model vision channel, and captureBrowserTab(fullPage:true) produces a correctly stitched long screenshot; anti-hotlink/CDN hit rate and image quality remain code-level only."
   ],
   "topRisks": [
+    "The first-mutation baseline producer/consumer contract drift made a real single-document D-113 delivery fail as unknown: the object-revision comparison was computed but omitted from the v2 receipt. D-114 and its single 65-stage core gate pass with direct producer-to-consumer coverage, but the risk remains open until clean identities and r36 pass without relaxing the consumer.",
+    "r35 shows the automated VLM Judge can assign a uniform 0.9/90 while missing an oversized title and the factual copy error 木耳耳边. Technical completion, model self-review and file delivery must remain separate from professional quality and blind human review.",
     "The dependency graph is installable and peer-consistent after D-104, but security is not closed: Electron 28.3.3 embeds EOL Node 18.18.2, OpenAI 4 relies on a Zod compatibility override, and the 2026-08-29 dynamic audits report 40 Agent and 7 UXP findings. Electron/OpenAI, Volcengine/network, image runtime and build-chain upgrades must remain separate rollback slices; do not run a global audit fix.",
     "The single Photoshop/UXP Host remains globally shared. D-096 can prevent cooperative official loaders from replacing it during formal capture, but a user-triggered UDT reload or third-party direct UDT call can bypass the lease; submission, first-write and completion runtime bindings remain the safety authority until r33 proves the combined path.",
     "The P0 declaration repair is still a late in-loop binding seam. The next architecture reduction should pre-bind one canonical runtimeProfileId before the full Agent is constructed, then retire the duplicate late-binding migration cluster atomically; deleting only half of that cluster would split TaskRun, Capability, budget and Evaluation ownership.",
@@ -197,6 +202,8 @@
     "R-040 is contained on the current chain, but M5 must still establish the single Release Gate and remove all bypass consumers."
   ],
   "nextActions": [
+    "Commit the fully validated D-114 slice independently and rebuild matching clean Agent/UXP identities without weakening the Reliability validator; do not repeat the already-passed 65-stage core gate.",
+    "Prepare a fresh r36 fixture and run the same natural main-image request with DeepSeek official deepseek-v4-flash-vision-exp. Require one settled TaskRun document, explicit first-mutation revision-unchanged proof, normal terminal, same-revision PSD/JPG, zero user correction and unchanged protected document histories; judge visual quality separately.",
     "Finish D-096 adjacent audits, Main/Renderer typecheck, Agent production build and one complete maintenance:validate; create an independent commit and rebuild matching clean Agent/UXP identities.",
     "Do not save, close or discard the currently open Photoshop documents. After the user finishes viewing and closes the r32 fixture document, reconcile the unknown-write Attempt under a restarted clean Runtime with zero pending requests; never bypass or move the canonical ledger.",
     "Prepare a fresh r33 fixture and run the fixed natural-language case with DeepSeek official deepseek-v4-flash-vision-exp, proving D-095 first-write recovery, D-096 loader exclusion, unchanged external document revisions and same-revision editable/raster delivery before blind review.",
@@ -322,48 +329,48 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "CREATED-DOCUMENT-LIFECYCLE-113",
-    "summary": "Settle every Photoshop document created by the current TaskRun before another document is created or the task completes, without automatic close or model-argument rewriting.",
-    "status": "lifecycle_preflight_completion_cross_reflexion_and_live_agent_loop_implemented_targeted_audits_types_agent_build_and_unique_full_core_65_passed_commit_clean_identities_and_r35_pending",
+    "id": "FIRST-MUTATION-RECEIPT-114",
+    "summary": "Project the protected-document revision comparison already computed by the guarded Photoshop baseline into its v2 receipt and prove the real producer contract against the Reliability consumer.",
+    "status": "r35_reconciled_root_cause_confirmed_field_and_producer_consumer_contract_implemented_targeted_audits_types_agent_uxp_builds_and_unique_full_core_65_passed_commit_clean_identities_and_r36_pending",
     "scope": [
-      "Track each trusted current-TaskRun document_creation through its latest Photoshop revision and partial delivery or explicit close settlement.",
-      "Block only a subsequent createDocument or composeDesign(new) while an earlier created document remains unsettled; allow active-document revision and sequential multi-document delivery.",
-      "Require every created document to satisfy the current raster/editable delivery scope or carry a successful exact-document close result before Completion passes.",
-      "Do not automatically close a document, rewrite new to active, choose a design candidate or bypass destructive-action confirmation.",
-      "Pass reusable attacks, types, production build, one full core gate, an independent commit, clean identities and a fresh r35 exact-DeepSeek Photoshop E2E."
+      "Persist and serialize preexistingDocumentRevisionsUnchanged only from the existing documentId/historyStateId assessment.",
+      "Clear the fact on recoverable pre-dispatch tool rejection and expose false on real revision drift while preserving fail-closed behavior.",
+      "Feed a real producer-generated completion receipt directly into the existing Reliability consumer instead of relying on hand-written success fixtures.",
+      "Do not relax runtime binding, document ownership, completion reconciliation, interaction accounting or protected-user-document checks.",
+      "Pass targeted attacks, types, production builds, one full core gate, an independent commit, clean identities and a fresh r36 exact-DeepSeek Photoshop E2E."
     ]
   },
   "activeRequest": {
-    "id": "CREATED-DOCUMENT-LIFECYCLE-113",
-    "summary": "Close the r34 zero-intervention gap by adding a category-neutral per-document settlement lifecycle to the existing TaskRun creation evidence, execution preflight and Completion owners.",
-    "status": "d112_commit_and_r34_reconciliation_complete_d113_implementation_targeted_audits_types_agent_build_and_unique_full_core_65_passed_commit_clean_identities_and_r35_pending_deepseek_exact_model_preserved",
+    "id": "FIRST-MUTATION-RECEIPT-114",
+    "summary": "Close the r35 false unknown-write failure by aligning the existing guarded-baseline producer with the already-strict Reliability consumer, then repeat the fixed case on a fresh fixture.",
+    "status": "d113_commit_and_r35_reconciliation_complete_d114_implementation_and_producer_consumer_attack_complete_targeted_audits_types_agent_uxp_builds_and_unique_full_core_65_passed_commit_clean_identities_and_r36_pending_deepseek_exact_model_preserved",
     "mustDo": [
-      "Project lifecycle state only from trusted document_creation commits, exact source-revision save/export receipts and successful exact-document close results.",
-      "Reject a second new-document write while a current-TaskRun document remains unsettled, and give the same Agent facts needed to replan toward active revision or settlement.",
-      "Verify the full created-document set in existing creative and Profile Completion while preserving explicit raster-only and editable-only delivery scopes.",
-      "Carry latest revision and partial settlement across Reflexion without granting Tool, close, quality or completion authority.",
-      "Pass reusable attacks, types, production build, one full core gate, an independent commit and a fresh r35 real DeepSeek/Photoshop E2E."
+      "Carry the first-mutation protected-document revision comparison from the baseline assessment into the v2 receipt without another state owner.",
+      "Prove true on unchanged objects, false on drift and reset on the existing recoverable pre-dispatch rejection path.",
+      "Run the actual producer receipt through validateDebugBridgeReceipt so future protocol drift fails the reusable suite.",
+      "Preserve the exact D-113 lifecycle, external-document histories, runtime binding and completion requirements.",
+      "Pass production builds, one full core gate, an independent commit and a fresh r36 real DeepSeek/Photoshop E2E."
     ],
     "mustNotDo": [
-      "Do not infer lifecycle from filenames, category terms, assistant prose, directory scans or model self-reports.",
-      "Do not automatically invoke closeDocument or saveDocument, silently rewrite composeDesign parameters or select which candidate to keep.",
-      "Do not accept stale-revision, cross-document, failed, policy-gated or name-only close evidence.",
-      "Do not prohibit legitimate multi-document work after the preceding document has been settled.",
-      "Do not mix Task Profile reliability, context compression, semantic matting, design-quality tuning or dependency upgrades into this rollback slice."
+      "Do not delete or weaken the Reliability consumer assertion, default the field to true or synthesize it from request text, model output or file paths.",
+      "Do not add a second baseline, receipt ledger, transaction owner or case-specific r35 condition.",
+      "Do not relabel the reconciled r35 Attempt as technical success or zero-intervention success.",
+      "Do not mix the r35 copy/composition defect into this receipt-contract rollback slice.",
+      "Do not switch from deepseek-v4-flash-vision-exp or enable provider fallback."
     ]
   },
   "activePlan": {
-    "id": "CREATED-DOCUMENT-LIFECYCLE-113",
+    "id": "FIRST-MUTATION-RECEIPT-114",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：D-112 独立提交、clean identities、65/65 与 fresh r34 exact DeepSeek/Photoshop 运行。",
-      "已完成：r34 v1/v2 创建集合、v2 同 revision PSD/JPG、外层 orphan 拒绝、人工恢复与 canonical reconciliation 归因。",
-      "已完成：TaskRun 创建文档生命周期投影、跨 Reflexion 可信延续与项目真相源更新。",
-      "已完成：未结算候选后的再次新建 preflight，以及 active 修订 /顺序多文档相邻路径。",
-      "已完成：creative /Profile Completion 全创建集合终态核对和 D-112 显式单格式 /paired 交付范围回归。",
-      "已完成：专项攻击、相邻审计、Main /Renderer 类型、简化棘轮、仓库卫生与 Agent production build。",
-      "已完成：最终差异审查与提交前唯一完整核心 65/65。",
-      "待完成：独立提交、clean identities 与 fresh r35 真机。",
+      "已完成：D-113 独立提交、clean identities、65/65 与 fresh r35 exact DeepSeek/Photoshop 运行。",
+      "已完成：r35 单文档 lifecycle、同 revision PSD/JPG、外部文档零变化、正式拒绝与 canonical reconciliation 归因。",
+      "已完成：定位 assessment 已计算但 v2 receipt 漏序列化 preexistingDocumentRevisionsUnchanged 的 producer/consumer 协议漂移。",
+      "已完成：baseline state /receipt 字段、recoverable reset 与 real-drift false 投影。",
+      "已完成：producer 真实完成收据直达 Reliability consumer 的集成攻击测试。",
+      "已完成：Design Reliability、业务 /Runtime /作者权 /变更边界与 Main /Renderer 类型检查。",
+      "已完成：项目真相源、生产构建、仓库卫生与提交前唯一完整核心 65/65。",
+      "进行中：独立提交、clean identities 与 fresh r36 真机。",
       "后续：Task Profile 绑定、上下文效率、D-102 /D-103 与商业质量独立治理。"
     ]
   },
@@ -383,5 +390,5 @@
     "capabilityDenialSuspectCount": null,
     "note": "治理切片 1/2 代码完成前的历史基线；治理后窗口由真实运行回填并用 debug:runs --convergence 对照。2026-08-16 治理切片 9 补齐两项收敛机制：首次写入延迟（run record toolCalls 增 elapsedMs 时序）与疑似能力误判启发式计数；这两项的基线值为 null（旧档案无时序、无计数口径），待新版本真机运行数据回填后补录再对照。"
   },
-  "lastUpdated": "2026-08-29"
+  "lastUpdated": "2026-08-30"
 }

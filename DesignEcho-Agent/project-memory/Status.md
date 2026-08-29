@@ -2,6 +2,16 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-30 D-114 /r35 首写收据 producer-consumer 漂移
+
+- D-113 已提交 `805680302fb577ce0ca24c128f05b0345cbe031d`；clean Agent /UXP buildId 分别为 `designecho-805680302fb5-45ebecc9acad` 与 `designecho-uxp-production-805680302fb5-cb76a9e9c3fe`，提交前唯一完整核心 65/65 与两端 production build 通过。
+- fresh r35 使用 fixture `fixture-20260829153743-deba398b5ddd`、正式 `deepseek-v4-flash-vision-exp` 和真实 Photoshop。约 685 秒内完成 37 次模型请求、41 次 Tool、2,975,105 input /60,013 output tokens；模型 /Tool failure 均为 0。
+- Agent 只创建 document 6000，并在同一对象修订到 history 6013；D-113 Completion 为 `created=1 /settled=1 /delivered=1 /unsettled=0`。PSD 29,771,768 字节与 JPG 907,206 字节已落盘，6 个外部用户文档的 document/history 全程未变。
+- 正式 Attempt 没有通过：baseline assessment 已按真实 document/history 比较得到 `preexistingDocumentRevisionsUnchanged=true`，但 baseline state 与 v2 receipt 漏掉该字段；Reliability consumer 正确要求 passed 首写收据显式携带 true，因此返回 `submission_unknown_write_state`。这不是 D-113 lifecycle、save/export 或 Photoshop 写入失败。
+- 测试文档只在 clean/save 状态下被关闭；Agent Runtime 重启、UXP 重载、0 pending、0 fixture 文档与 6 个外部稳定对象均经读回确认。Attempt 已追加 `reconciled_after_runtime_restart`，r35 仍不计技术成功。
+- D-114 已在唯一 baseline owner 中保存 /序列化该对象事实；可恢复非写拒绝会清空，真实 revision 漂移会输出 false 并永久阻断。新增测试把 producer 生成的真实完成收据直接送入 Reliability consumer，避免手写 fixture 再次掩盖协议漂移。Design Reliability、业务 /Runtime /作者权 /变更边界、Main /Renderer 类型、Agent /UXP production build 与提交前唯一完整核心 65/65 通过；独立提交、clean identities 和 r36 待完成。
+- 独立视觉复核把 r35 判为 `needs_fix`：产品摄影和色调成立，但大标题压住腿部，且“木耳边”被错误写成“木耳耳边”。自动 90 分明显过高，不能替代人工盲评或正确文案核对。
+
 ## 2026-08-29 D-113 /r34 本 TaskRun 新建文档生命周期缺口
 
 - D-112 已以 `8604c6f6` 独立提交并完成 clean Agent /UXP identities、Agent production build 与唯一完整核心 65/65。fresh r34 使用 exact D-112、正式 `deepseek-v4-flash-vision-exp`、正常持久 Key 和真实 Photoshop，证明 Agent 能自主形成同 revision PSD 20,385,121 字节与 JPG 1,282,877 字节。

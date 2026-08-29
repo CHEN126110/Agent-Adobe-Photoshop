@@ -6,6 +6,20 @@
 
 ## 当前高风险
 
+### R-060 首写基线 producer 漏字段会让真实成功被 Reliability 恒定拒绝
+
+- 事实：r35 的首写前 Runtime、6 个前置对象 revision、唯一 createDocument、完成对账和双格式交付均真实通过；但 `assessGuardedPhotoshopDocuments()` 计算的 `preexistingDocumentRevisionsUnchanged` 没有进入 baseline state /v2 receipt，Reliability consumer 对 passed receipt 要求该值为 true，结果恒为 undefined 并把已写状态归类 unknown。
+- 影响：Agent、Photoshop 和交付都正确时仍会浪费约 11 分钟模型 /Tool 成本、fixture 与人工现场恢复；若用删除断言、默认 true 或改账绕过，又会失去外部用户文档 revision 保护。分开的 producer /consumer 绿色测试会继续掩盖同类协议漂移。
+- 处理：D-114 只在 baseline owner 保存并投影真实 comparison 值；非写可恢复拒绝清空，真实漂移投影 false。producer 的实际完成收据必须直接通过 Reliability consumer，另有漂移攻击证明不能伪造。专项、类型、两端 production build 与唯一完整核心 65/65 通过，独立提交 /clean identities /r36 待完成。
+- 关闭条件：独立提交、clean Agent /UXP identities 和 fresh r36 正常 terminal 通过；r36 首写 proof 显式为 true、完成对账通过、6 个用户文档 history 不变。一次 r36 只关闭本协议风险，不代表多样本稳定率或视觉质量达标。
+
+### R-059 自动 VLM 评分会高估文案错误与过重构图
+
+- 事实：r35 自动 Scorecard 对 16 项统一给出 0.9、总分 90，并声称标题对齐与商品表达全部通过；原图独立复核可见标题面积过大并压住腿部，更有“木耳边”被写成“木耳耳边”的明确文案错误。Agent 最终正文也重复该错误。
+- 影响：若把模型自评当质量 Gate，技术文件齐全会被误报为专业设计达标；错误卖点可直接进入商业交付，均匀高分又无法提供有效修订优先级。反过来把固定字号 /配方写进 Harness 也会侵占 Agent 作者权并制造新的品类补丁。
+- 处理：r35 视觉状态保持 `needs_fix`。本轮 D-114 不改 Evaluation；后续独立切片要把 Brief 中的事实文案一致性与真正视觉判断分轴，使用 Eagle /用户成稿盲评和多 Case 校准自动 Judge，只对有证据的诊断修订，不用固定版式处方。
+- 关闭条件：固定未见 Case 的多次盲评证明自动 verdict 与人工排序达到预设一致性；明显错字 /重复卖点能在发布前被事实 owner 检出；质量提高且 TaskRun、交付、人工介入与速度均不回退。单张修好或调低分数不能关闭。
+
 ### R-058 本 TaskRun 创建集合存在未交付 /未关闭的孤立 Photoshop 文档
 
 - 事实：fresh r34 的真实 DeepSeek Agent 在主图 `create_new` 任务中成功创建 v1 文档 5939，发现对比度问题后又新建 v2 文档 5968；只为 v2 生成同 revision PSD/JPG。Profile Completion 因“已创建文档 + 最终交付”通过，但 v1 仍 `unsaved + dirty`，外层 Attempt 只能以 `new_outside_document_opened` 拒绝。人工关闭 v1 才恢复现场，因此零人工介入失败。

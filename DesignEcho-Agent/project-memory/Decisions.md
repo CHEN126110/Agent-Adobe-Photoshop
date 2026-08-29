@@ -2,6 +2,15 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-114 首写对象 revision 不变事实由 baseline owner 计算并贯穿 v2 收据
+
+- 状态：已采用；r35 真实失败与官方 reconciliation 完成，代码、producer/consumer 集成攻击、Design Reliability、相邻边界、Main /Renderer 类型、Agent /UXP production build 与提交前唯一完整核心 65/65 通过；独立提交、clean identities 与 r36 待完成。
+- 触发事实：r35 的 D-113 生命周期、同 revision PSD/JPG、内部 Completion 与 6 个用户文档保护均真实通过，但外层 Reliability 报“首次 Photoshop 写入隔离基线收据与对象级文档归属或 Runtime Build 事实不一致”。源码对账证明 assessment 已计算 `preexistingDocumentRevisionsUnchanged`，receipt producer 没有序列化，而 consumer 强制要求 passed 值为 true。
+- 决定：在现有 `GuardedPhotoshopExecutionBaseline` 中保存 assessment 的布尔事实，并由 `readGuardedPhotoshopExecutionBaselineReceipt()` 原样投影。错误首写工具在 Host dispatch 前可恢复时清空该值并重新观察；真实对象 revision 漂移投影 false 并保持 blocked。v2 版本不升级，因为 consumer 与既有手写 v2 fixture 已把该字段视为 intended contract；本修复是在 producer 补齐既有契约，不改变语义。
+- 测试裁决：不能再只分别测试 producer 和 consumer。Design Reliability 必须用 producer 实际生成且完成对账的 receipt 直接调用 consumer validator，并保留 true /false 攻击断言。手写 receipt 只覆盖其它协议组合，不得作为本字段唯一绿色证据。
+- 不做：不删除或放宽 consumer 断言，不用默认 true，不从请求 /模型 /文件名补值，不新增第二基线账本，也不把 r35 视觉问题混进 Harness 收据修复。
+- 回滚点：若字段导致非正式路径行为变化，可回退 D-114；回退后正式采集 passed 首写会再次恒失败，因此不能把回退版本用于 Reliability 发布结论。
+
 ## D-113 本 TaskRun 新建文档按对象逐个结算，Harness 不替 Agent 关闭或改稿
 
 - 状态：已采用并完成代码与提交前验证阶段；D-112 提交、clean identities、65/65 与 r34 真实归因已完成，D-113 运行事实 /业务 /Runtime /作者权 /工具 /Executor /Capability /简化棘轮、类型、Agent production build 与唯一完整核心 65/65 通过；独立提交、clean identities 与 r35 待验证。

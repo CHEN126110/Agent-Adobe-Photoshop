@@ -77,6 +77,7 @@ export interface GuardedPhotoshopExecutionBaseline {
     openOutsideFixtureDocumentCount?: number;
     unresolvedOwnershipDocumentCount?: number;
     dirtyOutsideFixtureDocumentCount?: number;
+    preexistingDocumentRevisionsUnchanged?: boolean;
     observedPhotoshopRuntimeBuildId?: string;
     observedPhotoshopRuntimeIdentity?: DebugBridgePhotoshopRuntimeLiveIdentity;
     error?: string;
@@ -107,6 +108,7 @@ export interface GuardedPhotoshopExecutionBaselineReceipt {
     openOutsideFixtureDocumentCount?: number;
     unresolvedOwnershipDocumentCount?: number;
     dirtyOutsideFixtureDocumentCount?: number;
+    preexistingDocumentRevisionsUnchanged?: boolean;
     observedPhotoshopRuntimeBuildId?: string;
     observedPhotoshopRuntimeIdentity?: DebugBridgePhotoshopRuntimeLiveIdentity;
     error?: string;
@@ -338,6 +340,7 @@ function rejectNonMutatingFirstToolSelection(
     baseline.openOutsideFixtureDocumentCount = undefined;
     baseline.unresolvedOwnershipDocumentCount = undefined;
     baseline.dirtyOutsideFixtureDocumentCount = undefined;
+    baseline.preexistingDocumentRevisionsUnchanged = undefined;
     baseline.observedPhotoshopRuntimeBuildId = undefined;
     baseline.observedPhotoshopRuntimeIdentity = undefined;
     baseline.error = undefined;
@@ -439,6 +442,12 @@ export function readGuardedPhotoshopExecutionBaselineReceipt(
             : {}),
         ...(Number.isSafeInteger(baseline.dirtyOutsideFixtureDocumentCount)
             ? { dirtyOutsideFixtureDocumentCount: baseline.dirtyOutsideFixtureDocumentCount }
+            : {}),
+        ...(typeof baseline.preexistingDocumentRevisionsUnchanged === 'boolean'
+            ? {
+                preexistingDocumentRevisionsUnchanged:
+                    baseline.preexistingDocumentRevisionsUnchanged
+            }
             : {}),
         ...(baseline.observedPhotoshopRuntimeBuildId
             ? { observedPhotoshopRuntimeBuildId: baseline.observedPhotoshopRuntimeBuildId }
@@ -548,6 +557,8 @@ export async function enforceGuardedPhotoshopExecutionBaseline(
             baseline.openOutsideFixtureDocumentCount = documentAssessment.openOutsideFixtureDocumentCount;
             baseline.unresolvedOwnershipDocumentCount = documentAssessment.unresolvedOwnershipDocumentCount;
             baseline.dirtyOutsideFixtureDocumentCount = documentAssessment.dirtyOutsideFixtureDocumentCount;
+            baseline.preexistingDocumentRevisionsUnchanged =
+                documentAssessment.preexistingDocumentRevisionsUnchanged;
             if (!documentAssessment.ready) {
                 const reason = documentAssessment.blocker || 'document_inventory_unavailable';
                 if (reason === 'first_mutation_must_create_task_document') {
