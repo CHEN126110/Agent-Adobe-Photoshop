@@ -2439,6 +2439,18 @@ function readGuardedOpenDocumentCount(value: unknown): number | undefined {
     return (value as any).documents.length;
 }
 
+function readGuardedOpenDocumentIds(value: unknown): number[] | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    if ((value as any).success === false || !Array.isArray((value as any).documents)) return undefined;
+    const ids: number[] = [];
+    for (const document of (value as any).documents) {
+        const id = Number(document?.id);
+        if (!Number.isSafeInteger(id) || id <= 0) return undefined;
+        ids.push(id);
+    }
+    return ids;
+}
+
 function buildCancelledToolResult(toolName: string): Record<string, any> {
     return {
         success: false,
@@ -2481,6 +2493,13 @@ async function sendToPluginWithCancellation(
                     readGuardedOpenDocumentCount(await callPhotoshopMcpTool(
                         'listDocuments',
                         { includeDetails: false },
+                        { signal, timeoutMs: 5_000 }
+                    ))
+                ),
+                observeOpenDocumentIds: async (): Promise<number[] | undefined> => (
+                    readGuardedOpenDocumentIds(await callPhotoshopMcpTool(
+                        'listDocuments',
+                        { includeDetails: false, includePaths: false },
                         { signal, timeoutMs: 5_000 }
                     ))
                 )

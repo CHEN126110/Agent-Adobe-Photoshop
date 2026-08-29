@@ -5233,7 +5233,65 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         `当前 Photoshop Runtime 完整身份与受控调试指定版本不一致（期望 ${expectedPhotoshopRuntimeBuildId}，实际 ${submittedPhotoshopRuntimeBuildId || 'unknown'}）。`
                     );
                 }
+                if (request.requireNoOpenPhotoshopDocuments === true
+                    && request.requireExternalDirtyDocumentUntouched === true) {
+                    throw new Error('文档策略冲突：none_open 与 external_dirty_document_open 不能同时要求。');
+                }
+                // 逐文档读取历史身份的受控观察。history 字段缺失（旧插件）时如实失败，
+                // 不能让"读不到"降级成"默认没被改过"。
+                const readExternalDirtyDocumentObservation = async (): Promise<{
+                    documentId: number;
+                    name: string;
+                    activeHistoryStateId: number;
+                    historyStateCount: number;
+                    saved: boolean;
+                }[]> => {
+                    const documentListResult = await executeToolCall('listDocuments', {
+                        includeDetails: false,
+                        includePaths: false,
+                        includeHistory: true
+                    });
+                    if (documentListResult?.success !== true
+                        || !Array.isArray(documentListResult?.documents)) {
+                        throw new Error('无法可靠读取 Photoshop 文档列表，本轮受控调试不会提交模型或执行写入。');
+                    }
+                    return documentListResult.documents.map((document: {
+                        id?: number;
+                        name?: string;
+                        activeHistoryStateId?: number;
+                        historyStateCount?: number;
+                        saved?: boolean;
+                        historyStatusReason?: string;
+                    }) => {
+                        const documentId = Number(document?.id);
+                        const activeHistoryStateId = Number(document?.activeHistoryStateId);
+                        const historyStateCount = Number(document?.historyStateCount);
+                        if (!Number.isSafeInteger(documentId) || documentId <= 0
+                            || !Number.isSafeInteger(activeHistoryStateId) || activeHistoryStateId <= 0
+                            || !Number.isSafeInteger(historyStateCount) || historyStateCount < 0
+                            || typeof document?.saved !== 'boolean') {
+                            throw new Error(
+                                `无法读取文档 ${document?.name || document?.id || 'unknown'} 的完整历史身份`
+                                + `${document?.historyStatusReason ? `（${document.historyStatusReason}）` : '（当前 Photoshop 插件可能不支持 includeHistory）'}；`
+                                + '外部文档隔离基线无法建立，本轮受控调试不会提交模型。'
+                            );
+                        }
+                        return {
+                            documentId,
+                            name: String(document?.name || '').trim() || `document-${documentId}`,
+                            activeHistoryStateId,
+                            historyStateCount,
+                            saved: document.saved
+                        };
+                    });
+                };
                 let openPhotoshopDocumentCountAtSubmission: number | null = null;
+                let externalDocumentAtSubmission: {
+                    documentId: number;
+                    name: string;
+                    activeHistoryStateId: number;
+                    historyStateCount: number;
+                } | null = null;
                 if (request.requireNoOpenPhotoshopDocuments === true) {
                     const documentListResult = await executeToolCall('listDocuments', {
                         includeDetails: false
@@ -5248,11 +5306,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     if (openDocumentCount > 0) {
                         throw new Error(`Photoshop 当前仍打开 ${openDocumentCount} 个既有文档；请先安全处理这些文档，再运行隔离测试。`);
                     }
+                } else if (request.requireExternalDirtyDocumentUntouched === true) {
+                    const observedDocuments = await readExternalDirtyDocumentObservation();
+                    throwIfDebugRequestCancelled();
+                    openPhotoshopDocumentCountAtSubmission = observedDocuments.length;
+                    if (observedDocuments.length !== 1) {
+                        throw new Error(
+                            `外部脏文档基线要求提交前恰好打开 1 个外部文档，实际 ${observedDocuments.length} 个；本轮受控调试不会提交模型。`
+                        );
+                    }
+                    const [observedDocument] = observedDocuments;
+                    if (observedDocument.saved !== false) {
+                        throw new Error(
+                            `外部文档「${observedDocument.name}」当前没有未保存修改；该基线专门验证 dirty 文档不被触碰，请先让它带上未保存修改。`
+                        );
+                    }
+                    externalDocumentAtSubmission = {
+                        documentId: observedDocument.documentId,
+                        name: observedDocument.name,
+                        activeHistoryStateId: observedDocument.activeHistoryStateId,
+                        historyStateCount: observedDocument.historyStateCount
+                    };
                 }
                 const guardedPhotoshopExecutionBaseline = createGuardedPhotoshopExecutionBaseline({
                     requestId: debugRequestId,
                     expectedPhotoshopRuntimeBuildId,
-                    expectedPhotoshopRuntimeBinding
+                    expectedPhotoshopRuntimeBinding,
+                    ...(externalDocumentAtSubmission
+                        ? {
+                            documentPolicy: 'external_dirty_document_open' as const,
+                            externalDocument: externalDocumentAtSubmission
+                        }
+                        : {})
                 });
                 if (request.resetConversation) {
                     resetChatTestConversation();
@@ -5341,6 +5426,35 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     const firstPhotoshopMutationBaseline = readGuardedPhotoshopExecutionBaselineReceipt(
                         guardedPhotoshopExecutionBaseline
                     );
+                    // 外部脏文档基线的完成侧读回：同一文档必须仍然打开、history 身份逐项一致、
+                    // 依旧带未保存修改。任何一项对不上都如实写进收据，由评测端拒绝，不在这里吞掉。
+                    let externalDocumentAtCompletion: {
+                        documentId: number;
+                        name: string;
+                        activeHistoryStateId: number;
+                        historyStateCount: number;
+                    } | null = null;
+                    let externalDocumentUntouchedThroughCompletion: boolean | null = null;
+                    if (externalDocumentAtSubmission) {
+                        const completedDocuments = await readExternalDirtyDocumentObservation();
+                        const matched = completedDocuments.find(
+                            (document) => document.documentId === externalDocumentAtSubmission!.documentId
+                        );
+                        if (matched) {
+                            externalDocumentAtCompletion = {
+                                documentId: matched.documentId,
+                                name: matched.name,
+                                activeHistoryStateId: matched.activeHistoryStateId,
+                                historyStateCount: matched.historyStateCount
+                            };
+                            externalDocumentUntouchedThroughCompletion =
+                                matched.activeHistoryStateId === externalDocumentAtSubmission.activeHistoryStateId
+                                && matched.historyStateCount === externalDocumentAtSubmission.historyStateCount
+                                && matched.saved === false;
+                        } else {
+                            externalDocumentUntouchedThroughCompletion = false;
+                        }
+                    }
                     return {
                         snapshot,
                         receipt: {
@@ -5356,12 +5470,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                             ),
                             photoshopDocumentPolicy: request.requireNoOpenPhotoshopDocuments === true
                                 ? 'none_open'
-                                : 'not_required',
+                                : (request.requireExternalDirtyDocumentUntouched === true
+                                    ? 'external_dirty_document_open'
+                                    : 'not_required'),
                             openPhotoshopDocumentCountAtSubmission,
                             photoshopDocumentGuardPassedAtSubmission: Boolean(
-                                request.requireNoOpenPhotoshopDocuments === true
-                                && openPhotoshopDocumentCountAtSubmission === 0
+                                (request.requireNoOpenPhotoshopDocuments === true
+                                    && openPhotoshopDocumentCountAtSubmission === 0)
+                                || (request.requireExternalDirtyDocumentUntouched === true
+                                    && openPhotoshopDocumentCountAtSubmission === 1
+                                    && externalDocumentAtSubmission !== null)
                             ),
+                            ...(externalDocumentAtSubmission
+                                ? {
+                                    externalDocumentAtSubmission,
+                                    externalDocumentAtCompletion,
+                                    externalDocumentUntouchedThroughCompletion:
+                                        externalDocumentUntouchedThroughCompletion === true
+                                }
+                                : {}),
                             expectedPhotoshopRuntimeBuildId,
                             expectedPhotoshopRuntimeBinding,
                             submittedPhotoshopRuntimeIdentity,

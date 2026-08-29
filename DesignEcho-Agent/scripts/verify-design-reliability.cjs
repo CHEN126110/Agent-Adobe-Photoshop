@@ -76,8 +76,10 @@ const {
   prepareFixture,
   prepareAnonymousReviewPacket,
   readFixtureInstance,
+  readReceiptExternalDocumentIdentity,
   recordAnonymousReview,
   readDebugBridgeExecutionFailure,
+  resolveCasePhotoshopDocumentPolicy,
   revalidateOfficialReviewBundles,
   retainContextuallyValidReviews,
   retainContextuallyValidAttemptEvents,
@@ -923,6 +925,74 @@ async function main() {
     assert.strictEqual(decision.ready, false, `${blockedCase.name} must block before mutation dispatch`);
     assert.strictEqual(decision.receipt.status, "blocked");
   }
+
+  // external_dirty_document_open 基线：首写前必须恰好只有冻结的外部文档打开。
+  const externalBaselineIdentity = {
+    documentId: 4201,
+    name: "外部占用文档-请勿触碰",
+    activeHistoryStateId: 90017,
+    historyStateCount: 4
+  };
+  assert.throws(
+    () => guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+      requestId: "debug-request-external-missing-identity",
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: baselineRuntimeBinding,
+      documentPolicy: "external_dirty_document_open"
+    }),
+    /外部文档冻结身份/,
+    "缺外部文档身份时 external 基线不得创建"
+  );
+  for (const externalCase of [
+    { name: "only external doc open", openDocumentIds: [4201], expectReady: true },
+    { name: "external doc closed", openDocumentIds: [], expectReady: false },
+    { name: "different doc open", openDocumentIds: [999], expectReady: false },
+    { name: "extra doc open", openDocumentIds: [4201, 999], expectReady: false },
+    { name: "ids unavailable", openDocumentIds: undefined, expectReady: false }
+  ]) {
+    const externalBaseline = guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+      requestId: `debug-request-external-${externalCase.name}`,
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: baselineRuntimeBinding,
+      documentPolicy: "external_dirty_document_open",
+      externalDocument: externalBaselineIdentity
+    });
+    const externalDecision = await guardedBaselineModule.enforceGuardedPhotoshopExecutionBaseline(
+      externalBaseline,
+      "createDocument",
+      {
+        observePhotoshopRuntimeIdentity: async () => baselineRuntimeIdentity,
+        observeOpenDocumentCount: async () => {
+          throw new Error("external policy 不应回落到 count 观察者");
+        },
+        observeOpenDocumentIds: async () => externalCase.openDocumentIds
+      }
+    );
+    assert.strictEqual(
+      externalDecision.ready,
+      externalCase.expectReady,
+      `external baseline case: ${externalCase.name}`
+    );
+    assert.strictEqual(externalDecision.receipt.documentPolicy, "external_dirty_document_open");
+    if (externalCase.expectReady) {
+      assert.strictEqual(externalDecision.receipt.openDocumentCount, 1);
+      assert.strictEqual(
+        externalDecision.receipt.externalDocumentIdAtFirstMutation,
+        externalBaselineIdentity.documentId
+      );
+    } else {
+      assert.strictEqual(externalDecision.receipt.status, "blocked");
+    }
+  }
+  const legacyBaselineReceipt = guardedBaselineModule.readGuardedPhotoshopExecutionBaselineReceipt(
+    guardedBaselineModule.createGuardedPhotoshopExecutionBaseline({
+      requestId: "debug-request-legacy-policy",
+      expectedPhotoshopRuntimeBuildId: expectedPhotoshopBuildId,
+      expectedPhotoshopRuntimeBinding: baselineRuntimeBinding
+    })
+  );
+  assert.strictEqual(legacyBaselineReceipt.documentPolicy, "none_open",
+    "缺省基线策略必须保持 none_open");
 
   const duplicatePixelFixture = buildDebugProviderReceiptFixture({
     duplicateNormalizedPixels: true
@@ -2101,6 +2171,154 @@ async function main() {
   assert.strictEqual(Object.prototype.hasOwnProperty.call(firstMutationBaselineProof, "requestId"), false);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(firstMutationBaselineProof, "error"), false,
     "Attempt 只持久化脱敏首次写入证明，不能保存原始响应或错误正文");
+  // ===== 外部脏文档基线（external_dirty_document_open）攻击矩阵 =====
+  assert.strictEqual(
+    resolveCasePhotoshopDocumentPolicy({ boundaries: { devBenchmarkOnly: true } }),
+    "none_open",
+    "未声明外部脏文档边界的 Case 保持零文档隔离缺省"
+  );
+  assert.strictEqual(
+    resolveCasePhotoshopDocumentPolicy({
+      boundaries: { externalDirtyDocumentRemainsOpenAndUntouched: true }
+    }),
+    "external_dirty_document_open",
+    "声明外部脏文档边界的 Case 必须解析为对应策略"
+  );
+  assert.strictEqual(
+    readReceiptExternalDocumentIdentity({
+      documentId: 12, name: "外部占用文档", activeHistoryStateId: 88, historyStateCount: 3
+    })?.documentId,
+    12,
+    "完整外部文档身份必须可读"
+  );
+  assert.strictEqual(
+    readReceiptExternalDocumentIdentity({
+      documentId: 12, name: "外部占用文档", historyStateCount: 3
+    }),
+    null,
+    "缺 history 身份的外部文档记录不能当成真实观察"
+  );
+  const externalDocumentFrozen = {
+    documentId: 4201,
+    name: "外部占用文档-请勿触碰",
+    activeHistoryStateId: 90017,
+    historyStateCount: 4
+  };
+  const externalDirtyReceipt = {
+    ...validDebugReceipt,
+    photoshopDocumentPolicy: "external_dirty_document_open",
+    openPhotoshopDocumentCountAtSubmission: 1,
+    photoshopDocumentGuardPassedAtSubmission: true,
+    externalDocumentAtSubmission: externalDocumentFrozen,
+    externalDocumentAtCompletion: { ...externalDocumentFrozen },
+    externalDocumentUntouchedThroughCompletion: true,
+    firstPhotoshopMutationBaseline: {
+      ...validDebugReceipt.firstPhotoshopMutationBaseline,
+      documentPolicy: "external_dirty_document_open",
+      externalDocument: externalDocumentFrozen
+    }
+  };
+  const externalDirtyReceiptInput = {
+    ...validDebugReceiptInput,
+    photoshopDocumentPolicy: "external_dirty_document_open"
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalDirtyReceipt } },
+    externalDirtyReceiptInput
+  ).ok, true, "外部脏文档收据完整且 history 身份一致时必须可信");
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: validDebugReceipt } },
+    externalDirtyReceiptInput
+  ).ok, false, "外部脏文档 Case 不接受 none_open 收据冒充");
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalDirtyReceipt } },
+    validDebugReceiptInput
+  ).ok, false, "none_open Case 不接受外部脏文档收据冒充");
+  const externalHistoryDrift = {
+    ...externalDirtyReceipt,
+    externalDocumentAtCompletion: {
+      ...externalDocumentFrozen,
+      activeHistoryStateId: externalDocumentFrozen.activeHistoryStateId + 1,
+      historyStateCount: externalDocumentFrozen.historyStateCount + 1
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalHistoryDrift } },
+    externalDirtyReceiptInput
+  ).ok, false, "外部文档完成时 history 身份漂移（被触碰）必须拒绝");
+  const externalDocumentMissingAtCompletion = JSON.parse(JSON.stringify(externalDirtyReceipt));
+  externalDocumentMissingAtCompletion.externalDocumentAtCompletion = null;
+  externalDocumentMissingAtCompletion.externalDocumentUntouchedThroughCompletion = false;
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalDocumentMissingAtCompletion } },
+    externalDirtyReceiptInput
+  ).ok, false, "外部文档完成时已被关闭必须拒绝");
+  const externalWrongCount = {
+    ...externalDirtyReceipt,
+    openPhotoshopDocumentCountAtSubmission: 2
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalWrongCount } },
+    externalDirtyReceiptInput
+  ).ok, false, "提交时不是恰好 1 个外部文档必须拒绝");
+  const externalUntouchedFlagForged = {
+    ...externalDirtyReceipt,
+    externalDocumentUntouchedThroughCompletion: false
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalUntouchedFlagForged } },
+    externalDirtyReceiptInput
+  ).ok, false, "运行窗口自身未确认 untouched 时不能靠字段一致性放行");
+  const externalMutationBaselinePassed = {
+    ...externalDirtyReceipt,
+    firstPhotoshopMutationBaseline: {
+      ...externalDirtyReceipt.firstPhotoshopMutationBaseline,
+      status: "passed",
+      firstMutationToolName: "createDocument",
+      checkedAt: "2026-08-26T00:00:03.000Z",
+      openDocumentCount: 1,
+      externalDocumentIdAtFirstMutation: externalDocumentFrozen.documentId,
+      observedPhotoshopRuntimeBuildId: verifiedPhotoshopBuildId,
+      observedPhotoshopRuntimeIdentity: safePhotoshopRuntime
+    }
+  };
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalMutationBaselinePassed } },
+    externalDirtyReceiptInput
+  ).ok, true, "首写基线在外部脏文档策略下要求恰好该外部文档打开");
+  const externalMutationBaselineWrongDoc = JSON.parse(JSON.stringify(externalMutationBaselinePassed));
+  externalMutationBaselineWrongDoc.firstPhotoshopMutationBaseline.externalDocumentIdAtFirstMutation =
+    externalDocumentFrozen.documentId + 1;
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalMutationBaselineWrongDoc } },
+    externalDirtyReceiptInput
+  ).ok, false, "首写前打开的不是冻结外部文档必须拒绝");
+  const externalMutationBaselineZeroDocs = JSON.parse(JSON.stringify(externalMutationBaselinePassed));
+  externalMutationBaselineZeroDocs.firstPhotoshopMutationBaseline.openDocumentCount = 0;
+  assert.strictEqual(validateDebugBridgeReceipt(
+    { result: { receipt: externalMutationBaselineZeroDocs } },
+    externalDirtyReceiptInput
+  ).ok, false, "外部脏文档策略下首写前零文档说明外部文档被关闭，必须拒绝");
+  const externalObservationWithMutations = {
+    observed: { observedMutationCalls: 3 }
+  };
+  assert.strictEqual(validateMutationBaselineAgainstObservation(
+    externalMutationBaselinePassed,
+    externalObservationWithMutations,
+    verifiedPhotoshopBuildId,
+    "external_dirty_document_open"
+  ).ok, true, "外部脏文档策略的写入观察交叉校验要求基线绑定同一外部文档");
+  assert.strictEqual(validateMutationBaselineAgainstObservation(
+    externalMutationBaselineWrongDoc,
+    externalObservationWithMutations,
+    verifiedPhotoshopBuildId,
+    "external_dirty_document_open"
+  ).ok, false, "写入观察交叉校验不得放过绑定错误外部文档的基线");
+  assert.strictEqual(validateMutationBaselineAgainstObservation(
+    externalMutationBaselinePassed,
+    externalObservationWithMutations,
+    verifiedPhotoshopBuildId
+  ).ok, false, "none_open 交叉校验不得接受外部脏文档基线");
   const missingExpectedPhotoshopBuild = JSON.parse(JSON.stringify(validDebugReceipt));
   delete missingExpectedPhotoshopBuild.expectedPhotoshopRuntimeBuildId;
   assert.strictEqual(validateDebugBridgeReceipt(
@@ -4142,8 +4360,17 @@ async function main() {
 
   const fullSuite = loadSuite();
   assert.strictEqual(fullSuite.ok, true);
-  assert.strictEqual(fullSuite.cases.filter((item) => item.status === "active").length, 5,
-    "正式 Suite 应包含主图、unseen 主图、详情页、自主 SKU 与真实参考复刻五个 active Case");
+  assert.strictEqual(fullSuite.cases.filter((item) => item.status === "active").length, 6,
+    "正式 Suite 应包含主图、unseen 主图、unseen 主图外部脏文档变体、详情页、自主 SKU 与真实参考复刻六个 active Case");
+  const externalDirtyCase = fullSuite.cases.find(
+    (item) => item.caseId === "main-image-pink-coffee-external-dirty-v1"
+  );
+  assert(externalDirtyCase, "外部脏文档隔离 Case 必须在正式 Suite 中");
+  assert.strictEqual(
+    resolveCasePhotoshopDocumentPolicy(externalDirtyCase),
+    "external_dirty_document_open",
+    "外部脏文档 Case 的边界声明必须解析为 external_dirty_document_open 策略"
+  );
   assert.strictEqual(fullSuite.cases.filter((item) => item.status === "draft").length, 1,
     "SKU 交互协议在 actor/receipt 完成前只能保留一个 draft Case");
   assert(designReliabilityCliSource.includes(

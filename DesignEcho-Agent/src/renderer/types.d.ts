@@ -951,6 +951,8 @@ export interface DesignEchoAPI {
         expectedModelId?: string;
         requireCleanRuntimeGitState?: boolean;
         requireNoOpenPhotoshopDocuments?: boolean;
+        /** 外部脏文档隔离 Case：恰好 1 个带未保存修改的外部文档全程不被触碰；与上一项互斥。 */
+        requireExternalDirtyDocumentUntouched?: boolean;
         publicPlanConfirmationSourceMessageId?: string;
         publicPlanConfirmationRequestId?: string;
         publicPlanDisposableLiveAdapter?: boolean;

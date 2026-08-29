@@ -6,6 +6,7 @@
   "cases": [
     "cases/main-image-c1163-v1.json",
     "cases/main-image-pink-coffee-unseen-v1.json",
+    "cases/main-image-pink-coffee-external-dirty-v1.json",
     "cases/detail-page-c1163-v1.json",
     "cases/sku-c1163-v1.json",
     "cases/sku-c1163-interaction-v1.json",

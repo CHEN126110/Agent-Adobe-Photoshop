@@ -41,6 +41,10 @@ export class ListDocumentsTool implements Tool {
                 includeLayerCount: {
                     type: 'boolean',
                     description: '是否递归统计图层数；默认仅在 includeDetails=true 时启用'
+                },
+                includeHistory: {
+                    type: 'boolean',
+                    description: '是否读取每个文档的历史状态身份（activeHistoryStateId、historyStateCount、saved）。纯 DOM 只读，不激活、不切换文档；用于“文档未被触碰”的版本证明'
                 }
             }
         }
@@ -51,6 +55,7 @@ export class ListDocumentsTool implements Tool {
         includePaths?: boolean;
         includeDimensions?: boolean;
         includeLayerCount?: boolean;
+        includeHistory?: boolean;
     }): Promise<{
         success: boolean;
         activeDocumentId?: number;
@@ -64,6 +69,10 @@ export class ListDocumentsTool implements Tool {
             width?: number;
             height?: number;
             layerCount?: number;
+            activeHistoryStateId?: number;
+            historyStateCount?: number;
+            saved?: boolean;
+            historyStatusReason?: string;
         }[];
         count?: number;
         error?: string;
@@ -94,8 +103,12 @@ export class ListDocumentsTool implements Tool {
                 width?: number;
                 height?: number;
                 layerCount?: number;
+                activeHistoryStateId?: number;
+                historyStateCount?: number;
+                saved?: boolean;
+                historyStatusReason?: string;
             }[] = [];
-            
+
             for (const doc of documents) {
                 const docInfo: {
                     id: number;
@@ -107,6 +120,10 @@ export class ListDocumentsTool implements Tool {
                     width?: number;
                     height?: number;
                     layerCount?: number;
+                    activeHistoryStateId?: number;
+                    historyStateCount?: number;
+                    saved?: boolean;
+                    historyStatusReason?: string;
                 } = {
                     id: doc.id,
                     name: doc.name,
@@ -117,6 +134,35 @@ export class ListDocumentsTool implements Tool {
                 if (params.includeDetails || params.includeDimensions) {
                     docInfo.width = doc.width;
                     docInfo.height = doc.height;
+                }
+                if (params.includeHistory) {
+                    // 逐文档 DOM 读取，不激活目标文档：history 身份用于"未被触碰"证明，
+                    // 读取动作本身绝不能制造历史状态。读不到时保留字段缺失并说明原因，
+                    // 由调用方 fail closed，不用 0 或 -1 冒充真实观察。
+                    try {
+                        const historyStateId = Number(doc.activeHistoryState?.id);
+                        const historyStates = doc.historyStates;
+                        const historyStateCount = Number(historyStates?.length);
+                        if (Number.isSafeInteger(historyStateId) && historyStateId > 0) {
+                            docInfo.activeHistoryStateId = historyStateId;
+                        }
+                        if (Number.isSafeInteger(historyStateCount) && historyStateCount >= 0) {
+                            docInfo.historyStateCount = historyStateCount;
+                        }
+                        if (typeof doc.saved === 'boolean') {
+                            docInfo.saved = doc.saved;
+                        }
+                        if (docInfo.activeHistoryStateId === undefined
+                            || docInfo.historyStateCount === undefined
+                            || docInfo.saved === undefined) {
+                            docInfo.historyStatusReason =
+                                'Photoshop 未返回完整历史身份（activeHistoryState/historyStates/saved 部分缺失）。';
+                        }
+                    } catch (historyError) {
+                        docInfo.historyStatusReason = `读取文档历史身份失败：${
+                            historyError instanceof Error ? historyError.message : String(historyError)
+                        }`;
+                    }
                 }
                 if (params.includeDetails || params.includeLayerCount) {
                     docInfo.layerCount = this.countLayers(doc);

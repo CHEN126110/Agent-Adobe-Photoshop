@@ -127,6 +127,12 @@ export interface DebugBridgeChatSubmitInput {
     requireCleanRuntimeGitState?: boolean;
     /** 从零创作的隔离 Case 要求提交时 Photoshop 没有任何既有文档。 */
     requireNoOpenPhotoshopDocuments?: boolean;
+    /**
+     * 外部脏文档隔离 Case：提交时恰好打开 1 个带未保存修改的外部文档，
+     * 全程不被触碰（history 身份与未保存状态在完成侧逐项复核）。
+     * 与 requireNoOpenPhotoshopDocuments 互斥，二者必须恰好声明一个。
+     */
+    requireExternalDirtyDocumentUntouched?: boolean;
     publicPlanConfirmationSourceMessageId?: string;
     publicPlanConfirmationRequestId?: string;
     publicPlanDisposableLiveAdapter?: boolean;
@@ -729,7 +735,9 @@ export class DebugBridgeService {
                 && typeof body.expectedWorkspaceSemanticDigest === 'string'
                 && /^sha256:[0-9a-f]{64}$/.test(body.expectedWorkspaceSemanticDigest.trim())
                 && body.requireCleanRuntimeGitState === true
-                && body.requireNoOpenPhotoshopDocuments === true;
+                // 文档基线必须恰好声明一种：零文档隔离，或外部脏文档不被触碰。
+                && ((body.requireNoOpenPhotoshopDocuments === true)
+                    !== (body.requireExternalDirtyDocumentUntouched === true));
             if (!hasFormalWriteGuard) {
                 sendExecutionFailure(res, 400, buildDebugBridgeChatExecutionFailure({
                     stage: 'bridge_preflight',
@@ -823,6 +831,7 @@ export class DebugBridgeService {
                     : undefined,
                 requireCleanRuntimeGitState: body.requireCleanRuntimeGitState === true,
                 requireNoOpenPhotoshopDocuments: body.requireNoOpenPhotoshopDocuments === true,
+                requireExternalDirtyDocumentUntouched: body.requireExternalDirtyDocumentUntouched === true,
                 publicPlanConfirmationSourceMessageId: typeof body.publicPlanConfirmationSourceMessageId === 'string'
                     ? body.publicPlanConfirmationSourceMessageId
                     : undefined,

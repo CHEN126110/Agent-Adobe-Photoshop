@@ -1,5 +1,33 @@
 # Current Task
 
+## 2026-08-30 WORKTREE-UNTANGLE-AND-EXTERNAL-DIRTY-CASE-001：脏工作树分簇收口 + 外部脏文档隔离正式 Case
+
+### 目标
+
+1. 把共享脏工作树中混写的多组功能按语义分开提交、验证、可独立回滚；姿态统一（P0 未拆解）不得进入主线。
+2. 扩展 Design Reliability 协议，使「外部 dirty 文档仍打开」成为可正式采样的受控环境变体：外部文档全程不被触碰（history/save 状态不变）、新任务绑定自己的文档、其余验收（同 revision 交付、零人工纠偏、盲评）沿用既有机制。
+
+### 已完成事实（分簇收口，全部已推送 legacy 远程）
+
+- 7 个独立提交落在 `codex/agent-uxp`：`7e44e6a2` 依赖迁移（@anthropic-ai/sdk 0.122 + zod override）、`75f8b677` matting 固定 CPU + 取消 YOLO-World 预加载、`86259c76` 模型失败原因可见性三刀、`09431fa1` 推理档位端到端、`202832b2` Smile AI 图像通道 + 参考图多张化（顺手修复 Smile Key 恢复被 OpenRouter Key 门控的接线缺陷）、`9feb68ff` 跨文档置入隔离 + 两个纯函数测试、`14145f48` 思考过程 UI 扁平化 + design-qa 验收记录。
+- 姿态统一整簇（9 文件，含 P0 多调用拼接写链）停放在分支 `wip/pose-alignment-pending-split`（`266beb26`，DO NOT MERGE），主线工作树 0 脏文件。
+- 混合文件按 hunk 精确拆分（models.config/SettingsModal/provider-model-listing/autonomous-agent/report-change-boundaries/UXP index.ts）；干净树上完整 `maintenance:validate` 57 项通过。
+- 运行环境事实：桌面端 PID 36080 运行的是脏树 13:53 构建；Photoshop 插件加载的是 26f0d6c2 构建。两者与当前干净 HEAD `14145f48` 均不匹配，正式采样前需重建 + 重启 + 插件重载。
+
+### 当前实施边界（外部脏文档协议扩展）
+
+- 收据 owner 不变：提交/完成收据仍由 ChatPanel 受控调试路径生产，校验仍在 design-reliability.cjs；不新增第二 Runtime/Registry/事务 owner。
+- 策略字段：Case `boundaries.externalDirtyDocumentRemainsOpenAndUntouched=true` → 提交体 `requireExternalDirtyDocumentUntouched`；缺省行为（none_open）逐字节不变。
+- 不触碰证明 = 冻结外部文档 `documentId + activeHistoryStateId + historyStateCount + saved=false`，提交前与完成后各读一次；首写基线在变体下要求「恰好 1 个打开文档且 id = 冻结外部文档」。
+- UXP `listDocuments` 增加只读 `includeHistory`（DOM 逐文档读，不激活、不切换文档）；旧插件缺字段时守卫 fail closed。
+- 新 Case `main-image-pink-coffee-external-dirty-v1` 复用粉咖 fixture 与 rubric，caseDigest 重算；攻击测试进 verify-design-reliability.cjs。
+
+### 状态
+
+`worktree_untangled_and_pushed / core_57_validated / external_dirty_protocol_in_progress / runtime_rebuild_and_plugin_reload_pending / formal_live_run_pending`
+
+---
+
 ## 2026-08-28 DEVELOPMENT-LOOP-RESET-001：复盘并重置高价值开发循环
 
 ### 目标
