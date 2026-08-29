@@ -4,7 +4,6 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
-const os = require("os");
 const path = require("path");
 const { readPsd } = require("ag-psd");
 const sharp = require("sharp");
@@ -15,6 +14,11 @@ const {
   validatePhotoshopRuntimeBinding,
   verifyPhotoshopRuntimeBuildIdentity
 } = require("./lib/photoshop-runtime-build-identity.cjs");
+const {
+  acquirePhotoshopRuntimeLease,
+  releasePhotoshopRuntimeLease,
+  resolveDesignReliabilityDataRoot
+} = require("./lib/design-reliability-photoshop-runtime-lease.cjs");
 const {
   createDesignReliabilityReviewPacket,
   verifyDesignReliabilityReviewerResponse
@@ -158,23 +162,7 @@ function validateActiveCaseLiveRunActor(caseSpec) {
 }
 
 function resolvePersistentDataRoot() {
-  if (process.platform === "win32") {
-    const appData = cleanString(process.env.APPDATA);
-    const base = appData || path.join(os.homedir(), "AppData", "Roaming");
-    return path.resolve(base, "designecho-agent", "design-reliability");
-  }
-  if (process.platform === "darwin") {
-    return path.resolve(
-      os.homedir(),
-      "Library",
-      "Application Support",
-      "designecho-agent",
-      "design-reliability"
-    );
-  }
-  const xdgConfigHome = cleanString(process.env.XDG_CONFIG_HOME);
-  const base = xdgConfigHome || path.join(os.homedir(), ".config");
-  return path.resolve(base, "designecho-agent", "design-reliability");
+  return resolveDesignReliabilityDataRoot();
 }
 
 function cleanString(value) {
@@ -4765,24 +4753,44 @@ async function runLiveCase(suite, args) {
   if (!debugToken) {
     throw new Error("run-live 需要 --debug-token 或 DESIGNECHO_DEBUG_TOKEN；未授权的本地进程不能启动真实 Agent 写入。");
   }
-  const armedAttempt = writeLiveAttemptEvent(attemptContext, 1, "armed", {
-    status: "armed",
-    interactionMetricsRequireReceipts: true
+  const runtimeLease = acquirePhotoshopRuntimeLease({
+    purpose: "formal_capture",
+    ownerId: attemptContext.attemptId,
+    ttlMs: timeoutMs + (5 * 60 * 1000)
   });
-  const submissionAttempt = writeLiveAttemptEvent(attemptContext, 2, "submission_started", {
-    status: "submitted",
-    endpointKind: "debug_bridge_chat_submit"
-  });
-  let trustedCompletionReceipt = false;
-  const projectAssetReferences = (caseSpec.task.agentVisibleReferences || []).map((reference) => ({
-    version: "debug-bridge-project-asset-reference/v1",
-    relativePath: normalizeRelativePath(reference.ref),
-    label: cleanString(reference.role) === "user_provided_target_reference"
-      ? "用户提供的目标参考"
-      : "用户参考",
-    digest: cleanString(reference.digest).toLowerCase()
-  }));
   try {
+    const leasedPhotoshopRuntime = await inspectPhotoshopRuntimeBinding(args);
+    if (!leasedPhotoshopRuntime.ready
+      || !photoshopRuntimeBindingsMatch(
+        leasedPhotoshopRuntime.binding,
+        photoshopRuntimeBinding
+      )) {
+      const issueCodes = (leasedPhotoshopRuntime.issues || [])
+        .map((issue) => cleanString(issue?.code))
+        .filter(Boolean);
+      throw new Error(
+        `Photoshop Runtime 在正式采集租约取得后发生漂移：${issueCodes.join("、") || "runtime_binding_drift"}；`
+        + "本轮尚未写入 Attempt，也不会提交模型或 Photoshop 写入。"
+      );
+    }
+    const armedAttempt = writeLiveAttemptEvent(attemptContext, 1, "armed", {
+      status: "armed",
+      interactionMetricsRequireReceipts: true
+    });
+    const submissionAttempt = writeLiveAttemptEvent(attemptContext, 2, "submission_started", {
+      status: "submitted",
+      endpointKind: "debug_bridge_chat_submit"
+    });
+    let trustedCompletionReceipt = false;
+    const projectAssetReferences = (caseSpec.task.agentVisibleReferences || []).map((reference) => ({
+      version: "debug-bridge-project-asset-reference/v1",
+      relativePath: normalizeRelativePath(reference.ref),
+      label: cleanString(reference.role) === "user_provided_target_reference"
+        ? "用户提供的目标参考"
+        : "用户参考",
+      digest: cleanString(reference.digest).toLowerCase()
+    }));
+    try {
     const actorDispatch = await actorCapability.dispatchProtocol({
       debugBridge,
       debugToken,
@@ -5001,6 +5009,12 @@ async function runLiveCase(suite, args) {
       } : {})
     });
     throw error;
+    }
+  } finally {
+    const released = releasePhotoshopRuntimeLease(runtimeLease);
+    if (!released.released && released.reason !== "lease_already_absent") {
+      console.warn(`[Design Reliability] Photoshop Runtime 租约释放异常：${released.reason}`);
+    }
   }
 }
 

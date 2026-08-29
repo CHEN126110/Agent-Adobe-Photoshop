@@ -1,10 +1,11 @@
 {
-  "currentFocus": "2026-08-29 DESIGN-RELIABILITY-095：r32 证明 D-094 安全阻断有效，但无副作用首写工具错误永久毒化 TaskRun，造成 24 次模型调用、176 万 input tokens 与零 mutation；当前只让该错误选择可重新检查，真实 Runtime /文档漂移继续永久锁死。",
-  "currentMilestone": "DESIGN-RELIABILITY-095",
-  "milestoneStatus": "r32_failed_zero_mutation_gate_poison_and_uxp_runtime_drift_d095_targeted_adjacent_typechecks_production_build_and_full_core_58_passed_commit_clean_runtime_and_r33_pending",
+  "currentFocus": "2026-08-29 DESIGN-RELIABILITY-096：D-095 已提交；r32 第二 Run 已证实为编辑消息后的新 branch 顶层重发而非自动 guard 逃逸。当前只在开发评测面让正式 run-live 与官方 UXP loader 竞争同一跨进程 Runtime 租约，避免共享 Host 在高成本采集中被替换。",
+  "currentMilestone": "DESIGN-RELIABILITY-096",
+  "milestoneStatus": "d095_committed_r32_second_run_attributed_to_explicit_message_edit_d096_runtime_lease_targeted_two_process_canary_adjacent_typechecks_production_build_full_core_58_commit_and_clean_identities_passed_reconciliation_and_r33_pending",
   "verified": {
     "code": [
-      "Design Reliability recoverable non-mutating first-tool rejection D-095 (2026-08-29): a first write tool rejected before Photoshop dispatch for first_mutation_must_create_task_document no longer permanently poisons the TaskRun. The baseline returns to pending, clears the rejected candidate and re-observes full runtime and document revisions; only createDocument can pass. Runtime identity, inventory, fixture, preexisting-object and revision drift still latch blocked. Targeted attacks and Main/Renderer typechecks passed; full core and live r33 remain pending.",
+      "Design Reliability cooperative Photoshop Runtime lease D-096 (2026-08-29): formal run-live and the official UXP loader acquire one repository-external cross-worktree lease before Attempt events or UDT host mutation. A live owner is never deleted only because TTL elapsed; a dead owner can be reclaimed; release is leaseId-bound. Targeted pure logic, loader self-test, a real two-process pre-UDT rejection canary, adjacent audits, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58, an isolated commit and clean post-commit identities passed; live r33 remains pending.",
+      "Design Reliability recoverable non-mutating first-tool rejection D-095 (2026-08-29): a first write tool rejected before Photoshop dispatch for first_mutation_must_create_task_document no longer permanently poisons the TaskRun. The baseline returns to pending, clears the rejected candidate and re-observes full runtime and document revisions; only createDocument can pass. Runtime identity, inventory, fixture, preexisting-object and revision drift still latch blocked. Targeted attacks, Main/Renderer typechecks, Agent/UXP production builds, full core 58/58 and commit d8ce40ef passed; live r33 remains pending.",
       "Design Reliability protected preexisting revision baseline D-094 live negative evidence (2026-08-29): clean commit eb40a93c and matching Agent/UXP builds passed r32 preflight with unsaved 800 open. The failed r32 run used DeepSeek V4 Flash Vision and recorded 8 failed mutation attempts with mutationObserved=false and zero successful mutations; runtime binding rejected a later dirty UXP generation. This proves safety containment, not technical delivery or design quality.",
       "Design Reliability object-scoped document baseline D-093 (2026-08-29): formal Debug submission freezes the open-document inventory and permits resolved outside-fixture documents, including dirty user work, without granting save, close or write authority. First mutation rechecks runtime and document identities; createDocument may establish a new target while external documents remain open, normal writes require an active fixture document, and unresolved, pre-existing fixture or newly opened outside documents fail closed. The Debug receipt is v3 and the guarded baseline/receipt are v1.",
       "Design Reliability ReviewSet identity slice D-090 (2026-08-29): single-surface terminal closure never falls back to a same-revision visual_observation_bundle; multi-surface closure still requires its Bundle. Final Judge selection, E2 reviewed-source binding and trusted cross-generation visual artifacts consume the same selector. The integrated behavior audit injects a valid misleading same-history asset Bundle and requires an automatic no-region full-canvas capture, exact Judge-first image, Bundle exclusion and persisted single_surface artifact.",
@@ -74,6 +75,7 @@
       "Live concurrency/resume validation, real Provider-to-Photoshop V0, live validation of the first Photoshop Craft Recipe, Release Gate, reviewed multi-sample design quality and business live E2E are not complete."
     ],
     "build": [
+      "D-096 node syntax checks, the official UXP loader self-test and the Design Reliability focused behavior suite passed. A real second process was rejected with runtime_capture_lease_active before UDT connection and the owner released the global lease without residue. Planning, encoding, entry-doc, business-boundary, Main/Renderer typecheck, Agent production build and the complete ordered 58-stage maintenance core including UXP tests/build all passed.",
       "The D-093 focused Design Reliability behavior suite, complete ordered 58-stage maintenance validation, Agent production build and UXP production build passed. Commit/push and live r32 coexistence remain pending and are not implied by this entry.",
       "The 2026-08-29 terminal-lifecycle slice passed the complete ordered 58-stage maintenance core after its planning-card schema and agent.ts complexity failures were fixed at their owners; Agent production build, Main/Renderer typecheck, capability/runtime/authorship/business/simplification audits, UXP tests and UXP production build all exited 0. agent.ts returned to the existing 12,826-line ratchet baseline instead of raising it. This is not an r22 live Photoshop or visual-quality claim.",
       "The 2026-08-29 terminal-truth slice reached the final UXP build in the ordered 58-stage maintenance core and the final UXP typecheck plus webpack production build was independently re-run with exit code 0; Main/Renderer typecheck, runtime declaration, Design Reliability, simplification ratchet and Agent business-boundary audits passed.",
@@ -96,6 +98,8 @@
       "The full 22-check maintenance:validate passed after the WEB-SEARCH-AGENT-TOOL-001 webSearch capability addition: 164-Tool registration audit (zero display/scope/set-sync/team-allowlist gaps), Agent business boundaries 0 violations, generic executor 0 violations, simplification ratchet unchanged, Main/Renderer typecheck, git diff --check and UXP production build all green. The DeepSeek-native search path itself has not been exercised with a real API key, so live search latency, source quality and degradation behavior remain unverified."
     ],
     "manual": [
+      "The r32 ordinary message-edit rerun produced a PSD/JPG but is outside the formal Attempt. Its exported image has basic readable hierarchy yet remains below the frozen Eagle anchors: the raw flat-lay is embedded as a large rectangle, four colors dilute the pink-coffee focus, oversized pill labels compete with the product, and scene integration plus thumbnail impact are weak.",
+      "A live D-096 two-process canary held a formal_capture lease while the official UXP loader returned runtime_capture_lease_active before connecting to UDT; releasing the owner removed the global lease. No Photoshop document, plugin session or Runtime was changed by that canary.",
       "r31 was the first formal main-image sample with 15 machine checks passed, verified zero UI protocol/correction interventions, five model-owned committed mutations, zero Harness writes, same-revision PSD/JPG and about 8m59s total runtime. Its automatic quality result was 85/needs_review and the official cohort is only 1 of 5 cases, so professional visual quality and repeat success remain unverified.",
       "An isolated Electron debug window visually verified the knowledge overview, usable-knowledge search, human-review empty state, keyboard focus, Eagle-page routing and container-width responsiveness at 1200x800 and wide layouts with no horizontal overflow.",
       "In the fake runtime, an all-source query for 构图 returned two built-in methods and one Eagle candidate in about 0.34 seconds after independent sources were parallelized; this is UI/runtime-path evidence, not a real user Eagle-library quality claim.",
@@ -110,7 +114,8 @@
     ]
   },
   "unverified": [
-    "A final-commit Runtime identity check and an r32 real Provider-to-Photoshop attempt that leaves the already-open outside-fixture dirty r31 documentId/history unchanged while creating and delivering a new fixture-owned document.",
+    "D-096 full maintenance validation, clean commit/build identities, a whole formal run-live window that rejects another worktree loader, real dead-owner recovery, and manual UDT reload detection through the existing runtime binding.",
+    "A legal r32 reconciliation after the user finishes viewing and closes every r32 fixture document, followed by a fresh r33 DeepSeek V4 Flash Vision Provider-to-Photoshop attempt that preserves all external documents and produces same-revision PSD/JPG.",
     "A disposable live Photoshop regression for sku-color-card and the ten migrated write tools, including forced verification failure, real History rollback, document-switch rebinding and end-to-end editable output readback.",
     "A restarted real Provider-to-Photoshop rerun of the reported SKU correction proving lower duplicate observation and visual-call rates, faster first effective mutation, successful new-revision replanning and same-target readback.",
     "The separate deterministic SKU fix for multi-card subslots in arrangeDynamic, copied-card structure/bounds validation, blocked export readback failure semantics and the actual 2双自选备注.jpg output quality.",
@@ -139,6 +144,7 @@
     "Live browser-extension 1.1.0 end-to-end: after reloading the extension in Chrome/Edge, a real logged-in Taobao detail page must verify readBrowserPage(includeImages:true) returns product image pixels that enter the model vision channel, and captureBrowserTab(fullPage:true) produces a correctly stitched long screenshot; anti-hotlink/CDN hit rate and image quality remain code-level only."
   ],
   "topRisks": [
+    "The single Photoshop/UXP Host remains globally shared. D-096 can prevent cooperative official loaders from replacing it during formal capture, but a user-triggered UDT reload or third-party direct UDT call can bypass the lease; submission, first-write and completion runtime bindings remain the safety authority until r33 proves the combined path.",
     "The P0 declaration repair is still a late in-loop binding seam. The next architecture reduction should pre-bind one canonical runtimeProfileId before the full Agent is constructed, then retire the duplicate late-binding migration cluster atomically; deleting only half of that cluster would split TaskRun, Capability, budget and Evaluation ownership.",
     "Bare continuation remains intentionally unable to resurrect unknown historical write permission, but performance-budget stops still lack a signed one-time continuation bound to the original TaskRun, authorization, target revision and remaining obligations. This is a separate recovery gap, not a reason to weaken the completion contract.",
     "The generic observation/liveness contract is core-validated but not yet measured in a restarted live run; Provider behavior may still choose low-value novel reads until real duplicate-observation and first-mutation metrics are captured.",
@@ -163,6 +169,9 @@
     "R-040 is contained on the current chain, but M5 must still establish the single Release Gate and remove all bypass consumers."
   ],
   "nextActions": [
+    "Finish D-096 adjacent audits, Main/Renderer typecheck, Agent production build and one complete maintenance:validate; create an independent commit and rebuild matching clean Agent/UXP identities.",
+    "Do not save, close or discard the currently open Photoshop documents. After the user finishes viewing and closes the r32 fixture document, reconcile the unknown-write Attempt under a restarted clean Runtime with zero pending requests; never bypass or move the canonical ledger.",
+    "Prepare a fresh r33 fixture and run the fixed natural-language case with DeepSeek official deepseek-v4-flash-vision-exp, proving D-095 first-write recovery, D-096 loader exclusion, unchanged external document revisions and same-revision editable/raster delivery before blind review.",
     "Run a disposable real-provider exact-text replacement through the signed scope, unique full-document snapshot, CAS mutation and final-history verification path; require zero Eagle, zero Design Team, zero full-canvas VLM, and record model/tool counts, latency and actual cost.",
     "Implement the next autonomous-design CandidateSet/Preview/DesignIR slice only for create_new/redesign: render two genuinely different low-cost previews, judge both with one rubric, and send only the winner into expensive Photoshop production.",
     "After the latest DesignEcho and UXP builds are loaded, rerun the real 2/3/4-pair SKU task in E:\\WERKE\\C-1247; require 15 combination files plus 3 self-select-note files, exact document/layer target binding, bounded non-overlap actual-bounds QA, complete export readback and no residual empty staging parent before recording success.",
@@ -285,51 +294,54 @@
     "source": "project-memory/CurrentTask.md"
   },
   "activeSlice": {
-    "id": "DESIGN-RELIABILITY-095",
-    "summary": "Allow a first write tool rejected before Photoshop dispatch to recover inside the same TaskRun only by rechecking the full runtime and document baseline and then dispatching createDocument; keep every factual runtime or revision hazard permanently blocked.",
-    "status": "r32_negative_evidence_root_cause_and_owner_confirmed_recoverable_first_tool_and_revision_drift_attacks_adjacent_audits_main_renderer_typechecks_production_build_and_full_core_58_passed_commit_clean_runtime_and_r33_pending",
+    "id": "DESIGN-RELIABILITY-096",
+    "summary": "Give formal Design Reliability capture and the official UXP loader one cooperative repository-external Photoshop Runtime lease so another worktree cannot replace the singleton plugin session during an expensive Attempt; keep full runtime binding as the safety authority.",
+    "status": "d095_committed_second_run_explicit_message_edit_attribution_confirmed_runtime_lease_targeted_two_process_canary_adjacent_audits_typechecks_production_build_full_core_58_commit_and_clean_identities_passed_reconciliation_and_r33_pending",
     "scope": [
-      "Reject an incorrect first write tool before Photoshop dispatch and keep success=false, executesPhotoshop=false and countsAsTaskProgress=false.",
-      "Return the baseline to pending only for first_mutation_must_create_task_document and re-observe runtime plus every protected document revision.",
-      "Allow only createDocument to become the first dispatched mutation; all later writes retain the private target/revision guard and unique PhotoshopTransactionRunner.",
-      "Latch runtime identity, inventory, fixture, preexisting-object, revision and new-external-document failures as permanently blocked.",
-      "Keep the D-094 completion reconciliation and development evidence chain unchanged.",
-      "Do not mix DeepSeek transport, UXP loader ownership or design prompting into D-095.",
-      "Use a fresh r33 fixture after a clean commit and stable single UXP loading session."
+      "Acquire formal_capture after full preflight but before armed/submission events, then immediately revalidate the exact Photoshop Runtime binding.",
+      "Acquire uxp_loader before connecting to UDT or performing validate/load/unload, and reject an active owner without a force bypass.",
+      "Treat a live process as authoritative even after TTL; reclaim only a dead owner, and release only the matching leaseId.",
+      "Keep the lease in the canonical repository-external Design Reliability root shared by all worktrees without storing fixture paths, credentials, prompts or Photoshop content.",
+      "Retain submission, first-write and completion Runtime binding because manual UDT and third-party direct loads remain outside cooperative locking.",
+      "Do not add a generation guard for the r32 second Run: its new branchId proves a separate message-edit resend.",
+      "After clean validation and commit, reconcile r32 legally and use a fresh r33 fixture with DeepSeek V4 Flash Vision."
     ]
   },
   "activeRequest": {
-    "id": "DESIGN-RELIABILITY-095",
-    "summary": "Remove the r32 no-side-effect baseline poison without weakening document or runtime safety, then prove in a fresh DeepSeek V4 Flash Vision case that the first dispatched mutation creates the task document and no external work is touched.",
-    "status": "deepseek_vision_and_key_verified_d094_clean_commit_and_live_safety_negative_evidence_complete_d095_targeted_adjacent_typechecks_production_build_and_full_core_58_passed_commit_and_r33_pending",
+    "id": "DESIGN-RELIABILITY-096",
+    "summary": "Prevent cooperative development loaders from replacing the only Photoshop UXP session during a formal Attempt, then complete r32 reconciliation and prove D-095 plus the stable Runtime in a fresh DeepSeek V4 Flash Vision r33 case.",
+    "status": "deepseek_vision_and_key_verified_d095_committed_d096_targeted_live_conflict_canary_adjacent_typechecks_production_build_full_core_58_commit_and_clean_identities_passed_reconciliation_and_r33_pending",
     "mustDo": [
-      "Keep a rejected non-createDocument first write outside Photoshop and return a structured same-TaskRun recovery instruction.",
-      "Re-read the full Photoshop runtime identity and document inventory before a later createDocument can pass.",
-      "Permanently block any runtime, inventory, fixture, identity or revision drift even after a recoverable rejection.",
-      "Preserve D-094 completion reconciliation for every protected preexisting document.",
+      "Acquire and release one cross-worktree development lease around formal capture and official UXP loading.",
+      "Re-read the complete Photoshop Runtime binding after the formal lease is acquired and before writing any Attempt event.",
+      "Reject competing official loaders before UDT connection and keep stale-owner recovery plus leaseId ownership attack-tested.",
+      "Preserve D-095 first-write recovery, D-094 protected-document completion reconciliation and every existing target/revision guard.",
       "Use DeepSeek official deepseek-v4-flash-vision-exp with the existing secure key and real Agent image/tool transport.",
-      "Produce same-revision PSD and JPG, zero user design corrections and a verified completion receipt in a fresh r33 fixture."
+      "Reconcile r32 only after all fixture documents are closed, then produce same-revision PSD and JPG, zero user design corrections and a verified completion receipt in fresh r33."
     ],
     "mustNotDo": [
-      "Do not retry or dispatch the originally rejected write tool.",
-      "Do not recover runtime or document fact failures with defaults, retries or later apparently safe observations.",
+      "Do not extend the failed Debug Attempt across a later explicit user message edit or block legitimate top-level resend.",
+      "Do not treat the cooperative lease as Photoshop permission, transaction ownership or a replacement for Runtime binding.",
+      "Do not add a force bypass or delete a live owner's lease only because TTL elapsed.",
       "Do not delete the r32 RunRecord or Attempt events to reuse a consumed fixture.",
       "Do not create a second transaction, runtime, document store or completion gate.",
       "Do not weaken the existing target/revision preflight or unique PhotoshopTransactionRunner.",
-      "Do not save or close 800, 详情页.psb or any other user document for the test."
+      "Do not save, close or discard 800, 详情页.psb, either r32 design document or any other user document for the test."
     ]
   },
   "activePlan": {
-    "id": "DESIGN-RELIABILITY-095",
+    "id": "DESIGN-RELIABILITY-096",
     "source": "project-memory/Plan.md",
     "steps": [
-      "已完成：D-094 clean commit、双 Runtime identity、DeepSeek Vision 与 r32 read-only preflight。",
-      "已完成负向证据：r32 的 8 次 mutation 尝试全部未派发，baseline poison 与 UXP runtime drift 已分开归因。",
-      "已完成 D-095 专项：错误首选后 createDocument 可重新观察并通过，revision 漂移仍永久 blocked。",
-      "已完成：相邻审计、Main/Renderer 类型检查、Agent production build 和完整 maintenance:validate 58/58。",
-      "待完成：项目状态轻量复核和独立提交。",
-      "待完成：等待共享 UXP loading session 稳定，创建 fresh r33 并运行真实 Case。",
-      "条件后置：技术成功后完成同版本交付复核与匿名视觉比较。"
+      "已完成：D-095 专项、相邻审计、Main/Renderer 类型检查、Agent/UXP production build、完整 maintenance:validate 58/58 和独立提交 d8ce40ef。",
+      "已完成归因：r32 第二 Run 是编辑消息后的新 branch 顶层重发，不是自动 generation escape；不新增错误 Guard。",
+      "已完成 D-096 专项：正式采集与 loader 共用租约，并发拒绝、错误释放、存活 owner、死亡 owner 和旧 owner 攻击均通过。",
+      "已完成 canary：真实第二进程 loader 在 UDT 连接前被拒绝，原 owner 释放后全局租约 absent，Photoshop 零变更。",
+      "已完成：相邻审计、Main/Renderer 类型检查、Agent/UXP production build 和唯一一次完整 maintenance:validate 58/58。",
+      "已完成：最终差异复核、独立提交和提交后 clean 双 Runtime identity。",
+      "待完成：不触碰现有文档，待 r32 fixture 文档关闭后执行合法 reconciliation。",
+      "待完成：重建 clean 双 Runtime，创建 fresh r33，以 DeepSeek V4 Flash Vision 运行正式 Case。",
+      "条件后置：技术成功后完成同版本交付复核、匿名视觉比较和有证据的上下文 /Tool 往返性能治理。"
     ]
   },
   "convergenceBaseline": {

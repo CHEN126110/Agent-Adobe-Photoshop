@@ -4,6 +4,11 @@
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
+const {
+  PHOTOSHOP_RUNTIME_LEASE_CONFLICT,
+  acquirePhotoshopRuntimeLease,
+  releasePhotoshopRuntimeLease
+} = require('./lib/design-reliability-photoshop-runtime-lease.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_MANIFEST = path.resolve(ROOT, '..', 'DesignEcho-UXP', 'manifest.json');
@@ -47,6 +52,8 @@ function readManifest(manifestPath) {
 
 function classifyLoadError(error) {
   const message = error instanceof Error ? error.message : String(error || '');
+  if (error?.code === PHOTOSHOP_RUNTIME_LEASE_CONFLICT
+    || message.includes(PHOTOSHOP_RUNTIME_LEASE_CONFLICT)) return 'runtime_capture_lease_active';
   if (/Bridge did not become ready/i.test(message)) return 'bridge_not_ready';
   if (/timed out|timeout/i.test(message)) return 'load_timeout';
   if (/ECONNREFUSED|not running|connect/i.test(message)) return 'devtools_service_unavailable';
@@ -56,6 +63,11 @@ function classifyLoadError(error) {
 
 function buildRecoveryActions(classification) {
   switch (classification) {
+    case 'runtime_capture_lease_active':
+      return [
+        '等待当前 Design Reliability 正式采集或另一个 UXP loader 完成。',
+        '不要强制替换插件；若持有进程已经退出，重新运行时会自动回收陈旧租约。'
+      ];
     case 'load_timeout':
       return [
         'Clear any modal dialog in Photoshop, then rerun this loader.',
@@ -335,9 +347,19 @@ async function loadPlugin(options = {}) {
   const port = parsePositiveInteger(options.port, DEFAULT_PORT);
   const timeoutMs = parsePositiveInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS);
   const appId = options.appId || 'PS';
-  const client = createDevtoolsClient({ port, timeoutMs, appId });
+  const bridgeTimeoutMs = parsePositiveInteger(
+    options.bridgeTimeoutMs,
+    DEFAULT_BRIDGE_WAIT_TIMEOUT_MS
+  );
+  const runtimeLease = acquirePhotoshopRuntimeLease({
+    purpose: 'uxp_loader',
+    ownerId: `uxp-loader:${String(manifest.id || 'unknown').trim() || 'unknown'}:${process.pid}`,
+    ttlMs: (timeoutMs * 4) + (options.waitForBridge ? bridgeTimeoutMs : 0) + 30_000
+  });
+  let client;
 
   try {
+    client = createDevtoolsClient({ port, timeoutMs, appId });
     await client.waitForOpen();
     const appClient = await client.waitForApp();
     const validate = await client.request({
@@ -400,13 +422,17 @@ async function loadPlugin(options = {}) {
       },
       bridge: options.waitForBridge
         ? await waitForBridgeReady({
-          timeoutMs: options.bridgeTimeoutMs,
+          timeoutMs: bridgeTimeoutMs,
           pollMs: options.bridgePollMs
         })
         : null
     };
   } finally {
-    client.close();
+    client?.close();
+    const released = releasePhotoshopRuntimeLease(runtimeLease);
+    if (!released.released && released.reason !== 'lease_already_absent') {
+      console.warn(`[UXP Loader] Photoshop Runtime 租约释放异常：${released.reason}`);
+    }
   }
 }
 
@@ -423,6 +449,12 @@ function runSelfTest() {
   }
   if (classifyLoadError(new Error('Bridge did not become ready after plugin load.')) !== 'bridge_not_ready') {
     throw new Error('Bridge wait errors must be classified.');
+  }
+  const leaseConflictError = new Error(`${PHOTOSHOP_RUNTIME_LEASE_CONFLICT}: capture active`);
+  leaseConflictError.code = PHOTOSHOP_RUNTIME_LEASE_CONFLICT;
+  if (classifyLoadError(leaseConflictError) !== 'runtime_capture_lease_active'
+    || buildRecoveryActions('runtime_capture_lease_active').length < 2) {
+    throw new Error('Active runtime capture lease errors must be classified with recovery actions.');
   }
   if (buildRecoveryActions('load_timeout').length < 2) {
     throw new Error('Timeout recovery actions must be actionable.');
@@ -442,6 +474,7 @@ function runSelfTest() {
       'load timeout is classified',
       'devtools service connection error is classified',
       'bridge wait error is classified',
+      'active runtime capture lease is classified',
       'recovery actions are available',
       'load/unload protocol messages preserve the UXP Developer Tools session identity'
     ]

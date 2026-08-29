@@ -2,13 +2,22 @@
 
 本文件只记录当前事实摘要。历史实施日志由 Git 承担；不能从历史日志反推当前完成度。
 
+## 2026-08-29 D-096 正式采集 Runtime 租约与 r32 普通重发归因
+
+- r32 失败 Attempt 后的第二 Run 已按对话存储、RunRecord 和代码入口重新归因：同 conversationId、不同 branchId；branchId 只有编辑已发送用户消息时才更换。正式 Attempt 在 `05:07:17.986Z` 终止，第二 Run 约 25 秒后启动；同期 Codex 仅做页面文本读取。该 Run 是新的显式顶层重发，不是 Reflexion /Debug guard 逃逸，因此没有新增 generation Gate。
+- 普通重发 Run `run-20260829051822-b6f8c117-e4c2` 使用 DeepSeek V4 Flash Vision，32 次模型调用、38 次 Tool Call、2,619,699 input tokens、57,939 output tokens、约 639 秒总耗时；9 次成功 mutation，生成 PSD 31,987,098 字节与 JPG 942,389 字节。它脱离正式 Attempt，不能计入技术成功或零人工分母。
+- 真实 JPG 的基础层级和可读性成立，但商业视觉未达标：原始平铺摄影以大矩形嵌入，四色商品稀释粉咖主焦点，底部三个大胶囊卖点争抢注意力，照片 /背景缺少空间融合。与固定 Eagle 的手持近景、穿着主视觉和场景化搭配锚点相比，主体塑造、卖点证明、质感和缩略图点击力均较弱。
+- r32 的 UXP 漂移根因独立成立：官方 loader 没有跨 worktree 互斥；三处 binding 只能在提交 /首次写 /完成时发现漂移。D-096 新增仓库外单一开发租约，`formal_capture` 与 `uxp_loader` 在 UDT mutation 前竞争；`run-live` 在任何 Attempt Event 前取得租约并复验完整 binding。
+- 专项验证已通过：并发 loader 被结构化拒绝；错误 leaseId 不能释放；存活 owner 即使 TTL 到点也不能被删除；死亡 owner 可回收；旧 owner 不能删除新 owner。loader self-test 和真实双进程拒绝 canary 均通过，canary 在连接 UDT 前结束且 Photoshop 零 mutation。相邻审计、Main /Renderer 类型检查、Agent /UXP production build、完整核心闸门 58/58、独立提交和提交后 clean identity 均已完成。
+- 当前 r32 fixture PSD 仍打开，账本保持 `submission_unknown_write_state`；没有自动保存、关闭、丢弃或移动任何文档 /证据。r33 必须等合法 reconciliation 后开始。
+
 ## 2026-08-29 D-095 无副作用首写拒绝恢复与 r32 失败病历
 
 - D-094 已形成干净提交 `eb40a93c`，提交后 Agent /UXP production identity 匹配。r32 在真实未保存 `800` 保持打开时通过 read-only preflight，证明 `documentId/historyStateId` 前置对象隔离可以在真机建立。
 - r32 Attempt `main-image-pink-coffee-unseen-v1-attempt-20260829045547-706e60bd6c2e` / Run `run-20260829050717-b6f8c117-8f2a` 使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`，最终失败：23 iterations、24 次模型调用、21 次 Tool Call、1,764,991 input tokens、67,813 output tokens、649,831 ms 模型耗时、689,034 ms 总耗时。
 - 首个写尝试 `placeImage` 在 Photoshop dispatch 前被 `first_mutation_must_create_task_document` 拒绝。模型下一轮已经改用 `createDocument`，但 baseline 的 blocked 状态不可恢复，5 次 `createDocument` 与 2 次 `composeDesign` 继续失败；RunRecord 证明 8 次 mutation 尝试均 `mutationObserved=false`、成功 mutation 为 0，因此用户 `800` 的 revision 变化不是本 Run 写入。
 - 运行期间外部又打开 `E:\WERKE\C-1258\PSD\详情页.psb`，并把 UXP 从 clean D-094 build 切换到旧 `de628ade...-dirty`；Debug Bridge 在完成态按 runtime binding 失败关闭，Attempt 记录 `submission_unknown_write_state`。该失败不能重放，也不能计入设计质量。
-- D-095 已在独立分支实现：只有纯工具选择错误可以返回 pending 并要求下一次重新检查；Runtime /文档事实错误仍永久 blocked。攻击用例已证明 `placeImage → createDocument` 可恢复，以及两次之间 revision 漂移继续永久阻断；Design Reliability 专项、相邻审计、Main /Renderer 类型检查、Agent production build 和完整核心闸门 58/58 已通过，独立提交和 r33 真机待完成。
+- D-095 已在独立提交 `d8ce40ef` 实现：只有纯工具选择错误可以返回 pending 并要求下一次重新检查；Runtime /文档事实错误仍永久 blocked。攻击用例已证明 `placeImage → createDocument` 可恢复，以及两次之间 revision 漂移继续永久阻断；Design Reliability 专项、相邻审计、Main /Renderer 类型检查、Agent /UXP production build 和完整核心闸门 58/58 已通过，r33 真机待完成。
 
 ## 2026-08-29 D-094 未保存前置文档的 TaskRun 对象隔离
 

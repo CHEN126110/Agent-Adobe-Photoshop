@@ -48,6 +48,12 @@ const {
   deriveBuildId
 } = require("./lib/photoshop-runtime-build-identity.cjs");
 const {
+  PHOTOSHOP_RUNTIME_LEASE_CONFLICT,
+  acquirePhotoshopRuntimeLease,
+  inspectPhotoshopRuntimeLease,
+  releasePhotoshopRuntimeLease
+} = require("./lib/design-reliability-photoshop-runtime-lease.cjs");
+const {
   buildCanonicalAttemptSafetyLedger,
   buildAttemptCohortReportContext,
   buildFirstMutationBaselineProof,
@@ -1555,6 +1561,11 @@ async function main() {
     "scripts",
     "design-reliability.cjs"
   ), "utf8");
+  const photoshopUxpLoaderSource = fs.readFileSync(path.join(
+    ROOT,
+    "scripts",
+    "load-photoshop-uxp-plugin.cjs"
+  ), "utf8");
   const agentRuntimeTypesSource = fs.readFileSync(path.join(
     ROOT,
     "src",
@@ -1939,8 +1950,19 @@ async function main() {
     && !debugBridgeProjectSeedSource.includes("process.env.NODE_ENV"),
   "production benchmark 项目必须来自 Main 授权的启动上下文，不能依赖 development 编译分支或 Renderer URL 自签");
   const runLivePreflightIndex = designReliabilityCliSource.indexOf("const preflight = await buildPreflight");
+  const runLiveLeaseIndex = designReliabilityCliSource.indexOf(
+    "const runtimeLease = acquirePhotoshopRuntimeLease({",
+    runLivePreflightIndex
+  );
+  const runLiveLeaseRevalidationIndex = designReliabilityCliSource.indexOf(
+    "const leasedPhotoshopRuntime = await inspectPhotoshopRuntimeBinding(args);",
+    runLiveLeaseIndex
+  );
   const runLiveArmedIndex = designReliabilityCliSource.indexOf("const armedAttempt = writeLiveAttemptEvent", runLivePreflightIndex);
   assert(runLivePreflightIndex > 0
+    && runLiveLeaseIndex > runLivePreflightIndex
+    && runLiveLeaseRevalidationIndex > runLiveLeaseIndex
+    && runLiveArmedIndex > runLiveLeaseRevalidationIndex
     && runLiveArmedIndex > runLivePreflightIndex
     && designReliabilityCliSource.includes("renderer_model_mismatch")
     && designReliabilityCliSource.includes("renderer_provider_mismatch")
@@ -1949,6 +1971,94 @@ async function main() {
     && designReliabilityCliSource.includes('canvasAuthority === "runtime_setting"')
     && designReliabilityCliSource.includes("classifyUntrustedDebugBridgeFailure(error)"),
   "run-live 必须在 armed 前核对 Renderer 模型/Provider/项目/尺寸，并只按结构化副作用事实分流终态");
+  assert(designReliabilityCliSource.includes("releasePhotoshopRuntimeLease(runtimeLease)")
+    && photoshopUxpLoaderSource.includes("purpose: 'uxp_loader'")
+    && photoshopUxpLoaderSource.includes("acquirePhotoshopRuntimeLease({")
+    && photoshopUxpLoaderSource.includes("releasePhotoshopRuntimeLease(runtimeLease)"),
+  "正式采集与官方 UXP loader 必须竞争同一开发期 Runtime 租约，并在 finally 释放");
+
+  const runtimeLeaseTestRoot = fs.mkdtempSync(path.join(os.tmpdir(), "designecho-runtime-lease-"));
+  try {
+    const firstLease = acquirePhotoshopRuntimeLease({
+      dataRoot: runtimeLeaseTestRoot,
+      purpose: "formal_capture",
+      ownerId: "attempt-a",
+      ownerPid: 41001,
+      ownerProcessStartedAtMs: 1_000,
+      nowMs: 2_000,
+      ttlMs: 20_000,
+      processAlive: () => true
+    });
+    assert.strictEqual(
+      inspectPhotoshopRuntimeLease({
+        dataRoot: runtimeLeaseTestRoot,
+        nowMs: 3_000,
+        processAlive: () => true
+      }).status,
+      "active",
+      "存活 owner 的未到期正式采集租约必须保持 active"
+    );
+    assert.throws(
+      () => acquirePhotoshopRuntimeLease({
+        dataRoot: runtimeLeaseTestRoot,
+        purpose: "uxp_loader",
+        ownerId: "loader-b",
+        ownerPid: 41002,
+        ownerProcessStartedAtMs: 2_500,
+        nowMs: 3_000,
+        ttlMs: 20_000,
+        processAlive: () => true
+      }),
+      (error) => error?.code === PHOTOSHOP_RUNTIME_LEASE_CONFLICT,
+      "正式采集期间另一个 UXP loader 必须在 Host mutation 前被同一租约拒绝"
+    );
+    assert.strictEqual(
+      releasePhotoshopRuntimeLease({
+        leasePath: firstLease.leasePath,
+        leaseId: "00000000-0000-0000-0000-000000000000"
+      }).released,
+      false,
+      "错误 leaseId 不能释放另一个 owner 的租约"
+    );
+    assert.strictEqual(releasePhotoshopRuntimeLease(firstLease).released, true,
+      "原 owner 必须能够释放自己的租约");
+
+    const expiredLease = acquirePhotoshopRuntimeLease({
+      dataRoot: runtimeLeaseTestRoot,
+      purpose: "uxp_loader",
+      ownerId: "expired-loader",
+      ownerPid: 41003,
+      ownerProcessStartedAtMs: 5_000,
+      nowMs: 6_000,
+      ttlMs: 10_000,
+      processAlive: () => true
+    });
+    const expiredButAliveInspection = inspectPhotoshopRuntimeLease({
+      dataRoot: runtimeLeaseTestRoot,
+      nowMs: 20_000,
+      processAlive: () => true
+    });
+    assert.strictEqual(expiredButAliveInspection.status, "active",
+      "TTL 只限制预期采集窗口；持有进程仍存活时不得把它误判为可删除陈旧租约");
+    assert.strictEqual(expiredButAliveInspection.expired, true);
+    const replacementLease = acquirePhotoshopRuntimeLease({
+      dataRoot: runtimeLeaseTestRoot,
+      purpose: "formal_capture",
+      ownerId: "attempt-c",
+      ownerPid: 41004,
+      ownerProcessStartedAtMs: 19_000,
+      nowMs: 20_000,
+      ttlMs: 20_000,
+      processAlive: (pid) => pid !== expiredLease.lease.ownerPid
+    });
+    assert.notStrictEqual(expiredLease.lease.leaseId, replacementLease.lease.leaseId,
+      "持有进程已退出的陈旧租约必须可回收，不能永久阻塞后续正式采集");
+    assert.strictEqual(releasePhotoshopRuntimeLease(expiredLease).released, false,
+      "旧 owner 在租约被回收后不能删除新 owner 的租约");
+    assert.strictEqual(releasePhotoshopRuntimeLease(replacementLease).released, true);
+  } finally {
+    fs.rmSync(runtimeLeaseTestRoot, { recursive: true, force: true });
+  }
   assert(designReliabilityCliSource.includes(
     '全局写状态安全账本未清账: ${status.evidence.attemptSafetyLedger.unresolvedAttemptCount}'
   ), "status 必须把当前 Case 覆盖与跨 revision 的全局写状态安全账本分开显示");

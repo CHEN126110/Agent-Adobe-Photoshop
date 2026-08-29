@@ -2,9 +2,20 @@
 
 本文件只保留仍约束当前实现的关键裁决。更早的 D-001～D-059 由 Git 历史保留。
 
+## D-096 正式 Design Reliability 采集与官方 UXP loader 必须竞争同一开发期 Runtime 租约
+
+- 状态：已采用并在独立 D-096 worktree 形成可回滚提交；专项纯逻辑、loader self-test、真实双进程拒绝 canary、相邻审计、Main /Renderer 类型检查、Agent /UXP production build、完整核心闸门 58/58 与提交后 clean identity 已通过。r32 reconciliation 和 r33 真机待完成。
+- 触发事实：r32 提交时 Photoshop UXP 是 D-094 clean build，正式 DeepSeek Run 期间却被另一开发会话替换为旧 dirty build。现有三处 Runtime binding 能安全拒绝漂移，但只能在昂贵运行已经发生后报告失败；官方 loader 没有跨 worktree 互斥。
+- 反证结论：r32 在失败 Attempt 后出现的第二 Run 不是自动 Reflexion 逃逸。它在 Attempt 终止约 25 秒后从同一 conversationId 的新 branchId 启动；生产代码只有“编辑已发送消息并重发”会更换 branchId。它属于新的显式顶层交互，不允许用代际 guard 或延长旧 Debug lease 阻断正常用户重发。
+- 决定：仓库外 canonical Design Reliability data root 只保留一个版本化 Photoshop Runtime lease。`run-live` 以 `formal_capture` 取得后再次核对完整 UXP binding，并在任何 Attempt Event、模型提交或 Photoshop 写入前失败关闭；官方 UXP loader 以 `uxp_loader` 在连接 UDT 和任何 load /unload 前取得同一租约。二者都在 `finally` 精确释放。
+- 陈旧与所有权：租约绑定随机 leaseId、有限 owner、PID、进程起始 /取得 /预期到期时间。只要 owner 进程仍存活就不得因 TTL 到点删除；owner 已退出时后继者可回收。释放必须匹配当前 leaseId，旧 owner 不得删除新 owner。没有 force 参数。
+- Owner 与边界：该租约只拥有开发评测期间的合作式 loader 互斥，不拥有 Photoshop 权限、TaskRun、Runtime binding、事务、完成判断或设计答案。用户手动 UDT reload 与第三方直连仍可能绕过，因此既有提交 /首次写 /完成 binding 必须保留为安全权威。
+- 回滚点：D-096 只新增一个 `scripts/lib` 租约模块，并接入 `design-reliability.cjs` 与官方 loader；若出现开发 loader 无法恢复的误阻断，可独立回滚本切片，D-095 /D-094 与三处完整 Runtime binding 不受影响。
+- 验证边界：双进程 canary 已证明持有正式采集租约时 loader 在 UDT 连接前返回 `runtime_capture_lease_active`，随后原 owner 成功释放且全局无残留。尚未完成真实 `run-live` 全窗口、持有进程崩溃后的真实 loader 回收和 r33，不能宣称环境漂移已完全消失。
+
 ## D-095 写前已拒绝且无 Host 副作用的错误首选可恢复，事实风险继续永久锁死
 
-- 状态：已采用；独立 D-095 分支已完成纯逻辑攻击测试、相邻审计、Main /Renderer 类型检查、Agent production build 和完整核心闸门 58/58，独立提交和 r33 真机待完成。
+- 状态：已采用并形成独立提交 `d8ce40ef`；纯逻辑攻击测试、相邻审计、Main /Renderer 类型检查、Agent /UXP production build 和完整核心闸门 58/58 已通过，r33 真机待完成。
 - 触发事实：r32 的首个写尝试 `placeImage` 被 D-094 在 dispatch 前正确拒绝，RunRecord 明确 `mutationObserved=false`。模型下一轮已经改用正确 `createDocument`，但 `blockBaseline()` 把整个 TaskRun 永久置为 blocked，导致 5 次 `createDocument`、2 次 `composeDesign` 继续撞墙，最终 24 次模型调用累计 1,764,991 input tokens 且成功 mutation 为 0。
 - 决定：`first_mutation_must_create_task_document` 只表达当前工具选择错误，不表达 Photoshop 环境已经不安全。该调用仍返回失败且不派发；baseline 清除本次首写候选并回到 pending。下一次受保护写调用必须重新读取完整 Runtime identity 与文档 inventory，只有 `createDocument` 且所有前置对象 identity /revision 仍匹配时才可进入 passed。
 - 永久阻断边界：Runtime 身份缺失 /漂移、文档 inventory 缺失、fixture 文档已打开、前置对象缺失 /身份 /revision 变化、新外部文档出现等仍调用唯一 `blockBaseline()`；一旦 blocked，同一 TaskRun 不因后续状态看似恢复而解锁。被拒绝的原工具本身不可自动重试，也不会取得权限。

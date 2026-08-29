@@ -1,43 +1,44 @@
 # Current Task
 
-## 2026-08-29 DESIGN-RELIABILITY-095：无副作用首写拒绝可恢复，真实风险继续锁死
+## 2026-08-29 DESIGN-RELIABILITY-096：正式采集与 UXP loader 共用单一开发期 Runtime 租约
 
 ### 目标
 
-修复 r32 暴露的第一条真实效率偏差：模型第一次选择 `placeImage` 时，D-094 在 Photoshop dispatch 前正确拒绝且证明 `mutationObserved=false`，但 baseline 被永久置为 `blocked`，导致模型下一步已经改用正确 `createDocument` 仍无法恢复。D-095 只允许“首个错误工具已在写前被拒绝、没有任何 Host 副作用、Runtime 与全部前置文档 revision 仍匹配”的同一 TaskRun 重新检查；首个真正获准派发的 Photoshop mutation 仍必须是 `createDocument`。
+阻止另一个开发脚本在高成本正式 Attempt 运行期间替换唯一 Photoshop UXP plugin session。现有 Runtime binding 继续负责安全检测；D-096 只在开发评测面增加一个合作式跨进程租约，让 `design-reliability run-live` 与官方 `load-photoshop-uxp-plugin.cjs` 竞争同一 owner，在 Host load /unload 前拒绝并发替换。它不进入生产 Runtime、Agent Prompt、Tool 权限、设计决策或完成判定。
 
 ### 当前事实
 
-- D-094 已形成干净提交 `eb40a93c`，专项、Agent /UXP production build 与完整 `maintenance:validate` 58/58 均通过。r32 提交前预检在真实未保存 `800` 打开时通过，证明对象 revision 隔离本身可用。
-- 正式 Attempt `main-image-pink-coffee-unseen-v1-attempt-20260829045547-706e60bd6c2e` 使用用户指定的 DeepSeek 官方 `deepseek-v4-flash-vision-exp`。Run `run-20260829050717-b6f8c117-8f2a` 为失败：23 iterations、24 次模型调用、21 次 Tool Call、1,764,991 input tokens、67,813 output tokens、649,831 ms 模型耗时、689,034 ms 总耗时。
-- 首个 Photoshop 写尝试是 `placeImage`，在 214,039 ms 时被 `first_mutation_must_create_task_document` 写前拒绝。随后模型已改用 `createDocument`，但 baseline 的永久 blocked 状态让 5 次 `createDocument` 和 2 次 `composeDesign` 继续撞同一墙。8 次 mutation 尝试全部 `mutationObserved=false`，成功 mutation 为 0；`800` 的 revision 变化与新增 `详情页.psb` 来自外部并发，不是本 Run 写入。
-- 同一运行中 Photoshop UXP 在 05:04:18 从 D-094 clean build 漂移到旧 `de628ade...-dirty`，Debug Bridge 因完成时 Runtime 身份不一致返回 `submission_unknown_write_state`。该失败证明 runtime binding 闸门有效，但加载会话隔离属于独立实机环境问题，D-095 不用恢复逻辑掩盖它。
-- 已定位唯一代码 owner：`src/shared/guarded-photoshop-execution-baseline.ts` 把所有首次写前拒绝都调用 `blockBaseline()`，没有区分“已确认未派发的错误工具选择”和“Runtime /文档事实已不安全”。Tool executor 已在唯一 Photoshop MCP dispatch 之前执行该 owner，不需要新增 Gate、Runtime、Store 或事务层。
+- D-095 已以 `d8ce40ef` 独立提交；专项、相邻审计、Main /Renderer 类型检查、Agent /UXP production build 与完整 `maintenance:validate` 58/58 均通过。只有 `first_mutation_must_create_task_document` 且明确未派发的错误首选可恢复；Runtime /文档事实漂移继续永久锁死。
+- r32 正式 Attempt 的唯一受保护 Run `run-20260829050717-b6f8c117-8f2a` 是 0 成功 mutation 的失败病历。UXP 在运行期间从 clean D-094 漂移到旧 dirty build，完成态按完整 binding 正确拒绝；安全检测成立，但整次 DeepSeek 运行已经消耗约 11 分 29 秒。
+- r32 随后出现的 `run-20260829051822-b6f8c117-e4c2` 不是自动 Reflexion 或 Debug guard 逃逸。正式 Attempt 已在 `05:07:17.986Z` 终止；第二 Run 约 25 秒后开始，沿用同一 conversationId 但取得新的 branchId。代码中唯一会更换 branchId 的生产路径是“编辑已发送用户消息并截断后续回复”；同期 Codex 只读取页面文本，没有点击或再次提交。因此它是新的显式顶层重发，不应被旧 Attempt 租约接管，也不新增 D096 generation guard。
+- 该普通重发使用同一 DeepSeek V4 Flash Vision，32 次模型调用、38 次 Tool Call、2,619,699 input tokens、57,939 output tokens、约 10 分 39 秒，产生 9 次成功 mutation 和 PSD /JPG。它只作为产品运行与质量诊断，不计入正式 Attempt：成稿把原始平铺摄影作为大矩形嵌入模板，四色商品没有形成粉咖款唯一焦点，底部胶囊卖点过强；与三个冻结 Eagle 锚点相比，主体塑造、场景证明、层级和商业点击力均明显不足。
+- 官方 UXP loader 当前没有跨进程互斥。`run-live` 只在提交前和完成后校验 Runtime binding，因此能够发现漂移却不能阻止另一个 worktree 的 loader 在 10–35 分钟采集窗口中先卸载再加载同 ID 插件。这是 R-053 的唯一开发 Harness owner，不应通过 Prompt、Provider 重试或放宽 completion 隐藏。
 
 ### 实施边界
 
-- 只有 blocker 精确为 `first_mutation_must_create_task_document` 时可返回可恢复拒绝；被拒绝调用仍 `success=false / executesPhotoshop=false / countsAsTaskProgress=false`，不得触达 Provider。
-- 可恢复拒绝后 baseline 回到 `pending`，清除被拒绝工具的首写候选；下一次受保护写调用必须重新读取完整 Runtime identity 与文档 inventory。只有 `createDocument` 且全部事实仍安全时才进入 `passed`。
-- Runtime 身份缺失 /漂移、文档 inventory 缺失、fixture 文档已打开、前置对象缺失 /身份 /revision 变化、新外部文档出现等继续永久 `blocked`；不得用重试或默认值恢复。
-- 复用现有 baseline owner、Tool executor dispatch、RunRecord 与 policy-gate 会计；不新增第二恢复 owner，不修改 DeepSeek Provider、不混入 UXP loader 隔离或设计 Prompt。
+- 新租约只允许 `formal_capture / uxp_loader` 两种目的，存放在仓库外 canonical Design Reliability data root，所有 worktree 共享；记录有限 owner /PID /时间信息，不保存 token、Prompt、fixture 绝对路径或 Photoshop 内容。
+- `run-live` 在任何 `armed /submission_started` Event 前取得租约，并立即再次核对完整 Photoshop Runtime binding；租约前后漂移时不写 Attempt、不提交模型、不允许 Photoshop 写入。
+- 官方 loader 在连接 UDT、validate、load、unload 或 bridge wait 前先取得同一租约，并在 `finally` 释放。已有正式采集或另一个 loader 存活时直接返回结构化 `runtime_capture_lease_active`，不得提供 force 绕过。
+- 持有进程存活时即使 TTL 到点也不得删除租约；只有 owner 进程已退出才可回收。释放必须匹配精确 leaseId，旧 owner 不能删除后来取得的新租约。
+- 这是合作式开发工具互斥，不能阻止用户在 UDT UI 手动 reload 或第三方直接调用 UDT；现有提交 /完成 /首次 mutation Runtime binding 继续是安全权威，租约只减少可避免的昂贵失败。
 
 ### 下一步
 
-1. 补攻击测试：`placeImage` 写前拒绝后 `createDocument` 可重新检查并通过；两次观察之间 Runtime /revision /文档集合任一变化仍永久阻断；被拒绝调用不计 mutation。
-2. `[已完成]` 修改唯一 baseline 与 Tool 结果语义；专项、Main /Renderer 类型检查、Agent production build 和完整核心闸门 58/58 已通过，没有修改断言阈值。
-3. 形成独立可回滚提交后，等待其它共享 Photoshop /UXP 会话停止替换插件，再加载同一 clean build。
-4. 使用全新 fixture 重新执行固定 Case；必须证明错误首选至多造成一次无副作用拒绝，后续真实首个 mutation 是 `createDocument`，并完成同 revision PSD /JPG 与零人工交互收据。
-5. 技术成功后才进入匿名视觉比较；本次 r32 失败只作为 Harness 负向证据，不进入设计质量样本。
+1. `[已完成]` 纯逻辑攻击覆盖并发拒绝、错误 owner 释放、存活但 TTL 到期不得误删、死亡 owner 回收、旧 owner 不得删除新租约；loader 自测与真实双进程拒绝 canary 已通过，且 canary 未连接 UDT、未触发 Photoshop mutation。
+2. `[已完成]` Main /Renderer 类型检查、相邻正式审计、Agent production build 与提交前唯一一次完整 `maintenance:validate` 已通过；核心闸门 58/58、UXP production build、独立 D-096 提交和提交后 clean 双 Runtime identity 均已完成，不重复全套。
+3. 不自动保存、关闭或丢弃当前 `800`、`详情页.psb`、r32 未保存设计文档或 r32 已保存 PSD。r32 reconciliation 仍要求用户完成自己的查看并关闭 fixture 文档后才能执行；普通重发产物与失败 Attempt 保持分轴。
+4. 对账完成后加载 D-096 clean UXP，准备全新 r33，继续使用 DeepSeek 官方 `deepseek-v4-flash-vision-exp`、真实 Photoshop 和 1440×1440 画布运行正式 Attempt。
+5. r33 先验收 D-095 的正确首写恢复与 D-096 的稳定 Runtime；技术通过后再进行匿名视觉比较。r32 普通重发只提供设计 /性能根因，不冒充正式成功样本。
 
 ### 验证与未知
 
-- 已验证 D-094 的安全面：8 次错误写尝试均未派发，用户文档没有 Agent mutation；完成时 UXP runtime 漂移也被拒绝。
-- 已验证代码恢复面：无副作用拒绝后可在同 TaskRun 以正确 `createDocument` 重新检查并通过；两次之间 revision 漂移会永久 blocked，后续安全观察也不能解锁。专项、相邻审计、Main /Renderer 类型检查、Agent production build 和完整核心闸门 58/58 均通过。
-- 待解决的独立环境项是共享 UXP plugin session 被其它运行加载；未取得稳定单一加载会话前，不重跑高成本正式 Case。
+- 已验证 D-096 纯逻辑和双进程协作拒绝；相邻业务边界 /入口文档 /编码 /规划检查、Main /Renderer 类型检查、Agent production build 与完整核心闸门 58/58 均通过。测试租约没有触发 UXP load /unload，也没有修改 Photoshop 文档。
+- 尚未验证另一个真实 worktree 的 loader 在完整 `run-live` 窗口内被拒绝、进程崩溃后下一次 loader 自动回收，以及用户手动 UDT reload 时现有 binding 仍准确终止 Attempt。
+- r32 正式账本仍为 unreconciled unknown-write，且 r32 fixture PSD 仍打开；在不越权关闭文档的前提下，r33 不能开始。该等待不构成修改安全协议或跳过账本的理由。
 
 ### 状态
 
-`in_progress`：D-095 代码、攻击测试、production build 与完整核心闸门已通过；独立提交、clean Runtime 重建、共享 UXP session 稳定化和 r33 真机待完成。
+`in_progress`：D-096 实现、专项攻击、双进程拒绝 canary、相邻审计、类型 /production build、完整核心闸门 58/58、独立提交与提交后 clean identity 已完成；r32 reconciliation 与 r33 真机仍待完成。
 
 ## 2026-08-29 DESIGN-RELIABILITY-TERMINAL-LIFECYCLE-002：完成态代际与终局交付闭合
 
