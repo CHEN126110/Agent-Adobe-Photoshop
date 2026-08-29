@@ -149,8 +149,10 @@ export class ListDocumentsTool implements Tool {
                         if (Number.isSafeInteger(historyStateCount) && historyStateCount >= 0) {
                             docInfo.historyStateCount = historyStateCount;
                         }
-                        if (typeof doc.saved === 'boolean') {
-                            docInfo.saved = doc.saved;
+                        // UXP 类型定义缺少 Document.saved，但运行时存在（save-document.ts 同款读法）
+                        const savedFlag = (doc as any).saved;
+                        if (typeof savedFlag === 'boolean') {
+                            docInfo.saved = savedFlag;
                         }
                         if (docInfo.activeHistoryStateId === undefined
                             || docInfo.historyStateCount === undefined

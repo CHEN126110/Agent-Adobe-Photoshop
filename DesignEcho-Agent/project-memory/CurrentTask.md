@@ -7,14 +7,15 @@
 1. 把共享脏工作树中混写的多组功能按语义分开提交、验证、可独立回滚；姿态统一（P0 未拆解）不得进入主线。
 2. 扩展 Design Reliability 协议，使「外部 dirty 文档仍打开」成为可正式采样的受控环境变体：外部文档全程不被触碰（history/save 状态不变）、新任务绑定自己的文档、其余验收（同 revision 交付、零人工纠偏、盲评）沿用既有机制。
 
-### 已完成事实（分簇收口，全部已推送 legacy 远程）
+### 当前事实
 
-- 7 个独立提交落在 `codex/agent-uxp`：`7e44e6a2` 依赖迁移（@anthropic-ai/sdk 0.122 + zod override）、`75f8b677` matting 固定 CPU + 取消 YOLO-World 预加载、`86259c76` 模型失败原因可见性三刀、`09431fa1` 推理档位端到端、`202832b2` Smile AI 图像通道 + 参考图多张化（顺手修复 Smile Key 恢复被 OpenRouter Key 门控的接线缺陷）、`9feb68ff` 跨文档置入隔离 + 两个纯函数测试、`14145f48` 思考过程 UI 扁平化 + design-qa 验收记录。
+- 分簇收口已推送 legacy 远程：7 个独立提交落在 `codex/agent-uxp`——`7e44e6a2` 依赖迁移（@anthropic-ai/sdk 0.122 + zod override）、`75f8b677` matting 固定 CPU + 取消 YOLO-World 预加载、`86259c76` 模型失败原因可见性三刀、`09431fa1` 推理档位端到端、`202832b2` Smile AI 图像通道 + 参考图多张化（顺手修复 Smile Key 恢复被 OpenRouter Key 门控的接线缺陷）、`9feb68ff` 跨文档置入隔离 + 两个纯函数测试、`14145f48` 思考过程 UI 扁平化 + design-qa 验收记录。
 - 姿态统一整簇（9 文件，含 P0 多调用拼接写链）停放在分支 `wip/pose-alignment-pending-split`（`266beb26`，DO NOT MERGE），主线工作树 0 脏文件。
-- 混合文件按 hunk 精确拆分（models.config/SettingsModal/provider-model-listing/autonomous-agent/report-change-boundaries/UXP index.ts）；干净树上完整 `maintenance:validate` 57 项通过。
-- 运行环境事实：桌面端 PID 36080 运行的是脏树 13:53 构建；Photoshop 插件加载的是 26f0d6c2 构建。两者与当前干净 HEAD `14145f48` 均不匹配，正式采样前需重建 + 重启 + 插件重载。
+- 混合文件按 hunk 精确拆分（models.config/SettingsModal/provider-model-listing/autonomous-agent/report-change-boundaries/UXP index.ts）；分簇后干净树上完整 `maintenance:validate` 57 项真实通过（tail 直读成功宣言行）。
+- 外部脏文档协议扩展已以 `c78875ea` 提交推送（详见实施边界）；其提交前验证存在管道假绿，纠错见「验证与未知」。
+- 运行环境事实：桌面端 PID 36080 运行的是脏树 13:53 构建；Photoshop 插件加载的是 26f0d6c2 构建。两者与当前 HEAD 均不匹配，正式采样前需重建 + 重启 + 插件重载（UDT 四进程在运行，重载入口待确认）。
 
-### 当前实施边界（外部脏文档协议扩展）
+### 实施边界
 
 - 收据 owner 不变：提交/完成收据仍由 ChatPanel 受控调试路径生产，校验仍在 design-reliability.cjs；不新增第二 Runtime/Registry/事务 owner。
 - 策略字段：Case `boundaries.externalDirtyDocumentRemainsOpenAndUntouched=true` → 提交体 `requireExternalDirtyDocumentUntouched`；缺省行为（none_open）逐字节不变。
@@ -22,9 +23,22 @@
 - UXP `listDocuments` 增加只读 `includeHistory`（DOM 逐文档读，不激活、不切换文档）；旧插件缺字段时守卫 fail closed。
 - 新 Case `main-image-pink-coffee-external-dirty-v1` 复用粉咖 fixture 与 rubric，caseDigest 重算；攻击测试进 verify-design-reliability.cjs。
 
+### 下一步
+
+1. 提交 `Document.saved` 类型修复与本卡结构修正；以 pipefail 口径重跑完整 `maintenance:validate` 并直读退出码。
+2. 从干净 HEAD 重建 Agent 与 UXP 生产构建；带 `DESIGNECHO_DEBUG_TOKEN` 重启桌面端；经 UDT 重载插件并核对 diagnoseState 构建身份。
+3. `prepare-fixture` 实例化粉咖 fixture，`run-live --case main-image-pink-coffee-external-dirty-v1` 执行首个外部脏文档正式 Case；盲评包交人工。
+
+### 验证与未知
+
+- 已核实（纠错）：协议扩展提交 `c78875ea` 前的那次 `maintenance:validate` 实际在第一阶段（规划一致性：本卡节名不精确）即失败，被执行侧 `cmd | tail` 管道把退出码掩盖成 0；同一管道也掩盖过 UXP typecheck 对 `Document.saved` 的真实报错（TS2339）。修复 = 本卡节名精确化 + `(doc as any).saved`（save-document.ts 同款先例）。教训：验证退出码必须直读或 pipefail，判"通过"只认工具自己的成功宣言行。
+- 已核实：协议扩展的专项面（test:design-reliability 攻击矩阵、套件 7 Case 契约、UXP 三测试、双侧 typecheck）在纠错后均真实通过。
+- 未知：新 `listDocuments.includeHistory` 对非活动文档的 DOM 读取（activeHistoryState/historyStates/saved）尚未真机验证；插件重载后先用 MCP 探针验证再进正式 Case。
+- 未知：正式 Case 的零人工纠偏与盲评质量结论需真实运行后才有；当前一切为代码级闭环。
+
 ### 状态
 
-`worktree_untangled_and_pushed / core_57_validated / external_dirty_protocol_in_progress / runtime_rebuild_and_plugin_reload_pending / formal_live_run_pending`
+`in_progress / worktree_untangled_and_pushed / external_dirty_protocol_committed_c78875ea / pipeline_false_green_corrected / full_validation_rerun_pending / runtime_rebuild_and_plugin_reload_pending / formal_live_run_pending`
 
 ---
 
